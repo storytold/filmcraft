@@ -121,6 +121,15 @@ pub(crate) fn str_p<'a>(p: &'a Value, k: &str) -> Option<&'a str> {
 pub(crate) fn f64_p(p: &Value, k: &str) -> Option<f64> {
     p.get(k).and_then(Value::as_f64)
 }
+/// `fps` as a sequence frame rate; zero or negative rates are refused (all frame maths divides by them).
+fn fps_p(p: &Value, cmd: &str) -> Result<Option<FrameRate>> {
+    let Some(fps) = f64_p(p, "fps") else { return Ok(None) };
+    let r = FrameRate::from_f64(fps);
+    if r.num <= 0 || r.frame_duration() <= Tick::ZERO {
+        return Err(bad(cmd, format!("fps must be a positive frame rate, got {fps}")));
+    }
+    Ok(Some(r))
+}
 pub(crate) fn bool_p(p: &Value, k: &str) -> Option<bool> {
     p.get(k).and_then(Value::as_bool)
 }
@@ -506,8 +515,8 @@ fn build() -> Vec<CommandSpec> {
                 if let Some(h) = u64_p(p, "height") {
                     st.height = h as u32;
                 }
-                if let Some(fps) = f64_p(p, "fps") {
-                    st.frame_rate = FrameRate::from_f64(fps);
+                if let Some(fps) = fps_p(p, "file.newSequence")? {
+                    st.frame_rate = fps;
                 }
                 if let Some(sr) = u64_p(p, "sampleRate") {
                     st.sample_rate = sr as u32;
@@ -1259,6 +1268,7 @@ fn build() -> Vec<CommandSpec> {
             has_seq,
             |s, p| {
                 let id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+                let fps = fps_p(p, "sequence.settings")?;
                 let mix = match str_p(p, "mix") {
                     Some(m) => Some(
                         crate::mixer::channels_from(m).ok_or_else(|| bad("sequence.settings", format!("unknown mix `{m}` (Stereo, Mono, 5.1, Adaptive)")))?,
@@ -1277,8 +1287,8 @@ fn build() -> Vec<CommandSpec> {
                     if let Some(h) = u64_p(&p, "height") {
                         q.settings.height = h as u32;
                     }
-                    if let Some(f) = f64_p(&p, "fps") {
-                        q.settings.frame_rate = FrameRate::from_f64(f);
+                    if let Some(f) = fps {
+                        q.settings.frame_rate = f;
                     }
                     if let Some(sr) = u64_p(&p, "sampleRate") {
                         q.settings.sample_rate = sr as u32;
