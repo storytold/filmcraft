@@ -106,6 +106,11 @@ pub const DISPLAY_HEIGHT: u32 = 0x54BA;
 pub const DISPLAY_UNIT: u32 = 0x54B2;
 pub const COLOUR_SPACE: u32 = 0x2E_B524;
 pub const COLOUR: u32 = 0x55B0;
+pub const PROJECTION: u32 = 0x7670;
+pub const PROJECTION_TYPE: u32 = 0x7671;
+pub const PROJECTION_POSE_YAW: u32 = 0x7673;
+pub const PROJECTION_POSE_PITCH: u32 = 0x7674;
+pub const PROJECTION_POSE_ROLL: u32 = 0x7675;
 
 // Colour
 pub const MATRIX_COEFFICIENTS: u32 = 0x55B1;

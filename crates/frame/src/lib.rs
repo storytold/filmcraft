@@ -143,6 +143,41 @@ impl VideoFrame {
         Some(VideoFrame { width: ow as u32, height: oh as u32, data, color: self.color, par: self.par, pts: self.pts })
     }
 
+    /// The frame turned clockwise by `quarter_turns` × 90° (a container's display rotation).
+    /// Planes rotate at their own resolution; 4:2:2 chroma is widened to 4:4:4 first for a quarter
+    /// or three-quarter turn (its half-width chroma would become half-height, which has no
+    /// [`Chroma`] variant). The pixel aspect ratio follows the turn.
+    pub fn rotated(&self, quarter_turns: u8) -> VideoFrame {
+        let q = quarter_turns % 4;
+        if q == 0 {
+            return self.clone();
+        }
+        let (w, h) = (self.width as usize, self.height as usize);
+        let data = match &self.data {
+            PixelData::Rgba8(d) => PixelData::Rgba8(Arc::new(rotate_plane(d, w, h, 4, q))),
+            PixelData::RgbaF32(d) => PixelData::RgbaF32(Arc::new(rotate_plane(d, w, h, 4, q))),
+            PixelData::Yuv8 { planes, chroma, alpha } => {
+                let (c, chroma) = rotate_chroma(planes, *chroma, w, h, q);
+                PixelData::Yuv8 {
+                    planes: [Arc::new(rotate_plane(&planes[0], w, h, 1, q)), Arc::new(c[0].clone()), Arc::new(c[1].clone())],
+                    chroma,
+                    alpha: alpha.as_ref().map(|a| Arc::new(rotate_plane(a, w, h, 1, q))),
+                }
+            }
+            PixelData::Yuv16 { planes, chroma, bits, alpha } => {
+                let (c, chroma) = rotate_chroma(planes, *chroma, w, h, q);
+                PixelData::Yuv16 {
+                    planes: [Arc::new(rotate_plane(&planes[0], w, h, 1, q)), Arc::new(c[0].clone()), Arc::new(c[1].clone())],
+                    chroma,
+                    bits: *bits,
+                    alpha: alpha.as_ref().map(|a| Arc::new(rotate_plane(a, w, h, 1, q))),
+                }
+            }
+        };
+        let (width, height, par) = if q % 2 == 1 { (self.height, self.width, (self.par.1, self.par.0)) } else { (self.width, self.height, self.par) };
+        VideoFrame { width, height, data, color: self.color, par, pts: self.pts }
+    }
+
     /// Convert to premultiplied linear RGBA f32 (the compositor's working format).
     pub fn to_linear_f32(&self) -> Vec<f32> {
         self.to_linear_f32_decimated(1).2
@@ -445,8 +480,86 @@ fn box_plane<T: Copy + Into<u32> + TryFrom<u32> + Send + Sync + Default>(src: &[
     out
 }
 
+/// A `w`×`h` plane of `n`-element pixels turned clockwise by `q` (1–3) quarter turns.
+fn rotate_plane<T: Copy + Default + Send + Sync>(src: &[T], w: usize, h: usize, n: usize, q: u8) -> Vec<T> {
+    let mut out = vec![T::default(); w * h * n];
+    if w == 0 || h == 0 || src.len() < w * h * n {
+        return out;
+    }
+    // output width: h for a quarter / three-quarter turn
+    let ow = if q % 2 == 1 { h } else { w };
+    out.par_chunks_mut(ow * n).enumerate().for_each(|(oy, row)| {
+        for ox in 0..ow {
+            // the source pixel shown at (ox, oy)
+            let (x, y) = match q {
+                1 => (oy, h - 1 - ox),
+                2 => (w - 1 - ox, h - 1 - oy),
+                _ => (w - 1 - oy, ox),
+            };
+            let s = (y * w + x) * n;
+            row[ox * n..ox * n + n].copy_from_slice(&src[s..s + n]);
+        }
+    });
+    out
+}
+
+/// The two chroma planes of a `w`×`h` picture turned by `q` quarter turns, and their new format.
+fn rotate_chroma<T: Copy + Default + Send + Sync>(planes: &[Arc<Vec<T>>; 3], chroma: Chroma, w: usize, h: usize, q: u8) -> ([Vec<T>; 2], Chroma) {
+    let (sx, sy) = chroma.shifts();
+    let (cw, ch) = (w.div_ceil(1 << sx), h.div_ceil(1 << sy));
+    if chroma == Chroma::C422 && q % 2 == 1 {
+        // widen to 4:4:4 (each chroma sample covers two luma columns), then turn
+        let widen = |p: &[T]| -> Vec<T> {
+            let mut o = vec![T::default(); w * h];
+            if p.len() >= cw * h {
+                for y in 0..h {
+                    for x in 0..w {
+                        o[y * w + x] = p[y * cw + x / 2];
+                    }
+                }
+            }
+            o
+        };
+        return ([rotate_plane(&widen(&planes[1]), w, h, 1, q), rotate_plane(&widen(&planes[2]), w, h, 1, q)], Chroma::C444);
+    }
+    ([rotate_plane(&planes[1], cw, ch, 1, q), rotate_plane(&planes[2], cw, ch, 1, q)], chroma)
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn rotation_turns_every_plane_clockwise() {
+        // 4x2 RGBA8 with distinct pixels 0..8
+        let px: Vec<u8> = (0..8u8).flat_map(|i| [i, 0, 0, 255]).collect();
+        let f = VideoFrame { par: (4, 3), ..VideoFrame::rgba8(4, 2, px) };
+        let r = f.rotated(1);
+        assert_eq!((r.width, r.height, r.par), (2, 4, (3, 4)));
+        let red: Vec<u8> = r.to_rgba8().chunks(4).map(|p| p[0]).collect();
+        // source rows [0 1 2 3] / [4 5 6 7] turned clockwise: the bottom row becomes the left column
+        assert_eq!(red, [4, 0, 5, 1, 6, 2, 7, 3]);
+        let red180: Vec<u8> = f.rotated(2).to_rgba8().chunks(4).map(|p| p[0]).collect();
+        assert_eq!(red180, [7, 6, 5, 4, 3, 2, 1, 0]);
+        let red270: Vec<u8> = f.rotated(3).to_rgba8().chunks(4).map(|p| p[0]).collect();
+        assert_eq!(red270, [3, 7, 2, 6, 1, 5, 0, 4]);
+        assert_eq!(f.rotated(4).width, 4);
+
+        // 4:2:0 4x2: chroma 2x1 -> 1x2; 4:2:2 4x2: chroma 2x2 -> widened 4:4:4 2x4
+        let yuv = |chroma: Chroma, c: Vec<u8>| VideoFrame {
+            width: 4,
+            height: 2,
+            data: PixelData::Yuv8 { planes: [Arc::new((0..8).collect()), Arc::new(c.clone()), Arc::new(c)], chroma, alpha: None },
+            color: ColorInfo::REC709,
+            par: (1, 1),
+            pts: Tick::ZERO,
+        };
+        let r = yuv(Chroma::C420, vec![10, 20]).rotated(1);
+        let PixelData::Yuv8 { planes, chroma, .. } = &r.data else { panic!() };
+        assert_eq!((*chroma, &planes[0][..], &planes[1][..]), (Chroma::C420, &[4, 0, 5, 1, 6, 2, 7, 3][..], &[10, 20][..]));
+        let r = yuv(Chroma::C422, vec![10, 20, 30, 40]).rotated(1);
+        let PixelData::Yuv8 { planes, chroma, .. } = &r.data else { panic!() };
+        assert_eq!((*chroma, &planes[1][..]), (Chroma::C444, &[30, 10, 30, 10, 40, 20, 40, 20][..]));
+    }
 
     #[test]
     fn box_decimation_averages_blocks_per_plane() {

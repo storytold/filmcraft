@@ -100,6 +100,8 @@ impl Mp4Source {
         }
         let mut color = ColorInfo::REC709;
         let mut explicit_color = None;
+        // display rotation from the track matrix (portrait phone video is stored landscape)
+        let rotation = vtrack.and_then(|i| file.tracks[i].display_rotation()).unwrap_or(0);
         let video = vtrack.map(|i| {
             let t = &file.tracks[i];
             let entry = &t.entries[0];
@@ -130,6 +132,10 @@ impl Mp4Source {
                 has_alpha: matches!(&entry.codec, CodecConfig::ProRes { fourcc } if fourcc.0 == *b"ap4h" || fourcc.0 == *b"ap4x"),
                 bitrate,
             };
+            if rotation % 2 == 1 {
+                (info.width, info.height) = (info.height, info.width);
+                info.par = (info.par.1, info.par.0);
+            }
             if matches!(entry.codec, CodecConfig::Dnx { .. }) {
                 // the sample entry doesn't say which VC-3 compression ID it is: read the first frame header
                 let s0 = &t.samples[0];
@@ -220,7 +226,7 @@ impl Mp4Source {
             file,
             vtrack,
             atrack,
-            video: GopCache::new(explicit_color),
+            video: GopCache::new(explicit_color).with_rotation(rotation),
             audio: Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None }),
             audio_starts,
             audio_offset,
@@ -461,4 +467,74 @@ pub fn reader_opener(name: &str, head: &[u8], reader: &filmcraft_media::SharedRe
         return None;
     }
     Some(Mp4Source::open_reader(name, reader.clone()).map(|s| Arc::new(s) as SharedSource).map_err(Into::into))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use filmcraft_isobmff::{Brand, FourCc, Mp4Writer, SampleEntry, TrackConfig, WriteSample, WriterOptions};
+    use filmcraft_media::FrameRequest;
+
+    /// A one-frame 64×32 ProRes MOV (bright left half, dark right half) whose `tkhd` matrix is
+    /// replaced by `matrix` — built here, no media files.
+    fn rotated_mov(matrix: [i32; 9]) -> Arc<[u8]> {
+        let (w, h) = (64u32, 32u32);
+        let mut fr = filmcraft_prores::Frame::new(w, h, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
+        for (i, y) in fr.y.iter_mut().enumerate() {
+            *y = if (i as u32 % w) < w / 2 { 800 } else { 100 };
+        }
+        let data = filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, w, h).encode(&fr).expect("encode");
+        let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).expect("writer");
+        let t = mux.add_track(TrackConfig::new(SampleEntry::prores(FourCc(*b"apch"), w as u16, h as u16), 25)).expect("track");
+        mux.write_sample(t, WriteSample { data: &data, duration: 1, composition_offset: 0, is_sync: true }).expect("sample");
+        let mut b = mux.finish().expect("finish").into_inner();
+        // tkhd (ISO/IEC 14496-12 §8.3.2): version/flags, then 20 (v0) or 32 (v1) bytes of
+        // times/id/duration, 8 reserved, layer, alternate_group, volume, reserved, matrix
+        let k = b.windows(4).position(|x| x == b"tkhd").expect("tkhd") + 4;
+        let m = k + 4 + if b[k] == 1 { 32 } else { 20 } + 16;
+        for (j, v) in matrix.iter().enumerate() {
+            b[m + j * 4..m + j * 4 + 4].copy_from_slice(&v.to_be_bytes());
+        }
+        b.into()
+    }
+
+    /// Mean luma of the top and bottom halves of the decoded frame, and its size.
+    fn halves(src: &Mp4Source) -> (u32, u32, u8, u8) {
+        let f = src.video_frame(FrameRequest::full(Tick::ZERO)).expect("frame");
+        let l = f.luma8();
+        let half = l.len() / 2;
+        let mean = |s: &[u8]| (s.iter().map(|&v| v as u32).sum::<u32>() / s.len() as u32) as u8;
+        (f.width, f.height, mean(&l[..half]), mean(&l[half..]))
+    }
+
+    #[test]
+    fn display_matrix_rotates_frames_and_reported_size() {
+        const ONE: i32 = 0x10000;
+        const W: i32 = 0x4000_0000;
+        // identity: landscape 64x32, top and bottom alike
+        let s = Mp4Source::open("id.mov", rotated_mov([ONE, 0, 0, 0, ONE, 0, 0, 0, W])).expect("open");
+        let v = s.info().video.as_ref().expect("video");
+        assert_eq!((v.width, v.height), (64, 32));
+        let (w, h, top, bottom) = halves(&s);
+        assert_eq!((w, h), (64, 32));
+        assert!(top.abs_diff(bottom) < 4);
+
+        // 90° clockwise (what an iPhone writes for portrait): the left half ends up on top
+        let s = Mp4Source::open("cw.mov", rotated_mov([0, ONE, 0, -ONE, 0, 0, 32 * ONE, 0, W])).expect("open");
+        let v = s.info().video.as_ref().expect("video");
+        assert_eq!((v.width, v.height), (32, 64));
+        let (w, h, top, bottom) = halves(&s);
+        assert_eq!((w, h), (32, 64));
+        assert!(top > bottom + 100, "top {top} bottom {bottom}");
+
+        // 270° clockwise: the left half ends up at the bottom
+        let s = Mp4Source::open("ccw.mov", rotated_mov([0, -ONE, 0, ONE, 0, 0, 0, 64 * ONE, W])).expect("open");
+        let (w, h, top, bottom) = halves(&s);
+        assert_eq!((w, h), (32, 64));
+        assert!(bottom > top + 100, "top {top} bottom {bottom}");
+
+        // 180°: still landscape
+        let s = Mp4Source::open("180.mov", rotated_mov([-ONE, 0, 0, 0, -ONE, 0, 64 * ONE, 32 * ONE, W])).expect("open");
+        assert_eq!(s.info().video.as_ref().map(|v| (v.width, v.height)), Some((64, 32)));
+    }
 }

@@ -107,6 +107,24 @@ impl Track {
     pub fn video(&self) -> Option<&crate::codec::VideoParams> {
         self.entries.first().and_then(|e| e.video.as_ref())
     }
+    /// Clockwise quarter turns (0–3) the `tkhd` matrix applies for display, or None when it is not
+    /// a pure 0/90/180/270° rotation (mirrored, scaled or sheared — left to the caller).
+    ///
+    /// ISO/IEC 14496-12 §8.3.2: a sample point (p, q) is displayed at p′ = a·p + c·q + x,
+    /// q′ = b·p + d·q + y for the matrix {a, b, u, c, d, v, x, y, w}, with y pointing down. So
+    /// {0, 1, −1, 0} sends the top row to the right-hand column (90° clockwise — iPhone portrait
+    /// video), {−1, 0, 0, −1} is 180° and {0, −1, 1, 0} is 270°. Only the signs matter: a·d − b·c
+    /// carries the scale, which the presentation size already reflects.
+    pub fn display_rotation(&self) -> Option<u8> {
+        let [a, b, _, c, d, _, _, _, _] = self.matrix;
+        match (a.signum(), b.signum(), c.signum(), d.signum()) {
+            (1, 0, 0, 1) => Some(0),
+            (0, 1, -1, 0) => Some(1),
+            (-1, 0, 0, -1) => Some(2),
+            (0, -1, 1, 0) => Some(3),
+            _ => None,
+        }
+    }
     pub fn audio(&self) -> Option<&crate::codec::AudioParams> {
         self.entries.first().and_then(|e| e.audio.as_ref())
     }

@@ -63,6 +63,11 @@ fn synthetic() -> Vec<u8> {
     el_uint(&mut vid, DISPLAY_WIDTH, 1920);
     el_uint(&mut vid, DISPLAY_HEIGHT, 1080);
     el(&mut vid, COLOUR, &col);
+    // rectangular, a quarter turn clockwise (portrait phone video)
+    let mut proj = Vec::new();
+    el_uint(&mut proj, PROJECTION_TYPE, 0);
+    el_float(&mut proj, PROJECTION_POSE_ROLL, -90.0);
+    el(&mut vid, PROJECTION, &proj);
     el(&mut v, VIDEO, &vid);
     // header stripping: every frame starts with 00 00 00 01
     let mut comp = Vec::new();
@@ -152,6 +157,8 @@ fn synthetic_file() {
     assert!(matches!(&v.codec, Codec::Avc { avcc } if avcc[1] == 0x64));
     let vi = v.video.as_ref().unwrap();
     assert_eq!(vi.pixel_aspect(), (4, 3));
+    assert_eq!(vi.projection.as_ref().map(|p| p.roll), Some(-90.0));
+    assert_eq!(vi.display_rotation(), Some(1));
     let c = vi.colour.as_ref().unwrap();
     assert!(c.full_range());
     assert_eq!((c.matrix_coefficients, c.transfer_characteristics, c.primaries, c.max_cll, c.max_fall), (Some(9), Some(16), Some(9), Some(1000), Some(400)));
