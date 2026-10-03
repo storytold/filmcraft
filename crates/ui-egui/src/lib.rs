@@ -128,6 +128,9 @@ pub struct Playback {
 
 /// How long `ui.screenshot` waits for the window to present the frame.
 const SCREENSHOT_TIMEOUT_S: f64 = 10.0;
+/// How long `ui.screenshot` waits for the UI to settle (monitors showing their exact frames, the
+/// timeline zoom animation finished) before capturing what is there.
+const SCREENSHOT_SETTLE_MAX_S: f64 = 5.0;
 
 pub struct FilmcraftApp {
     pub session: Session,
@@ -154,6 +157,12 @@ pub struct FilmcraftApp {
     /// Screenshots waiting for their frame: (token, path, crop, reply, give-up time).
     pending_screenshots: Vec<(u64, Option<String>, Option<[f32; 4]>, Sender<Value>, f64)>,
     queued_screenshots: Vec<(u64, f64, u32)>,
+    /// A paused monitor drew a stand-in (nearest cached) picture last frame: its exact frame is
+    /// still decoding.
+    pub(crate) monitor_inexact: bool,
+    /// Consecutive frames the timeline zoom / scroll has been at rest. `ui.elements` answers from
+    /// the frame before the last one, so its timeline rects are final from 2 on.
+    pub(crate) timeline_still: u32,
     input_waiters: Vec<Sender<Value>>,
     next_token: u64,
     styled: bool,
@@ -249,6 +258,8 @@ impl FilmcraftApp {
             status_seen: (String::new(), 0.0),
             pending_screenshots: Vec::new(),
             queued_screenshots: Vec::new(),
+            monitor_inexact: false,
+            timeline_still: 0,
             input_waiters: Vec::new(),
             next_token: 1,
             styled: false,
@@ -840,13 +851,16 @@ impl FilmcraftApp {
         self.control_rx = Some(rx);
     }
 
-    fn issue_screenshots(&mut self, ctx: &egui::Context) {
+    /// Capture once the UI shows the current state (`settled`): after a seek the monitor shows the
+    /// nearest cached picture until the exact frame is decoded, and an agent must not be handed
+    /// the stand-in.
+    fn issue_screenshots(&mut self, ctx: &egui::Context, settled: bool) {
         let now = ctx.input(|i| i.time);
         let mut any = false;
         self.queued_screenshots.retain_mut(|(token, at, frames)| {
             *frames += 1;
             any = true;
-            if now >= *at && *frames >= 3 {
+            if now >= *at && *frames >= 3 && (settled || now >= *at + SCREENSHOT_SETTLE_MAX_S) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(*token)));
                 false
             } else {
@@ -1110,6 +1124,7 @@ impl eframe::App for FilmcraftApp {
             // Nothing is shown while the window is hidden: not a dropped frame.
             self.playback.hidden = true;
         }
+        self.timeline_still = if self.ui.timeline.animating() { 0 } else { self.timeline_still.saturating_add(1) };
         let had_synthetic = !self.synthetic.is_empty();
         self.drain_control(ctx);
         if !self.synthetic.is_empty() && !had_synthetic {
@@ -1124,7 +1139,8 @@ impl eframe::App for FilmcraftApp {
                 let _ = w.send(json!({"ok": true, "result": null}));
             }
         }
-        self.issue_screenshots(ctx);
+        let settled = !std::mem::take(&mut self.monitor_inexact) && self.timeline_still > 0;
+        self.issue_screenshots(ctx, settled);
         self.collect_screenshots(ctx);
     }
 

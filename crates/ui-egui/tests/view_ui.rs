@@ -313,3 +313,21 @@ fn snap_in_program_monitor_and_graphics_menu() {
     assert_eq!(shortcut, "Cmd+Shift+]");
     d.shot("graphics-menu");
 }
+
+#[test]
+fn elements_wait_for_the_timeline_zoom_to_settle() {
+    let mut d = Driver::demo();
+    let project = d.exec("project.inspect", json!({}));
+    let item = first_media_item(&project).expect("a movie in the demo project");
+    // opening a sequence fits the timeline with an animated zoom: rects read right away must
+    // already be the final ones
+    d.exec("file.newSequence", json!({"name": "Zoom", "fromItem": item}));
+    let clip = d.exec("sequence.inspect", json!({}))["video"][0]["items"][0]["clip"].as_u64().expect("clip");
+    let id = format!("timeline.clip.{clip}");
+    let first = d.rect(&id);
+    d.frames(120);
+    let settled = d.rect(&id);
+    for k in 0..4 {
+        assert!((first[k] - settled[k]).abs() < 0.5, "rect read while zooming {first:?}, settled {settled:?}");
+    }
+}
