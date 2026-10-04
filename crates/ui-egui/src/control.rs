@@ -101,6 +101,10 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
         "ui.inspect" => ok(inspect(app, ctx)),
         "perf.stats" => ok(crate::perf::stats(app)),
         "ui.elements" => {
+            if app.timeline_still < 2 {
+                // rects of timeline elements are still moving (e.g. the fit after opening a sequence)
+                return Outcome::Retry("the timeline is still zooming".into());
+            }
             let prefix = s("prefix").unwrap_or("");
             ok(serde_json::to_value(app.auto.query(prefix)).unwrap_or_default())
         }

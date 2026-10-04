@@ -196,6 +196,13 @@ pub struct TimelineView {
     pub track_lanes: std::collections::BTreeMap<u64, String>,
 }
 
+impl TimelineView {
+    /// The zoom / scroll animation is still running (element rects are moving).
+    pub fn animating(&self) -> bool {
+        self.pps != self.target_pps || self.scroll != self.target_scroll
+    }
+}
+
 impl Default for TimelineView {
     fn default() -> Self {
         Self {

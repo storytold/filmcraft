@@ -179,6 +179,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         } else {
             cpu_texture(app, &ctx, &tex_name, key, display)
         };
+        if !playing && !exact {
+            app.monitor_inexact = true;
+        }
         if playing {
             if std::mem::take(&mut app.playback.hidden) {
                 app.playback.meter.resync(frame, exact);
