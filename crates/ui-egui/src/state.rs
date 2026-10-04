@@ -190,6 +190,10 @@ pub struct TimelineView {
     /// Follow playhead during playback (page scroll).
     pub follow: bool,
     pub fit_pending: bool,
+    /// The zoom a fit gave an empty sequence (which fits its 1 s minimum): the first clip to arrive
+    /// fits again, unless the zoom was changed in between.
+    #[serde(skip)]
+    pub fit_empty: Option<f64>,
     /// Audio tracks showing track keyframes instead of clip keyframes: track id → lane
     /// (`volume`, `pan`, `mute`, `send.<i>.level`, `fx.<slot>.<param>`).
     #[serde(default)]
@@ -213,6 +217,7 @@ impl Default for TimelineView {
             show_waveforms: true,
             follow: true,
             fit_pending: true,
+            fit_empty: None,
             track_lanes: Default::default(),
         }
     }

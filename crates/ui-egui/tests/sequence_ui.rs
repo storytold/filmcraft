@@ -155,3 +155,49 @@ fn shift_semicolon_goes_to_the_next_gap() {
     let want = d.exec("playhead.set", json!({"frame": 48}))["time"].clone();
     assert_eq!(ph, want);
 }
+
+fn first_movie(v: &Value) -> Option<u64> {
+    match v {
+        Value::Object(m) => {
+            if let Some(id) = m.get("item").and_then(Value::as_u64)
+                && m.get("type").and_then(Value::as_str) == Some("Movie")
+            {
+                return Some(id);
+            }
+            m.values().find_map(first_movie)
+        }
+        Value::Array(a) => a.iter().find_map(first_movie),
+        _ => None,
+    }
+}
+
+/// On-screen x of a clip's in and out edges in the timeline (not clipped to the panel).
+fn clip_span(d: &mut Driver, clip: u64) -> (f64, f64) {
+    let x = |d: &mut Driver, edge: &str| d.ok("ui.timeline.locate", json!({"clip": clip, "edge": edge}))["x"].as_f64().expect("x");
+    (x(d, "in"), x(d, "out"))
+}
+
+#[test]
+fn new_empty_sequence_fits_its_first_clip() {
+    let mut d = Driver::demo();
+    let project = d.exec("project.inspect", json!({}));
+    let item = first_movie(&project).expect("a movie in the demo project");
+    // an empty sequence fits its 1 s minimum; the clip placed into it afterwards is fitted again
+    d.exec("file.newSequence", json!({"name": "Empty"}));
+    d.frames(30);
+    let clip = d.exec("timeline.place", json!({"item": item, "track": "V1", "seconds": 0}))["clips"][0].as_u64().expect("clip");
+    d.frames(60);
+    let (x_in, x_out) = clip_span(&mut d, clip);
+    assert!(x_out < 1600.0 && x_out - x_in > 500.0, "clip spans x {x_in}..{x_out}: not fitted to the 1600 px window");
+
+    // a zoom chosen while the sequence is still empty is kept
+    d.exec("file.newSequence", json!({"name": "Zoomed"}));
+    d.frames(30);
+    d.ok("ui.set", json!({"timeline": {"pps": 300.0}}));
+    d.frames(30);
+    let clip = d.exec("timeline.place", json!({"item": item, "track": "V1", "seconds": 0}))["clips"][0].as_u64().expect("clip");
+    d.frames(60);
+    let secs = d.exec("sequence.inspect", json!({}))["video"][0]["items"][0]["duration"].as_f64().expect("duration") / 254_016_000_000.0;
+    let (x_in, x_out) = clip_span(&mut d, clip);
+    assert!(((x_out - x_in) - (secs * 300.0 - 4.0)).abs() < 2.0, "zoom not kept: {} px for {secs} s at 300 px/s", x_out - x_in);
+}
