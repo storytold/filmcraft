@@ -4,7 +4,7 @@
 use crate::codec::map_codec;
 use crate::ebml::{Children, float, int, string, uint};
 use crate::ids::*;
-use crate::track::{AudioInfo, Colour, ContentEncoding, MasteringMetadata, Track, TrackKind, VideoInfo, gcd};
+use crate::track::{AudioInfo, Colour, ContentEncoding, MasteringMetadata, Projection, Track, TrackKind, VideoInfo, gcd};
 
 /// `Info` element.
 #[derive(Clone, Debug, PartialEq)]
@@ -390,6 +390,19 @@ fn parse_video(d: &[u8]) -> VideoInfo {
             ALPHA_MODE => v.alpha_mode = u,
             COLOUR_SPACE => v.colour_space = e.data.try_into().ok(),
             COLOUR => v.colour = Some(parse_colour(e.data)),
+            PROJECTION => {
+                let mut p = Projection::default();
+                for x in Children::new(e.data) {
+                    match x.id {
+                        PROJECTION_TYPE => p.projection_type = uint(x.data),
+                        PROJECTION_POSE_YAW => p.yaw = float(x.data),
+                        PROJECTION_POSE_PITCH => p.pitch = float(x.data),
+                        PROJECTION_POSE_ROLL => p.roll = float(x.data),
+                        _ => {}
+                    }
+                }
+                v.projection = Some(p);
+            }
             _ => {}
         }
     }

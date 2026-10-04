@@ -172,6 +172,8 @@ pub struct GopCache {
     state: Mutex<State>,
     /// Colour signalled by the container, which wins over the bitstream's.
     explicit_color: Option<ColorInfo>,
+    /// Clockwise quarter turns from the container's display matrix, applied to every frame.
+    rotation: u8,
     budget: usize,
 }
 
@@ -200,21 +202,31 @@ impl GopCache {
                 bytes: 0,
             }),
             explicit_color,
+            rotation: 0,
             budget: 384 << 20,
         }
     }
 
-    /// Colour signalled by the container wins over the bitstream's (YUV frames only).
-    fn apply_color(&self, f: &mut VideoFrame) {
+    /// Turn every decoded frame clockwise by `quarter_turns` × 90° (the container's display
+    /// rotation, e.g. portrait phone video stored landscape).
+    pub fn with_rotation(mut self, quarter_turns: u8) -> Self {
+        self.rotation = quarter_turns % 4;
+        self
+    }
+
+    /// Colour signalled by the container wins over the bitstream's (YUV frames only); the
+    /// container's display rotation is applied.
+    fn finish(&self, mut f: VideoFrame) -> VideoFrame {
         if let Some(c) = self.explicit_color
             && !matches!(f.data, filmcraft_frame::PixelData::Rgba8(_) | filmcraft_frame::PixelData::RgbaF32(_))
         {
             f.color = c;
         }
+        if self.rotation != 0 { f.rotated(self.rotation) } else { f }
     }
 
-    fn store(&self, st: &mut State, pts: i64, mut f: VideoFrame, draft: bool) {
-        self.apply_color(&mut f);
+    fn store(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) {
+        let f = self.finish(f);
         if draft {
             st.drafts.insert(pts);
             DRAFT.fetch_add(1, Ordering::Relaxed);
@@ -361,14 +373,13 @@ impl GopCache {
         let mut d = s.make_decoder()?;
         let mut next = usize::MAX;
         let out = Self::decode_to(s, d.as_mut(), &mut next, i, want_pts, n)?;
-        let mut f = out
+        let f = out
             .into_iter()
             .filter(|p| p.pts <= want_pts)
             .max_by_key(|p| p.pts)
             .map(|p| p.frame)
             .ok_or_else(|| CodecError::Decode("frame not produced".into()))?;
-        self.apply_color(&mut f);
-        Ok(Arc::new(f))
+        Ok(Arc::new(self.finish(f)))
     }
 
     /// Decode with `d` (positioned at `next`) until the picture with `want_pts` (sample `i`) comes out.

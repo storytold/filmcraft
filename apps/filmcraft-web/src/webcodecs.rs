@@ -200,7 +200,9 @@ pub fn reader_opener(name: &str, head: &[u8], reader: &SharedReader) -> Option<R
         return Some(Ok(inner));
     }
     let info = inner.info().clone();
-    let (w, h) = info.video.as_ref().map(|v| (v.width, v.height)).unwrap_or((0, 0));
+    // the decoder wants the coded size; `info` reports the display size after the track's rotation
+    let rotation = file.tracks[track].display_rotation().unwrap_or(0);
+    let (w, h) = info.video.as_ref().map(|v| if rotation % 2 == 1 { (v.height, v.width) } else { (v.width, v.height) }).unwrap_or((0, 0));
     let id = NEXT_ID.with(|n| {
         let id = n.get();
         n.set(id + 1);
@@ -215,7 +217,7 @@ pub fn reader_opener(name: &str, head: &[u8], reader: &SharedReader) -> Option<R
         file,
         track,
         id,
-        config: Config { codec, description, width: w, height: h },
+        config: Config { codec, description, width: w, height: h, rotation },
         state: Mutex::new(Cache::default()),
     })))
 }
@@ -225,6 +227,8 @@ struct Config {
     description: Option<Vec<u8>>,
     width: u32,
     height: u32,
+    /// Clockwise quarter turns from the track matrix, applied to decoded frames.
+    rotation: u8,
 }
 
 #[derive(Default)]
@@ -455,6 +459,7 @@ impl WcSource {
             std::mem::take(&mut *s.out.borrow_mut())
         });
         for (pts, f) in out {
+            let f = if self.config.rotation != 0 { f.rotated(self.config.rotation) } else { f };
             c.frames.insert(pts, Arc::new(f));
         }
         while c.frames.len() > CACHE_FRAMES {

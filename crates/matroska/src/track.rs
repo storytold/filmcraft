@@ -96,9 +96,34 @@ pub struct VideoInfo {
     /// `ColourSpace` FourCC (uncompressed video).
     pub colour_space: Option<[u8; 4]>,
     pub colour: Option<Colour>,
+    pub projection: Option<Projection>,
+}
+
+/// `Projection` element (RFC 9559 §5.1.4.1.28.41): pose angles in degrees.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Projection {
+    /// 0 rectangular, 1 equirectangular, 2 cubemap, 3 mesh.
+    pub projection_type: u64,
+    /// Clockwise around the up vector.
+    pub yaw: f64,
+    /// Counter-clockwise around the right vector.
+    pub pitch: f64,
+    /// Counter-clockwise around the forward vector.
+    pub roll: f64,
 }
 
 impl VideoInfo {
+    /// Clockwise quarter turns (0–3) to display a rectangular video, from `ProjectionPoseRoll`
+    /// (a counter-clockwise angle, so −90 is a quarter turn clockwise). None for other
+    /// projections, flips (non-zero yaw / pitch) or angles that are not a multiple of 90°.
+    pub fn display_rotation(&self) -> Option<u8> {
+        let Some(p) = &self.projection else { return Some(0) };
+        if p.projection_type != 0 || p.yaw != 0.0 || p.pitch != 0.0 || p.roll % 90.0 != 0.0 {
+            return None;
+        }
+        Some((-(p.roll / 90.0) as i64).rem_euclid(4) as u8)
+    }
+
     /// Pixel aspect ratio derived from the display size (pixels or aspect-ratio units), reduced.
     pub fn pixel_aspect(&self) -> (u32, u32) {
         let (pw, ph) = (self.pixel_width.saturating_sub(self.crop.2 + self.crop.3) as u64, self.pixel_height.saturating_sub(self.crop.0 + self.crop.1) as u64);

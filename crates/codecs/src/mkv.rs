@@ -220,6 +220,8 @@ impl MkvSource {
         }
         let mut explicit_color = None;
         let mut ventry = None;
+        // display rotation from the track's Projection (portrait phone video is stored landscape)
+        let rotation = vtrack.and_then(|i| file.tracks[i].video.as_ref()).and_then(|v| v.display_rotation()).unwrap_or(0);
         let video = vtrack.map(|i| {
             let t = &file.tracks[i];
             let v = t.video.clone().unwrap_or_default();
@@ -241,11 +243,12 @@ impl MkvSource {
             ventry = sample_entry(&t.codec, &t.codec_private, t.video.as_ref(), w as u16, h as u16);
             let secs = file.duration_ns().unwrap_or(0) as f64 / 1e9;
             let bitrate = (secs > 0.0).then(|| (t.samples.iter().map(|s| s.size as u64).sum::<u64>() as f64 * 8.0 / secs) as u64);
+            let ((w, h), par) = if rotation % 2 == 1 { ((h, w), (v.pixel_aspect().1, v.pixel_aspect().0)) } else { ((w, h), v.pixel_aspect()) };
             VideoStreamInfo {
                 width: w,
                 height: h,
                 frame_rate: rate,
-                par: v.pixel_aspect(),
+                par,
                 codec: codec_label(&t.codec),
                 pixel_format: String::new(),
                 color,
@@ -317,7 +320,7 @@ impl MkvSource {
             vtrack,
             atrack,
             ventry,
-            video: GopCache::new(explicit_color),
+            video: GopCache::new(explicit_color).with_rotation(rotation),
             audio: Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None }),
             audio_starts,
             audio_preroll,

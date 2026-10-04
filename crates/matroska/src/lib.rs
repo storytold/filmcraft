@@ -28,7 +28,7 @@ pub use error::{Error, Result};
 pub use meta::{Attachment, Chapter, ChapterDisplay, ClusterInfo, CuePoint, CuePosition, Edition, SeekEntry, SegmentInfo, SimpleTag, Tag, TagTargets};
 pub use mux::{LacingMode, MkvWriter, MuxOptions, TrackSpec};
 pub use source::{ByteSource, ReadSeekSource};
-pub use track::{AudioInfo, Colour, ContentEncoding, MasteringMetadata, Sample, Track, TrackKind, VideoInfo};
+pub use track::{AudioInfo, Colour, ContentEncoding, MasteringMetadata, Projection, Sample, Track, TrackKind, VideoInfo};
 
 /// Element IDs used by the demuxer (marker bits included), for callers inspecting raw elements.
 pub mod element_ids {
