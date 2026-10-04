@@ -84,6 +84,17 @@ fn trim_linked_and_ripple_delete() {
 }
 
 #[test]
+fn zero_fps_is_refused() {
+    let mut s = demo();
+    let rate = s.sequence_rate();
+    assert!(s.execute("file.newSequence", json!({"name": "z", "fps": 0})).is_err());
+    assert!(s.execute("sequence.settings", json!({"fps": 0})).is_err());
+    assert!(s.execute("sequence.settings", json!({"fps": -24})).is_err());
+    assert_eq!(s.sequence_rate(), rate, "the active sequence keeps its rate");
+    s.execute("markers.markIn", json!({"time": 0})).unwrap();
+}
+
+#[test]
 fn effects_and_keyframes() {
     let mut s = demo();
     let c = s.active_sequence().unwrap().video_tracks[0].items[1].id.0;
