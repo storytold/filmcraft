@@ -266,6 +266,7 @@ The control protocol is documented in [docs/control-protocol.md](docs/control-pr
 | [docs/control-protocol.md](docs/control-protocol.md) | Control-channel and MCP reference |
 | [docs/project-files.md](docs/project-files.md) | `.fcproj` format, schema migrations, auto-save and crash recovery |
 | [docs/graphics.md](docs/graphics.md) · [docs/captions.md](docs/captions.md) | Text engine, graphic clips and tools; caption tracks and formats |
+| [docs/nested-sequences.md](docs/nested-sequences.md) | Nested sequences: what Premiere does, what FilmCraft does, and the plan to close the gap |
 | [ROADMAP.md](ROADMAP.md) | Honest assessment, what's missing, milestones and estimates |
 
 ## Status
