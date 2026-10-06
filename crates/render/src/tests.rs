@@ -350,3 +350,67 @@ fn draft_reduced_resolution_plans_carry_decimated_yuv() {
         }
     }
 }
+
+/// A 4:4:4 10-bit grey picture with an alpha plane: transparent on the left half, opaque on the right
+/// (what a ProRes 4444 overlay decodes to).
+struct AlphaOverlay {
+    info: filmcraft_media::MediaInfo,
+}
+
+impl MediaSource for AlphaOverlay {
+    fn info(&self) -> &filmcraft_media::MediaInfo {
+        &self.info
+    }
+    fn video_frame(&self, _req: FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+        let (w, h) = (320usize, 180usize);
+        let alpha = (0..w * h).map(|i| if i % w < w / 2 { 0u16 } else { 1023 }).collect();
+        Ok(Arc::new(filmcraft_frame::VideoFrame {
+            width: w as u32,
+            height: h as u32,
+            data: filmcraft_frame::PixelData::Yuv16 {
+                planes: [Arc::new(vec![700u16; w * h]), Arc::new(vec![512u16; w * h]), Arc::new(vec![512u16; w * h])],
+                chroma: filmcraft_frame::Chroma::C444,
+                bits: 10,
+                alpha: Some(Arc::new(alpha)),
+            },
+            color: filmcraft_color::ColorInfo::REC709,
+            par: (1, 1),
+            pts: Tick::ZERO,
+        }))
+    }
+    fn audio(&self, _start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+        Ok(filmcraft_frame::AudioBuffer::silence(sample_rate, 2, frames))
+    }
+}
+
+/// A layer that carries an alpha plane (ProRes 4444) must not reach the GPU as Y'CbCr: the GPU
+/// uploads only Y/Cb/Cr and used to draw such a layer opaque, so a transparent overlay (banner,
+/// lower third) covered the footage under it in the Program monitor. It is drawn on the CPU instead.
+#[test]
+fn layer_with_alpha_plane_is_drawn_on_the_cpu_and_stays_transparent() {
+    let (mut p, overlay, ocean, seq, mut map) = setup();
+    let info = map.0.get(&overlay).map(|s| s.info().clone()).expect("overlay source");
+    map.0.insert(overlay, Arc::new(AlphaOverlay { info }) as SharedSource);
+    place(&mut p, seq, 0, ocean, 0, 48);
+    let r = FrameRate::FPS_24;
+    let t = r.tick_of(10);
+    let background = render_sequence(&p, seq, t, RenderOptions::default(), &map);
+    place(&mut p, seq, 1, overlay, 0, 48);
+
+    let plan = plan::plan_frame(&p, seq, t, RenderOptions::default(), &map);
+    let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("a simple stack plans as layers") };
+    assert!(
+        layers.iter().all(|l| !matches!(
+            l.frame.data,
+            filmcraft_frame::PixelData::Yuv8 { alpha: Some(_), .. } | filmcraft_frame::PixelData::Yuv16 { alpha: Some(_), .. }
+        )),
+        "a layer with an alpha plane reached the GPU path, which drops the alpha"
+    );
+
+    let img = plan::execute_cpu(&plan);
+    let (left, right) = (img.get(40, 90), img.get(280, 90));
+    let bg_left = background.get(40, 90);
+    assert!((0..3).all(|k| (left[k] - bg_left[k]).abs() < 0.02), "transparent half shows the footage: {left:?} vs {bg_left:?}");
+    let bg_right = background.get(280, 90);
+    assert!((0..3).any(|k| (right[k] - bg_right[k]).abs() > 0.05), "opaque half covers the footage: {right:?} vs {bg_right:?}");
+}

@@ -235,10 +235,15 @@ fn push_item(
         let want = (lin * opts.scale as f64).clamp(1.0 / 64.0, 1.0) as f32;
         let Ok(frame) = src.video_frame(FrameRequest { time: ft, scale: want }) else { return };
         let cs = crate::colorman::source_space(project, item.item, &frame);
+        // The GPU path uploads only the Y'CbCr planes and drops the alpha plane (ProRes 4444,
+        // yuva), so a layer carrying one is drawn on the CPU, which composites it correctly.
+        let has_alpha_plane =
+            matches!(&frame.data, filmcraft_frame::PixelData::Yuv8 { alpha: Some(_), .. } | filmcraft_frame::PixelData::Yuv16 { alpha: Some(_), .. });
         // log / HDR / wide-gamut media is converted on the CPU (below), and so are blended
         // in-between frames (Frame Blending / Optical Flow on speed-changed clips)
-        let plain =
-            !crate::colorman::needs_management(&seq.settings.color, cs, &frame) && crate::interpolation_blend(item, t, src.info().frame_rate()).is_none();
+        let plain = !has_alpha_plane
+            && !crate::colorman::needs_management(&seq.settings.color, cs, &frame)
+            && crate::interpolation_blend(item, t, src.info().frame_rate()).is_none();
         if plain && !chain.is_empty() {
             // GPU effect stage: the working image the CPU would decode (`base_layer`), the
             // effects evaluated for it, placed as `item_layer` places it
