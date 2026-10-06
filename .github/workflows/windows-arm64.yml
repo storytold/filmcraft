@@ -1,0 +1,124 @@
+# Windows on ARM (#54): package the ARM64 release the way release.yml does (cross-compiled on an
+# x64 runner, unsigned here), then install that MSI on a Windows 11 ARM64 runner and run it, and
+# run the test suite natively on ARM64.
+name: Windows ARM64
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - "**/Cargo.toml"
+      - "**/build.rs"
+      - .github/workflows/windows-arm64.yml
+      - packaging/windows/**
+  schedule:
+    - cron: "17 5 * * 1" # weekly, so drift in the runner images shows up
+  workflow_dispatch:
+
+concurrency:
+  group: windows-arm64-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  package:
+    name: package (cross-compiled on x64)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+          targets: aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: windows-arm64-package
+      - name: Install WiX
+        shell: pwsh
+        run: dotnet tool install --global wix --version 5.0.2
+      - name: Build and package (unsigned)
+        shell: pwsh
+        env:
+          DIST: ${{ github.workspace }}\dist\arm64
+        run: ./packaging/windows/package.ps1 -Arch arm64
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: filmcraft-windows-arm64
+          path: dist/arm64/*
+          if-no-files-found: error
+          retention-days: 7
+
+  install:
+    name: install and run on ARM64
+    needs: package
+    runs-on: windows-11-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: filmcraft-windows-arm64
+          path: dist
+      - name: Install the MSI, check it, run it, uninstall it
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = (Get-ChildItem dist/*.msi | Select-Object -First 1).FullName
+          $p = Start-Process msiexec.exe -ArgumentList '/i', "`"$msi`"", '/qn', '/l*v', 'install.log' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content install.log -Tail 60; throw "msiexec /i exited $($p.ExitCode)" }
+          $dir = Join-Path $env:ProgramFiles 'FilmCraft'
+          foreach ($exe in 'filmcraft.exe', 'filmcraft-cli.exe') {
+            $path = Join-Path $dir $exe
+            if (-not (Test-Path $path)) { Get-ChildItem -Recurse $env:ProgramFiles -Filter $exe | Select-Object -First 3; throw "$exe not installed in $dir" }
+            $bytes = [System.IO.File]::ReadAllBytes($path)
+            $machine = [BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 0x3C) + 4)
+            if ($machine -ne 0xAA64) { throw "$exe is for machine 0x$('{0:X}' -f $machine), not ARM64" }
+            Write-Output "ok $path (ARM64)"
+          }
+          # The installed CLI runs natively: edit the built-in (procedural) demo project, render a
+          # frame, export H.264 + AAC and WAV, then probe and decode what it wrote.
+          $cli = Join-Path $dir 'filmcraft-cli.exe'
+          function Invoke-Cli { $out = & $cli @args 2>&1 | Out-String; if ($LASTEXITCODE -ne 0) { Write-Output $out; throw "filmcraft-cli $args exited $LASTEXITCODE" }; return $out }
+          New-Item -ItemType Directory -Force smoke | Out-Null
+          Invoke-Cli --version
+          $proj = "$PWD\smoke\edit.fcproj"
+          Invoke-Cli --demo --save-as $proj exec timeline.razor seconds=1 | Out-Null
+          if (-not (Test-Path $proj)) { throw 'the edited project was not saved' }
+          Invoke-Cli --project $proj render --seconds 0.5 --scale 0.25 --out smoke\frame.png
+          Invoke-Cli --project $proj export smoke\clip.mp4 --format h264 --start 0 --end 2 --scale 0.25
+          Invoke-Cli --project $proj export smoke\audio.wav --start 0 --end 2
+          foreach ($f in 'smoke\frame.png', 'smoke\clip.mp4', 'smoke\audio.wav') { if (-not (Test-Path $f) -or (Get-Item $f).Length -eq 0) { throw "$f was not written" } }
+          $probe = Invoke-Cli probe smoke\clip.mp4 --compact
+          Write-Output $probe
+          if ($probe -notmatch '"codec":"H\.264' -or $probe -notmatch '"codec":"AAC"') { throw 'probe did not find the H.264 video and AAC audio streams' }
+          Invoke-Cli bench-decode smoke\clip.mp4 --frames 10
+          Write-Output 'ok filmcraft-cli: edited, saved, rendered, exported, probed and decoded on ARM64'
+          $p = Start-Process msiexec.exe -ArgumentList '/x', "`"$msi`"", '/qn' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "msiexec /x exited $($p.ExitCode)" }
+          if (Test-Path (Join-Path $dir 'filmcraft.exe')) { throw 'uninstall left filmcraft.exe behind' }
+          Write-Output 'ok uninstalled'
+
+  test:
+    name: test (native ARM64)
+    runs-on: windows-11-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: windows-arm64-test
+      - name: Test
+        run: cargo test --workspace --locked

@@ -17,9 +17,10 @@
 .EXAMPLE
   pwsh packaging/windows/package.ps1 -Arch x64
   pwsh packaging/windows/package.ps1 -Arch x86 -SkipBuild
+  pwsh packaging/windows/package.ps1 -Arch arm64     # cross-compiled; needs the MSVC ARM64 build tools
 #>
 param(
-  [ValidateSet('x64', 'x86')] [string] $Arch = 'x64',
+  [ValidateSet('x64', 'x86', 'arm64')] [string] $Arch = 'x64',
   [switch] $SkipBuild
 )
 $ErrorActionPreference = 'Stop'
@@ -44,7 +45,7 @@ if (-not $Version) { throw 'could not read [workspace.package] version from Carg
 # MSI ProductVersion is numeric (major.minor.build); pre-release tags are dropped there.
 $MsiVersion = ($Version -split '-')[0]
 
-$Target = if ($Arch -eq 'x64') { 'x86_64-pc-windows-msvc' } else { 'i686-pc-windows-msvc' }
+$Target = switch ($Arch) { 'x64' { 'x86_64-pc-windows-msvc' } 'x86' { 'i686-pc-windows-msvc' } 'arm64' { 'aarch64-pc-windows-msvc' } }
 $Dist = if ($env:DIST) { $env:DIST } else { Join-Path $Root 'dist\release' }
 $TargetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $Root 'target' }
 New-Item -ItemType Directory -Force -Path $Dist | Out-Null
@@ -65,6 +66,23 @@ if (-not $SkipBuild) {
 }
 
 $Bin = Join-Path $TargetDir "$Target\release"
+
+# Check both binaries' PE headers before packaging. Machine (COFF header) must match -Arch, so an
+# x64 build can never ship labelled arm64 (#54). Subsystem (optional header): 2 = Windows GUI,
+# 3 = console. The app must be GUI (no console window opens with it); the CLI must stay console so
+# its output reaches the terminal.
+function Get-PeHeader([string] $Path) {
+  $bytes = [System.IO.File]::ReadAllBytes($Path)
+  $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+  return @{ Machine = [BitConverter]::ToUInt16($bytes, $pe + 4); Subsystem = [BitConverter]::ToUInt16($bytes, $pe + 0x5C) }
+}
+$Machine = switch ($Arch) { 'x64' { 0x8664 } 'x86' { 0x14C } 'arm64' { 0xAA64 } }
+foreach ($check in @(@('filmcraft.exe', 2), @('filmcraft-cli.exe', 3))) {
+  $h = Get-PeHeader (Join-Path $Bin $check[0])
+  if ($h.Machine -ne $Machine) { throw "$($check[0]) is for machine 0x$('{0:X}' -f $h.Machine), expected 0x$('{0:X}' -f $Machine) ($Arch)" }
+  if ($h.Subsystem -ne $check[1]) { throw "$($check[0]) has PE subsystem $($h.Subsystem), expected $($check[1])" }
+  Write-Output "ok $($check[0]): $Arch, PE subsystem $($h.Subsystem)"
+}
 $Stage = Join-Path $TargetDir "windows-package\$Arch"
 Remove-Item -Recurse -Force $Stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Stage | Out-Null
@@ -96,5 +114,12 @@ $Zip = Join-Path $Dist "filmcraft-$Version-windows-$Arch-portable.zip"
 Remove-Item -Force $Zip -ErrorAction SilentlyContinue
 Compress-Archive -Path $Portable -DestinationPath $Zip
 
-Invoke-Native 'filmcraft-cli --version' { & (Join-Path $Stage 'filmcraft-cli.exe') --version }
+# Smoke-test the CLI when this machine can run it. An ARM64 build made on an x64 runner can't run
+# here; .github/workflows/windows-arm64.yml installs and runs it on ARM64 instead.
+$HostArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+if ($Arch -ne 'arm64' -or $HostArch -eq 'arm64') {
+  Invoke-Native 'filmcraft-cli --version' { & (Join-Path $Stage 'filmcraft-cli.exe') --version }
+} else {
+  Write-Output "skipping filmcraft-cli --version: an $Arch build doesn't run on this $HostArch machine"
+}
 Get-Item $Msi, $Zip | Format-Table Name, Length

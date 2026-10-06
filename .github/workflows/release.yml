@@ -112,6 +112,9 @@ jobs:
         include:
           - { arch: x64, target: x86_64-pc-windows-msvc }
           - { arch: x86, target: i686-pc-windows-msvc }
+          # Windows on ARM (#54): cross-compiled on the x64 runner, so signing and WiX run as above.
+          # .github/workflows/windows-arm64.yml installs and runs it on ARM64 hardware.
+          - { arch: arm64, target: aarch64-pc-windows-msvc }
     env:
       FILMCRAFT_VERSION: ${{ needs.version.outputs.version }}
       FILMCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}

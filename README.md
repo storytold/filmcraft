@@ -237,7 +237,7 @@ The trailer and the grades in these screenshots were built exactly this way, by 
 
 ## Everywhere
 
-- **Native** on macOS, Windows and Linux, with a native macOS menu bar.
+- **Native** on macOS, Windows and Linux, with a native macOS menu bar. Windows builds come for x64, x86 and ARM64 (Windows on ARM, no emulation); every ARM64 change is tested on ARM64 hardware in CI.
 - **The web:** every crate up to the engine compiles to `wasm32`; the browser front end is next.
 - **Swappable UI.** The interface is one crate (`ui-egui`) over the engine, so a different front end can replace it without touching editing logic.
 
