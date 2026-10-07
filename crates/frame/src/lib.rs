@@ -9,7 +9,8 @@
 
 pub mod pool;
 
-use std::sync::Arc;
+use std::borrow::Cow;
+use std::sync::{Arc, OnceLock};
 
 use filmcraft_color::{ColorInfo, DecodeTable, Matrix, Range, linear_to_srgb_u8, normalize_c, normalize_y, srgb_u8_to_linear_table, to_linear, ycbcr_to_rgb};
 use filmcraft_time::Tick;
@@ -42,6 +43,75 @@ impl Chroma {
     }
 }
 
+/// A decoded picture that lives in GPU memory (a hardware decoder's output, shared with the
+/// renderer's device): the platform decoder implements this, the GPU compositor samples it without
+/// any copy, and every CPU consumer reads it through [`GpuPixels::cpu`], which downloads it once.
+pub trait GpuSurface: Send + Sync + std::fmt::Debug {
+    /// Picture size in luma samples.
+    fn size(&self) -> (u32, u32);
+    /// GPU memory the picture occupies (cache accounting).
+    fn byte_len(&self) -> usize;
+    /// The picture in planar CPU form (`PixelData::Yuv8` / `Yuv16`).
+    fn download(&self) -> Result<PixelData, String>;
+    /// The concrete surface, for the GPU compositor to import.
+    fn as_any(&self) -> &dyn std::any::Any;
+    /// Process-unique id of the surface (upload cache key).
+    fn id(&self) -> u64;
+}
+
+/// A [`GpuSurface`] with its chroma layout and bit depth, and the CPU copy once something asked
+/// for it.
+#[derive(Clone)]
+pub struct GpuPixels {
+    surface: Arc<dyn GpuSurface>,
+    pub chroma: Chroma,
+    /// Significant bits per sample (8 = NV12-like, 10 = P010-like).
+    pub bits: u32,
+    cpu: Arc<OnceLock<PixelData>>,
+}
+
+impl std::fmt::Debug for GpuPixels {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuPixels").field("surface", &self.surface).field("chroma", &self.chroma).field("bits", &self.bits).finish()
+    }
+}
+
+impl GpuPixels {
+    pub fn new(surface: Arc<dyn GpuSurface>, chroma: Chroma, bits: u32) -> Self {
+        Self { surface, chroma, bits, cpu: Arc::new(OnceLock::new()) }
+    }
+
+    pub fn surface(&self) -> &Arc<dyn GpuSurface> {
+        &self.surface
+    }
+
+    /// The planar CPU picture, downloaded on first use. A failed download (a lost device) gives
+    /// mid-grey, logged: every caller of the CPU path is infallible, and a grey frame beats a
+    /// crash.
+    pub fn cpu(&self, width: u32, height: u32) -> &PixelData {
+        self.cpu.get_or_init(|| match self.surface.download() {
+            Ok(d) => d,
+            Err(e) => {
+                log::warn!("reading a decoded picture back from the GPU failed: {e}");
+                grey(width, height, self.chroma, self.bits)
+            }
+        })
+    }
+}
+
+/// A mid-grey planar picture.
+fn grey(width: u32, height: u32, chroma: Chroma, bits: u32) -> PixelData {
+    let (sx, sy) = chroma.shifts();
+    let (w, h) = (width as usize, height as usize);
+    let (cw, ch) = (w.div_ceil(1 << sx), h.div_ceil(1 << sy));
+    if bits <= 8 {
+        PixelData::Yuv8 { planes: [Arc::new(vec![128; w * h]), Arc::new(vec![128; cw * ch]), Arc::new(vec![128; cw * ch])], chroma, alpha: None }
+    } else {
+        let mid = 1u16 << (bits.min(16) - 1);
+        PixelData::Yuv16 { planes: [Arc::new(vec![mid; w * h]), Arc::new(vec![mid; cw * ch]), Arc::new(vec![mid; cw * ch])], chroma, bits, alpha: None }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum PixelData {
     /// Straight-alpha, sRGB/709-encoded RGBA, 8 bits per channel.
@@ -52,6 +122,9 @@ pub enum PixelData {
     Yuv8 { planes: [Arc<Vec<u8>>; 3], chroma: Chroma, alpha: Option<Arc<Vec<u8>>> },
     /// 9–16-bit planar Y'CbCr stored in u16 (`bits` significant bits).
     Yuv16 { planes: [Arc<Vec<u16>>; 3], chroma: Chroma, bits: u32, alpha: Option<Arc<Vec<u16>>> },
+    /// A planar Y'CbCr picture in GPU memory (see [`GpuSurface`]); CPU code uses
+    /// [`VideoFrame::cpu`].
+    Gpu(GpuPixels),
 }
 
 #[derive(Clone, Debug)]
@@ -83,8 +156,26 @@ impl VideoFrame {
         self
     }
 
+    /// This frame with its pixels in CPU memory: itself, or for a GPU picture a copy of it
+    /// downloaded once (and cached with the picture). Everything that reads planes goes through
+    /// this; only the GPU compositor takes the surface itself.
+    pub fn cpu(&self) -> Cow<'_, VideoFrame> {
+        match &self.data {
+            PixelData::Gpu(g) => Cow::Owned(VideoFrame {
+                width: self.width,
+                height: self.height,
+                data: g.cpu(self.width, self.height).clone(),
+                color: self.color,
+                par: self.par,
+                pts: self.pts,
+            }),
+            _ => Cow::Borrowed(self),
+        }
+    }
+
     pub fn format_label(&self) -> String {
         match &self.data {
+            PixelData::Gpu(g) => format!("YUV {} {}-bit (GPU)", g.chroma.label(), g.bits),
             PixelData::Rgba8(_) => "RGBA 8-bit".into(),
             PixelData::RgbaF32(_) => "RGBA 32-bit float".into(),
             PixelData::Yuv8 { chroma, .. } => format!("YUV {} 8-bit", chroma.label()),
@@ -95,6 +186,7 @@ impl VideoFrame {
     /// Approximate memory footprint in bytes (for caches).
     pub fn byte_size(&self) -> usize {
         match &self.data {
+            PixelData::Gpu(g) => g.surface().byte_len(),
             PixelData::Rgba8(d) => d.len(),
             PixelData::RgbaF32(d) => d.len() * 4,
             PixelData::Yuv8 { planes, alpha, .. } => planes.iter().map(|p| p.len()).sum::<usize>() + alpha.as_ref().map_or(0, |a| a.len()),
@@ -113,6 +205,8 @@ impl VideoFrame {
         let (w, h) = (self.width as usize, self.height as usize);
         let (ow, oh) = ((w / n).max(1), (h / n).max(1));
         let data = match &self.data {
+            // a GPU picture is minified by the GPU's sampler, not decimated on the CPU
+            PixelData::Gpu(_) => return None,
             PixelData::Yuv8 { planes, chroma, alpha } => {
                 let (sx, sy) = chroma.shifts();
                 let (cw, ch) = (w.div_ceil(1 << sx), h.div_ceil(1 << sy));
@@ -156,6 +250,9 @@ impl VideoFrame {
         if q == 0 {
             return self.clone();
         }
+        if matches!(self.data, PixelData::Gpu(_)) {
+            return self.cpu().rotated(quarter_turns);
+        }
         let (w, h) = (self.width as usize, self.height as usize);
         let data = match &self.data {
             PixelData::Rgba8(d) => PixelData::Rgba8(Arc::new(rotate_plane(d, w, h, 4, q))),
@@ -168,6 +265,7 @@ impl VideoFrame {
                     alpha: alpha.as_ref().map(|a| Arc::new(rotate_plane(a, w, h, 1, q))),
                 }
             }
+            PixelData::Gpu(_) => return self.cpu().rotated(quarter_turns),
             PixelData::Yuv16 { planes, chroma, bits, alpha } => {
                 let (c, chroma) = rotate_chroma(planes, *chroma, w, h, q);
                 PixelData::Yuv16 {
@@ -198,6 +296,9 @@ impl VideoFrame {
     /// `decode` (a colour-managed curve: log, PQ, HLG scene light…) instead of the frame's
     /// transfer. Float frames are already linear and ignore it.
     pub fn to_linear_f32_decimated_with(&self, n: usize, decode: Option<&DecodeTable>) -> (usize, usize, Vec<f32>) {
+        if matches!(self.data, PixelData::Gpu(_)) {
+            return self.cpu().to_linear_f32_decimated_with(n, decode);
+        }
         let n = n.max(1);
         let (w, h) = (self.width as usize, self.height as usize);
         let (ow, oh) = ((w / n).max(1), (h / n).max(1));
@@ -217,6 +318,8 @@ impl VideoFrame {
         };
         let inv = 1.0 / (n * n) as f32;
         match &self.data {
+            // (a GPU picture was handled above, through its CPU copy)
+            PixelData::Gpu(_) => {}
             PixelData::RgbaF32(d) => {
                 out.par_chunks_mut(ow * 4).enumerate().for_each(|(oy, row)| {
                     for ox in 0..ow {
@@ -338,6 +441,9 @@ impl VideoFrame {
 
     /// Convert to straight-alpha sRGB RGBA8 for display (fast paths for 8-bit sources).
     pub fn to_rgba8(&self) -> Vec<u8> {
+        if matches!(self.data, PixelData::Gpu(_)) {
+            return self.cpu().to_rgba8();
+        }
         let (w, h) = (self.width as usize, self.height as usize);
         match &self.data {
             PixelData::Rgba8(d) => d.as_ref().clone(),
@@ -385,6 +491,9 @@ impl VideoFrame {
 
     /// Luma plane (8-bit, for scopes/thumbnails analysis).
     pub fn luma8(&self) -> Vec<u8> {
+        if matches!(self.data, PixelData::Gpu(_)) {
+            return self.cpu().luma8();
+        }
         match &self.data {
             PixelData::Yuv8 { planes, .. } => planes[0].as_ref().clone(),
             _ => self.to_rgba8().as_chunks::<4>().0.iter().map(|p| (0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32) as u8).collect(),

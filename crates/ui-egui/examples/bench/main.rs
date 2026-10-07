@@ -193,6 +193,7 @@ fn machine_info() -> Value {
                 .ok()
                 .and_then(|c| c.lines().find(|l| l.starts_with("model name")).and_then(|l| l.split(':').nth(1)).map(|s| s.trim().to_string()))
         })
+        .or_else(|| sh("powershell", &["-NoProfile", "-Command", "(Get-CimInstance Win32_Processor | Select-Object -First 1).Name"]))
         .unwrap_or_else(|| "unknown CPU".into());
     let mem_gb = sh("sysctl", &["-n", "hw.memsize"]).and_then(|m| m.parse::<u64>().ok()).map(|b| b as f64 / (1u64 << 30) as f64);
     let os = sh("uname", &["-sr"]).unwrap_or_default();
@@ -249,6 +250,9 @@ pub fn section_markdown(v: &Value) -> String {
                 ("cpu_ms_per_frame", "CPU ms/frame"),
                 ("first_frame_ms", "first frame ms"),
                 ("realtime", "× real time"),
+                ("hw_frames", "hw frames"),
+                ("hw_sessions", "hw sessions"),
+                ("hw_fallbacks", "hw fallbacks"),
                 ("load", "load"),
             ],
             1,
@@ -267,6 +271,10 @@ pub fn section_markdown(v: &Value) -> String {
                 ("seeks", "seeks"),
                 ("skipped", "skipped"),
                 ("draft_frames", "draft"),
+                ("hw_frames", "hw frames"),
+                ("hw_sessions", "hw sessions"),
+                ("hw_fallbacks", "hw fallbacks"),
+                ("hw_zero_copy", "zero-copy frames"),
                 ("load", "load"),
             ],
             1,

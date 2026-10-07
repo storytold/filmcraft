@@ -993,6 +993,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cpu-time"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9e393a7668fe1fad3075085b86c781883000b4ede868f43627b34a87c8b7ded"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1662,6 +1672,7 @@ dependencies = [
  "eframe",
  "egui",
  "filmcraft-engine",
+ "filmcraft-gpu",
  "filmcraft-platform",
  "filmcraft-ui-egui",
  "log",
@@ -1669,6 +1680,7 @@ dependencies = [
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "pollster 0.4.0",
  "rfd",
  "serde_json",
  "winit",
@@ -1920,6 +1932,7 @@ version = "0.2.1"
 dependencies = [
  "filmcraft-color",
  "filmcraft-time",
+ "log",
  "rayon",
  "serde",
 ]
@@ -2090,8 +2103,11 @@ dependencies = [
  "filmcraft-codecs",
  "filmcraft-color",
  "filmcraft-frame",
+ "filmcraft-geom",
+ "filmcraft-gpu",
  "filmcraft-isobmff",
  "filmcraft-media",
+ "filmcraft-render",
  "filmcraft-testkit",
  "filmcraft-time",
  "log",
@@ -2099,6 +2115,9 @@ dependencies = [
  "objc2-core-media",
  "objc2-core-video",
  "objc2-video-toolbox",
+ "pollster 0.4.0",
+ "wgpu",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -2202,6 +2221,7 @@ dependencies = [
 name = "filmcraft-ui-egui"
 version = "0.2.1"
 dependencies = [
+ "cpu-time",
  "eframe",
  "egui",
  "egui_kittest",

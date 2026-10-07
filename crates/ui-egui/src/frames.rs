@@ -174,7 +174,11 @@ pub fn thread_cpu_time() -> Option<Duration> {
         let t = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
         Some(Duration::new(t.tv_sec as u64, t.tv_nsec as u32))
     }
-    #[cfg(not(all(unix, not(target_arch = "wasm32"))))]
+    #[cfg(windows)]
+    {
+        cpu_time::ThreadTime::try_now().ok().map(|t| t.as_duration())
+    }
+    #[cfg(not(any(windows, all(unix, not(target_arch = "wasm32")))))]
     {
         None
     }
@@ -187,7 +191,11 @@ pub fn process_cpu_time() -> Option<Duration> {
         let t = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
         Some(Duration::new(t.tv_sec as u64, t.tv_nsec as u32))
     }
-    #[cfg(not(all(unix, not(target_arch = "wasm32"))))]
+    #[cfg(windows)]
+    {
+        cpu_time::ProcessTime::try_now().ok().map(|t| t.as_duration())
+    }
+    #[cfg(not(any(windows, all(unix, not(target_arch = "wasm32")))))]
     {
         None
     }

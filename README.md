@@ -286,7 +286,7 @@ We track two numbers ([ROADMAP.md](ROADMAP.md#honest-assessment-2026-10-05)):
 
 The biggest gaps today:
 
-- **Speed on big footage.** Hardware decoding works on macOS; Windows and Linux have no hardware path yet. Blend modes and the most common effects run on the GPU, but Lumetri, keys, export and encoding still run on the CPU ([#30](https://github.com/storytold/filmcraft/issues/30)).
+- **Speed on big footage.** Hardware decoding works on macOS and Windows; Linux has no hardware path yet. Blend modes and the most common effects run on the GPU, but Lumetri, keys, export and encoding still run on the CPU ([#30](https://github.com/storytold/filmcraft/issues/30)).
 - **No plugins.** No VST3 / Audio Units or OpenFX hosting.
 - **Delivery codecs.** H.264 is our only delivery-codec export; no HEVC or AV1 export yet.
 - **Real-world media and platforms.** Our decoders are bit-exact on conformance streams, but camera and phone files in the wild are less tested. Windows and Linux get far less testing than macOS.

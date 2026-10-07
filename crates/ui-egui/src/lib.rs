@@ -289,8 +289,15 @@ impl FilmcraftApp {
         }
     }
 
+    /// Whether the GPU compositor is running (not disabled by a GPU error or the CPU override).
+    pub fn gpu_compositor_active(&self) -> bool {
+        self.gpu.is_some()
+    }
+
     /// Drop the GPU compositor after a GPU error; the monitors composite on the CPU from then on.
     fn disable_gpu(&mut self, why: &str) {
+        // decoders stop handing out GPU pictures nobody samples any more
+        filmcraft_codecs::hw::set_gpu_frames(false);
         log::error!("GPU compositor disabled: {why}");
         if let Some(g) = self.gpu.take()
             && let Some(id) = g.texture

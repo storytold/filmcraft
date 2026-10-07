@@ -24,6 +24,8 @@ mod args;
 mod audio;
 mod audio_in;
 mod control_server;
+#[cfg(windows)]
+mod dx12;
 #[cfg(target_os = "macos")]
 mod native_menu;
 mod window_raise;
@@ -90,7 +92,11 @@ fn main() -> eframe::Result {
     // OS hardware video decoders (VideoToolbox on macOS) in front of our own; Settings ▸ Playback ▸
     // Hardware decoding switches them off. Unsupported streams and failures use our decoders.
     register_hardware_decoders();
-    let options = eframe::NativeOptions {
+    // Windows: a DX12 renderer when the DirectX Shader Compiler is installed, so the hardware
+    // decoder's pictures reach the compositor without a copy (zero-copy; dx12.rs).
+    #[cfg(windows)]
+    let dx12 = dx12::setup();
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("FilmCraft")
             .with_inner_size([1600.0, 980.0])
@@ -107,6 +113,10 @@ fn main() -> eframe::Result {
         event_loop_builder: agent_event_loop(control_port.is_some()),
         ..Default::default()
     };
+    #[cfg(windows)]
+    if let Some(existing) = dx12.clone() {
+        options.wgpu_options.wgpu_setup = eframe::egui_wgpu::WgpuSetup::Existing(existing);
+    }
     let started = eframe::run_native(
         "FilmCraft",
         options,
@@ -162,7 +172,15 @@ fn main() -> eframe::Result {
             if let Some(rs) = cc.wgpu_render_state.clone()
                 && std::env::var_os("FILMCRAFT_CPU_COMPOSITE").is_none()
             {
+                #[cfg(windows)]
+                let device = rs.device.clone();
                 app.set_wgpu(rs);
+                // hardware decoders hand the compositor GPU pictures where its device can open them
+                #[cfg(windows)]
+                if app.gpu_compositor_active() {
+                    let on = filmcraft_platform::media_foundation::enable_zero_copy(&device);
+                    log::info!("zero-copy hardware decoding: {on}");
+                }
             }
             if let Some(out) = audio::CpalOut::new() {
                 // Settings ▸ Audio Hardware is applied on the first frame (`apply_prefs`)
@@ -275,6 +293,6 @@ mod tests {
     fn startup_registers_the_hardware_decoders_without_a_logger() {
         assert!(!log::log_enabled!(log::Level::Info));
         let hardware = super::register_hardware_decoders();
-        assert_eq!(filmcraft_platform::registered(), cfg!(target_os = "macos"), "{hardware:?}");
+        assert_eq!(filmcraft_platform::registered(), cfg!(any(target_os = "macos", target_os = "windows")), "{hardware:?}");
     }
 }

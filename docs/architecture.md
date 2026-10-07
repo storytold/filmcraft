@@ -72,7 +72,7 @@ and `filmcraft-cli`.
 | `engine` | L4 | `Session`, command registry, undo history, media pool, jobs, interchange glue |
 | `ui-egui` | L5 | the egui frontend: docking, panels, timeline, monitors, playback, control-channel handlers |
 | `automation` | L5 | MCP server (`rmcp`, stdio), headless or bridged to the running app |
-| `platform` | L5 | OS media FFI only: hardware video decoding (VideoToolbox H.264 / HEVC on macOS; a no-op elsewhere) behind `codecs::VideoDecoder`, with transparent fallback to our decoders. The one crate allowed `unsafe` ([ADR 0001](adr/0001-platform-ffi.md), [README](../crates/platform/README.md)) |
+| `platform` | L5 | OS media FFI only: hardware video decoding (VideoToolbox H.264 / HEVC on macOS; Media Foundation / Direct3D 11 H.264 / HEVC on Windows; a no-op elsewhere) behind `codecs::VideoDecoder`, with transparent fallback to our decoders. The one crate allowed `unsafe` ([ADR 0001](adr/0001-platform-ffi.md), [README](../crates/platform/README.md)) |
 | `filmcraft` | L6 | desktop binary: eframe/wgpu window, cpal audio output, file dialogs, native macOS menu, TCP control server |
 | `filmcraft-cli` | L6 | headless CLI: `exec`, `run`, `inspect`, `describe`, `commands`, `import`, `export`, `render`, `probe`, `mcp`; `--bridge` targets the running app |
 | `filmcraft-web` | L6 | the browser app (wasm32): eframe web runner on WebGPU/WebGL2, Blob-backed services, OPFS recovery, WebAudio, WebCodecs, `window.filmcraft` API ([web.md](web.md)) |
@@ -200,7 +200,7 @@ pub struct CommandSpec {
 ```text
 file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware seek
           │   decoder registry: h264, hevc, vp9, av1, prores, dnx, mjpeg (+ any registered first:
-          │   platform's VideoToolbox H.264 / HEVC on macOS, falling back to ours)
+          │   platform's VideoToolbox (macOS) or Media Foundation (Windows) H.264 / HEVC, falling back to ours)
           ▼
         media::MediaSource ──► frame cache (byte-budgeted LRU, shared)
           ▼
@@ -231,7 +231,8 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   hardware decoder can take precedence. The GOP cache never holds its lock while decoding.
 - **Hardware decoding.** The apps (desktop, CLI / headless MCP, bench) call
   `filmcraft_platform::register()` at startup, which on macOS registers a VideoToolbox factory for
-  `avcC` / `hvcC` streams (8 / 10-bit, 4:2:0 and 4:2:2; elsewhere it does nothing). The factory
+  `avcC` / `hvcC` streams (8 / 10-bit, 4:2:0 and 4:2:2; elsewhere it does nothing), and on Windows a
+  Media Foundation one (below). The factory
   declines (our decoder is used) when Settings ▸ Playback ▸ Hardware decoding is Off
   (`codecs::hw::set_hardware_decoding`, applied by the engine whenever preferences change), for
   formats it does not take, and when the OS cannot create a *hardware* session for the stream.
@@ -246,7 +247,20 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   `codecs::software_video_decoder` (built-in factories only), replays the samples since the last
   restart point and continues in software for that instance; it is logged and counted. A source
   already open keeps its decoder when the setting changes, until it is reopened. `perf.stats`
-  `decode.hardware` reports hardware vs software frames, sessions, declines and fallbacks.
+  `decode.hardware` reports hardware vs software frames, sessions, declines and fallbacks, and the
+  registered `backend`.
+  On Windows the decoder (`platform::media_foundation`) is a Direct3D-aware decoder MFT driven at
+  the level of single access units (no Source Reader: the demuxer above already delivers the
+  samples): the `avcC` / `hvcC` sample becomes Annex B, the MFT is given the process's Direct3D 11
+  video device through an `IMFDXGIDeviceManager` so it decodes with DXVA, and its NV12 (8-bit) /
+  P010 (10-bit) texture is read back through a staging texture (the one GPU to CPU copy) into
+  planar `Yuv8` / `Yuv16`. H.264 Baseline / Main / High and HEVC Main / Main 10, 4:2:0, progressive;
+  everything else, and any stream the GPU's DXVA decoder does not list, is declined. A decoder that
+  would hand back system-memory pictures (Microsoft's decoder MFTs do that when DXVA is not
+  available) fails the stream, so the hybrid continues with our decoder and Windows' software
+  decoding is never used in its place. With a DX12 renderer on the decoder's adapter the picture is not
+  read back at all: it stays in GPU memory as a `PixelData::Gpu` (`frame::GpuSurface`), the compositor
+  opens it as wgpu textures, and CPU code reads it through `VideoFrame::cpu()` (ADR 0002).
   Decoders run slices on rayon, so an export worker waiting inside a decode can pick up another
   frame of the same source. A request that finds the shared decoder busy decodes with a private
   decoder.

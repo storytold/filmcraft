@@ -36,7 +36,7 @@ before choosing work.
 | **Correctness in depth** | not tracked | **~60–70%** | A first-time contributor found four real bugs in core paths within hours (#5–#8: AIFF import failed, Slide left linked audio behind, transitions didn't follow ripple trims, export ignored start/end times). User reports: Color Matte always grey with no picker (#29); ALSA audio error on Linux (#23). Settings are "most wired", not all. |
 | **Codecs and media** | ~90% | **~75%** | Our decoders are bit-exact on conformance streams. Real camera and phone media (variable frame rate, damaged files, unusual containers) is far less tested. No camera RAW (RED, BRAW, ARRIRAW), no E-AC-3. |
 | **Export** | ~92% | **~70%** | Delivery: H.264 only (ProRes, DNxHR and image sequences cover mastering). No HEVC or AV1 export. AAF and OMF have never been validated in Avid Media Composer or Pro Tools. Export renders and encodes on the CPU only. |
-| **Performance and hardware** | ~62% | **~35–40%** | Premiere runs effects, decoding and encoding on the GPU and the hardware media engines. Here, hardware decode works on macOS only (VideoToolbox, #33; active in the desktop app only since #41, so releases up to 0.2.1 decoded in software). The GPU does compositing, blend modes (#32) and 31 common effects (GPU2): colour adjustments, crop/flip/transform, blurs, sharpen. Lumetri, keys, masks, the remaining effects, export and encoding are CPU. Linux and Windows have no hardware path. 8K and AV1 aren't real-time. The effect list shows Premiere's "GPU accelerated" badge, but only 31 effect ids run on the GPU here; the rest, Lumetri included, run on the CPU. |
+| **Performance and hardware** | ~62% | **~35–40%** | Premiere runs effects, decoding and encoding on the GPU and the hardware media engines. Here, hardware decode works on macOS (VideoToolbox, #33; active in the desktop app only since #41, so releases up to 0.2.1 decoded in software) and Windows (Media Foundation / Direct3D 11 DXVA, H.264 and HEVC Main / Main 10, #30). The GPU does compositing, blend modes (#32) and 31 common effects (GPU2): colour adjustments, crop/flip/transform, blurs, sharpen. Lumetri, keys, masks, the remaining effects, export and encoding are CPU. Linux has no hardware path. 8K and AV1 aren't real-time. The effect list shows Premiere's "GPU accelerated" badge, but only 31 effect ids run on the GPU here; the rest, Lumetri included, run on the CPU. |
 | **Stability** | not tracked | **improving, unproven** | The never-crash pass (no panics in product code, last-resort guards) landed on 2026-10-04. There's no field record from real users' projects yet. |
 | **Plugins and pro ecosystem** | not tracked | **~0–10%** | No audio plugin hosting (VST3 / Audio Units) and no third-party video effects (OpenFX). For many professional editors this alone rules FilmCraft out. Team Projects and Productions are out of scope by design. |
 | **AI features** | partial | **~25–35%** | Speech to text exists but is off in default builds (the `whisper` feature). Enhance Speech is a DSP chain, not a model. Auto Reframe is approximate. No Generative Extend, and no media-intelligence search or auto colour. |
@@ -48,8 +48,8 @@ before choosing work.
 In priority order. Agents should prefer this work over adding more checklist items.
 
 1. **Hardware acceleration** (#30), the most visible gap to users:
-   - hardware decode on Linux (VA-API) and Windows (Media Foundation);
-   - zero-copy decoded frames into wgpu;
+   - hardware decode on Linux (VA-API); VP9 / AV1 on Windows;
+   - zero-copy decoded frames into wgpu (Windows DX12 done, ADR 0002; macOS IOSurface / Metal and Vulkan next);
    - the remaining effects on the GPU: Lumetri, keys, Vignette, Video Limiter, masks (31 common effects are done);
    - GPU export, then hardware encode (H.264 / HEVC).
 2. **A measured parity number.** Add `cargo xtask parity`, run in CI. It should cover menus,
@@ -154,7 +154,7 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 
 ## Running now
 
-- **Hardware acceleration (#30):** landed: blend modes on the GPU (#32); VideoToolbox hardware decode + the `platform` FFI crate (#33); 31 common effects on the GPU (GPU2). Next: VA-API (Linux) and Media Foundation (Windows) decode, zero-copy upload, Lumetri on the GPU.
+- **Hardware acceleration (#30):** landed: blend modes on the GPU (#32); VideoToolbox hardware decode + the `platform` FFI crate (#33); 31 common effects on the GPU (GPU2). Windows: Media Foundation / Direct3D 11 H.264 + HEVC decode (HW2). Next: VA-API (Linux) decode, zero-copy upload, Lumetri on the GPU.
 - **Next:** [Where we are lacking](#where-we-are-lacking) items 1–5. GPU export waits for the export-crate work (#19 and the never-crash follow-up) to land.
 
 ## Log

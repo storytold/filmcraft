@@ -25,15 +25,21 @@ Containment rules:
 
 1. The crate does not use `lints.workspace = true`. Its own `[lints]` table copies the workspace
    lints except `unsafe_code = "deny"` (not `forbid`), and adds
-   `clippy::undocumented_unsafe_blocks = "deny"`. Only the FFI modules (`videotoolbox`) carry
-   `#[allow(unsafe_code)]`; the rest of the crate (the fallback logic in `hybrid`) has no `unsafe`.
+   `clippy::undocumented_unsafe_blocks = "deny"`. Only the FFI modules (`videotoolbox`, and
+   `media_foundation::gpu` / `media_foundation::mft` on Windows) carry `#[allow(unsafe_code)]`; the
+   rest of the crate (the fallback logic in `hybrid`, the decoder logic in `media_foundation`,
+   `annexb`, `biplanar`) has no `unsafe`.
 2. Every `unsafe` block has a `// SAFETY:` comment saying why it is sound.
 3. The public API is safe: no `pub unsafe fn`, no raw pointers or FFI types in public signatures;
    failures are `Result`s. The crate keeps the never-crash `deny(clippy::unwrap_used, …)`
    attribute of every clean crate.
 4. No panic crosses the FFI boundary: the VideoToolbox output callback runs under `catch_unwind`
-   and reports a panic as a failed frame.
-5. The crate compiles on every target. OS bindings are target-specific dependencies; elsewhere
+   and reports a panic as a failed frame. The Windows backend has no callbacks into Rust (it drives
+   a synchronous decoder MFT with `ProcessInput` / `ProcessOutput`), so nothing can unwind into
+   COM.
+5. The crate compiles on every target. OS bindings are target-specific dependencies (the
+   `objc2-*` crates on macOS, the official `windows` crate on Windows: MIT OR Apache-2.0, already
+   in the lockfile through wgpu / winit, with only the Win32 features the backend uses); elsewhere
    `register()` reports `Unavailable` and does nothing. It is not part of the wasm check (L5).
 
 ## The fallback guarantee
@@ -44,7 +50,10 @@ Registering a hardware decoder never makes a file undecodable, and never changes
   decoding is Off, for formats the hardware path does not take (field-coded H.264, bit depths
   other than 8 / 10, 4:4:4, mismatched luma / chroma depth), and when the OS cannot create a
   hardware session for the stream (hardware decoding is *required*, so the OS's own software
-  decoder is never used instead of ours).
+  decoder is never used instead of ours). On Windows that means the decoder MFT must be
+  Direct3D-aware, the GPU's DXVA decoder must list the stream, and every picture must come back as
+  a Direct3D 11 texture: Microsoft's decoder MFTs quietly decode in software when DXVA is not
+  available, and a system-memory picture is treated as a failure.
 - A hardware decoder that fails mid-stream (decode error, session invalidated by a GPU change or
   sleep, in-band parameter sets that differ from the sample entry) becomes the software decoder
   for that stream without the caller noticing: `HybridDecoder` replays the samples since the last

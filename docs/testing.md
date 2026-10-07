@@ -66,7 +66,11 @@ are never linked or shipped ([AGENTS.md](../AGENTS.md) §2).
   the matrix.
 - Fixture sources are synthetic: `testsrc2`, `mandelbrot`, SMPTE bars, noise and fades, sine tones.
   H.264 and HEVC fixtures need ffmpeg built with libx264 and libx265. VideoToolbox fixtures are
-  generated only on macOS.
+  generated only on macOS. The Media Foundation parity tests (`crates/platform/tests/media_foundation.rs`,
+  Windows only) make their 640x360, 1080p and 2160p H.264 / HEVC / Main 10 fixtures with ffmpeg and skip
+  without a Direct3D 11 video device or the HEVC Video Extensions.
+  `tests/zero_copy.rs` also needs a DX12 device compiling with DXC: set `FILMCRAFT_DXC_DIR` to a folder with
+  `dxcompiler.dll` and `dxil.dll` (the Windows SDK has them), otherwise it skips.
 
 ### Pass criteria per codec
 

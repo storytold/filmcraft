@@ -110,12 +110,43 @@ pub struct Display {
 impl Display {
     pub fn new(gpu: bool) -> Self {
         let gpu = if gpu {
-            let instance = eframe::wgpu::Instance::default();
-            let adapter = pollster::block_on(instance.request_adapter(&eframe::wgpu::RequestAdapterOptions::default())).ok();
-            adapter.and_then(|a| pollster::block_on(a.request_device(&eframe::wgpu::DeviceDescriptor::default())).ok()).map(|(d, q)| {
-                let c = filmcraft_gpu::GpuCompositor::new(&d, &q);
-                (c, d)
-            })
+            // Windows with `FILMCRAFT_DXC_DIR` (a folder with dxcompiler.dll and dxil.dll): a DX12
+            // device compiling with DXC, and zero-copy hardware decoding on it, as the desktop app
+            // does when it finds DXC (`apps/filmcraft/src/dx12.rs`). `--hw off` keeps CPU pictures.
+            #[cfg(windows)]
+            let dxc = std::env::var_os("FILMCRAFT_DXC_DIR").map(|d| std::path::Path::new(&d).join("dxcompiler.dll"));
+            #[cfg(not(windows))]
+            let dxc: Option<std::path::PathBuf> = None;
+            let instance = match &dxc {
+                Some(dll) => eframe::wgpu::Instance::new(eframe::wgpu::InstanceDescriptor {
+                    backends: eframe::wgpu::Backends::DX12,
+                    backend_options: eframe::wgpu::BackendOptions {
+                        dx12: eframe::wgpu::Dx12BackendOptions {
+                            shader_compiler: eframe::wgpu::Dx12Compiler::DynamicDxc { dxc_path: dll.to_string_lossy().into_owned() },
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    ..eframe::wgpu::InstanceDescriptor::new_without_display_handle()
+                }),
+                None => eframe::wgpu::Instance::default(),
+            };
+            let adapter = pollster::block_on(instance.request_adapter(&eframe::wgpu::RequestAdapterOptions {
+                power_preference: eframe::wgpu::PowerPreference::HighPerformance,
+                ..Default::default()
+            }))
+            .ok();
+            let features = adapter.as_ref().map(|a| a.features() & eframe::wgpu::Features::TEXTURE_FORMAT_16BIT_NORM).unwrap_or_default();
+            adapter
+                .and_then(|a| pollster::block_on(a.request_device(&eframe::wgpu::DeviceDescriptor { required_features: features, ..Default::default() })).ok())
+                .map(|(d, q)| {
+                    let c = filmcraft_gpu::GpuCompositor::new(&d, &q);
+                    #[cfg(windows)]
+                    if dxc.is_some() && filmcraft_codecs::hw::hardware_decoding() {
+                        eprintln!("zero-copy decoding: {}", filmcraft_platform::media_foundation::enable_zero_copy(&d));
+                    }
+                    (c, d)
+                })
         } else {
             None
         };

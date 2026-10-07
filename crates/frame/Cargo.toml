@@ -10,6 +10,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+log = { workspace = true }
 filmcraft-color = { workspace = true }
 filmcraft-time = { workspace = true }
 rayon = { workspace = true }

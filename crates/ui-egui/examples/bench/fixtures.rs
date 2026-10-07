@@ -16,7 +16,9 @@ pub fn ffmpeg() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("FILMCRAFT_FFMPEG") {
         return Some(PathBuf::from(p));
     }
-    ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].iter().map(PathBuf::from).find(|p| p.exists())
+    let fixed = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].iter().map(PathBuf::from).find(|p| p.exists());
+    // otherwise whatever `ffmpeg` / `ffmpeg.exe` is on PATH (Windows has no fixed location)
+    fixed.or_else(|| std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(format!("ffmpeg{}", std::env::consts::EXE_SUFFIX))).find(|p| p.is_file()))
 }
 
 /// A fixture: file name, lavfi video source, seconds, with audio, video encoder arguments.
@@ -32,6 +34,22 @@ const X264: &[&str] = &["-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pi
 const X265: &[&str] = &["-c:v", "libx265", "-preset", "fast", "-crf", "22", "-pix_fmt", "yuv420p", "-tag:v", "hvc1", "-x265-params", "log-level=error"];
 const VP9: &[&str] = &["-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8", "-b:v", "0", "-crf", "32", "-row-mt", "1", "-pix_fmt", "yuv420p"];
 const AV1: &[&str] = &["-c:v", "libsvtav1", "-preset", "10", "-crf", "35", "-pix_fmt", "yuv420p", "-svtav1-params", "keyint=48"];
+const X265_MAIN10: &[&str] = &[
+    "-c:v",
+    "libx265",
+    "-preset",
+    "fast",
+    "-crf",
+    "22",
+    "-profile:v",
+    "main10",
+    "-pix_fmt",
+    "yuv420p10le",
+    "-tag:v",
+    "hvc1",
+    "-x265-params",
+    "log-level=error",
+];
 const PRORES: &[&str] = &["-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le", "-vendor", "apl0"];
 
 const SPECS: &[Spec] = &[
@@ -49,6 +67,7 @@ const SPECS: &[Spec] = &[
     Spec { name: "dec_h264_2160.mp4", src: "testsrc2=s=3840x2160:r=24000/1001:d=3,noise=alls=6:allf=t", secs: 3, audio: false, codec: X264 },
     Spec { name: "dec_hevc_1080.mp4", src: "testsrc2=s=1920x1080:r=24000/1001:d=5,noise=alls=6:allf=t", secs: 5, audio: false, codec: X265 },
     Spec { name: "dec_hevc_2160.mp4", src: "testsrc2=s=3840x2160:r=24000/1001:d=3,noise=alls=6:allf=t", secs: 3, audio: false, codec: X265 },
+    Spec { name: "dec_hevc10_2160.mp4", src: "testsrc2=s=3840x2160:r=24000/1001:d=3,noise=alls=6:allf=t", secs: 3, audio: false, codec: X265_MAIN10 },
     Spec { name: "dec_vp9_1080.webm", src: "testsrc2=s=1920x1080:r=24000/1001:d=5,noise=alls=6:allf=t", secs: 5, audio: false, codec: VP9 },
     Spec { name: "dec_vp9_2160.webm", src: "testsrc2=s=3840x2160:r=24000/1001:d=3,noise=alls=6:allf=t", secs: 3, audio: false, codec: VP9 },
     Spec { name: "dec_av1_1080.mp4", src: "testsrc2=s=1920x1080:r=24000/1001:d=5,noise=alls=6:allf=t", secs: 5, audio: false, codec: AV1 },
