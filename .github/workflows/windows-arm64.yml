@@ -1,7 +1,7 @@
 # Windows on ARM: package the ARM64 release the way release.yml does (cross-compiled on an x64
 # runner, unsigned here), then install that MSI on a Windows 11 ARM64 runner, check the installed
 # binaries are ARM64, run the CLI natively, and uninstall. (A native ARM64 `cargo test` job is left
-# out for now: PrintCraft saw an intermittent access violation in egui UI tests there.)
+# out for now: PdfCraft saw an intermittent access violation in egui UI tests there.)
 name: Windows ARM64
 
 on:
