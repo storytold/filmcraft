@@ -83,8 +83,8 @@ driven one app can drive the others.
 
 ### Long exports: progress and cancellation
 
-`command_run {"id": "file.exportMedia", "params": {…, "wait": true}}` in headless mode blocks until
-the file is written. It uses the MCP progress and cancellation utilities, so a client can show
+`command_run {"id": "file.exportMedia", "params": {…, "wait": true}}` blocks until the file is
+written, in headless and in bridge mode. It uses the MCP progress and cancellation utilities, so a client can show
 progress and stop it:
 
 - The export runs as the same background job `jobs.list` shows. The session is locked only for short
@@ -97,7 +97,10 @@ progress and stop it:
   no response, as the MCP cancellation utility asks.
 - Without `wait` the command returns `{job, path}` at once, as before: poll `jobs.list` and stop it
   with `jobs.cancel`. Other exports (`file.exportFrame`, interchange formats, …) finish quickly and
-  ignore the token. Bridge mode forwards the call unchanged; the app shows its own progress.
+  ignore the token.
+- In bridge mode (MCP, and `filmcraft-cli --bridge … exec`) the export is started in the app without
+  `wait` and its job polled, however long it takes: the app keeps showing its progress and answering
+  other requests, and the call returns the same `{job, path, result}` as headless mode.
 
 ## 2. Control channel
 

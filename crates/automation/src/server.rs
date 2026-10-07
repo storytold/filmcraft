@@ -249,7 +249,7 @@ impl FilmcraftMcp {
                 .await
                 .map_err(join_error)?
             }
-            Backend::Bridge(b) => b.call("engine.execute", json!({"command": id, "params": params})).await,
+            Backend::Bridge(b) => b.execute(id, params).await,
         }
     }
 
@@ -575,7 +575,6 @@ impl ServerHandler for FilmcraftMcp {
         }
         // A blocking export reports progress and can be cancelled (docs/agents.md § Long exports).
         if request.name == "command_run"
-            && matches!(&*self.backend, Backend::Headless(_))
             && let Some(a) = &request.arguments
             && let Some(id) = a.get("id").and_then(Value::as_str)
         {
@@ -653,10 +652,13 @@ mod tests {
 
     impl Client {
         fn start(s: Session) -> Self {
+            Self::serve(FilmcraftMcp::headless(s))
+        }
+        fn serve(m: FilmcraftMcp) -> Self {
             use tokio::io::AsyncBufReadExt;
             let (tx, server_in) = tokio::io::duplex(1 << 22);
             let (server_out, rx) = tokio::io::duplex(1 << 22);
-            tokio::spawn(FilmcraftMcp::headless(s).serve_io(server_in, server_out));
+            tokio::spawn(m.serve_io(server_in, server_out));
             Self { tx, rx: tokio::io::BufReader::new(rx).lines() }
         }
         async fn send(&mut self, line: &str) {
@@ -798,6 +800,30 @@ mod tests {
     /// docs/agents.md § Long exports: a blocking export reports `notifications/progress` for its
     /// token (none without one), answers `ping` meanwhile, and `notifications/cancelled` stops
     /// it, deletes the partial file and sends no response.
+    /// Bridge mode: `command_run` of a blocking export that outlasts the app's 60 s reply limit
+    /// returns the finished export, with progress, instead of `app: timeout` (#91).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bridge_blocking_export_returns_the_finished_job() {
+        let (addr, log) = crate::bridge::fake_app::start();
+        let mut c = Client::serve(FilmcraftMcp::bridge(&addr).unwrap());
+        c.init().await;
+        let params = json!({"path": "/tmp/long.mov", "format": "prores", "wait": true});
+        c.send(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"command_run","arguments":{"id":"file.exportMedia","params":params},"_meta":{"progressToken":"p"}}}).to_string()).await;
+        let mut progress = 0;
+        let r = loop {
+            let m = c.next().await;
+            if m["method"] != "notifications/progress" {
+                break m;
+            }
+            progress += 1;
+        };
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let v: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!((v["job"].as_u64(), v["result"]["frames"].as_u64()), (Some(7), Some(642)), "{v}");
+        assert!(progress > 0, "no progress notifications");
+        assert_eq!(*log.lock().unwrap(), ["file.exportMedia wait=false"]);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn export_progress_and_cancel() {
         let dir = std::env::temp_dir().join(format!("filmcraft-mcp-progress-{}", std::process::id()));

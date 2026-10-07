@@ -1,8 +1,9 @@
 //! Long exports over MCP (docs/agents.md § Long exports): `file.exportMedia` with `wait: true`
 //! runs as a background engine job; the server reports its progress as MCP
 //! `notifications/progress` (when the request carried a `progressToken`) and stops it on
-//! `notifications/cancelled`, deleting the partial output. The session lock is only held for
-//! short polls, so other requests are answered while the export runs.
+//! `notifications/cancelled`, deleting the partial output. The session lock (in bridge mode, the
+//! connection to the app) is only held for short polls, so other requests are answered while the
+//! export runs.
 
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -18,7 +19,7 @@ use crate::server::FilmcraftMcp;
 pub const LONG_COMMANDS: &[&str] = &["file.exportMedia"];
 
 /// How often the job is polled (and at most how often progress is reported).
-const POLL: Duration = Duration::from_millis(100);
+pub(crate) const POLL: Duration = Duration::from_millis(100);
 
 /// Whether `command_run {id, params}` is a long call this module runs.
 pub fn is_long(id: &str, params: &Value) -> bool {
