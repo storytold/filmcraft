@@ -129,7 +129,7 @@ a command, everything is agent-drivable, and the quality gates (`cargo xtask ci`
 
 **Contributor credits are compiled in.** Help ▸ About FilmCraft ▸ Contributors/Models come from
 `contributors/contributors.json`, baked into the binary by `crates/ui-egui/build.rs` (never read at
-run time). Regenerate it with `python3 ../craftrules/scripts/contributors.py .` and commit it; never
+run time). Regenerate it with `python3 ../../craftrules/scripts/contributors.py .` and commit it; never
 hand-edit it. GitHub usernames only; display and real names only with consent recorded in craftrules
 `contributors/people.toml`. See [docs/contributors.md](docs/contributors.md).
 
