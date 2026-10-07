@@ -10,6 +10,7 @@ pub mod automation;
 pub mod brand;
 pub mod control;
 pub mod crash;
+pub mod credits;
 pub mod dock;
 pub mod frames;
 pub mod header;
