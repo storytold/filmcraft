@@ -1,0 +1,65 @@
+name: Build Windows x64 Chinese MSI
+
+# Chinese (zh-cn) build of FilmCraft for Windows x64.
+# Produces filmcraft-<version>-windows-x64.msi (WiX) + portable zip,
+# published to the fork's Release page on tag push (zh-v*).
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "zh-v*"
+
+jobs:
+  build:
+    name: Windows x64
+    runs-on: windows-latest
+    env:
+      FILMCRAFT_VERSION: 0.2.1-zh-CN
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: storytold/craft-fonts
+          ref: abb83316d96aa59c1cf64784289e378fe9fa5695 # bump deliberately
+          path: craft-fonts
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-windows-x64-zh
+
+      - name: Install WiX
+        shell: pwsh
+        run: dotnet tool install --global wix --version 5.0.2
+
+      - name: Build, sign, package
+        shell: pwsh
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+        run: ./packaging/windows/package.ps1 -Arch x64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: filmcraft-windows-x64-zh-CN
+          path: dist/release/*
+          if-no-files-found: error
+
+      - name: Publish to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/release/*
+          # the fork's GITHUB_TOKEN is read-only; use the stored PAT
+          token: ${{ secrets.RELEASE_PAT }}
+          name: FilmCraft v0.2.1 简体中文版
+          body: |
+            FilmCraft v0.2.1 Windows x64 简体中文版（WiX 安装包 + 绿色便携版）。
+
+            基于上游 storytold/filmcraft，含简体中文界面翻译（PR #229）：347 条菜单文案汉化，
+            Edit > Language > 简体中文 切换。Windows 自带微软雅黑即可正常显示中文，
+            无需额外安装字体。
