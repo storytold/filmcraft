@@ -70,6 +70,11 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   It declines two-pass VBR, HDR, MXF, interlaced output, sizes outside NVENC's limits and systems
   without an NVIDIA GPU or driver, and the software encoder runs instead. A failure during an export
   ends it with an error, since a hardware stream cannot be finished in software.
+- **Linux: VA-API H.264** (`vaapi.rs`), progressive 8-bit 4:2:0 through the DRM render node. The
+  decoder downloads NV12 surfaces into FilmCraft's planar YUV frames and declines systems without a
+  usable VA-API render node, unsupported H.264 profiles, interlaced streams, or non-8-bit / non-4:2:0
+  streams. `HybridDecoder` keeps the pure-Rust decoder as the mid-stream fallback. The VA-API decoder
+  is confined to a worker thread because its libva state is not `Send`.
 - **Other systems:** `register()` does nothing and returns `Availability::Unavailable`.
 - **`HybridDecoder`** (`hybrid.rs`, safe code): the hardware decoder plus the means to build our
   software decoder for the same `SampleEntry` (`filmcraft_codecs::software_video_decoder`). On a

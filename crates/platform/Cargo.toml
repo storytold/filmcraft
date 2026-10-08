@@ -1,6 +1,6 @@
 [package]
 name = "filmcraft-platform"
-description = "OS media integration: hardware video decoding through the operating system's codecs (VideoToolbox on macOS), with transparent fallback to the pure-Rust decoders"
+description = "OS media integration: hardware video decoding through VideoToolbox, Media Foundation or VA-API, with transparent fallback to the pure-Rust decoders"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -48,6 +48,11 @@ windows = { version = "0.62", features = [
     "Win32_System_Com",
     "Win32_System_LibraryLoader",
 ] }
+
+# VA-API's H.264 decoder owns libva state that is not Send; the Linux adapter confines it to a
+# worker thread and exposes FilmCraft's Send VideoDecoder interface.
+[target.'cfg(target_os = "linux")'.dependencies]
+moq-vaapi = "0.1.0"
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }

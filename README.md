@@ -287,7 +287,7 @@ We track two numbers ([ROADMAP.md](ROADMAP.md#honest-assessment-2026-10-05)):
 
 The biggest gaps today:
 
-- **Speed on big footage.** Hardware decoding works on macOS and Windows; Linux has no hardware path yet. Blend modes and the most common effects run on the GPU, but Lumetri, keys and export rendering still run on the CPU; H.264 encoding can use the hardware encoder on macOS and on Windows with an NVIDIA GPU (opt-in, Export ▸ Hardware encoding), and H.265 export is hardware-only there ([#30](https://github.com/storytold/filmcraft/issues/30)).
+- **Speed on big footage.** Hardware decoding works on macOS and Windows, and Linux has a VA-API H.264 path for progressive 8-bit 4:2:0 streams. Blend modes and the most common effects run on the GPU, but Lumetri, keys and export rendering still run on the CPU; H.264 encoding can use the hardware encoder on macOS and on Windows with an NVIDIA GPU (opt-in, Export ▸ Hardware encoding), and H.265 export is hardware-only there ([#30](https://github.com/storytold/filmcraft/issues/30)).
 - **No plugins.** No VST3 / Audio Units or OpenFX hosting.
 - **Delivery codecs.** H.264 is our only delivery-codec export; no HEVC or AV1 export yet.
 - **Real-world media and platforms.** Our decoders are bit-exact on conformance streams, but camera and phone files in the wild are less tested. Windows and Linux get far less testing than macOS.

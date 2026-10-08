@@ -37,6 +37,8 @@ pub mod hybrid;
 pub mod media_foundation;
 #[cfg(target_os = "windows")]
 pub mod nvenc;
+#[cfg(target_os = "linux")]
+mod vaapi;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub mod videotoolbox;
@@ -79,7 +81,16 @@ pub fn register() -> Availability {
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        Availability::Unavailable("no hardware video decoder for this system yet")
+        #[cfg(target_os = "linux")]
+        {
+            filmcraft_codecs::register_video_decoder(vaapi_factory);
+            filmcraft_codecs::hw::set_hw_backend("VA-API");
+            Availability::Available("VA-API")
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Availability::Unavailable("no hardware video decoder for this system yet")
+        }
     }
 }
 
@@ -95,7 +106,14 @@ pub fn registered() -> bool {
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        false
+        #[cfg(target_os = "linux")]
+        {
+            filmcraft_codecs::video_decoder_registered(vaapi_factory)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
     }
 }
 
@@ -112,8 +130,38 @@ pub fn hardware_decoder_for(entry: &filmcraft_isobmff::SampleEntry) -> bool {
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        let _ = entry;
-        false
+        #[cfg(target_os = "linux")]
+        {
+            vaapi::hardware_decoder_for(entry)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = entry;
+            false
+        }
+    }
+}
+
+/// The Linux VA-API factory: currently progressive 8-bit 4:2:0 H.264 only. Unsupported streams
+/// fall through to FilmCraft's software decoder; a mid-stream VA-API failure is handled by the
+/// same [`HybridDecoder`] fallback used by the other platform backends.
+#[cfg(target_os = "linux")]
+pub fn vaapi_factory(entry: &filmcraft_isobmff::SampleEntry) -> Option<filmcraft_codecs::Result<Box<dyn filmcraft_codecs::VideoDecoder>>> {
+    if !filmcraft_codecs::hw::hardware_decoding() {
+        return None;
+    }
+    let info = filmcraft_codecs::hw::NalStreamInfo::from_entry(entry)?.ok()?;
+    if !vaapi::supported(&info) {
+        filmcraft_codecs::hw::note_hw_declined();
+        return None;
+    }
+    match vaapi::VaapiDecoder::new(info.clone()) {
+        Ok(decoder) => Some(Ok(Box::new(HybridDecoder::new(Box::new(decoder), entry.clone(), info)))),
+        Err(why) => {
+            log::info!("VA-API hardware decoding declined for {} video: {why}", entry.codec.name());
+            filmcraft_codecs::hw::note_hw_declined();
+            None
+        }
     }
 }
 

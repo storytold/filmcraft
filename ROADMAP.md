@@ -47,8 +47,8 @@ before choosing work.
 
 In priority order. Agents should prefer this work over adding more checklist items.
 
-1. **Hardware acceleration** (#30), the most visible gap to users:
-   - hardware decode on Linux (VA-API);
+  1. **Hardware acceleration** (#30), the most visible gap to users:
+   - extend the Linux VA-API H.264 path to HEVC / VP9 / AV1 and add zero-copy surfaces;
    - zero-copy decoded frames into wgpu;
    - the remaining effects on the GPU: Lumetri, keys, Vignette, Video Limiter, masks (31 common effects are done);
    - GPU export, then hardware encode: H.264 and H.265 on macOS are in (H.264 opt-in; H.265 has no other encoder), H.264 on NVENC (Windows, opt-in); HEVC on Windows and Linux remain.
