@@ -306,6 +306,30 @@ pub fn workspace(name: &str) -> DockNode {
     }
 }
 
+/// Where a dragged panel lands on a target group: into its tab strip, or beside it (splitting the
+/// group's space in two, the dragged panel taking the named side).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropZone {
+    Center,
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+impl DropZone {
+    pub fn from_name(s: &str) -> Option<DropZone> {
+        match s.to_ascii_lowercase().as_str() {
+            "center" | "centre" | "tab" => Some(DropZone::Center),
+            "left" => Some(DropZone::Left),
+            "right" => Some(DropZone::Right),
+            "top" => Some(DropZone::Top),
+            "bottom" => Some(DropZone::Bottom),
+            _ => None,
+        }
+    }
+}
+
 impl DockNode {
     /// Every panel in the tree.
     pub fn panels(&self, out: &mut Vec<PanelKind>) {
@@ -378,6 +402,91 @@ impl DockNode {
             self.open_near(PanelKind::Timeline, PanelKind::Project);
         }
     }
+    fn same_group(&self, a: PanelKind, b: PanelKind) -> bool {
+        match self {
+            DockNode::Split { a: x, b: y, .. } => x.same_group(a, b) || y.same_group(a, b),
+            DockNode::Tabs { panels, .. } => panels.contains(&a) && panels.contains(&b),
+        }
+    }
+    /// Append `p` as the active tab of the group holding `target`.
+    fn add_to_group_of(&mut self, p: PanelKind, target: PanelKind) -> bool {
+        match self {
+            DockNode::Split { a, b, .. } => a.add_to_group_of(p, target) || b.add_to_group_of(p, target),
+            DockNode::Tabs { panels, active } => {
+                if panels.contains(&target) {
+                    panels.push(p);
+                    *active = panels.len().saturating_sub(1);
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+    /// Replace the group holding `target` with a split of that group and a new group holding `p`.
+    fn split_beside(&mut self, p: PanelKind, target: PanelKind, zone: DropZone) -> bool {
+        if let DockNode::Split { a, b, .. } = &mut *self {
+            return a.split_beside(p, target, zone) || b.split_beside(p, target, zone);
+        }
+        if !matches!(self, DockNode::Tabs { panels, .. } if panels.contains(&target)) {
+            return false;
+        }
+        let slim = match (&*self, target) {
+            (DockNode::Tabs { panels, .. }, PanelKind::Tools) if panels.as_slice() == [PanelKind::Tools] => Some(64.0),
+            (DockNode::Tabs { panels, .. }, PanelKind::AudioMeters) if panels.as_slice() == [PanelKind::AudioMeters] => Some(116.0),
+            _ => None,
+        };
+        let old = std::mem::replace(self, tabs(&[], 0));
+        let new = tabs(&[p], 0);
+        let (first, second) = if matches!(zone, DropZone::Left | DropZone::Top) { (new, old) } else { (old, new) };
+        let vertical = matches!(zone, DropZone::Top | DropZone::Bottom);
+        // beside a slim panel (Tools, Audio Meters) that panel keeps its width
+        let size = match slim {
+            Some(w) if !vertical && matches!(zone, DropZone::Left) => SplitSize::FixedB(w),
+            Some(w) if !vertical => SplitSize::FixedA(w),
+            _ => SplitSize::Ratio(0.5),
+        };
+        *self = DockNode::Split { vertical, size, a: Box::new(first), b: Box::new(second) };
+        true
+    }
+    /// Widen the narrow fixed-size column holding `target` to a width tabs can use.
+    fn widen_after_join(&mut self, target: PanelKind) {
+        if let DockNode::Split { vertical, size, a, b } = self {
+            let holds = |n: &DockNode| matches!(n, DockNode::Tabs { panels, .. } if panels.contains(&target));
+            if !*vertical {
+                let cur = *size;
+                match cur {
+                    SplitSize::FixedA(w) if holds(&**a) && w < 200.0 => *size = SplitSize::FixedA(300.0),
+                    SplitSize::FixedB(w) if holds(&**b) && w < 200.0 => *size = SplitSize::FixedB(300.0),
+                    _ => {}
+                }
+            }
+            a.widen_after_join(target);
+            b.widen_after_join(target);
+        }
+    }
+    /// Move panel `p` next to the group that holds `target`: as a tab of it (`Center`) or in a new
+    /// group split off one of its sides. The tree is only replaced when the move succeeded, so a
+    /// refused move never loses a panel. Returns whether the layout changed (or `p` is already there).
+    pub fn move_panel(&mut self, p: PanelKind, target: PanelKind, zone: DropZone) -> bool {
+        if p == target || !self.contains(p) || !self.contains(target) {
+            return false;
+        }
+        if zone == DropZone::Center && self.same_group(p, target) {
+            return self.activate(p);
+        }
+        let mut next = self.clone();
+        next.close(p);
+        let moved = if zone == DropZone::Center { next.add_to_group_of(p, target) } else { next.split_beside(p, target, zone) };
+        if moved && zone == DropZone::Center && target.compact() {
+            // a slim panel's group (Tools, Audio Meters) now has tabs: give it room for them
+            next.widen_after_join(target);
+        }
+        if moved {
+            *self = next;
+        }
+        moved
+    }
     /// Add a panel as a tab next to `near` (or into the first group).
     pub fn open_near(&mut self, p: PanelKind, near: PanelKind) {
         if self.contains(p) {
@@ -425,6 +534,8 @@ pub enum DockAction {
     CloseSequence(u64),
     /// A sequence tab was dragged past a neighbour: its new place among the sequence tabs.
     MoveSequence(u64, usize),
+    /// A tab was dropped on another group: move `panel` to the group holding `target`.
+    MovePanel(PanelKind, PanelKind, DropZone),
 }
 
 /// Size of a split's first child in `avail` points: the requested size, keeping both children at
@@ -515,10 +626,23 @@ pub fn draw_group_chrome(
     let active_panel = g.panels.get(g.active).copied();
     let compact = g.panels.len() == 1 && g.panels[0].compact();
     if compact {
-        // grip dots
+        // grip dots: also the handle to drag the panel somewhere else (it has no tab to grab)
+        let grip = Rect::from_min_size(g.rect.min, vec2(g.rect.width(), 12.0));
+        let resp = ui.interact(grip, egui::Id::new(("dock-grip", g.path.clone())), Sense::click_and_drag());
+        if let Some(p) = g.panels.first().copied() {
+            reg.add(&format!("panel.grip.{}", p.id()), grip, p.title());
+            if resp.drag_started() {
+                set_dragging(ui.ctx(), p);
+                actions.push(DockAction::Focus(p));
+            }
+        }
+        let on = resp.hovered() || resp.dragged();
+        if on {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
         let c = pos2(g.rect.center().x, g.rect.min.y + 4.0);
         for dx in [-4.0, 0.0, 4.0] {
-            painter.circle_filled(c + vec2(dx, 0.0), 1.0, t.text_faint);
+            painter.circle_filled(c + vec2(dx, 0.0), if on { 1.5 } else { 1.0 }, if on { t.tab_text_active } else { t.text_faint });
         }
     } else {
         let strip = Rect::from_min_size(g.rect.min, vec2(g.rect.width(), t.tab_h));
@@ -599,12 +723,23 @@ pub fn draw_group_chrome(
             // a sequence tab keeps its identity when the tabs are reordered under the pointer
             let resp = match tab.seq {
                 Some(id) => ui.interact(tab_rect, egui::Id::new(("tab-seq", g.path.clone(), id)), Sense::click_and_drag()),
-                None => ui.interact(tab_rect, egui::Id::new(("tab", g.path.clone(), i)), Sense::click()),
+                None => ui.interact(tab_rect, egui::Id::new(("tab", g.path.clone(), i)), Sense::click_and_drag()),
             };
+            // dragging a panel's tab picks the panel up (see `drag_overlay`)
+            if tab.seq.is_none() && resp.drag_started() {
+                set_dragging(ui.ctx(), tab.panel);
+            }
             if let Some(id) = tab.seq {
                 seq_rects.push((id, tab_rect));
                 if resp.dragged() {
-                    dragged = Some(id);
+                    // along the strip a sequence tab changes places; pulled off the strip it carries
+                    // the whole Timeline panel
+                    let off_strip = ui.input(|i| i.pointer.latest_pos()).is_some_and(|q| q.y > strip.max.y + 10.0 || q.y < strip.min.y - 10.0);
+                    if off_strip || dragging(ui.ctx()).is_some() {
+                        set_dragging(ui.ctx(), PanelKind::Timeline);
+                    } else {
+                        dragged = Some(id);
+                    }
                 }
             }
             if let Some(id) = tab.seq {
@@ -730,6 +865,124 @@ pub fn draw_group_chrome(
     actions
 }
 
+fn drag_id() -> egui::Id {
+    egui::Id::new("dock-panel-drag")
+}
+
+pub fn set_dragging(ctx: &egui::Context, p: PanelKind) {
+    ctx.data_mut(|d| d.insert_temp(drag_id(), p));
+}
+
+/// The panel being dragged by its tab, if any.
+pub fn dragging(ctx: &egui::Context) -> Option<PanelKind> {
+    ctx.data(|d| d.get_temp::<PanelKind>(drag_id()))
+}
+
+/// Where a dragged panel would land: the panel to anchor the move to, the zone, the group's body
+/// and the inset rectangle of the docking guide drawn in it.
+struct Drop {
+    anchor: PanelKind,
+    zone: DropZone,
+    outer: Rect,
+    inner: Rect,
+}
+
+/// The docking guide's inset rectangle: the middle is "join the tabs", the four trapezoids between
+/// it and `outer` are "split off that side".
+fn guide_inner(outer: Rect) -> Rect {
+    let ix = (outer.width() * 0.3).min(56.0);
+    let iy = (outer.height() * 0.3).min(56.0);
+    Rect::from_min_max(outer.min + vec2(ix, iy), outer.max - vec2(ix, iy))
+}
+
+/// The group under `pos` that `p` may be dropped on. None over `p`'s own group when it holds
+/// nothing else, and outside the dock.
+fn drop_target(groups: &[Group], p: PanelKind, pos: egui::Pos2) -> Option<Drop> {
+    let g = groups.iter().find(|g| g.rect.contains(pos))?;
+    let anchor = g.panels.iter().copied().find(|x| *x != p)?;
+    let outer = g.content;
+    let inner = guide_inner(outer);
+    let zone = if pos.y < outer.min.y {
+        DropZone::Center
+    } else {
+        // how far into the margin the pointer is, per side, relative to the margin's width: the
+        // diagonals from the outer to the inner corners are where two sides' values are equal
+        let (mx, my) = ((inner.min.x - outer.min.x).max(1.0), (inner.min.y - outer.min.y).max(1.0));
+        let (dx, dy) = ((pos.x - outer.min.x).min(outer.max.x - pos.x), (pos.y - outer.min.y).min(outer.max.y - pos.y));
+        let (rx, ry) = (dx / mx, dy / my);
+        if rx.min(ry) >= 1.0 {
+            DropZone::Center
+        } else if rx < ry {
+            if pos.x < outer.center().x { DropZone::Left } else { DropZone::Right }
+        } else if pos.y < outer.center().y {
+            DropZone::Top
+        } else {
+            DropZone::Bottom
+        }
+    };
+    if zone == DropZone::Center && g.panels.contains(&p) {
+        return None;
+    }
+    Some(Drop { anchor, zone, outer, inner })
+}
+
+/// Premiere's docking guide: the group dims, an inset rectangle is joined to the corners by
+/// diagonals, and the part for the zone under the pointer fills dark blue.
+fn paint_guide(painter: &egui::Painter, d: &Drop) {
+    let dim = egui::Color32::from_rgba_unmultiplied(66, 66, 66, 235);
+    let blue = egui::Color32::from_rgba_unmultiplied(27, 27, 56, 245);
+    let line = Stroke::new(1.0, egui::Color32::from_rgb(26, 26, 26));
+    let (o, i) = (d.outer, d.inner);
+    painter.rect_filled(o, 0.0, dim);
+    let zone = match d.zone {
+        DropZone::Center => vec![i.left_top(), i.right_top(), i.right_bottom(), i.left_bottom()],
+        DropZone::Left => vec![o.left_top(), i.left_top(), i.left_bottom(), o.left_bottom()],
+        DropZone::Right => vec![o.right_top(), i.right_top(), i.right_bottom(), o.right_bottom()],
+        DropZone::Top => vec![o.left_top(), o.right_top(), i.right_top(), i.left_top()],
+        DropZone::Bottom => vec![o.left_bottom(), o.right_bottom(), i.right_bottom(), i.left_bottom()],
+    };
+    painter.add(egui::Shape::convex_polygon(zone, blue, Stroke::NONE));
+    for (from, to) in [(o.left_top(), i.left_top()), (o.right_top(), i.right_top()), (o.right_bottom(), i.right_bottom()), (o.left_bottom(), i.left_bottom())] {
+        painter.line_segment([from, to], line);
+    }
+    painter.rect_stroke(i, 0.0, line, StrokeKind::Inside);
+}
+
+/// While a panel is being dragged by its tab: the docking guide over the group under the pointer
+/// (middle = join its tabs; a side = split off that side) and a label following the pointer.
+/// Returns the move when the button is released over a valid target; Esc cancels.
+pub fn drag_overlay(ctx: &egui::Context, groups: &[Group], t: &Tokens) -> Option<DockAction> {
+    let p = dragging(ctx)?;
+    let (pos, down, escape) = ctx.input(|i| (i.pointer.latest_pos(), i.pointer.any_down(), i.key_pressed(egui::Key::Escape)));
+    let end = || ctx.data_mut(|d| d.remove::<PanelKind>(drag_id()));
+    if escape {
+        end();
+        return None;
+    }
+    let Some(pos) = pos else {
+        if !down {
+            end();
+        }
+        return None;
+    };
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("dock-drop-overlay")));
+    let target = drop_target(groups, p, pos);
+    if let Some(d) = &target {
+        paint_guide(&painter, d);
+    }
+    let galley = painter.layout_no_wrap(p.title().to_string(), Tokens::ui(12.0), t.tab_text_active);
+    let label = Rect::from_min_size(pos + vec2(14.0, 14.0), galley.size() + vec2(16.0, 8.0));
+    painter.rect_filled(label, 4.0, t.panel_bg);
+    painter.rect_stroke(label, 4.0, Stroke::new(1.0, t.focus), StrokeKind::Inside);
+    painter.galley_with_override_text_color(label.min + vec2(8.0, 4.0), galley, t.tab_text_active);
+    ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+    if down {
+        return None;
+    }
+    end();
+    target.map(|d| DockAction::MovePanel(p, d.anchor, d.zone))
+}
+
 /// Placeholder body for panels that are not implemented yet.
 pub fn placeholder(ui: &mut egui::Ui, rect: Rect, t: &Tokens, text: &str) {
     ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, Tokens::ui(12.0), t.text_faint);
@@ -766,6 +1019,115 @@ mod tests {
             assert!(d.contains(PanelKind::Timeline), "{w}");
             assert!(d.contains(PanelKind::Program), "{w}");
         }
+    }
+
+    fn sorted(d: &DockNode) -> Vec<String> {
+        let mut v = Vec::new();
+        d.panels(&mut v);
+        let mut v: Vec<String> = v.iter().map(|p| p.id()).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn move_panel_as_tab() {
+        let mut d = workspace("Editing");
+        assert!(d.move_panel(PanelKind::Effects, PanelKind::Program, DropZone::Center));
+        assert!(d.same_group(PanelKind::Effects, PanelKind::Program));
+        assert!(d.is_visible(PanelKind::Effects));
+        assert!(!d.same_group(PanelKind::Effects, PanelKind::Project));
+    }
+
+    #[test]
+    fn move_panel_to_edge_splits() {
+        let mut d = workspace("Editing");
+        let before = sorted(&d);
+        assert!(d.move_panel(PanelKind::Timeline, PanelKind::Program, DropZone::Left));
+        assert_eq!(before, sorted(&d));
+        assert!(!d.same_group(PanelKind::Timeline, PanelKind::Program));
+        // a lone panel dragged beside another group leaves nothing empty behind
+        assert!(d.move_panel(PanelKind::Program, PanelKind::Timeline, DropZone::Bottom));
+        assert_eq!(before, sorted(&d));
+    }
+
+    #[test]
+    fn move_panel_refusals_keep_the_layout() {
+        let mut d = workspace("Editing");
+        let orig = d.clone();
+        assert!(!d.move_panel(PanelKind::Program, PanelKind::Program, DropZone::Left));
+        assert!(!d.move_panel(PanelKind::Program, PanelKind::LumetriColor, DropZone::Left));
+        assert!(!d.move_panel(PanelKind::LumetriColor, PanelKind::Program, DropZone::Center));
+        assert_eq!(d, orig);
+        // dropping a tab on its own group's tab strip only shows it
+        assert!(d.move_panel(PanelKind::Info, PanelKind::Project, DropZone::Center));
+        assert_eq!(sorted(&d), sorted(&orig));
+    }
+
+    #[test]
+    fn slim_panels_can_move_and_be_dropped_beside() {
+        // Tools has no tab: its grip drags it; it can land as a tab or split off a side
+        let mut d = workspace("Editing");
+        // a panel dropped on the middle of the Tools group joins it, and the column gets wider
+        let mut joined = workspace("Editing");
+        assert!(joined.move_panel(PanelKind::Info, PanelKind::Tools, DropZone::Center));
+        assert!(joined.same_group(PanelKind::Info, PanelKind::Tools));
+        fn tools_column_narrow(n: &DockNode) -> bool {
+            match n {
+                DockNode::Split { size, a, b, .. } => {
+                    (matches!(size, SplitSize::FixedA(w) if *w < 100.0) && matches!(&**a, DockNode::Tabs { panels, .. } if panels.contains(&PanelKind::Tools)))
+                        || tools_column_narrow(a)
+                        || tools_column_narrow(b)
+                }
+                DockNode::Tabs { .. } => false,
+            }
+        }
+        assert!(!tools_column_narrow(&joined));
+        assert!(d.move_panel(PanelKind::Tools, PanelKind::Program, DropZone::Right));
+        assert!(!d.same_group(PanelKind::Tools, PanelKind::Program));
+        // a panel dropped left of the Audio Meters leaves the meters their width
+        assert!(d.move_panel(PanelKind::Info, PanelKind::AudioMeters, DropZone::Left));
+        fn meters_fixed(n: &DockNode) -> bool {
+            match n {
+                DockNode::Split { size, a, b, .. } => {
+                    (matches!(size, SplitSize::FixedB(w) if *w == 116.0) && matches!(&**b, DockNode::Tabs { panels, .. } if panels.as_slice() == [PanelKind::AudioMeters]))
+                        || meters_fixed(a)
+                        || meters_fixed(b)
+                }
+                DockNode::Tabs { .. } => false,
+            }
+        }
+        assert!(meters_fixed(&d));
+    }
+
+    #[test]
+    fn any_move_keeps_every_panel_exactly_once() {
+        for w in WORKSPACES {
+            let base = workspace(w);
+            let mut all = Vec::new();
+            base.panels(&mut all);
+            for &p in &all {
+                for &t in &all {
+                    for z in [DropZone::Center, DropZone::Left, DropZone::Right, DropZone::Top, DropZone::Bottom] {
+                        let mut d = base.clone();
+                        d.move_panel(p, t, z);
+                        assert_eq!(sorted(&d), sorted(&base), "{w}: {p:?} -> {t:?} {z:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_floating_panel_docks_again_beside_a_group() {
+        // what dropping a floating panel does: it joins the group, then takes its place
+        let mut d = workspace("Editing");
+        let before = sorted(&d);
+        d.close(PanelKind::Properties);
+        assert!(!d.contains(PanelKind::Properties));
+        d.open_near(PanelKind::Properties, PanelKind::Program);
+        assert!(d.move_panel(PanelKind::Properties, PanelKind::Program, DropZone::Left));
+        assert_eq!(sorted(&d), before);
+        assert!(!d.same_group(PanelKind::Properties, PanelKind::Program));
     }
 
     #[test]
