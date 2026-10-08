@@ -41,6 +41,12 @@ pub fn craft_japanese() -> impl Iterator<Item = &'static CraftFont> {
     CRAFT_FONTS.iter().filter(|f| f.scripts.contains(&"Jpan"))
 }
 
+/// The craft-fonts entries for Simplified Chinese (`Hans`), in [`CRAFT_FONTS`] order. Empty when the app was
+/// built without craft-fonts.
+pub fn craft_chinese() -> impl Iterator<Item = &'static CraftFont> {
+    CRAFT_FONTS.iter().filter(|f| f.scripts.contains(&"Hans"))
+}
+
 /// Origin of faces registered from [`CRAFT_FONTS`].
 pub const CRAFT_ORIGIN: &str = "craft-fonts";
 

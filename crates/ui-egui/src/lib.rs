@@ -1471,6 +1471,10 @@ impl eframe::App for FilmcraftApp {
             if self.ui.language == i18n::Language::Ja && !i18n::install_japanese_font(ctx) {
                 self.ui.language = i18n::Language::En;
             }
+            // same for a saved Chinese setting on a system without a Chinese font
+            if self.ui.language == i18n::Language::Zh && !i18n::install_chinese_font(ctx) {
+                self.ui.language = i18n::Language::En;
+            }
             self.styled = true;
             ctx.request_repaint();
         } else {
