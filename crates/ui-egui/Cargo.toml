@@ -52,3 +52,4 @@ egui_kittest = { workspace = true, features = ["eframe", "wgpu"] }
 # build.rs bakes contributors/contributors.json into the binary (About ▸ Contributors).
 [build-dependencies]
 serde_json = { workspace = true }
+toml = "1"
