@@ -218,3 +218,21 @@ fn list_searches_labels_and_keys() {
     let v = s.execute("shortcuts.list", json!({"panel": "History", "assigned": true})).unwrap();
     assert_eq!(v.as_array().unwrap().len(), 2, "{v}");
 }
+
+#[test]
+fn default_keymaps_have_no_conflicts_on_any_platform() {
+    // The Premiere audit used to check keys on macOS only, so off macOS `⌃9`/`⌘9`, `⌃⇧M`/`⌘⇧M` and
+    // `⌃T`/`⌘T` ended up on the same Ctrl key; CI only ran on macOS, so nobody saw it.
+    use crate::shortcuts::Platform;
+    let s = Session::default();
+    for p in [Platform::Mac, Platform::Windows, Platform::Linux] {
+        let mut sc = s.shortcuts.clone();
+        sc.bindings = sc.builtin_for(crate::shortcuts::DEFAULT_PRESET, p).unwrap();
+        assert!(sc.conflicts(p).is_empty(), "{p:?}: {:?}", sc.conflicts(p));
+    }
+    // macOS keeps every Premiere key it had
+    let mac = s.shortcuts.builtin_for(crate::shortcuts::DEFAULT_PRESET, Platform::Mac).unwrap();
+    for (cmd, keys) in [("multicam.cutToCamera9", "Ctrl+9"), ("markers.addRange", "Ctrl+Shift+M"), ("graphics.newText", "Cmd+T")] {
+        assert!(mac.iter().any(|b| b.command == cmd && b.keys == keys), "{cmd} {keys} on macOS");
+    }
+}

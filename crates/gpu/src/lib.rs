@@ -324,7 +324,23 @@ impl GpuCompositor {
             view_formats: &[],
         });
         let dummy = dummy_tex.create_view(&Default::default());
-        let fx = fx::FxStage::supported(device).then(|| fx::FxStage::new(device, &shader, &layer_bgl));
+        // The effect stage's pipelines can still be invalid on a device that passes the limits
+        // check (Rgba32Float is not renderable everywhere, e.g. software Vulkan/GL). Validation
+        // errors would panic, so they are captured: without the stage, effects render on the CPU.
+        let fx = fx::FxStage::supported(device)
+            .then(|| {
+                let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+                let stage = fx::FxStage::new(device, &shader, &layer_bgl);
+                match poll_now(scope.pop()) {
+                    Some(None) => Some(stage),
+                    Some(Some(e)) => {
+                        log::warn!("GPU effects unavailable on this device, rendering them on the CPU: {e}");
+                        None
+                    }
+                    None => None,
+                }
+            })
+            .flatten();
         Self {
             device: device.clone(),
             queue: queue.clone(),
@@ -894,6 +910,16 @@ struct SrcInfo {
     chroma: (u32, u32),
     size: (u32, u32),
     color: filmcraft_color::ColorInfo,
+}
+
+/// Poll a future once: wgpu's native error scopes resolve immediately. `None` if it is still
+/// pending (then the caller assumes the worst).
+fn poll_now<F: std::future::Future>(f: F) -> Option<F::Output> {
+    let mut f = std::pin::pin!(f);
+    match f.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())) {
+        std::task::Poll::Ready(v) => Some(v),
+        std::task::Poll::Pending => None,
+    }
 }
 
 /// A render pass drawing into the accumulator.

@@ -1,0 +1,48 @@
+# Builds and tests the workspace on FreeBSD, inside a FreeBSD VM on a Linux runner
+# (GitHub has no FreeBSD runners). GPU tests skip themselves when the VM has no adapter.
+name: FreeBSD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - "**/Cargo.toml"
+      - .github/workflows/freebsd.yml
+  workflow_dispatch:
+
+concurrency:
+  group: freebsd-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  freebsd:
+    name: FreeBSD 14 (build + test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test in a FreeBSD VM
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1
+        with:
+          release: "14.3"
+          usesh: true
+          cpu: 4
+          mem: 12288
+          # Nothing to bring back; copying the target dir out of the VM fails on large builds.
+          copyback: false
+          prepare: |
+            pkg install -y git curl pkgconf cmake python3 libxkbcommon wayland libX11 libXcursor libXrandr libXi libxcb mesa-libs vulkan-loader gtk3 fontconfig freetype2 alsa-lib
+            curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
+          run: |
+            . "$HOME/.cargo/env"
+            # The checkout is synced in under another owner; let tests that call git read it.
+            git config --global --add safe.directory "*"
+            rustc --version
+            CARGO_PROFILE_DEV_DEBUG=0 cargo build --workspace --all-targets --locked
+            CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --locked
