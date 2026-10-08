@@ -192,6 +192,28 @@ fn v8_loads_without_transcripts_and_v9_roundtrips_them() {
     assert_eq!(again.project.transcripts[&ItemId(7)].speakers[0].name, "Speaker 1");
 }
 
+/// Schema 12 (before generated media): no ComfyUI clip recipes; loads with none, and a recipe
+/// survives a save and load.
+#[test]
+fn v12_minimal_loads_without_generated_media() {
+    let l = decode(&fixture("v12-minimal.fcproj")).unwrap();
+    assert_eq!(l.schema_version, 12);
+    assert!(l.migrated());
+    let mut p = l.project.clone();
+    assert_eq!(p.name, "Before Generated Clips");
+    assert!(p.generated.is_empty());
+    let g = filmcraft_project::Generation {
+        provider: "comfyui".into(),
+        recipe: serde_json::json!({"workflow": {"9": {"class_type": "SaveImage", "inputs": {}}}, "inputs": [{"node": "9", "input": "filename_prefix", "value": "x"}]}),
+        last_run: serde_json::Value::Null,
+    };
+    p.generated.insert(ItemId(1), std::sync::Arc::new(g));
+    let again = decode(&encode(&p, true)).unwrap();
+    assert_eq!(again.schema_version, SCHEMA_VERSION);
+    const { assert!(SCHEMA_VERSION >= 13) };
+    assert_eq!(again.project, p);
+}
+
 /// Schema 11 (before M10.7): no source graphics; graphic clips without template / roll /
 /// responsive data and layers without style runs or pins load with those empty.
 #[test]

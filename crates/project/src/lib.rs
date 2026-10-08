@@ -1187,6 +1187,23 @@ pub struct Project {
     /// project item. Schema v12.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub source_graphics: BTreeMap<ItemId, SourceGraphic>,
+    /// Media items made by a generative tool (ComfyUI clips, docs/comfyui.md): how to make each
+    /// again. Shared (`Arc`) so undo snapshots don't copy the workflows. Schema v13.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub generated: BTreeMap<ItemId, std::sync::Arc<Generation>>,
+}
+
+/// How a generated media item was made (and is made again).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Generation {
+    /// The tool (`"comfyui"`).
+    pub provider: String,
+    /// The tool's recipe (for ComfyUI a `filmcraft_comfyui::Recipe`: workflow, input overrides,
+    /// server).
+    pub recipe: serde_json::Value,
+    /// What the last run reported (outputs, texts, files written); null until it ran.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub last_run: serde_json::Value,
 }
 
 /// How a sequence is shown in the Timeline panel: its zoom, scroll position and track heights.
@@ -1270,6 +1287,7 @@ impl Project {
             transcripts: BTreeMap::new(),
             search_bins: Vec::new(),
             source_graphics: BTreeMap::new(),
+            generated: BTreeMap::new(),
         }
     }
 

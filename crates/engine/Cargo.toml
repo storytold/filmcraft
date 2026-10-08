@@ -15,6 +15,9 @@ default = []
 whisper = ["filmcraft-speech/whisper"]
 # Speech-model downloads over HTTPS.
 speech-download = ["filmcraft-speech/download"]
+# ComfyUI clips over HTTP(S). Off by default and in wasm builds (sessions can still install a
+# transport of their own).
+comfyui = ["filmcraft-comfyui/http"]
 
 [dependencies]
 filmcraft-time = { workspace = true }
@@ -35,6 +38,7 @@ filmcraft-format = { workspace = true }
 filmcraft-interchange = { workspace = true }
 filmcraft-captions = { workspace = true }
 filmcraft-speech = { workspace = true }
+filmcraft-comfyui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

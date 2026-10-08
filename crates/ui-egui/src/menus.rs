@@ -90,6 +90,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("view.theme.dark", "Darkest", ["View", "Appearance"], None),
     uic!("view.theme.medium", "Medium", ["View", "Appearance"], None),
     uic!("view.theme.light", "Light", ["View", "Appearance"], None),
+    uic!("window.comfyui", "ComfyUI…", ["Window"], None),
     uic!("window.workspace.editing", "Editing", ["Window", "Workspaces"], Some("Alt+Shift+1")),
     uic!("window.workspace.assembly", "Assembly", ["Window", "Workspaces"], Some("Alt+Shift+2")),
     uic!("window.workspace.color", "Color", ["Window", "Workspaces"], Some("Alt+Shift+3")),
@@ -188,6 +189,9 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         return Ok(json!({"tool": tool}));
     }
     if let Some(r) = crate::panels::keyboard::route(app, ctx, id, &params) {
+        return r;
+    }
+    if let Some(r) = crate::panels::comfyui::route(app, ctx, id) {
         return r;
     }
     if let Some(r) = crate::panels::trim_monitor::route_transport(app, ctx, id) {

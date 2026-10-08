@@ -52,6 +52,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 | 10 | M3.10 | clip time interpolation, Hold Filters, Field Options, audio source channels, Modify ▸ Audio Channels map, subclip Restrict Trims; no-op step |
 | 11 | M3.11 | search bins (`project.search_bins`), Flash Cue markers, Project Settings safe areas, capture format and scratch disks; no-op step |
 | 12 | M10.7 | graphics design data: `TrackItem::graphic` (roll / crawl, responsive time, template link), `EffectInstance::layer` (layer uid, per-character styles, responsive pins), `project.source_graphics`; no-op step |
+| 13 | ComfyUI clips | generated media: `project.generated` (the recipes of ComfyUI clips, [comfyui.md](comfyui.md)); no-op step |
 
 ### Migrations
 
