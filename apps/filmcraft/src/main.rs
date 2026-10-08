@@ -36,6 +36,8 @@ mod graphics;
 mod logging;
 #[cfg(target_os = "macos")]
 mod native_menu;
+#[cfg(target_os = "linux")]
+mod pulse_out;
 mod window_raise;
 
 use args::{Cli, Launch};
@@ -202,7 +204,14 @@ fn main() -> eframe::Result {
             }
             // Keep device selection available even when the default device is unavailable.
             // Settings ▸ Audio Hardware is applied on the first frame (`apply_prefs`).
-            app.audio = Some(Box::new(audio::CpalOut::new()));
+            #[cfg(target_os = "linux")]
+            {
+                app.audio = Some(Box::new(pulse_out::SystemOut::new()));
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                app.audio = Some(Box::new(audio::CpalOut::new()));
+            }
             app.hooks.pick_files = Some(Box::new(|exts: &[&str]| {
                 rfd::FileDialog::new()
                     .add_filter(filmcraft_ui_egui::i18n::t("Media"), &file_filters::extensions(exts))
