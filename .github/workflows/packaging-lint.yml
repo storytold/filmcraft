@@ -54,4 +54,15 @@ jobs:
           desktop-file-validate packaging/linux/ai.storyteller.filmcraft.desktop
           sed -e 's/@VERSION@/0.0.0/' -e 's/@DATE@/2026-01-01/' packaging/linux/ai.storyteller.filmcraft.metainfo.xml.in >"$RUNNER_TEMP/ai.storyteller.filmcraft.metainfo.xml"
           appstreamcli validate --no-net --explain "$RUNNER_TEMP/ai.storyteller.filmcraft.metainfo.xml"
-          python3 -c "import yaml; m = yaml.safe_load(open('packaging/linux/flatpak/ai.storyteller.filmcraft.yml')); assert m['id'] == 'ai.storyteller.filmcraft' and m['command'] == 'filmcraft'"
+          python3 - <<'EOF'
+          import yaml
+          src = yaml.safe_load(open("packaging/linux/flatpak/ai.storyteller.filmcraft.yml"))
+          bundle = yaml.safe_load(open("packaging/linux/flatpak/ai.storyteller.filmcraft.bundle.yml"))
+          for m in (src, bundle):
+              assert m["id"] == "ai.storyteller.filmcraft" and m["command"] == "filmcraft", m["id"]
+          for key in ("runtime", "runtime-version", "sdk", "finish-args"):
+              assert src[key] == bundle[key], f"Flatpak manifests disagree on {key}: {src[key]} vs {bundle[key]}"
+          print("Flatpak manifests ok")
+          EOF
+      - name: FreeBSD package layout (stub binaries)
+        run: bash packaging/freebsd/package.sh --dry-run

@@ -1,0 +1,59 @@
+# Flatpak manifest for the single-file bundle attached to every GitHub release
+# (filmcraft-<version>-linux-<arch>.flatpak). Build it with packaging/linux/flatpak-bundle.sh.
+#
+# It repackages the release's own Linux tarball (filmcraft-<version>-linux-<arch>.tar.gz,
+# built on Ubuntu 22.04 by package.sh) instead of compiling Rust inside flatpak-builder: no
+# network and no vendored crate sources during the build, a few seconds instead of 20+ minutes,
+# and byte-for-byte the same binaries as the AppImage/deb/rpm. The script unpacks the tarball
+# into `stage/` next to a copy of this file. The binaries need glibc >= 2.35 and load X11,
+# Wayland, xkbcommon, ALSA and Vulkan at runtime; the freedesktop runtime has all of them (its
+# ALSA routes through PulseAudio/PipeWire), and the GPU driver comes from its
+# org.freedesktop.Platform.GL extension.
+#
+# ai.storyteller.filmcraft.yml (same directory) is the from-source manifest for Flathub. Keep
+# runtime-version and finish-args identical in both (packaging-lint checks this).
+id: ai.storyteller.filmcraft
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+command: filmcraft
+finish-args:
+  # X11 shared memory (MIT-SHM). Without it the X11 fallback is slow or fails.
+  - --share=ipc
+  # Display: Wayland first; X11 only when no Wayland compositor is running.
+  - --socket=wayland
+  - --socket=fallback-x11
+  # Audio playback and the mixer's meters (cpal over ALSA, which the runtime routes to the
+  # host's PulseAudio or PipeWire server).
+  - --socket=pulseaudio
+  # GPU access for the wgpu compositor, scopes and effects (Vulkan, or GL as a fallback).
+  - --device=dri
+  # A project refers to its media by absolute path (docs/project-files.md), and the document
+  # portal only exposes the file it was handed, not the media beside it: a project opened from
+  # ~/Videos found none of its clips (#107). So, as other video editors do, FilmCraft reads and
+  # writes the home directory (media, projects, exports, autosave next to the project) and the
+  # usual mount points of external drives, where footage often lives. Open/Save dialogs still go
+  # through the file-chooser portal; nothing outside these locations is granted.
+  - --filesystem=home
+  - --filesystem=/media
+  - --filesystem=/run/media
+  - --filesystem=/mnt
+  # Deliberately not granted: network (the optional --control server listens on 127.0.0.1 in
+  # the sandbox; `flatpak override --user --share=network ai.storyteller.filmcraft` exposes it
+  # to host agents) and host-wide filesystem access.
+modules:
+  - name: filmcraft
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 bin/filmcraft /app/bin/filmcraft
+      - install -Dm755 bin/filmcraft-cli /app/bin/filmcraft-cli
+      - install -Dm644 share/applications/ai.storyteller.filmcraft.desktop /app/share/applications/ai.storyteller.filmcraft.desktop
+      # The same MIME file the deb/rpm install (no types of its own yet; the runtime's
+      # shared-mime-info already knows the video and audio formats).
+      - install -Dm644 share/mime/packages/ai.storyteller.filmcraft.xml /app/share/mime/packages/ai.storyteller.filmcraft.xml
+      # Already has the release's version and date substituted by package.sh.
+      - install -Dm644 share/metainfo/ai.storyteller.filmcraft.metainfo.xml /app/share/metainfo/ai.storyteller.filmcraft.metainfo.xml
+      - mkdir -p /app/share/icons /app/share/doc && cp -R share/icons/hicolor /app/share/icons/ && cp -R share/doc/filmcraft /app/share/doc/
+    sources:
+      - type: dir
+        path: stage

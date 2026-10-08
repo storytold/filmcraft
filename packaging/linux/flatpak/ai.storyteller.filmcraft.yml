@@ -16,10 +16,15 @@ sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
 command: filmcraft
 finish-args:
+  # X11 shared memory (MIT-SHM). Without it the X11 fallback is slow or fails.
   - --share=ipc
+  # Display: Wayland first; X11 only when no Wayland compositor is running.
   - --socket=wayland
   - --socket=fallback-x11
+  # Audio playback and the mixer's meters (cpal over ALSA, which the runtime routes to the
+  # host's PulseAudio or PipeWire server).
   - --socket=pulseaudio
+  # GPU access for the wgpu compositor, scopes and effects (Vulkan, or GL as a fallback).
   - --device=dri
   # A project refers to its media by absolute path (docs/project-files.md), and the document
   # portal only exposes the file it was handed, not the media beside it: a project opened from
@@ -31,6 +36,9 @@ finish-args:
   - --filesystem=/media
   - --filesystem=/run/media
   - --filesystem=/mnt
+  # Deliberately not granted: network (the optional --control server listens on 127.0.0.1 in
+  # the sandbox; `flatpak override --user --share=network ai.storyteller.filmcraft` exposes it
+  # to host agents) and host-wide filesystem access.
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
 modules:

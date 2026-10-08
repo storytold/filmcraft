@@ -1,0 +1,58 @@
+# Builds FilmCraft on FreeBSD, inside a FreeBSD VM on a Linux runner (GitHub has no FreeBSD
+# runners), then runs packaging/freebsd/package.sh, the script the release job runs, and checks
+# the tarball. A broken FreeBSD build or package fails here before it can fail a release. Nothing
+# is uploaded and no secrets are used. (The test suite isn't run here yet: the ffmpeg-oracle and
+# golden-image tests need tools and a GPU the VM doesn't have.)
+name: FreeBSD
+
+# The VM build takes an hour or more, so it runs nightly on main rather than on every push or
+# dependency change: a drifted dependency still shows up within a day. PRs that change the
+# FreeBSD packaging itself still run it.
+on:
+  schedule:
+    - cron: "37 2 * * *"
+  pull_request:
+    paths:
+      - .github/workflows/freebsd.yml
+      - packaging/freebsd/**
+      - packaging/env.sh
+  workflow_dispatch:
+
+concurrency:
+  group: freebsd-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  freebsd:
+    name: FreeBSD 14 (build + package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and package in a FreeBSD VM
+        # vmactions/freebsd-vm v1.5.9, pinned by commit (it runs our build).
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc
+        with:
+          release: "14.3"
+          usesh: true
+          cpu: 4
+          mem: 12288
+          # Nothing to bring back; copying the target dir out of the VM fails on large builds.
+          copyback: false
+          # The same packages as release.yml's freebsd job: winit/wgpu (X11, Wayland, Vulkan,
+          # Mesa), the file dialogs (GTK 3), fonts, and audio (cpal over ALSA: alsa-lib).
+          prepare: |
+            pkg install -y bash git curl pkgconf cmake python3 libxkbcommon wayland libX11 libXcursor libXrandr libXi libxcb mesa-libs vulkan-loader gtk3 fontconfig freetype2 alsa-lib
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          run: |
+            set -e
+            . "$HOME/.cargo/env"
+            git config --global --add safe.directory "*"
+            rustc --version
+            export CARGO_TARGET_DIR=/var/tmp/filmcraft-target CARGO_BUILD_JOBS=4
+            bash packaging/freebsd/package.sh
+            tar -tzf dist/release/filmcraft-*-freebsd-x86_64.tar.gz \
+              | grep -E '/bin/filmcraft$|/bin/filmcraft-cli$|/share/applications/ai\.storyteller\.filmcraft\.desktop$|/share/doc/filmcraft/LICENSE-MIT$'

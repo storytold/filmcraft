@@ -1,7 +1,8 @@
 # Releasing FilmCraft
 
 Every push to the `release` branch runs `.github/workflows/release.yml`. The workflow builds
-installers for macOS, Windows and Linux, plus the web build, and creates or updates a **draft**
+installers for macOS, Windows, Linux (AppImage, deb, rpm, tarball, Flatpak) and FreeBSD, plus
+the web build, and creates or updates a **draft**
 GitHub Release named `FilmCraft v<version>`. Nobody sees a draft until a maintainer publishes it.
 
 User-facing names say **FilmCraft**. Files, binaries and ids stay lowercase
@@ -33,8 +34,11 @@ Once the draft is published, the workflow refuses to touch that version again: b
 
 **Test runs:** *Actions › Release › Run workflow* runs the whole pipeline by hand. The optional
 `version` input (such as `0.3.0-rc.1`) overrides `Cargo.toml` for that run only; each build job
-applies it with `cargo xtask version set` before building. The jobs run in the `release`
-environment, which only the `release` branch can use, so pick that branch in the dialog.
+applies it with `cargo xtask version set` before building. The signing jobs (macOS, Windows)
+and the draft-release job run in the `release` environment, which only the `release` branch can
+use, so pick that branch for a full run. Run from any other branch, it is a dry run: the jobs that
+sign nothing (Linux, Flatpak, FreeBSD, web) build and upload their artifacts to the run, the
+signing jobs are refused, and the draft-release job, which needs them, is skipped.
 
 ## What gets built
 
@@ -46,6 +50,9 @@ environment, which only the `release` branch can use, so pick that branch in the
 | Windows on ARM64 | `filmcraft-<v>-windows-arm64.msi`, `filmcraft-<v>-windows-arm64-portable.zip` | `windows-latest` (cross-compiled) |
 | Linux x86_64 | `filmcraft-<v>-linux-x86_64.{AppImage,deb,rpm,tar.gz}` | `ubuntu-22.04` |
 | Linux aarch64 | `filmcraft-<v>-linux-aarch64.{AppImage,deb,rpm,tar.gz}` | `ubuntu-22.04-arm` |
+| AppImage updates | `filmcraft-<v>-linux-{x86_64,aarch64}.AppImage.zsync` | with the AppImage |
+| Flatpak | `filmcraft-<v>-linux-x86_64.flatpak`, `filmcraft-<v>-linux-aarch64.flatpak` | `ubuntu-24.04`, `ubuntu-24.04-arm` (repackaged Linux tarball) |
+| FreeBSD 14 x86_64 | `filmcraft-<v>-freebsd-x86_64.tar.gz` | FreeBSD 14.3 VM on `ubuntu-latest` |
 | Web | `filmcraft-web-<v>.zip`, a static site (see [`packaging/web/README.md`](../packaging/web/README.md)) | `ubuntu-latest` |
 
 `filmcraft --version` and `filmcraft-cli --version` print the version from `Cargo.toml`.
@@ -104,8 +111,34 @@ the job to a newer image raises the floor, so do it deliberately and update `nfp
 After packaging, the job prints the `.deb`'s metadata and contents, runs `ldd` on the binary and
 runs each AppImage with `--version`.
 
-`packaging/linux/flatpak/ai.storyteller.filmcraft.yml` is a Flatpak manifest (its header says how
-to build it). The release doesn't build a Flatpak; the workflows only check the manifest's id.
+**AppImage updates.** Each AppImage embeds update information,
+`gh-releases-zsync|storytold|filmcraft|latest|filmcraft-*-linux-<arch>.AppImage.zsync`, and
+`appimagetool` writes the matching `.zsync` beside it (the job installs `zsync` for
+`zsyncmake`). [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) and
+AppImageLauncher then fetch only the changed blocks from the newest published (non-pre-release)
+release. The job checks both with `--appimage-updateinformation` and `test -s`.
+
+**Flatpak.** The `flatpak` jobs (x86_64 on `ubuntu-24.04`, aarch64 on `ubuntu-24.04-arm`) run
+`packaging/linux/flatpak-bundle.sh` on the Linux job's tarball: it installs the binaries with
+`packaging/linux/flatpak/ai.storyteller.filmcraft.bundle.yml` into a single-file bundle,
+`filmcraft-<v>-linux-<arch>.flatpak` (no Rust build, so it takes a minute), then installs it and
+runs `filmcraft-cli --version` in the sandbox. Users install it with
+`flatpak install --user <file>`; the freedesktop runtime comes from Flathub.
+`packaging/linux/flatpak/ai.storyteller.filmcraft.yml` is the from-source manifest for a Flathub
+submission (its header says how to build it). Both manifests must keep the same runtime and
+`finish-args` (packaging-lint checks this).
+
+### FreeBSD
+
+GitHub has no FreeBSD runners, so the `freebsd` job builds in a FreeBSD 14.3 VM
+([vmactions/freebsd-vm](https://github.com/vmactions/freebsd-vm), pinned by commit) on
+`ubuntu-latest`. `packaging/freebsd/package.sh` builds both programs and packs a
+`/usr/local`-style tree as `filmcraft-<v>-freebsd-x86_64.tar.gz`; install it with
+`tar -xzf filmcraft-<v>-freebsd-x86_64.tar.gz --strip-components 1 -C /usr/local`. The build needs
+the packages listed in the job (winit/wgpu, GTK 3 for the file dialogs, fontconfig, and
+`alsa-lib` for audio through cpal). `.github/workflows/freebsd.yml` builds and packages the same
+way nightly, so a FreeBSD break shows up before a release. `package.sh --dry-run` checks the
+tree's layout with stub binaries on any OS (packaging-lint runs it).
 
 ### Web
 
@@ -122,8 +155,9 @@ the job fails and asks for a version bump (`cargo xtask version set`).
 
 ## Secrets
 
-All jobs run in the `release` environment, which only the `release` branch can use and which holds
-the signing secrets. Every secret is optional: a missing one produces unsigned artifacts and a
+The macOS, Windows and draft-release jobs run in the `release` environment, which only the
+`release` branch can use and which holds the signing secrets. The other jobs sign nothing and get
+no secrets. Every secret is optional: a missing one produces unsigned artifacts and a
 warning, never a failed build.
 
 | Secret | Used for |
