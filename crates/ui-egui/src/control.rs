@@ -63,9 +63,12 @@ fn err(e: impl std::fmt::Display) -> Outcome {
 }
 
 fn modifiers(p: &Value) -> egui::Modifiers {
+    const IS_MAC: bool = cfg!(target_os = "macos");
     let m = p.get("modifiers").unwrap_or(p);
     let b = |k: &str| m.get(k).and_then(Value::as_bool).unwrap_or(false);
-    egui::Modifiers { alt: b("alt"), ctrl: b("ctrl"), shift: b("shift"), mac_cmd: cfg!(target_os = "macos") && b("command"), command: b("command") }
+    let ctrl = b("ctrl");
+    let command = b("command") || (ctrl && !IS_MAC);
+    egui::Modifiers { alt: b("alt"), ctrl, shift: b("shift"), mac_cmd: IS_MAC && b("command"), command }
 }
 
 /// Resolve a point from `{id}` (element centre) or `{x, y}`.

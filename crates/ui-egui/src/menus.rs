@@ -504,6 +504,7 @@ pub fn shortcut_text(s: &str) -> String {
 
 /// Parse "Cmd+Shift+K" into modifiers + key.
 pub fn parse_shortcut(s: &str) -> Option<(egui::Modifiers, egui::Key)> {
+    const IS_MAC: bool = cfg!(target_os = "macos");
     let mut m = egui::Modifiers::NONE;
     let mut key = None;
     let parts: Vec<&str> = if s == "+" { vec!["+"] } else { s.split('+').collect() };
@@ -512,7 +513,7 @@ pub fn parse_shortcut(s: &str) -> Option<(egui::Modifiers, egui::Key)> {
             "Cmd" => m.command = true,
             "Shift" => m.shift = true,
             "Alt" => m.alt = true,
-            "Ctrl" => m.ctrl = true,
+            "Ctrl" => { m.ctrl = true; if !IS_MAC { m.command = true; } }
             k => {
                 key = match k {
                     ";" => Some(egui::Key::Semicolon),
