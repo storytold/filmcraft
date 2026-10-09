@@ -21,6 +21,10 @@ use crate::{CodecError, make_video_decoder};
 /// Most bytes read from one AAC access unit when probing for HE-AAC at open (8 channels × 6144 bits).
 const MAX_AAC_PROBE_UNIT: usize = 8 * 6144 / 8;
 
+/// Most audio tracks one file opens as streams (each one is a decoder: a damaged file with
+/// thousands of tracks must not open thousands).
+const MAX_AUDIO_STREAMS: usize = 8;
+
 struct AudioState {
     decoder: Option<PacketDecoder>,
     /// Decoded packets by sample index.
@@ -35,6 +39,8 @@ pub struct Mp4Source {
     file: Mp4File,
     vtrack: Option<usize>,
     atrack: Option<usize>,
+    /// Every playable audio track, in file order (`atrack` is the first one).
+    audio_tracks: Vec<usize>,
     video: GopCache,
     audio: Mutex<AudioState>,
     /// Cumulative sample start frames for the audio track (for packet lookup).
@@ -114,13 +120,25 @@ impl Mp4Source {
 
     /// Open from a random-access reader: only the index is read now, samples on demand.
     pub fn open_reader(name: &str, reader: filmcraft_media::SharedReader) -> crate::Result<Self> {
+        Self::open_reader_track(name, reader, None)
+    }
+
+    /// [`open_reader`](Self::open_reader), playing audio track `audio_track` (an index into the
+    /// file's tracks) instead of the first playable one.
+    fn open_reader_track(name: &str, reader: filmcraft_media::SharedReader, audio_track: Option<usize>) -> crate::Result<Self> {
         let bytes = crate::Src(reader);
         let file = filmcraft_isobmff::open(&bytes).map_err(|e| CodecError::Container(e.to_string()))?;
         // A track needs samples, a sample description and a timescale to be playable (damaged
         // files can lack them: indexing `entries[0]` or dividing by the timescale used to panic).
         let playable = |t: &&filmcraft_isobmff::Track, kind| t.kind == kind && !t.samples.is_empty() && !t.entries.is_empty() && t.timescale > 0;
         let vtrack = file.tracks.iter().position(|t| playable(&t, TrackKind::Video));
-        let atrack = file.tracks.iter().position(|t| playable(&t, TrackKind::Audio));
+        let audio_tracks: Vec<usize> =
+            file.tracks.iter().enumerate().filter(|(_, t)| playable(t, TrackKind::Audio)).map(|(i, _)| i).take(MAX_AUDIO_STREAMS).collect();
+        let atrack = match audio_track {
+            Some(i) if audio_tracks.contains(&i) => Some(i),
+            Some(_) => return Err(CodecError::Unsupported("no playable audio track".into())),
+            None => audio_tracks.first().copied(),
+        };
         if vtrack.is_none() && atrack.is_none() {
             return Err(CodecError::Unsupported("no playable tracks".into()));
         }
@@ -273,6 +291,7 @@ impl Mp4Source {
             file,
             vtrack,
             atrack,
+            audio_tracks,
             video: GopCache::new(explicit_color).with_rotation(rotation),
             audio: Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None }),
             audio_starts,
@@ -543,7 +562,64 @@ pub fn opener(name: &str, bytes: Arc<[u8]>) -> Option<Result<SharedSource, Media
     if !sniff(&bytes) {
         return None;
     }
-    Some(Mp4Source::open(name, bytes).map(|s| Arc::new(s) as SharedSource).map_err(Into::into))
+    Some(open_all(name, Arc::new(filmcraft_media::reader::MemReader(bytes))).map_err(Into::into))
+}
+
+/// Open a file with every audio track it has: one track opens as a plain [`Mp4Source`], several as
+/// a [`MultiAudioSource`] that plays them together (their channels in file order).
+fn open_all(name: &str, reader: filmcraft_media::SharedReader) -> crate::Result<SharedSource> {
+    let first = Mp4Source::open_reader(name, reader.clone())?;
+    let mut rest = Vec::new();
+    for &t in first.audio_tracks.iter().skip(1) {
+        // a track that will not open is left out: the streams listed are the ones that play
+        if let Ok(s) = Mp4Source::open_reader_track(name, reader.clone(), Some(t)) {
+            rest.push(s);
+        }
+    }
+    if rest.is_empty() {
+        return Ok(Arc::new(first));
+    }
+    let mut info = first.info.clone();
+    if let Some(a) = info.audio.as_mut() {
+        a.channels = rest.iter().filter_map(|s| s.info.audio.as_ref()).fold(a.channels, |n, x| n.saturating_add(x.channels));
+    }
+    Ok(Arc::new(MultiAudioSource { info, first, rest }))
+}
+
+/// A file with several audio tracks (game and microphone, say): the first track's [`Mp4Source`],
+/// which also plays the video, and one source per other track. Each decodes its own track, and the
+/// channels of all of them are joined in file order (see [`MediaSource::audio_streams`]).
+struct MultiAudioSource {
+    info: MediaInfo,
+    first: Mp4Source,
+    rest: Vec<Mp4Source>,
+}
+
+impl MediaSource for MultiAudioSource {
+    fn info(&self) -> &MediaInfo {
+        &self.info
+    }
+
+    fn video_frame(&self, req: FrameRequest) -> Result<Arc<VideoFrame>, MediaError> {
+        self.first.video_frame(req)
+    }
+
+    fn audio_streams(&self) -> Vec<AudioStreamInfo> {
+        self.first.audio_streams().into_iter().chain(self.rest.iter().flat_map(|s| s.audio_streams())).collect()
+    }
+
+    fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer, MediaError> {
+        let mut out = self.first.audio(start, frames, sample_rate)?;
+        for s in &self.rest {
+            // a track that fails to decode plays as silence, so the others still play
+            let buf = s.audio(start, frames, sample_rate).unwrap_or_else(|_| {
+                let ch = s.info.audio.as_ref().map_or(1, |a| a.channels as usize);
+                AudioBuffer::silence(sample_rate, ch, frames)
+            });
+            out.channels.extend(buf.channels);
+        }
+        Ok(out)
+    }
 }
 
 /// How long a track plays. With an edit list that is the sum of its edits (ISO/IEC 14496-12
@@ -570,7 +646,7 @@ pub fn reader_opener(name: &str, head: &[u8], reader: &filmcraft_media::SharedRe
     if !sniff(head) {
         return None;
     }
-    Some(Mp4Source::open_reader(name, reader.clone()).map(|s| Arc::new(s) as SharedSource).map_err(Into::into))
+    Some(open_all(name, reader.clone()).map_err(Into::into))
 }
 
 #[cfg(test)]
@@ -862,6 +938,36 @@ mod he_aac_tests {
             let src = super::Mp4Source::open("hostile.mp4", mux.finish().unwrap().into_inner().into()).unwrap();
             let buf = src.audio(0, 4800, 48_000).unwrap();
             assert!(buf.channels.iter().flatten().all(|v| v.is_finite() && v.abs() <= 1.0), "media_time {media_time}");
+        }
+    }
+
+    /// A file with two AAC tracks (a 1 kHz and a 3 kHz stereo tone) used to play only its first one.
+    /// Both are streams now, and the channels are the tracks' channels in file order: 1 kHz on 0–1,
+    /// 3 kHz on 2–3.
+    #[test]
+    fn every_audio_track_plays_on_its_own_channels() {
+        let rate = 48_000u32;
+        let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mp4)).unwrap();
+        for hz in [1000.0f32, 3000.0] {
+            let tone: Vec<f32> = (0..rate as usize * 2).map(|i| 0.25 * (2.0 * std::f32::consts::PI * hz * i as f32 / rate as f32).sin()).collect();
+            let mut enc = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(rate, 2, 128_000)).unwrap();
+            let mut aus = enc.encode(&[&tone, &tone]);
+            aus.extend(enc.flush());
+            let t = mux.add_track(TrackConfig::new(SampleEntry::aac(enc.audio_specific_config(), 2, rate), rate)).unwrap();
+            for au in &aus {
+                mux.write_sample(t, WriteSample { data: au, duration: 1024, composition_offset: 0, is_sync: true }).unwrap();
+            }
+        }
+        let bytes: std::sync::Arc<[u8]> = mux.finish().unwrap().into_inner().into();
+        let src = super::open_all("two.mp4", std::sync::Arc::new(filmcraft_media::reader::MemReader(bytes))).unwrap();
+        assert_eq!(src.audio_streams().len(), 2);
+        assert_eq!(src.info().audio.as_ref().map(|a| a.channels), Some(4));
+        // one second from 0.5 s: a sine crosses zero upwards once per cycle
+        let buf = src.audio(24_000, 48_000, rate).unwrap();
+        assert_eq!(buf.channel_count(), 4);
+        for (c, hz) in [(0usize, 1000usize), (2, 3000)] {
+            let x = buf.channels[c].windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
+            assert!((hz * 95 / 100..=hz * 105 / 100).contains(&x), "channel {c}: {x} Hz");
         }
     }
 }

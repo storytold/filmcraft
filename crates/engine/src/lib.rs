@@ -1052,6 +1052,8 @@ mod media_test_util;
 #[cfg(test)]
 mod mixer_tests;
 #[cfg(test)]
+mod multi_audio_tests;
+#[cfg(test)]
 mod multicam_tests;
 #[cfg(test)]
 mod nest_editing_tests;

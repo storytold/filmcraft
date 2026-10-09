@@ -92,6 +92,8 @@ pub struct MediaInfo {
     /// Media duration. Stills report a default duration (the still-image default preference).
     pub duration: Tick,
     pub video: Option<VideoStreamInfo>,
+    /// The first audio stream's format. With several audio streams, `channels` is their total and
+    /// the streams are listed by [`MediaSource::audio_streams`].
     pub audio: Option<AudioStreamInfo>,
     pub container: String,
     /// Timecode of the first frame (in frames at `video.frame_rate`), if the file carries one.
@@ -132,6 +134,12 @@ pub trait MediaSource: Send + Sync {
     fn video_frame(&self, req: FrameRequest) -> Result<Arc<VideoFrame>>;
     /// `frames` audio frames starting at sample index `start` (at `sample_rate`, media time).
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer>;
+    /// Every audio stream of the source, in channel order: [`audio`](Self::audio) returns the
+    /// channels of the first stream, then the second's, and so on. A file with several audio tracks
+    /// (game and microphone, say) lists them all; one with a single stream lists just `info().audio`.
+    fn audio_streams(&self) -> Vec<AudioStreamInfo> {
+        self.info().audio.clone().into_iter().collect()
+    }
 }
 
 pub type SharedSource = Arc<dyn MediaSource>;

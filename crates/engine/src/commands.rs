@@ -8,8 +8,8 @@ use filmcraft_edit::{Edge, TrimMode};
 use filmcraft_media::Generator;
 use filmcraft_media::generators::GeneratorSource;
 use filmcraft_project::{
-    ClipId, ItemId, ItemKind, Label, Marker, MarkerId, MarkerKind, MediaClip, MediaRef, ParamValue, SequenceSettings, TrackId, TrackKind, Transition,
-    TransitionId, resolve_auto_points,
+    AudioChannelMap, AudioChannels, ClipId, Interpretation, ItemId, ItemKind, Label, Marker, MarkerId, MarkerKind, MediaClip, MediaRef, ParamValue,
+    SequenceSettings, TrackId, TrackKind, Transition, TransitionId, resolve_auto_points,
 };
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange, parse_timecode};
 use serde_json::{Value, json};
@@ -400,6 +400,25 @@ fn detect_image_sequence(s: &Session, path: &str) -> bool {
     filmcraft_media::sequence::Numbered::parse(path).is_some() && crate::media_pool::image_sequence_frames(path, &*s.services).is_ok_and(|f| f.len() > 1)
 }
 
+/// The channel map of a file with several audio streams (a game track and a microphone track, say):
+/// one audio clip per stream, playing that stream's channels in the order
+/// [`filmcraft_media::MediaSource::audio_streams`] lists them, so each stream edits in on a track of
+/// its own. A file with one stream keeps the default mapping (None).
+pub(crate) fn stream_channel_map(streams: &[filmcraft_media::AudioStreamInfo]) -> Option<AudioChannelMap> {
+    if streams.len() < 2 {
+        return None;
+    }
+    let mut next = 0u16;
+    let mut clips = Vec::with_capacity(streams.len());
+    for st in streams {
+        let n = u16::try_from(st.channels.max(1)).unwrap_or(u16::MAX);
+        clips.push((next..next.saturating_add(n)).collect());
+        next = next.saturating_add(n);
+    }
+    let format = if streams.iter().any(|st| st.channels > 2) { AudioChannels::Surround51 } else { AudioChannels::Stereo };
+    Some(AudioChannelMap { format, clips })
+}
+
 fn import_source(
     s: &mut Session,
     path: &str,
@@ -417,6 +436,7 @@ fn import_source(
     {
         v.frame_rate = crate::settings::timebase_rate(&s.prefs.media.indeterminate_timebase);
     }
+    let interpret = Interpretation { audio_channels: stream_channel_map(&src.audio_streams()), ..Default::default() };
     let path_s = path.to_string();
     let id = s.edit(&format!("Import {name}"), |p, _| {
         Ok(p.add_item(
@@ -425,7 +445,7 @@ fn import_source(
             ItemKind::Media(MediaClip {
                 media: MediaRef::File { path: path_s },
                 info,
-                interpret: Default::default(),
+                interpret,
                 mark_in: None,
                 mark_out: None,
                 markers: vec![],
@@ -483,6 +503,21 @@ fn set_matte_color(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(())
     })?;
     Ok(json!({"item": item.0, "color": filmcraft_color::to_hex(color)}))
+}
+
+/// The most audio tracks a sequence grows to when a clip's streams are placed (a damaged channel map
+/// must not add thousands of tracks).
+const MAX_AUDIO_TRACKS: usize = 64;
+
+/// Add audio tracks to the sequence until it has `n` of them (at most [`MAX_AUDIO_TRACKS`]).
+fn ensure_audio_tracks(p: &mut filmcraft_project::Project, seq_id: ItemId, n: usize) {
+    let have = p.sequence(seq_id).map_or(0, |q| q.audio_tracks.len());
+    for k in have..n.min(MAX_AUDIO_TRACKS) {
+        let id = TrackId(p.alloc_id());
+        if let Some(q) = p.sequence_mut(seq_id) {
+            q.audio_tracks.push(filmcraft_project::Track::new(id, TrackKind::Audio, format!("Audio {}", k + 1)));
+        }
+    }
 }
 
 /// Place a project item on the timeline (drag from Project, or Insert/Overwrite from source).
@@ -545,8 +580,10 @@ pub(crate) fn place_item(
                 .and_then(|m| m.interpret.audio_channels.as_ref())
                 .map(|m| m.clips.iter().skip(1).cloned().collect())
                 .unwrap_or_default();
+            // each further clip plays on the audio track below the last one: add the tracks it needs
+            let first = p.sequence(seq_id).and_then(|q| q.audio_tracks.iter().position(|t| t.id == adest)).unwrap_or(0);
+            ensure_audio_tracks(p, seq_id, first + extra.len() + 1);
             let tracks: Vec<TrackId> = p.sequence(seq_id).map(|q| q.audio_tracks.iter().map(|t| t.id).collect()).unwrap_or_default();
-            let first = tracks.iter().position(|t| *t == adest).unwrap_or(0);
             a.link = if link.is_none() && !extra.is_empty() { Some(p.alloc_id()) } else { link };
             placements.push((adest, a.clone()));
             for (k, chans) in extra.into_iter().enumerate() {
