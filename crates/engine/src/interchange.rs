@@ -10,7 +10,7 @@ use crate::{EngineError, Result, Session};
 /// The interchange format of a file, if it is one (by content, with the extension as a hint).
 pub fn detect(path: &str, bytes: &[u8]) -> Option<Format> {
     let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-    if !matches!(ext.as_deref(), Some("edl" | "xml" | "fcpxml" | "otio" | "aaf" | "omf" | "omfi")) {
+    if !matches!(ext.as_deref(), Some("edl" | "xml" | "fcpxml" | "otio" | "aaf" | "omf" | "omfi" | "prproj")) {
         return None;
     }
     filmcraft_interchange::detect(bytes, ext.as_deref())
@@ -33,7 +33,7 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
         name: p.file_stem().map(|n| n.to_string_lossy().to_string()),
         ..Default::default()
     };
-    let (fragment, report) = match format {
+    let (fragment, mut report) = match format {
         // AAF / OMF may embed audio: write it next to the document (the media items point there)
         Format::Aaf | Format::Omf => {
             let r = if format == Format::Aaf { filmcraft_interchange::aaf::import(bytes, &opts) } else { filmcraft_interchange::omf::import(bytes, &opts) };
@@ -76,13 +76,13 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
     let mut linked = 0;
     let mut offline = Vec::new();
     for (id, mpath) in new_media {
-        let opened = s.services.read_file(&mpath).ok().and_then(|b| {
-            let fname = std::path::Path::new(&mpath).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            s.media.open_bytes(&fname, b.into()).ok()
-        });
+        let opened = s.media.open_file(&mpath, &*s.services).ok();
         match opened {
             Some(src) => {
                 let info = src.info().clone();
+                if format == Format::PremiereProject && info.audio_streams.len() > 1 {
+                    report.warn("Premiere import uses the first audio stream of multi-stream media; native stream routing is not translated");
+                }
                 let identity = crate::relink::identity_of(&*s.services, &mpath).ok();
                 let rebase = (format == Format::Edl).then_some(info.start_timecode).flatten();
                 s.edit("Link Media", |proj, _| {
@@ -129,8 +129,8 @@ pub fn export(s: &mut Session, p: &Value) -> Result<Value> {
     // else, so the error can list exactly what is accepted.
     let format = match p.get("format") {
         None | Some(Value::Null) => Format::Fcp7Xml,
-        Some(v) => v.as_str().and_then(|name| Format::ALL.into_iter().find(|f| f.extension().eq_ignore_ascii_case(name))).ok_or_else(|| {
-            let names: Vec<&str> = Format::ALL.iter().map(|f| f.extension()).collect();
+        Some(v) => v.as_str().and_then(|name| Format::EXPORTABLE.into_iter().find(|f| f.extension().eq_ignore_ascii_case(name))).ok_or_else(|| {
+            let names: Vec<&str> = Format::EXPORTABLE.iter().map(|f| f.extension()).collect();
             crate::commands::bad("file.exportInterchange", format!("unknown format {v}: use one of {}", names.join(", ")))
         })?,
     };

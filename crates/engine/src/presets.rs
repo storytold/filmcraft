@@ -71,6 +71,12 @@ pub struct EffectPreset {
     /// Frame size (clip pixels) of the clip the preset was saved from.
     #[serde(default = "hd")]
     pub source_size: (u32, u32),
+    /// Native Premiere points use frame fractions. Motion position follows the sequence size;
+    /// anchors and standard-effect points follow the source size.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub normalised_points: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition_duration: Option<Tick>,
     pub effects: Vec<EffectInstance>,
     /// Built-in (not saved, cannot be deleted).
     #[serde(skip)]
@@ -141,6 +147,18 @@ fn parse_file(bytes: &[u8]) -> std::result::Result<Vec<EffectPreset>, String> {
         if p.effects.iter().any(|e| e.def().is_none()) {
             return Err(format!("preset `{}` uses an effect this build doesn't have", p.name));
         }
+        if let Some(duration) = p.transition_duration
+            && (duration.0 <= 0
+                || duration.0 > i64::MAX / 4
+                || p.effects.len() != 1
+                || !p
+                    .effects
+                    .first()
+                    .and_then(|e| e.def())
+                    .is_some_and(|d| matches!(d.kind, filmcraft_project::EffectKind::VideoTransition | filmcraft_project::EffectKind::AudioTransition)))
+        {
+            return Err(format!("preset `{}` has invalid transition metadata", p.name));
+        }
     }
     Ok(f.presets)
 }
@@ -191,6 +209,8 @@ fn preset(name: &str, description: &str, keyframes: KeyframeMode, secs: f64, eff
         source_size: hd(),
         effects,
         builtin: true,
+        normalised_points: false,
+        transition_duration: None,
     }
 }
 
@@ -279,6 +299,8 @@ pub fn capture(it: &TrackItem, idx: &[usize], name: &str, description: &str, mod
         source_size: size,
         effects,
         builtin: false,
+        normalised_points: false,
+        transition_duration: None,
     }
 }
 
@@ -297,6 +319,21 @@ pub fn retime(rel: Tick, mode: KeyframeMode, source_len: Tick, target: &TrackIte
             }
         }
     }
+}
+
+fn native_retime_fits(preset: &EffectPreset, target: &TrackItem, rel: Tick) -> bool {
+    let tin = target.source_in.0;
+    let tlen = media_len(target).0;
+    let mapped = match preset.keyframes {
+        KeyframeMode::AnchorToIn => tin.checked_add(rel.0),
+        KeyframeMode::AnchorToOut => preset.source_duration.0.checked_sub(rel.0).and_then(|offset| tin.checked_add(tlen)?.checked_sub(offset)),
+        KeyframeMode::Scale if preset.source_duration.0 > 0 => {
+            let offset = i128::from(rel.0) * i128::from(tlen) / i128::from(preset.source_duration.0);
+            i64::try_from(offset).ok().and_then(|offset| tin.checked_add(offset))
+        }
+        KeyframeMode::Scale => tin.checked_add(rel.0),
+    };
+    mapped.is_some()
 }
 
 fn scale_value(v: &mut ParamValue, sx: f64, sy: f64) {
@@ -406,7 +443,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             save,
             true,
         ),
-        spec("presets.apply", "Apply Preset", r#"{"preset":str,"clips":[id]?}"#, has_seq, apply, true),
+        spec("presets.apply", "Apply Preset", r#"{"preset":str,"clips":[id]?,"edge":"in|out"?}"#, has_seq, apply, true),
         spec("presets.delete", "Delete Preset", r#"{"name":str}"#, always, delete, true),
         spec("presets.rename", "Rename Preset", r#"{"name":str,"to":str}"#, always, rename, true),
         spec("presets.export", "Export Presets", r#"{"path":str,"names":[str]?}"#, always, export, false),
@@ -480,7 +517,36 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
     if clips.is_empty() {
         return Err(bad("presets.apply", "select clips first"));
     }
+    if let Some(duration) = preset.transition_duration {
+        if clips.len() != 1 {
+            return Err(bad("presets.apply", "select one clip for a transition preset"));
+        }
+        let effect = preset.effects.first().ok_or_else(|| bad("presets.apply", "transition preset has no effect"))?;
+        let rate = s.sequence_rate();
+        let lower = rate.frame_at(duration);
+        let upper = lower.saturating_add(1);
+        let frames = if duration - rate.tick_of(lower) <= rate.tick_of(upper) - duration { lower } else { upper }.max(1);
+        let mut params = json!({"effect":effect.effect,"clip":clips[0].0,"frames":frames});
+        if let Some(edge) = str_p(p, "edge") {
+            if !matches!(edge, "in" | "out") {
+                return Err(bad("presets.apply", "transition edge must be in or out"));
+            }
+            params["edge"] = json!(edge);
+        }
+        let result = s.execute("effects.apply", params)?;
+        let report: Vec<String> =
+            if rate.tick_of(frames) == duration { Vec::new() } else { vec!["Transition preset duration was rounded to the target sequence frame rate".into()] };
+        return Ok(json!({"applied":1,"transition":result.get("transition"),"report":report}));
+    }
     let audio = preset.effects.iter().all(|e| e.def().is_some_and(|d| d.kind == filmcraft_project::EffectKind::Audio));
+    if preset.normalised_points {
+        let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+        for target in clips.iter().filter_map(|id| seq.find_item(*id).map(|(_, it)| it)) {
+            if preset.effects.iter().flat_map(|e| e.params.values()).flat_map(|p| &p.keyframes).any(|k| !native_retime_fits(&preset, target, k.time)) {
+                return Err(bad("presets.apply", "native preset keyframe timing is out of range for the target clip"));
+            }
+        }
+    }
     let sizes: Vec<(ClipId, (u32, u32))> = {
         let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
         clips.iter().filter_map(|c| seq.find_item(*c).map(|(_, it)| (*c, clip_size(s, it)))).collect()
@@ -488,13 +554,26 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
     let label = format!("Apply Preset {}", preset.name);
     let n = s.edit_sequence(&label, |q, _, _| {
         let mut n = 0;
+        let sequence_size = (q.settings.width, q.settings.height);
         for t in q.all_tracks_mut() {
             if (t.kind == TrackKind::Audio) != audio {
                 continue;
             }
             for it in t.items.iter_mut().filter(|i| clips.contains(&i.id)) {
                 let size = sizes.iter().find(|(c, _)| *c == it.id).map(|x| x.1).unwrap_or(hd());
-                let fx = instantiate(&preset, it, size);
+                let mut fx = instantiate(&preset, it, size);
+                if preset.normalised_points {
+                    for effect in fx.iter_mut().filter(|e| e.effect == "motion") {
+                        if let Some(position) = effect.param_mut("position") {
+                            let sx = f64::from(sequence_size.0) / f64::from(size.0.max(1));
+                            let sy = f64::from(sequence_size.1) / f64::from(size.1.max(1));
+                            scale_value(&mut position.value, sx, sy);
+                            for keyframe in &mut position.keyframes {
+                                scale_value(&mut keyframe.value, sx, sy)
+                            }
+                        }
+                    }
+                }
                 put_effects(it, fx);
                 n += 1;
             }
@@ -557,13 +636,62 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn import(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_p(p, "path").ok_or_else(|| bad("presets.import", "need `path`"))?;
-    let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-    let presets = parse_file(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let native_extension = Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("prfpset"));
+    let limit = filmcraft_interchange::premiere::MAX_DOCUMENT_BYTES;
+    let bytes = if native_extension && let Some(reader) = s.services.reader(path) {
+        let reader = reader.map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+        let size =
+            usize::try_from(reader.len()).ok().filter(|size| *size <= limit).ok_or_else(|| bad("presets.import", "preset exceeds the 64 MiB size limit"))?;
+        let mut bytes = vec![0; size];
+        reader.read_at(0, &mut bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+        bytes
+    } else {
+        if native_extension && s.services.file_size(path).is_ok_and(|size| size > limit as u64) {
+            return Err(bad("presets.import", "preset exceeds the 64 MiB size limit"));
+        }
+        s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?
+    };
+    if native_extension && bytes.len() > limit {
+        return Err(bad("presets.import", "preset exceeds the 64 MiB size limit"));
+    }
+    // Existing host exports may use a .prfpset name for FilmCraft JSON presets.
+    let native = native_extension && bytes.iter().find(|byte| !byte.is_ascii_whitespace()).copied() != Some(b'{');
+    let (presets, report) = if native {
+        let (imported, report) = filmcraft_interchange::premiere::import_presets(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+        let presets = imported
+            .into_iter()
+            .map(|p| EffectPreset {
+                name: p.name,
+                description: p.description,
+                keyframes: match p.timing {
+                    filmcraft_interchange::premiere::PresetTiming::Scale => KeyframeMode::Scale,
+                    filmcraft_interchange::premiere::PresetTiming::AnchorToIn => KeyframeMode::AnchorToIn,
+                    filmcraft_interchange::premiere::PresetTiming::AnchorToOut => KeyframeMode::AnchorToOut,
+                },
+                source_duration: p.source_duration,
+                source_size: p.source_size,
+                effects: p.effects,
+                builtin: false,
+                normalised_points: true,
+                transition_duration: p.transition_duration,
+            })
+            .collect();
+        (presets, report.entries.into_iter().map(|e| if e.count > 1 { format!("{} (×{})", e.message, e.count) } else { e.message }).collect::<Vec<_>>())
+    } else {
+        (parse_file(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?, Vec::new())
+    };
     let names: Vec<String> = presets.iter().map(|x| x.name.clone()).collect();
+    if presets.is_empty() {
+        return Ok(json!({"imported": names, "report": report}));
+    }
+    let previous = s.presets.user.clone();
     for pr in presets {
         s.presets.user.retain(|x| x.name != pr.name);
         s.presets.user.push(pr);
     }
-    s.presets.persist().map_err(EngineError::Other)?;
-    Ok(json!({"imported": names}))
+    if let Err(error) = s.presets.persist() {
+        s.presets.user = previous;
+        return Err(EngineError::Other(error));
+    }
+    Ok(json!({"imported": names, "report": report}))
 }

@@ -33,6 +33,7 @@ pub mod fcp7;
 pub mod fcpxml;
 pub mod omf;
 pub mod otio;
+pub mod premiere;
 
 mod common;
 mod comp;
@@ -63,10 +64,14 @@ pub enum Format {
     Aaf,
     /// OMF Interchange 2.0 (Bento container).
     Omf,
+    /// Native PremiereData project (`.prproj`), import only.
+    PremiereProject,
 }
 
 impl Format {
-    pub const ALL: [Format; 6] = [Format::Edl, Format::Fcp7Xml, Format::Fcpxml, Format::Otio, Format::Aaf, Format::Omf];
+    pub const ALL: [Format; 7] = [Format::Edl, Format::Fcp7Xml, Format::Fcpxml, Format::Otio, Format::Aaf, Format::Omf, Format::PremiereProject];
+    /// Formats FilmCraft can export. Native Premiere projects are imported into FilmCraft projects.
+    pub const EXPORTABLE: [Format; 6] = [Format::Edl, Format::Fcp7Xml, Format::Fcpxml, Format::Otio, Format::Aaf, Format::Omf];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -76,6 +81,7 @@ impl Format {
             Format::Otio => "OpenTimelineIO",
             Format::Aaf => "AAF",
             Format::Omf => "OMF",
+            Format::PremiereProject => "Premiere Pro project",
         }
     }
 
@@ -88,6 +94,7 @@ impl Format {
             Format::Otio => "otio",
             Format::Aaf => "aaf",
             Format::Omf => "omf",
+            Format::PremiereProject => "prproj",
         }
     }
 
@@ -101,6 +108,7 @@ impl Format {
             "otio" => Some(Format::Otio),
             "aaf" => Some(Format::Aaf),
             "omf" | "omfi" => Some(Format::Omf),
+            "prproj" => Some(Format::PremiereProject),
             _ => None,
         }
     }
@@ -108,6 +116,9 @@ impl Format {
 
 /// Sniff the format of a document from its bytes, using the file extension as a hint.
 pub fn detect(bytes: &[u8], extension: Option<&str>) -> Option<Format> {
+    if extension.and_then(Format::from_extension) == Some(Format::PremiereProject) || premiere::sniff(bytes) {
+        return Some(Format::PremiereProject);
+    }
     if aaf::sniff(bytes) {
         return Some(Format::Aaf);
     }
@@ -259,6 +270,9 @@ pub fn import(bytes: &[u8], format: Format, base_dir: Option<&str>) -> Result<(I
 ///
 /// AAF and OMF documents may embed audio: [`aaf::import`] / [`omf::import`] also return it.
 pub fn import_with(bytes: &[u8], format: Format, opts: &ImportOptions) -> Result<(Imported, Report)> {
+    if format == Format::PremiereProject {
+        return premiere::import_project(bytes, opts);
+    }
     if matches!(format, Format::Aaf | Format::Omf) {
         let (imported, extracted, mut report) = if format == Format::Aaf { aaf::import(bytes, opts)? } else { omf::import(bytes, opts)? };
         if !extracted.is_empty() {
@@ -274,6 +288,7 @@ pub fn import_with(bytes: &[u8], format: Format, opts: &ImportOptions) -> Result
         Format::Fcpxml => fcpxml::import(&text, opts, &mut report)?,
         Format::Otio => otio::import(&text, opts, &mut report)?,
         Format::Aaf | Format::Omf => return Err(Error::Other("AAF / OMF are binary documents".into())),
+        Format::PremiereProject => return Err(Error::Other("native Premiere projects are read as object graphs".into())),
     };
     Ok((imported, report))
 }
@@ -375,6 +390,9 @@ impl Default for ExportOptions {
 
 /// Export `sequence` of `project` (and the media/nested sequences it uses).
 pub fn export(project: &Project, sequence: ItemId, format: Format, opts: &ExportOptions) -> Result<(Vec<u8>, Report)> {
+    if format == Format::PremiereProject {
+        return Err(Error::Other("native Premiere project export is not supported; save a FilmCraft project or export Final Cut Pro XML".into()));
+    }
     if project.sequence(sequence).is_none() {
         return Err(Error::NoSequence(sequence));
     }
@@ -391,6 +409,7 @@ pub fn export(project: &Project, sequence: ItemId, format: Format, opts: &Export
         Format::Fcpxml => fcpxml::export(project, sequence, opts, &mut report)?,
         Format::Otio => otio::export(project, sequence, opts, &mut report)?,
         Format::Aaf | Format::Omf => return Err(Error::Other("AAF / OMF are binary documents".into())),
+        Format::PremiereProject => return Err(Error::Other("native Premiere project export is not supported".into())),
     };
     Ok((text.into_bytes(), report))
 }

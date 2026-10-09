@@ -4,6 +4,12 @@ Timeline interchange for FilmCraft: CMX 3600 EDL, Final Cut Pro 7 XML (xmeml), F
 OpenTimelineIO, AAF and OMF import and export, plus Avid ALE. Layer L2: no file I/O; media
 references are strings and audio essence is supplied by the caller (the engine).
 
+Native PremiereData v3 `.prproj` and `.prfpset` import is described in
+[Premiere FX & Projects](../../docs/premiere-fx-projects.md). The native project format is
+import-only (`Format::PremiereProject`); `Format::EXPORTABLE` lists the existing export
+formats. Native data-file compatibility was observed from user-authored reference files;
+the public regression fixtures are synthetic, and no Adobe implementation was consulted.
+
 ## Specifications
 
 Clean-room: written from public specifications only. The AAF SDK, pyaaf2, the OMF Toolkit and

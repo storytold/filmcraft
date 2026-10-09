@@ -6,7 +6,7 @@
 //! `savePreset.keyframes.<scale|anchorIn|anchorOut|none>`, `savePreset.ok`, `savePreset.cancel`.
 
 use egui::{Align2, Rect, Sense, pos2, vec2};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
@@ -70,13 +70,19 @@ pub fn run(app: &mut FilmcraftApp, cmd: &str, name: &str) {
             app.session.execute(cmd, json!({"path": path, "names": [name]}))
         }
         "presets.import" => {
-            let Some(path) = app.hooks.pick_open_file.as_mut().and_then(|f| f(tl!("Effect presets"), &["json"])) else { return };
+            let Some(path) = app.hooks.pick_open_file.as_mut().and_then(|f| f(tl!("Effect presets"), &["json", "prfpset"])) else { return };
             app.session.execute(cmd, json!({"path": path}))
         }
         _ => return,
     };
-    if let Err(e) = r {
-        app.ui.status = e.to_string();
+    match r {
+        Err(e) => app.ui.status = e.to_string(),
+        Ok(v) if cmd == "presets.import" => {
+            let count = v.get("imported").and_then(Value::as_array).map_or(0, Vec::len);
+            let report = v.get("report").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).take(3).collect::<Vec<_>>().join(" ");
+            app.ui.status = format!("Imported {count} preset(s). {report}");
+        }
+        _ => {}
     }
 }
 
