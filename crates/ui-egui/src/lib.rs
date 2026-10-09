@@ -12,6 +12,7 @@ pub mod control;
 pub mod crash;
 pub mod credits;
 pub mod dock;
+pub mod floating;
 pub mod frames;
 pub mod header;
 pub mod i18n;
@@ -594,6 +595,8 @@ impl FilmcraftApp {
     pub fn set_workspace(&mut self, name: &str) {
         self.ui.workspace = name.to_string();
         self.ui.dock = dock::saved_layout(&self.workspaces, name);
+        // a workspace is a layout of the dock: floating panels go back to it
+        self.ui.floating.clear();
         if self.workspaces.current != name {
             let mut next = self.workspaces.clone();
             next.current = name.to_string();
@@ -607,6 +610,11 @@ impl FilmcraftApp {
     }
 
     pub fn show_panel(&mut self, p: PanelKind) {
+        // a floating panel is already on show: just focus it
+        if self.ui.floating.iter().any(|f| f.panel == p) {
+            self.ui.focused = p;
+            return;
+        }
         if p == PanelKind::Timeline {
             self.ui.dock.restore_timeline();
         }
@@ -1276,7 +1284,7 @@ impl FilmcraftApp {
                 filmcraft_engine::Event::OpenSequence(_) => {
                     // show the sequence with its own view (or fitted, the first time)
                     self.timeline_view_of = None;
-                    self.ui.dock.restore_timeline();
+                    self.restore_timeline();
                     self.ui.dock.activate(PanelKind::Timeline);
                 }
                 filmcraft_engine::Event::OpenSource(_) => {
@@ -1460,8 +1468,24 @@ impl FilmcraftApp {
             child.set_clip_rect(g.content);
             panels::show(self, &mut child, p, g.content);
         }
+        floating::show(self, ui.ctx(), body);
+        if maximized.is_none() {
+            actions.extend(dock::drag_overlay(ui.ctx(), &groups, &t));
+        }
         for a in actions {
             match a {
+                dock::DockAction::MovePanel(p, target, zone) => {
+                    // a floating panel dropped on the dock first joins the group, then takes its place
+                    let was_floating = self.ui.floating.iter().any(|f| f.panel == p);
+                    if was_floating {
+                        self.ui.floating.retain(|f| f.panel != p);
+                        self.ui.dock.open_near(p, target);
+                    }
+                    if self.ui.dock.move_panel(p, target, zone) || was_floating {
+                        self.ui.dock.activate(p);
+                        self.ui.focused = p;
+                    }
+                }
                 dock::DockAction::Activate(p) => {
                     self.ui.dock.activate(p);
                 }

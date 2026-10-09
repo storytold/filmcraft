@@ -199,7 +199,19 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             ui.set_min_width(190.0);
             // the Timeline's tabs are its open sequences: Close Panel closes the active one and
             // keeps the panel (Premiere's wording and behaviour)
-            if p == PanelKind::Timeline && app.session.state.active_sequence.is_some() {
+            let floating = app.ui.floating.iter().any(|f| f.panel == p);
+            if floating {
+                if ui.button("Close Panel").clicked() {
+                    app.ui.floating.retain(|f| f.panel != p);
+                    close = true;
+                }
+                let r = ui.button("Dock Panel");
+                app.auto.add(&format!("panel.menu.{}.dock", p.id()), r.rect, "Dock Panel");
+                if r.clicked() {
+                    app.dock_panel(p);
+                    close = true;
+                }
+            } else if p == PanelKind::Timeline && app.session.state.active_sequence.is_some() {
                 let r = ui.button("Close Panel");
                 app.auto.add("panel.menu.Timeline.close", r.rect, "Close Panel");
                 if r.clicked() {
@@ -216,9 +228,19 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                 app.ui.dock.close(p);
                 close = true;
             }
-            if ui.button("Maximize Frame").clicked() {
-                app.ui.dock = crate::dock::DockNode::Tabs { panels: vec![p], active: 0 };
-                close = true;
+            if !floating {
+                let r = ui.button("Undock Panel");
+                app.auto.add(&format!("panel.menu.{}.undock", p.id()), r.rect, "Undock Panel");
+                if r.clicked() {
+                    if let Err(e) = app.undock_panel(p) {
+                        app.ui.status = e;
+                    }
+                    close = true;
+                }
+                if ui.button("Maximize Frame").clicked() {
+                    app.ui.dock = crate::dock::DockNode::Tabs { panels: vec![p], active: 0 };
+                    close = true;
+                }
             }
             if ui.button("Restore Workspace").clicked() {
                 let w = app.ui.workspace.clone();

@@ -10,6 +10,7 @@
 //! - `ui.elements {prefix?}`: registered widgets (optionally filtered by id prefix)
 //! - `ui.set {tool?, workspace?, mode?, theme?, focused?, playbackRes?, timeline?:{pps,scroll}}`
 //! - `ui.panel.show {panel}` / `ui.panel.close {panel}`
+//! - `ui.panel.move {panel, target, zone}` / `ui.panel.undock {panel}` / `ui.panel.dock {panel}`
 //! - `ui.click {id | x,y, button?, count?, modifiers?}` / `ui.move {x,y}` / `ui.scroll {x,y,dx,dy}`
 //! - `ui.drag {from:{id|x,y}, to:{id|x,y}, steps?, modifiers?}`: synthetic press-move-release
 //! - `ui.key {key, command?, shift?, alt?, ctrl?}` / `ui.type {text}`
@@ -279,8 +280,33 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                 app.show_panel(panel);
             } else {
                 app.ui.dock.close(panel);
+                app.ui.floating.retain(|f| f.panel != panel);
             }
             ok(Value::Null)
+        }
+        "ui.panel.undock" | "ui.panel.dock" => {
+            let Some(panel) = s("panel").and_then(PanelKind::from_name) else { return err("unknown `panel`") };
+            if req.method == "ui.panel.undock" {
+                match app.undock_panel(panel) {
+                    Ok(()) => ok(Value::Null),
+                    Err(e) => err(e),
+                }
+            } else {
+                app.dock_panel(panel);
+                ok(Value::Null)
+            }
+        }
+        "ui.panel.move" => {
+            let (Some(panel), Some(target)) = (s("panel").and_then(PanelKind::from_name), s("target").and_then(PanelKind::from_name)) else {
+                return err("need `panel` and `target`");
+            };
+            let Some(zone) = s("zone").and_then(crate::dock::DropZone::from_name) else { return err("`zone` is center, left, right, top or bottom") };
+            if app.ui.dock.move_panel(panel, target, zone) {
+                app.ui.dock.activate(panel);
+                ok(Value::Null)
+            } else {
+                err("cannot move that panel there")
+            }
         }
         "ui.click" | "ui.move" => {
             let pos = match point(app, p) {
