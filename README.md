@@ -19,6 +19,26 @@
   By the ArtCraft team.
 </p>
 
+> **About this fork.** [per-simmons/filmcraft](https://github.com/per-simmons/filmcraft) is a fork of
+> [storytold/filmcraft](https://github.com/storytold/filmcraft), used day to day as a Premiere Pro
+> replacement for YouTube editing — with AI agents doing the editing. On top of upstream it adds:
+>
+> - **Text-based editing like Premiere's.** Transcribe runs Whisper large-v3-turbo locally on the GPU
+>   (candle + Metal; no API key). Filter the transcript by text, filler words or **pauses**, then
+>   Delete or Delete all (Extract or Lift). Pauses come from the waveform, keep a few milliseconds of
+>   air around speech, and never cut into a word. See [docs/transcripts.md](docs/transcripts.md).
+> - **Agents can press every button.** Every control has an automation id. The MCP server
+>   (`filmcraft-cli mcp --bridge`, bundled inside the macOS app) starts FilmCraft by itself, waits
+>   for long jobs (transcription, exports), refuses a click that a dialog would swallow instead of
+>   missing silently, and has `ui_map`, a catalogue of every control and how to reach it. Settings ▸
+>   Agents turns the control server on. See [docs/agents.md](docs/agents.md).
+> - **Premiere parity fixes.** The playhead lands exactly on clip and sequence ends; `D` on an empty
+>   stretch selects the gap (white box) and Delete closes it; Track Select Forward/Backward cursors;
+>   OBS millisecond timestamps detected as 60 fps (not 58.82); a Trim Monitor freeze found by a
+>   crawler that clicks every button.
+>
+> Upstream's README follows.
+
 <p align="center">
   <a href="#license-and-credits"><img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-8b5cf6"></a>
   <img alt="Written in pure Rust" src="https://img.shields.io/badge/pure-Rust-6a3fd6?logo=rust&logoColor=white">

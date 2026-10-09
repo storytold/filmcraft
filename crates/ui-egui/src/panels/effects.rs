@@ -5,7 +5,7 @@
 //! picture, `filmcraft_render::lumetri_presets`); double-click (or right-click ▸ Apply to Selected
 //! Clips, `effects.presetMenu.apply`) applies it (`lumetri.applyPreset`).
 //! When the panel is wide (maximized), clicking a Lumetri Presets folder shows its presets as a
-//! thumbnail grid to the right of the tree. Automation ids: `effects.lumetriPreset.<name>`,
+//! thumbnail grid to the right of the tree. Automation ids: `effects.search`, `effects.lumetriPreset.<name>`,
 //! `effects.presetGrid` (the grid area), `effects.presetGrid.<name>`.
 
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
@@ -20,7 +20,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let sr = Rect::from_min_size(rect.min + vec2(8.0, 6.0), vec2(rect.width() - 16.0, 22.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(sr));
     let mut q = app.ui.effects_search.clone();
-    crate::widgets::search_field(&mut child, &mut q, "Search effects", sr.width(), &t);
+    let sresp = crate::widgets::search_field(&mut child, &mut q, "Search effects", sr.width(), &t);
+    app.auto.add("effects.search", sresp.rect, "Search effects");
     app.ui.effects_search = q.clone();
     let body = Rect::from_min_max(pos2(rect.min.x, sr.max.y + 6.0), rect.max);
     // wide panel: the tree on the left, the Lumetri Presets thumbnail grid on the right

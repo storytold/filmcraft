@@ -15,6 +15,11 @@
 //! `graphics.roll.mode`, `graphics.roll.<startOffScreen|endOffScreen|preroll|easeIn|easeOut|postroll>`,
 //! `graphics.time.intro|outro`, `graphics.pin.to`, `graphics.pin.<left|top|right|bottom>`;
 //! dialogs: `exportTemplate.name|category|control.<n>|ok|cancel`, `replaceFonts.from|to|ok|cancel`.
+//! While a dropdown is open its entries are `<dropdown id>.option.<value>`:
+//! `gfxTemplates.category.option.<all|category>`, `gfxTemplates.control.<id>.option.<family>`,
+//! `graphics.roll.mode.option.<off|roll|crawlLeft|crawlRight>`,
+//! `graphics.pin.to.option.<none|frame|layer index>`, `replaceFonts.from|to.option.<family>` (font
+//! lists: the entries scrolled into view); `exportTemplate.control.<n>.name` edits a property's name.
 //! The UI state (`UiState::gfx_templates`) is serde, so agents can read and set it.
 
 use std::sync::Arc;
@@ -179,9 +184,11 @@ fn browse(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         elems.push(("gfxTemplates.search".into(), r.rect, "Search".into()));
         let cur = if st.category.is_empty() { "All Categories".to_string() } else { st.category.clone() };
         let r = egui::ComboBox::from_id_salt("gfx-cat").selected_text(cur).width(130.0).show_ui(ui, |ui| {
-            ui.selectable_value(&mut st.category, String::new(), "All Categories");
+            let o = ui.selectable_value(&mut st.category, String::new(), "All Categories");
+            elems.push(("gfxTemplates.category.option.all".into(), o.rect, "All Categories".into()));
             for c in &cats {
-                ui.selectable_value(&mut st.category, c.clone(), c);
+                let o = ui.selectable_value(&mut st.category, c.clone(), c);
+                elems.push((format!("gfxTemplates.category.option.{c}"), o.rect, c.clone()));
             }
         });
         elems.push(("gfxTemplates.category".into(), r.response.rect, "Category".into()));
@@ -428,7 +435,11 @@ pub fn template_controls(
                     &mut vui,
                     |ui| {
                         for (f, _) in filmcraft_text::families() {
-                            if ui.selectable_label(f == fam, &f).clicked() {
+                            let o = ui.selectable_label(f == fam, &f);
+                            if let Some(vr) = crate::widgets::visible(ui, o.rect) {
+                                autos.push((format!("{id}.option.{f}"), vr, f.clone()));
+                            }
+                            if o.clicked() {
                                 set(json!(f), actions);
                             }
                         }
@@ -469,19 +480,23 @@ pub fn responsive_time(app: &FilmcraftApp, ui: &mut egui::Ui, clip: ClipId, it: 
     }
     let mut vui = row_label(ui, "Roll", &t);
     let mut mode = m.roll.mode;
+    let roll_name = |mode: RollMode| match mode {
+        RollMode::Off => "off",
+        RollMode::Roll => "roll",
+        RollMode::CrawlLeft => "crawlLeft",
+        RollMode::CrawlRight => "crawlRight",
+    };
+    let mut options: Elems = Vec::new();
     let r = egui::ComboBox::from_id_salt(("gfx-roll", clip.0)).selected_text(mode.label()).width(120.0).show_ui(&mut vui, |ui| {
         for x in RollMode::ALL {
-            ui.selectable_value(&mut mode, x, x.label());
+            let o = ui.selectable_value(&mut mode, x, x.label());
+            options.push((format!("graphics.roll.mode.option.{}", roll_name(x)), o.rect, x.label().into()));
         }
     });
     autos.push(("graphics.roll.mode".into(), r.response.rect, "Roll".into()));
+    autos.extend(options);
     if mode != m.roll.mode {
-        let name = match mode {
-            RollMode::Off => "off",
-            RollMode::Roll => "roll",
-            RollMode::CrawlLeft => "crawlLeft",
-            RollMode::CrawlRight => "crawlRight",
-        };
+        let name = roll_name(mode);
         actions.push(("graphics.setRoll".into(), json!({"clip": clip.0, "mode": name})));
     }
     if m.roll.mode == RollMode::Off {
@@ -535,23 +550,33 @@ pub fn responsive_position(
             .unwrap_or_default(),
     };
     let mut vui = row_label(ui, "Pin To", &t);
+    let mut options: Elems = Vec::new();
     let r = egui::ComboBox::from_id_salt(("gfx-pin", clip.0, layer)).selected_text(&target_name).width(150.0).show_ui(&mut vui, |ui| {
-        if ui.selectable_label(pin.is_none(), "None").clicked() {
+        let o = ui.selectable_label(pin.is_none(), "None");
+        options.push(("graphics.pin.to.option.none".into(), o.rect, "None".into()));
+        if o.clicked() {
             actions.push(("graphics.pin".into(), json!({"clip": clip.0, "layer": layer, "to": "none"})));
         }
-        if ui.selectable_label(target_name == "Video Frame", "Video Frame").clicked() {
+        let o = ui.selectable_label(target_name == "Video Frame", "Video Frame");
+        options.push(("graphics.pin.to.option.frame".into(), o.rect, "Video Frame".into()));
+        if o.clicked() {
             actions.push(("graphics.pin".into(), json!({"clip": clip.0, "layer": layer, "to": "frame"})));
         }
         for (i, &e) in idx.iter().enumerate() {
             if i != layer {
-                let n = layer_display_name(&it.effects[e], i);
-                if ui.selectable_label(n == target_name, &n).clicked() {
+                let Some(fx) = it.effects.get(e) else { continue };
+                let n = layer_display_name(fx, i);
+                let o = ui.selectable_label(n == target_name, &n);
+                // a layer by its index (what `graphics.pin {to}` takes)
+                options.push((format!("graphics.pin.to.option.{i}"), o.rect, n.clone()));
+                if o.clicked() {
                     actions.push(("graphics.pin".into(), json!({"clip": clip.0, "layer": layer, "to": i})));
                 }
             }
         }
     });
     autos.push(("graphics.pin.to".into(), r.response.rect, "Pin To".into()));
+    autos.extend(options);
     let Some(p) = pin else { return };
     let mut vui = row_label(ui, "Pinned Edges", &t);
     let mut edges = [p.left, p.top, p.right, p.bottom];
@@ -660,7 +685,8 @@ fn export_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     ui.horizontal(|ui| {
                         let r = ui.checkbox(&mut c.on, "");
                         elems.push((format!("exportTemplate.control.{n}"), r.rect, c.name.clone()));
-                        ui.add(egui::TextEdit::singleline(&mut c.name).desired_width(220.0));
+                        let r = ui.add(egui::TextEdit::singleline(&mut c.name).desired_width(220.0));
+                        elems.push((format!("exportTemplate.control.{n}.name"), r.rect, c.name.clone()));
                         ui.label(egui::RichText::new(c.param.replace('_', " ")).weak());
                     });
                 }
@@ -735,14 +761,20 @@ fn replace_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 ui.label("Replace:");
                 let r = egui::ComboBox::from_id_salt("gfx-rf-from").selected_text(&d.from).width(160.0).show_ui(ui, |ui| {
                     for f in &fams {
-                        ui.selectable_value(&mut d.from, f.clone(), f);
+                        let o = ui.selectable_value(&mut d.from, f.clone(), f);
+                        if let Some(vr) = crate::widgets::visible(ui, o.rect) {
+                            elems.push((format!("replaceFonts.from.option.{f}"), vr, f.clone()));
+                        }
                     }
                 });
                 elems.push(("replaceFonts.from".into(), r.response.rect, "Replace".into()));
                 ui.label("with:");
                 let r = egui::ComboBox::from_id_salt("gfx-rf-to").selected_text(&d.to).width(160.0).height(360.0).show_ui(ui, |ui| {
                     for (f, _) in filmcraft_text::families() {
-                        ui.selectable_value(&mut d.to, f.clone(), &f);
+                        let o = ui.selectable_value(&mut d.to, f.clone(), &f);
+                        if let Some(vr) = crate::widgets::visible(ui, o.rect) {
+                            elems.push((format!("replaceFonts.to.option.{f}"), vr, f.clone()));
+                        }
                     }
                 });
                 elems.push(("replaceFonts.to".into(), r.response.rect, "With".into()));

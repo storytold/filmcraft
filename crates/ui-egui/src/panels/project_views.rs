@@ -2,6 +2,16 @@
 //! headers, inline rename, label column, optional thumbnails), Icon (thumbnail cards with hover
 //! scrub, In/Out bar, poster frames, Sort Icons) and Freeform (clip cards placed freely, stacks,
 //! grid).
+//!
+//! Right-click menus (`<pre>` = the panel instance's prefix, e.g. `project`): an item's
+//! `project.itemMenu.<rename|openInSource|openInTimeline|newSequenceFromClip|duplicate|
+//! setPosterFrame|interpretFootage|makeSubclip|editSubclip|convertToMaster|linkMedia|makeOffline|
+//! clear>`, `project.itemMenu.label` (+ `.label.<Label>`), `project.itemMenu.proxy` (+
+//! `.proxy.<create|attach|reconnectFullRes|detach>`); a bin's `<pre>.binMenu.<inPlace|newTab|
+//! newWindow|rename|newBin>`; a list header's `<pre>.list.headerMenu.metadataDisplay`; the empty
+//! area's `<pre>.emptyMenu.<newBin|newSearchBin|find|automateToSequence|import|newItem>`; a
+//! freeform card's `<pre>.cardMenu.clipSize` (+ `.clipSize.<larger|smaller|default>`); the
+//! freeform canvas's `<pre>.canvasMenu.<restoreArrangement|deleteArrangement>` (+ `.<name>`).
 
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_engine::project_panel::{self as pp, Card, SortSpec, ViewMode};
@@ -201,37 +211,50 @@ pub fn item_interactions(
     }
 }
 
+/// A context-menu entry that registers automation id `id`; whether it was clicked.
+fn menu_entry(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: &str, label: &str) -> bool {
+    let b = ui.button(label);
+    app.auto.add(id, b.rect, label);
+    b.clicked()
+}
+
+/// A submenu opener that registers automation id `id`.
+fn submenu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: &str, label: &str, add: impl FnOnce(&mut FilmcraftApp, &mut egui::Ui)) {
+    let r = ui.menu_button(label, |ui| add(app, ui));
+    app.auto.add(id, r.response.rect, label);
+}
+
 fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemKind, actions: &mut Actions) {
     let sel = || json!({"items": [id.0]});
-    if ui.button("Rename").clicked() {
+    if menu_entry(app, ui, "project.itemMenu.rename", "Rename") {
         actions.push(("projectPanel.rename".into(), json!({"item": id.0})));
         ui.close();
     }
-    if ui.button("Open in Source Monitor").clicked() {
+    if menu_entry(app, ui, "project.itemMenu.openInSource", "Open in Source Monitor") {
         actions.push(("source.open".into(), json!({"item": id.0})));
         ui.close();
     }
-    if matches!(kind, ItemKind::Sequence(_)) && ui.button("Open in Timeline").clicked() {
+    if matches!(kind, ItemKind::Sequence(_)) && menu_entry(app, ui, "project.itemMenu.openInTimeline", "Open in Timeline") {
         actions.push(("sequence.open".into(), json!({"item": id.0})));
         ui.close();
     }
-    if ui.button("New Sequence From Clip").clicked() {
+    if menu_entry(app, ui, "project.itemMenu.newSequenceFromClip", "New Sequence From Clip") {
         actions.push(("file.newSequence".into(), json!({"fromItem": id.0})));
         ui.close();
     }
-    if ui.button("Duplicate").clicked() {
+    if menu_entry(app, ui, "project.itemMenu.duplicate", "Duplicate") {
         actions.push(("project.select".into(), sel()));
         actions.push(("edit.duplicate".into(), json!({})));
         ui.close();
     }
-    if ui.button("Set Poster Frame").clicked() {
+    if menu_entry(app, ui, "project.itemMenu.setPosterFrame", "Set Poster Frame") {
         // the hover-scrubbed time when there is one
         let h = app.ui.project_panel.hover.filter(|h| h.item == id.0);
         actions.push(("project.select".into(), sel()));
         actions.push(("clip.setPosterFrame".into(), h.map(|h| json!({"item": id.0, "time": h.time})).unwrap_or(json!({}))));
         ui.close();
     }
-    if ui.button("Interpret Footage…").clicked() {
+    if menu_entry(app, ui, "project.itemMenu.interpretFootage", "Interpret Footage…") {
         actions.push(("clip.interpretFootage".into(), json!({"items": [id.0]})));
         ui.close();
     }
@@ -251,9 +274,9 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
             ui.close();
         }
     }
-    ui.menu_button("Label", |ui| {
+    submenu(app, ui, "project.itemMenu.label", "Label", |app, ui| {
         for l in filmcraft_project::Label::ALL {
-            if ui.button(l.name()).clicked() {
+            if menu_entry(app, ui, &format!("project.itemMenu.label.{}", l.name()), l.name()) {
                 actions.push(("project.select".into(), json!({"items": [id.0]})));
                 actions.push(("edit.label".into(), json!({"label": l.name()})));
                 ui.close();
@@ -262,21 +285,21 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
     });
     if matches!(kind, ItemKind::Media(m) if matches!(m.media, filmcraft_project::MediaRef::File { .. })) {
         ui.separator();
-        for (label, cmd) in [("Link Media…", "media.linkMedia"), ("Make Offline…", "media.makeOffline")] {
-            if ui.button(label).clicked() {
+        for (key, label, cmd) in [("linkMedia", "Link Media…", "media.linkMedia"), ("makeOffline", "Make Offline…", "media.makeOffline")] {
+            if menu_entry(app, ui, &format!("project.itemMenu.{key}"), label) {
                 actions.push(("project.select".into(), sel()));
                 actions.push((cmd.into(), json!({})));
                 ui.close();
             }
         }
-        ui.menu_button("Proxy", |ui| {
-            for (label, cmd) in [
-                ("Create Proxies…", "media.createProxies"),
-                ("Attach Proxies…", "media.attachProxies"),
-                ("Reconnect Full Resolution Media…", "media.reconnectFullRes"),
-                ("Detach Proxies", "media.detachProxies"),
+        submenu(app, ui, "project.itemMenu.proxy", "Proxy", |app, ui| {
+            for (key, label, cmd) in [
+                ("create", "Create Proxies…", "media.createProxies"),
+                ("attach", "Attach Proxies…", "media.attachProxies"),
+                ("reconnectFullRes", "Reconnect Full Resolution Media…", "media.reconnectFullRes"),
+                ("detach", "Detach Proxies", "media.detachProxies"),
             ] {
-                if ui.button(label).clicked() {
+                if menu_entry(app, ui, &format!("project.itemMenu.proxy.{key}"), label) {
                     actions.push(("project.select".into(), json!({"items": [id.0]})));
                     actions.push((cmd.into(), json!({})));
                     ui.close();
@@ -285,7 +308,7 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
         });
     }
     ui.separator();
-    if ui.button("Clear").clicked() {
+    if menu_entry(app, ui, "project.itemMenu.clear", "Clear") {
         actions.push(("project.delete".into(), json!({"items": [id.0]})));
         ui.close();
     }
@@ -304,11 +327,11 @@ fn bin_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: u64, actio
         }
     }
     ui.separator();
-    if ui.button("Rename").clicked() {
+    if menu_entry(app, ui, &format!("{}.binMenu.rename", v.prefix), "Rename") {
         actions.push(("projectPanel.rename".into(), json!({"bin": bin})));
         ui.close();
     }
-    if ui.button("New Bin").clicked() {
+    if menu_entry(app, ui, &format!("{}.binMenu.newBin", v.prefix), "New Bin") {
         actions.push(("file.newBin".into(), json!({"name": "New Bin", "parent": bin})));
         ui.close();
     }
@@ -461,7 +484,7 @@ pub fn list_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
                 actions.push(("project.sort".into(), json!({"column": c.name})));
             }
             resp.context_menu(|ui| {
-                if ui.button("Metadata Display…").clicked() {
+                if menu_entry(app, ui, &format!("{}.list.headerMenu.metadataDisplay", v.prefix), "Metadata Display…") {
                     actions.push(("projectPanel.metadataDisplay".into(), json!({})));
                     ui.close();
                 }
@@ -507,20 +530,20 @@ fn empty_space(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, actions: &mu
 }
 
 fn background_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<u64>, actions: &mut Actions) {
-    for (label, cmd) in [
-        ("New Bin", "file.newBin"),
-        ("New Search Bin", "file.newSearchBin"),
-        ("Find…", "edit.find"),
-        ("Automate to Sequence…", "clip.automateToSequence"),
-        ("Import…", "file.import"),
+    for (key, label, cmd) in [
+        ("newBin", "New Bin", "file.newBin"),
+        ("newSearchBin", "New Search Bin", "file.newSearchBin"),
+        ("find", "Find…", "edit.find"),
+        ("automateToSequence", "Automate to Sequence…", "clip.automateToSequence"),
+        ("import", "Import…", "file.import"),
     ] {
-        if ui.button(label).clicked() {
+        if menu_entry(app, ui, &format!("{}.emptyMenu.{key}", v.prefix), label) {
             let p = if cmd == "file.newBin" { json!({"name": "New Bin", "parent": bin}) } else { json!({}) };
             actions.push((cmd.into(), p));
             ui.close();
         }
     }
-    ui.menu_button("New Item", |ui| crate::panels::project::new_item_menu(app, ui, &v.prefix, actions));
+    submenu(app, ui, &format!("{}.emptyMenu.newItem", v.prefix), "New Item", |app, ui| crate::panels::project::new_item_menu(app, ui, &v.prefix, actions));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -969,14 +992,15 @@ fn card_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, item: u64, act
         actions.push(("project.freeform.unstack".into(), json!({"items": items})));
         ui.close();
     }
-    ui.menu_button("Clip Size", |ui| {
-        for (label, step) in [("Larger", 1), ("Smaller", -1)] {
-            if ui.button(label).clicked() {
+    let pre = v.prefix.clone();
+    submenu(app, ui, &format!("{pre}.cardMenu.clipSize"), "Clip Size", |app, ui| {
+        for (key, label, step) in [("larger", "Larger", 1), ("smaller", "Smaller", -1)] {
+            if menu_entry(app, ui, &format!("{pre}.cardMenu.clipSize.{key}"), label) {
                 actions.push(("project.freeform.resize".into(), json!({"items": items, "step": step})));
                 ui.close();
             }
         }
-        if ui.button("Default").clicked() {
+        if menu_entry(app, ui, &format!("{pre}.cardMenu.clipSize.default"), "Default") {
             actions.push(("project.freeform.resize".into(), json!({"items": items, "size": app.session.prefs.project_panel.freeform.card_size})));
             ui.close();
         }
@@ -1007,18 +1031,19 @@ fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<
         .ok()
         .and_then(|v| serde_json::from_value(v["arrangements"].clone()).ok())
         .unwrap_or_default();
+    let pre = v.prefix.clone();
     ui.add_enabled_ui(!names.is_empty(), |ui| {
-        ui.menu_button("Restore Arrangement", |ui| {
+        submenu(app, ui, &format!("{pre}.canvasMenu.restoreArrangement"), "Restore Arrangement", |app, ui| {
             for n in &names {
-                if ui.button(n).clicked() {
+                if menu_entry(app, ui, &format!("{pre}.canvasMenu.restoreArrangement.{n}"), n) {
                     actions.push(("project.freeform.restoreArrangement".into(), json!({"name": n, "bin": bin})));
                     ui.close();
                 }
             }
         });
-        ui.menu_button("Delete Arrangement", |ui| {
+        submenu(app, ui, &format!("{pre}.canvasMenu.deleteArrangement"), "Delete Arrangement", |app, ui| {
             for n in &names {
-                if ui.button(n).clicked() {
+                if menu_entry(app, ui, &format!("{pre}.canvasMenu.deleteArrangement.{n}"), n) {
                     actions.push(("project.freeform.deleteArrangement".into(), json!({"name": n, "bin": bin})));
                     ui.close();
                 }

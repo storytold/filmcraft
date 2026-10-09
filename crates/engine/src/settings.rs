@@ -29,6 +29,25 @@ pub const PREFS_VERSION: u32 = 2;
 
 // ------------------------------------------------------------------ category values
 
+/// Settings ▸ Agents: AI agents driving FilmCraft over the localhost control channel and MCP
+/// (`filmcraft-cli mcp --bridge`, docs/agents.md).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AgentPrefs {
+    /// "Let AI agents control FilmCraft": start the control server whenever FilmCraft starts, as
+    /// `--control <port>` does. It listens on 127.0.0.1 only and has no password: any program on
+    /// this computer can use it while it's on.
+    pub control_server: bool,
+    /// Its port (the MCP bridge's default is 9876).
+    pub control_port: u16,
+}
+
+impl Default for AgentPrefs {
+    fn default() -> Self {
+        Self { control_server: false, control_port: 9876 }
+    }
+}
+
 /// Settings ▸ General.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -331,8 +350,19 @@ pub struct MediaAnalysisPrefs {
     pub language_auto_detect: bool,
     /// "Default language" (ISO 639-1).
     pub default_language: String,
-    /// Speech model (`transcript.models`).
-    pub whisper_model: String,
+    /// Speech model (`transcript.models`). Stored as `speechModel`: the old `whisperModel` key
+    /// held the former default (whisper-base) in every saved preferences file, so it is ignored
+    /// and the current default (large-v3-turbo with the GPU) applies until the user picks one.
+    pub speech_model: String,
+    /// Text panel ▸ Transcript View Options ▸ Pause length: the shortest silence shown and found
+    /// as a pause (a tight pause cut reviews gaps down to 80 ms).
+    pub pause_min_ms: u32,
+    /// When a pause is deleted, the silence kept after the word before it (a decaying ending)…
+    pub pause_keep_after_ms: u32,
+    /// …and before the word after it (a soft onset). A tight pause cut keeps 30 ms and 35 ms.
+    pub pause_keep_before_ms: u32,
+    /// Show pauses in the transcript as `[...]`.
+    pub show_pauses: bool,
 }
 
 impl Default for MediaAnalysisPrefs {
@@ -345,7 +375,11 @@ impl Default for MediaAnalysisPrefs {
             speaker_labeling: "on".into(),
             language_auto_detect: false,
             default_language: "en".into(),
-            whisper_model: filmcraft_speech::models::DEFAULT_MODEL.into(),
+            speech_model: filmcraft_speech::models::DEFAULT_MODEL.into(),
+            pause_min_ms: 150,
+            pause_keep_after_ms: 30,
+            pause_keep_before_ms: 35,
+            show_pauses: true,
         }
     }
 }
@@ -630,7 +664,7 @@ const ANALYSIS_CACHE: &[(&str, &str)] = &[("mediaCache", "In the Media Cache"), 
 const TRANSCRIBE_SCOPE: &[(&str, &str)] =
     &[("sequenceClips", "Auto-transcribe only clips in sequences"), ("allImported", "Auto-transcribe all imported clips")];
 const SPEAKERS: &[(&str, &str)] = &[("on", "Label speakers"), ("off", "Don't label speakers")];
-const LANGUAGES: &[(&str, &str)] = &[
+pub(crate) const LANGUAGES: &[(&str, &str)] = &[
     ("en", "English"),
     ("es", "Spanish"),
     ("fr", "French"),
@@ -644,8 +678,12 @@ const LANGUAGES: &[(&str, &str)] = &[
     ("ru", "Russian"),
     ("hi", "Hindi"),
 ];
-const MODELS: &[(&str, &str)] =
-    &[("whisper-tiny", "Whisper tiny (fastest)"), ("whisper-base", "Whisper base (balanced)"), ("whisper-small", "Whisper small (most accurate)")];
+const MODELS: &[(&str, &str)] = &[
+    ("whisper-tiny", "Whisper tiny (fastest)"),
+    ("whisper-base", "Whisper base"),
+    ("whisper-small", "Whisper small"),
+    ("whisper-large-v3-turbo", "Whisper large-v3-turbo (most accurate)"),
+];
 const CACHE_MGMT: &[(&str, &str)] = &[
     ("never", "Do not delete cache files automatically"),
     ("olderThan", "Automatically delete cache files older than"),
@@ -901,7 +939,16 @@ static CATEGORIES: &[Category] = &[
                     f("mediaAnalysis.speakerLabeling", "Speaker Labeling", Kind::Choice(SPEAKERS), true),
                     b("mediaAnalysis.languageAutoDetect", "Enable language auto-detection", true),
                     f("mediaAnalysis.defaultLanguage", "Default language", Kind::Choice(LANGUAGES), true),
-                    f("mediaAnalysis.whisperModel", "Speech model", Kind::Choice(MODELS), true),
+                    f("mediaAnalysis.speechModel", "Speech model", Kind::Choice(MODELS), true),
+                ],
+            ),
+            Row::Group(
+                "Pauses (text-based editing)",
+                &[
+                    b("mediaAnalysis.showPauses", "Show pauses in the transcript", true),
+                    f("mediaAnalysis.pauseMinMs", "Pause length", Kind::Int { min: 80.0, max: 10_000.0, unit: "ms" }, true),
+                    f("mediaAnalysis.pauseKeepAfterMs", "Keep after a word when deleting a pause", Kind::Int { min: 0.0, max: 1_000.0, unit: "ms" }, true),
+                    f("mediaAnalysis.pauseKeepBeforeMs", "Keep before the next word", Kind::Int { min: 0.0, max: 1_000.0, unit: "ms" }, true),
                 ],
             ),
         ],
@@ -1008,6 +1055,17 @@ static CATEGORIES: &[Category] = &[
             sub("trim.rippleAddsEdits", "Ripple trim adds edits to keep both sides of trim in sync", Kind::Bool, "trim.shiftOverlappingClips", false),
             b("trim.playheadDeterminesLoop", "Playhead position determines trim monitor loop playback", true),
             b("trim.dynamicRippleUpdates", "Update timeline dynamically during ripple edits.", false),
+        ],
+    },
+    Category {
+        id: "agents",
+        title: "Agents",
+        rows: &[
+            b("agents.controlServer", "Let AI agents control FilmCraft (control channel and MCP; restart to apply)", true),
+            f("agents.controlPort", "Port", Kind::Int { min: 1024.0, max: 65_535.0, unit: "" }, true),
+            Row::Note(
+                "Agents connect with `filmcraft-cli mcp --bridge 127.0.0.1:<port>` and can then press every button, run every command and see the screen. The port is on this computer only (127.0.0.1) and has no password, so any program running here can use it while it's on.",
+            ),
         ],
     },
 ];

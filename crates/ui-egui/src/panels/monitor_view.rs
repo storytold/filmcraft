@@ -37,7 +37,7 @@ const SNAP_COLOR: Color32 = Color32::from_rgb(0xff, 0x4f, 0xd8);
 /// Snap distance (points).
 pub const SNAP_PX: f32 = 6.0;
 
-const RES_NAMES: [(&str, PlaybackRes); 5] = [
+pub(crate) const RES_NAMES: [(&str, PlaybackRes); 5] = [
     ("full", PlaybackRes::Full),
     ("half", PlaybackRes::Half),
     ("quarter", PlaybackRes::Quarter),
@@ -648,7 +648,9 @@ pub fn wrench_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which) {
     let mode = v.display_mode();
     let mut out: Picks = Vec::new();
     pick(ui, &mut out, "display.composite", "Composite Video", mode == Some(DisplayMode::Composite));
-    ui.menu_button("RGBA Channels", |ui| {
+    // submenu openers (hovering one opens it): `<monitor>.settings.<rgbaChannels|playbackResolution|pausedResolution>`
+    let mut openers: Vec<(&str, Rect, &str)> = Vec::new();
+    let sub = ui.menu_button("RGBA Channels", |ui| {
         for (k, l, m) in [
             ("alpha", "Alpha", DisplayMode::Alpha),
             ("red", "Red", DisplayMode::Red),
@@ -658,6 +660,7 @@ pub fn wrench_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which) {
             pick(ui, &mut out, &format!("display.{k}"), l, mode == Some(m));
         }
     });
+    openers.push(("rgbaChannels", sub.response.rect, "RGBA Channels"));
     if w == Which::Program {
         pick(ui, &mut out, "display.multicam", "Multi-Camera", v.multicam);
         pick(ui, &mut out, "display.comparison", "Comparison View", mode == Some(DisplayMode::Comparison));
@@ -666,16 +669,18 @@ pub fn wrench_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which) {
         pick(ui, &mut out, "display.videoAndWaveform", "Video and Audio Waveform Split", mode == Some(DisplayMode::VideoAndWaveform));
     }
     ui.separator();
-    ui.menu_button("Playback Resolution", |ui| {
+    let sub = ui.menu_button("Playback Resolution", |ui| {
         for (k, r) in RES_NAMES {
             pick(ui, &mut out, &format!("playbackRes.{k}"), r.label(), v.res == r);
         }
     });
-    ui.menu_button("Paused Resolution", |ui| {
+    openers.push(("playbackResolution", sub.response.rect, "Playback Resolution"));
+    let sub = ui.menu_button("Paused Resolution", |ui| {
         for (k, r) in RES_NAMES {
             pick(ui, &mut out, &format!("pausedRes.{k}"), r.label(), v.paused_res == r);
         }
     });
+    openers.push(("pausedResolution", sub.response.rect, "Paused Resolution"));
     pick(ui, &mut out, "highQualityPlayback", "High Quality Playback", v.high_quality);
     ui.separator();
     pick(ui, &mut out, "showRulers", "Show Rulers", v.show_rulers);
@@ -689,6 +694,9 @@ pub fn wrench_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which) {
     }
     ui.separator();
     let pfx = prefix(w);
+    for (key, r, label) in openers {
+        app.auto.add(&format!("{pfx}.settings.{key}"), r, label);
+    }
     for (key, r, label, clicked) in out {
         app.auto.add(&format!("{pfx}.settings.{key}"), r, &label);
         if clicked && let Some(Err(e)) = route(app, &format!("view.{key}"), &json!({"monitor": pfx})) {

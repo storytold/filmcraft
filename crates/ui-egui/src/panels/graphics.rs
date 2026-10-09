@@ -17,7 +17,9 @@
 //!
 //! All edits go through `graphics.*` commands. Automation ids: `program.layer.<clip>.<layer>`,
 //! `program.layer.<clip>.<layer>.handle.<n>`, `program.layer.<clip>.<layer>.anchor`,
-//! `program.textEdit`, `graphics.*` in the panels.
+//! `program.textEdit`, `graphics.*` in the panels; while a property dropdown is open, its entries
+//! `graphics.prop.<param>.option.<n>` (choices), `graphics.prop.font.option.<family>` (the entries
+//! scrolled into view) and `graphics.prop.font_style.option.<style>`.
 
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_geom::{Affine, Vec2};
@@ -1108,7 +1110,8 @@ impl Ctx<'_> {
             vui,
             |ui| {
                 for (i, o) in opts.iter().enumerate() {
-                    ui.selectable_value(&mut sel, i, *o);
+                    let r = ui.selectable_value(&mut sel, i, *o);
+                    self.autos.push((format!("graphics.prop.{id}.option.{i}"), r.rect, o.to_string()));
                 }
             },
         );
@@ -1440,7 +1443,11 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     filmcraft_text::fonts::scan_system();
                 }
                 for (f, _) in &fams {
-                    if ui.selectable_label(*f == family, f).clicked() {
+                    let o = ui.selectable_label(*f == family, f);
+                    if let Some(vr) = crate::widgets::visible(ui, o.rect) {
+                        cx.auto(&format!("font.option.{f}"), vr, f);
+                    }
+                    if o.clicked() {
                         cx.set("font", json!(f));
                     }
                 }
@@ -1460,7 +1467,9 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         }
                     }
                 }) {
-                    if ui.selectable_label(st == style, st).clicked() {
+                    let o = ui.selectable_label(st == style, st);
+                    cx.auto(&format!("font_style.option.{st}"), o.rect, st);
+                    if o.clicked() {
                         cx.set("font_style", json!(st));
                     }
                 }

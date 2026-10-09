@@ -175,7 +175,10 @@ impl FilmcraftMcp {
         Self { backend: Arc::new(Backend::Headless(Arc::new(Mutex::new(session)))), tool_router: Self::tool_router() }
     }
     pub fn bridge(addr: &str) -> Result<Self, AutomationError> {
-        Ok(Self { backend: Arc::new(Backend::Bridge(Arc::new(BridgeClient::new(addr)?))), tool_router: Self::tool_router() })
+        Ok(Self {
+            backend: Arc::new(Backend::Bridge(Arc::new(BridgeClient::new(addr)?.with_launcher(crate::bridge::default_app())))),
+            tool_router: Self::tool_router(),
+        })
     }
 
     pub async fn serve_stdio(self) -> Result<(), AutomationError> {
@@ -445,7 +448,7 @@ impl FilmcraftMcp {
 
     #[tool(
         title = "Live app: UI state",
-        description = "Live app: UI state (tool, workspace, panels, timeline zoom, playback, selection, fps).",
+        description = "Live app: UI state (tool, workspace, panels, timeline zoom, playback, selection, fps). `modal` is the open modal dialog as {rect, elements: [{id, label, rect}]}, null when none is open: check it after the app starts (e.g. 'Recover Unsaved Changes') and answer it before clicking anything else.",
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
     )]
     async fn ui_inspect(&self) -> Result<CallToolResult, McpError> {
@@ -463,7 +466,7 @@ impl FilmcraftMcp {
 
     #[tool(
         title = "Live app: click",
-        description = "Live app: click an element by id or at x,y (points). Supports right/middle button, double-click (count=2) and modifiers.",
+        description = "Live app: click an element by id or at x,y (points). Supports right/middle button, double-click (count=2) and modifiers. Waits (up to 3 s) until the element has been drawn in the same place for two frames, so a click aimed at a list that just opened lands. Fails with an error naming the dialog's buttons when a modal dialog is open (e.g. 'Recover Unsaved Changes' on launch) or a dialog window covers the element: answer or close that dialog first (e.g. ui_click recovery.later).",
         annotations(read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
     )]
     async fn ui_click(&self, Parameters(p): Parameters<ClickParams>) -> Result<CallToolResult, McpError> {
@@ -479,7 +482,7 @@ impl FilmcraftMcp {
 
     #[tool(
         title = "Live app: drag",
-        description = "Live app: press-drag-release from one point/element to another (move clips, trim edges, scrub, resize panels, drop project items onto tracks).",
+        description = "Live app: press-drag-release from one point/element to another (move clips, trim edges, scrub, resize panels, drop project items onto tracks). Waits (up to 3 s) until the element has been drawn in the same place for two frames, so a click aimed at a list that just opened lands. Fails with an error naming the dialog's buttons when a modal dialog is open (e.g. 'Recover Unsaved Changes' on launch) or a dialog window covers the element: answer or close that dialog first (e.g. ui_click recovery.later).",
         annotations(read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
     )]
     async fn ui_drag(&self, Parameters(p): Parameters<DragParams>) -> Result<CallToolResult, McpError> {
@@ -524,6 +527,18 @@ impl FilmcraftMcp {
     async fn ui_control(&self, Parameters(p): Parameters<ControlParams>) -> Result<CallToolResult, McpError> {
         self.ui(&p.method, p.params.unwrap_or(json!({}))).await
     }
+
+    #[tool(
+        title = "Map of every button",
+        description = "Find any button, field, tab, dropdown option, dialog control or menu command of the FilmCraft window (offline, both modes). Filter by `prefix` (id), `panel` (`Timeline`, `Export mode`, `Dialog: Add Tracks`, `Menu: Clip`…), `kind` and free-text `query` (e.g. \"add tracks\", \"mute\", \"export preset\"); 40 entries per call (`limit` ≤ 500, `offset` to page). Each entry: id, label, panel, kind, `reach` (steps from a fresh start that make it visible), `effect` (what a click did on the demo project), `command` (the engine command behind it), `close`, `rightClick`, `examples`. When the entry has a `command`, prefer command_run with it. Otherwise follow `reach` (ui.panel.show / ui.set → ui_control, ui.menu.invoke / command_run → command_run, ui.click → ui_click), take the real id of a {clip}/{item}/{track}/{name} family from ui_elements, then ui_click the id.",
+        annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn ui_map(&self, Parameters(p): Parameters<crate::ui_map::UiMapParams>) -> Result<CallToolResult, McpError> {
+        Ok(match crate::ui_map::search(&p) {
+            Ok(v) => ok_json(&v),
+            Err(e) => fail(e),
+        })
+    }
 }
 
 impl FilmcraftMcp {
@@ -561,7 +576,7 @@ impl FilmcraftMcp {
     }
 }
 
-const INSTRUCTIONS: &str = "FilmCraft video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`) returns ids you can pass to commands; `render_preview` shows the result. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`).";
+const INSTRUCTIONS: &str = "FilmCraft video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`) returns ids you can pass to commands; `render_preview` shows the result. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. `ui_map` finds any button of the window (where it is, how to reach it, the command behind it). Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`).";
 
 /// Resources: the project (as `doc_inspect`) and the command catalog (as `command_list`).
 const DOCUMENT_URI: &str = "filmcraft://document";
@@ -739,11 +754,30 @@ mod tests {
             }
         }
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
-        for want in ["command_list", "command_run", "command_batch", "doc_inspect", "render_preview", "project_inspect", "render_frame", "ui_click"] {
+        for want in ["command_list", "command_run", "command_batch", "doc_inspect", "render_preview", "project_inspect", "render_frame", "ui_click", "ui_map"] {
             assert!(names.contains(&want), "{want} not listed");
         }
         let ro = |n: &str| tools.iter().find(|t| t["name"] == n).map(|t| t["annotations"]["readOnlyHint"].clone());
-        assert_eq!((ro("command_list"), ro("command_run")), (Some(json!(true)), Some(json!(false))));
+        assert_eq!((ro("command_list"), ro("command_run"), ro("ui_map")), (Some(json!(true)), Some(json!(false)), Some(json!(true))));
+    }
+
+    /// `ui_map` answers in headless mode too (the map is embedded), with strict arguments.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ui_map_finds_buttons_offline() {
+        let mut c = Client::start(Session::default());
+        c.init().await;
+        let r = c.call(1, "ui_map", json!({"query": "razor tool", "limit": 5})).await;
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let v: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        let ids: Vec<&str> = v["elements"].as_array().unwrap().iter().filter_map(|e| e["id"].as_str()).collect();
+        assert!(ids.contains(&"tools.Razor") && ids.len() <= 5, "{v}");
+        assert!(v["how"].as_str().unwrap().contains("ui_click"), "{v}");
+        let r = c.call(2, "ui_map", json!({"panel": "Menu: Sequence", "kind": "menu-item", "limit": 500})).await;
+        let v: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        let els = v["elements"].as_array().unwrap();
+        assert!(!els.is_empty() && els.iter().all(|e| e["command"] == e["id"]), "menu commands carry their command: {v}");
+        let r = c.call(3, "ui_map", json!({"querry": "x"})).await;
+        assert_eq!(r["error"]["code"], -32602, "{r}");
     }
 
     /// Strict arguments, malformed JSON, batch, doc_inspect and render_preview over the raw line

@@ -25,6 +25,7 @@ use std::sync::mpsc::Sender;
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
+use crate::automation::Element;
 use crate::dock::PanelKind;
 use crate::state::{Mode, PlaybackRes, Tool};
 
@@ -85,7 +86,8 @@ fn as_pressed(mut m: egui::Modifiers) -> egui::Modifiers {
 /// Resolve a point from `{id}` (element centre) or `{x, y}`.
 fn point(app: &FilmcraftApp, p: &Value) -> Result<egui::Pos2, String> {
     if let Some(id) = p.get("id").and_then(Value::as_str) {
-        let e = app.auto.find(id).ok_or_else(|| format!("{RETRY}no element `{id}` (see ui.elements)"))?;
+        app.auto.find(id).ok_or_else(|| format!("{RETRY}no element `{id}` (see ui.elements)"))?;
+        let e = app.auto.settled(id).ok_or_else(|| format!("{RETRY}`{id}` is still appearing or moving"))?;
         let fx = p.get("fx").and_then(Value::as_f64).unwrap_or(0.5) as f32;
         let fy = p.get("fy").and_then(Value::as_f64).unwrap_or(0.5) as f32;
         return Ok(egui::pos2(e.rect[0] + e.rect[2] * fx, e.rect[1] + e.rect[3] * fy));
@@ -93,6 +95,73 @@ fn point(app: &FilmcraftApp, p: &Value) -> Result<egui::Pos2, String> {
     let x = p.get("x").and_then(Value::as_f64).ok_or("need `id` or `x`,`y`")?;
     let y = p.get("y").and_then(Value::as_f64).ok_or("need `y`")?;
     Ok(egui::pos2(x as f32, y as f32))
+}
+
+fn centre(e: &Element) -> egui::Pos2 {
+    egui::pos2(e.rect[0] + e.rect[2] * 0.5, e.rect[1] + e.rect[3] * 0.5)
+}
+
+/// `id (label), …` of the elements, at most a dozen, a dialog's answer buttons first.
+fn listing(els: &[&Element]) -> String {
+    let answer = |e: &&Element| [".ok", ".cancel", ".close", ".later", ".recover", ".discard", ".done"].iter().any(|s| e.id.ends_with(s));
+    let (mut els, rest): (Vec<&Element>, Vec<&Element>) = els.iter().copied().partition(answer);
+    els.extend(rest);
+    let mut out: Vec<String> = els.iter().take(12).map(|e| format!("{} ({})", e.id, e.label)).collect();
+    if els.len() > 12 {
+        out.push(format!("+{} more in ui.elements", els.len() - 12));
+    }
+    out.join(", ")
+}
+
+/// The open modal dialog: its rect and the elements drawn in it. A modal swallows every click
+/// outside it, so nothing else on screen can be pressed until it is answered.
+fn modal<'a>(app: &'a FilmcraftApp, ctx: &egui::Context) -> Option<(egui::Rect, Vec<&'a Element>)> {
+    let layer = ctx.memory(|m| m.top_modal_layer())?;
+    let rect = ctx.memory(|m| m.area_rect(layer.id))?;
+    let mut els: Vec<&Element> = app.auto.dialog_elements().iter().filter(|e| rect.contains(centre(e))).collect();
+    if els.is_empty() {
+        els = app.auto.query("").into_iter().filter(|e| rect.contains(centre(e))).collect();
+    }
+    Some((rect, els))
+}
+
+/// `Err` when a press at `pos` (on element `id`, if given) would land on something else: outside an
+/// open modal dialog, or on a panel element that a dialog window covers. An agent then gets told
+/// what is in the way instead of a click that silently did nothing.
+fn reachable(app: &FilmcraftApp, ctx: &egui::Context, id: Option<&str>, pos: egui::Pos2) -> Result<(), String> {
+    if let Some((rect, els)) = modal(app, ctx) {
+        let inside = match id {
+            Some(i) => els.iter().any(|e| e.id == i),
+            None => rect.contains(pos),
+        };
+        if inside {
+            return Ok(());
+        }
+        let what = id.map(|i| format!("`{i}`")).unwrap_or_else(|| format!("({:.0}, {:.0})", pos.x, pos.y));
+        return Err(format!("a dialog is open and blocks {what}; answer it first: {}", listing(&els)));
+    }
+    let Some(id) = id else { return Ok(()) };
+    if app.auto.in_dialog(id) {
+        return Ok(());
+    }
+    let Some(layer) = ctx.layer_id_at(pos) else { return Ok(()) };
+    if layer.order == egui::Order::Background {
+        return Ok(());
+    }
+    let Some(rect) = ctx.memory(|m| m.area_rect(layer.id)) else { return Ok(()) };
+    let covering: Vec<&Element> = app.auto.dialog_elements().iter().filter(|e| rect.contains(centre(e))).collect();
+    if covering.is_empty() {
+        // a popup or menu opened from the panels (the element is probably in it)
+        return Ok(());
+    }
+    Err(format!("`{id}` is covered by a dialog; close it first: {}", listing(&covering)))
+}
+
+/// [`point`], then [`reachable`].
+fn target(app: &FilmcraftApp, ctx: &egui::Context, p: &Value) -> Result<egui::Pos2, String> {
+    let pos = point(app, p)?;
+    reachable(app, ctx, p.get("id").and_then(Value::as_str), pos)?;
+    Ok(pos)
 }
 
 pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
@@ -283,7 +352,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             ok(Value::Null)
         }
         "ui.click" | "ui.move" => {
-            let pos = match point(app, p) {
+            let pos = match if req.method == "ui.click" { target(app, ctx, p) } else { point(app, p) } {
                 Ok(p) => p,
                 Err(e) if e.starts_with(RETRY) => return Outcome::Retry(e.trim_start_matches(RETRY).to_string()),
                 Err(e) => return err(e),
@@ -306,7 +375,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
         }
         "ui.drag" => {
             let (Some(from), Some(to)) = (p.get("from"), p.get("to")) else { return err("need `from` and `to`") };
-            let (a, b) = match (point(app, from), point(app, to)) {
+            let (a, b) = match (target(app, ctx, from), point(app, to)) {
                 (Ok(a), Ok(b)) => (a, b),
                 (Err(e), _) | (_, Err(e)) if e.starts_with(RETRY) => return Outcome::Retry(e.trim_start_matches(RETRY).to_string()),
                 (Err(e), _) | (_, Err(e)) => return err(e),
@@ -323,7 +392,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             Outcome::AfterInput
         }
         "ui.scroll" => {
-            let pos = match point(app, p) {
+            let pos = match target(app, ctx, p) {
                 Ok(p) => p,
                 Err(e) => return err(e),
             };
@@ -434,8 +503,10 @@ pub fn inspect(app: &FilmcraftApp, ctx: &egui::Context) -> Value {
         "playhead": app.session.playhead().0,
         "activeSequence": app.session.state.active_sequence.map(|i| i.0),
         "selection": app.session.state.selection.iter().map(|c| c.0).collect::<Vec<_>>(),
-        "elements": app.auto.previous.len(),
+        "gapSelection": filmcraft_engine::gaps::gaps_json(&app.session)["gaps"],
+        "elements": app.auto.query("").len(),
         "dialog": app.dialog.map(|d| format!("{d:?}")),
+        "modal": modal(app, ctx).map(|(r, els)| json!({"rect": [r.min.x, r.min.y, r.width(), r.height()], "elements": els})),
     })
 }
 

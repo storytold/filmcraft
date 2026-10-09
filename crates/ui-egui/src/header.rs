@@ -2,6 +2,11 @@
 //! document title centred, the workspace name and quick actions on the right. On macOS the menus
 //! live in the native menu bar (set up by the app); elsewhere a compact in-window menu bar follows
 //! the mode tabs.
+//!
+//! Automation ids: `header.home`, `header.mode.<import|edit|export>`, `header.<fullscreen|volume|
+//! search|notifications|quickExport|workspaces>`, `header.workspaceName`, `header.discord`,
+//! `header.drag` (the free stretch around the title: drag moves the window, a double-click
+//! maximizes), and in the workspaces popup `header.workspaces.<slug>` and `header.workspaces.reset`.
 
 use egui::{Color32, Rect, Sense, Stroke, pos2, vec2};
 
@@ -122,6 +127,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         // Localized menus and user titles can be wider than English. Use the actual gap.
         let left = left_end + 12.0;
         let right = r.min.x - 12.0;
+        if right > left {
+            // the free stretch around the title: drag moves the window, double-click maximizes
+            app.auto.add("header.drag", Rect::from_min_max(pos2(left, rect.min.y), pos2(right, rect.max.y)), "Move window (double-click: maximize)");
+        }
         if right > left + 40.0 {
             let mut job = egui::text::LayoutJob::simple_singleline(title, Tokens::ui(14.0), t.tab_text_active);
             job.wrap.max_width = right - left;
@@ -152,13 +161,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ui.set_min_width(220.0);
                 for w in crate::dock::names(&app.workspaces) {
                     let sel = app.ui.workspace == w;
-                    if ui.selectable_label(sel, &w).clicked() {
+                    let o = ui.selectable_label(sel, &w);
+                    app.auto.add(&format!("header.workspaces.{}", crate::dock::slug(&w)), o.rect, &w);
+                    if o.clicked() {
                         app.set_workspace(&w);
                         ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
                     }
                 }
                 ui.separator();
-                if ui.button("Reset to Saved Layout").clicked() {
+                let b = ui.button("Reset to Saved Layout");
+                app.auto.add("header.workspaces.reset", b.rect, "Reset to Saved Layout");
+                if b.clicked() {
                     let n = app.ui.workspace.clone();
                     app.set_workspace(&n);
                     ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));

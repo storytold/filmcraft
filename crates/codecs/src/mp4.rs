@@ -11,7 +11,7 @@ use filmcraft_color::{ColorInfo, Matrix, Primaries, Range, Transfer};
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_isobmff::{CodecConfig, Mp4File, TrackKind};
 use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, SharedSource, VideoStreamInfo};
-use filmcraft_time::{FrameRate, Tick};
+use filmcraft_time::Tick;
 
 use crate::audio::{PacketDecoder, decode_pcm};
 use crate::gop::{GopCache, VideoSamples};
@@ -167,13 +167,9 @@ impl Mp4Source {
             let entry = &t.entries[0];
             let vp = entry.video.clone().unwrap_or_default();
             let (w, h) = (if vp.width > 0 { vp.width as u32 } else { t.width }, if vp.height > 0 { vp.height as u32 } else { t.height });
-            // frame rate from the median sample duration
-            let mut durs: Vec<u32> = t.samples.iter().take(240).map(|s| s.duration).collect();
-            durs.sort_unstable();
-            let d = durs.get(durs.len() / 2).copied().unwrap_or(1).max(1);
-            let rate = FrameRate::from_f64(t.timescale as f64 / d as f64);
-            // A rate that rounds to zero (one sample per huge duration) can't be divided by.
-            let rate = if rate.num > 0 && rate.den > 0 { rate } else { FrameRate::default() };
+            // frame rate from the sample durations (robust to millisecond-rounded times and drops)
+            let durs: Vec<i64> = t.samples.iter().take(crate::RATE_SAMPLES).map(|s| i64::from(s.duration)).collect();
+            let rate = crate::rate_from_durations(durs, f64::from(t.timescale));
             color = color_from(entry, w, h);
             if entry
                 .video

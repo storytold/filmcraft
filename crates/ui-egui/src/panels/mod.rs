@@ -1,5 +1,9 @@
 //! Panel bodies. `show` dispatches on [`PanelKind`]; drag-and-drop between panels (project items,
 //! effects) is carried in egui temp data so the timeline/monitors can accept drops.
+//!
+//! The panel "≡" menu (`panel.menu.<Panel>`) has `panel.menu.<Panel>.close`, `.maximize`,
+//! `.restoreWorkspace`, and for the Timeline `.closeOthers`, `.revealSequence`,
+//! `.videoThumbnails`, `.audioWaveforms`.
 
 pub mod audio_fx_editor;
 pub mod clip_dialogs;
@@ -212,15 +216,23 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                     let _ = app.session.execute("sequence.closeOthers", serde_json::json!({}));
                     close = true;
                 }
-            } else if ui.button("Close Panel").clicked() {
-                app.ui.dock.close(p);
-                close = true;
+            } else {
+                let r = ui.button("Close Panel");
+                app.auto.add(&format!("panel.menu.{}.close", p.id()), r.rect, "Close Panel");
+                if r.clicked() {
+                    app.ui.dock.close(p);
+                    close = true;
+                }
             }
-            if ui.button("Maximize Frame").clicked() {
+            let r = ui.button("Maximize Frame");
+            app.auto.add(&format!("panel.menu.{}.maximize", p.id()), r.rect, "Maximize Frame");
+            if r.clicked() {
                 app.ui.dock = crate::dock::DockNode::Tabs { panels: vec![p], active: 0 };
                 close = true;
             }
-            if ui.button("Restore Workspace").clicked() {
+            let r = ui.button("Restore Workspace");
+            app.auto.add(&format!("panel.menu.{}.restoreWorkspace", p.id()), r.rect, "Restore Workspace");
+            if r.clicked() {
                 let w = app.ui.workspace.clone();
                 app.set_workspace(&w);
                 close = true;
@@ -233,8 +245,10 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                     let _ = app.session.execute("sequence.revealInProject", serde_json::json!({}));
                     close = true;
                 }
-                ui.checkbox(&mut app.ui.timeline.show_thumbnails, "Video Thumbnails");
-                ui.checkbox(&mut app.ui.timeline.show_waveforms, "Audio Waveforms");
+                let r = ui.checkbox(&mut app.ui.timeline.show_thumbnails, "Video Thumbnails");
+                app.auto.add("panel.menu.Timeline.videoThumbnails", r.rect, "Video Thumbnails");
+                let r = ui.checkbox(&mut app.ui.timeline.show_waveforms, "Audio Waveforms");
+                app.auto.add("panel.menu.Timeline.audioWaveforms", r.rect, "Audio Waveforms");
             }
             if p == PanelKind::Project {
                 ui.separator();

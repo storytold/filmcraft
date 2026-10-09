@@ -8,9 +8,10 @@
 //! same over MCP. Automation ids: `shortcuts.preset`, `shortcuts.preset.<name>`, `shortcuts.saveAs`,
 //! `shortcuts.saveAs.name`, `shortcuts.saveAs.ok`, `shortcuts.delete`, `shortcuts.export`,
 //! `shortcuts.import`, `shortcuts.context`, `shortcuts.context.<panel>`, `shortcuts.search`,
-//! `shortcuts.key.<Key>`, `shortcuts.mod.<Cmd|Ctrl|Alt|Shift>`, `shortcuts.row.<command>`,
+//! `shortcuts.key.<Key>` (`shortcuts.key.CapsLock` takes no shortcut), `shortcuts.mod.<Cmd|Ctrl|Alt|Shift>`, `shortcuts.row.<command>`,
 //! `shortcuts.cell.<command>` (click = record), `shortcuts.add.<command>`, `shortcuts.assignKey`,
-//! `shortcuts.undo`, `shortcuts.redo`, `shortcuts.clear`, `shortcuts.cancel`, `shortcuts.ok`.
+//! `shortcuts.undo`, `shortcuts.redo`, `shortcuts.clear`, `shortcuts.cancel`, `shortcuts.ok`,
+//! `shortcuts.close` (the title-bar ×, as Cancel).
 
 use egui::text::LayoutJob;
 use egui::{Align2, Color32, CornerRadius, FontId, Rect, RichText, Sense, Stroke, StrokeKind, TextFormat, pos2, vec2};
@@ -148,7 +149,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let size = vec2((screen.width() - 40.0).clamp(760.0, 1320.0), (screen.height() - 60.0).clamp(560.0, 900.0));
     let mut close: Option<bool> = None; // Some(true) = OK, Some(false) = Cancel
     let mut open = true;
-    egui::Window::new("Keyboard Shortcuts")
+    let w = egui::Window::new("Keyboard Shortcuts")
         .id(egui::Id::new("keyboard-shortcuts"))
         .open(&mut open)
         .collapsible(false)
@@ -180,6 +181,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             ui.add_space(6.0);
             close = footer(app, ui, &t);
         });
+    if let Some(w) = w {
+        // the title-bar ×: closes like Cancel. The content is wider than the fixed size, so the
+        // title bar spans only the fixed width from the window's left edge.
+        let title = egui::Rect::from_min_size(w.response.rect.min, vec2(size.x.min(w.response.rect.width()), w.response.rect.height()));
+        app.auto.add("shortcuts.close", crate::widgets::window_close_rect(ctx, title, Some(egui::Margin::same(14))), "Close");
+    }
     if !open {
         close = Some(false);
     }
@@ -462,9 +469,12 @@ fn keyboard(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, t: &Tokens) {
     let origin = area.min;
     let mut clicked_key: Option<String> = None;
     let mut toggled: Option<&str> = None;
+    let mut caps_clicked = false;
     let mut draw = |ui: &mut egui::Ui, r: Rect, name: &str| {
         let r = r.shrink(gap / 2.0);
-        let is_mod = name.starts_with('#');
+        // Caps Lock is drawn but is no modifier and takes no shortcut
+        let caps = name == "#Caps";
+        let is_mod = name.starts_with('#') && !caps;
         let (app_cmd, panel_cmd) = map.get(name).cloned().unwrap_or_default();
         let mod_on = match name {
             "#Shift" => mods.shift,
@@ -476,8 +486,9 @@ fn keyboard(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, t: &Tokens) {
         // modifier keys appear twice: the right-hand ones get a ".right" suffix
         let right = is_mod && r.center().x > area.center().x;
         let id = match (is_mod, right) {
-            (true, false) => format!("shortcuts.mod.{}", &name[1..]),
-            (true, true) => format!("shortcuts.mod.{}.right", &name[1..]),
+            _ if caps => "shortcuts.key.CapsLock".to_string(),
+            (true, false) => format!("shortcuts.mod.{}", name.trim_start_matches('#')),
+            (true, true) => format!("shortcuts.mod.{}.right", name.trim_start_matches('#')),
             _ => format!("shortcuts.key.{name}"),
         };
         let resp = ui.interact(r, egui::Id::new(&id), Sense::click());
@@ -535,7 +546,9 @@ fn keyboard(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, t: &Tokens) {
                     "#Cmd" => "Cmd",
                     _ => "Ctrl",
                 });
-            } else if name != "#Caps" {
+            } else if caps {
+                caps_clicked = true;
+            } else {
                 clicked_key = Some(name.to_string());
             }
         }
@@ -569,6 +582,9 @@ fn keyboard(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, t: &Tokens) {
     }
     if let Some(k) = clicked_key {
         ed.key = Some(k);
+    }
+    if caps_clicked {
+        ed.message = "Caps Lock can't be used in a shortcut".into();
     }
 }
 

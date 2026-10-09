@@ -3,9 +3,12 @@
 //! editing on the Program monitor (drag vertices, Bézier handles, the whole mask, feather and
 //! expansion handles; the pen places a free-draw Bézier mask).
 //!
-//! Automation ids: `effectControls.<effect>.mask.{ellipse,polygon,pen}`,
-//! `effectControls.<effect>.mask<k>` (+ `.mode`, `.inverted`, `.delete`, and the parameter rows
-//! `effectControls.<effect>.mask<k>.<param>.*`), `program.mask.vertex.<i>`, `program.mask.in.<i>`,
+//! Automation ids (`<effect>` is the effect's automation key, see
+//! `effect_controls::fx_auto_key`): `effectControls.<effect>.mask.{ellipse,polygon,pen}`,
+//! `effectControls.<effect>.mask<k>` (+ `.twirl`, `.mode` with `.mode.option.<Mode>` while open,
+//! `.inverted`, `.delete` in its right-click menu, `.trackMethod` with
+//! `.trackMethod.option.<Position|PositionRotation|PositionScaleRotation>` while open, `.track.<back|backFrame|fwdFrame|fwd>`, and the
+//! parameter rows `effectControls.<effect>.mask<k>.<param>.*`), `program.mask.vertex.<i>`, `program.mask.in.<i>`,
 //! `program.mask.out.<i>`, `program.mask.body`, `program.mask.feather`, `program.mask.expansion`,
 //! `program.maskPen`.
 
@@ -43,6 +46,7 @@ pub fn effect_rows(
     it: &TrackItem,
 ) {
     let t = app.tokens;
+    let fx = crate::panels::effect_controls::fx_auto_key(it, idx);
     // creation tools: ellipse, 4-point polygon, free-draw Bézier
     let (r, _) = ui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::hover());
     let pen_on = app.ui.mask_pen.as_ref().is_some_and(|p| p.clip == clip.0 && p.effect == idx);
@@ -58,7 +62,7 @@ pub fn effect_rows(
         }
         let on = kind == "pen" && pen_on;
         icons::paint(ui.painter(), br.shrink(3.0), icon, if on { t.accent } else { t.icon });
-        app.auto.add(&format!("effectControls.{}.mask.{kind}", e.effect), br, tip);
+        app.auto.add(&format!("effectControls.{fx}.mask.{kind}"), br, tip);
         if resp.clicked() {
             if kind == "pen" {
                 app.ui.mask_pen = if on { None } else { Some(crate::state::MaskPenDraft { clip: clip.0, effect: idx, points: vec![] }) };
@@ -96,20 +100,27 @@ pub fn effect_rows(
         };
         icons::paint(ui.painter(), glyph, gi, if selected { t.accent } else { t.text_dim });
         ui.painter().text(pos2(r.min.x + 54.0, r.center().y), Align2::LEFT_CENTER, &m.name, Tokens::ui(12.0), t.text);
-        let base = format!("effectControls.{}.mask{k}", e.effect);
+        let base = format!("effectControls.{fx}.mask{k}");
         app.auto.add(&base, r, &m.name);
+        app.auto.add(&format!("{base}.twirl"), tw.expand(3.0), if open { "Collapse mask" } else { "Expand mask" });
         // mode
         let mr = Rect::from_min_size(pos2(r.max.x - 118.0, r.min.y + 2.0), vec2(96.0, ROW_H - 4.0));
         let mut mui = ui.new_child(egui::UiBuilder::new().max_rect(mr).layout(egui::Layout::left_to_right(egui::Align::Center)));
         let mut mode = m.mode;
+        let mut options: Vec<(String, Rect, &str)> = Vec::new();
         egui::ComboBox::from_id_salt(("mask-mode", clip.0, idx, k)).selected_text(mode.label()).width(88.0).show_ui(&mut mui, |ui| {
             for md in MaskMode::ALL {
-                if ui.selectable_value(&mut mode, md, md.label()).changed() {
+                let o = ui.selectable_value(&mut mode, md, md.label());
+                options.push((format!("{base}.mode.option.{}", md.label()), o.rect, md.label()));
+                if o.changed() {
                     actions.push(("masks.set".into(), json!({"clip": clip.0, "effect": idx, "mask": k, "mode": md.label()})));
                 }
             }
         });
         app.auto.add(&format!("{base}.mode"), mr, "Mask mode");
+        for (id, or, label) in options {
+            app.auto.add(&id, or, label);
+        }
         if twresp.clicked() {
             if open {
                 app.ui.collapsed_fx.push(key.clone());
@@ -124,7 +135,9 @@ pub fn effect_rows(
             }
         }
         resp.context_menu(|ui| {
-            if ui.button("Delete Mask").clicked() {
+            let d = ui.button("Delete Mask");
+            app.auto.add(&format!("{base}.delete"), d.rect, "Delete Mask");
+            if d.clicked() {
                 actions.push(("masks.remove".into(), json!({"clip": clip.0, "effect": idx, "mask": k})));
                 ui.close();
             }
@@ -540,7 +553,7 @@ pub fn path_value(app: &mut FilmcraftApp, ui: &mut egui::Ui, clip: ClipId, effec
     let Some(it) = app.session.active_sequence().and_then(|q| q.find_item(clip)).map(|(_, i)| i.clone()) else { return };
     let Some(e) = it.effects.get(effect) else { return };
     let Some(m) = e.masks.get(k) else { return };
-    let base = format!("effectControls.{}.mask{k}", e.effect);
+    let base = format!("effectControls.{}.mask{k}", crate::panels::effect_controls::fx_auto_key(&it, effect));
     let target = filmcraft_engine::masks::MaskSel { clip, effect, mask: k };
     let running = app.session.mask_jobs.iter().find(|j| j.target == target).map(|j| j.job);
     for (icon, dir, frames, id, tip) in [
@@ -576,7 +589,10 @@ pub fn path_value(app: &mut FilmcraftApp, ui: &mut egui::Ui, clip: ClipId, effec
     let resp = resp.on_hover_text(format!("Tracking method: {}", m.track_method.label()));
     egui::Popup::menu(&resp).show(|ui| {
         for tm in filmcraft_project::TrackMethod::ALL {
-            if ui.selectable_label(tm == m.track_method, tm.label()).clicked() {
+            let o = ui.selectable_label(tm == m.track_method, tm.label());
+            // `Position`, `PositionRotation`, `PositionScaleRotation`
+            app.auto.add(&format!("{base}.trackMethod.option.{}", tm.label().replace([' ', '&', ','], "")), o.rect, tm.label());
+            if o.clicked() {
                 actions.push(("masks.set".into(), json!({"clip": clip.0, "effect": effect, "mask": k, "trackMethod": tm.label()})));
             }
         }

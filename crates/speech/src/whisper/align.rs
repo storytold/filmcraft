@@ -1,7 +1,7 @@
 //! Word timing from cross-attention: token-to-audio alignment by dynamic time warping over the
 //! averaged, normalised attention of the alignment heads (see the module docs of `whisper`).
 
-use candle_core::{Result, Tensor};
+use candle_core::{DType, Result, Tensor};
 
 use super::model::Model;
 
@@ -16,7 +16,7 @@ pub fn align(m: &mut Model, xa: &Tensor, prompt: &[u32], text: &[u32], eot: u32,
     let Some(qk) = qk else { return Ok(vec![(0, 0); text.len()]) };
     let (h, t, f_all) = qk.dims3()?;
     let f = (seg_frames / 2).clamp(1, f_all);
-    let qk = qk.narrow(2, 0, f)?.contiguous()?;
+    let qk = qk.narrow(2, 0, f)?.to_dtype(DType::F32)?.contiguous()?;
     let w = candle_nn::ops::softmax_last_dim(&qk)?;
     let w: Vec<Vec<Vec<f32>>> = w.to_vec3()?;
     let rows = text.len() + 1;

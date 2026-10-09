@@ -6,6 +6,14 @@
 //! requested first and the nearest cached frame is shown until it arrives (no black flashes), or
 //! failing that the frame asked for a refresh earlier, so the picture follows a scrub or a value
 //! that is dragged instead of waiting for the mouse to rest.
+//!
+//! The Source monitor plays on its own clock (its Play button, [`toggle_source`]); playing one
+//! monitor stops the other. Automation ids: `<monitor>.timecode`, `.zoom`, `.resolution` (+
+//! `.resolution.<full|half|quarter|eighth|sixteenth>` while open), `.settings` (the wrench; its
+//! entries `.settings.<…>`, e.g. `.settings.safeMargins`, `program.settings.playback.loop`,
+//! `program.settings.multicam.gridLayout.<auto|2x2|3x3|4x4>`), `.scrubBar`, `.picture`,
+//! `.transport.<command>` (the transport bar) and `.transport.buttonEditor` (the `+`), whose popup
+//! has `<monitor>.buttonEditor.<command>` (show / hide that button) and `.buttonEditor.reset`.
 
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_project::ItemKind;
@@ -16,7 +24,7 @@ use crate::FilmcraftApp;
 use crate::frames::{FrameKey, Target};
 use crate::icons::{self, Icon};
 use crate::panels::monitor_view;
-use crate::state::{DisplayMode, PlaybackRes};
+use crate::state::DisplayMode;
 use crate::theme::Tokens;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -25,9 +33,94 @@ pub enum Which {
     Program,
 }
 
+/// Source monitor playback (its Play button): the clip it plays and the clock's anchor. Kept in
+/// the egui context while playing; the Program monitor's playback lives in `FilmcraftApp::playback`.
+#[derive(Clone, Copy, Debug)]
+struct SourcePlay {
+    item: u64,
+    /// egui time (s) of the first frame played; negative until that frame.
+    anchor_time: f64,
+    anchor: Tick,
+}
+
+fn source_play_id() -> egui::Id {
+    egui::Id::new("source-monitor-playback")
+}
+
+/// Whether the Source monitor is playing.
+pub fn source_playing(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<SourcePlay>(source_play_id())).is_some()
+}
+
+/// Stop Source monitor playback (no-op when it is not playing).
+pub fn stop_source(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.remove::<SourcePlay>(source_play_id()));
+}
+
+/// Play / stop the Source monitor, as its Play button does. Playing it stops the Program monitor
+/// (one monitor plays at a time, as in Premiere); from the last frame it restarts at the In point
+/// (or the clip's start).
+pub fn toggle_source(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    if source_playing(ctx) {
+        stop_source(ctx);
+        return;
+    }
+    let Some(item) = app.session.state.source_item else {
+        app.ui.status = "Open a clip in the Source monitor to play it".into();
+        return;
+    };
+    let Some(view) = filmcraft_engine::clip_ops::source_view(&app.session, item) else { return };
+    if app.playback.playing {
+        app.stop();
+    }
+    let last = view.end - view.rate.frame_duration();
+    let mut at = app.session.state.source_playhead;
+    if at >= last {
+        at = view.mark_in.unwrap_or(view.start);
+        if let Err(e) = app.session.execute("source.setPlayhead", json!({"time": at.0})) {
+            app.ui.status = e.to_string();
+        }
+    }
+    ctx.data_mut(|d| d.insert_temp(source_play_id(), SourcePlay { item: item.0, anchor_time: -1.0, anchor: at }));
+    ctx.request_repaint();
+}
+
+/// Move the Source monitor's playhead along while it plays (once per frame, before drawing it):
+/// at real-time speed from where Play was pressed, stopping on the clip's last frame, when the
+/// Program monitor starts playing, or when another clip is loaded.
+fn advance_source(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let Some(mut sp) = ctx.data(|d| d.get_temp::<SourcePlay>(source_play_id())) else { return };
+    let view = app.session.state.source_item.filter(|i| i.0 == sp.item).and_then(|i| filmcraft_engine::clip_ops::source_view(&app.session, i));
+    let Some(view) = view.filter(|_| !app.playback.playing) else {
+        stop_source(ctx);
+        return;
+    };
+    let now = ctx.input(|i| i.time);
+    if sp.anchor_time < 0.0 {
+        sp.anchor_time = now;
+        ctx.data_mut(|d| d.insert_temp(source_play_id(), sp));
+    }
+    let last = view.end - view.rate.frame_duration();
+    let t = sp.anchor + Tick::from_seconds_f64((now - sp.anchor_time).max(0.0));
+    let at = if t >= last {
+        stop_source(ctx);
+        last
+    } else {
+        t
+    };
+    if let Err(e) = app.session.execute("source.setPlayhead", json!({"time": at.0})) {
+        app.ui.status = e.to_string();
+        stop_source(ctx);
+    }
+    ctx.request_repaint();
+}
+
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
+    if which == Which::Source {
+        advance_source(app, &ctx);
+    }
     let controls_h = 28.0 + 24.0 + 36.0;
     let video_area = Rect::from_min_max(rect.min + vec2(4.0, 4.0), pos2(rect.max.x - 4.0, rect.max.y - controls_h));
     // the Source monitor's time ruler starts at `origin` (a subclip restricted to its range)
@@ -292,8 +385,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     let rresp = crate::widgets::dropdown_text(ui, rr, res.label(), &t, egui::Id::new((prefix, "res")));
     app.auto.add(&format!("{prefix}.resolution"), rr, "Select Playback Resolution");
     egui::Popup::menu(&rresp).show(|ui| {
-        for r in PlaybackRes::ALL {
-            if ui.selectable_label(r == res, r.label()).clicked() {
+        for (k, r) in monitor_view::RES_NAMES {
+            let o = ui.selectable_label(r == res, r.label());
+            app.auto.add(&format!("{prefix}.resolution.{k}"), o.rect, r.label());
+            if o.clicked() {
                 monitor_view::view_mut(app, which).res = r;
             }
         }
@@ -306,18 +401,39 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         ui.set_min_width(240.0);
         monitor_view::wrench_items(app, ui, which);
         let mv = monitor_view::view_mut(app, which);
-        ui.checkbox(&mut mv.safe_margins, "Safe Margins");
-        ui.checkbox(&mut mv.show_transport, "Show Transport Controls");
+        let r = ui.checkbox(&mut mv.safe_margins, "Safe Margins");
+        app.auto.add(&format!("{prefix}.settings.safeMargins"), r.rect, "Safe Margins");
+        let mv = monitor_view::view_mut(app, which);
+        let r = ui.checkbox(&mut mv.show_transport, "Show Transport Controls");
+        app.auto.add(&format!("{prefix}.settings.showTransport"), r.rect, "Show Transport Controls");
         if which == Which::Program {
             ui.separator();
-            ui.checkbox(&mut app.ui.show_scopes, "Lumetri Scopes");
-            ui.checkbox(&mut app.playback.looping, "Loop");
-            ui.separator();
-            let mut follows = app.session.state.multicam_audio_follows_video;
-            if ui.checkbox(&mut follows, "Multi-Camera Audio Follows Video").changed() {
-                let _ = app.session.execute("multicam.audioFollowsVideo", json!({"enabled": follows}));
+            // shows / closes the Lumetri Scopes panel
+            let mut scopes = app.ui.dock.contains(crate::dock::PanelKind::LumetriScopes);
+            let r = ui.checkbox(&mut scopes, "Lumetri Scopes");
+            app.auto.add("program.settings.lumetriScopes", r.rect, "Lumetri Scopes");
+            if r.changed() {
+                app.ui.show_scopes = scopes;
+                if scopes {
+                    app.show_panel(crate::dock::PanelKind::LumetriScopes);
+                } else {
+                    app.ui.dock.close(crate::dock::PanelKind::LumetriScopes);
+                }
             }
-            ui.checkbox(&mut app.ui.multicam_record, "Multi-Camera Record");
+            let r = ui.checkbox(&mut app.playback.looping, "Loop");
+            app.auto.add("program.settings.playback.loop", r.rect, "Loop");
+            ui.separator();
+            let mut errors: Vec<String> = Vec::new();
+            let mut follows = app.session.state.multicam_audio_follows_video;
+            let r = ui.checkbox(&mut follows, "Multi-Camera Audio Follows Video");
+            app.auto.add("program.settings.multicam.audioFollowsVideo", r.rect, "Multi-Camera Audio Follows Video");
+            if r.changed()
+                && let Err(e) = app.session.execute("multicam.audioFollowsVideo", json!({"enabled": follows}))
+            {
+                errors.push(e.to_string());
+            }
+            let r = ui.checkbox(&mut app.ui.multicam_record, "Multi-Camera Record");
+            app.auto.add("program.settings.multicam.recordToggle", r.rect, "Multi-Camera Record");
             let v = app.session.state.multicam_view.clone();
             for (cmd, label, on) in [
                 ("multicam.selectionTopDown", "Multi-Camera Selection Top Down", v.top_down),
@@ -326,20 +442,36 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
                 ("multicam.transmitView", "Transmit Multi-Camera View", v.transmit),
             ] {
                 let mut b = on;
-                if ui.checkbox(&mut b, label).changed() {
-                    let _ = app.session.execute(cmd, json!({"enabled": b}));
+                let r = ui.checkbox(&mut b, label);
+                app.auto.add(&format!("program.settings.{cmd}"), r.rect, label);
+                if r.changed()
+                    && let Err(e) = app.session.execute(cmd, json!({"enabled": b}))
+                {
+                    errors.push(e.to_string());
                 }
             }
-            ui.menu_button("Multi-Camera Layout", |ui| {
+            let sub = ui.menu_button("Multi-Camera Layout", |ui| {
                 for (k, label) in [("auto", "Automatic"), ("2x2", "2 × 2"), ("3x3", "3 × 3"), ("4x4", "4 × 4")] {
-                    if ui.selectable_label(v.layout_name() == k, label).clicked() {
-                        let _ = app.session.execute("multicam.gridLayout", json!({"layout": k}));
+                    let o = ui.selectable_label(v.layout_name() == k, label);
+                    app.auto.add(&format!("program.settings.multicam.gridLayout.{k}"), o.rect, label);
+                    if o.clicked()
+                        && let Err(e) = app.session.execute("multicam.gridLayout", json!({"layout": k}))
+                    {
+                        errors.push(e.to_string());
                     }
                 }
             });
-            if ui.button("Edit Cameras…").clicked() {
-                let _ = crate::panels::multicam::route(app, "multicam.editCamerasDialog", &json!({}));
+            app.auto.add("program.settings.multicam.gridLayout", sub.response.rect, "Multi-Camera Layout");
+            let b = ui.button("Edit Cameras…");
+            app.auto.add("program.settings.multicam.editCameras", b.rect, "Edit Cameras…");
+            if b.clicked() {
+                if let Some(Err(e)) = crate::panels::multicam::route(app, "multicam.editCamerasDialog", &json!({})) {
+                    errors.push(e);
+                }
                 ui.close();
+            }
+            if let Some(e) = errors.pop() {
+                app.ui.status = e;
             }
         }
     });
@@ -347,9 +479,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     let bar = Rect::from_min_size(pos2(rect.min.x + 14.0, row1.max.y + 2.0), vec2(rect.width() - 28.0, 22.0));
     mini_timeline(app, ui, bar, which, origin, time, duration, rate, mark_in, mark_out);
 
-    // ---- transport buttons
+    // ---- transport buttons (wrench ▸ Show Transport Controls)
     let row3 = Rect::from_min_size(pos2(rect.min.x, bar.max.y + 4.0), vec2(rect.width(), 32.0));
-    transport(app, ui, row3, which);
+    if monitor_view::view(app, which).show_transport {
+        transport(app, ui, row3, which);
+    }
 }
 
 /// How many of a paused monitor's latest requests are remembered ([`asked_before`]): about a
@@ -498,17 +632,19 @@ fn mini_timeline(
     }
 }
 
-fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which) {
-    let t = app.tokens;
-    let src = which == Which::Source;
-    let buttons: Vec<(Icon, &str, &str)> = if src {
+/// A transport button: icon, command, tooltip.
+type Button = (Icon, &'static str, &'static str);
+
+/// A monitor's default transport buttons.
+fn default_buttons(app: &FilmcraftApp, ctx: &egui::Context, src: bool) -> Vec<Button> {
+    if src {
         vec![
             (Icon::Marker, "markers.add", "Add Marker (M)"),
             (Icon::MarkIn, "src.markIn", "Mark In (I)"),
             (Icon::MarkOut, "src.markOut", "Mark Out (O)"),
             (Icon::GoToIn, "src.goIn", "Go to In (Shift+I)"),
             (Icon::StepBack, "src.stepBack", "Step Back 1 Frame (Left)"),
-            (Icon::Play, "src.play", "Play-Stop Toggle (Space)"),
+            (if source_playing(ctx) { Icon::Pause } else { Icon::Play }, "src.play", "Play-Stop Toggle (Space)"),
             (Icon::StepFwd, "src.stepFwd", "Step Forward 1 Frame (Right)"),
             (Icon::GoToOut, "src.goOut", "Go to Out (Shift+O)"),
             (Icon::Insert, "source.insert", "Insert (,)"),
@@ -531,7 +667,33 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
             (Icon::Camera, "exportFrame", "Export Frame (Shift+E)"),
             (Icon::Proxy, "media.toggleProxies", "Toggle Proxies"),
         ]
-    };
+    }
+}
+
+/// The buttons the Button Editor can add to a monitor's transport bar.
+fn extra_buttons(src: bool) -> Vec<Button> {
+    if src {
+        vec![(Icon::Grid, "view.safeMargins", "Safe Margins")]
+    } else {
+        vec![
+            (Icon::ChevronLeft, "markers.goPrev", "Go to Previous Marker (Cmd+Shift+M)"),
+            (Icon::ChevronRight, "markers.goNext", "Go to Next Marker (Shift+M)"),
+            (Icon::GoToIn, "playback.inToOut", "Play In to Out (Alt+K)"),
+            (Icon::Loop, "playback.loop", "Loop"),
+            (Icon::Grid, "view.safeMargins", "Safe Margins"),
+            (Icon::Close, "markers.clearInOut", "Clear In and Out"),
+        ]
+    }
+}
+
+fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which) {
+    let t = app.tokens;
+    let src = which == Which::Source;
+    let defaults = default_buttons(app, ui.ctx(), src);
+    let extras = extra_buttons(src);
+    let custom = if src { app.ui.panels.transport.source.clone() } else { app.ui.panels.transport.program.clone() };
+    let mut buttons: Vec<Button> = defaults.iter().copied().filter(|b| !custom.hidden.iter().any(|h| h == b.1)).collect();
+    buttons.extend(custom.added.iter().filter_map(|a| extras.iter().find(|b| b.1 == a.as_str()).copied()));
     let bw = 30.0;
     let total = buttons.len() as f32 * bw;
     let mut x = row.center().x - total / 2.0;
@@ -546,7 +708,12 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
             ui.painter().rect_filled(r, 4.0, t.hover);
         }
         let sz = if is_play { 16.0 } else { 14.0 };
-        let on = cmd == "media.toggleProxies" && app.session.media.use_proxies();
+        let on = match cmd {
+            "media.toggleProxies" => app.session.media.use_proxies(),
+            "playback.loop" => app.playback.looping,
+            "view.safeMargins" => monitor_view::view(app, which).safe_margins,
+            _ => false,
+        };
         let col = if on {
             t.accent
         } else if resp.hovered() {
@@ -563,11 +730,15 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
                     source_nav(app, cmd);
                     Ok(serde_json::Value::Null)
                 }
-                "src.play" => Ok(serde_json::Value::Null),
+                "src.play" => {
+                    toggle_source(app, &ctx);
+                    Ok(serde_json::Value::Null)
+                }
                 "exportFrame" => {
                     app.ui.status = "Export Frame: use Export mode (M6)".into();
                     Ok(serde_json::Value::Null)
                 }
+                "view.safeMargins" => crate::menus::invoke(app, &ctx, cmd, json!({"monitor": prefix})),
                 c => crate::menus::invoke(app, &ctx, c, json!({})),
             };
             if let Err(e) = r {
@@ -576,10 +747,57 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
         }
         x += bw;
     }
-    // button editor "+"
+    // Button Editor "+": shows or hides each default button and adds extra ones
     let r = Rect::from_min_size(pos2(row.max.x - 30.0, row.min.y + 4.0), vec2(22.0, 22.0));
     let resp = ui.interact(r, egui::Id::new((prefix, "btn-editor")), Sense::click()).on_hover_text("Button Editor");
     icons::paint(ui.painter(), r.shrink(5.0), Icon::Plus, if resp.hovered() { t.tab_text_active } else { t.text_dim });
+    app.auto.add(&format!("{prefix}.transport.buttonEditor"), r, "Button Editor");
+    button_editor(app, &resp, which, &defaults, &extras);
+}
+
+/// The Button Editor popup of a monitor's `+`: a checkbox per button (the bar's defaults, then the
+/// extra ones it can take) and Reset Layout. Automation ids `<monitor>.buttonEditor.<command>`
+/// and `<monitor>.buttonEditor.reset`.
+fn button_editor(app: &mut FilmcraftApp, resp: &egui::Response, which: Which, defaults: &[Button], extras: &[Button]) {
+    let prefix = if which == Which::Source { "source" } else { "program" };
+    let mut custom = if which == Which::Source { app.ui.panels.transport.source.clone() } else { app.ui.panels.transport.program.clone() };
+    let before = custom.clone();
+    let mut elems: Vec<(String, Rect, String)> = Vec::new();
+    egui::Popup::menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_min_width(260.0);
+        ui.label(egui::RichText::new("Buttons on the transport bar").weak());
+        for (i, (_, cmd, tip)) in defaults.iter().chain(extras.iter()).enumerate() {
+            let label = tip.split(" (").next().unwrap_or(tip);
+            let default = i < defaults.len();
+            let mut shown = if default { !custom.hidden.iter().any(|h| h == cmd) } else { custom.added.iter().any(|a| a == cmd) };
+            let r = ui.checkbox(&mut shown, label);
+            elems.push((format!("{prefix}.buttonEditor.{cmd}"), r.rect, label.to_string()));
+            if r.changed() {
+                let list = if default { &mut custom.hidden } else { &mut custom.added };
+                list.retain(|x| x != cmd);
+                // a default button shows unless hidden; an extra one only once added
+                if shown != default {
+                    list.push(cmd.to_string());
+                }
+            }
+        }
+        ui.separator();
+        let b = ui.button("Reset Layout");
+        elems.push((format!("{prefix}.buttonEditor.reset"), b.rect, "Reset Layout".into()));
+        if b.clicked() {
+            custom = Default::default();
+        }
+    });
+    for (id, r, l) in elems {
+        app.auto.add(&id, r, &l);
+    }
+    if custom != before {
+        if which == Which::Source {
+            app.ui.panels.transport.source = custom;
+        } else {
+            app.ui.panels.transport.program = custom;
+        }
+    }
 }
 
 fn source_nav(app: &mut FilmcraftApp, cmd: &str) {

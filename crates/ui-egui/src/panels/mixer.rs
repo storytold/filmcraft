@@ -241,34 +241,40 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if show_hide {
         let mut open = true;
         let mut close = false;
-        egui::Window::new("Show/Hide Tracks").id(egui::Id::new("mixer-show-hide")).collapsible(false).resizable(false).open(&mut open).show(ui.ctx(), |ui| {
-            for id in seq.audio_tracks.iter().chain(&seq.submix_tracks).map(|t| t.id) {
-                let label = strip_label(&seq, id);
-                let name = seq.mix_track(id).map(|t| t.name.clone()).unwrap_or_default();
-                let mut shown = !app.ui.mixer_hidden.contains(&id.0);
-                let r = ui.checkbox(&mut shown, format!("{label}  {name}"));
-                app.auto.add(&format!("mixer.showHide.{label}"), r.rect, &format!("Show {label}"));
-                if r.changed() {
-                    if shown {
-                        app.ui.mixer_hidden.retain(|h| *h != id.0);
-                    } else if !app.ui.mixer_hidden.contains(&id.0) {
-                        app.ui.mixer_hidden.push(id.0);
+        let w = egui::Window::new("Show/Hide Tracks").id(egui::Id::new("mixer-show-hide")).collapsible(false).resizable(false).open(&mut open).show(
+            ui.ctx(),
+            |ui| {
+                for id in seq.audio_tracks.iter().chain(&seq.submix_tracks).map(|t| t.id) {
+                    let label = strip_label(&seq, id);
+                    let name = seq.mix_track(id).map(|t| t.name.clone()).unwrap_or_default();
+                    let mut shown = !app.ui.mixer_hidden.contains(&id.0);
+                    let r = ui.checkbox(&mut shown, format!("{label}  {name}"));
+                    app.auto.add(&format!("mixer.showHide.{label}"), r.rect, &format!("Show {label}"));
+                    if r.changed() {
+                        if shown {
+                            app.ui.mixer_hidden.retain(|h| *h != id.0);
+                        } else if !app.ui.mixer_hidden.contains(&id.0) {
+                            app.ui.mixer_hidden.push(id.0);
+                        }
                     }
                 }
-            }
-            ui.horizontal(|ui| {
-                let r = ui.button("Show All");
-                app.auto.add("mixer.showHide.all", r.rect, "Show All");
-                if r.clicked() {
-                    app.ui.mixer_hidden.clear();
-                }
-                let r = ui.button("OK");
-                app.auto.add("mixer.showHide.ok", r.rect, "OK");
-                if r.clicked() {
-                    close = true;
-                }
-            });
-        });
+                ui.horizontal(|ui| {
+                    let r = ui.button("Show All");
+                    app.auto.add("mixer.showHide.all", r.rect, "Show All");
+                    if r.clicked() {
+                        app.ui.mixer_hidden.clear();
+                    }
+                    let r = ui.button("OK");
+                    app.auto.add("mixer.showHide.ok", r.rect, "OK");
+                    if r.clicked() {
+                        close = true;
+                    }
+                });
+            },
+        );
+        if let Some(w) = w {
+            app.auto.add("mixer.showHide.close", crate::widgets::window_close_rect(ui.ctx(), w.response.rect, None), "Close");
+        }
         show_hide = open && !close;
     }
     ui.data_mut(|d| d.insert_temp(show_hide_id, show_hide));

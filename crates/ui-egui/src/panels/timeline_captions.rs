@@ -183,6 +183,18 @@ fn interact_block(
     let ctx = ui.ctx().clone();
     let resp = ui.interact(r, egui::Id::new(("caption-block", c.id.0)), Sense::click_and_drag());
     let edge = 5.0f32.min(r.width() / 4.0);
+    // the edge zones: drag one to trim the caption's in / out point
+    if edge > 0.0 {
+        let clip = ui.clip_rect();
+        for (name, er) in
+            [("inEdge", Rect::from_min_max(r.min, pos2(r.min.x + edge, r.max.y))), ("outEdge", Rect::from_min_max(pos2(r.max.x - edge, r.min.y), r.max))]
+        {
+            let er = er.intersect(clip);
+            if er.is_positive() {
+                app.auto.add(&format!("timeline.caption.{}.{name}", c.id.0), er, if name == "inEdge" { "Caption in point" } else { "Caption out point" });
+            }
+        }
+    }
     let gesture_at = |x: f32| {
         if x - r.min.x < edge {
             Gesture::TrimIn

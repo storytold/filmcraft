@@ -225,6 +225,41 @@ impl Pen16<'_> {
     }
 }
 
+/// The Track Select tools' mouse pointer, drawn at `tip` (the hot spot): a pointer arrow with
+/// chevrons beside it, pointing `forward` (right) or back (left); one chevron for a `single`
+/// track (Shift), two for all tracks. White with a dark outline, like a system pointer, so it
+/// reads over clips and over empty track. Same design as [`Icon::TrackSelectFwd`].
+pub fn paint_track_select_cursor(painter: &Painter, tip: Pos2, forward: bool, single: bool) {
+    const S: f32 = 1.45; // points per design unit: an 18 pt tall pointer
+    let dir = if forward { 1.0 } else { -1.0 };
+    let at = |(x, y): (f32, f32)| pos2(tip.x + dir * x * S, tip.y + y * S);
+    let (fill, edge) = (Color32::WHITE, Stroke::new(1.0, Color32::from_black_alpha(230)));
+    // the pointer is star-shaped from its tip, so a fan from the tip fills it exactly
+    let pointer = [(0.0, 0.0), (0.0, 11.0), (2.6, 8.6), (4.2, 12.2), (5.6, 11.6), (4.0, 8.0), (7.6, 8.0)];
+    let chevrons: &[[(f32, f32); 3]] =
+        if single { &[[(9.0, 3.5), (12.5, 7.0), (9.0, 10.5)]] } else { &[[(8.6, 3.5), (12.0, 7.0), (8.6, 10.5)], [(12.6, 3.5), (16.0, 7.0), (12.6, 10.5)]] };
+    let mut mesh = egui::Mesh::default();
+    let v: Vec<Pos2> = pointer.iter().copied().map(at).collect();
+    for p in &v {
+        mesh.colored_vertex(*p, fill);
+    }
+    for i in 1..(v.len() as u32 - 1) {
+        mesh.add_triangle(0, i, i + 1);
+    }
+    for c in chevrons {
+        let base = mesh.vertices.len() as u32;
+        for p in c {
+            mesh.colored_vertex(at(*p), fill);
+        }
+        mesh.add_triangle(base, base + 1, base + 2);
+    }
+    painter.add(egui::Shape::mesh(mesh));
+    painter.add(PathShape::closed_line(v, edge));
+    for c in chevrons {
+        painter.add(PathShape::closed_line(c.iter().copied().map(at).collect(), edge));
+    }
+}
+
 /// Paint `icon` centred in `rect`.
 pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
     let pen = Pen16 { painter, rect, color, width: 1.25 };
@@ -877,6 +912,32 @@ mod tests {
     }
 
     /// The panel menu mark (≡): three lines, the same two gaps, at every scale.
+    /// The Track Select pointer: its hot spot is the pointer's tip, it points the tool's way,
+    /// and Shift (one track) draws one chevron where all tracks draw two.
+    #[test]
+    fn track_select_cursor_points_its_way_with_one_or_two_chevrons() {
+        let tip = pos2(100.0, 50.0);
+        for (forward, single, outlines) in [(true, false, 3), (true, true, 2), (false, false, 3), (false, true, 2)] {
+            let ctx = egui::Context::default();
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| paint_track_select_cursor(ui.painter(), tip, forward, single));
+            out.textures_delta.clear();
+            let shapes: Vec<Shape> = out.shapes.into_iter().map(|c| c.shape).collect();
+            let paths: Vec<_> = shapes.iter().filter_map(|s| if let Shape::Path(p) = s { Some(p) } else { None }).collect();
+            assert_eq!(paths.len(), outlines, "forward {forward} single {single}: pointer + chevron outlines");
+            assert!(shapes.iter().any(|s| matches!(s, Shape::Mesh(_))), "filled");
+            let xs: Vec<f32> = paths.iter().flat_map(|p| p.points.iter().map(|q| q.x)).collect();
+            let ys: Vec<f32> = paths.iter().flat_map(|p| p.points.iter().map(|q| q.y)).collect();
+            // the hot spot is the top-left (top-right going back) corner of the whole pointer
+            assert_eq!(paths[0].points[0], tip);
+            assert!(ys.iter().all(|y| *y >= tip.y));
+            if forward {
+                assert!(xs.iter().all(|x| *x >= tip.x), "forward points right");
+            } else {
+                assert!(xs.iter().all(|x| *x <= tip.x), "backward points left");
+            }
+        }
+    }
+
     #[test]
     fn menu_mark_lines_are_evenly_spaced() {
         for &ppp in &[1.0, 1.5, 2.0] {

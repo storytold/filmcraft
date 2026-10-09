@@ -8,7 +8,10 @@
 //! `.name`, `.ok`), `essentialSound.section.<Name>` (twirl) and `.toggle` (switch), setting rows by
 //! key (`essentialSound.repair.noise.on`, `essentialSound.repair.noise.amount`,
 //! `essentialSound.clarity.eqPreset`…), `essentialSound.autoMatch`,
-//! `essentialSound.ducking.against.<Type>`, `essentialSound.generateDucking`,
+//! `essentialSound.ducking.against.<Type>`, `essentialSound.generateDucking`; while a dropdown is
+//! open its entries `<dropdown id>.option.<name>` (`essentialSound.preset.option.<preset>`,
+//! `essentialSound.clarity.eqPreset.option.<name>`…). A slider's id is its knob (a click there
+//! keeps the value, a drag from it moves it); `<slider id>.track` is the whole track.
 //! `essentialSound.volume.on` / `.levelDb`, `essentialSound.mute`, and in Browse
 //! `essentialSound.browse.<Type>.<preset>`.
 
@@ -215,7 +218,9 @@ fn typed_body(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, items: &[Tra
         let w = ui.available_width() - 56.0;
         let cb = egui::ComboBox::from_id_salt("es-preset").selected_text(&current).width(w).show_ui(ui, |ui| {
             for p in &mine {
-                if ui.selectable_label(p.name == st.preset, &p.name).clicked() {
+                let o = ui.selectable_label(p.name == st.preset, &p.name);
+                cx.auto.add(&format!("essentialSound.preset.option.{}", p.name), o.rect, &p.name);
+                if o.clicked() {
                     picked = Some(p.name.clone());
                 }
             }
@@ -532,12 +537,17 @@ fn slider_track(ui: &mut egui::Ui, cx: &mut Ctx, track: Rect, key: &str, v: f64,
             },
         ),
     );
-    cx.auto.add(&format!("essentialSound.{key}"), track, key);
+    // The id is the knob: a click on it keeps the value and a drag from it moves it; `.track` is the
+    // whole slider, for a click or drag to a position along it.
+    cx.auto.add(&format!("essentialSound.{key}"), Rect::from_center_size(pos2(kx, y), vec2(12.0, 12.0)), key);
+    cx.auto.add(&format!("essentialSound.{key}.track"), track, key);
     if !active {
         return;
     }
     if (resp.dragged() || resp.clicked())
         && let Some(p) = resp.interact_pointer_pos()
+        // a click on the knob itself leaves the value alone
+        && !(resp.clicked() && (p.x - kx).abs() <= 6.0)
     {
         let nf = ((p.x - track.min.x) / track.width()).clamp(0.0, 1.0) as f64;
         let mut nv = lo + nf * (hi - lo);
@@ -555,7 +565,9 @@ fn combo(ui: &mut egui::Ui, cx: &mut Ctx, key: &str, names: &[&str], current: &s
     ui.add_enabled_ui(active, |ui| {
         let cb = egui::ComboBox::from_id_salt(("es-combo", key)).selected_text(current).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
             for n in names {
-                if ui.selectable_label(*n == current, *n).clicked() {
+                let o = ui.selectable_label(*n == current, *n);
+                cx.auto.add(&format!("essentialSound.{key}.option.{n}"), o.rect, n);
+                if o.clicked() {
                     picked = Some(n.to_string());
                 }
             }

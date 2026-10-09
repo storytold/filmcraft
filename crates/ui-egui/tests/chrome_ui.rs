@@ -27,7 +27,9 @@ fn harness(show_header: bool, show_status_bar: bool) -> Harness<'static, Filmcra
 /// Top and bottom edge of every registered element outside the header.
 fn body_extent(h: &Harness<'static, FilmcraftApp>) -> (f32, f32) {
     let els = h.state().auto.query("");
-    let body: Vec<_> = els.iter().filter(|e| !e.id.starts_with("header.")).collect();
+    // the in-window menu bar (`menu.*`) is drawn in the header; `status.bar` is the status bar
+    let chrome = |id: &str| id.starts_with("header.") || id.starts_with("menu.") || id.starts_with("status.");
+    let body: Vec<_> = els.iter().filter(|e| !chrome(&e.id)).collect();
     assert!(!body.is_empty(), "no panel elements registered");
     let top = body.iter().map(|e| e.rect[1]).fold(f32::INFINITY, f32::min);
     let bottom = body.iter().map(|e| e.rect[1] + e.rect[3]).fold(f32::NEG_INFINITY, f32::max);

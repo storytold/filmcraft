@@ -334,7 +334,7 @@ pub fn floating(app: &mut FilmcraftApp, ctx: &egui::Context) {
         };
         let mut open = true;
         let root = app.ui.project_panel.tabs[k].bin == app.session.project.root.id.0;
-        egui::Window::new(if root { format!("Project: {}", app.session.project.name) } else { format!("Bin: {name}") })
+        let w = egui::Window::new(if root { format!("Project: {}", app.session.project.name) } else { format!("Bin: {name}") })
             .id(egui::Id::new(("bin-window", k)))
             .open(&mut open)
             .default_size(vec2(520.0, 360.0))
@@ -350,6 +350,9 @@ pub fn floating(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 child.set_clip_rect(r);
                 body(app, &mut child, r, &v, &mut actions);
             });
+        if let Some(w) = w {
+            app.auto.add(&format!("projectBin.{k}.close"), crate::widgets::window_close_rect(ctx, w.response.rect, None), "Close");
+        }
         if !open {
             close = Some(k);
         }

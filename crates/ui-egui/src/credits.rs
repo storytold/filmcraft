@@ -227,9 +227,11 @@ const LIST_HEIGHT: f32 = 360.0;
 
 /// About ▸ Contributors: a name toggle, a sort, and the list as a grab bag or a table.
 ///
-/// Automation ids: `about.credits.names.{username,displayName,realName}`, `about.credits.sort`,
+/// Automation ids: `about.credits.names.{username,displayName,realName}`, `about.credits.sort`
+/// (+ `about.credits.sort.option.<n>` while open, by column like the headers),
 /// `about.credits.reverse`, `about.credits.grabBag`, `about.credits.table`,
-/// `about.credits.header.<n>` (table headers, by column).
+/// `about.credits.header.<n>` (table headers, by column), `about.credits.contributor.<login>` (a
+/// name scrolled into view: opens their GitHub profile).
 pub fn contributors_ui(ui: &mut egui::Ui, t: &Tokens, auto: &mut Registry) {
     let id = egui::Id::new("credits_view");
     let mut v = ui.data_mut(|d| d.get_temp::<View>(id)).unwrap_or_default();
@@ -245,14 +247,17 @@ pub fn contributors_ui(ui: &mut egui::Ui, t: &Tokens, auto: &mut Registry) {
         ui.separator();
         ui.label("Sort");
         let combo = egui::ComboBox::from_id_salt("credits_sort").selected_text(v.key.label().0).show_ui(ui, |ui| {
-            for k in SortKey::ALL {
-                if ui.selectable_label(v.key == k, k.label().0).clicked() {
+            for (i, k) in SortKey::ALL.into_iter().enumerate() {
+                let o = ui.selectable_label(v.key == k, k.label().0);
+                auto.add(&format!("about.credits.sort.option.{i}"), o.rect, k.label().0);
+                if o.clicked() {
                     v.key = k;
                     v.ascending = k.default_ascending();
                 }
             }
         });
-        auto.add("about.credits.sort", combo.response.rect, "Sort");
+        // the label carries the sort shown (`Sort: Merged PRs`), so an agent can read it back
+        auto.add("about.credits.sort", combo.response.rect, &format!("Sort: {}", v.key.label().0));
         let r = ui.button(if v.ascending { "▲" } else { "▼" }).on_hover_text("Reverse the order");
         auto.add("about.credits.reverse", r.rect, "Reverse the order");
         if r.clicked() {
@@ -284,7 +289,10 @@ pub fn contributors_ui(ui: &mut egui::Ui, t: &Tokens, auto: &mut Registry) {
                     if i > 0 {
                         ui.label(RichText::new("·").color(t.text_dim));
                     }
-                    ui.hyperlink_to(c.name(v.names), format!("https://github.com/{}", c.login)).on_hover_text(c.summary());
+                    let r = ui.hyperlink_to(c.name(v.names), format!("https://github.com/{}", c.login)).on_hover_text(c.summary());
+                    if let Some(vr) = crate::widgets::visible(ui, r.rect) {
+                        auto.add(&format!("about.credits.contributor.{}", c.login), vr, &c.name(v.names));
+                    }
                 }
             });
         }
@@ -309,7 +317,10 @@ fn table(ui: &mut egui::Ui, list: &[&Contributor], v: &mut View, auto: &mut Regi
         }
         ui.end_row();
         for c in list {
-            ui.hyperlink_to(c.name(v.names), format!("https://github.com/{}", c.login)).on_hover_text(c.summary());
+            let r = ui.hyperlink_to(c.name(v.names), format!("https://github.com/{}", c.login)).on_hover_text(c.summary());
+            if let Some(vr) = crate::widgets::visible(ui, r.rect) {
+                auto.add(&format!("about.credits.contributor.{}", c.login), vr, &c.name(v.names));
+            }
             ui.label(group(c.prs));
             ui.label(group(c.commits));
             ui.label(group(c.lines_added));

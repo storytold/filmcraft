@@ -134,3 +134,59 @@ fn webm_with_1ms_timestamps_shows_every_frame_once() {
 fn mp4_with_a_1ms_timescale_shows_every_frame_once() {
     check("mov", mp4_1ms);
 }
+
+/// A WebM without DefaultDuration: its rate comes from the 1 ms timestamps alone.
+fn webm_no_default_duration(rate: FrameRate, stamp: Stamp) -> Arc<[u8]> {
+    let mut spec = TrackSpec::new(TrackKind::Video, "V_MJPEG");
+    spec.video_size = Some((BITS * BLOCK, BLOCK));
+    spec.default_duration_ns = None;
+    let opts = MuxOptions { doc_type: "webm".into(), ..MuxOptions::default() };
+    let mut w = MkvWriter::new(Cursor::new(Vec::new()), vec![spec], opts).unwrap();
+    for k in 0..frame_count(rate) {
+        w.write_frame(0, stamp_ms(rate, k, stamp) * 1_000_000, true, &picture(k), None).unwrap();
+    }
+    w.finish().unwrap().into_inner().into()
+}
+
+/// Millisecond timestamps make single frame durations lie (60 fps is stored as 17, 17, 16 ms;
+/// the median, 17 ms, read as 58.82 fps), so the detected rate must still be the real one.
+#[test]
+fn the_frame_rate_of_millisecond_timestamps_is_the_real_rate() {
+    let mut wrong = Vec::new();
+    for (container, open) in [("mov", mp4_1ms as fn(FrameRate, Stamp) -> Arc<[u8]>), ("webm", webm_no_default_duration)] {
+        for rate in RATES {
+            for stamp in [Stamp::Nearest, Stamp::Floor] {
+                let src = crate::open_bytes(&format!("synthetic.{container}"), open(rate, stamp)).unwrap();
+                let got = src.info().frame_rate();
+                if got != rate {
+                    wrong.push(format!("{container} {rate} ({stamp:?}): detected {got}"));
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// An OBS screen recording: 60 fps on a 90 kHz timescale with times rounded to the millisecond
+/// (1530, 1530, 1440 ticks) and a couple of dropped frames (a 3060 tick gap). It is 60 fps,
+/// not 58.824 (= 1000 / 17, what the median used to say).
+#[test]
+fn an_obs_recording_with_dropped_frames_is_60_fps() {
+    let mut durs: Vec<i64> = (0..1999).map(|k| if k % 3 == 2 { 1440 } else { 1530 }).collect();
+    durs[500] = 3060;
+    durs[1400] = 2970;
+    assert_eq!(crate::rate_from_durations(durs.clone(), 90_000.0), FrameRate::FPS_60);
+    // the first few seconds alone (what a short clip has) say the same
+    assert_eq!(crate::rate_from_durations(durs[..240].to_vec(), 90_000.0), FrameRate::FPS_60);
+    // exact streams keep their exact rate, standard or not
+    assert_eq!(crate::rate_from_durations(vec![1001; 300], 60_000.0), FrameRate::FPS_59_94);
+    assert_eq!(crate::rate_from_durations(vec![1001; 300], 30_000.0), FrameRate::FPS_29_97);
+    assert_eq!(crate::rate_from_durations(vec![2399; 300], 90_000.0), FrameRate::from_f64(90_000.0 / 2399.0));
+    // nothing usable: the default rate, never a zero one
+    for bad in [vec![], vec![0, -5], vec![i64::MAX, i64::MAX]] {
+        let r = crate::rate_from_durations(bad, 90_000.0);
+        assert!(r.num > 0 && r.den > 0);
+    }
+    assert_eq!(crate::rate_from_durations(vec![1500; 10], 0.0), FrameRate::default());
+    assert_eq!(crate::rate_from_durations(vec![1500; 10], f64::NAN), FrameRate::default());
+}

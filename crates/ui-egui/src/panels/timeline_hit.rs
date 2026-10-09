@@ -111,7 +111,7 @@ impl Reach {
 /// The edge zone (px, on each side of an edge) of a clip `w` px wide on screen: a third of the
 /// clip, at most [`EDGE_PX`], so the middle third of a narrow clip still moves it. `None` when the
 /// clip has no usable width (zoomed far out, or a broken zoom): it has no edges then.
-fn zone(w: f32) -> Option<f32> {
+pub(crate) fn zone(w: f32) -> Option<f32> {
     if w.is_finite() && w > 0.0 { Some(EDGE_PX.min(w / 3.0)) } else { None }
 }
 

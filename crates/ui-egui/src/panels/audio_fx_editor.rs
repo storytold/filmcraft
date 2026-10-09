@@ -182,7 +182,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         let mut ed = Ed { t: app.tokens, fx: &fx_id, target: &target, inst, mt, drafts, acts: Vec::new(), autos: Vec::new() };
         let mut open = true;
         let mut closed = false;
-        egui::Window::new(title).id(egui::Id::new(("fx-editor", &k))).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+        let w = egui::Window::new(title).id(egui::Id::new(("fx-editor", &k))).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             match ed.fx {
                 "parametric_eq" => parametric(ui, &mut ed),
                 "graphic_eq" | "graphic_eq_20" | "graphic_eq_30" => graphic(ui, &mut ed),
@@ -214,6 +214,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             keep.remove(c);
         }
         ctx.data_mut(|d| d.insert_temp(drafts_id, keep));
+        if let Some(w) = w {
+            ed.auto(format!("fxEditor.{}.windowClose", ed.fx), crate::widgets::window_close_rect(ctx, w.response.rect, None), "Close window");
+        }
         for (id, r, label) in std::mem::take(&mut ed.autos) {
             app.auto.add(&id, r, &label);
         }

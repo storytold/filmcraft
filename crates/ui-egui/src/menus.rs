@@ -151,6 +151,22 @@ pub fn panel_command_id(p: PanelKind) -> String {
 }
 
 /// Execute a UI or engine command by id.
+/// Menu items and shortcuts that open a dialog in the UI rather than run straight away: Sequence ▸
+/// Transcribe Sequence… and Transcript ▸ Transcribe… open the Text panel's Transcribe options
+/// (language, speakers, the model download), as Premiere's menu opens its dialog. The commands
+/// themselves (control channel, MCP, CLI) still run directly.
+pub(crate) fn open_dialog_for(app: &mut FilmcraftApp, id: &str) -> bool {
+    if !matches!(id, "sequence.transcribe" | "transcript.generate") || app.session.active_sequence().is_none() {
+        return false;
+    }
+    app.show_panel(PanelKind::Text);
+    app.ui.text_tab = "Transcript".into();
+    if filmcraft_engine::transcript::sequence_words(&app.session).is_empty() {
+        app.ui.transcribe_dialog = Some(Default::default());
+    }
+    true
+}
+
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
     if matches!(id, "app.language.english" | "app.language.japanese" | "app.language.spanish" | "app.language.portuguese") {
         // Japanese needs the craft-fonts (built with CRAFT_FONTS_DIR) or a font installed on the system
@@ -595,32 +611,43 @@ pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
     v
 }
 
-/// Draw the in-window menu bar.
+/// Automation elements of the menu bar: `(id, rect, label)`.
+type MenuElems = Vec<(String, egui::Rect, String)>;
+
+/// Draw the in-window menu bar. Automation ids: `menu.<Top>` opens a menu, `menu.<Top>.<Sub>…` a
+/// submenu (path segments as shown in English), `menu.item.<command id>` runs an item.
 pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("interface-language"), app.ui.language));
     let items = menu_items(app);
     let ctx = ui.ctx().clone();
     let mut clicked: Option<String> = None;
+    let mut elems = MenuElems::new();
     egui::MenuBar::new().config(egui::containers::menu::MenuConfig::new().style(crate::theme::menu_style)).ui(ui, |ui| {
         for top in MENUS {
             let mine: Vec<&MenuItem> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(top)).collect();
-            ui.menu_button(app.ui.language.tr(top), |ui| {
+            let r = ui.menu_button(app.ui.language.tr(top), |ui| {
                 ui.set_min_width(260.0);
                 if mine.is_empty() {
                     ui.add_enabled(false, egui::Button::new("(empty)"));
                 }
-                menu_level(ui, &mine, 1, &mut clicked);
+                menu_level(ui, &mine, 1, &mut clicked, &mut elems);
             });
+            elems.push((format!("menu.{top}"), r.response.rect, top.to_string()));
         }
     });
-    if let Some(id) = clicked {
+    for (id, rect, label) in &elems {
+        app.auto.add(id, *rect, label);
+    }
+    if let Some(id) = clicked
+        && !open_dialog_for(app, &id)
+    {
         let _ = invoke(app, &ctx, &id, json!({}));
     }
 }
 
 /// One menu level: items whose path ends here, and a submenu (at its first item's position) for
 /// each deeper path segment, recursively (e.g. Clip ▸ Video Options ▸ Time Interpolation).
-fn menu_level(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mut Option<String>) {
+fn menu_level(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mut Option<String>, elems: &mut MenuElems) {
     let mut subs: Vec<&str> = Vec::new();
     for it in items {
         if let Some(sub) = it.path.get(depth).map(String::as_str) {
@@ -630,18 +657,24 @@ fn menu_level(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mu
             subs.push(sub);
             let inner: Vec<&MenuItem> = items.iter().copied().filter(|x| x.path.get(depth).map(String::as_str) == Some(sub)).collect();
             let language = ui.ctx().data(|d| d.get_temp::<crate::i18n::Language>(egui::Id::new("interface-language"))).unwrap_or_default();
-            ui.menu_button(language.tr(sub), |ui| {
+            let r = ui.menu_button(language.tr(sub), |ui| {
                 ui.set_min_width(220.0);
-                menu_level(ui, &inner, depth + 1, clicked);
+                menu_level(ui, &inner, depth + 1, clicked, elems);
             });
-        } else if menu_entry(ui, it) {
-            *clicked = Some(it.id.clone());
-            ui.close();
+            let path = it.path.get(..=depth).unwrap_or_default().join(".");
+            elems.push((format!("menu.{path}"), r.response.rect, sub.to_string()));
+        } else {
+            let r = menu_entry(ui, it);
+            elems.push((format!("menu.item.{}", it.id), r.rect, it.label.clone()));
+            if r.clicked() {
+                *clicked = Some(it.id.clone());
+                ui.close();
+            }
         }
     }
 }
 
-fn menu_entry(ui: &mut egui::Ui, it: &MenuItem) -> bool {
+fn menu_entry(ui: &mut egui::Ui, it: &MenuItem) -> egui::Response {
     // checkable items leave room for a checkmark drawn at the left
     let label = if it.checked.is_some() { format!("      {}", it.label) } else { it.label.clone() };
     let mut b = egui::Button::new(label);
@@ -656,7 +689,7 @@ fn menu_entry(ui: &mut egui::Ui, it: &MenuItem) -> bool {
         ui.painter().line_segment([c + egui::vec2(-4.0, 0.0), c + egui::vec2(-1.0, 3.0)], st);
         ui.painter().line_segment([c + egui::vec2(-1.0, 3.0), c + egui::vec2(4.5, -3.5)], st);
     }
-    r.clicked()
+    r
 }
 
 #[cfg(test)]

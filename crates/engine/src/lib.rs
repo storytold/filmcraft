@@ -19,6 +19,7 @@ pub mod commands;
 pub mod demo;
 pub mod essential_sound;
 pub mod export_tools;
+pub mod gaps;
 pub mod graphic_templates;
 pub mod graphics;
 pub mod interchange;
@@ -259,6 +260,10 @@ pub struct EditorState {
     /// Selected captions (caption tracks / Captions panel).
     #[serde(default)]
     pub caption_selection: Vec<ClipId>,
+    /// Selected gaps (the empty time between two clips; Delete closes them). Read them through
+    /// [`gaps::selected_gaps`], which drops the ones an edit or another selection has replaced.
+    #[serde(default)]
+    pub gap_selection: Vec<gaps::SelectedGap>,
     /// Selected layers (indices among the graphic layers, 0 = back) of the selected graphic clip.
     #[serde(default)]
     pub graphic_layers: Vec<usize>,
@@ -359,6 +364,8 @@ pub struct Session {
     pub mask_jobs: Vec<masks::PendingTrack>,
     /// Scene Edit Detection jobs whose results are applied when they finish.
     pub scene_jobs: Vec<scene_detect::PendingScene>,
+    /// Transcriptions and voice analyses whose transcripts are stored when they finish.
+    pub transcribe_jobs: Vec<transcript::PendingTranscription>,
     /// Effect presets (built-in + the user's, persisted in the data directory).
     pub presets: presets::PresetLibrary,
     /// Export presets (built-in + the user's, persisted in the data directory) and favourites.
@@ -455,6 +462,7 @@ impl Session {
             media_jobs: Vec::new(),
             mask_jobs: Vec::new(),
             scene_jobs: Vec::new(),
+            transcribe_jobs: Vec::new(),
             presets: Default::default(),
             export_presets: Default::default(),
             export_queue: Default::default(),
@@ -548,6 +556,7 @@ impl Session {
         proxies::poll(self);
         masks::poll(self);
         scene_detect::poll(self);
+        transcript::poll(self);
         export_tools::pump_queue(self, false);
         panels::log_jobs(self);
         let Some(p) = self.persistence.as_mut() else { return };
@@ -618,6 +627,11 @@ impl Session {
         if self.exec_depth == 0 && spec.journal && self.trim_play.active() {
             self.settle_trim_playback(id);
         }
+        // a transcription that finished in the background is stored before the next command
+        // (headless hosts such as the MCP server have no UI loop to poll it)
+        if self.exec_depth == 0 && !self.transcribe_jobs.is_empty() {
+            transcript::poll(self);
+        }
         if let Err(why) = self.enabled_for(spec, &params) {
             let e = EngineError::Disabled(id.to_string(), why);
             if self.exec_depth == 0 {
@@ -632,6 +646,12 @@ impl Session {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, &params)))
             .unwrap_or_else(|_| Err(EngineError::Other(format!("internal error in `{id}` (see the crash log); the command did not complete"))));
         self.exec_depth -= 1;
+        // a gap selection gives way to any other timeline selection
+        if !self.state.gap_selection.is_empty()
+            && (!self.state.selection.is_empty() || !self.state.caption_selection.is_empty() || !self.state.edit_points.is_empty())
+        {
+            self.state.gap_selection.clear();
+        }
         // source graphics: an edited instance updates the shared layers and the other instances
         if r.is_ok() && spec.journal && id.starts_with("graphics.") && !self.project.source_graphics.is_empty() {
             graphic_templates::sync_source_graphics(self);
@@ -905,7 +925,8 @@ impl Session {
     pub fn set_playhead(&mut self, t: Tick) {
         if let Some(s) = self.state.active_sequence {
             let rate = self.active_sequence().map(|s| s.settings.frame_rate).unwrap_or_default();
-            self.state.playheads.insert(s, rate.snap(t.max(Tick::ZERO)));
+            // the frame containing `t`, but a cut stored a tick before a boundary is on it
+            self.state.playheads.insert(s, rate.snap_frame(t.max(Tick::ZERO)));
             if self.state.selection_follows_playhead {
                 sequence_tools::select_under_playhead(self);
             }
@@ -1035,6 +1056,8 @@ mod explicit_targets_tests;
 mod export_tests;
 #[cfg(test)]
 mod file_tests;
+#[cfg(test)]
+mod gaps_tests;
 #[cfg(test)]
 mod image_sequence_tests;
 #[cfg(test)]

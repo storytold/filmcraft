@@ -222,7 +222,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             let time = k.time;
             let key2 = key.clone();
             resp.context_menu(|ui| {
-                if ui.button("Delete").clicked() {
+                let b = ui.button("Delete");
+                app.auto.add(&format!("timeline.track.{label}.lane.kf.{i}.delete"), b.rect, "Delete");
+                if b.clicked() {
                     acts.push(("mixer.deleteKeyframe", json!({"strip": r.track.0, "lane": key2, "time": time.0})));
                     ui.close();
                 }

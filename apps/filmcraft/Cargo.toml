@@ -14,6 +14,8 @@ workspace = true
 default = []
 # Speech-to-text (Text panel ▸ Transcribe) with Whisper on the CPU, and model downloads.
 whisper = ["filmcraft-engine/whisper", "filmcraft-engine/speech-download"]
+# Speech-to-text on the Apple GPU (macOS; the CPU remains the fallback).
+metal = ["whisper", "filmcraft-engine/speech-metal"]
 
 [dependencies]
 filmcraft-engine = { workspace = true }

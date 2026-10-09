@@ -8,7 +8,9 @@
 //! action runs an engine command (`file.exportMedia`, `export.queue.*`, `export.presets.*`,
 //! `export.quick`).
 //!
-//! Automation ids: `export.fileName`, `export.location`, `export.preset`, `export.preset.more`,
+//! Automation ids: `export.fileName`, `export.location`, `export.preset` (while open, the entries
+//! scrolled into view: `export.preset.favorite.<name>`, `export.preset.option.<name>` and
+//! `export.preset.option.more`), `export.preset.more`, dropdowns' entries `<id>.option.<n>`,
 //! `export.format`, `export.section.<video|audio|multiplexer|captions|effects|metadata>`,
 //! `export.video.*`, `export.audio.*`, `export.effects.*`, `export.metadata.*`, `export.range`,
 //! `export.scaling`, `export.summary`, `export.estimate`, `export.sendToQueue`, `export.button`,
@@ -16,7 +18,7 @@
 //! Preset Manager: `presetManager.search`, `presetManager.favoritesOnly`,
 //! `presetManager.item.<name>`, `presetManager.favorite.<name>`, `presetManager.saveName`,
 //! `presetManager.save`, `presetManager.delete`, `presetManager.import`, `presetManager.export`,
-//! `presetManager.ok`, `presetManager.cancel`; Quick Export: `quickExport.path`,
+//! `presetManager.ok`, `presetManager.cancel`, `presetManager.close` (title-bar ×); Quick Export: `quickExport.path`,
 //! `quickExport.preset.<name>`, `quickExport.go`, `quickExport.close`.
 
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
@@ -411,7 +413,11 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 if !favs.is_empty() {
                     ui.label(egui::RichText::new("Favorites").color(t.text_dim).size(11.0));
                     for f in &favs {
-                        if ui.selectable_label(*f == ex.preset, f).clicked() {
+                        let o = ui.selectable_label(*f == ex.preset, f);
+                        if let Some(vr) = crate::widgets::visible(ui, o.rect) {
+                            reg.add(format!("export.preset.favorite.{f}"), vr, f.clone());
+                        }
+                        if o.clicked() {
                             chosen_preset = Some(f.clone());
                         }
                     }
@@ -423,12 +429,20 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         cat = p.category.clone();
                         ui.label(egui::RichText::new(&cat).color(t.text_dim).size(11.0));
                     }
-                    if ui.selectable_label(p.name == ex.preset, &p.name).clicked() {
+                    let o = ui.selectable_label(p.name == ex.preset, &p.name);
+                    if let Some(vr) = crate::widgets::visible(ui, o.rect) {
+                        reg.add(format!("export.preset.option.{}", p.name), vr, p.name.clone());
+                    }
+                    if o.clicked() {
                         chosen_preset = Some(p.name.clone());
                     }
                 }
                 ui.separator();
-                if ui.button("More presets…").clicked() {
+                let b = ui.button("More presets…");
+                if let Some(vr) = crate::widgets::visible(ui, b.rect) {
+                    reg.add("export.preset.option.more", vr, "More presets…");
+                }
+                if b.clicked() {
                     open_manager = true;
                 }
             });
@@ -1025,7 +1039,7 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let all = app.session.export_presets.all();
     let favorite = |n: &str| app.session.export_presets.is_favorite(n);
     let q = m.query.to_ascii_lowercase();
-    egui::Window::new("Preset Manager")
+    let w = egui::Window::new("Preset Manager")
         .id(egui::Id::new("preset-manager"))
         .open(&mut open)
         .collapsible(false)
@@ -1124,6 +1138,9 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 });
             });
         });
+    if let Some(w) = w {
+        reg.add("presetManager.close", crate::widgets::window_close_rect(ctx, w.response.rect, None), "Close");
+    }
     reg.flush(app);
     if let Some((c, p)) = cmd
         && let Err(e) = app.session.execute(c, p)

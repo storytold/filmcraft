@@ -14,7 +14,10 @@
 //! Automation ids (`<p>` = the dialog prefix, `<key>` = a parameter): `<p>.ok`, `<p>.cancel` and
 //! `<p>.<key>` for each control; radio buttons `<p>.<key>.<value>`; Find rows
 //! `find.row.<n>.column|operator|text`; Project Settings tabs `projectSettings.tab.<general|scratchDisks|ingest>`,
-//! scratch rows `projectSettings.scratch.<key>` / `.browse` / `.same`.
+//! scratch rows `projectSettings.scratch.<key>` / `.browse` / `.same`; while a dropdown is open, its
+//! entries `<dropdown id>.option.<value>` (e.g. `transcribe.language.option.en`,
+//! `find.row.0.column.option.Name`). A search bin row's right-click menu:
+//! `project.searchBin.<id>.delete`.
 
 use egui::{Align2, RichText};
 use filmcraft_project::{FindOp, find::COLUMNS};
@@ -411,14 +414,19 @@ fn combo(ui: &mut egui::Ui, elems: &mut Elems, id: &str, label: &str, value: &mu
         }
         let cur = value.as_str().unwrap_or_default().to_string();
         let shown = options.iter().find(|o| o.0 == cur).map(|o| o.1.clone()).unwrap_or(cur.clone());
+        let mut opts: Elems = Vec::new();
         let r = egui::ComboBox::from_id_salt(id).selected_text(shown).show_ui(ui, |ui| {
             for (k, l) in options {
-                if ui.selectable_label(cur == *k, l).clicked() {
+                let o = ui.selectable_label(cur == *k, l);
+                push(&mut opts, format!("{id}.option.{k}"), &o, l.as_str());
+                if o.clicked() {
                     *value = json!(k);
                 }
             }
         });
         push(elems, id, &r.response, label);
+        // the open list's entries, after their opener so the opener's id resolves first
+        elems.extend(opts);
     });
 }
 
@@ -918,7 +926,9 @@ pub fn search_bin_rows(
             }
         }
         resp.context_menu(|ui| {
-            if ui.button("Delete Search Bin").clicked() {
+            let d = ui.button("Delete Search Bin");
+            app.auto.add(&format!("project.searchBin.{}.delete", sb.id.0), d.rect, "Delete Search Bin");
+            if d.clicked() {
                 actions.push(("project.deleteSearchBin".into(), json!({"bin": sb.id.0})));
                 ui.close();
             }

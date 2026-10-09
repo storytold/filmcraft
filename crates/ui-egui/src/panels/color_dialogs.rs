@@ -2,7 +2,7 @@
 //! Management… (working space, wide gamut, Auto Tone Map Media). Each applies one engine command
 //! on OK, so it is a single undo step. Automation ids: `colorDialog.space.<id>`,
 //! `colorDialog.working.<id>`, `colorDialog.wideGamut`, `colorDialog.autoToneMap`,
-//! `colorDialog.ok`, `colorDialog.cancel`.
+//! `colorDialog.ok`, `colorDialog.cancel`, `colorDialog.close` (the title-bar ×).
 
 use filmcraft_color::{ColorSpace, WorkingSpace};
 use serde_json::{Value, json};
@@ -70,7 +70,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 .and_then(|v| v["detectedLabel"].as_str().map(str::to_string))
                 .unwrap_or_else(|| "—".into());
             let n = items.len();
-            egui::Window::new("Interpret Footage").open(&mut open).collapsible(false).resizable(false).default_width(380.0).show(ctx, |ui| {
+            let w = egui::Window::new("Interpret Footage").open(&mut open).collapsible(false).resizable(false).default_width(380.0).show(ctx, |ui| {
                 ui.label(egui::RichText::new(format!("Color Management · {n} item{}", if n == 1 { "" } else { "s" })).strong());
                 ui.label(format!("Media colour space (from file metadata): {detected}"));
                 ui.add_space(4.0);
@@ -91,9 +91,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
                 close = ok || cancel;
             });
+            if let Some(w) = w {
+                app.auto.add("colorDialog.close", crate::widgets::window_close_rect(ctx, w.response.rect, None), "Close");
+            }
         }
         ColorDialog::Sequence { working_space, wide_gamut, auto_tone_map } => {
-            egui::Window::new("Sequence Color Management").open(&mut open).collapsible(false).resizable(false).default_width(340.0).show(ctx, |ui| {
+            let w = egui::Window::new("Sequence Color Management").open(&mut open).collapsible(false).resizable(false).default_width(340.0).show(ctx, |ui| {
                 ui.label(egui::RichText::new("Working Color Space").strong());
                 for w in WorkingSpace::ALL {
                     if radio(app, ui, &format!("colorDialog.working.{}", w.id()), working_space == w.id(), w.label()) {
@@ -111,6 +114,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
                 close = ok || cancel;
             });
+            if let Some(w) = w {
+                app.auto.add("colorDialog.close", crate::widgets::window_close_rect(ctx, w.response.rect, None), "Close");
+            }
         }
     }
     app.ui.color_dialog = if close || !open { None } else { Some(d) };

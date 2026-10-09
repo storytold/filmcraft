@@ -3,7 +3,9 @@
 //! export it) and the Save Preset dialog (Effect Controls ▸ right-click an effect ▸ Save Preset…).
 //!
 //! Automation ids: `effects.preset.<name>`, `savePreset.name`, `savePreset.description`,
-//! `savePreset.keyframes.<scale|anchorIn|anchorOut|none>`, `savePreset.ok`, `savePreset.cancel`.
+//! `savePreset.keyframes.<scale|anchorIn|anchorOut|none>`, `savePreset.ok`, `savePreset.cancel`,
+//! `savePreset.close` (the title-bar ×); a preset's right-click menu
+//! `effects.preset.<name>.<delete|export|import>`.
 
 use egui::{Align2, Rect, Sense, pos2, vec2};
 use serde_json::json;
@@ -43,15 +45,23 @@ pub fn folder_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui, filter: &str) -> O
             action = Some(("presets.apply".to_string(), p.name.clone()));
         }
         resp.context_menu(|ui| {
-            if !p.builtin && ui.button("Delete Preset").clicked() {
-                action = Some(("presets.delete".to_string(), p.name.clone()));
-                ui.close();
+            if !p.builtin {
+                let b = ui.button("Delete Preset");
+                app.auto.add(&format!("effects.preset.{}.delete", p.name), b.rect, "Delete Preset");
+                if b.clicked() {
+                    action = Some(("presets.delete".to_string(), p.name.clone()));
+                    ui.close();
+                }
             }
-            if ui.button("Export Preset…").clicked() {
+            let b = ui.button("Export Preset…");
+            app.auto.add(&format!("effects.preset.{}.export", p.name), b.rect, "Export Preset…");
+            if b.clicked() {
                 action = Some(("presets.export".to_string(), p.name.clone()));
                 ui.close();
             }
-            if ui.button("Import Presets…").clicked() {
+            let b = ui.button("Import Presets…");
+            app.auto.add(&format!("effects.preset.{}.import", p.name), b.rect, "Import Presets…");
+            if b.clicked() {
                 action = Some(("presets.import".to_string(), String::new()));
                 ui.close();
             }
@@ -90,7 +100,7 @@ pub fn save_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut open = true;
     let mut close = false;
     let mut apply = false;
-    egui::Window::new("Save Preset").open(&mut open).collapsible(false).resizable(false).default_width(340.0).show(ctx, |ui| {
+    let w = egui::Window::new("Save Preset").open(&mut open).collapsible(false).resizable(false).default_width(340.0).show(ctx, |ui| {
         ui.horizontal(|ui| {
             ui.label("Name:");
             let r = ui.text_edit_singleline(&mut d.name);
@@ -119,6 +129,9 @@ pub fn save_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             close = apply || c.clicked();
         });
     });
+    if let Some(w) = w {
+        app.auto.add("savePreset.close", crate::widgets::window_close_rect(ctx, w.response.rect, None), "Close");
+    }
     app.ui.save_preset = if close || !open { None } else { Some(d.clone()) };
     if apply {
         let r = app.session.execute(

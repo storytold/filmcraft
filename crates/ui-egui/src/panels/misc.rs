@@ -6,6 +6,9 @@ use filmcraft_time::{TimeDisplay, format_time};
 use crate::FilmcraftApp;
 use crate::theme::Tokens;
 
+/// History panel: `history.row.open` (before the first step: undo everything),
+/// `history.row.<i>` (undo step i, 0 = the oldest: back to just after it) and `history.redo.<i>`
+/// (the undone steps, 0 = the next one: redo up to it).
 pub fn history(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(6.0)));
@@ -13,7 +16,8 @@ pub fn history(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let redo: Vec<String> = app.session.history.redo.iter().rev().map(|h| h.0.clone()).collect();
     let mut target: Option<i64> = None;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut child, |ui| {
-        let row = |ui: &mut egui::Ui, label: &str, current: bool, dim: bool| -> bool {
+        // a row; registers `id` while it is scrolled into view
+        let mut row = |ui: &mut egui::Ui, id: &str, label: &str, current: bool, dim: bool| -> bool {
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click());
             if current {
                 ui.painter().rect_filled(r, 0.0, t.row_selected);
@@ -21,18 +25,21 @@ pub fn history(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ui.painter().rect_filled(r, 0.0, t.hover);
             }
             ui.painter().text(pos2(r.min.x + 8.0, r.center().y), Align2::LEFT_CENTER, label, Tokens::ui(12.0), if dim { t.text_faint } else { t.text });
+            if let Some(vr) = crate::widgets::visible(ui, r) {
+                app.auto.add(id, vr, label);
+            }
             resp.clicked()
         };
-        if row(ui, "Open", undo.is_empty(), false) {
+        if row(ui, "history.row.open", "Open", undo.is_empty(), false) {
             target = Some(-(undo.len() as i64));
         }
         for (i, l) in undo.iter().enumerate() {
-            if row(ui, l, i + 1 == undo.len(), false) {
+            if row(ui, &format!("history.row.{i}"), l, i + 1 == undo.len(), false) {
                 target = Some(i as i64 + 1 - undo.len() as i64);
             }
         }
         for (i, l) in redo.iter().enumerate() {
-            if row(ui, l, false, true) {
+            if row(ui, &format!("history.redo.{i}"), l, false, true) {
                 target = Some(i as i64 + 1);
             }
         }

@@ -31,12 +31,15 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut open = true;
     match d {
         Dialog::About => {
-            egui::Window::new("About FilmCraft")
+            let w = egui::Window::new("About FilmCraft")
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                 .show(ctx, |ui| about(app, ui));
+            if let Some(w) = w {
+                app.auto.add("about.close", crate::widgets::window_close_rect(ctx, w.response.rect, None), "Close");
+            }
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
                 open = false;
             }

@@ -466,10 +466,12 @@ fn text_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
     let n = words.len();
     let paras = filmcraft_edit::transcript::paragraphs(&words, filmcraft_time::Tick::from_seconds_f64(1.5));
     let para_of = |i: usize| paras.iter().position(|p| p.contains(&i)).unwrap_or(0);
-    let (anchor, cur) = app.ui.transcript_sel.unwrap_or_else(|| {
-        let i = filmcraft_edit::transcript::word_at(&words, app.session.playhead()).unwrap_or(0);
+    // a selection kept from before an edit can point past the words the transcript has now
+    let (anchor, cur) = app.ui.transcript_sel.map(|(a, c)| (a.min(n - 1), c.min(n - 1))).unwrap_or_else(|| {
+        let i = filmcraft_edit::transcript::word_at(&words, app.session.playhead()).unwrap_or(0).min(n - 1);
         (i, i)
     });
+    let para = |i: usize| paras.get(para_of(i)).cloned().unwrap_or(0..n);
     let line = |i: usize, d: i64| -> usize {
         let p = para_of(i) as i64 + d;
         if p < 0 { 0 } else { paras.get(p as usize).map_or(n - 1, |r| r.start) }
@@ -483,12 +485,21 @@ fn text_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
         "nextLine" => (line(cur, 1), false),
         "selectPrevLine" => (line(cur, -1), true),
         "selectNextLine" => (line(cur, 1), true),
-        "segmentStart" => (paras[para_of(cur)].start, false),
-        "segmentEnd" => (paras[para_of(cur)].end - 1, false),
-        "selectToSegmentStart" => (paras[para_of(cur)].start, true),
-        "selectToSegmentEnd" => (paras[para_of(cur)].end - 1, true),
+        "segmentStart" => (para(cur).start, false),
+        "segmentEnd" => (para(cur).end.saturating_sub(1), false),
+        "selectToSegmentStart" => (para(cur).start, true),
+        "selectToSegmentEnd" => (para(cur).end.saturating_sub(1), true),
         "delete" | "rippleDelete" => {
-            let Some((a, b)) = app.ui.transcript_sel else { return Err("select text in the transcript".into()) };
+            // a clicked pause: Backspace extracts it, Alt+Backspace lifts it
+            if app.ui.transcript_sel.is_none()
+                && let Some(k) = app.ui.transcript_pause
+            {
+                let mode = if op == "delete" { "lift" } else { "extract" };
+                let r = app.session.execute("transcript.deleteHits", json!({"filter": "pauses", "hit": k, "mode": mode})).map_err(|e| e.to_string())?;
+                app.ui.transcript_pause = None;
+                return Ok(r);
+            }
+            let Some((a, b)) = app.ui.transcript_sel else { return Err("select text or a pause in the transcript".into()) };
             let cmd = if op == "delete" { "transcript.lift" } else { "transcript.extract" };
             let r = app.session.execute(cmd, json!({"from": a.min(b), "to": a.max(b)})).map_err(|e| e.to_string())?;
             app.ui.transcript_sel = None;
@@ -496,8 +507,11 @@ fn text_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
         }
         _ => return Err(format!("unknown Text panel command `{op}`")),
     };
+    let to = to.min(n - 1);
     app.ui.transcript_sel = Some(if extend { (anchor, to) } else { (to, to) });
     // the playhead follows the caret
-    app.session.set_playhead(words[to].start);
+    if let Some(w) = words.get(to) {
+        app.session.set_playhead(w.start);
+    }
     Ok(json!({"selection": [anchor.min(to), anchor.max(to)], "word": to}))
 }

@@ -15,6 +15,8 @@ default = []
 whisper = ["filmcraft-speech/whisper"]
 # Speech-model downloads over HTTPS.
 speech-download = ["filmcraft-speech/download"]
+# Whisper on the Apple GPU (candle Metal, macOS); falls back to the CPU at run time.
+speech-metal = ["whisper", "filmcraft-speech/metal"]
 
 [dependencies]
 filmcraft-time = { workspace = true }
