@@ -373,7 +373,10 @@ fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportS
 pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut settings: ExportSettings, label: String, wait: bool) -> Result<u64> {
     let format = settings.format;
     if !filmcraft_export::available(format) {
-        return Err(EngineError::Other(format!("{} export is not available (no encoder registered)", format.label())));
+        return Err(EngineError::Other(match format.left_out_feature() {
+            Some(feature) => filmcraft_export::missing_feature(format.label(), feature).to_string(),
+            None => format!("{} export is not available (no encoder registered)", format.label()),
+        }));
     }
     if s.services.export_in_memory() {
         let services = s.services.clone();

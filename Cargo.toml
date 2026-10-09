@@ -37,7 +37,7 @@ filmcraft-h264enc = { path = "crates/h264enc" }
 filmcraft-audio-dsp = { path = "crates/audio-dsp" }
 filmcraft-frame = { path = "crates/frame" }
 filmcraft-media = { path = "crates/media" }
-filmcraft-codecs = { path = "crates/codecs" }
+filmcraft-codecs = { path = "crates/codecs", default-features = false }
 filmcraft-project = { path = "crates/project" }
 filmcraft-edit = { path = "crates/edit" }
 filmcraft-interchange = { path = "crates/interchange" }
@@ -47,10 +47,10 @@ filmcraft-speech = { path = "crates/speech" }
 filmcraft-render = { path = "crates/render" }
 filmcraft-gpu = { path = "crates/gpu" }
 filmcraft-scopes = { path = "crates/scopes" }
-filmcraft-export = { path = "crates/export" }
+filmcraft-export = { path = "crates/export", default-features = false }
 filmcraft-format = { path = "crates/format" }
-filmcraft-engine = { path = "crates/engine" }
-filmcraft-ui-egui = { path = "crates/ui-egui" }
+filmcraft-engine = { path = "crates/engine", default-features = false }
+filmcraft-ui-egui = { path = "crates/ui-egui", default-features = false }
 filmcraft-automation = { path = "crates/automation" }
 filmcraft-platform = { path = "crates/platform" }
 filmcraft-testkit = { path = "crates/testkit" }

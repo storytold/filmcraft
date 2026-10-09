@@ -21,9 +21,9 @@ type_complexity = "allow"
 undocumented_unsafe_blocks = "deny"
 
 [dependencies]
-filmcraft-codecs = { workspace = true }
+filmcraft-codecs = { workspace = true, default-features = true }
 filmcraft-color = { workspace = true }
-filmcraft-export = { workspace = true }
+filmcraft-export = { workspace = true, default-features = true }
 filmcraft-frame = { workspace = true }
 filmcraft-isobmff = { workspace = true }
 filmcraft-time = { workspace = true }

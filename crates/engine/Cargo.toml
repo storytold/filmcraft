@@ -10,7 +10,13 @@ rust-version.workspace = true
 workspace = true
 
 [features]
-default = []
+default = ["h264", "hevc", "aac", "prores"]
+# The codecs licensed through patent pools or a vendor programme, decoders and encoders (see
+# `filmcraft-codecs` and `filmcraft-export`). On by default; an embedding app can turn them off.
+h264 = ["filmcraft-codecs/h264", "filmcraft-export/h264"]
+hevc = ["filmcraft-codecs/hevc"]
+aac = ["filmcraft-codecs/aac", "filmcraft-export/aac"]
+prores = ["filmcraft-codecs/prores", "filmcraft-export/prores"]
 # Speech-to-text with Whisper (candle, CPU). Off by default and in wasm builds.
 whisper = ["filmcraft-speech/whisper"]
 # Speech-model downloads over HTTPS.

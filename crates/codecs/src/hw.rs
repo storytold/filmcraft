@@ -12,9 +12,17 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use filmcraft_isobmff::{CodecConfig, SampleEntry};
 
+#[cfg(any(feature = "h264", feature = "hevc"))]
+use crate::CodecError;
+use crate::Result;
 pub use crate::hw_frame::{FrameCodec, FrameStreamInfo, PictureParams};
-use crate::video::{avcc_length_size, h264_disposable, hevc_disposable, hvcc_length_size_and_tid, sar_par, vui_color};
-use crate::{CodecError, Result};
+#[cfg(feature = "h264")]
+use crate::video::avcc_length_size;
+#[cfg(feature = "hevc")]
+use crate::video::hvcc_length_size_and_tid;
+use crate::video::{h264_disposable, hevc_disposable};
+#[cfg(any(feature = "h264", feature = "hevc"))]
+use crate::video::{sar_par, vui_color};
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
 
@@ -200,6 +208,7 @@ impl StreamInfo {
 }
 
 /// Length-prefixed parameter-set entries (`u16` length + bytes) starting at `pos`.
+#[cfg(any(feature = "h264", feature = "hevc"))]
 fn read_sets(rec: &[u8], pos: &mut usize, count: usize, out: &mut Vec<Vec<u8>>) -> Result<()> {
     for _ in 0..count {
         let len = rec
@@ -227,6 +236,13 @@ impl NalStreamInfo {
     }
 
     /// From an `avcC` (AVCDecoderConfigurationRecord) payload.
+    #[cfg(not(feature = "h264"))]
+    pub fn from_avcc(_avcc: &[u8]) -> Result<Self> {
+        Err(crate::missing_feature("H.264", "h264"))
+    }
+
+    /// From an `avcC` (AVCDecoderConfigurationRecord) payload.
+    #[cfg(feature = "h264")]
     pub fn from_avcc(avcc: &[u8]) -> Result<Self> {
         if avcc.len() < 7 || avcc[0] != 1 {
             return Err(CodecError::Decode("bad avcC record".into()));
@@ -266,6 +282,13 @@ impl NalStreamInfo {
     }
 
     /// From an `hvcC` (HEVCDecoderConfigurationRecord) payload.
+    #[cfg(not(feature = "hevc"))]
+    pub fn from_hvcc(_hvcc: &[u8]) -> Result<Self> {
+        Err(crate::missing_feature("HEVC", "hevc"))
+    }
+
+    /// From an `hvcC` (HEVCDecoderConfigurationRecord) payload.
+    #[cfg(feature = "hevc")]
     pub fn from_hvcc(hvcc: &[u8]) -> Result<Self> {
         if hvcc.len() < 23 || hvcc[0] != 1 {
             return Err(CodecError::Decode("bad hvcC record".into()));

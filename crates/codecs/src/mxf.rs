@@ -62,6 +62,7 @@ pub struct MxfSource {
 /// Picture order counts of AVC access units (Annex B), in stored order, as presentation
 /// positions: the rank of (IDR period, POC) (8.2.1.1, picture order count type 0; types 1 and 2
 /// never reorder for the streams written by AVC encoders we have seen, so they keep stored order).
+#[cfg(feature = "h264")]
 pub fn avc_presentation_order(heads: &[Vec<u8>]) -> Option<Vec<i64>> {
     use filmcraft_bitstream::{annexb_nals, unescape_rbsp};
     use filmcraft_h264::params::{Pps, Sps};
@@ -148,6 +149,12 @@ pub fn avc_presentation_order(heads: &[Vec<u8>]) -> Option<Vec<i64>> {
         pts[i] = rank as i64;
     }
     Some(pts)
+}
+
+/// Without the `h264` feature the slice headers can't be parsed: the stored order stands.
+#[cfg(not(feature = "h264"))]
+pub fn avc_presentation_order(_heads: &[Vec<u8>]) -> Option<Vec<i64>> {
+    None
 }
 
 /// ProRes FourCC from the RDD 44 coding label profile byte.
@@ -427,7 +434,7 @@ impl VideoSamples for MxfVideo<'_> {
         let v = self.src.info.video.as_ref().ok_or_else(|| CodecError::Unsupported("no video track".into()))?;
         let (w, h) = (v.width.min(u16::MAX as u32) as u16, v.height.min(u16::MAX as u32) as u16);
         match t.codec {
-            Codec::Avc { .. } => Ok(Box::new(crate::video::H264Decoder::annexb())),
+            Codec::Avc { .. } => crate::video::h264_annexb(),
             Codec::Mpeg2 => Ok(Box::new(crate::video::Mpeg2Decoder::new(self.src.mpeg2_header.clone()))),
             Codec::Vc3 => make_video_decoder(&SampleEntry::dnx(FourCc(*b"AVdh"), w, h)),
             Codec::ProRes { profile } => make_video_decoder(&SampleEntry::prores(prores_fourcc(profile), w, h)),

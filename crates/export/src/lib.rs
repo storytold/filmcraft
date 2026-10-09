@@ -56,6 +56,21 @@ pub enum ExportError {
 
 pub type Result<T> = std::result::Result<T, ExportError>;
 
+/// The error for an export whose codec this build leaves out: `codec` names the format and
+/// `feature` the cargo feature that builds our encoder for it.
+pub fn missing_feature(codec: &str, feature: &str) -> ExportError {
+    ExportError::Unsupported(format!("{codec} export is not in this build: it needs the filmcraft-export feature `{feature}` or a registered encoder"))
+}
+
+/// First-pass statistics of a two-pass H.264 encode.
+#[cfg(feature = "h264")]
+pub use filmcraft_h264enc::PassStats;
+
+/// First-pass statistics of a two-pass H.264 encode: empty without the `h264` feature.
+#[cfg(not(feature = "h264"))]
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PassStats;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Format {
     /// MPEG-4 (or QuickTime, see [`Multiplexer`]), H.264 video + AAC audio.
@@ -181,7 +196,16 @@ impl Format {
     /// Whether the crate carries an encoder for the format; the others need one registered at runtime
     /// ([`register_format_probe`]).
     pub fn has_builtin_encoder(self) -> bool {
-        self != Format::Hevc
+        self != Format::Hevc && self.left_out_feature().is_none()
+    }
+    /// The cargo feature of this crate that builds our encoder for the format, when this build
+    /// leaves it out.
+    pub fn left_out_feature(self) -> Option<&'static str> {
+        match self {
+            Format::H264 if !cfg!(feature = "h264") => Some("h264"),
+            Format::ProRes if !cfg!(feature = "prores") => Some("prores"),
+            _ => None,
+        }
     }
     /// H.264 or H.265: MPEG-4 (or QuickTime) with AAC audio, set up with the same bitrate controls.
     pub fn is_h26x(self) -> bool {
@@ -211,7 +235,7 @@ pub enum H264Pass {
     #[default]
     Single,
     First,
-    Second(filmcraft_h264enc::PassStats),
+    Second(PassStats),
 }
 
 /// Every Export-mode setting. Serialized in camelCase; every field is optional on input.
@@ -595,7 +619,7 @@ pub trait VideoEncoder: Send {
         None
     }
     /// First-pass statistics of a two-pass encode (H.264).
-    fn pass_stats(&self) -> Option<filmcraft_h264enc::PassStats> {
+    fn pass_stats(&self) -> Option<PassStats> {
         None
     }
 }
@@ -732,12 +756,14 @@ fn mjpeg_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSett
 }
 
 /// AAC-LC (our encoder), 320 kbps stereo by default.
+#[cfg(feature = "aac")]
 struct AacEncoder {
     enc: filmcraft_aac::Encoder,
     rate: u32,
     channels: u32,
 }
 
+#[cfg(feature = "aac")]
 impl AudioEncoder for AacEncoder {
     fn sample_entry(&self) -> SampleEntry {
         SampleEntry::aac(self.enc.audio_specific_config(), self.channels, self.rate)
@@ -762,6 +788,12 @@ impl AudioEncoder for AacEncoder {
     }
 }
 
+#[cfg(not(feature = "aac"))]
+fn aac_factory(_format: Format, _sample_rate: u32, _channels: u32, _s: &ExportSettings) -> Option<Result<Box<dyn AudioEncoder>>> {
+    Some(Err(missing_feature("AAC", "aac")))
+}
+
+#[cfg(feature = "aac")]
 fn aac_factory(_format: Format, sample_rate: u32, channels: u32, s: &ExportSettings) -> Option<Result<Box<dyn AudioEncoder>>> {
     // AAC caps a frame at 6144 bits per channel (ISO/IEC 14496-3 §4.5.3.2): 6 bits per sample, so
     // 264.6 kbps for stereo at 22.05 kHz; a higher setting is capped instead of refused
@@ -775,6 +807,7 @@ fn aac_factory(_format: Format, sample_rate: u32, channels: u32, s: &ExportSetti
 }
 
 /// ProRes 422 encoder (HQ unless the settings pick another flavour): sRGB/709 RGBA8 → 10-bit limited-range BT.709 4:2:2.
+#[cfg(feature = "prores")]
 struct ProResEncoder {
     enc: filmcraft_prores::Encoder,
     profile: filmcraft_prores::Profile,
@@ -784,6 +817,7 @@ struct ProResEncoder {
     signal: ColorSignal,
 }
 
+#[cfg(feature = "prores")]
 impl VideoEncoder for ProResEncoder {
     fn sample_entry(&self) -> SampleEntry {
         let mut e = SampleEntry::prores(filmcraft_isobmff::FourCc(self.profile.fourcc()), self.w as u16, self.h as u16);
@@ -837,6 +871,7 @@ pub fn rgba_to_yuv422_10(rgba: &[u8], w: usize, h: usize, y: &mut [u16], cb: &mu
 }
 
 /// The ProRes profile named by [`ExportSettings::prores_profile`].
+#[cfg(feature = "prores")]
 pub fn prores_profile(name: &str) -> filmcraft_prores::Profile {
     use filmcraft_prores::Profile;
     match name.to_ascii_lowercase().as_str() {
@@ -874,6 +909,12 @@ pub fn rgbf_to_yuv422_10(rgb: &[f32], w: usize, h: usize, kr: f32, kb: f32, y: &
     });
 }
 
+#[cfg(not(feature = "prores"))]
+fn prores_factory(format: Format, _w: u32, _h: u32, _rate: FrameRate, _s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+    (format == Format::ProRes).then(|| Err(missing_feature("ProRes", "prores")))
+}
+
+#[cfg(feature = "prores")]
 fn prores_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     (format == Format::ProRes).then(|| {
         let profile = prores_profile(&s.prores_profile);
@@ -1039,6 +1080,7 @@ fn apv_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettin
 
 /// H.264 High (our encoder): sRGB/709 RGBA8 → 8-bit limited-range BT.709 4:2:0, VBR at the
 /// requested bitrate, length-prefixed samples with the `avcC` in the sample entry.
+#[cfg(feature = "h264")]
 struct H264Encoder {
     enc: filmcraft_h264enc::Encoder,
     w: u32,
@@ -1050,6 +1092,7 @@ struct H264Encoder {
     signal: ColorSignal,
 }
 
+#[cfg(feature = "h264")]
 impl H264Encoder {
     fn packets(&self, ps: Vec<filmcraft_h264enc::Packet>) -> Vec<EncodedPacket> {
         ps.into_iter()
@@ -1058,6 +1101,7 @@ impl H264Encoder {
     }
 }
 
+#[cfg(feature = "h264")]
 impl VideoEncoder for H264Encoder {
     fn sample_entry(&self) -> SampleEntry {
         let cfg = filmcraft_isobmff::AvcConfig::parse(&self.enc.avcc()).unwrap_or_else(|_| {
@@ -1092,7 +1136,7 @@ impl VideoEncoder for H264Encoder {
         // With B-frames the first DTS is one frame before the first PTS.
         (self.enc.delay() > 0).then_some(self.rate.den)
     }
-    fn pass_stats(&self) -> Option<filmcraft_h264enc::PassStats> {
+    fn pass_stats(&self) -> Option<PassStats> {
         self.enc.pass_stats()
     }
 }
@@ -1163,10 +1207,17 @@ pub fn rgbf_to_yuv420_8(rgb: &[f32], w: usize, h: usize, kr: f32, kb: f32, y: &m
 /// Slices per H.264 picture: one per four macroblock rows. The encoder's default follows the core
 /// count, which would make the stream (and every decoded picture) depend on the machine; this is
 /// what it picks on a machine with enough cores.
+#[cfg(feature = "h264")]
 pub(crate) fn h264_slices(height: u32) -> usize {
     (height.div_ceil(16) as usize).div_ceil(4).max(1)
 }
 
+#[cfg(not(feature = "h264"))]
+fn h264_factory(format: Format, _w: u32, _h: u32, _rate: FrameRate, _s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+    (format == Format::H264).then(|| Err(missing_feature("H.264", "h264")))
+}
+
+#[cfg(feature = "h264")]
 fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     if format != Format::H264 {
         return None;

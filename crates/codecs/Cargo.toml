@@ -9,6 +9,17 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["h264", "hevc", "aac", "prores"]
+# Our own decoders for codecs licensed through patent pools (H.264, HEVC, AAC) or a vendor
+# programme (ProRes). An app that embeds the engine can leave them out (`default-features = false`):
+# such a stream then fails with an error naming the feature, unless a registered decoder takes it
+# (`register_video_decoder`, `register_reader_opener`).
+h264 = ["dep:filmcraft-h264"]
+hevc = ["dep:filmcraft-hevc"]
+aac = ["dep:filmcraft-aac", "symphonia/aac"]
+prores = ["dep:filmcraft-prores"]
+
 [dependencies]
 filmcraft-time = { workspace = true }
 filmcraft-color = { workspace = true }
@@ -22,14 +33,14 @@ filmcraft-mpeg2v = { workspace = true }
 filmcraft-ac3 = { workspace = true }
 filmcraft-ogg = { workspace = true }
 filmcraft-bitstream = { workspace = true }
-filmcraft-h264 = { workspace = true }
-filmcraft-hevc = { workspace = true }
+filmcraft-h264 = { workspace = true, optional = true }
+filmcraft-hevc = { workspace = true, optional = true }
 filmcraft-vp9 = { workspace = true }
-filmcraft-prores = { workspace = true }
+filmcraft-prores = { workspace = true, optional = true }
 filmcraft-dnx = { workspace = true }
 filmcraft-av1 = { workspace = true }
 filmcraft-apv = { workspace = true }
-filmcraft-aac = { workspace = true }
+filmcraft-aac = { workspace = true, optional = true }
 filmcraft-opus = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
@@ -37,7 +48,7 @@ log = { workspace = true }
 web-time = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 # Bootstrap audio decoding (MPL-2.0, used unmodified); replaced by own decoders over time.
-symphonia = { version = "0.5.5", default-features = false, features = ["aac", "mp1", "mp2", "mp3", "flac", "alac", "pcm", "wav", "aiff", "ogg", "vorbis", "isomp4"] }
+symphonia = { version = "0.5.5", default-features = false, features = ["mp1", "mp2", "mp3", "flac", "alac", "pcm", "wav", "aiff", "ogg", "vorbis", "isomp4"] }
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }

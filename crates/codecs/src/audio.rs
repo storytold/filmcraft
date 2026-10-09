@@ -6,7 +6,7 @@ use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, SharedSource};
 use filmcraft_time::Tick;
 use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{CODEC_TYPE_AAC, CODEC_TYPE_ALAC, CODEC_TYPE_FLAC, CODEC_TYPE_MP3, CodecParameters, CodecType, Decoder, DecoderOptions};
+use symphonia::core::codecs::{CODEC_TYPE_ALAC, CODEC_TYPE_FLAC, CODEC_TYPE_MP3, CodecParameters, CodecType, Decoder, DecoderOptions};
 use symphonia::core::formats::{FormatOptions, Packet};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
@@ -16,6 +16,7 @@ use crate::{CodecError, Result};
 
 enum Inner {
     /// Our own AAC-LC decoder. `up` interpolates HE-AAC's core to the output rate (see [`Upsample2x`]).
+    #[cfg(feature = "aac")]
     Aac { dec: Box<filmcraft_aac::Decoder>, asc: Vec<u8>, up: Option<Box<Upsample2x>> },
     /// AAC whose configuration arrives with the first frame (ADTS / LATM).
     AacPending,
@@ -85,12 +86,18 @@ impl PacketDecoder {
     /// AAC: our decoder for AAC-LC and the AAC-LC core of HE-AAC (v1/v2); symphonia for other
     /// object types. `sample_rate` is the stream's output rate: when it is twice the core rate
     /// (HE-AAC, see [`aac_output_rate`]) the decoded core is upsampled to it.
+    #[cfg(feature = "aac")]
     pub fn aac(asc: &[u8], sample_rate: u32) -> Result<Self> {
         if let Ok(dec) = filmcraft_aac::Decoder::new(asc) {
             let up = (dec.sample_rate().checked_mul(2) == Some(sample_rate)).then(|| Box::new(Upsample2x::new(dec.channels())));
             return Ok(Self { inner: Inner::Aac { dec: Box::new(dec), asc: asc.to_vec(), up }, channels: 0 });
         }
-        Self::new(CODEC_TYPE_AAC, sample_rate, Some(asc.to_vec()))
+        Self::new(symphonia::core::codecs::CODEC_TYPE_AAC, sample_rate, Some(asc.to_vec()))
+    }
+    /// AAC without the `aac` feature: an error naming it.
+    #[cfg(not(feature = "aac"))]
+    pub fn aac(_asc: &[u8], _sample_rate: u32) -> Result<Self> {
+        Err(crate::missing_feature("AAC", "aac"))
     }
     /// Opus from an `OpusHead` (Matroska `CodecPrivate`, Ogg) or a `dOps` box payload. Output is
     /// 48 kHz; pre-skip is *not* trimmed here (Matroska `CodecDelay` / MP4 edit lists do that).
@@ -114,6 +121,7 @@ impl PacketDecoder {
         Self { inner: Inner::AacPending, channels: 0 }
     }
     /// (Re)configure for the AudioSpecificConfig `asc` unless it is the current one.
+    #[cfg(feature = "aac")]
     pub fn ensure_aac(&mut self, asc: &[u8]) -> Result<()> {
         if let Inner::Aac { asc: cur, .. } = &self.inner
             && cur == asc
@@ -123,6 +131,11 @@ impl PacketDecoder {
         let dec = filmcraft_aac::Decoder::new(asc).map_err(|e| CodecError::Unsupported(format!("AAC: {e}")))?;
         self.inner = Inner::Aac { dec: Box::new(dec), asc: asc.to_vec(), up: None };
         Ok(())
+    }
+    /// AAC without the `aac` feature: an error naming it.
+    #[cfg(not(feature = "aac"))]
+    pub fn ensure_aac(&mut self, _asc: &[u8]) -> Result<()> {
+        Err(crate::missing_feature("AAC", "aac"))
     }
     /// AC-3 (ATSC A/52).
     pub fn ac3() -> Result<Self> {
@@ -147,6 +160,7 @@ impl PacketDecoder {
     /// Decode one packet into planar channels.
     pub fn decode(&mut self, data: &[u8], ts: u64) -> Result<Vec<Vec<f32>>> {
         let dec = match &mut self.inner {
+            #[cfg(feature = "aac")]
             Inner::Aac { dec, up, .. } => {
                 let mut out = dec.decode(data).map_err(|e| CodecError::Decode(e.to_string()))?;
                 if let Some(up) = up {
@@ -207,6 +221,7 @@ impl PacketDecoder {
     }
     pub fn reset(&mut self) {
         match &mut self.inner {
+            #[cfg(feature = "aac")]
             Inner::Aac { dec, asc, up } => {
                 if let Ok(d) = filmcraft_aac::Decoder::new(asc) {
                     **dec = d;
@@ -226,7 +241,9 @@ impl PacketDecoder {
 /// The output rate of an AAC stream: twice the core rate for HE-AAC (ISO/IEC 14496-3 §1.6.5).
 /// Explicit signalling names the rate in the `AudioSpecificConfig`; with implicit signalling (an
 /// AAC-LC config at 24 kHz or less) SBR is only visible as fill-element data in the access units,
-/// so the first ones are decoded to look for it. `None` if `asc` is not one our decoder reads.
+/// so the first ones are decoded to look for it. `None` if `asc` is not one our decoder reads, or
+/// without the `aac` feature.
+#[cfg(feature = "aac")]
 pub fn aac_output_rate<'a>(asc: &[u8], first_units: impl IntoIterator<Item = &'a [u8]>) -> Option<u32> {
     let mut dec = filmcraft_aac::Decoder::new(asc).ok()?;
     let core = dec.sample_rate();
@@ -242,6 +259,11 @@ pub fn aac_output_rate<'a>(asc: &[u8], first_units: impl IntoIterator<Item = &'a
         }
     }
     Some(core)
+}
+
+#[cfg(not(feature = "aac"))]
+pub fn aac_output_rate<'a>(_asc: &[u8], _first_units: impl IntoIterator<Item = &'a [u8]>) -> Option<u32> {
+    None
 }
 
 /// Taps on each side of the interpolation point in [`Upsample2x`].
