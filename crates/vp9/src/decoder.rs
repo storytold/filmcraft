@@ -92,6 +92,25 @@ fn default_threads() -> usize {
     }
 }
 
+/// Dequantizers per segment (8.6.1): `[segment][plane type (luma, chroma)][dc, ac]`.
+pub(crate) fn segment_quantizers(h: &FrameHeader, seg: &crate::header::Segmentation) -> [[[i32; 2]; 2]; 8] {
+    let bd_idx = (h.color.bit_depth.saturating_sub(8) >> 1).min(2) as usize;
+    let mut seg_q = [[[0i32; 2]; 2]; 8];
+    for (s, q) in seg_q.iter_mut().enumerate() {
+        let qindex = if seg.feature_active(s as u8, SEG_LVL_ALT_Q) {
+            let d = seg.feature_data[s][SEG_LVL_ALT_Q] as i32;
+            (if seg.abs_or_delta_update { d } else { h.base_q_idx as i32 + d }).clamp(0, 255)
+        } else {
+            h.base_q_idx as i32
+        };
+        let dc = |b: i32| DC_QLOOKUP[bd_idx * 256 + b.clamp(0, 255) as usize];
+        let ac = |b: i32| AC_QLOOKUP[bd_idx * 256 + b.clamp(0, 255) as usize];
+        q[0] = [dc(qindex + h.delta_q_y_dc as i32), ac(qindex)];
+        q[1] = [dc(qindex + h.delta_q_uv_dc as i32), ac(qindex + h.delta_q_uv_ac as i32)];
+    }
+    seg_q
+}
+
 /// get_tile_offset (6.4.1).
 fn tile_offset(i: usize, mis: usize, log2: u32) -> usize {
     let sbs = (mis + 7) >> 3;
@@ -304,22 +323,8 @@ impl Decoder {
                 }
             }
         }
-        // Quantizers per segment (8.6.1).
-        let bd_idx = ((h.color.bit_depth - 8) >> 1) as usize;
         let seg = self.st.seg.clone();
-        let mut seg_q = [[[0i32; 2]; 2]; 8];
-        for (s, q) in seg_q.iter_mut().enumerate() {
-            let qindex = if seg.feature_active(s as u8, SEG_LVL_ALT_Q) {
-                let d = seg.feature_data[s][SEG_LVL_ALT_Q] as i32;
-                (if seg.abs_or_delta_update { d } else { h.base_q_idx as i32 + d }).clamp(0, 255)
-            } else {
-                h.base_q_idx as i32
-            };
-            let dc = |b: i32| DC_QLOOKUP[bd_idx * 256 + b.clamp(0, 255) as usize];
-            let ac = |b: i32| AC_QLOOKUP[bd_idx * 256 + b.clamp(0, 255) as usize];
-            q[0] = [dc(qindex + h.delta_q_y_dc as i32), ac(qindex)];
-            q[1] = [dc(qindex + h.delta_q_uv_dc as i32), ac(qindex + h.delta_q_uv_ac as i32)];
-        }
+        let seg_q = segment_quantizers(&h, &seg);
         // Tile layout and data (6.4).
         let tile_cols = 1usize << h.tile_cols_log2;
         let tile_rows = 1usize << h.tile_rows_log2;

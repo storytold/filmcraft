@@ -5,8 +5,9 @@
 //! feature) that publishes finished CTB rows into the picture's shared [`Frame`]; jobs of later pictures
 //! block per row on the reference data they read, so several pictures decode concurrently.
 
+use crate::accel::{AccelOutput, AccelPicture, AccelRef, AccelSlice, Accelerator};
 use crate::dpb::{Dpb, Output, OutputMeta, PocState, RefPicSet, build_ref_lists};
-use crate::error::{Error, Result, ensure, invalid};
+use crate::error::{Error, Result, ensure, invalid, unsupported};
 use crate::params::{Layout, Pps, Sps, Vps};
 use crate::picture::{Frame, FrameRef};
 use crate::slice::{NalHeader, SliceHeader, nal_type};
@@ -89,6 +90,8 @@ pub struct Decoder {
     in_flight: VecDeque<FrameRef>,
     max_in_flight: usize,
     draft: bool,
+    /// Hardware acceleration: pictures go to it instead of being reconstructed here.
+    accel: Option<Box<dyn Accelerator>>,
 }
 
 impl Default for Decoder {
@@ -143,7 +146,51 @@ impl Decoder {
             in_flight: VecDeque::new(),
             max_in_flight: threads.max(1) + 2,
             draft: false,
+            accel: None,
         }
+    }
+
+    /// A decoder whose pictures are decoded by `accel` ([`crate::accel`]): use
+    /// [`Decoder::decode_accel`] / [`Decoder::flush_accel`] instead of `decode` / `flush`.
+    pub fn with_accelerator(accel: Box<dyn Accelerator>) -> Self {
+        let mut d = Self::with_threads(1);
+        d.accel = Some(accel);
+        d
+    }
+
+    /// [`Decoder::decode`] with an accelerator: pictures that became ready for output, by id, in
+    /// output order.
+    pub fn decode_accel(&mut self, data: &[u8], pts: i64) -> Result<Vec<AccelOutput>> {
+        if self.accel.is_none() {
+            return invalid("decode_accel without an accelerator");
+        }
+        let nals = match self.nal_length_size {
+            Some(n) => length_prefixed_nals(data, n)?,
+            None => annexb_nals(data),
+        };
+        let mut result = Ok(());
+        for nal in nals {
+            if let Err(e) = self.handle_nal(nal, pts) {
+                result = Err(e);
+                break;
+            }
+        }
+        self.submit_pending();
+        if let Some(e) = self.take_error() {
+            result = result.and(Err(e));
+        }
+        result?;
+        Ok(self.out_queue.drain(..).map(|o| accel_output(&o)).collect())
+    }
+
+    /// [`Decoder::flush`] with an accelerator.
+    pub fn flush_accel(&mut self) -> Vec<AccelOutput> {
+        self.submit_pending();
+        let mut outs = Vec::new();
+        self.dpb.flush(&mut outs);
+        self.out_queue.extend(outs);
+        self.first_picture = true;
+        self.out_queue.drain(..).map(|o| accel_output(&o)).collect()
     }
 
     /// Configure from an `hvcC` (HEVCDecoderConfigurationRecord) box payload.
@@ -355,7 +402,8 @@ impl Decoder {
         }
         let (st, dependent, weighted, tmvp, sao, dbk_off, lt) =
             (sh.slice_type, sh.dependent, sh.pwt.is_some(), sh.temporal_mvp, sh.sao_luma || sh.sao_chroma, sh.deblocking_disabled, !sh.lt.is_empty());
-        pending.slices.push(SliceJob { sh, pps, sps, rbsp, refs });
+        let nal = if self.accel.is_some() { nal.to_vec() } else { Vec::new() };
+        pending.slices.push(SliceJob { sh, pps, sps, rbsp, nal, refs });
         self.stat(|s| {
             match st {
                 crate::slice::SliceType::I => s.slices_i += 1,
@@ -417,6 +465,9 @@ impl Decoder {
             Arc::new(Frame::gray(id, p, &template))
         };
         let rps = self.dpb.apply_rps(sh, poc, max_lsb, irap_no_rasl, &mut make_missing)?;
+        if missing > 0 && self.accel.is_some() {
+            return unsupported("missing reference pictures with hardware decoding");
+        }
         if missing > 0 {
             self.stat(|s| s.missing_refs += missing);
         }
@@ -470,13 +521,73 @@ impl Decoder {
     /// Start decoding the pending picture and insert it into the DPB.
     fn submit_pending(&mut self) {
         let Some(p) = self.pending.take() else { return };
-        let PendingPic { frame, sps, pps, layout, first_sh, poc, output, meta, slices, .. } = p;
-        let scaling = self.layout_cache.iter().find(|(pp, ss, _, _)| Arc::ptr_eq(pp, &pps) && Arc::ptr_eq(ss, &sps)).and_then(|(_, _, _, s)| s.clone());
-        self.dispatch(frame.clone(), sps, pps, layout, scaling, slices, meta.draft);
+        let PendingPic { frame, sps, pps, layout, first_sh, poc, output, meta, slices, rps, .. } = p;
+        if self.accel.is_some() {
+            if let Err(e) = self.accelerate(&frame, &first_sh, &sps, &pps, poc, &rps, &slices)
+                && let Ok(mut err) = self.shared.error.lock()
+            {
+                err.get_or_insert(Error::Invalid(format!("hardware decoding: {e}")));
+            }
+        } else {
+            let scaling = self.layout_cache.iter().find(|(pp, ss, _, _)| Arc::ptr_eq(pp, &pps) && Arc::ptr_eq(ss, &sps)).and_then(|(_, _, _, s)| s.clone());
+            self.dispatch(frame.clone(), sps, pps, layout, scaling, slices, meta.draft);
+        }
         self.poc_state.update(&first_sh, poc);
         let mut outs = Vec::new();
         self.dpb.insert(frame, poc, output, meta, &mut outs);
         self.out_queue.extend(outs);
+        if let Some(a) = self.accel.as_mut() {
+            let live: Vec<u32> = self.dpb.entries.iter().map(|e| e.frame.id).chain(self.out_queue.iter().map(|o| o.frame.id)).collect();
+            a.retain(&live);
+        }
+    }
+
+    /// Hand one picture to the accelerator.
+    #[allow(clippy::too_many_arguments)]
+    fn accelerate(
+        &mut self,
+        frame: &FrameRef,
+        first: &SliceHeader,
+        sps: &Arc<Sps>,
+        pps: &Arc<Pps>,
+        poc: i32,
+        rps: &RefPicSet,
+        slices: &[SliceJob],
+    ) -> std::result::Result<(), String> {
+        let r = |x: &crate::picture::RefPic| AccelRef { id: x.frame.id, poc: x.poc, long_term: x.long_term };
+        let refs: Vec<AccelRef> = self
+            .dpb
+            .entries
+            .iter()
+            .filter(|e| e.marking != crate::dpb::Marking::Unused && e.frame.id != frame.id)
+            .map(|e| AccelRef { id: e.frame.id, poc: e.poc, long_term: e.marking == crate::dpb::Marking::Long })
+            .collect();
+        let accel_slices: Vec<AccelSlice> = slices
+            .iter()
+            .map(|s| AccelSlice {
+                header: &s.sh,
+                nal: &s.nal,
+                data_byte_offset: 2 + s.sh.data_offset,
+                header_emulation_bytes: crate::accel::emulation_bytes_before(s.nal.get(2..).unwrap_or(&[]), s.sh.data_offset),
+                lists: [0, 1].map(|l| s.refs[l].iter().map(r).collect()),
+            })
+            .collect();
+        let pic = AccelPicture {
+            id: frame.id,
+            poc,
+            sps,
+            pps,
+            irap: first.nal.is_irap(),
+            idr: first.nal.is_idr(),
+            intra: slices.iter().all(|s| s.sh.slice_type == crate::slice::SliceType::I),
+            st_curr_before: rps.st_curr_before.iter().map(r).collect(),
+            st_curr_after: rps.st_curr_after.iter().map(r).collect(),
+            lt_curr: rps.lt_curr.iter().map(r).collect(),
+            refs,
+            slices: accel_slices,
+        };
+        let Some(a) = self.accel.as_mut() else { return Err("no accelerator".into()) };
+        a.decode_picture(&pic)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -575,6 +686,22 @@ fn output_meta(sps: &Sps, pts: i64, key: bool, draft: bool) -> OutputMeta {
         sar: vui.sar,
         bit_depth: sps.bit_depth_luma,
         draft,
+    }
+}
+
+fn accel_output(o: &Output) -> AccelOutput {
+    let m = &o.meta;
+    AccelOutput {
+        id: o.frame.id,
+        pts: m.pts,
+        key: m.key,
+        crop: m.crop,
+        full_range: m.full_range,
+        colour_primaries: m.colour_primaries,
+        transfer_characteristics: m.transfer_characteristics,
+        matrix_coefficients: m.matrix_coefficients,
+        sar: m.sar,
+        bit_depth: m.bit_depth,
     }
 }
 

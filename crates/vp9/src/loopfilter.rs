@@ -17,31 +17,38 @@ pub struct LfFrame {
     pub bit_depth: u8,
 }
 
-impl LfFrame {
-    pub fn new(lf: &LoopFilterParams, seg: &Segmentation, mi_rows: usize, mi_cols: usize, ss_x: bool, ss_y: bool, bit_depth: u8) -> LfFrame {
-        let mut lvl = [[[0u8; 2]; 4]; 8];
-        let n_shift = lf.level >> 5;
-        for (seg_id, l) in lvl.iter_mut().enumerate() {
-            let mut lvl_seg = lf.level as i32;
-            if seg.feature_active(seg_id as u8, SEG_LVL_ALT_L) {
-                let d = seg.feature_data[seg_id][SEG_LVL_ALT_L] as i32;
-                lvl_seg = if seg.abs_or_delta_update { d } else { d + lf.level as i32 };
-                lvl_seg = lvl_seg.clamp(0, MAX_LOOP_FILTER);
-            }
-            if !lf.delta_enabled {
-                *l = [[lvl_seg as u8; 2]; 4];
-            } else {
-                let intra = lvl_seg + ((lf.ref_deltas[0] as i32) << n_shift);
-                l[0][0] = intra.clamp(0, MAX_LOOP_FILTER) as u8;
-                l[0][1] = l[0][0];
-                for rf in 1..4 {
-                    for mode in 0..2 {
-                        let v = lvl_seg + ((lf.ref_deltas[rf] as i32) << n_shift) + ((lf.mode_deltas[mode] as i32) << n_shift);
-                        l[rf][mode] = v.clamp(0, MAX_LOOP_FILTER) as u8;
-                    }
+/// Loop filter levels (8.8.1): `[segment][reference frame (intra, last, golden, altref)][mode
+/// (ZEROMV, other)]`.
+pub(crate) fn segment_filter_levels(lf: &LoopFilterParams, seg: &Segmentation) -> [[[u8; 2]; 4]; 8] {
+    let mut lvl = [[[0u8; 2]; 4]; 8];
+    let n_shift = lf.level >> 5;
+    for (seg_id, l) in lvl.iter_mut().enumerate() {
+        let mut lvl_seg = lf.level as i32;
+        if seg.feature_active(seg_id as u8, SEG_LVL_ALT_L) {
+            let d = seg.feature_data[seg_id][SEG_LVL_ALT_L] as i32;
+            lvl_seg = if seg.abs_or_delta_update { d } else { d + lf.level as i32 };
+            lvl_seg = lvl_seg.clamp(0, MAX_LOOP_FILTER);
+        }
+        if !lf.delta_enabled {
+            *l = [[lvl_seg as u8; 2]; 4];
+        } else {
+            let intra = lvl_seg + ((lf.ref_deltas[0] as i32) << n_shift);
+            l[0][0] = intra.clamp(0, MAX_LOOP_FILTER) as u8;
+            l[0][1] = l[0][0];
+            for rf in 1..4 {
+                for mode in 0..2 {
+                    let v = lvl_seg + ((lf.ref_deltas[rf] as i32) << n_shift) + ((lf.mode_deltas[mode] as i32) << n_shift);
+                    l[rf][mode] = v.clamp(0, MAX_LOOP_FILTER) as u8;
                 }
             }
         }
+    }
+    lvl
+}
+
+impl LfFrame {
+    pub fn new(lf: &LoopFilterParams, seg: &Segmentation, mi_rows: usize, mi_cols: usize, ss_x: bool, ss_y: bool, bit_depth: u8) -> LfFrame {
+        let lvl = segment_filter_levels(lf, seg);
         let mut limits = [(0, 0, 0); 64];
         let sh = lf.sharpness as i32;
         let shift = if sh > 4 {

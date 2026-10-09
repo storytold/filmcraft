@@ -2097,16 +2097,23 @@ dependencies = [
 name = "filmcraft-platform"
 version = "0.4.0"
 dependencies = [
+ "filmcraft-av1",
+ "filmcraft-bitstream",
  "filmcraft-codecs",
  "filmcraft-color",
  "filmcraft-export",
  "filmcraft-frame",
+ "filmcraft-h264",
+ "filmcraft-h264enc",
+ "filmcraft-hevc",
  "filmcraft-isobmff",
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-render",
  "filmcraft-testkit",
  "filmcraft-time",
+ "filmcraft-vp9",
+ "libloading",
  "log",
  "objc2-core-foundation",
  "objc2-core-media",

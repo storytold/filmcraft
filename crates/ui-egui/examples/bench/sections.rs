@@ -437,7 +437,10 @@ pub fn export(o: &Opts) -> Vec<Value> {
     let dir = std::env::temp_dir().join(format!("filmcraft-bench-export-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("tmp dir");
     let mut rows = Vec::new();
-    for (format, label, ext) in [("h264", "H.264 + AAC (MP4)", "mp4"), ("prores", "ProRes 422 (MOV)", "mov")].into_iter().filter(|f| o.wants(f.0)) {
+    // H.265 only where a hardware encoder provides it (it has no software encoder)
+    let hevc = filmcraft_engine::export::available(filmcraft_engine::export::Format::Hevc);
+    let formats = [("h264", "H.264 + AAC (MP4)", "mp4"), ("hevc", "H.265 + AAC (MP4)", "mp4"), ("prores", "ProRes 422 (MOV)", "mov")];
+    for (format, label, ext) in formats.into_iter().filter(|f| o.wants(f.0) && (f.0 != "hevc" || hevc)) {
         let mut runs = Vec::new();
         let mut cpu = Vec::new();
         let mut bytes = 0u64;
