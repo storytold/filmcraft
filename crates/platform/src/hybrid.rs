@@ -148,14 +148,47 @@ impl HybridDecoder {
             self.carry.clear();
             return Err(CodecError::Decode(format!("{err} (continuing in software after the next seek)")));
         };
-        let mut frames = Vec::new();
-        for (s, p) in &log {
-            let Some(sw) = self.sw.as_mut() else { break };
-            frames.extend(sw.decode(s, *p)?);
-        }
+        let (frames, failure) = match self.sw.as_mut() {
+            Some(sw) => replay(sw.as_mut(), &log),
+            None => (Vec::new(), None),
+        };
         self.log = Some(log);
-        Ok(self.merge(frames))
+        if matches!(failure, Some(CodecError::Cancelled)) {
+            return Err(CodecError::Cancelled);
+        }
+        let out = self.merge(frames);
+        match failure {
+            // Nothing could be recovered: report the error.
+            Some(e) if out.is_empty() => Err(e),
+            // Pictures were decoded before or after the rejected sample: keep them.
+            Some(e) => {
+                log::warn!("software decoder rejected a replayed sample ({e}); keeping the pictures it decoded");
+                Ok(out)
+            }
+            None => Ok(out),
+        }
     }
+}
+
+/// Feed `log` to `sw`. A sample the decoder rejects is skipped (as a caller would after an error)
+/// so pictures already decoded are kept; the first error is returned beside them. A cancellation
+/// stops the replay and is the error returned.
+fn replay(sw: &mut dyn VideoDecoder, log: &[(Vec<u8>, i64)]) -> (Vec<DecodedFrame>, Option<CodecError>) {
+    let mut frames = Vec::new();
+    let mut failure = None;
+    for (s, p) in log {
+        match sw.decode(s, *p) {
+            Ok(out) => frames.extend(out),
+            Err(CodecError::Cancelled) => {
+                failure = Some(CodecError::Cancelled);
+                break;
+            }
+            Err(e) => {
+                failure.get_or_insert(e);
+            }
+        }
+    }
+    (frames, failure)
 }
 
 impl VideoDecoder for HybridDecoder {
@@ -229,5 +262,63 @@ impl VideoDecoder for HybridDecoder {
         if let Some(sw) = self.sw.as_mut() {
             sw.set_draft(on);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use filmcraft_frame::VideoFrame;
+
+    /// Returns one picture per sample (pts = the sample's first byte), except for sample `bad`
+    /// (rejected) and sample `cancel` (cancelled).
+    struct Mock {
+        bad: u8,
+        cancel: u8,
+    }
+
+    impl VideoDecoder for Mock {
+        fn decode(&mut self, sample: &[u8], _pts: i64) -> Result<Vec<DecodedFrame>> {
+            let id = sample.first().copied().unwrap_or(0);
+            if id == self.cancel {
+                return Err(CodecError::Cancelled);
+            }
+            if id == self.bad {
+                return Err(CodecError::Decode("bad sample".into()));
+            }
+            Ok(vec![DecodedFrame { pts: i64::from(id), frame: VideoFrame::rgba8(1, 1, vec![0; 4]), draft: false }])
+        }
+        fn flush(&mut self) -> Vec<DecodedFrame> {
+            Vec::new()
+        }
+        fn reset(&mut self) {}
+        fn name(&self) -> &str {
+            "mock"
+        }
+    }
+
+    fn log() -> Vec<(Vec<u8>, i64)> {
+        (0u8..4).map(|i| (vec![i], i64::from(i))).collect()
+    }
+
+    #[test]
+    fn replay_keeps_frames_around_a_rejected_sample() {
+        let (frames, failure) = replay(&mut Mock { bad: 2, cancel: 9 }, &log());
+        assert_eq!(frames.iter().map(|f| f.pts).collect::<Vec<_>>(), vec![0, 1, 3]);
+        assert!(matches!(failure, Some(CodecError::Decode(_))));
+    }
+
+    #[test]
+    fn replay_without_errors_reports_none() {
+        let (frames, failure) = replay(&mut Mock { bad: 9, cancel: 9 }, &log());
+        assert_eq!(frames.len(), 4);
+        assert!(failure.is_none());
+    }
+
+    #[test]
+    fn replay_stops_at_a_cancellation() {
+        let (frames, failure) = replay(&mut Mock { bad: 0, cancel: 2 }, &log());
+        assert_eq!(frames.iter().map(|f| f.pts).collect::<Vec<_>>(), vec![1]);
+        assert!(matches!(failure, Some(CodecError::Cancelled)));
     }
 }
