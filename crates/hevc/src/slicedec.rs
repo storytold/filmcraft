@@ -91,6 +91,8 @@ pub struct SliceJob {
     pub pps: Arc<Pps>,
     pub sps: Arc<Sps>,
     pub rbsp: Vec<u8>,
+    /// The NAL unit as in the stream (kept only with an accelerator).
+    pub nal: Vec<u8>,
     pub refs: [Vec<RefPic>; 2],
 }
 

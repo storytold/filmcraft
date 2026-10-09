@@ -29,6 +29,16 @@ filmcraft-isobmff = { workspace = true }
 filmcraft-time = { workspace = true }
 log = { workspace = true }
 
+# Linux: VA-API through libva, loaded at run time (dlopen) so builds and systems without it work
+[target.'cfg(target_os = "linux")'.dependencies]
+libloading = "0.8"
+filmcraft-h264 = { workspace = true }
+filmcraft-hevc = { workspace = true }
+filmcraft-h264enc = { workspace = true }
+filmcraft-vp9 = { workspace = true }
+filmcraft-av1 = { workspace = true }
+filmcraft-bitstream = { workspace = true }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-foundation = "0.3.2"
 objc2-core-media = "0.3.2"

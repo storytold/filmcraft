@@ -37,6 +37,8 @@ pub mod hybrid;
 pub mod media_foundation;
 #[cfg(target_os = "windows")]
 pub mod nvenc;
+#[cfg(target_os = "linux")]
+pub mod vaapi;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub mod videotoolbox;
@@ -77,7 +79,29 @@ pub fn register() -> Availability {
         filmcraft_codecs::hw::set_hw_backend("Media Foundation");
         Availability::Available("Media Foundation")
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    {
+        // only when this system has a VA-API driver that decodes H.264 (libva is loaded lazily)
+        if vaapi::device::Display::open_for(vaapi::ffi::VAProfileH264High, vaapi::ffi::VA_RT_FORMAT_YUV420).is_err() {
+            return Availability::Unavailable("no VA-API hardware decoder (libva or a driver is missing)");
+        }
+        filmcraft_codecs::register_video_decoder(vaapi_factory);
+        // Export ▸ Hardware encoding (H.264): in front of the software encoder, taking an export
+        // only when asked for and when the GPU can do it
+        static ENCODERS: std::sync::Once = std::sync::Once::new();
+        ENCODERS.call_once(|| {
+            filmcraft_export::register_encoder(vaapi::h264enc::factory);
+            // H.265 has no software encoder: the format exists where the GPU encodes it
+            filmcraft_export::register_encoder(vaapi::hevcenc::factory);
+            filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, vaapi::hevcenc::available);
+            // AV1 likewise
+            filmcraft_export::register_encoder(vaapi::av1enc::factory);
+            filmcraft_export::register_format_probe(filmcraft_export::Format::Av1, vaapi::av1enc::available);
+        });
+        filmcraft_codecs::hw::set_hw_backend("VA-API");
+        Availability::Available("VA-API")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         Availability::Unavailable("no hardware video decoder for this system yet")
     }
@@ -93,7 +117,11 @@ pub fn registered() -> bool {
     {
         filmcraft_codecs::video_decoder_registered(media_foundation_factory)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    {
+        filmcraft_codecs::video_decoder_registered(vaapi_factory)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         false
     }
@@ -110,10 +138,67 @@ pub fn hardware_decoder_for(entry: &filmcraft_isobmff::SampleEntry) -> bool {
     {
         media_foundation::stream_info(entry).is_some_and(|info| media_foundation::MfDecoder::new(info).is_ok())
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    {
+        vaapi_decoder(entry).is_some_and(|r| r.is_ok())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         let _ = entry;
         false
+    }
+}
+
+/// The VA-API decoder for `entry` (H.264 8-bit and HEVC 8/10-bit, 4:2:0 progressive), `None`
+/// when it does not take the stream; `Some(Err)` when it does but the hardware could not start.
+#[cfg(target_os = "linux")]
+fn vaapi_decoder(entry: &filmcraft_isobmff::SampleEntry) -> Option<std::result::Result<Box<dyn filmcraft_codecs::VideoDecoder>, String>> {
+    use filmcraft_codecs::hw::{FrameCodec, FrameStreamInfo, NalStreamInfo};
+    type Boxed = Box<dyn filmcraft_codecs::VideoDecoder>;
+    if let Some(info) = NalStreamInfo::from_entry(entry) {
+        let info = info.ok()?;
+        if info.interlaced || info.chroma_format_idc != 1 || info.bit_depth_luma != info.bit_depth_chroma {
+            return None;
+        }
+        let hw: std::result::Result<Boxed, String> = match &entry.codec {
+            filmcraft_isobmff::CodecConfig::Avc(avc) if info.bit_depth_luma == 8 => {
+                vaapi::h264::VaH264Decoder::new(&avc.to_bytes()).map(|d| Box::new(d) as Boxed)
+            }
+            filmcraft_isobmff::CodecConfig::Hevc(hevc) if matches!(info.bit_depth_luma, 8 | 10) => {
+                vaapi::hevc::VaHevcDecoder::new(&hevc.to_bytes(), info.bit_depth_luma).map(|d| Box::new(d) as Boxed)
+            }
+            _ => return None,
+        };
+        return Some(hw.map(|d| Box::new(HybridDecoder::new(d, entry.clone(), info)) as Boxed));
+    }
+    let info = FrameStreamInfo::from_entry(entry)?.ok()?;
+    if info.mono || info.subsampling != (1, 1) {
+        return None;
+    }
+    let hw: std::result::Result<Boxed, String> = match info.codec {
+        FrameCodec::Vp9 if matches!((info.profile, info.bit_depth), (0, 8) | (2, 10)) => {
+            vaapi::vp9::VaVp9Decoder::new(info.clone()).map(|d| Box::new(d) as Boxed)
+        }
+        FrameCodec::Av1 if info.profile == 0 && matches!(info.bit_depth, 8 | 10) => vaapi::av1::VaAv1Decoder::new(info.clone()).map(|d| Box::new(d) as Boxed),
+        _ => return None,
+    };
+    Some(hw.map(|d| Box::new(HybridDecoder::new(d, entry.clone(), info)) as Boxed))
+}
+
+/// The VA-API factory: a [`HybridDecoder`] around [`vaapi::h264::VaH264Decoder`] for streams the
+/// GPU can decode, `None` otherwise (and while Hardware decoding is Off).
+#[cfg(target_os = "linux")]
+pub fn vaapi_factory(entry: &filmcraft_isobmff::SampleEntry) -> Option<filmcraft_codecs::Result<Box<dyn filmcraft_codecs::VideoDecoder>>> {
+    if !filmcraft_codecs::hw::hardware_decoding() {
+        return None;
+    }
+    match vaapi_decoder(entry)? {
+        Ok(d) => Some(Ok(d)),
+        Err(why) => {
+            log::info!("hardware decoding declined for {} video: {why}", entry.codec.name());
+            filmcraft_codecs::hw::note_hw_declined();
+            None
+        }
     }
 }
 

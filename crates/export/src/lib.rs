@@ -67,6 +67,10 @@ pub enum Format {
     /// with [`register_format_probe`]; [`available`] is false without it.
     #[serde(rename = "hevc", alias = "Hevc")]
     Hevc,
+    /// MPEG-4, AV1 Main (8-bit) video + AAC audio. Like H.265 it has no built-in encoder: offered
+    /// where a hardware encoder registers one.
+    #[serde(rename = "av1", alias = "Av1")]
+    Av1,
     /// QuickTime, Apple ProRes 422 (HQ unless the settings pick another flavour) + PCM.
     #[serde(rename = "prores", alias = "ProRes")]
     ProRes,
@@ -109,6 +113,7 @@ impl Format {
         Some(match s.to_ascii_lowercase().replace([' ', '-', '_', '.'], "").as_str() {
             "h264" | "mp4" | "avc" | "m4v" => Format::H264,
             "hevc" | "h265" | "hvc1" | "hev1" | "x265" => Format::Hevc,
+            "av1" | "av01" => Format::Av1,
             "prores" | "mov" | "appleprores" => Format::ProRes,
             "dnxhr" | "dnxhd" | "dnx" | "avid" | "aviddnxhr" | "aviddnxhd" | "vc3" => Format::DnxHr,
             "apv" | "apv1" => Format::Apv,
@@ -129,6 +134,7 @@ impl Format {
         match self {
             Format::H264 => "h264",
             Format::Hevc => "hevc",
+            Format::Av1 => "av1",
             Format::ProRes => "prores",
             Format::DnxHr => "dnxhr",
             Format::Apv => "apv",
@@ -145,7 +151,7 @@ impl Format {
     }
     pub fn extension(self) -> &'static str {
         match self {
-            Format::H264 | Format::Hevc => "mp4",
+            Format::H264 | Format::Hevc | Format::Av1 => "mp4",
             Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg => "mov",
             Format::PngSequence => "png",
             Format::TiffSequence => "tif",
@@ -160,6 +166,7 @@ impl Format {
         match self {
             Format::H264 => "H.264",
             Format::Hevc => "H.265 (HEVC)",
+            Format::Av1 => "AV1",
             Format::ProRes => "Apple ProRes",
             Format::DnxHr => "Avid DNxHR",
             Format::Apv => "APV",
@@ -181,15 +188,24 @@ impl Format {
     /// Whether the crate carries an encoder for the format; the others need one registered at runtime
     /// ([`register_format_probe`]).
     pub fn has_builtin_encoder(self) -> bool {
-        self != Format::Hevc
+        !matches!(self, Format::Hevc | Format::Av1)
     }
     /// H.264 or H.265: MPEG-4 (or QuickTime) with AAC audio, set up with the same bitrate controls.
     pub fn is_h26x(self) -> bool {
         matches!(self, Format::H264 | Format::Hevc)
     }
-    pub const ALL: [Format; 14] = [
+    /// A bitrate-controlled MPEG-4 video format with AAC audio: H.264, H.265 or AV1 (MPEG-4 only).
+    pub fn is_mp4_video(self) -> bool {
+        matches!(self, Format::H264 | Format::Hevc | Format::Av1)
+    }
+    /// Whether the file is MPEG-4 rather than QuickTime for `mux`.
+    pub fn is_mp4_with(self, mux: Multiplexer) -> bool {
+        self == Format::Av1 || (self.is_h26x() && mux == Multiplexer::Mp4)
+    }
+    pub const ALL: [Format; 15] = [
         Format::H264,
         Format::Hevc,
+        Format::Av1,
         Format::ProRes,
         Format::DnxHr,
         Format::Apv,
@@ -504,6 +520,9 @@ impl ExportSettings {
         }
         if self.format == Format::Hevc && self.bitrate_mode == BitrateMode::Vbr2Pass {
             return Err(ExportError::Unsupported("H.265 export has no two-pass mode: choose CBR or VBR, 1 pass".into()));
+        }
+        if self.format == Format::Av1 && self.bitrate_mode == BitrateMode::Vbr2Pass {
+            return Err(ExportError::Unsupported("AV1 export has no two-pass mode: choose CBR or VBR, 1 pass".into()));
         }
         Ok(())
     }
@@ -1377,7 +1396,7 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
             }
             (total, count)
         }
-        Format::H264 | Format::Hevc | Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom => {
+        Format::H264 | Format::Hevc | Format::Av1 | Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom => {
             // Handled by the stepped exporter above; reaching here would be a dispatch bug.
             return Err(ExportError::Unsupported(format!("{:?} must run as a stepped export", settings.format)));
         }

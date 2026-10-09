@@ -466,6 +466,37 @@ fn a_time_left_reads_like_a_clock() {
 }
 
 #[test]
+fn av1_is_an_mp4_format_that_needs_a_registered_encoder() {
+    for name in ["av1", "AV1", "av01"] {
+        assert_eq!(Format::from_name(name), Some(Format::Av1), "{name}");
+    }
+    assert_eq!(Format::from_name(Format::Av1.id()), Some(Format::Av1));
+    assert_eq!((Format::Av1.extension(), Format::Av1.label()), ("mp4", "AV1"));
+    assert!(Format::ALL.contains(&Format::Av1));
+    let s: ExportSettings = serde_json::from_value(serde_json::json!({"format": "av1"})).unwrap();
+    assert_eq!(s.format, Format::Av1);
+    assert_eq!(serde_json::to_value(&s).unwrap()["format"], "av1");
+    // MP4 with AAC only: a QuickTime multiplexer setting left over from H.264 does not apply
+    let a = ExportSettings { format: Format::Av1, ..Default::default() };
+    assert_eq!((a.audio_codec(), a.extension()), (AudioCodec::Aac, "mp4"));
+    let mov = ExportSettings { multiplexer: Multiplexer::Mov, ..a.clone() };
+    assert_eq!((mov.audio_codec(), mov.extension()), (AudioCodec::Aac, "mp4"));
+    let b = a.estimate_bytes(1920, 1088, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
+    assert!((b as f64 - 25.4e6).abs() < 0.2e6, "{b}");
+    let summary = a.summary(1920, 1088, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
+    assert_eq!(summary.format, "AV1 (MP4)");
+    assert!(summary.video.contains("AV1 Main"), "{}", summary.video);
+    let e = ExportSettings { bitrate_mode: BitrateMode::Vbr2Pass, ..a.clone() }.validate().unwrap_err();
+    assert!(e.to_string().contains("two-pass"), "{e}");
+    assert!(!Format::Av1.has_builtin_encoder());
+    assert!(!available(Format::Av1), "nothing registered an encoder for it");
+    let (p, seq, m) = matte([0.0, 0.0, 1.0, 1.0], 160, 96, None);
+    let sc = Scratch::new("av1-missing");
+    let err = export(&p, seq, &ExportSettings { path: sc.path("x.mp4"), include_audio: false, ..a.clone() }, &m, &Progress::default()).unwrap_err().to_string();
+    assert!(err.contains("AV1") && err.contains("encoder not available"), "{err}");
+}
+
+#[test]
 fn h265_is_a_format_that_needs_a_registered_encoder() {
     use std::sync::atomic::{AtomicBool, Ordering};
     // names, ids, files and serialized settings
@@ -474,7 +505,7 @@ fn h265_is_a_format_that_needs_a_registered_encoder() {
     }
     assert_eq!(Format::from_name(Format::Hevc.id()), Some(Format::Hevc));
     assert_eq!((Format::Hevc.extension(), Format::Hevc.label()), ("mp4", "H.265 (HEVC)"));
-    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 14);
+    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 15);
     let s: ExportSettings = serde_json::from_value(serde_json::json!({"format": "hevc"})).unwrap();
     assert_eq!(s.format, Format::Hevc);
     assert_eq!(serde_json::to_value(&s).unwrap()["format"], "hevc");

@@ -321,6 +321,56 @@ of 8 s of a 1080p23.976 H.264 clip (191 frames) to H.264 with the default preset
 
 Quality at equal bitrate: see the PR description.
 
+## Results (HW5: Linux VA-API hardware H.264 / HEVC decoding, Off → Auto)
+
+Same build, `cargo xtask bench --sections decode --only dec_h264 --repeat 3 --hw off|auto`,
+2026-10-08, AMD Ryzen 7 9700X (16 threads) + Radeon RX 7900 (Navi 31), Mesa 26.2.2, libva 2.24,
+load average 7–11. Pictures are bit-exact either way (`crates/platform/tests/vaapi.rs`).
+
+| codec | size | CPU ms/frame Off → **Auto** | fps Off → **Auto** (best of 3) | hw frames / fallbacks |
+|---|---|---|---|---|
+| H.264 | 1080p | 33.6 → **0.9** | 393 → **348** | 360 / 0 |
+| H.264 | 2160p | 136.7 → **3.2** | 97 → **107** | 216 / 0 |
+| HEVC | 1080p | 22.7 → **0.7** | 258 → **493** | 360 / 0 |
+| HEVC | 2160p | 118.3 → **2.8** | 87 → **148** | 216 / 0 |
+| HEVC Main 10 | 2160p | 113.2 → **4.1** | 88 → **126** | 216 / 0 |
+| VP9 | 1080p | 12.6 → **0.8** | 199 → **391** | 360 / 0 |
+| VP9 | 2160p | 61.1 → **2.9** | 50 → **118** | 216 / 0 |
+| AV1 | 1080p | 17.9 → **0.9** | 167 → **431** | 360 / 0 |
+| AV1 | 2160p | 64.0 → **3.0** | 41 → **138** | 216 / 0 |
+
+VP9 rows: `--only dec_vp9` (WebM, libvpx), AV1 rows `--only dec_av1` (SVT-AV1), same machine, load average 2–12. HEVC runs 1.4–1.9×, VP9 2–2.3× and AV1 2.6–3.3× faster on top of the CPU saving; H.264 throughput is about the same (the
+software decoder already used all 16 threads). The CPU time left per frame is the slice-header
+parse and the copy of the picture out of the GPU (`--only dec_hevc`, load average 3–8).
+
+## Results (HW6: Linux VA-API H.264 export, software → hardware)
+
+Same machine as HW5 (Ryzen 7 9700X + Radeon RX 7900, Mesa 26.2.2, libva 2.24, 2026-10-08), same
+method as HW4: `cargo xtask bench --sections export --only h264 --repeat 3 --hw off|auto`, 191 frames
+of 1080p23.976 to H.264, default preset, VBR one pass. The VA-API row had `hw frames` = 573 = 191 × 3.
+
+| encoder | fps | CPU ms/frame | MB |
+|---|---|---|---|
+| software | 39 (4.9 s) | 296 | 20.4 |
+| **VA-API** | **61** (3.1 s) | **62** | 17.2 |
+
+- 4.7× less CPU per frame and 1.6× faster. What is left is the compositing, the RGBA → YUV
+  conversion and the upload, as with NVENC.
+- The bitrate is not matched (17.2 vs 20.4 MB), so the rows are not a quality comparison;
+  `crates/platform/tests/vaapi_export.rs` finds the hardware and software exports at worst 52.1 dB
+  luma PSNR from each other (640×360, 72 frames).
+
+### H.265 on VA-API
+
+Same machine and method, `--only hevc` (the bench exports H.265 only where a hardware encoder
+provides it). H.265 has no software encoder, so both rows encode on the GPU (`hw frames` 573);
+`--hw auto` also decodes the H.264 source clip on the GPU.
+
+| run | fps | CPU ms/frame | MB |
+|---|---|---|---|
+| `--hw off` (software decoding) | 71 (2.7 s) | 101 | 16.9 |
+| **`--hw auto`** | **97** (2.0 s) | **64** | 16.9 |
+
 ## Results (HW2 follow-up: Windows VP9 and AV1 hardware decoding, Off → Auto)
 
 Same machine and method as the H.264 / HEVC results above (Xeon E5-2680 v4, RTX 5060 driver 617.14,

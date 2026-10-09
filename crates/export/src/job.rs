@@ -28,7 +28,7 @@ use rayon::prelude::*;
 use crate::audio_out::AudioOut;
 use crate::mxf_out::{MxfMux, MxfSetup};
 use crate::pipeline::Pipeline;
-use crate::settings::{AudioCodec, BitrateMode, Multiplexer};
+use crate::settings::{AudioCodec, BitrateMode};
 use crate::{
     AudioEncoder, ColorSignal, EncodedPacket, EncoderFrame, ExportError, ExportSettings, Format, H264Pass, Out, Progress, Report, Result, VideoEncoder,
     audio_factories, export_range, frame_span, video_factories,
@@ -82,7 +82,10 @@ pub struct Exporter {
 
 /// Whether [`Exporter`] handles a format.
 pub fn stepped(format: Format) -> bool {
-    matches!(format, Format::H264 | Format::Hevc | Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom)
+    matches!(
+        format,
+        Format::H264 | Format::Hevc | Format::Av1 | Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom
+    )
 }
 
 fn make_venc(settings: &ExportSettings, w: u32, h: u32, rate: FrameRate) -> Result<Box<dyn VideoEncoder>> {
@@ -128,7 +131,7 @@ impl Exporter {
             progress.set_status(format!("Exporting {} frames ({})", nframes, settings.format.label()));
         }
         let venc = make_venc(&settings, pipe.w, pipe.h, pipe.rate)?;
-        let brand = if settings.format.is_h26x() && settings.multiplexer == Multiplexer::Mp4 { Brand::Mp4 } else { Brand::Mov };
+        let brand = if settings.format.is_mp4_with(settings.multiplexer) { Brand::Mp4 } else { Brand::Mov };
         let audio = if settings.has_audio() { Some(AudioOut::new(project.clone(), seq, &settings, range)?) } else { None };
         let aenc: Option<Box<dyn AudioEncoder>> = match (&audio, settings.audio_codec()) {
             (Some(a), AudioCodec::Aac) => {
