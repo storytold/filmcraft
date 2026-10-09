@@ -464,12 +464,8 @@ fn open_in_source(s: &mut Session, p: &Value) -> Result<Value> {
         Some(i) => i,
         None => {
             let r = import(s, &json!({"paths": [path], "imageSequence": false}))?;
-            r["items"]
-                .as_array()
-                .and_then(|a| a.first())
-                .and_then(Value::as_u64)
-                .map(ItemId)
-                .ok_or_else(|| bad("mediaBrowser.openInSource", "the file could not be imported"))?
+            // (or the item the file already has under another path)
+            crate::commands::imported_item(&r).ok_or_else(|| bad("mediaBrowser.openInSource", "the file could not be imported"))?
         }
     };
     s.execute("source.open", json!({"item": item.0}))?;

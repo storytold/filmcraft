@@ -452,6 +452,9 @@ fn start_file_drag(app: &mut FilmcraftApp, ui: &egui::Ui, e: &Entry) {
         let pos = ui.ctx().pointer_latest_pos().unwrap_or_default();
         let after = app.session.history.undo.len();
         with_cache(ui.ctx(), |c| c.drag = Some((items, after.max(before), pos)));
+    } else if let Some(existing) = r["duplicates"][0]["item"].as_u64() {
+        // the file is in the project under another path: drag that item, nothing to undo
+        crate::panels::start_drag_item(ui, ItemId(existing));
     }
 }
 

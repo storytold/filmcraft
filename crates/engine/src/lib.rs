@@ -21,6 +21,7 @@ pub mod essential_sound;
 pub mod export_tools;
 pub mod graphic_templates;
 pub mod graphics;
+mod import_duplicates;
 pub mod interchange;
 pub mod keyboard;
 pub mod masks;
@@ -92,6 +93,20 @@ pub enum EngineError {
 
 pub type Result<T> = std::result::Result<T, EngineError>;
 
+/// The *file identity*: which file on this machine a path leads to, whatever the path (a hard
+/// link is the same file under another one): the device and the file's number on it (inode).
+/// Network and FUSE filesystems may hand out numbers that are not unique, so a match is a hint to
+/// be confirmed by the content (`import_duplicates`, tier 2), never proof.
+///
+/// Not the *media identity* ([`filmcraft_project::MediaIdentity`]: size + content fingerprint,
+/// saved in the project and checked by relinking): a file identity is asked of the host each time
+/// and never saved, and a copy of a file has the same media identity and another file identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FileIdentity {
+    pub volume: u64,
+    pub index: u64,
+}
+
 /// Host services (file access, clipboard…) injected by the frontend.
 pub trait Services: Send + Sync {
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>>;
@@ -106,6 +121,18 @@ pub trait Services: Send + Sync {
         let b = self.read_file(path)?;
         let a = (offset as usize).min(b.len());
         Ok(b[a..(a + len).min(b.len())].to_vec())
+    }
+    /// The one spelling of the path of an existing file or directory: absolute, `.` and `..`
+    /// resolved, symlinks followed, the letter case the volume has (`file.import` duplicates,
+    /// #356). `None`: there is no such path, or the host cannot tell (the web); paths are then
+    /// compared as written.
+    fn canonical_path(&self, _path: &str) -> Option<String> {
+        None
+    }
+    /// The file a path leads to (symlinks followed), so a hard link is recognised. `None`: no
+    /// such file, or the host has no file identities.
+    fn file_identity(&self, _path: &str) -> Option<FileIdentity> {
+        None
     }
     /// A random-access reader for a media file, so containers are opened without reading the
     /// whole file (web: `Blob` range reads). `None`: the host has none; media are read whole.
@@ -156,6 +183,18 @@ impl Services for FsServices {
     fn file_size(&self, path: &str) -> std::io::Result<u64> {
         let m = std::fs::metadata(path)?;
         if m.is_file() { Ok(m.len()) } else { Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{path} is not a file"))) }
+    }
+    fn canonical_path(&self, path: &str) -> Option<String> {
+        std::fs::canonicalize(path).ok().map(|p| p.to_string_lossy().into_owned())
+    }
+    // (Windows: std has no stable volume serial number + file index, so a hard link there is not
+    // recognised; `canonical_path` covers its other spellings)
+    #[cfg(unix)]
+    fn file_identity(&self, path: &str) -> Option<FileIdentity> {
+        use std::os::unix::fs::MetadataExt;
+        let m = std::fs::metadata(path).ok()?;
+        // no real file has inode 0: a filesystem that reports it has no identities to offer
+        (m.is_file() && m.ino() != 0).then(|| FileIdentity { volume: m.dev(), index: m.ino() })
     }
     fn list_dir(&self, dir: &str) -> Option<std::io::Result<Vec<String>>> {
         let dir = if dir.is_empty() { "." } else { dir };
@@ -1040,6 +1079,8 @@ mod export_tests;
 mod file_tests;
 #[cfg(test)]
 mod image_sequence_tests;
+#[cfg(test)]
+mod import_duplicates_tests;
 #[cfg(test)]
 mod interchange_auto_points_tests;
 #[cfg(test)]

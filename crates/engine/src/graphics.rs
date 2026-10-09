@@ -755,7 +755,8 @@ fn menu_commands() -> Vec<CommandSpec> {
             |s, p| {
                 let path = str_p(p, "path").ok_or_else(|| bad("graphics.newFromFile", "need `path`"))?.to_string();
                 let r = s.execute("file.import", json!({"paths": [path]}))?;
-                let item = r["items"].as_array().and_then(|a| a.first()).and_then(Value::as_u64).map(ItemId).ok_or_else(|| {
+                // (a file the project already has is placed from its existing item)
+                let item = crate::commands::imported_item(&r).ok_or_else(|| {
                     bad(
                         "graphics.newFromFile",
                         r["errors"].as_array().and_then(|e| e.first()).and_then(Value::as_str).unwrap_or("nothing imported").to_string(),
