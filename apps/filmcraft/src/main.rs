@@ -5,7 +5,7 @@
 //! unknown option is an error (exit code 2), not a file to open.
 //!
 //! Without a project, `--demo` or `--empty`, Settings ▸ General ▸ At Startup decides: Show Home
-//! (the demo project), Open Most Recent, or an empty project.
+//! (Import, including Recent Projects), Open Most Recent, or an empty project.
 //!
 //! `--control <port>` (or `FILMCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control server;
 //! see `filmcraft_ui_egui::control` for the methods. A port that is not a number is an error from
@@ -121,6 +121,11 @@ fn main() -> eframe::Result {
             }
             // voice-over recording reads the microphone through cpal
             session.voiceover.input = Some(Box::new(audio_in::CpalIn::new(&session.prefs.audio_hardware.device_class)));
+            let show_home = files.is_empty()
+                && !startup_flag
+                && session.prefs.general.at_startup == "showHome"
+                && recover != Some(true)
+                && (recover == Some(false) || session.recovery_candidates().is_empty());
             let project = files.iter().find(|f| f.ends_with(".fcproj")).cloned();
             if let Some(p) = project {
                 if let Err(e) = session.execute("file.open", json!({"path": p})) {
@@ -140,7 +145,7 @@ fn main() -> eframe::Result {
                     }
                 }
             } else if !startup_flag && session.prefs.general.at_startup == "emptyProject" {
-            } else if demo {
+            } else if demo && !show_home {
                 let _ = session.execute("file.openDemoProject", json!({}));
             }
             let media: Vec<String> = files.iter().filter(|f| !f.ends_with(".fcproj")).cloned().collect();
@@ -155,6 +160,9 @@ fn main() -> eframe::Result {
                 }
             }
             let mut app = FilmcraftApp::new(session);
+            if show_home {
+                app.ui.mode = filmcraft_ui_egui::state::Mode::Import;
+            }
             if recover == Some(false) {
                 app.dialog = None;
             }

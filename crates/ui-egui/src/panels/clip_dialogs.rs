@@ -27,6 +27,7 @@
 //! - Clip Speed / Duration `speedDuration.*`: `speed`, `reverse`, `ripple`,
 //!   `interpolation.<frameSampling|frameBlending|opticalFlow>`;
 //! - Close Project `closeProject.save`, `closeProject.dontSave`, `closeProject.cancel`.
+//! - Open Recent Project `openProject.save`, `openProject.dontSave`, `openProject.cancel`.
 
 use egui::{Align2, RichText};
 use filmcraft_project::{AudioChannelMap, AudioChannels, ItemKind, TrackKind};
@@ -56,6 +57,7 @@ fn meta(command: &str) -> Option<(&'static str, &'static str)> {
         "clip.fieldOptions" => ("Field Options", "fieldOptions"),
         "clip.speedDuration" => ("Clip Speed / Duration", "speedDuration"),
         "file.closeProject" => ("Save Project", "closeProject"),
+        "file.open" => ("Save Project", "openProject"),
         _ => return None,
     })
 }
@@ -77,6 +79,11 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
         return Some(app.file_dialog("file.save", params));
     }
     if id == "file.closeProject" && !app.session.is_dirty() {
+        return None;
+    }
+    // Open Project's normal menu entry still uses the native file picker. The recent-project
+    // row supplies a path and creates its confirmation draft directly.
+    if id == "file.open" {
         return None;
     }
     meta(id)?;
@@ -277,8 +284,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut elems: Elems = Vec::new();
     let mut action: Option<&'static str> = None;
     let project_name = app.session.project.name.clone();
-    let can_save = app.session.path.is_some();
-    egui::Window::new(title).collapsible(false).resizable(false).default_width(360.0).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+    let opening = d.command == "file.open";
+    let can_save = app.session.path.is_some() || (opening && app.hooks.pick_save.is_some());
+    let mut draw = |ui: &mut egui::Ui| {
         let p = &mut d.params;
         match d.command.as_str() {
             "edit.pasteAttributes" | "edit.removeAttributes" => {
@@ -505,8 +513,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     }
                 }
             }
-            "file.closeProject" => {
-                ui.label(format!("Save changes to “{project_name}” before closing?"));
+            "file.closeProject" | "file.open" => {
+                let next = if opening { "opening another project" } else { "closing" };
+                ui.label(format!("Save changes to “{project_name}” before {next}?"));
+                if !d.error.is_empty() {
+                    ui.colored_label(egui::Color32::from_rgb(0xe0, 0x60, 0x60), &d.error);
+                }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let r = ui.button("Cancel");
@@ -545,7 +557,15 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 action = Some("ok");
             }
         });
-    });
+    };
+    if opening {
+        egui::Modal::new(egui::Id::new("open-project-confirm")).show(ctx, |ui| {
+            ui.set_width(360.0);
+            draw(ui);
+        });
+    } else {
+        egui::Window::new(title).collapsible(false).resizable(false).default_width(360.0).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, draw);
+    }
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
@@ -571,6 +591,32 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
         }
         Some("dontSave") | Some("save") => {
+            if opening {
+                if action == Some("save") {
+                    if let Err(e) = crate::menus::invoke(app, ctx, "file.save", json!({})) {
+                        d.error = e;
+                        app.ui.clip_dialog = Some(d);
+                        return;
+                    }
+                    // Cancelling Save As leaves the current project edited and the prompt open.
+                    if app.session.is_dirty() {
+                        app.ui.clip_dialog = Some(d);
+                        return;
+                    }
+                }
+                match crate::menus::invoke(app, ctx, "file.open", d.params.clone()) {
+                    Ok(_) => {
+                        app.stop();
+                        app.ui.mode = crate::state::Mode::Edit;
+                        app.ui.clip_dialog = None;
+                    }
+                    Err(e) => {
+                        d.error = e;
+                        app.ui.clip_dialog = Some(d);
+                    }
+                }
+                return;
+            }
             if action == Some("save")
                 && let Err(e) = app.session.execute("file.save", json!({}))
             {

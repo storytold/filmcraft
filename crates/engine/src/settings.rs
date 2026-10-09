@@ -33,7 +33,7 @@ pub const PREFS_VERSION: u32 = 2;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct GeneralPrefs {
-    /// "At Startup": `showHome` (FilmCraft: the demo project), `openMostRecent`, `emptyProject`.
+    /// "At Startup": `showHome` (Import / Recent Projects), `openMostRecent`, `emptyProject`.
     pub at_startup: String,
     /// "When Opening a Project": `showOpenDialog` | `showHome`.
     pub when_opening_project: String,

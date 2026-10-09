@@ -210,9 +210,14 @@ choices. `prefs.schema {category?}` lists every category with its fields (label,
 range, unit, current value, and `wired`: whether FilmCraft acts on it yet). `app.settings.<category>`
 opens the dialog on a page.
 
+The Home screen (also available from **Import** in the header) lists **Recent Projects**, newest
+first, with each project's filename and full path. Click a row to open it in Edit. Opening from
+this list asks to save an edited project first; Cancel, a cancelled Save As, or an unreadable
+project leaves the current work open. The list scrolls with the rest of the Home screen.
+
 | Category | Takes effect |
 |---|---|
-| General | At Startup (Show Home = demo project, Open Most Recent, empty project; recent projects are remembered on open/save), Show Tool Tips |
+| General | At Startup (Show Home = Import with Recent Projects, Open Most Recent, empty project; the ten most recent projects are remembered on open/save), Show Tool Tips |
 | Appearance | Color Theme (Darkest / Dark / Light; View ▸ Appearance writes it too), highlight colour, accessible contrast |
 | Audio | Automatch Time, Large Volume Adjustment, automation keyframe thinning (linear, minimum time) |
 | Audio Hardware | device class (cpal host), output device, I/O buffer size, sample rate, force document rate, Output Mapping (programme L/R → device channels) |
