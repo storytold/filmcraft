@@ -12,6 +12,15 @@ workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["h264", "hevc", "aac", "prores"]
+# Our decoders and encoders for these codecs (see `filmcraft-engine`). Without them, WebCodecs
+# still decodes what the browser supports.
+h264 = ["filmcraft-engine/h264", "filmcraft-ui-egui/h264", "filmcraft-codecs/h264"]
+hevc = ["filmcraft-engine/hevc", "filmcraft-ui-egui/hevc", "filmcraft-codecs/hevc"]
+aac = ["filmcraft-engine/aac", "filmcraft-ui-egui/aac", "filmcraft-codecs/aac"]
+prores = ["filmcraft-engine/prores", "filmcraft-ui-egui/prores", "filmcraft-codecs/prores"]
+
 # Everything is wasm32-only: on other targets this crate is empty (so `cargo test --workspace`
 # and clippy stay cheap). Build with `cargo xtask web` (see docs/web.md).
 [target.'cfg(target_arch = "wasm32")'.dependencies]

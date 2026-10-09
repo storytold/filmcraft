@@ -195,6 +195,7 @@ pub fn mjpeg_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
 }
 
 /// Our pure-Rust H.264 decoder (frame-threaded).
+#[cfg(feature = "h264")]
 pub struct H264Decoder {
     avcc: Vec<u8>,
     dec: filmcraft_h264::Decoder,
@@ -202,6 +203,7 @@ pub struct H264Decoder {
     draft: bool,
 }
 
+#[cfg(feature = "h264")]
 impl H264Decoder {
     pub fn new(avcc: Vec<u8>) -> Result<Self> {
         recycle_h264_planes();
@@ -236,6 +238,7 @@ impl H264Decoder {
     }
 }
 
+#[cfg(feature = "h264")]
 impl VideoDecoder for H264Decoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
         let pics = self.dec.decode(sample, pts).map_err(|e| CodecError::Decode(e.to_string()))?;
@@ -273,15 +276,20 @@ impl VideoDecoder for H264Decoder {
 
 /// The H.264 decoder's output planes come from the frames the caches evicted
 /// (`filmcraft_frame::pool`) instead of the allocator.
+#[cfg(feature = "h264")]
 fn recycle_h264_planes() {
     filmcraft_h264::set_plane_allocator(filmcraft_frame::pool::take_u8);
 }
 
-/// Worker threads each H.264 decoder uses (frame threading; 1 on wasm).
+/// Worker threads each H.264 decoder uses (frame threading; 1 on wasm; 0 without the `h264` feature).
 pub fn h264_threads() -> usize {
-    filmcraft_h264::default_threads()
+    #[cfg(feature = "h264")]
+    return filmcraft_h264::default_threads();
+    #[cfg(not(feature = "h264"))]
+    0
 }
 
+#[cfg(feature = "h264")]
 pub fn h264_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
     match &e.codec {
         CodecConfig::Avc(a) => Some(H264Decoder::new(a.to_bytes()).map(|d| Box::new(d) as Box<dyn VideoDecoder>)),
@@ -289,7 +297,21 @@ pub fn h264_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
     }
 }
 
+#[cfg(not(feature = "h264"))]
+pub fn h264_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
+    matches!(e.codec, CodecConfig::Avc(_)).then(|| Err(crate::missing_feature("H.264", "h264")))
+}
+
+/// Our H.264 decoder for Annex B byte-stream samples (MXF, MPEG TS/PS).
+pub fn h264_annexb() -> Result<Box<dyn VideoDecoder>> {
+    #[cfg(feature = "h264")]
+    return Ok(Box::new(H264Decoder::annexb()));
+    #[cfg(not(feature = "h264"))]
+    Err(crate::missing_feature("H.264", "h264"))
+}
+
 /// Our pure-Rust HEVC decoder (Main / Main 10, frame-threaded).
+#[cfg(feature = "hevc")]
 pub struct HevcDecoder {
     hvcc: Vec<u8>,
     dec: filmcraft_hevc::Decoder,
@@ -297,6 +319,7 @@ pub struct HevcDecoder {
     highest_tid: Option<u8>,
 }
 
+#[cfg(feature = "hevc")]
 impl HevcDecoder {
     pub fn new(hvcc: Vec<u8>) -> Result<Self> {
         let dec = filmcraft_hevc::Decoder::from_hvcc(&hvcc).map_err(|e| CodecError::Decode(e.to_string()))?;
@@ -339,6 +362,7 @@ impl HevcDecoder {
     }
 }
 
+#[cfg(feature = "hevc")]
 impl VideoDecoder for HevcDecoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
         let pics = self.dec.decode(sample, pts).map_err(|e| CodecError::Decode(e.to_string()))?;
@@ -371,11 +395,25 @@ impl VideoDecoder for HevcDecoder {
     }
 }
 
+#[cfg(feature = "hevc")]
 pub fn hevc_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
     match &e.codec {
         CodecConfig::Hevc(c) => Some(HevcDecoder::new(c.to_bytes()).map(|d| Box::new(d) as Box<dyn VideoDecoder>)),
         _ => None,
     }
+}
+
+#[cfg(not(feature = "hevc"))]
+pub fn hevc_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
+    matches!(e.codec, CodecConfig::Hevc(_)).then(|| Err(crate::missing_feature("HEVC", "hevc")))
+}
+
+/// Our HEVC decoder for Annex B byte-stream samples (MPEG TS).
+pub fn hevc_annexb() -> Result<Box<dyn VideoDecoder>> {
+    #[cfg(feature = "hevc")]
+    return Ok(Box::new(HevcDecoder::annexb()));
+    #[cfg(not(feature = "hevc"))]
+    Err(crate::missing_feature("HEVC", "hevc"))
 }
 
 /// Our pure-Rust VP9 decoder (profiles 0-3, 8/10/12-bit; tile columns and loop filter decode in
@@ -593,8 +631,10 @@ pub fn av1_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
 }
 
 /// Our ProRes decoder (every frame is intra; slices decode in parallel).
+#[cfg(feature = "prores")]
 pub struct ProResDecoder;
 
+#[cfg(feature = "prores")]
 impl VideoDecoder for ProResDecoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
         use std::sync::Arc;
@@ -638,7 +678,10 @@ impl VideoDecoder for ProResDecoder {
 }
 
 pub fn prores_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
-    matches!(e.codec, CodecConfig::ProRes { .. }).then(|| Ok(Box::new(ProResDecoder) as Box<dyn VideoDecoder>))
+    #[cfg(feature = "prores")]
+    return matches!(e.codec, CodecConfig::ProRes { .. }).then(|| Ok(Box::new(ProResDecoder) as Box<dyn VideoDecoder>));
+    #[cfg(not(feature = "prores"))]
+    matches!(e.codec, CodecConfig::ProRes { .. }).then(|| Err(crate::missing_feature("ProRes", "prores")))
 }
 
 /// Our APV (Advanced Professional Video, RFC 9924) decoder (every frame is intra; tiles decode in

@@ -180,6 +180,7 @@ impl Mp4Source {
                     info.has_alpha = h.alpha;
                 }
             }
+            #[cfg(feature = "prores")]
             if matches!(entry.codec, CodecConfig::ProRes { .. }) {
                 // a 4444 fourcc doesn't mean the frames carry alpha (alpha_channel_type does): read the first frame header
                 let s0 = &t.samples[0];
@@ -511,8 +512,13 @@ fn avc_format(a: &filmcraft_isobmff::AvcConfig) -> Option<(u32, u32)> {
     {
         return Some(((chroma & 3) as u32, (depth & 7) as u32 + 8));
     }
-    let sps = filmcraft_h264::params::Sps::parse(&filmcraft_bitstream::unescape_rbsp(a.sps.first()?.get(1..)?)).ok()?;
-    Some((sps.chroma_format_idc, sps.bit_depth_luma))
+    #[cfg(feature = "h264")]
+    {
+        let sps = filmcraft_h264::params::Sps::parse(&filmcraft_bitstream::unescape_rbsp(a.sps.first()?.get(1..)?)).ok()?;
+        Some((sps.chroma_format_idc, sps.bit_depth_luma))
+    }
+    #[cfg(not(feature = "h264"))]
+    None
 }
 
 fn pixfmt_label(c: &CodecConfig) -> String {

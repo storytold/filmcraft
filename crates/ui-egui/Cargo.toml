@@ -9,6 +9,14 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["h264", "hevc", "aac", "prores"]
+# The engine's codec features (see `filmcraft-engine`), for an app that embeds this UI.
+h264 = ["filmcraft-engine/h264"]
+hevc = ["filmcraft-engine/hevc"]
+aac = ["filmcraft-engine/aac"]
+prores = ["filmcraft-engine/prores"]
+
 [dependencies]
 filmcraft-time = { workspace = true }
 filmcraft-geom = { workspace = true }
@@ -42,7 +50,7 @@ cpu-time = "1"
 
 [dev-dependencies]
 pollster = "0.4"
-filmcraft-codecs = { workspace = true }
+filmcraft-codecs = { workspace = true, default-features = true }
 # the bench registers OS hardware decoders as the desktop app does (dev-dependency only: ui-egui
 # itself stays OS-independent and web-portable)
 filmcraft-platform = { workspace = true }

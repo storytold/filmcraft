@@ -18,9 +18,9 @@ default = []
 whisper = ["filmcraft-engine/whisper", "filmcraft-engine/speech-download"]
 
 [dependencies]
-filmcraft-engine = { workspace = true }
+filmcraft-engine = { workspace = true, default-features = true }
 filmcraft-media = { workspace = true }
-filmcraft-codecs = { workspace = true }
+filmcraft-codecs = { workspace = true, default-features = true }
 filmcraft-platform = { workspace = true }
 filmcraft-mxf = { workspace = true }
 filmcraft-mpegts = { workspace = true }

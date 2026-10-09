@@ -57,6 +57,12 @@ pub enum CodecError {
 
 pub type Result<T> = std::result::Result<T, CodecError>;
 
+/// The error for a stream whose codec this build leaves out: `codec` names the format and
+/// `feature` the cargo feature that builds our decoder for it.
+pub fn missing_feature(codec: &str, feature: &str) -> CodecError {
+    CodecError::Unsupported(format!("{codec} is not in this build: it needs the filmcraft-codecs feature `{feature}` or a registered decoder"))
+}
+
 impl From<CodecError> for filmcraft_media::MediaError {
     fn from(e: CodecError) -> Self {
         match e {

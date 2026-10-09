@@ -436,7 +436,11 @@ impl ExportSettings {
         let px = r.width as f64 * r.height as f64;
         let video_bps = match self.video_format() {
             Format::H264 | Format::Hevc => r.target_kbps as f64 * 1000.0,
+            #[cfg(feature = "prores")]
             Format::ProRes => crate::prores_profile(&self.prores_profile).nominal_mbps_1080p30() * 1e6 * px / (1920.0 * 1080.0) * fps / 29.97,
+            // the data rate of a registered encoder is unknown here
+            #[cfg(not(feature = "prores"))]
+            Format::ProRes => 0.0,
             Format::DnxHr => {
                 // nominal 1080p29.97 data rates of the DNxHR profiles (Mb/s)
                 let mbps = match self.dnx_profile.to_ascii_lowercase().as_str() {
@@ -516,6 +520,7 @@ impl ExportSettings {
                     };
                     v += &format!(", keyframe every {} frames", r.keyint);
                 }
+                #[cfg(feature = "prores")]
                 Format::ProRes => {
                     use filmcraft_prores::Profile;
                     v += match crate::prores_profile(&self.prores_profile) {

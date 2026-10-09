@@ -313,9 +313,11 @@ fn estimate_bytes(m: &filmcraft_project::MediaClip, dur: Tick, pr: &Preset) -> u
     let secs = dur.seconds().max(0.0);
     let audio = m.info.audio.as_ref().map_or(0.0, |a| a.sample_rate as f64 * 2.0 * 2.0 * secs);
     let Some(v) = &m.info.video else { return audio as u64 };
+    #[cfg(feature = "prores")]
     let fps = v.frame_rate.num as f64 / v.frame_rate.den.max(1) as f64;
     let px = (v.width * v.height) as f64 * (pr.scale * pr.scale) as f64;
     let mbps = match pr.format {
+        #[cfg(feature = "prores")]
         filmcraft_export::Format::ProRes => filmcraft_export::prores_profile(pr.prores).nominal_mbps_1080p30() * px / (1920.0 * 1080.0) * fps / 29.97,
         _ => (px / 200.0).max(800.0) / 1000.0,
     };

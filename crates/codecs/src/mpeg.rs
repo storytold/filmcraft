@@ -20,7 +20,7 @@ use filmcraft_time::{FrameRate, Tick};
 
 use crate::CodecError;
 use crate::gop::{GopCache, VideoSamples};
-use crate::video::{H264Decoder, HevcDecoder, Mpeg2Decoder, VideoDecoder};
+use crate::video::{Mpeg2Decoder, VideoDecoder, h264_annexb, hevc_annexb};
 
 impl filmcraft_mpegts::ByteSource for crate::Src {
     fn len(&self) -> u64 {
@@ -423,7 +423,7 @@ impl MpegSource {
             }
             VKind::H264 | VKind::Hevc => {
                 // decode up to the first frame for size, aspect and colour
-                let mut dec: Box<dyn VideoDecoder> = if v.kind == VKind::H264 { Box::new(H264Decoder::annexb()) } else { Box::new(HevcDecoder::annexb()) };
+                let mut dec = if v.kind == VKind::H264 { h264_annexb()? } else { hevc_annexb()? };
                 let mut frame = None;
                 for i in 0..v.units.len().min(32) {
                     if let Some(f) = dec.decode(&self.read_unit(v, i)?, i as i64)?.into_iter().next() {
@@ -755,8 +755,8 @@ impl VideoSamples for MpegVideo<'_> {
         }
         Ok(match self.v.kind {
             VKind::Mpeg2 => Box::new(Mpeg2Decoder::new(self.v.header.clone())),
-            VKind::H264 => Box::new(H264Decoder::annexb()),
-            VKind::Hevc => Box::new(HevcDecoder::annexb()),
+            VKind::H264 => h264_annexb()?,
+            VKind::Hevc => hevc_annexb()?,
         })
     }
 }

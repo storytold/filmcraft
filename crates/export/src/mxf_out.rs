@@ -31,6 +31,17 @@ fn io(e: std::io::Error) -> ExportError {
 /// The picture essence description for an export (codec from the MXF video codec setting).
 fn picture(settings: &ExportSettings, w: u32, h: u32) -> PictureDesc {
     let coding = match settings.video_format() {
+        // a registered ProRes encoder names the same profiles
+        #[cfg(not(feature = "prores"))]
+        Format::ProRes => PictureCoding::ProRes {
+            profile: match settings.prores_profile.to_ascii_lowercase().as_str() {
+                "proxy" => 1,
+                "lt" => 2,
+                "standard" | "422" => 3,
+                _ => 4,
+            },
+        },
+        #[cfg(feature = "prores")]
         Format::ProRes => {
             use filmcraft_prores::Profile;
             PictureCoding::ProRes {

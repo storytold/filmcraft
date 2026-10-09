@@ -9,6 +9,15 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["h264", "aac", "prores"]
+# Our own encoders for codecs licensed through patent pools (H.264, AAC) or a vendor programme
+# (ProRes). Without one, exporting that format fails with an error naming the feature, unless a
+# registered encoder takes it (`register_encoder`, `register_audio_encoder`).
+h264 = ["dep:filmcraft-h264enc"]
+aac = ["dep:filmcraft-aac"]
+prores = ["dep:filmcraft-prores"]
+
 [dependencies]
 filmcraft-time = { workspace = true }
 filmcraft-frame = { workspace = true }
@@ -20,12 +29,12 @@ filmcraft-audio-dsp = { workspace = true }
 filmcraft-geom = { workspace = true }
 filmcraft-text = { workspace = true }
 filmcraft-isobmff = { workspace = true }
-filmcraft-prores = { workspace = true }
+filmcraft-prores = { workspace = true, optional = true }
 filmcraft-dnx = { workspace = true }
 filmcraft-apv = { workspace = true }
 filmcraft-mxf = { workspace = true }
-filmcraft-aac = { workspace = true }
-filmcraft-h264enc = { workspace = true }
+filmcraft-aac = { workspace = true, optional = true }
+filmcraft-h264enc = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -35,4 +44,4 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
-filmcraft-codecs = { workspace = true }
+filmcraft-codecs = { workspace = true, default-features = true }
