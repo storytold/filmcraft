@@ -12,6 +12,17 @@ use crate::Session;
 use crate::media_test_util::tmp_dir;
 
 #[test]
+fn import_accepts_uppercase_extensions() {
+    let dir = tmp_dir("import-uppercase");
+    let wav = dir.join("TONE.WAV");
+    std::fs::write(&wav, filmcraft_media::wav::write_wav16(&[0.1; 4800], 2, 48_000)).unwrap();
+    let mut s = Session::default();
+    let r = s.execute("file.import", json!({"paths": [wav.to_string_lossy()]})).unwrap();
+    assert_eq!(r["items"].as_array().unwrap().len(), 1);
+    assert!(s.project.items.values().any(|it| it.name == "TONE.WAV"));
+}
+
+#[test]
 fn import_replace_starts_from_an_empty_project() {
     let dir = tmp_dir("import-replace");
     let wav = dir.join("tone.wav");
