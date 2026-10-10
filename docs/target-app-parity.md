@@ -45,7 +45,9 @@ issues now document. That is new evidence, not drift: see [Calibration](#calibra
   Audio Clip / Track Effect Editor, Sequence Index, AI Models and Collaboration settings, UXP /
   Exchange plug-in entries. A label match is presence only, and can over-count (a label that
   exists in a different place); it is a lower bound on misses, not proof of behaviour. The script
-  is ad hoc; turning it into `cargo xtask parity` is gap [G7](gaps.md#g7-no-measured-parity-tool-in-ci).
+  was ad hoc; `cargo xtask parity` now measures the shipped menu bar against the snapshot,
+  reporting presence and placement separately (not yet re-run for this figure); the other areas
+  are gap [G7](gaps.md#g7-no-measured-parity-tool-in-ci).
 - **Effects (measured by tests).** `premiere_26_video_effects_catalogue`,
   `premiere_audio_set_is_complete_and_foldered` and `premiere_26_transition_tree` check the
   catalogue against Premiere's Effects panel: video effects 93/93 (+Legacy, Obsolete), audio
