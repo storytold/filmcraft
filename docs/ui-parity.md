@@ -24,7 +24,7 @@ open interaction reports (about 40 of the 188 open issues).
 | Panels and docking | 17 workspaces, dock / undock / float, drop zones | 11 workspaces, docking; rearranging windows reported missing (#493); multi-monitor floating windows (#466) | 60% | #493, #466 | 20–35 h |
 | Project panel | List / Icon / Freeform, hover scrub, marquee | all three views, hover scrub, view presets; no marquee (#578), Freeform bins and pan (#579), bins can't be left on Windows (#587), duplicate imports allowed (#356) | 75% | #578, #579, #587, #456 | 10–20 h |
 | Timeline display | filmstrip thumbnails, waveforms, track heights, renaming | clip thumbnails, waveforms, heights; no continuous filmstrip (#614), no track rename (#654), wheel scroll in audio area (#400) | 70% | #614, #654, #400 | 8–15 h |
-| Transitions | drag, resize, alignment, edit in Effect Controls | drag / select / resize (#503); transition controls (#577) | 70% | #577 | 5–10 h |
+| Transitions | drag, resize, alignment, edit in Effect Controls | drag / select / resize (#503); settings and the transition's own timeline in Effect Controls, drag to slide or resize (#577); no A/B previews with Start / End sliders | 70% | #577 | 5–10 h |
 | Numeric entry and scrubbing | scrubbable hot text, typed values | scrubbable values, timecode scrub-edit (#576); audio clip mixer values cannot be typed (#481) | 80% | #481 | 3–6 h |
 | Drag and drop | OS files into Project / Timeline, clipboard paste | OS drops into the timeline (#517); no clipboard paste of images / files (#611) | 70% | #519, #611 | 5–10 h |
 | Theme and appearance | dark / light, brightness | dark / light / system (#505, #555) | 85% | macOS window controls (#637), Wayland title bar (#433), X11 scale (#457) | 5–10 h |
