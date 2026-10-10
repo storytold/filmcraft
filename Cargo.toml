@@ -65,6 +65,8 @@ log = "0.4"
 rayon = "1"
 proptest = "1"
 roxmltree = "0.21"
+miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
+ruzstd = { version = "0.9", default-features = false, features = ["std"] }
 
 # ui
 egui = "0.36"
