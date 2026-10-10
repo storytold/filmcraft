@@ -342,8 +342,21 @@ fn section(ui: &mut egui::Ui, reg: &mut Reg, open: &mut Vec<String>, key: &str, 
 }
 
 fn drag(ui: &mut egui::Ui, reg: &mut Reg, id: &str, v: &mut f64, range: std::ops::RangeInclusive<f64>, speed: f64, suffix: &str, decimals: usize) -> bool {
+    let before = *v;
     let r = ui.add(egui::DragValue::new(v).range(range).speed(speed).suffix(suffix).max_decimals(decimals));
     reg.add(id, r.rect, format!("{v}"));
+    // a drag ended by Escape goes back to the value it started from (egui ends the drag, #580)
+    let home = r.id.with("before-drag");
+    if r.drag_started() {
+        ui.data_mut(|d| d.insert_temp(home, before));
+    }
+    if r.drag_stopped()
+        && let Some(b) = ui.data_mut(|d| d.remove_temp::<f64>(home))
+        && ui.input(|i| i.key_pressed(egui::Key::Escape))
+    {
+        *v = b;
+        return true;
+    }
     r.changed()
 }
 
@@ -1205,7 +1218,7 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
     {
         close = true;
     }
-    app.ui.export.manager = if close || !open || ctx.input(|i| i.key_pressed(egui::Key::Escape)) { None } else { Some(m) };
+    app.ui.export.manager = if close || !open || crate::widgets::escape_closes(ctx) { None } else { Some(m) };
 }
 
 /// A five-pointed star (favourite marker), drawn from scratch.
@@ -1326,7 +1339,7 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
         }
         close = true;
     }
-    if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) || (clicked_elsewhere && !toggled) {
+    if close || crate::widgets::escape_closes(ctx) || (clicked_elsewhere && !toggled) {
         app.ui.export.quick_open = false;
     }
 }

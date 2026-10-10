@@ -188,10 +188,33 @@ pub fn clear_drag(ui: &egui::Ui) {
     ui.ctx().data_mut(|d| d.insert_temp::<Option<DragPayloadBox>>(payload_id(), None));
 }
 
-/// Draw the drag ghost near the pointer and clear the payload after release.
+fn cancelled_id() -> egui::Id {
+    egui::Id::new("filmcraft-drag-cancelled")
+}
+
+/// Abandon the drag in progress (Escape, #580): nothing is dropped, and nothing restarts it until
+/// the button comes up.
+pub fn cancel_drag(ui: &egui::Ui) {
+    clear_drag(ui);
+    ui.ctx().data_mut(|d| d.insert_temp(cancelled_id(), true));
+}
+
+/// Whether the press in progress had its drag cancelled with Escape.
+pub fn drag_cancelled(ui: &egui::Ui) -> bool {
+    ui.ctx().data(|d| d.get_temp::<bool>(cancelled_id())).unwrap_or(false)
+}
+
+/// Draw the drag ghost near the pointer and clear the payload after release. Escape cancels it.
 pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
+    if !ui.ctx().input(|i| i.pointer.any_down()) {
+        ui.ctx().data_mut(|d| d.remove::<bool>(cancelled_id()));
+    }
     let Some(pl) = payload(ui) else { return };
     let ctx = ui.ctx();
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        cancel_drag(ui);
+        return;
+    }
     if let Some(p) = ctx.pointer_hover_pos() {
         let label = match &pl {
             DragPayload::Item(i) => app.session.project.item(*i).map(|x| x.name.clone()).unwrap_or_default(),
@@ -307,7 +330,7 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     // A click elsewhere or Escape closes the menu. The click that opened it is over the tab, not
     // the menu, and must not close it again in the same frame.
     let fresh = ui.ctx().data(|d| d.get_temp::<u64>(egui::Id::new("panel-menu-opened"))) == Some(ui.ctx().cumulative_frame_nr());
-    if close || (!fresh && area.response.clicked_elsewhere()) || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if close || (!fresh && area.response.clicked_elsewhere()) || crate::widgets::escape_closes(ui.ctx()) {
         ui.ctx().data_mut(|d| d.remove::<(PanelKind, egui::Pos2)>(id));
     }
 }

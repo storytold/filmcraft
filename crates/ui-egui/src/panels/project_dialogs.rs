@@ -15,6 +15,7 @@ fn push(app: &mut FilmcraftApp, id: &str, r: &egui::Response, label: &str) {
 
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.project_panel.dialog.clone() else { return };
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("project-dialog-before-drag"), &mut d);
     let mut close = false;
     let mut run: Option<(String, Value)> = None;
     let title = match &d {
@@ -82,7 +83,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
         }
     });
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::widgets::escape_closes(ctx) {
         close = true;
     }
     if let Some((cmd, p)) = run {

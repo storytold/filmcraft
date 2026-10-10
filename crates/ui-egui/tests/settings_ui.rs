@@ -200,6 +200,96 @@ fn checkbox_edits_apply_on_ok_and_not_on_cancel() {
     assert_eq!(d.pref("timeline.snapPlayhead"), false, "on by default (as in Premiere), the click turns it off");
 }
 
+/// #580: Escape while dragging a number in Settings puts it back and keeps the dialog open (the
+/// modal's own Escape close included); Escape with no drag still cancels the dialog.
+#[test]
+fn escape_mid_drag_reverts_a_setting_and_keeps_the_dialog() {
+    let mut d = Driver::demo();
+    d.menu("app.settings.playback");
+    let els = d.ok("ui.elements", json!({"prefix": "settings.playback.stepManyFrames"}));
+    let r: Vec<f32> = els.as_array().unwrap().iter().find(|e| e["id"] == "settings.playback.stepManyFrames").expect("number field")["rect"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap() as f32)
+        .collect();
+    let from = egui::pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    let drag = |d: &mut Driver, escape: bool| {
+        let mut send = |e: egui::Event| {
+            d.harness.input_mut().events.push(e);
+            d.frames(1);
+        };
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        send(egui::Event::PointerMoved(from));
+        send(button(from, true));
+        for k in 1..=10 {
+            send(egui::Event::PointerMoved(from + egui::vec2(6.0 * k as f32, 0.0)));
+            if escape && k == 5 {
+                send(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+            }
+        }
+        send(button(from + egui::vec2(60.0, 0.0), false));
+        d.frames(3);
+    };
+    let before = d.draft();
+    drag(&mut d, true);
+    assert_eq!(d.draft(), before, "the value it had before the drag, and the dialog is still open");
+    drag(&mut d, false);
+    assert_ne!(d.draft(), before, "without Escape the same drag changes it");
+    d.ok("ui.key", json!({"key": "Escape"}));
+    d.frames(2);
+    assert_eq!(d.draft(), Value::Null, "Escape with no drag closes the dialog");
+}
+
+/// #580: the color pickers in Settings take back a drag on Escape too, as everywhere else.
+#[test]
+fn escape_mid_drag_reverts_a_settings_color() {
+    let mut d = Driver::demo();
+    d.menu("app.settings.appearance");
+    // the areas on top: the Settings modal, and the picker's popup over it when it is open
+    let on_top = |d: &Driver| {
+        d.harness.ctx.memory(|m| {
+            let mut v: Vec<egui::Rect> =
+                m.areas().visible_layer_ids().into_iter().filter(|l| l.order == egui::Order::Foreground).filter_map(|l| m.area_rect(l.id)).collect();
+            v.sort_by(|a, b| a.area().total_cmp(&b.area()));
+            v
+        })
+    };
+    let picker = |d: &mut Driver| {
+        if on_top(d).len() < 2 {
+            d.ok("ui.click", json!({"id": "settings.appearance.highlightColor"}));
+        }
+        let r = *on_top(d).first().expect("the color picker opened");
+        (r.min + egui::vec2(30.0, 90.0), r.min + egui::vec2(70.0, 120.0))
+    };
+    let drag = |d: &mut Driver, from: egui::Pos2, to: egui::Pos2, escape: bool| {
+        let mut send = |e: egui::Event| {
+            d.harness.input_mut().events.push(e);
+            d.frames(1);
+        };
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        send(egui::Event::PointerMoved(from));
+        send(button(from, true));
+        for k in 1..=10 {
+            send(egui::Event::PointerMoved(from.lerp(to, k as f32 / 10.0)));
+            if escape && k == 5 {
+                send(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+            }
+        }
+        send(button(to, false));
+        d.frames(3);
+    };
+    let color = |d: &mut Driver| d.draft()["values"]["appearance"]["highlightColor"].clone();
+    let before = color(&mut d);
+    let (from, to) = picker(&mut d);
+    drag(&mut d, from, to, true);
+    assert_eq!(color(&mut d), before, "the highlight color it had before the drag");
+    assert_ne!(d.draft(), Value::Null, "the dialog is still open");
+    let (from, to) = picker(&mut d);
+    drag(&mut d, from, to, false);
+    assert_ne!(color(&mut d), before, "without Escape the same drag picks a color");
+}
+
 #[test]
 fn dropdowns_numbers_and_reset() {
     let mut d = Driver::demo();

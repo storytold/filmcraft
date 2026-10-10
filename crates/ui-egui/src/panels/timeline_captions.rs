@@ -259,7 +259,8 @@ fn interact_block(
         && id == c.id.0
     {
         ctx.data_mut(|dd| dd.remove::<(u64, u8, i64)>(drag_id()));
-        if d != 0 {
+        // egui ends a drag on Escape: that stop abandons it (#580)
+        if d != 0 && !ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             match g {
                 0 => {
                     let sel: Vec<u64> = if app.session.state.caption_selection.contains(&ClipId(id)) {

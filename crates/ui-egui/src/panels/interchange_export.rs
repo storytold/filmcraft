@@ -62,6 +62,7 @@ pub fn is_open(ctx: &egui::Context) -> bool {
 
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(Some(mut d)) = ctx.data(|m| m.get_temp::<Option<Draft>>(draft_id())) else { return };
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("interchange-export-before-drag"), &mut d);
     let p = if d.omf { "omfExport" } else { "aafExport" };
     let mut close = false;
     let mut apply = false;
@@ -168,7 +169,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::widgets::escape_closes(ctx) {
         close = true;
     }
     if apply {

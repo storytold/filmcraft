@@ -269,6 +269,9 @@ pub struct FilmcraftApp {
     deferred: Vec<(ControlRequest, f64)>,
     last_ui_time: f64,
     pub(crate) synthetic: Vec<egui::Event>,
+    /// The mouse press in progress (its start time) and the undo history when it began, for Escape
+    /// to take back what the press changed (#580).
+    value_press: Option<(f64, filmcraft_engine::UndoMark)>,
     /// BS.1770 loudness of the programme as it plays, and the next sample position to feed.
     pub(crate) loudness: Option<(filmcraft_audio_dsp::LoudnessMeter, i64)>,
     /// Status message last shown and when it first appeared (messages expire after a few seconds).
@@ -505,6 +508,7 @@ impl FilmcraftApp {
             deferred: Vec::new(),
             last_ui_time: 0.0,
             synthetic: Vec::new(),
+            value_press: None,
             loudness: None,
             status_seen: (String::new(), 0.0),
             pending_screenshots: Vec::new(),
@@ -1622,6 +1626,7 @@ impl FilmcraftApp {
             }
             self.command_inbox = Some(rx);
         }
+        self.begin_press(&ctx);
         self.handle_shortcuts(&ctx);
         self.advance_playback(&ctx);
         self.advance_source_playback(&ctx);
@@ -1831,6 +1836,30 @@ impl FilmcraftApp {
             }
         }
         panels::panel_menu_popup(self, ui);
+        self.cancel_value_drag(ui.ctx());
+    }
+
+    /// Remember the undo history as a mouse press begins, before any panel acts on it (a color
+    /// picker sets its color on the press itself), for [`Self::cancel_value_drag`].
+    fn begin_press(&mut self, ctx: &egui::Context) {
+        match ctx.input(|i| i.pointer.press_start_time().filter(|_| i.pointer.any_down())) {
+            None => self.value_press = None,
+            Some(p) if self.value_press.is_some_and(|(q, _)| q == p) => {}
+            Some(p) => self.value_press = Some((p, self.session.undo_mark())),
+        }
+    }
+
+    /// Escape while a mouse button is held takes back every edit this press made (#580): value
+    /// drags (one merged step or one step per change), color picks, anything committed on the
+    /// Escape frame. Run after the panels, so a value sent on the Escape frame goes with it.
+    fn cancel_value_drag(&mut self, ctx: &egui::Context) {
+        let escape = ctx.input(|i| i.pointer.any_down() && i.key_pressed(egui::Key::Escape));
+        if let Some((press, mark)) = self.value_press
+            && escape
+            && self.session.revert_to(mark) > 0
+        {
+            self.value_press = Some((press, self.session.undo_mark()));
+        }
     }
 }
 

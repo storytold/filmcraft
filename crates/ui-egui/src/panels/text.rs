@@ -414,7 +414,9 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
         let mut size = st.size;
         let resp = ui.add(egui::DragValue::new(&mut size).range(8.0..=200.0).speed(0.5).suffix(" px"));
         app.auto.add("text.captions.style.size", resp.rect, "Caption size");
-        if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+        // a drag ended by Escape keeps the size it had (#580)
+        let escaped = resp.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape));
+        if !escaped && (resp.drag_stopped() || (resp.changed() && !resp.dragged())) {
             actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "size": size})));
         }
         let mut col = Color32::from_rgba_unmultiplied(st.color[0], st.color[1], st.color[2], st.color[3]);

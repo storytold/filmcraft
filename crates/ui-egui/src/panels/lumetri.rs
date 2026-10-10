@@ -235,11 +235,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             app.auto.add(&id, r, label);
         }
     }
-    for a in actions {
-        if let Err(err) = app.session.execute("effects.setParam", a) {
-            app.ui.status = err.to_string();
-        }
-    }
+    // a dragged value is one undo step, as in Effect Controls
+    crate::panels::effect_controls::run(app, ui.ctx(), actions.into_iter().map(|a| ("effects.setParam".to_string(), a)).collect());
     for sec in sections {
         if let Err(err) = app.session.execute("lumetri.setSection", json!({"clip": clip.0, "section": sec})) {
             app.ui.status = err.to_string();

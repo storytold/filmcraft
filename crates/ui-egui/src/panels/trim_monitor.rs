@@ -258,7 +258,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if resp.drag_stopped() {
             let total = ui.ctx().data_mut(|d| d.remove_temp::<f32>(egui::Id::new("trim-monitor-dx")).unwrap_or(0.0));
             let n = (total * fpp).round() as i64;
-            if n != 0 {
+            // egui ends a drag on Escape: that stop abandons it (#580)
+            if n != 0 && !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 drag_trim(app, which, n);
             }
         }

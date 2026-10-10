@@ -445,6 +445,7 @@ fn pairs(v: &[&str]) -> Vec<(String, String)> {
 /// Draw the open dialog, if any.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.extras.dialog.clone() else { return };
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("menu-dialog-before-drag"), &mut d);
     let Some((title, pre, ok_text)) = meta(&d.command) else {
         app.ui.extras.dialog = None;
         return;
@@ -827,7 +828,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     {
         d.params[k.as_str()] = json!(dir);
     }
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::widgets::escape_closes(ctx) {
         action = Some("cancel");
     }
     match action {

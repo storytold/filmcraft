@@ -623,6 +623,19 @@ pub fn draw_group_chrome(
                 if resp.dragged() {
                     dragged = Some(id);
                 }
+                // Escape puts a dragged tab back where it was (egui ends the drag on Escape, #580)
+                let home = egui::Id::new(("tab-seq-home", id));
+                if resp.drag_started()
+                    && let Some(at) = seqs.open.iter().position(|(s, _)| *s == id)
+                {
+                    ui.data_mut(|d| d.insert_temp(home, at));
+                }
+                if resp.drag_stopped()
+                    && let Some(at) = ui.data_mut(|d| d.remove_temp::<usize>(home))
+                    && ui.input(|i| i.key_pressed(egui::Key::Escape))
+                {
+                    actions.push(DockAction::MoveSequence(id, at));
+                }
             }
             if let Some(id) = tab.seq {
                 reg.add(&format!("timeline.tab.{id}"), tab_rect, &tab.title);
