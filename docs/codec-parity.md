@@ -42,7 +42,7 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 | AAC (LC, HE, LATM) | decode + encode | own decoder (LC, HE core), LATM | own LC encoder | loudness oracle vs ffmpeg | 90% | 3–5 h |
 | AC-3 | decode (licensed) | own decoder (ATSC A/52) | none | conformance | 80% | — |
 | E-AC-3 (Dolby Digital Plus) | decode | own decoder (ATSC A/52 Annex E, #647): independent substream, 1–6 blocks, spectral extension; **no** adaptive hybrid transform, enhanced coupling or 7.1 dependent substreams (plays the 5.1 core) | none | SNR vs ffmpeg 65–91 dB (raw, MP4, MOV, Matroska, TS) | 75% | 10–20 h |
-| MP3 / MP2 | decode + MP3 encode | decode (symphonia, MPL-2.0; own MP2) | **none** | — | 60% | 10–20 h (MP3 encoder) |
+| MP3 / MP2 | decode + MP3 encode | decode (symphonia, MPL-2.0; own MP2) in raw, MP4, MOV (#800), Matroska, TS, PS; **not** MP2 mono above 192 kbit/s or stereo below 64 kbit/s (ffmpeg's mono default; symphonia rejects them) | **none** | MP2 sample-exact vs ffmpeg (raw, MP4, MOV, TS, PS) | 60% | 10–20 h (MP3 encoder) |
 | Opus | — (not a Premiere import format) | own decoder, RFC 8251 range-exact | none | conformance vectors | ahead | — |
 | FLAC, ALAC, Vorbis | partial | decode (symphonia); FLAC in MP4 silent (#603) | none | — | 70% | 3–6 h |
 | WMA | decode on Windows | none | none | — | 0% | 10–20 h |

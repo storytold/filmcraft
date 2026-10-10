@@ -155,9 +155,13 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 ## G10. Container and codec gaps on import
 
 - **Have:** E-AC-3 (Dolby Digital Plus) in MP4, MOV, Matroska and MPEG-TS (#647): independent
-  substream, 1–6 blocks per syncframe, spectral extension.
-- **Missing:** E-AC-3 adaptive hybrid transform, enhanced coupling and the extra channels of 7.1
-  dependent substreams (played as the 5.1 core), AVI (#598; listed as an extension but no
+  substream, 1–6 blocks per syncframe, spectral extension. MP2 (MPEG audio layer II) in MP4 and
+  MOV, sample-exact against ffmpeg (#800).
+- **Missing:** MP2 at bit rates ISO/IEC 11172-3 disallows: mono above 192 kbit/s (ffmpeg's default
+  for mono MP2 is 384 kbit/s) and stereo below 64 kbit/s; the bootstrap decoder (symphonia, also
+  0.6) rejects every such frame, so the track plays silent: needs our own layer I/II decoder.
+  E-AC-3 adaptive hybrid transform, enhanced coupling and the extra channels of 7.1 dependent
+  substreams (played as the 5.1 core), AVI (#598; listed as an extension but no
   demuxer), WMV / ASF, DV / DVCPRO / DV100, MPEG-4 Part 2, FLAC in MP4 (#603), camera RAW (R3D
   incl. R3D NE, ARRIRAW, Sony RAW / X-OCN, Canon RAW, BRAW, ProRes RAW; #345, #383), JPEG 2000 /
   JPEG XS MXF, Cinema DNG; stills: PSD, EXR, DPX, Targa, HEIF / HEIC, Radiance HDR, AI / EPS;

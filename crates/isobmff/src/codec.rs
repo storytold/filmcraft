@@ -181,7 +181,8 @@ pub enum CodecConfig {
     /// Advanced Professional Video (`apv1` + `apvC`).
     Apv(ApvConfig),
     Aac(AacConfig),
-    /// MPEG-1/2 audio layer III (esds object type 0x69/0x6B, or QuickTime `.mp3`).
+    /// MPEG-1/2 audio (esds object type 0x69/0x6B, or QuickTime `.mp3` / `.mp2`). Usually layer
+    /// III, but these name no layer: ffmpeg stores MP2 as `mp4a` + 0x6B. Each frame header has it.
     Mp3,
     Pcm(PcmConfig),
     /// ALAC magic cookie (ALACSpecificConfig, 24 bytes, optionally followed by a channel layout).
@@ -883,6 +884,7 @@ fn is_audio_fourcc(f: &[u8; 4]) -> bool {
             | b"ac-3"
             | b"ec-3"
             | b".mp3"
+            | b".mp2"
             | b"enca"
             | b"ulaw"
             | b"alaw"
@@ -1028,7 +1030,7 @@ pub(crate) fn parse_sample_entry(format: FourCc, payload: &[u8], handler: FourCc
                 Some(p) => parse_esds(p)?,
                 None => unknown(),
             },
-            b".mp3" => CodecConfig::Mp3,
+            b".mp3" | b".mp2" => CodecConfig::Mp3,
             b"alac" => match get(b"alac") {
                 Some(p) if p.len() >= 4 => CodecConfig::Alac { cookie: p[4..].to_vec() },
                 _ => unknown(),
@@ -1641,6 +1643,20 @@ mod tests {
         }
         assert_eq!(roundtrip(&e, false, b"soun"), e);
         assert_eq!(roundtrip(&e, true, b"soun"), e);
+    }
+
+    /// QuickTime's `.mp2` entry (what ffmpeg writes for MP2 in MOV) is MPEG audio, as `.mp3` is,
+    /// even under a handler that does not say "sound" (#800).
+    #[test]
+    fn quicktime_mpeg_audio_entries() {
+        for fourcc in [*b".mp3", *b".mp2"] {
+            let e = SampleEntry::audio(FourCc(fourcc), CodecConfig::Mp3, 2, 48000.0, 16);
+            for handler in [b"soun", b"\0\0\0\0"] {
+                let back = roundtrip(&e, true, handler);
+                assert_eq!(back.codec, CodecConfig::Mp3, "{fourcc:?} {handler:?}");
+                assert_eq!(back.audio.map(|a| (a.channels, a.sample_rate)), Some((2, 48000.0)), "{fourcc:?} {handler:?}");
+            }
+        }
     }
 
     #[test]
