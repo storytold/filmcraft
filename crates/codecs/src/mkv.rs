@@ -68,7 +68,7 @@ pub struct MkvSource {
 ///
 /// Block timestamps are quantised to `TimestampScale` (usually 1 ms), so they are only accurate to a
 /// tick: a 1024-sample AAC frame at 48 kHz lasts 21.33 ms. Packets that all decode to the same
-/// length (AAC, MPEG audio, AC-3) therefore run on from one another, resynchronising to the
+/// length (AAC, MPEG audio, AC-3, E-AC-3) therefore run on from one another, resynchronising to the
 /// timestamp only across gaps of more than half a packet (and more than two ticks); see
 /// [`crate::audio::contiguous_starts`]. Opus packets: [`opus_starts`]. Other codecs start at their
 /// timestamps.
@@ -86,6 +86,7 @@ fn audio_starts(file: &MkvFile, bytes: &crate::Src, ti: usize, rate: i64) -> Vec
         Codec::Aac { asc } => fixed_packet_samples(FixedFrames::Aac(asc), &[], out_rate),
         Codec::Mp3 | Codec::Mp2 => fixed_packet_samples(FixedFrames::MpegAudio, &first(), out_rate),
         Codec::Ac3 => fixed_packet_samples(FixedFrames::Ac3, &first(), out_rate),
+        Codec::Eac3 => fixed_packet_samples(FixedFrames::Eac3, &first(), out_rate),
         _ => None,
     };
     let Some(frame) = frame else {
@@ -447,7 +448,7 @@ impl MkvSource {
             Codec::Opus { head } => PacketDecoder::opus(filmcraft_opus::OpusHead::parse(head).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?),
             Codec::Mp3 => PacketDecoder::new(CODEC_TYPE_MP3, rate, None),
             Codec::Mp2 => PacketDecoder::mpeg_audio(2, rate),
-            Codec::Ac3 => PacketDecoder::ac3(),
+            Codec::Ac3 | Codec::Eac3 => PacketDecoder::ac3(),
             // symphonia wants the STREAMINFO block body: skip `fLaC` + the 4-byte block header.
             Codec::Flac { private } => PacketDecoder::new(CODEC_TYPE_FLAC, rate, private.get(8..42).map(<[u8]>::to_vec)),
             Codec::Vorbis { headers } if headers.len() == 3 => {

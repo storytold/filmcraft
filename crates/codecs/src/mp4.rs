@@ -57,8 +57,9 @@ pub fn sniff(b: &[u8]) -> bool {
 }
 
 /// Audio packet start positions in source sample frames at `rate`: the running total of the sample
-/// durations, except that packets which all decode to the same length (AAC, MPEG audio, AC-3) run
-/// on from one another, resynchronising to the total only across gaps of more than half a packet.
+/// durations, except that packets which all decode to the same length (AAC, MPEG audio, AC-3,
+/// E-AC-3) run on from one another, resynchronising to the total only across gaps of more than half
+/// a packet.
 /// A remux from Matroska (OBS's) carries the millisecond rounding of its timestamps into the
 /// durations: 1008, 1008, 1056… for 1024-sample AAC frames at 48 kHz (see
 /// [`crate::audio::contiguous_starts`]).
@@ -81,6 +82,7 @@ fn audio_starts(file: &Mp4File, bytes: &crate::Src, ti: usize, rate: u32) -> Vec
         Some(CodecConfig::Aac(a)) => fixed_packet_samples(FixedFrames::Aac(&a.asc), &[], rate),
         Some(CodecConfig::Mp3) => fixed_packet_samples(FixedFrames::MpegAudio, &first(), rate),
         Some(CodecConfig::Ac3 { .. }) => fixed_packet_samples(FixedFrames::Ac3, &first(), rate),
+        Some(CodecConfig::Eac3 { .. }) => fixed_packet_samples(FixedFrames::Eac3, &first(), rate),
         _ => None,
     };
     let Some(frame) = frame else { return stamps };

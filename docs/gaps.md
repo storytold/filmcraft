@@ -154,12 +154,15 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G10. Container and codec gaps on import
 
-- **Missing:** E-AC-3 (#647; our AC-3 decoder refuses bsid 11–16), AVI (#598; listed as an
-  extension but no demuxer), WMV / ASF, DV / DVCPRO / DV100, MPEG-4 Part 2, FLAC in MP4 (#603),
-  camera RAW (R3D incl. R3D NE, ARRIRAW, Sony RAW / X-OCN, Canon RAW, BRAW, ProRes RAW; #345,
-  #383), JPEG 2000 / JPEG XS MXF, Cinema DNG; stills: PSD, EXR, DPX, Targa, HEIF / HEIC, Radiance
-  HDR, AI / EPS; transparent video (#402); Sony start timecode in `rtmd` (#460); stereo 3D flag
-  (#500); MKV multi-audio (#601).
+- **Have:** E-AC-3 (Dolby Digital Plus) in MP4, MOV, Matroska and MPEG-TS (#647): independent
+  substream, 1–6 blocks per syncframe, spectral extension.
+- **Missing:** E-AC-3 adaptive hybrid transform, enhanced coupling and the extra channels of 7.1
+  dependent substreams (played as the 5.1 core), AVI (#598; listed as an extension but no
+  demuxer), WMV / ASF, DV / DVCPRO / DV100, MPEG-4 Part 2, FLAC in MP4 (#603), camera RAW (R3D
+  incl. R3D NE, ARRIRAW, Sony RAW / X-OCN, Canon RAW, BRAW, ProRes RAW; #345, #383), JPEG 2000 /
+  JPEG XS MXF, Cinema DNG; stills: PSD, EXR, DPX, Targa, HEIF / HEIC, Radiance HDR, AI / EPS;
+  transparent video (#402); Sony start timecode in `rtmd` (#460); stereo 3D flag (#500); MKV
+  multi-audio (#601).
 - **Estimate:** 120–200 h (camera RAW alone 60–100 h, and some SDKs have licences we cannot use:
   clean-room from public specs only where specs exist). Docs: [codec-parity.md](codec-parity.md),
   [file-format-parity.md](file-format-parity.md).
