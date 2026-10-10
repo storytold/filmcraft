@@ -143,7 +143,7 @@ pub fn effect_rows(
                 && let Some(param) = m.param(pd.id)
                 && param.is_animated()
             {
-                crate::panels::effect_controls::graph_rows(app, ui, body, clip, idx, Some(k), pd, param, lane, it, actions);
+                crate::panels::effect_controls::graph_rows(app, ui, body, clip, idx, Some(k), pd, param, None, lane, it, actions);
             }
         }
         // Inverted

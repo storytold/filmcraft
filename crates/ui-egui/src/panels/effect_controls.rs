@@ -207,9 +207,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     if app.ui.expanded_fx.contains(&graph_key(clip, idx, pd.id))
                         && let Some(param) = e.params.get(pd.id)
                         && param.is_animated()
-                        && matches!(param.value, ParamValue::Float(_))
                     {
-                        graph_rows(app, bui, body, clip, idx, None, pd, param, &lane, it, &mut actions);
+                        match param.value {
+                            ParamValue::Float(_) => graph_rows(app, bui, body, clip, idx, None, pd, param, None, &lane, it, &mut actions),
+                            ParamValue::Vec2(_) => {
+                                graph_rows(app, bui, body, clip, idx, None, pd, param, Some(0), &lane, it, &mut actions);
+                                graph_rows(app, bui, body, clip, idx, None, pd, param, Some(1), &lane, it, &mut actions);
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 if crate::panels::masks::maskable(e) {
@@ -423,7 +429,7 @@ pub(crate) fn param_row(
     let (r, _) = ui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::hover());
     let mut x = r.min.x + 26.0;
     // twirl-down for the value/velocity graphs (animated scalar params)
-    if param.is_animated() && matches!(param.value, ParamValue::Float(_)) {
+    if param.is_animated() && matches!(param.value, ParamValue::Float(_) | ParamValue::Vec2(_)) {
         let key = graph_key(clip, idx, pkey);
         let open = app.ui.expanded_fx.contains(&key);
         let tw = Rect::from_center_size(pos2(r.min.x + 12.0, r.center().y), vec2(12.0, 12.0));
@@ -899,6 +905,7 @@ pub(crate) fn graph_rows(
     mask: Option<usize>,
     pd: &filmcraft_project::ParamDef,
     param: &filmcraft_project::Param,
+    axis: Option<usize>,
     lane: &Rect,
     it: &TrackItem,
     actions: &mut Vec<(String, Value)>,
@@ -919,10 +926,22 @@ pub(crate) fn graph_rows(
     let x_of = |f: f32| lane.min.x + f * lane.width();
     // samples
     let n = (lane.width() / 2.0).max(8.0) as usize;
-    let vals: Vec<f64> = (0..=n).map(|i| param.f64_at(to_media(i as f64 / n as f64))).collect();
+    let sample = |t: Tick| match (axis, param.value_at(t)) {
+        (Some(0), ParamValue::Vec2(p)) => p.x,
+        (Some(1), ParamValue::Vec2(p)) => p.y,
+        (_, ParamValue::Float(v)) => v,
+        _ => param.f64_at(t),
+    };
+    let component = |v: &ParamValue| match (axis, v) {
+        (Some(0), ParamValue::Vec2(p)) => Some(p.x),
+        (Some(1), ParamValue::Vec2(p)) => Some(p.y),
+        (_, ParamValue::Float(v)) => Some(*v),
+        _ => None,
+    };
+    let vals: Vec<f64> = (0..=n).map(|i| sample(to_media(i as f64 / n as f64))).collect();
     let (mut lo, mut hi) = vals.iter().fold((f64::MAX, f64::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
     for k in &param.keyframes {
-        if let ParamValue::Float(v) = k.value {
+        if let Some(v) = component(&k.value) {
             lo = lo.min(v);
             hi = hi.max(v);
         }
@@ -950,7 +969,12 @@ pub(crate) fn graph_rows(
     let dec = if let ParamKind::Float { decimals, .. } = pd.kind { decimals as usize } else { 1 };
     p.text(pos2(vr.max.x - 30.0, area.min.y + 6.0), Align2::RIGHT_CENTER, format!("{hi:.dec$}"), Tokens::ui(10.0), t.text_dim);
     p.text(pos2(vr.max.x - 30.0, area.max.y - 6.0), Align2::RIGHT_CENTER, format!("{lo:.dec$}"), Tokens::ui(10.0), t.text_dim);
-    p.text(pos2(vr.min.x + 44.0, area.center().y), Align2::LEFT_CENTER, tl!("Value"), Tokens::ui(11.0), t.text_dim);
+    let axis_label = match axis {
+        Some(0) => tl!("X"),
+        Some(1) => tl!("Y"),
+        _ => tl!("Value"),
+    };
+    p.text(pos2(vr.min.x + 44.0, area.center().y), Align2::LEFT_CENTER, axis_label, Tokens::ui(11.0), t.text_dim);
     let line: Vec<Pos2> = vals.iter().enumerate().map(|(i, v)| pos2(x_of(i as f32 / n as f32), y_of(*v))).collect();
     p.add(egui::Shape::line(line, Stroke::new(1.5, t.accent)));
     // velocity (units per second, derivative of the sampled value)
@@ -969,12 +993,12 @@ pub(crate) fn graph_rows(
     // keyframes + handles
     let ks = &param.keyframes;
     for (i, k) in ks.iter().enumerate() {
-        let ParamValue::Float(v) = k.value else { continue };
+        let Some(v) = component(&k.value) else { continue };
         let f = to_f(k.time);
         if !(-0.01..=1.01).contains(&f) {
             continue;
         }
-        let id = egui::Id::new(("kfg", clip.0, idx, mask, pd.id, k.time.0));
+        let id = egui::Id::new(("kfg", clip.0, idx, mask, pd.id, axis, k.time.0));
         let dy: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(0.0);
         let c = pos2(x_of(f), y_of(v) + dy);
         let r = Rect::from_center_size(c, vec2(10.0, 10.0));
@@ -1017,7 +1041,12 @@ pub(crate) fn graph_rows(
             ui.data_mut(|d| d.remove::<f32>(id));
             let nv = v_of(c.y);
             let nv = if let ParamKind::Float { min, max, .. } = pd.kind { nv.clamp(min, max) } else { nv };
-            actions.push(("effects.setKeyframe".into(), with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "mediaTime": k.time.0, "value": nv}))));
+            let value = match (axis, &k.value) {
+                (Some(0), ParamValue::Vec2(p)) => json!([nv, p.y]),
+                (Some(1), ParamValue::Vec2(p)) => json!([p.x, nv]),
+                _ => json!(nv),
+            };
+            actions.push(("effects.setKeyframe".into(), with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "mediaTime": k.time.0, "value": value}))));
         }
     }
 }
@@ -1247,7 +1276,7 @@ mod graph_drag_tests {
                 let body = Rect::from_min_size(pos2(8.0, 8.0), vec2(320.0, 200.0));
                 let lane = Rect::from_min_max(pos2(360.0, 8.0), pos2(760.0, 220.0));
                 let mut actions = Vec::new();
-                graph_rows(&mut self.app, ui, body, self.clip, index, None, pd, &effect.params["scale"], &lane, &it, &mut actions);
+                graph_rows(&mut self.app, ui, body, self.clip, index, None, pd, &effect.params["scale"], None, &lane, &it, &mut actions);
                 run(&mut self.app, ui.ctx(), actions);
             });
             out.textures_delta.clear();
@@ -1319,5 +1348,44 @@ mod graph_drag_tests {
                 assert_eq!(d.undo_len(), undo + 1);
             }
         }
+    }
+
+    #[test]
+    fn position_graphs_paint_x_and_y_keyframes() {
+        let mut d = Driver::new();
+        let seq = d.app.session.state.active_sequence.unwrap();
+        let it = std::sync::Arc::make_mut(&mut d.app.session.project).sequence_mut(seq).unwrap().find_item_mut(d.clip).unwrap().1;
+        let mut a = Keyframe::new(it.source_in + Tick(it.duration.0 / 4), ParamValue::Vec2(filmcraft_geom::Vec2::new(100.0, 200.0)));
+        let mut b = Keyframe::new(it.source_in + Tick(it.duration.0 * 3 / 4), ParamValue::Vec2(filmcraft_geom::Vec2::new(400.0, 50.0)));
+        a.interp = Interpolation::Bezier;
+        b.interp = Interpolation::Bezier;
+        it.effects.iter_mut().find(|e| e.effect == "motion").unwrap().params.insert(
+            "position".into(),
+            Param { value: ParamValue::Vec2(filmcraft_geom::Vec2::new(100.0, 200.0)), keyframes: vec![a, b] },
+        );
+        d.time += 0.1;
+        d.app.auto.begin_frame();
+        let mut out = d.ctx.run_ui(egui::RawInput { time: Some(d.time), events: vec![], ..Default::default() }, |ui| {
+            let it = d.app.session.active_sequence().unwrap().find_item(d.clip).unwrap().1.clone();
+            let index = it.effects.iter().position(|e| e.effect == "motion").unwrap();
+            let effect = &it.effects[index];
+            let pd = effect.def().unwrap().param("position").unwrap();
+            let body = Rect::from_min_size(pos2(8.0, 8.0), vec2(320.0, 400.0));
+            let lane = Rect::from_min_max(pos2(360.0, 8.0), pos2(760.0, 420.0));
+            let mut actions = Vec::new();
+            graph_rows(&mut d.app, ui, body, d.clip, index, None, pd, &effect.params["position"], Some(0), &lane, &it, &mut actions);
+            graph_rows(&mut d.app, ui, body, d.clip, index, None, pd, &effect.params["position"], Some(1), &lane, &it, &mut actions);
+            run(&mut d.app, ui.ctx(), actions);
+        });
+        out.textures_delta.clear();
+        fn count_circles(shape: &egui::Shape, radius: f32) -> usize {
+            match shape {
+                egui::Shape::Circle(circle) if circle.radius == radius => 1,
+                egui::Shape::Vec(shapes) => shapes.iter().map(|s| count_circles(s, radius)).sum(),
+                _ => 0,
+            }
+        }
+        let painted: usize = out.shapes.iter().map(|s| count_circles(&s.shape, 4.5)).sum();
+        assert!(painted >= 4, "X and Y graphs each paint two position keyframes, got {painted}");
     }
 }
