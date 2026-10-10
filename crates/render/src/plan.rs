@@ -159,7 +159,7 @@ fn cpu_frame(img: crate::Image) -> Arc<VideoFrame> {
 }
 
 fn simple_transition(id: &str) -> bool {
-    matches!(id, "cross_dissolve" | "dip_to_black" | "dip_to_white" | "morph_cut")
+    matches!(id, "cross_dissolve" | "dip_to_black" | "dip_to_white")
 }
 
 /// The standard effects of a media clip if the GPU can draw it (any blend mode, no opacity masks,

@@ -248,6 +248,64 @@ fn modern_and_legacy_ids_are_distinct_renders() {
     assert!(mean_abs(&m, &want) < 1e-6);
 }
 
+/// A jump cut (256×144): a static background with a 64×72 subject whose left edge is at `x0`;
+/// flat colours, or a smooth texture on both (the subject's own texture moves with it).
+fn jump_cut_frame(x0: f32, textured: bool) -> Image {
+    let tex = |u: f32, v: f32, k: f32| {
+        0.35 + 0.15 * (u * 0.21 * k).sin() * (v * 0.17).cos() + 0.1 * ((u + v) * 0.11 * k).sin() + 0.05 * (u * 0.53 - v * 0.31 * k).cos()
+    };
+    paint(256, 144, |x, y| {
+        let inside = (x0..x0 + 64.0).contains(&x) && (36.0..108.0).contains(&y);
+        let l = match (textured, inside) {
+            (false, true) => 0.95,
+            (false, false) => 0.3,
+            (true, true) => 0.4 + tex(x - x0, y, 0.6),
+            (true, false) => 0.6 * tex(x, y, 1.0),
+        };
+        [l, l * 0.9, l * 0.8, 1.0]
+    })
+}
+
+#[test]
+fn morph_cut_moves_the_subject_instead_of_double_exposing() {
+    // the subject jumps 12 px between the shots; at the midpoint Morph Cut shows it once, 6 px
+    // along, where a cross dissolve shows two half-bright copies
+    let (a, b) = (jump_cut_frame(96.0, false), jump_cut_frame(108.0, false));
+    let want = jump_cut_frame(102.0, false);
+    let morph = apply(&filmcraft_project::find_effect("morph_cut").unwrap().instance(), &a, &b, 0.5);
+    let dissolve = apply(&filmcraft_project::find_effect("cross_dissolve").unwrap().instance(), &a, &b, 0.5);
+    // mean red error down a column through the subject's rows
+    let column_err = |img: &Image, x: usize| (40..104).map(|y| (img.get(x, y)[0] - want.get(x, y)[0]).abs()).sum::<f32>() / 64.0;
+    // uncovered background, both edges, the middle, background still to be covered
+    for x in [98usize, 103, 134, 165, 170] {
+        let (m, d) = (column_err(&morph, x), column_err(&dissolve, x));
+        assert!(m < 0.12, "x={x}: morph off by {m} (dissolve {d})");
+    }
+    for x in [98usize, 170] {
+        assert!(column_err(&dissolve, x) > 0.3, "x={x}: the dissolve ghosts here");
+    }
+    let (e_morph, e_dissolve) = (mean_abs(&morph, &want), mean_abs(&dissolve, &want));
+    assert!(e_morph * 10.0 < e_dissolve, "morph {e_morph} vs dissolve {e_dissolve}");
+    // the background away from the subject is left alone
+    for (x, y) in [(8, 8), (40, 70), (220, 130)] {
+        assert!(morph.get(x, y).iter().zip(a.get(x, y)).all(|(p, q)| (p - q).abs() < 1e-4), "({x}, {y})");
+    }
+}
+
+#[test]
+fn morph_cut_tracks_textured_subjects_and_follows_the_progress() {
+    // detail on the subject and behind it: the morph lands much closer than the dissolve, at
+    // the midpoint and a quarter of the way through
+    for (p, from, to, at) in [(0.5f32, 96.0f32, 108.0f32, 102.0f32), (0.25, 96.0, 112.0, 100.0)] {
+        let (a, b) = (jump_cut_frame(from, true), jump_cut_frame(to, true));
+        let want = jump_cut_frame(at, true);
+        let morph = apply(&filmcraft_project::find_effect("morph_cut").unwrap().instance(), &a, &b, p);
+        let dissolve = a.clone().lerp(&b, p);
+        let (e_morph, e_dissolve) = (mean_abs(&morph, &want), mean_abs(&dissolve, &want));
+        assert!(e_morph * 2.0 < e_dissolve, "p={p}: morph {e_morph} vs dissolve {e_dissolve}");
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Golden fingerprints
 
