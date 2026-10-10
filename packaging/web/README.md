@@ -34,7 +34,9 @@ forever. Only `index.html` needs revalidation.
 - **HTTPS:** WebGPU (and the clipboard) only work in a secure context, which means `https://`
   or `http://localhost`. Over plain HTTP elsewhere, the app falls back to WebGL2.
 - **No special isolation headers:** FilmCraft doesn't use `SharedArrayBuffer`, so it doesn't
-  need `Cross-Origin-Opener-Policy` or `Cross-Origin-Embedder-Policy`. If your site already sends
+  need `Cross-Origin-Opener-Policy` or `Cross-Origin-Embedder-Policy`. A threaded build
+  (`cargo xtask web --threads`, see docs/web.md) does: send `Cross-Origin-Opener-Policy: same-origin`
+  and `Cross-Origin-Embedder-Policy: require-corp`, and allow `worker-src 'self' blob:` in a CSP. If your site already sends
   COEP `require-corp`, also send `Cross-Origin-Resource-Policy: same-origin` (or `cross-origin`
   when the files live on a CDN) on the app's files.
 

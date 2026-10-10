@@ -275,10 +275,30 @@ fn target_dir() -> std::path::PathBuf {
 /// Build the web app into `<target>/web/dist` (see docs/web.md).
 fn web(args: &[String]) -> Result<(), String> {
     let dev = args.iter().any(|a| a == "--dev");
+    let threads = args.iter().any(|a| a == "--threads");
     let serve = args.iter().position(|a| a == "--serve").map(|i| args.get(i + 1).and_then(|p| p.parse::<u16>().ok()).unwrap_or(8765));
     let profile = if dev { "dev" } else { "release" };
-    let mut build = Command::new(env!("CARGO"));
+    // `--threads` (docs/web.md, Threads): std rebuilt with atomics on a nightly toolchain, shared
+    // memory, and the `threads` feature. Its own target directory, so the regular build stays cached.
+    let target = if threads { target_dir().join("wasm-threads") } else { target_dir() };
+    let mut build = if threads {
+        let toolchain = std::env::var("FILMCRAFT_WEB_TOOLCHAIN").unwrap_or_else(|_| "nightly".into());
+        let mut c = Command::new("cargo");
+        c.arg(format!("+{toolchain}"));
+        c.env(
+            "RUSTFLAGS",
+            "-C target-feature=+atomics,+bulk-memory,+mutable-globals -C link-arg=--shared-memory \
+             -C link-arg=--import-memory -C link-arg=--max-memory=4294967296 -C link-arg=--export=__wasm_init_tls \
+             -C link-arg=--export=__tls_size -C link-arg=--export=__tls_align -C link-arg=--export=__tls_base",
+        );
+        c
+    } else {
+        Command::new(env!("CARGO"))
+    };
     build.args(["build", "--target", "wasm32-unknown-unknown", "-p", "filmcraft-web", "--profile", profile]);
+    if threads {
+        build.args(["--features", "threads", "-Z", "build-std=std,panic_abort", "--target-dir"]).arg(&target);
+    }
     run(&mut build)?;
     let out = Command::new("wasm-bindgen")
         .arg("--version")
@@ -292,7 +312,7 @@ fn web(args: &[String]) -> Result<(), String> {
         ));
     }
     let dir = if dev { "debug" } else { "release" };
-    let wasm = target_dir().join("wasm32-unknown-unknown").join(dir).join("filmcraft_web.wasm");
+    let wasm = target.join("wasm32-unknown-unknown").join(dir).join("filmcraft_web.wasm");
     let dist = target_dir().join("web").join("dist");
     let _ = std::fs::remove_dir_all(&dist);
     std::fs::create_dir_all(&dist).map_err(|e| e.to_string())?;
@@ -301,11 +321,12 @@ fn web(args: &[String]) -> Result<(), String> {
     if !dev && Command::new("wasm-opt").arg("--version").output().is_ok() {
         // optional: smaller and faster (binaryen); skipped when not installed
         let opt = dist.join("filmcraft_web_opt.wasm");
-        run(Command::new("wasm-opt")
-            .args(["-O2", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "--enable-sign-ext", "--enable-mutable-globals"])
-            .arg(&bg)
-            .arg("-o")
-            .arg(&opt))?;
+        let mut opt_cmd = Command::new("wasm-opt");
+        opt_cmd.args(["-O2", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "--enable-sign-ext", "--enable-mutable-globals"]);
+        if threads {
+            opt_cmd.arg("--enable-threads");
+        }
+        run(opt_cmd.arg(&bg).arg("-o").arg(&opt))?;
         std::fs::rename(&opt, &bg).map_err(|e| e.to_string())?;
     }
     // index.html loads the glue and the wasm with `?v=<hash of this build>`: hosts cache them as
