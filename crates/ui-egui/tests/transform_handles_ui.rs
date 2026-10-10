@@ -93,6 +93,19 @@ impl Driver {
         let at = self.center(id);
         self.drag_from(at, dx, dy);
     }
+    /// A drag of 48 × 24 points with `button` (the control channel's `ui.drag` uses the left one).
+    fn drag_with(&mut self, (x, y): (f64, f64), button: egui::PointerButton) {
+        let from = egui::pos2(x as f32, y as f32);
+        let press = |pos, pressed| egui::Event::PointerButton { pos, button, pressed, modifiers: Default::default() };
+        let mut events = vec![egui::Event::PointerMoved(from), press(from, true)];
+        events.extend((1..=6).map(|k| egui::Event::PointerMoved(from + egui::vec2(8.0 * k as f32, 4.0 * k as f32))));
+        events.push(press(from + egui::vec2(48.0, 24.0), false));
+        for e in events {
+            self.harness.input_mut().events.push(e);
+            self.frames(1);
+        }
+        self.frames(3);
+    }
     fn undo_len(&mut self) -> usize {
         self.exec("history.list", json!({}))["undo"].as_array().unwrap().len()
     }
@@ -235,9 +248,9 @@ fn motion_handles_move_scale_rotate_and_move_the_anchor() {
     assert!(d.num(clip, "motion", "scale_width") > w + 3.0);
     d.shot("transform-motion-non-uniform");
 
-    // a click beside the box lets go of it
+    // a click beside the box, beyond its rotate zone, lets go of it
     let b = d.rect("program.transform.box");
-    d.ok("ui.click", json!({"x": b[0] - 20.0, "y": b[1] + b[3] / 2.0}));
+    d.ok("ui.click", json!({"x": b[0] - 40.0, "y": b[1] + b[3] / 2.0}));
     d.frames(2);
     assert_eq!(d.selected_effect(), Value::Null);
     assert!(d.find("program.transform.box").is_none());
@@ -361,4 +374,83 @@ fn transform_effect_handles_and_double_click_selection() {
         .as_u64()
         .unwrap();
     assert_eq!(d.selected_effect(), json!({"clip": under, "effect": "motion", "instance": 0}));
+}
+
+/// Only the left button takes hold of the box: a middle or right drag leaves the picture alone.
+#[test]
+fn only_the_left_button_drags_the_handles() {
+    let mut d = Driver::demo();
+    let (clip, _) = d.first_clip();
+    d.exec("effects.setParam", json!({"clip": clip, "effect": "motion", "param": "scale", "value": 50.0}));
+    d.click("effectControls.effect.motion");
+    let (p0, undo) = (d.point(clip, "motion", "position"), d.undo_len());
+    let b = d.rect("program.transform.box");
+    let from = (b[0] + b[2] * 0.3, b[1] + b[3] * 0.3);
+    for button in [egui::PointerButton::Middle, egui::PointerButton::Secondary] {
+        d.drag_with(from, button);
+        assert_eq!(d.point(clip, "motion", "position"), p0, "{button:?} drag moved the picture");
+        assert_eq!(d.undo_len(), undo, "{button:?} drag made an undo step");
+    }
+    d.drag_from(from, 40.0, 20.0);
+    assert_ne!(d.point(clip, "motion", "position"), p0, "the left button still moves it");
+}
+
+/// The other things dragged on the Program monitor take the left button only too: a guide, a
+/// mask's body and vertices, and a graphic layer stay put under a middle or right drag.
+#[test]
+fn guides_masks_and_graphics_take_the_left_button_only() {
+    let mut d = Driver::demo();
+    let (clip, _) = d.first_clip();
+    let others = [egui::PointerButton::Middle, egui::PointerButton::Secondary];
+    let project = |d: &Driver| d.harness.state().session.project.to_json();
+    // a guide
+    d.ok("ui.menu.invoke", json!({"id": "view.addGuide", "params": {"orientation": "vertical", "position": 700}}));
+    d.frames(2);
+    let g = d.rect("program.guide.0");
+    for b in others {
+        d.drag_with((g[0] + g[2] / 2.0, g[1] + g[3] * 0.2), b);
+        assert_eq!(d.rect("program.guide.0"), g, "a {b:?} drag moved the guide");
+    }
+    // a mask
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "gaussian_blur"}));
+    let fx = {
+        let s = &d.harness.state().session;
+        s.active_sequence().unwrap().find_item(ClipId(clip)).unwrap().1.effects.iter().position(|e| e.effect == "gaussian_blur").unwrap()
+    };
+    d.exec("masks.add", json!({"clip": clip, "effect": fx, "shape": "ellipse"}));
+    d.exec("masks.select", json!({"clip": clip, "effect": fx, "mask": 0}));
+    d.frames(3);
+    let before = project(&d);
+    for id in ["program.mask.body", "program.mask.vertex.0"] {
+        for b in others {
+            let at = d.center(id);
+            d.drag_with(at, b);
+            assert_eq!(project(&d), before, "a {b:?} drag on {id} changed the mask");
+        }
+    }
+    // a graphic layer
+    d.exec("masks.select", json!({"none": true}));
+    let gclip = d.exec("graphics.newText", json!({"text": "Title", "position": [600, 500], "size": 120}))["clip"].as_u64().unwrap();
+    d.frames(3);
+    let before = project(&d);
+    let at = d.center(&format!("program.layer.{gclip}.0"));
+    for b in others {
+        d.drag_with(at, b);
+        assert_eq!(project(&d), before, "a {b:?} drag moved the layer");
+    }
+    d.drag_from(at, 40.0, 20.0);
+    assert_ne!(project(&d), before, "the left button still moves the layer");
+}
+/// Anywhere just outside the box rotates, beside the middle of an edge as beside a corner.
+#[test]
+fn rotating_from_beside_an_edge() {
+    let mut d = Driver::demo();
+    let (clip, _) = d.first_clip();
+    d.exec("effects.setParam", json!({"clip": clip, "effect": "motion", "param": "scale", "value": 50.0}));
+    d.click("effectControls.effect.motion");
+    let left = d.rect("program.transform.handle.7");
+    let (x, y) = (left[0] + left[2] / 2.0 - 14.0, left[1] + left[3] / 2.0);
+    d.drag_from((x, y), 0.0, -60.0);
+    let r = d.num(clip, "motion", "rotation");
+    assert!(r > 5.0, "up from beside the left edge turns clockwise: {r}");
 }

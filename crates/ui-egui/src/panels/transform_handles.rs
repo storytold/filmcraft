@@ -5,7 +5,7 @@
 //!
 //! Dragging inside the box changes Position. A handle changes Scale about the anchor point; with
 //! Uniform Scale off a side handle changes only the width and a top or bottom handle only the
-//! height. Dragging just outside a corner changes Rotation. The anchor point moves without moving
+//! height. Dragging just outside the box changes Rotation. The anchor point moves without moving
 //! the picture: Position changes by the same amount. The values go through `effects.setParam` at
 //! the playhead while the drag goes on, as dragging them in Effect Controls does, so a property
 //! with its stopwatch on gets a keyframe there, and one drag is one undo step.
@@ -21,7 +21,6 @@ use filmcraft_time::Tick;
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
-use crate::icons::{self, Icon};
 use crate::panels::graphics::{frame_to_screen, handle_points, unscale};
 use crate::state::Tool;
 
@@ -29,13 +28,18 @@ use crate::state::Tool;
 /// beyond the drawn squares, so the small handles stay easy to take hold of.
 const GRAB: f32 = 8.0;
 /// The drawn handles, a little smaller than the graphic layers' (7 and 5 points) for precision:
-/// the side of a corner square and of an edge square, and the anchor point's circle radius and
-/// cross arm.
+/// the side of a corner square and of an edge square.
 const CORNER: f32 = 5.0;
 const EDGE: f32 = 4.0;
-const ANCHOR_RADIUS: f32 = 3.0;
-const ANCHOR_ARM: f32 = 5.0;
-/// How far from a corner, outside the box, the pointer rotates the picture.
+/// The anchor point, Premiere's ⊕: a circle of this radius with the cross inside it, in thin lines
+/// whose crossing marks the exact point; and how close the pointer must be to take hold of it.
+const ANCHOR_RADIUS: f32 = 7.0;
+const ANCHOR_ARM: f32 = ANCHOR_RADIUS;
+const ANCHOR_GRAB: f32 = 11.0;
+/// The small anchor point beside the pointer while it is over the anchor point.
+const BADGE_RADIUS: f32 = 3.0;
+const BADGE_ARM: f32 = 5.0;
+/// How far outside the box (from its edges and corners) the pointer rotates the picture.
 const ROTATE_REACH: f32 = 24.0;
 /// The `merge` key of a drag's changes: one undo step, whichever parameters the drag changes.
 const MERGE: &str = "programTransform";
@@ -183,7 +187,7 @@ fn selected_placement(app: &FilmcraftApp, pic: Rect, frame: (u32, u32)) -> Optio
 }
 
 fn grab_at(pl: &Placement, p: Pos2) -> Option<Grab> {
-    if (pl.anchor_at - p).length() <= GRAB {
+    if (pl.anchor_at - p).length() <= ANCHOR_GRAB {
         return Some(Grab::Anchor);
     }
     if let Some(n) = handle_points(&pl.quad).iter().position(|h| (*h - p).length() <= GRAB) {
@@ -192,7 +196,18 @@ fn grab_at(pl: &Placement, p: Pos2) -> Option<Grab> {
     if inside(&pl.quad, p) {
         return Some(Grab::Move);
     }
-    pl.quad.iter().any(|c| (*c - p).length() <= ROTATE_REACH).then_some(Grab::Rotate)
+    // anywhere just outside the box rotates, beside an edge as beside a corner, as in Premiere
+    let n = pl.quad.len();
+    let near = (0..n).filter_map(|i| Some(seg_dist(p, *pl.quad.get(i)?, *pl.quad.get((i + 1) % n)?))).any(|d| d <= ROTATE_REACH);
+    near.then_some(Grab::Rotate)
+}
+
+/// The distance from `p` to the segment `a`–`b`.
+fn seg_dist(p: Pos2, a: Pos2, b: Pos2) -> f32 {
+    let ab = b - a;
+    let l2 = ab.length_sq();
+    let t = if l2 > 0.0 { ((p - a).dot(ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
+    (p - (a + ab * t)).length()
 }
 
 /// The scale factors (width, height) dragging handle `n` from `start` to `cur` gives: the
@@ -292,24 +307,56 @@ fn draw(app: &mut FilmcraftApp, ui: &egui::Ui, pl: &Placement, pic: Rect, name: 
     painter.circle_stroke(a, ANCHOR_RADIUS, Stroke::new(1.0, accent));
     painter.line_segment([a - vec2(ANCHOR_ARM, 0.0), a + vec2(ANCHOR_ARM, 0.0)], Stroke::new(1.0, accent));
     painter.line_segment([a - vec2(0.0, ANCHOR_ARM), a + vec2(0.0, ANCHOR_ARM)], Stroke::new(1.0, accent));
-    app.auto.add("program.transform.anchor", Rect::from_center_size(a, grab), "anchor point");
+    app.auto.add("program.transform.anchor", Rect::from_center_size(a, vec2(ANCHOR_GRAB, ANCHOR_GRAB) * std::f32::consts::SQRT_2), "anchor point");
 }
 
 /// The pointer for what it would take hold of at `at` (or has hold of). There is no system
 /// cursor for rotating, so a code-drawn one replaces it there.
 fn cursor(ui: &egui::Ui, pl: &Placement, grab: Grab, at: Pos2, pic: Rect) {
     let icon = match grab {
-        Grab::Move | Grab::Anchor => CursorIcon::Move,
+        Grab::Move => CursorIcon::Move,
+        // the plain arrow with a small anchor point beside it, as Premiere shows, so it's clear the
+        // anchor point is under the pointer and not the picture
+        Grab::Anchor => {
+            let painter = ui.painter().with_clip_rect(pic.expand(24.0));
+            let b = at + vec2(14.0, 16.0);
+            for (col, w) in [(Color32::BLACK, 3.0), (Color32::WHITE, 1.0)] {
+                painter.circle_stroke(b, BADGE_RADIUS, Stroke::new(w, col));
+                painter.line_segment([b - vec2(BADGE_ARM, 0.0), b + vec2(BADGE_ARM, 0.0)], Stroke::new(w, col));
+                painter.line_segment([b - vec2(0.0, BADGE_ARM), b + vec2(0.0, BADGE_ARM)], Stroke::new(w, col));
+            }
+            CursorIcon::Default
+        }
         Grab::Handle(n) => handle_points(&pl.quad).get(n).map_or(CursorIcon::Move, |h| resize_cursor(*h - centre(&pl.quad))),
         Grab::Rotate => {
-            let painter = ui.painter().with_clip_rect(pic.expand(16.0));
-            let r = Rect::from_center_size(at, vec2(16.0, 16.0));
-            icons::paint(&painter, r.translate(vec2(1.0, 1.0)), Icon::Reset, Color32::BLACK);
-            icons::paint(&painter, r, Icon::Reset, Color32::WHITE);
+            let out = (at - centre(&pl.quad)).normalized();
+            rotate_pointer(&ui.painter().with_clip_rect(pic.expand(ROTATE_REACH + 16.0)), at, if out.is_finite() { out } else { vec2(0.0, -1.0) });
             CursorIcon::None
         }
     };
     ui.ctx().set_cursor_icon(icon);
+}
+
+/// Premiere's rotate pointer: a curved double arrow at `at`, bulging along `out` (away from the
+/// box), so it turns to face outward wherever the pointer is around the box.
+fn rotate_pointer(painter: &egui::Painter, at: Pos2, out: egui::Vec2) {
+    const R: f32 = 9.0;
+    const SWEEP: f32 = 1.6;
+    let c = at - out * R;
+    let base = out.y.atan2(out.x);
+    let on_arc = |a: f32| c + vec2(a.cos(), a.sin()) * R;
+    let arc: Vec<Pos2> = (0..=12).map(|i| on_arc(base + (i as f32 / 12.0 - 0.5) * SWEEP)).collect();
+    // an arrowhead at each end, pointing on along the arc
+    let head = |a: f32, dir: f32| {
+        let (tip, along, across) = (on_arc(a), vec2(-a.sin(), a.cos()) * dir, vec2(a.cos(), a.sin()));
+        vec![tip + along * 4.5, tip - across * 3.5, tip + across * 3.5]
+    };
+    let heads = [head(base + SWEEP / 2.0, 1.0), head(base - SWEEP / 2.0, -1.0)];
+    painter.add(egui::Shape::line(arc.clone(), Stroke::new(3.5, Color32::BLACK)));
+    painter.add(egui::Shape::line(arc, Stroke::new(1.5, Color32::WHITE)));
+    for h in heads {
+        painter.add(egui::Shape::convex_polygon(h, Color32::WHITE, Stroke::new(1.0, Color32::BLACK)));
+    }
 }
 
 /// The top-most clip at the playhead whose picture is under `p`.
@@ -337,8 +384,11 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     let double = ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary));
     if let Some((sel, def, pl)) = selected_placement(app, pic, frame) {
         draw(app, ui, &pl, pic, def.name);
-        let resp = ui.interact(Rect::from_points(&pl.quad).expand(ROTATE_REACH), id, Sense::click_and_drag());
-        if resp.drag_started() {
+        // (as far again beyond the rotate zone, where a click lets go of the box)
+        let resp = ui.interact(Rect::from_points(&pl.quad).expand(ROTATE_REACH * 2.0), id, Sense::click_and_drag());
+        // the left button only: a middle or right drag leaves the picture alone
+        let left = egui::PointerButton::Primary;
+        if resp.drag_started_by(left) {
             // where the button went down (a drag starts only after the pointer has moved a little)
             let p = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()).unwrap_or(pl.anchor_at);
             match grab_at(&pl, p) {
@@ -351,7 +401,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         }
         let drag: Option<Drag> = ui.data(|d| d.get_temp(drag_id)).filter(|d: &Drag| d.sel == sel);
         if let Some(mut d) = drag
-            && resp.dragged()
+            && resp.dragged_by(left)
         {
             let cur = resp.interact_pointer_pos().unwrap_or(d.start);
             let off = cur - d.from.anchor_at;
@@ -361,7 +411,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                 d.angle = a;
                 ui.data_mut(|m| m.insert_temp(drag_id, d));
             }
-            if resp.drag_started() || resp.drag_delta() != egui::Vec2::ZERO {
+            if resp.drag_started_by(left) || resp.drag_delta() != egui::Vec2::ZERO {
                 for (param, value) in changes(&d, def.id, cur) {
                     actions.push(("effects.setParam".into(), json!({"clip": sel.0.0, "effect": sel.1, "param": param, "value": value, "merge": MERGE})));
                 }

@@ -160,9 +160,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let selected = app.session.state.selected_effect.as_ref().is_some_and(|s| s.clip == clip && s.index(&it.effects) == Some(idx));
                 let (r, resp) = bui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::click());
                 if selected {
-                    bui.painter().rect_filled(r, 0.0, t.row_selected);
+                    bui.painter().rect_filled(crate::panels::effect_controls::row_fill(r), 0.0, t.row_selected);
                 } else if resp.hovered() {
-                    bui.painter().rect_filled(r, 0.0, t.hover);
+                    bui.painter().rect_filled(crate::panels::effect_controls::row_fill(r), 0.0, t.hover);
                 }
                 row_line(bui, r, &lane, &t);
                 // only the arrow twirls the effect open or shut; the rest of the header selects it
@@ -966,6 +966,12 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     bui.painter().rect_stroke(br, 4.0, Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
     bui.painter().text(br.center(), Align2::CENTER_CENTER, tlf!("Speed {n}%", n = format!("{:.0}", it.speed * 100.0)), Tokens::ui(12.0), t.text);
     run(app, ui.ctx(), actions);
+}
+
+/// Where a row's highlight (hover, selection) is painted: the row less its first point, which is
+/// where the focused panel's outline runs, so the highlight doesn't cut through the outline.
+pub(crate) fn row_fill(r: Rect) -> Rect {
+    Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y), r.max)
 }
 
 /// Run the panel's actions. Parameter changes made while the mouse button is down (a drag) share

@@ -548,8 +548,8 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     let editing = app.ui.gfx_edit.clone();
     let edit_view = editing.as_ref().and_then(|e| views.iter().find(|v| v.clip.0 == e.clip && v.layer == e.layer));
 
-    // ---- presses
-    if graphics_tool && resp.drag_started() {
+    // ---- presses (the left button only: a middle or right drag leaves the layers alone)
+    if graphics_tool && resp.drag_started_by(egui::PointerButton::Primary) {
         // where the button went down (a drag starts only after the pointer has moved a little)
         let p = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()).unwrap_or(pic.center());
         let shift = ui.input(|i| i.modifiers.shift);
