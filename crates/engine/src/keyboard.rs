@@ -265,12 +265,8 @@ fn slip_selection(s: &mut Session, frames: i64) -> Result<Value> {
 fn slide_selection(s: &mut Session, frames: i64) -> Result<Value> {
     let d = s.sequence_rate().tick_of(frames);
     let clips = with_links(s, &s.state.selection.clone());
-    s.edit_sequence("Slide", |q, ctx, _| {
-        for c in &clips {
-            edit::slide(q, *c, d, ctx)?;
-        }
-        Ok(())
-    })?;
+    // one common delta, clamped by the most restrictive member, keeps linked partners in sync
+    s.edit_sequence("Slide", |q, ctx, _| Ok(edit::slide_items(q, &clips, d, ctx)?))?;
     Ok(Value::Null)
 }
 

@@ -2349,20 +2349,8 @@ fn build() -> Vec<CommandSpec> {
                 .or_else(|| p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)))
                 .unwrap_or_default();
             let clips = with_links(s, &[c]);
-            s.edit_sequence("Slide", |q, ctx, _| {
-                // clamp across all linked partners, then slide them by the common delta
-                let mut dd = d;
-                for c in &clips {
-                    let x = edit::slide(&mut q.clone(), *c, dd, ctx)?;
-                    if x.abs() < dd.abs() {
-                        dd = x;
-                    }
-                }
-                for c in &clips {
-                    edit::slide(q, *c, dd, ctx)?;
-                }
-                Ok(())
-            })?;
+            // clamp across all linked partners, then slide them by the common delta
+            s.edit_sequence("Slide", |q, ctx, _| Ok(edit::slide_items(q, &clips, d, ctx)?))?;
             Ok(Value::Null)
         }),
         cmd!("timeline.rateStretch", "Rate Stretch", [], None, r#"{"clip":id,"edge":"in|out","delta":ticks}"#, has_seq, |s, p| {
