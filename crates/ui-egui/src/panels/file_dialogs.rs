@@ -42,6 +42,8 @@ pub fn show_recovery(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     }
     let mut choice = app.file_dialogs.recovery_choice.min(items.len() - 1);
     let mut open = true;
+    // Enter recovers, Esc is Not Now; the prompt never leaves the keyboard stuck
+    let (enter, esc) = ctx.input_mut(|i| (i.consume_key(egui::Modifiers::NONE, egui::Key::Enter), i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)));
     egui::Modal::new(egui::Id::new("recovery-modal")).frame(modal_frame(&t)).show(ctx, |ui| {
         ui.set_width(520.0);
         Frame::new().inner_margin(Margin { left: 28, right: 28, top: 24, bottom: 20 }).show(ui, |ui| {
@@ -87,13 +89,13 @@ pub fn show_recovery(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                     choice = 0;
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if button(app, ui, "recovery.recover", tl!("Recover"), true) {
+                    if button(app, ui, "recovery.recover", tl!("Recover"), true) || enter {
                         match app.session.execute("file.recover", json!({ "id": id })) {
                             Ok(_) => open = false,
                             Err(e) => app.ui.status = e.to_string(),
                         }
                     }
-                    if button(app, ui, "recovery.later", tl!("Not Now"), false) {
+                    if button(app, ui, "recovery.later", tl!("Not Now"), false) || esc {
                         open = false;
                     }
                 });

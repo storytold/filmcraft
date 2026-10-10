@@ -424,14 +424,22 @@ impl FilmcraftApp {
 impl FilmcraftApp {
     pub fn new(mut session: Session) -> Self {
         session.shortcuts.register_external(menus::external_commands());
-        let recovery = !session.recovery_candidates().is_empty();
+        // A crash's unsaved changes are offered first thing (a modal prompt). Changes left by a
+        // normal quit are only pointed out: a prompt on every launch would hold the keyboard
+        // until it is answered.
+        let crashed = session.recovery_candidates().iter().any(|c| !c.meta.clean_exit);
+        let left_over = !crashed && !session.recovery_candidates().is_empty();
         let frames = Arc::new(FrameServer::new(session.media.clone(), session.services.clone(), session.previews.clone(), FrameServer::default_workers()));
         let workspaces =
             session.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| dock::WorkspacePrefs::load(&d.join(dock::WORKSPACES_FILE))).unwrap_or_default();
         let language = i18n::Language::parse(&session.prefs.general.interface_language).unwrap_or_default();
         Self {
             session,
-            ui: UiState { language, ..UiState::default() },
+            ui: UiState {
+                language,
+                status: if left_over { tl!("Unsaved changes from an earlier session: File ▸ Recover Unsaved Changes…").into() } else { String::new() },
+                ..UiState::default()
+            },
             tokens: Tokens::for_kind(ThemeKind::Dark),
             frames,
             playback: Playback { speed: 1.0, ..Default::default() },
@@ -439,8 +447,7 @@ impl FilmcraftApp {
             audio: None,
             scrub: Default::default(),
             hooks: HostHooks::default(),
-            // Unsaved changes left by a session that died are offered first thing.
-            dialog: recovery.then_some(Dialog::Recovery),
+            dialog: crashed.then_some(Dialog::Recovery),
             file_dialogs: Default::default(),
             auto: Default::default(),
             textures: HashMap::new(),
