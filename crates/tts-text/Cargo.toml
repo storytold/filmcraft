@@ -1,0 +1,14 @@
+[package]
+name = "filmcraft-tts-text"
+description = "FilmCraft text-to-speech text front end: text normalization (numbers, money, dates, times, abbreviations, acronyms, pause markers) into plain spoken words, English and Spanish"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }

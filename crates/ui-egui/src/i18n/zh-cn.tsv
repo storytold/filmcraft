@@ -963,6 +963,7 @@
 	Reset…	重置…
 	Source · {name}	源 · {name}
 	Reset Effect	重置效果
+	Reset Parameter	重置参数
 	Save Preset…	保存预设…
 	Custom Setup	自定义设置
 	Edit…	编辑…
@@ -1208,6 +1209,9 @@
 	Caption track options	字幕轨道选项
 	Timeline Display Settings	时间轴显示设置
 	Show Video Thumbnails	显示视频缩略图
+	Head	首帧
+	Head and Tail	首尾帧
+	Continuous	连续
 	Show Audio Waveform	显示音频波形
 	Expand All Tracks	展开所有轨道
 	Minimize All Tracks	最小化所有轨道
@@ -2883,6 +2887,7 @@
 	Target Bitrate	目标码率
 	Adaptive ({bpp} bits per pixel)	自适应（每像素 {bpp} 位）
 	Maximum Bitrate	最大码率
+	Quality (CRF)	质量 (CRF)
 	Key Frame Distance	关键帧间隔
 	Quality	质量
 	Render at Maximum Depth	以最大深度渲染
@@ -2963,6 +2968,9 @@
 	Apple ProRes 422 HQ	Apple ProRes 422 HQ
 	Apple ProRes 422 LT	Apple ProRes 422 LT
 	Apple ProRes 422 Proxy	Apple ProRes 422 Proxy
+	Apple ProRes 4444	Apple ProRes 4444
+	Apple ProRes 4444 with Alpha	Apple ProRes 4444（带 Alpha）
+	Apple ProRes 4444 XQ	Apple ProRes 4444 XQ
 	Application	应用程序
 	Apply Guide Template	应用参考线模板
 	Auto Save Now	立即自动保存
@@ -3172,6 +3180,9 @@
 	QuickTime, ProRes 422 HQ, 24-bit 48 kHz PCM	QuickTime，ProRes 422 HQ，24 位 48 kHz PCM
 	QuickTime, ProRes 422 LT, 24-bit 48 kHz PCM	QuickTime，ProRes 422 LT，24 位 48 kHz PCM
 	QuickTime, ProRes 422 Proxy, 24-bit 48 kHz PCM	QuickTime，ProRes 422 Proxy，24 位 48 kHz PCM
+	QuickTime, ProRes 4444 (4:4:4), 24-bit 48 kHz PCM	QuickTime，ProRes 4444 (4:4:4)，24 位 48 kHz PCM
+	QuickTime, ProRes 4444 (4:4:4) with alpha channel, 24-bit 48 kHz PCM	QuickTime，ProRes 4444 (4:4:4)，带 Alpha 通道，24 位 48 kHz PCM
+	QuickTime, ProRes 4444 XQ (4:4:4), 24-bit 48 kHz PCM	QuickTime，ProRes 4444 XQ (4:4:4)，24 位 48 kHz PCM
 	QuickTime, ProRes 422, 24-bit 48 kHz PCM	QuickTime，ProRes 422，24 位 48 kHz PCM
 	Quit FilmCraft	退出 FilmCraft
 	Rate Stretch Tool	速率伸缩工具
@@ -3287,6 +3298,7 @@
 	Upper First	上方优先
 	VBR, 1 pass	VBR，1 遍
 	VBR, 2 pass	VBR，2 遍
+	CRF (constant quality)	CRF（恒定质量）
 	Vimeo 1080p Full HD	Vimeo 1080p 全高清
 	Vimeo 2160p 4K Ultra HD	Vimeo 2160p 4K 超高清
 	Voice-over Record	画外音录制
@@ -3488,5 +3500,20 @@
 	Appearance Mode	外观模式
 	Next Appearance Mode	下一个外观模式
 	Sync with system	跟随系统
+	UI Scale	界面缩放
+	Auto (system)	自动（系统）
+	GPU Rendering	GPU 渲染
+	Composite on the GPU when available	可用时在 GPU 上合成
+	Text to Speech	文字转语音
+	Edit Narration	编辑旁白
 	Clear Transition	清除过渡
 	Set Transition Duration	设置过渡持续时间
+	Project Notes	项目备注
+	Get Project Notes	获取项目备注
+	Edit Project Notes	编辑项目备注
+	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	此项目的备注：待办事项、说明、帧号等… 随项目一起保存。
+	GPU acceleration is unavailable; preview renders on the CPU	GPU 加速不可用；预览在 CPU 上渲染
+	Caption Tracks	字幕轨道
+	Delete Caption Track	删除字幕轨道
+	Delete Caption Tracks	删除多个字幕轨道
+	Delete Empty Caption Tracks	删除空字幕轨道

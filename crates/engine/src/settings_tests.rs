@@ -253,6 +253,18 @@ fn schema_command_describes_every_category() {
     assert_eq!(auto["value"], "pageScroll");
     assert_eq!(auto["wired"], true);
     assert!(auto["kind"]["choices"].as_array().unwrap().iter().any(|c| c["value"] == "smoothScroll"));
+
+    // This option is stored, but Insert/Overwrite does not yet implement focus transfer.
+    let focus = tl["fields"].as_array().unwrap().iter().find(|f| f["key"] == "timeline.focusTimelineOnEdit").unwrap();
+    assert_eq!(focus["kind"], json!({"type": "bool"}));
+    assert_eq!(focus["wired"], false);
+    assert_eq!(focus["value"], false);
+    set(&mut s, "timeline.focusTimelineOnEdit", json!(true));
+    let updated = s.execute("prefs.schema", json!({"category": "timeline"})).unwrap();
+    let focus = updated["categories"][0]["fields"].as_array().unwrap().iter().find(|f| f["key"] == "timeline.focusTimelineOnEdit").unwrap();
+    assert_eq!(focus["value"], true);
+    assert_eq!(focus["wired"], false);
+
     let one = s.execute("prefs.schema", json!({"category": "trim"})).unwrap();
     assert_eq!(one["categories"].as_array().unwrap().len(), 1);
     assert!(s.execute("prefs.schema", json!({"category": "nope"})).is_err());

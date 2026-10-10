@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use filmcraft_color::ColorInfo;
 use filmcraft_frame::{AudioBuffer, Region, VideoFrame};
-use filmcraft_isobmff::{CleanAperture, CodecConfig, Mp4File, TrackKind};
+use filmcraft_isobmff::{ByteSource, CleanAperture, CodecConfig, Mp4File, TrackKind};
 use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, SharedSource, VideoStreamInfo};
 use filmcraft_time::{FrameRate, Tick};
 
@@ -162,6 +162,48 @@ fn color_from(entry: &filmcraft_isobmff::SampleEntry, w: u32, h: u32) -> ColorIn
     crate::stream_color::resolve(w, h, &sources)
 }
 
+/// First bytes of a Sony `rtmd` sample needed for the start-timecode block (`frames` is last).
+const RTMD_HEADER_LEN: usize = 0x12;
+
+/// Sony XAVC `rtmd` (real-time metadata) start timecode fields, read from the first sample: hours,
+/// minutes, seconds, a drop-frame flag and frames. Sony stores them as raw decimal bytes in the
+/// sample's fixed header. The layout is proprietary and undocumented, so it is reproduced here from
+/// real footage; it is the same block ffmpeg reports as the `timecode` tag of an `rtmd` stream.
+///
+/// Fields outside SMPTE bounds — including the labels drop-frame counting skips — are rejected
+/// (no fabricated start time from damaged metadata).
+fn rtmd_fields(sample: &[u8], rate: FrameRate) -> Option<(i64, i64, i64, i64, bool)> {
+    let f = sample.get(0x0d..0x12)?;
+    let (h, m, s) = (f[0] as i64, f[1] as i64, f[2] as i64);
+    let frames = f[4] as i64;
+    let drop = f[3] != 0;
+    let base = rate.timecode_base();
+    if h > 23 || m > 59 || s > 59 || frames >= base {
+        return None;
+    }
+    // Drop-frame counting skips the first `base / 15` frame labels of every minute except each
+    // tenth minute, so those labels never occur in valid footage (SMPTE ST 12-1).
+    if drop && rate.supports_drop_frame() && s == 0 && m % 10 != 0 && frames < base / 15 {
+        return None;
+    }
+    Some((h, m, s, frames, drop))
+}
+
+/// Start timecode from a Sony `rtmd` track as a frame count at `rate` (issue #460), used when the
+/// file has no `tmcd` track. `None` if there is no `rtmd` track or it has no usable first sample.
+/// Only the fixed-size header is read (a damaged `stsz` size can't drive a huge allocation).
+fn rtmd_start_timecode(file: &Mp4File, bytes: &crate::Src, rate: FrameRate) -> Option<i64> {
+    let t = file.tracks.iter().find(|t| t.entries.first().is_some_and(|e| e.format.0 == *b"rtmd"))?;
+    let s = t.samples.first()?;
+    if s.size < RTMD_HEADER_LEN as u32 {
+        return None;
+    }
+    let mut buf = [0u8; RTMD_HEADER_LEN];
+    bytes.read_at(s.offset, &mut buf).ok()?;
+    let (h, m, s, f, drop) = rtmd_fields(&buf, rate)?;
+    Some(filmcraft_time::fields_to_frames(h, m, s, f, rate, drop))
+}
+
 impl Mp4Source {
     pub fn open(name: &str, bytes: Arc<[u8]>) -> crate::Result<Self> {
         Self::open_reader(name, Arc::new(filmcraft_media::reader::MemReader(bytes)))
@@ -170,7 +212,7 @@ impl Mp4Source {
     /// Open from a random-access reader: only the index is read now, samples on demand.
     pub fn open_reader(name: &str, reader: filmcraft_media::SharedReader) -> crate::Result<Self> {
         let bytes = crate::Src(reader);
-        let file = filmcraft_isobmff::open(&bytes).map_err(|e| CodecError::Container(e.to_string()))?;
+        let mut file = filmcraft_isobmff::open(&bytes).map_err(|e| CodecError::Container(e.to_string()))?;
         // A track needs samples, a sample description and a timescale to be playable (damaged
         // files can lack them: indexing `entries[0]` or dividing by the timescale used to panic).
         let playable = |t: &&filmcraft_isobmff::Track, kind| t.kind == kind && !t.samples.is_empty() && !t.entries.is_empty() && t.timescale > 0;
@@ -271,6 +313,9 @@ impl Mp4Source {
             Some(CodecConfig::Timecode(tc)) => tc.start_frame.map(|f| f as i64),
             _ => None,
         });
+        // Sony XAVC files with no `tmcd` track carry the start timecode in an `rtmd` metadata
+        // track; convert its fields to a frame count using the video frame rate.
+        let start_timecode = start_timecode.or_else(|| rtmd_start_timecode(&file, &bytes, video.as_ref()?.frame_rate));
         let info = MediaInfo {
             name: name.to_string(),
             kind: if video.is_some() { MediaKind::Movie } else { MediaKind::AudioOnly },
@@ -281,7 +326,7 @@ impl Mp4Source {
             start_timecode,
             file_size: Some(bytes.0.len()),
         };
-        let audios: Vec<Mp4Audio> = atracks
+        let mut audios: Vec<Mp4Audio> = atracks
             .iter()
             .zip(&info.audio_streams)
             .filter_map(|(&i, ainfo)| {
@@ -300,6 +345,7 @@ impl Mp4Source {
                 Some(Mp4Audio { track: i, state, starts, offset, preroll })
             })
             .collect();
+        rebase_unedited_video(&mut file, vtrack, &mut audios);
         Ok(Self { info, bytes, file, vtrack, video: GopCache::new(explicit_color).with_rotation(rotation).with_crop(aperture), audios })
     }
 
@@ -605,6 +651,35 @@ pub fn opener(name: &str, bytes: Arc<[u8]>) -> Option<Result<SharedSource, Media
     Some(Mp4Source::open(name, bytes).map(|s| Arc::new(s) as SharedSource).map_err(Into::into))
 }
 
+/// Start the file at its first picture when its video track has no edit list (#714). Without an
+/// edit list the media timeline is the presentation, so a B-frame stream's first picture sits at its
+/// composition delay (two frames on an x264 MP4 written without `elst`, and on fragmented MP4s):
+/// media time zero repeated it and the clip, which lasts the media duration, lost its last pictures.
+/// Every track moves back by the earliest start among them, video and audio alike, so the streams
+/// stay in sync and a delay between them keeps its meaning; a track with an edit list is never
+/// rebased on its own.
+fn rebase_unedited_video(file: &mut Mp4File, vtrack: Option<usize>, audios: &mut [Mp4Audio]) {
+    let Some(vi) = vtrack else { return };
+    let Some(t) = file.tracks.get(vi).filter(|t| t.edits.is_empty() && t.timescale > 0) else { return };
+    let Some(first) = t.samples.iter().map(|s| s.pts).min().map(|p| p.saturating_add(t.edit_offset)).filter(|&p| p > 0) else { return };
+    let vts = i64::from(t.timescale);
+    let video_start = Tick::from_rational(first, 1, vts);
+    let audio_ts = |a: &Mp4Audio| file.tracks.get(a.track).map_or(1, |t| i64::from(t.timescale.max(1)));
+    // an audio track starts at its offset (a negative one only hides priming before zero)
+    let shift = audios.iter().fold(video_start, |m, a| m.min(Tick::from_rational(a.offset.max(0), 1, audio_ts(a))));
+    if shift <= Tick::ZERO {
+        return;
+    }
+    for a in audios.iter_mut() {
+        let d = shift.to_rational_round(1, audio_ts(a));
+        a.offset = a.offset.saturating_sub(d);
+    }
+    let v = if shift == video_start { first } else { shift.to_rational_round(1, vts) };
+    if let Some(t) = file.tracks.get_mut(vi) {
+        t.edit_offset = t.edit_offset.saturating_sub(v);
+    }
+}
+
 /// How long a track plays. With an edit list that is the sum of its edits (ISO/IEC 14496-12
 /// §8.6.6, movie timescale), as `tkhd` records it. The media duration (`mdhd`) runs on the decode
 /// timeline: it is longer than the presentation by the B-frame delay an edit skips (`media_time`, one
@@ -698,6 +773,30 @@ mod tests {
         assert_eq!(frames(&Mp4Source::open("huge.mov", mov_with_edits(huge)).expect("open")), 4);
         let zero = vec![Edit { segment_duration: 0, media_time: 0, media_rate: 0x10000 }];
         assert_eq!(frames(&Mp4Source::open("zero.mov", mov_with_edits(zero)).expect("open")), 4);
+    }
+
+    /// #714: a video track without an edit list whose pictures carry a composition delay (B-frame
+    /// style, as x264 writes them with no `elst`) starts at its first picture. Media time zero
+    /// repeated picture 0 for the length of the delay and the last pictures never showed.
+    #[test]
+    fn unedited_composition_delay_starts_at_the_first_picture() {
+        let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).expect("writer");
+        let t = mux.add_track(TrackConfig::new(SampleEntry::prores(FourCc(*b"apch"), 64, 32), 25)).expect("track");
+        for k in 0..4u16 {
+            let mut fr = filmcraft_prores::Frame::new(64, 32, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
+            fr.y.fill(100 + 200 * k);
+            let data = filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, 64, 32).encode(&fr).expect("encode");
+            mux.write_sample(t, WriteSample { data: &data, duration: 1, composition_offset: 2, is_sync: true }).expect("sample");
+        }
+        let src = Mp4Source::open("delay.mov", mux.finish().expect("finish").into_inner().into()).expect("open");
+        assert_eq!(src.info().duration, Tick::from_rational(4, 1, 25));
+        let luma = |k: i64| {
+            let f = src.video_frame(FrameRequest::full(Tick::from_rational(k, 1, 25))).expect("frame");
+            let l = f.luma8();
+            l.iter().map(|&v| u32::from(v)).sum::<u32>() / l.len().max(1) as u32
+        };
+        let seen: Vec<u32> = (0..4).map(luma).collect();
+        assert!(seen.windows(2).all(|w| w[0] < w[1]), "one picture per frame, in order: {seen:?}");
     }
 
     /// Overwrite the big-endian u32 `skip` bytes after the first `fourcc` box type.
@@ -913,6 +1012,48 @@ mod tests {
             let v = s.info().video.as_ref().expect("video");
             assert_eq!((v.pixel_format.as_str(), v.has_alpha), (want, alpha), "{}", String::from_utf8_lossy(fourcc));
         }
+    }
+
+    #[test]
+    fn rtmd_fields_parse_and_reject_damaged_metadata() {
+        let rate = FrameRate::FPS_59_94;
+        // 03:37:12:34, non-drop (a Sony FX3/a6400 XAVC header).
+        let mut s = [0u8; 24];
+        s[0x0d..0x12].copy_from_slice(&[3, 37, 12, 0, 34]);
+        assert_eq!(rtmd_fields(&s, rate), Some((3, 37, 12, 34, false)));
+        s[0x10] = 1;
+        assert_eq!(rtmd_fields(&s, rate), Some((3, 37, 12, 34, true)));
+        // Too short to hold the block: no fields, no panic.
+        assert_eq!(rtmd_fields(&[0u8; 6], rate), None);
+        // Damaged fields are rejected rather than normalized into a plausible time.
+        for bad in [[3, 37, 12, 0, 60], [3, 60, 0, 0, 0], [24, 0, 0, 0, 0], [0, 0, 60, 0, 0]] {
+            let mut b = [0u8; 24];
+            b[0x0d..0x12].copy_from_slice(&bad);
+            assert_eq!(rtmd_fields(&b, rate), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn rtmd_fields_reject_drop_frame_skipped_labels() {
+        let df = |h, m, s, f| {
+            let mut b = [0u8; 24];
+            b[0x0d..0x12].copy_from_slice(&[h, m, s, 1, f]);
+            rtmd_fields(&b, FrameRate::FPS_59_94)
+        };
+        // At 59.94 DF, frames 00-03 of a non-tenth minute are skipped, so they never occur.
+        assert_eq!(df(0, 1, 0, 0), None);
+        assert_eq!(df(0, 1, 0, 3), None);
+        assert_eq!(df(0, 1, 0, 4), Some((0, 1, 0, 4, true)));
+        assert_eq!(df(0, 10, 0, 0), Some((0, 10, 0, 0, true))); // tenth minute: label exists
+        assert_eq!(df(0, 1, 1, 0), Some((0, 1, 1, 0, true))); // seconds > 0: label exists
+        // At 29.97 DF only frames 00-01 are skipped.
+        let df30 = |m, s, f| {
+            let mut b = [0u8; 24];
+            b[0x0d..0x12].copy_from_slice(&[0, m, s, 1, f]);
+            rtmd_fields(&b, FrameRate::FPS_29_97)
+        };
+        assert_eq!(df30(1, 0, 0), None);
+        assert_eq!(df30(1, 0, 2), Some((0, 1, 0, 2, true)));
     }
 }
 

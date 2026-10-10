@@ -29,6 +29,7 @@ impl FakeFs {
             "/home/me/Movies/edit.edl",
             "/home/me/Movies/subs.srt",
             "/home/me/Movies/clip.mov",
+            "/home/me/Movies/CLIP.MOV",
         ] {
             files.insert(f.to_string(), vec![0; 16]);
         }
@@ -100,7 +101,7 @@ fn listing_puts_folders_first_and_hides_unsupported_files() {
     assert_eq!(l["dir"], "/home/me");
     assert_eq!(names(&l), ["Movies"]);
     let l = s.execute("mediaBrowser.list", json!({"path": "/home/me/Movies"})).unwrap();
-    assert_eq!(names(&l), ["Selects", "A-interview.wav", "b-roll.wav", "clip.mov", "edit.edl", "shot_0001.png", "shot_0002.png", "subs.srt"]);
+    assert_eq!(names(&l), ["Selects", "A-interview.wav", "b-roll.wav", "CLIP.MOV", "clip.mov", "edit.edl", "shot_0001.png", "shot_0002.png", "subs.srt"]);
     let e = &l["entries"][0];
     assert_eq!((e["isDir"].as_bool(), e["kind"].as_str()), (Some(true), Some("folder")));
     let shot = l["entries"].as_array().unwrap().iter().find(|e| e["name"] == "shot_0001.png").unwrap();
@@ -117,7 +118,7 @@ fn file_type_filter() {
     let l = s.execute("mediaBrowser.list", json!({"path": "/home/me/Movies", "fileTypes": "image"})).unwrap();
     assert_eq!(names(&l), ["Selects", "shot_0001.png", "shot_0002.png"]);
     let l = s.execute("mediaBrowser.list", json!({"path": "/home/me/Movies", "fileTypes": "mov"})).unwrap();
-    assert_eq!(names(&l), ["Selects", "clip.mov"]);
+    assert_eq!(names(&l), ["Selects", "CLIP.MOV", "clip.mov"]);
     // the setting persists and applies by default
     s.execute("mediaBrowser.settings", json!({"fileTypes": "project"})).unwrap();
     let l = s.execute("mediaBrowser.list", json!({"path": "/home/me/Movies"})).unwrap();
@@ -208,6 +209,47 @@ fn import_the_selection_and_open_in_source() {
     let mut s = session();
     let r = s.execute("mediaBrowser.import", json!({"paths": ["/Volumes/Card/DCIM"]})).unwrap();
     assert_eq!(r["items"].as_array().unwrap().len(), 1);
+}
+
+/// Importing a folder keeps its structure (#411): the folder becomes a bin named after it, each
+/// sub-folder with media a bin inside that, and every file lands in its folder's bin.
+#[test]
+fn importing_a_folder_mirrors_its_sub_folders_as_bins() {
+    let mut fs = FakeFs::new();
+    let wav = filmcraft_media::wav::write_wav16(&[0.0; 4800], 2, 48_000);
+    fs.dirs.extend(["/Shoot", "/Shoot/Day 1", "/Shoot/Day 1/Cam A", "/Shoot/Empty"].map(String::from));
+    for f in ["/Shoot/slate.wav", "/Shoot/Day 1/room.wav", "/Shoot/Day 1/Cam A/take1.wav", "/Shoot/Day 1/Cam A/take2.wav"] {
+        fs.files.get_mut().unwrap().insert(f.into(), wav.clone());
+    }
+    let mut s = Session::new(Arc::new(fs));
+    let r = s.execute("mediaBrowser.import", json!({"paths": ["/Shoot"]})).unwrap();
+    assert_eq!(r["items"].as_array().unwrap().len(), 4, "{r}");
+    assert_eq!(r["bins"].as_array().unwrap().len(), 3, "{r}");
+    let tree = |b: &filmcraft_project::Bin| -> Vec<String> {
+        b.children
+            .iter()
+            .map(|c| match c {
+                filmcraft_project::BinEntry::Bin(b) => format!("bin {}", b.name),
+                filmcraft_project::BinEntry::Item(i) => s.project.item(*i).unwrap().name.clone(),
+            })
+            .collect()
+    };
+    let sub = |b: &filmcraft_project::Bin, name: &str| -> filmcraft_project::Bin {
+        b.children
+            .iter()
+            .find_map(|c| match c {
+                filmcraft_project::BinEntry::Bin(b) if b.name == name => Some(b.clone()),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert_eq!(tree(&s.project.root), ["bin Shoot"]);
+    let shoot = sub(&s.project.root, "Shoot");
+    // a folder without media gets no bin
+    assert_eq!(tree(&shoot), ["slate.wav", "bin Day 1"]);
+    let day = sub(&shoot, "Day 1");
+    assert_eq!(tree(&day), ["room.wav", "bin Cam A"]);
+    assert_eq!(tree(&sub(&day, "Cam A")), ["take1.wav", "take2.wav"]);
 }
 
 #[test]

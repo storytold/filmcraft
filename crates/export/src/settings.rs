@@ -75,6 +75,22 @@ pub enum HardwareEncoding {
     Auto,
 }
 
+/// Whether the picture of an export may be composited on the GPU (`filmcraft-gpu`'s off-screen
+/// compositor) instead of the CPU reference renderer. Auto = use the GPU when the app registered
+/// a GPU frame renderer and the machine has an adapter; the CPU result is the fallback either
+/// way. On an effects-heavy edit it exports 2.4× (1080p) to 3.2× (4K) faster, and a single plain
+/// clip takes the same time (`docs/performance.md`). The GPU matches the CPU within the
+/// compositor's parity tolerance, not bit for bit, so an export's bytes can depend on the
+/// machine's GPU. Off = the CPU reference renderer, byte-reproducible everywhere; Off is the
+/// default (opt-in per export) until GPU export has been measured on Windows and macOS.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GpuRendering {
+    Auto,
+    #[default]
+    Off,
+}
+
 /// Bitrate encoding of bitrate-driven codecs (H.264).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -86,6 +102,9 @@ pub enum BitrateMode {
     Vbr1Pass,
     /// Variable bitrate, two passes (the picture is rendered and analysed first).
     Vbr2Pass,
+    /// Constant quality: every frame is coded at [`ExportSettings::crf`] and the bitrate follows the
+    /// picture (H.264, built-in encoder only).
+    Crf,
 }
 
 impl BitrateMode {
@@ -94,6 +113,7 @@ impl BitrateMode {
             BitrateMode::Cbr => "CBR",
             BitrateMode::Vbr1Pass => "VBR, 1 pass",
             BitrateMode::Vbr2Pass => "VBR, 2 pass",
+            BitrateMode::Crf => "CRF (constant quality)",
         }
     }
 }
@@ -358,6 +378,21 @@ impl ExportSettings {
         if self.format.is_mxf() { self.mxf_video_codec.encoder_format() } else { self.format }
     }
 
+    /// Whether the output can carry an alpha channel ([`ExportSettings::alpha`]): PNG and TIFF
+    /// sequences and ProRes 4444 / 4444 XQ QuickTime movies.
+    pub fn supports_alpha(&self) -> bool {
+        match self.format {
+            Format::PngSequence | Format::TiffSequence => true,
+            Format::ProRes => crate::prores_profile(&self.prores_profile).chroma() == filmcraft_prores::ChromaFormat::Yuv444,
+            _ => false,
+        }
+    }
+
+    /// Whether the exported frames keep their alpha channel instead of being flattened over black.
+    pub fn keeps_alpha(&self) -> bool {
+        self.alpha && self.supports_alpha()
+    }
+
     /// Whether the output is a numbered image sequence.
     pub fn is_image_sequence(&self) -> bool {
         matches!(self.format, Format::PngSequence | Format::TiffSequence | Format::BmpSequence)
@@ -390,16 +425,7 @@ impl ExportSettings {
             6.. => 6,
             _ => 2,
         };
-        Resolved {
-            width: w,
-            height: h,
-            rate,
-            sample_rate: self.audio.sample_rate.filter(|r| (8000..=192_000).contains(r)).unwrap_or(seq_sr),
-            channels,
-            target_kbps: target,
-            max_kbps: max,
-            keyint,
-        }
+        Resolved { width: w, height: h, rate, sample_rate: self.audio.sample_rate.unwrap_or(seq_sr), channels, target_kbps: target, max_kbps: max, keyint }
     }
 
     /// The audio codec actually used.
@@ -504,6 +530,7 @@ impl ExportSettings {
                     );
                     v += &match self.bitrate_mode {
                         BitrateMode::Cbr => format!(", {}", mbps(r.target_kbps)),
+                        BitrateMode::Crf => format!(" {}", self.crf),
                         _ => format!(", Target {}, Max {}", mbps(r.target_kbps), mbps(r.max_kbps)),
                     };
                     v += &format!(", keyframe every {} frames", r.keyint);
@@ -524,7 +551,9 @@ impl ExportSettings {
                         Profile::Proxy => ", ProRes 422 Proxy",
                         Profile::Lt => ", ProRes 422 LT",
                         Profile::Standard => ", ProRes 422",
-                        _ => ", ProRes 422 HQ",
+                        Profile::Hq => ", ProRes 422 HQ",
+                        Profile::P4444 => ", ProRes 4444",
+                        Profile::P4444Xq => ", ProRes 4444 XQ",
                     }
                 }
                 Format::DnxHr => v += &format!(", DNxHR {}", if self.dnx_profile.is_empty() { "HQ".into() } else { self.dnx_profile.to_ascii_uppercase() }),

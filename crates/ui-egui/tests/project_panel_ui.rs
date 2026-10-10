@@ -448,6 +448,79 @@ fn bins_open_in_place_in_a_tab_or_in_a_window() {
 }
 
 #[test]
+fn select_all_takes_only_the_shown_bin() {
+    // #456: Cmd+A selected every item in the project, closed bins and other tabs included
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    let (bin, items) = d.footage();
+    assert!(!items.is_empty());
+    let sorted = |v: &[ItemId]| {
+        let mut v: Vec<u64> = v.iter().map(|i| i.0).collect();
+        v.sort();
+        v
+    };
+    let mut footage = items.clone();
+    footage.sort();
+    // the root with the Footage bin closed: none of its items
+    d.app().ui.expanded_bins.clear();
+    d.frames(2);
+    d.key("Cmd+A");
+    let sel = d.app().session.state.project_selection.clone();
+    assert!(sel.iter().all(|i| !items.contains(&i.0)), "{sel:?}");
+    assert!(sel.iter().all(|i| d.app().session.project.root.children.contains(&BinEntry::Item(*i))), "{sel:?}");
+    // twirled open in List view, its items are shown and count
+    d.app().ui.expanded_bins.push(bin);
+    d.frames(2);
+    d.key("Cmd+A");
+    let sel = d.app().session.state.project_selection.clone();
+    assert!(items.iter().all(|i| sel.contains(&ItemId(*i))), "{sel:?}");
+    d.key("Cmd+Shift+A");
+    assert!(d.app().session.state.project_selection.is_empty());
+    // the bin opened in its own tab: exactly its items
+    d.app().ui.expanded_bins.clear();
+    d.app().session.prefs.general.bins_double_click = "openNewTab".into();
+    double_click_bin(&mut d, bin, false);
+    assert_eq!(d.app().ui.project_panel.active_tab, Some(0));
+    d.key("Cmd+A");
+    assert_eq!(sorted(&d.app().session.state.project_selection), footage);
+}
+
+#[test]
+fn a_dragged_bin_nests_in_another_and_back_out() {
+    // #456: a bin stayed wherever it was created; dragging it onto another bin did nothing
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    let outer = d.exec("file.newBin", json!({"name": "Outer"}))["bin"].as_u64().unwrap();
+    let inner = d.exec("file.newBin", json!({"name": "Inner"}))["bin"].as_u64().unwrap();
+    d.app().ui.expanded_bins.clear();
+    d.frames(3);
+    let parent =
+        |d: &mut Driver, b: u64| filmcraft_ui_egui::panels::project::parent_bin(&d.app().session.project.root, filmcraft_project::BinId(b)).map(|p| p.0);
+    let root = d.app().session.project.root.id.0;
+    let drag = |d: &mut Driver, from: [f32; 4], to: (f32, f32)| {
+        let start = (from[0] + 80.0, from[1] + from[3] / 2.0);
+        d.ok("ui.drag", json!({"from": {"x": start.0, "y": start.1}, "to": {"x": to.0, "y": to.1}, "steps": 12}));
+        d.frames(3);
+    };
+    // onto the Outer row: Inner nests in it
+    let (from, to) = (d.rect(&format!("project.bin.{inner}")), d.rect(&format!("project.bin.{outer}")));
+    drag(&mut d, from, (to[0] + 80.0, to[1] + to[3] / 2.0));
+    assert_eq!(parent(&mut d, inner), Some(outer));
+    // a bin never goes into itself
+    d.app().ui.expanded_bins.push(outer);
+    d.frames(3);
+    let (from, to) = (d.rect(&format!("project.bin.{outer}")), d.rect(&format!("project.bin.{inner}")));
+    drag(&mut d, from, (to[0] + 80.0, to[1] + to[3] / 2.0));
+    assert_eq!(parent(&mut d, outer), Some(root));
+    assert_eq!(parent(&mut d, inner), Some(outer));
+    // onto empty space: back to the bin the view shows
+    let from = d.rect(&format!("project.bin.{inner}"));
+    let to = centre(d.rect("project.empty"));
+    drag(&mut d, from, to);
+    assert_eq!(parent(&mut d, inner), Some(root));
+}
+
+#[test]
 fn footer_buttons_are_wired() {
     let mut d = project_driver();
     let bins0 = d.app().session.project.root.children.len();
@@ -475,6 +548,26 @@ fn footer_buttons_are_wired() {
     d.click("project.sortIcons");
     d.click("project.sortIcons.Name");
     assert_eq!(d.app().session.prefs.project_panel.view.icon_sort.column, "Name");
+}
+
+#[test]
+fn new_bin_asks_for_its_name() {
+    // #456: New Bin opens the name field of the new bin instead of leaving it "New Bin"
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    d.click("project.button.file.newBin");
+    d.frames(2);
+    let bin = d.app().ui.project_panel.rename.as_ref().and_then(|r| r.bin).expect("the new bin's name is being edited");
+    assert!(d.has("project.rename"), "the name field is shown");
+    d.key("Cmd+A");
+    d.ok("ui.type", json!({"text": "Interviews"}));
+    d.key("Enter");
+    let name = d.app().session.project.root.find_bin(filmcraft_project::BinId(bin)).unwrap().name.clone();
+    assert_eq!(name, "Interviews");
+    // with a name (agents) the bin is named directly and nothing is edited
+    let r = d.ok("ui.menu.invoke", json!({"id": "file.newBin", "params": {"name": "B-roll"}}));
+    assert!(r["bin"].as_u64().is_some(), "{r}");
+    assert!(d.app().ui.project_panel.rename.is_none());
 }
 
 // ------------------------------------------------------------------------------------ Media Browser
@@ -625,4 +718,247 @@ fn media_browser_drag_imports_into_the_project_panel() {
     d.frames(6);
     assert_eq!(d.app().session.project.items.len(), n0 + 1, "kept after a drop on the Timeline");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Double-clicking empty space in the Project panel opens Import, also between and beside the
+/// Icon view's cards once the project has some. Only the strip under the last row used to answer,
+/// so with a project loaded a double-click in the visible blank space did nothing. Real pointer
+/// input at 60 frames per second, so the two clicks are a real double-click.
+#[test]
+fn double_click_empty_area_imports_with_a_project_loaded() {
+    fn driver(demo: bool) -> (Driver, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let mut session = Session::default();
+        if demo {
+            session.execute("file.openDemoProject", json!({})).expect("demo project");
+        }
+        let (tx, rx) = channel();
+        let mut app = FilmcraftApp::new(session).with_control(rx);
+        let picks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = picks.clone();
+        app.hooks.pick_files = Some(Box::new(move |_| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Vec::new()
+        }));
+        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |_cc| app);
+        let mut d = Driver { harness, tx, snapshots: None };
+        d.frames(10);
+        (d, picks)
+    }
+    fn double_click(d: &mut Driver, at: egui::Pos2) {
+        let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);
+        // a pause first, as a person makes: clicks closer together continue the last gesture
+        // (a triple click) instead of starting a double-click
+        d.frames(60);
+        push(d, egui::Event::PointerMoved(at));
+        d.frames(1);
+        for _ in 0..2 {
+            for pressed in [true, false] {
+                push(d, egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+                d.frames(1);
+            }
+        }
+        d.frames(3);
+    }
+    let count = |p: &std::sync::Arc<std::sync::atomic::AtomicUsize>| p.load(std::sync::atomic::Ordering::SeqCst);
+
+    // an empty project: the whole panel is the empty area
+    let (mut d, picks) = driver(false);
+    let r = d.rect("project.empty");
+    double_click(&mut d, egui::pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0));
+    assert_eq!(count(&picks), 1, "empty project");
+
+    // the demo project, Icon view: the gap between the first two bins, and the space right of the
+    // last card in the first row
+    let (mut d, picks) = driver(true);
+    d.ok("ui.set", json!({}));
+    let (a, b) = (d.rect("project.bin.1"), d.rect("project.bin.2"));
+    assert!((a[1] - b[1]).abs() < 1.0 && b[0] > a[0] + a[2], "bins 1 and 2 share a row: {a:?} {b:?}");
+    double_click(&mut d, egui::pos2((a[0] + a[2] + b[0]) / 2.0, a[1] + a[3] / 2.0));
+    assert_eq!(count(&picks), 1, "between two bins");
+    let row: Vec<[f32; 4]> = d.ids("project.bin.").iter().map(|id| d.rect(id)).filter(|r| (r[1] - a[1]).abs() < 1.0).collect();
+    let last = row.iter().fold(a, |m, r| if r[0] > m[0] { *r } else { m });
+    let panel = d.rect("project.count");
+    if last[0] + last[2] + 30.0 < panel[0] + panel[2] {
+        double_click(&mut d, egui::pos2(last[0] + last[2] + 20.0, last[1] + last[3] / 2.0));
+        assert_eq!(count(&picks), 2, "right of the last card");
+    }
+    // a card still takes its own double-click: the bin opens, Import does not
+    double_click(&mut d, egui::pos2(a[0] + a[2] / 2.0, a[1] + a[3] / 2.0));
+    let picked = count(&picks);
+    assert!(picked <= 2, "double-clicking a bin must not open Import");
+}
+
+/// The report: with audio placed in the timeline, double-clicking the Project panel's empty space
+/// no longer opened Import. A new sequence with a tone on A1 (so the panel shows the sequence and
+/// the audio clip as cards); every empty spot opens Import: the strip under the cards and the space
+/// beside them.
+#[test]
+fn double_click_imports_with_audio_in_the_timeline() {
+    let mut session = Session::default();
+    session.execute("file.newSequence", json!({"name": "Mix", "audio": 2, "video": 1})).unwrap();
+    let inter: Vec<f32> = (0..48_000).flat_map(|i| [(i as f32 * 0.0576).sin() * 0.5; 2]).collect();
+    let bytes: std::sync::Arc<[u8]> = filmcraft_engine::previews::write_wav_f32(&inter, 48_000).into();
+    let item = filmcraft_engine::commands::import_bytes(&mut session, "/tone.wav", bytes, None).unwrap();
+    session.execute("timeline.place", json!({"item": item.0, "audioTrack": "A1", "seconds": 0.0})).unwrap();
+    let (tx, rx) = channel();
+    let mut app = FilmcraftApp::new(session).with_control(rx);
+    let picks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = picks.clone();
+    app.hooks.pick_files = Some(Box::new(move |_| {
+        seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Vec::new()
+    }));
+    let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |_cc| app);
+    let mut d = Driver { harness, tx, snapshots: None };
+    d.frames(10);
+    let double_click = |d: &mut Driver, at: egui::Pos2| {
+        let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);
+        d.frames(60);
+        push(d, egui::Event::PointerMoved(at));
+        d.frames(1);
+        for _ in 0..2 {
+            for pressed in [true, false] {
+                push(d, egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+                d.frames(1);
+            }
+        }
+        d.frames(3);
+    };
+    let count = || picks.load(std::sync::atomic::Ordering::SeqCst);
+    let cards: Vec<[f32; 4]> = d.ids("project.item.").iter().filter(|id| id.matches('.').count() == 2).map(|id| d.rect(id)).collect();
+    assert!(!cards.is_empty(), "the sequence and the tone show as cards");
+    let empty = d.rect("project.empty");
+    eprintln!("cards {cards:?}, empty strip {empty:?}");
+    double_click(&mut d, egui::pos2(empty[0] + empty[2] / 2.0, empty[1] + empty[3] / 2.0));
+    let strip = count();
+    let last = cards.iter().fold(cards[0], |m, r| if r[0] > m[0] { *r } else { m });
+    double_click(&mut d, egui::pos2(last[0] + last[2] + 40.0, last[1] + last[3] / 2.0));
+    let beside = count() - strip;
+    assert_eq!((strip, beside), (1, 1), "double-click on (the strip under the cards, the space beside them)");
+}
+
+// ---- marquee selection (#578)
+
+/// The Footage bin open in place in `view`, with its items' rects (row by row, left to right).
+fn footage_in(d: &mut Driver, view: &str) -> Vec<(u64, [f32; 4])> {
+    let (bin, items) = d.footage();
+    d.exec("project.view.set", json!({"view": view}));
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+    d.wait_for(&format!("project.item.{}", items[0]));
+    let mut rects: Vec<(u64, [f32; 4])> = items.iter().map(|i| (*i, d.rect(&format!("project.item.{i}")))).collect();
+    rects.sort_by(|a, b| (a.1[1], a.1[0]).partial_cmp(&(b.1[1], b.1[0])).unwrap());
+    rects
+}
+
+fn selection(d: &mut Driver) -> Vec<u64> {
+    let mut s: Vec<u64> = d.app().session.state.project_selection.iter().map(|i| i.0).collect();
+    s.sort_unstable();
+    s
+}
+
+fn sorted(mut v: Vec<u64>) -> Vec<u64> {
+    v.sort_unstable();
+    v
+}
+
+fn centre(r: [f32; 4]) -> (f32, f32) {
+    (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0)
+}
+
+fn marquee(d: &mut Driver, from: (f32, f32), to: (f32, f32), shift: bool) {
+    d.ok("ui.drag", json!({"from": {"x": from.0, "y": from.1}, "to": {"x": to.0, "y": to.1}, "steps": 12, "modifiers": {"shift": shift}}));
+    d.frames(3);
+}
+
+#[test]
+fn marquee_selects_cards_in_icon_view() {
+    let mut d = project_driver();
+    let cards = footage_in(&mut d, "icon");
+    let [(i0, a), (i1, b), (i2, c)] = [cards[0], cards[1], cards[2]];
+    assert!((a[1] - c[1]).abs() < 1.0, "the first three cards share a row");
+    // from the gap above-left of the first card to the middle of the second
+    marquee(&mut d, (a[0] - 4.0, a[1] - 4.0), centre(b), false);
+    assert_eq!(selection(&mut d), sorted(vec![i0, i1]));
+    // Shift adds
+    marquee(&mut d, (c[0] + 4.0, c[1] - 4.0), centre(c), true);
+    assert_eq!(selection(&mut d), sorted(vec![i0, i1, i2]));
+    // a plain drag replaces
+    marquee(&mut d, (a[0] - 4.0, a[1] - 4.0), centre(a), false);
+    assert_eq!(selection(&mut d), vec![i0]);
+    // the gaps between cards are empty space: a click there deselects
+    d.ok("ui.click", json!({"x": a[0] - 4.0, "y": a[1] - 4.0}));
+    d.frames(2);
+    assert!(selection(&mut d).is_empty());
+}
+
+#[test]
+fn escape_cancels_a_marquee_and_keeps_the_selection() {
+    let mut d = project_driver();
+    let cards = footage_in(&mut d, "icon");
+    let [(i0, a), (i1, b), (i2, c)] = [cards[0], cards[1], cards[2]];
+    d.exec("project.select", json!({"items": [i2]}));
+    let send = |d: &mut Driver, e: egui::Event| {
+        d.harness.input_mut().events.push(e);
+        d.frames(1);
+    };
+    let (from, to) = (egui::pos2(a[0] - 4.0, a[1] - 4.0), egui::pos2(centre(b).0, centre(b).1));
+    send(&mut d, egui::Event::PointerMoved(from));
+    send(&mut d, egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    for k in 1..=10 {
+        send(&mut d, egui::Event::PointerMoved(from.lerp(to, k as f32 / 10.0)));
+    }
+    assert_eq!(selection(&mut d), sorted(vec![i0, i1]), "the selection follows the rectangle");
+    send(&mut d, egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+    let end = egui::pos2(centre(c).0, centre(c).1);
+    send(&mut d, egui::Event::PointerMoved(end));
+    send(&mut d, egui::Event::PointerButton { pos: end, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+    d.frames(2);
+    assert_eq!(selection(&mut d), vec![i2], "Escape restored the selection the drag began with");
+}
+
+#[test]
+fn only_the_left_button_draws_a_marquee() {
+    let mut d = project_driver();
+    let cards = footage_in(&mut d, "icon");
+    let [(i0, a), (_, b)] = [cards[0], cards[1]];
+    d.exec("project.select", json!({"items": [i0]}));
+    let (from, to) = (egui::pos2(a[0] - 4.0, a[1] - 4.0), egui::pos2(centre(b).0, centre(b).1));
+    for button in [egui::PointerButton::Middle, egui::PointerButton::Secondary] {
+        let mut send = |e: egui::Event| {
+            d.harness.input_mut().events.push(e);
+            d.frames(1);
+        };
+        send(egui::Event::PointerMoved(from));
+        send(egui::Event::PointerButton { pos: from, button, pressed: true, modifiers: Default::default() });
+        for k in 1..=10 {
+            send(egui::Event::PointerMoved(from.lerp(to, k as f32 / 10.0)));
+        }
+        send(egui::Event::PointerButton { pos: to, button, pressed: false, modifiers: Default::default() });
+        d.key("Escape");
+        assert_eq!(selection(&mut d), vec![i0], "{button:?} drag left the selection alone");
+        assert!(!d.has("project.marquee"));
+    }
+}
+
+#[test]
+fn marquee_selects_rows_in_list_view() {
+    let mut d = project_driver();
+    let rows = footage_in(&mut d, "list");
+    let n = rows.len();
+    let (last, before_last) = (rows[n - 1], rows[n - 2]);
+    let empty = d.rect("project.empty");
+    // from the empty space under the rows up into the second-to-last row
+    marquee(&mut d, (empty[0] + 60.0, empty[1] + 20.0), (empty[0] + 60.0, centre(before_last.1).1), false);
+    assert_eq!(selection(&mut d), sorted(vec![last.0, before_last.0]));
+}
+
+#[test]
+fn marquee_selects_cards_in_freeform_view() {
+    let mut d = project_driver();
+    let cards = footage_in(&mut d, "freeform");
+    let [(i0, a), (i1, b)] = [cards[0], cards[1]];
+    assert!((a[1] - b[1]).abs() < 1.0, "the first two cards share a row");
+    marquee(&mut d, (a[0] - 6.0, a[1] - 6.0), centre(b), false);
+    assert_eq!(selection(&mut d), sorted(vec![i0, i1]));
+    assert!(!d.app().session.project.item(ItemId(i0)).unwrap().metadata.contains_key(FREEFORM_POS), "the marquee moved no card");
 }

@@ -84,7 +84,6 @@ impl<'a> CompoundFile<'a> {
         let mini_cutoff = u32_at(data, 56) as u64;
         let first_minifat = u32_at(data, 60);
         let first_difat = u32_at(data, 68);
-        let n_difat = u32_at(data, 72) as usize;
         let mut header_clsid = [0u8; 16];
         header_clsid.copy_from_slice(&data[8..24]);
         let max_sectors = data.len() / sector_size + 1;
@@ -108,8 +107,10 @@ impl<'a> CompoundFile<'a> {
         let mut seen = 0;
         while d <= MAXREGSECT && fat_sectors.len() < n_fat {
             seen += 1;
-            if seen > n_difat.max(1) + max_sectors {
-                return Err(invalid("DIFAT chain loops"));
+            // a DIFAT chain cannot have more sectors than the file holds; the header's DIFAT sector
+            // count (up to 2^32 - 1) is not trusted, or a self-pointing sector loops that often
+            if seen > max_sectors {
+                return Err(invalid(format!("DIFAT chain loops: more than {max_sectors} sectors in a {}-byte file", data.len())));
             }
             let s = cf.sector(d)?;
             let per = sector_size / 4 - 1;
@@ -169,13 +170,17 @@ impl<'a> CompoundFile<'a> {
         let mut out = Vec::new();
         let mut s = start;
         let mut steps = 0usize;
+        // A chain cannot visit more sectors than the file holds. Not `self.fat.len()`: the FAT can
+        // be far longer (one FAT sector named by many header / DIFAT slots), and a looping chain
+        // would then append a whole sector per FAT entry (hundreds of MB, or an abort).
+        let max_steps = self.data.len() / self.sector_size + 1;
         while s != ENDOFCHAIN {
             if s > MAXREGSECT {
                 return Err(invalid(format!("bad sector {s:#x} in a chain")));
             }
             steps += 1;
-            if steps > self.fat.len().max(1) {
-                return Err(invalid("sector chain loops"));
+            if steps > max_steps {
+                return Err(invalid(format!("sector chain loops: more than {max_steps} sectors in a {}-byte file", self.data.len())));
             }
             let b = self.sector(s)?;
             out.extend_from_slice(b);

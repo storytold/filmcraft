@@ -1,0 +1,33 @@
+[package]
+name = "filmcraft-tts"
+description = "FilmCraft text to speech: the Voice trait, the voice catalogue, script parsing (pause markers), the built-in formant voice and (feature kokoro) Kokoro-82M neural voices on candle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Kokoro-82M neural voices on the CPU via candle (pure Rust). Off by default and in wasm builds.
+kokoro = ["dep:candle-core", "dep:candle-nn", "dep:zip", "dep:serde_json", "dep:filmcraft-tts-text", "dep:filmcraft-audio-dsp"]
+
+[dependencies]
+filmcraft-tts-text = { workspace = true, optional = true }
+filmcraft-audio-dsp = { workspace = true, optional = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+candle-core = { version = "0.9", default-features = false, optional = true }
+candle-nn = { version = "0.9", default-features = false, optional = true }
+zip = { version = "7", default-features = false, optional = true }
+serde_json = { workspace = true, optional = true }
+
+[[example]]
+name = "kokoro_say"
+required-features = ["kokoro"]
+
+[[example]]
+name = "narrate"
+required-features = ["kokoro"]

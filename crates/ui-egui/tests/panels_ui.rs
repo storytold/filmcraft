@@ -158,7 +158,7 @@ fn every_panel_opens_from_the_window_menu() {
     let menu = d.ok("ui.menu.list", json!({}));
     let window: Vec<String> =
         menu.as_array().unwrap().iter().filter(|m| m["path"] == json!(["Window"])).filter_map(|m| m["label"].as_str().map(str::to_string)).collect();
-    for p in ["Events", "Lumetri Scopes", "Metadata", "Progress", "Reference Monitor", "Timecode"] {
+    for p in ["Events", "Lumetri Scopes", "Metadata", "Progress", "Project Notes", "Reference Monitor", "Timecode"] {
         assert!(window.iter().any(|w| w == p), "{p} not in Window: {window:?}");
     }
     for (panel, key) in [
@@ -168,6 +168,7 @@ fn every_panel_opens_from_the_window_menu() {
         ("Events", "events.clearAll"),
         ("Progress", "progress.showFinished"),
         ("ReferenceMonitor", "reference.gang"),
+        ("ProjectNotes", "notes.text"),
     ] {
         d.ok("ui.menu.invoke", json!({"id": format!("window.panel.{panel}")}));
         d.frames(3);
@@ -265,6 +266,31 @@ fn metadata_panel_edits_a_field_with_undo() {
     d.exec("metadata.set", json!({"item": item.0, "field": "Tape Name", "value": "A001"}));
     d.frames(2);
     assert_eq!(d.label("metadata.field.TapeName"), "A001");
+}
+
+/// #620: notes typed into Project Notes land in the project; one typing session is one undo step.
+#[test]
+fn project_notes_panel_types_into_the_project_with_undo() {
+    let mut d = Driver::demo();
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.ProjectNotes"}));
+    d.frames(3);
+    let undo0 = d.app().session.history.undo.len();
+    d.click("notes.text");
+    d.ok("ui.type", json!({"text": "Fix logo"}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.ok("ui.type", json!({"text": "at 1:02"}));
+    d.frames(3);
+    assert_eq!(d.app().session.project.notes, "Fix logo\nat 1:02");
+    assert_eq!(d.app().session.history.undo.len(), undo0 + 1);
+    assert_eq!(d.label("notes.text"), "Fix logo\nat 1:02");
+    d.exec("edit.undo", json!({}));
+    d.frames(2);
+    assert_eq!(d.app().session.project.notes, "");
+    // an agent writes them, the panel shows them
+    d.exec("project.setNotes", json!({"text": "From the script"}));
+    d.frames(2);
+    assert_eq!(d.label("notes.text"), "From the script");
 }
 
 #[test]

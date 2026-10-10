@@ -194,6 +194,25 @@ fn builtins_apply_and_user_presets_persist() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// #333: Fade In then Fade Out on one clip keeps both ramps (they keyframe the same Opacity).
+#[test]
+fn fade_in_and_fade_out_add_up_on_one_clip() {
+    let (mut s, clips) = demo();
+    let c = clips[0];
+    s.execute("presets.apply", json!({"preset": "Fade In", "clips": [c.0]})).unwrap();
+    s.execute("presets.apply", json!({"preset": "Fade Out", "clips": [c.0]})).unwrap();
+    let it = item(&s, c);
+    let op = it.effect("opacity").unwrap().param("opacity").unwrap();
+    let keys: Vec<(Tick, ParamValue)> = op.keyframes.iter().map(|k| (k.time, k.value.clone())).collect();
+    let (tin, tout) = (it.source_in, it.source_in + media_len(&it));
+    let f = ParamValue::Float;
+    assert_eq!(keys, vec![(tin, f(0.0)), (tin + secs(1.0), f(100.0)), (tout - secs(1.0), f(100.0)), (tout, f(0.0))], "both fades survive");
+    // re-applying Fade In replaces its own ramp, not the Fade Out one
+    s.execute("presets.apply", json!({"preset": "Fade In", "clips": [c.0]})).unwrap();
+    let it = item(&s, c);
+    assert_eq!(it.effect("opacity").unwrap().param("opacity").unwrap().keyframes.len(), 4);
+}
+
 #[test]
 fn mask_geometry_scales_to_the_target_frame_size() {
     let (s, clips) = demo();
