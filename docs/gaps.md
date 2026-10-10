@@ -207,9 +207,11 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G16. Performance reports on 0.5.0
 
-- **Missing:** steady UI under load. Constant lag after 0.4 → 0.5 (#525), ~100% CPU (#523),
-  "Render Effects In to Out" (#424). AV1 software decode is ~4 fps at 1080p single-threaded; 8K
-  is not real time.
+- **Missing:** steady UI under load. Constant lag after 0.4 → 0.5 (#525), ~100% CPU (#523). AV1
+  software decode is ~4 fps at 1080p single-threaded; 8K is not real time.
+- **Done:** Render (Effects) In to Out renders only the frames between In and Out, as partial
+  previews named by segment hash and relative frames, instead of every segment In/Out touches
+  (#424); Render Audio still renders whole audio segments.
 - **Estimate:** 30–60 h. Doc: [performance.md](performance.md).
 
 ## G17. Audio device and playback reliability

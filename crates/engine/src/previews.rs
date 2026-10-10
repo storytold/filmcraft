@@ -3,7 +3,13 @@
 //!
 //! Segments, content hashes and the yellow/red cost estimate come from
 //! [`filmcraft_render::preview`]. A rendered segment is a ProRes 422 QuickTime file named
-//! `<hash>.mov` in the project's preview cache directory:
+//! `<hash>.mov` in the project's preview cache directory, and a rendered part of a segment (In/Out
+//! inside it: Render In to Out renders only In to Out, like Premiere) is `<hash>-<off>-<len>.mov`,
+//! frames `off..off + len` counted from the segment start. Because the offsets are relative to the
+//! segment, a ripple edit that moves the segment keeps its parts, as it keeps whole previews. The
+//! render bar is green over the rendered frames only; later renders fill the gaps.
+//!
+//! The folder:
 //!
 //! * saved project `/path/Film.fcproj` → `/path/FilmCraft Previews/Film/`;
 //! * unsaved project → a per-process folder in the system temp dir; its files move into the
@@ -19,7 +25,7 @@
 
 use filmcraft_audio_dsp::channels::{Layout, Mixdown};
 use filmcraft_render::audio::to_layout;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -28,7 +34,7 @@ use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_media::{FrameRequest, SharedSource};
 use filmcraft_project::{ItemId, Project};
 use filmcraft_render::preview::{AudioSegment, Need, Segment, segment_at, video_segments};
-use filmcraft_time::{Tick, TimeRange};
+use filmcraft_time::{FrameRate, Tick, TimeRange};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -73,9 +79,11 @@ pub struct PreviewStore {
     dir: RwLock<Option<PathBuf>>,
     /// Where unsaved projects' previews go (Settings ▸ Media Cache); None = the system temp dir.
     temp_root: RwLock<Option<PathBuf>>,
-    /// File names present: `<hash>.mov` (video) and `<hash>.wav` (audio).
+    /// File names present: `<hash>.mov` / `<hash>-<off>-<len>.mov` (video) and `<hash>.wav` (audio).
     files: RwLock<HashSet<String>>,
-    /// Opened preview files (most recent last).
+    /// The video files of `files` by segment hash (rebuilt whenever `files` changes).
+    video: RwLock<HashMap<String, Vec<Part>>>,
+    /// Opened preview files by file name (most recent last).
     sources: Mutex<Vec<(String, SharedSource)>>,
     /// Loaded audio previews: interleaved stereo f32 (most recent last).
     audio: Mutex<Vec<(String, Arc<Vec<f32>>)>>,
@@ -89,6 +97,72 @@ pub struct PreviewStore {
 
 fn video_name(hash: &str) -> String {
     format!("{hash}.mov")
+}
+
+/// A rendered stretch of one segment: frames `off..off + len` counted from the segment start, in
+/// file `name`. A whole-segment preview has `off` 0 and `len` [`WHOLE`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Part {
+    off: i64,
+    len: i64,
+    name: String,
+}
+
+const WHOLE: i64 = i64::MAX;
+
+/// File name of the preview of frames `off..off + len` of a segment of `frames` frames.
+fn part_name(hash: &str, off: i64, len: i64, frames: i64) -> String {
+    if off == 0 && len >= frames { video_name(hash) } else { format!("{hash}-{off}-{len}.mov") }
+}
+
+/// `(hash, off, len)` of a video preview file name (`<hash>.mov` or `<hash>-<off>-<len>.mov`).
+fn parse_video_name(name: &str) -> Option<(&str, i64, i64)> {
+    let stem = name.strip_suffix(".mov")?;
+    if is_hash(stem) {
+        return Some((stem, 0, WHOLE));
+    }
+    let mut it = stem.split('-');
+    let (hash, off, len) = (it.next()?, it.next()?, it.next()?);
+    if it.next().is_some() || !is_hash(hash) {
+        return None;
+    }
+    let (off, len) = (off.parse::<u32>().ok()?, len.parse::<u32>().ok()?);
+    (len > 0).then_some((hash, i64::from(off), i64::from(len)))
+}
+
+/// The parts of `[a, b)` not covered by the sorted, merged intervals `cov`.
+fn gaps(cov: &[(i64, i64)], a: i64, b: i64) -> Vec<(i64, i64)> {
+    let mut out = Vec::new();
+    let mut pos = a;
+    for &(x, y) in cov {
+        if y <= pos {
+            continue;
+        }
+        if x >= b {
+            break;
+        }
+        if x > pos {
+            out.push((pos, x));
+        }
+        pos = pos.max(y);
+    }
+    if pos < b {
+        out.push((pos, b));
+    }
+    out
+}
+
+/// First frame whose start is at or after `t`.
+fn frame_ceil(rate: FrameRate, t: Tick) -> i64 {
+    let f = rate.frame_at(t);
+    if rate.tick_of(f) < t { f.saturating_add(1) } else { f }
+}
+
+/// Frames of In/Out (`range`) inside `seg`, counted from the segment start (empty when apart).
+fn rel_range(seg: &Segment, rate: FrameRate, range: &TimeRange) -> (i64, i64) {
+    let a = rate.frame_at(range.start).saturating_sub(seg.first_frame).clamp(0, seg.frames.max(0));
+    let b = frame_ceil(rate, range.end()).saturating_sub(seg.first_frame).clamp(0, seg.frames.max(0));
+    (a, b.max(a))
 }
 fn audio_name(hash: &str) -> String {
     format!("{hash}.wav")
@@ -132,15 +206,14 @@ impl PreviewStore {
         {
             for e in rd.flatten() {
                 let name = e.file_name().to_string_lossy().to_string();
-                if let Some(h) = name.strip_suffix(".mov").or_else(|| name.strip_suffix(".wav"))
-                    && is_hash(h)
-                {
+                if parse_video_name(&name).is_some() || name.strip_suffix(".wav").is_some_and(is_hash) {
                     files.insert(name);
                 }
             }
         }
         *self.dir.write().unwrap_or_else(|e| e.into_inner()) = dir;
         *self.files.write().unwrap_or_else(|e| e.into_inner()) = files;
+        self.reindex();
         self.sources.lock().unwrap_or_else(|e| e.into_inner()).clear();
         self.audio.lock().unwrap_or_else(|e| e.into_inner()).clear();
         self.bump();
@@ -166,9 +239,47 @@ impl PreviewStore {
         self.set_dir(Some(dir));
     }
 
-    /// Whether the video preview of segment `hash` exists.
-    pub fn has(&self, hash: &str) -> bool {
-        self.files.read().unwrap_or_else(|e| e.into_inner()).contains(&video_name(hash))
+    /// Rebuild the by-hash index of the video previews from the file names.
+    fn reindex(&self) {
+        let mut video: HashMap<String, Vec<Part>> = HashMap::new();
+        for name in self.files.read().unwrap_or_else(|e| e.into_inner()).iter() {
+            if let Some((hash, off, len)) = parse_video_name(name) {
+                video.entry(hash.to_string()).or_default().push(Part { off, len, name: name.clone() });
+            }
+        }
+        *self.video.write().unwrap_or_else(|e| e.into_inner()) = video;
+    }
+
+    /// The rendered frames of `seg`, counted from its start: sorted, merged, within the segment.
+    pub fn coverage(&self, seg: &Segment) -> Vec<(i64, i64)> {
+        let video = self.video.read().unwrap_or_else(|e| e.into_inner());
+        let Some(parts) = video.get(&seg.hash) else { return Vec::new() };
+        let n = seg.frames.max(0);
+        let mut iv: Vec<(i64, i64)> = parts.iter().map(|p| (p.off.clamp(0, n), p.off.saturating_add(p.len).clamp(0, n))).filter(|(a, b)| a < b).collect();
+        iv.sort_unstable();
+        let mut out: Vec<(i64, i64)> = Vec::new();
+        for (a, b) in iv {
+            match out.last_mut() {
+                Some(l) if a <= l.1 => l.1 = l.1.max(b),
+                _ => out.push((a, b)),
+            }
+        }
+        out
+    }
+
+    /// Whether previews cover every frame of `seg`.
+    pub fn is_rendered(&self, seg: &Segment) -> bool {
+        matches!(self.coverage(seg).as_slice(), [(0, b)] if *b == seg.frames)
+    }
+
+    /// Names of the video preview files of `seg` that hold frames of `a..b` (from the segment start).
+    fn parts_in(&self, seg: &Segment, a: i64, b: i64) -> Vec<String> {
+        if a >= b {
+            return Vec::new();
+        }
+        let video = self.video.read().unwrap_or_else(|e| e.into_inner());
+        let Some(parts) = video.get(&seg.hash) else { return Vec::new() };
+        parts.iter().filter(|p| p.off < b && a < p.off.saturating_add(p.len)).map(|p| p.name.clone()).collect()
     }
 
     /// Whether the audio preview of audio segment `hash` exists.
@@ -181,17 +292,14 @@ impl PreviewStore {
         self.files.read().unwrap_or_else(|e| e.into_inner()).len()
     }
 
-    pub fn path_for(&self, hash: &str) -> Option<PathBuf> {
-        self.dir().map(|d| d.join(video_name(hash)))
-    }
-
     pub fn audio_path_for(&self, hash: &str) -> Option<PathBuf> {
         self.dir().map(|d| d.join(audio_name(hash)))
     }
 
-    /// Register a finished video preview file.
-    pub fn add(&self, hash: &str) {
-        self.files.write().unwrap_or_else(|e| e.into_inner()).insert(video_name(hash));
+    /// Register a finished video preview file (`<hash>.mov` or `<hash>-<off>-<len>.mov`).
+    fn add_video(&self, name: &str) {
+        self.files.write().unwrap_or_else(|e| e.into_inner()).insert(name.to_string());
+        self.reindex();
         self.bump();
     }
 
@@ -204,23 +312,39 @@ impl PreviewStore {
     /// Delete the preview files (video and audio) of `hashes`, or every file when None. Returns
     /// how many files were removed.
     pub fn delete(&self, hashes: Option<&[String]>) -> usize {
-        let Some(dir) = self.dir() else { return 0 };
         let victims: Vec<String> = {
             let files = self.files.read().unwrap_or_else(|e| e.into_inner());
             match hashes {
-                Some(h) => h.iter().flat_map(|h| [video_name(h), audio_name(h)]).filter(|n| files.contains(n)).collect(),
+                Some(h) => files
+                    .iter()
+                    .filter(|n| {
+                        let owner = parse_video_name(n).map(|(hash, _, _)| hash).or_else(|| n.strip_suffix(".wav"));
+                        owner.is_some_and(|o| h.iter().any(|h| h == o))
+                    })
+                    .cloned()
+                    .collect(),
                 None => files.iter().cloned().collect(),
             }
         };
-        let gone = |h: &String| victims.contains(&video_name(h)) || victims.contains(&audio_name(h));
-        self.sources.lock().unwrap_or_else(|e| e.into_inner()).retain(|(h, _)| !gone(h));
-        self.audio.lock().unwrap_or_else(|e| e.into_inner()).retain(|(h, _)| !gone(h));
+        self.delete_files(&victims)
+    }
+
+    /// Delete the preview files named `names`. Returns how many were removed.
+    fn delete_files(&self, names: &[String]) -> usize {
+        let Some(dir) = self.dir() else { return 0 };
+        let victims: Vec<String> = {
+            let files = self.files.read().unwrap_or_else(|e| e.into_inner());
+            names.iter().filter(|n| files.contains(*n)).cloned().collect()
+        };
+        self.sources.lock().unwrap_or_else(|e| e.into_inner()).retain(|(n, _)| !victims.contains(n));
+        self.audio.lock().unwrap_or_else(|e| e.into_inner()).retain(|(h, _)| !victims.contains(&audio_name(h)));
         let mut files = self.files.write().unwrap_or_else(|e| e.into_inner());
         for n in &victims {
             let _ = std::fs::remove_file(dir.join(n));
             files.remove(n);
         }
         drop(files);
+        self.reindex();
         self.bump();
         victims.len()
     }
@@ -341,25 +465,41 @@ impl PreviewStore {
         segs
     }
 
+    /// Green when previews cover the whole segment, else its colour without a preview.
     pub fn state_of(&self, seg: &Segment) -> BarState {
-        if self.has(&seg.hash) {
-            return BarState::Green;
-        }
-        match seg.need {
-            Need::None => BarState::None,
-            Need::Realtime => BarState::Yellow,
-            Need::Render => BarState::Red,
-        }
+        if self.is_rendered(seg) { BarState::Green } else { need_state(seg) }
     }
 
-    /// The render bar: one span per segment, adjacent spans of the same colour merged.
+    /// The render bar: per segment, green over its rendered frames and its own colour elsewhere;
+    /// adjacent spans of the same colour merged.
     pub fn bar(&self, project: &Arc<Project>, seq: ItemId) -> Vec<BarSpan> {
+        let Some(rate) = project.sequence(seq).map(|q| q.settings.frame_rate) else { return Vec::new() };
         let mut out: Vec<BarSpan> = Vec::new();
         for s in self.segments(project, seq).iter() {
-            let state = self.state_of(s);
-            match out.last_mut() {
-                Some(l) if l.end == s.start && l.state == state => l.end = s.end,
-                _ => out.push(BarSpan { start: s.start, end: s.end, state }),
+            let need = need_state(s);
+            let mut spans = Vec::new();
+            let mut pos = 0;
+            for (a, b) in self.coverage(s) {
+                if a > pos {
+                    spans.push((pos, a, need));
+                }
+                spans.push((a, b, BarState::Green));
+                pos = b;
+            }
+            if pos < s.frames {
+                spans.push((pos, s.frames, need));
+            }
+            let at = |f: i64| match f {
+                0 => s.start,
+                f if f >= s.frames => s.end,
+                f => rate.tick_of(s.first_frame.saturating_add(f)),
+            };
+            for (a, b, state) in spans {
+                let (start, end) = (at(a), at(b));
+                match out.last_mut() {
+                    Some(l) if l.end == start && l.state == state => l.end = end,
+                    _ => out.push(BarSpan { start, end, state }),
+                }
             }
         }
         out
@@ -372,33 +512,45 @@ impl PreviewStore {
         }
         let segs = self.segments(project, seq);
         let seg = segment_at(&segs, frame)?;
-        if !self.has(&seg.hash) {
-            return None;
-        }
-        let src = self.open(pool, &seg.hash)?;
+        let rel = frame.checked_sub(seg.first_frame)?;
+        let (name, off) = {
+            let video = self.video.read().unwrap_or_else(|e| e.into_inner());
+            let p = video.get(&seg.hash)?.iter().find(|p| p.off <= rel && rel < p.off.saturating_add(p.len))?;
+            (p.name.clone(), p.off)
+        };
+        let src = self.open(pool, &name)?;
         let rate = project.sequence(seq)?.settings.frame_rate;
-        src.video_frame(FrameRequest { time: rate.tick_of(frame - seg.first_frame), scale }).ok()
+        src.video_frame(FrameRequest { time: rate.tick_of(rel - off), scale }).ok()
     }
 
-    fn open(&self, pool: &MediaPool, hash: &str) -> Option<SharedSource> {
+    /// The opened preview file `name` (`<hash>.mov` or a part).
+    fn open(&self, pool: &MediaPool, name: &str) -> Option<SharedSource> {
         {
             let mut g = self.sources.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(i) = g.iter().position(|(h, _)| h == hash) {
+            if let Some(i) = g.iter().position(|(n, _)| n == name) {
                 let e = g.remove(i);
                 let s = e.1.clone();
                 g.push(e);
                 return Some(s);
             }
         }
-        let path = self.path_for(hash)?;
+        let path = self.dir()?.join(name);
         let bytes = std::fs::read(&path).ok()?;
-        let src = pool.open_bytes(&format!("{hash}.mov"), bytes.into()).ok()?;
+        let src = pool.open_bytes(name, bytes.into()).ok()?;
         let mut g = self.sources.lock().unwrap_or_else(|e| e.into_inner());
-        g.push((hash.to_string(), src.clone()));
+        g.push((name.to_string(), src.clone()));
         if g.len() > 6 {
             g.remove(0);
         }
         Some(src)
+    }
+}
+
+fn need_state(seg: &Segment) -> BarState {
+    match seg.need {
+        Need::None => BarState::None,
+        Need::Realtime => BarState::Yellow,
+        Need::Render => BarState::Red,
     }
 }
 
@@ -438,33 +590,42 @@ fn in_out(s: &Session) -> Result<(ItemId, TimeRange)> {
     Ok((id, TimeRange::from_bounds(a, b.max(a))))
 }
 
-fn overlaps(seg: &Segment, r: &TimeRange) -> bool {
-    seg.start < r.end() && r.start < seg.end
+/// One preview file to render: frames `off..off + len` of segment `seg` (from its start).
+struct Todo {
+    seg: Segment,
+    off: i64,
+    len: i64,
 }
 
 /// Start rendering previews as a background job. `{"wait": true}` renders synchronously.
+///
+/// The In/Out modes render only the frames between In and Out (a segment that extends past them
+/// gets a partial preview), and every mode renders only frames that have no preview yet.
 pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
     let (seq, range) = in_out(s)?;
+    let rate = s.project.sequence(seq).ok_or(EngineError::NoSequence)?.settings.frame_rate;
     let store = s.previews.clone();
     let dir = store.dir().ok_or_else(|| EngineError::Other("render previews are not available here (no preview folder)".into()))?;
     let segs = store.segments(&s.project, seq);
     let selection: HashSet<_> = s.state.selection.iter().copied().collect();
-    let todo: Vec<Segment> = segs
-        .iter()
-        .filter(|g| !store.has(&g.hash))
-        .filter(|g| match mode {
-            RenderMode::EffectsInToOut => g.need != Need::None && overlaps(g, &range),
-            RenderMode::InToOut => overlaps(g, &range),
-            RenderMode::Selection => g.clips.iter().any(|c| selection.contains(c)),
-        })
-        .cloned()
-        .collect();
+    let mut todo: Vec<Todo> = Vec::new();
+    for g in segs.iter() {
+        let (a, b) = match mode {
+            RenderMode::EffectsInToOut if g.need == Need::None => continue,
+            RenderMode::EffectsInToOut | RenderMode::InToOut => rel_range(g, rate, &range),
+            RenderMode::Selection if g.clips.iter().any(|c| selection.contains(c)) => (0, g.frames.max(0)),
+            RenderMode::Selection => continue,
+        };
+        for (off, end) in gaps(&store.coverage(g), a, b) {
+            todo.push(Todo { seg: g.clone(), off, len: end - off });
+        }
+    }
     if todo.is_empty() {
         s.toast("Nothing to render: previews are up to date");
         return Ok(json!({"job": null, "segments": 0}));
     }
     std::fs::create_dir_all(&dir).map_err(|e| EngineError::Other(format!("preview folder {}: {e}", dir.display())))?;
-    let frames: i64 = todo.iter().map(|g| g.frames).sum();
+    let frames: i64 = todo.iter().map(|t| t.len).fold(0, i64::saturating_add);
     let id = s.jobs.len() as u64 + 1;
     let job = crate::Job {
         id,
@@ -484,17 +645,19 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
         let mut bytes = 0u64;
         let mut done_frames = 0u64;
         let mut outcome: std::result::Result<(), String> = Ok(());
-        for (k, g) in todo.iter().enumerate() {
+        for (k, t) in todo.iter().enumerate() {
             if prog.cancel.load(Ordering::Relaxed) {
                 outcome = Err("cancelled".into());
                 break;
             }
             *prog.status.lock().unwrap_or_else(|e| e.into_inner()) = format!("Rendering segment {} of {nseg}", k + 1);
-            let part = dir.join(format!("{}.mov.part", g.hash));
+            let name = part_name(&t.seg.hash, t.off, t.len, t.seg.frames);
+            let part = dir.join(format!("{name}.part"));
+            let first = t.seg.first_frame.saturating_add(t.off);
             let settings = filmcraft_export::ExportSettings {
                 format: filmcraft_export::Format::ProRes,
                 path: part.to_string_lossy().to_string(),
-                range: Some(TimeRange::from_bounds(g.start, g.end)),
+                range: Some(TimeRange::from_bounds(rate.tick_of(first), rate.tick_of(first.saturating_add(t.len)))),
                 scale: 1.0,
                 include_audio: false,
                 quality: 90,
@@ -510,14 +673,14 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
                 Ok(r) => {
                     bytes += r.bytes;
                     done_frames += r.frames;
-                    let fin = dir.join(format!("{}.mov", g.hash));
+                    let fin = dir.join(&name);
                     if let Err(e) = std::fs::rename(&part, &fin) {
                         outcome = Err(e.to_string());
                         break;
                     }
-                    store.add(&g.hash);
+                    store.add_video(&name);
                     // open it now so the first playback doesn't wait for the file read
-                    let _ = store.open(&pool, &g.hash);
+                    let _ = store.open(&pool, &name);
                 }
                 Err(e) => {
                     let _ = std::fs::remove_file(&part);
@@ -692,8 +855,18 @@ pub fn read_wav_f32(b: &[u8]) -> Option<Vec<f32>> {
 pub fn delete(s: &mut Session, in_to_out: bool) -> Result<Value> {
     let n = if in_to_out {
         let (seq, range) = in_out(s)?;
-        let hashes: Vec<String> = s.previews.segments(&s.project, seq).iter().filter(|g| overlaps(g, &range)).map(|g| g.hash.clone()).collect();
-        s.previews.delete(Some(&hashes))
+        let rate = s.project.sequence(seq).ok_or(EngineError::NoSequence)?.settings.frame_rate;
+        // the files holding frames between In and Out (a partial preview outside them stays)
+        let names: Vec<String> = s
+            .previews
+            .segments(&s.project, seq)
+            .iter()
+            .flat_map(|g| {
+                let (a, b) = rel_range(g, rate, &range);
+                s.previews.parts_in(g, a, b)
+            })
+            .collect();
+        s.previews.delete_files(&names)
     } else {
         s.previews.delete(None)
     };
@@ -717,6 +890,7 @@ pub fn bar_json(s: &Session) -> Result<Value> {
             "startSeconds": g.start.seconds(),
             "endSeconds": g.end.seconds(),
             "state": s.previews.state_of(g),
+            "renderedFrames": s.previews.coverage(g).iter().map(|(a, b)| b - a).sum::<i64>(),
             "costMs": (g.cost_ms * 10.0).round() / 10.0,
             "budgetMs": (rate.frame_duration().seconds() * 1000.0 * filmcraft_render::preview::REALTIME_BUDGET * 10.0).round() / 10.0,
             "hash": g.hash,
