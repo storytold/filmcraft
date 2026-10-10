@@ -954,19 +954,19 @@ impl FilmcraftApp {
     }
 
     fn start_audio(&mut self) {
-        let speed = self.playback.speed;
-        if (speed - 1.0).abs() > 1e-9 {
-            if let Some(a) = self.audio.as_mut() {
-                a.stop();
-            }
-            return;
-        }
         let Some(seq_id) = self.session.state.active_sequence else { return };
         let start_tick = self.session.playhead();
         let Some(a) = self.audio.as_mut() else { return };
         let sr = a.sample_rate();
-        let cursor = start_tick.to_units_floor(sr as i64);
-        let mix = playback_mix(&self.session, seq_id, sr);
+        // Mix at a lower effective rate for forward shuttle playback, then hand the
+        // samples to the device at its real rate. This keeps sound on the same
+        // timeline as the accelerated picture (with the expected pitch shift).
+        let Some(mix_rate) = shuttle_mix_rate(sr, self.playback.speed) else {
+            a.stop();
+            return;
+        };
+        let cursor = start_tick.to_units_floor(i64::from(mix_rate));
+        let mix = playback_mix(&self.session, seq_id, mix_rate);
         // the old stream stops before the new mixer resets the underrun counters
         a.stop();
         // Desktop: mix ahead on a thread so the device callback never waits on decoding.
@@ -1989,6 +1989,20 @@ impl eframe::App for FilmcraftApp {
     }
 }
 
+/// Effective sample rate for shuttle playback. The audio device still runs at `device_rate`,
+/// so at 2x its output samples represent twice the timeline duration. Reverse and
+/// extreme shuttle speeds remain silent rather than asking the mixer for invalid rates.
+fn shuttle_mix_rate(device_rate: u32, speed: f64) -> Option<u32> {
+    if device_rate == 0 || !speed.is_finite() || !(0.5..=4.0).contains(&speed) {
+        return None;
+    }
+    let rate = (f64::from(device_rate) / speed).round();
+    if !(1.0..=f64::from(u32::MAX)).contains(&rate) {
+        return None;
+    }
+    Some(rate as u32)
+}
+
 /// The program mix that playback plays: `mix(device_frame, interleaved, channels)` renders the
 /// active sequence at device rate `sr` from `device_frame`, with the live project snapshot (edits
 /// made while playing are heard), Output Mapping, the 5.1 mixdown and voice-over cues.
@@ -2183,6 +2197,27 @@ mod audio_recovery_tests {
         fn played_frames(&self) -> Option<u64> {
             self.reading
         }
+    }
+
+    #[test]
+    fn forward_shuttle_playback_keeps_audio_enabled() {
+        assert_eq!(shuttle_mix_rate(48_000, 1.0), Some(48_000));
+        assert_eq!(shuttle_mix_rate(48_000, 2.0), Some(24_000));
+        assert_eq!(shuttle_mix_rate(48_000, 4.0), Some(12_000));
+        assert_eq!(shuttle_mix_rate(48_000, -1.0), None);
+        assert_eq!(shuttle_mix_rate(0, 2.0), None);
+        assert_eq!(shuttle_mix_rate(48_000, f64::NAN), None);
+
+        let mut session = Session::default();
+        session.execute("file.newSequence", json!({"width":16,"height":16})).unwrap();
+        let mut app = FilmcraftApp::new(session);
+        let starts = Arc::new(AtomicUsize::new(0));
+        app.audio = Some(Box::new(Device { ready: true, starts: starts.clone(), reading: Some(0) }));
+        app.play(2.0);
+        app.end_preroll(0.0);
+        assert_eq!(starts.load(Ordering::Relaxed), 1, "2x playback must start audio output");
+        assert!(app.playback.audio_clock, "the device is still the master clock");
+        app.stop();
     }
 
     #[test]
