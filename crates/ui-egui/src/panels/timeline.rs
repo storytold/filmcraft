@@ -394,7 +394,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let visible = (layout.tick_at(content.min.x - 2.0), layout.tick_at(content.max.x + 2.0));
     let selection: Vec<ClipId> = app.session.state.selection.clone();
     let mut previews: HashMap<ClipId, (Tick, Tick, Option<TrackId>)> = HashMap::new(); // live drag preview: (start, dur, track)
-    preview_drag(app, &seq, &layout, &mut previews);
+    // clips whose media changes in the preview (a trimmed or rolled edge): drawn from the edited
+    // item, so the waveform and thumbnail stay where the media is instead of squeezing (#374)
+    let mut edited: HashMap<ClipId, TrackItem> = HashMap::new();
+    preview_drag(app, &seq, &mut previews, &mut edited);
     for r in &rows {
         let Some(tr) = seq.track(r.track) else { continue };
         let clip_rect = if r.kind == TrackKind::Video { vclip } else { aclip };
@@ -405,6 +408,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let p = painter.with_clip_rect(Rect::from_min_max(pos2(content.min.x, row.min.y), pos2(content.max.x, row.max.y)));
         let volume_line = r.kind == TrackKind::Audio && !r.lane;
         for it in &tr.items {
+            let it = edited.get(&it.id).unwrap_or(it);
             let (start, dur, moved_track) = previews.get(&it.id).copied().unwrap_or((it.start, it.duration, None));
             if moved_track.is_some_and(|m| m != r.track) {
                 continue;
@@ -1589,7 +1593,14 @@ pub fn locate(app: &FilmcraftApp, clip: u64, edge: Option<&str>) -> Option<(f32,
     Some((x, y))
 }
 
-fn preview_drag(app: &FilmcraftApp, seq: &Sequence, _layout: &Layout, out: &mut HashMap<ClipId, (Tick, Tick, Option<TrackId>)>) {
+fn preview_drag(app: &FilmcraftApp, seq: &Sequence, out: &mut HashMap<ClipId, (Tick, Tick, Option<TrackId>)>, edited: &mut HashMap<ClipId, TrackItem>) {
+    // the item as the edge move leaves it, and its place in the preview
+    let mut moved = |it: &TrackItem, edge: filmcraft_edit::Edge, delta: Tick| {
+        let mut e = it.clone();
+        filmcraft_edit::move_edge(&mut e, edge, delta, true);
+        out.insert(e.id, (e.start, e.duration, None));
+        edited.insert(e.id, e);
+    };
     let Some(d) = &app.tl.drag else { return };
     match d {
         Drag::Move { clips, offset, track_delta, .. } => {
@@ -1605,7 +1616,15 @@ fn preview_drag(app: &FilmcraftApp, seq: &Sequence, _layout: &Layout, out: &mut 
                 out.insert(*clip, (it.start, it.duration + *delta, None));
             }
         }
-        Drag::Trim { clip, edge, delta, .. } | Drag::Stretch { clip, edge, delta, .. } => {
+        Drag::Trim { clip, edge, delta, .. } => {
+            for c in filmcraft_engine::commands::with_links(&app.session, &[*clip]) {
+                if let Some((_, it)) = seq.find_item(c) {
+                    moved(it, *edge, *delta);
+                }
+            }
+        }
+        // a rate stretch keeps the same media in a new length: that one does squeeze
+        Drag::Stretch { clip, edge, delta, .. } => {
             let ids = filmcraft_engine::commands::with_links(&app.session, &[*clip]);
             for c in ids {
                 if let Some((_, it)) = seq.find_item(c) {
@@ -1619,10 +1638,10 @@ fn preview_drag(app: &FilmcraftApp, seq: &Sequence, _layout: &Layout, out: &mut 
         }
         Drag::Roll { left, right, delta, .. } => {
             if let Some((_, l)) = seq.find_item(*left) {
-                out.insert(*left, (l.start, l.duration + *delta, None));
+                moved(l, filmcraft_edit::Edge::Out, *delta);
             }
             if let Some((_, r)) = seq.find_item(*right) {
-                out.insert(*right, (r.start + *delta, r.duration - *delta, None));
+                moved(r, filmcraft_edit::Edge::In, *delta);
             }
         }
         Drag::Slide { clip, delta } => {
@@ -2587,6 +2606,72 @@ pub(crate) fn chain_starts(start: Tick, durations: &[Tick]) -> Vec<Tick> {
             at
         })
         .collect()
+}
+
+/// #374: trimming an audio clip must cut its waveform off at the moving edge, not squeeze the whole
+/// waveform into the shorter clip: the preview draws from the item the trim will leave, which shows
+/// the same media at every timeline time it still covers.
+#[cfg(test)]
+mod trim_preview_tests {
+    use super::*;
+
+    fn demo() -> (FilmcraftApp, Sequence) {
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        let seq = s.active_sequence().unwrap().clone();
+        (FilmcraftApp::new(s), seq)
+    }
+
+    fn assert_same_media(before: &TrackItem, after: &TrackItem) {
+        let mut t = after.start.max(before.start);
+        while t < after.end().min(before.end()) {
+            assert!((before.source_time_at(t) - after.source_time_at(t)).0.abs() <= 1, "{}: media moved at {t:?}", before.name);
+            t += Tick(filmcraft_time::TICKS_PER_SECOND / 10);
+        }
+    }
+
+    #[test]
+    fn trimming_the_music_keeps_its_waveform_in_place() {
+        let (mut app, seq) = demo();
+        let music = seq.audio_tracks.iter().flat_map(|t| &t.items).find(|i| i.name.contains("Ambient")).unwrap().clone();
+        for (edge, delta) in [(filmcraft_edit::Edge::In, 5), (filmcraft_edit::Edge::Out, -5), (filmcraft_edit::Edge::In, -1)] {
+            let delta = Tick(delta * filmcraft_time::TICKS_PER_SECOND);
+            app.tl.drag = Some(Drag::Trim { clip: music.id, edge, mode: filmcraft_edit::TrimMode::Regular, delta, from: Tick::ZERO });
+            let (mut out, mut edited) = (HashMap::new(), HashMap::new());
+            preview_drag(&app, &seq, &mut out, &mut edited);
+            let shown = edited.get(&music.id).expect("the trimmed clip is drawn from its edited item");
+            // where the preview places it is unchanged
+            let want = match edge {
+                filmcraft_edit::Edge::In => (music.start + delta, music.duration - delta, None),
+                filmcraft_edit::Edge::Out => (music.start, music.duration + delta, None),
+            };
+            assert_eq!(out.get(&music.id).copied(), Some(want));
+            assert_eq!((shown.start, shown.duration), (want.0, want.1));
+            // the music under every remaining timeline time is the same: the waveform stays put
+            assert_same_media(&music, shown);
+            if edge == filmcraft_edit::Edge::In {
+                assert_eq!(shown.source_in, music.source_in + delta, "5 s into the music, not the music squeezed");
+            }
+        }
+    }
+
+    #[test]
+    fn rolling_an_edit_keeps_both_sides_in_place_but_a_stretch_still_squeezes() {
+        let (mut app, seq) = demo();
+        let (left, right) = seq.audio_tracks[0].items.windows(2).find(|w| w[0].end() == w[1].start).map(|w| (w[0].clone(), w[1].clone())).unwrap();
+        let delta = Tick(filmcraft_time::TICKS_PER_SECOND / 2);
+        app.tl.drag = Some(Drag::Roll { left: left.id, right: right.id, delta, from: Tick::ZERO });
+        let (mut out, mut edited) = (HashMap::new(), HashMap::new());
+        preview_drag(&app, &seq, &mut out, &mut edited);
+        assert_same_media(&left, &edited[&left.id]);
+        assert_same_media(&right, &edited[&right.id]);
+        assert_eq!(edited[&right.id].start, right.start + delta);
+        // Rate Stretch keeps the same media in a new length: drawn from the original item
+        app.tl.drag = Some(Drag::Stretch { clip: left.id, edge: filmcraft_edit::Edge::Out, delta, from: Tick::ZERO });
+        let (mut out, mut edited) = (HashMap::new(), HashMap::new());
+        preview_drag(&app, &seq, &mut out, &mut edited);
+        assert!(edited.is_empty() && out.contains_key(&left.id));
+    }
 }
 
 #[cfg(test)]
