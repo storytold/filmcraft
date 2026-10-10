@@ -24,6 +24,8 @@
 
 mod app_nap;
 mod appearance;
+#[cfg(target_os = "macos")]
+mod apple_events;
 mod args;
 mod audio;
 mod audio_in;
@@ -142,6 +144,12 @@ fn main() -> eframe::Result {
         graphics::configure(&mut options, eframe::wgpu::Backends::from_env());
         options
     };
+    // Registered before the event loop starts, so it catches the Finder event that launched us as
+    // well as later ones. Lives until the event loop returns; the app creator only borrows it.
+    #[cfg(target_os = "macos")]
+    let apple_events = apple_events::AppleEvents::install();
+    #[cfg(target_os = "macos")]
+    let apple_events = &apple_events;
     let started = eframe::run_native(
         "FilmCraft",
         options,
@@ -268,6 +276,8 @@ fn main() -> eframe::Result {
                 let rx = control_server::start(port, cc.egui_ctx.clone());
                 app = app.with_control(rx);
             }
+            #[cfg(target_os = "macos")]
+            let app = apple_events::Desktop::new(app, apple_events.connect(&cc.egui_ctx));
             Ok(Box::new(app))
         }),
     );

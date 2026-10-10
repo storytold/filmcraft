@@ -1674,6 +1674,7 @@ dependencies = [
  "filmcraft-engine",
  "filmcraft-platform",
  "filmcraft-ui-egui",
+ "fmv-macos-events",
  "glob",
  "log",
  "muda",
@@ -2318,6 +2319,17 @@ dependencies = [
  "num-traits",
  "rand 0.9.5",
  "rand_distr",
+]
+
+[[package]]
+name = "fmv-macos-events"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90642cf66dde7f205dc8b42dfe57b47d0f3a29f571b832742883ef512e23fe55"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]
