@@ -120,6 +120,11 @@ fn query_flag(name: &str) -> bool {
     web_sys::window().and_then(|w| w.location().search().ok()).and_then(|s| web_sys::UrlSearchParams::new_with_str(&s).ok()).is_some_and(|p| p.has(name))
 }
 
+/// `initThreadPool(n)` (wasm-bindgen-rayon): `n` Web Workers sharing this module's memory, used by
+/// rayon. `threads` builds only; index.html calls it before `start` on a cross-origin isolated page.
+#[cfg(feature = "threads")]
+pub use wasm_bindgen_rayon::init_thread_pool;
+
 /// Entry point (called by the page's bootstrap script once the wasm module is instantiated).
 #[wasm_bindgen]
 pub async fn start(canvas_id: String) -> Result<(), JsValue> {
@@ -129,10 +134,17 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
     let canvas: web_sys::HtmlCanvasElement = doc.get_element_by_id(&canvas_id).ok_or("no canvas")?.dyn_into()?;
 
     let isolated = js_sys::Reflect::get(&js_sys::global(), &"crossOriginIsolated".into()).ok().and_then(|v| v.as_bool()).unwrap_or(false);
-    // Frame rendering runs cooperatively on this thread. wasm threads need a cross-origin
-    // isolated page *and* a build with atomics (nightly `build-std`); this build has none.
+    // Frame rendering runs cooperatively on this thread. A `threads` build (atomics, `cargo xtask
+    // web --threads`) on a cross-origin isolated page has a rayon pool of Web Workers, started by
+    // index.html before `start` (initThreadPool): the parallel loops inside each frame job
+    // (generators, compositing, effects) spread over it. Otherwise rayon runs inline, as before.
+    #[cfg(feature = "threads")]
+    let rayon_threads = rayon::current_num_threads();
+    #[cfg(not(feature = "threads"))]
+    let rayon_threads = 1usize;
     set_info("crossOriginIsolated", json!(isolated));
-    set_info("threads", json!(false));
+    set_info("threads", json!(rayon_threads > 1));
+    set_info("rayonThreads", json!(rayon_threads));
     set_info("frameWorkers", json!("cooperative"));
     set_info("opfs", json!(opfs::available()));
 

@@ -78,6 +78,8 @@ pub mod timing {
 static DEVICE_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Retire the shared export device, logging the first reason only.
+// Unused where `shared_device` has no device (the web `threads` build).
+#[cfg_attr(all(target_arch = "wasm32", target_feature = "atomics"), allow(dead_code))]
 fn mark_device_failed(why: &str) {
     if !DEVICE_FAILED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         log::error!("GPU export disabled for this session ({why}); exports render on the CPU");
@@ -97,24 +99,37 @@ pub struct ExportRenderer {
     compositor: GpuCompositor,
 }
 
+/// The off-screen device every export renderer shares. `None` is kept too: a machine without an
+/// adapter does not search again on every export.
+#[cfg(not(all(target_arch = "wasm32", target_feature = "atomics")))]
+fn shared_device() -> Option<(wgpu::Instance, wgpu::Device, wgpu::Queue)> {
+    static SHARED: std::sync::OnceLock<Option<(wgpu::Instance, wgpu::Device, wgpu::Queue)>> = std::sync::OnceLock::new();
+    SHARED
+        .get_or_init(|| {
+            let instance = wgpu::Instance::default();
+            let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+            let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+            // wgpu's default handler panics on a validation or out-of-memory error; log it and
+            // send the remaining frames to the CPU instead.
+            device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| mark_device_failed(&format!("GPU error: {e}"))));
+            device.set_device_lost_callback(|reason, msg| mark_device_failed(&format!("GPU device lost ({reason:?}): {msg}")));
+            Some((instance, device, queue))
+        })
+        .clone()
+}
+
+/// A wasm build with atomics (the web `threads` build, docs/web.md) cannot keep wgpu handles in a
+/// shared static: they are neither Send nor Sync there. The web never exports through this
+/// renderer, so that build has no shared device.
+#[cfg(all(target_arch = "wasm32", target_feature = "atomics"))]
+fn shared_device() -> Option<(wgpu::Instance, wgpu::Device, wgpu::Queue)> {
+    None
+}
+
 impl ExportRenderer {
     /// The off-screen device, or `None` when this host has no usable adapter.
     pub fn new() -> Option<Self> {
-        // `None` is kept too: a machine without an adapter does not search again on every export
-        static SHARED: std::sync::OnceLock<Option<(wgpu::Instance, wgpu::Device, wgpu::Queue)>> = std::sync::OnceLock::new();
-        let (instance, device, queue) = SHARED
-            .get_or_init(|| {
-                let instance = wgpu::Instance::default();
-                let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-                let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
-                // wgpu's default handler panics on a validation or out-of-memory error; log it and
-                // send the remaining frames to the CPU instead.
-                device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| mark_device_failed(&format!("GPU error: {e}"))));
-                device.set_device_lost_callback(|reason, msg| mark_device_failed(&format!("GPU device lost ({reason:?}): {msg}")));
-                Some((instance, device, queue))
-            })
-            .as_ref()?
-            .clone();
+        let (instance, device, queue) = shared_device()?;
         if device_failed() {
             return None;
         }

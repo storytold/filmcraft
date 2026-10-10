@@ -72,9 +72,16 @@
     const t0 = performance.now();
     const params = new URLSearchParams(location.search);
     try {
-      const { default: init, start } = await import("./filmcraft_web.js" + v);
+      const { default: init, start, initThreadPool } = await import("./filmcraft_web.js" + v);
       await init({ module_or_path: new URL("filmcraft_web_bg.wasm" + v, location.href) });
       window.filmcraftLoad.wasmMs = performance.now() - t0;
+      // `threads` builds export initThreadPool (docs/web.md, Threads): rayon on a pool of Web Workers,
+      // which needs a cross-origin isolated page. `?threads=N` picks the pool size, `?nothreads` skips it.
+      if (initThreadPool && crossOriginIsolated && !params.has("nothreads")) {
+        const wanted = parseInt(params.get("threads") || "0", 10) || Math.min(8, Math.max(1, (navigator.hardwareConcurrency || 4) - 1));
+        await initThreadPool(Math.max(1, Math.min(wanted, 32)));
+        window.filmcraftLoad.threadsMs = performance.now() - t0;
+      }
       await start("filmcraft_canvas");
       window.filmcraftLoad.readyMs = performance.now() - t0;
     } catch (e) {

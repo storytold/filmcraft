@@ -447,7 +447,18 @@ impl FrameServer {
         let mut g = self.repaint.lock().unwrap_or_else(|e| e.into_inner());
         if g.is_none() {
             let ctx = ctx.clone();
-            *g = Some(Box::new(move || ctx.request_repaint()));
+            // With atomics (the web `threads` build), `egui::Context` is neither Send nor Sync: its
+            // viewports hold JS values. Only frame workers call this hook, and none runs on the web
+            // (`new` spawns none, `pump` renders on the UI thread), so that build keeps a no-op.
+            #[cfg(not(all(target_arch = "wasm32", target_feature = "atomics")))]
+            {
+                *g = Some(Box::new(move || ctx.request_repaint()));
+            }
+            #[cfg(all(target_arch = "wasm32", target_feature = "atomics"))]
+            {
+                drop(ctx);
+                *g = Some(Box::new(|| {}));
+            }
         }
     }
 

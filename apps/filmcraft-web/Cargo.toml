@@ -12,6 +12,11 @@ workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+# rayon on a pool of Web Workers (wasm threads). Needs an atomics build: `cargo xtask web --threads`
+# (docs/web.md, Threads). Off by default: the regular build is unchanged.
+[features]
+threads = ["dep:rayon", "dep:wasm-bindgen-rayon"]
+
 # Everything is wasm32-only: on other targets this crate is empty (so `cargo test --workspace`
 # and clippy stay cheap). Build with `cargo xtask web` (see docs/web.md).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -29,6 +34,10 @@ eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
 serde_json = { workspace = true }
 log = { workspace = true }
 wasm-bindgen = "=0.2.129"
+# `threads` only. wasm-bindgen-rayon turns on rayon-core's `web_spin_lock`: the UI thread spins instead of
+# blocking, since `Atomics.wait` is not allowed on the main thread.
+rayon = { workspace = true, optional = true }
+wasm-bindgen-rayon = { version = "1.3", features = ["no-bundler"], optional = true }
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 web-time = "1"

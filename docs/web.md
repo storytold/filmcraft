@@ -54,10 +54,35 @@ panic on `wasm32-unknown-unknown` (use `filmcraft_engine::temp_dir`, `web_time`,
 
 ### Threads
 
-wasm threads need a cross-origin isolated page **and** a wasm build with atomics (a nightly
-`build-std` toolchain), so this build is single-threaded everywhere: frame rendering, decoding,
-mixing and encoding are cooperative on the UI thread, and `rayon` runs inline.
-`filmcraft.info()` reports `crossOriginIsolated` so a threaded build can choose at start-up.
+wasm threads need a cross-origin isolated page **and** a wasm build with atomics. The default
+build has none: frame rendering, decoding, mixing and encoding are cooperative on the UI thread,
+and `rayon` runs inline.
+
+`cargo xtask web --threads` is the opt-in threaded build: std rebuilt with atomics on a nightly
+toolchain (with `rust-src`; `FILMCRAFT_WEB_TOOLCHAIN` picks it, default `nightly`), shared memory up
+to 4 GiB, the `threads` feature of `filmcraft-web`, and `wasm-opt --enable-threads`. At start-up,
+`index.html` calls `initThreadPool` (wasm-bindgen-rayon) when the page is cross-origin isolated, so
+rayon's parallel loops inside each frame job (generators, compositing, effects) run on a pool of
+Web Workers. The frame server itself stays cooperative (`FrameServer::pump`), and rayon-core's
+`web_spin_lock` makes the UI thread spin rather than block (`Atomics.wait` is not allowed there).
+`?threads=N` sets the pool size (default: logical cores - 1, at most 8), `?nothreads` skips it;
+`filmcraft.info()` reports `crossOriginIsolated`, `threads` and `rayonThreads`.
+
+Hosting a threaded build: the page must be cross-origin isolated (`Cross-Origin-Opener-Policy:
+same-origin` and `Cross-Origin-Embedder-Policy: require-corp`; `--serve` sends both), so it has its
+threads as a top-level page only, never inside a cross-origin iframe. The workers start from a
+`blob:` URL of their own script: a Content Security Policy needs `worker-src 'self' blob:`.
+
+Measured on the demo project (Program monitor at 1/2, 8 s of playback through the overlapping
+clips and cross-dissolves; headless Chromium 149 on WebGPU, 16 logical cores):
+
+| `--threads` build | rayon threads | frames shown | frames dropped |
+|---|---|---|---|
+| `?nothreads` (rayon inline, as in the default build) | 1 | 102 | 98 |
+| `?threads=3` | 3 | 135 | 60 |
+| `?threads=7` | 7 | 182 | 12 |
+| default pool size | 8 | 193 | 1 |
+
 Commands that need a thread on the desktop (render previews, proxies, Project Manager, mask
 tracking) report an error on the web for now.
 
