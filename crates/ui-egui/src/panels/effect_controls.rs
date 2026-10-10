@@ -157,17 +157,19 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let Some(def) = e.def() else { continue };
                 let key = format!("{}:{}", clip.0, idx);
                 let open = !app.ui.collapsed_fx.contains(&key);
+                let selected = app.session.state.selected_effect.as_ref().is_some_and(|s| s.clip == clip && s.index(&it.effects) == Some(idx));
                 let (r, resp) = bui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::click());
-                if resp.hovered() {
+                if selected {
+                    bui.painter().rect_filled(r, 0.0, t.row_selected);
+                } else if resp.hovered() {
                     bui.painter().rect_filled(r, 0.0, t.hover);
                 }
                 row_line(bui, r, &lane, &t);
-                icons::paint(
-                    bui.painter(),
-                    Rect::from_center_size(pos2(r.min.x + 10.0, r.center().y), vec2(10.0, 10.0)),
-                    if open { Icon::ChevronDown } else { Icon::ChevronRight },
-                    t.text_dim,
-                );
+                // only the arrow twirls the effect open or shut; the rest of the header selects it
+                let tw = Rect::from_center_size(pos2(r.min.x + 10.0, r.center().y), vec2(10.0, 10.0));
+                icons::paint(bui.painter(), tw, if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_dim);
+                let twresp = bui.interact(tw.expand(3.0), egui::Id::new(("fx-twirl", clip.0, idx)), Sense::click());
+                app.auto.add(&format!("effectControls.effect.{}.twirl", e.effect), tw, "twirl");
                 // fx enable toggle
                 let fxr = Rect::from_center_size(pos2(r.min.x + 28.0, r.center().y), vec2(18.0, 14.0));
                 let fxresp = bui.interact(fxr, egui::Id::new(("fxen", clip.0, idx)), Sense::click());
@@ -188,12 +190,14 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     actions.push(("effects.reset".into(), json!({"clip": clip.0, "index": idx})));
                 }
                 app.auto.add(&format!("effectControls.effect.{}", e.effect), r, def.name);
-                if resp.clicked() && !fxresp.clicked() && !rresp.clicked() {
+                if twresp.clicked() {
                     if open {
                         app.ui.collapsed_fx.push(key.clone());
                     } else {
                         app.ui.collapsed_fx.retain(|k| *k != key);
                     }
+                } else if resp.clicked() && !fxresp.clicked() && !rresp.clicked() {
+                    actions.push(("effects.select".into(), json!({"clip": clip.0, "effect": idx})));
                 }
                 let mut save_preset = false;
                 let fx_id = e.effect.clone();
@@ -490,8 +494,12 @@ pub(crate) fn param_row(
         }
         v
     };
-    let (r, _) = ui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::hover());
+    let (r, row) = ui.allocate_exact_size(vec2(body.width(), ROW_H), if mask.is_none() { Sense::click() } else { Sense::hover() });
     row_line(ui, r, lane, &t);
+    // clicking one of an effect's properties selects the effect, as clicking its header does
+    if row.clicked() {
+        actions.push(("effects.select".into(), json!({"clip": clip.0, "effect": idx})));
+    }
     let mut x = r.min.x + 26.0;
     // twirl-down for the value/velocity graphs (animated scalar and point params)
     if param.is_animated() && graphable(&param.value) {
@@ -963,14 +971,17 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 /// Run the panel's actions. Parameter changes made while the mouse button is down (a drag) share
 /// one undo step, which the first change of each press begins (#201); typed values and clicks stay
 /// separate steps. A drag value only changes once the mouse moves, after the press frame, so the
-/// press that already began a step is remembered by its start time.
-fn run(app: &mut FilmcraftApp, ctx: &egui::Context, actions: Vec<(String, Value)>) {
+/// press that already began a step is remembered by its start time. A change that brings its own
+/// `merge` key (a Program monitor handle changing several parameters) keeps it.
+pub(crate) fn run(app: &mut FilmcraftApp, ctx: &egui::Context, actions: Vec<(String, Value)>) {
     let (down, press) = ctx.input(|i| (i.pointer.any_down(), i.pointer.press_start_time()));
     let key = egui::Id::new("effect-controls-drag-step");
     for (cmd, mut p) in actions {
         if cmd == "effects.setParam" && down {
             let begun = ctx.data(|d| d.get_temp::<Option<f64>>(key)).flatten();
-            p["merge"] = json!(true);
+            if p.get("merge").is_none() {
+                p["merge"] = json!(true);
+            }
             p["begin"] = json!(begun != press);
             ctx.data_mut(|d| d.insert_temp(key, press));
         }

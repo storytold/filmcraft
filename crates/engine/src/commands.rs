@@ -2560,6 +2560,16 @@ fn build() -> Vec<CommandSpec> {
         cmd!("effects.remove", "Remove Effect", [], None, r#"{"clip":id,"index":n}"#, has_seq, |s, p| {
             let c = clip_p(p, "clip").ok_or_else(|| bad("effects.remove", "need `clip`"))?;
             let idx = u64_p(p, "index").ok_or_else(|| bad("effects.remove", "need `index`"))? as usize;
+            // the selected effect: where it is, and its selection once the effect at `idx` is gone
+            let effects = s.active_sequence().and_then(|q| q.find_item(c)).map(|(_, it)| it.effects.clone()).unwrap_or_default();
+            let sel = s.state.selected_effect.clone().filter(|e| e.clip == c).and_then(|e| e.index(&effects));
+            let after = sel.filter(|i| *i != idx).and_then(|i| {
+                let mut rest = effects;
+                if idx < rest.len() {
+                    rest.remove(idx);
+                }
+                crate::EffectSel::of(c, &rest, if i > idx { i - 1 } else { i })
+            });
             s.edit_sequence("Remove Effect", |q, _, _| {
                 let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
                 if it.effects.get(idx).and_then(|e| e.def()).is_some_and(|d| d.intrinsic) {
@@ -2570,14 +2580,27 @@ fn build() -> Vec<CommandSpec> {
                 }
                 Ok(())
             })?;
+            if sel.is_some() {
+                s.state.selected_effect = after;
+            }
             Ok(Value::Null)
         }),
+        CommandSpec {
+            id: "effects.select",
+            label: "Select Effect",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"clip":id,"effect":index|id}|{"none":true}"#,
+            enabled: has_seq,
+            run: select_effect,
+            journal: false,
+        },
         cmd!(
             "effects.setParam",
             "Set Effect Parameter",
             [],
             None,
-            r##"{"clip":id,"effect":"motion"|index,"param":str,"mask":n?,"value":num|[x,y]|"#rrggbb"|bool|path|"option name" (a choice takes its index or its name),"time":ticks? (where the keyframe goes when the parameter is animated; a parameter that is not animated gets a new static value whatever the time),"keyframe":bool? (true: write a keyframe at `time` and animate the parameter),"merge":bool?,"begin":bool?}"##,
+            r##"{"clip":id,"effect":"motion"|index,"param":str,"mask":n?,"value":num|[x,y]|"#rrggbb"|bool|path|"option name" (a choice takes its index or its name),"time":ticks? (where the keyframe goes when the parameter is animated; a parameter that is not animated gets a new static value whatever the time),"keyframe":bool? (true: write a keyframe at `time` and animate the parameter),"merge":bool|key?,"begin":bool?}"##,
             has_seq,
             |s, p| {
                 let c = clip_p(p, "clip").ok_or_else(|| bad("effects.setParam", "need `clip`"))?;
@@ -2588,8 +2611,12 @@ fn build() -> Vec<CommandSpec> {
                 let ph = s.playhead();
                 let tl = time_p(s, p, "").unwrap_or(ph);
                 let pq = p.clone();
-                // `merge`: a drag of one parameter is one undo step (#201); `begin` starts a new one
-                let merge = bool_p(p, "merge").unwrap_or(false).then(|| format!("setParam:{}:{eff}:{pid}:{}", c.0, p.get("mask").unwrap_or(&Value::Null)));
+                // `merge`: a drag of one parameter is one undo step (#201), and a key makes one of a
+                // drag that changes several (the Program monitor's handles); `begin` starts a new one
+                let merge = match p.get("merge") {
+                    Some(Value::String(key)) => Some(format!("setParam:{}:{key}", c.0)),
+                    _ => bool_p(p, "merge").unwrap_or(false).then(|| format!("setParam:{}:{eff}:{pid}:{}", c.0, p.get("mask").unwrap_or(&Value::Null))),
+                };
                 if bool_p(p, "begin").unwrap_or(false) {
                     s.history.merge_key = None;
                 }
@@ -3439,6 +3466,28 @@ fn transition_ids_p(v: &Value) -> Option<Vec<TransitionId>> {
         Value::Array(a) => a.iter().map(|x| x.as_u64().map(TransitionId)).collect(),
         x => x.as_u64().map(|i| vec![TransitionId(i)]),
     }
+}
+
+/// `effects.select`: the effect selected in Effect Controls (`effect`: index, or the id of the
+/// clip's first effect of that kind). It replaces the mask selection.
+fn select_effect(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "effects.select";
+    if bool_p(p, "none") == Some(true) {
+        s.state.selected_effect = None;
+        return Ok(Value::Null);
+    }
+    let clip = clip_p(p, "clip").ok_or_else(|| bad(CMD, "need `clip` (or `none`)"))?;
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let (_, it) = q.find_item(clip).ok_or_else(|| bad(CMD, "no such clip"))?;
+    let effect = match p.get("effect") {
+        Some(Value::Number(n)) => n.as_u64().and_then(|i| usize::try_from(i).ok()).filter(|i| *i < it.effects.len()),
+        Some(Value::String(id)) => it.effects.iter().position(|e| &e.effect == id),
+        _ => None,
+    }
+    .ok_or_else(|| bad(CMD, "no such effect on clip"))?;
+    s.state.selected_effect = crate::EffectSel::of(clip, &it.effects, effect);
+    s.state.selected_mask = None;
+    Ok(Value::Null)
 }
 
 /// `timeline.select {"transitions": […]}`: select transitions (clicking one in the Timeline). It

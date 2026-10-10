@@ -130,7 +130,7 @@ fn effect_controls_show_the_audio_of_a_video_clip() {
 
     // the audio rows edit the audio clip
     for fx in ["motion", "opacity", "time_remap"] {
-        d.click(&format!("effectControls.effect.{fx}"));
+        d.click(&format!("effectControls.effect.{fx}.twirl"));
     }
     d.click("effectControls.volume.level.stopwatch");
     assert!(d.item(pair.audio).effect("volume").unwrap().param("level").unwrap().is_animated());

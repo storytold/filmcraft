@@ -229,6 +229,29 @@ pub struct GapSelection {
     pub range: TimeRange,
 }
 
+/// An effect of a clip (`effects.select`): its id and which of the clip's effects with that id it
+/// is (0 = the first). Not its index, which applying an effect shifts (standard effects go first).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectSel {
+    pub clip: ClipId,
+    pub effect: String,
+    pub instance: usize,
+}
+
+impl EffectSel {
+    /// The selection of `effects[index]` of `clip`.
+    pub fn of(clip: ClipId, effects: &[filmcraft_project::EffectInstance], index: usize) -> Option<Self> {
+        let id = &effects.get(index)?.effect;
+        let instance = effects.iter().take(index).filter(|e| &e.effect == id).count();
+        Some(Self { clip, effect: id.clone(), instance })
+    }
+
+    /// Where the selected effect is in the clip's `effects`.
+    pub fn index(&self, effects: &[filmcraft_project::EffectInstance]) -> Option<usize> {
+        effects.iter().enumerate().filter(|(_, e)| e.effect == self.effect).nth(self.instance).map(|(i, _)| i)
+    }
+}
+
 /// Editing state that commands depend on (not project data, but headless-relevant).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct EditorState {
@@ -286,6 +309,11 @@ pub struct EditorState {
     /// The mask being edited on the Program monitor (Effect Controls selection).
     #[serde(default)]
     pub selected_mask: Option<masks::MaskSel>,
+    /// The effect selected in Effect Controls (its header or one of its properties): Motion and
+    /// Transform show their handles on the Program monitor. Selecting a mask clears it, and
+    /// selecting an effect clears the mask selection.
+    #[serde(default)]
+    pub selected_effect: Option<EffectSel>,
     /// Multi-Camera Audio Follows Video: switching a multi-camera clip's angle switches its linked
     /// audio clips too.
     #[serde(default)]
@@ -886,6 +914,11 @@ impl Session {
             if !ok {
                 self.state.selected_mask = None;
             }
+        }
+        if let Some(e) = &self.state.selected_effect
+            && self.active_sequence().and_then(|q| q.find_item(e.clip)).and_then(|(_, it)| e.index(&it.effects)).is_none()
+        {
+            self.state.selected_effect = None;
         }
         if let Some(s) = self.state.active_sequence
             && p.sequence(s).is_none()
