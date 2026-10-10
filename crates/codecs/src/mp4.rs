@@ -547,7 +547,18 @@ fn audio_stream_info(t: &filmcraft_isobmff::Track, bytes: &crate::Src) -> Option
         CodecConfig::Opus(o) => (crate::audio::OPUS_RATE, (o.output_channels as u32).max(1), None),
         _ => (if ap.sample_rate > 0.0 { ap.sample_rate as u32 } else { t.timescale }, ap.channels.max(1), None),
     };
-    Some(AudioStreamInfo { sample_rate: rate.max(1), channels: ch.max(1), codec: codec_label(&entry.codec), bits_per_sample: bits })
+    let codec = match &entry.codec {
+        // these entries name no layer (ffmpeg stores MP2 as `mp4a` + 0x6B): the first frame does
+        CodecConfig::Mp3 => {
+            let head = t.samples.first().and_then(|s| filmcraft_media::reader::read_range(&*bytes.0, s.offset, (s.size as usize).min(4)).ok());
+            match head.as_deref().and_then(crate::audio::mpeg_audio_layer) {
+                Some(1 | 2) => "MPEG Audio".into(),
+                _ => codec_label(&entry.codec),
+            }
+        }
+        c => codec_label(c),
+    };
+    Some(AudioStreamInfo { sample_rate: rate.max(1), channels: ch.max(1), codec, bits_per_sample: bits })
 }
 
 fn codec_label(c: &CodecConfig) -> String {

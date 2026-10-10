@@ -20,6 +20,9 @@ enum Inner {
     Aac { dec: Box<filmcraft_aac::Decoder>, asc: Vec<u8>, up: Option<Box<Upsample2x>> },
     /// AAC whose configuration arrives with the first frame (ADTS / LATM).
     AacPending,
+    /// MPEG audio at this rate whose layer arrives with the first frame (MP4 / QuickTime name the
+    /// codec, not the layer, and symphonia's decoder reads only the layer it was made for).
+    MpegPending(u32),
     /// Our own Opus decoder (always 48 kHz output; pre-skip is left to container timestamps).
     /// `order` maps output channel → decoded channel (Vorbis → WAV/SMPTE order for surround).
     Opus { dec: Box<filmcraft_opus::Decoder>, order: Option<&'static [usize]> },
@@ -133,6 +136,12 @@ impl PacketDecoder {
         };
         Self::new(codec, sample_rate, None)
     }
+    /// MPEG-1/2 audio of a layer the frame headers name (see [`mpeg_audio_layer`]): MP4's
+    /// `esds` object types 0x69 / 0x6B and QuickTime's `.mp3` / `.mp2` cover layers I–III alike
+    /// (ffmpeg stores MP2 as `mp4a` + 0x6B).
+    pub fn lazy_mpeg_audio(sample_rate: u32) -> Self {
+        Self { inner: Inner::MpegPending(sample_rate), channels: 0 }
+    }
     /// AAC configured by [`Self::ensure_aac`] from in-band headers (ADTS, LATM).
     pub fn lazy_aac() -> Self {
         Self { inner: Inner::AacPending, channels: 0 }
@@ -160,7 +169,7 @@ impl PacketDecoder {
         use filmcraft_isobmff::CodecConfig as C;
         match c {
             C::Aac(a) => Self::aac(&a.asc, if rate > 0 { rate } else { a.sample_rate }),
-            C::Mp3 => Self::new(CODEC_TYPE_MP3, rate, None),
+            C::Mp3 => Ok(Self::lazy_mpeg_audio(rate)),
             C::Ac3 { .. } | C::Eac3 { .. } => Self::ac3(),
             C::Alac { cookie } => Self::new(CODEC_TYPE_ALAC, rate, Some(cookie.clone())),
             C::Flac(_) => Self::new(CODEC_TYPE_FLAC, rate, None),
@@ -170,6 +179,10 @@ impl PacketDecoder {
     }
     /// Decode one packet into planar channels.
     pub fn decode(&mut self, data: &[u8], ts: u64) -> Result<Vec<Vec<f32>>> {
+        if let Inner::MpegPending(rate) = self.inner {
+            let layer = mpeg_audio_layer(data).ok_or_else(|| CodecError::Decode("MPEG audio: no frame header".into()))?;
+            self.inner = Self::mpeg_audio(layer, rate)?.inner;
+        }
         let dec = match &mut self.inner {
             Inner::Aac { dec, up, .. } => {
                 let mut out = dec.decode(data).map_err(|e| CodecError::Decode(e.to_string()))?;
@@ -192,6 +205,7 @@ impl PacketDecoder {
             }
             Inner::Symphonia(d) => d,
             Inner::AacPending => return Err(CodecError::Decode("AAC: no configuration yet".into())),
+            Inner::MpegPending(_) => return Err(CodecError::Decode("MPEG audio: no frame header".into())),
             Inner::Ac3(d) => {
                 // a packet may hold several syncframes (MP4 / Matroska); E-AC-3 dependent
                 // substreams and further programs decode to no channels and are skipped
@@ -245,8 +259,18 @@ impl PacketDecoder {
             Inner::Opus { dec, .. } => dec.reset(),
             Inner::Symphonia(d) => d.reset(),
             Inner::Ac3(d) => d.reset(),
-            Inner::AacPending => {}
+            Inner::AacPending | Inner::MpegPending(_) => {}
         }
+    }
+}
+
+/// The layer (1, 2 or 3) named by the MPEG-1/2 audio frame header that starts `frame`: the 12-bit
+/// sync word (11 bits for MPEG-2.5), then `ID` and the 2-bit `layer` field, 3 for layer I down to 1
+/// for layer III (ISO/IEC 11172-3 §2.4.2.3). `None` without a sync word or for the reserved layer 0.
+pub fn mpeg_audio_layer(frame: &[u8]) -> Option<u8> {
+    match *frame {
+        [0xFF, b1, ..] if b1 & 0xE0 == 0xE0 && (b1 >> 1) & 3 != 0 => Some(4 - ((b1 >> 1) & 3)),
+        _ => None,
     }
 }
 
@@ -998,5 +1022,51 @@ mod packet_time_tests {
         assert_eq!(fixed_packet_samples(FixedFrames::Eac3, &au(&[frame(0, 0), frame(0, 0)]), 48_000), Some(512));
         assert_eq!(fixed_packet_samples(FixedFrames::Eac3, &au(&[frame(0, 3)]), 44_100), None);
         assert_eq!(fixed_packet_samples(FixedFrames::Eac3, &[0x0B, 0x77], 48_000), None);
+    }
+}
+
+#[cfg(test)]
+mod mpeg_audio_tests {
+    use super::*;
+
+    /// A silent mono 48 kHz MPEG-1 frame of `layer` (2: 64 kbps, 192 bytes; 3: 56 kbps, 168
+    /// bytes): header, then all-zero bit allocation / side information.
+    fn silent_frame(layer: u8) -> Vec<u8> {
+        let (b1, len) = if layer == 2 { (0xFD, 192) } else { (0xFB, 168) };
+        let mut f = vec![0xFF, b1, 0x44, 0xC0];
+        f.resize(len, 0);
+        f
+    }
+
+    #[test]
+    fn layer_comes_from_the_frame_header() {
+        assert_eq!(mpeg_audio_layer(&[0xFF, 0xFF, 0x10, 0xC0]), Some(1));
+        assert_eq!(mpeg_audio_layer(&silent_frame(2)), Some(2));
+        assert_eq!(mpeg_audio_layer(&silent_frame(3)), Some(3));
+        // MPEG-2 layer III, MPEG-2.5 layer II
+        assert_eq!(mpeg_audio_layer(&[0xFF, 0xF3, 0x90, 0x44]), Some(3));
+        assert_eq!(mpeg_audio_layer(&[0xFF, 0xE5, 0x90, 0x44]), Some(2));
+        // reserved layer, no sync word, too short
+        for bad in [&[0xFF, 0xF9, 0x44, 0xC0][..], &[0xFF, 0x1D], &[0x00, 0xFD], &[0xFF], &[]] {
+            assert_eq!(mpeg_audio_layer(bad), None, "{bad:?}");
+        }
+    }
+
+    /// #800: ffmpeg stores MP2 in MP4 as `mp4a` + object type 0x6B, which names no layer. Handing
+    /// it to the layer III decoder rejected every frame and the track played as silence.
+    #[test]
+    fn mp4_mpeg_audio_decodes_the_layer_its_frames_name() {
+        for layer in [2u8, 3] {
+            let mut d = PacketDecoder::for_isobmff(&filmcraft_isobmff::CodecConfig::Mp3, 48_000).unwrap();
+            // a packet without a frame header is an error, not a crash, and configures nothing
+            assert!(d.decode(&[0u8; 16], 0).is_err());
+            d.reset();
+            for k in 0..3u64 {
+                let out = d.decode(&silent_frame(layer), k * 1152).unwrap_or_else(|e| panic!("layer {layer}: {e}"));
+                assert_eq!(out.len(), 1, "layer {layer}");
+                assert_eq!(out[0].len(), 1152, "layer {layer}");
+                assert!(out[0].iter().all(|&s| s == 0.0), "layer {layer}");
+            }
+        }
     }
 }
