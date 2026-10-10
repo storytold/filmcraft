@@ -55,3 +55,6 @@ Bridge mode needs the app started with the control port open. Added a Desktop sh
 - PR: https://github.com/storytold/filmcraft/pull/583 (branch `windows-launcher`, pushed to the fork `didpublishing/filmcraft`; no write access to `storytold/filmcraft`).
 - Working: release build, launcher, three Desktop shortcuts (FilmCraft, FilmCraft (log), FilmCraft (MCP)), MCP stdio server.
 - Open: the crash you reported has no captured log yet. Reproduce it with **FilmCraft (log)** and share `log.txt` (the one reviewed earlier was from the test run, exit code 0). Also not run: `cargo test` and `cargo xtask ci`; the MCP servers need `/mcp` reconnecting in an interactive `claude` terminal.
+
+## Correction: the "crash" was a test conflict
+The reported crash was not an app bug. During testing the assistant quit the app through the control port and force-stopped every `filmcraft` process by name, which closed the user's own instance, and its test runs shared port 9876 and `log.txt`. No crash evidence ever existed (no crash logs, no Windows crash events, clean exit codes). The "open: crash" item above is withdrawn. Lesson for future test runs: stop only the process you started (by PID), and use a different port and log path from the user's.
