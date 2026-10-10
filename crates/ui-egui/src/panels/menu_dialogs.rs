@@ -795,6 +795,13 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 let r = ui.label(&text);
                 push(&mut elems, "transcribe.download.license", &r, text);
                 ui.label(tlf!("Source: {source}", source = m["source"].as_str().unwrap_or_default()));
+                // a CC-BY model (Parakeet) must be credited wherever it is offered
+                if m["license"].as_str().is_some_and(|l| l.contains("CC-BY"))
+                    && let Some(credit) = m["attribution"].as_str()
+                {
+                    let r = ui.label(RichText::new(credit).small());
+                    push(&mut elems, "transcribe.download.attribution", &r, credit);
+                }
                 ui.label(
                     RichText::new(tl!("The model is saved in FilmCraft's data folder; transcription then runs on this computer without a connection.")).weak(),
                 );

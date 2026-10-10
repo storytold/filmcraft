@@ -11,7 +11,8 @@ build = "build.rs"
 workspace = true
 
 [features]
-default = []
+# Local speech-to-text is part of the desktop app (Text panel ▸ Transcribe).
+default = ["whisper"]
 # Speech-to-text (Text panel ▸ Transcribe) with Whisper and Parakeet TDT on the CPU, and model downloads.
 whisper = ["filmcraft-engine/whisper", "filmcraft-engine/speech-download"]
 # Speech-to-text with Parakeet TDT only, and model downloads (part of `whisper`).

@@ -317,8 +317,10 @@ static CATALOGUE: &[ModelInfo] = &[
 const PARAKEET_LICENSE: &str = "CC-BY-4.0 (NVIDIA Parakeet TDT weights)";
 const PARAKEET_LICENSE_URL: &str = "https://creativecommons.org/licenses/by/4.0/";
 
-/// The default model.
-pub const DEFAULT_MODEL: &str = "whisper-base";
+/// The default model: Parakeet TDT v3 (English, German and 23 more European languages). It keeps
+/// filler words and gives tight word times, which text-based editing needs, and is the fastest on
+/// the CPU. Whisper stays the choice for other languages.
+pub const DEFAULT_MODEL: &str = "parakeet-tdt-0.6b-v3";
 
 pub fn catalogue() -> &'static [ModelInfo] {
     CATALOGUE

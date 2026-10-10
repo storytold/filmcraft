@@ -3541,3 +3541,12 @@
 	Norwegian	挪威语
 	Ukrainian	乌克兰语
 	Turkish	土耳其语
+	; {n} not taken over: {list}	；{n} 个未采用：{list}
+	Fixed effects cannot be removed; Reset Effect resets them	固定效果无法移除；可用“重置效果”将其重置
+	Imported “{name}” from Premiere Pro: {n} shortcuts	已从 Premiere Pro 导入“{name}”：{n} 个快捷键
+	Keyboard (macOS):	键盘（macOS）：
+	Keyboard:	键盘：
+	Parakeet TDT v3 (25 European languages, very accurate)	Parakeet TDT v3（25 种欧洲语言，非常准确）
+	Parakeet TDT v2 (English, very accurate)	Parakeet TDT v2（英语，非常准确）
+	Whisper large-v3 turbo (99 languages)	Whisper large-v3 turbo（99 种语言）
+	Whisper large-v3 (99 languages, slow)	Whisper large-v3（99 种语言，较慢）

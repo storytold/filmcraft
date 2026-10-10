@@ -908,7 +908,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "transcript.generate",
             "Transcribe…",
             &["Sequence", "Transcript"],
-            r#"{"items":[id]?,"model":"whisper-base"?,"language":"en|auto"?,"diarize":bool?,"maxSpeakers":n?,"download":bool=false,"wait":bool=true}"#,
+            r#"{"items":[id]?,"model":"parakeet-tdt-0.6b-v3"?,"language":"en|auto"?,"diarize":bool?,"maxSpeakers":n?,"download":bool=false,"wait":bool=true}"#,
             can_transcribe,
             generate,
             true,
@@ -945,7 +945,7 @@ pub fn commands() -> Vec<CommandSpec> {
             true,
         ),
         spec("transcript.models", "List Speech Models", &[], "{}", always, models, false),
-        spec("transcript.downloadModel", "Download Speech Model", &[], r#"{"model":"whisper-base"?}"#, can_download, download_model, true),
+        spec("transcript.downloadModel", "Download Speech Model", &[], r#"{"model":"parakeet-tdt-0.6b-v3"?}"#, can_download, download_model, true),
         spec("transcript.select", "Mark Selected Text", &[], r#"{"from":word,"to":word?}|{"pauseAfter":word}"#, has_transcript, select, true),
         spec(
             "transcript.extract",

@@ -316,9 +316,31 @@ fn a_missing_model_is_confirmed_with_size_and_licence() {
     assert_eq!(d.label("transcribe.ok"), "Download and transcribe");
     assert!(d.label("transcribe.download.size").contains("290 MB"), "{}", d.label("transcribe.download.size"));
     assert!(d.label("transcribe.download.license").contains("MIT"), "{}", d.label("transcribe.download.license"));
+    assert!(d.ids("transcribe.download.attribution").is_empty(), "MIT needs no credit line");
     d.click("transcribe.cancel");
     assert!(d.app().ui.extras.dialog.is_none());
     assert!(d.app().session.transcribe_jobs.is_empty(), "nothing started");
+}
+
+/// Parakeet is CC-BY-4.0: the download confirmation credits NVIDIA with the licence and source.
+#[test]
+fn a_cc_by_model_is_credited_before_download() {
+    let mut d = Driver::transcript_tab();
+    d.install_recogniser(1);
+    d.click("text.transcript.generate");
+    let m = filmcraft_speech::models::find("parakeet-tdt-0.6b-v3").expect("in the catalogue");
+    let dlg = d.app_mut().ui.extras.dialog.as_mut().expect("Transcribe dialog");
+    dlg.info["recogniser"] = Value::Null;
+    dlg.info["models"] = json!([{"id": m.id, "name": m.name, "size": m.size(), "installed": false, "license": m.license,
+        "attribution": m.attribution(), "source": m.source}]);
+    dlg.params["model"] = json!(m.id);
+    // the longer model name widens the dialog: let it settle before clicking
+    d.frames(8);
+    d.click("transcribe.ok");
+    assert_eq!(d.label("transcribe.ok"), "Download and transcribe");
+    let credit = d.label("transcribe.download.attribution");
+    assert!(credit.contains("NVIDIA") && credit.contains("CC-BY-4.0") && credit.contains("huggingface.co/nvidia"), "{credit}");
+    d.click("transcribe.cancel");
 }
 
 #[test]
