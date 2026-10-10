@@ -71,7 +71,7 @@ impl Gray {
         top + (bot - top) * fy
     }
     /// 5-tap binomial blur then 2× decimation.
-    fn down(&self) -> Gray {
+    pub(crate) fn down(&self) -> Gray {
         let k = [1.0, 4.0, 6.0, 4.0, 1.0].map(|v: f32| v / 16.0);
         let (w, h) = (self.w, self.h);
         let mut tmp = vec![0.0f32; w * h];
