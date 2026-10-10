@@ -83,6 +83,23 @@ pub fn paint(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, area: Re
         painter.rect_filled(badge, 3.0, if tr.enabled { FILL } else { t.field_bg });
         painter.text(badge.center(), Align2::CENTER_CENTER, &label, Tokens::semibold(10.5), Color32::WHITE);
         app.auto.add(&format!("timeline.captionTrack.{label}"), badge, &tr.name);
+        // right-click the header: delete this track or every empty caption track (registered
+        // before the lock / eye toggles so those stay on top)
+        let hresp = ui.interact(hrect, egui::Id::new(("cap-header", tr.id.0)), Sense::click());
+        hresp.context_menu(|ui| {
+            for (key, text, cmd, p) in [
+                ("delete", tl!("Delete Caption Track"), "captions.deleteTrack", json!({"track": tr.id.0})),
+                ("deleteEmpty", tl!("Delete Empty Caption Tracks"), "sequence.deleteTracks", json!({"captions": "empty"})),
+            ] {
+                let enabled = key != "deleteEmpty" || seq.caption_tracks.iter().any(|t| t.captions.is_empty());
+                let r = ui.add_enabled(enabled, egui::Button::new(text));
+                app.auto.add(&format!("timeline.captionTrack.{label}.menu.{key}"), r.rect, text);
+                if r.clicked() {
+                    actions.push((cmd.into(), p));
+                    ui.close();
+                }
+            }
+        });
         let lock_r = Rect::from_center_size(pos2(hrect.min.x + 49.0, row.center().y), vec2(18.0, 18.0));
         let lresp = crate::widgets::icon_toggle(
             ui,

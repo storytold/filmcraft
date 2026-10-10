@@ -274,20 +274,23 @@ The control protocol is documented in [docs/control-protocol.md](docs/control-pr
 | [docs/control-protocol.md](docs/control-protocol.md) | Control-channel and MCP reference |
 | [docs/project-files.md](docs/project-files.md) | `.fcproj` format, schema migrations, auto-save and crash recovery |
 | [docs/graphics.md](docs/graphics.md) · [docs/captions.md](docs/captions.md) | Text engine, graphic clips and tools; caption tracks and formats |
-| [ROADMAP.md](ROADMAP.md) | Honest assessment, what's missing, milestones and estimates |
+| [ROADMAP.md](ROADMAP.md) | Stage, parity numbers, languages, what's next and the progress log |
+| [docs/target-app-parity.md](docs/target-app-parity.md) · [docs/gaps.md](docs/gaps.md) · [docs/roadmap.md](docs/roadmap.md) | Parity assessment against Premiere Pro, the ranked list of shortfalls, milestones and current focus |
+| [docs/codec-parity.md](docs/codec-parity.md) · [docs/file-format-parity.md](docs/file-format-parity.md) · [docs/hardware-parity.md](docs/hardware-parity.md) · [docs/ui-parity.md](docs/ui-parity.md) · [docs/localization-parity.md](docs/localization-parity.md) | Parity checklists by dimension |
 
 ## Status
 
 FilmCraft is young and moving fast. Editing, trimming, multicam, colour, keyframes, effects, titles, captions, mixing, codecs and export work today.
 
-We track two numbers ([ROADMAP.md](ROADMAP.md#honest-assessment-2026-10-05)):
+FilmCraft is in **alpha**. We track two numbers ([docs/target-app-parity.md](docs/target-app-parity.md), re-measured 2026-10-10 against Premiere Pro 26.5.2):
 
-- **Feature checklist: ~87%.** Premiere Pro's menu items, effects, transitions, panels and formats that exist in FilmCraft.
-- **Ready for real work: ~50–60%.** Our honest estimate of how close FilmCraft is to replacing Premiere on real projects.
+- **Feature breadth: ~86%.** Premiere Pro's menu items, effects, transitions, panels and formats that exist in FilmCraft (menus 92% and effects 100% measured).
+- **Ready for real work: ~56%.** Our honest estimate of how close FilmCraft is to replacing Premiere on real projects.
 
 The biggest gaps today:
 
 - **Speed on big footage.** Hardware decoding works on macOS and Windows, and for H.264 and HEVC on Linux (VA-API, or NVDEC with NVIDIA's driver; VP9 and AV1 decode in software there). Blend modes and the most common effects run on the GPU, but Lumetri, keys and export rendering still run on the CPU; H.264 encoding can use the hardware encoder on macOS and on Windows and Linux with an NVIDIA GPU (opt-in, Export ▸ Hardware encoding), and H.265 export is hardware-only on both (HDR sequences export Main 10 PQ / HLG with NVENC; VideoToolbox writes 8-bit SDR) ([#30](https://github.com/storytold/filmcraft/issues/30)).
+- **Premiere projects.** `.prproj` files can't be opened yet; bring sequences over as FCP7 XML, AAF or OTIO.
 - **No plugins.** No VST3 / Audio Units or OpenFX hosting.
 - **Delivery codecs.** H.264 is our only software delivery-codec export; H.265 exports only through a hardware encoder (NVIDIA on Windows: Main 8-bit SDR and Main 10 HDR PQ / HLG; VideoToolbox on macOS: 8-bit Main, SDR); no AV1 export yet.
 - **Real-world media and platforms.** Our decoders are bit-exact on conformance streams, but camera and phone files in the wild are less tested. Windows and Linux get far less testing than macOS.

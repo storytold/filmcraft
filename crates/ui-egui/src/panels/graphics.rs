@@ -186,7 +186,8 @@ fn handle_points(quad: &[Pos2; 4]) -> [Pos2; 8] {
 }
 
 /// Dragging handle `n` of `quad` from `start` to `cur`: the box grows towards the pointer while
-/// the opposite corner / edge stays put. A corner scales both axes alike; an edge only its own.
+/// the opposite corner / edge stays put. A corner scales each axis by the pointer's travel along
+/// it (both alike with `keep_ratio`, Shift); an edge scales only its own.
 struct HandleScale {
     /// The handle opposite the dragged one, which does not move.
     pin: Pos2,
@@ -195,10 +196,12 @@ struct HandleScale {
     uy: egui::Vec2,
     fx: f32,
     fy: f32,
+    /// Width and height scale apart (an edge, or a corner without Shift).
+    apart: bool,
 }
 
 impl HandleScale {
-    fn new(quad: &[Pos2; 4], n: usize, start: Pos2, cur: Pos2) -> Self {
+    fn new(quad: &[Pos2; 4], n: usize, start: Pos2, cur: Pos2, keep_ratio: bool) -> Self {
         let pts = handle_points(quad);
         let n = n.min(7);
         let pin = if n < 4 { pts[(n + 2) % 4] } else { pts[4 + (n - 4 + 2) % 4] };
@@ -209,14 +212,15 @@ impl HandleScale {
             if from.abs() < 1.0 { 1.0 } else { ((cur - pin).dot(dir) / from).max(0.01) }
         };
         let (fx, fy) = match n {
-            0..=3 => {
+            0..=3 if keep_ratio => {
                 let f = along((start - pin).normalized());
                 (f, f)
             }
+            0..=3 => (along(ux), along(uy)),
             4 | 6 => (1.0, along(uy)),
             _ => (along(ux), 1.0),
         };
-        Self { pin, ux, uy, fx, fy }
+        Self { pin, ux, uy, fx, fy, apart: n >= 4 || !keep_ratio }
     }
 
     /// Where a screen point of the layer ends up.
@@ -231,9 +235,29 @@ impl HandleScale {
 /// Premiere Pro 26 with the Program monitor at Fit.
 const NEAR_ANCHOR: f32 = 60.0;
 
+/// Box `from` (`[x0, y0, x1, y1]`) with handle `n` moved by (`dx`, `dy`): that side or corner
+/// follows, the opposite one stays, and the box keeps at least `min` across instead of flipping.
+fn drag_sides(from: [f32; 4], n: usize, dx: f32, dy: f32, min: f32) -> [f32; 4] {
+    let [mut x0, mut y0, mut x1, mut y1] = from;
+    if matches!(n, 0 | 3 | 7) {
+        x0 = (x0 + dx).min(x1 - min);
+    }
+    if matches!(n, 1 | 2 | 5) {
+        x1 = (x1 + dx).max(x0 + min);
+    }
+    if matches!(n, 0 | 1 | 4) {
+        y0 = (y0 + dy).min(y1 - min);
+    }
+    if matches!(n, 2 | 3 | 6) {
+        y1 = (y1 + dy).max(y0 + min);
+    }
+    [x0, y0, x1, y1]
+}
+
 /// What dragging handle `n` of a layer from `start` to `cur` does, as Premiere Pro does it: point
 /// text scales about its anchor point, a paragraph-text box is resized (its text re-wraps at the
-/// same size), and a shape stretches away from its opposite side.
+/// same size), a shape's Size follows the handle (Scale untouched), and a path stretches away from
+/// its opposite side.
 enum HandleDrag {
     Stretch(HandleScale),
     /// Scale both axes by `f` about the anchor point, which is at `anchor` on screen.
@@ -248,36 +272,54 @@ enum HandleDrag {
         from: [f32; 4],
         tall: bool,
     },
+    /// The shape's box becomes `rect` (in the layer's pixels; it was `from`, with Size `size`).
+    Size {
+        rect: [f32; 4],
+        from: [f32; 4],
+        size: (f32, f32),
+    },
 }
 
 impl HandleDrag {
-    fn new(v: &LayerView, n: usize, start: Pos2, cur: Pos2) -> Self {
+    fn new(v: &LayerView, n: usize, start: Pos2, cur: Pos2, keep_ratio: bool) -> Self {
         let n = n.min(7);
         let quad = v.quad();
-        let Some(t) = text_of(&v.spec) else { return Self::Stretch(HandleScale::new(&quad, n, start, cur)) };
+        let (dx, dy) = match (v.to_local(start), v.to_local(cur)) {
+            (Some(a), Some(b)) => (b.0 - a.0, b.1 - a.1),
+            _ => (0.0, 0.0),
+        };
+        let Some(t) = text_of(&v.spec) else {
+            let LayerContent::Shape(s) = &v.spec.content else { return Self::Stretch(HandleScale::new(&quad, n, start, cur, keep_ratio)) };
+            // a path is its points, so it stretches; the other shapes are drawn from their Size
+            if s.shape == 3 {
+                return Self::Stretch(HandleScale::new(&quad, n, start, cur, keep_ratio));
+            }
+            let from = v.local;
+            let mut rect = drag_sides(from, n, dx, dy, 1.0);
+            let (w, h) = (from[2] - from[0], from[3] - from[1]);
+            if keep_ratio && n < 4 && w > 0.0 && h > 0.0 {
+                // Shift: the side that moved further sets the scale of both; the opposite corner stays
+                let (fw, fh) = ((rect[2] - rect[0]) / w, (rect[3] - rect[1]) / h);
+                let f = if (fw - 1.0).abs() >= (fh - 1.0).abs() { fw } else { fh };
+                let f = f.max(1.0 / w).max(1.0 / h);
+                if matches!(n, 0 | 3) {
+                    rect[0] = rect[2] - w * f;
+                } else {
+                    rect[2] = rect[0] + w * f;
+                }
+                if matches!(n, 0 | 1) {
+                    rect[1] = rect[3] - h * f;
+                } else {
+                    rect[3] = rect[1] + h * f;
+                }
+            }
+            return Self::Size { rect, from, size: s.size };
+        };
         if is_paragraph(t) {
             // a box without a height is as tall as its text
             let from = if t.box_height > 0.0 { [0.0, 0.0, t.box_width, t.box_height] } else { [0.0, v.local[1], t.box_width, v.local[3]] };
-            let (dx, dy) = match (v.to_local(start), v.to_local(cur)) {
-                (Some(a), Some(b)) => (b.0 - a.0, b.1 - a.1),
-                _ => (0.0, 0.0),
-            };
-            // the handle follows the pointer and the opposite side stays; the box does not flip
-            let min = (t.size * 0.5).max(1.0);
-            let [mut x0, mut y0, mut x1, mut y1] = from;
-            if matches!(n, 0 | 3 | 7) {
-                x0 = (x0 + dx).min(x1 - min);
-            }
-            if matches!(n, 1 | 2 | 5) {
-                x1 = (x1 + dx).max(x0 + min);
-            }
-            if matches!(n, 0 | 1 | 4) {
-                y0 = (y0 + dy).min(y1 - min);
-            }
-            if matches!(n, 2 | 3 | 6) {
-                y1 = (y1 + dy).max(y0 + min);
-            }
-            return Self::Resize { rect: [x0, y0, x1, y1], from, tall: t.box_height > 0.0 || !matches!(n, 5 | 7) };
+            let rect = drag_sides(from, n, dx, dy, (t.size * 0.5).max(1.0));
+            return Self::Resize { rect, from, tall: t.box_height > 0.0 || !matches!(n, 5 | 7) };
         }
         // Every handle scales both axes alike. Only the pointer's travel along one side of the box
         // counts: along its width for the two side handles, along its height for all the others.
@@ -305,12 +347,14 @@ impl HandleDrag {
         match self {
             Self::Stretch(h) => v.quad().map(|q| h.apply(q)),
             Self::Scale { anchor, f } => v.quad().map(|q| *anchor + (q - *anchor) * *f),
-            Self::Resize { rect: b, .. } => [(b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3])].map(|(x, y)| sp(&v.to_screen, x, y)),
+            Self::Resize { rect: b, .. } | Self::Size { rect: b, .. } => {
+                [(b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3])].map(|(x, y)| sp(&v.to_screen, x, y))
+            }
         }
     }
 
     /// The `graphics.set` properties that carry out the drag.
-    fn props(&self, v: &LayerView, n: usize) -> Value {
+    fn props(&self, v: &LayerView) -> Value {
         let tr = &v.spec.transform;
         match self {
             Self::Stretch(h) => {
@@ -322,8 +366,7 @@ impl HandleDrag {
                     "scale_width": tr.scale.x * 100.0 * h.fx as f64,
                     "position": [tr.position.x + delta.x, tr.position.y + delta.y],
                 });
-                if n >= 4 {
-                    // an edge stretches one axis only
+                if h.apart {
                     props["uniform_scale"] = json!(false);
                 }
                 props
@@ -340,6 +383,18 @@ impl HandleDrag {
                     props["box_height"] = json!(rect[3] - rect[1]);
                 }
                 props
+            }
+            Self::Size { rect, from, size } => {
+                // The box scales with Size about the layer's origin, so the origin moves to `o` (in
+                // the old layer pixels) to put the box at `rect`. The anchor point is renumbered so
+                // that it, the Position and the side that was not dragged stay where they are.
+                let f = |a: f32, b: f32| if b > 0.0 { a / b } else { 1.0 };
+                let (fx, fy) = (f(rect[2] - rect[0], from[2] - from[0]), f(rect[3] - rect[1], from[3] - from[1]));
+                let o = (rect[0] - from[0] * fx, rect[1] - from[1] * fy);
+                json!({
+                    "size": [size.0 * fx, size.1 * fy],
+                    "anchor": [tr.anchor.x - o.0 as f64, tr.anchor.y - o.1 as f64],
+                })
             }
         }
     }
@@ -386,6 +441,19 @@ const TEXT_EDIT_ID: &str = "gfx-text-edit";
 fn end_edit(app: &mut FilmcraftApp, ui: &egui::Ui) {
     app.ui.gfx_edit = None;
     ui.memory_mut(|m| m.surrender_focus(egui::Id::new(TEXT_EDIT_ID)));
+    ui.data_mut(|d| d.remove::<crate::dock::PanelKind>(egui::Id::new(TEXT_EDIT_ID).with("panel")));
+}
+
+/// A click on the Program monitor's empty space (the picture's, or around it): end the text edit
+/// and let go of the selected graphic layers and mask (#683).
+pub(crate) fn deselect_on_monitor(app: &mut FilmcraftApp, ui: &egui::Ui) {
+    end_edit(app, ui);
+    app.session.state.graphic_layers.clear();
+    if app.session.state.selected_mask.is_some()
+        && let Err(e) = app.session.execute("masks.select", json!({"none": true}))
+    {
+        app.ui.status = e.to_string();
+    }
 }
 
 /// Draw the overlay and handle graphics tools on the Program monitor picture `pic`.
@@ -561,7 +629,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             }
             DragKind::Handle(n) => {
                 if let Some(v) = v {
-                    let h = HandleDrag::new(v, n, d.start, cur);
+                    let h = HandleDrag::new(v, n, d.start, cur, ui.input(|i| i.modifiers.shift));
                     painter.add(egui::Shape::closed_line(h.quad(v).to_vec(), Stroke::new(1.0, Color32::WHITE)));
                 }
             }
@@ -614,7 +682,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                 }
                 DragKind::Handle(n) if moved => {
                     if let Some(v) = v {
-                        let props = HandleDrag::new(v, n, d.start, cur).props(v, n);
+                        let props = HandleDrag::new(v, n, d.start, cur, ui.input(|i| i.modifiers.shift)).props(v);
                         actions.push(("graphics.set".into(), json!({"clip": v.clip.0, "layer": v.layer, "props": props})));
                     }
                 }
@@ -678,10 +746,8 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                         end_edit(app, ui);
                     }
                     actions.push(("graphics.selectLayer".into(), json!({"clip": v.clip.0, "layers": [v.layer]})));
-                } else if app.ui.gfx_edit.is_some() {
-                    end_edit(app, ui);
-                } else if sel_clip.is_some() && !sel_layers.is_empty() {
-                    app.session.state.graphic_layers.clear();
+                } else {
+                    deselect_on_monitor(app, ui);
                 }
             }
             Tool::Pen => {
@@ -806,10 +872,26 @@ fn start_edit_at(app: &mut FilmcraftApp, ui: &egui::Ui, v: &LayerView, p: Pos2, 
 /// Keyboard handling while a text layer is being edited.
 fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView, mut ed: GfxEdit, resp: &egui::Response, actions: &mut Vec<(String, Value)>) {
     let _ = resp;
+    // moving to another panel ends the edit; Properties and Essential Graphics style the text
+    // being edited, so working there keeps it (#683). Only a move counts: an edit started with
+    // another panel focused (an agent's `ui.set`) goes on until the focus moves.
+    use crate::dock::PanelKind;
+    let panel_id = egui::Id::new(TEXT_EDIT_ID).with("panel");
+    let before = ui.data(|d| d.get_temp::<PanelKind>(panel_id));
+    ui.data_mut(|d| d.insert_temp(panel_id, app.ui.focused));
+    if before.is_some_and(|b| b != app.ui.focused) && !matches!(app.ui.focused, PanelKind::Program | PanelKind::Properties | PanelKind::EssentialGraphics) {
+        end_edit(app, ui);
+        return;
+    }
     let eid = egui::Id::new(TEXT_EDIT_ID);
     // a real (non-clickable) widget holds keyboard focus so shortcuts pause while typing
     let fr = ui.interact(Rect::from_points(&v.quad()), eid, Sense::focusable_noninteractive());
     fr.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Text layer"));
+    // while another field has the keyboard (a value typed in Properties) the keys are its own;
+    // the text takes the keyboard back once nothing has it (#683)
+    if ui.memory(|m| m.focused().is_some_and(|f| f != eid)) {
+        return;
+    }
     ui.memory_mut(|m| {
         m.request_focus(eid);
         m.set_focus_lock_filter(eid, egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true });

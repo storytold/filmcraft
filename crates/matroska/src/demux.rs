@@ -301,6 +301,9 @@ struct BlockRef {
     discardable: bool,
     invisible: bool,
     discard_padding: Option<i64>,
+    /// (offset, size) of the `BlockAdditional` with `BlockAddID` 1 (WebM: the VP8/VP9 alpha
+    /// layer), kept for unlaced blocks only.
+    addition: Option<(u64, u32)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -318,6 +321,7 @@ struct FrameRef {
     discard_padding: Option<i64>,
     block_offset: u64,
     lace: u16,
+    addition: Option<(u64, u32)>,
 }
 
 fn track_lookup(tracks: &[Track]) -> impl Fn(u64) -> Option<usize> + '_ {
@@ -354,6 +358,36 @@ fn parse_block<S: ByteSource + ?Sized>(
     Ok(Some((track, rel, flags, frames)))
 }
 
+/// The `BlockAdditional` with `BlockAddID` 1 (the default ID) in a `BlockAdditions` element:
+/// (offset, size) of its data. Other IDs, empty additions and damaged children are skipped.
+fn block_addition<S: ByteSource + ?Sized>(io: &mut Io<'_, S>, start: u64, end: u64) -> Result<Option<(u64, u32)>> {
+    let mut pos = start;
+    while pos < end {
+        let Some(more) = io.header(pos, end)? else { break };
+        let me = more.end(end);
+        if more.id == BLOCK_MORE {
+            let (mut id, mut data) = (1u64, None);
+            let mut p = more.data_start();
+            while p < me {
+                let Some(c) = io.header(p, me)? else { break };
+                let ce = c.end(me);
+                let len = ce.saturating_sub(c.data_start());
+                match c.id {
+                    BLOCK_ADD_ID => id = ebml::uint(io.peek(c.data_start(), len.min(8) as usize)?),
+                    BLOCK_ADDITIONAL => data = u32::try_from(len).ok().filter(|&n| n > 0).map(|n| (c.data_start(), n)),
+                    _ => {}
+                }
+                p = ce;
+            }
+            if id == 1 && data.is_some() {
+                return Ok(data);
+            }
+        }
+        pos = me;
+    }
+    Ok(None)
+}
+
 /// Parse one SimpleBlock or BlockGroup element.
 fn parse_block_elem<S: ByteSource + ?Sized>(
     io: &mut Io<'_, S>,
@@ -376,17 +410,19 @@ fn parse_block_elem<S: ByteSource + ?Sized>(
                 discardable: flags & 0x01 != 0,
                 invisible: flags & 0x08 != 0,
                 discard_padding: None,
+                addition: None,
             }))
         }
         BLOCK_GROUP => {
             let mut pos = ds;
             let mut block = None;
-            let (mut dur, mut has_ref, mut pad) = (None, false, None);
+            let (mut dur, mut has_ref, mut pad, mut addition) = (None, false, None, None);
             while pos < end {
                 let Some(c) = io.header(pos, end)? else { break };
                 let ce = c.end(end);
                 match c.id {
                     BLOCK => block = parse_block(io, c.data_start(), ce - c.data_start(), lookup)?,
+                    BLOCK_ADDITIONS => addition = block_addition(io, c.data_start(), ce)?,
                     BLOCK_DURATION => dur = Some(ebml::uint(io.peek(c.data_start(), (ce - c.data_start()) as usize)?)),
                     REFERENCE_BLOCK => has_ref = true,
                     DISCARD_PADDING => pad = Some(ebml::int(io.peek(c.data_start(), (ce - c.data_start()) as usize)?)),
@@ -395,6 +431,8 @@ fn parse_block_elem<S: ByteSource + ?Sized>(
                 pos = ce;
             }
             let Some((track, rel, flags, frames)) = block else { return Ok(None) };
+            // with lacing, an addition belongs to the block, not to one of its frames
+            let addition = addition.filter(|_| frames.len() == 1);
             Ok(Some(BlockRef {
                 track,
                 block_offset: h.pos,
@@ -405,6 +443,7 @@ fn parse_block_elem<S: ByteSource + ?Sized>(
                 discardable: false,
                 invisible: flags & 0x08 != 0,
                 discard_padding: pad,
+                addition,
             }))
         }
         _ => Ok(None),
@@ -450,6 +489,7 @@ fn expand(b: &BlockRef, t: &Track, scale: u64, skip: u16, out: &mut impl Extend<
             discard_padding: b.discard_padding,
             block_offset: b.block_offset,
             lace: i as u16,
+            addition: b.addition,
         }
     }));
 }
@@ -780,6 +820,7 @@ fn add_blocks(file: &mut MkvFile, cluster: u32, blocks: &[BlockRef]) {
                 cluster,
                 block_offset: f.block_offset,
                 lace: f.lace,
+                addition: f.addition,
             });
         }
     }
@@ -836,6 +877,20 @@ impl MkvFile {
         data.resize(at + s.size as usize, 0);
         src.read_at(s.offset, &mut data[at..])?;
         Ok(data)
+    }
+
+    /// The `BlockAdditional` (ID 1) of sample `index` of `track`, `None` when the block has none
+    /// (see [`Sample::addition`]). Stored as is: header stripping applies to frames only.
+    pub fn read_sample_addition<S: ByteSource + ?Sized>(&self, src: &S, track: usize, index: usize) -> Result<Option<Vec<u8>>> {
+        let t = self.tracks.get(track).ok_or(Error::NoSuchTrack(track))?;
+        let s = t.samples.get(index).ok_or(Error::NoSuchSample(index))?;
+        let Some((offset, size)) = s.addition else { return Ok(None) };
+        if offset.checked_add(size as u64).is_none_or(|end| end > src.len()) {
+            return Err(Error::Invalid("block addition past end of file".into()));
+        }
+        let mut data = vec![0; size as usize];
+        src.read_at(offset, &mut data)?;
+        Ok(Some(data))
     }
 
     /// Keyframe sample of `track` with the greatest pts ≤ `time_ns` (indexed files only).

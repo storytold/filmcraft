@@ -241,3 +241,36 @@ fn effect_controls_ruler_moves_the_playhead() {
     assert!(d.find("effectControls.playhead").is_none(), "no handle while the playhead is past the clip");
     d.rect("effectControls.ruler");
 }
+
+/// #412: Scale and Position both have a keyframe at the same time. A click on Scale's keyframe in
+/// the Effect Controls lane selects that keyframe only (every keyframe under the playhead, which
+/// the click moves there, used to light up); a keyframe that is gone drops out of the selection.
+#[test]
+fn clicking_a_lane_keyframe_selects_only_that_keyframe() {
+    let (mut d, clip) = Driver::demo();
+    let t0 = d.seek(1.0);
+    for param in ["scale", "position"] {
+        d.exec("effects.addKeyframe", json!({"clip": clip.id, "effect": "motion", "param": param}));
+    }
+    let time = d.scale(&clip).0[0];
+    let motion = {
+        let s = &d.harness.state().session;
+        let it = s.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1;
+        it.effects.iter().position(|e| e.effect == "motion").unwrap()
+    };
+    let selection = |d: &mut Driver| d.ok("ui.inspect", json!({}))["ui"]["keyframe_selection"].clone();
+    d.seek(2.0);
+    assert_eq!(selection(&mut d), json!([]), "nothing selected yet");
+
+    d.click(&format!("effectControls.motion.scale.keyframe.{time}"));
+    assert_eq!(selection(&mut d), json!([{"clip": clip.id, "effect": motion, "param": "scale", "time": time}]), "only Scale's keyframe");
+    assert_eq!(d.playhead(), t0, "the click still moves the playhead to the keyframe");
+    d.shot("keyframes-select-one");
+
+    d.click(&format!("effectControls.motion.position.keyframe.{time}"));
+    assert_eq!(selection(&mut d), json!([{"clip": clip.id, "effect": motion, "param": "position", "time": time}]), "a click replaces the selection");
+
+    // the diamond removes the keyframe at the playhead, the selected one: the selection empties
+    d.click("effectControls.motion.position.addKeyframe");
+    assert_eq!(selection(&mut d), json!([]), "a deleted keyframe is not selected");
+}
