@@ -239,7 +239,7 @@ pub struct ExportSettings {
     /// `progress.total`, `finished` and the final status; this call only adds to `done`.
     #[serde(default)]
     pub part_of_batch: bool,
-    /// ProRes flavour: `proxy`, `lt`, `standard` or `hq` (empty = HQ).
+    /// ProRes flavour: `proxy`, `lt`, `standard`, `hq`, `4444` or `4444xq` (empty = HQ).
     #[serde(default)]
     pub prores_profile: String,
     /// DNxHR profile: `lb`, `sq`, `hq` or `hqx` (empty = HQ).
@@ -256,8 +256,9 @@ pub struct ExportSettings {
     /// sequence's HDR space and signal it (VUI / `colr` / `mdcv` / `clli` / SEI).
     #[serde(default)]
     pub sdr: bool,
-    /// Keep the alpha channel in PNG and TIFF sequences (straight alpha, Premiere's "Include
-    /// Alpha Channel"). Off, every frame is flattened over black (#160). Other formats ignore it.
+    /// Keep the alpha channel in PNG and TIFF sequences and ProRes 4444 / 4444 XQ QuickTime movies
+    /// (straight alpha, Premiere's "Include Alpha Channel"). Off, every frame is flattened over
+    /// black (#160). Other formats ignore it.
     #[serde(default)]
     pub alpha: bool,
     /// Output frame size (None = Match Source: the sequence size times `scale`).
@@ -1006,6 +1007,8 @@ fn aac_factory(_format: Format, sample_rate: u32, channels: u32, s: &ExportSetti
 struct ProResEncoder {
     enc: filmcraft_prores::Encoder,
     profile: filmcraft_prores::Profile,
+    /// Code the frames' alpha channel (4444 profiles with Include Alpha Channel).
+    alpha: bool,
     w: u32,
     h: u32,
     rate: FrameRate,
@@ -1022,19 +1025,66 @@ impl VideoEncoder for ProResEncoder {
         self.rate.num as u32
     }
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
-        let mut fr = filmcraft_prores::Frame::new(f.width, f.height, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
-        timed(Stage::Convert, || match f.hdr {
-            Some(rgb) => {
-                let (kr, kb) = self.signal.kr_kb();
-                rgbf_to_yuv422_10(rgb, f.width as usize, f.height as usize, kr, kb, &mut fr.y, &mut fr.cb, &mut fr.cr)
+        let chroma = self.profile.chroma();
+        let mut fr = filmcraft_prores::Frame::new(f.width, f.height, chroma, 10, self.alpha);
+        let (w, h) = (f.width as usize, f.height as usize);
+        timed(Stage::Convert, || match (chroma, f.hdr) {
+            (filmcraft_prores::ChromaFormat::Yuv444, hdr) => {
+                let (kr, kb) = if hdr.is_some() { self.signal.kr_kb() } else { (0.2126, 0.0722) };
+                to_yuv444_10(f.rgba, hdr, w, h, kr, kb, &mut fr.y, &mut fr.cb, &mut fr.cr, fr.alpha.as_deref_mut())
             }
-            None => rgba_to_yuv422_10(f.rgba, f.width as usize, f.height as usize, &mut fr.y, &mut fr.cb, &mut fr.cr),
+            (_, Some(rgb)) => {
+                let (kr, kb) = self.signal.kr_kb();
+                rgbf_to_yuv422_10(rgb, w, h, kr, kb, &mut fr.y, &mut fr.cb, &mut fr.cr)
+            }
+            (_, None) => rgba_to_yuv422_10(f.rgba, w, h, &mut fr.y, &mut fr.cb, &mut fr.cr),
         });
         let data = self.enc.encode(&fr).map_err(|e| ExportError::Encode(e.to_string()))?;
         Ok(vec![EncodedPacket { data, key: true, duration: self.rate.den as u32, composition_offset: 0 }])
     }
     fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
         Ok(Vec::new())
+    }
+}
+
+/// Limited-range 10-bit 4:4:4 with matrix (Kr, Kb) from straight RGBA8, or from encoded R'G'B'
+/// floats (3 per pixel) when `hdr` is given. `alpha` (full range, 0 = transparent) takes the
+/// RGBA8 alpha; it stays opaque for float input, which carries none.
+#[allow(clippy::too_many_arguments)]
+pub fn to_yuv444_10(
+    rgba: &[u8],
+    hdr: Option<&[f32]>,
+    w: usize,
+    h: usize,
+    kr: f32,
+    kb: f32,
+    y: &mut [u16],
+    cb: &mut [u16],
+    cr: &mut [u16],
+    alpha: Option<&mut [u16]>,
+) {
+    let (w, n) = (w.max(1), w.saturating_mul(h));
+    let kg = 1.0 - kr - kb;
+    let (sb, sr) = (2.0 * (1.0 - kb), 2.0 * (1.0 - kr));
+    let rgb_at = |i: usize| -> [f32; 3] {
+        match hdr {
+            Some(f) => f.get(i * 3..i * 3 + 3).map_or([0.0; 3], |p| [p[0], p[1], p[2]]),
+            None => rgba.get(i * 4..i * 4 + 3).map_or([0.0; 3], |p| [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0]),
+        }
+    };
+    y.par_chunks_mut(w).zip(cb.par_chunks_mut(w).zip(cr.par_chunks_mut(w))).enumerate().for_each(|(row, (yr, (cbr, crr)))| {
+        for (x, (yv, (cbv, crv))) in yr.iter_mut().zip(cbr.iter_mut().zip(crr.iter_mut())).enumerate() {
+            let [r, g, b] = rgb_at(row * w + x);
+            let yy = kr * r + kg * g + kb * b;
+            *yv = (64.0 + 876.0 * yy).round().clamp(4.0, 1019.0) as u16;
+            *cbv = (512.0 + 896.0 * (b - yy) / sb).round().clamp(4.0, 1019.0) as u16;
+            *crv = (512.0 + 896.0 * (r - yy) / sr).round().clamp(4.0, 1019.0) as u16;
+        }
+    });
+    if let (Some(a), None) = (alpha, hdr) {
+        for (i, dst) in a.iter_mut().enumerate().take(n) {
+            *dst = rgba.get(i * 4 + 3).map_or(1023, |&v| ((v as u32 * 1023 + 127) / 255) as u16);
+        }
     }
 }
 
@@ -1071,6 +1121,8 @@ pub fn prores_profile(name: &str) -> filmcraft_prores::Profile {
         "proxy" => Profile::Proxy,
         "lt" => Profile::Lt,
         "standard" | "422" => Profile::Standard,
+        "4444" => Profile::P4444,
+        "4444xq" | "4444 xq" | "4444-xq" | "xq" => Profile::P4444Xq,
         _ => Profile::Hq,
     }
 }
@@ -1109,7 +1161,10 @@ fn prores_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSet
         if s.signal.is_hdr() {
             cfg.color = filmcraft_prores::ColorInfo { primaries: s.signal.primaries, transfer: s.signal.transfer, matrix: s.signal.matrix };
         }
-        Ok(Box::new(ProResEncoder { enc: filmcraft_prores::Encoder::with_config(cfg), profile, w, h, rate, signal: s.signal }) as Box<dyn VideoEncoder>)
+        let alpha = s.keeps_alpha();
+        cfg.encode_alpha = alpha;
+        let enc = filmcraft_prores::Encoder::with_config(cfg);
+        Ok(Box::new(ProResEncoder { enc, profile, alpha, w, h, rate, signal: s.signal }) as Box<dyn VideoEncoder>)
     })
 }
 
