@@ -129,13 +129,18 @@ params the menu entries open dialogs (ids `colorDialog.space.<id>`, `colorDialog
 `lumetri.match.*`; HDR scopes: `scopes.hdrWaveform`. `file.exportMedia {sdr: true}` exports an HDR
 sequence as tone-mapped SDR.
 
-**Keyboard shortcuts** (`crates/engine/src/shortcuts.rs`): `shortcuts.list {query?, panel?}`,
+**Keyboard shortcuts** (`crates/engine/src/shortcuts.rs`): `shortcuts.list {query?, panel?, layout?}`,
 `shortcuts.get`, `shortcuts.set {command, keys, panel?, add?, keepConflicts?}`, `shortcuts.clear`,
 `shortcuts.undo` / `shortcuts.redo`, `shortcuts.conflicts {platform?}`, `shortcuts.forKey {key}`,
 `shortcuts.resolve {keys, panel?}`, `shortcuts.presets`, `shortcuts.loadPreset` / `savePreset` /
-`deletePreset {name}`, `shortcuts.export` / `import {path}`, `shortcuts.audit`. Keys use `Cmd` (⌘ /
-Ctrl), `Ctrl` (macOS ⌃), `Alt`, `Shift`. The dialog (Edit ▸ Keyboard Shortcuts…, ⌥⌘K) uses ids
-`shortcuts.*` (`shortcuts.key.K`, `shortcuts.cell.<command>`, `shortcuts.ok`, …).
+`deletePreset {name}`, `shortcuts.export` / `import {path, activate?, layout?}`, `shortcuts.audit`.
+`shortcuts.import` also reads Premiere Pro `.kys` files and returns `{name, imported, layout,
+skipped: [{command, context, keys, reason}]}` (see `docs/keyboard.md`). Keys use `Cmd` (⌘ / Ctrl),
+`Ctrl` (macOS ⌃), `Alt`, `Shift`; punctuation keys are named by their US-keyboard position
+(`;` is Ö on a German keyboard, `IntlBackslash` the ISO `<` key) and `display` uses the labels of
+Settings ▸ General ▸ Keyboard Layout (`general.keyboardLayout`: `us` | `de`). The dialog (Edit ▸
+Keyboard Shortcuts…, ⌥⌘K) uses ids `shortcuts.*` (`shortcuts.key.K`, `shortcuts.cell.<command>`,
+`shortcuts.layout.<us|de>`, `shortcuts.ok`, …).
 
 ## MCP
 `filmcraft-cli mcp` serves MCP on stdio: headless (in-process session; `--demo` / `--project p.fcproj`)

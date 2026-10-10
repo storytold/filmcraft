@@ -680,7 +680,7 @@ pub fn panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
         let mut item = |ui: &mut egui::Ui, id: &str, label: &str, enabled: bool, shortcut: Option<&str>| -> bool {
             let mut b = egui::Button::new(label);
             if let Some(s) = shortcut {
-                b = b.shortcut_text(s);
+                b = b.shortcut_text(crate::menus::shortcut_text(s));
             }
             let r = ui.add_enabled(enabled, b);
             app.auto.add(&format!("project.menu.{id}"), r.rect, label);
@@ -727,7 +727,7 @@ pub fn panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
     for (mode, label, key) in
         [(ViewMode::List, tl!("List"), "Cmd+PageUp"), (ViewMode::Icon, tl!("Icon"), "Cmd+PageDown"), (ViewMode::Freeform, tl!("Freeform"), "")]
     {
-        let r = ui.add(egui::Button::selectable(v.mode == mode, label).shortcut_text(key));
+        let r = ui.add(egui::Button::selectable(v.mode == mode, label).shortcut_text(crate::menus::shortcut_text(key)));
         app.auto.add(&format!("project.menu.view.{mode:?}"), r.rect, label);
         if r.clicked() {
             set_mode(app, inst, mode, &mut actions);
@@ -742,7 +742,7 @@ pub fn panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
         ("hoverScrub", tl!("Hover Scrub"), pp.hover_scrub, "Shift+H"),
         ("thumbnailControlsAllDevices", tl!("Thumbnail controls for all pointing devices"), pp.thumbnail_controls_all_devices, ""),
     ] {
-        let r = ui.add(egui::Button::selectable(on, label).shortcut_text(shortcut));
+        let r = ui.add(egui::Button::selectable(on, label).shortcut_text(crate::menus::shortcut_text(shortcut)));
         app.auto.add(&format!("project.menu.{key}"), r.rect, label);
         if r.clicked() {
             actions.push(("project.view.set".into(), json!({key: !on})));

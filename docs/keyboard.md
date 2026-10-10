@@ -14,6 +14,41 @@ Tests: `crates/engine/src/keyboard_tests.rs` (no key used twice in one scope; be
 keyboard commands, with undo) and `crates/ui-egui/tests/keyboard_ui.rs` (no dangling ids in the
 tables, no conflicts in FilmCraft Default or the Premiere preset, keys pressed in the headless app).
 
+## Keyboard layouts
+
+Shortcuts name letters and digits by what they type and every other key by its position on a US
+keyboard (`crates/engine/src/shortcuts.rs`, `KEYS`), so one preset works on every layout: the key
+a German keyboard labels Ö is `;`, + is `]`, # is `\`, ß is `-`, - is `/`, and its extra key `<`
+is `IntlBackslash`. The UI reads key presses the same way (`menus::key_name`: letters by label, so
+Z and Y follow QWERTZ; digits and punctuation by position, so Shift+0, which types `=` on a German
+keyboard, is still Shift+0, and Ctrl+Alt+9 is not AltGr's `]`). Modifiers must match exactly, as in
+Premiere: Alt+J does not run J. The numeric keypad has no keys of its own (egui does not tell them
+apart): keypad keys are their main-keyboard twins.
+
+Settings ▸ General ▸ Keyboard Layout (also in the Keyboard Shortcuts dialog) picks the labels for
+menus and the shortcut editor: US, or Deutsch (QWERTZ), which also draws the German ISO keyboard.
+
+## Importing Premiere Pro shortcut files (.kys)
+
+Edit ▸ Keyboard Shortcuts… ▸ Import… (or `shortcuts.import {path}`) reads the `.kys` file Premiere
+saves for a custom keyboard set (Windows: `Documents\Adobe\Premiere Pro\<version>\Profile-<name>\Win\`,
+macOS: `…/Mac/`). `crates/engine/src/premiere_kys.rs` maps Premiere's command names onto FilmCraft
+ids (`COMMANDS`, `PANEL_COMMANDS`) and its contexts onto panels; the keys go through the keyboard
+layout the file was made with (detected: a German file has keys typing Ö, Ä, Ü or ß; `layout`
+overrides), which also becomes the label layout. The result is a custom preset named after the file,
+made active: FilmCraft Default, where every command the file lists gets exactly the file's keys
+(listed without a key = unbound) and keys the file gives to commands FilmCraft lacks stay free.
+What could not come over is returned in `skipped` with the reason (shown in the dialog): commands
+FilmCraft does not have (table below), panels it does not have (Productions), keys no US-position
+name covers (`=` is Shift+0 on a German keyboard), and keypad keys whose main-keyboard twin the
+file already uses for something else.
+
+Commands that exist so imported keys have something to run: Move Playhead to Cursor
+(`timeline.playheadToCursor`), Audio Track Mixer ▸ Show/Hide Tracks… (`mixer.showHideTracks`) and
+Meter Input(s) Only (`mixer.meterInputOnly`), the Rectangle and Ellipse tools (`tool.rectangle`,
+`tool.ellipse`). Every menu item can have a key now, as in Premiere (Nest…, Rename…, Export ▸ AAF…):
+the menus run them without parameters, opening their dialog where one is needed.
+
 ## Keyboard-only commands (M3.12)
 
 Premiere has these as keys only (most are not in a menu). Modules: `filmcraft_engine::keyboard`
@@ -52,7 +87,6 @@ Frame has no default key; the Premiere preset moves Shift+E to Export Frame and 
 | Change Draw Mode (⌥⌘L) | Premiere's shape draw modes for the Pen/shape tools; FilmCraft's shape tools have no draw modes. |
 | Production panel: New Project, New Folder, Close Project, Make a Copy, Move Selection Home/End/Page Up/Page Down, Move To Trash, Open Project, Zoom In/Out (12 keys) | Productions (shared multi-project folders) are not implemented; there is no Production panel. |
 | Search panel: Open in Source Monitor (⇧O) | No separate Search panel; Open Search (⇧⌘F) focuses the Project panel search. |
-| Audio Track Mixer: Show/Hide Tracks… (⌥⌘T), Meter Input(s) Only (⌃⇧I) | The mixer has no track visibility dialog and no input metering (no hardware input recording). |
 | Effect Controls: Remove Selected Effect (Delete), Loop During Audio-Only Playback (⌘L) | Effect Controls has no effect selection state and no audio-only playback mode; effects are removed from their context menu or `effects.remove`. |
 | Effects panel: New Custom Bin (⌘/), Delete Custom Item (Delete) | The Effects panel has no custom bins (effect presets live in the Presets bin). |
 | History panel: Delete (Delete) | History states cannot be selected and deleted individually. |
@@ -62,3 +96,4 @@ Frame has no default key; the Premiere preset moves Shift+E to Export Frame and 
 | Text panel: Edit Segment (Return) | No inline transcript text editing (corrections go through `transcript.set`). |
 | Text panel: Follow Active Monitor (⇧C), Show Source Transcript (⇧Z) | Only sequence transcripts exist; source clips have no transcript view. |
 | Timeline: Set Work Area Bar In/Out Point (⌥[ / ⌥]) | FilmCraft has no work area bar (Premiere hides it by default; renders use In/Out). |
+| Replace With After Effects Composition, Batch Capture, Range Selection tool, Effect Controls snapping options | No After Effects link, no tape capture, no such tool or option (reported by the `.kys` import). |

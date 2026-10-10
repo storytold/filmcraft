@@ -368,7 +368,8 @@ mod tests {
                 if p.is_dir() {
                     dirs.push(p);
                 } else if p.extension().is_some_and(|e| e == "rs") {
-                    let text = std::fs::read_to_string(&p).unwrap_or_default();
+                    // a Windows checkout (core.autocrlf) has CRLF line ends
+                    let text = std::fs::read_to_string(&p).unwrap_or_default().replace("\r\n", "\n");
                     let cut = text.find("#[cfg(test)]\nmod tests").unwrap_or(text.len());
                     out.push((p.display().to_string(), text[..cut].to_string()));
                 }

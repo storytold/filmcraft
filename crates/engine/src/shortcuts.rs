@@ -16,10 +16,15 @@
 //! are converted on import: their `Ctrl` is the primary modifier (`Cmd`) and `Win`/`Meta` maps to
 //! the macOS Control key.
 //!
+//! Keys are named by what they type for letters and digits, and by their position on a US keyboard
+//! for punctuation ([`KEYS`]), so a key set works on every keyboard layout: on a German keyboard
+//! the key labelled Ö is `;` and + is `]`. [`KeyLayout`] only changes the labels shown for them.
+//!
 //! Built-in presets: **FilmCraft Default** (each command's default plus the Premiere-default audit,
 //! see [`Shortcuts::audit`]), **Premiere Pro Compatible**, **Final Cut Pro Compatible** and
 //! **Avid Media Composer Compatible** ([`crate::shortcut_presets`]). Custom presets are JSON files in
-//! `<data dir>/Keyboard Shortcuts/`; the active set persists in `active.json` there.
+//! `<data dir>/Keyboard Shortcuts/`; the active set persists in `active.json` there. Premiere Pro
+//! keyboard shortcut files (`.kys`) import as custom presets too ([`crate::premiere_kys`]).
 //!
 //! Commands the frontend owns (tools, transport, panels, workspaces) are registered with
 //! [`Shortcuts::register_external`] so they can be listed, bound and resolved here too.
@@ -31,6 +36,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::commands::{CommandSpec, always, bad, bool_p, str_p};
+use crate::premiere_kys;
 use crate::shortcut_presets::{self as presets, Entry};
 use crate::{EngineError, Session};
 
@@ -131,6 +137,8 @@ pub const KEYS: &[&str] = &[
     ",",
     ".",
     "/", //
+    // the extra key of ISO keyboards, left of Z (`<` on a German keyboard)
+    "IntlBackslash",
     "Space",
     "Insert",
     "Delete",
@@ -236,8 +244,89 @@ fn canon_key(tok: &str) -> Option<&'static str> {
         "backslash" => "\\",
         "openbracket" | "bracketleft" => "[",
         "closebracket" | "bracketright" => "]",
+        "<" | ">" | "<>" | "iso" => "IntlBackslash",
         _ => return None,
     })
+}
+
+/// The keyboard layout key labels are shown for (Settings ▸ General ▸ Keyboard Layout). Shortcuts
+/// are stored by key ([`KEYS`]), so the layout changes only the labels and how the characters in
+/// an imported Premiere file are read, never which key runs a command.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KeyLayout {
+    /// US (ANSI): the canonical names are the labels.
+    #[default]
+    Us,
+    /// German (QWERTZ, ISO).
+    De,
+}
+
+/// Labels of the punctuation keys on a German keyboard, by canonical (US position) name.
+const GERMAN_LABELS: &[(&str, &str)] =
+    &[("`", "^"), ("-", "ß"), ("=", "´"), ("[", "Ü"), ("]", "+"), ("\\", "#"), (";", "Ö"), ("'", "Ä"), ("/", "-"), ("IntlBackslash", "<")];
+
+impl KeyLayout {
+    pub const ALL: [KeyLayout; 2] = [KeyLayout::Us, KeyLayout::De];
+
+    pub fn from_name(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "us" | "en" | "en-us" | "ansi" | "english" => Some(KeyLayout::Us),
+            "de" | "de-de" | "german" | "deutsch" | "qwertz" => Some(KeyLayout::De),
+            _ => None,
+        }
+    }
+
+    /// The preference value (`us`, `de`).
+    pub fn code(self) -> &'static str {
+        match self {
+            KeyLayout::Us => "us",
+            KeyLayout::De => "de",
+        }
+    }
+
+    /// The name shown in menus.
+    pub fn title(self) -> &'static str {
+        match self {
+            KeyLayout::Us => "US",
+            KeyLayout::De => "Deutsch (QWERTZ)",
+        }
+    }
+
+    /// The label printed on the key named `key` (`;` is Ö on a German keyboard).
+    pub fn label(self, key: &str) -> &str {
+        let table: &[(&str, &str)] = match self {
+            KeyLayout::Us => &[("IntlBackslash", "<>")],
+            KeyLayout::De => GERMAN_LABELS,
+        };
+        table.iter().find(|(k, _)| *k == key).map_or(key, |(_, l)| l)
+    }
+
+    /// The key that types `c` without Shift on this layout (`ö` → `;` on a German keyboard), as
+    /// Premiere stores keys in its shortcut files.
+    pub fn key_for_char(self, c: char) -> Option<&'static str> {
+        if c.is_ascii_alphanumeric() {
+            let up = c.to_ascii_uppercase().to_string();
+            return KEYS.iter().find(|k| **k == up).copied();
+        }
+        match self {
+            KeyLayout::Us => KEYS.iter().find(|k| k.len() == 1 && k.starts_with(c)).copied(),
+            KeyLayout::De => {
+                let c = match c {
+                    'ü' => 'Ü',
+                    'ö' => 'Ö',
+                    'ä' => 'Ä',
+                    c => c,
+                };
+                if matches!(c, ',' | '.') {
+                    return KEYS.iter().find(|k| k.len() == 1 && k.starts_with(c)).copied();
+                }
+                let mut buf = [0u8; 4];
+                let s: &str = c.encode_utf8(&mut buf);
+                GERMAN_LABELS.iter().find(|(_, l)| *l == s).and_then(|(k, _)| KEYS.iter().find(|x| *x == k).copied())
+            }
+        }
+    }
 }
 
 impl Chord {
@@ -308,6 +397,13 @@ impl Chord {
 
     /// Human text: `⌥⇧⌘K` on macOS, `Ctrl+Alt+Shift+K` elsewhere.
     pub fn display(&self, p: Platform) -> String {
+        self.display_in(p, KeyLayout::Us)
+    }
+
+    /// [`Self::display`] with the key labels of keyboard `layout` (`Ctrl+Ö` for `Cmd+;` on a German
+    /// keyboard).
+    pub fn display_in(&self, p: Platform, layout: KeyLayout) -> String {
+        let label = layout.label(self.key);
         if p.is_mac() {
             let mut s = String::new();
             for (on, g) in [(self.mods.ctrl, "⌃"), (self.mods.alt, "⌥"), (self.mods.shift, "⇧"), (self.mods.cmd, "⌘")] {
@@ -315,7 +411,7 @@ impl Chord {
                     s.push_str(g);
                 }
             }
-            let k = match self.key {
+            let k = match label {
                 "Backspace" => "⌫",
                 "Delete" => "⌦",
                 "Enter" => "↩",
@@ -339,7 +435,7 @@ impl Chord {
                     s.push_str(n);
                 }
             }
-            s.push_str(match self.key {
+            s.push_str(match label {
                 "PageUp" => "Page Up",
                 "PageDown" => "Page Down",
                 k => k,
@@ -433,12 +529,14 @@ fn category_of(id: &str, menu: &[&str]) -> String {
     }
 }
 
-/// Engine commands worth binding: undoable actions that need no required parameters.
+/// Engine commands worth binding: undoable actions that need no required parameters, and every
+/// menu item (as in Premiere, any menu command can have a key): the menus run them without
+/// parameters too, opening their dialog where one is needed.
 fn bindable(c: &CommandSpec) -> bool {
     if !c.journal || c.id.starts_with("shortcuts.") || c.id.starts_with("prefs.") || c.id == "trim.tick" {
         return false;
     }
-    if c.shortcut.is_some() {
+    if c.shortcut.is_some() || !c.menu.is_empty() {
         return true;
     }
     let body = c.params.trim().trim_start_matches('{').trim_end_matches('}');
@@ -964,11 +1062,14 @@ impl Shortcuts {
     }
 
     /// Commands assigned with exactly `mods` held, per key: (application command, panel command).
+    /// Off macOS a Control-key binding (`Ctrl+…`) is on the same key as its `Cmd+…` twin, so it is
+    /// listed under `Cmd` there.
     pub fn keyboard(&self, mods: Mods, panel: Option<&str>) -> BTreeMap<&'static str, (Option<String>, Option<String>)> {
+        let p = Platform::current();
         let mut m: BTreeMap<&'static str, (Option<String>, Option<String>)> = BTreeMap::new();
         for b in &self.bindings {
             let Some(c) = b.chord() else { continue };
-            if c.mods != mods {
+            if c.effective(p).mods != mods {
                 continue;
             }
             let e = m.entry(c.key).or_default();
@@ -988,9 +1089,103 @@ impl Shortcuts {
         m
     }
 
-    fn binding_json(&self, b: &Binding, p: Platform) -> Value {
-        json!({"keys": b.keys, "panel": b.panel, "display": b.chord().map(|c| c.display(p)).unwrap_or_else(|| b.keys.clone())})
+    fn binding_json(&self, b: &Binding, p: Platform, layout: KeyLayout) -> Value {
+        json!({"keys": b.keys, "panel": b.panel, "display": b.chord().map(|c| c.display_in(p, layout)).unwrap_or_else(|| b.keys.clone())})
     }
+
+    /// Import a Premiere Pro keyboard shortcut file (`.kys`) as a custom preset named after the
+    /// file, made the active set when `activate`. FilmCraft Default is the starting point: every
+    /// command the file lists (bound or not) gets exactly the file's keys, and a key the file uses
+    /// is taken away from the default command that had it. Commands and keys FilmCraft cannot take
+    /// over are reported in [`KysReport::skipped`].
+    pub fn import_kys(&mut self, path: &Path, activate: bool, layout: Option<KeyLayout>) -> std::result::Result<KysReport, String> {
+        let bytes = read_capped(path)?;
+        let text = String::from_utf8_lossy(&bytes);
+        let file = premiere_kys::parse(&text, layout).map_err(|e| format!("{}: {e}", path.display()))?;
+        let p = Platform::current();
+        let mut bindings = self.builtin(DEFAULT_PRESET).unwrap_or_default();
+        bindings.retain(|b| !file.listed.contains(&b.command));
+        // keys Premiere gave to commands FilmCraft lacks stay free, as they were there
+        let reserved: Vec<(&str, Option<Chord>)> =
+            file.reserved.iter().map(|(panel, k)| (panel.unwrap_or(APPLICATION), Chord::parse(k).ok().map(|c| c.effective(p)))).collect();
+        bindings.retain(|b| !reserved.iter().any(|(ctx, k)| *ctx == b.context() && k.is_some() && *k == b.chord().map(|c| c.effective(p))));
+        let mut skipped = file.skipped;
+        let mut imported: Vec<Binding> = Vec::new();
+        // main keys first: the numeric keypad has no keys of its own here, so a keypad binding
+        // only gets its main-keyboard twin when nothing in the file uses that already
+        let mut entries = file.entries;
+        entries.sort_by_key(|e| e.keypad);
+        for e in entries {
+            let nb = Binding { command: e.command.clone(), keys: e.keys.clone(), panel: e.panel.map(str::to_string) };
+            if imported.contains(&nb) {
+                continue;
+            }
+            let eff = nb.chord().map(|c| c.effective(p));
+            if let Some(o) = imported.iter().find(|o| o.context() == nb.context() && o.chord().map(|c| c.effective(p)) == eff) {
+                let why = if e.keypad { "the keypad key is the same key as its main-keyboard twin here, which" } else { "the key" };
+                skipped.push(premiere_kys::Skipped {
+                    command: e.source,
+                    context: nb.context().to_string(),
+                    keys: e.source_keys,
+                    reason: format!("{why} already runs {}", o.command),
+                });
+                continue;
+            }
+            bindings.retain(|o| !(o.context() == nb.context() && o.chord().map(|c| c.effective(p)) == eff));
+            imported.push(nb);
+        }
+        let count = imported.len();
+        bindings.extend(imported);
+        let stem = path.file_stem().map(|s| s.to_string_lossy().trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "Premiere Pro".into());
+        let name = if BUILTIN_PRESETS.iter().any(|b| b.eq_ignore_ascii_case(&stem)) { format!("{stem} (Premiere Pro)") } else { stem };
+        if let Some(pp) = self.preset_path(&name) {
+            let f = PresetFile { format: FILE_FORMAT.into(), version: 1, name: name.clone(), platform: None, modified: false, bindings: bindings.clone() };
+            write_file(&pp, &f)?;
+        }
+        if activate {
+            let before = self.snapshot();
+            self.bindings = bindings;
+            self.preset = name.clone();
+            self.modified = false;
+            self.changed(before);
+        }
+        Ok(KysReport { name, imported: count, layout: file.layout, platform: file.platform, skipped })
+    }
+}
+
+/// What [`Shortcuts::import_kys`] did.
+#[derive(Clone, Debug, Serialize)]
+pub struct KysReport {
+    /// The preset the file became.
+    pub name: String,
+    /// Key bindings taken over.
+    pub imported: usize,
+    /// The keyboard layout the file was made with.
+    pub layout: KeyLayout,
+    pub platform: Platform,
+    pub skipped: Vec<premiere_kys::Skipped>,
+}
+
+/// Shortcut files are small; anything bigger than this is not one.
+const MAX_FILE: u64 = 32 << 20;
+
+fn read_capped(path: &Path) -> std::result::Result<Vec<u8>, String> {
+    let len = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?.len();
+    if len > MAX_FILE {
+        return Err(format!("{}: too large for a keyboard shortcuts file ({len} bytes)", path.display()));
+    }
+    std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// A Premiere Pro keyboard shortcut file rather than a FilmCraft preset.
+pub fn is_kys(path: &Path) -> bool {
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("kys")) {
+        return true;
+    }
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let mut head = [0u8; 512];
+    let n = std::io::Read::read(&mut f, &mut head).unwrap_or(0);
+    String::from_utf8_lossy(head.get(..n).unwrap_or_default()).contains("<PremiereData")
 }
 
 fn panel_opt(p: &str) -> Option<&str> {
@@ -1055,6 +1250,12 @@ fn platform_p(p: &Value) -> Platform {
     str_p(p, "platform").and_then(Platform::from_name).unwrap_or_else(Platform::current)
 }
 
+/// The keyboard layout labels are shown for: `layout` when given, else Settings ▸ General ▸
+/// Keyboard Layout.
+fn layout_p(s: &Session, p: &Value) -> KeyLayout {
+    str_p(p, "layout").and_then(KeyLayout::from_name).unwrap_or_else(|| s.prefs.general.key_layout())
+}
+
 fn err(cmd: &str) -> impl Fn(String) -> EngineError + '_ {
     move |m| bad(cmd, m)
 }
@@ -1067,7 +1268,8 @@ fn presets_json(s: &Session) -> Value {
 fn list(s: &Session, p: &Value) -> Value {
     let sc = &s.shortcuts;
     let plat = platform_p(p);
-    let q = str_p(p, "query").map(str::to_ascii_lowercase);
+    let layout = layout_p(s, p);
+    let q = str_p(p, "query").map(str::to_lowercase);
     let assigned_only = bool_p(p, "assigned").unwrap_or(false);
     let panel = str_p(p, "panel").and_then(|x| check_panel(Some(x)).ok().flatten());
     let rows: Vec<Value> = sc
@@ -1079,14 +1281,14 @@ fn list(s: &Session, p: &Value) -> Value {
                 return None;
             }
             if let Some(q) = &q {
-                let hit = c.label.to_ascii_lowercase().contains(q.as_str())
-                    || c.id.to_ascii_lowercase().contains(q.as_str())
-                    || bs.iter().any(|b| b.keys.to_ascii_lowercase().contains(q.as_str()) || b.chord().is_some_and(|ch| ch.display(plat).to_ascii_lowercase().contains(q.as_str())));
+                let hit = c.label.to_lowercase().contains(q.as_str())
+                    || c.id.to_lowercase().contains(q.as_str())
+                    || bs.iter().any(|b| b.keys.to_lowercase().contains(q.as_str()) || b.chord().is_some_and(|ch| ch.display_in(plat, layout).to_lowercase().contains(q.as_str())));
                 if !hit {
                     return None;
                 }
             }
-            Some(json!({"id": c.id, "label": c.label, "category": c.category, "menu": c.menu, "shortcuts": bs.iter().map(|b| sc.binding_json(b, plat)).collect::<Vec<_>>()}))
+            Some(json!({"id": c.id, "label": c.label, "category": c.category, "menu": c.menu, "shortcuts": bs.iter().map(|b| sc.binding_json(b, plat, layout)).collect::<Vec<_>>()}))
         })
         .collect();
     json!(rows)
@@ -1099,14 +1301,19 @@ pub fn commands() -> Vec<CommandSpec> {
         };
     }
     vec![
-        sc!("shortcuts.list", "List Keyboard Shortcuts", r#"{"query":str?,"panel":str?,"assigned":bool?,"platform":"mac|windows|linux"?}"#, false, |s, p| Ok(
-            list(s, p)
-        )),
-        sc!("shortcuts.get", "Get Shortcuts of a Command", r#"{"command":id,"platform":str?}"#, false, |s, p| {
+        sc!(
+            "shortcuts.list",
+            "List Keyboard Shortcuts",
+            r#"{"query":str?,"panel":str?,"assigned":bool?,"platform":"mac|windows|linux"?,"layout":"us|de"?}"#,
+            false,
+            |s, p| Ok(list(s, p))
+        ),
+        sc!("shortcuts.get", "Get Shortcuts of a Command", r#"{"command":id,"platform":str?,"layout":"us|de"?}"#, false, |s, p| {
             let id = str_p(p, "command").ok_or_else(|| bad("shortcuts.get", "need `command`"))?;
             let c = s.shortcuts.command(id).ok_or_else(|| bad("shortcuts.get", format!("unknown command `{id}`")))?;
             let plat = platform_p(p);
-            let bs: Vec<Value> = s.shortcuts.for_command(id).into_iter().map(|b| s.shortcuts.binding_json(b, plat)).collect();
+            let layout = layout_p(s, p);
+            let bs: Vec<Value> = s.shortcuts.for_command(id).into_iter().map(|b| s.shortcuts.binding_json(b, plat, layout)).collect();
             Ok(json!({"id": c.id, "label": c.label, "category": c.category, "shortcuts": bs}))
         }),
         sc!("shortcuts.set", "Assign Shortcut", r#"{"command":id,"keys":"Cmd+Shift+K","panel":str?,"add":bool?,"keepConflicts":bool?}"#, true, |s, p| {
@@ -1172,10 +1379,25 @@ pub fn commands() -> Vec<CommandSpec> {
             s.shortcuts.export(Path::new(path)).map_err(err("shortcuts.export"))?;
             Ok(json!({"path": path, "bindings": s.shortcuts.bindings.len()}))
         }),
-        sc!("shortcuts.import", "Import Keyboard Shortcuts", r#"{"path":str,"activate":bool=true}"#, true, |s, p| {
+        sc!("shortcuts.import", "Import Keyboard Shortcuts", r#"{"path":str,"activate":bool=true,"layout":"us|de"?}"#, true, |s, p| {
             let path = str_p(p, "path").ok_or_else(|| bad("shortcuts.import", "need `path`"))?;
-            let name = s.shortcuts.import(Path::new(path), bool_p(p, "activate").unwrap_or(true)).map_err(err("shortcuts.import"))?;
-            Ok(json!({"name": name, "presets": presets_json(s)}))
+            let activate = bool_p(p, "activate").unwrap_or(true);
+            if !is_kys(Path::new(path)) {
+                let name = s.shortcuts.import(Path::new(path), activate).map_err(err("shortcuts.import"))?;
+                return Ok(json!({"name": name, "presets": presets_json(s)}));
+            }
+            // a Premiere Pro file: its keys are read through the keyboard layout it was made with
+            let layout = match str_p(p, "layout") {
+                Some(l) => Some(KeyLayout::from_name(l).ok_or_else(|| bad("shortcuts.import", format!("unknown keyboard layout `{l}` (us or de)")))?),
+                None => None,
+            };
+            let r = s.shortcuts.import_kys(Path::new(path), activate, layout).map_err(err("shortcuts.import"))?;
+            // show the keys with the labels of that keyboard from now on
+            if activate && r.layout != s.prefs.general.key_layout() {
+                s.execute("prefs.set", json!({"key": "general.keyboardLayout", "value": r.layout.code()}))?;
+            }
+            Ok(json!({"name": r.name, "premiere": true, "imported": r.imported, "layout": r.layout, "platform": r.platform,
+                "skipped": r.skipped, "presets": presets_json(s)}))
         }),
         sc!("shortcuts.audit", "Shortcut Audit", "{}", false, |s, _| {
             let a = s.shortcuts.audit();

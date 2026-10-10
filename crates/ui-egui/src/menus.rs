@@ -119,6 +119,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("tool.zoom", "Zoom Tool", [], Some("Z")),
     uic!("tool.type", "Type Tool", [], Some("T")),
     uic!("tool.verticalType", "Vertical Type Tool", [], None),
+    uic!("tool.rectangle", "Rectangle Tool", [], None),
+    uic!("tool.ellipse", "Ellipse Tool", [], None),
     uic!("mode.import", "Import", [], None),
     uic!("mode.edit", "Edit", [], None),
     uic!("mode.export", "Export", ["File", "Export"], Some("Cmd+M")),
@@ -601,10 +603,30 @@ pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
     out
 }
 
-/// Shortcut text for menus in this OS's notation (`⇧⌘K` on macOS, `Ctrl+Shift+K` elsewhere).
+/// The keyboard layout shortcut labels are shown for (Settings ▸ General ▸ Keyboard Layout), as
+/// set by [`set_key_layout`] each frame.
+static KEY_LAYOUT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn set_key_layout(layout: filmcraft_engine::shortcuts::KeyLayout) {
+    KEY_LAYOUT.store(layout as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn key_layout() -> filmcraft_engine::shortcuts::KeyLayout {
+    use filmcraft_engine::shortcuts::KeyLayout;
+    KeyLayout::ALL.get(usize::from(KEY_LAYOUT.load(std::sync::atomic::Ordering::Relaxed))).copied().unwrap_or_default()
+}
+
+/// Shortcut text for menus in this OS's notation (`⇧⌘K` on macOS, `Ctrl+Shift+K` elsewhere), with
+/// the key labels of the keyboard layout (`Ctrl+Ö` on a German keyboard).
 pub fn shortcut_text(s: &str) -> String {
     use filmcraft_engine::shortcuts::{Chord, Platform};
-    Chord::parse(s).map(|c| c.display(Platform::current())).unwrap_or_else(|_| s.to_string())
+    Chord::parse(s).map(|c| c.display_in(Platform::current(), key_layout())).unwrap_or_else(|_| s.to_string())
+}
+
+/// The shortcut a panel menu shows for `id`: its key in `panel`, else its application-wide key.
+pub fn panel_shortcut(session: &filmcraft_engine::Session, id: &str, panel: &str) -> String {
+    let bs = session.shortcuts.for_command(id);
+    bs.iter().find(|b| b.panel.as_deref() == Some(panel)).or_else(|| bs.iter().find(|b| b.panel.is_none())).map(|b| shortcut_text(&b.keys)).unwrap_or_default()
 }
 
 /// Parse "Cmd+Shift+K" into the modifiers a chord requires + its key. Off macOS the Control key
@@ -643,35 +665,86 @@ pub fn parse_shortcut(s: &str) -> Option<(egui::Modifiers, egui::Key)> {
     key.map(|k| (m, k))
 }
 
-/// One active key binding for the input loop: (modifiers, key, command id, panel or None).
-pub type KeyBinding = (egui::Modifiers, egui::Key, String, Option<String>);
-
-/// The active key bindings (from the engine's shortcut set), most specific first so Shift+I
-/// doesn't also fire I.
-pub fn bindings(app: &FilmcraftApp) -> Vec<KeyBinding> {
-    let mut v: Vec<KeyBinding> =
-        app.session.shortcuts.bindings.iter().filter_map(|b| parse_shortcut(&b.keys).map(|(m, k)| (m, k, b.command.clone(), b.panel.clone()))).collect();
-    // With Shift held, a punctuation key arrives as its shifted glyph (Shift+; is `:` on US layouts).
-    let shifted: Vec<KeyBinding> =
-        v.iter().filter(|b| b.0.shift).filter_map(|(m, k, id, p)| shifted_key(*k).map(|k2| (*m, k2, id.clone(), p.clone()))).collect();
-    v.extend(shifted);
-    v.sort_by_key(|(m, ..)| std::cmp::Reverse(m.command as u8 + m.shift as u8 + m.alt as u8 + m.ctrl as u8));
-    v
+/// The canonical name ([`filmcraft_engine::shortcuts::KEYS`]) of egui key `k`. The shifted
+/// glyphs of a US keyboard name their key: synthetic events (no physical key) may carry them.
+fn canonical_name(k: egui::Key) -> Option<&'static str> {
+    use egui::Key;
+    use filmcraft_engine::shortcuts::KEYS;
+    Some(match k {
+        Key::ArrowUp => "Up",
+        Key::ArrowDown => "Down",
+        Key::ArrowLeft => "Left",
+        Key::ArrowRight => "Right",
+        Key::Backtick => "`",
+        Key::Minus => "-",
+        Key::Equals | Key::Plus => "=",
+        Key::OpenBracket | Key::OpenCurlyBracket => "[",
+        Key::CloseBracket | Key::CloseCurlyBracket => "]",
+        Key::Backslash | Key::Pipe => "\\",
+        Key::Semicolon | Key::Colon => ";",
+        Key::Quote => "'",
+        Key::Comma => ",",
+        Key::Period => ".",
+        Key::Slash | Key::Questionmark => "/",
+        Key::Exclamationmark => "1",
+        k => {
+            let n = k.name();
+            return KEYS.iter().find(|x| **x == n).copied();
+        }
+    })
 }
 
-/// The key a US layout reports for `k` with Shift held, when it differs.
-fn shifted_key(k: egui::Key) -> Option<egui::Key> {
-    use egui::Key;
-    Some(match k {
-        Key::Semicolon => Key::Colon,
-        Key::Slash => Key::Questionmark,
-        Key::Equals => Key::Plus,
-        Key::Backslash => Key::Pipe,
-        Key::Num1 => Key::Exclamationmark,
-        Key::OpenBracket => Key::OpenCurlyBracket,
-        Key::CloseBracket => Key::CloseCurlyBracket,
-        _ => return None,
-    })
+fn is_letter(name: &str) -> bool {
+    name.len() == 1 && name.bytes().all(|b| b.is_ascii_uppercase())
+}
+
+/// The key a key press stands for, whatever the keyboard layout ([`filmcraft_engine::shortcuts::KEYS`]
+/// names). Letters go by what they type (Y and Z trade places on a German keyboard and the
+/// shortcuts follow the labels); digits and punctuation go by where the key is (`physical`, named
+/// as on a US keyboard), so Shift or AltGr never turn the key into another one: on a German
+/// keyboard Shift+0 types `=` and Ctrl+Alt+9 types `]`, and its Ö, Ä, Ü, +, # and < keys are `;`,
+/// `'`, `[`, `]`, `\` and the ISO key. Keypad keys are their main-keyboard twins. Synthetic
+/// events without a physical key use `key`.
+pub fn key_name(key: egui::Key, physical: Option<egui::Key>) -> Option<&'static str> {
+    let logical = canonical_name(key);
+    if logical.is_some_and(is_letter) {
+        return logical;
+    }
+    physical.and_then(canonical_name).or(logical)
+}
+
+/// The modifiers of a key press in the notation of the engine's shortcuts: off macOS the Control
+/// key is the primary modifier (`Cmd`), as [`filmcraft_engine::shortcuts::Chord::effective`] has it.
+pub fn mods_of(m: egui::Modifiers) -> filmcraft_engine::shortcuts::Mods {
+    use filmcraft_engine::shortcuts::Mods;
+    if cfg!(target_os = "macos") {
+        Mods { cmd: m.mac_cmd || m.command, ctrl: m.ctrl, alt: m.alt, shift: m.shift }
+    } else {
+        Mods { cmd: m.ctrl || m.command, ctrl: false, alt: m.alt, shift: m.shift }
+    }
+}
+
+/// One active key binding for the input loop: (modifiers, key, command id, panel or None). The
+/// modifiers are the chord's as this OS sees them ([`mods_of`]).
+pub type KeyBinding = (filmcraft_engine::shortcuts::Mods, &'static str, String, Option<String>);
+
+/// The active key bindings (from the engine's shortcut set).
+pub fn bindings(app: &FilmcraftApp) -> Vec<KeyBinding> {
+    use filmcraft_engine::shortcuts::{Chord, Platform};
+    let p = Platform::current();
+    app.session
+        .shortcuts
+        .bindings
+        .iter()
+        .filter_map(|b| Chord::parse(&b.keys).ok().map(|c| c.effective(p)).map(|c| (c.mods, c.key, b.command.clone(), b.panel.clone())))
+        .collect()
+}
+
+/// The command a key press runs with `focused` having focus: that panel's shortcut, else the
+/// application-wide one. Modifiers must match exactly, as in Premiere: Shift+J is not J.
+pub fn resolve<'a>(bindings: &'a [KeyBinding], focused: &str, key: &str, mods: filmcraft_engine::shortcuts::Mods) -> Option<&'a str> {
+    let hit = |b: &&KeyBinding| b.1 == key && b.0 == mods;
+    bindings.iter().filter(|b| b.3.as_deref() == Some(focused)).find(hit).or_else(|| bindings.iter().filter(|b| b.3.is_none()).find(hit)).map(|b| b.2.as_str())
 }
 
 /// Frontend-owned commands, registered with the engine's shortcut set so they can be listed,
@@ -777,5 +850,60 @@ mod parse_shortcut_tests {
         let (m, k) = parse_shortcut("Cmd+Shift+K").unwrap();
         assert!(m.command && m.shift && !m.alt && k == egui::Key::K);
         assert_eq!(parse_shortcut("+").map(|(_, k)| k), Some(egui::Key::Plus));
+    }
+
+    /// Keys are what they are on any keyboard layout: letters by their label, everything else by
+    /// position. These are the events egui-winit sends for a German (QWERTZ) keyboard.
+    #[test]
+    fn keys_read_the_same_on_a_german_keyboard() {
+        use super::key_name;
+        use egui::Key;
+        // Z and Y trade places; the shortcut follows the label
+        assert_eq!(key_name(Key::Z, Some(Key::Y)), Some("Z"));
+        assert_eq!(key_name(Key::Y, Some(Key::Z)), Some("Y"));
+        // + types `+` but sits where a US keyboard has ]
+        assert_eq!(key_name(Key::Plus, Some(Key::CloseBracket)), Some("]"));
+        // Ö, Ä, Ü have no egui name: egui sends the physical key
+        assert_eq!(key_name(Key::Semicolon, Some(Key::Semicolon)), Some(";"));
+        assert_eq!(key_name(Key::OpenBracket, Some(Key::OpenBracket)), Some("["));
+        // # and the ISO key < left of Y
+        assert_eq!(key_name(Key::Backslash, Some(Key::Backslash)), Some("\\"));
+        assert_eq!(key_name(Key::IntlBackslash, Some(Key::IntlBackslash)), Some("IntlBackslash"));
+        // - types `-` but sits where a US keyboard has /; ß sits on the US -
+        assert_eq!(key_name(Key::Minus, Some(Key::Slash)), Some("/"));
+        assert_eq!(key_name(Key::Minus, Some(Key::Minus)), Some("-"));
+        // Shift+0 types `=`, Shift+7 `/`, AltGr+9 `]`: still 0, 7, 9
+        assert_eq!(key_name(Key::Equals, Some(Key::Num0)), Some("0"));
+        assert_eq!(key_name(Key::Slash, Some(Key::Num7)), Some("7"));
+        assert_eq!(key_name(Key::CloseBracket, Some(Key::Num9)), Some("9"));
+        // AltGr+Q types @ (no egui key): egui sends the physical Q
+        assert_eq!(key_name(Key::Q, Some(Key::Q)), Some("Q"));
+        // keypad + and Enter are their main-keyboard twins
+        assert_eq!(key_name(Key::Plus, Some(Key::Plus)), Some("="));
+        assert_eq!(key_name(Key::Enter, Some(Key::Enter)), Some("Enter"));
+        // synthetic events (agents, tests) have no physical key; US shifted glyphs name their key
+        assert_eq!(key_name(Key::Colon, None), Some(";"));
+        assert_eq!(key_name(Key::ArrowLeft, None), Some("Left"));
+        assert_eq!(key_name(Key::F35, None), None);
+    }
+
+    #[test]
+    fn modifiers_match_exactly() {
+        use super::{KeyBinding, mods_of, resolve};
+        use filmcraft_engine::shortcuts::Mods;
+        let b: Vec<KeyBinding> = vec![
+            (Mods::default(), "J", "playback.reverse".into(), None),
+            (Mods { shift: true, ..Default::default() }, "J", "playback.slowReverse".into(), None),
+            (Mods::default(), "Left", "edit.undo".into(), Some("History".into())),
+            (Mods::default(), "Left", "playhead.stepBack".into(), None),
+        ];
+        assert_eq!(resolve(&b, "Timeline", "J", Mods::default()), Some("playback.reverse"));
+        assert_eq!(resolve(&b, "Timeline", "J", mods_of(egui::Modifiers::SHIFT)), Some("playback.slowReverse"));
+        assert_eq!(resolve(&b, "Timeline", "J", mods_of(egui::Modifiers::ALT)), None, "Alt+J is not J");
+        assert_eq!(resolve(&b, "History", "Left", Mods::default()), Some("edit.undo"), "panel keys first");
+        assert_eq!(resolve(&b, "Timeline", "Left", Mods::default()), Some("playhead.stepBack"));
+        // a physical Ctrl press is the primary modifier off macOS
+        let ctrl = egui::Modifiers { ctrl: true, command: !cfg!(target_os = "macos"), ..Default::default() };
+        assert_eq!(mods_of(ctrl).cmd, !cfg!(target_os = "macos"));
     }
 }

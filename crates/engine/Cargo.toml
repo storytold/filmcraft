@@ -37,6 +37,7 @@ filmcraft-captions = { workspace = true }
 filmcraft-speech = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+roxmltree = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 web-time = "1"

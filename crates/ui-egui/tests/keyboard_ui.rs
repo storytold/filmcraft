@@ -61,6 +61,15 @@ impl Driver {
         self.frames(3);
     }
 
+    /// A real key press as egui-winit reports it: `key` (logical, or the physical key when the
+    /// layout's character has no egui name) and `physical`.
+    fn press(&mut self, key: egui::Key, physical: egui::Key, m: egui::Modifiers) {
+        for pressed in [true, false] {
+            self.harness.input_mut().events.push(egui::Event::Key { key, physical_key: Some(physical), pressed, repeat: false, modifiers: m });
+        }
+        self.frames(3);
+    }
+
     fn focus(&mut self, panel: &str) {
         self.ok("ui.set", json!({"focused": panel}));
         self.frames(2);
@@ -237,4 +246,136 @@ fn delete_key_clears_the_selected_timeline_clip() {
     assert!(!items(&mut d).iter().any(|i| i["clip"].as_u64() == Some(clip)), "Delete removed the selected clip");
     d.key("Cmd+Z");
     assert!(items(&mut d).iter().any(|i| i["clip"].as_u64() == Some(clip)), "and undo brings it back");
+}
+
+/// Every Premiere command the `.kys` import maps names a FilmCraft command (engine or UI).
+#[test]
+fn premiere_file_import_names_real_commands() {
+    use filmcraft_engine::premiere_kys::{COMMANDS, PANEL_COMMANDS};
+    let ui: Vec<String> = filmcraft_ui_egui::menus::external_commands().into_iter().map(|c| c.id).collect();
+    let mut bad = Vec::new();
+    for (premiere, id) in COMMANDS.iter().map(|(p, i)| (*p, *i)).chain(PANEL_COMMANDS.iter().map(|(_, p, i)| (*p, *i))) {
+        if filmcraft_engine::find_command(id).is_none() && !ui.iter().any(|u| u == id) {
+            bad.push(format!("{premiere} → {id}"));
+        }
+    }
+    assert!(bad.is_empty(), "dangling ids: {bad:#?}");
+}
+
+/// A German keyboard: keys that type characters egui has no name for (Ö, <), keys whose
+/// character moves with Shift (Shift+0 is `=`), + (a US ]) and QWERTZ letters all run their
+/// shortcuts; modifiers must match exactly.
+#[test]
+fn shortcuts_work_on_a_german_keyboard() {
+    use egui::{Key, Modifiers};
+    use filmcraft_ui_egui::dock::PanelKind;
+    let mut d = Driver::new();
+    d.focus("Timeline");
+    // Shift+0 (Multi-Camera View) types `=` on a German keyboard
+    let mc = d.app().ui.program.multicam;
+    d.press(Key::Equals, Key::Num0, Modifiers::SHIFT);
+    assert_ne!(d.app().ui.program.multicam, mc, "Shift+0 toggles the Multi-Camera view");
+    d.press(Key::Equals, Key::Num0, Modifiers::SHIFT);
+    // Z and Y: the labels win
+    d.press(Key::Z, Key::Y, Modifiers::NONE);
+    assert_eq!(d.app().ui.tool, filmcraft_ui_egui::state::Tool::Zoom);
+    d.press(Key::Y, Key::Z, Modifiers::NONE);
+    assert_eq!(d.app().ui.tool, filmcraft_ui_egui::state::Tool::Slip);
+    // Ö (US ;), + (US ]) and < (the ISO key) take shortcuts like any other key
+    for (keys, key, physical) in
+        [(";", Key::Semicolon, Key::Semicolon), ("]", Key::Plus, Key::CloseBracket), ("IntlBackslash", Key::IntlBackslash, Key::IntlBackslash)]
+    {
+        d.exec("shortcuts.set", json!({"command": "window.maximizeFrame", "keys": keys}));
+        d.frames(2);
+        d.press(key, physical, Modifiers::NONE);
+        assert_eq!(d.app().ui.keys.maximized, Some(PanelKind::Timeline), "{keys}");
+        d.press(key, physical, Modifiers::NONE);
+        assert_eq!(d.app().ui.keys.maximized, None, "{keys}");
+    }
+    // exact modifiers: Alt+D is not D (Select Clip at Playhead)
+    let seq = d.exec("sequence.inspect", json!({}));
+    let second = &seq["video"][0]["items"].as_array().unwrap()[1];
+    d.exec("playhead.set", json!({"time": second["start"].as_i64().unwrap() + 1_000_000_000}));
+    d.exec("edit.deselectAll", json!({}));
+    d.press(Key::D, Key::D, Modifiers::ALT);
+    assert!(d.app().session.state.selection.is_empty(), "Alt+D ran D");
+    d.press(Key::D, Key::D, Modifiers::NONE);
+    assert!(!d.app().session.state.selection.is_empty(), "D selects");
+}
+
+/// A Premiere Pro `.kys` file imported in the app drives the keyboard, labels follow its layout.
+#[test]
+fn an_imported_premiere_file_drives_the_keyboard() {
+    use egui::{Key, Modifiers};
+    let dir = std::env::temp_dir().join(format!("fc-kys-ui-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let item = |i: usize, cmd: &str, code: u32, shift: bool| {
+        format!(
+            "<item.{i}><virtualkey>{code}</virtualkey><modifier.ctrl>false</modifier.ctrl><modifier.alt>false</modifier.alt><modifier.shift>{shift}</modifier.shift><commandname>{cmd}</commandname></item.{i}>"
+        )
+    };
+    let ch = |c: char| 0x8000_0000u32 | c as u32;
+    let text = format!(
+        "<?xml version=\"1.0\"?><PremiereData><shortcuts><context.global>{}{}{}</context.global><context.timeline>{}</context.timeline><platform>windows</platform></shortcuts></PremiereData>",
+        item(0, "cmd.tools.07slip", ch('Y'), false),
+        item(1, "cmd.toggle.maximize.focused.frame", ch('Ü'), true),
+        item(2, "cmd.tools.06razor", ch('<'), false),
+        item(3, "cmd.timeline.move.cti.to.cursor", 38, false),
+    );
+    let path = dir.join("Premiere.kys");
+    std::fs::write(&path, text).unwrap();
+    let mut d = Driver::new();
+    let r = d.exec("shortcuts.import", json!({"path": path.to_string_lossy()}));
+    assert_eq!(r["imported"], json!(4), "{r}");
+    d.frames(2);
+    d.focus("Timeline");
+    // the German Y key and < key
+    d.press(Key::Y, Key::Z, Modifiers::NONE);
+    assert_eq!(d.app().ui.tool, filmcraft_ui_egui::state::Tool::Slip);
+    d.press(Key::IntlBackslash, Key::IntlBackslash, Modifiers::NONE);
+    assert_eq!(d.app().ui.tool, filmcraft_ui_egui::state::Tool::Razor);
+    // Shift+Ü maximizes the focused frame
+    d.press(Key::OpenBracket, Key::OpenBracket, Modifiers::SHIFT);
+    assert!(d.app().ui.keys.maximized.is_some());
+    d.press(Key::OpenBracket, Key::OpenBracket, Modifiers::SHIFT);
+    // menus show the German labels (the layout is the app's, not a process-wide test setting)
+    let layout = d.app().session.prefs.general.key_layout();
+    assert_eq!(layout, filmcraft_engine::shortcuts::KeyLayout::De);
+    let shown = filmcraft_engine::shortcuts::Chord::parse("Shift+[").unwrap().display_in(Platform::current(), layout);
+    assert_eq!(shown, if cfg!(target_os = "macos") { "⇧Ü" } else { "Shift+Ü" });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn move_playhead_to_cursor_and_mixer_menu_commands() {
+    let mut d = Driver::new();
+    d.focus("Timeline");
+    let layout = d.app().tl.layout.clone().expect("the Timeline is laid out");
+    let rate = d.app().session.sequence_rate();
+    let x = layout.x_of(filmcraft_time::Tick::from_seconds_f64(2.0));
+    let r = d.ok("ui.menu.invoke", json!({"id": "timeline.playheadToCursor", "params": {"x": x}}));
+    let t = r["time"].as_i64().unwrap();
+    assert_eq!(rate.snap_nearest(filmcraft_time::Tick(t)).0, t, "on a frame");
+    assert!((filmcraft_time::Tick(t).seconds() - 2.0).abs() < 0.1, "{t}");
+    // off the Timeline it says so instead of moving
+    let (req, reply) = ControlRequest::new("ui.menu.invoke", json!({"id": "timeline.playheadToCursor", "params": {"x": -5.0}}));
+    d.tx.send(req).unwrap();
+    let v = loop {
+        d.frames(1);
+        if let Ok(v) = reply.try_recv() {
+            break v;
+        }
+    };
+    assert_eq!(v["ok"], json!(false), "{v}");
+    assert_eq!(d.app().session.playhead().0, t);
+    // Audio Track Mixer ▸ Meter Input(s) Only and Show/Hide Tracks as commands
+    let on = d.app().ui.mixer_meter_input_only;
+    d.ok("ui.menu.invoke", json!({"id": "mixer.meterInputOnly"}));
+    assert_ne!(d.app().ui.mixer_meter_input_only, on);
+    let r = d.ok("ui.menu.invoke", json!({"id": "mixer.showHideTracks"}));
+    assert_eq!(r["dialog"], json!("showHideTracks"));
+    // the Rectangle and Ellipse tools can have keys
+    let ui: Vec<String> = filmcraft_ui_egui::menus::external_commands().into_iter().map(|c| c.id).collect();
+    assert!(ui.iter().any(|c| c == "tool.rectangle") && ui.iter().any(|c| c == "tool.ellipse"));
 }

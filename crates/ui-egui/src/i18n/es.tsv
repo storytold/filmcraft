@@ -2824,8 +2824,14 @@
 	Export: no file chosen (agents: shortcuts.export {path})	Exportar: no se eligió ningún archivo (agentes: shortcuts.export {path})
 	Imported “{name}”	Importado “{name}”
 	Import: no file chosen (agents: shortcuts.import {path})	Importar: no se eligió ningún archivo (agentes: shortcuts.import {path})
-	Keyboard: US (macOS)	Teclado: EE. UU. (macOS)
-	Keyboard: US	Teclado: EE. UU.
+	Keyboard (macOS):	Teclado (macOS):
+	Keyboard:	Teclado:
+	Keyboard Layout	Distribución del teclado
+	US	EE. UU.
+	Deutsch (QWERTZ)	Alemán (QWERTZ)
+	Move Playhead to Cursor	Mover el cabezal al cursor
+	Imported “{name}” from Premiere Pro: {n} shortcuts	Importado “{name}” de Premiere Pro: {n} atajos
+	; {n} not taken over: {list}	; {n} no se adoptaron: {list}
 	Save preset as:	Guardar ajuste preestablecido como:
 	Commands:	Comandos:
 	{panel} Panel	Panel {panel}

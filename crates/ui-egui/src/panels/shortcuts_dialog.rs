@@ -14,7 +14,7 @@
 
 use egui::text::LayoutJob;
 use egui::{Align2, Color32, CornerRadius, FontId, Rect, RichText, Sense, Stroke, StrokeKind, TextFormat, pos2, vec2};
-use filmcraft_engine::shortcuts::{APPLICATION, Chord, KEYS, Mods, PANELS, Platform};
+use filmcraft_engine::shortcuts::{APPLICATION, Chord, KeyLayout, Mods, PANELS, Platform};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -59,16 +59,11 @@ pub fn open(app: &mut FilmcraftApp) {
     app.dialog = Some(crate::Dialog::Shortcuts);
 }
 
-/// The egui key for a canonical key name.
-fn egui_key(name: &str) -> Option<egui::Key> {
-    crate::menus::parse_shortcut(name).map(|(_, k)| k)
-}
-
-/// Canonical chord text from an egui key event.
-pub fn chord_of(key: egui::Key, m: egui::Modifiers) -> Option<String> {
-    let name = KEYS.iter().find(|k| egui_key(k) == Some(key))?;
-    let mods = Mods { cmd: m.command || m.mac_cmd, ctrl: m.ctrl && cfg!(target_os = "macos"), alt: m.alt, shift: m.shift };
-    Some(format!("{}{}", mods.prefix(), name))
+/// Canonical chord text from an egui key event: the key as [`crate::menus::key_name`] reads it on
+/// any keyboard layout, so a recorded key is the one the input loop matches.
+pub fn chord_of(key: egui::Key, physical: Option<egui::Key>, m: egui::Modifiers) -> Option<String> {
+    let name = crate::menus::key_name(key, physical)?;
+    Some(format!("{}{}", crate::menus::mods_of(m).prefix(), name))
 }
 
 fn label_of(app: &FilmcraftApp, id: &str) -> String {
@@ -95,7 +90,7 @@ fn assign(app: &mut FilmcraftApp, command: &str, keys: &str, add: bool) {
     let panel = app.shortcut_editor.panel().map(str::to_string);
     let p = Platform::current();
     if let Some(r) = exec(app, "shortcuts.set", json!({"command": command, "keys": keys, "panel": panel, "add": add})) {
-        let disp = Chord::parse(keys).map(|c| c.display(p)).unwrap_or_else(|_| keys.into());
+        let disp = Chord::parse(keys).map(|c| c.display_in(p, crate::menus::key_layout())).unwrap_or_else(|_| keys.into());
         let mut msg = format!("{disp} → {}", label_of(app, command));
         let moved: Vec<String> = r["reassigned"].as_array().into_iter().flatten().filter_map(|b| b["command"].as_str().map(|c| label_of(app, c))).collect();
         if !moved.is_empty() {
@@ -119,8 +114,8 @@ fn record(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let got = ctx.input_mut(|i| {
         let mut got = None;
         i.events.retain(|e| match e {
-            egui::Event::Key { key, pressed: true, modifiers, .. } if got.is_none() && !is_modifier_key(*key) => {
-                got = Some((*key, *modifiers));
+            egui::Event::Key { key, physical_key, pressed: true, modifiers, .. } if got.is_none() && !is_modifier_key(*key) => {
+                got = Some((*key, *physical_key, *modifiers));
                 false
             }
             egui::Event::Key { .. } | egui::Event::Text(_) => false,
@@ -128,16 +123,36 @@ fn record(app: &mut FilmcraftApp, ctx: &egui::Context) {
         });
         got
     });
-    let Some((key, m)) = got else { return };
+    let Some((key, physical, m)) = got else { return };
     app.shortcut_editor.recording = None;
     if key == egui::Key::Escape && !m.any() {
         app.shortcut_editor.message = tl!("Cancelled").into();
         return;
     }
-    match chord_of(key, m) {
+    match chord_of(key, physical, m) {
         Some(k) => assign(app, &cmd, &k, add),
         None => app.shortcut_editor.message = tlf!("{key} can't be used as a shortcut", key = format!("{key:?}")),
     }
+}
+
+/// The status line after `shortcuts.import`: for a Premiere Pro file, how many keys came over and
+/// what was left out (the full list is in the command's result).
+fn import_message(r: &Value) -> String {
+    let name = r["name"].as_str().unwrap_or("");
+    if r["premiere"] != json!(true) {
+        return tlf!("Imported “{name}”", name);
+    }
+    let skipped: Vec<&Value> = r["skipped"].as_array().map(|a| a.iter().collect()).unwrap_or_default();
+    let mut msg = tlf!("Imported “{name}” from Premiere Pro: {n} shortcuts", name, n = r["imported"].as_u64().unwrap_or(0));
+    if !skipped.is_empty() {
+        let list: Vec<String> =
+            skipped.iter().take(6).map(|s| format!("{} ({})", s["command"].as_str().unwrap_or(""), s["keys"].as_str().unwrap_or(""))).collect();
+        msg.push_str(&tlf!("; {n} not taken over: {list}", n = skipped.len(), list = list.join(", ")));
+        if skipped.len() > 6 {
+            msg.push('…');
+        }
+    }
+    msg
 }
 
 /// Show the dialog; false when it closed.
@@ -245,18 +260,31 @@ fn header(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens) {
             }
         }
         if small_button(app, ui, "shortcuts.import", tl!("Import…"), true) {
-            let picked = app.hooks.pick_open_file.as_mut().and_then(|f| f(tl!("Keyboard Shortcuts"), &["json"]));
+            // FilmCraft presets (.json) and Premiere Pro keyboard shortcut files (.kys)
+            let picked = app.hooks.pick_open_file.as_mut().and_then(|f| f(tl!("Keyboard Shortcuts"), &["json", "kys"]));
             match picked {
                 Some(path) => {
                     if let Some(r) = exec(app, "shortcuts.import", json!({"path": path})) {
-                        app.shortcut_editor.message = tlf!("Imported “{name}”", name = r["name"].as_str().unwrap_or(""));
+                        app.shortcut_editor.message = import_message(&r);
                     }
                 }
                 None => app.shortcut_editor.message = tl!("Import: no file chosen (agents: shortcuts.import {path})").into(),
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(if cfg!(target_os = "macos") { tl!("Keyboard: US (macOS)") } else { tl!("Keyboard: US") }).size(12.0).color(t.text_dim));
+            let cur = crate::menus::key_layout();
+            let r = egui::ComboBox::from_id_salt("shortcuts-layout").width(150.0).selected_text(crate::i18n::t(cur.title())).show_ui(ui, |ui| {
+                for l in KeyLayout::ALL {
+                    let r = ui.selectable_label(l == cur, crate::i18n::t(l.title()));
+                    app.auto.add(&format!("shortcuts.layout.{}", l.code()), r.rect, l.title());
+                    if r.clicked() {
+                        exec(app, "prefs.set", json!({"key": "general.keyboardLayout", "value": l.code()}));
+                        crate::menus::set_key_layout(l);
+                    }
+                }
+            });
+            app.auto.add("shortcuts.layout", r.response.rect, "Keyboard layout");
+            ui.label(RichText::new(if cfg!(target_os = "macos") { tl!("Keyboard (macOS):") } else { tl!("Keyboard:") }).size(12.0).color(t.text_dim));
         });
     });
     if let Some(mut name) = app.shortcut_editor.save_name.clone() {
@@ -382,8 +410,71 @@ const MAIN_ROWS: [KeyRow; 6] = [
         ("/", 1.0),
         ("#Shift", 2.75),
     ],
-    &[("#Ctrl", 1.5), ("#Alt", 1.25), ("#Cmd", 1.5), ("Space", 6.5), ("#Cmd", 1.5), ("#Alt", 1.25), ("#Ctrl", 1.5)],
+    BOTTOM_ROW,
 ];
+
+/// The German keyboard (ISO, QWERTZ), by canonical key names ([`KeyLayout::label`] gives the
+/// labels): Z and Y trade places, Ö Ä Ü ß ´ ^ + # - are the US keyboard's punctuation keys, and
+/// the ISO key (<) sits left of Y.
+const MAIN_ROWS_DE: [KeyRow; 6] = [
+    MAIN_ROWS[0],
+    MAIN_ROWS[1],
+    &[
+        ("Tab", 1.5),
+        ("Q", 1.0),
+        ("W", 1.0),
+        ("E", 1.0),
+        ("R", 1.0),
+        ("T", 1.0),
+        ("Z", 1.0),
+        ("U", 1.0),
+        ("I", 1.0),
+        ("O", 1.0),
+        ("P", 1.0),
+        ("[", 1.0),
+        ("]", 1.0),
+        ("Enter", 1.5),
+    ],
+    &[
+        ("#Caps", 1.75),
+        ("A", 1.0),
+        ("S", 1.0),
+        ("D", 1.0),
+        ("F", 1.0),
+        ("G", 1.0),
+        ("H", 1.0),
+        ("J", 1.0),
+        ("K", 1.0),
+        ("L", 1.0),
+        (";", 1.0),
+        ("'", 1.0),
+        ("\\", 1.0),
+    ],
+    &[
+        ("#Shift", 1.25),
+        ("IntlBackslash", 1.0),
+        ("Y", 1.0),
+        ("X", 1.0),
+        ("C", 1.0),
+        ("V", 1.0),
+        ("B", 1.0),
+        ("N", 1.0),
+        ("M", 1.0),
+        (",", 1.0),
+        (".", 1.0),
+        ("/", 1.0),
+        ("#Shift", 2.75),
+    ],
+    BOTTOM_ROW,
+];
+
+/// The modifier row: Control, Option, Command on a Mac; Ctrl, Windows key, Alt elsewhere (where
+/// Ctrl is the primary modifier, `#Cmd`, and the Windows key takes no shortcuts).
+const BOTTOM_ROW: KeyRow = if cfg!(target_os = "macos") {
+    &[("#Ctrl", 1.5), ("#Alt", 1.25), ("#Cmd", 1.5), ("Space", 6.5), ("#Cmd", 1.5), ("#Alt", 1.25), ("#Ctrl", 1.5)]
+} else {
+    &[("#Cmd", 1.5), ("#Win", 1.25), ("#Alt", 1.5), ("Space", 6.5), ("#Alt", 1.5), ("#Win", 1.25), ("#Cmd", 1.5)]
+};
 /// Navigation cluster rows (x offset in units within the cluster).
 const NAV_ROWS: [&[(&str, f32)]; 6] = [
     &[],
@@ -394,9 +485,10 @@ const NAV_ROWS: [&[(&str, f32)]; 6] = [
     &[("Left", 0.0), ("Down", 1.0), ("Right", 2.0)],
 ];
 
-fn key_legend(name: &str, mac: bool) -> String {
+fn key_legend(name: &str, mac: bool, layout: KeyLayout) -> String {
     match name {
         "#Caps" => "Caps Lock".into(),
+        "#Win" => "Win".into(),
         "#Shift" => "⇧ Shift".into(),
         "#Ctrl" => {
             if mac {
@@ -441,12 +533,13 @@ fn key_legend(name: &str, mac: bool) -> String {
         "Down" => "↓".into(),
         "Left" => "←".into(),
         "Right" => "→".into(),
-        k => k.into(),
+        k => layout.label(k).into(),
     }
 }
 
 fn keyboard(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, t: &Tokens) {
     let mac = cfg!(target_os = "macos");
+    let layout = crate::menus::key_layout();
     // held modifiers count as the filter too (outside recording)
     let held = ui.input(|i| i.modifiers);
     let mut mods = app.shortcut_editor.mods;
@@ -476,6 +569,7 @@ fn keyboard(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, t: &Tokens) {
             "#Ctrl" => mods.ctrl,
             _ => false,
         };
+        let legend = key_legend(name, mac, layout);
         // modifier keys appear twice: the right-hand ones get a ".right" suffix
         let right = is_mod && r.center().x > area.center().x;
         let id = match (is_mod, right) {
@@ -516,34 +610,33 @@ fn keyboard(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, t: &Tokens) {
             let g = ui.fonts_mut(|f| f.layout_job(job));
             ui.painter().galley(r.min + vec2(4.0, 3.0), g, Color32::WHITE);
         }
-        ui.painter().text(
-            r.left_bottom() + vec2(4.0, -3.0),
-            Align2::LEFT_BOTTOM,
-            key_legend(name, mac),
-            FontId::proportional(fs),
-            Color32::from_white_alpha(220),
-        );
+        ui.painter().text(r.left_bottom() + vec2(4.0, -3.0), Align2::LEFT_BOTTOM, legend.clone(), FontId::proportional(fs), Color32::from_white_alpha(220));
         let tip = match (&app_cmd, &panel_cmd) {
             (Some(a), Some(b)) => format!("{} / {} ({})", label_of(app, a), label_of(app, b), panel.clone().unwrap_or_default()),
             (Some(a), None) => label_of(app, a),
             (None, Some(b)) => label_of(app, b),
-            _ => key_legend(name, mac),
+            _ => legend.clone(),
         };
         app.auto.add(&id, r, &tip);
         if resp.clicked() {
             if is_mod {
-                toggled = Some(match name {
-                    "#Shift" => "Shift",
-                    "#Alt" => "Alt",
-                    "#Cmd" => "Cmd",
-                    _ => "Ctrl",
-                });
+                toggled = match name {
+                    "#Shift" => Some("Shift"),
+                    "#Alt" => Some("Alt"),
+                    "#Cmd" => Some("Cmd"),
+                    "#Ctrl" => Some("Ctrl"),
+                    _ => None,
+                };
             } else if name != "#Caps" {
                 clicked_key = Some(name.to_string());
             }
         }
     };
-    for (ri, row) in MAIN_ROWS.iter().enumerate() {
+    let rows = match layout {
+        KeyLayout::Us => &MAIN_ROWS,
+        KeyLayout::De => &MAIN_ROWS_DE,
+    };
+    for (ri, row) in rows.iter().enumerate() {
         let mut x = origin.x;
         let y = origin.y + ri as f32 * row_h + if ri > 0 { u * 0.15 } else { 0.0 };
         for (name, w) in row.iter() {
@@ -707,11 +800,12 @@ fn matches_search(row: &serde_json::Value, query: &str) -> bool {
 
 fn key_detail(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Tokens) {
     let plat = Platform::current();
+    let layout = crate::menus::key_layout();
     let key = app.shortcut_editor.key.clone();
     ui.horizontal(|ui| {
         ui.label(RichText::new(tl!("Key:")).size(13.0).strong().color(t.text));
         if let Some(k) = &key {
-            ui.label(RichText::new(key_legend(k, plat.is_mac())).size(13.0).color(t.hot_text));
+            ui.label(RichText::new(key_legend(k, plat.is_mac(), layout)).size(13.0).color(t.hot_text));
         }
     });
     let (hr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
@@ -726,9 +820,9 @@ fn key_detail(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Tokens
             let keys = b["keys"].as_str().unwrap_or("");
             let mods = Chord::parse(keys).map(|c| {
                 let k = Chord { mods: c.mods, key: c.key };
-                let d = k.display(plat);
-                let legend = key_legend(c.key, plat.is_mac());
-                let m = d.trim_end_matches(&legend).trim_end_matches(c.key).trim_end_matches('+').to_string();
+                let d = k.display_in(plat, layout);
+                let legend = key_legend(c.key, plat.is_mac(), layout);
+                let m = d.trim_end_matches(&legend).trim_end_matches(layout.label(c.key)).trim_end_matches(c.key).trim_end_matches('+').to_string();
                 if m.is_empty() { tl!("None").to_string() } else { m }
             });
             ui.painter().text(r.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, mods.unwrap_or_default(), Tokens::ui(12.5), t.text);
@@ -749,7 +843,7 @@ fn key_detail(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Tokens
     // assign the selected command to the clicked key with the selected modifiers
     if let (Some(k), Some(cmd)) = (key, app.shortcut_editor.selected.clone()) {
         let keys = format!("{}{}", app.shortcut_editor.mods.prefix(), k);
-        let disp = Chord::parse(&keys).map(|c| c.display(plat)).unwrap_or(keys.clone());
+        let disp = Chord::parse(&keys).map(|c| c.display_in(plat, layout)).unwrap_or(keys.clone());
         let label = tlf!("Assign {key} to {command}", key = disp, command = label_of(app, &cmd));
         if small_button(app, ui, "shortcuts.assignKey", &label, true) {
             assign(app, &cmd, &keys, false);
@@ -760,13 +854,14 @@ fn key_detail(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Tokens
 /// Bottom row: messages / conflicts, Undo / Redo / Clear, Cancel / OK. Returns Some(ok) to close.
 fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens) -> Option<bool> {
     let plat = Platform::current();
+    let layout = crate::menus::key_layout();
     let conflicts = app.session.shortcuts.conflicts(plat);
     let mut close = None;
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.set_width(ui.available_width() - 420.0);
             for (ctx, keys, cmds) in conflicts.iter().take(2) {
-                let disp = Chord::parse(keys).map(|c| c.display(plat)).unwrap_or(keys.clone());
+                let disp = Chord::parse(keys).map(|c| c.display_in(plat, layout)).unwrap_or(keys.clone());
                 let names: Vec<String> = cmds.iter().map(|c| label_of(app, c)).collect();
                 let r = ui.label(
                     RichText::new(tlf!("Conflict: {key} is assigned to {commands} ({ctx})", key = disp, commands = names.join(tl!(" and ")), ctx))

@@ -30,6 +30,7 @@ pub mod mixer;
 pub mod multicam;
 pub mod panels;
 pub mod perf;
+pub mod premiere_kys;
 pub mod presets;
 pub mod previews;
 pub mod project_manager;
@@ -1064,6 +1065,8 @@ mod nest_fidelity_tests;
 mod nesting_tests;
 #[cfg(test)]
 mod panels_tests;
+#[cfg(test)]
+mod premiere_kys_tests;
 #[cfg(test)]
 mod presets_tests;
 #[cfg(test)]

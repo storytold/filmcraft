@@ -37,6 +37,9 @@ pub struct GeneralPrefs {
     /// `system` (the default: the operating system's preferred language when the interface has it,
     /// otherwise English).
     pub interface_language: String,
+    /// Keyboard Layout the shortcut key labels are shown for: `us` or `de`
+    /// ([`crate::shortcuts::KeyLayout`]). Shortcuts work on every layout either way.
+    pub keyboard_layout: String,
     /// "At Startup": `showHome` (FilmCraft: the demo project), `openMostRecent`, `emptyProject`.
     pub at_startup: String,
     /// "When Opening a Project": `showOpenDialog` | `showHome`.
@@ -64,6 +67,7 @@ impl Default for GeneralPrefs {
     fn default() -> Self {
         Self {
             interface_language: "system".into(),
+            keyboard_layout: "us".into(),
             at_startup: "showHome".into(),
             when_opening_project: "showOpenDialog".into(),
             bins_double_click: "openInPlace".into(),
@@ -81,6 +85,13 @@ impl Default for GeneralPrefs {
             show_mask_tracker_preview: true,
             recent_projects: Vec::new(),
         }
+    }
+}
+
+impl GeneralPrefs {
+    /// The keyboard layout shortcut labels are shown for.
+    pub fn key_layout(&self) -> crate::shortcuts::KeyLayout {
+        crate::shortcuts::KeyLayout::from_name(&self.keyboard_layout).unwrap_or_default()
     }
 }
 
@@ -657,6 +668,7 @@ const CACHE_MGMT: &[(&str, &str)] = &[
     ("exceedsSize", "Automatically delete oldest cache files when cache exceeds"),
 ];
 const AUTO_SCROLL: &[(&str, &str)] = &[("noScroll", "No Scroll"), ("pageScroll", "Page Scroll"), ("smoothScroll", "Smooth Scroll")];
+const KEY_LAYOUTS: &[(&str, &str)] = &[("us", "US"), ("de", "Deutsch (QWERTZ)")];
 const MOUSE_SCROLL: &[(&str, &str)] = &[("vertical", "Vertical"), ("horizontal", "Horizontal")];
 const HW_DECODE: &[(&str, &str)] = &[("auto", "Auto"), ("off", "Off")];
 const TRACKS: &[(&str, &str)] = &[("useFile", "Use File"), ("mono", "Mono"), ("stereo", "Stereo"), ("5.1", "5.1"), ("adaptive", "Adaptive")];
@@ -683,6 +695,7 @@ static CATEGORIES: &[Category] = &[
                 Kind::Choice(&[("system", "System Language"), ("en", "English"), ("ja", "日本語"), ("es", "Español"), ("pt-br", "Português (Brasil)")]),
                 true,
             ),
+            f("general.keyboardLayout", "Keyboard Layout", Kind::Choice(KEY_LAYOUTS), true),
             f("general.atStartup", "At Startup", Kind::Choice(STARTUP), true),
             f("general.whenOpeningProject", "When Opening a Project", Kind::Choice(OPENING), false),
             Row::Group(

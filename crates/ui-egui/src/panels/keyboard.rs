@@ -16,6 +16,8 @@
 //! | `timeline.expandAllTracks` / `timeline.minimizeAllTracks` | Expand / Minimize All Tracks | Shift+= / Shift+- |
 //! | `timeline.increaseVideoHeight` … `timeline.decreaseAudioHeight` | Increase / Decrease Video / Audio Tracks Height | Cmd+= / Cmd+- / Alt+= / Alt+- (Timeline) |
 //! | `timeline.nextScreen` / `timeline.prevScreen` | Show Next / Previous Screen | PageDown / PageUp (Timeline) |
+//! | `timeline.playheadToCursor` | Move Playhead to Cursor (the frame under the pointer) | |
+//! | `mixer.showHideTracks` / `mixer.meterInputOnly` | Audio Track Mixer ▸ Show/Hide Tracks…, Meter Input(s) Only | |
 //! | `projectPanel.*` | Project panel: List / Icon / Toggle View, Hover Scrub, thumbnail size, Move / Extend Selection | (Project) |
 //! | `textPanel.*` | Text panel transcript: word / line / segment navigation and selection, Delete, Ripple Delete, Show Program Transcript | (Text) |
 //! | `graphics.beginTextEditing` | Begin Text Editing for a Graphic Layer | Cmd+Alt+' |
@@ -81,6 +83,9 @@ pub const COMMANDS: &[UiCommand] = &[
     uic!("timeline.decreaseAudioHeight", "Decrease Audio Tracks Height", [], None),
     uic!("timeline.nextScreen", "Show Next Screen", [], None),
     uic!("timeline.prevScreen", "Show Previous Screen", [], None),
+    uic!("timeline.playheadToCursor", "Move Playhead to Cursor", [], None),
+    uic!("mixer.showHideTracks", "Show/Hide Tracks…", [], None),
+    uic!("mixer.meterInputOnly", "Meter Input(s) Only", [], None),
     uic!("projectPanel.viewList", "List", [], None),
     uic!("projectPanel.viewIcon", "Icon", [], None),
     uic!("projectPanel.toggleView", "Toggle View", [], None),
@@ -208,6 +213,17 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             tv.target_scroll = (tv.target_scroll + d).max(0.0);
             Ok(json!({"scroll": tv.target_scroll}))
         }
+        "timeline.playheadToCursor" => playhead_to_cursor(app, ctx, params),
+        "mixer.showHideTracks" => {
+            app.show_panel(PanelKind::AudioTrackMixer);
+            crate::panels::mixer::open_show_hide(ctx);
+            Ok(json!({"dialog": "showHideTracks"}))
+        }
+        "mixer.meterInputOnly" => {
+            let on = params.get("enabled").and_then(Value::as_bool).unwrap_or(!app.ui.mixer_meter_input_only);
+            app.ui.mixer_meter_input_only = on;
+            Ok(json!({"meterInputOnly": on}))
+        }
         "graphics.beginTextEditing" => begin_text_editing(app),
         "help.filmcraftHelp" => {
             crate::links::open(ctx, HELP_URL);
@@ -228,6 +244,35 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
         app.ui.status = e.clone();
     }
     Some(r)
+}
+
+/// Move Playhead to Cursor: the playhead jumps to the frame under the pointer in the Timeline
+/// (`x`, a screen position, stands in for the pointer).
+fn playhead_to_cursor(app: &mut FilmcraftApp, ctx: &egui::Context, params: &Value) -> Result<Value, String> {
+    const AWAY: &str = "move the pointer over the Timeline";
+    let rate = app.session.active_sequence().ok_or("no sequence is open")?.settings.frame_rate;
+    if !app.ui.dock.is_visible(PanelKind::Timeline) {
+        return Err(AWAY.into());
+    }
+    let layout = app.tl.layout.as_ref().ok_or(AWAY)?;
+    let x = match params.get("x").and_then(Value::as_f64) {
+        Some(x) => x as f32,
+        None => {
+            let pos = ctx.input(|i| i.pointer.latest_pos()).ok_or(AWAY)?;
+            let area = egui::Rect::from_min_max(egui::pos2(layout.content.min.x, layout.ruler.min.y), layout.content.max);
+            if !area.contains(pos) {
+                return Err(AWAY.into());
+            }
+            pos.x
+        }
+    };
+    if !x.is_finite() || x < layout.content.min.x || x > layout.content.max.x {
+        return Err(AWAY.into());
+    }
+    let t = rate.snap_nearest(layout.tick_at(x).max(filmcraft_time::Tick::ZERO));
+    app.stop();
+    app.session.set_playhead(t);
+    Ok(json!({"time": app.session.playhead().0}))
 }
 
 // ------------------------------------------------------------------ frames and panels

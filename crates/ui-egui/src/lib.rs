@@ -1144,6 +1144,7 @@ impl FilmcraftApp {
     // ---------------------------------------------------------------- input
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        menus::set_key_layout(self.session.prefs.general.key_layout());
         let workspaces = (dock::names(&self.workspaces), self.ui.workspace.clone());
         if self.bindings_rev != self.session.shortcuts.revision || workspaces != self.menu_workspaces {
             self.menu_workspaces = workspaces;
@@ -1161,19 +1162,26 @@ impl FilmcraftApp {
         if self.session.trim_play.dynamic.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             let _ = self.session.execute("trim.cancelDynamic", json!({}));
         }
-        // Panel shortcuts of the focused panel first: they override application shortcuts.
+        // Panel shortcuts of the focused panel first: they override application shortcuts. Keys
+        // are matched by what they are on any keyboard layout (`menus::key_name`), with exactly
+        // the modifiers held.
         let focused = self.ui.focused.title();
         let mut fire = Vec::new();
+        let bindings = &self.bindings;
         ctx.input_mut(|i| {
             let modifiers = i.modifiers;
             clipboard_events_as_keys(&mut i.events, modifiers);
-            let panel = self.bindings.iter().filter(|b| b.3.as_deref() == Some(focused));
-            let app_wide = self.bindings.iter().filter(|b| b.3.is_none());
-            for (m, k, id, _) in panel.chain(app_wide) {
-                if i.consume_key(*m, *k) {
-                    fire.push(id.clone());
+            i.events.retain(|e| {
+                let egui::Event::Key { key, physical_key, pressed: true, modifiers, .. } = e else { return true };
+                let Some(name) = menus::key_name(*key, *physical_key) else { return true };
+                match menus::resolve(bindings, focused, name, menus::mods_of(*modifiers)) {
+                    Some(id) => {
+                        fire.push(id.to_string());
+                        false
+                    }
+                    None => true,
                 }
-            }
+            });
         });
         for mut id in fire {
             // Select All / Deselect All act on the Project panel's items when it has focus (#168).

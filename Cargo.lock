@@ -1879,6 +1879,7 @@ dependencies = [
  "filmcraft-time",
  "image",
  "log",
+ "roxmltree",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

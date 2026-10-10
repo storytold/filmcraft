@@ -79,6 +79,14 @@ fn db_text(db: f64) -> String {
 
 // ------------------------------------------------------------------------------------- meters
 
+/// Memory key of the open Show/Hide Tracks dialog.
+const SHOW_HIDE_OPEN: &str = "mixer-show-hide-open";
+
+/// Open Show/Hide Tracks (the panel menu item, `mixer.showHideTracks`).
+pub fn open_show_hide(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(SHOW_HIDE_OPEN), true));
+}
+
 /// Meter key of the recording input (Meter Input(s) Only).
 pub const INPUT_METER: u64 = u64::MAX - 1;
 
@@ -223,16 +231,18 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mresp = ui.interact(menu_r, egui::Id::new("mixer-menu"), Sense::click()).on_hover_text(tl!("Audio Track Mixer menu"));
     icons::paint(ui.painter(), menu_r.shrink(2.0), Icon::Hamburger, if mresp.hovered() { t.tab_text_active } else { t.icon });
     app.auto.add("mixer.menu", menu_r, "Audio Track Mixer menu");
-    let show_hide_id = egui::Id::new("mixer-show-hide-open");
+    let show_hide_id = egui::Id::new(SHOW_HIDE_OPEN);
     let mut show_hide: bool = ui.data(|d| d.get_temp(show_hide_id)).unwrap_or(false);
+    let keys = |id: &str| crate::menus::panel_shortcut(&app.session, id, "Audio Track Mixer");
+    let (show_hide_key, meter_key) = (keys("mixer.showHideTracks"), keys("mixer.meterInputOnly"));
     egui::Popup::menu(&mresp).show(|ui| {
-        let r = ui.button(tl!("Show/Hide Tracks…"));
+        let r = ui.add(egui::Button::new(tl!("Show/Hide Tracks…")).shortcut_text(show_hide_key));
         app.auto.add("mixer.menu.showHide", r.rect, "Show/Hide Tracks…");
         if r.clicked() {
             show_hide = true;
         }
         let on = app.ui.mixer_meter_input_only;
-        let r = ui.selectable_label(on, tl!("Meter Input(s) Only"));
+        let r = ui.add(egui::Button::selectable(on, tl!("Meter Input(s) Only")).shortcut_text(meter_key));
         app.auto.add("mixer.menu.meterInputOnly", r.rect, "Meter Input(s) Only");
         if r.clicked() {
             app.ui.mixer_meter_input_only = !on;

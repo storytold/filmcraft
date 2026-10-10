@@ -727,7 +727,7 @@ pub fn panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
             Some(c) => egui::Button::selectable(c, label),
             None => egui::Button::new(label),
         };
-        let r = ui.add_enabled(enabled, b.shortcut_text(shortcut));
+        let r = ui.add_enabled(enabled, b.shortcut_text(crate::menus::shortcut_text(shortcut)));
         app.auto.add(&format!("mediaBrowser.menu.{id}"), r.rect, label);
         r.clicked()
     };
