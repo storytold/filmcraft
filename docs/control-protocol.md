@@ -107,6 +107,16 @@ it shows. Dynamic trimming takes an explicit clock (seconds) so it is determinis
 {direction, slow?, clock}` (J/L), `trim.tick {clock}`, `trim.shuttleStop {clock?}` (K, one undo step),
 `trim.cancelDynamic` (Esc), `trim.playAround {clock, loop?}` (Space / Shift+K).
 
+**Gaps** (as in Premiere): `timeline.selectGap {track, time}` selects the gap containing `time` on a
+track: the empty span from the clip before it (or the sequence start) to the next clip; the space after
+a track's last clip is no gap. A click on that space in the Timeline does the same (Selection, Ripple
+and Rolling tools; a drag still draws a marquee) and draws a light box (id `timeline.gap`). Clips,
+captions or edit points selected replace it; `sequence.inspect` reports it as `gap: {track, start,
+end}`. `edit.clear` / `edit.rippleDelete` (Delete, Backspace, Shift+Delete) close a selected gap, one
+undo step, returning `{closedGap}`; sync-locked tracks move with it, and one with a clip across the gap
+(a music bed) refuses the edit with the reason, as Premiere does. `playhead.end` and playback that runs
+into the end park the playhead after the last frame, flush with the end of the last clip.
+
 **Replace With Clip**: `clip.replaceFromSource`, `clip.replaceFromSourceMatchFrame` and
 `clip.replaceFromBin {clips?, item?, keepSourceIn?}` swap the media of the clips and return
 `{clips: [ids], item, short: [{clip, shortByFrames}]}`. `short` lists the replaced clips that now

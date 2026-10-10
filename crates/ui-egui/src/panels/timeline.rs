@@ -353,6 +353,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // ---- clips
     let visible = (layout.tick_at(content.min.x - 2.0), layout.tick_at(content.max.x + 2.0));
     let selection: Vec<ClipId> = app.session.state.selection.clone();
+    let selected_gap = app.session.selected_gap();
     let mut previews: HashMap<ClipId, (Tick, Tick, Option<TrackId>)> = HashMap::new(); // live drag preview: (start, dur, track)
     preview_drag(app, &seq, &layout, &mut previews);
     for r in &rows {
@@ -396,6 +397,16 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             {
                 let body = Rect::from_min_max(pos2(layout.x_of(*start), r.rect.min.y + 1.0), pos2(layout.x_of(*start + *dur), r.rect.max.y - 1.0));
                 draw_clip(app, &ctx, &p, body, it, r.kind, true, &t, rate);
+            }
+        }
+        // the selected gap (a click on the empty space before a clip): a light box, as in Premiere;
+        // Clear or Ripple Delete closes it
+        if let Some((_, ga, gb)) = selected_gap.filter(|g| g.0 == r.track) {
+            let gr = Rect::from_min_max(pos2(layout.x_of(ga), r.rect.min.y + 1.0), pos2(layout.x_of(gb), r.rect.max.y - 1.0)).intersect(content);
+            if gr.width() > 0.0 {
+                p.rect_filled(gr, 0.0, Color32::from_white_alpha(64));
+                p.rect_stroke(gr, 0.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Inside);
+                app.auto.add("timeline.gap", gr, "Selected gap");
             }
         }
         // Show Through Edits: a small bow-tie on cuts between continuous pieces of one clip
@@ -1846,12 +1857,18 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 }
             }
             (_, Grab::Other(Hit::Transition { .. })) => None,
-            (_, Grab::Other(Hit::Empty { .. })) => {
+            (_, Grab::Other(Hit::Empty { track })) => {
+                app.session.state.gap_selection = None;
                 if resp.drag_started() {
                     Some(Drag::Marquee { start: p })
                 } else {
                     app.session.state.selection.clear();
                     app.session.state.edit_points.clear();
+                    // a click on a gap between two clips selects it (Premiere); past a track's
+                    // last clip there is no gap and the click only deselects
+                    if matches!(tool, Tool::Selection | Tool::Ripple | Tool::Rolling) {
+                        let _ = app.session.execute("timeline.selectGap", json!({"track": track.0, "time": t.0}));
+                    }
                     None
                 }
             }

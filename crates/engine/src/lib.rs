@@ -220,6 +220,16 @@ pub struct Targeting {
     pub audio_dest: Option<TrackId>,
 }
 
+/// A selected gap (Premiere: click the empty space between two clips on a track): the sequence,
+/// the track and a time inside the gap. Its bounds come from the clips around it
+/// ([`Session::selected_gap`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GapSelection {
+    pub sequence: ItemId,
+    pub track: TrackId,
+    pub time: Tick,
+}
+
 /// Editing state that commands depend on (not project data, but headless-relevant).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct EditorState {
@@ -261,6 +271,9 @@ pub struct EditorState {
     /// Selected captions (caption tracks / Captions panel).
     #[serde(default)]
     pub caption_selection: Vec<ClipId>,
+    /// The selected gap. Selecting clips, captions or edit points replaces it.
+    #[serde(default)]
+    pub gap_selection: Option<GapSelection>,
     /// Selected layers (indices among the graphic layers, 0 = back) of the selected graphic clip.
     #[serde(default)]
     pub graphic_layers: Vec<usize>,
@@ -914,6 +927,27 @@ impl Session {
         }
     }
 
+    /// The end of the active sequence on a frame boundary: the edge after its last frame, where
+    /// Go to Sequence End and playback stop (a clip ending mid-frame rounds up to the frame edge).
+    pub fn sequence_end(&self) -> Tick {
+        let Some(seq) = self.active_sequence() else { return Tick::ZERO };
+        let (rate, d) = (seq.settings.frame_rate, seq.duration());
+        let floor = rate.snap(d);
+        if floor < d { rate.tick_of(rate.frame_at(d).saturating_add(1)) } else { floor }
+    }
+
+    /// The selected gap as (track, start, end) while it is selected in the active sequence and is
+    /// still a gap there (an edit can fill it). Any clip, caption or edit point selection wins.
+    pub fn selected_gap(&self) -> Option<(TrackId, Tick, Tick)> {
+        let g = self.state.gap_selection?;
+        let st = &self.state;
+        if st.active_sequence != Some(g.sequence) || !st.selection.is_empty() || !st.edit_points.is_empty() || !st.caption_selection.is_empty() {
+            return None;
+        }
+        let r = filmcraft_edit::gap_at(self.active_sequence()?, g.track, g.time)?;
+        Some((g.track, r.start, r.end()))
+    }
+
     pub fn sequence_rate(&self) -> FrameRate {
         self.active_sequence().map(|s| s.settings.frame_rate).unwrap_or_default()
     }
@@ -1039,6 +1073,8 @@ mod explicit_targets_tests;
 mod export_tests;
 #[cfg(test)]
 mod file_tests;
+#[cfg(test)]
+mod gap_selection_tests;
 #[cfg(test)]
 mod image_sequence_tests;
 #[cfg(test)]

@@ -893,7 +893,7 @@ impl FilmcraftApp {
         let (lo, hi) = if self.playback.looping {
             (seq.and_then(|q| q.mark_in).unwrap_or(Tick::ZERO), seq.and_then(|q| q.mark_out).map(|o| o + rate.frame_duration()).unwrap_or(dur))
         } else {
-            (Tick::ZERO, dur)
+            (Tick::ZERO, self.session.sequence_end())
         };
         if let Some(end) = self.playback.stop_at.filter(|e| t >= *e && self.playback.speed > 0.0 && !self.playback.looping) {
             self.session.set_playhead(end);
@@ -903,7 +903,9 @@ impl FilmcraftApp {
                 self.session.set_playhead(lo);
                 self.play(self.playback.speed);
             } else {
-                self.session.set_playhead(hi - rate.frame_duration());
+                // Premiere parks the playhead at the end of the sequence, flush with the end of the
+                // last clip, not on its last frame
+                self.session.set_playhead(hi);
                 self.stop();
             }
         } else if t <= Tick::ZERO && self.playback.speed < 0.0 {
