@@ -119,8 +119,9 @@ struct Shared {
 pub struct FrameStats {
     /// Jobs finished (including cancelled ones).
     pub jobs: u64,
-    /// Jobs whose decode/render panicked (the worker survives; the frame is not cached).
+    /// Decode/render errors, including caught worker panics.
     pub failed: u64,
+    pub presentation_failed: u64,
     pub cancelled: u64,
     /// Jobs served from a render preview.
     pub preview: u64,
@@ -154,7 +155,7 @@ impl FrameStats {
         let n = self.jobs.max(1) as f64;
         let req = self.request_hits + self.request_misses;
         serde_json::json!({
-            "jobs": self.jobs, "cancelled": self.cancelled, "failedJobs": self.failed, "previewJobs": self.preview, "prefetchJobs": self.prefetch,
+            "jobs": self.jobs, "cancelled": self.cancelled, "failedJobs": self.failed, "failedPresentations": self.presentation_failed, "previewJobs": self.preview, "prefetchJobs": self.prefetch,
             "requestHitRate": if req == 0 { 0.0 } else { self.request_hits as f64 / req as f64 },
             "decodeMs": {"mean": self.source_ms / n, "p50": pct(&|r| r.0, 0.5), "p95": pct(&|r| r.0, 0.95)},
             "renderMs": {"mean": self.render_ms / n, "p50": pct(&|r| r.1, 0.5), "p95": pct(&|r| r.1, 0.95)},
@@ -282,10 +283,52 @@ impl GpuPlan {
     }
 }
 
+struct Cached<T> {
+    value: Result<Arc<T>, String>,
+    reported: bool,
+}
+
+impl<T> Clone for Cached<T> {
+    fn clone(&self) -> Self {
+        Self { value: self.value.clone(), reported: self.reported }
+    }
+}
+
+impl<T> Cached<T> {
+    fn new(value: Result<T, String>) -> Self {
+        Self { value: value.map(Arc::new), reported: false }
+    }
+
+    fn ready(&self) -> Option<Arc<T>> {
+        match &self.value {
+            Ok(value) => Some(value.clone()),
+            Err(_) => None,
+        }
+    }
+
+    fn bytes(&self, size: impl FnOnce(&T) -> usize) -> usize {
+        match &self.value {
+            Ok(value) => size(value),
+            Err(error) => error.len(),
+        }
+    }
+
+    fn take_error(&mut self) -> Option<String> {
+        if self.reported {
+            return None;
+        }
+        let Err(error) = &self.value else {
+            return None;
+        };
+        self.reported = true;
+        Some(error.clone())
+    }
+}
+
 /// Finished plans, bounded by count and bytes (oldest use evicted first).
 #[derive(Default)]
 struct PlanCache {
-    map: HashMap<FrameKey, (Arc<GpuPlan>, u64, usize)>,
+    map: HashMap<FrameKey, (Cached<GpuPlan>, u64, usize)>,
     clock: u64,
     bytes: usize,
 }
@@ -297,17 +340,17 @@ impl PlanCache {
     fn get(&mut self, k: &FrameKey) -> Option<Arc<GpuPlan>> {
         self.clock += 1;
         let clock = self.clock;
-        self.map.get_mut(k).map(|(p, used, _)| {
+        self.map.get_mut(k).and_then(|(p, used, _)| {
             *used = clock;
-            p.clone()
+            p.ready()
         })
     }
 
-    fn insert(&mut self, k: FrameKey, p: GpuPlan) {
+    fn insert(&mut self, k: FrameKey, p: Cached<GpuPlan>) {
         self.clock += 1;
-        let b = p.bytes();
+        let b = p.bytes(GpuPlan::bytes);
         self.bytes += b;
-        if let Some((_, _, old)) = self.map.insert(k, (Arc::new(p), self.clock, b)) {
+        if let Some((_, _, old)) = self.map.insert(k, (p, self.clock, b)) {
             self.bytes -= old;
         }
         if self.map.len() > Self::MAX || self.bytes > Self::BUDGET {
@@ -325,21 +368,21 @@ impl PlanCache {
 }
 
 struct Cache {
-    map: HashMap<FrameKey, (Arc<Rgba>, u64)>,
+    map: HashMap<FrameKey, (Cached<Rgba>, u64)>,
     bytes: usize,
     budget: usize,
     clock: u64,
 }
 
 impl Cache {
-    fn insert(&mut self, k: FrameKey, v: Arc<Rgba>) {
+    fn insert(&mut self, k: FrameKey, v: Cached<Rgba>) {
         self.clock += 1;
-        self.bytes += v.px.len();
+        self.bytes += v.bytes(|v| v.px.len());
         if let Some((old, _)) = self.map.insert(k, (v, self.clock)) {
-            self.bytes -= old.px.len();
+            self.bytes -= old.bytes(|v| v.px.len());
         }
         if self.bytes > self.budget {
-            let mut all: Vec<(u64, FrameKey, usize)> = self.map.iter().map(|(k, (v, s))| (*s, *k, v.px.len())).collect();
+            let mut all: Vec<(u64, FrameKey, usize)> = self.map.iter().map(|(k, (v, s))| (*s, *k, v.bytes(|v| v.px.len()))).collect();
             all.sort_unstable_by_key(|x| x.0);
             for (_, k, b) in all {
                 if self.bytes <= self.budget * 8 / 10 {
@@ -484,9 +527,9 @@ impl FrameServer {
         let mut c = self.shared.done.lock().unwrap_or_else(|e| e.into_inner());
         c.clock += 1;
         let clock = c.clock;
-        c.map.get_mut(k).map(|(v, s)| {
+        c.map.get_mut(k).and_then(|(v, s)| {
             *s = clock;
-            v.clone()
+            v.ready()
         })
     }
 
@@ -494,11 +537,34 @@ impl FrameServer {
         self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).get(k)
     }
 
+    /// A plan failed during GPU presentation; retain the error instead of retrying its pixels.
+    pub fn reject_plan(&self, key: FrameKey, error: String) {
+        self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(key, Cached::new(Err(error)));
+        self.shared.stats.lock().unwrap_or_else(|e| e.into_inner()).presentation_failed += 1;
+    }
+
+    /// Report each terminal job error once; failed keys stay cached to prevent retry loops.
+    pub fn take_error(&self) -> Option<String> {
+        let mut done = self.shared.done.lock().unwrap_or_else(|e| e.into_inner());
+        for (key, (entry, _)) in &mut done.map {
+            if let Some(error) = entry.take_error() {
+                return Some(format!("Frame {}: {error}", key.frame));
+            }
+        }
+        let mut plans = self.shared.plans.lock().unwrap_or_else(|e| e.into_inner());
+        for (key, (entry, _, _)) in &mut plans.map {
+            if let Some(error) = entry.take_error() {
+                return Some(format!("Frame {}: {error}", key.frame));
+            }
+        }
+        None
+    }
+
     /// Whether the exact frame (image or plan) is ready.
     pub fn is_ready(&self, k: &FrameKey) -> bool {
         match k.target {
-            Target::SequencePlan(_) => self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).map.contains_key(k),
-            _ => self.shared.done.lock().unwrap_or_else(|e| e.into_inner()).map.contains_key(k),
+            Target::SequencePlan(_) => self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).map.get(k).is_some_and(|(p, _, _)| p.value.is_ok()),
+            _ => self.shared.done.lock().unwrap_or_else(|e| e.into_inner()).map.get(k).is_some_and(|(p, _)| p.value.is_ok()),
         }
     }
 
@@ -822,24 +888,32 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
     // cancelled one, its result is not cached (the caller retries it).
     let _ = filmcraft_media::pending::take();
     let mut loading = false;
+    let mut failed = false;
     let preview = filmcraft_media::cancel::with_cancel(&job.cancel, || {
         filmcraft_media::cancel::with_catch_up(job.catch_up, || {
             filmcraft_media::cancel::with_draft(job.key.draft, || {
                 filmcraft_media::cancel::with_background(is_background(job), || {
                     if let Target::SequencePlan(seq) = job.key.target {
-                        let (plan, pv) = plan_job(job, seq, pool, services, previews);
+                        let result = plan_job(job, seq, pool, services, previews);
+                        let pv = result.as_ref().is_ok_and(|(_, pv)| *pv);
                         loading = filmcraft_media::pending::take();
                         if !job.cancel.load(Ordering::Relaxed) && !loading {
                             // Convert texels for upload here, not on the UI thread when the frame is shown.
-                            let prepared = filmcraft_gpu::prepare(&plan);
-                            sh.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, GpuPlan { plan, prepared });
+                            let result = result.map(|(plan, _)| {
+                                let prepared = filmcraft_gpu::prepare(&plan);
+                                GpuPlan { plan, prepared }
+                            });
+                            failed = result.is_err();
+                            sh.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, Cached::new(result));
                         }
                         pv
                     } else {
-                        let (img, pv) = render_job(job, pool, services, previews);
+                        let result = render_job(job, pool, services, previews);
+                        let pv = result.as_ref().is_ok_and(|(_, pv)| *pv);
                         loading = filmcraft_media::pending::take();
                         if !job.cancel.load(Ordering::Relaxed) && !loading {
-                            sh.done.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, Arc::new(img));
+                            failed = result.is_err();
+                            sh.done.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, Cached::new(result.map(|(img, _)| img)));
                         }
                         pv
                     }
@@ -849,7 +923,7 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
     });
     let cancelled = job.cancel.load(Ordering::Relaxed);
     sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).retain(|(k, c, _)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
-    if job.prefetch {
+    if job.prefetch && !failed {
         // Work beyond fetching source frames (decoding is sequential per source and is
         // not saved by skipping frames, so it is left out of the estimate). A cancelled job
         // only tells that the work takes at least this long.
@@ -865,6 +939,7 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
         let (src_ms, render_ms) = (source.as_secs_f64() * 1e3, job_wall.saturating_sub(source).as_secs_f64() * 1e3);
         let mut st = sh.stats.lock().unwrap_or_else(|e| e.into_inner());
         st.jobs += 1;
+        st.failed += failed as u64;
         st.cancelled += cancelled as u64;
         st.preview += preview as u64;
         st.prefetch += job.prefetch as u64;
@@ -905,7 +980,13 @@ fn provider(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>) -> J
     JobProvider { inner: pool.provider(job.project.clone(), services.clone()) }
 }
 
-fn plan_job(job: &Job, seq: ItemId, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, previews: &PreviewStore) -> (filmcraft_render::plan::FramePlan, bool) {
+fn plan_job(
+    job: &Job,
+    seq: ItemId,
+    pool: &Arc<MediaPool>,
+    services: &Arc<dyn Services>,
+    previews: &PreviewStore,
+) -> Result<(filmcraft_render::plan::FramePlan, bool), String> {
     let opts = filmcraft_render::RenderOptions { scale: job.scale, captions: true, ..Default::default() };
     if let Some(frame) = preview_frame(job, seq, pool, previews)
         && let Some(q) = job.project.sequence(seq)
@@ -924,20 +1005,20 @@ fn plan_job(job: &Job, seq: ItemId, pool: &Arc<MediaPool>, services: &Arc<dyn Se
                 fx: None,
             });
         }
-        return (filmcraft_render::plan::FramePlan::Layers { width: w, height: h, layers }, true);
+        return Ok((filmcraft_render::plan::FramePlan::Layers { width: w, height: h, layers }, true));
     }
     let provider = provider(job, pool, services);
-    (filmcraft_render::plan::plan_frame(&job.project, seq, job.time, opts, &provider), false)
+    Ok((filmcraft_render::plan::plan_frame(&job.project, seq, job.time, opts, &provider)?, false))
 }
 
 /// Render a job to RGBA8; the flag says whether it came from a render preview.
-fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, previews: &PreviewStore) -> (Rgba, bool) {
+fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, previews: &PreviewStore) -> Result<(Rgba, bool), String> {
     if let Target::Sequence(seq) | Target::SequencePlan(seq) = job.key.target
         && let Some(f) = preview_frame(job, seq, pool, previews)
         && let Some(q) = job.project.sequence(seq)
     {
         let (w, h) = filmcraft_render::output_size(q, job.scale);
-        let img = filmcraft_render::Image { w: f.width as usize, h: f.height as usize, px: f.to_linear_f32() };
+        let img = filmcraft_render::Image { w: f.width as usize, h: f.height as usize, px: f.to_linear_f32()? };
         let mut img = if img.w == w && img.h == h {
             img
         } else {
@@ -948,32 +1029,121 @@ fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, pr
                 o.composite_onto(&mut img.px, w, h);
             }
         }
-        return (Rgba { w: img.w, h: img.h, px: img.over_black_rgba8() }, true);
+        return Ok((Rgba { w: img.w, h: img.h, px: img.over_black_rgba8() }, true));
     }
     let provider = provider(job, pool, services);
     let opts = filmcraft_render::RenderOptions { scale: job.scale, captions: true, ..Default::default() };
     let img = match job.key.target {
-        Target::Sequence(seq) | Target::SequencePlan(seq) => Some(filmcraft_render::render_sequence(&job.project, seq, job.time, opts, &provider)),
-        Target::Item(item) => filmcraft_render::render_item(&job.project, item, job.time, job.scale, &provider),
+        Target::Sequence(seq) | Target::SequencePlan(seq) => Some(filmcraft_render::render_sequence(&job.project, seq, job.time, opts, &provider)?),
+        Target::Item(item) => filmcraft_render::render_item(&job.project, item, job.time, job.scale, &provider)?,
         Target::MulticamGrid(item, side, page) => {
             let side = (side > 0).then_some(side as usize);
-            filmcraft_render::multicam::render_grid_page(&job.project, item, job.time, job.scale, side, page as usize, &provider).map(|(img, _)| img)
+            filmcraft_render::multicam::render_grid_page(&job.project, item, job.time, job.scale, side, page as usize, &provider)?.map(|(img, _)| img)
         }
         Target::MulticamAngle(item, angle) => {
-            filmcraft_render::multicam::render_angle_thumbnail(&job.project, item, angle as usize, job.time, job.scale, &provider)
+            filmcraft_render::multicam::render_angle_thumbnail(&job.project, item, angle as usize, job.time, job.scale, &provider)?
         }
     };
     let rgba = match img {
         Some(img) => Rgba { w: img.w, h: img.h, px: img.over_black_rgba8() },
         None => Rgba { w: 1, h: 1, px: vec![0, 0, 0, 255] },
     };
-    (rgba, false)
+    Ok((rgba, false))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{PlaybackMeter, Target, background_work, playback_plan};
     use filmcraft_project::ItemId;
+
+    #[test]
+    fn pending_error_success_and_cancellation_have_distinct_outcomes() {
+        use super::*;
+        use filmcraft_media::{FrameRequest, MediaError, MediaInfo, MediaSource};
+        use std::sync::atomic::AtomicUsize;
+        struct Source {
+            info: MediaInfo,
+            mode: AtomicUsize,
+            calls: AtomicUsize,
+        }
+        impl MediaSource for Source {
+            fn info(&self) -> &MediaInfo {
+                &self.info
+            }
+            fn video_frame(&self, _: FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                match self.mode.load(Ordering::Relaxed) {
+                    0 => {
+                        filmcraft_media::pending::mark();
+                        Err(MediaError::Decode("loading".into()))
+                    }
+                    1 => Err(MediaError::Decode("injected preview failure".into())),
+                    _ => Ok(Arc::new(filmcraft_frame::VideoFrame::rgba8(2, 2, vec![255; 2 * 2 * 4]))),
+                }
+            }
+            fn audio(&self, _: i64, _: usize, _: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+                Err(MediaError::NoStream("audio"))
+            }
+        }
+        let pool = Arc::new(MediaPool::default());
+        let (project, seq) = filmcraft_engine::demo::demo_project(&pool);
+        let (item, info) = project
+            .items
+            .iter()
+            .find_map(|(id, item)| match &item.kind {
+                filmcraft_project::ItemKind::Media(media) if media.info.video.is_some() => Some((*id, media.info.clone())),
+                _ => None,
+            })
+            .unwrap();
+        let source = Arc::new(Source { info, mode: AtomicUsize::new(0), calls: AtomicUsize::new(0) });
+        pool.insert(item, source.clone());
+        let server = FrameServer::new(pool, Arc::new(filmcraft_engine::FsServices), Arc::new(PreviewStore::default()), 1);
+        let project = Arc::new(project);
+        let mut job = Job {
+            key: FrameKey { target: Target::Item(item), frame: 0, size: 1000, revision: 0, draft: false },
+            queued: Instant::now(),
+            cancel: Arc::new(AtomicBool::new(false)),
+            prefetch: false,
+            catch_up: None,
+            time: Tick::ZERO,
+            scale: 1.0,
+            project: project.clone(),
+            prio: 0,
+        };
+        let run = |job: &Job| run_job(&server.shared, job, &server.pool, &server.services, &server.previews);
+        assert!(!run(&job), "pending must retry");
+        assert!(server.shared.done.lock().unwrap().map.is_empty());
+        assert_eq!(server.stats().failed, 0);
+        source.mode.store(1, Ordering::Relaxed);
+        assert!(run(&job), "terminal failure must finish");
+        assert!(!server.is_ready(&job.key));
+        assert!(server.get(&job.key).is_none());
+        assert_eq!(server.stats().failed, 1);
+        assert!(server.take_error().unwrap().contains("injected preview failure"));
+        assert!(server.take_error().is_none());
+        server.request(job.key, job.time, job.scale, &project, job.prio);
+        assert_eq!(server.queue_len(), 0, "failed key must not loop");
+        source.mode.store(2, Ordering::Relaxed);
+        job.key.revision += 1;
+        assert!(run(&job));
+        assert!(server.is_ready(&job.key));
+        assert_eq!(server.get(&job.key).unwrap().px.len(), 2 * 2 * 4);
+        job.key.revision += 1;
+        job.cancel.store(true, Ordering::Relaxed);
+        assert!(run(&job));
+        assert!(!server.is_ready(&job.key));
+        assert_eq!(server.stats().failed, 1);
+        assert_eq!(server.stats().cancelled, 1);
+        assert!(source.calls.load(Ordering::Relaxed) >= 3);
+        assert!(server.shared.in_flight.lock().unwrap().is_empty());
+        let plan_key = FrameKey { target: Target::SequencePlan(seq), ..job.key };
+        server.reject_plan(plan_key, "injected presentation failure".into());
+        assert!(!server.is_ready(&plan_key));
+        assert!(server.get_plan(&plan_key).is_none());
+        assert!(server.take_error().unwrap().contains("injected presentation failure"));
+        assert!(server.take_error().is_none());
+        assert_eq!(server.stats().presentation_failed, 1);
+    }
 
     #[test]
     fn only_item_thumbnails_are_background_work() {

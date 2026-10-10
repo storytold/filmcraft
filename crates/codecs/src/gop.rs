@@ -460,17 +460,17 @@ impl GopCache {
 
     /// Colour signalled by the container wins over the bitstream's (YUV frames only); the
     /// container's display rotation is applied.
-    fn finish(&self, mut f: VideoFrame) -> VideoFrame {
+    fn finish(&self, mut f: VideoFrame) -> crate::Result<VideoFrame> {
         if let Some(c) = self.explicit_color
             && !matches!(f.data, filmcraft_frame::PixelData::Rgba8(_) | filmcraft_frame::PixelData::RgbaF32(_))
         {
             f.color = c;
         }
-        if self.rotation != 0 { f.rotated(self.rotation) } else { f }
+        if self.rotation != 0 { f.rotated(self.rotation).map_err(crate::CodecError::Decode) } else { Ok(f) }
     }
 
-    fn store(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) {
-        let f = self.finish(f);
+    fn store(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) -> crate::Result<()> {
+        let f = self.finish(f)?;
         st.last_used = Instant::now();
         if draft {
             st.drafts.insert(pts);
@@ -504,15 +504,17 @@ impl GopCache {
             pool.bytes.fetch_sub(before - st.bytes, Ordering::Relaxed);
         }
         pool.trim_frames(&self.shared);
+        Ok(())
     }
 
     /// Store decoder output (in presentation order) and advance `out_max`.
-    fn store_output(&self, st: &mut State, out: Vec<crate::video::DecodedFrame>) {
+    fn store_output(&self, st: &mut State, out: Vec<crate::video::DecodedFrame>) -> crate::Result<()> {
         count_frames(&out);
         for d in out {
+            self.store(st, d.pts, d.frame, d.draft)?;
             st.out_max = st.out_max.max(d.pts);
-            self.store(st, d.pts, d.frame, d.draft);
         }
+        Ok(())
     }
 
     /// The frame presented at `target` (track units, clamped to the stream).
@@ -644,14 +646,14 @@ impl GopCache {
             let out = timed(|| decoder.decode(&data, s.pts(k)))?;
             st.next += 1;
             DECODED.fetch_add(1, Ordering::Relaxed);
-            self.store_output(&mut st, out);
+            self.store_output(&mut st, out)?;
             if st.cached(want_pts, draft).is_some() {
                 break;
             }
         }
         if st.cached(want_pts, draft).is_none() {
             let out = st.decoder.as_mut().map(|d| timed(|| d.flush())).unwrap_or_default();
-            self.store_output(&mut st, out);
+            self.store_output(&mut st, out)?;
             st.next = usize::MAX;
         }
         // nearest decoded frame at or before the wanted pts (robust to decoder pts quirks)
@@ -670,7 +672,7 @@ impl GopCache {
             .max_by_key(|p| p.pts)
             .map(|p| p.frame)
             .ok_or_else(|| CodecError::Decode("frame not produced".into()))?;
-        Ok(Arc::new(self.finish(f)))
+        Ok(Arc::new(self.finish(f)?))
     }
 
     /// Decode with `d` (positioned at `next`) until the picture with `want_pts` (sample `i`) comes out.
@@ -743,7 +745,7 @@ impl GopCache {
         let res = res?;
         count_frames(&res);
         for d in res {
-            self.store(&mut st, d.pts, d.frame, d.draft);
+            self.store(&mut st, d.pts, d.frame, d.draft)?;
         }
         st.at_or_before(want_pts, true).ok_or_else(|| CodecError::Decode("frame not produced".into()))
     }

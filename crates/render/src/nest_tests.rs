@@ -64,12 +64,12 @@ impl Rig {
     }
 
     fn frame(&self, seq: ItemId, t: Tick) -> Image {
-        render_sequence(&self.p, seq, t, RenderOptions::default(), &self.map)
+        render_sequence(&self.p, seq, t, RenderOptions::default(), &self.map).unwrap()
     }
 
     /// The same frame through the frame plan (what the GPU compositor is given).
     fn planned(&self, seq: ItemId, t: Tick) -> Image {
-        plan::execute_cpu(&plan::plan_frame(&self.p, seq, t, RenderOptions::default(), &self.map))
+        plan::execute_cpu(&plan::plan_frame(&self.p, seq, t, RenderOptions::default(), &self.map).unwrap()).unwrap()
     }
 }
 
@@ -257,7 +257,7 @@ fn captions_inside_a_nest_are_part_of_its_picture() {
     });
     r.p.sequence_mut(outer).unwrap().caption_tracks.push(outer_track);
     assert!(worst(&r.frame(outer, t), &with) < 0.01, "outer captions are only drawn when asked for");
-    let shown = render_sequence(&r.p, outer, t, RenderOptions { captions: true, ..Default::default() }, &r.map);
+    let shown = render_sequence(&r.p, outer, t, RenderOptions { captions: true, ..Default::default() }, &r.map).unwrap();
     assert!(worst(&shown, &with) > 0.1, "and are drawn when asked for");
 }
 
@@ -265,7 +265,7 @@ fn captions_inside_a_nest_are_part_of_its_picture() {
 
 /// How many layers the plan of `seq` at `t` has (None when it fell back to one CPU image).
 fn layer_count(r: &Rig, seq: ItemId, t: Tick) -> Option<usize> {
-    match plan::plan_frame(&r.p, seq, t, RenderOptions::default(), &r.map) {
+    match plan::plan_frame(&r.p, seq, t, RenderOptions::default(), &r.map).unwrap() {
         plan::FramePlan::Layers { layers, .. } => Some(layers.len()),
         _ => None,
     }

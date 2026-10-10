@@ -154,9 +154,13 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
                     err = Some("stopped".to_string());
                     break 'clips;
                 }
-                match w.src.video_frame(filmcraft_media::FrameRequest { time: *mt, scale: w.scale }) {
-                    Ok(f) => {
-                        det.push_rgba(&f.to_rgba8(), f.width as usize, f.height as usize);
+                match w
+                    .src
+                    .video_frame(filmcraft_media::FrameRequest { time: *mt, scale: w.scale })
+                    .and_then(|f| f.to_rgba8().map(|px| (f, px)).map_err(filmcraft_media::MediaError::Decode))
+                {
+                    Ok((f, px)) => {
+                        det.push_rgba(&px, f.width as usize, f.height as usize);
                     }
                     Err(e) => {
                         err = Some(format!("{}: can't decode frame {k}: {e}", w.name));

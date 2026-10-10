@@ -41,16 +41,26 @@ objc2-video-toolbox = "0.3.2"
 # Windows: Media Foundation decoder MFTs + Direct3D 11 / DXVA through the official `windows` bindings
 # (MIT OR Apache-2.0; already in the lockfile through wgpu / winit).
 [target.'cfg(target_os = "windows")'.dependencies]
+filmcraft-gpu = { workspace = true }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct3D12",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Media_MediaFoundation",
     "Win32_System_Com",
     "Win32_System_LibraryLoader",
+    "Win32_Security",
 ] }
+# zero-copy: the decoded Direct3D 11 surface becomes a wgpu texture on the DX12 backend
+# (`wgpu::hal`; the same wgpu the renderer uses)
+wgpu = { version = "30", default-features = false, features = ["dx12"] }
+
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+# Exercise the non-DX12 importer refusal; production enables only the native DX12 bridge here.
+wgpu = { version = "30", default-features = false, features = ["vulkan"] }
 
 # Linux: libva (VA-API) is loaded at run time with libloading (ISC; already in the lockfile through
 # wgpu), so building needs no libva headers and a system without libva simply decodes in software.
@@ -58,8 +68,10 @@ windows = { version = "0.62", features = [
 libloading = "0.8"
 
 [dev-dependencies]
+pollster = "0.4"
 filmcraft-testkit = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-frame = { workspace = true }
 filmcraft-project = { workspace = true }
+filmcraft-geom = { workspace = true }
 filmcraft-render = { workspace = true }

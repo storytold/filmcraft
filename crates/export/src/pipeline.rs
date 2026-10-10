@@ -134,9 +134,9 @@ impl Pipeline {
 
     /// Output frame `f` as straight sRGB RGBA8 at the output size, or for HDR exports the encoded
     /// R'G'B' floats (3 per pixel).
-    pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> (Vec<u8>, Vec<f32>) {
+    pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> Result<(Vec<u8>, Vec<f32>)> {
         let t = self.rate.tick_of(f);
-        let img = filmcraft_render::render_sequence(&self.project, self.seq, t, self.opts, sources);
+        let img = filmcraft_render::render_sequence(&self.project, self.seq, t, self.opts, sources).map_err(ExportError::Encode)?;
         let mut img = self.place(img);
         self.overlays(&mut img, t);
         let lim = &self.effects.video_limiter;
@@ -152,7 +152,7 @@ impl Pipeline {
             }
             // the float image is not needed any more: its buffer serves the next frame's layers
             filmcraft_frame::pool::recycle_f32(img.px);
-            return (Vec::new(), out);
+            return Ok((Vec::new(), out));
         }
         let mut rgba = if self.alpha { img.to_rgba8() } else { img.over_black_rgba8() };
         // the float image is not needed any more: its buffer serves the next frame's layers
@@ -160,7 +160,7 @@ impl Pipeline {
         if lim.enabled {
             limit_rgba8(&mut rgba, lim.min_percent, lim.max_percent);
         }
-        (rgba, Vec::new())
+        Ok((rgba, Vec::new()))
     }
 
     /// Fit the rendered picture into the output frame.
@@ -377,4 +377,31 @@ fn limit_px(c: &mut [f32; 3], lo: f32, hi: f32) {
         c.iter_mut().for_each(|v| *v += d);
     }
     c.iter_mut().for_each(|v| *v = v.clamp(0.0, hi.max(lo)));
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+    use filmcraft_media::{FrameRequest, MediaError, MediaInfo, MediaSource};
+    struct FailedSource(MediaInfo);
+    impl MediaSource for FailedSource {
+        fn info(&self) -> &MediaInfo {
+            &self.0
+        }
+        fn video_frame(&self, _: FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+            Err(MediaError::Decode("injected export frame failure".into()))
+        }
+        fn audio(&self, _: i64, _: usize, _: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+            Err(MediaError::NoStream("audio"))
+        }
+    }
+    #[test]
+    fn failed_render_cannot_become_encoder_pixels() {
+        let (project, seq, mut sources) = crate::tests::project();
+        let video = project.sequence(seq).unwrap().video_tracks[0].items[0].item;
+        let info = sources.0[&video].info().clone();
+        sources.0.insert(video, Arc::new(FailedSource(info)));
+        let pipeline = Pipeline::new(project, seq, &ExportSettings::default(), false).unwrap();
+        assert!(pipeline.frame(0, &sources).unwrap_err().to_string().contains("injected export frame failure"));
+    }
 }

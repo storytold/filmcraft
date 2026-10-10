@@ -371,7 +371,7 @@ fn frame(s: &mut Session, f: i64) -> Vec<u8> {
 /// The frame of camera `item` at its media frame `f`, rendered alone.
 fn camera_frame(s: &Session, item: ItemId, f: i64) -> Vec<u8> {
     let provider = s.media.provider(s.project.clone(), s.services.clone());
-    filmcraft_render::render_item(&s.project, item, FrameRate::FPS_24.tick_of(f), 1.0, &provider).unwrap().over_black_rgba8()
+    filmcraft_render::render_item(&s.project, item, FrameRate::FPS_24.tick_of(f), 1.0, &provider).unwrap().unwrap().over_black_rgba8()
 }
 
 #[test]
@@ -405,7 +405,7 @@ fn multicam_clip_structure_and_render() {
     let provider = s.media.provider(s.project.clone(), s.services.clone());
     let edit_id = s.state.active_sequence.unwrap();
     let t10 = FrameRate::FPS_24.tick_of(10);
-    let plan = filmcraft_render::plan::plan_frame(&s.project, edit_id, t10, filmcraft_render::RenderOptions::default(), &provider);
+    let plan = filmcraft_render::plan::plan_frame(&s.project, edit_id, t10, filmcraft_render::RenderOptions::default(), &provider).unwrap();
     match &plan {
         filmcraft_render::plan::FramePlan::Layers { layers, .. } => {
             assert_eq!(layers.len(), 1);
@@ -413,13 +413,13 @@ fn multicam_clip_structure_and_render() {
         }
         _ => panic!("expected layers"),
     }
-    let via_plan = filmcraft_render::plan::execute_cpu(&plan);
+    let via_plan = filmcraft_render::plan::execute_cpu(&plan).unwrap();
     s.set_playhead(t10);
     let reference = s.render_program(1.0).unwrap();
     assert!(psnr(&via_plan.over_black_rgba8(), &reference.over_black_rgba8()) > 40.0);
     // grid of the angles
     let provider = s.media.provider(s.project.clone(), s.services.clone());
-    let (grid, angles) = filmcraft_render::multicam::render_grid(&s.project, src, Tick::ZERO, 0.25, &provider).unwrap();
+    let (grid, angles) = filmcraft_render::multicam::render_grid(&s.project, src, Tick::ZERO, 0.25, &provider).unwrap().unwrap();
     assert_eq!(angles, [0, 1, 2]);
     assert_eq!((grid.w, grid.h), (2 * 40, 2 * 23));
 }
@@ -727,7 +727,7 @@ fn grid_pages_decode_only_their_angles_at_reduced_resolution() {
         }
     };
     let t = FrameRate::FPS_24.tick_of(10);
-    let (img, angles) = filmcraft_render::multicam::render_grid_page(&s.project, src, t, 0.25, None, 1, &recording).unwrap();
+    let (img, angles) = filmcraft_render::multicam::render_grid_page(&s.project, src, t, 0.25, None, 1, &recording).unwrap().unwrap();
     assert_eq!(angles, [16, 17, 18, 19]);
     // 4×4 cells of 16×9 (¼ of 64×36): only the page's four angles decoded, each at ¼ scale
     assert_eq!((img.w, img.h), (64, 36));
@@ -824,7 +824,7 @@ fn perf_grid_of_four_1080p_angles() {
     let t0 = std::time::Instant::now();
     for f in 0..frames {
         let opts = filmcraft_render::RenderOptions { scale: 0.5, ..Default::default() };
-        let _ = filmcraft_render::multicam::render_angle(&s.project, &q, 0, rate.tick_of(f), opts, &provider);
+        filmcraft_render::multicam::render_angle(&s.project, &q, 0, rate.tick_of(f), opts, &provider).unwrap();
     }
     let one_ms = t0.elapsed().as_secs_f64() * 1000.0 / frames as f64;
     let (s, src) = setup();
@@ -832,7 +832,7 @@ fn perf_grid_of_four_1080p_angles() {
     let cpu0 = crate::multicam_tests::process_cpu();
     let t0 = std::time::Instant::now();
     for f in 0..frames {
-        let (g, _) = filmcraft_render::multicam::render_grid(&s.project, src, rate.tick_of(f), 0.25, &provider).unwrap();
+        let (g, _) = filmcraft_render::multicam::render_grid(&s.project, src, rate.tick_of(f), 0.25, &provider).unwrap().unwrap();
         assert_eq!((g.w, g.h), (960, 540));
     }
     let grid_ms = t0.elapsed().as_secs_f64() * 1000.0 / frames as f64;

@@ -182,7 +182,7 @@ fn set_params(base: &EffectInstance, x: &[f32; 10]) -> EffectInstance {
     e
 }
 
-fn graded_stats(img: &Image, base: &EffectInstance, x: &[f32; 10], skin_protect: bool) -> Stats {
+fn graded_stats(img: &Image, base: &EffectInstance, x: &[f32; 10], skin_protect: bool) -> crate::Result<Stats> {
     let mut g = img.clone();
     let cx = FxCtx {
         t: Tick::ZERO,
@@ -194,23 +194,23 @@ fn graded_stats(img: &Image, base: &EffectInstance, x: &[f32; 10], skin_protect:
         env: None,
         working: filmcraft_color::WorkingSpace::Rec709,
     };
-    apply(&mut g, &set_params(base, x), &cx);
-    stats(&g, skin_protect)
+    apply(&mut g, &set_params(base, x), &cx)?;
+    Ok(stats(&g, skin_protect))
 }
 
 /// Solve the grade that matches `current` (the clip before its wheels) to `reference`. `base` is
 /// the clip's Lumetri instance (its other settings are kept; wheels and saturation are solved).
-pub fn solve(current: &Image, reference: &Image, base: &EffectInstance, skin_protect: bool) -> Match {
+pub fn solve(current: &Image, reference: &Image, base: &EffectInstance, skin_protect: bool) -> crate::Result<Match> {
     let cur = shrink(current, 96);
     let refs = stats(&shrink(reference, 96), skin_protect);
     let mut x = [0f32; 10];
     let lambda_reg = 0.02f32;
-    let cost = |x: &[f32; 10]| -> (Vec<f32>, f32) {
-        let r = residuals(&graded_stats(&cur, base, x, skin_protect), &refs);
+    let cost = |x: &[f32; 10]| -> crate::Result<(Vec<f32>, f32)> {
+        let r = residuals(&graded_stats(&cur, base, x, skin_protect)?, &refs);
         let c = r.iter().map(|v| v * v).sum::<f32>() + lambda_reg * lambda_reg * x.iter().map(|v| v * v).sum::<f32>();
-        (r, c)
+        Ok((r, c))
     };
-    let (mut r, mut c) = cost(&x);
+    let (mut r, mut c) = cost(&x)?;
     let before = c.sqrt();
     let mut mu = 1e-3f32;
     for _ in 0..12 {
@@ -220,7 +220,7 @@ pub fn solve(current: &Image, reference: &Image, base: &EffectInstance, skin_pro
         for j in 0..10 {
             let mut xp = x;
             xp[j] += h;
-            let (rp, _) = cost(&xp);
+            let (rp, _) = cost(&xp)?;
             for (i, row) in jac.iter_mut().enumerate() {
                 row[j] = (rp[i] - r[i]) / h;
             }
@@ -245,7 +245,7 @@ pub fn solve(current: &Image, reference: &Image, base: &EffectInstance, skin_pro
         for p in 0..10 {
             xn[p] = (x[p] + dx[p] as f32).clamp(-1.0, 1.0);
         }
-        let (rn, cn) = cost(&xn);
+        let (rn, cn) = cost(&xn)?;
         if cn < c {
             x = xn;
             r = rn;
@@ -271,7 +271,7 @@ pub fn solve(current: &Image, reference: &Image, base: &EffectInstance, skin_pro
             let mut k = 1.0f32;
             for _ in 0..8 {
                 let xs: [f32; 10] = std::array::from_fn(|i| if i < 6 { x[i] * k } else { x[i] });
-                let s1 = graded_stats(&cur, base, &xs, true);
+                let s1 = graded_stats(&cur, base, &xs, true)?;
                 let mut d = (hue(&s1) - h0).abs();
                 if d > 180.0 {
                     d = 360.0 - d;
@@ -284,10 +284,10 @@ pub fn solve(current: &Image, reference: &Image, base: &EffectInstance, skin_pro
             for v in x.iter_mut().take(6) {
                 *v *= k;
             }
-            c = cost(&x).1;
+            c = cost(&x)?.1;
         }
     }
-    Match {
+    Ok(Match {
         shadows: [x[0], x[1]],
         midtones: [x[2], x[3]],
         highlights: [x[4], x[5]],
@@ -295,7 +295,7 @@ pub fn solve(current: &Image, reference: &Image, base: &EffectInstance, skin_pro
         saturation: ((1.0 + x[9]) * 100.0).clamp(0.0, 200.0),
         before,
         after: c.sqrt(),
-    }
+    })
 }
 
 /// Gaussian elimination with partial pivoting.
@@ -363,7 +363,7 @@ mod tests {
             env: None,
             working: filmcraft_color::WorkingSpace::Rec709,
         };
-        apply(&mut g, &set_params(base, &x), &cx);
+        apply(&mut g, &set_params(base, &x), &cx).unwrap();
         g
     }
 
@@ -384,7 +384,7 @@ mod tests {
     fn matching_a_frame_to_itself_changes_nothing() {
         let base = find_effect("lumetri").unwrap().instance();
         let f = frame(false);
-        let m = solve(&f, &f, &base, false);
+        let m = solve(&f, &f, &base, false).unwrap();
         assert!(m.before < 1e-4, "{m:?}");
         for v in m.shadows.iter().chain(&m.midtones).chain(&m.highlights) {
             assert!(v.abs() < 0.02, "{m:?}");
@@ -399,7 +399,7 @@ mod tests {
         // reference = the frame with a warm-highlights / cool-shadows grade and lifted shadows
         let truth = [-0.3, -0.2, 0.0, 0.1, 0.35, 0.15, 0.1, 0.0, -0.05, 0.2];
         let reference = graded(&f, &base, truth);
-        let m = solve(&f, &reference, &base, false);
+        let m = solve(&f, &reference, &base, false).unwrap();
         eprintln!("known grade: {m:?}");
         assert!(m.after < m.before * 0.15, "{m:?}");
         // the matched render's statistics are close to the reference's
@@ -451,8 +451,8 @@ mod tests {
             let d = (hue(&graded(&f, &base, x)) - h0).abs();
             if d > 180.0 { 360.0 - d } else { d }
         };
-        let free = solve(&f, &reference, &base, false);
-        let protected = solve(&f, &reference, &base, true);
+        let free = solve(&f, &reference, &base, false).unwrap();
+        let protected = solve(&f, &reference, &base, true).unwrap();
         let (a, b) = (shift(&free), shift(&protected));
         eprintln!("skin hue shift: free {a:.1}°, protected {b:.1}°");
         assert!(b <= 8.5, "protected skin hue shift {b}° (unprotected {a}°)");

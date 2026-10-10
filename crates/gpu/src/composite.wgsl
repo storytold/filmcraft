@@ -11,7 +11,7 @@ struct U {
     m0: vec4<f32>,   // a b c d
     m1: vec4<f32>,   // e f out_w out_h
     src: vec4<f32>,  // src_w src_h chroma_w chroma_h
-    p0: vec4<f32>,   // opacity, kind (0 rgba8 srgb straight, 1 rgba16f premul linear, 2 yuv), taps, transfer (0 srgb, 1 linear, 2 pq, 3 hlg)
+    p0: vec4<f32>,   // opacity, kind (0 rgba8 srgb straight, 1 rgba16f premul linear, 2 yuv planar, 3 yuv with interleaved chroma), taps, transfer (0 srgb, 1 linear, 2 pq, 3 hlg)
     p1: vec4<f32>,   // y_off y_scale c_off c_scale (code units)
     p2: vec4<f32>,   // kr kb code_scale footprint
     p3: vec4<f32>,   // blend mode, alpha-plane scale (0: none), effect-source integer decimation, unused
@@ -96,8 +96,17 @@ fn sample(p: vec2<f32>) -> vec4<f32> {
     let cs = u.p2.z;
     let yc = load4(tex0, p).r * cs;
     let cp = p * u.src.zw / u.src.xy;
-    let cb = load4(tex1, cp).r * cs;
-    let cr = load4(tex2, cp).r * cs;
+    var cb: f32;
+    var cr: f32;
+    if kind == 3u {
+        // NV12 / P010: Cb and Cr interleaved in one texture (red, green)
+        let c = load4(tex1, cp);
+        cb = c.r * cs;
+        cr = c.g * cs;
+    } else {
+        cb = load4(tex1, cp).r * cs;
+        cr = load4(tex2, cp).r * cs;
+    }
     let y = (yc - u.p1.x) / u.p1.y;
     let b = (cb - u.p1.z) / u.p1.w;
     let r = (cr - u.p1.z) / u.p1.w;

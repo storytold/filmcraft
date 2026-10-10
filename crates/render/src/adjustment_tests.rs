@@ -77,7 +77,7 @@ fn fx(s: &mut Scene, c: ClipId, id: &str) {
 }
 
 fn render(s: &Scene) -> Image {
-    render_sequence(&s.p, s.seq, R.tick_of(12), RenderOptions::default(), &s.map)
+    render_sequence(&s.p, s.seq, R.tick_of(12), RenderOptions::default(), &s.map).unwrap()
 }
 
 fn near(a: [f32; 4], b: [f32; 3], tol: f32) -> bool {
@@ -143,7 +143,7 @@ fn motion_and_masks_restrict_the_region() {
     assert!(near(img.get(40, 90), [0.0, 1.0, 1.0], 1e-4));
     assert!(near(img.get(280, 90), [1.0, 0.0, 0.0], 1e-4));
     // the same at half resolution (mask in sequence pixels scales with the output)
-    let half = render_sequence(&s.p, s.seq, R.tick_of(12), RenderOptions { scale: 0.5, ..Default::default() }, &s.map);
+    let half = render_sequence(&s.p, s.seq, R.tick_of(12), RenderOptions { scale: 0.5, ..Default::default() }, &s.map).unwrap();
     assert!(near(half.get(20, 45), [0.0, 1.0, 1.0], 1e-4));
     assert!(near(half.get(140, 45), [1.0, 0.0, 0.0], 1e-4));
     // an opacity mask on the adjustment layer: right half only (with the effect mask → nothing)
@@ -180,7 +180,7 @@ fn nested_adjustment_layers_stay_in_their_sequence() {
     let plain = {
         let mut p2 = s.p.clone();
         p2.sequence_mut(s.seq).unwrap().video_tracks[1].items.clear();
-        render_sequence(&p2, s.seq, R.tick_of(12), RenderOptions::default(), &s.map)
+        render_sequence(&p2, s.seq, R.tick_of(12), RenderOptions::default(), &s.map).unwrap()
     };
     assert_eq!(img.get(5, 5), plain.get(5, 5));
 }

@@ -39,11 +39,11 @@ pub use temporal::{StabilizerPath, clear_stabilizer_cache, stabilizer_path};
 pub trait FxEnv: Sync {
     /// The clip's layer `dt` timeline seconds from now, with the effects before `upto` applied,
     /// at the current working size. Temporal effects among those are skipped (no recursion).
-    fn frame(&self, dt: f64, upto: &EffectInstance) -> Option<Image>;
+    fn frame(&self, dt: f64, upto: &EffectInstance) -> crate::Result<Option<Image>>;
     /// The clip's raw picture `dt` seconds from now at `scale` × its source size (analysis).
-    fn source_frame(&self, dt: f64, scale: f32) -> Option<Image>;
+    fn source_frame(&self, dt: f64, scale: f32) -> crate::Result<Option<Image>>;
     /// Video track `index` (0 = V1) rendered alone at this time, output-sized.
-    fn track(&self, index: usize) -> Option<Image>;
+    fn track(&self, index: usize) -> crate::Result<Option<Image>>;
     /// Maps working-layer pixels to output pixels (Motion included).
     fn layer_to_output(&self) -> Affine;
     /// Clip duration on the timeline, in seconds.
@@ -90,9 +90,9 @@ pub fn is_temporal(id: &str) -> bool {
 }
 
 impl FxEnv for ItemEnv<'_> {
-    fn frame(&self, dt: f64, upto: &EffectInstance) -> Option<Image> {
+    fn frame(&self, dt: f64, upto: &EffectInstance) -> crate::Result<Option<Image>> {
         let t2 = self.t + Tick::from_seconds_f64(dt);
-        let base = crate::base_layer(self.project, self.seq, self.item, t2, self.opts, self.sources, self.want)?;
+        let Some(base) = crate::base_layer(self.project, self.seq, self.item, t2, self.opts, self.sources, self.want)? else { return Ok(None) };
         let mut img = resize(base, self.layer_size.0, self.layer_size.1);
         let src = crate::source_size(self.project, self.item.item).unwrap_or((1, 1));
         let cx = FxCtx {
@@ -110,21 +110,21 @@ impl FxEnv for ItemEnv<'_> {
                 break;
             }
             if e.def().is_some_and(|d| !d.intrinsic) && !filmcraft_project::graphic::is_layer(e) && !is_temporal(&e.effect) {
-                crate::mask::apply_effect(&mut img, e, &cx);
+                crate::mask::apply_effect(&mut img, e, &cx)?;
             }
         }
-        Some(img)
+        Ok(Some(img))
     }
-    fn source_frame(&self, dt: f64, scale: f32) -> Option<Image> {
+    fn source_frame(&self, dt: f64, scale: f32) -> crate::Result<Option<Image>> {
         let t2 = self.t + Tick::from_seconds_f64(dt);
         crate::base_layer(self.project, self.seq, self.item, t2, self.opts, self.sources, scale.clamp(1.0 / 64.0, 1.0))
     }
-    fn track(&self, index: usize) -> Option<Image> {
+    fn track(&self, index: usize) -> crate::Result<Option<Image>> {
         if index >= self.seq.video_tracks.len() {
-            return None;
+            return Ok(None);
         }
         let o = RenderOptions { captions: false, working_output: true, depth: self.opts.depth + 1, ..self.opts };
-        Some(crate::render_seq_tracks(self.project, self.seq, self.t, o, self.sources, Some(index)))
+        Ok(Some(crate::render_seq_tracks(self.project, self.seq, self.t, o, self.sources, Some(index))?))
     }
     fn layer_to_output(&self) -> Affine {
         self.layer_to_output
@@ -451,11 +451,11 @@ pub(crate) fn clip_progress(cx: &FxCtx) -> f64 {
 // ------------------------------------------------------------------ dispatch
 
 /// Apply `e` if it is one of the effects implemented here; returns `false` for anything else.
-pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
+pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> crate::Result<bool> {
     let alias = |img: &mut Image, base: &str| {
         let mut a = e.clone();
         a.effect = base.to_string();
-        crate::effects::apply(img, &a, cx);
+        crate::effects::apply(img, &a, cx)
     };
     match e.effect.as_str() {
         // Adjust / Color / Image Control / Keying / Utility colour
@@ -464,17 +464,17 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
         "vignette" => color::vignette(img, e, cx),
         "logo_cutout" => color::logo_cutout(img, e, cx),
         "ultra_key" => color::ultra_key(img, e, cx),
-        "track_matte" => color::track_matte(img, e, cx),
+        "track_matte" => color::track_matte(img, e, cx)?,
         "cineon_converter" => color::cineon(img, e, cx),
         "noise" | "noise_legacy" => color::noise(img, e, cx),
         // Blur & Sharpen
         "bokeh_blur" => blur::bokeh(img, e, cx),
         "channel_blur" => blur::channel_blur(img, e, cx),
-        "compound_blur" => blur::compound(img, e, cx),
+        "compound_blur" => blur::compound(img, e, cx)?,
         "focus_blur" => blur::focus(img, e, cx),
         "reduce_interlace_flicker" => blur::interlace_flicker(img, e, cx),
-        "gaussian_blur_legacy" => alias(img, "gaussian_blur"),
-        "directional_blur_legacy" => alias(img, "directional_blur"),
+        "gaussian_blur_legacy" => alias(img, "gaussian_blur")?,
+        "directional_blur_legacy" => alias(img, "directional_blur")?,
         // Distort / Transform / Utility geometry
         "corner_pin" => distort::corner_pin(img, e, cx),
         "magnify" | "magnify_legacy" => distort::magnify(img, e, cx),
@@ -491,7 +491,7 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
         "auto_align" => distort::auto_align(img, e, cx),
         "rounded_crop" => distort::rounded_crop(img, e, cx),
         "mosaic" | "mosaic_legacy" => distort::mosaic(img, e, cx),
-        "twirl_legacy" => alias(img, "twirl"),
+        "twirl_legacy" => alias(img, "twirl")?,
         // Lights & Glows
         "echo_glow" => lights::echo_glow(img, e, cx),
         "edge_glow" => lights::edge_glow(img, e, cx),
@@ -510,7 +510,7 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
         "stroke" => stylize::stroke(img, e, cx),
         "gradient" => stylize::gradient(img, e, cx),
         "block_dissolve" => stylize::block_dissolve(img, e, cx),
-        "gradient_wipe_legacy" => stylize::gradient_wipe(img, e, cx),
+        "gradient_wipe_legacy" => stylize::gradient_wipe(img, e, cx)?,
         "linear_wipe_legacy" => stylize::linear_wipe(img, e, cx),
         "lightning" => stylize::lightning(img, e, cx),
         "cell_pattern" => stylize::cell_pattern(img, e, cx),
@@ -519,15 +519,15 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
         "paint_bucket" => stylize::paint_bucket(img, e, cx),
         "write_on" => stylize::write_on(img, e, cx),
         // Time / analysis
-        "posterize_time" => temporal::posterize_time(img, e, cx),
-        "echo" => temporal::echo(img, e, cx),
-        "warp_stabilizer" => temporal::warp_stabilizer(img, e, cx),
-        "auto_reframe" => temporal::auto_reframe(img, e, cx),
+        "posterize_time" => temporal::posterize_time(img, e, cx)?,
+        "echo" => temporal::echo(img, e, cx)?,
+        "warp_stabilizer" => temporal::warp_stabilizer(img, e, cx)?,
+        "auto_reframe" => temporal::auto_reframe(img, e, cx)?,
         // Text
         "simple_text" => text::simple_text(img, e, cx),
         "metadata_burnin" => text::metadata_burnin(img, e, cx),
         id if id.starts_with("vr_") => immersive::apply(img, e, cx),
-        _ => return false,
+        _ => return Ok(false),
     }
-    true
+    Ok(true)
 }

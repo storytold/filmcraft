@@ -398,7 +398,7 @@ impl MediaSource for ProxySource {
             return Ok(f);
         }
         // different aspect: resample (nearest) to the original's aspect at the proxy's width
-        let src = f.to_rgba8();
+        let src = f.to_rgba8().map_err(MediaError::Decode)?;
         let (w, h) = (f.width as usize, want_h.max(1) as usize);
         let mut out = vec![0u8; w * h * 4];
         for y in 0..h {

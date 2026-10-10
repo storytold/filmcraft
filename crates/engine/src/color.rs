@@ -393,7 +393,7 @@ fn preset_thumbnails(_: &mut Session, p: &Value) -> Result<Value> {
     let w = p.get("width").and_then(Value::as_u64).unwrap_or(160).clamp(16, 1920) as usize;
     let h = (w * 9 / 16).max(9);
     let cols = p.get("columns").and_then(Value::as_u64).unwrap_or(4).clamp(1, 32) as usize;
-    let img = filmcraft_render::lumetri_presets::grid(&presets, cols, w, h);
+    let img = filmcraft_render::lumetri_presets::grid(&presets, cols, w, h).map_err(crate::EngineError::Other)?;
     let mut out = json!({"presets": presets.iter().map(|x| x.name).collect::<Vec<_>>(), "width": img.w, "height": img.h, "cell": [w, h], "columns": cols});
     if let Some(path) = str_p(p, "path") {
         let png = filmcraft_export::encode_png(img.over_black_rgba8(), img.w as u32, img.h as u32).map_err(|e| bad(cmd, e.to_string()))?;
@@ -425,10 +425,11 @@ fn apply_match(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let provider = s.media.provider(s.project.clone(), s.services.clone());
     let opts = filmcraft_render::RenderOptions { scale: 0.25, working_output: true, ..Default::default() };
-    let current =
-        filmcraft_render::render_clip(&probe, seq_id, clip, t, opts, &provider).ok_or_else(|| bad("lumetri.applyMatch", "the clip has no picture"))?;
-    let reference = filmcraft_render::render_sequence(&s.project, seq_id, reference_t, opts, &provider);
-    let m = filmcraft_render::color_match::solve(&current, &reference, &base, skin);
+    let current = filmcraft_render::render_clip(&probe, seq_id, clip, t, opts, &provider)
+        .map_err(crate::EngineError::Other)?
+        .ok_or_else(|| bad("lumetri.applyMatch", "the clip has no picture"))?;
+    let reference = filmcraft_render::render_sequence(&s.project, seq_id, reference_t, opts, &provider).map_err(crate::EngineError::Other)?;
+    let m = filmcraft_render::color_match::solve(&current, &reference, &base, skin).map_err(crate::EngineError::Other)?;
     let v2 = |a: [f32; 2]| ParamValue::Vec2(filmcraft_geom::Vec2::new(a[0] as f64, a[1] as f64));
     let values = [
         ("wheel_shadows", v2(m.shadows)),

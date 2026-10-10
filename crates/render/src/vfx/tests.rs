@@ -49,7 +49,7 @@ fn picture(w: usize, h: usize) -> Image {
 
 fn run(id: &str, e: &EffectInstance, img: &Image, cx: &FxCtx) -> Image {
     let mut o = img.clone();
-    crate::effects::apply(&mut o, e, cx);
+    crate::effects::apply(&mut o, e, cx).unwrap();
     let _ = id;
     o
 }
@@ -424,14 +424,14 @@ fn rotate_3d_z_matches_a_2d_rotation() {
 fn track_matte_uses_the_other_tracks_alpha_and_luma() {
     struct Env(Image);
     impl FxEnv for Env {
-        fn frame(&self, _: f64, _: &EffectInstance) -> Option<Image> {
-            None
+        fn frame(&self, _: f64, _: &EffectInstance) -> crate::Result<Option<Image>> {
+            Ok(None)
         }
-        fn source_frame(&self, _: f64, _: f32) -> Option<Image> {
-            None
+        fn source_frame(&self, _: f64, _: f32) -> crate::Result<Option<Image>> {
+            Ok(None)
         }
-        fn track(&self, i: usize) -> Option<Image> {
-            (i == 1).then(|| self.0.clone())
+        fn track(&self, i: usize) -> crate::Result<Option<Image>> {
+            Ok((i == 1).then(|| self.0.clone()))
         }
         fn layer_to_output(&self) -> Affine {
             Affine::IDENTITY
@@ -509,7 +509,7 @@ fn keyers_known_values() {
     let mut e = inst("alpha_adjust");
     set(&mut e, "invert", ParamValue::Bool(true));
     setf(&mut e, "opacity", 50.0);
-    crate::effects::apply(&mut a, &e, &cx());
+    crate::effects::apply(&mut a, &e, &cx()).unwrap();
     assert!(close(a.get(0, 0)[3], 0.375, 1e-5), "{:?}", a.get(0, 0));
     // Logo Cutout: the white background goes, a black logo stays black and opaque
     let mut img = solid(4, 1, [1.0, 1.0, 1.0]);
@@ -689,14 +689,14 @@ fn write_on_follows_the_animated_brush() {
 fn transform_presets_animate_over_the_clip() {
     struct Env;
     impl FxEnv for Env {
-        fn frame(&self, _: f64, _: &EffectInstance) -> Option<Image> {
-            None
+        fn frame(&self, _: f64, _: &EffectInstance) -> crate::Result<Option<Image>> {
+            Ok(None)
         }
-        fn source_frame(&self, _: f64, _: f32) -> Option<Image> {
-            None
+        fn source_frame(&self, _: f64, _: f32) -> crate::Result<Option<Image>> {
+            Ok(None)
         }
-        fn track(&self, _: usize) -> Option<Image> {
-            None
+        fn track(&self, _: usize) -> crate::Result<Option<Image>> {
+            Ok(None)
         }
         fn layer_to_output(&self) -> Affine {
             Affine::IDENTITY
@@ -889,14 +889,14 @@ impl ClipEnv {
     }
 }
 impl FxEnv for ClipEnv {
-    fn frame(&self, dt: f64, _: &EffectInstance) -> Option<Image> {
-        Some(self.render(((self.now + dt) * self.fps).round() / self.fps, 1.0))
+    fn frame(&self, dt: f64, _: &EffectInstance) -> crate::Result<Option<Image>> {
+        Ok(Some(self.render(((self.now + dt) * self.fps).round() / self.fps, 1.0)))
     }
-    fn source_frame(&self, dt: f64, scale: f32) -> Option<Image> {
-        Some(self.render(((self.now + dt) * self.fps).round() / self.fps, scale))
+    fn source_frame(&self, dt: f64, scale: f32) -> crate::Result<Option<Image>> {
+        Ok(Some(self.render(((self.now + dt) * self.fps).round() / self.fps, scale)))
     }
-    fn track(&self, _: usize) -> Option<Image> {
-        None
+    fn track(&self, _: usize) -> crate::Result<Option<Image>> {
+        Ok(None)
     }
     fn layer_to_output(&self) -> Affine {
         Affine::IDENTITY
@@ -957,7 +957,7 @@ fn posterize_time_and_echo_read_other_frames() {
     let at = |now: f64| {
         let env = mk(now);
         let mut img = env.render(now, 1.0);
-        crate::effects::apply(&mut img, &e, &FxCtx { seconds: now, env: Some(&env), ..cx() });
+        crate::effects::apply(&mut img, &e, &FxCtx { seconds: now, env: Some(&env), ..cx() }).unwrap();
         img
     };
     assert_eq!(at(0.0).px, at(1.0 / 24.0).px);
@@ -968,7 +968,7 @@ fn posterize_time_and_echo_read_other_frames() {
     let mut e = inst("echo");
     setf(&mut e, "time", -0.1);
     setf(&mut e, "decay", 0.5);
-    crate::effects::apply(&mut img, &e, &FxCtx { seconds: 0.5, env: Some(&env), ..cx() });
+    crate::effects::apply(&mut img, &e, &FxCtx { seconds: 0.5, env: Some(&env), ..cx() }).unwrap();
     assert!(close(img.get(50, 4)[0], 1.0, 1e-5), "current bar {:?}", img.get(50, 4));
     assert!(close(img.get(40, 4)[0], 0.5, 1e-5), "echo bar {:?}", img.get(40, 4));
 }
@@ -988,7 +988,7 @@ fn warp_stabilizer_removes_camera_jitter() {
             let env = mk(now);
             let raw = env.render(now, 1.0);
             let mut st = raw.clone();
-            crate::effects::apply(&mut st, &e, &FxCtx { seconds: now, env: Some(&env), ..cx() });
+            crate::effects::apply(&mut st, &e, &FxCtx { seconds: now, env: Some(&env), ..cx() }).unwrap();
             (raw, st)
         })
         .collect();
@@ -1014,10 +1014,10 @@ fn warp_stabilizer_removes_camera_jitter() {
     set(&mut e, "framing", ParamValue::Choice(2));
     let env = mk(9.0 / 24.0);
     let mut st = env.render(9.0 / 24.0, 1.0);
-    crate::effects::apply(&mut st, &e, &FxCtx { seconds: 9.0 / 24.0, env: Some(&env), ..cx() });
+    crate::effects::apply(&mut st, &e, &FxCtx { seconds: 9.0 / 24.0, env: Some(&env), ..cx() }).unwrap();
     assert!(st.px.as_chunks::<4>().0.iter().all(|p| p[3] > 0.99), "auto-scale leaves no border");
     // the path cache is reused
-    assert!(stabilizer_path(&env, 0.0, filmcraft_project::TrackMethod::Position, false).is_some());
+    assert!(stabilizer_path(&env, 0.0, filmcraft_project::TrackMethod::Position, false).unwrap().is_some());
 }
 
 #[test]
@@ -1030,7 +1030,7 @@ fn auto_reframe_follows_the_subject() {
     // 16:9 source in a 9:16 sequence → zoom to fill the height and pan to the subject
     let env = ClipEnv { w: 160, h: 90, fps: 24.0, secs: 1.0, now: 0.5, key: 0xBEEF, seq: (90, 160), pic: subject };
     let mut img = env.render(0.5, 1.0);
-    crate::effects::apply(&mut img, &inst("auto_reframe"), &FxCtx { seconds: 0.5, env: Some(&env), ..cx() });
+    crate::effects::apply(&mut img, &inst("auto_reframe"), &FxCtx { seconds: 0.5, env: Some(&env), ..cx() }).unwrap();
     // the layer centre now shows the subject side of the frame (texture, not the flat grey)
     let c = img.get(80, 45);
     assert!((c[0] - 0.2).abs() > 1e-3 || (img.get(85, 40)[0] - 0.2).abs() > 1e-3, "{c:?}");
@@ -1038,7 +1038,7 @@ fn auto_reframe_follows_the_subject() {
     let env = ClipEnv { seq: (160, 90), key: 0xBEF0, ..env };
     let raw = env.render(0.5, 1.0);
     let mut img = raw.clone();
-    crate::effects::apply(&mut img, &inst("auto_reframe"), &FxCtx { seconds: 0.5, env: Some(&env), ..cx() });
+    crate::effects::apply(&mut img, &inst("auto_reframe"), &FxCtx { seconds: 0.5, env: Some(&env), ..cx() }).unwrap();
     assert_eq!(img.px, raw.px);
 }
 
@@ -1100,17 +1100,17 @@ mod pipeline {
         setf(&mut pt, "rate", 6.0);
         place(&mut p, seq, 0, ocean, vec![pt]);
         let r = FrameRate::FPS_24;
-        let a = render_sequence(&p, seq, r.tick_of(1), RenderOptions::default(), &map);
-        let b = render_sequence(&p, seq, r.tick_of(3), RenderOptions::default(), &map);
+        let a = render_sequence(&p, seq, r.tick_of(1), RenderOptions::default(), &map).unwrap();
+        let b = render_sequence(&p, seq, r.tick_of(3), RenderOptions::default(), &map).unwrap();
         assert_eq!(a.px, b.px, "frames 1 and 3 share the 6 fps frame");
-        let c0 = render_sequence(&p, seq, r.tick_of(0), RenderOptions::default(), &map);
+        let c0 = render_sequence(&p, seq, r.tick_of(0), RenderOptions::default(), &map).unwrap();
         assert_eq!(a.px, c0.px);
         // Track Matte Key on V2 (white) using V1's luma
         let mut tm = inst("track_matte");
         set(&mut tm, "matte", ParamValue::Choice(1));
         set(&mut tm, "composite", ParamValue::Choice(1));
         place(&mut p, seq, 1, white, vec![tm]);
-        let img = render_sequence(&p, seq, r.tick_of(0), RenderOptions::default(), &map);
+        let img = render_sequence(&p, seq, r.tick_of(0), RenderOptions::default(), &map).unwrap();
         assert!(img.px.iter().all(|v| v.is_finite()));
         assert!(max_diff(&img, &c0) > 1e-3, "the matted white layer shows over V1");
         // Echo through the compositor stays finite and differs from the plain frame
@@ -1123,7 +1123,7 @@ mod pipeline {
         setf(&mut echo, "count", 2.0);
         set(&mut echo, "operator", ParamValue::Choice(6));
         place(&mut p2, seq2, 0, ocean2, vec![echo]);
-        let e = render_sequence(&p2, seq2, r.tick_of(30), RenderOptions::default(), &map2);
+        let e = render_sequence(&p2, seq2, r.tick_of(30), RenderOptions::default(), &map2).unwrap();
         assert!(e.px.iter().all(|v| v.is_finite()));
     }
 }

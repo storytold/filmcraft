@@ -223,7 +223,7 @@ fn frame_size_rate_and_scaling() {
     let src = filmcraft_codecs::open_bytes("square.mp4", bytes).unwrap();
     let v = src.info().video.clone().unwrap();
     assert_eq!((v.width, v.height), (256, 256));
-    let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 2))).unwrap().to_rgba8();
+    let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 2))).unwrap().to_rgba8().unwrap();
     let at = |x: usize, y: usize| &f[(y * 256 + x) * 4..(y * 256 + x) * 4 + 3];
     assert!(at(128, 128)[0] > 200, "picture in the middle: {:?}", at(128, 128));
     assert!(at(128, 10)[0] < 40, "letterbox bar on top: {:?}", at(128, 10));
@@ -247,7 +247,7 @@ fn frame_size_rate_and_scaling() {
     export(&p, seq, &s, &m, &Progress::default()).unwrap();
     let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
     let src = filmcraft_codecs::open_bytes("fill.mov", bytes).unwrap();
-    let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 2))).unwrap().to_rgba8();
+    let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 2))).unwrap().to_rgba8().unwrap();
     assert!(f[(5 * 200 + 100) * 4] > 200, "filled to the top edge");
 }
 
@@ -319,7 +319,7 @@ fn two_pass_and_cbr_h264() {
         assert_eq!(prog.done.load(Ordering::Relaxed), 24 * passes);
         let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
         let src = filmcraft_codecs::open_bytes("x.mp4", bytes).unwrap();
-        let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 2))).unwrap().to_rgba8();
+        let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 2))).unwrap().to_rgba8().unwrap();
         assert!((f[2] as i32 - 204).abs() < 12 && (f[1] as i32 - 127).abs() < 12, "{mode:?}: {:?}", &f[..4]);
     }
 }

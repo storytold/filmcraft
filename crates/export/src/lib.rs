@@ -1515,7 +1515,7 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
                 }
                 let end = (f + batch).min(f1);
                 if let Some(enc) = gif.as_mut() {
-                    let frames: Vec<Vec<u8>> = (f..end).into_par_iter().map(|fi| pipe.frame(fi, sources).0).collect();
+                    let frames: Vec<Vec<u8>> = (f..end).into_par_iter().map(|fi| pipe.frame(fi, sources).map(|f| f.0)).collect::<Result<Vec<_>>>()?;
                     for rgba in frames {
                         let img = image::RgbaImage::from_raw(w, h, rgba).ok_or_else(|| ExportError::Encode("frame".into()))?;
                         enc.encode_frame(image::Frame::from_parts(img, 0, 0, delay)).map_err(|e| ExportError::Encode(e.to_string()))?;
@@ -1524,7 +1524,7 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
                     let written: Vec<Result<u64>> = (f..end)
                         .into_par_iter()
                         .map(|fi| {
-                            let data = encode_still(settings.format, pipe.frame(fi, sources).0, w, h, settings.alpha)?;
+                            let data = encode_still(settings.format, pipe.frame(fi, sources)?.0, w, h, settings.alpha)?;
                             write_output(settings, &pcm::image_sequence_path(&settings.path, (fi - f0) as u64, count), data)
                         })
                         .collect();

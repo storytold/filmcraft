@@ -218,7 +218,7 @@ pub fn preview_image(w: usize, h: usize) -> Image {
 }
 
 /// A preset's thumbnail: the preview picture graded by the preset (Rec. 709).
-pub fn thumbnail(preset: &LumetriPreset, w: usize, h: usize) -> Image {
+pub fn thumbnail(preset: &LumetriPreset, w: usize, h: usize) -> crate::Result<Image> {
     let mut img = preview_image(w, h);
     let cx = FxCtx {
         t: Tick::ZERO,
@@ -230,13 +230,13 @@ pub fn thumbnail(preset: &LumetriPreset, w: usize, h: usize) -> Image {
         env: None,
         working: filmcraft_color::WorkingSpace::Rec709,
     };
-    apply(&mut img, &preset.instance(), &cx);
-    img
+    apply(&mut img, &preset.instance(), &cx)?;
+    Ok(img)
 }
 
 /// A grid of thumbnails (`cols` columns of `w`×`h` cells, 4 px gaps over a dark background), in
 /// the order given: the Effects panel's thumbnail view of a Lumetri Presets folder.
-pub fn grid(presets: &[LumetriPreset], cols: usize, w: usize, h: usize) -> Image {
+pub fn grid(presets: &[LumetriPreset], cols: usize, w: usize, h: usize) -> crate::Result<Image> {
     const GAP: usize = 4;
     let cols = cols.max(1);
     let rows = presets.len().div_ceil(cols).max(1);
@@ -244,7 +244,7 @@ pub fn grid(presets: &[LumetriPreset], cols: usize, w: usize, h: usize) -> Image
     let bg = srgb_to_linear(0.11);
     let mut out = Image::filled(gw, gh, [bg, bg, bg, 1.0]);
     for (k, p) in presets.iter().enumerate() {
-        let t = thumbnail(p, w, h);
+        let t = thumbnail(p, w, h)?;
         let (x0, y0) = (GAP + (k % cols) * (w + GAP), GAP + (k / cols) * (h + GAP));
         for y in 0..h {
             let src = &t.px[y * w * 4..(y + 1) * w * 4];
@@ -252,7 +252,7 @@ pub fn grid(presets: &[LumetriPreset], cols: usize, w: usize, h: usize) -> Image
             out.px[d..d + w * 4].copy_from_slice(src);
         }
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -274,13 +274,13 @@ mod tests {
             for (k, _) in &p.params {
                 assert!(def.param(k).is_some(), "{}: unknown param {k}", p.name);
             }
-            let t = thumbnail(p, 64, 36);
+            let t = thumbnail(p, 64, 36).unwrap();
             let diff: f32 = t.px.iter().zip(&base.px).map(|(a, b)| (a - b).abs()).sum::<f32>() / base.px.len() as f32;
             assert!(diff > 0.004, "{} barely changes the picture ({diff})", p.name);
             assert!(t.px.iter().all(|v| v.is_finite()));
         }
         // Monochrome presets are monochrome (Sepia / Cold are toned: low but not zero chroma)
-        let t = thumbnail(&find("Neutral Mono").unwrap(), 64, 36);
+        let t = thumbnail(&find("Neutral Mono").unwrap(), 64, 36).unwrap();
         assert!(t.px.chunks(4).all(|p| (p[0] - p[1]).abs() < 1e-3 && (p[1] - p[2]).abs() < 1e-3));
         assert!(find("neutral mono").is_some() && find("nope").is_none());
     }
@@ -294,7 +294,7 @@ mod tests {
         assert!(red[0] > 0.5 && red[1] < 0.1, "a red chip: {red:?}");
         let sky = px(160, 10);
         assert!(sky[2] > sky[0], "blue sky at the top: {sky:?}");
-        let grid = grid(&presets()[..5], 3, 32, 18);
+        let grid = grid(&presets()[..5], 3, 32, 18).unwrap();
         assert_eq!((grid.w, grid.h), (3 * 36 + 4, 2 * 22 + 4));
     }
 }

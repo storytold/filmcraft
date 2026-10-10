@@ -27,6 +27,8 @@ mod args;
 mod audio;
 mod audio_in;
 mod control_server;
+#[cfg(windows)]
+mod dx12;
 #[cfg(any(target_os = "windows", test))]
 mod graphics;
 mod logging;
@@ -112,6 +114,12 @@ fn main() -> eframe::Result {
     // OS hardware video decoders (VideoToolbox on macOS) in front of our own; Settings ▸ Playback ▸
     // Hardware decoding switches them off. Unsupported streams and failures use our decoders.
     register_hardware_decoders();
+    // Windows: a DX12 renderer when the DirectX Shader Compiler is installed, so the hardware
+    // decoder's pictures reach the compositor without a copy (zero-copy; dx12.rs).
+    #[cfg(windows)]
+    let backend_override = eframe::wgpu::Backends::from_env();
+    #[cfg(windows)]
+    let dx12 = if backend_override.is_none_or(|backends| backends.contains(eframe::wgpu::Backends::DX12)) { dx12::setup() } else { None };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("FilmCraft")
@@ -129,11 +137,13 @@ fn main() -> eframe::Result {
         event_loop_builder: agent_event_loop(control_port.is_some()),
         ..Default::default()
     };
-    // Before eframe creates the wgpu instance: leave OpenGL out on Windows (see graphics.rs).
-    #[cfg(target_os = "windows")]
+    #[cfg(windows)]
     let options = {
         let mut options = options;
-        graphics::configure(&mut options, eframe::wgpu::Backends::from_env());
+        graphics::configure(&mut options, backend_override);
+        if let Some(existing) = dx12.clone() {
+            options.wgpu_options.wgpu_setup = eframe::egui_wgpu::WgpuSetup::Existing(existing);
+        }
         options
     };
     let started = eframe::run_native(
@@ -191,7 +201,15 @@ fn main() -> eframe::Result {
             if let Some(rs) = cc.wgpu_render_state.clone()
                 && std::env::var_os("FILMCRAFT_CPU_COMPOSITE").is_none()
             {
+                #[cfg(windows)]
+                let device = rs.device.clone();
                 app.set_wgpu(rs);
+                // hardware decoders hand the compositor GPU pictures where its device can open them
+                #[cfg(windows)]
+                if app.gpu_compositor_active() {
+                    let on = filmcraft_platform::media_foundation::enable_zero_copy(&device);
+                    log::info!("zero-copy hardware decoding: {on}");
+                }
             }
             // Keep device selection available even when the default device is unavailable.
             // Settings ▸ Audio Hardware is applied on the first frame (`apply_prefs`).

@@ -257,7 +257,7 @@ async fn cli() {
             outln!("{n} frames in {dt:.2}s → {:.1} fps (sequential, via Mp4Source)", n as f64 / dt);
             let t1 = std::time::Instant::now();
             let f = src.video_frame(filmcraft_media::FrameRequest::full(rate.tick_of(n / 2))).unwrap_or_else(|e| fail(e));
-            let (w, h, _) = f.to_linear_f32_decimated(2);
+            let (w, h, _) = f.to_linear_f32_decimated(2).unwrap_or_else(|e| fail(e));
             outln!("½-res linear conversion {w}x{h}: {:.1} ms", t1.elapsed().as_secs_f64() * 1000.0);
         }
         "commands" | "describe" => {

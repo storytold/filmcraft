@@ -586,17 +586,17 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
     let run = move || {
         use std::sync::atomic::Ordering;
         let t0 = web_time::Instant::now();
-        let gray = |t: Tick| -> Option<(filmcraft_render::track::Prepared, f64)> {
-            let f = src.video_frame(filmcraft_media::FrameRequest { time: t, scale }).ok()?;
-            let g = filmcraft_render::track::Gray::from_rgba8(f.width as usize, f.height as usize, &f.to_rgba8());
-            Some((filmcraft_render::track::Prepared::new(g), f.width as f64 / size.0.max(1) as f64))
+        let gray = |t: Tick| -> std::result::Result<(filmcraft_render::track::Prepared, f64), String> {
+            let f = src.video_frame(filmcraft_media::FrameRequest { time: t, scale }).map_err(|e| e.to_string())?;
+            let g = filmcraft_render::track::Gray::from_rgba8(f.width as usize, f.height as usize, &f.to_rgba8()?);
+            Ok((filmcraft_render::track::Prepared::new(g), f.width as f64 / size.0.max(1) as f64))
         };
         let mut path = start_path;
         let mut err: Option<String> = None;
         let mut done = 0u64;
         match gray(mt0) {
-            None => err = Some("can't decode the clip".into()),
-            Some((mut prev, mut k_prev)) => {
+            Err(e) => err = Some(format!("can't decode the clip: {e}")),
+            Ok((mut prev, mut k_prev)) => {
                 lock(&out).push((mt0, path.clone()));
                 for step in 1..=steps {
                     if prog.cancel.load(Ordering::Relaxed) {
@@ -604,9 +604,12 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
                         break;
                     }
                     let t = if backward { mt0 - Tick(fd.0 * step as i64) } else { mt0 + Tick(fd.0 * step as i64) };
-                    let Some((next, k)) = gray(t) else {
-                        err = Some(format!("can't decode frame {step}"));
-                        break;
+                    let (next, k) = match gray(t) {
+                        Ok(frame) => frame,
+                        Err(e) => {
+                            err = Some(format!("can't decode frame {step}: {e}"));
+                            break;
+                        }
                     };
                     let region: Vec<Vec2> = path.flatten(0.5).into_iter().map(|q| q * k_prev).collect();
                     let Some(st) = filmcraft_render::track::track_step(&prev, &next, &region, method) else {

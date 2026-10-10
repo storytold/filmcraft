@@ -236,10 +236,10 @@ fn effect_costs() {
             env: None,
             working: filmcraft_color::WorkingSpace::Rec709,
         };
-        apply(&mut img, &e, &cx);
+        apply(&mut img, &e, &cx).unwrap();
         let t0 = std::time::Instant::now();
         for _ in 0..3 {
-            apply(&mut img, &e, &cx);
+            apply(&mut img, &e, &cx).unwrap();
         }
         rows.push((t0.elapsed().as_secs_f64() * 1000.0 / 3.0, d.id));
     }

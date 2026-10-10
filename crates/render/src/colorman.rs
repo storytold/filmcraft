@@ -52,11 +52,11 @@ pub fn input_transform(cs: ColorSpace, range: Range, pipe: &ColorPipeline, peak_
 }
 
 /// Decode a frame of `item` (box-decimated by `n`) into the working space of `pipe`.
-pub fn decode(project: &Project, item: ItemId, frame: &VideoFrame, n: usize, pipe: &ColorPipeline) -> Image {
+pub fn decode(project: &Project, item: ItemId, frame: &VideoFrame, n: usize, pipe: &ColorPipeline) -> crate::Result<Image> {
     let cs = source_space(project, item, frame);
     if !needs_management(pipe, cs, frame) {
-        let (w, h, px) = frame.to_linear_f32_decimated(n);
-        return Image { w, h, px };
+        let (w, h, px) = frame.to_linear_f32_decimated(n)?;
+        return Ok(Image { w, h, px });
     }
     // RGB stills/generators carry full-range code values; YUV carries its own range flag
     let range = match frame.data {
@@ -66,12 +66,12 @@ pub fn decode(project: &Project, item: ItemId, frame: &VideoFrame, n: usize, pip
     let t = input_transform(cs, range, pipe, source_peak_nits(project, item));
     let float_src = matches!(frame.data, filmcraft_frame::PixelData::RgbaF32(_));
     // float frames are linear already: only the gamut/tone stages apply to them
-    let (w, h, px) = frame.to_linear_f32_decimated_with(n, if float_src { None } else { Some(&t.table) });
+    let (w, h, px) = frame.to_linear_f32_decimated_with(n, if float_src { None } else { Some(&t.table) })?;
     let mut img = Image { w, h, px };
     if t.has_pixel_stage() {
         img.map_rgb(|c, _, _| t.apply(c));
     }
-    img
+    Ok(img)
 }
 
 /// Working space → monitor (SDR BT.709) for a non-plain pipeline; no-op otherwise.
@@ -135,7 +135,7 @@ mod tests {
         };
         let out = |hdr: Option<HdrMetadata>, nits: f32| {
             let (p, id) = item_with(hdr);
-            decode(&p, id, &frame([px(nits); 3], pq), 1, &ColorPipeline::REC709).px[0]
+            decode(&p, id, &frame([px(nits); 3], pq), 1, &ColorPipeline::REC709).unwrap().px[0]
         };
         // no metadata: a 1000 cd/m² master is assumed, so 2000 and 4000 both clip to SDR white
         assert!((out(None, 2000.0) - 1.0).abs() < 0.01 && (out(None, 4000.0) - 1.0).abs() < 0.01);
@@ -168,13 +168,13 @@ mod tests {
         let p = Project::new("t");
         let pq = ColorInfo { transfer: Transfer::Pq, primaries: Primaries::Bt2020, ..ColorInfo::SRGB_FULL };
         // ~1000 cd/m² white (PQ 0.75) → SDR peak after BT.2390; 203 cd/m² (PQ 0.58) → ≈ 0.8
-        let hi = decode(&p, ItemId(99), &frame([192, 192, 192], pq), 1, &ColorPipeline::REC709);
+        let hi = decode(&p, ItemId(99), &frame([192, 192, 192], pq), 1, &ColorPipeline::REC709).unwrap();
         assert!((hi.px[0] - 1.0).abs() < 0.03, "{:?}", &hi.px[..4]);
-        let rw = decode(&p, ItemId(99), &frame([148, 148, 148], pq), 1, &ColorPipeline::REC709);
+        let rw = decode(&p, ItemId(99), &frame([148, 148, 148], pq), 1, &ColorPipeline::REC709).unwrap();
         assert!((0.7..0.9).contains(&rw.px[0]), "{:?}", &rw.px[..4]);
         // the same frame in a PQ sequence keeps its HDR values (working units, 1.0 = 203 cd/m²)
         let hdr = ColorPipeline { working: WorkingSpace::Rec2100Pq, ..ColorPipeline::REC709 };
-        let w = decode(&p, ItemId(99), &frame([192, 192, 192], pq), 1, &hdr);
+        let w = decode(&p, ItemId(99), &frame([192, 192, 192], pq), 1, &hdr).unwrap();
         assert!(w.px[0] > 4.0, "{:?}", &w.px[..4]);
         let mut d = w.clone();
         to_display(&mut d, &hdr);

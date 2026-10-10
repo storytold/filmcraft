@@ -540,14 +540,14 @@ impl WcSource {
     }
 
     /// Move decoded pictures into the cache.
-    fn collect(&self, c: &mut Cache, want: i64) {
+    fn collect(&self, c: &mut Cache, want: i64) -> Result<(), MediaError> {
         let out = SESSIONS.with(|ss| {
             let ss = ss.borrow();
             let Some(s) = ss.get(&self.id) else { return Vec::new() };
             std::mem::take(&mut *s.out.borrow_mut())
         });
         for (pts, f) in out {
-            let f = if self.config.rotation != 0 { f.rotated(self.config.rotation) } else { f };
+            let f = if self.config.rotation != 0 { f.rotated(self.config.rotation).map_err(MediaError::Decode)? } else { f };
             c.frames.insert(pts, Arc::new(f));
         }
         while c.frames.len() > CACHE_FRAMES {
@@ -562,6 +562,7 @@ impl WcSource {
                 s.target = i64::MIN;
             }
         });
+        Ok(())
     }
 }
 
@@ -592,13 +593,13 @@ impl MediaSource for WcSource {
         let target = req.time.max(Tick::ZERO).to_rational_round(1, t.timescale.max(1) as i64);
         let i = t.sample_at_presentation_time(target).unwrap_or(n - 1).min(n - 1);
         let want = t.samples[i].pts;
-        self.collect(&mut c, want);
+        self.collect(&mut c, want)?;
         if let Some(f) = c.frames.get(&want) {
             return Ok(f.clone());
         }
         match self.drive(i, want) {
             Drive::Waiting => {
-                self.collect(&mut c, want);
+                self.collect(&mut c, want)?;
                 if let Some(f) = c.frames.get(&want) {
                     return Ok(f.clone());
                 }

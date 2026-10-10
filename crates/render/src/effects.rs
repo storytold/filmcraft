@@ -86,17 +86,17 @@ pub(crate) fn hash3(x: usize, y: usize, z: u64) -> f32 {
 }
 
 /// Apply one effect. Unknown/unimplemented ids are a no-op (they still round-trip in the project).
-pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> crate::Result<()> {
     if !e.enabled || img.w == 0 || img.h == 0 {
-        return;
+        return Ok(());
     }
-    if crate::vfx::apply(img, e, cx) {
-        return;
+    if crate::vfx::apply(img, e, cx)? {
+        return Ok(());
     }
     // effects with a GPU implementation: evaluated parameters + CPU reference (`gpufx`)
     if let Some(op) = crate::gpufx::FxOp::eval(e, cx, img.w, img.h) {
         op.apply(img);
-        return;
+        return Ok(());
     }
     match e.effect.as_str() {
         "lumetri" => lumetri(img, e, cx),
@@ -468,6 +468,7 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         }
         _ => {}
     }
+    Ok(())
 }
 
 /// Fill an opaque generated colour over the image at `op` opacity (Generate category).
@@ -915,7 +916,7 @@ mod tests {
                     *v = (*v + soft_max * 0.3).min(*soft_max);
                 }
             }
-            apply(&mut img, &e, &cx());
+            apply(&mut img, &e, &cx()).unwrap();
             assert!(img.px.iter().all(|v| v.is_finite()), "{}", def.id);
         }
     }
@@ -940,11 +941,11 @@ mod tests {
     fn flip_and_crop() {
         let mut img = Image::new(4, 1);
         img.px[0..4].copy_from_slice(&[1.0, 0.0, 0.0, 1.0]);
-        apply(&mut img, &find_effect("horizontal_flip").unwrap().instance(), &cx());
+        apply(&mut img, &find_effect("horizontal_flip").unwrap().instance(), &cx()).unwrap();
         assert_eq!(img.get(3, 0), [1.0, 0.0, 0.0, 1.0]);
         let mut e = find_effect("crop").unwrap().instance();
         e.params.get_mut("right").unwrap().value = ParamValue::Float(50.0);
-        apply(&mut img, &e, &cx());
+        apply(&mut img, &e, &cx()).unwrap();
         assert_eq!(img.get(3, 0)[3], 0.0);
     }
 
@@ -952,7 +953,7 @@ mod tests {
     fn identity_lumetri_is_identity() {
         let mut img = Image::filled(8, 8, [0.18, 0.3, 0.05, 1.0]);
         let before = img.clone();
-        apply(&mut img, &find_effect("lumetri").unwrap().instance(), &cx());
+        apply(&mut img, &find_effect("lumetri").unwrap().instance(), &cx()).unwrap();
         for (a, b) in img.px.iter().zip(&before.px) {
             assert!((a - b).abs() < 2e-3, "{a} {b}");
         }

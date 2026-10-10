@@ -61,7 +61,7 @@ fn mjpeg_mov_roundtrip() {
     let info = src.info();
     assert_eq!(info.video.as_ref().unwrap().width, 320);
     assert!((info.duration.seconds() - 1.0).abs() < 0.05, "{}", info.duration.seconds());
-    let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 2))).unwrap().to_rgba8();
+    let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 2))).unwrap().to_rgba8().unwrap();
     assert!(f[0] > 230 && f[1] < 30, "{:?}", &f[..4]);
     let a = src.audio(0, 24_000, 48_000).unwrap();
     let pk = a.peaks()[0];
@@ -97,7 +97,7 @@ fn prores_export_roundtrip() {
     let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
     let src = filmcraft_codecs::open_bytes("pr.mov", bytes).unwrap();
     assert!(src.info().video.as_ref().unwrap().codec.contains("ProRes 422 HQ"));
-    let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 3))).unwrap().to_rgba8();
+    let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 3))).unwrap().to_rgba8().unwrap();
     assert!(f[0] > 240 && f[1] < 15 && f[2] < 15, "{:?}", &f[..4]);
 }
 
@@ -114,7 +114,7 @@ fn dnxhr_export_roundtrip() {
         assert_eq!(info.codec, label);
         let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 3))).unwrap();
         assert!(f.format_label().contains("4:2:2"), "{}", f.format_label());
-        let px = f.to_rgba8();
+        let px = f.to_rgba8().unwrap();
         assert!(px[0] > 240 && px[1] < 15 && px[2] < 15, "{profile}: {:?}", &px[..4]);
     }
 }
@@ -230,7 +230,7 @@ fn hdr_exports_signal_pq_and_hlg() {
         }
         // 709 red matte → BT.2020 HDR → decoded back into Rec. 709 (tone mapped) stays red
         let f = src.video_frame(FrameRequest::full(Tick::ZERO)).unwrap();
-        let back = filmcraft_render::colorman::decode(&Project::new("x"), ItemId(0), &f, 1, &ColorPipeline::REC709);
+        let back = filmcraft_render::colorman::decode(&Project::new("x"), ItemId(0), &f, 1, &ColorPipeline::REC709).unwrap();
         let c = filmcraft_render::Image::unpremul(back.get(160, 90));
         assert!(c[0] > 0.6 && c[1] < 0.05 && c[2] < 0.05, "{path}: {c:?}");
         // ffprobe agrees

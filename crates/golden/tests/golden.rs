@@ -181,7 +181,7 @@ impl MediaSource for Encoded {
     }
     fn video_frame(&self, req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
         let f = self.inner.video_frame(req)?;
-        let rgba = f.to_rgba8();
+        let rgba = f.to_rgba8().map_err(filmcraft_media::MediaError::Decode)?;
         let m = filmcraft_color::spaces::to_f32(&filmcraft_color::spaces::gamut_matrix(Gamut::Bt709, self.target.gamut()));
         let curve = self.target.curve();
         let out: Vec<u8> = rgba
@@ -642,7 +642,7 @@ fn scenes() -> Vec<(&'static str, &'static str, fn() -> Scene)> {
 }
 
 fn render_cpu(s: &Scene) -> Rgba8 {
-    let img = render_sequence(&s.project, s.seq, RATE.tick_of(s.frame), RenderOptions::default(), &s.sources);
+    let img = render_sequence(&s.project, s.seq, RATE.tick_of(s.frame), RenderOptions::default(), &s.sources).unwrap();
     Rgba8::new(img.w as u32, img.h as u32, img.over_black_rgba8())
 }
 
@@ -713,7 +713,7 @@ goldens!(
 #[test]
 fn lumetri_presets_grid() {
     use filmcraft_render::lumetri_presets as lp;
-    let img = lp::grid(&lp::presets(), 6, 96, 54);
+    let img = lp::grid(&lp::presets(), 6, 96, 54).unwrap();
     let rgba = Rgba8::new(img.w as u32, img.h as u32, img.over_black_rgba8());
     let name = "lumetri_presets_grid";
     let d = assert_golden(&golden_path(name), &rgba, Tolerance::RENDER, "Lumetri Presets thumbnail grid", &format!("crates/golden/tests/golden.rs ({name})"));
@@ -756,9 +756,9 @@ fn gpu_matches_cpu_on_golden_scenes() {
         let s = make();
         let t = RATE.tick_of(s.frame);
         let cpu = render_cpu(&s);
-        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, t, RenderOptions::default(), &s.sources);
+        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, t, RenderOptions::default(), &s.sources).unwrap();
         let kind = if matches!(plan, filmcraft_render::plan::FramePlan::Layers { .. }) { "layers" } else { "cpu image" };
-        c.composite(&plan);
+        c.composite(&plan).unwrap();
         let (gw, gh, mut px) = c.read_output().expect("GPU readback");
         px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
         let gpu = Rgba8::new(gw, gh, px);
@@ -831,13 +831,13 @@ fn gpu_blend_modes_match_cpu_render() {
         let s = b.at(12);
         let t = RATE.tick_of(s.frame);
         let cpu = render_cpu(&s);
-        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, t, RenderOptions::default(), &s.sources);
+        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, t, RenderOptions::default(), &s.sources).unwrap();
         let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else {
             failures.push(format!("{mode}: planned as a CPU image"));
             continue;
         };
         assert_eq!(layers.len(), 4, "{mode}");
-        c.composite(&plan);
+        c.composite(&plan).unwrap();
         let (gw, gh, mut px) = c.read_output().expect("GPU readback");
         px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
         let gpu = Rgba8::new(gw, gh, px);
@@ -869,11 +869,11 @@ fn gpu_transition_of_blended_clips_matches_cpu_render() {
     }
     b.transition(1, "cross_dissolve", ca, cb, 24, 12);
     let s = b.at(22);
-    let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(s.frame), RenderOptions::default(), &s.sources);
+    let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(s.frame), RenderOptions::default(), &s.sources).unwrap();
     let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else { panic!("planned as a CPU image") };
     assert!(layers.iter().all(|l| l.blend == filmcraft_render::Blend::Normal));
     let mut c = filmcraft_gpu::GpuCompositor::new(&dev, &q);
-    c.composite(&plan);
+    c.composite(&plan).unwrap();
     let (gw, gh, mut px) = c.read_output().expect("GPU readback");
     px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
     let d = diff(&render_cpu(&s), &Rgba8::new(gw, gh, px)).unwrap();
@@ -923,7 +923,7 @@ fn gpu_effect_chains_match_cpu_render() {
     b.fixed(v5, "motion", &[("scale", fl(25.0)), ("position", pt(60.0, 140.0))]);
     b.effect(v5, "emboss", &[]);
     let mut s = b.at(12);
-    let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(s.frame), RenderOptions::default(), &s.sources);
+    let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(s.frame), RenderOptions::default(), &s.sources).unwrap();
     let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else { panic!("planned as a CPU image") };
     assert_eq!(layers.len(), 5);
     for (i, l) in layers.iter().take(4).enumerate() {
@@ -939,8 +939,8 @@ fn gpu_effect_chains_match_cpu_render() {
     let mut failures = Vec::new();
     for frame in [0, 12, 30] {
         s.frame = frame;
-        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(frame), RenderOptions::default(), &s.sources);
-        c.composite(&plan);
+        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(frame), RenderOptions::default(), &s.sources).unwrap();
+        c.composite(&plan).unwrap();
         let (gw, gh, mut px) = c.read_output().expect("GPU readback");
         px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
         let gpu = Rgba8::new(gw, gh, px);
@@ -957,14 +957,14 @@ fn gpu_effect_chains_match_cpu_render() {
     }
     // ½ playback resolution: the working images (and the effects' pixel radii) shrink with it
     let opts = RenderOptions { scale: 0.5, ..RenderOptions::default() };
-    let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(s.frame), opts, &s.sources);
+    let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(s.frame), opts, &s.sources).unwrap();
     let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else { panic!("½: planned as a CPU image") };
     assert!(layers.iter().take(4).all(|l| l.fx.is_some()));
-    c.composite(&plan);
+    c.composite(&plan).unwrap();
     let (gw, gh, mut px) = c.read_output().expect("GPU readback");
     px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
     let gpu = Rgba8::new(gw, gh, px);
-    let img = render_sequence(&s.project, s.seq, RATE.tick_of(s.frame), opts, &s.sources);
+    let img = render_sequence(&s.project, s.seq, RATE.tick_of(s.frame), opts, &s.sources).unwrap();
     let cpu = Rgba8::new(img.w as u32, img.h as u32, img.over_black_rgba8());
     let (p99, mean) = interior_diff(&plan, &cpu, &gpu);
     eprintln!("effect chains @ ½: GPU vs CPU interior p99 {p99}, mean {mean:.3}; whole frame {}", diff(&cpu, &gpu).unwrap());

@@ -182,13 +182,19 @@ fn apply_menu(app: &mut FilmcraftApp, resp: &egui::Response) -> bool {
 }
 
 /// A preset's thumbnail texture (rendered once per size, cached by name).
-fn preset_texture(app: &mut FilmcraftApp, ctx: &egui::Context, p: &filmcraft_render::lumetri_presets::LumetriPreset, w: usize) -> egui::TextureId {
+fn preset_texture(app: &mut FilmcraftApp, ctx: &egui::Context, p: &filmcraft_render::lumetri_presets::LumetriPreset, w: usize) -> Option<egui::TextureId> {
     let name = format!("lumetri-preset-{}-{w}", p.name);
     if let Some((id, _)) = app.texture_existing(&name) {
-        return id;
+        return Some(id);
     }
     let h = (w * 9 / 16).max(1);
-    let img = filmcraft_render::lumetri_presets::thumbnail(p, w, h);
+    let img = match filmcraft_render::lumetri_presets::thumbnail(p, w, h) {
+        Ok(img) => img,
+        Err(error) => {
+            app.ui.status = error;
+            return None;
+        }
+    };
     let rgba = crate::frames::Rgba { w: img.w, h: img.h, px: img.over_black_rgba8() };
     let key = crate::frames::FrameKey {
         target: crate::frames::Target::Item(filmcraft_project::ItemId(u64::MAX)),
@@ -197,7 +203,7 @@ fn preset_texture(app: &mut FilmcraftApp, ctx: &egui::Context, p: &filmcraft_ren
         revision: 0,
         draft: false,
     };
-    app.texture_for(ctx, &name, key, &rgba)
+    Some(app.texture_for(ctx, &name, key, &rgba))
 }
 
 /// The Lumetri Presets folder of the tree: sub-folders and preset rows with thumbnails. Returns
@@ -236,7 +242,7 @@ fn lumetri_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui, filter: &str) -> Opti
             if resp.hovered() {
                 ui.painter().rect_filled(r, 0.0, t.hover);
             }
-            let tex = preset_texture(app, ui.ctx(), p, 64);
+            let Some(tex) = preset_texture(app, ui.ctx(), p, 64) else { continue };
             let tr = Rect::from_min_size(pos2(r.min.x + 40.0, r.min.y + 3.0), vec2(32.0, 18.0));
             ui.painter().image(tex, tr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
             ui.painter().text(pos2(tr.max.x + 8.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::t(p.name), Tokens::ui(12.0), t.text);
@@ -272,7 +278,7 @@ fn preset_grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) -> Option<
             break;
         }
         let pic = Rect::from_min_size(cell.min, vec2(cw, ch));
-        let tex = preset_texture(app, ui.ctx(), p, 160);
+        let tex = preset_texture(app, ui.ctx(), p, 160)?;
         let resp = ui.interact(cell, egui::Id::new(("lumetri-grid", p.name)), Sense::click()).on_hover_text(crate::i18n::t(p.description));
         ui.painter().rect_filled(cell, 3.0, if resp.hovered() { t.hover } else { t.field_bg });
         ui.painter().image(tex, pic.shrink(2.0), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);

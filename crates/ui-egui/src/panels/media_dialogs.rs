@@ -131,7 +131,7 @@ fn match_params(d: &LinkMediaDraft) -> Value {
     })
 }
 
-fn preview_texture(app: &FilmcraftApp, ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
+fn preview_texture(app: &mut FilmcraftApp, ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
     let key = egui::Id::new(("link-preview", path));
     if let Some(t) = ctx.data(|d| d.get_temp::<Option<egui::TextureHandle>>(key)) {
         return t;
@@ -139,7 +139,14 @@ fn preview_texture(app: &FilmcraftApp, ctx: &egui::Context, path: &str) -> Optio
     let tex = app.session.media.open_file(path, &*app.session.services).ok().and_then(|src| {
         let t = filmcraft_time::Tick(src.info().duration.0 / 3);
         let f = src.video_frame(filmcraft_media::FrameRequest { time: t, scale: 0.25 }).ok()?;
-        let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.to_rgba8());
+        let px = match f.to_rgba8() {
+            Ok(px) => px,
+            Err(error) => {
+                app.ui.status = error;
+                return None;
+            }
+        };
+        let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &px);
         Some(ctx.load_texture(format!("link-preview-{path}"), img, egui::TextureOptions::LINEAR))
     });
     ctx.data_mut(|d| d.insert_temp(key, tex.clone()));

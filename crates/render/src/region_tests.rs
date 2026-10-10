@@ -156,7 +156,7 @@ fn reference(p: &Project, seq: ItemId, t: Tick, opts: RenderOptions, map: &Sourc
     let tc = format_time(t, s.settings.frame_rate, s.settings.drop_frame, TimeDisplay::Timecode, s.settings.sample_rate as i64);
     for track in &s.video_tracks {
         let Some(item) = track.item_at(t) else { continue };
-        if let Some((layer, op, bl)) = item_layer(p, s, item, t, opts, map, &tc) {
+        if let Some((layer, op, bl)) = item_layer(p, s, item, t, opts, map, &tc).unwrap() {
             blend::composite(&mut canvas, &layer, op, bl);
         }
     }
@@ -177,7 +177,7 @@ fn check(what: &str, specs: &[Spec], scale: f32) {
         let t = FPS.tick_of(f);
         // twice: the second render starts from recycled buffers
         for round in 0..2 {
-            let got = render_sequence(&p, seq, t, opts, &map);
+            let got = render_sequence(&p, seq, t, opts, &map).unwrap();
             same_bits(&got, &reference(&p, seq, t, opts, &map), &format!("{what} (frame {f}, render {round})"));
             pool::recycle_f32(got.px);
         }
@@ -226,7 +226,7 @@ fn which_layers_take_a_shortcut() {
     let (p, seq, map) = scene(&[Spec::new(camera(W, H)), Spec::new(banner(W, H, (0, H - 9, W, H)))]);
     let s = p.sequence(seq).expect("sequence");
     let (opts, t) = (RenderOptions::default(), FPS.tick_of(3));
-    let layer = |track: usize, allow: bool| item_layer_ex(&p, s, s.video_tracks[track].item_at(t).expect("clip"), t, opts, &map, "", allow);
+    let layer = |track: usize, allow: bool| item_layer_ex(&p, s, s.video_tracks[track].item_at(t).expect("clip"), t, opts, &map, "", allow).unwrap();
     // a camera frame has no alpha: opaque, the whole picture
     assert!(matches!(layer(0, true), Some(Layer::Full { opaque: true, .. })));
     // a banner is only its rectangle (rows H-9.. of a 96-wide picture)
@@ -240,7 +240,7 @@ fn which_layers_take_a_shortcut() {
     // a transparent banner is an empty region
     let (p, seq, map) = scene(&[Spec::new(banner(W, H, (0, 0, 0, 0)))]);
     let s = p.sequence(seq).expect("sequence");
-    match item_layer_ex(&p, s, s.video_tracks[0].item_at(t).expect("clip"), t, opts, &map, "", true) {
+    match item_layer_ex(&p, s, s.video_tracks[0].item_at(t).expect("clip"), t, opts, &map, "", true).unwrap() {
         Some(Layer::Region { image, .. }) => assert_eq!((image.w, image.h, image.px.len()), (0, 0, 0)),
         _ => panic!("a transparent banner is an empty region"),
     }
@@ -248,7 +248,10 @@ fn which_layers_take_a_shortcut() {
     for spec in [Spec { effect: Some("brightness_contrast"), ..Spec::new(camera(W, H)) }, Spec { motion_scale: Some(50.0), ..Spec::new(camera(W, H)) }] {
         let (p, seq, map) = scene(&[spec]);
         let s = p.sequence(seq).expect("sequence");
-        assert!(matches!(item_layer_ex(&p, s, s.video_tracks[0].item_at(t).expect("clip"), t, opts, &map, "", true), Some(Layer::Full { opaque: false, .. })));
+        assert!(matches!(
+            item_layer_ex(&p, s, s.video_tracks[0].item_at(t).expect("clip"), t, opts, &map, "", true).unwrap(),
+            Some(Layer::Full { opaque: false, .. })
+        ));
     }
 }
 

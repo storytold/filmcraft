@@ -946,11 +946,11 @@ impl Session {
 
     /// Render the active sequence at the playhead in its working colour space (HDR values kept;
     /// for scopes and analysis).
-    pub fn render_program_working(&self, scale: f32) -> Option<filmcraft_render::Image> {
-        let seq = self.renderable_sequence(scale).ok()?;
+    pub fn render_program_working(&self, scale: f32) -> Result<filmcraft_render::Image> {
+        let seq = self.renderable_sequence(scale)?;
         let provider = self.media.provider(self.project.clone(), self.services.clone());
         let opts = filmcraft_render::RenderOptions { scale, working_output: true, ..Default::default() };
-        Some(filmcraft_render::render_sequence(&self.project, seq, self.playhead(), opts, &provider))
+        filmcraft_render::render_sequence(&self.project, seq, self.playhead(), opts, &provider).map_err(EngineError::Other)
     }
 
     /// Render the active sequence at the playhead (CPU reference path).
@@ -971,7 +971,7 @@ impl Session {
         let t = self.sequence_rate().snap(t.max(Tick::ZERO));
         let provider = self.media.provider(self.project.clone(), self.services.clone());
         let opts = filmcraft_render::RenderOptions { scale, captions: true, ..Default::default() };
-        Ok(filmcraft_render::render_sequence(&self.project, seq, t, opts, &provider))
+        filmcraft_render::render_sequence(&self.project, seq, t, opts, &provider).map_err(EngineError::Other)
     }
 
     /// The active sequence, if a frame of it at `scale` is within the image size limits.

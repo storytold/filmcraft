@@ -90,9 +90,10 @@ fn render_turns_green_edit_invalidates_and_undo_restores() {
         FrameRate::FPS_24.tick_of(5),
         Default::default(),
         &s.media.provider(s.project.clone(), s.services.clone()),
-    );
+    )
+    .unwrap();
     let live = live.over_black_rgba8();
-    let prev = f.to_rgba8();
+    let prev = f.to_rgba8().unwrap();
     let diff = live.iter().zip(&prev).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap();
     assert!(diff <= 4, "preview differs from live render by {diff}");
     // edit the effect → stale

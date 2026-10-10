@@ -698,7 +698,7 @@ mod tests {
     /// Mean luma of the top and bottom halves of the decoded frame, and its size.
     fn halves(src: &Mp4Source) -> (u32, u32, u8, u8) {
         let f = src.video_frame(FrameRequest::full(Tick::ZERO)).expect("frame");
-        let l = f.luma8();
+        let l = f.luma8().unwrap();
         let half = l.len() / 2;
         let mean = |s: &[u8]| (s.iter().map(|&v| v as u32).sum::<u32>() / s.len() as u32) as u8;
         (f.width, f.height, mean(&l[..half]), mean(&l[half..]))

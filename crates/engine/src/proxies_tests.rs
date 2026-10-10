@@ -222,7 +222,7 @@ fn render_previews_ignore_proxies() {
     s.execute("sequence.renderInToOut", json!({"wait": true})).unwrap();
     let seq = s.state.active_sequence.unwrap();
     let f = s.previews.frame(&s.media, &s.project, seq, 4, 1.0).expect("frame 4 has a preview");
-    let q = psnr(&f.to_rgba8(), &full.2);
+    let q = psnr(&f.to_rgba8().unwrap(), &full.2);
     assert!(q > 30.0, "preview rendered from full-resolution media, not the (different) proxy: {q:.1} dB");
     let _ = std::fs::remove_dir_all(&root);
 }

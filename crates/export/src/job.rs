@@ -113,9 +113,9 @@ struct Ahead {
 /// Render frames `f..end` in parallel. `None` when a source was not ready for one of them (the
 /// pending flag, taken after every frame because it is per thread): the batch is incomplete and
 /// must be rendered again.
-fn render_batch(pipe: &Pipeline, f: i64, end: i64, sources: &dyn SourceProvider) -> Option<Vec<Frame>> {
+fn render_batch(pipe: &Pipeline, f: i64, end: i64, sources: &dyn SourceProvider) -> Result<Option<Vec<Frame>>> {
     let pending = AtomicBool::new(false);
-    let frames: Vec<Frame> = (f..end)
+    let frames: Result<Vec<Frame>> = (f..end)
         .into_par_iter()
         .map(|fi| {
             let frame = pipe.frame(fi, sources);
@@ -125,7 +125,10 @@ fn render_batch(pipe: &Pipeline, f: i64, end: i64, sources: &dyn SourceProvider)
             frame
         })
         .collect();
-    (!pending.load(Ordering::Relaxed)).then_some(frames)
+    if pending.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
+    Ok(Some(frames?))
 }
 
 /// What encoding a batch came to.
@@ -527,7 +530,7 @@ impl Exporter {
             _ => {
                 let (f, end) = (self.next, self.next.saturating_add(self.batch_len()).min(self.f1));
                 let pipe = &self.pipe;
-                match timed(Stage::Render, || render_batch(pipe, f, end, sources)) {
+                match timed(Stage::Render, || render_batch(pipe, f, end, sources))? {
                     Some(frames) => (f, frames),
                     None => return Ok(Step::Pending),
                 }
@@ -551,7 +554,7 @@ impl Exporter {
             };
         };
         let pipe = self.pipe.clone();
-        let mut slot: Option<std::thread::Result<Option<Vec<Frame>>>> = None;
+        let mut slot: Option<std::thread::Result<Result<Option<Vec<Frame>>>>> = None;
         let mut encode_done: Option<web_time::Instant> = None;
         let encoded = rayon::in_place_scope(|s| {
             s.spawn(|_| {
@@ -572,9 +575,10 @@ impl Exporter {
                 progress.done.fetch_add((end - f) as u64, Ordering::Relaxed);
                 self.next = end;
                 match slot {
-                    Some(Ok(Some(frames))) => self.ahead = Some(Ahead { first: a, frames }),
+                    Some(Ok(Ok(Some(frames)))) => self.ahead = Some(Ahead { first: a, frames }),
                     // a source was not ready: the next step renders this batch again
-                    Some(Ok(None)) | None => {}
+                    Some(Ok(Ok(None))) | None => {}
+                    Some(Ok(Err(error))) => return Err(error),
                     Some(Err(_)) => return Err(ExportError::Encode("internal error while rendering a frame (the panic was logged by the panic hook)".into())),
                 }
                 Ok(Step::Progress)
@@ -650,6 +654,49 @@ mod tests {
     use super::*;
 
     const MIB: u64 = 1 << 20;
+
+    #[test]
+    fn batch_distinguishes_pending_failure_and_success() {
+        use filmcraft_media::{FrameRequest, MediaError, MediaInfo, MediaSource};
+        struct Deferred {
+            info: MediaInfo,
+            pending: bool,
+        }
+        impl MediaSource for Deferred {
+            fn info(&self) -> &MediaInfo {
+                &self.info
+            }
+            fn video_frame(&self, _: FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+                if self.pending {
+                    filmcraft_media::pending::mark();
+                }
+                Err(MediaError::Decode("injected batch frame failure".into()))
+            }
+            fn audio(&self, _: i64, _: usize, _: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+                Err(MediaError::NoStream("audio"))
+            }
+        }
+        let (project, seq, mut sources) = crate::tests::project();
+        let video = project.sequence(seq).unwrap().video_tracks[0].items[0].item;
+        let original = sources.0[&video].clone();
+        let pipeline = Pipeline::new(project, seq, &ExportSettings::default(), false).unwrap();
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+        for pending in [true, false] {
+            sources.0.insert(video, Arc::new(Deferred { info: original.info().clone(), pending }));
+            let result = pool.install(|| render_batch(&pipeline, 0, 2, &sources));
+            if pending {
+                assert!(result.unwrap().is_none());
+            } else {
+                assert!(result.unwrap_err().to_string().contains("injected batch frame failure"));
+            }
+        }
+        sources.0.insert(video, original);
+        let frames = pool.install(|| render_batch(&pipeline, 0, 2, &sources)).unwrap().unwrap();
+        assert_eq!(frames.len(), 2);
+        for (index, actual) in frames.iter().enumerate() {
+            assert_eq!(actual, &pipeline.frame(index as i64, &sources).unwrap());
+        }
+    }
 
     #[test]
     fn frame_bytes_by_format() {

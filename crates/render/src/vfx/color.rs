@@ -366,14 +366,15 @@ pub fn ultra_key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
 
 /// Track Matte Key: multiplies the layer by another video track's alpha or luma (sampled where
 /// the layer lands in the frame).
-pub fn track_matte(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+pub fn track_matte(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> crate::Result<()> {
     let idx = chv(e, "matte") as usize;
     if idx == 0 {
-        return;
+        return Ok(());
     }
-    let Some(env) = cx.env else { return };
-    let Some(matte) = env.track(idx - 1) else { return };
+    let Some(env) = cx.env else { return Ok(()) };
+    let Some(matte) = env.track(idx - 1)? else { return Ok(()) };
     apply_matte(img, &matte, &env.layer_to_output(), chv(e, "composite") == 1, bv(e, "reverse"));
+    Ok(())
 }
 
 /// Multiply `img` (layer pixels) by `matte` (output pixels) mapped through `m`.

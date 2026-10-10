@@ -380,16 +380,23 @@ fn wipe_alpha(g: f32, c: f32, soft: f32) -> f32 {
 
 /// Gradient Wipe (Legacy): reveals by the luminance of a gradient layer (another track, or this
 /// layer's own luminance).
-pub fn gradient_wipe(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+pub fn gradient_wipe(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> crate::Result<()> {
     let c = fv(e, "completion", cx) / 100.0;
     if c <= 0.0 {
-        return;
+        return Ok(());
     }
     let soft = fv(e, "softness", cx) / 100.0;
     let invert = bv(e, "invert");
     let layer = chv(e, "layer") as usize;
     let placement = chv(e, "placement");
-    let track = if layer > 0 { cx.env.and_then(|env| env.track(layer - 1).map(|t| (t, env.layer_to_output()))) } else { None };
+    let track = if layer > 0 {
+        match cx.env {
+            Some(env) => env.track(layer - 1)?.map(|t| (t, env.layer_to_output())),
+            None => None,
+        }
+    } else {
+        None
+    };
     let own = img.clone();
     let w = img.w;
     let (iw, ih) = (img.w as f32, img.h as f32);
@@ -417,6 +424,7 @@ pub fn gradient_wipe(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             }
         }
     });
+    Ok(())
 }
 
 /// Linear Wipe (Legacy): a straight edge sweeps across at Wipe Angle.

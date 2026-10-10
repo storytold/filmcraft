@@ -36,13 +36,14 @@ fn frame_export_selects_the_correct_monitor_time_and_original_media() {
     let before = s.project.to_json();
     let revision = s.revision;
     let provider = s.media.full_res_provider(s.project.clone(), s.services.clone());
-    let expected_source = filmcraft_render::render_item(&s.project, item, s.state.source_playhead, 1.0, &provider).unwrap().to_rgba8();
+    let expected_source = filmcraft_render::render_item(&s.project, item, s.state.source_playhead, 1.0, &provider).unwrap().unwrap().to_rgba8();
     let preview_provider = s.media.provider(s.project.clone(), s.services.clone());
-    let preview = filmcraft_render::render_item(&s.project, item, s.state.source_playhead, 1.0, &preview_provider).unwrap().to_rgba8();
+    let preview = filmcraft_render::render_item(&s.project, item, s.state.source_playhead, 1.0, &preview_provider).unwrap().unwrap().to_rgba8();
     assert_ne!(preview, expected_source, "the preview really uses the red proxy");
     let seq = s.state.active_sequence.unwrap();
     let expected_program =
         filmcraft_render::render_sequence(&s.project, seq, s.playhead(), filmcraft_render::RenderOptions { captions: true, ..Default::default() }, &provider)
+            .unwrap()
             .to_rgba8();
     assert_ne!(expected_source, expected_program);
     for (target, time, expected) in [("source", s.state.source_playhead, expected_source), ("program", s.playhead(), expected_program)] {
@@ -83,6 +84,47 @@ fn source_frame_export_works_without_an_active_sequence_and_rejects_bad_params()
     Arc::make_mut(&mut s.project).item_mut(item).unwrap().as_media_mut().unwrap().info.video = None;
     assert!(s.execute("file.exportFrame", json!({"target":"source","path":path.to_string_lossy()})).is_err());
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn failed_frame_export_preserves_existing_output_and_project() {
+    use filmcraft_media::{FrameRequest, MediaError, MediaInfo, MediaSource};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct FailedSource {
+        info: MediaInfo,
+        calls: AtomicUsize,
+    }
+    impl MediaSource for FailedSource {
+        fn info(&self) -> &MediaInfo {
+            &self.info
+        }
+        fn video_frame(&self, _: FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Err(MediaError::Decode("injected frame export failure".into()))
+        }
+        fn audio(&self, _: i64, _: usize, _: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+            Err(MediaError::NoStream("audio"))
+        }
+    }
+    let (mut s, item) = session();
+    let info = s.project.item(item).unwrap().as_media().unwrap().info.clone();
+    let source = Arc::new(FailedSource { info, calls: AtomicUsize::new(0) });
+    s.media.insert(item, source.clone());
+    let before = s.project.to_json();
+    let revision = s.revision;
+    let original = b"existing user output";
+    for target in ["source", "program"] {
+        let path = std::env::temp_dir().join(format!("fc-failed-frame-{target}-{}.png", std::process::id()));
+        std::fs::write(&path, original).unwrap();
+        let calls = source.calls.load(Ordering::Relaxed);
+        let error = s.execute("file.exportFrame", json!({"target":target,"path":path.to_string_lossy(),"import":true})).unwrap_err();
+        assert!(error.to_string().contains("injected frame export failure"));
+        assert!(source.calls.load(Ordering::Relaxed) > calls, "failure probe must execute for {target}");
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(s.project.to_json(), before);
+        assert_eq!(s.revision, revision);
+        std::fs::remove_file(path).unwrap();
+    }
 }
 
 #[test]

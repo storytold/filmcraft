@@ -1672,6 +1672,7 @@ dependencies = [
  "eframe",
  "egui",
  "filmcraft-engine",
+ "filmcraft-gpu",
  "filmcraft-platform",
  "filmcraft-ui-egui",
  "log",
@@ -1679,6 +1680,7 @@ dependencies = [
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "pollster 0.4.0",
  "rfd",
  "serde_json",
  "sys-locale",
@@ -1934,6 +1936,7 @@ version = "0.5.0"
 dependencies = [
  "filmcraft-color",
  "filmcraft-time",
+ "log",
  "rayon",
  "serde",
 ]
@@ -2106,6 +2109,8 @@ dependencies = [
  "filmcraft-color",
  "filmcraft-export",
  "filmcraft-frame",
+ "filmcraft-geom",
+ "filmcraft-gpu",
  "filmcraft-h264",
  "filmcraft-hevc",
  "filmcraft-isobmff",
@@ -2120,6 +2125,8 @@ dependencies = [
  "objc2-core-media",
  "objc2-core-video",
  "objc2-video-toolbox",
+ "pollster 0.4.0",
+ "wgpu",
  "windows 0.62.2",
 ]
 

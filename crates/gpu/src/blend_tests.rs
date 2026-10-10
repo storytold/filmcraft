@@ -180,9 +180,9 @@ fn gpu_blend_modes_match_cpu() {
                 },
             ],
         };
-        let cpu_img = execute_cpu(&plan);
+        let cpu_img = execute_cpu(&plan).unwrap();
         let cpu = cpu_img.over_black_rgba8();
-        c.composite(&plan);
+        c.composite(&plan).unwrap();
         let (_, _, gpu) = c.read_output().expect("readback");
         let keep = interior(&plan);
         let (p99, mean, max) = stats8(&cpu, &gpu, &keep);
@@ -239,8 +239,8 @@ fn gpu_blend_edge_cases_match_cpu() {
                     PlanLayer { frame: src.clone(), matrix: Affine::IDENTITY, opacity, blend: mode, fx: None },
                 ],
             };
-            let cpu = execute_cpu(&plan);
-            c.composite(&plan);
+            let cpu = execute_cpu(&plan).unwrap();
+            c.composite(&plan).unwrap();
             let gpu = read_accum(&c);
             let mut worst = (0f32, 0usize);
             let mut steps = 0;
@@ -280,8 +280,8 @@ fn gpu_dissolve_pattern_is_exact() {
                 PlanLayer { frame: white.clone(), matrix: Affine::scale(w as f64, h as f64), opacity: op, blend: Blend::Dissolve, fx: None },
             ],
         };
-        let cpu = execute_cpu(&plan).over_black_rgba8();
-        c.composite(&plan);
+        let cpu = execute_cpu(&plan).unwrap().over_black_rgba8();
+        c.composite(&plan).unwrap();
         let (_, _, gpu) = c.read_output().expect("readback");
         let differ = cpu.chunks(4).zip(gpu.chunks(4)).filter(|(a, b)| a[..3] != b[..3]).count();
         let kept = gpu.chunks(4).filter(|p| p[1] > 128).count() as f32 / (w * h) as f32;
@@ -305,7 +305,7 @@ fn normal_fast_path_and_blend_layers_off_output() {
     let grey = Arc::new(VideoFrame::rgba_f32(4, 4, vec![0.2; 64]));
     let layer = |m: Affine, blend: Blend| PlanLayer { frame: grey.clone(), matrix: m, opacity: 1.0, blend, fx: None };
     let normal = FramePlan::Layers { width: 32, height: 16, layers: vec![layer(Affine::scale(8.0, 4.0), Blend::Normal)] };
-    c.composite(&normal);
+    c.composite(&normal).unwrap();
     assert!(c.backdrop.is_none());
     let (_, _, before) = c.read_output().expect("readback");
     let off = FramePlan::Layers {
@@ -317,12 +317,12 @@ fn normal_fast_path_and_blend_layers_off_output() {
             layer(Affine::translate(-10.0, -10.0), Blend::Screen),
         ],
     };
-    c.composite(&off);
+    c.composite(&off).unwrap();
     let (_, _, after) = c.read_output().expect("readback");
     assert_eq!(before, after);
     // only blend-mode layers first: the accumulator is still cleared
     let only = FramePlan::Layers { width: 32, height: 16, layers: vec![layer(Affine::translate(100.0, 0.0), Blend::Multiply)] };
-    c.composite(&only);
+    c.composite(&only).unwrap();
     let (_, _, empty) = c.read_output().expect("readback");
     assert!(empty.chunks(4).all(|p| p[..3] == [0, 0, 0]));
 }

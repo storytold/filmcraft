@@ -847,7 +847,7 @@ fn color_matte_color_changes_and_undoes() {
     let matte = s.execute("file.newColorMatte", json!({"width": 64, "height": 36, "color": "#ff0000"})).unwrap()["item"].as_u64().unwrap();
     let px = |s: &Session| {
         let f = s.source(ItemId(matte)).unwrap().video_frame(filmcraft_media::FrameRequest::full(Tick::ZERO)).unwrap();
-        f.to_rgba8()[..3].to_vec()
+        f.to_rgba8().unwrap()[..3].to_vec()
     };
     assert_eq!(px(&s), [255, 0, 0]);
     let r = s.execute("project.matteColor", json!({"item": matte, "color": "#0000ff"})).unwrap();
