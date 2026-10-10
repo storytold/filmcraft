@@ -14,6 +14,7 @@ filmcraft-time = { workspace = true }
 filmcraft-color = { workspace = true }
 filmcraft-frame = { workspace = true }
 filmcraft-media = { workspace = true }
+filmcraft-avi = { workspace = true }
 filmcraft-isobmff = { workspace = true }
 filmcraft-matroska = { workspace = true }
 filmcraft-mxf = { workspace = true }

@@ -178,13 +178,69 @@ pub fn hvcc_length_size_and_tid(hvcc: &[u8]) -> (usize, Option<u8>) {
 /// A factory returns `None` when it does not handle the entry.
 pub type VideoDecoderFactory = fn(&SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>>;
 
+/// The typical Huffman tables of ITU-T T.81 Annex K.3 as one DHT segment (luminance and
+/// chrominance, DC and AC): what a Motion JPEG frame without its own tables is coded with (AVI's
+/// "MJPG", the AVI1 convention of capture cards and cameras).
+const DEFAULT_DHT: &[u8] = &[
+    0xFF, 0xC4, 0x01, 0xA2, //
+    0x00, 0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, //
+    0x01, 0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, //
+    0x10, 0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 0x7D, //
+    0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07, 0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xA1, 0x08, //
+    0x23, 0x42, 0xB1, 0xC1, 0x15, 0x52, 0xD1, 0xF0, 0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0A, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x25, 0x26, 0x27, 0x28, //
+    0x29, 0x2A, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, //
+    0x5A, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, //
+    0x8A, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, //
+    0xB7, 0xB8, 0xB9, 0xBA, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA, 0xE1, 0xE2, //
+    0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA, //
+    0x11, 0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 0x77, //
+    0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21, 0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71, 0x13, 0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91, //
+    0xA1, 0xB1, 0xC1, 0x09, 0x23, 0x33, 0x52, 0xF0, 0x15, 0x62, 0x72, 0xD1, 0x0A, 0x16, 0x24, 0x34, 0xE1, 0x25, 0xF1, 0x17, 0x18, 0x19, 0x1A, 0x26, //
+    0x27, 0x28, 0x29, 0x2A, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, //
+    0x59, 0x5A, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, //
+    0x88, 0x89, 0x8A, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xB2, 0xB3, 0xB4, //
+    0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA, //
+    0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA,
+];
+
+/// A JPEG with the [`DEFAULT_DHT`] inserted before its first scan when it defines no Huffman
+/// table of its own (else unchanged, borrowed).
+pub fn with_default_huffman(jpeg: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    use std::borrow::Cow;
+    if jpeg.get(..2) != Some(&[0xFF, 0xD8]) {
+        return Cow::Borrowed(jpeg);
+    }
+    // walk the marker segments up to the start of scan
+    let mut at = 2usize;
+    while let (Some(&0xFF), Some(&m)) = (jpeg.get(at), jpeg.get(at + 1)) {
+        match m {
+            0xFF => at += 1, // fill byte
+            0xC4 => return Cow::Borrowed(jpeg),
+            0xDA => {
+                let mut out = Vec::with_capacity(jpeg.len() + DEFAULT_DHT.len());
+                out.extend_from_slice(jpeg.get(..at).unwrap_or_default());
+                out.extend_from_slice(DEFAULT_DHT);
+                out.extend_from_slice(jpeg.get(at..).unwrap_or_default());
+                return Cow::Owned(out);
+            }
+            0xD0..=0xD9 | 0x01 => at += 2,
+            _ => {
+                let Some(len) = jpeg.get(at + 2..at + 4).map(|b| usize::from(u16::from_be_bytes([b[0], b[1]]))) else { break };
+                at += 2 + len;
+            }
+        }
+    }
+    Cow::Borrowed(jpeg)
+}
+
 /// Motion-JPEG / Photo-JPEG (each sample is a complete JPEG).
 pub struct MjpegDecoder;
 
 impl VideoDecoder for MjpegDecoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
+        let sample = with_default_huffman(sample);
         // mjpa samples may contain two fields; decode the first image (field-merging lands with interlace support).
-        let img = image::load_from_memory_with_format(sample, image::ImageFormat::Jpeg).map_err(|e| CodecError::Decode(e.to_string()))?;
+        let img = image::load_from_memory_with_format(&sample, image::ImageFormat::Jpeg).map_err(|e| CodecError::Decode(e.to_string()))?;
         let rgba = img.to_rgba8();
         let (w, h) = rgba.dimensions();
         Ok(vec![DecodedFrame { pts, frame: VideoFrame::rgba8(w, h, rgba.into_raw()), draft: false }])
@@ -1015,5 +1071,167 @@ mod disposable_tests {
         assert!(!hevc_disposable(&sample(&[&nal(0, 1)]), 4, Some(1)));
         // unknown layering: never
         assert!(!hevc_disposable(&sample(&[&nal(0, 1)]), 4, None));
+    }
+}
+
+/// Uncompressed video layouts (AVI `BI_RGB` and YUV FourCCs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RawFormat {
+    /// 24-bit B, G, R; rows padded to 4 bytes.
+    Bgr24,
+    /// 32-bit B, G, R, X.
+    Bgrx32,
+    /// Packed 4:2:2: Y0 U Y1 V (`YUY2`, `YUYV`).
+    Yuy2,
+    /// Packed 4:2:2: U Y0 V Y1 (`UYVY`, `2vuy`).
+    Uyvy,
+    /// Planar 4:2:0: Y, U, V (`I420`, `IYUV`).
+    I420,
+    /// Planar 4:2:0: Y, V, U (`YV12`).
+    Yv12,
+    /// Y plane, interleaved U V at half resolution (`NV12`).
+    Nv12,
+    /// Luma only (`Y800`, `GREY`, `Y8  `).
+    Gray8,
+}
+
+impl RawFormat {
+    /// The layout of an AVI video stream: `BI_RGB` with its bit count, or a YUV FourCC.
+    pub fn from_avi(compression: [u8; 4], bit_count: u16) -> Option<RawFormat> {
+        if matches!(u32::from_le_bytes(compression), 0 | 3) {
+            return match bit_count {
+                24 => Some(RawFormat::Bgr24),
+                32 => Some(RawFormat::Bgrx32),
+                _ => None,
+            };
+        }
+        let mut upper = compression;
+        upper.make_ascii_uppercase();
+        Some(match &upper {
+            b"YUY2" | b"YUYV" | b"YUNV" | b"V422" => RawFormat::Yuy2,
+            b"UYVY" | b"2VUY" | b"UYNV" | b"HDYC" => RawFormat::Uyvy,
+            b"I420" | b"IYUV" => RawFormat::I420,
+            b"YV12" => RawFormat::Yv12,
+            b"NV12" => RawFormat::Nv12,
+            b"Y800" | b"GREY" | b"GRAY" | b"Y8  " => RawFormat::Gray8,
+            _ => return None,
+        })
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            RawFormat::Bgr24 => "Uncompressed RGB 24-bit",
+            RawFormat::Bgrx32 => "Uncompressed RGB 32-bit",
+            RawFormat::Yuy2 | RawFormat::Uyvy => "Uncompressed YUV 4:2:2",
+            RawFormat::I420 | RawFormat::Yv12 | RawFormat::Nv12 => "Uncompressed YUV 4:2:0",
+            RawFormat::Gray8 => "Uncompressed greyscale",
+        }
+    }
+}
+
+/// Uncompressed frames (each sample one picture of a [`RawFormat`]).
+pub struct RawVideoDecoder {
+    format: RawFormat,
+    width: u32,
+    height: u32,
+    /// RGB rows are stored bottom-up (a positive `BITMAPINFOHEADER` height).
+    bottom_up: bool,
+}
+
+impl RawVideoDecoder {
+    pub fn new(format: RawFormat, width: u32, height: u32, bottom_up: bool) -> Result<Self> {
+        if width == 0 || height == 0 || width > 16_384 || height > 16_384 {
+            return Err(CodecError::Unsupported(format!("{width}x{height} uncompressed video")));
+        }
+        Ok(Self { format, width, height, bottom_up })
+    }
+
+    fn yuv(&self, planes: [Vec<u8>; 3], chroma: filmcraft_frame::Chroma) -> VideoFrame {
+        use std::sync::Arc;
+        let [y, u, v] = planes;
+        VideoFrame {
+            width: self.width,
+            height: self.height,
+            data: filmcraft_frame::PixelData::Yuv8 { planes: [Arc::new(y), Arc::new(u), Arc::new(v)], chroma, alpha: None },
+            color: vui_color(self.width, self.height, 2, 2, false),
+            par: (1, 1),
+            pts: filmcraft_time::Tick::ZERO,
+        }
+    }
+
+    fn picture(&self, s: &[u8]) -> Result<VideoFrame> {
+        let (w, h) = (self.width as usize, self.height as usize);
+        let short = || CodecError::Decode(format!("{} frame of {} bytes is too short for {w}x{h}", self.format.label(), s.len()));
+        let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+        Ok(match self.format {
+            RawFormat::Bgr24 | RawFormat::Bgrx32 => {
+                let bpp = if self.format == RawFormat::Bgr24 { 3 } else { 4 };
+                let stride = (w * bpp).div_ceil(4) * 4;
+                if s.len() < stride * h {
+                    return Err(short());
+                }
+                let mut rgba = Vec::with_capacity(w * h * 4);
+                for row in 0..h {
+                    let src = if self.bottom_up { h - 1 - row } else { row };
+                    for px in s.get(src * stride..src * stride + w * bpp).unwrap_or_default().chunks_exact(bpp) {
+                        rgba.extend_from_slice(&[px[2], px[1], px[0], 255]);
+                    }
+                }
+                VideoFrame::rgba8(self.width, self.height, rgba)
+            }
+            RawFormat::Yuy2 | RawFormat::Uyvy => {
+                let stride = cw * 4;
+                if s.len() < stride * h {
+                    return Err(short());
+                }
+                let (yo, uo, vo, y2) = if self.format == RawFormat::Yuy2 { (0, 1, 3, 2) } else { (1, 0, 2, 3) };
+                let (mut y, mut u, mut v) = (Vec::with_capacity(w * h), Vec::with_capacity(cw * h), Vec::with_capacity(cw * h));
+                for row in s.chunks_exact(stride).take(h) {
+                    for (k, q) in row.as_chunks::<4>().0.iter().enumerate() {
+                        y.push(q[yo]);
+                        if 2 * k + 1 < w {
+                            y.push(q[y2]);
+                        }
+                        u.push(q[uo]);
+                        v.push(q[vo]);
+                    }
+                }
+                self.yuv([y, u, v], filmcraft_frame::Chroma::C422)
+            }
+            RawFormat::I420 | RawFormat::Yv12 | RawFormat::Nv12 | RawFormat::Gray8 => {
+                let luma = w * h;
+                let need = if self.format == RawFormat::Gray8 { luma } else { luma + 2 * cw * ch };
+                if s.len() < need {
+                    return Err(short());
+                }
+                let y = s.get(..luma).unwrap_or_default().to_vec();
+                let (u, v) = match self.format {
+                    RawFormat::Gray8 => (vec![128; cw * ch], vec![128; cw * ch]),
+                    RawFormat::Nv12 => s.get(luma..luma + 2 * cw * ch).unwrap_or_default().as_chunks::<2>().0.iter().map(|p| (p[0], p[1])).unzip(),
+                    _ => {
+                        let a = s.get(luma..luma + cw * ch).unwrap_or_default().to_vec();
+                        let b = s.get(luma + cw * ch..luma + 2 * cw * ch).unwrap_or_default().to_vec();
+                        if self.format == RawFormat::Yv12 { (b, a) } else { (a, b) }
+                    }
+                };
+                self.yuv([y, u, v], filmcraft_frame::Chroma::C420)
+            }
+        })
+    }
+}
+
+impl VideoDecoder for RawVideoDecoder {
+    fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
+        Ok(vec![DecodedFrame { pts, frame: self.picture(sample)?, draft: false }])
+    }
+    fn flush(&mut self) -> Vec<DecodedFrame> {
+        Vec::new()
+    }
+    fn reset(&mut self) {}
+    fn name(&self) -> &str {
+        self.format.label()
+    }
+    fn intra_only(&self) -> bool {
+        true
     }
 }
