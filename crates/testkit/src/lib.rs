@@ -11,6 +11,7 @@
 //! or shipped (AGENTS.md §2).
 
 pub mod fixtures;
+pub mod corpus;
 pub mod golden;
 pub mod oracle;
 pub mod wav;
