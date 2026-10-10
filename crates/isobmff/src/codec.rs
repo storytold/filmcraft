@@ -1275,6 +1275,10 @@ impl SampleEntry {
     pub fn hevc(cfg: HevcConfig, width: u16, height: u16) -> Self {
         Self::video(FourCc(*b"hvc1"), CodecConfig::Hevc(cfg), width, height)
     }
+    /// AV1 entry (`av01`).
+    pub fn av1(cfg: Av1Config, width: u16, height: u16) -> Self {
+        Self::video(FourCc(*b"av01"), CodecConfig::Av1(cfg), width, height)
+    }
     /// ProRes entry; `fourcc` one of `apch`/`apcn`/`apcs`/`apco`/`ap4h`/`ap4x`.
     pub fn prores(fourcc: FourCc, width: u16, height: u16) -> Self {
         let mut e = Self::video(fourcc, CodecConfig::ProRes { fourcc }, width, height);
