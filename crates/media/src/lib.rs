@@ -180,6 +180,20 @@ pub fn is_importable(path: &Path) -> bool {
     STILL_EXTENSIONS.contains(&ext.as_str()) || AUDIO_EXTENSIONS.contains(&ext.as_str()) || VIDEO_EXTENSIONS.contains(&ext.as_str())
 }
 
+#[cfg(test)]
+mod importable_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn camera_extensions_match_regardless_of_case() {
+        for name in ["clip.mov", "clip.MOV", "clip.Mov", "shot.MP4", "IMG_0001.JPG", "sound.WAV", "take.M2TS"] {
+            assert!(is_importable(Path::new(name)), "{name}");
+        }
+        assert!(!is_importable(Path::new("notes.txt")));
+    }
+}
+
 /// A pluggable opener (containers/codecs register themselves here from higher-level crates).
 pub type Opener = fn(name: &str, bytes: Arc<[u8]>) -> Option<Result<SharedSource>>;
 

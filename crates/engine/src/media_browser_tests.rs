@@ -29,6 +29,7 @@ impl FakeFs {
             "/home/me/Movies/edit.edl",
             "/home/me/Movies/subs.srt",
             "/home/me/Movies/clip.mov",
+            "/home/me/Movies/CLIP.MOV",
         ] {
             files.insert(f.to_string(), vec![0; 16]);
         }
@@ -100,7 +101,7 @@ fn listing_puts_folders_first_and_hides_unsupported_files() {
     assert_eq!(l["dir"], "/home/me");
     assert_eq!(names(&l), ["Movies"]);
     let l = s.execute("mediaBrowser.list", json!({"path": "/home/me/Movies"})).unwrap();
-    assert_eq!(names(&l), ["Selects", "A-interview.wav", "b-roll.wav", "clip.mov", "edit.edl", "shot_0001.png", "shot_0002.png", "subs.srt"]);
+    assert_eq!(names(&l), ["Selects", "A-interview.wav", "b-roll.wav", "CLIP.MOV", "clip.mov", "edit.edl", "shot_0001.png", "shot_0002.png", "subs.srt"]);
     let e = &l["entries"][0];
     assert_eq!((e["isDir"].as_bool(), e["kind"].as_str()), (Some(true), Some("folder")));
     let shot = l["entries"].as_array().unwrap().iter().find(|e| e["name"] == "shot_0001.png").unwrap();
@@ -117,7 +118,7 @@ fn file_type_filter() {
     let l = s.execute("mediaBrowser.list", json!({"path": "/home/me/Movies", "fileTypes": "image"})).unwrap();
     assert_eq!(names(&l), ["Selects", "shot_0001.png", "shot_0002.png"]);
     let l = s.execute("mediaBrowser.list", json!({"path": "/home/me/Movies", "fileTypes": "mov"})).unwrap();
-    assert_eq!(names(&l), ["Selects", "clip.mov"]);
+    assert_eq!(names(&l), ["Selects", "CLIP.MOV", "clip.mov"]);
     // the setting persists and applies by default
     s.execute("mediaBrowser.settings", json!({"fileTypes": "project"})).unwrap();
     let l = s.execute("mediaBrowser.list", json!({"path": "/home/me/Movies"})).unwrap();
