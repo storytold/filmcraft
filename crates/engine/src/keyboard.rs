@@ -635,13 +635,20 @@ fn export_frame(s: &mut Session, p: &Value) -> Result<Value> {
         }
     };
     let provider = s.media.full_res_provider(s.project.clone(), s.services.clone());
+    // On the web a frame can still be decoding (WebCodecs) or its bytes loading (Blob reads): the
+    // render then leaves that clip out, so saving it would pass a blank or partial picture off as
+    // the requested frame (#228). Report it instead and write nothing; a later call succeeds.
+    let _ = filmcraft_media::pending::take();
     let img = if target.source {
         filmcraft_render::render_item(&s.project, target.item, target.time, 1.0, &provider)
-            .ok_or_else(|| bad("file.exportFrame", "cannot decode the Source video frame"))?
     } else {
         let opts = filmcraft_render::RenderOptions { scale: 1.0, captions: true, ..Default::default() };
-        filmcraft_render::render_sequence(&s.project, target.item, target.time, opts, &provider)
+        Some(filmcraft_render::render_sequence(&s.project, target.item, target.time, opts, &provider))
     };
+    if filmcraft_media::pending::take() {
+        return Err(EngineError::Other("the frame is still loading; export it again in a moment".into()));
+    }
+    let img = img.ok_or_else(|| bad("file.exportFrame", "cannot decode the Source video frame"))?;
     let (w, h) = (
         u32::try_from(img.w).map_err(|_| bad("file.exportFrame", "image width exceeds limits"))?,
         u32::try_from(img.h).map_err(|_| bad("file.exportFrame", "image height exceeds limits"))?,
