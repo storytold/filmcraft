@@ -494,6 +494,7 @@
 	{panel} — coming in a later milestone	{panel} — 今後のマイルストーンで実装予定
 	Close Panel	パネルを閉じる
 	Close Other Timeline Panels	他のタイムラインパネルを閉じる
+	Close All	すべて閉じる
 	Maximize Frame	パネルを最大化
 	Restore Workspace	ワークスペースを復元
 	Reveal Sequence in Project	プロジェクトでシーケンスを表示

@@ -90,6 +90,52 @@ pub fn source_command(id: &str) -> bool {
         )
 }
 
+/// Most clips the Source monitor's list of recent clips keeps.
+pub const SOURCE_HISTORY_MAX: usize = 20;
+
+/// Keep the Source monitor's recent clips in step with the clip it shows: the open clip moves to
+/// the front, items no longer in the project drop out.
+pub(crate) fn track_history(s: &mut Session) {
+    let current = s.state.source_item;
+    let project = &s.project;
+    let history = &mut s.state.source_history;
+    history.retain(|i| project.item(*i).is_some());
+    if let Some(cur) = current.filter(|i| project.item(*i).is_some())
+        && history.first() != Some(&cur)
+    {
+        history.retain(|i| *i != cur);
+        history.insert(0, cur);
+    }
+    history.truncate(SOURCE_HISTORY_MAX);
+}
+
+/// Enablement of Close / Close All: a clip is open in the Source monitor.
+pub(crate) fn has_source_clip(s: &Session) -> std::result::Result<(), String> {
+    s.state.source_item.map(|_| ()).ok_or_else(|| "no clip is open in the Source monitor".into())
+}
+
+/// Source panel ▸ Close (`all`: Close All). The open clip leaves the Source monitor and its list
+/// of recent clips, and the next most recent one opens in its place, as in Premiere; Close All
+/// empties the list and the monitor.
+pub(crate) fn close(s: &mut Session, all: bool) -> Result<Value> {
+    if all {
+        s.state.source_history.clear();
+    } else if let Some(cur) = s.state.source_item {
+        s.state.source_history.retain(|i| *i != cur);
+    }
+    let next = s.state.source_history.iter().copied().find(|i| s.project.item(*i).is_some());
+    match next {
+        Some(i) => {
+            s.execute("source.open", json!({"item": i.0}))?;
+        }
+        None => {
+            s.state.source_item = None;
+            s.state.source_playhead = Tick::ZERO;
+        }
+    }
+    Ok(json!({"item": next.map(|i| i.0)}))
+}
+
 fn marker_list(p: &mut Project, item: ItemId) -> Result<&mut Vec<Marker>> {
     let it = p.item_mut(item).ok_or_else(|| EngineError::Other("Source item is unavailable".into()))?;
     match &mut it.kind {
@@ -287,6 +333,29 @@ mod tests {
         assert_eq!(source_view(&s, ItemId(5)).unwrap().markers[0].name, "Changed");
         s.execute("markers.clearCurrent", json!({"target":"source"})).unwrap();
         assert!(source_view(&s, ItemId(5)).unwrap().markers.is_empty());
+    }
+    /// #313: the Source monitor remembers the clips opened in it, most recent first; Close shows
+    /// the next most recent one and Close All empties the monitor.
+    #[test]
+    fn source_clips_are_remembered_and_closed_in_turn() {
+        let mut s = fixture();
+        let a = ItemId(5);
+        let mut others: Vec<ItemId> = s.project.items.values().filter(|i| i.as_media().is_some() && i.id != a).map(|i| i.id).collect();
+        others.sort();
+        let [b, c] = [others[0], others[1]];
+        for i in [b, c, a] {
+            s.execute("source.open", json!({"item": i.0})).unwrap();
+        }
+        assert_eq!(s.state.source_history, [a, c, b]);
+        assert_eq!(s.execute("source.close", json!({})).unwrap()["item"], c.0);
+        assert_eq!((s.state.source_item, s.state.source_history.clone()), (Some(c), vec![c, b]));
+        // an item deleted from the project leaves the list
+        s.execute("project.delete", json!({"items": [b.0]})).unwrap();
+        assert!(s.project.item(b).is_none());
+        assert!(!s.state.source_history.contains(&b));
+        s.execute("source.closeAll", json!({})).unwrap();
+        assert_eq!((s.state.source_item, s.state.source_history.len()), (None, 0));
+        assert!(s.execute("source.close", json!({})).is_err(), "nothing left to close");
     }
     #[test]
     fn invalid_marker_parameters_do_not_edit_the_project() {

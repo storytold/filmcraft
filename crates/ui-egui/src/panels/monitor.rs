@@ -822,6 +822,40 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
     }
 }
 
+/// The Source panel menu's clips (#313): the recently opened clips, the shown one ticked, to
+/// switch between, then Close / Close All. Returns whether the menu is done.
+pub fn source_panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
+    let mut done = false;
+    let current = app.session.state.source_item;
+    let recent: Vec<(u64, String)> =
+        app.session.state.source_history.iter().filter_map(|i| app.session.project.item(*i).map(|it| (i.0, it.name.clone()))).collect();
+    for (id, name) in &recent {
+        let shown = current.is_some_and(|c| c.0 == *id);
+        let r = ui.button(if shown { format!("✓ {name}") } else { name.clone() });
+        app.auto.add(&format!("panel.menu.Source.recent.{id}"), r.rect, name);
+        if r.clicked() {
+            if !shown && let Err(e) = app.session.execute("source.open", json!({"item": id})) {
+                app.ui.status = e.to_string();
+            }
+            done = true;
+        }
+    }
+    if !recent.is_empty() {
+        ui.separator();
+    }
+    for (cmd, id, label) in [("source.close", "close", tl!("Close")), ("source.closeAll", "closeAll", tl!("Close All"))] {
+        let r = ui.add_enabled(current.is_some(), egui::Button::new(label));
+        app.auto.add(&format!("panel.menu.Source.{id}"), r.rect, label);
+        if r.clicked() {
+            if let Err(e) = app.session.execute(cmd, json!({})) {
+                app.ui.status = e.to_string();
+            }
+            done = true;
+        }
+    }
+    done
+}
+
 fn source_nav(app: &mut FilmcraftApp, cmd: &str) {
     let Some(item) = app.session.state.source_item else { return };
     let Some(v) = filmcraft_engine::clip_ops::source_view(&app.session, item) else { return };

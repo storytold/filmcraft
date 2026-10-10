@@ -231,6 +231,10 @@ pub struct EditorState {
     /// Item loaded in the Source monitor and its playhead (media time).
     pub source_item: Option<ItemId>,
     pub source_playhead: Tick,
+    /// Clips opened in the Source monitor, most recent first: the Source panel's list of recent
+    /// clips (#313). Kept up to date after every command; items gone from the project drop out.
+    #[serde(default)]
+    pub source_history: Vec<ItemId>,
     /// Selected timeline items.
     pub selection: Vec<ClipId>,
     /// Selected project panel items.
@@ -646,6 +650,9 @@ impl Session {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, &params)))
             .unwrap_or_else(|_| Err(EngineError::Other(format!("internal error in `{id}` (see the crash log); the command did not complete"))));
         self.exec_depth -= 1;
+        if self.exec_depth == 0 {
+            source_monitor::track_history(self);
+        }
         // source graphics: an edited instance updates the shared layers and the other instances
         if r.is_ok() && spec.journal && id.starts_with("graphics.") && !self.project.source_graphics.is_empty() {
             graphic_templates::sync_source_graphics(self);
@@ -881,6 +888,7 @@ impl Session {
         {
             self.state.source_item = None;
         }
+        source_monitor::track_history(self);
         if let Some(seq) = self.state.active_sequence.and_then(|s| p.sequence(s)) {
             self.state.selection.retain(|c| seq.find_item(*c).is_some());
             self.state.caption_selection.retain(|c| seq.find_caption(*c).is_some());
