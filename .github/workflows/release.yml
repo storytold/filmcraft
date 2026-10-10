@@ -269,6 +269,75 @@ jobs:
           path: dist/release/*.flatpak
           if-no-files-found: error
 
+  linux-riscv64:
+    name: Linux riscv64
+    needs: version
+    runs-on: ubuntu-26.04
+    env:
+      FILMCRAFT_VERSION: ${{ needs.version.outputs.version }}
+      FILMCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out craft-fonts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: storytold/craft-fonts
+          ref: abb83316d96aa59c1cf64784289e378fe9fa5695 # bump deliberately
+          path: craft-fonts
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+          targets: riscv64gc-unknown-linux-gnu
+      - name: Apply version override
+        if: inputs.version != ''
+        run: cargo xtask version set "$FILMCRAFT_VERSION"
+      - name: Install cross-compilation dependencies
+        run: |
+          sudo dpkg --add-architecture riscv64
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sudo sed -i '/^Types: deb/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+          fi
+          if [ -f /etc/apt/sources.list ]; then
+            sudo sed -i 's/^deb /deb [arch=amd64] /g' /etc/apt/sources.list
+            sudo sed -i 's/^deb-src /deb-src [arch=amd64] /g' /etc/apt/sources.list
+          fi
+          cat << 'EOF' | sudo tee /etc/apt/sources.list.d/riscv64.list
+          deb [arch=riscv64] http://ports.ubuntu.com/ubuntu-ports resolute main universe restricted multiverse
+          deb [arch=riscv64] http://ports.ubuntu.com/ubuntu-ports resolute-updates main universe restricted multiverse
+          deb [arch=riscv64] http://ports.ubuntu.com/ubuntu-ports resolute-security main universe restricted multiverse
+          EOF
+          sudo apt-get update
+          sudo apt-get install -y --allow-downgrades --no-install-recommends \
+            gcc-riscv64-linux-gnu binutils-riscv64-linux-gnu libc6-dev-riscv64-cross libc6-dev:riscv64 qemu-user \
+            libasound2-dev:riscv64 libxkbcommon-dev:riscv64 \
+            libwayland-dev:riscv64 libx11-dev:riscv64 libxrandr-dev:riscv64 libxi-dev:riscv64 libgl1-mesa-dev:riscv64
+          if command -v qemu-riscv64 >/dev/null 2>&1 && ! command -v qemu-riscv64-static >/dev/null 2>&1; then
+            sudo ln -s "$(command -v qemu-riscv64)" /usr/local/bin/qemu-riscv64-static
+          fi
+      - name: Build and package
+        env:
+          CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER: riscv64-linux-gnu-gcc
+          CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-L/usr/riscv64-linux-gnu/lib -C link-arg=-L/usr/lib/riscv64-linux-gnu"
+          PKG_CONFIG_SYSROOT_DIR: /
+          PKG_CONFIG_PATH: /usr/lib/riscv64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+          PKG_CONFIG_ALLOW_CROSS: "1"
+          CROSS_ARCH: riscv64
+          CROSS_TARGET: riscv64gc-unknown-linux-gnu
+          CROSS_COMPILE: riscv64-linux-gnu-
+          EMULATOR: qemu-riscv64-static
+        run: |
+          export CRAFT_FONTS_DIR="$PWD/craft-fonts" CRAFT_FONTS_REQUIRED=1
+          packaging/linux/package.sh --formats "tar"
+      - name: Smoke test CLI under QEMU
+        run: |
+          tar -xzf dist/release/*.tar.gz
+          qemu-riscv64-static -L /usr/riscv64-linux-gnu filmcraft-*/bin/filmcraft-cli --version
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-linux-riscv64
+          path: dist/release/*.tar.gz
+          if-no-files-found: error
+
   freebsd:
     name: FreeBSD x86_64
     needs: version
