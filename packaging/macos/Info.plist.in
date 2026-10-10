@@ -49,6 +49,22 @@
   <key>NSHumanReadableCopyright</key>
   <string>Copyright © the FilmCraft authors. MIT OR Apache-2.0.</string>
 
+  <!-- Projects open from Finder (double-click, Open With, Dock); src/apple_events.rs. -->
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>FilmCraft Project</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>CFBundleTypeIconFile</key>
+      <string>FilmCraft</string>
+      <key>LSItemContentTypes</key>
+      <array><string>ai.storyteller.filmcraft.project</string></array>
+    </dict>
+  </array>
   <!-- Filmcraft's own format. -->
   <key>UTExportedTypeDeclarations</key>
   <array>
