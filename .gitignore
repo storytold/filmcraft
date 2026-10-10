@@ -5,3 +5,4 @@ plan/
 /log
 .DS_Store
 .claude/worktrees/
+/log.txt
