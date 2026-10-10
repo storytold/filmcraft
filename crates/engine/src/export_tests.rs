@@ -137,7 +137,7 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
             Some(a) => (a[0].as_u64().unwrap(), a[1].as_u64().unwrap()),
             None => (1920, 1080),
         };
-        if matches!(fmt.as_str(), "png" | "tiff" | "bmp") {
+        if matches!(fmt.as_str(), "png" | "tiff" | "bmp" | "jpg" | "tga" | "dpx") {
             let files = files_in(&sub);
             let ext = Path::new(&out).extension().unwrap().to_string_lossy().to_string();
             assert_eq!(frames, 7, "frames 23..=29 at 23.976 fps");
@@ -148,6 +148,9 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
                 let codec = match fmt.as_str() {
                     "png" => "png",
                     "tiff" => "tiff",
+                    "jpg" => "mjpeg",
+                    "tga" => "targa",
+                    "dpx" => "dpx",
                     _ => "bmp",
                 };
                 assert_eq!(v["codec_name"], codec, "{name}");

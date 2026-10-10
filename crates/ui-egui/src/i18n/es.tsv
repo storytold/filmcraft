@@ -3173,6 +3173,15 @@
 	Nudge Volume -1dB	Ajustar volumen -1 dB
 	Nudge Volume -3dB	Ajustar volumen -3 dB
 	Numbered BMP stills (24-bit)	Imágenes fijas BMP numeradas (24 bits)
+	JPEG	JPEG
+	Targa	Targa
+	DPX	DPX
+	JPEG Sequence	Secuencia JPEG
+	Targa Sequence	Secuencia Targa
+	DPX Sequence	Secuencia DPX
+	Numbered JPEG stills (quality 90)	Imágenes fijas JPEG numeradas (calidad 90)
+	Numbered Targa stills (24-bit, uncompressed)	Imágenes fijas Targa numeradas (24 bits, sin comprimir)
+	Numbered DPX stills (10-bit RGB)	Imágenes fijas DPX numeradas (RGB de 10 bits)
 	Numbered PNG stills at the sequence's frame size	Imágenes fijas PNG numeradas al tamaño de fotograma de la secuencia
 	Numbered TIFF stills (RGB, 8-bit)	Imágenes fijas TIFF numeradas (RGB, 8 bits)
 	Opacity 0 → 100 % over the first second	Opacidad de 0 a 100 % durante el primer segundo

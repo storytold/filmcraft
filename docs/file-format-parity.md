@@ -52,12 +52,12 @@ only). "Tested" names the evidence.
 
 | Format | Premiere | Read | Write (frame / sequence) | % |
 |---|---|---|---|---|
-| PNG, JPEG, TIFF, BMP, GIF | read + write | yes | PNG / TIFF / BMP sequences, GIF; **no JPEG sequence** | 80% |
+| PNG, JPEG, TIFF, BMP, GIF | read + write | yes | PNG / TIFF / BMP / JPEG sequences, GIF | 90% |
 | WebP | — | yes | no | ahead |
 | **PSD** (layers as sequence) | read (layered) | no | — | 0% |
 | **OpenEXR** | read + write | no | no | 0% |
-| **DPX** | read + write | no | no | 0% |
-| Targa | read + write | no | no | 0% |
+| **DPX** | read + write | no | sequences (10-bit RGB, BT.709; #779) | 40% |
+| Targa | read + write | no | sequences (24-bit, 32-bit with alpha; #779) | 40% |
 | HEIF / HEIC | read | no | — | 0% |
 | Radiance HDR, AI / EPS, ICO, PTL | read | no | — | 0% |
 
