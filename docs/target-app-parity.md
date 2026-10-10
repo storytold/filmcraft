@@ -13,8 +13,10 @@ The deep checklists are [file-format-parity.md](file-format-parity.md),
 | | Value | Kind |
 |---|---|---|
 | **Feature breadth** | **~86%** | Partly measured: menus 92% (label diff, below), effects / transitions / audio effects 100% (unit tests); the other areas are estimated |
-| **Ready for real work** | **~55%** (range 50–60%) | Estimated, from the evidence below; weights written down |
-| **Stage** | **alpha** | ~20 points and ~400–700 h from beta, and beta also needs `.prproj` import ([why](#stage)) |
+| **Ready for real work** | **~56%** (range 51–61%) | Estimated depth per area, combined with written weights ([formula](#three-readiness-numbers)) |
+| **Mainstream practitioner** | **~55%** | Weekly editing areas only, with written discounts ([method](#mainstream-practitioner)) |
+| **Essentials user** | **~60%** | Core features at default settings, with written discounts ([method](#essentials-user)) |
+| **Stage** | **alpha** | ~19 points and ~400–700 h from beta, and beta also needs `.prproj` import ([why](#stage)) |
 | **Remaining to beta** | **~400–700 Opus 5.5 agent-hours** | Estimated, calibrated below |
 | **Remaining to full parity** | **~1,550–2,750 Opus 5.5 agent-hours** | Estimated; ~70% parallelizes |
 | Codebase (measured 2026-10-10) | 45 crates + 3 apps, ~343,000 lines of Rust, 2,520 `#[test]` functions, 1,098 commits, 268 merged PRs, 69 authors | `git`, `gh`, `grep` |
@@ -128,7 +130,7 @@ agent-hours to close the area to Premiere, sequential.
 | Platforms | ~60% | 50–90 | [gaps.md](gaps.md#g9-windows-and-linux-at-run-time) |
 | Plugins and ecosystem | ~5% | 200–400 | [gaps.md](gaps.md#g11-no-plugin-hosting) |
 | AI features | ~25% | 150–300 | [gaps.md](gaps.md#g12-ai-features) |
-| **Total** | **~55%** | **~1,550–2,750** | |
+| **Total** | **~56%** | **~1,550–2,750** | |
 
 Dimension hours are disjoint (the feature row excludes UI, formats and codecs), so they add up.
 Evidence for the cross-cutting rows:
@@ -160,13 +162,126 @@ Evidence for the cross-cutting rows:
   Speech and Auto Reframe are DSP / heuristics. Missing: Object Mask (#406, #694), Generative
   Extend, media-intelligence search, caption translation, auto colour.
 
+## Three readiness numbers
+
+All three use the depth ("Ready") estimates of the [feature areas](#by-feature-area); they differ in
+which areas count and how they are discounted. The stage follows the first one and the
+[core-workflow gate](roadmap.md#alpha-gate).
+
+### Ready for real work (full target)
+
+Written formula: 0.70 × (feature areas, weighted as in [Weights](#weights)) + the cross-cutting
+rows, each weight × its percent.
+
+- Feature areas: 0.20×70 + 0.12×60 + 0.12×60 + 0.10×65 + 0.10×60 + 0.08×70 + 0.08×65 + 0.08×65
+  + 0.08×45 + 0.04×65 = **63.1%**, × 0.70 = 44.2 points.
+- Cross-cutting: hardware and performance 10% × 45, stability 8% × 45, platforms 5% × 60,
+  plugins 5% × 5, AI 2% × 25 = 4.5 + 3.6 + 3.0 + 0.25 + 0.5 = **11.9 points**.
+- Total **56.0% ≈ ~56%** (range 51–61%). Earlier in this pass the
+  headline said ~55% (range 50–60%): the same inputs, rounded down by judgement instead of
+  computed. Nothing in the evidence changed; the number moved only because the arithmetic is now
+  written out. The stage is unaffected (still alpha; beta needs ~75% and `.prproj`).
+
+### Mainstream practitioner
+
+A typical professional editor's week: cut, trim, colour, mix, title, caption and deliver, on
+their own machine, exchanging projects with Premiere users. Excluded: plugins, generative and cloud
+AI, Team Projects / Productions, control surfaces and external I/O, other interface languages.
+Depth here is judged on what that editor actually uses inside each area, so it is higher than the
+full-area depth (e.g. the ~20 common effects rather than all 93 and their approximations).
+
+| Area | Weight | Depth | Why |
+|---|---|---|---|
+| Editing and trimming | 28% | 80% | Insert / overwrite, ripple / roll / slip / slide, razor, J/K/L, markers, multicam all work; gap deletion (#648, #668) and deselect (#683) are friction |
+| Importing everyday footage | 14% | 65% | Phone and 8-bit camera H.264 / HEVC, ProRes, DNx, MXF open; 10-bit / 4:2:2 H.264 (Sony XAVC S-I, Canon) does not (#626); E-AC-3, AVI missing |
+| Common effects and transitions | 9% | 75% | Lumetri, Transform, Crop, blurs, Cross Dissolve, keys exist; Warp Stabilizer is 2-D, Object Mask missing |
+| Colour (Lumetri, scopes, LUTs) | 9% | 80% | Complete, parity-tested CPU / GPU; curves / wheels on CPU |
+| Audio (levels, Essential Sound, loudness, ducking) | 11% | 75% | Complete; audio-device reports off macOS |
+| Titles and captions | 7% | 75% | Text, shapes, templates, SRT / SCC / VTT; `.mogrt` not read by design |
+| Export with presets | 9% | 75% | H.264, HEVC (hardware), ProRes, DNxHR, presets, queue; bitrate miss (#371) |
+| Save, reopen, auto-save, relink, proxies | 4% | 80% | Atomic saves, migrations, recovery, Link Media |
+| Playback speed on their machine | 9% | 65% | 4K H.264 / HEVC real time with hardware decode on macOS; lag / CPU reports (#523, #525) |
+| **Weighted depth** | 100% | **74.8%** | |
+
+Discounts for what still stops real work:
+
+- **Interaction fidelity ×0.90:** about 40 open UI issues; no transform handles in the Program
+  monitor (#639); Effect Controls keyframe zoom / divider (#640–#645); docking (#493).
+- **Stability on real machines ×0.92:** current macOS on Apple silicon is solid, but launch
+  crashes on macOS 12, Intel UHD and Windows 11 (#468, #512, #380, #582, #687), and no CI runs the
+  tests on pull requests.
+- **File exchange with Premiere users ×0.88:** `.prproj` does not open (colleagues send
+  projects, not XML); AAF / OMF never validated in Avid / Pro Tools; FCP7 XML / OTIO do work.
+
+74.8 × 0.90 × 0.92 × 0.88 = **54.5% ≈ ~55%.** It is not higher than the full number, unlike most
+Craft apps: the parts the mainstream number leaves out (plugins, AI, localization) weigh only
+~12% in the full number, while the three discounts hit exactly what a working editor meets every
+week. Raising it means fixing [G2](gaps.md#g2-premieres-prproj-cannot-be-opened),
+[G3](gaps.md#g3-10-bit-and-422-camera-media-needs-hardware),
+[G4](gaps.md#g4-crashes-at-start-up-and-no-test-ci-on-pull-requests) and
+[G8](gaps.md#g8-ui-fidelity-monitor-handles-effect-controls-docking).
+
+### Essentials user
+
+Someone who imports phone or camera clips, puts them on a timeline, trims, adds a title, music and
+a dissolve, and exports an MP4 with the default preset. Excluded: everything above that the
+mainstream number excludes, plus advanced options, multicam, colour grading beyond presets,
+interchange and pro formats.
+
+| Feature | Weight | Depth | Why |
+|---|---|---|---|
+| New project, import clips | 15% | 80% | Drag-and-drop and Import work for phone MP4 / MOV (H.264, HEVC); MKV multi-audio (#601), AVI (#598) fail |
+| Put clips on the timeline, arrange | 15% | 85% | Drop to timeline (#517), snapping, tracks; new tracks by dropping missing (#483) |
+| Trim, split, delete | 15% | 80% | Razor, trim, ripple delete; Backspace on gaps (#648) and deselect (#683) confuse |
+| Undo / redo | 5% | 95% | Snapshot undo for every command |
+| Titles | 10% | 75% | Type tool, templates; Arabic text broken (#395) |
+| Transitions (cross dissolve) | 5% | 85% | Drag on, resize (#503) |
+| Music and volume | 10% | 75% | Clip volume, fades, meters; device issues off macOS |
+| Playback | 10% | 70% | Smooth on current Macs; lag / CPU reports on 0.5.0 (#523, #525) |
+| Export MP4 with the default preset | 10% | 80% | Own H.264 + AAC, Quick Export |
+| Save and reopen | 5% | 85% | `.fcproj`, auto-save, recovery prompt |
+| **Weighted depth** | 100% | **80.0%** | |
+
+Discounts a beginner actually hits:
+
+- **Launch and stability ×0.88:** the beginner's machine is often a Windows laptop with Intel
+  graphics or an older Mac; open launch crashes there (#380, #413, #477, #512, #582, #655, #661,
+  #687).
+- **Discoverability and UI clarity ×0.90:** a dense Premiere-style interface with no guided start;
+  reports about deselecting, deleting gaps and transitions controls (#683, #648, #577).
+- **Opening files people send them ×0.95:** phone and web video mostly opens; AVI, E-AC-3 audio
+  (#647), FLAC-in-MP4 (#603) and some WebM (#432) do not.
+
+80.0 × 0.88 × 0.90 × 0.95 = **60.2% ≈ ~60%.**
+
+### User evidence
+
+Counted 2026-10-10 from all 323 GitHub issues and their 270 comments, excluding the four
+repository collaborators (script in a private scratch folder; regex for praise and for "switched
+from" phrases, then read by hand):
+
+- **Praise:** 31 distinct non-maintainer people across 37 issues used praise words. About a dozen
+  are explicit praise, e.g. "Great job making this go!" (#313), "I personally love everything done
+  on it" (#227), "impressive otherwise" (#208), "Great project guys" (#451). Several of them pair
+  the praise with a bug ("great project although it obviously has a lot of bugs", #455).
+- **Switched from Premiere:** **0** reports of having switched. Two people describe testing it as
+  an alternative or hoping to leave Adobe (#411 "testing FilmCraft as an alternative workflow to
+  Adobe Premiere", #325 "finally moving away from adobe would be a god send").
+- **Open issues:** 202 open from non-maintainers; by title, ~93 are bug reports, of which **~64
+  are core-path** (launch, import, playback, timeline, audio, export) and ~29 niche; ~109 are
+  feature requests or questions (Object Mask, plugin compatibility, languages, Android,
+  collaboration, node-based colour).
+
+This supports the discounts: people like the direction and use it, but core-path bugs outnumber
+niche requests among the bug reports about two to one, and nobody reports having switched yet.
+
 ## Stage
 
 **Alpha.** It passes the core-workflow gate ([roadmap.md](roadmap.md#alpha-gate): all six of Premiere's core daily workflows work end to end on macOS and the project saves and reopens). Core workflows run end to end (import, edit, trim, colour, mix, caption, deliver,
-round-trip through XML / AAF), but ready-for-real-work is ~55%, below the ~75% beta bar, and the
+round-trip through XML / AAF), but ready-for-real-work is ~56%, below the ~75% beta bar, and the
 standard's beta condition "opens and saves the target's main format reliably" fails outright:
 FilmCraft cannot open a `.prproj` (it reads Premiere's FCP7 XML / AAF / OTIO exports instead).
-Distance to beta: ~20 points of ready-for-real-work plus `.prproj` import, ~400–700 agent-hours:
+Distance to beta: ~19 points of ready-for-real-work plus `.prproj` import, ~400–700 agent-hours:
 
 | To reach beta | Hours |
 |---|---|
@@ -221,6 +336,7 @@ control surfaces), and validation in Avid Media Composer / Pro Tools.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-10 | minor | Added the three readiness numbers: full ready-for-real-work formula written out (~55% -> ~56%, same inputs, now computed rather than rounded down), mainstream practitioner ~55% and essentials user ~60% with written weights and discounts, and counted user evidence (31 people praising, 0 switch reports, ~64 core-path vs ~29 niche open bugs) |
 | 2026-10-10 | minor | Stage checked against the new core-workflow gate (docs/roadmap.md#alpha-gate): passes, stays alpha |
 | 2026-10-10 | major | Created from ROADMAP.md's scorecard and estimate; full re-measure against Premiere Pro 26.5.2 (menu label diff, installed-bundle listings, 188 open issues); breadth ~87 → ~86% (file formats counted), ready ~50–60% → ~55%, hours re-estimated to include plugins, AI, localization and `.prproj`; stage alpha |
 | 2026-10-05 | major | Honest assessment added in ROADMAP.md (checklist ~87% vs ready ~50–60%) |

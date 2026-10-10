@@ -285,7 +285,7 @@ FilmCraft is young and moving fast. Editing, trimming, multicam, colour, keyfram
 FilmCraft is in **alpha**. We track two numbers ([docs/target-app-parity.md](docs/target-app-parity.md), re-measured 2026-10-10 against Premiere Pro 26.5.2):
 
 - **Feature breadth: ~86%.** Premiere Pro's menu items, effects, transitions, panels and formats that exist in FilmCraft (menus 92% and effects 100% measured).
-- **Ready for real work: ~55%.** Our honest estimate of how close FilmCraft is to replacing Premiere on real projects.
+- **Ready for real work: ~56%.** Our honest estimate of how close FilmCraft is to replacing Premiere on real projects.
 
 The biggest gaps today:
 
