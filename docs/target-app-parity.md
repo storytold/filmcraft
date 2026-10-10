@@ -162,7 +162,7 @@ Evidence for the cross-cutting rows:
 
 ## Stage
 
-**Alpha.** Core workflows run end to end (import, edit, trim, colour, mix, caption, deliver,
+**Alpha.** It passes the core-workflow gate ([roadmap.md](roadmap.md#alpha-gate): all six of Premiere's core daily workflows work end to end on macOS and the project saves and reopens). Core workflows run end to end (import, edit, trim, colour, mix, caption, deliver,
 round-trip through XML / AAF), but ready-for-real-work is ~55%, below the ~75% beta bar, and the
 standard's beta condition "opens and saves the target's main format reliably" fails outright:
 FilmCraft cannot open a `.prproj` (it reads Premiere's FCP7 XML / AAF / OTIO exports instead).
@@ -221,6 +221,7 @@ control surfaces), and validation in Avid Media Composer / Pro Tools.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-10 | minor | Stage checked against the new core-workflow gate (docs/roadmap.md#alpha-gate): passes, stays alpha |
 | 2026-10-10 | major | Created from ROADMAP.md's scorecard and estimate; full re-measure against Premiere Pro 26.5.2 (menu label diff, installed-bundle listings, 188 open issues); breadth ~87 → ~86% (file formats counted), ready ~50–60% → ~55%, hours re-estimated to include plugins, AI, localization and `.prproj`; stage alpha |
 | 2026-10-05 | major | Honest assessment added in ROADMAP.md (checklist ~87% vs ready ~50–60%) |
 | 2026-10-02 | minor | Scorecard ~62% → ~72% → ~87% as the menu long tail, effects and codecs landed |

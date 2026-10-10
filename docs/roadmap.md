@@ -19,6 +19,27 @@ In order. Each item links to its gap entry, which says what "done" means.
 6. **Hardware acceleration, continued** (#30, [G5](gaps.md#g5-hardware-acceleration-is-partial)): zero-copy upload, Lumetri curves / wheels / HSL and keys on the GPU, VideoToolbox Main 10, Quick Sync / AMF encoders. 120–200 h.
 7. **UI fidelity issues** ([G8](gaps.md#g8-ui-fidelity-monitor-handles-effect-controls-docking)): Program monitor transform handles, Effect Controls, docking. 120–200 h.
 
+## Alpha gate
+
+Premiere's core daily workflows, checked end to end on the main platform (macOS, Apple silicon),
+including saving the work as `.fcproj` and reopening it (atomic saves, schema migrations,
+auto-save and crash recovery; migration tests). Strict reading: a "partial" that stops the
+workflow would make FilmCraft pre-alpha.
+
+| Workflow | Works end to end? | Evidence | Hours to pass |
+|---|---|---|---|
+| Ingest and organize media (import camera / phone / screen files, bins, metadata, proxies) | partial, not blocking | H.264 / HEVC / ProRes / DNx / MXF / AVCHD / MKV import with bit-exact decoders, Media Browser, bins, proxies, Link Media. Gaps: H.264 10-bit / 4:2:2 (Sony XAVC S-I, Canon XF-AVC) opens nowhere and HEVC 4:2:2 only through VideoToolbox (#626, [G3](gaps.md#g3-10-bit-and-422-camera-media-needs-hardware)); E-AC-3 (#647), AVI (#598), camera RAW | 0 (G3 is a beta item, 30–50 h) |
+| Assemble and trim a sequence (insert / overwrite, ripple / roll / slip / slide, razor, J/K/L, multicam) | yes | Edit algebra with undo tests, Trim Monitor, Premiere keyboard preset, multicam with audio sync; UX issues (#683, #648, #668) slow it down but don't stop it | 0 |
+| Colour correct and grade (Lumetri, LUTs, scopes, colour management) | yes | Lumetri complete with CPU / WGSL parity tests, all Lumetri Scopes, LUT import, HDR export signalling checked with ffprobe | 0 |
+| Mix audio (levels, automation, Essential Sound, loudness) | yes on macOS | Mixer graph, automation, 53 effects, BS.1770 loudness matching ffmpeg; device reports are Windows / Linux (#605, #617) | 0 |
+| Titles and captions | yes | Text engine, graphic clips, templates, SRT / VTT / SCC / MCC / STL / TTML import-export, burn-in; Arabic titles broken (#395) | 0 |
+| Deliver (export H.264 / HEVC / ProRes / DNxHR / MXF with presets, queue) | yes | Own H.264 + AAC encoder, ProRes, DNxHR, MXF, hardware HEVC on macOS, ffprobe-checked exports; bitrate target miss (#371) | 0 |
+
+**Passes:** every core workflow runs end to end on macOS and the project saves and reopens, so
+FilmCraft stays **alpha**; the one partial (10-bit / 4:2:2 camera codecs) blocks some cameras'
+originals, not the workflow, and is on the beta list. Interchange with Premiere's own `.prproj`
+is a beta requirement, not an alpha one (sequences come over as FCP7 XML, AAF or OTIO).
+
 ## Beta milestones
 
 Beta = ready for real work ≥ ~75% and `.prproj` opens reliably ([target-app-parity.md](target-app-parity.md#stage)).
@@ -66,4 +87,5 @@ the web app shell ([G20](gaps.md#g20-the-web-app-shell)).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-10 | minor | Alpha gate table added (craftrules core-workflow gate): six core workflows, all pass on macOS; stage stays alpha |
 | 2026-10-10 | major | Created: milestone table moved from ROADMAP.md (M5 and M9 remaining work updated), HW and L10N rows, beta milestones B1–B7, Current focus from the re-measure |
