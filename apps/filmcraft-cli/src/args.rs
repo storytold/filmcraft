@@ -19,6 +19,7 @@ const VALUED: &[&str] = &[
     "--end",
     "--data-dir",
     "--settings",
+    "--gpu-rendering",
 ];
 
 #[derive(Debug, Default)]
@@ -119,6 +120,25 @@ mod tests {
         let b = args("--bridge=127.0.0.1:9876 inspect sequence");
         assert_eq!(b.opt("--bridge"), Some("127.0.0.1:9876"));
         assert_eq!(b.pos(1), Some("sequence"));
+    }
+
+    #[test]
+    fn gpu_rendering_option_consumes_its_value_before_or_after_output() {
+        for input in [
+            "export --gpu-rendering off output.wav",
+            "export output.wav --gpu-rendering off",
+            "export output.wav --gpu-rendering=off",
+            "export output.wav --gpu-rendering auto",
+        ] {
+            let a = args(input);
+            assert_eq!(a.pos(0), Some("export"), "{input}");
+            assert_eq!(a.pos(1), Some("output.wav"), "{input}");
+            assert_eq!(a.positionals.len(), 2, "{input}");
+            assert!(matches!(a.opt("--gpu-rendering"), Some("off" | "auto")), "{input}");
+        }
+        let invalid = args("export output.wav --gpu-rendering bogus");
+        assert_eq!(invalid.opt("--gpu-rendering"), Some("bogus"));
+        assert_eq!(invalid.positionals.len(), 2);
     }
 
     #[test]

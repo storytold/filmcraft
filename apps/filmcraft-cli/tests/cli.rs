@@ -41,6 +41,68 @@ fn long_help_matches_help_command() {
 }
 
 #[test]
+fn version_is_available_after_global_options() {
+    let expected = cli(&["--version"]);
+    assert!(expected.status.success());
+    assert!(expected.stderr.is_empty());
+    for args in [
+        &["-V"][..],
+        &["--demo", "--version"],
+        &["--compact", "--version"],
+        &["--data-dir", "version-check-unused", "--version"],
+        &["--demo", "version"],
+        &["--data-dir", "version-check-unused", "version"],
+    ] {
+        let out = cli(args);
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(out.stdout, expected.stdout, "{args:?}");
+        assert!(out.stderr.is_empty(), "{args:?}");
+    }
+}
+
+#[test]
+fn gpu_rendering_accepts_space_separated_values() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/cli-tests")
+        .join(format!("gpu-option-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let data = dir.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let data = data.to_str().unwrap();
+
+    for (name, option_before_output) in [("before.wav", true), ("after.wav", false)] {
+        let path = dir.join(name);
+        let path = path.to_str().unwrap();
+        let mut args = vec!["--demo", "--data-dir", data, "export"];
+        if option_before_output {
+            args.extend(["--gpu-rendering", "off"]);
+        }
+        args.push(path);
+        if !option_before_output {
+            args.extend(["--gpu-rendering", "off"]);
+        }
+        args.extend(["--start", "0", "--end", "0.1"]);
+        let out = cli(&args);
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(std::fs::metadata(path).is_ok_and(|m| m.len() > 44), "{path}");
+    }
+    for (name, option) in [("invalid-space.wav", false), ("invalid-equals.wav", true)] {
+        let path = dir.join(name);
+        let path = path.to_str().unwrap();
+        let mut args = vec!["--demo", "--data-dir", data, "export", path, "--start", "0", "--end", "0.1"];
+        if option {
+            args.push("--gpu-rendering=bogus");
+        } else {
+            args.extend(["--gpu-rendering", "bogus"]);
+        }
+        let out = cli(&args);
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(!std::path::Path::new(path).exists(), "{path}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn probe_reports_mpeg_transport_and_program_streams() {
     let Some(ffmpeg) = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].into_iter().find(|p| std::path::Path::new(p).exists()) else {
         eprintln!("SKIPPED (probe_reports_mpeg_transport_and_program_streams): ffmpeg not found");

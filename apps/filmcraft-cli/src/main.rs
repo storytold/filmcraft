@@ -252,13 +252,15 @@ async fn main() {
 }
 
 async fn cli() {
-    if matches!(std::env::args().nth(1).as_deref(), Some("--version" | "-V")) {
+    let a = Args::parse(std::env::args().skip(1));
+    // Like --help, --version is a global flag: preceding options must not hide it.
+    // Keep the short -V alias supported as a positional first argument.
+    if a.flag("--version") || a.pos(0) == Some("-V") {
         outln!("filmcraft-cli {}", env!("CARGO_PKG_VERSION"));
         return;
     }
     register_hardware_decoders();
     register_gpu_frame_renderer();
-    let a = Args::parse(std::env::args().skip(1));
     // `--help` anywhere (`filmcraft-cli --help`, `filmcraft-cli export --help`) prints the reference:
     // the parser takes it as a flag option, so it never reaches the subcommand match.
     if a.flag("--help") {
