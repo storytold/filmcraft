@@ -436,6 +436,88 @@ pub fn trim_delta(s: &Session, clip: ClipId, edge: Edge, mode: TrimMode, delta: 
     clamp_trim_linked(q, &with_links(s, &[clip]), edge, mode, delta, &ctx)
 }
 
+/// Link every selected clip together, or, when the selection holds more than one picture and
+/// some sound, one link per picture plus the selected sound that overlaps it.
+fn assign_pair_links(q: &mut filmcraft_project::Sequence, sel: &[ClipId], ctx: &mut edit::EditCtx<'_>) {
+    struct Side {
+        id: ClipId,
+        item: ItemId,
+        start: Tick,
+        range: TimeRange,
+    }
+    let mut videos = Vec::new();
+    let mut audios = Vec::new();
+    for c in sel {
+        let Some((tid, it)) = q.find_item(*c) else { continue };
+        let Some(tr) = q.track(tid) else { continue };
+        let side = Side { id: it.id, item: it.item, start: it.start, range: it.range() };
+        match tr.kind {
+            TrackKind::Video => videos.push(side),
+            TrackKind::Audio => audios.push(side),
+        }
+    }
+    // One picture, or no sound, stays one link. Two pictures on one track still share it.
+    if videos.len() <= 1 || audios.is_empty() {
+        let link = Some(ctx.alloc());
+        for c in sel {
+            if let Some((_, i)) = q.find_item_mut(*c) {
+                i.link = link;
+            }
+        }
+        return;
+    }
+    let mut owner = vec![None; audios.len()];
+    for (ai, audio) in audios.iter().enumerate() {
+        let mut best: Option<usize> = None;
+        for (vi, video) in videos.iter().enumerate() {
+            let Some(hit) = video.range.intersect(&audio.range) else { continue };
+            let take = match best {
+                None => true,
+                Some(bi) => {
+                    let old = &videos[bi];
+                    let old_hit = old.range.intersect(&audio.range).map(|r| r.duration).unwrap_or(Tick::ZERO);
+                    let (same_new, same_old) = (video.item == audio.item, old.item == audio.item);
+                    if same_new != same_old {
+                        same_new
+                    } else if hit.duration != old_hit {
+                        hit.duration > old_hit
+                    } else if video.start != old.start {
+                        video.start < old.start
+                    } else {
+                        video.id < old.id
+                    }
+                }
+            };
+            if take {
+                best = Some(vi);
+            }
+        }
+        owner[ai] = best;
+    }
+    for (vi, video) in videos.iter().enumerate() {
+        let mates: Vec<ClipId> = owner
+            .iter()
+            .enumerate()
+            .filter_map(|(ai, chosen)| match *chosen {
+                Some(i) if i == vi => Some(audios[ai].id),
+                _ => None,
+            })
+            .collect();
+        if mates.is_empty() {
+            continue;
+        }
+        let link = Some(ctx.alloc());
+        if let Some((_, i)) = q.find_item_mut(video.id) {
+            i.link = link;
+        }
+        for a in mates {
+            if let Some((_, i)) = q.find_item_mut(a) {
+                i.link = link;
+            }
+        }
+    }
+}
+
 /// Sequence settings matching a media clip (New Sequence From Clip, New Sequence from an item):
 /// its frame size, rate and pixel aspect ratio (Interpret Footage's, else the file's), so a
 /// 1440 x 1080 clip with 4:3 pixels makes a 1440 x 1080 sequence that displays 16:9.
@@ -1485,64 +1567,7 @@ fn build() -> Vec<CommandSpec> {
                         }
                     }
                 } else {
-                    // each selected clip with its track kind, worked out once
-                    type Spec = (ClipId, filmcraft_project::ItemId, filmcraft_time::TimeRange);
-                    let (mut v_clips, mut audio_specs): (Vec<Spec>, Vec<Spec>) = (Vec::new(), Vec::new());
-                    for c in &sel {
-                        if let Some((tid, i)) = q.find_item(*c) {
-                            if q.video_tracks.iter().any(|t| t.id == tid) {
-                                v_clips.push((*c, i.item, i.range()));
-                            } else {
-                                audio_specs.push((*c, i.item, i.range()));
-                            }
-                        }
-                    }
-                    if !audio_specs.is_empty() && v_clips.len() > 1 {
-                        let mut linked_audios = std::collections::HashSet::new();
-                        for (vid, item_id, vrange) in &v_clips {
-                            // Pair with overlapping audio clips from the same item, or overlapping audio clips if no same-item audio
-                            let matching: Vec<ClipId> = audio_specs
-                                .iter()
-                                .filter(|(aid, aitem, arange)| !linked_audios.contains(aid) && aitem == item_id && arange.overlaps(vrange))
-                                .map(|(aid, _, _)| *aid)
-                                .collect();
-                            let to_link = if !matching.is_empty() {
-                                matching
-                            } else {
-                                audio_specs
-                                    .iter()
-                                    .filter(|(aid, _, arange)| !linked_audios.contains(aid) && arange.overlaps(vrange))
-                                    .map(|(aid, _, _)| *aid)
-                                    .collect()
-                            };
-                            // a video clip with no audio partner stays unlinked: a one-member link would read as "linked"
-                            let l = (!to_link.is_empty()).then(|| ctx.alloc());
-                            if let Some((_, vi)) = q.find_item_mut(*vid) {
-                                vi.link = l;
-                            }
-                            for aid in to_link {
-                                linked_audios.insert(aid);
-                                if let Some((_, ai)) = q.find_item_mut(aid) {
-                                    ai.link = l;
-                                }
-                            }
-                        }
-                        // selected audio clips with no overlapping video stay unlinked
-                        for (aid, _, _) in audio_specs {
-                            if !linked_audios.contains(&aid)
-                                && let Some((_, ai)) = q.find_item_mut(aid)
-                            {
-                                ai.link = None;
-                            }
-                        }
-                    } else {
-                        let l = ctx.alloc();
-                        for c in &sel {
-                            if let Some((_, i)) = q.find_item_mut(*c) {
-                                i.link = Some(l);
-                            }
-                        }
-                    }
+                    assign_pair_links(q, &sel, ctx);
                 }
                 Ok(())
             })?;
