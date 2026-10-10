@@ -246,7 +246,7 @@ fn transcribe(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Other("there are no audio clips to transcribe".into()));
     }
     let mut params = json!({"items": items});
-    for k in ["language", "diarize", "maxSpeakers", "model"] {
+    for k in ["language", "diarize", "maxSpeakers", "model", "wait"] {
         if let Some(v) = p.get(k) {
             params[k] = v.clone();
         }

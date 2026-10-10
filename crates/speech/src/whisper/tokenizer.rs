@@ -28,7 +28,7 @@ pub struct Tokenizer {
 }
 
 /// GPT-2's byte → printable character table, inverted.
-fn unicode_to_byte() -> HashMap<char, u8> {
+fn unicode_to_byte() -> Result<HashMap<char, u8>, SpeechError> {
     let mut bs: Vec<u32> = (b'!' as u32..=b'~' as u32).chain(0xA1..=0xAC).chain(0xAE..=0xFF).collect();
     let mut cs = bs.clone();
     let mut n = 0;
@@ -39,7 +39,10 @@ fn unicode_to_byte() -> HashMap<char, u8> {
             n += 1;
         }
     }
-    bs.iter().zip(&cs).map(|(&b, &c)| (char::from_u32(c).expect("valid"), b as u8)).collect()
+    bs.iter()
+        .zip(&cs)
+        .map(|(&b, &c)| char::from_u32(c).map(|ch| (ch, b as u8)).ok_or_else(|| SpeechError::Model("invalid byte decoder code point".into())))
+        .collect()
 }
 
 impl Tokenizer {
@@ -47,7 +50,7 @@ impl Tokenizer {
         let bad = |m: &str| SpeechError::Model(format!("tokenizer.json: {m}"));
         let v: serde_json::Value = serde_json::from_str(json).map_err(|e| bad(&e.to_string()))?;
         let vocab = v["model"]["vocab"].as_object().ok_or_else(|| bad("no model.vocab"))?;
-        let table = unicode_to_byte();
+        let table = unicode_to_byte()?;
         let max = vocab.values().filter_map(|x| x.as_u64()).max().unwrap_or(0) as usize;
         let mut bytes = vec![Vec::new(); max + 1];
         for (tok, id) in vocab {
@@ -163,4 +166,18 @@ pub fn group_words(tok: &Tokenizer, ids: &[u32]) -> Vec<(String, std::ops::Range
         groups.push((pre, start..ids.len()));
     }
     groups.into_iter().map(|(b, r)| (String::from_utf8_lossy(&b).trim().to_string(), r)).filter(|(t, _)| !t.is_empty()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn byte_decoder_covers_every_byte_and_gpt2_space_mapping() {
+        let table = super::unicode_to_byte().unwrap();
+        assert_eq!(table.len(), 256);
+        assert_eq!(table.values().copied().collect::<std::collections::HashSet<_>>().len(), 256);
+        assert_eq!(table[&'Ġ'], b' ');
+        assert_eq!(table[&'Ā'], 0);
+        assert_eq!(table[&'!'], b'!');
+        assert_eq!(table[&'ÿ'], 255);
+    }
 }

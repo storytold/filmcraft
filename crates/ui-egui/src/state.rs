@@ -430,6 +430,12 @@ pub struct UiState {
     /// Text panel ▸ Transcript: search text.
     #[serde(default)]
     pub transcript_search: String,
+    /// Show the open Source clip instead of the sequence transcript.
+    #[serde(default)]
+    pub transcript_source: bool,
+    /// Word correction: media id, word index, replacement, original text.
+    #[serde(default)]
+    pub transcript_edit: Option<(u64, usize, String, String)>,
     /// Preferences ▸ Playback: play the rendered range when a preview render finishes.
     #[serde(default = "yes")]
     pub play_after_render: bool,
@@ -911,6 +917,8 @@ impl Default for UiState {
             caption_search: String::new(),
             transcript_sel: None,
             transcript_search: String::new(),
+            transcript_source: false,
+            transcript_edit: None,
             play_after_render: true,
             mixer_fx_open: false,
             mixer_hidden: Vec::new(),

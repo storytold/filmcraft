@@ -461,6 +461,8 @@ fn text_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
     if op == "showProgramTranscript" {
         app.show_panel(PanelKind::Text);
         app.ui.text_tab = "Transcript".into();
+        app.ui.transcript_source = false;
+        app.ui.transcript_sel = None;
         return Ok(json!({"tab": "Transcript"}));
     }
     if app.ui.text_tab != "Transcript" {
@@ -471,16 +473,18 @@ fn text_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
             _ => Ok(Value::Null),
         };
     }
-    let words = filmcraft_engine::transcript::sequence_words(&app.session);
+    let source = app.ui.transcript_source;
+    let words = if source { filmcraft_engine::transcript::source_words(&app.session) } else { filmcraft_engine::transcript::sequence_words(&app.session) };
     if words.is_empty() {
-        return Err("the sequence has no transcript".into());
+        return Err("the current view has no transcript".into());
     }
+    let playhead = if source { app.session.state.source_playhead } else { app.session.playhead() };
     let n = words.len();
     let paras = filmcraft_edit::transcript::paragraphs(&words, filmcraft_time::Tick::from_seconds_f64(1.5));
     let para_of = |i: usize| paras.iter().position(|p| p.contains(&i)).unwrap_or(0);
     // a selection left over from a longer transcript (e.g. after `transcript.extract` over the control channel) counts as none, as when drawing
     let (anchor, cur) = app.ui.transcript_sel.filter(|(a, b)| *a < n && *b < n).unwrap_or_else(|| {
-        let i = filmcraft_edit::transcript::word_at(&words, app.session.playhead()).unwrap_or(0);
+        let i = filmcraft_edit::transcript::word_at(&words, playhead).unwrap_or(0);
         (i, i)
     });
     let line = |i: usize, d: i64| -> usize {
@@ -501,6 +505,9 @@ fn text_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
         "selectToSegmentStart" => (paras[para_of(cur)].start, true),
         "selectToSegmentEnd" => (paras[para_of(cur)].end - 1, true),
         "delete" | "rippleDelete" => {
+            if source {
+                return Err("switch to the sequence transcript to extract or lift text".into());
+            }
             let Some((a, b)) = app.ui.transcript_sel else { return Err("select text in the transcript".into()) };
             let cmd = if op == "delete" { "transcript.lift" } else { "transcript.extract" };
             let r = app.session.execute(cmd, json!({"from": a.min(b), "to": a.max(b)})).map_err(|e| e.to_string())?;
@@ -511,7 +518,11 @@ fn text_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
     };
     app.ui.transcript_sel = Some(if extend { (anchor, to) } else { (to, to) });
     // the playhead follows the caret
-    app.session.set_playhead(words[to].start);
+    if source {
+        app.session.execute("source.setPlayhead", json!({"time": words[to].start.0})).map_err(|e| e.to_string())?;
+    } else {
+        app.session.set_playhead(words[to].start);
+    }
     Ok(json!({"selection": [anchor.min(to), anchor.max(to)], "word": to}))
 }
 
@@ -541,5 +552,20 @@ mod transcript_selection_tests {
         let (sa, sb) = app.ui.transcript_sel.unwrap();
         assert!(sa < 2 && sb < 2, "selection {sa}..{sb} outside the 2-word transcript");
         assert_eq!(r["word"], json!(sb));
+
+        app.session.execute("source.open", json!({"item": a.item.0})).unwrap();
+        app.ui.transcript_source = true;
+        app.ui.transcript_sel = Some((0, 0));
+        let project = app.session.project.clone();
+        let sequence_playhead = app.session.playhead();
+        let r = super::text_panel(&mut app, "nextWord").unwrap();
+        assert_eq!(r["word"], 1);
+        assert_eq!(app.session.playhead(), sequence_playhead);
+        assert!(app.session.state.source_playhead > filmcraft_time::Tick::ZERO);
+        assert!(super::text_panel(&mut app, "rippleDelete").is_err());
+        assert_eq!(*app.session.project, *project);
+        super::text_panel(&mut app, "showProgramTranscript").unwrap();
+        assert!(!app.ui.transcript_source);
+        assert!(app.ui.transcript_sel.is_none());
     }
 }
