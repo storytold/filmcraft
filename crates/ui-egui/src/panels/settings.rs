@@ -79,6 +79,192 @@ pub fn set_theme(app: &mut FilmcraftApp, ctx: &egui::Context, k: crate::theme::T
     app.set_theme(ctx, k);
 }
 
+/// The header's appearance button and View ▸ Appearance ▸ Next Appearance Mode: Auto, Light, Dark,
+/// then Auto again. The light and dark theme choices are kept.
+pub fn cycle_appearance(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let next = app.session.prefs.appearance.next_mode();
+    if let Err(e) = app.session.execute("prefs.set", json!({"key": "appearance.appearanceMode", "value": next})) {
+        app.ui.status = e.to_string();
+    }
+    app.apply_prefs(ctx);
+}
+
+/// Keys the Appearance page draws as the mode selector and theme cards instead of plain fields.
+const APPEARANCE_KEYS: &[&str] = &["appearance.appearanceMode", "appearance.lightTheme", "appearance.darkTheme", "appearance.colorTheme"];
+
+/// A small FilmCraft editor painted with `t`'s colours: the header with the Import / Edit / Export
+/// tabs, the Source and Program monitors, the Project panel, the tools, the Timeline with video and
+/// audio clips and the playhead, and the audio meters (the Editing workspace).
+fn theme_preview(ui: &mut Ui, t: &Tokens, width: f32) {
+    use egui::pos2;
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 128.0), Sense::hover());
+    let p = ui.painter_at(rect);
+    let bar = |r: Rect, w: f32, c: Color32| p.rect_filled(Rect::from_min_size(r.min, vec2(w, 2.0)), 1.0, c);
+    p.rect_filled(rect, 3.0, t.app_bg);
+    // header: home, the three mode tabs (Edit active, underlined), the title, quick actions
+    let header = Rect::from_min_size(rect.min, vec2(rect.width(), 12.0));
+    p.rect_filled(header, CornerRadius { nw: 3, ne: 3, sw: 0, se: 0 }, t.header_bg);
+    p.rect_filled(Rect::from_center_size(pos2(header.left() + 7.0, header.center().y), vec2(4.0, 4.0)), 1.0, t.text_dim);
+    for (i, w) in [9.0, 6.0, 9.0].into_iter().enumerate() {
+        let x = header.left() + 14.0 + i as f32 * 13.0;
+        let c = if i == 1 { t.tab_text_active } else { t.tab_text };
+        bar(Rect::from_min_size(pos2(x, header.center().y - 1.0), vec2(w, 2.0)), w, c);
+        if i == 1 {
+            p.rect_filled(Rect::from_min_size(pos2(x, header.bottom() - 2.5), vec2(w, 1.0)), 0.0, c);
+        }
+    }
+    bar(Rect::from_min_size(pos2(header.center().x - 16.0, header.center().y - 1.0), vec2(32.0, 2.0)), 32.0, t.tab_text_active);
+    for i in 0..4 {
+        p.rect_filled(Rect::from_center_size(pos2(header.right() - 7.0 - i as f32 * 8.0, header.center().y), vec2(4.0, 4.0)), 1.0, t.icon);
+    }
+    let body = Rect::from_min_max(pos2(rect.left() + 2.0, header.bottom() + 2.0), rect.max - vec2(2.0, 2.0));
+    let split_y = body.top() + body.height() * 0.5;
+    let panel = |r: Rect, tab_w: f32| {
+        p.rect_filled(r, 2.0, t.panel_bg);
+        bar(Rect::from_min_size(r.min + vec2(4.0, 3.5), vec2(tab_w, 2.0)), tab_w, t.tab_text_active);
+        Rect::from_min_max(r.min + vec2(3.0, 9.0), r.max - vec2(3.0, 3.0))
+    };
+    // Source monitor (left) and Program monitor (right)
+    let source = panel(Rect::from_min_max(body.min, pos2(body.left() + body.width() * 0.36, split_y - 1.0)), 14.0);
+    p.rect_filled(source, 0.0, t.monitor_bg);
+    p.rect_filled(source.shrink2(vec2(6.0, 8.0)), 0.0, t.field_bg);
+    let program = panel(Rect::from_min_max(pos2(body.left() + body.width() * 0.36 + 2.0, body.top()), pos2(body.right(), split_y - 1.0)), 16.0);
+    p.rect_filled(program, 0.0, t.monitor_bg);
+    let frame = Rect::from_center_size(program.center() - vec2(0.0, 3.0), vec2((program.height() - 9.0) * 16.0 / 9.0, program.height() - 9.0));
+    p.rect_filled(frame, 0.0, Color32::from_rgb(0x2c, 0x4a, 0x2e));
+    p.rect_filled(Rect::from_min_max(pos2(frame.left(), frame.bottom() - frame.height() * 0.3), frame.max), 0.0, Color32::from_rgb(0x4a, 0x3c, 0x30));
+    p.circle_filled(pos2(frame.left() + frame.width() * 0.62, frame.center().y + 2.0), frame.height() * 0.26, Color32::from_rgb(0xc8, 0x2a, 0x26));
+    bar(Rect::from_min_size(pos2(program.left() + 2.0, program.bottom() - 3.0), vec2(14.0, 2.0)), 14.0, t.timecode);
+    // Project panel, tools, Timeline, meters
+    let low = split_y + 1.0;
+    let project = panel(Rect::from_min_max(pos2(body.left(), low), pos2(body.left() + body.width() * 0.24, body.bottom())), 12.0);
+    for row in 0..2 {
+        for col in 0..2 {
+            let cell =
+                Rect::from_min_size(project.min + vec2(col as f32 * (project.width() / 2.0), 2.0 + row as f32 * 18.0), vec2(project.width() / 2.0 - 3.0, 11.0));
+            p.rect_filled(cell, 1.0, if (row + col) % 2 == 0 { t.field_bg } else { t.row_selected });
+            bar(Rect::from_min_size(cell.left_bottom() + vec2(0.0, 2.0), vec2(cell.width() * 0.7, 2.0)), cell.width() * 0.7, t.text_faint);
+        }
+    }
+    let tools = Rect::from_min_max(pos2(project.right() + 5.0, low), pos2(project.right() + 15.0, body.bottom()));
+    p.rect_filled(tools, 2.0, t.panel_bg);
+    for i in 0..5 {
+        let c = if i == 0 { t.accent } else { t.icon };
+        p.rect_filled(Rect::from_center_size(pos2(tools.center().x, tools.top() + 7.0 + i as f32 * 9.0), vec2(5.0, 5.0)), 1.0, c);
+    }
+    let meters = Rect::from_min_max(pos2(body.right() - 12.0, low), pos2(body.right(), body.bottom()));
+    p.rect_filled(meters, 2.0, t.panel_bg);
+    for (i, h) in [0.55, 0.62].into_iter().enumerate() {
+        let x = meters.left() + 3.0 + i as f32 * 4.0;
+        p.rect_filled(
+            Rect::from_min_max(pos2(x, meters.bottom() - 3.0 - (meters.height() - 6.0) * h), pos2(x + 2.0, meters.bottom() - 3.0)),
+            0.0,
+            t.render_green,
+        );
+    }
+    let tl = Rect::from_min_max(pos2(tools.right() + 2.0, low), pos2(meters.left() - 2.0, body.bottom()));
+    p.rect_filled(tl, 2.0, t.tl_bg);
+    bar(Rect::from_min_size(tl.min + vec2(4.0, 3.5), vec2(14.0, 2.0)), 14.0, t.tab_text_active);
+    bar(Rect::from_min_size(tl.min + vec2(4.0, 9.0), vec2(16.0, 2.0)), 16.0, t.timecode);
+    let heads_w = 22.0;
+    let ruler = Rect::from_min_max(pos2(tl.left() + heads_w, tl.top() + 7.0), pos2(tl.right() - 2.0, tl.top() + 13.0));
+    p.rect_filled(ruler, 0.0, t.tl_ruler_bg);
+    let mut x = ruler.left() + 2.0;
+    while x < ruler.right() {
+        p.line_segment([pos2(x, ruler.bottom() - 2.0), pos2(x, ruler.bottom())], Stroke::new(1.0, t.tl_ruler_tick));
+        x += 6.0;
+    }
+    let video = Label::Iris.rgb();
+    let audio = Label::Caribbean.rgb();
+    let music = Label::Forest.rgb();
+    let track_h = ((tl.bottom() - ruler.bottom() - 3.0) / 4.0).max(4.0);
+    for i in 0..4 {
+        let y = ruler.bottom() + 1.0 + i as f32 * track_h;
+        let head = Rect::from_min_size(pos2(tl.left() + 2.0, y), vec2(heads_w - 3.0, track_h - 1.0));
+        p.rect_filled(head, 1.0, t.tl_header_bg);
+        p.rect_filled(Rect::from_min_size(head.min + vec2(2.0, 1.5), vec2(5.0, track_h - 4.0)), 1.0, t.accent);
+        let lane = Rect::from_min_max(pos2(ruler.left(), y), pos2(ruler.right(), y + track_h - 1.0));
+        p.rect_filled(lane, 0.0, if i % 2 == 0 { t.tl_track_bg } else { t.tl_track_bg_alt });
+        let clips: &[(f32, f32)] = match i {
+            0 => &[(0.55, 0.75)],
+            1 | 2 => &[(0.0, 0.22), (0.23, 0.48), (0.49, 0.7), (0.71, 0.9)],
+            _ => &[(0.0, 0.9)],
+        };
+        let c = match i {
+            0 | 1 => video,
+            2 => audio,
+            _ => music,
+        };
+        for (a, b) in clips {
+            let r = Rect::from_min_max(pos2(lane.left() + lane.width() * a, lane.top() + 0.5), pos2(lane.left() + lane.width() * b, lane.bottom() - 0.5));
+            p.rect_filled(r, 1.0, Color32::from_rgb(c[0], c[1], c[2]).gamma_multiply(0.85));
+        }
+    }
+    let ph = ruler.left() + ruler.width() * 0.3;
+    p.line_segment([pos2(ph, ruler.top()), pos2(ph, tl.bottom() - 2.0)], Stroke::new(1.0, t.playhead));
+}
+
+/// One theme card of the Appearance page: title, "Active" while the mode shows it, the preview and
+/// a radio button per theme (automation ids `settings.<key>.<value>`).
+#[allow(clippy::too_many_arguments)]
+fn theme_card(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, key: &str, title: &str, opts: &[(&str, &str)], active: bool, width: f32) {
+    let t = app.tokens;
+    let current = choice_text(get(&d.values, key));
+    let shown = opts.iter().find(|(v, _)| *v == current).or(opts.first()).map_or("darkest", |(v, _)| v);
+    let highlight = settings::parse_hex(&choice_text(get(&d.values, "appearance.highlightColor")));
+    let contrast = get(&d.values, "appearance.accessibleContrast").as_bool().unwrap_or(false);
+    let look = Tokens::for_kind(crate::theme::ThemeKind::from_pref(shown)).with_appearance(highlight, contrast);
+    let r = Frame::new()
+        .fill(t.field_bg)
+        .stroke(Stroke::new(1.0, if active { t.accent } else { t.field_border }))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(Margin::same(10))
+        .show(ui, |ui| {
+            ui.vertical(|ui| {
+                ui.set_width(width - 20.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(crate::i18n::t(title)).size(12.5).strong());
+                    if active {
+                        ui.label(RichText::new(tl!("Active")).size(11.0).color(t.accent));
+                    }
+                });
+                ui.add_space(4.0);
+                theme_preview(ui, &look, width - 20.0);
+                ui.add_space(4.0);
+                for (v, l) in opts {
+                    let r = ui.radio(current == *v, RichText::new(crate::i18n::t(l)).size(12.5));
+                    app.auto.add(&format!("settings.{key}.{v}"), r.rect, l);
+                    if r.clicked() {
+                        put(&mut d.values, key, json!(v));
+                    }
+                }
+            });
+        });
+    app.auto.add(&format!("settings.{key}"), r.response.rect, title);
+}
+
+/// Settings ▸ Appearance: the Appearance Mode selector above the light and dark theme cards.
+fn appearance_modes(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft) {
+    let key = "appearance.appearanceMode";
+    let mode = choice_text(get(&d.values, key));
+    ui.horizontal(|ui| {
+        field_label(ui, "Appearance Mode");
+        if let Some(v) = combo(app, ui, key, &mode, &static_opts(settings::APPEARANCE_MODES), 200.0) {
+            put(&mut d.values, key, json!(v));
+        }
+    });
+    let mode = choice_text(get(&d.values, key));
+    let light_active = mode == "light" || (mode == "auto" && app.system_theme(ui.ctx()) == Some(egui::Theme::Light));
+    ui.add_space(6.0);
+    let width = ((ui.available_width() - 12.0) / 2.0).max(200.0);
+    ui.horizontal_top(|ui| {
+        theme_card(app, ui, d, "appearance.lightTheme", "Light Theme", settings::LIGHT_THEMES, light_active, width);
+        ui.add_space(4.0);
+        theme_card(app, ui, d, "appearance.darkTheme", "Dark Theme", settings::DARK_THEMES, !light_active, width);
+    });
+    ui.add_space(6.0);
+}
+
 /// Patch the open dialog's draft (`ui.set {"settings": {"page": "trim", "values": {key: value}}}`).
 pub fn patch(app: &mut FilmcraftApp, p: &Value) -> Result<(), String> {
     let d = app.ui.settings.as_mut().ok_or("the Settings dialog is not open")?;
@@ -422,6 +608,7 @@ fn custom(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, name: &str
                 ),
             );
         }
+        "appearanceModes" => appearance_modes(app, ui, d),
         "autoSaveStatus" => {
             let status = app.session.execute("file.autoSaveStatus", json!({})).unwrap_or_default();
             if let Some(dir) = status["autoSaveDir"].as_str() {
@@ -467,6 +654,7 @@ fn rows(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, list: &[Row]
             continue;
         }
         match r {
+            Row::Field(f) if APPEARANCE_KEYS.contains(&f.key) => continue,
             Row::Field(f) => draw_field(app, ui, d, f),
             Row::Group(title, inner) => group(ui, &t, title, |ui| rows(app, ui, d, inner)),
             Row::Note(text) => note(ui, &t, text),
@@ -595,6 +783,66 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::ThemeKind;
+
+    #[test]
+    fn appearance_button_cycles_modes_without_losing_theme_choices() {
+        let ctx = egui::Context::default();
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.apply_prefs(&ctx);
+        assert_eq!((app.session.prefs.appearance.appearance_mode.as_str(), app.tokens.kind), ("dark", ThemeKind::Dark), "new users keep Darkest");
+        app.session.execute("prefs.set", json!({"values": {"appearance.darkTheme": "dark"}})).unwrap();
+        app.hooks.system_theme = Some(Box::new(|_| Some(egui::Theme::Dark)));
+        for (mode, shown) in [("auto", ThemeKind::Medium), ("light", ThemeKind::Light), ("dark", ThemeKind::Medium), ("auto", ThemeKind::Medium)] {
+            cycle_appearance(&mut app, &ctx);
+            assert_eq!(app.session.prefs.appearance.appearance_mode, mode);
+            assert_eq!(app.tokens.kind, shown, "{mode}");
+            assert_eq!((app.session.prefs.appearance.dark_theme.as_str(), app.session.prefs.appearance.light_theme.as_str()), ("dark", "light"));
+        }
+        // View ▸ Appearance picks a theme and fixes the mode to its family
+        set_theme(&mut app, &ctx, ThemeKind::Light);
+        assert_eq!((app.session.prefs.appearance.appearance_mode.as_str(), app.tokens.kind), ("light", ThemeKind::Light));
+        set_theme(&mut app, &ctx, ThemeKind::Dark);
+        assert_eq!((app.session.prefs.appearance.appearance_mode.as_str(), app.tokens.kind), ("dark", ThemeKind::Dark));
+        assert_eq!(app.session.prefs.appearance.dark_theme, "darkest");
+    }
+
+    /// Auto follows the host's reading of the system appearance as it changes, and falls back to
+    /// dark without an answer.
+    #[test]
+    fn auto_follows_a_stubbed_system_theme() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU8, Ordering};
+        let ctx = egui::Context::default();
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let system = Arc::new(AtomicU8::new(2));
+        let read = system.clone();
+        app.hooks.system_theme = Some(Box::new(move |_| match read.load(Ordering::Relaxed) {
+            1 => Some(egui::Theme::Dark),
+            2 => Some(egui::Theme::Light),
+            _ => None,
+        }));
+        app.session.execute("prefs.set", json!({"key": "appearance.appearanceMode", "value": "auto"})).unwrap();
+        app.apply_prefs(&ctx);
+        assert_eq!(app.tokens.kind, ThemeKind::Light);
+        assert!(!app.ui.dark);
+        assert_eq!(ctx.theme(), egui::Theme::Light, "egui's style follows FilmCraft's choice");
+        system.store(1, Ordering::Relaxed);
+        app.apply_prefs(&ctx);
+        assert_eq!(app.tokens.kind, ThemeKind::Dark);
+        assert_eq!(ctx.theme(), egui::Theme::Dark);
+        system.store(2, Ordering::Relaxed);
+        app.apply_prefs(&ctx);
+        assert_eq!(app.tokens.kind, ThemeKind::Light);
+        system.store(0, Ordering::Relaxed);
+        app.apply_prefs(&ctx);
+        assert_eq!(app.tokens.kind, ThemeKind::Dark, "no answer: dark");
+        // a fixed mode ignores the system
+        app.session.execute("prefs.set", json!({"key": "appearance.appearanceMode", "value": "dark"})).unwrap();
+        system.store(2, Ordering::Relaxed);
+        app.apply_prefs(&ctx);
+        assert_eq!(app.tokens.kind, ThemeKind::Dark);
+    }
 
     #[test]
     fn diff_lists_changed_leaves() {

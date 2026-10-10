@@ -50,9 +50,21 @@ pub(crate) fn edge_geometry(seq: &Sequence, layout: &Layout, track: TrackId, cli
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Hit {
     Ruler,
-    Clip { track: TrackId, clip: ClipId, edge: Option<Edge> },
-    Transition { track: TrackId, id: TransitionId },
-    Empty { track: TrackId },
+    Clip {
+        track: TrackId,
+        clip: ClipId,
+        edge: Option<Edge>,
+    },
+    /// A transition; `edge` is its start (`In`) or end (`Out`) when the press is on one of its
+    /// ends (dragging it changes the duration), `None` on its middle (dragging slides it).
+    Transition {
+        track: TrackId,
+        id: TransitionId,
+        edge: Option<Edge>,
+    },
+    Empty {
+        track: TrackId,
+    },
     None,
 }
 
@@ -69,7 +81,16 @@ pub fn hit(seq: &Sequence, layout: &Layout, pos: Pos2) -> Hit {
         let x0 = layout.x_of(trn.start);
         let x1 = layout.x_of(trn.end());
         if pos.x >= x0 && pos.x <= x1 && pos.y > row.rect.min.y + 17.0 {
-            return Hit::Transition { track: row.track, id: trn.id };
+            // the ends are edge zones, narrower on a short transition so its middle stays grabbable
+            let zone = EDGE_PX.min((x1 - x0) / 3.0);
+            let edge = if pos.x - x0 <= zone {
+                Some(Edge::In)
+            } else if x1 - pos.x <= zone {
+                Some(Edge::Out)
+            } else {
+                None
+            };
+            return Hit::Transition { track: row.track, id: trn.id, edge };
         }
     }
     if let Some((clip, edge)) = edge_at(tr, layout, pos.x) {

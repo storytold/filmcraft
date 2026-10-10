@@ -103,6 +103,8 @@ pub fn transcode(
     if let Some(v) = &info.video {
         st.width = v.width;
         st.height = v.height;
+        // pixels in = pixels out: the sequence has the clip's pixel aspect, so nothing is stretched
+        st.par = clip.pixel_aspect();
     }
     st.frame_rate = rate;
     st.sample_rate = info.audio().map_or(48_000, |a| a.sample_rate.max(8000));

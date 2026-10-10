@@ -226,6 +226,7 @@ fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
                 m.info.audio_streams.truncate(max);
             }
             filmcraft_project::ItemKind::Sequence(sequence) => {
+                let sequence = std::sync::Arc::make_mut(sequence);
                 for clip in sequence.audio_tracks.iter_mut().flat_map(|t| t.items.iter_mut()) {
                     if clip.audio_stream >= max {
                         log::warn!("sequence `{name}`: clip `{}` uses audio stream {}, reset to 0", clip.name, clip.audio_stream);

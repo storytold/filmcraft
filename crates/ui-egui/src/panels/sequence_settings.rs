@@ -12,7 +12,7 @@
 //!
 //! Premiere settings FilmCraft has no equivalent for yet are shown greyed out with their current
 //! value and a "not supported yet" hint, rather than editable and silently ignored: Editing Mode,
-//! Pixel Aspect Ratio (stored, not rendered), Fields, the Frames and Feet + Frames display
+//! Pixel Aspect Ratio (rendered, and set by New Sequence From Clip, but not editable here yet), Fields, the Frames and Feet + Frames display
 //! formats, Number of Channels, audio Display Format, the Video Previews format, codec and size,
 //! Maximum Bit Depth, and the VR Properties tab. Composite in Linear Color is shown on and greyed:
 //! FilmCraft always composites in linear light.
@@ -174,6 +174,12 @@ fn aspect(w: u32, h: u32) -> String {
     }
 }
 
+/// The width a `w` x `h` frame with `par` pixels shows at, in square pixels (rounded).
+fn display_width(w: u32, h: u32, par: (u32, u32)) -> u32 {
+    let dw = filmcraft_project::conformed_size((w, h), par, (1, 1)).0.round();
+    if dw >= f64::from(u32::MAX) { u32::MAX } else { dw.max(0.0) as u32 }
+}
+
 fn gcd(mut a: u32, mut b: u32) -> u32 {
     while b != 0 {
         (a, b) = (b, a % b);
@@ -331,7 +337,8 @@ fn general(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, cur: &SequenceSetti
             let h = ui.add(egui::DragValue::new(&mut d.height).range(1..=filmcraft_project::MAX_FRAME_SIDE).speed(1.0));
             elems.push(("sequenceSettings.height".into(), h.rect, d.height.to_string()));
             ui.label(tl!("vertical"));
-            let a = aspect(d.width, d.height);
+            // the display aspect: 1440 x 1080 with 4:3 pixels is 16:9
+            let a = aspect(display_width(d.width, d.height, cur.par), d.height);
             let ar = ui.label(&a);
             elems.push(("sequenceSettings.aspect".into(), ar.rect, a));
         });
@@ -562,6 +569,11 @@ mod tests {
         assert_eq!(aspect(1080, 1920), "9:16");
         assert_eq!(aspect(1440, 1080), "4:3");
         assert_eq!(aspect(4096, 2160), "1.90:1");
+        // non-square pixels: the display aspect
+        assert_eq!(aspect(display_width(1440, 1080, (4, 3)), 1080), "16:9");
+        assert_eq!(aspect(display_width(1280, 1080, (3, 2)), 1080), "16:9");
+        assert_eq!(display_width(u32::MAX, 1, (8, 1)), u32::MAX);
+        assert_eq!(display_width(1440, 1080, (0, 0)), 1440);
     }
 
     #[test]

@@ -67,10 +67,22 @@ mod directx {
 #[cfg(target_os = "linux")]
 mod cuda {
     use super::c_void;
+    use std::marker::PhantomData;
+    use std::rc::Rc;
     type Init = unsafe extern "C" fn(u32) -> i32;
     type GetDevice = unsafe extern "C" fn(*mut i32, i32) -> i32;
     type Retain = unsafe extern "C" fn(*mut *mut c_void, i32) -> i32;
     type Release = unsafe extern "C" fn(i32) -> i32;
+    type Push = unsafe extern "C" fn(*mut c_void) -> i32;
+    type Pop = unsafe extern "C" fn(*mut *mut c_void) -> i32;
+    type CopyToHost = unsafe extern "C" fn(*mut c_void, u64, usize) -> i32;
+
+    /// A thread-local context stack entry; it cannot move to another thread.
+    pub struct Current<'a> {
+        _device: &'a Device,
+        pop: Pop,
+        _thread: PhantomData<Rc<()>>,
+    }
 
     /// One retained primary CUDA context. Retaining does not change the calling thread's
     /// current context; NVENC receives the explicit context handle. No toolkit is needed.
@@ -116,6 +128,49 @@ mod cuda {
         pub fn as_raw(&self) -> *mut c_void {
             self.context
         }
+
+        pub fn push_current(&self) -> Result<Current<'_>, String> {
+            // SAFETY: signatures match the CUDA driver headers; the retained context and
+            // library outlive the guard, whose Drop balances the push on this same thread.
+            unsafe {
+                let push: Push = *self._library.get(b"cuCtxPushCurrent_v2\0").map_err(|e| e.to_string())?;
+                let pop: Pop = *self._library.get(b"cuCtxPopCurrent_v2\0").map_err(|e| e.to_string())?;
+                let st = push(self.context);
+                if st != 0 {
+                    return Err(format!("cuCtxPushCurrent failed ({st})"));
+                }
+                Ok(Current { _device: self, pop, _thread: PhantomData })
+            }
+        }
+
+        /// Copy a driver-owned device address into a bounded host slice. CUDA validates
+        /// the source device range; the destination is always a live writable Rust slice.
+        pub fn copy_to_host(&self, source: u64, destination: &mut [u8]) -> Result<(), String> {
+            let _current = self.push_current()?;
+            source.checked_add(u64::try_from(destination.len()).map_err(|_| "CUDA copy length overflows")?).ok_or("CUDA copy address overflows")?;
+            // SAFETY: the synchronous copy writes at most destination.len() bytes to its
+            // live buffer. The CUDA context and library remain live through the call.
+            let st = unsafe {
+                let copy: CopyToHost = *self._library.get(b"cuMemcpyDtoH_v2\0").map_err(|e| e.to_string())?;
+                copy(destination.as_mut_ptr().cast(), source, destination.len())
+            };
+            if st != 0 {
+                return Err(format!("cuMemcpyDtoH failed ({st})"));
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for Current<'_> {
+        fn drop(&mut self) {
+            let mut previous = std::ptr::null_mut();
+            // SAFETY: this guard owns one successful push on this thread; previous is
+            // a valid out-pointer and the library is retained by the borrowed device.
+            let st = unsafe { (self.pop)(&mut previous) };
+            if st != 0 {
+                log::warn!("cuCtxPopCurrent failed ({st})");
+            }
+        }
     }
 
     impl Drop for Device {
@@ -123,7 +178,10 @@ mod cuda {
             // SAFETY: balances this object's successful retain, after the NVENC session is
             // destroyed. Release drops our reference, not other users' primary-context references.
             unsafe {
-                (self.release)(self.ordinal);
+                let st = (self.release)(self.ordinal);
+                if st != 0 {
+                    log::warn!("cuDevicePrimaryCtxRelease failed ({st})");
+                }
             }
         }
     }

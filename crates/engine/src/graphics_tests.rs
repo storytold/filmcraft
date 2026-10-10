@@ -153,6 +153,38 @@ fn typing_coalesces_into_one_undo_step_and_props_set() {
     assert_eq!(text_of(&layers(&s, clip)[0]), "");
 }
 
+/// A drag of a property is one undo step: `graphics.set` with `merge` folds consecutive calls
+/// into the step the first change of the press began (`begin`), so one undo restores the
+/// original value (the color picker in Essential Graphics was committing one step per frame).
+#[test]
+fn a_property_drag_is_one_undo_step() {
+    let mut s = demo();
+    let r = s.execute("graphics.newText", json!({"text": "Title"})).unwrap();
+    let clip = ClipId(r["clip"].as_u64().unwrap());
+    s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "props": {"shadow_color": [0.0, 0.0, 0.0, 1.0]}})).unwrap();
+    let color = |s: &Session| -> [f32; 4] {
+        let q = s.active_sequence().unwrap();
+        let (_, it) = q.find_item(clip).unwrap();
+        let e = it.effects.iter().find(|e| e.effect == "graphic_text").unwrap();
+        e.param("shadow_color").unwrap().value_at(Tick::ZERO).as_color().unwrap()
+    };
+    let before = s.history.undo.len();
+    // the drag: the first change of the press begins the step, the rest fold into it
+    for (i, c) in [[0.1, 0.0, 0.0, 1.0], [0.2, 0.0, 0.0, 1.0], [0.3, 0.0, 0.0, 1.0], [0.4, 0.0, 0.0, 1.0]].iter().enumerate() {
+        s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "props": {"shadow_color": c}, "merge": true, "begin": i == 0})).unwrap();
+    }
+    assert_eq!(s.history.undo.len(), before + 1, "one undo step for the whole drag");
+    assert_eq!(color(&s)[0], 0.4);
+    // a second drag (a new press) begins its own step
+    s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "props": {"shadow_color": [1.0, 0.0, 0.0, 1.0]}, "merge": true, "begin": true})).unwrap();
+    s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "props": {"shadow_color": [0.0, 1.0, 0.0, 1.0]}, "merge": true})).unwrap();
+    assert_eq!(s.history.undo.len(), before + 2, "a new press begins a new step");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(color(&s)[0], 0.4, "undo takes back only the second drag");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(color(&s)[0], 0.0, "and then the first");
+}
+
 #[test]
 fn align_and_distribute_layers() {
     let mut s = demo();

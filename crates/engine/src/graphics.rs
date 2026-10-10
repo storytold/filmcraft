@@ -14,7 +14,7 @@ use filmcraft_render::graphic_clip::{item_layer_specs, layer_local_bounds, layer
 use filmcraft_time::{Tick, TimeRange};
 use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, always, bad, f64_p, has_seq, str_p, time_p, u64_p};
+use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, has_seq, str_p, time_p, u64_p};
 use crate::{EngineError, Result, Session};
 
 type Run = fn(&mut Session, &Value) -> Result<Value>;
@@ -262,10 +262,19 @@ fn apply_props(e: &mut EffectInstance, props: &serde_json::Map<String, Value>, m
 }
 
 /// Set properties `props` on a layer (keyframe-aware at time `tl`). Changing the text keeps
-/// per-character styles on their characters.
-pub(crate) fn set_props(s: &mut Session, clip: ClipId, eidx: usize, props: &serde_json::Map<String, Value>, tl: Tick, label: &str) -> Result<()> {
+/// per-character styles on their characters. `merge` folds consecutive calls with the same key
+/// into one undo step (a drag is one undoable change, like `effects.setParam`).
+pub(crate) fn set_props(
+    s: &mut Session,
+    clip: ClipId,
+    eidx: usize,
+    props: &serde_json::Map<String, Value>,
+    tl: Tick,
+    label: &str,
+    merge: Option<&str>,
+) -> Result<()> {
     let props = props.clone();
-    s.edit_sequence(label, |q, _, _| {
+    s.edit_sequence_as(label, merge, |q, _, _| {
         let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
         let mt = it.source_time_at(tl.clamp(it.start, it.end() - Tick(1)));
         let e = it.effects.get_mut(eidx).ok_or_else(|| bad("graphics.set", "no such layer"))?;
@@ -744,7 +753,7 @@ fn menu_commands() -> Vec<CommandSpec> {
                     props.insert("sides".into(), json!(n));
                     let ph = s.playhead();
                     let before = s.history.undo.len();
-                    set_props(s, clip, ei, &props, ph, "Change Graphic Property")?;
+                    set_props(s, clip, ei, &props, ph, "Change Graphic Property", None)?;
                     if s.history.undo.len() > before {
                         s.history.undo.pop();
                     }
@@ -963,7 +972,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 let mut props = serde_json::Map::new();
                 props.insert("text".into(), Value::String(text));
                 let ph = s.playhead();
-                set_props(s, clip, ei, &props, ph, "Edit Text")?;
+                set_props(s, clip, ei, &props, ph, "Edit Text", None)?;
                 if merge && s.history.undo.len() >= 2 {
                     // keep the snapshot from before the typing session
                     s.history.undo.pop();
@@ -976,14 +985,19 @@ pub fn commands() -> Vec<CommandSpec> {
             "Set Graphic Properties",
             &[],
             None,
-            r##"{"clip":id?,"layer":n|name?,"props":{"font":"Inter","font_style":"Bold","size":120,"align":"center","tracking":50,"leading":0,"fill_color":"#ffcc00","stroke":true,"stroke_width":6,"background":true,"shadow":true,"position":[x,y],"scale":100,"rotation":0,"opacity":100,…},"time":ticks?}"##,
+            r##"{"clip":id?,"layer":n|name?,"props":{"font":"Inter","font_style":"Bold","size":120,"align":"center","tracking":50,"leading":0,"fill_color":"#ffcc00","stroke":true,"stroke_width":6,"background":true,"shadow":true,"position":[x,y],"scale":100,"rotation":0,"opacity":100,…},"time":ticks?,"merge":bool?,"begin":bool?}"##,
             has_graphic,
             |s, p| {
                 let clip = target_clip(s, p).ok_or_else(|| bad("graphics.set", "no graphic clip"))?;
                 let (_, ei) = layer_effect_index(s, clip, p)?;
                 let props = p.get("props").and_then(Value::as_object).ok_or_else(|| bad("graphics.set", "need `props`"))?.clone();
                 let tl = time_p(s, p, "").unwrap_or_else(|| s.playhead());
-                set_props(s, clip, ei, &props, tl, "Change Graphic Property")?;
+                // `merge`: a drag of a property is one undo step; `begin` starts a new one (#201)
+                let merge = bool_p(p, "merge").unwrap_or(false).then(|| format!("graphics.set:{}:{ei}", clip.0));
+                if bool_p(p, "begin").unwrap_or(false) {
+                    s.history.merge_key = None;
+                }
+                set_props(s, clip, ei, &props, tl, "Change Graphic Property", merge.as_deref())?;
                 Ok(Value::Null)
             },
         ),

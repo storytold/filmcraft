@@ -41,6 +41,10 @@ sync_github_name = true
 [people.ItzBloxy]
 display_name = "Bloxy"
 
+[people.Hathor875]
+real_name = "Krzysztof Cieślik"
+sync_github_name = true
+
 [people.ReReddo]
 display_name = "ReReddo"
 sync_github_name = false

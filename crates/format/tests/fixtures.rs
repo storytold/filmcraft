@@ -131,7 +131,7 @@ pub fn big_project(n: usize) -> Project {
     let seq_id = ItemId(21);
     let mut next = 1_000_000u64;
     let seq = match &mut p.items.get_mut(&seq_id).unwrap().kind {
-        ItemKind::Sequence(s) => s,
+        ItemKind::Sequence(s) => std::sync::Arc::make_mut(s),
         _ => unreachable!(),
     };
     let v0 = seq.video_tracks[0].items[0].clone();

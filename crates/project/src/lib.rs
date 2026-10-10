@@ -247,6 +247,12 @@ impl MediaClip {
     pub fn frame_rate(&self) -> FrameRate {
         self.interpret.frame_rate.unwrap_or_else(|| self.info.frame_rate())
     }
+    /// Pixel aspect ratio of the picture, in lowest terms: Modify ▸ Interpret Footage's override,
+    /// else the file's. A ratio that makes no sense ([`checked_par`]) is ignored: an override in
+    /// favour of the file's value, the file's in favour of square pixels.
+    pub fn pixel_aspect(&self) -> (u32, u32) {
+        self.interpret.par.and_then(checked_par).or_else(|| self.info.video.as_ref().and_then(|v| checked_par(v.par))).unwrap_or((1, 1))
+    }
     pub fn duration(&self) -> Tick {
         self.info.duration
     }
@@ -256,7 +262,9 @@ impl MediaClip {
 #[allow(clippy::large_enum_variant)]
 pub enum ItemKind {
     Media(MediaClip),
-    Sequence(Box<Sequence>),
+    /// Shared so project snapshots used by undo and background readers do not deep-copy every
+    /// timeline. Mutators detach with `Arc::make_mut`.
+    Sequence(std::sync::Arc<Sequence>),
     /// A subclip: a media item restricted to a range.
     Subclip {
         parent: ItemId,
@@ -321,7 +329,7 @@ impl ProjectItem {
     }
     pub fn as_sequence_mut(&mut self) -> Option<&mut Sequence> {
         match &mut self.kind {
-            ItemKind::Sequence(s) => Some(s),
+            ItemKind::Sequence(s) => Some(std::sync::Arc::make_mut(s)),
             _ => None,
         }
     }
@@ -882,6 +890,51 @@ pub fn validate_frame_size(width: u32, height: u32) -> Result<(), String> {
         return Err(format!("frame size must be positive, at most {MAX_FRAME_SIDE} pixels per side and {MAX_FRAME_PIXELS} pixels total"));
     }
     Ok(())
+}
+
+/// The most a pixel aspect ratio may stretch a picture either way (8:1 or 1:8). Real footage stays
+/// well inside (2:1 for 2x anamorphic lenses, 4:3 for HDV, 0.9 for NTSC DV); a ratio beyond it is
+/// garbage from a damaged file and is treated as square.
+pub const MAX_PIXEL_ASPECT: f64 = 8.0;
+
+/// A pixel aspect ratio fit to compute with, in lowest terms, or `None` when it is unset (a zero
+/// term, as decoders report "not signalled") or stretches more than [`MAX_PIXEL_ASPECT`] either
+/// way. Ratios come from media, project and interchange files, so they are untrusted.
+pub fn checked_par(par: (u32, u32)) -> Option<(u32, u32)> {
+    let (n, d) = par;
+    if n == 0 || d == 0 {
+        return None;
+    }
+    let r = f64::from(n) / f64::from(d);
+    if !(1.0 / MAX_PIXEL_ASPECT..=MAX_PIXEL_ASPECT).contains(&r) {
+        return None;
+    }
+    let (mut a, mut b) = (n, d);
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    let g = a.max(1);
+    Some((n / g, d / g))
+}
+
+/// [`checked_par`], with square pixels for a ratio that is unset or makes no sense.
+pub fn sane_par(par: (u32, u32)) -> (u32, u32) {
+    checked_par(par).unwrap_or((1, 1))
+}
+
+/// The width of one pixel over its height ([`sane_par`] first): 1.333… for 4:3 pixels.
+pub fn par_ratio(par: (u32, u32)) -> f64 {
+    let (n, d) = sane_par(par);
+    f64::from(n) / f64::from(d)
+}
+
+/// The size of a `size` picture with `par` pixels in the pixels of a frame whose pixel aspect is
+/// `frame_par`: the width scales by par / frame_par, the height stays. A 1440 x 1080 picture with
+/// 4:3 pixels covers 1920 x 1080 square pixels.
+pub fn conformed_size(size: (u32, u32), par: (u32, u32), frame_par: (u32, u32)) -> (f64, f64) {
+    let (par, frame_par) = (sane_par(par), sane_par(frame_par));
+    let w = if par == frame_par { f64::from(size.0) } else { f64::from(size.0) * par_ratio(par) / par_ratio(frame_par) };
+    (w, f64::from(size.1))
 }
 
 impl SequenceSettings {
@@ -1469,7 +1522,7 @@ impl Project {
             let id = TrackId(self.alloc_id());
             seq.audio_tracks.push(Track::new(id, TrackKind::Audio, format!("Audio {}", i + 1)));
         }
-        self.add_item(name, Label::Forest, ItemKind::Sequence(Box::new(seq)), bin)
+        self.add_item(name, Label::Forest, ItemKind::Sequence(std::sync::Arc::new(seq)), bin)
     }
 
     /// Re-base an item's media time: whatever was at media time `t` is at `t - delta` afterwards
@@ -1491,6 +1544,7 @@ impl Project {
         }
         for it in self.items.values_mut() {
             if let ItemKind::Sequence(seq) = &mut it.kind {
+                let seq = std::sync::Arc::make_mut(seq);
                 for t in seq.all_tracks_mut() {
                     for ti in t.items.iter_mut().filter(|ti| users.contains(&ti.item)) {
                         ti.source_in -= delta;
@@ -1644,6 +1698,35 @@ impl Project {
             };
         }
         None
+    }
+
+    /// Pixel aspect ratio of what an item shows, in lowest terms: a media clip's
+    /// ([`MediaClip::pixel_aspect`], Interpret Footage first), a nested sequence's, a subclip its
+    /// parent's. `None` for items drawn in the pixels of whatever sequence they are in (graphics,
+    /// adjustment layers) and for an item that doesn't exist.
+    pub fn source_par(&self, item: ItemId) -> Option<(u32, u32)> {
+        let mut id = item;
+        // subclips of subclips: bounded, as in `source_size`
+        for _ in 0..16 {
+            return match &self.item(id)?.kind {
+                ItemKind::Media(m) => Some(m.pixel_aspect()),
+                ItemKind::Sequence(q) => Some(sane_par(q.settings.par)),
+                ItemKind::AdjustmentLayer { .. } | ItemKind::Graphic { .. } => None,
+                ItemKind::Subclip { parent, .. } => {
+                    id = *parent;
+                    continue;
+                }
+            };
+        }
+        None
+    }
+
+    /// [`Project::source_size`] in the pixels of a frame whose pixel aspect is `frame_par`
+    /// ([`conformed_size`]): what Scale to Frame Size, Set to Frame Size and Fit / Fill fit into
+    /// the frame. Items without a pixel aspect of their own take the frame's.
+    pub fn conformed_source_size(&self, item: ItemId, frame_par: (u32, u32)) -> Option<(f64, f64)> {
+        let size = self.source_size(item)?;
+        Some(conformed_size(size, self.source_par(item).unwrap_or(frame_par), frame_par))
     }
 
     /// Resolve the "auto" (NaN) points of the clips in the sequences `sequences` selects, for
@@ -1923,6 +2006,30 @@ mod tests {
     }
 
     #[test]
+    fn project_clone_shares_sequences_until_mutated() {
+        fn sequence_arc(p: &Project, id: ItemId) -> &std::sync::Arc<Sequence> {
+            match &p.item(id).unwrap().kind {
+                ItemKind::Sequence(q) => q,
+                _ => unreachable!(),
+            }
+        }
+
+        let (mut p, _, a) = demo_project();
+        let b = p.new_sequence("Sequence 02", SequenceSettings::default(), 1, 1, None);
+        let before = p.clone();
+
+        assert!(std::sync::Arc::ptr_eq(sequence_arc(&p, a), sequence_arc(&before, a)));
+        assert!(std::sync::Arc::ptr_eq(sequence_arc(&p, b), sequence_arc(&before, b)));
+
+        p.sequence_mut(a).unwrap().mark_in = Some(Tick(1));
+
+        assert!(!std::sync::Arc::ptr_eq(sequence_arc(&p, a), sequence_arc(&before, a)));
+        assert!(std::sync::Arc::ptr_eq(sequence_arc(&p, b), sequence_arc(&before, b)));
+        assert_eq!(before.sequence(a).unwrap().mark_in, None);
+        assert_eq!(Project::from_json(&p.to_json()).unwrap(), p);
+    }
+
+    #[test]
     fn nest_cycle_finds_sequences_that_contain_themselves() {
         let (mut p, clip, a) = demo_project();
         let rate = p.sequence(a).unwrap().settings.frame_rate;
@@ -1986,5 +2093,62 @@ mod tests {
         assert_eq!(p.nest_overhang(&nest), None);
         nest.frame_hold = Some(f(100));
         assert_eq!(p.nest_overhang(&nest), Some(nest.range()));
+    }
+
+    #[test]
+    fn pixel_aspect_ratios_are_reduced_and_hostile_ones_are_square() {
+        assert_eq!(checked_par((4, 3)), Some((4, 3)));
+        assert_eq!(checked_par((40, 30)), Some((4, 3)));
+        assert_eq!(checked_par((u32::MAX, u32::MAX)), Some((1, 1)));
+        assert_eq!(checked_par((u32::MAX, u32::MAX - 1)), Some((u32::MAX, u32::MAX - 1)));
+        assert_eq!(checked_par((8, 1)), Some((8, 1)));
+        assert_eq!(checked_par((1, 8)), Some((1, 8)));
+        for bad in [(0, 0), (0, 1), (1, 0), (9, 1), (1, 9), (u32::MAX, 1), (1, u32::MAX)] {
+            assert_eq!(checked_par(bad), None, "{bad:?}");
+            assert_eq!(sane_par(bad), (1, 1), "{bad:?}");
+            assert_eq!(par_ratio(bad), 1.0, "{bad:?}");
+        }
+        assert!((par_ratio((4, 3)) - 4.0 / 3.0).abs() < 1e-12);
+        // 1440 x 1080 with 4:3 pixels is 1920 x 1080 square pixels, and itself in a 4:3 frame
+        assert_eq!(conformed_size((1440, 1080), (4, 3), (1, 1)), (1920.0, 1080.0));
+        assert_eq!(conformed_size((1440, 1080), (4, 3), (8, 6)), (1440.0, 1080.0));
+        assert_eq!(conformed_size((1920, 1080), (1, 1), (4, 3)), (1440.0, 1080.0));
+        assert_eq!(conformed_size((u32::MAX, u32::MAX), (8, 1), (1, 8)), (u32::MAX as f64 * 64.0, u32::MAX as f64));
+        assert_eq!(conformed_size((1440, 1080), (0, 0), (u32::MAX, 1)), (1440.0, 1080.0));
+    }
+
+    #[test]
+    fn source_par_follows_interpret_footage_subclips_and_sequences() {
+        let (mut p, clip, seq) = demo_project();
+        assert_eq!(p.source_par(clip), Some((1, 1)));
+        let sub = p.add_item("Sub", Label::Iris, ItemKind::Subclip { parent: clip, range: TimeRange::new(Tick::ZERO, Tick(100)), restrict_trims: false }, None);
+        fn media(p: &mut Project, id: ItemId) -> &mut MediaClip {
+            match &mut p.item_mut(id).unwrap().kind {
+                ItemKind::Media(m) => m,
+                _ => unreachable!(),
+            }
+        }
+        // the file's ratio, reduced
+        media(&mut p, clip).info.video.as_mut().unwrap().par = (40, 30);
+        assert_eq!((p.source_par(clip), p.source_par(sub)), (Some((4, 3)), Some((4, 3))));
+        assert_eq!(p.conformed_source_size(clip, (1, 1)), Some((1920.0 * 4.0 / 3.0, 1080.0)));
+        // Interpret Footage wins over the file
+        media(&mut p, clip).interpret.par = Some((2, 1));
+        assert_eq!(p.source_par(sub), Some((2, 1)));
+        // a nonsensical override falls back to the file, a nonsensical file value to square
+        media(&mut p, clip).interpret.par = Some((0, 7));
+        assert_eq!(p.source_par(clip), Some((4, 3)));
+        media(&mut p, clip).info.video.as_mut().unwrap().par = (u32::MAX, 1);
+        assert_eq!(p.source_par(clip), Some((1, 1)));
+        // a nested sequence has its own ratio; graphics and missing items have none
+        p.sequence_mut(seq).unwrap().settings.par = (0, 0);
+        assert_eq!(p.source_par(seq), Some((1, 1)));
+        p.sequence_mut(seq).unwrap().settings.par = (8, 6);
+        assert_eq!(p.source_par(seq), Some((4, 3)));
+        assert_eq!(p.conformed_source_size(seq, (1, 1)), Some((2560.0, 1080.0)));
+        let adj = p.add_item("Adj", Label::Iris, ItemKind::AdjustmentLayer { width: 1440, height: 1080, rate: FrameRate::FPS_24, duration: Tick(100) }, None);
+        assert_eq!(p.source_par(adj), None);
+        assert_eq!(p.conformed_source_size(adj, (4, 3)), Some((1440.0, 1080.0)));
+        assert_eq!(p.source_par(ItemId(987_654_321)), None);
     }
 }

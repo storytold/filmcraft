@@ -475,12 +475,12 @@ fn sync_items(s: &Session, items: &[ItemId], cmd: &str) -> Result<Vec<SyncClip>>
 }
 
 fn settings_for(s: &Session, item: ItemId) -> SequenceSettings {
-    let info = match s.project.item(item).map(|i| &i.kind) {
-        Some(ItemKind::Media(m)) => Some(m.info.clone()),
-        Some(ItemKind::Subclip { parent, .. }) => s.project.item(*parent).and_then(|i| i.as_media()).map(|m| m.info.clone()),
+    let media = match s.project.item(item).map(|i| &i.kind) {
+        Some(ItemKind::Media(m)) => Some(m),
+        Some(ItemKind::Subclip { parent, .. }) => s.project.item(*parent).and_then(|i| i.as_media()),
         _ => None,
     };
-    let mut st = info.as_ref().map(crate::commands::default_seq_settings_for).unwrap_or_default();
+    let mut st = media.map(crate::commands::default_seq_settings_for).unwrap_or_default();
     if let Some(m) = s.project.item(item).and_then(|i| i.as_media())
         && let Some(r) = m.interpret.frame_rate
     {

@@ -68,6 +68,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             return;
         }
+        Dialog::TransitionDuration => {
+            if !crate::panels::transition_controls::duration_dialog(app, ctx) && app.dialog == Some(d) {
+                app.dialog = None;
+            }
+            return;
+        }
         Dialog::SequenceSettings => {
             if !crate::panels::sequence_settings::show(app, ctx) && app.dialog == Some(d) {
                 app.dialog = None;

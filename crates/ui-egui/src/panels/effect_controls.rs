@@ -28,6 +28,19 @@ fn timeline_time_of(it: &TrackItem, m: Tick) -> Tick {
     it.start + Tick(((m - it.source_in).0 as f64 / it.speed.abs().max(1e-6)) as i64)
 }
 
+// The press frame can include movement before the button went down. Start from the press
+// origin so that only gesture motion enters the preview, including same-frame movement.
+fn graph_drag_offset(ui: &egui::Ui, response: &egui::Response, previous: egui::Vec2) -> egui::Vec2 {
+    if response.drag_started() {
+        response
+            .interact_pointer_pos()
+            .zip(ui.input(|i| i.pointer.press_origin()))
+            .map_or_else(|| response.drag_delta(), |(position, origin)| position - origin)
+    } else {
+        previous + response.drag_delta()
+    }
+}
+
 fn selected_clip(app: &FilmcraftApp) -> Option<(ClipId, TrackItem, TrackKind)> {
     selected_clips(app).into_iter().next()
 }
@@ -59,6 +72,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let clips = selected_clips(app);
     let Some((clip, it, _)) = clips.first().cloned() else {
+        // a transition clicked in the Timeline (#430)
+        if let Some(id) = crate::panels::transition_controls::selected(app) {
+            crate::panels::transition_controls::effect_controls(app, ui, rect, id);
+            return;
+        }
         crate::dock::placeholder(ui, rect, &t, tl!("(no clip selected)"));
         return;
     };
@@ -979,7 +997,7 @@ pub(crate) fn graph_rows(
             p.circle_filled(hp, 3.5, t.keyframe_handle);
             let hr = ui.interact(Rect::from_center_size(hp, vec2(10.0, 10.0)), hid.with("h"), Sense::drag());
             if hr.dragged() {
-                let nx = hdx + hr.drag_delta().x;
+                let nx = graph_drag_offset(ui, &hr, vec2(hdx, 0.0)).x;
                 ui.data_mut(|d| d.insert_temp(hid, nx));
             }
             if hr.drag_stopped() {
@@ -991,7 +1009,7 @@ pub(crate) fn graph_rows(
         }
         p.circle_filled(c, 4.5, if resp.dragged() { t.hot_text } else { t.plot_handle });
         if resp.dragged() {
-            let ny = dy + resp.drag_delta().y;
+            let ny = graph_drag_offset(ui, &resp, vec2(0.0, dy)).y;
             ui.data_mut(|d| d.insert_temp(id, ny));
             p.text(c + vec2(8.0, -10.0), Align2::LEFT_BOTTOM, format!("{:.dec$}", v_of(c.y)), Tokens::ui(10.5), t.hot_text);
         }
@@ -1170,5 +1188,136 @@ mod lane_tests {
         let mut labels = Vec::new();
         out.shapes.into_iter().for_each(|c| texts(c.shape, &mut labels));
         assert_eq!(labels, ["00:01:00:00", "00:01:02:00", "00:01:04:00"]);
+    }
+}
+
+#[cfg(test)]
+mod graph_drag_tests {
+    use super::*;
+    use filmcraft_project::{Interpolation, Keyframe, Param};
+
+    struct Driver {
+        app: FilmcraftApp,
+        ctx: egui::Context,
+        clip: ClipId,
+        time: f64,
+    }
+
+    impl Driver {
+        fn new() -> Self {
+            let mut session = filmcraft_engine::Session::default();
+            session.execute("file.openDemoProject", json!({})).unwrap();
+            let seq = session.state.active_sequence.unwrap();
+            let clip = session.active_sequence().unwrap().video_tracks[0].items[0].id;
+            let it = std::sync::Arc::make_mut(&mut session.project).sequence_mut(seq).unwrap().find_item_mut(clip).unwrap().1;
+            let mut a = Keyframe::new(it.source_in + Tick(it.duration.0 / 4), ParamValue::Float(40.0));
+            let mut b = Keyframe::new(it.source_in + Tick(it.duration.0 * 3 / 4), ParamValue::Float(80.0));
+            a.interp = Interpolation::Bezier;
+            b.interp = Interpolation::Bezier;
+            it.effects
+                .iter_mut()
+                .find(|e| e.effect == "motion")
+                .unwrap()
+                .params
+                .insert("scale".into(), Param { value: ParamValue::Float(40.0), keyframes: vec![a, b] });
+            let app = FilmcraftApp::new(session);
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx, &app.tokens);
+            Self { app, ctx, clip, time: 0.0 }
+        }
+
+        fn param(&self) -> Param {
+            self.app.session.active_sequence().unwrap().find_item(self.clip).unwrap().1.effect("motion").unwrap().params["scale"].clone()
+        }
+
+        fn undo_len(&mut self) -> usize {
+            self.app.session.execute("history.list", json!({})).unwrap()["undo"].as_array().unwrap().len()
+        }
+
+        // Draw the actual scalar graph and execute its emitted command, as the panel does.
+        // Current paint shapes give a real held-frame position rather than previous telemetry.
+        fn frame(&mut self, events: Vec<egui::Event>) -> [Pos2; 2] {
+            self.time += 0.1;
+            self.app.auto.begin_frame();
+            let mut out = self.ctx.run_ui(egui::RawInput { time: Some(self.time), events, ..Default::default() }, |ui| {
+                let it = self.app.session.active_sequence().unwrap().find_item(self.clip).unwrap().1.clone();
+                let index = it.effects.iter().position(|e| e.effect == "motion").unwrap();
+                let effect = &it.effects[index];
+                let pd = effect.def().unwrap().param("scale").unwrap();
+                let body = Rect::from_min_size(pos2(8.0, 8.0), vec2(320.0, 200.0));
+                let lane = Rect::from_min_max(pos2(360.0, 8.0), pos2(760.0, 220.0));
+                let mut actions = Vec::new();
+                graph_rows(&mut self.app, ui, body, self.clip, index, None, pd, &effect.params["scale"], &lane, &it, &mut actions);
+                run(&mut self.app, ui.ctx(), actions);
+            });
+            out.textures_delta.clear();
+            fn first_circle(shape: &egui::Shape, radius: f32) -> Option<Pos2> {
+                match shape {
+                    egui::Shape::Circle(circle) if circle.radius == radius => Some(circle.center),
+                    egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| first_circle(shape, radius)),
+                    _ => None,
+                }
+            }
+            [4.5, 3.5].map(|radius| {
+                out.shapes.iter().find_map(|shape| first_circle(&shape.shape, radius)).expect("scalar keyframe and outgoing influence are painted")
+            })
+        }
+    }
+
+    fn button(pos: Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() }
+    }
+
+    #[test]
+    fn scalar_graph_press_starts_at_the_pointer_origin_and_release_is_one_undo_step() {
+        for influence in [false, true] {
+            for batched in [true, false] {
+                let mut d = Driver::new();
+                let before = d.param();
+                let undo = d.undo_len();
+                let target = usize::from(influence);
+                let start = d.frame(vec![])[target];
+                // A different prior cursor makes the pre-press movement observable.
+                d.frame(vec![egui::Event::PointerMoved(start - vec2(80.0, 40.0))]);
+                if batched {
+                    d.frame(vec![egui::Event::PointerMoved(start), button(start, true)]);
+                } else {
+                    d.frame(vec![egui::Event::PointerMoved(start)]);
+                    d.frame(vec![button(start, true)]);
+                }
+                let pressed = d.frame(vec![])[target];
+                assert!(pressed.distance(start) < 0.05, "press cannot jump: influence={influence}, batched={batched}, start={start:?}, pressed={pressed:?}");
+                assert_eq!(d.param(), before);
+                assert_eq!(d.undo_len(), undo);
+                let offset = if influence { vec2(20.0, 0.0) } else { vec2(0.0, -20.0) };
+                d.frame(vec![egui::Event::PointerMoved(start + offset)]);
+                let preview = d.frame(vec![])[target];
+                assert!(
+                    preview.distance(start + offset) < 0.05,
+                    "preview follows only gesture motion: influence={influence}, batched={batched}, start={start:?}, preview={preview:?}"
+                );
+                assert_eq!(d.param(), before, "held preview cannot commit");
+                assert_eq!(d.undo_len(), undo);
+                d.frame(vec![button(start + offset, false)]);
+                d.frame(vec![]);
+                let changed = d.param();
+                assert_eq!(d.undo_len(), undo + 1);
+                assert_eq!(changed.keyframes[0].time, before.keyframes[0].time);
+                assert_eq!(changed.keyframes[1], before.keyframes[1]);
+                if influence {
+                    assert_eq!(changed.keyframes[0].value, before.keyframes[0].value);
+                    assert!(changed.keyframes[0].out_influence > before.keyframes[0].out_influence);
+                } else {
+                    assert!(changed.keyframes[0].value.as_f64().unwrap() > before.keyframes[0].value.as_f64().unwrap());
+                    assert_eq!(changed.keyframes[0].out_influence, before.keyframes[0].out_influence);
+                }
+                d.app.session.undo().expect("one graph gesture to undo");
+                assert_eq!(d.param(), before);
+                assert_eq!(d.undo_len(), undo);
+                d.app.session.redo().expect("the graph gesture to redo");
+                assert_eq!(d.param(), changed);
+                assert_eq!(d.undo_len(), undo + 1);
+            }
+        }
     }
 }

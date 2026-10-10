@@ -89,7 +89,7 @@ Timecode and Clip Name effects also draw with the text engine.
 | `graphics.newShape` | (agents) | `shape` (rectangle/ellipse/polygon/path), `position` (the shape's centre), `size`, `points`, `clip` (add to this graphic), `seconds` (5), `track`, `time` |
 | `graphics.setTextType` | Text Properties ▸ Text Layer Type | `clip`, `layer`, `type` (`point` / `paragraph`); the text stays where it is |
 | `graphics.setText` | typing on the monitor | `clip`, `layer`, `text`, `merge` (coalesce one typing session into one undo step) |
-| `graphics.set` | Properties panel | `clip`, `layer`, `props` {parameter id or camelCase alias: value; choices by index or name}, `time` |
+| `graphics.set` | Properties panel | `clip`, `layer`, `props` {parameter id or camelCase alias: value; choices by index or name}, `time`, `merge` + `begin` (a drag is one undo step: send `merge: true` on every change and `begin: true` on the first change of each press) |
 | `graphics.selectLayer` | layer list / monitor click | `clip`, `layers` |
 | `graphics.deleteLayer`, `graphics.arrangeLayer` | layer list | `clip`, `layer`, `to` (front/back/forward/backward/index) |
 | `graphics.align` | Align and Transform | `align` (left/hcenter/right/top/vcenter/bottom), `to` (frame/group/selection), `layers` |

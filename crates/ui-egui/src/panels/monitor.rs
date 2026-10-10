@@ -157,12 +157,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     } else {
         (None, video_area)
     };
-    // ---- picture
+    // ---- picture, at its display aspect (non-square pixels are stretched on screen)
     let ppp = ctx.pixels_per_point();
+    let display_w = (frame_size.0 as f64 * monitor_view::pixel_aspect(app, which)) as f32;
     let pic = if compare {
-        fit(video_area, frame_size.0 as f32, frame_size.1 as f32)
+        fit(video_area, display_w, frame_size.1 as f32)
     } else if show_picture {
-        monitor_view::picture_rect(video_area, frame_size.0 as f32, frame_size.1 as f32, &mv, ppp)
+        monitor_view::picture_rect(video_area, display_w, frame_size.1 as f32, &mv, ppp)
     } else {
         video_area
     };
@@ -172,7 +173,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         ui.painter().rect_filled(pic, 0.0, t.monitor_bg);
         let playing = if which == Which::Program { app.playback.playing } else { app.source_playback.clock.playing };
         let res = mv.effective_res(playing);
-        let screen_scale = (pic.width() * ppp / frame_size.0 as f32).min(1.0);
+        // frame pixels per screen pixel along the axis that needs the most of them
+        let screen_scale = (pic.width() * ppp / frame_size.0.max(1) as f32).max(pic.height() * ppp / frame_size.1.max(1) as f32).min(1.0);
         let scale = quantize_scale(res.scale().min(screen_scale.max(1.0 / 32.0)));
         let frame = rate.frame_at(time);
         let rev = match target {
@@ -240,7 +242,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
             let rf = rate.frame_at(Tick(mv.compare_ref.unwrap_or(time.0)));
             let rkey = FrameKey { target: cpu_target, frame: rf, size: size_key, revision: rev, draft: false };
             app.frames.request(rkey, rate.tick_of(rf), scale, &project, 1);
-            let rpic = fit(ra, frame_size.0 as f32, frame_size.1 as f32);
+            let rpic = fit(ra, display_w, frame_size.1 as f32);
             ui.painter().rect_filled(rpic, 0.0, t.monitor_bg);
             if let (Some(tex), _) = cpu_texture(app, &ctx, &format!("monitor-{prefix}-ref"), rkey, &[], DisplayMode::Composite) {
                 ui.painter().image(tex, rpic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);

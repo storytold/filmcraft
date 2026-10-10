@@ -1253,6 +1253,9 @@
 	Active Monitor	アクティブなモニター
 	Add	加算
 	Add tracks automatically when editing source clips onto the Timeline	ソースクリップをタイムラインに配置するとき、トラックを自動的に追加する
+	Place files dropped onto the Timeline directly on the Timeline	タイムラインにドロップしたファイルをタイムラインに直接配置
+	1 file	1 個のファイル
+	{n} files	{n} 個のファイル
 	Additional Scale	追加スケール
 	Additive Dissolve	加算ディゾルブ
 	Additive Dissolve (Legacy)	加算ディゾルブ (従来版)
@@ -3378,6 +3381,7 @@
 	out	アウト
 	in	イン
 	The language changed but could not be saved: {e}	表示言語は変更されましたが、保存できませんでした: {e}
+	no Chinese font is installed on this system; the interface stays in English	このシステムには中国語フォントがインストールされていないため、表示は英語のままです
 	no Japanese font is installed on this system; the interface stays in English	このシステムには日本語フォントがインストールされていないため、表示は英語のままです
 	Show	表示
 	Sort	並べ替え
@@ -3434,6 +3438,14 @@
 	Select All Project Items	すべてのプロジェクト項目を選択
 	Username	ユーザー名
 	Vertical Type Tool	縦書き文字ツール
+
+# System appearance modes and theme cards.
+	Active	使用中
+	Appearance Mode	外観モード
+	Dark Theme	ダークテーマ
+	Light Theme	ライトテーマ
+	Next Appearance Mode	次の外観モード
+	Sync with system	システムと同期
 	Go to previous keyframe	前のキーフレームへ移動
 	Go to next keyframe	次のキーフレームへ移動
 	Add keyframe	キーフレームを追加
@@ -3487,6 +3499,9 @@
 	Gradient Angle	グラデーションの角度
 	Linear Gradient	線形グラデーション
 	Solid	べた塗り
+	Clear Transition	トランジションを消去
+	Set Transition Duration	トランジションのデュレーションを設定
+
 # ComfyUI clips (Window ▸ ComfyUI…)
 	ComfyUI	ComfyUI
 	ComfyUI…	ComfyUI…

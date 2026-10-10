@@ -291,7 +291,7 @@ fn set_controls(s: &mut Session, clip: ClipId, values: &serde_json::Map<String, 
                 props.insert(c.param.clone(), v.clone());
             }
         }
-        set_props(s, clip, ei, &props, tl, "Change Template Property")?;
+        set_props(s, clip, ei, &props, tl, "Change Template Property", None)?;
         n += 1;
     }
     Ok(n)

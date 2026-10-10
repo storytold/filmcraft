@@ -211,3 +211,56 @@ fn project_delete_takes_explicit_bins_and_items_without_a_selection() {
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(s.project.items.len(), before);
 }
+
+#[test]
+fn link_multiple_video_and_audio_pairs_creates_one_link_per_pair() {
+    let mut s = demo();
+    let v_clips = v1(&s);
+    let a_clips = a1(&s);
+    assert!(v_clips.len() >= 3 && a_clips.len() >= 3);
+    let (v0, v1, v2) = (v_clips[0].id, v_clips[1].id, v_clips[2].id);
+    let (a0, a1, a2) = (a_clips[0].id, a_clips[1].id, a_clips[2].id);
+
+    // First, unlink all three pairs
+    let r = s.execute("clip.link", json!({"clips": [v0.0, a0.0, v1.0, a1.0, v2.0, a2.0]})).unwrap();
+    assert_eq!(r["linked"], false);
+    for cid in [v0, a0, v1, a1, v2, a2] {
+        assert_eq!(clip(&s, cid).unwrap().link, None);
+    }
+
+    // Now, run clip.link on all six clips. In Premiere parity (#507),
+    // it should create 3 separate links (one per pair), not one big link for all six.
+    let r = s.execute("clip.link", json!({"clips": [v0.0, a0.0, v1.0, a1.0, v2.0, a2.0]})).unwrap();
+    assert_eq!(r["linked"], true);
+
+    let l0 = clip(&s, v0).unwrap().link;
+    let la0 = clip(&s, a0).unwrap().link;
+    let l1 = clip(&s, v1).unwrap().link;
+    let la1 = clip(&s, a1).unwrap().link;
+    let l2 = clip(&s, v2).unwrap().link;
+    let la2 = clip(&s, a2).unwrap().link;
+
+    assert!(l0.is_some() && l1.is_some() && l2.is_some());
+    assert_eq!(l0, la0, "v0 linked to a0");
+    assert_eq!(l1, la1, "v1 linked to a1");
+    assert_eq!(l2, la2, "v2 linked to a2");
+
+    assert_ne!(l0, l1, "different pairs must not share the same link id");
+    assert_ne!(l1, l2, "different pairs must not share the same link id");
+    assert_ne!(l0, l2, "different pairs must not share the same link id");
+}
+
+/// A video clip with no overlapping selected audio, and audio with no overlapping video, stay
+/// unlinked: a one-member link would make the clip read as "linked" with no partner.
+#[test]
+fn link_leaves_clips_without_a_partner_unlinked() {
+    let mut s = demo();
+    let (v, a) = (v1(&s), a1(&s));
+    let (v0, v1, a0, a2) = (v[0].id, v[1].id, a[0].id, a[2].id);
+    s.execute("clip.link", json!({"clips": [v0.0, v1.0, a0.0, a2.0]})).unwrap();
+    s.execute("clip.link", json!({"clips": [v0.0, v1.0, a0.0, a2.0]})).unwrap();
+    assert!(clip(&s, v0).unwrap().link.is_some());
+    assert_eq!(clip(&s, v0).unwrap().link, clip(&s, a0).unwrap().link);
+    assert_eq!(clip(&s, v1).unwrap().link, None, "v1 has no overlapping audio in the selection");
+    assert_eq!(clip(&s, a2).unwrap().link, None, "a2 has no overlapping video in the selection");
+}

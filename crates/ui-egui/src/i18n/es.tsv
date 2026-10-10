@@ -1253,6 +1253,9 @@
 	Active Monitor	Monitor activo
 	Add	Añadir
 	Add tracks automatically when editing source clips onto the Timeline	Añadir pistas automáticamente al editar clips de origen en la línea de tiempo
+	Place files dropped onto the Timeline directly on the Timeline	Colocar los archivos soltados en la línea de tiempo directamente en ella
+	1 file	1 archivo
+	{n} files	{n} archivos
 	Additional Scale	Escala adicional
 	Additive Dissolve	Disolución aditiva
 	Additive Dissolve (Legacy)	Disolución aditiva (heredada)
@@ -1810,7 +1813,7 @@
 	Hard Limiter	Limitador duro
 	Hard Mix	Mezcla definida
 	Hardware decoding	Descodificación por hardware
-	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Descodificación por hardware: Automático usa el descodificador de video del sistema (VideoToolbox en macOS, Media Foundation en Windows, VA-API para H.264 y HEVC en Linux) para los flujos que admite, y el descodificador propio de FilmCraft para todo lo demás o si falla el hardware. Los medios ya abiertos mantienen su descodificador hasta que se vuelven a abrir.
+	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Descodificación por hardware: Automático usa el descodificador de video del sistema (VideoToolbox en macOS, Media Foundation en Windows, VA-API o NVDEC para H.264 y HEVC en Linux) para los flujos que admite, y el descodificador propio de FilmCraft para todo lo demás o si falla el hardware. Los medios ya abiertos mantienen su descodificador hasta que se vuelven a abrir.
 	Head Size	Tamaño de la cabeza
 	Heart	Corazón
 	Height	Altura
@@ -3383,6 +3386,7 @@
 	out	salida
 	in	entrada
 	The language changed but could not be saved: {e}	El idioma ha cambiado, pero no se ha podido guardar: {e}
+	no Chinese font is installed on this system; the interface stays in English	no hay ninguna fuente china instalada en este sistema; la interfaz sigue en inglés
 	no Japanese font is installed on this system; the interface stays in English	no hay ninguna fuente japonesa instalada en este sistema; la interfaz sigue en inglés
 	Show	Mostrar
 	Sort	Ordenar
@@ -3487,6 +3491,16 @@
 	New Sequence	Nueva secuencia
 	Tracks	Pistas
 	tracks	pistas
+	Clear Transition	Borrar transición
+	Set Transition Duration	Establecer duración de la transición
+
+# System appearance modes and theme cards.
+	Active	Activo
+	Appearance Mode	Modo de apariencia
+	Dark Theme	Tema oscuro
+	Light Theme	Tema claro
+	Next Appearance Mode	Siguiente modo de apariencia
+	Sync with system	Sincronizar con el sistema
 	In	Entrada
 	Out	Salida
 	Export Markers as CSV…	Exportar marcadores como CSV…

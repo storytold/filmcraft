@@ -352,6 +352,10 @@
 	Zoom In	Ampliar
 	Zoom Out	Reduzir
 	Zoom to Sequence	Zoom para a sequência
+
+# System appearance mode menu command.
+	Next Appearance Mode	Próximo modo de aparência
+
 # ComfyUI clips (Window ▸ ComfyUI…)
 	ComfyUI…	ComfyUI…
 	Generate ComfyUI Clip	Gerar clipe do ComfyUI
