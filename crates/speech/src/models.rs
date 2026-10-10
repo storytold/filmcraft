@@ -3,11 +3,13 @@
 //! Models are downloaded on first use, after the user confirms (the dialog shows the size, the
 //! source URL and the licence), into `<data dir>/models/<id>/`. They are never bundled with
 //! FilmCraft or committed to the repository. Every file is pinned to a Hugging Face revision of
-//! OpenAI's own repositories and checked against its SHA-256 before it is used.
+//! the publisher's own repository (OpenAI, NVIDIA) and checked against its SHA-256 before it is used.
 //!
 //! Licence: OpenAI released the Whisper code and model weights under the MIT licence
 //! (<https://github.com/openai/whisper/blob/main/LICENSE>); the safetensors conversions OpenAI
 //! publishes at `huggingface.co/openai/whisper-*` are labelled Apache-2.0. Both are permissive.
+//! NVIDIA's Parakeet TDT weights (`huggingface.co/nvidia/parakeet-tdt-*`) are CC-BY-4.0: they are
+//! downloaded unmodified, and the credit line ([`ModelInfo::attribution`]) is shown with them.
 
 use std::path::{Path, PathBuf};
 
@@ -42,6 +44,26 @@ impl ModelInfo {
     pub fn size(&self) -> u64 {
         self.files.iter().map(|f| f.size).sum()
     }
+
+    /// The recogniser that runs this model.
+    pub fn engine(&self) -> Engine {
+        if self.id.starts_with("parakeet-") { Engine::Parakeet } else { Engine::Whisper }
+    }
+
+    /// The credit line to show with the model (download dialog, About): name, author, licence and
+    /// source. CC-BY models require it.
+    pub fn attribution(&self) -> String {
+        format!("{} by {}, {} ({}), from {}; used unmodified.", self.name, self.author, self.license, self.license_url, self.source)
+    }
+}
+
+/// Which recogniser runs a catalogue model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum Engine {
+    /// [`crate::whisper`] (feature `whisper`).
+    Whisper,
+    /// [`crate::parakeet`] (feature `parakeet`).
+    Parakeet,
 }
 
 const LICENSE: &str = "MIT (OpenAI Whisper weights); Hugging Face conversion: Apache-2.0";
@@ -177,7 +199,43 @@ static CATALOGUE: &[ModelInfo] = &[
             ),
         ],
     },
+    // NVIDIA Parakeet TDT: one `.nemo` archive each (config, weights, tokenizer), CC-BY-4.0.
+    ModelInfo {
+        id: "parakeet-tdt-0.6b-v3",
+        name: "Parakeet TDT 0.6B v3 (25 European languages)",
+        multilingual: true,
+        description: "600 M parameters (NVIDIA FastConformer TDT). English, German and 23 more European languages, found automatically. The most accurate model here and faster than Whisper base on the CPU; keeps English filler words (um, uh); word times from the model itself.",
+        license: PARAKEET_LICENSE,
+        license_url: PARAKEET_LICENSE_URL,
+        author: "NVIDIA",
+        source: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3",
+        files: &[ModelFile {
+            name: "parakeet-tdt-0.6b-v3.nemo",
+            url: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3/resolve/541d1f99c6b0c3cd0b11a95167540bb8edefd82b/parakeet-tdt-0.6b-v3.nemo",
+            sha256: "3cbdc85877e668ca7b82d0d56770eb1fac76691f55d6b97545e8d61ca588d10d",
+            size: 2_509_332_480,
+        }],
+    },
+    ModelInfo {
+        id: "parakeet-tdt-0.6b-v2",
+        name: "Parakeet TDT 0.6B v2 (English)",
+        multilingual: false,
+        description: "600 M parameters (NVIDIA FastConformer TDT), English only. Very accurate on English, with punctuation and capitals; as fast as v3.",
+        license: PARAKEET_LICENSE,
+        license_url: PARAKEET_LICENSE_URL,
+        author: "NVIDIA",
+        source: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2",
+        files: &[ModelFile {
+            name: "parakeet-tdt-0.6b-v2.nemo",
+            url: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2/resolve/ae9ad07059c7c739ffaf932226a8fe64ae2620b0/parakeet-tdt-0.6b-v2.nemo",
+            sha256: "d99e39955c9d3d0350d8fb7c75e40c64a2b2eaeb003883d7c941fd2e8747b28c",
+            size: 2_472_222_720,
+        }],
+    },
 ];
+
+const PARAKEET_LICENSE: &str = "CC-BY-4.0 (NVIDIA Parakeet TDT weights)";
+const PARAKEET_LICENSE_URL: &str = "https://creativecommons.org/licenses/by/4.0/";
 
 /// The default model.
 pub const DEFAULT_MODEL: &str = "whisper-base";
@@ -295,8 +353,13 @@ mod tests {
         assert!(find(DEFAULT_MODEL).is_some());
         for m in catalogue() {
             assert!(m.size() > 100_000_000, "{}", m.id);
+            let repo = match m.engine() {
+                Engine::Whisper => "https://huggingface.co/openai/whisper-",
+                Engine::Parakeet => "https://huggingface.co/nvidia/parakeet-",
+            };
+            assert!(m.attribution().contains(m.license_url));
             for f in m.files {
-                assert!(f.url.starts_with("https://huggingface.co/openai/whisper-"), "{}", f.url);
+                assert!(f.url.starts_with(repo), "{}", f.url);
                 assert!(f.url.contains("/resolve/") && f.url.ends_with(f.name));
                 assert_eq!(f.sha256.len(), 64);
                 assert!(f.sha256.bytes().all(|b| b.is_ascii_hexdigit()));

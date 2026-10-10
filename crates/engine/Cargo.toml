@@ -11,8 +11,10 @@ workspace = true
 
 [features]
 default = []
-# Speech-to-text with Whisper (candle, CPU). Off by default and in wasm builds.
-whisper = ["filmcraft-speech/whisper"]
+# Speech-to-text with Whisper and Parakeet TDT (candle, CPU). Off by default and in wasm builds.
+whisper = ["filmcraft-speech/whisper", "parakeet"]
+# Speech-to-text with NVIDIA Parakeet TDT only (part of `whisper`).
+parakeet = ["filmcraft-speech/parakeet"]
 # Speech-model downloads over HTTPS.
 speech-download = ["filmcraft-speech/download"]
 

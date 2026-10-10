@@ -508,6 +508,7 @@ fn auto_transcribe_on_import_and_transcription_defaults() {
     // the model setting is validated against the catalogue
     assert!(s.execute("prefs.set", json!({"key": "mediaAnalysis.whisperModel", "value": "whisper-huge"})).is_err());
     set(&mut s, "mediaAnalysis.whisperModel", json!("whisper-tiny"));
+    set(&mut s, "mediaAnalysis.whisperModel", json!("parakeet-tdt-0.6b-v3"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

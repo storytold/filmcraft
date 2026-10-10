@@ -156,6 +156,9 @@ fn set_delete_and_models() {
     let m = s.execute("transcript.models", json!({})).unwrap();
     assert_eq!(m["available"], filmcraft_speech::available());
     assert!(m["models"].as_array().unwrap().iter().any(|x| x["id"] == "whisper-base"));
+    // CC-BY models carry their credit line for the download dialog
+    let pk = m["models"].as_array().unwrap().iter().find(|x| x["id"] == "parakeet-tdt-0.6b-v3").unwrap();
+    assert!(pk["attribution"].as_str().unwrap().contains("creativecommons.org/licenses/by/4.0"));
 }
 
 #[test]

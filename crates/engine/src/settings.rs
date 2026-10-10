@@ -710,8 +710,13 @@ const LANGUAGES: &[(&str, &str)] = &[
     ("ru", "Russian"),
     ("hi", "Hindi"),
 ];
-const MODELS: &[(&str, &str)] =
-    &[("whisper-tiny", "Whisper tiny (fastest)"), ("whisper-base", "Whisper base (balanced)"), ("whisper-small", "Whisper small (most accurate)")];
+const MODELS: &[(&str, &str)] = &[
+    ("whisper-tiny", "Whisper tiny (fastest)"),
+    ("whisper-base", "Whisper base (balanced)"),
+    ("whisper-small", "Whisper small (most accurate)"),
+    ("parakeet-tdt-0.6b-v3", "Parakeet TDT v3 (25 European languages, very accurate)"),
+    ("parakeet-tdt-0.6b-v2", "Parakeet TDT v2 (English, very accurate)"),
+];
 const CACHE_MGMT: &[(&str, &str)] = &[
     ("never", "Do not delete cache files automatically"),
     ("olderThan", "Automatically delete cache files older than"),

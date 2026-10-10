@@ -8,6 +8,8 @@
 //!   `download`) the verified downloader. Weights are **never** bundled or committed.
 //! - [`whisper`] (feature `whisper`): Whisper inference in pure Rust on candle, with timestamp
 //!   decoding, language detection and word-level timestamps from cross-attention alignment (DTW).
+//! - [`parakeet`] (feature `parakeet`): NVIDIA Parakeet TDT (FastConformer + token-and-duration
+//!   transducer) in pure Rust on candle, read from the `.nemo` archive ([`nemo`]).
 //! - [`diarize`]: speaker labelling by clustering per-chunk MFCC statistics (classical, no model).
 //! - [`mel`]: the log-mel front end shared by Whisper and diarization.
 //! - [`vad`]: energy-based tightening of word bounds (keeps pauses out of words).
@@ -19,6 +21,9 @@
 pub mod diarize;
 pub mod mel;
 pub mod models;
+pub mod nemo;
+#[cfg(feature = "parakeet")]
+pub mod parakeet;
 pub mod vad;
 #[cfg(feature = "whisper")]
 pub mod whisper;
@@ -118,11 +123,18 @@ impl Transcriber for FixedTranscriber {
     }
 }
 
-/// Load the transcriber for catalogue model `id` from `models_dir` (feature `whisper`).
+/// Load the transcriber for catalogue model `id` from `models_dir` (feature `whisper` or
+/// `parakeet`, by the model's [`models::Engine`]).
 pub fn load(models_dir: &std::path::Path, id: &str) -> Result<std::sync::Arc<dyn Transcriber>, SpeechError> {
     let m = models::find(id).ok_or_else(|| SpeechError::UnknownModel(id.into()))?;
     if !models::installed(models_dir, m) {
         return Err(SpeechError::NotInstalled(id.into()));
+    }
+    if m.engine() == models::Engine::Parakeet {
+        #[cfg(feature = "parakeet")]
+        return Ok(std::sync::Arc::new(parakeet::Parakeet::load(&models::model_dir(models_dir, m), m.id)?));
+        #[cfg(not(feature = "parakeet"))]
+        return Err(SpeechError::Unavailable("built without the `parakeet` feature".into()));
     }
     #[cfg(feature = "whisper")]
     {
@@ -136,7 +148,7 @@ pub fn load(models_dir: &std::path::Path, id: &str) -> Result<std::sync::Arc<dyn
 
 /// Whether this build can run speech models.
 pub const fn available() -> bool {
-    cfg!(feature = "whisper")
+    cfg!(any(feature = "whisper", feature = "parakeet"))
 }
 
 /// Mix a multi-channel buffer down to mono.
