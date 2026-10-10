@@ -465,6 +465,34 @@ fn transitions_stay_on_their_cuts() {
 }
 
 #[test]
+fn fades_follow_a_regular_trim() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let a = fx.put(v1, 10, 20, 10);
+    let fade = |id, start, from, to| Transition {
+        id: TransitionId(id),
+        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        start: f(start),
+        duration: f(6),
+        from,
+        to,
+        align: Default::default(),
+        reverse: false,
+    };
+    fx.seq.track_mut(v1).unwrap().transitions = vec![fade(1, 10, None, Some(a)), fade(2, 24, Some(a), None)];
+    let spans = |fx: &Fx| fx.seq.track(v1).unwrap().transitions.iter().map(|t| (t.start, t.duration)).collect::<Vec<_>>();
+    let mut n = fx.next;
+    trim(&mut fx.seq, a, Edge::In, TrimMode::Regular, f(2), &mut Fx::ctx(&mut n)).unwrap();
+    trim(&mut fx.seq, a, Edge::Out, TrimMode::Regular, f(4), &mut Fx::ctx(&mut n)).unwrap();
+    // the fade in starts with the clip (12), the fade out ends with it (34)
+    assert_eq!(spans(&fx), vec![(f(12), f(6)), (f(28), f(6))]);
+    // a clip trimmed shorter than its fades keeps them inside it
+    trim(&mut fx.seq, a, Edge::Out, TrimMode::Regular, -f(18), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(spans(&fx), vec![(f(12), f(4)), (f(12), f(4))]);
+    fx.seq.check().unwrap();
+}
+
+#[test]
 fn rate_stretch_and_speed() {
     let mut fx = Fx::new();
     let v1 = fx.v(0);
