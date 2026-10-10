@@ -1097,7 +1097,7 @@ static CATEGORIES: &[Category] = &[
                     f("timeline.multichannelMonoMediaTracks", "Multichannel Mono Media", Kind::Choice(TRACKS), false),
                 ],
             ),
-            b("timeline.focusTimelineOnEdit", "Set focus on the Timeline when performing Insert/Overwrite edits", true),
+            b("timeline.focusTimelineOnEdit", "Set focus on the Timeline when performing Insert/Overwrite edits", false),
             b("timeline.snapPlayhead", "Snap playhead in Timeline when Snap is enabled", true),
             b("timeline.returnToBeginning", "At playback end, return to beginning when restarting playback", true),
             b("timeline.outOfSyncUnlinked", "Display out of sync indicators for unlinked clips", false),

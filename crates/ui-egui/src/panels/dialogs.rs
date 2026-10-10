@@ -479,7 +479,7 @@ fn about_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             fg,
         );
         if resp.clicked() {
-            links::open(ui.ctx(), url);
+            links::open(app, ui.ctx(), url);
         }
     };
     link(ui, "discord", Icon::Chat, tl!("Join the ArtCraft Discord"), links::DISCORD, true);

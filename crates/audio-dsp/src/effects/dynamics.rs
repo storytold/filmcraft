@@ -263,8 +263,6 @@ pub struct Limiter {
     true_peak: bool,
     /// Look-ahead (samples) and detector alignment delay.
     look: usize,
-    /// Delay-line capacity (samples of look-ahead) allocated at construction for 0…30 ms.
-    max_look: usize,
     det_delay: usize,
     bank: PolyphaseBank,
     interp: Vec<Interpolator>,
@@ -287,21 +285,17 @@ impl Limiter {
         ParamSpec::new("input_gain", "Input Boost", 0.0, 24.0, 0.0, Unit::Decibels),
         ParamSpec::new("ceiling", "Ceiling", -24.0, 0.0, -1.0, Unit::Decibels),
         ParamSpec::log("release", "Release", 1.0, 1000.0, 60.0, Unit::Milliseconds),
-        ParamSpec::new("lookahead", "Look-Ahead", 0.0, 30.0, 5.0, Unit::Milliseconds),
         ParamSpec::toggle("true_peak", "True Peak", true),
     ];
-    /// Default look-ahead when the parameter is left at its DSP default.
+    /// Fixed look-ahead time.
     pub const LOOKAHEAD_MS: f32 = 5.0;
-    /// Longest look-ahead the delay line is sized for (Hard Limiter's 0…30 ms range).
-    pub const MAX_LOOKAHEAD_MS: f32 = 30.0;
 
     pub fn new(sample_rate: f32, channels: usize) -> Self {
         let channels = channels.max(1);
         let bank = PolyphaseBank::new(true_peak_factor(sample_rate as f64).max(2));
-        let max_look = ((Self::MAX_LOOKAHEAD_MS * 0.001 * sample_rate).round() as usize).max(1);
-        let look = ((Self::LOOKAHEAD_MS * 0.001 * sample_rate).round() as usize).max(1).min(max_look);
+        let look = ((Self::LOOKAHEAD_MS * 0.001 * sample_rate).round() as usize).max(1);
         let det_delay = bank.delay();
-        let dlen = max_look + det_delay + 1;
+        let dlen = look + det_delay + 1;
         let mut s = Limiter {
             pv: ParamValues::new(Self::PARAMS),
             sr: sample_rate,
@@ -310,7 +304,6 @@ impl Limiter {
             rel: 0.0,
             true_peak: true,
             look,
-            max_look,
             det_delay,
             bank,
             interp: vec![Interpolator::default(); channels],
@@ -333,15 +326,6 @@ impl Limiter {
         self.ceiling = db_to_gain(self.pv.v("ceiling"));
         self.rel = coef(self.pv.v("release"), self.sr);
         self.true_peak = self.pv.on("true_peak");
-        let look = ((self.pv.v("lookahead") * 0.001 * self.sr).round() as usize).max(1).min(self.max_look);
-        if look != self.look {
-            self.look = look;
-            self.minq.clear();
-            self.box_ring = vec![1.0; look + 1];
-            self.box_pos = 0;
-            self.box_sum = (look + 1) as f64;
-            self.rel_state = 1.0;
-        }
         if snap {
             self.in_gain.snap();
         }
@@ -379,7 +363,7 @@ impl AudioEffect for Limiter {
         for i in 0..n {
             let g_in = self.in_gain.tick();
             let det_pos = (self.wpos + dlen - self.det_delay) % dlen;
-            let out_pos = (self.wpos + dlen - (self.look + self.det_delay)) % dlen;
+            let out_pos = (self.wpos + 1) % dlen; // oldest = look + det_delay samples ago
             let mut det = 0.0f32;
             for ch in 0..nch {
                 let x = channels[ch][i] * g_in;
@@ -570,25 +554,5 @@ mod tests {
         let tail = &x[24000..];
         let peak = tail.iter().fold(0.0f32, |a, v| a.max(v.abs()));
         assert!((lin_to_db(peak) + 6.0).abs() < 0.3, "{}", lin_to_db(peak));
-    }
-
-    #[test]
-    fn limiter_lookahead_changes_latency_and_transient_shape() {
-        let mut a = Limiter::new(SR, 1);
-        let mut b = Limiter::new(SR, 1);
-        a.set_param("lookahead", 0.0);
-        b.set_param("lookahead", 30.0);
-        a.set_param("ceiling", -6.0);
-        b.set_param("ceiling", -6.0);
-        assert!(b.latency() > a.latency(), "{} vs {}", b.latency(), a.latency());
-        let mut xa: Vec<f32> = (0..4800).map(|i| 0.08 * (2.0 * std::f32::consts::PI * 997.0 * i as f32 / SR).sin()).collect();
-        for s in &mut xa[1200..1248] {
-            *s = 0.9;
-        }
-        let mut xb = xa.clone();
-        a.process(&mut [&mut xa]);
-        b.process(&mut [&mut xb]);
-        let max = xa.iter().zip(&xb).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
-        assert!(max > 1e-4, "look-ahead of 0 ms and 30 ms produced the same waveform (max Δ {max})");
     }
 }

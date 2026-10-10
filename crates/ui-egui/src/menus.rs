@@ -405,7 +405,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         }
         id if crate::links::url_for(id).is_some() => {
             let url = crate::links::url_for(id).unwrap_or_default();
-            crate::links::open(ctx, url);
+            crate::links::open(app, ctx, url);
             app.ui.status = tlf!("Opened {url}", url);
             return Ok(json!({"url": url}));
         }
@@ -482,6 +482,15 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             crate::panels::color_dialogs::open_sequence(app);
             return Ok(json!({"dialog": "sequenceColor"}));
+        }
+        // New Bin from menus, shortcuts and the Project panel asks for the name (inline rename);
+        // agents pass `name` to name the bin directly
+        "file.newBin" if params.get("name").is_none() => {
+            let r = crate::panels::project::new_bin(app, &params);
+            if let Err(e) = &r {
+                app.ui.status = e.clone();
+            }
+            return r;
         }
         // From menus/shortcuts (no params) these ask first; agents pass params to act directly.
         "file.revert" if params.as_object().is_none_or(|m| m.is_empty()) && app.session.is_dirty() => {

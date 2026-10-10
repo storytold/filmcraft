@@ -321,6 +321,32 @@ fn markers_panel_colour_filter() {
     assert_eq!(d.ids("markers.row.").len(), 2);
 }
 
+/// #695: a marker on the Timeline could not be cleared: with snapping off a click on it left the
+/// playhead on the frame under the pointer, not on the marker Clear Selected Marker looks for, and
+/// right-clicking it opened the clip menu.
+#[test]
+fn a_clicked_timeline_marker_can_be_cleared() {
+    let mut d = Driver::demo();
+    d.exec("markers.clearAll", json!({}));
+    let first = d.exec("markers.add", json!({"frame": 30}))["marker"].as_u64().unwrap();
+    let second = d.exec("markers.add", json!({"frame": 90}))["marker"].as_u64().unwrap();
+    d.exec("sequence.snap", json!({"on": false}));
+    d.exec("playhead.set", json!({"frame": 0}));
+    // zoomed out so that a few px beside a marker is another frame
+    let v = &mut d.app().ui.timeline;
+    (v.pps, v.target_pps, v.scroll, v.target_scroll) = (60.0, 60.0, 0.0, 0.0);
+    d.frames(4);
+    let markers = |d: &mut Driver| d.app().session.active_sequence().unwrap().markers.iter().map(|m| m.id.0).collect::<Vec<_>>();
+    d.ok("ui.click", json!({"id": format!("timeline.marker.{first}"), "fx": 0.95}));
+    d.frames(2);
+    d.exec("markers.clearCurrent", json!({}));
+    assert_eq!(markers(&mut d), vec![second], "the clicked marker is cleared");
+    d.ok("ui.click", json!({"id": format!("timeline.marker.{second}"), "fx": 0.95, "button": "right"}));
+    d.frames(3);
+    d.click("timeline.markerMenu.markers.clearCurrent");
+    assert!(markers(&mut d).is_empty(), "cleared from its context menu");
+}
+
 #[test]
 fn shift_semicolon_goes_to_the_next_gap() {
     let mut d = Driver::demo();

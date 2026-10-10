@@ -287,8 +287,12 @@ fn parse_time(s: &str, tm: Timing) -> Option<Tick> {
         "f" => {
             let n: i128 = vi.parse().ok()?;
             let fd = tm.rate.tick_of(1).0 as i128;
-            let whole = tm.rate.tick_of(n as i64).0 as i128;
-            whole + decimal_ticks("0", vf, fd)?
+            let whole = tm.rate.tick_of(i64::try_from(n).ok()?);
+            // tick_of saturates; a saturated count overflowed rather than named a real time
+            if whole == Tick(i64::MAX) {
+                return None;
+            }
+            whole.0 as i128 + decimal_ticks("0", vf, fd)?
         }
         "t" => {
             let n: i128 = vi.parse().ok()?;

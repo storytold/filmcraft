@@ -156,3 +156,40 @@ fn events_report_background_jobs() {
     s.poll_persistence();
     assert_eq!(s.log.entries.len(), 6);
 }
+
+/// #620: project notes are saved in the project file; typing (one `merge` key) is one undo step.
+#[test]
+fn project_notes_are_saved_and_typing_is_one_undo_step() {
+    let mut s = demo();
+    assert_eq!(s.execute("project.notes", json!({})).unwrap()["text"], "");
+    let undo0 = s.history.undo.len();
+    for text in ["T", "To", "To do: fix the logo at 00:01:02:03"] {
+        s.execute("project.setNotes", json!({"text": text, "merge": "1"})).unwrap();
+    }
+    assert_eq!(s.history.undo.len(), undo0 + 1, "one typing session, one undo step");
+    assert_eq!(s.history.undo.last().unwrap().0, "Edit Project Notes");
+    // the same text again changes nothing and adds no step
+    let r = s.execute("project.setNotes", json!({"text": "To do: fix the logo at 00:01:02:03"})).unwrap();
+    assert_eq!(r["changed"], json!(false));
+    assert_eq!(s.history.undo.len(), undo0 + 1);
+
+    let loaded = filmcraft_format::decode(&filmcraft_format::encode(&s.project, false)).unwrap();
+    assert_eq!(loaded.project.notes, "To do: fix the logo at 00:01:02:03");
+    // an older file without notes still loads, with none
+    let mut doc: Value = serde_json::from_slice(&filmcraft_format::encode(&filmcraft_project::Project::new("old"), false)).unwrap();
+    doc["schema_version"] = json!(14);
+    assert_eq!(filmcraft_format::decode(&serde_json::to_vec(&doc).unwrap()).unwrap().project.notes, "");
+
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project.notes, "");
+}
+
+#[test]
+fn project_notes_refuse_bad_input() {
+    let mut s = demo();
+    assert!(s.execute("project.setNotes", json!({})).is_err());
+    assert!(s.execute("project.setNotes", json!({"text": 5})).is_err());
+    let huge = "x".repeat(crate::panels::MAX_NOTES_BYTES + 1);
+    assert!(s.execute("project.setNotes", json!({"text": huge})).is_err());
+    assert_eq!(s.project.notes, "");
+}

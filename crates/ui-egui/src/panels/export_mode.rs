@@ -606,7 +606,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             }
         });
     }
-    if matches!(s.format, Format::PngSequence | Format::TiffSequence) {
+    if s.supports_alpha() {
         row(ui, t, tl!("Alpha"), |ui| {
             check(ui, reg, "export.video.alpha", &mut s.alpha, tl!("Include Alpha Channel"));
         });
@@ -708,8 +708,9 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         }
         Format::ProRes => {
             row(ui, t, tl!("Profile"), |ui| {
-                let keys = ["proxy", "lt", "standard", "hq"];
-                let labels = ["Apple ProRes 422 Proxy", "Apple ProRes 422 LT", "Apple ProRes 422", "Apple ProRes 422 HQ"];
+                let keys = ["proxy", "lt", "standard", "hq", "4444", "4444xq"];
+                let labels =
+                    ["Apple ProRes 422 Proxy", "Apple ProRes 422 LT", "Apple ProRes 422", "Apple ProRes 422 HQ", "Apple ProRes 4444", "Apple ProRes 4444 XQ"];
                 let cur = keys.iter().position(|k| *k == s.prores_profile).unwrap_or(3);
                 if let Some(i) = combo(ui, reg, "export.video.proresProfile", labels[cur], &opts(&labels), 220.0) {
                     s.prores_profile = keys[i].into();

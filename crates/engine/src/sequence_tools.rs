@@ -723,6 +723,54 @@ pub(crate) fn add_tracks(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"video": video, "audio": audio, "submix": submix}))
 }
 
+/// `timeline.place` names `"new"` as its `track` or `audioTrack`.
+pub(crate) fn wants_new_track(p: &Value) -> bool {
+    ["track", "audioTrack"].iter().any(|k| p.get(*k).and_then(Value::as_str).is_some_and(|v| v.eq_ignore_ascii_case("new")))
+}
+
+/// `timeline.place` with `"track":"new"` and/or `"audioTrack":"new"` (#483: media dropped in the
+/// empty space above the video tracks or below the audio tracks): a track is added after the
+/// last one of its kind for each stream the item carries (and the call enables), then the clip
+/// goes on it. One undo step; when the placement fails, the new tracks go away again.
+pub(crate) fn place_on_new_tracks(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "timeline.place";
+    let item = crate::commands::item_p(p, "item").ok_or_else(|| bad(cmd, "need `item`"))?;
+    let pi = s.project.item(item).ok_or_else(|| bad(cmd, "no such item"))?;
+    let is_new = |k: &str| p.get(k).and_then(Value::as_str).is_some_and(|v| v.eq_ignore_ascii_case("new"));
+    let enabled = |k: &str| p.get(k).and_then(Value::as_bool).unwrap_or(true);
+    let new_v = is_new("track") && pi.has_video() && enabled("video");
+    let new_a = is_new("audioTrack") && pi.has_audio() && enabled("audio");
+    if !new_v && !new_a {
+        return Err(bad(cmd, "no new track to add: the item has no picture or sound for it"));
+    }
+    let added = add_tracks(s, &json!({"video": u64::from(new_v), "audio": u64::from(new_a)}))?;
+    let mark = s.history.undo.len();
+    let mut q = p.clone();
+    for (key, kind) in [("track", "video"), ("audioTrack", "audio")] {
+        if is_new(key) {
+            q[key] = added.get(kind).and_then(|ids| ids.get(0)).cloned().unwrap_or(Value::Null);
+        }
+    }
+    let place = crate::commands::find(cmd).ok_or_else(|| EngineError::UnknownCommand(cmd.into()))?.run;
+    match place(s, &q) {
+        Ok(v) => {
+            // the new tracks and the clip are one undo step
+            if mark >= 1
+                && s.history.undo.len() == mark + 1
+                && let (Some((label, _)), Some((_, before))) = (s.history.undo.pop(), s.history.undo.pop())
+            {
+                s.history.undo.push((label, before));
+            }
+            Ok(v)
+        }
+        Err(e) => {
+            s.undo();
+            s.history.redo.pop();
+            Err(e)
+        }
+    }
+}
+
 fn delete_tracks(s: &mut Session, p: &Value) -> Result<Value> {
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;

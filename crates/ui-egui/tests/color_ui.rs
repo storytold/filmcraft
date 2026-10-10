@@ -324,3 +324,26 @@ fn lumetri_presets_in_the_effects_panel() {
     let e = lumetri(&mut d, clip);
     assert_eq!(e["params"]["temperature"]["value"], json!("Float(35.0)"), "{e}");
 }
+
+#[test]
+fn lumetri_presets_drag_onto_a_timeline_clip() {
+    let mut d = Driver::demo();
+    d.ok("ui.panel.show", json!({"panel": "Effects"}));
+    d.frames(3);
+    // the first clip is selected; the preset is dropped on the second, which gets it alone
+    let selected = select_first_clip(&mut d);
+    let seq = d.exec("sequence.inspect", json!({}));
+    let target = seq["video"][0]["items"][1]["clip"].as_u64().unwrap_or_else(|| panic!("no second clip: {seq}"));
+    d.click("effects.folder.Lumetri Presets");
+    d.click("effects.folder.Lumetri Presets/Monochrome");
+    d.frames(2);
+    assert!(d.element(&format!("timeline.clip.{target}")).is_some(), "target clip not on screen");
+    d.ok("ui.drag", json!({"from": {"id": "effects.lumetriPreset.Neutral Mono"}, "to": {"id": format!("timeline.clip.{target}")}, "steps": 8}));
+    d.frames(3);
+    let e = lumetri(&mut d, target);
+    assert_eq!(e["params"]["saturation"]["value"], json!("Float(0.0)"), "dropped preset on the target clip: {e}");
+    assert_eq!(lumetri(&mut d, selected), Value::Null, "the selected clip it was not dropped on is untouched");
+    // one undo step removes it again
+    d.exec("edit.undo", json!({}));
+    assert_eq!(lumetri(&mut d, target), Value::Null);
+}

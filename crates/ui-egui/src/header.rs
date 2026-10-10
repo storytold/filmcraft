@@ -147,7 +147,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
 
         if resp.clicked() {
-            crate::links::open(ui.ctx(), crate::links::DISCORD);
+            crate::links::open(app, ui.ctx(), crate::links::DISCORD);
         }
     }
     let popup_id = egui::Id::new("workspaces-popup");

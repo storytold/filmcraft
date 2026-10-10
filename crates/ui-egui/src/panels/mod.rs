@@ -29,6 +29,7 @@ pub mod mixer;
 pub mod monitor;
 pub mod monitor_view;
 pub mod multicam;
+pub mod notes;
 pub mod panel_state;
 pub mod presets;
 pub mod project;
@@ -101,6 +102,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect)
         PanelKind::Text => text::show(app, ui, rect),
         PanelKind::EssentialSound => essential_sound::show(app, ui, rect),
         PanelKind::TextToSpeech => tts::show(app, ui, rect),
+        PanelKind::ProjectNotes => notes::show(app, ui, rect),
         other => crate::dock::placeholder(ui, rect, &app.tokens, &tlf!("{panel} — coming in a later milestone", panel = crate::i18n::t(other.title()))),
     }
 }
@@ -111,6 +113,8 @@ pub mod source_range;
 #[derive(Clone, Debug)]
 enum DragPayload {
     Item(ItemId),
+    /// A bin (by id) dragged in the Project panel.
+    Bin(u64),
     Source(source_drag::SourceDrag),
     Effect(String),
     /// A graphics template (id, name) from Essential Graphics ▸ Browse.
@@ -133,6 +137,15 @@ pub fn dragged_source(ui: &egui::Ui) -> Option<source_drag::SourceDrag> {
 pub fn start_drag_item(ui: &egui::Ui, item: ItemId) {
     ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Item(item)))));
 }
+pub fn start_drag_bin(ui: &egui::Ui, bin: u64) {
+    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Bin(bin)))));
+}
+pub fn dragged_bin(ui: &egui::Ui) -> Option<u64> {
+    match payload(ui) {
+        Some(DragPayload::Bin(b)) => Some(b),
+        _ => None,
+    }
+}
 pub fn start_drag_template(ui: &egui::Ui, id: &str, name: &str) {
     ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Template(id.to_string(), name.to_string())))));
 }
@@ -144,6 +157,13 @@ pub fn dragged_template(ui: &egui::Ui) -> Option<String> {
 }
 pub fn start_drag_effect(ui: &egui::Ui, id: &str) {
     ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Effect(id.to_string())))));
+}
+/// Prefix of a dragged effect payload that names a Lumetri preset rather than an effect id.
+pub const LUMETRI_PRESET_PREFIX: &str = "lumetri:";
+/// A Lumetri preset (Effects ▸ Lumetri Presets) dragged onto a clip: an effect payload
+/// `lumetri:<name>` the Timeline applies with `lumetri.applyPreset`.
+pub fn start_drag_lumetri_preset(ui: &egui::Ui, name: &str) {
+    start_drag_effect(ui, &format!("{LUMETRI_PRESET_PREFIX}{name}"));
 }
 #[derive(Clone, Debug)]
 struct DragPayloadBox(DragPayload);
@@ -175,6 +195,7 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
     if let Some(p) = ctx.pointer_hover_pos() {
         let label = match &pl {
             DragPayload::Item(i) => app.session.project.item(*i).map(|x| x.name.clone()).unwrap_or_default(),
+            DragPayload::Bin(b) => app.session.project.root.find_bin(filmcraft_project::BinId(*b)).map(|x| x.name.clone()).unwrap_or_default(),
             DragPayload::Source(s) => {
                 let name = app.session.project.item(s.item).map(|i| i.name.as_str()).unwrap_or("Source");
                 let mode = match (s.video, s.audio) {
@@ -185,9 +206,10 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
                 format!("{name} · {mode} · {:.2} s", s.range.duration.seconds())
             }
             DragPayload::Template(_, name) => name.clone(),
-            DragPayload::Effect(e) => match e.strip_prefix("preset:") {
-                Some(name) => name.to_string(),
-                None => filmcraft_project::find_effect(e).map(|d| d.name.to_string()).unwrap_or_default(),
+            DragPayload::Effect(e) => match (e.strip_prefix("preset:"), e.strip_prefix(LUMETRI_PRESET_PREFIX)) {
+                (Some(name), _) => name.to_string(),
+                (_, Some(name)) => crate::i18n::t(name).to_string(),
+                _ => filmcraft_project::find_effect(e).map(|d| d.name.to_string()).unwrap_or_default(),
             },
         };
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("drag-ghost")));
