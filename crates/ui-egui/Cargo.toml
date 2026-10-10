@@ -42,6 +42,12 @@ rustix = { version = "1", default-features = false, features = ["std", "time"] }
 [target.'cfg(windows)'.dependencies]
 cpu-time = "1"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+core-text = "22"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winreg = "0.56"
+
 [dev-dependencies]
 pollster = "0.4"
 filmcraft-codecs = { workspace = true }
