@@ -243,8 +243,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::client::{Progress, RunOptions};
-    use crate::{Binding, Client, OutputKind, Recipe};
+    use crate::client::{MemorySink, Progress, RunOptions, Sink};
+    use crate::{Binding, Client, Output, OutputKind, Recipe};
 
     fn recipe() -> Recipe {
         let mut r = Recipe::new(json!({
@@ -274,10 +274,17 @@ mod tests {
         })));
         let client = Client::new(fake.clone());
         let mut lines = Vec::new();
-        let r = client.run(&recipe(), &mut read, &RunOptions::default(), &mut |p| {
-            lines.push(p.to_string());
-            true
-        });
+        let mut sink = MemorySink::default();
+        let r = client.run(
+            &recipe(),
+            &mut read,
+            &RunOptions::default(),
+            &mut |p| {
+                lines.push(p.to_string());
+                true
+            },
+            &mut sink,
+        );
         let r = r.unwrap();
         let queued = fake.queued();
         assert_eq!(queued.len(), 1);
@@ -286,9 +293,10 @@ mod tests {
         assert!(uploaded.starts_with("filmcraft_") && uploaded.ends_with("_first_frame.png"), "{uploaded}");
         assert_eq!(fake.uploads(), vec![(uploaded, b"bytes of /clips/first frame.png".to_vec())]);
         assert_eq!(
-            r.files.iter().map(|f| (f.output.kind, f.bytes.clone())).collect::<Vec<_>>(),
+            sink.files.iter().map(|(o, b)| (o.kind, b.clone())).collect::<Vec<_>>(),
             [(OutputKind::Image, vec![1, 2, 3]), (OutputKind::Audio, vec![4, 5])]
         );
+        assert_eq!(r.files.iter().map(|f| f.size).collect::<Vec<_>>(), [3, 2]);
         assert_eq!(r.texts(), ["next: a dog"]);
         assert_eq!(r.outputs.len(), 4);
         assert!(lines.iter().any(|l| l.starts_with("Uploading first_frame.png")), "{lines:?}");
@@ -301,7 +309,7 @@ mod tests {
             Arc::new(FakeComfy::with_outputs(vec![FakeOutput::file("9", "images", "a.png", vec![1]), FakeOutput::file("12", "audio", "b.wav", vec![2])]));
         let mut r = recipe();
         r.outputs = vec!["12".into()];
-        let res = Client::new(fake).run(&r, &mut read, &RunOptions::default(), &mut |_| true).unwrap();
+        let res = Client::new(fake).run(&r, &mut read, &RunOptions::default(), &mut |_| true, &mut MemorySink::default()).unwrap();
         assert_eq!(res.files.len(), 1);
         assert_eq!(res.files[0].output.node, "12");
     }
@@ -309,10 +317,12 @@ mod tests {
     #[test]
     fn execution_errors_and_missing_files() {
         let fake = Arc::new(FakeComfy::new(Box::new(|_| Err("CUDA out of memory".into()))));
-        let e = Client::new(fake).run(&recipe(), &mut read, &RunOptions::default(), &mut |_| true).unwrap_err();
+        let e = Client::new(fake).run(&recipe(), &mut read, &RunOptions::default(), &mut |_| true, &mut MemorySink::default()).unwrap_err();
         assert_eq!(e, ComfyError::Execution("node 1 (Fake): CUDA out of memory".into()));
         let fake = Arc::new(FakeComfy::with_outputs(vec![]));
-        let e = Client::new(fake).run(&recipe(), &mut |_| Err("No such file".into()), &RunOptions::default(), &mut |_| true).unwrap_err();
+        let e = Client::new(fake)
+            .run(&recipe(), &mut |_| Err("No such file".into()), &RunOptions::default(), &mut |_| true, &mut MemorySink::default())
+            .unwrap_err();
         assert!(matches!(e, ComfyError::Workflow(ref m) if m.contains("No such file")), "{e}");
     }
 
@@ -321,7 +331,9 @@ mod tests {
         let mut fake = FakeComfy::with_outputs(vec![FakeOutput::file("9", "images", "a.png", vec![1])]);
         fake.polls = 100;
         let fake = Arc::new(fake);
-        let e = Client::new(fake.clone()).run(&recipe(), &mut read, &RunOptions::default(), &mut |p| !matches!(p, Progress::Running { .. })).unwrap_err();
+        let e = Client::new(fake.clone())
+            .run(&recipe(), &mut read, &RunOptions::default(), &mut |p| !matches!(p, Progress::Running { .. }), &mut MemorySink::default())
+            .unwrap_err();
         assert_eq!(e, ComfyError::Cancelled);
         assert_eq!(fake.cancelled(), ["fake-1"]);
     }
@@ -331,8 +343,8 @@ mod tests {
         let mut fake = FakeComfy::with_outputs(vec![]);
         fake.polls = 1000;
         let fake = Arc::new(fake);
-        let opts = RunOptions { poll: Duration::from_millis(500), timeout: Duration::from_secs(2) };
-        let e = Client::new(fake.clone()).run(&recipe(), &mut read, &opts, &mut |_| true).unwrap_err();
+        let opts = RunOptions { poll: Duration::from_millis(500), timeout: Duration::from_secs(2), ..Default::default() };
+        let e = Client::new(fake.clone()).run(&recipe(), &mut read, &opts, &mut |_| true, &mut MemorySink::default()).unwrap_err();
         assert_eq!(e, ComfyError::Timeout(2));
         assert_eq!(fake.cancelled().len(), 1);
     }
@@ -350,9 +362,94 @@ mod tests {
             fn pause(&self, _: Duration) {}
         }
         let r = Recipe::new(json!({"1": {"class_type": "X", "inputs": {}}})).unwrap();
-        let e = Client::new(Arc::new(Junk)).run(&r, &mut read, &RunOptions::default(), &mut |_| true).unwrap_err();
+        let e = Client::new(Arc::new(Junk)).run(&r, &mut read, &RunOptions::default(), &mut |_| true, &mut MemorySink::default()).unwrap_err();
         assert!(matches!(e, ComfyError::Rejected(_)), "{e}");
         assert!(Client::new(Arc::new(Junk)).system_stats().is_err());
+    }
+
+    fn three_files() -> Arc<FakeComfy> {
+        Arc::new(FakeComfy::with_outputs(vec![
+            FakeOutput::file("9", "images", "a.png", vec![1; 10]),
+            FakeOutput::file("10", "images", "b.png", vec![2; 10]),
+            FakeOutput::file("11", "images", "c.png", vec![3; 10]),
+        ]))
+    }
+
+    #[test]
+    fn downloads_are_capped() {
+        let run = |opts: RunOptions, sink: &mut MemorySink| Client::new(three_files()).run(&recipe(), &mut read, &opts, &mut |_| true, sink);
+        // a file over the limit fails the run, and nothing of it is kept
+        let mut sink = MemorySink::default();
+        let e = run(RunOptions { max_file: 9, ..Default::default() }, &mut sink).unwrap_err();
+        assert!(matches!(e, ComfyError::TooLarge(ref m) if m.contains("a.png")), "{e}");
+        assert!(sink.files.is_empty());
+        // only the first `max_files` outputs are downloaded; all are listed
+        let mut sink = MemorySink::default();
+        let r = run(RunOptions { max_files: 2, ..Default::default() }, &mut sink).unwrap();
+        assert_eq!(sink.files.iter().map(|f| f.0.node.as_str()).collect::<Vec<_>>(), ["9", "10"]);
+        assert_eq!(r.outputs.len(), 3);
+        // the run's total: the third file no longer fits
+        let mut sink = MemorySink::default();
+        let e = run(RunOptions { max_total: 25, ..Default::default() }, &mut sink).unwrap_err();
+        assert!(matches!(e, ComfyError::TooLarge(ref m) if m.contains("in all")), "{e}");
+        assert_eq!(sink.files.len(), 2);
+    }
+
+    #[test]
+    fn a_failed_write_drops_the_file_and_a_stop_while_downloading_is_a_stop() {
+        /// Fails every write; counts what it was asked to close.
+        #[derive(Default)]
+        struct Full {
+            closed: Vec<Option<u64>>,
+        }
+        impl Sink for Full {
+            fn create(&mut self, _: &Output) -> std::result::Result<Box<dyn std::io::Write + '_>, String> {
+                Ok(Box::new(FullWriter))
+            }
+            fn close(&mut self, _: &Output, size: Option<u64>) -> std::result::Result<(), String> {
+                self.closed.push(size);
+                Ok(())
+            }
+        }
+        struct FullWriter;
+        impl std::io::Write for FullWriter {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("disk full"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut sink = Full::default();
+        let e = Client::new(three_files()).run(&recipe(), &mut read, &RunOptions::default(), &mut |_| true, &mut sink).unwrap_err();
+        assert!(matches!(e, ComfyError::Storage(ref m) if m.contains("disk full")), "{e}");
+        assert_eq!(sink.closed, [None]);
+        // the same failure after the user pressed Stop is a stop
+        let mut downloads = 0;
+        let mut sink = Full::default();
+        let e = Client::new(three_files())
+            .run(
+                &recipe(),
+                &mut read,
+                &RunOptions::default(),
+                &mut |p| {
+                    downloads += usize::from(matches!(p, Progress::Downloading { .. }));
+                    downloads < 2
+                },
+                &mut sink,
+            )
+            .unwrap_err();
+        assert_eq!(e, ComfyError::Cancelled);
+        assert_eq!(sink.closed, [None]);
+    }
+
+    #[test]
+    fn huge_uploads_are_refused() {
+        let fake = Arc::new(FakeComfy::with_outputs(vec![]));
+        let opts = RunOptions { max_upload: 8, ..Default::default() };
+        let e = Client::new(fake.clone()).run(&recipe(), &mut read, &opts, &mut |_| true, &mut MemorySink::default()).unwrap_err();
+        assert!(matches!(e, ComfyError::TooLarge(ref m) if m.contains("first frame.png")), "{e}");
+        assert!(fake.uploads().is_empty() && fake.queued().is_empty());
     }
 
     #[test]

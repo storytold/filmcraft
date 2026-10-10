@@ -18,6 +18,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod captions;
+pub mod frame_size;
 pub mod multicam;
 pub mod through;
 pub mod transcript;
@@ -534,15 +535,30 @@ pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delt
     match edge {
         Edge::In => {
             // extending left (d<0) needs media before source_in; shortening needs min duration
-            let max_ext = Tick((head(ctx, it).0 as f64 / speed).floor() as i64);
+            // a reversed clip plays source_out down to source_in, so its In edge consumes media after source_out
+            let handle = match (it.reverse, media) {
+                (true, Some(m)) => (m - it.source_out()).max(Tick::ZERO),
+                (true, None) => Tick::MAX,
+                (false, _) => head(ctx, it),
+            };
+            let max_ext = if handle == Tick::MAX { Tick::MAX } else { Tick((handle.0 as f64 / speed).floor() as i64) };
             let lo = if mode == TrimMode::Regular { (-(it.start - prev_end)).max(-max_ext) } else { -max_ext };
             let hi = it.duration - ctx.min_duration;
-            d = d.clamp(if it.frame_hold.is_some() { Tick::MIN } else { lo }, hi);
+            // a frame hold needs no source head, but a Regular trim still stops at the previous clip
+            let lo = match (it.frame_hold.is_some(), mode) {
+                (true, TrimMode::Regular) => -(it.start - prev_end),
+                (true, _) => Tick::MIN,
+                (false, _) => lo,
+            };
+            d = d.clamp(lo, hi);
         }
         Edge::Out => {
             let lo = -(it.duration - ctx.min_duration);
             let mut hi = if mode == TrimMode::Regular { next_start - it.end() } else { Tick::MAX };
-            if let Some(m) = media {
+            if it.reverse && it.frame_hold.is_none() {
+                // a reversed clip's Out edge consumes media before source_in
+                hi = hi.min(Tick((head(ctx, it).0 as f64 / speed).floor() as i64));
+            } else if let Some(m) = media {
                 let remain = Tick(((m - it.source_out()).0 as f64 / speed).floor() as i64);
                 hi = hi.min(remain);
             }
@@ -750,10 +766,19 @@ pub fn roll(seq: &mut Sequence, left: ClipId, right: ClipId, delta: Tick, ctx: &
     let mut d = delta;
     // left out-point limits
     d = d.max(-(l.duration - ctx.min_duration)).min(r.duration - ctx.min_duration);
-    if let Some(m) = media_len(ctx, l) {
+    // a reversed clip consumes media from the opposite end, so its media limit is the other one
+    if l.reverse {
+        d = d.min(Tick((head(ctx, l).0 as f64 / l.speed.abs()).floor() as i64));
+    } else if let Some(m) = media_len(ctx, l) {
         d = d.min(Tick(((m - l.source_out()).0 as f64 / l.speed.abs()).floor() as i64));
     }
-    d = d.max(-Tick((head(ctx, r).0 as f64 / r.speed.abs()).floor() as i64));
+    if r.reverse {
+        if let Some(m) = media_len(ctx, r) {
+            d = d.max(-Tick(((m - r.source_out()).0 as f64 / r.speed.abs()).floor() as i64));
+        }
+    } else {
+        d = d.max(-Tick((head(ctx, r).0 as f64 / r.speed.abs()).floor() as i64));
+    }
     if d == Tick::ZERO {
         return Ok(d);
     }
@@ -761,15 +786,19 @@ pub fn roll(seq: &mut Sequence, left: ClipId, right: ClipId, delta: Tick, ctx: &
     let before = seq.clone();
     {
         let (_, l) = seq.find_item_mut(left).ok_or(EditError::NoItem(left))?;
+        if l.reverse {
+            l.source_in -= src_of(d, ls);
+        }
         l.duration += d;
     }
     {
         let (_, r) = seq.find_item_mut(right).ok_or(EditError::NoItem(right))?;
         r.start += d;
         r.duration -= d;
-        r.source_in += src_of(d, rs);
+        if !r.reverse {
+            r.source_in += src_of(d, rs);
+        }
     }
-    let _ = ls;
     transitions_follow_cuts(&before, seq);
     Ok(d)
 }
@@ -798,7 +827,10 @@ pub fn slide(seq: &mut Sequence, clip: ClipId, delta: Tick, ctx: &mut EditCtx) -
     let mut d = delta;
     if let Some(p) = &prev {
         d = d.max(-(p.duration - ctx.min_duration));
-        if let Some(m) = media_len(ctx, p) {
+        if p.reverse {
+            // a reversed neighbour grows by pulling earlier media in front of its source In
+            d = d.min(Tick((head(ctx, p).0 as f64 / p.speed.abs()).floor() as i64));
+        } else if let Some(m) = media_len(ctx, p) {
             d = d.min(Tick(((m - p.source_out()).0 as f64 / p.speed.abs()).floor() as i64));
         }
     } else {
@@ -806,7 +838,14 @@ pub fn slide(seq: &mut Sequence, clip: ClipId, delta: Tick, ctx: &mut EditCtx) -
     }
     if let Some(n) = &next {
         d = d.min(n.duration - ctx.min_duration);
-        d = d.max(-Tick((head(ctx, n).0 as f64 / n.speed.abs()).floor() as i64));
+        if n.reverse {
+            // a reversed neighbour grows leftwards by pulling later media behind its source Out
+            if let Some(m) = media_len(ctx, n) {
+                d = d.max(-Tick(((m - n.source_out()).0 as f64 / n.speed.abs()).floor() as i64));
+            }
+        } else {
+            d = d.max(-Tick((head(ctx, n).0 as f64 / n.speed.abs()).floor() as i64));
+        }
     } else {
         d = d.min(neighbours(tr, clip).1 - it.end());
     }
@@ -818,12 +857,17 @@ pub fn slide(seq: &mut Sequence, clip: ClipId, delta: Tick, ctx: &mut EditCtx) -
     if let Some(p) = prev {
         let pi = t.item_mut(p.id).ok_or(EditError::NoItem(p.id))?;
         pi.duration += d;
+        if p.reverse {
+            pi.source_in -= src_of(d, p.speed);
+        }
     }
     if let Some(n) = next {
         let ni = t.item_mut(n.id).ok_or(EditError::NoItem(n.id))?;
         ni.start += d;
         ni.duration -= d;
-        ni.source_in += src_of(d, n.speed);
+        if !n.reverse {
+            ni.source_in += src_of(d, n.speed);
+        }
     }
     let me = t.item_mut(clip).ok_or(EditError::NoItem(clip))?;
     me.start += d;

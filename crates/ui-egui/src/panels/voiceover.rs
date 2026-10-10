@@ -55,9 +55,9 @@ pub fn header_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, track: TrackId, 
     if resp.clicked() {
         act = Some(Action::Toggle(track));
     }
-    let resp = resp.on_hover_text("Voice-over record (right-click: Voice-Over Record Settings…)");
+    let resp = resp.on_hover_text(tl!("Voice-over record (right-click: Voice-Over Record Settings…)"));
     resp.context_menu(|ui| {
-        let b = ui.button("Voice-Over Record Settings…");
+        let b = ui.button(tl!("Voice-Over Record Settings…"));
         app.auto.add(&format!("{id}.settings"), b.rect, "Voice-Over Record Settings…");
         if b.clicked() {
             act = Some(Action::Settings);
@@ -100,7 +100,7 @@ pub fn toggle(app: &mut FilmcraftApp, track: Option<u64>) -> Result<Value, Strin
     let from = Tick(r["captureStart"].as_i64().unwrap_or(0));
     app.session.set_playhead(from);
     app.play(1.0);
-    app.ui.status = "Recording voice-over…".into();
+    app.ui.status = tl!("Recording voice-over…").into();
     Ok(r)
 }
 
@@ -108,8 +108,8 @@ fn stop(app: &mut FilmcraftApp) -> Result<Value, String> {
     let t = app.session.playhead();
     let r = app.session.execute("audio.voiceover.stop", json!({"time": t.0})).map_err(|e| e.to_string())?;
     app.ui.status = match r["path"].as_str() {
-        Some(p) => format!("Voice-over recorded: {p}"),
-        None => "Voice-over recording stopped (nothing recorded)".into(),
+        Some(p) => tlf!("Voice-over recorded: {p}", p),
+        None => tl!("Voice-over recording stopped (nothing recorded)").into(),
     };
     Ok(r)
 }
@@ -214,9 +214,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         let left = (rec.record_start - now).seconds().ceil().max(1.0) as i64;
         format!("{left}")
     } else if rec.punch_out.is_some_and(|o| now >= o) {
-        "Post-roll".into()
+        tl!("Post-roll").into()
     } else {
-        "● Recording".into()
+        tl!("● Recording").into()
     };
     let r = Rect::from_center_size(pos2(screen.center().x, screen.min.y + 90.0), vec2(220.0, 64.0));
     egui::Area::new(egui::Id::new("voiceover-countdown")).order(egui::Order::Foreground).fixed_pos(r.min).interactable(false).show(ctx, |ui| {
@@ -236,17 +236,19 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut apply = false;
     let mut discard = false;
     let accent = app.tokens.accent;
-    egui::Window::new("Voice-Over Record Settings").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+    // the title is translated; the window keeps one id whatever the interface language
+    let id = egui::Id::new("voiceover-settings");
+    egui::Window::new(tl!("Voice-Over Record Settings")).id(id).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
         egui::Grid::new("voiceover-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-            ui.label("Name:");
+            ui.label(tl!("Name:"));
             let r = ui.add(egui::TextEdit::singleline(&mut d.prefs.name).desired_width(220.0));
             elems.push(("voiceover.name".into(), r.rect, d.prefs.name.clone()));
             ui.end_row();
-            ui.label("Source:");
-            let shown = if d.prefs.source.is_empty() { "Default Input".to_string() } else { d.prefs.source.clone() };
+            ui.label(tl!("Source:"));
+            let shown = if d.prefs.source.is_empty() { tl!("Default Input").to_string() } else { d.prefs.source.clone() };
             let previous_source = d.prefs.source.clone();
             let cb = egui::ComboBox::from_id_salt("voiceover-source").selected_text(&shown).width(220.0).show_ui(ui, |ui| {
-                let mut opts = vec![(String::new(), "Default Input".to_string())];
+                let mut opts = vec![(String::new(), tl!("Default Input").to_string())];
                 opts.extend(d.devices.iter().map(|x| (x.clone(), x.clone())));
                 for (i, (val, label)) in opts.into_iter().enumerate() {
                     let r = ui.selectable_label(d.prefs.source == val, &label);
@@ -265,13 +267,13 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
             }
             ui.end_row();
-            ui.label("Input:");
+            ui.label(tl!("Input:"));
             let n = u32::from(d.channels.clamp(1, 64));
             d.prefs.input_channel = d.prefs.input_channel.min(63);
-            let cur = format!("Channel {}", d.prefs.input_channel + 1);
+            let cur = tlf!("Channel {n}", n = d.prefs.input_channel + 1);
             let cb = egui::ComboBox::from_id_salt("voiceover-input").selected_text(&cur).width(220.0).show_ui(ui, |ui| {
                 for c in 0..n.max(d.prefs.input_channel + 1) {
-                    let label = format!("Channel {}", c + 1);
+                    let label = tlf!("Channel {n}", n = c + 1);
                     let r = ui.selectable_label(d.prefs.input_channel == c, &label);
                     elems.push((format!("voiceover.input.{c}"), r.rect, label));
                     if r.clicked() {
@@ -282,38 +284,38 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             elems.push(("voiceover.input".into(), cb.response.rect, cur));
             ui.end_row();
             ui.label("");
-            let r = ui.checkbox(&mut d.prefs.countdown_sound_cues, "Countdown Sound Cues");
+            let r = ui.checkbox(&mut d.prefs.countdown_sound_cues, tl!("Countdown Sound Cues"));
             elems.push(("voiceover.countdown".into(), r.rect, "Countdown Sound Cues".into()));
             ui.end_row();
-            ui.label("Pre-roll:");
-            let r = ui.add(egui::DragValue::new(&mut d.prefs.preroll_seconds).speed(0.1).range(0.0..=60.0).suffix(" seconds"));
+            ui.label(tl!("Pre-roll:"));
+            let r = ui.add(egui::DragValue::new(&mut d.prefs.preroll_seconds).speed(0.1).range(0.0..=60.0).suffix(tl!(" seconds")));
             elems.push(("voiceover.preroll".into(), r.rect, format!("{}", d.prefs.preroll_seconds)));
             ui.end_row();
-            ui.label("Post-roll:");
-            let r = ui.add(egui::DragValue::new(&mut d.prefs.postroll_seconds).speed(0.1).range(0.0..=60.0).suffix(" seconds"));
+            ui.label(tl!("Post-roll:"));
+            let r = ui.add(egui::DragValue::new(&mut d.prefs.postroll_seconds).speed(0.1).range(0.0..=60.0).suffix(tl!(" seconds")));
             elems.push(("voiceover.postroll".into(), r.rect, format!("{}", d.prefs.postroll_seconds)));
             ui.end_row();
         });
         ui.label(
-            RichText::new("Playback starts the pre-roll before the playhead (or the In point); with In/Out marked, recording punches in and out there.")
+            RichText::new(tl!("Playback starts the pre-roll before the playhead (or the In point); with In/Out marked, recording punches in and out there."))
                 .weak()
                 .small(),
         );
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if app.session.voiceover.recording() {
-                let r = ui.button("Discard take");
+                let r = ui.button(tl!("Discard take"));
                 elems.push(("voiceover.discard".into(), r.rect, "Discard the active take".into()));
                 if r.clicked() {
                     discard = true;
                 }
             }
-            let c = ui.button("Cancel");
+            let c = ui.button(tl!("Cancel"));
             elems.push(("voiceover.cancel".into(), c.rect, "Cancel".into()));
             if c.clicked() {
                 close = true;
             }
-            let o = ui.add(egui::Button::new(RichText::new("OK").color(Color32::WHITE)).fill(accent));
+            let o = ui.add(egui::Button::new(RichText::new(tl!("OK")).color(Color32::WHITE)).fill(accent));
             elems.push(("voiceover.ok".into(), o.rect, "OK".into()));
             if o.clicked() {
                 apply = true;
@@ -329,7 +331,7 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 if app.playback.playing {
                     app.stop();
                 }
-                app.ui.status = "Voice-over take discarded".into();
+                app.ui.status = tl!("Voice-over take discarded").into();
                 close = true;
             }
             Err(error) => app.ui.status = error.to_string(),

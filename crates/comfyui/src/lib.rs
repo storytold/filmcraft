@@ -11,10 +11,13 @@
 //! - [`fake`]: an in-process ComfyUI stand-in for tests and headless sessions.
 //!
 //! A [`Recipe`] is what a ComfyUI clip stores in the project: the workflow as exported, the input
-//! overrides and the server. Running the same recipe again regenerates the clip.
+//! overrides and the output nodes. Running the same recipe again regenerates the clip. A recipe
+//! never names a server: a project file can be shared, so the server is the user's setting.
 //!
-//! Nothing here touches the file system: input files arrive as bytes and outputs leave as bytes.
-//! See `docs/comfyui.md` for the user-facing behaviour.
+//! Nothing here touches the file system: input files arrive as bytes and output files are
+//! streamed into a [`Sink`] (the engine writes them to disk). Everything a server sends is
+//! capped ([`MAX_FILE`], [`MAX_FILES`], [`MAX_RUN_BYTES`], [`MAX_OUTPUTS`], [`MAX_TEXT`]). See
+//! `docs/comfyui.md` for the user-facing behaviour.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
@@ -28,7 +31,7 @@ pub mod workflow;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use client::{Client, Fetched, Progress, Response, RunOptions, RunResult, Transport};
+pub use client::{Client, Fetched, MemorySink, Progress, Response, RunOptions, RunResult, Sink, Transport};
 pub use protocol::{FileRef, Output, OutputKind};
 pub use workflow::{InputInfo, InputKind, NodeInfo, Workflow};
 
@@ -37,6 +40,19 @@ pub const DEFAULT_SERVER: &str = "http://127.0.0.1:8188";
 
 /// The `client_id` FilmCraft queues prompts under.
 pub const CLIENT_ID: &str = "filmcraft";
+
+/// Largest output file downloaded (streamed to disk, never held in memory whole).
+pub const MAX_FILE: u64 = 2 << 30;
+/// Most output files downloaded per run (further outputs are listed, not downloaded).
+pub const MAX_FILES: usize = 64;
+/// Most bytes downloaded per run, all files together.
+pub const MAX_RUN_BYTES: u64 = 8 << 30;
+/// Most outputs read from a history entry.
+pub const MAX_OUTPUTS: usize = 1024;
+/// Longest text output kept (bytes; longer texts are cut at a character boundary).
+pub const MAX_TEXT: usize = 64 << 10;
+/// Largest input file uploaded (it is read into memory to be sent).
+pub const MAX_UPLOAD: u64 = 1 << 30;
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ComfyError {
@@ -56,6 +72,12 @@ pub enum ComfyError {
     Server(String),
     #[error("connection: {0}")]
     Connection(String),
+    /// Something the server sent is over a limit (a file, the run's total).
+    #[error("{0}")]
+    TooLarge(String),
+    /// Saving an output file failed.
+    #[error("saving {0}")]
+    Storage(String),
 }
 
 pub type Result<T> = std::result::Result<T, ComfyError>;
@@ -91,12 +113,13 @@ impl Binding {
 }
 
 /// How to make a ComfyUI clip (stored with the clip's project item).
+///
+/// There is no server here on purpose: a project file can come from anyone, so the server a
+/// workflow runs on (and receives the input files) is always the user's own setting. A `server`
+/// key in an older or hand-written recipe is ignored.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Recipe {
-    /// Server base URL; empty = the preferences' server.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub server: String,
     /// The workflow in API format, as exported (the bindings are applied when it is queued).
     pub workflow: Value,
     /// Input overrides, applied in order.
@@ -130,9 +153,22 @@ impl Recipe {
         self.outputs.is_empty() || self.outputs.contains(&output.node)
     }
 
-    /// The server to use: this recipe's, else `default`.
-    pub fn server_or<'a>(&'a self, default: &'a str) -> &'a str {
-        if self.server.trim().is_empty() { default } else { self.server.trim() }
+    /// The local files the recipe uploads: (node, input, path).
+    pub fn files(&self) -> impl Iterator<Item = (&str, &str, &str)> {
+        self.inputs.iter().filter_map(|b| b.file.as_deref().map(|f| (b.node.as_str(), b.input.as_str(), f)))
+    }
+}
+
+/// Check and normalise a server address: `http(s)://host[:port][/prefix]`, without a trailing
+/// `/`, a query, a fragment, whitespace or control characters.
+pub fn normalize_server(url: &str) -> Result<String> {
+    let u = url.trim().trim_end_matches('/');
+    let rest = u.strip_prefix("http://").or_else(|| u.strip_prefix("https://"));
+    match rest {
+        Some(r) if !r.is_empty() && !r.starts_with('/') && !r.contains(|c: char| c.is_whitespace() || c.is_control() || c == '?' || c == '#') => {
+            Ok(u.to_string())
+        }
+        _ => Err(ComfyError::Connection(format!("`{url}` is not an http:// or https:// server address"))),
     }
 }
 
@@ -174,10 +210,29 @@ mod tests {
     }
 
     #[test]
-    fn server_falls_back_to_default() {
-        let mut r = Recipe::default();
-        assert_eq!(r.server_or(DEFAULT_SERVER), DEFAULT_SERVER);
-        r.server = " http://gpu:8188 ".into();
-        assert_eq!(r.server_or(DEFAULT_SERVER), "http://gpu:8188");
+    fn a_recipe_never_carries_a_server() {
+        // a project file naming a server of its own: the server is dropped, the rest is kept
+        let v = json!({"server": "http://attacker.example:8188", "workflow": {"9": {"class_type": "SaveImage", "inputs": {}}}, "outputs": ["9"]});
+        let r: Recipe = serde_json::from_value(v).unwrap();
+        assert_eq!(r.outputs, ["9"]);
+        let back = serde_json::to_value(&r).unwrap();
+        assert!(back.get("server").is_none(), "{back}");
+        assert!(!back.to_string().contains("attacker"), "{back}");
+    }
+
+    #[test]
+    fn recipe_lists_its_files() {
+        let mut r = Recipe::new(json!({"1": {"class_type": "LoadImage", "inputs": {"image": "x.png"}}})).unwrap();
+        r.bind([Binding::file("1", "image", "/in.png"), Binding::value("1", "upload", json!("image"))]);
+        assert_eq!(r.files().collect::<Vec<_>>(), [("1", "image", "/in.png")]);
+    }
+
+    #[test]
+    fn server_addresses() {
+        assert_eq!(normalize_server(" http://127.0.0.1:8188/ ").unwrap(), "http://127.0.0.1:8188");
+        assert_eq!(normalize_server("https://gpu.example/comfy").unwrap(), "https://gpu.example/comfy");
+        for bad in ["", "127.0.0.1:8188", "ftp://x", "http://", "http:///x", "http://a b", "http://a?x=1", "http://a#f", "http://a\nb", "http://a\u{7f}"] {
+            assert!(normalize_server(bad).is_err(), "{bad:?}");
+        }
     }
 }

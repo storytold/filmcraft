@@ -114,7 +114,7 @@ impl ApvSource {
                 bitrate,
                 hdr: None,
             }),
-            audio: None,
+            audio_streams: Vec::new(),
             container: "APV".into(),
             start_timecode: None,
             file_size: Some(len),

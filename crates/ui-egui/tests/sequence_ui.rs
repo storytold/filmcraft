@@ -1,6 +1,9 @@
 //! Headless UI tests of the Sequence / Markers menu additions: the Add Tracks and Delete Tracks dialogs, the
 //! through-edit marks on the timeline, the Markers panel colour filter and the Shift+; gap key.
 //! The real `FilmcraftApp` under `egui_kittest`, driven over the control channel by automation id.
+//!
+//! Set `FILMCRAFT_UI_SNAPSHOT_DIR=<dir>` to also render the window offscreen with wgpu and write
+//! `sequence-settings-*.png` there; without it no GPU is needed.
 
 use std::sync::mpsc::{Sender, channel};
 
@@ -13,6 +16,7 @@ use serde_json::{Value, json};
 struct Driver {
     harness: Harness<'static, FilmcraftApp>,
     tx: Sender<ControlRequest>,
+    snapshots: Option<std::path::PathBuf>,
 }
 
 impl Driver {
@@ -21,8 +25,13 @@ impl Driver {
         session.execute("file.openDemoProject", json!({})).expect("demo project");
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
+        let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
+        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
+        if snapshots.is_some() {
+            b = b.wgpu();
+        }
+        let harness = b.build_eframe(move |_cc| app);
+        let mut d = Driver { harness, tx, snapshots };
         d.frames(4);
         d
     }
@@ -78,6 +87,34 @@ impl Driver {
         let v = self.ok("ui.elements", json!({"prefix": id}));
         let e = v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).unwrap_or_else(|| panic!("no element {id}")).clone();
         e["label"].as_str().unwrap_or_default().to_string()
+    }
+
+    /// With `FILMCRAFT_UI_SNAPSHOT_DIR` set, render the window offscreen and write `<name>.png`,
+    /// cropped to the elements whose ids start with `prefix`.
+    fn snapshot(&mut self, name: &str, prefix: &str) {
+        let Some(dir) = self.snapshots.clone() else { return };
+        let v = self.ok("ui.elements", json!({"prefix": prefix}));
+        let mut bb = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for e in v.as_array().unwrap() {
+            let r: Vec<f32> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect();
+            bb = [bb[0].min(r[0]), bb[1].min(r[1]), bb[2].max(r[0] + r[2]), bb[3].max(r[1] + r[3])];
+        }
+        self.frames(2);
+        let img = match self.harness.render() {
+            Ok(i) => i,
+            Err(e) => {
+                eprintln!("snapshot {name} skipped: {e}");
+                return;
+            }
+        };
+        let ppp = img.width() as f32 / 1600.0;
+        let x0 = ((bb[0] - 24.0) * ppp).max(0.0) as u32;
+        let y0 = ((bb[1] - 40.0) * ppp).max(0.0) as u32;
+        let x1 = (((bb[2] + 24.0) * ppp) as u32).min(img.width());
+        let y1 = (((bb[3] + 24.0) * ppp) as u32).min(img.height());
+        let img = image::imageops::crop_imm(&img, x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0)).to_image();
+        std::fs::create_dir_all(&dir).unwrap();
+        img.save(dir.join(format!("{name}.png"))).unwrap();
     }
 
     fn ids(&mut self, prefix: &str) -> Vec<String> {
@@ -418,4 +455,195 @@ fn ctrl_x_cuts_clips() {
     d.clipboard_shortcut(egui::Event::Cut, egui::Modifiers::COMMAND);
     assert!(!d.app().session.state.clipboard.is_empty());
     assert!(d.app().session.active_sequence().unwrap().find_item(first.id).is_none(), "the cut clip leaves the timeline");
+}
+
+/// Sequence ▸ Sequence Settings… opens Premiere Pro's dialog (it used to do nothing, #172): the
+/// General tab shows the sequence's settings, the ones FilmCraft can't change yet are shown (greyed
+/// out), and the Color Management and VR Properties tabs are there. Opening and cancelling change
+/// nothing.
+#[test]
+fn sequence_settings_dialog_shows_the_sequence() {
+    let mut d = Driver::demo();
+    let before = (*d.app().session.project).clone();
+    let history = d.app().session.history.undo.len();
+    let r = d.ok("ui.menu.invoke", json!({"id": "sequence.settings"}));
+    assert_eq!(r["dialog"], "sequenceSettings", "{r}");
+    d.frames(3);
+    for (id, shown) in [
+        ("sequenceSettings.name", "Main Edit"),
+        ("sequenceSettings.editingMode", "Custom"),
+        ("sequenceSettings.timebase", "23.976 frames/second"),
+        ("sequenceSettings.width", "1920"),
+        ("sequenceSettings.height", "1080"),
+        ("sequenceSettings.aspect", "16:9"),
+        ("sequenceSettings.scaleMotion", "true"),
+        ("sequenceSettings.par", "Square Pixels (1.0)"),
+        ("sequenceSettings.fields", "No Fields (Progressive Scan)"),
+        ("sequenceSettings.videoDisplay", "23.976 fps Timecode"),
+        ("sequenceSettings.channelFormat", "Stereo"),
+        ("sequenceSettings.channels", "2"),
+        ("sequenceSettings.sampleRate", "48000 Hz"),
+        ("sequenceSettings.maxRenderQuality", "false"),
+        ("sequenceSettings.linearColor", "true"),
+    ] {
+        assert_eq!(d.label(id), shown, "{id}");
+    }
+    for id in ["sequenceSettings.tab.general", "sequenceSettings.tab.color", "sequenceSettings.tab.vr", "sequenceSettings.ok", "sequenceSettings.cancel"] {
+        assert!(d.ids(id).iter().any(|i| i == id), "{id} missing");
+    }
+    d.snapshot("sequence-settings-general", "sequenceSettings.");
+    // the timebase list offers the common rates
+    d.click("sequenceSettings.timebase");
+    let rates = d.ids("sequenceSettings.timebase.option.");
+    for r in ["24000/1001", "24/1", "25/1", "30000/1001", "60/1"] {
+        assert!(rates.iter().any(|i| i.ends_with(r)), "{r} missing: {rates:?}");
+    }
+    d.click("sequenceSettings.timebase.option.24000/1001");
+    d.click("sequenceSettings.tab.color");
+    assert_eq!(d.label("sequenceSettings.workingSpace"), "Rec. 709");
+    assert_eq!(d.label("sequenceSettings.autoToneMap"), "true");
+    d.snapshot("sequence-settings-color", "sequenceSettings.");
+    d.click("sequenceSettings.tab.vr");
+    assert_eq!(d.label("sequenceSettings.vr.projection"), "None");
+    d.snapshot("sequence-settings-vr", "sequenceSettings.");
+    d.click("sequenceSettings.cancel");
+    assert!(d.ids("sequenceSettings.").is_empty(), "dialog closed");
+    assert_eq!(*d.app().session.project, before);
+    assert_eq!(d.app().session.history.undo.len(), history, "no undo step");
+    // OK without a change closes it and adds no undo step either
+    d.ok("ui.menu.invoke", json!({"id": "sequence.settings"}));
+    d.frames(3);
+    d.click("sequenceSettings.ok");
+    assert!(d.ids("sequenceSettings.").is_empty());
+    assert_eq!(d.app().session.history.undo.len(), history);
+}
+
+/// OK applies the dialog in one undo step: a new timebase (29.97 starts on drop-frame timecode), a
+/// smaller frame with the clips' Motion scaled to match, and Maximum Render Quality.
+#[test]
+fn sequence_settings_dialog_applies_in_one_undo_step() {
+    let mut d = Driver::demo();
+    let before = (*d.app().session.project).clone();
+    let motion = |d: &mut Driver| {
+        let q = d.app().session.active_sequence().unwrap();
+        let m = q.video_tracks.iter().flat_map(|t| &t.items).find_map(|i| i.effect("motion")).unwrap().clone();
+        match (&m.param("position").unwrap().value, &m.param("scale").unwrap().value) {
+            (filmcraft_engine::project::ParamValue::Vec2(p), filmcraft_engine::project::ParamValue::Float(s)) => (p.x, p.y, *s),
+            _ => panic!("Motion has a point and a number"),
+        }
+    };
+    let (x0, y0, s0) = motion(&mut d);
+    d.ok("ui.menu.invoke", json!({"id": "sequence.settings"}));
+    // the window sizes itself over its first frames; click once it has settled
+    d.frames(10);
+    d.click("sequenceSettings.timebase");
+    d.snapshot("sequence-settings-timebase-list", "sequenceSettings.");
+    d.click("sequenceSettings.timebase.option.30000/1001");
+    assert_eq!(d.label("sequenceSettings.timebase"), "29.97 frames/second");
+    assert_eq!(d.label("sequenceSettings.videoDisplay"), "29.97 fps Drop-Frame Timecode");
+    // the frame-size fields are drag values; set the draft as typing would
+    d.app().ui.sequence_settings.width = 1280;
+    d.app().ui.sequence_settings.height = 720;
+    d.frames(2);
+    assert_eq!(d.label("sequenceSettings.aspect"), "16:9");
+    d.click("sequenceSettings.maxRenderQuality");
+    d.click("sequenceSettings.ok");
+    assert!(d.ids("sequenceSettings.").is_empty(), "dialog closed");
+    let st = d.app().session.active_sequence().unwrap().settings.clone();
+    assert_eq!((st.width, st.height, st.frame_rate), (1280, 720, filmcraft_engine::time::FrameRate::FPS_29_97));
+    assert!(st.drop_frame && st.max_render_quality);
+    let (x1, y1, s1) = motion(&mut d);
+    let k = 2.0 / 3.0;
+    assert!((x1 - x0 * k).abs() < 1e-9 && (y1 - y0 * k).abs() < 1e-9 && (s1 - s0 * k).abs() < 1e-9, "{x0},{y0},{s0} -> {x1},{y1},{s1}");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(*d.app().session.project, before, "one undo step for the whole dialog");
+}
+
+/// The General tab's Sequence Name renames the sequence (its Project panel item) together with
+/// the other settings, in the same undo step; a blank name keeps the old one.
+#[test]
+fn sequence_settings_dialog_renames_the_sequence() {
+    let mut d = Driver::demo();
+    let id = d.app().session.state.active_sequence.unwrap();
+    let name = |d: &mut Driver| d.app().session.project.item(id).unwrap().name.clone();
+    assert_eq!(name(&mut d), "Main Edit");
+    d.ok("ui.menu.invoke", json!({"id": "sequence.settings"}));
+    d.frames(10);
+    assert_eq!(d.label("sequenceSettings.name"), "Main Edit");
+    // the name field is a text edit; set the draft as typing would
+    d.app().ui.sequence_settings.name = "Rough Cut".into();
+    d.app().ui.sequence_settings.max_render_quality = true;
+    d.frames(2);
+    d.click("sequenceSettings.ok");
+    assert!(d.ids("sequenceSettings.").is_empty(), "dialog closed");
+    assert_eq!(name(&mut d), "Rough Cut");
+    assert!(d.app().session.active_sequence().unwrap().settings.max_render_quality);
+    d.exec("edit.undo", json!({}));
+    assert_eq!(name(&mut d), "Main Edit", "one undo step for the name and the settings");
+    assert!(!d.app().session.active_sequence().unwrap().settings.max_render_quality);
+    // a blank name changes nothing
+    let history = d.app().session.history.undo.len();
+    d.ok("ui.menu.invoke", json!({"id": "sequence.settings"}));
+    d.frames(10);
+    d.app().ui.sequence_settings.name = "   ".into();
+    d.frames(2);
+    d.click("sequenceSettings.ok");
+    assert_eq!(name(&mut d), "Main Edit");
+    assert_eq!(d.app().session.history.undo.len(), history);
+}
+
+/// File ▸ New ▸ Sequence… (Cmd+N) made a default sequence at once; it opens New Sequence: the
+/// Sequence Settings dialog from the default settings, named like the command would name it, with
+/// a Tracks tab. OK makes the sequence with what was chosen (one undo step); Cancel makes none.
+#[test]
+fn new_sequence_opens_its_dialog() {
+    let mut d = Driver::demo();
+    let sequences = |d: &mut Driver| d.app().session.project.sequences().count();
+    let n0 = sequences(&mut d);
+    let r = d.ok("ui.menu.invoke", json!({"id": "file.newSequence"}));
+    assert_eq!(r["dialog"], "newSequence", "{r}");
+    d.frames(10);
+    assert_eq!(sequences(&mut d), n0, "nothing is made before OK");
+    assert_eq!(d.label("sequenceSettings.name"), format!("Sequence {:02}", n0 + 1));
+    assert_eq!(d.label("sequenceSettings.timebase"), "23.976 frames/second");
+    assert!(d.ids("sequenceSettings.tab.").iter().any(|i| i == "sequenceSettings.tab.tracks"));
+    assert!(d.ids("sequenceSettings.tab.color").is_empty(), "New Sequence has General and Tracks");
+    d.click("sequenceSettings.tab.tracks");
+    assert_eq!(d.label("sequenceSettings.tracks.video"), "3");
+    assert_eq!(d.label("sequenceSettings.tracks.audio"), "3");
+    d.snapshot("new-sequence-tracks", "sequenceSettings.");
+    // set the draft as typing would: a vertical 30 fps sequence with 2 video and 4 audio tracks
+    {
+        let s = &mut d.app().ui.sequence_settings;
+        s.name = "Shorts".into();
+        (s.width, s.height) = (1080, 1920);
+        (s.fps_num, s.fps_den) = (30, 1);
+        (s.video_tracks, s.audio_tracks) = (2, 4);
+    }
+    d.frames(2);
+    d.click("sequenceSettings.ok");
+    assert!(d.ids("sequenceSettings.").is_empty(), "dialog closed");
+    assert_eq!(sequences(&mut d), n0 + 1);
+    let id = d.app().session.state.active_sequence.unwrap();
+    assert_eq!(d.app().session.project.item(id).unwrap().name, "Shorts", "the new sequence is the open one");
+    let q = d.app().session.active_sequence().unwrap().clone();
+    assert_eq!((q.settings.width, q.settings.height, q.settings.frame_rate), (1080, 1920, filmcraft_engine::time::FrameRate::FPS_30));
+    assert_eq!((q.video_tracks.len(), q.audio_tracks.len()), (2, 4));
+    d.exec("edit.undo", json!({}));
+    assert_eq!(sequences(&mut d), n0, "one undo step");
+    // Cancel makes nothing
+    d.ok("ui.menu.invoke", json!({"id": "file.newSequence"}));
+    d.frames(10);
+    d.click("sequenceSettings.cancel");
+    assert_eq!(sequences(&mut d), n0);
+    // with params (a clip, an agent) the command still makes the sequence directly
+    d.ok("ui.menu.invoke", json!({"id": "file.newSequence", "params": {"name": "Direct"}}));
+    d.frames(2);
+    assert_eq!(sequences(&mut d), n0 + 1);
+    // and Sequence Settings… is still the active sequence's dialog, with its three tabs
+    d.ok("ui.menu.invoke", json!({"id": "sequence.settings"}));
+    d.frames(10);
+    assert_eq!(d.label("sequenceSettings.name"), "Direct");
+    assert!(d.ids("sequenceSettings.tab.color").iter().any(|i| i == "sequenceSettings.tab.color"));
+    d.click("sequenceSettings.cancel");
 }

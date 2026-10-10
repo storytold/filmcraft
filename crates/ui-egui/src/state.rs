@@ -359,6 +359,15 @@ pub enum GuideDialog {
     },
 }
 
+/// The colour parameter an armed eyedropper fills (`effects.setParam` arguments).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Eyedropper {
+    pub clip: u64,
+    pub effect: usize,
+    pub param: String,
+    pub mask: Option<usize>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiState {
     #[serde(default)]
@@ -384,11 +393,21 @@ pub struct UiState {
     /// Collapsed effect sections in Effect Controls ("clip:index").
     pub collapsed_fx: Vec<String>,
     pub show_menu_bar: bool,
+    /// The header bar (Home, Import, Edit, Export, workspaces). An app that embeds FilmCraft can hide it.
+    #[serde(default = "shown")]
+    pub show_header: bool,
+    /// The status bar (hints, messages, job progress). An app that embeds FilmCraft can hide it.
+    #[serde(default = "shown")]
+    pub show_status_bar: bool,
     pub dark: bool,
     /// Lumetri scopes visible in the Program monitor area.
     pub show_scopes: bool,
     /// Transient status line shown in the footer.
     pub status: String,
+    /// The colour parameter an armed eyedropper will fill with the next pixel clicked in the Program
+    /// monitor (Esc or a click elsewhere disarms it). Never saved.
+    #[serde(skip)]
+    pub eyedropper: Option<Eyedropper>,
     /// Essential Sound sub-tab: "Edit" or "Browse".
     #[serde(default)]
     pub essential_sound_tab: String,
@@ -432,6 +451,9 @@ pub struct UiState {
     /// Delete Tracks dialog draft.
     #[serde(default)]
     pub delete_tracks: DeleteTracksDraft,
+    /// Sequence Settings dialog draft.
+    #[serde(default)]
+    pub sequence_settings: SequenceSettingsDraft,
     /// On-monitor text editing (Type tool / double-click on a text layer).
     #[serde(default)]
     pub gfx_edit: Option<GfxEdit>,
@@ -735,6 +757,60 @@ impl Default for AddTracksDraft {
     }
 }
 
+/// The Sequence Settings dialog (Sequence ▸ Sequence Settings…), filled from the active sequence
+/// when it opens (`panels::sequence_settings::open`). `tab`: `general`, `color` or `vr`; the
+/// timebase is `fps_num`/`fps_den`; `mix`: `Stereo`, `Mono`, `5.1` or `Adaptive`; `working_space`:
+/// a [`filmcraft_color::WorkingSpace`] id. `scale_motion` is "Scale motion effects proportionally
+/// when changing frame size", on by default as in Premiere.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SequenceSettingsDraft {
+    pub tab: String,
+    /// The sequence's name (its Project panel item); a blank name keeps the current one.
+    pub name: String,
+    /// File ▸ New ▸ Sequence…: the dialog makes a new sequence (`file.newSequence`) with these
+    /// settings and `video_tracks` / `audio_tracks` tracks, instead of changing the active one.
+    pub new_sequence: bool,
+    pub video_tracks: u32,
+    pub audio_tracks: u32,
+    pub fps_num: i64,
+    pub fps_den: i64,
+    pub width: u32,
+    pub height: u32,
+    pub scale_motion: bool,
+    pub drop_frame: bool,
+    pub mix: String,
+    pub sample_rate: u32,
+    pub max_render_quality: bool,
+    pub working_space: String,
+    pub wide_gamut: bool,
+    pub auto_tone_map: bool,
+}
+
+impl Default for SequenceSettingsDraft {
+    fn default() -> Self {
+        Self {
+            tab: "general".into(),
+            name: String::new(),
+            new_sequence: false,
+            video_tracks: 3,
+            audio_tracks: 3,
+            fps_num: 24_000,
+            fps_den: 1001,
+            width: 1920,
+            height: 1080,
+            scale_motion: true,
+            drop_frame: false,
+            mix: "Stereo".into(),
+            sample_rate: 48_000,
+            max_render_quality: false,
+            working_space: "rec709".into(),
+            wide_gamut: false,
+            auto_tone_map: true,
+        }
+    }
+}
+
 /// The Delete Tracks dialog (Sequence ▸ Delete Tracks…): per kind, whether to delete and which
 /// track (`"empty"` = All Empty Tracks, or a track name such as `"V2"`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -776,6 +852,10 @@ pub struct GfxEdit {
     pub anchor: usize,
 }
 
+fn shown() -> bool {
+    true
+}
+
 fn captions_tab() -> String {
     "Captions".into()
 }
@@ -803,9 +883,12 @@ impl Default for UiState {
             lumetri_grid_folder: None,
             collapsed_fx: vec![],
             show_menu_bar: true,
+            show_header: true,
+            show_status_bar: true,
             dark: true,
             show_scopes: false,
             status: String::new(),
+            eyedropper: None,
             essential_sound_tab: "Edit".into(),
             export: Default::default(),
             text_tab: captions_tab(),
@@ -820,6 +903,7 @@ impl Default for UiState {
             audio_gain: AudioGainDraft::default(),
             add_tracks: AddTracksDraft::default(),
             delete_tracks: DeleteTracksDraft::default(),
+            sequence_settings: SequenceSettingsDraft::default(),
             gfx_edit: None,
             pen_points: vec![],
             link_media: None,

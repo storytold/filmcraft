@@ -6,8 +6,32 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+/// A literal UI string in the language the interface is drawn in (`i18n::t`). Only literals: the
+/// i18n tests read every `tl!` literal in the crate and require a Spanish translation for it.
+macro_rules! tl {
+    ($s:literal) => {
+        $crate::i18n::t($s)
+    };
+}
+
+/// A translated template with `{name}` placeholders filled in, for text that `format!` would build.
+/// After the template literal come the values: `n = count`, or just `gain` for a variable of the
+/// same name. Values are formatted with `Display`; the translation may reorder placeholders.
+macro_rules! tlf {
+    (@v $k:ident = $v:expr) => {
+        $v
+    };
+    (@v $k:ident) => {
+        $k
+    };
+    ($s:literal $(, $k:ident $(= $v:expr)?)* $(,)?) => {
+        $crate::i18n::fmt($crate::i18n::t($s), &[$((stringify!($k), ToString::to_string(&tlf!(@v $k $(= $v)?)).as_str())),*])
+    };
+}
+
 pub mod automation;
 pub mod brand;
+mod cjk;
 pub mod control;
 pub mod crash;
 pub mod credits;
@@ -22,6 +46,8 @@ pub mod panels;
 pub mod perf;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod play_ahead;
+pub mod scrub;
+pub mod source_playback;
 pub mod state;
 pub mod theme;
 pub mod widgets;
@@ -85,10 +111,15 @@ pub struct HostHooks {
     pub pick_save_as: Option<Box<dyn FnMut(&str, &[&str], &str) -> Option<String>>>,
     /// The active keyboard shortcuts changed: update native menu key equivalents.
     pub shortcuts_changed: Option<Box<dyn FnMut(&[menus::MenuItem])>>,
+    /// The user's preferred languages (locale tags, most preferred first) for Interface Language ▸
+    /// System Language. Without it, System Language is English.
+    pub system_languages: Option<Box<dyn Fn() -> Vec<String>>>,
     /// Open dialog for a JSON file (shortcut preset import): filter name, extensions → path.
     pub pick_open_file: Option<Box<dyn FnMut(&str, &[&str]) -> Option<String>>>,
     /// Folder picker (Link Media search, proxy and Project Manager destinations).
     pub pick_folder: Option<Box<dyn FnMut() -> Option<String>>>,
+    /// Folder picker starting at the current destination (Export Frame).
+    pub pick_folder_at: Option<Box<dyn FnMut(&str) -> Option<String>>>,
     /// Pick one file for a command that relinks to it (Link Media ▸ Locate…, Attach Proxies,
     /// Reconnect Full Resolution) instead of importing it, as [`Self::pick_files`] does. Native
     /// hosts return the path. A host whose picker is asynchronous (the web) returns `None` and
@@ -130,6 +161,8 @@ pub enum Dialog {
     DeleteTracks,
     /// Sequence ▸ Add Tracks….
     AddTracks,
+    /// Sequence ▸ Sequence Settings….
+    SequenceSettings,
 }
 
 #[derive(Default)]
@@ -172,13 +205,28 @@ const SCREENSHOT_TIMEOUT_S: f64 = 10.0;
 /// timeline zoom animation finished) before capturing what is there.
 const SCREENSHOT_SETTLE_MAX_S: f64 = 5.0;
 
+/// Export entries that run from the menus through the save panel: command, filter label,
+/// extension.
+pub(crate) const EXPORT_SAVE_DIALOGS: [(&str, &str, &str); 7] = [
+    ("markers.exportCsv", "Marker report (CSV)", "csv"),
+    ("file.exportEdl", "EDL", "edl"),
+    ("file.exportFcp7Xml", "Final Cut Pro XML", "xml"),
+    ("file.exportFcpxml", "FCPXML", "fcpxml"),
+    ("file.exportOtio", "OpenTimelineIO", "otio"),
+    ("file.exportAle", "Avid Log Exchange", "ale"),
+    ("file.exportSelectionProject", "FilmCraft Project", "fcproj"),
+];
+
 pub struct FilmcraftApp {
     pub session: Session,
     pub ui: UiState,
     pub tokens: Tokens,
     pub frames: Arc<FrameServer>,
     pub playback: Playback,
+    pub source_playback: source_playback::SourcePlayback,
     pub audio: Option<Box<dyn AudioOut>>,
+    /// Audio during scrubbing (#211).
+    pub scrub: scrub::ScrubAudio,
     pub hooks: HostHooks,
     pub dialog: Option<Dialog>,
     pub file_dialogs: panels::file_dialogs::FileDialogState,
@@ -200,6 +248,11 @@ pub struct FilmcraftApp {
     /// A paused monitor drew a stand-in (nearest cached) picture last frame: its exact frame is
     /// still decoding.
     pub(crate) monitor_inexact: bool,
+    /// Per monitor: the frames it asked for on its latest paused passes, oldest first (stand-ins
+    /// while the newest renders, see `panels::monitor`).
+    pub(crate) monitor_asked: HashMap<String, std::collections::VecDeque<FrameKey>>,
+    /// The frame whose picture the Program monitor drew last: the frame due, or its stand-in.
+    pub(crate) program_shown: Option<FrameKey>,
     /// Consecutive frames the timeline zoom / scroll has been at rest. `ui.elements` answers from
     /// the frame before the last one, so its timeline rects are final from 2 on.
     pub(crate) timeline_still: u32,
@@ -259,13 +312,7 @@ pub struct GpuState {
 
 /// Largest texture side a plan needs on the GPU (output and every layer).
 fn plan_side(plan: &filmcraft_render::plan::FramePlan) -> usize {
-    use filmcraft_render::plan::FramePlan;
-    match plan {
-        FramePlan::Layers { width, height, layers } => {
-            layers.iter().map(|l| l.frame.width.max(l.frame.height) as usize).fold((*width).max(*height), usize::max)
-        }
-        FramePlan::Image(img) => img.w.max(img.h),
-    }
+    plan.max_side()
 }
 
 /// Whether the GPU compositor can run on this adapter: it renders and blends Rgba16Float
@@ -322,7 +369,7 @@ impl FilmcraftApp {
         {
             g.render_state.renderer.write().free_texture(&id);
         }
-        self.ui.status = "Graphics problem: switched to software compositing".into();
+        self.ui.status = tl!("Graphics problem: switched to software compositing").into();
     }
 
     /// Composite a plan on the GPU and return the egui texture showing it.
@@ -374,13 +421,16 @@ impl FilmcraftApp {
         let frames = Arc::new(FrameServer::new(session.media.clone(), session.services.clone(), session.previews.clone(), FrameServer::default_workers()));
         let workspaces =
             session.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| dock::WorkspacePrefs::load(&d.join(dock::WORKSPACES_FILE))).unwrap_or_default();
+        let language = i18n::Language::parse(&session.prefs.general.interface_language).unwrap_or_default();
         Self {
             session,
-            ui: UiState::default(),
+            ui: UiState { language, ..UiState::default() },
             tokens: Tokens::for_kind(ThemeKind::Dark),
             frames,
             playback: Playback { speed: 1.0, ..Default::default() },
+            source_playback: Default::default(),
             audio: None,
+            scrub: Default::default(),
             hooks: HostHooks::default(),
             // Unsaved changes left by a session that died are offered first thing.
             dialog: recovery.then_some(Dialog::Recovery),
@@ -396,6 +446,8 @@ impl FilmcraftApp {
             pending_screenshots: Vec::new(),
             queued_screenshots: Vec::new(),
             monitor_inexact: false,
+            monitor_asked: HashMap::new(),
+            program_shown: None,
             timeline_still: 0,
             input_waiters: Vec::new(),
             next_token: 1,
@@ -475,6 +527,26 @@ impl FilmcraftApp {
         let prev = self.applied_prefs.take();
         if prev.as_ref().is_none_or(|q| q.appearance != p.appearance || q.general.show_tool_tips != p.general.show_tool_tips) {
             self.set_theme(ctx, ThemeKind::from_pref(&p.appearance.color_theme));
+        }
+        if prev.as_ref().is_none_or(|q| q.general.interface_language != p.general.interface_language) {
+            let language = match i18n::Language::parse(&p.general.interface_language) {
+                Some(l) => l,
+                None if p.general.interface_language == "system" => {
+                    i18n::Language::from_locales(&self.hooks.system_languages.as_ref().map(|f| f()).unwrap_or_default())
+                }
+                None => i18n::Language::default(),
+            };
+            if language == i18n::Language::Ja && !i18n::install_japanese_font(ctx) {
+                self.ui.language = i18n::Language::En;
+                self.ui.status = tl!("no Japanese font is installed on this system; the interface stays in English").into();
+            } else {
+                self.ui.language = language;
+            }
+            i18n::set_current(self.ui.language);
+            let items = menus::menu_items(self);
+            if let Some(hook) = self.hooks.shortcuts_changed.as_mut() {
+                hook(&items);
+            }
         }
         self.frames.set_cache_budget(p.memory.frame_cache_mb as usize * (1 << 20));
         self.ui.play_after_render = p.timeline.play_after_rendering;
@@ -667,6 +739,7 @@ impl FilmcraftApp {
     }
 
     pub fn play(&mut self, speed: f64) {
+        self.stop_source();
         if self.session.active_sequence().is_none() {
             return;
         }
@@ -796,7 +869,7 @@ impl FilmcraftApp {
                 audio.stop();
             }
             log::warn!("audio output lost its playback clock; playing without sound");
-            self.ui.status = "Audio output failed: playing without sound (check Settings ▸ Audio Hardware)".into();
+            self.ui.status = tl!("Audio output failed: playing without sound (check Settings ▸ Audio Hardware)").into();
         }
         if let Some((f, sr)) = reading {
             if f != self.playback.audio_seen.0 {
@@ -812,7 +885,7 @@ impl FilmcraftApp {
                     a.stop();
                 }
                 log::warn!("audio output stalled (no samples consumed for {AUDIO_STALL_S} s); playing without sound");
-                self.ui.status = "Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)".into();
+                self.ui.status = tl!("Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)").into();
             }
         }
         let elapsed = match reading {
@@ -892,6 +965,17 @@ impl FilmcraftApp {
         self.textures.get(name).map(|(_, t)| (t.id(), t.size_vec2()))
     }
 
+    /// The frame a named texture shows.
+    pub fn texture_key(&self, name: &str) -> Option<FrameKey> {
+        self.textures.get(name).map(|(k, _)| *k)
+    }
+
+    /// The frame whose picture the Program monitor drew last: the frame due at the playhead, or
+    /// the stand-in shown while that one renders (`perf.stats`, tests).
+    pub fn program_picture(&self) -> Option<FrameKey> {
+        self.program_shown
+    }
+
     /// Get a thumbnail texture for an item at a media time (requested at low priority).
     /// Cache revision of a project item's own frames: media changes only when its file does
     /// (relink, Make Offline, proxies on/off), so its frames survive unrelated edits; other items
@@ -938,6 +1022,11 @@ impl FilmcraftApp {
 
     // ---------------------------------------------------------------- files
 
+    /// Destination of imports started from the currently shown Project panel view.
+    pub fn import_bin(&self) -> filmcraft_project::BinId {
+        panels::project::view_of(self, panels::project::shown_inst(self)).bin
+    }
+
     pub fn file_dialog(&mut self, id: &str, params: &Value) -> Result<Value, String> {
         match id {
             "file.import" => {
@@ -952,7 +1041,8 @@ impl FilmcraftApp {
                 if paths.is_empty() {
                     return Ok(Value::Null);
                 }
-                let r = self.session.execute("file.import", json!({"paths": paths})).map_err(|e| e.to_string());
+                let bin = params.get("bin").cloned().unwrap_or_else(|| json!(self.import_bin().0));
+                let r = self.session.execute("file.import", json!({"paths": paths, "bin": bin})).map_err(|e| e.to_string());
                 if let Ok(v) = &r
                     && let Some(errs) = v.get("errors").and_then(Value::as_array)
                     && !errs.is_empty()
@@ -1007,8 +1097,38 @@ impl FilmcraftApp {
                 p["path"] = json!(path);
                 self.session.execute("captions.export", p).map_err(|e| e.to_string())
             }
-            _ => Err(format!("no dialog for {id}")),
+            _ => match EXPORT_SAVE_DIALOGS.iter().find(|(c, ..)| *c == id) {
+                Some(&(_, filter, ext)) => self.export_save_dialog(id, filter, ext, params),
+                None => Err(format!("no dialog for {id}")),
+            },
         }
+    }
+
+    /// File ▸ Export ▸ EDL…, Final Cut Pro XML… etc. from the menus (#382): ask where to save, then
+    /// run the command with that `path` and the rest of `params`.
+    fn export_save_dialog(&mut self, id: &str, filter: &str, ext: &str, params: &Value) -> Result<Value, String> {
+        filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&self.session))?;
+        let Some(pick) = self.hooks.pick_save_as.as_mut() else {
+            return Err("no save dialog available: run the command with a `path`".into());
+        };
+        // Timelines are named after the sequence; a selection must not suggest the open project's file.
+        let sequence = self.session.state.active_sequence.and_then(|s| self.session.project.item(s)).map(|i| i.name.clone());
+        let stem = match id {
+            "file.exportAle" => self.session.project.name.clone(),
+            "file.exportSelectionProject" => format!("{} selection", self.session.project.name),
+            _ => sequence.unwrap_or_else(|| self.session.project.name.clone()),
+        };
+        let stem: String = stem.chars().map(|c| if matches!(c, '/' | '\\') || c.is_control() { '-' } else { c }).collect();
+        let stem = if stem.trim().is_empty() { "Untitled".to_string() } else { stem };
+        let Some(path) = pick(filter, &[ext], &format!("{stem}.{ext}")) else { return Ok(Value::Null) };
+        let mut p = params.as_object().cloned().unwrap_or_default();
+        p.insert("path".into(), json!(path));
+        let r = self.session.execute(id, Value::Object(p)).map_err(|e| e.to_string());
+        self.ui.status = match &r {
+            Ok(_) => tlf!("Exported {path}", path),
+            Err(e) => e.clone(),
+        };
+        r
     }
 
     /// Import dropped files.
@@ -1022,7 +1142,7 @@ impl FilmcraftApp {
             }
         }
         if !paths.is_empty() {
-            let _ = self.session.execute("file.import", json!({"paths": paths}));
+            let _ = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
         }
     }
 
@@ -1067,7 +1187,9 @@ impl FilmcraftApp {
             }
             // Mark In/Out in the Source monitor when it has focus.
             let params = if self.ui.focused == PanelKind::Source
-                && (matches!(id.as_str(), "markers.markIn" | "markers.markOut") || id.starts_with("markers.markSplit") || id.starts_with("markers.goToSplit"))
+                && (matches!(id.as_str(), "markers.markIn" | "markers.markOut" | "markers.clearInOut")
+                    || id.starts_with("markers.markSplit")
+                    || id.starts_with("markers.goToSplit"))
             {
                 json!({"target": "source"})
             } else {
@@ -1190,6 +1312,7 @@ impl FilmcraftApp {
     // ---------------------------------------------------------------- frame
 
     fn frame(&mut self, ui: &mut egui::Ui) {
+        i18n::set_current(self.ui.language);
         if std::mem::take(&mut self.panic_next_frame) {
             crash::injected_fault("injected UI fault");
         }
@@ -1232,13 +1355,17 @@ impl FilmcraftApp {
         }
         self.handle_shortcuts(&ctx);
         self.advance_playback(&ctx);
+        self.advance_source_playback(&ctx);
+        self.scrub_audio(&ctx);
         let t = self.tokens;
         let full = ui.max_rect();
         ui.painter().rect_filled(full, 0.0, t.app_bg);
-        let header_h = 38.0;
+        let header_h = if self.ui.show_header { 38.0 } else { 0.0 };
         let header = egui::Rect::from_min_size(full.min, egui::vec2(full.width(), header_h));
-        header::show(self, ui, header);
-        let status_h = 20.0;
+        if self.ui.show_header {
+            header::show(self, ui, header);
+        }
+        let status_h = if self.ui.show_status_bar { 20.0 } else { 0.0 };
         let body = egui::Rect::from_min_max(egui::pos2(full.min.x + 1.0, header.max.y + 1.0), egui::pos2(full.max.x - 1.0, full.max.y - status_h - 2.0));
         match self.ui.mode {
             state::Mode::Edit => self.dock_area(ui, body),
@@ -1246,9 +1373,14 @@ impl FilmcraftApp {
             state::Mode::Export => panels::export_mode::show(self, ui, body),
         }
         panels::dialogs::show(self, &ctx);
+        if !self.ui.show_status_bar {
+            // no bar to draw the job in, but a finished preview render still plays
+            self.watch_jobs(ui.ctx());
+            return;
+        }
         // Status / hint bar
         let sb = egui::Rect::from_min_max(egui::pos2(full.min.x, full.max.y - status_h), full.max);
-        ui.painter().rect_filled(sb, 0.0, egui::Color32::from_rgb(0x1c, 0x1c, 0x1c));
+        ui.painter().rect_filled(sb, 0.0, t.header_bg);
         let now = ui.input(|i| i.time);
         if self.ui.status != self.status_seen.0 {
             self.status_seen = (self.ui.status.clone(), now);
@@ -1268,9 +1400,9 @@ impl FilmcraftApp {
         self.job_status(ui, sb, &t);
     }
 
-    /// Right side of the status bar: the running job (export / render previews) with a progress
-    /// bar and a cancel button; plays the rendered range when a preview render completes.
-    fn job_status(&mut self, ui: &mut egui::Ui, sb: egui::Rect, t: &Tokens) {
+    /// The running job (export / render previews), if any; plays the rendered range when a preview
+    /// render completes. Runs every frame, with or without the status bar.
+    fn watch_jobs(&mut self, ctx: &egui::Context) -> Option<filmcraft_engine::Job> {
         use std::sync::atomic::Ordering;
         let running = self.session.jobs.iter().rev().find(|j| !j.progress.finished.load(Ordering::Relaxed)).cloned();
         // Play after rendering previews.
@@ -1285,12 +1417,20 @@ impl FilmcraftApp {
                 self.play(1.0);
             }
         }
-        let Some(job) = running else { return };
+        let job = running?;
         if job.label.starts_with("Rendering ") && !job.label.contains("audio") && self.watched_render.is_none_or(|w| w.0 != job.id) {
             let from = self.session.active_sequence().and_then(|q| q.mark_in).unwrap_or(Tick::ZERO);
             self.watched_render = Some((job.id, from));
         }
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(150));
+        ctx.request_repaint_after(std::time::Duration::from_millis(150));
+        Some(job)
+    }
+
+    /// Right side of the status bar: the running job (export / render previews) with a progress
+    /// bar and a cancel button.
+    fn job_status(&mut self, ui: &mut egui::Ui, sb: egui::Rect, t: &Tokens) {
+        use std::sync::atomic::Ordering;
+        let Some(job) = self.watch_jobs(ui.ctx()) else { return };
         let f = job.progress.fraction().clamp(0.0, 1.0);
         let left = job.progress.eta().map(panels::left_text).unwrap_or_default();
         let cancel = egui::Rect::from_center_size(egui::pos2(sb.max.x - 14.0, sb.center().y), egui::vec2(14.0, 14.0));
@@ -1298,7 +1438,7 @@ impl FilmcraftApp {
         let p = ui.painter();
         p.rect_filled(bar, 3.0, t.separator);
         p.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * f, bar.height())), 3.0, t.accent);
-        let verb = if job.label.starts_with("Rendering") { job.label.clone() } else { "Exporting".to_string() };
+        let verb = if job.label.starts_with("Rendering") { crate::i18n::t(&job.label).to_string() } else { tl!("Exporting").to_string() };
         p.text(
             egui::pos2(bar.min.x - 8.0, sb.center().y),
             egui::Align2::RIGHT_CENTER,
@@ -1313,7 +1453,7 @@ impl FilmcraftApp {
         p.line_segment([cancel.center() + egui::vec2(-k, k), cancel.center() + egui::vec2(k, -k)], egui::Stroke::new(1.4, c));
         self.auto.add("status.job.cancel", cancel, &format!("Cancel {}", job.label));
         self.auto.add("status.job.progress", bar, &format!("{:.0}%{left}", f * 100.0));
-        if resp.on_hover_text("Cancel").clicked() {
+        if resp.on_hover_text(tl!("Cancel")).clicked() {
             job.progress.cancel.store(true, Ordering::Relaxed);
             self.watched_render = None;
         }
@@ -1321,19 +1461,24 @@ impl FilmcraftApp {
 
     /// Contextual hint for the status bar (Premiere shows tool/gesture hints here).
     fn hint_text(&self) -> String {
+        let mac = cfg!(target_os = "macos");
         match self.ui.tool {
-            state::Tool::Selection => "Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.",
-            state::Tool::TrackSelectForward => "Click to select all clips to the right in all tracks. Shift-click for a single track.",
-            state::Tool::TrackSelectBackward => "Click to select all clips to the left in all tracks. Shift-click for a single track.",
-            state::Tool::Ripple => "Drag an edit point to ripple trim; later clips move to keep the gap closed.",
-            state::Tool::Rolling => "Drag an edit point to roll it: the out of one clip and the in of the next move together.",
-            state::Tool::RateStretch => "Drag an edge to change the clip's speed so it fills the new duration.",
-            state::Tool::Remix => "Drag the edge of a music clip to remix it to the new duration at musically matching beats.",
-            state::Tool::Razor => "Click to split a clip. Shift-click to split all tracks.",
-            state::Tool::Slip => "Drag a clip to slip its source in/out without moving it.",
-            state::Tool::Slide => "Drag a clip to slide it between its neighbours.",
-            state::Tool::Hand => "Drag to scroll the timeline.",
-            state::Tool::Zoom => "Click to zoom in; Opt-click to zoom out.",
+            state::Tool::Selection if mac => {
+                tl!("Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.")
+            }
+            state::Tool::Selection => tl!("Click to select, or click in empty space and drag to marquee select. Use Shift, Alt, and Ctrl for other options."),
+            state::Tool::TrackSelectForward => tl!("Click to select all clips to the right in all tracks. Shift-click for a single track."),
+            state::Tool::TrackSelectBackward => tl!("Click to select all clips to the left in all tracks. Shift-click for a single track."),
+            state::Tool::Ripple => tl!("Drag an edit point to ripple trim; later clips move to keep the gap closed."),
+            state::Tool::Rolling => tl!("Drag an edit point to roll it: the out of one clip and the in of the next move together."),
+            state::Tool::RateStretch => tl!("Drag an edge to change the clip's speed so it fills the new duration."),
+            state::Tool::Remix => tl!("Drag the edge of a music clip to remix it to the new duration at musically matching beats."),
+            state::Tool::Razor => tl!("Click to split a clip. Shift-click to split all tracks."),
+            state::Tool::Slip => tl!("Drag a clip to slip its source in/out without moving it."),
+            state::Tool::Slide => tl!("Drag a clip to slide it between its neighbours."),
+            state::Tool::Hand => tl!("Drag to scroll the timeline."),
+            state::Tool::Zoom if mac => tl!("Click to zoom in; Opt-click to zoom out."),
+            state::Tool::Zoom => tl!("Click to zoom in; Alt-click to zoom out."),
             _ => "",
         }
         .to_string()
@@ -1419,26 +1564,31 @@ impl FilmcraftApp {
     fn error_window(&mut self, ctx: &egui::Context) {
         let Some(msg) = self.ui_error.clone() else { return };
         let mut close = false;
-        egui::Window::new("FilmCraft hit an error").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-            ui.set_max_width(460.0);
-            ui.label("Something went wrong while drawing the window. Your project is still open; save it to be safe.");
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new(&msg).monospace().small());
-            if let Some(p) = crash::log_path() {
-                ui.label(egui::RichText::new(format!("Details: {}", p.display())).small());
-            }
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let s = ui.button("Save Project");
-                self.auto.add("error.save", s.rect, "Save Project");
-                if s.clicked() {
-                    let _ = crate::menus::invoke(self, ctx, "file.save", serde_json::json!({}));
+        egui::Window::new(tl!("FilmCraft hit an error"))
+            .id(egui::Id::new("FilmCraft hit an error"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_max_width(460.0);
+                ui.label(tl!("Something went wrong while drawing the window. Your project is still open; save it to be safe."));
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(&msg).monospace().small());
+                if let Some(p) = crash::log_path() {
+                    ui.label(egui::RichText::new(tlf!("Details: {path}", path = p.display())).small());
                 }
-                let d = ui.button("Continue");
-                self.auto.add("error.dismiss", d.rect, "Continue");
-                close |= d.clicked();
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let s = ui.button(tl!("Save Project"));
+                    self.auto.add("error.save", s.rect, "Save Project");
+                    if s.clicked() {
+                        let _ = crate::menus::invoke(self, ctx, "file.save", serde_json::json!({}));
+                    }
+                    let d = ui.button(tl!("Continue"));
+                    self.auto.add("error.dismiss", d.rect, "Continue");
+                    close |= d.clicked();
+                });
             });
-        });
         if close {
             self.ui_error = None;
         }

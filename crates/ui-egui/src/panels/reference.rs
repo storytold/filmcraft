@@ -31,7 +31,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
     let Some(seq_id) = app.session.state.active_sequence else {
-        crate::dock::placeholder(ui, rect, &t, "(no sequences)");
+        crate::dock::placeholder(ui, rect, &t, tl!("(no sequences)"));
         return;
     };
     let Some(frame) = frame(app) else { return };
@@ -116,19 +116,19 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         elems.push((id.to_string(), r, label.to_string()));
         resp.on_hover_text(label).clicked()
     };
-    if button(ui, "reference.stepBack", "Step Back 1 Frame", Some(Icon::StepBack), false, &mut elems) {
+    if button(ui, "reference.stepBack", tl!("Step Back 1 Frame"), Some(Icon::StepBack), false, &mut elems) {
         step = -1;
     }
-    if button(ui, "reference.stepForward", "Step Forward 1 Frame", Some(Icon::StepFwd), false, &mut elems) {
+    if button(ui, "reference.stepForward", tl!("Step Forward 1 Frame"), Some(Icon::StepFwd), false, &mut elems) {
         step = 1;
     }
-    let matched = button(ui, "reference.matchPlayhead", "Match Playhead", None, false, &mut elems);
-    let gang = button(ui, "reference.gang", "Gang to Program", None, st.ganged, &mut elems);
+    let matched = button(ui, "reference.matchPlayhead", tl!("Match Playhead"), None, false, &mut elems);
+    let gang = button(ui, "reference.gang", tl!("Gang to Program"), None, st.ganged, &mut elems);
     // display dropdown at the right
     let dr = Rect::from_min_size(pos2(bar.max.x - 150.0, bar.center().y - 11.0), vec2(142.0, 22.0));
     let mut display = st.display;
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(dr));
-    let label = |d: RefDisplay| if d == RefDisplay::Composite { "Composite Video" } else { "Lumetri Scopes" };
+    let label = |d: RefDisplay| if d == RefDisplay::Composite { tl!("Composite Video") } else { tl!("Lumetri Scopes") };
     let cb = egui::ComboBox::from_id_salt("reference-display").selected_text(label(display)).width(134.0).show_ui(&mut child, |ui| {
         for d in [RefDisplay::Composite, RefDisplay::Scopes] {
             let r = ui.selectable_value(&mut display, d, label(d));

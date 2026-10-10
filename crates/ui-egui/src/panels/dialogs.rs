@@ -20,6 +20,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     crate::panels::remix::show(app, ctx);
     crate::panels::comfyui::show(app, ctx);
     crate::panels::interchange_export::show(app, ctx);
+    crate::panels::frame_export::show(app, ctx);
     crate::panels::project_dialogs::show(app, ctx);
     crate::panels::media_browser::dialogs(app, ctx);
     let Some(d) = app.dialog else { return };
@@ -32,7 +33,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut open = true;
     match d {
         Dialog::About => {
-            egui::Window::new("About FilmCraft")
+            egui::Window::new(tl!("About FilmCraft"))
+                .id(egui::Id::new("About FilmCraft"))
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
@@ -66,6 +68,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             return;
         }
+        Dialog::SequenceSettings => {
+            if !crate::panels::sequence_settings::show(app, ctx) && app.dialog == Some(d) {
+                app.dialog = None;
+            }
+            return;
+        }
         Dialog::NewSequence | Dialog::Preferences | Dialog::Recovery | Dialog::RevertConfirm => {}
     }
     if !open {
@@ -94,44 +102,49 @@ fn audio_gain(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let mut keep = true;
     let mut apply = false;
     let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
-    egui::Window::new("Audio Gain").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        ui.add_space(6.0);
-        egui::Grid::new("audio-gain").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
-            let rows: [(&str, &str, &mut f64); 4] = [
-                ("set", "Set Gain to:", &mut draft.set_db),
-                ("adjust", "Adjust Gain by:", &mut draft.adjust_db),
-                ("normalizeMax", "Normalize Max Peak to:", &mut draft.max_peak_db),
-                ("normalizeAll", "Normalize All Peaks to:", &mut draft.all_peaks_db),
-            ];
-            for (id, label, v) in rows {
-                let r = ui.radio(draft.mode == id, label);
-                elems.push((format!("audioGain.{id}"), r.rect, label.to_string()));
-                if r.clicked() {
-                    draft.mode = id.to_string();
+    egui::Window::new(tl!("Audio Gain"))
+        .id(egui::Id::new("Audio Gain"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.add_space(6.0);
+            egui::Grid::new("audio-gain").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
+                let rows: [(&str, &str, &mut f64); 4] = [
+                    ("set", tl!("Set Gain to:"), &mut draft.set_db),
+                    ("adjust", tl!("Adjust Gain by:"), &mut draft.adjust_db),
+                    ("normalizeMax", tl!("Normalize Max Peak to:"), &mut draft.max_peak_db),
+                    ("normalizeAll", tl!("Normalize All Peaks to:"), &mut draft.all_peaks_db),
+                ];
+                for (id, label, v) in rows {
+                    let r = ui.radio(draft.mode == id, label);
+                    elems.push((format!("audioGain.{id}"), r.rect, label.to_string()));
+                    if r.clicked() {
+                        draft.mode = id.to_string();
+                    }
+                    let f = ui.add_enabled(draft.mode == id, egui::DragValue::new(v).speed(0.1).range(-96.0..=96.0).suffix(" dB"));
+                    elems.push((format!("audioGain.{id}.value"), f.rect, format!("{v:.1} dB")));
+                    ui.end_row();
                 }
-                let f = ui.add_enabled(draft.mode == id, egui::DragValue::new(v).speed(0.1).range(-96.0..=96.0).suffix(" dB"));
-                elems.push((format!("audioGain.{id}.value"), f.rect, format!("{v:.1} dB")));
-                ui.end_row();
-            }
+            });
+            ui.add_space(8.0);
+            let pk_text = tlf!("Peak Amplitude: {peak}", peak = peak.map(|p| format!("{p:.1} dB")).unwrap_or_else(|| "—".into()));
+            let pk = ui.label(&pk_text);
+            elems.push(("audioGain.peak".into(), pk.rect, pk_text));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let c = ui.button(tl!("Cancel"));
+                elems.push(("audioGain.cancel".into(), c.rect, "Cancel".into()));
+                if c.clicked() {
+                    keep = false;
+                }
+                let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(app.tokens.accent));
+                elems.push(("audioGain.ok".into(), o.rect, "OK".into()));
+                if o.clicked() {
+                    apply = true;
+                }
+            });
         });
-        ui.add_space(8.0);
-        let pk_text = format!("Peak Amplitude: {}", peak.map(|p| format!("{p:.1} dB")).unwrap_or_else(|| "—".into()));
-        let pk = ui.label(&pk_text);
-        elems.push(("audioGain.peak".into(), pk.rect, pk_text));
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            let c = ui.button("Cancel");
-            elems.push(("audioGain.cancel".into(), c.rect, "Cancel".into()));
-            if c.clicked() {
-                keep = false;
-            }
-            let o = ui.add(egui::Button::new(egui::RichText::new("OK").color(egui::Color32::WHITE)).fill(app.tokens.accent));
-            elems.push(("audioGain.ok".into(), o.rect, "OK".into()));
-            if o.clicked() {
-                apply = true;
-            }
-        });
-    });
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
@@ -173,88 +186,94 @@ fn add_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let mut keep = true;
     let mut apply = false;
     let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
-    const AUDIO_TYPES: [(&str, &str); 4] = [("standard", "Standard"), ("5.1", "5.1"), ("adaptive", "Adaptive"), ("mono", "Mono")];
-    const SUBMIX_TYPES: [(&str, &str); 4] = [("stereo", "Stereo"), ("5.1", "5.1"), ("adaptive", "Adaptive"), ("mono", "Mono")];
-    egui::Window::new("Add Tracks").collapsible(false).resizable(false).default_width(320.0).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        // everything spans the width the window has: no empty band beside the fields
-        ui.set_width(ui.available_width());
-        // the label column is as wide as its widest label; the lists take the rest of the row,
-        // up to the group's right edge (as in Premiere's dialog)
-        let font = egui::TextStyle::Body.resolve(ui.style());
-        let label_w = ["Amount", "Placement", "Track type"]
-            .iter()
-            .map(|l| ui.painter().layout_no_wrap(l.to_string(), font.clone(), egui::Color32::WHITE).size().x)
-            .fold(0.0, f32::max);
-        let row_h = ui.spacing().interact_size.y;
-        let label = |ui: &mut egui::Ui, text: &str| {
-            ui.allocate_ui_with_layout(egui::vec2(label_w, row_h), egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(text));
-        };
-        let groups: [(&str, &str, &mut u32, &mut usize, &[String], Option<(&mut String, &[(&str, &str); 4])>); 3] = [
-            ("video", "Add video tracks", &mut d.video, &mut d.video_after, &vnames, None),
-            ("audio", "Add audio tracks", &mut d.audio, &mut d.audio_after, &anames, Some((&mut d.audio_type, &AUDIO_TYPES))),
-            ("submix", "Add audio submix tracks", &mut d.submix, &mut d.submix_after, &snames, Some((&mut d.submix_type, &SUBMIX_TYPES))),
-        ];
-        for (kind, title, amount, after, tracks, track_type) in groups {
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new(title).strong());
-            ui.group(|ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    label(ui, "Amount");
-                    let r = ui.add(egui::DragValue::new(amount).range(0..=99).speed(0.1));
-                    elems.push((format!("addTracks.{kind}.amount"), r.rect, amount.to_string()));
-                });
-                ui.horizontal(|ui| {
-                    label(ui, "Placement");
-                    *after = (*after).min(tracks.len());
-                    let place = |n: usize| match n.checked_sub(1).and_then(|i| tracks.get(i)) {
-                        Some(name) => format!("After {name}"),
-                        None => "Before First Track".to_string(),
-                    };
-                    let shown = place(*after);
-                    let list_w = ui.available_width();
-                    // nowhere to choose from while the sequence has no track of the kind
-                    ui.add_enabled_ui(!tracks.is_empty(), |ui| {
-                        let r = egui::ComboBox::from_id_salt(("add-tracks-placement", kind)).selected_text(&shown).width(list_w).show_ui(ui, |ui| {
-                            for n in 0..=tracks.len() {
-                                let label = place(n);
-                                let o = ui.selectable_value(after, n, &label);
-                                elems.push((format!("addTracks.{kind}.placement.option.{n}"), o.rect, label));
-                            }
-                        });
-                        elems.push((format!("addTracks.{kind}.placement"), r.response.rect, shown.clone()));
-                    });
-                });
-                if let Some((chosen, types)) = track_type {
+    let audio_types: [(&str, &str); 4] = [("standard", tl!("Standard")), ("5.1", "5.1"), ("adaptive", tl!("Adaptive")), ("mono", tl!("Mono"))];
+    let submix_types: [(&str, &str); 4] = [("stereo", tl!("Stereo")), ("5.1", "5.1"), ("adaptive", tl!("Adaptive")), ("mono", tl!("Mono"))];
+    egui::Window::new(tl!("Add Tracks"))
+        .id(egui::Id::new("Add Tracks"))
+        .collapsible(false)
+        .resizable(false)
+        .default_width(320.0)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            // everything spans the width the window has: no empty band beside the fields
+            ui.set_width(ui.available_width());
+            // the label column is as wide as its widest label; the lists take the rest of the row,
+            // up to the group's right edge (as in Premiere's dialog)
+            let font = egui::TextStyle::Body.resolve(ui.style());
+            let label_w = [tl!("Amount"), tl!("Placement"), tl!("Track type")]
+                .iter()
+                .map(|l| ui.painter().layout_no_wrap(l.to_string(), font.clone(), egui::Color32::WHITE).size().x)
+                .fold(0.0, f32::max);
+            let row_h = ui.spacing().interact_size.y;
+            let label = |ui: &mut egui::Ui, text: &str| {
+                ui.allocate_ui_with_layout(egui::vec2(label_w, row_h), egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(text));
+            };
+            let groups: [(&str, &str, &mut u32, &mut usize, &[String], Option<(&mut String, &[(&str, &str); 4])>); 3] = [
+                ("video", tl!("Add video tracks"), &mut d.video, &mut d.video_after, &vnames, None),
+                ("audio", tl!("Add audio tracks"), &mut d.audio, &mut d.audio_after, &anames, Some((&mut d.audio_type, &audio_types))),
+                ("submix", tl!("Add audio submix tracks"), &mut d.submix, &mut d.submix_after, &snames, Some((&mut d.submix_type, &submix_types))),
+            ];
+            for (kind, title, amount, after, tracks, track_type) in groups {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(title).strong());
+                ui.group(|ui| {
+                    ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
-                        label(ui, "Track type");
-                        let shown = types.iter().find(|(id, _)| *id == chosen.as_str()).map_or(types[0].1, |(_, label)| label).to_string();
-                        let list_w = ui.available_width();
-                        let r = egui::ComboBox::from_id_salt(("add-tracks-type", kind)).selected_text(&shown).width(list_w).show_ui(ui, |ui| {
-                            for (id, label) in types {
-                                let o = ui.selectable_value(chosen, id.to_string(), *label);
-                                elems.push((format!("addTracks.{kind}.type.option.{id}"), o.rect, label.to_string()));
-                            }
-                        });
-                        elems.push((format!("addTracks.{kind}.type"), r.response.rect, shown));
+                        label(ui, tl!("Amount"));
+                        let r = ui.add(egui::DragValue::new(amount).range(0..=99).speed(0.1));
+                        elems.push((format!("addTracks.{kind}.amount"), r.rect, amount.to_string()));
                     });
+                    ui.horizontal(|ui| {
+                        label(ui, tl!("Placement"));
+                        *after = (*after).min(tracks.len());
+                        let place = |n: usize| match n.checked_sub(1).and_then(|i| tracks.get(i)) {
+                            Some(name) => tlf!("After {name}", name),
+                            None => tl!("Before First Track").to_string(),
+                        };
+                        let shown = place(*after);
+                        let list_w = ui.available_width();
+                        // nowhere to choose from while the sequence has no track of the kind
+                        ui.add_enabled_ui(!tracks.is_empty(), |ui| {
+                            let r = egui::ComboBox::from_id_salt(("add-tracks-placement", kind)).selected_text(&shown).width(list_w).show_ui(ui, |ui| {
+                                for n in 0..=tracks.len() {
+                                    let label = place(n);
+                                    let o = ui.selectable_value(after, n, &label);
+                                    elems.push((format!("addTracks.{kind}.placement.option.{n}"), o.rect, label));
+                                }
+                            });
+                            elems.push((format!("addTracks.{kind}.placement"), r.response.rect, shown.clone()));
+                        });
+                    });
+                    if let Some((chosen, types)) = track_type {
+                        ui.horizontal(|ui| {
+                            label(ui, tl!("Track type"));
+                            let shown = types.iter().find(|(id, _)| *id == chosen.as_str()).map_or(types[0].1, |(_, label)| label).to_string();
+                            let list_w = ui.available_width();
+                            let r = egui::ComboBox::from_id_salt(("add-tracks-type", kind)).selected_text(&shown).width(list_w).show_ui(ui, |ui| {
+                                for (id, label) in types {
+                                    let o = ui.selectable_value(chosen, id.to_string(), *label);
+                                    elems.push((format!("addTracks.{kind}.type.option.{id}"), o.rect, label.to_string()));
+                                }
+                            });
+                            elems.push((format!("addTracks.{kind}.type"), r.response.rect, shown));
+                        });
+                    }
+                });
+            }
+            ui.add_space(10.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(app.tokens.accent));
+                elems.push(("addTracks.ok".into(), o.rect, "OK".into()));
+                if o.clicked() {
+                    apply = true;
+                }
+                let c = ui.button(tl!("Cancel"));
+                elems.push(("addTracks.cancel".into(), c.rect, "Cancel".into()));
+                if c.clicked() {
+                    keep = false;
                 }
             });
-        }
-        ui.add_space(10.0);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let o = ui.add(egui::Button::new(egui::RichText::new("OK").color(egui::Color32::WHITE)).fill(app.tokens.accent));
-            elems.push(("addTracks.ok".into(), o.rect, "OK".into()));
-            if o.clicked() {
-                apply = true;
-            }
-            let c = ui.button("Cancel");
-            elems.push(("addTracks.cancel".into(), c.rect, "Cancel".into()));
-            if c.clicked() {
-                keep = false;
-            }
         });
-    });
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
@@ -298,48 +317,55 @@ fn delete_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let mut keep = true;
     let mut apply = false;
     let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
-    egui::Window::new("Delete Tracks").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        ui.set_min_width(300.0);
-        for (kind, title, on, target, list) in [
-            ("video", "Video Tracks", &mut draft.video, &mut draft.video_target, &vnames),
-            ("audio", "Audio Tracks", &mut draft.audio, &mut draft.audio_target, &anames),
-        ] {
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new(title).strong());
-            let label = format!("Delete {title}");
-            let c = ui.checkbox(on, &label);
-            elems.push((format!("deleteTracks.{kind}"), c.rect, label));
-            ui.horizontal(|ui| {
-                ui.add_space(22.0);
-                let shown = if target == "empty" { "All Empty Tracks".to_string() } else { target.clone() };
-                ui.add_enabled_ui(*on, |ui| {
-                    let r = egui::ComboBox::from_id_salt(("delete-tracks", kind)).selected_text(&shown).width(170.0).show_ui(ui, |ui| {
-                        let e = ui.selectable_value(target, "empty".to_string(), "All Empty Tracks");
-                        elems.push((format!("deleteTracks.{kind}.option.empty"), e.rect, "All Empty Tracks".into()));
-                        for n in list {
-                            let r = ui.selectable_value(target, n.clone(), n);
-                            elems.push((format!("deleteTracks.{kind}.option.{n}"), r.rect, n.clone()));
-                        }
+    egui::Window::new(tl!("Delete Tracks"))
+        .id(egui::Id::new("Delete Tracks"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.set_min_width(300.0);
+            for (kind, title, delete, on, target, list) in [
+                ("video", tl!("Video Tracks"), tl!("Delete Video Tracks"), &mut draft.video, &mut draft.video_target, &vnames),
+                ("audio", tl!("Audio Tracks"), tl!("Delete Audio Tracks"), &mut draft.audio, &mut draft.audio_target, &anames),
+            ] {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(title).strong());
+                let label = delete.to_string();
+                let c = ui.checkbox(on, &label);
+                elems.push((format!("deleteTracks.{kind}"), c.rect, label));
+                ui.horizontal(|ui| {
+                    ui.add_space(22.0);
+                    let shown = if target == "empty" { tl!("All Empty Tracks").to_string() } else { target.clone() };
+                    ui.add_enabled_ui(*on, |ui| {
+                        let r = egui::ComboBox::from_id_salt(("delete-tracks", kind)).selected_text(&shown).width(170.0).show_ui(ui, |ui| {
+                            let e = ui.selectable_value(target, "empty".to_string(), tl!("All Empty Tracks"));
+                            elems.push((format!("deleteTracks.{kind}.option.empty"), e.rect, "All Empty Tracks".into()));
+                            for n in list {
+                                let r = ui.selectable_value(target, n.clone(), n);
+                                elems.push((format!("deleteTracks.{kind}.option.{n}"), r.rect, n.clone()));
+                            }
+                        });
+                        elems.push((format!("deleteTracks.{kind}.target"), r.response.rect, shown));
                     });
-                    elems.push((format!("deleteTracks.{kind}.target"), r.response.rect, shown));
                 });
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                let c = ui.button(tl!("Cancel"));
+                elems.push(("deleteTracks.cancel".into(), c.rect, "Cancel".into()));
+                if c.clicked() {
+                    keep = false;
+                }
+                let o = ui.add_enabled(
+                    draft.video || draft.audio,
+                    egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(app.tokens.accent),
+                );
+                elems.push(("deleteTracks.ok".into(), o.rect, "OK".into()));
+                if o.clicked() {
+                    apply = true;
+                }
             });
-        }
-        ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            let c = ui.button("Cancel");
-            elems.push(("deleteTracks.cancel".into(), c.rect, "Cancel".into()));
-            if c.clicked() {
-                keep = false;
-            }
-            let o =
-                ui.add_enabled(draft.video || draft.audio, egui::Button::new(egui::RichText::new("OK").color(egui::Color32::WHITE)).fill(app.tokens.accent));
-            elems.push(("deleteTracks.ok".into(), o.rect, "OK".into()));
-            if o.clicked() {
-                apply = true;
-            }
         });
-    });
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
@@ -373,7 +399,7 @@ fn about(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     let tab_id = egui::Id::new("about_tab");
     let mut tab = ui.data_mut(|d| d.get_temp::<u8>(tab_id)).unwrap_or(0);
     ui.horizontal(|ui| {
-        for (i, (id, label)) in [("about", "About"), ("contributors", "Contributors"), ("models", "Models")].into_iter().enumerate() {
+        for (i, (id, label)) in [("about", tl!("About")), ("contributors", tl!("Contributors")), ("models", tl!("Models"))].into_iter().enumerate() {
             let i = i as u8;
             let r = ui.selectable_label(tab == i, label);
             app.auto.add(&format!("about.tab.{id}"), r.rect, label);
@@ -413,8 +439,8 @@ fn about_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     crate::brand::paint_wordmark(ui, egui::pos2(r.min.x, r.center().y), 20.0, app.ui.dark);
     ui.add_space(6.0);
     ui.heading("FilmCraft");
-    ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
-    ui.label("A clean-room, pure-Rust non-linear video editor. Part of the ArtCraft family.");
+    ui.label(tlf!("Version {version}", version = env!("CARGO_PKG_VERSION")));
+    ui.label(tl!("A clean-room, pure-Rust non-linear video editor. Part of the ArtCraft family."));
     ui.add_space(10.0);
     let mut link = |ui: &mut egui::Ui, id: &str, icon: Icon, label: &str, url: &str, primary: bool| {
         let size = egui::vec2(ui.available_width(), if primary { 36.0 } else { 28.0 });
@@ -443,12 +469,12 @@ fn about_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             links::open(ui.ctx(), url);
         }
     };
-    link(ui, "discord", Icon::Chat, "Join the ArtCraft Discord", links::DISCORD, true);
+    link(ui, "discord", Icon::Chat, tl!("Join the ArtCraft Discord"), links::DISCORD, true);
     ui.add_space(6.0);
     link(ui, "website", Icon::Globe, "getartcraft.com", links::WEBSITE, false);
-    link(ui, "appPage", Icon::Globe, "FilmCraft on getartcraft.com", links::APP_PAGE, false);
-    link(ui, "github", Icon::Code, "Source code on GitHub", links::GITHUB, false);
-    link(ui, "reportIssue", Icon::Code, "Report an issue", links::ISSUES, false);
+    link(ui, "appPage", Icon::Globe, tl!("FilmCraft on getartcraft.com"), links::APP_PAGE, false);
+    link(ui, "github", Icon::Code, tl!("Source code on GitHub"), links::GITHUB, false);
+    link(ui, "reportIssue", Icon::Code, tl!("Report an issue"), links::ISSUES, false);
     ui.add_space(10.0);
-    ui.label(egui::RichText::new("MIT OR Apache-2.0. Fonts: Inter, Noto Serif and JetBrains Mono (SIL OFL 1.1).").small().color(t.text_dim));
+    ui.label(egui::RichText::new(tl!("MIT OR Apache-2.0. Fonts: Inter, Noto Serif and JetBrains Mono (SIL OFL 1.1).")).small().color(t.text_dim));
 }

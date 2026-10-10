@@ -52,6 +52,38 @@ fn v1_edit_loads_with_defaults_for_later_fields() {
     seq.check().unwrap();
 }
 
+#[test]
+fn legacy_audio_field_becomes_primary_stream_and_clip_defaults_to_zero() {
+    let p = decode(&fixture("v1-edit.fcproj")).unwrap().project;
+    let media = p.item(ItemId(5)).unwrap().as_media().unwrap();
+    assert_eq!(media.info.audio_streams.len(), 1);
+    assert!(media.info.has_audio());
+    let clip = &p.sequence(ItemId(21)).unwrap().audio_tracks[0].items[0];
+    assert_eq!(clip.audio_stream, 0);
+    let again = decode(&encode(&p, false)).unwrap();
+    assert_eq!(again.project.item(ItemId(5)).unwrap().as_media().unwrap().info.audio_streams, media.info.audio_streams);
+}
+
+/// Out-of-range audio stream data is repaired on load, never a reason to refuse the project.
+#[test]
+fn hostile_audio_stream_counts_and_indices_are_repaired_not_rejected() {
+    let mut p = decode(&fixture("v1-edit.fcproj")).unwrap().project;
+    let seq = ItemId(21);
+    for bad in [filmcraft_media::MAX_AUDIO_STREAMS, usize::MAX] {
+        p.sequence_mut(seq).unwrap().audio_tracks[0].items[0].audio_stream = bad;
+        let loaded = decode(&encode(&p, false)).unwrap().project;
+        assert_eq!(loaded.sequence(seq).unwrap().audio_tracks[0].items[0].audio_stream, 0);
+    }
+    p.sequence_mut(seq).unwrap().audio_tracks[0].items[0].audio_stream = filmcraft_media::MAX_AUDIO_STREAMS - 1;
+    let loaded = decode(&encode(&p, false)).unwrap().project;
+    assert_eq!(loaded.sequence(seq).unwrap().audio_tracks[0].items[0].audio_stream, filmcraft_media::MAX_AUDIO_STREAMS - 1, "in range: kept");
+    let media = p.item_mut(ItemId(5)).unwrap().as_media_mut().unwrap();
+    let stream = media.info.audio_streams[0].clone();
+    media.info.audio_streams.resize(filmcraft_media::MAX_AUDIO_STREAMS + 1, stream);
+    let loaded = decode(&encode(&p, false)).unwrap().project;
+    assert_eq!(loaded.item(ItemId(5)).unwrap().as_media().unwrap().info.audio_streams.len(), filmcraft_media::MAX_AUDIO_STREAMS);
+}
+
 /// Schema 8 (before M3.10): no time interpolation / Hold Filters / Field Options / source channels
 /// on clips, no audio channel map, subclips without Restrict Trims.
 #[test]
@@ -192,26 +224,29 @@ fn v8_loads_without_transcripts_and_v9_roundtrips_them() {
     assert_eq!(again.project.transcripts[&ItemId(7)].speakers[0].name, "Speaker 1");
 }
 
-/// Schema 12 (before generated media): no ComfyUI clip recipes; loads with none, and a recipe
-/// survives a save and load.
+/// Schemas 12 and 13 (before generated media): no ComfyUI clip recipes; both load (through every
+/// later step) with none, and a recipe survives a save and load.
 #[test]
-fn v12_minimal_loads_without_generated_media() {
-    let l = decode(&fixture("v12-minimal.fcproj")).unwrap();
-    assert_eq!(l.schema_version, 12);
-    assert!(l.migrated());
-    let mut p = l.project.clone();
-    assert_eq!(p.name, "Before Generated Clips");
-    assert!(p.generated.is_empty());
-    let g = filmcraft_project::Generation {
-        provider: "comfyui".into(),
-        recipe: serde_json::json!({"workflow": {"9": {"class_type": "SaveImage", "inputs": {}}}, "inputs": [{"node": "9", "input": "filename_prefix", "value": "x"}]}),
-        last_run: serde_json::Value::Null,
-    };
-    p.generated.insert(ItemId(1), std::sync::Arc::new(g));
-    let again = decode(&encode(&p, true)).unwrap();
-    assert_eq!(again.schema_version, SCHEMA_VERSION);
-    const { assert!(SCHEMA_VERSION >= 13) };
-    assert_eq!(again.project, p);
+fn v12_and_v13_minimal_load_without_generated_media() {
+    for (file, version, name) in [("v12-minimal.fcproj", 12, "Before Generated Clips"), ("v13-minimal.fcproj", 13, "Before Generated Clips (v13)")] {
+        let l = decode(&fixture(file)).unwrap();
+        assert_eq!(l.schema_version, version);
+        assert!(l.migrated());
+        let mut p = l.project.clone();
+        assert_eq!(p.name, name);
+        assert!(p.generated.is_empty());
+        let g = filmcraft_project::Generation {
+            provider: "comfyui".into(),
+            recipe: serde_json::json!({"workflow": {"9": {"class_type": "SaveImage", "inputs": {}}}, "inputs": [{"node": "9", "input": "filename_prefix", "value": "x"}]}),
+            last_run: serde_json::Value::Null,
+        };
+        p.generated.insert(ItemId(1), std::sync::Arc::new(g));
+        let again = decode(&encode(&p, true)).unwrap();
+        assert_eq!(again.schema_version, SCHEMA_VERSION);
+        assert!(!again.migrated());
+        const { assert!(SCHEMA_VERSION >= 14) };
+        assert_eq!(again.project, p);
+    }
 }
 
 /// Schema 11 (before M10.7): no source graphics; graphic clips without template / roll /

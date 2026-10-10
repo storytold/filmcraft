@@ -177,6 +177,19 @@ fn auto_save_ring_rotates_and_can_save_the_project() {
 }
 
 #[test]
+fn portable_marker_keeps_data_next_to_the_executable() {
+    // #139: a portable install must not write to %APPDATA%.
+    let d = temp_dir("portable");
+    assert_eq!(autosave::portable_data_dir(&d), None);
+    std::fs::create_dir_all(d.join(autosave::PORTABLE_MARKER)).unwrap();
+    assert_eq!(autosave::portable_data_dir(&d), None, "a directory is not the marker");
+    std::fs::remove_dir_all(d.join(autosave::PORTABLE_MARKER)).unwrap();
+    std::fs::write(d.join(autosave::PORTABLE_MARKER), "").unwrap();
+    assert_eq!(autosave::portable_data_dir(&d), Some(d.join("data")));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn journal_costs_the_ui_thread_only_a_handoff() {
     // Per change the UI thread pays an Arc clone and a channel send; encoding happens on the worker.
     let d = temp_dir("cost");

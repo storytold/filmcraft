@@ -12,8 +12,7 @@
 //!   the job on a later frame, when the decoder's output callback has delivered the picture.
 //! - A session that has not delivered the frame it was started for is not restarted by other
 //!   requests (thumbnails and the monitor would otherwise keep resetting each other).
-//! - Outputs are converted to RGBA by drawing the `VideoFrame` on an `OffscreenCanvas` (the
-//!   browser applies the stream's colour description).
+//! - Native YUV planes feed the desktop frame/compositor contract. Unsupported browser formats or geometry use Canvas RGBA.
 //! - Any decoder error or unsupported configuration switches the source to our decoder.
 //!
 //! `?nowebcodecs` disables it. Support is probed at start-up with `VideoDecoder.isConfigSupported`.
@@ -34,6 +33,20 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
+mod pixels;
+
+#[derive(Default)]
+struct Transfers {
+    native: u64,
+    canvas: u64,
+    closed: u64,
+    stale: u64,
+    bytes: u64,
+    native_ms: f64,
+    canvas_ms: f64,
+    reasons: BTreeMap<&'static str, u64>,
+}
+
 /// Samples fed past the wanted one (decoders hold pictures for reordering).
 const LOOKAHEAD: usize = 8;
 /// Decoded frames kept per source.
@@ -52,6 +65,7 @@ thread_local! {
     static DECODED: Cell<u64> = const { Cell::new(0) };
     static FALLBACKS: Cell<u64> = const { Cell::new(0) };
     static SOURCES: Cell<u64> = const { Cell::new(0) };
+    static TRANSFERS: RefCell<Transfers> = RefCell::new(Transfers::default());
 }
 
 fn now_ms() -> f64 {
@@ -160,11 +174,15 @@ pub fn stats() -> serde_json::Value {
             .iter()
             .map(|(id, s)| {
                 json!({"id": id, "start": s.start, "next": s.next, "target": s.target, "needsKey": s.needs_key, "flushing": s.flushing.get(),
-                    "errored": s.errored.get(), "queue": s.queue(), "idleMs": now_ms() - s.last_output.get()})
+                    "errored": s.errored.get(), "queue": s.queue(), "copies": s.copying.get(), "idleMs": now_ms() - s.last_output.get()})
             })
             .collect()
     });
-    json!({"sources": SOURCES.with(Cell::get), "framesDecoded": DECODED.with(Cell::get), "fallbacks": FALLBACKS.with(Cell::get), "sessions": sessions})
+    let transfers = TRANSFERS.with(|s| {
+        let s = s.borrow();
+        json!({"nativeFrames":s.native,"canvasFrames":s.canvas,"closedFrames":s.closed,"staleFrames":s.stale,"nativeBytes":s.bytes,"nativeMs":s.native_ms,"canvasMs":s.canvas_ms,"canvasReasons":s.reasons})
+    });
+    json!({"sources": SOURCES.with(Cell::get), "framesDecoded": DECODED.with(Cell::get), "fallbacks": FALLBACKS.with(Cell::get), "sessions": sessions,"transfers":transfers})
 }
 
 /// A [`SharedReader`] as the demuxer's byte source.
@@ -210,6 +228,8 @@ pub fn reader_opener(name: &str, head: &[u8], reader: &SharedReader) -> Option<R
     });
     SOURCES.with(|c| c.set(c.get() + 1));
     log::info!("{name}: video decoded with WebCodecs ({codec})");
+    let color = info.video.as_ref().map(|v| v.color).unwrap_or_default();
+    let par = info.video.as_ref().map(|v| v.par).unwrap_or((1, 1));
     Some(Ok(Arc::new(WcSource {
         inner,
         info,
@@ -217,11 +237,12 @@ pub fn reader_opener(name: &str, head: &[u8], reader: &SharedReader) -> Option<R
         file,
         track,
         id,
-        config: Config { codec, description, width: w, height: h, rotation },
+        config: Config { codec, description, width: w, height: h, rotation, color, par },
         state: Mutex::new(Cache::default()),
     })))
 }
 
+#[derive(Clone)]
 struct Config {
     codec: String,
     description: Option<Vec<u8>>,
@@ -229,6 +250,8 @@ struct Config {
     height: u32,
     /// Clockwise quarter turns from the track matrix, applied to decoded frames.
     rotation: u8,
+    color: filmcraft_color::ColorInfo,
+    par: (u32, u32),
 }
 
 #[derive(Default)]
@@ -253,6 +276,9 @@ struct Session {
     /// Highest presentation time output since the session (re)started.
     out_max: Rc<Cell<i64>>,
     out: Rc<RefCell<Vec<(i64, VideoFrame)>>>,
+    copying: Rc<Cell<u32>>,
+    generation: Rc<Cell<u64>>,
+    alive: Rc<Cell<bool>>,
     _closures: (Closure<dyn FnMut(JsValue)>, Closure<dyn FnMut(JsValue)>),
 }
 
@@ -286,17 +312,65 @@ impl Session {
         let errored = Rc::new(Cell::new(false));
         let last_output = Rc::new(Cell::new(now_ms()));
         let out_max = Rc::new(Cell::new(i64::MIN));
+        let copying = Rc::new(Cell::new(0u32));
+        let generation = Rc::new(Cell::new(0u64));
+        let alive = Rc::new(Cell::new(true));
         let (o, lo, om) = (out.clone(), last_output.clone(), out_max.clone());
+        let (copies, epoch, active, config, errors) = (copying.clone(), generation.clone(), alive.clone(), cfg.clone(), errored.clone());
         let on_output = Closure::<dyn FnMut(JsValue)>::new(move |frame: JsValue| {
             let ts = get(&frame, "timestamp").as_f64().unwrap_or(0.0) as i64;
-            om.set(om.get().max(ts));
-            if let Some(f) = to_rgba(&frame) {
-                o.borrow_mut().push((ts, f));
-                DECODED.with(|c| c.set(c.get() + 1));
-            }
-            let _ = call(&frame, "close", &[]);
-            lo.set(now_ms());
-            crate::repaint();
+            let expected = epoch.get();
+            let (o, lo, om, copies, epoch, active, config, errors) =
+                (o.clone(), lo.clone(), om.clone(), copies.clone(), epoch.clone(), active.clone(), config.clone(), errors.clone());
+            copies.set(copies.get().saturating_add(1));
+            wasm_bindgen_futures::spawn_local(async move {
+                let begin = now_ms();
+                let converted = match pixels::read(&frame, &config).await {
+                    Ok((f, bytes)) => {
+                        TRANSFERS.with(|s| {
+                            let mut s = s.borrow_mut();
+                            s.native = s.native.saturating_add(1);
+                            s.bytes = s.bytes.saturating_add(bytes as u64);
+                            s.native_ms += now_ms() - begin;
+                        });
+                        Some(f)
+                    }
+                    Err(reason) => {
+                        let begin = now_ms();
+                        let f = to_rgba(&frame);
+                        TRANSFERS.with(|s| {
+                            let mut s = s.borrow_mut();
+                            s.canvas = s.canvas.saturating_add(1);
+                            s.canvas_ms += now_ms() - begin;
+                            let count = s.reasons.entry(reason).or_default();
+                            *count = count.saturating_add(1);
+                        });
+                        f
+                    }
+                };
+                let _ = call(&frame, "close", &[]);
+                copies.set(copies.get().saturating_sub(1));
+                TRANSFERS.with(|s| {
+                    let mut s = s.borrow_mut();
+                    s.closed = s.closed.saturating_add(1);
+                });
+                if !active.get() || epoch.get() != expected {
+                    TRANSFERS.with(|s| {
+                        let mut s = s.borrow_mut();
+                        s.stale = s.stale.saturating_add(1);
+                    });
+                    return;
+                }
+                if let Some(f) = converted {
+                    o.borrow_mut().push((ts, f));
+                    om.set(om.get().max(ts));
+                    DECODED.with(|c| c.set(c.get().saturating_add(1)));
+                } else {
+                    errors.set(true);
+                }
+                lo.set(now_ms());
+                crate::repaint();
+            });
         });
         let e = errored.clone();
         let on_error = Closure::<dyn FnMut(JsValue)>::new(move |err: JsValue| {
@@ -317,6 +391,9 @@ impl Session {
             last_output,
             out_max,
             out,
+            copying,
+            generation,
+            alive,
             _closures: (on_output, on_error),
         };
         s.configure(cfg)?;
@@ -338,6 +415,14 @@ impl Session {
 
     fn queue(&self) -> u32 {
         get(&self.decoder, "decodeQueueSize").as_f64().unwrap_or(0.0) as u32
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.alive.set(false);
+        self.generation.set(self.generation.get().wrapping_add(1));
+        let _ = call(&self.decoder, "close", &[]);
     }
 }
 
@@ -388,12 +473,15 @@ impl WcSource {
             // already output but the cache dropped needs a restart).
             let covers = !s.needs_key && s.start <= i && key <= s.next && (i >= s.next || want > s.out_max.get());
             if !covers {
-                // Don't interrupt a session that is still working towards its own frame.
-                let busy = !s.needs_key && s.target != i64::MIN && s.out_max.get() < s.target && now_ms() - s.last_output.get() < STALE_MS;
+                // Don't interrupt a session that is still working towards its own frame, unless it
+                // has gone quiet for STALE_MS (a copyTo that never settles must not wedge it).
+                let fresh = now_ms() - s.last_output.get() < STALE_MS;
+                let busy = fresh && (s.copying.get() > 0 || (!s.needs_key && s.target != i64::MIN && s.out_max.get() < s.target));
                 if busy {
                     return Drive::Waiting;
                 }
                 if !s.needs_key || s.next > 0 {
+                    s.generation.set(s.generation.get().wrapping_add(1));
                     let _ = call(&s.decoder, "reset", &[]);
                     if s.configure(&self.config).is_err() {
                         return Drive::Failed;
@@ -410,7 +498,7 @@ impl WcSource {
                 s.target = want;
             }
             let upto = (i + LOOKAHEAD).min(n - 1);
-            while s.next <= upto && s.queue() < MAX_QUEUE {
+            while s.next <= upto && s.queue().saturating_add(s.copying.get()) < MAX_QUEUE {
                 let smp = &t.samples[s.next];
                 let mut data = vec![0u8; smp.size as usize];
                 match self.reader.read_at(smp.offset, &mut data) {
@@ -480,10 +568,8 @@ impl WcSource {
 impl Drop for WcSource {
     fn drop(&mut self) {
         SESSIONS.with(|ss| {
-            if let Ok(mut ss) = ss.try_borrow_mut()
-                && let Some(s) = ss.remove(&self.id)
-            {
-                let _ = call(&s.decoder, "close", &[]);
+            if let Ok(mut ss) = ss.try_borrow_mut() {
+                ss.remove(&self.id);
             }
         });
     }
@@ -531,5 +617,8 @@ impl MediaSource for WcSource {
 
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer, MediaError> {
         self.inner.audio(start, frames, sample_rate)
+    }
+    fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer, MediaError> {
+        self.inner.audio_stream(stream, start, frames, sample_rate)
     }
 }

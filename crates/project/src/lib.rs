@@ -493,6 +493,10 @@ pub enum AudioChannels {
 }
 
 /// A clip instance on a track.
+fn is_zero_stream(stream: &usize) -> bool {
+    *stream == 0
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TrackItem {
     pub id: ClipId,
@@ -547,6 +551,9 @@ pub struct TrackItem {
     /// left/right). Empty = the first two channels (mono sources on both sides).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_channels: Vec<u16>,
+    /// Audio stream within the media container (0 = the primary stream).
+    #[serde(default, skip_serializing_if = "is_zero_stream")]
+    pub audio_stream: usize,
     /// Graphic clips: roll / crawl, responsive time and the template the graphic came from
     /// ([`GraphicMeta`]). Schema v12.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1188,7 +1195,7 @@ pub struct Project {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub source_graphics: BTreeMap<ItemId, SourceGraphic>,
     /// Media items made by a generative tool (ComfyUI clips, docs/comfyui.md): how to make each
-    /// again. Shared (`Arc`) so undo snapshots don't copy the workflows. Schema v13.
+    /// again. Shared (`Arc`) so undo snapshots don't copy the workflows. Schema v14.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub generated: BTreeMap<ItemId, std::sync::Arc<Generation>>,
 }
@@ -1242,9 +1249,9 @@ impl SequenceView {
     }
 }
 
-/// What was open when a project was saved: the Timeline's sequence tabs in order, the active one
-/// and how each sequence was shown. Stored beside the project in its file, not in it: it is not
-/// part of the edit and never an undo step.
+/// What was open when a project was saved: the Timeline's sequence tabs in order, the active one,
+/// how each sequence was shown and where its playhead was. Stored beside the project in its file,
+/// not in it: it is not part of the edit and never an undo step.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProjectView {
     #[serde(default)]
@@ -1253,6 +1260,17 @@ pub struct ProjectView {
     pub active_sequence: Option<ItemId>,
     #[serde(default)]
     pub sequences: BTreeMap<ItemId, SequenceView>,
+    /// Each sequence's playhead, so a sequence reopens where it was left. Files
+    /// written before it existed have none, and every playhead starts at zero as it did then.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub playheads: BTreeMap<ItemId, Tick>,
+}
+
+impl ProjectView {
+    /// The latest playhead a project file may ask for: ten million seconds (about 115 days), the
+    /// same bound as a sequence view's scroll position. Playheads are read from project files, so
+    /// nothing in them is trusted.
+    pub const MAX_PLAYHEAD: Tick = Tick(10_000_000 * TICKS_PER_SECOND);
 }
 
 /// A LUT imported into the project (`lut.import`). Lumetri refers to it as `lib:<id>`.
@@ -1544,6 +1562,7 @@ impl Project {
             hold_filters: false,
             field_options: None,
             source_channels,
+            audio_stream: 0,
             graphic: source_graphic.and_then(|sg| sg.meta.map(Box::new)),
         })
     }

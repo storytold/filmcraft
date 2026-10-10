@@ -9,6 +9,9 @@
 //! The compositor's working images (premultiplied linear `f32`, 33 MB at 1080p) get the same
 //! treatment ([`take_f32_overwritten`], [`recycle_f32`]): allocated and freed once per layer per
 //! frame they cost a zero-fill and fresh page faults every time.
+//!
+//! The shelves are sized for the busiest work, so they are a lot to keep once it is over: whoever
+//! finishes such work (a standalone export) calls [`trim_f32`].
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -138,10 +141,22 @@ pub fn recycle(frame: Arc<VideoFrame>) {
     }
 }
 
+/// Free the idle float images. A standalone export leaves that shelf full (up to [`F32_MAX_BYTES`]
+/// of images, each the size of that export's frames) and nothing else asks for those sizes again,
+/// so they would sit idle until the next export. Images still in use are not touched. The 8- and
+/// 16-bit plane shelves are left alone: playback recycles decoded frames through them all the time.
+pub fn trim_f32() {
+    // taken under the lock, freed after it: giving back hundreds of megabytes takes a moment
+    let floats = std::mem::take(&mut *F32.lock().unwrap_or_else(PoisonError::into_inner));
+    drop(floats);
+}
+
 /// Idle buffers held and buffers handed out again so far (`perf.stats`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PoolStats {
     pub idle_bytes: usize,
+    /// The part of `idle_bytes` held as float images ([`recycle_f32`]).
+    pub f32_idle_bytes: usize,
     pub reused: u64,
 }
 
@@ -150,7 +165,7 @@ pub fn stats() -> PoolStats {
     let a = U8.lock().unwrap_or_else(PoisonError::into_inner).bytes;
     let b = U16.lock().unwrap_or_else(PoisonError::into_inner).bytes;
     let c: usize = F32.lock().unwrap_or_else(PoisonError::into_inner).iter().map(|b| b.len().saturating_mul(4)).sum();
-    PoolStats { idle_bytes: idle(idle(a, b), c), reused: REUSED.load(Ordering::Relaxed) }
+    PoolStats { idle_bytes: idle(idle(a, b), c), f32_idle_bytes: c, reused: REUSED.load(Ordering::Relaxed) }
 }
 
 #[cfg(test)]
@@ -226,21 +241,37 @@ mod tests {
                 pts: filmcraft_time::Tick::ZERO,
             })
         };
-        let before = stats().reused;
-        // a frame someone else still holds is left alone
+        let plane_ptrs = |frame: &VideoFrame| match &frame.data {
+            PixelData::Yuv8 { planes, .. } => planes.each_ref().map(|plane| plane.as_ptr() as usize),
+            _ => panic!("fixture has three byte planes"),
+        };
+        // A frame someone else still holds is left alone. The reuse statistic is global:
+        // concurrent float-buffer tests can change it without touching these planes.
         let shared = yuv(1);
         let held = shared.clone();
+        let held_ptrs = plane_ptrs(&held);
         recycle(shared);
-        assert!(take_u8(n).capacity() >= n);
-        assert_eq!(stats().reused, before);
+        let fresh = take_u8(n);
+        assert!(fresh.capacity() >= n);
+        assert!(!held_ptrs.contains(&(fresh.as_ptr() as usize)), "a shared plane cannot be handed out");
         assert_eq!(held.byte_size(), n + 2 * c);
-        // an unshared frame's planes come back, empty
-        recycle(yuv(2));
+        // An unshared frame's exact allocations come back, empty. Equal-size chroma
+        // planes may be taken in either order.
+        let unshared = yuv(2);
+        let returned_ptrs = plane_ptrs(&unshared);
+        recycle(unshared);
         let (y, u, v) = (take_u8(n), take_u8(c), take_u8(c));
-        assert!(y.is_empty() && y.capacity() >= n && u.capacity() >= c && v.capacity() >= c);
-        assert_eq!(stats().reused, before + 3);
-        // and are not handed out twice
-        take_u8(n);
-        assert_eq!(stats().reused, before + 3);
+        assert!(y.is_empty() && u.is_empty() && v.is_empty());
+        assert!(y.capacity() >= n && u.capacity() >= c && v.capacity() >= c);
+        assert_eq!(y.as_ptr() as usize, returned_ptrs[0]);
+        let mut expected_chroma = [returned_ptrs[1], returned_ptrs[2]];
+        let mut actual_chroma = [u.as_ptr() as usize, v.as_ptr() as usize];
+        expected_chroma.sort_unstable();
+        actual_chroma.sort_unstable();
+        assert_eq!(actual_chroma, expected_chroma);
+        // The returned allocations remain owned by y/u/v and cannot be handed out twice.
+        let another = take_u8(n);
+        assert!(another.capacity() >= n);
+        assert!(!returned_ptrs.contains(&(another.as_ptr() as usize)));
     }
 }

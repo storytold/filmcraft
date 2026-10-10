@@ -169,6 +169,23 @@ impl Workflow {
         self.nodes.get(node)?.get("inputs")?.get(input).filter(|v| !is_link(v))
     }
 
+    /// What makes two workflows "the same workflow" (for settings kept per workflow, such as
+    /// the inputs exposed in the ComfyUI window): its nodes, ids and classes, not their values.
+    /// A workflow exported again with another prompt or seed keeps its key; adding, removing or
+    /// replacing a node makes a new one.
+    pub fn key(&self) -> String {
+        let mut nodes: Vec<(&String, &str)> = self.nodes.iter().map(|(id, n)| (id, n.get("class_type").and_then(Value::as_str).unwrap_or_default())).collect();
+        nodes.sort_unstable();
+        let mut bytes = Vec::new();
+        for (id, class) in nodes {
+            bytes.extend_from_slice(id.as_bytes());
+            bytes.push(0);
+            bytes.extend_from_slice(class.as_bytes());
+            bytes.push(0);
+        }
+        format!("{:016x}", crate::fnv1a(&bytes))
+    }
+
     /// The seed inputs (`(node, input)`), for regenerating with new seeds.
     pub fn seeds(&self) -> Vec<(String, String)> {
         self.nodes().into_iter().flat_map(|n| n.inputs.into_iter().filter(|i| i.seed).map(move |i| (n.node.clone(), i.input))).collect()
@@ -262,5 +279,27 @@ mod tests {
         assert!(w.check_binding(&Binding::value("6", "text", json!("x"))).is_ok());
         assert!(w.check_binding(&Binding::value("6", "clip", json!("x"))).is_err());
         assert!(w.check_binding(&Binding::value("77", "text", json!("x"))).is_err());
+    }
+
+    #[test]
+    fn key_follows_the_graph_not_its_values() {
+        let w = |text: &str, sampler: &str| {
+            Workflow::parse(&serde_json::json!({
+                "3": {"class_type": sampler, "inputs": {"seed": 1}},
+                "6": {"class_type": "CLIPTextEncode", "inputs": {"text": text}}
+            }))
+            .unwrap()
+        };
+        let k = w("a cat", "KSampler").key();
+        assert_eq!(k.len(), 16);
+        assert_eq!(w("a dog", "KSampler").key(), k, "another prompt: the same workflow");
+        assert_ne!(w("a cat", "KSamplerAdvanced").key(), k, "another node: another workflow");
+        let more = Workflow::parse(&serde_json::json!({
+            "3": {"class_type": "KSampler", "inputs": {"seed": 1}},
+            "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "a cat"}},
+            "9": {"class_type": "SaveImage", "inputs": {}}
+        }))
+        .unwrap();
+        assert_ne!(more.key(), k);
     }
 }

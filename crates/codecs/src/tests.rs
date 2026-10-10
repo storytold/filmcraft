@@ -70,7 +70,7 @@ fn mjpeg_mov_with_pcm() {
 fn aac_mp4_decodes() {
     let Some(b) = fixture("tone_aac.mp4", &["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:d=3", "-c:a", "aac", "-b:a", "128k"]) else { return };
     let src = crate::open_bytes("tone_aac.mp4", b).unwrap();
-    assert!(src.info().audio.as_ref().unwrap().codec.contains("AAC"));
+    assert!(src.info().audio().unwrap().codec.contains("AAC"));
     // read in the middle (random access) and sequentially
     let a = src.audio(48_000, 4800, 48_000).unwrap();
     let p = a.peaks()[0];
@@ -510,7 +510,7 @@ fn check_opus(name: &str, channels: usize, expr: &str, extra: &[&str], container
     let src = crate::open_bytes(name, b).expect("open");
     let info = src.info().clone();
     assert_eq!(info.container, container);
-    let a = info.audio.as_ref().expect("audio");
+    let a = info.audio().expect("audio");
     assert_eq!((a.codec.as_str(), a.sample_rate, a.channels as usize), ("Opus", 48_000, channels));
     let d = info.duration.seconds();
     assert!((d - 3.0).abs() < 0.03, "{name}: duration {d}");
@@ -614,4 +614,33 @@ fn apv_mp4_and_raw_bitstream_decode() {
     assert_eq!(mp4_v.pixel_format, "YUV 4:2:2 10-bit");
     let decoded_mp4 = mp4_src.video_frame(FrameRequest::full(Tick::ZERO)).expect("decode mp4 frame");
     assert_eq!(decoded_mp4.to_rgba8(), decoded_raw.to_rgba8());
+}
+
+/// ffmpeg writes MP4 without a `colr` box unless asked: the colour comes from the x265 / x264
+/// SPS VUI, and matches the same stream remuxed with `colr`.
+#[test]
+fn mp4_colour_comes_from_the_sps_without_colr() {
+    use filmcraft_color::{ColorSpace, Primaries, Range};
+    let src = |name: &str, args: &[&str]| fixture(name, args).map(|b| crate::open_bytes(name, b).expect("open"));
+    let color = |s: &filmcraft_media::SharedSource| s.info().video.as_ref().expect("video").color;
+    let lavfi = |size: &'static str| ["-f", "lavfi", "-i", size, "-t", "0.2"];
+    let x265 = "colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:log-level=error";
+    let mut pq = lavfi("testsrc2=s=640x360:r=25").to_vec();
+    pq.extend(["-c:v", "libx265", "-tag:v", "hvc1", "-pix_fmt", "yuv420p10le", "-x265-params", x265]);
+    let Some(plain) = src("hevc_pq_no_colr.mp4", &pq) else { return };
+    assert_eq!(ColorSpace::from_info(&color(&plain)), ColorSpace::Rec2100Pq);
+    let colr_path = fixture_path("hevc_pq_no_colr.mp4", &pq).expect("fixture");
+    if let Some(with_colr) = src("hevc_pq_colr.mp4", &["-i", colr_path.to_str().expect("path"), "-c", "copy", "-movflags", "+write_colr"]) {
+        assert_eq!(color(&with_colr), color(&plain));
+    }
+    let mut full = lavfi("testsrc2=s=640x360:r=25").to_vec();
+    full.extend(["-c:v", "libx264", "-pix_fmt", "yuvj420p", "-color_range", "pc"]);
+    if let Some(s) = src("h264_full_no_colr.mp4", &full) {
+        assert_eq!(color(&s).range, Range::Full);
+    }
+    let mut sd = lavfi("testsrc2=s=720x480:r=30000/1001").to_vec();
+    sd.extend(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-x264-params", "colorprim=smpte170m:transfer=smpte170m:colormatrix=smpte170m"]);
+    if let Some(s) = src("h264_sd601_no_colr.mp4", &sd) {
+        assert_eq!(color(&s).primaries, Primaries::Bt601_525);
+    }
 }

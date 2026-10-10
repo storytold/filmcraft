@@ -70,9 +70,8 @@ fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-/// Register a browser `File` (or `Blob` with a name) and return its virtual path. A file with
-/// the same name and size as an existing entry replaces it (the same file picked again keeps
-/// its path, so projects referencing it come back online); otherwise a numbered name is used.
+/// Register a browser `File` (or named `Blob`) at an unused virtual path; collisions get numbered names.
+/// Name + size do not identify content: replacing an occupied path changes every project item referencing it.
 pub fn register_blob(name: &str, blob: web_sys::Blob) -> String {
     let size = blob.size() as u64;
     let clean: String = name.chars().map(|c| if c == '/' || c == '\\' { '_' } else { c }).collect();
@@ -85,18 +84,11 @@ pub fn register_blob(name: &str, blob: web_sys::Blob) -> String {
         let mut n = 1;
         let path = loop {
             let p = if n == 1 { format!("/files/{clean}") } else { format!("/files/{stem} ({n}){ext}") };
-            match fs.entries.get(&p) {
-                None => break p,
-                Some(Entry::Blob { size: s, .. }) if *s == size => break p,
-                Some(Entry::Mem(b)) if b.len() as u64 == size => break p,
-                _ => n += 1,
+            if !fs.entries.contains_key(&p) {
+                break p;
             }
+            n += 1;
         };
-        if let Some(Entry::Blob { id, .. }) = fs.entries.get(&path) {
-            let id = *id;
-            fs.blobs.remove(&id);
-            fs.chunks.retain(|k, _| k.0 != id);
-        }
         let id = fs.next_id;
         fs.next_id += 1;
         fs.blobs.insert(id, blob);

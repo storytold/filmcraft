@@ -1,8 +1,11 @@
 //! Decoded picture buffer: POC derivation (8.3.1), reference picture set (8.3.2), missing
 //! reference generation (8.3.3), reference picture lists (8.3.4) and output / bumping (C.5.2).
+//!
+//! The buffer only does bookkeeping on picture headers; what a picture is (`F`: the software
+//! decoder's [`crate::picture::FrameRef`], a hardware decoder's surface) is up to the decoder, so
+//! hardware decoders driven by the same headers (VA-API) share this logic and output order.
 
 use crate::error::{Result, ensure};
-use crate::picture::{FrameRef, RefPic};
 use crate::slice::SliceHeader;
 use std::sync::Arc;
 
@@ -29,8 +32,8 @@ pub enum Marking {
     Long,
 }
 
-pub struct Entry {
-    pub frame: FrameRef,
+pub struct Entry<F> {
+    pub frame: F,
     pub poc: i32,
     pub marking: Marking,
     pub needed_for_output: bool,
@@ -39,31 +42,49 @@ pub struct Entry {
 }
 
 /// A picture leaving the DPB for output.
-pub struct Output {
-    pub frame: FrameRef,
+pub struct Output<F> {
+    pub frame: F,
     pub poc: i32,
     pub meta: Arc<OutputMeta>,
 }
 
-/// Reference picture set of the current picture (8.3.2) as DPB indices / generated frames.
-#[derive(Default)]
-pub struct RefPicSet {
-    pub st_curr_before: Vec<RefPic>,
-    pub st_curr_after: Vec<RefPic>,
-    pub lt_curr: Vec<RefPic>,
+/// A reference picture of the current picture.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ref<F> {
+    pub frame: F,
+    pub poc: i32,
+    pub long_term: bool,
 }
 
-#[derive(Default)]
-pub struct Dpb {
-    pub entries: Vec<Entry>,
+/// Reference picture set of the current picture (8.3.2) as DPB indices / generated frames.
+pub struct RefPicSet<F> {
+    pub st_curr_before: Vec<Ref<F>>,
+    pub st_curr_after: Vec<Ref<F>>,
+    pub lt_curr: Vec<Ref<F>>,
+}
+
+impl<F> Default for RefPicSet<F> {
+    fn default() -> Self {
+        Self { st_curr_before: Vec::new(), st_curr_after: Vec::new(), lt_curr: Vec::new() }
+    }
+}
+
+pub struct Dpb<F> {
+    pub entries: Vec<Entry<F>>,
     pub max_dec_pic_buffering: usize,
     pub max_num_reorder: usize,
     /// SpsMaxLatencyPictures (0 = no limit).
     pub max_latency: u32,
 }
 
-impl Dpb {
-    fn bump(&mut self, outs: &mut Vec<Output>) -> bool {
+impl<F> Default for Dpb<F> {
+    fn default() -> Self {
+        Self { entries: Vec::new(), max_dec_pic_buffering: 0, max_num_reorder: 0, max_latency: 0 }
+    }
+}
+
+impl<F: Clone> Dpb<F> {
+    fn bump(&mut self, outs: &mut Vec<Output<F>>) -> bool {
         let Some(i) = (0..self.entries.len()).filter(|&i| self.entries[i].needed_for_output).min_by_key(|&i| self.entries[i].poc) else { return false };
         let e = &mut self.entries[i];
         e.needed_for_output = false;
@@ -85,7 +106,7 @@ impl Dpb {
     }
 
     /// Output everything (end of stream or IRAP without no_output_of_prior_pics).
-    pub fn flush(&mut self, outs: &mut Vec<Output>) {
+    pub fn flush(&mut self, outs: &mut Vec<Output<F>>) {
         while self.bump(outs) {}
         for e in &mut self.entries {
             e.marking = Marking::Unused;
@@ -100,7 +121,7 @@ impl Dpb {
 
     /// C.5.2.2: removal of pictures before decoding the current (non-IRAP-reset) picture, after the RPS
     /// has been applied.
-    pub fn bump_before_decode(&mut self, outs: &mut Vec<Output>) {
+    pub fn bump_before_decode(&mut self, outs: &mut Vec<Output<F>>) {
         self.remove_unused();
         loop {
             let full = self.entries.len() >= self.max_dec_pic_buffering.max(1);
@@ -116,7 +137,7 @@ impl Dpb {
     }
 
     /// C.5.2.3: insert the current picture and apply "additional bumping".
-    pub fn insert(&mut self, frame: FrameRef, poc: i32, output: bool, meta: Arc<OutputMeta>, outs: &mut Vec<Output>) {
+    pub fn insert(&mut self, frame: F, poc: i32, output: bool, meta: Arc<OutputMeta>, outs: &mut Vec<Output<F>>) {
         for e in &mut self.entries {
             if e.needed_for_output {
                 e.latency += 1;
@@ -138,8 +159,8 @@ impl Dpb {
         poc: i32,
         max_poc_lsb: i32,
         irap_no_rasl: bool,
-        make_missing: &mut dyn FnMut(i32) -> FrameRef,
-    ) -> Result<RefPicSet> {
+        make_missing: &mut dyn FnMut(i32) -> F,
+    ) -> Result<RefPicSet<F>> {
         let mut set = RefPicSet::default();
         if sh.nal.is_irap() && irap_no_rasl {
             for e in &mut self.entries {
@@ -196,13 +217,13 @@ impl Dpb {
                 self.entries[i].marking = Marking::Long;
             }
         }
-        let mut make = |found: Option<usize>, p: i32, lt: bool, entries: &mut Vec<Entry>| -> RefPic {
+        let mut make = |found: Option<usize>, p: i32, lt: bool, entries: &mut Vec<Entry<F>>| -> Ref<F> {
             match found {
-                Some(i) => RefPic { frame: entries[i].frame.clone(), poc: entries[i].poc, long_term: lt },
+                Some(i) => Ref { frame: entries[i].frame.clone(), poc: entries[i].poc, long_term: lt },
                 None => {
                     // 8.3.3: generate an unavailable reference picture
                     let frame = make_missing(p);
-                    RefPic { frame, poc: p, long_term: lt }
+                    Ref { frame, poc: p, long_term: lt }
                 }
             }
         };
@@ -228,8 +249,8 @@ impl Dpb {
 }
 
 /// Build RefPicList0/1 (8.3.4).
-pub fn build_ref_lists(sh: &SliceHeader, rps: &RefPicSet) -> Result<[Vec<RefPic>; 2]> {
-    let mut lists: [Vec<RefPic>; 2] = [Vec::new(), Vec::new()];
+pub fn build_ref_lists<F: Clone>(sh: &SliceHeader, rps: &RefPicSet<F>) -> Result<[Vec<Ref<F>>; 2]> {
+    let mut lists: [Vec<Ref<F>>; 2] = [Vec::new(), Vec::new()];
     if sh.is_intra() {
         return Ok(lists);
     }

@@ -40,7 +40,7 @@ fn create_attach_toggle_renders_the_same_picture() {
     let full_half = frame_rgba(&mut s, 5, 0.5);
     let r = s.execute("media.createProxies", json!({"items": [items[0].0], "preset": "prores_proxy_half", "wait": true})).unwrap();
     let out = r["outputs"][0]["path"].as_str().unwrap().to_string();
-    assert!(out.ends_with("Proxies/a_Proxy.mov"), "{out}");
+    assert!(std::path::Path::new(&out).ends_with(std::path::Path::new("Proxies").join("a_Proxy.mov")), "{out}");
     let job = s.execute("jobs.list", json!({})).unwrap();
     assert_eq!(job[0]["finished"], json!(true), "{job}");
     let m = s.project.item(items[0]).unwrap().as_media().unwrap().clone();

@@ -1048,7 +1048,7 @@ fn clip_set(s: &mut Session, p: &Value) -> Result<Value> {
 // ------------------------------------------------------------------------------------- audio gain
 
 /// Peak (dBFS, before clip gain) of each selected audio clip's source range.
-fn clip_peaks(s: &Session, clips: &[filmcraft_project::ClipId]) -> Vec<(filmcraft_project::ClipId, f64)> {
+pub(crate) fn clip_peaks(s: &Session, clips: &[filmcraft_project::ClipId]) -> Vec<(filmcraft_project::ClipId, f64)> {
     let Some(seq) = s.active_sequence() else { return Vec::new() };
     let sr = seq.settings.sample_rate.max(1);
     let provider = s.media.provider(s.project.clone(), s.services.clone());
@@ -1065,7 +1065,7 @@ fn clip_peaks(s: &Session, clips: &[filmcraft_project::ClipId]) -> Vec<(filmcraf
             let mut pos = s0;
             while pos < s0 + len {
                 let n = (s0 + len - pos).min(sr as i64) as usize;
-                if let Ok(b) = src.audio(pos, n, sr) {
+                if let Ok(b) = src.audio_stream(it.audio_stream, pos, n, sr) {
                     peak = b.peaks().into_iter().fold(peak, f32::max);
                 }
                 pos += n as i64;
@@ -1129,19 +1129,19 @@ pub fn audio_gain(s: &mut Session, p: &Value) -> Result<Value> {
         }
         m => return Err(bad("clip.audioGain", format!("unknown mode `{m}` (set, adjust, normalizeMax, normalizeAll)"))),
     };
-    let n = new_gain.len();
-    let applied = new_gain.clone();
-    s.edit_sequence("Audio Gain", move |q, _, _| {
+    let applied = s.edit_sequence("Audio Gain", move |q, _, _| {
+        let mut applied = Vec::new();
         for t in q.audio_tracks.iter_mut() {
             for i in t.items.iter_mut() {
                 if let Some((_, g)) = new_gain.iter().find(|(c, _)| *c == i.id) {
                     i.gain_db = g.clamp(-96.0, 96.0);
+                    applied.push((i.id, i.gain_db));
                 }
             }
         }
-        Ok(())
+        Ok(applied)
     })?;
-    Ok(json!({"mode": mode, "clips": n, "gainDb": applied.iter().map(|(c, g)| json!({"clip": c.0, "gainDb": g})).collect::<Vec<_>>()}))
+    Ok(json!({"mode": mode, "clips": applied.len(), "gainDb": applied.iter().map(|(c, g)| json!({"clip": c.0, "gainDb": g})).collect::<Vec<_>>()}))
 }
 
 /// Effects panel ▸ Set Selected as Default Transition (video or audio, from the effect's kind).

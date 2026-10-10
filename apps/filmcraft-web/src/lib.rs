@@ -24,6 +24,7 @@ pub mod fs;
 pub mod import;
 pub mod opfs;
 pub mod recovery;
+pub mod recovery_policy;
 pub mod webcodecs;
 
 use std::cell::RefCell;
@@ -56,6 +57,13 @@ pub fn repaint() {
             c.request_repaint();
         }
     });
+}
+
+/// Give a host that builds its own [`WebApp`] the egui context that [`post`] and [`repaint`] wake.
+/// [`start`] calls it; an embedding app that runs `WebApp` in its own eframe runner calls it once
+/// from its app creator, or posted actions and JS API requests wait for the next input event.
+pub fn set_context(ctx: egui::Context) {
+    CTX.with(|c| *c.borrow_mut() = Some(ctx));
 }
 
 /// Environment facts reported by `filmcraft.info()` (backend, isolation, codecs…).
@@ -150,7 +158,7 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
             canvas,
             web_options,
             Box::new(move |cc| {
-                CTX.with(|c| *c.borrow_mut() = Some(cc.egui_ctx.clone()));
+                set_context(cc.egui_ctx.clone());
                 let ctx = cc.egui_ctx.clone();
                 fs::set_on_data(move || ctx.request_repaint());
                 fs::set_on_write(|path, data| {
@@ -177,6 +185,9 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 }
                 let mut app = FilmcraftApp::new(session);
                 import::install_hooks(&mut app);
+                // Settings ▸ General ▸ Interface Language ▸ System Language (#218): the browser's languages.
+                app.hooks.system_languages =
+                    Some(Box::new(|| web_sys::window().map(|w| w.navigator().languages().iter().filter_map(|v| v.as_string()).collect()).unwrap_or_default()));
                 let (tx, rx) = std::sync::mpsc::channel();
                 api::set_sender(tx);
                 app = app.with_control(rx);

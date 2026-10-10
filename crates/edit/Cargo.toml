@@ -16,5 +16,6 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+filmcraft-geom = { workspace = true }
 filmcraft-media = { workspace = true }
 serde_json = { workspace = true }

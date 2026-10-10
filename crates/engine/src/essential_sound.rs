@@ -12,7 +12,7 @@
 //! | `essentialSound.setType` / `clearType` | assign / clear the audio type (clearing removes its effects and gain) |
 //! | `essentialSound.set` | one setting by dotted key (`repair.noise.amount`), or several (`values`) |
 //! | `essentialSound.applyPreset` / `savePreset` / `deletePreset` | built-in and user presets |
-//! | `essentialSound.autoMatch` | measure integrated loudness (BS.1770) and set the match gain to the target |
+//! | `essentialSound.autoMatch` | measure integrated loudness (BS.1770, mono clips as one channel) and set the match gain to the target |
 //! | `essentialSound.generateDucking` | Volume keyframes that duck Music / Ambience under the trigger types |
 
 use serde_json::{Value, json};
@@ -262,15 +262,26 @@ fn delete_preset(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Integrated loudness (LUFS) of a clip's own signal (clip gain + clip effects) over its whole
 /// timeline range, or `None` when it is silent / has no audio.
+///
+/// The clip is measured with the channels it has: a stereo (or wider) source as the two channels
+/// it plays, a mono source or a mono pick as one channel (its two identical sides folded to one),
+/// the way BS.1770 and ffmpeg's `ebur128` measure a mono programme. Metering the dual-mono pair the
+/// clip plays would read 3 LU louder than the file and match it 3 dB too quietly (#296).
 pub fn clip_loudness(item: &TrackItem, sr: u32, sources: &dyn SourceProvider) -> Option<f64> {
     let a0 = item.start.to_units_floor(sr as i64);
     let a1 = item.end().to_units_floor(sr as i64);
-    let mut meter = LoudnessMeter::new(sr as f64, 2);
+    let mono = filmcraft_render::audio::clip_is_mono(item, sources)?;
+    let mut meter = LoudnessMeter::new(sr as f64, if mono { 1 } else { 2 });
     let mut pos = a0;
     while pos < a1 {
         let n = (a1 - pos).min(sr as i64) as usize;
         let [l, r] = filmcraft_render::audio::clip_signal(item, pos, n, sr, sources)?;
-        meter.process(&[&l, &r]);
+        if mono {
+            let m: Vec<f32> = l.iter().zip(&r).map(|(a, b)| 0.5 * (a + b)).collect();
+            meter.process(&[&m]);
+        } else {
+            meter.process(&[&l, &r]);
+        }
         pos += n as i64;
     }
     Some(meter.integrated()).filter(|v| v.is_finite())

@@ -489,3 +489,74 @@ fn layers_with_effects_fall_back_to_the_cpu_without_a_stage() {
         assert!(p99 <= 6 && mean < 1.5, "stage {stage}: p99 {p99}, mean {mean}");
     }
 }
+
+/// The half-float upload is lossless for this input, so a 1:1 effect source draw must be too.
+/// Odd dimensions expose interpolation drift that can invent opacity before any effect runs.
+#[test]
+fn effect_source_identity_preserves_odd_sized_half_float_texels() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    for (w, h) in [(67u32, 41u32), (96, 54), (64, 32)] {
+        let px = picture(w, h);
+        let frame = VideoFrame::rgba_f32(w, h, px.clone());
+        for n in [0, 1] {
+            let (ow, oh, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: n, ops: Vec::new() }).expect("source image");
+            assert_eq!((ow, oh, gpu.len()), (w, h, px.len()));
+            for (i, (expected, actual)) in px.iter().zip(&gpu).enumerate() {
+                assert_eq!(actual.to_bits(), expected.to_bits(), "{w}x{h} n{n} source component{i}: {actual} != {expected}");
+            }
+        }
+    }
+}
+
+#[test]
+fn alpha_invert_does_not_amplify_invented_opacity_at_odd_source_pixels() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (67, 41);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let op = FxOp::Invert { channel: 4, blend: 0.2 };
+    let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+    op.apply(&mut cpu);
+    let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("alpha invert image");
+    assert_eq!(gpu.len(), px.len());
+    let (worst, flips) = compare(&cpu.px, &gpu);
+    assert!(worst <= EXACT && flips == 0.0, "alpha invert: {worst}, {flips}");
+    let mut transparent = 0;
+    for (source, result) in px.as_chunks::<4>().0.iter().zip(gpu.as_chunks::<4>().0.iter()) {
+        if source[3] == 0.0 {
+            transparent += 1;
+            assert_eq!(&result[..3], &[0.0; 3], "a transparent source must not acquire neighboring RGB");
+            assert!((result[3] - 0.8).abs() <= f32::EPSILON);
+        }
+    }
+    assert_eq!(transparent, 402);
+}
+
+/// The exact source grid keeps the existing box-minification behavior at non-unit factors.
+#[test]
+fn effect_source_integer_decimation_preserves_cpu_box_oracle() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    for (w, h) in [(67u32, 41u32), (96, 54)] {
+        let frame = VideoFrame::rgba_f32(w, h, picture(w, h));
+        for n in [2, 4, 8] {
+            let (ow, oh, cpu) = frame.to_linear_f32_decimated(n as usize);
+            let (gw, gh, gpu) =
+                c.effect_image(&frame, &LayerFx { size: (ow as u32, oh as u32), decimation: n, ops: Vec::new() }).expect("decimated source image");
+            assert_eq!((gw as usize, gh as usize, gpu.len()), (ow, oh, cpu.len()));
+            let (worst, flips) = compare(&cpu, &gpu);
+            assert!(worst <= EXACT && flips == 0.0, "{w}x{h} n{n} source box: {worst}, {flips}");
+        }
+    }
+}

@@ -8,7 +8,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 ```json
 {
   "format": "filmcraft.project",
-  "schema_version": 12,
+  "schema_version": 13,
   "generator": "FilmCraft 0.1.0",
   "project": { "name": "…", "settings": { … }, "root": { … }, "items": { … }, "next_id": 48 },
   "view": { "open_sequences": [21, 50], "active_sequence": 50, "sequences": { "21": { "pps": 40.0, "scroll": 0.0, … } } }
@@ -21,12 +21,12 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
   clips, effects, keyframes, markers). Media is referenced by path, never embedded.
 - Files are written compact (no indentation). A 2,000-clip project is about 1.4 MB.
 - `view` (optional) is what was open when the project was saved: the Timeline's sequence tabs in
-  order, the active one, and each sequence's zoom, scroll and track heights
-  (`filmcraft_project::ProjectView`). It is beside the project, not in it: it is not part of the
+  order, the active one, each sequence's zoom, scroll and track heights, and each sequence's
+  playhead (`filmcraft_project::ProjectView`). It is beside the project, not in it: it is not part of the
   edit, never an undo step, and changing it does not mark the project as changed. Opening a
   project restores it when the Timeline preference "Restore open sequences when opening projects"
   is on. It is outside the schema version: older builds ignore it, ids that are not sequences and
-  numbers out of range are dropped or clamped, and a `view` that cannot be read is ignored (the
+  numbers out of range are dropped or clamped (a playhead also snaps to a frame of its sequence), and a `view` that cannot be read is ignored (the
   project opens on its first sequence, as it does without one or with no open sequence in it).
 - A coordinate of an effect's point parameter may be `null`. Point parameters use NaN for "auto"
   (the frame centre, or the source centre for `anchor`), and JSON writes NaN as `null`; it reads back
@@ -52,7 +52,8 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 | 10 | M3.10 | clip time interpolation, Hold Filters, Field Options, audio source channels, Modify ▸ Audio Channels map, subclip Restrict Trims; no-op step |
 | 11 | M3.11 | search bins (`project.search_bins`), Flash Cue markers, Project Settings safe areas, capture format and scratch disks; no-op step |
 | 12 | M10.7 | graphics design data: `TrackItem::graphic` (roll / crawl, responsive time, template link), `EffectInstance::layer` (layer uid, per-character styles, responsive pins), `project.source_graphics`; no-op step |
-| 13 | ComfyUI clips | generated media: `project.generated` (the recipes of ComfyUI clips, [comfyui.md](comfyui.md)); no-op step |
+| 13 | Multi-stream audio | `MediaInfo::audio_streams` and `TrackItem::audio_stream`; older `audio` objects load as stream zero, missing clip indices default to zero; no-op step |
+| 14 | ComfyUI clips | generated media: `project.generated` (the recipes of ComfyUI clips, [comfyui.md](comfyui.md)); no-op step |
 
 ### Migrations
 
@@ -160,7 +161,8 @@ Desktop flags: `--recover` recovers the newest candidate without asking. `--no-r
 without asking; the changes stay available through File ▸ Recover Unsaved Changes…. `--data-dir
 <dir>` (or `FILMCRAFT_DATA_DIR`) moves the data directory. The default is `~/Library/Application
 Support/FilmCraft` on macOS, `%APPDATA%\FilmCraft` on Windows, and `$XDG_DATA_HOME/filmcraft` or
-`~/.local/share/filmcraft` elsewhere.
+`~/.local/share/filmcraft` elsewhere. A `portable.txt` file next to the executable (the Windows
+portable zip ships one) makes it `data` next to the executable instead.
 
 ### Cost
 

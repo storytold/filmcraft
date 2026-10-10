@@ -109,6 +109,28 @@ fn image_sequences_are_numbered_like_premiere() {
     }
 }
 
+/// `alpha` keeps straight alpha in PNG and TIFF sequences; off (the default) flattens over black (#160).
+#[test]
+fn image_sequences_keep_alpha_when_asked() {
+    let (p, seq, m) = matte([0.0, 0.0, 1.0, 0.5], 64, 36, None);
+    for (fmt, ext) in [(Format::PngSequence, "png"), (Format::TiffSequence, "tif")] {
+        for alpha in [false, true] {
+            let dir = Scratch::new(&format!("alpha-{ext}-{alpha}"));
+            let mut s = ExportSettings { format: fmt, path: dir.path(&format!("a.{ext}")), alpha, ..Default::default() };
+            s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2)));
+            export(&p, seq, &s, &m, &Progress::default()).unwrap();
+            let img = image::open(dir.0.join(format!("a000.{ext}"))).unwrap();
+            let px = img.to_rgba8().get_pixel(32, 18).0;
+            if alpha {
+                assert!(img.color().has_alpha(), "{fmt:?} must be written with an alpha channel");
+                assert!((100..=160).contains(&px[3]) && px[2] > 200 && px[0] < 15, "{fmt:?} straight alpha: {px:?}");
+            } else {
+                assert!(px[3] == 255 && px[2] > 100 && px[2] < 240 && px[0] < 15, "{fmt:?} flattened over black: {px:?}");
+            }
+        }
+    }
+}
+
 #[test]
 fn wav_and_aiff_audio_only() {
     let (p, seq, m) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(-6.0));

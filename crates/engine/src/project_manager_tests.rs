@@ -59,11 +59,12 @@ fn collect_files_copies_used_media_and_opens() {
     let jobs = s.execute("jobs.list", json!({})).unwrap();
     assert!(jobs[0]["result"].get("error").is_none(), "{jobs}");
     // the copy opens with its media next to it, and plays the same frames
+    drop(s); // Windows does not allow renaming a directory while decoder files are open.
     std::fs::rename(root.join("Media"), root.join("Media-gone")).unwrap();
     let mut t = opened(r["project"].as_str().unwrap());
     for it in t.project.items.values().filter_map(|i| i.as_media()) {
         let MediaRef::File { path } = &it.media else { panic!() };
-        assert!(path.starts_with(&*dest.to_string_lossy()), "{path}");
+        assert!(std::path::Path::new(path).starts_with(&dest), "{path}");
         assert!(it.identity.is_some());
     }
     let after: Vec<Vec<u8>> = (0..36).step_by(5).map(|f| frame_rgba(&mut t, f, 1.0).2).collect();
@@ -98,5 +99,26 @@ fn consolidate_trims_to_used_ranges_with_handles() {
         let q = psnr(&frame_rgba(&mut t, *f, 1.0).2, &before[k]);
         assert!(q > 38.0, "frame {f}: {q:.1} dB");
     }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn nested_subclip_keeps_its_whole_parent_chain_used() {
+    use filmcraft_project::{ItemKind, Label};
+    use filmcraft_time::{Tick, TimeRange};
+    let root = tmp_dir("pm-nested-subclip");
+    let (s, items, _) = project(&root);
+    let seq = s.state.active_sequence.unwrap();
+    let mut p = (*s.project).clone();
+    let range = TimeRange::new(Tick::ZERO, Tick(1000));
+    let inner = p.add_item("Inner", Label::Iris, ItemKind::Subclip { parent: items[0], range, restrict_trims: false }, None);
+    let outer = p.add_item("Outer", Label::Iris, ItemKind::Subclip { parent: inner, range, restrict_trims: false }, None);
+    for t in p.sequence_mut(seq).unwrap().all_tracks_mut() {
+        for x in t.items.iter_mut().filter(|i| i.item == items[0]) {
+            x.item = outer;
+        }
+    }
+    let (_, used) = super::project_manager::used_ranges(&p, &[seq]);
+    assert!(used.contains(&outer) && used.contains(&inner) && used.contains(&items[0]), "{used:?}");
     let _ = std::fs::remove_dir_all(&root);
 }

@@ -246,6 +246,21 @@ fn dropdowns_numbers_and_reset() {
 }
 
 #[test]
+fn view_menu_and_settings_name_each_color_theme_alike() {
+    let mut d = Driver::demo();
+    let menu = d.ok("ui.menu.list", json!({}));
+    let menu_label = |id: &str| menu.as_array().unwrap().iter().find(|m| m["id"] == id).unwrap()["label"].as_str().unwrap().to_string();
+    d.menu("app.settings.appearance");
+    d.click("settings.appearance.colorTheme");
+    for (menu_id, pref) in [("view.theme.dark", "darkest"), ("view.theme.medium", "dark"), ("view.theme.light", "light")] {
+        let id = format!("settings.appearance.colorTheme.{pref}");
+        let found = d.ok("ui.elements", json!({"prefix": id}));
+        let choice = found.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).unwrap();
+        assert_eq!(menu_label(menu_id), choice["label"].as_str().unwrap(), "{menu_id} and {id} name the same theme");
+    }
+}
+
+#[test]
 fn appearance_labels_and_tooltips_take_effect() {
     let mut d = Driver::demo();
     assert_eq!(d.inspect()["ui"]["dark"], true);

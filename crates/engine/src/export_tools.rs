@@ -129,12 +129,30 @@ fn parse_file(bytes: &[u8]) -> std::result::Result<PresetFile, String> {
 // settings
 // ---------------------------------------------------------------------------------------------
 
+/// `sampleRate` → `sample_rate`.
+fn camel_to_snake(k: &str) -> String {
+    let mut out = String::with_capacity(k.len() + 2);
+    for c in k.chars() {
+        if c.is_ascii_uppercase() {
+            out.push('_');
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Deep-merge `patch` into `base` (objects merge, everything else replaces).
 fn merge(base: &mut Value, patch: &Value) {
     match (base, patch) {
         (Value::Object(b), Value::Object(p)) => {
             for (k, v) in p {
-                merge(b.entry(k.clone()).or_insert(Value::Null), v);
+                // Some nested settings structs serialize snake_case (`audio.sample_rate`); accept the documented camelCase
+                // spelling for them too instead of adding a second, ignored key next to the default.
+                let snake = camel_to_snake(k);
+                let key = if !b.contains_key(k) && b.contains_key(&snake) { snake } else { k.clone() };
+                merge(b.entry(key).or_insert(Value::Null), v);
             }
         }
         (b, p) => *b = p.clone(),
@@ -230,6 +248,9 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
     if let Some(v) = bool_p(p, "sdr") {
         settings.sdr = v;
     }
+    if let Some(v) = bool_p(p, "alpha") {
+        settings.alpha = v;
+    }
     match (crate::commands::checked_u32_p(p, "width", cmd)?, crate::commands::checked_u32_p(p, "height", cmd)?) {
         (Some(w), Some(h)) => settings.frame_size = Some((w, h)),
         (None, None) => {}
@@ -304,7 +325,7 @@ pub fn default_export_dir(s: &Session) -> PathBuf {
         // the web build's virtual file table: written files are offered as downloads
         return PathBuf::from("/exports");
     }
-    if let Ok(h) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+    if let Some(h) = crate::media_browser::std_home_dir() {
         let movies = Path::new(&h).join("Movies");
         return if movies.is_dir() { movies } else { PathBuf::from(h) };
     }
@@ -327,11 +348,19 @@ fn with_extension(path: &str, settings: &ExportSettings) -> String {
     }
 }
 
-fn expand_home(p: &str) -> String {
-    match (p.strip_prefix("~/"), std::env::var("HOME")) {
-        (Some(rest), Ok(h)) => format!("{h}/{rest}"),
+/// `~/` expanded to the home directory (`USERPROFILE` on Windows). On Windows `/` becomes `\`:
+/// after a `\\?\` prefix (what `canonicalize` returns) `/` is not a separator.
+pub fn expand_home(p: &str) -> String {
+    let p = match (p.strip_prefix("~/"), crate::media_browser::std_home_dir()) {
+        (Some(rest), Some(h)) => format!("{h}/{rest}"),
         _ => p.to_string(),
-    }
+    };
+    if cfg!(windows) { p.replace('/', "\\") } else { p }
+}
+
+/// `x` names a folder: it ends in a separator or already exists as one.
+fn is_folder(x: &str) -> bool {
+    x.ends_with(['/', '\\']) || Path::new(x).is_dir()
 }
 
 /// Output path for `seq`: the `path` param (a file, or a directory ending in `/` or existing), else
@@ -339,7 +368,7 @@ fn expand_home(p: &str) -> String {
 fn output_path(s: &Session, p: &Value, seq: ItemId, settings: &ExportSettings, suffix: Option<usize>) -> String {
     let name = s.project.item(seq).map(|i| i.name.clone()).unwrap_or_else(|| "Sequence".into());
     let base = match str_p(p, "path").map(expand_home) {
-        Some(x) if x.ends_with('/') || x.ends_with('\\') || Path::new(&x).is_dir() => Path::new(&x).join(file_safe(&name)).to_string_lossy().to_string(),
+        Some(x) if is_folder(&x) => Path::new(&x).join(file_safe(&name)).to_string_lossy().to_string(),
         Some(x) => x,
         None => default_export_dir(s).join(file_safe(&name)).to_string_lossy().to_string(),
     };
@@ -633,11 +662,7 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
             };
             st.range = range_param(s, &project, seq, *r, times, cmd)?;
             // several ranges of one sequence get numbered names; several sequences their own names
-            let suffix = if many && (ranges.len() > 1 || str_p(p, "path").is_some_and(|x| !x.ends_with('/') && !Path::new(&expand_home(x)).is_dir())) {
-                Some(n)
-            } else {
-                None
-            };
+            let suffix = if many && (ranges.len() > 1 || str_p(p, "path").is_some_and(|x| !is_folder(&expand_home(x)))) { Some(n) } else { None };
             st.path = output_path(s, p, seq, &st, suffix);
             n += 1;
             items.push((seq, st));
@@ -762,7 +787,7 @@ fn queue_move(s: &mut Session, p: &Value) -> Result<Value> {
     let n = s.export_queue.items.len() as i64;
     let to = match (p.get("to").and_then(Value::as_i64), p.get("by").and_then(Value::as_i64)) {
         (Some(t), _) => t,
-        (None, Some(b)) => i as i64 + b,
+        (None, Some(b)) => (i as i64).saturating_add(b),
         _ => return Err(bad(cmd, "need `to` (index) or `by` (±n)")),
     }
     .clamp(0, n - 1) as usize;

@@ -1,8 +1,11 @@
 //! Decoded picture buffer: reference marking (8.2.5), reference list construction (8.2.4) and output
 //! ordering / bumping (C.4).
+//!
+//! The buffer only does bookkeeping on picture headers; what a picture is (`F`: the software
+//! decoder's [`crate::picture::FrameRef`], a hardware decoder's surface) is up to the decoder, so
+//! hardware decoders driven by the same headers (VA-API) share this logic and output order.
 
 use crate::error::{Result, ensure};
-use crate::picture::{FrameRef, RefPic};
 use crate::slice::{Mmco, SliceHeader, SliceType};
 use std::sync::Arc;
 
@@ -28,8 +31,8 @@ pub struct OutputMeta {
     pub draft: bool,
 }
 
-pub struct DpbEntry {
-    pub frame: FrameRef,
+pub struct DpbEntry<F> {
+    pub frame: F,
     pub poc: i32,
     pub frame_num: u32,
     pub long_term_frame_idx: u32,
@@ -39,8 +42,8 @@ pub struct DpbEntry {
     pub meta: Arc<OutputMeta>,
 }
 
-pub struct Dpb {
-    pub entries: Vec<DpbEntry>,
+pub struct Dpb<F> {
+    pub entries: Vec<DpbEntry<F>>,
     /// None = "no long-term frame indices".
     pub max_long_term_frame_idx: Option<u32>,
     pub capacity: usize,
@@ -48,18 +51,18 @@ pub struct Dpb {
 }
 
 /// A picture leaving the DPB for output.
-pub struct Output {
-    pub frame: FrameRef,
+pub struct Output<F> {
+    pub frame: F,
     pub poc: i32,
     pub meta: Arc<OutputMeta>,
 }
 
-impl Dpb {
+impl<F: Clone> Dpb<F> {
     pub fn new() -> Self {
         Dpb { entries: Vec::new(), max_long_term_frame_idx: None, capacity: 16, max_reorder: 16 }
     }
 
-    fn frame_num_wrap(e: &DpbEntry, cur_frame_num: u32, max_frame_num: u32) -> i32 {
+    fn frame_num_wrap(e: &DpbEntry<F>, cur_frame_num: u32, max_frame_num: u32) -> i32 {
         if e.frame_num > cur_frame_num { e.frame_num as i32 - max_frame_num as i32 } else { e.frame_num as i32 }
     }
 
@@ -73,7 +76,7 @@ impl Dpb {
     }
 
     /// Output the picture with the smallest POC (C.4.5.3 "bumping"). Returns false if none waits.
-    fn bump(&mut self, out: &mut Vec<Output>) -> bool {
+    fn bump(&mut self, out: &mut Vec<Output<F>>) -> bool {
         let Some(i) = self.entries.iter().enumerate().filter(|(_, e)| e.needed_for_output).min_by_key(|(_, e)| e.poc).map(|(i, _)| i) else {
             return false;
         };
@@ -85,13 +88,13 @@ impl Dpb {
     }
 
     /// Output everything in POC order and clear non-reference entries.
-    pub fn flush(&mut self, out: &mut Vec<Output>) {
+    pub fn flush(&mut self, out: &mut Vec<Output<F>>) {
         while self.bump(out) {}
         self.prune();
     }
 
     /// IDR: mark all references unused; output (or drop) prior pictures.
-    pub fn idr(&mut self, no_output_of_prior_pics: bool, out: &mut Vec<Output>) {
+    pub fn idr(&mut self, no_output_of_prior_pics: bool, out: &mut Vec<Output<F>>) {
         for e in &mut self.entries {
             e.mark = RefMark::Unused;
         }
@@ -122,7 +125,8 @@ impl Dpb {
         self.prune();
     }
 
-    /// Insert "non-existing" frames for a frame_num gap (8.2.5.2).
+    /// Insert "non-existing" frames for a frame_num gap (8.2.5.2). `make_frame` gives each one's
+    /// picture and POC.
     #[allow(clippy::too_many_arguments)]
     pub fn fill_frame_num_gap(
         &mut self,
@@ -130,17 +134,17 @@ impl Dpb {
         frame_num: u32,
         max_frame_num: u32,
         max_num_ref_frames: usize,
-        make_frame: &mut dyn FnMut(u32) -> (FrameRef, Arc<OutputMeta>),
+        make_frame: &mut dyn FnMut(u32) -> (F, i32, Arc<OutputMeta>),
         poc_state: &mut dyn FnMut(u32),
     ) {
         let mut unused = (prev_ref_frame_num + 1) % max_frame_num;
         let mut guard = 0;
         while unused != frame_num && guard < max_frame_num {
             self.sliding_window(unused, max_frame_num, max_num_ref_frames);
-            let (frame, meta) = make_frame(unused);
+            let (frame, poc, meta) = make_frame(unused);
             poc_state(unused);
             self.entries.push(DpbEntry {
-                poc: frame.poc,
+                poc,
                 frame,
                 frame_num: unused,
                 long_term_frame_idx: 0,
@@ -154,26 +158,26 @@ impl Dpb {
         }
     }
 
-    /// Initial reference picture lists (8.2.4.2) + modification (8.2.4.3) for a frame slice.
-    pub fn build_ref_lists(&self, sh: &SliceHeader, cur_poc: i32, max_frame_num: u32) -> Result<[Vec<RefPic>; 2]> {
-        let mut lists: [Vec<RefPic>; 2] = [Vec::new(), Vec::new()];
+    /// Initial reference picture lists (8.2.4.2) + modification (8.2.4.3) for a frame slice, each
+    /// entry made by `to_ref` from the DPB entry it refers to.
+    pub fn build_ref_lists<R>(&self, sh: &SliceHeader, cur_poc: i32, max_frame_num: u32, to_ref: impl Fn(&DpbEntry<F>) -> R) -> Result<[Vec<R>; 2]> {
+        let mut lists: [Vec<R>; 2] = [Vec::new(), Vec::new()];
         if sh.slice_type.is_intra() {
             return Ok(lists);
         }
         let cur_fn = sh.frame_num;
-        let pic_num = |e: &DpbEntry| Self::frame_num_wrap(e, cur_fn, max_frame_num);
-        let short: Vec<&DpbEntry> = self.entries.iter().filter(|e| e.mark == RefMark::Short).collect();
-        let mut long: Vec<&DpbEntry> = self.entries.iter().filter(|e| e.mark == RefMark::Long).collect();
+        let pic_num = |e: &DpbEntry<F>| Self::frame_num_wrap(e, cur_fn, max_frame_num);
+        let short: Vec<&DpbEntry<F>> = self.entries.iter().filter(|e| e.mark == RefMark::Short).collect();
+        let mut long: Vec<&DpbEntry<F>> = self.entries.iter().filter(|e| e.mark == RefMark::Long).collect();
         long.sort_by_key(|e| e.long_term_frame_idx);
-        let to_ref = |e: &&DpbEntry| RefPic { frame: e.frame.clone(), long_term: e.mark == RefMark::Long };
-        let mut entry_lists: [Vec<&DpbEntry>; 2] = [Vec::new(), Vec::new()];
+        let mut entry_lists: [Vec<&DpbEntry<F>>; 2] = [Vec::new(), Vec::new()];
         if sh.slice_type != SliceType::B {
             let mut s = short.clone();
             s.sort_by_key(|e| std::cmp::Reverse(pic_num(e)));
             entry_lists[0] = s.into_iter().chain(long.iter().copied()).collect();
         } else {
-            let mut before: Vec<&DpbEntry> = short.iter().copied().filter(|e| e.poc < cur_poc).collect();
-            let mut after: Vec<&DpbEntry> = short.iter().copied().filter(|e| e.poc > cur_poc).collect();
+            let mut before: Vec<&DpbEntry<F>> = short.iter().copied().filter(|e| e.poc < cur_poc).collect();
+            let mut after: Vec<&DpbEntry<F>> = short.iter().copied().filter(|e| e.poc > cur_poc).collect();
             before.sort_by_key(|e| std::cmp::Reverse(e.poc));
             after.sort_by_key(|e| e.poc);
             entry_lists[0] = before.iter().chain(after.iter()).chain(long.iter()).copied().collect();
@@ -188,7 +192,7 @@ impl Dpb {
         let nlists = if sh.slice_type == SliceType::B { 2 } else { 1 };
         for l in 0..nlists {
             let n = sh.num_ref_idx_active[l] as usize;
-            let mut list: Vec<Option<&DpbEntry>> = entry_lists[l].iter().copied().map(Some).collect();
+            let mut list: Vec<Option<&DpbEntry<F>>> = entry_lists[l].iter().copied().map(Some).collect();
             list.truncate(n);
             list.resize(n, None);
             if !sh.ref_pic_list_mod[l].is_empty() {
@@ -199,7 +203,7 @@ impl Dpb {
                 for m in &sh.ref_pic_list_mod[l] {
                     ensure!(ref_idx < n, "too many ref_pic_list_modification entries");
                     list.push(None); // temporarily one longer
-                    let (target, is_long): (Option<&DpbEntry>, bool) = match m.idc {
+                    let (target, is_long): (Option<&DpbEntry<F>>, bool) = match m.idc {
                         0 | 1 => {
                             let d = m.value as i32 + 1;
                             let no_wrap = if m.idc == 0 {
@@ -249,7 +253,7 @@ impl Dpb {
             }
             // Fill missing entries (should not happen in conforming streams) with the first valid entry.
             let fallback = list.iter().flatten().next().copied().or_else(|| self.entries.last());
-            let out: Vec<RefPic> = list.iter().filter_map(|e| e.or(fallback)).map(|e| to_ref(&e)).collect();
+            let out: Vec<R> = list.iter().filter_map(|e| e.or(fallback)).map(&to_ref).collect();
             lists[l] = out;
         }
         Ok(lists)
@@ -327,12 +331,12 @@ impl Dpb {
     pub fn store_picture(
         &mut self,
         sh: &SliceHeader,
-        frame: FrameRef,
+        frame: F,
         poc: i32,
         max_frame_num: u32,
         max_num_ref_frames: usize,
         meta: Arc<OutputMeta>,
-        out: &mut Vec<Output>,
+        out: &mut Vec<Output<F>>,
     ) {
         let mut mark = RefMark::Unused;
         let mut long_idx = 0;
@@ -404,7 +408,7 @@ impl Dpb {
     }
 }
 
-impl Default for Dpb {
+impl<F: Clone> Default for Dpb<F> {
     fn default() -> Self {
         Self::new()
     }

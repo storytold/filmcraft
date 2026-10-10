@@ -932,6 +932,10 @@ impl Exp<'_, '_> {
         let hold = c.frame_hold;
         let src_in = hold.unwrap_or(c.source_in);
         let src_out = if hold.is_some() { src_in + c.duration } else { c.source_out() };
+        let (start_f, end_f, in_f) = (frames_round(rate, c.start), frames_round(rate, c.end()), frames_round(rate, src_in));
+        // At normal speed (and on a freeze frame) the source span is the record span. Rounded on its own
+        // it can come out a frame shorter or longer than `end - start` (#340), so derive it from them.
+        let out_f = if hold.is_some() || c.speed.abs() == 1.0 { in_f.saturating_add(end_f.saturating_sub(start_f)) } else { frames_round(rate, src_out) };
         self.w.open(tag, &[("id", xid)]);
         if generator.is_none() && !is_seq {
             let mid = self.master_id(base);
@@ -940,12 +944,12 @@ impl Exp<'_, '_> {
         self.w.text("name", &c.name);
         self.w.text("enabled", bool_str(c.enabled));
         let media_dur = self.p.item(base).map(|i| i.duration()).unwrap_or(Tick::ZERO).max(src_out);
-        self.w.text("duration", frames_round(rate, media_dur));
+        self.w.text("duration", frames_round(rate, media_dur).max(out_f));
         write_rate(&mut self.w, rate);
-        self.w.text("start", frames_round(rate, c.start));
-        self.w.text("end", frames_round(rate, c.end()));
-        self.w.text("in", frames_round(rate, src_in));
-        self.w.text("out", frames_round(rate, src_out));
+        self.w.text("start", start_f);
+        self.w.text("end", end_f);
+        self.w.text("in", in_f);
+        self.w.text("out", out_f);
         self.w.text("pproTicksIn", src_in.0);
         self.w.text("pproTicksOut", src_out.0);
         if let Some(g) = &generator {
@@ -1055,7 +1059,7 @@ impl Exp<'_, '_> {
             self.w.close();
             self.w.close();
         }
-        if let Some(a) = &m.info.audio {
+        if let Some(a) = m.info.audio() {
             self.w.open("audio", &[]);
             self.w.open("samplecharacteristics", &[]);
             self.w.text("depth", a.bits_per_sample.unwrap_or(16));

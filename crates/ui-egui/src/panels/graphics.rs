@@ -1104,14 +1104,14 @@ impl Ctx<'_> {
             _ => 0,
         };
         let mut sel = cur;
-        let r = egui::ComboBox::from_id_salt(("gfxc", self.clip.0, self.layer, id)).selected_text(opts.get(cur).copied().unwrap_or("")).width(width).show_ui(
-            vui,
-            |ui| {
+        let r = egui::ComboBox::from_id_salt(("gfxc", self.clip.0, self.layer, id))
+            .selected_text(opts.get(cur).map_or("", |o| crate::i18n::t(o)))
+            .width(width)
+            .show_ui(vui, |ui| {
                 for (i, o) in opts.iter().enumerate() {
-                    ui.selectable_value(&mut sel, i, *o);
+                    ui.selectable_value(&mut sel, i, crate::i18n::t(o));
                 }
-            },
-        );
+            });
         self.auto(id, r.response.rect, id);
         if sel != cur {
             self.set(id, json!(sel));
@@ -1136,7 +1136,7 @@ fn section_header(ui: &mut egui::Ui, app: &mut FilmcraftApp, name: &str, t: &Tok
         if open { Icon::ChevronDown } else { Icon::ChevronRight },
         t.text_dim,
     );
-    ui.painter().text(pos2(r.min.x + 18.0, r.center().y), Align2::LEFT_CENTER, name, Tokens::semibold(13.0), t.text);
+    ui.painter().text(pos2(r.min.x + 18.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::t(name), Tokens::semibold(13.0), t.text);
     app.auto.add(&format!("graphics.section.{}", name.replace(' ', "")), r, name);
     if resp.clicked() {
         if open {
@@ -1243,9 +1243,9 @@ pub fn graphic_selected(app: &FilmcraftApp) -> bool {
 pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some((clip, it)) = selected_graphic(app) else {
-        crate::dock::placeholder(ui, rect, &t, "Select a graphic clip, or use the Type tool (T) on the Program monitor");
+        crate::dock::placeholder(ui, rect, &t, tl!("Select a graphic clip, or use the Type tool (T) on the Program monitor"));
         let br = Rect::from_center_size(rect.center() + vec2(0.0, 30.0), vec2(150.0, 26.0));
-        let resp = ui.put(br, egui::Button::new("Create new graphic"));
+        let resp = ui.put(br, egui::Button::new(tl!("Create new graphic")));
         app.auto.add("graphics.createNew", br, "Create new graphic");
         if resp.clicked()
             && let Err(e) = app.session.execute("graphics.newText", json!({"text": "New Text"}))
@@ -1272,24 +1272,24 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if section(ui, app, "Layers", &t) {
             ui.horizontal(|ui| {
                 ui.add_space(14.0);
-                for (label, tip, cmd, p) in [
-                    ("T", "New Text Layer", "graphics.newText", json!({"clip": clip.0, "text": "New Text"})),
-                    ("", "New Rectangle", "graphics.newShape", json!({"clip": clip.0, "shape": "rectangle"})),
-                    ("", "New Ellipse", "graphics.newShape", json!({"clip": clip.0, "shape": "ellipse", "size": [200, 200]})),
+                for (label, key, tip, cmd, p) in [
+                    ("T", "NewTextLayer", tl!("New Text Layer"), "graphics.newText", json!({"clip": clip.0, "text": tl!("New Text")})),
+                    ("", "NewRectangle", tl!("New Rectangle"), "graphics.newShape", json!({"clip": clip.0, "shape": "rectangle"})),
+                    ("", "NewEllipse", tl!("New Ellipse"), "graphics.newShape", json!({"clip": clip.0, "shape": "ellipse", "size": [200, 200]})),
                 ] {
                     let r = letter_button(ui, label, tip, false, &t, Tokens::semibold(13.0));
                     if label.is_empty() {
                         let ir = Rect::from_center_size(r.rect.center(), vec2(14.0, 14.0));
-                        icons::paint(ui.painter(), ir, if tip == "New Rectangle" { Icon::Rectangle } else { Icon::Ellipse }, t.text_dim);
+                        icons::paint(ui.painter(), ir, if key == "NewRectangle" { Icon::Rectangle } else { Icon::Ellipse }, t.text_dim);
                     }
-                    autos.push((format!("graphics.{}", tip.replace(' ', "")), r.rect, tip.into()));
+                    autos.push((format!("graphics.{key}"), r.rect, tip.into()));
                     if r.clicked() {
                         actions.push((cmd.into(), p));
                     }
                 }
                 ui.add_space(8.0);
                 if let Some(l) = sel {
-                    for (label, tip, to) in [("↑", "Bring Forward", "forward"), ("↓", "Send Backward", "backward")] {
+                    for (label, tip, to) in [("↑", tl!("Bring Forward"), "forward"), ("↓", tl!("Send Backward"), "backward")] {
                         let r = letter_button(ui, label, tip, false, &t, Tokens::ui(13.0));
                         autos.push((format!("graphics.arrange.{to}"), r.rect, tip.into()));
                         if r.clicked() {
@@ -1299,7 +1299,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let (dr, dresp) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::click());
                     icons::paint(ui.painter(), dr.shrink(4.0), Icon::Trash, if dresp.hovered() { t.text } else { t.text_dim });
                     autos.push(("graphics.deleteLayer".into(), dr, "Delete Layer".into()));
-                    if dresp.on_hover_text("Delete Layer").clicked() {
+                    if dresp.on_hover_text(tl!("Delete Layer")).clicked() {
                         actions.push(("graphics.deleteLayer".into(), json!({"clip": clip.0, "layer": l})));
                     }
                 }
@@ -1338,7 +1338,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 crate::panels::graphics_templates::responsive_time(app, ui, clip, &it, &mut autos, &mut actions);
             }
             ui.add_space(12.0);
-            ui.label(egui::RichText::new("Select a layer to edit its properties.").color(t.text_faint));
+            ui.label(egui::RichText::new(tl!("Select a layer to edit its properties.")).color(t.text_faint));
             return;
         };
         let e = &it.effects[idx[l]];
@@ -1360,12 +1360,12 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.horizontal(|ui| {
                 ui.add_space(14.0);
                 for (how, tip) in [
-                    ("left", "Align Left"),
-                    ("hcenter", "Align Center Horizontally"),
-                    ("right", "Align Right"),
-                    ("top", "Align Top"),
-                    ("vcenter", "Align Center Vertically"),
-                    ("bottom", "Align Bottom"),
+                    ("left", tl!("Align Left")),
+                    ("hcenter", tl!("Align Center Horizontally")),
+                    ("right", tl!("Align Right")),
+                    ("top", tl!("Align Top")),
+                    ("vcenter", tl!("Align Center Vertically")),
+                    ("bottom", tl!("Align Bottom")),
                 ] {
                     let r = glyph_button(ui, how, tip, false, &t);
                     cx.autos.push((format!("graphics.align.{how}"), r.rect, tip.into()));
@@ -1374,7 +1374,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 }
                 ui.add_space(6.0);
-                for (how, axis, tip) in [("dh", "horizontal", "Distribute Horizontally"), ("dv", "vertical", "Distribute Vertically")] {
+                for (how, axis, tip) in [("dh", "horizontal", tl!("Distribute Horizontally")), ("dv", "vertical", tl!("Distribute Vertically"))] {
                     let r = glyph_button(ui, how, tip, false, &t);
                     cx.autos.push((format!("graphics.distribute.{axis}"), r.rect, tip.into()));
                     if r.clicked() {
@@ -1382,11 +1382,11 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 }
             });
-            cx.point(ui, "Position", "position");
-            cx.point(ui, "Anchor point", "anchor");
-            cx.number(ui, "Scale", "scale", 0.5, (0.0, 100_000.0), 0, " %");
-            cx.number(ui, "Rotation", "rotation", 0.5, (-36_000.0, 36_000.0), 1, " °");
-            cx.number(ui, "Opacity", "opacity", 0.5, (0.0, 100.0), 0, " %");
+            cx.point(ui, tl!("Position"), "position");
+            cx.point(ui, tl!("Anchor point"), "anchor");
+            cx.number(ui, tl!("Scale"), "scale", 0.5, (0.0, 100_000.0), 0, " %");
+            cx.number(ui, tl!("Rotation"), "rotation", 0.5, (-36_000.0, 36_000.0), 1, " °");
+            cx.number(ui, tl!("Opacity"), "opacity", 0.5, (0.0, 100.0), 0, " %");
         }
         // ---- text
         let text_open = e.effect == graphic::TEXT_LAYER && {
@@ -1396,7 +1396,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let wresp = ui.interact(wr, egui::Id::new(("gfx-text-props", clip.0, l)), Sense::click());
             icons::paint(ui.painter(), wr.shrink(4.0), Icon::Wrench, if wresp.hovered() { t.text } else { t.text_dim });
             cx.autos.push(("graphics.textProperties".into(), wr, "Text Properties".into()));
-            if wresp.on_hover_text("Text Properties").clicked() {
+            if wresp.on_hover_text(tl!("Text Properties")).clicked() {
                 let flag = |id: &str| pv(e, id, mt).as_bool().unwrap_or(false);
                 let ligatures = flag("ligatures");
                 app.ui.text_props_dialog = Some(TextPropsDialog {
@@ -1434,7 +1434,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 _ => String::new(),
             };
             let fams = filmcraft_text::families();
-            let (_, mut vui) = cx.row(ui, "Font");
+            let (_, mut vui) = cx.row(ui, tl!("Font"));
             let r = egui::ComboBox::from_id_salt(("gfx-font", clip.0, l)).selected_text(&family).width(170.0).height(400.0).show_ui(&mut vui, |ui| {
                 if !filmcraft_text::fonts::system_scanned() {
                     filmcraft_text::fonts::scan_system();
@@ -1447,7 +1447,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             });
             cx.auto("font", r.response.rect, "Font");
             let styles: Vec<String> = fams.iter().find(|(f, _)| f.eq_ignore_ascii_case(&family)).map(|(_, s)| s.clone()).unwrap_or_default();
-            let (_, mut vui) = cx.row(ui, "Font Style");
+            let (_, mut vui) = cx.row(ui, tl!("Font Style"));
             let r = egui::ComboBox::from_id_salt(("gfx-style", clip.0, l)).selected_text(&style).width(170.0).show_ui(&mut vui, |ui| {
                 for st in styles.iter().map(String::as_str).chain(["Bold", "Italic", "Bold Italic"]).filter({
                     let mut seen = Vec::new();
@@ -1466,44 +1466,46 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
             });
             cx.auto("font_style", r.response.rect, "Font Style");
-            cx.number(ui, "Font Size", "size", 0.5, (1.0, 2000.0), 0, "");
+            cx.number(ui, tl!("Font Size"), "size", 0.5, (1.0, 2000.0), 0, "");
             let align = match pv(e, "align", mt) {
                 ParamValue::Choice(c) => c,
                 _ => 0,
             };
-            let (_, mut vui) = cx.row(ui, "Alignment");
-            for (i, (how, tip)) in [("pl", "Left Align Text"), ("pc", "Center Align Text"), ("pr", "Right Align Text"), ("pj", "Justify")].iter().enumerate() {
+            let (_, mut vui) = cx.row(ui, tl!("Alignment"));
+            for (i, (how, tip)) in
+                [("pl", tl!("Left Align Text")), ("pc", tl!("Center Align Text")), ("pr", tl!("Right Align Text")), ("pj", tl!("Justify"))].iter().enumerate()
+            {
                 let r = glyph_button(&mut vui, how, tip, align == i as u32, &t);
                 cx.auto(&format!("align.{i}"), r.rect, tip);
                 if r.clicked() {
                     cx.set("align", json!(i));
                 }
             }
-            cx.number(ui, "Tracking", "tracking", 1.0, (-1000.0, 10_000.0), 0, "");
-            cx.number(ui, "Leading", "leading", 0.5, (-5000.0, 5000.0), 0, "");
-            cx.number(ui, "Baseline Shift", "baseline_shift", 0.5, (-5000.0, 5000.0), 0, "");
+            cx.number(ui, tl!("Tracking"), "tracking", 1.0, (-1000.0, 10_000.0), 0, "");
+            cx.number(ui, tl!("Leading"), "leading", 0.5, (-5000.0, 5000.0), 0, "");
+            cx.number(ui, tl!("Baseline Shift"), "baseline_shift", 0.5, (-5000.0, 5000.0), 0, "");
             let vertical = pv(e, "vertical", mt).as_bool().unwrap_or(false);
-            let (_, mut vui) = cx.row(ui, "Orientation");
+            let (_, mut vui) = cx.row(ui, tl!("Orientation"));
             let mut value = vertical;
-            let response = vui.checkbox(&mut value, "Vertical Text");
+            let response = vui.checkbox(&mut value, tl!("Vertical Text"));
             cx.auto("vertical", response.rect, "Vertical Text");
             if response.changed() {
                 cx.set("vertical", json!(value));
             }
-            cx.number(ui, "Text Box Width", "box_width", 2.0, (0.0, 100_000.0), 0, "");
-            cx.number(ui, "Text Box Height", "box_height", 2.0, (0.0, 100_000.0), 0, "");
-            let (_, mut vui) = cx.row(ui, "Style");
+            cx.number(ui, tl!("Text Box Width"), "box_width", 2.0, (0.0, 100_000.0), 0, "");
+            cx.number(ui, tl!("Text Box Height"), "box_height", 2.0, (0.0, 100_000.0), 0, "");
+            let (_, mut vui) = cx.row(ui, tl!("Style"));
             let flag = |id: &str| pv(e, id, mt).as_bool().unwrap_or(false);
             let caps = match pv(e, "caps", mt) {
                 ParamValue::Choice(c) => c,
                 _ => 0,
             };
             for (id, label, tip, on, font) in [
-                ("faux_bold", "T", "Faux Bold", flag("faux_bold"), Tokens::semibold(14.0)),
-                ("faux_italic", "T", "Faux Italic", flag("faux_italic"), egui::FontId::new(14.0, egui::FontFamily::Proportional)),
-                ("all_caps", "TT", "All Caps", caps == 1, Tokens::ui(12.0)),
-                ("small_caps", "Tt", "Small Caps", caps == 2, Tokens::ui(12.0)),
-                ("underline", "U", "Underline", flag("underline"), Tokens::ui(13.0)),
+                ("faux_bold", "T", tl!("Faux Bold"), flag("faux_bold"), Tokens::semibold(14.0)),
+                ("faux_italic", "T", tl!("Faux Italic"), flag("faux_italic"), egui::FontId::new(14.0, egui::FontFamily::Proportional)),
+                ("all_caps", "TT", tl!("All Caps"), caps == 1, Tokens::ui(12.0)),
+                ("small_caps", "Tt", tl!("Small Caps"), caps == 2, Tokens::ui(12.0)),
+                ("underline", "U", tl!("Underline"), flag("underline"), Tokens::ui(13.0)),
             ] {
                 let r = letter_button(&mut vui, label, tip, on, &t, font);
                 if id == "faux_italic" {
@@ -1520,25 +1522,40 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 }
             }
-            let (_, mut vui) = cx.row(ui, "OpenType");
-            cx.check(&mut vui, "kerning", "Kerning");
-            cx.check(&mut vui, "ligatures", "Ligatures");
+            let (_, mut vui) = cx.row(ui, tl!("OpenType"));
+            cx.check(&mut vui, "kerning", tl!("Kerning"));
+            cx.check(&mut vui, "ligatures", tl!("Ligatures"));
         }
         if e.effect == graphic::SHAPE_LAYER && section(ui, app, "Shape", &t) {
-            let (_, mut vui) = cx.row(ui, "Shape");
+            let (_, mut vui) = cx.row(ui, tl!("Shape"));
             cx.choice(&mut vui, "shape", graphic::SHAPE_OPTS, 120.0);
-            cx.point(ui, "Size", "size");
-            cx.number(ui, "Corner Radius", "corner_radius", 0.5, (0.0, 10_000.0), 0, "");
-            cx.number(ui, "Polygon Sides", "sides", 0.05, (3.0, 64.0), 0, "");
+            cx.point(ui, tl!("Size"), "size");
+            cx.number(ui, tl!("Corner Radius"), "corner_radius", 0.5, (0.0, 10_000.0), 0, "");
+            cx.number(ui, tl!("Polygon Sides"), "sides", 0.05, (3.0, 64.0), 0, "");
         }
         // ---- appearance
         if section(ui, app, "Appearance", &t) {
-            let (_, mut vui) = cx.row(ui, "Fill");
-            cx.check(&mut vui, "fill", "");
+            let (_, mut vui) = cx.row(ui, tl!("Fill"));
+            let fill_on = cx.check(&mut vui, "fill", "");
             cx.color(&mut vui, "fill_color");
-            for (on, col, w, kind, label) in
-                [("stroke", "stroke_color", "stroke_width", "stroke_type", "Stroke"), ("stroke2", "stroke2_color", "stroke2_width", "stroke2_type", "Stroke 2")]
-            {
+            if fill_on {
+                vui.add_space(6.0);
+                cx.choice(&mut vui, "fill_kind", graphic::FILL_KIND_OPTS, 130.0);
+            }
+            let fill_kind = match pv(e, "fill_kind", mt) {
+                ParamValue::Choice(c) => c,
+                _ => 0,
+            };
+            if fill_on && fill_kind == 1 {
+                let (_, mut vui) = cx.row(ui, tl!("Gradient"));
+                cx.color(&mut vui, "gradient_start");
+                cx.color(&mut vui, "gradient_end");
+                cx.number(ui, tl!("   Angle"), "gradient_angle", 0.5, (-3600.0, 3600.0), 0, " °");
+            }
+            for (on, col, w, kind, label) in [
+                ("stroke", "stroke_color", "stroke_width", "stroke_type", tl!("Stroke")),
+                ("stroke2", "stroke2_color", "stroke2_width", "stroke2_type", tl!("Stroke 2")),
+            ] {
                 let (_, mut vui) = cx.row(ui, label);
                 cx.check(&mut vui, on, "");
                 cx.color(&mut vui, col);
@@ -1547,23 +1564,23 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 vui.add_space(6.0);
                 cx.choice(&mut vui, kind, graphic::STROKE_OPTS, 70.0);
             }
-            let (_, mut vui) = cx.row(ui, "Background");
+            let (_, mut vui) = cx.row(ui, tl!("Background"));
             let bg = cx.check(&mut vui, "background", "");
             cx.color(&mut vui, "background_color");
             if bg {
-                cx.number(ui, "   Opacity", "background_opacity", 0.5, (0.0, 100.0), 0, " %");
-                cx.number(ui, "   Size", "background_size", 0.5, (0.0, 1000.0), 0, "");
-                cx.number(ui, "   Corner Radius", "background_radius", 0.5, (0.0, 1000.0), 0, "");
+                cx.number(ui, tl!("   Opacity"), "background_opacity", 0.5, (0.0, 100.0), 0, " %");
+                cx.number(ui, tl!("   Size"), "background_size", 0.5, (0.0, 1000.0), 0, "");
+                cx.number(ui, tl!("   Corner Radius"), "background_radius", 0.5, (0.0, 1000.0), 0, "");
             }
-            let (_, mut vui) = cx.row(ui, "Shadow");
+            let (_, mut vui) = cx.row(ui, tl!("Shadow"));
             let sh = cx.check(&mut vui, "shadow", "");
             cx.color(&mut vui, "shadow_color");
             if sh {
-                cx.number(ui, "   Opacity", "shadow_opacity", 0.5, (0.0, 100.0), 0, " %");
-                cx.number(ui, "   Angle", "shadow_angle", 0.5, (-36_000.0, 36_000.0), 0, " °");
-                cx.number(ui, "   Distance", "shadow_distance", 0.5, (0.0, 1000.0), 0, "");
-                cx.number(ui, "   Size", "shadow_size", 0.5, (0.0, 1000.0), 0, "");
-                cx.number(ui, "   Blur", "shadow_blur", 0.5, (0.0, 1000.0), 0, "");
+                cx.number(ui, tl!("   Opacity"), "shadow_opacity", 0.5, (0.0, 100.0), 0, " %");
+                cx.number(ui, tl!("   Angle"), "shadow_angle", 0.5, (-36_000.0, 36_000.0), 0, " °");
+                cx.number(ui, tl!("   Distance"), "shadow_distance", 0.5, (0.0, 1000.0), 0, "");
+                cx.number(ui, tl!("   Size"), "shadow_size", 0.5, (0.0, 1000.0), 0, "");
+                cx.number(ui, tl!("   Blur"), "shadow_blur", 0.5, (0.0, 1000.0), 0, "");
             }
         }
         actions.append(&mut cx.actions);
@@ -1585,9 +1602,10 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut elems: Vec<(String, Rect, &str)> = Vec::new();
     let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
     let mut ok = false;
-    let name = |paragraph: bool| if paragraph { "Paragraph Text" } else { "Point Text" };
-    egui::Window::new("Text Properties").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        ui.label("Text Layer Type");
+    let name = |paragraph: bool| if paragraph { tl!("Paragraph Text") } else { tl!("Point Text") };
+    let id = egui::Id::new("gfx-text-properties");
+    egui::Window::new(tl!("Text Properties")).id(id).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+        ui.label(tl!("Text Layer Type"));
         let r = egui::ComboBox::from_id_salt("gfx-text-type").selected_text(name(d.paragraph)).width(190.0).show_ui(ui, |ui| {
             for paragraph in [false, true] {
                 // vertical text has no box to wrap in
@@ -1600,15 +1618,15 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         });
         elems.push(("graphics.textProperties.type".into(), r.response.rect, "Text Layer Type"));
         ui.add_space(6.0);
-        ui.label("Text Styling");
-        let r = ui.checkbox(&mut d.ligatures, "Ligatures");
+        ui.label(tl!("Text Styling"));
+        let r = ui.checkbox(&mut d.ligatures, tl!("Ligatures"));
         elems.push(("graphics.textProperties.ligatures".into(), r.rect, "Ligatures"));
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            let r = ui.button("Cancel");
+            let r = ui.button(tl!("Cancel"));
             elems.push(("graphics.textProperties.cancel".into(), r.rect, "Cancel"));
             close |= r.clicked();
-            let r = ui.button("OK");
+            let r = ui.button(tl!("OK"));
             elems.push(("graphics.textProperties.ok".into(), r.rect, "OK"));
             ok |= r.clicked();
         });

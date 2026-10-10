@@ -1505,10 +1505,8 @@ impl SampleEntry {
             CodecConfig::Aac(c) => {
                 b.leaf(b"esds", &esds_payload(0x40, &c.asc, c.max_bitrate, c.avg_bitrate, c.buffer_size));
             }
-            CodecConfig::Mp3 => {
-                if format == *b"mp4a" {
-                    b.leaf(b"esds", &esds_payload(0x6B, &[], 0, 0, 0));
-                }
+            CodecConfig::Mp3 if format == *b"mp4a" => {
+                b.leaf(b"esds", &esds_payload(0x6B, &[], 0, 0, 0));
             }
             CodecConfig::Alac { cookie } => {
                 let m = b.start_full(b"alac", 0, 0);

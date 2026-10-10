@@ -1,5 +1,6 @@
 //! The HTTP transport against a minimal ComfyUI look-alike on a local socket: upload, queue,
-//! poll, download, and a refused workflow's 400 with its node errors.
+//! poll, streamed download (and its size limit), and a refused workflow's 400 with its node
+//! errors.
 
 #![cfg(feature = "http")]
 
@@ -8,7 +9,7 @@ use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 
 use filmcraft_comfyui::http::HttpTransport;
-use filmcraft_comfyui::{Binding, Client, ComfyError, OutputKind, Recipe, RunOptions};
+use filmcraft_comfyui::{Binding, Client, ComfyError, MemorySink, OutputKind, Recipe, RunOptions};
 use serde_json::{Value, json};
 
 #[derive(Default)]
@@ -48,6 +49,17 @@ fn respond(stream: &mut std::net::TcpStream, status: u16, body: &[u8]) {
     let _ = stream.write_all(body);
 }
 
+/// A body without a length (read until the connection closes), as a streaming server sends it.
+fn respond_unsized(stream: &mut std::net::TcpStream, body: &[u8]) {
+    let _ = stream.write_all(b"HTTP/1.1 200 X\r\nConnection: close\r\n\r\n");
+    let _ = stream.write_all(body);
+}
+
+/// A 3 MiB output file (several reads of the transport's buffer).
+fn big() -> Vec<u8> {
+    (0..3 << 20).map(|i: u32| (i % 251) as u8).collect()
+}
+
 /// Serve a fake ComfyUI on 127.0.0.1; returns its base URL.
 fn serve(seen: Arc<Mutex<Seen>>, refuse: bool) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -78,6 +90,8 @@ fn serve(seen: Arc<Mutex<Seen>>, refuse: bool) -> String {
                     respond(&mut s, 200, h.to_string().as_bytes());
                 }
                 ("GET", "/view") if path.contains("filename=out%201.png") => respond(&mut s, 200, b"PNGDATA"),
+                ("GET", "/view") if path.contains("filename=big.mp4") => respond(&mut s, 200, &big()),
+                ("GET", "/view") if path.contains("filename=unsized.mp4") => respond_unsized(&mut s, &big()),
                 ("GET", "/system_stats") => respond(&mut s, 200, br#"{"system":{"comfyui_version":"0.3.0"}}"#),
                 _ => respond(&mut s, 404, b"not found"),
             }
@@ -103,10 +117,11 @@ fn runs_a_workflow_over_http() {
     let base = serve(seen.clone(), false);
     let client = Client::new(Arc::new(HttpTransport::new(&base).unwrap()));
     assert_eq!(client.system_stats().unwrap()["system"]["comfyui_version"], "0.3.0");
-    let r = client.run(&recipe(), &mut |_| Ok(b"FRAME".to_vec()), &RunOptions::default(), &mut |_| true).unwrap();
+    let mut sink = MemorySink::default();
+    let r = client.run(&recipe(), &mut |_| Ok(b"FRAME".to_vec()), &RunOptions::default(), &mut |_| true, &mut sink).unwrap();
     assert_eq!(r.files.len(), 1);
     assert_eq!(r.files[0].output.kind, OutputKind::Image);
-    assert_eq!(r.files[0].bytes, b"PNGDATA");
+    assert_eq!(sink.files[0].1, b"PNGDATA");
     let g = seen.lock().unwrap();
     assert!(g.uploads[0].windows(5).any(|w| w == b"FRAME"), "multipart body carries the file");
     assert_eq!(g.prompts[0]["6"]["inputs"]["image"], "up.png");
@@ -116,9 +131,29 @@ fn runs_a_workflow_over_http() {
 fn a_refused_workflow_explains_why() {
     let base = serve(Arc::default(), true);
     let client = Client::new(Arc::new(HttpTransport::new(&base).unwrap()));
-    let e = client.run(&recipe(), &mut |_| Ok(Vec::new()), &RunOptions::default(), &mut |_| true).unwrap_err();
+    let e = client.run(&recipe(), &mut |_| Ok(Vec::new()), &RunOptions::default(), &mut |_| true, &mut MemorySink::default()).unwrap_err();
     match e {
         ComfyError::Rejected(m) => assert!(m.contains("node 4 (CheckpointLoaderSimple): Value not in list"), "{m}"),
         e => panic!("{e:?}"),
     }
+}
+
+#[test]
+fn downloads_stream_and_stop_at_the_limit() {
+    let base = serve(Arc::default(), false);
+    let client = Client::new(Arc::new(HttpTransport::new(&base).unwrap()));
+    for name in ["big.mp4", "unsized.mp4"] {
+        let f = filmcraft_comfyui::FileRef { filename: name.into(), subfolder: String::new(), folder: "output".into() };
+        let mut out = Vec::new();
+        assert_eq!(client.download(&f, &mut out, 8 << 20).unwrap(), 3 << 20, "{name}");
+        assert!(out == big(), "{name}");
+        // over the limit: an error, and (without a length to refuse it up front) never more than the limit written
+        let mut out = Vec::new();
+        let e = client.download(&f, &mut out, 1 << 20).unwrap_err();
+        assert!(matches!(e, ComfyError::TooLarge(ref m) if m.contains(name)), "{name}: {e}");
+        assert!(out.len() <= 1 << 20, "{name}: {}", out.len());
+    }
+    let missing = filmcraft_comfyui::FileRef { filename: "nope.png".into(), subfolder: String::new(), folder: "output".into() };
+    let e = client.download(&missing, &mut Vec::new(), 1 << 20).unwrap_err();
+    assert!(matches!(e, ComfyError::Server(ref m) if m.contains("nope.png") && m.contains("404")), "{e}");
 }

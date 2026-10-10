@@ -1,17 +1,24 @@
 //! ComfyUI clips (`comfyui.*`): clips whose media is made by a ComfyUI workflow (docs/comfyui.md).
 //!
 //! A ComfyUI clip is a media item with a [`Recipe`] in `Project::generated`: the workflow (API
-//! format, any workflow), the input overrides and the server. It starts as a placeholder (a Color
-//! Matte) on the timeline; generating runs the workflow and links the item to what it made, so
-//! every clip of the item shows the result. Generating again makes a new version of the file and
-//! relinks the item to it.
+//! format, any workflow), the input overrides and the output nodes. It starts as a placeholder (a
+//! Color Matte) on the timeline; generating runs the workflow and links the item to what it made,
+//! so every clip of the item shows the result. Generating again makes a new version of the file
+//! and relinks the item to it.
+//!
+//! A project file can come from anyone, so it never decides where data goes: every clip runs on
+//! the server in the preferences (`comfyui.settings`; a recipe has no server), and a local file
+//! an input names is uploaded only when it was chosen in this session or is one of the project's
+//! media ([`upload_allowed`]). Output files are streamed to disk with size and count limits
+//! (`filmcraft_comfyui::MAX_FILE` …), never held in memory whole.
 //!
 //! | command | does |
 //! |---|---|
 //! | `comfyui.settings` | get / set the server, output folder and timeout (preferences); `check` tests the connection |
 //! | `comfyui.inspect` | a workflow's nodes and editable inputs (`workflow` / `path`), or a ComfyUI clip's recipe and last run |
 //! | `comfyui.newClip` | a new ComfyUI clip from a workflow, placed at the playhead (optionally generated at once) |
-//! | `comfyui.setInputs` | change a clip's input overrides, workflow, outputs or server (undoable) |
+//! | `comfyui.setInputs` | change a clip's input overrides, workflow or outputs (undoable) |
+//! | `comfyui.expose` | choose the inputs shown first in the ComfyUI window, kept per workflow in the preferences |
 //! | `comfyui.generate` | run the clips' workflows in a background job and link the results (one undo step per clip) |
 //!
 //! What a run brings back:
@@ -30,6 +37,9 @@
 //! The network goes through [`ComfyState::transport`] when a host or test installed one (the
 //! [`filmcraft_comfyui::fake::FakeComfy`] stand-in), else over HTTP (engine feature `comfyui`).
 
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -53,22 +63,40 @@ pub const PLACEHOLDER: [f32; 4] = [0.18, 0.13, 0.28, 1.0];
 /// Why ComfyUI can't run in this build.
 pub(crate) const NO_COMFY: &str = "ComfyUI is not available in this build (built without the `comfyui` feature)";
 
+/// Largest output file kept in memory on hosts without a file system.
+const MAX_FILE_IN_MEMORY: u64 = 512 << 20;
+
+/// Most workflows with exposed inputs kept in the preferences.
+pub const MAX_EXPOSED_WORKFLOWS: usize = 1000;
+/// Most exposed inputs per workflow.
+pub const MAX_EXPOSED_INPUTS: usize = 256;
+
+/// An input exposed in the ComfyUI window: shown in the Exposed group, above the full list.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExposedInput {
+    pub node: String,
+    pub input: String,
+}
+
 /// ComfyUI settings (persisted in the preferences as `comfyui`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ComfyPrefs {
-    /// Server for clips that don't name one.
+    /// The server every clip runs on (projects never choose one).
     pub server: String,
     /// Where generated files are written ("" = a `ComfyUI` folder next to the project, else in
     /// the data directory).
     pub output_dir: String,
     /// Give up on a run after this many minutes.
     pub timeout_minutes: u32,
+    /// The inputs exposed per workflow (by `Workflow::key`), in the order they were exposed.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub exposed: BTreeMap<String, Vec<ExposedInput>>,
 }
 
 impl Default for ComfyPrefs {
     fn default() -> Self {
-        Self { server: comfy::DEFAULT_SERVER.into(), output_dir: String::new(), timeout_minutes: 60 }
+        Self { server: comfy::DEFAULT_SERVER.into(), output_dir: String::new(), timeout_minutes: 60, exposed: BTreeMap::new() }
     }
 }
 
@@ -78,6 +106,10 @@ pub struct ComfyState {
     /// Every server is reached through this when set (tests, hosts with their own networking).
     pub transport: Option<Arc<dyn Transport>>,
     pending: Vec<Pending>,
+    /// Local files confirmed for upload in this session: the input files passed to
+    /// `comfyui.newClip` / `comfyui.setInputs` (chosen in the ComfyUI window, or named by a
+    /// script or agent). Paths that only came with a project file are not in here.
+    confirmed: BTreeSet<String>,
 }
 
 impl ComfyState {
@@ -85,10 +117,15 @@ impl ComfyState {
     pub fn generating(&self, item: ItemId) -> bool {
         self.pending.iter().any(|p| p.items.contains(&item))
     }
+
+    /// Whether `path` was confirmed for upload in this session.
+    pub fn confirmed(&self, path: &str) -> bool {
+        self.confirmed.contains(path)
+    }
 }
 
-/// A file a run wrote: (output, path, bytes).
-type Written = (comfy::Output, String, Arc<[u8]>);
+/// A file a run wrote: (output, path).
+type Written = (comfy::Output, String);
 
 /// What one clip's run produced.
 struct Done {
@@ -145,6 +182,36 @@ fn transport(s: &Session, server: &str) -> std::result::Result<Arc<dyn Transport
 pub fn recipe_of(s: &Session, item: ItemId) -> Option<Recipe> {
     let g = s.project.generated.get(&item).filter(|g| g.provider == PROVIDER)?;
     serde_json::from_value(g.recipe.clone()).ok()
+}
+
+/// Whether the local file `path` may be uploaded to the ComfyUI server. A project file can come
+/// from anyone, so a path it names is uploaded only when it was confirmed in this session
+/// ([`ComfyState::confirmed`]) or is the file of one of the project's media items that opens as
+/// media: a shared project can't name `~/.ssh/id_rsa` and have it sent on Generate.
+pub fn upload_allowed(s: &Session, path: &str) -> bool {
+    if s.comfyui.confirmed(path) {
+        return true;
+    }
+    let is_item = s.project.items.values().any(|i| matches!(i.as_media().map(|m| &m.media), Some(MediaRef::File { path: p }) if p == path));
+    is_item && s.media.open_file(path, &*s.services).is_ok()
+}
+
+/// The input files of `recipe` that may not be uploaded yet: (node, input, path).
+fn unconfirmed<'a>(s: &Session, recipe: &'a Recipe) -> Vec<(&'a str, &'a str, &'a str)> {
+    recipe.files().filter(|(_, _, f)| !upload_allowed(s, f)).collect()
+}
+
+/// A clip has no server of its own: refuse `server` (the server is a preference).
+fn no_server(p: &Value, cmd: &str) -> Result<()> {
+    if p.get("server").is_some_and(|v| !v.is_null()) {
+        return Err(bad(cmd, "a ComfyUI clip has no server of its own: set the server with comfyui.settings {server}"));
+    }
+    Ok(())
+}
+
+/// Confirm the input files of `bindings` for upload (the caller chose them in this session).
+fn confirm(s: &mut Session, bindings: &[Binding]) {
+    s.comfyui.confirmed.extend(bindings.iter().filter_map(|b| b.file.clone()));
 }
 
 /// The workflow passed as `workflow` (JSON object) or read from `path`.
@@ -230,12 +297,9 @@ fn settings_json(s: &Session) -> Value {
 fn settings(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "comfyui.settings";
     let mut c = s.prefs.comfyui.clone();
-    if let Some(v) = str_p(p, "server") {
-        let v = v.trim().trim_end_matches('/');
-        if !(v.starts_with("http://") || v.starts_with("https://")) || v.len() < "http://x".len() {
-            return Err(bad(CMD, "`server` must be an http:// or https:// address"));
-        }
-        c.server = v.to_string();
+    if let Some(v) = p.get("server").filter(|v| !v.is_null()) {
+        let v = v.as_str().ok_or_else(|| bad(CMD, "`server` must be an http:// or https:// address"))?;
+        c.server = comfy::normalize_server(v).map_err(|e| bad(CMD, e.to_string()))?;
     }
     if let Some(v) = str_p(p, "outputDir") {
         c.output_dir = v.trim().to_string();
@@ -265,7 +329,12 @@ fn settings(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(out)
 }
 
-fn nodes_json(wf: &Workflow, recipe: Option<&Recipe>) -> Value {
+/// The exposed inputs of `wf` (those it still has), from the preferences.
+pub fn exposed_of(s: &Session, wf: &Workflow) -> Vec<ExposedInput> {
+    s.prefs.comfyui.exposed.get(&wf.key()).into_iter().flatten().filter(|e| wf.input(&e.node, &e.input).is_some()).cloned().collect()
+}
+
+fn nodes_json(wf: &Workflow, recipe: Option<&Recipe>, exposed: &[ExposedInput]) -> Value {
     let nodes: Vec<Value> = wf
         .nodes()
         .into_iter()
@@ -277,6 +346,9 @@ fn nodes_json(wf: &Workflow, recipe: Option<&Recipe>) -> Value {
                     let mut v = json!(i);
                     if let Some(b) = recipe.and_then(|r| r.inputs.iter().find(|b| b.node == n.node && b.input == i.input)) {
                         v["override"] = json!(b);
+                    }
+                    if exposed.iter().any(|e| e.node == n.node && e.input == i.input) {
+                        v["exposed"] = json!(true);
                     }
                     v
                 })
@@ -291,7 +363,8 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "comfyui.inspect";
     if let Some(w) = workflow_p(s, p, CMD)? {
         let wf = Workflow::parse(&w).map_err(|e| comfy_err(CMD, e))?;
-        return Ok(json!({"nodes": nodes_json(&wf, None), "seeds": wf.seeds()}));
+        let exposed = exposed_of(s, &wf);
+        return Ok(json!({"nodes": nodes_json(&wf, None, &exposed), "seeds": wf.seeds(), "key": wf.key(), "exposed": exposed}));
     }
     let item = *targets(s, p).first().ok_or_else(|| bad(CMD, "pass `workflow` or `path`, or select a ComfyUI clip"))?;
     let recipe = recipe_of(s, item).ok_or_else(|| bad(CMD, "not a ComfyUI clip"))?;
@@ -299,18 +372,100 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
     let pi = s.project.item(item).ok_or_else(|| bad(CMD, "no such item"))?;
     let generated = matches!(pi.as_media().map(|m| &m.media), Some(MediaRef::File { .. }));
     let last_run = s.project.generated.get(&item).map(|g| g.last_run.clone()).unwrap_or_default();
+    let unconfirmed: Vec<Value> = unconfirmed(s, &recipe).into_iter().map(|(node, input, file)| json!({"node": node, "input": input, "file": file})).collect();
+    let exposed = exposed_of(s, &wf);
     Ok(json!({
         "item": item.0,
         "name": pi.name,
-        "server": recipe.server_or(&s.prefs.comfyui.server),
+        "server": s.prefs.comfyui.server,
         "inputs": recipe.inputs,
+        "unconfirmedFiles": unconfirmed,
         "outputs": recipe.outputs,
-        "nodes": nodes_json(&wf, Some(&recipe)),
+        "nodes": nodes_json(&wf, Some(&recipe), &exposed),
         "seeds": wf.seeds(),
+        "key": wf.key(),
+        "exposed": exposed,
         "generated": generated,
         "generating": s.comfyui.generating(item),
         "lastRun": last_run,
     }))
+}
+
+/// `key: [{node, input}]`, each a literal input of `wf`.
+fn exposed_p(p: &Value, key: &str, wf: &Workflow, cmd: &str) -> Result<Option<Vec<ExposedInput>>> {
+    let Some(list) = p.get(key).filter(|v| !v.is_null()) else { return Ok(None) };
+    let list = list.as_array().ok_or_else(|| bad(cmd, format!("`{key}` must be a list of {{node, input}}")))?;
+    if list.len() > MAX_EXPOSED_INPUTS {
+        return Err(bad(cmd, format!("at most {MAX_EXPOSED_INPUTS} exposed inputs per workflow")));
+    }
+    list.iter()
+        .map(|e| {
+            let node = match e.get("node") {
+                Some(Value::String(n)) => n.clone(),
+                Some(Value::Number(n)) => n.to_string(),
+                _ => return Err(bad(cmd, "every input needs a `node`")),
+            };
+            let input = str_p(e, "input").filter(|i| !i.is_empty()).ok_or_else(|| bad(cmd, "every input needs an `input` name"))?.to_string();
+            if wf.input(&node, &input).is_none() {
+                return Err(bad(cmd, format!("node {node} has no input `{input}` with a value (links can't be exposed)")));
+            }
+            Ok(ExposedInput { node, input })
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
+}
+
+/// `comfyui.expose`: the inputs shown first in the ComfyUI window for a workflow (`workflow` /
+/// `path`, else the workflow of the targeted ComfyUI clip). Kept in the preferences by the
+/// workflow's key, so every clip made from that workflow (and the workflow loaded again) shows
+/// them; not part of the project, and not undoable (a preference).
+fn expose(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "comfyui.expose";
+    let w = match workflow_p(s, p, CMD)? {
+        Some(w) => w,
+        None => {
+            let item = *targets(s, p).first().ok_or_else(|| bad(CMD, "pass `workflow` or `path`, or select a ComfyUI clip"))?;
+            recipe_of(s, item).ok_or_else(|| bad(CMD, "not a ComfyUI clip"))?.workflow
+        }
+    };
+    let wf = Workflow::parse(&w).map_err(|e| comfy_err(CMD, e))?;
+    let key = wf.key();
+    let mut list = exposed_of(s, &wf);
+    if let Some(set) = exposed_p(p, "set", &wf, CMD)? {
+        list.clear();
+        for e in set {
+            if !list.contains(&e) {
+                list.push(e);
+            }
+        }
+    }
+    if let Some(inputs) = exposed_p(p, "inputs", &wf, CMD)? {
+        let on = bool_p(p, "exposed").unwrap_or(true);
+        for e in inputs {
+            list.retain(|x| *x != e);
+            if on {
+                list.push(e);
+            }
+        }
+    }
+    if list.len() > MAX_EXPOSED_INPUTS {
+        return Err(bad(CMD, format!("at most {MAX_EXPOSED_INPUTS} exposed inputs per workflow")));
+    }
+    let mut c = s.prefs.comfyui.clone();
+    if list.is_empty() {
+        c.exposed.remove(&key);
+    } else {
+        if !c.exposed.contains_key(&key) && c.exposed.len() >= MAX_EXPOSED_WORKFLOWS {
+            return Err(bad(CMD, format!("exposed inputs are kept for at most {MAX_EXPOSED_WORKFLOWS} workflows; clear some with `set: []`")));
+        }
+        c.exposed.insert(key.clone(), list.clone());
+    }
+    if c != s.prefs.comfyui {
+        let mut prefs = s.prefs.clone();
+        prefs.comfyui = c;
+        s.set_prefs(prefs).map_err(|e| EngineError::Other(format!("saving preferences: {e}")))?;
+    }
+    Ok(json!({"key": key, "exposed": list}))
 }
 
 fn check_bindings(wf: &Workflow, b: &[Binding], cmd: &str) -> Result<()> {
@@ -322,14 +477,15 @@ fn check_bindings(wf: &Workflow, b: &[Binding], cmd: &str) -> Result<()> {
 
 fn new_clip(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "comfyui.newClip";
+    no_server(p, CMD)?;
     let wf_json = workflow_p(s, p, CMD)?.ok_or_else(|| bad(CMD, "need `workflow` (API-format JSON) or `path`"))?;
     let mut recipe = Recipe::new(wf_json).map_err(|e| comfy_err(CMD, e))?;
     let wf = Workflow::parse(&recipe.workflow).map_err(|e| comfy_err(CMD, e))?;
     let bindings = bindings_p(p, CMD)?;
     check_bindings(&wf, &bindings, CMD)?;
+    let picked = bindings.clone();
     recipe.bind(bindings);
     recipe.outputs = outputs_p(p).unwrap_or_default();
-    recipe.server = str_p(p, "server").unwrap_or_default().trim().to_string();
     let stem = str_p(p, "path").and_then(|x| std::path::Path::new(x).file_stem()).map(|x| x.to_string_lossy().into_owned());
     let name = str_p(p, "name").map(str::trim).filter(|n| !n.is_empty()).map(str::to_string).or(stem).unwrap_or_else(|| "ComfyUI Clip".into());
     let secs = f64_p(p, "duration").unwrap_or(5.0);
@@ -349,7 +505,7 @@ fn new_clip(s: &mut Session, p: &Value) -> Result<Value> {
         (id, dur)
     };
     let (item, clip) = if s.active_sequence().is_some() && bool_p(p, "place").unwrap_or(true) {
-        let clip = crate::graphics::place_video_clip(s, &name, p, "New ComfyUI Clip", Vec::new(), make)?;
+        let clip = crate::graphics::place_video_clip(s, CMD, &name, p, "New ComfyUI Clip", Vec::new(), make)?;
         let item = s.active_sequence().and_then(|q| q.find_item(clip)).map(|(_, it)| it.item).ok_or(EngineError::NoSequence)?;
         (item, Some(clip))
     } else {
@@ -361,6 +517,7 @@ fn new_clip(s: &mut Session, p: &Value) -> Result<Value> {
         })?;
         (id, None)
     };
+    confirm(s, &picked);
     let mut out = json!({"item": item.0, "clip": clip.map(|c| c.0), "name": name});
     if bool_p(p, "generate") == Some(true) {
         out["generate"] = generate(s, &json!({"items": [item.0], "wait": bool_p(p, "wait").unwrap_or(false), "dir": str_p(p, "dir")}))?;
@@ -370,6 +527,7 @@ fn new_clip(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn set_inputs(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "comfyui.setInputs";
+    no_server(p, CMD)?;
     let item = match targets(s, p).as_slice() {
         [i] => *i,
         [] => return Err(bad(CMD, "select a ComfyUI clip (or pass `item`)")),
@@ -388,12 +546,10 @@ fn set_inputs(s: &mut Session, p: &Value) -> Result<Value> {
     let wf = Workflow::parse(&recipe.workflow).map_err(|e| comfy_err(CMD, e))?;
     let bindings = bindings_p(p, CMD)?;
     check_bindings(&wf, &bindings, CMD)?;
+    let picked = bindings.clone();
     recipe.bind(bindings);
     if let Some(o) = outputs_p(p) {
         recipe.outputs = o;
-    }
-    if let Some(v) = str_p(p, "server") {
-        recipe.server = v.trim().to_string();
     }
     let name = str_p(p, "name").map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
     let recipe_json = serde_json::to_value(&recipe).map_err(|e| EngineError::Other(e.to_string()))?;
@@ -407,6 +563,7 @@ fn set_inputs(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Ok(())
     })?;
+    confirm(s, &picked);
     inspect(s, &json!({"item": item.0}))
 }
 
@@ -458,7 +615,93 @@ struct Work {
     item: ItemId,
     name: String,
     recipe: Recipe,
-    transport: Arc<dyn Transport>,
+}
+
+/// A writer that fails once the job is stopped (a Stop ends a download at its next write).
+struct Stoppable<'a, W> {
+    inner: W,
+    cancel: &'a AtomicBool,
+}
+
+impl<W: Write> Write for Stoppable<'_, W> {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        if self.cancel.load(Ordering::Relaxed) {
+            return Err(std::io::Error::other("stopped"));
+        }
+        self.inner.write(b)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// Where a run's output files go: `<dir>/<clip name> <nnn>.<ext>`, streamed to `<file>.part`
+/// and renamed once complete (a partial download never looks like a version), or, on hosts
+/// without a file system, collected and handed to `Services::write_file`.
+struct OutputFiles<'a> {
+    services: &'a dyn crate::Services,
+    dir: &'a str,
+    name: &'a str,
+    in_memory: bool,
+    cancel: &'a AtomicBool,
+    /// The file being downloaded (and its bytes, in memory).
+    current: String,
+    buffer: Vec<u8>,
+    written: Vec<Written>,
+}
+
+impl OutputFiles<'_> {
+    fn part(path: &str) -> String {
+        format!("{path}.part")
+    }
+
+    /// Remove the files written so far: a run that failed or was stopped leaves nothing behind.
+    fn discard(&mut self) {
+        for (_, path) in self.written.drain(..) {
+            if !self.in_memory {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+}
+
+impl comfy::Sink for OutputFiles<'_> {
+    fn create(&mut self, o: &comfy::Output) -> std::result::Result<Box<dyn Write + '_>, String> {
+        let ext = o.file.as_ref().and_then(|f| f.filename.rsplit_once('.')).map_or("bin", |x| x.1);
+        let path = version_path(self.services, self.dir, self.name, ext);
+        self.current.clone_from(&path);
+        if self.in_memory {
+            self.buffer.clear();
+            return Ok(Box::new(Stoppable { inner: &mut self.buffer, cancel: self.cancel }));
+        }
+        std::fs::create_dir_all(self.dir).map_err(|e| format!("{}: {e}", self.dir))?;
+        let part = Self::part(&path);
+        let f = std::fs::File::create(&part).map_err(|e| format!("{part}: {e}"))?;
+        Ok(Box::new(Stoppable { inner: std::io::BufWriter::with_capacity(1 << 20, f), cancel: self.cancel }))
+    }
+
+    fn close(&mut self, o: &comfy::Output, size: Option<u64>) -> std::result::Result<(), String> {
+        let path = std::mem::take(&mut self.current);
+        if self.in_memory {
+            let bytes = std::mem::take(&mut self.buffer);
+            if size.is_some() {
+                self.services.write_file(&path, &bytes).map_err(|e| format!("{path}: {e}"))?;
+                self.written.push((o.clone(), path));
+            }
+            return Ok(());
+        }
+        let part = Self::part(&path);
+        if size.is_none() {
+            let _ = std::fs::remove_file(&part);
+            return Ok(());
+        }
+        if let Err(e) = std::fs::rename(&part, &path) {
+            let _ = std::fs::remove_file(&part);
+            return Err(format!("{path}: {e}"));
+        }
+        self.written.push((o.clone(), path));
+        Ok(())
+    }
 }
 
 fn generate(s: &mut Session, p: &Value) -> Result<Value> {
@@ -473,75 +716,98 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let randomize = bool_p(p, "randomizeSeeds").unwrap_or(false);
     let salt = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0) ^ s.revision;
-    let default_server = s.prefs.comfyui.server.clone();
     let mut work = Vec::new();
+    let mut refused = Vec::new();
     for item in &items {
         let Some(mut recipe) = recipe_of(s, *item) else { continue };
+        let name = s.project.item(*item).map(|i| i.name.clone()).unwrap_or_default();
+        refused.extend(unconfirmed(s, &recipe).into_iter().map(|(node, input, f)| format!("{name}: node {node} `{input}`: {f}")));
         if randomize {
             let wf = Workflow::parse(&recipe.workflow).map_err(|e| comfy_err(CMD, e))?;
             let seeds = wf.seeds();
             recipe.bind(seeds.into_iter().enumerate().map(|(k, (node, input))| Binding::value(node, input, json!(new_seed(salt ^ item.0, k)))));
         }
-        let server = recipe.server_or(&default_server).to_string();
-        let transport = transport(s, &server).map_err(|e| comfy_err(CMD, e))?;
-        let name = s.project.item(*item).map(|i| i.name.clone()).unwrap_or_default();
-        work.push(Work { item: *item, name, recipe, transport });
+        work.push(Work { item: *item, name, recipe });
     }
+    if !refused.is_empty() {
+        return Err(bad(
+            CMD,
+            format!(
+                "not uploading files that came with the project file and were not chosen in this session ({}). Choose them again (Window ▸ ComfyUI… ▸ Allow Uploads, or comfyui.setInputs with the same `file`), or import them into the project",
+                refused.join("; ")
+            ),
+        ));
+    }
+    // the user's server, never one a project names
+    let server = s.prefs.comfyui.server.clone();
+    let transport = transport(s, &server).map_err(|e| comfy_err(CMD, e))?;
     let dir = output_dir(s, p);
-    let opts = RunOptions { timeout: std::time::Duration::from_secs(u64::from(s.prefs.comfyui.timeout_minutes.max(1)) * 60), ..Default::default() };
     let services = s.services.clone();
-    let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
+    let in_memory = cfg!(target_arch = "wasm32") || services.export_in_memory();
+    let mut opts = RunOptions { timeout: std::time::Duration::from_secs(u64::from(s.prefs.comfyui.timeout_minutes.max(1)) * 60), ..Default::default() };
+    if in_memory {
+        opts.max_file = opts.max_file.min(MAX_FILE_IN_MEMORY);
+    }
+    let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0).checked_add(1).ok_or_else(|| EngineError::Other("no job id left".into()))?;
     let label = match work.as_slice() {
         [w] => format!("ComfyUI: {}", w.name),
         w => format!("ComfyUI ({} clips)", w.len()),
     };
     let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
-    job.progress.total.store(work.len() as u64, std::sync::atomic::Ordering::Relaxed);
+    job.progress.total.store(work.len() as u64, Ordering::Relaxed);
     let results: Arc<Mutex<Vec<Done>>> = Arc::default();
     let (prog, res, out) = (job.progress.clone(), job.result.clone(), results.clone());
     let run = move || {
-        use std::sync::atomic::Ordering;
         let t0 = web_time::Instant::now();
         let (mut ok, mut failed, mut bytes) = (0u64, Vec::new(), 0u64);
         let mut stopped = false;
+        let client = Client::new(transport);
         for w in &work {
             if prog.cancel.load(Ordering::Relaxed) {
                 stopped = true;
                 break;
             }
-            let client = Client::new(w.transport.clone());
-            let mut read = |path: &str| services.read_file(path).map_err(|e| e.to_string());
-            let r = client.run(&w.recipe, &mut read, &opts, &mut |pr| {
-                *lock(&prog.status) = format!("{}: {pr}", w.name);
-                !prog.cancel.load(Ordering::Relaxed)
-            });
+            let mut read = |path: &str| -> std::result::Result<Vec<u8>, String> {
+                // refuse a huge file before reading it into memory
+                if services.file_size(path).map_err(|e| e.to_string())? > opts.max_upload {
+                    return Err(format!("larger than {} MiB, the most FilmCraft uploads", opts.max_upload >> 20));
+                }
+                services.read_file(path).map_err(|e| e.to_string())
+            };
+            let mut files = OutputFiles {
+                services: &*services,
+                dir: &dir,
+                name: &w.name,
+                in_memory,
+                cancel: &prog.cancel,
+                current: String::new(),
+                buffer: Vec::new(),
+                written: Vec::new(),
+            };
+            let r = client.run(
+                &w.recipe,
+                &mut read,
+                &opts,
+                &mut |pr| {
+                    *lock(&prog.status) = format!("{}: {pr}", w.name);
+                    !prog.cancel.load(Ordering::Relaxed)
+                },
+                &mut files,
+            );
             let result = match r {
                 Ok(rr) => {
-                    if !cfg!(target_arch = "wasm32") && !rr.files.is_empty() {
-                        let _ = std::fs::create_dir_all(&dir);
-                    }
-                    let mut written = Vec::new();
-                    let mut err = None;
-                    for f in rr.files {
-                        let ext = f.output.file.as_ref().and_then(|x| x.filename.rsplit_once('.')).map(|x| x.1.to_string()).unwrap_or_else(|| "bin".into());
-                        let path = version_path(&*services, &dir, &w.name, &ext);
-                        if let Err(e) = services.write_file(&path, &f.bytes) {
-                            err = Some(format!("{path}: {e}"));
-                            break;
-                        }
-                        bytes += f.bytes.len() as u64;
-                        written.push((f.output, path, Arc::<[u8]>::from(f.bytes)));
-                    }
-                    match err {
-                        Some(e) => Err(e),
-                        None => Ok((rr.prompt_id, rr.outputs, written)),
-                    }
+                    bytes = rr.files.iter().fold(bytes, |b, f| b.saturating_add(f.size));
+                    Ok((rr.prompt_id, rr.outputs, std::mem::take(&mut files.written)))
                 }
                 Err(ComfyError::Cancelled) => {
+                    files.discard();
                     stopped = true;
                     break;
                 }
-                Err(e) => Err(e.to_string()),
+                Err(e) => {
+                    files.discard();
+                    Err(e.to_string())
+                }
             };
             match &result {
                 Ok(_) => ok += 1,
@@ -577,24 +843,23 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some(Err(e)) = s.jobs.iter().find(|j| j.id == id).and_then(|j| lock(&j.result).clone()) {
             return Err(EngineError::Other(e));
         }
-        return Ok(json!({"job": id, "items": clips}));
+        return Ok(json!({"job": id, "server": server, "items": clips}));
     }
     std::thread::Builder::new().name("filmcraft-comfyui".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
-    Ok(json!({"job": id, "items": items.iter().map(|i| i.0).collect::<Vec<_>>()}))
+    Ok(json!({"job": id, "server": server, "items": items.iter().map(|i| i.0).collect::<Vec<_>>()}))
 }
 
 /// Apply finished generate jobs (one undo step per clip). Called once per UI frame from
 /// [`Session::poll_persistence`] and after synchronous runs.
 pub fn poll(s: &mut Session) {
-    use std::sync::atomic::Ordering;
-    let mut i = 0;
-    while i < s.comfyui.pending.len() {
-        let job = s.jobs.iter().find(|j| j.id == s.comfyui.pending[i].job);
-        if !job.is_none_or(|j| j.progress.finished.load(Ordering::Relaxed)) {
-            i += 1;
-            continue;
-        }
-        let pj = s.comfyui.pending.remove(i);
+    if s.comfyui.pending.is_empty() {
+        return;
+    }
+    let pending = std::mem::take(&mut s.comfyui.pending);
+    let (finished, running): (Vec<Pending>, Vec<Pending>) =
+        pending.into_iter().partition(|p| s.jobs.iter().find(|j| j.id == p.job).is_none_or(|j| j.progress.finished.load(Ordering::Relaxed)));
+    s.comfyui.pending = running;
+    for pj in finished {
         // clips that finished before a stop are kept: they are complete
         let done = std::mem::take(&mut *lock(&pj.results));
         for d in done {
@@ -622,7 +887,7 @@ fn apply(s: &mut Session, d: Done) -> Result<()> {
     let last_run = json!({
         "promptId": prompt_id,
         "outputs": outputs,
-        "files": files.iter().map(|(o, path, _)| json!({"node": o.node, "kind": o.kind, "path": path})).collect::<Vec<_>>(),
+        "files": files.iter().map(|(o, path)| json!({"node": o.node, "kind": o.kind, "path": path})).collect::<Vec<_>>(),
         "texts": texts,
         "media": main.and_then(|k| files.get(k)).map(|f| f.1.clone()),
     });
@@ -632,16 +897,16 @@ fn apply(s: &mut Session, d: Done) -> Result<()> {
     let label = "Generate ComfyUI Clip";
     let mut media_info = None;
     match main.and_then(|k| files.get(k)) {
-        Some((_, path, bytes)) => {
-            let fname = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let src = s.media.open_bytes(&fname, bytes.clone()).map_err(|e| EngineError::Other(format!("{fname}: {e}")))?;
+        Some((_, path)) => {
+            // streamed from disk: a long video is never read into memory whole
+            let src = s.media.open_file(path, &*s.services).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
             let mut info = src.info().clone();
             if info.kind == MediaKind::Still
                 && let Some(v) = info.video.as_mut()
             {
                 v.frame_rate = crate::settings::timebase_rate(&s.prefs.media.indeterminate_timebase);
             }
-            let identity = crate::relink::identity_of_bytes(bytes);
+            let identity = crate::relink::identity_of(&*s.services, path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
             let (path, info2) = (path.clone(), info.clone());
             s.edit(label, move |pr, _| {
                 let m = pr.item_mut(item).and_then(|i| i.as_media_mut()).ok_or_else(|| EngineError::Other("the clip is no longer media".into()))?;
@@ -675,11 +940,11 @@ fn apply(s: &mut Session, d: Done) -> Result<()> {
     }
     // further media outputs are imported; a separate sound joins a picture that has none
     let mut sound = None;
-    for (k, (o, path, bytes)) in files.iter().enumerate() {
+    for (k, (o, path)) in files.iter().enumerate() {
         if Some(k) == main {
             continue;
         }
-        match crate::commands::import_bytes(s, path, bytes.clone(), None) {
+        match crate::commands::import_streamed(s, path, None) {
             Ok(id) if o.kind == OutputKind::Audio && sound.is_none() => sound = Some(id),
             Ok(_) => {}
             Err(e) => s.error_toast("comfyui.generate", format!("ComfyUI: {path}: {e}")),
@@ -687,7 +952,7 @@ fn apply(s: &mut Session, d: Done) -> Result<()> {
     }
     if let (Some(info), Some(audio)) = (&media_info, sound)
         && info.video.is_some()
-        && info.audio.is_none()
+        && !info.has_audio()
     {
         let dur = s.project.item(audio).map(|i| i.duration()).unwrap_or_default();
         s.edit(label, |pr, _| add_audio_partners(pr, item, audio, dur))?;
@@ -738,7 +1003,7 @@ fn insert_audio(pr: &mut Project, seq: ItemId, a: TrackItem) -> Result<()> {
 /// clips keep their length), sound-only media moves to audio tracks, and a video with sound gets
 /// a linked audio clip under each video clip that has none.
 fn fit_clips(pr: &mut Project, item: ItemId, info: &MediaInfo) -> Result<()> {
-    let (has_v, has_a) = (info.video.is_some(), info.audio.is_some());
+    let (has_v, has_a) = (info.video.is_some(), info.has_audio());
     let still = info.kind == MediaKind::Still;
     let seqs: Vec<ItemId> = pr.sequences().map(|i| i.id).collect();
     for sid in seqs {
@@ -854,7 +1119,7 @@ pub fn commands() -> Vec<CommandSpec> {
         spec(
             "comfyui.newClip",
             "New ComfyUI Clip",
-            r#"{"workflow":{api workflow}|"path":str,"inputs":[{"node":id,"input":str,"value":any|"file":path}]?,"outputs":[node id]?,"server":str?,"name":str?,"duration":seconds=5,"time":ticks?,"track":index?,"place":bool=true,"generate":bool=false,"wait":bool=false}"#,
+            r#"{"workflow":{api workflow}|"path":str,"inputs":[{"node":id,"input":str,"value":any|"file":path}]?,"outputs":[node id]?,"name":str?,"duration":seconds=5,"time":ticks?,"track":index?,"place":bool=true,"generate":bool=false,"wait":bool=false}"#,
             always,
             new_clip,
             true,
@@ -862,9 +1127,17 @@ pub fn commands() -> Vec<CommandSpec> {
         spec(
             "comfyui.setInputs",
             "ComfyUI Clip Settings",
-            r#"{"item":id?|"clip":id?,"inputs":[{"node":id,"input":str,"value":any|"file":path|neither: remove}]?,"clearInputs":bool?,"workflow":{api workflow}?|"path":str?,"outputs":[node id]?,"server":str?,"name":str?}"#,
+            r#"{"item":id?|"clip":id?,"inputs":[{"node":id,"input":str,"value":any|"file":path|neither: remove}]?,"clearInputs":bool?,"workflow":{api workflow}?|"path":str?,"outputs":[node id]?,"name":str?}"#,
             has_target,
             set_inputs,
+            true,
+        ),
+        spec(
+            "comfyui.expose",
+            "Expose ComfyUI Inputs",
+            r#"{"workflow":{api workflow}?|"path":str?|"item":id?|"clip":id?,"inputs":[{"node":id,"input":str}]?,"exposed":bool=true,"set":[{"node":id,"input":str}]?}"#,
+            always,
+            expose,
             true,
         ),
         spec(

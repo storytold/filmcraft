@@ -33,7 +33,7 @@ pub fn field_id(name: &str) -> String {
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some(item) = target(app) else {
-        crate::dock::placeholder(ui, rect, &t, "Select a clip to view its metadata.");
+        crate::dock::placeholder(ui, rect, &t, tl!("Select a clip to view its metadata."));
         app.auto.add("metadata.empty", rect, "Select a clip to view its metadata.");
         return;
     };
@@ -45,7 +45,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut commit: Option<(String, String)> = None;
     // header: "Clip: name" with a rule (like the Info panel)
     let (hr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
-    let g = ui.painter().layout_no_wrap(format!("Clip: {name}"), Tokens::semibold(14.0), t.text);
+    let g = ui.painter().layout_no_wrap(tlf!("Clip: {name}", name), Tokens::semibold(14.0), t.text);
     let gw = g.size().x;
     ui.painter().galley(egui::pos2(hr.min.x, hr.center().y - g.size().y / 2.0), g, t.text);
     ui.painter().line_segment([egui::pos2(hr.min.x + gw + 10.0, hr.center().y), egui::pos2(hr.max.x, hr.center().y)], egui::Stroke::new(2.0, t.separator));
@@ -57,22 +57,24 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             if f.section != section {
                 section = f.section;
                 ui.add_space(4.0);
-                let r = ui.label(RichText::new(section).color(t.text_dim).strong());
+                let r = ui.label(RichText::new(crate::i18n::t(section)).color(t.text_dim).strong());
                 elems.push((format!("metadata.section.{section}"), r.rect, section.to_string()));
             }
             ui.horizontal(|ui| {
-                ui.add_sized(vec2(label_w, 20.0), egui::Label::new(RichText::new(format!("{}:", f.name)).color(t.text_dim)).truncate());
+                ui.add_sized(vec2(label_w, 20.0), egui::Label::new(RichText::new(format!("{}:", crate::i18n::t(&f.name))).color(t.text_dim)).truncate());
                 if f.name == "Label" {
                     let cur = Label::from_name(&f.value).unwrap_or(Label::Violet);
                     let mut sel = cur;
-                    let r =
-                        egui::ComboBox::from_id_salt(("md-label", item.0)).selected_text(cur.name()).width(ui.available_width().min(200.0)).show_ui(ui, |ui| {
+                    let r = egui::ComboBox::from_id_salt(("md-label", item.0))
+                        .selected_text(crate::i18n::t(cur.name()))
+                        .width(ui.available_width().min(200.0))
+                        .show_ui(ui, |ui| {
                             for l in Label::ALL {
                                 let c = l.rgb();
                                 let rr = ui.horizontal(|ui| {
                                     let (sw, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
                                     ui.painter().rect_filled(sw, 2.0, egui::Color32::from_rgb(c[0], c[1], c[2]));
-                                    ui.selectable_value(&mut sel, l, l.name())
+                                    ui.selectable_value(&mut sel, l, crate::i18n::t(l.name()))
                                 });
                                 elems.push((format!("metadata.label.{}", l.name()), rr.inner.rect, l.name().to_string()));
                             }

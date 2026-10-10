@@ -23,16 +23,16 @@ pub fn history(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.painter().text(pos2(r.min.x + 8.0, r.center().y), Align2::LEFT_CENTER, label, Tokens::ui(12.0), if dim { t.text_faint } else { t.text });
             resp.clicked()
         };
-        if row(ui, "Open", undo.is_empty(), false) {
+        if row(ui, tl!("Open"), undo.is_empty(), false) {
             target = Some(-(undo.len() as i64));
         }
         for (i, l) in undo.iter().enumerate() {
-            if row(ui, l, i + 1 == undo.len(), false) {
+            if row(ui, crate::i18n::t(l), i + 1 == undo.len(), false) {
                 target = Some(i as i64 + 1 - undo.len() as i64);
             }
         }
         for (i, l) in redo.iter().enumerate() {
-            if row(ui, l, false, true) {
+            if row(ui, crate::i18n::t(l), false, true) {
                 target = Some(i as i64 + 1);
             }
         }
@@ -62,7 +62,7 @@ pub const MARKER_FILTER: [filmcraft_project::Label; 7] = {
 pub fn markers(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some(seq) = app.session.active_sequence().cloned() else {
-        crate::dock::placeholder(ui, rect, &t, "(no sequence)");
+        crate::dock::placeholder(ui, rect, &t, tl!("(no sequence)"));
         return;
     };
     let hidden: Vec<[u8; 3]> = app.session.state.hidden_marker_colors.iter().map(|l| l.marker_rgb()).collect();
@@ -82,7 +82,7 @@ pub fn markers(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ui.painter().rect_stroke(r.shrink(2.5), 3.0, egui::Stroke::new(1.0, col), egui::StrokeKind::Inside);
             }
             elems.push((format!("markers.filter.{}", l.name()), r, format!("{} markers {}", l.name(), if on { "shown" } else { "hidden" })));
-            if resp.on_hover_text(format!("Show or hide {} markers", l.name())).clicked() {
+            if resp.on_hover_text(tlf!("Show or hide {color} markers", color = crate::i18n::t(l.name()))).clicked() {
                 toggle = Some((l, !on));
             }
         }
@@ -98,7 +98,7 @@ pub fn markers(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
             let c = m.color.marker_rgb();
             ui.painter().rect_filled(Rect::from_min_size(r.min + vec2(4.0, 6.0), vec2(4.0, 26.0)), 2.0, Color32::from_rgb(c[0], c[1], c[2]));
-            let name = if m.name.is_empty() { "Marker" } else { &m.name };
+            let name = if m.name.is_empty() { tl!("Marker") } else { &m.name };
             ui.painter().text(pos2(r.min.x + 16.0, r.min.y + 12.0), Align2::LEFT_CENTER, name, Tokens::ui(12.0), t.text);
             let mut tc = format_time(m.start, seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, 48000);
             if m.duration > filmcraft_time::Tick::ZERO {
@@ -106,7 +106,7 @@ pub fn markers(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 tc = format!("{tc}  ({d})");
             }
             if m.kind == filmcraft_project::MarkerKind::Chapter {
-                tc = format!("{tc}  Chapter");
+                tc = tlf!("{tc}  Chapter", tc);
             }
             ui.painter().text(pos2(r.min.x + 16.0, r.min.y + 27.0), Align2::LEFT_CENTER, tc, Tokens::mono(11.0), t.hot_text);
             elems.push((format!("markers.row.{}", m.id.0), r, name.to_string()));
@@ -115,9 +115,9 @@ pub fn markers(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
         }
         if seq.markers.is_empty() {
-            ui.label(egui::RichText::new("No markers. Press M to add one.").color(t.text_faint));
+            ui.label(egui::RichText::new(tl!("No markers. Press M to add one.")).color(t.text_faint));
         } else if shown == 0 {
-            ui.label(egui::RichText::new("All markers are hidden by the colour filter.").color(t.text_faint));
+            ui.label(egui::RichText::new(tl!("All markers are hidden by the colour filter.")).color(t.text_faint));
         }
     });
     for (id, r, l) in elems {
@@ -145,17 +145,17 @@ pub fn info(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     };
     if let Some(item) = app.session.state.project_selection.first().and_then(|i| app.session.project.item(*i)).cloned() {
         ui.label(egui::RichText::new(&item.name).strong());
-        line(ui, "Type:", item.type_label().to_string());
+        line(ui, tl!("Type:"), crate::i18n::t(item.type_label()).to_string());
         if let Some(m) = item.as_media() {
             if let Some(v) = &m.info.video {
-                line(ui, "Video:", format!("{} fps, {} x {} ({:.4})", v.frame_rate.label(), v.width, v.height, v.par.0 as f32 / v.par.1 as f32));
-                line(ui, "Codec:", v.codec.clone());
+                line(ui, tl!("Video:"), format!("{} fps, {} x {} ({:.4})", v.frame_rate.label(), v.width, v.height, v.par.0 as f32 / v.par.1 as f32));
+                line(ui, tl!("Codec:"), v.codec.clone());
             }
-            if let Some(a) = &m.info.audio {
-                line(ui, "Audio:", format!("{} Hz - {} ch - {}", a.sample_rate, a.channels, a.codec));
+            if let Some(a) = m.info.audio() {
+                line(ui, tl!("Audio:"), format!("{} Hz - {} ch - {}", a.sample_rate, a.channels, a.codec));
             }
         }
-        line(ui, "Duration:", format_time(item.duration(), item.frame_rate(), false, TimeDisplay::Timecode, 48000));
+        line(ui, tl!("Duration:"), format_time(item.duration(), item.frame_rate(), false, TimeDisplay::Timecode, 48000));
         ui.separator();
     }
     if let Some(seq) = app.session.active_sequence() {
@@ -163,19 +163,19 @@ pub fn info(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.label(egui::RichText::new(name).strong());
         line(
             ui,
-            "Settings:",
+            tl!("Settings:"),
             format!("{}x{} · {} fps · {} Hz", seq.settings.width, seq.settings.height, seq.settings.frame_rate.label(), seq.settings.sample_rate),
         );
-        line(ui, "Playhead:", format_time(app.session.playhead(), seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, 48000));
+        line(ui, tl!("Playhead:"), format_time(app.session.playhead(), seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, 48000));
         for (i, tr) in seq.video_tracks.iter().enumerate().rev() {
             let at = tr.item_at(app.session.playhead()).map(|x| x.name.clone()).unwrap_or_default();
-            line(ui, &format!("Video {}:", i + 1), at);
+            line(ui, &tlf!("Video {n}:", n = i + 1), at);
         }
         for (i, tr) in seq.audio_tracks.iter().enumerate() {
             let at = tr.item_at(app.session.playhead()).map(|x| x.name.clone()).unwrap_or_default();
-            line(ui, &format!("Audio {}:", i + 1), at);
+            line(ui, &tlf!("Audio {n}:", n = i + 1), at);
         }
     }
     ui.separator();
-    line(ui, "UI:", format!("{:.0} fps · {} frames queued", app.fps, app.frames.queue_len()));
+    line(ui, tl!("UI:"), tlf!("{fps} fps · {n} frames queued", fps = format!("{:.0}", app.fps), n = app.frames.queue_len()));
 }

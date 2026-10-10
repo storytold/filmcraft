@@ -224,7 +224,7 @@ pub fn metadata_fields(p: &Project, id: ItemId) -> Vec<Field> {
         let cs = media.and_then(|m| m.interpret.color_space).unwrap_or(detected);
         add("Clip", "Color Space", cs.label().to_string(), false);
     }
-    if let Some(a) = media.and_then(|m| m.info.audio.as_ref()) {
+    if let Some(a) = media.and_then(|m| m.info.audio()) {
         add("Clip", "Audio Info", format!("{} Hz - {} ch", a.sample_rate, a.channels), false);
         add("Clip", "Audio Codec", a.codec.clone(), false);
     }

@@ -207,9 +207,4 @@ fn copy_line(line: &[u16], x0: i32, out: &mut [i16]) {
 pub type FrameRef = Arc<Frame>;
 
 /// An entry of RefPicList0/1 of the current slice.
-#[derive(Clone)]
-pub struct RefPic {
-    pub frame: FrameRef,
-    pub poc: i32,
-    pub long_term: bool,
-}
+pub type RefPic = crate::dpb::Ref<FrameRef>;

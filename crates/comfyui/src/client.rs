@@ -1,13 +1,14 @@
 //! Running a workflow on a ComfyUI server.
 //!
 //! [`Client::run`] uploads the recipe's input files, queues the workflow (`POST /prompt`), polls
-//! `GET /history/<id>` (and `GET /queue` for the position) until it finished, and downloads the
-//! output files (`GET /view`). Progress goes to a callback that can stop the run; a stopped run
-//! removes the prompt from the queue, or interrupts it when it is the one running.
+//! `GET /history/<id>` (and `GET /queue` for the position) until it finished, and streams the
+//! output files (`GET /view`) into a [`Sink`]. Progress goes to a callback that can stop the run;
+//! a stopped run removes the prompt from the queue, or interrupts it when it is the one running.
 //!
-//! The [`Transport`] is all the networking: two blocking calls. The HTTP one is in
-//! [`crate::http`]; tests and headless sessions use [`crate::fake::FakeComfy`].
+//! The [`Transport`] is all the networking: blocking calls. The HTTP one is in [`crate::http`];
+//! tests and headless sessions use [`crate::fake::FakeComfy`].
 
+use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,23 +41,90 @@ impl Response {
 pub trait Transport: Send + Sync {
     fn get(&self, path: &str) -> Result<Response>;
     fn post(&self, path: &str, content_type: &str, body: &[u8]) -> Result<Response>;
+    /// Stream the body of `GET path` (a file) into `out`; more than `limit` bytes is
+    /// [`ComfyError::TooLarge`], a failed write [`ComfyError::Storage`]. Returns the size. The
+    /// default reads the whole answer with [`Transport::get`] (in-process servers); the HTTP
+    /// transport streams it.
+    fn download(&self, path: &str, out: &mut dyn Write, limit: u64) -> Result<u64> {
+        let r = self.get(path)?;
+        if !r.ok() {
+            return Err(ComfyError::Server(format!("{path}: HTTP {}", r.status)));
+        }
+        let n = r.body.len() as u64;
+        if n > limit {
+            return Err(too_large(path, limit));
+        }
+        out.write_all(&r.body).map_err(|e| ComfyError::Storage(e.to_string()))?;
+        Ok(n)
+    }
     /// Wait between two polls.
     fn pause(&self, d: Duration) {
         std::thread::sleep(d);
     }
 }
 
-/// How long to wait and how often to look.
+/// The error for a download over `limit` bytes.
+pub(crate) fn too_large(what: &str, limit: u64) -> ComfyError {
+    ComfyError::TooLarge(format!("{what}: larger than {} MiB, the most FilmCraft downloads", limit >> 20))
+}
+
+/// Where a run's output files go. The engine streams them to disk ([`MemorySink`] keeps them in
+/// memory, for tests and hosts without a file system).
+pub trait Sink {
+    /// A writer for the file of `output` (a wanted media output, in output order).
+    fn create(&mut self, output: &Output) -> std::result::Result<Box<dyn Write + '_>, String>;
+    /// The download into the last created writer ended: complete with `size` bytes, or `None`
+    /// (failed or stopped: drop what was written).
+    fn close(&mut self, output: &Output, size: Option<u64>) -> std::result::Result<(), String>;
+}
+
+/// A [`Sink`] that keeps the files in memory: (output, bytes), complete files only.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MemorySink {
+    pub files: Vec<(Output, Vec<u8>)>,
+    current: Vec<u8>,
+}
+
+impl Sink for MemorySink {
+    fn create(&mut self, _: &Output) -> std::result::Result<Box<dyn Write + '_>, String> {
+        self.current.clear();
+        Ok(Box::new(&mut self.current))
+    }
+    fn close(&mut self, output: &Output, size: Option<u64>) -> std::result::Result<(), String> {
+        let bytes = std::mem::take(&mut self.current);
+        if size.is_some() {
+            self.files.push((output.clone(), bytes));
+        }
+        Ok(())
+    }
+}
+
+/// How long to wait, how often to look, and how much to download.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RunOptions {
     pub poll: Duration,
     /// Give up (and cancel the prompt) after this long.
     pub timeout: Duration,
+    /// Largest output file (bytes).
+    pub max_file: u64,
+    /// Most output files downloaded; further outputs are listed but not downloaded.
+    pub max_files: usize,
+    /// Most bytes downloaded, all files together.
+    pub max_total: u64,
+    /// Largest input file uploaded (bytes).
+    pub max_upload: u64,
 }
 
 impl Default for RunOptions {
     fn default() -> Self {
-        Self { poll: Duration::from_millis(500), timeout: Duration::from_secs(3600) }
+        Self {
+            poll: Duration::from_millis(500),
+            timeout: Duration::from_secs(3600),
+            max_file: crate::MAX_FILE,
+            max_files: crate::MAX_FILES,
+            max_total: crate::MAX_RUN_BYTES,
+            max_upload: crate::MAX_UPLOAD,
+        }
     }
 }
 
@@ -81,11 +149,11 @@ impl std::fmt::Display for Progress {
     }
 }
 
-/// A downloaded output file.
+/// A downloaded output file (its bytes went to the [`Sink`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fetched {
     pub output: Output,
-    pub bytes: Vec<u8>,
+    pub size: u64,
 }
 
 /// What a finished run produced.
@@ -164,13 +232,13 @@ impl Client {
         Ok(protocol::parse_queue(&v, prompt_id))
     }
 
-    /// The bytes of an output file.
-    pub fn fetch(&self, f: &FileRef) -> Result<Vec<u8>> {
-        let r = self.t.get(&f.view_path())?;
-        if !r.ok() {
-            return Err(ComfyError::Server(format!("{}: HTTP {}", f.filename, r.status)));
-        }
-        Ok(r.body)
+    /// Stream an output file into `out` (at most `limit` bytes); its size.
+    pub fn download(&self, f: &FileRef, out: &mut dyn Write, limit: u64) -> Result<u64> {
+        self.t.download(&f.view_path(), out, limit).map_err(|e| match e {
+            ComfyError::TooLarge(_) => too_large(&f.filename, limit),
+            ComfyError::Server(m) => ComfyError::Server(format!("{}: {m}", f.filename)),
+            e => e,
+        })
     }
 
     /// Take a prompt off the queue, or interrupt it when it is running (best effort).
@@ -182,11 +250,12 @@ impl Client {
     }
 
     /// The workflow to queue for `recipe`: its bindings checked and applied, files uploaded
-    /// (`read` reads a local file).
+    /// (`read` reads a local file; files over `max_upload` bytes are refused).
     pub fn prepare(
         &self,
         recipe: &Recipe,
         read: &mut dyn FnMut(&str) -> std::result::Result<Vec<u8>, String>,
+        max_upload: u64,
         progress: &mut dyn FnMut(&Progress) -> bool,
     ) -> Result<Value> {
         let wf = Workflow::parse(&recipe.workflow)?;
@@ -200,6 +269,12 @@ impl Client {
                         return Err(ComfyError::Cancelled);
                     }
                     let bytes = read(path).map_err(|e| ComfyError::Workflow(format!("node {node} `{input}`: {path}: {e}")))?;
+                    if bytes.len() as u64 > max_upload {
+                        return Err(ComfyError::TooLarge(format!(
+                            "node {node} `{input}`: {path}: larger than {} MiB, the most FilmCraft uploads",
+                            max_upload >> 20
+                        )));
+                    }
                     Value::String(self.upload(path, &bytes)?.input_value())
                 }
                 (None, Some(v)) => v.clone(),
@@ -210,25 +285,45 @@ impl Client {
         wf.apply(&values)
     }
 
-    /// Run `recipe`: prepare, queue, wait and download the wanted media outputs.
+    /// Run `recipe`: prepare, queue, wait and stream the wanted media outputs into `sink`
+    /// (at most `opts.max_files` files of `opts.max_file` bytes, `opts.max_total` in all). A file
+    /// over a limit fails the run; files already in `sink` are the caller's to drop.
     pub fn run(
         &self,
         recipe: &Recipe,
         read: &mut dyn FnMut(&str) -> std::result::Result<Vec<u8>, String>,
         opts: &RunOptions,
         progress: &mut dyn FnMut(&Progress) -> bool,
+        sink: &mut dyn Sink,
     ) -> Result<RunResult> {
-        let workflow = self.prepare(recipe, read, progress)?;
+        let workflow = self.prepare(recipe, read, opts.max_upload, progress)?;
         let prompt_id = self.queue(&workflow)?;
         let outputs = self.wait(&prompt_id, opts, progress)?;
-        let wanted: Vec<&Output> = outputs.iter().filter(|o| o.kind.is_media() && o.file.is_some() && recipe.wants(o)).collect();
+        let wanted: Vec<&Output> = outputs.iter().filter(|o| o.kind.is_media() && o.file.is_some() && recipe.wants(o)).take(opts.max_files).collect();
         let mut files = Vec::with_capacity(wanted.len());
+        let mut total = 0u64;
         for (k, o) in wanted.iter().enumerate() {
             let Some(f) = &o.file else { continue };
             if !progress(&Progress::Downloading { done: k, total: wanted.len(), file: f.filename.clone() }) {
                 return Err(ComfyError::Cancelled);
             }
-            files.push(Fetched { output: (*o).clone(), bytes: self.fetch(f)? });
+            let left = opts.max_total.saturating_sub(total);
+            let limit = opts.max_file.min(left);
+            let mut w = sink.create(o).map_err(ComfyError::Storage)?;
+            let r = self.download(f, &mut *w, limit).and_then(|n| w.flush().map(|_| n).map_err(|e| ComfyError::Storage(e.to_string())));
+            drop(w);
+            sink.close(o, r.as_ref().ok().copied()).map_err(ComfyError::Storage)?;
+            let n = match r {
+                Ok(n) => n,
+                // a stop shows as a failed write: say it was a stop
+                Err(_) if !progress(&Progress::Downloading { done: k, total: wanted.len(), file: f.filename.clone() }) => return Err(ComfyError::Cancelled),
+                Err(ComfyError::TooLarge(_)) if limit < opts.max_file => {
+                    return Err(ComfyError::TooLarge(format!("{}: the run's files are larger than {} MiB in all", f.filename, opts.max_total >> 20)));
+                }
+                Err(e) => return Err(e),
+            };
+            total = total.saturating_add(n);
+            files.push(Fetched { output: (*o).clone(), size: n });
         }
         Ok(RunResult { prompt_id, outputs, files })
     }

@@ -480,7 +480,7 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
     let nseg = todo.len();
     let pool = s.media.clone();
     let run = move || {
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         let mut bytes = 0u64;
         let mut done_frames = 0u64;
         let mut outcome: std::result::Result<(), String> = Ok(());
@@ -581,7 +581,7 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
     let (prog, res) = (job.progress.clone(), job.result.clone());
     let nseg = todo.len();
     let run = move || {
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         let mut bytes = 0u64;
         let mut outcome: std::result::Result<(), String> = Ok(());
         let Some(q) = project.sequence(seq) else { return };

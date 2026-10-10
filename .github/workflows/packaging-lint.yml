@@ -23,7 +23,7 @@ jobs:
     env:
       ACTIONLINT_VERSION: 1.7.12
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install tools
         run: |
           sudo apt-get update
@@ -35,6 +35,8 @@ jobs:
           "$RUNNER_TEMP/actionlint" -color
       - name: shellcheck
         run: shellcheck packaging/*.sh packaging/*/*.sh
+      - name: Linux tarball installer
+        run: python3 packaging/linux/test_install.py
       - name: PowerShell
         shell: pwsh
         run: |
@@ -62,6 +64,11 @@ jobs:
               assert m["id"] == "ai.storyteller.filmcraft" and m["command"] == "filmcraft", m["id"]
           for key in ("runtime", "runtime-version", "sdk", "finish-args"):
               assert src[key] == bundle[key], f"Flatpak manifests disagree on {key}: {src[key]} vs {bundle[key]}"
+          # Both install the app and the CLI/MCP server (#346).
+          import re
+          def programs(m):
+              return {p for c in m["modules"][0]["build-commands"] for p in re.findall(r"/app/bin/([\w.-]+)", c)}
+          assert programs(src) == programs(bundle) == {"filmcraft", "filmcraft-cli"}, f"Flatpak manifests install {programs(src)} vs {programs(bundle)}"
           print("Flatpak manifests ok")
           EOF
       - name: FreeBSD package layout (stub binaries)

@@ -1,0 +1,357 @@
+# Brazilian Portuguese (pt-br) catalog. Same format as `es.tsv`: context <TAB> source <TAB> translation.
+#
+# Clean-room: every entry was written from the plain meaning of the English label using ordinary
+# Brazilian Portuguese computing vocabulary. No proprietary localisation resource, string table or
+# product UI was consulted or copied. This catalog covers the menus; anything else is shown in
+# English.
+
+	About FilmCraft	Sobre o FilmCraft
+	Add Audio Submix Track	Adicionar faixa de submixagem de áudio
+	Add Caption at Playhead	Adicionar legenda no cursor de reprodução
+	Add Chapter Marker…	Adicionar marcador de capítulo…
+	Add Edit	Adicionar edição
+	Add Edit to All Tracks	Adicionar edição em todas as faixas
+	Add Flash Cue Marker…	Adicionar marcador de referência Flash…
+	Add Frame Hold	Adicionar quadro congelado
+	Add Guide…	Adicionar guia…
+	Add Marker	Adicionar marcador
+	Add New Caption Track…	Adicionar nova faixa de legendas…
+	Add Range Marker	Adicionar marcador de intervalo
+	Add Range Marker to In and Out	Adicionar marcador de intervalo da entrada à saída
+	Add Tracks…	Adicionar faixas…
+	Adjustment Layer…	Camada de ajuste…
+	Align to Selection	Alinhar à seleção
+	Align to Video Frame	Alinhar ao quadro de vídeo
+	Align to Video Frame as Group	Alinhar ao quadro de vídeo como grupo
+	All Panels	Todos os painéis
+	Alpha	Alfa
+	Appearance	Aparência
+	Appearance…	Aparência…
+	Apply Audio Transition	Aplicar transição de áudio
+	Apply Default Transitions to Selection	Aplicar transições padrão à seleção
+	Apply Video Transition	Aplicar transição de vídeo
+	Arrange	Organizar
+	ArtCraft Website	Site do ArtCraft
+	Assembly	Montagem
+	Attach Proxies…	Anexar proxies…
+	Audio Channels…	Canais de áudio…
+	Audio Clip Mixer	Misturador de clipes de áudio
+	Audio Gain…	Ganho de áudio…
+	Audio Hardware…	Hardware de áudio…
+	Audio In	Entrada de áudio
+	Audio Meters	Medidores de áudio
+	Audio Options	Opções de áudio
+	Audio Out	Saída de áudio
+	Audio Track Mixer	Misturador de faixas de áudio
+	Audio Waveform	Forma de onda de áudio
+	Auto Save…	Salvamento automático…
+	Automate to Sequence…	Automatizar para a sequência…
+	Bars and Tone…	Barras e tom…
+	Bin	Pasta
+	Bin From Selection	Pasta a partir da seleção
+	Black Video…	Vídeo preto…
+	Blue	Azul
+	Bottom	Inferior
+	Breakout to Mono	Separar em mono
+	Bring Forward	Trazer para a frente
+	Bring to Front	Trazer ao topo
+	Brown	Marrom
+	Captions	Legendas
+	Captions and Graphics	Legendas e gráficos
+	Captions…	Legendas…
+	Caribbean	Caribe
+	Center Horizontally	Centralizar horizontalmente
+	Center Vertically	Centralizar verticalmente
+	Cerulean	Cerúleo
+	Clear	Limpar
+	Clear Guides	Limpar guias
+	Clear In	Limpar entrada
+	Clear In and Out	Limpar entrada e saída
+	Clear Markers	Limpar marcadores
+	Clear Out	Limpar saída
+	Clear Selected Marker	Limpar marcador selecionado
+	Close	Fechar
+	Close All Other Projects	Fechar todos os outros projetos
+	Close All Projects	Fechar todos os projetos
+	Close Gap	Fechar lacuna
+	Close Project	Fechar projeto
+	Color Management…	Gerenciamento de cores…
+	Color Matte…	Matte de cor…
+	Comparison View	Visualização de comparação
+	Composite Video	Vídeo composto
+	Consolidate Duplicates	Consolidar duplicatas
+	Copy	Copiar
+	Copy Paste Includes Sequence Markers	Copiar e colar inclui marcadores da sequência
+	Create Captions from Transcript…	Criar legendas a partir da transcrição…
+	Create Multi-Camera Source Sequence…	Criar sequência de origem multicâmera…
+	Create Proxies…	Criar proxies…
+	Cut	Recortar
+	Dark	Escuro
+	Darkest	Mais escuro
+	Delete Render Files	Excluir arquivos de renderização
+	Delete Render Files In to Out	Excluir arquivos de renderização da entrada à saída
+	Delete Tracks…	Excluir faixas…
+	Delete Transcript	Excluir transcrição
+	Demo Footage	Clipes de demonstração
+	Demo Project	Projeto de demonstração
+	Deselect All	Desmarcar tudo
+	Detach Proxies	Desanexar proxies
+	Display Mode	Modo de exibição
+	Distribute	Distribuir
+	Distribute Horizontally	Distribuir horizontalmente
+	Distribute Space Horizontally	Distribuir espaço horizontalmente
+	Distribute Space Vertically	Distribuir espaço verticalmente
+	Distribute Vertically	Distribuir verticalmente
+	Duplicate	Duplicar
+	Dynamic Audio Waveforms	Formas de onda de áudio dinâmicas
+	Edit	Editar
+	Edit Offline…	Editar offline…
+	Edit Original	Editar original
+	Edit Subclip…	Editar subclipe…
+	Editing	Edição
+	Effect Controls	Controles de efeito
+	Effects	Efeitos
+	Ellipse	Elipse
+	Enable	Ativar
+	Enable Remix	Ativar remixagem
+	Essential Graphics	Gráficos essenciais
+	Essential Sound	Som essencial
+	Events	Eventos
+	Export	Exportar
+	Export As Motion Graphics Template…	Exportar como modelo de gráficos de movimento…
+	Extract	Extrair
+	Extract Audio	Extrair áudio
+	Field Options…	Opções de campo…
+	File	Arquivo
+	File…	Arquivo…
+	Fill frame	Preencher quadro
+	FilmCraft Help…	Ajuda do FilmCraft…
+	FilmCraft on GitHub	FilmCraft no GitHub
+	FilmCraft on getartcraft.com	FilmCraft no getartcraft.com
+	Find Next	Localizar próximo
+	Find…	Localizar…
+	Fit	Ajustar
+	Fit to frame	Ajustar ao quadro
+	Flatten	Achatar
+	Forest	Floresta
+	Frame Blending	Emenda de quadros
+	Frame Hold Options…	Opções de quadro congelado…
+	Frame Sampling	Amostragem de quadros
+	From Bin	Da pasta
+	From Source Monitor	Do monitor de origem
+	From Source Monitor, Match Frame	Do monitor de origem, quadro correspondente
+	From file…	Do arquivo…
+	Full	Total
+	Generate Audio Waveform	Gerar forma de onda de áudio
+	Get Media File Properties for	Obter propriedades do arquivo de mídia de
+	Go to Gap	Ir para a lacuna
+	Go to In	Ir para a entrada
+	Go to Next Caption Segment	Ir para o próximo segmento de legenda
+	Go to Next Marker	Ir para o próximo marcador
+	Go to Out	Ir para a saída
+	Go to Previous Caption Segment	Ir para o segmento de legenda anterior
+	Go to Previous Marker	Ir para o marcador anterior
+	Go to Split	Ir para a divisão
+	Graphics and Titles	Gráficos e títulos
+	Graphics…	Gráficos…
+	Green	Verde
+	Group	Agrupar
+	Guide Templates	Modelos de guias
+	Help	Ajuda
+	Hide All Caption Tracks	Ocultar todas as faixas de legendas
+	High Quality Playback	Reprodução em alta qualidade
+	History	Histórico
+	Import From	Importar de
+	Import Image Sequence…	Importar sequência de imagens…
+	Import from Media Browser	Importar do navegador de mídia
+	Import…	Importar…
+	Info	Informações
+	Ingest Settings…	Configurações de ingestão…
+	Insert	Inserir
+	Insert Frame Hold Segment	Inserir segmento de quadro congelado
+	Install Motion Graphics Template…	Instalar modelo de gráficos de movimento…
+	Interpret Footage…	Interpretar clipes…
+	Join the ArtCraft Discord…	Entre no Discord do ArtCraft…
+	Keyboard Shortcuts…	Atalhos de teclado…
+	Label	Rótulo
+	Labels…	Rótulos…
+	Language	Idioma
+	Lavender	Lavanda
+	Learning	Aprendizado
+	Left	Esquerda
+	Libraries	Bibliotecas
+	Lift	Levantar
+	Light	Claro
+	Link	Vincular
+	Link Media…	Vincular mídia…
+	Linked Selection	Seleção vinculada
+	Lock Guides	Bloquear guias
+	Lumetri Color	Cor Lumetri
+	Lumetri Scopes	Escopos Lumetri
+	Magnification	Ampliação
+	Make Offline…	Tornar offline…
+	Make Subclip…	Criar subclipe…
+	Make Subsequence	Criar subsequência
+	Manage Guides…	Gerenciar guias…
+	Mark Clip	Marcar clipe
+	Mark In	Marcar entrada
+	Mark Out	Marcar saída
+	Mark Selection	Marcar seleção
+	Mark Split	Marcar divisão
+	Markers	Marcadores
+	Match Frame	Quadro correspondente
+	Media Analysis & Transcription…	Análise e transcrição de mídia…
+	Media Browser	Navegador de mídia
+	Media Cache…	Cache de mídia…
+	Media…	Mídia…
+	Memory…	Memória…
+	Merge Clips…	Mesclar clipes…
+	Metadata	Metadados
+	Modify	Modificar
+	Motion Graphics Template…	Modelo de gráficos de movimento…
+	Multi-Camera	Multicâmera
+	Multi-Camera View	Visualização multicâmera
+	Nest…	Aninhar…
+	New	Novo
+	New Layer	Nova camada
+	New Project Panel	Novo painel de projeto
+	Next in Sequence	Próximo na sequência
+	Next in Track	Próximo na faixa
+	Normalize Mix Track…	Normalizar faixa de mixagem…
+	Offline File…	Arquivo offline…
+	Open Project…	Abrir projeto…
+	Optical Flow	Fluxo óptico
+	Overwrite	Sobrescrever
+	Paste	Colar
+	Paste Attributes…	Colar atributos…
+	Paste Insert	Inserir colando
+	Paused Resolution	Resolução pausada
+	Playback Resolution	Resolução de reprodução
+	Playback…	Reprodução…
+	Plugins…	Plug-ins…
+	Polygon	Polígono
+	Preferences	Preferências
+	Previous in Sequence	Anterior na sequência
+	Previous in Track	Anterior na faixa
+	Program	Programa
+	Progress	Progresso
+	Project	Projeto
+	Project Manager…	Gerenciador de projetos…
+	Project Settings	Configurações do projeto
+	Project…	Projeto…
+	Properties	Propriedades
+	Purple	Roxo
+	Reconnect Full Resolution Media…	Reconectar mídia em resolução total…
+	Recover Unsaved Changes…	Recuperar alterações não salvas…
+	Rectangle	Retângulo
+	Red	Vermelho
+	Redo	Refazer
+	Reference Monitor	Monitor de referência
+	Remix	Remixagem
+	Remix Properties…	Propriedades da remixagem…
+	Remove Attributes…	Remover atributos…
+	Remove Filler Words	Remover muletas
+	Remove Pauses	Remover pausas
+	Remove Unused	Remover não usados
+	Rename…	Renomear…
+	Render Audio	Renderizar áudio
+	Render Effects In to Out	Renderizar efeitos da entrada à saída
+	Render In to Out	Renderizar da entrada à saída
+	Render Selection	Renderizar seleção
+	Replace Fonts in Projects…	Substituir fontes em projetos…
+	Replace With Clip	Substituir por clipe
+	Report an Issue…	Relatar um problema…
+	Reset All Parameters	Redefinir todos os parâmetros
+	Reset Duration	Redefinir duração
+	Reset to Saved Layout	Redefinir para o layout salvo
+	Restore Captions from Source Clip	Restaurar legendas do clipe de origem
+	Reveal Log Files…	Mostrar arquivos de log…
+	Reverse Match Frame	Quadro correspondente inverso
+	Revert	Reverter
+	Revert Remix	Reverter remixagem
+	Review	Revisão
+	Right	Direita
+	Ripple Delete	Excluir e fechar lacuna
+	Ripple Sequence Markers	Deslocar marcadores da sequência
+	Rose	Rosa
+	Safe Margins	Margens de segurança
+	Save	Salvar
+	Save All	Salvar tudo
+	Save As…	Salvar como…
+	Save Guides as Template…	Salvar guias como modelo…
+	Save a Copy…	Salvar uma cópia…
+	Save as Template…	Salvar como modelo…
+	Scale to Frame Size	Escalar para o tamanho do quadro
+	Scene Edit Detection…	Detecção de edição de cena…
+	Scratch Disks…	Discos de trabalho…
+	Search Bin	Pasta de pesquisa
+	Select	Selecionar
+	Select All	Selecionar tudo
+	Select All Matching	Selecionar todos correspondentes
+	Select Label Group	Selecionar grupo de rótulos
+	Select Next Graphic	Selecionar próximo gráfico
+	Select Next Layer	Selecionar próxima camada
+	Select Previous Graphic	Selecionar gráfico anterior
+	Select Previous Layer	Selecionar camada anterior
+	Selection Follows Playhead	A seleção segue o cursor de reprodução
+	Selection as FilmCraft Project…	Seleção como projeto do FilmCraft…
+	Selection…	Seleção…
+	Send Backward	Enviar para trás
+	Send to Back	Enviar para o fundo
+	Sequence	Sequência
+	Sequence From Clip	Sequência a partir do clipe
+	Sequence Settings…	Configurações da sequência…
+	Sequence…	Sequência…
+	Show Active Caption Tracks Only	Mostrar apenas faixas de legendas ativas
+	Show All Caption Tracks	Mostrar todas as faixas de legendas
+	Show All Marker Colors	Mostrar todas as cores de marcador
+	Show Guides	Mostrar guias
+	Show Rulers	Mostrar réguas
+	Show Through Edits	Mostrar edições contíguas
+	Simplify Sequence…	Simplificar sequência…
+	Snap in Program Monitor	Encaixar no monitor do programa
+	Snap in Timeline	Encaixar na linha do tempo
+	Source	Origem
+	Source Settings…	Configurações de origem…
+	Speed/Duration…	Velocidade/duração…
+	Synchronize…	Sincronizar…
+	System Compatibility Report…	Relatório de compatibilidade do sistema…
+	Tan	Canela
+	Teal	Verde-azulado
+	Text	Texto
+	Time Interpolation	Interpolação de tempo
+	Timecode	Timecode
+	Timecode…	Timecode…
+	Timeline	Linha do tempo
+	Timeline…	Linha do tempo…
+	Toggle Proxies	Alternar proxies
+	Tools	Ferramentas
+	Top	Superior
+	Transcribe Sequence…	Transcrever sequência…
+	Transcribe…	Transcrever…
+	Transcript	Transcrição
+	Transparent Video…	Vídeo transparente…
+	Trim Edit	Edição de aparagem
+	Trim…	Aparar…
+	Undo	Desfazer
+	Ungroup	Desagrupar
+	Universal Counting Leader…	Cabeçote de contagem universal…
+	Update Metadata…	Atualizar metadados…
+	Upgrade Caption to Graphic	Converter legenda em gráfico
+	Upgrade to Source Graphic	Converter em gráfico de origem
+	Vertical Text	Texto vertical
+	Video In	Entrada de vídeo
+	Video Options	Opções de vídeo
+	Video Out	Saída de vídeo
+	Video and Audio Waveform Split	Vídeo e forma de onda de áudio separados
+	View	Exibir
+	Violet	Violeta
+	Window	Janela
+	Workspaces	Áreas de trabalho
+	Yellow	Amarelo
+	Zoom In	Ampliar
+	Zoom Out	Reduzir
+	Zoom to Sequence	Zoom para a sequência
+# ComfyUI clips (Window ▸ ComfyUI…)
+	ComfyUI…	ComfyUI…
+	Generate ComfyUI Clip	Gerar clipe do ComfyUI

@@ -2,7 +2,7 @@
 //! pipeline: the same frames, a file both decode, counters showing which encoder ran, and what NVENC
 //! declines (hardware encoding Off, two-pass, MXF...) going to the software encoder. Its own test
 //! binary: the encoder registry is process-wide. Skips without an NVIDIA GPU with NVENC.
-#![cfg(target_os = "windows")]
+#![cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 
 use std::sync::Arc;
 
@@ -83,15 +83,19 @@ fn hardware_export_matches_the_software_export() {
     filmcraft_platform::register();
     let (p, seq, m) = project(1280, 720, 72);
     let soft_path = tmp("soft.mp4");
+    let before_soft = hw_encode_stats();
     export(&p, seq, &settings(soft_path.clone(), HardwareEncoding::Off), &m, &Progress::default()).unwrap();
-    assert_eq!(hw_encode_stats().sessions, 0, "Off: no hardware encoder");
+    assert_eq!(hw_encode_stats(), before_soft, "Off: no hardware encoder attempt");
 
     let hw_path = tmp("hw.mp4");
     let before = hw_encode_stats();
     let report = export(&p, seq, &settings(hw_path.clone(), HardwareEncoding::Auto), &m, &Progress::default()).unwrap();
     let after = hw_encode_stats();
     if after.sessions == before.sessions {
-        eprintln!("SKIPPED: no NVENC here (declined {})", after.declined - before.declined);
+        assert_eq!(after.declined - before.declined, 1, "Auto attempted hardware and reported the fallback");
+        assert_eq!(after.frames, before.frames);
+        assert_eq!(std::fs::read(&soft_path).unwrap(), std::fs::read(&hw_path).unwrap(), "fallback preserves software determinism");
+        eprintln!("no NVENC here: byte-identical software fallback verified");
         return;
     }
     assert_eq!(report.frames, 72);
@@ -135,7 +139,9 @@ fn what_nvenc_does_not_take_goes_to_the_software_encoder() {
         (0, 1)
     );
     // an odd frame size is rounded to even by the pipeline, so NVENC still takes it
-    assert_eq!(run("odd.mp4", &|s| s.frame_size = Some((641, 359))), (24, 0));
+    let hardware_available = filmcraft_platform::nvenc::available();
+    let odd = run("odd.mp4", &|s| s.frame_size = Some((641, 359)));
+    assert_eq!(odd, if hardware_available { (24, 0) } else { (0, 1) });
     // Off never touches the hardware encoder
     assert_eq!(run("off.mp4", &|s| s.hardware_encoding = HardwareEncoding::Off), (0, 0));
     // the decoded file of a declined export is fine

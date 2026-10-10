@@ -142,10 +142,24 @@ pub fn parse_queued(status: u16, body: &[u8]) -> Result<String> {
     Err(ComfyError::Rejected(parts.join("; ")))
 }
 
-/// The outputs listed by a history entry's `outputs` object, in node id order.
+/// Longest node id, output key, file or folder name taken from a history entry.
+const MAX_NAME: usize = 1024;
+
+/// `t` cut to at most `max` bytes, at a character boundary.
+fn cut(t: &str, max: usize) -> &str {
+    let mut end = t.len().min(max);
+    while !t.is_char_boundary(end) {
+        end -= 1;
+    }
+    t.get(..end).unwrap_or_default()
+}
+
+/// The outputs listed by a history entry's `outputs` object, in node id order: at most
+/// [`crate::MAX_OUTPUTS`], texts cut to [`crate::MAX_TEXT`] bytes, entries with absurdly long
+/// names left out.
 pub fn parse_outputs(outputs: &Value) -> Vec<Output> {
     let Some(map) = outputs.as_object() else { return Vec::new() };
-    let mut nodes: Vec<(&String, &Value)> = map.iter().collect();
+    let mut nodes: Vec<(&String, &Value)> = map.iter().filter(|(n, _)| n.len() <= MAX_NAME).collect();
     nodes.sort_by(|a, b| match (a.0.parse::<u64>(), b.0.parse::<u64>()) {
         (Ok(x), Ok(y)) => x.cmp(&y),
         _ => a.0.cmp(b.0),
@@ -153,12 +167,17 @@ pub fn parse_outputs(outputs: &Value) -> Vec<Output> {
     let mut out = Vec::new();
     for (node, v) in nodes {
         let Some(keys) = v.as_object() else { continue };
-        for (key, list) in keys {
+        for (key, list) in keys.iter().filter(|(k, _)| k.len() <= MAX_NAME) {
             for e in list.as_array().into_iter().flatten() {
+                if out.len() >= crate::MAX_OUTPUTS {
+                    return out;
+                }
                 if let Some(t) = e.as_str() {
-                    out.push(Output { node: node.clone(), key: key.clone(), kind: OutputKind::Text, file: None, text: Some(t.to_string()) });
+                    let text = cut(t, crate::MAX_TEXT).to_string();
+                    out.push(Output { node: node.clone(), key: key.clone(), kind: OutputKind::Text, file: None, text: Some(text) });
                 } else if let Ok(f) = serde_json::from_value::<FileRef>(e.clone())
                     && !f.filename.is_empty()
+                    && [&f.filename, &f.subfolder, &f.folder].iter().all(|x| x.len() <= MAX_NAME)
                 {
                     let kind = OutputKind::of_file(&f.filename);
                     out.push(Output { node: node.clone(), key: key.clone(), kind, file: Some(f), text: None });
@@ -288,6 +307,18 @@ mod tests {
         assert_eq!(o[1].file.as_ref().unwrap().view_path(), "/view?filename=a_00001_.flac&subfolder=audio&type=output");
         assert_eq!(o[3].text.as_deref(), Some("a prompt for the next shot"));
         assert_eq!(parse_history(&json!({}), "p1"), None);
+    }
+
+    #[test]
+    fn outputs_are_capped() {
+        // a server listing a million files and a huge text: bounded lists, cut text
+        let files: Vec<Value> = (0..5000).map(|i| json!({"filename": format!("f{i}.png")})).collect();
+        let long = "é".repeat(crate::MAX_TEXT);
+        let o = parse_outputs(&json!({"1": {"text": [long]}, "2": {"images": files}, "3": {"images": [{"filename": "x".repeat(5000) + ".png"}]}}));
+        assert_eq!(o.len(), crate::MAX_OUTPUTS);
+        let t = o[0].text.as_deref().unwrap();
+        assert!(t.len() <= crate::MAX_TEXT && t.chars().all(|c| c == 'é'), "{}", t.len());
+        assert!(o.iter().all(|x| x.node != "3"));
     }
 
     #[test]

@@ -516,9 +516,9 @@ pub fn column_text(e: &Entry, column: &str, probe: Option<&MediaInfo>) -> String
             })
             .unwrap_or_default(),
         "Video Info" => probe.and_then(|i| i.video.as_ref()).map(|v| format!("{} x {}", v.width, v.height)).unwrap_or_default(),
-        "Audio Info" => probe.and_then(|i| i.audio.as_ref()).map(|a| format!("{} Hz - {} ch", a.sample_rate, a.channels)).unwrap_or_default(),
+        "Audio Info" => probe.and_then(|i| i.audio()).map(|a| format!("{} Hz - {} ch", a.sample_rate, a.channels)).unwrap_or_default(),
         "Video Codec" => probe.and_then(|i| i.video.as_ref()).map(|v| v.codec.clone()).unwrap_or_default(),
-        "Audio Codec" => probe.and_then(|i| i.audio.as_ref()).map(|a| a.codec.clone()).unwrap_or_default(),
+        "Audio Codec" => probe.and_then(|i| i.audio()).map(|a| a.codec.clone()).unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -663,7 +663,9 @@ pub fn std_volumes() -> Vec<Volume> {
     v
 }
 
-/// The desktop user's home directory.
+/// The desktop user's home directory. Windows prefers `USERPROFILE`: shells like Git Bash set
+/// `HOME` to a Unix-style path (`/c/Users/…`) that native file APIs cannot open.
 pub fn std_home_dir() -> Option<String> {
-    std::env::var("HOME").ok().or_else(|| std::env::var("USERPROFILE").ok()).filter(|h| !h.is_empty())
+    let vars = if cfg!(windows) { ["USERPROFILE", "HOME"] } else { ["HOME", "USERPROFILE"] };
+    vars.iter().find_map(|v| std::env::var(v).ok().filter(|h| !h.is_empty()))
 }

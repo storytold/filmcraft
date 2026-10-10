@@ -105,14 +105,14 @@ pub fn transcode(
         st.height = v.height;
     }
     st.frame_rate = rate;
-    st.sample_rate = info.audio.as_ref().map_or(48_000, |a| a.sample_rate.max(8000));
+    st.sample_rate = info.audio().map_or(48_000, |a| a.sample_rate.max(8000));
     let mut p = Project::new("transcode");
     let mut c = clip.clone();
     c.offline = false;
     c.proxy = None;
     let item = p.add_item(name, filmcraft_project::Label::Iris, ItemKind::Media(c), None);
     let has_v = info.video.is_some();
-    let has_a = info.audio.is_some();
+    let has_a = info.has_audio();
     let seq = p.new_sequence("transcode", st, usize::from(has_v), usize::from(has_a), None);
     let range = range.unwrap_or(TimeRange { start: Tick::ZERO, duration: info.duration });
     let mut placed = Vec::new();
@@ -200,7 +200,7 @@ pub fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, String, &'st
     let outputs: Arc<Mutex<Vec<(ItemId, String)>>> = Arc::default();
     let (prog, res, outs) = (job.progress.clone(), job.result.clone(), outputs.clone());
     let run = move || {
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         let mut bytes = 0;
         let mut err = None;
         let n = tasks.len();

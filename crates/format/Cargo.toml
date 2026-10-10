@@ -11,10 +11,11 @@ workspace = true
 
 [dependencies]
 filmcraft-project = { workspace = true }
+filmcraft-media = { workspace = true }
+log = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
 filmcraft-time = { workspace = true }
-filmcraft-media = { workspace = true }

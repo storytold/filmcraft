@@ -402,7 +402,7 @@ impl FilmcraftMcp {
                     let t = p.seconds.map_or_else(|| g.playhead(), filmcraft_time::Tick::from_seconds_f64);
                     let (w, h) =
                         g.active_sequence().map(|q| (q.settings.width, q.settings.height)).ok_or_else(|| AutomationError::Other("no sequence".into()))?;
-                    let scale = (max as f32 / w.max(h) as f32).min(1.0);
+                    let scale = render_scale(max, w, h);
                     let img = g.try_render_program_at(scale, t).map_err(|e| AutomationError::Other(e.to_string()))?;
                     png_rgba(img.w as u32, img.h as u32, img.over_black_rgba8(), max)
                 })
@@ -648,9 +648,25 @@ impl ServerHandler for FilmcraftMcp {
     }
 }
 
+/// Render scale that fits the longest side of a `w` x `h` sequence into `max_side` (never upscales; 0 = no limit, as in `png_rgba`).
+fn render_scale(max_side: u32, w: u32, h: u32) -> f32 {
+    if max_side == 0 {
+        return 1.0;
+    }
+    (max_side as f32 / w.max(h).max(1) as f32).min(1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn render_scale_zero_means_no_limit() {
+        assert_eq!(render_scale(0, 1920, 1080), 1.0);
+        assert_eq!(render_scale(960, 1920, 1080), 0.5);
+        assert_eq!(render_scale(960, 640, 360), 1.0);
+        assert_eq!(render_scale(960, 0, 0), 1.0);
+    }
 
     #[tokio::test]
     async fn headless_commands_and_render() {

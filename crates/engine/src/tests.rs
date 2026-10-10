@@ -35,6 +35,50 @@ fn demo_project_is_valid_and_renders() {
     assert!(img.px.chunks(4).any(|p| p[3] > 0.9));
 }
 
+/// Ordinary and configured multi-frame offsets remain valid.
+#[test]
+fn frame_steps_in_new_custom_rate_sequences_move_in_the_requested_direction() {
+    for fps in [31.0, 23.98, 24.999] {
+        let mut s = Session::default();
+        s.execute("file.newSequence", json!({"fps": fps})).unwrap();
+        let rate = s.sequence_rate();
+        s.execute("playhead.set", json!({"frame": 10})).unwrap();
+        assert_eq!(rate.frame_at(s.playhead()), 10);
+        for frame in 11..=42 {
+            s.execute("playhead.stepForward", json!({})).unwrap();
+            assert_eq!(rate.frame_at(s.playhead()), frame);
+        }
+        for frame in (10..42).rev() {
+            s.execute("playhead.stepBack", json!({})).unwrap();
+            assert_eq!(rate.frame_at(s.playhead()), frame);
+        }
+        s.execute("prefs.set", json!({"key": "playback.stepManyFrames", "value": 12})).unwrap();
+        s.execute("playhead.stepForward5", json!({})).unwrap();
+        assert_eq!(rate.frame_at(s.playhead()), 22);
+        s.execute("playhead.stepBack5", json!({})).unwrap();
+        assert_eq!(rate.frame_at(s.playhead()), 10);
+        s.execute("playhead.step", json!({"frames": -20})).unwrap();
+        s.execute("playhead.stepBack", json!({})).unwrap();
+        assert_eq!(s.playhead(), Tick::ZERO);
+    }
+}
+
+#[test]
+fn overflowing_frame_steps_are_errors_and_leave_the_playhead_unchanged() {
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"fps": 31.0})).unwrap();
+    for start in [10, 0] {
+        s.execute("playhead.set", json!({"frame": start})).unwrap();
+        let before = s.playhead();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.execute("playhead.step", json!({"frames": i64::MAX}))));
+        assert!(result.is_ok(), "an extreme frame offset must not panic");
+        assert!(matches!(result.unwrap(), Err(EngineError::BadParams { .. })));
+        assert_eq!(s.playhead(), before);
+    }
+    s.execute("playhead.step", json!({"frames": i64::MIN})).unwrap();
+    assert_eq!(s.playhead(), Tick::ZERO);
+}
+
 #[test]
 fn add_edit_undo_redo() {
     let mut s = demo();
@@ -144,6 +188,73 @@ fn sequence_parameters_are_bounded_and_failed_changes_are_atomic() {
     assert_eq!(s.active_sequence().unwrap().settings.height, 8192, "a 16384x8192 panorama is accepted");
 }
 
+/// The first video clip's Motion Position and Scale (static values).
+fn first_motion(s: &Session) -> (u64, (f64, f64), f64) {
+    let q = s.active_sequence().unwrap();
+    let it = q.video_tracks.iter().flat_map(|t| &t.items).find(|i| i.effect("motion").is_some()).unwrap();
+    let m = it.effect("motion").unwrap();
+    let p = match m.param("position").unwrap().value {
+        filmcraft_project::ParamValue::Vec2(v) => (v.x, v.y),
+        _ => panic!("position is a point"),
+    };
+    let sc = match m.param("scale").unwrap().value {
+        filmcraft_project::ParamValue::Float(v) => v,
+        _ => panic!("scale is a number"),
+    };
+    (it.id.0, p, sc)
+}
+
+#[test]
+fn sequence_settings_scales_motion_with_the_frame_size_in_one_undo_step() {
+    let mut s = demo();
+    let before = (*s.project).clone();
+    let (id, p0, s0) = first_motion(&s);
+    assert_eq!((s.active_sequence().unwrap().settings.width, s.active_sequence().unwrap().settings.height), (1920, 1080));
+    let r = s.execute("sequence.settings", json!({"width":1280,"height":720,"scaleMotion":true})).unwrap();
+    assert!(r["scaledClips"].as_u64().unwrap() >= 1, "{r}");
+    let (id1, p1, s1) = first_motion(&s);
+    assert_eq!(id1, id);
+    assert!((p1.0 - p0.0 * 2.0 / 3.0).abs() < 1e-9 && (p1.1 - p0.1 * 2.0 / 3.0).abs() < 1e-9, "{p0:?} -> {p1:?}");
+    assert!((s1 - s0 * 2.0 / 3.0).abs() < 1e-9, "{s0} -> {s1}");
+    let after = (*s.project).clone();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.project, before, "size and Motion come back in one undo step");
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(*s.project, after);
+    // without the option the frame size changes alone (the command's default, as before)
+    let r = s.execute("sequence.settings", json!({"width":3840,"height":2160})).unwrap();
+    assert_eq!(r["scaledClips"], json!(0));
+    assert_eq!(first_motion(&s), (id, p1, s1));
+    assert_eq!(s.active_sequence().unwrap().settings.width, 3840);
+}
+
+#[test]
+fn sequence_settings_timecode_render_quality_and_colour() {
+    let mut s = demo();
+    s.execute("sequence.settings", json!({"fps":29.97,"dropFrame":true,"maxRenderQuality":true})).unwrap();
+    let st = s.active_sequence().unwrap().settings.clone();
+    assert_eq!(st.frame_rate, FrameRate::FPS_29_97);
+    assert!(st.drop_frame && st.max_render_quality);
+    s.execute("sequence.settings", json!({"dropFrame":false})).unwrap();
+    assert!(!s.active_sequence().unwrap().settings.drop_frame);
+    // drop-frame only exists for the NTSC rates; a refused change leaves everything as it was
+    let before = (*s.project).clone();
+    let history = s.history.undo.len();
+    for params in [json!({"fps":25,"dropFrame":true}), json!({"workingSpace":"rec2020-log"}), json!({"fps":25,"dropFrame":true,"width":1280})] {
+        assert!(s.execute("sequence.settings", params.clone()).is_err(), "{params}");
+        assert_eq!(*s.project, before, "{params}");
+        assert_eq!(s.history.undo.len(), history);
+    }
+    s.execute("sequence.settings", json!({"workingSpace":"rec2100-pq","wideGamut":true,"autoToneMap":true})).unwrap();
+    let st = s.active_sequence().unwrap().settings.clone();
+    assert_eq!(st.color.working, filmcraft_color::WorkingSpace::Rec2100Pq);
+    assert!(st.color.wide_gamut && st.color.auto_tone_map);
+    assert_eq!(st.working_space, "Rec. 2100 PQ");
+    // disabled without a sequence
+    let mut empty = Session::default();
+    assert!(empty.execute("sequence.settings", json!({"width":1280})).is_err());
+}
+
 #[test]
 fn zero_fps_is_refused() {
     let mut s = demo();
@@ -168,6 +279,96 @@ fn effects_and_keyframes() {
     s.execute("effects.toggleAnimation", json!({"clip": c, "effect": "motion", "param": "scale"})).unwrap();
     let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1.clone();
     assert!(it.effect("motion").unwrap().params["scale"].is_animated());
+}
+
+/// `effects.addKeyframe` is the keyframe diamond of Effect Controls and Properties: it adds a
+/// keyframe at the playhead or removes the one there, and the value then follows the keyframes
+/// that are left (Premiere's Add/Remove Keyframe), unlike the stopwatch, which drops them all.
+#[test]
+fn add_keyframe_toggles_the_keyframe_at_the_playhead() {
+    let mut s = demo();
+    let c = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    let scale = |s: &Session| {
+        let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1;
+        let p = &it.effect("motion").unwrap().params["scale"];
+        (p.keyframes.len(), p.f64_at(it.source_time_at(s.playhead())))
+    };
+    let key = json!({"clip": c, "effect": "motion", "param": "scale"});
+    s.execute("playhead.set", json!({"seconds": 0.5})).unwrap();
+    s.execute("effects.addKeyframe", key.clone()).unwrap();
+    assert_eq!(scale(&s), (1, 100.0), "the first keyframe turns animation on");
+    s.execute("playhead.set", json!({"seconds": 2.5})).unwrap();
+    s.execute("effects.addKeyframe", key.clone()).unwrap();
+    s.execute("effects.setParam", json!({"clip": c, "effect": "motion", "param": "scale", "value": 50.0})).unwrap();
+    assert_eq!(scale(&s), (2, 50.0));
+    // on a keyframe: only that keyframe goes, and Scale is the other keyframe's 100 again
+    s.execute("effects.addKeyframe", key.clone()).unwrap();
+    assert_eq!(scale(&s), (1, 100.0));
+    s.undo();
+    assert_eq!(scale(&s), (2, 50.0));
+    s.redo();
+    assert_eq!(scale(&s), (1, 100.0));
+    // parameters that name nothing are errors and change nothing
+    for bad in [
+        json!({}),
+        json!({"clip": c}),
+        json!({"clip": u64::MAX, "param": "scale"}),
+        json!({"clip": c, "effect": "nope", "param": "scale"}),
+        json!({"clip": c, "effect": u64::MAX, "param": "scale"}),
+        json!({"clip": c, "effect": "motion", "param": "nope"}),
+        json!({"clip": c, "effect": "motion", "param": "scale", "mask": 7}),
+    ] {
+        assert!(s.execute("effects.addKeyframe", bad.clone()).is_err(), "{bad}");
+    }
+    assert_eq!(scale(&s), (1, 100.0));
+    // the stopwatch ends the animation and keeps the value at the playhead
+    s.execute("effects.toggleAnimation", key).unwrap();
+    assert_eq!(scale(&s), (0, 100.0));
+}
+
+/// Dragging the Volume line or one of its keyframes in the timeline (#223) sends a keyframe edit
+/// every frame; `merge` keeps the whole drag one undo step and `begin` starts the next one.
+#[test]
+fn keyframe_drags_are_one_undo_step() {
+    let mut s = demo();
+    let c = s.active_sequence().unwrap().audio_tracks[0].items[0].id.0;
+    let level = |s: &Session| -> Vec<(i64, f64)> {
+        let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1;
+        it.effect("volume").unwrap().params["level"].keyframes.iter().map(|k| (k.time.0, k.value.as_f64().unwrap())).collect()
+    };
+    let key = json!({"clip": c, "effect": "volume", "param": "level"});
+    for sec in [0.5, 1.5] {
+        s.execute("playhead.set", json!({"seconds": sec})).unwrap();
+        s.execute("effects.addKeyframe", key.clone()).unwrap();
+    }
+    let before = level(&s);
+    let [(t0, _), (t1, _)] = before[..] else { panic!("two keyframes: {before:?}") };
+
+    // the line between them: both keyframes move together, frame after frame
+    for (i, v) in [-1.0, -2.0, -3.0].into_iter().enumerate() {
+        for t in [t0, t1] {
+            let p = json!({"clip": c, "effect": "volume", "param": "level", "mediaTime": t, "value": v, "merge": true, "begin": i == 0 && t == t0});
+            s.execute("effects.setKeyframe", p).unwrap();
+        }
+    }
+    assert_eq!(level(&s), [(t0, -3.0), (t1, -3.0)]);
+    s.undo();
+    assert_eq!(level(&s), before);
+
+    // one keyframe: time and value in one command
+    let mut at = t1;
+    for (i, d) in [1000, 2000, 3000].into_iter().enumerate() {
+        let p = json!({"clip": c, "effect": "volume", "param": "level", "mediaTime": at, "to": t1 + d, "value": -6.0, "merge": true, "begin": i == 0});
+        s.execute("effects.moveKeyframe", p).unwrap();
+        at = t1 + d;
+    }
+    assert_eq!(level(&s), [before[0], (t1 + 3000, -6.0)]);
+    s.undo();
+    assert_eq!(level(&s), before);
+
+    let bad = json!({"clip": c, "effect": "volume", "param": "level", "mediaTime": t0, "to": t0 + 1, "value": "loud"});
+    assert!(s.execute("effects.moveKeyframe", bad).is_err());
+    assert_eq!(level(&s), before);
 }
 
 #[test]
@@ -528,4 +729,38 @@ fn dragging_an_effect_parameter_is_one_undo_step() {
     assert_eq!(opacity(&s), 30.0, "undo takes back the whole second drag");
     s.undo();
     assert_eq!(opacity(&s), start, "and then the whole first one");
+}
+
+/// #484: Enable flips each selected clip on its own, as in Premiere. With one enabled and one
+/// disabled clip selected it swaps them, instead of first making both the same.
+#[test]
+fn enable_flips_each_selected_clip() {
+    let mut s = demo();
+    let enabled = |s: &Session, c: u64| s.active_sequence().unwrap().find_item(ClipId(c)).unwrap().1.enabled;
+    let partner = |s: &Session, c: u64| {
+        let q = s.active_sequence().unwrap();
+        let link = q.find_item(ClipId(c)).unwrap().1.link?;
+        q.all_tracks().flat_map(|t| t.items.iter()).find(|i| i.link == Some(link) && i.id != ClipId(c)).map(|i| i.id.0)
+    };
+    let (a, b) = (v1(&s)[0].0, v1(&s)[1].0);
+    s.execute("clip.enable", json!({"clips": [a]})).unwrap();
+    assert_eq!((enabled(&s, a), enabled(&s, b)), (false, true));
+    // mixed selection: each flips
+    s.execute("clip.enable", json!({"clips": [a, b]})).unwrap();
+    assert_eq!((enabled(&s, a), enabled(&s, b)), (true, false));
+    s.execute("clip.enable", json!({"clips": [a, b]})).unwrap();
+    assert_eq!((enabled(&s, a), enabled(&s, b)), (false, true));
+    // a clip named twice still flips once, and one press is one undo step
+    s.execute("clip.enable", json!({"clips": [a, a]})).unwrap();
+    assert!(enabled(&s, a));
+    s.undo();
+    assert_eq!((enabled(&s, a), enabled(&s, b)), (false, true));
+    // with linked selection on, a clip's linked audio flips with it
+    if let Some(au) = partner(&s, a) {
+        assert_eq!(enabled(&s, au), enabled(&s, a));
+    }
+    // a uniform selection still toggles as before
+    s.execute("clip.enable", json!({"clips": [b]})).unwrap();
+    s.execute("clip.enable", json!({"clips": [a, b]})).unwrap();
+    assert_eq!((enabled(&s, a), enabled(&s, b)), (true, true));
 }

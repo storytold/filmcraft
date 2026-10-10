@@ -26,6 +26,8 @@ iconography, images or other Adobe assets; open licences only; every asset attri
 | `docs/images/filmcraft-effects.png` | FilmCraft contributors | Original work: FilmCraft screenshot crop; NASA Earth Views (US Government work, public domain) | MIT OR Apache-2.0; footage public domain |
 | `docs/images/filmcraft-timeline.png` | FilmCraft contributors | Original work: FilmCraft UI crop; thumbnails from Night of the Living Dead (1968) and Carnival of Souls (1962), CC0 Chopin waveform | MIT OR Apache-2.0; film frames public domain |
 | `assets/app-icon/filmcraft.svg` | Brandon Thomas (FilmCraft owner) | Original work: FilmCraft app icon (owl with ear tufts), drawn by the owner in ArtCraft and vectorised; canonical vector | MIT OR Apache-2.0 (`assets/app-icon/LICENSE.txt`) |
+| `packaging/macos/dmg/background.svg` | @XusBadia | Original work: FilmCraft macOS DMG window background, derived from the FilmCraft app icon (`assets/app-icon/filmcraft.svg`); rendered to `background.tiff` by `packaging/macos/dmg/generate.py` | MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`) |
+| `packaging/macos/dmg/background.tiff` | @XusBadia | Rendered from `packaging/macos/dmg/background.svg` by `packaging/macos/dmg/generate.py` | MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`) |
 | `assets/app-icon/filmcraft-small.svg` | Brandon Thomas (FilmCraft owner) | Original work: FilmCraft app icon (owl with ear tufts), drawn by the owner in ArtCraft and vectorised; lighter vector | MIT OR Apache-2.0 (`assets/app-icon/LICENSE.txt`) |
 | `assets/app-icon/filmcraft-1024.png` | Brandon Thomas (FilmCraft owner) | Original work: FilmCraft app icon (owl with ear tufts), drawn by the owner in ArtCraft and vectorised; 1024 px render | MIT OR Apache-2.0 (`assets/app-icon/LICENSE.txt`) |
 | `assets/app-icon/filmcraft-macos-512.png` | Brandon Thomas (FilmCraft owner) | Original work: FilmCraft app icon (owl with ear tufts), drawn by the owner in ArtCraft and vectorised; macOS runtime Dock icon (512 px) | MIT OR Apache-2.0 (`assets/app-icon/LICENSE.txt`) |
@@ -99,6 +101,7 @@ is traced or derived from Adobe artwork.
 | Asset | Where |
 |---|---|
 | UI icons (tools, transport, panels, header) | `crates/ui-egui/src/icons.rs`: vector paths on a 16×16 grid |
+| Source and Program range braces and trim hover cues | `crates/ui-egui/src/panels/monitor.rs` and `source_range.rs`: original generic vector shapes by FilmCraft contributors, MIT OR Apache-2.0; no third-party artwork |
 | Align / distribute / paragraph-alignment glyphs in the graphics panel | `crates/ui-egui/src/panels/graphics.rs` (`align_glyph`): bars and lines drawn with the egui painter |
 | Demo footage (ocean sunset, aurora, city night, dunes, forest, plasma), bars and tone, counting leader, colour matte | `crates/media/src/generators.rs` |
 | Built-in graphics templates (Lower Third – Slab / Rule, Ticker – Crawl, Title – Centered / Boxed, End Credits – Roll, Callout – Pointer / Tag) and their placeholder text | `crates/project/src/gtemplate.rs` (`builtin_templates`): original designs defined in code with the bundled Inter font; thumbnails are rendered at runtime, no template, image or font files |
@@ -146,7 +149,7 @@ the original copyright and permission notice in its header.
 
 | File | Author | Source | Licence |
 |---|---|---|---|
-| `crates/platform/src/nvenc/ffi.rs` | NVIDIA Corporation (`nvEncodeAPI.h`); FilmCraft contributors (Rust transcription) | Structures, function table and constants transcribed from `nvEncodeAPI.h`, NVIDIA Video Codec SDK, API 12.1 (https://developer.nvidia.com/video-codec-sdk) | MIT (Copyright (c) 2010-2023 NVIDIA Corporation; notice kept in the file header) |
+| `crates/platform/src/nvenc/ffi.rs` | NVIDIA Corporation (`nvEncodeAPI.h`); FilmCraft contributors (Rust transcription) | Structures (including `NV_ENC_CONFIG_HEVC` and its bit-field masks, `NV_ENC_PIC_PARAMS_HEVC`, `NV_ENC_SEI_PAYLOAD`, `NV_ENC_TIME_CODE`), function table, codec / profile GUIDs (H.264, HEVC Main, HEVC Main 10) and constants (`NV_ENC_LEVEL_HEVC_*`, tier, CU size, `NV_ENC_BUFFER_FORMAT_YUV420_10BIT`, `NV_ENC_CAPS_SUPPORT_10BIT_ENCODE`, BT.2020 / PQ / HLG VUI codes) transcribed from `nvEncodeAPI.h`, NVIDIA Video Codec SDK, API 12.1 (https://developer.nvidia.com/video-codec-sdk) | MIT (Copyright (c) 2010-2023 NVIDIA Corporation; notice kept in the file header) |
 
 ## Downloaded at runtime
 

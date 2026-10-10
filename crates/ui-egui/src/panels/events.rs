@@ -42,10 +42,10 @@ fn ago(ms: u64) -> String {
     let now = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(ms);
     let s = now.saturating_sub(ms) / 1000;
     match s {
-        0..=4 => "just now".into(),
-        5..=59 => format!("{s} s ago"),
-        60..=3599 => format!("{} min ago", s / 60),
-        _ => format!("{} h ago", s / 3600),
+        0..=4 => tl!("just now").into(),
+        5..=59 => tlf!("{n} s ago", n = s),
+        60..=3599 => tlf!("{n} min ago", n = s / 60),
+        _ => tlf!("{n} h ago", n = s / 3600),
     }
 }
 
@@ -63,9 +63,9 @@ pub fn events(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // toolbar: [All ▾]  counts …  [Clear All]
     ui.horizontal(|ui| {
         let label = |l: Level| match l {
-            Level::Info => "All Events",
-            Level::Warning => "Warnings and Errors",
-            Level::Error => "Errors Only",
+            Level::Info => tl!("All Events"),
+            Level::Warning => tl!("Warnings and Errors"),
+            Level::Error => tl!("Errors Only"),
         };
         let r = egui::ComboBox::from_id_salt("events-filter").selected_text(label(min)).width(150.0).show_ui(ui, |ui| {
             for l in [Level::Info, Level::Warning, Level::Error] {
@@ -84,7 +84,7 @@ pub fn events(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.label(RichText::new(log.count(l).to_string()).color(t.text_dim));
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let r = ui.button("Clear All");
+            let r = ui.button(tl!("Clear All"));
             elems.push(("events.clearAll".into(), r.rect, "Clear All".into()));
             clear = r.clicked();
         });
@@ -94,7 +94,7 @@ pub fn events(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let list_h = (ui.available_height() - details_h).max(20.0);
     egui::ScrollArea::vertical().max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
         if entries.is_empty() {
-            ui.label(RichText::new("No events.").color(t.text_faint));
+            ui.label(RichText::new(tl!("No events.")).color(t.text_faint));
         }
         for (n, e) in entries.iter().enumerate() {
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
@@ -121,7 +121,7 @@ pub fn events(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if let Some(sel) = st.selected.and_then(|id| entries.iter().find(|e| e.id == id)) {
         let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), details_h - 4.0), Sense::hover());
         ui.painter().rect_filled(r, 3.0, t.field_bg);
-        let text = format!("{} · {} · {}\n{}", sel.level.label(), sel.source, ago(sel.time_ms), sel.message);
+        let text = format!("{} · {} · {}\n{}", crate::i18n::t(sel.level.label()), sel.source, ago(sel.time_ms), sel.message);
         let g = ui.painter().layout(text, Tokens::ui(11.5), t.text, r.width() - 12.0);
         ui.painter().with_clip_rect(r).galley(r.min + vec2(6.0, 4.0), g, t.text);
         elems.push(("events.details".into(), r, sel.message.clone()));
@@ -153,7 +153,7 @@ pub fn progress(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut elems: Vec<(String, Rect, String)> = Vec::new();
     let mut cancel = None;
     let mut finished = show_finished;
-    let r = ui.checkbox(&mut finished, "Show finished jobs");
+    let r = ui.checkbox(&mut finished, tl!("Show finished jobs"));
     elems.push(("progress.showFinished".into(), r.rect, "Show finished jobs".into()));
     ui.add_space(4.0);
     let active = jobs.iter().filter(|j| j["finished"] != json!(true)).count();
@@ -166,16 +166,16 @@ pub fn progress(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
             shown += 1;
             let id = j["id"].as_u64().unwrap_or(0);
-            let label = j["label"].as_str().unwrap_or("Job");
+            let label = crate::i18n::t(j["label"].as_str().unwrap_or("Job"));
             let frac = j["progress"].as_f64().unwrap_or(0.0).clamp(0.0, 1.0) as f32;
             let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::hover());
             ui.painter().rect_filled(r.shrink(1.0), 3.0, t.row_alt);
             ui.painter().text(r.min + vec2(8.0, 6.0), Align2::LEFT_TOP, label, Tokens::semibold(12.0), t.text);
             let err = j["result"]["error"].as_str();
             let status = match (done, err) {
-                (true, Some(e)) if e.to_ascii_lowercase().contains("cancel") => "Cancelled".to_string(),
-                (true, Some(e)) => format!("Failed: {e}"),
-                (true, None) => "Done".to_string(),
+                (true, Some(e)) if e.to_ascii_lowercase().contains("cancel") => tl!("Cancelled").to_string(),
+                (true, Some(e)) => tlf!("Failed: {e}", e),
+                (true, None) => tl!("Done").to_string(),
                 (false, _) => {
                     let s = j["status"].as_str().unwrap_or("");
                     let n = format!("{} / {}", j["done"].as_u64().unwrap_or(0), j["total"].as_u64().unwrap_or(0));
@@ -204,13 +204,13 @@ pub fn progress(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ui.painter().line_segment([cr.center() + vec2(-5.0, -5.0), cr.center() + vec2(5.0, 5.0)], s);
                 ui.painter().line_segment([cr.center() + vec2(5.0, -5.0), cr.center() + vec2(-5.0, 5.0)], s);
                 elems.push((format!("progress.cancel.{id}"), cr, format!("Cancel {label}")));
-                if resp.on_hover_text("Cancel").clicked() {
+                if resp.on_hover_text(tl!("Cancel")).clicked() {
                     cancel = Some(id);
                 }
             }
         }
         if shown == 0 {
-            ui.label(RichText::new(if active == 0 { "No background jobs." } else { "" }).color(t.text_faint));
+            ui.label(RichText::new(if active == 0 { tl!("No background jobs.") } else { "" }).color(t.text_faint));
         }
     });
     for (id, r, l) in elems {

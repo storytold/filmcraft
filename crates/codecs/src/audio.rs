@@ -87,7 +87,7 @@ impl PacketDecoder {
     /// (HE-AAC, see [`aac_output_rate`]) the decoded core is upsampled to it.
     pub fn aac(asc: &[u8], sample_rate: u32) -> Result<Self> {
         if let Ok(dec) = filmcraft_aac::Decoder::new(asc) {
-            let up = (dec.sample_rate().checked_mul(2) == Some(sample_rate)).then(|| Box::new(Upsample2x::new(dec.channels())));
+            let up = upsamples_core(dec.sample_rate(), sample_rate).then(|| Box::new(Upsample2x::new(dec.channels())));
             return Ok(Self { inner: Inner::Aac { dec: Box::new(dec), asc: asc.to_vec(), up }, channels: 0 });
         }
         Self::new(CODEC_TYPE_AAC, sample_rate, Some(asc.to_vec()))
@@ -242,6 +242,77 @@ pub fn aac_output_rate<'a>(asc: &[u8], first_units: impl IntoIterator<Item = &'a
         }
     }
     Some(core)
+}
+
+/// Whether [`PacketDecoder::aac`] upsamples a decoded AAC core at `core` Hz to `rate` (HE-AAC).
+fn upsamples_core(core: u32, rate: u32) -> bool {
+    core.checked_mul(2) == Some(rate)
+}
+
+/// A codec whose packets all decode to the same number of samples (see [`fixed_packet_samples`]).
+#[derive(Clone, Copy, Debug)]
+pub enum FixedFrames<'a> {
+    /// AAC with this AudioSpecificConfig.
+    Aac(&'a [u8]),
+    /// MPEG-1/2 audio, layer I, II or III.
+    MpegAudio,
+    /// AC-3 (and E-AC-3).
+    Ac3,
+}
+
+/// Samples each packet decodes to at the stream's output `rate`, for codecs where that is the same
+/// for every packet: AAC 1024 (2048 when [`PacketDecoder::aac`] upsamples an HE-AAC core); MPEG
+/// audio and AC-3 from the frame header of `first`, the stream's first packet. `None` when it is
+/// not known: an AAC configuration our decoder does not read, a header that does not parse, or a
+/// header whose rate is not `rate`.
+pub fn fixed_packet_samples(codec: FixedFrames, first: &[u8], rate: u32) -> Option<i64> {
+    let mpegts = match codec {
+        FixedFrames::Aac(asc) => {
+            let core = filmcraft_aac::Decoder::new(asc).ok()?.sample_rate();
+            return Some(if upsamples_core(core, rate) { 2048 } else { 1024 });
+        }
+        FixedFrames::MpegAudio => filmcraft_mpegts::Codec::MpegAudio,
+        FixedFrames::Ac3 => filmcraft_mpegts::Codec::Ac3,
+    };
+    let f = filmcraft_mpegts::frame_info(&mpegts, first)?;
+    (f.sample_rate == rate && f.samples > 0).then_some(f.samples as i64)
+}
+
+/// Where the container puts one audio packet, for [`contiguous_starts`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PacketTime {
+    /// Its timestamp, in output samples.
+    pub stamp: i64,
+    /// Whether `stamp` is the packet's own. A Matroska frame after the first in a laced block
+    /// without a duration repeats the block's timestamp.
+    pub stamped: bool,
+    /// Samples it decodes to, when known.
+    pub samples: Option<i64>,
+}
+
+/// Packet start positions in output samples: each packet starts where the previous one ends,
+/// unless its own timestamp is more than `tolerance` samples from there (a real gap or overlap in
+/// the recording) or the previous packet's length is unknown; then it starts at its timestamp.
+///
+/// Container timestamps are coarser than a sample. Matroska stores milliseconds, and a remux to MP4
+/// (OBS's) turns that rounding into uneven sample durations: a 1024-sample AAC frame at 48 kHz lasts
+/// 21.33 ms, so frames are stamped at 0, 1008, 2064, 3072… Placing each decoded packet at its
+/// stamp overwrote the end of one packet and left a hole of silence after another, a click every
+/// few packets: crackling throughout playback and export (#236).
+pub fn contiguous_starts(packets: impl IntoIterator<Item = PacketTime>, tolerance: i64) -> Vec<i64> {
+    let tolerance = tolerance.max(0).unsigned_abs();
+    let mut next: Option<i64> = None;
+    packets
+        .into_iter()
+        .map(|p| {
+            let start = match next {
+                Some(n) if !p.stamped || n.abs_diff(p.stamp) <= tolerance => n,
+                _ => p.stamp,
+            };
+            next = p.samples.and_then(|k| start.checked_add(k));
+            start
+        })
+        .collect()
 }
 
 /// Taps on each side of the interpolation point in [`Upsample2x`].
@@ -666,12 +737,12 @@ impl AudioFileSource {
             kind: MediaKind::AudioOnly,
             duration: Tick::from_units(frames as i64, rate as i64),
             video: None,
-            audio: Some(AudioStreamInfo {
+            audio_streams: vec![AudioStreamInfo {
                 sample_rate: rate,
                 channels: samples.len() as u32,
                 codec: codec_name,
                 bits_per_sample: track.codec_params.bits_per_sample,
-            }),
+            }],
             container: ext.to_uppercase(),
             start_timecode: None,
             file_size: Some(bytes.len() as u64),
@@ -737,5 +808,84 @@ mod he_aac_tests {
             assert!((y[2 * k + 1] - want).abs() < 1e-3, "{k}: {} vs {want}", y[2 * k + 1]);
             assert_eq!(y[2 * k], x[k - UPSAMPLE_HALF]);
         }
+    }
+}
+
+#[cfg(test)]
+mod packet_time_tests {
+    use super::*;
+
+    /// 1024-sample frames at 48 kHz stamped to the nearest millisecond, then back in samples.
+    fn ms_stamps(count: i64) -> Vec<i64> {
+        (0..count).map(|k| (k * 1024 * 1000 + 24_000) / 48_000 * 48).collect()
+    }
+
+    fn timed(stamps: &[i64], samples: Option<i64>) -> Vec<PacketTime> {
+        stamps.iter().map(|&stamp| PacketTime { stamp, stamped: true, samples }).collect()
+    }
+
+    #[test]
+    fn rounded_stamps_give_back_to_back_packets() {
+        let stamps = ms_stamps(200);
+        assert_eq!(&stamps[..4], [0, 1008, 2064, 3072]);
+        let starts = contiguous_starts(timed(&stamps, Some(1024)), 512);
+        assert_eq!(starts, (0..200).map(|k| k * 1024).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn real_gaps_and_overlaps_resynchronise() {
+        // a 100 ms gap after packet 3, then a packet stamped 600 samples early
+        let mut stamps: Vec<i64> = (0..8).map(|k| k * 1024).collect();
+        for s in &mut stamps[4..] {
+            *s += 4800;
+        }
+        stamps[7] -= 600;
+        let starts = contiguous_starts(timed(&stamps, Some(1024)), 512);
+        assert_eq!(starts, [0, 1024, 2048, 3072, 8896, 9920, 10944, 11368]);
+        // within the tolerance: runs on
+        stamps[7] += 200;
+        assert_eq!(contiguous_starts(timed(&stamps, Some(1024)), 512)[7], 11968);
+    }
+
+    #[test]
+    fn unstamped_packets_follow_on_and_unknown_lengths_resynchronise() {
+        // a laced block of three frames that repeat its timestamp
+        let packets = [0, 1024, 1024, 1024, 4096].map(|stamp| PacketTime { stamp, stamped: true, samples: Some(1024) });
+        let mut laced = packets;
+        laced[2].stamped = false;
+        laced[3].stamped = false;
+        assert_eq!(contiguous_starts(laced, 512), [0, 1024, 2048, 3072, 4096]);
+        // a packet whose length is unknown: the next one starts at its own stamp
+        let mut unknown = timed(&[0, 1024, 2100, 3124], Some(1024));
+        unknown[1].samples = None;
+        assert_eq!(contiguous_starts(unknown, 512), [0, 1024, 2100, 3124]);
+    }
+
+    #[test]
+    fn hostile_values_stay_finite() {
+        let packets = [
+            PacketTime { stamp: i64::MAX, stamped: true, samples: Some(i64::MAX) },
+            PacketTime { stamp: i64::MIN, stamped: false, samples: Some(-5) },
+            PacketTime { stamp: 0, stamped: true, samples: Some(i64::MIN) },
+            PacketTime { stamp: 7, stamped: true, samples: None },
+        ];
+        assert_eq!(contiguous_starts(packets, i64::MIN).len(), 4);
+        assert_eq!(contiguous_starts(packets, i64::MAX).len(), 4);
+        assert!(contiguous_starts([], 512).is_empty());
+    }
+
+    #[test]
+    fn fixed_frame_lengths() {
+        // AAC-LC 48 kHz stereo; HE-AAC (24 kHz core) played at 48 kHz is upsampled
+        assert_eq!(fixed_packet_samples(FixedFrames::Aac(&[0x11, 0x90]), &[], 48_000), Some(1024));
+        assert_eq!(fixed_packet_samples(FixedFrames::Aac(&[0x13, 0x10]), &[], 48_000), Some(2048));
+        assert_eq!(fixed_packet_samples(FixedFrames::Aac(&[]), &[], 48_000), None);
+        // MPEG-1 layer III 44.1 kHz, 128 kbps; MPEG-2 layer III 22.05 kHz
+        assert_eq!(fixed_packet_samples(FixedFrames::MpegAudio, &[0xFF, 0xFB, 0x90, 0x44], 44_100), Some(1152));
+        assert_eq!(fixed_packet_samples(FixedFrames::MpegAudio, &[0xFF, 0xF3, 0x90, 0x44], 22_050), Some(576));
+        // the header's rate must be the stream's
+        assert_eq!(fixed_packet_samples(FixedFrames::MpegAudio, &[0xFF, 0xFB, 0x90, 0x44], 48_000), None);
+        assert_eq!(fixed_packet_samples(FixedFrames::MpegAudio, &[0xFF], 44_100), None);
+        assert_eq!(fixed_packet_samples(FixedFrames::Ac3, &[0x0B, 0x77], 48_000), None);
     }
 }

@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use filmcraft_comfyui::Transport;
 use filmcraft_comfyui::fake::{FakeComfy, FakeOutput};
 use filmcraft_media::{DemoScene, Generator};
 use filmcraft_project::{ClipId, ItemId, MediaRef, TrackKind};
@@ -144,6 +145,9 @@ fn image_result_links_the_item() {
     assert_eq!(it.duration, Tick::from_seconds_f64(3.0));
     assert_eq!(r["items"][0]["lastRun"]["media"], json!(path));
     assert!(s.render_program(0.5).is_some());
+    // streamed to `<file>.part`, renamed when complete: no partial file is left
+    let names: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(names, ["Shot 001.png"]);
     // again: a new version, the item follows
     generate(&mut s, &dir, json!({"item": item.0})).unwrap();
     let MediaRef::File { path: p2 } = &s.project.item(item).unwrap().as_media().unwrap().media else { panic!() };
@@ -360,13 +364,26 @@ fn hostile_parameters_are_errors() {
         ("comfyui.setInputs", json!({"item": 123456})),
         ("comfyui.generate", json!({"items": [1, 2, 3]})),
         ("comfyui.settings", json!({"server": 7})),
+        ("comfyui.settings", json!({"server": "http://a b"})),
+        ("comfyui.settings", json!({"server": "http://gpu:8188?x=1"})),
+        ("comfyui.settings", json!({"server": "file:///etc/passwd"})),
+        // a clip has no server of its own
+        ("comfyui.newClip", json!({"workflow": workflow(), "server": "http://elsewhere:8188"})),
+        ("comfyui.expose", json!({})),
+        ("comfyui.expose", json!({"workflow": workflow(), "inputs": "text"})),
+        ("comfyui.expose", json!({"workflow": workflow(), "inputs": [{"node": "99", "input": "text"}]})),
+        ("comfyui.expose", json!({"workflow": workflow(), "inputs": [{"node": "6", "input": "clip"}]})),
+        ("comfyui.expose", json!({"workflow": workflow(), "inputs": [{"node": "6"}]})),
+        ("comfyui.expose", json!({"workflow": workflow(), "set": vec![json!({"node": "6", "input": "text"}); MAX_EXPOSED_INPUTS + 1]})),
     ];
+    let prefs = s.prefs.comfyui.clone();
     for (id, p) in bad {
         let before = s.project.clone();
         let r = s.execute(id, p.clone());
-        assert!(r.is_err() || id == "comfyui.settings", "{id} {p}: {r:?}");
+        assert!(r.is_err(), "{id} {p}: {r:?}");
         assert_eq!(*s.project, *before, "{id} {p}");
     }
+    assert_eq!(s.prefs.comfyui, prefs);
     // a huge or NaN length is clamped / refused, never a panic
     let r = s.execute("comfyui.newClip", json!({"workflow": workflow(), "duration": f64::MAX}));
     assert!(r.is_ok(), "{r:?}");
@@ -377,6 +394,166 @@ fn hostile_parameters_are_errors() {
     s.project = std::sync::Arc::new(p);
     assert!(recipe_of(&s, item).is_none());
     assert!(s.execute("comfyui.generate", json!({"item": item.0})).is_err());
+    let (item, _) = new_clip(&mut s, json!({}));
+    assert!(s.execute("comfyui.setInputs", json!({"item": item.0, "server": "http://elsewhere:8188"})).is_err());
+}
+
+/// The project file of `s`, saved to `dir`, with `edit` applied to the recipe of `item` (what a
+/// hand-made or hostile project could carry).
+fn tampered_project(s: &mut Session, dir: &std::path::Path, item: ItemId, edit: impl FnOnce(&mut Value)) -> String {
+    let path = dir.join("shared.fcproj").to_string_lossy().into_owned();
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+    let mut doc: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    edit(&mut doc["project"]["generated"][item.0.to_string()]["recipe"]);
+    std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+    path
+}
+
+#[test]
+fn a_project_never_chooses_the_server() {
+    let fake = Arc::new(FakeComfy::with_outputs(vec![FakeOutput::file("9", "images", "out.png", png(8, 8))]));
+    let mut a = session(fake.clone());
+    let (item, _) = new_clip(&mut a, json!({}));
+    let dir = tmp_dir("comfy-server");
+    let path = tampered_project(&mut a, &dir, item, |r| r["server"] = json!("http://attacker.invalid:8188"));
+    let mut b = Session::default();
+    b.comfyui.transport = Some(fake);
+    b.execute("file.open", json!({"path": path})).unwrap();
+    // the recipe loads, without the server
+    assert!(recipe_of(&b, item).is_some());
+    let mine = b.prefs.comfyui.server.clone();
+    assert_eq!(b.execute("comfyui.inspect", json!({"item": item.0})).unwrap()["server"], json!(mine));
+    let r = generate(&mut b, &dir, json!({"item": item.0})).unwrap();
+    assert_eq!(r["server"], json!(mine));
+    // and saving again drops it for good
+    let again = dir.join("again.fcproj").to_string_lossy().into_owned();
+    b.execute("file.saveAs", json!({"path": again})).unwrap();
+    assert!(!std::fs::read_to_string(&again).unwrap().contains("attacker"));
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn files_named_by_a_project_are_not_uploaded_until_confirmed() {
+    let dir = tmp_dir("comfy-exfil");
+    let secret = dir.join("id_rsa");
+    std::fs::write(&secret, b"-----BEGIN OPENSSH PRIVATE KEY-----").unwrap();
+    let secret = secret.to_string_lossy().into_owned();
+    let mut a = session(Arc::new(FakeComfy::with_outputs(vec![])));
+    let (item, _) = new_clip(&mut a, json!({}));
+    let path = tampered_project(&mut a, &dir, item, |r| r["inputs"] = json!([{"node": "10", "input": "image", "file": secret}]));
+    // someone else opens the shared project and presses Generate
+    let fake = Arc::new(FakeComfy::with_outputs(vec![FakeOutput::file("9", "images", "out.png", png(8, 8))]));
+    let mut b = Session::default();
+    b.comfyui.transport = Some(fake.clone());
+    b.execute("file.open", json!({"path": path})).unwrap();
+    let before = b.project.clone();
+    let e = generate(&mut b, &dir, json!({"item": item.0})).unwrap_err().to_string();
+    assert!(e.contains(&secret) && e.contains("not chosen in this session"), "{e}");
+    assert!(fake.uploads().is_empty() && fake.queued().is_empty(), "nothing was sent");
+    assert_eq!(*b.project, *before);
+    assert!(b.jobs.is_empty() && !b.comfyui.generating(item));
+    let c = b.execute("comfyui.inspect", json!({"item": item.0})).unwrap();
+    assert_eq!(c["unconfirmedFiles"], json!([{"node": "10", "input": "image", "file": secret}]));
+    // the user chooses the file (again): now it is theirs to send
+    b.execute("comfyui.setInputs", json!({"item": item.0, "inputs": [{"node": "10", "input": "image", "file": secret}]})).unwrap();
+    assert!(b.comfyui.confirmed(&secret));
+    assert_eq!(b.execute("comfyui.inspect", json!({"item": item.0})).unwrap()["unconfirmedFiles"], json!([]));
+    generate(&mut b, &dir, json!({"item": item.0})).unwrap();
+    assert_eq!(fake.uploads().len(), 1);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn project_media_upload_but_not_a_non_media_file_posing_as_one() {
+    let dir = tmp_dir("comfy-media-input");
+    let frame = dir.join("frame.png");
+    std::fs::write(&frame, png(4, 4)).unwrap();
+    let frame = frame.to_string_lossy().into_owned();
+    let secret = dir.join("notes.txt");
+    std::fs::write(&secret, b"private").unwrap();
+    let secret = secret.to_string_lossy().into_owned();
+    let fake = Arc::new(FakeComfy::with_outputs(vec![FakeOutput::file("9", "images", "out.png", png(8, 8))]));
+    let mut s = session(fake.clone());
+    let imported = s.execute("file.import", json!({"paths": [frame]})).unwrap();
+    let media = ItemId(imported["items"][0].as_u64().unwrap());
+    let (item, _) = new_clip(&mut s, json!({}));
+    // a recipe from a project file (never confirmed) naming the project's own media: allowed
+    let bind = |s: &mut Session, file: &str| {
+        let mut r = recipe_of(s, item).unwrap();
+        r.inputs = vec![Binding::file("10", "image", file)];
+        let mut p = (*s.project).clone();
+        p.generated.insert(
+            item,
+            Arc::new(filmcraft_project::Generation { provider: PROVIDER.into(), recipe: serde_json::to_value(&r).unwrap(), last_run: Value::Null }),
+        );
+        s.project = Arc::new(p);
+    };
+    bind(&mut s, &frame);
+    assert!(!s.comfyui.confirmed(&frame));
+    generate(&mut s, &dir, json!({"item": item.0})).unwrap();
+    assert_eq!(fake.uploads().len(), 1);
+    assert_eq!(fake.uploads()[0].1, png(4, 4));
+    // a media item whose path is not media (a hostile project's "footage") is not enough
+    let mut p = (*s.project).clone();
+    if let Some(m) = p.item_mut(media).and_then(|i| i.as_media_mut()) {
+        m.media = MediaRef::File { path: secret.clone() };
+    }
+    s.project = Arc::new(p);
+    bind(&mut s, &secret);
+    let e = generate(&mut s, &dir, json!({"item": item.0})).unwrap_err().to_string();
+    assert!(e.contains(&secret), "{e}");
+    assert_eq!(fake.uploads().len(), 1, "nothing more was sent");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A server whose `/view` fails for files named `broken…`.
+struct Flaky(Arc<FakeComfy>);
+
+impl Transport for Flaky {
+    fn get(&self, path: &str) -> filmcraft_comfyui::Result<filmcraft_comfyui::Response> {
+        if path.starts_with("/view") && path.contains("broken") {
+            return Ok(filmcraft_comfyui::Response { status: 500, body: b"oops".to_vec() });
+        }
+        self.0.get(path)
+    }
+    fn post(&self, path: &str, content_type: &str, body: &[u8]) -> filmcraft_comfyui::Result<filmcraft_comfyui::Response> {
+        self.0.post(path, content_type, body)
+    }
+    fn pause(&self, _: std::time::Duration) {}
+}
+
+#[test]
+fn a_failed_download_leaves_no_files_behind() {
+    let fake = Arc::new(FakeComfy::with_outputs(vec![
+        FakeOutput::file("9", "images", "good.png", png(8, 8)),
+        FakeOutput::file("10", "images", "broken.png", png(8, 8)),
+    ]));
+    let mut s = session(fake.clone());
+    s.comfyui.transport = Some(Arc::new(Flaky(fake)));
+    let (item, _) = new_clip(&mut s, json!({}));
+    let before = s.project.clone();
+    let dir = tmp_dir("comfy-partial");
+    let out = dir.join("out");
+    let e = generate(&mut s, &out, json!({"item": item.0})).unwrap_err().to_string();
+    assert!(e.contains("broken.png") && e.contains("500"), "{e}");
+    assert_eq!(*s.project, *before);
+    // good.png was downloaded, then removed with the failed run; no `.part` either
+    let left: Vec<_> = std::fs::read_dir(&out).map(|d| d.flatten().map(|e| e.file_name()).collect()).unwrap_or_default();
+    assert!(left.is_empty(), "{left:?}");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// Regression: the job id was `max + 1`, which overflowed (a panic in debug builds).
+#[test]
+fn job_ids_never_overflow() {
+    let mut s = session(Arc::new(FakeComfy::with_outputs(vec![FakeOutput::file("9", "images", "out.png", png(8, 8))])));
+    let (item, _) = new_clip(&mut s, json!({}));
+    s.jobs.push(crate::Job { id: u64::MAX, label: "old".into(), progress: Default::default(), result: Default::default() });
+    let dir = tmp_dir("comfy-jobid");
+    let r = generate(&mut s, &dir, json!({"item": item.0}));
+    assert!(r.is_err(), "{r:?}");
+    assert!(!s.comfyui.generating(item));
+    std::fs::remove_dir_all(dir).ok();
 }
 
 #[cfg(not(feature = "comfyui"))]
@@ -389,4 +566,35 @@ fn without_a_transport_generate_is_disabled() {
     s.state.project_selection = vec![ItemId(item)];
     let e = s.execute("comfyui.generate", json!({"item": item})).unwrap_err().to_string();
     assert!(e.contains("not available in this build"), "{e}");
+}
+
+#[test]
+fn exposed_inputs_are_kept_per_workflow() {
+    let mut s = session(Arc::new(FakeComfy::with_outputs(vec![])));
+    let r = s.execute("comfyui.expose", json!({"workflow": workflow(), "inputs": [{"node": "6", "input": "text"}, {"node": 3, "input": "seed"}]})).unwrap();
+    assert_eq!(r["exposed"], json!([{"node": "6", "input": "text"}, {"node": "3", "input": "seed"}]));
+    // the workflow exported again with another prompt is the same workflow
+    let mut again = workflow();
+    again["6"]["inputs"]["text"] = json!("a harbour at dawn");
+    let w = s.execute("comfyui.inspect", json!({"workflow": again})).unwrap();
+    assert_eq!((&w["key"], &w["exposed"]), (&r["key"], &r["exposed"]));
+    let prompt = w["nodes"].as_array().unwrap().iter().find(|n| n["node"] == "6").unwrap();
+    assert_eq!(prompt["inputs"][0]["exposed"], true);
+    // every clip made from it shows them; changing them through a clip changes the workflow's
+    let (item, _) = new_clip(&mut s, json!({}));
+    assert_eq!(s.execute("comfyui.inspect", json!({"item": item.0})).unwrap()["exposed"], r["exposed"]);
+    let n0 = s.history.undo.len();
+    s.execute("comfyui.expose", json!({"item": item.0, "inputs": [{"node": "3", "input": "seed"}], "exposed": false})).unwrap();
+    let w = s.execute("comfyui.inspect", json!({"workflow": workflow()})).unwrap();
+    assert_eq!(w["exposed"], json!([{"node": "6", "input": "text"}]));
+    assert_eq!(s.history.undo.len(), n0, "a preference, not an edit");
+    // another workflow has its own
+    let mut other = workflow();
+    other["11"] = json!({"class_type": "SaveImage", "inputs": {"filename_prefix": "x"}});
+    assert_eq!(s.execute("comfyui.inspect", json!({"workflow": other})).unwrap()["exposed"], json!([]));
+    // `set` replaces the list; an empty one forgets the workflow
+    s.execute("comfyui.expose", json!({"workflow": workflow(), "set": [{"node": "10", "input": "image"}]})).unwrap();
+    assert_eq!(s.execute("comfyui.inspect", json!({"workflow": workflow()})).unwrap()["exposed"], json!([{"node": "10", "input": "image"}]));
+    s.execute("comfyui.expose", json!({"workflow": workflow(), "set": []})).unwrap();
+    assert!(s.prefs.comfyui.exposed.is_empty());
 }

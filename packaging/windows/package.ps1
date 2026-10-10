@@ -5,7 +5,7 @@
 .DESCRIPTION
   Produces, in $env:DIST (default: dist/release):
     filmcraft-<version>-windows-<arch>.msi            per-machine installer (WiX v5)
-    filmcraft-<version>-windows-<arch>-portable.zip   filmcraft.exe + filmcraft-cli.exe
+    filmcraft-<version>-windows-<arch>-portable.zip   filmcraft.exe + filmcraft-cli.exe + portable.txt
 
   The binaries link the C runtime statically (+crt-static), so neither the MSI nor the portable
   zip needs the Visual C++ redistributable. Signing is delegated to sign.ps1 (skipped with a
@@ -106,6 +106,11 @@ $Portable = Join-Path $TargetDir "windows-package\filmcraft-$Version-windows-$Ar
 Remove-Item -Recurse -Force $Portable -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Portable | Out-Null
 Copy-Item (Join-Path $Stage '*.exe') $Portable
+# The marker that makes FilmCraft keep its data in .\data next to the exe instead of %APPDATA% (#139).
+Set-Content -Encoding ascii -Path (Join-Path $Portable 'portable.txt') -Value @(
+  'FilmCraft portable: preferences, presets, logs and crash recovery are kept in the data folder',
+  'next to filmcraft.exe. Delete this file to use %APPDATA%\FilmCraft instead.'
+)
 foreach ($f in 'README.md', 'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE') {
   $p = Join-Path $Root $f
   if (Test-Path $p) { Copy-Item $p $Portable }

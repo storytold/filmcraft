@@ -52,7 +52,7 @@ impl StillSource {
                 bitrate: None,
                 hdr: None,
             }),
-            audio: None,
+            audio_streams: Vec::new(),
             container: "Image".into(),
             start_timecode: None,
             file_size: Some(file_size),

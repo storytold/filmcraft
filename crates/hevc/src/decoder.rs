@@ -25,7 +25,7 @@ struct PendingPic {
     /// Header of the latest independent slice segment (for dependent slice segments).
     last_sh: SliceHeader,
     first_sh: SliceHeader,
-    rps: RefPicSet,
+    rps: RefPicSet<FrameRef>,
     poc: i32,
     output: bool,
     meta: Arc<OutputMeta>,
@@ -72,7 +72,7 @@ pub struct Decoder {
     spss: Vec<Option<Arc<Sps>>>,
     ppss: Vec<Option<Arc<Pps>>>,
     nal_length_size: Option<usize>,
-    dpb: Dpb,
+    dpb: Dpb<FrameRef>,
     poc_state: PocState,
     pending: Option<PendingPic>,
     next_id: u32,
@@ -82,7 +82,7 @@ pub struct Decoder {
     /// RASL pictures associated with the last IRAP are skipped (it had NoRaslOutputFlag = 1).
     skip_rasl: bool,
     layout_cache: Vec<(Arc<Pps>, Arc<Sps>, Arc<Layout>, Option<Arc<Vec<Vec<u8>>>>)>,
-    out_queue: VecDeque<Output>,
+    out_queue: VecDeque<Output<FrameRef>>,
     shared: Arc<Shared>,
     #[cfg(feature = "threads")]
     pool: Option<rayon::ThreadPool>,
@@ -578,7 +578,7 @@ fn output_meta(sps: &Sps, pts: i64, key: bool, draft: bool) -> OutputMeta {
     }
 }
 
-fn make_picture(o: &Output) -> Picture {
+fn make_picture(o: &Output<FrameRef>) -> Picture {
     let (cx, cy, cw, ch) = o.meta.crop;
     let (cx, cy, cw, ch) = (cx as usize, cy as usize, cw as usize, ch as usize);
     let (y, u, v) = o.frame.copy_cropped((cx, cy, cw, ch));

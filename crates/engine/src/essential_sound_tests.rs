@@ -265,6 +265,41 @@ fn auto_match_hits_the_target_loudness() {
     }
 }
 
+/// #296: a mono file measured ~3 LU too loud. The same speech imported as a 1-channel WAV and as
+/// a dual-mono stereo WAV must measure 3.01 LU apart (the stereo pair carries twice the energy),
+/// the mono clip must agree with a one-channel BS.1770 meter over the file (what ffmpeg's
+/// `ebur128` reports), and a mono pick (Modify ▸ Audio Channels) of the stereo file counts as mono.
+#[test]
+fn auto_match_measures_a_mono_clip_as_one_channel() {
+    let sig = speech(12.0, 0.3, |t| (t % 3.0) < 2.2);
+    let (mut s, c) = session_with(&[(sig.clone(), 0.0)]);
+    let stereo = c[0];
+    let mono_wav: Arc<[u8]> = filmcraft_media::wav::write_wav16(&sig, 1, SR).into();
+    let mono_item = crate::commands::import_bytes(&mut s, "/mono.wav", mono_wav, None).unwrap();
+    let r = s.execute("timeline.place", json!({"item": mono_item.0, "audioTrack": "A2", "seconds": 0.0})).unwrap();
+    let mono = ClipId(r["clips"][0].as_u64().unwrap());
+    for c in [stereo, mono] {
+        s.execute("essentialSound.setType", json!({"clips": [c.0], "type": "dialogue"})).unwrap();
+    }
+    let measured = |s: &mut Session, c: ClipId| {
+        let r = s.execute("essentialSound.autoMatch", json!({"clips": [c.0], "target": -23.0})).unwrap();
+        r["clips"][0]["measuredLufs"].as_f64().unwrap()
+    };
+    let (two, one) = (measured(&mut s, stereo), measured(&mut s, mono));
+    let mut file = LoudnessMeter::new(SR as f64, 1);
+    file.process(&[&sig]);
+    let want = file.integrated();
+    println!("stereo (dual mono) {two:.3} LUFS, mono {one:.3} LUFS, mono file {want:.3} LUFS");
+    assert!((one - want).abs() <= 0.1, "mono clip {one} LUFS, the file reads {want} LUFS");
+    assert!((two - one - 3.0103).abs() <= 0.1, "dual mono {two} LUFS should read 3.01 LU above mono {one} LUFS");
+    let st = item(&s, mono).essential.unwrap();
+    assert!((st.loudness.gain_db - (-23.0 - want)).abs() <= 0.1, "match gain {} dB for {want} LUFS", st.loudness.gain_db);
+    // one picked channel of the stereo file plays on both sides: measured as mono too
+    s.execute("clip.audioChannels", json!({"clips": [stereo.0], "channels": [0]})).unwrap();
+    let picked = measured(&mut s, stereo);
+    assert!((picked - want).abs() <= 0.1, "mono pick {picked} LUFS, the file reads {want} LUFS");
+}
+
 #[test]
 fn ducking_generates_volume_keyframes_under_dialogue() {
     // dialogue in [2, 4] and [6, 7.5] s; music for 10 s

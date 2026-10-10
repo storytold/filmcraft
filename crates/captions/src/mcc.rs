@@ -17,7 +17,8 @@
 //! - **CDP (SMPTE ST 334-2):** identifier `96 69`, length, frame-rate code, flags, sequence
 //!   counter, a `cc_data` section (`72`, `E0 | cc_count`, cc_count × (marker/valid/type, two
 //!   bytes)), optional time code / service info sections, footer `74`, the counter again and a
-//!   checksum that makes the packet's byte sum 0 mod 256.
+//!   checksum that makes the packet's byte sum 0 mod 256. The ancillary packet then ends with one ST 291 checksum byte
+//!   (low 8 bits of DID + SDID + data count + CDP bytes).
 //! - **Writing** (29.97 fps, `30DF` or `30` timecode labels): every frame from the first caption
 //!   data to one frame after the last carries a CDP with 20 cc_data triplets: field 1 CEA-608
 //!   pop-on data (the same schedule as [SCC](crate::scc)), a null field-2 pair, CEA-708
@@ -161,6 +162,9 @@ pub fn build_cdp(seq: u16, data: &FrameData) -> Vec<u8> {
     cdp.push(((256 - sum % 256) % 256) as u8);
     let mut out = vec![0x61, 0x01, cdp.len() as u8];
     out.extend(cdp);
+    // SMPTE ST 291 ancillary checksum: low 8 bits of the sum of DID, SDID, data count and the user data words.
+    let anc_sum: u32 = out.iter().map(|&b| b as u32).sum();
+    out.push((anc_sum & 0xff) as u8);
     out
 }
 
@@ -661,7 +665,11 @@ mod tests {
         let d = FrameData { f1: Some((0x14, 0x20)), dtvcc: vec![(true, 0x02, 0x21), (false, 0x89, 0x01)] };
         let b = build_cdp(7, &d);
         assert_eq!(&b[..3], &[0x61, 0x01, 73]);
-        let cdp = &b[3..];
+        // prefix (3) + CDP (73) + ancillary checksum byte (1)
+        assert_eq!(b.len(), 77);
+        let sum: u32 = b[..76].iter().map(|&x| x as u32).sum();
+        assert_eq!(b[76], (sum & 0xff) as u8, "ancillary checksum");
+        let cdp = &b[3..76];
         assert_eq!(cdp.len(), 73);
         assert_eq!(&cdp[..9], &[0x96, 0x69, 73, 0x4f, 0x43, 0, 7, 0x72, 0xf4]);
         assert_eq!(cdp.iter().map(|&x| x as u32).sum::<u32>() % 256, 0, "checksum");

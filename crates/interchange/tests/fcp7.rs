@@ -483,3 +483,47 @@ fn a_master_clip_used_by_an_earlier_sequence_still_lands_in_its_bin() {
     assert_ne!(bin, p.root.id, "the take was left loose at the top");
     assert_eq!(p.root.find_bin(bin).unwrap().name, "Comedy");
 }
+
+/// `start`/`end`/`in`/`out` of every sequence clip item in an exported document.
+fn clip_spans(xml: &str) -> Vec<(i64, i64, i64, i64)> {
+    let tag = |block: &str, name: &str| -> i64 {
+        let open = format!("<{name}>");
+        let at = block.find(&open).unwrap_or_else(|| panic!("no <{name}> in {block}")) + open.len();
+        block[at..].split('<').next().unwrap().trim().parse().unwrap()
+    };
+    xml.split("<clipitem").skip(1).filter(|b| b.contains("<start>")).map(|b| (tag(b, "start"), tag(b, "end"), tag(b, "in"), tag(b, "out"))).collect()
+}
+
+/// #340: a clip placed by seconds in a 23.976 sequence has sub-frame start, duration and source in.
+/// Its record span and source span were rounded to frames independently, so `out - in` could come
+/// out a frame shorter than `end - start` (Premiere then reads a different source range).
+#[test]
+fn sub_frame_clips_keep_equal_source_and_record_spans() {
+    const SECOND: i64 = 254_016_000_000;
+    let r = FrameRate::FPS_23_976;
+    let mut p = Project::new("P");
+    let a = media(&mut p, "/m/a.mov", true, true, r);
+    let s = sequence(&mut p, "t", r, false);
+    let c = clip(&mut p, s, TrackKind::Video, 0, a, 0, 24, 0);
+    // the issue's case first (start 0, source in 20 s, 3 s long), then starts, ins and lengths in tenths of a second
+    let mut cases = vec![(0, 200, 30)];
+    for start in [0, 1, 5, 17, 33] {
+        for src in [0, 3, 7, 200, 413] {
+            for dur in [1, 4, 30, 71, 125] {
+                cases.push((start, src, dur));
+            }
+        }
+    }
+    for (start, src, dur) in cases {
+        let (_, it) = p.sequence_mut(s).unwrap().find_item_mut(c).unwrap();
+        it.start = Tick(start * SECOND / 10);
+        it.source_in = Tick(src * SECOND / 10);
+        it.duration = Tick(dur * SECOND / 10);
+        let (bytes, _) = export(&p, s, Format::Fcp7Xml, &ExportOptions::default()).expect("export");
+        let xml = String::from_utf8(bytes).unwrap();
+        let spans = clip_spans(&xml);
+        assert_eq!(spans.len(), 1, "{xml}");
+        let (start_f, end_f, in_f, out_f) = spans[0];
+        assert_eq!(out_f - in_f, end_f - start_f, "start {start}, in {src}, duration {dur} (tenths of a second): {spans:?}");
+    }
+}

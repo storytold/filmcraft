@@ -387,6 +387,27 @@ pub struct PocState {
     prev_frame_num: u32,
 }
 
+/// Is `sh` the first slice of a new primary coded picture relative to `prev` (7.4.1.2.4)?
+pub fn is_new_picture(prev: &SliceHeader, sh: &SliceHeader, sps: &Sps) -> bool {
+    if sh.frame_num != prev.frame_num
+        || sh.pps_id != prev.pps_id
+        || sh.field_pic != prev.field_pic
+        || sh.bottom_field != prev.bottom_field
+        || (sh.nal_ref_idc == 0) != (prev.nal_ref_idc == 0)
+        || sh.idr != prev.idr
+        || (sh.idr && prev.idr && sh.idr_pic_id != prev.idr_pic_id)
+    {
+        return true;
+    }
+    if sps.pic_order_cnt_type == 0 && (sh.pic_order_cnt_lsb != prev.pic_order_cnt_lsb || sh.delta_pic_order_cnt_bottom != prev.delta_pic_order_cnt_bottom) {
+        return true;
+    }
+    if sps.pic_order_cnt_type == 1 && sh.delta_pic_order_cnt != prev.delta_pic_order_cnt {
+        return true;
+    }
+    false
+}
+
 /// Output of POC computation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Poc {

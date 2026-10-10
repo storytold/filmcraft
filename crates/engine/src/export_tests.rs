@@ -64,6 +64,19 @@ fn export_integer_parameters_cannot_wrap_or_overflow() {
     assert!(s.execute("export.resolve", json!({"bitrateKbps":8000.0, "keyframeDistance":48.0})).is_ok(), "integer-valued floats are integers");
 }
 
+#[test]
+fn nested_camel_case_settings_are_honoured() {
+    let mut s = demo();
+    let camel = json!({"audio":{"sampleRate":96000}, "effects":{"loudness":{"enabled":true, "targetLufs":-16}}});
+    let snake = json!({"audio":{"sample_rate":96000}, "effects":{"loudness":{"enabled":true, "target_lufs":-16}}});
+    let camel = s.execute("export.resolve", json!({"format":"wav", "settings":camel})).unwrap();
+    let snake = s.execute("export.resolve", json!({"format":"wav", "settings":snake})).unwrap();
+    assert_eq!(camel["output"]["sampleRate"], 96000);
+    assert_eq!(camel["settings"]["audio"]["sample_rate"], 96000);
+    assert_eq!(camel["settings"]["effects"]["loudness"]["target_lufs"], -16.0);
+    assert_eq!(camel["settings"], snake["settings"]);
+}
+
 fn probe(path: &str) -> Option<Value> {
     let ffprobe = filmcraft_testkit::ffprobe_or_skip("export presets")?;
     let out = std::process::Command::new(ffprobe).args(["-v", "error", "-of", "json", "-show_format", "-show_streams", path]).output().unwrap();
@@ -360,6 +373,22 @@ fn queue_orders_cancels_and_retries() {
 }
 
 #[test]
+fn queue_move_by_extreme_offsets_clamps_instead_of_overflowing() {
+    let mut s = demo();
+    let ids: Vec<u64> = (0..3)
+        .map(|_| {
+            let r = s.execute("export.queue.add", json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": "queued-output/"})).unwrap();
+            r["added"][0].as_u64().unwrap()
+        })
+        .collect();
+    let order = |s: &mut Session| -> Vec<u64> { queue(s).iter().map(|i| i["id"].as_u64().unwrap()).collect() };
+    s.execute("export.queue.move", json!({"id": ids[1], "by": i64::MAX})).unwrap();
+    assert_eq!(order(&mut s), [ids[0], ids[2], ids[1]]);
+    s.execute("export.queue.move", json!({"id": ids[1], "by": i64::MIN})).unwrap();
+    assert_eq!(order(&mut s), [ids[1], ids[0], ids[2]]);
+}
+
+#[test]
 fn queue_cancels_a_running_export_and_retries_a_failed_one() {
     let mut s = demo();
     let dir = Scratch::new("queue-cancel");
@@ -482,6 +511,23 @@ fn queue_exports_several_sequences_and_ranges() {
     assert!(names.contains(&"parts.wav".to_string()) && names.contains(&"parts_2.wav".to_string()), "{names:?}");
     let len = |f: &str| std::fs::metadata(dir.0.join(f)).unwrap().len();
     assert_eq!(len("parts_2.wav"), 44 + 12_000 * 4, "0.25 s of 16-bit stereo");
+}
+
+#[test]
+fn queue_folder_paths_expand_home_and_take_either_separator() {
+    let mut s = demo();
+    let first = s.state.active_sequence.unwrap();
+    let second = s.execute("file.newSequence", json!({"name": "Second Cut", "width": 640, "height": 360, "fps": 25})).unwrap()["sequence"].as_u64().unwrap();
+    let preset = "Waveform Audio 48 kHz 16-bit";
+    // a folder that does not exist yet, named by a trailing `\`: each sequence keeps its own name
+    s.execute("export.queue.add", json!({"preset": preset, "path": "not-yet-made\\", "sequences": [first.0, second]})).unwrap();
+    let paths: Vec<String> = queue(&mut s).iter().map(|i| i["path"].as_str().unwrap().to_string()).collect();
+    assert!(paths.iter().any(|p| p.ends_with("Second Cut.wav")), "{paths:?}");
+    if let Some(home) = crate::media_browser::std_home_dir() {
+        s.execute("export.queue.add", json!({"preset": preset, "path": "~/Exports/", "sequence": first.0})).unwrap();
+        let last = queue(&mut s).last().unwrap()["path"].as_str().unwrap().to_string();
+        assert!(last.starts_with(&home), "{last}");
+    }
 }
 
 #[test]

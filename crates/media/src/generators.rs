@@ -108,7 +108,7 @@ impl GeneratorSource {
             kind: if matches!(generator, Generator::Demo(_)) { MediaKind::Movie } else { MediaKind::Synthetic },
             duration,
             video,
-            audio,
+            audio_streams: audio.into_iter().collect(),
             container: if matches!(generator, Generator::Demo(_)) { "Synthetic MPEG-4".into() } else { "Synthetic".into() },
             start_timecode: None,
             file_size: None,

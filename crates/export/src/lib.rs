@@ -23,6 +23,7 @@ mod pcm;
 mod pipeline;
 pub mod presets;
 pub mod settings;
+pub mod still;
 pub use audio_out::LoudnessReport;
 pub use job::{Exporter, Step, stepped};
 pub use mxf_out::opatom_audio_paths;
@@ -64,7 +65,9 @@ pub enum Format {
     H264,
     /// MPEG-4 (or QuickTime, see [`Multiplexer`]), H.265 / HEVC Main (8-bit) video + AAC audio. There is no
     /// built-in encoder: a platform hardware encoder registers one ([`register_encoder`]) and says so
-    /// with [`register_format_probe`]; [`available`] is false without it.
+    /// with [`register_format_probe`]; [`available`] is false without it. HDR sequences export as HDR
+    /// (Main 10, PQ / HLG) only where an encoder also says so with [`register_hdr_probe`]
+    /// ([`hdr_available`]); elsewhere they are tone-mapped to SDR.
     #[serde(rename = "hevc", alias = "Hevc")]
     Hevc,
     /// QuickTime, Apple ProRes 422 (HQ unless the settings pick another flavour) + PCM.
@@ -253,6 +256,10 @@ pub struct ExportSettings {
     /// sequence's HDR space and signal it (VUI / `colr` / `mdcv` / `clli` / SEI).
     #[serde(default)]
     pub sdr: bool,
+    /// Keep the alpha channel in PNG and TIFF sequences (straight alpha, Premiere's "Include
+    /// Alpha Channel"). Off, every frame is flattened over black (#160). Other formats ignore it.
+    #[serde(default)]
+    pub alpha: bool,
     /// Output frame size (None = Match Source: the sequence size times `scale`).
     pub frame_size: Option<(u32, u32)>,
     /// Output frame rate (None = Match Source).
@@ -420,11 +427,17 @@ impl ColorSignal {
             } else {
                 filmcraft_isobmff::ColorInfo::Nclx { primaries: p, transfer: t, matrix: m, full_range: false }
             });
-            if self.transfer == 16 {
-                v.mastering_display = Some(filmcraft_isobmff::MasteringDisplay::bt2020(1000.0, 0.0001));
-                v.content_light = Some((0, 0));
+            if let Some((md, cll)) = self.static_metadata() {
+                v.mastering_display = Some(md);
+                v.content_light = Some(cll);
             }
         }
+    }
+    /// HDR10 static metadata of a PQ signal: the mastering display (BT.2020/D65, 1000 / 0.0001 cd/m²)
+    /// and (MaxCLL, MaxFALL) = (0, 0), unknown. `None` for HLG and SDR. The one definition of these
+    /// values: the `mdcv` / `clli` boxes and the SEI messages of every encoder come from here.
+    pub fn static_metadata(&self) -> Option<(filmcraft_isobmff::MasteringDisplay, (u16, u16))> {
+        (self.transfer == 16).then(|| (filmcraft_isobmff::MasteringDisplay::bt2020(1000.0, 0.0001), (0, 0)))
     }
 }
 
@@ -445,6 +458,7 @@ impl Default for ExportSettings {
             apv_profile: String::new(),
             mxf_video_codec: MxfVideoCodec::default(),
             sdr: false,
+            alpha: false,
             frame_size: None,
             frame_rate: None,
             scaling: Scaling::default(),
@@ -658,6 +672,79 @@ pub fn note_hw_encode_declined() {
     HW_DECLINED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// The stages of an export whose wall time [`stage_times`] adds up (`perf.stats` `export.stages`). The
+/// render of one batch overlaps the encoding of the previous one (`Exporter::overlapping`), so
+/// [`Stage::Render`] and [`Stage::Encode`] with its neighbours can sum to more than the export took;
+/// [`Stage::Wait`] is the time left waiting for the render.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
+    /// [`Exporter::new`]: settings, pipeline, encoder and audio set-up.
+    Setup,
+    /// The loudness pass before the first frame (normalised audio only).
+    Loudness,
+    /// Rendering a batch of frames (parallel; includes decoding the sources, effects, colour).
+    Render,
+    /// Encoding the rendered frames, colour conversion included (serial).
+    Encode,
+    /// The part of [`Stage::Encode`] spent converting RGB to the encoder's YUV.
+    Convert,
+    /// Mixing and encoding audio and writing it to the container.
+    Audio,
+    /// Writing video samples to the container (and creating it).
+    Mux,
+    /// Flushing the encoders and finishing the file.
+    Finish,
+    /// Time the encoding side waited, after encoding a batch, for the next batch to finish rendering
+    /// (only with overlap: large means the export is render-bound, near zero encode-bound).
+    Wait,
+}
+
+const STAGES: usize = 9;
+
+impl Stage {
+    pub const ALL: [Stage; STAGES] =
+        [Stage::Setup, Stage::Loudness, Stage::Render, Stage::Encode, Stage::Convert, Stage::Audio, Stage::Mux, Stage::Finish, Stage::Wait];
+
+    /// The name in `perf.stats`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Stage::Setup => "setup",
+            Stage::Loudness => "loudness",
+            Stage::Render => "render",
+            Stage::Encode => "encode",
+            Stage::Convert => "convert",
+            Stage::Audio => "audio",
+            Stage::Mux => "mux",
+            Stage::Finish => "finish",
+            Stage::Wait => "wait",
+        }
+    }
+}
+
+static STAGE_NS: [std::sync::atomic::AtomicU64; STAGES] = [const { std::sync::atomic::AtomicU64::new(0) }; STAGES];
+
+/// Wall time each export stage has taken so far in this process, in nanoseconds, summed over every
+/// stepped export (they only grow: diff two readings to measure one export). Measuring costs two
+/// clock reads per stage per batch; nothing an export does depends on it.
+pub fn stage_times() -> Vec<(Stage, u64)> {
+    Stage::ALL.iter().map(|s| (*s, STAGE_NS.get(*s as usize).map_or(0, |a| a.load(std::sync::atomic::Ordering::Relaxed)))).collect()
+}
+
+/// Add `d` to a stage's wall time (also for encoders outside this crate: [`Stage::Convert`]).
+pub fn note_stage(stage: Stage, d: std::time::Duration) {
+    if let Some(a) = STAGE_NS.get(stage as usize) {
+        a.fetch_add(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX), std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Run `f`, adding its wall time to `stage`.
+pub fn timed<T>(stage: Stage, f: impl FnOnce() -> T) -> T {
+    let t = web_time::Instant::now();
+    let r = f();
+    note_stage(stage, t.elapsed());
+    r
+}
+
 /// Register a video encoder factory (tried before the built-in ones and those registered earlier).
 /// Registering the same factory twice is harmless.
 pub fn register_encoder(f: EncoderFactory) {
@@ -690,6 +777,29 @@ pub fn register_format_probe(format: Format, probe: fn() -> bool) {
     if !g.iter().any(|(f, p)| *f == format && std::ptr::fn_addr_eq(*p, probe)) {
         g.push((format, probe));
     }
+}
+
+fn hdr_probes() -> &'static RwLock<Vec<FormatProbe>> {
+    static P: OnceLock<RwLock<Vec<FormatProbe>>> = OnceLock::new();
+    P.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Say how to find out whether the registered encoder of `format` can write HDR (PQ / HLG) on this
+/// machine: `probe` runs when [`hdr_available`] asks (it should cache its answer). Only H.265 needs
+/// one: its encoders are hardware-only and not all of them take 10-bit pictures, so an HDR sequence
+/// exports as tone-mapped SDR unless a probe says otherwise. Registering the same probe twice is harmless.
+pub fn register_hdr_probe(format: Format, probe: fn() -> bool) {
+    let mut g = hdr_probes().write().unwrap_or_else(|e| e.into_inner());
+    if !g.iter().any(|(f, p)| *f == format && std::ptr::fn_addr_eq(*p, probe)) {
+        g.push((format, probe));
+    }
+}
+
+/// Whether a registered probe says the encoder of `format` writes HDR here (false without one).
+pub fn hdr_available(format: Format) -> bool {
+    // the probes run outside the lock: one may take a while
+    let probes: Vec<fn() -> bool> = hdr_probes().read().unwrap_or_else(|e| e.into_inner()).iter().filter(|(f, _)| *f == format).map(|(_, p)| *p).collect();
+    probes.into_iter().any(|p| p())
 }
 
 /// Whether a format can currently be exported: it has a built-in encoder, or a registered probe
@@ -795,13 +905,13 @@ impl VideoEncoder for ProResEncoder {
     }
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
         let mut fr = filmcraft_prores::Frame::new(f.width, f.height, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
-        match f.hdr {
+        timed(Stage::Convert, || match f.hdr {
             Some(rgb) => {
                 let (kr, kb) = self.signal.kr_kb();
                 rgbf_to_yuv422_10(rgb, f.width as usize, f.height as usize, kr, kb, &mut fr.y, &mut fr.cb, &mut fr.cr)
             }
             None => rgba_to_yuv422_10(f.rgba, f.width as usize, f.height as usize, &mut fr.y, &mut fr.cb, &mut fr.cr),
-        }
+        });
         let data = self.enc.encode(&fr).map_err(|e| ExportError::Encode(e.to_string()))?;
         Ok(vec![EncodedPacket { data, key: true, duration: self.rate.den as u32, composition_offset: 0 }])
     }
@@ -1072,13 +1182,13 @@ impl VideoEncoder for H264Encoder {
         self.rate.num as u32
     }
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
-        match f.hdr {
+        timed(Stage::Convert, || match f.hdr {
             Some(rgb) => {
                 let (kr, kb) = self.signal.kr_kb();
                 rgbf_to_yuv420_8(rgb, f.width as usize, f.height as usize, kr, kb, &mut self.y, &mut self.u, &mut self.v)
             }
             None => rgba_to_yuv420_8(f.rgba, f.width as usize, f.height as usize, &mut self.y, &mut self.u, &mut self.v),
-        }
+        });
         let cw = (f.width as usize).div_ceil(2);
         let frame = filmcraft_h264enc::YuvFrame { y: &self.y, u: &self.u, v: &self.v, y_stride: f.width as usize, uv_stride: cw };
         let ps = self.enc.try_encode(&frame, f.index as i64 * self.rate.den).map_err(|e| ExportError::Encode(e.to_string()))?;
@@ -1160,6 +1270,59 @@ pub fn rgbf_to_yuv420_8(rgb: &[f32], w: usize, h: usize, kr: f32, kb: f32, y: &m
     });
 }
 
+/// Limited-range 10-bit 4:2:0 (code values 0..1023, not MSB-aligned) from encoded R'G'B' floats with
+/// matrix (Kr, Kb): Y = 64 + 876·Y', C = 512 + 896·C, chroma averaged over each 2x2 block (one pixel
+/// or pair at an odd edge). `rgb` is 3 floats per pixel; NaN counts as 0, infinities and
+/// out-of-range values clamp to 0..1 first, and codes clamp to 4..1019 like [`rgbf_to_yuv422_10`]
+/// (so black is 64, peak white 940 and the chroma of any colour stays within 64..960).
+/// The planes are resized to `w * h` and `ceil(w / 2) * ceil(h / 2)`. A `rgb` slice of the wrong
+/// length, a zero size or a size whose arithmetic overflows is an error.
+#[allow(clippy::too_many_arguments)]
+pub fn rgbf_to_yuv420_10(rgb: &[f32], w: usize, h: usize, kr: f32, kb: f32, y: &mut Vec<u16>, u: &mut Vec<u16>, v: &mut Vec<u16>) -> Result<()> {
+    let bad = || ExportError::Encode(format!("a {w}x{h} HDR picture needs w*h*3 floats, got {}", rgb.len()));
+    let px = w.checked_mul(h).ok_or_else(bad)?;
+    if w == 0 || h == 0 || px.checked_mul(3) != Some(rgb.len()) {
+        return Err(bad());
+    }
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let kg = 1.0 - kr - kb;
+    let (sb, sr) = (2.0 * (1.0 - kb), 2.0 * (1.0 - kr));
+    y.clear();
+    y.resize(px, 0);
+    u.clear();
+    u.resize(cw * ch, 0);
+    v.clear();
+    v.resize(cw * ch, 0);
+    let unit = |x: f32| if x.is_nan() { 0.0 } else { x.clamp(0.0, 1.0) };
+    let code = |x: f32| x.round().clamp(4.0, 1019.0) as u16;
+    y.par_chunks_mut(w * 2).zip(u.par_chunks_mut(cw).zip(v.par_chunks_mut(cw))).enumerate().for_each(|(cy, (yr, (ur, vr)))| {
+        let rows = yr.len() / w;
+        let mut us = vec![0f32; cw];
+        let mut vs = vec![0f32; cw];
+        let mut cnt = vec![0f32; cw];
+        for (dy, yrow) in yr.chunks_exact_mut(w).enumerate().take(rows) {
+            let row = cy * 2 + dy;
+            let Some(src) = rgb.get(row * w * 3..(row + 1) * w * 3) else { continue };
+            for (x, (&[r, g, b], yo)) in src.as_chunks::<3>().0.iter().zip(yrow.iter_mut()).enumerate() {
+                let (r, g, b) = (unit(r), unit(g), unit(b));
+                let yy = kr * r + kg * g + kb * b;
+                *yo = code(64.0 + 876.0 * yy);
+                if let (Some(a), Some(c), Some(n)) = (us.get_mut(x / 2), vs.get_mut(x / 2), cnt.get_mut(x / 2)) {
+                    *a += (b - yy) / sb;
+                    *c += (r - yy) / sr;
+                    *n += 1.0;
+                }
+            }
+        }
+        for (cx, (uo, vo)) in ur.iter_mut().zip(vr.iter_mut()).enumerate() {
+            let n = cnt.get(cx).copied().unwrap_or(1.0).max(1.0);
+            *uo = code(512.0 + 896.0 * us.get(cx).copied().unwrap_or(0.0) / n);
+            *vo = code(512.0 + 896.0 * vs.get(cx).copied().unwrap_or(0.0) / n);
+        }
+    });
+    Ok(())
+}
+
 /// Slices per H.264 picture: one per four macroblock rows. The encoder's default follows the core
 /// count, which would make the stream (and every decoded picture) depend on the machine; this is
 /// what it picks on a machine with enough cores.
@@ -1199,12 +1362,11 @@ fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSetti
     }
     if s.signal.is_hdr() {
         cfg.color = filmcraft_h264enc::ColorConfig { primaries: s.signal.primaries, transfer: s.signal.transfer, matrix: s.signal.matrix, full_range: false };
-        if s.signal.transfer == 16 {
-            let md = filmcraft_isobmff::MasteringDisplay::bt2020(1000.0, 0.0001).to_bytes();
+        if let Some((md, cll)) = s.signal.static_metadata() {
             let mut b = [0u8; 24];
-            b.copy_from_slice(&md);
+            b.copy_from_slice(&md.to_bytes());
             cfg.mastering_display = Some(b);
-            cfg.content_light = Some((0, 0));
+            cfg.content_light = Some(cll);
         }
     }
     Some(
@@ -1266,11 +1428,12 @@ impl Write for SharedBuf {
 
 /// Encode straight sRGB RGBA8 pixels as a PNG file (thumbnails, previews).
 pub fn encode_png(rgba: Vec<u8>, w: u32, h: u32) -> Result<Vec<u8>> {
-    encode_still(Format::PngSequence, rgba, w, h)
+    encode_still(Format::PngSequence, rgba, w, h, false)
 }
 
-/// Encode one still of an image sequence (also Export Frame).
-pub fn encode_still(format: Format, rgba: Vec<u8>, w: u32, h: u32) -> Result<Vec<u8>> {
+/// Encode one still of an image sequence (also Export Frame). PNG always carries the alpha
+/// channel it is given; `alpha` keeps it in TIFF too, which is otherwise written as RGB.
+pub fn encode_still(format: Format, rgba: Vec<u8>, w: u32, h: u32, alpha: bool) -> Result<Vec<u8>> {
     let enc = |e: image::ImageError| ExportError::Encode(e.to_string());
     let mut out = std::io::Cursor::new(Vec::new());
     match format {
@@ -1279,9 +1442,12 @@ pub fn encode_still(format: Format, rgba: Vec<u8>, w: u32, h: u32) -> Result<Vec
         }
         Format::TiffSequence | Format::BmpSequence => {
             let img = image::RgbaImage::from_raw(w, h, rgba).ok_or_else(|| ExportError::Encode("frame size".into()))?;
-            let rgb = image::DynamicImage::ImageRgba8(img).to_rgb8();
             let f = if format == Format::TiffSequence { image::ImageFormat::Tiff } else { image::ImageFormat::Bmp };
-            rgb.write_to(&mut out, f).map_err(enc)?
+            if alpha && format == Format::TiffSequence {
+                img.write_to(&mut out, f).map_err(enc)?
+            } else {
+                image::DynamicImage::ImageRgba8(img).to_rgb8().write_to(&mut out, f).map_err(enc)?
+            }
         }
         _ => return Err(ExportError::Unsupported(format!("{} is not an image sequence", format.label()))),
     }
@@ -1358,7 +1524,7 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
                     let written: Vec<Result<u64>> = (f..end)
                         .into_par_iter()
                         .map(|fi| {
-                            let data = encode_still(settings.format, pipe.frame(fi, sources).0, w, h)?;
+                            let data = encode_still(settings.format, pipe.frame(fi, sources).0, w, h, settings.alpha)?;
                             write_output(settings, &pcm::image_sequence_path(&settings.path, (fi - f0) as u64, count), data)
                         })
                         .collect();
@@ -1404,3 +1570,6 @@ mod mxf_tests;
 
 #[cfg(test)]
 mod determinism_tests;
+
+#[cfg(test)]
+mod hdr_tests;

@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use filmcraft_color::{ColorInfo, Matrix, Primaries, Range, Transfer};
+use filmcraft_color::ColorInfo;
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_isobmff::{CodecConfig, Mp4File, TrackKind};
 use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, SharedSource, VideoStreamInfo};
@@ -29,24 +29,65 @@ struct AudioState {
     last_decoded: Option<usize>,
 }
 
+/// One playable audio track with its own decoder state and timing tables.
+struct Mp4Audio {
+    /// Index into `Mp4File::tracks`.
+    track: usize,
+    state: Mutex<AudioState>,
+    /// Packet start positions in source sample frames (see [`audio_starts`]).
+    starts: Vec<i64>,
+    /// Presentation offset of the track in its timescale (edit list, or Opus pre-skip).
+    offset: i64,
+    /// Decoder pre-roll after a seek, in source sample frames (0: prime with one packet).
+    preroll: i64,
+}
+
 pub struct Mp4Source {
     info: MediaInfo,
     bytes: crate::Src,
     file: Mp4File,
     vtrack: Option<usize>,
-    atrack: Option<usize>,
     video: GopCache,
-    audio: Mutex<AudioState>,
-    /// Cumulative sample start frames for the audio track (for packet lookup).
-    audio_starts: Vec<i64>,
-    /// Presentation offset of the audio track in its timescale (edit list, or Opus pre-skip).
-    audio_offset: i64,
-    /// Decoder pre-roll after a seek, in audio track timescale units (0: prime with one packet).
-    audio_preroll: i64,
+    /// The playable audio tracks in file order: `info.audio_streams[k]` describes `audios[k]`.
+    audios: Vec<Mp4Audio>,
 }
 
 pub fn sniff(b: &[u8]) -> bool {
     b.len() >= 12 && matches!(&b[4..8], b"ftyp" | b"moov" | b"mdat" | b"wide" | b"free" | b"skip")
+}
+
+/// Audio packet start positions in source sample frames at `rate`: the running total of the sample
+/// durations, except that packets which all decode to the same length (AAC, MPEG audio, AC-3) run
+/// on from one another, resynchronising to the total only across gaps of more than half a packet.
+/// A remux from Matroska (OBS's) carries the millisecond rounding of its timestamps into the
+/// durations: 1008, 1008, 1056… for 1024-sample AAC frames at 48 kHz (see
+/// [`crate::audio::contiguous_starts`]).
+fn audio_starts(file: &Mp4File, bytes: &crate::Src, ti: usize, rate: u32) -> Vec<i64> {
+    use crate::audio::{FixedFrames, PacketTime, contiguous_starts, fixed_packet_samples};
+    let Some(t) = file.tracks.get(ti) else { return Vec::new() };
+    let ts = i128::from(t.timescale.max(1));
+    let mut total = 0i128;
+    let stamps: Vec<i64> = t
+        .samples
+        .iter()
+        .map(|s| {
+            let at = total * i128::from(rate) / ts;
+            total += i128::from(s.duration);
+            i64::try_from(at).unwrap_or(i64::MAX)
+        })
+        .collect();
+    let first = || file.read_sample(bytes, ti, 0).unwrap_or_default();
+    let frame = match t.entries.first().map(|e| &e.codec) {
+        Some(CodecConfig::Aac(a)) => fixed_packet_samples(FixedFrames::Aac(&a.asc), &[], rate),
+        Some(CodecConfig::Mp3) => fixed_packet_samples(FixedFrames::MpegAudio, &first(), rate),
+        Some(CodecConfig::Ac3 { .. }) => fixed_packet_samples(FixedFrames::Ac3, &first(), rate),
+        _ => None,
+    };
+    let Some(frame) = frame else { return stamps };
+    // samples per track timescale unit, rounded up: how coarse the running total is
+    let unit = i64::try_from((i128::from(rate) + ts - 1) / ts).unwrap_or(i64::MAX);
+    let packets = stamps.iter().map(|&stamp| PacketTime { stamp, stamped: true, samples: Some(frame) });
+    contiguous_starts(packets, (frame / 2).max(unit.saturating_mul(2).saturating_add(1)))
 }
 
 /// HDR static metadata from the sample entry's `mdcv` / `clli` boxes (0 = unknown).
@@ -63,48 +104,40 @@ fn hdr_metadata(md: Option<&filmcraft_isobmff::MasteringDisplay>, cll: Option<(u
     })
 }
 
+/// Colour of a video sample entry. The `colr` box (`nclx` / `nclc`) wins; what it leaves
+/// unspecified, or all of it when there is none (ffmpeg writes MP4 without `colr` by default),
+/// comes from the stream's own description: `vpcC` / `apvC`, or the SPS VUI in `avcC` / `hvcC`
+/// and the sequence header in `av1C`. The rest defaults by frame size.
 fn color_from(entry: &filmcraft_isobmff::SampleEntry, w: u32, h: u32) -> ColorInfo {
-    let mut c = ColorInfo { matrix: filmcraft_frame::default_matrix(w, h), transfer: Transfer::Bt709, primaries: Primaries::Bt709, range: Range::Limited };
-    // VP9 and APV carry their colour description in vpcC / apvC (used when there is no colr box).
-    let vpc = match &entry.codec {
-        CodecConfig::Vp9(v) => Some(filmcraft_isobmff::ColorInfo::Nclx {
-            primaries: v.colour_primaries as u16,
-            transfer: v.transfer_characteristics as u16,
-            matrix: v.matrix_coefficients as u16,
-            full_range: v.full_range,
-        }),
-        CodecConfig::Apv(a) if a.color_description_present => Some(filmcraft_isobmff::ColorInfo::Nclx {
-            primaries: a.color_primaries as u16,
-            transfer: a.transfer_characteristics as u16,
-            matrix: a.matrix_coefficients as u16,
-            full_range: a.full_range,
-        }),
+    use crate::stream_color::ColorCodes;
+    use filmcraft_isobmff::ColorInfo as Colr;
+    let colr = match entry.video.as_ref().and_then(|v| v.color.as_ref()) {
+        Some(Colr::Nclx { primaries, transfer, matrix, full_range }) => {
+            Some(ColorCodes::from_wide((*primaries).into(), (*transfer).into(), (*matrix).into(), Some(*full_range)))
+        }
+        // QuickTime `nclc` has no range flag
+        Some(Colr::Nclc { primaries, transfer, matrix }) => Some(ColorCodes::from_wide((*primaries).into(), (*transfer).into(), (*matrix).into(), None)),
+        // an ICC profile, or no `colr`: no code points
         _ => None,
     };
-    if let Some(col) = entry.video.as_ref().and_then(|v| v.color.as_ref()).or(vpc.as_ref()) {
-        let (p, t, m, full) = match col {
-            filmcraft_isobmff::ColorInfo::Nclx { primaries, transfer, matrix, full_range } => (*primaries, *transfer, *matrix, *full_range),
-            filmcraft_isobmff::ColorInfo::Nclc { primaries, transfer, matrix } => (*primaries, *transfer, *matrix, false),
-            _ => return c,
-        };
-        if let Some(m) = Matrix::from_code(m as u8) {
-            c.matrix = m;
-        }
-        if let Some(t) = Transfer::from_code(t as u8) {
-            c.transfer = t;
-        }
-        c.primaries = match p {
-            9 => Primaries::Bt2020,
-            12 => Primaries::P3D65,
-            5 => Primaries::Bt601_625,
-            6 => Primaries::Bt601_525,
-            _ => Primaries::Bt709,
-        };
-        if full {
-            c.range = Range::Full;
-        }
-    }
-    c
+    let stream = match &entry.codec {
+        CodecConfig::Vp9(v) => Some(ColorCodes {
+            primaries: v.colour_primaries,
+            transfer: v.transfer_characteristics,
+            matrix: v.matrix_coefficients,
+            full_range: Some(v.full_range),
+        }),
+        CodecConfig::Apv(a) if a.color_description_present => Some(ColorCodes {
+            primaries: a.color_primaries,
+            transfer: a.transfer_characteristics,
+            matrix: a.matrix_coefficients,
+            full_range: Some(a.full_range),
+        }),
+        CodecConfig::Apv(_) => None,
+        codec => crate::stream_color::from_codec_config(codec),
+    };
+    let sources: Vec<ColorCodes> = [colr, stream].into_iter().flatten().collect();
+    crate::stream_color::resolve(w, h, &sources)
 }
 
 impl Mp4Source {
@@ -120,8 +153,10 @@ impl Mp4Source {
         // files can lack them: indexing `entries[0]` or dividing by the timescale used to panic).
         let playable = |t: &&filmcraft_isobmff::Track, kind| t.kind == kind && !t.samples.is_empty() && !t.entries.is_empty() && t.timescale > 0;
         let vtrack = file.tracks.iter().position(|t| playable(&t, TrackKind::Video));
-        let atrack = file.tracks.iter().position(|t| playable(&t, TrackKind::Audio));
-        if vtrack.is_none() && atrack.is_none() {
+        // every audio track is a stream (the track count comes from the file: capped)
+        let atracks: Vec<usize> =
+            file.tracks.iter().enumerate().filter(|(_, t)| playable(t, TrackKind::Audio)).map(|(i, _)| i).take(filmcraft_media::MAX_AUDIO_STREAMS).collect();
+        if vtrack.is_none() && atracks.is_empty() {
             return Err(CodecError::Unsupported("no playable tracks".into()));
         }
         let mut color = ColorInfo::REC709;
@@ -195,37 +230,11 @@ impl Mp4Source {
             }
             info
         });
-        let audio = atrack.map(|i| {
-            let t = &file.tracks[i];
-            let entry = &t.entries[0];
-            let ap = entry.audio.clone().unwrap_or_default();
-            let (rate, ch, bits) = match &entry.codec {
-                CodecConfig::Aac(a) => (
-                    {
-                        // HE-AAC plays at twice the core rate the AudioSpecificConfig starts with
-                        // an AAC access unit is at most 6144 bits per channel: a hostile `stsz` can't make us read more
-                        let units = t
-                            .samples
-                            .iter()
-                            .take(8)
-                            .filter_map(|x| filmcraft_media::reader::read_range(&*bytes.0, x.offset, (x.size as usize).min(MAX_AAC_PROBE_UNIT)).ok());
-                        let units: Vec<Vec<u8>> = units.collect();
-                        match crate::audio::aac_output_rate(&a.asc, units.iter().map(Vec::as_slice)) {
-                            Some(r) => r,
-                            None if a.sample_rate > 0 => a.sample_rate,
-                            None => ap.sample_rate as u32,
-                        }
-                    },
-                    if a.channel_config > 0 { a.channel_config as u32 } else { ap.channels },
-                    None,
-                ),
-                CodecConfig::Pcm(p) => (p.sample_rate as u32, p.channels, Some(p.bits as u32)),
-                CodecConfig::Opus(o) => (crate::audio::OPUS_RATE, (o.output_channels as u32).max(1), None),
-                _ => (if ap.sample_rate > 0.0 { ap.sample_rate as u32 } else { t.timescale }, ap.channels.max(1), None),
-            };
-            AudioStreamInfo { sample_rate: rate.max(1), channels: ch.max(1), codec: codec_label(&entry.codec), bits_per_sample: bits }
-        });
-        let duration = vtrack.or(atrack).and_then(|i| file.tracks.get(i)).map(|t| presentation_duration(&file, t)).unwrap_or_default();
+        // one entry per playable audio track (`playable` guarantees a sample description); a track
+        // that somehow has none is dropped so `audio_streams` and `audios` stay index-aligned
+        let (atracks, audio_streams): (Vec<usize>, Vec<AudioStreamInfo>) =
+            atracks.into_iter().filter_map(|i| Some((i, audio_stream_info(file.tracks.get(i)?, &bytes)?))).unzip();
+        let duration = vtrack.or(atracks.first().copied()).and_then(|i| file.tracks.get(i)).map(|t| presentation_duration(&file, t)).unwrap_or_default();
         let start_timecode = file.tracks.iter().find_map(|t| match t.codec() {
             Some(CodecConfig::Timecode(tc)) => tc.start_frame.map(|f| f as i64),
             _ => None,
@@ -235,50 +244,31 @@ impl Mp4Source {
             kind: if video.is_some() { MediaKind::Movie } else { MediaKind::AudioOnly },
             duration,
             video,
-            audio,
+            audio_streams,
             container: if file.is_quicktime { "QuickTime".into() } else { "MPEG-4".into() },
             start_timecode,
             file_size: Some(bytes.0.len()),
         };
-        let audio_starts = atrack
-            .map(|i| {
-                let t = &file.tracks[i];
-                let mut acc = 0i64;
-                t.samples
-                    .iter()
-                    .map(|s| {
-                        let st = acc;
-                        acc += s.duration as i64;
-                        st
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let (audio_offset, audio_preroll) = atrack
-            .map(|i| {
-                let t = &file.tracks[i];
+        let audios: Vec<Mp4Audio> = atracks
+            .iter()
+            .zip(&info.audio_streams)
+            .filter_map(|(&i, ainfo)| {
+                let t = file.tracks.get(i)?;
+                let starts = audio_starts(&file, &bytes, i, ainfo.sample_rate);
                 let ts = t.timescale.max(1) as i64;
-                match &t.entries[0].codec {
-                    CodecConfig::Opus(o) => {
+                let (offset, preroll) = match t.entries.first().map(|e| &e.codec) {
+                    Some(CodecConfig::Opus(o)) => {
                         let off = if t.edit_offset != 0 { t.edit_offset } else { -(o.pre_skip as i64) * ts / 48_000 };
-                        (off, (crate::audio::OPUS_PRE_ROLL as u64 * ts as u64).div_ceil(48_000) as i64)
+                        // (Opus plays at 48 kHz: the pre-roll is in its sample frames)
+                        (off, crate::audio::OPUS_PRE_ROLL as i64)
                     }
                     _ => (t.edit_offset, 0),
-                }
+                };
+                let state = Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None });
+                Some(Mp4Audio { track: i, state, starts, offset, preroll })
             })
-            .unwrap_or((0, 0));
-        Ok(Self {
-            info,
-            bytes,
-            file,
-            vtrack,
-            atrack,
-            video: GopCache::new(explicit_color).with_rotation(rotation),
-            audio: Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None }),
-            audio_starts,
-            audio_offset,
-            audio_preroll,
-        })
+            .collect();
+        Ok(Self { info, bytes, file, vtrack, video: GopCache::new(explicit_color).with_rotation(rotation), audios })
     }
 
     fn read(&self, track: usize, i: usize) -> crate::Result<Vec<u8>> {
@@ -294,27 +284,30 @@ impl Mp4Source {
         self.video.frame_late(&Mp4Video { src: self, track: ti }, t.to_rational_round(1, ts), late)
     }
 
-    fn audio_packet(&self, st: &mut AudioState, i: usize) -> crate::Result<Arc<Vec<Vec<f32>>>> {
+    /// Decoded packet `i` of audio stream `a` (`ainfo` is its `AudioStreamInfo`; `st` its decoder state).
+    fn audio_packet(&self, a: &Mp4Audio, ainfo: &AudioStreamInfo, st: &mut AudioState, i: usize) -> crate::Result<Arc<Vec<Vec<f32>>>> {
         if let Some(p) = st.packets.get(&i) {
             return Ok(p.clone());
         }
-        let ti = self.atrack.ok_or_else(|| CodecError::Unsupported("no audio track".into()))?;
-        let track = &self.file.tracks[ti];
+        let ti = a.track;
+        let track = self.file.tracks.get(ti).ok_or_else(|| CodecError::Unsupported("no audio track".into()))?;
         let entry = track.entries.first().ok_or_else(|| CodecError::Container("audio track without a sample description".into()))?;
+        let sample = track.samples.get(i).ok_or_else(|| CodecError::Container("audio packet out of range".into()))?;
+        let pk_start = a.starts.get(i).copied().unwrap_or(0);
         let data = self.read(ti, i)?;
         let decoded = match &entry.codec {
             CodecConfig::Pcm(p) => decode_pcm(&data, p),
             c => {
                 if st.decoder.is_none() {
-                    st.decoder = Some(PacketDecoder::for_isobmff(c, self.info.audio.as_ref().map_or(48_000, |a| a.sample_rate))?);
+                    st.decoder = Some(PacketDecoder::for_isobmff(c, ainfo.sample_rate)?);
                 }
                 // Non-sequential access: reset and prime with the preceding packets (codec pre-roll:
                 // one packet, or `OPUS_PRE_ROLL` worth for Opus).
                 if st.last_decoded.is_none_or(|l| l + 1 != i) {
                     let d = st.decoder.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?;
                     d.reset();
-                    let from = if self.audio_preroll > 0 {
-                        self.audio_starts.partition_point(|&x| x <= self.audio_starts[i] - self.audio_preroll).saturating_sub(1)
+                    let from = if a.preroll > 0 {
+                        a.starts.partition_point(|&x| x <= pk_start.saturating_sub(a.preroll)).saturating_sub(1)
                     } else {
                         i.saturating_sub(1)
                     };
@@ -324,11 +317,11 @@ impl Mp4Source {
                         }
                     }
                 }
-                let r = st.decoder.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?.decode(&data, self.audio_starts[i].max(0) as u64);
+                let r = st.decoder.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?.decode(&data, pk_start.max(0) as u64);
                 st.last_decoded = Some(i);
                 match r {
                     Ok(v) => v,
-                    Err(_) => vec![vec![0.0; track.samples[i].duration as usize]; self.info.audio.as_ref().map_or(2, |a| a.channels as usize)],
+                    Err(_) => vec![vec![0.0; sample.duration as usize]; ainfo.channels.max(1) as usize],
                 }
             }
         };
@@ -381,30 +374,33 @@ impl MediaSource for Mp4Source {
     }
 
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer, MediaError> {
-        let ti = self.atrack.ok_or(MediaError::NoStream("audio"))?;
-        let track = &self.file.tracks[ti];
-        let ainfo = self.info.audio.as_ref().ok_or(MediaError::NoStream("audio"))?;
+        self.audio_stream(0, start, frames, sample_rate)
+    }
+
+    fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer, MediaError> {
+        let a = self.audios.get(stream).ok_or(MediaError::NoStream("audio"))?;
+        let ti = a.track;
+        let track = self.file.tracks.get(ti).ok_or(MediaError::NoStream("audio"))?;
+        let ainfo = self.info.audio_streams.get(stream).ok_or(MediaError::NoStream("audio"))?;
         let src_rate = ainfo.sample_rate;
         let ch = ainfo.channels.max(1) as usize;
         // Map the requested window to source samples (edit list offset applied: presentation = pts + edit_offset).
         let ratio = src_rate as f64 / sample_rate as f64;
         let p0 = (start as f64 * ratio).floor() as i64;
         // (in i128: a hostile edit list can make the offset large enough to overflow i64)
-        let offset = i128::from(self.audio_offset) * i128::from(src_rate) / i128::from(track.timescale.max(1));
+        let offset = i128::from(a.offset) * i128::from(src_rate) / i128::from(track.timescale.max(1));
         let s0 = i64::try_from(i128::from(p0) - offset).unwrap_or(if offset > 0 { i64::MIN } else { i64::MAX });
         let need = (frames as f64 * ratio).ceil() as i64 + 2;
-        // Samples-per-unit: the track timescale is usually the sample rate for audio.
-        let unit = src_rate as f64 / track.timescale.max(1) as f64;
         let mut src: Vec<Vec<f32>> = vec![vec![0.0; need.max(0) as usize]; ch];
-        let mut st = self.audio.lock().unwrap_or_else(|e| e.into_inner());
-        let first = self.audio_starts.partition_point(|&x| (x as f64 * unit) as i64 <= s0.max(0)).saturating_sub(1);
+        let mut st = a.state.lock().unwrap_or_else(|e| e.into_inner());
+        let first = a.starts.partition_point(|&x| x <= s0.max(0)).saturating_sub(1);
         let mut i = first;
         while i < track.samples.len() {
-            let pk_start = (self.audio_starts[i] as f64 * unit) as i64;
+            let Some(&pk_start) = a.starts.get(i) else { break };
             if pk_start >= s0.saturating_add(need) {
                 break;
             }
-            let pk = self.audio_packet(&mut st, i)?;
+            let pk = self.audio_packet(a, ainfo, &mut st, i)?;
             for (c, dst) in src.iter_mut().enumerate() {
                 let Some(chan) = pk.get(c.min(pk.len().saturating_sub(1))) else { continue };
                 for (k, v) in chan.iter().enumerate() {
@@ -441,6 +437,37 @@ impl MediaSource for Mp4Source {
         }
         Ok(out)
     }
+}
+
+/// What the file says about one audio track (`None`: the track has no sample description).
+fn audio_stream_info(t: &filmcraft_isobmff::Track, bytes: &crate::Src) -> Option<AudioStreamInfo> {
+    let entry = t.entries.first()?;
+    let ap = entry.audio.clone().unwrap_or_default();
+    let (rate, ch, bits) = match &entry.codec {
+        CodecConfig::Aac(a) => (
+            {
+                // HE-AAC plays at twice the core rate the AudioSpecificConfig starts with
+                // an AAC access unit is at most 6144 bits per channel: a hostile `stsz` can't make us read more
+                let units = t
+                    .samples
+                    .iter()
+                    .take(8)
+                    .filter_map(|x| filmcraft_media::reader::read_range(&*bytes.0, x.offset, (x.size as usize).min(MAX_AAC_PROBE_UNIT)).ok());
+                let units: Vec<Vec<u8>> = units.collect();
+                match crate::audio::aac_output_rate(&a.asc, units.iter().map(Vec::as_slice)) {
+                    Some(r) => r,
+                    None if a.sample_rate > 0 => a.sample_rate,
+                    None => ap.sample_rate as u32,
+                }
+            },
+            if a.channel_config > 0 { a.channel_config as u32 } else { ap.channels },
+            None,
+        ),
+        CodecConfig::Pcm(p) => (p.sample_rate as u32, p.channels, Some(p.bits as u32)),
+        CodecConfig::Opus(o) => (crate::audio::OPUS_RATE, (o.output_channels as u32).max(1), None),
+        _ => (if ap.sample_rate > 0.0 { ap.sample_rate as u32 } else { t.timescale }, ap.channels.max(1), None),
+    };
+    Some(AudioStreamInfo { sample_rate: rate.max(1), channels: ch.max(1), codec: codec_label(&entry.codec), bits_per_sample: bits })
 }
 
 fn codec_label(c: &CodecConfig) -> String {
@@ -804,6 +831,33 @@ mod tests {
 }
 
 #[cfg(test)]
+mod multi_audio_tests {
+    use filmcraft_isobmff::{Brand, Mp4Writer, PcmConfig, SampleEntry, TrackConfig, WriteSample, WriterOptions};
+    use filmcraft_media::MediaSource;
+
+    /// Two mono PCM tracks with different rates and samples. Stream indices follow file order;
+    /// decoder caches, sample timing and resampling must not cross streams.
+    #[test]
+    fn every_audio_track_is_inspected_and_decoded_independently() {
+        let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).unwrap();
+        for (rate, value) in [(48_000u32, 8192i16), (24_000, -16384)] {
+            let entry = SampleEntry::pcm(PcmConfig { bits: 16, float: false, big_endian: false, signed: true, channels: 1, sample_rate: rate as f64 });
+            let track = mux.add_track(TrackConfig::new(entry, rate)).unwrap();
+            let data: Vec<u8> = (0..rate / 10).flat_map(|_| value.to_le_bytes()).collect();
+            mux.write_sample(track, WriteSample { data: &data, duration: rate / 10, composition_offset: 0, is_sync: true }).unwrap();
+        }
+        let bytes = mux.finish().unwrap().into_inner();
+        let source = super::Mp4Source::open("two.mov", bytes.into()).unwrap();
+        assert_eq!(source.info().audio_streams.iter().map(|a| a.sample_rate).collect::<Vec<_>>(), vec![48_000, 24_000]);
+        let primary = source.audio(0, 100, 48_000).unwrap();
+        let secondary = source.audio_stream(1, 0, 100, 48_000).unwrap();
+        assert!((primary.channels[0][50] - 0.25).abs() < 0.001);
+        assert!((secondary.channels[0][50] + 0.5).abs() < 0.001);
+        assert!(source.audio_stream(2, 0, 100, 48_000).is_err());
+    }
+}
+
+#[cfg(test)]
 mod he_aac_tests {
     use filmcraft_isobmff::{Brand, Mp4Writer, SampleEntry, TrackConfig, WriteSample, WriterOptions};
     use filmcraft_media::MediaSource;
@@ -829,7 +883,7 @@ mod he_aac_tests {
         }
         let b = mux.finish().unwrap().into_inner();
         let src = super::Mp4Source::open("he.mp4", b.into()).unwrap();
-        assert_eq!(src.info().audio.as_ref().unwrap().sample_rate, 44_100);
+        assert_eq!(src.info().audio().unwrap().sample_rate, 44_100);
         // one second from 0.5 s at 44.1 kHz: the 1 kHz tone at its level (not silence, not shifted)
         let buf = src.audio(22_050, 44_100, 44_100).unwrap();
         let x = &buf.channels[0];

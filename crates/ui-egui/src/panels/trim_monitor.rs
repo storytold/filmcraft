@@ -14,7 +14,8 @@
 //! `trimMonitor.playAround`, `trimMonitor.exit`.
 
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
-use filmcraft_project::{ItemKind, Sequence, Track};
+use filmcraft_edit::Edge;
+use filmcraft_project::{ClipId, ItemKind, Sequence, Track, TrackId};
 use filmcraft_time::{Tick, TimeDisplay, format_time};
 use serde_json::{Value, json};
 
@@ -22,6 +23,7 @@ use crate::FilmcraftApp;
 use crate::frames::{FrameKey, Target};
 use crate::icons::{self, Icon};
 use crate::panels::timeline::{Layout, Row};
+use crate::panels::timeline_hit::EdgeKind;
 use crate::theme::Tokens;
 
 /// Ripple edit points are red, roll / regular trims yellow (as in Premiere's timeline).
@@ -79,16 +81,37 @@ pub fn paint_edit_points(app: &FilmcraftApp, p: &egui::Painter, seq: &Sequence, 
         let col = if ep.kind == TrimKind::Ripple { RIPPLE_RED } else { ROLL_YELLOW };
         for (clip, out) in marks {
             let Some(it) = tr.item(clip) else { continue };
-            let x = layout.x_of(if out { it.end() } else { it.start });
-            let (y0, y1) = (row.rect.min.y + 2.0, row.rect.max.y - 2.0);
-            let dir = if out { -1.0 } else { 1.0 };
-            let xi = x + dir * 1.5;
-            let w = 6.0 * dir;
-            let s = Stroke::new(3.0, col);
-            p.line_segment([pos2(xi, y0), pos2(xi, y1)], s);
-            p.line_segment([pos2(xi, y0 + 1.0), pos2(xi + w, y0 + 1.0)], s);
-            p.line_segment([pos2(xi, y1 - 1.0), pos2(xi + w, y1 - 1.0)], s);
+            paint_bracket(p, layout.x_of(if out { it.end() } else { it.start }), row, out, col);
         }
+    }
+}
+
+/// A trim bracket at `x` on `row`, its arms pointing into the clip (left for an Out edge).
+pub fn paint_bracket(p: &egui::Painter, x: f32, row: &Row, out: bool, col: Color32) {
+    let (y0, y1) = (row.rect.min.y + 2.0, row.rect.max.y - 2.0);
+    let dir = if out { -1.0 } else { 1.0 };
+    let xi = x + dir * 1.5;
+    let w = 6.0 * dir;
+    let s = Stroke::new(3.0, col);
+    p.line_segment([pos2(xi, y0), pos2(xi, y1)], s);
+    p.line_segment([pos2(xi, y0 + 1.0), pos2(xi + w, y0 + 1.0)], s);
+    p.line_segment([pos2(xi, y1 - 1.0), pos2(xi + w, y1 - 1.0)], s);
+}
+
+/// The bracket on the edge a press would grab (#259): an edit point's bracket at half strength,
+/// red for a ripple and yellow otherwise; a roll marks both sides of the cut.
+pub fn paint_hover_bracket(p: &egui::Painter, seq: &Sequence, layout: &Layout, track: TrackId, clip: ClipId, edge: Edge, kind: EdgeKind) {
+    let Some(row) = layout.rows.iter().find(|r| r.track == track) else { return };
+    let Some(tr) = seq.track(track) else { return };
+    let full = if kind == EdgeKind::Ripple { RIPPLE_RED } else { ROLL_YELLOW };
+    let col = full.gamma_multiply(0.5);
+    let marks = match kind {
+        EdgeKind::Roll { left, right } => vec![(left, true), (right, false)],
+        _ => vec![(clip, edge == Edge::Out)],
+    };
+    for (c, out) in marks {
+        let Some(it) = tr.item(c) else { continue };
+        paint_bracket(p, layout.x_of(if out { it.end() } else { it.start }), row, out, col);
     }
 }
 
@@ -173,8 +196,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let col = if kind == "ripple" { RIPPLE_RED } else { ROLL_YELLOW };
     // headers: clip names
     for (side, r, key) in [(&info["outgoing"], left, "outgoing"), (&info["incoming"], right, "incoming")] {
-        let name = side["name"].as_str().map(|n| format!("{} ({})", n, side["track"].as_str().unwrap_or(""))).unwrap_or_else(|| "(gap)".into());
-        let label = if key == "outgoing" { format!("Out: {name}") } else { format!("In: {name}") };
+        let name = side["name"].as_str().map(|n| format!("{} ({})", n, side["track"].as_str().unwrap_or(""))).unwrap_or_else(|| tl!("(gap)").into());
+        let label = if key == "outgoing" { tlf!("Out: {name}", name) } else { tlf!("In: {name}", name) };
         ui.painter().text(pos2(r.min.x + 2.0, rect.min.y + 4.0 + header_h / 2.0), Align2::LEFT_CENTER, label, Tokens::ui(11.5), t.text_dim);
     }
     let mut pics = [left, right];
@@ -182,7 +205,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if side.is_null() {
             let p = fit(r, 16.0, 9.0);
             ui.painter().rect_filled(p, 0.0, Color32::BLACK);
-            ui.painter().text(p.center(), Align2::CENTER_CENTER, "(gap)", Tokens::ui(12.0), t.text_faint);
+            ui.painter().text(p.center(), Align2::CENTER_CENTER, tl!("(gap)"), Tokens::ui(12.0), t.text_faint);
             pics[i] = p;
         } else {
             pics[i] = picture(app, ui, r, side, if i == 0 { "trim-outgoing" } else { "trim-incoming" });
@@ -259,12 +282,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let n = info["largeTrimOffset"].as_i64().unwrap_or(5);
     let bar = Rect::from_min_size(pos2(rect.min.x, row.max.y + 6.0), vec2(rect.width(), 28.0));
     let buttons: [(&str, String, &str, f32); 6] = [
-        ("trimMonitor.playAround", String::new(), "Play Around Edit (Space loops, Shift+K once)", 30.0),
-        ("trimMonitor.backwardMany", format!("−{n}"), "Trim Backward Many", 40.0),
-        ("trimMonitor.backward", "−1".into(), "Trim Backward", 40.0),
-        ("trimMonitor.applyTransition", "Apply Default Transitions".into(), "Apply Default Transitions to Selection (Shift+D)", 176.0),
-        ("trimMonitor.forward", "+1".into(), "Trim Forward", 40.0),
-        ("trimMonitor.forwardMany", format!("+{n}"), "Trim Forward Many", 40.0),
+        ("trimMonitor.playAround", String::new(), tl!("Play Around Edit (Space loops, Shift+K once)"), 30.0),
+        ("trimMonitor.backwardMany", format!("−{n}"), tl!("Trim Backward Many"), 40.0),
+        ("trimMonitor.backward", "−1".into(), tl!("Trim Backward"), 40.0),
+        ("trimMonitor.applyTransition", tl!("Apply Default Transitions").into(), tl!("Apply Default Transitions to Selection (Shift+D)"), 176.0),
+        ("trimMonitor.forward", "+1".into(), tl!("Trim Forward"), 40.0),
+        ("trimMonitor.forwardMany", format!("+{n}"), tl!("Trim Forward Many"), 40.0),
     ];
     let total: f32 = buttons.iter().map(|b| b.3 + 4.0).sum();
     let mut x = bar.center().x - total / 2.0;
@@ -304,7 +327,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     // exit trim mode
     let r = Rect::from_min_size(pos2(rect.max.x - 30.0, bar.min.y + 3.0), vec2(22.0, 22.0));
-    let resp = ui.interact(r, egui::Id::new("trimMonitor.exit"), Sense::click()).on_hover_text("Exit Trim Mode");
+    let resp = ui.interact(r, egui::Id::new("trimMonitor.exit"), Sense::click()).on_hover_text(tl!("Exit Trim Mode"));
     let c = if resp.hovered() { t.tab_text_active } else { t.text_dim };
     ui.painter().line_segment([r.min + vec2(6.0, 6.0), r.max - vec2(6.0, 6.0)], Stroke::new(1.5, c));
     ui.painter().line_segment([pos2(r.max.x - 6.0, r.min.y + 6.0), pos2(r.min.x + 6.0, r.max.y - 6.0)], Stroke::new(1.5, c));

@@ -313,6 +313,45 @@ fn audio_gain_modes_and_peak() {
 }
 
 #[test]
+fn audio_gain_reports_only_audio_items_it_updates() {
+    for mode in ["set", "adjust"] {
+        for target in [29, 30] {
+            for linked in [true, false] {
+                let mut s = demo();
+                s.execute("sequence.linkedSelection", json!({"on": linked})).unwrap();
+                let r = s.execute("clip.audioGain", json!({"clips": [target], "mode": mode, "db": -6})).unwrap();
+                let applied = linked || target == 30;
+                assert_eq!(r["clips"], usize::from(applied), "{mode}, target {target}, linked {linked}: {r}");
+                assert_eq!(r["gainDb"], if applied { json!([{"clip": 30, "gainDb": -6.0}]) } else { json!([]) });
+                let q = s.active_sequence().unwrap();
+                assert_eq!(q.find_item(ClipId(29)).unwrap().1.gain_db, 0.0);
+                assert_eq!(q.find_item(ClipId(30)).unwrap().1.gain_db, if applied { -6.0 } else { 0.0 });
+                if applied {
+                    s.execute("edit.undo", json!({})).unwrap();
+                    assert_eq!(s.active_sequence().unwrap().find_item(ClipId(30)).unwrap().1.gain_db, 0.0);
+                    s.execute("edit.redo", json!({})).unwrap();
+                    assert_eq!(s.active_sequence().unwrap().find_item(ClipId(30)).unwrap().1.gain_db, -6.0);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn audio_gain_reports_the_clamped_stored_gain() {
+    for mode in ["set", "adjust"] {
+        for db in [-200.0_f64, 200.0] {
+            let mut s = demo();
+            s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+            let r = s.execute("clip.audioGain", json!({"clips": [30], "mode": mode, "db": db})).unwrap();
+            let stored = s.active_sequence().unwrap().find_item(ClipId(30)).unwrap().1.gain_db;
+            assert_eq!(stored, db.clamp(-96.0, 96.0));
+            assert_eq!(r["gainDb"], json!([{"clip": 30, "gainDb": stored}]));
+        }
+    }
+}
+
+#[test]
 fn default_audio_transition_is_used_by_apply() {
     let mut s = demo();
     s.execute("effects.setDefaultTransition", json!({"effect": "Exponential Fade"})).unwrap();

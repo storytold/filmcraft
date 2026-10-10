@@ -96,18 +96,25 @@ pub(crate) fn graphic_source(p: &mut filmcraft_project::Project, w: u32, h: u32,
 
 /// Place a new graphic clip holding `layer` at the playhead: on the first video track above the
 /// topmost clip at the playhead that is free for the duration (a track is added if needed).
-fn new_graphic_clip(s: &mut Session, layer: filmcraft_project::EffectInstance, name: &str, p: &Value) -> Result<ClipId> {
+fn new_graphic_clip(s: &mut Session, cmd: &str, layer: filmcraft_project::EffectInstance, name: &str, p: &Value) -> Result<ClipId> {
     let seconds = f64_p(p, "seconds").unwrap_or(5.0).max(0.01);
-    place_video_clip(s, name, p, "New Graphic", vec![layer], move |pr, (w, h, rate)| {
+    // Here `seconds` is duration, not the generic time parser's placement alias.
+    let mut placement = p.clone();
+    if let Some(params) = placement.as_object_mut() {
+        params.remove("seconds");
+    }
+    place_video_clip(s, cmd, name, &placement, "New Graphic", vec![layer], move |pr, (w, h, rate)| {
         let src = graphic_source(pr, w, h, rate);
         (src, rate.snap_nearest(Tick::from_seconds_f64(seconds)).max(rate.frame_duration()))
     })
 }
 
 /// Place a video clip of the item `source` returns (with its duration) at the playhead (or
-/// `time`), above the clips there, as one undo step; selects it.
+/// `time`), above the clips there, as one undo step; selects it. `cmd` is the command that asked,
+/// for its errors.
 pub(crate) fn place_video_clip(
     s: &mut Session,
+    cmd: &str,
     name: &str,
     p: &Value,
     label: &str,
@@ -128,7 +135,7 @@ pub(crate) fn place_video_clip(
         let src_size = pr.source_size(src).unwrap_or((w, h));
         let t = rate.snap(t);
         let dur = dur.max(rate.frame_duration());
-        let mut ti = pr.make_track_item(src, TrackKind::Video, t, TimeRange::new(Tick::ZERO, dur), rate).ok_or_else(|| bad("graphics.newText", "bad item"))?;
+        let mut ti = pr.make_track_item(src, TrackKind::Video, t, TimeRange::new(Tick::ZERO, dur), rate).ok_or_else(|| bad(cmd, "bad item"))?;
         ti.name = name;
         ti.effects.extend(extra);
         for e in &mut ti.effects {
@@ -141,7 +148,7 @@ pub(crate) fn place_video_clip(
         let free = |tr: &filmcraft_project::Track| !tr.items.iter().any(|i| i.range().overlaps(&range));
         let idx = match want_track {
             Some(i) if i < q.video_tracks.len() && free(&q.video_tracks[i]) => i,
-            Some(i) if i < q.video_tracks.len() => return Err(bad("graphics.newText", format!("V{} is not free here", i + 1))),
+            Some(i) if i < q.video_tracks.len() => return Err(bad(cmd, format!("V{} is not free here", i + 1))),
             _ => {
                 let top = q.video_tracks.iter().rposition(|tr| tr.item_at(t).is_some()).map_or(0, |k| k + 1);
                 match (top..q.video_tracks.len()).find(|&i| free(&q.video_tracks[i]) && !q.video_tracks[i].locked) {
@@ -185,6 +192,10 @@ fn param_id(k: &str) -> &str {
         "fontSize" => "size",
         "fontStyle" | "style" => "font_style",
         "fillColor" | "color" => "fill_color",
+        "fillKind" => "fill_kind",
+        "gradientStart" => "gradient_start",
+        "gradientEnd" => "gradient_end",
+        "gradientAngle" => "gradient_angle",
         "strokeColor" => "stroke_color",
         "strokeWidth" => "stroke_width",
         "backgroundColor" => "background_color",
@@ -207,6 +218,7 @@ pub(crate) fn to_param(template: &ParamValue, id: &str, v: &Value) -> Option<Par
             "align" => graphic::ALIGN_OPTS,
             "caps" => graphic::CAPS_OPTS,
             "stroke_type" | "stroke2_type" => graphic::STROKE_OPTS,
+            "fill_kind" => graphic::FILL_KIND_OPTS,
             "shape" => SHAPE_OPTS,
             _ => &[],
         };
@@ -698,7 +710,7 @@ fn menu_commands() -> Vec<CommandSpec> {
             "Rectangle",
             &["Graphics and Titles", "New Layer"],
             Some("Cmd+Alt+R"),
-            r#"{"position":[x,y]?,"size":[w,h]=[400,200],"clip":id?}"#,
+            r#"{"position":[x,y]?,"size":[w,h]=[400,200],"clip":id?,"seconds":f64=5,"track":index?,"time":ticks?}"#,
             has_seq,
             |s, p| new_shape_cmd(s, p, "rectangle"),
         ),
@@ -707,7 +719,7 @@ fn menu_commands() -> Vec<CommandSpec> {
             "Ellipse",
             &["Graphics and Titles", "New Layer"],
             Some("Cmd+Alt+E"),
-            r#"{"position":[x,y]?,"size":[w,h]=[400,200],"clip":id?}"#,
+            r#"{"position":[x,y]?,"size":[w,h]=[400,200],"clip":id?,"seconds":f64=5,"track":index?,"time":ticks?}"#,
             has_seq,
             |s, p| new_shape_cmd(s, p, "ellipse"),
         ),
@@ -716,7 +728,7 @@ fn menu_commands() -> Vec<CommandSpec> {
             "Polygon",
             &["Graphics and Titles", "New Layer"],
             None,
-            r#"{"position":[x,y]?,"size":[w,h]=[300,300],"sides":n=6,"clip":id?}"#,
+            r#"{"position":[x,y]?,"size":[w,h]=[300,300],"sides":n=6,"clip":id?,"seconds":f64=5,"track":index?,"time":ticks?}"#,
             has_seq,
             |s, p| {
                 let mut q = if p.is_object() { p.clone() } else { json!({}) };
@@ -761,7 +773,7 @@ fn menu_commands() -> Vec<CommandSpec> {
                     return Err(bad("graphics.newFromFile", "the file has no picture"));
                 }
                 let (name, dur) = (pi.name.clone(), pi.duration());
-                let clip = place_video_clip(s, &name, p, "New Layer from File", Vec::new(), move |_, _| (item, dur))?;
+                let clip = place_video_clip(s, "graphics.newFromFile", &name, p, "New Layer from File", Vec::new(), move |_, _| (item, dur))?;
                 s.state.graphic_layers.clear();
                 Ok(json!({"clip": clip.0, "item": item.0}))
             },
@@ -897,7 +909,7 @@ pub fn commands() -> Vec<CommandSpec> {
                     Some(c) => (c, add_layer(s, c, layer)?),
                     None => {
                         let name = text.lines().next().filter(|l| !l.trim().is_empty()).unwrap_or("Graphic").to_string();
-                        (new_graphic_clip(s, layer, &name, p)?, 0)
+                        (new_graphic_clip(s, "graphics.newText", layer, &name, p)?, 0)
                     }
                 };
                 Ok(json!({"clip": clip.0, "layer": layer_i}))
@@ -908,7 +920,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "Shape",
             &[],
             None,
-            r#"{"shape":"rectangle|ellipse|polygon|path","position":[x,y]?,"size":[w,h]=[400,200],"points":[[x,y],…]?,"clip":id?,"seconds":f64=5}"#,
+            r#"{"shape":"rectangle|ellipse|polygon|path","position":[x,y]? (the shape's centre),"size":[w,h]=[400,200],"points":[[x,y],…]?,"clip":id? (add the shape to this graphic),"seconds":f64=5,"track":index?,"time":ticks?}"#,
             has_seq,
             |s, p| {
                 let shape = str_p(p, "shape").unwrap_or("rectangle").to_ascii_lowercase();
@@ -931,7 +943,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 let into = u64_p(p, "clip").map(ClipId).filter(|c| s.active_sequence().is_some_and(|q| is_graphic(s, q, *c)));
                 let (clip, layer_i) = match into {
                     Some(c) => (c, add_layer(s, c, layer)?),
-                    None => (new_graphic_clip(s, layer, "Shape", p)?, 0),
+                    None => (new_graphic_clip(s, "graphics.newShape", layer, "Shape", p)?, 0),
                 };
                 Ok(json!({"clip": clip.0, "layer": layer_i}))
             },

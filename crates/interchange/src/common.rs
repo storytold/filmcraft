@@ -81,6 +81,15 @@ pub fn file_url_to_path(url: &str) -> String {
 /// Convert an absolute path to a `file://` URL (`localhost` form for FCP7 XML).
 pub fn path_to_file_url(path: &str, localhost: bool) -> String {
     let p = path.replace('\\', "/");
+    // Windows verbatim paths (`\\?\C:\x`, `\\?\UNC\server\share`, as `canonicalize` returns them)
+    // are not network shares: drop the prefix so `?` doesn't become the URL's host.
+    let p = if let Some(unc) = p.strip_prefix("//?/UNC/") {
+        format!("//{unc}")
+    } else if let Some(local) = p.strip_prefix("//?/") {
+        local.to_string()
+    } else {
+        p
+    };
     let host = if localhost { "localhost" } else { "" };
     if is_windows_abs(&p) {
         format!("file://{host}/{}", percent_encode_path(&p))
@@ -251,7 +260,11 @@ pub(crate) fn media_info(name: &str, spec: &MediaSpec) -> MediaInfo {
             bitrate: None,
             hdr: None,
         }),
-        audio: spec.audio.map(|(sr, ch)| AudioStreamInfo { sample_rate: sr, channels: ch, codec: String::new(), bits_per_sample: None }),
+        audio_streams: spec
+            .audio
+            .map(|(sr, ch)| AudioStreamInfo { sample_rate: sr, channels: ch, codec: String::new(), bits_per_sample: None })
+            .into_iter()
+            .collect(),
         container: String::new(),
         start_timecode: spec.start_tc,
         file_size: None,
@@ -443,6 +456,7 @@ impl Builder {
             hold_filters: false,
             field_options: None,
             source_channels: Vec::new(),
+            audio_stream: 0,
             graphic: None,
         }
     }
@@ -670,6 +684,8 @@ mod tests {
         assert_eq!(file_url_to_path("/plain/path.mov"), "/plain/path.mov");
         assert_eq!(path_to_file_url("/Users/me/My Clip.mov", true), "file://localhost/Users/me/My%20Clip.mov");
         assert_eq!(path_to_file_url("C:\\Media\\a b.mxf", false), "file:///C:/Media/a%20b.mxf");
+        assert_eq!(path_to_file_url("\\\\?\\C:\\Media\\a.mp4", true), "file://localhost/C:/Media/a.mp4");
+        assert_eq!(path_to_file_url("\\\\?\\UNC\\srv\\share\\a.mp4", false), "file://srv/share/a.mp4");
         for p in ["/a/b c/ü.mov", "C:/x/y.mp4", "/r/%/#?.mov"] {
             assert_eq!(file_url_to_path(&path_to_file_url(p, true)), p);
             assert_eq!(file_url_to_path(&path_to_file_url(p, false)), p);

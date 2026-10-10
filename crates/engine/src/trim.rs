@@ -169,7 +169,7 @@ pub fn toggle_type(s: &mut Session) -> Result<Value> {
 
 /// Trim every selected edit point by `delta` (edit point movement; positive = later).
 fn trim_all(s: &mut Session, delta: Tick) -> Result<Value> {
-    let applied = trim_all_raw(s, delta)?;
+    let applied = trim_all_raw(s, &|_, _| Some(delta))?;
     let first = applied.first().and_then(Value::as_i64).map(Tick).unwrap_or_default();
     add_shift(s, first);
     Ok(json!({"applied": applied}))
@@ -193,7 +193,8 @@ fn reset_shift(s: &mut Session) {
     s.state.trim_shift = TrimShift::default();
 }
 
-fn trim_all_raw(s: &mut Session, delta: Tick) -> Result<Vec<Value>> {
+/// Trim every selected edit point; `delta_for` gives each point's own movement, read from the sequence as it is when that point is reached.
+fn trim_all_raw(s: &mut Session, delta_for: &dyn Fn(&Sequence, &EditPoint) -> Option<Tick>) -> Result<Vec<Value>> {
     if s.state.edit_points.is_empty() {
         return Err(EngineError::Other("no edit points selected".into()));
     }
@@ -201,6 +202,7 @@ fn trim_all_raw(s: &mut Session, delta: Tick) -> Result<Vec<Value>> {
     let mut applied = Vec::new();
     for ep in &pts {
         let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+        let Some(delta) = delta_for(seq, ep) else { continue };
         let r = match ep.kind {
             TrimKind::Roll => {
                 let Some((l, r)) = roll_pair(seq, ep) else { continue };
@@ -226,9 +228,10 @@ pub fn nudge(s: &mut Session, p: &Value) -> Result<Value> {
 /// `trim.extendToPlayhead`: move each selected edit point to the playhead.
 pub fn extend_to_playhead(s: &mut Session) -> Result<Value> {
     let ph = s.playhead();
-    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
-    let first = s.state.edit_points.first().and_then(|e| edit_time(seq, e)).ok_or_else(|| EngineError::Other("no edit points selected".into()))?;
-    trim_all(s, ph - first)
+    let applied = trim_all_raw(s, &|seq, e| edit_time(seq, e).map(|t| ph - t))?;
+    let first = applied.first().and_then(Value::as_i64).map(Tick).unwrap_or_default();
+    add_shift(s, first);
+    Ok(json!({"applied": applied}))
 }
 
 /// `trim.toPlayhead {side: "previous"|"next", ripple}` (Q/W, ⌥Q/⌥W): remove the material between
@@ -502,14 +505,14 @@ fn apply_dynamic(s: &mut Session, offset: Tick) -> Result<Tick> {
     let redo = std::mem::take(&mut s.history.redo);
     s.history.limit = usize::MAX;
     s.project = d.before.clone();
-    let r = if offset == Tick::ZERO { Ok(vec![json!(0)]) } else { trim_all_raw(s, offset) };
+    let r = if offset == Tick::ZERO { Ok(vec![json!(0)]) } else { trim_all_raw(s, &|_, _| Some(offset)) };
     let applied = match r {
         Ok(a) => a.first().and_then(Value::as_i64).map(Tick).unwrap_or_default(),
         Err(_) => {
             // refused outright (e.g. it would break sync): stay where we were
             s.project = d.before.clone();
             if d.offset != Tick::ZERO {
-                let _ = trim_all_raw(s, d.offset);
+                let _ = trim_all_raw(s, &|_, _| Some(d.offset));
             }
             d.offset
         }

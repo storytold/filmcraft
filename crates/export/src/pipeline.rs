@@ -12,7 +12,7 @@ use filmcraft_time::FrameRate;
 use rayon::prelude::*;
 
 use crate::settings::{ExportEffects, Placement, Scaling, TextOverlay};
-use crate::{ExportError, ExportSettings, Result};
+use crate::{ExportError, ExportSettings, Format, Result};
 
 /// Where the rendered picture lands in the output frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -61,11 +61,29 @@ pub(crate) struct Pipeline {
     geom: Geometry,
     opts: RenderOptions,
     pub hdr_out: bool,
+    /// Keep straight alpha in the RGBA8 output instead of flattening over black.
+    alpha: bool,
     out_tf: Option<filmcraft_color::OutputTransform>,
     effects: ExportEffects,
     overlay: Option<Image>,
     start_tc: i64,
     drop_frame: bool,
+    /// Free the pool's float images when the export ends: a standalone export, not one part of a
+    /// batch (`ExportSettings::part_of_batch`).
+    trim_pool: bool,
+}
+
+impl Drop for Pipeline {
+    /// The export is over, however it ended (done, failed, cancelled, dropped half way). The float
+    /// images its frames left on the `filmcraft_frame::pool` float shelf are the size of its
+    /// frames, which nothing else asks for, so free them instead of holding up to 320 MiB idle. A
+    /// job still rendering at that moment allocates a few images again; the pool is only a cache.
+    /// Parts of a larger job (render-preview segments, proxies) keep them for the next part.
+    fn drop(&mut self) {
+        if self.trim_pool {
+            filmcraft_frame::pool::trim_f32();
+        }
+    }
 }
 
 impl Pipeline {
@@ -98,6 +116,7 @@ impl Pipeline {
             seq_rate: q.settings.frame_rate,
             start_tc: q.start_timecode,
             drop_frame: q.settings.drop_frame,
+            trim_pool: !settings.part_of_batch,
             project: project.clone(),
             seq,
             rate: r.rate,
@@ -106,6 +125,7 @@ impl Pipeline {
             geom,
             opts,
             hdr_out,
+            alpha: settings.alpha && matches!(settings.format, Format::PngSequence | Format::TiffSequence),
             out_tf,
             effects,
             overlay,
@@ -134,7 +154,7 @@ impl Pipeline {
             filmcraft_frame::pool::recycle_f32(img.px);
             return (Vec::new(), out);
         }
-        let mut rgba = img.over_black_rgba8();
+        let mut rgba = if self.alpha { img.to_rgba8() } else { img.over_black_rgba8() };
         // the float image is not needed any more: its buffer serves the next frame's layers
         filmcraft_frame::pool::recycle_f32(img.px);
         if lim.enabled {

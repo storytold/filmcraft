@@ -13,7 +13,7 @@
 //! configurations are declined, and a declined export fails with "encoder not available" instead of
 //! falling back; [`hevc_available`] tells the format list whether this machine can do it at all.
 
-use std::sync::OnceLock;
+use std::sync::{Once, OnceLock};
 
 use filmcraft_export::{BitrateMode, EncodedPacket, EncoderFrame, ExportError, ExportSettings, Format, H264Pass, H264Profile, HardwareEncoding, VideoEncoder};
 use filmcraft_isobmff::{AvcConfig, HevcConfig, SampleEntry};
@@ -66,11 +66,13 @@ pub fn config_for(w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Result
     })
 }
 
-/// Whether this machine has a hardware HEVC encoder (asked once, by creating a small session): what
-/// makes `Format::Hevc` available.
+static HEVC_PROBE: OnceLock<bool> = OnceLock::new();
+
+/// Whether this machine has a hardware HEVC encoder (asked once, by creating a small session, which
+/// takes about 0.1 s): what makes `Format::Hevc` available. [`warm_hevc_probe`] asks it ahead of the
+/// first caller.
 pub fn hevc_available() -> bool {
-    static AVAILABLE: OnceLock<bool> = OnceLock::new();
-    *AVAILABLE.get_or_init(|| {
+    *HEVC_PROBE.get_or_init(|| {
         let probe = VtConfig {
             width: 640,
             height: 360,
@@ -86,6 +88,27 @@ pub fn hevc_available() -> bool {
         }
         result.is_ok()
     })
+}
+
+/// Whether [`hevc_available`] has its answer yet (diagnostics and tests).
+pub fn hevc_probed() -> bool {
+    HEVC_PROBE.get().is_some()
+}
+
+/// Ask [`hevc_available`] now, on a thread of its own, so that the first draw of the format list does
+/// not spend its 0.1 s creating a hardware session on the UI thread. Whoever asks while the thread
+/// runs waits for the same answer (no longer than asking first); if the thread cannot start, or the
+/// probe panics, the first caller asks, as before. Only the first call starts a thread.
+pub fn warm_hevc_probe() {
+    static STARTED: Once = Once::new();
+    STARTED.call_once(|| {
+        let spawned = std::thread::Builder::new().name("filmcraft-hevc-probe".into()).spawn(|| {
+            let _ = std::panic::catch_unwind(hevc_available);
+        });
+        if let Err(why) = spawned {
+            log::info!("HEVC probe not started ahead of time: {why}");
+        }
+    });
 }
 
 /// The encoder factory `register` puts in front of the built-in ones: a hardware encoder when the
@@ -194,7 +217,7 @@ impl VideoEncoder for HardwareEncoder {
         if f.rgba.len() < w.saturating_mul(h).saturating_mul(4) {
             return Err(ExportError::Encode("the RGBA picture is smaller than its size".into()));
         }
-        filmcraft_export::rgba_to_yuv420_8(f.rgba, w, h, &mut self.y, &mut self.u, &mut self.v);
+        filmcraft_export::timed(filmcraft_export::Stage::Convert, || filmcraft_export::rgba_to_yuv420_8(f.rgba, w, h, &mut self.y, &mut self.u, &mut self.v));
         let packets = self.vt.encode(f.index, &self.y, &self.u, &self.v).map_err(ExportError::Encode)?;
         // the muxer needs the parameter sets after the first group of pictures
         if f.index == 0 {

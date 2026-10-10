@@ -175,3 +175,39 @@ fn naming_targets_lifts_only_the_selection_condition() {
     let _ = s.execute("edit.clear", json!({"clips": [a.id.0]}));
     assert!(clip(&s, a.id).is_some(), "a clip on a locked track is not removed");
 }
+
+/// `project.delete` with explicit ids needs no Project-panel selection, for bins as much as for
+/// items: the selection can hold both, so a named bin stands in for it (#244).
+#[test]
+fn project_delete_takes_explicit_bins_and_items_without_a_selection() {
+    let mut s = demo();
+    let before = s.project.items.len();
+    let empty = s.execute("file.newBin", json!({"name": "Empty"})).unwrap()["bin"].as_u64().unwrap();
+    let outer = s.execute("file.newBin", json!({"name": "Old footage"})).unwrap()["bin"].as_u64().unwrap();
+    let ocean = item_named(&s, "Ocean_Sunset.mp4");
+    s.execute("project.moveToBin", json!({"items": [ocean.0], "bin": outer})).unwrap();
+    s.state.project_selection.clear();
+    assert!(!s.is_enabled("project.delete"));
+    assert_eq!(disabled(s.execute("project.delete", json!({}))), "select an item in the Project panel");
+    // an empty bin, by its id alone
+    let r = s.execute("project.delete", json!({"items": [empty]})).unwrap();
+    assert_eq!(r, json!({"items": 0, "bins": 1}));
+    assert!(s.project.root.find_bin(filmcraft_project::BinId(empty)).is_none());
+    // a bin with a clip in it, and an item, each by id alone
+    let r = s.execute("project.delete", json!({"items": [outer]})).unwrap();
+    assert_eq!(r, json!({"items": 1, "bins": 1}));
+    assert!(s.project.item(ocean).is_none());
+    let dunes = item_named(&s, "Desert_Dunes.mp4");
+    let r = s.execute("project.delete", json!({"items": [dunes.0]})).unwrap();
+    assert_eq!(r, json!({"items": 1, "bins": 0}));
+    assert_eq!(s.project.items.len(), before - 2);
+    assert!(s.state.project_selection.is_empty(), "the selection is left as it was");
+    assert!(!s.is_enabled("project.delete"), "menu enablement still follows the selection");
+    // ids of nothing, or of the project's own top bin, do not stand in for a selection
+    let root = s.project.root.id.0;
+    assert_eq!(disabled(s.execute("project.delete", json!({"items": [root]}))), "select an item in the Project panel");
+    assert_eq!(disabled(s.execute("project.delete", json!({"items": [999_999]}))), "select an item in the Project panel");
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project.items.len(), before);
+}

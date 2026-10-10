@@ -81,12 +81,12 @@ async fn prewarm(path: &str, size: u64) {
 }
 
 /// `file.import` one path, retried while its bytes are loading.
-async fn import_path(path: String) -> Result<Value, String> {
+async fn import_path(path: String, bin: u64) -> Result<Value, String> {
     for _ in 0..2000 {
         let p = path.clone();
         let (r, pending) = on_ui(move |w, _| {
             let _ = filmcraft_media::pending::take();
-            let r = w.app.session.execute("file.import", json!({"paths": [p]})).map_err(|e| e.to_string());
+            let r = w.app.session.execute("file.import", json!({"paths": [p], "bin": bin})).map_err(|e| e.to_string());
             (r, filmcraft_media::pending::take())
         })
         .await;
@@ -105,6 +105,8 @@ async fn import_path(path: String) -> Result<Value, String> {
 
 /// Import browser files (no copies): returns `{items, errors, paths}`.
 pub async fn import_files(files: Vec<web_sys::File>) -> Value {
+    // Capture once per batch: navigation while prewarming must not redirect pending imports.
+    let bin = on_ui(|w, _| w.app.import_bin().0).await;
     let mut items = Vec::new();
     let mut errors = Vec::new();
     let mut paths = Vec::new();
@@ -113,7 +115,7 @@ pub async fn import_files(files: Vec<web_sys::File>) -> Value {
         let size = f.size() as u64;
         let path = fs::register_blob(&name, f.clone().into());
         prewarm(&path, size).await;
-        match import_path(path.clone()).await {
+        match import_path(path.clone(), bin).await {
             Ok(v) => {
                 items.extend(v.get("items").and_then(Value::as_array).cloned().unwrap_or_default());
                 errors.extend(v.get("errors").and_then(Value::as_array).cloned().unwrap_or_default());

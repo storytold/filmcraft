@@ -215,6 +215,23 @@ impl Face {
     pub fn has_char(&self, c: char) -> bool {
         self.glyph(c).is_some()
     }
+    /// Height of the glyph's vertical origin above its baseline, in pixels.
+    /// OpenType VORG takes precedence; TrueType uses the ink top plus vmtx's top bearing.
+    pub(crate) fn vertical_origin(&self, gid: u32, px: f32) -> Option<f32> {
+        use skrifa::raw::TableProvider;
+        let font = self.font()?;
+        let glyph = skrifa::GlyphId::new(gid);
+        let units = match font.vorg() {
+            Ok(table) => f32::from(table.vertical_origin_y(glyph)),
+            Err(_) => {
+                let bounds = font.glyph_metrics(Size::unscaled(), LocationRef::default()).bounds(glyph)?;
+                bounds.y_max + f32::from(font.vmtx().ok()?.side_bearing(glyph)?)
+            }
+        };
+        let origin = units * px / self.units_per_em();
+        (origin.is_finite() && origin.abs() < px * 4.0).then_some(origin)
+    }
+
     pub fn metrics(&self, px: f32) -> VMetrics {
         let Some(f) = self.font() else {
             return VMetrics {

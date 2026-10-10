@@ -10,8 +10,13 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{FileSystemDirectoryHandle, FileSystemFileHandle};
 
+/// Called with whether a queued write reached OPFS.
+pub type Done = Box<dyn FnOnce(bool)>;
+
 thread_local! {
-    static QUEUE: RefCell<(BTreeMap<String, Vec<u8>>, bool)> = const { RefCell::new((BTreeMap::new(), false)) };
+    /// Pending writes per path (bytes and the callbacks of every write coalesced into them), and
+    /// whether the writer task is running.
+    static QUEUE: RefCell<(BTreeMap<String, (Vec<u8>, Vec<Done>)>, bool)> = const { RefCell::new((BTreeMap::new(), false)) };
 }
 
 /// Whether this browser has OPFS (`navigator.storage.getDirectory`).
@@ -60,9 +65,17 @@ async fn write_now(rel: &str, data: &[u8]) -> Result<(), JsValue> {
 
 /// Queue a write of `data` to `rel` (relative to the OPFS root).
 pub fn write(rel: String, data: Vec<u8>) {
+    write_then(rel, data, None);
+}
+
+/// [`write`], then call `done` with whether it succeeded. A write replaced by a newer one to the
+/// same path reports the newer one's result.
+pub fn write_then(rel: String, data: Vec<u8>, done: Option<Done>) {
     let start = QUEUE.with(|q| {
         let mut q = q.borrow_mut();
-        q.0.insert(rel, data);
+        let e = q.0.entry(rel).or_default();
+        e.0 = data;
+        e.1.extend(done);
         !std::mem::replace(&mut q.1, true)
     });
     if !start {
@@ -81,9 +94,13 @@ pub fn write(rel: String, data: Vec<u8>) {
                     }
                 }
             });
-            let Some((rel, data)) = next else { break };
-            if let Err(e) = write_now(&rel, &data).await {
+            let Some((rel, (data, done))) = next else { break };
+            let r = write_now(&rel, &data).await;
+            if let Err(e) = &r {
                 log::warn!("OPFS write {rel}: {e:?}");
+            }
+            for d in done {
+                d(r.is_ok());
             }
         }
     });

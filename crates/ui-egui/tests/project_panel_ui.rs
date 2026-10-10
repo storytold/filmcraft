@@ -493,6 +493,34 @@ fn media_dir(tag: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn file_dialog_import_uses_shown_bin_unless_explicit() {
+    let dir = media_dir("import-bin");
+    let path = dir.join("a-interview.wav").to_string_lossy().into_owned();
+    let mut app = FilmcraftApp::new(Session::default());
+    app.hooks.pick_files = Some(Box::new(move |_| vec![path.clone()]));
+    let parent = app.session.execute("file.newBin", json!({"name": "Footage"})).unwrap()["bin"].as_u64().unwrap();
+    let child = app.session.execute("file.newBin", json!({"name": "Selects", "parent": parent})).unwrap()["bin"].as_u64().unwrap();
+    let root = app.session.project.root.id.0;
+    app.ui.project_panel.tabs.push(filmcraft_ui_egui::panels::project::BinTab { bin: parent, ..Default::default() });
+    for (shown, tab, params, expected) in [
+        (None, None, json!({}), root),
+        (Some(child), None, json!({}), child),
+        (Some(child), Some(0), json!({}), parent),
+        (Some(child), None, json!({"bin": null}), root),
+        (Some(parent), None, json!({"bin": child}), child),
+    ] {
+        app.ui.project_panel.bin = shown;
+        app.ui.project_panel.active_tab = tab;
+        let result = app.file_dialog("file.import", &params).unwrap();
+        assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+        let item = ItemId(result["items"][0].as_u64().unwrap());
+        let bin = app.session.project.root.find_bin(filmcraft_project::BinId(expected)).unwrap();
+        assert!(bin.children.contains(&BinEntry::Item(item)), "shown={shown:?}, tab={tab:?}, params={params}: expected bin {expected}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn media_browser_navigation_import_and_columns() {
     let dir = media_dir("nav");
     let d0 = dir.to_string_lossy().to_string();

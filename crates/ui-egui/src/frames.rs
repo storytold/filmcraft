@@ -35,6 +35,22 @@ pub enum Target {
     MulticamAngle(ItemId, u32),
 }
 
+/// Item jobs at this priority or a larger number are background work: thumbnails of the Project
+/// panel and the timeline (50) and the Media Browser (40). Monitors and playback use 0..=3. Their
+/// decoders are small and are not kept (`filmcraft_media::cancel::with_background`).
+pub const BACKGROUND_PRIO: u32 = 40;
+
+/// Whether a job is a thumbnail: a single item at a background priority. Sequence frames are never
+/// background, whatever their priority (the scopes ask for the program frame at 40 while playing,
+/// and must not turn the program's decoders into small ones).
+fn is_background(job: &Job) -> bool {
+    background_work(job.prio, job.key.target)
+}
+
+fn background_work(prio: u32, target: Target) -> bool {
+    prio >= BACKGROUND_PRIO && matches!(target, Target::Item(_))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FrameKey {
     pub target: Target,
@@ -234,6 +250,9 @@ impl filmcraft_media::MediaSource for TimedSource {
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
         self.0.audio(start, frames, sample_rate)
     }
+    fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+        self.0.audio_stream(stream, start, frames, sample_rate)
+    }
 }
 
 /// The job's source provider: the pool, with source fetches timed (the time feeds
@@ -258,10 +277,7 @@ pub struct GpuPlan {
 impl GpuPlan {
     /// Bytes this plan keeps alive (layer frames + converted texels).
     fn bytes(&self) -> usize {
-        let frames = match &self.plan {
-            filmcraft_render::plan::FramePlan::Layers { layers, .. } => layers.iter().map(|l| l.frame.byte_size()).sum(),
-            filmcraft_render::plan::FramePlan::Image(img) => img.px.len() * 4,
-        };
+        let frames = self.plan.source_bytes();
         frames + self.prepared.bytes()
     }
 }
@@ -535,10 +551,15 @@ impl FrameServer {
             // A new frame on screen for this view replaces the one asked for before: scrubbing
             // asks for one per refresh, and without this the oldest position would decode
             // first (or keep a decoder busy seeking to it) while the newest waits.
+            //
+            // A job already running for the same frame at an older revision (a value being
+            // dragged asks for a new revision per refresh) is left to finish: it needs the same
+            // source frames, so it holds no decoder back, and when frames take longer than a
+            // refresh, cancelling each one for the next would show nothing until the mouse rests.
             let same_view = |k: &FrameKey| k.target == key.target && k.size == key.size;
             q.retain(|j| !(j.prio == 0 && !j.prefetch && same_view(&j.key)));
             for (k, c, prefetch) in self.shared.in_flight.lock().unwrap_or_else(|e| e.into_inner()).iter() {
-                if !prefetch && *k != key && same_view(k) {
+                if !prefetch && same_view(k) && k.frame != key.frame {
                     c.store(true, Ordering::Relaxed);
                 }
             }
@@ -804,23 +825,25 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
     let preview = filmcraft_media::cancel::with_cancel(&job.cancel, || {
         filmcraft_media::cancel::with_catch_up(job.catch_up, || {
             filmcraft_media::cancel::with_draft(job.key.draft, || {
-                if let Target::SequencePlan(seq) = job.key.target {
-                    let (plan, pv) = plan_job(job, seq, pool, services, previews);
-                    loading = filmcraft_media::pending::take();
-                    if !job.cancel.load(Ordering::Relaxed) && !loading {
-                        // Convert texels for upload here, not on the UI thread when the frame is shown.
-                        let prepared = filmcraft_gpu::prepare(&plan);
-                        sh.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, GpuPlan { plan, prepared });
+                filmcraft_media::cancel::with_background(is_background(job), || {
+                    if let Target::SequencePlan(seq) = job.key.target {
+                        let (plan, pv) = plan_job(job, seq, pool, services, previews);
+                        loading = filmcraft_media::pending::take();
+                        if !job.cancel.load(Ordering::Relaxed) && !loading {
+                            // Convert texels for upload here, not on the UI thread when the frame is shown.
+                            let prepared = filmcraft_gpu::prepare(&plan);
+                            sh.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, GpuPlan { plan, prepared });
+                        }
+                        pv
+                    } else {
+                        let (img, pv) = render_job(job, pool, services, previews);
+                        loading = filmcraft_media::pending::take();
+                        if !job.cancel.load(Ordering::Relaxed) && !loading {
+                            sh.done.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, Arc::new(img));
+                        }
+                        pv
                     }
-                    pv
-                } else {
-                    let (img, pv) = render_job(job, pool, services, previews);
-                    loading = filmcraft_media::pending::take();
-                    if !job.cancel.load(Ordering::Relaxed) && !loading {
-                        sh.done.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, Arc::new(img));
-                    }
-                    pv
-                }
+                })
             })
         })
     });
@@ -949,7 +972,21 @@ fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, pr
 
 #[cfg(test)]
 mod tests {
-    use super::{PlaybackMeter, playback_plan};
+    use super::{PlaybackMeter, Target, background_work, playback_plan};
+    use filmcraft_project::ItemId;
+
+    #[test]
+    fn only_item_thumbnails_are_background_work() {
+        let item = Target::Item(ItemId(1));
+        // thumbnails (50) and the Media Browser (40)
+        assert!(background_work(50, item));
+        assert!(background_work(40, item));
+        // the Source monitor shows an item at a foreground priority
+        assert!(!background_work(1, item));
+        // the scopes ask for the program frame at 40 while playing: never background
+        assert!(!background_work(40, Target::Sequence(ItemId(1))));
+        assert!(!background_work(50, Target::SequencePlan(ItemId(1))));
+    }
 
     #[test]
     fn draft_decoding_only_for_reduced_resolution_playback() {

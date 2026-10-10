@@ -36,14 +36,38 @@ cargo run --release -p filmcraft-cli -- mcp --demo    # headless MCP server on s
 cargo xtask web --serve 8765                          # the web app on http://127.0.0.1:8765/ (docs/web.md)
 ```
 
-`FILMCRAFT_CONTROL_PORT=9876` works like `--control 9876`, and `FILMCRAFT_CPU_COMPOSITE=1`
-disables the GPU compositor.
+| Variable | Effect |
+|---|---|
+| `FILMCRAFT_CONTROL_PORT` | Same as `--control <port>` |
+| `FILMCRAFT_CPU_COMPOSITE=1` | Disables the GPU compositor |
+| `FILMCRAFT_DATA_DIR` | Same as `--data-dir <dir>`: auto-save, crash recovery, settings and logs |
+| `RUST_LOG` | Log levels for standard error and the log file (see [Logs](#logs)) |
+
 `filmcraft --help` lists the app's options. An option it does not know, or a control port that is
 not a number (from `--control` or from `FILMCRAFT_CONTROL_PORT`), is an error on stderr with exit
 code 2 instead of a window.
 
 Dev builds compile dependencies at `opt-level = 2` and workspace crates at `opt-level = 1`. For
 playback and codec speed, use `--release`.
+
+### Logs
+
+The desktop app writes its `log` records to standard error and to `Logs/filmcraft.log` in the data
+directory (`~/.local/share/filmcraft/Logs/` or `$XDG_DATA_HOME/filmcraft/Logs/` on Linux,
+`~/Library/Application Support/FilmCraft/Logs/` on macOS, `%APPDATA%\FilmCraft\Logs\` on Windows,
+or under `--data-dir` / `FILMCRAFT_DATA_DIR`), next to the crash logs; Help ▸ Reveal Log Files opens
+the folder. A start from a desktop menu or the Dock has no terminal, so this file is what to attach
+to a bug report: GPU compositor fallbacks, audio output problems, panicked frame jobs and container
+warnings all land there. Each launch moves the previous log to `filmcraft.1.log` (and that one to
+`filmcraft.2.log`), so the log of a run that crashed survives the next start. The file stops growing
+at 16 MiB. `--help`, `--version` and command-line errors write no file.
+
+By default FilmCraft's own crates log at `info` and everything else at `warn`. `RUST_LOG` replaces
+that with env_logger-style directives, for example `RUST_LOG=debug`,
+`RUST_LOG=warn,filmcraft_codecs=trace` or `RUST_LOG=info,wgpu_core=warn`; a directive ending in `*`
+covers every target starting with it (`filmcraft*=debug`). The logger is
+`apps/filmcraft/src/logging.rs`; the realtime audio callbacks do not log. The web app logs to the
+browser console instead.
 
 ### Building with craft-fonts
 
@@ -65,6 +89,15 @@ for sans text, Mincho for serif text). Without `CRAFT_FONTS_DIR`, `CRAFT_FONTS` 
 FilmCraft uses its bundled and system fonts. A `CRAFT_FONTS_DIR` that is not a checkout is a build
 warning, or an error with `CRAFT_FONTS_REQUIRED=1` (release builds set both). Tests on these fonts'
 glyphs skip when it is empty; when you touch fonts, run the gates both with and without it.
+
+Chinese media names and track labels use the `Hans` / `Hant` craft-fonts faces after the Japanese
+fallbacks in every UI font family, regardless of interface language (Japanese and Chinese share code
+points, so Japanese text keeps Japanese glyph forms; the Chinese faces cover hanzi the Japanese ones lack). Without those build inputs,
+native builds look up an installed Chinese face (for example Microsoft YaHei or Noto Sans CJK SC)
+once and reuse it across theme changes. No system font files are bundled or copied into the app.
+Web builds depend on the font faces selected by `crates/text/build.rs`; they cannot scan system fonts.
+`theme::tests::chinese_names_render_in_every_theme_and_font_family` verifies Chinese glyphs in the
+timeline's proportional, monospace, medium and semibold families under all three themes.
 
 ## 3. Quality gates
 

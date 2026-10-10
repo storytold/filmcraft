@@ -177,15 +177,64 @@ fn open(p: &Path) -> MpegSource {
     MpegSource::open(p.file_name().unwrap().to_str().unwrap(), bytes(p)).unwrap()
 }
 
-/// ffprobe's video frames in display order: pts (90 kHz).
+/// ffprobe's video frames in display order: PTS (90 kHz). A program-stream picture
+/// need not carry its own PTS; use the decoder's presentation timestamp for that picture.
 fn ffprobe_frame_pts(file: &Path) -> Option<Vec<i64>> {
-    let fp = filmcraft_testkit::ffprobe()?;
+    let fp = filmcraft_testkit::ffprobe_or_skip("MPEG video frame presentation timestamps")?;
     let o = std::process::Command::new(fp)
-        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "frame=pts", "-of", "csv=p=0"])
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "frame=pts,best_effort_timestamp", "-of", "json"])
         .arg(file)
         .output()
-        .ok()?;
-    Some(String::from_utf8_lossy(&o.stdout).lines().filter_map(|l| l.trim().trim_end_matches(',').parse().ok()).collect())
+        .unwrap_or_else(|error| panic!("{}: cannot run ffprobe: {error}", file.display()));
+    assert!(o.status.success(), "{}: ffprobe failed: {}", file.display(), String::from_utf8_lossy(&o.stderr));
+    Some(parse_ffprobe_frame_pts(&o.stdout).unwrap_or_else(|error| panic!("{}: {error}", file.display())))
+}
+
+fn parse_ffprobe_frame_pts(bytes: &[u8]) -> Result<Vec<i64>, String> {
+    let data: serde_json::Value = serde_json::from_slice(bytes).map_err(|error| format!("invalid ffprobe JSON: {error}"))?;
+    let frames = data.get("frames").and_then(serde_json::Value::as_array).ok_or("ffprobe output is missing its frames array")?;
+    if frames.is_empty() {
+        return Err("ffprobe returned no video frames".into());
+    }
+    frames
+        .iter()
+        .enumerate()
+        .map(|(index, frame)| {
+            let field = if frame.get("pts").is_some() { "pts" } else { "best_effort_timestamp" };
+            frame.get(field).and_then(serde_json::Value::as_i64).ok_or_else(|| format!("ffprobe video frame {index} is missing an integer {field}"))
+        })
+        .collect()
+}
+
+#[test]
+fn ffprobe_pts_preserve_missing_raw_timestamps_and_side_data() {
+    let output = br#"{"frames":[
+        {"pts":131400,"best_effort_timestamp":131401,"side_data_list":[{},{}]},
+        {"best_effort_timestamp":135000,"side_data_list":[{}]},
+        {"pts":138600,"best_effort_timestamp":138600}
+    ]}"#;
+    assert_eq!(parse_ffprobe_frame_pts(output).unwrap(), [131400, 135000, 138600], "keep every display frame, with raw PTS preferred when present");
+    assert_eq!(parse_ffprobe_frame_pts(br#"{"frames":[{"pts":-3600},{"pts":0},{"pts":9223372036854775807}]}"#).unwrap(), [-3600, 0, i64::MAX]);
+}
+
+#[test]
+fn malformed_ffprobe_pts_fail_instead_of_dropping_frames() {
+    for output in [
+        "not JSON",
+        "{}",
+        r#"{"frames":{}}"#,
+        r#"{"frames":[]}"#,
+        r#"{"frames":[{}]}"#,
+        r#"{"frames":[null]}"#,
+        r#"{"frames":[{"pts":"N/A","best_effort_timestamp":135000}]}"#,
+        r#"{"frames":[{"pts":null,"best_effort_timestamp":135000}]}"#,
+        r#"{"frames":[{"pts":1.5}]}"#,
+        r#"{"frames":[{"pts":9223372036854775808}]}"#,
+        r#"{"frames":[{"best_effort_timestamp":"135000"}]}"#,
+        r#"{"frames":[{"pts":131400},{"best_effort_timestamp":null},{"pts":138600}]}"#,
+    ] {
+        assert!(parse_ffprobe_frame_pts(output.as_bytes()).is_err(), "malformed oracle output must fail: {output}");
+    }
 }
 
 /// Decode every frame in order and `seeks` random frames; compare with ffmpeg within `tol`.
@@ -245,7 +294,7 @@ fn check_video(ff: &Path, file: &Path, tol: u16, seeks: usize) -> (u16, f64) {
 /// Our decoded audio from the first audio frame against ffmpeg's decode. Returns the max error.
 fn check_audio(ff: &Path, file: &Path, tol: f32) -> f32 {
     let src = open(file);
-    let a = src.info().audio.clone().unwrap();
+    let a = src.info().audio().cloned().unwrap();
     let (start, len) = src.audio_extent().unwrap();
     let want = ffmpeg_audio_f32(ff, file, &[]);
     let ch = a.channels as usize;
@@ -314,7 +363,7 @@ fn transport_stream_mpeg2_and_mp2() {
     let (worst, psnr) = check_video(&ff, &f, 4, 12);
     assert!(psnr >= 58.0, "PSNR {psnr}");
     println!("ts_mpeg2_mp2: video max diff {worst}, PSNR {psnr:.2} dB");
-    let a = src.info().audio.clone().unwrap();
+    let a = src.info().audio().cloned().unwrap();
     assert_eq!((a.codec.as_str(), a.sample_rate, a.channels), ("MPEG Audio", 48_000, 2));
     let e = check_audio(&ff, &f, 2e-4);
     println!("ts_mpeg2_mp2: MP2 audio max error {e:.2e}");
@@ -337,7 +386,7 @@ fn bdav_h264_with_lpcm_sample_exact() {
     let f = make(&ff, "m2ts_h264_lpcm.m2ts");
     let src = open(&f);
     assert_eq!(src.info().container, "MPEG-2 TS (BDAV/AVCHD)");
-    let a = src.info().audio.clone().unwrap();
+    let a = src.info().audio().cloned().unwrap();
     assert_eq!((a.codec.as_str(), a.channels, a.bits_per_sample), ("LPCM (Blu-ray)", 2, Some(24)));
     check_video(&ff, &f, 0, 10);
     assert_eq!(check_audio(&ff, &f, 0.0), 0.0);
@@ -349,7 +398,7 @@ fn avchd_ac3_audio() {
     let f = make(&ff, "m2ts_h264_ac3.mts");
     let src = open(&f);
     check_video(&ff, &f, 0, 6);
-    let a = src.info().audio.clone().unwrap();
+    let a = src.info().audio().cloned().unwrap();
     if filmcraft_codecs::audio::AC3_DECODER {
         assert_eq!((a.codec.as_str(), a.channels), ("AC-3", 2));
         // AC-3 zero-bit mantissas carry decoder-specific dither (A/52 §7.3.4)
@@ -370,7 +419,7 @@ fn transport_stream_hevc_and_latm() {
     let f = make(&ff, "ts_hevc_latm.ts");
     let src = open(&f);
     assert_eq!(src.info().video.as_ref().unwrap().codec, "HEVC");
-    assert_eq!(src.info().audio.as_ref().unwrap().codec, "AAC (LATM)");
+    assert_eq!(src.info().audio().unwrap().codec, "AAC (LATM)");
     check_video(&ff, &f, 0, 8);
     let e = check_audio(&ff, &f, 1e-4);
     println!("ts_hevc_latm: AAC (LATM) max error {e:.2e}");
@@ -389,17 +438,17 @@ fn program_streams() {
     // DVD LPCM: sample-exact
     let f = make(&ff, "ps_mpeg2_lpcm.vob");
     let src = open(&f);
-    assert_eq!(src.info().audio.as_ref().unwrap().codec, "LPCM (DVD)");
-    assert_eq!(src.info().audio.as_ref().unwrap().bits_per_sample, Some(24));
+    assert_eq!(src.info().audio().unwrap().codec, "LPCM (DVD)");
+    assert_eq!(src.info().audio().unwrap().bits_per_sample, Some(24));
     assert_eq!(check_audio(&ff, &f, 0.0), 0.0);
     check_video(&ff, &f, 4, 4);
     let f = make(&ff, "ps_mpeg2_lpcm16.vob");
-    assert_eq!(open(&f).info().audio.as_ref().unwrap().bits_per_sample, Some(16));
+    assert_eq!(open(&f).info().audio().unwrap().bits_per_sample, Some(16));
     assert_eq!(check_audio(&ff, &f, 0.0), 0.0);
     // AC-3 in private stream 1
     let f = make(&ff, "ps_mpeg2_ac3.vob");
     let src = open(&f);
-    assert_eq!(src.info().audio.as_ref().unwrap().codec, "AC-3");
+    assert_eq!(src.info().audio().unwrap().codec, "AC-3");
     let e = check_audio(&ff, &f, 5e-3);
     println!("ps_mpeg2_ac3: AC-3 max error {e:.2e}");
     // MPEG-1 system stream
@@ -457,7 +506,7 @@ fn standalone_mp2_file() {
     let ff = filmcraft_testkit::require_ffmpeg!();
     let f = make(&ff, "audio.mp2");
     let src = filmcraft_codecs::open_bytes("audio.mp2", bytes(&f)).unwrap();
-    let a = src.info().audio.clone().unwrap();
+    let a = src.info().audio().cloned().unwrap();
     assert_eq!((a.sample_rate, a.channels), (48_000, 2));
     let want = ffmpeg_audio_f32(&ff, &f, &[]);
     let n = want.len() / 2;
@@ -483,7 +532,7 @@ fn truncated_and_corrupt_files_never_panic() {
                     let _ = s.video_frame(FrameRequest::full(v.frame_rate.tick_of(i)));
                 }
             }
-            if let Some(a) = &info.audio {
+            if let Some(a) = info.audio() {
                 let _ = s.audio(rng.below(48_000) as i64, 2048, a.sample_rate);
             }
         };

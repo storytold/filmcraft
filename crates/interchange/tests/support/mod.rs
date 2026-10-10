@@ -25,7 +25,10 @@ pub fn media_info(name: &str, video: bool, audio: bool, rate: FrameRate, secs: i
             bitrate: None,
             hdr: None,
         }),
-        audio: audio.then(|| filmcraft_media::AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: "aac".into(), bits_per_sample: None }),
+        audio_streams: audio
+            .then(|| filmcraft_media::AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: "aac".into(), bits_per_sample: None })
+            .into_iter()
+            .collect(),
         container: "mp4".into(),
         start_timecode: None,
         file_size: None,

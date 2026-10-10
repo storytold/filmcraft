@@ -6,11 +6,11 @@
 //! jobs of later pictures block per row on the reference data they need, so several pictures decode
 //! concurrently (frame-level parallelism).
 
-use crate::dpb::{Dpb, Output, OutputMeta};
+use crate::dpb::{Dpb, Output, OutputMeta, RefMark};
 use crate::error::{Error, Result, ensure, invalid, unsupported};
 use crate::params::{Pps, Sps};
 use crate::picture::{Frame, FrameRef, MbKind, MbState, Planes, RefPic};
-use crate::slice::{NalHeader, Poc, PocState, SliceHeader, SliceType, nal_type};
+use crate::slice::{NalHeader, Poc, PocState, SliceHeader, SliceType, is_new_picture, nal_type};
 use crate::slicedec::{PicState, SliceDecoder};
 use crate::transform::LevelScale;
 use crate::{ColorInfo, Picture};
@@ -81,7 +81,7 @@ pub struct Decoder {
     spss: Vec<Option<Arc<Sps>>>,
     ppss: Vec<Option<Arc<Pps>>>,
     nal_length_size: Option<usize>,
-    dpb: Dpb,
+    dpb: Dpb<FrameRef>,
     poc_state: PocState,
     prev_ref_frame_num: u32,
     pending: Option<PendingPic>,
@@ -89,7 +89,7 @@ pub struct Decoder {
     active_sps: Option<Arc<Sps>>,
     ls_cache: Vec<(Arc<Pps>, Arc<LevelScale>)>,
     /// Pictures leaving the DPB, converted once their decoding job has finished.
-    out_queue: VecDeque<Output>,
+    out_queue: VecDeque<Output<FrameRef>>,
     shared: Arc<Shared>,
     #[cfg(feature = "threads")]
     pool: Option<rayon::ThreadPool>,
@@ -104,27 +104,6 @@ impl Default for Decoder {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Is `sh` the first slice of a new primary coded picture relative to `prev` (7.4.1.2.4)?
-fn is_new_picture(prev: &SliceHeader, sh: &SliceHeader, sps: &Sps) -> bool {
-    if sh.frame_num != prev.frame_num
-        || sh.pps_id != prev.pps_id
-        || sh.field_pic != prev.field_pic
-        || sh.bottom_field != prev.bottom_field
-        || (sh.nal_ref_idc == 0) != (prev.nal_ref_idc == 0)
-        || sh.idr != prev.idr
-        || (sh.idr && prev.idr && sh.idr_pic_id != prev.idr_pic_id)
-    {
-        return true;
-    }
-    if sps.pic_order_cnt_type == 0 && (sh.pic_order_cnt_lsb != prev.pic_order_cnt_lsb || sh.delta_pic_order_cnt_bottom != prev.delta_pic_order_cnt_bottom) {
-        return true;
-    }
-    if sps.pic_order_cnt_type == 1 && sh.delta_pic_order_cnt != prev.delta_pic_order_cnt {
-        return true;
-    }
-    false
 }
 
 /// The worker threads [`Decoder::new`] uses: the available cores (at most 16) with the `threads`
@@ -384,7 +363,9 @@ impl Decoder {
         let Some(pending) = self.pending.as_mut() else {
             return invalid("slice without a started picture");
         };
-        let refs = self.dpb.build_ref_lists(&sh, pending.poc.frame(), sps.max_frame_num())?;
+        let refs = self
+            .dpb
+            .build_ref_lists(&sh, pending.poc.frame(), sps.max_frame_num(), |e| RefPic { frame: e.frame.clone(), long_term: e.mark == RefMark::Long })?;
         if !sh.slice_type.is_intra() {
             ensure!(!refs[0].is_empty(), "no reference pictures available for inter slice");
             if sh.slice_type.is_b() {
@@ -464,7 +445,7 @@ impl Decoder {
                         }
                         _ => Planes::gray(mb_w * 16, mb_h * 16),
                     };
-                    (Arc::new(Frame::from_planes(id, 0, &planes)), meta.clone())
+                    (Arc::new(Frame::from_planes(id, 0, &planes)), 0, meta.clone())
                 };
                 let mut upd = |fnum: u32| poc_state.update_gap_frame(fnum, sps);
                 self.shared.stats.lock().map(|mut s| s.frame_num_gaps += 1).ok();
@@ -516,7 +497,7 @@ impl Decoder {
         run_job(frame, slices, &shared, draft);
     }
 
-    fn emit(&mut self, outs: Vec<Output>) {
+    fn emit(&mut self, outs: Vec<Output<FrameRef>>) {
         self.out_queue.extend(outs);
     }
 }
@@ -613,7 +594,7 @@ fn output_meta(sps: &Sps, pts: i64, key: bool) -> OutputMeta {
     }
 }
 
-fn make_picture(o: &Output) -> Picture {
+fn make_picture(o: &Output<FrameRef>) -> Picture {
     let (cx, cy, cw, ch) = o.meta.crop;
     let (cx, cy, cw, ch) = (cx as usize, cy as usize, cw as usize, ch as usize);
     let (y, u, v) = o.frame.copy_cropped((cx, cy, cw, ch));

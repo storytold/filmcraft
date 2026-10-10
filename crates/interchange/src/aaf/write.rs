@@ -349,9 +349,13 @@ pub(crate) fn write(doc: &Document, version: filmcraft_cfb::Version, report: &mu
         .with(pid::CONTENT, Value::Strong(Box::new(content)))
         .with(pid::DICTIONARY, Value::Strong(Box::new(dict)))
         .with(pid::IDENTIFICATION_LIST, Value::StrongVec(vec![ident]));
-    let root = Obj::new(ROOT)
-        .with(pid::ROOT_META_DICTIONARY, Value::Strong(Box::new(Obj::new(META_DICTIONARY))))
-        .with(pid::ROOT_HEADER, Value::Strong(Box::new(header)));
+    // The meta-dictionary holds only extensions to the baseline object model, and everything written
+    // here is baseline, so its class and type definition sets are empty; readers that load them
+    // (pyaaf2) still need the sets to be there (#323).
+    let meta = Obj::new(META_DICTIONARY)
+        .with(pid::META_CLASS_DEFINITIONS, Value::StrongSet(Vec::new(), pid::META_IDENTIFICATION))
+        .with(pid::META_TYPE_DEFINITIONS, Value::StrongSet(Vec::new(), pid::META_IDENTIFICATION));
+    let root = Obj::new(ROOT).with(pid::ROOT_META_DICTIONARY, Value::Strong(Box::new(meta))).with(pid::ROOT_HEADER, Value::Strong(Box::new(header)));
     store::write(&root, version).map_err(Error::Other)
 }
 

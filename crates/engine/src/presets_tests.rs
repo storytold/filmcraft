@@ -1,7 +1,10 @@
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
 use serde_json::json;
 
-use crate::Session;
 use crate::presets::{KeyframeMode, retime};
+use crate::{Services, Session};
 use filmcraft_project::{ClipId, ParamValue, TrackItem};
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
 
@@ -202,4 +205,36 @@ fn mask_geometry_scales_to_the_target_frame_size() {
     let c = path.centroid();
     assert!((c.x - 480.0).abs() < 1e-6 && (c.y - 270.0).abs() < 1e-6, "{c:?}");
     assert_eq!(m.feather.value, ParamValue::Float(80.0));
+}
+
+/// A host without a filesystem (the web): files exist only through `Services`.
+#[derive(Default)]
+struct MemFs(Mutex<BTreeMap<String, Vec<u8>>>);
+
+impl Services for MemFs {
+    fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+        self.0.lock().unwrap().get(path).cloned().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, path.to_string()))
+    }
+    fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+        self.0.lock().unwrap().insert(path.into(), data.to_vec());
+        Ok(())
+    }
+}
+
+/// #379: export and import go through the host's services, not `std::fs` (which traps on the web).
+#[test]
+fn export_and_import_go_through_host_services() {
+    let fs = Arc::new(MemFs::default());
+    let mut s = Session::new(fs.clone());
+    let path = "/exports/owned-preset.prfpset";
+    let r = s.execute("presets.export", json!({"path": path, "names": ["Fade In"]})).unwrap();
+    assert_eq!(r["count"], 1);
+    let bytes = fs.read_file(path).unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("filmcraft.effect-presets"));
+    // a second session on the same host imports it from there
+    let mut s2 = Session::new(fs);
+    let r = s2.execute("presets.import", json!({"path": path})).unwrap();
+    assert_eq!(r["imported"], json!(["Fade In"]));
+    assert_eq!(s2.presets.user.len(), 1);
+    assert!(s2.execute("presets.import", json!({"path": "/exports/missing.prfpset"})).is_err());
 }

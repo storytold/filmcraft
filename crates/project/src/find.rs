@@ -133,7 +133,7 @@ pub fn column_text(p: &Project, it: &ProjectItem, column: &str) -> String {
             .and_then(|m| m.info.video.as_ref())
             .map(|v| format!("{} x {} ({:.4}) {}", v.width, v.height, v.par.0 as f64 / v.par.1.max(1) as f64, v.codec))
             .unwrap_or_default(),
-        "audio info" => media.and_then(|m| m.info.audio.as_ref()).map(|a| format!("{} Hz - {} ch {}", a.sample_rate, a.channels, a.codec)).unwrap_or_default(),
+        "audio info" => media.and_then(|m| m.info.audio()).map(|a| format!("{} Hz - {} ch {}", a.sample_rate, a.channels, a.codec)).unwrap_or_default(),
         "file path" | "path" => match media.map(|m| &m.media) {
             Some(MediaRef::File { path }) => path.clone(),
             _ => String::new(),

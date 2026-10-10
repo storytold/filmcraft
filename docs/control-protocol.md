@@ -34,12 +34,12 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 | `ui.click` / `ui.move` | `{id}` or `{x,y}`, `button`, `count`, `modifiers` | synthetic pointer input |
 | `ui.drag` | `{from, to, steps, modifiers}` | press–move–release |
 | `ui.scroll` | `{id|x,y, dx, dy, modifiers}` | wheel / trackpad |
-| `ui.key` / `ui.type` | `{key}` (`Cmd+K`, `Space`…) / `{text}` | keyboard |
-| `ui.timeline.hit` / `ui.timeline.locate` | `{x,y}` / `{clip, edge?}` | timeline hit-testing |
+| `ui.key` / `ui.type` | `{key}` (`Cmd+K`, `Space`…; off macOS `Ctrl+K` is the same key) / `{text}` | keyboard |
+| `ui.timeline.hit` / `ui.timeline.locate` | `{x,y,modifiers?}` / `{clip, edge?}` | timeline hit-testing. `hit` reports a clip's `edge` (`In`/`Out`) within 7 px of it (a third of a narrow clip); just left of a cut that is the left clip's Out, from the cut rightwards the right clip's In. `kind` is the trim a press of the current tool with `modifiers` starts there (`trim`, `ripple`, `roll`, `rateStretch`, `remix`), `volume` on an audio clip's Volume line (Selection and Pen tools), or null |
 | `ui.playback` | `{action: play|stop|toggle, speed?}` | |
 | `ui.screenshot` | `{path?, panel?}` | PNG of the window or one panel; fails after 10 s when no frame is presented (window hidden, display asleep) |
 | `ui.resize`, `ui.focus`, `app.quit` | | `ui.focus` is the only request that activates the app and takes keyboard focus |
-| `perf.stats` | – | performance counters (also the command `perf.stats`, so `engine.execute` and MCP `command_run` reach it; headless sessions return the engine part). `decode`: GOP-cache requests / hits / `cacheHitRate`, decoder seeks, samples decoded and skipped while catching up, `draftFrames` (decoded in draft mode), `h264Threads` (frame-threading workers per H.264 decoder), `liveDecoders` (sources holding a decoder now), `cacheMB` / `cacheBudgetMB` (decoded frames all sources hold, and the shared budget), `planePoolMB` / `planesReused` (idle plane buffers of evicted frames, and planes decoded into a recycled one), decoder ms (total and per sample), `framesDecoded`, `hardware` (Settings ▸ Playback ▸ Hardware decoding: `enabled`, pictures from hardware decoders `frames` vs `softwareFrames`, `sessions`, `declined` streams, mid-stream `fallbacks`); `playback`: playing, shown / dropped frames and `dropRate` of the current or last play, resolution, `draftDecode` (Settings ▸ Playback ▸ Draft decoding), `audio` (desktop: sound is mixed 200 ms ahead of the device; device `callbacks`, `underruns` and `missingFrames` played as silence because the mixer fell behind, `minLeadMs` the least sound left buffered); `frames`: frame-worker jobs, cancelled, `requestHitRate`, `decodeMs` / `renderMs` (mean, p50, p95 of the last 256 jobs), queue, render-cost estimate, cache use; `ui`: fps and frame ms; `process`: CPU seconds; `media`, `jobs`. Counters are cumulative: diff two readings to measure an interval ([performance.md](performance.md)) |
+| `perf.stats` | – | performance counters (also the command `perf.stats`, so `engine.execute` and MCP `command_run` reach it; headless sessions return the engine part). `decode`: GOP-cache requests / hits / `cacheHitRate`, decoder seeks, samples decoded and skipped while catching up, `draftFrames` (decoded in draft mode), `h264Threads` (frame-threading workers per H.264 decoder), `liveDecoders` (sources holding a decoder now), `cacheMB` / `cacheBudgetMB` (decoded frames all sources hold, and the shared budget), `planePoolMB` / `planesReused` (idle buffers of the frame pool, the planes of evicted frames and the compositor's float images, which a standalone export frees when it ends; and buffers taken from it instead of allocated), decoder ms (total and per sample), `framesDecoded`, `hardware` (Settings ▸ Playback ▸ Hardware decoding: `enabled`, pictures from hardware decoders `frames` vs `softwareFrames`, `sessions`, `declined` streams, mid-stream `fallbacks`); `playback`: playing, shown / dropped frames and `dropRate` of the current or last play, resolution, `draftDecode` (Settings ▸ Playback ▸ Draft decoding), `audio` (desktop: sound is mixed 200 ms ahead of the device; device `callbacks`, `underruns` and `missingFrames` played as silence because the mixer fell behind, `minLeadMs` the least sound left buffered); `frames`: frame-worker jobs, cancelled, `requestHitRate`, `decodeMs` / `renderMs` (mean, p50, p95 of the last 256 jobs), queue, render-cost estimate, cache use; `monitor`: the `frame` and `revision` of the picture the Program monitor shows against `playheadFrame` and `projectRevision` (how far a drag or a scrub is ahead of the picture); `ui`: fps and frame ms; `process`: CPU seconds; `media`, `jobs`. Counters are cumulative: diff two readings to measure an interval ([performance.md](performance.md)) |
 
 **Selection or explicit targets.** A command that acts on the selection is "not available right now" when
 nothing is selected. When `params` name the targets under a key the command documents (`clips` /
@@ -82,6 +82,16 @@ Essential Sound: `essentialSound.inspect`, `essentialSound.setType {type: dialog
 `essentialSound.repair.noise.amount`, `essentialSound.repair.humHz.<i>`), `essentialSound.autoMatch`,
 `essentialSound.ducking.against.<Type>`, `essentialSound.generateDucking`, `essentialSound.volume.on`,
 `essentialSound.volume.levelDb`, `essentialSound.mute`, `essentialSound.browse.<Type>.<preset>`.
+
+ComfyUI clips ([comfyui.md](comfyui.md)): `comfyui.settings {server?, outputDir?, timeoutMinutes?,
+check?}`, `comfyui.inspect`, `comfyui.newClip`, `comfyui.setInputs`, `comfyui.expose {workflow? |
+item?, inputs?, exposed?, set?}` and `comfyui.generate`. The server is only ever the one in the
+settings; input files named by a project file are uploaded only once confirmed (`unconfirmedFiles`
+in `comfyui.inspect`). UI ids: `comfyui.server`, `comfyui.test`, `comfyui.loadWorkflow`,
+`comfyui.name`, `comfyui.duration`, `comfyui.allInputs`, `comfyui.node.<node>`,
+`comfyui.input.<node>.<input>[.expose|.browse|.reset]`, `comfyui.exposed.<node>.<input>[…]`,
+`comfyui.unconfirmed`, `comfyui.allowUploads`, `comfyui.create`, `comfyui.createGenerate`,
+`comfyui.apply`, `comfyui.generate`, `comfyui.generateNewSeeds`, `comfyui.status`.
 
 Project files, auto-save, crash recovery and preferences commands (`file.recover`, `prefs.set`, …) and their
 automation ids are listed in [project-files.md](project-files.md). That file also lists the media

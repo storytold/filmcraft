@@ -28,7 +28,7 @@ mod cavlc;
 mod cavlc_tables;
 mod deblock;
 mod decoder;
-mod dpb;
+pub mod dpb;
 mod error;
 mod inter;
 mod intra;

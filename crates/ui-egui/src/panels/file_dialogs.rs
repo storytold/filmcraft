@@ -45,31 +45,31 @@ pub fn show_recovery(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     egui::Modal::new(egui::Id::new("recovery-modal")).frame(modal_frame(&t)).show(ctx, |ui| {
         ui.set_width(520.0);
         Frame::new().inner_margin(Margin { left: 28, right: 28, top: 24, bottom: 20 }).show(ui, |ui| {
-            ui.label(RichText::new("Recover Unsaved Changes").size(18.0).strong().color(t.text));
+            ui.label(RichText::new(tl!("Recover Unsaved Changes")).size(18.0).strong().color(t.text));
             ui.add_space(6.0);
             ui.separator();
             ui.add_space(6.0);
             let c = &items[choice];
-            let name = c["projectName"].as_str().unwrap_or("Untitled");
+            let name = c["projectName"].as_str().unwrap_or(tl!("Untitled"));
             let when = c["savedAt"].as_str().unwrap_or("");
             let why = if c["cleanExit"].as_bool() == Some(true) {
-                format!("FilmCraft was closed while “{name}” had unsaved changes.")
+                tlf!("FilmCraft was closed while “{name}” had unsaved changes.", name)
             } else {
-                format!("FilmCraft quit unexpectedly while “{name}” had unsaved changes.")
+                tlf!("FilmCraft quit unexpectedly while “{name}” had unsaved changes.", name)
             };
             ui.label(RichText::new(why).size(13.5).color(t.text));
             ui.add_space(4.0);
-            ui.label(RichText::new(format!("Recover unsaved changes from {when}?")).size(13.5).color(t.text));
+            ui.label(RichText::new(tlf!("Recover unsaved changes from {when}?", when)).size(13.5).color(t.text));
             if let Some(p) = c["projectPath"].as_str() {
                 ui.label(RichText::new(p).size(11.5).color(t.text_dim));
             } else {
-                ui.label(RichText::new("The project had not been saved yet.").size(11.5).color(t.text_dim));
+                ui.label(RichText::new(tl!("The project had not been saved yet.")).size(11.5).color(t.text_dim));
             }
             if items.len() > 1 {
                 ui.add_space(8.0);
-                ui.label(RichText::new(format!("{} sessions have unsaved changes:", items.len())).size(12.0).color(t.text_dim));
+                ui.label(RichText::new(tlf!("{n} sessions have unsaved changes:", n = items.len())).size(12.0).color(t.text_dim));
                 for (i, it) in items.iter().enumerate() {
-                    let label = format!("{} — {}", it["projectName"].as_str().unwrap_or("Untitled"), it["savedAt"].as_str().unwrap_or(""));
+                    let label = format!("{} — {}", it["projectName"].as_str().unwrap_or(tl!("Untitled")), it["savedAt"].as_str().unwrap_or(""));
                     let r = ui.radio(choice == i, RichText::new(&label).size(12.5));
                     app.auto.add(&format!("recovery.item.{i}"), r.rect, &label);
                     if r.clicked() {
@@ -80,20 +80,20 @@ pub fn show_recovery(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             ui.add_space(18.0);
             let id = items[choice]["id"].as_str().unwrap_or("").to_string();
             ui.horizontal(|ui| {
-                if button(app, ui, "recovery.discard", "Discard", false) {
+                if button(app, ui, "recovery.discard", tl!("Discard"), false) {
                     if let Err(e) = app.session.execute("file.discardRecovery", json!({ "id": id })) {
                         app.ui.status = e.to_string();
                     }
                     choice = 0;
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if button(app, ui, "recovery.recover", "Recover", true) {
+                    if button(app, ui, "recovery.recover", tl!("Recover"), true) {
                         match app.session.execute("file.recover", json!({ "id": id })) {
                             Ok(_) => open = false,
                             Err(e) => app.ui.status = e.to_string(),
                         }
                     }
-                    if button(app, ui, "recovery.later", "Not Now", false) {
+                    if button(app, ui, "recovery.later", tl!("Not Now"), false) {
                         open = false;
                     }
                 });
@@ -111,20 +111,20 @@ pub fn show_revert(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let r = egui::Modal::new(egui::Id::new("revert-modal")).frame(modal_frame(&t)).show(ctx, |ui| {
         ui.set_width(460.0);
         Frame::new().inner_margin(Margin { left: 28, right: 28, top: 24, bottom: 20 }).show(ui, |ui| {
-            ui.label(RichText::new("Revert").size(18.0).strong().color(t.text));
+            ui.label(RichText::new(tl!("Revert")).size(18.0).strong().color(t.text));
             ui.add_space(6.0);
             ui.separator();
             ui.add_space(6.0);
-            ui.label(RichText::new(format!("Are you sure you want to discard your changes to '{file}'?")).size(13.5).color(t.text));
+            ui.label(RichText::new(tlf!("Are you sure you want to discard your changes to '{file}'?", file)).size(13.5).color(t.text));
             ui.add_space(18.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if button(app, ui, "revert.yes", "Yes", true) {
+                if button(app, ui, "revert.yes", tl!("Yes"), true) {
                     if let Err(e) = app.session.execute("file.revert", json!({})) {
                         app.ui.status = e.to_string();
                     }
                     open = false;
                 }
-                if button(app, ui, "revert.no", "No", false) {
+                if button(app, ui, "revert.no", tl!("No"), false) {
                     open = false;
                 }
             });

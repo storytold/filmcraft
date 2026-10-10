@@ -489,9 +489,22 @@ fn plain_layer(frame: &VideoFrame, n: usize, opacity: f32, blend: Blend) -> Laye
 /// convert it with.
 fn media_frame(item: &TrackItem, t: Tick, sources: &dyn SourceProvider, want: f32, src_size: (u32, u32)) -> Option<(SharedSource, Arc<VideoFrame>, usize)> {
     let src = sources.source(item.item)?;
-    let frame = src.video_frame(FrameRequest { time: item.source_time_at(t), scale: want }).ok()?;
+    let frame = src.video_frame(FrameRequest { time: video_source_time(item, t, src.info().frame_rate()), scale: want }).ok()?;
     let n = decimation(frame.width as f32, src_size.0 as f32 * want);
     Some((src, frame, n))
+}
+
+/// The media time to ask a source for the video frame a clip shows at timeline `t`. A reversed
+/// clip's source time is the instant just before its mirrored position; readers that round the
+/// request to the nearest unit of a coarse timescale (MP4) land on the next frame from there,
+/// showing one frame past the clip's source range and never its In (#318). Snapped down to the
+/// start of the `media_rate` frame that contains it, every reader shows that frame.
+pub(crate) fn video_source_time(item: &TrackItem, t: Tick, media_rate: filmcraft_time::FrameRate) -> Tick {
+    let ft = item.source_time_at(t);
+    if !item.reverse || item.frame_hold.is_some() || media_rate.frame_duration().0 <= 0 {
+        return ft;
+    }
+    media_rate.tick_of(media_rate.frame_at(ft)).clamp(item.source_in.min(ft), ft)
 }
 
 /// The linear image of a media clip's `frame`, colour managed, and blended with the next frame when

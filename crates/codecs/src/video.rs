@@ -45,7 +45,18 @@ pub trait VideoDecoder: Send {
     /// shortcuts that only change pictures nothing references, which come out flagged
     /// [`DecodedFrame::draft`]. Decoders without such a mode ignore it.
     fn set_draft(&mut self, _on: bool) {}
+    /// Made with fewer worker threads than a decoder for playback gets, because it was made for
+    /// background work ([`filmcraft_media::cancel::with_background`]). A request for a monitor
+    /// replaces such a decoder.
+    fn thread_limited(&self) -> bool {
+        false
+    }
 }
+
+/// Worker threads of the H.264 decoders made for background work (thumbnails): a frame-threaded
+/// 4K decoder holds `threads + 2` pictures in flight (~0.5 GB with 16 threads), and the frame
+/// workers already decode different files in parallel.
+const BACKGROUND_H264_THREADS: usize = 2;
 
 /// NAL unit headers of a length-prefixed (avcC / hvcC) sample: the first two bytes of each unit.
 fn nal_headers(sample: &[u8], length_size: usize) -> impl Iterator<Item = (u8, u8)> + '_ {
@@ -200,19 +211,36 @@ pub struct H264Decoder {
     dec: filmcraft_h264::Decoder,
     length_size: usize,
     draft: bool,
+    /// Worker threads (a background decoder gets fewer).
+    threads: usize,
 }
 
 impl H264Decoder {
+    /// The worker threads for a decoder made now.
+    fn threads_now() -> usize {
+        if filmcraft_media::cancel::background() { BACKGROUND_H264_THREADS.min(h264_threads()) } else { h264_threads() }
+    }
+
+    fn make_inner(avcc: &[u8], threads: usize) -> Result<filmcraft_h264::Decoder> {
+        let mut dec = filmcraft_h264::Decoder::with_threads(threads);
+        if !avcc.is_empty() {
+            dec.configure_avcc(avcc).map_err(|e| CodecError::Decode(e.to_string()))?;
+        }
+        Ok(dec)
+    }
+
     pub fn new(avcc: Vec<u8>) -> Result<Self> {
         recycle_h264_planes();
-        let dec = filmcraft_h264::Decoder::from_avcc(&avcc).map_err(|e| CodecError::Decode(e.to_string()))?;
+        let threads = Self::threads_now();
+        let dec = Self::make_inner(&avcc, threads)?;
         let length_size = avcc_length_size(&avcc);
-        Ok(Self { avcc, dec, length_size, draft: false })
+        Ok(Self { avcc, dec, length_size, draft: false, threads })
     }
     /// A decoder for Annex B byte-stream samples (start codes, in-band parameter sets: MXF, TS).
     pub fn annexb() -> Self {
         recycle_h264_planes();
-        Self { avcc: Vec::new(), dec: filmcraft_h264::Decoder::new(), length_size: 0, draft: false }
+        let threads = Self::threads_now();
+        Self { avcc: Vec::new(), dec: filmcraft_h264::Decoder::with_threads(threads), length_size: 0, draft: false, threads }
     }
     fn convert(p: filmcraft_h264::Picture) -> DecodedFrame {
         use std::sync::Arc;
@@ -245,15 +273,16 @@ impl VideoDecoder for H264Decoder {
         self.dec.flush().into_iter().map(Self::convert).collect()
     }
     fn reset(&mut self) {
-        if self.avcc.is_empty() {
-            self.dec = filmcraft_h264::Decoder::new();
-        } else if let Ok(d) = filmcraft_h264::Decoder::from_avcc(&self.avcc) {
+        if let Ok(d) = Self::make_inner(&self.avcc, self.threads) {
             self.dec = d;
         }
         self.dec.set_draft(self.draft);
     }
     fn name(&self) -> &str {
         "FilmCraft H.264"
+    }
+    fn thread_limited(&self) -> bool {
+        self.threads < h264_threads()
     }
     fn set_draft(&mut self, on: bool) {
         self.draft = on;

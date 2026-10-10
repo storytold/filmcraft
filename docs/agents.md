@@ -33,6 +33,23 @@ claude mcp add filmcraft-headless -- /abs/path/filmcraft/target/release/filmcraf
 { "mcpServers": { "filmcraft": { "command": "/abs/path/filmcraft-cli", "args": ["mcp", "--bridge", "127.0.0.1:9876"] } } }
 ```
 
+### From an installed release
+
+The release packages ship `filmcraft-cli` alongside the desktop app, so no build is needed:
+
+| Install | CLI |
+|---|---|
+| Windows (MSI) | `C:\Program Files\FilmCraft\filmcraft-cli.exe` by default (wherever you installed it otherwise), not on `PATH` |
+| Linux (deb, rpm) | `/usr/bin/filmcraft-cli` |
+| macOS | the separate `filmcraft-cli-<version>-macos-<arch>.zip` release asset (the `.app` holds only the desktop app) |
+
+```sh
+# Windows, default install folder
+claude mcp add filmcraft -- "C:\Program Files\FilmCraft\filmcraft-cli.exe" mcp
+# Linux, or macOS with the CLI unzipped onto PATH
+claude mcp add filmcraft -- filmcraft-cli mcp
+```
+
 ### Tools
 
 | Tool | Modes | Purpose |
@@ -166,6 +183,9 @@ Notes:
 
 Every command is also one shell call away. Options go anywhere; output is JSON; exit status is 0 on
 success, 1 when a command fails and 2 on a usage error. `filmcraft-cli help` prints the reference.
+If the reader of stdout closes the pipe early (`filmcraft-cli commands | head`), the CLI drops the rest
+of its output but still finishes the work, saves included, and the exit status still reports
+failures; any other stdout write error is reported and makes the status 1.
 
 ```sh
 filmcraft-cli commands razor                     # find ids (add --json for machine output)
@@ -173,6 +193,7 @@ filmcraft-cli describe timeline.razor            # one command: menu, shortcut, 
 filmcraft-cli --demo inspect sequence            # project / sequence as JSON
 filmcraft-cli --project p.fcproj --save exec timeline.razor seconds=3.5
 filmcraft-cli --project p.fcproj exec effects.apply '{"effect":"Gaussian Blur"}'
+filmcraft-cli --project p.fcproj exec markers.exportCsv path=review.csv
 filmcraft-cli --project p.fcproj --save import a.mov b.wav
 filmcraft-cli --project p.fcproj export out.mp4  # format from the extension; waits for the job
 filmcraft-cli --project p.fcproj export out --preset "YouTube 1080p Full HD" --start 0 --end 10
@@ -186,6 +207,22 @@ filmcraft-cli --bridge 127.0.0.1:9876 exec window.workspace.color   # the runnin
 strings; dotted keys nest (`color.r=1`). `run` prints one JSON line per command
 (`{"line","id","ok","result"|"error"}`) and stops at the first failure unless `--keep-going`.
 `--save` writes back to `--project`; `--save-as path` writes elsewhere.
+
+`markers.exportCsv {path}` exports all markers in the active sequence, including colours hidden
+in the UI and markers outside In/Out, sorted by start then id. The UTF-8 CSV has a header and CRLF
+records; quotes, commas and embedded newlines are escaped. Columns are Sequence, Marker ID, Name,
+Comment, Kind, Color, Start Timecode, End Timecode, Duration Frames, Start Ticks, Duration Ticks and
+Frame Rate (exact numerator/denominator). Color uses the user's display label from Settings ▸
+Labels. Timecodes include the sequence's start timecode and
+drop-frame setting; End is exclusive, and a point marker's End equals Start. Duration Frames is
+rounded down; tick columns preserve sub-frame timing (254016000000 ticks per second).
+An empty sequence writes just the header. User text starting with a spreadsheet formula character
+(`=`, `+`, `-`, `@`, including after whitespace) gets a leading apostrophe in the exported cell.
+The export leaves the project, dirty flag and undo history untouched, works with locked tracks,
+and uses the host's file service (atomic
+on desktop, a download on web). It exports sequence markers only, not clip/source markers;
+reports are limited to 100000 markers and a conservative 16 MiB output budget. Invalid timing or a
+failed write reports an error. The menu opens the normal save dialog; cancelling writes nothing.
 
 ## 3. Verifying UI work
 

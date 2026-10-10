@@ -13,7 +13,8 @@
 //! - `ui.click {id | x,y, button?, count?, modifiers?}` / `ui.move {x,y}` / `ui.scroll {x,y,dx,dy}`
 //! - `ui.drag {from:{id|x,y}, to:{id|x,y}, steps?, modifiers?}`: synthetic press-move-release
 //! - `ui.key {key, command?, shift?, alt?, ctrl?}` / `ui.type {text}`
-//! - `ui.timeline.hit {x, y}`: what the timeline shows at a point (track, clip, edge, time)
+//! - `ui.timeline.hit {x, y, modifiers?}`: what the timeline shows at a point (track, clip, edge,
+//!   time) and `kind`, the trim a press of the current tool with `modifiers` starts there
 //! - `ui.timeline.locate {clip, edge?}`: screen point of a clip body/edge (for drags)
 //! - `ui.playback {action: play|stop|toggle, speed?}`
 //! - `ui.screenshot {path?, panel?}`: PNG of the window (or one panel)
@@ -62,10 +63,23 @@ fn err(e: impl std::fmt::Display) -> Outcome {
     Outcome::Done(json!({"ok": false, "error": e.to_string()}))
 }
 
+/// Modifier flags from `{modifiers: {ctrl, command, shift, alt}}` (or the same keys at the top
+/// level), as the OS would report them pressed.
 fn modifiers(p: &Value) -> egui::Modifiers {
     let m = p.get("modifiers").unwrap_or(p);
     let b = |k: &str| m.get(k).and_then(Value::as_bool).unwrap_or(false);
-    egui::Modifiers { alt: b("alt"), ctrl: b("ctrl"), shift: b("shift"), mac_cmd: cfg!(target_os = "macos") && b("command"), command: b("command") }
+    as_pressed(egui::Modifiers { alt: b("alt"), ctrl: b("ctrl"), shift: b("shift"), mac_cmd: cfg!(target_os = "macos") && b("command"), command: b("command") })
+}
+
+/// `m` as egui-winit reports a physical press: off macOS Control is the primary modifier, so
+/// `ctrl` and `command` are one key and a press of either carries both. A synthetic `Ctrl+Z` then
+/// matches a `Cmd+Z` binding exactly as the real key does (#245).
+fn as_pressed(mut m: egui::Modifiers) -> egui::Modifiers {
+    if !cfg!(target_os = "macos") && (m.ctrl || m.command) {
+        m.ctrl = true;
+        m.command = true;
+    }
+    m
 }
 
 /// Resolve a point from `{id}` (element centre) or `{x, y}`.
@@ -332,9 +346,8 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
         }
         "ui.key" => {
             let Some(name) = s("key") else { return err("missing `key`") };
-            let Some((mut m, key)) = crate::menus::parse_shortcut(name) else { return err(format!("unknown key `{name}`")) };
-            let extra = modifiers(p);
-            m |= extra;
+            let Some((m, key)) = crate::menus::parse_shortcut(name) else { return err(format!("unknown key `{name}`")) };
+            let m = as_pressed(m | modifiers(p));
             app.synthetic.push(egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: m });
             app.synthetic.push(egui::Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers: m });
             Outcome::AfterInput
@@ -350,7 +363,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                 Ok(p) => p,
                 Err(e) => return err(e),
             };
-            ok(crate::panels::timeline::hit_json(app, pos))
+            ok(crate::panels::timeline::hit_json(app, pos, modifiers(p)))
         }
         "ui.timeline.locate" => {
             let Some(c) = p.get("clip").and_then(Value::as_u64) else { return err("need `clip`") };
@@ -417,6 +430,7 @@ pub fn inspect(app: &FilmcraftApp, ctx: &egui::Context) -> Value {
         "pixelsPerPoint": ctx.pixels_per_point(),
         "fps": app.fps,
         "ui": app.ui,
+        "sourcePlayback": {"playing": app.source_playback.clock.playing, "audioClock": app.source_playback.clock.audio_clock, "playhead": app.session.state.source_playhead.0},
         "playback": {"playing": app.playback.playing, "speed": app.playback.speed, "loop": app.playback.looping, "audioClock": app.playback.audio_clock, "dropped": app.playback.meter.counts().1, "shown": app.playback.meter.counts().0, "preroll": app.playback.preroll.is_some()},
         "playhead": app.session.playhead().0,
         "activeSequence": app.session.state.active_sequence.map(|i| i.0),

@@ -142,6 +142,41 @@ fn through_edits_show_and_join() {
     assert_eq!(s.execute("sequence.throughEdits", json!({})).unwrap().as_array().unwrap().len(), n - 2);
 }
 
+/// `cut: [left, right]` (the timeline's edit point menu, #219) joins exactly that cut and its
+/// linked partner, even when one of its pieces is also part of another through edit.
+#[test]
+fn join_one_through_edit_by_its_cut() {
+    let mut s = demo();
+    let v1 = s.active_sequence().unwrap().video_tracks[0].id.0;
+    for frame in [30, 40] {
+        s.execute("playhead.set", json!({"frame": frame})).unwrap();
+        s.execute("sequence.addEditAllTracks", json!({})).unwrap();
+    }
+    let te = s.execute("sequence.throughEdits", json!({})).unwrap();
+    let on_v1: Vec<&Value> = te.as_array().unwrap().iter().filter(|e| e["track"] == json!(v1)).collect();
+    assert_eq!(on_v1.len(), 2);
+    // the second cut: its left piece is also the right piece of the first one
+    let (second, first) = (on_v1[1], on_v1[0]);
+    assert_eq!(second["left"], first["right"]);
+    let n = te.as_array().unwrap().len();
+    let r = s.execute("sequence.joinThroughEdits", json!({"cut": [second["left"], second["right"]]})).unwrap();
+    assert_eq!(r["joined"], json!(2), "V1 + linked A1");
+    let te = s.execute("sequence.throughEdits", json!({})).unwrap();
+    assert_eq!(te.as_array().unwrap().len(), n - 2);
+    assert!(te.as_array().unwrap().iter().any(|e| e["left"] == first["left"] && e["right"] == first["right"]), "the first cut stays");
+}
+
+#[test]
+fn join_by_cut_rejects_hostile_parameters() {
+    let mut s = demo();
+    let items = s.active_sequence().unwrap().video_tracks[0].items.clone();
+    let before = s.active_sequence().unwrap().clone();
+    for cut in [json!([]), json!([1]), json!([1, 2, 3]), json!("x"), json!([-1, 2]), json!([u64::MAX, 0]), json!([items[0].id.0, items[1].id.0])] {
+        assert!(s.execute("sequence.joinThroughEdits", json!({"cut": cut})).is_err(), "{cut}");
+    }
+    assert_eq!(s.active_sequence().unwrap(), &before, "nothing changed");
+}
+
 #[test]
 fn make_subsequence_from_in_out_and_from_selection() {
     let mut s = demo();
@@ -482,4 +517,25 @@ fn selection_follows_playhead() {
     let sel = s.state.selection.clone();
     s.execute("playhead.set", json!({"frame": 10})).unwrap();
     assert_eq!(s.state.selection, sel, "off again");
+}
+
+/// #208: with no In / Out mark, Go to In / Go to Out move to the start / end of the sequence
+/// (they did nothing); with marks they go to them.
+#[test]
+fn go_to_in_out_without_marks_go_to_the_sequence_ends() {
+    let mut s = demo();
+    let end = s.active_sequence().unwrap().duration();
+    let mid = filmcraft_time::Tick(end.0 / 2);
+    s.execute("playhead.set", json!({"time": mid.0})).unwrap();
+    s.execute("markers.goToIn", json!({})).unwrap();
+    assert_eq!(s.playhead(), filmcraft_time::Tick::ZERO, "the start");
+    s.execute("markers.goToOut", json!({})).unwrap();
+    assert_eq!(s.playhead(), end, "the end");
+    // with marks, the marks
+    let at = filmcraft_time::Tick(end.0 / 4);
+    s.execute("playhead.set", json!({"time": at.0})).unwrap();
+    s.execute("markers.markIn", json!({})).unwrap();
+    s.execute("playhead.set", json!({"time": mid.0})).unwrap();
+    s.execute("markers.goToIn", json!({})).unwrap();
+    assert_eq!(s.playhead(), s.active_sequence().unwrap().mark_in.unwrap());
 }

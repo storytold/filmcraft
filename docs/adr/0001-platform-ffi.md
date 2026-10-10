@@ -25,10 +25,12 @@ Containment rules:
 
 1. The crate does not use `lints.workspace = true`. Its own `[lints]` table copies the workspace
    lints except `unsafe_code = "deny"` (not `forbid`), and adds
-   `clippy::undocumented_unsafe_blocks = "deny"`. Only the FFI modules (`videotoolbox`, `media_foundation::gpu` / `media_foundation::mft`, and
-   `nvenc::ffi` / `nvenc::session` on Windows) carry `#[allow(unsafe_code)]`; the rest of the crate
+   `clippy::undocumented_unsafe_blocks = "deny"`. Only the FFI modules (`videotoolbox`, `media_foundation::gpu` / `media_foundation::mft`,
+   `nvenc::ffi` / `nvenc::session` / `nvenc::device` on Windows and 64-bit Linux, and `vaapi::va` on Linux) carry `#[allow(unsafe_code)]`; the rest of the crate
    (the fallback logic in `hybrid`, the decoder logic in `media_foundation`, `annexb`, `biplanar`,
-   the encoder logic in `nvenc`) has no `unsafe`.
+   the encoder logic in `nvenc`, H.264 and H.265 alike) has no `unsafe`. NVENC's H.265 support
+   added no `unsafe` module: it reuses `nvenc::ffi` and `nvenc::session` (new data declarations and
+   a second codec-configuration member of an existing union).
 2. Every `unsafe` block has a `// SAFETY:` comment saying why it is sound.
 3. The public API is safe: no `pub unsafe fn`, no raw pointers or FFI types in public signatures;
    failures are `Result`s. The crate keeps the never-crash `deny(clippy::unwrap_used, …)`
@@ -93,6 +95,14 @@ Everything else in this record applies unchanged: `unsafe` stays in `crates/plat
 has a `// SAFETY:` comment, no panic crosses the FFI boundary, the public API is safe, and the crate
 compiles everywhere (`register()` is a no-op off macOS).
 
+## Addendum (2026-10-08): NVENC HEVC Main 10 (HDR)
+
+HDR H.265 added no `unsafe` module either. `nvenc::ffi` gained data declarations (the HEVC picture
+parameters, `NV_ENC_SEI_PAYLOAD`, the 10-bit buffer format) checked by the generated layout tests, and
+`nvenc::session` gained the P010 pitch check and the SEI pointers it hands to the driver, which are
+heap blocks owned by the session for its whole life (`// SAFETY:` comments say so). The conversion from
+float pictures to 10-bit planes is safe code in the export crate.
+
 ## Addendum (2026-10-07): hardware H.265 (HEVC) encoding
 
 The same VideoToolbox session wrapper also creates HEVC sessions (`VtProfile::HevcMain`). The rules
@@ -101,3 +111,38 @@ there will not be one (pure Rust, clean-room: x265 is GPL), so `Format::Hevc` ex
 OS has a hardware encoder. Choosing the format is the opt-in, `filmcraft_export::available` asks a
 probe the platform crate registers, and what the hardware path does not take (two-pass, odd sizes,
 a machine without the encoder) is an error naming the reason instead of a different encoder.
+
+## Addendum (2026-10-08): VA-API hardware decoding on Linux
+
+The Linux backend this decision named: H.264 and HEVC decoding through VA-API (`vaapi/`). The rules above
+hold; VA-API differs from the other two backends in three ways.
+
+- **libva is loaded at run time** (`libva.so.2`, `libva-drm.so.2`, through `libloading`: ISC, already
+  in the lockfile through wgpu). Building needs no libva headers, and a system without libva, a DRM
+  render node or a working driver starts as before and decodes in software (`register()` reports
+  `Unavailable`). The declarations (`vaapi/ffi.rs`) are transcribed from libva's MIT-licensed
+  `va.h`, and `vaapi/abi_tests.rs` checks sizes, offsets, constants and bit-field positions against a
+  C compiler's view of it, as for NVENC. Only `vaapi::va` carries `#[allow(unsafe_code)]`; the
+  declarations, the H.264 front end (`vaapi::h264`) and the decoder (`VaDecoder`) are safe code.
+- **Decoding is stateless:** the host parses the stream and keeps the decoded picture buffer; the GPU
+  only decodes slice data. FilmCraft does that host side with the software decoders' own parsers and
+  DPBs (`filmcraft_h264::dpb` and `filmcraft_hevc::dpb` are generic over what a picture is), so the two decoders decide alike by
+  construction, and the front end is tested on every OS against a stand-in for the hardware. The
+  one place they cannot agree is concealment: pictures predicted from frames that were never decoded
+  (the leading pictures of an open H.264 GOP after a seek) are concealed by both but can differ;
+  HEVC pictures with references that were never decoded go to the software decoder instead.
+- **One callback into Rust:** libva's error messages go to our log through a callback that runs under
+  `catch_unwind`; its info messages are turned off.
+
+The fallback guarantee is unchanged: what the hardware path does not take is declined up front or,
+mid-stream, handed to the software decoder by `HybridDecoder`.
+
+## Addendum: Linux NVENC H.264 encoding
+
+The existing NVENC session is shared with 64-bit Linux. Only device acquisition and driver loading
+are platform-specific: Windows retains the Direct3D device; Linux retains the first CUDA device's
+primary context through `libcuda.so.1`. `cuDevicePrimaryCtxRetain` does not push a context onto the
+calling thread's stack. The retained reference is released after the NVENC session and its buffers;
+other users' references are not reset. `libnvidia-encode.so.1` stays loaded with its function table.
+Both libraries come from the installed NVIDIA driver, not this project. Export registration on
+Linux does not claim that a hardware decoder is available. The same opt-in and fallback rules apply.

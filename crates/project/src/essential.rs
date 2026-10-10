@@ -783,6 +783,7 @@ mod tests {
             hold_filters: false,
             field_options: None,
             source_channels: Vec::new(),
+            audio_stream: 0,
             graphic: None,
         }
     }

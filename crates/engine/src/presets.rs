@@ -550,13 +550,14 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     if chosen.is_empty() {
         return Err(bad("presets.export", "no presets to export"));
     }
-    filmcraft_format::atomic_write(Path::new(path), &file_bytes(&chosen)).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    // through the host: atomic on the desktop, a download on the web (no filesystem there)
+    s.services.write_file(path, &file_bytes(&chosen)).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     Ok(json!({"path": path, "count": chosen.len()}))
 }
 
 fn import(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_p(p, "path").ok_or_else(|| bad("presets.import", "need `path`"))?;
-    let bytes = std::fs::read(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let presets = parse_file(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let names: Vec<String> = presets.iter().map(|x| x.name.clone()).collect();
     for pr in presets {

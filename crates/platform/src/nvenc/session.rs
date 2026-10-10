@@ -1,4 +1,4 @@
-//! An NVENC H.264 encode session: the driver library, the Direct3D 11 device it is opened on, the
+//! An NVENC (H.264 or HEVC) encode session: the driver library, the device it is opened on, the
 //! encoder configuration, and the input / output buffers (every call into the driver).
 //!
 //! FFI module (docs/adr/0001-platform-ffi.md): every `unsafe` block has a `// SAFETY:` comment, the
@@ -7,21 +7,14 @@
 use std::ffi::{CStr, c_void};
 use std::sync::OnceLock;
 
-use windows::Win32::Foundation::HMODULE;
-use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
-use windows::Win32::Graphics::Direct3D11::{D3D11_CREATE_DEVICE_FLAG, D3D11_SDK_VERSION, D3D11CreateDevice, ID3D11Device};
-use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIAdapter, IDXGIFactory1};
-use windows::Win32::System::LibraryLoader::{GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
-use windows::core::{Interface, PCSTR, w};
-
+use super::device::Device;
 use super::ffi::*;
-
-/// NVIDIA's PCI vendor id.
-const NVIDIA: u32 = 0x10DE;
 
 /// The driver's entry points (loaded once).
 struct Api {
     list: NV_ENCODE_API_FUNCTION_LIST,
+    #[cfg(target_os = "linux")]
+    _library: libloading::Library,
 }
 
 // SAFETY: the function table is plain function pointers, immutable after loading; NVENC's API is
@@ -35,7 +28,11 @@ fn api() -> Result<&'static Api, String> {
     API.get_or_init(load).as_ref().map_err(Clone::clone)
 }
 
+#[cfg(target_os = "windows")]
 fn load() -> Result<Api, String> {
+    use windows::Win32::Foundation::HMODULE;
+    use windows::Win32::System::LibraryLoader::{GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
+    use windows::core::{PCSTR, w};
     // SAFETY: loads the driver's library from the system directory only.
     let module: HMODULE =
         unsafe { LoadLibraryExW(w!("nvEncodeAPI64.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32) }.map_err(|_| "no NVIDIA encoder driver".to_string())?;
@@ -64,44 +61,75 @@ fn load() -> Result<Api, String> {
     }
 }
 
-/// A Direct3D 11 device on the first NVIDIA adapter (what an NVENC session is opened on).
-fn nvidia_device() -> Result<ID3D11Device, String> {
-    // SAFETY: plain COM / D3D calls with valid out-pointers; the adapter outlives the call.
+#[cfg(target_os = "linux")]
+fn load() -> Result<Api, String> {
+    // SAFETY: runtime-load NVIDIA's driver and use the signatures from nvEncodeAPI.h.
+    // The library lives alongside the immutable function table, for the process lifetime.
     unsafe {
-        let factory: IDXGIFactory1 = CreateDXGIFactory1().map_err(|e| format!("no DXGI: {e}"))?;
-        let mut i = 0;
-        while let Ok(adapter) = factory.EnumAdapters1(i) {
-            i += 1;
-            let Ok(desc) = adapter.GetDesc1() else { continue };
-            if desc.VendorId != NVIDIA {
-                continue;
-            }
-            let mut device = None;
-            let adapter: IDXGIAdapter = adapter.cast().map_err(|e| e.to_string())?;
-            if D3D11CreateDevice(
-                &adapter,
-                D3D_DRIVER_TYPE_UNKNOWN,
-                HMODULE::default(),
-                D3D11_CREATE_DEVICE_FLAG(0),
-                None,
-                D3D11_SDK_VERSION,
-                Some(&mut device),
-                None,
-                None,
-            )
-            .is_ok()
-                && let Some(d) = device
-            {
-                return Ok(d);
-            }
+        let library = libloading::Library::new("libnvidia-encode.so.1").map_err(|e| format!("no NVIDIA encoder driver: {e}"))?;
+        let version: libloading::Symbol<MaxSupportedVersionFn> = library.get(b"NvEncodeAPIGetMaxSupportedVersion\0").map_err(|e| e.to_string())?;
+        let create: libloading::Symbol<CreateInstanceFn> = library.get(b"NvEncodeAPICreateInstance\0").map_err(|e| e.to_string())?;
+        let mut v = 0;
+        if version(&mut v) != NV_ENC_SUCCESS {
+            return Err("cannot query the NVENC version".into());
         }
+        let ours = (NVENCAPI_VERSION & 0xf) << 4 | ((NVENCAPI_VERSION >> 24) & 0xf);
+        if v < ours {
+            return Err(format!("the NVIDIA driver's NVENC ({}.{}) is older than {}.{}", v >> 4, v & 0xf, ours >> 4, ours & 0xf));
+        }
+        let mut list: NV_ENCODE_API_FUNCTION_LIST = std::mem::zeroed();
+        list.version = NV_ENCODE_API_FUNCTION_LIST_VER;
+        if create(&mut list) != NV_ENC_SUCCESS {
+            return Err("NvEncodeAPICreateInstance failed".into());
+        }
+        Ok(Api { list, _library: library })
     }
-    Err("no NVIDIA adapter".into())
 }
 
-/// What the encoder says it can do for H.264.
+/// The codec a session encodes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Codec {
+    H264,
+    Hevc,
+}
+
+impl Codec {
+    fn guid(self) -> Guid {
+        match self {
+            Codec::H264 => NV_ENC_CODEC_H264_GUID,
+            Codec::Hevc => NV_ENC_CODEC_HEVC_GUID,
+        }
+    }
+}
+
+/// One SEI message the encoder writes in front of every IDR picture (HEVC): its payload type and bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sei {
+    pub payload_type: u32,
+    pub payload: Vec<u8>,
+}
+
+/// The colour description of a stream (ITU-T H.273 code points, limited range) and the SEI messages
+/// that go with it. The default is BT.709 without SEI.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Signal {
+    pub primaries: u8,
+    pub transfer: u8,
+    pub matrix: u8,
+    pub sei: Vec<Sei>,
+}
+
+impl Default for Signal {
+    fn default() -> Self {
+        Signal { primaries: 1, transfer: 1, matrix: 1, sei: Vec::new() }
+    }
+}
+
+/// What the encoder says it can do for a codec.
 #[derive(Clone, Copy, Debug)]
 pub struct Caps {
+    /// 10-bit encoding (Main 10) is supported.
+    pub ten_bit: bool,
     pub max_bframes: u32,
     pub min_size: (u32, u32),
     pub max_size: (u32, u32),
@@ -110,6 +138,7 @@ pub struct Caps {
 /// Encoder settings (already validated by the caller).
 #[derive(Clone, Debug)]
 pub struct Params {
+    pub codec: Codec,
     pub width: u32,
     pub height: u32,
     pub fps: (u32, u32),
@@ -117,16 +146,23 @@ pub struct Params {
     pub max_bitrate: u32,
     pub cbr: bool,
     pub gop: u32,
-    /// 0 baseline, 1 main, 2 high.
+    /// H.264 only: 0 baseline, 1 main, 2 high (HEVC is Main, or Main 10 with `ten_bit`).
     pub profile: u8,
+    /// HEVC Main 10: 10-bit 4:2:0 pictures (P010), otherwise 8-bit (NV12).
+    pub ten_bit: bool,
+    /// 8-bit only: pictures go in as packed RGBA (ABGR) and NVENC converts them to 4:2:0 on the GPU.
+    pub rgba_input: bool,
+    /// HEVC: the VUI colour description and the SEI messages of every IDR picture (H.264 keeps BT.709).
+    pub signal: Signal,
+    /// The codec's own level code: `level × 10` for H.264, `level × 30` for HEVC.
     pub level: Option<u8>,
     pub sar: Option<(u32, u32)>,
     /// B-frames between references (0 or 1).
     pub bframes: u32,
 }
 
-/// An input buffer locked for writing: NV12 rows go to `data` at `pitch` bytes per row, the
-/// chroma plane after `pitch * height` bytes.
+/// An input buffer locked for writing: NV12 (or P010) rows go to `data` at `pitch` bytes per row, the
+/// chroma plane after `pitch * height` bytes; packed RGBA (ABGR) has `height` rows and no chroma plane.
 pub struct Locked<'a> {
     pub data: &'a mut [u8],
     pub pitch: usize,
@@ -159,15 +195,26 @@ struct Slot {
 pub struct Session {
     api: &'static Api,
     enc: Handle,
-    // keeps the Direct3D device (the session's device) alive
-    _device: ID3D11Device,
+    // Keeps the Direct3D device / retained CUDA context alive through session destruction.
+    _device: Device,
     slots: Vec<Slot>,
     size: (u32, u32),
     out_size: u32,
+    /// `NV_ENC_BUFFER_FORMAT_*` of the input buffers and pictures, and its bytes per sample.
+    fmt: u32,
+    bytes_per_sample: usize,
+    /// The SEI messages of every IDR picture. The payload bytes and the array of descriptors live on
+    /// the heap, owned by the session for its whole life, so the pointers handed to the driver stay
+    /// valid however the `Session` value is moved and however long the driver keeps a picture queued.
+    sei_payloads: Vec<Box<[u8]>>,
+    sei_array: Box<[NV_ENC_SEI_PAYLOAD]>,
+    /// Pictures submitted, and the distance between IDR pictures (to know which pictures get the SEI).
+    submitted: u64,
+    gop: u64,
 }
 
 // SAFETY: an encoder session and its buffers are driver objects used from one thread at a time (the
-// session is `&mut`-driven); the Direct3D device is a free-threaded COM object.
+// session is `&mut`-driven); Direct3D is free-threaded, and NVENC takes an explicit CUDA context.
 unsafe impl Send for Session {}
 
 /// A readable form of a driver status.
@@ -181,7 +228,8 @@ fn status(what: &str, s: NvStatus, enc: Handle, api: &Api) -> String {
             })
         })
         .flatten()
-        .filter(|d| !d.is_empty());
+        // the driver's text is sometimes not text at all (HEVC parameter errors): keep it only when readable
+        .filter(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_graphic() || c == ' '));
     match detail {
         Some(d) => format!("{what} failed ({s}): {d}"),
         None => format!("{what} failed ({s})"),
@@ -192,14 +240,14 @@ impl Session {
     /// Open a session on the system's NVIDIA GPU, or say why not.
     pub fn open() -> Result<Session, String> {
         let api = api()?;
-        let device = nvidia_device()?;
-        // SAFETY: a zeroed parameter block with its version and the device's COM pointer; the
+        let device = Device::new()?;
+        // SAFETY: a zeroed parameter block with its version and the matching device pointer; the
         // device is kept in the session for as long as the encoder lives. On failure a non-null
         // handle is the driver's and is destroyed exactly once, here, before returning.
         let enc = unsafe {
             let mut p: NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS = std::mem::zeroed();
             p.version = NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER;
-            p.deviceType = NV_ENC_DEVICE_TYPE_DIRECTX;
+            p.deviceType = Device::KIND;
             p.device = device.as_raw();
             p.apiVersion = NVENCAPI_VERSION;
             let open = api.list.nvEncOpenEncodeSessionEx.ok_or("the driver has no nvEncOpenEncodeSessionEx")?;
@@ -218,11 +266,24 @@ impl Session {
             }
             enc
         };
-        Ok(Session { api, enc, _device: device, slots: Vec::new(), size: (0, 0), out_size: 0 })
+        Ok(Session {
+            api,
+            enc,
+            _device: device,
+            slots: Vec::new(),
+            size: (0, 0),
+            out_size: 0,
+            fmt: NV_ENC_BUFFER_FORMAT_NV12,
+            bytes_per_sample: 1,
+            sei_payloads: Vec::new(),
+            sei_array: Box::new([]),
+            submitted: 0,
+            gop: 1,
+        })
     }
 
-    /// The encoder's limits for H.264.
-    pub fn caps(&self) -> Result<Caps, String> {
+    /// The encoder's limits for `codec` (an error when the GPU cannot encode it).
+    pub fn caps(&self, codec: Codec) -> Result<Caps, String> {
         let get = |cap: u32| -> Result<u32, String> {
             let f = self.api.list.nvEncGetEncodeCaps.ok_or("no nvEncGetEncodeCaps")?;
             // SAFETY: a valid session, a zeroed parameter block with its version, one int out.
@@ -231,14 +292,16 @@ impl Session {
                 p.version = NV_ENC_CAPS_PARAM_VER;
                 p.capsToQuery = cap;
                 let mut v = 0i32;
-                let s = f(self.enc, NV_ENC_CODEC_H264_GUID, &mut p, &mut v);
+                let s = f(self.enc, codec.guid(), &mut p, &mut v);
                 if s != NV_ENC_SUCCESS {
-                    return Err(status("querying the encoder", s, self.enc, self.api));
+                    return Err(status(if codec == Codec::Hevc { "querying the HEVC encoder" } else { "querying the encoder" }, s, self.enc, self.api));
                 }
                 Ok(v.max(0) as u32)
             }
         };
         Ok(Caps {
+            // a failing query means no 10-bit encoder
+            ten_bit: get(NV_ENC_CAPS_SUPPORT_10BIT_ENCODE).unwrap_or(0) != 0,
             max_bframes: get(NV_ENC_CAPS_NUM_MAX_BFRAMES)?,
             min_size: (get(NV_ENC_CAPS_WIDTH_MIN)?, get(NV_ENC_CAPS_HEIGHT_MIN)?),
             max_size: (get(NV_ENC_CAPS_WIDTH_MAX)?, get(NV_ENC_CAPS_HEIGHT_MAX)?),
@@ -248,6 +311,30 @@ impl Session {
     /// Configure the encoder (preset P5, high quality tuning, the settings' rate control) and
     /// create `ring` pairs of input / output buffers.
     pub fn initialize(&mut self, p: &Params, ring: usize) -> Result<(), String> {
+        if p.ten_bit && p.codec != Codec::Hevc {
+            return Err("10-bit encoding is HEVC Main 10 here".into());
+        }
+        if !p.signal.sei.is_empty() && p.codec != Codec::Hevc {
+            return Err("SEI messages are written for HEVC only".into());
+        }
+        if p.ten_bit && p.rgba_input {
+            return Err("RGBA input is 8-bit only".into());
+        }
+        (self.fmt, self.bytes_per_sample) = match (p.ten_bit, p.rgba_input) {
+            (true, _) => (NV_ENC_BUFFER_FORMAT_YUV420_10BIT, 2),
+            (false, true) => (NV_ENC_BUFFER_FORMAT_ABGR, 4),
+            (false, false) => (NV_ENC_BUFFER_FORMAT_NV12, 1),
+        };
+        self.gop = u64::from(p.gop.max(1));
+        self.submitted = 0;
+        // the SEI payloads: heap blocks that outlive every picture (see the field documentation)
+        self.sei_payloads = p.signal.sei.iter().map(|m| m.payload.clone().into_boxed_slice()).collect();
+        let mut array = Vec::with_capacity(self.sei_payloads.len());
+        for (m, bytes) in p.signal.sei.iter().zip(self.sei_payloads.iter_mut()) {
+            let size = u32::try_from(bytes.len()).map_err(|_| "an SEI payload longer than 4 GiB".to_string())?;
+            array.push(NV_ENC_SEI_PAYLOAD { payloadSize: size, payloadType: m.payload_type, payload: bytes.as_mut_ptr() });
+        }
+        self.sei_array = array.into_boxed_slice();
         let preset_fn = self.api.list.nvEncGetEncodePresetConfigEx.ok_or("no nvEncGetEncodePresetConfigEx")?;
         let init_fn = self.api.list.nvEncInitializeEncoder.ok_or("no nvEncInitializeEncoder")?;
         // SAFETY: zeroed parameter blocks with their versions; the preset call fills `preset`; the
@@ -256,16 +343,18 @@ impl Session {
             let mut preset: Box<NV_ENC_PRESET_CONFIG> = Box::new(std::mem::zeroed());
             preset.version = NV_ENC_PRESET_CONFIG_VER;
             preset.presetCfg.version = NV_ENC_CONFIG_VER;
-            let s = preset_fn(self.enc, NV_ENC_CODEC_H264_GUID, NV_ENC_PRESET_P5_GUID, NV_ENC_TUNING_INFO_HIGH_QUALITY, &mut *preset);
+            let s = preset_fn(self.enc, p.codec.guid(), NV_ENC_PRESET_P5_GUID, NV_ENC_TUNING_INFO_HIGH_QUALITY, &mut *preset);
             if s != NV_ENC_SUCCESS {
                 return Err(status("reading the encoder preset", s, self.enc, self.api));
             }
             let mut cfg: Box<NV_ENC_CONFIG> = Box::new(preset.presetCfg);
             cfg.version = NV_ENC_CONFIG_VER;
-            cfg.profileGUID = match p.profile {
-                0 => NV_ENC_H264_PROFILE_BASELINE_GUID,
-                1 => NV_ENC_H264_PROFILE_MAIN_GUID,
-                _ => NV_ENC_H264_PROFILE_HIGH_GUID,
+            cfg.profileGUID = match (p.codec, p.profile) {
+                (Codec::Hevc, _) if p.ten_bit => NV_ENC_HEVC_PROFILE_MAIN10_GUID,
+                (Codec::Hevc, _) => NV_ENC_HEVC_PROFILE_MAIN_GUID,
+                (Codec::H264, 0) => NV_ENC_H264_PROFILE_BASELINE_GUID,
+                (Codec::H264, 1) => NV_ENC_H264_PROFILE_MAIN_GUID,
+                (Codec::H264, _) => NV_ENC_H264_PROFILE_HIGH_GUID,
             };
             cfg.gopLength = p.gop.max(1);
             cfg.frameIntervalP = 1 + p.bframes as i32;
@@ -277,28 +366,65 @@ impl Session {
             // a one-second buffer, the usual for streaming-style rate control
             rc.vbvBufferSize = rc.maxBitRate;
             rc.vbvInitialDelay = rc.vbvBufferSize;
-            let h = &mut cfg.encodeCodecConfig.h264Config;
-            h.idrPeriod = p.gop.max(1);
-            h.level = p.level.map_or(NV_ENC_LEVEL_AUTOSELECT, u32::from);
-            h.flags &= !(H264_OUTPUT_AUD | H264_REPEAT_SPSPPS);
-            h.entropyCodingMode = if p.profile == 0 { 2 } else { NV_ENC_H264_ENTROPY_CODING_MODE_CABAC };
-            h.maxNumRefFrames = 0;
-            // BT.709 limited range, like our own encoder's default signalling
-            let vui = &mut h.h264VUIParameters;
-            vui.videoSignalTypePresentFlag = 1;
-            vui.videoFormat = NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED;
-            vui.videoFullRangeFlag = 0;
-            vui.colourDescriptionPresentFlag = 1;
-            vui.colourPrimaries = NV_ENC_VUI_COLOR_PRIMARIES_BT709;
-            vui.transferCharacteristics = NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
-            vui.colourMatrix = NV_ENC_VUI_MATRIX_COEFFS_BT709;
-            vui.timingInfoPresentFlag = 1;
-            vui.numUnitInTicks = p.fps.1;
-            vui.timeScale = p.fps.0.saturating_mul(2);
+            match p.codec {
+                Codec::H264 => {
+                    let h = &mut cfg.encodeCodecConfig.h264Config;
+                    h.idrPeriod = p.gop.max(1);
+                    h.level = p.level.map_or(NV_ENC_LEVEL_AUTOSELECT, u32::from);
+                    h.flags &= !(H264_OUTPUT_AUD | H264_REPEAT_SPSPPS);
+                    h.entropyCodingMode = if p.profile == 0 { 2 } else { NV_ENC_H264_ENTROPY_CODING_MODE_CABAC };
+                    h.maxNumRefFrames = 0;
+                    // BT.709 limited range, like our own encoder's default signalling
+                    let vui = &mut h.h264VUIParameters;
+                    vui.videoSignalTypePresentFlag = 1;
+                    vui.videoFormat = NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED;
+                    vui.videoFullRangeFlag = 0;
+                    vui.colourDescriptionPresentFlag = 1;
+                    vui.colourPrimaries = NV_ENC_VUI_COLOR_PRIMARIES_BT709;
+                    vui.transferCharacteristics = NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
+                    vui.colourMatrix = NV_ENC_VUI_MATRIX_COEFFS_BT709;
+                    vui.timingInfoPresentFlag = 1;
+                    vui.numUnitInTicks = p.fps.1;
+                    vui.timeScale = p.fps.0.saturating_mul(2);
+                }
+                Codec::Hevc => {
+                    let h = &mut cfg.encodeCodecConfig.hevcConfig;
+                    h.level = p.level.map_or(NV_ENC_LEVEL_AUTOSELECT, u32::from);
+                    h.tier = NV_ENC_TIER_HEVC_MAIN;
+                    h.minCUSize = NV_ENC_HEVC_CUSIZE_AUTOSELECT;
+                    h.maxCUSize = NV_ENC_HEVC_CUSIZE_AUTOSELECT;
+                    h.idrPeriod = p.gop.max(1);
+                    // parameter sets only in the first IDR (and the hvcC), no access unit delimiters, 4:2:0 at 8 or 10 bits
+                    h.flags &= !(HEVC_OUTPUT_AUD
+                        | HEVC_DISABLE_SPSPPS
+                        | HEVC_REPEAT_SPSPPS
+                        | HEVC_ENABLE_INTRA_REFRESH
+                        | HEVC_CHROMA_FORMAT_MASK
+                        | HEVC_PIXEL_BIT_DEPTH_MASK);
+                    h.flags |= 1 << HEVC_CHROMA_FORMAT_SHIFT;
+                    if p.ten_bit {
+                        h.flags |= 2 << HEVC_PIXEL_BIT_DEPTH_SHIFT;
+                    }
+                    h.maxNumRefFramesInDPB = 0;
+                    // the stream's colour description (BT.709 unless the signal says otherwise), limited
+                    // range; an HEVC VUI counts frames, not fields: frame rate = time_scale / num_units_in_tick
+                    let vui = &mut h.hevcVUIParameters;
+                    vui.videoSignalTypePresentFlag = 1;
+                    vui.videoFormat = NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED;
+                    vui.videoFullRangeFlag = 0;
+                    vui.colourDescriptionPresentFlag = 1;
+                    vui.colourPrimaries = u32::from(p.signal.primaries);
+                    vui.transferCharacteristics = u32::from(p.signal.transfer);
+                    vui.colourMatrix = u32::from(p.signal.matrix);
+                    vui.timingInfoPresentFlag = 1;
+                    vui.numUnitInTicks = p.fps.1;
+                    vui.timeScale = p.fps.0;
+                }
+            }
 
             let mut init: Box<NV_ENC_INITIALIZE_PARAMS> = Box::new(std::mem::zeroed());
             init.version = NV_ENC_INITIALIZE_PARAMS_VER;
-            init.encodeGUID = NV_ENC_CODEC_H264_GUID;
+            init.encodeGUID = p.codec.guid();
             init.presetGUID = NV_ENC_PRESET_P5_GUID;
             init.encodeWidth = p.width;
             init.encodeHeight = p.height;
@@ -310,7 +436,7 @@ impl Session {
             init.enablePTD = 1;
             init.encodeConfig = &mut *cfg;
             init.tuningInfo = NV_ENC_TUNING_INFO_HIGH_QUALITY;
-            init.bufferFormat = NV_ENC_BUFFER_FORMAT_NV12;
+            init.bufferFormat = self.fmt;
             let s = init_fn(self.enc, &mut *init);
             if s != NV_ENC_SUCCESS {
                 return Err(status("initialising the encoder", s, self.enc, self.api));
@@ -337,7 +463,7 @@ impl Session {
             i.width = self.size.0;
             i.height = self.size.1;
             i.memoryHeap = NV_ENC_MEMORY_HEAP_SYSMEM_CACHED;
-            i.bufferFmt = NV_ENC_BUFFER_FORMAT_NV12;
+            i.bufferFmt = self.fmt;
             let s = create_in(self.enc, &mut i);
             if s != NV_ENC_SUCCESS {
                 return Err(status("creating an input buffer", s, self.enc, self.api));
@@ -363,7 +489,7 @@ impl Session {
         self.slots.len()
     }
 
-    /// The SPS and PPS as one Annex B byte string.
+    /// The parameter sets as one Annex B byte string (SPS and PPS; VPS, SPS and PPS for HEVC).
     pub fn sequence_params(&self) -> Result<Vec<u8>, String> {
         let f = self.api.list.nvEncGetSequenceParams.ok_or("no nvEncGetSequenceParams")?;
         let mut buf = vec![0u8; 1024];
@@ -397,8 +523,9 @@ impl Session {
         );
         let (w, h) = self.size;
         // SAFETY: the buffer handle is one this session created. `LockInputBuffer` returns a
-        // writable block of `pitch * h * 3 / 2` bytes (NV12: luma rows then chroma rows) that stays
-        // valid until `UnlockInputBuffer`; the slice borrows it only inside `fill`.
+        // writable block of `pitch * h * 3 / 2` bytes (NV12 or P010: luma rows then chroma rows, the pitch
+        // in bytes), or `pitch * h` bytes (ABGR: packed rows only), that stays valid until
+        // `UnlockInputBuffer`; the slice borrows it only inside `fill`.
         let pitch = unsafe {
             let mut l: NV_ENC_LOCK_INPUT_BUFFER = std::mem::zeroed();
             l.version = NV_ENC_LOCK_INPUT_BUFFER_VER;
@@ -407,13 +534,14 @@ impl Session {
             if st != NV_ENC_SUCCESS || l.bufferDataPtr.is_null() || l.pitch == 0 {
                 return Err(status("locking an input buffer", st, self.enc, self.api));
             }
-            // a driver pitch narrower than a row would make `fill` write past each row
-            if (l.pitch as usize) < w as usize {
+            // a driver pitch narrower than a row (in bytes: P010 samples are two) would make `fill` write past each row
+            if (l.pitch as usize) < (w as usize).saturating_mul(self.bytes_per_sample) {
                 // the lock succeeded, so release it before giving up (its status no longer matters)
                 let _ = unlock(self.enc, input);
-                return Err(format!("the driver returned an input pitch of {} bytes for {w}-pixel rows", l.pitch));
+                return Err(format!("the driver returned an input pitch of {} bytes for {w}-pixel rows of {}-byte samples", l.pitch, self.bytes_per_sample));
             }
-            let len = (l.pitch as usize).saturating_mul(h as usize).saturating_mul(3) / 2;
+            let rows = (l.pitch as usize).saturating_mul(h as usize);
+            let len = if self.fmt == NV_ENC_BUFFER_FORMAT_ABGR { rows } else { rows.saturating_mul(3) / 2 };
             fill(Locked { data: std::slice::from_raw_parts_mut(l.bufferDataPtr.cast::<u8>(), len), pitch: l.pitch as usize });
             let st = unlock(self.enc, input);
             if st != NV_ENC_SUCCESS {
@@ -421,16 +549,27 @@ impl Session {
             }
             l.pitch
         };
-        // SAFETY: a zeroed parameter block with its version; the buffers are this session's.
+        // IDR pictures (every `gop` pictures from the first, in submission = display order) carry the SEI messages
+        let idr = !self.sei_array.is_empty() && self.submitted.is_multiple_of(self.gop);
+        self.submitted = self.submitted.saturating_add(1);
+        // SAFETY: a zeroed parameter block with its version; the buffers are this session's. The SEI
+        // descriptor array and the payload bytes it points to are heap blocks owned by `self`, which
+        // stay allocated (and unmoved) until the session is dropped, so they outlive this call and
+        // whatever time the driver keeps the picture queued.
         let st = unsafe {
             let mut e: NV_ENC_PIC_PARAMS = std::mem::zeroed();
+            if idr {
+                let h = &mut e.codecPicParams.hevcPicParams;
+                h.seiPayloadArrayCnt = u32::try_from(self.sei_array.len()).unwrap_or(0);
+                h.seiPayloadArray = self.sei_array.as_mut_ptr();
+            }
             e.version = NV_ENC_PIC_PARAMS_VER;
             e.inputWidth = w;
             e.inputHeight = h;
             e.inputPitch = pitch;
             e.inputBuffer = input;
             e.outputBitstream = output;
-            e.bufferFmt = NV_ENC_BUFFER_FORMAT_NV12;
+            e.bufferFmt = self.fmt;
             e.pictureStruct = NV_ENC_PIC_STRUCT_FRAME;
             e.inputTimeStamp = pts;
             e.inputDuration = 1;

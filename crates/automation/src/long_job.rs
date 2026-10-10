@@ -107,10 +107,11 @@ impl FilmcraftMcp {
 }
 
 /// Delete what an interrupted export wrote, and nothing else: the output file itself, the numbered
-/// stills of an image sequence (`<stem><digits>.<same extension>`) and the caption sidecar
+/// stills of an image sequence (`<stem><3+ digits>.<same extension>`, only when the output is a
+/// PNG/TIFF/BMP sequence) and the caption sidecar
 /// (`<stem>.srt` / `<stem>.vtt`), each only if it was written since `since`. Other files that
-/// merely share the name's stem (`<stem>.aep`, `<stem>2.psd`, …) are never touched, even when they
-/// were saved during the export.
+/// merely share the name's stem (`<stem>.aep`, `<stem>2.psd`, `<stem>1.mp4` beside a movie, …) are
+/// never touched, even when they were saved during the export.
 pub fn remove_partial(path: &str, since: SystemTime) {
     let p = Path::new(path);
     let (Some(dir), Some(stem), Some(file)) = (p.parent(), p.file_stem().and_then(|s| s.to_str()), p.file_name().and_then(|s| s.to_str())) else {
@@ -139,9 +140,19 @@ fn is_export_output(name: &str, file: &str, stem: &str, ext: &str) -> bool {
     if let Some(sidecar) = rest.strip_prefix('.') {
         return sidecar.eq_ignore_ascii_case("srt") || sidecar.eq_ignore_ascii_case("vtt");
     }
-    // image sequence: one or more digits, then the output's own extension
+    // image sequence: the frame number (at least three digits, like `image_sequence_path`), then the
+    // output's own extension; movies and audio are a single file, so numbered neighbours are not theirs
+    if !is_sequence_extension(ext) {
+        return false;
+    }
     let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
-    digits > 0 && !ext.is_empty() && rest.get(digits..).is_some_and(|r| r.strip_prefix('.').is_some_and(|x| x == ext))
+    digits >= 3 && rest.get(digits..).is_some_and(|r| r.strip_prefix('.').is_some_and(|x| x == ext))
+}
+
+/// Whether an export to a file with extension `ext` writes an image sequence (one still per frame).
+fn is_sequence_extension(ext: &str) -> bool {
+    use filmcraft_engine::export::Format;
+    Format::from_name(ext).is_some_and(|f| matches!(f, Format::PngSequence | Format::TiffSequence | Format::BmpSequence))
 }
 
 #[cfg(test)]
@@ -161,6 +172,50 @@ mod tests {
             std::fs::write(dir.join(f), b"x").unwrap();
         }
         remove_partial(&dir.join("trailer.png").to_string_lossy(), started);
+        for f in ours {
+            assert!(!dir.join(f).exists(), "{f} should be removed");
+        }
+        for f in theirs {
+            assert!(dir.join(f).exists(), "{f} must not be removed");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn numbered_files_beside_a_movie_are_kept() {
+        let dir = std::env::temp_dir().join(format!("fc-remove-partial-movie-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let started = SystemTime::now();
+        // a movie export writes one file: `clip1.mp4` and `clip002.mp4` are other exports
+        let ours = ["clip.mp4", "clip.srt"];
+        let theirs = ["clip1.mp4", "clip002.mp4", "clip2.mov"];
+        for f in ours.iter().chain(theirs.iter()) {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        remove_partial(&dir.join("clip.mp4").to_string_lossy(), started);
+        for f in ours {
+            assert!(!dir.join(f).exists(), "{f} should be removed");
+        }
+        for f in theirs {
+            assert!(dir.join(f).exists(), "{f} must not be removed");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sequence_frames_have_at_least_three_digits() {
+        let dir = std::env::temp_dir().join(format!("fc-remove-partial-digits-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let started = SystemTime::now();
+        // frames are numbered with at least three digits (`shot000.tiff`); `shot2.tiff` is not one
+        let ours = ["shot.tiff", "shot000.tiff", "shot1234.tiff"];
+        let theirs = ["shot2.tiff", "shot12.tiff"];
+        for f in ours.iter().chain(theirs.iter()) {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        remove_partial(&dir.join("shot.tiff").to_string_lossy(), started);
         for f in ours {
             assert!(!dir.join(f).exists(), "{f} should be removed");
         }

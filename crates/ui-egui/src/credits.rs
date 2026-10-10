@@ -234,37 +234,37 @@ pub fn contributors_ui(ui: &mut egui::Ui, t: &Tokens, auto: &mut Registry) {
     let id = egui::Id::new("credits_view");
     let mut v = ui.data_mut(|d| d.get_temp::<View>(id)).unwrap_or_default();
     ui.horizontal_wrapped(|ui| {
-        ui.label("Show");
+        ui.label(tl!("Show"));
         for m in NameMode::ALL {
-            let r = ui.selectable_label(v.names == m, m.label());
+            let r = ui.selectable_label(v.names == m, crate::i18n::t(m.label()));
             auto.add(&format!("about.credits.names.{}", m.id()), r.rect, m.label());
             if r.clicked() {
                 v.names = m;
             }
         }
         ui.separator();
-        ui.label("Sort");
-        let combo = egui::ComboBox::from_id_salt("credits_sort").selected_text(v.key.label().0).show_ui(ui, |ui| {
+        ui.label(tl!("Sort"));
+        let combo = egui::ComboBox::from_id_salt("credits_sort").selected_text(crate::i18n::t(v.key.label().0)).show_ui(ui, |ui| {
             for k in SortKey::ALL {
-                if ui.selectable_label(v.key == k, k.label().0).clicked() {
+                if ui.selectable_label(v.key == k, crate::i18n::t(k.label().0)).clicked() {
                     v.key = k;
                     v.ascending = k.default_ascending();
                 }
             }
         });
         auto.add("about.credits.sort", combo.response.rect, "Sort");
-        let r = ui.button(if v.ascending { "▲" } else { "▼" }).on_hover_text("Reverse the order");
+        let r = ui.button(if v.ascending { "▲" } else { "▼" }).on_hover_text(tl!("Reverse the order"));
         auto.add("about.credits.reverse", r.rect, "Reverse the order");
         if r.clicked() {
             v.ascending = !v.ascending;
         }
         ui.separator();
-        let r = ui.selectable_label(!v.table, "Grab bag");
+        let r = ui.selectable_label(!v.table, tl!("Grab bag"));
         auto.add("about.credits.grabBag", r.rect, "Grab bag");
         if r.clicked() {
             v.table = false;
         }
-        let r = ui.selectable_label(v.table, "Table");
+        let r = ui.selectable_label(v.table, tl!("Table"));
         auto.add("about.credits.table", r.rect, "Table");
         if r.clicked() {
             v.table = true;
@@ -275,7 +275,7 @@ pub fn contributors_ui(ui: &mut egui::Ui, t: &Tokens, auto: &mut Registry) {
     ui.separator();
     egui::ScrollArea::both().id_salt("credits_list").max_height(LIST_HEIGHT).auto_shrink([false, false]).show(ui, |ui| {
         if list.is_empty() {
-            ui.label("No contributor data was built into this copy.");
+            ui.label(tl!("No contributor data was built into this copy."));
         } else if v.table {
             table(ui, &list, &mut v, auto);
         } else {
@@ -296,7 +296,7 @@ fn table(ui: &mut egui::Ui, list: &[&Contributor], v: &mut View, auto: &mut Regi
     egui::Grid::new("credits_table").striped(true).num_columns(SortKey::ALL.len()).show(ui, |ui| {
         for (i, k) in SortKey::ALL.into_iter().enumerate() {
             let arrow = if v.key == k { if v.ascending { " ▲" } else { " ▼" } } else { "" };
-            let r = ui.button(RichText::new(format!("{}{arrow}", k.label().1)).strong()).on_hover_text(k.label().0);
+            let r = ui.button(RichText::new(format!("{}{arrow}", k.label().1)).strong()).on_hover_text(crate::i18n::t(k.label().0));
             auto.add(&format!("about.credits.header.{i}"), r.rect, k.label().0);
             if r.clicked() {
                 if v.key == k {
@@ -327,13 +327,13 @@ fn table(ui: &mut egui::Ui, list: &[&Contributor], v: &mut View, auto: &mut Regi
 /// About ▸ Models: AI models credited in Co-Authored-By trailers.
 pub fn models_ui(ui: &mut egui::Ui) {
     if MODELS.is_empty() {
-        ui.label("No model credits were built into this copy.");
+        ui.label(tl!("No model credits were built into this copy."));
         return;
     }
     let assisted: u64 = MODELS.iter().map(|m| m.commits).max().unwrap_or(0).max(1);
     egui::ScrollArea::both().id_salt("credits_models").max_height(LIST_HEIGHT).auto_shrink([false, true]).show(ui, |ui| {
         egui::Grid::new("credits_models").striped(true).num_columns(6).show(ui, |ui| {
-            for h in ["Company", "Model", "Version", "Commits", "% of all commits", "Lines +/−"] {
+            for h in [tl!("Company"), tl!("Model"), tl!("Version"), tl!("Commits"), tl!("% of all commits"), tl!("Lines +/−")] {
                 ui.label(RichText::new(h).strong());
             }
             ui.end_row();

@@ -19,3 +19,5 @@ harfrust = { version = "0.12", default-features = false, features = ["std"] }
 unicode-bidi = "0.3.18"
 # UAX #14 line breaking (Apache-2.0).
 unicode-linebreak = "0.1.5"
+# UAX #29 extended grapheme clusters (MIT OR Apache-2.0).
+unicode-segmentation = "1.13"

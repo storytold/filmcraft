@@ -208,7 +208,7 @@ fn mix_item(
         if !src.info().has_audio() {
             return;
         }
-        effected(item, &|m0, len| src.audio(m0, len, sr).ok(), a0, n, sr, w)
+        effected(item, &|m0, len| src.audio_stream(item.audio_stream, m0, len, sr).ok(), a0, n, sr, w)
     };
     // gains: clip gain × Volume (keyframed, per 64-sample block) × channel volume × panner
     let clip_gain = db_to_gain(item.gain_db);
@@ -328,7 +328,7 @@ pub fn clip_signal(item: &TrackItem, start: i64, frames: usize, sr: u32, sources
         let n = (a1 - a0) as usize;
         let off = (a0 - start) as usize;
         let g = db_to_gain(item.gain_db);
-        let buf = effected(item, &|m0, len| src.audio(m0, len, sr).ok(), a0, n, sr, 2);
+        let buf = effected(item, &|m0, len| src.audio_stream(item.audio_stream, m0, len, sr).ok(), a0, n, sr, 2);
         for (dst, b) in out.iter_mut().zip(&buf) {
             for (d, x) in dst[off..off + n].iter_mut().zip(b) {
                 *d = x * g;
@@ -336,6 +336,18 @@ pub fn clip_signal(item: &TrackItem, start: i64, frames: usize, sr: u32, sources
         }
     }
     Some(out)
+}
+
+/// Whether a clip plays one source channel on both sides: a mono source, or one picked channel
+/// (Modify ▸ Audio Channels, Breakout to Mono). Loudness Auto-Match measures such a clip as the one
+/// channel it is, as BS.1770 (and ffmpeg's `ebur128`) measure a mono programme, not as the
+/// dual-mono pair [`clip_signal`] plays, which reads 3 LU louder. `None` when the clip has no
+/// audio source.
+pub fn clip_is_mono(item: &TrackItem, sources: &dyn SourceProvider) -> Option<bool> {
+    let src = sources.source(item.item)?;
+    let available = src.info().audio_streams.get(item.audio_stream)?.channels as usize;
+    let (left, right) = source_pair(item, available);
+    Some(left == right)
 }
 
 /// The clip's audio (after speed/reverse) for timeline samples `[x0, x0 + len)` as `w` channels

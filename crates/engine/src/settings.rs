@@ -33,6 +33,10 @@ pub const PREFS_VERSION: u32 = 2;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct GeneralPrefs {
+    /// Interface language (persisted independently of projects): `en`, `ja`, `es`, `pt-br`, or
+    /// `system` (the default: the operating system's preferred language when the interface has it,
+    /// otherwise English).
+    pub interface_language: String,
     /// "At Startup": `showHome` (FilmCraft: the demo project), `openMostRecent`, `emptyProject`.
     pub at_startup: String,
     /// "When Opening a Project": `showOpenDialog` | `showHome`.
@@ -59,6 +63,7 @@ pub struct GeneralPrefs {
 impl Default for GeneralPrefs {
     fn default() -> Self {
         Self {
+            interface_language: "system".into(),
             at_startup: "showHome".into(),
             when_opening_project: "showOpenDialog".into(),
             bins_double_click: "openInPlace".into(),
@@ -672,6 +677,12 @@ static CATEGORIES: &[Category] = &[
         id: "general",
         title: "General",
         rows: &[
+            f(
+                "general.interfaceLanguage",
+                "Interface Language",
+                Kind::Choice(&[("system", "System Language"), ("en", "English"), ("ja", "日本語"), ("es", "Español"), ("pt-br", "Português (Brasil)")]),
+                true,
+            ),
             f("general.atStartup", "At Startup", Kind::Choice(STARTUP), true),
             f("general.whenOpeningProject", "When Opening a Project", Kind::Choice(OPENING), false),
             Row::Group(
@@ -955,7 +966,7 @@ static CATEGORIES: &[Category] = &[
             b("playback.draftDecode", "Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)", true),
             f("playback.hardwareDecoding", "Hardware decoding", Kind::Choice(HW_DECODE), true),
             Row::Note(
-                "Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS) for the H.264 and HEVC streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.",
+                "Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.",
             ),
         ],
     },
@@ -1084,10 +1095,8 @@ pub fn sanitize(v: &mut Value, defaults: &Value) {
         let Some(slot) = path.iter().try_fold(&mut *v, |v, k| v.get_mut(*k)) else { continue };
         let def = path.iter().try_fold(defaults, |v, k| v.get(*k)).cloned().unwrap_or(Value::Null);
         match f.kind {
-            Kind::Choice(_) | Kind::Color => {
-                if validate(f.key, slot).is_err() {
-                    *slot = def;
-                }
+            Kind::Choice(_) | Kind::Color if validate(f.key, slot).is_err() => {
+                *slot = def;
             }
             Kind::Int { min, max, .. } => match slot.as_f64().filter(|x| x.is_finite()) {
                 Some(x) => *slot = json!(x.round().clamp(min, max) as u64),

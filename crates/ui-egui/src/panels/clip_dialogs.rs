@@ -44,27 +44,40 @@ fn push(elems: &mut Elems, id: impl Into<String>, r: &egui::Response, label: imp
 /// Dialog title and automation prefix of a command's dialog.
 fn meta(command: &str) -> Option<(&'static str, &'static str)> {
     Some(match command {
-        "edit.pasteAttributes" => ("Paste Attributes", "pasteAttributes"),
-        "edit.removeAttributes" => ("Remove Attributes", "removeAttributes"),
-        "file.newOfflineFile" => ("New Offline File", "offlineFile"),
-        "clip.nest" => ("Nested Sequence Name", "nest"),
-        "clip.makeSubclip" => ("Make Subclip", "makeSubclip"),
-        "clip.editSubclip" => ("Edit Subclip", "editSubclip"),
-        "clip.audioChannels" => ("Modify Clip: Audio Channels", "audioChannels"),
-        "clip.modifyTimecode" => ("Modify Clip: Timecode", "timecode"),
-        "clip.frameHoldOptions" => ("Frame Hold Options", "frameHold"),
-        "clip.fieldOptions" => ("Field Options", "fieldOptions"),
-        "clip.speedDuration" => ("Clip Speed / Duration", "speedDuration"),
-        "file.closeProject" => ("Save Project", "closeProject"),
+        "edit.pasteAttributes" => (tl!("Paste Attributes"), "pasteAttributes"),
+        "edit.removeAttributes" => (tl!("Remove Attributes"), "removeAttributes"),
+        "file.newOfflineFile" => (tl!("New Offline File"), "offlineFile"),
+        "clip.nest" => (tl!("Nested Sequence Name"), "nest"),
+        "clip.makeSubclip" => (tl!("Make Subclip"), "makeSubclip"),
+        "clip.editSubclip" => (tl!("Edit Subclip"), "editSubclip"),
+        "clip.audioChannels" => (tl!("Modify Clip: Audio Channels"), "audioChannels"),
+        "clip.modifyTimecode" => (tl!("Modify Clip: Timecode"), "timecode"),
+        "clip.frameHoldOptions" => (tl!("Frame Hold Options"), "frameHold"),
+        "clip.fieldOptions" => (tl!("Field Options"), "fieldOptions"),
+        "clip.speedDuration" => (tl!("Clip Speed / Duration"), "speedDuration"),
+        "file.closeProject" => (tl!("Save Project"), "closeProject"),
         _ => return None,
     })
 }
 
-const INTRINSIC_VIDEO: [(&str, &str); 3] = [("motion", "Motion"), ("opacity", "Opacity"), ("timeRemapping", "Time Remapping")];
-const INTRINSIC_AUDIO: [(&str, &str); 3] = [("volume", "Volume"), ("channelVolume", "Channel Volume"), ("panner", "Panner")];
-const FORMATS: [(&str, &str); 4] = [("mono", "Mono"), ("stereo", "Stereo"), ("5.1", "5.1"), ("adaptive", "Adaptive")];
-const HOLD_ON: [(&str, &str); 5] =
-    [("in", "In Point"), ("out", "Out Point"), ("playhead", "Playhead"), ("sourceTimecode", "Source Timecode"), ("sequenceTime", "Sequence Time")];
+fn intrinsic_video() -> [(&'static str, &'static str); 3] {
+    [("motion", tl!("Motion")), ("opacity", tl!("Opacity")), ("timeRemapping", tl!("Time Remapping"))]
+}
+fn intrinsic_audio() -> [(&'static str, &'static str); 3] {
+    [("volume", tl!("Volume")), ("channelVolume", tl!("Channel Volume")), ("panner", tl!("Panner"))]
+}
+fn formats() -> [(&'static str, &'static str); 4] {
+    [("mono", tl!("Mono")), ("stereo", tl!("Stereo")), ("5.1", "5.1"), ("adaptive", tl!("Adaptive"))]
+}
+fn hold_on() -> [(&'static str, &'static str); 5] {
+    [
+        ("in", tl!("In Point")),
+        ("out", tl!("Out Point")),
+        ("playhead", tl!("Playhead")),
+        ("sourceTimecode", tl!("Source Timecode")),
+        ("sequenceTime", tl!("Sequence Time")),
+    ]
+}
 
 /// Menu / shortcut entry points without params open a dialog. Returns None for other ids.
 pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
@@ -155,7 +168,7 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
             let item = s.state.project_selection.iter().find_map(|i| s.project.item(*i).and_then(|it| it.as_media()).filter(|m| m.info.has_audio()));
             match item {
                 Some(m) => {
-                    let n = m.info.audio.as_ref().map_or(2, |a| a.channels) as u16;
+                    let n = m.info.audio().map_or(2, |a| a.channels) as u16;
                     let map = m.interpret.audio_channels.clone().unwrap_or_else(|| AudioChannelMap::for_format(AudioChannels::Stereo, n));
                     (json!({"format": format_name(map.format), "clips": map.clips}), json!({"channels": n, "items": true}))
                 }
@@ -278,30 +291,32 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut action: Option<&'static str> = None;
     let project_name = app.session.project.name.clone();
     let can_save = app.session.path.is_some();
-    egui::Window::new(title).collapsible(false).resizable(false).default_width(360.0).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+    // the title is translated; the window keeps one id whatever the interface language
+    let id = egui::Id::new(("clip-dialog", pre));
+    egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(360.0).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
         let p = &mut d.params;
         match d.command.as_str() {
             "edit.pasteAttributes" | "edit.removeAttributes" => {
                 let (v, a) = (d.info["video"].as_bool().unwrap_or(true), d.info["audio"].as_bool().unwrap_or(true));
-                ui.label(RichText::new("Video Attributes").strong());
-                for (k, l) in INTRINSIC_VIDEO {
+                ui.label(RichText::new(tl!("Video Attributes")).strong());
+                for (k, l) in intrinsic_video() {
                     check(ui, &mut elems, pre, p, k, l, v);
                 }
-                ui.label(RichText::new("Audio Attributes").strong());
-                for (k, l) in INTRINSIC_AUDIO {
+                ui.label(RichText::new(tl!("Audio Attributes")).strong());
+                for (k, l) in intrinsic_audio() {
                     check(ui, &mut elems, pre, p, k, l, a);
                 }
                 let effects: Vec<(String, String)> = d.info["effects"]
                     .as_array()
                     .map(|x| x.iter().filter_map(|e| Some((e[0].as_str()?.to_string(), e[1].as_str()?.to_string()))).collect())
                     .unwrap_or_default();
-                ui.label(RichText::new("Effects").strong());
+                ui.label(RichText::new(tl!("Effects")).strong());
                 if effects.is_empty() {
-                    ui.label(RichText::new("No effects").weak());
+                    ui.label(RichText::new(tl!("No effects")).weak());
                 }
                 for (id, name) in &effects {
                     let mut on = p["effects"].as_array().is_some_and(|x| x.iter().any(|e| e.as_str() == Some(id)));
-                    let r = ui.checkbox(&mut on, name);
+                    let r = ui.checkbox(&mut on, crate::i18n::t(name));
                     push(&mut elems, format!("{pre}.effect.{id}"), &r, name.as_str());
                     if r.changed() {
                         let mut list: Vec<Value> = p["effects"].as_array().cloned().unwrap_or_default();
@@ -314,33 +329,33 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
                 if d.command == "edit.pasteAttributes" {
                     ui.separator();
-                    check(ui, &mut elems, pre, p, "scaleTimes", "Scale Attribute Times", true);
+                    check(ui, &mut elems, pre, p, "scaleTimes", tl!("Scale Attribute Times"), true);
                 }
             }
             "file.newOfflineFile" => {
-                text(ui, &mut elems, pre, p, "fileName", "File Name:", 220.0);
-                text(ui, &mut elems, pre, p, "name", "Clip Name:", 220.0);
-                text(ui, &mut elems, pre, p, "tapeName", "Tape Name:", 220.0);
-                text(ui, &mut elems, pre, p, "description", "Description:", 220.0);
+                text(ui, &mut elems, pre, p, "fileName", tl!("File Name:"), 220.0);
+                text(ui, &mut elems, pre, p, "name", tl!("Clip Name:"), 220.0);
+                text(ui, &mut elems, pre, p, "tapeName", tl!("Tape Name:"), 220.0);
+                text(ui, &mut elems, pre, p, "description", tl!("Description:"), 220.0);
                 ui.horizontal(|ui| {
-                    ui.label("Contains:");
-                    check(ui, &mut elems, pre, p, "video", "Video", true);
-                    check(ui, &mut elems, pre, p, "audio", "Audio", true);
+                    ui.label(tl!("Contains:"));
+                    check(ui, &mut elems, pre, p, "video", tl!("Video"), true);
+                    check(ui, &mut elems, pre, p, "audio", tl!("Audio"), true);
                 });
                 let has_v = p["video"].as_bool().unwrap_or(true);
                 ui.add_enabled_ui(has_v, |ui| {
-                    number(ui, &mut elems, pre, p, "width", "Width:", 16.0..=16384.0, " px");
-                    number(ui, &mut elems, pre, p, "height", "Height:", 16.0..=16384.0, " px");
-                    number(ui, &mut elems, pre, p, "fps", "Frame Rate:", 1.0..=240.0, " fps");
+                    number(ui, &mut elems, pre, p, "width", tl!("Width:"), 16.0..=16384.0, " px");
+                    number(ui, &mut elems, pre, p, "height", tl!("Height:"), 16.0..=16384.0, " px");
+                    number(ui, &mut elems, pre, p, "fps", tl!("Frame Rate:"), 1.0..=240.0, " fps");
                 });
-                text(ui, &mut elems, pre, p, "timecode", "Media Start:", 120.0);
-                number(ui, &mut elems, pre, p, "seconds", "Duration:", 0.05..=86_400.0, " s");
+                text(ui, &mut elems, pre, p, "timecode", tl!("Media Start:"), 120.0);
+                number(ui, &mut elems, pre, p, "seconds", tl!("Duration:"), 0.05..=86_400.0, " s");
             }
             "clip.nest" => {
                 // the name is ready to type over, and Enter accepts it
                 let mut v = p["name"].as_str().unwrap_or_default().to_string();
                 ui.horizontal(|ui| {
-                    ui.label("Name:");
+                    ui.label(tl!("Name:"));
                     let id = egui::Id::new("nest-name");
                     let r = ui.add(egui::TextEdit::singleline(&mut v).desired_width(240.0).id(id));
                     push(&mut elems, format!("{pre}.name"), &r, "Name:");
@@ -360,23 +375,23 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             "clip.makeSubclip" | "clip.editSubclip" => {
                 let fps = d.info["fps"].as_f64().unwrap_or(24.0);
                 if d.command == "clip.makeSubclip" {
-                    text(ui, &mut elems, pre, p, "name", "Name:", 240.0);
+                    text(ui, &mut elems, pre, p, "name", tl!("Name:"), 240.0);
                 } else {
-                    ui.label(format!("Subclip: {}", d.info["name"].as_str().unwrap_or_default()));
+                    ui.label(tlf!("Subclip: {name}", name = d.info["name"].as_str().unwrap_or_default()));
                 }
-                frames(ui, &mut elems, pre, p, "startFrame", "Start:", fps);
-                frames(ui, &mut elems, pre, p, "endFrame", "End:", fps);
-                check(ui, &mut elems, pre, p, "restrictTrims", "Restrict Trims To Subclip Boundaries", true);
+                frames(ui, &mut elems, pre, p, "startFrame", tl!("Start:"), fps);
+                frames(ui, &mut elems, pre, p, "endFrame", tl!("End:"), fps);
+                check(ui, &mut elems, pre, p, "restrictTrims", tl!("Restrict Trims To Subclip Boundaries"), true);
                 if d.command == "clip.editSubclip" {
-                    check(ui, &mut elems, pre, p, "convertToMaster", "Convert to Master Clip", true);
+                    check(ui, &mut elems, pre, p, "convertToMaster", tl!("Convert to Master Clip"), true);
                 }
             }
             "clip.audioChannels" => {
                 let n = d.info["channels"].as_u64().unwrap_or(2).max(1) as u16;
                 if d.info["items"].as_bool().unwrap_or(false) {
                     ui.horizontal(|ui| {
-                        ui.label("Clip Channel Format:");
-                        for (k, l) in FORMATS {
+                        ui.label(tl!("Clip Channel Format:"));
+                        for (k, l) in formats() {
                             let r = ui.radio(p["format"].as_str() == Some(k), l);
                             push(&mut elems, format!("{pre}.format.{k}"), &r, l);
                             if r.clicked() {
@@ -387,7 +402,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     });
                     let mut clips: Vec<Vec<u16>> = serde_json::from_value(p["clips"].clone()).unwrap_or_default();
                     ui.horizontal(|ui| {
-                        ui.label("Number of Audio Clips:");
+                        ui.label(tl!("Number of Audio Clips:"));
                         let mut count = clips.len() as u32;
                         let r = ui.add(egui::DragValue::new(&mut count).range(1..=n as u32));
                         push(&mut elems, format!("{pre}.count"), &r, "Number of Audio Clips");
@@ -400,15 +415,15 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                             clips.truncate(count);
                         }
                     });
-                    ui.label(RichText::new("Media Source Channels").strong());
+                    ui.label(RichText::new(tl!("Media Source Channels")).strong());
                     egui::Grid::new("audio-channel-matrix").striped(true).show(ui, |ui| {
                         ui.label("");
                         for c in 0..n {
-                            ui.label(format!("Ch. {}", c + 1));
+                            ui.label(tlf!("Ch. {n}", n = c + 1));
                         }
                         ui.end_row();
                         for (ci, chans) in clips.iter_mut().enumerate() {
-                            ui.label(format!("Clip {}", ci + 1));
+                            ui.label(tlf!("Clip {n}", n = ci + 1));
                             for c in 0..n {
                                 let mut on = chans.contains(&c);
                                 let r = ui.checkbox(&mut on, "");
@@ -427,12 +442,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     });
                     p["clips"] = json!(clips);
                 } else {
-                    ui.label("Source channels the selected audio clips play:");
+                    ui.label(tl!("Source channels the selected audio clips play:"));
                     let mut chans: Vec<u16> = serde_json::from_value(p["channels"].clone()).unwrap_or_default();
                     ui.horizontal(|ui| {
                         for c in 0..n.max(2) {
                             let mut on = chans.contains(&c);
-                            let r = ui.checkbox(&mut on, format!("Ch. {}", c + 1));
+                            let r = ui.checkbox(&mut on, tlf!("Ch. {n}", n = c + 1));
                             push(&mut elems, format!("{pre}.clip.0.ch.{c}"), &r, format!("Ch. {}", c + 1));
                             if r.changed() {
                                 if on {
@@ -448,15 +463,15 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
             }
             "clip.modifyTimecode" => {
-                text(ui, &mut elems, pre, p, "timecode", "Set Timecode:", 120.0);
-                text(ui, &mut elems, pre, p, "tapeName", "Tape Name:", 200.0);
-                check(ui, &mut elems, pre, p, "reset", "Use the file's timecode", true);
+                text(ui, &mut elems, pre, p, "timecode", tl!("Set Timecode:"), 120.0);
+                text(ui, &mut elems, pre, p, "tapeName", tl!("Tape Name:"), 200.0);
+                check(ui, &mut elems, pre, p, "reset", tl!("Use the file's timecode"), true);
             }
             "clip.frameHoldOptions" => {
-                check(ui, &mut elems, pre, p, "enabled", "Hold On", true);
+                check(ui, &mut elems, pre, p, "enabled", tl!("Hold On"), true);
                 let on = p["enabled"].as_bool().unwrap_or(true);
                 ui.add_enabled_ui(on, |ui| {
-                    for (k, l) in HOLD_ON {
+                    for (k, l) in hold_on() {
                         let r = ui.radio(p["holdOn"].as_str() == Some(k), l);
                         push(&mut elems, format!("{pre}.holdOn.{k}"), &r, l);
                         if r.clicked() {
@@ -464,15 +479,15 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         }
                     }
                     if matches!(p["holdOn"].as_str(), Some("sourceTimecode" | "sequenceTime")) {
-                        text(ui, &mut elems, pre, p, "timecode", "Timecode:", 120.0);
+                        text(ui, &mut elems, pre, p, "timecode", tl!("Timecode:"), 120.0);
                     }
-                    check(ui, &mut elems, pre, p, "holdFilters", "Hold Filters", true);
+                    check(ui, &mut elems, pre, p, "holdFilters", tl!("Hold Filters"), true);
                 });
             }
             "clip.fieldOptions" => {
-                check(ui, &mut elems, pre, p, "reverseFieldDominance", "Reverse Field Dominance", true);
-                ui.label(RichText::new("Processing Options").strong());
-                for (k, l) in [("none", "None"), ("alwaysDeinterlace", "Always Deinterlace"), ("flickerRemoval", "Flicker Removal")] {
+                check(ui, &mut elems, pre, p, "reverseFieldDominance", tl!("Reverse Field Dominance"), true);
+                ui.label(RichText::new(tl!("Processing Options")).strong());
+                for (k, l) in [("none", tl!("None")), ("alwaysDeinterlace", tl!("Always Deinterlace")), ("flickerRemoval", tl!("Flicker Removal"))] {
                     let r = ui.radio(p["processing"].as_str() == Some(k), l);
                     push(&mut elems, format!("{pre}.processing.{k}"), &r, l);
                     if r.clicked() {
@@ -481,7 +496,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
             }
             "clip.speedDuration" => {
-                number(ui, &mut elems, pre, p, "speed", "Speed:", 0.01..=100_000.0, " %");
+                number(ui, &mut elems, pre, p, "speed", tl!("Speed:"), 0.01..=100_000.0, " %");
                 // Duration follows the speed: the media shown stays the same
                 let (dur, was, fps) =
                     (d.info["duration"].as_i64().unwrap_or(0), d.info["speed"].as_f64().unwrap_or(1.0), d.info["fps"].as_f64().unwrap_or(24.0));
@@ -490,15 +505,15 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     let rate = filmcraft_time::FrameRate::from_f64(if fps > 0.0 { fps } else { 24.0 });
                     let ticks = filmcraft_time::Tick((dur as f64 * was / now).round() as i64);
                     ui.horizontal(|ui| {
-                        ui.label("Duration:");
+                        ui.label(tl!("Duration:"));
                         ui.label(RichText::new(filmcraft_time::format_timecode_frames(rate.frame_at(ticks), rate, false)).monospace());
                     });
                 }
-                check(ui, &mut elems, pre, p, "reverse", "Reverse Speed", true);
-                check(ui, &mut elems, pre, p, "ripple", "Ripple Edit, Shifting Trailing Clips", true);
-                ui.label(RichText::new("Time Interpolation").strong());
+                check(ui, &mut elems, pre, p, "reverse", tl!("Reverse Speed"), true);
+                check(ui, &mut elems, pre, p, "ripple", tl!("Ripple Edit, Shifting Trailing Clips"), true);
+                ui.label(RichText::new(tl!("Time Interpolation")).strong());
                 for m in filmcraft_project::TimeInterpolation::ALL {
-                    let r = ui.radio(p["interpolation"].as_str() == Some(m.name()), m.label());
+                    let r = ui.radio(p["interpolation"].as_str() == Some(m.name()), crate::i18n::t(m.label()));
                     push(&mut elems, format!("{pre}.interpolation.{}", m.name()), &r, m.label());
                     if r.clicked() {
                         p["interpolation"] = json!(m.name());
@@ -506,20 +521,20 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
             }
             "file.closeProject" => {
-                ui.label(format!("Save changes to “{project_name}” before closing?"));
+                ui.label(tlf!("Save changes to “{project_name}” before closing?", project_name));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let r = ui.button("Cancel");
+                    let r = ui.button(tl!("Cancel"));
                     push(&mut elems, format!("{pre}.cancel"), &r, "Cancel");
                     if r.clicked() {
                         action = Some("cancel");
                     }
-                    let r = ui.button("Don't Save");
+                    let r = ui.button(tl!("Don't Save"));
                     push(&mut elems, format!("{pre}.dontSave"), &r, "Don't Save");
                     if r.clicked() {
                         action = Some("dontSave");
                     }
-                    let r = ui.add_enabled(can_save, egui::Button::new("Save"));
+                    let r = ui.add_enabled(can_save, egui::Button::new(tl!("Save")));
                     push(&mut elems, format!("{pre}.save"), &r, "Save");
                     if r.clicked() {
                         action = Some("save");
@@ -534,12 +549,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         }
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            let r = ui.button("Cancel");
+            let r = ui.button(tl!("Cancel"));
             push(&mut elems, format!("{pre}.cancel"), &r, "Cancel");
             if r.clicked() {
                 action = Some("cancel");
             }
-            let r = ui.button("OK");
+            let r = ui.button(tl!("OK"));
             push(&mut elems, format!("{pre}.ok"), &r, "OK");
             if r.clicked() {
                 action = Some("ok");
@@ -593,10 +608,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
 fn finish(d: &ClipDialogDraft) -> Value {
     let mut p = d.params.clone();
     match d.command.as_str() {
-        "file.newOfflineFile" => {
-            if p["name"].as_str().is_some_and(str::is_empty) {
-                p.as_object_mut().map(|m| m.remove("name"));
-            }
+        "file.newOfflineFile" if p["name"].as_str().is_some_and(str::is_empty) => {
+            p.as_object_mut().map(|m| m.remove("name"));
         }
         "clip.modifyTimecode" if p["reset"].as_bool() == Some(true) => {
             p.as_object_mut().map(|m| m.remove("timecode"));

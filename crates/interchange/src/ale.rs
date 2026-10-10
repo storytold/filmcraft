@@ -87,7 +87,7 @@ pub fn export_items(p: &Project, items: &[ItemId]) -> AleDoc {
     let rows_src: Vec<ItemId> = items.iter().copied().filter(|i| media_of(*i).is_some()).collect();
     let first_video = rows_src.iter().find_map(|i| media_of(*i).and_then(|(m, ..)| m.info.video.as_ref().map(|v| (v.frame_rate, v.height))));
     let (rate, height) = first_video.unwrap_or((FrameRate::FPS_24, 1080));
-    let sr = rows_src.iter().find_map(|i| media_of(*i).and_then(|(m, ..)| m.info.audio.as_ref().map(|a| a.sample_rate))).unwrap_or(48_000);
+    let sr = rows_src.iter().find_map(|i| media_of(*i).and_then(|(m, ..)| m.info.audio().map(|a| a.sample_rate))).unwrap_or(48_000);
     let heading = vec![
         ("FIELD_DELIM".to_string(), "TABS".to_string()),
         ("VIDEO_FORMAT".to_string(), video_format(height).to_string()),
@@ -103,7 +103,7 @@ pub fn export_items(p: &Project, items: &[ItemId]) -> AleDoc {
         if m.info.video.is_some() {
             tracks.push('V');
         }
-        for c in 1..=m.info.audio.as_ref().map_or(0, |a| a.channels.min(16)) {
+        for c in 1..=m.info.audio().map_or(0, |a| a.channels.min(16)) {
             tracks.push_str(&format!("A{c}"));
         }
         // media start timecode (frames at the media's own rate) + the subclip offset
@@ -223,7 +223,10 @@ mod tests {
                 bitrate: None,
                 hdr: None,
             }),
-            audio: (audio > 0).then(|| AudioStreamInfo { sample_rate: 48_000, channels: audio, codec: "aac".into(), bits_per_sample: None }),
+            audio_streams: (audio > 0)
+                .then(|| AudioStreamInfo { sample_rate: 48_000, channels: audio, codec: "aac".into(), bits_per_sample: None })
+                .into_iter()
+                .collect(),
             container: "mp4".into(),
             start_timecode: tc,
             file_size: None,

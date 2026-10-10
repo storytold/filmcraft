@@ -53,7 +53,7 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
         }
         "multicam.recordToggle" => {
             app.ui.multicam_record = params.get("enabled").and_then(Value::as_bool).unwrap_or(!app.ui.multicam_record);
-            app.ui.status = format!("Multi-Camera Record {}", if app.ui.multicam_record { "on" } else { "off" });
+            app.ui.status = if app.ui.multicam_record { tl!("Multi-Camera Record on") } else { tl!("Multi-Camera Record off") }.to_string();
             return Some(Ok(json!({"record": app.ui.multicam_record})));
         }
         _ => {}
@@ -73,8 +73,8 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     let items: Vec<u64> = app.session.state.project_selection.iter().map(|i| i.0).collect();
     let first = app.session.state.project_selection.first().and_then(|i| app.session.project.item(*i)).map(|i| i.name.clone()).unwrap_or_default();
     let name = match kind {
-        "merge" => format!("{first} - Merged"),
-        "multicam" => format!("{first} Multicam"),
+        "merge" => tlf!("{first} - Merged", first),
+        "multicam" => tlf!("{first} Multicam", first),
         _ => String::new(),
     };
     app.ui.sync_dialog = Some(SyncDraft { kind: kind.into(), items, name, ..Default::default() });
@@ -85,120 +85,131 @@ fn push(elems: &mut Elems, id: impl Into<String>, r: &egui::Response, label: imp
     elems.push((id.into(), r.rect, label.into()));
 }
 
-const METHODS: [(&str, &str); 5] = [("in", "In Points"), ("out", "Out Points"), ("timecode", "Timecode"), ("marker", "Clip Marker"), ("audio", "Audio")];
+/// Synchronize Point choices: (key, label).
+fn methods() -> [(&'static str, &'static str); 5] {
+    [("in", tl!("In Points")), ("out", tl!("Out Points")), ("timecode", tl!("Timecode")), ("marker", tl!("Clip Marker")), ("audio", tl!("Audio"))]
+}
 
 /// Draw the open Synchronize / Merge Clips / Create Multi-Camera dialog.
 pub fn show_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.sync_dialog.clone() else { return };
     let (title, pre) = match d.kind.as_str() {
-        "merge" => ("Merge Clips", "merge"),
-        "multicam" => ("Create Multi-Camera Source Sequence", "mcam"),
-        _ => ("Synchronize Clips", "sync"),
+        "merge" => (tl!("Merge Clips"), "merge"),
+        "multicam" => (tl!("Create Multi-Camera Source Sequence"), "mcam"),
+        _ => (tl!("Synchronize Clips"), "sync"),
     };
     let mut elems: Elems = Vec::new();
     let mut action: Option<&str> = None;
     let accent = app.tokens.accent;
     let names: Vec<String> = d.items.iter().filter_map(|i| app.session.project.item(ItemId(*i)).map(|it| it.name.clone())).collect();
-    egui::Window::new(title).collapsible(false).resizable(false).default_width(440.0).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        if pre != "sync" {
-            ui.horizontal(|ui| {
-                ui.label(if pre == "merge" { "Clip Name:" } else { "Sequence Name:" });
-                let r = ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(300.0));
-                push(&mut elems, format!("{pre}.name"), &r, "name");
-            });
-            ui.label(RichText::new(format!("{} clip(s): {}", names.len(), names.join(", "))).weak().small());
-            ui.add_space(4.0);
-        } else {
-            let n = app.session.state.selection.len();
-            ui.label(RichText::new(format!("{n} clip(s) selected; the clip on the reference track stays put.")).weak().small());
-        }
-        ui.group(|ui| {
-            ui.set_min_width(400.0);
-            ui.label(RichText::new("Synchronize Point").strong());
-            for (m, label) in METHODS {
+    egui::Window::new(title)
+        .id(egui::Id::new(("sync-dialog", pre)))
+        .collapsible(false)
+        .resizable(false)
+        .default_width(440.0)
+        .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            if pre != "sync" {
                 ui.horizontal(|ui| {
-                    let r = ui.radio(d.method == m, label);
-                    push(&mut elems, format!("{pre}.method.{m}"), &r, label);
-                    if r.clicked() {
-                        d.method = m.into();
-                    }
-                    match m {
-                        "timecode" => {
-                            let r = ui.add_enabled(d.method == "timecode", egui::Checkbox::new(&mut d.ignore_hours, "Ignore Hours"));
-                            push(&mut elems, format!("{pre}.ignoreHours"), &r, "Ignore Hours");
-                        }
-                        "marker" => {
-                            let r =
-                                ui.add_enabled(d.method == "marker", egui::TextEdit::singleline(&mut d.marker).hint_text("first marker").desired_width(140.0));
-                            push(&mut elems, format!("{pre}.marker"), &r, "marker name");
-                        }
-                        _ => {}
-                    }
+                    ui.label(if pre == "merge" { tl!("Clip Name:") } else { tl!("Sequence Name:") });
+                    let r = ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(300.0));
+                    push(&mut elems, format!("{pre}.name"), &r, "name");
                 });
+                ui.label(RichText::new(tlf!("{n} clip(s): {names}", n = names.len(), names = names.join(", "))).weak().small());
+                ui.add_space(4.0);
+            } else {
+                let n = app.session.state.selection.len();
+                ui.label(RichText::new(tlf!("{n} clip(s) selected; the clip on the reference track stays put.", n)).weak().small());
             }
-            ui.horizontal(|ui| {
-                ui.label(if pre == "merge" { "Offset Audio by:" } else { "Offset:" });
-                let r = ui.add(egui::DragValue::new(&mut d.offset).range(-100_000..=100_000).suffix(" frames"));
-                push(&mut elems, format!("{pre}.offset"), &r, "offset");
-            });
-        });
-        match pre {
-            "sync" => {
-                ui.horizontal(|ui| {
-                    ui.label("Reference track:");
-                    let r = ui.add(egui::TextEdit::singleline(&mut d.track).hint_text("lowest (V1…)").desired_width(90.0));
-                    push(&mut elems, "sync.track", &r, "reference track");
-                });
-            }
-            "merge" => {
-                let r = ui.checkbox(&mut d.remove_video_audio, "Remove Audio from AV Clip");
-                push(&mut elems, "merge.removeVideoAudio", &r, "Remove Audio from AV Clip");
-            }
-            _ => {
-                ui.group(|ui| {
-                    ui.set_min_width(400.0);
-                    ui.label(RichText::new("Audio").strong());
+            ui.group(|ui| {
+                ui.set_min_width(400.0);
+                ui.label(RichText::new(tl!("Synchronize Point")).strong());
+                for (m, label) in methods() {
                     ui.horizontal(|ui| {
-                        for (a, label) in [("camera1", "Camera 1"), ("all", "All Cameras"), ("switch", "Switch Audio")] {
-                            let r = ui.radio(d.audio == a, label);
-                            push(&mut elems, format!("mcam.audio.{a}"), &r, label);
-                            if r.clicked() {
-                                d.audio = a.into();
+                        let r = ui.radio(d.method == m, label);
+                        push(&mut elems, format!("{pre}.method.{m}"), &r, label);
+                        if r.clicked() {
+                            d.method = m.into();
+                        }
+                        match m {
+                            "timecode" => {
+                                let r = ui.add_enabled(d.method == "timecode", egui::Checkbox::new(&mut d.ignore_hours, tl!("Ignore Hours")));
+                                push(&mut elems, format!("{pre}.ignoreHours"), &r, "Ignore Hours");
                             }
+                            "marker" => {
+                                let r = ui.add_enabled(
+                                    d.method == "marker",
+                                    egui::TextEdit::singleline(&mut d.marker).hint_text(tl!("first marker")).desired_width(140.0),
+                                );
+                                push(&mut elems, format!("{pre}.marker"), &r, "marker name");
+                            }
+                            _ => {}
                         }
                     });
-                    ui.label(RichText::new("Camera Names").strong());
-                    ui.horizontal(|ui| {
-                        for (a, label) in [("clip", "Clip Names"), ("track", "Enumerate Cameras"), ("metadata", "Camera Angle Metadata")] {
-                            let r = ui.radio(d.camera_names == a, label);
-                            push(&mut elems, format!("mcam.cameraNames.{a}"), &r, label);
-                            if r.clicked() {
-                                d.camera_names = a.into();
-                            }
-                        }
-                    });
+                }
+                ui.horizontal(|ui| {
+                    ui.label(if pre == "merge" { tl!("Offset Audio by:") } else { tl!("Offset:") });
+                    let r = ui.add(egui::DragValue::new(&mut d.offset).range(-100_000..=100_000).suffix(tl!(" frames")));
+                    push(&mut elems, format!("{pre}.offset"), &r, "offset");
                 });
-                let r = ui.checkbox(&mut d.processed_bin, "Move source clips to Processed Clips bin");
-                push(&mut elems, "mcam.processedBin", &r, "Move source clips to Processed Clips bin");
+            });
+            match pre {
+                "sync" => {
+                    ui.horizontal(|ui| {
+                        ui.label(tl!("Reference track:"));
+                        let r = ui.add(egui::TextEdit::singleline(&mut d.track).hint_text(tl!("lowest (V1…)")).desired_width(90.0));
+                        push(&mut elems, "sync.track", &r, "reference track");
+                    });
+                }
+                "merge" => {
+                    let r = ui.checkbox(&mut d.remove_video_audio, tl!("Remove Audio from AV Clip"));
+                    push(&mut elems, "merge.removeVideoAudio", &r, "Remove Audio from AV Clip");
+                }
+                _ => {
+                    ui.group(|ui| {
+                        ui.set_min_width(400.0);
+                        ui.label(RichText::new(tl!("Audio")).strong());
+                        ui.horizontal(|ui| {
+                            for (a, label) in [("camera1", tl!("Camera 1")), ("all", tl!("All Cameras")), ("switch", tl!("Switch Audio"))] {
+                                let r = ui.radio(d.audio == a, label);
+                                push(&mut elems, format!("mcam.audio.{a}"), &r, label);
+                                if r.clicked() {
+                                    d.audio = a.into();
+                                }
+                            }
+                        });
+                        ui.label(RichText::new(tl!("Camera Names")).strong());
+                        ui.horizontal(|ui| {
+                            for (a, label) in [("clip", tl!("Clip Names")), ("track", tl!("Enumerate Cameras")), ("metadata", tl!("Camera Angle Metadata"))] {
+                                let r = ui.radio(d.camera_names == a, label);
+                                push(&mut elems, format!("mcam.cameraNames.{a}"), &r, label);
+                                if r.clicked() {
+                                    d.camera_names = a.into();
+                                }
+                            }
+                        });
+                    });
+                    let r = ui.checkbox(&mut d.processed_bin, tl!("Move source clips to Processed Clips bin"));
+                    push(&mut elems, "mcam.processedBin", &r, "Move source clips to Processed Clips bin");
+                }
             }
-        }
-        if !d.message.is_empty() {
-            ui.colored_label(Color32::from_rgb(0xe0, 0x8a, 0x6a), &d.message);
-        }
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            let r = ui.button("Cancel");
-            push(&mut elems, format!("{pre}.cancel"), &r, "Cancel");
-            if r.clicked() {
-                action = Some("cancel");
+            if !d.message.is_empty() {
+                ui.colored_label(Color32::from_rgb(0xe0, 0x8a, 0x6a), &d.message);
             }
-            let r = ui.add(egui::Button::new(RichText::new("OK").color(Color32::WHITE)).fill(accent));
-            push(&mut elems, format!("{pre}.ok"), &r, "OK");
-            if r.clicked() {
-                action = Some("ok");
-            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let r = ui.button(tl!("Cancel"));
+                push(&mut elems, format!("{pre}.cancel"), &r, "Cancel");
+                if r.clicked() {
+                    action = Some("cancel");
+                }
+                let r = ui.add(egui::Button::new(RichText::new(tl!("OK")).color(Color32::WHITE)).fill(accent));
+                push(&mut elems, format!("{pre}.ok"), &r, "OK");
+                if r.clicked() {
+                    action = Some("ok");
+                }
+            });
         });
-    });
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
@@ -244,9 +255,9 @@ pub fn show_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             match app.session.execute(cmd, p) {
                 Ok(v) => {
                     app.ui.status = match pre {
-                        "sync" => format!("Synchronized {} clip group(s)", v["moved"]),
-                        "merge" => "Merged clip created".into(),
-                        _ => format!("Multi-camera source sequence with {} camera(s)", v["cameras"].as_array().map_or(0, Vec::len)),
+                        "sync" => tlf!("Synchronized {n} clip group(s)", n = v["moved"]),
+                        "merge" => tl!("Merged clip created").into(),
+                        _ => tlf!("Multi-camera source sequence with {n} camera(s)", n = v["cameras"].as_array().map_or(0, Vec::len)),
                     };
                     app.ui.sync_dialog = None;
                     return;
@@ -284,7 +295,7 @@ pub fn grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) {
     let playhead = app.session.playhead();
     let info = filmcraft_engine::multicam::inspect_at(&app.session, playhead);
     let Some(src) = info["source"].as_u64().map(ItemId) else {
-        ui.painter().text(area.center(), Align2::CENTER_CENTER, "No multi-camera clip at the playhead", Tokens::ui(12.0), t.text_dim);
+        ui.painter().text(area.center(), Align2::CENTER_CENTER, tl!("No multi-camera clip at the playhead"), Tokens::ui(12.0), t.text_dim);
         return;
     };
     let Some(q) = app.session.project.sequence(src) else { return };
@@ -339,7 +350,7 @@ pub fn grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) {
         let cell_i = k - lay.first;
         let cell = Rect::from_min_size(pic.min + vec2((cell_i % cols) as f32 * cw, (cell_i / cols) as f32 * ch), vec2(cw, ch));
         let name = cams.cameras.get(angle).map(|c| c.name.clone()).unwrap_or_default();
-        let resp = ui.interact(cell, egui::Id::new(("multicam-angle", k)), Sense::click()).on_hover_text(format!("Camera {} — {name}", k + 1));
+        let resp = ui.interact(cell, egui::Id::new(("multicam-angle", k)), Sense::click()).on_hover_text(tlf!("Camera {n} — {name}", n = k + 1, name));
         app.auto.add(&format!("program.multicam.angle.{}", k + 1), cell, &name);
         if resp.clicked() {
             // modifiers held now, or carried by the click event (synthetic input)
@@ -366,11 +377,15 @@ pub fn grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) {
     if paged {
         let bar = Rect::from_min_max(pos2(area.min.x, area.max.y - 22.0), area.max);
         let mid = bar.center();
-        ui.painter().text(mid, Align2::CENTER_CENTER, format!("Page {} of {}", lay.page + 1, lay.pages), Tokens::ui(11.0), t.text_dim);
+        ui.painter().text(mid, Align2::CENTER_CENTER, tlf!("Page {page} of {pages}", page = lay.page + 1, pages = lay.pages), Tokens::ui(11.0), t.text_dim);
         for (id, label, dx, cmd) in [("pagePrev", "◀", -70.0, "multicam.prevPage"), ("pageNext", "▶", 70.0, "multicam.nextPage")] {
             let r = Rect::from_center_size(mid + vec2(dx, 0.0), vec2(26.0, 18.0));
             let enabled = if cmd == "multicam.prevPage" { lay.page > 0 } else { lay.page + 1 < lay.pages };
-            let resp = ui.interact(r, egui::Id::new(("multicam-page", id)), Sense::click()).on_hover_text(if dx < 0.0 { "Previous page" } else { "Next page" });
+            let resp = ui.interact(r, egui::Id::new(("multicam-page", id)), Sense::click()).on_hover_text(if dx < 0.0 {
+                tl!("Previous page")
+            } else {
+                tl!("Next page")
+            });
             ui.painter().rect_filled(r, 3.0, if resp.hovered() && enabled { t.hover } else { t.field_bg });
             ui.painter().text(r.center(), Align2::CENTER_CENTER, label, Tokens::ui(10.0), if enabled { t.text } else { t.text_faint });
             app.auto.add(&format!("program.multicam.{id}"), r, label);
@@ -382,7 +397,7 @@ pub fn grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) {
     // record indicator
     let rr = Rect::from_min_size(area.min + vec2(8.0, 8.0), vec2(64.0, 18.0));
     let rec_on = app.ui.multicam_record;
-    let resp = ui.interact(rr, egui::Id::new("multicam-record"), Sense::click()).on_hover_text("Multi-Camera Record On/Off (0)");
+    let resp = ui.interact(rr, egui::Id::new("multicam-record"), Sense::click()).on_hover_text(tl!("Multi-Camera Record On/Off (0)"));
     app.auto.add("program.multicam.record", rr, "Multi-Camera Record");
     let dot = if recording {
         Color32::from_rgb(0xe0, 0x3a, 0x3a)
@@ -393,7 +408,7 @@ pub fn grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) {
     };
     ui.painter().rect_filled(rr, 3.0, Color32::from_black_alpha(140));
     ui.painter().circle_filled(rr.left_center() + vec2(9.0, 0.0), 4.5, dot);
-    ui.painter().text(rr.left_center() + vec2(18.0, 0.0), Align2::LEFT_CENTER, if recording { "REC" } else { "Record" }, Tokens::ui(10.5), Color32::WHITE);
+    ui.painter().text(rr.left_center() + vec2(18.0, 0.0), Align2::LEFT_CENTER, if recording { "REC" } else { tl!("Record") }, Tokens::ui(10.5), Color32::WHITE);
     if resp.clicked() {
         app.ui.multicam_record = !app.ui.multicam_record;
     }
@@ -435,45 +450,51 @@ pub fn show_edit_cameras(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
     let th = thumb_w * q.settings.height.max(1) as f32 / q.settings.width.max(1) as f32;
     let tokens = app.tokens;
-    egui::Window::new("Edit Cameras").collapsible(false).resizable(false).default_width(420.0).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        ui.label(RichText::new("Cameras shown in the Multi-Camera view (uncheck to hide).").weak().small());
-        egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
-            for a in 0..d.names.len() {
-                ui.horizontal(|ui| {
-                    let r = ui.checkbox(&mut d.enabled[a], "");
-                    push(&mut elems, format!("editCameras.enabled.{a}"), &r, "Enabled");
-                    let (tr, _) = ui.allocate_exact_size(vec2(thumb_w, th), Sense::hover());
-                    ui.painter().rect_filled(tr, 2.0, tokens.monitor_bg);
-                    match thumbs[a] {
-                        (_, Some(tex)) => {
-                            ui.painter().image(tex, tr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    egui::Window::new(tl!("Edit Cameras"))
+        .id(egui::Id::new("Edit Cameras"))
+        .collapsible(false)
+        .resizable(false)
+        .default_width(420.0)
+        .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(RichText::new(tl!("Cameras shown in the Multi-Camera view (uncheck to hide).")).weak().small());
+            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                for a in 0..d.names.len() {
+                    ui.horizontal(|ui| {
+                        let r = ui.checkbox(&mut d.enabled[a], "");
+                        push(&mut elems, format!("editCameras.enabled.{a}"), &r, "Enabled");
+                        let (tr, _) = ui.allocate_exact_size(vec2(thumb_w, th), Sense::hover());
+                        ui.painter().rect_filled(tr, 2.0, tokens.monitor_bg);
+                        match thumbs[a] {
+                            (_, Some(tex)) => {
+                                ui.painter().image(tex, tr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                            }
+                            (false, None) => {
+                                ui.painter().text(tr.center(), Align2::CENTER_CENTER, tl!("Audio"), Tokens::ui(10.0), tokens.text_dim);
+                            }
+                            _ => {}
                         }
-                        (false, None) => {
-                            ui.painter().text(tr.center(), Align2::CENTER_CENTER, "Audio", Tokens::ui(10.0), tokens.text_dim);
-                        }
-                        _ => {}
-                    }
-                    elems.push((format!("editCameras.thumb.{a}"), tr, format!("Camera {}", a + 1)));
-                    ui.label(format!("{}", a + 1));
-                    let r = ui.add(egui::TextEdit::singleline(&mut d.names[a]).desired_width(180.0));
-                    push(&mut elems, format!("editCameras.name.{a}"), &r, "Camera name");
-                });
-            }
+                        elems.push((format!("editCameras.thumb.{a}"), tr, format!("Camera {}", a + 1)));
+                        ui.label(format!("{}", a + 1));
+                        let r = ui.add(egui::TextEdit::singleline(&mut d.names[a]).desired_width(180.0));
+                        push(&mut elems, format!("editCameras.name.{a}"), &r, "Camera name");
+                    });
+                }
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let r = ui.button(tl!("Cancel"));
+                push(&mut elems, "editCameras.cancel", &r, "Cancel");
+                if r.clicked() {
+                    action = Some("cancel");
+                }
+                let r = ui.add(egui::Button::new(RichText::new(tl!("OK")).color(Color32::WHITE)).fill(tokens.accent));
+                push(&mut elems, "editCameras.ok", &r, "OK");
+                if r.clicked() {
+                    action = Some("ok");
+                }
+            });
         });
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            let r = ui.button("Cancel");
-            push(&mut elems, "editCameras.cancel", &r, "Cancel");
-            if r.clicked() {
-                action = Some("cancel");
-            }
-            let r = ui.add(egui::Button::new(RichText::new("OK").color(Color32::WHITE)).fill(tokens.accent));
-            push(&mut elems, "editCameras.ok", &r, "OK");
-            if r.clicked() {
-                action = Some("ok");
-            }
-        });
-    });
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
@@ -511,7 +532,7 @@ pub fn on_stop(app: &mut FilmcraftApp) {
     if app.session.mcrec.active() {
         let t = app.session.playhead();
         match app.session.execute("multicam.recordStop", json!({"time": t.0})) {
-            Ok(v) if v["cuts"].as_u64().unwrap_or(0) > 0 => app.ui.status = format!("Recorded {} multi-camera cut(s)", v["cuts"]),
+            Ok(v) if v["cuts"].as_u64().unwrap_or(0) > 0 => app.ui.status = tlf!("Recorded {n} multi-camera cut(s)", n = v["cuts"]),
             Ok(_) => {}
             Err(e) => app.ui.status = e.to_string(),
         }

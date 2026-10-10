@@ -44,7 +44,7 @@ fn probe_reports_mpeg_transport_and_program_streams() {
         assert!(st.success());
         let v = json_out(&cli(&["probe", out.to_str().unwrap()]));
         assert!(v["video"]["codec"].as_str().unwrap().starts_with("MPEG-2 Video"), "{v}");
-        assert_eq!(v["audio"]["codec"], "MPEG Audio");
+        assert_eq!(v["audio_streams"][0]["codec"], "MPEG Audio");
         let streams = v["mpeg"]["streams"].as_array().unwrap();
         assert_eq!(streams.len(), 2, "{v}");
         assert_eq!(streams[0]["codec"], "MPEG-2 Video");
@@ -179,9 +179,89 @@ fn export_with_presets() {
     let v = json_out(&cli(&["--demo", "--data-dir", data_s, "export", q.to_str().unwrap(), "--preset", "Tiny WAV", "--queue", "--range", "entire"]));
     assert_eq!(v["items"][0]["status"], "done", "{v}");
     assert!(q.exists());
+    // a format that changes the extension: the completion message names the file written (#341)
+    let apv = dir.join("apv.mp4");
+    let o =
+        cli(&["--demo", "--data-dir", data_s, "export", apv.to_str().unwrap(), "--preset", "APV 422-10", "--start", "0", "--end", "0.1", "--scale", "0.125"]);
+    let v = json_out(&o);
+    let written = v["path"].as_str().unwrap().to_string();
+    assert!(written.ends_with("apv.mp4.mov") && std::path::Path::new(&written).exists(), "{v}");
+    let msg = String::from_utf8_lossy(&o.stderr);
+    assert!(msg.contains(&format!("exported {written} in ")), "{msg}");
+    let qa = dir.join("queued-apv.mp4");
+    let o = cli(&[
+        "--demo",
+        "--data-dir",
+        data_s,
+        "export",
+        qa.to_str().unwrap(),
+        "--preset",
+        "APV 422-10",
+        "--queue",
+        "--start",
+        "0",
+        "--end",
+        "0.1",
+        "--scale",
+        "0.125",
+    ]);
+    let v = json_out(&o);
+    let written = v["items"][0]["path"].as_str().unwrap().to_string();
+    assert!(written.ends_with("queued-apv.mp4.mov"), "{v}");
+    assert!(String::from_utf8_lossy(&o.stderr).contains(&format!("exported {written} in ")), "{}", String::from_utf8_lossy(&o.stderr));
     // unknown preset: exit status 1 and a message naming it
     let bad = cli(&["--demo", "--data-dir", data_s, "export", dir.join("x.mp4").to_str().unwrap(), "--preset", "No Such Preset"]);
     assert_eq!(bad.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&bad.stderr).contains("No Such Preset"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `filmcraft-cli commands | head -c 10` panicked with "failed printing to stdout: Broken pipe
+/// (os error 32)" and exit status 101 (#285).
+#[test]
+fn closed_stdout_ends_quietly() {
+    use std::io::Read;
+    for args in [&["commands"][..], &["help"], &["--demo", "commands", "--json"]] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_filmcraft-cli")).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let mut first = [0u8; 10];
+        child.stdout.as_mut().unwrap().read_exact(&mut first).unwrap();
+        drop(child.stdout.take());
+        let out = child.wait_with_output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success() && err.is_empty(), "{args:?}: {:?}: {err}", out.status);
+    }
+}
+
+/// `run -` with stdout already closed: `run` reads its script to the end before it prints, so its
+/// first write fails for sure. The rest of the script and the save still happen, and the exit status
+/// still reports a failing command.
+fn run_with_closed_stdout(args: &[&str], script: &[u8]) -> Output {
+    let mut child =
+        Command::new(env!("CARGO_BIN_EXE_filmcraft-cli")).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    drop(child.stdout.take());
+    child.stdin.take().unwrap().write_all(script).unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn closed_stdout_still_runs_the_script_and_saves() {
+    let dir = std::env::temp_dir().join(format!("fc-cli-pipe-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let proj = dir.join("p.fcproj");
+    let p = proj.to_str().unwrap();
+    let script = b"{\"id\":\"file.newBin\",\"params\":{\"name\":\"Piped One\"}}\n{\"id\":\"file.newBin\",\"params\":{\"name\":\"Piped Two\"}}\n";
+    let out = run_with_closed_stdout(&["--demo", "--save-as", p, "run", "-"], script);
+    assert!(out.status.success(), "{:?}: {}", out.status, String::from_utf8_lossy(&out.stderr));
+    let tree = json_out(&cli(&["--project", p, "inspect", "project"])).to_string();
+    assert!(tree.contains("Piped One") && tree.contains("Piped Two"), "{tree}");
+
+    // a failing command is still a failure, whether or not anyone reads stdout
+    let out = run_with_closed_stdout(&["--demo", "run", "-"], b"{\"id\":\"no.such.command\"}\n");
+    assert_eq!(out.status.code(), Some(1));
+    let out = run_with_closed_stdout(
+        &["--demo", "--keep-going", "run", "-"],
+        b"{\"id\":\"no.such.command\"}\n{\"id\":\"file.newBin\",\"params\":{\"name\":\"x\"}}\n",
+    );
+    assert_eq!(out.status.code(), Some(1));
     let _ = std::fs::remove_dir_all(&dir);
 }

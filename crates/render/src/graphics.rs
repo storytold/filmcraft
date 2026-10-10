@@ -14,6 +14,15 @@ pub fn premul_linear(c: [f32; 4]) -> [f32; 4] {
     [srgb_to_linear(c[0]) * a, srgb_to_linear(c[1]) * a, srgb_to_linear(c[2]) * a, a]
 }
 
+/// Blend two sRGB straight colours in linear light, then premultiply. `t` is 0 at `start`.
+pub fn premul_linear_lerp(start: [f32; 4], end: [f32; 4], t: f32) -> [f32; 4] {
+    let t = t.clamp(0.0, 1.0);
+    let s = [srgb_to_linear(start[0]), srgb_to_linear(start[1]), srgb_to_linear(start[2]), start[3].clamp(0.0, 1.0)];
+    let e = [srgb_to_linear(end[0]), srgb_to_linear(end[1]), srgb_to_linear(end[2]), end[3].clamp(0.0, 1.0)];
+    let a = s[3] * (1.0 - t) + e[3] * t;
+    [(s[0] * (1.0 - t) + e[0] * t) * a, (s[1] * (1.0 - t) + e[1] * t) * a, (s[2] * (1.0 - t) + e[2] * t) * a, a]
+}
+
 /// Composite `color` (premultiplied linear) through coverage `m` placed at (`x0`, `y0`), scaled by
 /// `opacity`, over `img`.
 pub fn paint_mask(img: &mut Image, m: &Mask, x0: i32, y0: i32, color: [f32; 4], opacity: f32) {

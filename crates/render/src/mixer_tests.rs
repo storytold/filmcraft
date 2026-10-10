@@ -58,7 +58,7 @@ impl Rig {
                 kind: MediaKind::AudioOnly,
                 duration: Tick(10 * TICKS_PER_SECOND),
                 video: None,
-                audio: Some(AudioStreamInfo { sample_rate: 48_000, channels: ch as u32, codec: "test".into(), bits_per_sample: Some(32) }),
+                audio_streams: vec![AudioStreamInfo { sample_rate: 48_000, channels: ch as u32, codec: "test".into(), bits_per_sample: Some(32) }],
                 container: "test".into(),
                 start_timecode: None,
                 file_size: None,
@@ -126,6 +126,70 @@ fn kf(t_samples: i64, v: f64) -> Keyframe {
 
 fn close(a: f32, b: f32, tol: f32) -> bool {
     (a - b).abs() <= tol
+}
+
+/// The renderer must request the stream selected by each clip, rather than reading stream zero
+/// twice when a container item has clips on two audio tracks.
+#[test]
+fn audio_clips_from_one_container_mix_distinct_streams() {
+    struct TwoStreams(MediaInfo);
+    impl MediaSource for TwoStreams {
+        fn info(&self) -> &MediaInfo {
+            &self.0
+        }
+        fn video_frame(&self, _: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+            Err(MediaError::NoStream("video"))
+        }
+        fn audio(&self, start: i64, frames: usize, sr: u32) -> filmcraft_media::Result<AudioBuffer> {
+            self.audio_stream(0, start, frames, sr)
+        }
+        fn audio_stream(&self, stream: usize, _start: i64, frames: usize, sr: u32) -> filmcraft_media::Result<AudioBuffer> {
+            let v = match stream {
+                0 => 0.25,
+                1 => -0.125,
+                _ => return Err(MediaError::NoStream("audio")),
+            };
+            Ok(AudioBuffer { sample_rate: sr, channels: vec![vec![v; frames], vec![v; frames]] })
+        }
+    }
+    let mut p = Project::new("streams");
+    let seq = p.new_sequence("mix", SequenceSettings::default(), 0, 2, None);
+    let mut info = MediaInfo {
+        name: "two.mov".into(),
+        kind: MediaKind::AudioOnly,
+        duration: Tick(TICKS_PER_SECOND),
+        video: None,
+        audio_streams: vec![AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: "PCM".into(), bits_per_sample: Some(16) }],
+        container: "MOV".into(),
+        start_timecode: None,
+        file_size: None,
+    };
+    info.audio_streams.push(info.audio_streams[0].clone());
+    let id = p.add_item(
+        "two.mov",
+        Label::Iris,
+        ItemKind::Media(MediaClip {
+            media: MediaRef::File { path: "two.mov".into() },
+            info: info.clone(),
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        }),
+        None,
+    );
+    let mut map = SourceMap::default();
+    map.0.insert(id, Arc::new(TwoStreams(info)));
+    for stream in 0..2 {
+        let mut clip = p.make_track_item(id, TrackKind::Audio, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)), FrameRate::FPS_24).unwrap();
+        clip.audio_stream = stream;
+        p.sequence_mut(seq).unwrap().audio_tracks[stream].items.push(clip);
+    }
+    let buffer = crate::audio::mix_sequence(&p, p.sequence(seq).unwrap(), 0, 32, &map);
+    assert!(buffer.channels.iter().all(|c| c.iter().all(|&v| close(v, 0.125, 1e-6))));
 }
 
 #[test]
@@ -423,6 +487,10 @@ fn live_override_holds_and_ramps_back() {
 
 /// 24 tracks × 3 inserts (EQ, Dynamics, Studio Reverb) + a compressed submix at 48 kHz, one core.
 #[test]
+// Off Unix there is no per-thread CPU clock (`thread_cpu_secs`), so the timing falls back to wall
+// time, which a loaded CI host (Windows runners run the suite in parallel) can push under the
+// threshold: genuinely timing-flaky there. On Unix it measures this thread's CPU time and stays on.
+#[cfg_attr(not(unix), ignore = "wall-clock timing without a thread CPU clock is load-dependent; run with --ignored")]
 fn perf_24_tracks_3_effects_realtime_factor() {
     let r = busy_rig(24);
     let secs = if cfg!(debug_assertions) { 2.0 } else { 10.0 };
@@ -666,7 +734,7 @@ fn nested_tone(inner_rate: u32) -> (Project, ItemId, SourceMap, Arc<Tone>) {
         kind: MediaKind::AudioOnly,
         duration: ten.duration,
         video: None,
-        audio: Some(AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: "test".into(), bits_per_sample: Some(32) }),
+        audio_streams: vec![AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: "test".into(), bits_per_sample: Some(32) }],
         container: "test".into(),
         start_timecode: None,
         file_size: None,

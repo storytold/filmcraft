@@ -713,10 +713,8 @@ impl Walker<'_> {
         match h.id {
             SEEK_HEAD => file.seek_head.extend(parse_seekhead(&data)),
             INFO => file.info = parse_info(&data),
-            TRACKS => {
-                if file.tracks.is_empty() {
-                    file.tracks = parse_tracks(&data, file.info.timestamp_scale);
-                }
+            TRACKS if file.tracks.is_empty() => {
+                file.tracks = parse_tracks(&data, file.info.timestamp_scale);
             }
             CUES => parse_cues(&data, &mut file.cues),
             CHAPTERS => parse_chapters(&data, &mut file.chapters),
