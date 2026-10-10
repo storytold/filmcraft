@@ -167,6 +167,38 @@ fn wav_and_aiff_audio_only() {
     }
 }
 
+/// #533: an accepted explicit WAV rate must reach both the resolver and the written PCM header.
+/// The no-override case must still use the sequence's sample rate.
+#[test]
+fn wav_export_honours_explicit_sample_rate_outside_standard_presets() {
+    let (project, sequence, sources) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(-12.0));
+    let dir = Scratch::new("wav-sample-rate-override");
+    for (name, requested, expected) in [
+        ("sequence-default", None, 48_000),
+        ("standard-rate", Some(192_000), 192_000),
+        ("high-rate", Some(200_000), 200_000),
+        ("maximum-rate", Some(384_000), 384_000),
+    ] {
+        let path = dir.path(&format!("{name}.wav"));
+        let settings = ExportSettings {
+            format: Format::Wav,
+            path: path.clone(),
+            audio: AudioSettings { sample_rate: requested, ..Default::default() },
+            range: Some(TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND / 4))),
+            ..Default::default()
+        };
+        settings.validate().unwrap();
+        assert_eq!(settings.resolve(64, 36, FrameRate::FPS_24, 48_000).sample_rate, expected);
+        assert!(settings.summary(64, 36, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND / 4)).audio.contains(&format!("{expected} Hz")));
+        export(&project, sequence, &settings, &sources, &Progress::default()).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[0..4], b"RIFF", "{name}");
+        assert_eq!(&bytes[8..12], b"WAVE", "{name}");
+        assert_eq!(u32::from_le_bytes(bytes[24..28].try_into().unwrap()), expected, "{name}");
+        assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()), expected, "{name}: 0.25 seconds of stereo 16-bit PCM");
+    }
+}
+
 #[test]
 fn invalid_export_allocations_are_rejected_before_rendering() {
     let (project, sequence, _) = matte([1.0, 0.0, 0.0, 1.0], 64, 36, None);
