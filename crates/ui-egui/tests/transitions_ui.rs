@@ -274,3 +274,73 @@ fn transition_settings_in_effect_controls() {
     let want = serde_json::to_value(&def.instance().params.get("direction").unwrap().value).unwrap();
     assert_eq!(d.transition(id).unwrap()["params"]["direction"], want, "Reset puts Push's own defaults back");
 }
+
+/// Effect Controls' own timeline for a selected transition (#577): clip A, clip B and the
+/// transition over their cut. Dragging its end changes its duration from that end, dragging its
+/// middle slides it over the cut, each drag one undo step; the ruler moves the playhead.
+#[test]
+fn transition_timeline_in_effect_controls() {
+    let mut d = Driver::demo();
+    let c = d.crossing();
+    let frame = frame_ticks(d.rate());
+    d.click(&format!("timeline.transition.{}", c.id));
+    // both clips are shown, by name
+    let q = d.exec("sequence.inspect", json!({}));
+    let names: Vec<String> = q["video"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|t| t["items"].as_array().unwrap().clone())
+        .filter(|i| i["start"].as_i64().unwrap() < c.cut + c.duration && i["start"].as_i64().unwrap() + i["duration"].as_i64().unwrap() > c.cut - c.duration)
+        .map(|i| i["name"].as_str().unwrap_or_default().to_string())
+        .collect();
+    let (a, b) = (d.label("effectControls.transition.timeline.a"), d.label("effectControls.transition.timeline.b"));
+    assert!(names.contains(&a) && names.contains(&b), "A {a:?} and B {b:?} are the clips at the cut: {names:?}");
+    d.snapshot("transition-effect-controls-timeline");
+    // its end: drag it right
+    let (x, y, w, h, _) = d.find("effectControls.transition.timeline.span.out").expect("the transition's end in Effect Controls");
+    let (fx, fy) = (x + w / 2.0, y + h / 2.0);
+    d.ok("ui.drag", json!({"from": {"x": fx, "y": fy}, "to": {"x": fx + 30.0, "y": fy}, "steps": 8}));
+    d.frames(3);
+    let x1 = d.transition(c.id).unwrap();
+    let (s1, d1) = (x1["start"].as_i64().unwrap(), x1["duration"].as_i64().unwrap());
+    assert!(d1 > c.duration, "dragging the end out lengthens it: {} -> {d1}", c.duration);
+    assert_eq!(s1, c.start, "the start stays where it was");
+    assert_eq!((d1 - c.duration) % frame, 0, "by whole frames");
+    let (num, den) = d.rate();
+    let rate = filmcraft_engine::time::FrameRate { num, den };
+    assert_eq!(
+        d.label("effectControls.transition.duration"),
+        filmcraft_engine::time::format_timecode_frames(d1 / frame, rate, false),
+        "the Duration field follows"
+    );
+    // its middle: slide it left (more than egui's click tolerance)
+    let (x, y, w, h, _) = d.find("effectControls.transition.timeline.span").unwrap();
+    let (mx, my) = (x + w / 2.0, y + h / 2.0);
+    d.ok("ui.drag", json!({"from": {"x": mx, "y": my}, "to": {"x": mx - 14.0, "y": my}, "steps": 6}));
+    d.frames(3);
+    let x2 = d.transition(c.id).unwrap();
+    assert_eq!(x2["duration"].as_i64(), Some(d1), "sliding keeps the duration");
+    let s2 = x2["start"].as_i64().unwrap();
+    assert!(s2 < s1, "and moves it left: {s1} -> {s2}");
+    assert!(s2 + d1 >= c.cut, "still over the cut");
+    assert_eq!((s1 - s2) % frame, 0, "by whole frames");
+    // two drags, two undo steps
+    d.exec("edit.undo", json!({}));
+    let back = d.transition(c.id).unwrap();
+    assert_eq!((back["start"].as_i64(), back["duration"].as_i64()), (Some(s1), Some(d1)), "the slide is one step");
+    d.exec("edit.undo", json!({}));
+    let back = d.transition(c.id).unwrap();
+    assert_eq!((back["start"].as_i64(), back["duration"].as_i64()), (Some(c.start), Some(c.duration)), "the resize is the other");
+    // the ruler: a click at its left end puts the playhead before the cut, at its right end after
+    let (x, y, w, h, _) = d.find("effectControls.transition.timeline.ruler").unwrap();
+    d.ok("ui.click", json!({"x": x + 3.0, "y": y + h / 2.0}));
+    d.frames(3);
+    let ph = d.exec("sequence.inspect", json!({}))["playhead"].as_i64();
+    assert!(ph.is_some_and(|p| p < c.cut), "{ph:?}");
+    d.ok("ui.click", json!({"x": x + w - 3.0, "y": y + h / 2.0}));
+    d.frames(3);
+    let ph = d.exec("sequence.inspect", json!({}))["playhead"].as_i64();
+    assert!(ph.is_some_and(|p| p > c.cut), "{ph:?}");
+    assert!(d.find("effectControls.transition.timeline.playhead").is_some(), "the playhead shows in the transition's timeline");
+}
