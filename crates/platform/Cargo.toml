@@ -55,8 +55,12 @@ windows = { version = "0.62", features = [
 
 # Linux: libva (VA-API) is loaded at run time with libloading (ISC; already in the lockfile through
 # wgpu), so building needs no libva headers and a system without libva simply decodes in software.
+# Audio playback speaks the PulseAudio native protocol over the Unix socket (PipeWire's
+# pipewire-pulse or PulseAudio itself); `pulseaudio` is a pure-Rust protocol implementation (MIT),
+# so nothing links or loads a C sound library.
 [target.'cfg(target_os = "linux")'.dependencies]
 libloading = "0.8"
+pulseaudio = "0.3.1"
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
