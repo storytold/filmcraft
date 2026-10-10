@@ -335,12 +335,31 @@ fn plan_side(plan: &filmcraft_render::plan::FramePlan) -> usize {
     plan.max_side()
 }
 
+/// A software rasterizer (llvmpipe, SwiftShader, softpipe — VMs and containers without GPU device
+/// access, missing or broken drivers) runs wgpu entirely on the CPU. Compositing through one is
+/// slower than the native CPU compositor and hides the cause: GPU usage stays at 0 % while the
+/// CPU saturates. Returns a description when the adapter is one.
+pub fn software_rasterizer(info: &eframe::wgpu::AdapterInfo) -> Option<String> {
+    rasterizer_reason(&info.name, info.device_type)
+}
+
+fn rasterizer_reason(name: &str, device_type: eframe::wgpu::DeviceType) -> Option<String> {
+    let lower = name.to_ascii_lowercase();
+    if device_type == eframe::wgpu::DeviceType::Cpu || ["llvmpipe", "swiftshader", "softpipe"].iter().any(|s| lower.contains(s)) {
+        return Some(format!("software rasterizer ({name}, {device_type:?})"));
+    }
+    None
+}
+
 /// Whether the GPU compositor can run on this adapter: it renders and blends Rgba16Float
 /// targets and uploads whole frames as textures. Older or OpenGL-backed GPUs (some Intel Macs,
 /// VMs, Linux without Vulkan, WebGL) can't; those use the CPU compositor, which renders the same
 /// frames. Returns the reason when unsupported.
 pub fn gpu_compositor_unsupported(adapter: &eframe::wgpu::Adapter) -> Option<String> {
     use eframe::wgpu::{TextureFormat, TextureFormatFeatureFlags as F, TextureUsages as U};
+    if let Some(why) = software_rasterizer(&adapter.get_info()) {
+        return Some(why);
+    }
     let f = adapter.get_texture_format_features(TextureFormat::Rgba16Float);
     if !f.allowed_usages.contains(U::RENDER_ATTACHMENT | U::TEXTURE_BINDING) {
         return Some("Rgba16Float is not renderable".into());
@@ -360,6 +379,9 @@ impl FilmcraftApp {
     pub fn set_wgpu(&mut self, rs: eframe::egui_wgpu::RenderState) {
         if let Some(why) = gpu_compositor_unsupported(&rs.adapter) {
             log::warn!("GPU compositor disabled ({why}); compositing on the CPU");
+            // Say so instead of letting the preview quietly crawl: "GPU 0 %, CPU 100 %" with no
+            // explanation read like a renderer bug when the machine simply has no GPU access.
+            self.ui.status = format!("{} ({why})", tl!("GPU acceleration is unavailable; preview renders on the CPU"));
             return;
         }
         // wgpu's default reaction to a validation error or lost device is to panic, which closed
@@ -1953,6 +1975,20 @@ mod clipboard_key_tests {
 #[cfg(test)]
 mod gpu_fallback_tests {
     use filmcraft_render::plan::{FramePlan, PlanLayer};
+
+    /// Software rasterizers must not be treated as a GPU compositor: the preview crawled while
+    /// "GPU" usage read 0 % because wgpu had silently fallen back to llvmpipe.
+    #[test]
+    fn software_rasterizers_are_detected() {
+        use eframe::wgpu::DeviceType as D;
+        let r = super::rasterizer_reason;
+        assert!(r("llvmpipe (LLVM 23.1.1, 256 bits)", D::Cpu).is_some());
+        assert!(r("NVIDIA GeForce RTX 4080", D::Cpu).is_some());
+        assert!(r("SwiftShader Device", D::Other).is_some());
+        assert!(r("softpipe", D::Cpu).is_some());
+        assert!(r("AMD Radeon RX 5700 XT", D::DiscreteGpu).is_none());
+        assert!(r("Apple M3 Pro", D::IntegratedGpu).is_none());
+    }
 
     #[test]
     fn plan_side_covers_output_and_every_layer() {

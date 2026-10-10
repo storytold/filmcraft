@@ -301,6 +301,71 @@ pub const FIXTURES: &[Fixture] = &[
         filter: NOISE,
         args: &["-profile:v", "main", "-qp", "1", "-x264-params", "cabac=0"],
     },
+    // High 10 (10-bit 4:2:0)
+    Fixture {
+        name: "high10_cabac",
+        source: "testsrc2",
+        width: 352,
+        height: 288,
+        frames: 12,
+        filter: NOISE,
+        args: &["-pix_fmt", "yuv420p10le", "-preset", "medium", "-crf", "22"],
+    },
+    Fixture {
+        name: "high10_cavlc_8x8",
+        source: "mandelbrot",
+        width: 256,
+        height: 144,
+        frames: 8,
+        filter: NOISE,
+        args: &["-pix_fmt", "yuv420p10le", "-x264-params", "cabac=0:keyint=3"],
+    },
+    Fixture {
+        name: "high10_weightb",
+        source: "testsrc2",
+        width: 256,
+        height: 144,
+        frames: 12,
+        filter: NOISE,
+        args: &["-pix_fmt", "yuv420p10le", "-x264-params", "weightp=2:weightb=1:bframes=3"],
+    },
+    // High 4:2:2 (the Panasonic Lumix MOV mode: H264_422_LongGOP is High 4:2:2 10-bit CABAC)
+    Fixture {
+        name: "high422_cabac",
+        source: "testsrc2",
+        width: 352,
+        height: 288,
+        frames: 12,
+        filter: NOISE,
+        args: &["-pix_fmt", "yuv422p10le", "-preset", "medium", "-crf", "22"],
+    },
+    Fixture {
+        name: "high422_cavlc",
+        source: "testsrc2",
+        width: 352,
+        height: 288,
+        frames: 10,
+        filter: NOISE,
+        args: &["-pix_fmt", "yuv422p", "-x264-params", "cabac=0:keyint=3"],
+    },
+    Fixture {
+        name: "high422_intra",
+        source: "mandelbrot",
+        width: 256,
+        height: 144,
+        frames: 4,
+        filter: NOISE,
+        args: &["-pix_fmt", "yuv422p10le", "-x264-params", "keyint=1"],
+    },
+    Fixture {
+        name: "high422_weightb",
+        source: "testsrc2",
+        width: 256,
+        height: 144,
+        frames: 12,
+        filter: NOISE,
+        args: &["-pix_fmt", "yuv422p10le", "-x264-params", "weightp=2:weightb=1:bframes=3"],
+    },
 ];
 
 pub fn fixture(name: &str) -> &'static Fixture {
@@ -330,6 +395,11 @@ fn run(cmd: &mut Command) -> bool {
     }
 }
 
+/// The fixture's input / reference pixel format (`-pix_fmt` in its args, yuv420p when absent).
+fn pix_fmt_of(f: &Fixture) -> &'static str {
+    f.args.iter().position(|a| *a == "-pix_fmt").and_then(|i| f.args.get(i + 1)).copied().unwrap_or("yuv420p")
+}
+
 /// Generate (if needed) the fixture stream and its ffmpeg reference decode.
 /// Returns None (with a message) when ffmpeg is unavailable.
 pub fn ensure(f: &Fixture) -> Option<(PathBuf, PathBuf)> {
@@ -337,9 +407,10 @@ pub fn ensure(f: &Fixture) -> Option<(PathBuf, PathBuf)> {
     let dir = fixtures_dir();
     let h264 = dir.join(format!("{}.h264", f.name));
     let yuv = dir.join(format!("{}.yuv", f.name));
+    let pix = pix_fmt_of(f);
     if !h264.exists() {
         let tmp = filmcraft_testkit::temp_path(&h264);
-        let mut vf = format!("{}=size={}x{}:rate=25,format=yuv420p", f.source, f.width, f.height);
+        let mut vf = format!("{}=size={}x{}:rate=25,format={}", f.source, f.width, f.height, pix);
         if !f.filter.is_empty() {
             vf.push(',');
             vf.push_str(f.filter);
@@ -364,7 +435,7 @@ pub fn ensure(f: &Fixture) -> Option<(PathBuf, PathBuf)> {
         let tmp = filmcraft_testkit::temp_path(&yuv);
         let mut c = Command::new(&ff);
         c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&h264);
-        c.args(["-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "yuv420p"]).arg(&tmp);
+        c.args(["-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", pix]).arg(&tmp);
         assert!(run(&mut c), "reference decode failed for {}", f.name);
         std::fs::rename(&tmp, &yuv).unwrap();
     }
@@ -445,10 +516,17 @@ pub fn decode_file_opts(path: &Path, threads: usize, draft: bool) -> Result<Vec<
     Ok(out)
 }
 
-/// Compare decoded pictures with a raw yuv420p reference; returns a diagnostic on the first mismatch.
+/// Compare decoded pictures with a raw planar reference in the fixture's pixel format (8-bit
+/// bytes or 16-bit little-endian samples, 4:2:0 or 4:2:2 as the pictures report); returns a
+/// diagnostic on the first mismatch.
 pub fn compare(pics: &[Picture], reference: &[u8], w: usize, h: usize) -> Result<(), String> {
-    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
-    let fsize = w * h + 2 * cw * ch;
+    let Some(first) = pics.first() else {
+        return if reference.is_empty() { Ok(()) } else { Err("decoder produced no frames".into()) };
+    };
+    let deep = first.bit_depth > 8;
+    let (cw, ch) = (first.chroma_width as usize, first.chroma_height as usize);
+    let bytes = if deep { 2 } else { 1 };
+    let fsize = (w * h + 2 * cw * ch) * bytes;
     let nref = reference.len() / fsize;
     for (i, p) in pics.iter().enumerate() {
         if i >= nref {
@@ -458,10 +536,18 @@ pub fn compare(pics: &[Picture], reference: &[u8], w: usize, h: usize) -> Result
             return Err(format!("frame {i}: size {}x{} != {}x{}", p.width, p.height, w, h));
         }
         let f = &reference[i * fsize..(i + 1) * fsize];
-        let planes =
-            [("Y", &p.y[..], &f[..w * h], w, h, 16), ("U", &p.u[..], &f[w * h..w * h + cw * ch], cw, ch, 8), ("V", &p.v[..], &f[w * h + cw * ch..], cw, ch, 8)];
+        let raw = |off: usize, len: usize| -> Vec<u16> {
+            let s = f.get(off..).unwrap_or_default().get(..len * bytes).unwrap_or_default();
+            if deep { s.as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes(*b)).collect() } else { s.iter().map(|&b| b as u16).collect() }
+        };
+        let (y, u, v) = (p.y.to_u16(), p.u.to_u16(), p.v.to_u16());
+        let planes = [
+            ("Y", &y[..], raw(0, w * h), w, h, 16),
+            ("U", &u[..], raw(w * h * bytes, cw * ch), cw, ch, 8),
+            ("V", &v[..], raw((w * h + cw * ch) * bytes, cw * ch), cw, ch, 8),
+        ];
         for (name, got, exp, pw, ph, mbs) in planes {
-            if got != exp {
+            if got != exp.as_slice() {
                 let mut first = None;
                 let mut count = 0usize;
                 let mut maxd = 0i32;

@@ -1,4 +1,8 @@
 //! Scaling (dequantisation) and inverse transforms (8.5.10 - 8.5.13).
+//!
+//! `qp` arguments are the *effective* QP (`QP′Y = QPY + QpBdOffsetY`, `QP′C = QpC + QpBdOffsetC`,
+//! 7-38 / 8-312), so the scaling formulas are those of the 8-bit case unchanged. Reconstruction
+//! clips to `max` (`(1 << BitDepth) - 1` of the plane).
 
 use crate::params::ScalingMatrices;
 use crate::tables::{norm_adjust4, norm_adjust8};
@@ -83,16 +87,49 @@ pub fn chroma_dc_dequant_420(c: &mut [i32; 4], qp: i32, ls00: i32) {
     }
 }
 
+/// 4:2:2 chroma DC: 2x4 transform + scaling (8.5.11, 8-325..8-329). `c` is the 2x4 block in
+/// raster order (`c[i * 2 + j]`, i = row 0..4, j = column 0..2): `f = H4 * c * H2` with the
+/// 4-point Hadamard over the rows and the 2-point over the columns.
+///
+/// `qp` is the effective chroma QP (`QP′C`); `ls00` must be `LevelScale4x4((qp + 3) % 6, 0, 0)`
+/// (the scaling uses `qPDC = qP + 3`, 8-327).
+pub fn chroma_dc_dequant_422(c: &mut [i32; 8], qp: i32, ls00: i32) {
+    // t = H4 * c (over the 4 rows, per column)
+    let mut t = [0i32; 8];
+    for j in 0..2 {
+        let (c0, c1, c2, c3) = (c[j], c[2 + j], c[4 + j], c[6 + j]);
+        let s01 = c0.wrapping_add(c1);
+        let d01 = c0.wrapping_sub(c1);
+        let s23 = c2.wrapping_add(c3);
+        let d23 = c2.wrapping_sub(c3);
+        t[j] = s01.wrapping_add(s23);
+        t[2 + j] = s01.wrapping_sub(s23);
+        t[4 + j] = d01.wrapping_sub(d23);
+        t[6 + j] = d01.wrapping_add(d23);
+    }
+    // f = t * H2 (over the 2 columns, per row)
+    let qpd = qp.wrapping_add(3);
+    for i in 0..4 {
+        let (a, b) = (t[i * 2], t[i * 2 + 1]);
+        let f = [a.wrapping_add(b), a.wrapping_sub(b)];
+        for j in 0..2 {
+            c[i * 2 + j] =
+                if qpd >= 36 { f[j].wrapping_mul(ls00) << (qpd / 6 - 6) } else { f[j].wrapping_mul(ls00).wrapping_add(1 << (5 - qpd / 6)) >> (6 - qpd / 6) };
+        }
+    }
+}
+
+/// Clip a reconstructed sample to `0..=max` (`Clip1Y` / `Clip1C`, 5-3 / 5-4).
 #[inline(always)]
-fn clip_u8(v: i32) -> u8 {
-    v.clamp(0, 255) as u8
+fn clip1(v: i32, max: i32) -> u16 {
+    v.clamp(0, max) as u16
 }
 
 /// Inverse 4x4 transform of raster-order `d` and add to `dst` (8.5.12.2, 8.5.14).
 ///
 /// Rows first, then columns (the spec's order: the `>> 1` steps make it matter). The column
 /// pass and the reconstruction run across all columns at once so they vectorise.
-pub fn idct4_add(d: &[i32; 16], dst: &mut [u8], stride: usize) {
+pub fn idct4_add(d: &[i32; 16], dst: &mut [u16], stride: usize, max: i32) {
     let mut t = [[0i32; 4]; 4];
     for (i, row) in t.iter_mut().enumerate() {
         let r = &d[i * 4..i * 4 + 4];
@@ -118,18 +155,18 @@ pub fn idct4_add(d: &[i32; 16], dst: &mut [u8], stride: usize) {
             return;
         };
         for (p, &v) in line.iter_mut().zip(row) {
-            *p = clip_u8(*p as i32 + ((v + 32) >> 6));
+            *p = clip1(*p as i32 + ((v + 32) >> 6), max);
         }
     }
 }
 
 /// DC-only shortcut: all AC coefficients zero.
 #[allow(dead_code)]
-pub fn idct4_dc_add(dc: i32, dst: &mut [u8], stride: usize) {
+pub fn idct4_dc_add(dc: i32, dst: &mut [u16], stride: usize, max: i32) {
     let v = (dc + 32) >> 6;
     for i in 0..4 {
         for p in &mut dst[i * stride..i * stride + 4] {
-            *p = clip_u8(*p as i32 + v);
+            *p = clip1(*p as i32 + v, max);
         }
     }
 }
@@ -157,7 +194,7 @@ fn idct8_1d(d: [i32; 8]) -> [i32; 8] {
 
 /// Inverse 8x8 transform of raster-order `d` and add to `dst` (8.5.13.2): rows, then columns,
 /// the column pass and reconstruction across all columns at once (they vectorise).
-pub fn idct8_add(d: &[i32; 64], dst: &mut [u8], stride: usize) {
+pub fn idct8_add(d: &[i32; 64], dst: &mut [u16], stride: usize, max: i32) {
     let mut t = [[0i32; 8]; 8];
     for (row, src) in t.iter_mut().zip(d.as_chunks::<8>().0) {
         *row = idct8_1d(*src);
@@ -174,7 +211,7 @@ pub fn idct8_add(d: &[i32; 64], dst: &mut [u8], stride: usize) {
             return;
         };
         for (p, &v) in line.iter_mut().zip(row) {
-            *p = clip_u8(*p as i32 + ((v + 32) >> 6));
+            *p = clip1(*p as i32 + ((v + 32) >> 6), max);
         }
     }
 }
@@ -185,7 +222,7 @@ mod tests {
 
     /// The straightforward per-column formulation (8.5.12.2 / 8.5.13.2) the vectorised
     /// transforms must equal.
-    fn reference_add(d: &[i32], n: usize, dst: &mut [u8], stride: usize) {
+    fn reference_add(d: &[i32], n: usize, dst: &mut [u16], stride: usize, max: i32) {
         let one = |v: &[i32]| -> Vec<i32> {
             if n == 4 {
                 let (e, f, g, h) = (v[0] + v[2], v[0] - v[2], (v[1] >> 1) - v[3], v[1] + (v[3] >> 1));
@@ -199,7 +236,7 @@ mod tests {
             let col = one(&(0..n).map(|i| rows[i][j]).collect::<Vec<_>>());
             for i in 0..n {
                 let p = &mut dst[i * stride + j];
-                *p = (*p as i32 + ((col[i] + 32) >> 6)).clamp(0, 255) as u8;
+                *p = (*p as i32 + ((col[i] + 32) >> 6)).clamp(0, max) as u16;
             }
         }
     }
@@ -217,14 +254,15 @@ mod tests {
             let range = [64u64, 1024, 8192, 1 << 15][iter % 4];
             let d4: [i32; 16] = std::array::from_fn(|_| (next() % (2 * range + 1)) as i32 - range as i32);
             let d8: [i32; 64] = std::array::from_fn(|_| (next() % (2 * range + 1)) as i32 - range as i32);
-            let base: Vec<u8> = (0..24 * 8).map(|_| next() as u8).collect();
+            let max = [255i32, 1023][iter % 2];
+            let base: Vec<u16> = (0..24 * 8).map(|_| (next() % (max as u64 + 1)) as u16).collect();
             let (mut a, mut b) = (base.clone(), base.clone());
-            idct4_add(&d4, &mut a[3..], 24);
-            reference_add(&d4, 4, &mut b[3..], 24);
+            idct4_add(&d4, &mut a[3..], 24, max);
+            reference_add(&d4, 4, &mut b[3..], 24, max);
             assert_eq!(a, b, "4x4 iteration {iter}");
             let (mut a, mut b) = (base.clone(), base);
-            idct8_add(&d8, &mut a[5..], 24);
-            reference_add(&d8, 8, &mut b[5..], 24);
+            idct8_add(&d8, &mut a[5..], 24, max);
+            reference_add(&d8, 8, &mut b[5..], 24, max);
             assert_eq!(a, b, "8x8 iteration {iter}");
         }
     }
@@ -233,10 +271,10 @@ mod tests {
     fn idct4_dc_only_matches_shortcut() {
         let mut d = [0i32; 16];
         d[0] = 640; // -> +10 everywhere
-        let mut a = [100u8; 16];
-        let mut b = [100u8; 16];
-        idct4_add(&d, &mut a, 4);
-        idct4_dc_add(640, &mut b, 4);
+        let mut a = [100u16; 16];
+        let mut b = [100u16; 16];
+        idct4_add(&d, &mut a, 4, 255);
+        idct4_dc_add(640, &mut b, 4, 255);
         assert_eq!(a, b);
         assert!(a.iter().all(|&v| v == 110));
     }
@@ -248,8 +286,8 @@ mod tests {
         let mut d = [0i32; 16];
         d[0] = 64;
         d[1] = 64;
-        let mut out = [0u8; 16];
-        idct4_add(&d, &mut out, 4);
+        let mut out = [0u16; 16];
+        idct4_add(&d, &mut out, 4, 255);
         for i in 0..4 {
             assert_eq!(&out[i * 4..i * 4 + 4], &[2, 2, 1, 0]);
         }
@@ -259,9 +297,21 @@ mod tests {
     fn idct8_dc() {
         let mut d = [0i32; 64];
         d[0] = 64 * 5;
-        let mut out = [10u8; 64];
-        idct8_add(&d, &mut out, 8);
+        let mut out = [10u16; 64];
+        idct8_add(&d, &mut out, 8, 255);
         assert!(out.iter().all(|&v| v == 15));
+    }
+
+    #[test]
+    fn reconstruction_clips_to_the_bit_depth() {
+        let mut d = [0i32; 16];
+        d[0] = 64 * 400; // +400 everywhere
+        let mut out = [900u16; 16];
+        idct4_add(&d, &mut out, 4, 1023);
+        assert!(out.iter().all(|&v| v == 1023));
+        let mut out = [200u16; 16];
+        idct4_add(&d, &mut out, 4, 255);
+        assert!(out.iter().all(|&v| v == 255));
     }
 
     #[test]
@@ -282,6 +332,17 @@ mod tests {
     }
 
     #[test]
+    fn chroma_dc_422_hand_example() {
+        // c = [[1, 0], [0, 0], [0, 0], [0, 0]] (raster [1,0,0,0,0,0,0,0]):
+        // t = H4*c -> col0 = [1,1,1,1] Hadamard rows: row sums [1,1,1,1]... t = [1,1,1,1] on col0, 0 on col1.
+        // f = t*H2: each row [1+0, 1-0] = [1,1]. Eight f values all 1.
+        let mut c = [1, 0, 0, 0, 0, 0, 0, 0];
+        // qP = 6 -> qPDC = 9: 9 < 36 -> ((1 * ls00) + 2^(5 - 1)) >> (6 - 1); ls00 = 256: (256 + 16) >> 5 = 8
+        chroma_dc_dequant_422(&mut c, 6, 256);
+        assert_eq!(c, [8; 8]);
+    }
+
+    #[test]
     fn scale_functions() {
         assert_eq!(scale4(2, 160, 24), 2 * 160);
         assert_eq!(scale4(2, 160, 12), (2 * 160 + 2) >> 2);
@@ -296,6 +357,8 @@ mod tests {
     fn huge_levels_dequantise_without_overflow_panics() {
         let mut c = [i32::MAX / 2, i32::MAX / 3, -i32::MAX / 2, 7];
         chroma_dc_dequant_420(&mut c, 51, 16 * 25);
+        let mut c8 = [i32::MAX / 2, i32::MAX / 3, -i32::MAX / 2, 7, i32::MIN / 2, 0, 5, -9];
+        chroma_dc_dequant_422(&mut c8, 51, 16 * 25);
         let _ = scale4(i32::MAX, 16 * 25, 51);
         let _ = scale4(i32::MAX, 16 * 25, 0);
         let _ = scale8(i32::MIN, 16 * 25, 51);
