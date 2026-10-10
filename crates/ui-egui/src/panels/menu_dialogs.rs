@@ -199,7 +199,8 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             if let Ok(v) = &r {
                 let mut peaks = app.tl.peaks.lock().unwrap_or_else(|e| e.into_inner());
                 for i in v["items"].as_array().cloned().unwrap_or_default() {
-                    peaks.remove(&filmcraft_engine::project::ItemId(i.as_u64().unwrap_or_default()));
+                    let item = filmcraft_engine::project::ItemId(i.as_u64().unwrap_or_default());
+                    peaks.retain(|(it, _), _| *it != item);
                 }
             }
             return Some(r);

@@ -575,7 +575,7 @@ pub fn waveform(
     }
     let mid = area.center().y;
     p.line_segment([pos2(area.min.x, mid), pos2(area.max.x, mid)], Stroke::new(1.0, Color32::from_white_alpha(30)));
-    match crate::panels::timeline::request_peaks(app, item) {
+    match crate::panels::timeline::request_peaks(app, item, 0) {
         Some(peaks) if !peaks.is_empty() => {
             let half = area.height() * 0.45;
             let spp = 256.0 * TICKS_PER_SAMPLE_48K;

@@ -34,6 +34,9 @@ const MASTER_H: f32 = 34.0;
 const GAP_FILL: Color32 = Color32::from_gray(224);
 const SNAP_PX: f32 = 9.0;
 
+/// Waveform peaks are kept per audio stream: (item, index into the media's `audio_streams`).
+pub type PeakKey = (ItemId, usize);
+
 /// Transient interaction state.
 #[derive(Default)]
 pub struct TlState {
@@ -44,8 +47,8 @@ pub struct TlState {
     pub layout: Option<Layout>,
     /// Snap indicator x (screen) this frame.
     snap_x: Option<f32>,
-    pub peaks: Arc<Mutex<HashMap<ItemId, Arc<Vec<(f32, f32)>>>>>,
-    peaks_pending: Arc<Mutex<Vec<ItemId>>>,
+    pub peaks: Arc<Mutex<HashMap<PeakKey, Arc<Vec<(f32, f32)>>>>>,
+    peaks_pending: Arc<Mutex<Vec<PeakKey>>>,
     /// Nested sequences have waveforms too, of their mix. Unlike media a sequence changes: this is
     /// the content key (see [`sequence_audio_key`]) the cached peaks of each sequence were made
     /// from, and the key worked out for the session revision last seen.
@@ -53,7 +56,7 @@ pub struct TlState {
     seq_keys_seen: HashMap<ItemId, (u64, u64)>,
     /// Source peak of each cached peak list (keyed by the list's address), for the waveform
     /// display gain: scanning the whole source per clip per frame cost more than drawing.
-    peak_max: HashMap<ItemId, (usize, f32)>,
+    peak_max: HashMap<PeakKey, (usize, f32)>,
     zoom_anchor: Option<(f64, f32)>,
 }
 
@@ -791,7 +794,8 @@ fn draw_clip(
 }
 
 fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &TrackItem, col: Color32) {
-    let Some(peaks) = request_peaks(app, it.item) else { return };
+    let Some(peaks) = request_peaks(app, it.item, it.audio_stream) else { return };
+    let pkey = (it.item, it.audio_stream);
     let spp = 256.0;
     let sr = 48_000.0;
     let zone_h = (body.height() * 0.42).max(8.0);
@@ -801,11 +805,11 @@ fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &Tra
         return;
     }
     let key = Arc::as_ptr(&peaks) as usize;
-    let peak = match app.tl.peak_max.get(&it.item) {
+    let peak = match app.tl.peak_max.get(&pkey) {
         Some(&(k, v)) if k == key => v,
         _ => {
             let v = peaks.iter().fold(0f32, |m, (a, b)| m.max(a.abs()).max(b.abs()));
-            app.tl.peak_max.insert(it.item, (key, v));
+            app.tl.peak_max.insert(pkey, (key, v));
             v
         }
     };
@@ -881,17 +885,18 @@ fn request_sequence_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Ve
             key
         }
     };
-    let have = app.tl.peaks.lock().unwrap_or_else(|e| e.into_inner()).get(&item).cloned();
+    let pkey = (item, 0);
+    let have = app.tl.peaks.lock().unwrap_or_else(|e| e.into_inner()).get(&pkey).cloned();
     let current = app.tl.seq_peak_keys.lock().unwrap_or_else(|e| e.into_inner()).get(&item) == Some(&key);
     if current && have.is_some() {
         return have;
     }
     {
         let mut pend = app.tl.peaks_pending.lock().unwrap_or_else(|e| e.into_inner());
-        if pend.contains(&item) {
+        if pend.contains(&pkey) {
             return have;
         }
-        pend.push(item);
+        pend.push(pkey);
     }
     let (peaks, keys, pending) = (app.tl.peaks.clone(), app.tl.seq_peak_keys.clone(), app.tl.peaks_pending.clone());
     let project = app.session.project.clone();
@@ -920,10 +925,10 @@ fn request_sequence_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Ve
             Some(out)
         }));
         if let Ok(Some(out)) = mixed {
-            peaks.lock().unwrap_or_else(|e| e.into_inner()).insert(item, Arc::new(out));
+            peaks.lock().unwrap_or_else(|e| e.into_inner()).insert(pkey, Arc::new(out));
             keys.lock().unwrap_or_else(|e| e.into_inner()).insert(item, key);
         }
-        pending.lock().unwrap_or_else(|e| e.into_inner()).retain(|i| *i != item);
+        pending.lock().unwrap_or_else(|e| e.into_inner()).retain(|i| *i != pkey);
     };
     #[cfg(not(target_arch = "wasm32"))]
     std::thread::spawn(run);
@@ -932,47 +937,55 @@ fn request_sequence_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Ve
     have
 }
 
-pub(crate) fn request_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Vec<(f32, f32)>>> {
+/// Min/max peaks (one per 256 samples at 48 kHz) of audio stream `stream` of `src`, `dur` long.
+fn source_peaks(src: &dyn filmcraft_media::MediaSource, stream: usize, dur: Tick) -> Vec<(f32, f32)> {
+    let sr = 48_000u32;
+    let total = dur.to_units_floor(sr as i64).max(0) as usize;
+    let mut out = Vec::with_capacity(total / 256 + 1);
+    let chunk = 48_000 * 4;
+    let mut s = 0usize;
+    while s < total {
+        let n = chunk.min(total - s);
+        match src.audio_stream(stream, s as i64, n, sr) {
+            Ok(buf) => {
+                let ch = buf.channels.first().cloned().unwrap_or_default();
+                for c in ch.chunks(256) {
+                    let (lo, hi) = c.iter().fold((0f32, 0f32), |(l, h), v| (l.min(*v), h.max(*v)));
+                    out.push((lo, hi));
+                }
+            }
+            Err(_) => break,
+        }
+        s += n;
+    }
+    out
+}
+
+/// Waveform peaks of audio stream `stream` of `item` (a clip's `audio_stream`).
+pub(crate) fn request_peaks(app: &mut FilmcraftApp, item: ItemId, stream: usize) -> Option<Arc<Vec<(f32, f32)>>> {
     if app.session.project.sequence(item).is_some() {
         return request_sequence_peaks(app, item);
     }
-    if let Some(p) = app.tl.peaks.lock().unwrap_or_else(|e| e.into_inner()).get(&item) {
+    let pkey = (item, stream);
+    if let Some(p) = app.tl.peaks.lock().unwrap_or_else(|e| e.into_inner()).get(&pkey) {
         return Some(p.clone());
     }
     // No source: try again on a later frame instead of leaving the item pending forever.
     let src = app.session.source(item)?;
     {
         let mut pend = app.tl.peaks_pending.lock().unwrap_or_else(|e| e.into_inner());
-        if pend.contains(&item) {
+        if pend.contains(&pkey) {
             return None;
         }
-        pend.push(item);
+        pend.push(pkey);
     }
     let peaks = app.tl.peaks.clone();
     let pending = app.tl.peaks_pending.clone();
     let dur = src.info().duration;
     let run = move || {
-        let sr = 48_000u32;
-        let total = dur.to_units_floor(sr as i64).max(0) as usize;
-        let mut out = Vec::with_capacity(total / 256 + 1);
-        let chunk = 48_000 * 4;
-        let mut s = 0usize;
-        while s < total {
-            let n = chunk.min(total - s);
-            match src.audio(s as i64, n, sr) {
-                Ok(buf) => {
-                    let ch = buf.channels.first().cloned().unwrap_or_default();
-                    for c in ch.chunks(256) {
-                        let (lo, hi) = c.iter().fold((0f32, 0f32), |(l, h), v| (l.min(*v), h.max(*v)));
-                        out.push((lo, hi));
-                    }
-                }
-                Err(_) => break,
-            }
-            s += n;
-        }
-        peaks.lock().unwrap_or_else(|e| e.into_inner()).insert(item, Arc::new(out));
-        pending.lock().unwrap_or_else(|e| e.into_inner()).retain(|i| *i != item);
+        let out = source_peaks(&*src, stream, dur);
+        peaks.lock().unwrap_or_else(|e| e.into_inner()).insert(pkey, Arc::new(out));
+        pending.lock().unwrap_or_else(|e| e.into_inner()).retain(|i| *i != pkey);
     };
     #[cfg(not(target_arch = "wasm32"))]
     std::thread::spawn(run);
@@ -2695,6 +2708,49 @@ mod trim_preview_tests {
             assert!((before.source_time_at(t) - after.source_time_at(t)).0.abs() <= 1, "{}: media moved at {t:?}", before.name);
             t += Tick(filmcraft_time::TICKS_PER_SECOND / 10);
         }
+    }
+
+    /// A source whose audio streams are different constants (0.1 for stream 0, 0.5 for stream 1).
+    struct TwoStreams(filmcraft_media::MediaInfo);
+
+    impl filmcraft_media::MediaSource for TwoStreams {
+        fn info(&self) -> &filmcraft_media::MediaInfo {
+            &self.0
+        }
+        fn video_frame(&self, _req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+            Err(filmcraft_media::MediaError::NoStream("video"))
+        }
+        fn audio(&self, _start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+            Ok(filmcraft_frame::AudioBuffer { sample_rate, channels: vec![vec![0.1; frames]] })
+        }
+        fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+            match stream {
+                0 => self.audio(start, frames, sample_rate),
+                1 => Ok(filmcraft_frame::AudioBuffer { sample_rate, channels: vec![vec![0.5; frames]] }),
+                _ => Err(filmcraft_media::MediaError::NoStream("audio")),
+            }
+        }
+    }
+
+    #[test]
+    fn each_audio_stream_gets_its_own_waveform_peaks() {
+        let info = filmcraft_media::MediaInfo {
+            name: "two.mkv".into(),
+            kind: filmcraft_media::MediaKind::Movie,
+            duration: Tick(TICKS_PER_SECOND),
+            video: None,
+            audio_streams: Vec::new(),
+            container: "mkv".into(),
+            start_timecode: None,
+            file_size: None,
+        };
+        let src = TwoStreams(info);
+        let first = source_peaks(&src, 0, Tick(TICKS_PER_SECOND));
+        let second = source_peaks(&src, 1, Tick(TICKS_PER_SECOND));
+        assert!(!first.is_empty() && first.len() == second.len());
+        assert!(first.iter().all(|&(_, hi)| (hi - 0.1).abs() < 1e-6), "stream 0 is the quiet one");
+        assert!(second.iter().all(|&(_, hi)| (hi - 0.5).abs() < 1e-6), "stream 1 is its own audio, not stream 0 again");
+        assert!(source_peaks(&src, 2, Tick(TICKS_PER_SECOND)).is_empty(), "a missing stream has no peaks");
     }
 
     #[test]

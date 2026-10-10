@@ -71,7 +71,7 @@ impl Driver {
     fn peaks_when(&mut self, item: u64, ready: impl Fn(&[(f32, f32)]) -> bool) -> Vec<(f32, f32)> {
         for _ in 0..400 {
             self.frames(1);
-            let got = self.app().tl.peaks.lock().unwrap().get(&ItemId(item)).cloned();
+            let got = self.app().tl.peaks.lock().unwrap().get(&(ItemId(item), 0)).cloned();
             if let Some(p) = got.filter(|p| ready(p)) {
                 return p.to_vec();
             }
