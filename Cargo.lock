@@ -1756,6 +1756,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-avi"
+version = "0.5.0"
+dependencies = [
+ "filmcraft-testkit",
+]
+
+[[package]]
 name = "filmcraft-bitstream"
 version = "0.5.0"
 dependencies = [
@@ -1808,6 +1815,7 @@ dependencies = [
  "filmcraft-ac3",
  "filmcraft-apv",
  "filmcraft-av1",
+ "filmcraft-avi",
  "filmcraft-bitstream",
  "filmcraft-color",
  "filmcraft-dnx",
