@@ -989,12 +989,12 @@ fn draw_transition(p: &egui::Painter, r: Rect, trn: &filmcraft_project::Transiti
     }
 }
 
-/// A Premiere track-header button (patch / target): blue fill when on, full track height.
+/// A Premiere track-header button (patch / target): highlight-blue fill when on, full track height.
 fn patch_button(ui: &mut egui::Ui, r: Rect, clip: Rect, label: &str, on: bool, show_off: bool, id: egui::Id, t: &Tokens) -> egui::Response {
     let resp = ui.interact(r.intersect(clip), id, Sense::click());
     let p = ui.painter().with_clip_rect(clip);
     if on {
-        p.rect_filled(r, 2.0, Color32::from_rgb(0x26, 0x5b, 0xc1));
+        p.rect_filled(r, 2.0, t.track_target);
         p.text(r.center(), Align2::CENTER_CENTER, label, Tokens::semibold(10.0), Color32::from_rgb(0xeb, 0xeb, 0xeb));
     } else if show_off {
         if resp.hovered() {
