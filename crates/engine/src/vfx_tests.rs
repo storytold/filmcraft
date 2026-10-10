@@ -115,3 +115,16 @@ fn new_effect_params_are_settable_and_keyframable() {
     let img = s.render_program(0.125).unwrap();
     assert!(img.px.iter().all(|v| v.is_finite()));
 }
+
+#[test]
+fn ultra_key_setting_writes_aggressive_parameters() {
+    let mut s = demo();
+    let clip = first_v1_clip(&s);
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "ultra_key"})).unwrap();
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "ultra_key", "param": "setting", "value": 2})).unwrap();
+    let e = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1.effect("ultra_key").unwrap();
+    assert_eq!(e.param("tolerance").unwrap().value.as_f64(), Some(90.0));
+    assert_eq!(e.param("pedestal").unwrap().value.as_f64(), Some(50.0));
+    assert_eq!(e.param("choke").unwrap().value.as_f64(), Some(10.0));
+    assert_eq!(e.param("contrast").unwrap().value.as_f64(), Some(10.0));
+}

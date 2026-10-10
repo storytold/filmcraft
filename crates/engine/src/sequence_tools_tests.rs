@@ -351,6 +351,42 @@ fn delete_tracks_empty_and_specific() {
 }
 
 #[test]
+fn delete_tracks_removes_caption_tracks() {
+    let mut s = demo();
+    let before = s.active_sequence().unwrap().clone();
+    let n0 = before.caption_tracks.len();
+    for _ in 0..3 {
+        s.execute("captions.newTrack", json!({"format": "Subtitle"})).unwrap();
+    }
+    // new tracks are inserted on top: C1 gets a caption, C2 and C3 stay empty
+    let cap = s.execute("captions.add", json!({"track": "C1", "text": "Hi", "seconds": 1.0})).unwrap()["caption"].as_u64().unwrap();
+    s.execute("captions.select", json!({"captions": [cap]})).unwrap();
+    let empty = s.active_sequence().unwrap().caption_tracks.iter().filter(|t| t.captions.is_empty()).count();
+    assert!(empty >= 2);
+    let r = s.execute("sequence.deleteTracks", json!({"captions": "empty"})).unwrap();
+    assert_eq!(r["deleted"], json!(empty));
+    let q = s.active_sequence().unwrap();
+    assert!(q.caption_tracks.iter().all(|t| !t.captions.is_empty()));
+    assert_eq!(q.video_tracks.len(), before.video_tracks.len(), "video tracks untouched");
+    assert!(s.execute("sequence.deleteTracks", json!({"captions": "empty"})).is_err(), "nothing left to delete");
+    // unknown names, ids and value types are errors, not panics
+    for bad in [json!("C99"), json!("C0"), json!("Cx"), json!(999_999), json!(true), json!(["C1"])] {
+        assert!(s.execute("sequence.deleteTracks", json!({"captions": bad})).is_err(), "{bad}");
+    }
+    // a specific track (with its captions); the last caption track may go too
+    let left = s.active_sequence().unwrap().caption_tracks.len();
+    for _ in 0..left {
+        s.execute("sequence.deleteTracks", json!({"captions": "C1"})).unwrap();
+    }
+    assert!(s.active_sequence().unwrap().caption_tracks.is_empty());
+    assert!(s.state.caption_selection.is_empty(), "selection of deleted captions cleared");
+    for _ in 0..left + 1 {
+        s.execute("edit.undo", json!({})).unwrap();
+    }
+    assert_eq!(s.active_sequence().unwrap().caption_tracks.len(), n0 + 3);
+}
+
+#[test]
 fn split_points_on_the_sequence() {
     let (mut s, bars) = fresh();
     place(&mut s, bars, "V1", 0, 0, 240);

@@ -199,3 +199,95 @@ fn mutation_never_panics_or_hangs() {
         }
     }
 }
+
+fn put_u32(b: &mut [u8], at: usize, v: u32) {
+    b[at..at + 4].copy_from_slice(&v.to_le_bytes());
+}
+
+/// A 512-byte header (§2.2) with sector shift `shift`: no directory, mini FAT or DIFAT chain, and
+/// all 109 FAT slots free. Tests fill in the fields they attack.
+fn bare_header(shift: u16) -> Vec<u8> {
+    let mut h = vec![0u8; 512];
+    h[..8].copy_from_slice(&SIGNATURE);
+    h[24..26].copy_from_slice(&0x3Eu16.to_le_bytes());
+    h[26..28].copy_from_slice(&(if shift == 9 { 3u16 } else { 4 }).to_le_bytes());
+    h[28..30].copy_from_slice(&0xFFFEu16.to_le_bytes());
+    h[30..32].copy_from_slice(&shift.to_le_bytes());
+    h[32..34].copy_from_slice(&6u16.to_le_bytes());
+    for at in [48, 60, 68] {
+        put_u32(&mut h, at, ENDOFCHAIN);
+    }
+    put_u32(&mut h, 56, MINI_STREAM_CUTOFF);
+    h[76..].fill(0xFF);
+    h
+}
+
+/// A DIFAT sector that names no FAT sector and points to itself. The loop guard used to be the
+/// header's DIFAT sector count (up to 2^32 - 1), so this 1 KB file kept `open` (and so AAF
+/// sniffing) busy for 14-16 s here (minutes with `u32::MAX`), reading a sector each pass. A DIFAT
+/// chain cannot be longer than the file, so the walk now stops after as many passes as the file
+/// has sectors (1024 / 512 + 1 = 3 here) and fails on the 4th.
+#[test]
+fn difat_self_loop_fails_fast() {
+    let mut b = bare_header(9);
+    put_u32(&mut b, 44, 1); // one FAT sector, to be found through the DIFAT
+    put_u32(&mut b, 68, 0); // first DIFAT sector
+    put_u32(&mut b, 72, 100_000_000); // claimed DIFAT sector count (inflates the old loop bound)
+    let mut difat = vec![0xFF; 512]; // no FAT sector numbers...
+    put_u32(&mut difat, 508, 0); // ...and the next DIFAT sector is this one
+    b.extend_from_slice(&difat);
+    // The message names the bound the walk stopped at: the file's 3 sectors, not the header's
+    // 100,000,000 (the old guard allowed 100,000,003 passes).
+    let expect = format!("DIFAT chain loops: more than 3 sectors in a {}-byte file", b.len());
+    assert_eq!(CompoundFile::open(&b).unwrap_err(), Error::Invalid(expect));
+}
+
+/// All 109 header slots name the same FAT sector, so the FAT is 109 copies of it, and the
+/// directory chain loops (sector 0 → 0). The loop guard used to be the FAT length, so this 450 KB
+/// file appended a sector per FAT entry before failing: a 457 MB buffer per open (117 GB with
+/// 64 KB sectors in a 7 MB file). A chain cannot visit more sectors than the file has.
+#[test]
+fn duplicated_fat_sector_chain_loop_fails_fast() {
+    let ss = 4096;
+    let mut b = bare_header(12);
+    put_u32(&mut b, 44, 109); // FAT sectors: the 109 header slots...
+    for i in 0..109 {
+        put_u32(&mut b, 76 + i * 4, 0); // ...all naming sector 0
+    }
+    put_u32(&mut b, 48, 0); // the directory starts at sector 0
+    b.resize(ss, 0);
+    let mut fat = vec![0xFF; ss];
+    put_u32(&mut fat, 0, 0); // FAT[0] = 0: sector 0 is followed by itself
+    b.extend_from_slice(&fat);
+    b.resize(110 * ss, 0); // big enough for 109 FAT sectors to pass the size check
+    // The message names the bound the walk stopped at: 111, this file's 110 sectors + 1, not the
+    // 109 * 1024 = 111,616 entries of the inflated FAT that the old guard allowed (a 457 MB buffer).
+    let expect = format!("sector chain loops: more than 111 sectors in a {}-byte file", b.len());
+    assert_eq!(CompoundFile::open(&b).unwrap_err(), Error::Invalid(expect));
+}
+
+/// Positive control for the chain bound: the longest chains a file can hold still read back, in
+/// both versions: a directory (read without a size limit) and a stream, each filling every sector
+/// but the header and the FAT (and the directory, for the stream).
+#[test]
+fn chains_filling_the_file_still_read() {
+    for v in [Version::V3, Version::V4] {
+        let ss = v_sector(v);
+        let mut w = Writer::new(v);
+        for i in 0..1000 {
+            w.stream(Writer::ROOT, &format!("e{i}"), Vec::new()).unwrap();
+        }
+        let b = w.finish();
+        assert!(b.len() / ss <= (1001 * 128usize).div_ceil(ss) + 3, "header, directory, FAT");
+        let cf = CompoundFile::open(&b).unwrap();
+        assert_eq!(cf.root().children.len(), 1000);
+        assert_eq!(cf.read_path("e999").unwrap(), Vec::<u8>::new());
+
+        let mut w = Writer::new(v);
+        let data = pattern(64 * ss, 3);
+        w.stream(Writer::ROOT, "big", data.clone()).unwrap();
+        let b = w.finish();
+        assert_eq!(b.len(), (1 + 64 + 2) * ss, "header, stream, directory, FAT");
+        assert_eq!(CompoundFile::open(&b).unwrap().read_path("big").unwrap(), data);
+    }
+}

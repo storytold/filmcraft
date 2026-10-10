@@ -1208,6 +1208,9 @@
 	Caption track options	字幕轨道选项
 	Timeline Display Settings	时间轴显示设置
 	Show Video Thumbnails	显示视频缩略图
+	Head	首帧
+	Head and Tail	首尾帧
+	Continuous	连续
 	Show Audio Waveform	显示音频波形
 	Expand All Tracks	展开所有轨道
 	Minimize All Tracks	最小化所有轨道
@@ -2883,6 +2886,7 @@
 	Target Bitrate	目标码率
 	Adaptive ({bpp} bits per pixel)	自适应（每像素 {bpp} 位）
 	Maximum Bitrate	最大码率
+	Quality (CRF)	质量 (CRF)
 	Key Frame Distance	关键帧间隔
 	Quality	质量
 	Render at Maximum Depth	以最大深度渲染
@@ -3287,6 +3291,7 @@
 	Upper First	上方优先
 	VBR, 1 pass	VBR，1 遍
 	VBR, 2 pass	VBR，2 遍
+	CRF (constant quality)	CRF（恒定质量）
 	Vimeo 1080p Full HD	Vimeo 1080p 全高清
 	Vimeo 2160p 4K Ultra HD	Vimeo 2160p 4K 超高清
 	Voice-over Record	画外音录制
@@ -3488,9 +3493,12 @@
 	Appearance Mode	外观模式
 	Next Appearance Mode	下一个外观模式
 	Sync with system	跟随系统
+	UI Scale	界面缩放
+	Auto (system)	自动（系统）
 	GPU Rendering	GPU 渲染
 	Composite on the GPU when available	可用时在 GPU 上合成
 	Text to Speech	文字转语音
 	Edit Narration	编辑旁白
 	Clear Transition	清除过渡
 	Set Transition Duration	设置过渡持续时间
+	GPU acceleration is unavailable; preview renders on the CPU	GPU 加速不可用；预览在 CPU 上渲染

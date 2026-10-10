@@ -44,11 +44,12 @@ pub(crate) fn mapping(id: &str) -> Option<Mapping> {
         },
         "hard_limiter" => Mapping {
             dsp: "limiter",
-            preroll: |e, t| (f(e, "release", t) as f64 / 1000.0 * 5.0).clamp(0.05, 2.0),
+            preroll: |e, t| (f(e, "lookahead", t) as f64 / 1000.0 + f(e, "release", t) as f64 / 1000.0 * 5.0).clamp(0.05, 2.0),
             apply: |d, e, t| {
                 d.set_param("ceiling", f(e, "max", t));
                 d.set_param("input_gain", f(e, "boost", t).max(0.0));
                 d.set_param("release", f(e, "release", t));
+                d.set_param("lookahead", f(e, "lookahead", t));
             },
         },
         "delay" => Mapping {

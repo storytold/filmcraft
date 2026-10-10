@@ -349,6 +349,24 @@ fn move_clips(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"moved": moves.iter().map(|m| m.0.0).collect::<Vec<_>>(), "overwritten": overwritten}))
 }
 
+/// Slip clips together: the media delta of each clip is scaled down by the same factor so that the
+/// most constrained clip (media end or start) still moves, and no linked partner slips further.
+pub(crate) fn slip_together(q: &mut filmcraft_project::Sequence, ctx: &mut edit::EditCtx<'_>, deltas: &[(ClipId, Tick)]) -> Result<()> {
+    let mut scale = 1.0_f64;
+    for (c, d) in deltas {
+        if d.0 == 0 {
+            continue;
+        }
+        let x = edit::slip(&mut q.clone(), *c, *d, ctx)?;
+        scale = scale.min(x.0.abs() as f64 / d.0.abs() as f64);
+    }
+    for (c, d) in deltas {
+        let dd = if scale < 1.0 { Tick((d.0 as f64 * scale).round() as i64) } else { *d };
+        edit::slip(q, *c, dd, ctx)?;
+    }
+    Ok(())
+}
+
 /// Expand a clip selection with linked partners (when linked selection is on).
 pub fn with_links(s: &Session, clips: &[ClipId]) -> Vec<ClipId> {
     let Some(seq) = s.active_sequence() else { return clips.to_vec() };
@@ -713,6 +731,20 @@ pub(crate) fn place_item(
     })
 }
 
+/// How long an item runs on the Timeline without In/Out marks: its duration, or for a still (and a
+/// generator without a length) Settings ▸ Timeline ▸ Still Image Default Duration.
+pub(crate) fn full_duration(s: &Session, pi: &filmcraft_project::ProjectItem) -> Tick {
+    match &pi.kind {
+        ItemKind::Media(m)
+            if matches!(m.info.kind, filmcraft_media::MediaKind::Still)
+                || (matches!(m.info.kind, filmcraft_media::MediaKind::Synthetic) && m.info.duration.0 <= 0) =>
+        {
+            s.prefs.timeline.still_duration(s.sequence_rate())
+        }
+        _ => pi.duration(),
+    }
+}
+
 pub(crate) fn source_range(s: &Session) -> Option<(ItemId, TimeRange)> {
     let item = s.state.source_item?;
     let pi = s.project.item(item)?;
@@ -938,7 +970,7 @@ fn build() -> Vec<CommandSpec> {
                 Ok(json!({"items": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))
             }
         ),
-        cmd!("file.import", "Import…", ["File"], Some("Cmd+I"), r#"{"paths":[str],"bin":binId?,"imageSequence":bool?}"#, always, |s, p| {
+        cmd!("file.import", "Import…", ["File"], Some("Cmd+I"), r#"{"paths":[str],"bin":binId?,"imageSequence":bool?,"replace":bool?}"#, always, |s, p| {
             let bin = u64_p(p, "bin").map(filmcraft_project::BinId);
             let paths: Vec<String> = match p.get("paths").and_then(Value::as_array) {
                 Some(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
@@ -946,6 +978,10 @@ fn build() -> Vec<CommandSpec> {
             };
             if paths.is_empty() {
                 return Err(bad("file.import", "need `paths`"));
+            }
+            if bool_p(p, "replace").unwrap_or(false) {
+                let name = s.project.name.clone();
+                s.execute("file.newProject", json!({ "name": name }))?;
             }
             let mut ids = Vec::new();
             let mut errors = Vec::new();
@@ -1205,7 +1241,7 @@ fn build() -> Vec<CommandSpec> {
             "Media…",
             ["File", "Export"],
             None,
-            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"format":"h264|hevc|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff"?,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass"?,"hardwareEncoding":"off|auto"?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"alpha":bool=false,"captionSidecar":"srt|vtt"?,"loudnessLufs":f64?,"proresProfile":"proxy|lt|standard|hq"?,"dnxProfile":"lb|sq|hq|hqx"?,"apvProfile":"422-10|422-12|444-10|444-12"?,"mxfVideoCodec":"dnxhr|proRes|h264"?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false}"#,
+            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"format":"h264|hevc|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff"?,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass|crf"?,"crf":0..51=23,"hardwareEncoding":"off|auto"?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"alpha":bool=false,"captionSidecar":"srt|vtt"?,"loudnessLufs":f64?,"proresProfile":"proxy|lt|standard|hq"?,"dnxProfile":"lb|sq|hq|hqx"?,"apvProfile":"422-10|422-12|444-10|444-12"?,"mxfVideoCodec":"dnxhr|proRes|h264"?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false}"#,
             has_seq,
             crate::export_tools::export_media
         ),
@@ -1246,7 +1282,7 @@ fn build() -> Vec<CommandSpec> {
                 let caps = s.state.caption_selection.clone();
                 return crate::captions::delete(s, &caps, false);
             }
-            let sel = with_links(s, &clips_p(s, p));
+            let sel = if p.get("clips").is_some() || p.get("clip").is_some() { with_links(s, &clips_p(s, p)) } else { s.state.selection.clone() };
             s.edit_sequence("Clear", |q, _, st| {
                 edit::delete_items(q, &sel);
                 st.selection.clear();
@@ -1259,7 +1295,7 @@ fn build() -> Vec<CommandSpec> {
                 let caps = s.state.caption_selection.clone();
                 return crate::captions::delete(s, &caps, true);
             }
-            let sel = with_links(s, &clips_p(s, p));
+            let sel = if p.get("clips").is_some() || p.get("clip").is_some() { with_links(s, &clips_p(s, p)) } else { s.state.selection.clone() };
             s.edit_sequence("Ripple Delete", |q, _, st| {
                 let spans = edit::ripple_delete_items(q, &sel)?;
                 if st.ripple_sequence_markers {
@@ -2140,16 +2176,7 @@ fn build() -> Vec<CommandSpec> {
                 if p.get("audio").is_some() && audio && pi.has_audio() && a.is_none() {
                     return Err(bad("timeline.place", "no audio destination: add or enable an audio track"));
                 }
-                let full = match &pi.kind {
-                    // Settings ▸ Timeline ▸ Still Image Default Duration
-                    ItemKind::Media(m)
-                        if matches!(m.info.kind, filmcraft_media::MediaKind::Still)
-                            || (matches!(m.info.kind, filmcraft_media::MediaKind::Synthetic) && m.info.duration.0 <= 0) =>
-                    {
-                        s.prefs.timeline.still_duration(s.sequence_rate())
-                    }
-                    _ => pi.duration(),
-                };
+                let full = full_duration(s, pi);
                 let (mi, mo) = match &pi.kind {
                     ItemKind::Media(m) => (m.mark_in, m.mark_out.map(|o| o + pi.frame_rate().frame_duration())),
                     ItemKind::Subclip { range, .. } => (Some(range.start), Some(range.end())),
@@ -2161,13 +2188,13 @@ fn build() -> Vec<CommandSpec> {
                 Ok(json!({"clips": ids.iter().map(|c| c.0).collect::<Vec<_>>()}))
             }
         ),
-        cmd!("timeline.select", "Select Clips", [], None, r#"{"clips":[id],"transitions":[id]?,"add":bool,"toggle":bool}"#, has_seq, |s, p| {
+        cmd!("timeline.select", "Select Clips", [], None, r#"{"clips":[id],"transitions":[id]?,"add":bool,"toggle":bool,"linked":bool?}"#, has_seq, |s, p| {
             if let Some(ids) = p.get("transitions") {
                 return select_transitions(s, ids, bool_p(p, "add").unwrap_or(false), bool_p(p, "toggle").unwrap_or(false));
             }
             let clips: Vec<ClipId> =
                 p.get("clips").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_u64().map(ClipId)).collect()).unwrap_or_default();
-            let clips = with_links(s, &clips);
+            let clips = if bool_p(p, "linked").unwrap_or(true) { with_links(s, &clips) } else { clips };
             // selecting clips leaves trim mode (Premiere: clip and edit point selections are exclusive)
             s.state.edit_points.clear();
             s.state.trim_shift = Default::default();
@@ -2345,17 +2372,8 @@ fn build() -> Vec<CommandSpec> {
             let clips = with_links(s, &[c]);
             s.edit_sequence("Slip", |q, ctx, _| {
                 // clamp across all linked partners, then slip them by the common delta
-                let mut dd = d;
-                for c in &clips {
-                    let x = edit::slip(&mut q.clone(), *c, dd, ctx)?;
-                    if x.abs() < dd.abs() {
-                        dd = x;
-                    }
-                }
-                for c in &clips {
-                    edit::slip(q, *c, dd, ctx)?;
-                }
-                Ok(())
+                let deltas: Vec<(ClipId, Tick)> = clips.iter().map(|c| (*c, d)).collect();
+                slip_together(q, ctx, &deltas)
             })?;
             Ok(Value::Null)
         }),
@@ -2590,15 +2608,33 @@ fn build() -> Vec<CommandSpec> {
                     {
                         e.params.insert(pid.clone(), filmcraft_project::Param::new(d.default.clone()));
                     }
-                    let prm = crate::masks::target_param(e, &pq, &pid).ok_or_else(|| bad("effects.setParam", format!("no param `{pid}`")))?;
-                    let v = json_to_param(&prm.value, &val).ok_or_else(|| bad("effects.setParam", "value has the wrong type"))?;
-                    if keyframe {
-                        // the stopwatch and the value in one step
-                        prm.put_keyframe(mt, v);
-                    } else {
-                        prm.set_at(mt, v);
+                    let (keyframes, v) = {
+                        let prm = crate::masks::target_param(e, &pq, &pid).ok_or_else(|| bad("effects.setParam", format!("no param `{pid}`")))?;
+                        let v = json_to_param(&prm.value, &val).ok_or_else(|| bad("effects.setParam", "value has the wrong type"))?;
+                        let keyframes = if keyframe {
+                            // the stopwatch and the value in one step
+                            prm.put_keyframe(mt, v.clone());
+                            prm.keyframes.len()
+                        } else {
+                            prm.set_at(mt, v.clone());
+                            prm.keyframes.len()
+                        };
+                        (keyframes, v)
+                    };
+                    if e.effect == "ultra_key" && pid == "setting"
+                        && let ParamValue::Choice(setting) = v
+                        && let Some(rows) = filmcraft_project::effect::ultra_key_setting(setting)
+                    {
+                        for (id, value) in rows {
+                            if let Some(p) = e.param_mut(id) {
+                                p.value = ParamValue::Float(*value);
+                                p.keyframes.clear();
+                            } else {
+                                e.params.insert((*id).to_string(), filmcraft_project::Param::new(ParamValue::Float(*value)));
+                            }
+                        }
                     }
-                    Ok(prm.keyframes.len())
+                    Ok(keyframes)
                 })?;
                 // 0 keyframes: the value is static (`time` was not used)
                 Ok(json!({"keyframes": keyframes}))
@@ -2853,6 +2889,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::keyboard::commands());
     v.extend(crate::project_panel::commands());
     v.extend(crate::media_browser::commands());
+    v.extend(crate::paste_media::commands());
     // Edit ▸ Label ▸ <colour>, Paste Attributes, subclips, Video / Audio Options, Replace With Clip…
     // and their menu order
     crate::clip_ops::apply_layout(&mut v);
