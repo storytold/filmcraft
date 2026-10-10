@@ -13,7 +13,7 @@ pub enum PcmContainer {
 }
 
 /// Quantise one sample to a signed integer of `bits` (16 or 24).
-fn quantise(s: f32, bits: u16) -> i32 {
+pub(crate) fn quantise(s: f32, bits: u16) -> i32 {
     let max = if bits >= 24 { 8_388_607.0 } else { 32_767.0 };
     (s.clamp(-1.0, 1.0) * max).round() as i32
 }

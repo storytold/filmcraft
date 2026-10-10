@@ -257,6 +257,7 @@ impl Exporter {
                     audio_factories().read().unwrap_or_else(|e| e.into_inner()).iter().find_map(|f| f(settings.format, a.sr, a.channels as u32, &settings));
                 Some(found.ok_or_else(|| ExportError::Unsupported("AAC encoder not available".into()))??)
             }
+            (Some(a), AudioCodec::Flac) => Some(Box::new(crate::FlacAudio::new(a.sr, a.channels as u32, &settings)?)),
             _ => None,
         };
         let measured = !settings.effects.loudness.enabled || audio.is_none();
@@ -484,11 +485,12 @@ impl Exporter {
         self.write_video(tail)?;
         self.write_audio(mixed)?;
         if let (Some(at), Some(a)) = (self.at, self.aenc.as_mut()) {
-            let fs = a.frame_size();
             let mux = self.mux.as_mut().ok_or_else(|| ExportError::Encode("internal: the container writer was not created".into()))?;
-            for au in a.flush()? {
-                mux.write_sample(at, WriteSample { data: &au, duration: fs, composition_offset: 0, is_sync: true })
-                    .map_err(|e| ExportError::Io(e.to_string()))?;
+            for (au, duration) in a.flush_timed()? {
+                mux.write_sample(at, WriteSample { data: &au, duration, composition_offset: 0, is_sync: true }).map_err(|e| ExportError::Io(e.to_string()))?;
+            }
+            if let Some(entry) = a.final_sample_entry() {
+                mux.set_sample_entry(at, entry).map_err(|e| ExportError::Io(e.to_string()))?;
             }
         }
         let (bytes, extra_files) = match self.mxf.take() {

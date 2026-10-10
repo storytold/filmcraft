@@ -1310,6 +1310,16 @@ impl SampleEntry {
     pub fn aac(asc: Vec<u8>, channels: u32, sample_rate: u32) -> Self {
         Self::audio(FourCc(*b"mp4a"), CodecConfig::Aac(AacConfig::from_asc(asc)), channels, sample_rate as f64, 16)
     }
+    /// FLAC entry (`fLaC` + `dfLa`) from the 34-byte STREAMINFO body: the only metadata block.
+    pub fn flac(streaminfo: &[u8; 34]) -> Self {
+        let mut blocks = vec![0x80, 0, 0, 34];
+        blocks.extend_from_slice(streaminfo);
+        let mut full = vec![0; 4];
+        full.extend_from_slice(&blocks);
+        let cfg = FlacConfig::parse(&full).unwrap_or(FlacConfig { metadata_blocks: blocks, ..Default::default() });
+        let (channels, rate, bits) = (u32::from(cfg.channels), f64::from(cfg.sample_rate), u16::from(cfg.bits_per_sample));
+        Self::audio(FourCc(*b"fLaC"), CodecConfig::Flac(cfg), channels, rate, bits)
+    }
     /// PCM entry. The muxer picks the on-disk format (`sowt`/`twos`/`lpcm` for MOV, `ipcm`/`fpcm` for MP4).
     pub fn pcm(cfg: PcmConfig) -> Self {
         Self::audio(FourCc(*b"lpcm"), CodecConfig::Pcm(cfg), cfg.channels, cfg.sample_rate, cfg.bits)

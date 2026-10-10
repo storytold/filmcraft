@@ -32,6 +32,7 @@ filmcraft-dnx = { path = "crates/dnx" }
 filmcraft-apv = { path = "crates/apv" }
 filmcraft-av1 = { path = "crates/av1" }
 filmcraft-aac = { path = "crates/aac" }
+filmcraft-flac = { path = "crates/flac" }
 filmcraft-opus = { path = "crates/opus" }
 filmcraft-h264enc = { path = "crates/h264enc" }
 filmcraft-audio-dsp = { path = "crates/audio-dsp" }
@@ -109,6 +110,9 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.filmcraft-aac]
+opt-level = 3
+
+[profile.dev.package.filmcraft-flac]
 opt-level = 3
 
 # Audio effects: realtime-factor tests and long convolution / spectral runs.

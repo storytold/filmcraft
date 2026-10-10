@@ -750,17 +750,22 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         }
     }
     row(ui, t, tl!("Audio Format"), |ui| {
-        let fixed = s.format.is_h26x() && s.multiplexer == Multiplexer::Mp4 || audio_only || s.format.is_mxf();
+        let fixed = audio_only || s.format.is_mxf();
         let cur = match s.audio_codec() {
             AudioCodec::Aac => "AAC",
+            AudioCodec::Flac => tl!("FLAC (lossless)"),
             _ => tl!("Uncompressed (PCM)"),
         };
-        let labels =
-            vec![("AAC".to_string(), !audio_only), (tl!("Uncompressed (PCM)").to_string(), !(s.format.is_h26x() && s.multiplexer == Multiplexer::Mp4))];
+        // MP4 takes AAC or FLAC; QuickTime any of the three
+        let labels = vec![
+            ("AAC".to_string(), !audio_only),
+            (tl!("Uncompressed (PCM)").to_string(), !(s.format.is_h26x() && s.multiplexer == Multiplexer::Mp4)),
+            (tl!("FLAC (lossless)").to_string(), true),
+        ];
         if fixed {
             ui.label(cur);
         } else if let Some(i) = combo(ui, reg, "export.audio.codec", cur, &labels, 180.0) {
-            s.audio.codec = if i == 0 { AudioCodec::Aac } else { AudioCodec::Pcm };
+            s.audio.codec = [AudioCodec::Aac, AudioCodec::Pcm, AudioCodec::Flac][i.min(2)];
         }
     });
     row(ui, t, tl!("Sample Rate"), |ui| {
@@ -797,6 +802,16 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             if let Some(i) = combo(ui, reg, "export.audio.bits", cur, &opts(&sizes), 120.0) {
                 s.audio.bits = if i == 0 { 16 } else { 24 };
             }
+        });
+    }
+    if s.audio_codec() == AudioCodec::Flac {
+        // every level is lossless: higher levels take longer for smaller files
+        row(ui, t, tl!("Compression Level"), |ui| {
+            let mut level = f64::from(s.audio.flac_level.min(8));
+            if drag(ui, reg, "export.audio.flacLevel", &mut level, 0.0..=8.0, 0.05, "", 0) {
+                s.audio.flac_level = level.round() as u8;
+            }
+            ui.label(egui::RichText::new(tl!("0 fastest, 8 smallest")).size(12.0));
         });
     }
 }

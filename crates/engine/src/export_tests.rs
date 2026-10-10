@@ -144,10 +144,11 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
         let Some(j) = probe(&out) else { continue };
         let fmt_name = j["format"]["format_name"].as_str().unwrap();
         match fmt.as_str() {
-            "wav" | "aiff" => {
+            "wav" | "aiff" | "flac" => {
                 let a = stream(&j, "audio").unwrap();
                 let bits = settings["audio"]["bits"].as_u64().unwrap();
                 let codec = match (fmt.as_str(), bits) {
+                    ("flac", _) => "flac",
                     ("wav", 24) => "pcm_s24le",
                     ("wav", _) => "pcm_s16le",
                     (_, 24) => "pcm_s24be",
