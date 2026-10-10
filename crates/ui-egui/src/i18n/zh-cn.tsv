@@ -2952,6 +2952,12 @@
 	AIFF	AIFF
 	AIFF 48 kHz 16-bit	AIFF 48 kHz 16 位
 	AIFF, stereo 48 kHz 16-bit PCM	AIFF，立体声 48 kHz 16 位 PCM
+	FLAC	FLAC
+	FLAC 48 kHz 24-bit	FLAC 48 kHz 24 位
+	FLAC, stereo 48 kHz 24-bit, lossless	FLAC，立体声 48 kHz 24 位，无损
+	FLAC (lossless)	FLAC（无损）
+	Compression Level	压缩级别
+	0 fastest, 8 smallest	0 最快，8 最小
 	APV	APV
 	APV 422-10	APV 422-10
 	APV 422-12	APV 422-12

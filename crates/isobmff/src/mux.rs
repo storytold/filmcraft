@@ -541,6 +541,14 @@ impl<W: Write + Seek> Mp4Writer<W> {
         Ok(self.tracks.len() - 1)
     }
 
+    /// Replace a track's sample entry before the file is finished (the `moov` is written last), for
+    /// codecs whose configuration is only complete at the end, like the FLAC STREAMINFO in `dfLa`.
+    pub fn set_sample_entry(&mut self, track: usize, entry: SampleEntry) -> Result<()> {
+        let t = self.tracks.get_mut(track).ok_or_else(|| Error::Invalid(format!("no track {track}")))?;
+        t.cfg.entry = entry;
+        Ok(())
+    }
+
     /// Add a QuickTime timecode track referenced by `video_track`. Its single sample (the start
     /// frame number) is written at finish, spanning the video track's duration.
     pub fn add_timecode_track(&mut self, video_track: usize, tc: TimecodeConfig, start_frame: u32) -> Result<usize> {

@@ -41,7 +41,7 @@ fn h264(size: Option<(u32, u32)>, kbps: u32, max_kbps: u32) -> ExportSettings {
         bitrate_kbps: kbps,
         max_bitrate_kbps: Some(max_kbps),
         bitrate_mode: BitrateMode::Vbr1Pass,
-        audio: AudioSettings { codec: AudioCodec::Aac, sample_rate: Some(48_000), channels: 2, bitrate_kbps: 320, bits: 16 },
+        audio: AudioSettings { codec: AudioCodec::Aac, sample_rate: Some(48_000), channels: 2, bitrate_kbps: 320, bits: 16, ..Default::default() },
         ..Default::default()
     }
 }
@@ -53,7 +53,7 @@ fn adaptive(bpp: f32) -> ExportSettings {
 fn mov(format: Format, profile: &str) -> ExportSettings {
     let mut s = ExportSettings {
         format,
-        audio: AudioSettings { codec: AudioCodec::Pcm, sample_rate: Some(48_000), channels: 2, bitrate_kbps: 320, bits: 24 },
+        audio: AudioSettings { codec: AudioCodec::Pcm, sample_rate: Some(48_000), channels: 2, bitrate_kbps: 320, bits: 24, ..Default::default() },
         render_at_max_depth: true,
         ..Default::default()
     };
@@ -82,7 +82,7 @@ fn mxf(format: Format, codec: MxfVideoCodec, profile: &str) -> ExportSettings {
 fn audio_only(format: Format, bits: u16) -> ExportSettings {
     ExportSettings {
         format,
-        audio: AudioSettings { codec: AudioCodec::Pcm, sample_rate: Some(48_000), channels: 2, bitrate_kbps: 0, bits },
+        audio: AudioSettings { codec: AudioCodec::Pcm, sample_rate: Some(48_000), channels: 2, bitrate_kbps: 0, bits, ..Default::default() },
         ..Default::default()
     }
 }
@@ -153,6 +153,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
         p("Waveform Audio 48 kHz 16-bit", "Audio Only", "WAV, stereo 48 kHz 16-bit PCM", audio_only(Format::Wav, 16)),
         p("Waveform Audio 48 kHz 24-bit", "Audio Only", "WAV, stereo 48 kHz 24-bit PCM", audio_only(Format::Wav, 24)),
         p("AIFF 48 kHz 16-bit", "Audio Only", "AIFF, stereo 48 kHz 16-bit PCM", audio_only(Format::Aiff, 16)),
+        p("FLAC 48 kHz 24-bit", "Audio Only", "FLAC, stereo 48 kHz 24-bit, lossless", audio_only(Format::Flac, 24)),
     ]
 }
 

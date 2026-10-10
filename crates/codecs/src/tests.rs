@@ -224,6 +224,18 @@ fn matroska_hevc_flac() {
     check_mkv("blue_hevc_flac.mkv", &["-c:v", "libx265", "-x265-params", "log-level=error", "-pix_fmt", "yuv420p"], &["-c:a", "flac"]);
 }
 
+/// FLAC in MP4 (`fLaC` + `dfLa`): the decoder gets the STREAMINFO from `dfLa` (it was given
+/// nothing, and every FLAC track in an MP4 failed with "missing extra data").
+#[test]
+fn mp4_flac_audio() {
+    let args = ["-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:d=2", "-c:a", "flac", "-strict", "-2"];
+    let Some(b) = fixture("tone_flac.mp4", &args) else { return };
+    let src = crate::open_bytes("tone_flac.mp4", b).expect("open");
+    let a = src.audio(24_000, 4800, 48_000).expect("audio");
+    let peak = a.channels[0].iter().fold(0f32, |m, s| m.max(s.abs()));
+    assert!(peak > 0.05 && peak < 1.0, "audio peak {peak}");
+}
+
 #[test]
 fn matroska_prores_pcm() {
     check_mkv("blue_prores_pcm.mkv", &["-c:v", "prores_ks", "-profile:v", "2"], &["-c:a", "pcm_s16le"]);

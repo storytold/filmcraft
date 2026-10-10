@@ -1,0 +1,17 @@
+[package]
+name = "filmcraft-flac"
+description = "Clean-room FLAC encoder (RFC 9639)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+filmcraft-bitstream = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+filmcraft-testkit = { workspace = true }

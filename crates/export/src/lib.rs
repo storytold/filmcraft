@@ -98,6 +98,9 @@ pub enum Format {
     Wav,
     #[serde(rename = "aiff", alias = "Aiff")]
     Aiff,
+    /// FLAC (RFC 9639): lossless compressed audio.
+    #[serde(rename = "flac", alias = "Flac")]
+    Flac,
     /// MXF OP1a (SMPTE ST 378): frame-wrapped DNxHR, ProRes or H.264 ([`MxfVideoCodec`]) + PCM.
     #[serde(rename = "mxf-op1a", alias = "MxfOp1a")]
     MxfOp1a,
@@ -124,6 +127,7 @@ impl Format {
             "gif" | "animatedgif" => Format::Gif,
             "wav" | "waveform" | "waveformaudio" => Format::Wav,
             "aif" | "aiff" | "aifc" => Format::Aiff,
+            "flac" | "fla" => Format::Flac,
             _ => return None,
         })
     }
@@ -142,6 +146,7 @@ impl Format {
             Format::Gif => "gif",
             Format::Wav => "wav",
             Format::Aiff => "aiff",
+            Format::Flac => "flac",
             Format::MxfOp1a => "mxf-op1a",
             Format::MxfOpAtom => "mxf-opatom",
         }
@@ -156,6 +161,7 @@ impl Format {
             Format::Gif => "gif",
             Format::Wav => "wav",
             Format::Aiff => "aif",
+            Format::Flac => "flac",
             Format::MxfOp1a | Format::MxfOpAtom => "mxf",
         }
     }
@@ -173,9 +179,14 @@ impl Format {
             Format::Gif => "Animated GIF",
             Format::Wav => "Waveform Audio",
             Format::Aiff => "AIFF",
+            Format::Flac => "FLAC",
             Format::MxfOp1a => "MXF OP1a",
             Format::MxfOpAtom => "MXF OP-Atom",
         }
+    }
+    /// Audio only: WAV, AIFF or FLAC.
+    pub fn is_audio_only(self) -> bool {
+        matches!(self, Format::Wav | Format::Aiff | Format::Flac)
     }
     /// An MXF container format.
     pub fn is_mxf(self) -> bool {
@@ -190,7 +201,7 @@ impl Format {
     pub fn is_h26x(self) -> bool {
         matches!(self, Format::H264 | Format::Hevc)
     }
-    pub const ALL: [Format; 14] = [
+    pub const ALL: [Format; 15] = [
         Format::H264,
         Format::Hevc,
         Format::ProRes,
@@ -203,6 +214,7 @@ impl Format {
         Format::Gif,
         Format::Wav,
         Format::Aiff,
+        Format::Flac,
         Format::MxfOp1a,
         Format::MxfOpAtom,
     ];
@@ -321,6 +333,12 @@ impl std::fmt::Debug for OutputSink {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("OutputSink")
     }
+}
+
+/// How an audio-only export codes its samples.
+enum AudioWriter {
+    Pcm(pcm::PcmContainer),
+    Flac(Box<filmcraft_flac::Encoder>),
 }
 
 /// An export's output file: on disk, or in memory for an [`OutputSink`].
@@ -628,6 +646,17 @@ pub trait AudioEncoder: Send {
     fn priming(&self) -> u32;
     /// Samples per access unit (1024 for AAC).
     fn frame_size(&self) -> u32;
+    /// [`AudioEncoder::flush`] with each access unit's duration, for codecs whose last unit is
+    /// shorter than [`AudioEncoder::frame_size`] (FLAC); by default every unit is a full frame.
+    fn flush_timed(&mut self) -> Result<Vec<(Vec<u8>, u32)>> {
+        let n = self.frame_size();
+        Ok(self.flush()?.into_iter().map(|au| (au, n)).collect())
+    }
+    /// The sample entry once everything is encoded, when it differs from the first one (the FLAC
+    /// STREAMINFO learns its frame sizes and MD5 at the end).
+    fn final_sample_entry(&self) -> Option<SampleEntry> {
+        None
+    }
 }
 
 pub type EncoderFactory = fn(format: Format, width: u32, height: u32, rate: FrameRate, settings: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>>;
@@ -967,6 +996,53 @@ impl AudioEncoder for AacEncoder {
     }
     fn frame_size(&self) -> u32 {
         1024
+    }
+}
+
+/// FLAC (our encoder) in MP4 / QuickTime: one frame of 4096 samples per access unit.
+pub(crate) struct FlacAudio {
+    enc: filmcraft_flac::Encoder,
+    bits: u16,
+    /// Samples of the frame `flush` returns (shorter than a full block).
+    tail: u32,
+}
+
+impl FlacAudio {
+    pub(crate) fn new(sample_rate: u32, channels: u32, s: &ExportSettings) -> Result<Self> {
+        let bits = if s.audio.bits >= 24 { 24 } else { 16 };
+        let ch = u8::try_from(channels).map_err(|_| ExportError::Unsupported("FLAC: too many audio channels".into()))?;
+        let mut cfg = filmcraft_flac::EncoderConfig::new(sample_rate, ch, bits as u8);
+        cfg.level = s.audio.flac_level.min(8);
+        let enc = filmcraft_flac::Encoder::new(cfg).map_err(|e| ExportError::Unsupported(format!("FLAC: {e}")))?;
+        Ok(FlacAudio { enc, bits, tail: 0 })
+    }
+}
+
+impl AudioEncoder for FlacAudio {
+    fn sample_entry(&self) -> SampleEntry {
+        SampleEntry::flac(&self.enc.streaminfo())
+    }
+    fn encode(&mut self, planar: &[Vec<f32>]) -> Result<Vec<Vec<u8>>> {
+        let ints: Vec<Vec<i32>> = planar.iter().map(|c| c.iter().map(|&s| pcm::quantise(s, self.bits)).collect()).collect();
+        let refs: Vec<&[i32]> = ints.iter().map(Vec::as_slice).collect();
+        self.enc.encode_frames(&refs).map_err(|e| ExportError::Encode(format!("FLAC: {e}")))
+    }
+    fn flush(&mut self) -> Result<Vec<Vec<u8>>> {
+        Ok(self.flush_timed()?.into_iter().map(|(au, _)| au).collect())
+    }
+    fn flush_timed(&mut self) -> Result<Vec<(Vec<u8>, u32)>> {
+        self.tail = self.enc.pending_samples() as u32;
+        let last = self.enc.finish();
+        Ok(if last.is_empty() { Vec::new() } else { vec![(last, self.tail)] })
+    }
+    fn priming(&self) -> u32 {
+        0
+    }
+    fn frame_size(&self) -> u32 {
+        4096
+    }
+    fn final_sample_entry(&self) -> Option<SampleEntry> {
+        Some(SampleEntry::flac(&self.enc.streaminfo()))
     }
 }
 
@@ -1571,21 +1647,70 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
     let cancelled = || progress.cancel.load(Ordering::Relaxed);
     let batch = rayon::current_num_threads().clamp(2, 16) as i64;
     let (bytes, nframes) = match settings.format {
-        Format::Wav | Format::Aiff => {
+        Format::Wav | Format::Aiff | Format::Flac => {
+            let mut a = audio_out::AudioOut::new(project.clone(), seq, settings, range)?;
+            let (ch, sr, bits) = (a.channels as u16, a.sr, settings.audio.bits);
+            let frames = a.remaining();
+            // the sizes are known up front: refuse an AIFF that cannot hold them before measuring
+            let mut writer = match settings.format {
+                Format::Flac => {
+                    let mut cfg = filmcraft_flac::EncoderConfig::new(sr, ch as u8, if bits >= 24 { 24 } else { 16 });
+                    cfg.level = settings.audio.flac_level.min(8);
+                    AudioWriter::Flac(Box::new(filmcraft_flac::Encoder::new(cfg).map_err(|e| ExportError::Unsupported(format!("FLAC: {e}")))?))
+                }
+                Format::Wav => AudioWriter::Pcm(pcm::PcmContainer::Wav),
+                _ => AudioWriter::Pcm(pcm::PcmContainer::Aiff),
+            };
+            let head = match &writer {
+                AudioWriter::Pcm(c) => pcm::header(*c, ch, sr, bits, frames).map_err(ExportError::Unsupported)?,
+                AudioWriter::Flac(enc) => enc.header(),
+            };
+            // one second per chunk: memory stays flat however long the range is
+            let chunk = i64::from(sr.max(1));
             if !settings.part_of_batch {
-                progress.total.store(1, Ordering::Relaxed);
+                progress.total.store(frames.div_ceil(chunk as u64).max(1), Ordering::Relaxed);
                 progress.set_status(format!("Exporting audio ({})", settings.format.label()));
             }
-            let mut a = audio_out::AudioOut::new(project.clone(), seq, settings, range)?;
             a.measure(settings, sources, &cancelled)?;
             *progress.loudness.lock().unwrap_or_else(|e| e.into_inner()) = a.loudness;
-            let planar = a.rest(sources).unwrap_or_else(|| vec![Vec::new(); a.channels]);
-            let inter = audio_out::interleave(&planar);
-            let (ch, sr, bits) = (a.channels as u16, a.sr, settings.audio.bits);
-            let data = if settings.format == Format::Wav { pcm::write_wav(&inter, ch, sr, bits) } else { pcm::write_aiff(&inter, ch, sr, bits) };
-            let n = write_output(settings, &settings.path, data)?;
-            progress.done.store(1, Ordering::Relaxed);
-            (n, planar.first().map_or(0, Vec::len) as u64)
+            let mut out = Out::create(settings)?;
+            let io = |e: std::io::Error| ExportError::Io(e.to_string());
+            out.write_all(&head).map_err(io)?;
+            let mut buf = Vec::new();
+            while let Some(planar) = a.pull(a.out.saturating_add(chunk), sources) {
+                if cancelled() {
+                    return Err(ExportError::Cancelled);
+                }
+                buf.clear();
+                match &mut writer {
+                    AudioWriter::Pcm(c) => pcm::encode(*c, &audio_out::interleave(&planar), bits, &mut buf),
+                    AudioWriter::Flac(enc) => {
+                        let ints: Vec<Vec<i32>> = planar.iter().map(|c| c.iter().map(|&s| pcm::quantise(s, bits)).collect()).collect();
+                        let refs: Vec<&[i32]> = ints.iter().map(Vec::as_slice).collect();
+                        buf = enc.encode(&refs).map_err(|e| ExportError::Encode(format!("FLAC: {e}")))?;
+                    }
+                }
+                out.write_all(&buf).map_err(io)?;
+                if !settings.part_of_batch {
+                    progress.done.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            match &mut writer {
+                AudioWriter::Pcm(_) => out.write_all(pcm::pad(frames, ch, bits)).map_err(io)?,
+                AudioWriter::Flac(enc) => {
+                    out.write_all(&enc.finish()).map_err(io)?;
+                    // the frame sizes and MD5 are known now: fill them into STREAMINFO
+                    use std::io::{Seek, SeekFrom};
+                    out.seek(SeekFrom::Start(filmcraft_flac::STREAMINFO_OFFSET)).map_err(io)?;
+                    out.write_all(&enc.streaminfo()).map_err(io)?;
+                    out.seek(SeekFrom::End(0)).map_err(io)?;
+                }
+            }
+            let n = out.finish(settings)?;
+            if settings.part_of_batch {
+                progress.done.store(1, Ordering::Relaxed);
+            }
+            (n, frames)
         }
         Format::PngSequence | Format::TiffSequence | Format::BmpSequence | Format::Gif => {
             let pipe = pipeline::Pipeline::new(project.clone(), seq, settings, false)?;
