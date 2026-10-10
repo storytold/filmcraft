@@ -191,12 +191,7 @@ fn gpu_chain<'a>(project: &Project, item: &'a TrackItem, opts: RenderOptions) ->
 pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> FramePlan {
     let Some(seq) = project.sequence(seq_id) else { return FramePlan::Image(crate::Image::new(1, 1)) };
     let (w, h) = output_size(seq, opts.scale);
-    // HDR / wide-gamut sequences composite and convert on the CPU.
-    if !seq.settings.color.is_plain() {
-        return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
-    }
-    // Whole-frame fallback: adjustment layers or complex transitions anywhere at t.
-    if !layered_at(project, seq, t) {
+    if whole_frame_on_cpu(project, seq, t) {
         return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
     }
     let mut layers = PlanStack::default();
@@ -212,6 +207,20 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
         }
     }
     layers.finish(w, h)
+}
+
+/// Whether [`plan_frame`] hands the frame at `t` back as one CPU image ([`FramePlan::Image`]). A
+/// GPU renderer gains nothing on such a frame, so a caller with only a few of them (the export's
+/// pool) can render it on the CPU without taking one.
+pub fn is_cpu_frame(project: &Project, seq_id: ItemId, t: Tick) -> bool {
+    project.sequence(seq_id).is_none_or(|seq| whole_frame_on_cpu(project, seq, t))
+}
+
+/// The frames [`plan_frame`] does not plan: an HDR / wide-gamut sequence composites and converts
+/// on the CPU, and so does a frame with an adjustment layer or a complex transition anywhere at
+/// `t` (whole-frame fallback).
+fn whole_frame_on_cpu(project: &Project, seq: &Sequence, t: Tick) -> bool {
+    !seq.settings.color.is_plain() || !layered_at(project, seq, t)
 }
 
 /// Whether the frame of `seq` at `t` can be planned as layers: no adjustment layer and no
