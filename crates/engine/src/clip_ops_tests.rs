@@ -510,10 +510,14 @@ fn frame_blending_renders_in_between_frames() {
         *a = (*a + b) * 0.5;
     }
     assert!(mean_abs_diff(&avg, &blended) < mean_abs_diff(&sampled, &blended), "closer to the average than to either frame");
-    // optical flow falls back to blending
+    // optical flow synthesises a motion-compensated frame instead of the cross-fade
     s.execute("clip.timeInterpolation.opticalFlow", json!({})).unwrap();
     s.execute("playhead.set", json!({"time": t.0})).unwrap();
-    assert!(mean_abs_diff(&s.render_program(0.125).unwrap(), &blended) < 1e-6);
+    let flowed = s.render_program(0.125).unwrap();
+    // the moving traffic is motion compensated, the static city stays as blended
+    let d = mean_abs_diff(&flowed, &blended);
+    assert!(d > 1e-6, "optical flow should not be the plain cross-fade: {d}");
+    assert!(d < mean_abs_diff(&blended, &sampled), "optical flow stays near the blend on mostly static footage: {d}");
     // at 100 % nothing is blended
     s.execute("clip.speedDuration", json!({"speed": 100.0})).unwrap();
     assert!(filmcraft_render::interpolation_blend(&clip(&s, c.id.0), t, src_rate).is_none());

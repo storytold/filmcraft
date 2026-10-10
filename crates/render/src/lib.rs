@@ -15,6 +15,7 @@ pub mod blend;
 pub mod color_match;
 pub mod colorman;
 pub mod effects;
+pub mod flow;
 pub mod gpufx;
 pub mod graphic_clip;
 pub mod graphics;
@@ -535,8 +536,8 @@ pub(crate) fn video_source_time(item: &TrackItem, t: Tick, media_rate: filmcraft
     media_rate.tick_of(media_rate.frame_at(ft)).clamp(item.source_in.min(ft), ft)
 }
 
-/// The linear image of a media clip's `frame`, colour managed, and blended with the next frame when
-/// the clip's speed asks for it.
+/// The linear image of a media clip's `frame`, colour managed, and blended (or, with Optical Flow,
+/// motion interpolated) with the next frame when the clip's speed asks for it.
 #[allow(clippy::too_many_arguments)]
 fn media_image(project: &Project, seq: &Sequence, item: &TrackItem, t: Tick, src: &SharedSource, frame: &VideoFrame, n: usize, want: f32) -> Image {
     let img = colorman::decode(project, item.item, frame, n, &seq.settings.color);
@@ -544,7 +545,7 @@ fn media_image(project: &Project, seq: &Sequence, item: &TrackItem, t: Tick, src
         Some((next_time, wgt)) => match src.video_frame(FrameRequest { time: next_time, scale: want }) {
             Ok(f2) if f2.width == frame.width && f2.height == frame.height => {
                 let b = colorman::decode(project, item.item, &f2, n, &seq.settings.color);
-                img.lerp(&b, wgt)
+                if item.time_interpolation == filmcraft_project::TimeInterpolation::OpticalFlow { flow::interpolate(&img, &b, wgt) } else { img.lerp(&b, wgt) }
             }
             _ => img,
         },
@@ -618,9 +619,8 @@ pub fn render_clip(
 
 /// Frame Blending / Optical Flow on a speed-changed clip: the later source frame to mix in and
 /// its weight (0..1) at timeline `t`, or None when the exact media time falls on a source frame
-/// (or the clip plays at 100 %, is frame-held, or uses Frame Sampling).
-///
-/// TODO(optical flow): motion-compensated interpolation; Optical Flow renders as Frame Blending.
+/// (or the clip plays at 100 %, is frame-held, or uses Frame Sampling). Frame Blending cross-fades
+/// the two frames; Optical Flow synthesises the in-between frame from their motion ([`flow`]).
 pub fn interpolation_blend(item: &TrackItem, t: Tick, src_rate: filmcraft_time::FrameRate) -> Option<(Tick, f32)> {
     if item.time_interpolation == filmcraft_project::TimeInterpolation::FrameSampling || item.frame_hold.is_some() {
         return None;
