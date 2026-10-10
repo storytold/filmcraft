@@ -496,6 +496,7 @@
 	{panel} — coming in a later milestone	{panel}: llegará en una versión posterior
 	Close Panel	Cerrar panel
 	Close Other Timeline Panels	Cerrar los demás paneles de línea de tiempo
+	Close All	Cerrar todo
 	Maximize Frame	Maximizar marco
 	Restore Frame	Restaurar marco
 	Restore Workspace	Restaurar espacio de trabajo

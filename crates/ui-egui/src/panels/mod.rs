@@ -298,6 +298,10 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                 ui.separator();
                 close |= media_browser::panel_menu(app, ui);
             }
+            if p == PanelKind::Source {
+                ui.separator();
+                close |= monitor::source_panel_menu(app, ui);
+            }
         });
     });
     // A click elsewhere or Escape closes the menu. The click that opened it is over the tab, not

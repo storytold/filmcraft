@@ -494,6 +494,7 @@
 	{panel} — coming in a later milestone	{panel} — 今後のマイルストーンで実装予定
 	Close Panel	パネルを閉じる
 	Close Other Timeline Panels	他のタイムラインパネルを閉じる
+	Close All	すべて閉じる
 	Maximize Frame	パネルを最大化
 	Restore Frame	パネルを元に戻す
 	Restore Workspace	ワークスペースを復元

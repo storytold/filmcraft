@@ -2132,6 +2132,9 @@ fn build() -> Vec<CommandSpec> {
             s.events.push(crate::Event::OpenSource(id));
             Ok(Value::Null)
         }),
+        // Source panel: Close / Close All, for the clip shown and the list of recent clips (#313)
+        cmd!("source.close", "Close", [], None, "{}", crate::source_monitor::has_source_clip, |s, _| crate::source_monitor::close(s, false)),
+        cmd!("source.closeAll", "Close All", [], None, "{}", crate::source_monitor::has_source_clip, |s, _| crate::source_monitor::close(s, true)),
         cmd!("source.setPlayhead", "Set Source Playhead", [], None, r#"{"time":ticks|"frame":i64|"seconds":f64}"#, always, |s, p| {
             let item = s.state.source_item.ok_or_else(|| EngineError::Other("no source clip".into()))?;
             let view = crate::clip_ops::source_view(s, item);
