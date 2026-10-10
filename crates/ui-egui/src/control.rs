@@ -429,6 +429,8 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             ok(Value::Null)
         }
         "app.quit" => {
+            // scripted quits don't wait on the save prompt; unsaved changes stay in the recovery journal
+            app.quit_confirmed = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             ok(Value::Null)
         }

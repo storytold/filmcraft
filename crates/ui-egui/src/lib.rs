@@ -291,6 +291,9 @@ pub struct FilmcraftApp {
     /// Fault injection for robustness tests: the next UI pass panics.
     #[doc(hidden)]
     pub panic_next_frame: bool,
+    /// The next close request quits without asking to save (Save / Don't Save was chosen in the
+    /// quit prompt, or the control channel's `app.quit`).
+    pub quit_confirmed: bool,
     fonts_ready: bool,
     pub integrated_titlebar: bool,
     pub last_timeline_width: f32,
@@ -511,6 +514,7 @@ impl FilmcraftApp {
             styled: false,
             ui_error: None,
             panic_next_frame: false,
+            quit_confirmed: false,
             fonts_ready: false,
             integrated_titlebar: false,
             last_timeline_width: 1000.0,
@@ -1882,6 +1886,10 @@ impl eframe::App for FilmcraftApp {
             self.playback.hidden = true;
         }
         self.timeline_still = if self.ui.timeline.animating() { 0 } else { self.timeline_still.saturating_add(1) };
+        // Quitting with unsaved changes asks to save them first.
+        if ctx.input(|i| i.viewport().close_requested()) && panels::clip_dialogs::intercept_quit(self) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
         let had_synthetic = !self.synthetic.is_empty();
         self.drain_control(ctx);
         if !self.synthetic.is_empty() && !had_synthetic {
