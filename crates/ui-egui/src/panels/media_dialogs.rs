@@ -298,7 +298,7 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::widgets::escape_closes(ctx) {
         action = Some("cancel");
     }
     let (item, ..) = rows[d.row].clone();
@@ -424,7 +424,7 @@ fn make_offline(app: &mut FilmcraftApp, ctx: &egui::Context) {
         }
         keep = false;
     }
-    app.ui.make_offline = (keep && !ctx.input(|i| i.key_pressed(egui::Key::Escape))).then_some(delete);
+    app.ui.make_offline = (keep && !crate::widgets::escape_closes(ctx)).then_some(delete);
 }
 
 fn create_proxies(app: &mut FilmcraftApp, ctx: &egui::Context) {
@@ -483,7 +483,7 @@ fn create_proxies(app: &mut FilmcraftApp, ctx: &egui::Context) {
         }
         keep = false;
     }
-    app.ui.create_proxies = (keep && !ctx.input(|i| i.key_pressed(egui::Key::Escape))).then_some(d);
+    app.ui.create_proxies = (keep && !crate::widgets::escape_closes(ctx)).then_some(d);
 }
 
 fn pm_params(d: &ProjectManagerDraft, dry: bool) -> Value {
@@ -502,6 +502,7 @@ fn pm_params(d: &ProjectManagerDraft, dry: bool) -> Value {
 
 fn project_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.project_manager.clone() else { return };
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("project-manager-before-drag"), &mut d);
     let before = d.clone();
     let mut elems: Elems = Vec::new();
     let mut keep = true;
@@ -633,5 +634,5 @@ fn project_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
             Err(e) => d.message = e.to_string(),
         }
     }
-    app.ui.project_manager = (keep && !ctx.input(|i| i.key_pressed(egui::Key::Escape))).then_some(d);
+    app.ui.project_manager = (keep && !crate::widgets::escape_closes(ctx)).then_some(d);
 }

@@ -691,6 +691,7 @@ fn rows(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, list: &[Row]
 /// Draw the dialog; returns whether it stays open.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let Some(mut d) = app.ui.settings.take() else { return false };
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("settings-dialog-before-drag"), &mut d);
     let t = app.tokens;
     let mut close = false;
     let mut apply = false;
@@ -781,7 +782,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             Err(e) => d.message = e.to_string(),
         }
     }
-    if resp.should_close() || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    // (the modal's own close also fires on Escape: not while a drag is being cancelled)
+    if (resp.should_close() && !ctx.input(|i| i.pointer.any_down())) || crate::widgets::escape_closes(ctx) {
         close = true;
     }
     if !close {

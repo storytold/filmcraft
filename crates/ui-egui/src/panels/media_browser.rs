@@ -232,10 +232,22 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let mut sz = prefs.thumbnail_size;
         let resp = ui.put(sr, egui::Slider::new(&mut sz, 60.0..=320.0).show_value(false));
         app.auto.add("mediaBrowser.thumbnailSize", sr, "Thumbnail size");
+        // a drag ended by Escape goes back to the size it started from (#580)
+        let orig_id = egui::Id::new("media-browser-thumbnail-size-before-drag");
+        if resp.drag_started() {
+            ui.data_mut(|d| d.insert_temp(orig_id, prefs.thumbnail_size));
+        }
+        let escaped = resp.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape));
+        if resp.drag_stopped()
+            && let Some(before) = ui.data_mut(|d| d.remove_temp(orig_id))
+            && escaped
+        {
+            sz = before;
+        }
         if sz != prefs.thumbnail_size {
             app.session.prefs.media_browser.thumbnail_size = sz;
         }
-        if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+        if !escaped && (resp.drag_stopped() || (resp.changed() && !resp.dragged())) {
             exec(app, &ctx, "mediaBrowser.settings", json!({"thumbnailSize": sz}));
         }
     }
@@ -839,5 +851,5 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         }
         close = true;
     }
-    app.ui.media_browser.edit_columns = if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) { None } else { Some(cols) };
+    app.ui.media_browser.edit_columns = if close || crate::widgets::escape_closes(ctx) { None } else { Some(cols) };
 }

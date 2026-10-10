@@ -958,3 +958,47 @@ fn enable_flips_each_selected_clip() {
     s.execute("clip.enable", json!({"clips": [a, b]})).unwrap();
     assert_eq!((enabled(&s, a), enabled(&s, b)), (true, true));
 }
+
+/// #580: Escape takes back what a gesture changed, merged or not: the project returns to the mark,
+/// neither undo nor redo keeps the changes, and older steps stay.
+#[test]
+fn reverting_to_a_mark_takes_back_a_gesture_without_redo() {
+    let mut s = demo_unlocked();
+    let id = v1(&s)[0].0;
+    let opacity = |s: &Session| {
+        let q = s.active_sequence().unwrap();
+        let it = q.find_item(ClipId(id)).unwrap().1;
+        it.effects.iter().find(|e| e.effect == "opacity").unwrap().params["opacity"].value.as_f64().unwrap()
+    };
+    let set = |s: &mut Session, v: f64, merge: bool, begin: bool| {
+        s.execute("effects.setParam", json!({"clip": id, "effect": "opacity", "param": "opacity", "value": v, "merge": merge, "begin": begin})).unwrap();
+    };
+    set(&mut s, 80.0, false, false); // an earlier edit, kept
+    let (start, undo, mark) = (opacity(&s), s.history.undo.len(), s.undo_mark());
+    set(&mut s, 90.0, true, true); // a merged drag…
+    set(&mut s, 70.0, true, false);
+    set(&mut s, 60.0, false, false); // …and changes made one step each
+    set(&mut s, 50.0, false, false);
+    assert_eq!(s.revert_to(mark), 3);
+    assert_eq!(opacity(&s), start, "the value at the mark");
+    assert_eq!(s.history.undo.len(), undo, "the earlier step stays");
+    assert!(s.history.redo.is_empty(), "nothing to redo");
+    assert_eq!(s.revert_to(mark), 0, "nothing left to take back");
+    s.undo();
+    assert_eq!(opacity(&s), 100.0, "undo still takes back the earlier edit");
+}
+
+/// A mark no longer in the history does nothing; an older mark still takes back what followed it.
+#[test]
+fn reverting_to_a_lost_mark_does_nothing() {
+    let mut s = demo_unlocked();
+    let id = v1(&s)[0].0;
+    let (base, start) = (s.history.undo.len(), s.undo_mark());
+    s.execute("effects.setParam", json!({"clip": id, "effect": "opacity", "param": "opacity", "value": 40.0})).unwrap();
+    let mark = s.undo_mark();
+    s.undo();
+    s.execute("effects.setParam", json!({"clip": id, "effect": "opacity", "param": "opacity", "value": 30.0})).unwrap();
+    assert_eq!(s.revert_to(mark), 0, "the marked step was undone and replaced");
+    assert_eq!(s.revert_to(start), 1);
+    assert_eq!(s.history.undo.len(), base);
+}

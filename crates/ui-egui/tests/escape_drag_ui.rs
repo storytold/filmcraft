@@ -159,6 +159,81 @@ fn escape_puts_a_freeform_card_back_and_the_next_drag_works() {
 }
 
 #[test]
+fn escape_takes_back_a_value_drag_in_properties() {
+    let mut d = Driver::demo();
+    let clip = d.ok("engine.execute", json!({"command": "graphics.newText", "params": {"text": "Hi"}}))["clip"].as_u64().expect("graphic clip");
+    d.ok("engine.execute", json!({"command": "timeline.select", "params": {"clips": [clip]}}));
+    d.ok("ui.panel.show", json!({"panel": "Properties"}));
+    d.frames(4);
+    let from = centre(d.rect("graphics.prop.scale"));
+    let to = from + egui::vec2(40.0, 0.0);
+    let (before, undo) = (d.project(), d.undo_len());
+    d.drag(from, to, true);
+    assert_eq!(d.project(), before, "the scale is back to what it was");
+    assert_eq!(d.undo_len(), undo, "nothing to undo");
+    assert!(d.harness.state().session.history.redo.is_empty(), "nothing to redo");
+    d.drag(from, to, false);
+    assert_ne!(d.project(), before, "without Escape the same drag changes the scale");
+    assert_eq!(d.undo_len(), undo + 1, "as one undo step");
+}
+
+/// The color picker applies colors as you drag in it; Escape takes all of them back.
+#[test]
+fn escape_takes_back_a_color_picker_drag() {
+    let mut d = Driver::demo();
+    let clip = d.ok("engine.execute", json!({"command": "graphics.newText", "params": {"text": "Hi"}}))["clip"].as_u64().expect("graphic clip");
+    d.ok("engine.execute", json!({"command": "timeline.select", "params": {"clips": [clip]}}));
+    d.ok("ui.panel.show", json!({"panel": "Properties"}));
+    d.ok("ui.set", json!({"focused": "Properties"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    d.frames(4);
+    // the picker's popup, and in it the saturation / value square under the RGB row and swatch
+    // scroll the Fill color up into the window, with room under it for the picker
+    for _ in 0..10 {
+        if d.rect("graphics.prop.fill_color")[1] < 500.0 {
+            break;
+        }
+        d.ok("ui.scroll", json!({"id": "graphics.prop.scale", "dy": -200.0}));
+    }
+    let picker = |d: &mut Driver| {
+        d.ok("ui.click", json!({"id": "graphics.prop.fill_color"}));
+        let popup = d.harness.ctx.memory(|m| {
+            m.areas()
+                .visible_layer_ids()
+                .into_iter()
+                .filter(|l| l.order == egui::Order::Foreground)
+                .filter_map(|l| m.area_rect(l.id))
+                .max_by(|a, b| a.area().total_cmp(&b.area()))
+        });
+        let r = popup.expect("the color picker opened");
+        (r.min + egui::vec2(30.0, 90.0), r.min + egui::vec2(70.0, 120.0))
+    };
+    let (before, undo) = (d.project(), d.undo_len());
+    let (from, to) = picker(&mut d);
+    d.drag(from, to, true);
+    assert_eq!(d.project(), before, "the fill color is back to what it was");
+    assert_eq!(d.undo_len(), undo, "nothing to undo");
+    d.ok("ui.key", json!({"key": "Escape"}));
+    let (from, to) = picker(&mut d);
+    d.drag(from, to, false);
+    assert_ne!(d.project(), before, "without Escape the same drag picks a color");
+}
+
+#[test]
+fn escape_puts_a_thumbnail_size_slider_back() {
+    let mut d = Driver::demo();
+    d.footage_in("icon");
+    let size = |d: &Driver| d.harness.state().session.prefs.project_panel.view.icon_size;
+    let start = size(&d);
+    let r = d.rect("project.iconSize");
+    let (from, to) = (egui::pos2(r[0] + r[2] * 0.3, r[1] + r[3] / 2.0), egui::pos2(r[0] + r[2] * 0.9, r[1] + r[3] / 2.0));
+    d.drag(from, to, true);
+    assert_eq!(size(&d), start, "the slider went back");
+    d.drag(from, to, false);
+    assert_ne!(size(&d), start, "without Escape the same drag resizes");
+}
+
+#[test]
 fn escape_cancels_dragging_an_effect_onto_a_clip() {
     let mut d = Driver::demo();
     d.ok("ui.panel.show", json!({"panel": "Effects"}));

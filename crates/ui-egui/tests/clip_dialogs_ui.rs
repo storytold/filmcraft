@@ -341,3 +341,47 @@ fn quit_save_on_a_new_project_uses_the_save_dialog_and_scripted_quit_does_not_as
     d.ok("app.quit", json!({}));
     assert!(d.app().quit_confirmed);
 }
+
+/// #580: Escape while dragging a value in a dialog puts the value back and keeps the dialog open;
+/// Escape with no drag still closes it.
+#[test]
+fn escape_mid_drag_reverts_the_field_and_keeps_the_dialog() {
+    let mut d = Driver::new();
+    let c = d.v1(0);
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    d.menu("clip.speedDuration");
+    let els = d.ok("ui.elements", json!({"prefix": "speedDuration.speed"}));
+    let r: Vec<f32> = els.as_array().unwrap().iter().find(|e| e["id"] == "speedDuration.speed").expect("speed field")["rect"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap() as f32)
+        .collect();
+    let from = egui::pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    let speed = |d: &mut Driver| d.app().ui.clip_dialog.as_ref().map(|g| g.params["speed"].clone());
+    let drag = |d: &mut Driver, escape: bool| {
+        let mut send = |e: egui::Event| {
+            d.harness.input_mut().events.push(e);
+            d.frames(1);
+        };
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        send(egui::Event::PointerMoved(from));
+        send(button(from, true));
+        for k in 1..=10 {
+            send(egui::Event::PointerMoved(from + egui::vec2(4.0 * k as f32, 0.0)));
+            if escape && k == 5 {
+                send(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+            }
+        }
+        send(button(from + egui::vec2(40.0, 0.0), false));
+        d.frames(3);
+    };
+    drag(&mut d, true);
+    assert_eq!(speed(&mut d), Some(json!(100.0)), "the speed it had before the drag, and the dialog is still open");
+    drag(&mut d, false);
+    assert_ne!(speed(&mut d), Some(json!(100.0)), "without Escape the same drag changes the speed");
+    d.ok("ui.key", json!({"key": "Escape"}));
+    d.frames(2);
+    assert!(d.app().ui.clip_dialog.is_none(), "Escape with no drag closes the dialog");
+    assert_eq!(d.v1(0).speed, 1.0, "and applies nothing");
+}

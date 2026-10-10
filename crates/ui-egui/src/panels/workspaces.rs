@@ -157,7 +157,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.workspace_dialog.clone() else { return };
     let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
     let mut push = |id: &str, r: &egui::Response, label: &str| elems.push((id.to_string(), r.rect, label.to_string()));
-    let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    let mut close = crate::widgets::escape_closes(ctx);
     let mut act: Option<(&str, Value)> = None;
     let names = dock::names(&app.workspaces);
     let changed: Vec<String> = app.workspaces.saved.iter().map(|s| s.name.clone()).collect();
