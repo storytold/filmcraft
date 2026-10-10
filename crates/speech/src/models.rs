@@ -287,6 +287,69 @@ pub fn missing_bytes(models_dir: &Path, m: &ModelInfo) -> u64 {
     m.files.iter().filter(|f| !std::fs::metadata(d.join(f.name)).is_ok_and(|md| md.len() == f.size)).map(|f| f.size).sum()
 }
 
+/// A copy of a catalogue model that another tool may already have downloaded into the Hugging Face
+/// hub cache: the official repository's snapshot (checked file by file against the catalogue
+/// sizes), or a known CTranslate2 ("faster-whisper") conversion of the same weights, identified by
+/// its repository and the exact size of its `model.bin` (the loader validates every tensor).
+struct LocalCopy {
+    id: &'static str,
+    /// Hub cache directory name (`models--<owner>--<repo>`).
+    repo: &'static str,
+    /// `model.bin` size of a CTranslate2 conversion; `None` = the official repository.
+    ct2_size: Option<u64>,
+}
+
+static LOCAL_COPIES: &[LocalCopy] = &[
+    LocalCopy { id: "whisper-tiny", repo: "models--openai--whisper-tiny", ct2_size: None },
+    LocalCopy { id: "whisper-base", repo: "models--openai--whisper-base", ct2_size: None },
+    LocalCopy { id: "whisper-small", repo: "models--openai--whisper-small", ct2_size: None },
+    LocalCopy { id: "whisper-large-v3-turbo", repo: "models--openai--whisper-large-v3-turbo", ct2_size: None },
+    LocalCopy { id: "whisper-large-v3", repo: "models--openai--whisper-large-v3", ct2_size: None },
+    // float16 conversion of openai/whisper-large-v3-turbo (revision 0a363e91…)
+    LocalCopy { id: "whisper-large-v3-turbo", repo: "models--mobiuslabsgmbh--faster-whisper-large-v3-turbo", ct2_size: Some(1_617_884_929) },
+];
+
+/// The Hugging Face hub cache: `$HF_HUB_CACHE`, `$HF_HOME/hub`, or `~/.cache/huggingface/hub`.
+pub fn hub_cache() -> Option<PathBuf> {
+    let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    var("HF_HUB_CACHE")
+        .or_else(|| var("HF_HOME").map(|h| h.join("hub")))
+        .or_else(|| var("USERPROFILE").or_else(|| var("HOME")).map(|h| h.join(".cache").join("huggingface").join("hub")))
+}
+
+/// A usable copy of `m` in the hub cache `hub` (see [`hub_cache`]), if there is one.
+pub fn local_copy_in(hub: &Path, m: &ModelInfo) -> Option<PathBuf> {
+    find_copy(hub, m, LOCAL_COPIES)
+}
+
+fn find_copy(hub: &Path, m: &ModelInfo, copies: &[LocalCopy]) -> Option<PathBuf> {
+    for c in copies.iter().filter(|c| c.id == m.id) {
+        let Ok(snaps) = std::fs::read_dir(hub.join(c.repo).join("snapshots")) else { continue };
+        let mut snaps: Vec<PathBuf> = snaps.flatten().map(|e| e.path()).collect();
+        snaps.sort();
+        for d in snaps.into_iter().rev() {
+            let size = |n: &str| std::fs::metadata(d.join(n)).ok().map(|md| md.len());
+            let ok = match c.ct2_size {
+                None => m.files.iter().all(|f| size(f.name) == Some(f.size)),
+                Some(bin) => size("model.bin") == Some(bin) && size("tokenizer.json").is_some() && size("config.json").is_some(),
+            };
+            if ok {
+                return Some(d);
+            }
+        }
+    }
+    None
+}
+
+/// Where `m` can be loaded from: its directory under `models_dir` when it is installed, else a
+/// copy another tool already downloaded ([`local_copy_in`] the [`hub_cache`]).
+pub fn usable_dir(models_dir: &Path, m: &ModelInfo) -> Option<PathBuf> {
+    if installed(models_dir, m) {
+        return Some(model_dir(models_dir, m));
+    }
+    local_copy_in(&hub_cache()?, m)
+}
+
 /// The tokenizer shared by the multilingual models has one checksum.
 pub fn shared_tokenizer_sha() -> &'static str {
     TOKENIZER_MULTI
@@ -391,6 +454,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn copies_in_the_hub_cache_are_found_by_size() {
+        let hub = std::env::temp_dir().join(format!("filmcraft-hub-{}", std::process::id()));
+        let m = find("whisper-large-v3-turbo").unwrap();
+        assert_eq!(local_copy_in(&hub, m), None);
+        let table = [LocalCopy { id: m.id, repo: "models--someone--faster-whisper-turbo", ct2_size: Some(12) }];
+        // a CTranslate2 conversion: model.bin of the pinned size, tokenizer and config present
+        let snap = hub.join("models--someone--faster-whisper-turbo/snapshots/0a36");
+        std::fs::create_dir_all(&snap).unwrap();
+        std::fs::write(snap.join("tokenizer.json"), "{}").unwrap();
+        std::fs::write(snap.join("config.json"), "{}").unwrap();
+        std::fs::write(snap.join("model.bin"), [0u8; 11]).unwrap();
+        assert_eq!(find_copy(&hub, m, &table), None, "wrong size");
+        std::fs::write(snap.join("model.bin"), [0u8; 12]).unwrap();
+        assert_eq!(find_copy(&hub, m, &table), Some(snap.clone()));
+        // not offered for another model
+        assert_eq!(find_copy(&hub, find("whisper-base").unwrap(), &table), None);
+        // the official repository's snapshot: every catalogue file with its size
+        let tiny = find("whisper-tiny").unwrap();
+        let off = hub.join("models--openai--whisper-tiny/snapshots/169d");
+        std::fs::create_dir_all(&off).unwrap();
+        for f in tiny.files.iter().filter(|f| f.size < 10_000_000) {
+            std::fs::write(off.join(f.name), vec![0u8; f.size as usize]).unwrap();
+        }
+        assert_eq!(local_copy_in(&hub, tiny), None, "model.safetensors missing");
+        let _ = std::fs::remove_dir_all(&hub);
     }
 
     #[test]

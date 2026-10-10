@@ -131,15 +131,15 @@ impl Transcriber for FixedTranscriber {
 /// Load the transcriber for catalogue model `id` from `models_dir` (feature `whisper`).
 pub fn load(models_dir: &std::path::Path, id: &str) -> Result<std::sync::Arc<dyn Transcriber>, SpeechError> {
     let m = models::find(id).ok_or_else(|| SpeechError::UnknownModel(id.into()))?;
-    if !models::installed(models_dir, m) {
-        return Err(SpeechError::NotInstalled(id.into()));
-    }
+    // installed, or already downloaded by another tool (Hugging Face cache, faster-whisper)
+    let dir = models::usable_dir(models_dir, m).ok_or_else(|| SpeechError::NotInstalled(id.into()))?;
     #[cfg(feature = "whisper")]
     {
-        Ok(std::sync::Arc::new(whisper::Whisper::load(&models::model_dir(models_dir, m), m.id)?))
+        Ok(std::sync::Arc::new(whisper::Whisper::load(&dir, m.id)?))
     }
     #[cfg(not(feature = "whisper"))]
     {
+        let _ = dir;
         Err(SpeechError::Unavailable("built without the `whisper` feature".into()))
     }
 }
