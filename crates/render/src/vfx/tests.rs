@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use filmcraft_project::{EffectKind, ParamKind, find_effect};
+use filmcraft_project::{EffectKind, Interpolation, Keyframe, Param, ParamKind, find_effect};
 
 use super::*;
 
@@ -504,6 +504,12 @@ fn keyers_known_values() {
     set(&mut e, "output", ParamValue::Choice(1));
     let m = run("ultra_key", &e, &img, &cx());
     assert!(m.get(1, 0)[0] < 0.05 && m.get(6, 0)[0] > 0.9 && m.get(1, 0)[3] == 1.0);
+    let mut aggressive = inst("ultra_key");
+    set(&mut aggressive, "setting", ParamValue::Choice(2));
+    let ag = run("ultra_key", &aggressive, &img, &cx());
+    let def = run("ultra_key", &inst("ultra_key"), &img, &cx());
+    let delta = (0..img.w * img.h).map(|i| (ag.px[i * 4 + 3] - def.px[i * 4 + 3]).abs()).fold(0.0f32, f32::max);
+    assert!(delta > 1e-4, "Aggressive Setting left the Default matte unchanged");
     // Alpha Adjust: invert and opacity
     let mut a = Image::filled(2, 2, [0.1, 0.1, 0.1, 0.25]);
     let mut e = inst("alpha_adjust");
@@ -757,6 +763,27 @@ fn transform_presets_animate_over_the_clip() {
     assert_eq!(text::burnin_text(&e2, &end), "FILE A001.mov");
     set(&mut e2, "source", ParamValue::Choice(4));
     assert_eq!(text::burnin_text(&e2, &mid), "FILE 24");
+}
+
+#[test]
+fn transform_shutter_override_blurs_moving_position() {
+    let mut e = inst("transform");
+    set(&mut e, "shutter_override", ParamValue::Bool(true));
+    setf(&mut e, "shutter_angle", 180.0);
+    let a = Keyframe::new(Tick::ZERO, ParamValue::Vec2(filmcraft_geom::Vec2::new(8.0, 16.0)));
+    let mut b = Keyframe::new(Tick::from_seconds_f64(1.0), ParamValue::Vec2(filmcraft_geom::Vec2::new(40.0, 16.0)));
+    b.interp = Interpolation::Linear;
+    e.params.insert("position".into(), Param { value: ParamValue::Vec2(filmcraft_geom::Vec2::new(8.0, 16.0)), keyframes: vec![a, b] });
+    let img = picture(32, 32);
+    let cx = FxCtx { t: Tick::from_seconds_f64(0.5), seconds: 0.5, ..cx() };
+    let sharp = {
+        let mut off = e.clone();
+        set(&mut off, "shutter_override", ParamValue::Bool(false));
+        run("transform", &off, &img, &cx)
+    };
+    let blurred = run("transform", &e, &img, &cx);
+    let delta = max_diff(&sharp, &blurred);
+    assert!(delta > 1e-3, "shutter override left the Transform picture unchanged ({delta})");
 }
 
 #[test]

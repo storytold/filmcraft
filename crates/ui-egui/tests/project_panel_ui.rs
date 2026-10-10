@@ -448,6 +448,44 @@ fn bins_open_in_place_in_a_tab_or_in_a_window() {
 }
 
 #[test]
+fn select_all_takes_only_the_shown_bin() {
+    // #456: Cmd+A selected every item in the project, closed bins and other tabs included
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    let (bin, items) = d.footage();
+    assert!(!items.is_empty());
+    let sorted = |v: &[ItemId]| {
+        let mut v: Vec<u64> = v.iter().map(|i| i.0).collect();
+        v.sort();
+        v
+    };
+    let mut footage = items.clone();
+    footage.sort();
+    // the root with the Footage bin closed: none of its items
+    d.app().ui.expanded_bins.clear();
+    d.frames(2);
+    d.key("Cmd+A");
+    let sel = d.app().session.state.project_selection.clone();
+    assert!(sel.iter().all(|i| !items.contains(&i.0)), "{sel:?}");
+    assert!(sel.iter().all(|i| d.app().session.project.root.children.contains(&BinEntry::Item(*i))), "{sel:?}");
+    // twirled open in List view, its items are shown and count
+    d.app().ui.expanded_bins.push(bin);
+    d.frames(2);
+    d.key("Cmd+A");
+    let sel = d.app().session.state.project_selection.clone();
+    assert!(items.iter().all(|i| sel.contains(&ItemId(*i))), "{sel:?}");
+    d.key("Cmd+Shift+A");
+    assert!(d.app().session.state.project_selection.is_empty());
+    // the bin opened in its own tab: exactly its items
+    d.app().ui.expanded_bins.clear();
+    d.app().session.prefs.general.bins_double_click = "openNewTab".into();
+    double_click_bin(&mut d, bin, false);
+    assert_eq!(d.app().ui.project_panel.active_tab, Some(0));
+    d.key("Cmd+A");
+    assert_eq!(sorted(&d.app().session.state.project_selection), footage);
+}
+
+#[test]
 fn footer_buttons_are_wired() {
     let mut d = project_driver();
     let bins0 = d.app().session.project.root.children.len();
@@ -625,4 +663,130 @@ fn media_browser_drag_imports_into_the_project_panel() {
     d.frames(6);
     assert_eq!(d.app().session.project.items.len(), n0 + 1, "kept after a drop on the Timeline");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- marquee selection (#578)
+
+/// The Footage bin open in place in `view`, with its items' rects (row by row, left to right).
+fn footage_in(d: &mut Driver, view: &str) -> Vec<(u64, [f32; 4])> {
+    let (bin, items) = d.footage();
+    d.exec("project.view.set", json!({"view": view}));
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+    d.wait_for(&format!("project.item.{}", items[0]));
+    let mut rects: Vec<(u64, [f32; 4])> = items.iter().map(|i| (*i, d.rect(&format!("project.item.{i}")))).collect();
+    rects.sort_by(|a, b| (a.1[1], a.1[0]).partial_cmp(&(b.1[1], b.1[0])).unwrap());
+    rects
+}
+
+fn selection(d: &mut Driver) -> Vec<u64> {
+    let mut s: Vec<u64> = d.app().session.state.project_selection.iter().map(|i| i.0).collect();
+    s.sort_unstable();
+    s
+}
+
+fn sorted(mut v: Vec<u64>) -> Vec<u64> {
+    v.sort_unstable();
+    v
+}
+
+fn centre(r: [f32; 4]) -> (f32, f32) {
+    (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0)
+}
+
+fn marquee(d: &mut Driver, from: (f32, f32), to: (f32, f32), shift: bool) {
+    d.ok("ui.drag", json!({"from": {"x": from.0, "y": from.1}, "to": {"x": to.0, "y": to.1}, "steps": 12, "modifiers": {"shift": shift}}));
+    d.frames(3);
+}
+
+#[test]
+fn marquee_selects_cards_in_icon_view() {
+    let mut d = project_driver();
+    let cards = footage_in(&mut d, "icon");
+    let [(i0, a), (i1, b), (i2, c)] = [cards[0], cards[1], cards[2]];
+    assert!((a[1] - c[1]).abs() < 1.0, "the first three cards share a row");
+    // from the gap above-left of the first card to the middle of the second
+    marquee(&mut d, (a[0] - 4.0, a[1] - 4.0), centre(b), false);
+    assert_eq!(selection(&mut d), sorted(vec![i0, i1]));
+    // Shift adds
+    marquee(&mut d, (c[0] + 4.0, c[1] - 4.0), centre(c), true);
+    assert_eq!(selection(&mut d), sorted(vec![i0, i1, i2]));
+    // a plain drag replaces
+    marquee(&mut d, (a[0] - 4.0, a[1] - 4.0), centre(a), false);
+    assert_eq!(selection(&mut d), vec![i0]);
+    // the gaps between cards are empty space: a click there deselects
+    d.ok("ui.click", json!({"x": a[0] - 4.0, "y": a[1] - 4.0}));
+    d.frames(2);
+    assert!(selection(&mut d).is_empty());
+}
+
+#[test]
+fn escape_cancels_a_marquee_and_keeps_the_selection() {
+    let mut d = project_driver();
+    let cards = footage_in(&mut d, "icon");
+    let [(i0, a), (i1, b), (i2, c)] = [cards[0], cards[1], cards[2]];
+    d.exec("project.select", json!({"items": [i2]}));
+    let send = |d: &mut Driver, e: egui::Event| {
+        d.harness.input_mut().events.push(e);
+        d.frames(1);
+    };
+    let (from, to) = (egui::pos2(a[0] - 4.0, a[1] - 4.0), egui::pos2(centre(b).0, centre(b).1));
+    send(&mut d, egui::Event::PointerMoved(from));
+    send(&mut d, egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    for k in 1..=10 {
+        send(&mut d, egui::Event::PointerMoved(from.lerp(to, k as f32 / 10.0)));
+    }
+    assert_eq!(selection(&mut d), sorted(vec![i0, i1]), "the selection follows the rectangle");
+    send(&mut d, egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+    let end = egui::pos2(centre(c).0, centre(c).1);
+    send(&mut d, egui::Event::PointerMoved(end));
+    send(&mut d, egui::Event::PointerButton { pos: end, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+    d.frames(2);
+    assert_eq!(selection(&mut d), vec![i2], "Escape restored the selection the drag began with");
+}
+
+#[test]
+fn only_the_left_button_draws_a_marquee() {
+    let mut d = project_driver();
+    let cards = footage_in(&mut d, "icon");
+    let [(i0, a), (_, b)] = [cards[0], cards[1]];
+    d.exec("project.select", json!({"items": [i0]}));
+    let (from, to) = (egui::pos2(a[0] - 4.0, a[1] - 4.0), egui::pos2(centre(b).0, centre(b).1));
+    for button in [egui::PointerButton::Middle, egui::PointerButton::Secondary] {
+        let mut send = |e: egui::Event| {
+            d.harness.input_mut().events.push(e);
+            d.frames(1);
+        };
+        send(egui::Event::PointerMoved(from));
+        send(egui::Event::PointerButton { pos: from, button, pressed: true, modifiers: Default::default() });
+        for k in 1..=10 {
+            send(egui::Event::PointerMoved(from.lerp(to, k as f32 / 10.0)));
+        }
+        send(egui::Event::PointerButton { pos: to, button, pressed: false, modifiers: Default::default() });
+        d.key("Escape");
+        assert_eq!(selection(&mut d), vec![i0], "{button:?} drag left the selection alone");
+        assert!(!d.has("project.marquee"));
+    }
+}
+
+#[test]
+fn marquee_selects_rows_in_list_view() {
+    let mut d = project_driver();
+    let rows = footage_in(&mut d, "list");
+    let n = rows.len();
+    let (last, before_last) = (rows[n - 1], rows[n - 2]);
+    let empty = d.rect("project.empty");
+    // from the empty space under the rows up into the second-to-last row
+    marquee(&mut d, (empty[0] + 60.0, empty[1] + 20.0), (empty[0] + 60.0, centre(before_last.1).1), false);
+    assert_eq!(selection(&mut d), sorted(vec![last.0, before_last.0]));
+}
+
+#[test]
+fn marquee_selects_cards_in_freeform_view() {
+    let mut d = project_driver();
+    let cards = footage_in(&mut d, "freeform");
+    let [(i0, a), (i1, b)] = [cards[0], cards[1]];
+    assert!((a[1] - b[1]).abs() < 1.0, "the first two cards share a row");
+    marquee(&mut d, (a[0] - 6.0, a[1] - 6.0), centre(b), false);
+    assert_eq!(selection(&mut d), sorted(vec![i0, i1]));
+    assert!(!d.app().session.project.item(ItemId(i0)).unwrap().metadata.contains_key(FREEFORM_POS), "the marquee moved no card");
 }
