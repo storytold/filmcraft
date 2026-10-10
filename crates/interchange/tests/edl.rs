@@ -127,6 +127,45 @@ FCM: NON-DROP FRAME
     assert!(rep.mentions("key"), "{rep}");
 }
 
+/// #711: a named audio dissolve keeps its audio transition instead of falling back to Constant
+/// Power with a false "not supported" warning; an A/V event still resolves the name per kind.
+#[test]
+fn named_audio_dissolves_keep_their_effect() {
+    let opts = ImportOptions { edl_frame_rate: Some(FrameRate::FPS_24), ..Default::default() };
+    let edl = |chan: &str, name: &str| {
+        format!(
+            "TITLE: AudioDissolve
+FCM: NON-DROP FRAME
+
+001  AX       {chan}     C        00:00:00:00 00:00:02:00 01:00:00:00 01:00:02:00
+* FROM CLIP NAME: A
+
+002  AX       {chan}     C        00:00:02:00 00:00:02:00 01:00:02:00 01:00:02:00
+002  AX       {chan}     D 024    00:00:02:00 00:00:04:00 01:00:02:00 01:00:04:00
+* TO CLIP NAME: B
+* EFFECT NAME: {name}
+"
+        )
+    };
+    for (name, id) in [("CONSTANT GAIN", "constant_gain"), ("EXPONENTIAL FADE", "exponential_fade"), ("CONSTANT POWER", "constant_power")] {
+        let (imp, rep) = import_with(edl("A", name).as_bytes(), Format::Edl, &opts).unwrap();
+        let s = imp.project.sequence(only_seq(&imp)).unwrap();
+        assert_eq!(s.audio_tracks[0].transitions.len(), 1, "{name}");
+        assert_eq!(s.audio_tracks[0].transitions[0].effect.effect, id, "{name}");
+        assert!(!rep.mentions("not supported"), "{name}: {rep}");
+    }
+    // An unknown name still warns and falls back to Constant Power on audio.
+    let (imp, rep) = import_with(edl("A", "UNRECOGNIZED TRANSITION").as_bytes(), Format::Edl, &opts).unwrap();
+    let s = imp.project.sequence(only_seq(&imp)).unwrap();
+    assert_eq!(s.audio_tracks[0].transitions[0].effect.effect, "constant_power");
+    assert!(rep.mentions("not supported"), "{rep}");
+    // On an A/V event the video track gets Cross Dissolve, the audio track Constant Gain.
+    let (imp, _) = import_with(edl("B", "CONSTANT GAIN").as_bytes(), Format::Edl, &opts).unwrap();
+    let s = imp.project.sequence(only_seq(&imp)).unwrap();
+    assert_eq!(s.video_tracks[0].transitions[0].effect.effect, "cross_dissolve");
+    assert_eq!(s.audio_tracks[0].transitions[0].effect.effect, "constant_gain");
+}
+
 fn demo_project(rate: FrameRate, df: bool) -> (filmcraft_project::Project, filmcraft_project::ItemId) {
     let mut p = filmcraft_project::Project::new("P");
     let a = media(&mut p, "/media/Beach Day.mov", true, true, rate);

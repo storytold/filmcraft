@@ -618,16 +618,7 @@ pub(crate) fn standard_effects(ti: &TrackItem) -> impl Iterator<Item = &EffectIn
 /// A transition effect for a document's transition name. Unknown names become Cross Dissolve
 /// (Constant Power on audio) with a warning.
 pub(crate) fn transition_effect(name: &str, audio: bool, report: &mut Report) -> EffectInstance {
-    let n = name.trim().to_ascii_lowercase();
-    let alias = match n.as_str() {
-        "dissolve" | "cross dissolve" | "smpte_dissolve" | "d" | "crossdissolve" => Some(if audio { "constant_power" } else { "cross_dissolve" }),
-        "cross fade (+3db)" | "cross fade +3db" | "crossfade (+3db)" | "cross fade" => Some("constant_power"),
-        "cross fade (0db)" | "cross fade 0db" | "crossfade (0db)" => Some("constant_gain"),
-        "dip to color dissolve" | "fade in fade out dissolve" | "fade to color" => Some("dip_to_black"),
-        "edge wipe" | "wipe" | "smpte_wipe" => Some("wipe"),
-        _ => None,
-    };
-    if let Some(id) = alias
+    if let Some(id) = transition_alias(name, audio)
         && let Some(d) = find_effect(id)
     {
         return d.instance();
@@ -647,6 +638,28 @@ pub(crate) fn transition_effect(name: &str, audio: bool, report: &mut Report) ->
         essential: false,
         layer: None,
     })
+}
+
+/// Effect id of a well-known document transition name, if `name` is one.
+fn transition_alias(name: &str, audio: bool) -> Option<&'static str> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "dissolve" | "cross dissolve" | "smpte_dissolve" | "d" | "crossdissolve" => Some(if audio { "constant_power" } else { "cross_dissolve" }),
+        "cross fade (+3db)" | "cross fade +3db" | "crossfade (+3db)" | "cross fade" => Some("constant_power"),
+        "cross fade (0db)" | "cross fade 0db" | "crossfade (0db)" => Some("constant_gain"),
+        "dip to color dissolve" | "fade in fade out dissolve" | "fade to color" => Some("dip_to_black"),
+        "edge wipe" | "wipe" | "smpte_wipe" => Some("wipe"),
+        _ => None,
+    }
+}
+
+/// The audio transition a document's transition name stands for (alias, id or display name),
+/// or `None` when the name is not an audio transition. Reports nothing.
+pub(crate) fn audio_transition_named(name: &str) -> Option<EffectInstance> {
+    transition_alias(name, true)
+        .and_then(find_effect)
+        .or_else(|| find_effect_by_name(name.trim()))
+        .filter(|d| d.kind == EffectKind::AudioTransition)
+        .map(|d| d.instance())
 }
 
 /// Display name of a transition (for documents).

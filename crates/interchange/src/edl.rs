@@ -19,8 +19,8 @@ use filmcraft_project::{
 use filmcraft_time::{FrameRate, Tick, fields_to_frames, format_timecode_frames};
 
 use crate::common::{
-    Builder, MediaSpec, empty_sequence, file_name, file_stem, frames_round, generator_of, item_path, on_frame, overwrite, relative_path, resolve_path,
-    sanitize_reel, scaled, settings_for, transition_effect, transition_name,
+    Builder, MediaSpec, audio_transition_named, empty_sequence, file_name, file_stem, frames_round, generator_of, item_path, on_frame, overwrite,
+    relative_path, resolve_path, sanitize_reel, scaled, settings_for, transition_effect, transition_name,
 };
 use crate::{ExportOptions, Format, ImportOptions, Imported, ReelMode, Report, Result};
 
@@ -467,7 +467,11 @@ fn import_event(ctx: &mut Ctx, ev: &Event, report: &mut Report) {
             let t0 = ctx.rec(l2.tcs[2], df);
             let t1 = ctx.rec(l2.tcs[3], df);
             let d = ctx.rate.tick_of(l2.dur);
-            let effect = transition_for(l2.trans, ev.effect.as_deref(), report);
+            let chans: BTreeSet<Ch> = l2.chans.iter().copied().collect();
+            // A named audio transition (Constant Gain, …) keeps its effect on audio tracks; the
+            // name is only resolved as a video transition when a video channel needs one.
+            let audio_effect = ev.effect.as_deref().and_then(audio_transition_named);
+            let video_effect = (chans.contains(&Ch::V) || audio_effect.is_none()).then(|| transition_for(l2.trans, ev.effect.as_deref(), report));
             let to_black = l2.reel.eq_ignore_ascii_case("BL");
             let from_black = l1.reel.eq_ignore_ascii_case("BL");
             // Incoming clip.
@@ -481,7 +485,6 @@ fn import_event(ctx: &mut Ctx, ev: &Event, report: &mut Report) {
                 placed = ctx.lay(l2, item, &name, t0, t1 - t0, src, m2_for(&l2.reel), 0);
             }
             // Transition on each channel of the incoming line.
-            let chans: BTreeSet<Ch> = l2.chans.iter().copied().collect();
             for ch in chans {
                 let (kind, idx) = ctx.track_index(ch, 0);
                 ctx.b.ensure_tracks(&mut ctx.seq, kind, idx + 1);
@@ -505,7 +508,8 @@ fn import_event(ctx: &mut Ctx, ev: &Event, report: &mut Report) {
                     continue;
                 }
                 let audio = kind == TrackKind::Audio;
-                let mut eff = effect.clone();
+                let named_audio = if audio { audio_effect.clone() } else { None };
+                let Some(mut eff) = named_audio.or_else(|| video_effect.clone()) else { continue };
                 if audio && eff.def().is_some_and(|d| d.kind != filmcraft_project::EffectKind::AudioTransition) {
                     eff = find_effect("constant_power").map(|d| d.instance()).unwrap_or(eff);
                 }
