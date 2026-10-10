@@ -126,14 +126,33 @@ pub fn paragraphs(words: &[SeqWord], gap: Tick) -> Vec<std::ops::Range<usize>> {
 /// Matches of `query` (one or more words, case and punctuation ignored; the last query word may be
 /// a prefix) as word index ranges.
 pub fn search(words: &[SeqWord], query: &str) -> Vec<std::ops::Range<usize>> {
-    let q: Vec<String> = query.split_whitespace().map(filmcraft_project::transcript::normalize_word).filter(|s| !s.is_empty()).collect();
-    if q.is_empty() {
-        return Vec::new();
-    }
-    let norm: Vec<String> = words.iter().map(SeqWord::normalized).collect();
+    search_with(words, query, SearchOptions::default())
+}
+
+/// The Text panel's search settings.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SearchOptions {
+    /// "Find whole words only": the last query word must be a whole word too.
+    pub whole_words: bool,
+    /// "Match capitalization".
+    pub match_case: bool,
+}
+
+/// [`search`] with search settings (punctuation is always ignored).
+pub fn search_with(words: &[SeqWord], query: &str, opts: SearchOptions) -> Vec<std::ops::Range<usize>> {
+    let norm = |s: &str| {
+        let t = s.trim_matches(|c: char| !c.is_alphanumeric());
+        if opts.match_case { t.to_string() } else { t.to_lowercase() }
+    };
+    let q: Vec<String> = query.split_whitespace().map(norm).filter(|s| !s.is_empty()).collect();
+    let Some(last) = q.len().checked_sub(1) else { return Vec::new() };
+    let text: Vec<String> = words.iter().map(|w| norm(&w.text)).collect();
     let mut out = Vec::new();
-    for i in 0..norm.len().saturating_sub(q.len() - 1) {
-        let ok = q.iter().enumerate().all(|(k, qw)| if k + 1 == q.len() { norm[i + k].starts_with(qw.as_str()) } else { norm[i + k] == *qw });
+    for i in 0..text.len().saturating_sub(last) {
+        let ok = q.iter().enumerate().all(|(k, qw)| {
+            let Some(w) = text.get(i + k) else { return false };
+            if k == last && !opts.whole_words { w.starts_with(qw.as_str()) } else { w == qw }
+        });
         if ok {
             out.push(i..i + q.len());
         }
@@ -166,48 +185,101 @@ pub fn media_word_range(t: &Transcript, a: usize, b: usize, rate: FrameRate) -> 
     Some(TimeRange::from_bounds(s, e2))
 }
 
+/// A pause: the silence between word `after` of the sequence transcript and the next word (the
+/// Text panel shows it inline as "[...]").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pause {
+    /// Index of the word before the pause.
+    pub after: usize,
+    /// Sequence time: the end of word `after` and the start of the next word.
+    pub start: Tick,
+    pub end: Tick,
+}
+
+impl Pause {
+    pub fn duration(&self) -> Tick {
+        self.end - self.start
+    }
+}
+
+/// The pause after word `after` (whatever its length), if the next word starts later.
+pub fn pause_after(words: &[SeqWord], after: usize) -> Option<Pause> {
+    let (a, b) = (words.get(after)?.end, words.get(after.checked_add(1)?)?.start);
+    (b > a).then_some(Pause { after, start: a, end: b })
+}
+
+/// The pauses of at least `min` (and at least one tick) between consecutive words, in order.
+pub fn pauses(words: &[SeqWord], min: Tick) -> Vec<Pause> {
+    (0..words.len().saturating_sub(1)).filter_map(|i| pause_after(words, i)).filter(|p| p.duration() >= min).collect()
+}
+
+/// The timeline range removing pause `p` except `keep` of silence next to both words, snapped
+/// inward to frames; None when less than a frame is left.
+pub fn pause_range(p: &Pause, keep: Tick, rate: FrameRate) -> Option<TimeRange> {
+    let (s, e) = (p.start + keep, p.end - keep);
+    let mut s2 = rate.snap(s);
+    if s2 < s {
+        s2 += rate.frame_duration();
+    }
+    let e2 = rate.snap(e);
+    (e2 > s2).then(|| TimeRange::from_bounds(s2, e2))
+}
+
 /// Pauses between consecutive words of at least `min`, as the ranges to remove: each keeps `keep`
 /// of silence next to both words and is snapped inward to frames (pauses shorter than one frame
 /// after that are skipped).
 pub fn find_pauses(words: &[SeqWord], min: Tick, keep: Tick, rate: FrameRate) -> Vec<TimeRange> {
-    let mut out = Vec::new();
-    for p in words.windows(2) {
-        let (a, b) = (p[0].end, p[1].start);
-        if b - a < min || b <= a {
-            continue;
-        }
-        let s = a + keep;
-        let e = b - keep;
-        let mut s2 = rate.snap(s);
-        if s2 < s {
-            s2 += rate.frame_duration();
-        }
-        let e2 = rate.snap(e);
-        if e2 > s2 {
-            out.push(TimeRange::from_bounds(s2, e2));
-        }
-    }
-    out
+    pauses(words, min).iter().filter_map(|p| pause_range(p, keep, rate)).collect()
 }
 
-/// The default filler words and phrases (configurable in preferences and per command).
+/// The filler words of English transcripts (and of transcripts without a language).
 pub const DEFAULT_FILLERS: &[&str] = &["um", "uh", "umm", "uhm", "erm", "er", "ah", "hmm", "mm", "mhm"];
+
+/// The filler words of German transcripts. "er", "ah" and "eh" are words in German, so they are
+/// not on the list.
+pub const GERMAN_FILLERS: &[&str] = &["äh", "ähm", "ähh", "ähmm", "öh", "öhm", "ehm", "hm", "hmm", "mm", "mhm", "um", "uh", "uhm"];
+
+/// The filler words of other languages: only hesitation sounds that are words in none of them
+/// ("er" is Dutch for "there").
+pub const NEUTRAL_FILLERS: &[&str] = &["um", "uh", "umm", "uhm", "erm", "ehm", "hmm", "mm", "mhm", "äh", "ähm"];
+
+/// The filler words for a transcript language (ISO 639-1, optionally with a region: `de-AT`).
+pub fn default_fillers(language: &str) -> &'static [&'static str] {
+    let primary = language.split(['-', '_']).next().unwrap_or_default().to_ascii_lowercase();
+    match primary.as_str() {
+        "" | "en" => DEFAULT_FILLERS,
+        "de" => GERMAN_FILLERS,
+        _ => NEUTRAL_FILLERS,
+    }
+}
+
+/// Filler words and phrases normalized for matching (case and punctuation dropped, each split into
+/// words), longest first so "you know" wins over a lone "you".
+pub fn filler_phrases<S: AsRef<str>>(fillers: &[S]) -> Vec<Vec<String>> {
+    let mut phrases: Vec<Vec<String>> = fillers
+        .iter()
+        .map(|f| f.as_ref().split_whitespace().map(filmcraft_project::transcript::normalize_word).filter(|s| !s.is_empty()).collect::<Vec<_>>())
+        .filter(|p| !p.is_empty())
+        .collect();
+    phrases.sort_by_key(|p| std::cmp::Reverse(p.len()));
+    phrases
+}
 
 /// Filler words: word index ranges matching one of `fillers` (each a word or a phrase such as
 /// "you know"; case and punctuation ignored).
 pub fn find_fillers(words: &[SeqWord], fillers: &[String]) -> Vec<std::ops::Range<usize>> {
+    let phrases = filler_phrases(fillers);
+    find_fillers_by(words, |_| phrases.as_slice())
+}
+
+/// [`find_fillers`] with the phrases (from [`filler_phrases`]) chosen per word, e.g. by the
+/// language of the word's transcript; a phrase is looked up by its first word.
+pub fn find_fillers_by<'a>(words: &[SeqWord], phrases_for: impl Fn(&SeqWord) -> &'a [Vec<String>]) -> Vec<std::ops::Range<usize>> {
     let norm: Vec<String> = words.iter().map(SeqWord::normalized).collect();
-    let mut phrases: Vec<Vec<String>> = fillers
-        .iter()
-        .map(|f| f.split_whitespace().map(filmcraft_project::transcript::normalize_word).filter(|s| !s.is_empty()).collect::<Vec<_>>())
-        .filter(|p| !p.is_empty())
-        .collect();
-    // longest phrases first, so "you know" wins over a lone "you"
-    phrases.sort_by_key(|p| std::cmp::Reverse(p.len()));
     let mut out = Vec::new();
     let mut i = 0;
-    while i < norm.len() {
-        let hit = phrases.iter().find(|p| i + p.len() <= norm.len() && p.iter().enumerate().all(|(k, w)| norm[i + k] == *w));
+    while let Some(w) = words.get(i) {
+        let hit = phrases_for(w).iter().find(|p| norm.get(i..i.saturating_add(p.len())).is_some_and(|run| run == p.as_slice()));
         match hit {
             Some(p) => {
                 out.push(i..i + p.len());

@@ -427,6 +427,10 @@ pub struct UiState {
     /// Text panel ▸ Transcript: search text.
     #[serde(default)]
     pub transcript_search: String,
+    /// Text panel ▸ Transcript: search filter, current match, Delete row, selected pause, the
+    /// Transcript View Options dialog.
+    #[serde(default)]
+    pub transcript: crate::panels::transcript::TranscriptUi,
     /// Preferences ▸ Playback: play the rendered range when a preview render finishes.
     #[serde(default = "yes")]
     pub play_after_render: bool,
@@ -895,6 +899,7 @@ impl Default for UiState {
             caption_search: String::new(),
             transcript_sel: None,
             transcript_search: String::new(),
+            transcript: Default::default(),
             play_after_render: true,
             mixer_fx_open: false,
             mixer_hidden: Vec::new(),

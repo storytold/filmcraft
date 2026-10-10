@@ -3503,3 +3503,59 @@
 	Gradient Angle	Ángulo del degradado
 	Linear Gradient	Degradado lineal
 	Solid	Sólido
+
+# Text panel ▸ Transcript (Premiere's text-based editing)
+	ACTIONS	ACCIONES
+	PREFERENCES	PREFERENCIAS
+	Audio analysis	Análisis de audio
+	Audio clips tagged as 'Dialogue'	Clips de audio etiquetados como 'Diálogo'
+	Audio on track	Audio en la pista
+	Audio {n}	Audio {n}
+	Automatically set In/Out points	Establecer puntos de entrada/salida automáticamente
+	Delete All Matches	Eliminar todas las coincidencias
+	Delete all	Eliminar todo
+	Download and transcribe	Descargar y transcribir
+	Download size: {size}	Tamaño de descarga: {size}
+	Download speech model	Descargar modelo de voz
+	Downloading speech model…	Descargando modelo de voz…
+	Enable auto-scrolling	Activar desplazamiento automático
+	Filler words	Muletillas
+	Find in Transcript	Buscar en la transcripción
+	Find whole words only	Buscar solo palabras completas
+	Licence: {license}	Licencia: {license}
+	Loading speech model…	Cargando modelo de voz…
+	Match capitalization	Coincidir mayúsculas y minúsculas
+	Minimum pause length	Duración mínima de pausa
+	More options	Más opciones
+	Next result	Resultado siguiente
+	Previous result	Resultado anterior
+	Pauses	Pausas
+	Search settings	Ajustes de búsqueda
+	Search settings…	Ajustes de búsqueda…
+	Source: {source}	Origen: {source}
+	Speech model: {id}	Modelo de voz: {id}
+	The model is saved in FilmCraft's data folder; transcription then runs on this computer without a connection.	El modelo se guarda en la carpeta de datos de FilmCraft; después, la transcripción se realiza en este equipo sin conexión.
+	Transcribe sequence…	Transcribir secuencia…
+	Transcribe source clips	Transcribir clips de origen
+	Transcribe your source clips to view your sequence transcript.	Transcriba los clips de origen para ver la transcripción de la secuencia.
+	Transcribing source clips	Transcribiendo clips de origen
+	Transcribing	Transcribiendo
+	Transcribing…	Transcribiendo…
+	Transcript View Options	Opciones de vista de la transcripción
+	Transcript view options…	Opciones de vista de la transcripción…
+	Transcript view	Vista de la transcripción
+	no results	sin resultados
+	{name} (download {size} MB)	{name} (descargar {size} MB)
+	{name} is not on this computer yet.	{name} aún no está en este equipo.
+	{name} is untranscribed	{name} no está transcrito
+	{n} clips are untranscribed	{n} clips sin transcribir
+	{n}/{total} results	{n}/{total} resultados
+	{seconds} seconds	{seconds} segundos
+	Transcription Status	Estado de la transcripción
+	Cancel Transcription	Cancelar transcripción
+	Auto detect	Detección automática
+	Danish	Danés
+	Swedish	Sueco
+	Norwegian	Noruego
+	Ukrainian	Ucraniano
+	Turkish	Turco

@@ -413,6 +413,49 @@ impl Default for MediaAnalysisPrefs {
     }
 }
 
+/// Text panel ▸ Transcript ▸ ••• ▸ Transcript view options… (Transcript view, Search settings) and
+/// the panel's toggles (••• ▸ Enable auto-scrolling, "Automatically set In/Out points").
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TranscriptPrefs {
+    /// "Filler words": mark filler words in the transcript.
+    pub filler_words: bool,
+    /// "Pauses": show pauses inline as "[...]".
+    pub pauses: bool,
+    /// "Minimum pause length" (seconds): shorter silences are no pauses.
+    pub min_pause_length: f64,
+    /// "Find whole words only" (otherwise the last word of a search may be the start of a word).
+    pub whole_words: bool,
+    /// "Match capitalization".
+    pub match_case: bool,
+    /// "Enable auto-scrolling": the transcript scrolls to the word at the playhead.
+    pub auto_scroll: bool,
+    /// "Automatically set In/Out points": selecting text marks In/Out on the timeline.
+    pub auto_in_out: bool,
+}
+
+impl Default for TranscriptPrefs {
+    fn default() -> Self {
+        Self {
+            filler_words: true,
+            pauses: true,
+            min_pause_length: crate::transcript::DEFAULT_PAUSE_SECONDS,
+            whole_words: false,
+            match_case: false,
+            auto_scroll: true,
+            auto_in_out: true,
+        }
+    }
+}
+
+impl TranscriptPrefs {
+    pub(crate) fn clamp(&mut self) {
+        use crate::transcript::{DEFAULT_PAUSE_SECONDS, MAX_PAUSE_SECONDS, MIN_PAUSE_SECONDS};
+        let v = self.min_pause_length;
+        self.min_pause_length = if v.is_finite() { v.clamp(MIN_PAUSE_SECONDS, MAX_PAUSE_SECONDS) } else { DEFAULT_PAUSE_SECONDS };
+    }
+}
+
 /// Settings ▸ Media Cache.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]

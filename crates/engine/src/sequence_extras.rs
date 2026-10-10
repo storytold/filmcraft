@@ -56,7 +56,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             "Transcribe Sequence…",
             &["Sequence"],
             None,
-            r#"{"track":"mix"|"A1"|id?,"language":"en|auto"?,"diarize":bool?,"maxSpeakers":n?,"model":str?}"#,
+            r#"{"track":"mix"|"dialogue"|"A1"|id?,"language":"en|auto"?,"diarize":bool?,"maxSpeakers":n?,"model":str?,"download":bool=false,"wait":bool=true}"#,
             can_transcribe_sequence,
             transcribe,
         ),
@@ -229,24 +229,29 @@ fn normalize_mix(s: &mut Session, p: &Value) -> Result<Value> {
 /// tracks — "Mix" — or one track) with `transcript.generate`.
 fn transcribe(s: &mut Session, p: &Value) -> Result<Value> {
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    // Audio analysis: "Audio clips tagged as 'Dialogue'" (Essential Sound) or "Audio on track" (Mix = all)
+    let dialogue = matches!(p.get("track"), Some(Value::String(t)) if t.eq_ignore_ascii_case("dialogue"));
     let track = match p.get("track") {
         None => None,
-        Some(Value::String(t)) if t.eq_ignore_ascii_case("mix") => None,
+        Some(Value::String(t)) if t.eq_ignore_ascii_case("mix") || t.eq_ignore_ascii_case("dialogue") => None,
         Some(_) => Some(crate::commands::track_p(s, p, "track", "sequence.transcribe")?.ok_or_else(|| bad("sequence.transcribe", "unknown `track`"))?),
     };
     let mut items = Vec::new();
     for t in q.audio_tracks.iter().filter(|t| track.is_none_or(|x| x == t.id)) {
-        for it in t.items.iter().filter(|i| i.enabled) {
+        let tagged =
+            |i: &&filmcraft_project::TrackItem| !dialogue || i.essential.as_ref().is_some_and(|e| e.kind == filmcraft_project::essential::AudioType::Dialogue);
+        for it in t.items.iter().filter(|i| i.enabled).filter(tagged) {
             if !items.contains(&it.item.0) {
                 items.push(it.item.0);
             }
         }
     }
     if items.is_empty() {
-        return Err(EngineError::Other("there are no audio clips to transcribe".into()));
+        let why = if dialogue { "no audio clips are tagged as Dialogue (Essential Sound)" } else { "there are no audio clips to transcribe" };
+        return Err(EngineError::Other(why.into()));
     }
     let mut params = json!({"items": items});
-    for k in ["language", "diarize", "maxSpeakers", "model"] {
+    for k in ["language", "diarize", "maxSpeakers", "model", "download", "wait"] {
         if let Some(v) = p.get(k) {
             params[k] = v.clone();
         }

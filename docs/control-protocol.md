@@ -83,6 +83,22 @@ Essential Sound: `essentialSound.inspect`, `essentialSound.setType {type: dialog
 `essentialSound.ducking.against.<Type>`, `essentialSound.generateDucking`, `essentialSound.volume.on`,
 `essentialSound.volume.levelDb`, `essentialSound.mute`, `essentialSound.browse.<Type>.<preset>`.
 
+Text panel ▸ Transcript ([transcripts.md](transcripts.md)): `transcript.generate {wait: false}` /
+`sequence.transcribe {wait: false}` start a background job; poll `transcript.status` (or `jobs.list`)
+and stop it with `transcript.cancel`; `wait: true` (the default) returns when it is done.
+`transcript.search {filter: text|fillers|pauses, query?}`, `transcript.deleteAll {filter, query?, lift?}`,
+`transcript.select|extract|lift {from, to}` or `{pauseAfter}`. `ui.set {"transcript": {filter, current,
+deleteOpen, lift, pause, caret, viewOptions}, "transcriptSearch": "…"}` merges into the tab's view
+state. UI ids: `text.transcript.generate`, `text.transcript.progress`, `text.transcript.cancel`,
+`text.transcript.search`, `text.transcript.filter[.text|.fillers|.pauses|.searchSettings]`,
+`text.transcript.autoInOut`, `text.transcript.extract|lift`, `text.transcript.more[.createCaptions|.transcribe|.viewOptions|.autoScroll]`,
+`text.transcript.delete`, `text.transcript.count`, `text.transcript.prev|next`,
+`text.transcript.deleteMode.extract|lift`, `text.transcript.deleteAll|deleteOne`,
+`text.transcript.word.<i>`, `text.transcript.pause.<i>`, `text.transcript.segment.<n>`; the Transcribe
+dialog `transcribe.language|model|analysis.dialogue|analysis.track|track|ok|cancel` (and
+`transcribe.download.size|license` while it asks to download a model); Transcript View Options
+`transcriptViewOptions.fillerWords|pauses|minPauseLength|wholeWords|matchCase|save|cancel`.
+
 Project files, auto-save, crash recovery and preferences commands (`file.recover`, `prefs.set`, …) and their
 automation ids are listed in [project-files.md](project-files.md). That file also lists the media
 management commands and dialog ids: offline media and relinking (`media.findMissing`,

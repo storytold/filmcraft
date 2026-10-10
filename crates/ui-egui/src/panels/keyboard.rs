@@ -17,7 +17,7 @@
 //! | `timeline.increaseVideoHeight` … `timeline.decreaseAudioHeight` | Increase / Decrease Video / Audio Tracks Height | Cmd+= / Cmd+- / Alt+= / Alt+- (Timeline) |
 //! | `timeline.nextScreen` / `timeline.prevScreen` | Show Next / Previous Screen | PageDown / PageUp (Timeline) |
 //! | `projectPanel.*` | Project panel: List / Icon / Toggle View, Hover Scrub, thumbnail size, Move / Extend Selection | (Project) |
-//! | `textPanel.*` | Text panel transcript: word / line / segment navigation and selection, Delete, Ripple Delete, Show Program Transcript | (Text) |
+//! | `textPanel.*` | Text panel transcript: word / line / segment navigation and selection, Delete (lift), Ripple Delete (extract; also the selected pause), Show Program Transcript, Find | (Text) |
 //! | `graphics.beginTextEditing` | Begin Text Editing for a Graphic Layer | Cmd+Alt+' |
 //! | `help.filmcraftHelp` | Help (Premiere Help…) | F1 |
 //! | `app.quit` | Quit | Cmd+Q |
@@ -127,6 +127,7 @@ pub const COMMANDS: &[UiCommand] = &[
     uic!("textPanel.delete", "Delete", [], None),
     uic!("textPanel.rippleDelete", "Ripple Delete", [], None),
     uic!("textPanel.showProgramTranscript", "Show Program Transcript", [], None),
+    uic!("textPanel.find", "Find in Transcript", [], None),
     uic!("graphics.beginTextEditing", "Begin Text Editing for a Graphic Layer", [], Some("Cmd+Alt+'")),
     uic!("help.filmcraftHelp", "FilmCraft Help…", ["Help"], Some("F1")),
     uic!("app.quit", "Quit FilmCraft", [], Some("Cmd+Q")),
@@ -221,6 +222,12 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             Some(r) => r,
             None => project_panel(app, &id["projectPanel.".len()..]),
         },
+        // Find in the Text panel: its search field
+        "textPanel.find" => {
+            app.show_panel(PanelKind::Text);
+            app.ui.focused = PanelKind::Text;
+            Ok(focus_find_box(app, ctx))
+        }
         _ if id.starts_with("textPanel.") => text_panel(app, &id["textPanel.".len()..]),
         _ => return None,
     };
@@ -479,8 +486,9 @@ fn text_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
     let paras = filmcraft_edit::transcript::paragraphs(&words, filmcraft_time::Tick::from_seconds_f64(1.5));
     let para_of = |i: usize| paras.iter().position(|p| p.contains(&i)).unwrap_or(0);
     // a selection left over from a longer transcript (e.g. after `transcript.extract` over the control channel) counts as none, as when drawing
+    // without a selection, from the text cursor (a click, the last move), else the playhead's word
     let (anchor, cur) = app.ui.transcript_sel.filter(|(a, b)| *a < n && *b < n).unwrap_or_else(|| {
-        let i = filmcraft_edit::transcript::word_at(&words, app.session.playhead()).unwrap_or(0);
+        let i = app.ui.transcript.caret.filter(|c| *c < n).or_else(|| filmcraft_edit::transcript::word_at(&words, app.session.playhead())).unwrap_or(0);
         (i, i)
     });
     let line = |i: usize, d: i64| -> usize {
@@ -501,18 +509,26 @@ fn text_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
         "selectToSegmentStart" => (paras[para_of(cur)].start, true),
         "selectToSegmentEnd" => (paras[para_of(cur)].end - 1, true),
         "delete" | "rippleDelete" => {
-            let Some((a, b)) = app.ui.transcript_sel else { return Err("select text in the transcript".into()) };
+            // the selected text, or the selected pause
+            let Some(params) = crate::panels::transcript::selection_params(app) else { return Err("select text in the transcript".into()) };
             let cmd = if op == "delete" { "transcript.lift" } else { "transcript.extract" };
-            let r = app.session.execute(cmd, json!({"from": a.min(b), "to": a.max(b)})).map_err(|e| e.to_string())?;
+            let r = app.session.execute(cmd, params).map_err(|e| e.to_string())?;
             app.ui.transcript_sel = None;
+            app.ui.transcript.pause = None;
             return Ok(r);
         }
         _ => return Err(format!("unknown Text panel command `{op}`")),
     };
-    app.ui.transcript_sel = Some(if extend { (anchor, to) } else { (to, to) });
-    // the playhead follows the caret
+    // moving the cursor drops the selection; Shift extends it (and marks In/Out like a drag)
+    app.ui.transcript_sel = extend.then_some((anchor, to));
+    app.ui.transcript.pause = None;
+    app.ui.transcript.caret = Some(to);
+    if extend && app.session.prefs.transcript.auto_in_out {
+        app.session.execute("transcript.select", json!({"from": anchor.min(to), "to": anchor.max(to)})).map_err(|e| e.to_string())?;
+    }
+    // the playhead follows the cursor
     app.session.set_playhead(words[to].start);
-    Ok(json!({"selection": [anchor.min(to), anchor.max(to)], "word": to}))
+    Ok(json!({"selection": extend.then(|| [anchor.min(to), anchor.max(to)]), "word": to}))
 }
 
 #[cfg(test)]
@@ -538,8 +554,14 @@ mod transcript_selection_tests {
         app.session.execute("transcript.extract", json!({"from": 0, "to": 1})).unwrap();
         assert_eq!(filmcraft_engine::transcript::sequence_words(&app.session).len(), 2);
         let r = super::text_panel(&mut app, "prevWord").unwrap();
+        let caret = app.ui.transcript.caret.unwrap();
+        assert!(caret < 2, "cursor {caret} outside the 2-word transcript");
+        assert_eq!(r["word"], json!(caret));
+        assert_eq!(app.ui.transcript_sel, None, "moving the cursor drops the selection");
+        // a cursor left behind is checked the same way
+        app.ui.transcript.caret = Some(7);
+        let r = super::text_panel(&mut app, "selectNextWord").unwrap();
         let (sa, sb) = app.ui.transcript_sel.unwrap();
-        assert!(sa < 2 && sb < 2, "selection {sa}..{sb} outside the 2-word transcript");
-        assert_eq!(r["word"], json!(sb));
+        assert!(sa < 2 && sb < 2, "selection {sa}..{sb} outside the 2-word transcript: {r}");
     }
 }

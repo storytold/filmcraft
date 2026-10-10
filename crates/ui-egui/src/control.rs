@@ -250,6 +250,18 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                     Err(e) => return err(format!("`gfxTemplates`: {e}")),
                 }
             }
+            // Text panel ▸ Transcript view state (`panels::transcript::TranscriptUi`), merged
+            if let Some(patch) = p.get("transcript") {
+                let mut cur = serde_json::to_value(&app.ui.transcript).unwrap_or_default();
+                merge(&mut cur, patch);
+                match serde_json::from_value(cur) {
+                    Ok(v) => app.ui.transcript = v,
+                    Err(e) => return err(format!("`transcript`: {e}")),
+                }
+            }
+            if let Some(q) = s("transcriptSearch") {
+                app.ui.transcript_search = q.to_string();
+            }
             // the Type tool's text editing state: {"clip", "layer", "caret", "anchor"} (byte offsets) or null
             if let Some(v) = p.get("gfxEdit") {
                 match serde_json::from_value(v.clone()) {
