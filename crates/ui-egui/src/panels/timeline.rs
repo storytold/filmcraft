@@ -568,7 +568,11 @@ fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         && ui.rect_contains_pointer(rect)
         && ui.input(|i| i.pointer.any_released())
     {
-        let _ = app.session.execute("file.newSequence", json!({"fromItem": item.0}));
+        // a multi-selection makes the sequence from its first item and follows it, back to back, in one undo step
+        let items: Vec<u64> = crate::panels::dragged_selection(app, item).iter().map(|i| i.0).collect();
+        if let Err(e) = app.session.execute("file.newSequence", json!({"fromItems": items})) {
+            app.ui.status = e.to_string();
+        }
     }
 }
 
@@ -2315,15 +2319,23 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 TrackKind::Video => (Some(row.track.0), seq.audio_tracks.get(row.index).or(seq.audio_tracks.first()).map(|t| t.id.0)),
                 TrackKind::Audio => (seq.video_tracks.get(row.index).or(seq.video_tracks.first()).map(|t| t.id.0), Some(row.track.0)),
             };
-            let mut params = json!({"item": item.0, "track": vt, "audioTrack": at, "time": t.0, "insert": mods.command});
+            // dragging one of several selected project items places them all, back to back, as one edit
+            let items = match source {
+                None => crate::panels::dragged_selection(app, item),
+                Some(_) => vec![item],
+            };
+            let mut params = json!({"track": vt, "audioTrack": at, "time": t.0, "insert": mods.command});
+            match items.as_slice() {
+                [one] => params["item"] = json!(one.0),
+                many => params["items"] = json!(many.iter().map(|i| i.0).collect::<Vec<_>>()),
+            }
             if let Some(source) = source {
                 params["sourceIn"] = json!(source.range.start.0);
                 params["duration"] = json!(source.range.duration.0);
                 params["video"] = json!(source.video);
                 params["audio"] = json!(source.audio);
             }
-            let r = app.session.execute("timeline.place", params);
-            if let Err(e) = r {
+            if let Err(e) = app.session.execute("timeline.place", params) {
                 app.ui.status = e.to_string();
             }
             crate::panels::clear_drag(ui);
