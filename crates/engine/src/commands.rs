@@ -140,6 +140,29 @@ pub(crate) fn named_clips(s: &Session, spec: &CommandSpec, p: &Value) -> Option<
     let clips: Vec<ClipId> = named_ids(spec, p, "clips", "clip")?.into_iter().map(ClipId).filter(|c| seq.find_item(*c).is_some()).collect();
     (!clips.is_empty()).then_some(clips)
 }
+/// Why the clips a caller named in `clips` / `clip` stand in for no selection (#591): a clip of
+/// another sequence, an id of no clip (a track, a project item…) or a value that is not an id.
+/// `None` when the caller named nothing or no sequence is open, so the selection's reason stands.
+pub(crate) fn named_clips_missing(s: &Session, spec: &CommandSpec, p: &Value) -> Option<String> {
+    s.active_sequence()?;
+    let first = if spec.params.contains("\"clips\":[id]")
+        && let Some(a) = p.get("clips").and_then(Value::as_array)
+    {
+        a.first()?
+    } else if spec.params.contains("\"clip\":id") {
+        p.get("clip").filter(|v| !v.is_null())?
+    } else {
+        return None;
+    };
+    let Some(id) = first.as_u64() else {
+        return Some(format!("{first} is not a clip id (clip ids are the `clip` numbers of the items in sequence.inspect)"));
+    };
+    let elsewhere = s.project.sequences().find(|i| i.as_sequence().is_some_and(|q| q.find_item(ClipId(id)).is_some()));
+    Some(match elsewhere {
+        Some(i) => format!("clip {id} is in sequence \"{}\", not the active one: open it first with sequence.open {{\"item\":{}}}", i.name, i.id.0),
+        None => format!("no clip {id} in the active sequence (clip ids are the `clip` numbers of the items in sequence.inspect)"),
+    })
+}
 /// Project items named explicitly in `items` / `item`, likewise. The Project panel's selection
 /// holds bins beside items (one id space, see `project.select`), so a bin named here counts too;
 /// the project's own top bin does not, since no command acts on it (#244).
