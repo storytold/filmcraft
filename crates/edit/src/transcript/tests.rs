@@ -230,6 +230,79 @@ fn fillers_are_found_with_phrases_and_removed() {
 }
 
 #[test]
+fn pauses_are_listed_and_snapped_inward_one_at_a_time() {
+    let w = sequence_words(&whole(), &transcripts());
+    let p = pauses(&w, s(1.0));
+    assert_eq!(p, vec![Pause { after: 3, start: s(1.70), end: s(3.70) }]);
+    assert_eq!(p[0].duration(), s(2.0));
+    assert_eq!(pause_after(&w, 3), Some(p[0]));
+    assert_eq!(pauses(&w, s(0.4)).len(), 3, "as many as find_pauses finds");
+    // the whole pause, inward to frames: 1.70 → 1.72, 3.70 → 3.68
+    assert_eq!(pause_range(&p[0], Tick::ZERO, R), Some(TimeRange::from_bounds(s(1.72), s(3.68))));
+    assert_eq!(pause_range(&p[0], s(0.1), R), Some(TimeRange::from_bounds(s(1.80), s(3.60))));
+    assert_eq!(pause_range(&p[0], s(1.0), R), None, "nothing left to remove");
+    // no pause after the last word, between touching words, or past the end
+    assert_eq!(pause_after(&w, w.len() - 1), None);
+    assert_eq!(pause_after(&w, usize::MAX), None);
+    assert!(pauses(&[], s(0.1)).is_empty());
+    assert!(pauses(&w, Tick::ZERO).iter().all(|p| p.end > p.start));
+}
+
+fn loose_words(texts: &[&str], item: u64) -> Vec<SeqWord> {
+    texts
+        .iter()
+        .enumerate()
+        .map(|(i, t)| SeqWord {
+            text: t.to_string(),
+            start: s(i as f64),
+            end: s(i as f64 + 0.5),
+            clip: ClipId(item),
+            item: ItemId(item),
+            index: i,
+            track: 0,
+            speaker: None,
+            confidence: 1.0,
+        })
+        .collect()
+}
+
+#[test]
+fn search_settings_whole_words_and_capitalization() {
+    let w = loose_words(&["The", "Theme,", "then", "the", "end."], 1);
+    assert_eq!(search(&w, "the"), vec![0..1, 1..2, 2..3, 3..4], "a prefix of the last word, any case");
+    let whole = SearchOptions { whole_words: true, ..Default::default() };
+    assert_eq!(search_with(&w, "THE", whole), vec![0..1, 3..4]);
+    let case = SearchOptions { match_case: true, ..Default::default() };
+    assert_eq!(search_with(&w, "The", case), vec![0..1, 1..2]);
+    assert_eq!(search_with(&w, "the end", SearchOptions { whole_words: true, match_case: true }), vec![3..5]);
+    assert!(search_with(&w, " ,. ", whole).is_empty());
+    assert!(search_with(&[], "the", case).is_empty());
+}
+
+#[test]
+fn filler_lists_follow_the_transcript_language() {
+    assert!(default_fillers("en").contains(&"er"));
+    assert_eq!(default_fillers(""), DEFAULT_FILLERS);
+    assert!(default_fillers("de").contains(&"ähm") && default_fillers("de-AT").contains(&"öhm"));
+    for (lang, word) in [("de", "er"), ("de", "ah"), ("de", "eh"), ("nl", "er"), ("es", "ah")] {
+        assert!(!default_fillers(lang).contains(&word), "{word} is a word in {lang}");
+    }
+    let (en, de) = (filler_phrases(default_fillers("en")), filler_phrases(default_fillers("de")));
+    // "Er hat äh ÄHM, gesagt": German finds the hesitations (case and punctuation ignored), not "Er"
+    let words = loose_words(&["Er", "hat", "äh", "ÄHM,", "gesagt"], 1);
+    assert_eq!(find_fillers_by(&words, |_| de.as_slice()), vec![2..3, 3..4]);
+    assert_eq!(find_fillers_by(&words, |_| en.as_slice()), vec![0..1]);
+    // chosen per word: an English clip's "er" is a filler next to a German clip's "Er"
+    let mut mixed = loose_words(&["so", "er", "yes"], 1);
+    mixed.extend(loose_words(&["Er", "äh", "kommt"], 2));
+    assert_eq!(find_fillers_by(&mixed, |w| if w.item == ItemId(1) { en.as_slice() } else { de.as_slice() }), vec![1..2, 4..5]);
+    // phrases still win over their first word
+    let phrases = filler_phrases(&["you", "you know"]);
+    assert_eq!(phrases[0], ["you", "know"]);
+    assert_eq!(find_fillers_by(&loose_words(&["you", "Know.", "you"], 1), |_| phrases.as_slice()), vec![0..2, 2..3]);
+}
+
+#[test]
 fn merge_ranges_joins_overlaps() {
     let r = |a: f64, b: f64| TimeRange::from_bounds(s(a), s(b));
     let m = merge_ranges(vec![r(5.0, 6.0), r(1.0, 2.0), r(1.5, 3.0), r(3.0, 4.0)]);

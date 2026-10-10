@@ -349,6 +349,8 @@ pub const PREMIERE_PANEL: &[Entry] = &[
     ("textPanel.selectToSegmentEnd", "Cmd+Shift+Down", "Text"),
     ("textPanel.delete", "Alt+Backspace", "Text"),
     ("textPanel.rippleDelete", "Backspace", "Text"),
+    ("textPanel.rippleDelete", "Delete", "Text"),
+    ("textPanel.find", "Cmd+F", "Text"),
     ("textPanel.showProgramTranscript", "Shift+X", "Text"),
     ("captions.merge", "Alt+M", "Text"),
     ("captions.split", "Alt+S", "Text"),

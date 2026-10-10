@@ -155,6 +155,8 @@ pub struct Preferences {
     pub labels: settings::LabelPrefs,
     pub media: MediaPrefs,
     pub media_analysis: settings::MediaAnalysisPrefs,
+    /// Text panel ▸ Transcript: Transcript view options and the ••• menu toggles.
+    pub transcript: settings::TranscriptPrefs,
     pub media_cache: settings::MediaCachePrefs,
     pub memory: settings::MemoryPrefs,
     pub playback: PlaybackPrefs,
@@ -185,6 +187,7 @@ impl Default for Preferences {
             labels: Default::default(),
             media: Default::default(),
             media_analysis: Default::default(),
+            transcript: Default::default(),
             media_cache: Default::default(),
             memory: Default::default(),
             playback: Default::default(),
@@ -391,6 +394,7 @@ impl Preferences {
         self.playback.preroll_seconds = secs(self.playback.preroll_seconds);
         self.playback.postroll_seconds = secs(self.playback.postroll_seconds);
         self.trim.large_trim_offset = self.trim.large_trim_offset.clamp(1, 1000);
+        self.transcript.clamp();
         self.labels.sanitize_labels();
         self.appearance.sync_color_theme();
         self.version = settings::PREFS_VERSION;

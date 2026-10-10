@@ -3496,3 +3496,59 @@
 	Gradient Angle	グラデーションの角度
 	Linear Gradient	線形グラデーション
 	Solid	べた塗り
+
+# Text panel ▸ Transcript (Premiere's text-based editing)
+	ACTIONS	アクション
+	PREFERENCES	環境設定
+	Audio analysis	オーディオ分析
+	Audio clips tagged as 'Dialogue'	「会話」タグ付きのオーディオクリップ
+	Audio on track	トラックのオーディオ
+	Audio {n}	オーディオ {n}
+	Automatically set In/Out points	インポイント/アウトポイントを自動設定
+	Delete All Matches	一致したものをすべて削除
+	Delete all	すべて削除
+	Download and transcribe	ダウンロードして文字起こし
+	Download size: {size}	ダウンロードサイズ：{size}
+	Download speech model	音声モデルをダウンロード
+	Downloading speech model…	音声モデルをダウンロード中…
+	Enable auto-scrolling	自動スクロールを有効にする
+	Filler words	フィラーワード
+	Find in Transcript	文字起こし内を検索
+	Find whole words only	単語単位で検索
+	Licence: {license}	ライセンス：{license}
+	Loading speech model…	音声モデルを読み込み中…
+	Match capitalization	大文字と小文字を区別
+	Minimum pause length	最小ポーズの長さ
+	More options	その他のオプション
+	Next result	次の結果
+	Previous result	前の結果
+	Pauses	ポーズ
+	Search settings	検索設定
+	Search settings…	検索設定…
+	Source: {source}	ソース：{source}
+	Speech model: {id}	音声モデル：{id}
+	The model is saved in FilmCraft's data folder; transcription then runs on this computer without a connection.	モデルは FilmCraft のデータフォルダーに保存され、以後の文字起こしはこのコンピューター上でオフラインで実行されます。
+	Transcribe sequence…	シーケンスを文字起こし…
+	Transcribe source clips	ソースクリップを文字起こし
+	Transcribe your source clips to view your sequence transcript.	ソースクリップを文字起こしすると、シーケンスの文字起こしが表示されます。
+	Transcribing source clips	ソースクリップを文字起こし中
+	Transcribing	文字起こし中
+	Transcribing…	文字起こし中…
+	Transcript View Options	文字起こしの表示オプション
+	Transcript view options…	文字起こしの表示オプション…
+	Transcript view	文字起こしの表示
+	no results	結果なし
+	{name} (download {size} MB)	{name}（{size} MB をダウンロード）
+	{name} is not on this computer yet.	{name} はまだこのコンピューターにありません。
+	{name} is untranscribed	{name} は文字起こしされていません
+	{n} clips are untranscribed	{n} 個のクリップが文字起こしされていません
+	{n}/{total} results	{n}/{total} 件の結果
+	{seconds} seconds	{seconds} 秒
+	Transcription Status	文字起こしの状態
+	Cancel Transcription	文字起こしをキャンセル
+	Auto detect	自動検出
+	Danish	デンマーク語
+	Swedish	スウェーデン語
+	Norwegian	ノルウェー語
+	Ukrainian	ウクライナ語
+	Turkish	トルコ語

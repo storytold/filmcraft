@@ -2245,6 +2245,7 @@ dependencies = [
  "filmcraft-project",
  "filmcraft-render",
  "filmcraft-scopes",
+ "filmcraft-speech",
  "filmcraft-text",
  "filmcraft-time",
  "image",

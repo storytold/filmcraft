@@ -1,9 +1,8 @@
 //! The Text panel: Transcript / Captions / Graphics tabs. The Captions tab lists the caption
 //! segments of a caption track with editable in/out timecodes and text, a toolbar (add, split,
 //! merge, delete), track choice and the track style. Every edit dispatches a `captions.*` engine
-//! command; every widget registers an automation id (`text.*`). The Transcript tab shows the
-//! sequence transcript as speaker paragraphs of clickable words (click, Shift+click to extend);
-//! the selection marks In/Out and can be extracted or lifted (`transcript.*` commands).
+//! command; every widget registers an automation id (`text.*`). The Transcript tab is
+//! [`super::transcript`].
 
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_project::{CaptionAlign, CaptionAnchor, CaptionFormat};
@@ -56,7 +55,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let body = Rect::from_min_max(pos2(rect.min.x, rect.min.y + 34.0), rect.max);
     match app.ui.text_tab.as_str() {
         "Captions" => captions(app, ui, body),
-        "Transcript" => transcript(app, ui, body),
+        "Transcript" => super::transcript::show(app, ui, body),
         _ => crate::dock::placeholder(ui, body, &t, tl!("Graphics text search arrives with M10.1–M10.2")),
     }
 }
@@ -275,118 +274,6 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     });
     run(app, ui, actions);
-}
-
-fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
-    let t = app.tokens;
-    if app.session.active_sequence().is_none() {
-        crate::dock::placeholder(ui, rect, &t, tl!("Open a sequence to see its transcript"));
-        return;
-    }
-    let mut actions: Vec<(String, Value)> = Vec::new();
-    let words = filmcraft_engine::transcript::sequence_words(&app.session);
-    if words.is_empty() {
-        let c = rect.center();
-        icons::paint(ui.painter(), Rect::from_center_size(c - vec2(0.0, 70.0), vec2(40.0, 40.0)), Icon::Captions, t.text_dim);
-        ui.painter().text(c - vec2(0.0, 30.0), Align2::CENTER_CENTER, tl!("Transcribe sequence"), Tokens::semibold(16.0), t.text);
-        let note = if filmcraft_speech_available(app) {
-            tl!("Speech-to-text turns the dialogue into editable text.")
-        } else {
-            tl!("This build has no speech-to-text; import a transcript with transcript.set.")
-        };
-        ui.painter().text(c - vec2(0.0, 8.0), Align2::CENTER_CENTER, note, Tokens::ui(12.0), t.text_dim);
-        let r = Rect::from_center_size(c + vec2(0.0, 26.0), vec2(200.0, 26.0));
-        let resp = ui.interact(r, egui::Id::new("text.transcript.generate"), Sense::click());
-        ui.painter().rect_filled(r, 13.0, if resp.hovered() { t.accent_hover } else { t.accent });
-        ui.painter().text(r.center(), Align2::CENTER_CENTER, tl!("Transcribe"), Tokens::semibold(12.0), Color32::WHITE);
-        app.auto.add("text.transcript.generate", r, "Transcribe");
-        if resp.clicked() {
-            actions.push(("transcript.generate".into(), json!({})));
-        }
-        run(app, ui, actions);
-        return;
-    }
-    let sel = app.ui.transcript_sel.filter(|(a, b)| *a < words.len() && *b < words.len());
-    let (sa, sb) = sel.map(|(a, b)| (a.min(b), a.max(b))).unzip();
-
-    // ---- toolbar: search, extract / lift selection, remove fillers / pauses, captions
-    let bar = Rect::from_min_size(rect.min + vec2(10.0, 2.0), vec2(rect.width() - 20.0, 26.0));
-    let sw = 170.0f32.min(bar.width() * 0.4);
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(bar.min, vec2(sw, 24.0))));
-    let sresp = crate::widgets::search_field(&mut child, &mut app.ui.transcript_search, tl!("Search"), sw, &t);
-    app.auto.add("text.transcript.search", sresp.rect, "Search transcript");
-    let hits: Vec<std::ops::Range<usize>> = filmcraft_edit::transcript::search(&words, &app.ui.transcript_search);
-    let mut x = bar.min.x + sw + 10.0;
-    let range = sel.map(|(a, b)| json!({"from": a.min(b), "to": a.max(b)}));
-    let tools: [(Icon, &str, &str, bool, &str, Value); 4] = [
-        (Icon::Razor, "text.transcript.extract", tl!("Extract selected text"), sel.is_some(), "transcript.extract", range.clone().unwrap_or_default()),
-        (Icon::Trash, "text.transcript.lift", tl!("Lift selected text"), sel.is_some(), "transcript.lift", range.unwrap_or_default()),
-        (Icon::Link, "text.transcript.removeFillers", tl!("Remove filler words"), true, "transcript.removeFillers", json!({})),
-        (Icon::Captions, "text.transcript.createCaptions", tl!("Create captions"), true, "transcript.createCaptions", json!({})),
-    ];
-    for (icon, id, label, enabled, cmd, params) in tools {
-        let r = Rect::from_min_size(pos2(x, bar.min.y), vec2(24.0, 24.0));
-        if r.max.x > rect.max.x {
-            break;
-        }
-        if tool_button(app, ui, r, icon, id, label, enabled) {
-            if cmd.ends_with("extract") || cmd.ends_with("lift") {
-                app.ui.transcript_sel = None;
-            }
-            actions.push((cmd.into(), params));
-        }
-        x += 28.0;
-    }
-
-    // ---- paragraphs of words
-    let list = Rect::from_min_max(pos2(rect.min.x + 6.0, bar.max.y + 8.0), pos2(rect.max.x - 6.0, rect.max.y - 4.0));
-    ui.painter().rect_filled(list, 3.0, t.app_bg);
-    let ph = app.session.playhead();
-    let current = filmcraft_edit::transcript::word_at(&words, ph);
-    let paras = filmcraft_edit::transcript::paragraphs(&words, filmcraft_time::Tick::from_seconds_f64(1.5));
-    let rate = app.session.sequence_rate();
-    let df = app.session.active_sequence().is_some_and(|q| q.settings.drop_frame);
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(list.shrink(6.0)).id_salt("transcript-list"));
-    egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("transcript-scroll").show(&mut child, |ui| {
-        ui.set_width(list.width() - 16.0);
-        for (pi, pr) in paras.iter().enumerate() {
-            let w0 = &words[pr.start];
-            let head = format!("{}  {}", w0.speaker.as_deref().unwrap_or(tl!("Speaker")), format_time(w0.start, rate, df, TimeDisplay::Timecode, 48_000));
-            let hr = ui.label(egui::RichText::new(head).size(11.0).color(t.text_dim).strong());
-            app.auto.add(&format!("text.transcript.paragraph.{pi}"), hr.rect, "Paragraph");
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = vec2(4.0, 3.0);
-                for i in pr.clone() {
-                    let w = &words[i];
-                    let in_sel = sa.is_some_and(|a| i >= a) && sb.is_some_and(|b| i <= b);
-                    let hit = hits.iter().any(|h| h.contains(&i));
-                    let mut text = egui::RichText::new(&w.text).size(13.0).color(if Some(i) == current { t.hot_text } else { t.text });
-                    if in_sel {
-                        text = text.background_color(t.row_selected);
-                    } else if hit {
-                        text = text.background_color(t.hover);
-                    }
-                    let resp = ui.add(egui::Label::new(text).sense(Sense::click()));
-                    app.auto.add(&format!("text.transcript.word.{i}"), resp.rect, &w.text);
-                    if resp.clicked() {
-                        let shift = ui.input(|inp| inp.modifiers.shift);
-                        app.ui.transcript_sel = Some(match (shift, sel) {
-                            (true, Some((a, _))) => (a, i),
-                            _ => (i, i),
-                        });
-                        let (a, b) = app.ui.transcript_sel.unwrap_or((i, i));
-                        actions.push(("transcript.select".into(), json!({"from": a.min(b), "to": a.max(b)})));
-                    }
-                }
-            });
-            ui.add_space(8.0);
-        }
-    });
-    run(app, ui, actions);
-}
-
-fn filmcraft_speech_available(app: &FilmcraftApp) -> bool {
-    app.session.transcriber.is_some() || filmcraft_engine::transcript::speech_available()
 }
 
 fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: usize, actions: &mut Vec<(String, Value)>) {

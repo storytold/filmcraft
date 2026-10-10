@@ -120,6 +120,10 @@ pub enum Icon {
     Moon,
     /// Colour parameters: pick a colour from the Program monitor (a pipette).
     Eyedropper,
+    /// Text panel ▸ Transcript: the search filter (a funnel), previous match, the "•••" menu.
+    Filter,
+    ChevronUp,
+    More,
 }
 
 pub struct Pen16<'a> {
@@ -763,6 +767,16 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.line(&[(9.5, 7.5), (3.5, 12.5)]);
             pen.line(&[(3.5, 12.5), (2.5, 13.5)]);
         }
+        Filter => {
+            // a funnel: a wide rim narrowing to a short spout
+            pen.closed(&[(2.5, 3.5), (13.5, 3.5), (9.5, 8.5), (9.5, 12.5), (6.5, 13.5), (6.5, 8.5)]);
+        }
+        ChevronUp => pen.line(&[(4.0, 10.0), (8.0, 6.0), (12.0, 10.0)]),
+        More => {
+            for x in [3.5, 8.0, 12.5] {
+                pen.dot(x, 8.0, 1.2);
+            }
+        }
     }
 }
 
@@ -895,6 +909,9 @@ mod tests {
         Network,
         Clock,
         Eyedropper,
+        Filter,
+        ChevronUp,
+        More,
     ];
 
     /// Paint `icon` at `ppp` device pixels per point into a rect of `size` points whose corner is

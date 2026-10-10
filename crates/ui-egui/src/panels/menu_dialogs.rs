@@ -333,7 +333,15 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value
         }
         "sequence.transcribe" => {
             let tracks: Vec<String> = s.active_sequence().map(|q| (1..=q.audio_tracks.len()).map(|i| format!("A{i}")).collect()).unwrap_or_default();
-            (json!({"language": "auto", "track": "mix", "diarize": true}), json!({"tracks": tracks}))
+            let ma = &s.prefs.media_analysis;
+            let language = if ma.language_auto_detect { "auto".to_string() } else { ma.default_language.clone() };
+            let model = ma.whisper_model.clone();
+            let models = s.execute("transcript.models", json!({})).map_err(|e| e.to_string())?;
+            let recogniser = s.transcriber.as_ref().map(|t| t.id());
+            (
+                json!({"language": language, "analysis": "track", "track": "mix", "model": model, "confirmDownload": false}),
+                json!({"tracks": tracks, "models": models["models"], "recogniser": recogniser}),
+            )
         }
         "file.saveAsTemplate" => (json!({"name": s.project.name}), Value::Null),
         "markers.addFlashCue" => (json!({"name": "", "comment": ""}), Value::Null),
@@ -436,6 +444,41 @@ fn color(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &s
         }
         ui.label(p.get(key).and_then(Value::as_str).unwrap_or_default());
     });
+}
+
+/// The languages of the Transcribe dialog (Premiere's list), "Auto detect" first.
+fn language_names() -> Vec<(String, String)> {
+    const LANGS: [(&str, &str); 18] = [
+        ("auto", "Auto detect"),
+        ("en", "English"),
+        ("de", "German"),
+        ("fr", "French"),
+        ("es", "Spanish"),
+        ("it", "Italian"),
+        ("pt", "Portuguese"),
+        ("nl", "Dutch"),
+        ("da", "Danish"),
+        ("sv", "Swedish"),
+        ("no", "Norwegian"),
+        ("ru", "Russian"),
+        ("uk", "Ukrainian"),
+        ("tr", "Turkish"),
+        ("hi", "Hindi"),
+        ("ja", "Japanese"),
+        ("ko", "Korean"),
+        ("zh", "Chinese"),
+    ];
+    LANGS.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+}
+
+/// The catalogue entry (`transcript.models`) of a speech model in the Transcribe dialog's info.
+fn transcribe_model(info: &Value, id: &str) -> Value {
+    info["models"].as_array().and_then(|a| a.iter().find(|m| m["id"] == id)).cloned().unwrap_or(Value::Null)
+}
+
+/// Transcribe needs to download the chosen model first (no recogniser installed by the host).
+fn needs_download(d: &ClipDialogDraft) -> bool {
+    d.info["recogniser"].is_null() && transcribe_model(&d.info, d.params["model"].as_str().unwrap_or_default())["installed"] == false
 }
 
 fn pairs(v: &[&str]) -> Vec<(String, String)> {
@@ -738,21 +781,74 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     &[("both", tl!("Video and Audio")), ("video", tl!("Video Only")), ("audio", tl!("Audio Only"))],
                 );
             }
-            "sequence.transcribe" => {
-                let langs = pairs(&["auto", "en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh", "nl", "ru"]);
-                combo(ui, &mut elems, "transcribe.language", tl!("Language:"), &mut p["language"], &langs);
-                let mut tracks: Vec<(String, String)> = vec![("mix".into(), tl!("Mix").into())];
-                tracks.extend(
-                    d.info["tracks"]
-                        .as_array()
-                        .cloned()
-                        .unwrap_or_default()
-                        .iter()
-                        .filter_map(|t| t.as_str())
-                        .map(|t| (t.to_string(), tlf!("Audio on track {t}", t))),
+            "sequence.transcribe" if p["confirmDownload"] == true => {
+                // the chosen model is not on this computer: say what will be downloaded first
+                let m = transcribe_model(&d.info, p["model"].as_str().unwrap_or_default());
+                let name = m["name"].as_str().unwrap_or_default().to_string();
+                ui.label(RichText::new(tl!("Download speech model")).strong());
+                ui.label(tlf!("{name} is not on this computer yet.", name = name));
+                let size = format!("{:.0} MB", m["size"].as_f64().unwrap_or(0.0) / 1e6);
+                let text = tlf!("Download size: {size}", size = size);
+                let r = ui.label(&text);
+                push(&mut elems, "transcribe.download.size", &r, text);
+                let text = tlf!("Licence: {license}", license = m["license"].as_str().unwrap_or_default());
+                let r = ui.label(&text);
+                push(&mut elems, "transcribe.download.license", &r, text);
+                ui.label(tlf!("Source: {source}", source = m["source"].as_str().unwrap_or_default()));
+                ui.label(
+                    RichText::new(tl!("The model is saved in FilmCraft's data folder; transcription then runs on this computer without a connection.")).weak(),
                 );
-                combo(ui, &mut elems, "transcribe.track", tl!("Audio analysis:"), &mut p["track"], &tracks);
-                check(ui, &mut elems, pre, p, "diarize", tl!("Recognize when different speakers are talking"));
+            }
+            "sequence.transcribe" => {
+                combo(ui, &mut elems, "transcribe.language", tl!("Language"), &mut p["language"], &language_names());
+                match d.info["recogniser"].as_str() {
+                    // a host or test installed its own recogniser: the catalogue is not used
+                    Some(id) => {
+                        ui.label(RichText::new(tlf!("Speech model: {id}", id)).weak());
+                    }
+                    None => {
+                        let models: Vec<(String, String)> = d.info["models"]
+                            .as_array()
+                            .cloned()
+                            .unwrap_or_default()
+                            .iter()
+                            .map(|m| {
+                                let (name, mb) = (m["name"].as_str().unwrap_or_default(), m["size"].as_f64().unwrap_or(0.0) / 1e6);
+                                let label = if m["installed"] == true {
+                                    name.to_string()
+                                } else {
+                                    tlf!("{name} (download {size} MB)", name, size = format!("{mb:.0}"))
+                                };
+                                (m["id"].as_str().unwrap_or_default().to_string(), label)
+                            })
+                            .collect();
+                        combo(ui, &mut elems, "transcribe.model", tl!("Speech model"), &mut p["model"], &models);
+                        let m = transcribe_model(&d.info, p["model"].as_str().unwrap_or_default());
+                        if let Some(desc) = m["description"].as_str() {
+                            ui.label(RichText::new(desc).weak().small());
+                        }
+                    }
+                }
+                ui.add_space(4.0);
+                ui.label(tl!("Audio analysis"));
+                let r = ui.radio(p["analysis"] == "dialogue", tl!("Audio clips tagged as 'Dialogue'"));
+                push(&mut elems, "transcribe.analysis.dialogue", &r, "Audio clips tagged as 'Dialogue'");
+                if r.clicked() {
+                    p["analysis"] = json!("dialogue");
+                }
+                ui.horizontal(|ui| {
+                    let r = ui.radio(p["analysis"] != "dialogue", tl!("Audio on track"));
+                    push(&mut elems, "transcribe.analysis.track", &r, "Audio on track");
+                    if r.clicked() {
+                        p["analysis"] = json!("track");
+                    }
+                    let mut tracks: Vec<(String, String)> = vec![("mix".into(), tl!("Mix").into())];
+                    tracks.extend(d.info["tracks"].as_array().cloned().unwrap_or_default().iter().filter_map(|t| t.as_str()).map(|t| {
+                        let n = t.trim_start_matches('A').to_string();
+                        (t.to_string(), tlf!("Audio {n}", n))
+                    }));
+                    ui.add_enabled_ui(p["analysis"] != "dialogue", |ui| combo(ui, &mut elems, "transcribe.track", "", &mut p["track"], &tracks));
+                });
             }
             "file.saveAsTemplate" => text(ui, &mut elems, pre, p, "name", tl!("Template Name:"), 240.0),
             "file.newColorMatte" => {
@@ -812,6 +908,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     action = Some("cancel");
                 }
             }
+            let ok_text = if d.command == "sequence.transcribe" && d.params["confirmDownload"] == true { tl!("Download and transcribe") } else { ok_text };
             let r = ui.button(ok_text);
             push(&mut elems, format!("{pre}.ok"), &r, ok_text);
             if r.clicked() {
@@ -834,6 +931,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         Some("cancel") => {
             app.ui.extras.dialog = None;
             return;
+        }
+        Some("ok") if d.command == "sequence.transcribe" && d.params["confirmDownload"] != true && needs_download(&d) => {
+            d.params["confirmDownload"] = json!(true);
         }
         Some("ok") => match run(app, &d) {
             Ok(Some(info)) => d.info["result"] = json!(info),
@@ -883,6 +983,17 @@ fn run(app: &mut FilmcraftApp, d: &ClipDialogDraft) -> Result<Option<String>, St
             app.ui.status = tlf!("Saved template {path}", path = r["path"].as_str().unwrap_or_default());
             Ok(None)
         }
+        "sequence.transcribe" => {
+            let track = if p["analysis"] == "dialogue" { json!("dialogue") } else { p["track"].clone() };
+            let q = json!({
+                "track": track, "language": p["language"], "model": p["model"], "diarize": false,
+                "download": p["confirmDownload"] == true, "wait": false,
+            });
+            s.execute("sequence.transcribe", q).map_err(|e| e.to_string())?;
+            app.show_panel(PanelKind::Text);
+            app.ui.text_tab = "Transcript".into();
+            Ok(None)
+        }
         "clip.sceneEditDetection" => {
             s.execute(&d.command, p.clone()).map_err(|e| e.to_string())?;
             app.ui.status = tl!("Scene Edit Detection: analysing in the background (see Progress)").into();
@@ -892,9 +1003,6 @@ fn run(app: &mut FilmcraftApp, d: &ClipDialogDraft) -> Result<Option<String>, St
             let mut q = p.clone();
             if cmd == "markers.addFlashCue" && q["name"].as_str().is_some_and(str::is_empty) {
                 q.as_object_mut().map(|m| m.remove("name"));
-            }
-            if cmd == "sequence.transcribe" && q["language"] == "auto" {
-                q.as_object_mut().map(|m| m.remove("language"));
             }
             s.execute(cmd, q).map_err(|e| e.to_string())?;
             Ok(None)

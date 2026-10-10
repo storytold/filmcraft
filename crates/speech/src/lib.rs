@@ -23,6 +23,8 @@ pub mod vad;
 #[cfg(feature = "whisper")]
 pub mod whisper;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use filmcraft_project::Transcript;
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
 
@@ -92,6 +94,17 @@ pub trait Transcriber: Send + Sync {
     fn id(&self) -> String;
     /// Transcribe mono 16 kHz `audio`. Word times are relative to the first sample.
     fn transcribe(&self, audio: &[f32], opts: &Options, progress: ProgressFn) -> Result<Transcript, SpeechError>;
+    /// [`Transcriber::transcribe`] that stops with [`SpeechError::Cancelled`] once `cancel` is set
+    /// (from another thread: the job's Cancel button). The default checks the flag before and after
+    /// the run and makes `progress` return `false` once it is set, so a recogniser stops at its next
+    /// progress report; one that can stop sooner overrides this.
+    fn transcribe_cancellable(&self, audio: &[f32], opts: &Options, progress: ProgressFn, cancel: &AtomicBool) -> Result<Transcript, SpeechError> {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(SpeechError::Cancelled);
+        }
+        let r = self.transcribe(audio, opts, &mut |f, s| !cancel.load(Ordering::Relaxed) && progress(f, s));
+        if cancel.load(Ordering::Relaxed) { Err(SpeechError::Cancelled) } else { r }
+    }
 }
 
 /// A transcriber that returns a fixed transcript (tests, demos and agents that bring their own
@@ -199,6 +212,56 @@ mod tests {
         assert_eq!(out.words.len(), 1);
         assert_eq!(out.source, "fixed");
         assert_eq!(f.transcribe(&[], &Options::default(), &mut |_, _| false), Err(SpeechError::Cancelled));
+    }
+
+    #[test]
+    fn transcribe_cancellable_stops_at_the_next_progress_report() {
+        let mut t = Transcript::default();
+        t.words.push(Word::new("hi", seconds_tick(0.1), seconds_tick(0.3)));
+        let f = FixedTranscriber { transcript: t, id: "fixed".into() };
+        let audio = vec![0.0; 16_000];
+        let cancel = AtomicBool::new(false);
+        let mut reports = 0;
+        let out = f
+            .transcribe_cancellable(
+                &audio,
+                &Options::default(),
+                &mut |_, _| {
+                    reports += 1;
+                    true
+                },
+                &cancel,
+            )
+            .unwrap();
+        assert_eq!((out.words.len(), reports), (1, 2));
+        // set before the run: nothing runs
+        cancel.store(true, Ordering::Relaxed);
+        let mut reports = 0;
+        assert_eq!(
+            f.transcribe_cancellable(
+                &audio,
+                &Options::default(),
+                &mut |_, _| {
+                    reports += 1;
+                    true
+                },
+                &cancel
+            ),
+            Err(SpeechError::Cancelled)
+        );
+        assert_eq!(reports, 0);
+        // set while it runs (by the caller's progress callback here): the progress report says stop
+        let cancel = AtomicBool::new(false);
+        let r = f.transcribe_cancellable(
+            &audio,
+            &Options::default(),
+            &mut |_, _| {
+                cancel.store(true, Ordering::Relaxed);
+                true
+            },
+            &cancel,
+        );
+        assert_eq!(r, Err(SpeechError::Cancelled));
     }
 
     #[test]

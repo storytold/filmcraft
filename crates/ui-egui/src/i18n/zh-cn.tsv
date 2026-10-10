@@ -3485,3 +3485,59 @@
 	Appearance Mode	外观模式
 	Next Appearance Mode	下一个外观模式
 	Sync with system	跟随系统
+
+# Text panel ▸ Transcript (Premiere's text-based editing)
+	ACTIONS	操作
+	PREFERENCES	首选项
+	Audio analysis	音频分析
+	Audio clips tagged as 'Dialogue'	标记为“对话”的音频剪辑
+	Audio on track	轨道上的音频
+	Audio {n}	音频 {n}
+	Automatically set In/Out points	自动设置入点/出点
+	Delete All Matches	删除所有匹配项
+	Delete all	全部删除
+	Download and transcribe	下载并转录
+	Download size: {size}	下载大小：{size}
+	Download speech model	下载语音模型
+	Downloading speech model…	正在下载语音模型…
+	Enable auto-scrolling	启用自动滚动
+	Filler words	填充词
+	Find in Transcript	在转录中查找
+	Find whole words only	仅查找完整单词
+	Licence: {license}	许可证：{license}
+	Loading speech model…	正在加载语音模型…
+	Match capitalization	区分大小写
+	Minimum pause length	最短停顿时长
+	More options	更多选项
+	Next result	下一个结果
+	Previous result	上一个结果
+	Pauses	停顿
+	Search settings	搜索设置
+	Search settings…	搜索设置…
+	Source: {source}	来源：{source}
+	Speech model: {id}	语音模型：{id}
+	The model is saved in FilmCraft's data folder; transcription then runs on this computer without a connection.	模型保存在 FilmCraft 的数据文件夹中；之后转录在本机离线运行。
+	Transcribe sequence…	转录序列…
+	Transcribe source clips	转录源剪辑
+	Transcribe your source clips to view your sequence transcript.	转录源剪辑以查看序列的转录文本。
+	Transcribing source clips	正在转录源剪辑
+	Transcribing	正在转录
+	Transcribing…	正在转录…
+	Transcript View Options	转录视图选项
+	Transcript view options…	转录视图选项…
+	Transcript view	转录视图
+	no results	无结果
+	{name} (download {size} MB)	{name}（需下载 {size} MB）
+	{name} is not on this computer yet.	本机上还没有 {name}。
+	{name} is untranscribed	{name} 尚未转录
+	{n} clips are untranscribed	{n} 个剪辑尚未转录
+	{n}/{total} results	{n}/{total} 个结果
+	{seconds} seconds	{seconds} 秒
+	Transcription Status	转录状态
+	Cancel Transcription	取消转录
+	Auto detect	自动检测
+	Danish	丹麦语
+	Swedish	瑞典语
+	Norwegian	挪威语
+	Ukrainian	乌克兰语
+	Turkish	土耳其语
