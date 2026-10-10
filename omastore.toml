@@ -1,0 +1,11 @@
+kind = "app"
+categories = ["AudioVideo", "Video", "AudioVideoEditing"]
+icon = "assets/app-icon/hicolor/256x256/apps/ai.storyteller.filmcraft.png"
+
+[linux.x86_64]
+asset = "filmcraft-{version}-linux-x86_64.tar.gz"
+exec = "filmcraft-{version}-linux-x86_64/usr/bin/filmcraft"
+
+[linux.aarch64]
+asset = "filmcraft-{version}-linux-aarch64.tar.gz"
+exec = "filmcraft-{version}-linux-aarch64/usr/bin/filmcraft"
