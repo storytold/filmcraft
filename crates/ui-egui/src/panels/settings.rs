@@ -739,7 +739,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         ui.horizontal(|ui| {
             ui.add_space(20.0);
             if button(app, ui, "settings.help", tl!("Help"), false) {
-                crate::links::open(ctx, &format!("{}/blob/main/docs/project-files.md#settings", crate::links::GITHUB));
+                crate::links::open(app, ctx, &format!("{}/blob/main/docs/project-files.md#settings", crate::links::GITHUB));
             }
             if button(app, ui, "settings.reset", tl!("Reset…"), false) {
                 // this category back to its defaults (OK applies it)

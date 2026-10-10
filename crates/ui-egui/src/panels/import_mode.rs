@@ -67,7 +67,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         crate::icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 20.0, r.center().y), vec2(16.0, 16.0)), icon, fg);
         ui.painter().galley(pos2(r.min.x + 34.0, r.center().y - g.size().y / 2.0), g, fg);
         if resp.clicked() {
-            crate::links::open(&ctx, url);
+            crate::links::open(app, &ctx, url);
         }
         x = r.max.x + 12.0;
     }

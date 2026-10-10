@@ -404,7 +404,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         }
         id if crate::links::url_for(id).is_some() => {
             let url = crate::links::url_for(id).unwrap_or_default();
-            crate::links::open(ctx, url);
+            crate::links::open(app, ctx, url);
             app.ui.status = tlf!("Opened {url}", url);
             return Ok(json!({"url": url}));
         }

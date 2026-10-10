@@ -34,6 +34,8 @@ rfd = { workspace = true }
 cpal = "0.16"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 sys-locale = "0.3"
+# Help menu / About / Discord links in the system browser (MIT; as PhotoCraft).
+open = "5"
 
 [dev-dependencies]
 glob = "0.3"
