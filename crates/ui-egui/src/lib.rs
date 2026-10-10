@@ -760,6 +760,8 @@ impl FilmcraftApp {
 
     pub fn set_workspace(&mut self, name: &str) {
         self.ui.workspace = name.to_string();
+        // a workspace is shown whole: no frame stays maximized over it
+        self.ui.keys.maximized = None;
         self.ui.dock = dock::saved_layout(&self.workspaces, name);
         if self.workspaces.current != name {
             let mut next = self.workspaces.clone();

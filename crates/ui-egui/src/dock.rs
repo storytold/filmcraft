@@ -404,8 +404,19 @@ impl DockNode {
                 }
             }
         }
-        if !add(self, p, near) && !add(self, p, PanelKind::Project) {
-            add(self, p, PanelKind::Program);
+        /// The first group of the tree, even an empty one (closing the last panel leaves the
+        /// root as an empty group: a panel opened then must still have somewhere to go).
+        fn add_first(n: &mut DockNode, p: PanelKind) {
+            match n {
+                DockNode::Split { a, .. } => add_first(a, p),
+                DockNode::Tabs { panels, active } => {
+                    panels.push(p);
+                    *active = panels.len() - 1;
+                }
+            }
+        }
+        if !add(self, p, near) && !add(self, p, PanelKind::Project) && !add(self, p, PanelKind::Program) {
+            add_first(self, p);
         }
     }
 }
@@ -784,5 +795,26 @@ mod tests {
         let s = serde_json::to_string(&d).unwrap();
         let back: DockNode = serde_json::from_str(&s).unwrap();
         assert_eq!(back, d);
+    }
+
+    /// #284: with Project and Program closed (or every panel closed) a panel still opens.
+    #[test]
+    fn open_near_falls_back_to_the_first_group() {
+        let mut d = workspace("Editing");
+        let mut all = Vec::new();
+        d.panels(&mut all);
+        for p in all {
+            d.close(p);
+        }
+        assert_eq!(d, DockNode::Tabs { panels: vec![], active: 0 });
+        d.open_near(PanelKind::Program, PanelKind::Project);
+        assert!(d.is_visible(PanelKind::Program));
+        d.restore_timeline();
+        assert!(d.is_visible(PanelKind::Timeline));
+        // a tree without Project or Program: the panel joins the first group
+        let mut d = hsplit(SplitSize::Ratio(0.5), tabs(&[PanelKind::Effects], 0), tabs(&[PanelKind::Markers], 0));
+        d.open_near(PanelKind::Info, PanelKind::Source);
+        assert!(d.is_visible(PanelKind::Info));
+        assert_eq!(d, hsplit(SplitSize::Ratio(0.5), tabs(&[PanelKind::Effects, PanelKind::Info], 1), tabs(&[PanelKind::Markers], 0)));
     }
 }

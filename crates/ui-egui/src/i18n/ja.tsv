@@ -495,6 +495,7 @@
 	Close Panel	パネルを閉じる
 	Close Other Timeline Panels	他のタイムラインパネルを閉じる
 	Maximize Frame	パネルを最大化
+	Restore Frame	パネルを元に戻す
 	Restore Workspace	ワークスペースを復元
 	Reveal Sequence in Project	プロジェクトでシーケンスを表示
 	Video Thumbnails	ビデオサムネイル

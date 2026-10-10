@@ -178,6 +178,37 @@ fn every_panel_opens_from_the_window_menu() {
     }
 }
 
+/// #284 point 3: the panel menu's Maximize Frame keeps the layout (Restore Frame brings it back),
+/// and closing every panel still leaves a dock that Window ▸ can reopen panels into.
+#[test]
+fn panel_menu_maximize_restores_and_an_empty_dock_reopens() {
+    use filmcraft_ui_egui::dock::{DockNode, PanelKind};
+    let mut d = Driver::demo();
+    let layout = d.app().ui.dock.clone();
+    d.click("panel.menu.Program");
+    assert_eq!(d.label("panel.menu.Program.maximize"), "Maximize Frame");
+    d.click("panel.menu.Program.maximize");
+    assert_eq!(d.app().ui.keys.maximized, Some(PanelKind::Program));
+    assert!(!d.has("panel.Timeline"), "only the maximized panel is shown");
+    d.click("panel.menu.Program");
+    assert_eq!(d.label("panel.menu.Program.maximize"), "Restore Frame");
+    d.click("panel.menu.Program.maximize");
+    assert_eq!(d.app().ui.keys.maximized, None);
+    assert_eq!(d.app().ui.dock, layout, "the layout survives maximize / restore");
+    assert!(d.has("panel.Timeline"));
+
+    let mut all = Vec::new();
+    layout.panels(&mut all);
+    for p in all {
+        d.ok("ui.panel.close", json!({"panel": p.id()}));
+    }
+    assert_eq!(d.app().ui.dock, DockNode::Tabs { panels: vec![], active: 0 });
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.Program"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.Timeline"}));
+    d.frames(3);
+    assert!(d.has("panel.tab.Program") && d.has("panel.tab.Timeline"));
+}
+
 #[test]
 fn lumetri_scopes_layouts_menu_and_footer() {
     let mut d = Driver::demo();
