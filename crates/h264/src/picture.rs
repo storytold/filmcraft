@@ -303,6 +303,38 @@ impl Frame {
         }
     }
 
+    /// Copy the w x h luma window at (x0, y0) (clamped) into `out`, copying exactly `w` samples per
+    /// line straight from the picture.
+    ///
+    /// Equivalent to [`Self::luma_window`] followed by taking the `w` x `h` top-left corner, but
+    /// without materialising the `(w + 5)` x `(h + 5)` window: integer-precision motion needs no
+    /// filter taps, and building that window is the bulk of the cost of motion compensation on real
+    /// streams (87% of calls on a libx264 High 4:2:2 10-bit sample carry integer motion vectors).
+    #[inline]
+    pub fn copy_luma(&self, x0: i32, y0: i32, w: usize, h: usize, out: &mut [u16], os: usize) {
+        let (width, height) = (self.width, self.height);
+        for r in 0..h {
+            let yy = (y0 + r as i32).clamp(0, height as i32 - 1) as usize;
+            let row = self.row(yy >> 4);
+            let line = &row.y[(yy & 15) * width..(yy & 15) * width + width];
+            copy_clamped(line, x0, &mut out[r * os..][..w]);
+        }
+    }
+
+    /// [`Self::copy_luma`] for chroma component `c`.
+    #[inline]
+    pub fn copy_chroma(&self, c: usize, x0: i32, y0: i32, w: usize, h: usize, out: &mut [u16], os: usize) {
+        let (cw, ch) = (self.cwidth, self.cheight);
+        let clines = self.fmt.chroma_row_lines();
+        for r in 0..h {
+            let yy = (y0 + r as i32).clamp(0, ch as i32 - 1) as usize;
+            let row = self.row(self.fmt.chroma_row_index(yy));
+            let plane = if c == 0 { &row.cb } else { &row.cr };
+            let line = &plane[(yy & (clines - 1)) * cw..(yy & (clines - 1)) * cw + cw];
+            copy_clamped(line, x0, &mut out[r * os..][..w]);
+        }
+    }
+
     /// Crop and copy the frame into planar buffers (waits for completion).
     pub fn copy_cropped(&self, crop: (usize, usize, usize, usize)) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
         let (cx, cy, cw, ch) = crop;

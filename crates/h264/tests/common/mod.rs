@@ -69,6 +69,17 @@ pub const FIXTURES: &[Fixture] = &[
         filter: "noise=alls=3:allf=t",
         args: &["-preset", "medium", "-crf", "20"],
     },
+    // Deep-bit-depth / 4:2:2 performance reference (see tests/perf.rs): the format whose decode cost
+    // the 8-bit 4:2:0 stream above does not predict.
+    Fixture {
+        name: "bench_1080p_422_10b",
+        source: "testsrc2",
+        width: 1920,
+        height: 1080,
+        frames: 60,
+        filter: "noise=alls=3:allf=t",
+        args: &["-pix_fmt", "yuv422p10le", "-preset", "medium", "-crf", "20"],
+    },
     Fixture {
         name: "intra_cavlc",
         source: "testsrc2",
