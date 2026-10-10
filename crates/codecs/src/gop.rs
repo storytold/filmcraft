@@ -122,6 +122,18 @@ pub trait VideoSamples {
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>>;
 }
 
+/// The sync sample to start decoding at for sample `i`: its sync sample, or an earlier one when
+/// `i` is a leading picture of an open GOP (stored after its random-access picture, shown before
+/// it, like the RASL pictures after every HEVC CRA of iPhone video). Those are predicted from the
+/// GOP before, so a decoder starting at their random-access picture leaves them out.
+fn decode_start(s: &dyn VideoSamples, i: usize) -> usize {
+    let mut key = s.sync_before(i);
+    while key > 0 && s.pts(i) < s.pts(key) {
+        key = s.sync_before(key - 1).min(key - 1);
+    }
+    key
+}
+
 struct State {
     decoder: Option<Box<dyn VideoDecoder>>,
     /// The decoder only produces intra pictures: frames decode independently and in parallel.
@@ -604,12 +616,13 @@ impl GopCache {
         if st.intra {
             return self.intra_frame(st, s, i, want_pts);
         }
-        let mut key = s.sync_before(i);
+        let mut key = decode_start(s, i);
         // Continue the running decoder when it has passed the wanted sample's sync sample and
         // either has not reached the sample yet or has been fed it without outputting it yet
         // (a frame-threaded decoder holds many pictures in flight). Otherwise the frame was
-        // evicted or lies in another GOP: restart at the sync sample.
-        let running = st.next != usize::MAX && st.next <= n;
+        // evicted or lies in another GOP: restart at the sync sample. A run that started after
+        // `key` (at the random-access picture of a wanted leading picture) left the picture out.
+        let running = st.next != usize::MAX && st.next <= n && st.start <= key;
         // Decoding on through a short stretch into the next GOP is cheaper than a restart, and
         // playback wants those frames anyway.
         let near = st.next <= key && key - st.next <= CONTINUE_THROUGH;
@@ -694,7 +707,7 @@ impl GopCache {
         want_pts: i64,
         n: usize,
     ) -> crate::Result<Vec<crate::video::DecodedFrame>> {
-        let mut key = s.sync_before(i);
+        let mut key = decode_start(s, i);
         // Continue the running decoder when the wanted sample is ahead within this GOP run.
         let continuing = *next != usize::MAX && *next > key && *next <= i + 16 && *next <= n;
         if !continuing {
@@ -1260,5 +1273,95 @@ mod tests {
             assert!(matches!(&f.data, filmcraft_frame::PixelData::Rgba8(d) if d.iter().all(|&b| b == i as u8)), "frame {i} has its own pixels");
         }
         assert!(reused() - before >= more as u64 - 2, "{} of {more} planes recycled", reused() - before);
+    }
+
+    /// An open-GOP stream like iPhone HEVC: 8 pictures a GOP; after the first, each GOP stores
+    /// its random-access picture (display 8·g) first, then two leading pictures shown before it
+    /// (8·g − 2, 8·g − 1, predicted from the GOP before), then the rest. pts = 1000 · display.
+    struct OpenGop {
+        /// (display index, sync) in decode order
+        order: Vec<(i64, bool)>,
+        resets: Arc<AtomicUsize>,
+    }
+
+    impl OpenGop {
+        fn new(gops: i64) -> Self {
+            let mut order: Vec<(i64, bool)> = (0..6).map(|d| (d, d == 0)).collect();
+            for g in 1..gops {
+                order.extend([(8 * g, true), (8 * g - 2, false), (8 * g - 1, false)]);
+                order.extend((8 * g + 1..8 * g + 6).map(|d| (d, false)));
+            }
+            Self { order, resets: Default::default() }
+        }
+    }
+
+    /// Leaves out the leading pictures of the random-access picture a run starts at (RASL
+    /// pictures, as the HEVC decoders do), outputs the others at once.
+    struct OpenGopDec {
+        run_start: Option<i64>,
+        resets: Arc<AtomicUsize>,
+    }
+
+    impl VideoDecoder for OpenGopDec {
+        fn decode(&mut self, _sample: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
+            let start = *self.run_start.get_or_insert(pts);
+            Ok(if pts < start { Vec::new() } else { vec![picture((pts, false))] })
+        }
+        fn flush(&mut self) -> Vec<DecodedFrame> {
+            Vec::new()
+        }
+        fn reset(&mut self) {
+            self.resets.fetch_add(1, Ordering::Relaxed);
+            self.run_start = None;
+        }
+        fn name(&self) -> &str {
+            "open gop"
+        }
+    }
+
+    impl VideoSamples for OpenGop {
+        fn count(&self) -> usize {
+            self.order.len()
+        }
+        fn pts(&self, i: usize) -> i64 {
+            self.order[i].0 * 1000
+        }
+        fn sync_before(&self, i: usize) -> usize {
+            (0..=i).rev().find(|&k| self.order[k].1).unwrap_or(0)
+        }
+        fn sample_at(&self, t: i64) -> Option<usize> {
+            self.order.iter().position(|&(d, _)| d == t / 1000)
+        }
+        fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+            Ok(vec![i as u8])
+        }
+        fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+            Ok(Box::new(OpenGopDec { run_start: None, resets: self.resets.clone() }))
+        }
+    }
+
+    /// A leading picture of an open GOP, asked for first (a clip trimmed to start on it, the
+    /// playhead parked on it), came out black: decoding started at the random-access picture
+    /// after it, which leaves it out.
+    #[test]
+    fn leading_pictures_of_an_open_gop_decode_from_the_gop_before() {
+        let s = OpenGop::new(6);
+        for d in [6usize, 7, 14, 15, 39] {
+            let c = GopCache::new(None);
+            assert_eq!(index_of(&c.frame(&s, d as i64 * 1000).expect("frame")), d);
+        }
+        // the random-access picture first, then its leading pictures: the run that started at
+        // it left them out, so they restart a GOP earlier
+        let c = GopCache::new(None);
+        assert_eq!(index_of(&c.frame(&s, 16_000).expect("frame")), 16);
+        assert_eq!(index_of(&c.frame(&s, 15_000).expect("frame")), 15);
+        assert_eq!(index_of(&c.frame(&s, 14_000).expect("frame")), 14);
+        // playing through: one seek, every picture in turn
+        let s = OpenGop::new(6);
+        let c = GopCache::new(None);
+        for d in 0..46usize {
+            assert_eq!(index_of(&c.frame(&s, d as i64 * 1000).expect("frame")), d);
+        }
+        assert_eq!(s.resets.load(Ordering::Relaxed), 1);
     }
 }
