@@ -250,6 +250,32 @@ fn push_plan_preserves_reference_track_order_and_reverse() {
     }
 }
 
+#[test]
+fn morph_cut_frames_render_on_the_cpu_with_the_morph() {
+    // the GPU compositor can only cross-fade layers: a Morph Cut frame is planned whole on the
+    // CPU, so preview and export show the optical-flow morph, not a dissolve
+    let (mut p, red, ocean, seq, map) = setup();
+    let a = place(&mut p, seq, 0, red, 0, 24);
+    let b = place(&mut p, seq, 0, ocean, 24, 24);
+    let rate = FrameRate::FPS_24;
+    p.sequence_mut(seq).unwrap().video_tracks[0].transitions.push(filmcraft_project::Transition {
+        id: filmcraft_project::TransitionId(998),
+        effect: filmcraft_project::find_effect("morph_cut").unwrap().instance(),
+        start: rate.tick_of(18),
+        duration: rate.tick_of(12),
+        from: Some(a),
+        to: Some(b),
+        align: Default::default(),
+        reverse: false,
+    });
+    let opts = RenderOptions { scale: 0.5, ..Default::default() };
+    assert!(plan::is_cpu_frame(&p, seq, rate.tick_of(24)));
+    assert!(!plan::is_cpu_frame(&p, seq, rate.tick_of(10)), "outside the transition the frame stays on the GPU");
+    let plan = plan::plan_frame(&p, seq, rate.tick_of(24), opts, &map);
+    assert!(matches!(plan, plan::FramePlan::Image(_)));
+    assert_eq!(plan::execute_cpu(&plan).px, render_sequence(&p, seq, rate.tick_of(24), opts, &map).px);
+}
+
 /// A project with a 4 s bars-and-tone clip (1 kHz at −20 dBFS) on A1, with extra audio effects.
 fn tone_with(effects: &[(&str, &[(&str, f64)])]) -> (Project, ItemId, SourceMap) {
     let mut p = Project::new("fx");
