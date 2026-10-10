@@ -788,6 +788,8 @@ pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
 pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("interface-language"), app.ui.language));
     let items = menu_items(app);
+    // Draw Edit ▸ Label with the user's live palette, not the baked-in label colours.
+    let labels = app.session.prefs.labels.clone();
     let ctx = ui.ctx().clone();
     let mut clicked: Option<String> = None;
     egui::MenuBar::new().config(egui::containers::menu::MenuConfig::new().style(crate::theme::menu_style)).ui(ui, |ui| {
@@ -798,7 +800,7 @@ pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                 if mine.is_empty() {
                     ui.add_enabled(false, egui::Button::new(tl!("(empty)")));
                 }
-                menu_level(ui, &mine, 1, &mut clicked, &mut app.auto);
+                menu_level(ui, &mine, 1, &mut clicked, &mut app.auto, &labels);
             });
             app.auto.add(&format!("menu.{top}"), r.response.rect, top);
         }
@@ -810,7 +812,14 @@ pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
 
 /// One menu level: items whose path ends here, and a submenu (at its first item's position) for
 /// each deeper path segment, recursively (e.g. Clip ▸ Video Options ▸ Time Interpolation).
-fn menu_level(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mut Option<String>, auto: &mut crate::automation::Registry) {
+fn menu_level(
+    ui: &mut egui::Ui,
+    items: &[&MenuItem],
+    depth: usize,
+    clicked: &mut Option<String>,
+    auto: &mut crate::automation::Registry,
+    labels: &filmcraft_engine::settings::LabelPrefs,
+) {
     let mut subs: Vec<&str> = Vec::new();
     for it in items {
         if let Some(sub) = it.path.get(depth).map(String::as_str) {
@@ -822,24 +831,37 @@ fn menu_level(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mu
             let language = ui.ctx().data(|d| d.get_temp::<crate::i18n::Language>(egui::Id::new("interface-language"))).unwrap_or_default();
             ui.menu_button(language.tr(sub), |ui| {
                 ui.set_min_width(220.0);
-                menu_level(ui, &inner, depth + 1, clicked, auto);
+                menu_level(ui, &inner, depth + 1, clicked, auto, labels);
             });
-        } else if menu_entry(ui, it, auto) {
+        } else if menu_entry(ui, it, auto, labels) {
             *clicked = Some(it.id.clone());
             ui.close();
         }
     }
 }
 
-fn menu_entry(ui: &mut egui::Ui, it: &MenuItem, auto: &mut crate::automation::Registry) -> bool {
-    // checkable items leave room for a checkmark drawn at the left
-    let label = if it.checked.is_some() { format!("      {}", it.label) } else { it.label.clone() };
+/// Only Edit ▸ Label choices get a swatch. Other commands keep their usual menu layout.
+fn label_menu_swatch(id: &str, labels: &filmcraft_engine::settings::LabelPrefs) -> Option<egui::Color32> {
+    let label = id.strip_prefix("edit.label.").and_then(filmcraft_project::Label::from_name)?;
+    let [r, g, b] = labels.rgb(label);
+    Some(egui::Color32::from_rgb(r, g, b))
+}
+
+fn menu_entry(ui: &mut egui::Ui, it: &MenuItem, auto: &mut crate::automation::Registry, labels: &filmcraft_engine::settings::LabelPrefs) -> bool {
+    // Checkmarks and label swatches each occupy the same left gutter.
+    let swatch = label_menu_swatch(&it.id, labels);
+    let label = if it.checked.is_some() || swatch.is_some() { format!("      {}", it.label) } else { it.label.clone() };
     let mut b = egui::Button::new(label);
     if let Some(s) = &it.shortcut {
         b = b.shortcut_text(shortcut_text(s));
     }
     let r = ui.add_enabled(it.enabled, b);
     auto.add(&format!("menu.{}", it.id), r.rect, &it.label);
+    if let Some(color) = swatch {
+        let rect = egui::Rect::from_center_size(r.rect.left_center() + egui::vec2(10.0, 0.0), egui::vec2(12.0, 12.0));
+        ui.painter().rect_filled(rect, 2.0, color);
+        ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color), egui::StrokeKind::Inside);
+    }
     if it.checked == Some(true) {
         let c = r.rect.left_center() + egui::vec2(10.0, 0.0);
         let col = ui.visuals().text_color();
@@ -852,7 +874,22 @@ fn menu_entry(ui: &mut egui::Ui, it: &MenuItem, auto: &mut crate::automation::Re
 
 #[cfg(test)]
 mod parse_shortcut_tests {
-    use super::parse_shortcut;
+    use super::{label_menu_swatch, parse_shortcut};
+
+    #[test]
+    fn edit_label_menu_swatch_uses_current_custom_palette() {
+        use filmcraft_engine::settings::{LabelPrefs, label_id};
+        use filmcraft_project::Label;
+
+        let mut labels = LabelPrefs::default();
+        let label = Label::Iris;
+        let key = label_id(label);
+        labels.colors.get_mut(&key).unwrap().color = "#12ab34".into();
+
+        assert_eq!(label_menu_swatch("edit.label.Iris", &labels), Some(egui::Color32::from_rgb(0x12, 0xab, 0x34)));
+        assert_eq!(label_menu_swatch("edit.clear", &labels), None);
+        assert_eq!(label_menu_swatch("edit.label.invalid", &labels), None);
+    }
 
     /// Off macOS `Ctrl` and `Cmd` are the same key, so either spelling parses to the modifiers a
     /// physical Ctrl press carries and matches a binding written the other way (#245).
