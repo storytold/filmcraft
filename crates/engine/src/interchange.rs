@@ -1,4 +1,5 @@
-//! Interchange documents (CMX 3600 EDL, FCP7 XML, FCPXML, OTIO, AAF, OMF) ↔ the session's project.
+//! Interchange documents (CMX 3600 EDL, FCP7 XML, FCPXML, OTIO, AAF, OMF; DaVinci Resolve `.drp`
+//! import) ↔ the session's project.
 
 use serde_json::{Value, json};
 
@@ -10,7 +11,7 @@ use crate::{EngineError, Result, Session};
 /// The interchange format of a file, if it is one (by content, with the extension as a hint).
 pub fn detect(path: &str, bytes: &[u8]) -> Option<Format> {
     let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-    if !matches!(ext.as_deref(), Some("edl" | "xml" | "fcpxml" | "otio" | "aaf" | "omf" | "omfi")) {
+    if !matches!(ext.as_deref(), Some("edl" | "xml" | "fcpxml" | "otio" | "aaf" | "omf" | "omfi" | "drp")) {
         return None;
     }
     filmcraft_interchange::detect(bytes, ext.as_deref())
@@ -76,10 +77,9 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
     let mut linked = 0;
     let mut offline = Vec::new();
     for (id, mpath) in new_media {
-        let opened = s.services.read_file(&mpath).ok().and_then(|b| {
-            let fname = std::path::Path::new(&mpath).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            s.media.open_bytes(&fname, b.into()).ok()
-        });
+        // Stream through the host's reader (as File ▸ Import does): reading every file whole here
+        // runs out of memory on a project with thousands of clips.
+        let opened = s.media.open_file(&mpath, &*s.services).ok();
         match opened {
             Some(src) => {
                 let info = src.info().clone();

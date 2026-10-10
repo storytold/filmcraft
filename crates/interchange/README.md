@@ -1,7 +1,7 @@
 # filmcraft-interchange
 
 Timeline interchange for FilmCraft: CMX 3600 EDL, Final Cut Pro 7 XML (xmeml), FCPXML,
-OpenTimelineIO, AAF and OMF import and export, plus Avid ALE. Layer L2: no file I/O; media
+OpenTimelineIO, AAF and OMF import and export, DaVinci Resolve project (`.drp`) import, plus Avid ALE. Layer L2: no file I/O; media
 references are strings and audio essence is supplied by the caller (the engine).
 
 ## Specifications
@@ -22,7 +22,19 @@ read off files it exports, never from the application itself.
 | OMF | Apple *Bento Specification* | revision 1.0d5 | container label, TOC encoding, objects / properties / types, references |
 | WAVE / AIFF | Microsoft RIFF WAVE; Apple AIFF 1.3 | — | embedded and separate audio files |
 
+| ZIP | PKWARE *APPNOTE.TXT* | 6.3.10 | the `.drp` container (stored and deflated entries) |
+| DEFLATE | IETF RFC 1951 | — | `.drp` entries (decoded by `miniz_oxide`) |
+| Zstandard | IETF RFC 8878 | — | compressed `.drp` fields (decoded by `ruzstd`) |
+| Protocol Buffers | Google *Encoding* (wire format) | — | `.drp` effect, title and clip-info fields |
+
 The other formats' editions are listed in the module docs (`edl`, `fcp7`, `fcpxml`, `otio`, `ale`).
+
+## DaVinci Resolve (`.drp`)
+
+Blackmagic Design publishes no specification for `.drp`. The layout was read off project
+archives Resolve 19 and 20 exported (a ZIP of XML documents that mirror its project database,
+with binary fields in hex); no Blackmagic software, SDK or scripting API was inspected or used.
+Import only. What maps to what, and what is reported instead, is in the `drp` module docs.
 
 ## AAF and OMF
 
