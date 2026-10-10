@@ -1,7 +1,8 @@
 //! Design tokens. Every widget reads colours/sizes from [`Tokens`] so themes apply everywhere.
 //!
 //! The default theme follows the look of Premiere Pro's current dark UI (values measured from
-//! black-box screenshots, see `plan/premiere/02-ui-ux.md`); fonts are Inter + JetBrains Mono (OFL).
+//! black-box screenshots, see `plan/premiere/02-ui-ux.md`); the Linux UI uses the system sans-serif
+//! font, with Inter as a fallback. Timecode uses JetBrains Mono (OFL).
 
 use std::sync::Arc;
 
@@ -426,12 +427,65 @@ pub fn install(ctx: &egui::Context, t: &Tokens) {
     fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "jbmono".into());
     fonts.families.insert(FontFamily::Name("semibold".into()), vec!["inter-semibold".into(), "inter".into()]);
     fonts.families.insert(FontFamily::Name("medium".into()), vec!["inter-medium".into(), "inter".into()]);
+    add_system_fonts(&mut fonts, &system_fonts());
     // Japanese before Chinese: the two share code points, and Japanese text must keep Japanese
     // glyph forms; Chinese faces still cover the hanzi Japanese fonts lack
     add_craft_fonts(&mut fonts);
     crate::cjk::install(&mut fonts);
     ctx.set_fonts(fonts);
     apply_visuals(ctx, t);
+}
+
+type SystemFont = (FontFamily, String, Arc<FontData>);
+
+fn add_system_fonts(fonts: &mut FontDefinitions, system: &[SystemFont]) {
+    for (family, name, data) in system {
+        fonts.font_data.insert(name.clone(), data.clone());
+        fonts.families.entry(family.clone()).or_default().insert(0, name.clone());
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn system_fonts() -> Vec<SystemFont> {
+    static FONTS: std::sync::OnceLock<Vec<SystemFont>> = std::sync::OnceLock::new();
+    FONTS
+        .get_or_init(|| {
+            let Some(exe) = ["/usr/bin/fc-match", "/bin/fc-match"].into_iter().find(|p| std::path::Path::new(p).is_file()) else {
+                return Vec::new();
+            };
+            filmcraft_text::fonts::scan_system();
+            let faces = filmcraft_text::fonts::all_faces();
+            [
+                (FontFamily::Proportional, "system-ui", "sans-serif:weight=regular"),
+                (FontFamily::Name("medium".into()), "system-ui-medium", "sans-serif:weight=medium"),
+                (FontFamily::Name("semibold".into()), "system-ui-semibold", "sans-serif:weight=demibold"),
+            ]
+            .into_iter()
+            .filter_map(|(family, name, pattern)| {
+                let output = std::process::Command::new(exe).args(["-f", "%{file}\n%{index}\n", pattern]).output().ok()?;
+                if !output.status.success() {
+                    return None;
+                }
+                let text = std::str::from_utf8(&output.stdout).ok()?;
+                let mut lines = text.lines();
+                let path = std::path::Path::new(lines.next()?);
+                let index = lines.next()?.parse::<u32>().ok()?;
+                let face = faces.iter().find(|f| f.info.index == index && matches!(&f.info.data, filmcraft_text::fonts::FaceData::File(p) if p == path))?;
+                if !face.has_char('A') {
+                    return None;
+                }
+                let mut data = FontData::from_owned(face.data()?);
+                data.index = index;
+                Some((family, name.into(), Arc::new(data)))
+            })
+            .collect()
+        })
+        .clone()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn system_fonts() -> Vec<SystemFont> {
+    Vec::new()
 }
 
 /// Name of the egui font for a craft-fonts entry.
@@ -512,6 +566,33 @@ pub fn apply_visuals(ctx: &egui::Context, t: &Tokens) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_ui_fonts_take_priority_without_replacing_fallbacks_or_timecode() {
+        let ctx = egui::Context::default();
+        install(&ctx, &Tokens::for_kind(ThemeKind::Dark));
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        ctx.fonts_mut(|f| {
+            let definitions = f.definitions();
+            for (family, name, _) in system_fonts() {
+                let stack = &definitions.families[&family];
+                assert_eq!(stack.first(), Some(&name));
+                assert!(stack.iter().any(|n| n.starts_with("inter")), "bundled fallback lost for {family:?}");
+            }
+            assert_eq!(definitions.families[&FontFamily::Monospace].first().map(String::as_str), Some("jbmono"));
+            let sample = f.layout_no_wrap("Editing Discord".into(), Tokens::ui(12.0), Color32::WHITE);
+            assert!(sample.size().x > 0.0);
+        });
+    }
+
+    #[test]
+    fn unavailable_system_fonts_leave_bundled_families_intact() {
+        let mut fonts = FontDefinitions::default();
+        let fallback = fonts.families.clone();
+        add_system_fonts(&mut fonts, &[]);
+        assert_eq!(fonts.families, fallback);
+    }
 
     const JAPANESE: &str = "日本語の文字";
 
@@ -670,7 +751,9 @@ mod tests {
         ctx.fonts_mut(|fonts| {
             let defs = fonts.definitions().clone();
             assert_eq!(defs.font_data.keys().filter(|k| k.starts_with("craft:")).count(), n);
-            assert_eq!(defs.families[&FontFamily::Proportional].first().map(String::as_str), Some("inter"));
+            let system = system_fonts();
+            let primary = system.iter().find(|(family, _, _)| *family == FontFamily::Proportional).map_or("inter", |(_, name, _)| name.as_str());
+            assert_eq!(defs.families[&FontFamily::Proportional].first().map(String::as_str), Some(primary));
             assert_eq!(defs.families[&FontFamily::Monospace].first().map(String::as_str), Some("jbmono"));
             assert!(fonts.has_glyph(&FontId::new(13.0, FontFamily::Proportional), 'A'));
             if n == 0 {
