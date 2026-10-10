@@ -102,7 +102,10 @@ is, and so does one whose position would not change (the listed clip only change
 lists every clip that moved, partners included. No clip is moved before the sequence
 start: if one would be, all clips of the call land later by the same amount (their spacing is
 kept). A `time` beyond the representable range is an "invalid parameters" error. The timeline
-panel's drag passes `linked: false`, because it already lists exactly the clips it moves.
+panel's drag passes `linked: false`, because it already lists exactly the clips it moves. With
+`copy: true` (Option-drag in the timeline) the clips stay where they are and copies land at the
+destinations instead (linked partners are copied too, unless `linked: false`); the result lists
+the new clips as `copied`, they are selected, and copies of linked clips are linked to each other.
 
 **Trim mode** (`crates/engine/src/trim.rs`): `trim.selectEditPoint` / `trim.selectNearest` enter trim
 mode (the Program monitor becomes the Trim Monitor, ids `trimMonitor.*`); `trim.monitor` returns what

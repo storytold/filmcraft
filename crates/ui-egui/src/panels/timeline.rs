@@ -94,6 +94,9 @@ pub enum Drag {
         start_track: TrackId,
         offset: Tick,
         track_delta: i32,
+        /// Option is held: the drop copies the clips instead of moving them (as of the last
+        /// drag frame, so letting go of both at once still copies).
+        copy: bool,
     },
     Trim {
         clip: ClipId,
@@ -403,6 +406,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // item, so the waveform and thumbnail stay where the media is instead of squeezing (#374)
     let mut edited: HashMap<ClipId, TrackItem> = HashMap::new();
     preview_drag(app, &seq, &mut previews, &mut edited);
+    // Option-drag copies: the clips stay where they are and their copies follow the pointer
+    let copying = matches!(app.tl.drag, Some(Drag::Move { copy: true, .. }));
+    let copies: Vec<(ClipId, (Tick, Tick, Option<TrackId>))> = if copying { previews.drain().collect() } else { Vec::new() };
+    if copying {
+        ctx.set_cursor_icon(CursorIcon::Copy);
+    }
     for r in &rows {
         let Some(tr) = seq.track(r.track) else { continue };
         let clip_rect = if r.kind == TrackKind::Video { vclip } else { aclip };
@@ -462,6 +471,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 if volume_line {
                     super::timeline_volume::paint(&p, body, it);
                 }
+            }
+        }
+        for (cid, (start, dur, mt)) in &copies {
+            if let Some((home, it)) = seq.find_item(*cid)
+                && mt.unwrap_or(home) == r.track
+            {
+                let body = Rect::from_min_max(pos2(layout.x_of(*start), r.rect.min.y + 1.0), pos2(layout.x_of(*start + *dur), r.rect.max.y - 1.0));
+                draw_clip(app, &ctx, &p, body, it, r.kind, true, &t, rate);
+                app.auto.add(&format!("timeline.clip.{}.copy", cid.0), body.intersect(content), &it.name);
             }
         }
         // Show Through Edits: a small bow-tie on cuts between continuous pieces of one clip
@@ -2118,7 +2136,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 }
                 if resp.drag_started() {
                     let clips = app.session.state.selection.clone();
-                    Some(Drag::Move { clips, grab_tick: t, start_track: track, offset: Tick::ZERO, track_delta: 0 })
+                    Some(Drag::Move { clips, grab_tick: t, start_track: track, offset: Tick::ZERO, track_delta: 0, copy: mods.alt })
                 } else {
                     None
                 }
@@ -2219,7 +2237,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     (Some(c), Some(s)) if c.kind == s.kind => c.index as i32 - s.index as i32,
                     _ => 0,
                 };
-                Some(Drag::Move { clips, grab_tick, start_track, offset, track_delta })
+                Some(Drag::Move { clips, grab_tick, start_track, offset, track_delta, copy: mods.alt })
             }
             Drag::Trim { clip, edge, mode, from, .. } => seq.find_item(clip).map(|(_, it)| {
                 let base = if edge == filmcraft_edit::Edge::In { it.start } else { it.end() };
@@ -2286,12 +2304,13 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         && let Some(d) = app.tl.drag.take()
     {
         let r = match d {
-            Drag::Move { clips, offset, track_delta, .. } if offset != Tick::ZERO || track_delta != 0 => {
+            Drag::Move { clips, offset, track_delta, copy, .. } if offset != Tick::ZERO || track_delta != 0 => {
                 let moves: Vec<Value> = clips
                     .iter()
                     .filter_map(|c| seq.find_item(*c).map(|(tid, it)| json!({"clip": c.0, "track": shift_track(seq, tid, track_delta).unwrap_or(tid).0, "time": (it.start + offset).max(Tick::ZERO).0})))
                     .collect();
-                Some(app.session.execute("timeline.move", json!({"moves": moves, "insert": mods.command, "linked": false})))
+                // Option held while dropping copies (Premiere: Option-drag duplicates)
+                Some(app.session.execute("timeline.move", json!({"moves": moves, "insert": mods.command, "linked": false, "copy": copy || mods.alt})))
             }
             Drag::Trim { clip, edge, mode, delta, .. } if delta != Tick::ZERO => Some(app.session.execute(
                 "timeline.trim",
