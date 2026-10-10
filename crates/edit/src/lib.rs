@@ -569,6 +569,31 @@ pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delt
     Ok(d)
 }
 
+/// What moving one edge by `d` (already clamped) does to the item itself: its length, the media
+/// it starts at (a reversed clip consumes media from its other end; a frame hold has none to
+/// move), and, for the In edge with `move_start`, where it starts. The trims and the timeline's
+/// live trim preview share it, so the preview shows the media the edit will keep (#374).
+pub fn move_edge(it: &mut TrackItem, edge: Edge, d: Tick, move_start: bool) {
+    let speed = it.speed.abs();
+    match edge {
+        Edge::In => {
+            if !it.reverse && it.frame_hold.is_none() {
+                it.source_in += src_of(d, speed);
+            }
+            it.duration -= d;
+            if move_start {
+                it.start += d;
+            }
+        }
+        Edge::Out => {
+            if it.reverse {
+                it.source_in -= src_of(d, speed);
+            }
+            it.duration += d;
+        }
+    }
+}
+
 /// Trim one edge of an item (Selection-tool edge drag = Regular; Ripple tool = Ripple).
 /// Linked partners should be trimmed by the caller with the same delta.
 pub fn trim(seq: &mut Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta: Tick, ctx: &mut EditCtx) -> Result<Tick> {
@@ -580,27 +605,10 @@ pub fn trim(seq: &mut Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta:
     let old_end = it.end();
     let old_start = it.start;
     let own_link = it.link;
-    let speed = it.speed.abs();
     let mut work = seq.clone();
     {
         let (_, it) = work.find_item_mut(clip).ok_or(EditError::NoItem(clip))?;
-        match edge {
-            Edge::In => {
-                if !it.reverse && it.frame_hold.is_none() {
-                    it.source_in += src_of(d, speed);
-                }
-                it.duration -= d;
-                if mode == TrimMode::Regular {
-                    it.start += d;
-                }
-            }
-            Edge::Out => {
-                if it.reverse {
-                    it.source_in -= src_of(d, speed);
-                }
-                it.duration += d;
-            }
-        }
+        move_edge(it, edge, d, mode == TrimMode::Regular);
     }
     if mode == TrimMode::Ripple {
         let (at, shift) = match edge {
@@ -658,25 +666,11 @@ pub fn ripple_trim_group(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta
     let mut origins: Vec<(TrackId, Tick)> = Vec::new();
     for c in clips {
         let (tid, it) = work.find_item_mut(*c).ok_or(EditError::NoItem(*c))?;
-        let speed = it.speed.abs();
         let from = match edge {
             Edge::In => it.start + Tick(1),
             Edge::Out => it.end(),
         };
-        match edge {
-            Edge::In => {
-                if !it.reverse && it.frame_hold.is_none() {
-                    it.source_in += src_of(d, speed);
-                }
-                it.duration -= d;
-            }
-            Edge::Out => {
-                if it.reverse {
-                    it.source_in -= src_of(d, speed);
-                }
-                it.duration += d;
-            }
-        }
+        move_edge(it, edge, d, false);
         if !origins.iter().any(|(t, _)| *t == tid) {
             origins.push((tid, from));
         }

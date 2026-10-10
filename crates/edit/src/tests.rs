@@ -749,3 +749,40 @@ fn roll_reversed_clips_keeps_media_mapping() {
     let (_, r) = fx.seq.find_item(ib).unwrap();
     assert_eq!((r.start, r.duration, r.source_in), (f(40), f(20), f(50)));
 }
+
+/// #374: moving an edge must not change which media sits under any timeline time the clip still
+/// covers (the timeline's live trim preview draws its waveform from this item), and must leave the
+/// item as the trim itself does.
+#[test]
+fn moving_an_edge_keeps_the_media_under_the_timeline() {
+    let fx = Fx::new();
+    let v1 = fx.v(0);
+    for (speed, reverse, hold) in [(1.0, false, None), (2.0, false, None), (0.5, false, None), (1.0, true, None), (2.0, true, None), (1.0, false, Some(f(50)))]
+    {
+        for (edge, d) in [(Edge::In, f(7)), (Edge::In, -f(4)), (Edge::Out, -f(9)), (Edge::Out, f(3))] {
+            let mut fresh = Fx::new();
+            let c = fresh.put(v1, 100, 40, 200);
+            {
+                let it = fresh.seq.find_item_mut(c).unwrap().1;
+                (it.speed, it.reverse, it.frame_hold) = (speed, reverse, hold);
+            }
+            let before = fresh.seq.find_item(c).unwrap().1.clone();
+            let mut moved = before.clone();
+            move_edge(&mut moved, edge, d, true);
+            let label = format!("speed {speed} reverse {reverse} hold {hold:?} {edge:?} {d:?}");
+            // every frame still covered shows the same media as before the move
+            let mut t = moved.start.max(before.start);
+            while t < moved.end().min(before.end()) {
+                let (a, b) = (before.source_time_at(t), moved.source_time_at(t));
+                assert!((a - b).0.abs() <= 1, "{label}: at {t:?} {a:?} became {b:?}");
+                t += f(1);
+            }
+            // and the item is what the real (unclamped) trim makes of it
+            let mut n = fresh.next;
+            let got = trim(&mut fresh.seq, c, edge, TrimMode::Regular, d, &mut Fx::ctx(&mut n)).unwrap();
+            assert_eq!(got, d, "{label}: not clamped");
+            let trimmed = fresh.seq.find_item(c).unwrap().1;
+            assert_eq!((trimmed.start, trimmed.duration, trimmed.source_in), (moved.start, moved.duration, moved.source_in), "{label}");
+        }
+    }
+}
