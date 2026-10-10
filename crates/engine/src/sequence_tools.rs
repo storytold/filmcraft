@@ -131,7 +131,7 @@ fn groups() -> Vec<(&'static str, Vec<CommandSpec>)> {
                 "Delete Tracks…",
                 &["Sequence"],
                 None,
-                r#"{"video":"empty"|"V2"|id?,"audio":"empty"|"A2"|id?}"#,
+                r#"{"video":"empty"|"V2"|id?,"audio":"empty"|"A2"|id?,"captions":"empty"|"C2"|id?}"#,
                 has_seq,
                 delete_tracks,
             )],
@@ -748,6 +748,18 @@ fn delete_tracks(s: &mut Session, p: &Value) -> Result<Value> {
         }
         doomed.extend(mine);
     }
+    // caption tracks: unlike video/audio, a sequence may have none, so all of them can go
+    match p.get("captions") {
+        None | Some(Value::Null) => {}
+        Some(v) if v.as_str().is_some_and(|x| matches!(x, "empty" | "allEmpty" | "all-empty")) => {
+            doomed.extend(q.caption_tracks.iter().filter(|t| t.captions.is_empty()).map(|t| t.id));
+        }
+        Some(v @ (Value::String(_) | Value::Number(_))) => {
+            let id = crate::captions::track_param(s, &json!({"track": v})).ok_or_else(|| bad("sequence.deleteTracks", "unknown caption track"))?;
+            doomed.push(id);
+        }
+        Some(_) => return Err(bad("sequence.deleteTracks", "`captions` must be \"empty\", a name like \"C2\" or a track id")),
+    }
     if doomed.is_empty() {
         return Err(EngineError::Other("no tracks to delete".into()));
     }
@@ -755,7 +767,9 @@ fn delete_tracks(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit_sequence("Delete Tracks", |q, _, st| {
         q.video_tracks.retain(|t| !doomed.contains(&t.id));
         q.audio_tracks.retain(|t| !doomed.contains(&t.id));
+        q.caption_tracks.retain(|t| !doomed.contains(&t.id));
         st.selection.retain(|c| q.find_item(*c).is_some());
+        st.caption_selection.retain(|c| q.find_caption(*c).is_some());
         if let Some(tg) = st.targeting.get_mut(&seq_id) {
             tg.targeted.retain(|t| !doomed.contains(t));
             if tg.video_dest.is_some_and(|t| doomed.contains(&t)) {

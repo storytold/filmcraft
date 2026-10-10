@@ -407,6 +407,10 @@
 	Delete Video Tracks	Eliminar pistas de video
 	Delete Audio Tracks	Eliminar pistas de audio
 	All Empty Tracks	Todas las pistas vacías
+	Caption Tracks	Pistas de subtítulos
+	Delete Caption Tracks	Eliminar pistas de subtítulos
+	Delete Caption Track	Eliminar pista de subtítulos
+	Delete Empty Caption Tracks	Eliminar pistas de subtítulos vacías
 	Version {version}	Versión {version}
 	A clean-room, pure-Rust non-linear video editor. Part of the ArtCraft family.	Un editor de video no lineal en Rust puro, desarrollado en sala limpia. Parte de la familia ArtCraft.
 	Join the ArtCraft Discord	Únete al Discord de ArtCraft
@@ -1215,6 +1219,9 @@
 	Caption track options	Opciones de pista de subtítulos
 	Timeline Display Settings	Ajustes de visualización de la línea de tiempo
 	Show Video Thumbnails	Mostrar miniaturas de video
+	Head	Cabeza
+	Head and Tail	Cabeza y cola
+	Continuous	Continuas
 	Show Audio Waveform	Mostrar forma de onda de audio
 	Expand All Tracks	Expandir todas las pistas
 	Minimize All Tracks	Minimizar todas las pistas
@@ -2895,6 +2902,7 @@
 	Target Bitrate	Velocidad de bits objetivo
 	Adaptive ({bpp} bits per pixel)	Adaptable ({bpp} bits por píxel)
 	Maximum Bitrate	Velocidad de bits máxima
+	Quality (CRF)	Calidad (CRF)
 	Key Frame Distance	Distancia entre fotogramas clave
 	Quality	Calidad
 	Render at Maximum Depth	Procesar a la máxima profundidad
@@ -2940,6 +2948,7 @@
 	File Name & Location	Nombre y ubicación del archivo
 	Quick Export: {path}	Exportación rápida: {path}
 	Graphics problem: switched to software compositing	Problema de gráficos: se ha cambiado a la composición por software
+	GPU acceleration is unavailable; preview renders on the CPU	La aceleración por GPU no está disponible; la vista previa se renderiza en la CPU
 	Exporting	Exportando
 	Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.	Haz clic para seleccionar, o haz clic en un espacio vacío y arrastra para seleccionar con un marco. Usa Mayús, Opción y Cmd para otras opciones.
 	Click to select all clips to the right in all tracks. Shift-click for a single track.	Haz clic para seleccionar todos los clips a la derecha en todas las pistas. Mayús+clic para una sola pista.
@@ -3299,6 +3308,7 @@
 	Upper First	Superior primero
 	VBR, 1 pass	VBR, 1 pasada
 	VBR, 2 pass	VBR, 2 pasadas
+	CRF (constant quality)	CRF (calidad constante)
 	Vimeo 1080p Full HD	Vimeo 1080p Full HD
 	Vimeo 2160p 4K Ultra HD	Vimeo 2160p 4K Ultra HD
 	Voice-over Record	Grabación de voz en off
@@ -3501,6 +3511,8 @@
 	Light Theme	Tema claro
 	Next Appearance Mode	Siguiente modo de apariencia
 	Sync with system	Sincronizar con el sistema
+	UI Scale	Escala de la interfaz
+	Auto (system)	Automática (sistema)
 	In	Entrada
 	Out	Salida
 	Export Markers as CSV…	Exportar marcadores como CSV…
@@ -3516,3 +3528,4 @@
 	Get Project Notes	Obtener notas del proyecto
 	Edit Project Notes	Editar notas del proyecto
 	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	Notas de este proyecto: tareas pendientes, instrucciones, números de fotograma… Se guardan con el proyecto.
+	Use Effect Shutter Angle	Usar el ángulo de obturación del efecto

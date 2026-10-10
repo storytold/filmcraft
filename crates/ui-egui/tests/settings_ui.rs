@@ -334,6 +334,31 @@ fn appearance_labels_and_tooltips_take_effect() {
 }
 
 #[test]
+fn hex_field_takes_typing_a_character_at_a_time() {
+    let mut d = Driver::demo();
+    d.menu("app.settings.appearance");
+    let hex = |d: &mut Driver| d.draft()["values"]["appearance"]["highlightColor"].clone();
+    let before = hex(&mut d);
+    d.ok("ui.click", json!({"id": "settings.appearance.highlightColor.hex"}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    // not a colour yet: the field keeps it and the setting stays
+    d.ok("ui.type", json!({"text": "#12ab"}));
+    d.frames(2);
+    assert_eq!(hex(&mut d), before);
+    d.ok("ui.type", json!({"text": "34"}));
+    d.frames(2);
+    assert_eq!(hex(&mut d), "#12ab34");
+    // deleting a character leaves the last colour
+    d.ok("ui.key", json!({"key": "Backspace"}));
+    d.frames(2);
+    assert_eq!(hex(&mut d), "#12ab34");
+    d.ok("ui.type", json!({"text": "5"}));
+    d.frames(2);
+    assert_eq!(hex(&mut d), "#12ab35");
+}
+
+#[test]
 fn memory_and_media_cache_pages() {
     let mut d = Driver::demo();
     d.menu("app.settings.memory");

@@ -534,11 +534,21 @@ fn color_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, key: 
     if r.changed() {
         put(&mut d.values, key, json!(settings::hex(rgb)));
     }
-    let mut text = choice_text(get(&d.values, key));
+    // While the field has focus it shows what is typed, even when that is not a colour yet (one
+    // character into `#2f6bdf`); each valid colour is kept as it comes. Leaving shows the kept one.
+    let draft_id = egui::Id::new(("settings-hex", key));
+    let mut text = ui.data(|m| m.get_temp::<String>(draft_id)).unwrap_or_else(|| choice_text(get(&d.values, key)));
     let t = ui.add(egui::TextEdit::singleline(&mut text).desired_width(70.0).font(egui::TextStyle::Monospace));
     app.auto.add(&format!("settings.{key}.hex"), t.rect, label);
-    if t.changed() && settings::parse_hex(&text).is_some() {
-        put(&mut d.values, key, json!(settings::hex(settings::parse_hex(&text).unwrap_or(rgb))));
+    if t.has_focus() {
+        ui.data_mut(|m| m.insert_temp(draft_id, text.clone()));
+    } else {
+        ui.data_mut(|m| m.remove::<String>(draft_id));
+    }
+    if t.changed()
+        && let Some(c) = settings::parse_hex(&text)
+    {
+        put(&mut d.values, key, json!(settings::hex(c)));
     }
 }
 
@@ -784,6 +794,30 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
 mod tests {
     use super::*;
     use crate::theme::ThemeKind;
+
+    /// #457: on a desktop that reports 150%, UI Scale 100% makes a point one physical pixel. It is
+    /// applied once, so Ctrl+- still zooms for the session, and Auto gives the system's scale back.
+    #[test]
+    fn ui_scale_overrides_the_system_scale_and_auto_restores_it() {
+        let ctx = egui::Context::default();
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        // a frame applying the settings, then the next one, where a new zoom takes effect
+        let pass = |app: &mut FilmcraftApp| {
+            let mut input = egui::RawInput::default();
+            input.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(1.5);
+            ctx.run_ui(input.clone(), |ui| app.apply_prefs(ui.ctx())).textures_delta.clear();
+            ctx.run_ui(input, |_| {}).textures_delta.clear();
+            ctx.zoom_factor()
+        };
+        assert_eq!(pass(&mut app), 1.0, "Auto keeps the system's scale");
+        app.session.execute("prefs.set", json!({"key": "appearance.uiScale", "value": "100"})).unwrap();
+        assert_eq!(pass(&mut app), 1.0 / 1.5, "100% is one physical pixel per point");
+        ctx.set_zoom_factor(0.9 / 1.5); // Ctrl+-
+        assert_eq!(pass(&mut app), 0.9 / 1.5, "a session zoom isn't undone every frame");
+        assert!(app.session.execute("prefs.set", json!({"key": "appearance.uiScale", "value": "130"})).is_err());
+        app.session.execute("prefs.set", json!({"key": "appearance.uiScale", "value": "auto"})).unwrap();
+        assert_eq!(pass(&mut app), 1.0);
+    }
 
     #[test]
     fn appearance_button_cycles_modes_without_losing_theme_choices() {

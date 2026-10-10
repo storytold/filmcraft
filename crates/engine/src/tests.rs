@@ -140,6 +140,45 @@ fn trim_linked_and_ripple_delete() {
 }
 
 #[test]
+fn clear_respects_individually_selected_linked_clips_and_undo() {
+    for audio in [false, true] {
+        let mut s = demo();
+        let video = s.active_sequence().unwrap().video_tracks[0].items[0].clone();
+        let sound = s.active_sequence().unwrap().audio_tracks[0].items.iter().find(|i| i.link == video.link).unwrap().clone();
+        let (selected, partner) = if audio { (sound.id, video.id) } else { (video.id, sound.id) };
+        s.execute("timeline.select", json!({"clips": [selected.0], "linked": false})).unwrap();
+        assert_eq!(s.state.selection, vec![selected]);
+        s.execute("edit.clear", json!({})).unwrap();
+        assert!(s.active_sequence().unwrap().find_item(selected).is_none());
+        assert!(s.active_sequence().unwrap().find_item(partner).is_some());
+        s.execute("edit.undo", json!({})).unwrap();
+        assert!(s.active_sequence().unwrap().find_item(selected).is_some());
+        s.execute("timeline.select", json!({"clips": [selected.0]})).unwrap();
+        assert_eq!(s.state.selection.len(), 2);
+        s.execute("edit.clear", json!({})).unwrap();
+        assert!(s.active_sequence().unwrap().find_item(partner).is_none());
+    }
+}
+
+#[test]
+fn ripple_delete_respects_individual_selection_and_explicit_clear_keeps_link_behavior() {
+    let mut s = demo();
+    let video = s.active_sequence().unwrap().video_tracks[0].items[0].clone();
+    let sound = s.active_sequence().unwrap().audio_tracks[0].items.iter().find(|i| i.link == video.link).unwrap().id;
+    let tracks: Vec<_> = s.active_sequence().unwrap().all_tracks().map(|t| t.id.0).collect();
+    for track in tracks {
+        s.execute("timeline.setTrack", json!({"track": track, "syncLock": false})).unwrap();
+    }
+    s.execute("timeline.select", json!({"clips": [video.id.0], "linked": false})).unwrap();
+    s.execute("edit.rippleDelete", json!({})).unwrap();
+    assert!(s.active_sequence().unwrap().find_item(video.id).is_none());
+    assert!(s.active_sequence().unwrap().find_item(sound).is_some());
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.clear", json!({"clips": [video.id.0]})).unwrap();
+    assert!(s.active_sequence().unwrap().find_item(sound).is_none());
+}
+
+#[test]
 fn slide_moves_linked_audio_with_the_video() {
     let mut s = demo();
     let v = s.active_sequence().unwrap().video_tracks[0].items[1].clone();
