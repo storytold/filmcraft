@@ -775,6 +775,7 @@ static CATEGORIES: &[Category] = &[
                     ("uk", "Українська"),
                     ("zh-cn", "简体中文"),
                     ("de", "Deutsch"),
+                    ("ru", "Русский"),
                 ]),
                 true,
             ),

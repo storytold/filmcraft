@@ -43,6 +43,7 @@ pub enum Language {
     #[serde(rename = "zh-cn")]
     ZhCn,
     De,
+    Ru,
 }
 
 static JAPANESE: OnceLock<Catalog> = OnceLock::new();
@@ -51,9 +52,10 @@ static PORTUGUESE: OnceLock<Catalog> = OnceLock::new();
 static UKRAINIAN: OnceLock<Catalog> = OnceLock::new();
 static CHINESE: OnceLock<Catalog> = OnceLock::new();
 static GERMAN: OnceLock<Catalog> = OnceLock::new();
+static RUSSIAN: OnceLock<Catalog> = OnceLock::new();
 
 impl Language {
-    pub const ALL: [Self; 7] = [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De];
+    pub const ALL: [Self; 8] = [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -64,6 +66,7 @@ impl Language {
             Self::Uk => "Українська",
             Self::ZhCn => "简体中文",
             Self::De => "Deutsch",
+            Self::Ru => "Русский",
         }
     }
 
@@ -76,6 +79,7 @@ impl Language {
             "uk" => Some(Self::Uk),
             "zh-cn" => Some(Self::ZhCn),
             "de" => Some(Self::De),
+            "ru" => Some(Self::Ru),
             _ => None,
         }
     }
@@ -87,8 +91,15 @@ impl Language {
     /// only for Simplified locales (`zh`, `zh-CN`, `zh-SG`, `zh-Hans…`); Traditional ones (`zh-TW`,
     /// `zh-HK`, `zh-MO`, `zh-Hant…`) are skipped.
     pub fn from_locales(tags: &[String]) -> Self {
-        const PRIMARY: [(&str, Language); 6] =
-            [("en", Language::En), ("ja", Language::Ja), ("es", Language::Es), ("pt", Language::PtBr), ("uk", Language::Uk), ("de", Language::De)];
+        const PRIMARY: [(&str, Language); 7] = [
+            ("en", Language::En),
+            ("ja", Language::Ja),
+            ("es", Language::Es),
+            ("pt", Language::PtBr),
+            ("uk", Language::Uk),
+            ("de", Language::De),
+            ("ru", Language::Ru),
+        ];
         tags.iter()
             .find_map(|tag| {
                 let mut parts = tag.split(['-', '_', '.', '@']);
@@ -115,6 +126,7 @@ impl Language {
             Self::Uk => "uk",
             Self::ZhCn => "zh-cn",
             Self::De => "de",
+            Self::Ru => "ru",
         }
     }
 
@@ -128,6 +140,7 @@ impl Language {
             Self::Uk => Some(UKRAINIAN.get_or_init(|| Catalog::parse(include_str!("uk.tsv")))),
             Self::ZhCn => Some(CHINESE.get_or_init(|| Catalog::parse(include_str!("zh-cn.tsv")))),
             Self::De => Some(GERMAN.get_or_init(|| Catalog::parse(include_str!("de.tsv")))),
+            Self::Ru => Some(RUSSIAN.get_or_init(|| Catalog::parse(include_str!("ru.tsv")))),
         }
     }
 
@@ -296,6 +309,7 @@ mod tests {
             ("uk", include_str!("uk.tsv")),
             ("zh-cn", include_str!("zh-cn.tsv")),
             ("de", include_str!("de.tsv")),
+            ("ru", include_str!("ru.tsv")),
         ] {
             let (entries, errors) = catalog::parse_entries(text);
             assert!(errors.is_empty(), "{code}: {errors:?}");
@@ -332,6 +346,10 @@ mod tests {
         assert_eq!(Language::De.name(), "Deutsch");
         assert_eq!(Language::parse("de"), Some(Language::De));
         assert_eq!(Language::parse("de-DE"), None, "the preference stores the bare code");
+        assert_eq!(Language::Ru.name(), "Русский");
+        assert_eq!(Language::Ru.tr("File"), "Файл");
+        assert_eq!(Language::Ru.tr("мой клип.mp4"), "мой клип.mp4");
+        assert_eq!(Language::Ru.tr("An untranslated label"), "An untranslated label");
         for l in Language::ALL {
             assert_eq!(Language::parse(l.code()), Some(l));
             let json = serde_json::to_string(&l).unwrap();
@@ -895,6 +913,24 @@ mod tests {
             assert!(Language::De.has(en), "untranslated German menu: {en}");
         }
         assert_eq!(Language::De.tr("Settings"), "Voreinstellungen");
+    }
+
+    #[test]
+    fn russian_entries_cover_the_original_menu_catalog() {
+        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+        let items = crate::menus::menu_items(&app);
+        let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
+        let (entries, _) = catalog::parse_entries(include_str!("ru.tsv"));
+        for (_, en, _) in entries {
+            assert!(known(&en) || en == "Settings", "not a menu label: {en}");
+        }
+        let (portuguese, _) = catalog::parse_entries(include_str!("pt-br.tsv"));
+        for (_, en, _) in portuguese {
+            assert!(Language::Ru.has(&en), "missing Russian menu label: {en}");
+        }
+        for en in crate::menus::MENUS.into_iter().chain(["Audio", "Settings"]) {
+            assert_ne!(Language::Ru.tr(en), en, "untranslated Russian menu: {en}");
+        }
     }
 
     #[test]
