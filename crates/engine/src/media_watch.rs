@@ -14,7 +14,7 @@
 //! media pool swaps in the new source (the old one still indexes the file as it was), and the
 //! view is refreshed without an undo step or modifying a clean project ([`Session::bump_view`]):
 //! the file changed, not the edit. A file seen for the first time is only remembered; one that
-//! can't be opened yet keeps its old stamp, so the next look tries again.
+//! can't be opened (still being written) is tried again once it changes again, not on every look.
 //!
 //! [`MediaInfo`]: filmcraft_media::MediaInfo
 
@@ -142,12 +142,8 @@ impl Session {
                 }
             }
         }
-        // Not readable yet (still being written): the next look tries again.
-        for path in &failed {
-            if let Some(old) = before.get(path) {
-                self.media_stamps.insert(path.clone(), *old);
-            }
-        }
+        // A file that can't be opened (still being written, or not media FilmCraft reads) keeps its
+        // new stamp: it is tried again once it changes again, not on every look.
         if fresh.is_empty() {
             return Ok(json!({"refreshed": []}));
         }
