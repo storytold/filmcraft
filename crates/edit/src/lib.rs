@@ -506,6 +506,60 @@ pub fn move_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
     Ok(())
 }
 
+/// Copy items to (track, time) with overwrite or insert semantics, leaving the originals where
+/// they are (Option-drag). `moves`: (item, destination track, start of the copy). The copies get
+/// new ids; copies of linked clips are linked to each other, not to the originals, and the
+/// transitions that would travel with a move are copied with them. Returns the copies' ids in
+/// the order of `moves`.
+pub fn copy_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_mode: bool, ctx: &mut EditCtx) -> Result<Vec<ClipId>> {
+    let mut work = seq.clone();
+    let mut placed = Vec::new();
+    for (c, dest, start) in moves {
+        let (_, it) = work.find_item(*c).ok_or(EditError::NoItem(*c))?;
+        let mut it = it.clone();
+        if work.track(*dest).ok_or(EditError::NoTrack(*dest))?.locked {
+            return Err(EditError::Locked);
+        }
+        it.start = (*start).max(Tick::ZERO);
+        placed.push((*dest, it));
+    }
+    // worked out on the original ids, then moved over to the copies
+    let carried = carried_transitions(&work, &placed);
+    let mut ids = HashMap::new();
+    let mut links = HashMap::new();
+    for (_, it) in &mut placed {
+        let id = ClipId(ctx.alloc());
+        ids.insert(it.id, id);
+        it.id = id;
+        if let Some(l) = it.link {
+            it.link = Some(*links.entry(l).or_insert_with(|| ctx.alloc()));
+        }
+    }
+    // a copy whose linked partner is not copied is not linked
+    let mut counts: HashMap<u64, usize> = HashMap::new();
+    for l in placed.iter().filter_map(|(_, it)| it.link) {
+        *counts.entry(l).or_default() += 1;
+    }
+    for (_, it) in &mut placed {
+        if it.link.is_some_and(|l| counts.get(&l).copied().unwrap_or(0) < 2) {
+            it.link = None;
+        }
+    }
+    let out = if insert_mode { insert(&mut work, placed, ctx)? } else { overwrite(&mut work, placed, ctx)? };
+    for (dest, mut tr) in carried {
+        tr.id = TransitionId(ctx.alloc());
+        tr.from = tr.from.and_then(|c| ids.get(&c).copied());
+        tr.to = tr.to.and_then(|c| ids.get(&c).copied());
+        let t = track_mut(&mut work, dest)?;
+        if [tr.from, tr.to].into_iter().flatten().all(|c| t.item(c).is_some()) && (tr.from.is_some() || tr.to.is_some()) {
+            t.transitions.push(tr);
+            t.sort();
+        }
+    }
+    *seq = work;
+    Ok(out)
+}
+
 /// The transitions that travel with a move (#227, #374): those whose clips all move, onto one
 /// track and by one offset (a fade at a moved clip's edge, or the cut between two clips that move
 /// together), shifted to where those clips land.
