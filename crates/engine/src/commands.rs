@@ -82,16 +82,20 @@ pub(crate) fn has_selection(s: &Session) -> std::result::Result<(), String> {
 /// Clips or captions selected (Clear / Ripple Delete work on either).
 fn has_any_selection(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
-    if s.state.selection.is_empty() && s.state.caption_selection.is_empty() && s.state.transition_selection.is_empty() {
+    if s.state.selection.is_empty() && s.state.caption_selection.is_empty() && s.state.transition_selection.is_empty() && s.state.gap_selection.is_none() {
         Err("nothing selected".into())
     } else {
         Ok(())
     }
 }
-/// Clips or captions selected (Ripple Delete: a transition has no length of its own to close).
+/// Clips, captions or a gap selected (Ripple Delete: a transition has no length of its own to close).
 fn has_clip_or_caption_selection(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
-    if s.state.selection.is_empty() && s.state.caption_selection.is_empty() { Err("nothing selected".into()) } else { Ok(()) }
+    if s.state.selection.is_empty() && s.state.caption_selection.is_empty() && s.state.gap_selection.is_none() {
+        Err("nothing selected".into())
+    } else {
+        Ok(())
+    }
 }
 fn has_source(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
@@ -1218,6 +1222,12 @@ fn build() -> Vec<CommandSpec> {
                     let ids = s.state.transition_selection.clone();
                     return remove_transitions(s, &ids, "Clear");
                 }
+                // a selected gap closes, as in Premiere Pro (#648, #668)
+                if s.state.caption_selection.is_empty()
+                    && let Some(g) = s.state.gap_selection
+                {
+                    return ripple_delete_gap(s, g);
+                }
                 let caps = s.state.caption_selection.clone();
                 return crate::captions::delete(s, &caps, false);
             }
@@ -1231,6 +1241,11 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("edit.rippleDelete", "Ripple Delete", ["Edit"], Some("Shift+Delete"), r#"{"clips":[id]?}"#, has_clip_or_caption_selection, |s, p| {
             if p.get("clips").is_none() && p.get("clip").is_none() && s.state.selection.is_empty() {
+                if s.state.caption_selection.is_empty()
+                    && let Some(g) = s.state.gap_selection
+                {
+                    return ripple_delete_gap(s, g);
+                }
                 let caps = s.state.caption_selection.clone();
                 return crate::captions::delete(s, &caps, true);
             }
@@ -1250,11 +1265,13 @@ fn build() -> Vec<CommandSpec> {
         cmd!("edit.selectAll", "Select All", ["Edit"], Some("Cmd+A"), "{}", has_seq, |s, _| {
             let all: Vec<ClipId> = s.active_sequence().map(|q| q.all_tracks().flat_map(|t| t.items.iter().map(|i| i.id)).collect()).unwrap_or_default();
             s.state.selection = all;
+            s.state.gap_selection = None;
             Ok(json!({"selected": s.state.selection.len()}))
         }),
         cmd!("edit.deselectAll", "Deselect All", ["Edit"], Some("Cmd+Shift+A"), "{}", always, |s, _| {
             s.state.selection.clear();
             s.state.caption_selection.clear();
+            s.state.gap_selection = None;
             Ok(Value::Null)
         }),
         cmd!("edit.duplicate", "Duplicate", ["Edit"], Some("Cmd+Shift+/"), "{}", has_project_selection, |s, _| {
@@ -1648,21 +1665,7 @@ fn build() -> Vec<CommandSpec> {
         cmd!("sequence.closeGap", "Close Gap", ["Sequence"], None, r#"{"track":"V1"|id,"time":ticks}"#, has_seq, |s, p| {
             let tr = track_p(s, p, "track", "sequence.closeGap")?.ok_or_else(|| bad("sequence.closeGap", "need `track`"))?;
             let t = time_p(s, p, "").unwrap_or(s.playhead());
-            s.edit_sequence("Ripple Delete", |q, _, st| {
-                let before: Vec<(ClipId, Tick)> = q.track(tr).map(|x| x.items.iter().map(|i| (i.id, i.start)).collect()).unwrap_or_default();
-                edit::close_gap(q, tr, t)?;
-                if st.ripple_sequence_markers {
-                    // the gap ended where the first clip that moved started
-                    let moved = before
-                        .iter()
-                        .filter_map(|(id, old)| q.find_item(*id).filter(|(_, i)| i.start != *old).map(|(_, i)| (*old, *old - i.start)))
-                        .min_by_key(|m| m.0);
-                    if let Some((end, len)) = moved {
-                        crate::sequence_tools::ripple_markers(&mut q.markers, end, -len);
-                    }
-                }
-                Ok(())
-            })?;
+            close_gap(s, tr, t)?;
             Ok(Value::Null)
         }),
         cmd!("sequence.snap", "Snap in Timeline", ["Sequence"], Some("S"), r#"{"on":bool?}"#, always, |s, p| {
@@ -2146,8 +2149,9 @@ fn build() -> Vec<CommandSpec> {
             // selecting clips leaves trim mode (Premiere: clip and edit point selections are exclusive)
             s.state.edit_points.clear();
             s.state.trim_shift = Default::default();
-            // and a clip selection replaces a transition one
+            // and a clip selection replaces a transition or gap one
             s.state.transition_selection.clear();
+            s.state.gap_selection = None;
             if bool_p(p, "toggle").unwrap_or(false) {
                 for c in clips {
                     if let Some(i) = s.state.selection.iter().position(|x| *x == c) {
@@ -2168,6 +2172,7 @@ fn build() -> Vec<CommandSpec> {
             }
             Ok(json!({"selection": s.state.selection.iter().map(|c| c.0).collect::<Vec<_>>()}))
         }),
+        cmd!("timeline.selectGap", "Select Gap", [], None, r#"{"track":"V1"|id,"time":ticks|"frame":n|"seconds":f}"#, has_seq, select_gap),
         cmd!(
             "timeline.move",
             "Move Clips",
@@ -3350,6 +3355,7 @@ fn select_transitions(s: &mut Session, ids: &Value, add: bool, toggle: bool) -> 
     }
     s.state.selection.clear();
     s.state.caption_selection.clear();
+    s.state.gap_selection = None;
     s.state.edit_points.clear();
     s.state.trim_shift = Default::default();
     Ok(json!({"selection": [], "transitionSelection": s.state.transition_selection.iter().map(|t| t.0).collect::<Vec<_>>()}))
@@ -3364,6 +3370,59 @@ fn remove_transitions(s: &mut Session, ids: &[TransitionId], label: &str) -> Res
         Ok(n)
     })?;
     Ok(json!({"removed": n}))
+}
+
+/// `timeline.selectGap`: select the gap on `track` at `time` (clicking empty space between
+/// clips, #648, #668). It replaces the clip, transition, caption and edit point selections, as
+/// in Premiere Pro. Empty time after a track's last clip is not a gap.
+fn select_gap(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "timeline.selectGap";
+    let track = track_p(s, p, "track", CMD)?.ok_or_else(|| bad(CMD, "need `track`"))?;
+    let t = time_p(s, p, "").ok_or_else(|| bad(CMD, "need `time`, `frame` or `seconds`"))?;
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let tr = q.track(track).ok_or_else(|| bad(CMD, format!("no track {}", track.0)))?;
+    if tr.locked {
+        return Err(EngineError::Edit(edit::EditError::Locked));
+    }
+    let range = edit::through::track_gaps(tr).into_iter().find(|g| g.contains(t)).ok_or_else(|| bad(CMD, "there is no gap there"))?;
+    s.state.gap_selection = Some(crate::GapSelection { track, range });
+    s.state.selection.clear();
+    s.state.caption_selection.clear();
+    s.state.transition_selection.clear();
+    s.state.edit_points.clear();
+    s.state.trim_shift = Default::default();
+    Ok(json!({"track": track.0, "start": range.start.0, "end": range.end().0}))
+}
+
+/// Close the selected gap (Delete, Backspace or Ripple Delete on a gap).
+fn ripple_delete_gap(s: &mut Session, g: crate::GapSelection) -> Result<Value> {
+    let still = s.active_sequence().and_then(|q| q.track(g.track)).is_some_and(|tr| edit::through::track_gaps(tr).contains(&g.range));
+    if !still {
+        s.state.gap_selection = None;
+        return Err(EngineError::Other("the selected gap is no longer there".into()));
+    }
+    close_gap(s, g.track, g.range.start)?;
+    s.state.gap_selection = None;
+    Ok(json!({"closed": g.range.duration.0}))
+}
+
+/// `sequence.closeGap`: ripple the gap on `track` at `t` closed (one undo step, "Ripple Delete").
+fn close_gap(s: &mut Session, tr: TrackId, t: Tick) -> Result<()> {
+    s.edit_sequence("Ripple Delete", |q, _, st| {
+        let before: Vec<(ClipId, Tick)> = q.track(tr).map(|x| x.items.iter().map(|i| (i.id, i.start)).collect()).unwrap_or_default();
+        edit::close_gap(q, tr, t)?;
+        if st.ripple_sequence_markers {
+            // the gap ended where the first clip that moved started
+            let moved = before
+                .iter()
+                .filter_map(|(id, old)| q.find_item(*id).filter(|(_, i)| i.start != *old).map(|(_, i)| (*old, *old - i.start)))
+                .min_by_key(|m| m.0);
+            if let Some((end, len)) = moved {
+                crate::sequence_tools::ripple_markers(&mut q.markers, end, -len);
+            }
+        }
+        Ok(())
+    })
 }
 
 /// `sequence.setTransition`: edit an applied transition (Effect Controls, the Timeline): its
@@ -3588,6 +3647,7 @@ pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence
         "audio": q.audio_tracks.iter().map(tr).collect::<Vec<_>>(),
         "selection": s.state.selection.iter().map(|c| c.0).collect::<Vec<_>>(),
         "transitionSelection": s.state.transition_selection.iter().map(|t| t.0).collect::<Vec<_>>(),
+        "gapSelection": s.state.gap_selection.map(|g| json!({"track": g.track.0, "start": g.range.start.0, "end": g.range.end().0})),
     })
 }
 
