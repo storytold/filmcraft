@@ -1,0 +1,385 @@
+# German (de) catalog. Same format as `es.tsv`: context <TAB> source <TAB> translation.
+#
+# Clean-room: every entry was written from the plain meaning of the English label using ordinary
+# German video-editing vocabulary. No proprietary localisation resource, string table or product UI
+# was consulted or copied; add entries the same way. Like the German catalogs of the other Craft
+# apps, text addresses the user informally ("du") and commands use the infinitive ("Projekt
+# öffnen…"). Product, format and feature names (FilmCraft, ArtCraft, Lumetri, Essential Graphics,
+# EDL, AAF…) keep their spelling. This catalog covers every menu, including the native macOS
+# Settings menu; anything else is shown in English.
+#
+# Terms: track = Spur, bin = Ablage, marker = Marker, playhead = Abspielposition, In/Out = In-/Out-
+# Punkt, transition = Übergang, frame hold = Standbild, panel = Bedienfeld, workspace =
+# Arbeitsbereich, label (colour) = Farbmarkierung, preferences (also the native macOS Settings
+# menu) = Voreinstellungen. "Timeline" is not translated.
+
+	AAF…	AAF…
+	About FilmCraft	Über FilmCraft
+	Add Audio Submix Track	Audio-Submix-Spur hinzufügen
+	Add Caption at Playhead	Untertitel an Abspielposition hinzufügen
+	Add Chapter Marker…	Kapitelmarker hinzufügen…
+	Add Edit	Schnitt hinzufügen
+	Add Edit to All Tracks	Schnitt auf allen Spuren hinzufügen
+	Add Flash Cue Marker…	Flash-Cue-Marker hinzufügen…
+	Add Frame Hold	Standbild hinzufügen
+	Add Guide…	Hilfslinie hinzufügen…
+	Add Marker	Marker hinzufügen
+	Add New Caption Track…	Neue Untertitelspur hinzufügen…
+	Add Range Marker	Bereichsmarker hinzufügen
+	Add Range Marker to In and Out	Bereichsmarker von In bis Out hinzufügen
+	Add Tracks…	Spuren hinzufügen…
+	Adjustment Layer…	Einstellungsebene…
+	Align to Selection	An Auswahl ausrichten
+	Align to Video Frame	Am Videobild ausrichten
+	Align to Video Frame as Group	Als Gruppe am Videobild ausrichten
+	All Panels	Alle Bedienfelder
+	Alpha	Alpha
+	Appearance	Erscheinungsbild
+	Appearance…	Darstellung…
+	Apply Audio Transition	Audioübergang anwenden
+	Apply Default Transitions to Selection	Standardübergänge auf Auswahl anwenden
+	Apply Video Transition	Videoübergang anwenden
+	Arrange	Anordnen
+	ArtCraft Website	ArtCraft-Website
+	Assembly	Montage
+	Attach Proxies…	Proxys anhängen…
+	Audio	Audio
+	Audio Channels…	Audiokanäle…
+	Audio Clip Mixer	Audioclip-Mischpult
+	Audio Gain…	Audioverstärkung…
+	Audio Hardware…	Audiohardware…
+	Audio In	Audio-In
+	Audio Meters	Audiopegel
+	Audio Options	Audiooptionen
+	Audio Out	Audio-Out
+	Audio Track Mixer	Audiospur-Mischpult
+	Audio Waveform	Audio-Wellenform
+	Audio…	Audio…
+	Auto Save…	Automatisch speichern…
+	Automate to Sequence…	Automatisch in Sequenz einfügen…
+	Avid Log Exchange…	Avid Log Exchange…
+	Bars and Tone…	Farbbalken und Ton…
+	Bin	Ablage
+	Bin From Selection	Ablage aus Auswahl
+	Black Video…	Schwarzbild…
+	Blue	Blau
+	Bottom	Unten
+	Breakout to Mono	In Mono aufteilen
+	Bring Forward	Schrittweise nach vorne
+	Bring to Front	In den Vordergrund
+	Brown	Braun
+	Captions	Untertitel
+	Captions and Graphics	Untertitel und Grafiken
+	Captions…	Untertitel…
+	Caribbean	Karibik
+	Center Horizontally	Horizontal zentrieren
+	Center Vertically	Vertikal zentrieren
+	Cerulean	Himmelblau
+	Clear	Löschen
+	Clear Guides	Hilfslinien löschen
+	Clear In	In-Punkt entfernen
+	Clear In and Out	In- und Out-Punkt entfernen
+	Clear Markers	Marker entfernen
+	Clear Out	Out-Punkt entfernen
+	Clear Selected Marker	Ausgewählten Marker entfernen
+	Clip	Clip
+	Close	Schließen
+	Close All Other Projects	Alle anderen Projekte schließen
+	Close All Projects	Alle Projekte schließen
+	Close Gap	Lücke schließen
+	Close Project	Projekt schließen
+	Color	Farbe
+	Color Management…	Farbmanagement…
+	Color Matte…	Farbfläche…
+	Color…	Farbe…
+	Comparison View	Vergleichsansicht
+	Composite Video	Composite-Video
+	Consolidate Duplicates	Duplikate zusammenführen
+	Copy	Kopieren
+	Copy Paste Includes Sequence Markers	Kopieren und Einfügen mit Sequenzmarkern
+	Create Captions from Transcript…	Untertitel aus Transkript erstellen…
+	Create Multi-Camera Source Sequence…	Mehrkamera-Quellsequenz erstellen…
+	Create Proxies…	Proxys erstellen…
+	Cut	Ausschneiden
+	Dark	Dunkel
+	Darkest	Sehr dunkel
+	Delete Render Files	Renderdateien löschen
+	Delete Render Files In to Out	Renderdateien von In bis Out löschen
+	Delete Tracks…	Spuren löschen…
+	Delete Transcript	Transkript löschen
+	Demo Footage	Demomaterial
+	Demo Project	Demoprojekt
+	Deselect All	Auswahl aufheben
+	Detach Proxies	Proxys trennen
+	Display Mode	Anzeigemodus
+	Distribute	Verteilen
+	Distribute Horizontally	Horizontal verteilen
+	Distribute Space Horizontally	Abstände horizontal verteilen
+	Distribute Space Vertically	Abstände vertikal verteilen
+	Distribute Vertically	Vertikal verteilen
+	Duplicate	Duplizieren
+	Dynamic Audio Waveforms	Dynamische Audio-Wellenformen
+	EDL…	EDL…
+	Edit	Bearbeiten
+	Edit Offline…	Offline bearbeiten…
+	Edit Original	Original bearbeiten
+	Edit Subclip…	Subclip bearbeiten…
+	Edit Workspaces…	Arbeitsbereiche bearbeiten…
+	Editing	Schnitt
+	Effect Controls	Effekteinstellungen
+	Effects	Effekte
+	Ellipse	Ellipse
+	Enable	Aktivieren
+	Enable Remix	Remix aktivieren
+	Essential Graphics	Essential Graphics
+	Essential Sound	Essential Sound
+	Events	Ereignisse
+	Export	Exportieren
+	Export As Motion Graphics Template…	Als Motion-Graphics-Vorlage exportieren…
+	Export Markers as CSV…	Marker als CSV exportieren…
+	Extract	Extrahieren
+	Extract Audio	Audio extrahieren
+	FCPXML…	FCPXML…
+	Field Options…	Halbbildoptionen…
+	File	Datei
+	File…	Datei…
+	Fill frame	Bild füllen
+	FilmCraft Help…	FilmCraft-Hilfe…
+	FilmCraft on GitHub	FilmCraft auf GitHub
+	FilmCraft on getartcraft.com	FilmCraft auf getartcraft.com
+	Final Cut Pro XML…	Final Cut Pro XML…
+	Find Next	Weitersuchen
+	Find…	Suchen…
+	Fit	Einpassen
+	Fit to frame	In Bild einpassen
+	Flatten	Reduzieren
+	Forest	Waldgrün
+	Frame Blending	Frame-Blending
+	Frame Hold Options…	Standbildoptionen…
+	Frame Sampling	Frame-Sampling
+	From Bin	Aus der Ablage
+	From Source Monitor	Aus dem Quellmonitor
+	From Source Monitor, Match Frame	Aus dem Quellmonitor, bildgenau
+	From file…	Aus Datei…
+	Full	Voll
+	General…	Allgemein…
+	Generate Audio Waveform	Audio-Wellenform erzeugen
+	Get Media File Properties for	Mediendatei-Eigenschaften abrufen für
+	Go to Gap	Zur Lücke gehen
+	Go to In	Zum In-Punkt gehen
+	Go to Next Caption Segment	Zum nächsten Untertitelsegment gehen
+	Go to Next Marker	Zum nächsten Marker gehen
+	Go to Out	Zum Out-Punkt gehen
+	Go to Previous Caption Segment	Zum vorherigen Untertitelsegment gehen
+	Go to Previous Marker	Zum vorherigen Marker gehen
+	Go to Split	Zum Split-Punkt gehen
+	Graphics and Titles	Grafiken und Titel
+	Graphics…	Grafiken…
+	Green	Grün
+	Group	Gruppieren
+	Guide Templates	Hilfslinienvorlagen
+	Help	Hilfe
+	Hide All Caption Tracks	Alle Untertitelspuren ausblenden
+	High Quality Playback	Wiedergabe in hoher Qualität
+	History	Verlauf
+	Import From	Importieren aus
+	Import Image Sequence…	Bildsequenz importieren…
+	Import from Media Browser	Aus Medienbrowser importieren
+	Import…	Importieren…
+	Info	Info
+	Ingest Settings…	Ingest-Einstellungen…
+	Insert	Einfügen
+	Insert Frame Hold Segment	Standbildsegment einfügen
+	Install Motion Graphics Template…	Motion-Graphics-Vorlage installieren…
+	Interpret Footage…	Material interpretieren…
+	Iris	Iris
+	Join the ArtCraft Discord…	Dem ArtCraft-Discord beitreten…
+	Keyboard Shortcuts…	Tastenkürzel…
+	Label	Farbmarkierung
+	Labels…	Farbmarkierungen…
+	Language	Sprache
+	Lavender	Lavendel
+	Learning	Lernen
+	Left	Links
+	Libraries	Bibliotheken
+	Lift	Herausheben
+	Light	Hell
+	Link	Verknüpfen
+	Link Media…	Medien verknüpfen…
+	Linked Selection	Verknüpfte Auswahl
+	Lock Guides	Hilfslinien sperren
+	Lumetri Color	Lumetri-Farbe
+	Lumetri Scopes	Lumetri-Scopes
+	Magenta	Magenta
+	Magnification	Vergrößerung
+	Make Offline…	Offline setzen…
+	Make Subclip…	Subclip erstellen…
+	Make Subsequence	Untersequenz erstellen
+	Manage Guides…	Hilfslinien verwalten…
+	Mango	Mango
+	Mark Clip	Clip markieren
+	Mark In	In-Punkt setzen
+	Mark Out	Out-Punkt setzen
+	Mark Selection	Auswahl markieren
+	Mark Split	Split-Punkt setzen
+	Markers	Marker
+	Match Frame	Quellbild finden
+	Media Analysis & Transcription…	Medienanalyse und Transkription…
+	Media Browser	Medienbrowser
+	Media Cache…	Mediencache…
+	Media…	Medien…
+	Memory…	Arbeitsspeicher…
+	Merge Clips…	Clips zusammenführen…
+	Metadata	Metadaten
+	Modify	Ändern
+	Motion Graphics Template…	Motion-Graphics-Vorlage…
+	Multi-Camera	Mehrkamera
+	Multi-Camera View	Mehrkameraansicht
+	Nest…	Verschachteln…
+	New	Neu
+	New Layer	Neue Ebene
+	New Project Panel	Neues Projekt-Bedienfeld
+	Next Appearance Mode	Nächster Darstellungsmodus
+	Next in Sequence	Nächste in der Sequenz
+	Next in Track	Nächste in der Spur
+	Normalize Mix Track…	Mix-Spur normalisieren…
+	OMF…	OMF…
+	Offline File…	Offline-Datei…
+	Open Project…	Projekt öffnen…
+	OpenTimelineIO…	OpenTimelineIO…
+	Optical Flow	Optischer Fluss
+	Overwrite	Überschreiben
+	Paste	Einfügen
+	Paste Attributes…	Attribute einfügen…
+	Paste Insert	Einfügen und verschieben
+	Paused Resolution	Auflösung bei Pause
+	Playback Resolution	Wiedergabeauflösung
+	Playback…	Wiedergabe…
+	Plugins…	Plug-ins…
+	Polygon	Polygon
+	Preferences	Voreinstellungen
+	Previous in Sequence	Vorherige in der Sequenz
+	Previous in Track	Vorherige in der Spur
+	Program	Programm
+	Progress	Fortschritt
+	Project	Projekt
+	Project Manager…	Projektmanager…
+	Project Settings	Projekteinstellungen
+	Project…	Projekt…
+	Properties	Eigenschaften
+	Proxy	Proxy
+	Purple	Lila
+	Reconnect Full Resolution Media…	Medien in voller Auflösung neu verknüpfen…
+	Recover Unsaved Changes…	Nicht gespeicherte Änderungen wiederherstellen…
+	Rectangle	Rechteck
+	Red	Rot
+	Redo	Wiederholen
+	Reference Monitor	Referenzmonitor
+	Remix	Remix
+	Remix Properties…	Remix-Eigenschaften…
+	Remove Attributes…	Attribute entfernen…
+	Remove Filler Words	Füllwörter entfernen
+	Remove Pauses	Pausen entfernen
+	Remove Unused	Nicht verwendete entfernen
+	Rename…	Umbenennen…
+	Render Audio	Audio rendern
+	Render Effects In to Out	Effekte von In bis Out rendern
+	Render In to Out	Von In bis Out rendern
+	Render Selection	Auswahl rendern
+	Replace Fonts in Projects…	Schriften in Projekten ersetzen…
+	Replace With Clip	Durch Clip ersetzen
+	Report an Issue…	Problem melden…
+	Reset All Parameters	Alle Parameter zurücksetzen
+	Reset Duration	Dauer zurücksetzen
+	Reset to Saved Layout	Auf gespeichertes Layout zurücksetzen
+	Restore Captions from Source Clip	Untertitel aus Quellclip wiederherstellen
+	Reveal Log Files…	Protokolldateien anzeigen…
+	Reverse Match Frame	Sequenzbild finden
+	Revert	Zurück zur gespeicherten Version
+	Revert Remix	Remix zurücksetzen
+	Review	Überprüfung
+	Right	Rechts
+	Ripple Delete	Löschen und Lücke schließen
+	Ripple Sequence Markers	Sequenzmarker mitverschieben
+	Rose	Rosa
+	Safe Margins	Sicherheitsränder
+	Save	Speichern
+	Save All	Alle speichern
+	Save As…	Speichern unter…
+	Save Changes to this Workspace	Änderungen an diesem Arbeitsbereich speichern
+	Save Guides as Template…	Hilfslinien als Vorlage speichern…
+	Save a Copy…	Kopie speichern…
+	Save as New Workspace…	Als neuen Arbeitsbereich speichern…
+	Save as Template…	Als Vorlage speichern…
+	Scale to Frame Size	Auf Bildgröße skalieren
+	Scene Edit Detection…	Szenenschnitterkennung…
+	Scratch Disks…	Arbeitslaufwerke…
+	Search Bin	Suchablage
+	Select	Auswählen
+	Select All	Alles auswählen
+	Select All Matching	Alle passenden auswählen
+	Select Label Group	Farbmarkierungsgruppe auswählen
+	Select Next Graphic	Nächste Grafik auswählen
+	Select Next Layer	Nächste Ebene auswählen
+	Select Previous Graphic	Vorherige Grafik auswählen
+	Select Previous Layer	Vorherige Ebene auswählen
+	Selection Follows Playhead	Auswahl folgt Abspielposition
+	Selection as FilmCraft Project…	Auswahl als FilmCraft-Projekt…
+	Selection…	Auswahl…
+	Send Backward	Schrittweise nach hinten
+	Send to Back	In den Hintergrund
+	Sequence	Sequenz
+	Sequence From Clip	Sequenz aus Clip
+	Sequence Settings…	Sequenzeinstellungen…
+	Sequence…	Sequenz…
+	Settings	Voreinstellungen
+	Show Active Caption Tracks Only	Nur aktive Untertitelspuren anzeigen
+	Show All Caption Tracks	Alle Untertitelspuren anzeigen
+	Show All Marker Colors	Alle Markerfarben anzeigen
+	Show Guides	Hilfslinien anzeigen
+	Show Rulers	Lineale anzeigen
+	Show Through Edits	Durchgehende Schnitte anzeigen
+	Simplify Sequence…	Sequenz vereinfachen…
+	Snap in Program Monitor	Im Programmmonitor einrasten
+	Snap in Timeline	In der Timeline einrasten
+	Source	Quelle
+	Source Settings…	Quelleinstellungen…
+	Speed/Duration…	Geschwindigkeit/Dauer…
+	Synchronize…	Synchronisieren…
+	System Compatibility Report…	Systemkompatibilitätsbericht…
+	Tan	Hellbraun
+	Teal	Petrol
+	Text	Text
+	Time Interpolation	Zeitinterpolation
+	Timecode	Timecode
+	Timecode…	Timecode…
+	Timeline	Timeline
+	Timeline…	Timeline…
+	Toggle Proxies	Proxys ein/aus
+	Tools	Werkzeuge
+	Top	Oben
+	Transcribe Sequence…	Sequenz transkribieren…
+	Transcribe…	Transkribieren…
+	Transcript	Transkript
+	Transparent Video…	Transparentes Video…
+	Trim Edit	Schnitt trimmen
+	Trim…	Trimmen…
+	Undo	Rückgängig
+	Ungroup	Gruppierung aufheben
+	Universal Counting Leader…	Universal-Countdown-Vorspann…
+	Update Metadata…	Metadaten aktualisieren…
+	Upgrade Caption to Graphic	Untertitel in Grafik umwandeln
+	Upgrade to Source Graphic	In Quellgrafik umwandeln
+	Vertical Text	Vertikaler Text
+	Video In	Video-In
+	Video Options	Videooptionen
+	Video Out	Video-Out
+	Video and Audio Waveform Split	Video und Audio-Wellenform geteilt
+	View	Ansicht
+	Violet	Violett
+	Window	Fenster
+	Workspaces	Arbeitsbereiche
+	Yellow	Gelb
+	Zoom In	Vergrößern
+	Zoom Out	Verkleinern
+	Zoom to Sequence	Auf Sequenz zoomen

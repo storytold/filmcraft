@@ -33,9 +33,9 @@ pub const PREFS_VERSION: u32 = 2;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct GeneralPrefs {
-    /// Interface language (persisted independently of projects): `en`, `ja`, `es`, `pt-br`, or
-    /// `system` (the default: the operating system's preferred language when the interface has it,
-    /// otherwise English).
+    /// Interface language (persisted independently of projects): `en`, `ja`, `es`, `pt-br`, `uk`,
+    /// `zh-cn`, `de`, or `system` (the default: the operating system's preferred language when the
+    /// interface has it, otherwise English).
     pub interface_language: String,
     /// "At Startup": `showHome` (FilmCraft: the demo project), `openMostRecent`, `emptyProject`.
     pub at_startup: String,
@@ -752,6 +752,7 @@ static CATEGORIES: &[Category] = &[
                     ("pt-br", "Português (Brasil)"),
                     ("uk", "Українська"),
                     ("zh-cn", "简体中文"),
+                    ("de", "Deutsch"),
                 ]),
                 true,
             ),
