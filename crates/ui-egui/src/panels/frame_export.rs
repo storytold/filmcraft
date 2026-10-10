@@ -1,4 +1,5 @@
 //! Monitor Export Frame settings, with captured target/time and a destination folder.
+use crate::native_dialogs::FileDialog;
 use crate::{
     FilmcraftApp,
     icons::{self, Icon},
@@ -152,7 +153,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 let r = ui.checkbox(&mut d.import, "Import into project");
                 elems.push(("exportFrame.import".into(), r.rect, d.import.to_string()));
                 ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 26.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let r = ui.add_enabled(app.hooks.pick_folder_at.is_some() || app.hooks.pick_folder.is_some(), egui::Button::new("Browse…"));
+                    let r = ui.add_enabled(FileDialog::Folder { at: Some(String::new()) }.available(&app.hooks), egui::Button::new("Browse…"));
                     browse = r.clicked();
                     elems.push(("exportFrame.browse".into(), r.rect, "Browse".into()));
                 });
@@ -211,14 +212,16 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     close |= ctx.input(|i| i.key_pressed(egui::Key::Escape));
     if browse && !close {
         let folder = filmcraft_engine::export_tools::expand_home(d.folder.trim());
-        let picked = match app.hooks.pick_folder_at.as_mut() {
-            Some(pick) => pick(&folder),
-            None => app.hooks.pick_folder.as_mut().and_then(|pick| pick()),
-        };
-        if let Some(path) = picked {
-            d.folder = path;
-            d.replace = None;
-        }
+        let ctx = ctx.clone();
+        // into the dialog's stored draft, if it is still open when the folder comes back
+        app.pick_ui(FileDialog::Folder { at: Some(folder) }, move |_, paths| {
+            let Some(path) = paths.into_iter().next() else { return };
+            if let Some(Some(mut d)) = ctx.data(|m| m.get_temp::<Option<Draft>>(draft_id())) {
+                d.folder = path;
+                d.replace = None;
+                ctx.data_mut(|m| m.insert_temp(draft_id(), Some(d)));
+            }
+        });
     }
     if (apply || replace) && !close {
         let mut stem = clean(&d.name);

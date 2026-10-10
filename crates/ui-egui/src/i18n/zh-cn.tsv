@@ -796,6 +796,7 @@
 	Relink others automatically	自动重新链接其他项
 	Search in:	搜索位置：
 	Browse…	浏览…
+	A file dialog is already open	已有一个文件对话框处于打开状态
 	Exact name matches only	仅精确名称匹配
 	No candidates yet — Search a folder or Locate the file.	暂无候选项 — 请搜索文件夹或定位文件。
 	✔ same file	✔ 同一文件

@@ -17,6 +17,7 @@
 use egui::{Color32, RichText};
 use serde_json::{Value, json};
 
+use crate::native_dialogs::FileDialog;
 use crate::state::{LinkMediaDraft, ProjectManagerDraft, ProxyDraft};
 use crate::{FilmcraftApp, RelinkHint};
 
@@ -82,15 +83,11 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
             let Some(item) = item else { return Some(Err("select a clip in the Project panel".into())) };
             let exts: Vec<&str> = filmcraft_media::VIDEO_EXTENSIONS.to_vec();
             let hint = RelinkHint { command: id.to_string(), params: json!({"item": item.0}) };
-            let picked = if let Some(picker) = app.hooks.pick_file_for_relink.as_mut() {
-                picker(&exts, Some(hint))
-            } else if let Some(picker) = app.hooks.pick_files.as_mut() {
-                picker(&exts).into_iter().next()
-            } else {
-                None
-            };
-            let Some(picked) = picked else { return Some(Ok(Value::Null)) };
-            Some(app.session.execute(id, json!({"item": item.0, "path": picked})).map_err(|e| e.to_string()))
+            let id = id.to_string();
+            Some(app.pick(FileDialog::Relink { exts: exts.iter().map(|e| e.to_string()).collect(), hint }, move |app, paths| {
+                let Some(picked) = paths.into_iter().next() else { return Ok(Value::Null) };
+                app.session.execute(&id, json!({"item": item.0, "path": picked})).map_err(|e| e.to_string())
+            }))
         }
         "file.projectManager" => Some(enabled(app, id).map(|_| {
             let seqs = app.session.state.active_sequence.map(|s| vec![s.0]).unwrap_or_default();
@@ -302,26 +299,13 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
         action = Some("cancel");
     }
     let (item, ..) = rows[d.row].clone();
-    let relink = |app: &mut FilmcraftApp, d: &mut LinkMediaDraft, path: String| {
-        let mut p = match_params(d);
-        p["item"] = json!(item);
-        p["path"] = json!(path);
-        match app.session.execute("media.relink", p) {
-            Ok(v) => {
-                d.message.clear();
-                d.candidates.clear();
-                d.candidate = None;
-                app.ui.status = tlf!("Linked {n} clip(s)", n = v["relinked"].as_array().map_or(0, Vec::len));
-            }
-            Err(e) => d.message = e.to_string(),
-        }
-    };
+    let relink = |app: &mut FilmcraftApp, d: &mut LinkMediaDraft, path: String| relink_to(app, d, &json!(item), path);
     match action {
-        Some("browse") => {
-            if let Some(f) = app.hooks.pick_folder.as_mut().and_then(|f| f()) {
+        Some("browse") => app.pick_ui(FileDialog::Folder { at: None }, |app, paths| {
+            if let (Some(f), Some(d)) = (paths.into_iter().next(), app.ui.link_media.as_mut()) {
                 d.folder = f;
             }
-        }
+        }),
         Some("search") => {
             let mut p = match_params(&d);
             p["folder"] = json!(d.folder);
@@ -353,16 +337,12 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
             let mut params = match_params(&d);
             params["item"] = json!(item);
             let hint = RelinkHint { command: "media.relink".into(), params };
-            let picked = if let Some(picker) = app.hooks.pick_file_for_relink.as_mut() {
-                picker(&exts, Some(hint))
-            } else if let Some(picker) = app.hooks.pick_files.as_mut() {
-                picker(&exts).into_iter().next()
-            } else {
-                None
-            };
-            if let Some(path) = picked {
-                relink(app, &mut d, path);
-            }
+            let item = json!(item);
+            app.pick_ui(FileDialog::Relink { exts: exts.iter().map(|e| e.to_string()).collect(), hint }, move |app, paths| {
+                let (Some(path), Some(mut d)) = (paths.into_iter().next(), app.ui.link_media.clone()) else { return };
+                relink_to(app, &mut d, &item, path);
+                app.ui.link_media = Some(d);
+            });
         }
         Some("link") => {
             if let Some(path) = d.candidate.and_then(|c| d.candidates.get(c)).map(|c| c.0.clone()) {
@@ -472,8 +452,12 @@ fn create_proxies(app: &mut FilmcraftApp, ctx: &egui::Context) {
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
-    if browse && let Some(f) = app.hooks.pick_folder.as_mut().and_then(|f| f()) {
-        d.destination = f;
+    if browse {
+        app.pick_ui(FileDialog::Folder { at: None }, |app, paths| {
+            if let (Some(f), Some(d)) = (paths.into_iter().next(), app.ui.create_proxies.as_mut()) {
+                d.destination = f;
+            }
+        });
     }
     if ok {
         let p = json!({"items": d.items, "preset": d.preset, "destination": if d.destination.is_empty() { Value::Null } else { json!(d.destination) }});
@@ -601,8 +585,12 @@ fn project_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
-    if browse && let Some(f) = app.hooks.pick_folder.as_mut().and_then(|f| f()) {
-        d.destination = f;
+    if browse {
+        app.pick_ui(FileDialog::Folder { at: None }, |app, paths| {
+            if let (Some(f), Some(d)) = (paths.into_iter().next(), app.ui.project_manager.as_mut()) {
+                d.destination = f;
+            }
+        });
     }
     // settings changed: the estimate is stale
     if (d.mode != before.mode
@@ -634,4 +622,20 @@ fn project_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
         }
     }
     app.ui.project_manager = (keep && !ctx.input(|i| i.key_pressed(egui::Key::Escape))).then_some(d);
+}
+
+/// Link Media: relink `item` to `path` with the dialog's matching options; the result goes into `d`.
+fn relink_to(app: &mut FilmcraftApp, d: &mut LinkMediaDraft, item: &Value, path: String) {
+    let mut p = match_params(d);
+    p["item"] = item.clone();
+    p["path"] = json!(path);
+    match app.session.execute("media.relink", p) {
+        Ok(v) => {
+            d.message.clear();
+            d.candidates.clear();
+            d.candidate = None;
+            app.ui.status = tlf!("Linked {n} clip(s)", n = v["relinked"].as_array().map_or(0, Vec::len));
+        }
+        Err(e) => d.message = e.to_string(),
+    }
 }

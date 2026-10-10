@@ -31,6 +31,7 @@ use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
 use crate::frames::{FrameKey, Target};
+use crate::native_dialogs::FileDialog;
 use crate::theme::Tokens;
 
 /// Export mode state.
@@ -543,12 +544,20 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if open_manager {
         app.ui.export.manager = Some(PresetManager { selected: app.ui.export.preset.clone(), ..Default::default() });
     }
-    if pick_folder && let Some(d) = app.hooks.pick_folder.as_mut().and_then(|f| f()) {
-        app.ui.export.location = d;
+    if pick_folder {
+        app.pick_ui(FileDialog::Folder { at: None }, |app, paths| {
+            if let Some(d) = paths.into_iter().next() {
+                app.ui.export.location = d;
+            }
+        });
     }
-    if pick_overlay && let Some(f) = app.hooks.pick_open_file.as_mut().and_then(|f| f(tl!("Image"), &["png", "jpg", "jpeg"])) {
-        app.ui.export.settings.effects.image_overlay.path = f;
-        app.ui.export.settings.effects.image_overlay.enabled = true;
+    if pick_overlay {
+        app.pick_ui(FileDialog::open_file(tl!("Image"), &["png", "jpg", "jpeg"]), |app, paths| {
+            if let Some(f) = paths.into_iter().next() {
+                app.ui.export.settings.effects.image_overlay.path = f;
+                app.ui.export.settings.effects.image_overlay.enabled = true;
+            }
+        });
     }
     reg.flush(app);
 }
@@ -1176,22 +1185,25 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
         app.ui.status = e.to_string();
     }
     match pick {
-        Some("import") => match app.hooks.pick_open_file.as_mut().and_then(|f| f(tl!("Export presets"), &["json"])) {
+        Some("import") => app.pick_ui(FileDialog::open_file(tl!("Export presets"), &["json"]), |app, paths| match paths.into_iter().next() {
             Some(path) => {
                 if let Err(e) = app.session.execute("export.presets.import", json!({"path": path})) {
                     app.ui.status = e.to_string();
                 }
             }
             None => app.ui.status = tl!("Import: no file chosen (agents: export.presets.import {path})").into(),
-        },
-        Some(_) => match app.hooks.pick_save_as.as_mut().and_then(|f| f(tl!("Export presets"), &["json"], &format!("{}.json", m.selected))) {
-            Some(path) => {
-                if let Err(e) = app.session.execute("export.presets.export", json!({"path": path, "names": [m.selected]})) {
-                    app.ui.status = e.to_string();
+        }),
+        Some(_) => {
+            let selected = m.selected.clone();
+            app.pick_ui(FileDialog::save_as(tl!("Export presets"), &["json"], &format!("{selected}.json")), move |app, paths| match paths.into_iter().next() {
+                Some(path) => {
+                    if let Err(e) = app.session.execute("export.presets.export", json!({"path": path, "names": [selected]})) {
+                        app.ui.status = e.to_string();
+                    }
                 }
-            }
-            None => app.ui.status = tl!("Export: no file chosen (agents: export.presets.export {path, names})").into(),
-        },
+                None => app.ui.status = tl!("Export: no file chosen (agents: export.presets.export {path, names})").into(),
+            })
+        }
         None => {}
     }
     if let Some(name) = apply

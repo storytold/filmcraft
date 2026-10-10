@@ -19,6 +19,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
+use crate::native_dialogs::FileDialog;
 use crate::theme::Tokens;
 
 /// Key colours (our own palette): application-wide, panel-specific, unassigned, held modifier.
@@ -234,26 +235,24 @@ fn header(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens) {
             app.shortcut_editor.message = tlf!("Deleted preset “{active}”", active);
         }
         if small_button(app, ui, "shortcuts.export", tl!("Export…"), true) {
-            let picked = app.hooks.pick_save_as.as_mut().and_then(|f| f(tl!("Keyboard Shortcuts"), &["json"], &format!("{active}.json")));
-            match picked {
+            app.pick_ui(FileDialog::save_as(tl!("Keyboard Shortcuts"), &["json"], &format!("{active}.json")), |app, paths| match paths.into_iter().next() {
                 Some(path) => {
                     if exec(app, "shortcuts.export", json!({"path": path})).is_some() {
                         app.shortcut_editor.message = tlf!("Exported to {path}", path);
                     }
                 }
                 None => app.shortcut_editor.message = tl!("Export: no file chosen (agents: shortcuts.export {path})").into(),
-            }
+            });
         }
         if small_button(app, ui, "shortcuts.import", tl!("Import…"), true) {
-            let picked = app.hooks.pick_open_file.as_mut().and_then(|f| f(tl!("Keyboard Shortcuts"), &["json"]));
-            match picked {
+            app.pick_ui(FileDialog::open_file(tl!("Keyboard Shortcuts"), &["json"]), |app, paths| match paths.into_iter().next() {
                 Some(path) => {
                     if let Some(r) = exec(app, "shortcuts.import", json!({"path": path})) {
                         app.shortcut_editor.message = tlf!("Imported “{name}”", name = r["name"].as_str().unwrap_or(""));
                     }
                 }
                 None => app.shortcut_editor.message = tl!("Import: no file chosen (agents: shortcuts.import {path})").into(),
-            }
+            });
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(RichText::new(if cfg!(target_os = "macos") { tl!("Keyboard: US (macOS)") } else { tl!("Keyboard: US") }).size(12.0).color(t.text_dim));
