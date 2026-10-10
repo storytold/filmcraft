@@ -122,12 +122,17 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G7. No measured parity tool in CI
 
-- **Missing:** `cargo xtask parity` (menus, commands, effects, transitions, panels, preferences,
-  formats against `plan/premiere/` snapshots), presence and fidelity reported separately (exact,
-  approximate, stub), generating `docs/parity-checklist.md`.
-- **Evidence:** the 92% menu figure in this pass came from an ad hoc label-matching script.
-- **Estimate:** 10–20 h (the menu snapshot is local-only, so the tool needs a committed, Adobe-free
-  list of menu paths or runs only where `plan/` exists).
+- **Done:** `cargo xtask parity` measures menus (#781): our shipped menu bar (the tree the app
+  builds, `examples/menu_tree.rs`) against a reference list of menu paths, by default the local
+  `plan/premiere/menus.json`; presence and placement reported separately (same path, elsewhere,
+  missing), app / Help / recent / account / macOS items out of scope, a markdown checklist, and
+  `--min` to fail below a presence threshold. Without a reference it prints our inventory only.
+- **Missing:** the other areas (commands, effects, transitions, panels, preferences, formats),
+  fidelity tiers (exact, approximate, stub), a CI job, and a committed `docs/parity-checklist.md`.
+- **Evidence:** the 92% menu figure in this pass came from an ad hoc label-matching script; it has
+  not yet been re-measured with the tool.
+- **Estimate:** 8–17 h left (the menu snapshot is local-only, so CI needs a committed, Adobe-free
+  list of menu paths for `--reference`, or the check runs only where `plan/` exists).
 
 ## G8. UI fidelity: monitor handles, Effect Controls, docking
 

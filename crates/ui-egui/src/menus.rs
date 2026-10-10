@@ -636,6 +636,16 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
     v
 }
 
+/// The menu bar as it ships, without a running app: English labels, default preferences, the
+/// built-in workspaces, nothing checked. Deterministic, so `cargo xtask parity` can measure it
+/// (`examples/menu_tree.rs` prints it as JSON).
+pub fn default_menu_items() -> Vec<MenuItem> {
+    let session = filmcraft_engine::Session::default();
+    let mut v = menu_items_for(&session);
+    crate::panels::workspaces::default_menu(&mut v, &session);
+    v
+}
+
 /// Menu entries with their live shortcuts and enablement.
 pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
     let mut out = Vec::new();
@@ -867,5 +877,27 @@ mod parse_shortcut_tests {
         let (m, k) = parse_shortcut("Cmd+Shift+K").unwrap();
         assert!(m.command && m.shift && !m.alt && k == egui::Key::K);
         assert_eq!(parse_shortcut("+").map(|(_, k)| k), Some(egui::Key::Plus));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What `cargo xtask parity` measures: every item sits under a top-level menu, and Window ▸
+    /// Workspaces lists the built-in workspaces before the layout commands, none checked.
+    #[test]
+    fn default_menu_items_are_the_shipped_menu_bar() {
+        let items = default_menu_items();
+        assert!(items.len() > 300, "{} items", items.len());
+        assert!(items.iter().all(|it| it.path.first().is_some_and(|top| MENUS.contains(&top.as_str()))));
+        let ws: Vec<&MenuItem> = items.iter().filter(|it| it.path == ["Window", "Workspaces"]).collect();
+        for name in crate::dock::WORKSPACES {
+            assert!(ws.iter().any(|it| it.label == name && it.checked.is_none()), "no workspace {name}");
+        }
+        let editing = ws.iter().position(|it| it.label == "Editing");
+        let reset = ws.iter().position(|it| it.id == "window.workspace.reset");
+        assert!(matches!((editing, reset), (Some(e), Some(r)) if e < r), "workspaces come before the layout commands");
+        assert!(items.iter().any(|it| it.id == "file.save" && it.path == ["File"]));
     }
 }

@@ -129,21 +129,31 @@ fn delete(app: &mut FilmcraftApp, name: &str) -> Result<Value, String> {
 /// Rebuild the Window ▸ Workspaces submenu: every workspace (the current one checked), then the
 /// layout commands in table order.
 pub fn menu(app: &FilmcraftApp, items: &mut Vec<MenuItem>) {
+    splice(items, &app.workspaces, &app.session, Some(&app.ui.workspace), |n| app.ui.language.tr(n).to_string());
+}
+
+/// The same submenu without a running app: the built-in workspaces in English, none checked
+/// (`menus::default_menu_items`).
+pub fn default_menu(items: &mut Vec<MenuItem>, session: &filmcraft_engine::Session) {
+    splice(items, &dock::WorkspacePrefs::default(), session, None, str::to_string);
+}
+
+fn splice(items: &mut Vec<MenuItem>, prefs: &dock::WorkspacePrefs, session: &filmcraft_engine::Session, current: Option<&str>, tr: impl Fn(&str) -> String) {
     let is_ws = |it: &MenuItem| it.path.len() == 2 && it.path[0] == "Window" && it.path[1] == "Workspaces";
     let Some(at) = items.iter().position(is_ws) else { return };
     let actions: Vec<MenuItem> =
         items.iter().filter(|it| is_ws(it) && it.id.strip_prefix("window.workspace.").is_some_and(|k| ACTIONS.contains(&k))).cloned().collect();
     items.retain(|it| !is_ws(it));
-    let mut sub: Vec<MenuItem> = dock::names(&app.workspaces)
+    let mut sub: Vec<MenuItem> = dock::names(prefs)
         .into_iter()
         .map(|n| {
             let id = format!("window.workspace.{}", slug(&n));
             MenuItem {
-                label: app.ui.language.tr(&n).to_string(),
+                label: tr(&n),
                 path: vec!["Window".into(), "Workspaces".into()],
-                shortcut: app.session.shortcuts.primary(&id),
+                shortcut: session.shortcuts.primary(&id),
                 enabled: true,
-                checked: Some(n == app.ui.workspace),
+                checked: current.map(|c| n == c),
                 id,
             }
         })
