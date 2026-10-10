@@ -44,10 +44,14 @@ pub fn threshold(db: &[f32]) -> f32 {
 /// Move word bounds inward past silent frames (see the module docs).
 pub fn tighten_words(audio: &[f32], words: &mut [Word]) {
     let db = frame_db(audio);
+    tighten_words_db(&db, threshold(&db), words);
+}
+
+/// [`tighten_words`] with the frame levels ([`frame_db`]) and threshold already computed.
+pub fn tighten_words_db(db: &[f32], th: f32, words: &mut [Word]) {
     if db.is_empty() {
         return;
     }
-    let th = threshold(&db);
     let frame_ticks = TICKS_PER_SAMPLE * FRAME as i64;
     for w in words {
         let a = (w.start.0 / frame_ticks).max(0) as usize;

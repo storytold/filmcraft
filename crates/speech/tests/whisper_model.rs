@@ -1,10 +1,11 @@
 //! Whisper end-to-end on real speech, when the weights are on this machine.
 //!
-//! Never downloads. Looks for the model in `$FILMCRAFT_MODELS_DIR/<id>/`, then
-//! `<repo>/target/models/<id>/` (put a model there by hand, or let the app download it into the
-//! data directory and point `FILMCRAFT_MODELS_DIR` at `<data dir>/models`). Speech samples are
-//! `<repo>/target/fixtures/speech/**/<name>.f32` (mono 16 kHz little-endian f32) with the
-//! reference text in `<name>.txt`; without either the test prints SKIPPED.
+//! Never downloads. Looks for the model (`$FILMCRAFT_SPEECH_MODEL`, default `whisper-tiny`) in
+//! `$FILMCRAFT_MODELS_DIR/<id>/`, then `<repo>/target/models/<id>/` (put a model there by hand, or
+//! let the app download it into the data directory and point `FILMCRAFT_MODELS_DIR` at
+//! `<data dir>/models`). Speech samples are `<dir>/*/<name>.f32` (mono 16 kHz little-endian f32)
+//! with the reference text in `<name>.txt`, where `<dir>` is `$FILMCRAFT_SPEECH_FIXTURES` or
+//! `<repo>/target/fixtures/speech`; without either the test prints SKIPPED.
 #![cfg(feature = "whisper")]
 
 use std::path::{Path, PathBuf};
@@ -29,7 +30,8 @@ fn model_dir(id: &str) -> Option<PathBuf> {
 }
 
 fn samples() -> Vec<(PathBuf, String)> {
-    let mut roots = vec![repo().join("target/fixtures/speech")];
+    let mut roots: Vec<PathBuf> = std::env::var_os("FILMCRAFT_SPEECH_FIXTURES").map(PathBuf::from).into_iter().collect();
+    roots.push(repo().join("target/fixtures/speech"));
     if let Ok(main) = std::fs::canonicalize(repo())
         && let Some(p) = main.ancestors().find(|p| p.join(".git").is_dir())
     {
@@ -62,9 +64,10 @@ fn read_f32(p: &Path) -> Vec<f32> {
 }
 
 #[test]
-fn tiny_model_transcribes_public_domain_speech() {
-    let Some(dir) = model_dir("whisper-tiny") else {
-        eprintln!("SKIPPED: whisper-tiny weights not found (see the test's module docs)");
+fn model_transcribes_public_domain_speech() {
+    let id = std::env::var("FILMCRAFT_SPEECH_MODEL").unwrap_or_else(|_| "whisper-tiny".into());
+    let Some(dir) = model_dir(&id) else {
+        eprintln!("SKIPPED: {id} weights not found (see the test's module docs)");
         return;
     };
     let samples = samples();
@@ -72,7 +75,7 @@ fn tiny_model_transcribes_public_domain_speech() {
         eprintln!("SKIPPED: no speech samples in target/fixtures/speech");
         return;
     }
-    let w = filmcraft_speech::whisper::Whisper::load(&dir, "whisper-tiny").unwrap();
+    let w = filmcraft_speech::whisper::Whisper::load(&dir, &id).unwrap();
     let opts = Options { language: Some("en".into()), diarize: false, ..Default::default() };
     let (mut errs, mut words) = (0.0, 0usize);
     for (p, reference) in samples.iter().take(8) {
@@ -88,6 +91,6 @@ fn tiny_model_transcribes_public_domain_speech() {
         assert!(t.words.iter().all(|x| x.end <= end), "{}", p.display());
     }
     let wer = errs / words.max(1) as f64;
-    eprintln!("whisper-tiny WER {:.1}% over {words} words", wer * 100.0);
-    assert!(wer < 0.25, "WER {wer}");
+    eprintln!("{id} WER {:.1}% over {words} words", wer * 100.0);
+    assert!(wer < if id == "whisper-tiny" { 0.25 } else { 0.15 }, "WER {wer}");
 }

@@ -6,8 +6,9 @@
 //! - [`models`]: the catalogue of downloadable Whisper models (source URL pinned to a revision,
 //!   SHA-256, size, licence), where they live in the per-user data directory, and (feature
 //!   `download`) the verified downloader. Weights are **never** bundled or committed.
-//! - [`whisper`] (feature `whisper`): Whisper inference in pure Rust on candle, with timestamp
-//!   decoding, language detection and word-level timestamps from cross-attention alignment (DTW).
+//! - [`whisper`] (feature `whisper`): Whisper inference in pure Rust on the CPU, with timestamp
+//!   decoding, language detection, word-level timestamps from cross-attention alignment (DTW),
+//!   batched decoding of independent regions, temperature fallback and per-window progress.
 //! - [`safetensors`], [`ct2`]: readers of model weight files (Hugging Face `model.safetensors`;
 //!   CTranslate2 `model.bin`, the format of "faster-whisper" conversions). Both treat the file as
 //!   hostile input and read one tensor at a time.
