@@ -626,3 +626,40 @@ fn media_browser_drag_imports_into_the_project_panel() {
     assert_eq!(d.app().session.project.items.len(), n0 + 1, "kept after a drop on the Timeline");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Dragging one of several selected Project items onto the Timeline places all of them, back to
+/// back, as one undo step; an item outside the selection goes alone.
+#[test]
+fn dragging_a_selection_to_the_timeline_places_every_item() {
+    let mut d = Driver::demo();
+    let (bin, items) = d.footage();
+    assert!(items.len() >= 3);
+    d.exec("file.newSequence", json!({"name": "Drop", "video": 2, "audio": 2}));
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+    let card = |i: u64| format!("project.item.{i}");
+    d.wait_for(&card(items[0]));
+    let clips = |d: &mut Driver| d.app().session.active_sequence().map(|q| q.video_tracks.iter().map(|t| t.items.len()).sum::<usize>()).unwrap_or(0);
+    let steps = d.app().session.history.undo.len();
+    let drop = json!({"id": "timeline.tracks", "fx": 0.3, "fy": 0.1});
+
+    // an item that is not selected: one clip
+    d.exec("project.select", json!({"items": [items[2]]}));
+    d.ok("ui.drag", json!({"from": {"id": card(items[0])}, "to": drop, "steps": 16}));
+    d.frames(4);
+    assert_eq!(clips(&mut d), 1, "an unselected item goes alone");
+    d.exec("edit.undo", json!({}));
+
+    // two of the selection: both, back to back, in one undo step
+    d.exec("project.select", json!({"items": [items[0], items[1]]}));
+    d.frames(2);
+    d.ok("ui.drag", json!({"from": {"id": card(items[0])}, "to": drop, "steps": 16}));
+    d.frames(4);
+    assert_eq!(clips(&mut d), 2, "the whole selection is placed");
+    let mut v1: Vec<(i64, i64)> =
+        d.app().session.active_sequence().unwrap().video_tracks.iter().flat_map(|t| t.items.iter()).map(|i| (i.start.0, i.end().0)).collect();
+    v1.sort();
+    assert_eq!(v1[0].1, v1[1].0, "back to back");
+    assert_eq!(d.app().session.history.undo.len(), steps + 1, "the drag is one undo step");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(clips(&mut d), 0);
+}

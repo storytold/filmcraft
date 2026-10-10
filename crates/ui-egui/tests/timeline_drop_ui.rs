@@ -152,3 +152,27 @@ fn with_drop_import_off_the_file_is_only_imported() {
     assert_eq!(h.state().session.project.items.len(), items_before + 1, "the still is imported to the bin");
     assert_eq!(clip_counts(&h), (0, 0), "status: {}", h.state().ui.status);
 }
+
+/// Several files dropped at once land end to end, and one undo takes all of them off the Timeline.
+#[test]
+fn several_files_dropped_together_are_placed_in_one_undo_step() {
+    let mut h = harness();
+    let at = point_on_row(&h, "timeline.track.V1.target");
+    pointer_to(&mut h, at);
+    for name in ["drop_many_a.png", "drop_many_b.png", "drop_many_c.png"] {
+        h.input_mut().dropped_files.push(std::sync::Arc::new(OsFile(still(name))));
+    }
+    step(&mut h);
+    h.input_mut().dropped_files.clear();
+    step(&mut h);
+    assert_eq!(clip_counts(&h), (3, 0), "status: {}", h.state().ui.status);
+    let spans: Vec<(i64, i64)> = {
+        let q = h.state().session.active_sequence().unwrap();
+        let mut v: Vec<_> = q.video_tracks.iter().flat_map(|t| t.items.iter()).map(|i| (i.start.0, i.end().0)).collect();
+        v.sort();
+        v
+    };
+    assert!(spans.windows(2).all(|w| w[0].1 == w[1].0), "end to end: {spans:?}");
+    h.state_mut().session.execute("edit.undo", serde_json::json!({})).unwrap();
+    assert_eq!(clip_counts(&h), (0, 0), "one undo removes every placed clip");
+}

@@ -577,6 +577,110 @@ pub(crate) fn ensure_audio_tracks(p: &mut Project, seq_id: ItemId, first: usize,
     Ok(p.sequence(seq_id).map(|q| q.audio_tracks.iter().map(|t| t.id).collect()).unwrap_or_default())
 }
 
+/// `timeline.place` for one item (`item`).
+fn place_one(s: &mut Session, p: &Value) -> Result<Value> {
+    let stream_flag = |key: &str| match p.get(key) {
+        None => Ok(true),
+        Some(Value::Bool(v)) => Ok(*v),
+        _ => Err(bad("timeline.place", format!("`{key}` must be a boolean"))),
+    };
+    let (video, audio) = (stream_flag("video")?, stream_flag("audio")?);
+    if !video && !audio {
+        return Err(bad("timeline.place", "enable video, audio, or both"));
+    }
+    let item = item_p(p, "item").ok_or_else(|| bad("timeline.place", "need `item`"))?;
+    let at = time_p(s, p, "").unwrap_or(s.playhead());
+    let tg = s.targeting();
+    let pi = s.project.item(item).ok_or_else(|| bad("timeline.place", "no such item"))?;
+    let is_audio = |t: TrackId| s.active_sequence().is_some_and(|q| q.audio_tracks.iter().any(|x| x.id == t));
+    // `track` is where the picture goes and `audioTrack` where the sound goes. A caller that
+    // names an audio track as `track` asks for the sound alone, on that track.
+    let (v, a) = match (track_p(s, p, "track", "timeline.place")?, track_p(s, p, "audioTrack", "timeline.place")?) {
+        (Some(t), Some(_)) if is_audio(t) => {
+            return Err(bad("timeline.place", "`track` names an audio track and `audioTrack` is given as well: name the sound's track once"));
+        }
+        (_, Some(t)) if !is_audio(t) => return Err(bad("timeline.place", "`audioTrack` names a video track")),
+        (Some(t), None) if is_audio(t) && !pi.has_audio() => {
+            return Err(bad("timeline.place", "`track` names an audio track and this item has no sound"));
+        }
+        (Some(t), None) if is_audio(t) => (None, Some(t)),
+        (Some(_), None) if !pi.has_video() => {
+            return Err(bad("timeline.place", "`track` names a video track and this item has no picture: name an audio track"));
+        }
+        (v, a) => (v.or(tg.video_dest), a.or(tg.audio_dest)),
+    };
+    let v = v.filter(|_| video);
+    let a = a.filter(|_| audio);
+    if p.get("video").is_some() && video && pi.has_video() && v.is_none() {
+        return Err(bad("timeline.place", "no video destination: add or enable a video track"));
+    }
+    if p.get("audio").is_some() && audio && pi.has_audio() && a.is_none() {
+        return Err(bad("timeline.place", "no audio destination: add or enable an audio track"));
+    }
+    let full = match &pi.kind {
+        // Settings ▸ Timeline ▸ Still Image Default Duration
+        ItemKind::Media(m)
+            if matches!(m.info.kind, filmcraft_media::MediaKind::Still)
+                || (matches!(m.info.kind, filmcraft_media::MediaKind::Synthetic) && m.info.duration.0 <= 0) =>
+        {
+            s.prefs.timeline.still_duration(s.sequence_rate())
+        }
+        _ => pi.duration(),
+    };
+    let (mi, mo) = match &pi.kind {
+        ItemKind::Media(m) => (m.mark_in, m.mark_out.map(|o| o + pi.frame_rate().frame_duration())),
+        ItemKind::Subclip { range, .. } => (Some(range.start), Some(range.end())),
+        _ => (None, None),
+    };
+    let sin = p.get("sourceIn").and_then(Value::as_i64).map(Tick).or(mi).unwrap_or_default();
+    let dur = p.get("duration").and_then(Value::as_i64).map(Tick).unwrap_or_else(|| mo.unwrap_or(full) - sin);
+    let ids = place_item(s, item, TimeRange::new(sin, dur), at, v, a, bool_p(p, "insert").unwrap_or(false), "Place Clip", None)?;
+    Ok(json!({"clips": ids.iter().map(|c| c.0).collect::<Vec<_>>()}))
+}
+
+/// Most items one `timeline.place` with `items` takes: a larger list is refused, not cut.
+const MAX_PLACE_ITEMS: usize = 10_000;
+
+/// `timeline.place` for `items`: the first at the given time, each next one where the previous one
+/// ends, all as one undo step. `track`, `audioTrack`, `insert`, `video` and `audio` apply to every
+/// item; `sourceIn` and `duration` name one item's range, so they need `item`.
+fn place_items(s: &mut Session, p: &Value, items: &Value) -> Result<Value> {
+    let ids: Vec<ItemId> = items
+        .as_array()
+        .ok_or_else(|| bad("timeline.place", "`items` must be a list of item ids"))?
+        .iter()
+        .map(|v| v.as_u64().map(ItemId).ok_or_else(|| bad("timeline.place", "`items` must be a list of item ids")))
+        .collect::<Result<_>>()?;
+    if p.get("item").is_some() || p.get("sourceIn").is_some() || p.get("duration").is_some() {
+        return Err(bad("timeline.place", "give `item` or `items`, and no `sourceIn` or `duration` with `items`"));
+    }
+    if ids.is_empty() || ids.len() > MAX_PLACE_ITEMS {
+        return Err(bad("timeline.place", format!("`items` needs 1 to {MAX_PLACE_ITEMS} item ids")));
+    }
+    let mut at = time_p(s, p, "").unwrap_or(s.playhead());
+    s.edit_group("Place Clips", |s| {
+        let mut placed = Vec::new();
+        for item in ids {
+            let mut one = p.clone();
+            if let Some(o) = one.as_object_mut() {
+                o.remove("items");
+                for k in ["time", "frame", "seconds"] {
+                    o.remove(k);
+                }
+                o.insert("item".into(), json!(item.0));
+                o.insert("time".into(), json!(at.0));
+            }
+            let r = place_one(s, &one)?;
+            let clips: Vec<ClipId> = r["clips"].as_array().map(|a| a.iter().filter_map(|c| c.as_u64().map(ClipId)).collect()).unwrap_or_default();
+            if let Some(end) = s.active_sequence().and_then(|q| clips.iter().filter_map(|c| q.find_item(*c).map(|(_, i)| i.end())).max()) {
+                at = end;
+            }
+            placed.push(json!(clips.iter().map(|c| c.0).collect::<Vec<_>>()));
+        }
+        Ok(json!({"clips": placed.iter().flat_map(|c| c.as_array().cloned().unwrap_or_default()).collect::<Vec<_>>(), "placed": placed}))
+    })
+}
+
 /// Place a project item on the timeline (drag from Project, or Insert/Overwrite from source).
 pub(crate) fn place_item(
     s: &mut Session,
@@ -774,11 +878,22 @@ fn build() -> Vec<CommandSpec> {
             "Sequence…",
             ["File", "New"],
             Some("Cmd+N"),
-            r#"{"name":str,"width":u32=1920,"height":u32=1080,"fps":f64=23.976,"sampleRate":u32=48000,"video":n=3,"audio":n=3,"mix":"Stereo|Mono|5.1|Adaptive"?,"trackType":"Standard|Mono|5.1|Adaptive"?,"fromItem":itemId?}"#,
+            r#"{"name":str,"width":u32=1920,"height":u32=1080,"fps":f64=23.976,"sampleRate":u32=48000,"video":n=3,"audio":n=3,"mix":"Stereo|Mono|5.1|Adaptive"?,"trackType":"Standard|Mono|5.1|Adaptive"?,"fromItem":itemId?,"fromItems":[itemId]?}"#,
             always,
-            |s, p| {
+            |s, p| s.edit_group("New Sequence", |s| {
+                // `fromItems` is `fromItem` for a list: the first sets the sequence, the rest follow it back to back
+                let mut from_ids: Vec<ItemId> = match p.get("fromItems") {
+                    None => Vec::new(),
+                    Some(l) => l
+                        .as_array()
+                        .and_then(|a| a.iter().map(|v| v.as_u64().map(ItemId)).collect())
+                        .ok_or_else(|| bad("file.newSequence", "`fromItems` must be a list of item ids"))?,
+                };
+                if let Some(one) = item_p(p, "fromItem") {
+                    from_ids.insert(0, one);
+                }
                 let mut st = SequenceSettings::default();
-                if let Some(from) = item_p(p, "fromItem").and_then(|i| s.project.item(i)).and_then(|i| i.as_media()) {
+                if let Some(from) = from_ids.first().and_then(|i| s.project.item(*i)).and_then(|i| i.as_media()) {
                     st = default_seq_settings_for(from);
                 }
                 if let Some(w) = checked_u32_p(p, "width", "file.newSequence")? {
@@ -828,14 +943,19 @@ fn build() -> Vec<CommandSpec> {
                     }
                     Ok(id)
                 })?;
-                if let Some(from) = item_p(p, "fromItem") {
+                if let Some((&from, rest)) = from_ids.split_first() {
                     let dur = s.project.item(from).map(|i| i.duration()).unwrap_or_default();
                     let tg = s.targeting();
-                    place_item(s, from, TimeRange::new(Tick::ZERO, dur), Tick::ZERO, tg.video_dest, tg.audio_dest, false, "New Sequence From Clip", None)?;
+                    let ids =
+                        place_item(s, from, TimeRange::new(Tick::ZERO, dur), Tick::ZERO, tg.video_dest, tg.audio_dest, false, "New Sequence From Clip", None)?;
+                    if !rest.is_empty() {
+                        let end = s.active_sequence().and_then(|q| ids.iter().filter_map(|c| q.find_item(*c).map(|(_, i)| i.end())).max()).unwrap_or_default();
+                        place_items(s, &json!({"time": end.0}), &json!(rest.iter().map(|i| i.0).collect::<Vec<_>>()))?;
+                    }
                 }
                 s.events.push(crate::Event::OpenSequence(id));
                 Ok(json!({"sequence": id.0}))
-            }
+            })
         ),
         cmd!("file.newBin", "Bin", ["File", "New"], Some("Cmd+B"), r#"{"name":str,"parent":binId?}"#, always, |s, p| {
             let n = str_p(p, "name").unwrap_or("New Bin").to_string();
@@ -2074,66 +2194,11 @@ fn build() -> Vec<CommandSpec> {
             "Place Clip",
             [],
             None,
-            r#"{"item":id,"track":"V1"|id|"A1" (sound only)?,"audioTrack":"A1"|id?,"time":ticks|"frame":i64|"seconds":f64,"insert":bool,"sourceIn":ticks?,"duration":ticks?,"video":bool=true,"audio":bool=true}"#,
+            r#"{"item":id|"items":[id] (back to back, one undo step),"track":"V1"|id|"A1" (sound only)?,"audioTrack":"A1"|id?,"time":ticks|"frame":i64|"seconds":f64,"insert":bool,"sourceIn":ticks?,"duration":ticks?,"video":bool=true,"audio":bool=true}"#,
             has_seq,
-            |s, p| {
-                let stream_flag = |key: &str| match p.get(key) {
-                    None => Ok(true),
-                    Some(Value::Bool(v)) => Ok(*v),
-                    _ => Err(bad("timeline.place", format!("`{key}` must be a boolean"))),
-                };
-                let (video, audio) = (stream_flag("video")?, stream_flag("audio")?);
-                if !video && !audio {
-                    return Err(bad("timeline.place", "enable video, audio, or both"));
-                }
-                let item = item_p(p, "item").ok_or_else(|| bad("timeline.place", "need `item`"))?;
-                let at = time_p(s, p, "").unwrap_or(s.playhead());
-                let tg = s.targeting();
-                let pi = s.project.item(item).ok_or_else(|| bad("timeline.place", "no such item"))?;
-                let is_audio = |t: TrackId| s.active_sequence().is_some_and(|q| q.audio_tracks.iter().any(|x| x.id == t));
-                // `track` is where the picture goes and `audioTrack` where the sound goes. A caller that
-                // names an audio track as `track` asks for the sound alone, on that track.
-                let (v, a) = match (track_p(s, p, "track", "timeline.place")?, track_p(s, p, "audioTrack", "timeline.place")?) {
-                    (Some(t), Some(_)) if is_audio(t) => {
-                        return Err(bad("timeline.place", "`track` names an audio track and `audioTrack` is given as well: name the sound's track once"));
-                    }
-                    (_, Some(t)) if !is_audio(t) => return Err(bad("timeline.place", "`audioTrack` names a video track")),
-                    (Some(t), None) if is_audio(t) && !pi.has_audio() => {
-                        return Err(bad("timeline.place", "`track` names an audio track and this item has no sound"));
-                    }
-                    (Some(t), None) if is_audio(t) => (None, Some(t)),
-                    (Some(_), None) if !pi.has_video() => {
-                        return Err(bad("timeline.place", "`track` names a video track and this item has no picture: name an audio track"));
-                    }
-                    (v, a) => (v.or(tg.video_dest), a.or(tg.audio_dest)),
-                };
-                let v = v.filter(|_| video);
-                let a = a.filter(|_| audio);
-                if p.get("video").is_some() && video && pi.has_video() && v.is_none() {
-                    return Err(bad("timeline.place", "no video destination: add or enable a video track"));
-                }
-                if p.get("audio").is_some() && audio && pi.has_audio() && a.is_none() {
-                    return Err(bad("timeline.place", "no audio destination: add or enable an audio track"));
-                }
-                let full = match &pi.kind {
-                    // Settings ▸ Timeline ▸ Still Image Default Duration
-                    ItemKind::Media(m)
-                        if matches!(m.info.kind, filmcraft_media::MediaKind::Still)
-                            || (matches!(m.info.kind, filmcraft_media::MediaKind::Synthetic) && m.info.duration.0 <= 0) =>
-                    {
-                        s.prefs.timeline.still_duration(s.sequence_rate())
-                    }
-                    _ => pi.duration(),
-                };
-                let (mi, mo) = match &pi.kind {
-                    ItemKind::Media(m) => (m.mark_in, m.mark_out.map(|o| o + pi.frame_rate().frame_duration())),
-                    ItemKind::Subclip { range, .. } => (Some(range.start), Some(range.end())),
-                    _ => (None, None),
-                };
-                let sin = p.get("sourceIn").and_then(Value::as_i64).map(Tick).or(mi).unwrap_or_default();
-                let dur = p.get("duration").and_then(Value::as_i64).map(Tick).unwrap_or_else(|| mo.unwrap_or(full) - sin);
-                let ids = place_item(s, item, TimeRange::new(sin, dur), at, v, a, bool_p(p, "insert").unwrap_or(false), "Place Clip", None)?;
-                Ok(json!({"clips": ids.iter().map(|c| c.0).collect::<Vec<_>>()}))
+            |s, p| match p.get("items") {
+                Some(items) => place_items(s, p, items),
+                None => place_one(s, p),
             }
         ),
         cmd!("timeline.select", "Select Clips", [], None, r#"{"clips":[id],"transitions":[id]?,"add":bool,"toggle":bool}"#, has_seq, |s, p| {
