@@ -407,6 +407,10 @@
 	Delete Video Tracks	Eliminar pistas de video
 	Delete Audio Tracks	Eliminar pistas de audio
 	All Empty Tracks	Todas las pistas vacías
+	Caption Tracks	Pistas de subtítulos
+	Delete Caption Tracks	Eliminar pistas de subtítulos
+	Delete Caption Track	Eliminar pista de subtítulos
+	Delete Empty Caption Tracks	Eliminar pistas de subtítulos vacías
 	Version {version}	Versión {version}
 	A clean-room, pure-Rust non-linear video editor. Part of the ArtCraft family.	Un editor de video no lineal en Rust puro, desarrollado en sala limpia. Parte de la familia ArtCraft.
 	Join the ArtCraft Discord	Únete al Discord de ArtCraft
@@ -968,6 +972,7 @@
 	Reset…	Restablecer…
 	Source · {name}	Origen · {name}
 	Reset Effect	Restablecer efecto
+	Reset Parameter	Restablecer parámetro
 	Save Preset…	Guardar ajuste preestablecido…
 	Custom Setup	Configuración personalizada
 	Edit…	Editar…
@@ -1215,6 +1220,9 @@
 	Caption track options	Opciones de pista de subtítulos
 	Timeline Display Settings	Ajustes de visualización de la línea de tiempo
 	Show Video Thumbnails	Mostrar miniaturas de video
+	Head	Cabeza
+	Head and Tail	Cabeza y cola
+	Continuous	Continuas
 	Show Audio Waveform	Mostrar forma de onda de audio
 	Expand All Tracks	Expandir todas las pistas
 	Minimize All Tracks	Minimizar todas las pistas
@@ -1253,6 +1261,9 @@
 	Active Monitor	Monitor activo
 	Add	Añadir
 	Add tracks automatically when editing source clips onto the Timeline	Añadir pistas automáticamente al editar clips de origen en la línea de tiempo
+	Place files dropped onto the Timeline directly on the Timeline	Colocar los archivos soltados en la línea de tiempo directamente en ella
+	1 file	1 archivo
+	{n} files	{n} archivos
 	Additional Scale	Escala adicional
 	Additive Dissolve	Disolución aditiva
 	Additive Dissolve (Legacy)	Disolución aditiva (heredada)
@@ -1810,7 +1821,7 @@
 	Hard Limiter	Limitador duro
 	Hard Mix	Mezcla definida
 	Hardware decoding	Descodificación por hardware
-	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Descodificación por hardware: Automático usa el descodificador de video del sistema (VideoToolbox en macOS, Media Foundation en Windows, VA-API para H.264 y HEVC en Linux) para los flujos que admite, y el descodificador propio de FilmCraft para todo lo demás o si falla el hardware. Los medios ya abiertos mantienen su descodificador hasta que se vuelven a abrir.
+	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Descodificación por hardware: Automático usa el descodificador de video del sistema (VideoToolbox en macOS, Media Foundation en Windows, VA-API o NVDEC para H.264 y HEVC en Linux) para los flujos que admite, y el descodificador propio de FilmCraft para todo lo demás o si falla el hardware. Los medios ya abiertos mantienen su descodificador hasta que se vuelven a abrir.
 	Head Size	Tamaño de la cabeza
 	Heart	Corazón
 	Height	Altura
@@ -2892,6 +2903,7 @@
 	Target Bitrate	Velocidad de bits objetivo
 	Adaptive ({bpp} bits per pixel)	Adaptable ({bpp} bits por píxel)
 	Maximum Bitrate	Velocidad de bits máxima
+	Quality (CRF)	Calidad (CRF)
 	Key Frame Distance	Distancia entre fotogramas clave
 	Quality	Calidad
 	Render at Maximum Depth	Procesar a la máxima profundidad
@@ -2937,6 +2949,7 @@
 	File Name & Location	Nombre y ubicación del archivo
 	Quick Export: {path}	Exportación rápida: {path}
 	Graphics problem: switched to software compositing	Problema de gráficos: se ha cambiado a la composición por software
+	GPU acceleration is unavailable; preview renders on the CPU	La aceleración por GPU no está disponible; la vista previa se renderiza en la CPU
 	Exporting	Exportando
 	Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.	Haz clic para seleccionar, o haz clic en un espacio vacío y arrastra para seleccionar con un marco. Usa Mayús, Opción y Cmd para otras opciones.
 	Click to select all clips to the right in all tracks. Shift-click for a single track.	Haz clic para seleccionar todos los clips a la derecha en todas las pistas. Mayús+clic para una sola pista.
@@ -2972,6 +2985,9 @@
 	Apple ProRes 422 HQ	Apple ProRes 422 HQ
 	Apple ProRes 422 LT	Apple ProRes 422 LT
 	Apple ProRes 422 Proxy	Apple ProRes 422 Proxy
+	Apple ProRes 4444	Apple ProRes 4444
+	Apple ProRes 4444 with Alpha	Apple ProRes 4444 con alfa
+	Apple ProRes 4444 XQ	Apple ProRes 4444 XQ
 	Application	Aplicación
 	Apply Guide Template	Aplicar plantilla de guías
 	Auto Save Now	Guardar automáticamente ahora
@@ -3181,6 +3197,9 @@
 	QuickTime, ProRes 422 HQ, 24-bit 48 kHz PCM	QuickTime, ProRes 422 HQ, PCM de 24 bits y 48 kHz
 	QuickTime, ProRes 422 LT, 24-bit 48 kHz PCM	QuickTime, ProRes 422 LT, PCM de 24 bits y 48 kHz
 	QuickTime, ProRes 422 Proxy, 24-bit 48 kHz PCM	QuickTime, ProRes 422 Proxy, PCM de 24 bits y 48 kHz
+	QuickTime, ProRes 4444 (4:4:4), 24-bit 48 kHz PCM	QuickTime, ProRes 4444 (4:4:4), PCM de 24 bits y 48 kHz
+	QuickTime, ProRes 4444 (4:4:4) with alpha channel, 24-bit 48 kHz PCM	QuickTime, ProRes 4444 (4:4:4) con canal alfa, PCM de 24 bits y 48 kHz
+	QuickTime, ProRes 4444 XQ (4:4:4), 24-bit 48 kHz PCM	QuickTime, ProRes 4444 XQ (4:4:4), PCM de 24 bits y 48 kHz
 	QuickTime, ProRes 422, 24-bit 48 kHz PCM	QuickTime, ProRes 422, PCM de 24 bits y 48 kHz
 	Quit FilmCraft	Salir de FilmCraft
 	Rate Stretch Tool	Herramienta Ajuste de velocidad
@@ -3296,6 +3315,7 @@
 	Upper First	Superior primero
 	VBR, 1 pass	VBR, 1 pasada
 	VBR, 2 pass	VBR, 2 pasadas
+	CRF (constant quality)	CRF (calidad constante)
 	Vimeo 1080p Full HD	Vimeo 1080p Full HD
 	Vimeo 2160p 4K Ultra HD	Vimeo 2160p 4K Ultra HD
 	Voice-over Record	Grabación de voz en off
@@ -3383,6 +3403,7 @@
 	out	salida
 	in	entrada
 	The language changed but could not be saved: {e}	El idioma ha cambiado, pero no se ha podido guardar: {e}
+	no Chinese font is installed on this system; the interface stays in English	no hay ninguna fuente china instalada en este sistema; la interfaz sigue en inglés
 	no Japanese font is installed on this system; the interface stays in English	no hay ninguna fuente japonesa instalada en este sistema; la interfaz sigue en inglés
 	Show	Mostrar
 	Sort	Ordenar
@@ -3487,6 +3508,18 @@
 	New Sequence	Nueva secuencia
 	Tracks	Pistas
 	tracks	pistas
+	Clear Transition	Borrar transición
+	Set Transition Duration	Establecer duración de la transición
+
+# System appearance modes and theme cards.
+	Active	Activo
+	Appearance Mode	Modo de apariencia
+	Dark Theme	Tema oscuro
+	Light Theme	Tema claro
+	Next Appearance Mode	Siguiente modo de apariencia
+	Sync with system	Sincronizar con el sistema
+	UI Scale	Escala de la interfaz
+	Auto (system)	Automática (sistema)
 	In	Entrada
 	Out	Salida
 	Export Markers as CSV…	Exportar marcadores como CSV…
@@ -3494,3 +3527,12 @@
 	Gradient Angle	Ángulo del degradado
 	Linear Gradient	Degradado lineal
 	Solid	Sólido
+	GPU Rendering	Renderizado por GPU
+	Composite on the GPU when available	Componer en la GPU cuando esté disponible
+	Text to Speech	Texto a voz
+	Edit Narration	Editar narración
+	Project Notes	Notas del proyecto
+	Get Project Notes	Obtener notas del proyecto
+	Edit Project Notes	Editar notas del proyecto
+	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	Notas de este proyecto: tareas pendientes, instrucciones, números de fotograma… Se guardan con el proyecto.
+	Use Effect Shutter Angle	Usar el ángulo de obturación del efecto

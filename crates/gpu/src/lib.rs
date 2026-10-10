@@ -38,10 +38,12 @@ use filmcraft_frame::{Chroma, PixelData, VideoFrame};
 use filmcraft_render::Blend;
 use filmcraft_render::plan::{FramePlan, PlanLayer, PlanStep};
 
+pub mod export_renderer;
 pub mod fx;
 pub mod lut;
 pub mod mask;
 mod transition;
+pub use export_renderer::ExportRenderer;
 pub use lut::GpuLut;
 pub use mask::GpuMask;
 
@@ -78,6 +80,7 @@ pub struct GpuCompositor {
     /// Copy of the accumulator under a blend-mode layer (allocated on first use).
     backdrop: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     output: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
+    accum_readback_buf: Option<(wgpu::Buffer, u64)>,
     uploads: HashMap<(usize, u32, u32), Uploaded>,
     clock: u64,
     dummy: wgpu::TextureView,
@@ -133,6 +136,46 @@ pub fn f32_to_f16(v: f32) -> u16 {
         h += 1;
     }
     h as u16
+}
+
+/// IEEE half → f32 (the inverse of [`f32_to_f16`]), for reading `Rgba16Float` textures back.
+pub fn f16_to_f32(h: u16) -> f32 {
+    let sign = ((h & 0x8000) as u32) << 16;
+    let exp = ((h >> 10) & 0x1f) as u32;
+    let mant = (h & 0x03ff) as u32;
+    let bits = match exp {
+        0 => {
+            if mant == 0 {
+                sign
+            } else {
+                // Half subnormal: value = mant × 2⁻²⁴ = (1 + frac) × 2^(b−24) with b the mantissa's
+                // highest set bit — renormalise into an f32.
+                let b = 31 - mant.leading_zeros();
+                let frac = (mant ^ (1 << b)) << (23 - b);
+                sign | ((103 + b) << 23) | frac
+            }
+        }
+        0x1f => sign | 0x7f80_0000 | (mant << 13),
+        _ => sign | ((exp + 112) << 23) | (mant << 13),
+    };
+    f32::from_bits(bits)
+}
+
+/// [`f16_to_f32`] with a branch-light path for normal numbers and zeros (the bulk of read-back
+/// data); subnormals, infinities and NaNs take the general path. Same result for every input.
+#[inline(always)]
+pub fn f16_to_f32_fast(h: u16) -> f32 {
+    let u = u32::from(h);
+    let sign = (u & 0x8000) << 16;
+    let abs = u & 0x7fff;
+    if (0x0400..0x7c00).contains(&abs) {
+        // rebias the exponent (127 - 15 = 112) and widen the mantissa
+        f32::from_bits(sign | ((abs + (112 << 10)) << 13))
+    } else if abs == 0 {
+        f32::from_bits(sign)
+    } else {
+        f16_to_f32(h)
+    }
 }
 
 /// Half-float texel data for one frame (one byte vector per plane), converted off the UI thread.
@@ -357,6 +400,7 @@ impl GpuCompositor {
             accum: None,
             backdrop: None,
             output: None,
+            accum_readback_buf: None,
             uploads: HashMap::new(),
             clock: 0,
             dummy,
@@ -869,6 +913,22 @@ impl GpuCompositor {
         self.render_plan(&empty, None, false, true)
     }
 
+    /// Export rendering: `plan` composited into the linear float accumulator and read back as
+    /// premultiplied RGBA f32 (the sRGB resolve is skipped). None for a plan the export path does
+    /// not run on the GPU (transitions: the caller renders those on the CPU) or a failed read-back.
+    pub fn render_export_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> Option<(u32, u32, Vec<f32>)> {
+        if matches!(plan, FramePlan::Composite { .. }) {
+            return None;
+        }
+        let t = std::time::Instant::now();
+        self.render_plan(plan, prep, true, false);
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite-export") });
+        let size = self.copy_accumulator(&mut enc)?;
+        self.queue.submit([enc.finish()]);
+        export_renderer::timing::add_submit(t.elapsed());
+        self.map_accumulator(size)
+    }
+
     /// Run the effect stage of a layer alone: `frame` decoded into its working image and `fx`
     /// applied, read back as linear premultiplied RGBA f32 (what `LayerFx` ops produce on the
     /// CPU from the same frame). None when the working image does not fit in a texture.
@@ -928,6 +988,77 @@ impl GpuCompositor {
         drop(data);
         buf.unmap();
         Some((w, h, out))
+    }
+
+    /// Read the **linear float accumulator** back as premultiplied RGBA f32 (export rendering):
+    /// the display texture this crate's [`read_output`](Self::read_output) resolves is sRGB 8-bit
+    /// and would clip the working-space data HDR exports need. The accumulator must have been
+    /// composited first ([`composite`](Self::composite) / [`composite_prepared`](Self::composite_prepared)).
+    pub fn read_accumulator(&mut self) -> Option<(u32, u32, Vec<f32>)> {
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        let size = self.copy_accumulator(&mut enc)?;
+        self.queue.submit([enc.finish()]);
+        self.map_accumulator(size)
+    }
+
+    /// Record a copy of the accumulator into the staging buffer (grown when too small, reused
+    /// otherwise); returns its width, height and row pitch in bytes.
+    fn copy_accumulator(&mut self, enc: &mut wgpu::CommandEncoder) -> Option<(u32, u32, u32)> {
+        let (_, _, (w, h)) = self.accum.as_ref()?;
+        let (w, h) = (*w, *h);
+        let row = w.checked_mul(8)?.div_ceil(256).checked_mul(256)?;
+        let needed = u64::from(row) * u64::from(h);
+        if self.accum_readback_buf.as_ref().is_none_or(|(_, size)| *size < needed) {
+            let b = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("accum-readback"),
+                size: needed,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            self.accum_readback_buf = Some((b, needed));
+        }
+        let (tex, _, _) = self.accum.as_ref()?;
+        let (buf, _) = self.accum_readback_buf.as_ref()?;
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer: buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        Some((w, h, row))
+    }
+
+    /// Wait for the staging buffer filled by [`copy_accumulator`](Self::copy_accumulator) and
+    /// convert its half floats to f32.
+    fn map_accumulator(&self, (w, h, row): (u32, u32, u32)) -> Option<(u32, u32, Vec<f32>)> {
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let t = std::time::Instant::now();
+        let (buf, _) = self.accum_readback_buf.as_ref()?;
+        let slice = buf.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        rx.recv().ok()?.ok()?;
+        export_renderer::timing::add_map_wait(t.elapsed());
+        let t = std::time::Instant::now();
+        let (width, row) = (w as usize, row as usize);
+        let mut out = filmcraft_frame::pool::take_f32_overwritten(width.checked_mul(h as usize)?.checked_mul(4)?);
+        let data = slice.get_mapped_range().ok()?;
+        // every row must be there: the pooled output holds stale values until written
+        let converted = out.chunks_exact_mut(width * 4).enumerate().all(|(y, dst)| {
+            let Some(src) = data.get(y * row..y * row + width * 8) else { return false };
+            for (d, s) in dst.iter_mut().zip(src.as_chunks::<2>().0) {
+                *d = f16_to_f32_fast(u16::from_le_bytes(*s));
+            }
+            true
+        });
+        drop(data);
+        buf.unmap();
+        export_renderer::timing::add_convert(t.elapsed());
+        converted.then_some((w, h, out))
     }
 
     /// Read the output back as RGBA8 (tests / screenshots / thumbnails).

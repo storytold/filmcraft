@@ -29,11 +29,13 @@ fn interface_language_persists_and_rejects_hostile_values() {
     let mut s = Session { prefs_path: Some(path.clone()), ..Session::default() };
     set(&mut s, "general.interfaceLanguage", json!("es"));
     assert_eq!(Preferences::load(&path).general.interface_language, "es");
-    for value in [json!("xx"), json!("es-MX"), json!(null), json!(-1), json!({}), json!("x".repeat(4096))] {
+    for value in [json!("xx"), json!("es-MX"), json!("de-DE"), json!(null), json!(-1), json!({}), json!("x".repeat(4096))] {
         assert!(s.execute("prefs.set", json!({"key": "general.interfaceLanguage", "value": value})).is_err());
         assert_eq!(s.prefs.general.interface_language, "es");
     }
     assert_eq!(Preferences::load(&path).general.interface_language, "es");
+    set(&mut s, "general.interfaceLanguage", json!("de"));
+    assert_eq!(Preferences::load(&path).general.interface_language, "de");
     // back to following the operating system (#218)
     set(&mut s, "general.interfaceLanguage", json!("system"));
     assert_eq!(Preferences::load(&path).general.interface_language, "system");
@@ -251,6 +253,18 @@ fn schema_command_describes_every_category() {
     assert_eq!(auto["value"], "pageScroll");
     assert_eq!(auto["wired"], true);
     assert!(auto["kind"]["choices"].as_array().unwrap().iter().any(|c| c["value"] == "smoothScroll"));
+
+    // This option is stored, but Insert/Overwrite does not yet implement focus transfer.
+    let focus = tl["fields"].as_array().unwrap().iter().find(|f| f["key"] == "timeline.focusTimelineOnEdit").unwrap();
+    assert_eq!(focus["kind"], json!({"type": "bool"}));
+    assert_eq!(focus["wired"], false);
+    assert_eq!(focus["value"], false);
+    set(&mut s, "timeline.focusTimelineOnEdit", json!(true));
+    let updated = s.execute("prefs.schema", json!({"category": "timeline"})).unwrap();
+    let focus = updated["categories"][0]["fields"].as_array().unwrap().iter().find(|f| f["key"] == "timeline.focusTimelineOnEdit").unwrap();
+    assert_eq!(focus["value"], true);
+    assert_eq!(focus["wired"], false);
+
     let one = s.execute("prefs.schema", json!({"category": "trim"})).unwrap();
     assert_eq!(one["categories"].as_array().unwrap().len(), 1);
     assert!(s.execute("prefs.schema", json!({"category": "nope"})).is_err());
@@ -550,4 +564,112 @@ fn hardware_decoding_setting_drives_the_decoder_switch() {
     set(&mut s, "playback.hardwareDecoding", json!("auto"));
     assert!(filmcraft_codecs::hw::hardware_decoding());
     assert!(settings::field("playback.hardwareDecoding").is_some_and(|f| f.wired && matches!(f.kind, Kind::Choice(_))));
+}
+
+/// Settings ▸ Timeline ▸ "Place files dropped onto the Timeline directly on the Timeline": on by default.
+#[test]
+fn drop_import_to_timeline_defaults_to_on() {
+    assert!(settings::TimelinePrefs::default().drop_import_to_timeline);
+    assert!(Preferences::default().timeline.drop_import_to_timeline);
+}
+
+/// The key is saved under `timeline.dropImportToTimeline`, read back by `prefs.get`, and persisted.
+#[test]
+fn drop_import_to_timeline_round_trips_through_prefs() {
+    let dir = tmp_dir("drop-import-to-timeline");
+    let path = dir.join("preferences.json");
+    let mut s = Session { prefs_path: Some(path.clone()), ..Session::default() };
+    set(&mut s, "timeline.dropImportToTimeline", json!(false));
+    assert!(!s.prefs.timeline.drop_import_to_timeline);
+    assert_eq!(s.execute("prefs.get", json!({"key": "timeline.dropImportToTimeline"})).unwrap(), json!(false));
+    assert!(!Preferences::load(&path).timeline.drop_import_to_timeline);
+    // a non-boolean is rejected and the stored value is kept
+    assert!(s.execute("prefs.set", json!({"key": "timeline.dropImportToTimeline", "value": "no"})).is_err());
+    assert!(!s.prefs.timeline.drop_import_to_timeline);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Preferences files written before the key existed load it as on.
+#[test]
+fn drop_import_to_timeline_defaults_to_on_for_older_prefs() {
+    assert!(serde_json::from_value::<settings::TimelinePrefs>(json!({})).unwrap().drop_import_to_timeline);
+    let old = Preferences::from_value(json!({"version": 2, "timeline": {"stillImageDuration": 3}}));
+    assert!(old.timeline.drop_import_to_timeline);
+    assert_eq!(old.timeline.still_image_duration, 3.0);
+}
+
+/// The key is a Boolean field of the Timeline category in the settings registry.
+#[test]
+fn drop_import_to_timeline_is_in_the_settings_registry() {
+    let (cat, f) = settings::fields().into_iter().find(|(_, f)| f.key == "timeline.dropImportToTimeline").expect("registry field");
+    assert_eq!(cat, "timeline");
+    assert!(matches!(f.kind, Kind::Bool));
+    assert_eq!(settings::field("timeline.dropImportToTimeline").map(|f| f.key), Some("timeline.dropImportToTimeline"));
+}
+
+/// New users keep the dark Darkest theme (following the system is opt-in); a file saved before
+/// appearance modes keeps showing its Color Theme as a fixed Dark or Light mode.
+#[test]
+fn appearance_defaults_and_legacy_theme_migrate() {
+    let a = Preferences::default().appearance;
+    assert_eq!((a.appearance_mode.as_str(), a.dark_theme.as_str(), a.light_theme.as_str()), ("dark", "darkest", "light"));
+    assert_eq!(a.shown_theme(Some(true)), "darkest", "Dark mode ignores a light system");
+    let dir = tmp_dir("prefs-appearance-migrate");
+    let path = dir.join("preferences.json");
+    for (theme, mode, dark, light) in [("darkest", "dark", "darkest", "light"), ("dark", "dark", "dark", "light"), ("light", "light", "darkest", "light")] {
+        std::fs::write(&path, json!({"version": 2, "appearance": {"colorTheme": theme}}).to_string()).unwrap();
+        let a = Preferences::load(&path).appearance;
+        assert_eq!((a.appearance_mode.as_str(), a.dark_theme.as_str(), a.light_theme.as_str()), (mode, dark, light), "{theme}");
+        assert_eq!(a.shown_theme(None), theme);
+    }
+    // a v1 file without an appearance section, and a hostile theme, get the defaults
+    std::fs::write(&path, r#"{"autoSave":{"enabled":true}}"#).unwrap();
+    assert_eq!(Preferences::load(&path).appearance, settings::AppearancePrefs::default());
+    std::fs::write(&path, r#"{"appearance":{"colorTheme":"neon","appearanceMode":7,"darkTheme":"light"}}"#).unwrap();
+    assert_eq!(Preferences::load(&path).appearance, settings::AppearancePrefs::default());
+    // a file with a mode keeps it
+    std::fs::write(&path, r#"{"appearance":{"colorTheme":"darkest","appearanceMode":"auto","lightTheme":"light","darkTheme":"dark"}}"#).unwrap();
+    let a = Preferences::load(&path).appearance;
+    assert_eq!((a.appearance_mode.as_str(), a.shown_theme(Some(true)), a.shown_theme(Some(false)), a.shown_theme(None)), ("auto", "light", "dark", "dark"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn appearance_choices_validate_and_legacy_theme_still_selects() {
+    let mut s = Session::default();
+    s.execute("prefs.set", json!({"values": {"appearance.appearanceMode": "auto", "appearance.darkTheme": "dark"}})).unwrap();
+    assert_eq!((s.prefs.appearance.appearance_mode.as_str(), s.prefs.appearance.dark_theme.as_str()), ("auto", "dark"));
+    for (key, value) in [
+        ("appearance.darkTheme", json!("light")),
+        ("appearance.lightTheme", json!("darkest")),
+        ("appearance.appearanceMode", json!("system")),
+        ("appearance.appearanceMode", json!(1)),
+    ] {
+        assert!(s.execute("prefs.set", json!({"key": key, "value": value})).is_err(), "{key} {value}");
+    }
+    // the single Color Theme of older clients selects that theme and fixes the mode to its family
+    set(&mut s, "appearance.colorTheme", json!("light"));
+    assert_eq!((s.prefs.appearance.appearance_mode.as_str(), s.prefs.appearance.light_theme.as_str()), ("light", "light"));
+    assert_eq!(s.prefs.appearance.dark_theme, "dark", "the dark choice is kept");
+    set(&mut s, "appearance.colorTheme", json!("darkest"));
+    assert_eq!((s.prefs.appearance.appearance_mode.as_str(), s.prefs.appearance.dark_theme.as_str()), ("dark", "darkest"));
+    // the legacy Color Theme follows the mode and theme choices, so clients reading it aren't stale
+    assert_eq!(s.prefs.appearance.color_theme, "darkest");
+    set(&mut s, "appearance.appearanceMode", json!("light"));
+    assert_eq!(s.prefs.appearance.color_theme, "light");
+    set(&mut s, "appearance.appearanceMode", json!("dark"));
+    set(&mut s, "appearance.darkTheme", json!("dark"));
+    assert_eq!(s.prefs.appearance.color_theme, "dark");
+    set(&mut s, "appearance.appearanceMode", json!("auto"));
+    assert_eq!(s.prefs.appearance.color_theme, "dark", "Auto: the dark theme");
+    set(&mut s, "appearance.colorTheme", json!("light"));
+    assert_eq!((s.prefs.appearance.appearance_mode.as_str(), s.prefs.appearance.color_theme.as_str()), ("light", "light"));
+    // the header button's cycle
+    let mut a = settings::AppearancePrefs::default();
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        a.appearance_mode = a.next_mode().into();
+        seen.push(a.appearance_mode.clone());
+    }
+    assert_eq!(seen, ["auto", "light", "dark", "auto"]);
 }

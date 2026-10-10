@@ -480,6 +480,13 @@ impl R<'_> {
                         return Err(bad("short weak collection index"));
                     };
                     let size = size as usize;
+                    if count > 0 && size == 0 {
+                        return Err(bad("zero-size weak collection key"));
+                    }
+                    // every key must lie in the index, so its length (not the count) bounds the loop
+                    if (count as usize).checked_mul(size).and_then(|n| n.checked_add(9)).is_none_or(|end| end > idx.len()) {
+                        return Err(bad("short weak collection index"));
+                    }
                     let mut keys = Vec::new();
                     for k in 0..count as usize {
                         keys.push(idx.get(9 + k * size..9 + (k + 1) * size).ok_or_else(|| bad("short weak collection index"))?.to_vec());

@@ -1,6 +1,6 @@
 //! Headless UI tests of the handles of graphic layers in the Program monitor: point text scales
-//! about its anchor point, a paragraph-text box is resized, a shape stretches away from its
-//! opposite side (docs/graphics.md).
+//! about its anchor point, a paragraph-text box is resized, a shape's Size follows the handle
+//! while its opposite side and anchor point stay (docs/graphics.md).
 //!
 //! With `FILMCRAFT_UI_SHOTS=<dir>` the tests also render the UI with wgpu and save PNGs there.
 
@@ -128,6 +128,14 @@ impl Driver {
     fn drag(&mut self, from: (f64, f64), by: (f64, f64)) {
         self.ok("ui.drag", json!({"from": {"x": from.0, "y": from.1}, "to": {"x": from.0 + by.0, "y": from.1 + by.1}, "steps": 6}));
         self.frames(4);
+    }
+
+    /// Press or let go of Shift, as a keyboard reports it (the control channel's drags carry
+    /// modifiers only on their press and release).
+    fn hold_shift(&mut self, on: bool) {
+        let m = if on { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE };
+        self.harness.input_mut().events.push(egui::Event::ModifiersChanged(m));
+        self.frames(1);
     }
 
     fn drag_handle(&mut self, pre: &str, n: usize, dx: f64, dy: f64) {
@@ -370,6 +378,58 @@ fn shape_corner_handles_scale_away_from_the_opposite_corner() {
     let (tr2, bl2) = (d.handle(&pre, 1), d.handle(&pre, 3));
     assert!(near(tr, tr2), "top-right stays put: {tr:?} -> {tr2:?}");
     assert!(bl2.0 < bl.0 - 20.0 && bl2.1 > bl.1 + 5.0, "bottom-left follows the pointer: {bl:?} -> {bl2:?}");
+}
+
+/// Width and height of a layer's box in its own pixels.
+fn box_size(l: &Value) -> (f64, f64) {
+    let b = &l["localBounds"];
+    (num(&b[2]) - num(&b[0]), num(&b[3]) - num(&b[1]))
+}
+
+#[test]
+fn shape_handles_change_its_size_and_shift_keeps_the_ratio() {
+    let mut d = Driver::new();
+    let pre = d.shape();
+    let clip: u64 = pre.split('.').nth(2).unwrap().parse().unwrap();
+    // a corner straight right: only wider, as in Premiere; the Size changes, not the Scale
+    let (tl, br, anchor) = (d.handle(&pre, 0), d.handle(&pre, 2), d.at(&pre, "anchor"));
+    let before = d.layer(clip);
+    d.drag_handle(&pre, 2, 60.0, 0.0);
+    let l = d.layer(clip);
+    assert_eq!((num(&l["scale"]), num(&l["scaleWidth"])), (100.0, 100.0), "{l}");
+    let (w, h) = box_size(&l);
+    assert!(w > 510.0 && (h - 300.0).abs() < 1e-3, "wider, as tall: {w} x {h}");
+    let (tl2, br2) = (d.handle(&pre, 0), d.handle(&pre, 2));
+    assert!(near(tl, tl2), "top-left stays put: {tl:?} -> {tl2:?}");
+    assert!(near(br2, (br.0 + 60.0, br.1)), "bottom-right follows the pointer: {br:?} -> {br2:?}");
+    assert!(near(d.at(&pre, "anchor"), anchor), "the anchor point stays put");
+    assert_eq!(l["position"], before["position"]);
+
+    // with Shift both sides grow alike from the opposite corner
+    d.hold_shift(true);
+    d.drag_handle(&pre, 2, 40.0, 0.0);
+    d.hold_shift(false);
+    let l2 = d.layer(clip);
+    let (w2, h2) = box_size(&l2);
+    assert!(h2 > 310.0, "taller too: {w2} x {h2}");
+    assert!((w2 / h2 - w / h).abs() < 1e-3, "same proportions: {w}x{h} -> {w2}x{h2}");
+    assert!(near(d.handle(&pre, 0), tl), "top-left still stays put");
+    assert_eq!(num(&l2["scale"]), 100.0);
+    // one undo step per drag
+    d.exec("edit.undo", json!({}));
+    assert_eq!(box_size(&d.layer(clip)), (w, h));
+}
+
+#[test]
+fn polygon_handles_keep_the_opposite_corner() {
+    let mut d = Driver::new();
+    let r = d.exec("graphics.newPolygon", json!({"sides": 5, "position": [800, 500], "size": [300, 300]}));
+    let pre = d.select(r["clip"].as_u64().unwrap());
+    // a pentagon's box is not centred on the shape's origin; the top-left corner stays anyway
+    let (tl, br) = (d.handle(&pre, 0), d.handle(&pre, 2));
+    d.drag_handle(&pre, 2, 50.0, 40.0);
+    assert!(near(d.handle(&pre, 0), tl), "top-left stays put");
+    assert!(near(d.handle(&pre, 2), (br.0 + 50.0, br.1 + 40.0)), "bottom-right follows the pointer");
 }
 
 #[test]

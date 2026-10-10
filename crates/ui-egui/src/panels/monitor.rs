@@ -157,12 +157,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     } else {
         (None, video_area)
     };
-    // ---- picture
+    // ---- picture, at its display aspect (non-square pixels are stretched on screen)
     let ppp = ctx.pixels_per_point();
+    let display_w = (frame_size.0 as f64 * monitor_view::pixel_aspect(app, which)) as f32;
     let pic = if compare {
-        fit(video_area, frame_size.0 as f32, frame_size.1 as f32)
+        fit(video_area, display_w, frame_size.1 as f32)
     } else if show_picture {
-        monitor_view::picture_rect(video_area, frame_size.0 as f32, frame_size.1 as f32, &mv, ppp)
+        monitor_view::picture_rect(video_area, display_w, frame_size.1 as f32, &mv, ppp)
     } else {
         video_area
     };
@@ -172,7 +173,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         ui.painter().rect_filled(pic, 0.0, t.monitor_bg);
         let playing = if which == Which::Program { app.playback.playing } else { app.source_playback.clock.playing };
         let res = mv.effective_res(playing);
-        let screen_scale = (pic.width() * ppp / frame_size.0 as f32).min(1.0);
+        // frame pixels per screen pixel along the axis that needs the most of them
+        let screen_scale = (pic.width() * ppp / frame_size.0.max(1) as f32).max(pic.height() * ppp / frame_size.1.max(1) as f32).min(1.0);
         let scale = quantize_scale(res.scale().min(screen_scale.max(1.0 / 32.0)));
         let frame = rate.frame_at(time);
         let rev = match target {
@@ -240,7 +242,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
             let rf = rate.frame_at(Tick(mv.compare_ref.unwrap_or(time.0)));
             let rkey = FrameKey { target: cpu_target, frame: rf, size: size_key, revision: rev, draft: false };
             app.frames.request(rkey, rate.tick_of(rf), scale, &project, 1);
-            let rpic = fit(ra, frame_size.0 as f32, frame_size.1 as f32);
+            let rpic = fit(ra, display_w, frame_size.1 as f32);
             ui.painter().rect_filled(rpic, 0.0, t.monitor_bg);
             if let (Some(tex), _) = cpu_texture(app, &ctx, &format!("monitor-{prefix}-ref"), rkey, &[], DisplayMode::Composite) {
                 ui.painter().image(tex, rpic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
@@ -276,6 +278,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     if which == Which::Program && app.playback.playing {
         let c = if app.playback.meter.counts().1 > 0 { t.render_yellow } else { t.render_green };
         ui.painter().circle_filled(pos2(video_area.min.x + 10.0, video_area.min.y + 10.0), 4.0, c);
+    }
+    // A click on the Program monitor around the picture lets go of what is selected on it (#683;
+    // in the picture the overlays do that). Under the picture and the overlays, so they come first.
+    if which == Which::Program && show_picture && ui.interact(video_area, egui::Id::new((prefix, "background")), Sense::click()).clicked() {
+        crate::panels::graphics::deselect_on_monitor(app, ui);
     }
     // Click/drag in the picture: the Hand tool pans a magnified picture, otherwise focus.
     let pic_resp = ui.interact(pic, egui::Id::new((prefix, "pic")), if show_picture { Sense::click_and_drag() } else { Sense::hover() });
@@ -690,6 +697,19 @@ fn mini_timeline(
     }
 }
 
+// A hidden transport action is still available through its regular shortcut/menu.
+fn transport_visible(hidden: &[String], command: &str) -> bool {
+    !hidden.iter().any(|id| id == command)
+}
+
+fn set_transport_visible(hidden: &mut Vec<String>, command: &str, visible: bool) {
+    if visible {
+        hidden.retain(|id| id != command);
+    } else if transport_visible(hidden, command) {
+        hidden.push(command.to_owned());
+    }
+}
+
 fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which) {
     let t = app.tokens;
     let src = which == Which::Source;
@@ -724,12 +744,21 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
             (Icon::Proxy, "media.toggleProxies", tl!("Toggle Proxies")),
         ]
     };
+    let mut buttons = buttons;
+    if !src {
+        // Optional control, discoverable through the editor without changing existing layouts.
+        buttons.push((Icon::Loop, "playback.loop", tl!("Loop")));
+    }
+    let hidden = monitor_view::view(app, which).transport_hidden.clone();
     let bw = 30.0;
-    let total = buttons.len() as f32 * bw;
+    let total = buttons.iter().filter(|(_, cmd, _)| transport_visible(&hidden, cmd)).count() as f32 * bw;
     let mut x = row.center().x - total / 2.0;
     let ctx = ui.ctx().clone();
     let prefix = if src { "source" } else { "program" };
-    for (icon, cmd, tip) in buttons {
+    for &(icon, cmd, tip) in &buttons {
+        if !transport_visible(&hidden, cmd) {
+            continue;
+        }
         let r = Rect::from_min_size(pos2(x, row.min.y + 2.0), vec2(bw - 2.0, 26.0));
         let resp = ui.interact(r, egui::Id::new((prefix, cmd)), Sense::click()).on_hover_text(tip);
         app.auto.add(&format!("{prefix}.transport.{cmd}"), r, tip);
@@ -765,10 +794,32 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
         }
         x += bw;
     }
-    // button editor "+"
+    // Customize this monitor's transport separately from the other monitor.
     let r = Rect::from_min_size(pos2(row.max.x - 30.0, row.min.y + 4.0), vec2(22.0, 22.0));
     let resp = ui.interact(r, egui::Id::new((prefix, "btn-editor")), Sense::click()).on_hover_text(tl!("Button Editor"));
+    app.auto.add(&format!("{prefix}.transport.editor"), r, "Button Editor");
     icons::paint(ui.painter(), r.shrink(5.0), Icon::Plus, if resp.hovered() { t.tab_text_active } else { t.text_dim });
+    let mut edited_hidden = hidden.clone();
+    egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_min_width(225.0);
+        for &(_, cmd, tip) in &buttons {
+            let mut visible = transport_visible(&edited_hidden, cmd);
+            let checkbox = ui.checkbox(&mut visible, tip);
+            app.auto.add(&format!("{prefix}.transport.editor.{cmd}"), checkbox.rect, tip);
+            if checkbox.changed() {
+                set_transport_visible(&mut edited_hidden, cmd, visible);
+            }
+        }
+        ui.separator();
+        let reset = ui.button(tl!("Reset"));
+        app.auto.add(&format!("{prefix}.transport.editor.reset"), reset.rect, "Reset");
+        if reset.clicked() {
+            edited_hidden = crate::state::MonitorView::default().transport_hidden;
+        }
+    });
+    if edited_hidden != hidden {
+        monitor_view::view_mut(app, which).transport_hidden = edited_hidden;
+    }
 }
 
 fn source_nav(app: &mut FilmcraftApp, cmd: &str) {
@@ -793,6 +844,21 @@ mod tests {
 
     fn flat(w: usize, h: usize, rgba: [u8; 4]) -> Rgba {
         Rgba { w, h, px: rgba.iter().copied().cycle().take(w * h * 4).collect() }
+    }
+
+    #[test]
+    fn button_editor_updates_visibility_without_affecting_other_monitor() {
+        let mut program = crate::state::MonitorView::default().transport_hidden;
+        let source = program.clone();
+        assert!(!transport_visible(&program, "playback.loop"));
+        set_transport_visible(&mut program, "playback.loop", true);
+        set_transport_visible(&mut program, "playback.loop", true);
+        assert!(transport_visible(&program, "playback.loop"));
+        assert!(program.is_empty(), "enabling twice must not leave hidden entries");
+        set_transport_visible(&mut program, "playhead.stepForward", false);
+        set_transport_visible(&mut program, "playhead.stepForward", false);
+        assert_eq!(program, vec!["playhead.stepForward"]);
+        assert!(transport_visible(&source, "playhead.stepForward"));
     }
 
     #[test]

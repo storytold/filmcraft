@@ -29,7 +29,7 @@
 //! software encoder takes over. A declined HEVC export is an error that says why.
 
 #[allow(unsafe_code)]
-mod device;
+pub(crate) mod device;
 pub mod export;
 #[allow(unsafe_code)]
 mod ffi;

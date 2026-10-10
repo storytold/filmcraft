@@ -40,6 +40,7 @@ const OP_ASC_CDL: u32 = 15;
 const OP_CHANNEL_MIX: u32 = 16;
 const OP_COLOR_REPLACE: u32 = 17;
 const OP_ALPHA_ADJUST: u32 = 18;
+const OP_VIGNETTE: u32 = 19;
 const OP_BOX: u32 = 20;
 const OP_DIRECTIONAL: u32 = 22;
 const OP_UNSHARP: u32 = 23;
@@ -49,6 +50,8 @@ const OP_HFLIP: u32 = 26;
 const OP_VFLIP: u32 = 27;
 const OP_MIRROR: u32 = 28;
 const OP_OFFSET: u32 = 29;
+const OP_VIDEO_LIMITER: u32 = 30;
+const OP_LUMETRI: u32 = 31;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -85,7 +88,7 @@ struct Step {
     run: bool,
     code: u32,
     i1: [u32; 4],
-    p: [f32; 16],
+    p: [f32; 24],
     /// Unsharp combine: reads the blurred image and the original.
     combine: bool,
     /// A blur pass of Unsharp Mask (the original stays untouched until the combine).
@@ -93,7 +96,7 @@ struct Step {
 }
 
 fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
-    let mut q = [0.0; 16];
+    let mut q = [0.0; 24];
     for (d, s) in q.iter_mut().zip(p) {
         *d = *s;
     }
@@ -174,6 +177,73 @@ fn steps(op: &FxOp) -> Vec<Step> {
         }
         FxOp::AlphaAdjust { opacity, ignore, invert, mask_only } => {
             out.push(step(OP_ALPHA_ADJUST, [*ignore as u32, *invert as u32, *mask_only as u32, 0], &[*opacity]));
+        }
+        FxOp::Vignette { amount, midpoint, roundness, feather, target } => {
+            if amount.abs() >= 1e-5 {
+                out.push(step(OP_VIGNETTE, [0; 4], &[*amount, *midpoint, *roundness, *feather, target[0], target[1], target[2]]));
+            }
+        }
+        FxOp::VideoLimiter { max, comp, axis, warn, warning_color } => {
+            out.push(step(OP_VIDEO_LIMITER, [*axis, *warn as u32, 0, 0], &[*max, *comp, warning_color[0], warning_color[1], warning_color[2]]));
+        }
+        FxOp::Lumetri {
+            gains,
+            exposure,
+            contrast,
+            hl,
+            sh,
+            wh,
+            bl,
+            sat,
+            creative_on,
+            faded,
+            vib,
+            st,
+            ht,
+            vignette_on,
+            va,
+            vmid,
+            vround,
+            vfeather,
+            aspect,
+            ..
+        } => {
+            let ge = [gains[0] * exposure, gains[1] * exposure, gains[2] * exposure];
+            let b0 = -bl * 0.15;
+            let w0 = 1.0 - wh * 0.15;
+            let sh_k = sh * 0.35;
+            let hl_k = hl * 0.35;
+            let vround_aspect = filmcraft_render::gpufx::lumetri_vignette_aspect(*aspect, *vround);
+            let st_k = [(st[0] - 0.5) * 0.3, (st[1] - 0.5) * 0.3, (st[2] - 0.5) * 0.3];
+            let ht_k = [(ht[0] - 0.5) * 0.3, (ht[1] - 0.5) * 0.3, (ht[2] - 0.5) * 0.3];
+
+            let p = [
+                ge[0],
+                ge[1],
+                ge[2],
+                b0,
+                w0,
+                sh_k,
+                hl_k,
+                *contrast,
+                *faded,
+                *sat,
+                *vib,
+                *va,
+                *vmid,
+                *vfeather,
+                vround_aspect,
+                0.0,
+                st_k[0],
+                st_k[1],
+                st_k[2],
+                0.0,
+                ht_k[0],
+                ht_k[1],
+                ht_k[2],
+                0.0,
+            ];
+            out.push(step(OP_LUMETRI, [*creative_on as u32, *vignette_on as u32, 0, 0], &p));
         }
     }
     out
@@ -340,7 +410,7 @@ impl FxStage {
                 (true, Some(o)) => views.get(o)?,
                 _ => dummy,
             };
-            let mut bytes = Vec::with_capacity(96);
+            let mut bytes = Vec::with_capacity(128);
             for v in [s.code, w, h, 0].iter().chain(&s.i1) {
                 bytes.extend_from_slice(&v.to_le_bytes());
             }

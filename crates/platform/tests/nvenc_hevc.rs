@@ -321,3 +321,19 @@ fn a_keyframe_every_one_or_two_pictures_is_written_without_b_frames() {
         assert_eq!(n + dec.flush().len(), 12, "keyint {keyint}");
     }
 }
+
+#[test]
+fn vui_timing_matches_integer_and_fractional_frame_rates() {
+    let _one = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    for fps in [(24, 1), (25, 1), (30_000, 1_001)] {
+        let mut cfg = config(640, 360);
+        cfg.fps = fps;
+        cfg.bframes = false;
+        let Some((enc, _, _)) = encode_all(&cfg, 2) else { return };
+        let sps_nal = enc.parameter_sets().0;
+        let sps = Sps::parse(&unescape_rbsp(&sps_nal[2..])).unwrap();
+        let (units, scale) = sps.vui.and_then(|v| v.timing).expect("HEVC VUI timing");
+        assert!(units > 0 && scale > 0);
+        assert_eq!(u64::from(scale) * u64::from(fps.1), u64::from(units) * u64::from(fps.0), "timing for {fps:?}");
+    }
+}

@@ -119,10 +119,15 @@ fn clip_commands_take_explicit_clips_without_a_selection() {
 fn naming_nothing_usable_does_not_enable_a_command() {
     let mut s = demo();
     let before = s.project.clone();
-    // no ids, ids of no clip, the wrong type, and a key the command does not take
-    for p in [json!({"clips": []}), json!({"clips": [987_654_321u64]}), json!({"clips": "all"}), json!({"clips": [-1, 1.5, null]}), json!({"items": [1]})] {
+    // no ids, the wrong type, and a key the command does not take
+    for p in [json!({"clips": []}), json!({"clips": "all"}), json!({"items": [1]})] {
         assert_eq!(disabled(s.execute("edit.rippleDelete", p.clone())), "nothing selected", "{p}");
     }
+    // ids of no clip and values that are not ids: still disabled, and the reason names them (#591)
+    let why = disabled(s.execute("edit.rippleDelete", json!({"clips": [987_654_321u64]})));
+    assert!(why.starts_with("no clip 987654321 in the active sequence"), "{why}");
+    let why = disabled(s.execute("edit.rippleDelete", json!({"clips": [-1, 1.5, null]})));
+    assert!(why.starts_with("-1 is not a clip id"), "{why}");
     assert_eq!(disabled(s.execute("clip.replaceFromBin", json!({"clips": [v1(&s)[0].id.0], "item": 987_654_321u64}))), "select a clip in the Project panel");
     // `edit.cut` takes no `clips`: it works on the selection only
     assert_eq!(disabled(s.execute("edit.cut", json!({"clips": [v1(&s)[0].id.0]}))), "no clips selected");
@@ -157,6 +162,44 @@ fn link_and_speed_take_explicit_clips_without_a_selection() {
     s.execute("edit.redo", json!({})).unwrap();
     assert_eq!(clip(&s, last.id).unwrap().duration, fast.duration);
     assert!(s.state.selection.is_empty() && !s.is_enabled("clip.speedDuration"), "menu enablement still follows the selection");
+}
+
+/// #591: a caller that names clips which cannot stand in for the selection hears why, instead of
+/// "no clips selected": a clip of another sequence, an id of something else, a string id.
+#[test]
+fn named_clips_that_are_not_usable_say_why() {
+    let mut s = demo();
+    let demo_seq = s.state.active_sequence.unwrap();
+    let demo_name = s.project.item(demo_seq).unwrap().name.clone();
+    let last = v1(&s).last().unwrap().clone();
+    // a track id and a project item id are not clip ids
+    let track = s.active_sequence().unwrap().video_tracks[0].id.0;
+    let why = disabled(s.execute("clip.speedDuration", json!({"clips": [track], "speed": 50})));
+    assert_eq!(why, format!("no clip {track} in the active sequence (clip ids are the `clip` numbers of the items in sequence.inspect)"));
+    let why = disabled(s.execute("clip.speedDuration", json!({"clips": [last.item.0], "speed": 50})));
+    assert!(why.starts_with(&format!("no clip {} in the active sequence", last.item.0)), "{why}");
+    // a string is not an id
+    let why = disabled(s.execute("clip.speedDuration", json!({"clips": [last.id.0.to_string()], "speed": 50})));
+    assert!(why.starts_with(&format!("\"{}\" is not a clip id", last.id.0)), "{why}");
+    // `clip`, where the command documents it
+    let why = disabled(s.execute("graphics.setText", json!({"clip": "x", "text": "x"})));
+    assert!(why.starts_with("\"x\" is not a clip id"), "{why}");
+    // a clip of a sequence that is not the active one
+    s.execute("file.newSequence", json!({"name": "Other"})).unwrap();
+    assert_ne!(s.state.active_sequence, Some(demo_seq));
+    let why = disabled(s.execute("clip.speedDuration", json!({"clips": [last.id.0], "speed": 200})));
+    assert_eq!(
+        why,
+        format!("clip {} is in sequence \"{demo_name}\", not the active one: open it first with sequence.open {{\"item\":{}}}", last.id.0, demo_seq.0)
+    );
+    // and doing what it says works
+    s.execute("sequence.open", json!({"item": demo_seq.0})).unwrap();
+    s.execute("clip.speedDuration", json!({"clips": [last.id.0], "speed": 200})).unwrap();
+    assert!(clip(&s, last.id).unwrap().duration < last.duration);
+    // naming nothing keeps the selection's reason, for menus and callers alike
+    s.state.selection.clear();
+    assert_eq!(disabled(s.execute("clip.speedDuration", json!({"speed": 50}))), "no clips selected");
+    assert_eq!(disabled(s.execute("clip.speedDuration", json!({"clips": [], "speed": 50}))), "no clips selected");
 }
 
 #[test]
@@ -210,4 +253,57 @@ fn project_delete_takes_explicit_bins_and_items_without_a_selection() {
     s.execute("edit.undo", json!({})).unwrap();
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(s.project.items.len(), before);
+}
+
+#[test]
+fn link_multiple_video_and_audio_pairs_creates_one_link_per_pair() {
+    let mut s = demo();
+    let v_clips = v1(&s);
+    let a_clips = a1(&s);
+    assert!(v_clips.len() >= 3 && a_clips.len() >= 3);
+    let (v0, v1, v2) = (v_clips[0].id, v_clips[1].id, v_clips[2].id);
+    let (a0, a1, a2) = (a_clips[0].id, a_clips[1].id, a_clips[2].id);
+
+    // First, unlink all three pairs
+    let r = s.execute("clip.link", json!({"clips": [v0.0, a0.0, v1.0, a1.0, v2.0, a2.0]})).unwrap();
+    assert_eq!(r["linked"], false);
+    for cid in [v0, a0, v1, a1, v2, a2] {
+        assert_eq!(clip(&s, cid).unwrap().link, None);
+    }
+
+    // Now, run clip.link on all six clips. In Premiere parity (#507),
+    // it should create 3 separate links (one per pair), not one big link for all six.
+    let r = s.execute("clip.link", json!({"clips": [v0.0, a0.0, v1.0, a1.0, v2.0, a2.0]})).unwrap();
+    assert_eq!(r["linked"], true);
+
+    let l0 = clip(&s, v0).unwrap().link;
+    let la0 = clip(&s, a0).unwrap().link;
+    let l1 = clip(&s, v1).unwrap().link;
+    let la1 = clip(&s, a1).unwrap().link;
+    let l2 = clip(&s, v2).unwrap().link;
+    let la2 = clip(&s, a2).unwrap().link;
+
+    assert!(l0.is_some() && l1.is_some() && l2.is_some());
+    assert_eq!(l0, la0, "v0 linked to a0");
+    assert_eq!(l1, la1, "v1 linked to a1");
+    assert_eq!(l2, la2, "v2 linked to a2");
+
+    assert_ne!(l0, l1, "different pairs must not share the same link id");
+    assert_ne!(l1, l2, "different pairs must not share the same link id");
+    assert_ne!(l0, l2, "different pairs must not share the same link id");
+}
+
+/// A video clip with no overlapping selected audio, and audio with no overlapping video, stay
+/// unlinked: a one-member link would make the clip read as "linked" with no partner.
+#[test]
+fn link_leaves_clips_without_a_partner_unlinked() {
+    let mut s = demo();
+    let (v, a) = (v1(&s), a1(&s));
+    let (v0, v1, a0, a2) = (v[0].id, v[1].id, a[0].id, a[2].id);
+    s.execute("clip.link", json!({"clips": [v0.0, v1.0, a0.0, a2.0]})).unwrap();
+    s.execute("clip.link", json!({"clips": [v0.0, v1.0, a0.0, a2.0]})).unwrap();
+    assert!(clip(&s, v0).unwrap().link.is_some());
+    assert_eq!(clip(&s, v0).unwrap().link, clip(&s, a0).unwrap().link);
+    assert_eq!(clip(&s, v1).unwrap().link, None, "v1 has no overlapping audio in the selection");
+    assert_eq!(clip(&s, a2).unwrap().link, None, "a2 has no overlapping video in the selection");
 }

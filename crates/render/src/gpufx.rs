@@ -14,7 +14,7 @@ use filmcraft_geom::Affine;
 use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
 
-use crate::effects::{FxCtx, b, choice, color, dec, enc, f, gaussian_boxes, point};
+use crate::effects::{FxCtx, b, choice, color, dec, enc, f, gaussian_boxes, grade_space, on, point, text};
 use crate::image::Image;
 
 /// A bilinear resample of the working image through an affine map (`Image::transformed` at a
@@ -161,6 +161,42 @@ pub enum FxOp {
         invert: bool,
         mask_only: bool,
     },
+    Vignette {
+        amount: f32,
+        midpoint: f32,
+        roundness: f32,
+        feather: f32,
+        target: [f32; 3],
+    },
+    VideoLimiter {
+        max: f32,
+        comp: f32,
+        axis: u32,
+        warn: bool,
+        warning_color: [f32; 3],
+    },
+    Lumetri {
+        gains: [f32; 3],
+        exposure: f32,
+        contrast: f32,
+        hl: f32,
+        sh: f32,
+        wh: f32,
+        bl: f32,
+        sat: f32,
+        creative_on: bool,
+        faded: f32,
+        vib: f32,
+        st: [f32; 3],
+        ht: [f32; 3],
+        vignette_on: bool,
+        va: f32,
+        vmid: f32,
+        vround: f32,
+        vfeather: f32,
+        aspect: f32,
+        gpu_capable: bool,
+    },
 }
 
 /// Effect ids [`FxOp::eval`] understands (the GPU-capable standard effects).
@@ -196,6 +232,9 @@ pub const GPU_EFFECTS: &[&str] = &[
     "channel_mix",
     "color_replace",
     "alpha_adjust",
+    "vignette",
+    "video_limiter",
+    "lumetri",
 ];
 
 /// `Image::transformed` without the mip path: the destination rectangle it writes and the inverse.
@@ -415,6 +454,120 @@ impl FxOp {
                 use crate::vfx::{bv, fv};
                 FxOp::AlphaAdjust { opacity: fv(e, "opacity", cx) / 100.0, ignore: bv(e, "ignore"), invert: bv(e, "invert"), mask_only: bv(e, "mask_only") }
             }
+            "vignette" => {
+                use crate::vfx::{cv, fv};
+                let amt = fv(e, "amount", cx) / 100.0;
+                let mid = fv(e, "midpoint", cx) / 100.0;
+                let round = fv(e, "roundness", cx) / 100.0;
+                let raw_feather = fv(e, "feather", cx);
+                let feather = if raw_feather.is_finite() { (raw_feather / 100.0).max(0.01) } else { raw_feather };
+                let col = cv(e, "color", cx);
+                let target = if amt < 0.0 { [col[0], col[1], col[2]] } else { [1.0; 3] };
+                FxOp::Vignette { amount: amt, midpoint: mid, roundness: round, feather, target }
+            }
+            "video_limiter" => {
+                use crate::vfx::{bv, cv};
+                use filmcraft_project::ParamValue;
+                let clip_level = match e.param("clip_level").map(|p| p.value.clone()).or_else(|| crate::vfx::def_value(e, "clip_level")) {
+                    Some(ParamValue::Choice(c)) => c as f32,
+                    Some(ParamValue::Float(f)) => f as f32,
+                    _ => 0.0,
+                };
+                let comp_val = match e.param("compression").map(|p| p.value.clone()).or_else(|| crate::vfx::def_value(e, "compression")) {
+                    Some(ParamValue::Choice(c)) => [0.0, 0.03, 0.05, 0.10, 0.20][(c as usize).min(4)],
+                    Some(ParamValue::Float(f)) => f as f32,
+                    _ => 0.03,
+                };
+                let axis = match e.param("axis").map(|p| p.value.clone()).or_else(|| crate::vfx::def_value(e, "axis")) {
+                    Some(ParamValue::Choice(c)) => c,
+                    Some(ParamValue::Float(f)) => {
+                        if f.is_nan() {
+                            u32::MAX
+                        } else {
+                            f as u32
+                        }
+                    }
+                    _ => 3,
+                };
+                let warn = bv(e, "gamut_warning");
+                let c = cv(e, "warning_color", cx);
+                let wc = dec([c[0], c[1], c[2]]);
+                FxOp::VideoLimiter { max: 1.0 + clip_level / 100.0, comp: comp_val, axis, warn, warning_color: wc }
+            }
+            "lumetri" => {
+                use crate::effects::{curve_param, is_identity_curve, wheel_rgb};
+                let (basic_on, creative_on, vignette_on) = (on(e, "basic_on"), on(e, "creative_on"), on(e, "vignette_on"));
+                let gs = grade_space(e, cx, "hdr_white");
+                let is_hdr = gs.is_hdr();
+                let has_input_lut = basic_on && !text(e, "input_lut").is_empty();
+                let has_look_lut = creative_on && !text(e, "look_lut").is_empty();
+                let look = if creative_on && !has_look_lut { choice(e, "look") } else { 0 };
+                let sharpen = if creative_on { f(e, "sharpen", cx) / 100.0 } else { 0.0 };
+
+                let curves_on = on(e, "curves_on");
+                let has_curves = curves_on && {
+                    ["curve_luma", "curve_red", "curve_green", "curve_blue"].iter().any(|id| curve_param(e, id).is_some_and(|c| !is_identity_curve(&c)))
+                        || ["hue_vs_sat", "hue_vs_hue", "hue_vs_luma", "luma_vs_sat", "sat_vs_sat"]
+                            .iter()
+                            .any(|id| curve_param(e, id).is_some_and(|c| !c.is_empty()))
+                };
+
+                let wheels_on = on(e, "wheels_on");
+                let has_wheels = wheels_on && {
+                    let v2 = |id: &str| e.param(id).map(|p| p.vec2_at(cx.t)).unwrap_or_default();
+                    let (ws, wm, wh) = (wheel_rgb(v2("wheel_shadows")), wheel_rgb(v2("wheel_midtones")), wheel_rgb(v2("wheel_highlights")));
+                    let (ls, lm, lh) = (f(e, "wheel_shadows_l", cx) / 100.0, f(e, "wheel_midtones_l", cx) / 100.0, f(e, "wheel_highlights_l", cx) / 100.0);
+                    ws.iter().chain(&wm).chain(&wh).any(|v| v.abs() > 1e-5) || (ls.abs() + lm.abs() + lh.abs() > 1e-5)
+                };
+
+                let hsl_on = b(e, "hsl_on");
+
+                let gpu_capable = !is_hdr && !has_input_lut && !has_look_lut && look == 0 && sharpen.abs() <= 1e-3 && !has_curves && !has_wheels && !hsl_on;
+
+                let bf = |id: &str| if basic_on { f(e, id, cx) } else { 0.0 };
+                let temp = bf("temperature") / 100.0;
+                let tint = bf("tint") / 100.0;
+                let exposure = 2f32.powf(bf("exposure"));
+                let contrast = bf("contrast") / 100.0;
+                let hl = bf("highlights") / 100.0;
+                let sh = bf("shadows") / 100.0;
+                let wh = bf("whites") / 100.0;
+                let bl = bf("blacks") / 100.0;
+                let sat = if basic_on { f(e, "saturation", cx) / 100.0 } else { 1.0 } * if creative_on { f(e, "creative_sat", cx) / 100.0 } else { 1.0 };
+                let vib = if creative_on { f(e, "vibrance", cx) / 100.0 } else { 0.0 };
+                let faded = if creative_on { f(e, "faded_film", cx) / 100.0 } else { 0.0 };
+                let st = color(e, "shadow_tint", cx);
+                let ht = color(e, "highlight_tint", cx);
+                let va = if vignette_on { f(e, "vignette_amount", cx) } else { 0.0 };
+                let vmid = f(e, "vignette_midpoint", cx) / 100.0;
+                let vround = f(e, "vignette_roundness", cx) / 100.0;
+                let vfeather = f(e, "vignette_feather", cx) / 100.0;
+                let gains = [1.0 + 0.35 * temp, 1.0 - 0.3 * tint, 1.0 - 0.35 * temp];
+                let aspect = if h > 0 { (w as f32 / h as f32).max(1e-4) } else { 1.0 };
+
+                FxOp::Lumetri {
+                    gains,
+                    exposure,
+                    contrast,
+                    hl,
+                    sh,
+                    wh,
+                    bl,
+                    sat,
+                    creative_on,
+                    faded,
+                    vib,
+                    st: [st[0], st[1], st[2]],
+                    ht: [ht[0], ht[1], ht[2]],
+                    vignette_on,
+                    va,
+                    vmid,
+                    vround,
+                    vfeather,
+                    aspect,
+                    gpu_capable,
+                }
+            }
             _ => return None,
         })
     }
@@ -458,6 +611,16 @@ impl FxOp {
             FxOp::ChannelMix { m } => m.iter().all(|r| fin(r)),
             FxOp::ColorReplace { sim, target, replace, replace_hsl, .. } => sim.is_finite() && fin(target) && fin(replace) && fin(replace_hsl),
             FxOp::AlphaAdjust { opacity, .. } => opacity.is_finite(),
+            FxOp::Vignette { amount, midpoint, roundness, feather, target } => fin(&[*amount, *midpoint, *roundness, *feather]) && fin(target),
+            FxOp::VideoLimiter { max, comp, axis, warning_color, .. } => *axis <= 3 && max.is_finite() && comp.is_finite() && fin(warning_color),
+            FxOp::Lumetri { gains, exposure, contrast, hl, sh, wh, bl, sat, faded, vib, st, ht, va, vmid, vround, vfeather, aspect, gpu_capable, .. } => {
+                *gpu_capable
+                    && fin(gains)
+                    && fin(&[*exposure, *contrast, *hl, *sh, *wh, *bl, *sat, *faded, *vib])
+                    && fin(st)
+                    && fin(ht)
+                    && fin(&[*va, *vmid, *vround, *vfeather, *aspect])
+            }
         }
     }
 
@@ -709,8 +872,196 @@ impl FxOp {
                     }
                 });
             }
+            FxOp::Vignette { amount, midpoint, roundness, feather, target } => {
+                let (amt, mid, round, feather, target) = (*amount, *midpoint, *roundness, *feather, *target);
+                if !amt.is_finite() || !mid.is_finite() || !round.is_finite() || !feather.is_finite() || !target.iter().all(|c| c.is_finite()) {
+                    return;
+                }
+                if amt.abs() < 1e-5 {
+                    return;
+                }
+                let (w, h) = (img.w as f32, img.h as f32);
+                let aspect = w / h;
+                img.map_rgb(|c, x, y| {
+                    let mut nx = (x as f32 + 0.5) / w * 2.0 - 1.0;
+                    let ny = (y as f32 + 0.5) / h * 2.0 - 1.0;
+                    // roundness 100 = circle; 0 = an ellipse following the frame; −100 = squarer
+                    if round > 0.0 {
+                        nx *= 1.0 + (aspect - 1.0) * round;
+                    }
+                    let p = if round < 0.0 { 2.0 + (-round) * 6.0 } else { 2.0 };
+                    // 0 at the centre, 1 at the corners
+                    let d = (nx.abs().powf(p) + ny.abs().powf(p)).powf(1.0 / p) / 2f32.powf(1.0 / p);
+                    let edge = crate::vfx::smoothstep(mid - feather * 0.5, mid + feather * 0.5, d);
+                    dec(crate::vfx::lerp3(enc(c), target, edge * amt.abs()))
+                });
+            }
+            FxOp::VideoLimiter { max, comp, axis, warn, warning_color } => {
+                let (max, comp, axis, warn, wc) = (*max, *comp, *axis, *warn, *warning_color);
+                if !max.is_finite() || !comp.is_finite() || !wc.iter().all(|c| c.is_finite()) {
+                    return;
+                }
+                img.map_rgb(|c, _, _| {
+                    let v = [linear_to_enc(c[0]), linear_to_enc(c[1]), linear_to_enc(c[2])];
+                    let out = limit(v, max, comp, axis);
+                    if warn && v.iter().zip(&out).any(|(a, b)| (a - b).abs() > 1e-4) {
+                        return wc;
+                    }
+                    out.map(enc_to_linear)
+                });
+            }
+            FxOp::Lumetri {
+                gains,
+                exposure,
+                contrast,
+                hl,
+                sh,
+                wh,
+                bl,
+                sat,
+                creative_on,
+                faded,
+                vib,
+                st,
+                ht,
+                vignette_on,
+                va,
+                vmid,
+                vround,
+                vfeather,
+                aspect,
+                ..
+            } => {
+                let gains = *gains;
+                let (exposure, contrast, hl, sh, wh, bl, sat) = (*exposure, *contrast, *hl, *sh, *wh, *bl, *sat);
+                let (creative_on, faded, vib, st, ht) = (*creative_on, *faded, *vib, *st, *ht);
+                let (vignette_on, va, vmid, vround, vfeather, aspect) = (*vignette_on, *va, *vmid, *vround, *vfeather, *aspect);
+                let (w, h) = (img.w as f32, img.h as f32);
+                img.map_rgb(|c, x, y| {
+                    // white balance + exposure in linear light
+                    let lin = [c[0] * gains[0] * exposure, c[1] * gains[1] * exposure, c[2] * gains[2] * exposure];
+                    let mut v = enc(lin);
+                    // whites / blacks: endpoints
+                    let b0 = -bl * 0.15;
+                    let w0 = 1.0 - wh * 0.15;
+                    v = v.map(|q| (q - b0) / (w0 - b0).max(1e-3));
+                    // highlights / shadows: luma-weighted lift/compress, hue preserving
+                    let l = 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+                    let ws = (1.0 - l).clamp(0.0, 1.0).powi(3);
+                    let whl = l.clamp(0.0, 1.0).powi(3);
+                    let nl = (l + sh * 0.35 * ws + hl * 0.35 * whl).max(0.0);
+                    if l > 1e-5 {
+                        let k = nl / l;
+                        v = v.map(|q| q * k);
+                    }
+                    // contrast: smooth S-curve around mid grey
+                    if contrast.abs() > 1e-4 {
+                        let k = 1.0 + contrast;
+                        v = v.map(|q| {
+                            let q = q.clamp(0.0, 1.0);
+                            let s = q * q * (3.0 - 2.0 * q);
+                            if k >= 1.0 { q + (s - q) * (k - 1.0) } else { 0.5 + (q - 0.5) * k }
+                        });
+                    }
+                    // faded film: lift blacks and compress
+                    if faded > 0.0 {
+                        v = v.map(|q| q * (1.0 - 0.25 * faded) + 0.12 * faded);
+                    }
+                    // split tone
+                    if creative_on {
+                        let l2 = (0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]).clamp(0.0, 1.0);
+                        for k in 0..3 {
+                            v[k] += (st[k] - 0.5) * 0.3 * (1.0 - l2) + (ht[k] - 0.5) * 0.3 * l2;
+                        }
+                    }
+                    // saturation & vibrance
+                    let l3 = 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+                    let cur_sat = v[0].max(v[1]).max(v[2]) - v[0].min(v[1]).min(v[2]);
+                    let s = sat * (1.0 + vib * (1.0 - cur_sat.clamp(0.0, 1.0)));
+                    v = v.map(|q| l3 + (q - l3) * s);
+                    // vignette
+                    if vignette_on && va.abs() > 1e-4 {
+                        let nx = (x as f32 / w - 0.5) * 2.0 * lumetri_vignette_aspect(aspect, vround);
+                        let ny = (y as f32 / h - 0.5) * 2.0;
+                        let d = (nx * nx + ny * ny).sqrt() / std::f32::consts::SQRT_2;
+                        let edge = ((d - vmid * 0.9) / (vfeather.max(0.01) * 0.9)).clamp(0.0, 1.0);
+                        let e2 = edge * edge * (3.0 - 2.0 * edge);
+                        let k = 1.0 + va * 0.2 * e2;
+                        v = v.map(|q| if va < 0.0 { q * k.max(0.0) } else { q + (1.0 - q) * (k - 1.0) });
+                    }
+                    dec(v)
+                });
+            }
         }
     }
+}
+
+/// Horizontal scale of the Lumetri vignette's coordinates for a Roundness of `vround`
+/// (−1 … 1) on a frame `aspect` wide. At 0 the vignette is an ellipse that follows the
+/// frame; positive values move it towards a circle (1 = a true circle), negative values
+/// stretch it into a wider oval. Non-finite or out-of-range input never yields NaN.
+pub fn lumetri_vignette_aspect(aspect: f32, vround: f32) -> f32 {
+    if !aspect.is_finite() || aspect <= 0.0 || !vround.is_finite() {
+        return 1.0;
+    }
+    aspect.powf(vround.clamp(-1.0, 1.0))
+}
+
+/// sRGB encoding that keeps values above 1 (super-whites) instead of clamping them.
+#[inline]
+fn linear_to_enc(v: f32) -> f32 {
+    if v <= 1.0 { filmcraft_color::linear_to_srgb(v.max(0.0)) } else { 1.0 + (v - 1.0) / 2.4 }
+}
+#[inline]
+fn enc_to_linear(v: f32) -> f32 {
+    if v <= 1.0 { filmcraft_color::srgb_to_linear(v.max(0.0)) } else { 1.0 + (v - 1.0) * 2.4 }
+}
+
+#[inline]
+fn knee(v: f32, max: f32, comp: f32) -> f32 {
+    let k = max * (1.0 - comp);
+    if comp <= 0.0 || v <= k {
+        return v.min(max);
+    }
+    let r = max - k;
+    k + r * (1.0 - (-(v - k) / r).exp())
+}
+
+pub(crate) fn limit(v: [f32; 3], max: f32, comp: f32, axis: u32) -> [f32; 3] {
+    let m = filmcraft_color::Matrix::Bt709;
+    let ycc = filmcraft_color::rgb_to_ycbcr(v[0], v[1], v[2], m);
+    let (kr, kb) = (0.2126f32, 0.0722f32);
+    let to_rgb = |y: f32, cb: f32, cr: f32| {
+        let r = y + 2.0 * (1.0 - kr) * cr;
+        let b = y + 2.0 * (1.0 - kb) * cb;
+        let g = (y - kr * r - kb * b) / (1.0 - kr - kb);
+        [r, g, b]
+    };
+    let (mut y, mut cb, mut cr) = (ycc[0], ycc[1], ycc[2]);
+    if axis != 1 {
+        y = knee(y.max(0.0), max, comp);
+    }
+    if axis != 0 {
+        // scale chroma so every channel fits 0…max (the gamut of legal R′G′B′)
+        let rgb = to_rgb(y, cb, cr);
+        let mut s = 1.0f32;
+        for &ch in &rgb {
+            let d = ch - y;
+            if ch > max && d > 1e-6 {
+                s = s.min(((max - y) / d).max(0.0));
+            }
+            if ch < 0.0 && d < -1e-6 {
+                s = s.min((y / -d).max(0.0));
+            }
+        }
+        if axis == 3 && s < 1.0 - 1e-4 {
+            // smart limit: soft chroma compression rather than a hard cut
+            s = knee(s, 1.0, comp.max(0.03)).min(1.0);
+        }
+        cb *= s;
+        cr *= s;
+    }
+    to_rgb(y, cb, cr).map(|q| q.clamp(0.0, max))
 }
 
 /// The body of `Image::transformed` (no mip path) for a precomputed inverse and rectangle.

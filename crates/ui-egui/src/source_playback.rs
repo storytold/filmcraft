@@ -30,7 +30,16 @@ impl FilmcraftApp {
     }
 
     pub fn play_source(&mut self) -> Result<(), String> {
-        self.start_source_playback(None, None)
+        self.start_source_playback(None, None, 1.0)
+    }
+
+    /// J / K / L in the Source monitor: play at `speed` × real time (negative = backward) from the
+    /// Source playhead. Sound plays at normal forward speed only, as in the Program monitor.
+    pub fn shuttle_source(&mut self, speed: f64) -> Result<(), String> {
+        if !speed.is_finite() || speed == 0.0 {
+            return Err("Source shuttle speed must be a non-zero number".into());
+        }
+        self.start_source_playback(None, None, speed.clamp(-8.0, 8.0))
     }
 
     pub fn play_source_range(&mut self, from_playhead: bool, preroll: bool) -> Result<(), String> {
@@ -53,10 +62,10 @@ impl FilmcraftApp {
         if start >= stop {
             return Err("Source playhead is at or beyond the Out point".into());
         }
-        self.start_source_playback(Some(start), Some(stop))
+        self.start_source_playback(Some(start), Some(stop), 1.0)
     }
 
-    fn start_source_playback(&mut self, start: Option<Tick>, stop: Option<Tick>) -> Result<(), String> {
+    fn start_source_playback(&mut self, start: Option<Tick>, stop: Option<Tick>, speed: f64) -> Result<(), String> {
         let item = self.session.state.source_item.ok_or("Open a media file in the Source monitor first")?;
         let view = source_view(&self.session, item).ok_or("Source item is unavailable")?;
         let media = self.session.project.item(view.media).and_then(|i| i.as_media()).ok_or("Source playback currently supports media files and subclips")?;
@@ -76,7 +85,8 @@ impl FilmcraftApp {
         self.stop();
         self.stop_source();
         let mut time = start.unwrap_or(self.session.state.source_playhead);
-        if start.is_none() && (time < first || time >= view.rate.snap(Tick(end.0.saturating_sub(view.rate.frame_duration().0))).max(first)) {
+        // forward from the end (or before a looped range) starts over; backward runs from where it is
+        if start.is_none() && speed > 0.0 && (time < first || time >= view.rate.snap(Tick(end.0.saturating_sub(view.rate.frame_duration().0))).max(first)) {
             time = first;
         }
         self.session.execute("source.setPlayhead", json!({"time": time.0})).map_err(|e| e.to_string())?;
@@ -84,8 +94,8 @@ impl FilmcraftApp {
         self.source_playback.range_start = start;
         self.source_playback.item = Some(item);
         self.source_playback.shown = time;
-        self.source_playback.clock = Playback { playing: true, speed: 1.0, anchor_time: -1.0, anchor_tick: time, looping, stop_at: stop, ..Default::default() };
-        self.source_playback.clock.meter.start(1.0);
+        self.source_playback.clock = Playback { playing: true, speed, anchor_time: -1.0, anchor_tick: time, looping, stop_at: stop, ..Default::default() };
+        self.source_playback.clock.meter.start(speed);
         self.start_source_audio();
         Ok(())
     }
@@ -105,6 +115,12 @@ impl FilmcraftApp {
 
     fn start_source_audio(&mut self) {
         self.source_playback.clock.audio_clock = false;
+        if (self.source_playback.clock.speed - 1.0).abs() > 1e-9 {
+            if let Some(audio) = self.audio.as_mut() {
+                audio.stop();
+            }
+            return;
+        }
         let Some(item) = self.source_playback.item else { return };
         let Some(view) = source_view(&self.session, item) else { return };
         let Some(media) = self.session.project.item(view.media).and_then(|i| i.as_media()) else { return };
@@ -221,7 +237,24 @@ impl FilmcraftApp {
             Some((frames, sr)) if clock.audio_clock && sr > 0 => frames as f64 / f64::from(sr),
             _ => (now - clock.anchor_time).max(0.0),
         };
-        let next = Tick(clock.anchor_tick.0.saturating_add(Tick::from_seconds_f64(elapsed).0));
+        let next = Tick(clock.anchor_tick.0.saturating_add(Tick::from_seconds_f64(elapsed * clock.speed).0));
+        if clock.speed < 0.0 {
+            // backward: stops on the first frame (as the Program monitor stops at the start)
+            let ended = next <= view.start;
+            match self.session.execute("source.setPlayhead", json!({"time": next.max(view.start).0})) {
+                Ok(_) => self.source_playback.shown = self.session.state.source_playhead,
+                Err(e) => {
+                    self.stop_source();
+                    self.ui.status = e.to_string();
+                    return;
+                }
+            }
+            if ended {
+                self.stop_source();
+            }
+            ctx.request_repaint();
+            return;
+        }
         let range = view.selected_range();
         let end = clock.stop_at.unwrap_or_else(|| if clock.looping { range.end() } else { view.end }).min(view.end);
         let ended = next >= end;

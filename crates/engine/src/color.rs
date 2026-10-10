@@ -40,7 +40,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             "clip.interpretFootage",
             "Interpret Footage…",
             &["Clip", "Modify"],
-            r#"{"items":[id]?,"colorSpace":"auto"|"<color space id>"}"#,
+            r#"{"items":[id]?,"colorSpace":"auto"|"<color space id>"?,"pixelAspect":[num,den]|"file"?}"#,
             has_footage,
             interpret,
         ),
@@ -292,25 +292,57 @@ pub(crate) fn footage_targets(s: &Session, p: &Value) -> Vec<ItemId> {
     v
 }
 
+/// `clip.interpretFootage`: the colour space (`colorSpace`) and / or the pixel aspect ratio
+/// (`pixelAspect`) the footage is interpreted with. `"auto"` / `"file"` go back to the file's
+/// metadata; a parameter left out keeps its current interpretation.
 fn interpret(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "clip.interpretFootage";
     let items = footage_targets(s, p);
     if items.is_empty() {
-        return Err(bad("clip.interpretFootage", "no footage selected"));
+        return Err(bad(CMD, "no footage selected"));
     }
     let cs = match str_p(p, "colorSpace") {
-        None => return Err(bad("clip.interpretFootage", "need `colorSpace` (auto or a colour space id)")),
-        Some("auto") | Some("") => None,
-        Some(c) => Some(ColorSpace::parse(c).ok_or_else(|| bad("clip.interpretFootage", format!("unknown colour space `{c}`")))?),
+        None => None,
+        Some("auto") | Some("") => Some(None),
+        Some(c) => Some(Some(ColorSpace::parse(c).ok_or_else(|| bad(CMD, format!("unknown colour space `{c}`")))?)),
     };
+    let par =
+        match p.get("pixelAspect") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(f)) if f == "file" || f == "auto" => Some(None),
+            Some(v) => Some(Some(pixel_aspect_p(v).ok_or_else(|| {
+                bad(CMD, format!("pixelAspect must be [num, den] between 1:{0} and {0}:1, or \"file\"", filmcraft_project::MAX_PIXEL_ASPECT))
+            })?)),
+        };
+    if cs.is_none() && par.is_none() {
+        return Err(bad(CMD, "need `colorSpace` (auto or a colour space id) or `pixelAspect`"));
+    }
     s.edit("Interpret Footage", |pr, _| {
         for i in &items {
             if let Some(ItemKind::Media(m)) = pr.item_mut(*i).map(|it| &mut it.kind) {
-                m.interpret.color_space = cs;
+                if let Some(cs) = cs {
+                    m.interpret.color_space = cs;
+                }
+                if let Some(par) = par {
+                    m.interpret.par = par;
+                }
             }
         }
         Ok(())
     })?;
-    Ok(json!({"items": items.iter().map(|i| i.0).collect::<Vec<_>>(), "colorSpace": cs.map(|c| c.id()).unwrap_or("auto")}))
+    let first = items.first().and_then(|i| s.project.item(*i)).and_then(|i| i.as_media());
+    Ok(json!({
+        "items": items.iter().map(|i| i.0).collect::<Vec<_>>(),
+        "colorSpace": first.and_then(|m| m.interpret.color_space).map(|c| c.id()).unwrap_or("auto"),
+        "pixelAspect": first.map(|m| m.pixel_aspect()),
+    }))
+}
+
+/// `[num, den]` as a pixel aspect ratio FilmCraft can use ([`filmcraft_project::checked_par`]).
+fn pixel_aspect_p(v: &Value) -> Option<(u32, u32)> {
+    let [n, d] = v.as_array()?.as_slice() else { return None };
+    let (n, d) = (u32::try_from(n.as_u64()?).ok()?, u32::try_from(d.as_u64()?).ok()?);
+    filmcraft_project::checked_par((n, d))
 }
 
 fn spaces(_: &mut Session, _: &Value) -> Result<Value> {

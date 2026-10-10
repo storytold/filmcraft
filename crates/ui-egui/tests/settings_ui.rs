@@ -251,9 +251,12 @@ fn view_menu_and_settings_name_each_color_theme_alike() {
     let menu = d.ok("ui.menu.list", json!({}));
     let menu_label = |id: &str| menu.as_array().unwrap().iter().find(|m| m["id"] == id).unwrap()["label"].as_str().unwrap().to_string();
     d.menu("app.settings.appearance");
-    d.click("settings.appearance.colorTheme");
-    for (menu_id, pref) in [("view.theme.dark", "darkest"), ("view.theme.medium", "dark"), ("view.theme.light", "light")] {
-        let id = format!("settings.appearance.colorTheme.{pref}");
+    // the theme cards' choices (the single Color Theme is no longer drawn)
+    for (menu_id, id) in [
+        ("view.theme.dark", "settings.appearance.darkTheme.darkest"),
+        ("view.theme.medium", "settings.appearance.darkTheme.dark"),
+        ("view.theme.light", "settings.appearance.lightTheme.light"),
+    ] {
         let found = d.ok("ui.elements", json!({"prefix": id}));
         let choice = found.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).unwrap();
         assert_eq!(menu_label(menu_id), choice["label"].as_str().unwrap(), "{menu_id} and {id} name the same theme");
@@ -265,17 +268,39 @@ fn appearance_labels_and_tooltips_take_effect() {
     let mut d = Driver::demo();
     assert_eq!(d.inspect()["ui"]["dark"], true);
     d.menu("app.settings.appearance");
-    d.click("settings.appearance.colorTheme");
-    d.click("settings.appearance.colorTheme.light");
+    // the Appearance Mode selector above the light and dark theme cards
+    assert!(d.has("settings.appearance.lightTheme.light") && d.has("settings.appearance.darkTheme.dark"));
+    assert!(!d.has("settings.appearance.colorTheme"), "the single Color Theme is not shown");
+    // Each radio belongs below its preview, even though the cards are laid out side by side.
+    let elements = d.ok("ui.elements", json!({"prefix": "settings.appearance."}));
+    let top = |id: &str| elements.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap()["rect"][1].as_f64().unwrap();
+    for (card, radio) in
+        [("settings.appearance.lightTheme", "settings.appearance.lightTheme.light"), ("settings.appearance.darkTheme", "settings.appearance.darkTheme.darkest")]
+    {
+        assert!(top(radio) > top(card) + 128.0, "{radio} sits below its preview");
+    }
+    d.click("settings.appearance.darkTheme.dark");
+    d.click("settings.appearance.appearanceMode");
+    d.click("settings.appearance.appearanceMode.light");
     d.ok("ui.set", json!({"settings": {"values": {"appearance.highlightColor": "#e0457b"}}}));
     d.click("settings.ok");
     d.frames(2);
     assert_eq!(d.inspect()["ui"]["dark"], false, "Light theme applied");
+    assert_eq!((d.pref("appearance.appearanceMode"), d.pref("appearance.darkTheme")), (json!("light"), json!("dark")));
+    // the header button cycles Auto, Light, Dark
+    d.click("header.appearance");
+    assert_eq!(d.pref("appearance.appearanceMode"), "dark");
+    assert_eq!(d.harness.state().tokens.kind, filmcraft_ui_egui::theme::ThemeKind::Medium, "the saved dark theme");
+    d.click("header.appearance");
+    assert_eq!(d.pref("appearance.appearanceMode"), "auto");
+    d.menu("view.appearanceMode.next");
+    assert_eq!(d.pref("appearance.appearanceMode"), "light");
     assert_eq!(d.pref("appearance.highlightColor"), "#e0457b");
     assert_eq!(d.harness.state().tokens.accent, egui::Color32::from_rgb(0xe0, 0x45, 0x7b));
     // View ▸ Appearance writes the setting
     d.menu("view.theme.dark");
     assert_eq!(d.pref("appearance.colorTheme"), "darkest");
+    assert_eq!((d.pref("appearance.appearanceMode"), d.pref("appearance.darkTheme")), (json!("dark"), json!("darkest")));
     assert_eq!(d.inspect()["ui"]["dark"], true);
 
     // label names show in Edit ▸ Label
@@ -306,6 +331,31 @@ fn appearance_labels_and_tooltips_take_effect() {
     d.exec("prefs.set", json!({"key": "general.showToolTips", "value": true}));
     d.frames(2);
     assert!(d.harness.ctx.global_style().interaction.tooltip_delay < 1.0);
+}
+
+#[test]
+fn hex_field_takes_typing_a_character_at_a_time() {
+    let mut d = Driver::demo();
+    d.menu("app.settings.appearance");
+    let hex = |d: &mut Driver| d.draft()["values"]["appearance"]["highlightColor"].clone();
+    let before = hex(&mut d);
+    d.ok("ui.click", json!({"id": "settings.appearance.highlightColor.hex"}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    // not a colour yet: the field keeps it and the setting stays
+    d.ok("ui.type", json!({"text": "#12ab"}));
+    d.frames(2);
+    assert_eq!(hex(&mut d), before);
+    d.ok("ui.type", json!({"text": "34"}));
+    d.frames(2);
+    assert_eq!(hex(&mut d), "#12ab34");
+    // deleting a character leaves the last colour
+    d.ok("ui.key", json!({"key": "Backspace"}));
+    d.frames(2);
+    assert_eq!(hex(&mut d), "#12ab34");
+    d.ok("ui.type", json!({"text": "5"}));
+    d.frames(2);
+    assert_eq!(hex(&mut d), "#12ab35");
 }
 
 #[test]

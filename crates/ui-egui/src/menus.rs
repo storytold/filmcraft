@@ -27,6 +27,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("app.language.spanish", "Español", ["Edit", "Language"], None),
     uic!("app.language.portuguese", "Português (Brasil)", ["Edit", "Language"], None),
     uic!("app.language.ukrainian", "Українська", ["Edit", "Language"], None),
+    uic!("app.language.chinese", "简体中文", ["Edit", "Language"], None),
+    uic!("app.language.german", "Deutsch", ["Edit", "Language"], None),
     uic!("app.language.russian", "Русский", ["Edit", "Language"], None),
     uic!("source.playback.toggle", "Source Play/Stop", [], None),
     uic!("source.playback.play", "Play Source", [], None),
@@ -96,6 +98,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("view.theme.dark", "Darkest", ["View", "Appearance"], None),
     uic!("view.theme.medium", "Dark", ["View", "Appearance"], None),
     uic!("view.theme.light", "Light", ["View", "Appearance"], None),
+    uic!("view.appearanceMode.next", "Next Appearance Mode", ["View", "Appearance"], None),
     uic!("window.workspace.editing", "Editing", ["Window", "Workspaces"], Some("Alt+Shift+1")),
     uic!("window.workspace.assembly", "Assembly", ["Window", "Workspaces"], Some("Alt+Shift+2")),
     uic!("window.workspace.color", "Color", ["Window", "Workspaces"], Some("Alt+Shift+3")),
@@ -171,16 +174,32 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         let object = params.as_object_mut().ok_or("command parameters must be an object")?;
         object.insert("target".into(), json!("source"));
     }
-    if matches!(id, "app.language.english" | "app.language.japanese" | "app.language.spanish" | "app.language.portuguese" | "app.language.ukrainian" | "app.language.russian") {
+    if matches!(
+        id,
+        "app.language.english"
+            | "app.language.japanese"
+            | "app.language.spanish"
+            | "app.language.portuguese"
+            | "app.language.ukrainian"
+            | "app.language.chinese"
+            | "app.language.german"
+            | "app.language.russian"
+    ) {
         // Japanese needs the craft-fonts (built with CRAFT_FONTS_DIR) or a font installed on the system
         if id == "app.language.japanese" && !crate::i18n::install_japanese_font(ctx) {
             return Err("no Japanese font is installed on this system (for example Noto Sans CJK JP); the interface stays in English".into());
+        }
+        // Chinese needs the Chinese fallback theme::install adds (craft-fonts or a system face)
+        if id == "app.language.chinese" && !crate::i18n::chinese_font_available() {
+            return Err("no Chinese font is installed on this system (for example Noto Sans CJK SC or Microsoft YaHei); the interface stays in English".into());
         }
         let language = match id {
             "app.language.japanese" => crate::i18n::Language::Ja,
             "app.language.spanish" => crate::i18n::Language::Es,
             "app.language.portuguese" => crate::i18n::Language::PtBr,
             "app.language.ukrainian" => crate::i18n::Language::Uk,
+            "app.language.chinese" => crate::i18n::Language::ZhCn,
+            "app.language.german" => crate::i18n::Language::De,
             "app.language.russian" => crate::i18n::Language::Ru,
             _ => crate::i18n::Language::En,
         };
@@ -274,7 +293,8 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     }
     match id {
         "playback.slowForward" | "playback.slowReverse" if targets_source(app, &params) => {
-            return Err("Source playback currently supports normal forward speed".into());
+            app.shuttle_source(if id == "playback.slowForward" { 0.25 } else { -0.25 })?;
+            return Ok(json!({"playing": app.source_playback.clock.playing, "speed": app.source_playback.clock.speed}));
         }
         "playback.slowForward" | "playback.slowReverse" => {
             app.play(if id == "playback.slowForward" { 0.25 } else { -0.25 });
@@ -302,12 +322,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             app.toggle_play(1.0);
             return Ok(json!({"playing": app.playback.playing}));
         }
-        "playback.forward" if targets_source(app, &params) => {
-            app.play_source()?;
-            return Ok(json!({"playing": app.source_playback.clock.playing, "speed": 1.0}));
-        }
-        "playback.reverse" if targets_source(app, &params) => {
-            return Err("Source playback currently supports normal forward speed; use Play/Space or frame stepping".into());
+        // L / J: pressing again in the same direction doubles the speed, up to 8×
+        "playback.forward" | "playback.reverse" if targets_source(app, &params) => {
+            let (clock, dir) = (&app.source_playback.clock, if id == "playback.forward" { 1.0 } else { -1.0 });
+            let speed = if clock.playing && clock.speed * dir > 0.0 { (clock.speed * 2.0).clamp(-8.0, 8.0) } else { dir };
+            app.shuttle_source(speed)?;
+            return Ok(json!({"playing": app.source_playback.clock.playing, "speed": app.source_playback.clock.speed}));
         }
         "playhead.stepBack" | "playhead.stepForward" | "playhead.stepBack5" | "playhead.stepForward5" if targets_source(app, &params) => {
             app.stop_source();
@@ -391,7 +411,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         }
         id if crate::links::url_for(id).is_some() => {
             let url = crate::links::url_for(id).unwrap_or_default();
-            crate::links::open(ctx, url);
+            crate::links::open(app, ctx, url);
             app.ui.status = tlf!("Opened {url}", url);
             return Ok(json!({"url": url}));
         }
@@ -420,7 +440,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             return Ok(json!({"dialog": "audioGain"}));
         }
         // Colour dialogs from the menus; with params the engine command applies directly.
-        "clip.interpretFootage" if params.get("colorSpace").is_none() => {
+        "clip.interpretFootage" if params.get("colorSpace").is_none() && params.get("pixelAspect").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             crate::panels::color_dialogs::open_interpret(app, &params);
             return Ok(json!({"dialog": "interpretFootage"}));
@@ -469,6 +489,15 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             crate::panels::color_dialogs::open_sequence(app);
             return Ok(json!({"dialog": "sequenceColor"}));
         }
+        // New Bin from menus, shortcuts and the Project panel asks for the name (inline rename);
+        // agents pass `name` to name the bin directly
+        "file.newBin" if params.get("name").is_none() => {
+            let r = crate::panels::project::new_bin(app, &params);
+            if let Err(e) = &r {
+                app.ui.status = e.clone();
+            }
+            return r;
+        }
         // From menus/shortcuts (no params) these ask first; agents pass params to act directly.
         "file.revert" if params.as_object().is_none_or(|m| m.is_empty()) && app.session.is_dirty() => {
             if app.session.path.is_none() {
@@ -476,6 +505,16 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             }
             app.dialog = Some(crate::Dialog::RevertConfirm);
             return Ok(json!({"dialog": "revert"}));
+        }
+        // Files or an image on the system clipboard paste into the Timeline, or import into the
+        // Project panel (#611). Copying clips puts their names there as text, so media on the
+        // clipboard was copied after them; without media, Paste pastes the copied clips.
+        "edit.paste" | "edit.pasteInsert"
+            if params.as_object().is_none_or(|m| m.is_empty()) && matches!(app.ui.focused, PanelKind::Timeline | PanelKind::Project) =>
+        {
+            if let Some(r) = paste_clipboard_media(app, id == "edit.pasteInsert") {
+                return r;
+            }
         }
         "file.recover" if params.as_object().is_none_or(|m| m.is_empty()) => {
             if app.session.recovery_candidates().is_empty() {
@@ -486,6 +525,10 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             return Ok(json!({"dialog": "recovery"}));
         }
         _ => {}
+    }
+    if id == "view.appearanceMode.next" {
+        crate::panels::settings::cycle_appearance(app, ctx);
+        return Ok(json!({"appearanceMode": app.session.prefs.appearance.appearance_mode}));
     }
     if let Some(th) = id.strip_prefix("view.theme.") {
         let k = crate::theme::ThemeKind::from_name(th).ok_or("unknown theme")?;
@@ -528,6 +571,32 @@ fn put_clip_names_on_system_clipboard(app: &FilmcraftApp, ctx: &egui::Context) {
     ctx.copy_text(if text.trim().is_empty() { format!("{} clips", names.len()) } else { text });
 }
 
+/// Paste the files or the image on the system clipboard: placed on the Timeline when it has focus,
+/// imported into the shown bin in the Project panel. None when the clipboard holds neither.
+fn paste_clipboard_media(app: &mut FilmcraftApp, insert: bool) -> Option<Result<Value, String>> {
+    let media = (app.hooks.clipboard_media.as_mut()?)()?;
+    let paths = match media {
+        crate::ClipboardMedia::Files(paths) => paths,
+        crate::ClipboardMedia::Image { width, height, rgba } => match encode_png(width, height, rgba)
+            .and_then(|png| filmcraft_engine::paste_media::save_pasted_image(&mut app.session, &png).map_err(|e| e.to_string()))
+        {
+            Ok(path) => vec![path],
+            Err(e) => return Some(Err(e)),
+        },
+    };
+    let params = json!({"paths": paths, "insert": insert, "place": app.ui.focused == PanelKind::Timeline, "bin": app.import_bin().0});
+    Some(app.session.execute("edit.pasteMedia", params).map_err(|e| e.to_string()))
+}
+
+/// A compressed PNG of a clipboard image; an error when its size and pixels disagree.
+fn encode_png(width: usize, height: usize, rgba: Vec<u8>) -> Result<Vec<u8>, String> {
+    let (w, h) = (u32::try_from(width).map_err(|e| e.to_string())?, u32::try_from(height).map_err(|e| e.to_string())?);
+    let img = image::RgbaImage::from_raw(w, h, rgba).ok_or("the image on the clipboard is malformed")?;
+    let mut png = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).map_err(|e| e.to_string())?;
+    Ok(png)
+}
+
 /// A menu tree entry for display / `ui.menu.list`.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct MenuItem {
@@ -553,6 +622,8 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             "app.language.spanish" => it.checked = Some(app.ui.language == crate::i18n::Language::Es),
             "app.language.portuguese" => it.checked = Some(app.ui.language == crate::i18n::Language::PtBr),
             "app.language.ukrainian" => it.checked = Some(app.ui.language == crate::i18n::Language::Uk),
+            "app.language.chinese" => it.checked = Some(app.ui.language == crate::i18n::Language::ZhCn),
+            "app.language.german" => it.checked = Some(app.ui.language == crate::i18n::Language::De),
             "app.language.russian" => it.checked = Some(app.ui.language == crate::i18n::Language::Ru),
             _ => {}
         }
@@ -666,8 +737,14 @@ pub fn bindings(app: &FilmcraftApp) -> Vec<KeyBinding> {
     let shifted: Vec<KeyBinding> =
         v.iter().filter(|b| b.0.shift).filter_map(|(m, k, id, p)| shifted_key(*k).map(|k2| (*m, k2, id.clone(), p.clone()))).collect();
     v.extend(shifted);
-    v.sort_by_key(|(m, ..)| std::cmp::Reverse(m.command as u8 + m.shift as u8 + m.alt as u8 + m.ctrl as u8));
+    v.sort_by_key(|(m, ..)| std::cmp::Reverse(specificity(*m)));
     v
+}
+
+/// How many modifiers a chord names: chords naming more are matched first, because egui ignores
+/// extra Shift and Alt when matching a key press.
+pub fn specificity(m: egui::Modifiers) -> u8 {
+    m.command as u8 + m.shift as u8 + m.alt as u8 + m.ctrl as u8
 }
 
 /// The key a US layout reports for `k` with Shift held, when it differs.
