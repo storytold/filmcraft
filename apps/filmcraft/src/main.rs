@@ -228,7 +228,7 @@ fn main() -> eframe::Result {
                 Some(Box::new(|dir: &str| rfd::FileDialog::new().set_directory(dir).pick_folder().map(|p| p.to_string_lossy().into_owned())));
             app.hooks.open_path = Some(Box::new(open_path));
             // Settings ▸ General ▸ Interface Language ▸ System Language (#218).
-            app.hooks.system_languages = Some(Box::new(|| sys_locale::get_locales().collect()));
+            app.hooks.system_languages = Some(Box::new(system_languages));
             app.hooks.raise_without_focus = Some(Box::new(|| {
                 window_raise::raise_without_focus();
             }));
@@ -291,6 +291,39 @@ fn open_path(path: &str, reveal: bool) -> Result<(), String> {
         c
     };
     cmd.spawn().map(|_| ()).map_err(|e| format!("can't open {path}: {e}"))
+}
+
+/// The user's preferred interface languages. Uses `sys_locale` (POSIX `LANG`/`LC_*`) and, on
+/// macOS where app bundles inherit `LANG=C.UTF-8`, the `defaults read -g AppleLanguages` list so a
+/// Chinese system is detected instead of treated as English.
+fn system_languages() -> Vec<String> {
+    let locales: Vec<String> = sys_locale::get_locales()
+        .filter(|l| {
+            let base = l.split(['.', '@']).next().unwrap_or("").to_ascii_lowercase();
+            !matches!(base.as_str(), "c" | "posix")
+        })
+        .collect();
+    #[cfg(target_os = "macos")]
+    {
+        let mut out = locales;
+        if let Ok(defaults) = std::process::Command::new("/usr/bin/defaults")
+            .args(["read", "-g", "AppleLanguages"])
+            .output()
+        {
+            if defaults.status.success() {
+                out.extend(
+                    String::from_utf8_lossy(&defaults.stdout)
+                        .split(['(', ')', ',', '"', '\n'])
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(String::from),
+                );
+            }
+        }
+        return out;
+    }
+    #[cfg(not(target_os = "macos"))]
+    locales
 }
 
 /// Put the OS hardware video decoders in front of our own. Registered in a statement of its own:

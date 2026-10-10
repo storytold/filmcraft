@@ -3377,6 +3377,7 @@
 	in	entrada
 	The language changed but could not be saved: {e}	El idioma ha cambiado, pero no se ha podido guardar: {e}
 	no Japanese font is installed on this system; the interface stays in English	no hay ninguna fuente japonesa instalada en este sistema; la interfaz sigue en inglés
+	no Chinese font is installed on this system; the interface stays in English	no hay ninguna fuente china instalada en este sistema; la interfaz sigue en inglés
 	Show	Mostrar
 	Sort	Ordenar
 	Reverse the order	Invertir el orden
@@ -3480,3 +3481,19 @@
 	New Sequence	Nueva secuencia
 	Tracks	Pistas
 	tracks	pistas
+
+	{bits} Bit	{bits} bits
+
+	Depth:	Profundidad:
+
+	Format:	Formato:
+
+	Import into project	Importar al proyecto
+
+	Keep existing file	Mantener archivo existente
+
+	Path:	Ruta:
+
+	Replace	Reemplazar
+
+	This file already exists: {path}	Este archivo ya existe: {path}

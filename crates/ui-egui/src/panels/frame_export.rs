@@ -69,7 +69,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut movement = egui::Vec2::ZERO;
     // Only the custom white header moves the window; form controls keep their own gestures.
     let window_id = egui::Id::new("frame-export-window");
-    let mut window = egui::Window::new("Export Frame")
+    let mut window = egui::Window::new(tl!("Export Frame"))
         .id(window_id)
         .title_bar(false)
         .movable(false)
@@ -100,17 +100,17 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
         }
         elems.push(("exportFrame.header".into(), header, "Move Export Frame".into()));
-        let response = ui.interact(x, egui::Id::new("export-frame-close"), egui::Sense::click()).on_hover_text("Close");
+        let response = ui.interact(x, egui::Id::new("export-frame-close"), egui::Sense::click()).on_hover_text(tl!("Close"));
         icons::paint(ui.painter(), x.shrink(7.0), Icon::Close, egui::Color32::from_gray(90));
         elems.push(("exportFrame.close".to_string(), x, "Close".to_string()));
         close = response.clicked();
         egui::Frame::NONE.inner_margin(14).show(ui, |ui| {
             egui::Grid::new("frame-export-settings").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
-                ui.label("Name:");
+                ui.label(tl!("Name:"));
                 let r = ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(300.0));
                 elems.push(("exportFrame.name".into(), r.rect, d.name.clone()));
                 ui.end_row();
-                ui.label("Format:");
+                ui.label(tl!("Format:"));
                 let combo = egui::ComboBox::from_id_salt("frame-export-format").width(292.0).selected_text(d.format.label()).show_ui(ui, |ui| {
                     for format in StillFormat::ALL {
                         let r = ui.selectable_value(&mut d.format, format, format.label());
@@ -126,10 +126,10 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 if !d.format.supports_16() {
                     d.depth = 8;
                 }
-                ui.label("Depth:");
-                let combo = egui::ComboBox::from_id_salt("frame-export-depth").width(292.0).selected_text(format!("{} Bit", d.depth)).show_ui(ui, |ui| {
+                ui.label(tl!("Depth:"));
+                let combo = egui::ComboBox::from_id_salt("frame-export-depth").width(292.0).selected_text(tlf!("{bits} Bit", bits = d.depth)).show_ui(ui, |ui| {
                     for bits in [8, 16] {
-                        let r = ui.add_enabled(bits == 8 || d.format.supports_16(), egui::Button::selectable(d.depth == bits, format!("{bits} Bit")));
+                        let r = ui.add_enabled(bits == 8 || d.format.supports_16(), egui::Button::selectable(d.depth == bits, tlf!("{bits} Bit", bits = bits)));
                         if r.clicked() {
                             d.depth = bits;
                         }
@@ -142,29 +142,29 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
                 elems.push(("exportFrame.depth".into(), combo.response.rect, format!("{} Bit", d.depth)));
                 ui.end_row();
-                ui.label("Path:");
+                ui.label(tl!("Path:"));
                 let r = ui.add(egui::TextEdit::singleline(&mut d.folder).desired_width(300.0));
                 elems.push(("exportFrame.path".into(), r.rect, d.folder.clone()));
                 ui.end_row();
             });
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                let r = ui.checkbox(&mut d.import, "Import into project");
+                let r = ui.checkbox(&mut d.import, tl!("Import into project"));
                 elems.push(("exportFrame.import".into(), r.rect, d.import.to_string()));
                 ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 26.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let r = ui.add_enabled(app.hooks.pick_folder_at.is_some() || app.hooks.pick_folder.is_some(), egui::Button::new("Browse…"));
+                    let r = ui.add_enabled(app.hooks.pick_folder_at.is_some() || app.hooks.pick_folder.is_some(), egui::Button::new(tl!("Browse…")));
                     browse = r.clicked();
                     elems.push(("exportFrame.browse".into(), r.rect, "Browse".into()));
                 });
             });
             ui.add_space(12.0);
             if let Some(path) = d.replace.clone() {
-                ui.label(format!("This file already exists: {path}"));
+                ui.label(tlf!("This file already exists: {path}", path = path));
                 ui.horizontal(|ui| {
-                    let r = ui.button("Replace");
+                    let r = ui.button(tl!("Replace"));
                     replace = r.clicked();
                     elems.push(("exportFrame.replace".into(), r.rect, "Replace".into()));
-                    let r = ui.button("Keep existing file");
+                    let r = ui.button(tl!("Keep existing file"));
                     if r.clicked() {
                         d.replace = None;
                     }
@@ -172,12 +172,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 });
             } else {
                 ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 26.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let r = ui.button("Cancel");
+                    let r = ui.button(tl!("Cancel"));
                     close |= r.clicked();
                     elems.push(("exportFrame.cancel".into(), r.rect, "Cancel".into()));
                     let r = ui.add_enabled(
                         !d.name.trim().is_empty() && !d.folder.trim().is_empty(),
-                        egui::Button::new(egui::RichText::new("OK").color(egui::Color32::WHITE)).fill(app.tokens.accent),
+                        egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(app.tokens.accent),
                     );
                     apply = r.clicked();
                     elems.push(("exportFrame.export".into(), r.rect, "OK".into()));
@@ -185,7 +185,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             ui.add_space(12.0);
             ui.separator();
-            ui.label(format!("{} — {} × {}", if d.target.source { "Source" } else { "Program" }, d.target.width, d.target.height));
+            ui.label(format!("{} — {} × {}", if d.target.source { tl!("Source") } else { tl!("Program") }, d.target.width, d.target.height));
             ui.label(&d.target.name);
             let r = ui.label(format!("Frame time: {}", d.timecode));
             elems.push(("exportFrame.timecode".into(), r.rect, d.timecode.clone()));

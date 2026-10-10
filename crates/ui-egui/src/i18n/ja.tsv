@@ -93,3 +93,19 @@
 	OK	OK
 	Type Tool	文字ツール
 	Vertical Type Tool	縦書き文字ツール
+
+	{bits} Bit	{bits} ビット
+
+	Depth:	深度：
+
+	Format:	形式：
+
+	Import into project	プロジェクトに読み込み
+
+	Keep existing file	既存のファイルを保持
+
+	Path:	パス：
+
+	Replace	置き換え
+
+	This file already exists: {path}	このファイルは既に存在します：{path}
