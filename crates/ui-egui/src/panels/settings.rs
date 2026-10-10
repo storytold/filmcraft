@@ -534,11 +534,21 @@ fn color_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, key: 
     if r.changed() {
         put(&mut d.values, key, json!(settings::hex(rgb)));
     }
-    let mut text = choice_text(get(&d.values, key));
+    // While the field has focus it shows what is typed, even when that is not a colour yet (one
+    // character into `#2f6bdf`); each valid colour is kept as it comes. Leaving shows the kept one.
+    let draft_id = egui::Id::new(("settings-hex", key));
+    let mut text = ui.data(|m| m.get_temp::<String>(draft_id)).unwrap_or_else(|| choice_text(get(&d.values, key)));
     let t = ui.add(egui::TextEdit::singleline(&mut text).desired_width(70.0).font(egui::TextStyle::Monospace));
     app.auto.add(&format!("settings.{key}.hex"), t.rect, label);
-    if t.changed() && settings::parse_hex(&text).is_some() {
-        put(&mut d.values, key, json!(settings::hex(settings::parse_hex(&text).unwrap_or(rgb))));
+    if t.has_focus() {
+        ui.data_mut(|m| m.insert_temp(draft_id, text.clone()));
+    } else {
+        ui.data_mut(|m| m.remove::<String>(draft_id));
+    }
+    if t.changed()
+        && let Some(c) = settings::parse_hex(&text)
+    {
+        put(&mut d.values, key, json!(settings::hex(c)));
     }
 }
 
@@ -739,7 +749,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         ui.horizontal(|ui| {
             ui.add_space(20.0);
             if button(app, ui, "settings.help", tl!("Help"), false) {
-                crate::links::open(ctx, &format!("{}/blob/main/docs/project-files.md#settings", crate::links::GITHUB));
+                crate::links::open(app, ctx, &format!("{}/blob/main/docs/project-files.md#settings", crate::links::GITHUB));
             }
             if button(app, ui, "settings.reset", tl!("Reset…"), false) {
                 // this category back to its defaults (OK applies it)

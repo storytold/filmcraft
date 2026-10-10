@@ -408,6 +408,10 @@
 	Delete Video Tracks	Eliminar pistas de video
 	Delete Audio Tracks	Eliminar pistas de audio
 	All Empty Tracks	Todas las pistas vacías
+	Caption Tracks	Pistas de subtítulos
+	Delete Caption Tracks	Eliminar pistas de subtítulos
+	Delete Caption Track	Eliminar pista de subtítulos
+	Delete Empty Caption Tracks	Eliminar pistas de subtítulos vacías
 	Version {version}	Versión {version}
 	A clean-room, pure-Rust non-linear video editor. Part of the ArtCraft family.	Un editor de video no lineal en Rust puro, desarrollado en sala limpia. Parte de la familia ArtCraft.
 	Join the ArtCraft Discord	Únete al Discord de ArtCraft
@@ -493,7 +497,9 @@
 	{panel} — coming in a later milestone	{panel}: llegará en una versión posterior
 	Close Panel	Cerrar panel
 	Close Other Timeline Panels	Cerrar los demás paneles de línea de tiempo
+	Close All	Cerrar todo
 	Maximize Frame	Maximizar marco
+	Restore Frame	Restaurar marco
 	Restore Workspace	Restaurar espacio de trabajo
 	Reveal Sequence in Project	Mostrar secuencia en el proyecto
 	Video Thumbnails	Miniaturas de video
@@ -969,6 +975,7 @@
 	Reset…	Restablecer…
 	Source · {name}	Origen · {name}
 	Reset Effect	Restablecer efecto
+	Reset Parameter	Restablecer parámetro
 	Save Preset…	Guardar ajuste preestablecido…
 	Custom Setup	Configuración personalizada
 	Edit…	Editar…
@@ -2981,6 +2988,9 @@
 	Apple ProRes 422 HQ	Apple ProRes 422 HQ
 	Apple ProRes 422 LT	Apple ProRes 422 LT
 	Apple ProRes 422 Proxy	Apple ProRes 422 Proxy
+	Apple ProRes 4444	Apple ProRes 4444
+	Apple ProRes 4444 with Alpha	Apple ProRes 4444 con alfa
+	Apple ProRes 4444 XQ	Apple ProRes 4444 XQ
 	Application	Aplicación
 	Apply Guide Template	Aplicar plantilla de guías
 	Auto Save Now	Guardar automáticamente ahora
@@ -3190,6 +3200,9 @@
 	QuickTime, ProRes 422 HQ, 24-bit 48 kHz PCM	QuickTime, ProRes 422 HQ, PCM de 24 bits y 48 kHz
 	QuickTime, ProRes 422 LT, 24-bit 48 kHz PCM	QuickTime, ProRes 422 LT, PCM de 24 bits y 48 kHz
 	QuickTime, ProRes 422 Proxy, 24-bit 48 kHz PCM	QuickTime, ProRes 422 Proxy, PCM de 24 bits y 48 kHz
+	QuickTime, ProRes 4444 (4:4:4), 24-bit 48 kHz PCM	QuickTime, ProRes 4444 (4:4:4), PCM de 24 bits y 48 kHz
+	QuickTime, ProRes 4444 (4:4:4) with alpha channel, 24-bit 48 kHz PCM	QuickTime, ProRes 4444 (4:4:4) con canal alfa, PCM de 24 bits y 48 kHz
+	QuickTime, ProRes 4444 XQ (4:4:4), 24-bit 48 kHz PCM	QuickTime, ProRes 4444 XQ (4:4:4), PCM de 24 bits y 48 kHz
 	QuickTime, ProRes 422, 24-bit 48 kHz PCM	QuickTime, ProRes 422, PCM de 24 bits y 48 kHz
 	Quit FilmCraft	Salir de FilmCraft
 	Rate Stretch Tool	Herramienta Ajuste de velocidad
@@ -3521,3 +3534,8 @@
 	Composite on the GPU when available	Componer en la GPU cuando esté disponible
 	Text to Speech	Texto a voz
 	Edit Narration	Editar narración
+	Project Notes	Notas del proyecto
+	Get Project Notes	Obtener notas del proyecto
+	Edit Project Notes	Editar notas del proyecto
+	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	Notas de este proyecto: tareas pendientes, instrucciones, números de fotograma… Se guardan con el proyecto.
+	Use Effect Shutter Angle	Usar el ángulo de obturación del efecto

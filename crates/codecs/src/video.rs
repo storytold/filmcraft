@@ -224,7 +224,7 @@ impl H264Decoder {
     fn make_inner(avcc: &[u8], threads: usize) -> Result<filmcraft_h264::Decoder> {
         let mut dec = filmcraft_h264::Decoder::with_threads(threads);
         if !avcc.is_empty() {
-            dec.configure_avcc(avcc).map_err(|e| CodecError::Decode(e.to_string()))?;
+            dec.configure_avcc(avcc).map_err(h264_error)?;
         }
         Ok(dec)
     }
@@ -264,9 +264,19 @@ impl H264Decoder {
     }
 }
 
+/// An H.264 decoder error as a [`CodecError`]: a feature the decoder does not implement (High
+/// 4:2:2, field pictures...) is [`CodecError::Unsupported`], so the media pool shows the
+/// unreadable slate instead of a black picture (#626); anything else is a decode error.
+fn h264_error(e: filmcraft_h264::Error) -> CodecError {
+    match e {
+        filmcraft_h264::Error::Unsupported(what) => CodecError::Unsupported(format!("H.264: {what}")),
+        e => CodecError::Decode(e.to_string()),
+    }
+}
+
 impl VideoDecoder for H264Decoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
-        let pics = self.dec.decode(sample, pts).map_err(|e| CodecError::Decode(e.to_string()))?;
+        let pics = self.dec.decode(sample, pts).map_err(h264_error)?;
         Ok(pics.into_iter().map(Self::convert).collect())
     }
     fn flush(&mut self) -> Vec<DecodedFrame> {
@@ -328,7 +338,7 @@ pub struct HevcDecoder {
 
 impl HevcDecoder {
     pub fn new(hvcc: Vec<u8>) -> Result<Self> {
-        let dec = filmcraft_hevc::Decoder::from_hvcc(&hvcc).map_err(|e| CodecError::Decode(e.to_string()))?;
+        let dec = filmcraft_hevc::Decoder::from_hvcc(&hvcc).map_err(hevc_error)?;
         let (length_size, highest_tid) = hvcc_length_size_and_tid(&hvcc);
         Ok(Self { hvcc, dec, length_size, highest_tid })
     }
@@ -368,9 +378,17 @@ impl HevcDecoder {
     }
 }
 
+/// An HEVC decoder error as a [`CodecError`] (see [`h264_error`]).
+fn hevc_error(e: filmcraft_hevc::Error) -> CodecError {
+    match e {
+        filmcraft_hevc::Error::Unsupported(what) => CodecError::Unsupported(format!("HEVC: {what}")),
+        e => CodecError::Decode(e.to_string()),
+    }
+}
+
 impl VideoDecoder for HevcDecoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
-        let pics = self.dec.decode(sample, pts).map_err(|e| CodecError::Decode(e.to_string()))?;
+        let pics = self.dec.decode(sample, pts).map_err(hevc_error)?;
         Ok(pics.into_iter().map(Self::convert).collect())
     }
     fn flush(&mut self) -> Vec<DecodedFrame> {

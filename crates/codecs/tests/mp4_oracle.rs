@@ -163,3 +163,55 @@ fn cropped_pictures_match_ffmpeg() {
         }
     }
 }
+
+/// An open GOP (x265 `open-gop`, like iPhone HEVC): each CRA after the first is followed in the
+/// file by RASL pictures shown before it, predicted from the GOP before. Asked for first (a clip
+/// trimmed to start on one, the playhead parked on one), such a picture came out black: decoding
+/// started at the CRA after it, which leaves its RASL pictures out. Every frame, asked of a fresh
+/// source and in an order that visits each CRA before its leading pictures, is ffmpeg's, from MP4
+/// and from Matroska.
+#[test]
+fn open_gop_leading_pictures_decode_alone() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let args = [
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=160x96:rate=30:duration=2,noise=alls=10:allf=t",
+        "-c:v",
+        "libx265",
+        "-x265-params",
+        "log-level=error:keyint=12:min-keyint=12:scenecut=0:open-gop=1:bframes=3",
+        "-tag:v",
+        "hvc1",
+        "-pix_fmt",
+        "yuv420p",
+    ];
+    let Some(mp4) = fixture(&ff, "open_gop_x265.mp4", &args) else {
+        eprintln!("SKIPPED: ffmpeg without libx265");
+        return;
+    };
+    let mkv = fixture(&ff, "open_gop_x265.mkv", &["-i", mp4.to_str().unwrap(), "-c", "copy"]).unwrap();
+    let raw = ffmpeg_frames(&ff, &mp4, "yuv420p");
+    let frame_bytes = 160 * 96 * 3 / 2;
+    let want: Vec<_> = raw.chunks(frame_bytes).map(|f| raw_planes(f, 160, 96, 80, 48, 1)).collect();
+    assert_eq!(want.len(), 60);
+    for path in [&mp4, &mkv] {
+        let name = path.file_name().unwrap().to_str().unwrap();
+        let open = || filmcraft_codecs::open_bytes(name, bytes(path)).unwrap();
+        let rate = open().info().frame_rate();
+        let frame = |src: &filmcraft_media::SharedSource, i: usize| {
+            let f = src.video_frame(filmcraft_media::FrameRequest::full(rate.tick_of(i as i64))).unwrap_or_else(|e| panic!("{name}: frame {i}: {e}"));
+            assert!(planes(&f) == want[i], "{name}: frame {i} differs from ffmpeg's");
+        };
+        for i in 0..want.len() {
+            frame(&open(), i);
+        }
+        let src = open();
+        for cra in [12, 24, 36, 48] {
+            for i in [cra, cra - 1, cra - 2, cra - 3] {
+                frame(&src, i);
+            }
+        }
+    }
+}

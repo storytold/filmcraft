@@ -213,7 +213,7 @@ fn steps(op: &FxOp) -> Vec<Step> {
             let w0 = 1.0 - wh * 0.15;
             let sh_k = sh * 0.35;
             let hl_k = hl * 0.35;
-            let vround_aspect = if *vround < 0.0 { aspect.powf(-vround) } else { 1.0 };
+            let vround_aspect = filmcraft_render::gpufx::lumetri_vignette_aspect(*aspect, *vround);
             let st_k = [(st[0] - 0.5) * 0.3, (st[1] - 0.5) * 0.3, (st[2] - 0.5) * 0.3];
             let ht_k = [(ht[0] - 0.5) * 0.3, (ht[1] - 0.5) * 0.3, (ht[2] - 0.5) * 0.3];
 

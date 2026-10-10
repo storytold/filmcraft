@@ -101,6 +101,51 @@ fn prores_export_roundtrip() {
     assert!(f[0] > 240 && f[1] < 15 && f[2] < 15, "{:?}", &f[..4]);
 }
 
+/// ProRes 4444 / 4444 XQ export (#342): 4:4:4 frames under the `ap4h` / `ap4x` codes, and with
+/// Include Alpha Channel the picture's alpha survives instead of being flattened over black.
+#[test]
+fn prores_4444_export_roundtrip() {
+    let (p, seq, m) = project();
+    for (profile, label) in [("4444", "ProRes 4444"), ("4444xq", "ProRes 4444 XQ")] {
+        let path = tmp(&format!("pr_{profile}.mov"));
+        let s = ExportSettings { format: Format::ProRes, path: path.clone(), prores_profile: profile.into(), ..Default::default() };
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+        let src = filmcraft_codecs::open_bytes("pr.mov", bytes).unwrap();
+        let codec = src.info().video.as_ref().unwrap().codec.clone();
+        assert!(codec.contains(label), "{profile}: {codec}");
+        let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 3))).unwrap();
+        assert!(f.format_label().contains("4:4:4"), "{profile}: {}", f.format_label());
+        let px = f.to_rgba8();
+        assert!(px[0] > 240 && px[1] < 15 && px[2] < 15 && px[3] == 255, "{profile}: {:?}", &px[..4]);
+    }
+
+    // a half-transparent matte keeps its alpha with Include Alpha Channel, and only then
+    let mut p = (*p).clone();
+    let half = GeneratorSource::new(Generator::ColorMatte { color: [1.0, 0.0, 0.0, 0.5] }, 320, 180, FrameRate::FPS_24, Tick(2 * TICKS_PER_SECOND));
+    let item = p.sequence(seq).unwrap().video_tracks[0].items[0].item;
+    if let ItemKind::Media(mc) = &mut p.item_mut(item).unwrap().kind {
+        mc.media = MediaRef::Generator(half.generator.clone());
+    }
+    let mut m = m;
+    m.0.insert(item, Arc::new(half));
+    let p = Arc::new(p);
+    for alpha in [true, false] {
+        let path = tmp(&format!("pr_4444_alpha_{alpha}.mov"));
+        let s = ExportSettings { format: Format::ProRes, path: path.clone(), prores_profile: "4444".into(), alpha, ..Default::default() };
+        assert!(s.keeps_alpha() == alpha);
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+        let src = filmcraft_codecs::open_bytes("pr.mov", bytes).unwrap();
+        let px = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 3))).unwrap().to_rgba8();
+        if alpha {
+            assert!((px[3] as i32 - 128).abs() <= 3, "alpha kept: {:?}", &px[..4]);
+        } else {
+            assert_eq!(px[3], 255, "flattened: {:?}", &px[..4]);
+        }
+    }
+}
+
 #[test]
 fn dnxhr_export_roundtrip() {
     let (p, seq, m) = project();
@@ -357,6 +402,36 @@ fn gpu_hook_scenarios() {
     }
     // at most one panic per pooled renderer (4): none is used again after it panicked
     assert!(PANICS.load(std::sync::atomic::Ordering::SeqCst) <= 4, "renderer reused after a panic: {}", PANICS.load(std::sync::atomic::Ordering::SeqCst));
+
+    // 5. A frame the planner hands back as one CPU image (an adjustment layer over the clip from
+    //    frame 12) is rendered by the CPU without taking a pooled renderer: it counts as a
+    //    fallback, and the renderer's picture reaches only the frames before it.
+    crate::reset_frame_renderers_for_tests();
+    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer) as Box<dyn FrameRenderer>));
+    let (p, seq, m) = project();
+    let mut p = Arc::unwrap_or_clone(p);
+    let r = FrameRate::FPS_24;
+    let adj = p.add_item("adj", Label::Iris, ItemKind::AdjustmentLayer { width: 320, height: 180, rate: r, duration: Tick(TICKS_PER_SECOND) }, None);
+    let over = p.make_track_item(adj, TrackKind::Video, r.tick_of(12), TimeRange::new(Tick::ZERO, r.tick_of(12)), r).unwrap();
+    let v2 = filmcraft_project::TrackId(p.alloc_id());
+    let q = p.sequence_mut(seq).unwrap();
+    q.video_tracks.push(filmcraft_project::Track::new(v2, TrackKind::Video, "Video 2".into()));
+    q.video_tracks[1].items.push(over);
+    let p = Arc::new(p);
+    let mk24 = |path: &String, gpu: crate::GpuRendering| {
+        let mut s = ExportSettings { format: Format::PngSequence, path: path.clone(), ..Default::default() };
+        s.range = Some(TimeRange::new(Tick::ZERO, r.tick_of(24)));
+        s.gpu_rendering = gpu;
+        export(&p, seq, &s, &m, &Progress::default()).unwrap()
+    };
+    mk24(&tmp("adj-off.png"), crate::GpuRendering::Off);
+    mk24(&tmp("adj-auto.png"), crate::GpuRendering::Auto);
+    let frame = |name: &str, f: &str| std::fs::read(tmp(&format!("{name}{f}.png"))).unwrap();
+    assert_ne!(frame("adj-off", "011"), frame("adj-auto", "011"), "a layered frame goes to the renderer");
+    for f in ["012", "023"] {
+        assert_eq!(frame("adj-off", f), frame("adj-auto", f), "frame {f}: an adjustment layer frame is the CPU's");
+    }
+    assert_eq!((gpu_render_stats().frames, gpu_render_stats().fallbacks), (12, 12), "{:?}", gpu_render_stats());
     crate::reset_frame_renderers_for_tests();
 }
 

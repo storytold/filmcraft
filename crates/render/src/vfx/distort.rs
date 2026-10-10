@@ -257,9 +257,8 @@ pub fn transform_fx(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         let skew = (crate::effects::f(e, "skew", &cx2) as f64).to_radians().tan();
         let skew_axis = crate::effects::f(e, "skew_axis", &cx2) as f64;
         let op = crate::effects::f(e, "opacity", &cx2) / 100.0;
-        let sk = Affine::rotate_deg(skew_axis)
-            .then_apply(&Affine { a: 1.0, b: 0.0, c: skew, d: 1.0, e: 0.0, f: 0.0 })
-            .then_apply(&Affine::rotate_deg(-skew_axis));
+        let sk =
+            Affine::rotate_deg(skew_axis).then_apply(&Affine { a: 1.0, b: 0.0, c: skew, d: 1.0, e: 0.0, f: 0.0 }).then_apply(&Affine::rotate_deg(-skew_axis));
         let m = Affine::translate(pos.x, pos.y)
             .then_apply(&Affine::rotate_deg(rot))
             .then_apply(&sk)

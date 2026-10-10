@@ -3,7 +3,7 @@
 use crate::clip_ops::source_view;
 use crate::commands::bad;
 use crate::{EngineError, Result, Session};
-use filmcraft_project::{ItemId, Label, Marker, MarkerId, MarkerKind, Project};
+use filmcraft_project::{ClipId, ItemId, ItemKind, Label, Marker, MarkerId, MarkerKind, Project};
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
 use serde_json::{Value, json};
 
@@ -88,6 +88,52 @@ pub fn source_command(id: &str) -> bool {
                 | "markers.clearAll"
                 | "markers.edit"
         )
+}
+
+/// Most clips the Source monitor's list of recent clips keeps.
+pub const SOURCE_HISTORY_MAX: usize = 20;
+
+/// Keep the Source monitor's recent clips in step with the clip it shows: the open clip moves to
+/// the front, items no longer in the project drop out.
+pub(crate) fn track_history(s: &mut Session) {
+    let current = s.state.source_item;
+    let project = &s.project;
+    let history = &mut s.state.source_history;
+    history.retain(|i| project.item(*i).is_some());
+    if let Some(cur) = current.filter(|i| project.item(*i).is_some())
+        && history.first() != Some(&cur)
+    {
+        history.retain(|i| *i != cur);
+        history.insert(0, cur);
+    }
+    history.truncate(SOURCE_HISTORY_MAX);
+}
+
+/// Enablement of Close / Close All: a clip is open in the Source monitor.
+pub(crate) fn has_source_clip(s: &Session) -> std::result::Result<(), String> {
+    s.state.source_item.map(|_| ()).ok_or_else(|| "no clip is open in the Source monitor".into())
+}
+
+/// Source panel ▸ Close (`all`: Close All). The open clip leaves the Source monitor and its list
+/// of recent clips, and the next most recent one opens in its place, as in Premiere; Close All
+/// empties the list and the monitor.
+pub(crate) fn close(s: &mut Session, all: bool) -> Result<Value> {
+    if all {
+        s.state.source_history.clear();
+    } else if let Some(cur) = s.state.source_item {
+        s.state.source_history.retain(|i| *i != cur);
+    }
+    let next = s.state.source_history.iter().copied().find(|i| s.project.item(*i).is_some());
+    match next {
+        Some(i) => {
+            s.execute("source.open", json!({"item": i.0}))?;
+        }
+        None => {
+            s.state.source_item = None;
+            s.state.source_playhead = Tick::ZERO;
+        }
+    }
+    Ok(json!({"item": next.map(|i| i.0)}))
 }
 
 fn marker_list(p: &mut Project, item: ItemId) -> Result<&mut Vec<Marker>> {
@@ -203,6 +249,27 @@ pub(crate) fn route(s: &mut Session, id: &str, p: &Value) -> Result<Option<Value
     Ok(Some(Value::Null))
 }
 
+/// `source.open {"clip"}` (double-clicking a Timeline clip, as in Premiere): the clip's media
+/// opens in the Source monitor, parked on the frame shown under the playhead when the playhead
+/// is over the clip, otherwise on the clip's first frame.
+pub(crate) fn open_clip(s: &mut Session, clip: ClipId) -> Result<Value> {
+    let id = "source.open";
+    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let (_, it) = seq.find_item(clip).ok_or_else(|| bad(id, "no such clip in the active sequence"))?;
+    let t = s.playhead();
+    let time = it.source_time_at(if t >= it.start && t < it.end() { t } else { it.start });
+    let item = it.item;
+    match s.project.item(item).map(|i| &i.kind) {
+        None => return Err(bad(id, "the clip's source is unavailable")),
+        Some(ItemKind::Graphic { .. }) => return Err(bad(id, "a graphic clip has no source to open")),
+        Some(_) => {}
+    }
+    s.execute(id, json!({"item": item.0}))?;
+    // source.setPlayhead snaps to the source frame grid and keeps the playhead inside a subclip
+    s.execute("source.setPlayhead", json!({"time": time.0}))?;
+    Ok(json!({"item": item.0, "time": s.state.source_playhead.0}))
+}
+
 fn text<'a>(p: &'a Value, key: &str, id: &str) -> Result<Option<&'a str>> {
     p.get(key).map(|v| v.as_str().ok_or_else(|| bad(id, format!("{key} must be text")))).transpose()
 }
@@ -287,6 +354,53 @@ mod tests {
         assert_eq!(source_view(&s, ItemId(5)).unwrap().markers[0].name, "Changed");
         s.execute("markers.clearCurrent", json!({"target":"source"})).unwrap();
         assert!(source_view(&s, ItemId(5)).unwrap().markers.is_empty());
+    }
+    /// #313: the Source monitor remembers the clips opened in it, most recent first; Close shows
+    /// the next most recent one and Close All empties the monitor.
+    #[test]
+    fn source_clips_are_remembered_and_closed_in_turn() {
+        let mut s = fixture();
+        let a = ItemId(5);
+        let mut others: Vec<ItemId> = s.project.items.values().filter(|i| i.as_media().is_some() && i.id != a).map(|i| i.id).collect();
+        others.sort();
+        let [b, c] = [others[0], others[1]];
+        for i in [b, c, a] {
+            s.execute("source.open", json!({"item": i.0})).unwrap();
+        }
+        assert_eq!(s.state.source_history, [a, c, b]);
+        assert_eq!(s.execute("source.close", json!({})).unwrap()["item"], c.0);
+        assert_eq!((s.state.source_item, s.state.source_history.clone()), (Some(c), vec![c, b]));
+        // an item deleted from the project leaves the list
+        s.execute("project.delete", json!({"items": [b.0]})).unwrap();
+        assert!(s.project.item(b).is_none());
+        assert!(!s.state.source_history.contains(&b));
+        s.execute("source.closeAll", json!({})).unwrap();
+        assert_eq!((s.state.source_item, s.state.source_history.len()), (None, 0));
+        assert!(s.execute("source.close", json!({})).is_err(), "nothing left to close");
+    }
+    #[test]
+    fn timeline_clip_opens_in_source_at_the_matching_frame() {
+        let mut s = fixture();
+        let seq = s.active_sequence().unwrap();
+        let it = seq
+            .all_tracks()
+            .flat_map(|t| t.items.iter())
+            .find(|i| i.source_in > Tick::ZERO && s.project.item(i.item).is_some_and(|p| p.as_media().is_some()))
+            .unwrap()
+            .clone();
+        let rate = s.sequence_rate();
+        let inside = it.start + rate.tick_of(3);
+        s.set_playhead(inside);
+        let r = s.execute("source.open", json!({"clip": it.id.0})).unwrap();
+        assert_eq!(r["item"], it.item.0);
+        assert_eq!(s.state.source_item, Some(it.item));
+        let view = source_view(&s, it.item).unwrap();
+        assert_eq!(s.state.source_playhead, view.rate.snap(it.source_time_at(inside)));
+        // playhead off the clip: the clip's first frame
+        s.set_playhead(it.end() + rate.tick_of(1));
+        s.execute("source.open", json!({"clip": it.id.0})).unwrap();
+        assert_eq!(s.state.source_playhead, view.rate.snap(it.source_in));
+        assert!(s.execute("source.open", json!({"clip": u64::MAX})).is_err());
     }
     #[test]
     fn invalid_marker_parameters_do_not_edit_the_project() {

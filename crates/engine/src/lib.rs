@@ -59,7 +59,7 @@ use std::sync::Arc;
 
 use filmcraft_edit::EditCtx;
 use filmcraft_project::{ClipId, ItemId, Project, Sequence, TrackId, TrackKind};
-use filmcraft_time::{FrameRate, Tick};
+use filmcraft_time::{FrameRate, Tick, TimeRange};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -223,6 +223,13 @@ pub struct Targeting {
     pub audio_dest: Option<TrackId>,
 }
 
+/// A gap on one track of the active sequence (see [`EditorState::gap_selection`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GapSelection {
+    pub track: TrackId,
+    pub range: TimeRange,
+}
+
 /// Editing state that commands depend on (not project data, but headless-relevant).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct EditorState {
@@ -232,6 +239,10 @@ pub struct EditorState {
     /// Item loaded in the Source monitor and its playhead (media time).
     pub source_item: Option<ItemId>,
     pub source_playhead: Tick,
+    /// Clips opened in the Source monitor, most recent first: the Source panel's list of recent
+    /// clips (#313). Kept up to date after every command; items gone from the project drop out.
+    #[serde(default)]
+    pub source_history: Vec<ItemId>,
     /// Selected timeline items.
     pub selection: Vec<ClipId>,
     /// Selected project panel items.
@@ -268,6 +279,12 @@ pub struct EditorState {
     /// them. Selecting clips clears it and selecting transitions clears the clip selection.
     #[serde(default)]
     pub transition_selection: Vec<filmcraft_project::TransitionId>,
+    /// The selected gap (#648, #668): empty time on one track, clicked in the Timeline, from the
+    /// end of a clip (or the sequence start) up to the next clip. Delete, Backspace and Ripple
+    /// Delete close it. Selecting clips, transitions or edit points clears it, and so does an edit
+    /// that changes the gap.
+    #[serde(default)]
+    pub gap_selection: Option<GapSelection>,
     /// Selected layers (indices among the graphic layers, 0 = back) of the selected graphic clip.
     #[serde(default)]
     pub graphic_layers: Vec<usize>,
@@ -654,6 +671,9 @@ impl Session {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, &params)))
             .unwrap_or_else(|_| Err(EngineError::Other(format!("internal error in `{id}` (see the crash log); the command did not complete"))));
         self.exec_depth -= 1;
+        if self.exec_depth == 0 {
+            source_monitor::track_history(self);
+        }
         // source graphics: an edited instance updates the shared layers and the other instances
         if r.is_ok() && spec.journal && id.starts_with("graphics.") && !self.project.source_graphics.is_empty() {
             graphic_templates::sync_source_graphics(self);
@@ -703,8 +723,11 @@ impl Session {
         }
         let clips = commands::named_clips(self, spec, params);
         let items = commands::named_items(self, spec, params);
+        // clips were named but none is one of the active sequence: say which and why, rather
+        // than "no clips selected" to a caller that did not mean the selection (#591)
+        let missing = if clips.is_none() { commands::named_clips_missing(self, spec, params) } else { None };
         if clips.is_none() && items.is_none() {
-            return by_selection;
+            return by_selection.map_err(|why| missing.unwrap_or(why));
         }
         let mut clips = clips.unwrap_or_else(|| self.state.selection.clone());
         let mut items = items.unwrap_or_else(|| self.state.project_selection.clone());
@@ -713,7 +736,7 @@ impl Session {
         let by_params = (spec.enabled)(self);
         self.state.selection = clips;
         self.state.project_selection = items;
-        by_params
+        by_params.map_err(|why| missing.unwrap_or(why))
     }
 
     /// Whether the command can run on the current selection (what the menus show).
@@ -785,6 +808,7 @@ impl Session {
         self.history.redo.clear();
         self.history.merge_key = None;
         self.state = st;
+        self.drop_stale_gap();
         self.bump();
         Ok(r)
     }
@@ -804,6 +828,7 @@ impl Session {
         self.refuse_self_nesting(&p)?;
         self.project = Arc::new(p);
         self.state = st;
+        self.drop_stale_gap();
         self.bump();
         Ok(r)
     }
@@ -889,6 +914,7 @@ impl Session {
         {
             self.state.source_item = None;
         }
+        source_monitor::track_history(self);
         if let Some(seq) = self.state.active_sequence.and_then(|s| p.sequence(s)) {
             self.state.selection.retain(|c| seq.find_item(*c).is_some());
             self.state.caption_selection.retain(|c| seq.find_caption(*c).is_some());
@@ -897,6 +923,17 @@ impl Session {
             self.state.caption_selection.clear();
         }
         self.state.project_selection.retain(|i| p.item(*i).is_some());
+        self.drop_stale_gap();
+    }
+
+    /// Forget the selected gap when it is no longer a gap of the active sequence (a clip moved
+    /// into it or next to it, its track went, another sequence became the active one).
+    fn drop_stale_gap(&mut self) {
+        if let Some(g) = self.state.gap_selection
+            && !self.active_sequence().and_then(|q| q.track(g.track)).is_some_and(|tr| filmcraft_edit::through::track_gaps(tr).contains(&g.range))
+        {
+            self.state.gap_selection = None;
+        }
     }
 
     fn bump(&mut self) {
@@ -1066,6 +1103,8 @@ mod explicit_targets_tests;
 mod export_tests;
 #[cfg(test)]
 mod file_tests;
+#[cfg(test)]
+mod gap_selection_tests;
 #[cfg(test)]
 mod image_sequence_tests;
 #[cfg(test)]

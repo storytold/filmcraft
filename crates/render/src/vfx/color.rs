@@ -162,9 +162,7 @@ pub fn ultra_key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let kmag2 = (k[1] * k[1] + k[2] * k[2]).max(1e-6);
     let setting = chv(e, "setting");
     let preset = filmcraft_project::effect::ultra_key_setting(setting);
-    let pf = |id: &str, fallback: f32| {
-        preset.and_then(|rows| rows.iter().find(|(k, _)| *k == id).map(|(_, v)| *v as f32)).unwrap_or(fallback)
-    };
+    let pf = |id: &str, fallback: f32| preset.and_then(|rows| rows.iter().find(|(k, _)| *k == id).map(|(_, v)| *v as f32)).unwrap_or(fallback);
     let transparency = pf("transparency", fv(e, "transparency", cx)) / 100.0;
     let highlight = pf("highlight", fv(e, "highlight", cx)) / 100.0;
     let shadow = pf("shadow", fv(e, "shadow", cx)) / 100.0;

@@ -376,3 +376,29 @@ fn reveal_nested_sequence_opens_it_at_the_matching_frame() {
     assert_ne!(s.state.active_sequence, Some(outer));
     assert_eq!(s.playhead(), nest_clip.source_in + rate.tick_of(7), "{r}");
 }
+
+#[test]
+fn keyboard_slide_keeps_linked_partners_aligned_at_a_neighbour_limit() {
+    // #712: a three-frame sound-only follower limits only the sound partner
+    let mut s = Session::default();
+    s.execute("file.newProject", json!({"name": "Slide"})).unwrap();
+    s.execute("file.newSequence", json!({"name": "Sequence", "fps": 25, "video": 1, "audio": 1, "width": 16, "height": 16})).unwrap();
+    let r = s.execute("file.newOfflineFile", json!({"name": "Media", "seconds": 4, "fps": 25, "video": true, "audio": true})).unwrap();
+    let item = r["item"].as_u64().unwrap();
+    let fr = s.sequence_rate().tick_of(1);
+    let r =
+        s.execute("timeline.place", json!({"item": item, "track": "V1", "audioTrack": "A1", "time": 0, "sourceIn": fr.0 * 20, "duration": fr.0 * 60})).unwrap();
+    let (v, a) = (r["clips"][0].as_u64().unwrap(), r["clips"][1].as_u64().unwrap());
+    let r = s.execute("timeline.place", json!({"item": item, "track": "A1", "time": fr.0 * 60, "sourceIn": 0, "duration": fr.0 * 3})).unwrap();
+    let f = r["clips"][0].as_u64().unwrap();
+    s.execute("sequence.linkedSelection", json!({"on": true})).unwrap();
+    s.execute("timeline.select", json!({"clips": [v]})).unwrap();
+    s.execute("timeline.slideRight5", json!({})).unwrap();
+    assert_eq!(clip(&s, v).start, Tick(fr.0 * 2), "the pair moves only as far as the sound may");
+    assert_eq!(clip(&s, a).start, clip(&s, v).start, "picture and sound stay aligned");
+    let fl = clip(&s, f);
+    assert_eq!((fl.start, fl.duration, fl.source_in), (Tick(fr.0 * 62), fr, Tick(fr.0 * 2)));
+    // nothing more to give: a further slide right moves neither partner
+    s.execute("timeline.slideRight", json!({})).unwrap();
+    assert_eq!((clip(&s, v).start, clip(&s, a).start), (Tick(fr.0 * 2), Tick(fr.0 * 2)));
+}

@@ -65,6 +65,21 @@ fn export_integer_parameters_cannot_wrap_or_overflow() {
 }
 
 #[test]
+fn wav_resolve_honours_explicit_sample_rates() {
+    let mut s = demo();
+    for rate in [4000, 192_000, 192_001, 200_000, 352_800, 384_000] {
+        let result = s.execute("export.resolve", json!({"format":"wav", "settings":{"audio":{"sample_rate":rate}}})).unwrap();
+        assert_eq!(result["settings"]["audio"]["sample_rate"], rate);
+        assert_eq!(result["output"]["sampleRate"], rate);
+    }
+    let result = s.execute("export.resolve", json!({"format":"wav", "settings":{"audio":{"sample_rate":null}}})).unwrap();
+    assert_eq!(result["output"]["sampleRate"], 48_000);
+    for rate in [0, 384_001] {
+        assert!(s.execute("export.resolve", json!({"format":"wav", "settings":{"audio":{"sample_rate":rate}}})).is_err());
+    }
+}
+
+#[test]
 fn nested_camel_case_settings_are_honoured() {
     let mut s = demo();
     let camel = json!({"audio":{"sampleRate":96000}, "effects":{"loudness":{"enabled":true, "targetLufs":-16}}});
@@ -202,9 +217,16 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
                     "proxy" => ("Proxy", 45.0),
                     "lt" => ("LT", 102.0),
                     "standard" => ("Standard", 147.0),
+                    "4444" => ("4444", 330.0),
+                    "4444xq" => ("XQ", 500.0),
                     _ => ("HQ", 220.0),
                 };
                 assert_eq!(v["profile"], profile, "{name}");
+                if matches!(profile, "4444" | "XQ") {
+                    let pix = v["pix_fmt"].as_str().unwrap_or_default();
+                    let alpha = settings["alpha"].as_bool().unwrap_or(false);
+                    assert!(pix.contains("444") && pix.starts_with("yuva") == alpha, "{name}: {pix}");
+                }
                 assert!(vbr <= mbps * px * 1.5, "{name}: {vbr:.1} Mb/s vs nominal {:.1}", mbps * px);
                 assert_eq!(a["codec_name"], "pcm_s24le", "{name}");
             }
@@ -303,7 +325,7 @@ fn user_presets_persist_with_favourites_import_and_export() {
     let favs = s.execute("export.presets.list", json!({"favorites": true})).unwrap()["presets"].as_array().unwrap().len();
     assert_eq!(favs, 2);
     let hits = s.execute("export.presets.list", json!({"query": "prores"})).unwrap()["presets"].as_array().unwrap().len();
-    assert_eq!(hits, 5, "four QuickTime ProRes presets and MXF OP1a ProRes 422 HQ");
+    assert_eq!(hits, 8, "seven QuickTime ProRes presets and MXF OP1a ProRes 422 HQ");
     // persisted: a fresh session with the same data directory sees both
     let mut s2 = demo();
     s2.export_presets.set_dir(&dir.0);

@@ -31,7 +31,6 @@ filmcraft-av1 = { workspace = true }
 filmcraft-apv = { workspace = true }
 filmcraft-aac = { workspace = true }
 filmcraft-opus = { workspace = true }
-rayon = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 # Decode timing counters (`gop_stats`); std's Instant panics on wasm32.

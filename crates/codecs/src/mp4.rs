@@ -212,7 +212,7 @@ impl Mp4Source {
     /// Open from a random-access reader: only the index is read now, samples on demand.
     pub fn open_reader(name: &str, reader: filmcraft_media::SharedReader) -> crate::Result<Self> {
         let bytes = crate::Src(reader);
-        let file = filmcraft_isobmff::open(&bytes).map_err(|e| CodecError::Container(e.to_string()))?;
+        let mut file = filmcraft_isobmff::open(&bytes).map_err(|e| CodecError::Container(e.to_string()))?;
         // A track needs samples, a sample description and a timescale to be playable (damaged
         // files can lack them: indexing `entries[0]` or dividing by the timescale used to panic).
         let playable = |t: &&filmcraft_isobmff::Track, kind| t.kind == kind && !t.samples.is_empty() && !t.entries.is_empty() && t.timescale > 0;
@@ -326,7 +326,7 @@ impl Mp4Source {
             start_timecode,
             file_size: Some(bytes.0.len()),
         };
-        let audios: Vec<Mp4Audio> = atracks
+        let mut audios: Vec<Mp4Audio> = atracks
             .iter()
             .zip(&info.audio_streams)
             .filter_map(|(&i, ainfo)| {
@@ -345,6 +345,7 @@ impl Mp4Source {
                 Some(Mp4Audio { track: i, state, starts, offset, preroll })
             })
             .collect();
+        rebase_unedited_video(&mut file, vtrack, &mut audios);
         Ok(Self { info, bytes, file, vtrack, video: GopCache::new(explicit_color).with_rotation(rotation).with_crop(aperture), audios })
     }
 
@@ -650,6 +651,35 @@ pub fn opener(name: &str, bytes: Arc<[u8]>) -> Option<Result<SharedSource, Media
     Some(Mp4Source::open(name, bytes).map(|s| Arc::new(s) as SharedSource).map_err(Into::into))
 }
 
+/// Start the file at its first picture when its video track has no edit list (#714). Without an
+/// edit list the media timeline is the presentation, so a B-frame stream's first picture sits at its
+/// composition delay (two frames on an x264 MP4 written without `elst`, and on fragmented MP4s):
+/// media time zero repeated it and the clip, which lasts the media duration, lost its last pictures.
+/// Every track moves back by the earliest start among them, video and audio alike, so the streams
+/// stay in sync and a delay between them keeps its meaning; a track with an edit list is never
+/// rebased on its own.
+fn rebase_unedited_video(file: &mut Mp4File, vtrack: Option<usize>, audios: &mut [Mp4Audio]) {
+    let Some(vi) = vtrack else { return };
+    let Some(t) = file.tracks.get(vi).filter(|t| t.edits.is_empty() && t.timescale > 0) else { return };
+    let Some(first) = t.samples.iter().map(|s| s.pts).min().map(|p| p.saturating_add(t.edit_offset)).filter(|&p| p > 0) else { return };
+    let vts = i64::from(t.timescale);
+    let video_start = Tick::from_rational(first, 1, vts);
+    let audio_ts = |a: &Mp4Audio| file.tracks.get(a.track).map_or(1, |t| i64::from(t.timescale.max(1)));
+    // an audio track starts at its offset (a negative one only hides priming before zero)
+    let shift = audios.iter().fold(video_start, |m, a| m.min(Tick::from_rational(a.offset.max(0), 1, audio_ts(a))));
+    if shift <= Tick::ZERO {
+        return;
+    }
+    for a in audios.iter_mut() {
+        let d = shift.to_rational_round(1, audio_ts(a));
+        a.offset = a.offset.saturating_sub(d);
+    }
+    let v = if shift == video_start { first } else { shift.to_rational_round(1, vts) };
+    if let Some(t) = file.tracks.get_mut(vi) {
+        t.edit_offset = t.edit_offset.saturating_sub(v);
+    }
+}
+
 /// How long a track plays. With an edit list that is the sum of its edits (ISO/IEC 14496-12
 /// §8.6.6, movie timescale), as `tkhd` records it. The media duration (`mdhd`) runs on the decode
 /// timeline: it is longer than the presentation by the B-frame delay an edit skips (`media_time`, one
@@ -743,6 +773,30 @@ mod tests {
         assert_eq!(frames(&Mp4Source::open("huge.mov", mov_with_edits(huge)).expect("open")), 4);
         let zero = vec![Edit { segment_duration: 0, media_time: 0, media_rate: 0x10000 }];
         assert_eq!(frames(&Mp4Source::open("zero.mov", mov_with_edits(zero)).expect("open")), 4);
+    }
+
+    /// #714: a video track without an edit list whose pictures carry a composition delay (B-frame
+    /// style, as x264 writes them with no `elst`) starts at its first picture. Media time zero
+    /// repeated picture 0 for the length of the delay and the last pictures never showed.
+    #[test]
+    fn unedited_composition_delay_starts_at_the_first_picture() {
+        let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).expect("writer");
+        let t = mux.add_track(TrackConfig::new(SampleEntry::prores(FourCc(*b"apch"), 64, 32), 25)).expect("track");
+        for k in 0..4u16 {
+            let mut fr = filmcraft_prores::Frame::new(64, 32, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
+            fr.y.fill(100 + 200 * k);
+            let data = filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, 64, 32).encode(&fr).expect("encode");
+            mux.write_sample(t, WriteSample { data: &data, duration: 1, composition_offset: 2, is_sync: true }).expect("sample");
+        }
+        let src = Mp4Source::open("delay.mov", mux.finish().expect("finish").into_inner().into()).expect("open");
+        assert_eq!(src.info().duration, Tick::from_rational(4, 1, 25));
+        let luma = |k: i64| {
+            let f = src.video_frame(FrameRequest::full(Tick::from_rational(k, 1, 25))).expect("frame");
+            let l = f.luma8();
+            l.iter().map(|&v| u32::from(v)).sum::<u32>() / l.len().max(1) as u32
+        };
+        let seen: Vec<u32> = (0..4).map(luma).collect();
+        assert!(seen.windows(2).all(|w| w[0] < w[1]), "one picture per frame, in order: {seen:?}");
     }
 
     /// Overwrite the big-endian u32 `skip` bytes after the first `fourcc` box type.

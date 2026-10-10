@@ -184,6 +184,22 @@ fn properties_diamond_adds_and_removes_the_keyframe_at_the_playhead() {
     assert!(d.find(&format!("{SCALE}.prevKeyframe")).is_none());
 }
 
+/// #284: every Effect Controls property has a reset button; on an animated property it puts the
+/// default in as a keyframe at the playhead and keeps the other keyframes.
+#[test]
+fn effect_controls_reset_button_keeps_keyframes() {
+    let (mut d, clip) = Driver::demo();
+    let t0 = d.seek(0.5);
+    d.click(&format!("{SCALE}.addKeyframe"));
+    d.exec("effects.setParam", json!({"clip": clip.id, "effect": "motion", "param": "scale", "value": 150.0, "time": t0}));
+    d.seek(2.5);
+    d.click("effectControls.motion.scale.reset");
+    d.shot("effect-controls-reset");
+    let (keys, value) = d.scale(&clip);
+    assert_eq!(keys.len(), 2, "the keyframe stays and the default is keyed at the playhead: {keys:?}");
+    assert_eq!(value, 100.0);
+}
+
 /// Crop is not on a clip until it is used: its diamond applies the effect, then adds the keyframe.
 #[test]
 fn properties_diamond_applies_crop_first() {
@@ -257,4 +273,43 @@ fn clicking_a_lane_keyframe_selects_only_that_keyframe() {
     // the diamond removes the keyframe at the playhead, the selected one: the selection empties
     d.click("effectControls.motion.position.addKeyframe");
     assert_eq!(selection(&mut d), json!([]), "a deleted keyframe is not selected");
+}
+
+/// Effect Controls' divider (#643): dragging it widens the effect list or the keyframe area, each
+/// keeping a minimum width, and the width stays. The mouse wheel scrolls the rows over the
+/// keyframe area too, not only over the effect list.
+#[test]
+fn effect_controls_divider_and_scrolling_anywhere() {
+    let (mut d, clip) = Driver::demo();
+    let lane = d.rect("effectControls.lane");
+    let div = d.rect("effectControls.divider");
+    let (x, y) = (div[0] + div[2] / 2.0, div[1] + div[3] / 2.0);
+    d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + 80.0, "y": y}, "steps": 6}));
+    let narrower = d.rect("effectControls.lane");
+    assert!((narrower[0] - (lane[0] + 80.0)).abs() <= 1.0, "the keyframe area starts 80 points further right: {narrower:?} vs {lane:?}");
+    assert!((narrower[0] + narrower[2] - (lane[0] + lane[2])).abs() <= 1.0, "and still ends at the panel's edge");
+    d.frames(3);
+    assert_eq!(d.rect("effectControls.lane"), narrower, "the width stays");
+    // dragged all the way right, the keyframe area keeps its minimum width
+    let drag_divider = |d: &mut Driver, by: f64| {
+        let div = d.rect("effectControls.divider");
+        let (x, y) = (div[0] + div[2] / 2.0, div[1] + div[3] / 2.0);
+        d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + by, "y": y}, "steps": 6}));
+    };
+    drag_divider(&mut d, 3000.0);
+    assert!(d.rect("effectControls.lane")[2] >= 59.0, "the keyframe area can't vanish");
+    // and all the way left, the effect list keeps the width its rows are laid out for
+    drag_divider(&mut d, -3000.0);
+    assert!(d.rect("effectControls.effect.motion")[2] >= 259.0, "the effect list stays wide enough for its values");
+
+    // enough effects to scroll; the wheel over the keyframe area scrolls the rows
+    for fx in ["gaussian_blur", "transform", "crop", "tint"] {
+        d.exec("effects.apply", json!({"clips": [clip.id], "effect": fx}));
+    }
+    let before = d.rect("effectControls.motion.scale.stopwatch");
+    let lane = d.rect("effectControls.lane");
+    d.ok("ui.scroll", json!({"x": lane[0] + lane[2] / 2.0, "y": lane[1] + lane[3] * 0.7, "dx": 0.0, "dy": -80.0}));
+    d.frames(4);
+    let after = d.find("effectControls.motion.scale.stopwatch");
+    assert!(after.is_none_or(|r| r[1] < before[1] - 20.0), "the rows scrolled up: {before:?} → {after:?}");
 }

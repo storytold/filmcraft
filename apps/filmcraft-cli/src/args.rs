@@ -19,6 +19,7 @@ const VALUED: &[&str] = &[
     "--end",
     "--data-dir",
     "--settings",
+    "--gpu-rendering",
 ];
 
 #[derive(Debug, Default)]
@@ -58,6 +59,12 @@ impl Args {
 
     pub fn flag(&self, k: &str) -> bool {
         self.opts.iter().any(|(n, _)| n == k)
+    }
+
+    /// A version query: `--version` anywhere, or `-V` in the subcommand position, so global
+    /// options may come first (`--demo --version`, `--compact -V`).
+    pub fn wants_version(&self) -> bool {
+        self.flag("--version") || self.pos(0) == Some("-V")
     }
 
     /// The first option that is not in `allowed`, if any.
@@ -141,6 +148,16 @@ mod tests {
     }
 
     #[test]
+    fn version_after_global_options() {
+        for s in ["--version", "-V", "--demo --version", "--compact -V", "--data-dir d --version", "export --version"] {
+            assert!(args(s).wants_version(), "{s}");
+        }
+        for s in ["version", "--data-dir -V", "exec x -V", "-- --version"] {
+            assert!(!args(s).wants_version(), "{s}");
+        }
+    }
+
+    #[test]
     fn unknown_opt_reports_first_unlisted_option() {
         let allowed = ["--bridge", "--project"];
         assert_eq!(args("mcp --automation-read-root X").unknown_opt(&allowed), Some("--automation-read-root"));
@@ -152,5 +169,15 @@ mod tests {
     fn double_dash_ends_options() {
         let a = args("import -- --weird-name.mov a.mov");
         assert_eq!(a.positionals, ["import", "--weird-name.mov", "a.mov"]);
+    }
+
+    #[test]
+    fn gpu_rendering_takes_a_space_separated_value() {
+        let a = args("export --gpu-rendering off out.wav --start 0 --end 0.1");
+        assert_eq!(a.positionals, ["export", "out.wav"]);
+        assert_eq!(a.opt("--gpu-rendering"), Some("off"));
+        let b = args("export out.wav --gpu-rendering auto");
+        assert_eq!(b.positionals, ["export", "out.wav"]);
+        assert_eq!(b.opt("--gpu-rendering"), Some("auto"));
     }
 }

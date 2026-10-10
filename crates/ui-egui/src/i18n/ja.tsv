@@ -494,7 +494,9 @@
 	{panel} — coming in a later milestone	{panel} — 今後のマイルストーンで実装予定
 	Close Panel	パネルを閉じる
 	Close Other Timeline Panels	他のタイムラインパネルを閉じる
+	Close All	すべて閉じる
 	Maximize Frame	パネルを最大化
+	Restore Frame	パネルを元に戻す
 	Restore Workspace	ワークスペースを復元
 	Reveal Sequence in Project	プロジェクトでシーケンスを表示
 	Video Thumbnails	ビデオサムネイル
@@ -970,6 +972,7 @@
 	Reset…	リセット…
 	Source · {name}	ソース · {name}
 	Reset Effect	エフェクトをリセット
+	Reset Parameter	パラメーターをリセット
 	Save Preset…	プリセットを保存…
 	Custom Setup	カスタム設定
 	Edit…	編集…
@@ -2974,6 +2977,9 @@
 	Apple ProRes 422 HQ	Apple ProRes 422 HQ
 	Apple ProRes 422 LT	Apple ProRes 422 LT
 	Apple ProRes 422 Proxy	Apple ProRes 422 Proxy
+	Apple ProRes 4444	Apple ProRes 4444
+	Apple ProRes 4444 with Alpha	Apple ProRes 4444（アルファ付き）
+	Apple ProRes 4444 XQ	Apple ProRes 4444 XQ
 	Application	アプリケーション
 	Apply Guide Template	ガイドテンプレートを適用
 	Auto Save Now	今すぐ自動保存
@@ -3183,6 +3189,9 @@
 	QuickTime, ProRes 422 HQ, 24-bit 48 kHz PCM	QuickTime、ProRes 422 HQ、24-bit 48 kHz PCM
 	QuickTime, ProRes 422 LT, 24-bit 48 kHz PCM	QuickTime、ProRes 422 LT、24-bit 48 kHz PCM
 	QuickTime, ProRes 422 Proxy, 24-bit 48 kHz PCM	QuickTime、ProRes 422 Proxy、24-bit 48 kHz PCM
+	QuickTime, ProRes 4444 (4:4:4), 24-bit 48 kHz PCM	QuickTime、ProRes 4444 (4:4:4)、24-bit 48 kHz PCM
+	QuickTime, ProRes 4444 (4:4:4) with alpha channel, 24-bit 48 kHz PCM	QuickTime、ProRes 4444 (4:4:4) アルファチャンネル付き、24-bit 48 kHz PCM
+	QuickTime, ProRes 4444 XQ (4:4:4), 24-bit 48 kHz PCM	QuickTime、ProRes 4444 XQ (4:4:4)、24-bit 48 kHz PCM
 	QuickTime, ProRes 422, 24-bit 48 kHz PCM	QuickTime、ProRes 422、24-bit 48 kHz PCM
 	Quit FilmCraft	FilmCraft を終了
 	Rate Stretch Tool	レートストレッチツール
@@ -3513,4 +3522,8 @@
 	Clear Transition	トランジションを消去
 	Set Transition Duration	トランジションのデュレーションを設定
 	Refresh Changed Media	変更されたメディアを更新
+	Project Notes	プロジェクトメモ
+	Get Project Notes	プロジェクトメモを取得
+	Edit Project Notes	プロジェクトメモを編集
+	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	このプロジェクトのメモ: やること、指示、フレーム番号など… プロジェクトと一緒に保存されます。
 	GPU acceleration is unavailable; preview renders on the CPU	GPU アクセラレーションを利用できません。プレビューは CPU でレンダリングされます

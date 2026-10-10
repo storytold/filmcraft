@@ -679,7 +679,7 @@ fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         v = v.map(|q| l3 + (q - l3) * s);
         // vignette
         if va.abs() > 1e-4 {
-            let nx = (x as f32 / w - 0.5) * 2.0 * (1.0 + vround * 0.0) * if vround < 0.0 { aspect.powf(-vround) } else { 1.0 };
+            let nx = (x as f32 / w - 0.5) * 2.0 * crate::gpufx::lumetri_vignette_aspect(aspect, vround);
             let ny = (y as f32 / h - 0.5) * 2.0;
             let d = (nx * nx + ny * ny).sqrt() / std::f32::consts::SQRT_2;
             let edge = ((d - vmid * 0.9) / (vfeather.max(0.01) * 0.9)).clamp(0.0, 1.0);
@@ -1514,5 +1514,58 @@ mod lumetri_cpu_parity_tests {
             }
             eprintln!("{name}: max sample diff vs fn lumetri: {max_diff:.2e}");
         }
+    }
+
+    /// #719: positive Roundness rounds the Lumetri vignette (it used to be ignored), +100
+    /// is a circle and negative values widen the oval, on the CPU path and the GPU op alike.
+    #[test]
+    fn lumetri_vignette_roundness_shapes_the_vignette() {
+        let (w, h) = (80usize, 40usize);
+        let cx = FxCtx {
+            t: Tick::ZERO,
+            px_scale: 1.0,
+            seconds: 0.0,
+            timecode: "",
+            clip_name: "",
+            project: None,
+            env: None,
+            working: filmcraft_color::WorkingSpace::Rec709,
+        };
+        let render = |roundness: f64| {
+            let e = effect(&[
+                ("basic_on", ParamValue::Bool(false)),
+                ("creative_on", ParamValue::Bool(false)),
+                ("vignette_amount", fl(-3.0)),
+                ("vignette_roundness", fl(roundness)),
+            ]);
+            let grey = Image { w, h, px: [0.5, 0.5, 0.5, 1.0].repeat(w * h) };
+            let mut cpu = grey.clone();
+            lumetri(&mut cpu, &e, &cx);
+            let mut op_img = grey;
+            let op = FxOp::eval(&e, &cx, w, h).expect("lumetri op");
+            op.apply(&mut op_img);
+            for (a, b) in cpu.px.iter().zip(&op_img.px) {
+                assert!((a - b).abs() <= 1e-6, "roundness {roundness}: CPU and GPU op disagree");
+            }
+            cpu
+        };
+        let red = |img: &Image, x: usize, y: usize| img.px[(y * w + x) * 4];
+        // 16 px right of and 16 px below the centre (40, 20)
+        let (right, below) = ((56, 20), (40, 36));
+
+        let ellipse = render(0.0);
+        assert!(red(&ellipse, right.0, right.1) > red(&ellipse, below.0, below.1) + 0.01, "0 follows the frame");
+
+        let circle = render(100.0);
+        assert_ne!(circle.px, ellipse.px, "positive roundness changes the vignette");
+        let (r, b) = (red(&circle, right.0, right.1), red(&circle, below.0, below.1));
+        assert!((r - b).abs() < 1e-4, "+100 is a circle: {r} vs {b}");
+        assert!(r < red(&ellipse, right.0, right.1), "+100 darkens the sides more than 0");
+        let half = render(50.0);
+        assert!(red(&half, 70, 20) < red(&ellipse, 70, 20), "+50 darkens the sides more than 0");
+        assert!(red(&half, 70, 20) > red(&circle, 70, 20), "+50 darkens the sides less than +100");
+
+        let oval = render(-100.0);
+        assert!(red(&oval, 79, 20) > red(&ellipse, 79, 20), "negative values widen the oval");
     }
 }

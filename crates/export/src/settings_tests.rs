@@ -168,6 +168,50 @@ fn wav_and_aiff_audio_only() {
 }
 
 #[test]
+fn wav_export_honours_explicit_sample_rates() {
+    let (project, sequence, sources) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(-6.0));
+    let dir = Scratch::new("wav-sample-rates");
+    for rate in [1, 4000, 7350, 8000, 48_000, 192_000, 192_001, 200_000, 352_800, 384_000] {
+        let settings = ExportSettings {
+            format: Format::Wav,
+            path: dir.path(&format!("{rate}.wav")),
+            audio: AudioSettings { sample_rate: Some(rate), ..Default::default() },
+            range: Some(TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND / 4))),
+            ..Default::default()
+        };
+        settings.validate().unwrap();
+        let resolved = settings.resolve(64, 36, FrameRate::FPS_24, 48_000);
+        assert_eq!(resolved.sample_rate, rate, "requested {rate} Hz");
+        export(&project, sequence, &settings, &sources, &Progress::default()).unwrap();
+        let bytes = std::fs::read(&settings.path).unwrap();
+        assert_eq!(u32::from_le_bytes(bytes[24..28].try_into().unwrap()), rate);
+        assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()), rate / 4 * 4, "quarter-second stereo 16-bit PCM");
+        if let Some(probe) = ffprobe_json(&["-show_streams"], &settings.path) {
+            assert_eq!(probe["streams"][0]["sample_rate"], rate.to_string());
+        }
+    }
+    let settings = ExportSettings { format: Format::Wav, ..Default::default() };
+    assert_eq!(settings.resolve(64, 36, FrameRate::FPS_24, 44_100).sample_rate, 44_100);
+}
+
+#[test]
+fn aac_export_rejects_unsupported_explicit_sample_rates() {
+    let (project, sequence, sources) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(-6.0));
+    let dir = Scratch::new("aac-sample-rates");
+    for rate in [4000, 192_001, 200_000, 384_000] {
+        let settings = ExportSettings {
+            path: dir.path(&format!("{rate}.mp4")),
+            audio: AudioSettings { sample_rate: Some(rate), ..Default::default() },
+            range: Some(TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND / 4))),
+            ..Default::default()
+        };
+        let error = export(&project, sequence, &settings, &sources, &Progress::default()).unwrap_err();
+        assert!(error.to_string().contains("sample rate"), "{error}");
+        assert!(!Path::new(&settings.path).exists(), "an unsupported rate must not produce a substitute file");
+    }
+}
+
+#[test]
 fn invalid_export_allocations_are_rejected_before_rendering() {
     let (project, sequence, _) = matte([1.0, 0.0, 0.0, 1.0], 64, 36, None);
     for size in [(0, 36), (64, 0), (u32::MAX, u32::MAX), (32768, 16384), (40000, 16)] {

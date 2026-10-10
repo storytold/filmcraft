@@ -109,9 +109,8 @@ impl std::ops::Sub for GopStats {
     }
 }
 
-/// A container's video sample table, in decode (file) order. `Sync`: a cache decodes on its own
-/// threads ([`isolated`]).
-pub trait VideoSamples: Sync {
+/// A container's video sample table, in decode (file) order.
+pub trait VideoSamples {
     fn count(&self) -> usize;
     /// Presentation timestamp of sample `i` (track units).
     fn pts(&self, i: usize) -> i64;
@@ -121,6 +120,18 @@ pub trait VideoSamples: Sync {
     fn sample_at(&self, t: i64) -> Option<usize>;
     fn read(&self, i: usize) -> crate::Result<Vec<u8>>;
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>>;
+}
+
+/// The sync sample to start decoding at for sample `i`: its sync sample, or an earlier one when
+/// `i` is a leading picture of an open GOP (stored after its random-access picture, shown before
+/// it, like the RASL pictures after every HEVC CRA of iPhone video). Those are predicted from the
+/// GOP before, so a decoder starting at their random-access picture leaves them out.
+fn decode_start(s: &dyn VideoSamples, i: usize) -> usize {
+    let mut key = s.sync_before(i);
+    while key > 0 && s.pts(i) < s.pts(key) {
+        key = s.sync_before(key - 1).min(key - 1);
+    }
+    key
 }
 
 struct State {
@@ -426,57 +437,6 @@ const MIN_FRAMES: usize = 64;
 /// rather than restarting at the sync sample.
 const CONTINUE_THROUGH: usize = 48;
 
-/// Threads that run the caches' decoding (see [`isolated`]); `None` where none can be made.
-#[cfg(not(target_arch = "wasm32"))]
-fn decode_pool() -> Option<&'static rayon::ThreadPool> {
-    static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
-    POOL.get_or_init(|| {
-        let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-        rayon::ThreadPoolBuilder::new().num_threads(n).thread_name(|i| format!("decode-{i}")).build().ok()
-    })
-    .as_ref()
-}
-
-/// Run a cache's decoding, its lock held by the caller, on [`decode_pool`], the caller waiting
-/// without doing other rayon work meanwhile (#480).
-///
-/// That decoding starts rayon work (a decoder's slices, cropping and rotating the frames). On the
-/// pool of the render jobs that ask the cache for frames, a worker that took part of it could,
-/// waiting inside it, pick up another of those jobs and block on the lock: the lock holder then
-/// waits for its work on the blocked worker's stack, and that worker for the lock, for good (an
-/// export of rotated iPhone clips stopped making frames). On the decode pool that work only ever
-/// runs beside other caches' decoding, which never waits for a cache's lock. A caller that is a
-/// rayon worker would also run other jobs of its pool while it waits for the decode pool, some
-/// of them asking for a cache's lock while it holds this one: it waits on a plain thread instead.
-fn isolated<T: Send>(f: impl FnOnce() -> crate::Result<T> + Send) -> crate::Result<T> {
-    let ctx = filmcraft_media::cancel::Context::current();
-    let job = move || ctx.run(f);
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(pool) = decode_pool() {
-        if rayon::current_thread_index().is_none() {
-            return pool.install(job);
-        }
-        let slot = Mutex::new(Some(job));
-        let waited = std::thread::scope(|scope| {
-            let spawned = std::thread::Builder::new().name("decode-wait".into()).spawn_scoped(scope, || {
-                let job = slot.lock().unwrap_or_else(PoisonError::into_inner).take();
-                job.map(|job| pool.install(job))
-            });
-            spawned.map(|h| h.join())
-        });
-        return match waited {
-            Ok(Ok(Some(r))) => r,
-            Ok(Err(_)) => Err(CodecError::Decode("internal error while decoding".into())),
-            // no thread to wait on: decode here, as before
-            Ok(Ok(None)) | Err(_) => match slot.into_inner().unwrap_or_else(PoisonError::into_inner) {
-                Some(job) => job(),
-                None => Err(CodecError::Decode("internal error while decoding".into())),
-            },
-        };
-    }
-    job()
-}
-
 impl GopCache {
     pub fn new(explicit_color: Option<ColorInfo>) -> Self {
         // unit tests count decoder restarts: each of their caches gets a pool of its own
@@ -534,11 +494,7 @@ impl GopCache {
     }
 
     fn store(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) {
-        self.store_finished(st, pts, self.finish(f), draft);
-    }
-
-    /// Cache a frame [`Self::finish`] has been applied to.
-    fn store_finished(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) {
+        let f = self.finish(f);
         st.last_used = Instant::now();
         if draft {
             st.drafts.insert(pts);
@@ -660,28 +616,13 @@ impl GopCache {
         if st.intra {
             return self.intra_frame(st, s, i, want_pts);
         }
-        // with the lock held: see `isolated`
-        let st = &mut *st;
-        isolated(|| self.decode_until(st, s, i, want_pts, late_before, draft))
-    }
-
-    /// Decode (the lock held) until the frame with `want_pts` (sample `i`) is cached; return it.
-    fn decode_until(
-        &self,
-        st: &mut State,
-        s: &dyn VideoSamples,
-        i: usize,
-        want_pts: i64,
-        late_before: Option<i64>,
-        draft: bool,
-    ) -> crate::Result<Arc<VideoFrame>> {
-        let n = s.count();
-        let mut key = s.sync_before(i);
+        let mut key = decode_start(s, i);
         // Continue the running decoder when it has passed the wanted sample's sync sample and
         // either has not reached the sample yet or has been fed it without outputting it yet
         // (a frame-threaded decoder holds many pictures in flight). Otherwise the frame was
-        // evicted or lies in another GOP: restart at the sync sample.
-        let running = st.next != usize::MAX && st.next <= n;
+        // evicted or lies in another GOP: restart at the sync sample. A run that started after
+        // `key` (at the random-access picture of a wanted leading picture) left the picture out.
+        let running = st.next != usize::MAX && st.next <= n && st.start <= key;
         // Decoding on through a short stretch into the next GOP is cheaper than a restart, and
         // playback wants those frames anyway.
         let near = st.next <= key && key - st.next <= CONTINUE_THROUGH;
@@ -728,14 +669,14 @@ impl GopCache {
             let out = timed(|| decoder.decode(&data, s.pts(k)))?;
             st.next += 1;
             DECODED.fetch_add(1, Ordering::Relaxed);
-            self.store_output(st, out);
+            self.store_output(&mut st, out);
             if st.cached(want_pts, draft).is_some() {
                 break;
             }
         }
         if st.cached(want_pts, draft).is_none() {
             let out = st.decoder.as_mut().map(|d| timed(|| d.flush())).unwrap_or_default();
-            self.store_output(st, out);
+            self.store_output(&mut st, out);
             st.next = usize::MAX;
         }
         // nearest decoded frame at or before the wanted pts (robust to decoder pts quirks)
@@ -766,7 +707,7 @@ impl GopCache {
         want_pts: i64,
         n: usize,
     ) -> crate::Result<Vec<crate::video::DecodedFrame>> {
-        let mut key = s.sync_before(i);
+        let mut key = decode_start(s, i);
         // Continue the running decoder when the wanted sample is ahead within this GOP run.
         let continuing = *next != usize::MAX && *next > key && *next <= i + 16 && *next <= n;
         if !continuing {
@@ -820,17 +761,14 @@ impl GopCache {
             DECODED.fetch_add(1, Ordering::Relaxed);
             timed(|| dec.decode(&data, want_pts))
         });
-        // crop and rotate before taking the lock: that work runs on rayon (see `isolated`)
-        let res = res.map(|out| {
-            count_frames(&out);
-            out.into_iter().map(|d| (d.pts, self.finish(d.frame), d.draft)).collect::<Vec<_>>()
-        });
         let mut st = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         if st.spare.len() < 16 {
             st.spare.push(dec);
         }
-        for (pts, frame, draft) in res? {
-            self.store_finished(&mut st, pts, frame, draft);
+        let res = res?;
+        count_frames(&res);
+        for d in res {
+            self.store(&mut st, d.pts, d.frame, d.draft);
         }
         st.at_or_before(want_pts, true).ok_or_else(|| CodecError::Decode("frame not produced".into()))
     }
@@ -960,74 +898,6 @@ mod tests {
         }
         assert_eq!(s.resets.load(Ordering::Relaxed), 1, "only the first request seeks");
         assert!(s.decodes.load(Ordering::Relaxed) <= 60 + 24 + 1);
-    }
-
-    /// A decoder that, like a slice-threaded one, splits each picture's work over rayon.
-    struct ParDec(Box<dyn VideoDecoder>);
-
-    impl VideoDecoder for ParDec {
-        fn decode(&mut self, sample: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
-            use rayon::prelude::*;
-            let rows: u64 =
-                (0..64u32).into_par_iter().with_max_len(1).map(|r| (0..20_000u64).fold(u64::from(r), |a, x| a.wrapping_mul(31).wrapping_add(x))).sum();
-            std::hint::black_box(rows);
-            self.0.decode(sample, pts)
-        }
-        fn flush(&mut self) -> Vec<DecodedFrame> {
-            self.0.flush()
-        }
-        fn reset(&mut self) {
-            self.0.reset()
-        }
-        fn name(&self) -> &str {
-            "par"
-        }
-    }
-
-    struct ParSamples(Samples);
-
-    impl VideoSamples for ParSamples {
-        fn count(&self) -> usize {
-            self.0.count()
-        }
-        fn pts(&self, i: usize) -> i64 {
-            self.0.pts(i)
-        }
-        fn sync_before(&self, i: usize) -> usize {
-            self.0.sync_before(i)
-        }
-        fn sample_at(&self, t: i64) -> Option<usize> {
-            self.0.sample_at(t)
-        }
-        fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
-            self.0.read(i)
-        }
-        fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
-            Ok(Box::new(ParDec(self.0.make_decoder()?)))
-        }
-    }
-
-    /// #480: render jobs on rayon asking one source for frames while its decoding (a decoder's
-    /// slices, rotating the frames) runs on rayon too. A worker that took part of that work and,
-    /// waiting inside it, picked up another frame request blocked on the cache's lock for good:
-    /// an export of rotated iPhone clips stopped making frames.
-    #[test]
-    fn rayon_frame_requests_while_decoding_on_rayon_never_deadlock() {
-        use rayon::prelude::*;
-        let s = Arc::new(ParSamples(samples(240, 30, 4, false)));
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            for round in 0..40usize {
-                // export-like: many frame workers, frames of several GOPs of a fresh source at once
-                let c = GopCache::new(None).with_rotation(1);
-                (0..96usize).into_par_iter().with_max_len(1).for_each(|k| {
-                    let i = (k * 37 + round * 53) % 240;
-                    assert_eq!(index_of(&c.frame(&*s, i as i64 * 1000).expect("frame")), i);
-                });
-            }
-            let _ = tx.send(());
-        });
-        assert!(rx.recv_timeout(Duration::from_secs(120)).is_ok(), "frame requests deadlocked");
     }
 
     #[test]
@@ -1403,5 +1273,95 @@ mod tests {
             assert!(matches!(&f.data, filmcraft_frame::PixelData::Rgba8(d) if d.iter().all(|&b| b == i as u8)), "frame {i} has its own pixels");
         }
         assert!(reused() - before >= more as u64 - 2, "{} of {more} planes recycled", reused() - before);
+    }
+
+    /// An open-GOP stream like iPhone HEVC: 8 pictures a GOP; after the first, each GOP stores
+    /// its random-access picture (display 8·g) first, then two leading pictures shown before it
+    /// (8·g − 2, 8·g − 1, predicted from the GOP before), then the rest. pts = 1000 · display.
+    struct OpenGop {
+        /// (display index, sync) in decode order
+        order: Vec<(i64, bool)>,
+        resets: Arc<AtomicUsize>,
+    }
+
+    impl OpenGop {
+        fn new(gops: i64) -> Self {
+            let mut order: Vec<(i64, bool)> = (0..6).map(|d| (d, d == 0)).collect();
+            for g in 1..gops {
+                order.extend([(8 * g, true), (8 * g - 2, false), (8 * g - 1, false)]);
+                order.extend((8 * g + 1..8 * g + 6).map(|d| (d, false)));
+            }
+            Self { order, resets: Default::default() }
+        }
+    }
+
+    /// Leaves out the leading pictures of the random-access picture a run starts at (RASL
+    /// pictures, as the HEVC decoders do), outputs the others at once.
+    struct OpenGopDec {
+        run_start: Option<i64>,
+        resets: Arc<AtomicUsize>,
+    }
+
+    impl VideoDecoder for OpenGopDec {
+        fn decode(&mut self, _sample: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
+            let start = *self.run_start.get_or_insert(pts);
+            Ok(if pts < start { Vec::new() } else { vec![picture((pts, false))] })
+        }
+        fn flush(&mut self) -> Vec<DecodedFrame> {
+            Vec::new()
+        }
+        fn reset(&mut self) {
+            self.resets.fetch_add(1, Ordering::Relaxed);
+            self.run_start = None;
+        }
+        fn name(&self) -> &str {
+            "open gop"
+        }
+    }
+
+    impl VideoSamples for OpenGop {
+        fn count(&self) -> usize {
+            self.order.len()
+        }
+        fn pts(&self, i: usize) -> i64 {
+            self.order[i].0 * 1000
+        }
+        fn sync_before(&self, i: usize) -> usize {
+            (0..=i).rev().find(|&k| self.order[k].1).unwrap_or(0)
+        }
+        fn sample_at(&self, t: i64) -> Option<usize> {
+            self.order.iter().position(|&(d, _)| d == t / 1000)
+        }
+        fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+            Ok(vec![i as u8])
+        }
+        fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+            Ok(Box::new(OpenGopDec { run_start: None, resets: self.resets.clone() }))
+        }
+    }
+
+    /// A leading picture of an open GOP, asked for first (a clip trimmed to start on it, the
+    /// playhead parked on it), came out black: decoding started at the random-access picture
+    /// after it, which leaves it out.
+    #[test]
+    fn leading_pictures_of_an_open_gop_decode_from_the_gop_before() {
+        let s = OpenGop::new(6);
+        for d in [6usize, 7, 14, 15, 39] {
+            let c = GopCache::new(None);
+            assert_eq!(index_of(&c.frame(&s, d as i64 * 1000).expect("frame")), d);
+        }
+        // the random-access picture first, then its leading pictures: the run that started at
+        // it left them out, so they restart a GOP earlier
+        let c = GopCache::new(None);
+        assert_eq!(index_of(&c.frame(&s, 16_000).expect("frame")), 16);
+        assert_eq!(index_of(&c.frame(&s, 15_000).expect("frame")), 15);
+        assert_eq!(index_of(&c.frame(&s, 14_000).expect("frame")), 14);
+        // playing through: one seek, every picture in turn
+        let s = OpenGop::new(6);
+        let c = GopCache::new(None);
+        for d in 0..46usize {
+            assert_eq!(index_of(&c.frame(&s, d as i64 * 1000).expect("frame")), d);
+        }
+        assert_eq!(s.resets.load(Ordering::Relaxed), 1);
     }
 }

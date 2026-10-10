@@ -228,10 +228,8 @@ pub(crate) fn set_alpha(frame: &mut VideoFrame, a: &VideoFrame) {
         }
         PixelData::Rgba8(rgba) => {
             let px = Arc::make_mut(rgba);
-            for (p, &v) in px.chunks_exact_mut(4).zip(&codes) {
-                if let Some(slot) = p.get_mut(3) {
-                    *slot = rescale(v, 8) as u8;
-                }
+            for (p, &v) in px.as_chunks_mut::<4>().0.iter_mut().zip(&codes) {
+                p[3] = rescale(v, 8) as u8;
             }
         }
         PixelData::RgbaF32(_) => {}

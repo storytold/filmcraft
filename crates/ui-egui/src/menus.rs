@@ -28,6 +28,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("app.language.portuguese", "Português (Brasil)", ["Edit", "Language"], None),
     uic!("app.language.ukrainian", "Українська", ["Edit", "Language"], None),
     uic!("app.language.chinese", "简体中文", ["Edit", "Language"], None),
+    uic!("app.language.german", "Deutsch", ["Edit", "Language"], None),
+    uic!("app.language.russian", "Русский", ["Edit", "Language"], None),
     uic!("source.playback.toggle", "Source Play/Stop", [], None),
     uic!("source.playback.play", "Play Source", [], None),
     uic!("source.playback.stop", "Stop Source", [], None),
@@ -180,6 +182,8 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             | "app.language.portuguese"
             | "app.language.ukrainian"
             | "app.language.chinese"
+            | "app.language.german"
+            | "app.language.russian"
     ) {
         // Japanese needs the craft-fonts (built with CRAFT_FONTS_DIR) or a font installed on the system
         if id == "app.language.japanese" && !crate::i18n::install_japanese_font(ctx) {
@@ -195,6 +199,8 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             "app.language.portuguese" => crate::i18n::Language::PtBr,
             "app.language.ukrainian" => crate::i18n::Language::Uk,
             "app.language.chinese" => crate::i18n::Language::ZhCn,
+            "app.language.german" => crate::i18n::Language::De,
+            "app.language.russian" => crate::i18n::Language::Ru,
             _ => crate::i18n::Language::En,
         };
         // The preference is updated in memory before it is written, so a failed write (read-only
@@ -405,7 +411,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         }
         id if crate::links::url_for(id).is_some() => {
             let url = crate::links::url_for(id).unwrap_or_default();
-            crate::links::open(ctx, url);
+            crate::links::open(app, ctx, url);
             app.ui.status = tlf!("Opened {url}", url);
             return Ok(json!({"url": url}));
         }
@@ -482,6 +488,15 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             crate::panels::color_dialogs::open_sequence(app);
             return Ok(json!({"dialog": "sequenceColor"}));
+        }
+        // New Bin from menus, shortcuts and the Project panel asks for the name (inline rename);
+        // agents pass `name` to name the bin directly
+        "file.newBin" if params.get("name").is_none() => {
+            let r = crate::panels::project::new_bin(app, &params);
+            if let Err(e) = &r {
+                app.ui.status = e.clone();
+            }
+            return r;
         }
         // From menus/shortcuts (no params) these ask first; agents pass params to act directly.
         "file.revert" if params.as_object().is_none_or(|m| m.is_empty()) && app.session.is_dirty() => {
@@ -608,6 +623,8 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             "app.language.portuguese" => it.checked = Some(app.ui.language == crate::i18n::Language::PtBr),
             "app.language.ukrainian" => it.checked = Some(app.ui.language == crate::i18n::Language::Uk),
             "app.language.chinese" => it.checked = Some(app.ui.language == crate::i18n::Language::ZhCn),
+            "app.language.german" => it.checked = Some(app.ui.language == crate::i18n::Language::De),
+            "app.language.russian" => it.checked = Some(app.ui.language == crate::i18n::Language::Ru),
             _ => {}
         }
         if it.id.starts_with("view.") {

@@ -1,6 +1,6 @@
 //! Headless UI tests of the handles of graphic layers in the Program monitor: point text scales
-//! about its anchor point, a paragraph-text box is resized, a shape stretches away from its
-//! opposite side (docs/graphics.md).
+//! about its anchor point, a paragraph-text box is resized, a shape's Size follows the handle
+//! while its opposite side and anchor point stay (docs/graphics.md).
 //!
 //! With `FILMCRAFT_UI_SHOTS=<dir>` the tests also render the UI with wgpu and save PNGs there.
 
@@ -128,6 +128,14 @@ impl Driver {
     fn drag(&mut self, from: (f64, f64), by: (f64, f64)) {
         self.ok("ui.drag", json!({"from": {"x": from.0, "y": from.1}, "to": {"x": from.0 + by.0, "y": from.1 + by.1}, "steps": 6}));
         self.frames(4);
+    }
+
+    /// Press or let go of Shift, as a keyboard reports it (the control channel's drags carry
+    /// modifiers only on their press and release).
+    fn hold_shift(&mut self, on: bool) {
+        let m = if on { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE };
+        self.harness.input_mut().events.push(egui::Event::ModifiersChanged(m));
+        self.frames(1);
     }
 
     fn drag_handle(&mut self, pre: &str, n: usize, dx: f64, dy: f64) {
@@ -372,6 +380,110 @@ fn shape_corner_handles_scale_away_from_the_opposite_corner() {
     assert!(bl2.0 < bl.0 - 20.0 && bl2.1 > bl.1 + 5.0, "bottom-left follows the pointer: {bl:?} -> {bl2:?}");
 }
 
+/// Width and height of a layer's box in its own pixels.
+fn box_size(l: &Value) -> (f64, f64) {
+    let b = &l["localBounds"];
+    (num(&b[2]) - num(&b[0]), num(&b[3]) - num(&b[1]))
+}
+
+#[test]
+fn shape_handles_change_its_size_and_shift_keeps_the_ratio() {
+    let mut d = Driver::new();
+    let pre = d.shape();
+    let clip: u64 = pre.split('.').nth(2).unwrap().parse().unwrap();
+    // a corner straight right: only wider, as in Premiere; the Size changes, not the Scale
+    let (tl, br, anchor) = (d.handle(&pre, 0), d.handle(&pre, 2), d.at(&pre, "anchor"));
+    let before = d.layer(clip);
+    d.drag_handle(&pre, 2, 60.0, 0.0);
+    let l = d.layer(clip);
+    assert_eq!((num(&l["scale"]), num(&l["scaleWidth"])), (100.0, 100.0), "{l}");
+    let (w, h) = box_size(&l);
+    assert!(w > 510.0 && (h - 300.0).abs() < 1e-3, "wider, as tall: {w} x {h}");
+    let (tl2, br2) = (d.handle(&pre, 0), d.handle(&pre, 2));
+    assert!(near(tl, tl2), "top-left stays put: {tl:?} -> {tl2:?}");
+    assert!(near(br2, (br.0 + 60.0, br.1)), "bottom-right follows the pointer: {br:?} -> {br2:?}");
+    assert!(near(d.at(&pre, "anchor"), anchor), "the anchor point stays put");
+    assert_eq!(l["position"], before["position"]);
+
+    // with Shift both sides grow alike from the opposite corner
+    d.hold_shift(true);
+    d.drag_handle(&pre, 2, 40.0, 0.0);
+    d.hold_shift(false);
+    let l2 = d.layer(clip);
+    let (w2, h2) = box_size(&l2);
+    assert!(h2 > 310.0, "taller too: {w2} x {h2}");
+    assert!((w2 / h2 - w / h).abs() < 1e-3, "same proportions: {w}x{h} -> {w2}x{h2}");
+    assert!(near(d.handle(&pre, 0), tl), "top-left still stays put");
+    assert_eq!(num(&l2["scale"]), 100.0);
+    // one undo step per drag
+    d.exec("edit.undo", json!({}));
+    assert_eq!(box_size(&d.layer(clip)), (w, h));
+}
+
+#[test]
+fn polygon_handles_keep_the_opposite_corner() {
+    let mut d = Driver::new();
+    let r = d.exec("graphics.newPolygon", json!({"sides": 5, "position": [800, 500], "size": [300, 300]}));
+    let pre = d.select(r["clip"].as_u64().unwrap());
+    // a pentagon's box is not centred on the shape's origin; the top-left corner stays anyway
+    let (tl, br) = (d.handle(&pre, 0), d.handle(&pre, 2));
+    d.drag_handle(&pre, 2, 50.0, 40.0);
+    assert!(near(d.handle(&pre, 0), tl), "top-left stays put");
+    assert!(near(d.handle(&pre, 2), (br.0 + 50.0, br.1 + 40.0)), "bottom-right follows the pointer");
+}
+
+/// The Corner Radius of the shape layer of graphic clip `clip`.
+fn corner_radius(d: &mut Driver, clip: u64) -> f64 {
+    let s = &d.harness.state().session;
+    let (_, it) = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap();
+    let e = it.effects.iter().find(|e| e.effect == "graphic_shape").unwrap();
+    e.param("corner_radius").unwrap().value_at(filmcraft_time::Tick::ZERO).as_f64().unwrap()
+}
+
+#[test]
+fn a_rectangles_corner_circles_round_all_its_corners() {
+    let mut d = Driver::new();
+    let pre = d.shape();
+    let clip: u64 = pre.split('.').nth(2).unwrap().parse().unwrap();
+    let (tl, br) = (d.handle(&pre, 0), d.handle(&pre, 2));
+    let k = (br.0 - tl.0) / 500.0; // screen points per layer pixel
+    let corners: Vec<(f64, f64)> = (0..4).map(|n| d.at(&pre, &format!("corner.{n}"))).collect();
+    // just inside each corner, on its diagonal
+    assert!(corners[0].0 > tl.0 + 5.0 && corners[0].1 > tl.1 + 5.0 && corners[2].0 < br.0 - 5.0 && corners[2].1 < br.1 - 5.0, "{corners:?}");
+
+    // the top-left circle dragged 40 points down and right: a radius of 40 points' travel
+    d.drag(corners[0], (40.0, 40.0));
+    let r = corner_radius(&mut d, clip);
+    assert!((r - 40.0 / k).abs() < 2.0, "radius {r}, expected {}", 40.0 / k);
+    // the circles moved in to the radius, all four alike
+    let (tl2, br2) = (d.handle(&pre, 0), d.handle(&pre, 2));
+    assert!(near(tl, tl2) && near(br, br2), "the box stays");
+    let c0 = d.at(&pre, "corner.0");
+    let c2 = d.at(&pre, "corner.2");
+    assert!(near(c0, (tl.0 + r * k, tl.1 + r * k)) && near(c2, (br.0 - r * k, br.1 - r * k)), "{c0:?} {c2:?}");
+
+    // any circle drags all four; past the middle it stops at half the shorter side
+    d.drag(c2, (-300.0, -300.0));
+    assert_eq!(corner_radius(&mut d, clip), 150.0);
+    // back out squares them; one undo step per drag
+    let c1 = d.at(&pre, "corner.1");
+    d.drag(c1, (200.0, -200.0));
+    assert_eq!(corner_radius(&mut d, clip), 0.0);
+    d.exec("edit.undo", json!({}));
+    assert_eq!(corner_radius(&mut d, clip), 150.0);
+}
+
+#[test]
+fn only_rectangles_big_enough_get_corner_circles() {
+    let mut d = Driver::new();
+    let r = d.exec("graphics.newShape", json!({"shape": "ellipse", "position": [800, 500], "size": [500, 300]}));
+    let pre = d.select(r["clip"].as_u64().unwrap());
+    assert!(d.ok("ui.elements", json!({"prefix": format!("{pre}corner")})).as_array().unwrap().is_empty(), "an ellipse has none");
+    let r = d.exec("graphics.newShape", json!({"shape": "rectangle", "position": [800, 500], "size": [20, 20]}));
+    let pre = d.select(r["clip"].as_u64().unwrap());
+    assert!(d.ok("ui.elements", json!({"prefix": format!("{pre}corner")})).as_array().unwrap().is_empty(), "a tiny rectangle has none");
+}
+
 #[test]
 fn shape_edge_handles_stretch_one_axis() {
     let mut d = Driver::new();
@@ -406,7 +518,7 @@ fn a_hidden_layer_has_no_box_and_cannot_be_clicked() {
         let v = d.ok("ui.elements", json!({"prefix": layer}));
         v.as_array().unwrap().iter().map(|e| e["id"].as_str().unwrap().to_string()).collect()
     };
-    assert_eq!(ids(&mut d).len(), 10, "the layer, its eight handles and its anchor: {:?}", ids(&mut d));
+    assert_eq!(ids(&mut d).len(), 14, "the layer, its eight handles, four corner circles and its anchor: {:?}", ids(&mut d));
     let r = d.rect(&layer);
     let inside = (r[0] + r[2] / 4.0, r[1] + r[3] / 2.0);
 
@@ -425,5 +537,5 @@ fn a_hidden_layer_has_no_box_and_cannot_be_clicked() {
     // (elsewhere on it, so that the two clicks are not a double click)
     d.ok("ui.click", json!({"x": r[0] + r[2] * 0.75, "y": inside.1}));
     d.frames(4);
-    assert_eq!(ids(&mut d).len(), 10);
+    assert_eq!(ids(&mut d).len(), 14);
 }
