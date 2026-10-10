@@ -137,8 +137,8 @@ Evidence for the cross-cutting rows:
 
 - **Hardware ~45%.** Hardware decode exists on all three desktop OSs (VideoToolbox; Media
   Foundation / D3D11 incl. VP9 and AV1; VA-API and NVDEC for H.264 / HEVC on Linux). Hardware
-  encode: VideoToolbox H.264 / HEVC 8-bit; NVENC H.264 (Windows, Linux) and HEVC incl. Main 10 HDR
-  (Windows). Missing against Premiere: Intel Quick Sync and AMD encoders, 10-bit HEVC on macOS,
+  encode: VideoToolbox H.264 / HEVC 8-bit; NVENC H.264 and HEVC incl. Main 10 HDR (Windows,
+  Linux). Missing against Premiere: Intel Quick Sync and AMD encoders, 10-bit HEVC on macOS,
   ProRes hardware, zero-copy upload, ~48 of Premiere's accelerated effects, external video I/O,
   control surfaces. Detail: [hardware-parity.md](hardware-parity.md).
 - **Performance ~55%.** 4K H.264 / HEVC play with no dropped frames with hardware decoding (M4

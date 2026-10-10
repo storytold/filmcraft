@@ -1,5 +1,5 @@
-//! NVIDIA NVENC hardware encoding: H.264 (Windows and 64-bit Linux) and H.265 (HEVC) Main / Main 10
-//! (Windows).
+//! NVIDIA NVENC hardware encoding: H.264 and H.265 (HEVC) Main / Main 10 (Windows and
+//! 64-bit Linux).
 //!
 //! The encoder runs on the GPU's NVENC engine through the driver's `nvEncodeAPI64.dll` on Windows
 //! (on a Direct3D 11 device) or `libnvidia-encode.so.1` on Linux (on the CUDA driver's primary
