@@ -8,7 +8,7 @@
 //! Linux with neither) registration does nothing and reports [`Availability::Unavailable`]. It also registers a
 //! hardware H.264 encoder factory (`filmcraft_export::register_encoder`) that only acts when an
 //! export asks for it (`ExportSettings::hardware_encoding` = `Auto`), see [`hardware_encode`]; on
-//! macOS and on Windows (NVENC, [`nvenc`]) it also makes the H.265 export format available, and on Windows
+//! macOS and with NVENC ([`nvenc`], Windows and Linux) it also makes the H.265 export format available, and with NVENC
 //! (Main 10) lets HDR sequences export as HDR H.265.
 //!
 //! Hardware decoding never makes a file undecodable:
@@ -68,8 +68,6 @@ pub enum Availability {
 /// harmless). Streams they do not take, and every stream while hardware decoding is Off, keep
 /// using FilmCraft's own decoders.
 pub fn register() -> Availability {
-    #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
-    filmcraft_export::register_encoder(nvenc::export::factory);
     #[cfg(target_os = "macos")]
     {
         filmcraft_codecs::register_video_decoder(videotoolbox_factory);
@@ -81,23 +79,9 @@ pub fn register() -> Availability {
         filmcraft_codecs::hw::set_hw_backend("VideoToolbox");
         Availability::Available("VideoToolbox")
     }
-    // Export ▸ H.265: NVENC is FilmCraft's only HEVC encoder on Windows, so the format is available
-    // when a small HEVC session opens. That takes about half a second, so it is asked on a thread of
-    // its own now rather than by the first draw of the format list.
     #[cfg(target_os = "windows")]
     {
-        filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, nvenc::hevc_available);
-        // HDR sequences export as HEVC Main 10 (PQ / HLG) only where NVENC has a 10-bit encoder; elsewhere
-        // (and on macOS, whose VideoToolbox path is 8-bit) they are tone-mapped to SDR, as before
-        filmcraft_export::register_hdr_probe(filmcraft_export::Format::Hevc, nvenc::hevc_hdr_available);
-        nvenc::warm_hevc_probe();
-    }
-    #[cfg(target_os = "windows")]
-    {
-        static ENCODERS: std::sync::Once = std::sync::Once::new();
-        // Export ▸ Hardware encoding (NVENC H.264): in front of the software encoder, taking an
-        // export only when asked for and when NVENC can do it
-        ENCODERS.call_once(|| filmcraft_export::register_encoder(nvenc::export::factory));
+        register_nvenc();
         filmcraft_codecs::register_video_decoder(media_foundation_factory);
         filmcraft_codecs::hw::set_hw_backend("Media Foundation");
         Availability::Available("Media Foundation")
@@ -130,12 +114,34 @@ pub fn register() -> Availability {
             }
             Err(why) => log::info!("no NVDEC hardware decoding: {why}"),
         }
+        // After the VA-API probe, never beside it: libva-nvidia-driver calls `cuInit` from its
+        // library constructor (under the loader lock) while a first `cuInit` on another thread
+        // loads libraries under CUDA's own lock, and the two wait for each other forever.
+        #[cfg(target_pointer_width = "64")]
+        register_nvenc();
         available
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         Availability::Unavailable("no hardware video decoder for this system yet")
     }
+}
+
+/// NVENC: the Export encoder factory, and what makes the H.265 format (and HDR H.265) available.
+#[cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
+fn register_nvenc() {
+    // Export ▸ H.265: NVENC is FilmCraft's only HEVC encoder on Windows and Linux, so the format is available
+    // when a small HEVC session opens. That takes about half a second, so it is asked on a thread of
+    // its own now rather than by the first draw of the format list.
+    filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, nvenc::hevc_available);
+    // HDR sequences export as HEVC Main 10 (PQ / HLG) only where NVENC has a 10-bit encoder; elsewhere
+    // (and on macOS, whose VideoToolbox path is 8-bit) they are tone-mapped to SDR, as before
+    filmcraft_export::register_hdr_probe(filmcraft_export::Format::Hevc, nvenc::hevc_hdr_available);
+    nvenc::warm_hevc_probe();
+    static ENCODERS: std::sync::Once = std::sync::Once::new();
+    // Export ▸ Hardware encoding (NVENC H.264): in front of the software encoder, taking an
+    // export only when asked for and when NVENC can do it
+    ENCODERS.call_once(|| filmcraft_export::register_encoder(nvenc::export::factory));
 }
 
 /// Whether [`register`] has put a hardware decoder factory in front of our decoders.

@@ -1,7 +1,7 @@
-//! NVENC with packed RGBA input (Windows, NVIDIA GPU): the GPU's RGB → 4:2:0 conversion matches the
+//! NVENC with packed RGBA input (Windows and Linux, NVIDIA GPU): the GPU's RGB → 4:2:0 conversion matches the
 //! export's own BT.709 limited-range conversion (`filmcraft_export::rgba_to_yuv420_8`), for HEVC Main
 //! and H.264. Skips without an NVIDIA GPU / driver.
-#![cfg(target_os = "windows")]
+#![cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 
 use filmcraft_isobmff::{AvcConfig, SampleEntry};
 use filmcraft_platform::nvenc::{Codec, Config, Nvenc, Packet, Profile, Signal, available, hevc_available};
