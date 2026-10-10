@@ -54,11 +54,11 @@ impl LayerView {
         let v = self.to_screen.inverse()?.apply(Vec2::new(p.x as f64, p.y as f64));
         Some((v.x as f32, v.y as f32))
     }
-    fn hit(&self, p: Pos2) -> bool {
+    pub(crate) fn hit(&self, p: Pos2) -> bool {
         let pad = 4.0 / screen_scale(&self.to_screen).max(1e-6);
         self.to_local(p).is_some_and(|(x, y)| x >= self.local[0] - pad && x <= self.local[2] + pad && y >= self.local[1] - pad && y <= self.local[3] + pad)
     }
-    fn is_text(&self) -> bool {
+    pub(crate) fn is_text(&self) -> bool {
         matches!(self.spec.content, LayerContent::Text(_))
     }
 }
@@ -91,7 +91,7 @@ pub fn selected_graphic(app: &FilmcraftApp) -> Option<(ClipId, TrackItem)> {
 /// visibility is off is not in the picture, so it has no box and cannot be clicked either.
 /// Sequence pixels → screen points on the monitor picture `pic`. The picture shows the frame at its
 /// display aspect, so with non-square sequence pixels the two axes scale differently.
-fn frame_to_screen(pic: Rect, frame: (u32, u32)) -> Affine {
+pub(crate) fn frame_to_screen(pic: Rect, frame: (u32, u32)) -> Affine {
     let (kx, ky) = (pic.width() as f64 / frame.0.max(1) as f64, pic.height() as f64 / frame.1.max(1) as f64);
     Affine::translate(pic.min.x as f64, pic.min.y as f64).then_apply(&Affine::scale(kx, ky))
 }
@@ -184,7 +184,7 @@ struct DragState {
 
 /// The eight handles of a layer's box `quad` (TL, TR, BR, BL): the corners (0–3), then the middles
 /// of the top, right, bottom and left edges (4–7).
-fn handle_points(quad: &[Pos2; 4]) -> [Pos2; 8] {
+pub(crate) fn handle_points(quad: &[Pos2; 4]) -> [Pos2; 8] {
     let mid = |i: usize| quad[i] + (quad[(i + 1) % 4] - quad[i]) * 0.5;
     [quad[0], quad[1], quad[2], quad[3], mid(0), mid(1), mid(2), mid(3)]
 }
@@ -470,7 +470,7 @@ fn anchor_screen(v: &LayerView) -> Pos2 {
 }
 
 /// A screen offset in the units `m` maps to the screen (its translation left out).
-fn unscale(m: &Affine, off: egui::Vec2) -> Vec2 {
+pub(crate) fn unscale(m: &Affine, off: egui::Vec2) -> Vec2 {
     Affine { e: 0.0, f: 0.0, ..*m }.inverse().map(|i| i.apply(Vec2::new(off.x as f64, off.y as f64))).unwrap_or_default()
 }
 
@@ -620,8 +620,8 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     let editing = app.ui.gfx_edit.clone();
     let edit_view = editing.as_ref().and_then(|e| views.iter().find(|v| v.clip.0 == e.clip && v.layer == e.layer));
 
-    // ---- presses
-    if graphics_tool && resp.drag_started() {
+    // ---- presses (the left button only: a middle or right drag leaves the layers alone)
+    if graphics_tool && resp.drag_started_by(egui::PointerButton::Primary) {
         // where the button went down (a drag starts only after the pointer has moved a little)
         let p = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()).unwrap_or(pic.center());
         let shift = ui.input(|i| i.modifiers.shift);

@@ -817,6 +817,81 @@ fn dragging_an_effect_parameter_is_one_undo_step() {
     assert_eq!(opacity(&s), start, "and then the whole first one");
 }
 
+/// #639: a drag that changes several parameters (the anchor point and the position) shares one
+/// undo step when its changes carry the same `merge` key.
+#[test]
+fn a_merge_key_folds_several_parameters_into_one_undo_step() {
+    let mut s = demo_unlocked();
+    let id = v1(&s)[0].0;
+    let motion = |s: &Session| {
+        let it = s.active_sequence().unwrap().find_item(ClipId(id)).unwrap().1.clone();
+        let e = it.effect("motion").unwrap().clone();
+        (e.params["anchor"].value.clone(), e.params["position"].value.clone())
+    };
+    let start = motion(&s);
+    let undo = s.history.undo.len();
+    for (i, d) in [10.0, 20.0, 30.0].into_iter().enumerate() {
+        for param in ["anchor", "position"] {
+            let p = json!({"clip": id, "effect": "motion", "param": param, "value": [500.0 + d, 300.0 + d], "merge": "programTransform", "begin": i == 0 && param == "anchor"});
+            s.execute("effects.setParam", p).unwrap();
+        }
+    }
+    assert_eq!(s.history.undo.len(), undo + 1);
+    assert_eq!(motion(&s).1, filmcraft_project::ParamValue::Vec2(filmcraft_geom::Vec2::new(530.0, 330.0)));
+    s.undo();
+    assert_eq!(motion(&s), start);
+}
+
+/// #639: `effects.select` names the effect whose handles the Program monitor shows. It and the
+/// mask selection replace each other; undo or removal that takes the effect away clears it.
+#[test]
+fn selecting_an_effect_replaces_the_mask_selection() {
+    let mut s = demo_unlocked();
+    let id = v1(&s)[0].0;
+    let motion_sel = Some(EffectSel { clip: ClipId(id), effect: "motion".into(), instance: 0 });
+    s.execute("effects.select", json!({"clip": id, "effect": "motion"})).unwrap();
+    assert_eq!(s.state.selected_effect, motion_sel);
+    // applying an effect puts it first; Motion stays the selected effect
+    s.execute("effects.apply", json!({"clips": [id], "effect": "gaussian_blur"})).unwrap();
+    assert_eq!(s.state.selected_effect, motion_sel);
+    s.execute("effects.remove", json!({"clip": id, "index": 0})).unwrap();
+    assert_eq!(s.state.selected_effect, motion_sel, "and when one before it is removed");
+    let motion = s.active_sequence().unwrap().find_item(ClipId(id)).unwrap().1.effects.iter().position(|e| e.effect == "motion").unwrap();
+    s.execute("masks.add", json!({"clip": id, "shape": "ellipse"})).unwrap();
+    assert!(s.state.selected_effect.is_none(), "a new mask is selected instead");
+    s.execute("effects.select", json!({"clip": id, "effect": motion})).unwrap();
+    assert!(s.state.selected_mask.is_none());
+    s.execute("masks.select", json!({"clip": id, "effect": "opacity", "mask": 0})).unwrap();
+    assert!(s.state.selected_effect.is_none());
+    s.execute("effects.select", json!({"none": true})).unwrap();
+    assert!(s.state.selected_effect.is_none());
+    // an applied effect that undo takes away, and one removed
+    s.execute("effects.apply", json!({"clips": [id], "effect": "transform"})).unwrap();
+    s.execute("effects.select", json!({"clip": id, "effect": "transform"})).unwrap();
+    assert!(s.state.selected_effect.is_some());
+    s.undo();
+    assert!(s.state.selected_effect.is_none(), "selection follows undo");
+    s.redo();
+    s.execute("effects.select", json!({"clip": id, "effect": "transform"})).unwrap();
+    let effects = s.active_sequence().unwrap().find_item(ClipId(id)).unwrap().1.effects.clone();
+    let index = s.state.selected_effect.as_ref().unwrap().index(&effects).unwrap();
+    s.execute("effects.remove", json!({"clip": id, "index": index})).unwrap();
+    assert!(s.state.selected_effect.is_none());
+    // hostile parameters are errors, not panics
+    for p in [
+        json!({}),
+        json!({"clip": id}),
+        json!({"clip": id, "effect": 9999}),
+        json!({"clip": id, "effect": -1}),
+        json!({"clip": id, "effect": u64::MAX}),
+        json!({"clip": id, "effect": "no_such_effect"}),
+        json!({"clip": u64::MAX, "effect": 0}),
+        json!({"clip": "x", "effect": 0}),
+    ] {
+        assert!(s.execute("effects.select", p.clone()).is_err(), "{p}");
+    }
+}
+
 /// The demo's first video transition between two clips: (id, start, duration, cut).
 fn demo_crossing(s: &Session) -> (u64, Tick, Tick, Tick) {
     let q = s.active_sequence().unwrap();

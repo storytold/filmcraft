@@ -483,7 +483,8 @@ pub fn rulers(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, top: Rect, le
         if resp.hovered() {
             ui.ctx().set_cursor_icon(if vertical { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical });
         }
-        if resp.drag_started() {
+        // the left button only, as for the other things dragged on the monitor
+        if resp.drag_started_by(egui::PointerButton::Primary) {
             ui.data_mut(|d| d.insert_temp(drag_id, NewGuide { vertical }));
         }
         let Some(ng) = ui.data(|d| d.get_temp::<NewGuide>(drag_id)).filter(|g| g.vertical == vertical) else { continue };
@@ -532,8 +533,9 @@ pub fn guides(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area: Rect, p
         if resp.hovered() || resp.dragged() {
             ui.ctx().set_cursor_icon(if g.vertical { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical });
         }
+        let left = egui::PointerButton::Primary;
         if let Some(pos) = resp.interact_pointer_pos()
-            && (resp.dragged() || resp.drag_stopped())
+            && (resp.dragged_by(left) || resp.drag_stopped_by(left))
         {
             if !area.contains(pos) {
                 // outside the picture area: dropping here removes the guide
