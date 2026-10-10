@@ -989,9 +989,9 @@ static CATEGORIES: &[Category] = &[
             Row::Group(
                 "Growing Files",
                 &[
-                    b("media.refreshGrowingFiles", "Automatically refresh growing files", false),
+                    b("media.refreshGrowingFiles", "Automatically refresh growing files", true),
                     b("media.resumeGrowingPlayback", "Automatically resume playback for growing files in Source Monitor", false),
-                    sub("media.growingRefreshSeconds", "Refresh growing Files Every", int(1.0, 3600.0, "seconds"), "media.refreshGrowingFiles", false),
+                    sub("media.growingRefreshSeconds", "Refresh growing Files Every", int(1.0, 3600.0, "seconds"), "media.refreshGrowingFiles", true),
                 ],
             ),
             b("media.hardwareDecoding", "Enable hardware accelerated decoding (requires restart)", false),
