@@ -2940,6 +2940,7 @@
 	File Name & Location	Nombre y ubicación del archivo
 	Quick Export: {path}	Exportación rápida: {path}
 	Graphics problem: switched to software compositing	Problema de gráficos: se ha cambiado a la composición por software
+	GPU acceleration is unavailable; preview renders on the CPU	La aceleración por GPU no está disponible; la vista previa se renderiza en la CPU
 	Exporting	Exportando
 	Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.	Haz clic para seleccionar, o haz clic en un espacio vacío y arrastra para seleccionar con un marco. Usa Mayús, Opción y Cmd para otras opciones.
 	Click to select all clips to the right in all tracks. Shift-click for a single track.	Haz clic para seleccionar todos los clips a la derecha en todas las pistas. Mayús+clic para una sola pista.

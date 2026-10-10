@@ -243,23 +243,35 @@ impl H264Decoder {
         Self { avcc: Vec::new(), dec: filmcraft_h264::Decoder::with_threads(threads), length_size: 0, draft: false, threads }
     }
     fn convert(p: filmcraft_h264::Picture) -> DecodedFrame {
+        use filmcraft_h264::Plane;
         use std::sync::Arc;
         let draft = p.draft;
         let (w, h) = (p.width as usize, p.height as usize);
         let (cw, ch) = (p.chroma_width as usize, p.chroma_height as usize);
-        let y = tight_plane(p.y, p.y_stride, w, h);
-        let u = tight_plane(p.u, p.uv_stride, cw, ch);
-        let v = tight_plane(p.v, p.uv_stride, cw, ch);
+        let (ys, uvs) = (p.y_stride, p.uv_stride);
+        let wide = |pl: Plane| -> Vec<u16> {
+            match pl {
+                Plane::U16(v) => v,
+                Plane::U8(v) => v.into_iter().map(u16::from).collect(),
+            }
+        };
+        let chroma = if p.four_two_two { filmcraft_frame::Chroma::C422 } else { filmcraft_frame::Chroma::C420 };
+        let data = match (p.y, p.u, p.v) {
+            (Plane::U8(y), Plane::U8(u), Plane::U8(v)) => filmcraft_frame::PixelData::Yuv8 {
+                planes: [Arc::new(tight_plane(y, ys, w, h)), Arc::new(tight_plane(u, uvs, cw, ch)), Arc::new(tight_plane(v, uvs, cw, ch))],
+                chroma,
+                alpha: None,
+            },
+            (y, u, v) => filmcraft_frame::PixelData::Yuv16 {
+                planes: [Arc::new(tight_plane(wide(y), ys, w, h)), Arc::new(tight_plane(wide(u), uvs, cw, ch)), Arc::new(tight_plane(wide(v), uvs, cw, ch))],
+                chroma,
+                bits: p.bit_depth,
+                alpha: None,
+            },
+        };
         let color = vui_color(p.width, p.height, p.color.matrix, p.color.transfer, p.color.full_range);
         let par = sar_par(p.sar);
-        let frame = VideoFrame {
-            width: p.width,
-            height: p.height,
-            data: filmcraft_frame::PixelData::Yuv8 { planes: [Arc::new(y), Arc::new(u), Arc::new(v)], chroma: filmcraft_frame::Chroma::C420, alpha: None },
-            color,
-            par,
-            pts: filmcraft_time::Tick::ZERO,
-        };
+        let frame = VideoFrame { width: p.width, height: p.height, data, color, par, pts: filmcraft_time::Tick::ZERO };
         DecodedFrame { pts: p.pts, frame, draft }
     }
 }
@@ -303,7 +315,8 @@ impl VideoDecoder for H264Decoder {
 /// The H.264 decoder's output planes come from the frames the caches evicted
 /// (`filmcraft_frame::pool`) instead of the allocator.
 fn recycle_h264_planes() {
-    filmcraft_h264::set_plane_allocator(filmcraft_frame::pool::take_u8);
+    filmcraft_h264::set_plane_allocator(filmcraft_frame::pool::take_u16);
+    filmcraft_h264::set_plane_allocator8(filmcraft_frame::pool::take_u8);
 }
 
 /// Worker threads each H.264 decoder uses (frame threading; 1 on wasm).

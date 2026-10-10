@@ -13,7 +13,7 @@ use crate::picture::{Frame, FrameRef, MbKind, MbState, Planes, RefPic};
 use crate::slice::{NalHeader, Poc, PocState, SliceHeader, SliceType, is_new_picture, nal_type};
 use crate::slicedec::{PicState, SliceDecoder};
 use crate::transform::LevelScale;
-use crate::{ColorInfo, Picture};
+use crate::{ColorInfo, Picture, Plane};
 use filmcraft_bitstream::{BitReader, annexb_nals, length_prefixed_nals, unescape_rbsp};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -436,14 +436,14 @@ impl Decoder {
                     *next_id += 1;
                     let planes = match &last {
                         Some(f) if f.mb_w == mb_w && f.mb_h() == mb_h => {
-                            let mut p = Planes::new(mb_w * 16, mb_h * 16);
+                            let mut p = Planes::new(mb_w * 16, mb_h * 16, sps.format());
                             let (y, u, v) = f.copy_cropped((0, 0, mb_w * 16, mb_h * 16));
                             p.y = y;
                             p.cb = u;
                             p.cr = v;
                             p
                         }
-                        _ => Planes::gray(mb_w * 16, mb_h * 16),
+                        _ => Planes::gray(mb_w * 16, mb_h * 16, sps.format()),
                     };
                     (Arc::new(Frame::from_planes(id, 0, &planes)), 0, meta.clone())
                 };
@@ -458,7 +458,7 @@ impl Decoder {
         let frame_poc = if sh.has_mmco5() { 0 } else { poc.frame() };
         let id = self.next_id;
         self.next_id += 1;
-        let frame = Arc::new(Frame::new(id, frame_poc, mb_w, mb_h));
+        let frame = Arc::new(Frame::new(id, frame_poc, mb_w, mb_h, sps.format()));
         self.pending = Some(PendingPic { frame, sps: sps.clone(), first: sh.clone(), poc, pts, key: sh.idr, slices: Vec::new() });
         Ok(())
     }
@@ -527,7 +527,7 @@ fn run_job(frame: FrameRef, slices: Vec<SliceJob>, shared: &Shared, draft: bool)
         Ok(e) => e,
         Err(_) => {
             // Make sure readers never block on this frame.
-            let fallback = Planes::gray(frame.width, frame.height);
+            let fallback = Planes::gray(frame.width, frame.height, frame.fmt);
             let blank = vec![MbState::default(); frame.mb_w * frame.mb_h()];
             for r in 0..frame.mb_h() {
                 if !frame.is_published(r) {
@@ -597,18 +597,33 @@ fn output_meta(sps: &Sps, pts: i64, key: bool) -> OutputMeta {
 fn make_picture(o: &Output<FrameRef>) -> Picture {
     let (cx, cy, cw, ch) = o.meta.crop;
     let (cx, cy, cw, ch) = (cx as usize, cy as usize, cw as usize, ch as usize);
+    let fmt = o.frame.fmt;
     let (y, u, v) = o.frame.copy_cropped((cx, cy, cw, ch));
-    let (ccw, cch) = (cw.div_ceil(2), ch.div_ceil(2));
+    let (ccw, cch) = fmt.chroma_size(cw, ch);
+    // 8-bit planes come out as u8 (as before), deeper ones as u16.
+    let conv = |p: Vec<u16>, bd: u32| -> Plane {
+        if bd <= 8 {
+            let alloc = crate::picture::plane_allocator8();
+            let mut v = alloc(p.len());
+            v.extend(p.iter().map(|&s| s as u8));
+            Plane::U8(v)
+        } else {
+            Plane::U16(p)
+        }
+    };
     Picture {
         width: cw as u32,
         height: ch as u32,
         chroma_width: ccw as u32,
         chroma_height: cch as u32,
-        y,
-        u,
-        v,
+        y: conv(y, fmt.bit_depth),
+        u: conv(u, fmt.bit_depth_c),
+        v: conv(v, fmt.bit_depth_c),
         y_stride: cw,
         uv_stride: ccw,
+        bit_depth: fmt.bit_depth,
+        bit_depth_c: fmt.bit_depth_c,
+        four_two_two: fmt.chroma_y_shift == 0,
         pts: o.meta.pts,
         poc: o.poc,
         key: o.meta.key,

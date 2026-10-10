@@ -427,7 +427,7 @@ fn build_and_check(cabac: bool, threads: usize) {
     assert_eq!(out.len(), expected.len(), "cabac={cabac}");
     for (i, (p, e)) in out.iter().zip(expected.iter()).enumerate() {
         assert_eq!((p.width as usize, p.height as usize), (MB_W * 16, MB_H * 16));
-        assert!(p.y == e.0 && p.u == e.1 && p.v == e.2, "picture {i} differs (cabac={cabac}, threads={threads})");
+        assert!(p.y.to_u8() == e.0 && p.u.to_u8() == e.1 && p.v.to_u8() == e.2, "picture {i} differs (cabac={cabac}, threads={threads})");
     }
     let s = dec.stats();
     assert!(s.mb_pcm > 0 && s.frame_num_gaps == 1 && s.long_term_marks >= 3, "{s:?}");
@@ -515,7 +515,7 @@ fn weighted_check(cabac: bool, threads: usize) {
     assert!(dec.take_error().is_none());
     assert_eq!(out.len(), 4);
     for (i, (p, e)) in out.iter().zip(expected.iter()).enumerate() {
-        assert!(p.y == e.0 && p.u == e.1 && p.v == e.2, "picture {i} differs (cabac={cabac}, threads={threads})");
+        assert!(p.y.to_u8() == e.0 && p.u.to_u8() == e.1 && p.v.to_u8() == e.2, "picture {i} differs (cabac={cabac}, threads={threads})");
     }
 }
 
@@ -551,7 +551,7 @@ fn poc_type1_reordering() {
             for (k, p) in out.iter().enumerate() {
                 let e = render(&contents[expected_order[k]], None);
                 assert_eq!(p.poc, expected_poc[k]);
-                assert!(p.y == e.0 && p.u == e.1 && p.v == e.2, "output {k} (cabac={cabac})");
+                assert!(p.y.to_u8() == e.0 && p.u.to_u8() == e.1 && p.v.to_u8() == e.2, "output {k} (cabac={cabac})");
             }
         }
     }

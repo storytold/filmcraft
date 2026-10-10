@@ -519,16 +519,37 @@ impl Sps {
         if !self.frame_mbs_only {
             return unsupported("interlaced (field / MBAFF) coding");
         }
-        if self.chroma_array_type() != 1 {
-            return unsupported(format!("chroma_format_idc {} (only 4:2:0 is implemented)", self.chroma_format_idc));
+        if !matches!(self.chroma_array_type(), 1 | 2) {
+            return unsupported(format!("chroma_format_idc {} (only 4:2:0 and 4:2:2 are implemented)", self.chroma_format_idc));
         }
-        if self.bit_depth_luma != 8 || self.bit_depth_chroma != 8 {
-            return unsupported(format!("bit depth luma {} chroma {} (only 8-bit is implemented)", self.bit_depth_luma, self.bit_depth_chroma));
+        if !(8..=10).contains(&self.bit_depth_luma) || !(8..=10).contains(&self.bit_depth_chroma) {
+            return unsupported(format!("bit depth luma {} chroma {} (only 8..=10-bit is implemented)", self.bit_depth_luma, self.bit_depth_chroma));
         }
         if self.qpprime_y_zero_transform_bypass {
             return unsupported("qpprime_y_zero_transform_bypass (lossless)");
         }
         Ok(())
+    }
+
+    /// Sample layout of the decoded pictures (valid where [`Self::check_supported`] passes).
+    pub fn format(&self) -> crate::picture::Format {
+        let cat = self.chroma_array_type();
+        crate::picture::Format {
+            chroma_x_shift: u32::from(matches!(cat, 1 | 2)),
+            chroma_y_shift: u32::from(cat == 1),
+            bit_depth: self.bit_depth_luma,
+            bit_depth_c: self.bit_depth_chroma,
+        }
+    }
+
+    /// QpBdOffsetY (7-4): added to QPY for residual scaling.
+    pub fn qp_bd_offset_y(&self) -> i32 {
+        6 * (self.bit_depth_luma as i32 - 8)
+    }
+
+    /// QpBdOffsetC (7-6): added to QpC for chroma residual scaling.
+    pub fn qp_bd_offset_c(&self) -> i32 {
+        6 * (self.bit_depth_chroma as i32 - 8)
     }
 }
 

@@ -50,6 +50,13 @@ fixture_tests!(
     no8x8dct,
     qp50,
     qp1,
+    high10_cabac,
+    high10_cavlc_8x8,
+    high10_weightb,
+    high422_cabac,
+    high422_cavlc,
+    high422_intra,
+    high422_weightb,
     vt_high,
     vt_main,
     vt_baseline,
@@ -78,7 +85,8 @@ fn draft_mode_changes_only_flagged_non_reference_pictures() {
             let (mut draft, mut changed) = (0, 0);
             for (i, p) in pics.iter().enumerate() {
                 let r = &reference[i * fsize..(i + 1) * fsize];
-                let same = p.y == r[..w * h] && [&p.u[..], &p.v[..]].concat() == r[w * h..];
+                let (y, u, v) = (p.y.to_u8(), p.u.to_u8(), p.v.to_u8());
+                let same = y[..] == r[..w * h] && [&u[..], &v[..]].concat() == r[w * h..];
                 if p.draft {
                     draft += 1;
                     changed += !same as usize;
