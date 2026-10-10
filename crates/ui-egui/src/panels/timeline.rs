@@ -30,6 +30,8 @@ const RULER_H: f32 = 44.0;
 const SCROLLBAR_H: f32 = 17.0;
 const DIVIDER_H: f32 = 5.0;
 const MASTER_H: f32 = 34.0;
+/// The selected gap between two clips (#648, #668).
+const GAP_FILL: Color32 = Color32::from_gray(224);
 const SNAP_PX: f32 = 9.0;
 
 /// Transient interaction state.
@@ -380,6 +382,16 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         let p = painter.with_clip_rect(Rect::from_min_max(pos2(content.min.x, row.min.y), pos2(content.max.x, row.max.y)));
         let volume_line = r.kind == TrackKind::Audio && !r.lane;
+        // the selected gap (#648, #668): a light block across the empty time, as in Premiere Pro
+        if let Some(g) = app.session.state.gap_selection.filter(|g| g.track == r.track) {
+            let x0 = layout.x_of(g.range.start).max(content.min.x - 1.0);
+            let x1 = layout.x_of(g.range.end()).min(content.max.x + 1.0);
+            if x1 > x0 {
+                let gap = Rect::from_min_max(pos2(x0, r.rect.min.y + 1.0), pos2(x1, r.rect.max.y - 1.0));
+                p.rect_filled(gap, 0.0, GAP_FILL);
+                app.auto.add("timeline.gap", gap.intersect(content), "Selected gap");
+            }
+        }
         for it in &tr.items {
             let (start, dur, moved_track) = previews.get(&it.id).copied().unwrap_or((it.start, it.duration, None));
             if moved_track.is_some_and(|m| m != r.track) {
@@ -1695,6 +1707,19 @@ fn edit_point_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::U
     }
 }
 
+/// The menu of a right-clicked gap: Ripple Delete closes it.
+fn gap_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::Ui) {
+    let label = tl!("Ripple Delete");
+    let r = ui.add_enabled(app.session.state.gap_selection.is_some(), egui::Button::new(label));
+    app.auto.add("timeline.gapMenu.edit.rippleDelete", r.rect, label);
+    if r.clicked() {
+        if let Err(e) = crate::menus::invoke(app, ctx, "edit.rippleDelete", json!({})) {
+            app.ui.status = e;
+        }
+        ui.close();
+    }
+}
+
 /// The clip menu's Multi-Camera submenu: Enable, Flatten, and the cameras of the selected nested
 /// sequence clips (greyed out when none of the selected clips is a nested sequence).
 fn multicam_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, picked: &[&TrackItem]) {
@@ -1968,6 +1993,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     if mods.alt {
                         app.session.state.selection = vec![clip];
                         app.session.state.transition_selection.clear();
+                        app.session.state.gap_selection = None;
                     } else {
                         let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
                     }
@@ -1996,13 +2022,17 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 }
             }
             (_, Grab::Other(Hit::Transition { .. })) => None,
-            (_, Grab::Other(Hit::Empty { .. })) => {
+            (_, Grab::Other(Hit::Empty { track })) => {
                 if resp.drag_started() {
                     Some(Drag::Marquee { start: p })
                 } else {
                     app.session.state.selection.clear();
                     app.session.state.edit_points.clear();
                     app.session.state.transition_selection.clear();
+                    // empty time between clips: select the gap, for Delete to close it (#648, #668)
+                    if app.session.execute("timeline.selectGap", json!({"track": track.0, "time": t.0})).is_err() {
+                        app.session.state.gap_selection = None;
+                    }
                     None
                 }
             }
@@ -2199,6 +2229,21 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
     let edit_point_menu_id = egui::Id::new("timeline.editPointMenu.target");
     // the clip right-clicked, remembered while its menu is open: Unlink leaves only it selected
     let menu_clip_id = egui::Id::new("timeline.clipMenu.clip");
+    // right-clicking empty time between clips selects the gap and opens its menu (#648, #668)
+    let gap_menu_id = egui::Id::new("timeline.gapMenu.open");
+    if resp.secondary_clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        let on_gap = match hit(seq, layout, p) {
+            Hit::Empty { track } => app.session.execute("timeline.selectGap", json!({"track": track.0, "time": layout.tick_at(p.x).0})).is_ok(),
+            _ => false,
+        };
+        ctx.data_mut(|d| d.insert_temp(gap_menu_id, on_gap));
+        if on_gap {
+            // not the edit point menu of a cut right-clicked before
+            ctx.data_mut(|d| d.insert_temp::<Option<EditPointTarget>>(edit_point_menu_id, None));
+        }
+    }
     if resp.secondary_clicked()
         && let Some(p) = resp.interact_pointer_pos()
         && let Hit::Clip { clip, edge, track } = hit(seq, layout, p)
@@ -2228,6 +2273,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         ui.set_min_width(220.0);
         if let Some(target) = ctx.data(|d| d.get_temp::<Option<EditPointTarget>>(edit_point_menu_id)).flatten() {
             edit_point_menu(app, &ctx, ui, seq, target);
+            return;
+        }
+        if ctx.data(|d| d.get_temp::<bool>(gap_menu_id)).unwrap_or(false) {
+            gap_menu(app, &ctx, ui);
             return;
         }
         let sel = app.session.state.selection.clone();
