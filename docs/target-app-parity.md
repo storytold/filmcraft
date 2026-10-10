@@ -18,7 +18,7 @@ The deep checklists are [file-format-parity.md](file-format-parity.md),
 | **Essentials user** | **~60%** | Core features at default settings, with written discounts ([method](#essentials-user)) |
 | **Stage** | **alpha** | ~19 points and ~400–700 h from beta, and beta also needs `.prproj` import ([why](#stage)) |
 | **Remaining to beta** | **~400–700 Opus 5.5 agent-hours** | Estimated, calibrated below |
-| **Remaining to full parity** | **~1,550–2,750 Opus 5.5 agent-hours** | Estimated; ~70% parallelizes |
+| **Remaining to full parity** | **~1,550–2,750 Opus 5.5 agent-hours** (to ~95%: ~1,450–2,600) | Estimated; ~70% parallelizes |
 | Codebase (measured 2026-10-10) | 45 crates + 3 apps, ~343,000 lines of Rust, 2,520 `#[test]` functions, 1,098 commits, 268 merged PRs, 69 authors | `git`, `gh`, `grep` |
 
 The previous estimate (2026-10-05) was breadth ~87%, ready ~50–60%, and "~210–325 agent-hours to
@@ -163,6 +163,20 @@ Evidence for the cross-cutting rows:
   Extend, media-intelligence search, caption translation, auto colour.
 
 ## Three readiness numbers
+
+| Audience | Ready % | Opus 5.5 agent wall-clock hours to ~95% | Work that dominates |
+|---|---|---|---|
+| Full target (ready for real work) | ~56% | ~1,450–2,600 (~70% parallelizes) | Plugin hosting, AI models, localization incl. RTL / Devanagari, camera RAW and delivery codecs, `.prproj`, hardware acceleration, UI fidelity |
+| Mainstream practitioner | ~55% | ~500–850 (~65% parallelizes) | `.prproj` import (60–120), UI fidelity (120–200), stability and PR CI (40–80), 10-bit / 4:2:2 camera decode (30–50), playback / hardware (60–100), import and export gaps (60–100) |
+| Essentials user | ~60% | ~180–350 (~60% parallelizes) | Launch crashes on Windows / Intel / older macOS (40–80), discoverability and timeline friction (60–110), playback lag (30–60), common import gaps (20–40), audio devices (15–30) |
+
+Hours per audience are calibrated like the rest (one hardware backend ~3–5 h, one encoder ~4–8 h, a
+whole-interface language ~4–8 h, ~4–5 h per breadth point, depth work ~1.5–2× that). The
+audiences nest, so essentials ≤ mainstream ≤ full: the essentials work is a subset of the
+mainstream list, which is a subset of the full list. Needs a human: the plugin decision and AI
+models (full only), native-speaker review (full only), Avid / Pro Tools validation (mainstream
+and full), Windows / Intel test machines (all three).
+
 
 All three use the depth ("Ready") estimates of the [feature areas](#by-feature-area); they differ in
 which areas count and how they are discounted. The stage follows the first one and the
@@ -336,6 +350,7 @@ control surfaces), and validation in Avid Media Composer / Pro Tools.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-10 | minor | Readiness table: hours to ~95% for each audience (full ~1,450–2,600, mainstream ~500–850, essentials ~180–350); full number confirmed as an additive weighted sum (no change) |
 | 2026-10-10 | minor | Added the three readiness numbers: full ready-for-real-work formula written out (~55% -> ~56%, same inputs, now computed rather than rounded down), mainstream practitioner ~55% and essentials user ~60% with written weights and discounts, and counted user evidence (31 people praising, 0 switch reports, ~64 core-path vs ~29 niche open bugs) |
 | 2026-10-10 | minor | Stage checked against the new core-workflow gate (docs/roadmap.md#alpha-gate): passes, stays alpha |
 | 2026-10-10 | major | Created from ROADMAP.md's scorecard and estimate; full re-measure against Premiere Pro 26.5.2 (menu label diff, installed-bundle listings, 188 open issues); breadth ~87 → ~86% (file formats counted), ready ~50–60% → ~55%, hours re-estimated to include plugins, AI, localization and `.prproj`; stage alpha |

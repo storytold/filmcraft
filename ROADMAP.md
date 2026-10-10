@@ -24,6 +24,16 @@ Progress toward parity with Adobe Premiere Pro. This page is the summary; the de
 Two numbers, because they answer different questions. The gap between them is the work that
 matters most now: breadth is nearly done, depth is not.
 
+### Readiness by audience
+
+| Audience | Ready % | Opus 5.5 agent wall-clock hours to ~95% | Work that dominates |
+|---|---|---|---|
+| Full target (ready for real work) | ~56% | ~1,450–2,600 (~70% parallelizes) | Plugin hosting, AI models, localization incl. RTL / Devanagari, camera RAW and delivery codecs, `.prproj`, hardware acceleration, UI fidelity |
+| Mainstream practitioner | ~55% | ~500–850 (~65% parallelizes) | `.prproj` import (60–120), UI fidelity (120–200), stability and PR CI (40–80), 10-bit / 4:2:2 camera decode (30–50), playback / hardware (60–100), import and export gaps (60–100) |
+| Essentials user | ~60% | ~180–350 (~60% parallelizes) | Launch crashes on Windows / Intel / older macOS (40–80), discoverability and timeline friction (60–110), playback lag (30–60), common import gaps (20–40), audio devices (15–30) |
+
+Method and calibration: [docs/target-app-parity.md](docs/target-app-parity.md#three-readiness-numbers).
+
 ## By dimension
 
 | Dimension | Ready | Hours | Doc |
@@ -150,6 +160,7 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-10 | minor | Readiness-by-audience table with hours to ~95% per audience |
 | 2026-10-10 | minor | Headline adds mainstream practitioner (~55%) and essentials user (~60%); ready for real work ~55% -> ~56% (formula written out, same inputs); beta distance ~19 points |
 | 2026-10-10 | minor | Stage banner links the core-workflow gate (all six workflows pass on macOS; stays alpha) |
 | 2026-10-10 | major | Restructured to the craftrules progress-docs shape: stage banner, headline numbers, dimension / feature / language tables, upcoming; re-measured against Premiere 26.5.2 (breadth ~87 → ~86%, ready ~50–60% → ~55%); honest assessment and scorecard moved to docs/target-app-parity.md, "Where we are lacking" to docs/gaps.md, milestones to docs/roadmap.md, interface localization to docs/localization-parity.md |
