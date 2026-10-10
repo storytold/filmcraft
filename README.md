@@ -342,6 +342,21 @@ Remove-Item Env:WGPU_BACKEND                     # restore the default for later
 An explicit `gl` override can bring the driver crash back on affected systems. The macOS, Linux
 and web backend defaults are unchanged.
 
+A PC whose GPUs were installed from different driver packages (a laptop with an integrated and a
+discrete AMD GPU, each bringing its own Vulkan driver) lists one GPU twice, and drawing through the
+stale entry crashes inside the driver (`amdvlk64.dll`, exit code `0xc0000005`) as the window opens.
+FilmCraft draws with the entry that exposes the most features, the newer driver, and notes the
+duplicate in `%APPDATA%\FilmCraft\Logs\filmcraft.log`; installing one driver package for all GPUs
+removes it. Nothing is tied to one GPU or driver version: with one driver per GPU the choice is
+wgpu's usual one. `WGPU_ADAPTER_NAME` (part of the adapter's name, backend or driver text as the log
+writes them, any case) picks an adapter by hand:
+
+```powershell
+$env:WGPU_ADAPTER_NAME = "Radeon(TM) Graphics"   # draw with the integrated GPU
+& .\filmcraft.exe
+Remove-Item Env:WGPU_ADAPTER_NAME
+```
+
 ### macOS
 
 | Build | File | Notes |
