@@ -17,6 +17,8 @@ whisper = ["filmcraft-speech/whisper"]
 speech-download = ["filmcraft-speech/download"]
 # Whisper on the Apple GPU (candle Metal, macOS); falls back to the CPU at run time.
 speech-metal = ["whisper", "filmcraft-speech/metal"]
+# Natural voices for Text to Speech: Kokoro-82M on candle (CPU) and their download.
+neural-voices = ["filmcraft-tts/kokoro", "speech-download"]
 
 [dependencies]
 filmcraft-time = { workspace = true }
@@ -37,6 +39,7 @@ filmcraft-format = { workspace = true }
 filmcraft-interchange = { workspace = true }
 filmcraft-captions = { workspace = true }
 filmcraft-speech = { workspace = true }
+filmcraft-tts = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

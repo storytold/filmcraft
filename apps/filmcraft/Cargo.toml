@@ -16,9 +16,16 @@ default = []
 whisper = ["filmcraft-engine/whisper", "filmcraft-engine/speech-download"]
 # Speech-to-text on the Apple GPU (macOS; the CPU remains the fallback).
 metal = ["whisper", "filmcraft-engine/speech-metal"]
+# Natural Text to Speech voices (Kokoro-82M on the CPU, downloaded on first use).
+neural-voices = ["filmcraft-engine/neural-voices"]
 
 [dependencies]
 filmcraft-engine = { workspace = true }
+filmcraft-export = { workspace = true }
+filmcraft-project = { workspace = true }
+filmcraft-render = { workspace = true }
+filmcraft-time = { workspace = true }
+filmcraft-gpu = { workspace = true }
 filmcraft-ui-egui = { workspace = true }
 filmcraft-platform = { workspace = true }
 egui = { workspace = true }
@@ -29,6 +36,9 @@ rfd = { workspace = true }
 cpal = "0.16"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 sys-locale = "0.3"
+
+[dev-dependencies]
+glob = "0.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = "0.21"

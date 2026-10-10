@@ -28,6 +28,9 @@ mod args;
 mod audio;
 mod audio_in;
 mod control_server;
+#[cfg(target_os = "linux")]
+mod dev_icon;
+mod file_filters;
 #[cfg(any(target_os = "windows", test))]
 mod graphics;
 mod logging;
@@ -107,12 +110,15 @@ fn main() -> eframe::Result {
         }
     }
     app_nap::disable();
+    #[cfg(target_os = "linux")]
+    dev_icon::ensure_dev_desktop_entry();
     // Panics anywhere go to <data dir>/Logs/crash-<day>.log with a backtrace; the UI pass and
     // frame workers catch them and keep running (see filmcraft_ui_egui::crash).
     filmcraft_ui_egui::crash::install(log_dir);
     // OS hardware video decoders (VideoToolbox on macOS) in front of our own; Settings ▸ Playback ▸
     // Hardware decoding switches them off. Unsupported streams and failures use our decoders.
     register_hardware_decoders();
+    register_gpu_frame_renderer();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("FilmCraft")
@@ -199,7 +205,7 @@ fn main() -> eframe::Result {
             app.audio = Some(Box::new(audio::CpalOut::new()));
             app.hooks.pick_files = Some(Box::new(|exts: &[&str]| {
                 rfd::FileDialog::new()
-                    .add_filter(filmcraft_ui_egui::i18n::t("Media"), exts)
+                    .add_filter(filmcraft_ui_egui::i18n::t("Media"), &file_filters::extensions(exts))
                     .pick_files()
                     .unwrap_or_default()
                     .into_iter()
@@ -208,18 +214,21 @@ fn main() -> eframe::Result {
             }));
             // Link Media ▸ Locate…, Attach Proxies, Reconnect Full Resolution: one path, not imported.
             app.hooks.pick_file_for_relink = Some(Box::new(|exts: &[&str], _hint| {
-                rfd::FileDialog::new().add_filter(filmcraft_ui_egui::i18n::t("Media"), exts).pick_file().map(|p| p.to_string_lossy().to_string())
+                rfd::FileDialog::new()
+                    .add_filter(filmcraft_ui_egui::i18n::t("Media"), &file_filters::extensions(exts))
+                    .pick_file()
+                    .map(|p| p.to_string_lossy().to_string())
             }));
             app.hooks.pick_save = Some(Box::new(|name: &str| {
                 rfd::FileDialog::new()
-                    .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &["fcproj"])
+                    .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &file_filters::extensions(&["fcproj"]))
                     .set_file_name(name)
                     .save_file()
                     .map(|p| p.to_string_lossy().to_string())
             }));
             app.hooks.pick_save_as = Some(Box::new(|filter: &str, exts: &[&str], name: &str| {
                 rfd::FileDialog::new()
-                    .add_filter(filmcraft_ui_egui::i18n::t(filter), exts)
+                    .add_filter(filmcraft_ui_egui::i18n::t(filter), &file_filters::extensions(exts))
                     .set_file_name(name)
                     .save_file()
                     .map(|p| p.to_string_lossy().to_string())
@@ -238,11 +247,14 @@ fn main() -> eframe::Result {
                 window_raise::raise_without_focus();
             }));
             app.hooks.pick_open_file = Some(Box::new(|filter: &str, exts: &[&str]| {
-                rfd::FileDialog::new().add_filter(filmcraft_ui_egui::i18n::t(filter), exts).pick_file().map(|p| p.to_string_lossy().to_string())
+                rfd::FileDialog::new()
+                    .add_filter(filmcraft_ui_egui::i18n::t(filter), &file_filters::extensions(exts))
+                    .pick_file()
+                    .map(|p| p.to_string_lossy().to_string())
             }));
             app.hooks.pick_open_project = Some(Box::new(|| {
                 rfd::FileDialog::new()
-                    .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &["fcproj"])
+                    .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &file_filters::extensions(&["fcproj"]))
                     .pick_file()
                     .map(|p| p.to_string_lossy().to_string())
             }));
@@ -302,6 +314,30 @@ fn open_path(path: &str, reveal: bool) -> Result<(), String> {
         c
     };
     cmd.spawn().map(|_| ()).map_err(|e| format!("can't open {path}: {e}"))
+}
+
+/// The GPU export frame renderer (filmcraft-gpu's off-screen compositor behind filmcraft-export's
+/// frame-renderer hook): exports with GPU rendering Auto composite on the GPU and fall back to the
+/// CPU reference renderer wherever it cannot.
+struct GpuFrameRenderer(filmcraft_gpu::ExportRenderer);
+
+impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
+    fn render(
+        &mut self,
+        project: &filmcraft_project::Project,
+        seq: filmcraft_project::ItemId,
+        t: filmcraft_time::Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn filmcraft_render::SourceProvider,
+    ) -> Option<filmcraft_render::Image> {
+        self.0.render(project, seq, t, opts, sources)
+    }
+}
+
+fn register_gpu_frame_renderer() {
+    filmcraft_export::register_frame_renderer(|| {
+        filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(GpuFrameRenderer(r)) as Box<dyn filmcraft_export::FrameRenderer>)
+    });
 }
 
 /// Put the OS hardware video decoders in front of our own. Registered in a statement of its own:

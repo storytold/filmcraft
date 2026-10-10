@@ -21,13 +21,17 @@ metal = ["whisper", "filmcraft-engine/speech-metal"]
 
 [dependencies]
 filmcraft-engine = { workspace = true }
+filmcraft-export = { workspace = true }
+filmcraft-project = { workspace = true }
+filmcraft-render = { workspace = true }
+filmcraft-time = { workspace = true }
+filmcraft-gpu = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-codecs = { workspace = true }
 filmcraft-platform = { workspace = true }
 filmcraft-mxf = { workspace = true }
 filmcraft-mpegts = { workspace = true }
 filmcraft-ogg = { workspace = true }
-filmcraft-time = { workspace = true }
 filmcraft-automation = { workspace = true }
 serde_json = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

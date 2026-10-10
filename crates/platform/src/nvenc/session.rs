@@ -416,9 +416,11 @@ impl Session {
                     vui.colourPrimaries = u32::from(p.signal.primaries);
                     vui.transferCharacteristics = u32::from(p.signal.transfer);
                     vui.colourMatrix = u32::from(p.signal.matrix);
-                    vui.timingInfoPresentFlag = 1;
-                    vui.numUnitInTicks = p.fps.1;
-                    vui.timeScale = p.fps.0;
+                    // Let NVENC derive timing from frameRateNum/frameRateDen. Some drivers
+                    // reverse the explicitly supplied HEVC VUI timing pair.
+                    vui.timingInfoPresentFlag = 0;
+                    vui.numUnitInTicks = 0;
+                    vui.timeScale = 0;
                 }
             }
 

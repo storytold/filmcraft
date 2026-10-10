@@ -263,15 +263,22 @@ pub type DownloadProgress<'a> = &'a mut dyn FnMut(u64, u64, &str) -> bool;
 /// verifier.
 #[cfg(feature = "download")]
 pub fn download(models_dir: &Path, m: &ModelInfo, progress: DownloadProgress) -> Result<(), crate::SpeechError> {
+    download_files(&model_dir(models_dir, m), m.files, progress)
+}
+
+/// [`download`] for any pinned file list (the neural voices use it too): missing files of
+/// `files` go into `dir`, each verified against its SHA-256 and size before it is renamed into
+/// place.
+#[cfg(feature = "download")]
+pub fn download_files(dir: &Path, files: &[ModelFile], progress: DownloadProgress) -> Result<(), crate::SpeechError> {
     use crate::SpeechError;
     use sha2::Digest;
     use std::io::{Read, Write};
-    let dir = model_dir(models_dir, m);
-    std::fs::create_dir_all(&dir)?;
-    let total = missing_bytes(models_dir, m);
+    std::fs::create_dir_all(dir)?;
+    let total: u64 = files.iter().filter(|f| !std::fs::metadata(dir.join(f.name)).is_ok_and(|md| md.len() == f.size)).map(|f| f.size).sum();
     let agent = agent();
     let mut done = 0u64;
-    for f in m.files {
+    for f in files {
         let dest = dir.join(f.name);
         if std::fs::metadata(&dest).is_ok_and(|md| md.len() == f.size) {
             continue;
