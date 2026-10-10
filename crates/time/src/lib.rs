@@ -262,6 +262,44 @@ impl FrameRate {
         Tick(clamp_i64(if t - a <= b - t { a } else { b }))
     }
 
+    /// How far (either side) a time can be from a frame boundary and still count as on it: a
+    /// thousandth of a frame. Cuts made before `tick_of` rounded up (FilmCraft 0.4.0 and
+    /// earlier), or summed from rounded durations, sit a tick or two before the boundary of the
+    /// frame they belong to at rates whose frame is not a whole number of ticks (58.824 fps
+    /// screen recordings, 37.516 fps phone footage…).
+    pub fn boundary_slack(self) -> Tick {
+        Tick((self.frame_duration().0 / 1000).max(1))
+    }
+
+    /// The frame boundary `t` is on, when it is within [`FrameRate::boundary_slack`] of one.
+    fn near_boundary(self, t: Tick) -> Option<Tick> {
+        let f = self.frame_at(t);
+        let (a, b) = (self.tick_of(f), self.tick_of(f.saturating_add(1)));
+        let slack = self.boundary_slack().0;
+        if t.0.saturating_sub(a.0) <= slack {
+            Some(a)
+        } else if b.0.saturating_sub(t.0) <= slack {
+            Some(b)
+        } else {
+            None
+        }
+    }
+
+    /// Snap `t` down to a frame boundary (the frame that contains it), except that a time a hair
+    /// before a boundary counts as on it. The playhead parks here: a cut stored a tick before
+    /// frame 253 puts the playhead on 253, not on 252, the last frame of the outgoing clip.
+    pub fn snap_frame(self, t: Tick) -> Tick {
+        self.near_boundary(t).unwrap_or_else(|| self.snap(t))
+    }
+
+    /// Where the playhead goes for an edit point at `t`: the first frame that shows what comes
+    /// after the edit. That is the boundary at or after `t` (an edit part-way through a frame
+    /// leaves that frame showing what came before), with a time within
+    /// [`FrameRate::boundary_slack`] of a boundary counted as on it.
+    pub fn snap_edit(self, t: Tick) -> Tick {
+        self.near_boundary(t).unwrap_or_else(|| self.tick_of(self.frame_at(t).saturating_add(1)))
+    }
+
     /// Timecode base (frames counted per timecode second): 30 for 29.97, 24 for 23.976.
     pub fn timecode_base(self) -> i64 {
         let r = self.sane();
@@ -787,6 +825,46 @@ mod tests {
             let landed = r.frame_at(tick);
             assert_eq!(landed, target, "stepping backward to frame {target}");
             last = landed;
+        }
+    }
+
+    /// A 58.824 fps screen recording (7353/125) cut in FilmCraft 0.4.0, whose `tick_of` rounded
+    /// down: every cut sits one tick before its frame boundary. A plain floor snap parked the
+    /// playhead a whole frame before the cut (on the outgoing clip's last frame).
+    #[test]
+    fn edits_a_tick_before_a_boundary_count_as_on_it() {
+        let r = FrameRate::new(7353, 125);
+        // a real cut from such a project: the end of a clip at frame 253
+        let cut = Tick(1_092_514_075_887);
+        assert_eq!(r.tick_of(253), Tick(1_092_514_075_888));
+        assert_eq!(r.snap(cut), r.tick_of(252), "the plain floor lands a frame early");
+        assert_eq!(r.snap_frame(cut), r.tick_of(253));
+        assert_eq!(r.snap_edit(cut), r.tick_of(253));
+        // a tick after a boundary is on it too
+        assert_eq!(r.snap_frame(r.tick_of(253) + Tick(1)), r.tick_of(253));
+        assert_eq!(r.snap_edit(r.tick_of(253) + Tick(1)), r.tick_of(253));
+        for rate in [r, FrameRate::from_f64(37.516), FrameRate::FPS_29_97, FrameRate::FPS_24, FrameRate::FPS_60] {
+            let d = rate.frame_duration();
+            for f in [0i64, 1, 7, 253, 11_761] {
+                let b = rate.tick_of(f);
+                // boundaries are fixed points
+                assert_eq!(rate.snap_frame(b), b, "{rate} frame {f}");
+                assert_eq!(rate.snap_edit(b), b, "{rate} frame {f}");
+                // mid-frame: snap_frame keeps the frame, snap_edit goes to the next one
+                let mid = b + Tick(d.0 / 2);
+                assert_eq!(rate.snap_frame(mid), b, "{rate} mid frame {f}");
+                assert_eq!(rate.snap_edit(mid), rate.tick_of(f + 1), "{rate} mid frame {f}");
+                // the last tick of a frame is "on" the next boundary
+                let last = rate.tick_of(f + 1) - Tick(1);
+                assert_eq!(rate.snap_frame(last), rate.tick_of(f + 1), "{rate} last tick of {f}");
+            }
+        }
+        // hostile values never panic
+        for t in [i64::MIN, -1, 0, 1, i64::MAX] {
+            for rate in [r, FrameRate { num: 0, den: 0 }, FrameRate { num: -1, den: 7 }] {
+                let _ = rate.snap_frame(Tick(t));
+                let _ = rate.snap_edit(Tick(t));
+            }
         }
     }
 

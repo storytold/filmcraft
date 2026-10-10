@@ -198,7 +198,7 @@ fn essential_sound_panel_by_id_and_by_drag() {
     assert_eq!(c["settings"]["repair"]["noise"]["on"], true);
     assert!(c["effects"].as_array().unwrap().iter().any(|e| e["effect"] == "denoise"));
     let undo0 = d.exec("history.list", json!({}))["undo"].as_array().unwrap().len();
-    d.drag_x("essentialSound.repair.noise.amount", 0.5, 0.9, 6);
+    d.drag_x("essentialSound.repair.noise.amount.track", 0.5, 0.9, 6);
     let amt = es(&mut d, a1)["settings"]["repair"]["noise"]["amount"].as_f64().unwrap();
     assert!(amt > 8.0, "slider dragged to {amt}");
     assert_eq!(d.exec("history.list", json!({}))["undo"].as_array().unwrap().len(), undo0 + 1, "a drag is one undo step");

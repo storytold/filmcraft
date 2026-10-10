@@ -238,3 +238,28 @@ fn delete_key_clears_the_selected_timeline_clip() {
     d.key("Cmd+Z");
     assert!(items(&mut d).iter().any(|i| i["clip"].as_u64() == Some(clip)), "and undo brings it back");
 }
+
+/// The Text panel kept its caret from before an edit: with a shorter transcript afterwards, the
+/// arrow keys indexed past its words and panicked.
+#[test]
+fn transcript_arrow_keys_survive_a_shorter_transcript() {
+    let mut d = Driver::new();
+    let clip = d.exec("sequence.inspect", json!({}))["audio"][0]["items"][0].clone();
+    let (item, src) = (clip["item"].as_u64().unwrap(), clip["sourceIn"].as_i64().unwrap());
+    // words a tenth of a second apart from the clip's In point
+    let words = |n: i64| {
+        let w: Vec<Value> =
+            (0..n).map(|i| json!({"text": format!("w{i}"), "start": src + i * 25_401_600_000, "end": src + i * 25_401_600_000 + 20_000_000_000})).collect();
+        json!({"language": "en", "words": w})
+    };
+    d.exec("transcript.set", json!({"item": item, "transcript": words(20)}));
+    d.ok("ui.menu.invoke", json!({"id": "textPanel.showProgramTranscript"}));
+    for _ in 0..15 {
+        d.ok("ui.menu.invoke", json!({"id": "textPanel.nextWord"}));
+    }
+    assert_eq!(d.app().ui.transcript_sel, Some((15, 15)), "the caret is on word 15 of 20");
+    d.exec("transcript.set", json!({"item": item, "transcript": words(3)}));
+    for op in ["prevWord", "nextWord", "selectPrevWord", "selectNextWord", "segmentStart", "segmentEnd", "selectToSegmentEnd", "prevLine", "nextLine"] {
+        d.ok("ui.menu.invoke", json!({"id": format!("textPanel.{op}")}));
+    }
+}

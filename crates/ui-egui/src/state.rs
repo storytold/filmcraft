@@ -430,6 +430,22 @@ pub struct UiState {
     /// Text panel ▸ Transcript: search text.
     #[serde(default)]
     pub transcript_search: String,
+    /// Text panel ▸ Transcript: the search filter, as Premiere's filter icon offers it
+    /// (`text` = Transcript text, `fillers` = Filler words, `pauses` = Pauses).
+    #[serde(default = "text_filter")]
+    pub transcript_filter: String,
+    /// The current search result (the ▲ ▼ arrows step through them; Delete removes it).
+    #[serde(default)]
+    pub transcript_hit: usize,
+    /// Delete / Delete all lift (leave gaps) instead of extracting (closing them).
+    #[serde(default)]
+    pub transcript_lift: bool,
+    /// The pause clicked in the transcript (index into the transcript's pauses).
+    #[serde(default)]
+    pub transcript_pause: Option<usize>,
+    /// The Transcribe options (shown when Some).
+    #[serde(default)]
+    pub transcribe_dialog: Option<TranscribeDraft>,
     /// Preferences ▸ Playback: play the rendered range when a preview render finishes.
     #[serde(default = "yes")]
     pub play_after_render: bool,
@@ -875,6 +891,25 @@ fn captions_tab() -> String {
     "Captions".into()
 }
 
+fn text_filter() -> String {
+    "text".into()
+}
+
+/// The Transcribe options (Premiere's "Create transcription" dialog: language, speaker labeling).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TranscribeDraft {
+    /// ISO 639-1 code, or `auto` to detect it.
+    pub language: String,
+    /// Separate speakers (off: one speaker, as for a solo voice-over).
+    pub speakers: bool,
+}
+
+impl Default for TranscribeDraft {
+    fn default() -> Self {
+        Self { language: "en".into(), speakers: false }
+    }
+}
+
 fn yes() -> bool {
     true
 }
@@ -911,6 +946,11 @@ impl Default for UiState {
             caption_search: String::new(),
             transcript_sel: None,
             transcript_search: String::new(),
+            transcript_filter: text_filter(),
+            transcript_hit: 0,
+            transcript_lift: false,
+            transcript_pause: None,
+            transcribe_dialog: None,
             play_after_render: true,
             mixer_fx_open: false,
             mixer_hidden: Vec::new(),

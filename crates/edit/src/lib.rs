@@ -284,11 +284,24 @@ pub fn razor(seq: &mut Sequence, tracks: &[TrackId], t: Tick, ctx: &mut EditCtx)
         if tr.locked || (!tracks.is_empty() && !tracks.contains(&tr.id)) {
             continue;
         }
+        if !cuts_cleanly(tr, t) {
+            continue;
+        }
         if let Some(id) = split_track_at(tr, t, ctx, &mut links) {
             out.push(id);
         }
     }
     out
+}
+
+/// A razor cut closer than this to a clip's edge would leave a sliver nobody asked for: a cut
+/// on a frame boundary through a clip whose edge was stored a tick or two before that boundary
+/// (older projects at rates whose frame is not a whole number of ticks). The cut is skipped.
+pub const MIN_RAZOR_PIECE: Tick = Tick(8);
+
+/// Whether a razor cut at `t` splits the clip under it into two real pieces.
+fn cuts_cleanly(track: &Track, t: Tick) -> bool {
+    track.item_at(t).is_some_and(|i| t - i.start >= MIN_RAZOR_PIECE && i.end() - t >= MIN_RAZOR_PIECE)
 }
 
 /// Razor only the given items (and their linked partners if listed) at `t`.
@@ -302,6 +315,7 @@ pub fn razor_items(seq: &mut Sequence, items: &[ClipId], t: Tick, ctx: &mut Edit
         }
         // only split if the item at t is one of ours
         if tr.item_at(t).is_some_and(|i| items.contains(&i.id))
+            && cuts_cleanly(tr, t)
             && let Some(id) = split_track_at(tr, t, ctx, &mut links)
         {
             out.push(id);
@@ -443,6 +457,53 @@ pub fn ripple_delete_items(seq: &mut Sequence, items: &[ClipId]) -> Result<Vec<T
     }
     *seq = work;
     Ok(spans)
+}
+
+/// The gap on a track at `t`: the empty time from the end of the clip before `t` (or the start
+/// of the sequence) to the start of the first clip after it. None when a clip covers `t` or no
+/// clip follows (the empty time after the last clip is not a gap).
+pub fn gap_at(track: &Track, t: Tick) -> Option<TimeRange> {
+    if t < Tick::ZERO || track.item_at(t).is_some() {
+        return None;
+    }
+    let prev_end = track.items.iter().map(|i| i.end()).filter(|e| *e <= t).max().unwrap_or(Tick::ZERO);
+    let next_start = track.items.iter().map(|i| i.start).filter(|s| *s > t).min()?;
+    (next_start > prev_end).then(|| TimeRange::from_bounds(prev_end, next_start))
+}
+
+/// Close `range` on `tracks` (Ripple Delete on selected gaps): each of those tracks must be
+/// empty over `range`. The material after the range moves left by its length on them and on
+/// the other sync-locked tracks, which must be empty over the range too. Locked tracks stay.
+pub fn close_gap_range(seq: &mut Sequence, tracks: &[TrackId], range: TimeRange) -> Result<()> {
+    if range.duration <= Tick::ZERO || tracks.is_empty() {
+        return Err(EditError::Nothing);
+    }
+    for id in tracks {
+        let tr = seq.track(*id).ok_or(EditError::NoTrack(*id))?;
+        if !track_range_empty(tr, range) {
+            return Err(EditError::Other(format!("{} has a clip in the gap", track_label(seq, *id))));
+        }
+    }
+    if tracks.iter().all(|id| seq.track(*id).is_some_and(|tr| tr.locked)) {
+        return Err(EditError::Locked);
+    }
+    let mut work = seq.clone();
+    for tr in work.all_tracks_mut() {
+        if tr.locked {
+            continue;
+        }
+        if !tracks.contains(&tr.id) {
+            if !tr.sync_lock {
+                continue;
+            }
+            if !track_range_empty(tr, range) {
+                return Err(EditError::SyncLockConflict(track_label(seq, tr.id)));
+            }
+        }
+        shift_track_from(tr, range.end(), -range.duration);
+    }
+    *seq = work;
+    Ok(())
 }
 
 /// Close the gap containing `t` on a track (Ripple Delete on a gap).

@@ -1,5 +1,10 @@
 //! The vertical Tools panel. Grouped tools show a small flyout triangle; right-click (or long
 //! press) opens the group to pick another tool.
+//!
+//! Automation ids: `tools.<Tool>` is the button of the tool a group shows (a click selects
+//! exactly that tool; the group's other tools have no button of their own), `tools.group.<first
+//! tool of the group>` the same button whatever it shows (right-click it to open the flyout), and
+//! while the flyout is open `tools.select.<Tool>` for each of the group's tools.
 
 use egui::{Rect, Sense, pos2, vec2};
 
@@ -24,8 +29,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             format!("{} ({})", app.ui.language.tr(current.label()), current.shortcut())
         };
         let resp = ui.interact(r, egui::Id::new(("tool", format!("{:?}", group[0]))), Sense::click()).on_hover_text(tip);
-        for tl in &group {
-            app.auto.add(&format!("tools.{tl:?}"), r, tl.label());
+        // only the tool the button shows: a click there selects it, not another tool of the group
+        app.auto.add(&format!("tools.{current:?}"), r, current.label());
+        if group.len() > 1 {
+            app.auto.add(&format!("tools.group.{:?}", group[0]), r, current.label());
         }
         let active = group.contains(&app.ui.tool);
         if active {

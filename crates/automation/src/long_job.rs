@@ -14,15 +14,23 @@ use serde_json::{Value, json};
 
 use crate::server::FilmcraftMcp;
 
-/// Engine commands that block until a render is written when called with `wait: true`.
-pub const LONG_COMMANDS: &[&str] = &["file.exportMedia"];
+/// Engine commands that block until a render is written (or a transcription is done) when called
+/// with `wait: true`.
+pub const LONG_COMMANDS: &[&str] = &["file.exportMedia", "transcript.generate", "transcript.findPauses"];
+
+/// Long commands that wait unless told `wait: false` (the engine's own default for them).
+const WAIT_BY_DEFAULT: &[&str] = &["transcript.generate", "transcript.findPauses"];
 
 /// How often the job is polled (and at most how often progress is reported).
 const POLL: Duration = Duration::from_millis(100);
 
 /// Whether `command_run {id, params}` is a long call this module runs.
 pub fn is_long(id: &str, params: &Value) -> bool {
-    LONG_COMMANDS.contains(&id) && params.get("wait").and_then(Value::as_bool) == Some(true)
+    LONG_COMMANDS.contains(&id)
+        && match params.get("wait").and_then(Value::as_bool) {
+            Some(w) => w,
+            None => WAIT_BY_DEFAULT.contains(&id),
+        }
 }
 
 /// Sends `notifications/progress` for one request; progress only ever increases.
@@ -74,7 +82,8 @@ impl FilmcraftMcp {
             if finished {
                 let result = state.map(|j| j["result"].clone()).unwrap_or(Value::Null);
                 if let Some(e) = result.get("error").and_then(Value::as_str) {
-                    return CallToolResult::error(vec![Content::text(format!("export failed: {e}"))]);
+                    let what = if id == "file.exportMedia" { "export" } else { id };
+                    return CallToolResult::error(vec![Content::text(format!("{what} failed: {e}"))]);
                 }
                 let mut out = start;
                 if let Some(o) = out.as_object_mut() {

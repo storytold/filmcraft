@@ -59,6 +59,31 @@ pub fn hot_number(ui: &mut Ui, id: egui::Id, value: f64, speed: f64, range: (f64
     (resp, out)
 }
 
+/// The part of `r` a click can reach: `r` clipped to the ui's visible area, or `None` when its centre
+/// is scrolled out of view (an entry of a long dropdown list). Register an automation id with it so
+/// `ui.click` never presses whatever lies under a hidden entry.
+pub fn visible(ui: &Ui, r: Rect) -> Option<Rect> {
+    let clip = ui.clip_rect();
+    clip.contains(r.center()).then(|| r.intersect(clip))
+}
+
+/// The title-bar close button (×) of an `egui::Window` with a close button (`.open(&mut open)`),
+/// from the window's outer rect (its response rect; for a window whose content outgrows its
+/// `fixed_size`, the rect its title bar spans: that size from the window's left edge) and its
+/// frame's inner margin (`None`: the default window frame), as egui lays the title bar out: the
+/// button is the last item of the title row, a heading-line-high square inside the frame's margin
+/// and stroke. Register an automation id on it so `ui.click` closes the window as the mouse does.
+pub fn window_close_rect(ctx: &egui::Context, window: Rect, margin: Option<egui::Margin>) -> Rect {
+    let style = ctx.global_style();
+    let m = margin.unwrap_or(style.spacing.window_margin);
+    let stroke = style.visuals.window_stroke.width;
+    let h = ctx.fonts_mut(|f| f.row_height(&egui::TextStyle::Heading.resolve(&style)));
+    let icon = style.spacing.icon_width;
+    let c = pos2(window.max.x - stroke - f32::from(m.right) - h / 2.0, window.min.y + stroke + f32::from(m.top) + h / 2.0);
+    Rect::from_center_size(c, vec2(icon, icon))
+}
+
+
 /// A large blue timecode readout (monitors/timeline) that moves its playhead: drag horizontally to
 /// scrub (1 frame per point, Shift ×10), click to type a time (Enter or clicking away commits,
 /// Escape cancels). Returns the time to go to (never before `min`), or why a typed time is invalid.

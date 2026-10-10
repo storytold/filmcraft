@@ -58,6 +58,10 @@ echo "==> FilmCraft $VERSION for macOS ($ARCH), identity: $IDENTITY, notarize: $
 if [ "$SKIP_BUILD" = 0 ]; then
   args=()
   for t in "${TARGETS[@]}"; do args+=(--target "$t"); done
+  # Speech-to-text (Text panel ▸ Transcribe) with Whisper on the Apple GPU, CPU as the fallback.
+  # FILMCRAFT_FEATURES="" builds without it.
+  features="${FILMCRAFT_FEATURES-filmcraft/metal,filmcraft-cli/metal}"
+  [ -n "$features" ] && args+=(--features "$features")
   (cd "$ROOT" && cargo build --release --locked -p filmcraft -p filmcraft-cli "${args[@]}")
 fi
 
@@ -102,6 +106,9 @@ echo "==> assembling $APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 # Executable and icon carry the display name (CFBundleExecutable / CFBundleIconFile).
 cp "$WORK/bin/filmcraft" "$APP/Contents/MacOS/FilmCraft"
+# The CLI and MCP server ride along, so an agent always has the one matching this app:
+# FilmCraft.app/Contents/MacOS/filmcraft-cli mcp --bridge 127.0.0.1:9876 (it starts the app itself).
+cp "$WORK/bin/filmcraft-cli" "$APP/Contents/MacOS/filmcraft-cli"
 cp "$ROOT/assets/app-icon/filmcraft.icns" "$APP/Contents/Resources/FilmCraft.icns"
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHORT_VERSION@/$SHORT_VERSION/g" \
   -e "s/@BUILD_SHA@/${FILMCRAFT_BUILD_SHA:-unknown}/g" \
@@ -112,7 +119,8 @@ printf 'APPL????' >"$APP/Contents/PkgInfo"
 copy_font_licences "$APP/Contents/Resources"
 
 # Sign inside-out: nested code first, then the bundle itself (no --deep on the final signature).
-# Today the only nested code is the main executable; frameworks/helpers would be signed here too.
+# The nested code is the main executable and the CLI; frameworks/helpers would be signed here too.
+sign --options runtime "$APP/Contents/MacOS/filmcraft-cli"
 sign --options runtime --entitlements "$HERE/entitlements.plist" "$APP/Contents/MacOS/FilmCraft"
 sign --options runtime --entitlements "$HERE/entitlements.plist" "$APP"
 codesign --verify --strict --deep --verbose=2 "$APP"

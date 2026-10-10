@@ -148,7 +148,8 @@ impl Backend {
             if a.opt("--project").is_some() || a.flag("--demo") {
                 usage("--bridge drives the running app; open projects there (exec file.open path=…)");
             }
-            return Backend::Bridge(BridgeClient::new(addr).unwrap_or_else(|e| usage(e)));
+            let client = BridgeClient::new(addr).unwrap_or_else(|e| usage(e));
+            return Backend::Bridge(client.with_launcher(filmcraft_automation::bridge::default_app()));
         }
         let mut s = Session::default();
         // user export presets (and other per-user libraries) from the data directory

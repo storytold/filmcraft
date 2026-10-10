@@ -73,10 +73,14 @@ fn edits_on(seq: &Sequence, tracks: Option<&[TrackId]>) -> Vec<Tick> {
 /// none is targeted) or on any track.
 pub fn go_to_edit(s: &mut Session, next: bool, any: bool) -> Result<Value> {
     let t = s.playhead();
+    let rate = s.sequence_rate();
     let tg = s.targeting().targeted;
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let only = (!any && !tg.is_empty()).then_some(tg.as_slice());
-    let edits = edits_on(seq, only);
+    // each edit where the playhead parks for it: the first frame after the cut (a cut stored a
+    // tick before a frame boundary is on it, not a frame earlier on the outgoing clip)
+    let mut edits: Vec<Tick> = edits_on(seq, only).into_iter().map(|e| rate.snap_edit(e)).collect();
+    edits.dedup();
     let e = if next { edits.into_iter().find(|e| *e > t) } else { edits.into_iter().rev().find(|e| *e < t) };
     if let Some(e) = e {
         s.set_playhead(e);
@@ -94,9 +98,11 @@ fn selected_span(s: &Session) -> Option<(Tick, Tick)> {
 
 fn go_to_selected(s: &mut Session, end: bool) -> Result<Value> {
     let (a, b) = selected_span(s).ok_or_else(|| EngineError::Other("no clips selected".into()))?;
+    let rate = s.sequence_rate();
+    let first = rate.snap_edit(a);
     // Premiere parks on the clip's last frame for End (the frame before the Out edge)
-    let t = if end { b - s.sequence_rate().frame_duration() } else { a };
-    s.set_playhead(t.max(a));
+    let t = if end { rate.tick_of(rate.frame_at(rate.snap_edit(b)).saturating_sub(1)) } else { first };
+    s.set_playhead(t.max(first));
     Ok(json!({"time": s.playhead().0}))
 }
 
@@ -125,11 +131,19 @@ fn reveal_nested(s: &mut Session) -> Result<Value> {
 
 // ------------------------------------------------------------------ selection
 
+/// Select Clip at Playhead (D): the clips under the playhead on the targeted tracks. With the
+/// playhead in a gap on all of them, the gap is selected instead, so Delete closes it.
 fn select_clip_at_playhead(s: &mut Session) -> Result<Value> {
-    let t = s.playhead();
+    let t = crate::gaps::probe(s, s.playhead());
     let tg = s.targeting().targeted;
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let ids: Vec<ClipId> = seq.all_tracks().filter(|tr| tg.contains(&tr.id)).filter_map(|tr| tr.item_at(t).map(|i| i.id)).collect();
+    if ids.is_empty() {
+        let mut r = crate::gaps::select_gaps_at_playhead(s);
+        r["selection"] = json!([]);
+        return Ok(r);
+    }
+    s.state.gap_selection.clear();
     s.state.selection = with_links(s, &ids);
     s.state.edit_points.clear();
     s.state.caption_selection.clear();

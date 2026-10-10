@@ -167,6 +167,22 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
 }
 
 /// Execute a UI or engine command by id.
+/// Menu items and shortcuts that open a dialog in the UI rather than run straight away: Sequence ▸
+/// Transcribe Sequence… and Transcript ▸ Transcribe… open the Text panel's Transcribe options
+/// (language, speakers, the model download), as Premiere's menu opens its dialog. The commands
+/// themselves (control channel, MCP, CLI) still run directly.
+pub(crate) fn open_dialog_for(app: &mut FilmcraftApp, id: &str) -> bool {
+    if !matches!(id, "sequence.transcribe" | "transcript.generate") || app.session.active_sequence().is_none() {
+        return false;
+    }
+    app.show_panel(PanelKind::Text);
+    app.ui.text_tab = "Transcript".into();
+    if filmcraft_engine::transcript::sequence_words(&app.session).is_empty() {
+        app.ui.transcribe_dialog = Some(Default::default());
+    }
+    true
+}
+
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
     if filmcraft_engine::source_monitor::source_command(id) && targets_source(app, &params) && params.get("target").is_none() {
         let object = params.as_object_mut().ok_or("command parameters must be an object")?;
@@ -714,12 +730,17 @@ pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
     v
 }
 
-/// Draw the in-window menu bar.
+/// Automation elements of the menu bar: `(id, rect, label)`.
+type MenuElems = Vec<(String, egui::Rect, String)>;
+
+/// Draw the in-window menu bar. Automation ids: `menu.<Top>` opens a menu, `menu.<Top>.<Sub>…` a
+/// submenu (path segments as shown in English), `menu.item.<command id>` runs an item.
 pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("interface-language"), app.ui.language));
     let items = menu_items(app);
     let ctx = ui.ctx().clone();
     let mut clicked: Option<String> = None;
+    let mut elems = MenuElems::new();
     egui::MenuBar::new().config(egui::containers::menu::MenuConfig::new().style(crate::theme::menu_style)).ui(ui, |ui| {
         for top in MENUS {
             let mine: Vec<&MenuItem> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(top)).collect();
@@ -733,7 +754,9 @@ pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             app.auto.add(&format!("menu.{top}"), r.response.rect, top);
         }
     });
-    if let Some(id) = clicked {
+    if let Some(id) = clicked
+        && !open_dialog_for(app, &id)
+    {
         let _ = invoke(app, &ctx, &id, json!({}));
     }
 }

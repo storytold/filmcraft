@@ -265,7 +265,13 @@ fn main() -> eframe::Result {
                 app.hooks.shortcuts_changed = Some(update);
                 app.ui.show_menu_bar = false;
             }
-            if let Some(port) = control_port {
+            // `--control` / FILMCRAFT_CONTROL_PORT, else Settings ▸ Agents ▸ "Let AI agents control
+            // FilmCraft" (so the app opened from the Finder or the Dock is reachable too)
+            let from_prefs = {
+                let a = &app.session.prefs.agents;
+                a.control_server.then_some(a.control_port)
+            };
+            if let Some(port) = control_port.or(from_prefs) {
                 let rx = control_server::start(port, cc.egui_ctx.clone());
                 app = app.with_control(rx);
             }

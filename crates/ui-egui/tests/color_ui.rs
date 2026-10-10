@@ -257,9 +257,9 @@ fn hdr_lumetri_controls_hsl_refine_and_comparison_view() {
     d.click("lumetri.section.Curves");
     assert!(!d.ids("lumetri.param.curves_hdr_range").is_empty());
     d.snapshot("color-lumetri-hdr", None);
-    // clicking on the HDR White slider sets it (an undoable engine edit)
-    let r = d.element("lumetri.param.hdr_white").unwrap();
-    d.ok("ui.click", json!({"x": r[0] + 112.0 + 4.0, "y": r[1] + r[3] / 2.0}));
+    // clicking on the HDR White slider's track sets it (an undoable engine edit)
+    let r = d.element("lumetri.param.hdr_white.track").unwrap();
+    d.ok("ui.click", json!({"x": r[0] + 4.0, "y": r[1] + r[3] / 2.0}));
     d.frames(3);
     let e = lumetri(&mut d, clip);
     assert_ne!(e["params"]["hdr_white"]["value"], json!("Float(1000.0)"), "{e}");

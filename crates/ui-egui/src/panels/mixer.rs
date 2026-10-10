@@ -241,7 +241,7 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if show_hide {
         let mut open = true;
         let mut close = false;
-        egui::Window::new(tl!("Show/Hide Tracks")).id(egui::Id::new("mixer-show-hide")).collapsible(false).resizable(false).open(&mut open).show(
+        let w = egui::Window::new(tl!("Show/Hide Tracks")).id(egui::Id::new("mixer-show-hide")).collapsible(false).resizable(false).open(&mut open).show(
             ui.ctx(),
             |ui| {
                 for id in seq.audio_tracks.iter().chain(&seq.submix_tracks).map(|t| t.id) {
@@ -272,6 +272,9 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 });
             },
         );
+        if let Some(w) = w {
+            app.auto.add("mixer.showHide.close", crate::widgets::window_close_rect(ui.ctx(), w.response.rect, None), "Close");
+        }
         show_hide = open && !close;
     }
     ui.data_mut(|d| d.insert_temp(show_hide_id, show_hide));

@@ -73,6 +73,12 @@ pub struct Transcript {
     pub speakers: Vec<Speaker>,
     /// Words in time order, non-overlapping.
     pub words: Vec<Word>,
+    /// Where the recording has voice, as `(start, end)` media times measured from the waveform when
+    /// it was transcribed (sorted, non-overlapping). The gaps between them are the pauses the Text
+    /// panel shows and Delete removes. Empty for transcripts made without the audio (imported, or
+    /// from before voice analysis): their pauses are the gaps between words.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub voice: Vec<(Tick, Tick)>,
 }
 
 impl Transcript {
@@ -114,6 +120,17 @@ impl Transcript {
                 self.words[i - 1].end = s.max(self.words[i - 1].start);
             }
         }
+        // voice spans: positive, sorted, overlapping or touching ones merged
+        self.voice.retain(|(a, b)| b > a);
+        self.voice.sort_unstable();
+        let mut merged: Vec<(Tick, Tick)> = Vec::with_capacity(self.voice.len());
+        for (a, b) in std::mem::take(&mut self.voice) {
+            match merged.last_mut() {
+                Some(last) if a <= last.1 => last.1 = last.1.max(b),
+                _ => merged.push((a, b)),
+            }
+        }
+        self.voice = merged;
         let max = self.words.iter().filter_map(|w| w.speaker).max();
         if let Some(m) = max {
             while self.speakers.len() <= m as usize {
@@ -136,6 +153,14 @@ impl Transcript {
                 && s as usize >= self.speakers.len()
             {
                 return Err(format!("word {i} has speaker {s}, but there are {} speakers", self.speakers.len()));
+            }
+        }
+        for (i, (a, b)) in self.voice.iter().enumerate() {
+            if b <= a {
+                return Err(format!("voice span {i} is empty or reversed"));
+            }
+            if i > 0 && self.voice[i - 1].1 >= *a {
+                return Err(format!("voice span {i} overlaps or touches the one before it"));
             }
         }
         Ok(())
@@ -161,6 +186,22 @@ mod tests {
         assert_eq!(t.speakers.len(), 2);
         assert_eq!(t.speaker_name(&t.words[1]).as_deref(), Some("Speaker 2"));
         t.check().unwrap();
+    }
+
+    #[test]
+    fn voice_spans_are_sorted_merged_and_optional_in_files() {
+        let mut t = Transcript { voice: vec![(Tick(50), Tick(60)), (Tick(0), Tick(10)), (Tick(8), Tick(20)), (Tick(30), Tick(30))], ..Default::default() };
+        t.normalize();
+        assert_eq!(t.voice, vec![(Tick(0), Tick(20)), (Tick(50), Tick(60))]);
+        t.check().unwrap();
+        let json = serde_json::to_string(&t).unwrap();
+        assert!(json.contains("\"voice\":[[0,20],[50,60]]"), "{json}");
+        // older transcripts have no voice spans and don't write any
+        let old: Transcript = serde_json::from_str(r#"{"language":"en","source":"whisper-base","speakers":[],"words":[]}"#).unwrap();
+        assert!(old.voice.is_empty());
+        assert!(!serde_json::to_string(&old).unwrap().contains("voice"));
+        t.voice = vec![(Tick(5), Tick(1))];
+        assert!(t.check().is_err());
     }
 
     #[test]

@@ -298,11 +298,12 @@ impl MkvSource {
             let rate = match t.default_duration_ns {
                 Some(ns) if ns > 0 => FrameRate::from_f64(1e9 / ns as f64),
                 _ => {
-                    let mut d: Vec<i64> = t.samples.windows(2).take(240).map(|p| (p[1].pts - p[0].pts).abs()).filter(|d| *d > 0).collect();
-                    d.sort_unstable();
+                    // frame durations in presentation order (B-frames store pictures out of order)
+                    let mut pts: Vec<i64> = t.samples.iter().take(crate::RATE_SAMPLES + 1).map(|s| s.pts).collect();
+                    pts.sort_unstable();
+                    let d: Vec<i64> = pts.windows(2).map(|p| p[1].saturating_sub(p[0])).collect();
                     let (n, dd) = tb(t);
-                    let step = d.get(d.len() / 2).copied().unwrap_or(1).max(1) as f64 * n as f64 / dd as f64;
-                    FrameRate::from_f64(1.0 / step)
+                    crate::rate_from_durations(d, dd as f64 / n as f64)
                 }
             };
             ventry = sample_entry(&t.codec, &t.codec_private, t.video.as_ref(), w as u16, h as u16);

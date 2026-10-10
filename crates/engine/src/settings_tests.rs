@@ -85,9 +85,30 @@ fn categories_follow_premiere_order() {
             "playback",
             "plugins",
             "timeline",
-            "trim"
+            "trim",
+            // FilmCraft's own, after Premiere's
+            "agents"
         ]
     );
+}
+
+/// Settings ▸ Agents: off by default (an open localhost port is the user's choice), port 9876;
+/// both settable like any other preference.
+#[test]
+fn agent_control_is_off_by_default_and_settable() {
+    let mut s = Session::default();
+    assert!(!s.prefs.agents.control_server);
+    assert_eq!(s.prefs.agents.control_port, 9876);
+    s.execute("prefs.set", json!({"key": "agents.controlServer", "value": true})).unwrap();
+    s.execute("prefs.set", json!({"key": "agents.controlPort", "value": 9900})).unwrap();
+    assert!(s.prefs.agents.control_server);
+    assert_eq!(s.prefs.agents.control_port, 9900);
+    // numbers are clamped into range, as every number setting is: never a privileged port
+    let _ = s.execute("prefs.set", json!({"key": "agents.controlPort", "value": 80}));
+    assert_eq!(s.prefs.agents.control_port, 1024);
+    // a preferences file from before the Agents page loads with the defaults
+    let old: crate::autosave::Preferences = serde_json::from_str(r#"{"version": 2}"#).unwrap();
+    assert!(!old.agents.control_server);
 }
 
 #[test]
@@ -506,8 +527,8 @@ fn auto_transcribe_on_import_and_transcription_defaults() {
     assert_eq!(s.project.transcripts[&c].words[0].text, "hello");
     assert!(matches!(s.project.item(c).unwrap().kind, ItemKind::Media(_)));
     // the model setting is validated against the catalogue
-    assert!(s.execute("prefs.set", json!({"key": "mediaAnalysis.whisperModel", "value": "whisper-huge"})).is_err());
-    set(&mut s, "mediaAnalysis.whisperModel", json!("whisper-tiny"));
+    assert!(s.execute("prefs.set", json!({"key": "mediaAnalysis.speechModel", "value": "whisper-huge"})).is_err());
+    set(&mut s, "mediaAnalysis.speechModel", json!("whisper-tiny"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

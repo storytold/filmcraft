@@ -1,6 +1,18 @@
 //! Effect Controls: the selected clip's effects (fixed Motion/Opacity/Time Remapping first, as in
 //! Premiere, then standard effects), generated from parameter schemas, with stopwatches and a
 //! keyframe lane on the right. Also hosts the Lumetri Color panel body (same editor, grouped).
+//!
+//! Automation ids (`<fx>` = [`fx_auto_key`]: the effect id, `<effect>@<index>` for a second copy
+//! of one effect on the clip; `<p>` = the parameter id, `mask<k>.<param>` for a mask's):
+//! `effectControls.effect.<fx>` (the header: click twirls), `.enabled` (fx bypass), `.reset`,
+//! `.edit` (Custom Setup) and, in its right-click menu, `.savePreset` / `.clear`;
+//! `effectControls.<fx>.<p>.value` (a number, checkbox, dropdown or colour swatch; `.x` / `.y` for
+//! a point), `.value.option.<i>` (an open dropdown's entries), `.stopwatch`, `.graphs`,
+//! `.addKeyframe` / `.prevKeyframe` / `.nextKeyframe`, `.keyframe.<mediaTime>` (a lane diamond;
+//! right-click: `.keyframe.<mediaTime>.interp.<linear|bezier|…>` / `.clear`), and with graphs
+//! open `.graph.keyframe.<mediaTime>` (+ `.in` / `.out` influence handles). Properties panel:
+//! `properties.section.<transform|crop|audio>`, `properties.<motion|crop|volume>.reset`,
+//! `properties.<effect>.<param>.value` (`.x` / `.y`), and `properties.speed` (Speed/Duration).
 
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use filmcraft_project::{ClipId, EffectInstance, ParamKind, ParamValue, TrackItem, TrackKind};
@@ -66,6 +78,17 @@ fn selected_clips(app: &FilmcraftApp) -> Vec<(ClipId, TrackItem, TrackKind)> {
         out.push((ac, ai.clone(), ak));
     }
     out
+}
+
+/// The automation key of the effect at `idx` on the clip: its effect id (`gaussian_blur`) for the
+/// first copy of that effect, `<effect>@<idx>` for a later one, so two copies of one effect on a
+/// clip get distinct ids and the first keeps the plain one.
+pub(crate) fn fx_auto_key(it: &TrackItem, idx: usize) -> String {
+    let Some(e) = it.effects.get(idx) else { return format!("@{idx}") };
+    match it.effects.iter().position(|x| x.effect == e.effect) {
+        Some(first) if first == idx => e.effect.clone(),
+        _ => format!("{}@{idx}", e.effect),
+    }
 }
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
@@ -234,8 +257,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     run(app, ui.ctx(), actions);
 }
 
-/// Premiere's "Custom Setup ▸ Edit…" row: opens the effect's Clip Fx Editor window.
-fn custom_setup_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, body: Rect, clip: ClipId, idx: usize, effect: &str) {
+/// Premiere's "Custom Setup ▸ Edit…" row: opens the effect's Clip Fx Editor window. `fx_id` is the
+/// effect's [`fx_auto_key`].
+fn custom_setup_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, body: Rect, clip: ClipId, idx: usize, fx_id: &str) {
     let t = app.tokens;
     let (r, _) = ui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::hover());
     ui.painter().text(pos2(r.min.x + 42.0, r.center().y), Align2::LEFT_CENTER, tl!("Custom Setup"), Tokens::ui(12.0), t.text_dim);
@@ -244,7 +268,7 @@ fn custom_setup_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, body: Rect, clip:
     ui.painter().rect_filled(br, 3.0, if resp.hovered() { t.hover } else { t.field_bg });
     ui.painter().rect_stroke(br, 3.0, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
     ui.painter().text(br.center(), Align2::CENTER_CENTER, tl!("Edit…"), Tokens::ui(11.5), t.text);
-    app.auto.add(&format!("effectControls.effect.{effect}.edit"), br, "Edit…");
+    app.auto.add(&format!("effectControls.effect.{fx_id}.edit"), br, "Edit…");
     if resp.clicked() {
         crate::panels::audio_fx_editor::open(app, crate::panels::audio_fx_editor::FxTarget::Clip { clip: clip.0, index: idx });
     }
@@ -414,6 +438,8 @@ pub(crate) fn param_row(
         None => pd.id.to_string(),
     };
     let pkey = pkey.as_str();
+    // `effectControls.<fx>.<pkey>`: the row's automation prefix
+    let auto = format!("effectControls.{}.{pkey}", fx_auto_key(it, idx));
     let with_mask = |mut v: Value| -> Value {
         if let Some(k) = mask {
             v["mask"] = json!(k);
@@ -429,7 +455,7 @@ pub(crate) fn param_row(
         let tw = Rect::from_center_size(pos2(r.min.x + 12.0, r.center().y), vec2(12.0, 12.0));
         let tresp = ui.interact(tw.expand(2.0), egui::Id::new(("twirl", clip.0, idx, pkey)), Sense::click()).on_hover_text(tl!("Show graphs"));
         icons::paint(ui.painter(), tw, if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_dim);
-        app.auto.add(&format!("effectControls.{}.{}.graphs", e.effect, pkey), tw, "Show graphs");
+        app.auto.add(&format!("{auto}.graphs"), tw, "Show graphs");
         if tresp.clicked() {
             if open {
                 app.ui.expanded_fx.retain(|k| *k != key);
@@ -445,7 +471,7 @@ pub(crate) fn param_row(
         if resp.clicked() {
             actions.push(("effects.toggleAnimation".into(), with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id}))));
         }
-        app.auto.add(&format!("effectControls.{}.{}.stopwatch", e.effect, pkey), sw, "Toggle animation");
+        app.auto.add(&format!("{auto}.stopwatch"), sw, "Toggle animation");
     }
     x += 14.0;
     ui.painter().text(pos2(x, r.center().y), Align2::LEFT_CENTER, crate::i18n::t(pd.label), Tokens::ui(12.0), t.text);
@@ -458,46 +484,62 @@ pub(crate) fn param_row(
     );
     let id = egui::Id::new(("pv", clip.0, idx, pkey));
     let mut set: Option<Value> = None;
+    let value_id = format!("{auto}.value");
     match (&pd.kind, &value) {
         (ParamKind::Float { min, max, soft_min, soft_max, unit, decimals }, ParamValue::Float(v)) => {
             let speed = ((soft_max - soft_min) / 400.0).max(0.01);
-            let (_, nv) = crate::widgets::hot_number(&mut vui, id, *v, speed, (*min, *max), *decimals as usize, unit, &t);
+            let (vr, nv) = crate::widgets::hot_number(&mut vui, id, *v, speed, (*min, *max), *decimals as usize, unit, &t);
+            app.auto.add(&value_id, vr.rect, pd.label);
             if let Some(nv) = nv {
                 set = Some(json!(nv));
             }
         }
         (ParamKind::Angle, ParamValue::Float(v)) => {
-            let (_, nv) = crate::widgets::hot_number(&mut vui, id, *v, 0.5, (-36000.0, 36000.0), 1, "°", &t);
+            let (vr, nv) = crate::widgets::hot_number(&mut vui, id, *v, 0.5, (-36000.0, 36000.0), 1, "°", &t);
+            app.auto.add(&value_id, vr.rect, pd.label);
             if let Some(nv) = nv {
                 set = Some(json!(nv));
             }
         }
         (ParamKind::Point, ParamValue::Vec2(p)) => {
-            let (_, nx) = crate::widgets::hot_number(&mut vui, id.with("x"), p.x, 1.0, (-100_000.0, 100_000.0), 1, "", &t);
-            let (_, ny) = crate::widgets::hot_number(&mut vui, id.with("y"), p.y, 1.0, (-100_000.0, 100_000.0), 1, "", &t);
+            let (xr, nx) = crate::widgets::hot_number(&mut vui, id.with("x"), p.x, 1.0, (-100_000.0, 100_000.0), 1, "", &t);
+            let (yr, ny) = crate::widgets::hot_number(&mut vui, id.with("y"), p.y, 1.0, (-100_000.0, 100_000.0), 1, "", &t);
+            app.auto.add(&format!("{auto}.x"), xr.rect, &format!("{} X", pd.label));
+            app.auto.add(&format!("{auto}.y"), yr.rect, &format!("{} Y", pd.label));
             if nx.is_some() || ny.is_some() {
                 set = Some(json!([nx.unwrap_or(p.x), ny.unwrap_or(p.y)]));
             }
         }
         (ParamKind::Bool, ParamValue::Bool(b)) => {
             let mut v = *b;
-            if vui.checkbox(&mut v, "").changed() {
+            let cr = vui.checkbox(&mut v, "");
+            app.auto.add(&value_id, cr.rect, pd.label);
+            if cr.changed() {
                 set = Some(json!(v));
             }
         }
         (ParamKind::Choice(opts), ParamValue::Choice(c)) => {
             let mut sel = *c as usize;
-            egui::ComboBox::from_id_salt(id).selected_text(opts.get(sel).map_or("", |o| crate::i18n::t(o))).width(130.0).show_ui(&mut vui, |ui| {
+            let mut options: Vec<(String, Rect, String)> = Vec::new();
+            let cb = egui::ComboBox::from_id_salt(id).selected_text(opts.get(sel).copied().unwrap_or("")).width(130.0).show_ui(&mut vui, |ui| {
                 for (i, o) in opts.iter().enumerate() {
-                    if ui.selectable_value(&mut sel, i, crate::i18n::t(o)).changed() {
+                    let or = ui.selectable_value(&mut sel, i, *o);
+                    options.push((format!("{value_id}.option.{i}"), or.rect, o.to_string()));
+                    if or.changed() {
                         set = Some(json!(i));
                     }
                 }
             });
+            app.auto.add(&value_id, cb.response.rect, pd.label);
+            for (oid, or, label) in options {
+                app.auto.add(&oid, or, &label);
+            }
         }
         (ParamKind::Color, ParamValue::Color(c)) => {
             let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
-            if egui::color_picker::color_edit_button_rgba(&mut vui, &mut rgba, egui::color_picker::Alpha::Opaque).changed() {
+            let cr = egui::color_picker::color_edit_button_rgba(&mut vui, &mut rgba, egui::color_picker::Alpha::Opaque);
+            app.auto.add(&value_id, cr.rect, pd.label);
+            if cr.changed() {
                 set = Some(json!([rgba.r(), rgba.g(), rgba.b(), rgba.a()]));
             }
             // Eyedropper: arm it, then click a pixel in the Program monitor (Esc cancels)
@@ -539,7 +581,6 @@ pub(crate) fn param_row(
     let eff_json = json!(idx);
     if pd.animatable && param.is_animated() {
         let at = pos2(r.max.x - 42.0, r.center().y);
-        let auto = format!("effectControls.{}.{}", e.effect, pkey);
         if keyframe_nav(app, ui, at, Some(param), mt, it, egui::Id::new(("knav", clip.0, idx, pkey)), &auto, "Add/Remove Keyframe", actions) {
             actions.push(("effects.addKeyframe".into(), with_mask(json!({"clip": clip.0, "effect": eff_json, "param": pd.id}))));
         }
@@ -560,7 +601,8 @@ pub(crate) fn param_row(
             let kx = lane.min.x + f * lane.width() + drag_off.unwrap_or(0.0);
             let kr = Rect::from_center_size(pos2(kx, y), vec2(11.0, 11.0));
             let resp = ui.interact(kr.expand(2.0), id, Sense::click_and_drag());
-            app.auto.add(&format!("effectControls.{}.{}.keyframe.{}", e.effect, pkey, k.time.0), kr, "keyframe");
+            let kf_id = format!("{auto}.keyframe.{}", k.time.0);
+            app.auto.add(&kf_id, kr, "keyframe");
             let sel = k.time == mt || resp.dragged();
             let col = if sel { t.hot_text } else { Color32::from_rgb(0xb0, 0xb0, 0xb0) };
             match k.interp {
@@ -603,7 +645,9 @@ pub(crate) fn param_row(
                     (tl!("Ease In"), "easeIn"),
                     (tl!("Ease Out"), "easeOut"),
                 ] {
-                    if ui.button(label).clicked() {
+                    let b = ui.button(label);
+                    app.auto.add(&format!("{kf_id}.interp.{key}"), b.rect, label);
+                    if b.clicked() {
                         actions.push((
                             "effects.setInterpolation".into(),
                             with_mask(json!({"clip": clip.0, "effect": eff_json, "param": pd.id, "mediaTime": k.time.0, "interpolation": key})),
@@ -612,7 +656,9 @@ pub(crate) fn param_row(
                     }
                 }
                 ui.separator();
-                if ui.button(tl!("Clear")).clicked() {
+                let b = ui.button(tl!("Clear"));
+                app.auto.add(&format!("{kf_id}.clear"), b.rect, "Clear");
+                if b.clicked() {
                     actions
                         .push(("effects.deleteKeyframe".into(), with_mask(json!({"clip": clip.0, "effect": eff_json, "param": pd.id, "mediaTime": k.time.0}))));
                     ui.close();
@@ -752,7 +798,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     };
     let eff_idx = |id: &str| it.effects.iter().position(|e| e.effect == id);
     let val = |eid: &str, p: &str| it.effect(eid).and_then(|e| e.param(p)).map(|p| p.value_at(mt));
-    if kind == TrackKind::Video {
+    if kind == filmcraft_project::TrackKind::Video {
         if section(&mut bui, app, "Transform", eff_idx("motion").map(|i| (i, clip.0)), &mut actions) {
             for (label, p, unit, speed, range) in [
                 (tl!("Position"), "position", "", 1.0, (-100_000.0, 100_000.0)),
@@ -768,9 +814,11 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 );
                 match val("motion", p) {
                     Some(ParamValue::Vec2(v)) => {
-                        let (_, nx) = crate::widgets::hot_number(&mut vui, egui::Id::new(("pp", p, "x", clip.0)), v.x, speed, range, 0, " X", &t);
+                        let (xr, nx) = crate::widgets::hot_number(&mut vui, egui::Id::new(("pp", p, "x", clip.0)), v.x, speed, range, 0, " X", &t);
                         vui.add_space(10.0);
-                        let (_, ny) = crate::widgets::hot_number(&mut vui, egui::Id::new(("pp", p, "y", clip.0)), v.y, speed, range, 0, " Y", &t);
+                        let (yr, ny) = crate::widgets::hot_number(&mut vui, egui::Id::new(("pp", p, "y", clip.0)), v.y, speed, range, 0, " Y", &t);
+                        app.auto.add(&format!("properties.motion.{p}.x"), xr.rect, &format!("{label} X"));
+                        app.auto.add(&format!("properties.motion.{p}.y"), yr.rect, &format!("{label} Y"));
                         if nx.is_some() || ny.is_some() {
                             actions.push((
                                 "effects.setParam".into(),
@@ -779,8 +827,9 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         }
                     }
                     Some(ParamValue::Float(v)) => {
-                        let (_, nv) =
+                        let (vr, nv) =
                             crate::widgets::hot_number(&mut vui, egui::Id::new(("pp", p, clip.0)), v, speed, range, if p == "scale" { 0 } else { 1 }, unit, &t);
+                        app.auto.add(&format!("properties.motion.{p}.value"), vr.rect, label);
                         if let Some(nv) = nv {
                             actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "motion", "param": p, "value": nv})));
                         }
@@ -796,7 +845,8 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
             if let Some(ParamValue::Float(v)) = val("opacity", "opacity") {
-                let (_, nv) = crate::widgets::hot_number(&mut vui, egui::Id::new(("pp-op", clip.0)), v, 0.5, (0.0, 100.0), 0, " %", &t);
+                let (vr, nv) = crate::widgets::hot_number(&mut vui, egui::Id::new(("pp-op", clip.0)), v, 0.5, (0.0, 100.0), 0, " %", &t);
+                app.auto.add("properties.opacity.opacity.value", vr.rect, "Opacity");
                 if let Some(nv) = nv {
                     actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "opacity", "param": "opacity", "value": nv})));
                 }
@@ -813,7 +863,8 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         .layout(egui::Layout::left_to_right(egui::Align::Center)),
                 );
                 let v = val("crop", p).and_then(|v| v.as_f64()).unwrap_or(0.0);
-                let (_, nv) = crate::widgets::hot_number(&mut vui, egui::Id::new(("pp-crop", p, clip.0)), v, 0.2, (0.0, 100.0), 1, " %", &t);
+                let (vr, nv) = crate::widgets::hot_number(&mut vui, egui::Id::new(("pp-crop", p, clip.0)), v, 0.2, (0.0, 100.0), 1, " %", &t);
+                app.auto.add(&format!("properties.crop.{p}.value"), vr.rect, label);
                 if let Some(nv) = nv {
                     if crop.is_none() {
                         actions.push(("effects.apply".into(), json!({"clips": [clip.0], "effect": "crop"})));
@@ -837,7 +888,8 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
         let v = val("volume", "level").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let (_, nv) = crate::widgets::hot_number(&mut vui, egui::Id::new(("pp-vol", clip.0)), v, 0.1, (-96.0, 15.0), 1, " dB", &t);
+        let (vr, nv) = crate::widgets::hot_number(&mut vui, egui::Id::new(("pp-vol", clip.0)), v, 0.1, (-96.0, 15.0), 1, " dB", &t);
+        app.auto.add("properties.volume.level.value", vr.rect, "Level");
         if let Some(nv) = nv {
             actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "volume", "param": "level", "value": nv})));
         }
@@ -849,7 +901,8 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
         let v = val("panner", "balance").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let (_, nv) = crate::widgets::hot_number(&mut vui, egui::Id::new(("pp-pan", clip.0)), v, 0.5, (-100.0, 100.0), 0, "", &t);
+        let (vr, nv) = crate::widgets::hot_number(&mut vui, egui::Id::new(("pp-pan", clip.0)), v, 0.5, (-100.0, 100.0), 0, "", &t);
+        app.auto.add("properties.panner.balance.value", vr.rect, "Pan");
         if let Some(nv) = nv {
             actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "panner", "param": "balance", "value": nv})));
         }
@@ -859,8 +912,15 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let (br, bresp) = bui.allocate_exact_size(vec2(118.0, 26.0), Sense::click());
     bui.painter().rect_filled(br, 4.0, if bresp.hovered() { t.hover } else { t.panel_bg });
     bui.painter().rect_stroke(br, 4.0, Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
-    bui.painter().text(br.center(), Align2::CENTER_CENTER, tlf!("Speed {n}%", n = format!("{:.0}", it.speed * 100.0)), Tokens::ui(12.0), t.text);
+    bui.painter().text(br.center(), Align2::CENTER_CENTER, format!("Speed {:.0}%", it.speed * 100.0), Tokens::ui(12.0), t.text);
+    app.auto.add("properties.speed", br, "Speed/Duration…");
     run(app, ui.ctx(), actions);
+    // the speed button opens Clip Speed / Duration for the selection (the clip shown), as Premiere's does
+    if bresp.clicked()
+        && let Err(e) = crate::menus::invoke(app, ui.ctx(), "clip.speedDuration", json!({}))
+    {
+        app.ui.status = e;
+    }
 }
 
 /// Run the panel's actions. Parameter changes made while the mouse button is down (a drag) share
@@ -910,6 +970,10 @@ pub(crate) fn graph_rows(
         v
     };
     let t = app.tokens;
+    let auto = match mask {
+        Some(k) => format!("effectControls.{}.mask{k}.{}.graph", fx_auto_key(it, idx), pd.id),
+        None => format!("effectControls.{}.{}.graph", fx_auto_key(it, idx), pd.id),
+    };
     let (vr, _) = ui.allocate_exact_size(vec2(body.width(), 110.0), Sense::hover());
     let (velr, _) = ui.allocate_exact_size(vec2(body.width(), 64.0), Sense::hover());
     let speed = it.speed.abs().max(1e-6);
@@ -979,7 +1043,8 @@ pub(crate) fn graph_rows(
         let c = pos2(x_of(f), y_of(v) + dy);
         let r = Rect::from_center_size(c, vec2(10.0, 10.0));
         let resp = ui.interact(r.expand(2.0), id, Sense::drag());
-        app.auto.add(&format!("effectControls.{}.graph.keyframe.{}", pd.id, k.time.0), r, "keyframe value");
+        let kf_id = format!("{auto}.keyframe.{}", k.time.0);
+        app.auto.add(&kf_id, r, "keyframe value");
         // influence handles: flat (ease) tangents with length ∝ influence × neighbouring segment
         let eases_out =
             !matches!(k.interp, filmcraft_project::Interpolation::Linear | filmcraft_project::Interpolation::Hold | filmcraft_project::Interpolation::EaseIn);
@@ -993,9 +1058,15 @@ pub(crate) fn graph_rows(
             let hdx: f32 = ui.data(|d| d.get_temp(hid)).unwrap_or(0.0);
             let hx = c.x + side * (infl * seg + hdx * side).clamp(seg * 0.01, seg);
             let hp = pos2(hx, c.y);
-            p.line_segment([c, hp], Stroke::new(1.0, t.plot_handle_dim));
-            p.circle_filled(hp, 3.5, t.keyframe_handle);
-            let hr = ui.interact(Rect::from_center_size(hp, vec2(10.0, 10.0)), hid.with("h"), Sense::drag());
+            p.line_segment([c, hp], Stroke::new(1.0, Color32::from_rgb(0x90, 0x90, 0x90)));
+            p.circle_filled(hp, 3.5, Color32::from_rgb(0xd0, 0xd0, 0xd0));
+            let hrect = Rect::from_center_size(hp, vec2(10.0, 10.0));
+            let hr = ui.interact(hrect, hid.with("h"), Sense::drag());
+            app.auto.add(
+                &format!("{kf_id}.{}", if side > 0.0 { "out" } else { "in" }),
+                hrect,
+                if side > 0.0 { "outgoing influence" } else { "incoming influence" },
+            );
             if hr.dragged() {
                 let nx = graph_drag_offset(ui, &hr, vec2(hdx, 0.0)).x;
                 ui.data_mut(|d| d.insert_temp(hid, nx));

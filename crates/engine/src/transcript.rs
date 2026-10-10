@@ -9,7 +9,7 @@
 //! engine feature `whisper`; without it `transcript.generate` fails with a clear error, and agents
 //! can still bring their own transcript with `transcript.set`).
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
@@ -32,6 +32,40 @@ fn spec(id: &'static str, label: &'static str, menu: &'static [&'static str], pa
 /// Where downloaded speech models live (`<data dir>/models`).
 pub fn models_dir() -> Option<std::path::PathBuf> {
     crate::autosave::default_data_dir().map(|d| d.join("models"))
+}
+
+/// The speech model Transcribe uses (Settings ▸ Media Analysis ▸ Speech model).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelStatus {
+    pub id: String,
+    pub name: String,
+    /// Downloaded and ready (always true for a recogniser a host installed).
+    pub installed: bool,
+    /// Bytes still to download.
+    pub download_bytes: u64,
+    pub license: String,
+    pub source: String,
+}
+
+/// The model Transcribe would use, or `None` when this build can't transcribe.
+pub fn model_status(s: &Session) -> Option<ModelStatus> {
+    if let Some(t) = &s.transcriber {
+        return Some(ModelStatus { id: t.id(), name: t.id(), installed: true, download_bytes: 0, license: String::new(), source: String::new() });
+    }
+    if !speech_available() {
+        return None;
+    }
+    let m = filmcraft_speech::models::find(&s.prefs.media_analysis.speech_model)
+        .or_else(|| filmcraft_speech::models::find(filmcraft_speech::models::DEFAULT_MODEL))?;
+    let dir = models_dir();
+    let installed = dir.as_ref().is_some_and(|d| filmcraft_speech::models::installed(d, m));
+    let download_bytes = dir.as_ref().map(|d| filmcraft_speech::models::missing_bytes(d, m)).unwrap_or(m.size());
+    Some(ModelStatus { id: m.id.into(), name: m.name.into(), installed, download_bytes, license: m.license.into(), source: m.source.into() })
+}
+
+/// Languages offered for transcription: (ISO 639-1 code, name).
+pub fn languages() -> &'static [(&'static str, &'static str)] {
+    crate::settings::LANGUAGES
 }
 
 /// Whether this build can transcribe with Whisper (feature `whisper`).
@@ -107,41 +141,284 @@ fn targets(s: &Session, p: &Value) -> Vec<ItemId> {
     out
 }
 
-/// Mono 16 kHz audio of a media item (None: no audio).
-fn item_audio(s: &Session, item: ItemId) -> Option<Vec<f32>> {
-    let dur = match &s.project.item(item)?.kind {
-        ItemKind::Media(m) => m.duration(),
-        _ => return None,
-    };
-    let src = s.source(item)?;
-    if !src.info().has_audio() {
-        return None;
-    }
-    let sr = filmcraft_speech::SAMPLE_RATE;
-    let len = dur.to_units_floor(sr as i64).max(0) as usize;
-    let buf = src.audio(0, len, sr).ok()?;
-    Some(filmcraft_speech::downmix(&buf.channels))
-}
-
 fn speech_err(e: SpeechError) -> EngineError {
     EngineError::Other(e.to_string())
 }
 
-/// The transcriber to use: the installed one, else the named catalogue model.
-fn transcriber(s: &Session, p: &Value) -> Result<Arc<dyn Transcriber>> {
+/// Transcription options from the params, else Settings ▸ Media Analysis & Transcription.
+fn options(s: &Session, p: &Value) -> Options {
+    let ma = &s.prefs.media_analysis;
+    let default_language = if ma.language_auto_detect { None } else { Some(ma.default_language.clone()) };
+    Options {
+        language: match str_p(p, "language") {
+            Some(l) => Some(l).filter(|l| !l.is_empty() && *l != "auto").map(str::to_string),
+            None => default_language,
+        },
+        diarize: bool_p(p, "diarize").unwrap_or(ma.speaker_labeling != "off"),
+        max_speakers: u64_p(p, "maxSpeakers").map(|n| n.clamp(1, 32) as usize).unwrap_or(Options::default().max_speakers),
+    }
+}
+
+/// A running transcription or voice analysis (Text panel ▸ Transcribe); [`poll`] stores its
+/// transcripts as one undo step when it finishes.
+pub struct PendingTranscription {
+    pub job: u64,
+    pub results: Arc<Mutex<Option<Vec<(ItemId, Transcript)>>>>,
+    /// Voice analysis of existing transcripts only (no speech recognition).
+    pub voice_only: bool,
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// One clip to transcribe: its media, read on the job's thread.
+struct Work {
+    item: ItemId,
+    name: String,
+    src: filmcraft_media::SharedSource,
+    samples: usize,
+    /// For voice analysis: the transcript to keep.
+    existing: Option<Transcript>,
+}
+
+/// Where the recogniser comes from.
+enum Recogniser {
+    /// A host or test installed one.
+    Installed(Arc<dyn Transcriber>),
+    /// A catalogue model in `dir`, loaded (and first downloaded, with `download`) on the job thread.
+    Model { id: String, dir: std::path::PathBuf, download: bool },
+    /// Voice analysis only.
+    None,
+}
+
+fn work_items(s: &Session, items: &[ItemId], existing: bool) -> (Vec<Work>, Vec<u64>) {
+    let sr = filmcraft_speech::SAMPLE_RATE as i64;
+    let (mut work, mut skipped) = (Vec::new(), Vec::new());
+    for &item in items {
+        let media = s.project.item(item).and_then(|i| match &i.kind {
+            ItemKind::Media(m) => Some((i.name.clone(), m.duration())),
+            _ => None,
+        });
+        let src = s.source(item).filter(|src| src.info().has_audio());
+        let (Some((name, dur)), Some(src)) = (media, src) else {
+            skipped.push(item.0);
+            continue;
+        };
+        let existing = if existing { s.project.transcripts.get(&item).map(|t| (**t).clone()) } else { None };
+        let samples = usize::try_from(dur.to_units_floor(sr).max(0)).unwrap_or(0);
+        work.push(Work { item, name, src, samples, existing });
+    }
+    (work, skipped)
+}
+
+/// The recogniser for `transcript.generate`: the installed one, else the catalogue model named by
+/// `model` or the settings (it must be downloaded, or `download: true` fetches it first).
+fn recogniser(s: &Session, p: &Value) -> Result<Recogniser> {
     if let Some(t) = &s.transcriber {
-        return Ok(t.clone());
+        return Ok(Recogniser::Installed(t.clone()));
     }
     // Settings ▸ Media Analysis & Transcription ▸ Speech model
-    let model = str_p(p, "model").unwrap_or(&s.prefs.media_analysis.whisper_model);
-    if filmcraft_speech::models::find(model).is_none() {
-        return Err(speech_err(SpeechError::UnknownModel(model.into())));
-    }
+    let model = str_p(p, "model").unwrap_or(&s.prefs.media_analysis.speech_model).to_string();
+    let m = filmcraft_speech::models::find(&model).ok_or_else(|| speech_err(SpeechError::UnknownModel(model.clone())))?;
     if !filmcraft_speech::available() {
         return Err(EngineError::Other(NO_SPEECH.into()));
     }
     let dir = models_dir().ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
-    filmcraft_speech::load(&dir, model).map_err(speech_err)
+    let download = bool_p(p, "download").unwrap_or(false);
+    let can_fetch = download && cfg!(feature = "speech-download");
+    if !(filmcraft_speech::models::installed(&dir, m) || can_fetch) {
+        return Err(speech_err(SpeechError::NotInstalled(model)));
+    }
+    Ok(Recogniser::Model { id: model, dir, download })
+}
+
+/// Run `work` as a job: recognise (unless voice-only), measure the voice in the waveform, snap
+/// Whisper's words to it, and hand the transcripts to [`poll`]. With `wait` (the default; the UI
+/// passes false) it runs here and the transcripts are stored before returning.
+fn start(s: &mut Session, p: &Value, work: Vec<Work>, skipped: Vec<u64>, rec: Recogniser, opts: Options) -> Result<Value> {
+    use std::sync::atomic::Ordering;
+    let voice_only = matches!(rec, Recogniser::None);
+    if s.transcribe_jobs.iter().any(|j| s.jobs.iter().any(|x| x.id == j.job && !x.progress.finished.load(Ordering::Relaxed))) {
+        return Err(EngineError::Other("a transcription is already running (cancel it first)".into()));
+    }
+    let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
+    let n = work.len();
+    let label = if voice_only {
+        format!("Find pauses ({n} clip{})", if n == 1 { "" } else { "s" })
+    } else {
+        format!("Transcribe ({n} clip{})", if n == 1 { "" } else { "s" })
+    };
+    let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
+    const TOTAL: u64 = 1000;
+    job.progress.total.store(TOTAL, Ordering::Relaxed);
+    let results: Arc<Mutex<Option<Vec<(ItemId, Transcript)>>>> = Arc::default();
+    let (prog, res, out) = (job.progress.clone(), job.result.clone(), results.clone());
+    let run = move || {
+        let t0 = web_time::Instant::now();
+        let status = |m: String| *lock(&prog.status) = m;
+        let cancelled = || prog.cancel.load(Ordering::Relaxed);
+        let mut err: Option<String> = None;
+        // the recogniser, downloaded and loaded on this thread
+        let t: Option<Arc<dyn Transcriber>> = match rec {
+            Recogniser::Installed(t) => Some(t),
+            Recogniser::None => None,
+            Recogniser::Model { id, dir, download } => {
+                let m = filmcraft_speech::models::find(&id);
+                #[cfg(feature = "speech-download")]
+                if download && let Some(m) = m.filter(|m| !filmcraft_speech::models::installed(&dir, m)) {
+                    status(format!("Downloading {} ({:.1} GB)", m.name, m.size() as f64 / 1e9));
+                    let r = filmcraft_speech::models::download(&dir, m, &mut |done, total, _| {
+                        prog.done.store(done.saturating_mul(TOTAL / 4) / total.max(1), Ordering::Relaxed);
+                        !cancelled()
+                    });
+                    if let Err(e) = r {
+                        err = Some(if cancelled() { "stopped".into() } else { e.to_string() });
+                    }
+                }
+                #[cfg(not(feature = "speech-download"))]
+                let _ = download;
+                if err.is_none() {
+                    status(format!("Loading {}", m.map(|m| m.name).unwrap_or(id.as_str())));
+                    match filmcraft_speech::load(&dir, &id) {
+                        Ok(t) => Some(t),
+                        Err(e) => {
+                            err = Some(e.to_string());
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            }
+        };
+        let base = if prog.done.load(Ordering::Relaxed) > 0 { TOTAL / 4 } else { 0 };
+        let per = (TOTAL - base) / (n.max(1) as u64);
+        let mut done = Vec::new();
+        for (k, w) in work.into_iter().enumerate() {
+            if err.is_some() {
+                break;
+            }
+            if cancelled() {
+                err = Some("stopped".into());
+                break;
+            }
+            let at = base + per * k as u64;
+            prog.done.store(at, Ordering::Relaxed);
+            status(format!("{}: reading the audio", w.name));
+            let audio = match w.src.audio(0, w.samples, filmcraft_speech::SAMPLE_RATE) {
+                Ok(b) => filmcraft_speech::downmix(&b.channels),
+                Err(e) => {
+                    err = Some(format!("{}: {e}", w.name));
+                    break;
+                }
+            };
+            let mut tr = match (&t, w.existing) {
+                (Some(t), _) => {
+                    let mut cb = |f: f32, st: &str| {
+                        prog.done.store(at + (per as f32 * 0.95 * f.clamp(0.0, 1.0)) as u64, Ordering::Relaxed);
+                        *lock(&prog.status) = format!("{}: {st}", w.name);
+                        !cancelled()
+                    };
+                    match t.transcribe(&audio, &opts, &mut cb) {
+                        Ok(tr) => tr,
+                        Err(e) => {
+                            err = Some(if cancelled() { "stopped".into() } else { format!("{}: {e}", w.name) });
+                            break;
+                        }
+                    }
+                }
+                (None, Some(tr)) => tr,
+                (None, None) => continue,
+            };
+            status(format!("{}: finding pauses", w.name));
+            // where the waveform has voice: the pauses come from here, not from word gaps; Whisper's
+            // words (aligned by attention, which lets the word after a pause swallow it) snap to it
+            let voice = filmcraft_speech::voice::voice_map(&audio, &tr.words);
+            if tr.source.starts_with("whisper") {
+                filmcraft_speech::voice::snap_words(&mut tr.words, &voice);
+            }
+            tr.voice = voice.spans.iter().map(|r| (r.start, r.end())).collect();
+            tr.normalize();
+            done.push((w.item, tr));
+        }
+        let secs = t0.elapsed().as_secs_f64();
+        let words: usize = done.iter().map(|(_, t)| t.words.len()).sum();
+        status(match &err {
+            Some(e) if e == "stopped" => "Stopped: nothing was changed".into(),
+            Some(e) => e.clone(),
+            None if voice_only => format!("Found the pauses in {} clip(s) ({secs:.1}s)", done.len()),
+            None => format!("Transcribed {words} words in {} clip(s) ({secs:.1}s)", done.len()),
+        });
+        let r = match err {
+            Some(e) => Err(e),
+            None => {
+                *lock(&out) = Some(done);
+                Ok(filmcraft_export::Report { path: String::new(), frames: words as u64, seconds: secs, bytes: 0, render_fps: 0.0, extra_files: Vec::new() })
+            }
+        };
+        prog.done.store(TOTAL, Ordering::Relaxed);
+        *lock(&res) = Some(r);
+        prog.finished.store(true, Ordering::Relaxed);
+    };
+    let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
+    s.jobs.push(job);
+    s.transcribe_jobs.push(PendingTranscription { job: id, results: results.clone(), voice_only });
+    let wait = bool_p(p, "wait").unwrap_or(true);
+    if !wait && !cfg!(target_arch = "wasm32") {
+        std::thread::Builder::new().name("filmcraft-transcribe".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
+        return Ok(json!({"job": id, "items": n, "skipped": skipped}));
+    }
+    run();
+    let report: Vec<Value> = lock(&results)
+        .as_ref()
+        .map(|r| r.iter().map(|(i, t)| json!({"item": i.0, "words": t.words.len(), "speakers": t.speakers.len(), "language": t.language, "source": t.source, "voiceSpans": t.voice.len()})).collect())
+        .unwrap_or_default();
+    poll(s);
+    if let Some(Err(e)) = s.jobs.iter().find(|j| j.id == id).and_then(|j| lock(&j.result).clone()) {
+        return Err(EngineError::Other(e));
+    }
+    if report.is_empty() {
+        return Err(EngineError::Other("none of the clips has audio to transcribe".into()));
+    }
+    Ok(json!({"job": id, "items": report, "skipped": skipped}))
+}
+
+/// Store finished transcriptions (one undo step each). Called every UI frame from
+/// [`Session::poll_persistence`] and after a run with `wait`.
+pub fn poll(s: &mut Session) {
+    use std::sync::atomic::Ordering;
+    let mut i = 0;
+    while i < s.transcribe_jobs.len() {
+        let job = s.jobs.iter().find(|j| j.id == s.transcribe_jobs[i].job);
+        let finished = job.is_none_or(|j| j.progress.finished.load(Ordering::Relaxed));
+        let cancelled = job.is_some_and(|j| j.progress.cancel.load(Ordering::Relaxed));
+        if !finished {
+            i += 1;
+            continue;
+        }
+        let pj = s.transcribe_jobs.remove(i);
+        let Some(done) = lock(&pj.results).take().filter(|d| !cancelled && !d.is_empty()) else { continue };
+        let label = if pj.voice_only { "Find Pauses" } else { "Transcribe" };
+        let r = s.edit(label, move |pr, _| {
+            for (item, t) in done {
+                pr.transcripts.insert(item, Arc::new(t));
+            }
+            Ok(())
+        });
+        if let Err(e) = r {
+            s.error_toast("transcript.generate", format!("Transcribe: {e}"));
+        }
+    }
+}
+
+/// The running transcription job, if any: (job id, fraction done, status).
+pub fn running(s: &Session) -> Option<(u64, f32, String)> {
+    use std::sync::atomic::Ordering;
+    s.transcribe_jobs.iter().find_map(|pj| {
+        let j = s.jobs.iter().find(|j| j.id == pj.job)?;
+        (!j.progress.finished.load(Ordering::Relaxed)).then(|| (j.id, j.progress.fraction(), lock(&j.progress.status).clone()))
+    })
 }
 
 fn generate(s: &mut Session, p: &Value) -> Result<Value> {
@@ -149,43 +426,40 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
     if items.is_empty() {
         return Err(bad("transcript.generate", "nothing to transcribe (pass `items`, select clips, or open a sequence with audio)"));
     }
-    let t = transcriber(s, p)?;
-    // Settings ▸ Media Analysis & Transcription: language (or auto-detect) and speaker labelling
-    let ma = &s.prefs.media_analysis;
-    let default_language = if ma.language_auto_detect { None } else { Some(ma.default_language.clone()) };
-    let opts = Options {
-        language: match str_p(p, "language") {
-            Some(l) => Some(l).filter(|l| !l.is_empty() && *l != "auto").map(str::to_string),
-            None => default_language,
-        },
-        diarize: bool_p(p, "diarize").unwrap_or(ma.speaker_labeling != "off"),
-        max_speakers: u64_p(p, "maxSpeakers").map(|n| n.clamp(1, 32) as usize).unwrap_or(Options::default().max_speakers),
-    };
-    let mut done: Vec<(ItemId, Transcript)> = Vec::new();
-    let mut skipped = Vec::new();
-    for item in items {
-        let Some(audio) = item_audio(s, item) else {
-            skipped.push(item.0);
-            continue;
-        };
-        let mut tr = t.transcribe(&audio, &opts, &mut |_, _| true).map_err(speech_err)?;
-        tr.normalize();
-        done.push((item, tr));
-    }
-    if done.is_empty() {
+    let rec = recogniser(s, p)?;
+    let opts = options(s, p);
+    let (work, skipped) = work_items(s, &items, false);
+    if work.is_empty() {
         return Err(EngineError::Other("none of the clips has audio to transcribe".into()));
     }
-    let report: Vec<Value> = done
-        .iter()
-        .map(|(i, t)| json!({"item": i.0, "words": t.words.len(), "speakers": t.speakers.len(), "language": t.language, "source": t.source}))
-        .collect();
-    s.edit("Transcribe", move |pr, _| {
-        for (i, t) in done {
-            pr.transcripts.insert(i, Arc::new(t));
-        }
-        Ok(())
-    })?;
-    Ok(json!({"items": report, "skipped": skipped}))
+    start(s, p, work, skipped, rec, opts)
+}
+
+/// `transcript.findPauses`: measure the voice of transcripts that have none (imported, or made
+/// before voice analysis), so their pauses come from the waveform too.
+fn find_pauses_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    let items: Vec<ItemId> = match ids_p(p, "items") {
+        Some(v) => v.into_iter().filter_map(|i| media_item(s, i)).filter(|i| s.project.transcripts.contains_key(i)).collect(),
+        None => s.project.transcripts.iter().filter(|(_, t)| t.voice.is_empty()).map(|(i, _)| *i).collect(),
+    };
+    if items.is_empty() {
+        return Ok(json!({"items": 0}));
+    }
+    let (work, skipped) = work_items(s, &items, true);
+    if work.is_empty() {
+        return Err(EngineError::Other("none of the transcribed clips has audio to analyse".into()));
+    }
+    start(s, p, work, skipped, Recogniser::None, Options::default())
+}
+
+/// `transcript.cancel`: stop the running transcription (nothing changes).
+fn cancel(s: &mut Session, _: &Value) -> Result<Value> {
+    use std::sync::atomic::Ordering;
+    let (id, _, _) = running(s).ok_or_else(|| EngineError::Other("no transcription is running".into()))?;
+    if let Some(j) = s.jobs.iter().find(|j| j.id == id) {
+        j.progress.cancel.store(true, Ordering::Relaxed);
+    }
+    Ok(json!({"job": id}))
 }
 
 fn set(s: &mut Session, p: &Value) -> Result<Value> {
@@ -250,7 +524,35 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
         v
     };
     let current = tx::word_at(&words, s.playhead());
+    let (min, after, before) = pause_params(s, p);
+    let v = view(s, Some(min));
+    let rate = s.sequence_rate();
+    let pauses: Vec<Value> = v
+        .pauses
+        .iter()
+        .enumerate()
+        .map(|(i, pz)| {
+            let cut = tx::pause_cut(pz, after, before, rate);
+            json!({"i": i, "start": pz.range.start.0, "end": pz.range.end().0, "seconds": pz.range.duration.0 as f64 / TICKS_PER_SECOND as f64, "before": pz.before, "after": pz.after, "cut": cut.map(|c| json!({"start": c.start.0, "end": c.end().0}))})
+        })
+        .collect();
+    let tokens: Vec<Value> = v
+        .tokens
+        .iter()
+        .map(|t| match t {
+            tx::Token::Word(i) => json!({"word": i}),
+            tx::Token::Pause(i) => json!({"pause": i}),
+            tx::Token::Speech(i) => json!({"speech": i}),
+        })
+        .collect();
+    let running = running(s).map(|(job, f, st)| json!({"job": job, "progress": f, "status": st}));
     Ok(json!({
+        "pauses": pauses,
+        "speech": v.speech.iter().map(|r| json!({"start": r.start.0, "end": r.end().0})).collect::<Vec<_>>(),
+        "tokens": tokens,
+        "untranscribed": v.untranscribed,
+        "withoutVoice": v.without_voice,
+        "running": running,
         "words": words.iter().enumerate().map(|(i, w)| word_json(i, w)).collect::<Vec<_>>(),
         "paragraphs": paras,
         "speakers": speakers,
@@ -347,6 +649,203 @@ fn rename_speaker(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"renamed": n}))
 }
 
+/// What the Text panel shows for the active sequence: the words, the pauses (silences of at least
+/// the pause length, measured from the waveform) and the voice no word covers, in time order.
+#[derive(Clone, Debug, Default)]
+pub struct TranscriptView {
+    pub words: Vec<SeqWord>,
+    pub pauses: Vec<tx::Pause>,
+    /// Voice with no word on it (a stutter or restart the recogniser tidied away).
+    pub speech: Vec<TimeRange>,
+    pub tokens: Vec<tx::Token>,
+    /// Enabled audio clips of the sequence with no transcript.
+    pub untranscribed: usize,
+    /// Transcribed clips whose transcript has no voice map (their pauses are word gaps until
+    /// `transcript.findPauses` measures them).
+    pub without_voice: usize,
+}
+
+/// Pause settings: (shortest pause, kept after a word, kept before the next one), from `p`
+/// (`minSeconds`, `keepAfterSeconds`, `keepBeforeSeconds`; `keepSeconds` sets both) or the
+/// settings.
+fn pause_params(s: &Session, p: &Value) -> (Tick, Tick, Tick) {
+    let ma = &s.prefs.media_analysis;
+    let ms = |v: u32| Tick::from_seconds_f64(f64::from(v) / 1000.0);
+    let sec = |k: &str| f64_p(p, k).filter(|v| v.is_finite() && *v >= 0.0).map(Tick::from_seconds_f64);
+    let keep = sec("keepSeconds");
+    (
+        sec("minSeconds").unwrap_or(ms(ma.pause_min_ms)).max(Tick(1)),
+        sec("keepAfterSeconds").or(keep).unwrap_or(ms(ma.pause_keep_after_ms)),
+        sec("keepBeforeSeconds").or(keep).unwrap_or(ms(ma.pause_keep_before_ms)),
+    )
+}
+
+/// The Text panel's view of the active sequence (pause length from the settings, or `min`).
+pub fn view(s: &Session, min: Option<Tick>) -> TranscriptView {
+    let Some(q) = s.active_sequence() else { return TranscriptView::default() };
+    let words = tx::sequence_words(q, &s.project.transcripts);
+    let voice = tx::sequence_voice(q, &s.project.transcripts);
+    let min = min.unwrap_or_else(|| pause_params(s, &json!({})).0);
+    let pauses = tx::find_voice_pauses(&words, &voice, min);
+    let speech = tx::unlabelled_speech(&words, &voice, Tick::from_seconds_f64(0.1));
+    let tokens = tx::layout(&words, &pauses, &speech);
+    let mut untranscribed = 0;
+    let mut without_voice = 0;
+    let mut seen = Vec::new();
+    for it in q.audio_tracks.iter().flat_map(|t| t.items.iter()).filter(|i| i.enabled) {
+        let root = media_item(s, it.item).unwrap_or(it.item);
+        if seen.contains(&root) {
+            continue;
+        }
+        seen.push(root);
+        match s.project.transcripts.get(&root) {
+            None => untranscribed += 1,
+            Some(t) if t.voice.is_empty() && !t.words.is_empty() => without_voice += 1,
+            Some(_) => {}
+        }
+    }
+    TranscriptView { words, pauses, speech, tokens, untranscribed, without_voice }
+}
+
+/// What the Text panel's search filter looks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Filter {
+    Text,
+    Fillers,
+    Pauses,
+}
+
+impl Filter {
+    pub fn from_name(s: &str) -> Option<Filter> {
+        match s {
+            "text" | "Text" | "transcript" => Some(Filter::Text),
+            "fillers" | "Fillers" | "filler" | "fillerWords" => Some(Filter::Fillers),
+            "pauses" | "Pauses" | "pause" => Some(Filter::Pauses),
+            _ => None,
+        }
+    }
+}
+
+/// One search result: words `words` (Text, Fillers) or pause `pause` (Pauses); `range` is what it
+/// covers in the sequence, `cut` what Delete removes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hit {
+    pub words: Option<std::ops::Range<usize>>,
+    pub pause: Option<usize>,
+    pub range: TimeRange,
+    pub cut: Option<TimeRange>,
+}
+
+/// The results of `filter` (with `query` for Text) in time order.
+pub fn hits(s: &Session, v: &TranscriptView, filter: Filter, query: &str, p: &Value) -> Vec<Hit> {
+    let rate = s.sequence_rate();
+    let (_, after, before) = pause_params(s, p);
+    let words_hit = |r: std::ops::Range<usize>, cut: Option<TimeRange>| {
+        let (a, b) = (v.words.get(r.start).map(|w| w.start).unwrap_or_default(), v.words.get(r.end.saturating_sub(1)).map(|w| w.end).unwrap_or_default());
+        Hit { range: TimeRange::from_bounds(a, b.max(a)), words: Some(r), pause: None, cut }
+    };
+    match filter {
+        Filter::Text => tx::search(&v.words, query)
+            .into_iter()
+            .map(|r| {
+                let cut = tx::word_range(&v.words, r.start, r.end.saturating_sub(1), rate);
+                words_hit(r, cut)
+            })
+            .collect(),
+        Filter::Fillers => {
+            let fillers: Vec<String> = match p.get("fillers").and_then(Value::as_array) {
+                Some(a) => a.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+                None => tx::DEFAULT_FILLERS.iter().map(|f| f.to_string()).collect(),
+            };
+            let found = tx::find_fillers(&v.words, &fillers);
+            let cuts = tx::filler_ranges(&v.words, &found, rate);
+            // filler_ranges drops a filler shorter than a frame: pair cuts by position
+            found
+                .into_iter()
+                .map(|r| {
+                    let a = v.words.get(r.start).map(|w| w.start).unwrap_or_default();
+                    let cut = cuts
+                        .iter()
+                        .find(|c| c.overlaps(&TimeRange::from_bounds(a, v.words.get(r.end.saturating_sub(1)).map(|w| w.end).unwrap_or(a).max(a))))
+                        .copied();
+                    words_hit(r, cut)
+                })
+                .collect()
+        }
+        Filter::Pauses => v
+            .pauses
+            .iter()
+            .enumerate()
+            .map(|(i, pz)| Hit { words: None, pause: Some(i), range: pz.range, cut: tx::pause_cut(pz, after, before, rate) })
+            .collect(),
+    }
+}
+
+fn hit_json(i: usize, h: &Hit) -> Value {
+    json!({
+        "i": i,
+        "from": h.words.as_ref().map(|r| r.start), "to": h.words.as_ref().map(|r| r.end.saturating_sub(1)),
+        "pause": h.pause,
+        "start": h.range.start.0, "end": h.range.end().0, "seconds": h.range.duration.0 as f64 / TICKS_PER_SECOND as f64,
+        "cut": h.cut.map(|c| json!({"start": c.start.0, "end": c.end().0})),
+    })
+}
+
+fn filter_p(p: &Value, cmd: &str) -> Result<Filter> {
+    match str_p(p, "filter") {
+        None => Ok(Filter::Text),
+        Some(f) => Filter::from_name(f).ok_or_else(|| bad(cmd, format!("unknown `filter` `{f}` (text, fillers, pauses)"))),
+    }
+}
+
+/// `transcript.find`: the Text panel's search with its filter (Transcript text / Filler words /
+/// Pauses).
+fn find(s: &mut Session, p: &Value) -> Result<Value> {
+    let filter = filter_p(p, "transcript.find")?;
+    let query = str_p(p, "query").unwrap_or("");
+    let min = pause_params(s, p).0;
+    let v = view(s, Some(min));
+    let h = hits(s, &v, filter, query, p);
+    Ok(json!({"hits": h.iter().enumerate().map(|(i, h)| hit_json(i, h)).collect::<Vec<_>>()}))
+}
+
+/// `transcript.delete…` on search results: one result (`hit`, its index in `transcript.find`) or
+/// all of them, extracted (closing the gaps; the default) or lifted. One undo step.
+fn delete_hits(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "transcript.deleteHits";
+    let filter = filter_p(p, cmd)?;
+    let query = str_p(p, "query").unwrap_or("");
+    let lift = match str_p(p, "mode") {
+        None | Some("extract") => false,
+        Some("lift") => true,
+        Some(m) => return Err(bad(cmd, format!("unknown `mode` `{m}` (extract, lift)"))),
+    };
+    let v = view(s, Some(pause_params(s, p).0));
+    let all = hits(s, &v, filter, query, p);
+    let chosen: Vec<&Hit> = match u64_p(p, "hit") {
+        Some(i) => vec![all.get(i as usize).ok_or_else(|| bad(cmd, format!("no result {i} (there are {})", all.len())))?],
+        None => all.iter().collect(),
+    };
+    let ranges: Vec<TimeRange> = chosen.iter().filter_map(|h| h.cut).collect();
+    if ranges.is_empty() {
+        return Err(EngineError::Other(match filter {
+            Filter::Pauses if !all.is_empty() => "these pauses are shorter than the kept margins and a frame: nothing to delete".into(),
+            Filter::Pauses => "no pauses found (lower the pause length to find shorter ones)".into(),
+            Filter::Fillers => "no filler words found".into(),
+            Filter::Text => "nothing matches the search".into(),
+        }));
+    }
+    let what = match filter {
+        Filter::Pauses => "Pauses",
+        Filter::Fillers => "Filler Words",
+        Filter::Text => "Text",
+    };
+    let n = ranges.len();
+    let label = format!("{} {what}", if lift { "Lift" } else { "Delete" });
+    let total = s.edit_sequence(&label, |q, ctx, _| Ok(if lift { tx::lift_ranges(q, ranges, ctx) } else { tx::ripple_delete_ranges(q, ranges, ctx) }))?;
+    Ok(json!({"removed": n, "ticks": total.0, "seconds": total.0 as f64 / TICKS_PER_SECOND as f64, "mode": if lift { "lift" } else { "extract" }}))
+}
+
 fn remove_ranges(s: &mut Session, label: &str, ranges: Vec<TimeRange>) -> Result<Value> {
     let n = ranges.len();
     if n == 0 {
@@ -356,11 +855,13 @@ fn remove_ranges(s: &mut Session, label: &str, ranges: Vec<TimeRange>) -> Result
     Ok(json!({"removed": n, "ticks": total.0, "seconds": total.0 as f64 / TICKS_PER_SECOND as f64}))
 }
 
+/// Remove Pauses: every pause of at least the pause length, from the waveform's voice (see
+/// [`view`]), keeping the margins from the settings (or `minSeconds`, `keepAfterSeconds`,
+/// `keepBeforeSeconds`, `keepSeconds`).
 fn remove_pauses(s: &mut Session, p: &Value) -> Result<Value> {
-    let words = sequence_words(s);
-    let min = Tick::from_seconds_f64(f64_p(p, "minSeconds").unwrap_or(1.0));
-    let keep = Tick::from_seconds_f64(f64_p(p, "keepSeconds").unwrap_or(0.15));
-    let ranges = tx::find_pauses(&words, min, keep, s.sequence_rate());
+    let (min, after, before) = pause_params(s, p);
+    let rate = s.sequence_rate();
+    let ranges: Vec<TimeRange> = view(s, Some(min)).pauses.iter().filter_map(|pz| tx::pause_cut(pz, after, before, rate)).collect();
     remove_ranges(s, "Remove Pauses", ranges)
 }
 
@@ -439,7 +940,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "transcript.generate",
             "Transcribe…",
             &["Sequence", "Transcript"],
-            r#"{"items":[id]?,"model":"whisper-base"?,"language":"en|auto"?,"diarize":bool?,"maxSpeakers":n?}"#,
+            r#"{"items":[id]?,"model":"whisper-large-v3-turbo"?,"language":"en|auto"?,"diarize":bool?,"maxSpeakers":n?,"download":bool?,"wait":bool?}"#,
             can_transcribe,
             generate,
             true,
@@ -474,11 +975,23 @@ pub fn commands() -> Vec<CommandSpec> {
             "transcript.removePauses",
             "Remove Pauses",
             &["Sequence", "Transcript"],
-            r#"{"minSeconds":f?,"keepSeconds":f?}"#,
+            r#"{"minSeconds":f?,"keepAfterSeconds":f?,"keepBeforeSeconds":f?,"keepSeconds":f?}"#,
             has_transcript,
             remove_pauses,
             true,
         ),
+        spec("transcript.find", "Find in Transcript", &[], r#"{"filter":"text"|"fillers"|"pauses","query":str?,"minSeconds":f?}"#, always, find, false),
+        spec(
+            "transcript.deleteHits",
+            "Delete Search Results",
+            &[],
+            r#"{"filter":"text"|"fillers"|"pauses","query":str?,"hit":n?,"mode":"extract"|"lift"?,"minSeconds":f?,"keepAfterSeconds":f?,"keepBeforeSeconds":f?}"#,
+            has_transcript,
+            delete_hits,
+            true,
+        ),
+        spec("transcript.findPauses", "Find Pauses in Transcribed Clips", &[], r#"{"items":[id]?,"wait":bool?}"#, has_transcripts, find_pauses_cmd, true),
+        spec("transcript.cancel", "Stop Transcribing", &[], "{}", always, cancel, false),
         spec("transcript.removeFillers", "Remove Filler Words", &["Sequence", "Transcript"], r#"{"fillers":[str]?}"#, has_transcript, remove_fillers, true),
         spec(
             "transcript.createCaptions",

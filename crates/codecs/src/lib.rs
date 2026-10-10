@@ -169,6 +169,48 @@ impl filmcraft_matroska::ByteSource for Src {
     }
 }
 
+/// How many frame durations the demuxers look at to find a stream's frame rate.
+pub(crate) const RATE_SAMPLES: usize = 2000;
+
+/// A video stream's frame rate from its frame durations (`units_per_second` units to a second).
+///
+/// Muxers that store times in whole milliseconds (OBS, WebM / Matroska, some MP4 writers) give
+/// 60 fps frames as 17, 17, 16 ms, so any single duration lies (the median, 17 ms, is 58.82 fps);
+/// and a dropped frame makes one duration two frames long. So this takes the mean of the
+/// durations within half a frame of the median, and snaps it to the nearest standard rate when
+/// the timestamps are too coarse to tell the two apart.
+pub(crate) fn rate_from_durations(mut durs: Vec<i64>, units_per_second: f64) -> filmcraft_time::FrameRate {
+    use filmcraft_time::FrameRate;
+    durs.retain(|d| *d > 0);
+    durs.sort_unstable();
+    let Some(&median) = durs.get(durs.len() / 2) else { return FrameRate::default() };
+    let typical: Vec<i64> = durs.into_iter().filter(|d| d.saturating_mul(2) >= median && d.saturating_mul(2) <= median.saturating_mul(3)).collect();
+    let n = typical.len().max(1) as f64;
+    let mean = typical.iter().map(|d| *d as f64).sum::<f64>() / n;
+    if !units_per_second.is_finite() || units_per_second <= 0.0 || !mean.is_finite() || mean <= 0.0 {
+        return FrameRate::default();
+    }
+    let fps = units_per_second / mean;
+    // The stored times step in multiples of `grain` (1 ms = 90 units of a 90 kHz timescale for
+    // OBS), so over n frames the mean is off by up to about grain / n.
+    let grain = typical.iter().fold(0i64, |g, d| gcd(g, *d)).max(1) as f64;
+    // (min then max, not clamp: for a nonsense rate the bounds would cross)
+    let tol = (fps * grain / (n * mean)).min(fps * 0.01).max(0.005);
+    let nearest = FrameRate::COMMON.iter().copied().min_by(|a, b| (a.as_f64() - fps).abs().total_cmp(&(b.as_f64() - fps).abs()));
+    match nearest {
+        Some(r) if (r.as_f64() - fps).abs() <= tol => r,
+        _ => FrameRate::from_f64(fps).sane(),
+    }
+}
+
+fn gcd(a: i64, b: i64) -> i64 {
+    let (mut a, mut b) = (a.unsigned_abs(), b.unsigned_abs());
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    i64::try_from(a).unwrap_or(i64::MAX)
+}
+
 /// Convenience: an `Arc` media source from bytes (tries MP4/MOV then audio files).
 pub fn open_bytes(name: &str, bytes: Arc<[u8]>) -> std::result::Result<filmcraft_media::SharedSource, filmcraft_media::MediaError> {
     filmcraft_media::open_bytes(name, bytes, &openers())

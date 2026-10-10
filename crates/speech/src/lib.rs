@@ -11,6 +11,8 @@
 //! - [`diarize`]: speaker labelling by clustering per-chunk MFCC statistics (classical, no model).
 //! - [`mel`]: the log-mel front end shared by Whisper and diarization.
 //! - [`vad`]: energy-based tightening of word bounds (keeps pauses out of words).
+//! - [`voice`]: where the voice actually is (voiced spans from the waveform, for pause cutting) and
+//!   snapping word bounds onto it.
 //!
 //! See `docs/transcripts.md` for the user-facing behaviour and accuracy numbers.
 
@@ -20,6 +22,7 @@ pub mod diarize;
 pub mod mel;
 pub mod models;
 pub mod vad;
+pub mod voice;
 #[cfg(feature = "whisper")]
 pub mod whisper;
 
@@ -126,7 +129,15 @@ pub fn load(models_dir: &std::path::Path, id: &str) -> Result<std::sync::Arc<dyn
     }
     #[cfg(feature = "whisper")]
     {
-        Ok(std::sync::Arc::new(whisper::Whisper::load(&models::model_dir(models_dir, m), m.id)?))
+        let dir = models::model_dir(models_dir, m);
+        // the Apple GPU in half precision when there is one; the CPU is the tested fallback
+        #[cfg(feature = "metal")]
+        if let Ok(gpu) = candle_core::Device::new_metal(0)
+            && let Ok(w) = whisper::Whisper::load_with(&dir, m.id, gpu, candle_core::DType::F16)
+        {
+            return Ok(std::sync::Arc::new(w));
+        }
+        Ok(std::sync::Arc::new(whisper::Whisper::load(&dir, m.id)?))
     }
     #[cfg(not(feature = "whisper"))]
     {

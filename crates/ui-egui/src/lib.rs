@@ -181,6 +181,10 @@ pub enum Dialog {
     TransitionDuration,
 }
 
+/// What the Text panel's transcript view depends on: the project revision, the open sequence and
+/// the pause length.
+pub(crate) type TranscriptKey = (u64, Option<filmcraft_project::ItemId>, u32);
+
 #[derive(Default)]
 pub struct Playback {
     pub playing: bool,
@@ -254,6 +258,11 @@ pub struct FilmcraftApp {
     deferred: Vec<(ControlRequest, f64)>,
     last_ui_time: f64,
     pub(crate) synthetic: Vec<egui::Event>,
+    /// Frames left in which the real mouse is ignored after the last synthetic event.
+    pub(crate) synthetic_hold: u8,
+    /// The Text panel's transcript view, kept while the project, sequence and pause settings stay
+    /// the same (pauses come from voice maps that would be wasteful to re-read every frame).
+    pub(crate) transcript_view: Option<(TranscriptKey, Arc<filmcraft_engine::transcript::TranscriptView>)>,
     /// BS.1770 loudness of the programme as it plays, and the next sample position to feed.
     pub(crate) loudness: Option<(filmcraft_audio_dsp::LoudnessMeter, i64)>,
     /// Status message last shown and when it first appeared (messages expire after a few seconds).
@@ -461,6 +470,8 @@ impl FilmcraftApp {
             deferred: Vec::new(),
             last_ui_time: 0.0,
             synthetic: Vec::new(),
+            synthetic_hold: 0,
+            transcript_view: None,
             loudness: None,
             status_seen: (String::new(), 0.0),
             pending_screenshots: Vec::new(),
@@ -995,7 +1006,8 @@ impl FilmcraftApp {
                 self.session.set_playhead(lo);
                 self.play(self.playback.speed);
             } else {
-                self.session.set_playhead(hi - rate.frame_duration());
+                // Premiere stops just past the last frame, lined up with the end of the last clip
+                self.session.set_playhead(rate.snap_edit(hi));
                 self.stop();
             }
         } else if t <= Tick::ZERO && self.playback.speed < 0.0 {
@@ -1278,7 +1290,8 @@ impl FilmcraftApp {
                 hook(&items);
             }
         }
-        if ctx.egui_wants_keyboard_input() || self.dialog == Some(Dialog::Shortcuts) {
+        // a modal dialog (recovery, Settings) takes the keyboard: no edits behind its back
+        if ctx.egui_wants_keyboard_input() || self.dialog == Some(Dialog::Shortcuts) || ctx.memory(|m| m.top_modal_layer()).is_some() {
             return;
         }
         // Esc cancels a dynamic trim in progress
@@ -1314,6 +1327,9 @@ impl FilmcraftApp {
             } else {
                 json!({})
             };
+            if menus::open_dialog_for(self, &id) {
+                continue;
+            }
             if let Err(e) = menus::invoke(self, ctx, &id, params) {
                 self.ui.status = e;
             }
@@ -1466,6 +1482,9 @@ impl FilmcraftApp {
         self.handle_drops(&ctx);
         if let Some(rx) = self.command_inbox.take() {
             while let Ok(id) = rx.try_recv() {
+                if menus::open_dialog_for(self, &id) {
+                    continue;
+                }
                 if let Err(e) = menus::invoke(self, &ctx, &id, json!({})) {
                     self.ui.status = e;
                 }
@@ -1496,6 +1515,7 @@ impl FilmcraftApp {
             state::Mode::Import => panels::import_mode::show(self, ui, body),
             state::Mode::Export => panels::export_mode::show(self, ui, body),
         }
+self.auto.mark_dialogs();
         // the Timeline has had its chance to place a file drop this frame; anything left stays a bin import
         self.pending_timeline_drop = None;
         panels::dialogs::show(self, &ctx);
@@ -1518,6 +1538,7 @@ impl FilmcraftApp {
             }
         }
         let hint = if !self.ui.status.is_empty() { self.ui.status.clone() } else { self.hint_text() };
+        self.auto.add("status.bar", sb, &hint);
         ui.painter().text(egui::pos2(sb.min.x + 10.0, sb.center().y), egui::Align2::LEFT_CENTER, hint, Tokens::ui(11.0), t.text_dim);
         let resp = ui.interact(sb, egui::Id::new("status-bar"), egui::Sense::click());
         if resp.clicked() {
@@ -1723,10 +1744,20 @@ impl FilmcraftApp {
 
 impl eframe::App for FilmcraftApp {
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        let pointer = |e: &egui::Event| matches!(e, egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. } | egui::Event::MouseWheel { .. });
+        // While an agent's gesture is under way (and for a few frames after, until egui has acted
+        // on it), the real mouse must not move egui's pointer: the user may be working in another
+        // app, and raising the window for the control channel makes macOS report where the real
+        // cursor is. Either used to land between a synthetic press and release, and the click was
+        // lost (about one in four on a freshly opened dialog).
+        if !self.synthetic.is_empty() || self.synthetic_hold > 0 {
+            raw_input.events.retain(|e| !pointer(e) && !matches!(e, egui::Event::PointerGone));
+            self.synthetic_hold = self.synthetic_hold.saturating_sub(1);
+        }
         if !self.synthetic.is_empty() {
+            self.synthetic_hold = 4;
             // Pointer events go one per frame so egui sees press → moves → release as a real drag
             // (all in one frame reads as a click); key/text runs go together up to a key release.
-            let pointer = |e: &egui::Event| matches!(e, egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. } | egui::Event::MouseWheel { .. });
             let n = if pointer(&self.synthetic[0]) {
                 1
             } else {
@@ -1804,6 +1835,7 @@ impl eframe::App for FilmcraftApp {
             self.ui_error = Some(crash::take_last().unwrap_or_else(|| "unknown error".into()));
             self.playback.playing = false;
         }
+        self.auto.end_frame();
         self.error_window(ui.ctx());
         let ctx = ui.ctx().clone();
         self.last_ui_time = ctx.input(|i| i.time);

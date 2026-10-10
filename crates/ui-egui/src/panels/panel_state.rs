@@ -14,6 +14,26 @@ pub struct PanelsState {
     pub reference: ReferenceState,
     pub events: EventsState,
     pub progress: ProgressState,
+    /// The monitors' transport bars as their Button Editors changed them.
+    pub transport: TransportState,
+}
+
+/// The Source and Program monitors' transport bars, as the Button Editor (the `+` at the right of
+/// a bar) changes them.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TransportState {
+    pub source: TransportButtons,
+    pub program: TransportButtons,
+}
+
+/// One transport bar's changes from its default buttons, by command id (`markers.add`,
+/// `playback.loop`…): the default buttons taken off and the extra ones put on, in the order added.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TransportButtons {
+    pub hidden: Vec<String>,
+    pub added: Vec<String>,
 }
 
 /// Lumetri Scopes settings (the wrench / right-click menu and the footer).
