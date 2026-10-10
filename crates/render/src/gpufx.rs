@@ -981,7 +981,7 @@ impl FxOp {
                     v = v.map(|q| l3 + (q - l3) * s);
                     // vignette
                     if vignette_on && va.abs() > 1e-4 {
-                        let nx = (x as f32 / w - 0.5) * 2.0 * (1.0 + vround * 0.0) * if vround < 0.0 { aspect.powf(-vround) } else { 1.0 };
+                        let nx = (x as f32 / w - 0.5) * 2.0 * lumetri_vignette_aspect(aspect, vround);
                         let ny = (y as f32 / h - 0.5) * 2.0;
                         let d = (nx * nx + ny * ny).sqrt() / std::f32::consts::SQRT_2;
                         let edge = ((d - vmid * 0.9) / (vfeather.max(0.01) * 0.9)).clamp(0.0, 1.0);
@@ -994,6 +994,17 @@ impl FxOp {
             }
         }
     }
+}
+
+/// Horizontal scale of the Lumetri vignette's coordinates for a Roundness of `vround`
+/// (−1 … 1) on a frame `aspect` wide. At 0 the vignette is an ellipse that follows the
+/// frame; positive values move it towards a circle (1 = a true circle), negative values
+/// stretch it into a wider oval. Non-finite or out-of-range input never yields NaN.
+pub fn lumetri_vignette_aspect(aspect: f32, vround: f32) -> f32 {
+    if !aspect.is_finite() || aspect <= 0.0 || !vround.is_finite() {
+        return 1.0;
+    }
+    aspect.powf(vround.clamp(-1.0, 1.0))
 }
 
 /// sRGB encoding that keeps values above 1 (super-whites) instead of clamping them.
