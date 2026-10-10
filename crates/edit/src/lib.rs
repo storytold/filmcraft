@@ -214,6 +214,26 @@ fn transitions_follow_cuts(before: &Sequence, after: &mut Sequence) {
     }
 }
 
+/// Keep a clip's one-sided transitions (a fade in from nothing, a fade out to nothing) on its edges
+/// after a regular trim moved them, no longer than the clip (#374). Transitions between two clips
+/// are left alone: a regular trim cannot move their cut.
+fn fades_follow_edges(track: &mut Track, clip: ClipId) {
+    let Some((start, end, len)) = track.item(clip).map(|i| (i.start, i.end(), i.duration)) else { return };
+    for tr in &mut track.transitions {
+        match (tr.from, tr.to) {
+            (None, Some(to)) if to == clip => {
+                tr.duration = tr.duration.min(len);
+                tr.start = start;
+            }
+            (Some(from), None) if from == clip => {
+                tr.duration = tr.duration.min(len);
+                tr.start = end - tr.duration;
+            }
+            _ => {}
+        }
+    }
+}
+
 fn place(track: &mut Track, item: TrackItem) {
     let idx = track.items.partition_point(|i| i.start <= item.start);
     track.items.insert(idx, item);
@@ -670,6 +690,8 @@ pub fn trim(seq: &mut Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta:
             }
         }
         transitions_follow_cuts(seq, &mut work);
+    } else if let Ok(track) = track_mut(&mut work, tid) {
+        fades_follow_edges(track, clip);
     }
     work.check().map_err(EditError::Other)?;
     *seq = work;
