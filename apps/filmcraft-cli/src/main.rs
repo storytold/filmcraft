@@ -56,7 +56,7 @@ fn stdout_failed(e: std::io::Error) {
     if STDOUT_GONE.swap(true, Ordering::Relaxed) || e.kind() == std::io::ErrorKind::BrokenPipe {
         return;
     }
-    eprintln!("filmcraft-cli: can't write to stdout: {e}");
+    diag(format_args!("filmcraft-cli: can't write to stdout: {e}"));
     STDOUT_ERROR.store(true, Ordering::Relaxed);
 }
 
@@ -115,13 +115,23 @@ EXIT STATUS
   0 success · 1 a command failed · 2 usage error
 ";
 
+/// Writes one diagnostic line to `w`, dropping any write error. `eprintln!` panics (exit 101) when stderr's
+/// reader is gone, which would turn a usage error, a failure or a finished export into a crash.
+fn write_diag(w: &mut dyn std::io::Write, msg: std::fmt::Arguments) {
+    let _ = writeln!(w, "{msg}");
+}
+
+fn diag(msg: std::fmt::Arguments) {
+    write_diag(&mut std::io::stderr(), msg);
+}
+
 fn usage(msg: impl std::fmt::Display) -> ! {
-    eprintln!("filmcraft-cli: {msg}\nRun `filmcraft-cli help` for usage.");
+    diag(format_args!("filmcraft-cli: {msg}\nRun `filmcraft-cli help` for usage."));
     std::process::exit(2)
 }
 
 fn fail(msg: impl std::fmt::Display) -> ! {
-    eprintln!("filmcraft-cli: {msg}");
+    diag(format_args!("filmcraft-cli: {msg}"));
     std::process::exit(1)
 }
 
@@ -373,11 +383,7 @@ async fn cli() {
             if let Some(r) = a.opt("--range") {
                 p["range"] = json!(r);
             }
-            if let (Some(s0), Some(s1)) = (a.opt("--start"), a.opt("--end")) {
-                p["range"] = json!("custom");
-                p["startSeconds"] = parse_value(s0);
-                p["endSeconds"] = parse_value(s1);
-            }
+            set_custom_bounds(&mut p, a.opt("--start"), a.opt("--end"));
             if let Some(js) = a.opt("--settings") {
                 p["settings"] = serde_json::from_str(js).unwrap_or_else(|e| usage(format!("--settings: {e}")));
             }
@@ -399,7 +405,7 @@ async fn cli() {
             match r {
                 Ok(v) => {
                     print(&a, &v);
-                    eprintln!("exported {} in {:.1}s", written_paths(&v, out).join(", "), t0.elapsed().as_secs_f64());
+                    diag(format_args!("exported {} in {:.1}s", written_paths(&v, out).join(", "), t0.elapsed().as_secs_f64()));
                 }
                 Err(e) => fail(format!("export: {e}")),
             }
@@ -414,11 +420,11 @@ async fn cli() {
             let out = a.opt("--out").unwrap_or("frame.png");
             s.set_playhead(filmcraft_time::Tick::from_seconds_f64(secs));
             let t0 = std::time::Instant::now();
-            let Some(img) = s.render_program(scale) else { fail("no sequence") };
+            let img = render_at_playhead(&s, scale).unwrap_or_else(|e| fail(e));
             let dt = t0.elapsed();
             let png = filmcraft_automation::png_rgba(img.w as u32, img.h as u32, img.over_black_rgba8(), 0).unwrap_or_else(|e| fail(e));
             std::fs::write(out, png).unwrap_or_else(|e| fail(format!("{out}: {e}")));
-            eprintln!("rendered {}x{} in {:.1} ms → {out}", img.w, img.h, dt.as_secs_f64() * 1000.0);
+            diag(format_args!("rendered {}x{} in {:.1} ms → {out}", img.w, img.h, dt.as_secs_f64() * 1000.0));
         }
         "mcp" => {
             let server = match a.opt("--bridge") {
@@ -454,17 +460,66 @@ fn written_paths(result: &Value, requested: &str) -> Vec<String> {
     if paths.is_empty() { vec![requested.to_string()] } else { paths }
 }
 
+/// The active sequence at the playhead, or the reason it cannot be rendered (no sequence, bad scale).
+fn render_at_playhead(s: &Session, scale: f32) -> Result<filmcraft_engine::render::Image, String> {
+    s.try_render_program_at(scale, s.playhead()).map_err(|e| e.to_string())
+}
+
+/// `--start` / `--end` ask for a custom range. A lone bound is forwarded too, so the engine reports the missing one
+/// instead of the export silently running over the whole sequence.
+fn set_custom_bounds(p: &mut Value, start: Option<&str>, end: Option<&str>) {
+    if start.is_none() && end.is_none() {
+        return;
+    }
+    p["range"] = json!("custom");
+    if let Some(s0) = start {
+        p["startSeconds"] = parse_value(s0);
+    }
+    if let Some(s1) = end {
+        p["endSeconds"] = parse_value(s1);
+    }
+}
+
 #[cfg(test)]
 mod format_tests {
+    #[test]
+    fn render_reports_the_real_reason() {
+        let mut s = filmcraft_engine::Session::default();
+        assert!(super::render_at_playhead(&s, 0.5).unwrap_err().contains("sequence"));
+        s.execute("file.newSequence", serde_json::json!({"width": 16, "height": 16})).unwrap();
+        for scale in [0.0, -1.0, f32::NAN] {
+            let e = super::render_at_playhead(&s, scale).unwrap_err();
+            assert!(e.contains("finite and positive"), "{e}");
+        }
+        assert_eq!(super::render_at_playhead(&s, 0.5).unwrap().w, 8);
+    }
+
     /// The CLI (and MCP / headless runs, which share its entry point) registers the hardware
     /// decoders at start-up.
     #[test]
     fn startup_registers_the_hardware_decoders() {
         let hardware = super::register_hardware_decoders();
-        // always on macOS and Windows; on Linux when a VA-API driver is there
+        // always on macOS and Windows; on Linux when a VA-API driver or NVIDIA's driver (NVDEC) is there
         let expected = cfg!(any(target_os = "macos", target_os = "windows"))
             || (cfg!(target_os = "linux") && matches!(hardware, filmcraft_platform::Availability::Available(_)));
         assert_eq!(filmcraft_platform::registered(), expected, "{hardware:?}");
+    }
+
+    #[test]
+    fn a_failing_diagnostic_stream_does_not_panic() {
+        struct Closed;
+        impl std::io::Write for Closed {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+        }
+        super::write_diag(&mut Closed, format_args!("exported {}", "a.wav"));
+        let mut ok = Vec::new();
+        super::write_diag(&mut ok, format_args!("hi"));
+        assert_eq!(ok, b"hi\n");
     }
 
     #[test]
@@ -476,6 +531,23 @@ mod format_tests {
         assert_eq!(super::written_paths(&queued, "a.mp4"), ["a.mp4.mov", "b.wav"]);
         assert_eq!(super::written_paths(&json!({}), "x.mov"), ["x.mov"]);
         assert_eq!(super::written_paths(&json!({"items": []}), "x.mov"), ["x.mov"]);
+    }
+
+    #[test]
+    fn export_lone_bound_is_forwarded_as_custom_range() {
+        use serde_json::json;
+        let mut p = json!({});
+        super::set_custom_bounds(&mut p, Some("0.25"), None);
+        assert_eq!(p["range"], "custom");
+        assert_eq!(p["startSeconds"], 0.25);
+        assert!(p.get("endSeconds").is_none());
+        let mut p = json!({});
+        super::set_custom_bounds(&mut p, None, Some("0.25"));
+        assert_eq!(p["range"], "custom");
+        assert_eq!(p["endSeconds"], 0.25);
+        let mut p = json!({});
+        super::set_custom_bounds(&mut p, None, None);
+        assert!(p.get("range").is_none());
     }
 
     #[test]

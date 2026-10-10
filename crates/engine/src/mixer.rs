@@ -1048,7 +1048,7 @@ fn clip_set(s: &mut Session, p: &Value) -> Result<Value> {
 // ------------------------------------------------------------------------------------- audio gain
 
 /// Peak (dBFS, before clip gain) of each selected audio clip's source range.
-fn clip_peaks(s: &Session, clips: &[filmcraft_project::ClipId]) -> Vec<(filmcraft_project::ClipId, f64)> {
+pub(crate) fn clip_peaks(s: &Session, clips: &[filmcraft_project::ClipId]) -> Vec<(filmcraft_project::ClipId, f64)> {
     let Some(seq) = s.active_sequence() else { return Vec::new() };
     let sr = seq.settings.sample_rate.max(1);
     let provider = s.media.provider(s.project.clone(), s.services.clone());
@@ -1065,7 +1065,7 @@ fn clip_peaks(s: &Session, clips: &[filmcraft_project::ClipId]) -> Vec<(filmcraf
             let mut pos = s0;
             while pos < s0 + len {
                 let n = (s0 + len - pos).min(sr as i64) as usize;
-                if let Ok(b) = src.audio(pos, n, sr) {
+                if let Ok(b) = src.audio_stream(it.audio_stream, pos, n, sr) {
                     peak = b.peaks().into_iter().fold(peak, f32::max);
                 }
                 pos += n as i64;

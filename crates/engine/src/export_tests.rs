@@ -64,6 +64,19 @@ fn export_integer_parameters_cannot_wrap_or_overflow() {
     assert!(s.execute("export.resolve", json!({"bitrateKbps":8000.0, "keyframeDistance":48.0})).is_ok(), "integer-valued floats are integers");
 }
 
+#[test]
+fn nested_camel_case_settings_are_honoured() {
+    let mut s = demo();
+    let camel = json!({"audio":{"sampleRate":96000}, "effects":{"loudness":{"enabled":true, "targetLufs":-16}}});
+    let snake = json!({"audio":{"sample_rate":96000}, "effects":{"loudness":{"enabled":true, "target_lufs":-16}}});
+    let camel = s.execute("export.resolve", json!({"format":"wav", "settings":camel})).unwrap();
+    let snake = s.execute("export.resolve", json!({"format":"wav", "settings":snake})).unwrap();
+    assert_eq!(camel["output"]["sampleRate"], 96000);
+    assert_eq!(camel["settings"]["audio"]["sample_rate"], 96000);
+    assert_eq!(camel["settings"]["effects"]["loudness"]["target_lufs"], -16.0);
+    assert_eq!(camel["settings"], snake["settings"]);
+}
+
 fn probe(path: &str) -> Option<Value> {
     let ffprobe = filmcraft_testkit::ffprobe_or_skip("export presets")?;
     let out = std::process::Command::new(ffprobe).args(["-v", "error", "-of", "json", "-show_format", "-show_streams", path]).output().unwrap();
@@ -357,6 +370,22 @@ fn queue_orders_cancels_and_retries() {
     // clear finished
     s.execute("export.queue.clear", json!({})).unwrap();
     assert!(queue(&mut s).is_empty());
+}
+
+#[test]
+fn queue_move_by_extreme_offsets_clamps_instead_of_overflowing() {
+    let mut s = demo();
+    let ids: Vec<u64> = (0..3)
+        .map(|_| {
+            let r = s.execute("export.queue.add", json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": "queued-output/"})).unwrap();
+            r["added"][0].as_u64().unwrap()
+        })
+        .collect();
+    let order = |s: &mut Session| -> Vec<u64> { queue(s).iter().map(|i| i["id"].as_u64().unwrap()).collect() };
+    s.execute("export.queue.move", json!({"id": ids[1], "by": i64::MAX})).unwrap();
+    assert_eq!(order(&mut s), [ids[0], ids[2], ids[1]]);
+    s.execute("export.queue.move", json!({"id": ids[1], "by": i64::MIN})).unwrap();
+    assert_eq!(order(&mut s), [ids[1], ids[0], ids[2]]);
 }
 
 #[test]

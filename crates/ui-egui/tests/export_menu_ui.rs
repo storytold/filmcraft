@@ -29,7 +29,11 @@ impl Driver {
             asked.lock().unwrap().push((filter.to_string(), exts.iter().map(|e| e.to_string()).collect(), suggested.to_string()));
             save_to.as_ref().map(|d| d.join(suggested).to_string_lossy().into_owned())
         }));
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
+        let mut builder = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
+        if std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").is_some() {
+            builder = builder.wgpu();
+        }
+        let harness = builder.build_eframe(move |_cc| app);
         let mut d = Driver { harness, tx };
         d.frames(4);
         d
@@ -141,4 +145,60 @@ fn file_export_entries_need_an_open_sequence() {
         assert_eq!(d.call("ui.menu.invoke", json!({"id": id}))["ok"], json!(false), "{id}");
         assert_eq!(d.harness.state().ui.mode, Mode::Edit, "{id}");
     }
+}
+
+#[test]
+fn marker_csv_menu_exports_sequence_review_notes() {
+    let dir = tmp("markers");
+    let asked = Asked::default();
+    let mut s = session();
+    s.execute("markers.clearAll", json!({"target":"program"})).unwrap();
+    s.execute("markers.add", json!({"target":"program", "frame":24, "name":"Review, 日本語", "comment":"Change \"this\"\nNext line"})).unwrap();
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    let mut d = Driver::new(s, Some(dir.clone()), asked.clone());
+    let menu = d.ok("ui.menu.list", json!({}));
+    let entry = menu.as_array().unwrap().iter().find(|i| i["id"] == "markers.exportCsv").unwrap();
+    assert_eq!(entry["path"], json!(["Markers"]));
+    assert_eq!(entry["enabled"], true);
+    d.ok("ui.click", json!({"id":"menu.Markers"}));
+    d.frames(3);
+    let elements = d.ok("ui.elements", json!({"prefix":"menu.markers.exportCsv"}));
+    assert!(!elements.as_array().unwrap().is_empty(), "the menu command has an automation id");
+    if let Some(dir) = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR") {
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        d.harness.render().unwrap().save(dir.join("marker-csv-menu.png")).unwrap();
+    }
+    d.ok("ui.click", json!({"id":"menu.markers.exportCsv"}));
+    d.frames(3);
+    let (filter, exts, suggested) = asked.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(filter, "Marker report (CSV)");
+    assert_eq!(exts, ["csv"]);
+    assert!(suggested.ends_with(".csv"));
+    let bytes = std::fs::read(dir.join(suggested)).unwrap();
+    let csv = String::from_utf8(bytes).unwrap();
+    assert!(csv.contains("\"Review, 日本語\",\"Change \"\"this\"\"\nNext line\""));
+    assert_eq!(csv.matches("\"Review, 日本語\"").count(), 1);
+    assert_eq!(*d.harness.state().session.project, *before);
+    assert_eq!(d.harness.state().session.history.undo.len(), undo);
+    assert!(d.harness.state().ui.status.starts_with("Exported "));
+    let direct = dir.join("direct, 字幕.csv");
+    d.ok("engine.execute", json!({"command":"markers.exportCsv", "params":{"path":direct.to_string_lossy()}}));
+    assert_eq!(std::fs::read(direct).unwrap(), csv.as_bytes());
+    assert_eq!(asked.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn marker_csv_save_cancel_and_disabled_menu_leave_the_session_alone() {
+    let asked = Asked::default();
+    let mut d = Driver::new(session(), None, asked.clone());
+    let before = d.harness.state().session.project.clone();
+    assert_eq!(d.ok("ui.menu.invoke", json!({"id":"markers.exportCsv"})), Value::Null);
+    assert_eq!(*d.harness.state().session.project, *before);
+    assert_eq!(asked.lock().unwrap().len(), 1);
+    let asked = Asked::default();
+    let mut d = Driver::new(Session::default(), None, asked.clone());
+    assert_eq!(d.call("ui.menu.invoke", json!({"id":"markers.exportCsv"}))["ok"], false);
+    assert!(asked.lock().unwrap().is_empty(), "disabled exports must not open a save dialog");
 }

@@ -146,3 +146,14 @@ calling thread's stack. The retained reference is released after the NVENC sessi
 other users' references are not reset. `libnvidia-encode.so.1` stays loaded with its function table.
 Both libraries come from the installed NVIDIA driver, not this project. Export registration on
 Linux does not claim that a hardware decoder is available. The same opt-in and fallback rules apply.
+
+## Addendum (2026-10-09): NVDEC hardware decoding on Linux
+
+NVIDIA's proprietary driver has no VA-API of its own (only through the separate
+`libva-nvidia-driver`), so Linux gets a second decoder backend, `nvdec/`, registered in front of
+VA-API's. The rules above hold: `libnvcuvid.so.1` and `libcuda.so.1` are loaded at run time,
+`nvdec/ffi.rs` is transcribed from NVIDIA's MIT-licensed headers and checked by
+`nvdec/abi_tests.rs`, only `nvdec::cuvid` carries `#[allow(unsafe_code)]`, and the CUDA context is
+the one `nvenc::device` already retains for encoding. Unlike VA-API, NVDEC parses the stream
+itself; its callbacks run inside our parse call and never unwind into C (they record the first
+error and return 0, and the decoder then fails over to software like any other backend).

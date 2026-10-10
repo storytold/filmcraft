@@ -23,6 +23,7 @@ pub mod graphic_templates;
 pub mod graphics;
 pub mod interchange;
 pub mod keyboard;
+mod marker_export;
 pub mod masks;
 pub mod media_browser;
 pub mod media_pool;
@@ -721,14 +722,15 @@ impl Session {
             open_sequences: self.state.open_sequences.iter().copied().filter(is_seq).collect(),
             active_sequence: self.state.active_sequence.filter(is_seq),
             sequences: self.state.timeline_views.iter().filter(|(id, _)| is_seq(id)).map(|(id, v)| (*id, *v)).collect(),
+            playheads: self.state.playheads.iter().filter(|(id, _)| is_seq(id)).map(|(id, t)| (*id, *t)).collect(),
         }
     }
 
     /// Open what was open when the project was saved. Nothing in `view` is trusted: ids that are
     /// not sequences of this project are dropped (also a second mention of the same sequence),
-    /// and numbers are brought into range. A view without any open sequence leaves the project
-    /// on its first sequence: a project saved by a session that never showed one (a script, the
-    /// CLI) should not open on an empty Timeline.
+    /// and numbers are brought into range (a playhead also lands on a frame of its sequence). A
+    /// view without any open sequence leaves the project on its first sequence: a project saved
+    /// by a session that never showed one (a script, the CLI) should not open on an empty Timeline.
     pub fn restore_project_view(&mut self, view: filmcraft_project::ProjectView) {
         let mut open: Vec<ItemId> = Vec::new();
         for id in view.open_sequences {
@@ -742,6 +744,12 @@ impl Session {
         }
         self.state.timeline_views =
             view.sequences.into_iter().filter(|(id, _)| self.project.sequence(*id).is_some()).filter_map(|(id, v)| Some((id, v.checked()?))).collect();
+        for (id, t) in view.playheads {
+            if let Some(seq) = self.project.sequence(id) {
+                let t = t.clamp(Tick::ZERO, filmcraft_project::ProjectView::MAX_PLAYHEAD);
+                self.state.playheads.insert(id, seq.settings.frame_rate.snap(t));
+            }
+        }
     }
 
     /// Every edit passes through here: one that would put a sequence inside itself (directly or
@@ -1101,6 +1109,8 @@ mod nest_fidelity_tests;
 mod nesting_tests;
 #[cfg(test)]
 mod panels_tests;
+#[cfg(test)]
+mod par_tests;
 #[cfg(test)]
 mod premiere_kys_tests;
 #[cfg(test)]

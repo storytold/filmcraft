@@ -172,6 +172,8 @@ fn prop_name(pid: u16) -> &'static str {
     match pid {
         0x0001 => "MetaDictionary",
         0x0002 => "Header",
+        0x0003 => "ClassDefinitions",
+        0x0004 => "TypeDefinitions",
         0x3B03 => "Content",
         0x3B04 => "Dictionary",
         0x3B06 => "IdentificationList",
@@ -197,6 +199,16 @@ fn prop_name(pid: u16) -> &'static str {
         0x0204 => "ComponentComments",
         0x1E09 => "ParametersDefined",
         _ => "Property",
+    }
+}
+
+/// The key size of a strong reference set keyed by `key_pid`, for a set with no entry to take it
+/// from: AUIDs (definitions) are 16 bytes, MobIDs 32.
+fn set_key_size(key_pid: u16) -> usize {
+    match key_pid {
+        0x0005 | 0x1B01 => 16,
+        0x4401 | 0x2701 => 32,
+        _ => 0,
     }
 }
 
@@ -269,7 +281,7 @@ impl W {
                     index.extend_from_slice(&(items.len() as u32).to_le_bytes()); // first free key
                     index.extend_from_slice(&u32::MAX.to_le_bytes()); // last free key
                     let set_key = if let Value::StrongSet(_, k) = v { Some(*k) } else { None };
-                    let key_size = set_key.map(|k| items.first().and_then(|i| i.data(k)).map_or(0, <[u8]>::len)).unwrap_or(0);
+                    let key_size = set_key.map(|k| items.first().and_then(|i| i.data(k)).map_or_else(|| set_key_size(k), <[u8]>::len)).unwrap_or(0);
                     if let Some(k) = set_key {
                         index.extend_from_slice(&k.to_le_bytes());
                         index.push(key_size as u8);

@@ -28,6 +28,7 @@ pub mod mp4;
 pub mod mpeg;
 pub mod mxf;
 pub mod ogg;
+mod stream_color;
 pub mod video;
 
 use std::sync::{Arc, RwLock};
@@ -177,5 +178,7 @@ pub fn open_bytes(name: &str, bytes: Arc<[u8]>) -> std::result::Result<filmcraft
 mod audio_timing_tests;
 #[cfg(test)]
 mod rounded_pts_tests;
+#[cfg(test)]
+mod stream_color_tests;
 #[cfg(test)]
 mod tests;

@@ -551,3 +551,70 @@ fn hardware_decoding_setting_drives_the_decoder_switch() {
     assert!(filmcraft_codecs::hw::hardware_decoding());
     assert!(settings::field("playback.hardwareDecoding").is_some_and(|f| f.wired && matches!(f.kind, Kind::Choice(_))));
 }
+
+/// New users keep the dark Darkest theme (following the system is opt-in); a file saved before
+/// appearance modes keeps showing its Color Theme as a fixed Dark or Light mode.
+#[test]
+fn appearance_defaults_and_legacy_theme_migrate() {
+    let a = Preferences::default().appearance;
+    assert_eq!((a.appearance_mode.as_str(), a.dark_theme.as_str(), a.light_theme.as_str()), ("dark", "darkest", "light"));
+    assert_eq!(a.shown_theme(Some(true)), "darkest", "Dark mode ignores a light system");
+    let dir = tmp_dir("prefs-appearance-migrate");
+    let path = dir.join("preferences.json");
+    for (theme, mode, dark, light) in [("darkest", "dark", "darkest", "light"), ("dark", "dark", "dark", "light"), ("light", "light", "darkest", "light")] {
+        std::fs::write(&path, json!({"version": 2, "appearance": {"colorTheme": theme}}).to_string()).unwrap();
+        let a = Preferences::load(&path).appearance;
+        assert_eq!((a.appearance_mode.as_str(), a.dark_theme.as_str(), a.light_theme.as_str()), (mode, dark, light), "{theme}");
+        assert_eq!(a.shown_theme(None), theme);
+    }
+    // a v1 file without an appearance section, and a hostile theme, get the defaults
+    std::fs::write(&path, r#"{"autoSave":{"enabled":true}}"#).unwrap();
+    assert_eq!(Preferences::load(&path).appearance, settings::AppearancePrefs::default());
+    std::fs::write(&path, r#"{"appearance":{"colorTheme":"neon","appearanceMode":7,"darkTheme":"light"}}"#).unwrap();
+    assert_eq!(Preferences::load(&path).appearance, settings::AppearancePrefs::default());
+    // a file with a mode keeps it
+    std::fs::write(&path, r#"{"appearance":{"colorTheme":"darkest","appearanceMode":"auto","lightTheme":"light","darkTheme":"dark"}}"#).unwrap();
+    let a = Preferences::load(&path).appearance;
+    assert_eq!((a.appearance_mode.as_str(), a.shown_theme(Some(true)), a.shown_theme(Some(false)), a.shown_theme(None)), ("auto", "light", "dark", "dark"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn appearance_choices_validate_and_legacy_theme_still_selects() {
+    let mut s = Session::default();
+    s.execute("prefs.set", json!({"values": {"appearance.appearanceMode": "auto", "appearance.darkTheme": "dark"}})).unwrap();
+    assert_eq!((s.prefs.appearance.appearance_mode.as_str(), s.prefs.appearance.dark_theme.as_str()), ("auto", "dark"));
+    for (key, value) in [
+        ("appearance.darkTheme", json!("light")),
+        ("appearance.lightTheme", json!("darkest")),
+        ("appearance.appearanceMode", json!("system")),
+        ("appearance.appearanceMode", json!(1)),
+    ] {
+        assert!(s.execute("prefs.set", json!({"key": key, "value": value})).is_err(), "{key} {value}");
+    }
+    // the single Color Theme of older clients selects that theme and fixes the mode to its family
+    set(&mut s, "appearance.colorTheme", json!("light"));
+    assert_eq!((s.prefs.appearance.appearance_mode.as_str(), s.prefs.appearance.light_theme.as_str()), ("light", "light"));
+    assert_eq!(s.prefs.appearance.dark_theme, "dark", "the dark choice is kept");
+    set(&mut s, "appearance.colorTheme", json!("darkest"));
+    assert_eq!((s.prefs.appearance.appearance_mode.as_str(), s.prefs.appearance.dark_theme.as_str()), ("dark", "darkest"));
+    // the legacy Color Theme follows the mode and theme choices, so clients reading it aren't stale
+    assert_eq!(s.prefs.appearance.color_theme, "darkest");
+    set(&mut s, "appearance.appearanceMode", json!("light"));
+    assert_eq!(s.prefs.appearance.color_theme, "light");
+    set(&mut s, "appearance.appearanceMode", json!("dark"));
+    set(&mut s, "appearance.darkTheme", json!("dark"));
+    assert_eq!(s.prefs.appearance.color_theme, "dark");
+    set(&mut s, "appearance.appearanceMode", json!("auto"));
+    assert_eq!(s.prefs.appearance.color_theme, "dark", "Auto: the dark theme");
+    set(&mut s, "appearance.colorTheme", json!("light"));
+    assert_eq!((s.prefs.appearance.appearance_mode.as_str(), s.prefs.appearance.color_theme.as_str()), ("light", "light"));
+    // the header button's cycle
+    let mut a = settings::AppearancePrefs::default();
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        a.appearance_mode = a.next_mode().into();
+        seen.push(a.appearance_mode.clone());
+    }
+    assert_eq!(seen, ["auto", "light", "dark", "auto"]);
+}

@@ -129,6 +129,22 @@ fn fingerprint_mismatch_is_refused_unless_forced() {
 }
 
 #[test]
+fn forced_relink_takes_the_new_files_properties() {
+    let root = tmp_dir("relink-forced-info");
+    let (path, items) = saved_project(&root);
+    std::fs::remove_dir_all(root.join("Media")).unwrap();
+    // same name, different pictures and a different size
+    let other = root.join("Other");
+    std::fs::create_dir_all(&other).unwrap();
+    make_movie(&other.join("a.mov"), DemoScene::Dunes, W * 2, H * 2, 12);
+    let mut s = open(&path);
+    s.execute("media.relink", json!({"item": items[0].0, "path": other.join("a.mov").to_string_lossy(), "force": true, "relinkOthers": false})).unwrap();
+    let width = s.project.item(items[0]).and_then(|i| i.as_media()).and_then(|m| m.info.video.as_ref().map(|v| v.width));
+    assert_eq!(width, Some(W * 2), "the item describes the replacement file");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn make_offline_shows_the_slate_until_relinked() {
     let root = tmp_dir("relink-offline");
     let (path, items) = saved_project(&root);

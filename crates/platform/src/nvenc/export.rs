@@ -120,6 +120,8 @@ impl VideoEncoder for NvencEncoder {
             }
             (true, None) => return Err(ExportError::Unsupported("NVENC Main 10 needs the HDR picture (EncoderFrame::hdr)".into())),
             (false, Some(_)) => return Err(ExportError::Unsupported("NVENC Main (8-bit) does not take HDR pictures".into())),
+            // the GPU converts the RGBA picture itself (BT.709 limited range, the same codes as `rgba_to_yuv420_8`)
+            (false, None) if self.enc.takes_rgba() => self.enc.encode_rgba(f.rgba, f.index).map_err(|e| ExportError::Encode(format!("NVENC: {e}{hint}")))?,
             (false, None) => {
                 filmcraft_export::timed(filmcraft_export::Stage::Convert, || {
                     filmcraft_export::rgba_to_yuv420_8(f.rgba, w, h, &mut self.y, &mut self.u, &mut self.v)
@@ -209,7 +211,21 @@ pub fn factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettin
         // H.265 through NVENC is Windows-only for now; on Linux this backend takes H.264 only
         return if cfg!(target_os = "windows") { hevc_factory(w, h, rate, s) } else { None };
     }
-    factory_with(format, w, h, rate, s, Nvenc::new)
+    factory_with(format, w, h, rate, s, |cfg| open(cfg, &Signal::default()))
+}
+
+/// Open the encoder for `cfg`. An 8-bit one takes the export's RGBA pictures as they are and converts
+/// them on the GPU, which keeps the RGB → 4:2:0 conversion off the CPU (where it competes with the
+/// render of the next frames); where the driver refuses RGB input, it takes the CPU's 4:2:0 as before.
+/// Main 10 takes its 10-bit planes.
+fn open(cfg: &Config, signal: &Signal) -> std::result::Result<Nvenc, String> {
+    if cfg.profile == Profile::HevcMain10 {
+        return Nvenc::with_signal(cfg, signal);
+    }
+    Nvenc::with_rgba_input(cfg, signal).or_else(|why| {
+        log::info!("NVENC RGBA input declined ({why}): converting to 4:2:0 on the CPU");
+        Nvenc::with_signal(cfg, signal)
+    })
 }
 
 /// The H.264 side of [`factory`], with the driver call (`open`) passed in so tests can stand in for it.
@@ -254,7 +270,7 @@ fn hevc_factory(w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<R
         Ok(c) => c,
         Err(why) => return declined(&why),
     };
-    match Nvenc::with_signal(&cfg, &nvenc_signal(&s.signal)) {
+    match open(&cfg, &nvenc_signal(&s.signal)) {
         Ok(enc) => {
             filmcraft_export::note_hw_encode_session();
             Some(Ok(Box::new(new_encoder(enc, w, h, rate, s.signal))))

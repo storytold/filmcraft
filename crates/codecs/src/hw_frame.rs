@@ -53,7 +53,7 @@ pub struct FrameStreamInfo {
 }
 
 /// The OBUs of a low-overhead AV1 sample: `(type, payload)`, stopping at the first malformed one.
-fn obus(data: &[u8]) -> Vec<(u8, &[u8])> {
+pub(crate) fn obus(data: &[u8]) -> Vec<(u8, &[u8])> {
     let mut out = Vec::new();
     let mut pos = 0usize;
     while let Some(&h) = data.get(pos) {

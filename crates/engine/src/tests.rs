@@ -35,6 +35,50 @@ fn demo_project_is_valid_and_renders() {
     assert!(img.px.chunks(4).any(|p| p[3] > 0.9));
 }
 
+/// Ordinary and configured multi-frame offsets remain valid.
+#[test]
+fn frame_steps_in_new_custom_rate_sequences_move_in_the_requested_direction() {
+    for fps in [31.0, 23.98, 24.999] {
+        let mut s = Session::default();
+        s.execute("file.newSequence", json!({"fps": fps})).unwrap();
+        let rate = s.sequence_rate();
+        s.execute("playhead.set", json!({"frame": 10})).unwrap();
+        assert_eq!(rate.frame_at(s.playhead()), 10);
+        for frame in 11..=42 {
+            s.execute("playhead.stepForward", json!({})).unwrap();
+            assert_eq!(rate.frame_at(s.playhead()), frame);
+        }
+        for frame in (10..42).rev() {
+            s.execute("playhead.stepBack", json!({})).unwrap();
+            assert_eq!(rate.frame_at(s.playhead()), frame);
+        }
+        s.execute("prefs.set", json!({"key": "playback.stepManyFrames", "value": 12})).unwrap();
+        s.execute("playhead.stepForward5", json!({})).unwrap();
+        assert_eq!(rate.frame_at(s.playhead()), 22);
+        s.execute("playhead.stepBack5", json!({})).unwrap();
+        assert_eq!(rate.frame_at(s.playhead()), 10);
+        s.execute("playhead.step", json!({"frames": -20})).unwrap();
+        s.execute("playhead.stepBack", json!({})).unwrap();
+        assert_eq!(s.playhead(), Tick::ZERO);
+    }
+}
+
+#[test]
+fn overflowing_frame_steps_are_errors_and_leave_the_playhead_unchanged() {
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"fps": 31.0})).unwrap();
+    for start in [10, 0] {
+        s.execute("playhead.set", json!({"frame": start})).unwrap();
+        let before = s.playhead();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.execute("playhead.step", json!({"frames": i64::MAX}))));
+        assert!(result.is_ok(), "an extreme frame offset must not panic");
+        assert!(matches!(result.unwrap(), Err(EngineError::BadParams { .. })));
+        assert_eq!(s.playhead(), before);
+    }
+    s.execute("playhead.step", json!({"frames": i64::MIN})).unwrap();
+    assert_eq!(s.playhead(), Tick::ZERO);
+}
+
 #[test]
 fn add_edit_undo_redo() {
     let mut s = demo();
@@ -280,6 +324,51 @@ fn add_keyframe_toggles_the_keyframe_at_the_playhead() {
     // the stopwatch ends the animation and keeps the value at the playhead
     s.execute("effects.toggleAnimation", key).unwrap();
     assert_eq!(scale(&s), (0, 100.0));
+}
+
+/// Dragging the Volume line or one of its keyframes in the timeline (#223) sends a keyframe edit
+/// every frame; `merge` keeps the whole drag one undo step and `begin` starts the next one.
+#[test]
+fn keyframe_drags_are_one_undo_step() {
+    let mut s = demo();
+    let c = s.active_sequence().unwrap().audio_tracks[0].items[0].id.0;
+    let level = |s: &Session| -> Vec<(i64, f64)> {
+        let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1;
+        it.effect("volume").unwrap().params["level"].keyframes.iter().map(|k| (k.time.0, k.value.as_f64().unwrap())).collect()
+    };
+    let key = json!({"clip": c, "effect": "volume", "param": "level"});
+    for sec in [0.5, 1.5] {
+        s.execute("playhead.set", json!({"seconds": sec})).unwrap();
+        s.execute("effects.addKeyframe", key.clone()).unwrap();
+    }
+    let before = level(&s);
+    let [(t0, _), (t1, _)] = before[..] else { panic!("two keyframes: {before:?}") };
+
+    // the line between them: both keyframes move together, frame after frame
+    for (i, v) in [-1.0, -2.0, -3.0].into_iter().enumerate() {
+        for t in [t0, t1] {
+            let p = json!({"clip": c, "effect": "volume", "param": "level", "mediaTime": t, "value": v, "merge": true, "begin": i == 0 && t == t0});
+            s.execute("effects.setKeyframe", p).unwrap();
+        }
+    }
+    assert_eq!(level(&s), [(t0, -3.0), (t1, -3.0)]);
+    s.undo();
+    assert_eq!(level(&s), before);
+
+    // one keyframe: time and value in one command
+    let mut at = t1;
+    for (i, d) in [1000, 2000, 3000].into_iter().enumerate() {
+        let p = json!({"clip": c, "effect": "volume", "param": "level", "mediaTime": at, "to": t1 + d, "value": -6.0, "merge": true, "begin": i == 0});
+        s.execute("effects.moveKeyframe", p).unwrap();
+        at = t1 + d;
+    }
+    assert_eq!(level(&s), [before[0], (t1 + 3000, -6.0)]);
+    s.undo();
+    assert_eq!(level(&s), before);
+
+    let bad = json!({"clip": c, "effect": "volume", "param": "level", "mediaTime": t0, "to": t0 + 1, "value": "loud"});
+    assert!(s.execute("effects.moveKeyframe", bad).is_err());
+    assert_eq!(level(&s), before);
 }
 
 #[test]
@@ -640,4 +729,38 @@ fn dragging_an_effect_parameter_is_one_undo_step() {
     assert_eq!(opacity(&s), 30.0, "undo takes back the whole second drag");
     s.undo();
     assert_eq!(opacity(&s), start, "and then the whole first one");
+}
+
+/// #484: Enable flips each selected clip on its own, as in Premiere. With one enabled and one
+/// disabled clip selected it swaps them, instead of first making both the same.
+#[test]
+fn enable_flips_each_selected_clip() {
+    let mut s = demo();
+    let enabled = |s: &Session, c: u64| s.active_sequence().unwrap().find_item(ClipId(c)).unwrap().1.enabled;
+    let partner = |s: &Session, c: u64| {
+        let q = s.active_sequence().unwrap();
+        let link = q.find_item(ClipId(c)).unwrap().1.link?;
+        q.all_tracks().flat_map(|t| t.items.iter()).find(|i| i.link == Some(link) && i.id != ClipId(c)).map(|i| i.id.0)
+    };
+    let (a, b) = (v1(&s)[0].0, v1(&s)[1].0);
+    s.execute("clip.enable", json!({"clips": [a]})).unwrap();
+    assert_eq!((enabled(&s, a), enabled(&s, b)), (false, true));
+    // mixed selection: each flips
+    s.execute("clip.enable", json!({"clips": [a, b]})).unwrap();
+    assert_eq!((enabled(&s, a), enabled(&s, b)), (true, false));
+    s.execute("clip.enable", json!({"clips": [a, b]})).unwrap();
+    assert_eq!((enabled(&s, a), enabled(&s, b)), (false, true));
+    // a clip named twice still flips once, and one press is one undo step
+    s.execute("clip.enable", json!({"clips": [a, a]})).unwrap();
+    assert!(enabled(&s, a));
+    s.undo();
+    assert_eq!((enabled(&s, a), enabled(&s, b)), (false, true));
+    // with linked selection on, a clip's linked audio flips with it
+    if let Some(au) = partner(&s, a) {
+        assert_eq!(enabled(&s, au), enabled(&s, a));
+    }
+    // a uniform selection still toggles as before
+    s.execute("clip.enable", json!({"clips": [b]})).unwrap();
+    s.execute("clip.enable", json!({"clips": [a, b]})).unwrap();
+    assert_eq!((enabled(&s, a), enabled(&s, b)), (true, true));
 }

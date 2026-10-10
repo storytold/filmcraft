@@ -107,6 +107,39 @@ fn keyframed_mask_path_interpolates() {
 }
 
 #[test]
+fn add_vertex_on_animated_path_clamps_oversized_index_and_rejects_empty_path() {
+    let (mut s, clip) = demo();
+    let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
+    let rate = s.active_sequence().unwrap().settings.frame_rate;
+    s.set_playhead(it.start);
+    s.execute("masks.add", json!({"effect": "opacity", "shape": "polygon", "center": [400, 400], "size": [200, 200]})).unwrap();
+    s.execute("effects.toggleAnimation", json!({"clip": clip.0, "effect": "opacity", "mask": 0, "param": "path"})).unwrap();
+    s.set_playhead(it.start + rate.tick_of(10));
+    s.execute("masks.translate", json!({"delta": [5, 0]})).unwrap();
+    // an index past the last vertex appends instead of panicking
+    s.execute("masks.addVertex", json!({"after": 100, "at": [1, 1]})).unwrap();
+    let l = s.execute("masks.list", json!({})).unwrap();
+    assert_eq!(l["masks"][0]["path"]["vertices"].as_array().unwrap().len(), 5);
+
+    // an empty animated path is a parameter error and leaves the mask alone
+    s.set_playhead(it.start);
+    s.execute("masks.add", json!({"effect": "opacity", "path": {"vertices": [], "closed": false}})).unwrap();
+    s.execute("effects.toggleAnimation", json!({"clip": clip.0, "effect": "opacity", "mask": 1, "param": "path"})).unwrap();
+    s.set_playhead(it.start + rate.tick_of(10));
+    s.execute("masks.translate", json!({"mask": 1, "delta": [5, 0]})).unwrap();
+    let e = s.execute("masks.addVertex", json!({"mask": 1, "after": 0, "at": [1, 1]})).unwrap_err().to_string();
+    assert!(e.contains("no vertices"), "{e}");
+    let l = s.execute("masks.list", json!({})).unwrap();
+    assert_eq!(l["masks"][1]["path"]["vertices"].as_array().unwrap().len(), 0);
+
+    // a static empty path still takes its first vertex
+    s.execute("masks.add", json!({"effect": "opacity", "path": {"vertices": [], "closed": false}})).unwrap();
+    s.execute("masks.addVertex", json!({"mask": 2, "after": 0, "at": [1, 1]})).unwrap();
+    let l = s.execute("masks.list", json!({})).unwrap();
+    assert_eq!(l["masks"][2]["path"]["vertices"].as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn merged_drag_is_one_undo_step_and_project_round_trips() {
     let (mut s, _) = demo();
     s.execute("effects.apply", json!({"effect": "gaussian_blur"})).unwrap();

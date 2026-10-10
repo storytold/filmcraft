@@ -21,7 +21,7 @@ panic path, and fix a crash before building on top of it. The cross-app standard
    code alone (a literal that always parses): a single-item `#[allow(clippy::expect_used)]` with the reason.
 3. **No `unsafe`** (`unsafe_code = "forbid"` for the workspace). The single exception is
    `crates/platform`, which needs `unsafe` to call the operating system's media APIs (hardware
-   video decoding through VideoToolbox, Media Foundation / Direct3D 11 and VA-API; hardware encoding) and does nothing else. It
+   video decoding through VideoToolbox, Media Foundation / Direct3D 11, VA-API and NVDEC; hardware encoding) and does nothing else. It
    uses `unsafe_code = "deny"` with `#[allow(unsafe_code)]` only on its FFI modules, a
    `// SAFETY:` comment on every `unsafe` block, a safe `Result`-returning public API, and the
    pure-Rust decoder as the tested fallback ([ADR 0001](docs/adr/0001-platform-ffi.md)).

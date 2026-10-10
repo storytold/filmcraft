@@ -12,7 +12,7 @@ use std::time::Duration;
 use web_time::Instant;
 
 use filmcraft_color::ColorInfo;
-use filmcraft_frame::VideoFrame;
+use filmcraft_frame::{Region, VideoFrame};
 
 use crate::CodecError;
 use crate::video::VideoDecoder;
@@ -410,6 +410,8 @@ pub struct GopCache {
     explicit_color: Option<ColorInfo>,
     /// Clockwise quarter turns from the container's display matrix, applied to every frame.
     rotation: u8,
+    /// The container's clean aperture, cut from every frame before the rotation.
+    crop: Option<Region>,
     budget: usize,
 }
 
@@ -448,7 +450,7 @@ impl GopCache {
             pool: pool.clone(),
         });
         pool.register(&shared);
-        Self { shared, explicit_color, rotation: 0, budget: 384 << 20 }
+        Self { shared, explicit_color, rotation: 0, crop: None, budget: 384 << 20 }
     }
 
     /// Turn every decoded frame clockwise by `quarter_turns` × 90° (the container's display
@@ -458,13 +460,23 @@ impl GopCache {
         self
     }
 
+    /// Cut every decoded frame to `region` (the container's clean aperture, in stored picture
+    /// coordinates) before the rotation, as cropping and the display matrix compose.
+    pub fn with_crop(mut self, region: Option<Region>) -> Self {
+        self.crop = region;
+        self
+    }
+
     /// Colour signalled by the container wins over the bitstream's (YUV frames only); the
-    /// container's display rotation is applied.
+    /// container's clean aperture and then its display rotation are applied.
     fn finish(&self, mut f: VideoFrame) -> VideoFrame {
         if let Some(c) = self.explicit_color
             && !matches!(f.data, filmcraft_frame::PixelData::Rgba8(_) | filmcraft_frame::PixelData::RgbaF32(_))
         {
             f.color = c;
+        }
+        if let Some(r) = self.crop {
+            f = f.cropped(r);
         }
         if self.rotation != 0 { f.rotated(self.rotation) } else { f }
     }

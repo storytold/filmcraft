@@ -253,10 +253,10 @@ fn response_plot(ui: &mut egui::Ui, ed: &mut Ed, size: egui::Vec2, range: f64) -
     let (r, resp) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let p = ui.painter_at(r);
     let t = &ed.t;
-    p.rect_filled(r, 2.0, Color32::from_gray(0x18));
+    p.rect_filled(r, 2.0, ed.t.plot_bg);
     for f in [50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0] {
         let x = x_of(f, r);
-        p.line_segment([pos2(x, r.min.y), pos2(x, r.max.y)], Stroke::new(1.0, Color32::from_gray(0x2c)));
+        p.line_segment([pos2(x, r.min.y), pos2(x, r.max.y)], Stroke::new(1.0, ed.t.plot_grid));
         let label = if f >= 1000.0 { format!("{}k", f / 1000.0) } else { format!("{f}") };
         p.text(pos2(x + 2.0, r.max.y - 2.0), Align2::LEFT_BOTTOM, label, Tokens::ui(9.0), t.text_faint);
     }
@@ -264,7 +264,7 @@ fn response_plot(ui: &mut egui::Ui, ed: &mut Ed, size: egui::Vec2, range: f64) -
     let mut d = -range;
     while d <= range + 1e-9 {
         let y = y_of(d, r, range);
-        let col = if d.abs() < 1e-9 { Color32::from_gray(0x44) } else { Color32::from_gray(0x2c) };
+        let col = if d.abs() < 1e-9 { ed.t.plot_axis } else { ed.t.plot_grid };
         p.line_segment([pos2(r.min.x, y), pos2(r.max.x, y)], Stroke::new(1.0, col));
         p.text(pos2(r.min.x + 2.0, y - 1.0), Align2::LEFT_BOTTOM, format!("{d:+.0}"), Tokens::ui(9.0), t.text_faint);
         d += step;
@@ -310,7 +310,7 @@ fn parametric(ui: &mut egui::Ui, ed: &mut Ed) {
         let id = egui::Id::new(("peq-node", ed.target.clone(), pre));
         let resp = ui.interact(nr, id, Sense::click_and_drag());
         let on = ed.on(&on_id);
-        let col = if on { Color32::from_rgb(0xe8, 0xe8, 0xe8) } else { Color32::from_gray(0x70) };
+        let col = if on { ed.t.eq_node } else { ed.t.eq_node_off };
         ui.painter().circle_stroke(c, 7.0, Stroke::new(1.5, col));
         ui.painter().text(c, Align2::CENTER_CENTER, label, Tokens::ui(8.5), col);
         ed.auto(format!("fxEditor.{}.node.{pre}", ed.fx), nr, label);
@@ -374,14 +374,14 @@ fn graphic(ui: &mut egui::Ui, ed: &mut Ed) {
         let pid = format!("b{}", i + 1);
         let x = area.min.x + colw * (i as f32 + 0.5);
         let track = Rect::from_center_size(pos2(x, area.min.y + 70.0), vec2(6.0, 130.0));
-        ui.painter().rect_filled(track, 2.0, Color32::from_gray(0x30));
-        ui.painter().line_segment([pos2(x - 5.0, track.center().y), pos2(x + 5.0, track.center().y)], Stroke::new(1.0, Color32::from_gray(0x60)));
+        ui.painter().rect_filled(track, 2.0, ed.t.eq_track);
+        ui.painter().line_segment([pos2(x - 5.0, track.center().y), pos2(x + 5.0, track.center().y)], Stroke::new(1.0, ed.t.eq_tick));
         let v = ed.v(&pid);
         let ky = track.center().y - (v / 24.0) as f32 * track.height() * 0.5;
         let knob = Rect::from_center_size(pos2(x, ky), vec2(colw.min(18.0), 8.0));
         let id = egui::Id::new(("geq-band", ed.target.clone(), i));
         let resp = ui.interact(knob.union(track).expand(3.0), id, Sense::click_and_drag());
-        ui.painter().rect_filled(knob, 2.0, if resp.hovered() || resp.dragged() { Color32::from_gray(0xf0) } else { Color32::from_gray(0xc0) });
+        ui.painter().rect_filled(knob, 2.0, if resp.hovered() || resp.dragged() { ed.t.eq_knob_active } else { ed.t.eq_knob });
         ui.painter().text(pos2(x, area.max.y - 22.0), Align2::CENTER_CENTER, format!("{v:+.0}"), Tokens::ui(8.5), ed.t.text_dim);
         let short = label.replace(" Hz", "").replace(" kHz", "k");
         ui.painter().text(pos2(x, area.max.y - 8.0), Align2::CENTER_CENTER, short, Tokens::ui(8.5), ed.t.text_faint);
@@ -420,14 +420,14 @@ fn graphic(ui: &mut egui::Ui, ed: &mut Ed) {
 fn transfer_plot(ui: &mut egui::Ui, ed: &mut Ed, size: f32, band: usize, auto: String) {
     let (r, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
     let p = ui.painter_at(r);
-    p.rect_filled(r, 2.0, Color32::from_gray(0x18));
+    p.rect_filled(r, 2.0, ed.t.plot_bg);
     let lo = -60.0;
     let map = |x: f64, y: f64| pos2(r.min.x + ((x - lo) / -lo) as f32 * r.width(), r.max.y - (((y - lo) / -lo).clamp(-0.05, 1.05)) as f32 * r.height());
     for d in [-48.0, -36.0, -24.0, -12.0] {
-        p.line_segment([map(d, lo), map(d, 0.0)], Stroke::new(1.0, Color32::from_gray(0x2c)));
-        p.line_segment([map(lo, d), map(0.0, d)], Stroke::new(1.0, Color32::from_gray(0x2c)));
+        p.line_segment([map(d, lo), map(d, 0.0)], Stroke::new(1.0, ed.t.plot_grid));
+        p.line_segment([map(lo, d), map(0.0, d)], Stroke::new(1.0, ed.t.plot_grid));
     }
-    p.line_segment([map(lo, lo), map(0.0, 0.0)], Stroke::new(1.0, Color32::from_gray(0x44)));
+    p.line_segment([map(lo, lo), map(0.0, 0.0)], Stroke::new(1.0, ed.t.plot_axis));
     if let Some(dsp) = filmcraft_render::audio_fx::configured(&ed.preview(), ed.mt, 48000) {
         let pts: Vec<Pos2> = (0..=120)
             .filter_map(|i| {
@@ -447,7 +447,7 @@ fn transfer_plot(ui: &mut egui::Ui, ed: &mut Ed, size: f32, band: usize, auto: S
 fn multiband(ui: &mut egui::Ui, ed: &mut Ed) {
     // Spectrum strip with draggable crossover handles.
     let (r, _) = ui.allocate_exact_size(vec2(640.0, 70.0), Sense::hover());
-    ui.painter().rect_filled(r, 2.0, Color32::from_gray(0x18));
+    ui.painter().rect_filled(r, 2.0, ed.t.plot_bg);
     let cols =
         [Color32::from_rgb(0x3d, 0x6e, 0xb4), Color32::from_rgb(0x3d, 0xa0, 0x6e), Color32::from_rgb(0xb4, 0x9a, 0x3d), Color32::from_rgb(0xb4, 0x4f, 0x3d)];
     let xo = [ed.v("xo1"), ed.v("xo2"), ed.v("xo3")];
@@ -461,7 +461,8 @@ fn multiband(ui: &mut egui::Ui, ed: &mut Ed) {
         let x = edges[k + 1];
         let hr = Rect::from_center_size(pos2(x, r.center().y), vec2(10.0, r.height()));
         let resp = ui.interact(hr, egui::Id::new(("mb-xo", ed.target.clone(), k)), Sense::drag());
-        ui.painter().line_segment([pos2(x, r.min.y), pos2(x, r.max.y)], Stroke::new(if resp.hovered() || resp.dragged() { 2.5 } else { 1.5 }, Color32::WHITE));
+        ui.painter()
+            .line_segment([pos2(x, r.min.y), pos2(x, r.max.y)], Stroke::new(if resp.hovered() || resp.dragged() { 2.5 } else { 1.5 }, ed.t.crossover_handle));
         ui.painter().text(pos2(x + 3.0, r.min.y + 2.0), Align2::LEFT_TOP, format!("{:.0} Hz", xo[k]), Tokens::ui(9.0), ed.t.text_dim);
         ed.auto(format!("fxEditor.{}.{pid}", ed.fx), hr, "Crossover");
         if resp.dragged()

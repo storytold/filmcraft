@@ -36,6 +36,11 @@ objc2 = "0.6"
 # Same winit as eframe: macOS event-loop options (no app activation when driven by an agent).
 winit = { version = "0.30", default-features = false }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Settings ▸ Appearance ▸ Sync with system: the XDG desktop portal's colour scheme. The zbus the
+# portal file dialogs (rfd) and accesskit already use.
+zbus = "5.19"
+
 # Icon + VERSIONINFO for filmcraft.exe (build.rs); only needed when building on Windows.
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

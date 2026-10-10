@@ -11,8 +11,11 @@
 //! only encoder of the H.265 format (which has no software encoder).
 //!
 //! ```text
-//! RGBA (the export pipeline) ──► BT.709 limited 4:2:0 (the software encoder's conversion)
-//!    ──► NV12 input buffer ──NVENC──► Annex B ──► length-prefixed samples + avcC / hvcC
+//! RGBA (the export pipeline) ──► ABGR input buffer ──NVENC (BT.709 limited 4:2:0 on the GPU)──►
+//!    Annex B ──► length-prefixed samples + avcC / hvcC
+//!
+//! where the driver refuses RGB input (`Nvenc::with_rgba_input` fails), as before:
+//! RGBA ──► BT.709 limited 4:2:0 (the software encoder's conversion) ──► NV12 input buffer ──NVENC──► …
 //!
 //! HDR (PQ / HLG) HEVC Main 10:
 //! encoded BT.2020 R'G'B' floats ──► 10-bit limited 4:2:0 (`filmcraft_export::rgbf_to_yuv420_10`)
@@ -26,7 +29,7 @@
 //! software encoder takes over. A declined HEVC export is an error that says why.
 
 #[allow(unsafe_code)]
-mod device;
+pub(crate) mod device;
 pub mod export;
 #[allow(unsafe_code)]
 mod ffi;
@@ -120,6 +123,8 @@ pub struct Nvenc {
     size: (u32, u32),
     /// Main 10: pictures go in as 10-bit P010 ([`Nvenc::encode_10`]), otherwise as 8-bit NV12 ([`Nvenc::encode`]).
     ten_bit: bool,
+    /// Pictures go in as packed RGBA ([`Nvenc::encode_rgba`]) and the GPU converts them to 4:2:0.
+    rgba_input: bool,
 }
 
 /// The H.264 encoder (the name it had before HEVC joined it).
@@ -231,6 +236,19 @@ impl Nvenc {
     /// on every IDR picture), or say why NVENC does not take this configuration. H.264 takes the
     /// default signal only.
     pub fn with_signal(cfg: &Config, signal: &Signal) -> Result<Self, String> {
+        Self::open(cfg, signal, false)
+    }
+
+    /// Open an 8-bit encoder that takes straight RGBA8 pictures ([`Nvenc::encode_rgba`]) and converts
+    /// them to 4:2:0 on the GPU, or say why not (Main 10, or a driver that refuses RGB input).
+    pub fn with_rgba_input(cfg: &Config, signal: &Signal) -> Result<Self, String> {
+        if cfg.profile == Profile::HevcMain10 {
+            return Err("RGBA input is 8-bit only".into());
+        }
+        Self::open(cfg, signal, true)
+    }
+
+    fn open(cfg: &Config, signal: &Signal, rgba_input: bool) -> Result<Self, String> {
         let (w, h) = (cfg.width, cfg.height);
         if w == 0 || h == 0 || w % 2 != 0 || h % 2 != 0 {
             return Err(format!("{w}x{h}: NVENC needs even dimensions"));
@@ -278,6 +296,7 @@ impl Nvenc {
                 Profile::High => 2,
             },
             ten_bit,
+            rgba_input,
             signal: signal.clone(),
             level,
             sar: cfg.sar,
@@ -312,6 +331,7 @@ impl Nvenc {
             emitted: 0,
             size: (w, h),
             ten_bit,
+            rgba_input,
         })
     }
 
@@ -345,12 +365,34 @@ impl Nvenc {
         self.ten_bit
     }
 
+    /// Whether this encoder takes packed RGBA pictures ([`Nvenc::encode_rgba`]) instead of planar ones.
+    pub fn takes_rgba(&self) -> bool {
+        self.rgba_input
+    }
+
+    /// Encode picture `index` from straight RGBA8 (`w * 4` bytes per row, alpha ignored); NVENC
+    /// converts it to 4:2:0 with the stream's matrix. The pictures that came out, as for
+    /// [`Nvenc::encode`]. An error for an encoder opened without [`Nvenc::with_rgba_input`].
+    pub fn encode_rgba(&mut self, rgba: &[u8], index: u64) -> Result<Vec<Packet>, String> {
+        if !self.rgba_input {
+            return Err("an RGBA picture for a planar-input encoder".into());
+        }
+        let (w, h) = (self.size.0 as usize, self.size.1 as usize);
+        if rgba.len() < w.saturating_mul(h).saturating_mul(4) {
+            return Err("the picture is smaller than the encoder's size".into());
+        }
+        self.submit_picture(index, |l| fill_rgba(l, rgba, w, h))
+    }
+
     /// Encode picture `index` from planar 8-bit 4:2:0 (`u`, `v` at half size, rows `w` and `w / 2` bytes).
     /// Returns the pictures that came out (usually the oldest; none while the ring fills). An error
     /// for a Main 10 encoder.
     pub fn encode(&mut self, y: &[u8], u: &[u8], v: &[u8], index: u64) -> Result<Vec<Packet>, String> {
         if self.ten_bit {
             return Err("an 8-bit picture for a Main 10 encoder".into());
+        }
+        if self.rgba_input {
+            return Err("a planar picture for an RGBA-input encoder".into());
         }
         let (w, h) = (self.size.0 as usize, self.size.1 as usize);
         let (luma, chroma) = (w.saturating_mul(h), (w / 2).saturating_mul(h / 2));
@@ -451,6 +493,20 @@ fn fill_nv12(l: Locked<'_>, y: &[u8], u: &[u8], v: &[u8], w: usize, h: usize) {
         for (([du, dv], a), b) in dst.as_chunks_mut::<2>().0.iter_mut().zip(ur).zip(vr) {
             *du = *a;
             *dv = *b;
+        }
+    }
+}
+
+/// Copy straight RGBA8 rows into an ABGR input buffer (the same byte order: R, G, B, A). A row the
+/// pitch cannot hold is skipped, never overrun.
+fn fill_rgba(l: Locked<'_>, rgba: &[u8], w: usize, h: usize) {
+    let row = w.saturating_mul(4);
+    if row == 0 || l.pitch == 0 {
+        return;
+    }
+    for (src, dst) in rgba.chunks_exact(row).zip(l.data.chunks_mut(l.pitch)).take(h) {
+        if let Some(d) = dst.get_mut(..row) {
+            d.copy_from_slice(src);
         }
     }
 }

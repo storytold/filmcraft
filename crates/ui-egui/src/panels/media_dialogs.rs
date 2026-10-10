@@ -161,6 +161,7 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let accent = app.tokens.accent;
     let sel_path = d.candidate.and_then(|c| d.candidates.get(c)).map(|c| c.0.clone());
     let preview = sel_path.as_deref().and_then(|p| preview_texture(app, ctx, p));
+    let rows_max_h = (ctx.content_rect().height() * 0.3).clamp(90.0, 320.0);
     egui::Window::new(tl!("Link Media"))
         .id(egui::Id::new("Link Media"))
         .collapsible(false)
@@ -170,24 +171,26 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
         .show(ctx, |ui| {
             ui.label(tlf!("{n} clip(s) can't find their media. Locate them, search a folder, or leave them offline.", n = rows.len()));
             ui.add_space(6.0);
-            egui::Grid::new("link-media-rows").num_columns(4).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
-                for h in [tl!("Clip Name"), tl!("File Name"), tl!("File Path"), tl!("Status")] {
-                    ui.label(RichText::new(h).strong());
-                }
-                ui.end_row();
-                for (k, (_, name, fname, path, status)) in rows.iter().enumerate() {
-                    let r = ui.selectable_label(d.row == k, name);
-                    push(&mut elems, format!("linkMedia.row.{k}"), &r, name.clone());
-                    if r.clicked() && d.row != k {
-                        d.row = k;
-                        d.candidates.clear();
-                        d.candidate = None;
+            egui::ScrollArea::vertical().id_salt("link-media-rows-scroll").max_height(rows_max_h).auto_shrink([false, true]).show(ui, |ui| {
+                egui::Grid::new("link-media-rows").num_columns(4).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
+                    for h in [tl!("Clip Name"), tl!("File Name"), tl!("File Path"), tl!("Status")] {
+                        ui.label(RichText::new(h).strong());
                     }
-                    ui.label(fname);
-                    ui.label(RichText::new(path).small());
-                    ui.label(RichText::new(*status).color(Color32::from_rgb(0xe0, 0x5a, 0x5a)));
                     ui.end_row();
-                }
+                    for (k, (_, name, fname, path, status)) in rows.iter().enumerate() {
+                        let r = ui.selectable_label(d.row == k, name);
+                        push(&mut elems, format!("linkMedia.row.{k}"), &r, name.clone());
+                        if r.clicked() && d.row != k {
+                            d.row = k;
+                            d.candidates.clear();
+                            d.candidate = None;
+                        }
+                        ui.label(fname);
+                        ui.label(RichText::new(path).small());
+                        ui.label(RichText::new(*status).color(Color32::from_rgb(0xe0, 0x5a, 0x5a)));
+                        ui.end_row();
+                    }
+                });
             });
             ui.separator();
             ui.horizontal(|ui| {
@@ -234,24 +237,26 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     if d.candidates.is_empty() {
                         ui.label(RichText::new(tl!("No candidates yet — Search a folder or Locate the file.")).weak());
                     }
-                    for (k, (path, ok, idm, problems)) in d.candidates.iter().enumerate() {
-                        let mark = match (ok, idm) {
-                            (true, Some(true)) => tl!("✔ same file"),
-                            (true, _) => tl!("✔ matches"),
-                            (false, Some(false)) => tl!("✖ different file"),
-                            _ => "✖",
-                        };
-                        let text = format!("{mark}  {path}");
-                        let r = ui.selectable_label(
-                            d.candidate == Some(k),
-                            RichText::new(&text).color(if *ok { Color32::LIGHT_GREEN } else { Color32::from_rgb(0xe0, 0x8a, 0x6a) }),
-                        );
-                        let r = if problems.is_empty() { r } else { r.on_hover_text(problems) };
-                        push(&mut elems, format!("linkMedia.candidate.{k}"), &r, text);
-                        if r.clicked() {
-                            d.candidate = Some(k);
+                    egui::ScrollArea::vertical().id_salt("link-media-candidates-scroll").max_height(108.0).auto_shrink([false, true]).show(ui, |ui| {
+                        for (k, (path, ok, idm, problems)) in d.candidates.iter().enumerate() {
+                            let mark = match (ok, idm) {
+                                (true, Some(true)) => tl!("✔ same file"),
+                                (true, _) => tl!("✔ matches"),
+                                (false, Some(false)) => tl!("✖ different file"),
+                                _ => "✖",
+                            };
+                            let text = format!("{mark}  {path}");
+                            let r = ui.selectable_label(
+                                d.candidate == Some(k),
+                                RichText::new(&text).color(if *ok { Color32::LIGHT_GREEN } else { Color32::from_rgb(0xe0, 0x8a, 0x6a) }),
+                            );
+                            let r = if problems.is_empty() { r } else { r.on_hover_text(problems) };
+                            push(&mut elems, format!("linkMedia.candidate.{k}"), &r, text);
+                            if r.clicked() {
+                                d.candidate = Some(k);
+                            }
                         }
-                    }
+                    });
                 });
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(192.0, 108.0), egui::Sense::hover());
                 ui.painter().rect_filled(rect, 3.0, Color32::from_rgb(12, 12, 12));

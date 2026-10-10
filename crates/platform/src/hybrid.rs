@@ -129,7 +129,10 @@ impl HybridDecoder {
     }
 
     /// Switch to the software decoder after `err`, replaying the log (which ends with the sample
-    /// that failed).
+    /// that failed). The replay goes on past samples the software decoder rejects, as decoding in
+    /// software from the restart point would: one that the hardware had already decoded is logged
+    /// (its call returned long ago), and if the failed sample itself is rejected its error is this
+    /// call's, while the pictures replayed before it are kept for the next output.
     fn fall_back(&mut self, err: CodecError) -> Result<Vec<DecodedFrame>> {
         let Some(mut hw) = self.hw.take() else { return Err(err) };
         log::warn!("{} failed ({err}); continuing with the software decoder", hw.name());
@@ -149,12 +152,28 @@ impl HybridDecoder {
             return Err(CodecError::Decode(format!("{err} (continuing in software after the next seek)")));
         };
         let mut frames = Vec::new();
-        for (s, p) in &log {
+        let mut rejected = None;
+        let last = log.len().saturating_sub(1);
+        for (i, (s, p)) in log.iter().enumerate() {
             let Some(sw) = self.sw.as_mut() else { break };
-            frames.extend(sw.decode(s, *p)?);
+            match sw.decode(s, *p) {
+                Ok(out) => frames.extend(out),
+                Err(e) if i == last => rejected = Some(e),
+                Err(e) => log::warn!("software replay after the hardware decoder failed: {e}"),
+            }
         }
         self.log = Some(log);
-        Ok(self.merge(frames))
+        match rejected {
+            None => Ok(self.merge(frames)),
+            Some(e) => {
+                for f in frames {
+                    if !self.emitted.contains(&f.pts) {
+                        self.carry.insert(f.pts, f);
+                    }
+                }
+                Err(e)
+            }
+        }
     }
 }
 

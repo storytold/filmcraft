@@ -95,6 +95,50 @@ fn placing_media_with_two_streams_expands_tracks_and_keeps_stream_indices() {
 }
 
 #[test]
+fn clip_peaks_measure_the_stream_the_clip_plays() {
+    let mut s = Session::default();
+    let mut p = (*s.project).clone();
+    let rate = FrameRate::FPS_24;
+    let seq = p.new_sequence("Two streams", Default::default(), 1, 1, None);
+    let source = filmcraft_media::generators::GeneratorSource::new(filmcraft_media::Generator::BarsAndTone, 32, 32, rate, rate.tick_of(24));
+    let mut info = source.info().clone();
+    info.audio_streams.push(info.audio_streams[0].clone());
+    let item = p.add_item(
+        "two streams",
+        filmcraft_project::Label::Iris,
+        filmcraft_project::ItemKind::Media(filmcraft_project::MediaClip {
+            media: filmcraft_project::MediaRef::Generator(filmcraft_media::Generator::BarsAndTone),
+            info,
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        }),
+        None,
+    );
+    let (vdest, adest) = {
+        let q = p.sequence(seq).unwrap();
+        (q.video_tracks[0].id, q.audio_tracks[0].id)
+    };
+    s.project = std::sync::Arc::new(p);
+    s.state.active_sequence = Some(seq);
+    let ids =
+        crate::commands::place_item(&mut s, item, TimeRange::new(Tick::ZERO, rate.tick_of(24)), Tick::ZERO, Some(vdest), Some(adest), false, "test", None)
+            .unwrap();
+    let q = s.project.sequence(seq).unwrap();
+    let (a, b) = (q.audio_tracks[0].items[0].id, q.audio_tracks[1].items[0].id);
+    assert!(ids.contains(&a) && ids.contains(&b));
+    let peaks = crate::mixer::clip_peaks(&s, &[a, b]);
+    let db = |c: filmcraft_project::ClipId| peaks.iter().find(|(id, _)| *id == c).map(|(_, d)| *d).unwrap();
+    // The generator only has stream 0, so the clip playing stream 1 is silent, not a copy of stream 0.
+    assert!(db(a) > -30.0, "{peaks:?}");
+    assert!(db(b) < -100.0, "{peaks:?}");
+}
+
+#[test]
 fn missing_audio_tracks_are_cloned_from_the_destination() {
     let s = demo();
     let seq = active(&s);

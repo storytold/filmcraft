@@ -173,6 +173,12 @@ pub enum Grab {
         edge: Edge,
         kind: EdgeKind,
     },
+    /// An audio clip's Volume line (Selection and Pen tools): a drag changes the level, a Pen or
+    /// Cmd/Ctrl click adds a keyframe.
+    Volume {
+        track: TrackId,
+        clip: ClipId,
+    },
     /// Not an edge this tool trims: a clip body, a transition, an empty track, the ruler or
     /// nothing. A clip's `edge` may still be set, for tools that do something else there (Razor,
     /// Slip…).
@@ -184,6 +190,7 @@ impl Grab {
     pub fn hit(self) -> Hit {
         match self {
             Grab::Edge { track, clip, edge, .. } => Hit::Clip { track, clip, edge: Some(edge) },
+            Grab::Volume { track, clip } => Hit::Clip { track, clip, edge: None },
             Grab::Other(h) => h,
         }
     }
@@ -194,6 +201,12 @@ impl Grab {
 /// Selection tool to choose Roll and Ripple trims without modifier key".
 pub fn grab_at(seq: &Sequence, layout: &Layout, pos: Pos2, tool: Tool, mods: Modifiers, roll_ripple: bool) -> Grab {
     let h = hit(seq, layout, pos);
+    if let Hit::Clip { track, clip, edge: None } = h
+        && matches!(tool, Tool::Selection | Tool::Pen)
+        && super::timeline_volume::on_line(seq, layout, clip, pos)
+    {
+        return Grab::Volume { track, clip };
+    }
     let Hit::Clip { track, clip, edge: Some(edge) } = h else { return Grab::Other(h) };
     let kind = match tool {
         Tool::Selection => {
@@ -288,7 +301,7 @@ mod tests {
         let layout = Layout {
             content: row,
             ruler: Rect::from_min_max(pos2(0.0, 0.0), pos2(2000.0, 40.0)),
-            rows: vec![Row { track, kind: TrackKind::Video, index: 0, rect: row }],
+            rows: vec![Row { track, kind: TrackKind::Video, index: 0, rect: row, lane: false }],
             pps: 100.0,
             scroll: 0.0,
             split_y: TOP + 60.0,

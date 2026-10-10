@@ -150,6 +150,8 @@ pub struct Params {
     pub profile: u8,
     /// HEVC Main 10: 10-bit 4:2:0 pictures (P010), otherwise 8-bit (NV12).
     pub ten_bit: bool,
+    /// 8-bit only: pictures go in as packed RGBA (ABGR) and NVENC converts them to 4:2:0 on the GPU.
+    pub rgba_input: bool,
     /// HEVC: the VUI colour description and the SEI messages of every IDR picture (H.264 keeps BT.709).
     pub signal: Signal,
     /// The codec's own level code: `level × 10` for H.264, `level × 30` for HEVC.
@@ -160,7 +162,7 @@ pub struct Params {
 }
 
 /// An input buffer locked for writing: NV12 (or P010) rows go to `data` at `pitch` bytes per row, the
-/// chroma plane after `pitch * height` bytes.
+/// chroma plane after `pitch * height` bytes; packed RGBA (ABGR) has `height` rows and no chroma plane.
 pub struct Locked<'a> {
     pub data: &'a mut [u8],
     pub pitch: usize,
@@ -315,8 +317,14 @@ impl Session {
         if !p.signal.sei.is_empty() && p.codec != Codec::Hevc {
             return Err("SEI messages are written for HEVC only".into());
         }
-        self.fmt = if p.ten_bit { NV_ENC_BUFFER_FORMAT_YUV420_10BIT } else { NV_ENC_BUFFER_FORMAT_NV12 };
-        self.bytes_per_sample = if p.ten_bit { 2 } else { 1 };
+        if p.ten_bit && p.rgba_input {
+            return Err("RGBA input is 8-bit only".into());
+        }
+        (self.fmt, self.bytes_per_sample) = match (p.ten_bit, p.rgba_input) {
+            (true, _) => (NV_ENC_BUFFER_FORMAT_YUV420_10BIT, 2),
+            (false, true) => (NV_ENC_BUFFER_FORMAT_ABGR, 4),
+            (false, false) => (NV_ENC_BUFFER_FORMAT_NV12, 1),
+        };
         self.gop = u64::from(p.gop.max(1));
         self.submitted = 0;
         // the SEI payloads: heap blocks that outlive every picture (see the field documentation)
@@ -516,7 +524,8 @@ impl Session {
         let (w, h) = self.size;
         // SAFETY: the buffer handle is one this session created. `LockInputBuffer` returns a
         // writable block of `pitch * h * 3 / 2` bytes (NV12 or P010: luma rows then chroma rows, the pitch
-        // in bytes) that stays valid until `UnlockInputBuffer`; the slice borrows it only inside `fill`.
+        // in bytes), or `pitch * h` bytes (ABGR: packed rows only), that stays valid until
+        // `UnlockInputBuffer`; the slice borrows it only inside `fill`.
         let pitch = unsafe {
             let mut l: NV_ENC_LOCK_INPUT_BUFFER = std::mem::zeroed();
             l.version = NV_ENC_LOCK_INPUT_BUFFER_VER;
@@ -531,7 +540,8 @@ impl Session {
                 let _ = unlock(self.enc, input);
                 return Err(format!("the driver returned an input pitch of {} bytes for {w}-pixel rows of {}-byte samples", l.pitch, self.bytes_per_sample));
             }
-            let len = (l.pitch as usize).saturating_mul(h as usize).saturating_mul(3) / 2;
+            let rows = (l.pitch as usize).saturating_mul(h as usize);
+            let len = if self.fmt == NV_ENC_BUFFER_FORMAT_ABGR { rows } else { rows.saturating_mul(3) / 2 };
             fill(Locked { data: std::slice::from_raw_parts_mut(l.bufferDataPtr.cast::<u8>(), len), pitch: l.pitch as usize });
             let st = unlock(self.enc, input);
             if st != NV_ENC_SUCCESS {

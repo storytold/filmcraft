@@ -7,9 +7,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use filmcraft_color::{ColorInfo, Matrix, Primaries, Range, Transfer};
-use filmcraft_frame::{AudioBuffer, VideoFrame};
-use filmcraft_isobmff::{CodecConfig, Mp4File, TrackKind};
+use filmcraft_color::ColorInfo;
+use filmcraft_frame::{AudioBuffer, Region, VideoFrame};
+use filmcraft_isobmff::{CleanAperture, CodecConfig, Mp4File, TrackKind};
 use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, SharedSource, VideoStreamInfo};
 use filmcraft_time::{FrameRate, Tick};
 
@@ -104,48 +104,62 @@ fn hdr_metadata(md: Option<&filmcraft_isobmff::MasteringDisplay>, cll: Option<(u
     })
 }
 
+/// The clean aperture (`clap`, ISO/IEC 14496-12 / QuickTime) of a `w`×`h` decoded picture as a
+/// pixel rectangle: its size, centred on the picture and moved by its offsets, rounded to whole
+/// samples. `None` (the whole picture is shown) when it is the whole picture or makes no sense: a
+/// zero denominator, an empty or larger-than-the-picture size, a rectangle outside the picture.
+/// [`VideoFrame::cropped`] moves an odd corner onto the chroma grid.
+fn clean_aperture(c: CleanAperture, (w, h): (u32, u32)) -> Option<Region> {
+    let q = |(n, d): (u32, u32)| (d != 0).then(|| f64::from(n) / f64::from(d));
+    let qs = |(n, d): (i32, u32)| (d != 0).then(|| f64::from(n) / f64::from(d));
+    let (cw, ch, dx, dy) = (q(c.width)?.round(), q(c.height)?.round(), qs(c.horiz_offset)?, qs(c.vert_offset)?);
+    let (fw, fh) = (f64::from(w), f64::from(h));
+    if !(cw >= 1.0 && ch >= 1.0 && cw <= fw && ch <= fh) {
+        return None;
+    }
+    let (x, y) = (((fw - cw) / 2.0 + dx).round(), ((fh - ch) / 2.0 + dy).round());
+    // also false for NaN
+    if !(x >= 0.0 && y >= 0.0 && x + cw <= fw && y + ch <= fh) {
+        return None;
+    }
+    let r = Region { x: x as usize, y: y as usize, w: cw as usize, h: ch as usize };
+    (!r.is_full(w as usize, h as usize)).then_some(r)
+}
+
+/// Colour of a video sample entry. The `colr` box (`nclx` / `nclc`) wins; what it leaves
+/// unspecified, or all of it when there is none (ffmpeg writes MP4 without `colr` by default),
+/// comes from the stream's own description: `vpcC` / `apvC`, or the SPS VUI in `avcC` / `hvcC`
+/// and the sequence header in `av1C`. The rest defaults by frame size.
 fn color_from(entry: &filmcraft_isobmff::SampleEntry, w: u32, h: u32) -> ColorInfo {
-    let mut c = ColorInfo { matrix: filmcraft_frame::default_matrix(w, h), transfer: Transfer::Bt709, primaries: Primaries::Bt709, range: Range::Limited };
-    // VP9 and APV carry their colour description in vpcC / apvC (used when there is no colr box).
-    let vpc = match &entry.codec {
-        CodecConfig::Vp9(v) => Some(filmcraft_isobmff::ColorInfo::Nclx {
-            primaries: v.colour_primaries as u16,
-            transfer: v.transfer_characteristics as u16,
-            matrix: v.matrix_coefficients as u16,
-            full_range: v.full_range,
-        }),
-        CodecConfig::Apv(a) if a.color_description_present => Some(filmcraft_isobmff::ColorInfo::Nclx {
-            primaries: a.color_primaries as u16,
-            transfer: a.transfer_characteristics as u16,
-            matrix: a.matrix_coefficients as u16,
-            full_range: a.full_range,
-        }),
+    use crate::stream_color::ColorCodes;
+    use filmcraft_isobmff::ColorInfo as Colr;
+    let colr = match entry.video.as_ref().and_then(|v| v.color.as_ref()) {
+        Some(Colr::Nclx { primaries, transfer, matrix, full_range }) => {
+            Some(ColorCodes::from_wide((*primaries).into(), (*transfer).into(), (*matrix).into(), Some(*full_range)))
+        }
+        // QuickTime `nclc` has no range flag
+        Some(Colr::Nclc { primaries, transfer, matrix }) => Some(ColorCodes::from_wide((*primaries).into(), (*transfer).into(), (*matrix).into(), None)),
+        // an ICC profile, or no `colr`: no code points
         _ => None,
     };
-    if let Some(col) = entry.video.as_ref().and_then(|v| v.color.as_ref()).or(vpc.as_ref()) {
-        let (p, t, m, full) = match col {
-            filmcraft_isobmff::ColorInfo::Nclx { primaries, transfer, matrix, full_range } => (*primaries, *transfer, *matrix, *full_range),
-            filmcraft_isobmff::ColorInfo::Nclc { primaries, transfer, matrix } => (*primaries, *transfer, *matrix, false),
-            _ => return c,
-        };
-        if let Some(m) = Matrix::from_code(m as u8) {
-            c.matrix = m;
-        }
-        if let Some(t) = Transfer::from_code(t as u8) {
-            c.transfer = t;
-        }
-        c.primaries = match p {
-            9 => Primaries::Bt2020,
-            12 => Primaries::P3D65,
-            5 => Primaries::Bt601_625,
-            6 => Primaries::Bt601_525,
-            _ => Primaries::Bt709,
-        };
-        if full {
-            c.range = Range::Full;
-        }
-    }
-    c
+    let stream = match &entry.codec {
+        CodecConfig::Vp9(v) => Some(ColorCodes {
+            primaries: v.colour_primaries,
+            transfer: v.transfer_characteristics,
+            matrix: v.matrix_coefficients,
+            full_range: Some(v.full_range),
+        }),
+        CodecConfig::Apv(a) if a.color_description_present => Some(ColorCodes {
+            primaries: a.color_primaries,
+            transfer: a.transfer_characteristics,
+            matrix: a.matrix_coefficients,
+            full_range: Some(a.full_range),
+        }),
+        CodecConfig::Apv(_) => None,
+        codec => crate::stream_color::from_codec_config(codec),
+    };
+    let sources: Vec<ColorCodes> = [colr, stream].into_iter().flatten().collect();
+    crate::stream_color::resolve(w, h, &sources)
 }
 
 impl Mp4Source {
@@ -171,11 +185,21 @@ impl Mp4Source {
         let mut explicit_color = None;
         // display rotation from the track matrix (portrait phone video is stored landscape)
         let rotation = vtrack.and_then(|i| file.tracks[i].display_rotation()).unwrap_or(0);
+        // the clean aperture ('clap') cut from every frame, before the rotation
+        let mut aperture = None;
         let video = vtrack.map(|i| {
             let t = &file.tracks[i];
             let entry = &t.entries[0];
             let vp = entry.video.clone().unwrap_or_default();
             let (w, h) = (if vp.width > 0 { vp.width as u32 } else { t.width }, if vp.height > 0 { vp.height as u32 } else { t.height });
+            // H.264 and HEVC say their own output size (frame cropping / conformance window), which
+            // is what the decoder returns; a sample entry can give the coded size instead (#288)
+            let (w, h) = match crate::hw::NalStreamInfo::from_entry(entry) {
+                Some(Ok(n)) if n.crop.2 > 0 && n.crop.3 > 0 => (n.crop.2, n.crop.3),
+                _ => (w, h),
+            };
+            aperture = vp.clean_aperture.and_then(|c| clean_aperture(c, (w, h)));
+            let (w, h) = aperture.map_or((w, h), |r| (r.w as u32, r.h as u32));
             // frame rate from the median sample duration
             let mut durs: Vec<u32> = t.samples.iter().take(240).map(|s| s.duration).collect();
             durs.sort_unstable();
@@ -276,7 +300,7 @@ impl Mp4Source {
                 Some(Mp4Audio { track: i, state, starts, offset, preroll })
             })
             .collect();
-        Ok(Self { info, bytes, file, vtrack, video: GopCache::new(explicit_color).with_rotation(rotation), audios })
+        Ok(Self { info, bytes, file, vtrack, video: GopCache::new(explicit_color).with_rotation(rotation).with_crop(aperture), audios })
     }
 
     fn read(&self, track: usize, i: usize) -> crate::Result<Vec<u8>> {
@@ -741,6 +765,60 @@ mod tests {
         // 180°: still landscape
         let s = Mp4Source::open("180.mov", rotated_mov([-ONE, 0, 0, 0, -ONE, 0, 64 * ONE, 32 * ONE, W])).expect("open");
         assert_eq!(s.info().video.as_ref().map(|v| (v.width, v.height)), Some((64, 32)));
+    }
+
+    /// A one-frame 25 fps ProRes MOV (64×32, left half bright) with clean aperture `clap`.
+    fn clap_mov(clap: filmcraft_isobmff::CleanAperture) -> Arc<[u8]> {
+        let (w, h) = (64u32, 32u32);
+        let mut fr = filmcraft_prores::Frame::new(w, h, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
+        for (i, y) in fr.y.iter_mut().enumerate() {
+            *y = if (i as u32 % w) < w / 2 { 800 } else { 100 };
+        }
+        let data = filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, w, h).encode(&fr).expect("encode");
+        let mut entry = SampleEntry::prores(FourCc(*b"apch"), w as u16, h as u16);
+        entry.video.as_mut().expect("video").clean_aperture = Some(clap);
+        let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).expect("writer");
+        let t = mux.add_track(TrackConfig::new(entry, 25)).expect("track");
+        mux.write_sample(t, WriteSample { data: &data, duration: 1, composition_offset: 0, is_sync: true }).expect("sample");
+        mux.finish().expect("finish").into_inner().into()
+    }
+
+    #[test]
+    fn clean_aperture_crops_frames_and_reported_size() {
+        use filmcraft_isobmff::CleanAperture;
+        let clap = |w: (u32, u32), h: (u32, u32), dx: (i32, u32), dy: (i32, u32)| CleanAperture { width: w, height: h, horiz_offset: dx, vert_offset: dy };
+        // 32x16 moved 8 left of centre: columns 8..40 (24 bright, then 8 dark), rows 8..24
+        let s = Mp4Source::open("clap.mov", clap_mov(clap((32, 1), (16, 1), (-8, 1), (0, 1)))).expect("open");
+        assert_eq!(s.info().video.as_ref().map(|v| (v.width, v.height)), Some((32, 16)));
+        let f = s.video_frame(FrameRequest::full(Tick::ZERO)).expect("frame");
+        assert_eq!((f.width, f.height), (32, 16));
+        let l = f.luma8();
+        let col = |x: usize| (0..16).map(|y| u32::from(l[y * 32 + x])).sum::<u32>() / 16;
+        assert!(col(0) > col(31) + 100 && col(23) > col(24) + 100, "bright up to column 23: {} {} {} {}", col(0), col(23), col(24), col(31));
+
+        // rational sizes and offsets (64/2 = 32): the same rectangle
+        let s = Mp4Source::open("clap2.mov", clap_mov(clap((64, 2), (48, 3), (-16, 2), (0, 7)))).expect("open");
+        assert_eq!(s.info().video.as_ref().map(|v| (v.width, v.height)), Some((32, 16)));
+
+        // a clean aperture that makes no sense is ignored (the whole picture), never a panic
+        for c in [
+            clap((0, 1), (16, 1), (0, 1), (0, 1)),
+            clap((32, 0), (16, 1), (0, 1), (0, 1)),
+            clap((32, 1), (16, 1), (0, 0), (0, 1)),
+            clap((65, 1), (16, 1), (0, 1), (0, 1)),
+            clap((32, 1), (33, 1), (0, 1), (0, 1)),
+            clap((32, 1), (16, 1), (17, 1), (0, 1)),
+            clap((32, 1), (16, 1), (0, 1), (-9, 1)),
+            clap((32, 1), (16, 1), (i32::MIN, 1), (i32::MAX, 1)),
+            clap((u32::MAX, 1), (u32::MAX, 1), (0, 1), (0, 1)),
+            clap((1, u32::MAX), (16, 1), (0, u32::MAX), (0, 1)),
+            clap((64, 1), (32, 1), (0, 1), (0, 1)),
+        ] {
+            let s = Mp4Source::open("bad.mov", clap_mov(c)).expect("open");
+            assert_eq!(s.info().video.as_ref().map(|v| (v.width, v.height)), Some((64, 32)), "{c:?}");
+            let f = s.video_frame(FrameRequest::full(Tick::ZERO)).expect("frame");
+            assert_eq!((f.width, f.height), (64, 32), "{c:?}");
+        }
     }
 
     #[test]

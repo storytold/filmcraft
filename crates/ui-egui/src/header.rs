@@ -100,6 +100,16 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("quick-export-toggled"), true));
     }
     crate::panels::export_mode::quick_export(app, ui.ctx(), pos2(qx - 340.0, rect.max.y + 4.0));
+    // Appearance Mode: click for the next one (Auto, Light, Dark); the icon shows the current one.
+    let (icon, mode) = match app.session.prefs.appearance.appearance_mode.as_str() {
+        "auto" => (Icon::Monitor, tl!("Sync with system")),
+        "light" => (Icon::Sun, tl!("Light")),
+        _ => (Icon::Moon, tl!("Dark")),
+    };
+    let tip = format!("{}: {mode}", tl!("Appearance Mode"));
+    if btn(ui, icon, "appearance", &tip, app).clicked() {
+        crate::panels::settings::cycle_appearance(app, ui.ctx());
+    }
     let ws_resp = btn(ui, Icon::Workspaces, "workspaces", tl!("Workspaces"), app);
     // workspace name (caps)
     let ws = crate::i18n::t(&app.ui.workspace).to_uppercase();

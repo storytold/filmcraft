@@ -99,8 +99,18 @@ impl GeneralPrefs {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppearancePrefs {
-    /// "Color Theme": `darkest` (default) | `dark` | `light`.
+    /// Legacy single "Color Theme": `darkest` | `dark` | `light`. Setting it (old settings files,
+    /// automation, View ▸ Appearance) selects that theme and fixes the mode to its family. It is
+    /// kept in line with the fields below ([`AppearancePrefs::sync_color_theme`]): the light or
+    /// dark theme of a fixed mode, and the dark theme in Auto (whose shown theme depends on the
+    /// system; read `appearanceMode` for that).
     pub color_theme: String,
+    /// "Appearance Mode": `auto` (follow the operating system) | `dark` (default) | `light`.
+    pub appearance_mode: String,
+    /// The theme shown in dark mode: `darkest` (default) | `dark`.
+    pub dark_theme: String,
+    /// The theme shown in light mode: `light`.
+    pub light_theme: String,
     /// "Accessible color contrast": brighter secondary text and borders.
     pub accessible_contrast: bool,
     /// Highlight (accent) colour of selections, focus and primary buttons (`#rrggbb`).
@@ -109,7 +119,55 @@ pub struct AppearancePrefs {
 
 impl Default for AppearancePrefs {
     fn default() -> Self {
-        Self { color_theme: "darkest".into(), accessible_contrast: false, highlight_color: DEFAULT_HIGHLIGHT.into() }
+        Self {
+            color_theme: "darkest".into(),
+            appearance_mode: "dark".into(),
+            dark_theme: "darkest".into(),
+            light_theme: "light".into(),
+            accessible_contrast: false,
+            highlight_color: DEFAULT_HIGHLIGHT.into(),
+        }
+    }
+}
+
+impl AppearancePrefs {
+    /// The theme to show (`darkest` | `dark` | `light`): the light or dark theme of the mode. Auto
+    /// follows `system_light` (the operating system's appearance) and is dark without an answer.
+    pub fn shown_theme(&self, system_light: Option<bool>) -> &str {
+        let light = match self.appearance_mode.as_str() {
+            "light" => true,
+            "auto" => system_light == Some(true),
+            _ => false,
+        };
+        if light { &self.light_theme } else { &self.dark_theme }
+    }
+
+    /// Select `theme` (a Color Theme value) as the theme of its family and fix the mode to that
+    /// family. Unknown names are ignored.
+    pub fn select_theme(&mut self, theme: &str) {
+        if LIGHT_THEMES.iter().any(|(v, _)| *v == theme) {
+            self.light_theme = theme.into();
+            self.appearance_mode = "light".into();
+        } else if DARK_THEMES.iter().any(|(v, _)| *v == theme) {
+            self.dark_theme = theme.into();
+            self.appearance_mode = "dark".into();
+        }
+    }
+
+    /// Bring the legacy `color_theme` in line with the mode and theme choices, so clients that
+    /// still read it get the theme a fixed mode shows (the dark theme in Auto).
+    pub fn sync_color_theme(&mut self) {
+        let theme = self.shown_theme(None).to_string();
+        self.color_theme = theme;
+    }
+
+    /// The mode after this one in the header button's cycle: Auto, Light, Dark, Auto…
+    pub fn next_mode(&self) -> &'static str {
+        match self.appearance_mode.as_str() {
+            "auto" => "light",
+            "light" => "dark",
+            _ => "auto",
+        }
     }
 }
 
@@ -618,6 +676,9 @@ const OPENING: &[(&str, &str)] = &[("showOpenDialog", "Show Open Dialog"), ("sho
 const BIN_OPEN: &[(&str, &str)] = &[("openInPlace", "Open in place"), ("openNewTab", "Open new tab"), ("openNewWindow", "Open in new window")];
 const PROJECT_OPEN: &[(&str, &str)] = &[("openNewTab", "Open new tab"), ("openNewWindow", "Open in new window")];
 const THEMES: &[(&str, &str)] = &[("darkest", "Darkest"), ("dark", "Dark"), ("light", "Light")];
+pub const APPEARANCE_MODES: &[(&str, &str)] = &[("auto", "Sync with system"), ("dark", "Dark"), ("light", "Light")];
+pub const DARK_THEMES: &[(&str, &str)] = &[("darkest", "Darkest"), ("dark", "Dark")];
+pub const LIGHT_THEMES: &[(&str, &str)] = &[("light", "Light")];
 const MIXDOWN: &[(&str, &str)] = &[("front", "Front Only"), ("frontRear", "Front + Rear"), ("frontLfe", "Front + LFE"), ("frontRearLfe", "Front + Rear + LFE")];
 const AUDITION: &[(&str, &str)] = &[("scratch", "Scratch disk location for Captured Audio"), ("nextToMedia", "Next to original media files")];
 const BUFFERS: &[(&str, &str)] = &[("64", "64"), ("128", "128"), ("256", "256"), ("512", "512"), ("1024", "1024"), ("2048", "2048"), ("4096", "4096")];
@@ -692,7 +753,15 @@ static CATEGORIES: &[Category] = &[
             f(
                 "general.interfaceLanguage",
                 "Interface Language",
-                Kind::Choice(&[("system", "System Language"), ("en", "English"), ("ja", "日本語"), ("es", "Español"), ("pt-br", "Português (Brasil)")]),
+                Kind::Choice(&[
+                    ("system", "System Language"),
+                    ("en", "English"),
+                    ("ja", "日本語"),
+                    ("es", "Español"),
+                    ("pt-br", "Português (Brasil)"),
+                    ("uk", "Українська"),
+                    ("zh-cn", "简体中文"),
+                ]),
                 true,
             ),
             f("general.keyboardLayout", "Keyboard Layout", Kind::Choice(KEY_LAYOUTS), true),
@@ -727,6 +796,12 @@ static CATEGORIES: &[Category] = &[
         id: "appearance",
         title: "Appearance",
         rows: &[
+            // Drawn by the dialog as the Appearance Mode selector above the light and dark theme
+            // cards; the fields below keep their keys, validation and `prefs.schema` entries.
+            Row::Custom("appearanceModes"),
+            f("appearance.appearanceMode", "Appearance Mode", Kind::Choice(APPEARANCE_MODES), true),
+            f("appearance.lightTheme", "Light Theme", Kind::Choice(LIGHT_THEMES), true),
+            f("appearance.darkTheme", "Dark Theme", Kind::Choice(DARK_THEMES), true),
             f("appearance.colorTheme", "Color Theme", Kind::Choice(THEMES), true),
             b("appearance.accessibleContrast", "Accessible color contrast", true),
             f("appearance.highlightColor", "Highlight Color", Kind::Color, true),
@@ -979,7 +1054,7 @@ static CATEGORIES: &[Category] = &[
             b("playback.draftDecode", "Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)", true),
             f("playback.hardwareDecoding", "Hardware decoding", Kind::Choice(HW_DECODE), true),
             Row::Note(
-                "Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.",
+                "Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.",
             ),
         ],
     },
@@ -1146,6 +1221,18 @@ pub fn migrate(v: &mut Value) {
         // pre/postroll; v2 stores them as reals, which serde reads either way.
         m.insert("version".into(), json!(2));
     }
+    // Files from before appearance modes had one Color Theme: keep showing it, as a fixed Dark or
+    // Light mode, instead of switching established users to another theme or to Auto.
+    if let Some(a) = m.get_mut("appearance").and_then(Value::as_object_mut)
+        && !a.contains_key("appearanceMode")
+        && let Some(theme) = a.get("colorTheme").and_then(Value::as_str).map(str::to_string)
+    {
+        let mut p = AppearancePrefs::default();
+        p.select_theme(&theme);
+        a.insert("appearanceMode".into(), json!(p.appearance_mode));
+        a.insert("darkTheme".into(), json!(p.dark_theme));
+        a.insert("lightTheme".into(), json!(p.light_theme));
+    }
 }
 
 impl crate::autosave::Preferences {
@@ -1224,17 +1311,18 @@ pub fn map_output(left: &[f32], right: &[f32], out: &mut [f32], ch: usize, map: 
     }
 }
 
-/// Settings ▸ Media ▸ Default Media Scaling for a clip of `src` size placed in a `frame`-sized
-/// sequence: `scaleToFrameSize` turns on Scale to Frame Size (rasterised at frame size),
-/// `setToFrameSize` sets Motion ▸ Scale so the picture fits the frame.
-pub fn apply_media_scaling(ti: &mut filmcraft_project::TrackItem, scaling: &str, frame: (u32, u32), src: (u32, u32)) {
-    if src.0 == 0 || src.1 == 0 {
+/// Settings ▸ Media ▸ Default Media Scaling for a clip placed in a `frame`-sized sequence. `src`
+/// is the clip's size at its display aspect in sequence pixels
+/// ([`filmcraft_project::conformed_size`]): `scaleToFrameSize` turns on Scale to Frame Size
+/// (rasterised at frame size), `setToFrameSize` sets Motion ▸ Scale so the picture fits the frame.
+pub fn apply_media_scaling(ti: &mut filmcraft_project::TrackItem, scaling: &str, frame: (u32, u32), src: (f64, f64)) {
+    if !(src.0 >= 1e-9 && src.1 >= 1e-9 && src.0.is_finite() && src.1.is_finite()) {
         return;
     }
     match scaling {
         "scaleToFrameSize" => ti.scale_to_frame = true,
         "setToFrameSize" => {
-            let fit = (frame.0 as f64 / src.0 as f64).min(frame.1 as f64 / src.1 as f64);
+            let fit = (frame.0 as f64 / src.0).min(frame.1 as f64 / src.1);
             if let Some(m) = ti.effects.iter_mut().find(|e| e.effect == "motion") {
                 m.params.insert("scale".into(), filmcraft_project::Param::new(filmcraft_project::ParamValue::Float((fit * 1000.0).round() / 10.0)));
             }

@@ -10,7 +10,8 @@
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use filmcraft_frame::VideoFrame;
 use libloading::Library;
@@ -125,9 +126,49 @@ pub struct Display {
     _device: File,
 }
 
-// SAFETY: a VA display is not tied to the thread that opened it, and a `Display` is only used
-// through its single owner (`&mut` or `&` of one `Session` at a time), never concurrently.
+// SAFETY: a VA display is not tied to the thread that opened it.
 unsafe impl Send for Display {}
+// SAFETY: libva's functions are thread-safe and so must its drivers' be (va.h, "Multithreading
+// Guide"): one display may be used from several threads at once, as long as each VA object
+// (context, surfaces, buffers, images) is used by one thread at a time. Every `Session` on a
+// shared display has its own configuration, context, surfaces and image, used only through that
+// session (`&mut` or `&` of one owner); the display itself is only read (`api`, `dpy`, `vendor`).
+unsafe impl Sync for Display {}
+
+/// The display every [`Session`] decodes on. Opening a display takes a few milliseconds with
+/// Intel's and Mesa's drivers but 0.2-0.3 s with NVIDIA's (a CUDA context each, about 100 MB of
+/// video memory), and terminating one 60-70 ms, on the thread that creates or drops the decoder: a
+/// frame worker at every clip on the timeline, the UI thread when media is removed. So one display
+/// is opened (by [`probe`] at startup) and kept for the life of the process, like the libraries,
+/// and sessions only make and destroy their own configuration, context and surfaces.
+static SHARED: Mutex<Option<Arc<Display>>> = Mutex::new(None);
+/// Displays opened so far (diagnostics and tests).
+static OPENED: AtomicUsize = AtomicUsize::new(0);
+
+/// The number of VA displays this process has opened (one, unless the shared one stopped working).
+pub fn displays_opened() -> usize {
+    OPENED.load(Ordering::Relaxed)
+}
+
+/// The shared display, opened on first use.
+fn shared() -> Result<Arc<Display>, String> {
+    let mut shared = SHARED.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(d) = shared.as_ref() {
+        return Ok(d.clone());
+    }
+    let d = Arc::new(Display::open()?);
+    *shared = Some(d.clone());
+    Ok(d)
+}
+
+/// Share `new` from now on instead of `old` (if `old` is still the shared one). Sessions on `old`
+/// keep it until they end.
+fn replace_shared(old: &Arc<Display>, new: Arc<Display>) {
+    let mut shared = SHARED.lock().unwrap_or_else(PoisonError::into_inner);
+    if shared.as_ref().is_none_or(|d| Arc::ptr_eq(d, old)) {
+        *shared = Some(new);
+    }
+}
 
 impl Display {
     /// The first DRM render node with a working VA-API driver.
@@ -164,6 +205,7 @@ impl Display {
         // SAFETY: `dpy` is valid; the version outputs point to live locals.
         let st = unsafe { (api.initialize)(dpy, &mut major, &mut minor) };
         d.check(st, "vaInitialize")?;
+        OPENED.fetch_add(1, Ordering::Relaxed);
         // SAFETY: `dpy` is an initialised display; the vendor string is NUL-terminated and owned by
         // the driver for the life of the display (copied out here).
         let vendor = unsafe { (api.vendor_string)(dpy) };
@@ -206,7 +248,8 @@ impl Drop for Display {
 /// One stream's decoder: a VLD configuration of a profile, its surfaces and context, and the image
 /// pictures are read back through.
 pub struct Session {
-    display: Display,
+    /// The shared display (see [`SHARED`]), or the one that replaced it.
+    display: Arc<Display>,
     config: ffi::VAConfigID,
     context: ffi::VAContextID,
     surfaces: Vec<VASurfaceID>,
@@ -231,8 +274,23 @@ impl Session {
     /// 8 or 10), with `count` surfaces of `size` (coded luma samples); pictures read back are cut
     /// to `geometry`.
     pub fn new(profiles: &[ffi::VAProfile], size: (u32, u32), count: usize, geometry: Geometry) -> Result<Self, String> {
+        let display = shared()?;
+        match Self::on(display.clone(), profiles, size, count, geometry) {
+            Ok(s) => Ok(s),
+            Err(first) => {
+                // The shared display may have stopped working (a GPU reset): try a new one, and
+                // share that one from now on if it works. (A stream the driver does not take
+                // fails on both and costs the one extra display opening.)
+                let fresh = Arc::new(Display::open().map_err(|e| format!("{first}; a new display: {e}"))?);
+                let s = Self::on(fresh.clone(), profiles, size, count, geometry).map_err(|_| first)?;
+                replace_shared(&display, fresh);
+                Ok(s)
+            }
+        }
+    }
+
+    fn on(display: Arc<Display>, profiles: &[ffi::VAProfile], size: (u32, u32), count: usize, geometry: Geometry) -> Result<Self, String> {
         let (rt_format, _, _) = formats(geometry.bits)?;
-        let display = Display::open()?;
         let api = display.api;
         let dpy = display.dpy;
         let mut config = None;
@@ -497,8 +555,9 @@ impl Accel for Session {
 impl Drop for Session {
     fn drop(&mut self) {
         let (api, dpy) = (self.display.api, self.display.dpy);
-        // SAFETY: each object below was made on this display and is destroyed once; the display
-        // itself is terminated afterwards (when the `display` field is dropped).
+        // SAFETY: each object below was made on this display and is destroyed once, by this
+        // session only; the display itself is terminated when its last user lets it go (the
+        // shared one never is).
         unsafe {
             if let Some(image) = self.image.take() {
                 (api.destroy_image)(dpy, image.image_id);
@@ -521,5 +580,6 @@ impl Drop for Session {
 /// driver's description, or why not.
 pub fn probe() -> &'static Result<String, String> {
     static PROBE: OnceLock<Result<String, String>> = OnceLock::new();
-    PROBE.get_or_init(|| Display::open().map(|d| d.vendor().to_string()))
+    // the display opened to answer is the one sessions share
+    PROBE.get_or_init(|| shared().map(|d| d.vendor().to_string()))
 }

@@ -46,6 +46,7 @@ pub mod panels;
 pub mod perf;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod play_ahead;
+pub mod scrub;
 pub mod source_playback;
 pub mod state;
 pub mod theme;
@@ -131,7 +132,14 @@ pub struct HostHooks {
     /// Open a file in its default application, or (`true`) reveal it in the file manager (Edit ▸
     /// Edit Original, Help ▸ Reveal Log Files).
     pub open_path: Option<Box<dyn FnMut(&str, bool) -> Result<(), String>>>,
+    /// The operating system's light or dark appearance when egui cannot report it (Linux desktops
+    /// whose Wayland compositor sends no theme to winit). Without it, or without an answer, Auto
+    /// uses `egui::Context::system_theme`.
+    pub system_theme: Option<SystemThemeFn>,
 }
+
+/// Reads the system appearance (Settings ▸ Appearance ▸ Appearance Mode ▸ Sync with system).
+pub type SystemThemeFn = Box<dyn Fn(&egui::Context) -> Option<egui::Theme>>;
 
 /// The command a [`HostHooks::pick_file_for_relink`] caller runs with the chosen file, for hosts
 /// that can only run it later.
@@ -204,9 +212,10 @@ const SCREENSHOT_TIMEOUT_S: f64 = 10.0;
 /// timeline zoom animation finished) before capturing what is there.
 const SCREENSHOT_SETTLE_MAX_S: f64 = 5.0;
 
-/// File ▸ Export entries that run from the menus through the save panel: command, filter label,
+/// Export entries that run from the menus through the save panel: command, filter label,
 /// extension.
-pub(crate) const EXPORT_SAVE_DIALOGS: [(&str, &str, &str); 6] = [
+pub(crate) const EXPORT_SAVE_DIALOGS: [(&str, &str, &str); 7] = [
+    ("markers.exportCsv", "Marker report (CSV)", "csv"),
     ("file.exportEdl", "EDL", "edl"),
     ("file.exportFcp7Xml", "Final Cut Pro XML", "xml"),
     ("file.exportFcpxml", "FCPXML", "fcpxml"),
@@ -223,6 +232,8 @@ pub struct FilmcraftApp {
     pub playback: Playback,
     pub source_playback: source_playback::SourcePlayback,
     pub audio: Option<Box<dyn AudioOut>>,
+    /// Audio during scrubbing (#211).
+    pub scrub: scrub::ScrubAudio,
     pub hooks: HostHooks,
     pub dialog: Option<Dialog>,
     pub file_dialogs: panels::file_dialogs::FileDialogState,
@@ -426,6 +437,7 @@ impl FilmcraftApp {
             playback: Playback { speed: 1.0, ..Default::default() },
             source_playback: Default::default(),
             audio: None,
+            scrub: Default::default(),
             hooks: HostHooks::default(),
             // Unsaved changes left by a session that died are offered first thing.
             dialog: recovery.then_some(Dialog::Recovery),
@@ -506,6 +518,18 @@ impl FilmcraftApp {
         self.ui.dark = k != ThemeKind::Light;
     }
 
+    /// The system appearance: the host's reading, else what the windowing toolkit reports.
+    pub fn system_theme(&self, ctx: &egui::Context) -> Option<egui::Theme> {
+        self.hooks.system_theme.as_ref().and_then(|read| read(ctx)).or_else(|| ctx.system_theme())
+    }
+
+    /// The theme Settings ▸ Appearance selects: the light or dark theme of the Appearance Mode,
+    /// Auto following the system (dark when it gives no answer).
+    pub fn appearance_kind(&self, ctx: &egui::Context) -> ThemeKind {
+        let light = self.system_theme(ctx).map(|t| t == egui::Theme::Light);
+        ThemeKind::from_pref(self.session.prefs.appearance.shown_theme(light))
+    }
+
     fn apply_tooltips(&self, ctx: &egui::Context) {
         // Settings ▸ General ▸ Show Tool Tips
         let delay = if self.session.prefs.general.show_tool_tips { 0.5 } else { 1.0e9 };
@@ -515,13 +539,22 @@ impl FilmcraftApp {
     /// Make the UI follow the settings after they change (theme, tooltips, frame cache budget,
     /// play after rendering, audio device).
     pub fn apply_prefs(&mut self, ctx: &egui::Context) {
+        // Appearance Mode ▸ Sync with system: follow the system while running. The host reports
+        // changes as they happen (no polling) and wakes the UI only when the value changes.
+        if self.applied_prefs.is_some() {
+            let k = self.appearance_kind(ctx);
+            if k != self.tokens.kind {
+                self.set_theme(ctx, k);
+            }
+        }
         if self.applied_prefs.as_ref() == Some(&self.session.prefs) {
             return;
         }
         let p = self.session.prefs.clone();
         let prev = self.applied_prefs.take();
         if prev.as_ref().is_none_or(|q| q.appearance != p.appearance || q.general.show_tool_tips != p.general.show_tool_tips) {
-            self.set_theme(ctx, ThemeKind::from_pref(&p.appearance.color_theme));
+            let k = self.appearance_kind(ctx);
+            self.set_theme(ctx, k);
         }
         if prev.as_ref().is_none_or(|q| q.general.interface_language != p.general.interface_language) {
             let language = match i18n::Language::parse(&p.general.interface_language) {
@@ -534,6 +567,9 @@ impl FilmcraftApp {
             if language == i18n::Language::Ja && !i18n::install_japanese_font(ctx) {
                 self.ui.language = i18n::Language::En;
                 self.ui.status = tl!("no Japanese font is installed on this system; the interface stays in English").into();
+            } else if language == i18n::Language::ZhCn && !i18n::chinese_font_available() {
+                self.ui.language = i18n::Language::En;
+                self.ui.status = tl!("no Chinese font is installed on this system; the interface stays in English").into();
             } else {
                 self.ui.language = language;
             }
@@ -1367,6 +1403,7 @@ impl FilmcraftApp {
         self.handle_shortcuts(&ctx);
         self.advance_playback(&ctx);
         self.advance_source_playback(&ctx);
+        self.scrub_audio(&ctx);
         let t = self.tokens;
         let full = ui.max_rect();
         ui.painter().rect_filled(full, 0.0, t.app_bg);
@@ -1628,7 +1665,9 @@ impl eframe::App for FilmcraftApp {
             theme::install(ctx, &self.tokens);
             // theme::install replaces the fonts: add the system Japanese font back (or fall back to
             // English when a saved Japanese setting meets a system without one)
-            if self.ui.language == i18n::Language::Ja && !i18n::install_japanese_font(ctx) {
+            // (likewise Chinese without a Chinese face)
+            let japanese_missing = self.ui.language == i18n::Language::Ja && !i18n::install_japanese_font(ctx);
+            if japanese_missing || (self.ui.language == i18n::Language::ZhCn && !i18n::chinese_font_available()) {
                 self.ui.language = i18n::Language::En;
             }
             self.styled = true;

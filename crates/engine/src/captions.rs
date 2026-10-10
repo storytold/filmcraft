@@ -513,7 +513,11 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: always,
             run: |s, p| {
                 let Some(seq) = s.active_sequence() else { return Ok(json!({"tracks": []})) };
-                let only = p.get("track").and_then(|_| track_param(s, p));
+                // a `track` that names no caption track is an error, never every track
+                let only = match p.get("track") {
+                    Some(_) => Some(track_param(s, p).ok_or_else(|| bad("captions.list", "no such caption track"))?),
+                    None => None,
+                };
                 let tracks: Vec<Value> =
                     seq.caption_tracks.iter().enumerate().filter(|(_, t)| only.is_none_or(|o| o == t.id)).map(|(i, t)| track_json(s, t, i)).collect();
                 Ok(json!({"tracks": tracks, "selection": s.state.caption_selection.iter().map(|c| c.0).collect::<Vec<_>>()}))

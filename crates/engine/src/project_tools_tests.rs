@@ -221,6 +221,59 @@ fn export_selection_project_and_ale() {
 }
 
 #[test]
+fn export_selection_project_of_a_bin_exports_its_contents() {
+    let mut s = demo();
+    let (footage_bin, bin_items) = s
+        .project
+        .root
+        .children
+        .iter()
+        .find_map(|c| match c {
+            filmcraft_project::BinEntry::Bin(b) if b.name == "Footage" => {
+                let mut items = Vec::new();
+                b.all_items(&mut items);
+                Some((b.id.0, items))
+            }
+            _ => None,
+        })
+        .expect("Footage bin");
+    assert_eq!(bin_items.len(), 6);
+
+    // Selecting the bin (its id, not its items) must export the bin's contents, not an empty project.
+    s.execute("project.select", json!({"items": [footage_bin]})).unwrap();
+    let dir = tmp_dir("export-bin");
+    let path = dir.join("Footage.fcproj").to_string_lossy().to_string();
+    let r = s.execute("file.exportSelectionProject", json!({"path": path})).unwrap();
+    let p = filmcraft_format::decode(&std::fs::read(&path).unwrap()).unwrap().project;
+    assert_eq!(r["items"].as_array().unwrap().len(), p.items.len(), "reported items match the saved project");
+    let reported: std::collections::BTreeSet<ItemId> = r["items"].as_array().unwrap().iter().map(|v| ItemId(v.as_u64().unwrap())).collect();
+    assert_eq!(reported, bin_items.iter().copied().collect(), "the bin's items are the exported items");
+    for n in ["Ocean_Sunset.mp4", "Neon_Loop.mov", "Misty_Forest.mp4"] {
+        assert!(p.items.values().any(|i| i.name == n), "{n}");
+    }
+    assert!(!p.items.values().any(|i| i.name == "Ambient_Score.wav"), "the Audio bin stayed behind");
+    let mut listed = Vec::new();
+    p.root.all_items(&mut listed);
+    assert!(p.items.keys().all(|k| listed.contains(k) || matches!(p.item(*k).unwrap().kind, ItemKind::Graphic { .. })));
+
+    // A mixed bin + item request must not report the bin id, which names no item in the output.
+    let explicit = dir.join("Mixed.fcproj").to_string_lossy().to_string();
+    let r = s.execute("file.exportSelectionProject", json!({"items": [footage_bin, bin_items[0].0], "path": explicit})).unwrap();
+    let p = filmcraft_format::decode(&std::fs::read(&explicit).unwrap()).unwrap().project;
+    for v in r["items"].as_array().unwrap() {
+        let id = ItemId(v.as_u64().unwrap());
+        assert!(p.item(id).is_some(), "reported item {id:?} is in the output");
+    }
+
+    // An empty bin has nothing to export: an actionable error, no misleading empty file.
+    let empty_bin = s.execute("file.newBin", json!({"name": "Empty"})).unwrap()["bin"].as_u64().unwrap();
+    s.execute("project.select", json!({"items": [empty_bin]})).unwrap();
+    let empty_path = dir.join("Empty.fcproj").to_string_lossy().to_string();
+    assert!(s.execute("file.exportSelectionProject", json!({"path": empty_path})).is_err());
+    assert!(!std::path::Path::new(&empty_path).exists(), "no empty project written");
+}
+
+#[test]
 fn media_properties_settings_and_scratch_disks() {
     let dir = tmp_dir("props");
     let path = dir.join("clip.mp4");

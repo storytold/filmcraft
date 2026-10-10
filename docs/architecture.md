@@ -220,6 +220,16 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   `audio(start, frames, rate)` in media time. Sources are `Send + Sync` and shared by monitors,
   thumbnails, playback and export. The engine's `MediaPool` creates one per project item, lazily,
   through registered openers (`codecs::openers()`: MP4/MOV, MKV/WebM, audio files).
+- **Pixel aspect ratio.** Demuxers report it in `VideoStreamInfo::par` (MP4/MOV `pasp`, Matroska
+  display size, MXF aspect ratio, MPEG sequence header / VUI); Interpret Footage's
+  `Interpretation::par` overrides it (`clip.interpretFootage {pixelAspect}`), and
+  `SequenceSettings::par` is the sequence's. Both go through `project::checked_par` (a zero term
+  or more than 8:1 either way = square). `render::motion_matrix` works in square display units,
+  so a 1440 x 1080 clip with 4:3 pixels fills a 1920 x 1080 square-pixel sequence at 100 %
+  (Scale to Frame Size, Set to Frame Size and Fit / Fill use `Project::conformed_source_size`);
+  graphics and adjustment layers are in sequence pixels. New Sequence From Clip copies the clip's
+  ratio, and the Source and Program monitors draw the picture at its display aspect. The
+  renderer does not read decoded frames' own `VideoFrame::par`.
 - **Offline media and proxies.** The pool caches each item's source per reference (path, offline
   flag), so relinking and undo take effect at once. Media that can't be opened renders the offline
   slate (`render::offline`) instead of failing. With proxies enabled, an item with a proxy reads

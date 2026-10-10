@@ -73,7 +73,8 @@ are never linked or shipped ([AGENTS.md](../AGENTS.md) §2).
   without a Direct3D 11 video device or the HEVC / VP9 / AV1 codec extensions of the Microsoft Store. The VP9 and
   AV1 fixtures (libvpx-vp9, libaom-av1; 360p, 1080p, 2160p, hidden alt-ref frames, two GOPs) need an ffmpeg with those encoders.
 
-The NVENC tests (`crates/platform/tests/nvenc.rs` and `nvenc_export.rs` for H.264, `nvenc_hevc.rs`,
+The NVENC tests (`crates/platform/tests/nvenc.rs` and `nvenc_export.rs` for H.264, `nvenc_rgba_input.rs` for
+the GPU's RGB → 4:2:0 conversion, `nvenc_hevc.rs`,
 `nvenc_hevc_export.rs`, `nvenc_hevc_probe.rs` and `nvenc_hevc_warm.rs` for H.265, `nvenc_hevc_main10.rs` and
 `nvenc_hevc_hdr_export.rs` for Main 10 HDR; Windows only) skip, printing `SKIPPED`, without an NVIDIA GPU
 with NVENC (H.265: when the HEVC probe says there is no HEVC encoder; Main 10: when the Main 10 probe says
@@ -194,6 +195,10 @@ window (for example on a locked screen, where `ui.screenshot` cannot capture).
 `crates/ui-egui/tests/essential_sound_ui.rs` does the same for the Essential Sound panel (type buttons,
 switches, a slider drag as one undo step, section bypass, Auto-Match, ducking, Browse presets;
 `essential-sound-*.png`).
+`crates/ui-egui/tests/clip_audio_ui.rs` covers the audio of video clips (#223): the linked audio's
+Volume, Channel Volume and Panner in Effect Controls and Properties, and the Volume line on audio
+clips in the Timeline (a drag is one undo step, Pen-tool keyframes, keyframe drags, a click or
+right-click on the line still reaches the clip; `FILMCRAFT_UI_SHOTS=<dir>` writes `volume-*.png`).
 
 Essential Sound engine tests (`crates/engine/src/essential_sound_tests.rs`) build projects from
 generated speech-like and tonal WAVs: Auto-Match lands within ±0.5 LU of the target (measured: 0.000 LU,

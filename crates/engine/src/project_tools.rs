@@ -24,7 +24,7 @@
 
 use std::collections::BTreeSet;
 
-use filmcraft_project::{BinEntry, FindOp, FindQuery, FindRow, ItemId, ItemKind, MarkerKind, MediaRef, Project, SearchBin, TrackKind};
+use filmcraft_project::{BinEntry, BinId, FindOp, FindQuery, FindRow, ItemId, ItemKind, MarkerKind, MediaRef, Project, SearchBin, TrackKind};
 use filmcraft_time::{Tick, TimeDisplay, TimeRange};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -699,14 +699,30 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The selected items plus everything they need: sequence contents (recursively), subclip
 /// parents, multi-camera / merged-clip sources and graphic canvases.
+///
+/// Bins and items share one id space, so a named bin contributes every item it holds (and
+/// everything those items need), as `project.delete` does. The project's own top bin does not,
+/// since no command acts on it (#244), and only ids that name a real item end up in the result.
 pub fn closure(p: &Project, roots: &[ItemId]) -> BTreeSet<ItemId> {
     let mut keep: BTreeSet<ItemId> = BTreeSet::new();
     let mut todo: Vec<ItemId> = roots.to_vec();
+    let mut seen_bins: BTreeSet<u64> = BTreeSet::new();
     while let Some(id) = todo.pop() {
-        if !keep.insert(id) {
+        let bin = BinId(id.0);
+        if bin != p.root.id && p.root.find_bin(bin).is_some() {
+            if seen_bins.insert(id.0)
+                && let Some(b) = p.root.find_bin(bin)
+            {
+                let mut items = Vec::new();
+                b.all_items(&mut items);
+                todo.extend(items);
+            }
             continue;
         }
         let Some(it) = p.item(id) else { continue };
+        if !keep.insert(id) {
+            continue;
+        }
         match &it.kind {
             ItemKind::Subclip { parent, .. } => todo.push(*parent),
             ItemKind::Sequence(q) => {
@@ -754,6 +770,9 @@ fn export_selection(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("file.exportSelectionProject", "select items in the Project panel"));
     }
     let keep = closure(&s.project, &roots);
+    if keep.is_empty() {
+        return Err(bad("file.exportSelectionProject", "the selection has no items to export"));
+    }
     let mut sub = project_subset(&s.project, &keep);
     let name = std::path::Path::new(&path).file_stem().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| sub.name.clone());
     sub.name = name.clone();
