@@ -110,6 +110,9 @@ pub struct HostHooks {
     pub pick_save_as: Option<Box<dyn FnMut(&str, &[&str], &str) -> Option<String>>>,
     /// The active keyboard shortcuts changed: update native menu key equivalents.
     pub shortcuts_changed: Option<Box<dyn FnMut(&[menus::MenuItem])>>,
+    /// Whether the host currently uses a dark appearance. Hosts without a system appearance
+    /// (web, tests and non-macOS desktop builds) may leave this unset.
+    pub system_dark: Option<Box<dyn Fn() -> bool>>,
     /// The user's preferred languages (locale tags, most preferred first) for Interface Language ▸
     /// System Language. Without it, System Language is English.
     pub system_languages: Option<Box<dyn Fn() -> Vec<String>>>,
@@ -262,6 +265,8 @@ pub struct FilmcraftApp {
     pub panic_next_frame: bool,
     fonts_ready: bool,
     pub integrated_titlebar: bool,
+    /// Last system appearance applied while the Color Theme preference is `system`.
+    system_theme_dark: Option<bool>,
     pub last_timeline_width: f32,
     /// The sequence whose view `ui.timeline` holds, and that view as it was last exchanged with
     /// `session.state.timeline_views` (see `sync_timeline_view`).
@@ -451,6 +456,7 @@ impl FilmcraftApp {
             panic_next_frame: false,
             fonts_ready: false,
             integrated_titlebar: false,
+            system_theme_dark: None,
             last_timeline_width: 1000.0,
             timeline_view_of: None,
             timeline_view_last: None,
@@ -498,12 +504,15 @@ impl FilmcraftApp {
 
     /// Show theme `k` with the Settings ▸ Appearance highlight colour and contrast.
     pub fn set_theme(&mut self, ctx: &egui::Context, k: ThemeKind) {
+        let system_dark = self.hooks.system_dark.as_ref().map(|f| f()).unwrap_or(true);
+        let resolved = k.resolved(system_dark);
         let a = &self.session.prefs.appearance;
         let highlight = filmcraft_engine::settings::parse_hex(&a.highlight_color);
-        self.tokens = Tokens::for_kind(k).with_appearance(highlight, a.accessible_contrast);
+        self.tokens = Tokens::for_kind(resolved).with_appearance(highlight, a.accessible_contrast);
         theme::apply_visuals(ctx, &self.tokens);
         self.apply_tooltips(ctx);
-        self.ui.dark = k != ThemeKind::Light;
+        self.ui.dark = resolved != ThemeKind::Light;
+        self.system_theme_dark = (k == ThemeKind::System).then_some(system_dark);
     }
 
     fn apply_tooltips(&self, ctx: &egui::Context) {
@@ -569,6 +578,20 @@ impl FilmcraftApp {
             }
         }
         self.applied_prefs = Some(p);
+    }
+
+    /// Re-check a system theme without rewriting the persisted preference. macOS can change its
+    /// appearance while FilmCraft remains open, so this runs once per UI frame when selected.
+    fn refresh_system_theme(&mut self, ctx: &egui::Context) {
+        if ThemeKind::from_pref(&self.session.prefs.appearance.color_theme) != ThemeKind::System {
+            self.system_theme_dark = None;
+            return;
+        }
+        ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        let dark = self.hooks.system_dark.as_ref().map(|f| f()).unwrap_or(true);
+        if self.system_theme_dark != Some(dark) {
+            self.set_theme(ctx, ThemeKind::System);
+        }
     }
 
     /// Every sequence has its own Timeline view (zoom, scroll, track heights), as Premiere's
@@ -1322,6 +1345,7 @@ impl FilmcraftApp {
         }
         self.sync_pool();
         self.apply_prefs(&ctx);
+        self.refresh_system_theme(&ctx);
         for ev in self.session.drain_events() {
             match ev {
                 filmcraft_engine::Event::OpenSequence(_) => {

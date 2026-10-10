@@ -262,6 +262,9 @@ fn appearance_labels_and_tooltips_take_effect() {
     d.menu("view.theme.dark");
     assert_eq!(d.pref("appearance.colorTheme"), "darkest");
     assert_eq!(d.inspect()["ui"]["dark"], true);
+    d.menu("view.theme.system");
+    assert_eq!(d.pref("appearance.colorTheme"), "system");
+    assert_eq!(d.inspect()["ui"]["dark"], true, "headless host fallback is dark");
 
     // label names show in Edit ▸ Label
     d.menu("app.settings.labels");
@@ -291,6 +294,25 @@ fn appearance_labels_and_tooltips_take_effect() {
     d.exec("prefs.set", json!({"key": "general.showToolTips", "value": true}));
     d.frames(2);
     assert!(d.harness.ctx.global_style().interaction.tooltip_delay < 1.0);
+}
+
+#[test]
+fn system_theme_is_available_and_uses_host_fallback() {
+    let mut d = Driver::demo();
+    d.menu("app.settings.appearance");
+    d.click("settings.appearance.colorTheme");
+    assert!(d.has("settings.appearance.colorTheme.system"));
+    d.click("settings.appearance.colorTheme.system");
+    d.click("settings.ok");
+    assert_eq!(d.pref("appearance.colorTheme"), "system");
+    // Headless/non-macOS hosts have no appearance callback and intentionally use dark.
+    assert_eq!(d.inspect()["ui"]["dark"], true);
+
+    d.menu("app.settings.appearance");
+    d.click("settings.appearance.colorTheme");
+    d.click("settings.appearance.colorTheme.light");
+    d.click("settings.ok");
+    assert_eq!(d.inspect()["ui"]["dark"], false);
 }
 
 #[test]

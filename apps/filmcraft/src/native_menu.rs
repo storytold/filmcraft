@@ -8,6 +8,17 @@ use filmcraft_ui_egui::menus::{MENUS, MenuItem as Item, menu_items};
 use muda::accelerator::Accelerator;
 use muda::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 
+/// Return the current macOS effective appearance. This is intentionally queried on the main
+/// thread: AppKit appearance is tied to the application event loop and can change while the app
+/// remains open.
+pub fn system_is_dark() -> bool {
+    let Some(mtm) = objc2_foundation::MainThreadMarker::new() else {
+        return true;
+    };
+    let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+    app.effectiveAppearance().name().to_string() == "NSAppearanceNameDarkAqua"
+}
+
 fn accel(s: &str) -> Option<Accelerator> {
     // Only shortcuts with a modifier become native key equivalents (single keys stay in-app so
     // typing in fields keeps working).

@@ -229,6 +229,10 @@ fn main() -> eframe::Result {
             app.hooks.open_path = Some(Box::new(open_path));
             // Settings ▸ General ▸ Interface Language ▸ System Language (#218).
             app.hooks.system_languages = Some(Box::new(|| sys_locale::get_locales().collect()));
+            #[cfg(target_os = "macos")]
+            {
+                app.hooks.system_dark = Some(Box::new(native_menu::system_is_dark));
+            }
             app.hooks.raise_without_focus = Some(Box::new(|| {
                 window_raise::raise_without_focus();
             }));

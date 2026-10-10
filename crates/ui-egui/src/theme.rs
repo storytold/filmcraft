@@ -16,21 +16,25 @@ pub enum ThemeKind {
     /// Slightly lighter grey panels (Premiere's brightness slider mid position).
     Medium,
     Light,
+    /// Follow the host system appearance (macOS; dark elsewhere when unavailable).
+    System,
 }
 
 impl ThemeKind {
-    /// Settings ▸ Appearance ▸ Color Theme value (`darkest`, `dark`, `light`).
+    /// Settings ▸ Appearance ▸ Color Theme value (`darkest`, `dark`, `light`, `system`).
     pub fn pref_name(self) -> &'static str {
         match self {
             ThemeKind::Dark => "darkest",
             ThemeKind::Medium => "dark",
             ThemeKind::Light => "light",
+            ThemeKind::System => "system",
         }
     }
     pub fn from_pref(s: &str) -> ThemeKind {
         match s {
             "dark" => ThemeKind::Medium,
             "light" => ThemeKind::Light,
+            "system" => ThemeKind::System,
             _ => ThemeKind::Dark,
         }
     }
@@ -39,7 +43,18 @@ impl ThemeKind {
             "dark" | "darkest" => Some(ThemeKind::Dark),
             "medium" | "grey" | "gray" => Some(ThemeKind::Medium),
             "light" => Some(ThemeKind::Light),
+            "system" => Some(ThemeKind::System),
             _ => None,
+        }
+    }
+
+    /// Resolve the system choice into a concrete palette. Hosts without a system appearance
+    /// callback deliberately use the existing dark default.
+    pub fn resolved(self, system_dark: bool) -> ThemeKind {
+        match self {
+            ThemeKind::System if system_dark => ThemeKind::Dark,
+            ThemeKind::System => ThemeKind::Light,
+            other => other,
         }
     }
 }
@@ -190,6 +205,7 @@ impl Tokens {
                 tl_ruler_text: Color32::from_rgb(80, 80, 80),
                 ..dark
             },
+            ThemeKind::System => dark,
         }
     }
 
@@ -351,6 +367,15 @@ pub fn apply_visuals(ctx: &egui::Context, t: &Tokens) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_theme_resolves_without_changing_explicit_themes() {
+        assert_eq!(ThemeKind::from_pref("system"), ThemeKind::System);
+        assert_eq!(ThemeKind::from_name("system"), Some(ThemeKind::System));
+        assert_eq!(ThemeKind::System.resolved(true), ThemeKind::Dark);
+        assert_eq!(ThemeKind::System.resolved(false), ThemeKind::Light);
+        assert_eq!(ThemeKind::Light.resolved(true), ThemeKind::Light);
+    }
 
     const JAPANESE: &str = "日本語の文字";
 
