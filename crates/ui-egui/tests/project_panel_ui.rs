@@ -486,6 +486,41 @@ fn select_all_takes_only_the_shown_bin() {
 }
 
 #[test]
+fn a_dragged_bin_nests_in_another_and_back_out() {
+    // #456: a bin stayed wherever it was created; dragging it onto another bin did nothing
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    let outer = d.exec("file.newBin", json!({"name": "Outer"}))["bin"].as_u64().unwrap();
+    let inner = d.exec("file.newBin", json!({"name": "Inner"}))["bin"].as_u64().unwrap();
+    d.app().ui.expanded_bins.clear();
+    d.frames(3);
+    let parent =
+        |d: &mut Driver, b: u64| filmcraft_ui_egui::panels::project::parent_bin(&d.app().session.project.root, filmcraft_project::BinId(b)).map(|p| p.0);
+    let root = d.app().session.project.root.id.0;
+    let drag = |d: &mut Driver, from: [f32; 4], to: (f32, f32)| {
+        let start = (from[0] + 80.0, from[1] + from[3] / 2.0);
+        d.ok("ui.drag", json!({"from": {"x": start.0, "y": start.1}, "to": {"x": to.0, "y": to.1}, "steps": 12}));
+        d.frames(3);
+    };
+    // onto the Outer row: Inner nests in it
+    let (from, to) = (d.rect(&format!("project.bin.{inner}")), d.rect(&format!("project.bin.{outer}")));
+    drag(&mut d, from, (to[0] + 80.0, to[1] + to[3] / 2.0));
+    assert_eq!(parent(&mut d, inner), Some(outer));
+    // a bin never goes into itself
+    d.app().ui.expanded_bins.push(outer);
+    d.frames(3);
+    let (from, to) = (d.rect(&format!("project.bin.{outer}")), d.rect(&format!("project.bin.{inner}")));
+    drag(&mut d, from, (to[0] + 80.0, to[1] + to[3] / 2.0));
+    assert_eq!(parent(&mut d, outer), Some(root));
+    assert_eq!(parent(&mut d, inner), Some(outer));
+    // onto empty space: back to the bin the view shows
+    let from = d.rect(&format!("project.bin.{inner}"));
+    let to = centre(d.rect("project.empty"));
+    drag(&mut d, from, to);
+    assert_eq!(parent(&mut d, inner), Some(root));
+}
+
+#[test]
 fn footer_buttons_are_wired() {
     let mut d = project_driver();
     let bins0 = d.app().session.project.root.children.len();

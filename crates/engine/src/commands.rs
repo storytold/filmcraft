@@ -2816,7 +2816,7 @@ fn build() -> Vec<CommandSpec> {
             s.fix_state();
             Ok(json!({"items": items.len(), "bins": bins.len()}))
         }),
-        cmd!("project.moveToBin", "Move to Bin", [], None, r#"{"items":[id]?,"bin":binId|null}"#, always, |s, p| {
+        cmd!("project.moveToBin", "Move to Bin", [], None, r#"{"items":[id|binId]?,"bin":binId|null}"#, always, |s, p| {
             let items: Vec<ItemId> = match p.get("items").and_then(Value::as_array) {
                 Some(a) => a.iter().filter_map(|v| v.as_u64().map(ItemId)).collect(),
                 None => s.state.project_selection.clone(),

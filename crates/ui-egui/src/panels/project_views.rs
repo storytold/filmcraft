@@ -5,7 +5,7 @@
 
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_engine::project_panel::{self as pp, Card, SortSpec, ViewMode};
-use filmcraft_project::{Bin, BinEntry, ItemId, ItemKind};
+use filmcraft_project::{Bin, BinEntry, BinId, ItemId, ItemKind};
 use filmcraft_time::Tick;
 use serde_json::json;
 
@@ -331,19 +331,44 @@ pub fn clear_params(selection: &[filmcraft_project::ItemId], selected_bin: Optio
 }
 
 /// Drop project items dragged onto a bin: move them (the selection when the dragged item is in it).
+/// A dragged bin nests in it, unless that would put the bin inside itself.
 fn accept_bin_drop(app: &FilmcraftApp, ui: &egui::Ui, r: Rect, bin: u64, actions: &mut Actions) -> bool {
-    let Some(item) = crate::panels::dragged_project_item(ui) else { return false };
+    let items: Vec<u64> = if let Some(item) = crate::panels::dragged_project_item(ui) {
+        let sel = &app.session.state.project_selection;
+        if sel.contains(&item) { sel.iter().map(|i| i.0).collect() } else { vec![item.0] }
+    } else if let Some(dragged) = crate::panels::dragged_bin(ui) {
+        let root = &app.session.project.root;
+        if root.find_bin(BinId(dragged)).is_none_or(|d| d.find_bin(BinId(bin)).is_some()) {
+            return false;
+        }
+        vec![dragged]
+    } else {
+        return false;
+    };
     if !ui.rect_contains_pointer(r) {
         return false;
     }
     ui.painter().rect_stroke(r, 3.0, Stroke::new(1.5, app.tokens.accent), StrokeKind::Inside);
     if ui.input(|i| i.pointer.any_released()) {
-        let sel = &app.session.state.project_selection;
-        let items: Vec<u64> = if sel.contains(&item) { sel.iter().map(|i| i.0).collect() } else { vec![item.0] };
         actions.push(("project.moveToBin".into(), json!({"items": items, "bin": bin})));
         crate::panels::clear_drag(ui);
     }
     true
+}
+
+/// A bin dropped on empty space moves into the bin the view shows (out of the bin it was nested in).
+fn accept_view_drop(app: &FilmcraftApp, ui: &egui::Ui, r: Rect, v: &View, actions: &mut Actions) {
+    let Some(dragged) = crate::panels::dragged_bin(ui) else { return };
+    let root = &app.session.project.root;
+    // already shown here, or the view is inside the dragged bin
+    let here = root.find_bin(v.bin).is_some_and(|b| b.children.iter().any(|c| matches!(c, BinEntry::Bin(x) if x.id.0 == dragged)));
+    let inside = root.find_bin(BinId(dragged)).is_none_or(|d| d.find_bin(v.bin).is_some());
+    if here || inside || !ui.rect_contains_pointer(r) || !ui.input(|i| i.pointer.any_released()) {
+        return;
+    }
+    let bin = (v.bin != root.id).then_some(v.bin.0);
+    actions.push(("project.moveToBin".into(), json!({"items": [dragged], "bin": bin})));
+    crate::panels::clear_drag(ui);
 }
 
 /// The inline rename field at `r`; true while it is shown.
@@ -521,6 +546,7 @@ fn empty_space(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bg: &egui::R
     ui.allocate_rect(r, Sense::hover());
     app.auto.add(&format!("{}.empty", v.prefix), r.intersect(ui.clip_rect()), "Empty area");
     marquee(app, ui, v, bg, ui.max_rect().min, actions);
+    accept_view_drop(app, ui, r, v, actions);
     if bg.clicked() {
         app.ui.project_panel.selected_bin = None;
         actions.push(("project.select".into(), json!({"items": []})));
@@ -614,7 +640,7 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
     for bid in bins {
         let Some(b) = app.session.project.root.find_bin(bid).cloned() else { continue };
         let open = app.ui.expanded_bins.contains(&b.id.0) || !filter.is_empty();
-        let (r, resp) = ui.allocate_exact_size(vec2(lc.width, lc.row_h), Sense::click());
+        let (r, resp) = ui.allocate_exact_size(vec2(lc.width, lc.row_h), Sense::click_and_drag());
         let selected = app.ui.project_panel.selected_bin == Some(b.id.0);
         if selected {
             ui.painter().rect_filled(r, 0.0, t.row_selected);
@@ -633,6 +659,9 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         app.auto.add(&format!("{}.bin.{}", v.prefix, b.id.0), r.intersect(ui.clip_rect()), &b.name);
         app.auto.add(&format!("{}.bin.{}.toggle", v.prefix, b.id.0), tri, "Expand");
         accept_bin_drop(app, ui, r, b.id.0, actions);
+        if resp.drag_started() {
+            crate::panels::start_drag_bin(ui, b.id.0);
+        }
         if resp.clicked() {
             let on_tri = resp.interact_pointer_pos().is_some_and(|p| p.x < x + 12.0);
             if on_tri || app.ui.project_panel.selected_bin == Some(b.id.0) && !resp.double_clicked() {
@@ -844,7 +873,7 @@ fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &st
 fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &View, actions: &mut Actions) {
     let t = app.tokens;
     let th = Rect::from_min_size(r.min, vec2(r.width(), r.width() * 9.0 / 16.0));
-    let resp = ui.interact(r.expand(2.0), egui::Id::new((&v.prefix, "bincard", b.id.0)), Sense::click());
+    let resp = ui.interact(r.expand(2.0), egui::Id::new((&v.prefix, "bincard", b.id.0)), Sense::click_and_drag());
     let selected = app.ui.project_panel.selected_bin == Some(b.id.0);
     let bg = Rect::from_min_max(th.min - vec2(6.0, 6.0), pos2(th.max.x + 6.0, r.max.y + 2.0));
     ui.painter().rect_filled(bg, 4.0, if selected { t.tl_header_bg } else { t.panel_bg });
@@ -863,6 +892,9 @@ fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &Vie
     }
     app.auto.add(&format!("{}.bin.{}", v.prefix, b.id.0), th, &b.name);
     accept_bin_drop(app, ui, th, b.id.0, actions);
+    if resp.drag_started() {
+        crate::panels::start_drag_bin(ui, b.id.0);
+    }
     if resp.clicked() {
         app.ui.project_panel.selected_bin = Some(b.id.0);
         actions.push(("project.select".into(), json!({"items": []})));

@@ -113,6 +113,8 @@ pub mod source_range;
 #[derive(Clone, Debug)]
 enum DragPayload {
     Item(ItemId),
+    /// A bin (by id) dragged in the Project panel.
+    Bin(u64),
     Source(source_drag::SourceDrag),
     Effect(String),
     /// A graphics template (id, name) from Essential Graphics ▸ Browse.
@@ -134,6 +136,15 @@ pub fn dragged_source(ui: &egui::Ui) -> Option<source_drag::SourceDrag> {
 }
 pub fn start_drag_item(ui: &egui::Ui, item: ItemId) {
     ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Item(item)))));
+}
+pub fn start_drag_bin(ui: &egui::Ui, bin: u64) {
+    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Bin(bin)))));
+}
+pub fn dragged_bin(ui: &egui::Ui) -> Option<u64> {
+    match payload(ui) {
+        Some(DragPayload::Bin(b)) => Some(b),
+        _ => None,
+    }
 }
 pub fn start_drag_template(ui: &egui::Ui, id: &str, name: &str) {
     ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Template(id.to_string(), name.to_string())))));
@@ -177,6 +188,7 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
     if let Some(p) = ctx.pointer_hover_pos() {
         let label = match &pl {
             DragPayload::Item(i) => app.session.project.item(*i).map(|x| x.name.clone()).unwrap_or_default(),
+            DragPayload::Bin(b) => app.session.project.root.find_bin(filmcraft_project::BinId(*b)).map(|x| x.name.clone()).unwrap_or_default(),
             DragPayload::Source(s) => {
                 let name = app.session.project.item(s.item).map(|i| i.name.as_str()).unwrap_or("Source");
                 let mode = match (s.video, s.audio) {
