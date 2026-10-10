@@ -139,7 +139,8 @@ impl PacketDecoder {
             C::Mp3 => Self::new(CODEC_TYPE_MP3, rate, None),
             C::Ac3 { .. } => Self::ac3(),
             C::Alac { cookie } => Self::new(CODEC_TYPE_ALAC, rate, Some(cookie.clone())),
-            C::Flac(_) => Self::new(CODEC_TYPE_FLAC, rate, None),
+            // the decoder needs the STREAMINFO body: `dfLa` holds it after the 4-byte block header
+            C::Flac(f) => Self::new(CODEC_TYPE_FLAC, rate, f.metadata_blocks.get(4..38).map(<[u8]>::to_vec)),
             C::Opus(o) => Self::opus(filmcraft_opus::OpusHead::from_dops(&o.to_bytes()).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?),
             other => Err(CodecError::Unsupported(format!("{} audio", other.name()))),
         }
