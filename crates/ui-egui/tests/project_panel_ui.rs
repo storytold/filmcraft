@@ -720,6 +720,123 @@ fn media_browser_drag_imports_into_the_project_panel() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Double-clicking empty space in the Project panel opens Import, also between and beside the
+/// Icon view's cards once the project has some. Only the strip under the last row used to answer,
+/// so with a project loaded a double-click in the visible blank space did nothing. Real pointer
+/// input at 60 frames per second, so the two clicks are a real double-click.
+#[test]
+fn double_click_empty_area_imports_with_a_project_loaded() {
+    fn driver(demo: bool) -> (Driver, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let mut session = Session::default();
+        if demo {
+            session.execute("file.openDemoProject", json!({})).expect("demo project");
+        }
+        let (tx, rx) = channel();
+        let mut app = FilmcraftApp::new(session).with_control(rx);
+        let picks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = picks.clone();
+        app.hooks.pick_files = Some(Box::new(move |_| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Vec::new()
+        }));
+        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |_cc| app);
+        let mut d = Driver { harness, tx, snapshots: None };
+        d.frames(10);
+        (d, picks)
+    }
+    fn double_click(d: &mut Driver, at: egui::Pos2) {
+        let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);
+        // a pause first, as a person makes: clicks closer together continue the last gesture
+        // (a triple click) instead of starting a double-click
+        d.frames(60);
+        push(d, egui::Event::PointerMoved(at));
+        d.frames(1);
+        for _ in 0..2 {
+            for pressed in [true, false] {
+                push(d, egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+                d.frames(1);
+            }
+        }
+        d.frames(3);
+    }
+    let count = |p: &std::sync::Arc<std::sync::atomic::AtomicUsize>| p.load(std::sync::atomic::Ordering::SeqCst);
+
+    // an empty project: the whole panel is the empty area
+    let (mut d, picks) = driver(false);
+    let r = d.rect("project.empty");
+    double_click(&mut d, egui::pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0));
+    assert_eq!(count(&picks), 1, "empty project");
+
+    // the demo project, Icon view: the gap between the first two bins, and the space right of the
+    // last card in the first row
+    let (mut d, picks) = driver(true);
+    d.ok("ui.set", json!({}));
+    let (a, b) = (d.rect("project.bin.1"), d.rect("project.bin.2"));
+    assert!((a[1] - b[1]).abs() < 1.0 && b[0] > a[0] + a[2], "bins 1 and 2 share a row: {a:?} {b:?}");
+    double_click(&mut d, egui::pos2((a[0] + a[2] + b[0]) / 2.0, a[1] + a[3] / 2.0));
+    assert_eq!(count(&picks), 1, "between two bins");
+    let row: Vec<[f32; 4]> = d.ids("project.bin.").iter().map(|id| d.rect(id)).filter(|r| (r[1] - a[1]).abs() < 1.0).collect();
+    let last = row.iter().fold(a, |m, r| if r[0] > m[0] { *r } else { m });
+    let panel = d.rect("project.count");
+    if last[0] + last[2] + 30.0 < panel[0] + panel[2] {
+        double_click(&mut d, egui::pos2(last[0] + last[2] + 20.0, last[1] + last[3] / 2.0));
+        assert_eq!(count(&picks), 2, "right of the last card");
+    }
+    // a card still takes its own double-click: the bin opens, Import does not
+    double_click(&mut d, egui::pos2(a[0] + a[2] / 2.0, a[1] + a[3] / 2.0));
+    let picked = count(&picks);
+    assert!(picked <= 2, "double-clicking a bin must not open Import");
+}
+
+/// The report: with audio placed in the timeline, double-clicking the Project panel's empty space
+/// no longer opened Import. A new sequence with a tone on A1 (so the panel shows the sequence and
+/// the audio clip as cards); every empty spot opens Import: the strip under the cards and the space
+/// beside them.
+#[test]
+fn double_click_imports_with_audio_in_the_timeline() {
+    let mut session = Session::default();
+    session.execute("file.newSequence", json!({"name": "Mix", "audio": 2, "video": 1})).unwrap();
+    let inter: Vec<f32> = (0..48_000).flat_map(|i| [(i as f32 * 0.0576).sin() * 0.5; 2]).collect();
+    let bytes: std::sync::Arc<[u8]> = filmcraft_engine::previews::write_wav_f32(&inter, 48_000).into();
+    let item = filmcraft_engine::commands::import_bytes(&mut session, "/tone.wav", bytes, None).unwrap();
+    session.execute("timeline.place", json!({"item": item.0, "audioTrack": "A1", "seconds": 0.0})).unwrap();
+    let (tx, rx) = channel();
+    let mut app = FilmcraftApp::new(session).with_control(rx);
+    let picks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = picks.clone();
+    app.hooks.pick_files = Some(Box::new(move |_| {
+        seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Vec::new()
+    }));
+    let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |_cc| app);
+    let mut d = Driver { harness, tx, snapshots: None };
+    d.frames(10);
+    let double_click = |d: &mut Driver, at: egui::Pos2| {
+        let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);
+        d.frames(60);
+        push(d, egui::Event::PointerMoved(at));
+        d.frames(1);
+        for _ in 0..2 {
+            for pressed in [true, false] {
+                push(d, egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+                d.frames(1);
+            }
+        }
+        d.frames(3);
+    };
+    let count = || picks.load(std::sync::atomic::Ordering::SeqCst);
+    let cards: Vec<[f32; 4]> = d.ids("project.item.").iter().filter(|id| id.matches('.').count() == 2).map(|id| d.rect(id)).collect();
+    assert!(!cards.is_empty(), "the sequence and the tone show as cards");
+    let empty = d.rect("project.empty");
+    eprintln!("cards {cards:?}, empty strip {empty:?}");
+    double_click(&mut d, egui::pos2(empty[0] + empty[2] / 2.0, empty[1] + empty[3] / 2.0));
+    let strip = count();
+    let last = cards.iter().fold(cards[0], |m, r| if r[0] > m[0] { *r } else { m });
+    double_click(&mut d, egui::pos2(last[0] + last[2] + 40.0, last[1] + last[3] / 2.0));
+    let beside = count() - strip;
+    assert_eq!((strip, beside), (1, 1), "double-click on (the strip under the cards, the space beside them)");
+}
+
 // ---- marquee selection (#578)
 
 /// The Footage bin open in place in `view`, with its items' rects (row by row, left to right).
