@@ -515,6 +515,26 @@ fn footer_buttons_are_wired() {
     assert_eq!(d.app().session.prefs.project_panel.view.icon_sort.column, "Name");
 }
 
+#[test]
+fn new_bin_asks_for_its_name() {
+    // #456: New Bin opens the name field of the new bin instead of leaving it "New Bin"
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    d.click("project.button.file.newBin");
+    d.frames(2);
+    let bin = d.app().ui.project_panel.rename.as_ref().and_then(|r| r.bin).expect("the new bin's name is being edited");
+    assert!(d.has("project.rename"), "the name field is shown");
+    d.key("Cmd+A");
+    d.ok("ui.type", json!({"text": "Interviews"}));
+    d.key("Enter");
+    let name = d.app().session.project.root.find_bin(filmcraft_project::BinId(bin)).unwrap().name.clone();
+    assert_eq!(name, "Interviews");
+    // with a name (agents) the bin is named directly and nothing is edited
+    let r = d.ok("ui.menu.invoke", json!({"id": "file.newBin", "params": {"name": "B-roll"}}));
+    assert!(r["bin"].as_u64().is_some(), "{r}");
+    assert!(d.app().ui.project_panel.rename.is_none());
+}
+
 // ------------------------------------------------------------------------------------ Media Browser
 
 fn media_dir(tag: &str) -> std::path::PathBuf {
