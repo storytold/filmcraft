@@ -178,8 +178,20 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             v.pan = [0.0, 0.0];
             Ok(json!({"zoom": v.zoom}))
         }
-        "playback.inToOutPreroll" => play_range(app, true),
-        "playback.toOut" => play_range(app, false),
+        "playback.inToOutPreroll" => {
+            if crate::menus::targets_source(app, params) {
+                app.play_source_range(false, true).map(|_| Value::Null)
+            } else {
+                play_range(app, true)
+            }
+        }
+        "playback.toOut" => {
+            if crate::menus::targets_source(app, params) {
+                app.play_source_range(true, false).map(|_| Value::Null)
+            } else {
+                play_range(app, false)
+            }
+        }
         "timeline.expandAllTracks" | "timeline.minimizeAllTracks" => Ok(all_heights(app, id == "timeline.expandAllTracks")),
         "timeline.increaseVideoHeight" | "timeline.decreaseVideoHeight" | "timeline.increaseAudioHeight" | "timeline.decreaseAudioHeight" => {
             let d = if id.contains("increase") { HEIGHT_STEP } else { -HEIGHT_STEP };
@@ -466,12 +478,11 @@ fn text_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
     let n = words.len();
     let paras = filmcraft_edit::transcript::paragraphs(&words, filmcraft_time::Tick::from_seconds_f64(1.5));
     let para_of = |i: usize| paras.iter().position(|p| p.contains(&i)).unwrap_or(0);
-    // a selection kept from before an edit can point past the words the transcript has now
-    let (anchor, cur) = app.ui.transcript_sel.map(|(a, c)| (a.min(n - 1), c.min(n - 1))).unwrap_or_else(|| {
-        let i = filmcraft_edit::transcript::word_at(&words, app.session.playhead()).unwrap_or(0).min(n - 1);
+    // a selection left over from a longer transcript (e.g. after `transcript.extract` over the control channel) counts as none, as when drawing
+    let (anchor, cur) = app.ui.transcript_sel.filter(|(a, b)| *a < n && *b < n).unwrap_or_else(|| {
+        let i = filmcraft_edit::transcript::word_at(&words, app.session.playhead()).unwrap_or(0);
         (i, i)
     });
-    let para = |i: usize| paras.get(para_of(i)).cloned().unwrap_or(0..n);
     let line = |i: usize, d: i64| -> usize {
         let p = para_of(i) as i64 + d;
         if p < 0 { 0 } else { paras.get(p as usize).map_or(n - 1, |r| r.start) }
@@ -485,21 +496,12 @@ fn text_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
         "nextLine" => (line(cur, 1), false),
         "selectPrevLine" => (line(cur, -1), true),
         "selectNextLine" => (line(cur, 1), true),
-        "segmentStart" => (para(cur).start, false),
-        "segmentEnd" => (para(cur).end.saturating_sub(1), false),
-        "selectToSegmentStart" => (para(cur).start, true),
-        "selectToSegmentEnd" => (para(cur).end.saturating_sub(1), true),
+        "segmentStart" => (paras[para_of(cur)].start, false),
+        "segmentEnd" => (paras[para_of(cur)].end - 1, false),
+        "selectToSegmentStart" => (paras[para_of(cur)].start, true),
+        "selectToSegmentEnd" => (paras[para_of(cur)].end - 1, true),
         "delete" | "rippleDelete" => {
-            // a clicked pause: Backspace extracts it, Alt+Backspace lifts it
-            if app.ui.transcript_sel.is_none()
-                && let Some(k) = app.ui.transcript_pause
-            {
-                let mode = if op == "delete" { "lift" } else { "extract" };
-                let r = app.session.execute("transcript.deleteHits", json!({"filter": "pauses", "hit": k, "mode": mode})).map_err(|e| e.to_string())?;
-                app.ui.transcript_pause = None;
-                return Ok(r);
-            }
-            let Some((a, b)) = app.ui.transcript_sel else { return Err("select text or a pause in the transcript".into()) };
+            let Some((a, b)) = app.ui.transcript_sel else { return Err("select text in the transcript".into()) };
             let cmd = if op == "delete" { "transcript.lift" } else { "transcript.extract" };
             let r = app.session.execute(cmd, json!({"from": a.min(b), "to": a.max(b)})).map_err(|e| e.to_string())?;
             app.ui.transcript_sel = None;
@@ -507,11 +509,37 @@ fn text_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
         }
         _ => return Err(format!("unknown Text panel command `{op}`")),
     };
-    let to = to.min(n - 1);
     app.ui.transcript_sel = Some(if extend { (anchor, to) } else { (to, to) });
     // the playhead follows the caret
-    if let Some(w) = words.get(to) {
-        app.session.set_playhead(w.start);
-    }
+    app.session.set_playhead(words[to].start);
     Ok(json!({"selection": [anchor.min(to), anchor.max(to)], "word": to}))
+}
+
+#[cfg(test)]
+mod transcript_selection_tests {
+    use serde_json::{Value, json};
+
+    #[test]
+    fn prev_word_after_the_transcript_shrank_under_the_selection_does_not_panic() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let a = session.active_sequence().unwrap().audio_tracks[0].items[0].clone();
+        let tk = |s: f64| a.source_in.0 + (s * filmcraft_time::TICKS_PER_SECOND as f64) as i64;
+        let words: Vec<Value> = ["one", "two", "three", "four"]
+            .iter()
+            .enumerate()
+            .map(|(i, w)| json!({"text": w, "start": tk(0.5 + i as f64 * 0.5), "end": tk(0.9 + i as f64 * 0.5)}))
+            .collect();
+        session.execute("transcript.set", json!({"item": a.item.0, "transcript": {"language": "en", "words": words}})).unwrap();
+        let mut app = crate::FilmcraftApp::new(session);
+        app.ui.text_tab = "Transcript".into();
+        app.ui.transcript_sel = Some((3, 3));
+        // the transcript shrinks behind the panel's back, as with `transcript.extract` over the control channel
+        app.session.execute("transcript.extract", json!({"from": 0, "to": 1})).unwrap();
+        assert_eq!(filmcraft_engine::transcript::sequence_words(&app.session).len(), 2);
+        let r = super::text_panel(&mut app, "prevWord").unwrap();
+        let (sa, sb) = app.ui.transcript_sel.unwrap();
+        assert!(sa < 2 && sb < 2, "selection {sa}..{sb} outside the 2-word transcript");
+        assert_eq!(r["word"], json!(sb));
+    }
 }

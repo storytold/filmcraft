@@ -82,6 +82,10 @@ pub(crate) mod pid {
     // Root
     pub const ROOT_META_DICTIONARY: u16 = 0x0001;
     pub const ROOT_HEADER: u16 = 0x0002;
+    // MetaDictionary and MetaDefinition
+    pub const META_CLASS_DEFINITIONS: u16 = 0x0003;
+    pub const META_TYPE_DEFINITIONS: u16 = 0x0004;
+    pub const META_IDENTIFICATION: u16 = 0x0005;
     // Header
     pub const BYTE_ORDER: u16 = 0x3B01;
     pub const LAST_MODIFIED: u16 = 0x3B02;

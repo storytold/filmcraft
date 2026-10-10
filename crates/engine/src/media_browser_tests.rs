@@ -269,7 +269,7 @@ fn probing_large_unstreamable_files_does_not_read_them_whole() {
     crate::media_test_util::make_movie(&mov, filmcraft_media::DemoScene::OceanSunset, 64, 36, 24);
     let mut s = Session::default();
     assert!(media_browser::probe(&mut s, &avi.to_string_lossy()).is_none());
-    assert_eq!(media_browser::probe(&mut s, &wav.to_string_lossy()).unwrap().audio.unwrap().channels, 2);
+    assert_eq!(media_browser::probe(&mut s, &wav.to_string_lossy()).unwrap().audio().unwrap().channels, 2);
     assert!(media_browser::probe(&mut s, &mov.to_string_lossy()).unwrap().video.is_some());
     // importing is unchanged: it still opens files through the full path
     let r = s.execute("file.import", json!({"paths": [wav.to_string_lossy()]})).unwrap();

@@ -15,7 +15,7 @@
 //! `properties.<effect>.<param>.value` (`.x` / `.y`), and `properties.speed` (Speed/Duration).
 
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, pos2, vec2};
-use filmcraft_project::{ClipId, EffectInstance, ParamKind, ParamValue, TrackItem};
+use filmcraft_project::{ClipId, EffectInstance, ParamKind, ParamValue, TrackItem, TrackKind};
 use filmcraft_time::Tick;
 use serde_json::{Value, json};
 
@@ -40,19 +40,44 @@ fn timeline_time_of(it: &TrackItem, m: Tick) -> Tick {
     it.start + Tick(((m - it.source_in).0 as f64 / it.speed.abs().max(1e-6)) as i64)
 }
 
-fn selected_clip(app: &FilmcraftApp) -> Option<(ClipId, TrackItem, filmcraft_project::TrackKind)> {
-    let seq = app.session.active_sequence()?;
-    let mut best = None;
-    for c in &app.session.state.selection {
-        if let Some((tid, it)) = seq.find_item(*c) {
-            let kind = seq.track(tid)?.kind;
-            if kind == filmcraft_project::TrackKind::Video {
-                return Some((*c, it.clone(), kind));
-            }
-            best.get_or_insert((*c, it.clone(), kind));
-        }
+// The press frame can include movement before the button went down. Start from the press
+// origin so that only gesture motion enters the preview, including same-frame movement.
+fn graph_drag_offset(ui: &egui::Ui, response: &egui::Response, previous: egui::Vec2) -> egui::Vec2 {
+    if response.drag_started() {
+        response
+            .interact_pointer_pos()
+            .zip(ui.input(|i| i.pointer.press_origin()))
+            .map_or_else(|| response.drag_delta(), |(position, origin)| position - origin)
+    } else {
+        previous + response.drag_delta()
     }
-    best
+}
+
+fn selected_clip(app: &FilmcraftApp) -> Option<(ClipId, TrackItem, TrackKind)> {
+    selected_clips(app).into_iter().next()
+}
+
+/// The selected clip (video first) and, for a video clip, the selected audio linked to it.
+fn selected_clips(app: &FilmcraftApp) -> Vec<(ClipId, TrackItem, TrackKind)> {
+    let Some(seq) = app.session.active_sequence() else { return Vec::new() };
+    let picked: Vec<(ClipId, &TrackItem, TrackKind)> = app
+        .session
+        .state
+        .selection
+        .iter()
+        .filter_map(|c| {
+            let (tid, it) = seq.find_item(*c)?;
+            Some((*c, it, seq.track(tid)?.kind))
+        })
+        .collect();
+    let Some(&(clip, it, kind)) = picked.iter().find(|p| p.2 == TrackKind::Video).or(picked.first()) else { return Vec::new() };
+    let mut out = vec![(clip, it.clone(), kind)];
+    if kind == TrackKind::Video
+        && let Some(&(ac, ai, ak)) = picked.iter().find(|p| p.2 == TrackKind::Audio && p.1.link.is_some() && p.1.link == it.link)
+    {
+        out.push((ac, ai.clone(), ak));
+    }
+    out
 }
 
 /// The automation key of the effect at `idx` on the clip: its effect id (`gaussian_blur`) for the
@@ -68,19 +93,25 @@ pub(crate) fn fx_auto_key(it: &TrackItem, idx: usize) -> String {
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
-    let Some((clip, it, kind)) = selected_clip(app) else {
-        crate::dock::placeholder(ui, rect, &t, "(no clip selected)");
+    let clips = selected_clips(app);
+    let Some((clip, it, _)) = clips.first().cloned() else {
+        // a transition clicked in the Timeline (#430)
+        if let Some(id) = crate::panels::transition_controls::selected(app) {
+            crate::panels::transition_controls::effect_controls(app, ui, rect, id);
+            return;
+        }
+        crate::dock::placeholder(ui, rect, &t, tl!("(no clip selected)"));
         return;
     };
     let Some(seq) = app.session.active_sequence().cloned() else {
-        crate::dock::placeholder(ui, rect, &t, "(no sequences)");
+        crate::dock::placeholder(ui, rect, &t, tl!("(no sequences)"));
         return;
     };
     let split = rect.min.x + (rect.width() * 0.58).max(260.0).min(rect.width() - 60.0);
     let head = Rect::from_min_size(rect.min + vec2(8.0, 4.0), vec2(split - rect.min.x - 12.0, 24.0));
     // Premiere: two pill tabs — "Source · clip" and "Sequence · clip" (active)
     let pill = |ui: &mut egui::Ui, r: Rect, text: &str, active: bool| {
-        ui.painter().rect_filled(r, 4.0, if active { Color32::from_rgb(0x3a, 0x3a, 0x3a) } else { t.panel_bg });
+        ui.painter().rect_filled(r, 4.0, if active { t.pill_active_bg } else { t.panel_bg });
         if !active {
             ui.painter().rect_stroke(r, 4.0, Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
         }
@@ -88,7 +119,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         cp.text(pos2(r.min.x + 8.0, r.center().y), Align2::LEFT_CENTER, text, Tokens::ui(11.5), if active { t.text } else { t.text_dim });
     };
     let half = (head.width() - 6.0) / 2.0;
-    pill(ui, Rect::from_min_size(head.min, vec2(half, 24.0)), &format!("Source · {}", it.name), false);
+    pill(ui, Rect::from_min_size(head.min, vec2(half, 24.0)), &tlf!("Source · {name}", name = it.name), false);
     pill(ui, Rect::from_min_size(head.min + vec2(half + 6.0, 0.0), vec2(half, 24.0)), &format!("{} · {}", seq_name(app), it.name), true);
     // keyframe lane header, as Premiere's: a time ruler over the clip's stretch of the sequence,
     // which the playhead's handle rides on, and the clip's bar under it
@@ -101,7 +132,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let ruler = Rect::from_min_max(lane.min, pos2(lane.max.x, lane.min.y + RULER_H));
     paint_ruler(ui.painter(), ruler, &it, rate, seq.settings.drop_frame, &t);
     let bar = Rect::from_min_max(pos2(lane.min.x, ruler.max.y + 4.0), pos2(lane.max.x, ruler.max.y + 4.0 + CLIP_BAR_H));
-    ui.painter().rect_filled(bar.shrink2(vec2(0.0, 2.0)), 2.0, Color32::from_rgb(58, 58, 70));
+    ui.painter().rect_filled(bar.shrink2(vec2(0.0, 2.0)), 2.0, t.clip_bar_bg);
     ui.painter().with_clip_rect(bar).text(pos2(bar.min.x + 4.0, bar.center().y), Align2::LEFT_CENTER, &it.name, Tokens::ui(10.0), t.text);
     // click or drag anywhere on the ruler (or the bar) to move the playhead
     let scrub = Rect::from_min_max(ruler.min, bar.max);
@@ -120,96 +151,93 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut actions: Vec<(String, Value)> = Vec::new();
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("ec-body"));
     bui.set_clip_rect(Rect::from_min_max(body.min, pos2(rect.max.x, body.max.y)));
-    let mt_now = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
-    let heading = if kind == filmcraft_project::TrackKind::Video { "Video" } else { "Audio" };
-    bui.painter().text(pos2(body.min.x + 8.0, body.min.y + 8.0), Align2::LEFT_CENTER, heading, Tokens::semibold(11.5), t.text_dim);
-    bui.add_space(18.0);
-    // Premiere lists the fixed effects (Motion, Opacity, Time Remapping / Volume…) first.
-    let mut order: Vec<usize> = (0..it.effects.len()).collect();
-    order.sort_by_key(|i| !it.effects[*i].def().is_some_and(|d| d.intrinsic));
     let scroll_out = egui::ScrollArea::vertical().id_salt("ec-scroll").auto_shrink([false, false]).show(&mut bui, |bui| {
-        for idx in order {
-            let e = &it.effects[idx];
-            let Some(def) = e.def() else { continue };
-            let key = format!("{}:{}", clip.0, idx);
-            let open = !app.ui.collapsed_fx.contains(&key);
-            let (r, resp) = bui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::click());
-            if resp.hovered() {
-                bui.painter().rect_filled(r, 0.0, t.hover);
-            }
-            icons::paint(
-                bui.painter(),
-                Rect::from_center_size(pos2(r.min.x + 10.0, r.center().y), vec2(10.0, 10.0)),
-                if open { Icon::ChevronDown } else { Icon::ChevronRight },
-                t.text_dim,
-            );
-            // fx enable toggle
-            let fxr = Rect::from_center_size(pos2(r.min.x + 28.0, r.center().y), vec2(18.0, 14.0));
-            let fxresp = bui.interact(fxr, egui::Id::new(("fxen", clip.0, idx)), Sense::click());
-            bui.painter().text(fxr.center(), Align2::CENTER_CENTER, "fx", Tokens::semibold(10.5), if e.enabled { t.text } else { t.text_faint });
-            if !e.enabled {
-                bui.painter().line_segment([fxr.left_bottom(), fxr.right_top()], Stroke::new(1.0, t.text_faint));
-            }
-            if fxresp.clicked() {
-                actions.push(("effects.toggleEnabled".into(), json!({"clip": clip.0, "index": idx})));
-            }
-            bui.painter().text(pos2(r.min.x + 42.0, r.center().y), Align2::LEFT_CENTER, def.name, Tokens::ui(12.0), t.text);
-            // reset button
-            let rr = Rect::from_center_size(pos2(r.max.x - 14.0, r.center().y), vec2(16.0, 16.0));
-            let rresp = bui.interact(rr, egui::Id::new(("fxreset", clip.0, idx)), Sense::click()).on_hover_text("Reset Effect");
-            icons::paint(bui.painter(), rr.shrink(2.0), Icon::Reset, if rresp.hovered() { t.text } else { t.text_dim });
-            if rresp.clicked() {
-                actions.push(("effects.reset".into(), json!({"clip": clip.0, "index": idx})));
-            }
-            let fx_id = fx_auto_key(&it, idx);
-            app.auto.add(&format!("effectControls.effect.{fx_id}"), r, def.name);
-            app.auto.add(&format!("effectControls.effect.{fx_id}.enabled"), fxr, if e.enabled { "Bypass effect" } else { "Enable effect" });
-            app.auto.add(&format!("effectControls.effect.{fx_id}.reset"), rr, "Reset Effect");
-            if resp.clicked() && !fxresp.clicked() && !rresp.clicked() {
-                if open {
-                    app.ui.collapsed_fx.push(key.clone());
-                } else {
-                    app.ui.collapsed_fx.retain(|k| *k != key);
+        for (clip, it, kind) in &clips {
+            let clip = *clip;
+            let (hr, _) = bui.allocate_exact_size(vec2(body.width(), 18.0), Sense::hover());
+            let heading = if *kind == TrackKind::Video { tl!("Video") } else { tl!("Audio") };
+            bui.painter().text(pos2(hr.min.x + 8.0, hr.center().y), Align2::LEFT_CENTER, heading, Tokens::semibold(11.5), t.text_dim);
+            let mt_now = it.source_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
+            // Premiere lists the fixed effects (Motion, Opacity, Time Remapping / Volume…) first.
+            let mut order: Vec<usize> = (0..it.effects.len()).collect();
+            order.sort_by_key(|i| !it.effects[*i].def().is_some_and(|d| d.intrinsic));
+            for idx in order {
+                let e = &it.effects[idx];
+                let Some(def) = e.def() else { continue };
+                let key = format!("{}:{}", clip.0, idx);
+                let open = !app.ui.collapsed_fx.contains(&key);
+                let (r, resp) = bui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::click());
+                if resp.hovered() {
+                    bui.painter().rect_filled(r, 0.0, t.hover);
                 }
-            }
-            let mut save_preset = false;
-            resp.context_menu(|ui| {
-                let sp = ui.button("Save Preset…");
-                app.auto.add(&format!("effectControls.effect.{fx_id}.savePreset"), sp.rect, "Save Preset…");
-                if sp.clicked() {
-                    save_preset = true;
-                    ui.close();
+                icons::paint(
+                    bui.painter(),
+                    Rect::from_center_size(pos2(r.min.x + 10.0, r.center().y), vec2(10.0, 10.0)),
+                    if open { Icon::ChevronDown } else { Icon::ChevronRight },
+                    t.text_dim,
+                );
+                // fx enable toggle
+                let fxr = Rect::from_center_size(pos2(r.min.x + 28.0, r.center().y), vec2(18.0, 14.0));
+                let fxresp = bui.interact(fxr, egui::Id::new(("fxen", clip.0, idx)), Sense::click());
+                bui.painter().text(fxr.center(), Align2::CENTER_CENTER, "fx", Tokens::semibold(10.5), if e.enabled { t.text } else { t.text_faint });
+                if !e.enabled {
+                    bui.painter().line_segment([fxr.left_bottom(), fxr.right_top()], Stroke::new(1.0, t.text_faint));
                 }
-                if !def.intrinsic {
-                    let c = ui.button("Clear");
-                    app.auto.add(&format!("effectControls.effect.{fx_id}.clear"), c.rect, "Clear");
-                    if c.clicked() {
+                if fxresp.clicked() {
+                    actions.push(("effects.toggleEnabled".into(), json!({"clip": clip.0, "index": idx})));
+                }
+                bui.painter().text(pos2(r.min.x + 42.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::t(def.name), Tokens::ui(12.0), t.text);
+                // reset button
+                let rr = Rect::from_center_size(pos2(r.max.x - 14.0, r.center().y), vec2(16.0, 16.0));
+                let rresp = bui.interact(rr, egui::Id::new(("fxreset", clip.0, idx)), Sense::click()).on_hover_text(tl!("Reset Effect"));
+                icons::paint(bui.painter(), rr.shrink(2.0), Icon::Reset, if rresp.hovered() { t.text } else { t.text_dim });
+                if rresp.clicked() {
+                    actions.push(("effects.reset".into(), json!({"clip": clip.0, "index": idx})));
+                }
+                app.auto.add(&format!("effectControls.effect.{}", e.effect), r, def.name);
+                if resp.clicked() && !fxresp.clicked() && !rresp.clicked() {
+                    if open {
+                        app.ui.collapsed_fx.push(key.clone());
+                    } else {
+                        app.ui.collapsed_fx.retain(|k| *k != key);
+                    }
+                }
+                let mut save_preset = false;
+                let fx_id = e.effect.clone();
+                resp.context_menu(|ui| {
+                    let sp = ui.button(tl!("Save Preset…"));
+                    app.auto.add(&format!("effectControls.effect.{fx_id}.savePreset"), sp.rect, "Save Preset…");
+                    if sp.clicked() {
+                        save_preset = true;
+                        ui.close();
+                    }
+                    if !def.intrinsic && ui.button(tl!("Clear")).clicked() {
                         actions.push(("effects.remove".into(), json!({"clip": clip.0, "index": idx})));
                         ui.close();
                     }
+                });
+                if save_preset {
+                    crate::panels::presets::open_save(app, clip.0, vec![idx], def.name);
                 }
-            });
-            if save_preset {
-                crate::panels::presets::open_save(app, clip.0, vec![idx], def.name);
-            }
-            if !open {
-                continue;
-            }
-            if crate::panels::audio_fx_editor::has_editor(&e.effect) {
-                custom_setup_row(app, bui, body, clip, idx, &fx_id);
-            }
-            for pd in &def.params {
-                param_row(app, bui, body, clip, idx, e, None, pd, mt_now, &mut actions, &lane, &lx, &it);
-                if app.ui.expanded_fx.contains(&graph_key(clip, idx, pd.id))
-                    && let Some(param) = e.params.get(pd.id)
-                    && param.is_animated()
-                    && matches!(param.value, ParamValue::Float(_))
-                {
-                    graph_rows(app, bui, body, clip, idx, None, pd, param, &lane, &it, &mut actions);
+                if !open {
+                    continue;
                 }
-            }
-            if crate::panels::masks::maskable(e) {
-                crate::panels::masks::effect_rows(app, bui, body, clip, idx, e, mt_now, &mut actions, &lane, &lx, &it);
+                if crate::panels::audio_fx_editor::has_editor(&e.effect) {
+                    custom_setup_row(app, bui, body, clip, idx, &e.effect);
+                }
+                for pd in &def.params {
+                    param_row(app, bui, body, clip, idx, e, None, pd, mt_now, &mut actions, &lane, &lx, it);
+                    if app.ui.expanded_fx.contains(&graph_key(clip, idx, pd.id))
+                        && let Some(param) = e.params.get(pd.id)
+                        && param.is_animated()
+                        && matches!(param.value, ParamValue::Float(_))
+                    {
+                        graph_rows(app, bui, body, clip, idx, None, pd, param, &lane, it, &mut actions);
+                    }
+                }
+                if crate::panels::masks::maskable(e) {
+                    crate::panels::masks::effect_rows(app, bui, body, clip, idx, e, mt_now, &mut actions, &lane, &lx, it);
+                }
             }
         }
     });
@@ -234,12 +262,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 fn custom_setup_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, body: Rect, clip: ClipId, idx: usize, fx_id: &str) {
     let t = app.tokens;
     let (r, _) = ui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::hover());
-    ui.painter().text(pos2(r.min.x + 42.0, r.center().y), Align2::LEFT_CENTER, "Custom Setup", Tokens::ui(12.0), t.text_dim);
+    ui.painter().text(pos2(r.min.x + 42.0, r.center().y), Align2::LEFT_CENTER, tl!("Custom Setup"), Tokens::ui(12.0), t.text_dim);
     let br = Rect::from_min_size(pos2(r.min.x + 160.0, r.min.y + 2.0), vec2(60.0, ROW_H - 4.0));
     let resp = ui.interact(br, egui::Id::new(("fx-custom-setup", clip.0, idx)), Sense::click());
     ui.painter().rect_filled(br, 3.0, if resp.hovered() { t.hover } else { t.field_bg });
     ui.painter().rect_stroke(br, 3.0, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
-    ui.painter().text(br.center(), Align2::CENTER_CENTER, "Edit…", Tokens::ui(11.5), t.text);
+    ui.painter().text(br.center(), Align2::CENTER_CENTER, tl!("Edit…"), Tokens::ui(11.5), t.text);
     app.auto.add(&format!("effectControls.effect.{fx_id}.edit"), br, "Edit…");
     if resp.clicked() {
         crate::panels::audio_fx_editor::open(app, crate::panels::audio_fx_editor::FxTarget::Clip { clip: clip.0, index: idx });
@@ -324,7 +352,7 @@ fn keyframe_nav(
             [(-1.0, param.prev_keyframe(mt), "prevKeyframe", "Go to previous keyframe"), (1.0, param.next_keyframe(mt), "nextKeyframe", "Go to next keyframe")]
         {
             let r = Rect::from_center_size(at + vec2(d * NAV_STEP, 0.0), vec2(12.0, 14.0));
-            let resp = ui.interact(r, id.with(name), Sense::click()).on_hover_text(tip);
+            let resp = ui.interact(r, id.with(name), Sense::click()).on_hover_text(crate::i18n::t(tip));
             let c = r.center();
             let pts = vec![c + vec2(-3.0 * d, -4.0), c + vec2(-3.0 * d, 4.0), c + vec2(3.0 * d, 0.0)];
             ui.painter().add(egui::Shape::convex_polygon(pts, if target.is_some() { t.text } else { t.text_faint }, Stroke::NONE));
@@ -337,7 +365,7 @@ fn keyframe_nav(
         }
     }
     let r = Rect::from_center_size(at, vec2(13.0, 13.0));
-    let resp = ui.interact(r.expand(1.5), id.with("key"), Sense::click()).on_hover_text(tip);
+    let resp = ui.interact(r.expand(1.5), id.with("key"), Sense::click()).on_hover_text(crate::i18n::t(tip));
     if param.is_some_and(|p| p.keyframes.iter().any(|k| k.time == mt)) {
         icons::paint(ui.painter(), r, Icon::Keyframe, t.hot_text);
     } else {
@@ -425,7 +453,7 @@ pub(crate) fn param_row(
         let key = graph_key(clip, idx, pkey);
         let open = app.ui.expanded_fx.contains(&key);
         let tw = Rect::from_center_size(pos2(r.min.x + 12.0, r.center().y), vec2(12.0, 12.0));
-        let tresp = ui.interact(tw.expand(2.0), egui::Id::new(("twirl", clip.0, idx, pkey)), Sense::click()).on_hover_text("Show graphs");
+        let tresp = ui.interact(tw.expand(2.0), egui::Id::new(("twirl", clip.0, idx, pkey)), Sense::click()).on_hover_text(tl!("Show graphs"));
         icons::paint(ui.painter(), tw, if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_dim);
         app.auto.add(&format!("{auto}.graphs"), tw, "Show graphs");
         if tresp.clicked() {
@@ -438,7 +466,7 @@ pub(crate) fn param_row(
     }
     if pd.animatable {
         let sw = Rect::from_center_size(pos2(x, r.center().y), vec2(14.0, 14.0));
-        let resp = ui.interact(sw, egui::Id::new(("sw", clip.0, idx, pkey)), Sense::click()).on_hover_text("Toggle animation");
+        let resp = ui.interact(sw, egui::Id::new(("sw", clip.0, idx, pkey)), Sense::click()).on_hover_text(tl!("Toggle animation"));
         icons::paint(ui.painter(), sw, Icon::Stopwatch, if param.is_animated() { t.accent } else { t.text_dim });
         if resp.clicked() {
             actions.push(("effects.toggleAnimation".into(), with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id}))));
@@ -446,7 +474,7 @@ pub(crate) fn param_row(
         app.auto.add(&format!("{auto}.stopwatch"), sw, "Toggle animation");
     }
     x += 14.0;
-    ui.painter().text(pos2(x, r.center().y), Align2::LEFT_CENTER, pd.label, Tokens::ui(12.0), t.text);
+    ui.painter().text(pos2(x, r.center().y), Align2::LEFT_CENTER, crate::i18n::t(pd.label), Tokens::ui(12.0), t.text);
     let vx = r.min.x + (r.width() * 0.5).max(150.0);
     let value = param.value_at(mt);
     let mut vui = ui.new_child(
@@ -513,6 +541,14 @@ pub(crate) fn param_row(
             app.auto.add(&value_id, cr.rect, pd.label);
             if cr.changed() {
                 set = Some(json!([rgba.r(), rgba.g(), rgba.b(), rgba.a()]));
+            }
+            // Eyedropper: arm it, then click a pixel in the Program monitor (Esc cancels)
+            let target = crate::state::Eyedropper { clip: clip.0, effect: idx, param: pd.id.to_string(), mask };
+            let armed = app.ui.eyedropper.as_ref() == Some(&target);
+            let drop = icons::button(&mut vui, Icon::Eyedropper, 18.0, armed, &t, tl!("Eyedropper (pick a color from the Program monitor)"));
+            app.auto.add(&format!("effectControls.{}.{}.eyedropper", e.effect, pkey), drop.rect, "Eyedropper");
+            if drop.clicked() {
+                app.ui.eyedropper = if armed { None } else { Some(target) };
             }
         }
         (ParamKind::Path, _) => {
@@ -599,15 +635,15 @@ pub(crate) fn param_row(
                 actions.push(("playhead.set".into(), json!({"time": tl.0})));
             }
             resp.context_menu(|ui| {
-                ui.label(egui::RichText::new("Temporal Interpolation").color(t.text_dim));
+                ui.label(egui::RichText::new(tl!("Temporal Interpolation")).color(t.text_dim));
                 for (label, key) in [
-                    ("Linear", "linear"),
-                    ("Bezier", "bezier"),
-                    ("Auto Bezier", "autoBezier"),
-                    ("Continuous Bezier", "continuousBezier"),
-                    ("Hold", "hold"),
-                    ("Ease In", "easeIn"),
-                    ("Ease Out", "easeOut"),
+                    (tl!("Linear"), "linear"),
+                    (tl!("Bezier"), "bezier"),
+                    (tl!("Auto Bezier"), "autoBezier"),
+                    (tl!("Continuous Bezier"), "continuousBezier"),
+                    (tl!("Hold"), "hold"),
+                    (tl!("Ease In"), "easeIn"),
+                    (tl!("Ease Out"), "easeOut"),
                 ] {
                     let b = ui.button(label);
                     app.auto.add(&format!("{kf_id}.interp.{key}"), b.rect, label);
@@ -620,7 +656,7 @@ pub(crate) fn param_row(
                     }
                 }
                 ui.separator();
-                let b = ui.button("Clear");
+                let b = ui.button(tl!("Clear"));
                 app.auto.add(&format!("{kf_id}.clear"), b.rect, "Clear");
                 if b.clicked() {
                     actions
@@ -636,14 +672,14 @@ pub(crate) fn param_row(
 pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some((clip, it, _)) = selected_clip(app) else {
-        crate::dock::placeholder(ui, rect, &t, "Select a clip to grade");
+        crate::dock::placeholder(ui, rect, &t, tl!("Select a clip to grade"));
         return;
     };
     let idx = it.effects.iter().position(|e| e.effect == "lumetri");
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(6.0)).id_salt("lumetri"));
-    bui.label(egui::RichText::new(format!("Master · {}", it.name)).color(t.text_dim));
+    bui.label(egui::RichText::new(tlf!("Master · {name}", name = it.name)).color(t.text_dim));
     let Some(idx) = idx else {
-        if bui.button("Add Lumetri Color to clip").clicked() {
+        if bui.button(tl!("Add Lumetri Color to clip")).clicked() {
             let _ = app.session.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"}));
         }
         return;
@@ -665,7 +701,7 @@ pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         for g in groups {
             let key = format!("lumetri:{g}");
             let open = !app.ui.collapsed_fx.contains(&key);
-            let (resp, now_open) = crate::widgets::section_header(ui, egui::Id::new(&key), g, open, &t, true);
+            let (resp, now_open) = crate::widgets::section_header(ui, egui::Id::new(&key), crate::i18n::t(g), open, &t, true);
             app.auto.add(&format!("lumetri.section.{g}"), resp.rect, g);
             if now_open != open {
                 if now_open {
@@ -681,7 +717,7 @@ pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let v = e.params.get(pd.id).map(|p| p.value_at(mt)).unwrap_or(pd.default.clone());
                 ui.horizontal(|ui| {
                     ui.add_space(18.0);
-                    ui.add_sized(vec2(110.0, 18.0), egui::Label::new(egui::RichText::new(pd.label).size(12.0)));
+                    ui.add_sized(vec2(110.0, 18.0), egui::Label::new(egui::RichText::new(crate::i18n::t(pd.label)).size(12.0)));
                     if let (ParamKind::Float { min, max, soft_min, soft_max, .. }, ParamValue::Float(x)) = (&pd.kind, &v) {
                         let mut val = *x;
                         let s = ui.add(egui::Slider::new(&mut val, *soft_min..=*soft_max).show_value(false));
@@ -711,8 +747,9 @@ pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 /// Properties panel (Premiere 26): a compact inspector for the selected clip.
 pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
-    let Some((clip, it, kind)) = selected_clip(app) else {
-        crate::dock::placeholder(ui, rect, &t, "Select a clip to see its properties");
+    let clips = selected_clips(app);
+    let Some((clip, it, kind)) = clips.first().cloned() else {
+        crate::dock::placeholder(ui, rect, &t, tl!("Select a clip to see its properties"));
         return;
     };
     let ph = app.session.playhead();
@@ -730,13 +767,11 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.painter().text(pos2(r.min.x + 18.0, r.center().y), Align2::LEFT_CENTER, label, Tokens::ui(12.0), t.text_dim);
         r
     };
-    // `fx`: the effect the section's reset button resets (Transform resets Motion, Audio Volume)
-    let section = |ui: &mut egui::Ui, app: &mut FilmcraftApp, name: &str, fx: &str, reset: Option<(usize, u64)>, actions: &mut Vec<(String, Value)>| -> bool {
+    let section = |ui: &mut egui::Ui, app: &mut FilmcraftApp, name: &str, reset: Option<(usize, u64)>, actions: &mut Vec<(String, Value)>| -> bool {
         ui.add_space(4.0);
         let key = format!("props:{name}");
         let open = !app.ui.collapsed_fx.contains(&key);
         let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
-        app.auto.add(&format!("properties.section.{}", name.to_ascii_lowercase()), r, name);
         ui.painter().line_segment([r.left_top(), r.right_top()], Stroke::new(1.0, t.separator));
         icons::paint(
             ui.painter(),
@@ -744,11 +779,10 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             if open { Icon::ChevronDown } else { Icon::ChevronRight },
             t.text_dim,
         );
-        ui.painter().text(pos2(r.min.x + 18.0, r.center().y), Align2::LEFT_CENTER, name, Tokens::semibold(13.0), t.text);
+        ui.painter().text(pos2(r.min.x + 18.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::t(name), Tokens::semibold(13.0), t.text);
         if let Some((idx, c)) = reset {
             let rr = Rect::from_center_size(pos2(r.max.x - PROPS_NAV_X, r.center().y), vec2(14.0, 14.0));
             icons::paint(ui.painter(), rr, Icon::Reset, t.text_dim);
-            app.auto.add(&format!("properties.{fx}.reset"), rr, &format!("Reset {name}"));
             if ui.interact(rr, egui::Id::new(("props-reset", name, c)), Sense::click()).clicked() {
                 actions.push(("effects.reset".into(), json!({"clip": c, "index": idx})));
             }
@@ -765,12 +799,12 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let eff_idx = |id: &str| it.effects.iter().position(|e| e.effect == id);
     let val = |eid: &str, p: &str| it.effect(eid).and_then(|e| e.param(p)).map(|p| p.value_at(mt));
     if kind == filmcraft_project::TrackKind::Video {
-        if section(&mut bui, app, "Transform", "motion", eff_idx("motion").map(|i| (i, clip.0)), &mut actions) {
+        if section(&mut bui, app, "Transform", eff_idx("motion").map(|i| (i, clip.0)), &mut actions) {
             for (label, p, unit, speed, range) in [
-                ("Position", "position", "", 1.0, (-100_000.0, 100_000.0)),
-                ("Anchor point", "anchor", "", 1.0, (-100_000.0, 100_000.0)),
-                ("Scale", "scale", " %", 0.5, (0.0, 10000.0)),
-                ("Rotation", "rotation", " °", 0.5, (-36000.0, 36000.0)),
+                (tl!("Position"), "position", "", 1.0, (-100_000.0, 100_000.0)),
+                (tl!("Anchor point"), "anchor", "", 1.0, (-100_000.0, 100_000.0)),
+                (tl!("Scale"), "scale", " %", 0.5, (0.0, 10000.0)),
+                (tl!("Rotation"), "rotation", " °", 0.5, (-36000.0, 36000.0)),
             ] {
                 let r = row(&mut bui, label);
                 let mut vui = bui.new_child(
@@ -804,7 +838,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 properties_nav(app, &mut bui, r, clip, &it, mt, "motion", p, &mut actions);
             }
-            let r = row(&mut bui, "Opacity");
+            let r = row(&mut bui, tl!("Opacity"));
             let mut vui = bui.new_child(
                 egui::UiBuilder::new()
                     .max_rect(Rect::from_min_max(pos2(r.min.x + 150.0, r.min.y + 4.0), pos2(r.max.x - PROPS_VALUE_R, r.max.y - 4.0)))
@@ -820,8 +854,8 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             properties_nav(app, &mut bui, r, clip, &it, mt, "opacity", "opacity", &mut actions);
         }
         let crop = eff_idx("crop");
-        if section(&mut bui, app, "Crop", "crop", crop.map(|i| (i, clip.0)), &mut actions) {
-            for (label, p) in [("Left", "left"), ("Top", "top"), ("Right", "right"), ("Bottom", "bottom")] {
+        if section(&mut bui, app, "Crop", crop.map(|i| (i, clip.0)), &mut actions) {
+            for (label, p) in [(tl!("Left"), "left"), (tl!("Top"), "top"), (tl!("Right"), "right"), (tl!("Bottom"), "bottom")] {
                 let r = row(&mut bui, label);
                 let mut vui = bui.new_child(
                     egui::UiBuilder::new()
@@ -840,8 +874,14 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 properties_nav(app, &mut bui, r, clip, &it, mt, "crop", p, &mut actions);
             }
         }
-    } else if section(&mut bui, app, "Audio", "volume", eff_idx("volume").map(|i| (i, clip.0)), &mut actions) {
-        let r = row(&mut bui, "Level");
+    }
+    if let Some((clip, it, _)) = clips.iter().find(|c| c.2 == TrackKind::Audio)
+        && section(&mut bui, app, "Audio", it.effects.iter().position(|e| e.effect == "volume").map(|i| (i, clip.0)), &mut actions)
+    {
+        let clip = *clip;
+        let mt = it.source_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
+        let val = |eid: &str, p: &str| it.effect(eid).and_then(|e| e.param(p)).map(|p| p.value_at(mt));
+        let r = row(&mut bui, tl!("Level"));
         let mut vui = bui.new_child(
             egui::UiBuilder::new()
                 .max_rect(Rect::from_min_max(pos2(r.min.x + 150.0, r.min.y + 4.0), pos2(r.max.x - PROPS_VALUE_R, r.max.y - 4.0)))
@@ -853,8 +893,8 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if let Some(nv) = nv {
             actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "volume", "param": "level", "value": nv})));
         }
-        properties_nav(app, &mut bui, r, clip, &it, mt, "volume", "level", &mut actions);
-        let r = row(&mut bui, "Pan");
+        properties_nav(app, &mut bui, r, clip, it, mt, "volume", "level", &mut actions);
+        let r = row(&mut bui, tl!("Pan"));
         let mut vui = bui.new_child(
             egui::UiBuilder::new()
                 .max_rect(Rect::from_min_max(pos2(r.min.x + 150.0, r.min.y + 4.0), pos2(r.max.x - PROPS_VALUE_R, r.max.y - 4.0)))
@@ -965,16 +1005,16 @@ pub(crate) fn graph_rows(
     let y_of = |v: f64| area.max.y - ((v - lo) / (hi - lo)) as f32 * area.height();
     let v_of = |y: f32| lo + ((area.max.y - y) / area.height()) as f64 * (hi - lo);
     let p = ui.painter();
-    p.rect_filled(area, 0.0, Color32::from_rgb(0x19, 0x19, 0x19));
+    p.rect_filled(area, 0.0, t.keyframe_plot_bg);
     for g in 1..4 {
         let y = area.min.y + area.height() * g as f32 / 4.0;
-        p.line_segment([pos2(area.min.x, y), pos2(area.max.x, y)], Stroke::new(1.0, Color32::from_rgb(0x2a, 0x2a, 0x2a)));
+        p.line_segment([pos2(area.min.x, y), pos2(area.max.x, y)], Stroke::new(1.0, t.keyframe_plot_grid));
     }
     // range labels in the property column
     let dec = if let ParamKind::Float { decimals, .. } = pd.kind { decimals as usize } else { 1 };
     p.text(pos2(vr.max.x - 30.0, area.min.y + 6.0), Align2::RIGHT_CENTER, format!("{hi:.dec$}"), Tokens::ui(10.0), t.text_dim);
     p.text(pos2(vr.max.x - 30.0, area.max.y - 6.0), Align2::RIGHT_CENTER, format!("{lo:.dec$}"), Tokens::ui(10.0), t.text_dim);
-    p.text(pos2(vr.min.x + 44.0, area.center().y), Align2::LEFT_CENTER, "Value", Tokens::ui(11.0), t.text_dim);
+    p.text(pos2(vr.min.x + 44.0, area.center().y), Align2::LEFT_CENTER, tl!("Value"), Tokens::ui(11.0), t.text_dim);
     let line: Vec<Pos2> = vals.iter().enumerate().map(|(i, v)| pos2(x_of(i as f32 / n as f32), y_of(*v))).collect();
     p.add(egui::Shape::line(line, Stroke::new(1.5, t.accent)));
     // velocity (units per second, derivative of the sampled value)
@@ -982,12 +1022,12 @@ pub(crate) fn graph_rows(
     let vel: Vec<f64> = (0..n).map(|i| (vals[i + 1] - vals[i]) / secs.max(1e-9)).collect();
     let vmax = vel.iter().fold(1e-6f64, |a, v| a.max(v.abs())) * 1.15;
     let varea = Rect::from_min_max(pos2(lane.min.x, velr.min.y + 2.0), pos2(lane.max.x, velr.max.y - 4.0));
-    p.rect_filled(varea, 0.0, Color32::from_rgb(0x19, 0x19, 0x19));
+    p.rect_filled(varea, 0.0, t.keyframe_plot_bg);
     let vy = |v: f64| varea.center().y - (v / vmax) as f32 * varea.height() / 2.0;
-    p.line_segment([pos2(varea.min.x, varea.center().y), pos2(varea.max.x, varea.center().y)], Stroke::new(1.0, Color32::from_rgb(0x33, 0x33, 0x33)));
+    p.line_segment([pos2(varea.min.x, varea.center().y), pos2(varea.max.x, varea.center().y)], Stroke::new(1.0, t.keyframe_plot_axis));
     let vline: Vec<Pos2> = vel.iter().enumerate().map(|(i, v)| pos2(x_of((i as f32 + 0.5) / n as f32), vy(*v))).collect();
     p.add(egui::Shape::line(vline, Stroke::new(1.2, Color32::from_rgb(0xd0, 0xa0, 0x40))));
-    p.text(pos2(velr.min.x + 44.0, varea.center().y), Align2::LEFT_CENTER, "Velocity", Tokens::ui(11.0), t.text_dim);
+    p.text(pos2(velr.min.x + 44.0, varea.center().y), Align2::LEFT_CENTER, tl!("Velocity"), Tokens::ui(11.0), t.text_dim);
     p.text(pos2(velr.max.x - 30.0, varea.min.y + 6.0), Align2::RIGHT_CENTER, format!("{vmax:.1}/s"), Tokens::ui(10.0), t.text_dim);
     let p = p.clone();
     // keyframes + handles
@@ -1028,7 +1068,7 @@ pub(crate) fn graph_rows(
                 if side > 0.0 { "outgoing influence" } else { "incoming influence" },
             );
             if hr.dragged() {
-                let nx = hdx + hr.drag_delta().x;
+                let nx = graph_drag_offset(ui, &hr, vec2(hdx, 0.0)).x;
                 ui.data_mut(|d| d.insert_temp(hid, nx));
             }
             if hr.drag_stopped() {
@@ -1038,9 +1078,9 @@ pub(crate) fn graph_rows(
                 actions.push(("effects.setKeyframe".into(), with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "mediaTime": k.time.0, key: ni}))));
             }
         }
-        p.circle_filled(c, 4.5, if resp.dragged() { t.hot_text } else { Color32::from_rgb(0xe0, 0xe0, 0xe0) });
+        p.circle_filled(c, 4.5, if resp.dragged() { t.hot_text } else { t.plot_handle });
         if resp.dragged() {
-            let ny = dy + resp.drag_delta().y;
+            let ny = graph_drag_offset(ui, &resp, vec2(0.0, dy)).y;
             ui.data_mut(|d| d.insert_temp(id, ny));
             p.text(c + vec2(8.0, -10.0), Align2::LEFT_BOTTOM, format!("{:.dec$}", v_of(c.y)), Tokens::ui(10.5), t.hot_text);
         }
@@ -1057,10 +1097,10 @@ pub(crate) fn graph_rows(
 fn param_text(project: &filmcraft_project::Project, id: &str, value: &ParamValue) -> String {
     match value {
         ParamValue::Text(s) if id.ends_with("_lut") => filmcraft_render::luts::label(Some(project), s),
-        ParamValue::Text(s) if s.is_empty() => "None".into(),
+        ParamValue::Text(s) if s.is_empty() => tl!("None").into(),
         ParamValue::Text(s) => s.clone(),
-        ParamValue::Curve(pts) if pts.is_empty() || *pts == [[0.0, 0.0], [1.0, 1.0]] => "Default".into(),
-        ParamValue::Curve(pts) => format!("Custom ({} points)", pts.len()),
+        ParamValue::Curve(pts) if pts.is_empty() || *pts == [[0.0, 0.0], [1.0, 1.0]] => tl!("Default").into(),
+        ParamValue::Curve(pts) => tlf!("Custom ({n} points)", n = pts.len()),
         other => format!("{other:?}"),
     }
 }
@@ -1219,5 +1259,136 @@ mod lane_tests {
         let mut labels = Vec::new();
         out.shapes.into_iter().for_each(|c| texts(c.shape, &mut labels));
         assert_eq!(labels, ["00:01:00:00", "00:01:02:00", "00:01:04:00"]);
+    }
+}
+
+#[cfg(test)]
+mod graph_drag_tests {
+    use super::*;
+    use filmcraft_project::{Interpolation, Keyframe, Param};
+
+    struct Driver {
+        app: FilmcraftApp,
+        ctx: egui::Context,
+        clip: ClipId,
+        time: f64,
+    }
+
+    impl Driver {
+        fn new() -> Self {
+            let mut session = filmcraft_engine::Session::default();
+            session.execute("file.openDemoProject", json!({})).unwrap();
+            let seq = session.state.active_sequence.unwrap();
+            let clip = session.active_sequence().unwrap().video_tracks[0].items[0].id;
+            let it = std::sync::Arc::make_mut(&mut session.project).sequence_mut(seq).unwrap().find_item_mut(clip).unwrap().1;
+            let mut a = Keyframe::new(it.source_in + Tick(it.duration.0 / 4), ParamValue::Float(40.0));
+            let mut b = Keyframe::new(it.source_in + Tick(it.duration.0 * 3 / 4), ParamValue::Float(80.0));
+            a.interp = Interpolation::Bezier;
+            b.interp = Interpolation::Bezier;
+            it.effects
+                .iter_mut()
+                .find(|e| e.effect == "motion")
+                .unwrap()
+                .params
+                .insert("scale".into(), Param { value: ParamValue::Float(40.0), keyframes: vec![a, b] });
+            let app = FilmcraftApp::new(session);
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx, &app.tokens);
+            Self { app, ctx, clip, time: 0.0 }
+        }
+
+        fn param(&self) -> Param {
+            self.app.session.active_sequence().unwrap().find_item(self.clip).unwrap().1.effect("motion").unwrap().params["scale"].clone()
+        }
+
+        fn undo_len(&mut self) -> usize {
+            self.app.session.execute("history.list", json!({})).unwrap()["undo"].as_array().unwrap().len()
+        }
+
+        // Draw the actual scalar graph and execute its emitted command, as the panel does.
+        // Current paint shapes give a real held-frame position rather than previous telemetry.
+        fn frame(&mut self, events: Vec<egui::Event>) -> [Pos2; 2] {
+            self.time += 0.1;
+            self.app.auto.begin_frame();
+            let mut out = self.ctx.run_ui(egui::RawInput { time: Some(self.time), events, ..Default::default() }, |ui| {
+                let it = self.app.session.active_sequence().unwrap().find_item(self.clip).unwrap().1.clone();
+                let index = it.effects.iter().position(|e| e.effect == "motion").unwrap();
+                let effect = &it.effects[index];
+                let pd = effect.def().unwrap().param("scale").unwrap();
+                let body = Rect::from_min_size(pos2(8.0, 8.0), vec2(320.0, 200.0));
+                let lane = Rect::from_min_max(pos2(360.0, 8.0), pos2(760.0, 220.0));
+                let mut actions = Vec::new();
+                graph_rows(&mut self.app, ui, body, self.clip, index, None, pd, &effect.params["scale"], &lane, &it, &mut actions);
+                run(&mut self.app, ui.ctx(), actions);
+            });
+            out.textures_delta.clear();
+            fn first_circle(shape: &egui::Shape, radius: f32) -> Option<Pos2> {
+                match shape {
+                    egui::Shape::Circle(circle) if circle.radius == radius => Some(circle.center),
+                    egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| first_circle(shape, radius)),
+                    _ => None,
+                }
+            }
+            [4.5, 3.5].map(|radius| {
+                out.shapes.iter().find_map(|shape| first_circle(&shape.shape, radius)).expect("scalar keyframe and outgoing influence are painted")
+            })
+        }
+    }
+
+    fn button(pos: Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() }
+    }
+
+    #[test]
+    fn scalar_graph_press_starts_at_the_pointer_origin_and_release_is_one_undo_step() {
+        for influence in [false, true] {
+            for batched in [true, false] {
+                let mut d = Driver::new();
+                let before = d.param();
+                let undo = d.undo_len();
+                let target = usize::from(influence);
+                let start = d.frame(vec![])[target];
+                // A different prior cursor makes the pre-press movement observable.
+                d.frame(vec![egui::Event::PointerMoved(start - vec2(80.0, 40.0))]);
+                if batched {
+                    d.frame(vec![egui::Event::PointerMoved(start), button(start, true)]);
+                } else {
+                    d.frame(vec![egui::Event::PointerMoved(start)]);
+                    d.frame(vec![button(start, true)]);
+                }
+                let pressed = d.frame(vec![])[target];
+                assert!(pressed.distance(start) < 0.05, "press cannot jump: influence={influence}, batched={batched}, start={start:?}, pressed={pressed:?}");
+                assert_eq!(d.param(), before);
+                assert_eq!(d.undo_len(), undo);
+                let offset = if influence { vec2(20.0, 0.0) } else { vec2(0.0, -20.0) };
+                d.frame(vec![egui::Event::PointerMoved(start + offset)]);
+                let preview = d.frame(vec![])[target];
+                assert!(
+                    preview.distance(start + offset) < 0.05,
+                    "preview follows only gesture motion: influence={influence}, batched={batched}, start={start:?}, preview={preview:?}"
+                );
+                assert_eq!(d.param(), before, "held preview cannot commit");
+                assert_eq!(d.undo_len(), undo);
+                d.frame(vec![button(start + offset, false)]);
+                d.frame(vec![]);
+                let changed = d.param();
+                assert_eq!(d.undo_len(), undo + 1);
+                assert_eq!(changed.keyframes[0].time, before.keyframes[0].time);
+                assert_eq!(changed.keyframes[1], before.keyframes[1]);
+                if influence {
+                    assert_eq!(changed.keyframes[0].value, before.keyframes[0].value);
+                    assert!(changed.keyframes[0].out_influence > before.keyframes[0].out_influence);
+                } else {
+                    assert!(changed.keyframes[0].value.as_f64().unwrap() > before.keyframes[0].value.as_f64().unwrap());
+                    assert_eq!(changed.keyframes[0].out_influence, before.keyframes[0].out_influence);
+                }
+                d.app.session.undo().expect("one graph gesture to undo");
+                assert_eq!(d.param(), before);
+                assert_eq!(d.undo_len(), undo);
+                d.app.session.redo().expect("the graph gesture to redo");
+                assert_eq!(d.param(), changed);
+                assert_eq!(d.undo_len(), undo + 1);
+            }
+        }
     }
 }

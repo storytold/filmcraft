@@ -66,19 +66,6 @@ pub(crate) fn mapping(id: &str) -> Option<Mapping> {
                 d.set_param("mix", f(e, "mix", t));
             },
         },
-        "parametric_eq" => Mapping {
-            dsp: "simple_eq",
-            preroll: |_, _| 0.05,
-            apply: |d, e, t| {
-                d.set_param("low_freq", f(e, "low_freq", t));
-                d.set_param("low", f(e, "low_gain", t));
-                d.set_param("mid_freq", f(e, "mid_freq", t));
-                d.set_param("mid", f(e, "mid_gain", t));
-                d.set_param("mid_q", f(e, "mid_q", t));
-                d.set_param("high_freq", f(e, "high_freq", t));
-                d.set_param("high", f(e, "high_gain", t));
-            },
-        },
         // Single-band filters via band 1 of the parametric EQ (types: see FILTER_TYPE_NAMES).
         "highpass" => Mapping { dsp: "parametric_eq", preroll: |_, _| 0.05, apply: |d, e, t| band(d, 4.0, f(e, "cutoff", t), 0.707) },
         "lowpass" => Mapping { dsp: "parametric_eq", preroll: |_, _| 0.05, apply: |d, e, t| band(d, 3.0, f(e, "cutoff", t), 0.707) },
@@ -473,5 +460,26 @@ mod tests {
         assert!((fx.transfer_db(0, 0.0).unwrap() + 10.0).abs() < 1e-3, "−20 dB threshold, 2:1");
         assert_eq!(latency("fft_filter", 48000), 2048);
         assert_eq!(latency("amplify", 48000), 0);
+    }
+
+    #[test]
+    fn parametric_eq_applies_every_control() {
+        let def = filmcraft_project::find_effect("parametric_eq").unwrap();
+        let resp = |id: &str, v: filmcraft_project::ParamValue, extra: Option<(&str, filmcraft_project::ParamValue)>| {
+            let mut inst = def.instance();
+            inst.param_mut(id).unwrap().value = v;
+            if let Some((k, x)) = extra {
+                inst.param_mut(k).unwrap().value = x;
+            }
+            configured(&inst, Tick::ZERO, 48000).unwrap().response_db(1000.0).unwrap()
+        };
+        use filmcraft_project::ParamValue::{Bool, Float};
+        assert!((resp("master_gain", Float(-30.0), None) + 30.0).abs() < 1.0);
+        for b in ["b1", "b2", "b4", "b5"] {
+            let g = resp(&format!("{b}_gain"), Float(-24.0), Some((&format!("{b}_freq"), Float(1000.0))));
+            assert!((g + 24.0).abs() < 1.0, "{b}: {g}");
+        }
+        assert!(resp("hp_on", Bool(true), Some(("hp_freq", Float(10000.0)))) < -20.0);
+        assert!(resp("lp_on", Bool(true), Some(("lp_freq", Float(100.0)))) < -20.0);
     }
 }

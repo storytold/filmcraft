@@ -361,7 +361,7 @@ impl MxfSource {
             kind: if video.is_some() { MediaKind::Movie } else { MediaKind::AudioOnly },
             duration,
             video,
-            audio,
+            audio_streams: audio.into_iter().collect(),
             container: format!("MXF {}", file.operational_pattern.name()),
             start_timecode: None,
             file_size: Some(bytes.0.len()),
@@ -457,7 +457,7 @@ impl MediaSource for MxfSource {
     }
 
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer, MediaError> {
-        let ainfo = self.info.audio.as_ref().ok_or(MediaError::NoStream("audio"))?;
+        let ainfo = self.info.audio().ok_or(MediaError::NoStream("audio"))?;
         let src_rate = ainfo.sample_rate;
         let ch = ainfo.channels.max(1) as usize;
         let mut out = AudioBuffer::silence(sample_rate, ch, frames);

@@ -187,6 +187,26 @@ fn apply_effect_appears_in_effect_controls() {
 }
 
 #[test]
+fn spanish_search_finds_effects_and_presets_with_stable_automation_ids() {
+    let mut d = Driver::demo();
+    d.ok("ui.menu.invoke", json!({"id": "app.language.spanish"}));
+    d.ok("ui.panel.show", json!({"panel": "Effects"}));
+    d.ok("ui.set", json!({"effectsSearch": "DESENFOQUE"}));
+    d.frames(3);
+    assert!(d.element_ids("effects.item.").contains(&"effects.item.gaussian_blur".to_string()));
+    d.ok("ui.set", json!({"effectsSearch": "ENTRADA CON DESENFOQUE"}));
+    d.frames(3);
+    assert!(d.element_ids("effects.preset.").contains(&"effects.preset.Blur In".to_string()));
+    let clip = track_clips(&d.sequence(), 0)[0]["clip"].as_u64().unwrap();
+    d.exec("timeline.select", json!({"clips": [clip]}));
+    d.exec("effects.apply", json!({"effect": "gaussian_blur"}));
+    d.ok("ui.panel.show", json!({"panel": "Effect Controls"}));
+    d.frames(3);
+    assert!(d.element_ids("effectControls.effect.").contains(&"effectControls.effect.gaussian_blur".to_string()));
+    d.ok("ui.menu.invoke", json!({"id": "app.language.english"}));
+}
+
+#[test]
 fn effects_panel_lists_the_premiere_transition_folders() {
     let mut d = Driver::demo();
     d.ok("ui.panel.show", json!({"panel": "Effects"}));

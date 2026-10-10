@@ -31,7 +31,7 @@ fn matroska_audio_plays_without_holes() {
             continue;
         };
         let src = filmcraft_codecs::open_bytes(name, bytes(&path)).unwrap();
-        assert_eq!(src.info().audio.as_ref().map(|a| a.sample_rate), Some(rate), "{name}");
+        assert_eq!(src.info().audio().map(|a| a.sample_rate), Some(rate), "{name}");
         let frames = rate as usize * 29 / 10;
         let mut ours = Vec::with_capacity(frames);
         while ours.len() < frames {

@@ -84,12 +84,12 @@ impl WavSource {
             kind: MediaKind::AudioOnly,
             duration: Tick::from_units(frames as i64, rate as i64),
             video: None,
-            audio: Some(AudioStreamInfo {
+            audio_streams: vec![AudioStreamInfo {
                 sample_rate: rate,
                 channels: ch as u32,
                 codec: if float { "PCM float".into() } else { "PCM".into() },
                 bits_per_sample: Some(bits as u32),
-            }),
+            }],
             container: if time_reference.is_some() { "Broadcast WAV".into() } else { "WAV".into() },
             start_timecode: None,
             file_size: Some(b.len() as u64),
@@ -201,7 +201,7 @@ mod tests {
         let s: Vec<f32> = (0..200).map(|i| ((i as f32) * 0.1).sin() * 0.5).collect();
         let bytes = write_wav16(&s, 2, 48000);
         let src = WavSource::parse("t.wav", bytes.into()).unwrap();
-        assert_eq!(src.info().audio.as_ref().unwrap().channels, 2);
+        assert_eq!(src.info().audio().unwrap().channels, 2);
         let a = src.audio(0, 100, 48000).unwrap();
         assert!((a.channels[0][3] - s[6]).abs() < 1e-4);
         assert!((a.channels[1][3] - s[7]).abs() < 1e-4);

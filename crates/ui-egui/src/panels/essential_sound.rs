@@ -8,10 +8,7 @@
 //! `.name`, `.ok`), `essentialSound.section.<Name>` (twirl) and `.toggle` (switch), setting rows by
 //! key (`essentialSound.repair.noise.on`, `essentialSound.repair.noise.amount`,
 //! `essentialSound.clarity.eqPreset`…), `essentialSound.autoMatch`,
-//! `essentialSound.ducking.against.<Type>`, `essentialSound.generateDucking`; while a dropdown is
-//! open its entries `<dropdown id>.option.<name>` (`essentialSound.preset.option.<preset>`,
-//! `essentialSound.clarity.eqPreset.option.<name>`…). A slider's id is its knob (a click there
-//! keeps the value, a drag from it moves it); `<slider id>.track` is the whole track.
+//! `essentialSound.ducking.against.<Type>`, `essentialSound.generateDucking`,
 //! `essentialSound.volume.on` / `.levelDb`, `essentialSound.mute`, and in Browse
 //! `essentialSound.browse.<Type>.<preset>`.
 
@@ -64,11 +61,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let ty = rect.min.y + 16.0;
     let mut new_tab = None;
     for name in ["Browse", "Edit"] {
-        let g = painter.layout_no_wrap(name.to_string(), Tokens::ui(12.5), t.text);
+        let shown = if name == "Browse" { tl!("Browse") } else { tl!("Edit") };
+        let g = painter.layout_no_wrap(shown.to_string(), Tokens::ui(12.5), t.text);
         let r = Rect::from_min_size(pos2(x, ty - 9.0), vec2(g.size().x, 20.0));
         let resp = ui.interact(r, egui::Id::new(("es-tab", name)), Sense::click());
         let col = if name == tab || resp.hovered() { t.text } else { t.text_dim };
-        painter.text(pos2(x, ty), Align2::LEFT_CENTER, name, Tokens::ui(12.5), col);
+        painter.text(pos2(x, ty), Align2::LEFT_CENTER, shown, Tokens::ui(12.5), col);
         if name == tab {
             painter.line_segment([pos2(x, ty + 10.0), pos2(x + g.size().x, ty + 10.0)], Stroke::new(1.5, t.text));
         }
@@ -114,19 +112,19 @@ fn browse(ui: &mut egui::Ui, cx: &mut Ctx, rect: Rect, presets: &[es::Preset], i
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut child, |ui| {
         ui.set_max_width(ui.available_width() - 10.0);
         if items.is_empty() {
-            ui.label(egui::RichText::new("Select audio clips, then click a preset to apply it.").color(t.text_faint).size(11.5));
+            ui.label(egui::RichText::new(tl!("Select audio clips, then click a preset to apply it.")).color(t.text_faint).size(11.5));
         }
         for kind in AudioType::ALL {
             ui.add_space(8.0);
             let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
             type_icon(ui.painter(), Rect::from_center_size(pos2(r.min.x + 8.0, r.center().y), vec2(16.0, 16.0)), kind, t.text);
-            ui.painter().text(pos2(r.min.x + 24.0, r.center().y), Align2::LEFT_CENTER, kind.label(), Tokens::semibold(12.5), t.text);
+            ui.painter().text(pos2(r.min.x + 24.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::t(kind.label()), Tokens::semibold(12.5), t.text);
             for p in presets.iter().filter(|p| p.kind == kind) {
                 let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
                 if resp.hovered() {
                     ui.painter().rect_filled(r, 2.0, t.hover);
                 }
-                let name = if p.builtin { p.name.clone() } else { format!("{} (user)", p.name) };
+                let name = if p.builtin { crate::i18n::t(&p.name).to_string() } else { tlf!("{name} (user)", name = p.name) };
                 ui.painter().text(
                     pos2(r.min.x + 24.0, r.center().y),
                     Align2::LEFT_CENTER,
@@ -148,12 +146,12 @@ fn browse(ui: &mut egui::Ui, cx: &mut Ctx, rect: Rect, presets: &[es::Preset], i
 fn edit(ui: &mut egui::Ui, cx: &mut Ctx, rect: Rect, items: &[TrackItem], presets: &[es::Preset], collapsed: Vec<String>, expanded: Vec<String>) {
     let t = cx.t;
     if items.is_empty() {
-        crate::dock::placeholder(ui, rect, &t, "Select audio clips to edit them here");
+        crate::dock::placeholder(ui, rect, &t, tl!("Select audio clips to edit them here"));
         return;
     }
     let mut kinds: Vec<Option<AudioType>> = items.iter().map(|i| i.essential.as_ref().map(|e| e.kind)).collect();
     kinds.dedup();
-    let title = if items.len() > 1 { "Multiple Clips Selected".to_string() } else { items[0].name.clone() };
+    let title = if items.len() > 1 { tl!("Multiple Clips Selected").to_string() } else { items[0].name.clone() };
     let body = Rect::from_min_max(rect.min, pos2(rect.max.x, rect.max.y - FOOTER_H));
     let mut child =
         ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(body.min + vec2(PAD, 2.0), body.max - vec2(PAD - 2.0, 2.0))).id_salt("es-edit"));
@@ -167,12 +165,12 @@ fn edit(ui: &mut egui::Ui, cx: &mut Ctx, rect: Rect, items: &[TrackItem], preset
             _ => {
                 if kinds.len() > 1 {
                     ui.label(
-                        egui::RichText::new("The selected clips have different audio types. Assign one type to edit them together.")
+                        egui::RichText::new(tl!("The selected clips have different audio types. Assign one type to edit them together."))
                             .color(t.text_dim)
                             .size(11.5),
                     );
                 } else {
-                    ui.label(egui::RichText::new("Assign an audio type to the selection:").color(t.text_dim).size(12.0));
+                    ui.label(egui::RichText::new(tl!("Assign an audio type to the selection:")).color(t.text_dim).size(12.0));
                 }
                 ui.add_space(6.0);
                 for kind in AudioType::ALL {
@@ -181,7 +179,7 @@ fn edit(ui: &mut egui::Ui, cx: &mut Ctx, rect: Rect, items: &[TrackItem], preset
                     p.rect_filled(r.shrink(2.0), 4.0, if resp.hovered() { t.hover } else { t.field_bg });
                     p.rect_stroke(r.shrink(2.0), 4.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
                     type_icon(p, Rect::from_center_size(pos2(r.min.x + 26.0, r.center().y), vec2(22.0, 22.0)), kind, t.text);
-                    p.text(pos2(r.min.x + 50.0, r.center().y), Align2::LEFT_CENTER, kind.label(), Tokens::semibold(13.0), t.text);
+                    p.text(pos2(r.min.x + 50.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::t(kind.label()), Tokens::semibold(13.0), t.text);
                     cx.auto.add(&format!("essentialSound.type.{}", kind.label()), r, kind.label());
                     if resp.clicked() {
                         cx.run("essentialSound.setType", json!({"type": kind.id()}));
@@ -201,16 +199,16 @@ fn typed_body(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, items: &[Tra
     // type badge + Clear Audio Type
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
     type_icon(ui.painter(), Rect::from_center_size(pos2(r.min.x + 10.0, r.center().y), vec2(18.0, 18.0)), kind, t.text);
-    ui.painter().text(pos2(r.min.x + 28.0, r.center().y), Align2::LEFT_CENTER, kind.label(), Tokens::ui(12.5), t.text);
+    ui.painter().text(pos2(r.min.x + 28.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::t(kind.label()), Tokens::ui(12.5), t.text);
     let br = Rect::from_min_max(pos2(r.max.x - 122.0, r.min.y + 3.0), pos2(r.max.x, r.max.y - 3.0));
-    if button(ui, cx, br, "Clear Audio Type", "essentialSound.clearType") {
+    if button(ui, cx, br, tl!("Clear Audio Type"), "essentialSound.clearType") {
         cx.run("essentialSound.clearType", json!({}));
     }
     ui.add_space(6.0);
     // Preset: [▾] save delete
-    ui.label(egui::RichText::new("Preset:").color(t.text_dim).size(12.0));
+    ui.label(egui::RichText::new(tl!("Preset:")).color(t.text_dim).size(12.0));
     let mine: Vec<&es::Preset> = presets.iter().filter(|p| p.kind == kind).collect();
-    let current = if st.preset.is_empty() { "(Custom)".to_string() } else { st.preset.clone() };
+    let current = if st.preset.is_empty() { tl!("(Custom)").to_string() } else { crate::i18n::t(&st.preset).to_string() };
     let mut picked = None;
     let draft_id = egui::Id::new("es-preset-draft");
     let mut draft: Option<String> = ui.data(|d| d.get_temp(draft_id));
@@ -218,9 +216,7 @@ fn typed_body(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, items: &[Tra
         let w = ui.available_width() - 56.0;
         let cb = egui::ComboBox::from_id_salt("es-preset").selected_text(&current).width(w).show_ui(ui, |ui| {
             for p in &mine {
-                let o = ui.selectable_label(p.name == st.preset, &p.name);
-                cx.auto.add(&format!("essentialSound.preset.option.{}", p.name), o.rect, &p.name);
-                if o.clicked() {
+                if ui.selectable_label(p.name == st.preset, &p.name).clicked() {
                     picked = Some(p.name.clone());
                 }
             }
@@ -246,9 +242,9 @@ fn typed_body(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, items: &[Tra
     if let Some(mut d) = draft.take() {
         let mut done = false;
         ui.horizontal(|ui| {
-            let r = ui.add(egui::TextEdit::singleline(&mut d).hint_text("Preset name").desired_width(ui.available_width() - 70.0));
+            let r = ui.add(egui::TextEdit::singleline(&mut d).hint_text(tl!("Preset name")).desired_width(ui.available_width() - 70.0));
             cx.auto.add("essentialSound.preset.name", r.rect, "Preset name");
-            let ok = ui.button("Save");
+            let ok = ui.button(tl!("Save"));
             cx.auto.add("essentialSound.preset.ok", ok.rect, "Save");
             if (ok.clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))) && !d.trim().is_empty() {
                 cx.run("essentialSound.savePreset", json!({"name": d.trim()}));
@@ -280,46 +276,52 @@ fn typed_body(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, items: &[Tra
             match sec {
                 Section::Loudness => loudness(ui, cx, st, items),
                 Section::Repair => {
-                    slot(ui, cx, "Reduce Noise", "repair.noise", st.repair.noise, on);
-                    slot(ui, cx, "Reduce Rumble", "repair.rumble", st.repair.rumble, on);
-                    slot(ui, cx, "DeHum", "repair.dehum", st.repair.dehum, on);
+                    slot(ui, cx, tl!("Reduce Noise"), "repair.noise", st.repair.noise, on);
+                    slot(ui, cx, tl!("Reduce Rumble"), "repair.rumble", st.repair.rumble, on);
+                    slot(ui, cx, tl!("DeHum"), "repair.dehum", st.repair.dehum, on);
                     choice_row(ui, cx, "repair.humHz", &["50 Hz", "60 Hz"], usize::from(st.repair.hum_hz == 60), on && st.repair.dehum.on, |i| {
                         json!(if i == 1 { 60 } else { 50 })
                     });
-                    slot(ui, cx, "DeEss", "repair.deess", st.repair.deess, on);
-                    slot(ui, cx, "Reduce Reverb", "repair.reverb", st.repair.reverb, on);
+                    slot(ui, cx, tl!("DeEss"), "repair.deess", st.repair.deess, on);
+                    slot(ui, cx, tl!("Reduce Reverb"), "repair.reverb", st.repair.reverb, on);
                 }
                 Section::Clarity => {
-                    slot(ui, cx, "Dynamics", "clarity.dynamics", st.clarity.dynamics, on);
-                    switch_row(ui, cx, "EQ", "clarity.eq.on", st.clarity.eq.on, on);
+                    slot(ui, cx, tl!("Dynamics"), "clarity.dynamics", st.clarity.dynamics, on);
+                    switch_row(ui, cx, tl!("EQ"), "clarity.eq.on", st.clarity.eq.on, on);
                     let names: Vec<&str> = es::EQ_PRESETS.iter().map(|p| p.name).collect();
                     combo(ui, cx, "clarity.eqPreset", &names, &st.clarity.eq_preset, on && st.clarity.eq.on);
-                    slider(ui, cx, "Amount", "clarity.eq.amount", st.clarity.eq.amount, (0.0, 10.0), 1, "", on && st.clarity.eq.on);
-                    switch_row(ui, cx, "Enhance Speech", "clarity.enhance.on", st.clarity.enhance.on, on);
-                    choice_row(ui, cx, "clarity.enhanceTone", &["Low Tone", "High Tone"], st.clarity.enhance_tone as usize, on && st.clarity.enhance.on, |i| {
-                        json!(i)
-                    });
-                    slider(ui, cx, "Mix", "clarity.enhance.amount", st.clarity.enhance.amount, (0.0, 10.0), 1, "", on && st.clarity.enhance.on);
+                    slider(ui, cx, tl!("Amount"), "clarity.eq.amount", st.clarity.eq.amount, (0.0, 10.0), 1, "", on && st.clarity.eq.on);
+                    switch_row(ui, cx, tl!("Enhance Speech"), "clarity.enhance.on", st.clarity.enhance.on, on);
+                    choice_row(
+                        ui,
+                        cx,
+                        "clarity.enhanceTone",
+                        &[tl!("Low Tone"), tl!("High Tone")],
+                        st.clarity.enhance_tone as usize,
+                        on && st.clarity.enhance.on,
+                        |i| json!(i),
+                    );
+                    slider(ui, cx, tl!("Mix"), "clarity.enhance.amount", st.clarity.enhance.amount, (0.0, 10.0), 1, "", on && st.clarity.enhance.on);
                 }
                 Section::Creative => {
-                    switch_row(ui, cx, "Reverb", "creative.reverb.on", st.creative.reverb.on, on);
-                    ui.label(egui::RichText::new("Preset:").color(t.text_dim).size(12.0));
+                    switch_row(ui, cx, tl!("Reverb"), "creative.reverb.on", st.creative.reverb.on, on);
+                    ui.label(egui::RichText::new(tl!("Preset:")).color(t.text_dim).size(12.0));
                     let names: Vec<&str> = es::REVERB_PRESETS.iter().map(|p| p.name).collect();
                     combo(ui, cx, "creative.reverbPreset", &names, &st.creative.reverb_preset, on && st.creative.reverb.on);
-                    slider(ui, cx, "Amount", "creative.reverb.amount", st.creative.reverb.amount, (0.0, 10.0), 1, "", on && st.creative.reverb.on);
+                    slider(ui, cx, tl!("Amount"), "creative.reverb.amount", st.creative.reverb.amount, (0.0, 10.0), 1, "", on && st.creative.reverb.on);
                     if kind == AudioType::Ambience {
-                        slot(ui, cx, "Stereo Width", "creative.width", st.creative.width, on);
+                        slot(ui, cx, tl!("Stereo Width"), "creative.width", st.creative.width, on);
                     }
                 }
                 Section::Ducking => ducking(ui, cx, st, on),
                 Section::Duration => {
                     ui.label(
-                        egui::RichText::new("Remixing music to a target duration is not available yet. Trim the clip and add a crossfade instead.")
+                        egui::RichText::new(tl!("Remixing music to a target duration is not available yet. Trim the clip and add a crossfade instead."))
                             .color(t.text_faint)
                             .size(11.5),
                     );
                 }
-                Section::Pan => slider(ui, cx, "Pan", "pan.value", st.pan.value, (-100.0, 100.0), 1, "", on),
+                Section::Pan => slider(ui, cx, tl!("Pan"), "pan.value", st.pan.value, (-100.0, 100.0), 1, "", on),
             }
             ui.add_space(8.0);
         }
@@ -332,22 +334,22 @@ fn loudness(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, items: &[Track
     let t = cx.t;
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
     let br = Rect::from_min_size(r.min + vec2(0.0, 2.0), vec2(104.0, 24.0));
-    if button(ui, cx, br, "Auto-Match", "essentialSound.autoMatch") {
+    if button(ui, cx, br, tl!("Auto-Match"), "essentialSound.autoMatch") {
         cx.run("essentialSound.autoMatch", json!({}));
     }
     let text = match (st.loudness.measured_lufs, st.loudness.target_lufs) {
         (Some(m), Some(tg)) => format!("{m:.1} → {tg:.1} LUFS ({:+.1} dB)", st.loudness.gain_db),
-        _ => "Not matched yet".to_string(),
+        _ => tl!("Not matched yet").to_string(),
     };
     ui.painter().text(pos2(br.max.x + 10.0, r.center().y), Align2::LEFT_CENTER, text, Tokens::ui(11.5), t.text_dim);
     if items.len() > 1 {
-        ui.label(egui::RichText::new(format!("Matches each of the {} clips on its own.", items.len())).color(t.text_faint).size(11.0));
+        ui.label(egui::RichText::new(tlf!("Matches each of the {n} clips on its own.", n = items.len())).color(t.text_faint).size(11.0));
     }
 }
 
 fn ducking(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, on: bool) {
     let t = cx.t;
-    ui.label(egui::RichText::new("Duck against:").color(t.text_dim).size(12.0));
+    ui.label(egui::RichText::new(tl!("Duck against:")).color(t.text_dim).size(12.0));
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
     let mut x = r.min.x;
     for kind in AudioType::ALL {
@@ -358,7 +360,7 @@ fn ducking(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, on: bool) {
             br,
             4.0,
             if sel {
-                Color32::from_gray(0x4b)
+                cx.t.pressed
             } else if resp.hovered() {
                 t.hover
             } else {
@@ -385,25 +387,25 @@ fn ducking(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, on: bool) {
         br,
         4.0,
         if sel {
-            Color32::from_gray(0x4b)
+            cx.t.pressed
         } else if resp.hovered() {
             t.hover
         } else {
             Color32::TRANSPARENT
         },
     );
-    ui.painter().text(br.center(), Align2::CENTER_CENTER, "Untagged", Tokens::ui(11.5), if sel { t.text } else { t.text_faint });
+    ui.painter().text(br.center(), Align2::CENTER_CENTER, tl!("Untagged"), Tokens::ui(11.5), if sel { t.text } else { t.text_faint });
     cx.auto.add("essentialSound.ducking.against.Untagged", br, "Untagged");
     if resp.clicked() && on {
         cx.set("ducking.againstUntyped", json!(!sel), true);
     }
-    slider(ui, cx, "Sensitivity", "ducking.sensitivity", st.ducking.sensitivity, (0.0, 10.0), 1, "", on);
-    slider(ui, cx, "Reduce By", "ducking.reduceDb", st.ducking.reduce_db, (-40.0, 0.0), 1, " dB", on);
-    slider(ui, cx, "Fades", "ducking.fadeS", st.ducking.fade_s * 1000.0, (0.0, 5000.0), 0, " ms", on);
+    slider(ui, cx, tl!("Sensitivity"), "ducking.sensitivity", st.ducking.sensitivity, (0.0, 10.0), 1, "", on);
+    slider(ui, cx, tl!("Reduce By"), "ducking.reduceDb", st.ducking.reduce_db, (-40.0, 0.0), 1, " dB", on);
+    slider(ui, cx, tl!("Fades"), "ducking.fadeS", st.ducking.fade_s * 1000.0, (0.0, 5000.0), 0, " ms", on);
     ui.add_space(4.0);
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
     let br = Rect::from_min_size(r.min + vec2(0.0, 2.0), vec2(150.0, 24.0));
-    if button(ui, cx, br, "Generate Keyframes", "essentialSound.generateDucking") && on {
+    if button(ui, cx, br, tl!("Generate Keyframes"), "essentialSound.generateDucking") && on {
         cx.run("essentialSound.generateDucking", json!({}));
     }
 }
@@ -418,7 +420,7 @@ fn footer(ui: &mut egui::Ui, cx: &mut Ctx, rect: Rect, st: Option<&EssentialSoun
     if switch(ui, cx, Rect::from_min_size(row.min + vec2(0.0, 4.0), vec2(28.0, 14.0)), st.volume.on, "essentialSound.volume.on", "Clip Volume") {
         cx.set("volume.on", json!(!st.volume.on), true);
     }
-    ui.painter().text(pos2(row.min.x + 38.0, row.center().y), Align2::LEFT_CENTER, "Clip Volume", Tokens::ui(12.5), t.text);
+    ui.painter().text(pos2(row.min.x + 38.0, row.center().y), Align2::LEFT_CENTER, tl!("Clip Volume"), Tokens::ui(12.5), t.text);
     let vr = Rect::from_min_max(pos2(row.max.x - 70.0, row.min.y), row.max);
     ui.painter().text(pos2(vr.max.x - 18.0, vr.center().y), Align2::RIGHT_CENTER, format!("{:.1}", st.volume.level_db), Tokens::ui(12.0), t.hot_text);
     ui.painter().text(pos2(vr.max.x, vr.center().y), Align2::RIGHT_CENTER, "dB", Tokens::ui(12.0), t.text_dim);
@@ -428,7 +430,7 @@ fn footer(ui: &mut egui::Ui, cx: &mut Ctx, rect: Rect, st: Option<&EssentialSoun
     if switch(ui, cx, mr, st.mute, "essentialSound.mute", "Mute") {
         cx.set("mute", json!(!st.mute), true);
     }
-    ui.painter().text(pos2(mr.max.x + 10.0, mr.center().y), Align2::LEFT_CENTER, "Mute", Tokens::ui(12.5), t.text);
+    ui.painter().text(pos2(mr.max.x + 10.0, mr.center().y), Align2::LEFT_CENTER, tl!("Mute"), Tokens::ui(12.5), t.text);
 }
 
 // ------------------------------------------------------------------------------------- widgets
@@ -444,7 +446,7 @@ fn section_header(ui: &mut egui::Ui, cx: &mut Ctx, sec: Section, open: bool, ena
         if open { Icon::ChevronDown } else { Icon::ChevronRight },
         t.text,
     );
-    ui.painter().text(pos2(r.min.x + 30.0, r.center().y), Align2::LEFT_CENTER, sec.label(), Tokens::semibold(13.0), t.text);
+    ui.painter().text(pos2(r.min.x + 30.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::t(sec.label()), Tokens::semibold(13.0), t.text);
     cx.auto.add(&format!("essentialSound.section.{}", sec.label()), r, sec.label());
     if let (Some(on), Some(k)) = (enabled, sec.key()) {
         let sw = Rect::from_center_size(pos2(r.max.x - 16.0, r.center().y), vec2(30.0, 15.0));
@@ -465,11 +467,11 @@ fn switch(ui: &mut egui::Ui, cx: &mut Ctx, r: Rect, on: bool, id: &str, label: &
     let p = ui.painter();
     let rad = r.height() / 2.0;
     if on {
-        p.rect_filled(r, rad, Color32::from_gray(0xd4));
-        p.circle_filled(pos2(r.max.x - rad, r.center().y), rad - 3.0, Color32::from_gray(0x1d));
+        p.rect_filled(r, rad, cx.t.switch_fill);
+        p.circle_filled(pos2(r.max.x - rad, r.center().y), rad - 3.0, cx.t.switch_knob);
     } else {
-        p.rect_stroke(r, rad, Stroke::new(1.5, Color32::from_gray(if resp.hovered() { 0xb0 } else { 0x8a })), StrokeKind::Inside);
-        p.circle_stroke(pos2(r.min.x + rad, r.center().y), rad - 3.0, Stroke::new(1.5, Color32::from_gray(0xd4)));
+        p.rect_stroke(r, rad, Stroke::new(1.5, if resp.hovered() { cx.t.control_handle_dim } else { cx.t.switch_border }), StrokeKind::Inside);
+        p.circle_stroke(pos2(r.min.x + rad, r.center().y), rad - 3.0, Stroke::new(1.5, cx.t.switch_fill));
     }
     cx.auto.add(id, r, label);
     resp.clicked()
@@ -519,7 +521,7 @@ fn slider_track(ui: &mut egui::Ui, cx: &mut Ctx, track: Rect, key: &str, v: f64,
     let f = ((v - lo) / (hi - lo)).clamp(0.0, 1.0) as f32;
     let kx = track.min.x + f * track.width();
     let resp = ui.interact(track.expand2(vec2(6.0, 4.0)), egui::Id::new(("es-slider", key)), Sense::click_and_drag());
-    let line = if active { Color32::from_gray(0x8a) } else { Color32::from_gray(0x4a) };
+    let line = if active { cx.t.switch_border } else { cx.t.slider_disabled_track };
     ui.painter().line_segment([pos2(track.min.x, y), pos2(kx - 7.0, y)], Stroke::new(1.5, line));
     ui.painter().line_segment([pos2(kx + 7.0, y), pos2(track.max.x, y)], Stroke::new(1.5, line));
     ui.painter().circle_filled(pos2(kx, y), 6.0, t.panel_bg);
@@ -531,23 +533,18 @@ fn slider_track(ui: &mut egui::Ui, cx: &mut Ctx, track: Rect, key: &str, v: f64,
             if resp.dragged() {
                 t.hot_text
             } else if active {
-                Color32::from_gray(0xd4)
+                cx.t.switch_fill
             } else {
-                Color32::from_gray(0x6a)
+                cx.t.slider_disabled_knob
             },
         ),
     );
-    // The id is the knob: a click on it keeps the value and a drag from it moves it; `.track` is the
-    // whole slider, for a click or drag to a position along it.
-    cx.auto.add(&format!("essentialSound.{key}"), Rect::from_center_size(pos2(kx, y), vec2(12.0, 12.0)), key);
-    cx.auto.add(&format!("essentialSound.{key}.track"), track, key);
+    cx.auto.add(&format!("essentialSound.{key}"), track, key);
     if !active {
         return;
     }
     if (resp.dragged() || resp.clicked())
         && let Some(p) = resp.interact_pointer_pos()
-        // a click on the knob itself leaves the value alone
-        && !(resp.clicked() && (p.x - kx).abs() <= 6.0)
     {
         let nf = ((p.x - track.min.x) / track.width()).clamp(0.0, 1.0) as f64;
         let mut nv = lo + nf * (hi - lo);
@@ -563,11 +560,9 @@ fn slider_track(ui: &mut egui::Ui, cx: &mut Ctx, track: Rect, key: &str, v: f64,
 fn combo(ui: &mut egui::Ui, cx: &mut Ctx, key: &str, names: &[&str], current: &str, active: bool) {
     let mut picked = None;
     ui.add_enabled_ui(active, |ui| {
-        let cb = egui::ComboBox::from_id_salt(("es-combo", key)).selected_text(current).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
+        let cb = egui::ComboBox::from_id_salt(("es-combo", key)).selected_text(crate::i18n::t(current)).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
             for n in names {
-                let o = ui.selectable_label(*n == current, *n);
-                cx.auto.add(&format!("essentialSound.{key}.option.{n}"), o.rect, n);
-                if o.clicked() {
+                if ui.selectable_label(*n == current, crate::i18n::t(n)).clicked() {
                     picked = Some(n.to_string());
                 }
             }
@@ -592,7 +587,7 @@ fn choice_row(ui: &mut egui::Ui, cx: &mut Ctx, key: &str, opts: &[&str], sel: us
             br,
             4.0,
             if on {
-                Color32::from_gray(0x4b)
+                cx.t.pressed
             } else if resp.hovered() && active {
                 t.hover
             } else {
@@ -610,8 +605,8 @@ fn choice_row(ui: &mut egui::Ui, cx: &mut Ctx, key: &str, opts: &[&str], sel: us
 fn button(ui: &mut egui::Ui, cx: &mut Ctx, r: Rect, text: &str, id: &str) -> bool {
     let t = cx.t;
     let resp = ui.interact(r, egui::Id::new(("es-btn", id)), Sense::click());
-    ui.painter().rect_filled(r, 4.0, if resp.hovered() { Color32::from_gray(0x2a) } else { t.field_bg });
-    ui.painter().rect_stroke(r, 4.0, Stroke::new(1.0, Color32::from_gray(0x4b)), StrokeKind::Inside);
+    ui.painter().rect_filled(r, 4.0, if resp.hovered() { cx.t.button_hover } else { t.field_bg });
+    ui.painter().rect_stroke(r, 4.0, Stroke::new(1.0, cx.t.button_border), StrokeKind::Inside);
     ui.painter().text(r.center(), Align2::CENTER_CENTER, text, Tokens::ui(12.0), t.text);
     cx.auto.add(id, r, text);
     resp.clicked()

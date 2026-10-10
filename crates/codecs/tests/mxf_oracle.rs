@@ -179,7 +179,7 @@ fn check_video(ff: &Path, file: &Path, pix_fmt: &str, chroma: (usize, usize), bp
 /// Our audio, as interleaved f32, equals ffmpeg's decode exactly.
 fn check_audio_exact(ff: &Path, file: &Path, extra: &[&str]) {
     let src = open(file);
-    let a = src.info().audio.clone().unwrap();
+    let a = src.info().audio().cloned().unwrap();
     let ch = a.channels as usize;
     let want = ffmpeg_audio_f32(ff, file, extra);
     let n = want.len() / ch;
@@ -236,7 +236,7 @@ fn h264_2997_drop_frame_timecode_and_24_bit_audio() {
     assert!(tc.drop_frame);
     assert_eq!(tc.format(), "01:00:00;00");
     assert_eq!(info.start_timecode, Some(107_892));
-    assert_eq!(info.audio.as_ref().unwrap().bits_per_sample, Some(24));
+    assert_eq!(info.audio().unwrap().bits_per_sample, Some(24));
     check_video(&ff, &f, "yuv420p", (2, 2), 1, 0, 10);
     check_audio_exact(&ff, &f, &[]);
 }
@@ -299,14 +299,14 @@ fn op_atom_video_and_audio_files() {
     let v = make(&ff, "mxf_atom_dnxhr.mxf");
     let src = open(&v);
     assert_eq!(src.info().container, "MXF OP-Atom");
-    assert!(src.info().audio.is_none());
+    assert!(!src.info().has_audio());
     assert_eq!(src.file().tracks[0].wrapping, filmcraft_mxf::Wrapping::Clip);
     check_video(&ff, &v, "yuv422p", (2, 1), 1, 2, 10);
     let a = make(&ff, "mxf_atom_pcm.mxf");
     let src = open(&a);
     assert_eq!(src.info().kind, MediaKind::AudioOnly);
     assert_eq!(src.info().container, "MXF OP-Atom");
-    let ai = src.info().audio.clone().unwrap();
+    let ai = src.info().audio().cloned().unwrap();
     assert_eq!((ai.sample_rate, ai.channels, ai.bits_per_sample), (48_000, 1, Some(24)));
     assert_eq!(src.info().duration, filmcraft_time::Tick::from_units(48_000, 48_000));
     check_audio_exact(&ff, &a, &[]);
@@ -317,7 +317,7 @@ fn d10_aes3_elements_sample_exact() {
     let ff = filmcraft_testkit::require_ffmpeg!();
     let f = make(&ff, "mxf_d10.mxf");
     let src = open(&f);
-    let a = src.info().audio.clone().unwrap();
+    let a = src.info().audio().cloned().unwrap();
     assert_eq!(a.codec, "AES3 PCM");
     assert!(a.channels >= 4, "{}", a.channels);
     let v = src.info().video.as_ref().unwrap();
@@ -347,7 +347,7 @@ fn truncated_and_corrupt_files_never_panic() {
                         let _ = s.video_frame(FrameRequest::full(t));
                     }
                 }
-                if let Some(a) = &info.audio {
+                if let Some(a) = info.audio() {
                     let _ = s.audio(rng.below(96_000) as i64, 4000, a.sample_rate);
                 }
             }
@@ -364,7 +364,7 @@ fn truncated_and_corrupt_files_never_panic() {
                         let _ = s.video_frame(FrameRequest::full(s.info().frame_rate().tick_of(i)));
                     }
                 }
-                if s.info().audio.is_some() {
+                if s.info().has_audio() {
                     let _ = s.audio(0, 9600, 48_000);
                 }
             }

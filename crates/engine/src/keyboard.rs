@@ -34,12 +34,13 @@
 //! changes the project is one undo step.
 
 use filmcraft_edit as edit;
+pub use filmcraft_export::still::StillFormat;
 use filmcraft_geom::Vec2;
 use filmcraft_project::{ClipId, ItemKind, ParamValue, Sequence, TrackId, TrackKind};
 use filmcraft_time::Tick;
 use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, always, bad, has_selection, has_seq, item_p, str_p, time_p, with_links};
+use crate::commands::{CommandSpec, always, bad, has_selection, has_seq, item_p, time_p, with_links};
 use crate::{EngineError, Result, Session};
 
 type Run = fn(&mut Session, &Value) -> Result<Value>;
@@ -544,39 +545,119 @@ fn sanitize(name: &str) -> String {
     name.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c }).collect()
 }
 
-/// Export Frame: render the Program monitor frame at the playhead to a still image.
-fn export_frame(s: &mut Session, p: &Value) -> Result<Value> {
-    let fmt = str_p(p, "format").unwrap_or("png").to_ascii_lowercase();
-    let format = match fmt.as_str() {
-        "png" => filmcraft_export::Format::PngSequence,
-        "tif" | "tiff" => filmcraft_export::Format::TiffSequence,
-        "bmp" => filmcraft_export::Format::BmpSequence,
-        _ => return Err(bad("file.exportFrame", "format must be png, tiff or bmp")),
+/// A monitor frame captured when Export Frame opens. Export uses original media, never proxies.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FrameExportTarget {
+    pub source: bool,
+    pub item: filmcraft_project::ItemId,
+    pub time: Tick,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Resolve the requested monitor, item and exact frame without changing either playhead.
+pub fn frame_export_target(s: &Session, p: &Value) -> Result<FrameExportTarget> {
+    const CMD: &str = "file.exportFrame";
+    let source = match p.get("target") {
+        None => false,
+        Some(Value::String(t)) if t == "program" => false,
+        Some(Value::String(t)) if t == "source" => true,
+        _ => return Err(bad(CMD, "target must be source or program")),
     };
-    let ext = if fmt == "tif" { "tiff" } else { fmt.as_str() };
-    let seq_name = s.state.active_sequence.and_then(|i| s.project.item(i)).map(|i| i.name.clone()).unwrap_or_else(|| "Sequence".into());
-    let path = match str_p(p, "path") {
-        Some(path) => path.to_string(),
+    let key = if source { "item" } else { "sequence" };
+    let item = match p.get(key) {
+        Some(v) => filmcraft_project::ItemId(v.as_u64().ok_or_else(|| bad(CMD, format!("{key} must be an item id")))?),
+        None => if source { s.state.source_item } else { s.state.active_sequence }
+            .ok_or_else(|| bad(CMD, "open a video clip or sequence in the requested monitor"))?,
+    };
+    let pi = s.project.item(item).ok_or_else(|| bad(CMD, "the requested item is unavailable"))?;
+    let (width, height) = s.project.source_size(item).ok_or_else(|| bad(CMD, "the requested Source clip has no video frame"))?;
+    filmcraft_project::validate_frame_size(width, height).map_err(|e| bad(CMD, e.to_string()))?;
+    let (rate, current, bounds) = if source {
+        let v = crate::clip_ops::source_view(s, item).ok_or_else(|| bad(CMD, "Source clip is unavailable"))?;
+        if v.start.0 < 0 || v.end <= v.start {
+            return Err(bad(CMD, "Source clip has invalid bounds"));
+        }
+        (v.rate, s.state.source_playhead, Some((v.start, v.end)))
+    } else {
+        let q = s.project.sequence(item).ok_or(EngineError::NoSequence)?;
+        (q.settings.frame_rate, s.state.playheads.get(&item).copied().unwrap_or_default(), None)
+    };
+    let requested = match p.get("time") {
+        None => current,
+        Some(v) => Tick(v.as_i64().ok_or_else(|| bad(CMD, "time must be integer ticks"))?),
+    };
+    if rate.num <= 0 || rate.den <= 0 || requested.0 < 0 {
+        return Err(bad(CMD, "frame rate must be positive and time non-negative"));
+    }
+    let invalid = || bad(CMD, "frame time exceeds the supported range");
+    let unit = i128::from(filmcraft_time::TICKS_PER_SECOND).checked_mul(i128::from(rate.den)).ok_or_else(invalid)?;
+    let fd = unit / i128::from(rate.num);
+    if fd <= 0 || fd > i128::from(i64::MAX) {
+        return Err(invalid());
+    }
+    let t = bounds.map(|(a, b)| requested.clamp(a, Tick(b.0.saturating_sub(1)).max(a))).unwrap_or(requested);
+    let frame = i128::from(t.0).checked_mul(i128::from(rate.num)).ok_or_else(invalid)? / unit;
+    let snapped = frame.checked_mul(unit).ok_or_else(invalid)? / i128::from(rate.num);
+    let mut time = Tick(i64::try_from(snapped).map_err(|_| invalid())?);
+    if let Some((a, _)) = bounds {
+        time = time.max(a);
+    }
+    Ok(FrameExportTarget { source, item, time, name: pi.name.clone(), width, height })
+}
+
+/// Export the captured Source or Program frame as a full-resolution SDR still.
+fn export_frame(s: &mut Session, p: &Value) -> Result<Value> {
+    let target = frame_export_target(s, p)?;
+    let fmt = match p.get("format") {
+        None => "png".to_string(),
+        Some(v) => v.as_str().ok_or_else(|| bad("file.exportFrame", "format must be a string"))?.to_ascii_lowercase(),
+    };
+    let format = filmcraft_export::still::StillFormat::parse(&fmt).map_err(|e| bad("file.exportFrame", e.to_string()))?;
+    let depth = match p.get("depth") {
+        None => 8,
+        Some(v) => u8::try_from(v.as_u64().ok_or_else(|| bad("file.exportFrame", "depth must be 8 or 16"))?)
+            .map_err(|_| bad("file.exportFrame", "depth must be 8 or 16"))?,
+    };
+    if !matches!(depth, 8 | 16) || (depth == 16 && !format.supports_16()) {
+        return Err(bad("file.exportFrame", "16-bit output requires PNG or TIFF; JPEG and BMP require 8-bit output"));
+    }
+    let import = match p.get("import") {
+        None => false,
+        Some(v) => v.as_bool().ok_or_else(|| bad("file.exportFrame", "import must be true or false"))?,
+    };
+    let ext = format.extension();
+    let path = match p.get("path") {
+        Some(v) => {
+            let path = v.as_str().filter(|v| !v.trim().is_empty()).ok_or_else(|| bad("file.exportFrame", "path must be a non-empty string"))?;
+            crate::export_tools::expand_home(path)
+        }
         None => {
-            let dir = s.path.as_deref().and_then(|p| std::path::Path::new(p).parent()).map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
-            let base = sanitize(&seq_name);
-            let mut n = 1;
-            loop {
-                let name = format!("{base}.Still{n:03}.{ext}");
-                let cand = if dir.is_empty() { name } else { format!("{dir}/{name}") };
-                if s.services.file_size(&cand).is_err() || n > 9999 {
-                    break cand;
-                }
-                n += 1;
-            }
+            let dir = s.path.as_deref().and_then(|p| std::path::Path::new(p).parent()).unwrap_or_else(|| std::path::Path::new(""));
+            let base = sanitize(&target.name);
+            let candidate =
+                (1..=9999).map(|n| dir.join(format!("{base}.Still{n:03}.{ext}")).to_string_lossy().into_owned()).find(|p| s.services.file_size(p).is_err());
+            candidate.ok_or_else(|| bad("file.exportFrame", "choose a path: all default still names already exist"))?
         }
     };
-    let img = s.render_program(1.0).ok_or(EngineError::NoSequence)?;
-    let (w, h) = (img.w as u32, img.h as u32);
-    let bytes = filmcraft_export::encode_still(format, img.to_rgba8(), w, h, false).map_err(|e| EngineError::Other(e.to_string()))?;
+    let provider = s.media.full_res_provider(s.project.clone(), s.services.clone());
+    let img = if target.source {
+        filmcraft_render::render_item(&s.project, target.item, target.time, 1.0, &provider)
+            .ok_or_else(|| bad("file.exportFrame", "cannot decode the Source video frame"))?
+    } else {
+        let opts = filmcraft_render::RenderOptions { scale: 1.0, captions: true, ..Default::default() };
+        filmcraft_render::render_sequence(&s.project, target.item, target.time, opts, &provider)
+    };
+    let (w, h) = (
+        u32::try_from(img.w).map_err(|_| bad("file.exportFrame", "image width exceeds limits"))?,
+        u32::try_from(img.h).map_err(|_| bad("file.exportFrame", "image height exceeds limits"))?,
+    );
+    let bytes = filmcraft_export::still::encode(&img, format, depth).map_err(|e| EngineError::Other(e.to_string()))?;
     s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-    let mut out = json!({"path": path, "width": w, "height": h});
-    if p.get("import").and_then(Value::as_bool).unwrap_or(false) {
+    let mut out =
+        json!({"path": path, "width": w, "height": h, "depth": depth, "target": if target.source { "source" } else { "program" }, "time": target.time.0});
+    if import {
         out["import"] = s.execute("file.import", json!({"paths": [path]}))?;
     }
     s.toast(format!("Exported frame to {path}"));
@@ -718,7 +799,14 @@ pub fn commands() -> Vec<CommandSpec> {
         spec("graphics.nudgeDown5", "Nudge Selected Object down by five", None, "{}", has_graphic_or_selection, |s, _| nudge_object(s, 0.0, 5.0)),
         // ---- export frame, poster frame
         // Shift+E is Clip > Enable in FilmCraft Default; the Premiere preset moves it here
-        spec("file.exportFrame", "Export Frame", None, r#"{"path":str?,"format":"png|tiff|bmp"?,"import":bool?}"#, has_seq, export_frame),
+        spec(
+            "file.exportFrame",
+            "Export Frame",
+            None,
+            r#"{"path":str?,"format":"png|jpeg|tiff|bmp"?,"depth":8|16?,"import":bool?,"target":"source|program"?,"item":id?,"sequence":id?,"time":ticks?}"#,
+            always,
+            export_frame,
+        ),
         spec("clip.setPosterFrame", "Set Poster Frame", Some("Cmd+P"), r#"{"item":id?,"time":ticks?}"#, has_poster_target, |s, p| set_poster(s, p, false)),
         spec("clip.clearPosterFrame", "Clear Poster Frame", Some("Alt+P"), r#"{"item":id?}"#, has_poster_target, |s, p| set_poster(s, p, true)),
     ];

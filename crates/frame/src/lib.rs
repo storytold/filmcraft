@@ -179,6 +179,61 @@ impl VideoFrame {
         Some(VideoFrame { width: ow as u32, height: oh as u32, data, color: self.color, par: self.par, pts: self.pts })
     }
 
+    /// The part of the frame inside `region` (a container's clean aperture). The region is clipped
+    /// to the frame; on Y'CbCr frames its corner is moved up / left onto the chroma grid (at most
+    /// one sample, keeping its size where the frame allows), so chroma is cut where luma is. An empty
+    /// region, or one covering the whole frame, leaves the frame as it is.
+    pub fn cropped(&self, region: Region) -> VideoFrame {
+        let (w, h) = (self.width as usize, self.height as usize);
+        let (sx, sy) = match &self.data {
+            PixelData::Yuv8 { chroma, .. } | PixelData::Yuv16 { chroma, .. } => chroma.shifts(),
+            PixelData::Rgba8(_) | PixelData::RgbaF32(_) => (0, 0),
+        };
+        let (mx, my) = ((1usize << sx) - 1, (1usize << sy) - 1);
+        let (x, y) = (region.x.min(w) & !mx, region.y.min(h) & !my);
+        let r = Region { x, y, w: region.w, h: region.h }.clip(w, h);
+        if r.w == 0 || r.h == 0 || (r.w == w && r.h == h) {
+            return self.clone();
+        }
+        let chroma_rect = |cw: usize, ch: usize| {
+            (r.x >> sx, r.y >> sy, r.w.div_ceil(1 << sx).min(cw - (r.x >> sx).min(cw)), r.h.div_ceil(1 << sy).min(ch - (r.y >> sy).min(ch)))
+        };
+        let data = match &self.data {
+            PixelData::Rgba8(d) => PixelData::Rgba8(Arc::new(crop_plane(d, w, h, 4, r))),
+            PixelData::RgbaF32(d) => PixelData::RgbaF32(Arc::new(crop_plane(d, w, h, 4, r))),
+            PixelData::Yuv8 { planes, chroma, alpha } => {
+                let (cw, ch) = (w.div_ceil(1 << sx), h.div_ceil(1 << sy));
+                let (cx, cy, cr_w, cr_h) = chroma_rect(cw, ch);
+                let c = Region { x: cx, y: cy, w: cr_w, h: cr_h };
+                PixelData::Yuv8 {
+                    planes: [
+                        Arc::new(crop_plane(&planes[0], w, h, 1, r)),
+                        Arc::new(crop_plane(&planes[1], cw, ch, 1, c)),
+                        Arc::new(crop_plane(&planes[2], cw, ch, 1, c)),
+                    ],
+                    chroma: *chroma,
+                    alpha: alpha.as_ref().map(|a| Arc::new(crop_plane(a, w, h, 1, r))),
+                }
+            }
+            PixelData::Yuv16 { planes, chroma, bits, alpha } => {
+                let (cw, ch) = (w.div_ceil(1 << sx), h.div_ceil(1 << sy));
+                let (cx, cy, cr_w, cr_h) = chroma_rect(cw, ch);
+                let c = Region { x: cx, y: cy, w: cr_w, h: cr_h };
+                PixelData::Yuv16 {
+                    planes: [
+                        Arc::new(crop_plane(&planes[0], w, h, 1, r)),
+                        Arc::new(crop_plane(&planes[1], cw, ch, 1, c)),
+                        Arc::new(crop_plane(&planes[2], cw, ch, 1, c)),
+                    ],
+                    chroma: *chroma,
+                    bits: *bits,
+                    alpha: alpha.as_ref().map(|a| Arc::new(crop_plane(a, w, h, 1, r))),
+                }
+            }
+        };
+        VideoFrame { width: r.w as u32, height: r.h as u32, data, color: self.color, par: self.par, pts: self.pts }
+    }
+
     /// The frame turned clockwise by `quarter_turns` × 90° (a container's display rotation).
     /// Planes rotate at their own resolution; 4:2:2 chroma is widened to 4:4:4 first for a quarter
     /// or three-quarter turn (its half-width chroma would become half-height, which has no
@@ -595,6 +650,20 @@ fn box_plane<T: Copy + Into<u32> + TryFrom<u32> + Send + Sync + Default>(src: &[
     out
 }
 
+/// The `r` part of a `w`×`h` plane of `n`-element pixels (`r` lies inside the plane). A plane too
+/// short for its size gives a blank result, as in [`rotate_plane`].
+fn crop_plane<T: Copy + Default>(src: &[T], w: usize, h: usize, n: usize, r: Region) -> Vec<T> {
+    let mut out = vec![T::default(); r.w * r.h * n];
+    if src.len() < w * h * n || r.x + r.w > w || r.y + r.h > h {
+        return out;
+    }
+    for (row, o) in out.chunks_exact_mut((r.w * n).max(1)).enumerate().take(r.h) {
+        let s = ((r.y + row) * w + r.x) * n;
+        o.copy_from_slice(&src[s..s + r.w * n]);
+    }
+    out
+}
+
 /// A `w`×`h` plane of `n`-element pixels turned clockwise by `q` (1–3) quarter turns.
 fn rotate_plane<T: Copy + Default + Send + Sync>(src: &[T], w: usize, h: usize, n: usize, q: u8) -> Vec<T> {
     let mut out = vec![T::default(); w * h * n];
@@ -642,6 +711,65 @@ fn rotate_chroma<T: Copy + Default + Send + Sync>(planes: &[Arc<Vec<T>>; 3], chr
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn cropping_cuts_every_plane_at_the_same_place() {
+        // 6x4 RGBA8, red = index
+        let px: Vec<u8> = (0..24u8).flat_map(|i| [i, 0, 0, 255]).collect();
+        let f = VideoFrame { par: (4, 3), ..VideoFrame::rgba8(6, 4, px) };
+        let c = f.cropped(Region { x: 1, y: 1, w: 3, h: 2 });
+        assert_eq!((c.width, c.height, c.par), (3, 2, (4, 3)));
+        assert_eq!(c.to_rgba8().chunks(4).map(|p| p[0]).collect::<Vec<_>>(), [7, 8, 9, 13, 14, 15]);
+        // a region reaching past the frame is clipped to it; an empty or full one changes nothing
+        let c = f.cropped(Region { x: 4, y: 3, w: 100, h: 100 });
+        assert_eq!((c.width, c.height), (2, 1));
+        assert_eq!(c.to_rgba8().chunks(4).map(|p| p[0]).collect::<Vec<_>>(), [22, 23]);
+        for r in [
+            Region { x: 0, y: 0, w: 0, h: 2 },
+            Region { x: 9, y: 9, w: 2, h: 2 },
+            Region { x: 0, y: 0, w: 6, h: 4 },
+            Region { x: 0, y: 0, w: usize::MAX, h: usize::MAX },
+        ] {
+            let c = f.cropped(r);
+            assert_eq!((c.width, c.height), (6, 4), "{r:?}");
+        }
+
+        // 4:2:0, odd sizes (7x5: chroma 4x3), with alpha: luma = index, chroma = 100 + index
+        let luma: Vec<u8> = (0..35u8).collect();
+        let cb: Vec<u8> = (100..112u8).collect();
+        let yuv = |chroma| VideoFrame {
+            width: 7,
+            height: 5,
+            data: PixelData::Yuv8 { planes: [Arc::new(luma.clone()), Arc::new(cb.clone()), Arc::new(cb.clone())], chroma, alpha: Some(Arc::new(luma.clone())) },
+            color: Default::default(),
+            par: (1, 1),
+            pts: Default::default(),
+        };
+        // an odd corner moves onto the chroma grid (1,1 -> 0,0), keeping the size
+        let c = yuv(Chroma::C420).cropped(Region { x: 1, y: 1, w: 3, h: 3 });
+        assert_eq!((c.width, c.height), (3, 3));
+        let PixelData::Yuv8 { planes, alpha, .. } = &c.data else { panic!() };
+        assert_eq!(*planes[0], [0, 1, 2, 7, 8, 9, 14, 15, 16]);
+        assert_eq!(**alpha.as_ref().unwrap(), *planes[0]);
+        assert_eq!(*planes[1], [100, 101, 104, 105], "chroma 2x2 from (0,0)");
+        // even corner: chroma starts at (1,1); the last chroma column of an odd width is kept
+        let c = yuv(Chroma::C420).cropped(Region { x: 2, y: 2, w: 5, h: 3 });
+        let PixelData::Yuv8 { planes, .. } = &c.data else { panic!() };
+        assert_eq!((c.width, c.height), (5, 3));
+        assert_eq!(*planes[1], [105, 106, 107, 109, 110, 111], "chroma 3x2 from (1,1)");
+        // 4:4:4 needs no alignment
+        let c = yuv(Chroma::C444).cropped(Region { x: 1, y: 1, w: 2, h: 1 });
+        let PixelData::Yuv8 { planes, .. } = &c.data else { panic!() };
+        assert_eq!(*planes[0], [8, 9]);
+        // a plane shorter than its size gives a blank picture, never a panic
+        let mut short = yuv(Chroma::C420);
+        if let PixelData::Yuv8 { planes, .. } = &mut short.data {
+            planes[0] = Arc::new(vec![1; 3]);
+        }
+        let c = short.cropped(Region { x: 2, y: 2, w: 2, h: 2 });
+        let PixelData::Yuv8 { planes, .. } = &c.data else { panic!() };
+        assert_eq!(*planes[0], [0, 0, 0, 0]);
+    }
 
     #[test]
     fn rotation_turns_every_plane_clockwise() {

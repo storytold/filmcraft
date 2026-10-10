@@ -44,6 +44,15 @@ pub fn used_ranges(p: &Project, seqs: &[ItemId]) -> (BTreeMap<ItemId, (Tick, Tic
                     Some(ItemKind::Subclip { parent, .. }) => {
                         used.insert(ti.item);
                         target = *parent;
+                        // Loaded projects can nest subclips; keep every link up to the media (bounded like `resolve_media`).
+                        let mut up = *parent;
+                        for _ in 0..16 {
+                            used.insert(up);
+                            match p.item(up).map(|i| &i.kind) {
+                                Some(ItemKind::Subclip { parent, .. }) => up = *parent,
+                                _ => break,
+                            }
+                        }
                     }
                     Some(_) => {}
                     None => continue,
@@ -311,7 +320,7 @@ fn execute(
 
 fn estimate_bytes(m: &filmcraft_project::MediaClip, dur: Tick, pr: &Preset) -> u64 {
     let secs = dur.seconds().max(0.0);
-    let audio = m.info.audio.as_ref().map_or(0.0, |a| a.sample_rate as f64 * 2.0 * 2.0 * secs);
+    let audio = m.info.audio().map_or(0.0, |a| a.sample_rate as f64 * 2.0 * 2.0 * secs);
     let Some(v) = &m.info.video else { return audio as u64 };
     let fps = v.frame_rate.num as f64 / v.frame_rate.den.max(1) as f64;
     let px = (v.width * v.height) as f64 * (pr.scale * pr.scale) as f64;

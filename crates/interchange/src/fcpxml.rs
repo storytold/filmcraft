@@ -730,12 +730,12 @@ impl Exp<'_, '_> {
             fmt_time(start, mrate),
             fmt_time(m.info.duration, mrate),
             m.info.video.is_some() as u8,
-            m.info.audio.is_some() as u8
+            m.info.has_audio() as u8
         );
         if let Some(f) = fmt {
             a.push_str(&format!(" format=\"{f}\""));
         }
-        if let Some(au) = &m.info.audio {
+        if let Some(au) = m.info.audio() {
             a.push_str(&format!(" audioSources=\"1\" audioChannels=\"{}\" audioRate=\"{}\"", au.channels, au.sample_rate));
         }
         let path = item_path(self.p, item).unwrap_or("");
@@ -986,7 +986,7 @@ impl Exp<'_, '_> {
         };
         let retimed = it.speed != 1.0 || it.reverse || it.frame_hold.is_some();
         let local = origin + it.source_in;
-        let has_audio = item_media(self.p, base).is_some_and(|m| m.info.audio.is_some()) || (is_seq && audio.is_some());
+        let has_audio = item_media(self.p, base).is_some_and(|m| m.info.has_audio()) || (is_seq && audio.is_some());
         let has_video = item_media(self.p, base).is_none_or(|m| m.info.video.is_some());
         let src_enable = match (kind, audio.is_some()) {
             (TrackKind::Video, true) => "",

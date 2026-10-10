@@ -1,6 +1,6 @@
 [package]
 name = "filmcraft-platform"
-description = "OS media integration: hardware video decoding through the operating system's codecs (VideoToolbox on macOS, Media Foundation on Windows, VA-API on Linux), with transparent fallback to the pure-Rust decoders"
+description = "OS media integration: hardware video decoding through the operating system's codecs (VideoToolbox on macOS, Media Foundation on Windows, VA-API and NVDEC on Linux), with transparent fallback to the pure-Rust decoders"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -50,6 +50,7 @@ windows = { version = "0.62", features = [
     "Win32_Media_MediaFoundation",
     "Win32_System_Com",
     "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 # Linux: libva (VA-API) is loaded at run time with libloading (ISC; already in the lockfile through

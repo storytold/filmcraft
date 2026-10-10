@@ -6,8 +6,32 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+/// A literal UI string in the language the interface is drawn in (`i18n::t`). Only literals: the
+/// i18n tests read every `tl!` literal in the crate and require a Spanish translation for it.
+macro_rules! tl {
+    ($s:literal) => {
+        $crate::i18n::t($s)
+    };
+}
+
+/// A translated template with `{name}` placeholders filled in, for text that `format!` would build.
+/// After the template literal come the values: `n = count`, or just `gain` for a variable of the
+/// same name. Values are formatted with `Display`; the translation may reorder placeholders.
+macro_rules! tlf {
+    (@v $k:ident = $v:expr) => {
+        $v
+    };
+    (@v $k:ident) => {
+        $k
+    };
+    ($s:literal $(, $k:ident $(= $v:expr)?)* $(,)?) => {
+        $crate::i18n::fmt($crate::i18n::t($s), &[$((stringify!($k), ToString::to_string(&tlf!(@v $k $(= $v)?)).as_str())),*])
+    };
+}
+
 pub mod automation;
 pub mod brand;
+mod cjk;
 pub mod control;
 pub mod crash;
 pub mod credits;
@@ -22,6 +46,8 @@ pub mod panels;
 pub mod perf;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod play_ahead;
+pub mod scrub;
+pub mod source_playback;
 pub mod state;
 pub mod theme;
 pub mod widgets;
@@ -79,16 +105,23 @@ pub struct AudioDevices {
 #[derive(Default)]
 pub struct HostHooks {
     pub pick_files: Option<Box<dyn FnMut(&[&str]) -> Vec<String>>>,
+    /// The cursor in physical screen pixels. Where the windowing layer reports no pointer while files are dragged in from the OS (Windows), a drop is placed where this says it landed.
+    pub cursor_screen_position: Option<Box<dyn Fn() -> Option<(i32, i32)>>>,
     pub pick_save: Option<Box<dyn FnMut(&str) -> Option<String>>>,
     pub pick_open_project: Option<Box<dyn FnMut() -> Option<String>>>,
     /// Save dialog with a filter: (filter name, extensions, suggested file name) → path.
     pub pick_save_as: Option<Box<dyn FnMut(&str, &[&str], &str) -> Option<String>>>,
     /// The active keyboard shortcuts changed: update native menu key equivalents.
     pub shortcuts_changed: Option<Box<dyn FnMut(&[menus::MenuItem])>>,
+    /// The user's preferred languages (locale tags, most preferred first) for Interface Language ▸
+    /// System Language. Without it, System Language is English.
+    pub system_languages: Option<Box<dyn Fn() -> Vec<String>>>,
     /// Open dialog for a JSON file (shortcut preset import): filter name, extensions → path.
     pub pick_open_file: Option<Box<dyn FnMut(&str, &[&str]) -> Option<String>>>,
     /// Folder picker (Link Media search, proxy and Project Manager destinations).
     pub pick_folder: Option<Box<dyn FnMut() -> Option<String>>>,
+    /// Folder picker starting at the current destination (Export Frame).
+    pub pick_folder_at: Option<Box<dyn FnMut(&str) -> Option<String>>>,
     /// Pick one file for a command that relinks to it (Link Media ▸ Locate…, Attach Proxies,
     /// Reconnect Full Resolution) instead of importing it, as [`Self::pick_files`] does. Native
     /// hosts return the path. A host whose picker is asynchronous (the web) returns `None` and
@@ -101,7 +134,14 @@ pub struct HostHooks {
     /// Open a file in its default application, or (`true`) reveal it in the file manager (Edit ▸
     /// Edit Original, Help ▸ Reveal Log Files).
     pub open_path: Option<Box<dyn FnMut(&str, bool) -> Result<(), String>>>,
+    /// The operating system's light or dark appearance when egui cannot report it (Linux desktops
+    /// whose Wayland compositor sends no theme to winit). Without it, or without an answer, Auto
+    /// uses `egui::Context::system_theme`.
+    pub system_theme: Option<SystemThemeFn>,
 }
+
+/// Reads the system appearance (Settings ▸ Appearance ▸ Appearance Mode ▸ Sync with system).
+pub type SystemThemeFn = Box<dyn Fn(&egui::Context) -> Option<egui::Theme>>;
 
 /// The command a [`HostHooks::pick_file_for_relink`] caller runs with the chosen file, for hosts
 /// that can only run it later.
@@ -132,6 +172,8 @@ pub enum Dialog {
     AddTracks,
     /// Sequence ▸ Sequence Settings….
     SequenceSettings,
+    /// Set Transition Duration (double-click a transition in the Timeline).
+    TransitionDuration,
 }
 
 /// What the Text panel's transcript view depends on: the project revision, the open sequence and
@@ -178,9 +220,10 @@ const SCREENSHOT_TIMEOUT_S: f64 = 10.0;
 /// timeline zoom animation finished) before capturing what is there.
 const SCREENSHOT_SETTLE_MAX_S: f64 = 5.0;
 
-/// File ▸ Export entries that run from the menus through the save panel: command, filter label,
+/// Export entries that run from the menus through the save panel: command, filter label,
 /// extension.
-pub(crate) const EXPORT_SAVE_DIALOGS: [(&str, &str, &str); 6] = [
+pub(crate) const EXPORT_SAVE_DIALOGS: [(&str, &str, &str); 7] = [
+    ("markers.exportCsv", "Marker report (CSV)", "csv"),
     ("file.exportEdl", "EDL", "edl"),
     ("file.exportFcp7Xml", "Final Cut Pro XML", "xml"),
     ("file.exportFcpxml", "FCPXML", "fcpxml"),
@@ -195,7 +238,10 @@ pub struct FilmcraftApp {
     pub tokens: Tokens,
     pub frames: Arc<FrameServer>,
     pub playback: Playback,
+    pub source_playback: source_playback::SourcePlayback,
     pub audio: Option<Box<dyn AudioOut>>,
+    /// Audio during scrubbing (#211).
+    pub scrub: scrub::ScrubAudio,
     pub hooks: HostHooks,
     pub dialog: Option<Dialog>,
     pub file_dialogs: panels::file_dialogs::FileDialogState,
@@ -244,6 +290,10 @@ pub struct FilmcraftApp {
     /// The sequence whose view `ui.timeline` holds, and that view as it was last exchanged with
     /// `session.state.timeline_views` (see `sync_timeline_view`).
     timeline_view_of: Option<filmcraft_engine::project::ItemId>,
+    /// Items imported by an OS file drop, to place on the Timeline at the drop point this frame.
+    pending_timeline_drop: Option<(Vec<filmcraft_engine::project::ItemId>, egui::Pos2)>,
+    /// Files being dragged over the window from the OS (count, pointer): the Timeline previews where they would land.
+    file_drag_hover: Option<(usize, egui::Pos2)>,
     timeline_view_last: Option<filmcraft_engine::project::SequenceView>,
     pub fps: f32,
     last_time: f64,
@@ -286,13 +336,7 @@ pub struct GpuState {
 
 /// Largest texture side a plan needs on the GPU (output and every layer).
 fn plan_side(plan: &filmcraft_render::plan::FramePlan) -> usize {
-    use filmcraft_render::plan::FramePlan;
-    match plan {
-        FramePlan::Layers { width, height, layers } => {
-            layers.iter().map(|l| l.frame.width.max(l.frame.height) as usize).fold((*width).max(*height), usize::max)
-        }
-        FramePlan::Image(img) => img.w.max(img.h),
-    }
+    plan.max_side()
 }
 
 /// Whether the GPU compositor can run on this adapter: it renders and blends Rgba16Float
@@ -349,7 +393,7 @@ impl FilmcraftApp {
         {
             g.render_state.renderer.write().free_texture(&id);
         }
-        self.ui.status = "Graphics problem: switched to software compositing".into();
+        self.ui.status = tl!("Graphics problem: switched to software compositing").into();
     }
 
     /// Composite a plan on the GPU and return the egui texture showing it.
@@ -401,13 +445,16 @@ impl FilmcraftApp {
         let frames = Arc::new(FrameServer::new(session.media.clone(), session.services.clone(), session.previews.clone(), FrameServer::default_workers()));
         let workspaces =
             session.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| dock::WorkspacePrefs::load(&d.join(dock::WORKSPACES_FILE))).unwrap_or_default();
+        let language = i18n::Language::parse(&session.prefs.general.interface_language).unwrap_or_default();
         Self {
             session,
-            ui: UiState::default(),
+            ui: UiState { language, ..UiState::default() },
             tokens: Tokens::for_kind(ThemeKind::Dark),
             frames,
             playback: Playback { speed: 1.0, ..Default::default() },
+            source_playback: Default::default(),
             audio: None,
+            scrub: Default::default(),
             hooks: HostHooks::default(),
             // Unsaved changes left by a session that died are offered first thing.
             dialog: recovery.then_some(Dialog::Recovery),
@@ -437,6 +484,8 @@ impl FilmcraftApp {
             integrated_titlebar: false,
             last_timeline_width: 1000.0,
             timeline_view_of: None,
+            pending_timeline_drop: None,
+            file_drag_hover: None,
             timeline_view_last: None,
             fps: 60.0,
             last_time: 0.0,
@@ -490,6 +539,18 @@ impl FilmcraftApp {
         self.ui.dark = k != ThemeKind::Light;
     }
 
+    /// The system appearance: the host's reading, else what the windowing toolkit reports.
+    pub fn system_theme(&self, ctx: &egui::Context) -> Option<egui::Theme> {
+        self.hooks.system_theme.as_ref().and_then(|read| read(ctx)).or_else(|| ctx.system_theme())
+    }
+
+    /// The theme Settings ▸ Appearance selects: the light or dark theme of the Appearance Mode,
+    /// Auto following the system (dark when it gives no answer).
+    pub fn appearance_kind(&self, ctx: &egui::Context) -> ThemeKind {
+        let light = self.system_theme(ctx).map(|t| t == egui::Theme::Light);
+        ThemeKind::from_pref(self.session.prefs.appearance.shown_theme(light))
+    }
+
     fn apply_tooltips(&self, ctx: &egui::Context) {
         // Settings ▸ General ▸ Show Tool Tips
         let delay = if self.session.prefs.general.show_tool_tips { 0.5 } else { 1.0e9 };
@@ -499,13 +560,45 @@ impl FilmcraftApp {
     /// Make the UI follow the settings after they change (theme, tooltips, frame cache budget,
     /// play after rendering, audio device).
     pub fn apply_prefs(&mut self, ctx: &egui::Context) {
+        // Appearance Mode ▸ Sync with system: follow the system while running. The host reports
+        // changes as they happen (no polling) and wakes the UI only when the value changes.
+        if self.applied_prefs.is_some() {
+            let k = self.appearance_kind(ctx);
+            if k != self.tokens.kind {
+                self.set_theme(ctx, k);
+            }
+        }
         if self.applied_prefs.as_ref() == Some(&self.session.prefs) {
             return;
         }
         let p = self.session.prefs.clone();
         let prev = self.applied_prefs.take();
         if prev.as_ref().is_none_or(|q| q.appearance != p.appearance || q.general.show_tool_tips != p.general.show_tool_tips) {
-            self.set_theme(ctx, ThemeKind::from_pref(&p.appearance.color_theme));
+            let k = self.appearance_kind(ctx);
+            self.set_theme(ctx, k);
+        }
+        if prev.as_ref().is_none_or(|q| q.general.interface_language != p.general.interface_language) {
+            let language = match i18n::Language::parse(&p.general.interface_language) {
+                Some(l) => l,
+                None if p.general.interface_language == "system" => {
+                    i18n::Language::from_locales(&self.hooks.system_languages.as_ref().map(|f| f()).unwrap_or_default())
+                }
+                None => i18n::Language::default(),
+            };
+            if language == i18n::Language::Ja && !i18n::install_japanese_font(ctx) {
+                self.ui.language = i18n::Language::En;
+                self.ui.status = tl!("no Japanese font is installed on this system; the interface stays in English").into();
+            } else if language == i18n::Language::ZhCn && !i18n::chinese_font_available() {
+                self.ui.language = i18n::Language::En;
+                self.ui.status = tl!("no Chinese font is installed on this system; the interface stays in English").into();
+            } else {
+                self.ui.language = language;
+            }
+            i18n::set_current(self.ui.language);
+            let items = menus::menu_items(self);
+            if let Some(hook) = self.hooks.shortcuts_changed.as_mut() {
+                hook(&items);
+            }
         }
         self.frames.set_cache_budget(p.memory.frame_cache_mb as usize * (1 << 20));
         self.ui.play_after_render = p.timeline.play_after_rendering;
@@ -698,6 +791,7 @@ impl FilmcraftApp {
     }
 
     pub fn play(&mut self, speed: f64) {
+        self.stop_source();
         if self.session.active_sequence().is_none() {
             return;
         }
@@ -827,7 +921,7 @@ impl FilmcraftApp {
                 audio.stop();
             }
             log::warn!("audio output lost its playback clock; playing without sound");
-            self.ui.status = "Audio output failed: playing without sound (check Settings ▸ Audio Hardware)".into();
+            self.ui.status = tl!("Audio output failed: playing without sound (check Settings ▸ Audio Hardware)").into();
         }
         if let Some((f, sr)) = reading {
             if f != self.playback.audio_seen.0 {
@@ -843,7 +937,7 @@ impl FilmcraftApp {
                     a.stop();
                 }
                 log::warn!("audio output stalled (no samples consumed for {AUDIO_STALL_S} s); playing without sound");
-                self.ui.status = "Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)".into();
+                self.ui.status = tl!("Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)").into();
             }
         }
         let elapsed = match reading {
@@ -1084,14 +1178,23 @@ impl FilmcraftApp {
         p.insert("path".into(), json!(path));
         let r = self.session.execute(id, Value::Object(p)).map_err(|e| e.to_string());
         self.ui.status = match &r {
-            Ok(_) => format!("Exported {path}"),
+            Ok(_) => tlf!("Exported {path}", path),
             Err(e) => e.clone(),
         };
         r
     }
 
-    /// Import dropped files.
+    /// Import dropped files. With Timeline ▸ drop imports to the timeline, the new items are also
+    /// queued to be placed at the pointer (see `timeline::interact`).
     fn handle_drops(&mut self, ctx: &egui::Context) {
+        // While files hover, the OS sends no cursor events: poll the cursor each frame to draw the Timeline preview.
+        let hovering = ctx.input(|i| i.raw.hovered_files.len());
+        self.file_drag_hover = if hovering > 0 && self.session.prefs.timeline.drop_import_to_timeline {
+            ctx.request_repaint();
+            self.drop_pointer(ctx).map(|p| (hovering, p))
+        } else {
+            None
+        };
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         let mut paths = Vec::new();
         for f in dropped {
@@ -1101,8 +1204,31 @@ impl FilmcraftApp {
             }
         }
         if !paths.is_empty() {
-            let _ = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
+            let pointer = self.drop_pointer(ctx);
+            let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
+            if let Ok(v) = imported
+                && let Some(pos) = pointer
+                && self.session.prefs.timeline.drop_import_to_timeline
+            {
+                let items: Vec<filmcraft_engine::project::ItemId> =
+                    v["items"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect()).unwrap_or_default();
+                if !items.is_empty() {
+                    self.pending_timeline_drop = Some((items, pos));
+                }
+            }
         }
+    }
+
+    /// Where files dragged in from the OS are over the window. The OS reports no cursor motion during such a drag
+    /// (winit, Windows), so ask it through the host hook, else use the last pointer position egui saw.
+    fn drop_pointer(&self, ctx: &egui::Context) -> Option<egui::Pos2> {
+        let os_pointer = self
+            .hooks
+            .cursor_screen_position
+            .as_ref()
+            .and_then(|f| f())
+            .and_then(|px| ctx.input(|i| i.viewport().inner_rect.map(|r| screen_px_to_ui(px, i.pixels_per_point, r.min))));
+        os_pointer.or_else(|| ctx.input(|i| i.pointer.hover_pos().or(i.pointer.latest_pos())))
     }
 
     // ---------------------------------------------------------------- input
@@ -1147,7 +1273,9 @@ impl FilmcraftApp {
             }
             // Mark In/Out in the Source monitor when it has focus.
             let params = if self.ui.focused == PanelKind::Source
-                && (matches!(id.as_str(), "markers.markIn" | "markers.markOut") || id.starts_with("markers.markSplit") || id.starts_with("markers.goToSplit"))
+                && (matches!(id.as_str(), "markers.markIn" | "markers.markOut" | "markers.clearInOut")
+                    || id.starts_with("markers.markSplit")
+                    || id.starts_with("markers.goToSplit"))
             {
                 json!({"target": "source"})
             } else {
@@ -1273,6 +1401,7 @@ impl FilmcraftApp {
     // ---------------------------------------------------------------- frame
 
     fn frame(&mut self, ui: &mut egui::Ui) {
+        i18n::set_current(self.ui.language);
         if std::mem::take(&mut self.panic_next_frame) {
             crash::injected_fault("injected UI fault");
         }
@@ -1318,6 +1447,8 @@ impl FilmcraftApp {
         }
         self.handle_shortcuts(&ctx);
         self.advance_playback(&ctx);
+        self.advance_source_playback(&ctx);
+        self.scrub_audio(&ctx);
         let t = self.tokens;
         let full = ui.max_rect();
         ui.painter().rect_filled(full, 0.0, t.app_bg);
@@ -1333,7 +1464,9 @@ impl FilmcraftApp {
             state::Mode::Import => panels::import_mode::show(self, ui, body),
             state::Mode::Export => panels::export_mode::show(self, ui, body),
         }
-        self.auto.mark_dialogs();
+self.auto.mark_dialogs();
+        // the Timeline has had its chance to place a file drop this frame; anything left stays a bin import
+        self.pending_timeline_drop = None;
         panels::dialogs::show(self, &ctx);
         if !self.ui.show_status_bar {
             // no bar to draw the job in, but a finished preview render still plays
@@ -1401,7 +1534,7 @@ impl FilmcraftApp {
         let p = ui.painter();
         p.rect_filled(bar, 3.0, t.separator);
         p.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * f, bar.height())), 3.0, t.accent);
-        let verb = if job.label.starts_with("Rendering") { job.label.clone() } else { "Exporting".to_string() };
+        let verb = if job.label.starts_with("Rendering") { crate::i18n::t(&job.label).to_string() } else { tl!("Exporting").to_string() };
         p.text(
             egui::pos2(bar.min.x - 8.0, sb.center().y),
             egui::Align2::RIGHT_CENTER,
@@ -1416,7 +1549,7 @@ impl FilmcraftApp {
         p.line_segment([cancel.center() + egui::vec2(-k, k), cancel.center() + egui::vec2(k, -k)], egui::Stroke::new(1.4, c));
         self.auto.add("status.job.cancel", cancel, &format!("Cancel {}", job.label));
         self.auto.add("status.job.progress", bar, &format!("{:.0}%{left}", f * 100.0));
-        if resp.on_hover_text("Cancel").clicked() {
+        if resp.on_hover_text(tl!("Cancel")).clicked() {
             job.progress.cancel.store(true, Ordering::Relaxed);
             self.watched_render = None;
         }
@@ -1426,20 +1559,22 @@ impl FilmcraftApp {
     fn hint_text(&self) -> String {
         let mac = cfg!(target_os = "macos");
         match self.ui.tool {
-            state::Tool::Selection if mac => "Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.",
-            state::Tool::Selection => "Click to select, or click in empty space and drag to marquee select. Use Shift, Alt, and Ctrl for other options.",
-            state::Tool::TrackSelectForward => "Click to select all clips to the right in all tracks. Shift-click for a single track.",
-            state::Tool::TrackSelectBackward => "Click to select all clips to the left in all tracks. Shift-click for a single track.",
-            state::Tool::Ripple => "Drag an edit point to ripple trim; later clips move to keep the gap closed.",
-            state::Tool::Rolling => "Drag an edit point to roll it: the out of one clip and the in of the next move together.",
-            state::Tool::RateStretch => "Drag an edge to change the clip's speed so it fills the new duration.",
-            state::Tool::Remix => "Drag the edge of a music clip to remix it to the new duration at musically matching beats.",
-            state::Tool::Razor => "Click to split a clip. Shift-click to split all tracks.",
-            state::Tool::Slip => "Drag a clip to slip its source in/out without moving it.",
-            state::Tool::Slide => "Drag a clip to slide it between its neighbours.",
-            state::Tool::Hand => "Drag to scroll the timeline.",
-            state::Tool::Zoom if mac => "Click to zoom in; Opt-click to zoom out.",
-            state::Tool::Zoom => "Click to zoom in; Alt-click to zoom out.",
+            state::Tool::Selection if mac => {
+                tl!("Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.")
+            }
+            state::Tool::Selection => tl!("Click to select, or click in empty space and drag to marquee select. Use Shift, Alt, and Ctrl for other options."),
+            state::Tool::TrackSelectForward => tl!("Click to select all clips to the right in all tracks. Shift-click for a single track."),
+            state::Tool::TrackSelectBackward => tl!("Click to select all clips to the left in all tracks. Shift-click for a single track."),
+            state::Tool::Ripple => tl!("Drag an edit point to ripple trim; later clips move to keep the gap closed."),
+            state::Tool::Rolling => tl!("Drag an edit point to roll it: the out of one clip and the in of the next move together."),
+            state::Tool::RateStretch => tl!("Drag an edge to change the clip's speed so it fills the new duration."),
+            state::Tool::Remix => tl!("Drag the edge of a music clip to remix it to the new duration at musically matching beats."),
+            state::Tool::Razor => tl!("Click to split a clip. Shift-click to split all tracks."),
+            state::Tool::Slip => tl!("Drag a clip to slip its source in/out without moving it."),
+            state::Tool::Slide => tl!("Drag a clip to slide it between its neighbours."),
+            state::Tool::Hand => tl!("Drag to scroll the timeline."),
+            state::Tool::Zoom if mac => tl!("Click to zoom in; Opt-click to zoom out."),
+            state::Tool::Zoom => tl!("Click to zoom in; Alt-click to zoom out."),
             _ => "",
         }
         .to_string()
@@ -1525,26 +1660,31 @@ impl FilmcraftApp {
     fn error_window(&mut self, ctx: &egui::Context) {
         let Some(msg) = self.ui_error.clone() else { return };
         let mut close = false;
-        egui::Window::new("FilmCraft hit an error").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-            ui.set_max_width(460.0);
-            ui.label("Something went wrong while drawing the window. Your project is still open; save it to be safe.");
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new(&msg).monospace().small());
-            if let Some(p) = crash::log_path() {
-                ui.label(egui::RichText::new(format!("Details: {}", p.display())).small());
-            }
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let s = ui.button("Save Project");
-                self.auto.add("error.save", s.rect, "Save Project");
-                if s.clicked() {
-                    let _ = crate::menus::invoke(self, ctx, "file.save", serde_json::json!({}));
+        egui::Window::new(tl!("FilmCraft hit an error"))
+            .id(egui::Id::new("FilmCraft hit an error"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_max_width(460.0);
+                ui.label(tl!("Something went wrong while drawing the window. Your project is still open; save it to be safe."));
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(&msg).monospace().small());
+                if let Some(p) = crash::log_path() {
+                    ui.label(egui::RichText::new(tlf!("Details: {path}", path = p.display())).small());
                 }
-                let d = ui.button("Continue");
-                self.auto.add("error.dismiss", d.rect, "Continue");
-                close |= d.clicked();
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let s = ui.button(tl!("Save Project"));
+                    self.auto.add("error.save", s.rect, "Save Project");
+                    if s.clicked() {
+                        let _ = crate::menus::invoke(self, ctx, "file.save", serde_json::json!({}));
+                    }
+                    let d = ui.button(tl!("Continue"));
+                    self.auto.add("error.dismiss", d.rect, "Continue");
+                    close |= d.clicked();
+                });
             });
-        });
         if close {
             self.ui_error = None;
         }
@@ -1584,7 +1724,9 @@ impl eframe::App for FilmcraftApp {
             theme::install(ctx, &self.tokens);
             // theme::install replaces the fonts: add the system Japanese font back (or fall back to
             // English when a saved Japanese setting meets a system without one)
-            if self.ui.language == i18n::Language::Ja && !i18n::install_japanese_font(ctx) {
+            // (likewise Chinese without a Chinese face)
+            let japanese_missing = self.ui.language == i18n::Language::Ja && !i18n::install_japanese_font(ctx);
+            if japanese_missing || (self.ui.language == i18n::Language::ZhCn && !i18n::chinese_font_available()) {
                 self.ui.language = i18n::Language::En;
             }
             self.styled = true;
@@ -1883,5 +2025,33 @@ mod audio_recovery_tests {
         assert_eq!(app.session.playhead(), displayed);
         assert!(app.ui.status.contains("Audio output failed"));
         app.stop();
+    }
+}
+
+/// A physical-pixel screen position as a point in the window's UI space, given the window's content origin in points.
+///
+/// Assumes the whole virtual screen uses the window's `pixels_per_point`: with monitors of mixed
+/// DPI the point can be off when the cursor and the window's origin are on different monitors.
+fn screen_px_to_ui(px: (i32, i32), pixels_per_point: f32, content_min: egui::Pos2) -> egui::Pos2 {
+    let ppp = if pixels_per_point.is_finite() && pixels_per_point > 0.0 { pixels_per_point } else { 1.0 };
+    egui::pos2(px.0 as f32 / ppp - content_min.x, px.1 as f32 / ppp - content_min.y)
+}
+
+#[cfg(test)]
+mod screen_px_tests {
+    use super::screen_px_to_ui;
+
+    #[test]
+    fn maps_screen_pixels_into_the_window() {
+        let p = screen_px_to_ui((1300, 900), 2.0, egui::pos2(100.0, 50.0));
+        assert_eq!((p.x, p.y), (550.0, 400.0));
+    }
+
+    #[test]
+    fn a_hostile_scale_does_not_divide_by_zero() {
+        for ppp in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            let p = screen_px_to_ui((10, 20), ppp, egui::pos2(0.0, 0.0));
+            assert!(p.x.is_finite() && p.y.is_finite());
+        }
     }
 }

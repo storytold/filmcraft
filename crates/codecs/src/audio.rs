@@ -737,12 +737,12 @@ impl AudioFileSource {
             kind: MediaKind::AudioOnly,
             duration: Tick::from_units(frames as i64, rate as i64),
             video: None,
-            audio: Some(AudioStreamInfo {
+            audio_streams: vec![AudioStreamInfo {
                 sample_rate: rate,
                 channels: samples.len() as u32,
                 codec: codec_name,
                 bits_per_sample: track.codec_params.bits_per_sample,
-            }),
+            }],
             container: ext.to_uppercase(),
             start_timecode: None,
             file_size: Some(bytes.len() as u64),

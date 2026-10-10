@@ -536,9 +536,9 @@ pub fn draw_group_chrome(
                 tabs.extend(seqs.open.iter().map(|(id, name)| Tab { panel: *p, seq: Some(*id), title: name.clone(), active: seqs.active == Some(*id) }));
             } else if *p == PanelKind::Timeline {
                 let name = seqs.open.iter().find(|(id, _)| seqs.active == Some(*id)).map(|(_, n)| n.clone());
-                tabs.push(Tab { panel: *p, seq: None, title: name.unwrap_or_else(|| "Timeline: (no sequences)".into()), active });
+                tabs.push(Tab { panel: *p, seq: None, title: name.unwrap_or_else(|| tl!("Timeline: (no sequences)").into()), active });
             } else {
-                tabs.push(Tab { panel: *p, seq: None, title: p.title().to_string(), active });
+                tabs.push(Tab { panel: *p, seq: None, title: crate::i18n::t(p.title()).to_string(), active });
             }
         }
         let activate = |tab: &Tab, actions: &mut Vec<DockAction>| match tab.seq {

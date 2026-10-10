@@ -226,8 +226,79 @@ Where the built-in export's time goes (`sample` on the process during a 20 s exp
 time in the call tree; the figures overlap because work-stealing mixes the tasks): about two thirds
 of the busy CPU is in the encoder, about a third in compositing and layer decoding. Moving the encoder to
 the media engine removes most of the first and lets the next batch render while the previous one
-encodes (the exporter renders a batch of frames in parallel, then encodes it). What is left is the
+encodes (the exporter now does that: see "Export: rendering the next batch while the current one is
+encoded" below). What is left is the
 CPU compositor, the next target of #30 ("GPU export").
+
+## Export: rendering the next batch while the current one is encoded
+
+Until now a step of the stepped exporter (`filmcraft_export::Exporter`) rendered a batch of frames in
+parallel and only then encoded, muxed and mixed the audio of that batch on one thread, so the wall
+time was the sum of the stages. Where the sum was large (1080p30, 300 frames, `perf.stats`
+`export.stages`) the stages were: software H.264 render 4257 ms, encode 17845 (RGB to YUV 766 of it),
+audio 462, mux 17, finish 142 = 22.96 s; NVENC H.264 setup 465, render 3316, encode 1113 (convert 794),
+audio 471, mux 20, finish 24 = 5.69 s.
+
+Now a step renders batch k+1 on the rayon pool while the calling thread encodes, muxes and mixes the
+audio of batch k (`rayon::in_place_scope`), and the next step starts from the frames already rendered.
+Wall time is about `max(render, encode + audio + mux)` instead of the sum. What did not change:
+
+- **The file.** Batches are cut and encoded in the same order and the audio / mux interleave still
+  follows the 16-frame groups, so the output is byte-identical with or without overlap, on any core count
+  and with any step size, including one frame per step (tests in `determinism_tests.rs`: H.264, ProRes,
+  Motion-JPEG, two-pass).
+- **Pending media.** A prefetched batch whose sources were not ready is dropped and rendered again by a
+  later step; nothing is encoded from an incomplete batch. The web app (no threads) never overlaps: it runs
+  the sequential render-then-encode as before.
+- **Cancel and errors.** Cancelling drops the prefetched frames; a panic while rendering ahead becomes an
+  export error. The encoder stays on the thread that called `step`.
+- **Memory.** Two batches are in flight (the one being encoded and the one being rendered), so up to
+  `2 * batch * frame_bytes` of finished frames are held, and the batch is lowered until that fits in
+  `IN_FLIGHT_BUDGET` (512 MiB; at least one frame): 16 frames of 1080p (8 MB), 8 + 8 frames of 4K SDR
+  (33 MB), 2 + 2 frames of 4K HDR (100 MB, 3840 x 2160 x 3 f32), 1 of 8K HDR. A batch never grows, and
+  frames are freed as soon as they are encoded. A first try with a 1 GiB budget (16 + 16 frames of 4K SDR,
+  5 + 5 of 4K HDR) raised the peak RSS of the 4K SDR exports by 80-700 MB over the old code; 512 MiB
+  brings it under the old peak (table below). `Exporter::set_overlap(false)` gives the old behaviour.
+- **Known web issue, not changed here.** `AudioOut::pull` moves its position before the pending check, so
+  when a web export retries a batch after a pending audio source, that group of audio is lost. It is
+  independent of the overlap (the web never overlaps); TODO: fix separately.
+
+`perf.stats` `export.stages`: `renderMs` and `encodeMs` (and audio / mux) now run at the same time, so
+their sum can exceed the export's wall time. `waitMs` is the time the encoding side spent waiting for the
+next batch to finish rendering after it was done encoding: large means render-bound, near zero means
+encode-bound.
+
+Measured (Xeon E5-2680 v4 14C/28T, RTX 5060, driver 617.42, Windows 11, release CLI, 300 frames of
+30 fps, mean of 2 alternated rounds, export wall time, peak RSS of the CLI process; "before" is the same
+harness on the commit without the overlap, "now" the 512 MiB budget; the 1080p rows were measured with a
+1 GiB budget, which gives the same batches at that size):
+
+| Case | wall before | wall now | speedup | `waitMs` now | peak RSS before / now |
+|---|---|---|---|---|---|
+| 1080p SW H.264 + AAC | 22.60 s | 20.66 s | 1.09x | 0 | 1279 / 1427 MB (+148) |
+| 1080p NVENC H.264 | 5.56 s | 4.99 s | 1.11x | 49 ms | 1318 / 1441 MB (+123) |
+| 1080p ProRes 422 HQ | 16.97 s | 15.32 s | 1.11x | 0 | 1234 / 1392 MB (+158) |
+| 2160p SW H.264 | 60.79 s | 54.12 s | 1.12x | 0 | 4030 / 3113 MB (-917) |
+| 2160p NVENC H.264 | 18.08 s | 15.64 s | 1.16x | 678 ms | 4177 / 3250 MB (-927) |
+| 2160p ProRes 422 HQ | 60.92 s | 55.71 s | 1.09x | 0 | 3675 / 3140 MB (-535) |
+| 2160p HDR PQ SW H.264 | 82.79 s | 77.62 s | 1.07x | 6758 ms | 5284 / 2560 MB (-2724) |
+| 2160p HDR PQ ProRes 422 HQ | 89.14 s | 83.95 s | 1.06x | 215 ms | 5183 / 2565 MB (-2618) |
+| 1080p effects NVENC H.264 | 28.70 s | 26.82 s | 1.07x | 13116 ms | 2044 / 2130 MB (+86) |
+| 1080p effects SW H.264 | 39.60 s | 34.35 s | 1.15x | 0 | 2017 / 2084 MB (+67) |
+
+With the first 1 GiB budget the 2160p rows were 55.42 / 16.00 / 56.75 s at 4404 / 4254 / 4376 MB peak and
+the HDR rows 76.69 / 84.39 s at 3504 / 3532 MB: the same speed within 2 % (the HDR SW row 1.2 % slower
+at 512 MiB), but 4K SDR used up to 700 MB more than the old code. Halving the budget costs no time and
+makes every 4K export smaller than before.
+
+The gain is 6-16 %, well under the `max(render, encode + audio + mux)` bound (1.06-1.86x). The reason is
+that the encode side is not one core: the software H.264 and ProRes encoders run their slices on the same
+rayon pool, and the RGB to YUV conversion is parallel too, so render and encode compete for the same
+cores and overlapping them only fills idle gaps (the serial parts: entropy coding tails, muxing, audio,
+the encoder's hand-off). Only NVENC, whose encode is light on the CPU, comes close to the bound in the
+1080p case (4.99 s against 4.00 s). The effects case on NVENC is render-bound (`waitMs` 13 s of 27 s: the
+encoder waits for the renderer), as expected. 1080p exports use 70-160 MB more (the second batch of 16
+frames); 4K exports use less than before because the batch is smaller (8 for SDR, 2 for HDR instead of 16).
 
 ## Results (HW3: VideoToolbox hardware H.265 (HEVC) encoding, against hardware H.264)
 

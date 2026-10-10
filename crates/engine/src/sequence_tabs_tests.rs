@@ -1,9 +1,10 @@
 //! The Timeline's sequence tabs: closing the others, reordering, and what a project file keeps of
-//! them (the open tabs in order, the active one, and each sequence's zoom, scroll and track
-//! heights). Premiere's behaviour was observed in Premiere Pro 26.5.2.
+//! them (the open tabs in order, the active one, each sequence's zoom, scroll and track heights,
+//! and each sequence's playhead). Premiere's tab behaviour was observed in Premiere Pro 26.5.2.
 
 use super::*;
 use filmcraft_project::SequenceView;
+use filmcraft_time::TICKS_PER_SECOND;
 use serde_json::json;
 
 /// The demo project with two more sequences open: tabs [main, b, c], `c` active.
@@ -106,6 +107,52 @@ fn a_saved_project_reopens_with_its_tabs_and_their_views() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Each sequence reopens with its playhead where it was left: the project file keeps one playhead
+/// per sequence beside the tabs and views.
+#[test]
+fn each_sequence_reopens_with_its_playhead_where_it_was_left() {
+    let (mut s, [main, b, c]) = three_tabs();
+    let at = |s: &Session, seq: ItemId, secs: i64| s.project.sequence(seq).unwrap().settings.frame_rate.snap(Tick(secs * TICKS_PER_SECOND));
+    s.execute("sequence.open", json!({"item": main.0})).unwrap();
+    s.execute("playhead.set", json!({"seconds": 7})).unwrap();
+    s.execute("sequence.open", json!({"item": b.0})).unwrap();
+    s.execute("playhead.set", json!({"seconds": 2})).unwrap();
+    let (main_at, b_at) = (at(&s, main, 7), at(&s, b, 2));
+    assert_eq!(s.playhead(), b_at);
+    assert_eq!(s.project_view().playheads.get(&c), None, "a playhead that never moved is not written");
+    let dir = temp_dir("playheads");
+    let path = dir.join("tabs.fcproj").to_string_lossy().to_string();
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+
+    let mut t = Session::default();
+    t.execute("file.open", json!({"path": path})).unwrap();
+    assert_eq!(t.state.active_sequence, Some(b));
+    assert_eq!(t.playhead(), b_at, "the sequence that was shown is back where it was");
+    t.execute("sequence.open", json!({"item": main.0})).unwrap();
+    assert_eq!(t.playhead(), main_at, "and so is every other sequence");
+    t.execute("sequence.open", json!({"item": c.0})).unwrap();
+    assert_eq!(t.playhead(), Tick::ZERO);
+    assert!(!t.is_dirty(), "a restored playhead is not an edit");
+
+    // with the preference off, nothing of the view comes back, playheads included
+    let mut u = Session::default();
+    u.prefs.timeline.restore_open_sequences = false;
+    u.execute("file.open", json!({"path": path})).unwrap();
+    assert_eq!(u.playhead(), Tick::ZERO);
+
+    // a file written before playheads were kept opens as it did then: every playhead at zero
+    let mut doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(doc["view"]["playheads"].is_object());
+    doc["view"].as_object_mut().unwrap().remove("playheads");
+    std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+    let mut w = Session::default();
+    w.execute("file.open", json!({"path": path})).unwrap();
+    assert_eq!(w.state.active_sequence, Some(b));
+    assert_eq!(w.playhead(), Tick::ZERO);
+    assert!(w.state.playheads.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The view in a project file is not trusted: ids of things that are not sequences, repeats and
 /// numbers out of range are dropped or brought into range, and a view that cannot be read at all
 /// does not stop the project from opening.
@@ -134,6 +181,13 @@ fn a_damaged_view_in_a_project_file_is_cleaned_up_or_ignored() {
             "999999": {"pps": 40.0, "scroll": 0.0, "video_track_h": 60.0, "audio_track_h": 56.0},
             footage.0.to_string(): {"pps": 40.0, "scroll": 0.0, "video_track_h": 60.0, "audio_track_h": 56.0},
         },
+        "playheads": {
+            c.0.to_string(): -5,
+            b.0.to_string(): i64::MAX,
+            main.0.to_string(): TICKS_PER_SECOND + 1,
+            "999999": TICKS_PER_SECOND,
+            footage.0.to_string(): TICKS_PER_SECOND,
+        },
     }));
     assert_eq!(t.state.open_sequences, [c, b]);
     assert_eq!(t.state.active_sequence, Some(c), "an active tab that is not open: the first tab");
@@ -141,6 +195,16 @@ fn a_damaged_view_in_a_project_file_is_cleaned_up_or_ignored() {
     let v = t.state.timeline_views[&b];
     assert!(v.pps <= 1e5 && v.scroll == 0.0 && v.v_scroll <= 1e6 && v.a_scroll == 0.0);
     assert!(v.video_track_h >= 8.0 && v.audio_track_h <= 600.0);
+    // playheads: only sequences keep one, never before zero or past the bound, always on a frame
+    let rate = |seq: ItemId| t.project.sequence(seq).unwrap().settings.frame_rate;
+    assert_eq!(t.state.playheads.keys().copied().collect::<Vec<_>>(), {
+        let mut ids = vec![main, b, c];
+        ids.sort();
+        ids
+    });
+    assert_eq!(t.state.playheads[&c], Tick::ZERO);
+    assert_eq!(t.state.playheads[&b], rate(b).snap(filmcraft_project::ProjectView::MAX_PLAYHEAD));
+    assert_eq!(t.state.playheads[&main], rate(main).snap(Tick(TICKS_PER_SECOND + 1)));
 
     // not a view at all: the project opens as it does without one
     for junk in [json!("tabs"), json!([1, 2, 3]), json!({"open_sequences": "all"}), json!({"sequences": {"x": 1}}), json!(null)] {
@@ -159,6 +223,7 @@ fn the_view_of_a_deleted_sequence_is_forgotten() {
     s.execute("project.delete", json!({"items": [b.0]})).unwrap();
     assert_eq!(s.state.timeline_views.keys().copied().collect::<Vec<_>>(), [main, c]);
     assert_eq!(s.state.open_sequences, [main, c]);
-    // the saved view never names it either
+    // the saved view never names it either, nor keeps its playhead
     assert_eq!(s.project_view().open_sequences, [main, c]);
+    assert!(!s.project_view().playheads.contains_key(&b));
 }

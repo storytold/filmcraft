@@ -8,7 +8,7 @@
 //! | `sequence.goToNextGapInTrack` / `sequence.goToPrevGapInTrack` | Sequence ▸ Go to Gap ▸ Next / Previous in Track | |
 //! | `sequence.selectionFollowsPlayhead` | Sequence ▸ Selection Follows Playhead | |
 //! | `sequence.showThroughEdits` | Sequence ▸ Show Through Edits | |
-//! | `sequence.joinThroughEdits` | (clip context menu) Join Through Edits | |
+//! | `sequence.joinThroughEdits` | (clip and edit point context menus) Join Through Edits | |
 //! | `sequence.throughEdits` | query: the through edits of the active sequence | |
 //! | `sequence.makeSubsequence` | Sequence ▸ Make Subsequence | Shift+U |
 //! | `sequence.deleteTracks` | Sequence ▸ Delete Tracks… | |
@@ -103,7 +103,15 @@ fn groups() -> Vec<(&'static str, Vec<CommandSpec>)> {
                     s.state.show_through_edits = bool_p(p, "on").unwrap_or(!s.state.show_through_edits);
                     Ok(json!({"showThroughEdits": s.state.show_through_edits}))
                 }),
-                spec("sequence.joinThroughEdits", "Join Through Edits", &[], None, r#"{"clips":[id]?,"all":bool?}"#, has_seq, join_through_edits),
+                spec(
+                    "sequence.joinThroughEdits",
+                    "Join Through Edits",
+                    &[],
+                    None,
+                    r#"{"clips":[id]?,"cut":[id,id]?,"all":bool?}"#,
+                    has_seq,
+                    join_through_edits,
+                ),
                 query("sequence.throughEdits", "List Through Edits", "{}", |s, _| {
                     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
                     Ok(Value::Array(
@@ -326,6 +334,9 @@ fn go_to_gap(s: &mut Session, p: &Value, next: bool, in_track: bool) -> Result<V
 // ---------- through edits ----------
 
 fn join_through_edits(s: &mut Session, p: &Value) -> Result<Value> {
+    if let Some(cut) = p.get("cut") {
+        return join_through_edit_at(s, cut);
+    }
     let all = bool_p(p, "all").unwrap_or(false) || (p.get("clips").is_none() && p.get("clip").is_none() && s.state.selection.is_empty());
     let only = if all { Vec::new() } else { with_links(s, &clips_p(s, p)) };
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
@@ -337,6 +348,26 @@ fn join_through_edits(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let n = s.edit_sequence("Join Through Edits", |q, _, st| {
         let n = edit::through::join_through_edits(q, &only);
+        st.selection.retain(|c| q.find_item(*c).is_some());
+        Ok(n)
+    })?;
+    Ok(json!({"joined": n}))
+}
+
+/// `sequence.joinThroughEdits {cut: [left, right]}`: join just that one cut (the edit point menu,
+/// #219), with the cuts between the same pieces' linked partners when linked selection is on.
+fn join_through_edit_at(s: &mut Session, cut: &Value) -> Result<Value> {
+    let ids: Vec<ClipId> = cut.as_array().map(|a| a.iter().filter_map(|v| v.as_u64().map(ClipId)).collect()).unwrap_or_default();
+    let [left, right] = ids[..] else {
+        return Err(EngineError::Other("sequence.joinThroughEdits: `cut` needs two clip ids, [left, right]".into()));
+    };
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    if !edit::through::through_edits(q).iter().any(|e| e.left == left && e.right == right) {
+        return Err(EngineError::Other("that cut is not a through edit".into()));
+    }
+    let (lefts, rights) = (with_links(s, &[left]), with_links(s, &[right]));
+    let n = s.edit_sequence("Join Through Edits", |q, _, st| {
+        let n = edit::through::join_through_edits_where(q, |a, b| lefts.contains(&a) && rights.contains(&b));
         st.selection.retain(|c| q.find_item(*c).is_some());
         Ok(n)
     })?;
@@ -587,7 +618,7 @@ pub(crate) fn place_sequence_clips(
 /// The most tracks one `sequence.addTracks` adds of a kind, and the most a sequence may then
 /// have of it. (Amounts come from dialogs, scripts and the control channel: never trusted.)
 const MAX_ADDED_TRACKS: u64 = 99;
-const MAX_TRACKS: usize = 999;
+pub(crate) const MAX_TRACKS: usize = 999;
 
 /// Where `sequence.addTracks` puts new tracks among the `len` tracks of their kind: the number of
 /// tracks before them. `key` holds `"first"` (Before First Track), a track of that kind by name

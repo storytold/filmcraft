@@ -7,6 +7,11 @@
 #   flatpak-builder --user --install --force-clean build-flatpak packaging/linux/flatpak/ai.storyteller.filmcraft.yml
 #   flatpak run ai.storyteller.filmcraft
 #
+# The command-line tool and its MCP server run in the same sandbox, without opening a window:
+#
+#   flatpak run --command=filmcraft-cli ai.storyteller.filmcraft --version
+#   flatpak run --command=filmcraft-cli ai.storyteller.filmcraft mcp
+#
 # For Flathub, replace the `dir` source with a `git` source pinned to a release tag and commit.
 id: ai.storyteller.filmcraft
 runtime: org.freedesktop.Platform
@@ -49,8 +54,10 @@ modules:
         CARGO_HOME: /run/build/filmcraft/cargo
         CARGO_NET_OFFLINE: 'true'
     build-commands:
-      - cargo --offline build --release --locked -p filmcraft
+      - cargo --offline build --release --locked -p filmcraft -p filmcraft-cli
       - install -Dm755 target/release/filmcraft /app/bin/filmcraft
+      # The headless CLI and its stdio MCP server, as in the release bundle (#346).
+      - install -Dm755 target/release/filmcraft-cli /app/bin/filmcraft-cli
       - install -Dm644 packaging/linux/ai.storyteller.filmcraft.desktop /app/share/applications/ai.storyteller.filmcraft.desktop
       - install -Dm644 packaging/linux/ai.storyteller.filmcraft.mime.xml /app/share/mime/packages/ai.storyteller.filmcraft.xml
       - mkdir -p /app/share/icons && cp -R assets/app-icon/hicolor /app/share/icons/

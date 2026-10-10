@@ -44,7 +44,7 @@ pub fn row_text(app: &FilmcraftApp, row: &TimecodeRow) -> (String, String) {
                 ItemKind::Sequence(q) => (q.mark_in, q.mark_out),
                 _ => (None, None),
             };
-            let sr = it.as_media().and_then(|m| m.info.audio.as_ref()).map(|a| a.sample_rate as i64).unwrap_or(48000);
+            let sr = it.as_media().and_then(|m| m.info.audio()).map(|a| a.sample_rate as i64).unwrap_or(48000);
             View {
                 name: it.name.clone(),
                 rate: it.frame_rate(),
@@ -79,7 +79,8 @@ pub fn row_text(app: &FilmcraftApp, row: &TimecodeRow) -> (String, String) {
         }),
     };
     let Some(v) = view else {
-        return ("--:--:--:--".into(), format!("{} · no {}", row.mode.label(), if source == TcSource::Source { "clip" } else { "sequence" }));
+        let mode = crate::i18n::t(row.mode.label());
+        return ("--:--:--:--".into(), if source == TcSource::Source { tlf!("{mode} · no clip", mode) } else { tlf!("{mode} · no sequence", mode) });
     };
     let fmt = |t: Tick, rate: FrameRate, df: bool| format_time(t, rate, df, row.display, v.sample_rate);
     let (a, b) = (v.marks.0.unwrap_or(Tick::ZERO), v.marks.1.unwrap_or(v.dur));
@@ -94,10 +95,10 @@ pub fn row_text(app: &FilmcraftApp, row: &TimecodeRow) -> (String, String) {
         TcMode::Remaining => fmt((b - v.t).max(Tick::ZERO), v.rate, v.df),
     };
     let src = match source {
-        TcSource::Source => "Source",
-        _ => "Program",
+        TcSource::Source => tl!("Source"),
+        _ => tl!("Program"),
     };
-    (value, format!("{src} · {} · {}", row.mode.label(), v.name))
+    (value, format!("{src} · {} · {}", crate::i18n::t(row.mode.label()), v.name))
 }
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
@@ -132,26 +133,26 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 r.clicked()
             };
             for m in TcMode::ALL {
-                if pick(ui, format!("timecode.row.{i}.mode.{}", serde_name(&m)), m.label(), row.mode == m) {
+                if pick(ui, format!("timecode.row.{i}.mode.{}", serde_name(&m)), crate::i18n::t(m.label()), row.mode == m) {
                     nr.mode = m;
                 }
             }
             ui.separator();
             for src in TcSource::ALL {
-                if pick(ui, format!("timecode.row.{i}.source.{}", serde_name(&src)), src.label(), row.source == src) {
+                if pick(ui, format!("timecode.row.{i}.source.{}", serde_name(&src)), crate::i18n::t(src.label()), row.source == src) {
                     nr.source = src;
                 }
             }
             ui.separator();
             for (n, d) in TimeDisplay::ALL.into_iter().enumerate() {
-                if pick(ui, format!("timecode.row.{i}.display.{n}"), d.label(), row.display == d) {
+                if pick(ui, format!("timecode.row.{i}.display.{n}"), crate::i18n::t(d.label()), row.display == d) {
                     nr.display = d;
                 }
             }
             let mut remove = false;
             if rows.len() > 1 {
                 ui.separator();
-                remove = pick(ui, format!("timecode.row.{i}.remove"), "Remove Row", false);
+                remove = pick(ui, format!("timecode.row.{i}.remove"), tl!("Remove Row"), false);
             }
             for (id, r, l, _) in &picks {
                 elems.push((id.clone(), *r, l.clone()));
@@ -171,7 +172,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let aresp = ui.interact(ar, egui::Id::new("timecode-add"), Sense::click());
     ui.painter().text(ar.center(), Align2::CENTER_CENTER, "+", Tokens::ui(16.0), if aresp.hovered() { t.tab_text_active } else { t.icon });
     elems.push(("timecode.addRow".into(), ar, "Add Row".into()));
-    if aresp.on_hover_text("Add a timecode row").clicked() {
+    if aresp.on_hover_text(tl!("Add a timecode row")).clicked() {
         app.ui.panels.timecode.rows.push(TimecodeRow { mode: TcMode::Duration, ..rows.last().copied().unwrap_or_default() });
     }
     for (id, r, l) in elems {

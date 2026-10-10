@@ -14,7 +14,7 @@ use filmcraft_render::graphic_clip::{item_layer_specs, layer_local_bounds, layer
 use filmcraft_time::{Tick, TimeRange};
 use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, always, bad, f64_p, has_seq, str_p, time_p, u64_p};
+use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, has_seq, str_p, time_p, u64_p};
 use crate::{EngineError, Result, Session};
 
 type Run = fn(&mut Session, &Value) -> Result<Value>;
@@ -96,23 +96,25 @@ pub(crate) fn graphic_source(p: &mut filmcraft_project::Project, w: u32, h: u32,
 
 /// Place a new graphic clip holding `layer` at the playhead: on the first video track above the
 /// topmost clip at the playhead that is free for the duration (a track is added if needed).
-fn new_graphic_clip(s: &mut Session, layer: filmcraft_project::EffectInstance, name: &str, p: &Value) -> Result<ClipId> {
+fn new_graphic_clip(s: &mut Session, cmd: &str, layer: filmcraft_project::EffectInstance, name: &str, p: &Value) -> Result<ClipId> {
     let seconds = f64_p(p, "seconds").unwrap_or(5.0).max(0.01);
     // Here `seconds` is duration, not the generic time parser's placement alias.
     let mut placement = p.clone();
     if let Some(params) = placement.as_object_mut() {
         params.remove("seconds");
     }
-    place_video_clip(s, name, &placement, "New Graphic", vec![layer], move |pr, (w, h, rate)| {
+    place_video_clip(s, cmd, name, &placement, "New Graphic", vec![layer], move |pr, (w, h, rate)| {
         let src = graphic_source(pr, w, h, rate);
         (src, rate.snap_nearest(Tick::from_seconds_f64(seconds)).max(rate.frame_duration()))
     })
 }
 
 /// Place a video clip of the item `source` returns (with its duration) at the playhead (or
-/// `time`), above the clips there, as one undo step; selects it.
+/// `time`), above the clips there, as one undo step; selects it. `cmd` is the command that asked,
+/// for its errors.
 pub(crate) fn place_video_clip(
     s: &mut Session,
+    cmd: &str,
     name: &str,
     p: &Value,
     label: &str,
@@ -133,7 +135,7 @@ pub(crate) fn place_video_clip(
         let src_size = pr.source_size(src).unwrap_or((w, h));
         let t = rate.snap(t);
         let dur = dur.max(rate.frame_duration());
-        let mut ti = pr.make_track_item(src, TrackKind::Video, t, TimeRange::new(Tick::ZERO, dur), rate).ok_or_else(|| bad("graphics.newText", "bad item"))?;
+        let mut ti = pr.make_track_item(src, TrackKind::Video, t, TimeRange::new(Tick::ZERO, dur), rate).ok_or_else(|| bad(cmd, "bad item"))?;
         ti.name = name;
         ti.effects.extend(extra);
         for e in &mut ti.effects {
@@ -146,7 +148,7 @@ pub(crate) fn place_video_clip(
         let free = |tr: &filmcraft_project::Track| !tr.items.iter().any(|i| i.range().overlaps(&range));
         let idx = match want_track {
             Some(i) if i < q.video_tracks.len() && free(&q.video_tracks[i]) => i,
-            Some(i) if i < q.video_tracks.len() => return Err(bad("graphics.newText", format!("V{} is not free here", i + 1))),
+            Some(i) if i < q.video_tracks.len() => return Err(bad(cmd, format!("V{} is not free here", i + 1))),
             _ => {
                 let top = q.video_tracks.iter().rposition(|tr| tr.item_at(t).is_some()).map_or(0, |k| k + 1);
                 match (top..q.video_tracks.len()).find(|&i| free(&q.video_tracks[i]) && !q.video_tracks[i].locked) {
@@ -190,6 +192,10 @@ fn param_id(k: &str) -> &str {
         "fontSize" => "size",
         "fontStyle" | "style" => "font_style",
         "fillColor" | "color" => "fill_color",
+        "fillKind" => "fill_kind",
+        "gradientStart" => "gradient_start",
+        "gradientEnd" => "gradient_end",
+        "gradientAngle" => "gradient_angle",
         "strokeColor" => "stroke_color",
         "strokeWidth" => "stroke_width",
         "backgroundColor" => "background_color",
@@ -212,6 +218,7 @@ pub(crate) fn to_param(template: &ParamValue, id: &str, v: &Value) -> Option<Par
             "align" => graphic::ALIGN_OPTS,
             "caps" => graphic::CAPS_OPTS,
             "stroke_type" | "stroke2_type" => graphic::STROKE_OPTS,
+            "fill_kind" => graphic::FILL_KIND_OPTS,
             "shape" => SHAPE_OPTS,
             _ => &[],
         };
@@ -255,10 +262,19 @@ fn apply_props(e: &mut EffectInstance, props: &serde_json::Map<String, Value>, m
 }
 
 /// Set properties `props` on a layer (keyframe-aware at time `tl`). Changing the text keeps
-/// per-character styles on their characters.
-pub(crate) fn set_props(s: &mut Session, clip: ClipId, eidx: usize, props: &serde_json::Map<String, Value>, tl: Tick, label: &str) -> Result<()> {
+/// per-character styles on their characters. `merge` folds consecutive calls with the same key
+/// into one undo step (a drag is one undoable change, like `effects.setParam`).
+pub(crate) fn set_props(
+    s: &mut Session,
+    clip: ClipId,
+    eidx: usize,
+    props: &serde_json::Map<String, Value>,
+    tl: Tick,
+    label: &str,
+    merge: Option<&str>,
+) -> Result<()> {
     let props = props.clone();
-    s.edit_sequence(label, |q, _, _| {
+    s.edit_sequence_as(label, merge, |q, _, _| {
         let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
         let mt = it.source_time_at(tl.clamp(it.start, it.end() - Tick(1)));
         let e = it.effects.get_mut(eidx).ok_or_else(|| bad("graphics.set", "no such layer"))?;
@@ -703,7 +719,7 @@ fn menu_commands() -> Vec<CommandSpec> {
             "Rectangle",
             &["Graphics and Titles", "New Layer"],
             Some("Cmd+Alt+R"),
-            r#"{"position":[x,y]?,"size":[w,h]=[400,200],"clip":id?}"#,
+            r#"{"position":[x,y]?,"size":[w,h]=[400,200],"clip":id?,"seconds":f64=5,"track":index?,"time":ticks?}"#,
             has_seq,
             |s, p| new_shape_cmd(s, p, "rectangle"),
         ),
@@ -712,7 +728,7 @@ fn menu_commands() -> Vec<CommandSpec> {
             "Ellipse",
             &["Graphics and Titles", "New Layer"],
             Some("Cmd+Alt+E"),
-            r#"{"position":[x,y]?,"size":[w,h]=[400,200],"clip":id?}"#,
+            r#"{"position":[x,y]?,"size":[w,h]=[400,200],"clip":id?,"seconds":f64=5,"track":index?,"time":ticks?}"#,
             has_seq,
             |s, p| new_shape_cmd(s, p, "ellipse"),
         ),
@@ -721,7 +737,7 @@ fn menu_commands() -> Vec<CommandSpec> {
             "Polygon",
             &["Graphics and Titles", "New Layer"],
             None,
-            r#"{"position":[x,y]?,"size":[w,h]=[300,300],"sides":n=6,"clip":id?}"#,
+            r#"{"position":[x,y]?,"size":[w,h]=[300,300],"sides":n=6,"clip":id?,"seconds":f64=5,"track":index?,"time":ticks?}"#,
             has_seq,
             |s, p| {
                 let mut q = if p.is_object() { p.clone() } else { json!({}) };
@@ -737,7 +753,7 @@ fn menu_commands() -> Vec<CommandSpec> {
                     props.insert("sides".into(), json!(n));
                     let ph = s.playhead();
                     let before = s.history.undo.len();
-                    set_props(s, clip, ei, &props, ph, "Change Graphic Property")?;
+                    set_props(s, clip, ei, &props, ph, "Change Graphic Property", None)?;
                     if s.history.undo.len() > before {
                         s.history.undo.pop();
                     }
@@ -766,7 +782,7 @@ fn menu_commands() -> Vec<CommandSpec> {
                     return Err(bad("graphics.newFromFile", "the file has no picture"));
                 }
                 let (name, dur) = (pi.name.clone(), pi.duration());
-                let clip = place_video_clip(s, &name, p, "New Layer from File", Vec::new(), move |_, _| (item, dur))?;
+                let clip = place_video_clip(s, "graphics.newFromFile", &name, p, "New Layer from File", Vec::new(), move |_, _| (item, dur))?;
                 s.state.graphic_layers.clear();
                 Ok(json!({"clip": clip.0, "item": item.0}))
             },
@@ -902,7 +918,7 @@ pub fn commands() -> Vec<CommandSpec> {
                     Some(c) => (c, add_layer(s, c, layer)?),
                     None => {
                         let name = text.lines().next().filter(|l| !l.trim().is_empty()).unwrap_or("Graphic").to_string();
-                        (new_graphic_clip(s, layer, &name, p)?, 0)
+                        (new_graphic_clip(s, "graphics.newText", layer, &name, p)?, 0)
                     }
                 };
                 Ok(json!({"clip": clip.0, "layer": layer_i}))
@@ -913,7 +929,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "Shape",
             &[],
             None,
-            r#"{"shape":"rectangle|ellipse|polygon|path","position":[x,y]?,"size":[w,h]=[400,200],"points":[[x,y],…]?,"clip":id?,"seconds":f64=5}"#,
+            r#"{"shape":"rectangle|ellipse|polygon|path","position":[x,y]? (the shape's centre),"size":[w,h]=[400,200],"points":[[x,y],…]?,"clip":id? (add the shape to this graphic),"seconds":f64=5,"track":index?,"time":ticks?}"#,
             has_seq,
             |s, p| {
                 let shape = str_p(p, "shape").unwrap_or("rectangle").to_ascii_lowercase();
@@ -936,7 +952,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 let into = u64_p(p, "clip").map(ClipId).filter(|c| s.active_sequence().is_some_and(|q| is_graphic(s, q, *c)));
                 let (clip, layer_i) = match into {
                     Some(c) => (c, add_layer(s, c, layer)?),
-                    None => (new_graphic_clip(s, layer, "Shape", p)?, 0),
+                    None => (new_graphic_clip(s, "graphics.newShape", layer, "Shape", p)?, 0),
                 };
                 Ok(json!({"clip": clip.0, "layer": layer_i}))
             },
@@ -956,7 +972,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 let mut props = serde_json::Map::new();
                 props.insert("text".into(), Value::String(text));
                 let ph = s.playhead();
-                set_props(s, clip, ei, &props, ph, "Edit Text")?;
+                set_props(s, clip, ei, &props, ph, "Edit Text", None)?;
                 if merge && s.history.undo.len() >= 2 {
                     // keep the snapshot from before the typing session
                     s.history.undo.pop();
@@ -969,14 +985,19 @@ pub fn commands() -> Vec<CommandSpec> {
             "Set Graphic Properties",
             &[],
             None,
-            r##"{"clip":id?,"layer":n|name?,"props":{"font":"Inter","font_style":"Bold","size":120,"align":"center","tracking":50,"leading":0,"fill_color":"#ffcc00","stroke":true,"stroke_width":6,"background":true,"shadow":true,"position":[x,y],"scale":100,"rotation":0,"opacity":100,…},"time":ticks?}"##,
+            r##"{"clip":id?,"layer":n|name?,"props":{"font":"Inter","font_style":"Bold","size":120,"align":"center","tracking":50,"leading":0,"fill_color":"#ffcc00","stroke":true,"stroke_width":6,"background":true,"shadow":true,"position":[x,y],"scale":100,"rotation":0,"opacity":100,…},"time":ticks?,"merge":bool?,"begin":bool?}"##,
             has_graphic,
             |s, p| {
                 let clip = target_clip(s, p).ok_or_else(|| bad("graphics.set", "no graphic clip"))?;
                 let (_, ei) = layer_effect_index(s, clip, p)?;
                 let props = p.get("props").and_then(Value::as_object).ok_or_else(|| bad("graphics.set", "need `props`"))?.clone();
                 let tl = time_p(s, p, "").unwrap_or_else(|| s.playhead());
-                set_props(s, clip, ei, &props, tl, "Change Graphic Property")?;
+                // `merge`: a drag of a property is one undo step; `begin` starts a new one (#201)
+                let merge = bool_p(p, "merge").unwrap_or(false).then(|| format!("graphics.set:{}:{ei}", clip.0));
+                if bool_p(p, "begin").unwrap_or(false) {
+                    s.history.merge_key = None;
+                }
+                set_props(s, clip, ei, &props, tl, "Change Graphic Property", merge.as_deref())?;
                 Ok(Value::Null)
             },
         ),

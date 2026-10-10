@@ -449,6 +449,16 @@ pub struct SourceView {
 }
 
 impl SourceView {
+    /// The marked Source span. Unset marks mean the beginning/end of the source; Out is inclusive.
+    pub fn selected_range(&self) -> TimeRange {
+        if self.start.0 < 0 || self.end <= self.start {
+            return TimeRange::new(self.start, Tick::ZERO);
+        }
+        let start = self.mark_in.unwrap_or(self.start).clamp(self.start, self.end);
+        let end = self.mark_out.map(|o| Tick(o.0.saturating_add(self.rate.frame_duration().0))).unwrap_or(self.end).clamp(start, self.end);
+        TimeRange::from_bounds(start, end)
+    }
+
     pub fn to_json(&self, playhead: Tick) -> Value {
         json!({
             "item": self.item.0, "media": self.media.0, "start": self.start.0, "end": self.end.0, "fps": self.rate.as_f64(),
@@ -629,15 +639,19 @@ fn sequence_from_clip(s: &mut Session, p: &Value) -> Result<Value> {
     let pi = s.project.item(first).ok_or_else(|| bad("file.newSequenceFromClip", "no such item"))?.clone();
     let mut settings = match &pi.kind {
         ItemKind::Sequence(q) => q.settings.clone(),
-        _ => media_root(&s.project, first).map(|(_, m, _)| crate::commands::default_seq_settings_for(&m.info)).unwrap_or_default(),
+        _ => media_root(&s.project, first).map(|(_, m, _)| crate::commands::default_seq_settings_for(m)).unwrap_or_default(),
     };
     if let ItemKind::AdjustmentLayer { width, height, rate, .. } = &pi.kind {
         settings.width = *width;
         settings.height = *height;
         settings.frame_rate = *rate;
     }
-    let channels = media_root(&s.project, first).and_then(|(_, m, _)| m.info.audio.as_ref().map(|a| a.channels)).unwrap_or(2);
-    let n_audio = media_root(&s.project, first).and_then(|(_, m, _)| m.interpret.audio_channels.as_ref().map(|a| a.clips.len())).unwrap_or(1).max(1);
+    let channels = media_root(&s.project, first).and_then(|(_, m, _)| m.info.audio().map(|a| a.channels)).unwrap_or(2);
+    let n_audio = media_root(&s.project, first)
+        .map(|(_, m, _)| {
+            crate::commands::audio_placement_specs(m.interpret.audio_channels.as_ref().map_or(&[], |a| a.clips.as_slice()), m.info.audio_streams.len()).len()
+        })
+        .unwrap_or(1);
     let n0 = s.history.undo.len();
     let name = pi.name.clone();
     let bin = s.project.root.parent_of(first).filter(|b| *b != s.project.root.id);
@@ -761,12 +775,15 @@ fn offline_file(s: &mut Session, p: &Value) -> Result<Value> {
             bitrate: None,
             hdr: None,
         }),
-        audio: has_a.then(|| filmcraft_media::AudioStreamInfo {
-            sample_rate: u64_p(p, "sampleRate").unwrap_or(48_000) as u32,
-            channels: u64_p(p, "channels").unwrap_or(2).max(1) as u32,
-            codec: String::new(),
-            bits_per_sample: None,
-        }),
+        audio_streams: has_a
+            .then(|| filmcraft_media::AudioStreamInfo {
+                sample_rate: u64_p(p, "sampleRate").unwrap_or(48_000) as u32,
+                channels: u64_p(p, "channels").unwrap_or(2).max(1) as u32,
+                codec: String::new(),
+                bits_per_sample: None,
+            })
+            .into_iter()
+            .collect(),
         container: String::new(),
         start_timecode: start_tc,
         file_size: None,
@@ -913,7 +930,7 @@ fn consolidate_duplicates(s: &mut Session, _: &Value) -> Result<Value> {
     for it in s.project.items.values() {
         if let ItemKind::Media(m) = &it.kind {
             // same file (or generator), interpretation and streams
-            let shape = (m.info.video.is_some(), m.info.audio.is_some(), m.info.duration);
+            let shape = (m.info.video.is_some(), m.info.has_audio(), m.info.duration);
             let key = serde_json::to_string(&(&m.media, &m.interpret, m.offline, shape)).unwrap_or_default();
             groups.entry(key).or_default().push(it.id);
         }
@@ -932,6 +949,7 @@ fn consolidate_duplicates(s: &mut Session, _: &Value) -> Result<Value> {
         for it in pr.items.values_mut() {
             match &mut it.kind {
                 ItemKind::Sequence(q) => {
+                    let q = std::sync::Arc::make_mut(q);
                     for t in q.all_tracks_mut() {
                         for i in &mut t.items {
                             if let Some(k) = map.get(&i.item) {
@@ -1249,7 +1267,7 @@ fn audio_channels(s: &mut Session, p: &Value) -> Result<Value> {
     let mut maps = Vec::new();
     for i in &items {
         let Some(m) = s.project.item(*i).and_then(|it| it.as_media()) else { continue };
-        let n = m.info.audio.as_ref().map_or(2, |a| a.channels) as u16;
+        let n = m.info.audio().map_or(2, |a| a.channels) as u16;
         let fmt = format.unwrap_or_else(|| m.interpret.audio_channels.as_ref().map_or(AudioChannels::Stereo, |a| a.format));
         let map = match &custom {
             Some(c) => {
@@ -1502,17 +1520,24 @@ fn fit_fill(s: &mut Session, p: &Value, fill: bool) -> Result<Value> {
     let clips = video_clips(s, p);
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let (fw, fh) = (q.settings.width as f64, q.settings.height as f64);
-    let sizes: Vec<(ClipId, (u32, u32))> =
-        clips.iter().filter_map(|c| q.find_item(*c).and_then(|(_, i)| filmcraft_render::source_size(&s.project, i.item)).map(|sz| (*c, sz))).collect();
+    let frame_par = q.settings.par;
+    // (clip, storage size for the anchor, size at the display aspect in sequence pixels for the scale)
+    let sizes: Vec<(ClipId, (u32, u32), (f64, f64))> = clips
+        .iter()
+        .filter_map(|c| {
+            let (_, i) = q.find_item(*c)?;
+            Some((*c, filmcraft_render::source_size(&s.project, i.item)?, s.project.conformed_source_size(i.item, frame_par)?))
+        })
+        .collect();
     if sizes.is_empty() {
         return Err(bad(if fill { "clip.fillFrame" } else { "clip.fitToFrame" }, "select a video clip"));
     }
     let label = if fill { "Fill Frame" } else { "Fit to Frame" };
     let out = s.edit_sequence(label, |q, _, _| {
         let mut out = Vec::new();
-        for (c, (w, h)) in &sizes {
+        for (c, (w, h), (dw, dh)) in &sizes {
             let Some((_, it)) = q.find_item_mut(*c) else { continue };
-            let (sx, sy) = (fw / (*w).max(1) as f64, fh / (*h).max(1) as f64);
+            let (sx, sy) = (fw / dw.max(1.0), fh / dh.max(1.0));
             let pct = (if fill { sx.max(sy) } else { sx.min(sy) }) * 100.0;
             it.scale_to_frame = false;
             let Some(m) = it.effect_mut("motion") else { continue };
@@ -1554,7 +1579,7 @@ fn breakout_to_mono(s: &mut Session, p: &Value) -> Result<Value> {
         for i in &items {
             let Some(it) = pr.item(*i).cloned() else { continue };
             let Some(m) = it.as_media() else { continue };
-            let n = m.info.audio.as_ref().map_or(1, |a| a.channels).max(1) as u16;
+            let n = m.info.audio().map_or(1, |a| a.channels).max(1) as u16;
             let bin = pr.root.parent_of(*i).filter(|b| *b != pr.root.id);
             for c in 0..n {
                 let suffix = match (n, c) {
@@ -1590,7 +1615,7 @@ fn extract_audio(s: &mut Session, p: &Value) -> Result<Value> {
     let mut out = Vec::new();
     for item in items {
         let (root, m, sub) = media_root(&s.project, item).ok_or_else(|| bad("clip.extractAudio", "not a media clip"))?;
-        let a = m.info.audio.clone().ok_or_else(|| bad("clip.extractAudio", "the clip has no audio"))?;
+        let a = m.info.audio().cloned().ok_or_else(|| bad("clip.extractAudio", "the clip has no audio"))?;
         let range = sub.unwrap_or(TimeRange::new(Tick::ZERO, m.info.duration));
         let dir = match str_p(p, "dir") {
             Some(d) => d.to_string(),

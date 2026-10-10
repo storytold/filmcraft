@@ -208,6 +208,48 @@ fn plan_matches_reference_renderer() {
     }
 }
 
+#[test]
+fn push_plan_preserves_reference_track_order_and_reverse() {
+    let (mut p, red, ocean, seq, map) = setup();
+    place(&mut p, seq, 0, ocean, 0, 48);
+    let a = place(&mut p, seq, 1, red, 0, 24);
+    let b = place(&mut p, seq, 1, ocean, 24, 24);
+    let rate = FrameRate::FPS_24;
+    let s = p.sequence_mut(seq).unwrap();
+    for item in &mut s.video_tracks[1].items {
+        item.effect_mut("opacity").unwrap().param_mut("opacity").unwrap().value = ParamValue::Float(55.0);
+        item.effect_mut("motion").unwrap().param_mut("scale").unwrap().value = ParamValue::Float(75.0);
+    }
+    s.video_tracks[1].transitions.push(filmcraft_project::Transition {
+        id: filmcraft_project::TransitionId(999),
+        effect: filmcraft_project::find_effect("push").unwrap().instance(),
+        start: rate.tick_of(18),
+        duration: rate.tick_of(12),
+        from: Some(a),
+        to: Some(b),
+        align: Default::default(),
+        reverse: false,
+    });
+    for reverse in [false, true] {
+        for scale in [1.0, 0.5] {
+            for missing in [false, true] {
+                let tr = &mut p.sequence_mut(seq).unwrap().video_tracks[1].transitions[0];
+                tr.reverse = reverse;
+                tr.to = if missing { None } else { Some(b) };
+                for f in [18, 21, 24, 29] {
+                    let opts = RenderOptions { scale, ..Default::default() };
+                    let plan = plan::plan_frame(&p, seq, rate.tick_of(f), opts, &map);
+                    assert!(matches!(plan, plan::FramePlan::Composite { .. }));
+                    let got = plan::execute_cpu(&plan);
+                    let reference = render_sequence(&p, seq, rate.tick_of(f), opts, &map);
+                    let max = got.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
+                    assert!(max < 1e-5, "reverse {reverse}, scale {scale}, missing {missing}, frame {f}: {max}");
+                }
+            }
+        }
+    }
+}
+
 /// A project with a 4 s bars-and-tone clip (1 kHz at −20 dBFS) on A1, with extra audio effects.
 fn tone_with(effects: &[(&str, &[(&str, f64)])]) -> (Project, ItemId, SourceMap) {
     let mut p = Project::new("fx");

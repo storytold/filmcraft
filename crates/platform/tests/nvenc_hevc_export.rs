@@ -237,8 +237,10 @@ fn what_nvenc_cannot_do_is_an_error_that_says_why() {
     // (what, settings, size): each declined by the configuration alone, so even a machine without
     // NVENC counts and explains it
     let cases: Vec<(&str, ExportSettings, (u32, u32))> = vec![
-        ("HDR (PQ)", ExportSettings { signal: ColorSignal::PQ, ..base.clone() }, (1280, 720)),
-        ("HDR (HLG)", ExportSettings { signal: ColorSignal::HLG, ..base.clone() }, (1280, 720)),
+        // HDR is Main 10 since the HDR round (see nvenc_hevc_hdr_export.rs); what stays declined is a colour description
+        // this backend does not write
+        ("an unwritable colour signal", ExportSettings { signal: ColorSignal { primaries: 9, transfer: 1, matrix: 1 }, ..base.clone() }, (1280, 720)),
+        ("HDR with BT.709 primaries", ExportSettings { signal: ColorSignal { primaries: 1, transfer: 16, matrix: 9 }, ..base.clone() }, (1280, 720)),
         ("an analysis pass", ExportSettings { h264_pass: H264Pass::First, ..base.clone() }, (1280, 720)),
         ("two-pass VBR", ExportSettings { bitrate_mode: BitrateMode::Vbr2Pass, ..base.clone() }, (1280, 720)),
         ("non-square pixels", ExportSettings { pixel_aspect: Some((4, 3)), ..base.clone() }, (1280, 720)),
@@ -253,6 +255,19 @@ fn what_nvenc_cannot_do_is_an_error_that_says_why() {
         let Some(Err(e)) = r else { panic!("{what}: expected a declined request, got {}", if r.is_some() { "an encoder" } else { "None" }) };
         assert!(e.to_string().contains("NVENC"), "{what}: {e}");
         assert_eq!(delta(before), (0, 0, 1), "{what}: counted as declined, no session");
+    }
+    // HDR (PQ / HLG) is taken as Main 10 where the GPU has 10-bit HEVC, declined (counted, with the reason) where it has not
+    for signal in [ColorSignal::PQ, ColorSignal::HLG] {
+        let before = hw_encode_stats();
+        let r = factory(Format::Hevc, 640, 360, rate, &ExportSettings { signal, ..base.clone() });
+        if filmcraft_platform::nvenc::hevc_hdr_available() {
+            assert!(matches!(r, Some(Ok(_))), "{signal:?}");
+            assert_eq!(delta(before), (0, 1, 0), "{signal:?}");
+        } else if hevc_available() {
+            let Some(Err(e)) = r else { panic!("{signal:?}: expected a declined request") };
+            assert!(e.to_string().contains("10-bit"), "{signal:?}: {e}");
+            assert_eq!(delta(before), (0, 0, 1), "{signal:?}");
+        }
     }
     // interlaced output is refused by the export's own validation, before any encoder is asked
     let (p, seq, m) = project(640, 360, 6);

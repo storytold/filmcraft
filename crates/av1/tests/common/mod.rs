@@ -6,8 +6,27 @@ use filmcraft_av1::{Decoder, Picture};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// ffmpeg with libsvtav1 (fixtures) and libdav1d (reference), or `None` after reporting a skip.
 pub fn ffmpeg() -> Option<PathBuf> {
-    filmcraft_testkit::ffmpeg_or_skip("av1 oracle")
+    ffmpeg_with(&[("-encoders", "libsvtav1"), ("-decoders", "libdav1d")])
+}
+
+/// ffmpeg with libdav1d, for checks that decode existing files only.
+pub fn ffmpeg_dav1d() -> Option<PathBuf> {
+    ffmpeg_with(&[("-decoders", "libdav1d")])
+}
+
+/// Builds such as the Windows "essentials" ones lack these libraries; skip rather than fail.
+fn ffmpeg_with(needs: &[(&str, &str)]) -> Option<PathBuf> {
+    let ff = filmcraft_testkit::ffmpeg_or_skip("av1 oracle")?;
+    for &(list, lib) in needs {
+        let out = Command::new(&ff).args(["-hide_banner", list]).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+        if !out.contains(lib) {
+            filmcraft_testkit::skip("av1 oracle", &format!("ffmpeg has no {lib} (see `ffmpeg {list}`)"));
+            return None;
+        }
+    }
+    Some(ff)
 }
 
 pub fn fixture_dir() -> PathBuf {

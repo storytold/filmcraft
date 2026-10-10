@@ -163,6 +163,101 @@ fn half_float_conversion() {
 }
 
 #[test]
+fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
+    use filmcraft_project::ParamValue;
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (128usize, 72usize);
+    let layer = |side: usize| {
+        let px = (0..w * h)
+            .flat_map(|i| {
+                let u = (i % w % 2) as f32;
+                let v = (i / w % 2) as f32;
+                let a = if side == 0 { (u + v) / 2.0 } else { 1.0 - (u + v) / 2.0 };
+                [u * a, v * a, 0.5 * a, a]
+            })
+            .collect();
+        PlanLayer::new(Arc::new(VideoFrame::rgba_f32(w as u32, h as u32, px)), Affine::IDENTITY, 0.7, Blend::Normal)
+    };
+    let mut worst = (0, 0.0f64);
+    for direction in 0..4 {
+        for blur in [0.0, 50.0, 100.0] {
+            for progress in [0.0, 0.25, 0.37, 0.5, 0.75, 1.0] {
+                let mut effect = filmcraft_project::find_effect("push").unwrap().instance();
+                effect.param_mut("direction").unwrap().value = ParamValue::Choice(direction);
+                effect.param_mut("motion_blur").unwrap().value = ParamValue::Float(blur);
+                let mut above = layer(1);
+                above.blend = Blend::Multiply;
+                let plan = FramePlan::Composite {
+                    width: w,
+                    height: h,
+                    steps: vec![
+                        PlanStep::Layers(vec![layer(1)]),
+                        PlanStep::Transition { inputs: [vec![layer(0)], vec![layer(1)]], effect, progress, scale: 1.0 },
+                        PlanStep::Layers(vec![above]),
+                    ],
+                };
+                let cpu = execute_cpu(&plan).over_black_rgba8();
+                c.composite_prepared(&plan, Some(&prepare(&plan)));
+                let (_, _, gpu) = c.read_output().expect("readback");
+                let mut diffs: Vec<u32> =
+                    cpu.as_chunks::<4>().0.iter().zip(gpu.as_chunks::<4>().0).map(|(a, b)| (0..3).map(|k| a[k].abs_diff(b[k]) as u32).max().unwrap()).collect();
+                diffs.sort_unstable();
+                let p99 = diffs[diffs.len() * 99 / 100];
+                let mean = diffs.iter().sum::<u32>() as f64 / diffs.len() as f64;
+                worst = (worst.0.max(p99), worst.1.max(mean));
+                // Existing compositor acceptance band; moving edges included.
+                assert!(p99 <= 6 && mean < 1.5, "direction {direction}, blur {blur}, progress {progress}: p99 {p99}, mean {mean}");
+            }
+        }
+    }
+    assert_eq!(c.gpu_transitions, 4 * 3 * 6);
+    assert_eq!(c.cpu_transitions, 0);
+    eprintln!("Push 72 cases: worst p99 {}, mean {}", worst.0, worst.1);
+    let fallback = FramePlan::Composite {
+        width: w,
+        height: h,
+        steps: vec![PlanStep::Transition {
+            inputs: [vec![layer(0)], vec![layer(1)]],
+            effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+            progress: 0.37,
+            scale: 1.0,
+        }],
+    };
+    c.composite(&fallback);
+    let (_, _, got) = c.read_output().expect("fallback readback");
+    let expected = execute_cpu(&fallback).over_black_rgba8();
+    assert!(got.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 1));
+    assert_eq!(c.cpu_transitions, 1);
+    assert_eq!(c.gpu_transitions, 4 * 3 * 6);
+
+    // Reuse both input targets across ordered transitions; preparation advances past intervening layers.
+    let transition = |progress| PlanStep::Transition {
+        inputs: [vec![layer(0)], vec![layer(1)]],
+        effect: filmcraft_project::find_effect("push").unwrap().instance(),
+        progress,
+        scale: 1.0,
+    };
+    let mut middle = layer(0);
+    middle.blend = Blend::Screen;
+    let stacked = FramePlan::Composite {
+        width: w,
+        height: h,
+        steps: vec![PlanStep::Layers(vec![layer(1)]), transition(0.25), PlanStep::Layers(vec![middle]), transition(0.75)],
+    };
+    c.composite_prepared(&stacked, Some(&prepare(&stacked)));
+    let (_, _, gpu) = c.read_output().expect("stacked readback");
+    let cpu = execute_cpu(&stacked).over_black_rgba8();
+    // One byte level tolerates half-float resolve rounding.
+    assert!(gpu.iter().zip(cpu).all(|(a, b)| a.abs_diff(b) <= 1), "stacked transitions exceed one byte level");
+    assert_eq!(c.gpu_transitions, 4 * 3 * 6 + 2);
+    assert_eq!(c.cpu_transitions, 1);
+}
+
+#[test]
 fn prepared_upload_matches_inline_conversion() {
     let Some((dev, q)) = device() else {
         eprintln!("no GPU adapter; skipping");

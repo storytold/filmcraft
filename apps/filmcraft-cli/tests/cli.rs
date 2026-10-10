@@ -44,7 +44,7 @@ fn probe_reports_mpeg_transport_and_program_streams() {
         assert!(st.success());
         let v = json_out(&cli(&["probe", out.to_str().unwrap()]));
         assert!(v["video"]["codec"].as_str().unwrap().starts_with("MPEG-2 Video"), "{v}");
-        assert_eq!(v["audio"]["codec"], "MPEG Audio");
+        assert_eq!(v["audio_streams"][0]["codec"], "MPEG Audio");
         let streams = v["mpeg"]["streams"].as_array().unwrap();
         assert_eq!(streams.len(), 2, "{v}");
         assert_eq!(streams[0]["codec"], "MPEG-2 Video");

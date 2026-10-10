@@ -516,9 +516,9 @@ pub fn column_text(e: &Entry, column: &str, probe: Option<&MediaInfo>) -> String
             })
             .unwrap_or_default(),
         "Video Info" => probe.and_then(|i| i.video.as_ref()).map(|v| format!("{} x {}", v.width, v.height)).unwrap_or_default(),
-        "Audio Info" => probe.and_then(|i| i.audio.as_ref()).map(|a| format!("{} Hz - {} ch", a.sample_rate, a.channels)).unwrap_or_default(),
+        "Audio Info" => probe.and_then(|i| i.audio()).map(|a| format!("{} Hz - {} ch", a.sample_rate, a.channels)).unwrap_or_default(),
         "Video Codec" => probe.and_then(|i| i.video.as_ref()).map(|v| v.codec.clone()).unwrap_or_default(),
-        "Audio Codec" => probe.and_then(|i| i.audio.as_ref()).map(|a| a.codec.clone()).unwrap_or_default(),
+        "Audio Codec" => probe.and_then(|i| i.audio()).map(|a| a.codec.clone()).unwrap_or_default(),
         _ => String::new(),
     }
 }

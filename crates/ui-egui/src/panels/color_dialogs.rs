@@ -2,7 +2,7 @@
 //! Management… (working space, wide gamut, Auto Tone Map Media). Each applies one engine command
 //! on OK, so it is a single undo step. Automation ids: `colorDialog.space.<id>`,
 //! `colorDialog.working.<id>`, `colorDialog.wideGamut`, `colorDialog.autoToneMap`,
-//! `colorDialog.ok`, `colorDialog.cancel`, `colorDialog.close` (the title-bar ×).
+//! `colorDialog.ok`, `colorDialog.cancel`.
 
 use filmcraft_color::{ColorSpace, WorkingSpace};
 use serde_json::{Value, json};
@@ -48,9 +48,9 @@ fn buttons(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> (bool, bool) {
     let mut out = (false, false);
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        let c = ui.button("Cancel");
+        let c = ui.button(tl!("Cancel"));
         app.auto.add("colorDialog.cancel", c.rect, "Cancel");
-        let o = ui.button("OK");
+        let o = ui.button(tl!("OK"));
         app.auto.add("colorDialog.ok", o.rect, "OK");
         out = (o.clicked(), c.clicked());
     });
@@ -70,53 +70,62 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 .and_then(|v| v["detectedLabel"].as_str().map(str::to_string))
                 .unwrap_or_else(|| "—".into());
             let n = items.len();
-            let w = egui::Window::new("Interpret Footage").open(&mut open).collapsible(false).resizable(false).default_width(380.0).show(ctx, |ui| {
-                ui.label(egui::RichText::new(format!("Color Management · {n} item{}", if n == 1 { "" } else { "s" })).strong());
-                ui.label(format!("Media colour space (from file metadata): {detected}"));
-                ui.add_space(4.0);
-                ui.label("Override media colour space:");
-                if radio(app, ui, "colorDialog.space.auto", color_space == "auto", "Use file metadata") {
-                    *color_space = "auto".into();
-                }
-                egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                    for cs in ColorSpace::ALL {
-                        if radio(app, ui, &format!("colorDialog.space.{}", cs.id()), color_space == cs.id(), cs.label()) {
-                            *color_space = cs.id().into();
-                        }
+            egui::Window::new(tl!("Interpret Footage"))
+                .id(egui::Id::new("Interpret Footage"))
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .default_width(380.0)
+                .show(ctx, |ui| {
+                    ui.label(
+                        egui::RichText::new(if n == 1 { tlf!("Color Management · {n} item", n) } else { tlf!("Color Management · {n} items", n) }).strong(),
+                    );
+                    ui.label(tlf!("Media colour space (from file metadata): {detected}", detected));
+                    ui.add_space(4.0);
+                    ui.label(tl!("Override media colour space:"));
+                    if radio(app, ui, "colorDialog.space.auto", color_space == "auto", tl!("Use file metadata")) {
+                        *color_space = "auto".into();
                     }
+                    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                        for cs in ColorSpace::ALL {
+                            if radio(app, ui, &format!("colorDialog.space.{}", cs.id()), color_space == cs.id(), cs.label()) {
+                                *color_space = cs.id().into();
+                            }
+                        }
+                    });
+                    let (ok, cancel) = buttons(app, ui);
+                    if ok {
+                        apply = Some(("clip.interpretFootage", json!({"items": items, "colorSpace": color_space})));
+                    }
+                    close = ok || cancel;
                 });
-                let (ok, cancel) = buttons(app, ui);
-                if ok {
-                    apply = Some(("clip.interpretFootage", json!({"items": items, "colorSpace": color_space})));
-                }
-                close = ok || cancel;
-            });
-            if let Some(w) = w {
-                app.auto.add("colorDialog.close", crate::widgets::window_close_rect(ctx, w.response.rect, None), "Close");
-            }
         }
         ColorDialog::Sequence { working_space, wide_gamut, auto_tone_map } => {
-            let w = egui::Window::new("Sequence Color Management").open(&mut open).collapsible(false).resizable(false).default_width(340.0).show(ctx, |ui| {
-                ui.label(egui::RichText::new("Working Color Space").strong());
-                for w in WorkingSpace::ALL {
-                    if radio(app, ui, &format!("colorDialog.working.{}", w.id()), working_space == w.id(), w.label()) {
-                        *working_space = w.id().into();
+            egui::Window::new(tl!("Sequence Color Management"))
+                .id(egui::Id::new("Sequence Color Management"))
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .default_width(340.0)
+                .show(ctx, |ui| {
+                    ui.label(egui::RichText::new(tl!("Working Color Space")).strong());
+                    for w in WorkingSpace::ALL {
+                        if radio(app, ui, &format!("colorDialog.working.{}", w.id()), working_space == w.id(), w.label()) {
+                            *working_space = w.id().into();
+                        }
                     }
-                }
-                ui.add_space(4.0);
-                let r = ui.checkbox(wide_gamut, "Wide gamut color (composite in BT.2020)");
-                app.auto.add("colorDialog.wideGamut", r.rect, "Wide gamut");
-                let r = ui.checkbox(auto_tone_map, "Auto tone map media (HDR and log into SDR)");
-                app.auto.add("colorDialog.autoToneMap", r.rect, "Auto tone map");
-                let (ok, cancel) = buttons(app, ui);
-                if ok {
-                    apply = Some(("sequence.colorSettings", json!({"workingSpace": working_space, "wideGamut": *wide_gamut, "autoToneMap": *auto_tone_map})));
-                }
-                close = ok || cancel;
-            });
-            if let Some(w) = w {
-                app.auto.add("colorDialog.close", crate::widgets::window_close_rect(ctx, w.response.rect, None), "Close");
-            }
+                    ui.add_space(4.0);
+                    let r = ui.checkbox(wide_gamut, tl!("Wide gamut color (composite in BT.2020)"));
+                    app.auto.add("colorDialog.wideGamut", r.rect, "Wide gamut");
+                    let r = ui.checkbox(auto_tone_map, tl!("Auto tone map media (HDR and log into SDR)"));
+                    app.auto.add("colorDialog.autoToneMap", r.rect, "Auto tone map");
+                    let (ok, cancel) = buttons(app, ui);
+                    if ok {
+                        apply =
+                            Some(("sequence.colorSettings", json!({"workingSpace": working_space, "wideGamut": *wide_gamut, "autoToneMap": *auto_tone_map})));
+                    }
+                    close = ok || cancel;
+                });
         }
     }
     app.ui.color_dialog = if close || !open { None } else { Some(d) };

@@ -217,7 +217,7 @@ impl VideoEncoder for HardwareEncoder {
         if f.rgba.len() < w.saturating_mul(h).saturating_mul(4) {
             return Err(ExportError::Encode("the RGBA picture is smaller than its size".into()));
         }
-        filmcraft_export::rgba_to_yuv420_8(f.rgba, w, h, &mut self.y, &mut self.u, &mut self.v);
+        filmcraft_export::timed(filmcraft_export::Stage::Convert, || filmcraft_export::rgba_to_yuv420_8(f.rgba, w, h, &mut self.y, &mut self.u, &mut self.v));
         let packets = self.vt.encode(f.index, &self.y, &self.u, &self.v).map_err(ExportError::Encode)?;
         // the muxer needs the parameter sets after the first group of pictures
         if f.index == 0 {

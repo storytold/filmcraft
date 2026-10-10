@@ -89,6 +89,7 @@ fn moved_project(root: &Path) -> String {
     s.project = Arc::new(p);
     let path = root.join("p.fcproj").to_string_lossy().into_owned();
     s.execute("file.save", json!({"path": path})).unwrap();
+    drop(s); // Close decoder files before moving their directory on Windows.
     std::fs::create_dir_all(root.join("Moved")).unwrap();
     std::fs::rename(&media, root.join("Moved").join("Media")).unwrap();
     path
@@ -175,6 +176,178 @@ impl Driver {
         let path = dir.join(format!("{name}.png"));
         img.save(&path).unwrap();
         eprintln!("snapshot: {}", path.display());
+    }
+}
+
+/// #301: Source transport must step by frame index when frame durations need rounding.
+#[test]
+fn source_transport_steps_every_frame_at_a_fractional_tick_rate() {
+    let rate = FrameRate::new(31, 1);
+    let generator = Generator::Demo(DemoScene::OceanSunset);
+    let src = GeneratorSource::new(generator.clone(), 32, 18, rate, rate.tick_of(41));
+    let mut session = Session::default();
+    let item = Arc::make_mut(&mut session.project).add_item(
+        "31 fps source",
+        Label::Iris,
+        ItemKind::Media(MediaClip {
+            media: MediaRef::Generator(generator),
+            info: src.info().clone(),
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        }),
+        None,
+    );
+    session.execute("source.open", json!({"item": item.0})).unwrap();
+    let mut d = Driver::new(session);
+    for frame in 1..=40 {
+        d.click("source.transport.src.stepFwd");
+        assert_eq!(rate.frame_at(d.app().session.state.source_playhead), frame);
+    }
+    d.click("source.transport.src.stepFwd");
+    assert_eq!(rate.frame_at(d.app().session.state.source_playhead), 40, "stop at the last source frame");
+    for frame in (0..40).rev() {
+        d.click("source.transport.src.stepBack");
+        assert_eq!(rate.frame_at(d.app().session.state.source_playhead), frame);
+    }
+    d.click("source.transport.src.stepBack");
+    assert_eq!(d.app().session.state.source_playhead, Tick::ZERO);
+}
+
+/// Source-focused menu/keyboard commands use the same frame grid as the Source toolbar.
+#[test]
+fn source_menu_steps_use_ordinals_for_explicit_targets_and_focus() {
+    let rate = FrameRate::new(31, 1);
+    for explicit_source in [true, false] {
+        let generator = Generator::Demo(DemoScene::OceanSunset);
+        let src = GeneratorSource::new(generator.clone(), 32, 18, rate, rate.tick_of(41));
+        let mut session = Session::default();
+        session.execute("file.newSequence", json!({"fps": 31, "width": 32, "height": 18})).unwrap();
+        session.execute("playhead.set", json!({"frame": 10})).unwrap();
+        session.execute("prefs.set", json!({"key": "playback.stepManyFrames", "value": 12})).unwrap();
+        let item = Arc::make_mut(&mut session.project).add_item(
+            "31 fps menu source",
+            Label::Iris,
+            ItemKind::Media(MediaClip {
+                media: MediaRef::Generator(generator),
+                info: src.info().clone(),
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: None,
+            }),
+            None,
+        );
+        session.execute("source.open", json!({"item": item.0})).unwrap();
+        let mut d = Driver::new(session);
+        d.ok("ui.set", json!({"focused": if explicit_source { "Program" } else { "Source" }}));
+        let project = d.app().session.project.clone();
+        let history = d.exec("history.list", json!({}));
+        let mut source_metadata = d.exec("source.inspect", json!({}));
+        source_metadata.as_object_mut().unwrap().remove("playhead");
+        let source_params = if explicit_source { json!({"monitor": "source"}) } else { json!({}) };
+        for (command, frame) in [
+            ("playhead.stepForward", 1),
+            ("playhead.stepForward", 2),
+            ("playhead.stepBack", 1),
+            ("playhead.stepBack", 0),
+            ("playhead.stepBack", 0),
+            ("playhead.stepForward5", 12),
+            ("playhead.stepForward5", 24),
+            ("playhead.stepForward5", 36),
+            ("playhead.stepForward5", 40),
+            ("playhead.stepForward5", 40),
+            ("playhead.stepBack5", 28),
+            ("playhead.stepBack5", 16),
+            ("playhead.stepBack5", 4),
+            ("playhead.stepBack5", 0),
+            ("playhead.stepBack5", 0),
+        ] {
+            d.ok("ui.menu.invoke", json!({"id": command, "params": source_params.clone()}));
+            let mut source = d.exec("source.inspect", json!({}));
+            assert_eq!(source["playhead"], json!(rate.tick_of(frame).0), "{command}, explicit Source target: {explicit_source}");
+            source.as_object_mut().unwrap().remove("playhead");
+            assert_eq!(source, source_metadata);
+            assert_eq!(d.app().session.playhead(), rate.tick_of(10));
+            assert!(Arc::ptr_eq(&d.app().session.project, &project), "Source navigation must preserve the document");
+            assert_eq!(d.exec("history.list", json!({})), history);
+            let state = d.ok("ui.inspect", json!({}));
+            assert_eq!(state["playback"]["playing"], json!(false));
+            assert_eq!(state["sourcePlayback"]["playing"], json!(false));
+        }
+        // An explicit Program target takes priority even while Source has focus.
+        for (command, frame) in [("playhead.stepForward", 11), ("playhead.stepBack", 10)] {
+            d.ok("ui.menu.invoke", json!({"id": command, "params": {"monitor": "program"}}));
+            assert_eq!(d.app().session.playhead(), rate.tick_of(frame));
+            assert_eq!(d.app().session.state.source_playhead, Tick::ZERO);
+            assert!(Arc::ptr_eq(&d.app().session.project, &project));
+            assert_eq!(d.exec("history.list", json!({})), history);
+        }
+    }
+}
+
+// Requires the wide Time arithmetic: the accepted Source rate has more than one frame per tick.
+fn zero_tick_frame_duration_source() -> (Driver, Tick) {
+    let rate = FrameRate::new(i64::MAX, 1000);
+    let current = Tick(254_270_016_000_000); // 1001 seconds, beyond the i64 frame-index range.
+    assert_eq!(rate.frame_duration(), Tick::ZERO);
+    assert_eq!(rate.frame_at(current), i64::MAX);
+    assert_eq!(rate.tick_of(i64::MAX), Tick(254_016_000_000_000));
+    assert_eq!(rate.snap(current), current, "the composed Time helper must retain the exact cursor");
+    let generator = Generator::ColorMatte { color: [0.2, 0.8, 0.2, 1.0] };
+    let src = GeneratorSource::new(generator.clone(), 32, 18, rate, Tick(508_032_000_000_000)); // 2000 seconds.
+    let mut session = Session::default();
+    session.execute("file.newSequence", json!({"fps": 31, "width": 32, "height": 18})).unwrap();
+    let item = Arc::make_mut(&mut session.project).add_item(
+        "Source with less than one tick per frame",
+        Label::Iris,
+        ItemKind::Media(MediaClip {
+            media: MediaRef::Generator(generator),
+            info: src.info().clone(),
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        }),
+        None,
+    );
+    assert_eq!(filmcraft_engine::clip_ops::source_view(&session, item).unwrap().rate, rate);
+    session.execute("source.open", json!({"item": item.0})).unwrap();
+    let mut d = Driver::new(session);
+    d.exec("source.setPlayhead", json!({"time": current.0}));
+    assert_eq!(d.app().session.state.source_playhead, current, "the public Source seek must accept the exact starting cursor");
+    (d, current)
+}
+
+#[test]
+fn source_toolbar_steps_preserve_zero_tick_frame_duration_cursor() {
+    let (mut d, current) = zero_tick_frame_duration_source();
+    for button in ["source.transport.src.stepFwd", "source.transport.src.stepBack"] {
+        d.click(button);
+        assert_eq!(d.app().session.state.source_playhead, current, "{button} must retain the existing zero-duration no-op");
+    }
+}
+
+#[test]
+fn source_menu_steps_preserve_zero_tick_frame_duration_cursor() {
+    for explicit_source in [true, false] {
+        let (mut d, current) = zero_tick_frame_duration_source();
+        d.ok("ui.set", json!({"focused": if explicit_source { "Program" } else { "Source" }}));
+        let params = if explicit_source { json!({"monitor": "source"}) } else { json!({}) };
+        for command in ["playhead.stepForward", "playhead.stepBack"] {
+            d.ok("ui.menu.invoke", json!({"id": command, "params": params.clone()}));
+            assert_eq!(d.app().session.state.source_playhead, current, "{command}, explicit Source target: {explicit_source}");
+        }
     }
 }
 

@@ -31,7 +31,7 @@ pub fn open(app: &mut FilmcraftApp, ctx: &egui::Context) -> Result<Value, String
         seconds: v["targetSeconds"].as_f64().unwrap_or_else(|| v["seconds"].as_f64().unwrap_or(0.0)),
         segments: v["segments"].as_f64().unwrap_or(50.0),
         variations: v["variations"].as_f64().unwrap_or(50.0),
-        info: format!("Current duration {:.2} s", v["seconds"].as_f64().unwrap_or(0.0)),
+        info: tlf!("Current duration {seconds} s", seconds = format!("{:.2}", v["seconds"].as_f64().unwrap_or(0.0))),
     };
     ctx.data_mut(|m| m.insert_temp(draft_id(), Some(d)));
     Ok(json!({"dialog": "remixProperties"}))
@@ -47,39 +47,44 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut close = false;
     let mut apply = false;
     let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
-    egui::Window::new("Remix Properties").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        ui.set_min_width(320.0);
-        egui::Grid::new("remix-props").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
-            ui.label("Target Duration:");
-            let r = ui.add(egui::DragValue::new(&mut d.seconds).speed(0.1).range(1.0..=36_000.0).suffix(" s").max_decimals(2));
-            elems.push(("remixProperties.duration".into(), r.rect, format!("{:.2} s", d.seconds)));
-            ui.end_row();
-            ui.label("Segments:");
-            let r = ui.add(egui::Slider::new(&mut d.segments, 0.0..=100.0).step_by(1.0).text("Fewer · More"));
-            elems.push(("remixProperties.segments".into(), r.rect, format!("{:.0}", d.segments)));
-            ui.end_row();
-            ui.label("Variations:");
-            let r = ui.add(egui::Slider::new(&mut d.variations, 0.0..=100.0).step_by(1.0).text("Fewer · More"));
-            elems.push(("remixProperties.variations".into(), r.rect, format!("{:.0}", d.variations)));
-            ui.end_row();
+    egui::Window::new(tl!("Remix Properties"))
+        .id(egui::Id::new("Remix Properties"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.set_min_width(320.0);
+            egui::Grid::new("remix-props").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
+                ui.label(tl!("Target Duration:"));
+                let r = ui.add(egui::DragValue::new(&mut d.seconds).speed(0.1).range(1.0..=36_000.0).suffix(" s").max_decimals(2));
+                elems.push(("remixProperties.duration".into(), r.rect, format!("{:.2} s", d.seconds)));
+                ui.end_row();
+                ui.label(tl!("Segments:"));
+                let r = ui.add(egui::Slider::new(&mut d.segments, 0.0..=100.0).step_by(1.0).text(tl!("Fewer · More")));
+                elems.push(("remixProperties.segments".into(), r.rect, format!("{:.0}", d.segments)));
+                ui.end_row();
+                ui.label(tl!("Variations:"));
+                let r = ui.add(egui::Slider::new(&mut d.variations, 0.0..=100.0).step_by(1.0).text(tl!("Fewer · More")));
+                elems.push(("remixProperties.variations".into(), r.rect, format!("{:.0}", d.variations)));
+                ui.end_row();
+            });
+            ui.add_space(6.0);
+            let i = ui.weak(&d.info);
+            elems.push(("remixProperties.info".into(), i.rect, d.info.clone()));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let c = ui.button(tl!("Cancel"));
+                elems.push(("remixProperties.cancel".into(), c.rect, "Cancel".into()));
+                if c.clicked() {
+                    close = true;
+                }
+                let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(app.tokens.accent));
+                elems.push(("remixProperties.ok".into(), o.rect, "OK".into()));
+                if o.clicked() {
+                    apply = true;
+                }
+            });
         });
-        ui.add_space(6.0);
-        let i = ui.weak(&d.info);
-        elems.push(("remixProperties.info".into(), i.rect, d.info.clone()));
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            let c = ui.button("Cancel");
-            elems.push(("remixProperties.cancel".into(), c.rect, "Cancel".into()));
-            if c.clicked() {
-                close = true;
-            }
-            let o = ui.add(egui::Button::new(egui::RichText::new("OK").color(egui::Color32::WHITE)).fill(app.tokens.accent));
-            elems.push(("remixProperties.ok".into(), o.rect, "OK".into()));
-            if o.clicked() {
-                apply = true;
-            }
-        });
-    });
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
@@ -89,7 +94,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     if apply {
         let p = json!({"clip": d.clip, "seconds": d.seconds, "segments": d.segments, "variations": d.variations});
         match app.session.execute("clip.remix.properties", p) {
-            Ok(v) => app.ui.status = format!("Remixed to {:.2} s", v["seconds"].as_f64().unwrap_or(0.0)),
+            Ok(v) => app.ui.status = tlf!("Remixed to {seconds} s", seconds = format!("{:.2}", v["seconds"].as_f64().unwrap_or(0.0))),
             Err(e) => app.ui.status = e.to_string(),
         }
         close = true;

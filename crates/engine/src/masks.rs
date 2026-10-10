@@ -366,23 +366,34 @@ fn add_vertex(s: &mut Session, p: &Value) -> Result<Value> {
     let after = u64_p(p, "after").ok_or_else(|| bad("masks.addVertex", "need `after`"))? as usize;
     let at = p.get("at").and_then(pt).ok_or_else(|| bad("masks.addVertex", "need `at`"))?;
     edit_mask(s, p, "Add Mask Vertex", move |m, t| {
+        let n = m.path_at(t).vertices.len();
+        // clamp against the length before any insertion, so the index stays valid in the grown path
+        let i = (after + 1).min(n);
         if m.path.is_animated() && m.path.keyframes.len() > 1 {
+            if n == 0 {
+                return Err(bad("masks.addVertex", "the animated mask path has no vertices to insert after"));
+            }
             // keep every keyframe interpolable: insert the vertex into all of them
             for k in &mut m.path.keyframes {
                 if let ParamValue::Path(path) = &mut k.value {
-                    let i = (after + 1).min(path.vertices.len());
-                    let a = path.vertices[after.min(path.vertices.len() - 1)].p;
-                    let b = path.vertices[i % path.vertices.len()].p;
-                    path.vertices.insert(i, MaskVertex::corner(a.lerp(b, 0.5)));
+                    let len = path.vertices.len();
+                    if len == 0 {
+                        continue;
+                    }
+                    let at_i = i.min(len);
+                    let a = path.vertices[after.min(len - 1)].p;
+                    let b = path.vertices[at_i % len].p;
+                    path.vertices.insert(at_i, MaskVertex::corner(a.lerp(b, 0.5)));
                 }
             }
         }
         let mut path = m.path_at(t);
-        let i = (after + 1).min(path.vertices.len());
         if m.path.keyframes.len() > 1 {
-            path.vertices[i] = MaskVertex::corner(at);
+            if let Some(v) = path.vertices.get_mut(i) {
+                *v = MaskVertex::corner(at);
+            }
         } else {
-            path.vertices.insert(i, MaskVertex::corner(at));
+            path.vertices.insert(i.min(path.vertices.len()), MaskVertex::corner(at));
         }
         set_path_at(m, t, path);
         Ok(())

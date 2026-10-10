@@ -189,7 +189,7 @@ mod tests {
         let small = wav.len() as u64;
         let r = Arc::new(Counting(MemReader(Arc::from(wav.clone())), Default::default()));
         let src = open_reader_within("a.wav", r.clone(), &[], &[], small).unwrap();
-        assert_eq!(src.info().audio.as_ref().unwrap().channels, 2);
+        assert_eq!(src.info().audio().unwrap().channels, 2);
         // the same file over the limit: refused after reading the sniffing head only
         let r = Arc::new(Counting(MemReader(Arc::from(wav.clone())), Default::default()));
         let e = open_reader_within("a.wav", r.clone(), &[], &[], small - 1).err().unwrap();

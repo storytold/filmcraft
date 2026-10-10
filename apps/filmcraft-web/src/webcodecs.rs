@@ -618,4 +618,7 @@ impl MediaSource for WcSource {
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer, MediaError> {
         self.inner.audio(start, frames, sample_rate)
     }
+    fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer, MediaError> {
+        self.inner.audio_stream(stream, start, frames, sample_rate)
+    }
 }

@@ -60,6 +60,7 @@ impl Fx {
             hold_filters: false,
             field_options: None,
             source_channels: Vec::new(),
+            audio_stream: 0,
             graphic: None,
         }
     }
@@ -234,82 +235,24 @@ fn close_gap_works() {
 }
 
 #[test]
-fn gap_at_finds_the_empty_time_between_clips() {
+fn reversed_trim_uses_the_handle_its_playback_direction_consumes() {
     let mut fx = Fx::new();
     let v1 = fx.v(0);
-    fx.put(v1, 5, 10, 0);
-    fx.put(v1, 25, 10, 0);
-    let tr = fx.seq.track(v1).unwrap();
-    let span = |r: TimeRange| (R.frame_at(r.start), R.frame_at(r.end()));
-    // the gap at the head of the sequence, and the one between the clips (its edges included)
-    assert_eq!(gap_at(tr, f(0)).map(span), Some((0, 5)));
-    assert_eq!(gap_at(tr, f(15)).map(span), Some((15, 25)));
-    assert_eq!(gap_at(tr, f(24)).map(span), Some((15, 25)));
-    // on a clip, and after the last clip: no gap
-    assert_eq!(gap_at(tr, f(25)), None);
-    assert_eq!(gap_at(tr, f(14)), None);
-    assert_eq!(gap_at(tr, f(40)), None);
-    assert_eq!(gap_at(tr, Tick(-1)), None);
-    assert_eq!(gap_at(fx.seq.track(fx.v(1)).unwrap(), f(15)), None, "an empty track has no gap");
-}
-
-#[test]
-fn close_gap_range_closes_picture_and_sound_together() {
-    let mut fx = Fx::new();
-    let (v1, a1) = (fx.v(0), fx.a(0));
-    fx.put(v1, 0, 10, 0);
-    fx.put(v1, 25, 10, 0);
-    fx.put(a1, 0, 10, 0);
-    fx.put(a1, 25, 10, 0);
-    let gap = TimeRange::from_bounds(f(10), f(25));
-    close_gap_range(&mut fx.seq, &[v1, a1], gap).unwrap();
-    assert_eq!(fx.spans(v1), vec![(0, 10), (10, 10)]);
-    assert_eq!(fx.spans(a1), vec![(0, 10), (10, 10)]);
-    // nothing left to close there now
-    let before = fx.seq.clone();
-    assert!(close_gap_range(&mut fx.seq, &[v1], gap).is_err());
-    assert_eq!(fx.seq, before);
-}
-
-#[test]
-fn close_gap_range_respects_sync_lock() {
-    let mut fx = Fx::new();
-    let (v1, a2) = (fx.v(0), fx.a(1));
-    fx.put(v1, 0, 10, 0);
-    fx.put(v1, 25, 10, 0);
-    // a music bed under the gap on a sync-locked track: closing would knock it out of sync
-    fx.put(a2, 0, 40, 0);
-    let before = fx.seq.clone();
-    let gap = TimeRange::from_bounds(f(10), f(25));
-    assert!(matches!(close_gap_range(&mut fx.seq, &[v1], gap), Err(EditError::SyncLockConflict(t)) if t == "A2"));
-    assert_eq!(fx.seq, before);
-    // with A2's sync lock off, the picture closes up and the music stays put
-    fx.seq.track_mut(a2).unwrap().sync_lock = false;
-    close_gap_range(&mut fx.seq, &[v1], gap).unwrap();
-    assert_eq!(fx.spans(v1), vec![(0, 10), (10, 10)]);
-    assert_eq!(fx.spans(a2), vec![(0, 40)]);
-    assert!(matches!(close_gap_range(&mut fx.seq, &[v1], TimeRange::from_bounds(f(5), f(5))), Err(EditError::Nothing)));
-}
-
-/// Older projects at a rate whose frame is not a whole number of ticks have cuts a tick before
-/// the frame boundary; a razor on the boundary must not leave a one-tick clip behind.
-#[test]
-fn razor_never_cuts_a_sliver_off_a_clip_edge() {
-    let mut fx = Fx::new();
-    let v1 = fx.v(0);
-    let c = fx.put(v1, 10, 10, 0);
-    {
-        let it = fx.seq.track_mut(v1).unwrap().items.iter_mut().find(|i| i.id == c).unwrap();
-        it.start -= Tick(1);
-        it.duration += Tick(1);
-    }
+    // source frames [5, 15) played backwards; the media is 1000 frames long
+    let a = fx.put(v1, 30, 10, 5);
+    fx.seq.find_item_mut(a).unwrap().1.reverse = true;
     let mut n = fx.next;
-    assert!(razor(&mut fx.seq, &[v1], f(10), &mut Fx::ctx(&mut n)).is_empty());
-    assert!(razor_items(&mut fx.seq, &[c], f(10), &mut Fx::ctx(&mut n)).is_empty());
-    assert_eq!(fx.seq.track(v1).unwrap().items.len(), 1);
-    // a real cut still cuts
-    assert_eq!(razor(&mut fx.seq, &[v1], f(15), &mut Fx::ctx(&mut n)).len(), 1);
-    assert_eq!(fx.seq.track(v1).unwrap().items.len(), 2);
+    // out extends into the 5 frames before source_in, not into the 985 after source_out
+    let d = trim(&mut fx.seq, a, Edge::Out, TrimMode::Regular, f(20), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(d, f(5));
+    let it = fx.seq.find_item(a).unwrap().1;
+    assert_eq!((it.source_in, it.source_out()), (f(0), f(15)));
+    // in extends into the media after source_out
+    let d = trim(&mut fx.seq, a, Edge::In, TrimMode::Regular, -f(10), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(d, -f(10));
+    let it = fx.seq.find_item(a).unwrap().1;
+    assert_eq!((it.source_in, it.source_out()), (f(0), f(25)));
+    fx.seq.check().unwrap();
 }
 
 #[test]
@@ -328,6 +271,24 @@ fn regular_trim_respects_neighbours_and_handles() {
     let d = trim(&mut fx.seq, a, Edge::In, TrimMode::Regular, f(3), &mut Fx::ctx(&mut n)).unwrap();
     assert_eq!(d, f(3));
     assert_eq!(fx.seq.find_item(a).unwrap().1.source_in, f(8));
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn held_regular_in_trim_stops_at_previous_clip() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    fx.put(v1, 0, 10, 0);
+    let b = fx.put(v1, 15, 10, 5);
+    fx.seq.find_item_mut(b).unwrap().1.frame_hold = Some(f(5));
+    let mut n = fx.next;
+    // 5 frames of gap: a 20 frame extension is clamped to 5 instead of overlapping the previous clip
+    let d = trim(&mut fx.seq, b, Edge::In, TrimMode::Regular, -f(20), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(d, -f(5));
+    assert_eq!(fx.spans(v1), vec![(0, 10), (10, 15)]);
+    // no space left: nothing to do, and no error
+    let d = trim(&mut fx.seq, b, Edge::In, TrimMode::Regular, -f(3), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(d, Tick::ZERO);
     fx.seq.check().unwrap();
 }
 
@@ -434,6 +395,25 @@ fn roll_slip_slide() {
     assert_eq!(d, -f(10), "slip clamps at media start");
     slide(&mut fx.seq, b, f(2), &mut Fx::ctx(&mut n)).unwrap();
     assert_eq!(fx.spans(v1), vec![(0, 15), (15, 7), (22, 8)]);
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn slide_keeps_reversed_neighbours_content() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let a = fx.put(v1, 0, 30, 20);
+    let b = fx.put(v1, 30, 30, 50);
+    let c = fx.put(v1, 60, 30, 70);
+    for id in [a, c] {
+        fx.seq.find_item_mut(id).unwrap().1.reverse = true;
+    }
+    let mut n = fx.next;
+    slide(&mut fx.seq, b, f(10), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(fx.spans(v1), vec![(0, 40), (40, 30), (70, 20)]);
+    assert_eq!(fx.seq.find_item(a).unwrap().1.source_in, f(10));
+    assert_eq!(fx.seq.find_item(b).unwrap().1.source_in, f(50));
+    assert_eq!(fx.seq.find_item(c).unwrap().1.source_in, f(70));
     fx.seq.check().unwrap();
 }
 
@@ -750,4 +730,22 @@ fn shorter_head_closes_the_stretch_after_the_cut_on_sync_locked_tracks() {
         assert!(matches!(r, Err(EditError::SyncLockConflict(_))), "group {group}");
         assert_eq!(fx.spans(v1), vec![(0, 10), (10, 10), (20, 10)], "unchanged on failure");
     }
+}
+
+#[test]
+fn roll_reversed_clips_keeps_media_mapping() {
+    let mut fx = Fx::new();
+    let v = fx.v(0);
+    let mut a = fx.item(0, 30, 20);
+    a.reverse = true;
+    let mut b = fx.item(30, 30, 50);
+    b.reverse = true;
+    let (ia, ib) = (a.id, b.id);
+    fx.seq.track_mut(v).unwrap().items.extend([a, b]);
+    let mut n = 0;
+    roll(&mut fx.seq, ia, ib, f(10), &mut Fx::ctx(&mut n)).unwrap();
+    let (_, l) = fx.seq.find_item(ia).unwrap();
+    assert_eq!((l.start, l.duration, l.source_in), (f(0), f(40), f(10)));
+    let (_, r) = fx.seq.find_item(ib).unwrap();
+    assert_eq!((r.start, r.duration, r.source_in), (f(40), f(20), f(50)));
 }

@@ -147,7 +147,7 @@ impl ImageSequenceSource {
                 bitrate: None,
                 hdr: None,
             }),
-            audio: None,
+            audio_streams: Vec::new(),
             container: "Image Sequence".into(),
             start_timecode: None,
             file_size: None,

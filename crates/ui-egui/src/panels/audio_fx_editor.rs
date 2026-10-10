@@ -172,8 +172,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             close.push(target);
             continue;
         }
-        let name = inst.def().map(|d| d.name).unwrap_or("Effect");
-        let kind = if matches!(target, FxTarget::Clip { .. }) { "Clip Fx Editor" } else { "Track Fx Editor" };
+        let name = inst.def().map_or(tl!("Effect"), |d| crate::i18n::t(d.name));
+        let kind = if matches!(target, FxTarget::Clip { .. }) { tl!("Clip Fx Editor") } else { tl!("Track Fx Editor") };
         let title = format!("{kind} - {name}: {place}");
         let k = key(&target);
         let drafts_id = egui::Id::new(("fx-editor-drafts", &k));
@@ -191,7 +191,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             ui.separator();
             ui.horizontal(|ui| {
-                let r = ui.button("Close");
+                let r = ui.button(tl!("Close"));
                 ed.auto(format!("fxEditor.{}.close", ed.fx), r.rect, "Close");
                 if r.clicked() {
                     closed = true;
@@ -256,10 +256,10 @@ fn response_plot(ui: &mut egui::Ui, ed: &mut Ed, size: egui::Vec2, range: f64) -
     let (r, resp) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let p = ui.painter_at(r);
     let t = &ed.t;
-    p.rect_filled(r, 2.0, Color32::from_gray(0x18));
+    p.rect_filled(r, 2.0, ed.t.plot_bg);
     for f in [50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0] {
         let x = x_of(f, r);
-        p.line_segment([pos2(x, r.min.y), pos2(x, r.max.y)], Stroke::new(1.0, Color32::from_gray(0x2c)));
+        p.line_segment([pos2(x, r.min.y), pos2(x, r.max.y)], Stroke::new(1.0, ed.t.plot_grid));
         let label = if f >= 1000.0 { format!("{}k", f / 1000.0) } else { format!("{f}") };
         p.text(pos2(x + 2.0, r.max.y - 2.0), Align2::LEFT_BOTTOM, label, Tokens::ui(9.0), t.text_faint);
     }
@@ -267,7 +267,7 @@ fn response_plot(ui: &mut egui::Ui, ed: &mut Ed, size: egui::Vec2, range: f64) -
     let mut d = -range;
     while d <= range + 1e-9 {
         let y = y_of(d, r, range);
-        let col = if d.abs() < 1e-9 { Color32::from_gray(0x44) } else { Color32::from_gray(0x2c) };
+        let col = if d.abs() < 1e-9 { ed.t.plot_axis } else { ed.t.plot_grid };
         p.line_segment([pos2(r.min.x, y), pos2(r.max.x, y)], Stroke::new(1.0, col));
         p.text(pos2(r.min.x + 2.0, y - 1.0), Align2::LEFT_BOTTOM, format!("{d:+.0}"), Tokens::ui(9.0), t.text_faint);
         d += step;
@@ -313,7 +313,7 @@ fn parametric(ui: &mut egui::Ui, ed: &mut Ed) {
         let id = egui::Id::new(("peq-node", ed.target.clone(), pre));
         let resp = ui.interact(nr, id, Sense::click_and_drag());
         let on = ed.on(&on_id);
-        let col = if on { Color32::from_rgb(0xe8, 0xe8, 0xe8) } else { Color32::from_gray(0x70) };
+        let col = if on { ed.t.eq_node } else { ed.t.eq_node_off };
         ui.painter().circle_stroke(c, 7.0, Stroke::new(1.5, col));
         ui.painter().text(c, Align2::CENTER_CENTER, label, Tokens::ui(8.5), col);
         ed.auto(format!("fxEditor.{}.node.{pre}", ed.fx), nr, label);
@@ -352,7 +352,7 @@ fn parametric(ui: &mut egui::Ui, ed: &mut Ed) {
             ed.toggle(ui, &format!("{pre}_on"), label);
         }
     });
-    ed.slider(ui, "master_gain", "Master Gain", false);
+    ed.slider(ui, "master_gain", tl!("Master Gain"), false);
 }
 
 // --------------------------------------------------------------------------- graphic EQ
@@ -377,14 +377,14 @@ fn graphic(ui: &mut egui::Ui, ed: &mut Ed) {
         let pid = format!("b{}", i + 1);
         let x = area.min.x + colw * (i as f32 + 0.5);
         let track = Rect::from_center_size(pos2(x, area.min.y + 70.0), vec2(6.0, 130.0));
-        ui.painter().rect_filled(track, 2.0, Color32::from_gray(0x30));
-        ui.painter().line_segment([pos2(x - 5.0, track.center().y), pos2(x + 5.0, track.center().y)], Stroke::new(1.0, Color32::from_gray(0x60)));
+        ui.painter().rect_filled(track, 2.0, ed.t.eq_track);
+        ui.painter().line_segment([pos2(x - 5.0, track.center().y), pos2(x + 5.0, track.center().y)], Stroke::new(1.0, ed.t.eq_tick));
         let v = ed.v(&pid);
         let ky = track.center().y - (v / 24.0) as f32 * track.height() * 0.5;
         let knob = Rect::from_center_size(pos2(x, ky), vec2(colw.min(18.0), 8.0));
         let id = egui::Id::new(("geq-band", ed.target.clone(), i));
         let resp = ui.interact(knob.union(track).expand(3.0), id, Sense::click_and_drag());
-        ui.painter().rect_filled(knob, 2.0, if resp.hovered() || resp.dragged() { Color32::from_gray(0xf0) } else { Color32::from_gray(0xc0) });
+        ui.painter().rect_filled(knob, 2.0, if resp.hovered() || resp.dragged() { ed.t.eq_knob_active } else { ed.t.eq_knob });
         ui.painter().text(pos2(x, area.max.y - 22.0), Align2::CENTER_CENTER, format!("{v:+.0}"), Tokens::ui(8.5), ed.t.text_dim);
         let short = label.replace(" Hz", "").replace(" kHz", "k");
         ui.painter().text(pos2(x, area.max.y - 8.0), Align2::CENTER_CENTER, short, Tokens::ui(8.5), ed.t.text_faint);
@@ -404,8 +404,8 @@ fn graphic(ui: &mut egui::Ui, ed: &mut Ed) {
         }
     }
     ui.horizontal(|ui| {
-        ed.slider(ui, "gain", "Master Gain", false);
-        let r = ui.button("Reset");
+        ed.slider(ui, "gain", tl!("Master Gain"), false);
+        let r = ui.button(tl!("Reset"));
         ed.auto(format!("fxEditor.{}.reset", ed.fx), r.rect, "Reset");
         if r.clicked() {
             for i in 0..n {
@@ -423,14 +423,14 @@ fn graphic(ui: &mut egui::Ui, ed: &mut Ed) {
 fn transfer_plot(ui: &mut egui::Ui, ed: &mut Ed, size: f32, band: usize, auto: String) {
     let (r, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
     let p = ui.painter_at(r);
-    p.rect_filled(r, 2.0, Color32::from_gray(0x18));
+    p.rect_filled(r, 2.0, ed.t.plot_bg);
     let lo = -60.0;
     let map = |x: f64, y: f64| pos2(r.min.x + ((x - lo) / -lo) as f32 * r.width(), r.max.y - (((y - lo) / -lo).clamp(-0.05, 1.05)) as f32 * r.height());
     for d in [-48.0, -36.0, -24.0, -12.0] {
-        p.line_segment([map(d, lo), map(d, 0.0)], Stroke::new(1.0, Color32::from_gray(0x2c)));
-        p.line_segment([map(lo, d), map(0.0, d)], Stroke::new(1.0, Color32::from_gray(0x2c)));
+        p.line_segment([map(d, lo), map(d, 0.0)], Stroke::new(1.0, ed.t.plot_grid));
+        p.line_segment([map(lo, d), map(0.0, d)], Stroke::new(1.0, ed.t.plot_grid));
     }
-    p.line_segment([map(lo, lo), map(0.0, 0.0)], Stroke::new(1.0, Color32::from_gray(0x44)));
+    p.line_segment([map(lo, lo), map(0.0, 0.0)], Stroke::new(1.0, ed.t.plot_axis));
     if let Some(dsp) = filmcraft_render::audio_fx::configured(&ed.preview(), ed.mt, 48000) {
         let pts: Vec<Pos2> = (0..=120)
             .filter_map(|i| {
@@ -440,8 +440,8 @@ fn transfer_plot(ui: &mut egui::Ui, ed: &mut Ed, size: f32, band: usize, auto: S
             .collect();
         p.add(egui::Shape::line(pts, Stroke::new(1.5, Color32::from_rgb(0xff, 0xb3, 0x47))));
     }
-    p.text(r.left_top() + vec2(3.0, 2.0), Align2::LEFT_TOP, "out", Tokens::ui(8.5), ed.t.text_faint);
-    p.text(r.right_bottom() - vec2(3.0, 2.0), Align2::RIGHT_BOTTOM, "in", Tokens::ui(8.5), ed.t.text_faint);
+    p.text(r.left_top() + vec2(3.0, 2.0), Align2::LEFT_TOP, tl!("out"), Tokens::ui(8.5), ed.t.text_faint);
+    p.text(r.right_bottom() - vec2(3.0, 2.0), Align2::RIGHT_BOTTOM, tl!("in"), Tokens::ui(8.5), ed.t.text_faint);
     ed.auto(auto, r, "Transfer curve");
 }
 
@@ -450,7 +450,7 @@ fn transfer_plot(ui: &mut egui::Ui, ed: &mut Ed, size: f32, band: usize, auto: S
 fn multiband(ui: &mut egui::Ui, ed: &mut Ed) {
     // Spectrum strip with draggable crossover handles.
     let (r, _) = ui.allocate_exact_size(vec2(640.0, 70.0), Sense::hover());
-    ui.painter().rect_filled(r, 2.0, Color32::from_gray(0x18));
+    ui.painter().rect_filled(r, 2.0, ed.t.plot_bg);
     let cols =
         [Color32::from_rgb(0x3d, 0x6e, 0xb4), Color32::from_rgb(0x3d, 0xa0, 0x6e), Color32::from_rgb(0xb4, 0x9a, 0x3d), Color32::from_rgb(0xb4, 0x4f, 0x3d)];
     let xo = [ed.v("xo1"), ed.v("xo2"), ed.v("xo3")];
@@ -458,13 +458,14 @@ fn multiband(ui: &mut egui::Ui, ed: &mut Ed) {
     for b in 0..4 {
         let br = Rect::from_min_max(pos2(edges[b], r.min.y), pos2(edges[b + 1], r.max.y));
         ui.painter().rect_filled(br.shrink2(vec2(0.0, 8.0)), 0.0, cols[b].gamma_multiply(0.35));
-        ui.painter().text(br.center(), Align2::CENTER_CENTER, format!("Band {}", b + 1), Tokens::ui(10.0), ed.t.text);
+        ui.painter().text(br.center(), Align2::CENTER_CENTER, tlf!("Band {n}", n = b + 1), Tokens::ui(10.0), ed.t.text);
     }
     for (k, pid) in ["xo1", "xo2", "xo3"].iter().enumerate() {
         let x = edges[k + 1];
         let hr = Rect::from_center_size(pos2(x, r.center().y), vec2(10.0, r.height()));
         let resp = ui.interact(hr, egui::Id::new(("mb-xo", ed.target.clone(), k)), Sense::drag());
-        ui.painter().line_segment([pos2(x, r.min.y), pos2(x, r.max.y)], Stroke::new(if resp.hovered() || resp.dragged() { 2.5 } else { 1.5 }, Color32::WHITE));
+        ui.painter()
+            .line_segment([pos2(x, r.min.y), pos2(x, r.max.y)], Stroke::new(if resp.hovered() || resp.dragged() { 2.5 } else { 1.5 }, ed.t.crossover_handle));
         ui.painter().text(pos2(x + 3.0, r.min.y + 2.0), Align2::LEFT_TOP, format!("{:.0} Hz", xo[k]), Tokens::ui(9.0), ed.t.text_dim);
         ed.auto(format!("fxEditor.{}.{pid}", ed.fx), hr, "Crossover");
         if resp.dragged()
@@ -483,29 +484,29 @@ fn multiband(ui: &mut egui::Ui, ed: &mut Ed) {
         for b in 1..=4 {
             ui.vertical(|ui| {
                 ui.set_width(150.0);
-                ui.label(egui::RichText::new(format!("Band {b}")).strong());
+                ui.label(egui::RichText::new(tlf!("Band {n}", n = b)).strong());
                 transfer_plot(ui, ed, 110.0, b - 1, format!("fxEditor.{}.curve.{b}", ed.fx));
                 ui.horizontal(|ui| {
-                    ed.toggle(ui, &format!("b{b}_solo"), "Solo");
-                    ed.toggle(ui, &format!("b{b}_bypass"), "Bypass");
+                    ed.toggle(ui, &format!("b{b}_solo"), tl!("Solo"));
+                    ed.toggle(ui, &format!("b{b}_bypass"), tl!("Bypass"));
                 });
-                ed.slider(ui, &format!("b{b}_threshold"), "Thr", false);
-                ed.slider(ui, &format!("b{b}_ratio"), "Ratio", false);
-                ed.slider(ui, &format!("b{b}_attack"), "Att", true);
-                ed.slider(ui, &format!("b{b}_release"), "Rel", true);
-                ed.slider(ui, &format!("b{b}_gain"), "Gain", false);
+                ed.slider(ui, &format!("b{b}_threshold"), tl!("Thr"), false);
+                ed.slider(ui, &format!("b{b}_ratio"), tl!("Ratio"), false);
+                ed.slider(ui, &format!("b{b}_attack"), tl!("Att"), true);
+                ed.slider(ui, &format!("b{b}_release"), tl!("Rel"), true);
+                ed.slider(ui, &format!("b{b}_gain"), tl!("Gain"), false);
             });
         }
     });
     ui.separator();
     ui.horizontal(|ui| {
-        ed.slider(ui, "output", "Output Gain", false);
-        ed.toggle(ui, "lim_on", "Limiter");
-        ed.toggle(ui, "link", "Link Channels");
+        ed.slider(ui, "output", tl!("Output Gain"), false);
+        ed.toggle(ui, "lim_on", tl!("Limiter"));
+        ed.toggle(ui, "link", tl!("Link Channels"));
     });
     ui.horizontal(|ui| {
-        ed.slider(ui, "lim_threshold", "Limiter Threshold", false);
-        ed.slider(ui, "lim_release", "Limiter Release", true);
+        ed.slider(ui, "lim_threshold", tl!("Limiter Threshold"), false);
+        ed.slider(ui, "lim_release", tl!("Limiter Release"), true);
     });
 }
 
@@ -516,34 +517,34 @@ fn dynamics(ui: &mut egui::Ui, ed: &mut Ed) {
         transfer_plot(ui, ed, 220.0, 0, format!("fxEditor.{}.curve", ed.fx));
         ui.vertical(|ui| {
             ui.set_width(330.0);
-            ed.toggle(ui, "gate_on", "Auto Gate");
-            ed.slider(ui, "gate_threshold", "Threshold", false);
-            ed.slider(ui, "gate_attack", "Attack", true);
-            ed.slider(ui, "gate_release", "Release", true);
-            ed.slider(ui, "gate_hold", "Hold", false);
+            ed.toggle(ui, "gate_on", tl!("Auto Gate"));
+            ed.slider(ui, "gate_threshold", tl!("Threshold"), false);
+            ed.slider(ui, "gate_attack", tl!("Attack"), true);
+            ed.slider(ui, "gate_release", tl!("Release"), true);
+            ed.slider(ui, "gate_hold", tl!("Hold"), false);
             ui.separator();
-            ed.toggle(ui, "comp_on", "Compressor");
-            ed.slider(ui, "comp_threshold", "Threshold", false);
-            ed.slider(ui, "comp_ratio", "Ratio", false);
-            ed.slider(ui, "comp_attack", "Attack", true);
-            ed.slider(ui, "comp_release", "Release", true);
+            ed.toggle(ui, "comp_on", tl!("Compressor"));
+            ed.slider(ui, "comp_threshold", tl!("Threshold"), false);
+            ed.slider(ui, "comp_ratio", tl!("Ratio"), false);
+            ed.slider(ui, "comp_attack", tl!("Attack"), true);
+            ed.slider(ui, "comp_release", tl!("Release"), true);
             ui.horizontal(|ui| {
-                ed.toggle(ui, "comp_auto", "Auto Makeup");
+                ed.toggle(ui, "comp_auto", tl!("Auto Makeup"));
             });
-            ed.slider(ui, "comp_makeup", "Makeup", false);
+            ed.slider(ui, "comp_makeup", tl!("Makeup"), false);
         });
         ui.vertical(|ui| {
             ui.set_width(330.0);
-            ed.toggle(ui, "exp_on", "Expander");
-            ed.slider(ui, "exp_threshold", "Threshold", false);
-            ed.slider(ui, "exp_ratio", "Ratio", false);
+            ed.toggle(ui, "exp_on", tl!("Expander"));
+            ed.slider(ui, "exp_threshold", tl!("Threshold"), false);
+            ed.slider(ui, "exp_ratio", tl!("Ratio"), false);
             ui.separator();
-            ed.toggle(ui, "lim_on", "Limiter");
-            ed.slider(ui, "lim_threshold", "Threshold", false);
-            ed.slider(ui, "lim_release", "Release", true);
-            ed.toggle(ui, "soft_clip", "Soft Clip");
+            ed.toggle(ui, "lim_on", tl!("Limiter"));
+            ed.slider(ui, "lim_threshold", tl!("Threshold"), false);
+            ed.slider(ui, "lim_release", tl!("Release"), true);
+            ed.toggle(ui, "soft_clip", tl!("Soft Clip"));
             ui.separator();
-            ed.slider(ui, "output", "Output Gain", false);
+            ed.slider(ui, "output", tl!("Output Gain"), false);
         });
     });
 }

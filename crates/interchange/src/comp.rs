@@ -191,7 +191,7 @@ struct Exporter<'a> {
     p: &'a Project,
     media: &'a MediaOptions,
     doc: Document,
-    memo: HashMap<(String, CKind, Option<u32>), usize>,
+    memo: HashMap<(String, CKind, usize, Option<u32>), usize>,
     report: &'a mut Report,
     seq_rate: FrameRate,
     nests: Nests,
@@ -307,7 +307,7 @@ impl Exporter<'_> {
         if ckind == CKind::Sound
             && let Some(e) = self.media.essence_for(clip_key, channel).cloned()
         {
-            let memo_key = (format!("clip:{}", c.id.0), ckind, channel);
+            let memo_key = (format!("clip:{}", c.id.0), ckind, 0, channel);
             if let Some(&i) = self.memo.get(&memo_key) {
                 return Some(i);
             }
@@ -346,7 +346,7 @@ impl Exporter<'_> {
             self.report.warn(format!("the sound of the nested sequence \"{name}\" was not rendered (left as a gap)"));
             return None;
         }
-        let memo_key = (format!("seq:{}", item.0), ckind, channel);
+        let memo_key = (format!("seq:{}", item.0), ckind, 0, channel);
         if let Some(&i) = self.memo.get(&memo_key) {
             return Some(i);
         }
@@ -429,21 +429,29 @@ impl Exporter<'_> {
         // the source channel this slot plays when broken out to mono
         let channel = sub.map(|s| c.source_channels.get(s as usize).map(|&x| x as u32).unwrap_or(s));
         let clip_key = EssenceKey::Clip(c.id);
-        let media_key = EssenceKey::Media(item);
+        let media_key = EssenceKey::media(item, c.audio_stream);
         let ess = (ckind == CKind::Sound)
             .then(|| self.media.essence_for(clip_key, channel).or_else(|| self.media.essence_for(media_key, channel)))
             .flatten()
             .cloned();
         let key = match &ess {
             Some(e) if e.key == clip_key => format!("clip:{}", c.id.0),
+            _ if ckind == CKind::Sound && c.audio_stream > 0 => format!("item:{}:stream:{}", item.0, c.audio_stream),
             _ => format!("item:{}", item.0),
         };
-        let memo_key = (key.clone(), ckind, channel);
+        // Original linked file locators cannot name a container stream. Leave an explicit
+        // unsupported-feature report rather than reference its first audio stream.
+        if ckind == CKind::Sound && c.audio_stream > 0 && ess.is_none() {
+            self.report.warn("selected container audio streams require separate or embedded audio essence (left as gaps)");
+            return None;
+        }
+        let stream = if ckind == CKind::Sound { c.audio_stream } else { 0 };
+        let memo_key = (key.clone(), ckind, stream, channel);
         if let Some(&i) = self.memo.get(&memo_key) {
             return Some(i);
         }
         let video = m.info.video.as_ref();
-        let audio = m.info.audio.as_ref();
+        let audio = m.info.audio_streams.get(c.audio_stream);
         let still = m.info.kind == MediaKind::Still;
         match ckind {
             CKind::Picture if video.is_none() && !still => return None,

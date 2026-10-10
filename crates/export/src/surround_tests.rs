@@ -46,7 +46,7 @@ fn surround() -> (Arc<Project>, ItemId, SourceMap) {
         kind: MediaKind::AudioOnly,
         duration: Tick(2 * TICKS_PER_SECOND),
         video: None,
-        audio: Some(AudioStreamInfo { sample_rate: SR, channels: 6, codec: "test".into(), bits_per_sample: Some(32) }),
+        audio_streams: vec![AudioStreamInfo { sample_rate: SR, channels: 6, codec: "test".into(), bits_per_sample: Some(32) }],
         container: "test".into(),
         start_timecode: None,
         file_size: None,
@@ -185,7 +185,7 @@ fn aac_51_in_mp4_keeps_every_channel_in_place() {
     // our own demuxer sees an AAC track with channel configuration 6
     let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
     let src = filmcraft_codecs::open_bytes("s51.mp4", bytes).unwrap();
-    assert_eq!(src.info().audio.as_ref().unwrap().channels, 6);
+    assert_eq!(src.info().audio().unwrap().channels, 6);
     if let Some((n, layout)) = probe(&path) {
         assert_eq!(n, 6);
         assert!(is_51(&layout), "{layout}");

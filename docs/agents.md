@@ -33,21 +33,22 @@ claude mcp add filmcraft-headless -- /abs/path/filmcraft/target/release/filmcraf
 { "mcpServers": { "filmcraft": { "command": "/abs/path/filmcraft-cli", "args": ["mcp", "--bridge", "127.0.0.1:9876"] } } }
 ```
 
-**Your own FilmCraft, for every agent.** The macOS app bundle ships the CLI next to the app
-(`FilmCraft.app/Contents/MacOS/filmcraft-cli`), so one registration serves every Claude Code session:
+### From an installed release
+
+The release packages ship `filmcraft-cli` alongside the desktop app, so no build is needed:
+
+| Install | CLI |
+|---|---|
+| Windows (MSI) | `C:\Program Files\FilmCraft\filmcraft-cli.exe` by default (wherever you installed it otherwise), not on `PATH` |
+| Linux (deb, rpm) | `/usr/bin/filmcraft-cli` |
+| macOS | the separate `filmcraft-cli-<version>-macos-<arch>.zip` release asset (the `.app` holds only the desktop app) |
 
 ```sh
-claude mcp add -s user filmcraft -- /Applications/FilmCraft.app/Contents/MacOS/filmcraft-cli mcp --bridge 127.0.0.1:9876
+# Windows, default install folder
+claude mcp add filmcraft -- "C:\Program Files\FilmCraft\filmcraft-cli.exe" mcp
+# Linux, or macOS with the CLI unzipped onto PATH
+claude mcp add filmcraft -- filmcraft-cli mcp
 ```
-
-- **Settings ▸ Agents ▸ Let AI agents control FilmCraft** starts the control server every time
-  FilmCraft starts (`agents.controlServer`, port `agents.controlPort`, default 9876; off by default:
-  it listens on 127.0.0.1 only and has no password). `--control <port>` overrides it for one run.
-- **The bridge starts FilmCraft when it isn't running**: on the first call that finds no app, it
-  launches the app it belongs to (the enclosing `FilmCraft.app`, a sibling `filmcraft` binary, or
-  `FILMCRAFT_APP`) with `--control <port>` and waits up to 45 s for it to answer. An app that is
-  already running without the control server can't be reached: the error says to turn on Settings ▸
-  Agents.
 
 ### Tools
 
@@ -60,7 +61,7 @@ claude mcp add -s user filmcraft -- /Applications/FilmCraft.app/Contents/MacOS/f
 | `render_preview` | both | same as `render_frame` |
 | `project_inspect` | both | bins and items with ids, types, durations; active sequence |
 | `sequence_inspect` | both | the active sequence: tracks, clips (`start` / `end` and `sourceIn` / `sourceOut` in ticks, frames, `speed`, `reverse`: the clip plays its `sourceIn` to `sourceOut` stretch backward, `gainDb`), effects, transitions, markers (name and `comment`), playhead, selection |
-| `media_import` | both | import files by absolute path (`text`, one path per line) |
+| `media_import` | both | import files by absolute path (`paths`, an array; optional `bin`, `image_sequence`) |
 | `render_frame` | both | PNG of the program frame at `seconds` (headless renders; bridge screenshots the Program monitor). Read-only: the playhead and selection are left as they were |
 | `ui_inspect` | bridge | UI state: tool, workspace, panels, zoom, playback, fps |
 | `ui_elements` | bridge | on-screen interactive elements with id, label and rect (`prefix` filter) |
@@ -70,46 +71,9 @@ claude mcp add -s user filmcraft -- /Applications/FilmCraft.app/Contents/MacOS/f
 | `ui_type` | bridge | type text into the focused field |
 | `ui_screenshot` | bridge | PNG of the window or one `panel` |
 | `ui_control` | bridge | call any control-channel method directly (`ui.set`, `ui.scroll`, `ui.timeline.locate`, …) |
-| `ui_map` | both | the map of every button, field and menu command: where it is, how to make it visible, what it does, the command behind it (`prefix`, `panel`, `kind`, `query`, `limit`, `offset`); see below |
 
 Typical loop: `project_inspect` / `sequence_inspect` → get ids → `command_run` → `render_frame` or
 `ui_screenshot` → look at the result → `edit.undo` if it's wrong.
-
-### Every button: `ui_map`, then `ui_click`
-
-`ui_map` (both modes, offline) searches [ui-map.json](ui-map.json): every automation element of the
-window and every menu-bar command, written by a crawler that clicks each one on a fresh copy of the
-demo project ([ui-map.md](ui-map.md) has the coverage). Filter by `prefix`, `panel` (`Timeline`,
-`Export mode`, `Dialog: Add Tracks`, `Menu: Clip`…; part of the name is enough), `kind` and
-free-text `query`; 40 entries per call (`limit` up to 500, `offset` to page). Each entry has:
-
-- `id`, `label`, `panel`, `kind` (button, toggle, checkbox, dropdown, option, menu, menu-item, tab,
-  field, number, slider, handle, area, link);
-- `reach`: the steps from a fresh start that make it visible, e.g. `["ui.panel.show EffectControls"]`
-  or `["command_run timeline.select {\"clips\":[<a video clip>]}", "ui.panel.show EffectControls"]`;
-- `effect`: what a click did on the demo project (`opens dialog addTracks`, `sets ui.tool`,
-  `runs timeline.setTrack; edits the project (undo: Track Settings)`, `none`…);
-- `command`: the engine command behind it, when there is one; `close`: how to dismiss what it opens;
-  `rightClick`: what a right-click opens; `examples`: real ids of a family such as
-  `timeline.clip.{clip}` or `mixer.{track}.mute`.
-
-To press any button:
-
-1. `ui_map {query: "…"}` (or `panel` / `prefix`) and pick the entry.
-2. If it has a `command`, run `command_run {id: command, params}` (`command_list` documents the
-   params; a menu command without params opens its dialog in the app, as the menu does). Done.
-3. Otherwise run its `reach` steps in order: `ui.panel.show P` and `ui.set mode=M` with
-   `ui_control`, `ui.menu.invoke C` and `command_run …` with `command_run`, `ui.click X` with
-   `ui_click`.
-4. For a family id (`{clip}`, `{item}`, `{track}`, `{name}`…), take the real id from
-   `ui_elements {prefix}`.
-5. `ui_click {id}`; then `ui_type` for a `field` / `number`, or `ui_drag` for a `slider` / `handle`.
-   If it fails with "a dialog is open", answer that dialog first (the error names its buttons).
-6. Check the result (`ui_inspect`, `sequence_inspect`, `ui_screenshot`); `close` gets rid of a
-   dialog or menu the click opened.
-
-After changing the UI, regenerate the map: `cargo test -p filmcraft-ui-egui --test ui_map_crawl --
---ignored` (a few minutes; it rewrites `docs/ui-map.json` and `docs/ui-map.md`).
 
 ### Conventions
 
@@ -158,28 +122,6 @@ progress and stop it:
 - Bridge mode works the same way: the export runs as an app job (the app stays responsive and shows
   "Exporting… NN%" in its status bar) and the call returns when it is written, however long it
   takes. `filmcraft-cli --bridge … exec file.exportMedia … wait=true` blocks the same way.
-- **Transcription is a long job too.** `transcript.generate` (download the model if needed, load,
-  transcribe, map the voice) and `transcript.findPauses` wait for the job by default in both modes,
-  with the same progress notifications and cancellation (`transcript.cancel`); pass `"wait": false`
-  to get the job back at once. See [transcripts.md](transcripts.md).
-
-### Dialogs, and clicks that land
-
-A UI click either does what it names or fails with a reason; it never reports success after
-landing on something else.
-
-- **Modal dialogs.** A modal (Recover Unsaved Changes on launch after a crash, Settings) takes every
-  click and keystroke. `ui_inspect` reports it as `modal: {rect, elements: [{id, label}]}` (`null`
-  when none is open). A `ui_click` on anything outside it fails with ``a dialog is open and blocks
-  `panel.tab.Project`; answer it first: recovery.later (Not Now), …``. Check `modal` after the app starts. While a
-  modal is open, keyboard shortcuts don't run (a Delete behind Settings would have edited the
-  timeline you can't see); `command_run` still works.
-- **Dialog windows** (Add Tracks, Sequence Settings, …) cover the panels under them: a click on a
-  covered panel element fails with `<id> is covered by a dialog; close it first: …`.
-- **Settled targets.** `ui_click`/`ui_drag` wait (up to 3 s) until the element has been drawn at the
-  same place in two consecutive frames. A list that has just opened (its first frame is an
-  invisible sizing pass that takes no clicks) or a panel still laying out is clicked once it's
-  ready, so back-to-back clicks such as "open the dropdown, pick an option" land every time.
 
 ## 2. Control channel
 
@@ -251,6 +193,7 @@ filmcraft-cli describe timeline.razor            # one command: menu, shortcut, 
 filmcraft-cli --demo inspect sequence            # project / sequence as JSON
 filmcraft-cli --project p.fcproj --save exec timeline.razor seconds=3.5
 filmcraft-cli --project p.fcproj exec effects.apply '{"effect":"Gaussian Blur"}'
+filmcraft-cli --project p.fcproj exec markers.exportCsv path=review.csv
 filmcraft-cli --project p.fcproj --save import a.mov b.wav
 filmcraft-cli --project p.fcproj export out.mp4  # format from the extension; waits for the job
 filmcraft-cli --project p.fcproj export out --preset "YouTube 1080p Full HD" --start 0 --end 10
@@ -264,6 +207,22 @@ filmcraft-cli --bridge 127.0.0.1:9876 exec window.workspace.color   # the runnin
 strings; dotted keys nest (`color.r=1`). `run` prints one JSON line per command
 (`{"line","id","ok","result"|"error"}`) and stops at the first failure unless `--keep-going`.
 `--save` writes back to `--project`; `--save-as path` writes elsewhere.
+
+`markers.exportCsv {path}` exports all markers in the active sequence, including colours hidden
+in the UI and markers outside In/Out, sorted by start then id. The UTF-8 CSV has a header and CRLF
+records; quotes, commas and embedded newlines are escaped. Columns are Sequence, Marker ID, Name,
+Comment, Kind, Color, Start Timecode, End Timecode, Duration Frames, Start Ticks, Duration Ticks and
+Frame Rate (exact numerator/denominator). Color uses the user's display label from Settings ▸
+Labels. Timecodes include the sequence's start timecode and
+drop-frame setting; End is exclusive, and a point marker's End equals Start. Duration Frames is
+rounded down; tick columns preserve sub-frame timing (254016000000 ticks per second).
+An empty sequence writes just the header. User text starting with a spreadsheet formula character
+(`=`, `+`, `-`, `@`, including after whitespace) gets a leading apostrophe in the exported cell.
+The export leaves the project, dirty flag and undo history untouched, works with locked tracks,
+and uses the host's file service (atomic
+on desktop, a download on web). It exports sequence markers only, not clip/source markers;
+reports are limited to 100000 markers and a conservative 16 MiB output budget. Invalid timing or a
+failed write reports an error. The menu opens the normal save dialog; cancelling writes nothing.
 
 ## 3. Verifying UI work
 

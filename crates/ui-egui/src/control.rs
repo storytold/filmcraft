@@ -499,6 +499,7 @@ pub fn inspect(app: &FilmcraftApp, ctx: &egui::Context) -> Value {
         "pixelsPerPoint": ctx.pixels_per_point(),
         "fps": app.fps,
         "ui": app.ui,
+        "sourcePlayback": {"playing": app.source_playback.clock.playing, "audioClock": app.source_playback.clock.audio_clock, "playhead": app.session.state.source_playhead.0},
         "playback": {"playing": app.playback.playing, "speed": app.playback.speed, "loop": app.playback.looping, "audioClock": app.playback.audio_clock, "dropped": app.playback.meter.counts().1, "shown": app.playback.meter.counts().0, "preroll": app.playback.preroll.is_some()},
         "playhead": app.session.playhead().0,
         "activeSequence": app.session.state.active_sequence.map(|i| i.0),

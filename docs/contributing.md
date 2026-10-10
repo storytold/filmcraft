@@ -90,6 +90,15 @@ FilmCraft uses its bundled and system fonts. A `CRAFT_FONTS_DIR` that is not a c
 warning, or an error with `CRAFT_FONTS_REQUIRED=1` (release builds set both). Tests on these fonts'
 glyphs skip when it is empty; when you touch fonts, run the gates both with and without it.
 
+Chinese media names and track labels use the `Hans` / `Hant` craft-fonts faces after the Japanese
+fallbacks in every UI font family, regardless of interface language (Japanese and Chinese share code
+points, so Japanese text keeps Japanese glyph forms; the Chinese faces cover hanzi the Japanese ones lack). Without those build inputs,
+native builds look up an installed Chinese face (for example Microsoft YaHei or Noto Sans CJK SC)
+once and reuse it across theme changes. No system font files are bundled or copied into the app.
+Web builds depend on the font faces selected by `crates/text/build.rs`; they cannot scan system fonts.
+`theme::tests::chinese_names_render_in_every_theme_and_font_family` verifies Chinese glyphs in the
+timeline's proportional, monospace, medium and semibold families under all three themes.
+
 ## 3. Quality gates
 
 Every commit must pass all of these:

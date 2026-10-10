@@ -110,7 +110,7 @@ impl OggSource {
             kind: MediaKind::AudioOnly,
             duration: Tick::from_units(frames, rate as i64),
             video: None,
-            audio: Some(AudioStreamInfo { sample_rate: rate, channels: channels.max(1), codec: codec.into(), bits_per_sample: None }),
+            audio_streams: vec![AudioStreamInfo { sample_rate: rate, channels: channels.max(1), codec: codec.into(), bits_per_sample: None }],
             container: "Ogg".into(),
             start_timecode: None,
             file_size: Some(bytes.0.len()),

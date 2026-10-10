@@ -137,3 +137,24 @@ fn caption_commands_need_tracks_and_navigate() {
     s.execute("captions.deleteTrack", json!({"track": "C1"})).unwrap();
     assert!(s.active_sequence().unwrap().caption_tracks.is_empty());
 }
+
+#[test]
+fn caption_list_track_filter_never_falls_back_to_every_track() {
+    let mut s = demo();
+    s.execute("captions.newTrack", json!({})).unwrap();
+    s.execute("captions.newTrack", json!({})).unwrap();
+    let all = s.execute("captions.list", json!({})).unwrap();
+    let ids: Vec<u64> = all["tracks"].as_array().unwrap().iter().map(|t| t["id"].as_u64().unwrap()).collect();
+    assert_eq!(ids.len(), 2, "{all}");
+    for (i, id) in ids.iter().enumerate() {
+        for sel in [json!(id), json!(format!("C{}", i + 1))] {
+            let r = s.execute("captions.list", json!({"track": sel})).unwrap();
+            let got: Vec<u64> = r["tracks"].as_array().unwrap().iter().map(|t| t["id"].as_u64().unwrap()).collect();
+            assert_eq!(got, vec![*id], "{sel}");
+        }
+    }
+    let missing = ids.iter().max().unwrap() + 999;
+    for sel in [json!(missing), json!("C3"), json!("C0"), json!("nope")] {
+        assert!(s.execute("captions.list", json!({"track": sel})).is_err(), "{sel} names no caption track");
+    }
+}

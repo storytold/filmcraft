@@ -73,15 +73,17 @@ are never linked or shipped ([AGENTS.md](../AGENTS.md) §2).
   without a Direct3D 11 video device or the HEVC / VP9 / AV1 codec extensions of the Microsoft Store. The VP9 and
   AV1 fixtures (libvpx-vp9, libaom-av1; 360p, 1080p, 2160p, hidden alt-ref frames, two GOPs) need an ffmpeg with those encoders.
 
-The NVENC tests (`crates/platform/tests/nvenc.rs` and `nvenc_export.rs` for H.264, `nvenc_hevc.rs`,
-`nvenc_hevc_export.rs`, `nvenc_hevc_probe.rs` and `nvenc_hevc_warm.rs` for H.265; Windows only) skip,
-printing `SKIPPED`, without an NVIDIA GPU with NVENC (H.265: when the HEVC probe says there is no HEVC
-encoder; on a machine that has one, a configuration NVENC refuses fails the test). The FFI layout tests in
+The NVENC tests (`crates/platform/tests/nvenc.rs` and `nvenc_export.rs` for H.264, `nvenc_rgba_input.rs` for
+the GPU's RGB → 4:2:0 conversion, `nvenc_hevc.rs`,
+`nvenc_hevc_export.rs`, `nvenc_hevc_probe.rs` and `nvenc_hevc_warm.rs` for H.265, `nvenc_hevc_main10.rs` and
+`nvenc_hevc_hdr_export.rs` for Main 10 HDR; Windows only) skip, printing `SKIPPED`, without an NVIDIA GPU
+with NVENC (H.265: when the HEVC probe says there is no HEVC encoder; Main 10: when the Main 10 probe says
+there is no 10-bit encoder; on a machine that has one, a configuration NVENC refuses fails the test). The FFI layout tests in
 `crates/platform/src/nvenc/abi_tests.rs` were generated from a C program built with MSVC
 (`cl` after `vcvars64.bat`) against NVIDIA's MIT-licensed `nvEncodeAPI.h` (12.1); the header and the
 program are not in the repository. To regenerate them, put the header in a scratch directory and
 write a program that prints, for every type, field, constant and GUID of `src/nvenc/ffi.rs` that the
-asserts name (H.264 and HEVC), `sizeof` / `alignof` / `offsetof`, the enum and macro values cast to
+asserts name (H.264, HEVC and the HEVC picture parameters with their SEI payload array), `sizeof` / `alignof` / `offsetof`, the enum and macro values cast to
 64-bit integers and the GUIDs as 128-bit hex; for the bit-fields of the `flags` words, which
 `offsetof` cannot take, zero a structure, set that one field to its maximum and print the 32-bit word.
 Compare the numbers with the asserts (a difference is drift, which must be understood before
@@ -193,6 +195,10 @@ window (for example on a locked screen, where `ui.screenshot` cannot capture).
 `crates/ui-egui/tests/essential_sound_ui.rs` does the same for the Essential Sound panel (type buttons,
 switches, a slider drag as one undo step, section bypass, Auto-Match, ducking, Browse presets;
 `essential-sound-*.png`).
+`crates/ui-egui/tests/clip_audio_ui.rs` covers the audio of video clips (#223): the linked audio's
+Volume, Channel Volume and Panner in Effect Controls and Properties, and the Volume line on audio
+clips in the Timeline (a drag is one undo step, Pen-tool keyframes, keyframe drags, a click or
+right-click on the line still reaches the clip; `FILMCRAFT_UI_SHOTS=<dir>` writes `volume-*.png`).
 
 Essential Sound engine tests (`crates/engine/src/essential_sound_tests.rs`) build projects from
 generated speech-like and tonal WAVs: Auto-Match lands within ±0.5 LU of the target (measured: 0.000 LU,
@@ -337,3 +343,13 @@ At load ~25–60 the same final build plays h264-1080, stack3 and h264-2160 at F
 in 3 of 3 runs (192/0) and render previews 192/0. The 4K fixture needs ~4 cores of decode per
 real-time second (≈160 ms CPU per frame at 170 Mbit/s); the demo project's procedural footage
 ~190 ms per Full-resolution frame.
+
+### Audio mixer throughput
+
+`perf_24_tracks_3_effects_realtime_factor` (24 tracks, 72 inserts and a compressed submix on one
+core) must run at least 4x realtime in release builds (1x in debug). On Unix it times the test
+thread's CPU time, so it runs with the rest of the suite. Hosts without a per-thread CPU clock
+(Windows) fall back to wall time, which depends on load, so there it is ignored by default; run it
+explicitly with
+`cargo test --release -p filmcraft-render --lib perf_24_tracks_3_effects_realtime_factor -- --ignored --nocapture`
+and record the machine with the result.

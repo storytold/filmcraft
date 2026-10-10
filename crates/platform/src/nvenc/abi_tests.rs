@@ -5,6 +5,14 @@
 //! printing `sizeof` / `alignof` / `offsetof` of the structures of `src/nvenc/ffi.rs`, the constants
 //! and GUIDs it uses and, for the bit-fields of the `flags` words (`offsetof` cannot take those), the
 //! word with that one field set (see docs/testing.md). H.264 and HEVC are both covered.
+//!
+//! The expectations were generated with MSVC (Windows x64, LLP64) and also hold on Linux x86_64
+//! (LP64), where these tests run too: every field the structures use is a fixed-width integer
+//! (`uint32_t`, `int32_t`, `uint64_t`, ...), `int` / an enum (32 bits on both), a pointer (64 bits on
+//! both) or a GUID (four fixed-width members, 16 bytes, aligned to 4). None is a `long` /
+//! `unsigned long`, the one C type whose size differs between the two (32 bits on Windows, 64 on
+//! Linux). The `flags` bit-fields are all `uint32_t` fields of one `uint32_t` word, which MSVC and
+//! GCC / Clang lay out the same way (from the least significant bit) on x86_64.
 #![allow(clippy::unreadable_literal)]
 
 use super::ffi::*;
@@ -336,6 +344,41 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(NV_ENCODE_API_FUNCTION_LIST, nvEncRestoreEncoderState), 336, "NV_ENCODE_API_FUNCTION_LIST.nvEncRestoreEncoderState");
     assert_eq!(offset_of!(NV_ENCODE_API_FUNCTION_LIST, nvEncLookaheadPicture), 344, "NV_ENCODE_API_FUNCTION_LIST.nvEncLookaheadPicture");
     assert_eq!(offset_of!(NV_ENCODE_API_FUNCTION_LIST, reserved2), 352, "NV_ENCODE_API_FUNCTION_LIST.reserved2");
+    assert_eq!((size_of::<NV_ENC_SEI_PAYLOAD>(), align_of::<NV_ENC_SEI_PAYLOAD>()), (16, 8), "NV_ENC_SEI_PAYLOAD");
+    assert_eq!(offset_of!(NV_ENC_SEI_PAYLOAD, payloadSize), 0, "NV_ENC_SEI_PAYLOAD.payloadSize");
+    assert_eq!(offset_of!(NV_ENC_SEI_PAYLOAD, payloadType), 4, "NV_ENC_SEI_PAYLOAD.payloadType");
+    assert_eq!(offset_of!(NV_ENC_SEI_PAYLOAD, payload), 8, "NV_ENC_SEI_PAYLOAD.payload");
+    assert_eq!((size_of::<NV_ENC_CLOCK_TIMESTAMP_SET>(), align_of::<NV_ENC_CLOCK_TIMESTAMP_SET>()), (8, 4), "NV_ENC_CLOCK_TIMESTAMP_SET");
+    assert_eq!(offset_of!(NV_ENC_CLOCK_TIMESTAMP_SET, timeOffset), 4, "NV_ENC_CLOCK_TIMESTAMP_SET.timeOffset");
+    assert_eq!((size_of::<NV_ENC_TIME_CODE>(), align_of::<NV_ENC_TIME_CODE>()), (28, 4), "NV_ENC_TIME_CODE");
+    assert_eq!(offset_of!(NV_ENC_TIME_CODE, displayPicStruct), 0, "NV_ENC_TIME_CODE.displayPicStruct");
+    assert_eq!(offset_of!(NV_ENC_TIME_CODE, clockTimestamp), 4, "NV_ENC_TIME_CODE.clockTimestamp");
+    assert_eq!((size_of::<NV_ENC_PIC_PARAMS_HEVC>(), align_of::<NV_ENC_PIC_PARAMS_HEVC>()), (1536, 8), "NV_ENC_PIC_PARAMS_HEVC");
+    assert_eq!(offset_of!(NV_ENC_PIC_PARAMS_HEVC, displayPOCSyntax), 0, "NV_ENC_PIC_PARAMS_HEVC.displayPOCSyntax");
+    assert_eq!(offset_of!(NV_ENC_PIC_PARAMS_HEVC, refPicFlag), 4, "NV_ENC_PIC_PARAMS_HEVC.refPicFlag");
+    assert_eq!(offset_of!(NV_ENC_PIC_PARAMS_HEVC, temporalId), 8, "NV_ENC_PIC_PARAMS_HEVC.temporalId");
+    assert_eq!(offset_of!(NV_ENC_PIC_PARAMS_HEVC, forceIntraRefreshWithFrameCnt), 12, "NV_ENC_PIC_PARAMS_HEVC.forceIntraRefreshWithFrameCnt");
+    assert_eq!(offset_of!(NV_ENC_PIC_PARAMS_HEVC, sliceTypeData), 24, "NV_ENC_PIC_PARAMS_HEVC.sliceTypeData");
+    assert_eq!(offset_of!(NV_ENC_PIC_PARAMS_HEVC, sliceTypeArrayCnt), 32, "NV_ENC_PIC_PARAMS_HEVC.sliceTypeArrayCnt");
+    assert_eq!(offset_of!(NV_ENC_PIC_PARAMS_HEVC, sliceMode), 36, "NV_ENC_PIC_PARAMS_HEVC.sliceMode");
+    assert_eq!(offset_of!(NV_ENC_PIC_PARAMS_HEVC, sliceModeData), 40, "NV_ENC_PIC_PARAMS_HEVC.sliceModeData");
+    assert_eq!(offset_of!(NV_ENC_PIC_PARAMS_HEVC, ltrMarkFrameIdx), 44, "NV_ENC_PIC_PARAMS_HEVC.ltrMarkFrameIdx");
+    assert_eq!(offset_of!(NV_ENC_PIC_PARAMS_HEVC, ltrUseFrameBitmap), 48, "NV_ENC_PIC_PARAMS_HEVC.ltrUseFrameBitmap");
+    assert_eq!(offset_of!(NV_ENC_PIC_PARAMS_HEVC, ltrUsageMode), 52, "NV_ENC_PIC_PARAMS_HEVC.ltrUsageMode");
+    assert_eq!(offset_of!(NV_ENC_PIC_PARAMS_HEVC, seiPayloadArrayCnt), 56, "NV_ENC_PIC_PARAMS_HEVC.seiPayloadArrayCnt");
+    assert_eq!(offset_of!(NV_ENC_PIC_PARAMS_HEVC, reserved), 60, "NV_ENC_PIC_PARAMS_HEVC.reserved");
+    assert_eq!(offset_of!(NV_ENC_PIC_PARAMS_HEVC, seiPayloadArray), 64, "NV_ENC_PIC_PARAMS_HEVC.seiPayloadArray");
+    assert_eq!(offset_of!(NV_ENC_PIC_PARAMS_HEVC, timeCode), 72, "NV_ENC_PIC_PARAMS_HEVC.timeCode");
+    assert_eq!(offset_of!(NV_ENC_PIC_PARAMS_HEVC, reserved2), 100, "NV_ENC_PIC_PARAMS_HEVC.reserved2");
+    assert_eq!(offset_of!(NV_ENC_PIC_PARAMS_HEVC, reserved3), 1048, "NV_ENC_PIC_PARAMS_HEVC.reserved3");
+    assert_eq!(offset_of!(NV_ENC_CLOCK_TIMESTAMP_SET, bits), 0, "NV_ENC_CLOCK_TIMESTAMP_SET.bits");
+    assert_eq!(offset_of!(NV_ENC_CODEC_PIC_PARAMS, hevcPicParams), 0, "NV_ENC_CODEC_PIC_PARAMS.hevcPicParams");
+    assert_eq!(offset_of!(NV_ENC_CODEC_PIC_PARAMS, reserved), 0, "NV_ENC_CODEC_PIC_PARAMS.reserved");
+    assert_eq!(
+        offset_of!(NV_ENC_PIC_PARAMS_HEVC, flags),
+        16,
+        "NV_ENC_PIC_PARAMS_HEVC.flags (the C program sets constrainedFrame / ltrUseFrames and reads the word at 16: 0x1 / 0x8)"
+    );
 }
 
 #[test]
@@ -400,6 +443,13 @@ fn constants_match_the_header() {
     assert_eq!(NV_ENC_LEVEL_HEVC_61 as i64, 183, "NV_ENC_LEVEL_HEVC_61");
     assert_eq!(NV_ENC_LEVEL_HEVC_62 as i64, 186, "NV_ENC_LEVEL_HEVC_62");
     assert_eq!(NVENCAPI_VERSION as i64, 16777228, "NVENCAPI_VERSION");
+    assert_eq!(NV_ENC_BUFFER_FORMAT_YUV420_10BIT as i64, 65536, "NV_ENC_BUFFER_FORMAT_YUV420_10BIT");
+    assert_eq!(NV_ENC_BUFFER_FORMAT_ABGR as i64, 268435456, "NV_ENC_BUFFER_FORMAT_ABGR");
+    assert_eq!(NV_ENC_CAPS_SUPPORT_10BIT_ENCODE as i64, 39, "NV_ENC_CAPS_SUPPORT_10BIT_ENCODE");
+    assert_eq!(NV_ENC_VUI_COLOR_PRIMARIES_BT2020 as i64, 9, "NV_ENC_VUI_COLOR_PRIMARIES_BT2020");
+    assert_eq!(NV_ENC_VUI_TRANSFER_CHARACTERISTIC_SMPTE2084 as i64, 16, "NV_ENC_VUI_TRANSFER_CHARACTERISTIC_SMPTE2084");
+    assert_eq!(NV_ENC_VUI_TRANSFER_CHARACTERISTIC_ARIB_STD_B67 as i64, 18, "NV_ENC_VUI_TRANSFER_CHARACTERISTIC_ARIB_STD_B67");
+    assert_eq!(NV_ENC_VUI_MATRIX_COEFFS_BT2020_NCL as i64, 9, "NV_ENC_VUI_MATRIX_COEFFS_BT2020_NCL");
 }
 
 #[test]
@@ -412,6 +462,7 @@ fn guids_match_the_header() {
     assert_eq!(NV_ENC_PRESET_P5_GUID.to_u128(), 0x21c6e6b4297a4cba998fb6cbde72ade3u128, "NV_ENC_PRESET_P5_GUID");
     assert_eq!(NV_ENC_CODEC_HEVC_GUID.to_u128(), 0x790cdc8845224d7b9425bda9975f7603u128, "NV_ENC_CODEC_HEVC_GUID");
     assert_eq!(NV_ENC_HEVC_PROFILE_MAIN_GUID.to_u128(), 0xb514c39ab55b40fa878ff1253b4dfdecu128, "NV_ENC_HEVC_PROFILE_MAIN_GUID");
+    assert_eq!(NV_ENC_HEVC_PROFILE_MAIN10_GUID.to_u128(), 0xfa4d2b6c3a5b411a80180a3f5e3c9be5u128, "NV_ENC_HEVC_PROFILE_MAIN10_GUID");
 }
 
 /// The bit-field masks of the `flags` words (the C compiler's layout of each bit-field set alone).

@@ -67,28 +67,29 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut apply = false;
     let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
     let title = if d.omf { "OMF Export Settings" } else { "AAF Export Settings" };
-    egui::Window::new(title).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+    let shown = if d.omf { tl!("OMF Export Settings") } else { tl!("AAF Export Settings") };
+    egui::Window::new(shown).id(egui::Id::new(title)).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
         ui.set_min_width(380.0);
         egui::Grid::new("interchange-export-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
             if d.omf {
-                ui.label("OMF Title:");
+                ui.label(tl!("OMF Title:"));
                 let r = ui.text_edit_singleline(&mut d.title);
                 elems.push((format!("{p}.title"), r.rect, d.title.clone()));
                 ui.end_row();
             } else {
                 ui.label("");
-                let r = ui.checkbox(&mut d.mixdown_video, "Mixdown video");
+                let r = ui.checkbox(&mut d.mixdown_video, tl!("Mixdown video"));
                 elems.push((format!("{p}.mixdownVideo"), r.rect, d.mixdown_video.to_string()));
                 ui.end_row();
             }
-            ui.label("Audio:");
+            ui.label(tl!("Audio:"));
             ui.horizontal(|ui| {
-                let modes: &[(&'static str, &str)] = if d.omf {
-                    &[("embedded", "Encapsulate"), ("separate", "Separate Audio")]
+                let modes: Vec<(&'static str, &str)> = if d.omf {
+                    vec![("embedded", tl!("Encapsulate")), ("separate", tl!("Separate Audio"))]
                 } else {
-                    &[("embedded", "Embed"), ("separate", "Separate Files"), ("linked", "Link to Media")]
+                    vec![("embedded", tl!("Embed")), ("separate", tl!("Separate Files")), ("linked", tl!("Link to Media"))]
                 };
-                for (k, label) in modes {
+                for (k, label) in &modes {
                     let r = ui.radio(d.audio == *k, *label);
                     if r.clicked() {
                         d.audio = k;
@@ -97,7 +98,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
             });
             ui.end_row();
-            ui.label("Audio File Format:");
+            ui.label(tl!("Audio File Format:"));
             ui.horizontal(|ui| {
                 let formats: &[(&'static str, &str)] =
                     if d.omf { &[("wav", "Broadcast Wave"), ("aiff", "AIFF")] } else { &[("wav", "Broadcast Wave"), ("aiff", "AIFF"), ("mxf", "OP-Atom MXF")] };
@@ -110,7 +111,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
             });
             ui.end_row();
-            ui.label("Sample Rate:");
+            ui.label(tl!("Sample Rate:"));
             ui.horizontal(|ui| {
                 for r in RATES {
                     let b = ui.radio(d.sample_rate == r, format!("{r}"));
@@ -121,7 +122,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
             });
             ui.end_row();
-            ui.label("Bits per Sample:");
+            ui.label(tl!("Bits per Sample:"));
             ui.horizontal(|ui| {
                 for b in [16u16, 24] {
                     let r = ui.radio(d.bits == b, format!("{b}"));
@@ -132,32 +133,32 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
             });
             ui.end_row();
-            ui.label("Rendering:");
+            ui.label(tl!("Rendering:"));
             let linked = d.audio == "linked";
-            let r = ui.add_enabled(!linked, egui::Checkbox::new(&mut d.trim, "Trim audio files"));
+            let r = ui.add_enabled(!linked, egui::Checkbox::new(&mut d.trim, tl!("Trim audio files")));
             elems.push((format!("{p}.trimAudio"), r.rect, d.trim.to_string()));
             ui.end_row();
-            ui.label("Handle Frames:");
+            ui.label(tl!("Handle Frames:"));
             let r = ui.add_enabled(d.trim && !linked, egui::DragValue::new(&mut d.handles).range(0..=10_000));
             elems.push((format!("{p}.handles"), r.rect, d.handles.to_string()));
             ui.end_row();
             ui.label("");
-            let r = ui.add_enabled(!linked, egui::Checkbox::new(&mut d.render_effects, "Render audio clip effects"));
+            let r = ui.add_enabled(!linked, egui::Checkbox::new(&mut d.render_effects, tl!("Render audio clip effects")));
             elems.push((format!("{p}.renderAudioEffects"), r.rect, d.render_effects.to_string()));
             ui.end_row();
             ui.label("");
-            let r = ui.checkbox(&mut d.breakout, "Breakout to mono");
+            let r = ui.checkbox(&mut d.breakout, tl!("Breakout to mono"));
             elems.push((format!("{p}.breakoutToMono"), r.rect, d.breakout.to_string()));
             ui.end_row();
         });
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            let c = ui.button("Cancel");
+            let c = ui.button(tl!("Cancel"));
             elems.push((format!("{p}.cancel"), c.rect, "Cancel".into()));
             if c.clicked() {
                 close = true;
             }
-            let o = ui.add(egui::Button::new(egui::RichText::new("OK").color(egui::Color32::WHITE)).fill(app.tokens.accent));
+            let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(app.tokens.accent));
             elems.push((format!("{p}.ok"), o.rect, "OK".into()));
             if o.clicked() {
                 apply = true;
@@ -195,7 +196,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
                 let cmd = if d.omf { "file.exportOmf" } else { "file.exportAaf" };
                 match app.session.execute(cmd, params) {
-                    Ok(v) => app.ui.status = format!("Exported {}", v["path"].as_str().unwrap_or_default()),
+                    Ok(v) => app.ui.status = tlf!("Exported {path}", path = v["path"].as_str().unwrap_or_default()),
                     Err(e) => app.ui.status = e.to_string(),
                 }
             }

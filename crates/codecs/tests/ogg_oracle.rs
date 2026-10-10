@@ -88,7 +88,7 @@ fn snr_db(reference: &[f32], ours: &[f32]) -> f64 {
 /// (our continuous decode interleaved, ffmpeg's decode interleaved, channels, rate)
 fn decode_both(ff: &Path, file: &Path, decoder: &[&str]) -> (OggSource, Vec<f32>, Vec<f32>, usize, u32) {
     let src = OggSource::open(file.file_name().unwrap().to_str().unwrap(), bytes(file)).unwrap();
-    let a = src.info().audio.clone().unwrap();
+    let a = src.info().audio().cloned().unwrap();
     let ch = a.channels as usize;
     let mut args: Vec<&str> = decoder.to_vec();
     args.extend_from_slice(&["-i", file.to_str().unwrap(), "-map", "0:a:0", "-f", "f32le", "-"]);
@@ -134,7 +134,7 @@ fn opus_celt_music_matches_libopus() {
     assert_eq!(src.info().container, "Ogg");
     assert_eq!(src.info().kind, MediaKind::AudioOnly);
     assert_eq!((rate, ch), (48_000, 2));
-    assert_eq!(src.info().audio.as_ref().unwrap().codec, "Opus");
+    assert_eq!(src.info().audio().unwrap().codec, "Opus");
     let snr = snr_db(&want, &ours);
     eprintln!("{}: {} samples, SNR {snr:.1} dB vs libopus", f.display(), want.len() / ch);
     assert!(snr >= 50.0, "SNR {snr:.1} dB");
@@ -173,7 +173,7 @@ fn vorbis_matches_ffmpeg() {
     let ff = filmcraft_testkit::require_ffmpeg!();
     let f = make(&ff, "ogg_vorbis.ogg");
     let (src, ours, want, ch, rate) = decode_both(&ff, &f, &[]);
-    assert_eq!(src.info().audio.as_ref().unwrap().codec, "Vorbis");
+    assert_eq!(src.info().audio().unwrap().codec, "Vorbis");
     assert_eq!((rate, ch), (44_100, 2));
     let snr = snr_db(&want, &ours);
     eprintln!("{}: SNR {snr:.1} dB vs ffmpeg's Vorbis decoder", f.display());

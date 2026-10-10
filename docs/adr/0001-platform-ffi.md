@@ -26,7 +26,7 @@ Containment rules:
 1. The crate does not use `lints.workspace = true`. Its own `[lints]` table copies the workspace
    lints except `unsafe_code = "deny"` (not `forbid`), and adds
    `clippy::undocumented_unsafe_blocks = "deny"`. Only the FFI modules (`videotoolbox`, `media_foundation::gpu` / `media_foundation::mft`,
-   `nvenc::ffi` / `nvenc::session` on Windows, and `vaapi::va` on Linux) carry `#[allow(unsafe_code)]`; the rest of the crate
+   `nvenc::ffi` / `nvenc::session` / `nvenc::device` on Windows and 64-bit Linux, and `vaapi::va` on Linux) carry `#[allow(unsafe_code)]`; the rest of the crate
    (the fallback logic in `hybrid`, the decoder logic in `media_foundation`, `annexb`, `biplanar`,
    the encoder logic in `nvenc`, H.264 and H.265 alike) has no `unsafe`. NVENC's H.265 support
    added no `unsafe` module: it reuses `nvenc::ffi` and `nvenc::session` (new data declarations and
@@ -95,6 +95,14 @@ Everything else in this record applies unchanged: `unsafe` stays in `crates/plat
 has a `// SAFETY:` comment, no panic crosses the FFI boundary, the public API is safe, and the crate
 compiles everywhere (`register()` is a no-op off macOS).
 
+## Addendum (2026-10-08): NVENC HEVC Main 10 (HDR)
+
+HDR H.265 added no `unsafe` module either. `nvenc::ffi` gained data declarations (the HEVC picture
+parameters, `NV_ENC_SEI_PAYLOAD`, the 10-bit buffer format) checked by the generated layout tests, and
+`nvenc::session` gained the P010 pitch check and the SEI pointers it hands to the driver, which are
+heap blocks owned by the session for its whole life (`// SAFETY:` comments say so). The conversion from
+float pictures to 10-bit planes is safe code in the export crate.
+
 ## Addendum (2026-10-07): hardware H.265 (HEVC) encoding
 
 The same VideoToolbox session wrapper also creates HEVC sessions (`VtProfile::HevcMain`). The rules
@@ -128,3 +136,24 @@ hold; VA-API differs from the other two backends in three ways.
 
 The fallback guarantee is unchanged: what the hardware path does not take is declined up front or,
 mid-stream, handed to the software decoder by `HybridDecoder`.
+
+## Addendum: Linux NVENC H.264 encoding
+
+The existing NVENC session is shared with 64-bit Linux. Only device acquisition and driver loading
+are platform-specific: Windows retains the Direct3D device; Linux retains the first CUDA device's
+primary context through `libcuda.so.1`. `cuDevicePrimaryCtxRetain` does not push a context onto the
+calling thread's stack. The retained reference is released after the NVENC session and its buffers;
+other users' references are not reset. `libnvidia-encode.so.1` stays loaded with its function table.
+Both libraries come from the installed NVIDIA driver, not this project. Export registration on
+Linux does not claim that a hardware decoder is available. The same opt-in and fallback rules apply.
+
+## Addendum (2026-10-09): NVDEC hardware decoding on Linux
+
+NVIDIA's proprietary driver has no VA-API of its own (only through the separate
+`libva-nvidia-driver`), so Linux gets a second decoder backend, `nvdec/`, registered in front of
+VA-API's. The rules above hold: `libnvcuvid.so.1` and `libcuda.so.1` are loaded at run time,
+`nvdec/ffi.rs` is transcribed from NVIDIA's MIT-licensed headers and checked by
+`nvdec/abi_tests.rs`, only `nvdec::cuvid` carries `#[allow(unsafe_code)]`, and the CUDA context is
+the one `nvenc::device` already retains for encoding. Unlike VA-API, NVDEC parses the stream
+itself; its callbacks run inside our parse call and never unwind into C (they record the first
+error and return 0, and the decoder then fails over to software like any other backend).

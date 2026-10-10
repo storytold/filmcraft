@@ -359,6 +359,15 @@ pub enum GuideDialog {
     },
 }
 
+/// The colour parameter an armed eyedropper fills (`effects.setParam` arguments).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Eyedropper {
+    pub clip: u64,
+    pub effect: usize,
+    pub param: String,
+    pub mask: Option<usize>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiState {
     #[serde(default)]
@@ -395,6 +404,10 @@ pub struct UiState {
     pub show_scopes: bool,
     /// Transient status line shown in the footer.
     pub status: String,
+    /// The colour parameter an armed eyedropper will fill with the next pixel clicked in the Program
+    /// monitor (Esc or a click elsewhere disarms it). Never saved.
+    #[serde(skip)]
+    pub eyedropper: Option<Eyedropper>,
     /// Essential Sound sub-tab: "Edit" or "Browse".
     #[serde(default)]
     pub essential_sound_tab: String,
@@ -457,6 +470,9 @@ pub struct UiState {
     /// Sequence Settings dialog draft.
     #[serde(default)]
     pub sequence_settings: SequenceSettingsDraft,
+    /// Set Transition Duration dialog draft (double-click a transition).
+    #[serde(default)]
+    pub transition_duration: TransitionDurationDraft,
     /// On-monitor text editing (Type tool / double-click on a text layer).
     #[serde(default)]
     pub gfx_edit: Option<GfxEdit>,
@@ -760,6 +776,15 @@ impl Default for AddTracksDraft {
     }
 }
 
+/// The Set Transition Duration dialog (double-click a transition in the Timeline): which
+/// transition, and its duration in frames.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TransitionDurationDraft {
+    pub transition: u64,
+    pub frames: i64,
+}
+
 /// The Sequence Settings dialog (Sequence ▸ Sequence Settings…), filled from the active sequence
 /// when it opens (`panels::sequence_settings::open`). `tab`: `general`, `color` or `vr`; the
 /// timebase is `fps_num`/`fps_den`; `mix`: `Stereo`, `Mono`, `5.1` or `Adaptive`; `working_space`:
@@ -769,6 +794,13 @@ impl Default for AddTracksDraft {
 #[serde(default)]
 pub struct SequenceSettingsDraft {
     pub tab: String,
+    /// The sequence's name (its Project panel item); a blank name keeps the current one.
+    pub name: String,
+    /// File ▸ New ▸ Sequence…: the dialog makes a new sequence (`file.newSequence`) with these
+    /// settings and `video_tracks` / `audio_tracks` tracks, instead of changing the active one.
+    pub new_sequence: bool,
+    pub video_tracks: u32,
+    pub audio_tracks: u32,
     pub fps_num: i64,
     pub fps_den: i64,
     pub width: u32,
@@ -787,6 +819,10 @@ impl Default for SequenceSettingsDraft {
     fn default() -> Self {
         Self {
             tab: "general".into(),
+            name: String::new(),
+            new_sequence: false,
+            video_tracks: 3,
+            audio_tracks: 3,
             fps_num: 24_000,
             fps_den: 1001,
             width: 1920,
@@ -899,6 +935,7 @@ impl Default for UiState {
             dark: true,
             show_scopes: false,
             status: String::new(),
+            eyedropper: None,
             essential_sound_tab: "Edit".into(),
             export: Default::default(),
             text_tab: captions_tab(),
@@ -919,6 +956,7 @@ impl Default for UiState {
             add_tracks: AddTracksDraft::default(),
             delete_tracks: DeleteTracksDraft::default(),
             sequence_settings: SequenceSettingsDraft::default(),
+            transition_duration: TransitionDurationDraft::default(),
             gfx_edit: None,
             pen_points: vec![],
             link_media: None,

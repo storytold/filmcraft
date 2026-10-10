@@ -139,6 +139,30 @@ pub struct TypeParams {
     pub text: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MediaImportParams {
+    /// Absolute paths to media files (MP4/MOV, WAV/MP3/FLAC/AIFF/Ogg, PNG/JPEG/…).
+    pub paths: Vec<String>,
+    /// Bin ID to import into (optional).
+    #[serde(default)]
+    pub bin: Option<u64>,
+    /// Import numbered stills as an image sequence (optional, default false).
+    #[serde(default)]
+    pub image_sequence: Option<bool>,
+}
+
+/// `file.import` params for a `media_import` call.
+fn media_import_params(p: MediaImportParams) -> Value {
+    let mut params = json!({"paths": p.paths});
+    if let Some(bin) = p.bin {
+        params["bin"] = json!(bin);
+    }
+    if let Some(seq) = p.image_sequence {
+        params["imageSequence"] = json!(seq);
+    }
+    params
+}
+
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ElementsParams {
     /// Only element ids starting with this prefix (e.g. `timeline.clip.`).
@@ -384,9 +408,8 @@ impl FilmcraftMcp {
         description = "Import media files by absolute path (MP4/MOV, WAV/MP3/FLAC/AIFF/Ogg, PNG/JPEG/…).",
         annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = false)
     )]
-    async fn media_import(&self, Parameters(p): Parameters<TypeParams>) -> Result<CallToolResult, McpError> {
-        let paths: Vec<&str> = p.text.split('\n').map(str::trim).filter(|s| !s.is_empty()).collect();
-        wrap(self.run("file.import", json!({"paths": paths})).await)
+    async fn media_import(&self, Parameters(p): Parameters<MediaImportParams>) -> Result<CallToolResult, McpError> {
+        wrap(self.run("file.import", media_import_params(p)).await)
     }
 
     #[tool(
@@ -405,7 +428,7 @@ impl FilmcraftMcp {
                     let t = p.seconds.map_or_else(|| g.playhead(), filmcraft_time::Tick::from_seconds_f64);
                     let (w, h) =
                         g.active_sequence().map(|q| (q.settings.width, q.settings.height)).ok_or_else(|| AutomationError::Other("no sequence".into()))?;
-                    let scale = (max as f32 / w.max(h) as f32).min(1.0);
+                    let scale = render_scale(max, w, h);
                     let img = g.try_render_program_at(scale, t).map_err(|e| AutomationError::Other(e.to_string()))?;
                     png_rgba(img.w as u32, img.h as u32, img.over_black_rgba8(), max)
                 })
@@ -663,9 +686,25 @@ impl ServerHandler for FilmcraftMcp {
     }
 }
 
+/// Render scale that fits the longest side of a `w` x `h` sequence into `max_side` (never upscales; 0 = no limit, as in `png_rgba`).
+fn render_scale(max_side: u32, w: u32, h: u32) -> f32 {
+    if max_side == 0 {
+        return 1.0;
+    }
+    (max_side as f32 / w.max(h).max(1) as f32).min(1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn render_scale_zero_means_no_limit() {
+        assert_eq!(render_scale(0, 1920, 1080), 1.0);
+        assert_eq!(render_scale(960, 1920, 1080), 0.5);
+        assert_eq!(render_scale(960, 640, 360), 1.0);
+        assert_eq!(render_scale(960, 0, 0), 1.0);
+    }
 
     #[tokio::test]
     async fn headless_commands_and_render() {
@@ -732,6 +771,21 @@ mod tests {
         async fn call(&mut self, id: u64, name: &str, arguments: Value) -> Value {
             self.ask(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":arguments}})).await
         }
+    }
+
+    /// #499: `media_import` takes `paths` (a required array), and forwards `bin` / `image_sequence` to `file.import`.
+    #[test]
+    fn media_import_schema_and_params() {
+        let m = FilmcraftMcp::headless(Session::default());
+        let def = m.tool_router.get("media_import").unwrap();
+        let schema = Value::Object((*def.input_schema).clone());
+        assert_eq!(schema["properties"]["paths"]["type"], "array", "{schema}");
+        assert!(schema["required"].as_array().unwrap().iter().any(|r| r == "paths"), "{schema}");
+        let p: MediaImportParams = serde_json::from_value(json!({"paths": ["/a.png"], "bin": 7, "image_sequence": true})).unwrap();
+        assert_eq!(media_import_params(p), json!({"paths": ["/a.png"], "bin": 7, "imageSequence": true}));
+        let p: MediaImportParams = serde_json::from_value(json!({"paths": ["/a.wav"]})).unwrap();
+        assert_eq!(media_import_params(p), json!({"paths": ["/a.wav"]}));
+        assert!(serde_json::from_value::<MediaImportParams>(json!({"text": "/a.wav"})).is_err());
     }
 
     fn demo() -> Session {

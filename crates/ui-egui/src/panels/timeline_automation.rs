@@ -27,16 +27,19 @@ const LANE_COL: Color32 = Color32::from_rgb(0xe8, 0xc5, 0x47);
 
 /// The lanes an audio track can show: (key, label).
 pub fn lane_options(tr: &Track) -> Vec<(String, String)> {
-    let mut v =
-        vec![(LANE_VOLUME.to_string(), "Volume".to_string()), (LANE_PAN.to_string(), "Panner".to_string()), (LANE_MUTE.to_string(), "Mute".to_string())];
+    let mut v = vec![
+        (LANE_VOLUME.to_string(), tl!("Volume").to_string()),
+        (LANE_PAN.to_string(), tl!("Panner").to_string()),
+        (LANE_MUTE.to_string(), tl!("Mute").to_string()),
+    ];
     for (i, s) in tr.mixer.sends.iter().enumerate() {
         let _ = s;
-        v.push((send_lane(i), format!("Send {} Level", i + 1)));
+        v.push((send_lane(i), tlf!("Send {n} Level", n = i + 1)));
     }
     for (slot, e) in tr.effects.iter().enumerate() {
         let Some(def) = e.def() else { continue };
         for p in def.params.iter().filter(|p| matches!(p.kind, ParamKind::Float { .. }) && p.animatable) {
-            v.push((filmcraft_project::mixer::fx_lane(slot, p.id), format!("{}: {}", def.name, p.label)));
+            v.push((filmcraft_project::mixer::fx_lane(slot, p.id), format!("{}: {}", crate::i18n::t(def.name), crate::i18n::t(p.label))));
         }
     }
     v
@@ -96,18 +99,18 @@ pub fn header_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, 
     let showing = app.ui.timeline.track_lanes.get(&r.track.0).cloned();
     let resp =
         crate::widgets::icon_toggle(ui, rect.intersect(visible), Icon::Keyframe, showing.is_some(), t, egui::Id::new(("lanebtn", r.track.0)), Some(LANE_COL))
-            .on_hover_text("Show Keyframes");
+            .on_hover_text(tl!("Show Keyframes"));
     app.auto.add(&format!("timeline.track.{label}.keyframes"), rect, "Show Keyframes");
     let opts = lane_options(tr);
     egui::Popup::menu(&resp).show(|ui| {
         ui.set_min_width(170.0);
-        let c = ui.selectable_label(showing.is_none(), "Clip Keyframes");
+        let c = ui.selectable_label(showing.is_none(), tl!("Clip Keyframes"));
         app.auto.add(&format!("timeline.track.{label}.keyframes.clip"), c.rect, "Clip Keyframes");
         if c.clicked() {
             app.ui.timeline.track_lanes.remove(&r.track.0);
         }
         ui.separator();
-        ui.label(egui::RichText::new("Track Keyframes").small());
+        ui.label(egui::RichText::new(tl!("Track Keyframes")).small());
         for (k, l) in &opts {
             let e = ui.selectable_label(showing.as_deref() == Some(k.as_str()), l);
             app.auto.add(&format!("timeline.track.{label}.keyframes.{k}"), e.rect, l);
@@ -222,9 +225,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             let time = k.time;
             let key2 = key.clone();
             resp.context_menu(|ui| {
-                let b = ui.button("Delete");
-                app.auto.add(&format!("timeline.track.{label}.lane.kf.{i}.delete"), b.rect, "Delete");
-                if b.clicked() {
+                if ui.button(tl!("Delete")).clicked() {
                     acts.push(("mixer.deleteKeyframe", json!({"strip": r.track.0, "lane": key2, "time": time.0})));
                     ui.close();
                 }

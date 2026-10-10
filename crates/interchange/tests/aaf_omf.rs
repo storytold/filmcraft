@@ -132,7 +132,7 @@ fn aaf_round_trip_preserves_the_edit() {
             .unwrap();
         let ma = a.as_media().unwrap();
         assert_eq!(ma.info.start_timecode, Some(rate.timecode_base() * 3600 + 12));
-        assert!(ma.info.video.is_some() && ma.info.audio.is_some());
+        assert!(ma.info.video.is_some() && ma.info.has_audio());
         assert_eq!(ma.markers.len(), 1);
         assert_eq!((ma.markers[0].name.as_str(), ma.markers[0].comment.as_str()), ("slate", "take 3"));
         let mus = imp.project.items.values().find(|i| i.name == "music.wav").unwrap();
@@ -373,7 +373,7 @@ fn omf_separate_files_and_breakout() {
             let k = media_key(&imp.project, c.item);
             assert!(k.starts_with("/omf/media/") && k.ends_with(".aif"), "{k}");
             let m = imp.project.item(c.item).unwrap().as_media().unwrap();
-            assert_eq!(m.info.audio.as_ref().map(|a| (a.channels, a.sample_rate)), Some((1, 48_000)));
+            assert_eq!(m.info.audio().map(|a| (a.channels, a.sample_rate)), Some((1, 48_000)));
         }
     }
 }

@@ -14,7 +14,7 @@ struct U {
     p0: vec4<f32>,   // opacity, kind (0 rgba8 srgb straight, 1 rgba16f premul linear, 2 yuv), taps, transfer (0 srgb, 1 linear, 2 pq, 3 hlg)
     p1: vec4<f32>,   // y_off y_scale c_off c_scale (code units)
     p2: vec4<f32>,   // kr kb code_scale footprint
-    p3: vec4<f32>,   // blend mode (index into filmcraft_render::Blend::ALL), alpha-plane scale (0: none), unused ×2
+    p3: vec4<f32>,   // blend mode, alpha-plane scale (0: none), effect-source integer decimation, unused
 };
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -272,6 +272,15 @@ fn blend_rgb(mode: u32, b: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
 fn linear_to_srgb(v: vec3<f32>) -> vec3<f32> {
     let hi = 1.055 * pow(max(v, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
     return select(hi, v * 12.92, v <= vec3(0.0031308));
+}
+
+// Effect sources are axis-aligned integer-decimated working images. Raster-interpolated source
+// coordinates can mix adjacent texels at a nominal pixel center, inventing alpha near zero.
+// Keep the regular transformed/minified layer path unchanged; only this source draw uses its
+// exact working-pixel position and the host's integer decimation.
+@fragment
+fn fs_fx_source(in: VOut) -> @location(0) vec4<f32> {
+    return layer_color(in.pos.xy * u.p3.z);
 }
 
 // Blend modes that need the destination: written without fixed-function blending.

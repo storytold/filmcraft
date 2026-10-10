@@ -17,7 +17,7 @@ fn project() -> (Project, ItemId) {
         kind: filmcraft_media::MediaKind::AudioOnly,
         duration: FrameRate::FPS_25.tick_of(2500),
         video: None,
-        audio: Some(filmcraft_media::AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: String::new(), bits_per_sample: Some(16) }),
+        audio_streams: vec![filmcraft_media::AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: String::new(), bits_per_sample: Some(16) }],
         container: String::new(),
         start_timecode: None,
         file_size: None,

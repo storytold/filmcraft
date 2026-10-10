@@ -31,6 +31,14 @@ pub fn stats(app: &FilmcraftApp) -> Value {
     frames["renderCostMs"] = json!(app.frames.render_cost() * 1e3);
     frames["cache"] = json!({"images": images, "imageMB": image_bytes as f64 / 1e6, "plans": plans, "planMB": plan_bytes as f64 / 1e6});
     v["frames"] = frames;
+    v["gpu"] = app.gpu.as_ref().map_or(Value::Null, |g| {
+        json!({
+            "uploadedBytes": g.compositor.uploaded_bytes,
+            "transitions": g.compositor.gpu_transitions,
+            "cpuTransitions": g.compositor.cpu_transitions,
+            "submitMs": g.last_ms,
+        })
+    });
     // the Program monitor's picture against what is due: how far a drag or a scrub is ahead of it
     v["monitor"] = json!({
         "frame": app.program_picture().map(|k| k.frame),

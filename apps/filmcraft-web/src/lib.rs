@@ -185,6 +185,9 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 }
                 let mut app = FilmcraftApp::new(session);
                 import::install_hooks(&mut app);
+                // Settings ▸ General ▸ Interface Language ▸ System Language (#218): the browser's languages.
+                app.hooks.system_languages =
+                    Some(Box::new(|| web_sys::window().map(|w| w.navigator().languages().iter().filter_map(|v| v.as_string()).collect()).unwrap_or_default()));
                 let (tx, rx) = std::sync::mpsc::channel();
                 api::set_sender(tx);
                 app = app.with_control(rx);

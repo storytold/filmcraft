@@ -261,7 +261,7 @@ fn new_sequence_from_clip_bin_from_selection_and_offline_file() {
         .unwrap();
     let it = s.project.item(ItemId(r["item"].as_u64().unwrap())).unwrap();
     let m = it.as_media().unwrap();
-    assert!(m.offline && m.info.audio.is_none() && m.info.video.is_some());
+    assert!(m.offline && !m.info.has_audio() && m.info.video.is_some());
     assert_eq!(m.info.duration, s.sequence_rate().snap_nearest(Tick(4 * TICKS_PER_SECOND)));
     assert_eq!(m.info.start_timecode, Some(3600 * 24));
     assert_eq!(it.metadata["Tape Name"], "A001");
@@ -372,7 +372,7 @@ fn modify_audio_channels_and_breakout_to_mono() {
     s.project = std::sync::Arc::new({
         let mut p = (*s.project).clone();
         if let Some(m) = p.item_mut(item_named(&s, "Bars and Tone")).and_then(|i| i.as_media_mut()) {
-            m.info.audio = None;
+            m.info.audio_streams.clear();
         }
         p
     });
@@ -557,7 +557,7 @@ fn extract_audio_writes_a_wav_and_imports_it() {
     let item = s.project.item(ItemId(e["item"].as_u64().unwrap())).unwrap();
     let m = item.as_media().unwrap();
     assert!(m.info.video.is_none());
-    assert_eq!(m.info.audio.as_ref().unwrap().channels, 2);
+    assert_eq!(m.info.audio().unwrap().channels, 2);
     let src_dur = s.project.item(forest).unwrap().duration();
     assert!((m.info.duration - src_dur).0.abs() < TICKS_PER_SECOND / 100, "same length");
     assert_eq!(s.project.root.parent_of(item.id), s.project.root.parent_of(forest));
@@ -900,4 +900,26 @@ fn add_edit_cuts_only_the_selected_clips() {
     s.state.selection.clear();
     let r = s.execute("sequence.addEdit", json!({"time": t.0})).unwrap();
     assert!(r["cuts"].as_u64().unwrap() > 1, "{r}");
+}
+
+#[test]
+fn linked_slip_keeps_picture_and_sound_aligned_at_unequal_media_limits() {
+    let mut s = Session::default();
+    s.execute("file.newProject", json!({"name": "Slip"})).unwrap();
+    s.execute("file.newSequence", json!({"name": "Sequence", "fps": 25, "video": 1, "audio": 1, "width": 16, "height": 16})).unwrap();
+    let r = s.execute("file.newOfflineFile", json!({"name": "Media", "seconds": 4, "fps": 25, "video": true, "audio": true})).unwrap();
+    let item = r["item"].as_u64().unwrap();
+    let fr = s.sequence_rate().tick_of(1);
+    let r =
+        s.execute("timeline.place", json!({"item": item, "track": "V1", "audioTrack": "A1", "time": 0, "sourceIn": fr.0 * 20, "duration": fr.0 * 60})).unwrap();
+    let (v, a) = (r["clips"][0].as_u64().unwrap(), r["clips"][1].as_u64().unwrap());
+    // lengthen only the picture so the pair has unequal tail handles
+    s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+    s.execute("timeline.trim", json!({"clip": v, "edge": "out", "deltaFrames": 20})).unwrap();
+    s.execute("sequence.linkedSelection", json!({"on": true})).unwrap();
+    s.execute("timeline.slip", json!({"clip": v, "deltaFrames": 30})).unwrap();
+    assert_eq!(clip(&s, v).source_in, Tick(fr.0 * 20));
+    assert_eq!(clip(&s, a).source_in, Tick(fr.0 * 20), "sound must not slip alone");
+    s.execute("timeline.slip", json!({"clip": v, "deltaFrames": -10})).unwrap();
+    assert_eq!((clip(&s, v).source_in, clip(&s, a).source_in), (Tick(fr.0 * 10), Tick(fr.0 * 10)));
 }

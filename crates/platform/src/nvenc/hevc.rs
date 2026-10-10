@@ -1,6 +1,9 @@
 //! What is specific to HEVC in the NVENC backend (safe code): the level codes, and the `hvcC`
 //! record built from the parameter sets the encoder wrote.
 //!
+//! Main (8-bit) and Main 10 (10-bit) are both written; the caller says which it asked the encoder for
+//! and the record is refused if the SPS says otherwise.
+//!
 //! Nothing in the record is invented: the profile, tier, compatibility flags, level, chroma format,
 //! bit depths and temporal layers come from the SPS (parsed with `filmcraft_hevc`), and the 48
 //! general constraint flags and `sps_temporal_id_nesting_flag` are read from the SPS bits that carry
@@ -65,8 +68,14 @@ const PTL_LEN: usize = 12;
 
 /// The `hvcC` record of a stream of `size` pictures (width, height) whose parameter sets are `vps`,
 /// `sps` and `pps` (NAL units with their headers, without start codes or length prefixes). An error
-/// says why the stream is not one this backend writes: HEVC Main, 8-bit 4:2:0.
-pub fn hevc_config(vps: &[u8], sps: &[u8], pps: &[u8], size: (u32, u32)) -> Result<HevcConfig, String> {
+/// says why the stream is not the one that was asked for: `bit_depth` 8 is HEVC Main (profile 1),
+/// 10 is Main 10 (profile 2), both 4:2:0 with equal luma and chroma depth; any other depth is refused.
+pub fn hevc_config(vps: &[u8], sps: &[u8], pps: &[u8], size: (u32, u32), bit_depth: u8) -> Result<HevcConfig, String> {
+    let (profile_idc, profile_name) = match bit_depth {
+        8 => (1u8, "Main"),
+        10 => (2, "Main 10"),
+        other => return Err(format!("{other}-bit HEVC is not written by this backend")),
+    };
     for (nal, kind, name) in [(vps, 32u8, "VPS"), (sps, 33, "SPS"), (pps, 34, "PPS")] {
         if nal_type(Codec::Hevc, nal) != Some(kind) || nal.len() <= 2 {
             return Err(format!("the encoder's {name} is not a {name} NAL unit"));
@@ -85,12 +94,13 @@ pub fn hevc_config(vps: &[u8], sps: &[u8], pps: &[u8], size: (u32, u32)) -> Resu
     let temporal_id_nested = rbsp.first().is_some_and(|b| b & 1 != 0);
 
     let ptl = &parsed.ptl;
-    if ptl.profile_space != 0 || ptl.profile_idc != 1 {
-        return Err(format!("the encoder wrote HEVC profile {} (space {}), not Main", ptl.profile_idc, ptl.profile_space));
+    if ptl.profile_space != 0 || ptl.profile_idc != profile_idc {
+        return Err(format!("the encoder wrote HEVC profile {} (space {}), not {profile_name}", ptl.profile_idc, ptl.profile_space));
     }
-    if parsed.chroma_format_idc != 1 || parsed.bit_depth_luma != 8 || parsed.bit_depth_chroma != 8 {
+    let depth = u32::from(bit_depth);
+    if parsed.chroma_format_idc != 1 || parsed.bit_depth_luma != depth || parsed.bit_depth_chroma != depth {
         return Err(format!(
-            "the encoder wrote chroma format {} at {}/{} bits, not 8-bit 4:2:0",
+            "the encoder wrote chroma format {} at {}/{} bits, not {bit_depth}-bit 4:2:0",
             parsed.chroma_format_idc, parsed.bit_depth_luma, parsed.bit_depth_chroma
         ));
     }
@@ -140,7 +150,7 @@ mod tests {
     }
 
     fn record() -> HevcConfig {
-        hevc_config(&unhex(VPS), &unhex(SPS), &unhex(PPS), (1280, 720)).unwrap()
+        hevc_config(&unhex(VPS), &unhex(SPS), &unhex(PPS), (1280, 720), 8).unwrap()
     }
 
     #[test]
@@ -202,7 +212,7 @@ mod tests {
     fn the_picture_size_has_to_match_after_cropping() {
         let (v, s, p) = (unhex(VPS), unhex(SPS), unhex(PPS));
         for wrong in [(1280, 736), (1920, 1080), (1280, 719), (0, 0)] {
-            let e = hevc_config(&v, &s, &p, wrong).unwrap_err();
+            let e = hevc_config(&v, &s, &p, wrong, 8).unwrap_err();
             assert!(e.contains("1280x720"), "{e}");
         }
     }
@@ -215,10 +225,10 @@ mod tests {
         let (v, s, p) = (unhex(VPS), unhex(SPS), unhex(PPS));
         let mut other_profile = s.clone();
         other_profile[3] = (other_profile[3] & !0x1f) | 2; // Main 10
-        assert!(hevc_config(&v, &other_profile, &p, (1280, 720)).unwrap_err().contains("not Main"));
+        assert!(hevc_config(&v, &other_profile, &p, (1280, 720), 8).unwrap_err().contains("not Main"));
         let mut other_space = s.clone();
         other_space[3] |= 0x40;
-        assert!(hevc_config(&v, &other_space, &p, (1280, 720)).is_err());
+        assert!(hevc_config(&v, &other_space, &p, (1280, 720), 8).is_err());
     }
 
     #[test]
@@ -226,14 +236,14 @@ mod tests {
         let (v, s, p) = (unhex(VPS), unhex(SPS), unhex(PPS));
         // every truncation of the SPS
         for n in 0..s.len() {
-            assert!(hevc_config(&v, &s[..n], &p, (1280, 720)).is_err(), "SPS cut at {n}");
+            assert!(hevc_config(&v, &s[..n], &p, (1280, 720), 8).is_err(), "SPS cut at {n}");
         }
         // a bit flip anywhere in the SPS: an error or a record, but never a panic
         for byte in 0..s.len() {
             for bit in 0..8 {
                 let mut m = s.clone();
                 m[byte] ^= 1 << bit;
-                let r = std::panic::catch_unwind(|| hevc_config(&v, &m, &p, (1280, 720)));
+                let r = std::panic::catch_unwind(|| hevc_config(&v, &m, &p, (1280, 720), 8));
                 assert!(r.is_ok(), "panic with bit {bit} of byte {byte} flipped");
             }
         }
@@ -246,11 +256,59 @@ mod tests {
             (&v, &p, &s),
         ];
         for (v, s, p) in cases {
-            assert!(hevc_config(v, s, p, (64, 64)).is_err(), "{v:?} {s:?} {p:?}");
+            assert!(hevc_config(v, s, p, (64, 64), 8).is_err(), "{v:?} {s:?} {p:?}");
         }
         // a parameter set too long for the record's 16-bit lengths
         let mut huge = s.clone();
         huge.resize(70_000, 0x55);
-        assert!(hevc_config(&v, &huge, &p, (1280, 720)).is_err());
+        assert!(hevc_config(&v, &huge, &p, (1280, 720), 8).is_err());
+    }
+
+    // The parameter sets NVENC wrote for a 1280x720, 24 fps HEVC Main 10 stream with the PQ signal (VUI: BT.2020
+    // primaries, SMPTE ST 2084, BT.2020 NCL matrix, limited range) on the same GPU.
+    const VPS10: &str = "40010c01ffff2220000003009000000300000300789940c0000003004000000614";
+    const SPS10: &str = "420101222000000300900000030000030078a00280802e1f12d96654a421191bff0c05a8488048a000000300200000030301";
+    const PPS10: &str = "4401c1933c0cc9";
+
+    #[test]
+    fn a_main_10_stream_is_accepted_as_main_10_and_refused_as_main() {
+        let (v, s, p) = (unhex(VPS10), unhex(SPS10), unhex(PPS10));
+        let c = hevc_config(&v, &s, &p, (1280, 720), 10).unwrap();
+        assert_eq!((c.general_profile_space, c.general_tier_flag, c.general_profile_idc), (0, true, 2), "NVENC picked the High tier for level 4 at 12 Mbps");
+        assert_eq!(c.general_profile_compatibility_flags, 0x2000_0000, "Main 10 only");
+        assert_eq!(c.general_constraint_indicator_flags, 0x9000_0000_0000);
+        assert_eq!(c.general_level_idc, 120, "level 4");
+        assert_eq!((c.chroma_format_idc, c.bit_depth_luma, c.bit_depth_chroma), (1, 10, 10));
+        assert_eq!(HevcConfig::parse(&c.to_bytes()).unwrap(), c);
+        // the same stream where Main (8-bit) was asked for, and the 8-bit stream where Main 10 was asked for
+        let e = hevc_config(&v, &s, &p, (1280, 720), 8).unwrap_err();
+        assert!(e.contains("not Main") && !e.contains("Main 10"), "{e}");
+        let e = hevc_config(&unhex(VPS), &unhex(SPS), &unhex(PPS), (1280, 720), 10).unwrap_err();
+        assert!(e.contains("not Main 10"), "{e}");
+        // no other depth
+        for depth in [0, 7, 9, 12, 16, 255] {
+            assert!(hevc_config(&v, &s, &p, (1280, 720), depth).is_err(), "{depth}");
+        }
+        // a Main 10 profile byte with 8-bit depth (or the reverse) is refused whichever is asked for
+        let mut forged = s.clone();
+        forged[3] = (forged[3] & !0x1f) | 1; // profile_idc 1 (Main) but a 10-bit SPS
+        for depth in [8, 10] {
+            assert!(hevc_config(&v, &forged, &p, (1280, 720), depth).is_err(), "{depth}");
+        }
+    }
+
+    #[test]
+    fn truncated_and_flipped_main_10_parameter_sets_never_panic() {
+        let (v, s, p) = (unhex(VPS10), unhex(SPS10), unhex(PPS10));
+        for n in 0..s.len() {
+            assert!(hevc_config(&v, &s[..n], &p, (1280, 720), 10).is_err(), "SPS cut at {n}");
+        }
+        for byte in 0..s.len() {
+            for bit in 0..8 {
+                let mut m = s.clone();
+                m[byte] ^= 1 << bit;
+                assert!(std::panic::catch_unwind(|| hevc_config(&v, &m, &p, (1280, 720), 10)).is_ok(), "panic with bit {bit} of byte {byte} flipped");
+            }
+        }
     }
 }

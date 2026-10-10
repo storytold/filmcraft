@@ -263,7 +263,7 @@ pub fn check_candidate(s: &Session, item: ItemId, path: &str, o: &MatchOptions) 
                     if info.video.is_some() != m.info.video.is_some() {
                         c.problems.push("video stream presence differs".into());
                     }
-                    if let (Some(a), Some(b)) = (&info.audio, &m.info.audio)
+                    if let (Some(a), Some(b)) = (info.audio(), m.info.audio())
                         && a.channels != b.channels
                     {
                         c.problems.push(format!("audio channels differ ({} vs {})", a.channels, b.channels));
@@ -303,8 +303,9 @@ pub fn derive_remap(old: &str, new: &str) -> Option<(String, String)> {
 /// Apply a remap to a path (None when it doesn't start with the old prefix).
 pub fn apply_remap(path: &str, from: &str, to: &str) -> Option<String> {
     let p = path.replace('\\', "/");
-    let from = from.trim_end_matches('/');
-    let rest = p.strip_prefix(from)?;
+    let from = from.replace('\\', "/");
+    let to = to.replace('\\', "/");
+    let rest = p.strip_prefix(from.trim_end_matches('/'))?;
     if !(rest.is_empty() || rest.starts_with('/')) {
         return None;
     }
@@ -406,12 +407,18 @@ pub fn relink(s: &mut Session, p: &Value) -> Result<Value> {
         Some(MediaRef::File { path }) => path,
         _ => return Err(bad("media.relink", format!("item {} is not file media", item.0))),
     };
-    let c = check_candidate(s, item, &path, &o)?;
+    let mut c = check_candidate(s, item, &path, &o)?;
     if !c.ok && !force {
         return Err(EngineError::Other(format!("{} doesn't match {}: {}", file_name(&path), file_name(&old), c.problems.join("; "))));
     }
-    if c.source.is_none() && s.media.open_file(&path, &*s.services).is_err() {
-        return Err(EngineError::Other(format!("{path} can't be opened")));
+    if c.source.is_none() {
+        // Forced past a failed check: the file was never opened for its properties, so do it now
+        // and let the item take the new file's own info instead of keeping the old file's.
+        let Ok(src) = s.media.open_file(&path, &*s.services) else {
+            return Err(EngineError::Other(format!("{path} can't be opened")));
+        };
+        c.info = Some(src.info().clone());
+        c.source = Some(src);
     }
     let mut plans = vec![Plan { item, cand: c }];
     if o.relink_others {

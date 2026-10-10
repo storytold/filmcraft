@@ -509,7 +509,9 @@ impl ExportSettings {
                     v += &format!(", keyframe every {} frames", r.keyint);
                 }
                 Format::Hevc => {
-                    v += &format!(", HEVC Main (hardware encoder), {}", self.bitrate_mode.label());
+                    // Main 10 only where a registered encoder writes HDR (NVENC); VideoToolbox is 8-bit
+                    let profile = if crate::hdr_available(Format::Hevc) { "HEVC Main / Main 10 for HDR" } else { "HEVC Main" };
+                    v += &format!(", {profile} (hardware encoder), {}", self.bitrate_mode.label());
                     v += &match self.bitrate_mode {
                         BitrateMode::Cbr => format!(", {}", mbps(r.target_kbps)),
                         _ => format!(", Target {}, Max {}", mbps(r.target_kbps), mbps(r.max_kbps)),

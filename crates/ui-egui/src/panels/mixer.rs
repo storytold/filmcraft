@@ -128,7 +128,7 @@ pub fn poll_meters(app: &mut FilmcraftApp, ui: &egui::Ui) -> HashMap<u64, Vec<[f
 /// One bar per channel (level, peak hold) with a clip light on top; 5.1 meters carry channel names.
 fn draw_meters(ui: &egui::Ui, r: Rect, m: &[[f32; 2]], channels: usize, t: &Tokens) {
     let p = ui.painter();
-    p.rect_filled(r, 0.0, Color32::BLACK);
+    p.rect_filled(r, 0.0, t.meter_bg);
     let n = channels.max(1);
     let gap = if n > 2 { 1.0 } else { 2.0 };
     let w = (r.width() - gap * (n as f32 - 1.0)) / n as f32;
@@ -138,7 +138,7 @@ fn draw_meters(ui: &egui::Ui, r: Rect, m: &[[f32; 2]], channels: usize, t: &Toke
         crate::widgets::meter_bar(p, br, v[0], v[1], t);
         // clip light
         let lr = Rect::from_min_size(pos2(br.min.x, r.min.y), vec2(w, 4.0));
-        p.rect_filled(lr, 0.0, if v[1] >= -0.1 { RED } else { Color32::from_gray(0x30) });
+        p.rect_filled(lr, 0.0, if v[1] >= -0.1 { RED } else { t.meter_clip_off });
     }
 }
 
@@ -203,7 +203,7 @@ fn targets(seq: &Sequence, id: TrackId) -> Vec<&Track> {
 pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some(seq) = app.session.active_sequence().cloned() else {
-        crate::dock::placeholder(ui, rect, &t, "(no sequence)");
+        crate::dock::placeholder(ui, rect, &t, tl!("(no sequence)"));
         return;
     };
     let meters = poll_meters(app, ui);
@@ -212,7 +212,7 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let body = Rect::from_min_max(pos2(rect.min.x, rect.min.y + 2.0), pos2(rect.max.x, footer.min.y));
     // effects / sends disclosure at the left edge
     let arrow = Rect::from_min_size(pos2(body.min.x + 2.0, body.min.y + 4.0), vec2(14.0, 18.0));
-    let aresp = ui.interact(arrow, egui::Id::new("mixer-fx-toggle"), Sense::click()).on_hover_text("Show/Hide Effects and Sends");
+    let aresp = ui.interact(arrow, egui::Id::new("mixer-fx-toggle"), Sense::click()).on_hover_text(tl!("Show/Hide Effects and Sends"));
     icons::paint(ui.painter(), arrow.shrink(2.0), if app.ui.mixer_fx_open { Icon::ChevronDown } else { Icon::ChevronRight }, t.icon);
     app.auto.add("mixer.showEffects", arrow, "Show/Hide Effects and Sends");
     if aresp.clicked() {
@@ -220,19 +220,19 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     // panel menu: Show/Hide Tracks, Meter Input(s) Only
     let menu_r = Rect::from_min_size(pos2(body.min.x + 2.0, body.min.y + 26.0), vec2(14.0, 18.0));
-    let mresp = ui.interact(menu_r, egui::Id::new("mixer-menu"), Sense::click()).on_hover_text("Audio Track Mixer menu");
+    let mresp = ui.interact(menu_r, egui::Id::new("mixer-menu"), Sense::click()).on_hover_text(tl!("Audio Track Mixer menu"));
     icons::paint(ui.painter(), menu_r.shrink(2.0), Icon::Hamburger, if mresp.hovered() { t.tab_text_active } else { t.icon });
     app.auto.add("mixer.menu", menu_r, "Audio Track Mixer menu");
     let show_hide_id = egui::Id::new("mixer-show-hide-open");
     let mut show_hide: bool = ui.data(|d| d.get_temp(show_hide_id)).unwrap_or(false);
     egui::Popup::menu(&mresp).show(|ui| {
-        let r = ui.button("Show/Hide Tracks…");
+        let r = ui.button(tl!("Show/Hide Tracks…"));
         app.auto.add("mixer.menu.showHide", r.rect, "Show/Hide Tracks…");
         if r.clicked() {
             show_hide = true;
         }
         let on = app.ui.mixer_meter_input_only;
-        let r = ui.selectable_label(on, "Meter Input(s) Only");
+        let r = ui.selectable_label(on, tl!("Meter Input(s) Only"));
         app.auto.add("mixer.menu.meterInputOnly", r.rect, "Meter Input(s) Only");
         if r.clicked() {
             app.ui.mixer_meter_input_only = !on;
@@ -241,7 +241,7 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if show_hide {
         let mut open = true;
         let mut close = false;
-        let w = egui::Window::new("Show/Hide Tracks").id(egui::Id::new("mixer-show-hide")).collapsible(false).resizable(false).open(&mut open).show(
+        let w = egui::Window::new(tl!("Show/Hide Tracks")).id(egui::Id::new("mixer-show-hide")).collapsible(false).resizable(false).open(&mut open).show(
             ui.ctx(),
             |ui| {
                 for id in seq.audio_tracks.iter().chain(&seq.submix_tracks).map(|t| t.id) {
@@ -259,12 +259,12 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 }
                 ui.horizontal(|ui| {
-                    let r = ui.button("Show All");
+                    let r = ui.button(tl!("Show All"));
                     app.auto.add("mixer.showHide.all", r.rect, "Show All");
                     if r.clicked() {
                         app.ui.mixer_hidden.clear();
                     }
-                    let r = ui.button("OK");
+                    let r = ui.button(tl!("OK"));
                     app.auto.add("mixer.showHide.ok", r.rect, "OK");
                     if r.clicked() {
                         close = true;
@@ -308,7 +308,7 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let ky = bar.min.y + (bar.height() - kh) * voff / max_voff;
         let knob = Rect::from_min_size(pos2(bar.min.x, ky), vec2(bar.width(), kh));
         let kr = ui.interact(knob, egui::Id::new("mixer-vscroll-knob"), Sense::drag());
-        ui.painter().rect_filled(knob, 3.0, if kr.dragged() { t.accent } else { Color32::from_gray(0x5a) });
+        ui.painter().rect_filled(knob, 3.0, if kr.dragged() { t.accent } else { t.fader_knob });
         if kr.dragged() {
             voff = (voff + kr.drag_delta().y * (need + 4.0) / bar.height()).clamp(0.0, max_voff);
         }
@@ -322,7 +322,7 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let kx = bar.min.x + (bar.width() - kw) * off / max_off;
         let knob = Rect::from_min_size(pos2(kx, bar.min.y), vec2(kw, bar.height()));
         let kr = ui.interact(knob, egui::Id::new("mixer-hscroll-knob"), Sense::drag());
-        ui.painter().rect_filled(knob, 4.0, if kr.dragged() { t.accent } else { Color32::from_gray(0x5a) });
+        ui.painter().rect_filled(knob, 4.0, if kr.dragged() { t.accent } else { t.fader_knob });
         if kr.dragged() {
             off = (off + kr.drag_delta().x * total / bar.width()).clamp(0.0, max_off);
         }
@@ -372,7 +372,7 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
     let ap = format!("mixer.{label}");
     let is_master = id == MASTER_STRIP;
     let sid = json!(id.0);
-    ui.painter().rect_filled(sr, 3.0, Color32::from_gray(0x24));
+    ui.painter().rect_filled(sr, 3.0, t.control_surface);
     ui.painter().line_segment([pos2(sr.max.x + 1.0, sr.min.y), pos2(sr.max.x + 1.0, sr.max.y)], Stroke::new(1.0, t.separator));
     let x = sr.min.x;
     let w = sr.width();
@@ -396,7 +396,7 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
                 match fx {
                     Some(e) => {
                         if crate::panels::audio_fx_editor::has_editor(&e.effect) {
-                            let r0 = ui.button("Edit…");
+                            let r0 = ui.button(tl!("Edit…"));
                             app.auto.add(&format!("{ap}.fx.{k}.edit"), r0.rect, "Edit…");
                             if r0.clicked() {
                                 open_editor = Some(crate::panels::audio_fx_editor::FxTarget::Insert { strip: id.0, slot: k });
@@ -404,18 +404,18 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
                             ui.separator();
                         }
                         let on = e.enabled;
-                        let r1 = ui.selectable_label(!on, "Bypass");
+                        let r1 = ui.selectable_label(!on, tl!("Bypass"));
                         app.auto.add(&format!("{ap}.fx.{k}.bypass"), r1.rect, "Bypass");
                         if r1.clicked() {
                             cx.cmd("mixer.setInsert", json!({"strip": sid, "slot": k, "enabled": !on}));
                         }
-                        let r2 = ui.selectable_label(e.post_fader, "Post-Fader");
+                        let r2 = ui.selectable_label(e.post_fader, tl!("Post-Fader"));
                         app.auto.add(&format!("{ap}.fx.{k}.postFader"), r2.rect, "Post-Fader");
                         if r2.clicked() {
                             cx.cmd("mixer.setInsert", json!({"strip": sid, "slot": k, "postFader": !e.post_fader}));
                         }
                         ui.separator();
-                        let r3 = ui.button("Remove Effect");
+                        let r3 = ui.button(tl!("Remove Effect"));
                         app.auto.add(&format!("{ap}.fx.{k}.remove"), r3.rect, "Remove Effect");
                         if r3.clicked() {
                             cx.cmd("mixer.removeInsert", json!({"strip": sid, "slot": k}));
@@ -452,7 +452,7 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
                         }
                     }
                     None => {
-                        ui.label("Fill the slots above first");
+                        ui.label(tl!("Fill the slots above first"));
                     }
                 }
             });
@@ -472,7 +472,7 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
             let r = Rect::from_min_size(pos2(x + 4.0, y), vec2(w - 8.0, SLOT_H - 2.0));
             let snd = tr.mixer.sends.get(k);
             let text = match snd {
-                Some(s) => format!("{}{} {}", if s.pre_fader { "pre " } else { "" }, strip_label(seq, s.target), db_text(s.level_db)),
+                Some(s) => format!("{}{} {}", if s.pre_fader { tl!("pre ") } else { "" }, strip_label(seq, s.target), db_text(s.level_db)),
                 None => String::new(),
             };
             if is_master {
@@ -493,18 +493,18 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
                         if sl.changed() {
                             cx.cmd("mixer.setSend", json!({"strip": sid, "send": k, "levelDb": lvl}));
                         }
-                        let r1 = ui.selectable_label(s.pre_fader, "Pre-Fader");
+                        let r1 = ui.selectable_label(s.pre_fader, tl!("Pre-Fader"));
                         app.auto.add(&format!("{ap}.send.{k}.preFader"), r1.rect, "Pre-Fader");
                         if r1.clicked() {
                             cx.cmd("mixer.setSend", json!({"strip": sid, "send": k, "preFader": !s.pre_fader}));
                         }
-                        let r2 = ui.selectable_label(s.muted, "Mute Send");
+                        let r2 = ui.selectable_label(s.muted, tl!("Mute Send"));
                         app.auto.add(&format!("{ap}.send.{k}.mute"), r2.rect, "Mute Send");
                         if r2.clicked() {
                             cx.cmd("mixer.setSend", json!({"strip": sid, "send": k, "muted": !s.muted}));
                         }
                         ui.separator();
-                        let r3 = ui.button("Remove Send");
+                        let r3 = ui.button(tl!("Remove Send"));
                         app.auto.add(&format!("{ap}.send.{k}.remove"), r3.rect, "Remove Send");
                         if r3.clicked() {
                             cx.cmd("mixer.removeSend", json!({"strip": sid, "send": k}));
@@ -520,7 +520,7 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
                             }
                         }
                         if seq.submix_tracks.iter().all(|s| s.id != id) {
-                            let r = ui.button("New Submix");
+                            let r = ui.button(tl!("New Submix"));
                             app.auto.add(&format!("{ap}.send.{k}.newSubmix"), r.rect, "New Submix");
                             if r.clicked() {
                                 let n = seq.submix_tracks.len();
@@ -530,7 +530,7 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
                         }
                     }
                     None => {
-                        ui.label("Fill the slots above first");
+                        ui.label(tl!("Fill the slots above first"));
                     }
                 }
             });
@@ -542,11 +542,11 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
     // ---- input / output
     if !is_master {
         let ir = Rect::from_min_size(pos2(x + 4.0, y), vec2(w - 8.0, 20.0));
-        let iresp = crate::widgets::dropdown_text(ui, ir, tr.mixer.input_map.label(), &t, egui::Id::new((&ap, "input")));
+        let iresp = crate::widgets::dropdown_text(ui, ir, crate::i18n::t(tr.mixer.input_map.label()), &t, egui::Id::new((&ap, "input")));
         app.auto.add(&format!("{ap}.input"), ir, "Input channel mapping");
         egui::Popup::menu(&iresp).show(|ui| {
             for m in InputMap::ALL {
-                let r = ui.selectable_label(m == tr.mixer.input_map, m.label());
+                let r = ui.selectable_label(m == tr.mixer.input_map, crate::i18n::t(m.label()));
                 app.auto.add(&format!("{ap}.input.{}", m.label()), r.rect, m.label());
                 if r.clicked() {
                     cx.cmd("mixer.setStrip", json!({"strip": sid, "inputMap": m.label()}));
@@ -555,12 +555,13 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
         });
         y += 24.0;
         let or = Rect::from_min_size(pos2(x + 4.0, y), vec2(w - 8.0, 20.0));
-        let out_label = tr.mixer.output.map(|o| seq.mix_track(o).map(|s| s.name.clone()).unwrap_or_else(|| "Mix".into())).unwrap_or_else(|| "Mix".into());
+        let out_label =
+            tr.mixer.output.map(|o| seq.mix_track(o).map(|s| s.name.clone()).unwrap_or_else(|| tl!("Mix").into())).unwrap_or_else(|| tl!("Mix").into());
         let oresp = crate::widgets::dropdown_text(ui, or, &out_label, &t, egui::Id::new((&ap, "output")));
         app.auto.add(&format!("{ap}.output"), or, "Track output assignment");
         let tg = targets(seq, id);
         egui::Popup::menu(&oresp).show(|ui| {
-            let r = ui.selectable_label(tr.mixer.output.is_none(), "Mix");
+            let r = ui.selectable_label(tr.mixer.output.is_none(), tl!("Mix"));
             app.auto.add(&format!("{ap}.output.Mix"), r.rect, "Mix");
             if r.clicked() {
                 cx.cmd("mixer.setStrip", json!({"strip": sid, "output": "Mix"}));
@@ -582,8 +583,8 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
             let pan = shown(app, &tr, LANE_PAN, cx.now);
             let kc = pos2(sr.center().x, y + 20.0);
             let kr = Rect::from_center_size(kc, vec2(38.0, 38.0));
-            let kresp = ui.interact(kr, egui::Id::new((&ap, "pan")), Sense::click_and_drag()).on_hover_text("Pan / balance (drag; double-click: centre)");
-            let ring = if kresp.hovered() || kresp.dragged() { t.tab_text_active } else { Color32::from_gray(0xb0) };
+            let kresp = ui.interact(kr, egui::Id::new((&ap, "pan")), Sense::click_and_drag()).on_hover_text(tl!("Pan / balance (drag; double-click: centre)"));
+            let ring = if kresp.hovered() || kresp.dragged() { t.tab_text_active } else { t.control_handle_dim };
             ui.painter().circle_stroke(kc, 16.0, Stroke::new(2.0, ring));
             let ang = (pan / 100.0) as f32 * 135f32.to_radians();
             ui.painter().line_segment([kc, kc + vec2(ang.sin(), -ang.cos()) * 14.0], Stroke::new(2.0, ring));
@@ -619,14 +620,14 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
     // ---- automation mode
     let mr = Rect::from_min_size(pos2(x + 4.0, y), vec2(w - 8.0, 20.0));
     let mode = tr.mixer.mode;
-    let mresp = crate::widgets::dropdown_text(ui, mr, mode.label(), &t, egui::Id::new((&ap, "mode")));
+    let mresp = crate::widgets::dropdown_text(ui, mr, crate::i18n::t(mode.label()), &t, egui::Id::new((&ap, "mode")));
     if cx.recording && mode.writes() {
         ui.painter().rect_stroke(mr, 4.0, Stroke::new(1.0, RED), StrokeKind::Inside);
     }
     app.auto.add(&format!("{ap}.mode"), mr, &format!("Automation mode: {}", mode.label()));
     egui::Popup::menu(&mresp).show(|ui| {
         for m in AutomationMode::ALL {
-            let r = ui.selectable_label(m == mode, m.label());
+            let r = ui.selectable_label(m == mode, crate::i18n::t(m.label()));
             app.auto.add(&format!("{ap}.mode.{}", m.label()), r.rect, m.label());
             if r.clicked() {
                 cx.cmd("mixer.setStrip", json!({"strip": sid, "mode": m.label()}));
@@ -660,14 +661,14 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
         let is_sub = seq.submix_tracks.iter().any(|s| s.id == id);
         if is_sub {
             let r_r = crate::widgets::letter_toggle(ui, b(2.0), "◆", tr.mixer.solo_safe, Color32::from_gray(0xc8), &t, egui::Id::new((&ap, "safe")))
-                .on_hover_text("Solo safe");
+                .on_hover_text(tl!("Solo safe"));
             app.auto.add(&format!("{ap}.soloSafe"), b(2.0), "Solo Safe");
             if r_r.clicked() {
                 cx.cmd("mixer.setStrip", json!({"strip": sid, "soloSafe": !tr.mixer.solo_safe}));
             }
         } else {
             let r_r = crate::widgets::letter_toggle(ui, b(2.0), "R", tr.mixer.record_arm, RED, &t, egui::Id::new((&ap, "R")))
-                .on_hover_text("Enable track for recording");
+                .on_hover_text(tl!("Enable track for recording"));
             app.auto.add(&format!("{ap}.record"), b(2.0), "Enable Track for Recording");
             if r_r.clicked() {
                 cx.cmd("mixer.setStrip", json!({"strip": sid, "recordArm": !tr.mixer.record_arm}));
@@ -692,15 +693,16 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
             small_text(ui, pos2(x + 26.0, yy), Align2::RIGHT_CENTER, &s, 9.0, t.text_dim);
             ui.painter().line_segment([pos2(x + 28.0, yy), pos2(x + 31.0, yy)], Stroke::new(1.0, t.text_faint));
         }
-        ui.painter().rect_filled(track, 2.0, Color32::from_gray(0x10));
-        ui.painter().rect_stroke(track, 2.0, Stroke::new(1.0, Color32::from_gray(0x50)), StrokeKind::Inside);
+        ui.painter().rect_filled(track, 2.0, t.control_well);
+        ui.painter().rect_stroke(track, 2.0, Stroke::new(1.0, t.control_border), StrokeKind::Inside);
         let vol = shown(app, &tr, LANE_VOLUME, cx.now);
         let cy = ypos(vol);
         let cap = Rect::from_center_size(pos2(track.center().x, cy), vec2(18.0, 26.0));
-        let fresp = ui.interact(cap.expand(3.0), egui::Id::new((&ap, "fader")), Sense::click_and_drag()).on_hover_text("Volume (drag; double-click: 0 dB)");
+        let fresp =
+            ui.interact(cap.expand(3.0), egui::Id::new((&ap, "fader")), Sense::click_and_drag()).on_hover_text(tl!("Volume (drag; double-click: 0 dB)"));
         let held = app.session.previews.live.get(id, LANE_VOLUME).is_some();
-        let col = if fresp.dragged() || held { t.accent } else { Color32::from_gray(0xe0) };
-        ui.painter().rect_filled(cap, 3.0, Color32::from_gray(0x2a));
+        let col = if fresp.dragged() || held { t.accent } else { t.control_handle };
+        ui.painter().rect_filled(cap, 3.0, t.control_handle_bg);
         ui.painter().rect_stroke(cap, 3.0, Stroke::new(2.0, col), StrokeKind::Inside);
         ui.painter().line_segment([pos2(cap.min.x + 5.0, cy), pos2(cap.max.x - 5.0, cy)], Stroke::new(2.0, col));
         app.auto.add(&format!("{ap}.fader"), cap, &format!("Volume {}", db_text(vol)));
@@ -750,7 +752,7 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
     let nr = Rect::from_min_max(pos2(x, sr.max.y - name_h), sr.max);
     ui.painter().line_segment([pos2(nr.min.x + 4.0, nr.min.y), pos2(nr.max.x - 4.0, nr.min.y)], Stroke::new(1.0, t.separator));
     if is_master {
-        small_text(ui, nr.center(), Align2::CENTER_CENTER, "Mix", 12.0, t.text);
+        small_text(ui, nr.center(), Align2::CENTER_CENTER, tl!("Mix"), 12.0, t.text);
     } else {
         small_text(ui, pos2(nr.min.x + 6.0, nr.center().y), Align2::LEFT_CENTER, &label, 12.0, t.text);
         let name = ui.painter().with_clip_rect(Rect::from_min_max(pos2(nr.min.x + 26.0, nr.min.y), nr.max).intersect(ui.clip_rect()));
@@ -767,16 +769,17 @@ fn pan51_panner(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, tr: &Tr
     let px = shown(app, tr, LANE_PAN51_X, cx.now);
     let py = shown(app, tr, LANE_PAN51_Y, cx.now);
     let sq = Rect::from_min_size(pos2(r.min.x, r.min.y), vec2(46.0, 46.0));
-    let resp = ui.interact(sq, egui::Id::new((ap, "pan51")), Sense::click_and_drag()).on_hover_text("5.1 panner (drag the puck; double-click: front centre)");
+    let resp =
+        ui.interact(sq, egui::Id::new((ap, "pan51")), Sense::click_and_drag()).on_hover_text(tl!("5.1 panner (drag the puck; double-click: front centre)"));
     let p = ui.painter();
-    p.rect_filled(sq, 3.0, Color32::from_gray(0x16));
-    p.rect_stroke(sq, 3.0, Stroke::new(1.0, if resp.hovered() || resp.dragged() { t.tab_text_active } else { Color32::from_gray(0x60) }), StrokeKind::Inside);
+    p.rect_filled(sq, 3.0, t.panner_bg);
+    p.rect_stroke(sq, 3.0, Stroke::new(1.0, if resp.hovered() || resp.dragged() { t.tab_text_active } else { t.panner_border }), StrokeKind::Inside);
     let inner = sq.shrink(5.0);
     let to_pos =
         |x: f64, y: f64| pos2(inner.center().x + (x / 100.0) as f32 * inner.width() / 2.0, inner.center().y - (y / 100.0) as f32 * inner.height() / 2.0);
     // speakers
     for (x, y) in [(-100.0, 100.0), (0.0, 100.0), (100.0, 100.0), (-100.0, -100.0), (100.0, -100.0)] {
-        p.rect_filled(Rect::from_center_size(to_pos(x, y), vec2(4.0, 4.0)), 1.0, Color32::from_gray(0x90));
+        p.rect_filled(Rect::from_center_size(to_pos(x, y), vec2(4.0, 4.0)), 1.0, t.panner_speaker);
     }
     let puck = to_pos(px, py);
     p.circle_filled(puck, 4.0, if resp.dragged() { t.accent } else { t.hot_text });
@@ -804,7 +807,7 @@ fn pan51_panner(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, tr: &Tr
     let center = shown(app, tr, LANE_PAN51_CENTER, cx.now);
     let lfe = shown(app, tr, LANE_PAN51_LFE, cx.now);
     let col_x = sq.max.x + 4.0;
-    small_text(ui, pos2(col_x, r.min.y + 6.0), Align2::LEFT_CENTER, "Center", 9.0, t.text_dim);
+    small_text(ui, pos2(col_x, r.min.y + 6.0), Align2::LEFT_CENTER, tl!("Center"), 9.0, t.text_dim);
     let cr = Rect::from_min_size(pos2(col_x, r.min.y + 12.0), vec2(r.max.x - col_x, 14.0));
     let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(cr));
     let (cresp, nc) = crate::widgets::hot_number(&mut cui, egui::Id::new((ap, "pan51.center")), center, 1.0, (0.0, 100.0), 0, "%", &t);
@@ -833,12 +836,12 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, cx: &mut Ctx)
     ui.painter().text(pos2(row.max.x - 12.0, row.center().y), Align2::RIGHT_CENTER, dur, Tokens::mono(12.0), t.text_dim);
     let playing = app.playback.playing;
     let buttons: [(Icon, &str, &str); 6] = [
-        (Icon::GoToIn, "markers.goToIn", "Go to In Point"),
-        (Icon::GoToOut, "markers.goToOut", "Go to Out Point"),
-        (if playing { Icon::Pause } else { Icon::Play }, "playback.toggle", "Play-Stop Toggle (Space)"),
-        (Icon::Play, "playback.inToOut", "Play In to Out"),
-        (Icon::Loop, "playback.loop", "Loop"),
-        (Icon::Mic, "voiceover.recordToggle", "Record (voice-over on the record-enabled track)"),
+        (Icon::GoToIn, "markers.goToIn", tl!("Go to In Point")),
+        (Icon::GoToOut, "markers.goToOut", tl!("Go to Out Point")),
+        (if playing { Icon::Pause } else { Icon::Play }, "playback.toggle", tl!("Play-Stop Toggle (Space)")),
+        (Icon::Play, "playback.inToOut", tl!("Play In to Out")),
+        (Icon::Loop, "playback.loop", tl!("Loop")),
+        (Icon::Mic, "voiceover.recordToggle", tl!("Record (voice-over on the record-enabled track)")),
     ];
     let bw = 30.0;
     let mut x = row.center().x - bw * buttons.len() as f32 / 2.0;
@@ -884,7 +887,7 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, cx: &mut Ctx)
 pub fn clip_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some(seq) = app.session.active_sequence().cloned() else {
-        crate::dock::placeholder(ui, rect, &t, "(no sequence)");
+        crate::dock::placeholder(ui, rect, &t, tl!("(no sequence)"));
         return;
     };
     let meters = poll_meters(app, ui);
@@ -900,7 +903,7 @@ pub fn clip_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let sr = Rect::from_min_max(pos2(x, rect.min.y + 4.0), pos2(x + STRIP_W, rect.max.y - 4.0));
         let label = format!("A{}", i + 1);
         let ap = format!("clipMixer.{label}");
-        ui.painter().rect_filled(sr, 3.0, Color32::from_gray(0x24));
+        ui.painter().rect_filled(sr, 3.0, t.control_surface);
         let clip = tr.item_at(now).filter(|c| c.enabled);
         let active = clip.is_some();
         let dimc = |c: Color32| if active { c } else { c.gamma_multiply(0.4) };
@@ -930,9 +933,9 @@ pub fn clip_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let kc = pos2(sr.center().x, sr.min.y + 36.0);
         let kr = Rect::from_center_size(kc, vec2(30.0, 30.0));
         let kresp = ui.interact(kr, egui::Id::new((&ap, "pan")), Sense::click_and_drag());
-        ui.painter().circle_stroke(kc, 14.0, Stroke::new(2.0, dimc(Color32::from_gray(0xb0))));
+        ui.painter().circle_stroke(kc, 14.0, Stroke::new(2.0, dimc(t.control_handle_dim)));
         let ang = (pan / 100.0) as f32 * 135f32.to_radians();
-        ui.painter().line_segment([kc, kc + vec2(ang.sin(), -ang.cos()) * 12.0], Stroke::new(2.0, dimc(Color32::from_gray(0xb0))));
+        ui.painter().line_segment([kc, kc + vec2(ang.sin(), -ang.cos()) * 12.0], Stroke::new(2.0, dimc(t.control_handle_dim)));
         small_text(ui, pos2(kc.x - 18.0, kc.y + 16.0), Align2::CENTER_CENTER, "L", 11.0, dimc(t.hot_text));
         small_text(ui, pos2(kc.x + 18.0, kc.y + 16.0), Align2::CENTER_CENTER, "R", 11.0, dimc(t.hot_text));
         small_text(ui, pos2(kc.x, kc.y + 26.0), Align2::CENTER_CENTER, &format!("{pan:.1}"), 11.5, dimc(t.hot_text));
@@ -950,11 +953,11 @@ pub fn clip_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         // automation mode (Clip Mixer)
         let mode = filmcraft_engine::mixer::clip_mode(&app.session, tr.id);
         let mdr = Rect::from_min_size(pos2(sr.min.x + 4.0, sr.min.y + 2.0), vec2(sr.width() - 8.0, 16.0));
-        let mdresp = crate::widgets::dropdown_text(ui, mdr, mode.label(), &t, egui::Id::new((&ap, "mode")));
+        let mdresp = crate::widgets::dropdown_text(ui, mdr, crate::i18n::t(mode.label()), &t, egui::Id::new((&ap, "mode")));
         app.auto.add(&format!("{ap}.mode"), mdr, &format!("Clip automation mode: {}", mode.label()));
         egui::Popup::menu(&mdresp).show(|ui| {
             for m in AutomationMode::ALL {
-                let r = ui.selectable_label(m == mode, m.label());
+                let r = ui.selectable_label(m == mode, crate::i18n::t(m.label()));
                 app.auto.add(&format!("{ap}.mode.{}", m.label()), r.rect, m.label());
                 if r.clicked() {
                     acts.push(("clipMixer.setMode".into(), json!({"track": tr.id.0, "mode": m.label()})));
@@ -975,7 +978,7 @@ pub fn clip_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             acts.push(("mixer.setStrip".into(), json!({"strip": tr.id.0, "solo": !tr.solo})));
         }
         let kresp =
-            crate::widgets::icon_toggle(ui, b(2.0), Icon::Keyframe, kf, &t, egui::Id::new((&ap, "kf")), Some(t.accent)).on_hover_text("Write keyframes");
+            crate::widgets::icon_toggle(ui, b(2.0), Icon::Keyframe, kf, &t, egui::Id::new((&ap, "kf")), Some(t.accent)).on_hover_text(tl!("Write keyframes"));
         app.auto.add(&format!("{ap}.keyframe"), b(2.0), "Write Keyframes");
         if kresp.clicked() {
             write_kf.insert(tr.id.0, !kf);
@@ -989,13 +992,13 @@ pub fn clip_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let s = if d <= FADER_MIN_DB { "-∞".to_string() } else { format!("{}", d as i32) };
                 small_text(ui, pos2(sr.min.x + 26.0, ypos(d)), Align2::RIGHT_CENTER, &s, 9.0, t.text_dim);
             }
-            ui.painter().rect_filled(track, 2.0, Color32::from_gray(0x10));
+            ui.painter().rect_filled(track, 2.0, t.control_well);
             let cy = ypos(vol);
             let cap = Rect::from_center_size(pos2(track.center().x, cy), vec2(18.0, 26.0));
             let fresp = ui.interact(cap.expand(3.0), egui::Id::new((&ap, "fader")), Sense::click_and_drag());
-            ui.painter().rect_filled(cap, 3.0, Color32::from_gray(0x2a));
-            ui.painter().rect_stroke(cap, 3.0, Stroke::new(2.0, dimc(Color32::from_gray(0xe0))), StrokeKind::Inside);
-            ui.painter().line_segment([pos2(cap.min.x + 5.0, cy), pos2(cap.max.x - 5.0, cy)], Stroke::new(2.0, dimc(Color32::from_gray(0xe0))));
+            ui.painter().rect_filled(cap, 3.0, t.control_handle_bg);
+            ui.painter().rect_stroke(cap, 3.0, Stroke::new(2.0, dimc(t.control_handle)), StrokeKind::Inside);
+            ui.painter().line_segment([pos2(cap.min.x + 5.0, cy), pos2(cap.max.x - 5.0, cy)], Stroke::new(2.0, dimc(t.control_handle)));
             app.auto.add(&format!("{ap}.fader"), cap, &format!("Clip volume {}", db_text(vol)));
             if fresp.dragged() && active && fresp.drag_delta().y != 0.0 {
                 set(&mut acts, "volume", "level", pos_to_db(db_to_pos(vol) - fresp.drag_delta().y / track.height()), fresp.drag_started());
@@ -1022,6 +1025,29 @@ pub fn clip_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn meter_well_and_inactive_clip_light_follow_theme() {
+        for kind in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Medium, crate::theme::ThemeKind::Light] {
+            let t = Tokens::for_kind(kind);
+            let ctx = egui::Context::default();
+            let area = Rect::from_min_size(pos2(20.0, 20.0), vec2(40.0, 100.0));
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| draw_meters(ui, area, &[[-90.0; 2]], 1, &t));
+            out.textures_delta.clear();
+            let rectangles: Vec<_> = out
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Rect(r) => Some(r),
+                    _ => None,
+                })
+                .collect();
+            let well = rectangles.iter().find(|r| r.rect == area).expect("painted meter well");
+            assert_eq!(well.fill, t.meter_bg, "meter well did not follow {kind:?}");
+            let light = rectangles.iter().find(|r| r.rect.height() == 4.0).expect("painted clip light");
+            assert_eq!(light.fill, t.meter_clip_off, "clip light did not follow {kind:?}");
+        }
+    }
 
     #[test]
     fn taper_roundtrips_and_is_monotonic() {

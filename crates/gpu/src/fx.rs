@@ -254,7 +254,7 @@ impl FxStage {
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: composite,
-                entry_point: Some("fs"),
+                entry_point: Some("fs_fx_source"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState { format: FX_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
             }),

@@ -57,6 +57,7 @@ fn clip(id: u64, start: f64, dur: f64, src_in: f64) -> TrackItem {
         hold_filters: false,
         field_options: None,
         source_channels: Vec::new(),
+        audio_stream: 0,
         graphic: None,
     }
 }

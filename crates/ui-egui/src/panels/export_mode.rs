@@ -8,9 +8,7 @@
 //! action runs an engine command (`file.exportMedia`, `export.queue.*`, `export.presets.*`,
 //! `export.quick`).
 //!
-//! Automation ids: `export.fileName`, `export.location`, `export.preset` (while open, the entries
-//! scrolled into view: `export.preset.favorite.<name>`, `export.preset.option.<name>` and
-//! `export.preset.option.more`), `export.preset.more`, dropdowns' entries `<id>.option.<n>`,
+//! Automation ids: `export.fileName`, `export.location`, `export.preset`, `export.preset.more`,
 //! `export.format`, `export.section.<video|audio|multiplexer|captions|effects|metadata>`,
 //! `export.video.*`, `export.audio.*`, `export.effects.*`, `export.metadata.*`, `export.range`,
 //! `export.scaling`, `export.summary`, `export.estimate`, `export.sendToQueue`, `export.button`,
@@ -18,7 +16,7 @@
 //! Preset Manager: `presetManager.search`, `presetManager.favoritesOnly`,
 //! `presetManager.item.<name>`, `presetManager.favorite.<name>`, `presetManager.saveName`,
 //! `presetManager.save`, `presetManager.delete`, `presetManager.import`, `presetManager.export`,
-//! `presetManager.ok`, `presetManager.cancel`, `presetManager.close` (title-bar ×); Quick Export: `quickExport.path`,
+//! `presetManager.ok`, `presetManager.cancel`; Quick Export: `quickExport.path`,
 //! `quickExport.preset.<name>`, `quickExport.go`, `quickExport.close`.
 
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
@@ -122,7 +120,7 @@ pub fn apply_preset(app: &mut FilmcraftApp, name: &str) -> bool {
             true
         }
         None => {
-            app.ui.status = format!("No export preset named `{name}`");
+            app.ui.status = tlf!("No export preset named `{name}`", name);
             false
         }
     }
@@ -167,7 +165,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.painter().rect_filled(r, t.radius, t.panel_bg);
     }
     let Some(seq_id) = app.session.state.active_sequence else {
-        crate::dock::placeholder(ui, mid, &t, "Open a sequence to export");
+        crate::dock::placeholder(ui, mid, &t, tl!("Open a sequence to export"));
         queue_column(app, ui, left);
         return;
     };
@@ -197,21 +195,21 @@ fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let mut reg = Reg::default();
     let p = ui.painter();
-    p.text(rect.min + vec2(14.0, 20.0), Align2::LEFT_CENTER, "Destinations", Tokens::semibold(13.0), t.text);
+    p.text(rect.min + vec2(14.0, 20.0), Align2::LEFT_CENTER, tl!("Destinations"), Tokens::semibold(13.0), t.text);
     let mf = Rect::from_min_size(rect.min + vec2(8.0, 38.0), vec2(rect.width() - 16.0, 26.0));
     p.rect_filled(mf, 4.0, t.row_selected);
-    p.text(pos2(mf.min.x + 10.0, mf.center().y), Align2::LEFT_CENTER, "Media File", Tokens::ui(12.5), t.text);
+    p.text(pos2(mf.min.x + 10.0, mf.center().y), Align2::LEFT_CENTER, tl!("Media File"), Tokens::ui(12.5), t.text);
     reg.add("export.destination.mediaFile", mf, "Media File");
     let qtop = mf.max.y + 18.0;
     let n = app.session.export_queue.items.len();
-    p.text(pos2(rect.min.x + 14.0, qtop), Align2::LEFT_CENTER, format!("Queue ({n})"), Tokens::semibold(13.0), t.text);
+    p.text(pos2(rect.min.x + 14.0, qtop), Align2::LEFT_CENTER, tlf!("Queue ({n})", n), Tokens::semibold(13.0), t.text);
     let body = Rect::from_min_max(pos2(rect.min.x + 8.0, qtop + 14.0), pos2(rect.max.x - 8.0, rect.max.y - 40.0));
     let items: Vec<Value> = app.session.execute("export.queue.list", json!({})).ok().and_then(|v| v["items"].as_array().cloned()).unwrap_or_default();
     let mut action: Option<(&'static str, Value)> = None;
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("export-queue"));
     egui::ScrollArea::vertical().id_salt("export-queue-scroll").auto_shrink([false, false]).show(&mut child, |ui| {
         if items.is_empty() {
-            ui.label(egui::RichText::new("Send exports here with Send to Queue, then start the queue.").color(t.text_dim).size(11.5));
+            ui.label(egui::RichText::new(tl!("Send exports here with Send to Queue, then start the queue.")).color(t.text_dim).size(11.5));
         }
         for (i, it) in items.iter().enumerate() {
             let id = it["id"].as_u64().unwrap_or(0);
@@ -224,18 +222,20 @@ fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     ui.label(egui::RichText::new(format!("{} → {file}", it["sequenceName"].as_str().unwrap_or(""))).size(12.0).color(t.text));
                     let preset = it["preset"].as_str().filter(|s| !s.is_empty()).unwrap_or(CUSTOM);
                     let (label, col) = match status {
-                        "ready" => ("Ready".to_string(), t.text_dim),
-                        "encoding" => (format!("Encoding {:.0}%{}", it["progress"].as_f64().unwrap_or(0.0) * 100.0, super::eta_suffix(it)), t.accent),
-                        "done" => ("Done".to_string(), t.render_green),
-                        "failed" => (format!("Failed: {}", it["error"].as_str().unwrap_or("")), t.danger),
-                        _ => ("Cancelled".to_string(), t.text_faint),
+                        "ready" => (tl!("Ready").to_string(), t.text_dim),
+                        "encoding" => {
+                            (tlf!("Encoding {n}%", n = format!("{:.0}", it["progress"].as_f64().unwrap_or(0.0) * 100.0)) + &super::eta_suffix(it), t.accent)
+                        }
+                        "done" => (tl!("Done").to_string(), t.render_green),
+                        "failed" => (tlf!("Failed: {e}", e = it["error"].as_str().unwrap_or("")), t.danger),
+                        _ => (tl!("Cancelled").to_string(), t.text_faint),
                     };
                     if status == "encoding" {
                         // the progress and the time left on a line of their own: the column is narrow, and a wrapped "· 15 s left" reads badly
-                        ui.label(egui::RichText::new(preset).size(11.0).color(t.text_dim));
+                        ui.label(egui::RichText::new(crate::i18n::t(preset)).size(11.0).color(t.text_dim));
                         ui.label(egui::RichText::new(label).size(11.0).color(col));
                     } else {
-                        ui.label(egui::RichText::new(format!("{preset} · {label}")).size(11.0).color(col));
+                        ui.label(egui::RichText::new(format!("{} · {label}", crate::i18n::t(preset))).size(11.0).color(col));
                     }
                     if status == "encoding" {
                         ui.add(egui::ProgressBar::new(it["progress"].as_f64().unwrap_or(0.0) as f32).desired_height(6.0));
@@ -267,17 +267,18 @@ fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let has_ready = items.iter().any(|i| i["status"] == "ready");
     let foot = Rect::from_min_max(pos2(rect.min.x + 8.0, rect.max.y - 34.0), pos2(rect.max.x - 8.0, rect.max.y - 6.0));
     let mut f = ui.new_child(egui::UiBuilder::new().max_rect(foot).layout(egui::Layout::left_to_right(egui::Align::Center)));
-    let r = f.add_enabled(!running && has_ready, egui::Button::new("Start Queue"));
+    let r = f.add_enabled(!running && has_ready, egui::Button::new(tl!("Start Queue")));
     reg.add("export.queue.start", r.rect, "Start Queue");
     if r.clicked() {
         action = Some(("export.queue.start", json!({})));
     }
-    let r = f.add_enabled(running, egui::Button::new("Stop"));
+    let r = f.add_enabled(running, egui::Button::new(tl!("Stop")));
     reg.add("export.queue.stop", r.rect, "Stop");
     if r.clicked() {
         action = Some(("export.queue.stop", json!({})));
     }
-    let r = f.add_enabled(items.iter().any(|i| matches!(i["status"].as_str(), Some("done" | "failed" | "cancelled"))), egui::Button::new("Clear Finished"));
+    let r =
+        f.add_enabled(items.iter().any(|i| matches!(i["status"].as_str(), Some("done" | "failed" | "cancelled"))), egui::Button::new(tl!("Clear Finished")));
     reg.add("export.queue.clear", r.rect, "Clear Finished");
     if r.clicked() {
         action = Some(("export.queue.clear", json!({})));
@@ -308,10 +309,10 @@ fn row<R>(ui: &mut egui::Ui, t: &Tokens, label: &str, add: impl FnOnce(&mut egui
 /// A combo box over `options` (label, enabled); returns the chosen index.
 fn combo(ui: &mut egui::Ui, reg: &mut Reg, id: &str, selected: &str, options: &[(String, bool)], width: f32) -> Option<usize> {
     let mut chosen = None;
-    let r = egui::ComboBox::from_id_salt(id).selected_text(selected).width(width).show_ui(ui, |ui| {
+    let r = egui::ComboBox::from_id_salt(id).selected_text(crate::i18n::t(selected)).width(width).show_ui(ui, |ui| {
         for (i, (label, enabled)) in options.iter().enumerate() {
-            let resp = ui.add_enabled(*enabled, egui::Button::selectable(label == selected, label));
-            let resp = if *enabled { resp } else { resp.on_disabled_hover_text("Not supported by FilmCraft's encoders yet") };
+            let resp = ui.add_enabled(*enabled, egui::Button::selectable(label == selected, crate::i18n::t(label)));
+            let resp = if *enabled { resp } else { resp.on_disabled_hover_text(tl!("Not supported by FilmCraft's encoders yet")) };
             reg.add(format!("{id}.option.{i}"), resp.rect, label.clone());
             if resp.clicked() {
                 chosen = Some(i);
@@ -371,7 +372,7 @@ const RATES: [(&str, FrameRate); 11] = [
     ("60", FrameRate::FPS_60),
 ];
 
-const PARS: [(&str, Option<(u32, u32)>); 6] = [
+pub(crate) const PARS: [(&str, Option<(u32, u32)>); 6] = [
     ("Square Pixels (1.0)", None),
     ("D1/DV NTSC (0.9091)", Some((10, 11))),
     ("D1/DV PAL (1.0940)", Some((59, 54))),
@@ -391,6 +392,8 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         .map(|q| (q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate))
         .unwrap_or((1920, 1080, FrameRate::FPS_24, 48_000));
     let has_captions = app.session.active_sequence().is_some_and(|q| !q.caption_tracks.is_empty());
+    // an HDR sequence exports HDR (H.265 Main 10 where the hardware encoder has it) unless SDR is asked for
+    let seq_hdr = app.session.active_sequence().is_some_and(|q| q.settings.color.working.is_hdr());
     let all_presets = app.session.export_presets.all();
     let favs: Vec<String> = all_presets.iter().filter(|p| app.session.export_presets.is_favorite(&p.name)).map(|p| p.name.clone()).collect();
     let mut pick_folder = false;
@@ -398,65 +401,54 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(14.0, 10.0))).id_salt("export-settings"));
     let ex = &mut app.ui.export;
     egui::ScrollArea::vertical().id_salt("export-settings-scroll").auto_shrink([false, false]).show(&mut child, |ui| {
-        ui.label(egui::RichText::new("Media File").strong().size(14.0));
+        ui.label(egui::RichText::new(tl!("Media File")).strong().size(14.0));
         ui.add_space(6.0);
-        row(ui, &t, "File Name", |ui| text(ui, &mut reg, "export.fileName", &mut ex.file_name, "Sequence name"));
-        row(ui, &t, "Location", |ui| {
+        row(ui, &t, tl!("File Name"), |ui| text(ui, &mut reg, "export.fileName", &mut ex.file_name, tl!("Sequence name")));
+        row(ui, &t, tl!("Location"), |ui| {
             let r = ui.small_button("…");
             reg.add("export.location.browse", r.rect, "Choose folder");
             pick_folder = r.clicked();
-            text(ui, &mut reg, "export.location", &mut ex.location, "Folder");
+            text(ui, &mut reg, "export.location", &mut ex.location, tl!("Folder"));
         });
         // Preset: favourites, then every preset by category, then More presets…
-        row(ui, &t, "Preset", |ui| {
-            let r = egui::ComboBox::from_id_salt("export.preset").selected_text(&ex.preset).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
-                if !favs.is_empty() {
-                    ui.label(egui::RichText::new("Favorites").color(t.text_dim).size(11.0));
-                    for f in &favs {
-                        let o = ui.selectable_label(*f == ex.preset, f);
-                        if let Some(vr) = crate::widgets::visible(ui, o.rect) {
-                            reg.add(format!("export.preset.favorite.{f}"), vr, f.clone());
+        row(ui, &t, tl!("Preset"), |ui| {
+            let r =
+                egui::ComboBox::from_id_salt("export.preset").selected_text(crate::i18n::t(&ex.preset)).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
+                    if !favs.is_empty() {
+                        ui.label(egui::RichText::new(tl!("Favorites")).color(t.text_dim).size(11.0));
+                        for f in &favs {
+                            if ui.selectable_label(*f == ex.preset, crate::i18n::t(f)).clicked() {
+                                chosen_preset = Some(f.clone());
+                            }
                         }
-                        if o.clicked() {
-                            chosen_preset = Some(f.clone());
+                        ui.separator();
+                    }
+                    let mut cat = String::new();
+                    for p in &all_presets {
+                        if p.category != cat {
+                            cat = p.category.clone();
+                            ui.label(egui::RichText::new(crate::i18n::t(&cat)).color(t.text_dim).size(11.0));
+                        }
+                        if ui.selectable_label(p.name == ex.preset, crate::i18n::t(&p.name)).clicked() {
+                            chosen_preset = Some(p.name.clone());
                         }
                     }
                     ui.separator();
-                }
-                let mut cat = String::new();
-                for p in &all_presets {
-                    if p.category != cat {
-                        cat = p.category.clone();
-                        ui.label(egui::RichText::new(&cat).color(t.text_dim).size(11.0));
+                    if ui.button(tl!("More presets…")).clicked() {
+                        open_manager = true;
                     }
-                    let o = ui.selectable_label(p.name == ex.preset, &p.name);
-                    if let Some(vr) = crate::widgets::visible(ui, o.rect) {
-                        reg.add(format!("export.preset.option.{}", p.name), vr, p.name.clone());
-                    }
-                    if o.clicked() {
-                        chosen_preset = Some(p.name.clone());
-                    }
-                }
-                ui.separator();
-                let b = ui.button("More presets…");
-                if let Some(vr) = crate::widgets::visible(ui, b.rect) {
-                    reg.add("export.preset.option.more", vr, "More presets…");
-                }
-                if b.clicked() {
-                    open_manager = true;
-                }
-            });
+                });
             reg.add("export.preset", r.response.rect, ex.preset.clone());
         });
         ui.horizontal(|ui| {
             ui.add_space(LABEL_W + 8.0);
-            let r = ui.link("More presets…");
+            let r = ui.link(tl!("More presets…"));
             reg.add("export.preset.more", r.rect, "More presets…");
             if r.clicked() {
                 open_manager = true;
             }
         });
-        row(ui, &t, "Format", |ui| {
+        row(ui, &t, tl!("Format"), |ui| {
             let labels: Vec<(String, bool)> = Format::ALL.iter().map(|f| (f.label().to_string(), filmcraft_engine::export::available(*f))).collect();
             if let Some(i) = combo(ui, &mut reg, "export.format", ex.settings.format.label(), &labels, ui.available_width() - 4.0) {
                 let f = Format::ALL[i];
@@ -476,8 +468,8 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         });
         ui.add_space(8.0);
         let s = &mut ex.settings;
-        if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "video", "Video", &t) {
-            video_section(ui, &mut reg, s, &t, seq_w, seq_h);
+        if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "video", tl!("Video"), &t) {
+            video_section(ui, &mut reg, s, &t, seq_w, seq_h, seq_hdr);
         }
         if (s.has_audio()
             || !s.has_video()
@@ -486,57 +478,59 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             || s.format.is_mxf())
             && !s.is_image_sequence()
             && s.format != Format::Gif
-            && section(ui, &mut reg, &mut ex.open_sections, "audio", "Audio", &t)
+            && section(ui, &mut reg, &mut ex.open_sections, "audio", tl!("Audio"), &t)
         {
             audio_section(ui, &mut reg, s, &t, seq_sr);
         }
-        if s.format.is_h26x() && section(ui, &mut reg, &mut ex.open_sections, "multiplexer", "Multiplexer", &t) {
-            row(ui, &t, "Multiplexer", |ui| {
+        if s.format.is_h26x() && section(ui, &mut reg, &mut ex.open_sections, "multiplexer", tl!("Multiplexer"), &t) {
+            row(ui, &t, tl!("Multiplexer"), |ui| {
                 let cur = if s.multiplexer == Multiplexer::Mp4 { "MP4" } else { "QuickTime" };
                 if let Some(i) = combo(ui, &mut reg, "export.multiplexer", cur, &opts(&["MP4", "QuickTime"]), 160.0) {
                     s.multiplexer = if i == 0 { Multiplexer::Mp4 } else { Multiplexer::Mov };
                 }
             });
         }
-        if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "captions", "Captions", &t) {
+        if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "captions", tl!("Captions"), &t) {
             if !has_captions {
-                ui.label(egui::RichText::new("The sequence has no caption track.").color(t.text_dim).size(11.5));
+                ui.label(egui::RichText::new(tl!("The sequence has no caption track.")).color(t.text_dim).size(11.5));
             }
-            row(ui, &t, "Export Options", |ui| {
+            row(ui, &t, tl!("Export Options"), |ui| {
+                let modes = [tl!("None"), tl!("Burn Captions Into Video"), tl!("Create Sidecar File")];
                 let cur = if s.burn_captions {
-                    "Burn Captions Into Video"
+                    modes[1]
                 } else if s.caption_sidecar.is_some() {
-                    "Create Sidecar File"
+                    modes[2]
                 } else {
-                    "None"
+                    modes[0]
                 };
-                if let Some(i) = combo(ui, &mut reg, "export.captions.mode", cur, &opts(&["None", "Burn Captions Into Video", "Create Sidecar File"]), 220.0) {
+                if let Some(i) = combo(ui, &mut reg, "export.captions.mode", cur, &opts(&modes), 220.0) {
                     s.burn_captions = i == 1;
                     s.caption_sidecar = (i == 2).then(|| s.caption_sidecar.clone().unwrap_or_else(|| "srt".into()));
                 }
             });
             if let Some(kind) = s.caption_sidecar.clone() {
-                row(ui, &t, "File Format", |ui| {
-                    let cur = if kind == "vtt" { "WebVTT (.vtt)" } else { "SubRip Subtitle (.srt)" };
-                    if let Some(i) = combo(ui, &mut reg, "export.captions.format", cur, &opts(&["SubRip Subtitle (.srt)", "WebVTT (.vtt)"]), 220.0) {
+                row(ui, &t, tl!("File Format"), |ui| {
+                    let formats = [tl!("SubRip Subtitle (.srt)"), tl!("WebVTT (.vtt)")];
+                    let cur = if kind == "vtt" { formats[1] } else { formats[0] };
+                    if let Some(i) = combo(ui, &mut reg, "export.captions.format", cur, &opts(&formats), 220.0) {
                         s.caption_sidecar = Some(if i == 0 { "srt" } else { "vtt" }.into());
                     }
                 });
             }
         }
-        if section(ui, &mut reg, &mut ex.open_sections, "effects", "Effects", &t) {
+        if section(ui, &mut reg, &mut ex.open_sections, "effects", tl!("Effects"), &t) {
             pick_overlay = effects_section(ui, &mut reg, s, &t);
         }
         if matches!(s.format, Format::H264 | Format::Hevc | Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg)
-            && section(ui, &mut reg, &mut ex.open_sections, "metadata", "Metadata", &t)
+            && section(ui, &mut reg, &mut ex.open_sections, "metadata", tl!("Metadata"), &t)
         {
             let m = &mut s.metadata;
             for (key, label, v) in [
-                ("title", "Title", &mut m.title),
-                ("creator", "Creator", &mut m.creator),
-                ("copyright", "Copyright", &mut m.copyright),
-                ("description", "Description", &mut m.description),
-                ("comment", "Comment", &mut m.comment),
+                ("title", tl!("Title"), &mut m.title),
+                ("creator", tl!("Creator"), &mut m.creator),
+                ("copyright", tl!("Copyright"), &mut m.copyright),
+                ("description", tl!("Description"), &mut m.description),
+                ("comment", tl!("Comment"), &mut m.comment),
             ] {
                 row(ui, &t, label, |ui| text(ui, &mut reg, &format!("export.metadata.{key}"), v, ""));
             }
@@ -552,18 +546,18 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if pick_folder && let Some(d) = app.hooks.pick_folder.as_mut().and_then(|f| f()) {
         app.ui.export.location = d;
     }
-    if pick_overlay && let Some(f) = app.hooks.pick_open_file.as_mut().and_then(|f| f("Image", &["png", "jpg", "jpeg"])) {
+    if pick_overlay && let Some(f) = app.hooks.pick_open_file.as_mut().and_then(|f| f(tl!("Image"), &["png", "jpg", "jpeg"])) {
         app.ui.export.settings.effects.image_overlay.path = f;
         app.ui.export.settings.effects.image_overlay.enabled = true;
     }
     reg.flush(app);
 }
 
-fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_w: u32, seq_h: u32) {
+fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_w: u32, seq_h: u32, seq_hdr: bool) {
     // frame size
     let mut match_size = s.frame_size.is_none();
-    row(ui, t, "Frame Size", |ui| {
-        if check(ui, reg, "export.video.matchSize", &mut match_size, "Match Source") {
+    row(ui, t, tl!("Frame Size"), |ui| {
+        if check(ui, reg, "export.video.matchSize", &mut match_size, tl!("Match Source")) {
             s.frame_size = if match_size { None } else { Some((seq_w, seq_h)) };
         }
     });
@@ -578,8 +572,8 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
     }
     // frame rate
     let mut match_rate = s.frame_rate.is_none();
-    row(ui, t, "Frame Rate", |ui| {
-        if check(ui, reg, "export.video.matchRate", &mut match_rate, "Match Source") {
+    row(ui, t, tl!("Frame Rate"), |ui| {
+        if check(ui, reg, "export.video.matchRate", &mut match_rate, tl!("Match Source")) {
             s.frame_rate = if match_rate { None } else { Some(FrameRate::FPS_29_97) };
         }
         if let Some(r) = s.frame_rate {
@@ -590,22 +584,22 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             }
         }
     });
-    row(ui, t, "Field Order", |ui| {
+    row(ui, t, tl!("Field Order"), |ui| {
         let o = [FieldOrder::Progressive, FieldOrder::UpperFirst, FieldOrder::LowerFirst];
         let labels: Vec<(String, bool)> = o.iter().map(|f| (f.label().to_string(), *f == FieldOrder::Progressive)).collect();
         if let Some(i) = combo(ui, reg, "export.video.fieldOrder", s.field_order.label(), &labels, 160.0) {
             s.field_order = o[i];
         }
     });
-    row(ui, t, "Aspect", |ui| {
-        let cur = PARS.iter().find(|(_, p)| *p == s.pixel_aspect).map(|(l, _)| l.to_string()).unwrap_or_else(|| "Custom".into());
+    row(ui, t, tl!("Aspect"), |ui| {
+        let cur = PARS.iter().find(|(_, p)| *p == s.pixel_aspect).map(|(l, _)| l.to_string()).unwrap_or_else(|| tl!("Custom").into());
         let labels: Vec<(String, bool)> = PARS.iter().map(|(l, _)| (l.to_string(), true)).collect();
         if let Some(i) = combo(ui, reg, "export.video.aspect", &cur, &labels, 220.0) {
             s.pixel_aspect = PARS[i].1;
         }
     });
     if s.format.is_mxf() {
-        row(ui, t, "Video Codec", |ui| {
+        row(ui, t, tl!("Video Codec"), |ui| {
             let labels: Vec<(String, bool)> = MxfVideoCodec::ALL.iter().map(|c| (c.label().to_string(), true)).collect();
             if let Some(i) = combo(ui, reg, "export.video.mxfCodec", s.mxf_video_codec.label(), &labels, 180.0) {
                 s.mxf_video_codec = MxfVideoCodec::ALL[i];
@@ -613,36 +607,41 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         });
     }
     if matches!(s.format, Format::PngSequence | Format::TiffSequence) {
-        row(ui, t, "Alpha", |ui| {
-            check(ui, reg, "export.video.alpha", &mut s.alpha, "Include Alpha Channel");
+        row(ui, t, tl!("Alpha"), |ui| {
+            check(ui, reg, "export.video.alpha", &mut s.alpha, tl!("Include Alpha Channel"));
         });
     }
     match s.video_format() {
         f @ (Format::H264 | Format::Hevc) => {
             let hevc = f == Format::Hevc;
             if hevc {
-                // the hardware encoder writes one profile: Main, 8-bit 4:2:0, level chosen by the encoder
-                row(ui, t, "Profile", |ui| ui.label("Main (8-bit)"));
-                row(ui, t, "Encoder", |ui| ui.label("Hardware (H.265 has no software encoder)"));
+                // the hardware encoder writes Main (8-bit 4:2:0), or Main 10 for HDR sequences where it can; level chosen by the encoder
+                let label = match (filmcraft_engine::export::hdr_available(Format::Hevc), seq_hdr && !s.sdr) {
+                    (true, true) => tl!("Main 10 (10-bit, HDR)"),
+                    (true, false) => tl!("Main (8-bit; Main 10 for HDR sequences)"),
+                    (false, _) => tl!("Main (8-bit)"),
+                };
+                row(ui, t, tl!("Profile"), |ui| ui.label(label));
+                row(ui, t, tl!("Encoder"), |ui| ui.label(tl!("Hardware (H.265 has no software encoder)")));
             } else {
-                row(ui, t, "Profile", |ui| {
+                row(ui, t, tl!("Profile"), |ui| {
                     let o = [H264Profile::Baseline, H264Profile::Main, H264Profile::High];
                     let labels: Vec<(String, bool)> = o.iter().map(|p| (p.label().to_string(), true)).collect();
                     if let Some(i) = combo(ui, reg, "export.video.profile", s.h264_profile.label(), &labels, 120.0) {
                         s.h264_profile = o[i];
                     }
                 });
-                row(ui, t, "Level", |ui| {
+                row(ui, t, tl!("Level"), |ui| {
                     let levels: [Option<u8>; 13] =
                         [None, Some(30), Some(31), Some(32), Some(40), Some(41), Some(42), Some(50), Some(51), Some(52), Some(60), Some(61), Some(62)];
-                    let lab = |l: &Option<u8>| l.map(|l| format!("{}.{}", l / 10, l % 10)).unwrap_or_else(|| "Auto".into());
+                    let lab = |l: &Option<u8>| l.map(|l| format!("{}.{}", l / 10, l % 10)).unwrap_or_else(|| tl!("Auto").into());
                     let labels: Vec<(String, bool)> = levels.iter().map(|l| (lab(l), true)).collect();
                     if let Some(i) = combo(ui, reg, "export.video.level", &lab(&s.h264_level), &labels, 120.0) {
                         s.h264_level = levels[i];
                     }
                 });
             }
-            row(ui, t, "Bitrate Encoding", |ui| {
+            row(ui, t, tl!("Bitrate Encoding"), |ui| {
                 // a hardware encoder has one pass: H.265 offers no two-pass mode
                 let o = [BitrateMode::Cbr, BitrateMode::Vbr1Pass, BitrateMode::Vbr2Pass];
                 let labels: Vec<(String, bool)> = o.iter().map(|m| (m.label().to_string(), !(hevc && *m == BitrateMode::Vbr2Pass))).collect();
@@ -651,23 +650,23 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 }
             });
             if let Some(bpp) = s.adaptive_bitrate {
-                row(ui, t, "Target Bitrate", |ui| {
-                    ui.label(egui::RichText::new(format!("Adaptive ({bpp} bits per pixel)")).size(12.0));
-                    let r = ui.small_button("Set");
+                row(ui, t, tl!("Target Bitrate"), |ui| {
+                    ui.label(egui::RichText::new(tlf!("Adaptive ({bpp} bits per pixel)", bpp)).size(12.0));
+                    let r = ui.small_button(tl!("Set"));
                     reg.add("export.video.fixedBitrate", r.rect, "Set a fixed bitrate");
                     if r.clicked() {
                         s.adaptive_bitrate = None;
                     }
                 });
             } else {
-                row(ui, t, "Target Bitrate", |ui| {
+                row(ui, t, tl!("Target Bitrate"), |ui| {
                     let mut mbps = s.bitrate_kbps as f64 / 1000.0;
                     if drag(ui, reg, "export.video.target", &mut mbps, 0.1..=800.0, 0.1, " Mbps", 1) {
                         s.bitrate_kbps = (mbps * 1000.0).round() as u32;
                     }
                 });
                 if s.bitrate_mode != BitrateMode::Cbr {
-                    row(ui, t, "Maximum Bitrate", |ui| {
+                    row(ui, t, tl!("Maximum Bitrate"), |ui| {
                         let mut mbps = s.max_bitrate_kbps.unwrap_or(s.bitrate_kbps * 3 / 2) as f64 / 1000.0;
                         if drag(ui, reg, "export.video.max", &mut mbps, 0.1..=1000.0, 0.1, " Mbps", 1) {
                             s.max_bitrate_kbps = Some((mbps * 1000.0).round() as u32);
@@ -675,7 +674,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                     });
                 }
             }
-            row(ui, t, "Key Frame Distance", |ui| {
+            row(ui, t, tl!("Key Frame Distance"), |ui| {
                 let mut on = s.keyframe_distance.is_some();
                 if check(ui, reg, "export.video.keyframeOn", &mut on, "") {
                     s.keyframe_distance = on.then_some(48);
@@ -700,7 +699,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             }
         }
         Format::ProRes => {
-            row(ui, t, "Profile", |ui| {
+            row(ui, t, tl!("Profile"), |ui| {
                 let keys = ["proxy", "lt", "standard", "hq"];
                 let labels = ["Apple ProRes 422 Proxy", "Apple ProRes 422 LT", "Apple ProRes 422", "Apple ProRes 422 HQ"];
                 let cur = keys.iter().position(|k| *k == s.prores_profile).unwrap_or(3);
@@ -710,7 +709,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             });
         }
         Format::DnxHr => {
-            row(ui, t, "Profile", |ui| {
+            row(ui, t, tl!("Profile"), |ui| {
                 let keys = ["lb", "sq", "hq", "hqx"];
                 let labels = ["DNxHR LB", "DNxHR SQ", "DNxHR HQ", "DNxHR HQX (10-bit)"];
                 let cur = keys.iter().position(|k| *k == s.dnx_profile).unwrap_or(2);
@@ -720,7 +719,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             });
         }
         Format::Apv => {
-            row(ui, t, "Profile", |ui| {
+            row(ui, t, tl!("Profile"), |ui| {
                 let keys = ["422-10", "422-12", "444-10", "444-12"];
                 let labels = ["APV 422-10", "APV 422-12", "APV 444-10", "APV 444-12"];
                 let cur = keys.iter().position(|k| *k == s.apv_profile).unwrap_or(0);
@@ -730,7 +729,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             });
         }
         Format::Mjpeg => {
-            row(ui, t, "Quality", |ui| {
+            row(ui, t, tl!("Quality"), |ui| {
                 let mut q = s.quality as f64;
                 drag(ui, reg, "export.video.quality", &mut q, 1.0..=100.0, 1.0, "", 0);
                 s.quality = q as u8;
@@ -738,51 +737,53 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         }
         _ => {}
     }
-    row(ui, t, "", |ui| check(ui, reg, "export.video.maxDepth", &mut s.render_at_max_depth, "Render at Maximum Depth"));
-    row(ui, t, "", |ui| check(ui, reg, "export.video.maxQuality", &mut s.max_render_quality, "Use Maximum Render Quality"));
+    row(ui, t, "", |ui| check(ui, reg, "export.video.maxDepth", &mut s.render_at_max_depth, tl!("Render at Maximum Depth")));
+    row(ui, t, "", |ui| check(ui, reg, "export.video.maxQuality", &mut s.max_render_quality, tl!("Use Maximum Render Quality")));
 }
 
 fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_sr: u32) {
     let audio_only = !s.has_video();
     if !audio_only {
-        row(ui, t, "", |ui| check(ui, reg, "export.audio.include", &mut s.include_audio, "Export Audio"));
+        row(ui, t, "", |ui| check(ui, reg, "export.audio.include", &mut s.include_audio, tl!("Export Audio")));
         if !s.include_audio {
             return;
         }
     }
-    row(ui, t, "Audio Format", |ui| {
+    row(ui, t, tl!("Audio Format"), |ui| {
         let fixed = s.format.is_h26x() && s.multiplexer == Multiplexer::Mp4 || audio_only || s.format.is_mxf();
         let cur = match s.audio_codec() {
             AudioCodec::Aac => "AAC",
-            _ => "Uncompressed (PCM)",
+            _ => tl!("Uncompressed (PCM)"),
         };
-        let labels = vec![("AAC".to_string(), !audio_only), ("Uncompressed (PCM)".to_string(), !(s.format.is_h26x() && s.multiplexer == Multiplexer::Mp4))];
+        let labels =
+            vec![("AAC".to_string(), !audio_only), (tl!("Uncompressed (PCM)").to_string(), !(s.format.is_h26x() && s.multiplexer == Multiplexer::Mp4))];
         if fixed {
             ui.label(cur);
         } else if let Some(i) = combo(ui, reg, "export.audio.codec", cur, &labels, 180.0) {
             s.audio.codec = if i == 0 { AudioCodec::Aac } else { AudioCodec::Pcm };
         }
     });
-    row(ui, t, "Sample Rate", |ui| {
+    row(ui, t, tl!("Sample Rate"), |ui| {
         let rates: [Option<u32>; 5] = [None, Some(32_000), Some(44_100), Some(48_000), Some(96_000)];
-        let lab = |r: &Option<u32>| r.map(|r| format!("{r} Hz")).unwrap_or_else(|| format!("Match Source ({seq_sr} Hz)"));
+        let lab = |r: &Option<u32>| r.map(|r| format!("{r} Hz")).unwrap_or_else(|| tlf!("Match Source ({seq_sr} Hz)", seq_sr));
         let labels: Vec<(String, bool)> = rates.iter().map(|r| (lab(r), true)).collect();
         if let Some(i) = combo(ui, reg, "export.audio.sampleRate", &lab(&s.audio.sample_rate), &labels, 180.0) {
             s.audio.sample_rate = rates[i];
         }
     });
-    row(ui, t, "Channels", |ui| {
+    row(ui, t, tl!("Channels"), |ui| {
+        let names = [tl!("Mono"), tl!("Stereo"), "5.1"];
         let cur = match s.audio.channels {
-            1 => "Mono",
-            6 => "5.1",
-            _ => "Stereo",
+            1 => names[0],
+            6 => names[2],
+            _ => names[1],
         };
-        if let Some(i) = combo(ui, reg, "export.audio.channels", cur, &opts(&["Mono", "Stereo", "5.1"]), 120.0) {
+        if let Some(i) = combo(ui, reg, "export.audio.channels", cur, &opts(&names), 120.0) {
             s.audio.channels = [1, 2, 6][i.min(2)];
         }
     });
     if s.audio_codec() == AudioCodec::Aac {
-        row(ui, t, "Audio Bitrate", |ui| {
+        row(ui, t, tl!("Audio Bitrate"), |ui| {
             let rates = [128u32, 160, 192, 256, 320];
             let labels: Vec<(String, bool)> = rates.iter().map(|r| (format!("{r} kbps"), true)).collect();
             if let Some(i) = combo(ui, reg, "export.audio.bitrate", &format!("{} kbps", s.audio.bitrate_kbps), &labels, 120.0) {
@@ -790,9 +791,10 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             }
         });
     } else {
-        row(ui, t, "Sample Size", |ui| {
-            let cur = if s.audio.bits >= 24 { "24 bit" } else { "16 bit" };
-            if let Some(i) = combo(ui, reg, "export.audio.bits", cur, &opts(&["16 bit", "24 bit"]), 120.0) {
+        row(ui, t, tl!("Sample Size"), |ui| {
+            let sizes = [tl!("16 bit"), tl!("24 bit")];
+            let cur = if s.audio.bits >= 24 { sizes[1] } else { sizes[0] };
+            if let Some(i) = combo(ui, reg, "export.audio.bits", cur, &opts(&sizes), 120.0) {
                 s.audio.bits = if i == 0 { 16 } else { 24 };
             }
         });
@@ -808,8 +810,8 @@ fn placement_combo(ui: &mut egui::Ui, reg: &mut Reg, id: &str, p: &mut Placement
 
 fn text_overlay(ui: &mut egui::Ui, reg: &mut Reg, key: &str, o: &mut TextOverlay, t: &Tokens, text_label: &str) {
     row(ui, t, text_label, |ui| text(ui, reg, &format!("export.effects.{key}.text"), &mut o.text, ""));
-    row(ui, t, "Position", |ui| placement_combo(ui, reg, &format!("export.effects.{key}.position"), &mut o.placement));
-    row(ui, t, "Size / Opacity", |ui| {
+    row(ui, t, tl!("Position"), |ui| placement_combo(ui, reg, &format!("export.effects.{key}.position"), &mut o.placement));
+    row(ui, t, tl!("Size / Opacity"), |ui| {
         let (mut sz, mut op) = (o.size_percent as f64, o.opacity as f64);
         drag(ui, reg, &format!("export.effects.{key}.size"), &mut sz, 1.0..=50.0, 0.2, " %", 1);
         drag(ui, reg, &format!("export.effects.{key}.opacity"), &mut op, 0.0..=100.0, 1.0, " %", 0);
@@ -824,34 +826,34 @@ fn effects_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: 
     let video = s.has_video();
     let fx = &mut s.effects;
     if video {
-        check(ui, reg, "export.effects.imageOverlay", &mut fx.image_overlay.enabled, "Image Overlay");
+        check(ui, reg, "export.effects.imageOverlay", &mut fx.image_overlay.enabled, tl!("Image Overlay"));
         if fx.image_overlay.enabled {
             let o = &mut fx.image_overlay;
-            row(ui, t, "Image", |ui| {
-                let r = ui.small_button("Browse…");
+            row(ui, t, tl!("Image"), |ui| {
+                let r = ui.small_button(tl!("Browse…"));
                 reg.add("export.effects.imageOverlay.browse", r.rect, "Browse…");
                 browse = r.clicked();
-                text(ui, reg, "export.effects.imageOverlay.path", &mut o.path, "PNG or JPEG file");
+                text(ui, reg, "export.effects.imageOverlay.path", &mut o.path, tl!("PNG or JPEG file"));
             });
-            row(ui, t, "Position", |ui| placement_combo(ui, reg, "export.effects.imageOverlay.position", &mut o.placement));
-            row(ui, t, "Size / Opacity", |ui| {
+            row(ui, t, tl!("Position"), |ui| placement_combo(ui, reg, "export.effects.imageOverlay.position", &mut o.placement));
+            row(ui, t, tl!("Size / Opacity"), |ui| {
                 let (mut sz, mut op) = (o.size_percent as f64, o.opacity as f64);
                 drag(ui, reg, "export.effects.imageOverlay.size", &mut sz, 1.0..=100.0, 0.5, " %", 1);
                 drag(ui, reg, "export.effects.imageOverlay.opacity", &mut op, 0.0..=100.0, 1.0, " %", 0);
                 (o.size_percent, o.opacity) = (sz as f32, op as f32);
             });
         }
-        check(ui, reg, "export.effects.nameOverlay", &mut fx.name_overlay.enabled, "Name Overlay");
+        check(ui, reg, "export.effects.nameOverlay", &mut fx.name_overlay.enabled, tl!("Name Overlay"));
         if fx.name_overlay.enabled {
-            text_overlay(ui, reg, "nameOverlay", &mut fx.name_overlay, t, "Name");
+            text_overlay(ui, reg, "nameOverlay", &mut fx.name_overlay, t, tl!("Name"));
         }
-        check(ui, reg, "export.effects.timecodeOverlay", &mut fx.timecode_overlay.enabled, "Timecode Overlay");
+        check(ui, reg, "export.effects.timecodeOverlay", &mut fx.timecode_overlay.enabled, tl!("Timecode Overlay"));
         if fx.timecode_overlay.enabled {
-            text_overlay(ui, reg, "timecodeOverlay", &mut fx.timecode_overlay, t, "Prefix");
+            text_overlay(ui, reg, "timecodeOverlay", &mut fx.timecode_overlay, t, tl!("Prefix"));
         }
-        check(ui, reg, "export.effects.videoLimiter", &mut fx.video_limiter.enabled, "Video Limiter");
+        check(ui, reg, "export.effects.videoLimiter", &mut fx.video_limiter.enabled, tl!("Video Limiter"));
         if fx.video_limiter.enabled {
-            row(ui, t, "Luma Min / Max", |ui| {
+            row(ui, t, tl!("Luma Min / Max"), |ui| {
                 let (mut lo, mut hi) = (fx.video_limiter.min_percent as f64, fx.video_limiter.max_percent as f64);
                 drag(ui, reg, "export.effects.videoLimiter.min", &mut lo, 0.0..=50.0, 0.5, " %", 1);
                 drag(ui, reg, "export.effects.videoLimiter.max", &mut hi, 50.0..=100.0, 0.5, " %", 1);
@@ -860,12 +862,12 @@ fn effects_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: 
         }
     }
     if audio {
-        check(ui, reg, "export.effects.loudness", &mut fx.loudness.enabled, "Loudness Normalization");
+        check(ui, reg, "export.effects.loudness", &mut fx.loudness.enabled, tl!("Loudness Normalization"));
         if fx.loudness.enabled {
-            row(ui, t, "Target Loudness", |ui| {
+            row(ui, t, tl!("Target Loudness"), |ui| {
                 drag(ui, reg, "export.effects.loudness.target", &mut fx.loudness.target_lufs, -40.0..=-5.0, 0.1, " LUFS", 1);
             });
-            row(ui, t, "True Peak Limit", |ui| {
+            row(ui, t, tl!("True Peak Limit"), |ui| {
                 drag(ui, reg, "export.effects.loudness.truePeak", &mut fx.loudness.true_peak_dbtp, -9.0..=0.0, 0.1, " dBTP", 1);
             });
         }
@@ -877,7 +879,7 @@ fn effects_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: 
 // right: preview, range, summary, buttons
 // ---------------------------------------------------------------------------------------------
 
-const RANGES: [(&str, &str); 4] = [("entire", "Entire Source"), ("inOut", "Source In/Out"), ("workArea", "Work Area"), ("custom", "Custom")];
+pub(crate) const RANGES: [(&str, &str); 4] = [("entire", "Entire Source"), ("inOut", "Source In/Out"), ("workArea", "Work Area"), ("custom", "Custom")];
 
 fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id: filmcraft_engine::project::ItemId) {
     let t = app.tokens;
@@ -908,7 +910,7 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
             ui.painter().with_clip_rect(pic).image(tex, inner, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         }
     } else {
-        ui.painter().text(pic.center(), Align2::CENTER_CENTER, "Audio only", Tokens::ui(13.0), t.text_dim);
+        ui.painter().text(pic.center(), Align2::CENTER_CENTER, tl!("Audio only"), Tokens::ui(13.0), t.text_dim);
     }
     reg.add("export.preview", pic, "Preview");
     // range + scaling
@@ -920,7 +922,7 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
     let ex = &mut app.ui.export;
     let has_work_area = q.work_area.is_some();
     child.horizontal(|ui| {
-        ui.label(egui::RichText::new("Range").color(t.text_dim));
+        ui.label(egui::RichText::new(tl!("Range")).color(t.text_dim));
         let cur = RANGES.iter().find(|(k, _)| *k == ex.range).map(|x| x.1).unwrap_or("Entire Source");
         let labels: Vec<(String, bool)> = RANGES.iter().map(|(k, l)| (l.to_string(), *k != "workArea" || has_work_area)).collect();
         if let Some(i) = combo(ui, &mut reg, "export.range", cur, &labels, 140.0) {
@@ -933,9 +935,10 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
     });
     if ex.settings.has_video() {
         child.horizontal(|ui| {
-            ui.label(egui::RichText::new("Scaling").color(t.text_dim));
-            let o = [(Scaling::ScaleToFit, "Scale To Fit"), (Scaling::ScaleToFill, "Scale To Fill"), (Scaling::StretchToFill, "Stretch To Fill")];
-            let cur = o.iter().find(|(x, _)| *x == ex.settings.scaling).map(|x| x.1).unwrap_or("Scale To Fit");
+            ui.label(egui::RichText::new(tl!("Scaling")).color(t.text_dim));
+            let o =
+                [(Scaling::ScaleToFit, tl!("Scale To Fit")), (Scaling::ScaleToFill, tl!("Scale To Fill")), (Scaling::StretchToFill, tl!("Stretch To Fill"))];
+            let cur = o.iter().find(|(x, _)| *x == ex.settings.scaling).map_or(o[0].1, |x| x.1);
             let labels: Vec<(String, bool)> = o.iter().map(|(_, l)| (l.to_string(), true)).collect();
             if let Some(i) = combo(ui, &mut reg, "export.scaling", cur, &labels, 140.0) {
                 ex.settings.scaling = o[i].0;
@@ -952,10 +955,10 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
         .inner_margin(egui::Margin::same(10))
         .show(&mut child, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(egui::RichText::new("Summary").strong());
+            ui.label(egui::RichText::new(tl!("Summary")).strong());
             egui::Grid::new("export-summary-grid").num_columns(2).spacing(vec2(10.0, 3.0)).show(ui, |ui| {
                 let line = |ui: &mut egui::Ui, k: &str, v: &str| {
-                    ui.label(egui::RichText::new(k).color(t.text_dim).size(11.5));
+                    ui.label(egui::RichText::new(crate::i18n::t(k)).color(t.text_dim).size(11.5));
                     ui.add(egui::Label::new(egui::RichText::new(v).size(11.5)).wrap_mode(egui::TextWrapMode::Wrap).halign(egui::Align::Min));
                     ui.end_row();
                 };
@@ -963,35 +966,49 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
                 line(ui, "", &sum.format);
                 line(ui, "", &sum.video);
                 line(ui, "", &sum.audio);
-                line(ui, "Source", &format!("Sequence, {}x{}, {} fps, {} Hz", q.settings.width, q.settings.height, rate.label(), q.settings.sample_rate));
+                line(
+                    ui,
+                    "Source",
+                    &tlf!(
+                        "Sequence, {w}x{h}, {fps} fps, {rate} Hz",
+                        w = q.settings.width,
+                        h = q.settings.height,
+                        fps = rate.label(),
+                        rate = q.settings.sample_rate
+                    ),
+                );
                 line(
                     ui,
                     "Range",
-                    &format!("{} ({:.2} s)", RANGES.iter().find(|(k, _)| *k == ex.range).map(|x| x.1).unwrap_or(""), (range.1 - range.0).seconds()),
+                    &format!(
+                        "{} ({:.2} s)",
+                        crate::i18n::t(RANGES.iter().find(|(k, _)| *k == ex.range).map(|x| x.1).unwrap_or("")),
+                        (range.1 - range.0).seconds()
+                    ),
                 );
             });
         })
         .response;
     reg.add("export.summary", resp.rect, sum.video.clone());
     child.add_space(4.0);
-    let est = child.label(egui::RichText::new(format!("Estimated file size: {}", format_bytes(sum.estimated_bytes))).color(t.text_dim));
+    let est = child.label(egui::RichText::new(tlf!("Estimated file size: {size}", size = format_bytes(sum.estimated_bytes))).color(t.text_dim));
     reg.add("export.estimate", est.rect, sum.estimated_size.clone());
     // buttons
     let go = Rect::from_min_size(pos2(rect.max.x - 120.0, rect.max.y - 44.0), vec2(104.0, 30.0));
     let queue = Rect::from_min_size(pos2(go.min.x - 132.0, go.min.y), vec2(122.0, 30.0));
     let qresp = ui.interact(queue, egui::Id::new("export-queue-send"), Sense::click());
     ui.painter().rect_stroke(queue, 15.0, egui::Stroke::new(1.0, if qresp.hovered() { t.text } else { t.text_dim }), egui::StrokeKind::Inside);
-    ui.painter().text(queue.center(), Align2::CENTER_CENTER, "Send to Queue", Tokens::semibold(12.5), t.text);
+    ui.painter().text(queue.center(), Align2::CENTER_CENTER, tl!("Send to Queue"), Tokens::semibold(12.5), t.text);
     reg.add("export.sendToQueue", queue, "Send to Queue");
     let resp = ui.interact(go, egui::Id::new("export-go"), Sense::click());
     ui.painter().rect_filled(go, 15.0, if resp.hovered() { t.accent_hover } else { t.accent });
-    ui.painter().text(go.center(), Align2::CENTER_CENTER, "Export", Tokens::semibold(13.0), Color32::WHITE);
+    ui.painter().text(go.center(), Align2::CENTER_CENTER, tl!("Export"), Tokens::semibold(13.0), Color32::WHITE);
     reg.add("export.button", go, "Export");
     reg.flush(app);
     if resp.clicked() {
         let r = app.session.execute("file.exportMedia", export_params(app));
         match r {
-            Ok(v) => app.ui.status = format!("Exporting {}", v["path"].as_str().unwrap_or("")),
+            Ok(v) => app.ui.status = tlf!("Exporting {path}", path = v["path"].as_str().unwrap_or("")),
             Err(e) => app.ui.status = e.to_string(),
         }
     }
@@ -1002,7 +1019,7 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
             p["preset"] = json!(app.ui.export.preset);
         }
         match app.session.execute("export.queue.add", p) {
-            Ok(_) => app.ui.status = "Added to the export queue".into(),
+            Ok(_) => app.ui.status = tl!("Added to the export queue").into(),
             Err(e) => app.ui.status = e.to_string(),
         }
     }
@@ -1038,8 +1055,9 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut pick: Option<&'static str> = None;
     let all = app.session.export_presets.all();
     let favorite = |n: &str| app.session.export_presets.is_favorite(n);
-    let q = m.query.to_ascii_lowercase();
-    let w = egui::Window::new("Preset Manager")
+    let q = m.query.to_lowercase();
+    egui::Window::new(tl!("Preset Manager"))
+        .id(egui::Id::new("Preset Manager"))
         .id(egui::Id::new("preset-manager"))
         .open(&mut open)
         .collapsible(false)
@@ -1049,35 +1067,32 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
         .default_pos(ctx.content_rect().center())
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let r = crate::widgets::search_field(ui, &mut m.query, "Search presets", 300.0, &t);
+                let r = crate::widgets::search_field(ui, &mut m.query, tl!("Search presets"), 300.0, &t);
                 reg.add("presetManager.search", r.rect, "Search");
-                check(ui, &mut reg, "presetManager.favoritesOnly", &mut m.favorites_only, "Favorites only");
+                check(ui, &mut reg, "presetManager.favoritesOnly", &mut m.favorites_only, tl!("Favorites only"));
             });
             ui.separator();
             egui::ScrollArea::vertical().max_height(340.0).auto_shrink([false, false]).show(ui, |ui| {
                 let mut cat = String::new();
                 for p in all.iter().filter(|p| {
-                    (q.is_empty()
-                        || p.name.to_ascii_lowercase().contains(&q)
-                        || p.description.to_ascii_lowercase().contains(&q)
-                        || p.category.to_ascii_lowercase().contains(&q))
+                    (crate::i18n::matches_query(&p.name, &q) || crate::i18n::matches_query(&p.description, &q) || crate::i18n::matches_query(&p.category, &q))
                         && (!m.favorites_only || favorite(&p.name))
                 }) {
                     if p.category != cat {
                         cat = p.category.clone();
                         ui.add_space(4.0);
-                        ui.label(egui::RichText::new(&cat).strong().color(t.text_dim).size(11.5));
+                        ui.label(egui::RichText::new(crate::i18n::t(&cat)).strong().color(t.text_dim).size(11.5));
                     }
                     ui.horizontal(|ui| {
                         let fav = favorite(&p.name);
                         let (sr, sresp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
                         paint_star(ui.painter(), sr.shrink(2.0), fav, if fav { Color32::from_rgb(0xf5, 0xc2, 0x42) } else { t.text_faint });
                         reg.add(format!("presetManager.favorite.{}", p.name), sr, if fav { "Remove from favorites" } else { "Add to favorites" });
-                        if sresp.on_hover_text("Show in the Preset menu").clicked() {
+                        if sresp.on_hover_text(tl!("Show in the Preset menu")).clicked() {
                             cmd = Some(("export.presets.favorite", json!({"name": p.name})));
                         }
                         let sel = preset_key(&m.selected) == preset_key(&p.name);
-                        let r = list_row(ui, &t, sel, &p.name, 300.0);
+                        let r = list_row(ui, &t, sel, crate::i18n::t(&p.name), 300.0);
                         reg.add(format!("presetManager.item.{}", p.name), r.rect, p.name.clone());
                         if r.clicked() {
                             m.selected = p.name.clone();
@@ -1085,11 +1100,11 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         if r.double_clicked() {
                             apply = Some(p.name.clone());
                         }
-                        let r = r.on_hover_text(&p.description);
+                        let r = r.on_hover_text(crate::i18n::t(&p.description));
                         let _ = r;
                         ui.label(egui::RichText::new(p.settings.format.label()).color(t.text_dim).size(11.0));
                         if !p.builtin {
-                            ui.label(egui::RichText::new("User").color(t.accent).size(10.5));
+                            ui.label(egui::RichText::new(tl!("User")).color(t.accent).size(10.5));
                         }
                     });
                 }
@@ -1097,13 +1112,13 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ui.separator();
             let sel = all.iter().find(|p| preset_key(&p.name) == preset_key(&m.selected)).cloned();
             if let Some(p) = &sel {
-                ui.label(egui::RichText::new(&p.description).color(t.text_dim).size(11.5));
+                ui.label(egui::RichText::new(crate::i18n::t(&p.description)).color(t.text_dim).size(11.5));
             }
             ui.horizontal(|ui| {
-                ui.label("Save current settings as:");
-                let r = ui.add(egui::TextEdit::singleline(&mut m.save_name).hint_text("Preset name").desired_width(200.0));
+                ui.label(tl!("Save current settings as:"));
+                let r = ui.add(egui::TextEdit::singleline(&mut m.save_name).hint_text(tl!("Preset name")).desired_width(200.0));
                 reg.add("presetManager.saveName", r.rect, "Preset name");
-                let r = ui.add_enabled(!m.save_name.trim().is_empty(), egui::Button::new("Save"));
+                let r = ui.add_enabled(!m.save_name.trim().is_empty(), egui::Button::new(tl!("Save")));
                 reg.add("presetManager.save", r.rect, "Save");
                 if r.clicked() {
                     cmd = Some(("export.presets.save", json!({"name": m.save_name.trim(), "settings": settings_json(&app.ui.export.settings)})));
@@ -1111,36 +1126,33 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
             });
             ui.horizontal(|ui| {
-                let r = ui.button("Import…");
+                let r = ui.button(tl!("Import…"));
                 reg.add("presetManager.import", r.rect, "Import…");
                 if r.clicked() {
                     pick = Some("import");
                 }
-                let r = ui.add_enabled(sel.is_some(), egui::Button::new("Export…"));
+                let r = ui.add_enabled(sel.is_some(), egui::Button::new(tl!("Export…")));
                 reg.add("presetManager.export", r.rect, "Export…");
                 if r.clicked() {
                     pick = Some("export");
                 }
-                let r = ui.add_enabled(sel.as_ref().is_some_and(|p| !p.builtin), egui::Button::new("Delete"));
+                let r = ui.add_enabled(sel.as_ref().is_some_and(|p| !p.builtin), egui::Button::new(tl!("Delete")));
                 reg.add("presetManager.delete", r.rect, "Delete");
                 if r.clicked() {
                     cmd = Some(("export.presets.delete", json!({"name": m.selected})));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let r = ui.add_enabled(sel.is_some(), egui::Button::new("OK"));
+                    let r = ui.add_enabled(sel.is_some(), egui::Button::new(tl!("OK")));
                     reg.add("presetManager.ok", r.rect, "OK");
                     if r.clicked() {
                         apply = Some(m.selected.clone());
                     }
-                    let r = ui.button("Cancel");
+                    let r = ui.button(tl!("Cancel"));
                     reg.add("presetManager.cancel", r.rect, "Cancel");
                     close |= r.clicked();
                 });
             });
         });
-    if let Some(w) = w {
-        reg.add("presetManager.close", crate::widgets::window_close_rect(ctx, w.response.rect, None), "Close");
-    }
     reg.flush(app);
     if let Some((c, p)) = cmd
         && let Err(e) = app.session.execute(c, p)
@@ -1148,21 +1160,21 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
         app.ui.status = e.to_string();
     }
     match pick {
-        Some("import") => match app.hooks.pick_open_file.as_mut().and_then(|f| f("Export presets", &["json"])) {
+        Some("import") => match app.hooks.pick_open_file.as_mut().and_then(|f| f(tl!("Export presets"), &["json"])) {
             Some(path) => {
                 if let Err(e) = app.session.execute("export.presets.import", json!({"path": path})) {
                     app.ui.status = e.to_string();
                 }
             }
-            None => app.ui.status = "Import: no file chosen (agents: export.presets.import {path})".into(),
+            None => app.ui.status = tl!("Import: no file chosen (agents: export.presets.import {path})").into(),
         },
-        Some(_) => match app.hooks.pick_save_as.as_mut().and_then(|f| f("Export presets", &["json"], &format!("{}.json", m.selected))) {
+        Some(_) => match app.hooks.pick_save_as.as_mut().and_then(|f| f(tl!("Export presets"), &["json"], &format!("{}.json", m.selected))) {
             Some(path) => {
                 if let Err(e) = app.session.execute("export.presets.export", json!({"path": path, "names": [m.selected]})) {
                     app.ui.status = e.to_string();
                 }
             }
-            None => app.ui.status = "Export: no file chosen (agents: export.presets.export {path, names})".into(),
+            None => app.ui.status = tl!("Export: no file chosen (agents: export.presets.export {path, names})").into(),
         },
         None => {}
     }
@@ -1218,7 +1230,7 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
     let t = app.tokens;
     let Some(seq) = app.session.state.active_sequence else {
         app.ui.export.quick_open = false;
-        app.ui.status = "Quick Export: open a sequence first".into();
+        app.ui.status = tl!("Quick Export: open a sequence first").into();
         return;
     };
     if app.ui.export.quick_preset.is_empty() {
@@ -1248,21 +1260,21 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
         egui::Frame::popup(ui.style()).show(ui, |ui| {
             ui.set_width(340.0);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Quick Export").strong().size(14.0));
+                ui.label(egui::RichText::new(tl!("Quick Export")).strong().size(14.0));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let r = ui.small_button("Close");
+                    let r = ui.small_button(tl!("Close"));
                     reg.add("quickExport.close", r.rect, "Close");
                     close = r.clicked();
                 });
             });
-            ui.label(egui::RichText::new("File Name & Location").color(t.text_dim).size(11.5));
+            ui.label(egui::RichText::new(tl!("File Name & Location")).color(t.text_dim).size(11.5));
             let r = ui.add(egui::TextEdit::singleline(&mut q.quick_path).desired_width(f32::INFINITY));
             reg.add("quickExport.path", r.rect, "File Name & Location");
             ui.add_space(4.0);
-            ui.label(egui::RichText::new("Preset").color(t.text_dim).size(11.5));
+            ui.label(egui::RichText::new(tl!("Preset")).color(t.text_dim).size(11.5));
             egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
                 for name in &presets {
-                    let r = list_row(ui, &t, preset_key(name) == preset_key(&q.quick_preset), name, 320.0);
+                    let r = list_row(ui, &t, preset_key(name) == preset_key(&q.quick_preset), crate::i18n::t(name), 320.0);
                     reg.add(format!("quickExport.preset.{name}"), r.rect, name.clone());
                     if r.clicked() {
                         q.quick_preset = name.clone();
@@ -1270,10 +1282,11 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
                 }
             });
             ui.add_space(4.0);
-            ui.label(egui::RichText::new(format!("Estimated file size: {}", est.as_deref().unwrap_or("–"))).color(t.text_dim).size(11.5));
+            ui.label(egui::RichText::new(tlf!("Estimated file size: {size}", size = est.as_deref().unwrap_or("–"))).color(t.text_dim).size(11.5));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let r = ui
-                    .add(egui::Button::new(egui::RichText::new("Export").color(Color32::WHITE)).fill(t.accent).corner_radius(12.0).min_size(vec2(90.0, 26.0)));
+                let r = ui.add(
+                    egui::Button::new(egui::RichText::new(tl!("Export")).color(Color32::WHITE)).fill(t.accent).corner_radius(12.0).min_size(vec2(90.0, 26.0)),
+                );
                 reg.add("quickExport.go", r.rect, "Export");
                 go = r.clicked();
             });
@@ -1286,7 +1299,7 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
     if go {
         let p = json!({"preset": app.ui.export.quick_preset, "path": app.ui.export.quick_path});
         match app.session.execute("export.quick", p) {
-            Ok(v) => app.ui.status = format!("Quick Export: {}", v["path"].as_str().unwrap_or("")),
+            Ok(v) => app.ui.status = tlf!("Quick Export: {path}", path = v["path"].as_str().unwrap_or("")),
             Err(e) => app.ui.status = e.to_string(),
         }
         close = true;

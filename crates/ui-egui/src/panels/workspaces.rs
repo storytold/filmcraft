@@ -33,7 +33,7 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
         "saveAs" => match arg("name") {
             Some(n) => save_new(app, &n),
             None => {
-                app.ui.workspace_dialog = Some(WorkspaceDialog::SaveAs { name: "Untitled Workspace".into() });
+                app.ui.workspace_dialog = Some(WorkspaceDialog::SaveAs { name: tl!("Untitled Workspace").into() });
                 Ok(json!({"dialog": "saveWorkspace"}))
             }
         },
@@ -161,74 +161,77 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut act: Option<(&str, Value)> = None;
     let names = dock::names(&app.workspaces);
     let changed: Vec<String> = app.workspaces.saved.iter().map(|s| s.name.clone()).collect();
-    let title = match &d {
-        WorkspaceDialog::SaveAs { .. } => "New Workspace",
-        WorkspaceDialog::Edit { .. } => "Edit Workspaces",
+    let (title, shown) = match &d {
+        WorkspaceDialog::SaveAs { .. } => ("New Workspace", tl!("New Workspace")),
+        WorkspaceDialog::Edit { .. } => ("Edit Workspaces", tl!("Edit Workspaces")),
     };
-    egui::Window::new(title).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| match &mut d {
-        WorkspaceDialog::SaveAs { name } => {
-            ui.horizontal(|ui| {
-                ui.label("Name:");
-                let r = ui.text_edit_singleline(name);
-                push("workspaces.save.name", &r, "Name");
-            });
-            ui.horizontal(|ui| {
-                let r = ui.button("Cancel");
-                push("workspaces.save.cancel", &r, "Cancel");
-                close |= r.clicked();
-                let r = ui.button("OK");
-                push("workspaces.save.ok", &r, "OK");
-                if r.clicked() {
-                    act = Some(("window.workspace.saveAs", json!({"name": name.clone()})));
-                }
-            });
-        }
-        WorkspaceDialog::Edit { selected, name } => {
-            for (i, n) in names.iter().enumerate() {
-                let r = ui.selectable_label(selected.as_ref() == Some(n), n);
-                push(&format!("workspaces.edit.row.{i}"), &r, n);
-                if r.clicked() {
-                    *selected = Some(n.clone());
-                    *name = n.clone();
-                }
+    egui::Window::new(shown).id(egui::Id::new(title)).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(
+        ctx,
+        |ui| match &mut d {
+            WorkspaceDialog::SaveAs { name } => {
+                ui.horizontal(|ui| {
+                    ui.label(tl!("Name:"));
+                    let r = ui.text_edit_singleline(name);
+                    push("workspaces.save.name", &r, "Name");
+                });
+                ui.horizontal(|ui| {
+                    let r = ui.button(tl!("Cancel"));
+                    push("workspaces.save.cancel", &r, "Cancel");
+                    close |= r.clicked();
+                    let r = ui.button(tl!("OK"));
+                    push("workspaces.save.ok", &r, "OK");
+                    if r.clicked() {
+                        act = Some(("window.workspace.saveAs", json!({"name": name.clone()})));
+                    }
+                });
             }
-            ui.separator();
-            let sel = selected.clone().filter(|s| names.contains(s));
-            let own = sel.as_deref().is_some_and(|s| !is_builtin(s));
-            ui.horizontal(|ui| {
-                ui.label("Name:");
-                let r = ui.add_enabled(own, egui::TextEdit::singleline(name));
-                push("workspaces.edit.name", &r, "Name");
-                let r = ui.add_enabled(own && sel.as_deref() != Some(name.trim()), egui::Button::new("Rename"));
-                push("workspaces.edit.rename", &r, "Rename");
-                if r.clicked()
-                    && let Some(s) = &sel
-                {
-                    act = Some(("window.workspace.rename", json!({"from": s, "to": name.clone()})));
-                    *selected = Some(name.trim().to_string());
-                }
-            });
-            ui.horizontal(|ui| {
-                // a built-in workspace can't be deleted; its saved changes can
-                let restore = sel.as_deref().is_some_and(|s| is_builtin(s) && changed.iter().any(|c| c == s));
-                let label = if restore { "Restore Original" } else { "Delete" };
-                let r = ui.add_enabled(own || restore, egui::Button::new(label));
-                push("workspaces.edit.delete", &r, label);
-                if r.clicked()
-                    && let Some(s) = &sel
-                {
-                    act = Some(("window.workspace.delete", json!({"name": s})));
-                    if own {
-                        *selected = None;
-                        name.clear();
+            WorkspaceDialog::Edit { selected, name } => {
+                for (i, n) in names.iter().enumerate() {
+                    let r = ui.selectable_label(selected.as_ref() == Some(n), crate::i18n::t(n));
+                    push(&format!("workspaces.edit.row.{i}"), &r, n);
+                    if r.clicked() {
+                        *selected = Some(n.clone());
+                        *name = n.clone();
                     }
                 }
-                let r = ui.button("Close");
-                push("workspaces.edit.close", &r, "Close");
-                close |= r.clicked();
-            });
-        }
-    });
+                ui.separator();
+                let sel = selected.clone().filter(|s| names.contains(s));
+                let own = sel.as_deref().is_some_and(|s| !is_builtin(s));
+                ui.horizontal(|ui| {
+                    ui.label(tl!("Name:"));
+                    let r = ui.add_enabled(own, egui::TextEdit::singleline(name));
+                    push("workspaces.edit.name", &r, "Name");
+                    let r = ui.add_enabled(own && sel.as_deref() != Some(name.trim()), egui::Button::new(tl!("Rename")));
+                    push("workspaces.edit.rename", &r, "Rename");
+                    if r.clicked()
+                        && let Some(s) = &sel
+                    {
+                        act = Some(("window.workspace.rename", json!({"from": s, "to": name.clone()})));
+                        *selected = Some(name.trim().to_string());
+                    }
+                });
+                ui.horizontal(|ui| {
+                    // a built-in workspace can't be deleted; its saved changes can
+                    let restore = sel.as_deref().is_some_and(|s| is_builtin(s) && changed.iter().any(|c| c == s));
+                    let label = if restore { "Restore Original" } else { "Delete" };
+                    let r = ui.add_enabled(own || restore, egui::Button::new(if restore { tl!("Restore Original") } else { tl!("Delete") }));
+                    push("workspaces.edit.delete", &r, label);
+                    if r.clicked()
+                        && let Some(s) = &sel
+                    {
+                        act = Some(("window.workspace.delete", json!({"name": s})));
+                        if own {
+                            *selected = None;
+                            name.clear();
+                        }
+                    }
+                    let r = ui.button(tl!("Close"));
+                    push("workspaces.edit.close", &r, "Close");
+                    close |= r.clicked();
+                });
+            }
+        },
+    );
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }

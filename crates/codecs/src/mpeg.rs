@@ -211,7 +211,7 @@ impl MpegSource {
                 kind: MediaKind::Movie,
                 duration: Tick::ZERO,
                 video: None,
-                audio: None,
+                audio_streams: Vec::new(),
                 container: file.format.name().to_string(),
                 start_timecode: None,
                 file_size: Some(bytes.0.len()),
@@ -316,7 +316,7 @@ impl MpegSource {
                 kind: MediaKind::Movie,
                 duration: Tick::ZERO,
                 video: None,
-                audio: None,
+                audio_streams: Vec::new(),
                 container: "MPEG video elementary stream".into(),
                 start_timecode: None,
                 file_size: Some(bytes.0.len()),
@@ -485,7 +485,8 @@ impl MpegSource {
     /// Mark the audio stream as not decodable (it still shows in the media info).
     fn audio_unsupported(&mut self, codec_name: &str, why: String) -> Option<AudioTrack> {
         self.unsupported_audio = Some(why);
-        self.info.audio = Some(AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: format!("{codec_name} (unsupported)"), bits_per_sample: None });
+        self.info.audio_streams =
+            vec![AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: format!("{codec_name} (unsupported)"), bits_per_sample: None }];
         None
     }
 
@@ -599,7 +600,8 @@ impl MpegSource {
                 self.info.kind = MediaKind::AudioOnly;
             }
         }
-        self.info.audio = Some(AudioStreamInfo { sample_rate: rate.max(1), channels: channels.max(1) as u32, codec: codec_name, bits_per_sample: bits });
+        self.info.audio_streams =
+            vec![AudioStreamInfo { sample_rate: rate.max(1), channels: channels.max(1) as u32, codec: codec_name, bits_per_sample: bits }];
         Some(AudioTrack {
             stream: ai,
             codec,
