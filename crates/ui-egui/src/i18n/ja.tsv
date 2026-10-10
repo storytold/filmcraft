@@ -970,6 +970,7 @@
 	Reset…	リセット…
 	Source · {name}	ソース · {name}
 	Reset Effect	エフェクトをリセット
+	Reset Parameter	パラメーターをリセット
 	Save Preset…	プリセットを保存…
 	Custom Setup	カスタム設定
 	Edit…	編集…
@@ -1215,6 +1216,9 @@
 	Caption track options	キャプショントラックのオプション
 	Timeline Display Settings	タイムライン表示設定
 	Show Video Thumbnails	ビデオのサムネイルを表示
+	Head	先頭
+	Head and Tail	先頭と末尾
+	Continuous	連続
 	Show Audio Waveform	オーディオ波形を表示
 	Expand All Tracks	すべてのトラックを展開
 	Minimize All Tracks	すべてのトラックを最小化
@@ -2890,6 +2894,7 @@
 	Target Bitrate	ターゲットビットレート
 	Adaptive ({bpp} bits per pixel)	アダプティブ (1 ピクセルあたり {bpp} ビット)
 	Maximum Bitrate	最大ビットレート
+	Quality (CRF)	品質 (CRF)
 	Key Frame Distance	キーフレーム間隔
 	Quality	画質
 	Render at Maximum Depth	最大深度でレンダリングする
@@ -3294,6 +3299,7 @@
 	Upper First	上位フィールド優先
 	VBR, 1 pass	VBR、1 パス
 	VBR, 2 pass	VBR、2 パス
+	CRF (constant quality)	CRF (品質一定)
 	Vimeo 1080p Full HD	Vimeo 1080p Full HD
 	Vimeo 2160p 4K Ultra HD	Vimeo 2160p 4K Ultra HD
 	Voice-over Record	ナレーションを録音
@@ -3446,6 +3452,8 @@
 	Light Theme	ライトテーマ
 	Next Appearance Mode	次の外観モード
 	Sync with system	システムと同期
+	UI Scale	UI のスケール
+	Auto (system)	自動 (システム)
 	Go to previous keyframe	前のキーフレームへ移動
 	Go to next keyframe	次のキーフレームへ移動
 	Add keyframe	キーフレームを追加
@@ -3499,5 +3507,14 @@
 	Gradient Angle	グラデーションの角度
 	Linear Gradient	線形グラデーション
 	Solid	べた塗り
+	GPU Rendering	GPU レンダリング
+	Composite on the GPU when available	利用可能な場合は GPU で合成
+	Text to Speech	テキスト読み上げ
+	Edit Narration	ナレーションを編集
 	Clear Transition	トランジションを消去
 	Set Transition Duration	トランジションのデュレーションを設定
+	Project Notes	プロジェクトメモ
+	Get Project Notes	プロジェクトメモを取得
+	Edit Project Notes	プロジェクトメモを編集
+	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	このプロジェクトのメモ: やること、指示、フレーム番号など… プロジェクトと一緒に保存されます。
+	GPU acceleration is unavailable; preview renders on the CPU	GPU アクセラレーションを利用できません。プレビューは CPU でレンダリングされます

@@ -22,9 +22,9 @@
 //! | `clip.automateToSequence` | Clip ▸ Automate to Sequence… |
 //! | `help.systemReport` | query behind Help ▸ System Compatibility Report… |
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use filmcraft_project::{BinEntry, BinId, FindOp, FindQuery, FindRow, ItemId, ItemKind, MarkerKind, MediaRef, Project, SearchBin, TrackKind};
+use filmcraft_project::{BinEntry, FindOp, FindQuery, FindRow, ItemId, ItemKind, MarkerKind, MediaRef, Project, SearchBin, TrackKind};
 use filmcraft_time::{Tick, TimeDisplay, TimeRange};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -704,18 +704,42 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
 /// everything those items need), as `project.delete` does. The project's own top bin does not,
 /// since no command acts on it (#244), and only ids that name a real item end up in the result.
 pub fn closure(p: &Project, roots: &[ItemId]) -> BTreeSet<ItemId> {
+    // Index the bin tree once. Told apart from items with a set membership test (rather than a
+    // full `find_bin` per queued id, which is O(n²) when exporting many items from a flat
+    // project) and expanded from the indexed children (rather than a second walk per bin).
+    let mut bins: BTreeSet<u64> = BTreeSet::new();
+    let mut children: BTreeMap<u64, (Vec<ItemId>, Vec<u64>)> = BTreeMap::new();
+    let mut bin_stack = vec![&p.root];
+    while let Some(b) = bin_stack.pop() {
+        bins.insert(b.id.0);
+        let mut direct = (Vec::new(), Vec::new());
+        for c in &b.children {
+            match c {
+                BinEntry::Item(i) => direct.0.push(*i),
+                BinEntry::Bin(x) => {
+                    direct.1.push(x.id.0);
+                    bin_stack.push(x);
+                }
+            }
+        }
+        children.insert(b.id.0, direct);
+    }
+
     let mut keep: BTreeSet<ItemId> = BTreeSet::new();
     let mut todo: Vec<ItemId> = roots.to_vec();
     let mut seen_bins: BTreeSet<u64> = BTreeSet::new();
+    let mut bin_todo: Vec<u64> = Vec::new();
     while let Some(id) = todo.pop() {
-        let bin = BinId(id.0);
-        if bin != p.root.id && p.root.find_bin(bin).is_some() {
-            if seen_bins.insert(id.0)
-                && let Some(b) = p.root.find_bin(bin)
-            {
-                let mut items = Vec::new();
-                b.all_items(&mut items);
-                todo.extend(items);
+        if bins.contains(&id.0) && id.0 != p.root.id.0 {
+            bin_todo.push(id.0);
+            while let Some(bid) = bin_todo.pop() {
+                if !seen_bins.insert(bid) {
+                    continue;
+                }
+                if let Some((items, subs)) = children.get(&bid) {
+                    todo.extend(items.iter().copied());
+                    bin_todo.extend(subs.iter().copied());
+                }
             }
             continue;
         }
@@ -756,6 +780,7 @@ pub fn project_subset(p: &Project, keep: &BTreeSet<ItemId>) -> Project {
     out.items.retain(|id, _| keep.contains(id));
     prune(&mut out.root, keep);
     out.transcripts.retain(|id, _| keep.contains(id));
+    out.narrations.retain(|id, _| keep.contains(id));
     out.search_bins.clear();
     out
 }

@@ -58,6 +58,8 @@ pub struct MkvSource {
     /// Video codec as an ISO-BMFF sample entry (for the decoder factories).
     ventry: Option<SampleEntry>,
     video: GopCache,
+    /// The alpha layer of a VP9 track with `AlphaMode` 1 (WebM transparency, #402).
+    alpha: Option<Arc<crate::webm_alpha::AlphaLayer>>,
     /// The playable audio tracks in file order: `info.audio_streams[k]` describes `audios[k]`.
     audios: Vec<MkvAudio>,
 }
@@ -102,10 +104,9 @@ fn audio_starts(file: &MkvFile, bytes: &crate::Src, ti: usize, rate: i64) -> Vec
 fn opus_starts(file: &MkvFile, bytes: &crate::Src, ti: usize, head: &filmcraft_opus::OpusHead, rate: i64) -> Vec<i64> {
     let Some(t) = file.tracks.get(ti) else { return Vec::new() };
     let (n, d) = tb(t);
-    let scale_ns = (n as i128 * 1_000_000_000 / d as i128).max(1);
     let delay_ns = t.codec_delay_ns as i128;
-    // The demuxer's rounding of CodecDelay to ticks (half away from zero), undone here.
-    let delay_ticks = ((delay_ns + scale_ns / 2) / scale_ns) as i64;
+    // The demuxer's rounding of CodecDelay to ticks, undone here.
+    let delay_ticks = codec_delay_ticks(t);
     let skip = if t.codec_delay_ns > 0 { (delay_ns * rate as i128 / 1_000_000_000) as i64 } else { head.pre_skip as i64 };
     let at = |pts: i64| ((pts.saturating_add(delay_ticks) as i128 * n as i128 * rate as i128 / d as i128) as i64).saturating_sub(skip);
     let packets = t.samples.iter().enumerate().map(|(i, s)| crate::audio::PacketTime {
@@ -114,6 +115,46 @@ fn opus_starts(file: &MkvFile, bytes: &crate::Src, ti: usize, head: &filmcraft_o
         samples: file.read_sample(bytes, ti, i).ok().and_then(|p| crate::audio::opus_packet_samples(&p)).map(|k| k as i64),
     });
     crate::audio::contiguous_starts(packets, stamp_tolerance(t, rate))
+}
+
+/// `CodecDelay` in timestamp ticks, rounded as the demuxer rounds it (half away from zero) before
+/// subtracting it from every timestamp of the track.
+fn codec_delay_ticks(t: &filmcraft_matroska::Track) -> i64 {
+    let (n, d) = tb(t);
+    let scale_ns = (n as i128 * 1_000_000_000 / d as i128).max(1);
+    i64::try_from((t.codec_delay_ns as i128 + scale_ns / 2) / scale_ns).unwrap_or(i64::MAX)
+}
+
+/// The track timestamp that media time zero stands for (#715): the earliest start among the
+/// playable tracks. Block timestamps count from the start of the Segment, and a remux that keeps
+/// its source's timestamps (`ffmpeg -copyts`, a cut from a recording) starts its first picture
+/// seconds in; taken as media time, that repeated the opening picture until then. An audio track
+/// starts where its first packet does before `CodecDelay` was taken off (the delay only hides
+/// priming), and never before zero.
+fn media_origin(file: &MkvFile, vtrack: Option<usize>, atracks: &[usize]) -> i64 {
+    let start = |i: usize| {
+        let t = file.tracks.get(i)?;
+        let first = t.samples.iter().map(|s| s.pts).min()?;
+        Some(if t.kind == TrackKind::Audio { first.saturating_add(codec_delay_ticks(t)).max(0) } else { first })
+    };
+    vtrack.into_iter().chain(atracks.iter().copied()).filter_map(start).min().unwrap_or(0).max(0)
+}
+
+/// Move every track back by `origin` timestamp ticks, so the streams keep their relative timing
+/// (a delay between picture and sound survives).
+fn rebase(file: &mut MkvFile, origin: i64) {
+    if origin <= 0 {
+        return;
+    }
+    for s in file.tracks.iter_mut().flat_map(|t| t.samples.iter_mut()) {
+        s.pts = s.pts.saturating_sub(origin);
+    }
+}
+
+/// End of the last sample of track `i`, in its timebase.
+fn track_end(file: &MkvFile, i: usize) -> Option<(i64, &filmcraft_matroska::Track)> {
+    let t = file.tracks.get(i)?;
+    Some((t.samples.iter().map(|s| s.pts.saturating_add(i64::try_from(s.duration).unwrap_or(i64::MAX))).max().unwrap_or(0), t))
 }
 
 /// Two timestamp ticks in sample frames at `rate`, plus one: how far a packet's Matroska timestamp
@@ -144,7 +185,7 @@ fn tb(t: &filmcraft_matroska::Track) -> (i64, i64) {
 
 fn to_tick(t: &filmcraft_matroska::Track, pts: i64) -> Tick {
     let (n, d) = tb(t);
-    Tick::from_rational(pts * n, 1, d)
+    Tick::from_rational(pts, n, d)
 }
 
 /// A time as the track timestamp to look a frame up by: rounded to the nearest tick, as muxers
@@ -273,7 +314,7 @@ impl MkvSource {
     /// Open from a random-access reader: only the index is read now, samples on demand.
     pub fn open_reader(name: &str, reader: filmcraft_media::SharedReader) -> crate::Result<Self> {
         let bytes = crate::Src(reader);
-        let file = filmcraft_matroska::open(&bytes).map_err(|e| CodecError::Container(e.to_string()))?;
+        let mut file = filmcraft_matroska::open(&bytes).map_err(|e| CodecError::Container(e.to_string()))?;
         let vtrack = file.tracks.iter().position(|t| t.kind == TrackKind::Video && !t.samples.is_empty());
         // every audio track is a stream (the track count comes from the file: capped)
         let atracks: Vec<usize> = file
@@ -287,6 +328,24 @@ impl MkvSource {
         if vtrack.is_none() && atracks.is_empty() {
             return Err(CodecError::Unsupported("no playable tracks".into()));
         }
+        let main = vtrack.or(atracks.first().copied());
+        // The Segment's end (`Info/Duration` or the last sample), in Segment time.
+        let segment_end = match file.duration_ns() {
+            Some(ns) => Tick::from_rational(i64::try_from(ns).unwrap_or(i64::MAX), 1, 1_000_000_000),
+            None => main.and_then(|i| track_end(&file, i)).map(|(end, t)| to_tick(t, end)).unwrap_or_default(),
+        };
+        // Media time zero is the first picture (or sound): the streams start at their common origin.
+        let origin = media_origin(&file, vtrack, &atracks);
+        rebase(&mut file, origin);
+        // `Info/Duration` is the Segment's end: the media lasts from the origin to there (never less
+        // than its main track's samples).
+        let duration = match main.and_then(|i| track_end(&file, i)) {
+            Some((end, t)) if origin > 0 => {
+                let (n, d) = tb(t);
+                (segment_end - Tick::from_rational(origin, n, d)).max(to_tick(t, end))
+            }
+            _ => segment_end,
+        };
         let mut explicit_color = None;
         let mut ventry = None;
         // display rotation from the track's Projection (portrait phone video is stored landscape)
@@ -310,7 +369,7 @@ impl MkvSource {
             if explicit {
                 explicit_color = Some(color);
             }
-            let secs = file.duration_ns().unwrap_or(0) as f64 / 1e9;
+            let secs = duration.seconds();
             let bitrate = (secs > 0.0).then(|| (t.samples.iter().map(|s| s.size as u64).sum::<u64>() as f64 * 8.0 / secs) as u64);
             let ((w, h), par) = if rotation % 2 == 1 { ((h, w), (v.pixel_aspect().1, v.pixel_aspect().0)) } else { ((w, h), v.pixel_aspect()) };
             VideoStreamInfo {
@@ -340,17 +399,6 @@ impl MkvSource {
                 AudioStreamInfo { sample_rate: rate, channels, codec: codec_label(&t.codec), bits_per_sample: a.bit_depth.map(|b| b as u32) }
             })
             .collect();
-        let duration = match file.duration_ns() {
-            Some(ns) => Tick::from_rational(ns as i64, 1, 1_000_000_000),
-            None => vtrack
-                .or(atracks.first().copied())
-                .map(|i| {
-                    let t = &file.tracks[i];
-                    let end = t.samples.iter().map(|s| s.pts + s.duration as i64).max().unwrap_or(0);
-                    to_tick(t, end)
-                })
-                .unwrap_or_default(),
-        };
         let info = MediaInfo {
             name: name.to_string(),
             kind: if video.is_some() { MediaKind::Movie } else { MediaKind::AudioOnly },
@@ -380,7 +428,12 @@ impl MkvSource {
                 Some(MkvAudio { track: i, state, starts, preroll })
             })
             .collect();
-        Ok(Self { info, bytes, file, vtrack, ventry, video: GopCache::new(explicit_color).with_rotation(rotation), audios })
+        // WebM transparency: VP9 alpha in each block's BlockAdditional (ID 1)
+        let alpha = vtrack.and_then(|i| file.tracks.get(i)).filter(|t| {
+            matches!(t.codec, Codec::Vp9 { .. }) && t.video.as_ref().is_some_and(|v| v.alpha_mode != 0) && t.samples.iter().any(|s| s.addition.is_some())
+        });
+        let alpha = alpha.map(|t| Arc::new(crate::webm_alpha::AlphaLayer::new(bytes.clone(), t.samples.iter().map(|s| (s.pts, s.addition)))));
+        Ok(Self { info, bytes, file, vtrack, ventry, video: GopCache::new(explicit_color).with_rotation(rotation), alpha, audios })
     }
 
     fn read(&self, track: usize, i: usize) -> crate::Result<Vec<u8>> {
@@ -486,9 +539,15 @@ impl VideoSamples for MkvVideo<'_> {
         self.src.read(self.track, i)
     }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
-        match &self.src.ventry {
-            Some(e) => make_video_decoder(e),
-            None => Err(CodecError::Unsupported(format!("no decoder for {} video", codec_label(&self.src.file.tracks[self.track].codec)))),
+        let Some(e) = &self.src.ventry else {
+            return Err(CodecError::Unsupported(format!("no decoder for {} video", codec_label(&self.src.file.tracks[self.track].codec))));
+        };
+        let color = make_video_decoder(e)?;
+        let Some(layer) = &self.src.alpha else { return Ok(color) };
+        // the alpha layer always goes through our own decoder (it is luma only)
+        match crate::software_video_decoder(e) {
+            Ok(alpha) => Ok(Box::new(crate::webm_alpha::AlphaDecoder::new(color, alpha, layer.clone()))),
+            Err(_) => Ok(color),
         }
     }
 }
@@ -599,5 +658,54 @@ mod multi_audio_tests {
         assert!((primary.channels[0][20] - 0.25).abs() < 0.001);
         assert!((secondary.channels[0][20] + 0.5).abs() < 0.001);
         assert!(source.audio_stream(2, 0, 50, 48_000).is_err());
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use filmcraft_frame::PixelData;
+    use filmcraft_matroska::{MkvWriter, MuxOptions, TrackKind, TrackSpec};
+    use filmcraft_media::{FrameRequest, MediaSource};
+    use filmcraft_time::Tick;
+
+    /// A flat grey Motion-JPEG picture: its level says which frame it is.
+    fn picture(k: u8) -> Vec<u8> {
+        let img = image::GrayImage::from_pixel(16, 16, image::Luma([20 + 20 * k]));
+        let mut out = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 95).encode_image(&img).unwrap();
+        out
+    }
+
+    /// #715: a remux that keeps its source's timestamps (first picture at 1.48 s, sound 0.2 s after
+    /// it) starts at its first picture, lasts as long as its pictures, and keeps the sound's delay.
+    /// It repeated picture 0 until 1.48 s, and the clip ran to the Segment's absolute end.
+    #[test]
+    fn timestamp_preserving_remux_starts_at_the_first_picture() {
+        let mut v = TrackSpec::new(TrackKind::Video, "V_MJPEG");
+        v.video_size = Some((16, 16));
+        v.default_duration_ns = Some(40_000_000);
+        let mut a = TrackSpec::new(TrackKind::Audio, "A_PCM/INT/LIT");
+        a.audio = Some((48_000.0, 1, Some(16)));
+        let mut w = MkvWriter::new(std::io::Cursor::new(Vec::new()), vec![v, a], MuxOptions::default()).unwrap();
+        for k in 0..10u8 {
+            let pts = 1_480_000_000 + i64::from(k) * 40_000_000;
+            w.write_frame(0, pts, true, &picture(k), None).unwrap();
+            if k == 5 {
+                let pcm: Vec<u8> = (0..960).flat_map(|_| 16_384i16.to_le_bytes()).collect();
+                w.write_frame(1, 1_680_000_000, true, &pcm, Some(20_000_000)).unwrap();
+            }
+        }
+        let src = super::MkvSource::open("shifted.mkv", w.finish().unwrap().into_inner().into()).unwrap();
+        assert_eq!(src.info().duration, Tick::from_rational(10, 1, 25), "ten pictures at 25 fps");
+        let level = |k: i64| {
+            let f = src.video_frame(FrameRequest::full(Tick::from_rational(k, 1, 25))).unwrap();
+            let PixelData::Rgba8(px) = &f.data else { panic!("MJPEG decodes to RGBA8") };
+            px[0]
+        };
+        let seen: Vec<u8> = (0..10).map(level).collect();
+        assert!(seen.windows(2).all(|p| p[0] < p[1]), "one picture per frame, in order: {seen:?}");
+        let sound = src.audio(0, 48_000 * 2 / 5, 48_000).unwrap();
+        assert!(sound.channels[0][9_590].abs() < 0.001, "silent before the delay");
+        assert!((sound.channels[0][9_610] - 0.5).abs() < 0.001, "sound 0.2 s after the first picture");
     }
 }

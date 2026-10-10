@@ -100,6 +100,51 @@ fn golden_drop_frame_dissolves() {
 }
 
 #[test]
+fn named_edl_audio_dissolves_keep_their_effects() {
+    let fixture = "TITLE: AudioDissolve
+FCM: NON-DROP FRAME
+
+001  AX       A     C        00:00:00:00 00:00:02:00 01:00:00:00 01:00:02:00
+* FROM CLIP NAME: A
+
+002  AX       A     C        00:00:02:00 00:00:02:00 01:00:02:00 01:00:02:00
+002  AX       A     D 024    00:00:02:00 00:00:04:00 01:00:02:00 01:00:04:00
+* TO CLIP NAME: B
+";
+    let opts = ImportOptions { edl_frame_rate: Some(FrameRate::FPS_24), ..Default::default() };
+    for (name, expected, warning) in [
+        (Some("CONSTANT GAIN"), "constant_gain", false),
+        (Some("EXPONENTIAL FADE"), "exponential_fade", false),
+        (Some("CONSTANT POWER"), "constant_power", false),
+        (Some("UNRECOGNIZED TRANSITION"), "constant_power", true),
+        (None, "constant_power", false),
+    ] {
+        let text = format!("{fixture}{}", name.map(|name| format!("* EFFECT NAME: {name}\n")).unwrap_or_default());
+        let (imp, rep) = import_with(text.as_bytes(), Format::Edl, &opts).unwrap();
+        let seq = imp.project.sequence(only_seq(&imp)).unwrap();
+        let track = &seq.audio_tracks[0];
+        assert_eq!(track.transitions.len(), 1, "{name:?}");
+        let tr = &track.transitions[0];
+        assert_eq!(tr.effect.effect, expected, "{name:?}: {rep}");
+        assert_eq!(tr.start, f(FrameRate::FPS_24, 48), "{name:?}");
+        assert_eq!(tr.duration, f(FrameRate::FPS_24, 24), "{name:?}");
+        assert_eq!(tr.align, TransitionAlign::StartAtCut, "{name:?}");
+        assert!(tr.from.is_some() && tr.to.is_some(), "{name:?}");
+        assert_eq!(rep.mentions("not supported"), warning, "{name:?}: {rep}");
+        if warning {
+            assert!(rep.mentions("Constant Power"), "{rep}");
+        }
+    }
+
+    // The same event with video channels retains the video-only Cross Dissolve.
+    let video = fixture.replace("AX       A", "AX       V") + "* EFFECT NAME: CROSS DISSOLVE\n";
+    let (imp, rep) = import_with(video.as_bytes(), Format::Edl, &opts).unwrap();
+    let seq = imp.project.sequence(only_seq(&imp)).unwrap();
+    assert_eq!(seq.video_tracks[0].transitions[0].effect.effect, "cross_dissolve");
+    assert!(!rep.mentions("not supported"), "{rep}");
+}
+
+#[test]
 fn explicit_rate_and_wipes_and_keys() {
     let edl = "TITLE: Keys
 FCM: NON-DROP FRAME

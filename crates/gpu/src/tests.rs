@@ -492,3 +492,11 @@ fn gpu_draws_yuv_alpha_plane_like_the_cpu() {
         assert!(r != at(&bg, w - 2), "{bits}-bit: right edge {r:?} should differ from the background");
     }
 }
+
+#[test]
+fn fast_half_float_conversion_matches_the_reference_for_every_value() {
+    for h in 0..=u16::MAX {
+        let (fast, slow) = (f16_to_f32_fast(h), f16_to_f32(h));
+        assert!(fast.to_bits() == slow.to_bits() || (fast.is_nan() && slow.is_nan()), "{h:#06x}: {fast} vs {slow}");
+    }
+}

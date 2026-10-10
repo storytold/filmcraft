@@ -1667,18 +1667,26 @@ dependencies = [
 name = "filmcraft"
 version = "0.5.0"
 dependencies = [
+ "arboard",
  "chrono",
  "cpal",
  "eframe",
  "egui",
  "filmcraft-engine",
+ "filmcraft-export",
+ "filmcraft-gpu",
  "filmcraft-platform",
+ "filmcraft-project",
+ "filmcraft-render",
+ "filmcraft-time",
  "filmcraft-ui-egui",
+ "glob",
  "log",
  "muda",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "open",
  "rfd",
  "serde_json",
  "sys-locale",
@@ -1780,11 +1788,15 @@ dependencies = [
  "filmcraft-automation",
  "filmcraft-codecs",
  "filmcraft-engine",
+ "filmcraft-export",
+ "filmcraft-gpu",
  "filmcraft-media",
  "filmcraft-mpegts",
  "filmcraft-mxf",
  "filmcraft-ogg",
  "filmcraft-platform",
+ "filmcraft-project",
+ "filmcraft-render",
  "filmcraft-time",
  "serde_json",
  "tokio",
@@ -1878,6 +1890,7 @@ dependencies = [
  "filmcraft-testkit",
  "filmcraft-text",
  "filmcraft-time",
+ "filmcraft-tts",
  "image",
  "log",
  "serde",
@@ -1969,12 +1982,14 @@ name = "filmcraft-gpu"
 version = "0.5.0"
 dependencies = [
  "filmcraft-color",
+ "filmcraft-export",
  "filmcraft-frame",
  "filmcraft-geom",
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-render",
  "filmcraft-time",
+ "image",
  "log",
  "pollster 0.4.0",
  "rayon",
@@ -2223,6 +2238,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-tts"
+version = "0.5.0"
+dependencies = [
+ "candle-core",
+ "candle-nn",
+ "filmcraft-audio-dsp",
+ "filmcraft-tts-text",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "zip",
+]
+
+[[package]]
+name = "filmcraft-tts-text"
+version = "0.5.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "filmcraft-ui-egui"
 version = "0.5.0"
 dependencies = [
@@ -2235,6 +2272,7 @@ dependencies = [
  "filmcraft-color",
  "filmcraft-edit",
  "filmcraft-engine",
+ "filmcraft-export",
  "filmcraft-frame",
  "filmcraft-geom",
  "filmcraft-gpu",
@@ -2246,6 +2284,7 @@ dependencies = [
  "filmcraft-scopes",
  "filmcraft-text",
  "filmcraft-time",
+ "filmcraft-tts",
  "image",
  "log",
  "pollster 0.4.0",
@@ -2827,6 +2866,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "glob"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
+
+[[package]]
 name = "glow"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3186,6 +3231,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
 dependencies = [
  "generic-array",
+]
+
+[[package]]
+name = "is-docker"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "928bae27f42bc99b60d9ac7334e3a21d10ad8f1835a4e12ec3ec0464765ed1b3"
+dependencies = [
+ "once_cell",
+]
+
+[[package]]
+name = "is-wsl"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "173609498df190136aa7dea1a91db051746d339e18476eed5ca40521f02d7aa5"
+dependencies = [
+ "is-docker",
+ "once_cell",
 ]
 
 [[package]]
@@ -4112,6 +4176,16 @@ name = "opaque-debug"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
+
+[[package]]
+name = "open"
+version = "5.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa576c76302b7b808eecc68061e67336c47833ef9d22caa74dda10fa9675eebc"
+dependencies = [
+ "is-wsl",
+ "libc",
+]
 
 [[package]]
 name = "openssl-probe"

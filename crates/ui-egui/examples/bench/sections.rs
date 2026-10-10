@@ -13,6 +13,26 @@ use crate::Opts;
 use crate::fixtures::fixture;
 use crate::playback::{self, Bench, Display, load_avg, ms, pct};
 
+/// The GPU export frame renderer factory the bench registers for the export section (the app and
+/// CLI register the same thing at startup): filmcraft-gpu's off-screen compositor behind
+/// filmcraft-export's frame-renderer hook.
+fn gpu_export_frame_renderer_factory() -> Option<Box<dyn filmcraft_export::FrameRenderer>> {
+    struct R(filmcraft_gpu::ExportRenderer);
+    impl filmcraft_export::FrameRenderer for R {
+        fn render(
+            &mut self,
+            project: &filmcraft_project::Project,
+            seq: ItemId,
+            t: Tick,
+            opts: filmcraft_render::RenderOptions,
+            sources: &dyn filmcraft_render::SourceProvider,
+        ) -> Option<filmcraft_render::Image> {
+            self.0.render(project, seq, t, opts, sources)
+        }
+    }
+    filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(R(r)) as Box<dyn filmcraft_export::FrameRenderer>)
+}
+
 fn median(v: &[f64]) -> f64 {
     pct(v, 0.5)
 }
@@ -437,16 +457,35 @@ pub fn export(o: &Opts) -> Vec<Value> {
     let dir = std::env::temp_dir().join(format!("filmcraft-bench-export-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("tmp dir");
     let mut rows = Vec::new();
-    for (format, label, ext) in [("h264", "H.264 + AAC (MP4)", "mp4"), ("prores", "ProRes 422 (MOV)", "mov")].into_iter().filter(|f| o.wants(f.0)) {
+    // Scenes: (id, format, label, extension, effects-heavy). `--only` matches the id exactly here,
+    // so `--only h264` runs the plain scene and `--only h264_fx` only the layered one.
+    let scenes = [
+        ("h264", "h264", "H.264 + AAC (MP4)", "mp4", false),
+        ("h264_fx", "h264", "H.264 + AAC, 3 layers + effects", "mp4", true),
+        ("prores", "prores", "ProRes 422 (MOV)", "mov", false),
+    ];
+    for (id, format, label, ext, fx) in scenes.into_iter().filter(|f| o.only.as_deref().is_none_or(|x| x == f.0)) {
         let mut runs = Vec::new();
         let mut cpu = Vec::new();
         let mut bytes = 0u64;
         let mut frames = 0i64;
         let hw0 = filmcraft_engine::export::hw_encode_stats();
+        let gpu0 = filmcraft_engine::export::gpu_render_stats();
+        // The engine's headless session does not register the app's GPU export renderer; the bench
+        // does it here so `--gpu-rendering auto` measures the GPU path (and the row reports the
+        // frames it actually rendered on the GPU).
+        filmcraft_engine::export::register_frame_renderer(gpu_export_frame_renderer_factory);
         for _ in 0..o.repeat {
             let mut s = Session::default();
             let a = playback::import(&mut s, &path);
-            let seq = playback::build_sequence(&mut s, 1920, 1080, &[(a, 100.0, None, 0.0, 100.0)], &[], secs);
+            let seq = if fx {
+                // PiP layers: (scale %, position, rotation, opacity %); effects per layer, GPU-capable only
+                let layers = [(a, 100.0, None, 0.0, 100.0), (a, 50.0, Some((480.0, -270.0)), 0.0, 100.0), (a, 33.0, Some((-560.0, 300.0)), 0.0, 70.0)];
+                let per_layer: [&[&str]; 3] = [&["proc_amp", "gaussian_blur", "vignette"], &["brightness_contrast"], &["sharpen"]];
+                playback::build_sequence_fx(&mut s, 1920, 1080, &layers, &per_layer, secs)
+            } else {
+                playback::build_sequence(&mut s, 1920, 1080, &[(a, 100.0, None, 0.0, 100.0)], &[], secs)
+            };
             // build_sequence adds video only: add the clip's audio on A1 for the AAC encode
             s.edit("audio", |p, _| {
                 let rate = FrameRate::FPS_23_976;
@@ -459,10 +498,12 @@ pub fn export(o: &Opts) -> Vec<Value> {
             .expect("audio");
             frames = s.project.sequence(seq).map(|q| q.settings.frame_rate.frame_at(q.duration())).unwrap_or(0);
             let out = dir.join(format!("out.{ext}"));
+            filmcraft_export::reset_export_lock_wait();
+            filmcraft_gpu::export_renderer::timing::reset();
             let (t0, c0) = (Instant::now(), cpu_now());
             // `--hw auto`: the hardware encoder too (NVENC H.264 on Windows); `--hw off`: ours
             let hardware = if o.hw == "off" { "off" } else { "auto" };
-            let r = s.execute("file.exportMedia", json!({"path": out.to_string_lossy(), "format": format, "hardwareEncoding": hardware, "wait": true}));
+            let r = s.execute("file.exportMedia", json!({"path": out.to_string_lossy(), "format": format, "hardwareEncoding": hardware, "gpuRendering": if o.hw == "off" { "off" } else { "auto" }, "wait": true}));
             let dt = t0.elapsed().as_secs_f64();
             if let Err(e) = r {
                 eprintln!("export {format}: {e}");
@@ -472,6 +513,22 @@ pub fn export(o: &Opts) -> Vec<Value> {
                 eprintln!("export {format}: {e}");
                 break;
             }
+            let lock_wait = filmcraft_export::export_lock_wait();
+            let gpu_timings = filmcraft_gpu::export_renderer::timing::get();
+            if gpu_timings.frames > 0 {
+                let f = gpu_timings.frames as f64;
+                eprintln!(
+                    "  [GPU timings for {id}] lock_wait: {:.1} ms ({:.2} ms/f), submit: {:.1} ms ({:.2} ms/f), map_wait: {:.1} ms ({:.2} ms/f), convert: {:.1} ms ({:.2} ms/f)",
+                    lock_wait.as_secs_f64() * 1000.0,
+                    lock_wait.as_secs_f64() * 1000.0 / f,
+                    gpu_timings.submit.as_secs_f64() * 1000.0,
+                    gpu_timings.submit.as_secs_f64() * 1000.0 / f,
+                    gpu_timings.map_wait.as_secs_f64() * 1000.0,
+                    gpu_timings.map_wait.as_secs_f64() * 1000.0 / f,
+                    gpu_timings.convert.as_secs_f64() * 1000.0,
+                    gpu_timings.convert.as_secs_f64() * 1000.0 / f,
+                );
+            }
             runs.push(dt);
             cpu.push(ms(cpu_now() - c0) / frames.max(1) as f64);
             bytes = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
@@ -480,13 +537,16 @@ pub fn export(o: &Opts) -> Vec<Value> {
             continue;
         }
         let best = runs.iter().cloned().fold(f64::MAX, f64::min);
-        eprintln!("export {format}: {frames} frames in {best:.1} s");
+        eprintln!("export {id}: {frames} frames in {best:.1} s");
         rows.push(json!({
-            "format": label, "frames": frames, "seconds": best, "fps": frames as f64 / best,
+            "scene": id, "format": label, "frames": frames, "seconds": best, "fps": frames as f64 / best,
             "realtime": frames as f64 / best / FrameRate::FPS_23_976.as_f64(), "cpu_ms_per_frame": median(&cpu),
             "mbytes": bytes as f64 / 1e6, "runs_s": runs, "load": load_avg(),
             // pictures encoded by a hardware encoder during this row (zero with --hw off or where there is none)
             "hw_frames": filmcraft_engine::export::hw_encode_stats().frames.saturating_sub(hw0.frames),
+            // frames composited by the GPU export renderer (zero with --gpu-rendering off or where there is no adapter)
+            "gpu_frames": filmcraft_engine::export::gpu_render_stats().frames.saturating_sub(gpu0.frames),
+            "gpu_fallbacks": filmcraft_engine::export::gpu_render_stats().fallbacks.saturating_sub(gpu0.fallbacks),
         }));
     }
     let _ = std::fs::remove_dir_all(&dir);

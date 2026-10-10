@@ -332,6 +332,8 @@ pub fn section_markdown(v: &Value) -> String {
                 ("cpu_ms_per_frame", "CPU ms/frame"),
                 ("mbytes", "MB"),
                 ("hw_frames", "hw frames"),
+                ("gpu_frames", "gpu frames"),
+                ("gpu_fallbacks", "gpu fallbacks"),
                 ("load", "load"),
             ],
             2,

@@ -352,6 +352,43 @@ fn source_menu_steps_preserve_zero_tick_frame_duration_cursor() {
 }
 
 #[test]
+fn link_media_large_lists_and_long_paths_keep_actions_on_screen() {
+    for (width, height) in [(1600.0, 980.0), (1024.0, 768.0), (800.0, 600.0)] {
+        let mut s = Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let mut p = (*s.project).clone();
+        let template = p.items.values().find_map(|i| i.as_media()).unwrap().clone();
+        for n in 0..100 {
+            let mut media = template.clone();
+            media.media = MediaRef::File { path: format!("/missing/{}/clip-{n}.mov", "long-project-directory/".repeat(20)) };
+            media.offline = true;
+            let id = p.add_item(&format!("Missing clip {n}"), Label::Iris, ItemKind::Media(media), None);
+            s.offline.missing.push(id);
+        }
+        s.project = Arc::new(p);
+        let mut app = FilmcraftApp::new(s);
+        app.ui.link_media = Some(Default::default());
+        let mut builder = Harness::builder().with_size(egui::vec2(width, height)).with_max_steps(10_000);
+        let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(PathBuf::from);
+        if snapshots.is_some() {
+            builder = builder.wgpu();
+        }
+        let mut h = builder.build_eframe(move |_| app);
+        for _ in 0..8 {
+            h.step();
+        }
+        for id in ["linkMedia.locate", "linkMedia.cancel", "linkMedia.offlineAll", "linkMedia.link"] {
+            let r = h.state().auto.find(id).unwrap().rect;
+            assert!(r[0] >= 0.0 && r[1] >= 0.0 && r[0] + r[2] <= width && r[1] + r[3] <= height, "{id} at {r:?} outside {width}x{height}");
+        }
+        if let Some(dir) = snapshots {
+            std::fs::create_dir_all(&dir).unwrap();
+            h.render().unwrap().save(dir.join(format!("media-long-paths-{width}x{height}.png"))).unwrap();
+        }
+    }
+}
+
+#[test]
 fn link_media_dialog_relinks_moved_media() {
     let root = tmp_dir("link");
     let path = moved_project(&root);

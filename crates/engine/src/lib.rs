@@ -29,7 +29,9 @@ pub mod media_browser;
 pub mod media_pool;
 pub mod mixer;
 pub mod multicam;
+pub mod narration;
 pub mod panels;
+pub mod paste_media;
 pub mod perf;
 pub mod presets;
 pub mod previews;
@@ -353,6 +355,10 @@ pub struct Session {
     pub mcrec: multicam::Recorder,
     /// Voice-over recording: the input device and the take in progress.
     pub voiceover: voiceover::VoiceOver,
+    /// The last `tts.preview` result, for the host to play (Text to Speech ▸ Preview).
+    pub tts_preview: Option<Arc<filmcraft_tts::Audio>>,
+    /// Synthesized narrations (`tts.render` fills it from a background job).
+    pub tts_cache: narration::SynthCache,
     /// Dynamic (J/K/L) trimming and trim-mode loop playback in progress.
     pub trim_play: trim::TrimPlayback,
     /// Keyboard shortcuts (active bindings, presets; `shortcuts.*` commands).
@@ -455,6 +461,8 @@ impl Session {
             mixrec: Default::default(),
             mcrec: Default::default(),
             voiceover: Default::default(),
+            tts_preview: None,
+            tts_cache: Default::default(),
             trim_play: Default::default(),
             shortcuts: shortcuts::Shortcuts::new(),
             offline: Default::default(),
@@ -687,8 +695,11 @@ impl Session {
         }
         let clips = commands::named_clips(self, spec, params);
         let items = commands::named_items(self, spec, params);
+        // clips were named but none is one of the active sequence: say which and why, rather
+        // than "no clips selected" to a caller that did not mean the selection (#591)
+        let missing = if clips.is_none() { commands::named_clips_missing(self, spec, params) } else { None };
         if clips.is_none() && items.is_none() {
-            return by_selection;
+            return by_selection.map_err(|why| missing.unwrap_or(why));
         }
         let mut clips = clips.unwrap_or_else(|| self.state.selection.clone());
         let mut items = items.unwrap_or_else(|| self.state.project_selection.clone());
@@ -697,7 +708,7 @@ impl Session {
         let by_params = (spec.enabled)(self);
         self.state.selection = clips;
         self.state.project_selection = items;
-        by_params
+        by_params.map_err(|why| missing.unwrap_or(why))
     }
 
     /// Whether the command can run on the current selection (what the menus show).
@@ -1069,6 +1080,8 @@ mod mixer_tests;
 #[cfg(test)]
 mod multicam_tests;
 #[cfg(test)]
+mod narration_tests;
+#[cfg(test)]
 mod nest_editing_tests;
 #[cfg(test)]
 mod nest_fidelity_tests;
@@ -1078,6 +1091,8 @@ mod nesting_tests;
 mod panels_tests;
 #[cfg(test)]
 mod par_tests;
+#[cfg(test)]
+mod paste_media_tests;
 #[cfg(test)]
 mod presets_tests;
 #[cfg(test)]

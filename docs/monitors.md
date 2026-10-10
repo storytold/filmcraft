@@ -43,14 +43,17 @@ Play auditions the full source span by default. Play In to Out and Play to Out
 address the marked Source range when Source has focus. The Source wrench menu can loop the
 marked range; Program keeps its separate loop setting.
 
-Normal forward playback has sound. L starts normal forward Source playback, K stops, and the
-left/right frame-step keys address Source when it has focus. Reverse and shuttle-speed Source
-playback and source sequences are not yet supported and report an explanatory error. A failed
-audio device leaves the picture advancing with a status message; a decoding error stops Source.
+Normal forward playback has sound. With Source focused, L plays forward and J backward; pressing
+the same key again doubles the speed up to 8×, K stops, Shuttle Slow Right/Left play at ¼ speed,
+and the left/right frame-step keys step the Source playhead. As in Program, shuttle speeds other
+than normal forward play without sound, and backward playback stops on the first frame. Source
+sequences are not yet supported and report an explanatory error. A failed audio device leaves
+the picture advancing with a status message; a decoding error stops Source.
 
 Commands: `source.playback.play`, `source.playback.stop`, `source.playback.toggle` (no parameters),
-available through the UI command registry, CLI bridge and MCP. `playback.toggle` also accepts
-`monitor: "source"|"program"` to override focus. `ui.inspect.sourcePlayback` reports playing,
+available through the UI command registry, CLI bridge and MCP. `playback.toggle`,
+`playback.forward`, `playback.reverse`, `playback.slowForward` and `playback.slowReverse` also
+accept `monitor: "source"|"program"` to override focus. `ui.inspect.sourcePlayback` reports playing,
 audioClock and playhead. Test: `cargo test --release -p filmcraft-ui-egui --test source_playback_ui`.
 
 ## Drag a marked Source range to the timeline
