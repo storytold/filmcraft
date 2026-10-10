@@ -329,6 +329,27 @@ pub const FIXTURES: &[Fixture] = &[
         filter: NOISE,
         args: &["-pix_fmt", "yuv420p10le", "-x264-params", "weightp=2:weightb=1:bframes=3"],
     },
+    // Clean (unfiltered) 10-bit: x264's rate control (mb-tree + AQ) walks `mb_qp_delta` over most of
+    // its legal range, which a shallow `|delta| <= 26` range check rejects. The `NOISE` fixtures
+    // above keep the deltas small, so these two are the regression for that.
+    Fixture {
+        name: "high10_clean",
+        source: "testsrc2",
+        width: 352,
+        height: 288,
+        frames: 12,
+        filter: "",
+        args: &["-pix_fmt", "yuv420p10le", "-preset", "medium", "-crf", "22"],
+    },
+    Fixture {
+        name: "high422_clean",
+        source: "testsrc2",
+        width: 352,
+        height: 288,
+        frames: 12,
+        filter: "",
+        args: &["-pix_fmt", "yuv422p10le", "-preset", "medium", "-crf", "22"],
+    },
     // High 4:2:2 (the Panasonic Lumix MOV mode: H264_422_LongGOP is High 4:2:2 10-bit CABAC)
     Fixture {
         name: "high422_cabac",

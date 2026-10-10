@@ -23,6 +23,23 @@ pub struct SliceInfo {
     pub ref_ids: [Vec<u32>; 2],
 }
 
+/// Whether macroblock-level parse tracing is on (`H264_TRACE=1`): each decoded macroblock's syntax
+/// is printed to stderr. A debugging aid for bitstream desyncs; off unless the variable is set.
+pub fn trace_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("H264_TRACE").is_some())
+}
+
+/// Apply `mb_qp_delta` to a `QPY` (equation 7-10), wrapping over the `52 + QpBdOffsetY` values of
+/// 7-4. Both the input and the result are `QPY` in `-qpb..=51`.
+///
+/// The delta is normally small, but 7-4 only constrains the *result* (`QPY` stays inside
+/// `-QpBdOffsetY..=51`): with a deep `QpBdOffsetY` a single delta may legally exceed the 8-bit
+/// `-26..=25` bound, and the wrap makes the move land back inside the range.
+pub fn wrap_qp(qp: i32, delta: i32, qpb: i32) -> i32 {
+    (qp + delta + 52 + 2 * qpb) % (52 + qpb) - qpb
+}
+
 /// The picture under construction: private reconstruction buffers plus the shared [`Frame`] that
 /// finished (deblocked) macroblock rows are published into.
 pub struct PicState {
@@ -1112,16 +1129,32 @@ impl<'a> SliceDecoder<'a> {
         st.ref_idx = [[-1; 4]; 2];
     }
 
-    /// Update QP after mb_qp_delta (7.4.4 / 8.5.6: QPY wraps over `52 + QpBdOffsetY` values).
+    /// Update QP after `mb_qp_delta` (7.4.4 / 8.5.6, equation 7-10: the QP wraps over
+    /// `52 + QpBdOffsetY` values).
+    ///
+    /// The bitstream constraint (7-4) is on the *result*, not on the delta: `QPY` only has to stay
+    /// inside `-QpBdOffsetY..=51`, so with a deep `QpBdOffsetY` a single `mb_qp_delta` may legally
+    /// exceed +25 — a 10-bit stream can move a whole `51 + 12` at once (7-4 with 7-10). Rejecting
+    /// `|delta| > 26` outright therefore rejects valid deep-bit-depth streams; only a delta that
+    /// cannot land inside the wrap range from any previous QP is corrupt.
     pub fn apply_qp_delta(&mut self, delta: i32) -> Result<()> {
-        ensure!((-26..=25).contains(&delta), "mb_qp_delta {delta} out of range");
         let qpb = self.sps.qp_bd_offset_y();
-        self.qp = (self.qp + delta + 52 + 2 * qpb) % (52 + qpb) - qpb;
+        let span = 52 + qpb;
+        ensure!((-span..=span).contains(&delta), "mb_qp_delta {delta} out of range");
+        let before = self.qp;
+        self.qp = wrap_qp(self.qp, delta, qpb);
+        if trace_on() {
+            eprintln!("QP {before} {delta:+} -> {}", self.qp);
+        }
+        debug_assert!((-qpb..=51).contains(&self.qp), "equation 7-10 keeps QPY in range");
         Ok(())
     }
 
     /// Store the macroblock's QPs: the *effective* QPs (`QPY + QpBdOffsetY` / `QpC + QpBdOffsetC`)
     /// in 0..=63, which is what residual scaling and deblocking derive from.
+    ///
+    /// `self.qp` is the `QPY` of 7-4 (`-QpBdOffsetY..=51`); [`Self::chroma_qp`] takes the effective
+    /// luma QP and applies `QpBdOffsetC` itself (8-309..8-312).
     pub fn store_qp(&mut self) {
         let qp = self.qp;
         let qpc = [self.chroma_qp(qp, 0) as u8, self.chroma_qp(qp, 1) as u8];
@@ -1526,5 +1559,45 @@ impl<'a> SliceDecoder<'a> {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod qp_delta_tests {
+    use super::wrap_qp;
+
+    /// 8-bit (`QpBdOffsetY = 0`): `QPY` is the effective QP over 0..=51 and wraps over 52 values.
+    #[test]
+    fn eight_bit_wraps_over_52() {
+        assert_eq!(wrap_qp(26, 0, 0), 26);
+        assert_eq!(wrap_qp(26, 25, 0), 51);
+        assert_eq!(wrap_qp(26, -26, 0), 0);
+        assert_eq!(wrap_qp(51, 1, 0), 0); // wraps past the top
+        assert_eq!(wrap_qp(0, -1, 0), 51); // wraps past the bottom
+    }
+
+    /// 10-bit (`QpBdOffsetY = 12`): `QPY` runs over -12..=51, so one delta may legally move further
+    /// than the 8-bit -26..=25 bound — the case a `|delta| <= 26` range check used to reject.
+    #[test]
+    fn ten_bit_allows_deltas_beyond_the_eight_bit_bound() {
+        assert_eq!(wrap_qp(-12, 37, 12), 25); // -12 -> +25 is a legal +37 step
+        assert_eq!(wrap_qp(26, 25, 12), 51);
+        assert_eq!(wrap_qp(51, 1, 12), -12); // wraps past the top of the 10-bit range
+        assert_eq!(wrap_qp(-12, -1, 12), 51); // and past the bottom
+    }
+
+    /// Whatever the bit depth and step, the result stays inside the 7-4 range, so callers can rely
+    /// on it for scaling-matrix indices and the deblocking tables.
+    #[test]
+    fn result_is_always_in_the_seven_four_range() {
+        for qpb in [0, 6, 12] {
+            let span = 52 + qpb;
+            for qp in -qpb..=51 {
+                for delta in -span..=span {
+                    let out = wrap_qp(qp, delta, qpb);
+                    assert!((-qpb..=51).contains(&out), "qpb {qpb} qp {qp} delta {delta} -> {out}");
+                }
+            }
+        }
     }
 }

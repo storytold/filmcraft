@@ -229,6 +229,10 @@ the whole 8x16 block (8.3.4, Plane uses `yCF = 4`), 4:2:2 motion compensation ke
 motion vector with `yFracC = (mv & 3) << 1` (8-231..8-234), and the deblocking filter scales its
 thresholds by `1 << (BitDepth - 8)` while indexing the tables with the raw QPY/QPC (8.7.2.2),
 filtering the 4:2:2 chroma edges yE = 0, 4, 8, 12 regardless of `transform_size_8x8_flag`
-(8.7, Figure 8-10). Bit-exactness is proven against ffmpeg oracle fixtures (`high10_*`,
-`high422_*` in `tests/conformance.rs`) and real camera material (Panasonic Lumix S5 MOV,
-H.264 High 4:2:2 10-bit LongGOP, 4K25).
+(8.7, Figure 8-10). `mb_qp_delta` is bounded by the *result* it derives, not by its own magnitude:
+7-4 keeps `QPY` inside `-QpBdOffsetY..=51`, so a deep bit depth lets one delta legitimately move
+more than the 8-bit `-26..=25` (a 10-bit stream may carry `51 + 12`), and equation 7-10 wraps the
+result over `52 + QpBdOffsetY` values. Bit-exactness is proven against ffmpeg oracle fixtures
+(`high10_*`, `high422_*` in `tests/conformance.rs`, including the unfiltered `*_clean` pair that
+walks the full delta range) and real camera material (Panasonic Lumix S5 MOV, H.264 High 4:2:2
+10-bit LongGOP, 4K25).
