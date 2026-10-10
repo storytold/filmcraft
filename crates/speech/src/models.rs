@@ -177,6 +177,86 @@ static CATALOGUE: &[ModelInfo] = &[
             ),
         ],
     },
+    ModelInfo {
+        id: "whisper-large-v3-turbo",
+        name: "Whisper large-v3 turbo (multilingual)",
+        multilingual: true,
+        description: "809 M parameters (large-v3 encoder, 4-layer decoder). Close to large-v3 accuracy at a fraction of its cost; needs a fast CPU.",
+        license: LICENSE,
+        license_url: LICENSE_URL,
+        author: AUTHOR,
+        source: "https://huggingface.co/openai/whisper-large-v3-turbo",
+        files: &[
+            hf!(
+                "whisper-large-v3-turbo",
+                "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+                "config.json",
+                "c5b526b3e3cd64cd8940dabb45e8ba726629e22d8ed389c29b552f9140daf04a",
+                1256
+            ),
+            hf!(
+                "whisper-large-v3-turbo",
+                "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+                "generation_config.json",
+                "cce11bfe3aaa6ae9e072ea2637caaec8795e68d9b67e655a5af16ee509681a4c",
+                3772
+            ),
+            hf!(
+                "whisper-large-v3-turbo",
+                "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+                "tokenizer.json",
+                "297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd",
+                2710337
+            ),
+            hf!(
+                "whisper-large-v3-turbo",
+                "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+                "model.safetensors",
+                "542566a422ae4f3fd23f1ba11add198fca01bbf82e66e6a2857b3f608b1eb9d1",
+                1617824864
+            ),
+        ],
+    },
+    ModelInfo {
+        id: "whisper-large-v3",
+        name: "Whisper large-v3 (multilingual)",
+        multilingual: true,
+        description: "1.55 B parameters. The most accurate; several times slower than turbo and needs about 8 GB of memory.",
+        license: LICENSE,
+        license_url: LICENSE_URL,
+        author: AUTHOR,
+        source: "https://huggingface.co/openai/whisper-large-v3",
+        files: &[
+            hf!(
+                "whisper-large-v3",
+                "06f233fe06e710322aca913c1bc4249a0d71fce1",
+                "config.json",
+                "ad0e8d1e46f4d01f7861a21509e5d0f977d6cc1f367a370603c92541d819807b",
+                1272
+            ),
+            hf!(
+                "whisper-large-v3",
+                "06f233fe06e710322aca913c1bc4249a0d71fce1",
+                "generation_config.json",
+                "fbdfa70135de9b1d31553393f14e80aaeb1936ea36576b2ba864055943c09d23",
+                3903
+            ),
+            hf!(
+                "whisper-large-v3",
+                "06f233fe06e710322aca913c1bc4249a0d71fce1",
+                "tokenizer.json",
+                "6d8cbd7cd0d8d5815e478dac67b85a26bbe77c1f5e0c6d76d1ce2abc0e5f21ca",
+                2480617
+            ),
+            hf!(
+                "whisper-large-v3",
+                "06f233fe06e710322aca913c1bc4249a0d71fce1",
+                "model.safetensors",
+                "a8e94b85976e5864ba3e9525c7e6c83b2a1eca42d4b797a0c7c24d778e40fd95",
+                3087130976
+            ),
+        ],
+    },
 ];
 
 /// The default model.
@@ -290,6 +370,11 @@ fn agent() -> ureq::Agent {
 mod tests {
     use super::*;
 
+    /// The large-v3 tokenizers (one more language, `<|yue|>`, so the special tokens after the
+    /// languages move up by one).
+    const TOKENIZER_V3: [&str; 2] =
+        ["6d8cbd7cd0d8d5815e478dac67b85a26bbe77c1f5e0c6d76d1ce2abc0e5f21ca", "297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd"];
+
     #[test]
     fn catalogue_is_pinned_and_checksummed() {
         assert!(find(DEFAULT_MODEL).is_some());
@@ -301,7 +386,8 @@ mod tests {
                 assert_eq!(f.sha256.len(), 64);
                 assert!(f.sha256.bytes().all(|b| b.is_ascii_hexdigit()));
                 if f.name == "tokenizer.json" {
-                    assert_eq!(f.sha256, shared_tokenizer_sha());
+                    let v3 = m.id.starts_with("whisper-large-v3");
+                    assert!(if v3 { TOKENIZER_V3.contains(&f.sha256) } else { f.sha256 == shared_tokenizer_sha() }, "{}", m.id);
                 }
             }
         }
