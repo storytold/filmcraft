@@ -43,6 +43,10 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("view.zoomIn", "Zoom In", ["View"], Some("=")),
     uic!("view.zoomOut", "Zoom Out", ["View"], Some("-")),
     uic!("view.zoomToSequence", "Zoom to Sequence", ["View"], Some("\\")),
+    uic!("effectControls.zoomIn", "Zoom In", [], None),
+    uic!("effectControls.zoomOut", "Zoom Out", [], None),
+    uic!("effectControls.fit", "Fit", [], None),
+    uic!("effectControls.setView", "Effect Controls", [], None),
     uic!("view.playbackRes.full", "Full", ["View", "Playback Resolution"], None),
     uic!("view.playbackRes.half", "1/2", ["View", "Playback Resolution"], None),
     uic!("view.playbackRes.quarter", "1/4", ["View", "Playback Resolution"], None),
@@ -378,14 +382,24 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             return Ok(json!({"loop": app.playback.looping}));
         }
         "view.zoomIn" | "view.zoomOut" => {
+            if app.ui.focused == PanelKind::EffectControls {
+                let command = if id == "view.zoomIn" { "effectControls.zoomIn" } else { "effectControls.zoomOut" };
+                return crate::panels::effect_controls::view_command(app, command, &params);
+            }
             let f = if id == "view.zoomIn" { 1.6 } else { 1.0 / 1.6 };
             let ph = app.session.playhead().seconds();
             crate::panels::timeline::zoom_about(&mut app.ui.timeline, f, ph, app.last_timeline_width);
             return Ok(Value::Null);
         }
         "view.zoomToSequence" => {
+            if app.ui.focused == PanelKind::EffectControls {
+                return crate::panels::effect_controls::view_command(app, "effectControls.fit", &params);
+            }
             app.ui.timeline.fit_pending = true;
             return Ok(Value::Null);
+        }
+        "effectControls.zoomIn" | "effectControls.zoomOut" | "effectControls.fit" | "effectControls.setView" => {
+            return crate::panels::effect_controls::view_command(app, id, &params);
         }
         "mode.import" => {
             app.ui.mode = Mode::Import;
@@ -751,6 +765,9 @@ pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
     use filmcraft_engine::shortcuts::CommandInfo;
     let mut v: Vec<CommandInfo> =
         UI_COMMANDS.iter().chain(crate::panels::keyboard::COMMANDS).map(|c| CommandInfo::new(c.id, c.label, c.menu, c.shortcut)).collect();
+    for command in v.iter_mut().filter(|c| c.id.starts_with("effectControls.")) {
+        command.category = PanelKind::EffectControls.title().into();
+    }
     for p in PanelKind::ALL {
         v.push(CommandInfo::new(&panel_command_id(p), p.title(), &["Window"], p.window_shortcut()));
     }

@@ -61,3 +61,6 @@ sync_github_name = true
 real_name = "Max Murphy"
 display_name = "Max Murphy"
 sync_github_name = false
+
+[people.lollinoo]
+sync_github_name = true

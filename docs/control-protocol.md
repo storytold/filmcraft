@@ -50,6 +50,17 @@ nothing is selected. When `params` name the targets under a key the command docu
 checked against those instead and the selection is left as it is; the command's other conditions
 still apply. `engine.commands` and the menus always show the selection's enablement.
 
+**Effect Controls viewport.** `effectControls.zoomIn` / `effectControls.zoomOut` accept
+`{factor?, anchor?}`: a finite positive magnification factor (defaults to 1.6 / 0.625) and an anchor
+in sequence ticks (defaults to the playhead clamped to the view). `effectControls.fit` shows the
+selected clip. `effectControls.setView {start?, duration?, fit?}` and
+`ui.set {effectControls: {start?, duration?, fit?}}` set the same UI state; times are integer ticks,
+duration is nonnegative (zero fits), and the view is bounded to one frame through the whole clip.
+These commands require a selected clip and return `{start, duration}`. `ui.inspect` exposes it as
+`ui.effect_controls`. They do not edit the project or its undo history. `view.zoomIn`, `view.zoomOut`
+and `view.zoomToSequence` operate on this view when Effect Controls has focus. Element ids:
+`effectControls.zoomIn`, `.zoomOut`, `.fit`, and `effectControls.scrollbar.<track|thumb|left|right>`.
+
 **Focus.** Driving the app never steals the user's keyboard. Started with `--control`, the app opens
 without activating itself. UI requests and screenshots that need a rendered frame bring the window
 forward without making it key (macOS `orderFrontRegardless`), so the user's typing keeps going to
