@@ -75,6 +75,7 @@ SUBCOMMANDS
   inspect [project|sequence]    project tree or active sequence as JSON (default: both)
   import <file>...              import media into the project
   export <out> [--preset name] [--format f] [--range r] [--start s --end s] [--settings json]
+         [--gpu-rendering auto|off]
          [--scale f] [--quality 0-100] [--no-audio] [--queue]
                                 export the active sequence and wait for it to finish: with an
                                 export preset (`export --list-presets`; built-in or the user's), or
@@ -214,6 +215,30 @@ fn format_for(path: &str) -> Option<&'static str> {
 
 /// OS hardware video decoders (VideoToolbox on macOS, Media Foundation on Windows) in front of our
 /// own, as in the desktop app. Also what `mcp` and the headless commands decode with.
+/// The GPU export frame renderer (filmcraft-gpu's off-screen compositor behind filmcraft-export's
+/// frame-renderer hook): exports with GPU rendering Auto composite on the GPU and fall back to the
+/// CPU reference renderer wherever it cannot.
+struct GpuFrameRenderer(filmcraft_gpu::ExportRenderer);
+
+impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
+    fn render(
+        &mut self,
+        project: &filmcraft_project::Project,
+        seq: filmcraft_project::ItemId,
+        t: filmcraft_time::Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn filmcraft_render::SourceProvider,
+    ) -> Option<filmcraft_render::Image> {
+        self.0.render(project, seq, t, opts, sources)
+    }
+}
+
+fn register_gpu_frame_renderer() {
+    filmcraft_export::register_frame_renderer(|| {
+        filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(GpuFrameRenderer(r)) as Box<dyn filmcraft_export::FrameRenderer>)
+    });
+}
+
 fn register_hardware_decoders() -> filmcraft_platform::Availability {
     filmcraft_platform::register()
 }
@@ -232,10 +257,17 @@ async fn cli() {
         return;
     }
     register_hardware_decoders();
+    register_gpu_frame_renderer();
     let a = Args::parse(std::env::args().skip(1));
+    // `--help` anywhere (`filmcraft-cli --help`, `filmcraft-cli export --help`) prints the reference:
+    // the parser takes it as a flag option, so it never reaches the subcommand match.
+    if a.flag("--help") {
+        out!("{HELP}");
+        return;
+    }
     let Some(cmd) = a.pos(0) else { usage("missing subcommand") };
     match cmd {
-        "help" | "--help" | "-h" => out!("{HELP}"),
+        "help" | "-h" => out!("{HELP}"),
         "version" => outln!("filmcraft-cli {}", env!("CARGO_PKG_VERSION")),
         "probe" => {
             let path = a.pos(1).unwrap_or_else(|| usage("probe <media> [--image-sequence]"));
@@ -389,6 +421,9 @@ async fn cli() {
             }
             if a.flag("--no-audio") {
                 p["audio"] = json!(false);
+            }
+            if let Some(v) = a.opt("--gpu-rendering") {
+                p["gpuRendering"] = json!(v); // off | auto (validated by the export command)
             }
             let mut b = Backend::open(&a);
             let t0 = std::time::Instant::now();

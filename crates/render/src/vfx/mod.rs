@@ -460,8 +460,6 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
     match e.effect.as_str() {
         // Adjust / Color / Image Control / Keying / Utility colour
         "lighting_effects" => color::lighting(img, e, cx),
-        "video_limiter" => color::video_limiter(img, e, cx),
-        "vignette" => color::vignette(img, e, cx),
         "logo_cutout" => color::logo_cutout(img, e, cx),
         "ultra_key" => color::ultra_key(img, e, cx),
         "track_matte" => color::track_matte(img, e, cx),

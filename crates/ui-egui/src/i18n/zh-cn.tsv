@@ -3489,5 +3489,9 @@
 	Appearance Mode	外观模式
 	Next Appearance Mode	下一个外观模式
 	Sync with system	跟随系统
+	GPU Rendering	GPU 渲染
+	Composite on the GPU when available	可用时在 GPU 上合成
+	Text to Speech	文字转语音
+	Edit Narration	编辑旁白
 	Clear Transition	清除过渡
 	Set Transition Duration	设置过渡持续时间

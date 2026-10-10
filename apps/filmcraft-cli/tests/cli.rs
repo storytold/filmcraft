@@ -25,6 +25,22 @@ fn help_and_usage_errors() {
 }
 
 #[test]
+fn long_help_matches_help_command() {
+    let reference = cli(&["help"]);
+    assert!(reference.status.success());
+    let long_help = cli(&["--help"]);
+    assert!(long_help.status.success(), "--help failed: {}", String::from_utf8_lossy(&long_help.stderr));
+    assert_eq!(long_help.stdout, reference.stdout);
+    assert!(long_help.stderr.is_empty());
+    let short_help = cli(&["-h"]);
+    assert!(short_help.status.success());
+    assert_eq!(short_help.stdout, reference.stdout);
+    let sub_help = cli(&["export", "--help"]);
+    assert!(sub_help.status.success(), "export --help failed: {}", String::from_utf8_lossy(&sub_help.stderr));
+    assert_eq!(sub_help.stdout, reference.stdout);
+}
+
+#[test]
 fn probe_reports_mpeg_transport_and_program_streams() {
     let Some(ffmpeg) = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].into_iter().find(|p| std::path::Path::new(p).exists()) else {
         eprintln!("SKIPPED (probe_reports_mpeg_transport_and_program_streams): ffmpeg not found");

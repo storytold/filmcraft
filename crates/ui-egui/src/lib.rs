@@ -88,6 +88,11 @@ pub trait AudioOut {
     /// effect at the next `start`; `document_rate` is the sequence sample rate for "Attempt to
     /// force hardware to document sample rate".
     fn configure(&mut self, _hw: &filmcraft_engine::settings::AudioHardwarePrefs, _document_rate: Option<u32>) {}
+    /// A hardware note for the status bar — e.g. the default output device could not be opened
+    /// and a fallback device is in use, or no output device was found — or None.
+    fn note(&self) -> Option<String> {
+        None
+    }
 }
 
 /// What the platform audio layer can open (Settings ▸ Audio Hardware).
@@ -607,6 +612,9 @@ impl FilmcraftApp {
                 self.start_audio();
             }
         }
+        if let Some(note) = self.audio.as_ref().and_then(|a| a.note()) {
+            self.ui.status = note;
+        }
         if prev.is_none() && !self.workspace_restored {
             // reopen the workspace in use when the app last closed
             self.workspace_restored = true;
@@ -705,6 +713,11 @@ impl FilmcraftApp {
         }
         if !self.ui.dock.contains(p) {
             let near = match p {
+                // a side panel beside Properties (or Essential Sound), never over the Program monitor
+                PanelKind::TextToSpeech => [PanelKind::Properties, PanelKind::EssentialSound, PanelKind::EssentialGraphics]
+                    .into_iter()
+                    .find(|k| self.ui.dock.contains(*k))
+                    .unwrap_or(PanelKind::Program),
                 PanelKind::LumetriColor | PanelKind::EssentialGraphics | PanelKind::EssentialSound | PanelKind::Properties => PanelKind::Program,
                 PanelKind::Source
                 | PanelKind::EffectControls
@@ -824,6 +837,34 @@ impl FilmcraftApp {
         panels::voiceover::on_play(self);
     }
 
+    /// Play the last Text to Speech preview (`Session::tts_preview`) on the audio output, stopping
+    /// timeline playback first. Starting playback again takes the output back.
+    pub fn play_tts_preview(&mut self) -> Result<f64, String> {
+        let audio = self.session.tts_preview.clone().ok_or("nothing to preview")?;
+        if self.playback.playing {
+            self.stop();
+        }
+        let a = self.audio.as_mut().ok_or("no audio output (check Settings ▸ Audio Hardware)")?;
+        let sr = a.sample_rate().max(1);
+        a.stop();
+        let step = f64::from(audio.sample_rate.max(1)) / f64::from(sr);
+        let seconds = audio.seconds();
+        let mut pos = 0.0f64;
+        let fill = Box::new(move |buf: &mut [f32], ch: usize| {
+            for frame in buf.chunks_mut(ch.max(1)) {
+                let i = pos as usize;
+                let f = (pos - i as f64) as f32;
+                let x0 = audio.samples.get(i).copied().unwrap_or(0.0);
+                let x1 = audio.samples.get(i + 1).copied().unwrap_or(0.0);
+                frame.fill(x0 + (x1 - x0) * f);
+                pos += step;
+            }
+        });
+        a.start(fill)?;
+        self.playback.audio_clock = false;
+        Ok(seconds)
+    }
+
     pub fn stop(&mut self) {
         self.playback.playing = false;
         self.playback.stop_at = None;
@@ -872,7 +913,12 @@ impl FilmcraftApp {
             })
         };
         match a.start(fill) {
-            Ok(_) => self.playback.audio_clock = true,
+            Ok(_) => {
+                self.playback.audio_clock = true;
+                if let Some(note) = self.audio.as_ref().and_then(|audio| audio.note()) {
+                    self.ui.status = note;
+                }
+            }
             Err(e) => {
                 log::warn!("audio output unavailable: {e}");
                 self.playback.audio_clock = false;
@@ -1467,6 +1513,11 @@ impl FilmcraftApp {
         self.advance_playback(&ctx);
         self.advance_source_playback(&ctx);
         self.scrub_audio(&ctx);
+        // Text to Speech: a selected narration clip loads into the panel
+        panels::tts::follow_selection(self);
+        if self.ui.tts.pending.is_some() || self.ui.tts.download_job.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         let t = self.tokens;
         let full = ui.max_rect();
         ui.painter().rect_filled(full, 0.0, t.app_bg);

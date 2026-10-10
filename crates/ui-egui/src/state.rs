@@ -411,6 +411,9 @@ pub struct UiState {
     /// Essential Sound sub-tab: "Edit" or "Browse".
     #[serde(default)]
     pub essential_sound_tab: String,
+    /// Text to Speech panel: the script and voice settings being written or edited.
+    #[serde(default)]
+    pub tts: crate::panels::tts::TtsDraft,
     /// Export mode: settings, preset, destination, range, the Preset Manager and Quick Export.
     #[serde(default)]
     pub export: crate::panels::export_mode::ExportUi,
@@ -902,6 +905,7 @@ impl Default for UiState {
             status: String::new(),
             eyedropper: None,
             essential_sound_tab: "Edit".into(),
+            tts: Default::default(),
             export: Default::default(),
             text_tab: captions_tab(),
             caption_search: String::new(),

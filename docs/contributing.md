@@ -40,6 +40,7 @@ cargo xtask web --serve 8765                          # the web app on http://12
 |---|---|
 | `FILMCRAFT_CONTROL_PORT` | Same as `--control <port>` |
 | `FILMCRAFT_CPU_COMPOSITE=1` | Disables the GPU compositor |
+| `FILMCRAFT_DEV_DESKTOP_ENTRY=1` | Linux, opt-in: a run from a source tree installs a user-level desktop entry (and the icons from `assets/app-icon`) so the taskbar shows the FilmCraft icon. Nothing is written without it; packaged runs never write one |
 | `FILMCRAFT_DATA_DIR` | Same as `--data-dir <dir>`: auto-save, crash recovery, settings and logs |
 | `RUST_LOG` | Log levels for standard error and the log file (see [Logs](#logs)) |
 
@@ -135,7 +136,7 @@ comes with a regression test; parsers, decoders and commands get fuzz / hostile-
   [ROADMAP.md](../ROADMAP.md). If your change has no task id, use the area: `docs: …`,
   `README: …`, `ROADMAP: …`.
 - Commit only green states (all gates pass).
-- When a milestone lands, update its row in `ROADMAP.md` (status, what's done, estimates).
+- When a milestone lands, update its row in [roadmap.md](roadmap.md) (status, what's done, estimates), the summary in `ROADMAP.md`, and the parity doc and [gaps.md](gaps.md) entry it moves, with their "Last updated" lines and revision history.
 - AI agents end commit messages with the attribution line their environment requires.
 
 ## 5. Parallel work (several agents or worktrees)
