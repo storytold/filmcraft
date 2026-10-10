@@ -559,6 +559,17 @@ pub(crate) fn param_row(
             actions.push(("effects.addKeyframe".into(), with_mask(json!({"clip": clip.0, "effect": eff_json, "param": pd.id}))));
         }
     }
+    // reset to the default, under the effect's own reset button (an animated parameter keeps its
+    // keyframes and gets one at the playhead)
+    if mask.is_none() {
+        let rr = Rect::from_center_size(pos2(r.max.x - 14.0, r.center().y), vec2(12.0, 12.0));
+        let rresp = ui.interact(rr, egui::Id::new(("param-reset", clip.0, idx, pkey)), Sense::click()).on_hover_text(tl!("Reset Parameter"));
+        icons::paint(ui.painter(), rr, Icon::Reset, if rresp.hovered() { t.text } else { t.text_dim });
+        app.auto.add(&format!("effectControls.{}.{}.reset", e.effect, pkey), rr, "Reset Parameter");
+        if rresp.clicked() {
+            actions.push(("effects.resetParam".into(), json!({"clip": clip.0, "effect": eff_json, "param": pd.id})));
+        }
+    }
     // keyframes in the lane: draggable diamonds; right-click for interpolation
     if param.is_animated() {
         let y = r.center().y;

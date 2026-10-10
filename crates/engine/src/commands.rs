@@ -2698,15 +2698,35 @@ fn build() -> Vec<CommandSpec> {
         cmd!("effects.reset", "Reset Effect", [], None, r#"{"clip":id,"index":n}"#, has_seq, |s, p| {
             let c = clip_p(p, "clip").ok_or_else(|| bad("effects.reset", "need `clip`"))?;
             let idx = u64_p(p, "index").unwrap_or(0) as usize;
-            let (fw, fh) = s.active_sequence().map(|q| (q.settings.width, q.settings.height)).unwrap_or((1920, 1080));
+            let frame = s.active_sequence().map(|q| (q.settings.width, q.settings.height)).unwrap_or((1920, 1080));
+            let ph = s.playhead();
             s.edit_sequence("Reset Effect", |q, _, _| {
                 let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
-                if let Some(e) = it.effects.get_mut(idx)
-                    && let Some(d) = e.def()
-                {
-                    let mut fresh = d.instance();
-                    resolve_auto_points(&mut fresh, (fw, fh), (fw, fh));
-                    *e = fresh;
+                let mt = it.source_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
+                if let Some(e) = it.effects.get_mut(idx) {
+                    reset_params(e, None, frame, mt);
+                }
+                Ok(())
+            })?;
+            Ok(Value::Null)
+        }),
+        cmd!("effects.resetParam", "Reset Parameter", [], None, r#"{"clip":id,"effect":str|index,"param":str}"#, has_seq, |s, p| {
+            let c = clip_p(p, "clip").ok_or_else(|| bad("effects.resetParam", "need `clip`"))?;
+            let pid = str_p(p, "param").ok_or_else(|| bad("effects.resetParam", "need `param`"))?.to_string();
+            let eff = p.get("effect").cloned().unwrap_or(json!("motion"));
+            let frame = s.active_sequence().map(|q| (q.settings.width, q.settings.height)).unwrap_or((1920, 1080));
+            let ph = s.playhead();
+            s.edit_sequence("Reset Parameter", |q, _, _| {
+                let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
+                let mt = it.source_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
+                let e = match &eff {
+                    Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
+                    Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
+                    _ => None,
+                }
+                .ok_or_else(|| bad("effects.resetParam", "no such effect on clip"))?;
+                if !reset_params(e, Some(&pid), frame, mt) {
+                    return Err(bad("effects.resetParam", format!("no param `{pid}`")));
                 }
                 Ok(())
             })?;
@@ -2921,6 +2941,30 @@ fn build() -> Vec<CommandSpec> {
     crate::project_tools::apply_layout(&mut v);
     v.shrink_to_fit();
     v
+}
+
+/// Put `e`'s parameters (all of them, or only `only`) back to their defaults, as Premiere's reset
+/// buttons do: a parameter that is not animated gets its default as its static value, and an
+/// animated one keeps its keyframes and gets the default as a keyframe at media time `mt`.
+/// Masks are left alone. Returns whether any parameter was reset.
+fn reset_params(e: &mut filmcraft_project::EffectInstance, only: Option<&str>, frame: (u32, u32), mt: Tick) -> bool {
+    let Some(d) = e.def() else { return false };
+    let mut fresh = d.instance();
+    resolve_auto_points(&mut fresh, frame, frame);
+    let mut any = false;
+    for (id, prm) in fresh.params {
+        if only.is_some_and(|o| o != id) {
+            continue;
+        }
+        any = true;
+        match e.params.get_mut(&id) {
+            Some(old) if old.is_animated() => old.set_at(mt, prm.value),
+            _ => {
+                e.params.insert(id, prm);
+            }
+        }
+    }
+    any
 }
 
 fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
