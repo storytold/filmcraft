@@ -172,7 +172,7 @@ pub fn effect_rows(
 fn clip_to_screen(app: &FilmcraftApp, it: &TrackItem, mt: Tick, pic: Rect, frame: (u32, u32)) -> Option<Affine> {
     let seq = app.session.active_sequence()?;
     let size = filmcraft_render::source_size(&app.session.project, it.item).unwrap_or(frame);
-    let motion = filmcraft_render::motion_matrix(seq, it, size, mt);
+    let motion = filmcraft_render::motion_matrix(seq, it, size, filmcraft_render::source_par(&app.session.project, it.item), mt);
     let view = Affine::translate(pic.min.x as f64, pic.min.y as f64)
         .then_apply(&Affine::scale(pic.width() as f64 / frame.0 as f64, pic.height() as f64 / frame.1 as f64));
     Some(view.then_apply(&motion))
