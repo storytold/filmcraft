@@ -37,6 +37,9 @@ objc2-core-foundation = "0.3.2"
 objc2-core-media = "0.3.2"
 objc2-core-video = "0.3.2"
 objc2-video-toolbox = "0.3.2"
+# Open-documents Apple Event handler (open_documents_macos): Finder double-click / Open With.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "objc2-core-services", "NSAppleEventDescriptor", "NSAppleEventManager", "NSNotification", "NSObject", "NSString", "NSURL"] }
 
 # Windows: Media Foundation decoder MFTs + Direct3D 11 / DXVA through the official `windows` bindings
 # (MIT OR Apache-2.0; already in the lockfile through wgpu / winit).

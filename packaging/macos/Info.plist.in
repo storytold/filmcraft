@@ -45,6 +45,27 @@
   <key>NSHumanReadableCopyright</key>
   <string>Copyright © the FilmCraft authors. MIT OR Apache-2.0.</string>
 
+  <!-- Filmcraft opens its own projects: without this Finder refuses a double-clicked .fcproj
+       ("FilmCraft cannot open files of this type"). The app receives them as an open-documents
+       Apple Event (filmcraft_platform::open_documents). -->
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>FilmCraft Project</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>ai.storyteller.filmcraft.project</string>
+      </array>
+      <key>CFBundleTypeIconFile</key>
+      <string>FilmCraft</string>
+    </dict>
+  </array>
+
   <!-- Filmcraft's own format. -->
   <key>UTExportedTypeDeclarations</key>
   <array>

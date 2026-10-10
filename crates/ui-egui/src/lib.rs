@@ -110,6 +110,9 @@ pub struct HostHooks {
     pub pick_save_as: Option<Box<dyn FnMut(&str, &[&str], &str) -> Option<String>>>,
     /// The active keyboard shortcuts changed: update native menu key equivalents.
     pub shortcuts_changed: Option<Box<dyn FnMut(&[menus::MenuItem])>>,
+    /// Files the OS asked the app to open since the last call (macOS Finder double-click / Open
+    /// With); polled every frame. A `.fcproj` is opened, other files are imported.
+    pub opened_files: Option<Box<dyn FnMut() -> Vec<String>>>,
     /// The user's preferred languages (locale tags, most preferred first) for Interface Language ▸
     /// System Language. Without it, System Language is English.
     pub system_languages: Option<Box<dyn Fn() -> Vec<String>>>,
@@ -1141,6 +1144,27 @@ impl FilmcraftApp {
         }
     }
 
+    /// Open files the OS handed over ([`HostHooks::opened_files`]) like command-line files: the
+    /// first project is opened, other files are imported.
+    fn handle_opened_files(&mut self) {
+        let Some(paths) = self.hooks.opened_files.as_mut().map(|f| f()) else { return };
+        if paths.is_empty() {
+            return;
+        }
+        let is_project = |p: &String| std::path::Path::new(p).extension().is_some_and(|e| e.eq_ignore_ascii_case("fcproj"));
+        if let Some(project) = paths.iter().find(|p| is_project(p))
+            && let Err(e) = self.session.execute("file.open", json!({"path": project}))
+        {
+            self.ui.status = e.to_string();
+        }
+        let media: Vec<&String> = paths.iter().filter(|p| !is_project(p)).collect();
+        if !media.is_empty()
+            && let Err(e) = self.session.execute("file.import", json!({"paths": media, "bin": self.import_bin().0}))
+        {
+            self.ui.status = e.to_string();
+        }
+    }
+
     // ---------------------------------------------------------------- input
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
@@ -1340,6 +1364,7 @@ impl FilmcraftApp {
         }
         self.sync_timeline_view();
         self.handle_drops(&ctx);
+        self.handle_opened_files();
         if let Some(rx) = self.command_inbox.take() {
             while let Ok(id) = rx.try_recv() {
                 if let Err(e) = menus::invoke(self, &ctx, &id, json!({})) {

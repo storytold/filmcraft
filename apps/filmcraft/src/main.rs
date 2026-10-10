@@ -112,6 +112,11 @@ fn main() -> eframe::Result {
     // OS hardware video decoders (VideoToolbox on macOS) in front of our own; Settings ▸ Playback ▸
     // Hardware decoding switches them off. Unsupported streams and failures use our decoders.
     register_hardware_decoders();
+    // macOS delivers Finder double-clicks / Open With as an Apple Event, not as arguments; listen
+    // before the event loop starts so the document that launched the app is not missed.
+    if let Err(e) = filmcraft_platform::open_documents::install() {
+        log::warn!("{e}");
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("FilmCraft")
@@ -241,6 +246,10 @@ fn main() -> eframe::Result {
                     .pick_file()
                     .map(|p| p.to_string_lossy().to_string())
             }));
+            let ctx = cc.egui_ctx.clone();
+            filmcraft_platform::open_documents::set_waker(move || ctx.request_repaint());
+            app.hooks.opened_files =
+                Some(Box::new(|| filmcraft_platform::open_documents::take().into_iter().map(|p| p.to_string_lossy().into_owned()).collect()));
             #[cfg(target_os = "macos")]
             {
                 let (rx, update) = native_menu::install(&app, cc.egui_ctx.clone());
