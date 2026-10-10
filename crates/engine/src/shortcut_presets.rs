@@ -306,6 +306,9 @@ pub const PREMIERE_PANEL: &[Entry] = &[
     ("graphics.nudgeUp5", "Cmd+Shift+Up", "Properties"),
     ("graphics.nudgeDown5", "Cmd+Shift+Down", "Properties"),
     ("edit.clear", "Backspace", "Properties"),
+    // Clear in Effect Controls removes its selected keyframes or effects, never timeline clips
+    ("effectControls.clear", "Backspace", "Effect Controls"),
+    ("effectControls.clear", "Delete", "Effect Controls"),
     ("view.showRulers", "Cmd+R", "Program"),
     ("view.showGuides", "Cmd+;", "Program"),
     ("view.snapInProgramMonitor", "Cmd+Shift+;", "Program"),

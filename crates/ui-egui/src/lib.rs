@@ -1188,6 +1188,12 @@ impl FilmcraftApp {
             if self.ui.focused == PanelKind::Project && matches!(id.as_str(), "edit.selectAll" | "edit.deselectAll") {
                 id = id.replacen("edit.", "project.", 1);
             }
+            // Clear acts on the focused panel, as in Premiere: in Effect Controls it removes the
+            // selected keyframes or effects (whatever key a preset gives Clear), never the
+            // Timeline's clips or the Project panel's items.
+            if self.ui.focused == PanelKind::EffectControls && matches!(id.as_str(), "edit.clear" | "project.delete") {
+                id = "effectControls.clear".into();
+            }
             // Mark In/Out in the Source monitor when it has focus.
             let params = if self.ui.focused == PanelKind::Source
                 && (matches!(id.as_str(), "markers.markIn" | "markers.markOut" | "markers.clearInOut")

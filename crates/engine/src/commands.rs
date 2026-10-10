@@ -2493,6 +2493,15 @@ fn build() -> Vec<CommandSpec> {
             keyframe_op(s, p, "delete")
         }),
         cmd!(
+            "effects.clear",
+            "Clear Keyframes or Effects",
+            [],
+            None,
+            r#"{"clip":id,"keyframes":[{"effect":index|str,"param":str,"mask":n?,"mediaTime":ticks}]?,"effects":[index]?}"#,
+            has_seq,
+            clear_effects
+        ),
+        cmd!(
             "effects.moveKeyframe",
             "Move Keyframe",
             [],
@@ -2766,6 +2775,102 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
         Ok(())
     })?;
     Ok(Value::Null)
+}
+
+/// Most keyframes or effects one `effects.clear` names (a selection is a handful).
+const MAX_CLEAR: usize = 10_000;
+
+/// Effect Controls ▸ Clear (Backspace / Delete there, as in Premiere): the keyframes named in
+/// `keyframes` when there are any, else the effects named in `effects`, as one undo step made of
+/// `effects.deleteKeyframe` / `effects.remove`. Everything is checked before anything changes;
+/// fixed effects (Motion, Opacity, Volume…) cannot be removed (`effects.reset` resets them).
+fn clear_effects(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "effects.clear";
+    let c = clip_p(p, "clip").ok_or_else(|| bad(CMD, "need `clip`"))?;
+    let it = s.active_sequence().and_then(|q| q.find_item(c)).map(|(_, it)| it.clone()).ok_or_else(|| bad(CMD, "no such clip in the active sequence"))?;
+    let list = |k: &str| -> Result<Vec<Value>> {
+        match p.get(k) {
+            None | Some(Value::Null) => Ok(Vec::new()),
+            Some(Value::Array(a)) if a.len() <= MAX_CLEAR => Ok(a.clone()),
+            Some(Value::Array(_)) => Err(bad(CMD, format!("`{k}` names more than {MAX_CLEAR} entries"))),
+            Some(_) => Err(bad(CMD, format!("`{k}` must be a list"))),
+        }
+    };
+    let index = |v: &Value| v.as_u64().and_then(|i| usize::try_from(i).ok()).filter(|i| *i < it.effects.len());
+    let effect_at = |v: Option<&Value>| match v {
+        Some(Value::String(id)) => it.effects.iter().position(|e| e.effect == *id),
+        Some(v) => index(v),
+        None => None,
+    };
+    let mut keys: Vec<(usize, String, Option<usize>, Tick)> = Vec::new();
+    for (n, k) in list("keyframes")?.iter().enumerate() {
+        let e = effect_at(k.get("effect")).ok_or_else(|| bad(CMD, format!("keyframes[{n}]: no such effect on the clip")))?;
+        let pid = k.get("param").and_then(Value::as_str).ok_or_else(|| bad(CMD, format!("keyframes[{n}]: need `param`")))?;
+        let mask = match k.get("mask") {
+            None | Some(Value::Null) => None,
+            Some(m) => Some(m.as_u64().and_then(|i| usize::try_from(i).ok()).ok_or_else(|| bad(CMD, format!("keyframes[{n}]: `mask` must be an index")))?),
+        };
+        let t = k.get("mediaTime").and_then(Value::as_i64).map(Tick).ok_or_else(|| bad(CMD, format!("keyframes[{n}]: need `mediaTime` (ticks)")))?;
+        let prm = it.effects.get(e).and_then(|fx| match mask {
+            Some(m) => fx.masks.get(m).and_then(|x| x.param(pid)),
+            None => fx.params.get(pid),
+        });
+        let prm = prm.ok_or_else(|| bad(CMD, format!("keyframes[{n}]: no parameter `{pid}`")))?;
+        if !prm.keyframes.iter().any(|x| x.time == t) {
+            return Err(bad(CMD, format!("keyframes[{n}]: `{pid}` has no keyframe at {}", t.0)));
+        }
+        let key = (e, pid.to_string(), mask, t);
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    let mut effects: Vec<usize> = Vec::new();
+    for (n, v) in list("effects")?.iter().enumerate() {
+        let i = index(v).ok_or_else(|| bad(CMD, format!("effects[{n}]: no such effect on the clip")))?;
+        if !effects.contains(&i) {
+            effects.push(i);
+        }
+    }
+    if keys.is_empty() {
+        if let Some(d) = effects.iter().filter_map(|i| it.effects.get(*i).and_then(|e| e.def())).find(|d| d.intrinsic) {
+            return Err(bad(CMD, format!("{} is a fixed effect and cannot be removed (effects.reset resets it)", d.name)));
+        }
+    } else {
+        effects.clear();
+    }
+    let (label, removed) = match (keys.len(), effects.len()) {
+        (0, 0) => return Ok(json!({"keyframes": 0, "effects": 0})),
+        (0, 1) => ("Remove Effect", json!({"keyframes": 0, "effects": 1})),
+        (0, n) => ("Remove Effects", json!({"keyframes": 0, "effects": n})),
+        (1, _) => ("Delete Keyframe", json!({"keyframes": 1, "effects": 0})),
+        (n, _) => ("Delete Keyframes", json!({"keyframes": n, "effects": 0})),
+    };
+    // later effects first, so the earlier indices still name the same effects
+    effects.sort_unstable_by(|a, b| b.cmp(a));
+    let n0 = s.history.undo.len();
+    let mut run = || -> Result<()> {
+        for (e, pid, mask, t) in &keys {
+            let mut q = json!({"clip": c.0, "effect": e, "param": pid, "mediaTime": t.0});
+            if let Some(m) = mask {
+                q["mask"] = json!(m);
+            }
+            s.execute("effects.deleteKeyframe", q)?;
+        }
+        for i in &effects {
+            s.execute("effects.remove", json!({"clip": c.0, "index": i}))?;
+        }
+        Ok(())
+    };
+    if let Err(e) = run() {
+        // all or nothing: take back the steps that did run
+        if s.history.undo.len() > n0 {
+            while s.history.undo.len() > n0 && s.undo().is_some() {}
+            s.history.redo.clear();
+        }
+        return Err(e);
+    }
+    crate::clip_ops::collapse_history(s, n0, label);
+    Ok(removed)
 }
 
 fn in_out_range(s: &Session) -> Result<TimeRange> {

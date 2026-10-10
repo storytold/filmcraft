@@ -1,10 +1,16 @@
 //! Effect Controls: the selected clip's effects (fixed Motion/Opacity/Time Remapping first, as in
 //! Premiere, then standard effects), generated from parameter schemas, with stopwatches and a
 //! keyframe lane on the right. Also hosts the Lumetri Color panel body (same editor, grouped).
+//!
+//! As in Premiere, clicking an effect's name selects the effect and clicking a keyframe in the
+//! lane selects the keyframe (Shift or Cmd adds or removes one); the triangle folds the effect.
+//! Backspace / Delete with the panel focused (`effectControls.clear`) removes the selected
+//! keyframes, else the selected effects, and never touches the Timeline.
 
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use filmcraft_project::{ClipId, EffectInstance, ParamKind, ParamValue, TrackItem};
 use filmcraft_time::Tick;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
@@ -22,6 +28,136 @@ const NAV_STEP: f32 = 16.0;
 const PROPS_NAV_X: f32 = 26.0;
 /// Properties panel: where a row's value fields end, left of the navigator.
 const PROPS_VALUE_R: f32 = PROPS_NAV_X + NAV_STEP + 12.0;
+
+/// What is selected in Effect Controls: effects (their headers) or keyframes (lane diamonds) of the
+/// clip it shows. `ui.inspect` reads it as `ui.effect_controls` and `ui.set {"effectControls": …}`
+/// sets it. Entries name the effect's position and id, so one left over from an earlier effect
+/// list (after an undo) matches nothing.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Selection {
+    /// The clip the selection is on.
+    pub clip: u64,
+    pub effects: Vec<EffectRef>,
+    pub keyframes: Vec<KeyframeRef>,
+}
+
+/// A selected effect: its position in the clip's effect list (`effects.remove` `index`) and id.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EffectRef {
+    pub index: usize,
+    pub effect: String,
+}
+
+/// A selected keyframe: the effect (as in [`EffectRef`]), the parameter (of mask `mask`, if set)
+/// and the keyframe's media time in ticks (`effects.deleteKeyframe` `mediaTime`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KeyframeRef {
+    pub index: usize,
+    pub effect: String,
+    pub param: String,
+    pub mask: Option<usize>,
+    pub time: i64,
+}
+
+impl Selection {
+    fn has_effect(&self, clip: ClipId, index: usize) -> bool {
+        self.clip == clip.0 && self.effects.iter().any(|e| e.index == index)
+    }
+
+    fn has_keyframe(&self, clip: ClipId, k: &KeyframeRef) -> bool {
+        self.clip == clip.0 && self.keyframes.contains(k)
+    }
+
+    /// Drop what `it` (clip `clip`) no longer has: another clip's selection, effects that moved
+    /// or went, keyframes that are gone.
+    fn keep_valid(&mut self, clip: ClipId, it: &TrackItem) {
+        if self.clip != clip.0 {
+            *self = Selection { clip: clip.0, ..Default::default() };
+            return;
+        }
+        let fx = |index: usize, id: &str| it.effects.get(index).filter(|e| e.effect == id);
+        self.effects.retain(|e| fx(e.index, &e.effect).is_some());
+        self.keyframes.retain(|k| {
+            let param = fx(k.index, &k.effect).and_then(|e| match k.mask {
+                Some(m) => e.masks.get(m).and_then(|x| x.param(&k.param)),
+                None => e.params.get(&k.param),
+            });
+            param.is_some_and(|p| p.keyframes.iter().any(|x| x.time.0 == k.time))
+        });
+    }
+}
+
+/// A click on an effect header: select that effect; with Shift or Cmd add it to (or take it out
+/// of) the selected effects. Selecting effects deselects keyframes.
+fn select_effect(app: &mut FilmcraftApp, clip: ClipId, index: usize, effect: &str, add: bool) {
+    let sel = &mut app.ui.effect_controls;
+    if !add || sel.clip != clip.0 {
+        *sel = Selection { clip: clip.0, ..Default::default() };
+    }
+    sel.keyframes.clear();
+    if let Some(i) = sel.effects.iter().position(|e| e.index == index) {
+        sel.effects.remove(i);
+    } else {
+        sel.effects.push(EffectRef { index, effect: effect.to_string() });
+    }
+}
+
+/// A click on a keyframe: select it; with Shift or Cmd add it to (or take it out of) the selected
+/// keyframes. Selecting keyframes deselects effects.
+fn select_keyframe(app: &mut FilmcraftApp, clip: ClipId, k: KeyframeRef, add: bool) {
+    let sel = &mut app.ui.effect_controls;
+    if !add || sel.clip != clip.0 {
+        *sel = Selection { clip: clip.0, ..Default::default() };
+    }
+    sel.effects.clear();
+    if let Some(i) = sel.keyframes.iter().position(|x| *x == k) {
+        sel.keyframes.remove(i);
+    } else {
+        sel.keyframes.push(k);
+    }
+}
+
+/// Effect Controls ▸ Clear (`effectControls.clear`; Backspace / Delete with the panel focused, as
+/// in Premiere): the selected keyframes when there are any, else the selected effects, as one undo
+/// step (`effects.clear`). Fixed effects (Motion, Opacity, Volume…) stay. With nothing selected it
+/// does nothing: the key never falls through to the Timeline's Clear.
+pub fn clear(app: &mut FilmcraftApp) -> Result<Value, String> {
+    let none = json!({"keyframes": 0, "effects": 0});
+    let Some((clip, it, _)) = selected_clip(app) else { return Ok(none) };
+    let mut sel = app.ui.effect_controls.clone();
+    sel.keep_valid(clip, &it);
+    let keyframes: Vec<Value> = sel
+        .keyframes
+        .iter()
+        .map(|k| {
+            let mut v = json!({"effect": k.index, "param": k.param, "mediaTime": k.time});
+            if let Some(m) = k.mask {
+                v["mask"] = json!(m);
+            }
+            v
+        })
+        .collect();
+    let fixed = |i: usize| it.effects.get(i).and_then(|e| e.def()).is_some_and(|d| d.intrinsic);
+    let effects: Vec<usize> = sel.effects.iter().map(|e| e.index).filter(|i| !fixed(*i)).collect();
+    if keyframes.is_empty() && effects.is_empty() {
+        if !sel.effects.is_empty() {
+            app.ui.status = tl!("Fixed effects cannot be removed; Reset Effect resets them").into();
+        }
+        app.ui.effect_controls = sel;
+        return Ok(none);
+    }
+    let r = app.session.execute("effects.clear", json!({"clip": clip.0, "keyframes": keyframes, "effects": effects})).map_err(|e| e.to_string())?;
+    // what was removed is no longer selected; effects after a removed one moved up
+    sel.keyframes.clear();
+    if keyframes.is_empty() {
+        sel.effects.clear();
+    }
+    app.ui.effect_controls = sel;
+    Ok(r)
+}
 
 /// Timeline time at which the clip shows media time `m` (where a keyframe sits in the sequence).
 fn timeline_time_of(it: &TrackItem, m: Tick) -> Tick {
@@ -95,6 +231,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     let body = Rect::from_min_max(pos2(rect.min.x, head.max.y + 4.0), pos2(split, rect.max.y - 26.0));
     let mut actions: Vec<(String, Value)> = Vec::new();
+    app.ui.effect_controls.keep_valid(clip, &it);
+    let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("ec-body"));
     bui.set_clip_rect(Rect::from_min_max(body.min, pos2(rect.max.x, body.max.y)));
     let mt_now = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
@@ -111,15 +249,21 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let key = format!("{}:{}", clip.0, idx);
             let open = !app.ui.collapsed_fx.contains(&key);
             let (r, resp) = bui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::click());
-            if resp.hovered() {
+            if app.ui.effect_controls.has_effect(clip, idx) {
+                bui.painter().rect_filled(r, 0.0, t.row_selected);
+            } else if resp.hovered() {
                 bui.painter().rect_filled(r, 0.0, t.hover);
             }
+            // the triangle folds the effect; the rest of the header selects it
+            let tw = Rect::from_center_size(pos2(r.min.x + 10.0, r.center().y), vec2(16.0, ROW_H));
+            let twresp = bui.interact(tw, egui::Id::new(("fxtwirl", clip.0, idx)), Sense::click());
             icons::paint(
                 bui.painter(),
-                Rect::from_center_size(pos2(r.min.x + 10.0, r.center().y), vec2(10.0, 10.0)),
+                Rect::from_center_size(tw.center(), vec2(10.0, 10.0)),
                 if open { Icon::ChevronDown } else { Icon::ChevronRight },
                 t.text_dim,
             );
+            app.auto.add(&format!("effectControls.effect.{}.twirl", e.effect), tw, if open { "Collapse" } else { "Expand" });
             // fx enable toggle
             let fxr = Rect::from_center_size(pos2(r.min.x + 28.0, r.center().y), vec2(18.0, 14.0));
             let fxresp = bui.interact(fxr, egui::Id::new(("fxen", clip.0, idx)), Sense::click());
@@ -139,12 +283,16 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 actions.push(("effects.reset".into(), json!({"clip": clip.0, "index": idx})));
             }
             app.auto.add(&format!("effectControls.effect.{}", e.effect), r, def.name);
-            if resp.clicked() && !fxresp.clicked() && !rresp.clicked() {
+            if twresp.clicked() {
                 if open {
                     app.ui.collapsed_fx.push(key.clone());
                 } else {
                     app.ui.collapsed_fx.retain(|k| *k != key);
                 }
+            } else if resp.clicked() && !fxresp.clicked() && !rresp.clicked() {
+                select_effect(app, clip, idx, &e.effect, add);
+            } else if resp.secondary_clicked() && !app.ui.effect_controls.has_effect(clip, idx) {
+                select_effect(app, clip, idx, &e.effect, false);
             }
             let mut save_preset = false;
             let fx_id = e.effect.clone();
@@ -519,7 +667,8 @@ pub(crate) fn param_row(
             let kr = Rect::from_center_size(pos2(kx, y), vec2(11.0, 11.0));
             let resp = ui.interact(kr.expand(2.0), id, Sense::click_and_drag());
             app.auto.add(&format!("effectControls.{}.{}.keyframe.{}", e.effect, pkey, k.time.0), kr, "keyframe");
-            let sel = k.time == mt || resp.dragged();
+            let kref = KeyframeRef { index: idx, effect: e.effect.clone(), param: pd.id.to_string(), mask, time: k.time.0 };
+            let sel = app.ui.effect_controls.has_keyframe(clip, &kref) || resp.dragged();
             let col = if sel { t.hot_text } else { Color32::from_rgb(0xb0, 0xb0, 0xb0) };
             match k.interp {
                 filmcraft_project::Interpolation::Hold => {
@@ -545,10 +694,21 @@ pub(crate) fn param_row(
                         "effects.moveKeyframe".into(),
                         with_mask(json!({"clip": clip.0, "effect": eff_json, "param": pd.id, "mediaTime": k.time.0, "to": new_media.0})),
                     ));
+                    // a moved keyframe stays selected
+                    let ec = &mut app.ui.effect_controls;
+                    if ec.clip == clip.0
+                        && let Some(s) = ec.keyframes.iter_mut().find(|s| **s == kref)
+                    {
+                        s.time = new_media.0;
+                    }
                 }
             }
             if resp.clicked() {
+                let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
+                select_keyframe(app, clip, kref.clone(), add);
                 actions.push(("playhead.set".into(), json!({"time": tl.0})));
+            } else if resp.secondary_clicked() && !sel {
+                select_keyframe(app, clip, kref.clone(), false);
             }
             resp.context_menu(|ui| {
                 ui.label(egui::RichText::new(tl!("Temporal Interpolation")).color(t.text_dim));

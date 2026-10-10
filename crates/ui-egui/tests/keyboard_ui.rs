@@ -379,3 +379,98 @@ fn move_playhead_to_cursor_and_mixer_menu_commands() {
     let ui: Vec<String> = filmcraft_ui_egui::menus::external_commands().into_iter().map(|c| c.id).collect();
     assert!(ui.iter().any(|c| c == "tool.rectangle") && ui.iter().any(|c| c == "tool.ellipse"));
 }
+
+/// Premiere: Backspace / Delete with Effect Controls focused clear what is selected there (the
+/// selected keyframes, else the selected effect) and never the Timeline's clips, which the
+/// application-wide Clear used to delete; with nothing selected there they do nothing.
+#[test]
+fn clear_in_effect_controls_removes_its_selection_not_the_clip() {
+    use filmcraft_project::ClipId;
+    let mut d = Driver::new();
+    let first = d.exec("sequence.inspect", json!({}))["video"][0]["items"][0].clone();
+    let (clip, start) = (first["clip"].as_u64().unwrap(), first["start"].as_i64().unwrap());
+    d.exec("playhead.set", json!({"time": start}));
+    d.exec("timeline.select", json!({"clips": [clip]}));
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "gaussian_blur"}));
+    d.exec("effects.addKeyframe", json!({"clip": clip, "effect": "motion", "param": "scale"}));
+    d.ok("ui.panel.show", json!({"panel": "Effect Controls"}));
+    d.focus("Effect Controls");
+    let item = |d: &Driver| d.app().session.active_sequence().and_then(|q| q.find_item(ClipId(clip))).map(|(_, it)| it.clone());
+    let has = |d: &Driver, fx: &str| item(d).is_some_and(|it| it.effect(fx).is_some());
+    let scale_keys = |d: &Driver| item(d).and_then(|it| it.effect("motion").and_then(|e| e.param("scale")).map(|p| p.keyframes.len())).unwrap_or(0);
+    let undo_len = |d: &mut Driver| d.exec("history.list", json!({}))["undo"].as_array().unwrap().len();
+    let undo0 = undo_len(&mut d);
+    assert_eq!(scale_keys(&d), 1);
+
+    // nothing selected in Effect Controls: the keys do nothing at all
+    d.key("Backspace");
+    d.key("Delete");
+    d.press(egui::Key::Backspace, egui::Key::Backspace, egui::Modifiers::NONE);
+    assert!(item(&d).is_some(), "the clip stays in the timeline");
+    assert!(has(&d, "gaussian_blur") && scale_keys(&d) == 1);
+    assert_eq!(undo_len(&mut d), undo0, "nothing was edited");
+
+    // a selected keyframe goes first (Delete), and only it
+    let t = item(&d).unwrap().effect("motion").unwrap().param("scale").unwrap().keyframes[0].time.0;
+    d.ok("ui.click", json!({"id": format!("effectControls.motion.scale.keyframe.{t}")}));
+    assert_eq!(d.app().ui.effect_controls.keyframes.len(), 1, "the click selects the keyframe");
+    d.key("Delete");
+    assert_eq!(scale_keys(&d), 0);
+    assert!(item(&d).is_some() && has(&d, "gaussian_blur"), "the clip and its effects stay");
+    assert_eq!(undo_len(&mut d), undo0 + 1);
+    d.key("Cmd+Z");
+    assert_eq!(scale_keys(&d), 1);
+
+    // fold the fixed effects (the triangle), then select Gaussian Blur by its name: Backspace
+    // removes it as one undo step, and the clip stays
+    let fixed: Vec<String> = d
+        .ok("ui.elements", json!({"prefix": "effectControls.effect."}))
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["id"].as_str().filter(|i| i.ends_with(".twirl") && !i.contains("gaussian_blur")).map(str::to_string))
+        .collect();
+    assert!(fixed.iter().any(|i| i == "effectControls.effect.motion.twirl"), "{fixed:?}");
+    for id in fixed {
+        d.ok("ui.click", json!({"id": id}));
+        // the rows below move up once the folded effect is drawn again
+        d.frames(2);
+    }
+    d.ok("ui.click", json!({"id": "effectControls.effect.gaussian_blur"}));
+    assert_eq!(d.app().ui.effect_controls.effects.len(), 1, "the click selects the effect");
+    let undo1 = undo_len(&mut d);
+    d.press(egui::Key::Backspace, egui::Key::Backspace, egui::Modifiers::NONE);
+    assert!(!has(&d, "gaussian_blur"), "Backspace removed the selected effect");
+    assert!(item(&d).is_some(), "and left the clip in the timeline");
+    assert!(d.app().session.state.selection.iter().any(|c| c.0 == clip));
+    assert_eq!(undo_len(&mut d), undo1 + 1, "one undo step");
+    d.key("Cmd+Z");
+    assert!(has(&d, "gaussian_blur"), "undo brings the effect back");
+
+    // a fixed effect is never removed, whichever Clear key
+    d.ok("ui.click", json!({"id": "effectControls.effect.motion"}));
+    let undo2 = undo_len(&mut d);
+    d.key("Delete");
+    d.key("Backspace");
+    assert!(has(&d, "motion") && item(&d).is_some());
+    assert_eq!(undo_len(&mut d), undo2);
+
+    // agents select through ui.set and clear through the command
+    let index = item(&d).unwrap().effects.iter().position(|e| e.effect == "gaussian_blur").unwrap();
+    d.ok("ui.set", json!({"effectControls": {"clip": clip, "effects": [{"index": index, "effect": "gaussian_blur"}], "keyframes": []}}));
+    let r = d.ok("ui.menu.invoke", json!({"id": "effectControls.clear"}));
+    assert_eq!(r, json!({"keyframes": 0, "effects": 1}));
+    assert!(!has(&d, "gaussian_blur") && item(&d).is_some());
+    // a stale or hostile selection removes nothing
+    for sel in [
+        json!({"clip": clip, "effects": [{"index": index, "effect": "gaussian_blur"}]}),
+        json!({"clip": clip, "effects": [{"index": usize::MAX, "effect": "x"}], "keyframes": [{"index": 0, "effect": "motion", "param": "scale", "time": i64::MIN}]}),
+        json!({"clip": u64::MAX, "effects": [{"index": 0, "effect": "motion"}]}),
+    ] {
+        d.ok("ui.set", json!({"effectControls": sel}));
+        let undo = undo_len(&mut d);
+        d.key("Backspace");
+        assert_eq!(undo_len(&mut d), undo, "{sel}");
+        assert!(item(&d).is_some());
+    }
+}

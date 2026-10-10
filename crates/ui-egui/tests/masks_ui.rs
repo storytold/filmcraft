@@ -113,7 +113,7 @@ fn create_and_edit_masks_on_the_monitor() {
     // ellipse mask from the Effect Controls icon
     // fold Motion and Time Remapping so the Gaussian Blur rows are on screen
     for fx in ["motion", "time_remap"] {
-        d.ok("ui.click", json!({"id": format!("effectControls.effect.{fx}")}));
+        d.ok("ui.click", json!({"id": format!("effectControls.effect.{fx}.twirl")}));
         d.frames(2);
     }
     d.ok("ui.click", json!({"id": "effectControls.gaussian_blur.mask.ellipse"}));
@@ -166,13 +166,13 @@ fn create_and_edit_masks_on_the_monitor() {
     d.shot("mask-edited");
 
     // Inverted checkbox (fold Opacity so the row is on screen)
-    d.ok("ui.click", json!({"id": "effectControls.effect.opacity"}));
+    d.ok("ui.click", json!({"id": "effectControls.effect.opacity.twirl"}));
     d.frames(2);
     d.ok("ui.click", json!({"id": "effectControls.gaussian_blur.mask0.inverted"}));
     d.frames(2);
     assert_eq!(d.masks()[0]["inverted"], true);
     d.shot("mask-inverted");
-    d.ok("ui.click", json!({"id": "effectControls.effect.opacity"}));
+    d.ok("ui.click", json!({"id": "effectControls.effect.opacity.twirl"}));
     d.frames(2);
 
     // pen mask on Opacity: four clicks, then click the first point to close
@@ -241,7 +241,7 @@ fn presets_bin_drag_and_save_dialog() {
     d.shot("presets-bin");
     // Save Preset dialog from the effect's context menu (opened through the command-equivalent UI state)
     for fx in ["motion", "opacity", "time_remap"] {
-        d.ok("ui.click", json!({"id": format!("effectControls.effect.{fx}")}));
+        d.ok("ui.click", json!({"id": format!("effectControls.effect.{fx}.twirl")}));
         d.frames(2);
     }
     d.ok("ui.click", json!({"id": "effectControls.effect.brightness_contrast", "button": "right"}));

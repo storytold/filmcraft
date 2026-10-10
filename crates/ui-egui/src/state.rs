@@ -383,6 +383,10 @@ pub struct UiState {
     pub lumetri_grid_folder: Option<String>,
     /// Collapsed effect sections in Effect Controls ("clip:index").
     pub collapsed_fx: Vec<String>,
+    /// Effect Controls: the selected effects or keyframes (what Backspace / Delete there clears).
+    /// See `panels::effect_controls::Selection`.
+    #[serde(default)]
+    pub effect_controls: crate::panels::effect_controls::Selection,
     pub show_menu_bar: bool,
     /// The header bar (Home, Import, Edit, Export, workspaces). An app that embeds FilmCraft can hide it.
     #[serde(default = "shown")]
@@ -869,6 +873,7 @@ impl Default for UiState {
             expanded_fx: vec!["Video Transitions".into(), "Video Transitions/Dissolve".into()],
             lumetri_grid_folder: None,
             collapsed_fx: vec![],
+            effect_controls: Default::default(),
             show_menu_bar: true,
             show_header: true,
             show_status_bar: true,

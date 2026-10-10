@@ -75,6 +75,15 @@ Original, Make Subclip, Audio Channels, the Graphics New Layer / Arrange / Selec
 Program monitor Show Rulers / Show Guides / Snap / Lock Guides, New Bin From Selection, Paste and
 Paste Insert in the Timeline, the Audio Track Mixer Loop).
 
+Clear acts on the focused panel, as in Premiere. In Effect Controls, Backspace and Delete
+(`effectControls.clear`, both presets) remove the selected keyframes, else the selected effects, as
+one undo step (`effects.clear`); with nothing selected they do nothing, and they never delete the
+Timeline's clips. Clicking an effect's name selects it and clicking a keyframe in the lane selects
+that (Shift or Cmd adds); the triangle folds the effect. Fixed effects (Motion, Opacity, Time
+Remapping, Volume…) are never removed: Reset Effect resets them. Any other key a preset gives
+Clear (`edit.clear`, `project.delete`) does the same while Effect Controls has focus, and a `.kys`
+file's Effect Controls Clear key maps onto `effectControls.clear`.
+
 FilmCraft Default keeps its own keys where they differ (Shift+E is Clip ▸ Enable there, so Export
 Frame has no default key; the Premiere preset moves Shift+E to Export Frame and Enable to ⇧⌘E).
 
@@ -87,7 +96,7 @@ Frame has no default key; the Premiere preset moves Shift+E to Export Frame and 
 | Change Draw Mode (⌥⌘L) | Premiere's shape draw modes for the Pen/shape tools; FilmCraft's shape tools have no draw modes. |
 | Production panel: New Project, New Folder, Close Project, Make a Copy, Move Selection Home/End/Page Up/Page Down, Move To Trash, Open Project, Zoom In/Out (12 keys) | Productions (shared multi-project folders) are not implemented; there is no Production panel. |
 | Search panel: Open in Source Monitor (⇧O) | No separate Search panel; Open Search (⇧⌘F) focuses the Project panel search. |
-| Effect Controls: Remove Selected Effect (Delete), Loop During Audio-Only Playback (⌘L) | Effect Controls has no effect selection state and no audio-only playback mode; effects are removed from their context menu or `effects.remove`. |
+| Effect Controls: Loop During Audio-Only Playback (⌘L) | Effect Controls has no audio-only playback mode. |
 | Effects panel: New Custom Bin (⌘/), Delete Custom Item (Delete) | The Effects panel has no custom bins (effect presets live in the Presets bin). |
 | History panel: Delete (Delete) | History states cannot be selected and deleted individually. |
 | Media Browser: Select Directory List / Select Media List (⇧← / ⇧→) | The directory tree and media list take no separate keyboard focus. |

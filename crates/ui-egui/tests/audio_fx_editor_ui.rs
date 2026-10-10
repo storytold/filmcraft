@@ -134,7 +134,7 @@ impl Driver {
         self.frames(3);
         // fold the fixed effects so the applied one's rows are on screen
         for fx in ["volume", "channel_volume", "panner"] {
-            self.click(&format!("effectControls.effect.{fx}"));
+            self.click(&format!("effectControls.effect.{fx}.twirl"));
         }
         id
     }
@@ -202,7 +202,7 @@ fn graphic_eq_and_dynamics_editors() {
     // Dynamics: the transfer curve and section toggles
     d.exec("effects.apply", json!({"clips": [clip], "effect": "dynamics_rack"}));
     d.frames(3);
-    d.click("effectControls.effect.graphic_eq_30");
+    d.click("effectControls.effect.graphic_eq_30.twirl");
     d.click("effectControls.effect.dynamics_rack.edit");
     d.frames(3);
     assert!(d.element("fxEditor.dynamics_rack.curve").is_some());

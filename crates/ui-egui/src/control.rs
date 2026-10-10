@@ -250,6 +250,16 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                     Err(e) => return err(format!("`gfxTemplates`: {e}")),
                 }
             }
+            // the Effect Controls selection (`panels::effect_controls::Selection`): {"clip", "effects":
+            // [{"index", "effect"}], "keyframes": [{"index", "effect", "param", "mask", "time"}]}, merged
+            if let Some(patch) = p.get("effectControls") {
+                let mut cur = serde_json::to_value(&app.ui.effect_controls).unwrap_or_default();
+                merge(&mut cur, patch);
+                match serde_json::from_value(cur) {
+                    Ok(v) => app.ui.effect_controls = v,
+                    Err(e) => return err(format!("`effectControls`: {e}")),
+                }
+            }
             // the Type tool's text editing state: {"clip", "layer", "caret", "anchor"} (byte offsets) or null
             if let Some(v) = p.get("gfxEdit") {
                 match serde_json::from_value(v.clone()) {

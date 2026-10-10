@@ -65,8 +65,21 @@ fn shortcut_tables_have_no_key_used_twice_in_one_scope() {
 #[test]
 fn premiere_engine_entries_exist() {
     // UI-owned ids (tools, transport, panels…) are checked by the ui-egui keyboard test
-    let ui_prefixes =
-        ["tool.", "playback.", "window.", "view.", "app.", "help.", "mode.", "multicam.", "projectPanel.", "textPanel.", "panel.", "mediaBrowser."];
+    let ui_prefixes = [
+        "tool.",
+        "playback.",
+        "window.",
+        "view.",
+        "app.",
+        "help.",
+        "mode.",
+        "multicam.",
+        "projectPanel.",
+        "textPanel.",
+        "effectControls.",
+        "panel.",
+        "mediaBrowser.",
+    ];
     let ui_ids = ["timeline.expandAllTracks", "timeline.minimizeAllTracks", "graphics.beginTextEditing"];
     for (id, _, _) in presets::premiere() {
         if id.starts_with("timeline.") && (id.contains("Height") || id.contains("Screen")) || ui_ids.contains(&id) {
@@ -375,4 +388,131 @@ fn reveal_nested_sequence_opens_it_at_the_matching_frame() {
     assert_eq!(s.state.active_sequence, Some(nest_clip.item));
     assert_ne!(s.state.active_sequence, Some(outer));
     assert_eq!(s.playhead(), nest_clip.source_in + rate.tick_of(7), "{r}");
+}
+
+// ------------------------------------------------------------------ Effect Controls ▸ Clear
+
+/// The first V1 clip with Gaussian Blur and Crop applied and two Scale keyframes: (clip id,
+/// Motion's index, Scale keyframe times).
+fn clip_with_effects_and_keys(s: &mut Session) -> (u64, usize, Vec<i64>) {
+    let it = s.active_sequence().unwrap().video_tracks[0].items[0].clone();
+    let id = it.id.0;
+    for fx in ["gaussian_blur", "crop"] {
+        s.execute("effects.apply", json!({"clips": [id], "effect": fx})).unwrap();
+    }
+    let rate = s.sequence_rate();
+    for f in [0, 5] {
+        s.set_playhead(it.start + rate.tick_of(f));
+        s.execute("effects.addKeyframe", json!({"clip": id, "effect": "motion", "param": "scale"})).unwrap();
+    }
+    let it = clip(s, id);
+    let motion = it.effects.iter().position(|e| e.effect == "motion").unwrap();
+    let keys: Vec<i64> = it.effect("motion").unwrap().param("scale").unwrap().keyframes.iter().map(|k| k.time.0).collect();
+    assert_eq!(keys.len(), 2);
+    (id, motion, keys)
+}
+
+fn effect_index(s: &Session, id: u64, effect: &str) -> usize {
+    clip(s, id).effects.iter().position(|e| e.effect == effect).unwrap()
+}
+
+/// Backspace / Delete in Effect Controls (`effects.clear`): the named keyframes when there are
+/// any, else the named effects, each time as one undo step; fixed effects and the clip stay.
+#[test]
+fn effects_clear_takes_keyframes_first_then_effects_in_one_undo_step() {
+    let mut s = demo();
+    let (id, motion, keys) = clip_with_effects_and_keys(&mut s);
+    let (blur, crop) = (effect_index(&s, id, "gaussian_blur"), effect_index(&s, id, "crop"));
+    let n = clip(&s, id).effects.len();
+    let kf = |t: i64| json!({"effect": motion, "param": "scale", "mediaTime": t});
+    let undo = s.history.undo.len();
+    // keyframes named (one twice): only they go; the effect named beside them stays
+    let r = s.execute("effects.clear", json!({"clip": id, "keyframes": [kf(keys[0]), kf(keys[1]), kf(keys[0])], "effects": [blur]})).unwrap();
+    assert_eq!(r, json!({"keyframes": 2, "effects": 0}));
+    let it = clip(&s, id);
+    assert!(it.effect("motion").unwrap().param("scale").unwrap().keyframes.is_empty());
+    assert_eq!(it.effects.len(), n);
+    assert_eq!(s.history.undo.len(), undo + 1, "one undo step");
+    s.undo();
+    assert_eq!(clip(&s, id).effect("motion").unwrap().param("scale").unwrap().keyframes.len(), 2, "undo brings both back");
+    // effects by id work for keyframes too
+    s.execute("effects.clear", json!({"clip": id, "keyframes": [{"effect": "motion", "param": "scale", "mediaTime": keys[1]}]})).unwrap();
+    assert_eq!(clip(&s, id).effect("motion").unwrap().param("scale").unwrap().keyframes.len(), 1);
+    s.undo();
+    // no keyframes named: the effects go, as one step; the clip stays in the timeline
+    let undo = s.history.undo.len();
+    let r = s.execute("effects.clear", json!({"clip": id, "effects": [blur, crop, blur]})).unwrap();
+    assert_eq!(r, json!({"keyframes": 0, "effects": 2}));
+    let it = clip(&s, id);
+    assert!(!it.effects.iter().any(|e| e.effect == "gaussian_blur" || e.effect == "crop"));
+    assert!(it.effect("motion").is_some() && it.effect("opacity").is_some(), "fixed effects stay");
+    assert_eq!(it.effects.len(), n - 2);
+    assert_eq!(s.history.undo.len(), undo + 1);
+    assert_eq!(s.history.undo.last().map(|u| u.0.as_str()), Some("Remove Effects"));
+    s.undo();
+    assert_eq!(clip(&s, id).effects.len(), n, "undo brings both back");
+    // nothing named: nothing happens, and no undo step
+    let undo = s.history.undo.len();
+    for p in [json!({"clip": id}), json!({"clip": id, "effects": [], "keyframes": null})] {
+        assert_eq!(s.execute("effects.clear", p).unwrap(), json!({"keyframes": 0, "effects": 0}));
+    }
+    assert_eq!(s.history.undo.len(), undo);
+}
+
+/// AGENTS.md §0: `effects.clear` checks everything it is given before it changes anything.
+#[test]
+fn effects_clear_refuses_hostile_params_and_changes_nothing() {
+    let mut s = demo();
+    let (id, motion, keys) = clip_with_effects_and_keys(&mut s);
+    let blur = effect_index(&s, id, "gaussian_blur");
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    let kf = |effect: serde_json::Value, param: serde_json::Value, t: serde_json::Value| json!({"effect": effect, "param": param, "mediaTime": t});
+    let good = kf(json!(motion), json!("scale"), json!(keys[0]));
+    let mut cases = vec![
+        json!({}),
+        json!(null),
+        json!([id]),
+        json!({"clip": null}),
+        json!({"clip": "x"}),
+        json!({"clip": u64::MAX}),
+        json!({"clip": 1e300}),
+        json!({"clip": id, "effects": blur}),
+        json!({"clip": id, "effects": "all"}),
+        json!({"clip": id, "effects": {"0": blur}}),
+        json!({"clip": id, "effects": [-1]}),
+        json!({"clip": id, "effects": [1.5]}),
+        json!({"clip": id, "effects": [1e300]}),
+        json!({"clip": id, "effects": [u64::MAX]}),
+        json!({"clip": id, "effects": [null]}),
+        json!({"clip": id, "effects": ["gaussian_blur"]}),
+        json!({"clip": id, "effects": [blur, 9999]}),
+        json!({"clip": id, "effects": [motion]}),
+        json!({"clip": id, "effects": [blur, motion]}),
+        json!({"clip": id, "effects": vec![blur; 10_001]}),
+        json!({"clip": id, "keyframes": "all"}),
+        json!({"clip": id, "keyframes": [7]}),
+        json!({"clip": id, "keyframes": [{}]}),
+        json!({"clip": id, "keyframes": vec![good.clone(); 10_001]}),
+        json!({"clip": id, "keyframes": [good.clone(), kf(json!(motion), json!("nope"), json!(keys[1]))]}),
+    ];
+    for effect in [json!(-1), json!("no_such"), json!(9999), json!(u64::MAX), json!(null), json!([motion]), json!(1.5)] {
+        cases.push(json!({"clip": id, "keyframes": [kf(effect, json!("scale"), json!(keys[0]))]}));
+    }
+    for param in [json!(null), json!(5), json!(""), json!("scale\u{0}")] {
+        cases.push(json!({"clip": id, "keyframes": [kf(json!(motion), param, json!(keys[0]))]}));
+    }
+    for t in [json!(null), json!("0"), json!(1.5), json!(keys[0] + 1), json!(i64::MIN), json!(i64::MAX), json!(u64::MAX)] {
+        cases.push(json!({"clip": id, "keyframes": [kf(json!(motion), json!("scale"), t)]}));
+    }
+    for mask in [json!("x"), json!(-1), json!(99), json!(u64::MAX)] {
+        let mut k = good.clone();
+        k["mask"] = mask;
+        cases.push(json!({"clip": id, "keyframes": [k]}));
+    }
+    for p in cases {
+        assert!(s.execute("effects.clear", p.clone()).is_err(), "accepted {p}");
+    }
+    assert_eq!(*s.project, *before, "nothing was edited");
+    assert_eq!(s.history.undo.len(), undo, "and nothing was added to the undo history");
 }

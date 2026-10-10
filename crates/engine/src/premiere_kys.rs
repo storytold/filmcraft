@@ -563,8 +563,11 @@ pub const COMMANDS: &[(&str, &str)] = &[
 ];
 
 /// Commands that mean something else in one context: (Premiere context, command, FilmCraft id).
-pub const PANEL_COMMANDS: &[(&str, &str, &str)] =
-    &[("project", "cmd.edit.clear", "project.delete"), ("Graphics", "cmd.graphics.clear", "graphics.deleteLayer")];
+pub const PANEL_COMMANDS: &[(&str, &str, &str)] = &[
+    ("project", "cmd.edit.clear", "project.delete"),
+    ("effectcontrols", "cmd.edit.clear", "effectControls.clear"),
+    ("Graphics", "cmd.graphics.clear", "graphics.deleteLayer"),
+];
 
 /// Premiere commands FilmCraft has no counterpart for, with the reason (see docs/keyboard.md).
 const UNAVAILABLE: &[(&str, &str)] = &[

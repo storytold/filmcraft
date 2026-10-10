@@ -73,6 +73,7 @@
 	Center Vertically	Centrar verticalmente
 	Cerulean	Cerúleo
 	Clear	Borrar
+	Clear (Effect Controls)	Borrar (Controles de efectos)
 	Clear Guides	Borrar guías
 	Clear In	Borrar entrada
 	Clear In and Out	Borrar entrada y salida
@@ -118,6 +119,7 @@
 	Edit Subclip…	Editar subclip…
 	Editing	Edición
 	Effect Controls	Controles de efectos
+	EffectControls	Controles de efectos
 	Effects	Efectos
 	Ellipse	Elipse
 	Enable	Activar
@@ -968,6 +970,7 @@
 	Reset…	Restablecer…
 	Source · {name}	Origen · {name}
 	Reset Effect	Restablecer efecto
+	Fixed effects cannot be removed; Reset Effect resets them	Los efectos fijos no se pueden quitar; Restablecer efecto los restablece
 	Save Preset…	Guardar ajuste preestablecido…
 	Custom Setup	Configuración personalizada
 	Edit…	Editar…

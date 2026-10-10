@@ -20,6 +20,7 @@
 //! | `mixer.showHideTracks` / `mixer.meterInputOnly` | Audio Track Mixer ▸ Show/Hide Tracks…, Meter Input(s) Only | |
 //! | `projectPanel.*` | Project panel: List / Icon / Toggle View, Hover Scrub, thumbnail size, Move / Extend Selection | (Project) |
 //! | `textPanel.*` | Text panel transcript: word / line / segment navigation and selection, Delete, Ripple Delete, Show Program Transcript | (Text) |
+//! | `effectControls.clear` | Clear in Effect Controls: the selected keyframes, else the selected effects (`panels::effect_controls::clear`) | Backspace, Delete (Effect Controls) |
 //! | `graphics.beginTextEditing` | Begin Text Editing for a Graphic Layer | Cmd+Alt+' |
 //! | `help.filmcraftHelp` | Help (Premiere Help…) | F1 |
 //! | `app.quit` | Quit | Cmd+Q |
@@ -132,6 +133,7 @@ pub const COMMANDS: &[UiCommand] = &[
     uic!("textPanel.delete", "Delete", [], None),
     uic!("textPanel.rippleDelete", "Ripple Delete", [], None),
     uic!("textPanel.showProgramTranscript", "Show Program Transcript", [], None),
+    uic!("effectControls.clear", "Clear (Effect Controls)", [], None),
     uic!("graphics.beginTextEditing", "Begin Text Editing for a Graphic Layer", [], Some("Cmd+Alt+'")),
     uic!("help.filmcraftHelp", "FilmCraft Help…", ["Help"], Some("F1")),
     uic!("app.quit", "Quit FilmCraft", [], Some("Cmd+Q")),
@@ -225,6 +227,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             Ok(json!({"meterInputOnly": on}))
         }
         "graphics.beginTextEditing" => begin_text_editing(app),
+        "effectControls.clear" => crate::panels::effect_controls::clear(app),
         "help.filmcraftHelp" => {
             crate::links::open(ctx, HELP_URL);
             Ok(json!({"url": HELP_URL}))

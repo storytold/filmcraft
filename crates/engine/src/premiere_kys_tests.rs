@@ -200,7 +200,8 @@ fn import_makes_an_active_preset_from_filmcraft_default() {
 #[test]
 fn every_mapped_command_exists() {
     // UI commands are checked against the frontend's list in the egui tests
-    let ui_prefixes = ["tool.", "playback.", "view.", "window.", "mode.", "app.", "help.", "panel.", "projectPanel.", "textPanel.", "multicam.toggleView"];
+    let ui_prefixes =
+        ["tool.", "playback.", "view.", "window.", "mode.", "app.", "help.", "panel.", "projectPanel.", "textPanel.", "effectControls.", "multicam.toggleView"];
     let ui_ids = ["multicam.recordToggle", "timeline.playheadToCursor", "mixer.meterInputOnly", "mixer.showHideTracks", "graphics.beginTextEditing"];
     let ui_ids2 = ["timeline.expandAllTracks", "timeline.minimizeAllTracks", "timeline.nextScreen", "timeline.prevScreen"];
     let ui_ids3 = ["timeline.increaseVideoHeight", "timeline.decreaseVideoHeight", "timeline.increaseAudioHeight", "timeline.decreaseAudioHeight"];
