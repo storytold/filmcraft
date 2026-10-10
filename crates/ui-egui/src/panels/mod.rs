@@ -244,8 +244,12 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                 app.ui.dock.close(p);
                 close = true;
             }
-            if ui.button(tl!("Maximize Frame")).clicked() {
-                app.ui.dock = crate::dock::DockNode::Tabs { panels: vec![p], active: 0 };
+            // the same frame state as ` / Shift+`: the dock tree is kept, so Restore brings it back
+            let maximized = app.ui.keys.maximized.is_some_and(|q| app.ui.dock.contains(q));
+            let r = ui.button(if maximized { tl!("Restore Frame") } else { tl!("Maximize Frame") });
+            app.auto.add(&format!("panel.menu.{}.maximize", p.id()), r.rect, if maximized { "Restore Frame" } else { "Maximize Frame" });
+            if r.clicked() {
+                keyboard::toggle_maximize(app, p);
                 close = true;
             }
             if ui.button(tl!("Restore Workspace")).clicked() {
