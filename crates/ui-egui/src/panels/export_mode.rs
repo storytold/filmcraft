@@ -642,14 +642,22 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 });
             }
             row(ui, t, tl!("Bitrate Encoding"), |ui| {
-                // a hardware encoder has one pass: H.265 offers no two-pass mode
-                let o = [BitrateMode::Cbr, BitrateMode::Vbr1Pass, BitrateMode::Vbr2Pass];
-                let labels: Vec<(String, bool)> = o.iter().map(|m| (m.label().to_string(), !(hevc && *m == BitrateMode::Vbr2Pass))).collect();
+                // a hardware encoder has one pass and no constant-quality mode: H.265 offers neither
+                let o = [BitrateMode::Cbr, BitrateMode::Vbr1Pass, BitrateMode::Vbr2Pass, BitrateMode::Crf];
+                let labels: Vec<(String, bool)> =
+                    o.iter().map(|m| (m.label().to_string(), !(hevc && matches!(m, BitrateMode::Vbr2Pass | BitrateMode::Crf)))).collect();
                 if let Some(i) = combo(ui, reg, "export.video.bitrateMode", s.bitrate_mode.label(), &labels, 140.0) {
                     s.bitrate_mode = o[i];
                 }
             });
-            if let Some(bpp) = s.adaptive_bitrate {
+            if s.bitrate_mode == BitrateMode::Crf {
+                row(ui, t, tl!("Quality (CRF)"), |ui| {
+                    let mut crf = if s.crf.is_finite() { f64::from(s.crf) } else { f64::from(filmcraft_engine::export::DEFAULT_CRF) };
+                    if drag(ui, reg, "export.video.crf", &mut crf, 0.0..=51.0, 0.1, "", 0) {
+                        s.crf = crf.round() as f32;
+                    }
+                });
+            } else if let Some(bpp) = s.adaptive_bitrate {
                 row(ui, t, tl!("Target Bitrate"), |ui| {
                     ui.label(egui::RichText::new(tlf!("Adaptive ({bpp} bits per pixel)", bpp)).size(12.0));
                     let r = ui.small_button(tl!("Set"));

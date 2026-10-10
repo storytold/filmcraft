@@ -161,17 +161,14 @@ pub fn ultra_key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let k = rgb_to_ycbcr(kc[0], kc[1], kc[2], Matrix::Bt709);
     let kmag2 = (k[1] * k[1] + k[2] * k[2]).max(1e-6);
     let setting = chv(e, "setting");
-    let (g_mul, ped_mul) = match setting {
-        1 => (0.85, 0.7),
-        2 => (1.2, 1.5),
-        _ => (1.0, 1.0),
-    };
-    let transparency = fv(e, "transparency", cx) / 100.0;
-    let highlight = fv(e, "highlight", cx) / 100.0;
-    let shadow = fv(e, "shadow", cx) / 100.0;
-    let tol = 0.08 + fv(e, "tolerance", cx) / 100.0 * 0.5;
-    let pedestal = (fv(e, "pedestal", cx) / 100.0 * 0.3 * ped_mul).min(0.9);
-    let gain = (1.0 + 2.0 * transparency) * g_mul;
+    let preset = filmcraft_project::effect::ultra_key_setting(setting);
+    let pf = |id: &str, fallback: f32| preset.and_then(|rows| rows.iter().find(|(k, _)| *k == id).map(|(_, v)| *v as f32)).unwrap_or(fallback);
+    let transparency = pf("transparency", fv(e, "transparency", cx)) / 100.0;
+    let highlight = pf("highlight", fv(e, "highlight", cx)) / 100.0;
+    let shadow = pf("shadow", fv(e, "shadow", cx)) / 100.0;
+    let tol = 0.08 + pf("tolerance", fv(e, "tolerance", cx)) / 100.0 * 0.5;
+    let pedestal = (pf("pedestal", fv(e, "pedestal", cx)) / 100.0 * 0.3).min(0.9);
+    let gain = 1.0 + 2.0 * transparency;
     let output = chv(e, "output");
     let dom = if kc[1] >= kc[0] && kc[1] >= kc[2] {
         1
@@ -199,10 +196,10 @@ pub fn ultra_key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         *a = ((m.clamp(0.0, 1.0) - pedestal) / (1.0 - pedestal)).clamp(0.0, 1.0);
     });
     // cleanup
-    let choke = fv(e, "choke", cx) / 100.0;
-    let soften = fv(e, "soften", cx) / 100.0;
-    let contrast = fv(e, "contrast", cx) / 100.0;
-    let mid = fv(e, "mid_point", cx) / 100.0;
+    let choke = pf("choke", fv(e, "choke", cx)) / 100.0;
+    let soften = pf("soften", fv(e, "soften", cx)) / 100.0;
+    let contrast = pf("contrast", fv(e, "contrast", cx)) / 100.0;
+    let mid = pf("mid_point", fv(e, "mid_point", cx)) / 100.0;
     if choke > 0.0 {
         let r = (choke * 4.0 * cx.px_scale).max(0.5);
         let b = blur_plane(&alpha, img.w, img.h, r);
@@ -217,10 +214,10 @@ pub fn ultra_key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         alpha.par_iter_mut().for_each(|a| *a = ((*a - mid) * g + mid).clamp(0.0, 1.0));
     }
     // spill suppression + colour correction on the foreground
-    let spill = fv(e, "spill", cx) / 100.0;
-    let desat = fv(e, "desaturate", cx) / 100.0;
-    let range = fv(e, "range", cx) / 100.0;
-    let sluma = fv(e, "spill_luma", cx) / 100.0;
+    let spill = pf("spill", fv(e, "spill", cx)) / 100.0;
+    let desat = pf("desaturate", fv(e, "desaturate", cx)) / 100.0;
+    let range = pf("range", fv(e, "range", cx)) / 100.0;
+    let sluma = pf("spill_luma", fv(e, "spill_luma", cx)) / 100.0;
     let (cc_s, cc_h, cc_l) = (fv(e, "cc_saturation", cx) / 100.0, fv(e, "cc_hue", cx) / 360.0, fv(e, "cc_luminance", cx) / 100.0);
     let cc = (cc_s - 1.0).abs() > 1e-4 || cc_h.abs() > 1e-6 || (cc_l - 1.0).abs() > 1e-4;
     img.px.par_chunks_mut(4).zip(alpha.par_iter()).for_each(|(p, &a)| {

@@ -136,7 +136,7 @@ comes with a regression test; parsers, decoders and commands get fuzz / hostile-
   [ROADMAP.md](../ROADMAP.md). If your change has no task id, use the area: `docs: …`,
   `README: …`, `ROADMAP: …`.
 - Commit only green states (all gates pass).
-- When a milestone lands, update its row in `ROADMAP.md` (status, what's done, estimates).
+- When a milestone lands, update its row in [roadmap.md](roadmap.md) (status, what's done, estimates), the summary in `ROADMAP.md`, and the parity doc and [gaps.md](gaps.md) entry it moves, with their "Last updated" lines and revision history.
 - AI agents end commit messages with the attribution line their environment requires.
 
 ## 5. Parallel work (several agents or worktrees)

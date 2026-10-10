@@ -16,6 +16,7 @@ use crate::{CodecError, Result};
 
 enum Inner {
     /// Our own AAC-LC decoder. `up` interpolates HE-AAC's core to the output rate (see [`Upsample2x`]).
+    /// Surround output is reordered to WAV/SMPTE order (see [`aac_to_wav_order`]).
     Aac { dec: Box<filmcraft_aac::Decoder>, asc: Vec<u8>, up: Option<Box<Upsample2x>> },
     /// AAC whose configuration arrives with the first frame (ADTS / LATM).
     AacPending,
@@ -50,6 +51,29 @@ fn vorbis_to_wav_order(channels: usize) -> Option<&'static [usize]> {
         8 => &[0, 2, 1, 7, 5, 6, 3, 4],
         _ => return None,
     })
+}
+
+/// Channel order for AAC surround (ISO/IEC 14496-3 Table 1.19, our decoder's element order: C, L R,
+/// surrounds, LFE): output channel → decoded channel, giving the WAV/SMPTE order (L R C LFE Ls Rs)
+/// used elsewhere, as the AC-3 decoder does and the AAC encoder's caller undoes on export. Only the
+/// unambiguous channel configurations 3–6; 1, 2, 7 and PCE layouts keep the decoded order.
+fn aac_to_wav_order(channel_config: u8) -> Option<&'static [usize]> {
+    Some(match channel_config {
+        3 => &[1, 2, 0],
+        4 => &[1, 2, 0, 3],
+        5 => &[1, 2, 0, 3, 4],
+        6 => &[1, 2, 0, 5, 3, 4],
+        _ => return None,
+    })
+}
+
+/// `channels` reordered by `order` (output channel → decoded channel). A decode whose channel count
+/// does not match the order is returned unchanged.
+fn reorder(mut channels: Vec<Vec<f32>>, order: Option<&[usize]>) -> Vec<Vec<f32>> {
+    match order {
+        Some(order) if order.len() == channels.len() => order.iter().map(|&c| channels.get_mut(c).map(std::mem::take).unwrap_or_default()).collect(),
+        _ => channels,
+    }
 }
 
 /// Duration of an Opus packet in 48 kHz samples from its TOC and frame count (RFC 6716 §3.1),
@@ -152,18 +176,17 @@ impl PacketDecoder {
                 if let Some(up) = up {
                     out = up.process(out);
                 }
+                let out = reorder(out, aac_to_wav_order(dec.config().channel_config));
                 self.channels = out.len();
                 return Ok(out);
             }
             Inner::Opus { dec, order } => {
                 // A corrupt packet is concealed like a lost one (keeps timing and decoder state).
-                let mut out = match dec.decode(Some(data)) {
+                let out = match dec.decode(Some(data)) {
                     Ok(o) => o,
                     Err(_) => dec.decode(None).map_err(|e| CodecError::Decode(e.to_string()))?,
                 };
-                if let Some(order) = order {
-                    out = order.iter().map(|&c| std::mem::take(&mut out[c])).collect();
-                }
+                let out = reorder(out, *order);
                 self.channels = out.len();
                 return Ok(out);
             }
@@ -808,6 +831,63 @@ mod he_aac_tests {
             assert!((y[2 * k + 1] - want).abs() < 1e-3, "{k}: {} vs {want}", y[2 * k + 1]);
             assert_eq!(y[2 * k], x[k - UPSAMPLE_HALF]);
         }
+    }
+}
+
+#[cfg(test)]
+mod surround_order_tests {
+    use super::*;
+
+    /// Power of `x` at `hz` (Goertzel), normalised by length.
+    fn power(x: &[f32], hz: f32, rate: f32) -> f32 {
+        let k = 2.0 * (std::f32::consts::TAU * hz / rate).cos();
+        let (mut s1, mut s2) = (0.0f32, 0.0f32);
+        for &v in x {
+            let s0 = v + k * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        (s1 * s1 + s2 * s2 - k * s1 * s2) / x.len() as f32
+    }
+
+    /// #721: 5.1 AAC (configuration 6, coded C L R Ls Rs LFE) decodes to WAV/SMPTE order
+    /// L R C LFE Ls Rs, as the rest of FilmCraft and the AAC export path expect.
+    #[test]
+    fn aac_51_decodes_in_wav_order() {
+        let rate = 48_000u32;
+        // tones per speaker, in WAV order: L, R, C, LFE, Ls, Rs
+        let hz = [300.0f32, 400.0, 500.0, 60.0, 700.0, 800.0];
+        let tone = |f: f32| (0..rate as usize).map(|i| 0.25 * (std::f32::consts::TAU * f * i as f32 / rate as f32).sin()).collect::<Vec<f32>>();
+        let wav: Vec<Vec<f32>> = hz.iter().map(|&f| tone(f)).collect();
+        // the encoder takes AAC element order (as the exporter feeds it): C L R Ls Rs LFE
+        let coded: Vec<&[f32]> = [2usize, 0, 1, 4, 5, 3].iter().map(|&c| wav[c].as_slice()).collect();
+        let mut enc = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(rate, 6, 384_000)).unwrap();
+        let mut units = enc.encode(&coded);
+        units.extend(enc.flush());
+
+        let mut dec = PacketDecoder::aac(&enc.audio_specific_config(), rate).unwrap();
+        let mut out = vec![Vec::new(); 6];
+        for u in &units {
+            for (o, c) in out.iter_mut().zip(dec.decode(u, 0).unwrap()) {
+                o.extend(c);
+            }
+        }
+        assert_eq!(dec.channels, 6);
+        for (ch, samples) in out.iter().enumerate() {
+            let window = &samples[4800..38_400];
+            let own = power(window, hz[ch], rate as f32);
+            for (other, &f) in hz.iter().enumerate().filter(|&(o, _)| o != ch) {
+                let p = power(window, f, rate as f32);
+                assert!(own > 100.0 * p, "channel {ch}: {} Hz {own} vs {f} Hz (channel {other}) {p}", hz[ch]);
+            }
+        }
+    }
+
+    #[test]
+    fn reorder_leaves_mismatched_channel_counts_alone() {
+        let chans = vec![vec![1.0], vec![2.0]];
+        assert_eq!(reorder(chans.clone(), aac_to_wav_order(6)), chans);
+        assert_eq!(reorder(vec![vec![0.0], vec![1.0], vec![2.0]], aac_to_wav_order(3)), vec![vec![1.0], vec![2.0], vec![0.0]]);
     }
 }
 

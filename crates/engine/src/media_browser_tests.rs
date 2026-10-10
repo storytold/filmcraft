@@ -210,6 +210,47 @@ fn import_the_selection_and_open_in_source() {
     assert_eq!(r["items"].as_array().unwrap().len(), 1);
 }
 
+/// Importing a folder keeps its structure (#411): the folder becomes a bin named after it, each
+/// sub-folder with media a bin inside that, and every file lands in its folder's bin.
+#[test]
+fn importing_a_folder_mirrors_its_sub_folders_as_bins() {
+    let mut fs = FakeFs::new();
+    let wav = filmcraft_media::wav::write_wav16(&[0.0; 4800], 2, 48_000);
+    fs.dirs.extend(["/Shoot", "/Shoot/Day 1", "/Shoot/Day 1/Cam A", "/Shoot/Empty"].map(String::from));
+    for f in ["/Shoot/slate.wav", "/Shoot/Day 1/room.wav", "/Shoot/Day 1/Cam A/take1.wav", "/Shoot/Day 1/Cam A/take2.wav"] {
+        fs.files.get_mut().unwrap().insert(f.into(), wav.clone());
+    }
+    let mut s = Session::new(Arc::new(fs));
+    let r = s.execute("mediaBrowser.import", json!({"paths": ["/Shoot"]})).unwrap();
+    assert_eq!(r["items"].as_array().unwrap().len(), 4, "{r}");
+    assert_eq!(r["bins"].as_array().unwrap().len(), 3, "{r}");
+    let tree = |b: &filmcraft_project::Bin| -> Vec<String> {
+        b.children
+            .iter()
+            .map(|c| match c {
+                filmcraft_project::BinEntry::Bin(b) => format!("bin {}", b.name),
+                filmcraft_project::BinEntry::Item(i) => s.project.item(*i).unwrap().name.clone(),
+            })
+            .collect()
+    };
+    let sub = |b: &filmcraft_project::Bin, name: &str| -> filmcraft_project::Bin {
+        b.children
+            .iter()
+            .find_map(|c| match c {
+                filmcraft_project::BinEntry::Bin(b) if b.name == name => Some(b.clone()),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert_eq!(tree(&s.project.root), ["bin Shoot"]);
+    let shoot = sub(&s.project.root, "Shoot");
+    // a folder without media gets no bin
+    assert_eq!(tree(&shoot), ["slate.wav", "bin Day 1"]);
+    let day = sub(&shoot, "Day 1");
+    assert_eq!(tree(&day), ["room.wav", "bin Cam A"]);
+    assert_eq!(tree(&sub(&day, "Cam A")), ["take1.wav", "take2.wav"]);
+}
+
 #[test]
 fn import_with_ingest_settings() {
     let mut s = session();

@@ -347,7 +347,14 @@ fn parse_amount(rest: &str, _lang: Lang) -> Option<(u64, usize, usize, u32, bool
     }
     let major = int_digits.parse::<u64>().ok()?;
     let had_minor = after_decimal && !frac_digits.is_empty();
-    let minor = if had_minor { frac_digits.parse::<u32>().ok()? } else { 0 };
+    // One fractional digit denotes tenths of a major unit (e.g. $1.5 = $1.50),
+    // not five minor units. Preserve the existing two-digit and longer readings.
+    let minor = if had_minor {
+        let value = frac_digits.parse::<u32>().ok()?;
+        if frac_digits.len() == 1 { value * 10 } else { value }
+    } else {
+        0
+    };
     Some((major, int_digits.len(), used, minor, had_minor))
 }
 
@@ -600,14 +607,20 @@ fn has_leading_zero_str(digits: &str) -> bool {
 
 /// `%`, an ordinal suffix (`st`/`nd`/`rd`/`th`), a decimal fraction or `-`-joined
 /// digit groups.
+/// Percentage sign attached to a number, or separated from it by whitespace.
+fn percent_suffix_len(rest: &str) -> Option<usize> {
+    let suffix = rest.trim_start_matches(char::is_whitespace);
+    suffix.strip_prefix('%').map(|_| rest.len() - suffix.len() + 1)
+}
+
 fn parse_continuation(rest: &str, used: usize, value: u64) -> Option<(Vec<Token>, usize)> {
     let after = rest.get(used..)?;
+    if let Some(suffix_len) = percent_suffix_len(after) {
+        let mut words = english_cardinal(value);
+        words.push("percent".into());
+        return Some((words.into_iter().map(Token::Word).collect(), used + suffix_len));
+    }
     match peek(after, 0) {
-        Some('%') => {
-            let mut words = english_cardinal(value);
-            words.push("percent".into());
-            Some((words.into_iter().map(Token::Word).collect(), used + 1))
-        }
         Some('s' | 'S' | 't' | 'T' | 'n' | 'N' | 'd' | 'D' | 'r' | 'R') => {
             let suffix = after.get(..2)?;
             if is_ordinal_suffix(suffix) && !peek(after, 2).is_some_and(|c| c.is_alphabetic()) {
@@ -623,7 +636,12 @@ fn parse_continuation(rest: &str, used: usize, value: u64) -> Option<(Vec<Token>
                 return None;
             }
             words.extend(frac);
-            Some((words.into_iter().map(Token::Word).collect(), used + 1 + frac_used))
+            let number_end = used + 1 + frac_used;
+            if let Some(suffix_len) = rest.get(number_end..).and_then(percent_suffix_len) {
+                words.push("percent".into());
+                return Some((words.into_iter().map(Token::Word).collect(), number_end + suffix_len));
+            }
+            Some((words.into_iter().map(Token::Word).collect(), number_end))
         }
         Some('-') => parse_digit_groups(rest, used),
         _ => None,
@@ -700,13 +718,17 @@ fn parse_digit_groups(rest: &str, used: usize) -> Option<(Vec<Token>, usize)> {
         }
         return Some((words, end));
     }
-    if groups.len() == 2 && groups.iter().all(|g| g.len() <= 3) {
+    // For shorter non-phone-like groups, retain every group in order. Previously
+    // three original groups ("5-10-15") dropped the middle one by reading only
+    // the first and last endpoints.
+    if groups.iter().all(|g| g.len() <= 3) {
         let a = rest.get(..used)?.parse::<u64>().ok()?;
-        let b_str = groups.last()?;
-        let b = b_str.parse::<u64>().ok()?;
         let mut words = english_cardinal(a);
-        words.push("to".into());
-        words.extend(english_cardinal(b));
+        for group in &groups {
+            let n = group.parse::<u64>().ok()?;
+            words.push("to".into());
+            words.extend(english_cardinal(n));
+        }
         return Some((words.into_iter().map(Token::Word).collect(), end));
     }
     None
@@ -1165,6 +1187,13 @@ mod tests {
         assert_eq!(words("$3.50", Lang::EnUs), "three dollars and fifty cents");
         assert_eq!(words("$1", Lang::EnUs), "one dollar");
         assert_eq!(words("$1.00", Lang::EnUs), "one dollar");
+        assert_eq!(words("$1.5", Lang::EnUs), "one dollar and fifty cents");
+        assert_eq!(words("$2.5", Lang::EnUs), "two dollars and fifty cents");
+        assert_eq!(words("$0.5", Lang::EnUs), "zero dollars and fifty cents");
+        assert_eq!(words("$1.05", Lang::EnUs), "one dollar and five cents");
+        assert_eq!(words("The price is $1.5.", Lang::EnUs), words("The price is $1.50.", Lang::EnUs));
+        assert_eq!(words("£1.5", Lang::EnGb), "one pound and fifty pence");
+        assert_eq!(words("€1.5", Lang::EnUs), "one euro and fifty cents");
         assert_eq!(words("$5.05", Lang::EnUs), "five dollars and five cents");
         assert_eq!(words("$0.75", Lang::EnUs), "zero dollars and seventy-five cents");
         assert_eq!(words("$1,234.56", Lang::EnUs), "one thousand two hundred thirty-four dollars and fifty-six cents");
@@ -1176,10 +1205,36 @@ mod tests {
     }
 
     #[test]
+    fn short_hyphenated_groups_keep_every_number() {
+        for lang in [Lang::EnUs, Lang::EnGb] {
+            assert_eq!(words("1-2-3", lang), "one to two to three");
+            assert_eq!(words("5-10-15", lang), "five to ten to fifteen");
+            assert_eq!(words("10-20-30", lang), "ten to twenty to thirty");
+            assert_eq!(words("1-2-3-4", lang), "one to two to three to four");
+            assert_eq!(words("1-2-3-4-5", lang), "one to two to three to four to five");
+            assert_eq!(words("1-2-3-4-5-6", lang), "one to two to three to four to five to six");
+            assert_eq!(words("2-3", lang), "two to three");
+            assert_eq!(words("10-12", lang), "ten to twelve");
+            assert_eq!(words("555-0134", lang), "five five five zero one three four");
+            assert_eq!(words("005-010-015", lang), "zero zero five zero one zero zero one five");
+        }
+    }
+
+    #[test]
     fn percent() {
         assert_eq!(words("20%", Lang::EnUs), "twenty percent");
         assert_eq!(words("100%", Lang::EnUs), "one hundred percent");
         assert_eq!(words("7%", Lang::EnUs), "seven percent");
+        for lang in [Lang::EnUs, Lang::EnGb] {
+            assert_eq!(words("20.5%", lang), "twenty point five percent");
+            assert_eq!(words("0.5%", lang), "zero point five percent");
+            assert_eq!(words("50 %", lang), "fifty percent");
+            assert_eq!(words("50\t%", lang), "fifty percent");
+            assert_eq!(words("50\u{a0}%", lang), "fifty percent");
+            assert_eq!(words("100 %", lang), "one hundred percent");
+            assert_eq!(words("20.5 %", lang), "twenty point five percent");
+            assert_eq!(words("20.5%", lang), words("twenty point five percent", lang));
+        }
     }
 
     #[test]

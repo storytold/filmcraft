@@ -302,6 +302,16 @@ fn audio_fx_limiter_holds_ceiling() {
 }
 
 #[test]
+fn audio_fx_limiter_lookahead_changes_the_mix() {
+    let (p0, seq0, map0) = tone_with(&[("amplify", &[("gain", 30.0)]), ("hard_limiter", &[("max", -6.0), ("lookahead", 0.0)])]);
+    let (p1, seq1, map1) = tone_with(&[("amplify", &[("gain", 30.0)]), ("hard_limiter", &[("max", -6.0), ("lookahead", 30.0)])]);
+    let a = mix(&p0, seq0, &map0, 0, 48_000);
+    let b = mix(&p1, seq1, &map1, 0, 48_000);
+    let max = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).fold(0f32, f32::max);
+    assert!(max > 1e-4, "look-ahead of 0 ms and 30 ms mixed the same clip");
+}
+
+#[test]
 fn audio_fx_chain_is_continuous_and_random_access_matches() {
     let (p, seq, map) = tone_with(&[("delay", &[("delay", 0.05), ("feedback", 50.0), ("mix", 50.0)])]);
     let start = 48_000;

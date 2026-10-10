@@ -11,6 +11,24 @@ use serde_json::{Value, json};
 use crate::Session;
 use crate::media_test_util::tmp_dir;
 
+#[test]
+fn import_replace_starts_from_an_empty_project() {
+    let dir = tmp_dir("import-replace");
+    let wav = dir.join("tone.wav");
+    std::fs::write(&wav, filmcraft_media::wav::write_wav16(&[0.1; 4800], 2, 48_000)).unwrap();
+    let mut s = demo();
+    let demo_items = s.project.items.len();
+    assert!(demo_items > 1);
+    assert!(!s.state.open_sequences.is_empty());
+    s.execute("file.import", json!({"paths": [wav.to_string_lossy()], "replace": true})).unwrap();
+    assert!(s.state.open_sequences.is_empty());
+    assert_eq!(s.project.items.len(), 1);
+    assert!(s.project.items.values().any(|it| it.name == "tone.wav"));
+    let mut merge = demo();
+    merge.execute("file.import", json!({"paths": [wav.to_string_lossy()]})).unwrap();
+    assert!(merge.project.items.len() > demo_items);
+}
+
 fn demo() -> Session {
     let mut s = Session::default();
     s.execute("file.openDemoProject", json!({})).unwrap();
