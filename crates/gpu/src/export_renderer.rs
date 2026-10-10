@@ -90,7 +90,6 @@ fn device_failed() -> bool {
 
 pub struct ExportRenderer {
     _instance: wgpu::Instance,
-    #[expect(dead_code, reason = "kept for future frame-accuracy flows (readback fences)")]
     device: wgpu::Device,
     #[expect(dead_code, reason = "kept for future frame-accuracy flows (readback fences)")]
     queue: wgpu::Queue,
@@ -106,7 +105,11 @@ impl ExportRenderer {
             .get_or_init(|| {
                 let instance = wgpu::Instance::default();
                 let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-                let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+                let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                    required_features: adapter.features() & wgpu::Features::TEXTURE_FORMAT_16BIT_NORM,
+                    ..Default::default()
+                }))
+                .ok()?;
                 // wgpu's default handler panics on a validation or out-of-memory error; log it and
                 // send the remaining frames to the CPU instead.
                 device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| mark_device_failed(&format!("GPU error: {e}"))));
@@ -120,6 +123,33 @@ impl ExportRenderer {
         }
         let compositor = GpuCompositor::new(&device, &queue);
         Some(Self { _instance: instance, device, queue, compositor })
+    }
+
+    /// Completed linear accumulator for an OS encoder bridge. No pixel readback or display
+    /// resolve. The bridge uses this device's backend and retains the returned texture.
+    pub fn render_texture(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: RenderOptions,
+        sources: &dyn SourceProvider,
+    ) -> Option<(wgpu::Device, wgpu::Texture, (u32, u32))> {
+        if device_failed() {
+            return None;
+        }
+        let plan = plan_frame(project, seq, t, opts, sources);
+        if !matches!(plan, FramePlan::Layers { .. }) {
+            return None;
+        }
+        let prep = prepare(&plan);
+        let surface = self.compositor.export_texture(&plan, &prep)?;
+        // Backend access must never race wgpu writes. A CPU fence waits, but no pixels cross it.
+        self.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
+        if device_failed() {
+            return None;
+        }
+        Some((self.device.clone(), surface.0, surface.1))
     }
 
     /// One frame as `render_sequence` would return it (premultiplied linear-light RGBA at the

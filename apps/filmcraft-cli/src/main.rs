@@ -235,6 +235,10 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
 
 fn register_gpu_frame_renderer() {
     filmcraft_export::register_frame_renderer(|| {
+        #[cfg(target_os = "macos")]
+        if let Some(r) = filmcraft_platform::gpu_export::Renderer::new() {
+            return Some(Box::new(r) as Box<dyn filmcraft_export::FrameRenderer>);
+        }
         filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(GpuFrameRenderer(r)) as Box<dyn filmcraft_export::FrameRenderer>)
     });
 }

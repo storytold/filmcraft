@@ -619,11 +619,24 @@ impl VtEncoder {
     pub fn encode(&mut self, index: u64, y: &[u8], u: &[u8], v: &[u8]) -> Result<Vec<VtPacket>, String> {
         let buffer = self.new_buffer()?;
         fill(&buffer, self.config.width as usize, self.config.height as usize, y, u, v)?;
+        self.encode_buffer(index, &buffer)
+    }
+
+    /// Submit a completed IOSurface-backed NV12 frame without mapping its pixels on the CPU.
+    pub fn encode_buffer(&mut self, index: u64, buffer: &CVImageBuffer) -> Result<Vec<VtPacket>, String> {
+        let (w, h, format) = (
+            objc2_core_video::CVPixelBufferGetWidth(buffer),
+            objc2_core_video::CVPixelBufferGetHeight(buffer),
+            objc2_core_video::CVPixelBufferGetPixelFormatType(buffer),
+        );
+        if w != self.config.width as usize || h != self.config.height as usize || format != NV12_VIDEO {
+            return Err("native encoder buffer has an incompatible size or pixel format".into());
+        }
         let value = i64::try_from(index).ok().and_then(|i| i.checked_mul(i64::from(self.config.frame_duration))).ok_or("frame index out of range")?;
         let (pts, duration) = (cm_time(value, self.config.timescale), cm_time(i64::from(self.config.frame_duration), self.config.timescale));
         // SAFETY: the session and buffer are valid (VideoToolbox retains the buffer as long as it
         // needs it); no frame properties, refcon or info-flags out-pointer.
-        let status = unsafe { self.session.session.encode_frame(&buffer, pts, duration, None, std::ptr::null_mut(), std::ptr::null_mut()) };
+        let status = unsafe { self.session.session.encode_frame(buffer, pts, duration, None, std::ptr::null_mut(), std::ptr::null_mut()) };
         if status != 0 {
             return Err(format!("VTCompressionSessionEncodeFrame failed ({status})"));
         }

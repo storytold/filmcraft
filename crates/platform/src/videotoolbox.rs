@@ -9,9 +9,9 @@
 //! A session is created from the parameter sets of the sample entry (`avcC` / `hvcC`) with
 //! hardware decoding required, so streams the hardware cannot take are declined up front. Samples
 //! are fed as `CMSampleBuffer`s with asynchronous decompression (a couple in flight); the output
-//! callback (on a VideoToolbox thread) copies each decoded
-//! `CVPixelBuffer` (NV12 / P010-style biplanar) into planar [`PixelData::Yuv8`] /
-//! [`PixelData::Yuv16`]. VideoToolbox emits pictures in decoding order, so a reorder buffer of the
+//! callback (on a VideoToolbox thread) retains eligible decoded `CVPixelBuffer`s as
+//! [`PixelData::Native`] for Metal import and lazy CPU access, or copies unsupported layouts
+//! into planar [`PixelData::Yuv8`] / [`PixelData::Yuv16`]. VideoToolbox emits pictures in decoding order, so a reorder buffer of the
 //! stream's own depth (`max_num_reorder_frames` / `sps_max_num_reorder_pics`) puts them in
 //! presentation order, as the software decoders do.
 
@@ -134,7 +134,17 @@ unsafe extern "C-unwind" fn output_callback(
         // SAFETY: VideoToolbox passes a valid image buffer that stays alive for the duration of
         // the callback; we only borrow it here.
         let pb = unsafe { image.as_ref() };
-        match copy_out(pb, &shared.layout) {
+        let l = &shared.layout;
+        let frame = if CVPixelBufferGetPixelFormatType(pb) == l.pixel_format {
+            crate::gpu_decode::frame(pb, l.crop.2, l.crop.3, l.chroma, l.bits).map(|mut frame| {
+                frame.color = l.color;
+                frame.par = l.par;
+                frame
+            })
+        } else {
+            None
+        };
+        match frame.map(Ok).unwrap_or_else(|| copy_out(pb, l)) {
             Ok(frame) => Output::Frame(DecodedFrame { pts, frame, draft: false }),
             Err(e) => Output::Failed(e),
         }
@@ -222,10 +232,8 @@ fn copy_out(pb: &CVImageBuffer, l: &Layout) -> std::result::Result<VideoFrame, S
         }
         let (mut u, mut v) = (pool::take_u8(cw * ch), pool::take_u8(cw * ch));
         for y in 0..ch {
-            for pair in cs.row(coy + y, cox * 2 * bps, cw * 2 * bps)?.as_chunks::<2>().0 {
-                u.push(pair[0]);
-                v.push(pair[1]);
-            }
+            let pairs = cs.row(coy + y, cox * 2 * bps, cw * 2 * bps)?.as_chunks::<2>().0;
+            crate::chroma::append_u8(pairs, &mut u, &mut v);
         }
         PixelData::Yuv8 { planes: [Arc::new(yp), Arc::new(u), Arc::new(v)], chroma: l.chroma, alpha: None }
     } else {
@@ -236,15 +244,29 @@ fn copy_out(pb: &CVImageBuffer, l: &Layout) -> std::result::Result<VideoFrame, S
         }
         let (mut u, mut v) = (pool::take_u16(cw * ch), pool::take_u16(cw * ch));
         for y in 0..ch {
-            for q in cs.row(coy + y, cox * 2 * bps, cw * 2 * bps)?.as_chunks::<4>().0 {
-                u.push(u16::from_ne_bytes([q[0], q[1]]) >> shift);
-                v.push(u16::from_ne_bytes([q[2], q[3]]) >> shift);
-            }
+            let quads = cs.row(coy + y, cox * 2 * bps, cw * 2 * bps)?.as_chunks::<4>().0;
+            crate::chroma::append_u10(quads, &mut u, &mut v);
         }
         PixelData::Yuv16 { planes: [Arc::new(yp), Arc::new(u), Arc::new(v)], chroma: l.chroma, bits: l.bits, alpha: None }
     };
     drop(lock);
     Ok(VideoFrame { width: w as u32, height: h as u32, data, color: l.color, par: l.par, pts: filmcraft_time::Tick::ZERO })
+}
+
+#[cfg(test)]
+pub(crate) fn legacy_frame(pb: &CVImageBuffer, w: u32, h: u32, bits: u32) -> std::result::Result<VideoFrame, String> {
+    copy_out(
+        pb,
+        &Layout {
+            pixel_format: CVPixelBufferGetPixelFormatType(pb),
+            coded: (w, h),
+            crop: (0, 0, w, h),
+            chroma: Chroma::C420,
+            bits,
+            color: filmcraft_color::ColorInfo::REC709,
+            par: (1, 1),
+        },
+    )
 }
 
 /// The layout for a stream, or why VideoToolbox is not used for it.
@@ -284,7 +306,11 @@ impl Session {
         let pf = CFNumber::new_i32(layout.pixel_format as i32);
         // SAFETY: reading an immutable framework constant.
         let pf_key: &CFString = unsafe { kCVPixelBufferPixelFormatTypeKey };
-        let attrs = CFDictionary::<CFString, CFType>::from_slices(&[pf_key], &[pf.as_ref()]);
+        let io = CFDictionary::<CFString, CFType>::from_slices(&[], &[]);
+        // SAFETY: immutable CoreVideo constants.
+        let (io_key, metal_key) = unsafe { (objc2_core_video::kCVPixelBufferIOSurfacePropertiesKey, objc2_core_video::kCVPixelBufferMetalCompatibilityKey) };
+        let yes = CFBoolean::new(true);
+        let attrs = CFDictionary::<CFString, CFType>::from_slices(&[pf_key, io_key, metal_key], &[pf.as_ref(), io.as_ref(), yes.as_ref()]);
         let shared = Box::new(Shared { layout, out: Mutex::new(Vec::new()) });
         let record = VTDecompressionOutputCallbackRecord {
             decompressionOutputCallback: Some(output_callback),

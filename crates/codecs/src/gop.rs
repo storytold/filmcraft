@@ -378,7 +378,7 @@ impl Pool {
     /// budget. Caches in use keep theirs (each within its own budget): a frame evicted before it is shown costs a
     /// re-decode from the keyframe.
     fn trim_frames(&self, me: &Shared) {
-        let over = || self.bytes.load(Ordering::Relaxed) > self.budget;
+        let over = || self.bytes.load(Ordering::Relaxed) > self.budget.min(filmcraft_frame::memory::budgets().decoded);
         if !over() {
             return;
         }
@@ -490,7 +490,7 @@ impl GopCache {
         } else {
             st.drafts.remove(&pts);
         }
-        let budget = self.budget.max(MIN_FRAMES * f.byte_size());
+        let budget = self.budget.min(filmcraft_frame::memory::budgets().per_clip).max(MIN_FRAMES.saturating_mul(f.byte_size()));
         let before = st.bytes;
         st.bytes += f.byte_size();
         if let Some(old) = st.frames.insert(pts, Arc::new(f)) {
@@ -759,6 +759,35 @@ impl GopCache {
         }
         st.at_or_before(want_pts, true).ok_or_else(|| CodecError::Decode("frame not produced".into()))
     }
+}
+
+/// Best-effort memory-pressure trimming of idle caches, including while playback is paused.
+/// A decoding cache is never waited on or interrupted. Recently used/displayed frames stay alive.
+pub fn trim_memory() {
+    let pool = Pool::global();
+    let budget = pool.budget.min(filmcraft_frame::memory::budgets().decoded);
+    let mut caches: Vec<_> = pool
+        .caches
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .filter_map(Weak::upgrade)
+        .filter_map(|c| {
+            let used = try_state(&c).filter(|st| st.last_used.elapsed() >= pool.recent).map(|st| st.last_used)?;
+            Some((used, c))
+        })
+        .collect();
+    caches.sort_by_key(|(used, _)| *used);
+    for (_, cache) in caches {
+        if pool.bytes.load(Ordering::Relaxed) <= budget {
+            break;
+        }
+        if let Some(mut state) = try_state(&cache) {
+            state.release_frames(&pool, || pool.bytes.load(Ordering::Relaxed) > budget);
+        }
+    }
+    // Recycled planes from these caches respect the already lowered idle-shelf budgets.
+    filmcraft_frame::pool::trim_to_budget();
 }
 
 #[cfg(test)]

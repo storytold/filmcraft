@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use crate::{PixelData, VideoFrame};
 
 /// Bytes of idle buffers kept per sample type; a buffer that does not fit is freed.
+#[cfg(test)]
 const MAX_BYTES: usize = 192 << 20;
 
 /// Smaller buffers are not worth keeping (the allocator recycles those well).
@@ -72,6 +73,7 @@ static REUSED: AtomicU64 = AtomicU64::new(0);
 static F32: Mutex<Vec<Vec<f32>>> = Mutex::new(Vec::new());
 
 /// Bytes of idle float images kept; a buffer that does not fit is freed.
+#[cfg(test)]
 const F32_MAX_BYTES: usize = 320 << 20;
 
 fn take<T>(shelf: &Mutex<Shelf<T>>, len: usize) -> Vec<T> {
@@ -88,7 +90,7 @@ fn take<T>(shelf: &Mutex<Shelf<T>>, len: usize) -> Vec<T> {
 fn give<T>(shelf: &Mutex<Shelf<T>>, plane: Arc<Vec<T>>) {
     // a plane something else still shows (a monitor, a GPU upload in flight) is theirs
     if let Ok(b) = Arc::try_unwrap(plane) {
-        shelf.lock().unwrap_or_else(PoisonError::into_inner).give(b, MAX_BYTES);
+        shelf.lock().unwrap_or_else(PoisonError::into_inner).give(b, crate::memory::budgets().plane_shelf);
     }
 }
 
@@ -118,13 +120,13 @@ pub fn take_f32_overwritten(len: usize) -> Vec<f32> {
 
 /// Keep a float image nobody needs any more for the next [`take_f32_overwritten`] of its length.
 pub fn recycle_f32(buf: Vec<f32>) {
-    let bytes = buf.len().saturating_mul(4);
+    let bytes = buf.capacity().saturating_mul(4);
     if bytes < MIN_BYTES {
         return;
     }
     let mut idle = F32.lock().unwrap_or_else(PoisonError::into_inner);
-    let held: usize = idle.iter().map(|b| b.len().saturating_mul(4)).sum();
-    if held.saturating_add(bytes) <= F32_MAX_BYTES {
+    let held: usize = idle.iter().map(|b| b.capacity().saturating_mul(4)).sum();
+    if held.saturating_add(bytes) <= crate::memory::budgets().float_shelf {
         idle.push(buf);
     }
 }
@@ -135,13 +137,13 @@ pub fn recycle(frame: Arc<VideoFrame>) {
     let Ok(f) = Arc::try_unwrap(frame) else { return };
     match f.data {
         PixelData::Rgba8(d) => give(&U8, d),
-        PixelData::RgbaF32(_) => {}
+        PixelData::Native(_) | PixelData::RgbaF32(_) => {}
         PixelData::Yuv8 { planes, alpha, .. } => planes.into_iter().chain(alpha).for_each(|p| give(&U8, p)),
         PixelData::Yuv16 { planes, alpha, .. } => planes.into_iter().chain(alpha).for_each(|p| give(&U16, p)),
     }
 }
 
-/// Free the idle float images. A standalone export leaves that shelf full (up to [`F32_MAX_BYTES`]
+/// Free the idle float images. A standalone export leaves that shelf full (up to the float budget
 /// of images, each the size of that export's frames) and nothing else asks for those sizes again,
 /// so they would sit idle until the next export. Images still in use are not touched. The 8- and
 /// 16-bit plane shelves are left alone: playback recycles decoded frames through them all the time.
@@ -164,8 +166,36 @@ pub fn stats() -> PoolStats {
     let idle = |n: usize, m: usize| n.saturating_add(m);
     let a = U8.lock().unwrap_or_else(PoisonError::into_inner).bytes;
     let b = U16.lock().unwrap_or_else(PoisonError::into_inner).bytes;
-    let c: usize = F32.lock().unwrap_or_else(PoisonError::into_inner).iter().map(|b| b.len().saturating_mul(4)).sum();
+    let c: usize = F32.lock().unwrap_or_else(PoisonError::into_inner).iter().map(|b| b.capacity().saturating_mul(4)).sum();
     PoolStats { idle_bytes: idle(idle(a, b), c), f32_idle_bytes: c, reused: REUSED.load(Ordering::Relaxed) }
+}
+
+/// Release idle allocations after a budget or memory-pressure change. Nothing in use is touched.
+pub fn trim_to_budget() {
+    let b = crate::memory::budgets();
+    fn planes<T>(shelf: &Mutex<Shelf<T>>, budget: usize) {
+        let mut shelf = shelf.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut freed = Vec::new();
+        while shelf.bytes > budget {
+            let Some(buf) = shelf.bufs.pop() else { break };
+            shelf.bytes = shelf.bytes.saturating_sub(Shelf::<T>::size(&buf));
+            freed.push(buf);
+        }
+        drop(shelf);
+        drop(freed);
+    }
+    planes(&U8, b.plane_shelf);
+    planes(&U16, b.plane_shelf);
+    let mut floats = F32.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut held = floats.iter().fold(0usize, |n, v| n.saturating_add(v.capacity().saturating_mul(4)));
+    let mut freed = Vec::new();
+    while held > b.float_shelf {
+        let Some(buf) = floats.pop() else { break };
+        held = held.saturating_sub(buf.capacity().saturating_mul(4));
+        freed.push(buf);
+    }
+    drop(floats);
+    drop(freed);
 }
 
 #[cfg(test)]

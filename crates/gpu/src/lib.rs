@@ -42,6 +42,7 @@ pub mod export_renderer;
 pub mod fx;
 pub mod lut;
 pub mod mask;
+mod mask_cache;
 mod transition;
 pub use export_renderer::ExportRenderer;
 pub use lut::GpuLut;
@@ -52,6 +53,21 @@ pub use mask::GpuMask;
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
+/// A platform import supplies initialized immutable native YUV textures on this exact device.
+pub struct NativeImport {
+    pub views: [wgpu::TextureView; 2],
+    pub chroma: (u32, u32),
+    pub code_scale: f32,
+    pub bits: u32,
+}
+type NativeImporter = fn(&wgpu::Device, &Arc<dyn filmcraft_frame::NativeYuv>) -> Option<NativeImport>;
+static NATIVE_IMPORT: std::sync::OnceLock<NativeImporter> = std::sync::OnceLock::new();
+pub fn register_native_import(import: NativeImporter) {
+    let _ = NATIVE_IMPORT.set(import);
+}
+
+static UPLOAD_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 struct Uploaded {
     /// Y, Cb, Cr (or the RGBA texture) and the alpha plane (the dummy texture when there is none).
     views: [wgpu::TextureView; 4],
@@ -61,9 +77,16 @@ struct Uploaded {
     alpha_scale: f32,
     chroma: (u32, u32),
     last_used: u64,
+    bytes: usize,
     /// The uploaded pixel buffers, kept alive while cached: the cache key is the buffer address,
     /// and a freed buffer's address can be reused by a different frame (stale texture).
     _pixels: PixelData,
+}
+
+impl Drop for Uploaded {
+    fn drop(&mut self) {
+        UPLOAD_BYTES.fetch_sub(self.bytes, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 pub struct GpuCompositor {
@@ -248,7 +271,7 @@ pub fn prepare_frame(f: &VideoFrame) -> Option<Prepared> {
         PixelData::Yuv16 { planes, bits, alpha, .. } => {
             Some(Prepared { planes: planes.iter().chain(alpha.as_ref()).map(|p| codes_to_f16_bytes(p, *bits)).collect() })
         }
-        PixelData::Rgba8(_) | PixelData::Yuv8 { .. } => None,
+        PixelData::Native(_) | PixelData::Rgba8(_) | PixelData::Yuv8 { .. } => None,
     }
 }
 
@@ -460,9 +483,36 @@ impl GpuCompositor {
         t.create_view(&Default::default())
     }
 
+    /// Release retained source images after invalidation or memory pressure. In-flight GPU
+    /// commands still own their textures, including native CoreVideo lifetime guards.
+    pub fn clear_source_cache(&mut self) {
+        self.uploads.clear();
+    }
+
+    fn trim_sources(&mut self, protected: Option<(usize, u32, u32)>) {
+        // Bound retained uploads by bytes as well as count. Commands/bind groups already
+        // retain in-flight textures, so evicting an older cache entry cannot invalidate a draw.
+        let budget = filmcraft_frame::memory::budgets().gpu_uploads;
+        let mut held = UPLOAD_BYTES.load(std::sync::atomic::Ordering::Relaxed);
+        if self.uploads.len() > 24 || held > budget {
+            let mut v: Vec<_> = self.uploads.iter().filter(|(k, _)| Some(**k) != protected).map(|(k, u)| (u.last_used, *k)).collect();
+            v.sort_unstable();
+            for (_, k) in v {
+                if self.uploads.len() <= 24 && held <= budget {
+                    break;
+                }
+                if let Some(old) = self.uploads.remove(&k) {
+                    drop(old);
+                    held = UPLOAD_BYTES.load(std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+    }
+
     /// Upload (or reuse) the textures of a frame, using `prep` when it was converted beforehand.
     fn upload(&mut self, f: &VideoFrame, prep: Option<&Prepared>) -> (usize, u32, u32) {
         let id = match &f.data {
+            PixelData::Native(n) => Arc::as_ptr(n) as *const () as usize,
             PixelData::Rgba8(d) => Arc::as_ptr(d) as *const u8 as usize,
             PixelData::RgbaF32(d) => Arc::as_ptr(d) as *const u8 as usize,
             PixelData::Yuv8 { planes, .. } => Arc::as_ptr(&planes[0]) as *const u8 as usize,
@@ -470,6 +520,7 @@ impl GpuCompositor {
         };
         let key = (id, f.width, f.height);
         self.clock += 1;
+        self.trim_sources(Some(key));
         if let Some(u) = self.uploads.get_mut(&key) {
             u.last_used = self.clock;
             return key;
@@ -478,6 +529,23 @@ impl GpuCompositor {
         let d0 = self.dummy.clone();
         let dummy = || d0.clone();
         let up = match &f.data {
+            PixelData::Native(native) => {
+                if let Some(import) = NATIVE_IMPORT.get().and_then(|import| import(&self.device, native)) {
+                    let [y, uv] = import.views;
+                    Uploaded {
+                        views: [y, uv, dummy(), dummy()],
+                        kind: 3,
+                        code_scale: import.code_scale,
+                        alpha_scale: 0.0,
+                        chroma: import.chroma,
+                        last_used: self.clock,
+                        bytes: native.byte_size(),
+                        _pixels: f.data.clone(),
+                    }
+                } else {
+                    return self.upload(&f.materialized(), None);
+                }
+            }
             PixelData::Rgba8(d) => {
                 let v = self.plane_texture(w, h, wgpu::TextureFormat::Rgba8UnormSrgb, d, 4);
                 Uploaded {
@@ -487,6 +555,10 @@ impl GpuCompositor {
                     alpha_scale: 0.0,
                     chroma: (w, h),
                     last_used: self.clock,
+                    bytes: match &f.data {
+                        PixelData::RgbaF32(p) => p.len().saturating_mul(2),
+                        _ => f.byte_size(),
+                    },
                     _pixels: f.data.clone(),
                 }
             }
@@ -507,6 +579,10 @@ impl GpuCompositor {
                     alpha_scale: 0.0,
                     chroma: (w, h),
                     last_used: self.clock,
+                    bytes: match &f.data {
+                        PixelData::RgbaF32(p) => p.len().saturating_mul(2),
+                        _ => f.byte_size(),
+                    },
                     _pixels: f.data.clone(),
                 }
             }
@@ -525,6 +601,10 @@ impl GpuCompositor {
                     alpha_scale,
                     chroma: (cw, ch),
                     last_used: self.clock,
+                    bytes: match &f.data {
+                        PixelData::RgbaF32(p) => p.len().saturating_mul(2),
+                        _ => f.byte_size(),
+                    },
                     _pixels: f.data.clone(),
                 }
             }
@@ -554,19 +634,17 @@ impl GpuCompositor {
                     alpha_scale,
                     chroma: (cw, ch),
                     last_used: self.clock,
+                    bytes: match &f.data {
+                        PixelData::RgbaF32(p) => p.len().saturating_mul(2),
+                        _ => f.byte_size(),
+                    },
                     _pixels: f.data.clone(),
                 }
             }
         };
+        UPLOAD_BYTES.fetch_add(up.bytes, std::sync::atomic::Ordering::Relaxed);
         self.uploads.insert(key, up);
-        // keep the most recent uploads (enough for several stacked layers + playback lookahead)
-        if self.uploads.len() > 24 {
-            let mut v: Vec<(u64, (usize, u32, u32))> = self.uploads.iter().map(|(k, u)| (u.last_used, *k)).collect();
-            v.sort_unstable();
-            for (_, k) in v.into_iter().take(self.uploads.len() - 24) {
-                self.uploads.remove(&k);
-            }
-        }
+        self.trim_sources(Some(key));
         key
     }
 
@@ -574,6 +652,7 @@ impl GpuCompositor {
     fn src_info(&self, f: &VideoFrame, key: (usize, u32, u32)) -> Option<SrcInfo> {
         let up = self.uploads.get(&key)?;
         let code_levels = match &f.data {
+            PixelData::Native(n) => (n.bits() as f32).exp2(),
             PixelData::Yuv8 { .. } => 256.0,
             PixelData::Yuv16 { bits, .. } => (*bits as f32).exp2(),
             _ => 1.0,
@@ -593,8 +672,8 @@ impl GpuCompositor {
         let (kr, kb) = src.color.matrix.kr_kb();
         let bits_scale = src.code_levels / 256.0; // 2^(bits - 8), independent of texture encoding
         let (yo, ys, co, cs) = match (src.color.range, src.kind) {
-            (Range::Limited, 2) => (16.0 * bits_scale, 219.0 * bits_scale, 128.0 * bits_scale, 224.0 * bits_scale),
-            (Range::Full, 2) => (0.0, src.code_levels - 1.0, src.code_levels / 2.0, src.code_levels - 1.0),
+            (Range::Limited, 2 | 3) => (16.0 * bits_scale, 219.0 * bits_scale, 128.0 * bits_scale, 224.0 * bits_scale),
+            (Range::Full, 2 | 3) => (0.0, src.code_levels - 1.0, src.code_levels / 2.0, src.code_levels - 1.0),
             _ => (0.0, 1.0, 0.0, 1.0),
         };
         let transfer = match src.color.transfer {
@@ -699,7 +778,7 @@ impl GpuCompositor {
             .iter()
             .map(|l| {
                 let lfx = l.fx.as_ref()?;
-                if self.fx.is_some() && lfx.size.0.max(lfx.size.1) <= max_side {
+                if self.fx.is_some() && lfx.size.0.max(lfx.size.1) <= max_side && lfx.ops.iter().all(filmcraft_render::gpufx::FxOp::gpu_ok) {
                     return None;
                 }
                 let img = filmcraft_render::plan::effect_image(&l.frame, lfx);
@@ -911,6 +990,15 @@ impl GpuCompositor {
             }
         }
         self.render_plan(&empty, None, false, true)
+    }
+
+    pub(crate) fn export_texture(&mut self, plan: &FramePlan, prep: &PreparedPlan) -> Option<(wgpu::Texture, (u32, u32))> {
+        if !matches!(plan, FramePlan::Layers { .. }) {
+            return None;
+        }
+        self.render_plan(plan, Some(prep), true, false);
+        let (texture, _, size) = self.accum.as_ref()?;
+        Some((texture.clone(), *size))
     }
 
     /// Export rendering: `plan` composited into the linear float accumulator and read back as

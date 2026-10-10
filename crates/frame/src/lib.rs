@@ -7,6 +7,7 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod memory;
 pub mod pool;
 
 use std::sync::Arc;
@@ -42,8 +43,27 @@ impl Chroma {
     }
 }
 
+/// OS-owned immutable YUV image. Platform implementations validate and retain its storage;
+/// CPU planes are materialized only if a CPU consumer actually needs them.
+pub trait NativeYuv: std::fmt::Debug + Send + Sync + std::any::Any {
+    fn as_any(&self) -> &dyn std::any::Any;
+    fn chroma(&self) -> Chroma;
+    fn bits(&self) -> u32;
+    /// Stable cache charge for the entire lifetime, reserving any deferred CPU planes.
+    fn byte_size(&self) -> usize;
+    fn planes(&self) -> NativePlanes;
+}
+
+#[derive(Clone, Debug)]
+pub enum NativePlanes {
+    U8([Arc<Vec<u8>>; 3]),
+    U16([Arc<Vec<u16>>; 3]),
+}
+
 #[derive(Clone, Debug)]
 pub enum PixelData {
+    /// Retained native hardware-decoder surface, imported directly by compatible GPUs.
+    Native(Arc<dyn NativeYuv>),
     /// Straight-alpha, sRGB/709-encoded RGBA, 8 bits per channel.
     Rgba8(Arc<Vec<u8>>),
     /// Premultiplied, linear-light RGBA f32 (compositor working format).
@@ -115,8 +135,20 @@ impl VideoFrame {
         self
     }
 
+    /// Resolve native planes for CPU consumers. A native materialization cannot contain another
+    /// native frame, so delegation is bounded and cached by the platform implementation.
+    pub fn materialized(&self) -> Self {
+        let PixelData::Native(native) = &self.data else { return self.clone() };
+        let data = match native.planes() {
+            NativePlanes::U8(planes) => PixelData::Yuv8 { planes, chroma: native.chroma(), alpha: None },
+            NativePlanes::U16(planes) => PixelData::Yuv16 { planes, chroma: native.chroma(), bits: native.bits(), alpha: None },
+        };
+        Self { data, ..self.clone() }
+    }
+
     pub fn format_label(&self) -> String {
         match &self.data {
+            PixelData::Native(n) => format!("YUV {} {}-bit", n.chroma().label(), n.bits()),
             PixelData::Rgba8(_) => "RGBA 8-bit".into(),
             PixelData::RgbaF32(_) => "RGBA 32-bit float".into(),
             PixelData::Yuv8 { chroma, .. } => format!("YUV {} 8-bit", chroma.label()),
@@ -127,6 +159,7 @@ impl VideoFrame {
     /// Approximate memory footprint in bytes (for caches).
     pub fn byte_size(&self) -> usize {
         match &self.data {
+            PixelData::Native(n) => n.byte_size(),
             PixelData::Rgba8(d) => d.len(),
             PixelData::RgbaF32(d) => d.len() * 4,
             PixelData::Yuv8 { planes, alpha, .. } => planes.iter().map(|p| p.len()).sum::<usize>() + alpha.as_ref().map_or(0, |a| a.len()),
@@ -137,7 +170,8 @@ impl VideoFrame {
     /// A planar Y'CbCr frame reduced by `n` (2, 4, 8…) in each direction: every sample (luma,
     /// chroma at its own resolution, alpha) is the rounded mean of an `n`×`n` block, chroma format
     /// and bit depth unchanged. Reduced-resolution playback hands the GPU this instead of the full
-    /// picture (a quarter / sixteenth of the upload). None for RGBA frames or `n` < 2.
+    /// picture (a quarter / sixteenth of the upload). Native frames keep their surface for GPU
+    /// sampling; None for native/RGBA frames or `n` < 2.
     pub fn box_decimated(&self, n: usize) -> Option<VideoFrame> {
         if n < 2 {
             return None;
@@ -174,7 +208,7 @@ impl VideoFrame {
                     alpha: alpha.as_ref().map(|a| Arc::new(box_plane(a, w, h, ow, oh, n))),
                 }
             }
-            PixelData::Rgba8(_) | PixelData::RgbaF32(_) => return None,
+            PixelData::Native(_) | PixelData::Rgba8(_) | PixelData::RgbaF32(_) => return None,
         };
         Some(VideoFrame { width: ow as u32, height: oh as u32, data, color: self.color, par: self.par, pts: self.pts })
     }
@@ -187,6 +221,7 @@ impl VideoFrame {
         let (w, h) = (self.width as usize, self.height as usize);
         let (sx, sy) = match &self.data {
             PixelData::Yuv8 { chroma, .. } | PixelData::Yuv16 { chroma, .. } => chroma.shifts(),
+            PixelData::Native(n) => n.chroma().shifts(),
             PixelData::Rgba8(_) | PixelData::RgbaF32(_) => (0, 0),
         };
         let (mx, my) = ((1usize << sx) - 1, (1usize << sy) - 1);
@@ -199,6 +234,7 @@ impl VideoFrame {
             (r.x >> sx, r.y >> sy, r.w.div_ceil(1 << sx).min(cw - (r.x >> sx).min(cw)), r.h.div_ceil(1 << sy).min(ch - (r.y >> sy).min(ch)))
         };
         let data = match &self.data {
+            PixelData::Native(_) => return self.materialized().cropped(region),
             PixelData::Rgba8(d) => PixelData::Rgba8(Arc::new(crop_plane(d, w, h, 4, r))),
             PixelData::RgbaF32(d) => PixelData::RgbaF32(Arc::new(crop_plane(d, w, h, 4, r))),
             PixelData::Yuv8 { planes, chroma, alpha } => {
@@ -245,6 +281,7 @@ impl VideoFrame {
         }
         let (w, h) = (self.width as usize, self.height as usize);
         let data = match &self.data {
+            PixelData::Native(_) => return self.materialized().rotated(quarter_turns),
             PixelData::Rgba8(d) => PixelData::Rgba8(Arc::new(rotate_plane(d, w, h, 4, q))),
             PixelData::RgbaF32(d) => PixelData::RgbaF32(Arc::new(rotate_plane(d, w, h, 4, q))),
             PixelData::Yuv8 { planes, chroma, alpha } => {
@@ -345,6 +382,7 @@ impl VideoFrame {
         };
         let inv = 1.0 / (n * n) as f32;
         match &self.data {
+            PixelData::Native(_) => self.materialized().convert_region(n, decode, r, out),
             PixelData::RgbaF32(d) => {
                 out.par_chunks_mut(r.w * 4).enumerate().for_each(|(ry, row)| {
                     let oy = r.y + ry;
@@ -506,6 +544,7 @@ impl VideoFrame {
     pub fn to_rgba8(&self) -> Vec<u8> {
         let (w, h) = (self.width as usize, self.height as usize);
         match &self.data {
+            PixelData::Native(_) => self.materialized().to_rgba8(),
             PixelData::Rgba8(d) => d.as_ref().clone(),
             PixelData::Yuv8 { planes, chroma, alpha: None }
                 if matches!(self.color.transfer, filmcraft_color::Transfer::Bt709 | filmcraft_color::Transfer::Srgb) =>
@@ -552,6 +591,7 @@ impl VideoFrame {
     /// Luma plane (8-bit, for scopes/thumbnails analysis).
     pub fn luma8(&self) -> Vec<u8> {
         match &self.data {
+            PixelData::Native(_) => self.materialized().luma8(),
             PixelData::Yuv8 { planes, .. } => planes[0].as_ref().clone(),
             _ => self.to_rgba8().as_chunks::<4>().0.iter().map(|p| (0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32) as u8).collect(),
         }

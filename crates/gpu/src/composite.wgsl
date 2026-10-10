@@ -99,8 +99,10 @@ fn sample(p: vec2<f32>) -> vec4<f32> {
     let cs = u.p2.z;
     let yc = load4(tex0, p).r * cs;
     let cp = p * u.src.zw / u.src.xy;
-    let cb = load4(tex1, cp).r * cs;
-    let cr = load4(tex2, cp).r * cs;
+    let chroma = load4(tex1, cp);
+    let cb = chroma.r * cs;
+    var cr = chroma.g * cs;
+    if kind != 3u { cr = load4(tex2, cp).r * cs; }
     let y = (yc - u.p1.x) / u.p1.y;
     let b = (cb - u.p1.z) / u.p1.w;
     let r = (cr - u.p1.z) / u.p1.w;

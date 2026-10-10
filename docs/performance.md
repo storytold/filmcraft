@@ -1,5 +1,89 @@
 # Performance
 
+## M5: GPU keying and fused CPU Ultra Key on A18 Pro
+
+2026-10-10, MacBook Neo / A18 Pro, 8 GB RAM, Rust 1.95.0, Metal. The dev profile's
+`filmcraft-render`, `filmcraft-frame` and `filmcraft-gpu` packages were compiled at opt-level 3,
+with default CPU tuning. Commands are in [testing.md](testing.md#5-performance).
+
+Ultra Key (without spatial Choke/Soften), Color Key and Luma Key now stay in the GPU effect chain,
+including animated parameters. Ultra Key reproduces the current VFX matte generation, contrast,
+spill suppression, colour correction and all three outputs. Nonzero Choke/Soften still takes the
+complete CPU path. At this initial keying step, masks and advanced Lumetri sections remained CPU work; the subsequent pass-fusion/memory/native-export change below extends their GPU coverage.
+
+`bench_keying_compositor`: single-layer CPU plan execution vs GPU compositing on a cached,
+already-decoded YUV source. Median of five alternating rounds, six frames per round; GPU time
+includes command preparation, submission, rendering/resolve and waiting for each frame to finish.
+Decode, UI scheduling and GPU readback are excluded; these ratios are not whole-app playback FPS.
+The CPU reference uses the new fused Ultra Key operation, so its GPU comparison is conservative
+relative to the previous multi-pass keyer.
+
+| Effect | Frame | CPU | GPU | Speedup |
+|---|---|---:|---:|---:|
+| Ultra Key | 1920×1080 | 62.56 ms | 7.10 ms | 8.81× |
+| Color Key | 1920×1080 | 55.36 ms | 6.47 ms | 8.55× |
+| Luma Key | 1920×1080 | 31.29 ms | 7.12 ms | 4.39× |
+| Ultra Key | 3840×2160 | 252.29 ms | 13.72 ms | 18.39× |
+| Color Key | 3840×2160 | 196.98 ms | 14.24 ms | 13.83× |
+| Luma Key | 3840×2160 | 108.32 ms | 12.89 ms | 8.40× |
+
+The CPU path also fuses non-spatial Ultra Key into one traversal without the old full-frame
+alpha vector (8.29 MB at 1080p, 33.18 MB at 4K). Its effect stage alone, excluding source
+conversion and resetting the input pixels, measured as five alternating runs:
+
+| Frame | Previous VFX stage | Fused stage | Speedup |
+|---|---:|---:|---:|
+| 1920×1080 | 38.98 ms | 29.53 ms | 1.32× |
+| 3840×2160 | 241.97 ms | 175.02 ms | 1.38× |
+
+Validation: 175 render unit tests and 34 GPU unit tests passed (three ignored benchmarks/tests),
+including original-VFX-vs-fused parity, animated GPU keying, effect chains, hostile parameters
+and the source-preserving GPU planner. GPU tests ran with access to macOS graphics services.
+Render/GPU Clippy (`--all-targets --no-deps -D warnings`), workspace formatting, layer and asset
+checks passed. The full workspace suite and end-to-end playback benchmarks were not run.
+
+## VideoToolbox chroma copy on MacBook Neo / A18 Pro
+
+2026-10-10, MacBook Neo, A18 Pro (2 performance + 4 efficiency cores), 8 GB RAM,
+Rust 1.95.0, `aarch64-apple-darwin`, `rustc --test -O` with default CPU tuning.
+The VideoToolbox output callback now appends each chroma channel through an exact-size iterator
+instead of alternating two `Vec::push` calls per sample. LLVM emits ARM64 vector instructions;
+the code remains safe Rust and uses the existing pooled output planes.
+
+| Picture / chroma | Bits | Previous copy | New copy | Speedup |
+|---|---:|---:|---:|---:|
+| 1920×1080, 4:2:0 | 8 | 0.507 ms | 0.079 ms | 6.46× |
+| 1920×1080, 4:2:0 | 10 | 0.455 ms | 0.059 ms | 7.70× |
+| 3840×2160, 4:2:0 | 8 | 1.905 ms | 0.287 ms | 6.64× |
+| 3840×2160, 4:2:0 | 10 | 1.980 ms | 0.241 ms | 8.22× |
+| 3840×2160, 4:2:2 | 8 | 3.956 ms | 0.625 ms | 6.33× |
+| 3840×2160, 4:2:2 | 10 | 4.073 ms | 0.513 ms | 7.94× |
+
+These are synthetic **chroma-copy times**, not decoder throughput or playback FPS. The benchmark
+reuses one source row (warm input cache) and preallocated output vectors, clearing their lengths
+between frames as the plane pool does. Each result is the median of five rounds of 30 frames;
+the old and new routines alternate execution order. Hardware decoding, luma copying, GPU upload
+and rendering are excluded. No end-to-end speedup is implied by these ratios.
+
+Reproduce without building the workspace:
+
+```sh
+rustc --test -O crates/platform/src/chroma.rs -o target/chroma-tests
+target/chroma-tests
+target/chroma-tests --ignored --nocapture
+```
+
+The same tests are available through `cargo test --release -p filmcraft-platform --lib chroma::tests`;
+add `-- --include-ignored --nocapture` to run the benchmark. Correctness covers empty and odd rows,
+vector tails, unaligned sources, appending to existing vectors and all 1024 ten-bit sample values,
+including nonzero padding bits.
+
+Validation on the same Mac: 14 platform unit tests passed; all four VideoToolbox integration
+tests passed when run with access to macOS hardware services (the sandboxed run skipped hardware
+decoding). These cover bit-exact H.264/HEVC output, reset/reseek, software fallback after a forced
+failure and damaged samples/parameter sets. Platform Clippy (`--all-targets --no-deps -D warnings`),
+workspace formatting, layer and asset checks passed. The full workspace suite was not run.
+
 `cargo xtask bench` measures the whole app headlessly and writes `target/bench/bench-<label>.json`
 and `.md` (options and sections: [testing.md](testing.md) §5). Agents read live counters with
 `perf.stats` ([control-protocol.md](control-protocol.md)).
@@ -811,3 +895,81 @@ decode 2642 / 2925 → 2506 / 2064; playback 5246 / 7903 → 3379 / 3121; scrub 
 Not feasible / not done: reduced-resolution decode for H.264 / HEVC (inter prediction needs
 full-resolution references, so it cannot be bit-exact; ½/¼ playback already decimates after
 decode); AV1 internals untouched (measured only); export encoders not optimised.
+
+
+## M5 GPU fusion, live grading, memory and native export (2026-10-10)
+
+Measured on Apple A18 Pro, 8 GiB RAM, with the ignored `bench_fused_color_chain` test.
+The same five point effects (brightness, tint, basic Lumetri, color balance and luma key)
+were run with batching disabled and enabled, using cached decoded YUV input. Median of five
+alternating rounds of six frames, after two warm-up frames per mode. Default development
+profile (workspace opt-level 1, dependencies 2); Metal shaders use runtime optimisation.
+Timing includes command preparation, GPU drawing/resolve and completion waiting, and excludes
+decoding, UI and CPU image readback. These are chain timings, not whole-editor FPS.
+
+| Working resolution | Separate passes | Fused passes | Speedup |
+|---|---:|---:|---:|
+| 1920 × 1080 | 12.172 ms | 6.504 ms | 1.87× |
+| 3840 × 2160 | 40.839 ms | 20.197 ms | 2.02× |
+
+Batches contain at most 16 consecutive point operations. Spatial effects and masked mixing
+keep their ordering barriers; the intermediate format remains RGBA32Float. GPU/CPU parity
+covers advanced SDR Lumetri curves, wheels, looks, shaper/cube LUTs, spatial HSL Secondary,
+masked Unsharp, all mask combination modes, opacity masks and reduced-resolution plans.
+HDR grading and spatial UltraKey still use the CPU reference.
+
+For 8 GiB machines, normal-pressure targets are 512 MiB decoded frames (128 MiB per clip
+within that shared pool), 64 MiB each for idle byte/word planes, 128 MiB idle float buffers,
+256 MiB shared GPU source uploads and 128 MiB export overlap. They are cache targets, not
+an RSS cap: active frames, decoder references and GPU working textures need additional memory.
+Warning/critical pressure reduces targets by 2×/8× and trims idle CPU caches. macOS/Linux
+available-memory sampling runs every 15 seconds; Windows currently detects RAM at startup only.
+The GPU upload target is process-wide and is enforced when uploads are refreshed.
+
+On macOS, eligible SDR GPU exports write NV12 directly into an IOSurface-backed CoreVideo
+pixel buffer and feed it to VideoToolbox, without float image readback or CPU RGB-to-YUV
+conversion. The converter waits for GPU completion before encoding. Tests compare NV12 bytes
+with the portable conversion, encode native H.264/HEVC frames, and exercise a 24-frame H.264 MP4 export with zero float
+readbacks, plus the text-overlay fallback. Output transforms, alpha, nontrivial geometry,
+overlays and unsupported plans retain the existing export path. Select GPU rendering and
+hardware encoding `Auto` to use the native path when available.
+
+## Native decode and three Metal optimisations (2026-10-10)
+
+Measured on Apple A18 Pro, 8 GiB RAM. The GPU, frame, render and platform crates were
+built with development-profile opt-level 3; other workspace crates retain their development
+settings. This is not a full release-app benchmark. Results are medians of five alternating
+rounds of six frames, with two warm-up frames per mode and GPU completion awaited each frame.
+
+| Path | Resolution | Previous path | Optimised path | Speedup |
+|---|---|---:|---:|---:|
+| Native 8-bit frame preparation/draw | 1080p | 4.742 ms | 1.877 ms | 2.53× |
+| Native 10-bit frame preparation/draw | 1080p | 5.267 ms | 1.507 ms | 3.50× |
+| Native 8-bit frame preparation/draw | 4K | 9.614 ms | 4.896 ms | 1.96× |
+| Native 10-bit frame preparation/draw | 4K | 21.813 ms | 4.873 ms | 4.48× |
+| Specialised five-operation color chain | 1080p | 6.892 ms | 5.284 ms | 1.30× |
+| Specialised five-operation color chain | 4K | 20.730 ms | 15.158 ms | 1.37× |
+| Cached 64-edge mask | 1080p | 16.747 ms | 6.734 ms | 2.49× |
+| Cached 64-edge mask | 4K | 68.679 ms | 26.375 ms | 2.60× |
+| Tiled radius-32 blur, six passes | 1080p | 64.425 ms | 18.629 ms | 3.46× |
+| Tiled radius-32 blur, six passes | 4K | 311.832 ms | 83.174 ms | 3.75× |
+
+Native timing reuses the same pre-decoded IOSurface, clearing the GPU source cache every
+iteration. The previous path copies/deinterleaves CPU planes, converts/uploads them and
+draws; the new path retains/imports the CoreVideo surface and draws without application
+pixel copies/uploads. Compressed decoding, input generation and CPU image readback are
+excluded. A validated read-only CoreVideo mapping remains locked for safe lazy CPU fallback;
+these results do not establish that the OS performs no internal copies.
+
+The three additional GPU optimisations are background-compiled operation-specialised fused
+shaders, exact-geometry mask coverage caching, and shared-memory prefix-scan blur kernels.
+Effect benchmarks use cached YUV input and warmed shader/geometry caches, excluding decode,
+UI and readback. Specialisation is compared with the already-fused generic shader, using
+brightness, tint, gamma, color balance and luma key. Mask timing applies one masked brightness
+effect with unchanged polygon geometry; animated geometry must regenerate coverage. Blur uses
+three passes per axis. The tiled kernel is selected only for radii 8–32; other radii retain
+the existing kernels after threshold measurements.
+
+These are timings of separate paths, not whole-editor FPS, and their speedups must not be
+multiplied. Unsupported import formats/devices and CPU color-managed/HDR plans retain the
+existing fallback paths. Hardware results are specific to this A18 Pro run.

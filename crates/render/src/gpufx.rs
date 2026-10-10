@@ -17,6 +17,10 @@ use rayon::prelude::*;
 use crate::effects::{FxCtx, b, choice, color, dec, enc, f, gaussian_boxes, grade_space, on, point, text};
 use crate::image::Image;
 
+#[cfg(test)]
+#[path = "keying_tests.rs"]
+mod keying_tests;
+
 /// A bilinear resample of the working image through an affine map (`Image::transformed` at a
 /// magnification or mild minification: no mip pre-filter).
 #[derive(Clone, Debug, PartialEq)]
@@ -32,6 +36,19 @@ pub struct Resample {
 /// One evaluated effect.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FxOp {
+    Chain(Vec<FxOp>),
+    Lut {
+        lut: std::sync::Arc<filmcraft_color::Lut>,
+    },
+    Grade(Box<crate::grading::Grade>),
+    /// HSL Secondary: key, denoise/blur, correction, display mode.
+    Hsl {
+        params: [f32; 12],
+        output: u32,
+        radius: u32,
+        rx: Vec<u32>,
+        ry: Vec<u32>,
+    },
     BrightnessContrast {
         br: f32,
         co: f32,
@@ -70,6 +87,29 @@ pub enum FxOp {
         key: [f32; 3],
         sim: f32,
         reverse: bool,
+    },
+    /// Color Key: evaluated BT.709 key and matte thresholds.
+    ChromaKey {
+        key_ycc: [f32; 3],
+        tolerance: f32,
+        softness: f32,
+        spill: f32,
+        dominant: u32,
+        output: u32,
+    },
+    LumaKey {
+        threshold: f32,
+        cutoff: f32,
+    },
+    /// Ultra Key without spatial choke/soften. Packed single-pixel matte, spill and correction
+    /// parameters; layout is shared with `gpu::fx` / `fx.wgsl` (20 floats):
+    /// p0 = key YCbCr, chroma magnitude²; p1 = tolerance, gain, pedestal, highlight;
+    /// p2 = shadow, contrast, midpoint, spill; p3 = desaturate, range, spill luma, CC saturation;
+    /// p4 = CC hue, CC luminance, unused, unused.
+    UltraKey {
+        params: [f32; 20],
+        dominant: u32,
+        output: u32,
     },
     Gamma {
         g: f32,
@@ -175,6 +215,14 @@ pub enum FxOp {
         warn: bool,
         warning_color: [f32; 3],
     },
+    /// Effect-local masks, evaluated in working-image coordinates.
+    Masked {
+        op: Box<FxOp>,
+        masks: Vec<crate::mask::FlatMask>,
+    },
+    OpacityMask {
+        masks: Vec<crate::mask::FlatMask>,
+    },
     Lumetri {
         gains: [f32; 3],
         exposure: f32,
@@ -235,6 +283,9 @@ pub const GPU_EFFECTS: &[&str] = &[
     "vignette",
     "video_limiter",
     "lumetri",
+    "ultra_key",
+    "color_key",
+    "luma_key",
 ];
 
 /// `Image::transformed` without the mip path: the destination rectangle it writes and the inverse.
@@ -266,6 +317,73 @@ impl FxOp {
             return None;
         }
         Some(match e.effect.as_str() {
+            "ultra_key" => {
+                use crate::vfx::{chv, cv, fv};
+                // Spatial matte operations still use the complete CPU implementation.
+                if fv(e, "choke", cx) != 0.0 || fv(e, "soften", cx) != 0.0 {
+                    return None;
+                }
+                let kc = cv(e, "key_color", cx);
+                let k = filmcraft_color::rgb_to_ycbcr(kc[0], kc[1], kc[2], filmcraft_color::Matrix::Bt709);
+                let (gm, pm) = match chv(e, "setting") {
+                    1 => (0.85, 0.7),
+                    2 => (1.2, 1.5),
+                    _ => (1.0, 1.0),
+                };
+                let dominant = if kc[1] >= kc[0] && kc[1] >= kc[2] {
+                    1
+                } else if kc[2] >= kc[0] {
+                    2
+                } else {
+                    0
+                };
+                FxOp::UltraKey {
+                    params: [
+                        k[0],
+                        k[1],
+                        k[2],
+                        (k[1] * k[1] + k[2] * k[2]).max(1e-6),
+                        0.08 + fv(e, "tolerance", cx) / 100.0 * 0.5,
+                        (1.0 + 2.0 * (fv(e, "transparency", cx) / 100.0)) * gm,
+                        (fv(e, "pedestal", cx) / 100.0 * 0.3 * pm).min(0.9),
+                        fv(e, "highlight", cx) / 100.0,
+                        fv(e, "shadow", cx) / 100.0,
+                        fv(e, "contrast", cx) / 100.0,
+                        fv(e, "mid_point", cx) / 100.0,
+                        fv(e, "spill", cx) / 100.0,
+                        fv(e, "desaturate", cx) / 100.0,
+                        fv(e, "range", cx) / 100.0,
+                        fv(e, "spill_luma", cx) / 100.0,
+                        fv(e, "cc_saturation", cx) / 100.0,
+                        fv(e, "cc_hue", cx) / 360.0,
+                        fv(e, "cc_luminance", cx) / 100.0,
+                        0.0,
+                        0.0,
+                    ],
+                    dominant,
+                    output: chv(e, "output"),
+                }
+            }
+            "color_key" => {
+                let kc = color(e, "color", cx);
+                let key_ycc = filmcraft_color::rgb_to_ycbcr(kc[0], kc[1], kc[2], filmcraft_color::Matrix::Bt709);
+                let dominant = if kc[1] >= kc[0] && kc[1] >= kc[2] {
+                    1
+                } else if kc[2] >= kc[0] {
+                    2
+                } else {
+                    0
+                };
+                FxOp::ChromaKey {
+                    key_ycc,
+                    tolerance: f(e, "tolerance", cx) / 255.0 * 0.6 + 0.01,
+                    softness: f(e, "feather", cx) / 50.0 * 0.2 + 0.01,
+                    spill: 0.0,
+                    dominant,
+                    output: 0,
+                }
+            }
+            "luma_key" => FxOp::LumaKey { threshold: f(e, "threshold", cx) / 100.0, cutoff: f(e, "cutoff", cx) / 100.0 },
             "brightness_contrast" => FxOp::BrightnessContrast { br: f(e, "brightness", cx) / 100.0 * 0.4, co: 1.0 + f(e, "contrast", cx) / 100.0 },
             "proc_amp" => FxOp::ProcAmp {
                 br: f(e, "brightness", cx) / 100.0 * 0.4,
@@ -495,35 +613,12 @@ impl FxOp {
                 FxOp::VideoLimiter { max: 1.0 + clip_level / 100.0, comp: comp_val, axis, warn, warning_color: wc }
             }
             "lumetri" => {
-                use crate::effects::{curve_param, is_identity_curve, wheel_rgb};
                 let (basic_on, creative_on, vignette_on) = (on(e, "basic_on"), on(e, "creative_on"), on(e, "vignette_on"));
-                let gs = grade_space(e, cx, "hdr_white");
-                let is_hdr = gs.is_hdr();
-                let has_input_lut = basic_on && !text(e, "input_lut").is_empty();
-                let has_look_lut = creative_on && !text(e, "look_lut").is_empty();
-                let look = if creative_on && !has_look_lut { choice(e, "look") } else { 0 };
+                let is_hdr = grade_space(e, cx, "hdr_white").is_hdr();
+                let input_lut = if basic_on { crate::luts::resolve(cx.project, text(e, "input_lut")) } else { None };
                 let sharpen = if creative_on { f(e, "sharpen", cx) / 100.0 } else { 0.0 };
-
-                let curves_on = on(e, "curves_on");
-                let has_curves = curves_on && {
-                    ["curve_luma", "curve_red", "curve_green", "curve_blue"].iter().any(|id| curve_param(e, id).is_some_and(|c| !is_identity_curve(&c)))
-                        || ["hue_vs_sat", "hue_vs_hue", "hue_vs_luma", "luma_vs_sat", "sat_vs_sat"]
-                            .iter()
-                            .any(|id| curve_param(e, id).is_some_and(|c| !c.is_empty()))
-                };
-
-                let wheels_on = on(e, "wheels_on");
-                let has_wheels = wheels_on && {
-                    let v2 = |id: &str| e.param(id).map(|p| p.vec2_at(cx.t)).unwrap_or_default();
-                    let (ws, wm, wh) = (wheel_rgb(v2("wheel_shadows")), wheel_rgb(v2("wheel_midtones")), wheel_rgb(v2("wheel_highlights")));
-                    let (ls, lm, lh) = (f(e, "wheel_shadows_l", cx) / 100.0, f(e, "wheel_midtones_l", cx) / 100.0, f(e, "wheel_highlights_l", cx) / 100.0);
-                    ws.iter().chain(&wm).chain(&wh).any(|v| v.abs() > 1e-5) || (ls.abs() + lm.abs() + lh.abs() > 1e-5)
-                };
-
                 let hsl_on = b(e, "hsl_on");
-
-                let gpu_capable = !is_hdr && !has_input_lut && !has_look_lut && look == 0 && sharpen.abs() <= 1e-3 && !has_curves && !has_wheels && !hsl_on;
-
+                let gpu_capable = !is_hdr;
                 let bf = |id: &str| if basic_on { f(e, id, cx) } else { 0.0 };
                 let temp = bf("temperature") / 100.0;
                 let tint = bf("tint") / 100.0;
@@ -545,7 +640,7 @@ impl FxOp {
                 let gains = [1.0 + 0.35 * temp, 1.0 - 0.3 * tint, 1.0 - 0.35 * temp];
                 let aspect = if h > 0 { (w as f32 / h as f32).max(1e-4) } else { 1.0 };
 
-                FxOp::Lumetri {
+                let base = FxOp::Lumetri {
                     gains,
                     exposure,
                     contrast,
@@ -566,7 +661,42 @@ impl FxOp {
                     vfeather,
                     aspect,
                     gpu_capable,
+                };
+                if !gpu_capable {
+                    return Some(base);
                 }
+                let mut chain = Vec::new();
+                if let Some(lut) = input_lut {
+                    chain.push(FxOp::Lut { lut });
+                }
+                chain.push(base);
+                if let Some(grade) = crate::grading::Grade::eval(e, cx) {
+                    chain.push(FxOp::Grade(Box::new(grade)));
+                }
+                if hsl_on {
+                    let params = [
+                        f(e, "hsl_hue", cx) / 360.0,
+                        (f(e, "hsl_hue_range", cx) / 360.0).max(1e-3),
+                        f(e, "hsl_sat_min", cx) / 100.0,
+                        f(e, "hsl_luma_min", cx) / 100.0,
+                        f(e, "hsl_luma_max", cx) / 100.0,
+                        (f(e, "hsl_soft", cx) / 100.0 * 0.3).max(0.01),
+                        f(e, "hsl_temp", cx) / 100.0,
+                        f(e, "hsl_tint", cx) / 100.0,
+                        f(e, "hsl_sat", cx) / 100.0,
+                        f(e, "hsl_hue_shift", cx) / 360.0,
+                        f(e, "hsl_blur", cx).clamp(0.0, 100.0) / 100.0 * 20.0 * cx.px_scale,
+                        f(e, "hsl_denoise", cx).clamp(0.0, 100.0) / 100.0,
+                    ];
+                    let radius = ((1.0 + 2.0 * params[11]) * cx.px_scale).round().max(1.0) as u32;
+                    let (rx, ry) = if params[10] >= 0.3 { gaussian_boxes(w, h, params[10], params[10]) } else { (Vec::new(), Vec::new()) };
+                    chain.push(FxOp::Hsl { params, output: choice(e, "hsl_show_mask"), radius, rx, ry });
+                }
+                if sharpen.abs() > 1e-3 {
+                    let (rx, ry) = gaussian_boxes(w, h, 1.2 * cx.px_scale.max(0.35), 1.2 * cx.px_scale.max(0.35));
+                    chain.push(FxOp::Unsharp { rx, ry, amount: sharpen.max(-1.0), threshold: 0.0 });
+                }
+                if chain.len() == 1 { chain.remove(0) } else { FxOp::Chain(chain) }
             }
             _ => return None,
         })
@@ -583,6 +713,17 @@ impl FxOp {
     pub fn gpu_ok(&self) -> bool {
         let fin = |v: &[f32]| v.iter().all(|x| x.is_finite());
         match self {
+            FxOp::Chain(ops) => !ops.is_empty() && ops.len() <= 32 && ops.iter().all(|op| !matches!(op, FxOp::Chain(_) | FxOp::Masked { .. }) && op.gpu_ok()),
+            FxOp::Lut { lut } => crate::grading::lut_ok(lut),
+            FxOp::Grade(grade) => grade.gpu_ok(),
+            FxOp::Hsl { params, output, radius, .. } => fin(params) && *output <= 3 && (params[11] <= 0.0 || (1..=3).contains(radius)),
+            FxOp::Masked { op, masks } => !matches!(**op, FxOp::Masked { .. } | FxOp::OpacityMask { .. }) && op.gpu_ok() && masks_ok(masks),
+            FxOp::OpacityMask { masks } => masks_ok(masks),
+            FxOp::UltraKey { params, dominant, .. } => fin(params) && params[3] > 0.0 && params[6] < 1.0 && *dominant < 3,
+            FxOp::ChromaKey { key_ycc, tolerance, softness, spill, dominant, .. } => {
+                fin(key_ycc) && fin(&[*tolerance, *softness, *spill]) && *softness > 0.0 && *dominant < 3
+            }
+            FxOp::LumaKey { threshold, cutoff } => fin(&[*threshold, *cutoff]),
             FxOp::BrightnessContrast { br, co } => fin(&[*br, *co]),
             FxOp::ProcAmp { br, co, hue, sat } => fin(&[*br, *co, *hue, *sat]),
             FxOp::Tint { black, white, amount } => fin(black) && fin(white) && amount.is_finite(),
@@ -630,6 +771,168 @@ impl FxOp {
             return;
         }
         match self {
+            FxOp::Chain(ops) => {
+                for op in ops {
+                    op.apply(img);
+                }
+            }
+            FxOp::Lut { lut } => img.map_rgb(|c, _, _| dec(lut.apply(enc(c).map(|q| q.clamp(0.0, 1.0))))),
+            FxOp::Grade(grade) => grade.apply(img),
+            FxOp::Hsl { params: q, output, radius, .. } => {
+                let mask = if q[11] > 0.0 || q[10] >= 0.3 {
+                    let mut mask: Vec<f32> = img
+                        .px
+                        .par_chunks_exact(4)
+                        .map(|p| {
+                            if p[3] <= 1e-6 { 0.0 } else { crate::grading::hsl_key(enc([p[0] / p[3], p[1] / p[3], p[2] / p[3]]).map(|v| v.clamp(0.0, 1.0)), q) }
+                        })
+                        .collect();
+                    if q[11] > 0.0 {
+                        let median = crate::effects::median_filter(&mask, img.w, img.h, (*radius).min(3) as usize);
+                        for (m, d) in mask.iter_mut().zip(median) {
+                            *m += (d - *m) * q[11].min(1.0);
+                        }
+                    }
+                    if q[10] >= 0.3 {
+                        crate::effects::blur_plane(&mut mask, img.w, img.h, q[10]);
+                    }
+                    Some(mask)
+                } else {
+                    None
+                };
+                let w = img.w;
+                img.map_rgb(|c, x, y| {
+                    let v = enc(c);
+                    let u = v.map(|v| v.clamp(0.0, 1.0));
+                    let mut h = rgb_to_hsl(u[0], u[1], u[2]);
+                    let m = mask.as_ref().and_then(|m| m.get(y * w + x)).copied().unwrap_or_else(|| crate::grading::hsl_key(u, q));
+                    dec(match output {
+                        1 => u.map(|v| h[2] + (v - h[2]) * m),
+                        2 => u.map(|v| v * m),
+                        3 => [m; 3],
+                        _ => {
+                            h[0] = (h[0] + q[9]).rem_euclid(1.0);
+                            h[1] = (h[1] * q[8]).clamp(0.0, 1.0);
+                            let mut c2 = hsl_to_rgb(h[0], h[1], h[2]);
+                            c2[0] *= 1.0 + 0.25 * q[6];
+                            c2[2] *= 1.0 - 0.25 * q[6];
+                            c2[1] *= 1.0 - 0.2 * q[7];
+                            [u[0] + (c2[0] - u[0]) * m, u[1] + (c2[1] - u[1]) * m, u[2] + (c2[2] - u[2]) * m]
+                        }
+                    })
+                });
+            }
+            FxOp::Masked { op, masks } => {
+                let original = img.clone();
+                op.apply(img);
+                if let Some(cov) = crate::mask::coverage(masks, img.w, img.h) {
+                    crate::mask::mix(img, &original, &cov);
+                }
+            }
+            FxOp::OpacityMask { masks } => {
+                if let Some(cov) = crate::mask::coverage(masks, img.w, img.h) {
+                    crate::mask::scale_by(img, &cov);
+                }
+            }
+            FxOp::UltraKey { params: q, dominant, output } => {
+                let dom = *dominant as usize;
+                if dom >= 3 {
+                    return;
+                }
+                let kmag2 = q[3].max(1e-6);
+                let cc = (q[15] - 1.0).abs() > 1e-4 || q[16].abs() > 1e-6 || (q[17] - 1.0).abs() > 1e-4;
+                img.px.par_chunks_exact_mut(4).for_each(|p| {
+                    let src_a = p[3];
+                    let mut v = enc(Image::unpremul([p[0], p[1], p[2], src_a]));
+                    let mut a = 0.0;
+                    if src_a > 1e-6 {
+                        let y = filmcraft_color::rgb_to_ycbcr(v[0], v[1], v[2], filmcraft_color::Matrix::Bt709);
+                        let proj = (y[1] * q[1] + y[2] * q[2]) / kmag2;
+                        let perp = ((y[1] - proj * q[1]).powi(2) + (y[2] - proj * q[2]).powi(2)).sqrt() / kmag2.sqrt();
+                        let keyness = proj.clamp(0.0, 1.5) * (1.0 - crate::vfx::smoothstep(0.0, q[4], perp));
+                        let mut m = (1.0 - keyness * q[5]).clamp(0.0, 1.0);
+                        m += (y[0] - q[0]).max(0.0) * q[7] * 2.0 * keyness.min(1.0);
+                        m += (q[0] - y[0]).max(0.0) * q[8] * 2.0 * keyness.min(1.0);
+                        a = ((m.clamp(0.0, 1.0) - q[6]) / (1.0 - q[6]).max(f32::MIN_POSITIVE)).clamp(0.0, 1.0);
+                    }
+                    if q[9] > 0.0 {
+                        a = ((a - q[10]) * (1.0 + q[9] * 4.0) + q[10]).clamp(0.0, 1.0);
+                    }
+                    let (o1, o2) = (v[(dom + 1) % 3], v[(dom + 2) % 3]);
+                    let limit = o1.max(o2) * (1.0 - q[13]) + (o1 + o2) * 0.5 * q[13];
+                    let excess = (v[dom] - limit).max(0.0);
+                    if excess > 0.0 && q[11] > 0.0 {
+                        let l0 = luma709(v[0], v[1], v[2]);
+                        v[dom] -= excess * q[11];
+                        let l1 = luma709(v[0], v[1], v[2]);
+                        v = v.map(|x| l1 + (x - l1) * (1.0 - q[12] * (excess * 4.0).min(1.0)));
+                        v = v.map(|x| x + (l0 - l1) * q[14]);
+                    }
+                    if cc {
+                        let mut h = rgb_to_hsl(v[0].clamp(0.0, 1.0), v[1].clamp(0.0, 1.0), v[2].clamp(0.0, 1.0));
+                        h[0] = (h[0] + q[16]).rem_euclid(1.0);
+                        h[1] = (h[1] * q[15]).clamp(0.0, 1.0);
+                        h[2] = (h[2] * q[17]).clamp(0.0, 1.0);
+                        v = hsl_to_rgb(h[0], h[1], h[2]);
+                    }
+                    let l = dec(v);
+                    if *output == 1 {
+                        let g = filmcraft_color::srgb_to_linear(a) * src_a;
+                        p.copy_from_slice(&[g, g, g, src_a]);
+                    } else {
+                        let na = if *output == 2 { src_a } else { a * src_a };
+                        p.copy_from_slice(&[l[0] * na, l[1] * na, l[2] * na, na]);
+                    }
+                });
+            }
+            FxOp::ChromaKey { key_ycc, tolerance, softness, spill, dominant, output } => {
+                let dom = *dominant as usize;
+                // Public ops can be constructed directly; malformed channel indices never panic.
+                if dom >= 3 {
+                    return;
+                }
+                let softness = softness.max(f32::MIN_POSITIVE);
+                img.px.par_chunks_exact_mut(4).for_each(|p| {
+                    if p[3] <= 0.0 {
+                        return;
+                    }
+                    let mut c = enc([p[0] / p[3], p[1] / p[3], p[2] / p[3]]);
+                    let ycc = filmcraft_color::rgb_to_ycbcr(c[0], c[1], c[2], filmcraft_color::Matrix::Bt709);
+                    let d = ((ycc[1] - key_ycc[1]).powi(2) + (ycc[2] - key_ycc[2]).powi(2)).sqrt() + (ycc[0] - key_ycc[0]).abs() * 0.15;
+                    let alpha = ((d - tolerance) / softness).clamp(0.0, 1.0);
+                    if *spill > 0.0 {
+                        let others = (c[(dom + 1) % 3] + c[(dom + 2) % 3]) / 2.0;
+                        if c[dom] > others {
+                            c[dom] -= (c[dom] - others) * spill;
+                        }
+                    }
+                    let a = p[3] * alpha;
+                    if *output == 1 {
+                        p.copy_from_slice(&[a, a, a, p[3]]);
+                    } else {
+                        let lo = dec(c);
+                        p.copy_from_slice(&[lo[0] * a, lo[1] * a, lo[2] * a, a]);
+                    }
+                });
+            }
+            FxOp::LumaKey { threshold, cutoff } => {
+                img.px.par_chunks_exact_mut(4).for_each(|p| {
+                    if p[3] <= 0.0 {
+                        return;
+                    }
+                    let l = linear_to_srgb(luma709(p[0] / p[3], p[1] / p[3], p[2] / p[3]).max(0.0));
+                    let a = if l <= *cutoff {
+                        0.0
+                    } else if l >= threshold.max(cutoff + 1e-3) {
+                        1.0
+                    } else {
+                        (l - cutoff) / (threshold - cutoff).max(1e-3)
+                    };
+                    for v in p {
+                        *v *= a;
+                    }
+                });
+            }
             FxOp::BrightnessContrast { br, co } => {
                 let (br, co) = (*br, *co);
                 img.map_rgb(|c, _, _| {
@@ -1074,4 +1377,17 @@ fn resample_cpu(src: &Image, inv: &Affine, rect: [u32; 4]) -> Image {
         }
     });
     out
+}
+
+/// Bound shader loops and reject non-finite flattened geometry before GPU upload.
+fn masks_ok(masks: &[crate::mask::FlatMask]) -> bool {
+    !masks.is_empty()
+        && masks.len() <= 64
+        && masks.iter().all(|m| {
+            m.mode != filmcraft_project::MaskMode::None
+                && m.pts.len() <= 4096
+                && m.pts.iter().flatten().all(|v| v.is_finite())
+                && [m.feather, m.expansion, m.opacity].iter().all(|v| v.is_finite())
+        })
+        && masks.iter().map(|m| m.pts.len()).sum::<usize>() <= 16384
 }
