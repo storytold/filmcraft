@@ -56,3 +56,8 @@ sync_github_name = false
 
 [people.liangforstudy]
 sync_github_name = true
+
+[people.keller-lukas]
+real_name = "Lukas Keller"
+display_name = "Lukas Keller"
+sync_github_name = false
