@@ -45,3 +45,8 @@ Added a log mode to the launcher:
 - `/log.txt` is now in `.gitignore`.
 
 Next step: reproduce the crash with **FilmCraft (log)**, then read `log.txt`.
+
+## Update: MCP and the control port
+The repo ships an MCP server, `filmcraft-cli mcp`, registered in `.mcp.json` in two modes: `filmcraft-headless` (`mcp --demo`, in-process, no window) and `filmcraft` (`mcp --bridge 127.0.0.1:9876`, drives the running app). Both showed "Connection closed" at the start of the session only because `filmcraft-cli.exe` was not built yet; a stdio handshake and tool listing now succeed.
+
+Bridge mode needs the app started with the control port open. Added a Desktop shortcut, **FilmCraft (MCP)** (`launch-filmcraft.bat --control 9876`), and confirmed port 9876 listens on 127.0.0.1 after launching it. The Desktop shortcuts live in `C:\Users\denni\OneDrive\Desktop`: FilmCraft, FilmCraft (log) and FilmCraft (MCP).
