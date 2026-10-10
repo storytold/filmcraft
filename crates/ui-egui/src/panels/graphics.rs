@@ -11,12 +11,14 @@
 //! - **Selection tool:** click selects a layer (bounding box with handles and anchor point); drag
 //!   moves it; drag the anchor point to move that alone. What a handle does depends on the layer
 //!   (see [`HandleDrag`]): point text scales about its anchor point, a paragraph-text box is
-//!   resized and its text re-wraps, a shape stretches away from its opposite side.
+//!   resized and its text re-wraps, a shape stretches away from its opposite side. A rectangle
+//!   also has four small circles just inside its corners: dragging one rounds all four corners.
 //! - **Rectangle / Ellipse tools:** drag out a shape. **Pen tool:** click points; click the first
 //!   point again (or press Return) to close the path; Esc cancels.
 //!
 //! All edits go through `graphics.*` commands. Automation ids: `program.layer.<clip>.<layer>`,
 //! `program.layer.<clip>.<layer>.handle.<n>`, `program.layer.<clip>.<layer>.anchor`,
+//! `program.layer.<clip>.<layer>.corner.<n>`,
 //! `program.textEdit`, `graphics.*` in the panels.
 
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
@@ -164,6 +166,8 @@ enum DragKind {
     Handle(usize),
     /// The layer's anchor point: it moves, the layer stays where it is.
     Anchor,
+    /// Corner-radius handle `n` of a rectangle (see [`corner_handles`]).
+    Corner(usize),
     NewShape,
     /// The Type tool dragging out the box of a new paragraph-text layer.
     NewTextBox,
@@ -405,6 +409,61 @@ fn is_paragraph(t: &filmcraft_project::graphic::TextProps) -> bool {
     t.box_width > 0.0 && !t.vertical
 }
 
+/// Corner-radius handles sit at least this far (in points) inside a rectangle's corners, and show
+/// only on a rectangle at least four times as wide and tall on screen.
+const CORNER_INSET: f32 = 12.0;
+
+/// A rectangle layer's corner radius as it is drawn (at most half its shorter side) and its four
+/// corner-radius handles on screen (TL, TR, BR, BL); `None` for other layers and for a rectangle
+/// too small on screen to hold them.
+fn corner_handles(v: &LayerView) -> Option<(f32, [Pos2; 4])> {
+    let LayerContent::Shape(s) = &v.spec.content else { return None };
+    let q = v.quad();
+    if s.shape != 0 || (q[1] - q[0]).length() < 4.0 * CORNER_INSET || (q[3] - q[0]).length() < 4.0 * CORNER_INSET {
+        return None;
+    }
+    let r = s.corner_radius.min(s.size.0 / 2.0).min(s.size.1 / 2.0).max(0.0);
+    Some((r, corner_points(v, r)))
+}
+
+/// Where the corner-radius handles of rectangle `v` sit for radius `r`: on each corner's diagonal,
+/// where the rounded corner's arc is centred, but at least [`CORNER_INSET`] points in.
+fn corner_points(v: &LayerView, r: f32) -> [Pos2; 4] {
+    let b = v.local;
+    let d = r.max(CORNER_INSET / screen_scale(&v.to_screen).max(1e-6)).min((b[2] - b[0]) / 2.0).min((b[3] - b[1]) / 2.0);
+    [(b[0] + d, b[1] + d), (b[2] - d, b[1] + d), (b[2] - d, b[3] - d), (b[0] + d, b[3] - d)].map(|(x, y)| sp(&v.to_screen, x, y))
+}
+
+/// The corner radius after dragging handle `n` of rectangle `v` (radius `r0`) from `start` to
+/// `cur`: the pointer's travel into the shape along the corner's diagonal, up to half the shorter
+/// side.
+fn corner_drag(v: &LayerView, r0: f32, n: usize, start: Pos2, cur: Pos2) -> f32 {
+    let (Some(a), Some(b)) = (v.to_local(start), v.to_local(cur)) else { return r0 };
+    let (sx, sy) = match n {
+        0 => (1.0, 1.0),
+        1 => (-1.0, 1.0),
+        2 => (-1.0, -1.0),
+        _ => (1.0, -1.0),
+    };
+    let inward = ((b.0 - a.0) * sx + (b.1 - a.1) * sy) / 2.0;
+    let half = ((v.local[2] - v.local[0]).min(v.local[3] - v.local[1]) / 2.0).max(0.0);
+    (r0 + inward).clamp(0.0, half)
+}
+
+/// The outline of rectangle `v` with corner radius `r`, on screen.
+fn round_rect_outline(v: &LayerView, r: f32) -> Vec<Pos2> {
+    let b = v.local;
+    let mut pts = Vec::new();
+    // each corner's arc, clockwise from the top-right
+    for (cx, cy, from) in [(b[2] - r, b[1] + r, -90.0_f32), (b[2] - r, b[3] - r, 0.0), (b[0] + r, b[3] - r, 90.0), (b[0] + r, b[1] + r, 180.0)] {
+        for i in 0..=8 {
+            let a = (from + 90.0 * i as f32 / 8.0).to_radians();
+            pts.push(sp(&v.to_screen, cx + r * a.cos(), cy + r * a.sin()));
+        }
+    }
+    pts
+}
+
 /// The layer's anchor point on screen.
 fn anchor_screen(v: &LayerView) -> Pos2 {
     sp(&v.to_screen, v.spec.transform.anchor.x as f32, v.spec.transform.anchor.y as f32)
@@ -506,6 +565,12 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                     painter.rect_filled(hr, 0.0, Color32::WHITE);
                     app.auto.add(&format!("program.layer.{}.{}.handle.{n}", v.clip.0, v.layer), hr.expand(4.0), label);
                 }
+                // a rectangle's corner-radius handles, just inside its corners
+                for (n, c) in corner_handles(v).map(|(_, pts)| pts).iter().flatten().enumerate() {
+                    painter.circle_filled(*c, 3.0, Color32::WHITE);
+                    painter.circle_stroke(*c, 3.0, Stroke::new(1.0, accent));
+                    app.auto.add(&format!("program.layer.{}.{}.corner.{n}", v.clip.0, v.layer), Rect::from_center_size(*c, vec2(12.0, 12.0)), "corner radius");
+                }
                 // anchor point
                 let a = anchor_screen(v);
                 painter.circle_stroke(a, 4.0, Stroke::new(1.0, accent));
@@ -528,8 +593,15 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             Tool::Type | Tool::VerticalType => ui.ctx().set_cursor_icon(egui::CursorIcon::Text),
             Tool::Rectangle | Tool::Ellipse | Tool::Pen => ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair),
             Tool::Selection => {
+                let corner = views
+                    .iter()
+                    .filter(|v| Some(v.clip) == sel_clip && sel_layers.contains(&v.layer))
+                    .find_map(|v| corner_handles(v).and_then(|(_, pts)| pts.iter().position(|c| (*c - p).length() <= 6.0)));
                 if editing.as_ref().is_some_and(|e| views.iter().any(|v| v.clip.0 == e.clip && v.layer == e.layer && v.hit(p))) {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+                } else if let Some(n) = corner {
+                    // along the corner's diagonal, the way the drag works
+                    ui.ctx().set_cursor_icon(if n % 2 == 0 { egui::CursorIcon::ResizeNwSe } else { egui::CursorIcon::ResizeNeSw });
                 } else if views.iter().any(|v| v.hit(p)) {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
                 }
@@ -576,10 +648,14 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                     let selected = || views.iter().filter(|v| Some(v.clip) == sel_clip && sel_layers.contains(&v.layer));
                     let anchor = selected().find(|v| tool == Tool::Selection && (anchor_screen(v) - p).length() <= 7.0);
                     let handle = selected().find_map(|v| handle_points(&v.quad()).iter().position(|c| (*c - p).length() <= 7.0).map(|n| (v.clip, v.layer, n)));
+                    let corner = selected()
+                        .find_map(|v| corner_handles(v).and_then(|(_, pts)| pts.iter().position(|c| (*c - p).length() <= 6.0)).map(|n| (v.clip, v.layer, n)));
                     if let Some(v) = anchor {
                         drag = Some(DragState { kind: DragKind::Anchor, clip: v.clip, layer: v.layer, start: p });
                     } else if let Some((c, l, n)) = handle {
                         drag = Some(DragState { kind: DragKind::Handle(n), clip: c, layer: l, start: p });
+                    } else if let Some((c, l, n)) = corner {
+                        drag = Some(DragState { kind: DragKind::Corner(n), clip: c, layer: l, start: p });
                     } else if tool == Tool::Type && !views.iter().any(|v| v.is_text() && v.hit(p)) {
                         drag = Some(DragState { kind: DragKind::NewTextBox, clip: ClipId(0), layer: 0, start: p });
                     } else if tool == Tool::Selection
@@ -641,6 +717,17 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                     painter.line_segment([a - vec2(0.0, 6.0), a + vec2(0.0, 6.0)], Stroke::new(1.0, Color32::WHITE));
                 }
             }
+            DragKind::Corner(n) => {
+                if let Some(v) = v
+                    && let Some((r0, _)) = corner_handles(v)
+                {
+                    let r = corner_drag(v, r0, n, d.start, cur);
+                    painter.add(egui::Shape::closed_line(round_rect_outline(v, r), Stroke::new(1.0, Color32::WHITE)));
+                    for c in corner_points(v, r) {
+                        painter.circle_stroke(c, 3.0, Stroke::new(1.0, Color32::WHITE));
+                    }
+                }
+            }
             DragKind::NewTextBox => {
                 painter.rect_stroke(Rect::from_two_pos(d.start, cur), 0.0, Stroke::new(1.0, t.danger), StrokeKind::Middle);
             }
@@ -695,6 +782,14 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                             "graphics.set".into(),
                             json!({"clip": v.clip.0, "layer": v.layer, "props": {"position": [p0.x + canvas.x, p0.y + canvas.y], "anchor": [a0.x + local.x, a0.y + local.y]}}),
                         ));
+                    }
+                }
+                DragKind::Corner(n) if moved => {
+                    if let Some(v) = v
+                        && let Some((r0, _)) = corner_handles(v)
+                    {
+                        let r = corner_drag(v, r0, n, d.start, cur);
+                        actions.push(("graphics.set".into(), json!({"clip": v.clip.0, "layer": v.layer, "props": {"corner_radius": r}})));
                     }
                 }
                 DragKind::NewTextBox if moved => {

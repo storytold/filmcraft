@@ -24,7 +24,7 @@ kerning and ligatures, bidi, line breaking, all drawn as vectors in linear light
 | Group | Properties (parameter ids) |
 |---|---|
 | Text | `text` (Source Text), `font`, `font_style`, `size` (px), `align` (Left/Center/Right/Justify), `tracking` (1/1000 em), `kerning`, `ligatures`, `leading` (px added to the natural line height), `baseline_shift`, `faux_bold`, `faux_italic`, `caps` (Normal/All Caps/Small Caps), `underline`, `box_width` (0 = point text, else paragraph text wrapped at that width), `box_height` (paragraph text: lines that do not fit are not shown; 0 = as tall as the text) |
-| Shape | `shape` (Rectangle/Ellipse/Polygon/Path), `size` [w, h], `sides`, `corner_radius`, `points` (path vertices relative to the layer origin) |
+| Shape | `shape` (Rectangle/Ellipse/Polygon/Path), `size` [w, h], `sides`, `corner_radius` (one radius for all four corners, at most half the shorter side; on the Program monitor, drag one of the four small circles just inside a selected rectangle's corners), `points` (path vertices relative to the layer origin) |
 | Appearance | `fill`, `fill_color`; `stroke`, `stroke_color`, `stroke_width`, `stroke_type` (Outer/Center/Inner) and the same for `stroke2`; `background`, `background_color`, `background_opacity`, `background_size` (padding), `background_radius`; `shadow`, `shadow_color`, `shadow_opacity`, `shadow_angle` (135° = down-right), `shadow_distance`, `shadow_size`, `shadow_blur` |
 | Transform | `position` (graphic canvas px), `anchor` (layer px), `scale`, `scale_width`, `uniform_scale`, `rotation`, `opacity` |
 
