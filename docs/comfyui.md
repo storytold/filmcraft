@@ -84,7 +84,7 @@ when complete; a run that fails or is stopped removes what it downloaded. A gene
 undo step: undo brings the previous version (or the placeholder) back.
 
 The recipe (workflow, input overrides, output nodes) and what the last run reported are saved in
-the project (`project.generated`, schema v14), so a project opened elsewhere still knows how to
+the project (`project.generated`, schema v15), so a project opened elsewhere still knows how to
 make every ComfyUI clip again.
 
 ## Commands

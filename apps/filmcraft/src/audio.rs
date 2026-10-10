@@ -1,8 +1,9 @@
 //! cpal audio output: the playback master clock. Settings ▸ Audio Hardware picks the host
 //! ("Device Class"), the output device, the I/O buffer size and the sample rate.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+use std::sync::{Arc, Mutex, PoisonError};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use filmcraft_engine::settings::AudioHardwarePrefs;
@@ -17,6 +18,31 @@ pub struct CpalOut {
     hw: AudioHardwarePrefs,
     /// Sequence sample rate for "Attempt to force hardware to document sample rate".
     document_rate: Option<u32>,
+    /// Status-bar note: the host's default device could not be opened and a fallback device is
+    /// in use, or no output device was found (playing without sound).
+    note: Option<Note>,
+    /// The fallback picked when the default device could not be opened, as (host, device) names,
+    /// so later lookups (`devices`, `configure`, `start`) reuse it instead of probing every PCM.
+    fallback: Mutex<Option<(String, String)>>,
+}
+
+/// A hardware note for the status bar, translated when it is shown.
+#[derive(Clone, Debug, PartialEq)]
+enum Note {
+    /// The default output device cannot be opened; this named device is used instead.
+    Fallback(String),
+    /// No output device at all: playback runs without sound.
+    NoDevice,
+}
+
+impl Note {
+    fn text(&self) -> String {
+        use filmcraft_ui_egui::i18n::{fmt, t};
+        match self {
+            Note::Fallback(device) => fmt(t("Audio hardware: the default output device cannot be opened; using '{device}'"), &[("device", device)]),
+            Note::NoDevice => t("No audio output device found: playing without sound (check Settings ▸ Audio Hardware)").to_string(),
+        }
+    }
 }
 
 /// The host named in the settings (empty or unknown = the default host).
@@ -30,21 +56,76 @@ fn host(name: &str) -> cpal::Host {
     cpal::default_host()
 }
 
-/// The output device named in the settings (empty or missing = the host's default).
-fn output_device(h: &cpal::Host, name: &str) -> Option<cpal::Device> {
+/// The output device the settings ask for, with a status-bar note when a fallback is in use.
+struct DeviceChoice {
+    device: cpal::Device,
+    /// The host's default device could not be opened: this device is the fallback.
+    fallback: Option<Note>,
+}
+
+/// Fallback order when the default device cannot be opened: the sound-server bridges first
+/// (`pipewire`, `pulse`: they share the card with every other app), then other named PCMs, and
+/// raw `hw:`/`plughw:` devices last (opening one takes the card exclusively and silences the
+/// rest of the desktop).
+fn fallback_rank(name: &str) -> u8 {
+    let n = name.to_ascii_lowercase();
+    if n == "pipewire" || n.starts_with("pipewire:") {
+        0
+    } else if n == "pulse" || n.starts_with("pulse:") {
+        1
+    } else if n.starts_with("hw:") || n.starts_with("plughw:") {
+        3
+    } else {
+        2
+    }
+}
+
+/// The output device named in the settings (empty or missing = the host's default). When the
+/// default cannot be opened — a broken ALSA `default` (missing `99-pipewire-default.conf`,
+/// #23/#106) — a fallback that can, so the app is not silently mute. The fallback list is probed
+/// only after the default fails, in [`fallback_rank`] order, and the pick is cached in `cache`.
+fn output_device(h: &cpal::Host, name: &str, cache: &Mutex<Option<(String, String)>>) -> Option<DeviceChoice> {
     if !name.is_empty()
         && let Ok(mut devs) = h.output_devices()
         && let Some(d) = devs.find(|d| d.name().is_ok_and(|n| n == name))
     {
-        return Some(d);
+        return Some(DeviceChoice { device: d, fallback: None });
     }
-    h.default_output_device()
+    if let Some(d) = h.default_output_device()
+        && d.default_output_config().is_ok()
+    {
+        return Some(DeviceChoice { device: d, fallback: None });
+    }
+    let host_name = h.id().name().to_string();
+    let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut devs: Vec<(String, cpal::Device)> = h.output_devices().ok()?.filter_map(|d| d.name().ok().map(|n| (n, d))).collect();
+    if let Some((cached_host, cached)) = cache.as_ref()
+        && *cached_host == host_name
+        && let Some(i) = devs.iter().position(|(n, _)| n == cached)
+    {
+        let (found, d) = devs.swap_remove(i);
+        return Some(DeviceChoice { device: d, fallback: Some(Note::Fallback(found)) });
+    }
+    devs.sort_by_key(|(n, _)| fallback_rank(n));
+    let (found, d) = devs.into_iter().find(|(_, d)| d.default_output_config().is_ok())?;
+    log::warn!("the default audio output device cannot be opened; falling back to '{found}'");
+    *cache = Some((host_name, found.clone()));
+    Some(DeviceChoice { device: d, fallback: Some(Note::Fallback(found)) })
 }
 
 impl CpalOut {
     pub fn new() -> Self {
         let host = cpal::default_host();
-        let cfg = host.default_output_device().and_then(|dev| dev.default_output_config().ok());
+        let fallback = Mutex::new(None);
+        let choice = output_device(&host, "", &fallback);
+        let cfg = choice.as_ref().and_then(|c| c.device.default_output_config().ok());
+        let note = match choice {
+            Some(c) => c.fallback,
+            None => {
+                log::warn!("no audio output device found");
+                Some(Note::NoDevice)
+            }
+        };
         Self {
             stream: None,
             played: Arc::new(AtomicU64::new(0)),
@@ -53,6 +134,8 @@ impl CpalOut {
             channels: cfg.as_ref().map_or(2, |c| c.channels()),
             hw: AudioHardwarePrefs::default(),
             document_rate: None,
+            note,
+            fallback,
         }
     }
 
@@ -124,7 +207,8 @@ impl AudioOut for CpalOut {
     fn start(&mut self, mut fill: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String> {
         self.stop();
         let host = host(&self.hw.device_class);
-        let dev = output_device(&host, &self.hw.default_output).ok_or("no output device")?;
+        let DeviceChoice { device: dev, fallback } = output_device(&host, &self.hw.default_output, &self.fallback).ok_or("no output device")?;
+        self.note = fallback;
         let cfg = self.config(&dev)?;
         let channels = cfg.channels() as usize;
         if channels == 0 || cfg.sample_rate().0 == 0 {
@@ -185,7 +269,8 @@ impl AudioOut for CpalOut {
         let h = host(&self.hw.device_class);
         let outputs = h.output_devices().map(|d| d.filter_map(|x| x.name().ok()).collect()).unwrap_or_default();
         let inputs = h.input_devices().map(|d| d.filter_map(|x| x.name().ok()).collect()).unwrap_or_default();
-        let output_channels = output_device(&h, &self.hw.default_output).and_then(|d| self.config(&d).ok()).map(|c| c.channels()).unwrap_or(0);
+        let output_channels =
+            output_device(&h, &self.hw.default_output, &self.fallback).and_then(|c| self.config(&c.device).ok()).map(|cfg| cfg.channels()).unwrap_or(0);
         AudioDevices { hosts: cpal::available_hosts().iter().map(|h| h.name().to_string()).collect(), inputs, outputs, output_channels }
     }
     fn configure(&mut self, hw: &AudioHardwarePrefs, document_rate: Option<u32>) {
@@ -193,12 +278,16 @@ impl AudioOut for CpalOut {
         self.document_rate = document_rate;
         // the rate playback mixes at must be known before `start`
         let host = host(&self.hw.device_class);
-        if let Some(dev) = output_device(&host, &self.hw.default_output)
-            && let Ok(cfg) = self.config(&dev)
+        if let Some(choice) = output_device(&host, &self.hw.default_output, &self.fallback)
+            && let Ok(cfg) = self.config(&choice.device)
         {
             self.rate = cfg.sample_rate().0;
             self.channels = cfg.channels();
+            self.note = choice.fallback;
         }
+    }
+    fn note(&self) -> Option<String> {
+        self.note.as_ref().map(Note::text)
     }
 }
 
@@ -206,6 +295,19 @@ impl AudioOut for CpalOut {
 mod tests {
     use super::*;
     use cpal::Sample;
+
+    #[test]
+    fn fallback_prefers_sound_servers_over_raw_hardware() {
+        let mut names = vec!["plughw:CARD=PCH,DEV=0", "hw:CARD=PCH,DEV=0", "sysdefault:CARD=PCH", "pulse", "pipewire"];
+        names.sort_by_key(|n| fallback_rank(n));
+        assert_eq!(names, ["pipewire", "pulse", "sysdefault:CARD=PCH", "plughw:CARD=PCH,DEV=0", "hw:CARD=PCH,DEV=0"]);
+    }
+
+    #[test]
+    fn notes_name_the_fallback_device() {
+        assert!(Note::Fallback("pipewire".into()).text().contains("'pipewire'"));
+        assert!(!Note::NoDevice.text().is_empty());
+    }
 
     #[test]
     fn integer_conversion_clips_and_preserves_interleaved_channels() {

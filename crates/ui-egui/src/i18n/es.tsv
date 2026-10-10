@@ -3508,6 +3508,10 @@
 	Gradient Angle	Ángulo del degradado
 	Linear Gradient	Degradado lineal
 	Solid	Sólido
+	GPU Rendering	Renderizado por GPU
+	Composite on the GPU when available	Componer en la GPU cuando esté disponible
+	Text to Speech	Texto a voz
+	Edit Narration	Editar narración
 # ComfyUI clips (Window ▸ ComfyUI…)
 	ComfyUI	ComfyUI
 	ComfyUI…	ComfyUI…

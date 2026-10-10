@@ -3499,6 +3499,10 @@
 	Gradient Angle	グラデーションの角度
 	Linear Gradient	線形グラデーション
 	Solid	べた塗り
+	GPU Rendering	GPU レンダリング
+	Composite on the GPU when available	利用可能な場合は GPU で合成
+	Text to Speech	テキスト読み上げ
+	Edit Narration	ナレーションを編集
 	Clear Transition	トランジションを消去
 	Set Transition Duration	トランジションのデュレーションを設定
 

@@ -45,7 +45,10 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
 
 fn load4(t: texture_2d<f32>, p: vec2<f32>) -> vec4<f32> {
     let d = vec2<i32>(textureDimensions(t));
-    let q = p - 0.5;
+    var q = p - 0.5;
+    let rq = round(q);
+    if abs(q.x - rq.x) < 1e-4 { q.x = rq.x; }
+    if abs(q.y - rq.y) < 1e-4 { q.y = rq.y; }
     let i = vec2<i32>(floor(q));
     let f = q - floor(q);
     let a = textureLoad(t, clamp(i, vec2(0), d - 1), 0);

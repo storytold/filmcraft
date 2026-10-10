@@ -20,6 +20,7 @@ pub mod keyframe;
 pub mod mask;
 pub mod mixer;
 pub mod multicam;
+pub mod narration;
 pub mod transcript;
 pub mod vtransition;
 
@@ -39,6 +40,7 @@ pub use keyframe::{Interpolation, Keyframe, Param, ParamValue};
 pub use mask::{Mask, MaskMode, MaskPath, MaskVertex, TrackMethod};
 pub use mixer::{AutomationMode, InputMap, MixerStrip, TrackSend};
 pub use multicam::{Camera, MergedClip, MulticamAudio, MulticamSel, MulticamSource};
+pub use narration::{Narration, VocalPitch};
 pub use transcript::{Speaker, Transcript, Word};
 
 macro_rules! id_type {
@@ -1247,8 +1249,12 @@ pub struct Project {
     /// project item. Schema v12.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub source_graphics: BTreeMap<ItemId, SourceGraphic>,
+    /// Narrations (Text to Speech): the script and voice settings each generated WAV item was
+    /// made from, keyed by that item. Schema v14.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub narrations: BTreeMap<ItemId, Narration>,
     /// Media items made by a generative tool (ComfyUI clips, docs/comfyui.md): how to make each
-    /// again. Shared (`Arc`) so undo snapshots don't copy the workflows. Schema v14.
+    /// again. Shared (`Arc`) so undo snapshots don't copy the workflows. Schema v15.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub generated: BTreeMap<ItemId, std::sync::Arc<Generation>>,
 }
@@ -1259,7 +1265,7 @@ pub struct Generation {
     /// The tool (`"comfyui"`).
     pub provider: String,
     /// The tool's recipe (for ComfyUI a `filmcraft_comfyui::Recipe`: workflow, input overrides,
-    /// server).
+    /// output nodes; never a server).
     pub recipe: serde_json::Value,
     /// What the last run reported (outputs, texts, files written); null until it ran.
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
@@ -1358,6 +1364,7 @@ impl Project {
             transcripts: BTreeMap::new(),
             search_bins: Vec::new(),
             source_graphics: BTreeMap::new(),
+            narrations: BTreeMap::new(),
             generated: BTreeMap::new(),
         }
     }
