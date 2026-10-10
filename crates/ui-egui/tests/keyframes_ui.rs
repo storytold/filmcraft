@@ -184,6 +184,22 @@ fn properties_diamond_adds_and_removes_the_keyframe_at_the_playhead() {
     assert!(d.find(&format!("{SCALE}.prevKeyframe")).is_none());
 }
 
+/// #284: every Effect Controls property has a reset button; on an animated property it puts the
+/// default in as a keyframe at the playhead and keeps the other keyframes.
+#[test]
+fn effect_controls_reset_button_keeps_keyframes() {
+    let (mut d, clip) = Driver::demo();
+    let t0 = d.seek(0.5);
+    d.click(&format!("{SCALE}.addKeyframe"));
+    d.exec("effects.setParam", json!({"clip": clip.id, "effect": "motion", "param": "scale", "value": 150.0, "time": t0}));
+    d.seek(2.5);
+    d.click("effectControls.motion.scale.reset");
+    d.shot("effect-controls-reset");
+    let (keys, value) = d.scale(&clip);
+    assert_eq!(keys.len(), 2, "the keyframe stays and the default is keyed at the playhead: {keys:?}");
+    assert_eq!(value, 100.0);
+}
+
 /// Crop is not on a clip until it is used: its diamond applies the effect, then adds the keyframe.
 #[test]
 fn properties_diamond_applies_crop_first() {
