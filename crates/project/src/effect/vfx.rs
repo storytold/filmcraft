@@ -1014,6 +1014,60 @@ pub(super) fn defs() -> Vec<EffectDef> {
     v
 }
 
+/// Parameter values written when Ultra Key's Setting is Default, Relaxed or Aggressive.
+/// Custom (index 3) leaves the current values. Aggressive matches the matte that cleans
+/// light and dark clothing on a typical green screen.
+pub fn ultra_key_setting(setting: u32) -> Option<&'static [(&'static str, f64)]> {
+    Some(match setting {
+        0 => &[
+            ("transparency", 45.0),
+            ("highlight", 10.0),
+            ("shadow", 50.0),
+            ("tolerance", 50.0),
+            ("pedestal", 10.0),
+            ("choke", 0.0),
+            ("soften", 0.0),
+            ("contrast", 0.0),
+            ("mid_point", 50.0),
+            ("desaturate", 25.0),
+            ("range", 50.0),
+            ("spill", 50.0),
+            ("spill_luma", 50.0),
+        ],
+        1 => &[
+            ("transparency", 30.0),
+            ("highlight", 15.0),
+            ("shadow", 35.0),
+            ("tolerance", 70.0),
+            ("pedestal", 5.0),
+            ("choke", 0.0),
+            ("soften", 8.0),
+            ("contrast", 0.0),
+            ("mid_point", 50.0),
+            ("desaturate", 15.0),
+            ("range", 50.0),
+            ("spill", 40.0),
+            ("spill_luma", 50.0),
+        ],
+        2 => &[
+            ("transparency", 40.0),
+            ("highlight", 10.0),
+            ("shadow", 55.0),
+            ("tolerance", 90.0),
+            ("pedestal", 50.0),
+            ("choke", 10.0),
+            ("soften", 10.0),
+            ("contrast", 10.0),
+            ("mid_point", 50.0),
+            ("desaturate", 50.0),
+            ("range", 50.0),
+            ("spill", 50.0),
+            ("spill_luma", 50.0),
+        ],
+        _ => return None,
+    })
+}
+
 /// Extra parameters added to core effects by the 26.x rebuilds (old instances fall back to the
 /// defaults, so projects round-trip unchanged).
 pub(super) fn extend_core(v: &mut [EffectDef]) {

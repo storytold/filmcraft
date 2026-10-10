@@ -231,6 +231,51 @@ pub fn rotate_3d(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     });
 }
 
+/// Transform: affine place, with optional shutter-angle motion blur when the override is on.
+pub fn transform_fx(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+    let fps = cx.env.map_or(24.0, |env| env.frame_rate()).max(1.0);
+    let angle = fv(e, "shutter_angle", cx);
+    let n = if bv(e, "shutter_override") && angle > 0.5 { 7 } else { 1 };
+    let span = (angle as f64 / 360.0) / fps;
+    motion_blurred(img, n, |im, k| {
+        let t = cx.t + Tick::from_seconds_f64(k * span);
+        let cx2 = FxCtx {
+            t,
+            px_scale: cx.px_scale,
+            seconds: cx.seconds + k * span,
+            timecode: cx.timecode,
+            clip_name: cx.clip_name,
+            project: cx.project,
+            env: cx.env,
+            working: cx.working,
+        };
+        let anchor = crate::effects::point(e, "anchor", &cx2, im);
+        let pos = crate::effects::point(e, "position", &cx2, im);
+        let sh = crate::effects::f(e, "scale_height", &cx2) as f64 / 100.0;
+        let sw = if crate::effects::b(e, "uniform_scale") { sh } else { crate::effects::f(e, "scale_width", &cx2) as f64 / 100.0 };
+        let rot = crate::effects::f(e, "rotation", &cx2) as f64;
+        let skew = (crate::effects::f(e, "skew", &cx2) as f64).to_radians().tan();
+        let skew_axis = crate::effects::f(e, "skew_axis", &cx2) as f64;
+        let op = crate::effects::f(e, "opacity", &cx2) / 100.0;
+        let sk = Affine::rotate_deg(skew_axis)
+            .then_apply(&Affine { a: 1.0, b: 0.0, c: skew, d: 1.0, e: 0.0, f: 0.0 })
+            .then_apply(&Affine::rotate_deg(-skew_axis));
+        let m = Affine::translate(pos.x, pos.y)
+            .then_apply(&Affine::rotate_deg(rot))
+            .then_apply(&sk)
+            .then_apply(&Affine::scale(sw, sh))
+            .then_apply(&Affine::translate(-anchor.x, -anchor.y));
+        affine_warp(im, &m);
+        if op < 1.0 - 1e-5 {
+            im.px.par_chunks_mut(4).for_each(|p| {
+                for v in p.iter_mut() {
+                    *v *= op;
+                }
+            });
+        }
+    });
+}
+
 /// Grow / Shrink: scale animated across the clip from Scale From to Scale To.
 pub fn grow(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let p = ease(chv(e, "easing"), clip_progress(cx));

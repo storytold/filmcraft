@@ -252,6 +252,10 @@ fn parse_time(s: &str, tm: Timing) -> Option<Tick> {
         let (h, m) = (num(parts.first()?)?, num(parts.get(1)?)?);
         let sec_part = parts.get(2)?;
         let (si, sf) = sec_part.split_once('.').unwrap_or((sec_part, ""));
+        let seconds = num(si)?;
+        if m >= 60 || seconds >= 60 {
+            return None;
+        }
         let mut t = (h * 3600 + m * 60) * tps + decimal_ticks(si, sf, tps)?;
         if let Some(fp) = parts.get(3) {
             if parts.len() > 4 {
@@ -259,13 +263,15 @@ fn parse_time(s: &str, tm: Timing) -> Option<Tick> {
             }
             let (fi, fs) = fp.split_once('.').unwrap_or((fp, ""));
             let frames = num(fi)?;
-            let _ = tm.base;
             let sub: i128 = if fs.is_empty() { 0 } else { num(fs)? };
+            if frames >= i128::from(tm.base) || sub >= i128::from(tm.sub_frame_rate) {
+                return None;
+            }
             // frames at the effective rate; sub-frames divide a frame
             let ft = tm.rate.tick_of(1).0 as i128;
             t += frames * ft + sub * ft / tm.sub_frame_rate.max(1) as i128;
         }
-        return Some(Tick(t as i64));
+        return i64::try_from(t).ok().map(Tick);
     }
     let unit_start = s.find(|c: char| c.is_ascii_alphabetic())?;
     let (v, unit) = s.split_at(unit_start);
@@ -290,7 +296,7 @@ fn parse_time(s: &str, tm: Timing) -> Option<Tick> {
         }
         _ => return None,
     };
-    Some(Tick(t as i64))
+    i64::try_from(t).ok().map(Tick)
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -550,6 +556,33 @@ mod tests {
         assert_eq!(parse_time("15000000t", ticks), Some(s(1.5)));
         assert_eq!(parse_time("bogus", t), None);
         assert_eq!(parse_time("1:2", t), None);
+    }
+
+    #[test]
+    fn invalid_and_overflowed_time_expressions_are_ignored() {
+        let normal = tm(FrameRate::FPS_25);
+        for expr in [
+            "999999999999999h",
+            "999999999999999m",
+            "999999999999999s",
+            "999999999999999ms",
+            "999999999999999f",
+            "999999999999999t",
+            "00:60:00",
+            "00:00:60",
+            "00:00:01:25",
+        ] {
+            assert_eq!(parse_time(expr, normal), None, "{expr}");
+        }
+        let subframes = Timing { sub_frame_rate: 2, ..normal };
+        assert!(parse_time("00:00:01:12.1", subframes).is_some());
+        assert_eq!(parse_time("00:00:01:12.2", subframes), None);
+        // Bad cues must not wrap to a plausible but unrelated timeline position.
+        let xml = r#"<tt xmlns="http://www.w3.org/ns/ttml"><body><div><p begin="999999999999999s" end="2s">Bad</p><p begin="1s" end="2s">Good</p></div></body></tt>"#;
+        let doc = parse(xml).expect("well-formed TTML");
+        assert_eq!(doc.cues.len(), 1);
+        assert_eq!(doc.cues[0].text, "Good");
+        assert!(!doc.warnings.is_empty());
     }
 
     #[test]
