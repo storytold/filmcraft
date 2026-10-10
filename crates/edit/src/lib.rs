@@ -876,6 +876,27 @@ pub fn slide(seq: &mut Sequence, clip: ClipId, delta: Tick, ctx: &mut EditCtx) -
     Ok(d)
 }
 
+/// Slide several items (a linked picture/sound pair, a selection) by one common delta: the most
+/// restrictive item's neighbour limit clamps them all, so their relative timing is kept.
+/// Returns the delta applied.
+pub fn slide_items(seq: &mut Sequence, clips: &[ClipId], delta: Tick, ctx: &mut EditCtx) -> Result<Tick> {
+    let mut d = delta;
+    for c in clips {
+        let x = slide(&mut seq.clone(), *c, d, ctx)?;
+        if x.0.signum() != d.0.signum() {
+            d = Tick::ZERO;
+        } else if x.abs() < d.abs() {
+            d = x;
+        }
+    }
+    if d != Tick::ZERO {
+        for c in clips {
+            slide(seq, *c, d, ctx)?;
+        }
+    }
+    Ok(d)
+}
+
 /// Rate stretch: change an item's duration by dragging an edge, adjusting speed to keep the same media.
 pub fn rate_stretch(seq: &mut Sequence, clip: ClipId, edge: Edge, delta: Tick, ctx: &mut EditCtx) -> Result<f64> {
     let (tid, it) = seq.find_item(clip).ok_or(EditError::NoItem(clip))?;
