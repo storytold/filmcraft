@@ -492,6 +492,7 @@
 	{panel} — coming in a later milestone	{panel}: llegará en una versión posterior
 	Close Panel	Cerrar panel
 	Close Other Timeline Panels	Cerrar los demás paneles de línea de tiempo
+	Maximize	Maximizar
 	Maximize Frame	Maximizar marco
 	Restore Workspace	Restaurar espacio de trabajo
 	Reveal Sequence in Project	Mostrar secuencia en el proyecto
@@ -1215,6 +1216,7 @@
 	Show Video Thumbnails	Mostrar miniaturas de video
 	Show Audio Waveform	Mostrar forma de onda de audio
 	Expand All Tracks	Expandir todas las pistas
+	Minimize	Minimizar
 	Minimize All Tracks	Minimizar todas las pistas
 	Unrendered: should play back in real time	Sin procesar: debería reproducirse en tiempo real
 	Unrendered: render to play back in real time	Sin procesar: procésalo para reproducirlo en tiempo real

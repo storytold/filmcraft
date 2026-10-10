@@ -31,3 +31,30 @@ pub fn paint_wordmark(ui: &egui::Ui, left_center: egui::Pos2, height: f32, dark:
     ui.painter().image(tex.id(), r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
     Some(r)
 }
+
+/// The app icon (the FilmCraft tile, `assets/app-icon/`), shown at the left of the header on Linux
+/// where the undecorated window has no OS title bar to carry it — as PhotoCraft's title bar shows
+/// its mark. 128 px: sharp at 20 pt on high-dpi displays, and the mipmaps keep it clean at 1x.
+const MARK_PNG: &[u8] = include_bytes!("../../../assets/app-icon/hicolor/128x128/apps/ai.storyteller.filmcraft.png");
+
+/// The mark's texture, uploaded on first use and kept in the context.
+pub fn mark(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+    let id = egui::Id::new("filmcraft-brand-mark");
+    if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return Some(t);
+    }
+    let img = image::load_from_memory_with_format(MARK_PNG, image::ImageFormat::Png).ok()?;
+    let rgba = img.to_rgba8();
+    let color = egui::ColorImage::from_rgba_unmultiplied([rgba.width() as usize, rgba.height() as usize], rgba.as_raw());
+    let options = egui::TextureOptions { mipmap_mode: Some(egui::TextureFilter::Linear), ..egui::TextureOptions::LINEAR };
+    let tex = ctx.load_texture("filmcraft-brand-mark", color, options);
+    ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
+    Some(tex)
+}
+
+/// Paint the mark into `r` (square). Returns whether it was drawn.
+pub fn paint_mark(ui: &egui::Ui, r: egui::Rect) -> bool {
+    let Some(tex) = mark(ui.ctx()) else { return false };
+    ui.painter().image(tex.id(), r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+    true
+}

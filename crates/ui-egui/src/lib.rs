@@ -262,6 +262,14 @@ pub struct FilmcraftApp {
     pub panic_next_frame: bool,
     fonts_ready: bool,
     pub integrated_titlebar: bool,
+    /// The window is undecorated and the header draws its own minimize / maximize / close buttons
+    /// (Linux). macOS keeps the native traffic lights in the `integrated_titlebar` gap; Windows
+    /// keeps the OS title bar.
+    pub window_controls: bool,
+    /// The desktop runs on Wayland (`WAYLAND_DISPLAY` at startup): `xdg_toplevel.set_minimize` is
+    /// a request the compositor may ignore (GNOME and the tiling WMs do), so the header offers no
+    /// Minimize button there.
+    pub wayland: bool,
     pub last_timeline_width: f32,
     /// The sequence whose view `ui.timeline` holds, and that view as it was last exchanged with
     /// `session.state.timeline_views` (see `sync_timeline_view`).
@@ -451,6 +459,8 @@ impl FilmcraftApp {
             panic_next_frame: false,
             fonts_ready: false,
             integrated_titlebar: false,
+            window_controls: false,
+            wayland: false,
             last_timeline_width: 1000.0,
             timeline_view_of: None,
             timeline_view_last: None,
@@ -1354,9 +1364,13 @@ impl FilmcraftApp {
         let t = self.tokens;
         let full = ui.max_rect();
         ui.painter().rect_filled(full, 0.0, t.app_bg);
-        let header_h = if self.ui.show_header { 38.0 } else { 0.0 };
+        // The undecorated window's caption buttons and drag area live in the header, so it always
+        // shows while `window_controls` is set: hiding it would leave the window without move or
+        // close controls.
+        let show_header = self.ui.show_header || self.window_controls;
+        let header_h = if show_header { 38.0 } else { 0.0 };
         let header = egui::Rect::from_min_size(full.min, egui::vec2(full.width(), header_h));
-        if self.ui.show_header {
+        if show_header {
             header::show(self, ui, header);
         }
         let status_h = if self.ui.show_status_bar { 20.0 } else { 0.0 };
@@ -1370,6 +1384,7 @@ impl FilmcraftApp {
         if !self.ui.show_status_bar {
             // no bar to draw the job in, but a finished preview render still plays
             self.watch_jobs(ui.ctx());
+            self.edge_resize(ui, header_h);
             return;
         }
         // Status / hint bar
@@ -1392,6 +1407,46 @@ impl FilmcraftApp {
             self.ui.status.clear();
         }
         self.job_status(ui, sb, &t);
+        self.edge_resize(ui, header_h);
+    }
+
+    /// The resize edges of the undecorated window (`window_controls`, Linux): the compositor draws
+    /// none, so invisible zones along the window's edges and corners start an OS resize on a
+    /// primary-button drag — PhotoCraft's `titlebar::resize_zones`. They sit in a foreground layer
+    /// above every panel, and none while maximized or full screen. The header is the window's title
+    /// bar here, so the top edge and the caption strip belong to it: the side zones start below it
+    /// (`header_h`), and a click on a caption button never begins a resize.
+    pub(crate) fn edge_resize(&mut self, ui: &mut egui::Ui, header_h: f32) {
+        if !self.window_controls {
+            return;
+        }
+        let ctx = ui.ctx().clone();
+        let fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        if fullscreen || maximized {
+            return;
+        }
+        let w = ctx.content_rect();
+        let (e, c) = (5.0, 12.0);
+        let top = w.top() + header_h;
+        use egui::{CursorIcon, ResizeDirection, Sense};
+        let zones = [
+            (egui::Rect::from_min_max(egui::pos2(w.left(), w.bottom() - e), w.right_bottom()), ResizeDirection::South, CursorIcon::ResizeVertical),
+            (egui::Rect::from_min_max(w.left_top(), egui::pos2(w.left() + e, w.bottom())), ResizeDirection::West, CursorIcon::ResizeHorizontal),
+            (egui::Rect::from_min_max(egui::pos2(w.right() - e, top), w.right_bottom()), ResizeDirection::East, CursorIcon::ResizeHorizontal),
+            (egui::Rect::from_min_size(w.left_bottom() - egui::vec2(0.0, c), egui::vec2(c, c)), ResizeDirection::SouthWest, CursorIcon::ResizeNeSw),
+            (egui::Rect::from_min_size(w.right_bottom() - egui::vec2(c, c), egui::vec2(c, c)), ResizeDirection::SouthEast, CursorIcon::ResizeNwSe),
+            (egui::Rect::from_min_size(egui::pos2(w.left(), top), egui::vec2(c, c)), ResizeDirection::NorthWest, CursorIcon::ResizeNwSe),
+            (egui::Rect::from_min_size(egui::pos2(w.right() - c, top), egui::vec2(c, c)), ResizeDirection::NorthEast, CursorIcon::ResizeNeSw),
+        ];
+        let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("window-resize"));
+        let zui = ui.new_child(egui::UiBuilder::new().layer_id(layer).max_rect(w));
+        for (i, (r, dir, cursor)) in zones.into_iter().enumerate() {
+            let resp = zui.interact(r, egui::Id::new(("window-resize", i)), Sense::drag()).on_hover_cursor(cursor);
+            if resp.drag_started_by(egui::PointerButton::Primary) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
+            }
+        }
     }
 
     /// The running job (export / render previews), if any; plays the rendered range when a preview
@@ -1581,6 +1636,13 @@ impl FilmcraftApp {
                     let d = ui.button(tl!("Continue"));
                     self.auto.add("error.dismiss", d.rect, "Continue");
                     close |= d.clicked();
+                    // The undecorated Linux window has no OS close button to fall back on while
+                    // the UI pass is failing, so the error window carries its own way out.
+                    let q = ui.button(tl!("Quit FilmCraft"));
+                    self.auto.add("error.quit", q.rect, "Quit FilmCraft");
+                    if q.clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
                 });
             });
         if close {

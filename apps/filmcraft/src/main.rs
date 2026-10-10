@@ -112,6 +112,10 @@ fn main() -> eframe::Result {
     // OS hardware video decoders (VideoToolbox on macOS) in front of our own; Settings ▸ Playback ▸
     // Hardware decoding switches them off. Unsupported streams and failures use our decoders.
     register_hardware_decoders();
+    // Linux: one top bar — the header IS the title bar, so the window is undecorated and the
+    // header draws its own window buttons (macOS keeps the native traffic lights, Windows its
+    // OS title bar). FILMCRAFT_DECORATIONS=1 asks for the OS title bar back instead.
+    let decorations = cfg!(not(target_os = "linux")) || std::env::var_os("FILMCRAFT_DECORATIONS").is_some();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("FilmCraft")
@@ -121,6 +125,7 @@ fn main() -> eframe::Result {
             .with_fullsize_content_view(true)
             .with_titlebar_shown(false)
             .with_title_shown(false)
+            .with_decorations(decorations)
             // Started for an agent (`--control`): open without taking the user's keyboard focus.
             .with_active(control_port.is_none())
             .with_icon(app_icon())
@@ -188,6 +193,13 @@ fn main() -> eframe::Result {
                 app.dialog = None;
             }
             app.integrated_titlebar = cfg!(target_os = "macos");
+            // Linux: the window is undecorated (one top bar), so the header owns the window
+            // buttons and the app the resize edges — unless FILMCRAFT_DECORATIONS brought the
+            // OS title bar back.
+            app.window_controls = cfg!(target_os = "linux") && !decorations;
+            // Wayland's minimize is a request the compositor may ignore (GNOME and the tiling
+            // WMs do), so the header offers no Minimize button there.
+            app.wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
             if let Some(rs) = cc.wgpu_render_state.clone()
                 && std::env::var_os("FILMCRAFT_CPU_COMPOSITE").is_none()
             {

@@ -92,6 +92,10 @@ pub struct Tokens {
     pub monitor_bg: Color32,
     pub timecode: Color32,
     pub danger: Color32,
+    /// Window caption buttons (the undecorated Linux window): the close button's hover fill and
+    /// the glyph's ink on it.
+    pub caption_close: Color32,
+    pub caption_close_text: Color32,
     pub radius: f32,
     pub radius_sm: f32,
     pub gap: f32,
@@ -141,6 +145,8 @@ impl Tokens {
             monitor_bg: Color32::from_rgb(0x1d, 0x1d, 0x1d),
             timecode: Color32::from_rgb(0x40, 0x96, 0xf3),
             danger: Color32::from_rgb(0xdc, 0x51, 0x3d),
+            caption_close: Color32::from_rgb(196, 43, 28),
+            caption_close_text: Color32::WHITE,
             radius: 0.0,
             radius_sm: 4.0,
             gap: 4.0,
