@@ -50,3 +50,8 @@ Next step: reproduce the crash with **FilmCraft (log)**, then read `log.txt`.
 The repo ships an MCP server, `filmcraft-cli mcp`, registered in `.mcp.json` in two modes: `filmcraft-headless` (`mcp --demo`, in-process, no window) and `filmcraft` (`mcp --bridge 127.0.0.1:9876`, drives the running app). Both showed "Connection closed" at the start of the session only because `filmcraft-cli.exe` was not built yet; a stdio handshake and tool listing now succeed.
 
 Bridge mode needs the app started with the control port open. Added a Desktop shortcut, **FilmCraft (MCP)** (`launch-filmcraft.bat --control 9876`), and confirmed port 9876 listens on 127.0.0.1 after launching it. The Desktop shortcuts live in `C:\Users\denni\OneDrive\Desktop`: FilmCraft, FilmCraft (log) and FilmCraft (MCP).
+
+## Status at end of session (2026-10-10)
+- PR: https://github.com/storytold/filmcraft/pull/583 (branch `windows-launcher`, pushed to the fork `didpublishing/filmcraft`; no write access to `storytold/filmcraft`).
+- Working: release build, launcher, three Desktop shortcuts (FilmCraft, FilmCraft (log), FilmCraft (MCP)), MCP stdio server.
+- Open: the crash you reported has no captured log yet. Reproduce it with **FilmCraft (log)** and share `log.txt` (the one reviewed earlier was from the test run, exit code 0). Also not run: `cargo test` and `cargo xtask ci`; the MCP servers need `/mcp` reconnecting in an interactive `claude` terminal.
