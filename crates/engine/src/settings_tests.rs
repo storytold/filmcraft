@@ -496,12 +496,20 @@ fn auto_transcribe_on_import_and_transcription_defaults() {
     let r = s.execute("file.import", json!({"paths": [mov.to_string_lossy()]})).unwrap();
     let a = ItemId(r["items"][0].as_u64().unwrap());
     assert!(!s.project.transcripts.contains_key(&a));
+    // (each import is another file: the same file again is a duplicate, not an import, #356)
+    let (mov2, mov3) = (dir.join("talk2.mov"), dir.join("talk3.mov"));
+    std::fs::copy(&mov, &mov2).unwrap();
+    std::fs::copy(&mov, &mov3).unwrap();
     // on, but only for clips in sequences (Premiere's default scope): still nothing on import
     set(&mut s, "mediaAnalysis.autoTranscribe", json!(true));
-    let r = s.execute("file.import", json!({"paths": [mov.to_string_lossy()]})).unwrap();
+    let r = s.execute("file.import", json!({"paths": [mov2.to_string_lossy()]})).unwrap();
     assert!(!s.project.transcripts.contains_key(&ItemId(r["items"][0].as_u64().unwrap())));
     set(&mut s, "mediaAnalysis.autoTranscribeScope", json!("allImported"));
+    // a file that is already there is not transcribed again
     let r = s.execute("file.import", json!({"paths": [mov.to_string_lossy()]})).unwrap();
+    assert_eq!((r["items"].as_array().unwrap().len(), r["duplicates"].as_array().unwrap().len()), (0, 1), "{r}");
+    assert!(s.project.transcripts.is_empty());
+    let r = s.execute("file.import", json!({"paths": [mov3.to_string_lossy()]})).unwrap();
     let c = ItemId(r["items"][0].as_u64().unwrap());
     assert_eq!(s.project.transcripts[&c].words[0].text, "hello");
     assert!(matches!(s.project.item(c).unwrap().kind, ItemKind::Media(_)));
@@ -530,7 +538,9 @@ fn transcription_without_speech_to_text_says_so() {
     assert_eq!(r["errors"], json!([]));
     set(&mut s, "mediaAnalysis.autoTranscribe", json!(true));
     set(&mut s, "mediaAnalysis.autoTranscribeScope", json!("allImported"));
-    let r = s.execute("file.import", json!({"paths": [mov.to_string_lossy()]})).unwrap();
+    let mov2 = dir.join("talk2.mov");
+    std::fs::copy(&mov, &mov2).unwrap();
+    let r = s.execute("file.import", json!({"paths": [mov2.to_string_lossy()]})).unwrap();
     let errors = r["errors"].as_array().unwrap();
     assert!(errors.iter().any(|e| e.as_str().is_some_and(|e| e.starts_with("transcription:") && e.contains("not available in this build"))), "{errors:?}");
     assert!(!s.project.transcripts.contains_key(&ItemId(r["items"][0].as_u64().unwrap())));

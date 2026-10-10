@@ -362,6 +362,60 @@ destination?, preset?}` (Project Settings ▸ Ingest) acts on every `file.import
 
 `file.import` reports this under `ingest`.
 
+### Importing a file twice
+
+`file.import {paths, bin?, imageSequence?}` does not add a file the project already has (#356:
+a folder dragged in twice used to add every file again). Its result always carries four lists:
+
+| Field | |
+|---|---|
+| `items` | ids of the items this import added |
+| `duplicates` | one `{path, item, tier}` per path whose file was already in the project: the path as given, the existing item, and the tier that recognised it (`path`, `file` or `ingested`, below). Nothing is added, ingested or transcribed for these, and there is no undo step |
+| `relink` | one `{path, item}` per offline or missing item a path is the media of. Nothing is added and nothing is relinked yet: the Link Media dialog is asked for, and `media.relink {item, path}` takes the offer |
+| `errors` | one `"path: reason"` per path that failed. A duplicate is never listed here |
+
+The command fails only when every path failed; a duplicate or a relink offer counts as a result.
+The UI shows "Already in the project: …" as a toast. A duplicate stays in the bin it is in: `bin`
+only says where new items go.
+
+Each path is looked up in three tiers (`crates/engine/src/import_duplicates.rs`), cheapest first:
+
+1. **Path.** Both paths are normalised by the host (`Services::canonical_path`,
+   `std::fs::canonicalize` natively: absolute, `.` and `..` resolved, symlinks and symlinked folders
+   followed, the letter case of the volume) and compared. An equal path is the same file, with
+   nothing more to check, also when the file was replaced on disk since. A host that cannot
+   normalise (the web) compares the paths as written.
+2. **File identity, confirmed by the fingerprint.** A hard link is the same file under a path
+   that normalises differently. The host says which file a path is (`Services::file_identity`,
+   `FileIdentity`: device + inode on Unix), but network and FUSE mounts hand out numbers that are
+   not unique, so a match only counts when the media identity of both paths (size + head/tail
+   fingerprint, `relink::identity_of`, [above](#media-offline-relinking-proxies-ingest)) agrees
+   too: two reads of at most 2 MiB, only when the numbers already matched. Windows has no file
+   identity yet (std has no stable volume serial number + file index), so a hard link there is
+   imported as another file; the other spellings are tier 1.
+3. **Media identity.** The content, wherever the file is, in the two cases where it is certain
+   what the user wants:
+   - it is the media of an item that is **offline or missing** (the fingerprint saved at import):
+     reported under `relink`, so the clip that lost its file gets it back instead of the project
+     getting a second item;
+   - ingest is set to **copy**, and the copy this file would be ingested to is already in the
+     project with the same content: a duplicate (`tier: "ingested"`), the original imported again.
+     Nothing is copied over the file the project uses.
+
+What is **not** a duplicate:
+
+- **A copy** of a file (another path, another file identity), however alike: proxy and versioning
+  workflows keep copies on purpose, and each is its own item. Tier 3 never speaks for online items
+  other than the ingested copy.
+- **A still and the image sequence it starts.** A sequence is its first frame's name in its
+  (normalised) folder, so only tier 1 applies: a link to the first frame from another folder or
+  under another name starts another sequence, and a sequence starting at a later frame is other
+  media.
+- **A file that is gone.** A path that does not exist is an error, not a duplicate of the item
+  that once had it.
+
+Paths and file identities are asked of the host once per command and never saved in the project.
+
 ## Project Manager
 
 `file.projectManager` (File ▸ Project Manager…) makes a self-contained copy of a project:

@@ -379,6 +379,20 @@ pub fn create(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Ingest freshly imported items per the project's ingest settings.
+/// Where Project Settings ▸ Ingest copies the file at `path`. `None`: ingest does not copy, or
+/// the file is already there.
+pub(crate) fn ingest_copy_path(ing: &filmcraft_project::IngestSettings, path: &str) -> Option<PathBuf> {
+    if !ing.enabled || !matches!(ing.action, IngestAction::Copy | IngestAction::CopyAndCreateProxies) {
+        return None;
+    }
+    let dir = match &ing.destination {
+        Some(d) if !d.is_empty() => PathBuf::from(d),
+        _ => Path::new(path).parent().unwrap_or(Path::new(".")).join("Ingested Media"),
+    };
+    let out = dir.join(Path::new(path).file_name()?);
+    (Path::new(path) != out).then_some(out)
+}
+
 pub fn ingest(s: &mut Session, items: &[ItemId]) -> Result<Value> {
     let ing = s.project.settings.ingest.clone();
     if !ing.enabled || items.is_empty() {
@@ -389,15 +403,9 @@ pub fn ingest(s: &mut Session, items: &[ItemId]) -> Result<Value> {
     if copy {
         for &i in items {
             let Some((_, path, _)) = media_path(&s.project, i) else { continue };
-            let dir = match &ing.destination {
-                Some(d) if !d.is_empty() => PathBuf::from(d),
-                _ => Path::new(&path).parent().unwrap_or(Path::new(".")).join("Ingested Media"),
-            };
-            let fname = Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let out = dir.join(&fname);
-            if Path::new(&path) == out {
-                continue;
-            }
+            let Some(out) = ingest_copy_path(&ing, &path) else { continue };
+            let dir = out.parent().unwrap_or(Path::new(".")).to_path_buf();
+            let fname = out.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             std::fs::create_dir_all(&dir).map_err(|e| EngineError::Other(format!("{}: {e}", dir.display())))?;
             std::fs::copy(&path, &out).map_err(|e| EngineError::Other(format!("copying {fname}: {e}")))?;
             let out_s = out.to_string_lossy().into_owned();

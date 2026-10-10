@@ -421,6 +421,13 @@ fn detect_image_sequence(s: &Session, path: &str) -> bool {
     filmcraft_media::sequence::Numbered::parse(path).is_some() && crate::media_pool::image_sequence_frames(path, &*s.services).is_ok_and(|f| f.len() > 1)
 }
 
+/// The item a `file.import` result is about: the first it added, else the first it found already
+/// in the project (`duplicates`).
+pub(crate) fn imported_item(r: &Value) -> Option<ItemId> {
+    let first = |k: &str| r.get(k).and_then(Value::as_array).and_then(|a| a.first());
+    first("items").and_then(Value::as_u64).or_else(|| first("duplicates").and_then(|d| d.get("item")).and_then(Value::as_u64)).map(ItemId)
+}
+
 fn import_source(
     s: &mut Session,
     path: &str,
@@ -913,7 +920,14 @@ fn build() -> Vec<CommandSpec> {
                 Ok(json!({"items": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))
             }
         ),
+        // Result: `items` (the ids added), `errors` (one `path: reason` per path that failed; the
+        // command itself fails only when nothing else came of it), `duplicates` (one
+        // `{path, item, tier}` per path whose file the project already has: nothing is added) and
+        // `relink` (one `{path, item}` per offline item a path is the media of: nothing is added,
+        // Link Media is offered). See `import_duplicates` and docs/project-files.md, "Importing a
+        // file twice".
         cmd!("file.import", "Import…", ["File"], Some("Cmd+I"), r#"{"paths":[str],"bin":binId?,"imageSequence":bool?}"#, always, |s, p| {
+            use crate::import_duplicates::Found;
             let bin = u64_p(p, "bin").map(filmcraft_project::BinId);
             let paths: Vec<String> = match p.get("paths").and_then(Value::as_array) {
                 Some(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
@@ -931,50 +945,72 @@ fn build() -> Vec<CommandSpec> {
             // Settings ▸ Media ▸ Import image sequences on, a single numbered still is detected.
             let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
             let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
+            // A file the project already has is not imported again (#356, `import_duplicates`):
+            // the project's files as the three tiers look them up, asked of the host once.
+            let mut known = crate::import_duplicates::Known::of(s);
+            let mut duplicates = Vec::new();
+            let mut relink = Vec::new();
             for path in paths {
-                if as_sequence || (detect && detect_image_sequence(s, &path)) {
+                let sequence = as_sequence || (detect && detect_image_sequence(s, &path));
+                match known.find(s, &path, sequence) {
+                    Some(Found::Duplicate { item, tier }) => {
+                        duplicates.push(json!({"path": path, "item": item.0, "tier": tier}));
+                        continue;
+                    }
+                    Some(Found::Relink(items)) => {
+                        relink.extend(items.iter().map(|i| json!({"path": path, "item": i.0})));
+                        continue;
+                    }
+                    None => {}
+                }
+                let added = if sequence {
                     match import_image_sequence(s, &path, bin) {
                         Ok((id, frames, missing)) => {
-                            ids.push(id.0);
                             image_sequences.push(json!({"item": id.0, "frames": frames, "missing": missing}));
+                            Some(id)
                         }
-                        Err(e) => errors.push(format!("{path}: {e}")),
+                        Err(e) => {
+                            errors.push(format!("{path}: {e}"));
+                            None
+                        }
                     }
-                    continue;
-                }
-                // Media files through the host's reader (no whole-file read) when it has one.
-                let streamed = filmcraft_media::is_importable(std::path::Path::new(&path)) && s.services.reader(&path).is_some();
-                let read = if streamed { Ok(Vec::new()) } else { s.services.read_file(&path) };
-                match read {
-                    Ok(_) if streamed => match import_streamed(s, &path, bin) {
-                        Ok(id) => ids.push(id.0),
-                        Err(e) => errors.push(format!("{path}: {e}")),
-                    },
-                    Ok(b) => {
-                        if let Some(fmt) = crate::captions::detect(&path, &b) {
-                            match crate::captions::import(s, &path, &b, fmt, None) {
-                                Ok(r) => reports.push(r),
-                                Err(e) => errors.push(format!("{path}: {e}")),
-                            }
-                        } else if let Some(fmt) = crate::interchange::detect(&path, &b) {
-                            match crate::interchange::import(s, &path, &b, fmt) {
-                                Ok(r) => {
+                } else {
+                    // Media files through the host's reader (no whole-file read) when it has one.
+                    let streamed = filmcraft_media::is_importable(std::path::Path::new(&path)) && s.services.reader(&path).is_some();
+                    let read = if streamed { Ok(Vec::new()) } else { s.services.read_file(&path) };
+                    let media = match read {
+                        Ok(_) if streamed => import_streamed(s, &path, bin).map(Some),
+                        Ok(b) => {
+                            if let Some(fmt) = crate::captions::detect(&path, &b) {
+                                crate::captions::import(s, &path, &b, fmt, None).map(|r| {
+                                    reports.push(r);
+                                    None
+                                })
+                            } else if let Some(fmt) = crate::interchange::detect(&path, &b) {
+                                crate::interchange::import(s, &path, &b, fmt).map(|r| {
                                     sequences.extend(r["sequences"].as_array().cloned().unwrap_or_default());
                                     reports.push(r);
-                                }
-                                Err(e) => errors.push(format!("{path}: {e}")),
-                            }
-                        } else {
-                            match import_bytes(s, &path, b.into(), bin) {
-                                Ok(id) => ids.push(id.0),
-                                Err(e) => errors.push(format!("{path}: {e}")),
+                                    None
+                                })
+                            } else {
+                                import_bytes(s, &path, b.into(), bin).map(Some)
                             }
                         }
-                    }
-                    Err(e) => errors.push(format!("{path}: {e}")),
+                        Err(e) => Err(EngineError::Other(e.to_string())),
+                    };
+                    media.unwrap_or_else(|e| {
+                        errors.push(format!("{path}: {e}"));
+                        None
+                    })
+                };
+                if let Some(id) = added {
+                    ids.push(id.0);
+                    // the same file again later in `paths` (or through a link) is a duplicate too
+                    known.add(&*s.services, &path, sequence, id);
                 }
             }
-            if ids.is_empty() && sequences.is_empty() && reports.is_empty() && !errors.is_empty() {
+            // every path failed: an error. A file the project knows is a result, not a failure.
+            if ids.is_empty() && sequences.is_empty() && reports.is_empty() && duplicates.is_empty() && relink.is_empty() && !errors.is_empty() {
                 return Err(EngineError::Other(errors.join("; ")));
             }
             // Project Settings ▸ Ingest: copy / transcode / create proxies
@@ -1020,6 +1056,22 @@ fn build() -> Vec<CommandSpec> {
             for item in was_missing.iter().filter(|i| !s.offline.missing.contains(i)) {
                 s.media.remove(*item);
             }
+            let names = |rows: &[Value]| {
+                let names: Vec<&str> = rows.iter().take(3).filter_map(|d| d["path"].as_str()).map(|p| p.rsplit(['/', '\\']).next().unwrap_or(p)).collect();
+                let more = rows.len().saturating_sub(names.len());
+                format!("{}{}", names.join(", "), if more > 0 { format!(" and {more} more") } else { String::new() })
+            };
+            if !duplicates.is_empty() {
+                s.toast(format!("Already in the project: {}", names(&duplicates)));
+            }
+            // the media of an offline clip: offer to link it (the Link Media dialog) instead of
+            // adding the file beside the clip that wants it
+            if !relink.is_empty() {
+                s.toast(format!("Media of offline clips, not imported: {}. Use Link Media to reconnect.", names(&relink)));
+                s.offline.prompt = true;
+            }
+            out["duplicates"] = json!(duplicates);
+            out["relink"] = json!(relink);
             Ok(out)
         }),
         cmd!(
