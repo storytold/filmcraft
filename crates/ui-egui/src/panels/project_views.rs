@@ -497,6 +497,21 @@ fn empty_space(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, actions: &mu
     let r = Rect::from_min_size(rest.min, vec2(rest.width(), rest.height().max(40.0)));
     let resp = ui.allocate_rect(r, Sense::click());
     app.auto.add(&format!("{}.empty", v.prefix), r.intersect(ui.clip_rect()), "Empty area");
+    empty_interactions(app, &resp, v, actions);
+}
+
+/// The space between and beside the cards of the Icon view, which is empty too: registered before
+/// the cards, so a card on top takes its own clicks and everything else lands here. Without it
+/// only the strip under the last row answered, and once a project had a row of bins or clips that
+/// strip was all a double-click could open Import from.
+fn empty_background(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, actions: &mut Actions) {
+    let r = ui.clip_rect();
+    let resp = ui.interact(r, ui.id().with((&v.prefix, "empty-background")), Sense::click());
+    app.auto.add(&format!("{}.emptyBackground", v.prefix), r, "Empty area");
+    empty_interactions(app, &resp, v, actions);
+}
+
+fn empty_interactions(app: &mut FilmcraftApp, resp: &egui::Response, v: &View, actions: &mut Actions) {
     if resp.clicked() {
         app.ui.project_panel.selected_bin = None;
         actions.push(("project.select".into(), json!({"items": []})));
@@ -811,6 +826,7 @@ pub fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
             app.ui.keys.icon_columns = per_row;
         }
         let rows = n.div_ceil(per_row);
+        empty_background(app, ui, v, actions);
         for rr in 0..rows {
             let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), cell.y), Sense::hover());
             for k in 0..per_row {
