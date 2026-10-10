@@ -210,7 +210,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
         }
         "graphics.beginTextEditing" => begin_text_editing(app),
         "help.filmcraftHelp" => {
-            crate::links::open(ctx, HELP_URL);
+            crate::links::open(app, ctx, HELP_URL);
             Ok(json!({"url": HELP_URL}))
         }
         "app.quit" => {
