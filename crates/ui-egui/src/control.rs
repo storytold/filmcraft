@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
 use crate::dock::PanelKind;
-use crate::state::{Mode, PlaybackRes, Tool};
+use crate::state::{Mode, PlaybackRes, ThumbnailMode, Tool};
 
 /// Prefix marking errors that may resolve after another frame.
 pub const RETRY: &str = "\u{1}";
@@ -189,9 +189,29 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                 if let Some(v) = tl.get("audioTrackHeight").and_then(Value::as_f64) {
                     app.ui.timeline.audio_track_h = v as f32;
                 }
+                // Show Video Thumbnails: "off" or a mode ("head", "headAndTail", "continuous")
+                if let Some(m) = tl.get("thumbnails").and_then(Value::as_str) {
+                    if m.eq_ignore_ascii_case("off") {
+                        app.ui.timeline.show_thumbnails = false;
+                    } else {
+                        let Some(mode) = ThumbnailMode::from_name(m) else {
+                            return err(format!("unknown thumbnail mode `{m}` (off, head, headAndTail, continuous)"));
+                        };
+                        app.ui.timeline.show_thumbnails = true;
+                        app.ui.timeline.thumbnail_mode = mode;
+                    }
+                }
             }
             if let Some(q) = s("effectsSearch") {
                 app.ui.effects_search = q.to_string();
+            }
+            // Effect Controls keyframe selection (`[{clip, effect, param, mask?, time}]`), replaced;
+            // references to missing keyframes are dropped by the panel
+            if let Some(v) = p.get("keyframeSelection") {
+                match serde_json::from_value(v.clone()) {
+                    Ok(sel) => app.ui.keyframe_selection = sel,
+                    Err(e) => return err(format!("`keyframeSelection`: {e}")),
+                }
             }
             if let Some(v) = p.get("safeMargins").and_then(Value::as_bool) {
                 app.ui.program.safe_margins = v;

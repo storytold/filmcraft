@@ -40,7 +40,7 @@ use filmcraft_project::{ClipId, ItemKind, ParamValue, Sequence, TrackId, TrackKi
 use filmcraft_time::Tick;
 use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, always, bad, has_selection, has_seq, item_p, time_p, with_links};
+use crate::commands::{CommandSpec, always, bad, has_selection, has_seq, item_p, slip_together, time_p, with_links};
 use crate::{EngineError, Result, Session};
 
 type Run = fn(&mut Session, &Value) -> Result<Value>;
@@ -248,14 +248,21 @@ fn slip_selection(s: &mut Session, frames: i64) -> Result<Value> {
     let rate = s.sequence_rate();
     let clips = with_links(s, &s.state.selection.clone());
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
-    // media delta per clip (source frames run at the clip's speed)
-    let deltas: Vec<(ClipId, Tick)> = clips
-        .iter()
-        .filter_map(|c| seq.find_item(*c).map(|(_, i)| (*c, Tick((rate.tick_of(frames).0 as f64 * i.speed.abs().max(1e-9)).round() as i64))))
-        .collect();
+    let linked = s.state.linked_selection;
+    // media delta per clip (source frames run at the clip's speed); linked partners slip as one group
+    let mut groups: Vec<(Option<u64>, Vec<(ClipId, Tick)>)> = Vec::new();
+    for c in &clips {
+        let Some((_, i)) = seq.find_item(*c) else { continue };
+        let d = Tick((rate.tick_of(frames).0 as f64 * i.speed.abs().max(1e-9)).round() as i64);
+        let link = i.link.filter(|_| linked);
+        match groups.iter_mut().find(|(l, _)| link.is_some() && *l == link) {
+            Some((_, g)) => g.push((*c, d)),
+            None => groups.push((link, vec![(*c, d)])),
+        }
+    }
     s.edit_sequence("Slip", |q, ctx, _| {
-        for (c, d) in &deltas {
-            edit::slip(q, *c, *d, ctx)?;
+        for (_, g) in &groups {
+            slip_together(q, ctx, g)?;
         }
         Ok(())
     })?;
@@ -265,12 +272,8 @@ fn slip_selection(s: &mut Session, frames: i64) -> Result<Value> {
 fn slide_selection(s: &mut Session, frames: i64) -> Result<Value> {
     let d = s.sequence_rate().tick_of(frames);
     let clips = with_links(s, &s.state.selection.clone());
-    s.edit_sequence("Slide", |q, ctx, _| {
-        for c in &clips {
-            edit::slide(q, *c, d, ctx)?;
-        }
-        Ok(())
-    })?;
+    // one common delta, clamped by the most restrictive member, keeps linked partners in sync
+    s.edit_sequence("Slide", |q, ctx, _| Ok(edit::slide_items(q, &clips, d, ctx)?))?;
     Ok(Value::Null)
 }
 

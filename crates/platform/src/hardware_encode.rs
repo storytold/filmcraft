@@ -33,6 +33,9 @@ pub fn config_for(w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Result
     if s.bitrate_mode == BitrateMode::Vbr2Pass || !matches!(s.h264_pass, H264Pass::Single) {
         return Err("two-pass encoding".into());
     }
+    if s.bitrate_mode == BitrateMode::Crf {
+        return Err("CRF (constant quality)".into());
+    }
     if s.signal.is_hdr() {
         return Err("HDR".into());
     }

@@ -465,6 +465,39 @@ fn transitions_stay_on_their_cuts() {
 }
 
 #[test]
+fn transitions_travel_with_moved_clips() {
+    // V1: a [0,10) fading in, b [10,20), c [20,30); b→c crossfade, c fading out
+    let mut fx = Fx::new();
+    let (v1, v2) = (fx.v(0), fx.v(1));
+    let a = fx.put(v1, 0, 10, 10);
+    let b = fx.put(v1, 10, 10, 10);
+    let c = fx.put(v1, 20, 10, 10);
+    let tr = |id, start, from, to| Transition {
+        id: TransitionId(id),
+        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        start: f(start),
+        duration: f(4),
+        from,
+        to,
+        align: Default::default(),
+        reverse: false,
+    };
+    fx.seq.track_mut(v1).unwrap().transitions = vec![tr(1, 0, None, Some(a)), tr(2, 18, Some(b), Some(c)), tr(3, 26, Some(c), None)];
+    let at = |fx: &Fx, track: TrackId| -> Vec<(u64, i64)> { fx.seq.track(track).unwrap().transitions.iter().map(|t| (t.id.0, R.frame_at(t.start))).collect() };
+    let mut n = fx.next;
+    // a fade at a clip's edge goes with it, to another track too
+    move_items(&mut fx.seq, &[(a, v2, f(40))], false, &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!((at(&fx, v1), at(&fx, v2)), (vec![(2, 18), (3, 26)], vec![(1, 40)]));
+    // a cut whose two clips move together keeps its transition, in an insert move as well
+    move_items(&mut fx.seq, &[(b, v1, f(60)), (c, v1, f(70))], true, &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(at(&fx, v1), vec![(2, 68), (3, 76)]);
+    // a crossfade whose partner stays behind is dropped; the other clip's fade stays with it
+    move_items(&mut fx.seq, &[(c, v1, f(90))], false, &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(at(&fx, v1), vec![(3, 96)]);
+    fx.seq.check().unwrap();
+}
+
+#[test]
 fn rate_stretch_and_speed() {
     let mut fx = Fx::new();
     let v1 = fx.v(0);
