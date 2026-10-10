@@ -27,6 +27,7 @@ mod marker_export;
 pub mod masks;
 pub mod media_browser;
 pub mod media_pool;
+pub mod media_watch;
 pub mod mixer;
 pub mod multicam;
 pub mod panels;
@@ -382,6 +383,11 @@ pub struct Session {
     pub browser: media_browser::BrowserState,
     /// Nesting depth of [`Session::execute`] (commands that run other commands).
     exec_depth: u32,
+    /// Each media file's size and modification time when last seen (Settings ▸ Media ▸
+    /// Automatically refresh growing files, [`media_watch`]).
+    pub media_stamps: std::collections::HashMap<String, media_watch::Stamp>,
+    /// The stamps being taken on a worker thread ([`Session::start_media_scan`]).
+    pub media_scan: Option<media_watch::MediaScan>,
 }
 
 /// An export advanced a batch at a time on the host's thread ([`Session::pump_jobs`]).
@@ -469,6 +475,8 @@ impl Session {
             log: Default::default(),
             browser: Default::default(),
             exec_depth: 0,
+            media_stamps: Default::default(),
+            media_scan: None,
         }
     }
 
@@ -1064,6 +1072,8 @@ mod masks_tests;
 mod media_browser_tests;
 #[cfg(test)]
 mod media_test_util;
+#[cfg(test)]
+mod media_watch_tests;
 #[cfg(test)]
 mod mixer_tests;
 #[cfg(test)]

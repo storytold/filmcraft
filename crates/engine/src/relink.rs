@@ -654,6 +654,16 @@ pub fn commands() -> Vec<CommandSpec> {
             journal: true,
         },
         CommandSpec {
+            id: "media.refreshChanged",
+            label: "Refresh Changed Media",
+            menu: &[],
+            shortcut: None,
+            params: "{}",
+            enabled: always,
+            run: crate::media_watch::refresh_changed,
+            journal: true,
+        },
+        CommandSpec {
             id: "media.replaceFootage",
             label: "Replace Footage…",
             menu: &[],

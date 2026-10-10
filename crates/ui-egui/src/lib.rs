@@ -1384,6 +1384,41 @@ impl FilmcraftApp {
 
     // ---------------------------------------------------------------- frame
 
+    /// Settings ▸ Media ▸ Automatically refresh growing files: every *Refresh growing files every*
+    /// seconds, and as soon as the window comes back to the front (after a render in another app),
+    /// stamp the project's media files on a worker thread and read the changed ones again
+    /// ([`filmcraft_engine::media_watch`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn tick_media_refresh(&mut self, ctx: &egui::Context) {
+        if let Some(r) = self.session.poll_media_scan() {
+            match r {
+                Ok(r) => {
+                    if let Some(n) = r["refreshed"].as_array().map(Vec::len).filter(|n| *n > 0) {
+                        self.toast = Some((format!("Refreshed {n} media item(s) changed on disk"), ctx.input(|i| i.time)));
+                    }
+                }
+                Err(e) => self.toast = Some((e.to_string(), ctx.input(|i| i.time))),
+            }
+        }
+        let media = &self.session.prefs.media;
+        let (on, every) = (media.refresh_growing_files, f64::from(media.growing_refresh_seconds.max(1)));
+        let (last_key, focus_key) = (egui::Id::new("mediaWatch.lastScan"), egui::Id::new("mediaWatch.focused"));
+        let now = ctx.input(|i| i.time);
+        let focused = ctx.input(|i| i.focused);
+        let was_focused: bool = ctx.data(|d| d.get_temp(focus_key)).unwrap_or(focused);
+        ctx.data_mut(|d| d.insert_temp(focus_key, focused));
+        if !on || filmcraft_engine::media_watch::media_files(&self.session.project).is_empty() {
+            return;
+        }
+        let last: f64 = ctx.data(|d| d.get_temp(last_key)).unwrap_or(f64::NEG_INFINITY);
+        if now - last >= every || (focused && !was_focused) {
+            ctx.data_mut(|d| d.insert_temp(last_key, now));
+            self.session.start_media_scan();
+        }
+        let wait = if self.session.media_scan.is_some() { 0.1 } else { (every - (now - last)).clamp(0.1, every) };
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
+    }
+
     fn frame(&mut self, ui: &mut egui::Ui) {
         i18n::set_current(self.ui.language);
         if std::mem::take(&mut self.panic_next_frame) {
@@ -1400,6 +1435,8 @@ impl FilmcraftApp {
         }
         self.sync_pool();
         self.apply_prefs(&ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.tick_media_refresh(&ctx);
         for ev in self.session.drain_events() {
             match ev {
                 filmcraft_engine::Event::OpenSequence(_) => {
