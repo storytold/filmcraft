@@ -3162,6 +3162,15 @@
 	Nudge Volume -1dB	音量を -1dB 微調整
 	Nudge Volume -3dB	音量を -3dB 微調整
 	Numbered BMP stills (24-bit)	連番 BMP 静止画 (24-bit)
+	JPEG	JPEG
+	Targa	Targa
+	DPX	DPX
+	JPEG Sequence	JPEG 連番画像
+	Targa Sequence	Targa 連番画像
+	DPX Sequence	DPX 連番画像
+	Numbered JPEG stills (quality 90)	連番 JPEG 静止画 (品質 90)
+	Numbered Targa stills (24-bit, uncompressed)	連番 Targa 静止画 (24-bit、非圧縮)
+	Numbered DPX stills (10-bit RGB)	連番 DPX 静止画 (10-bit RGB)
 	Numbered PNG stills at the sequence's frame size	シーケンスと同じフレームサイズの連番 PNG 静止画
 	Numbered TIFF stills (RGB, 8-bit)	連番 TIFF 静止画 (RGB、8-bit)
 	Opacity 0 → 100 % over the first second	最初の 1 秒で不透明度を 0 → 100 % に変化

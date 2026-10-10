@@ -743,7 +743,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 }
             });
         }
-        Format::Mjpeg => {
+        Format::Mjpeg | Format::JpegSequence => {
             row(ui, t, tl!("Quality"), |ui| {
                 let mut q = s.quality as f64;
                 drag(ui, reg, "export.video.quality", &mut q, 1.0..=100.0, 1.0, "", 0);

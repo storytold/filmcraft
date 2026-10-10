@@ -108,7 +108,7 @@ impl FilmcraftMcp {
 
 /// Delete what an interrupted export wrote, and nothing else: the output file itself, the numbered
 /// stills of an image sequence (`<stem><3+ digits>.<same extension>`, only when the output is a
-/// PNG/TIFF/BMP sequence) and the caption sidecar
+/// PNG/TIFF/BMP/JPEG/Targa/DPX sequence) and the caption sidecar
 /// (`<stem>.srt` / `<stem>.vtt`), each only if it was written since `since`. Other files that
 /// merely share the name's stem (`<stem>.aep`, `<stem>2.psd`, `<stem>1.mp4` beside a movie, …) are
 /// never touched, even when they were saved during the export.
@@ -152,7 +152,7 @@ fn is_export_output(name: &str, file: &str, stem: &str, ext: &str) -> bool {
 /// Whether an export to a file with extension `ext` writes an image sequence (one still per frame).
 fn is_sequence_extension(ext: &str) -> bool {
     use filmcraft_engine::export::Format;
-    Format::from_name(ext).is_some_and(|f| matches!(f, Format::PngSequence | Format::TiffSequence | Format::BmpSequence))
+    Format::from_name(ext).is_some_and(Format::is_image_sequence)
 }
 
 #[cfg(test)]

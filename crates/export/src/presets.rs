@@ -152,6 +152,14 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
         ),
         p("TIFF Sequence", "Image Sequence", "Numbered TIFF stills (RGB, 8-bit)", ExportSettings { format: Format::TiffSequence, ..Default::default() }),
         p("BMP Sequence", "Image Sequence", "Numbered BMP stills (24-bit)", ExportSettings { format: Format::BmpSequence, ..Default::default() }),
+        p("JPEG Sequence", "Image Sequence", "Numbered JPEG stills (quality 90)", ExportSettings { format: Format::JpegSequence, ..Default::default() }),
+        p(
+            "Targa Sequence",
+            "Image Sequence",
+            "Numbered Targa stills (24-bit, uncompressed)",
+            ExportSettings { format: Format::TgaSequence, ..Default::default() },
+        ),
+        p("DPX Sequence", "Image Sequence", "Numbered DPX stills (10-bit RGB)", ExportSettings { format: Format::DpxSequence, ..Default::default() }),
         p(
             "Animated GIF 640×360",
             "Animated GIF",

@@ -178,9 +178,10 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 ## G13. Delivery formats
 
 - **Missing:** AV1 export (software or hardware), MPEG-2 / DVD / Blu-ray, DCP, JPEG 2000 MXF,
-  AS-10 / AS-11, XDCAM HD MXF, P2, EXR / DPX / Targa / JPEG sequences, MP3 and AAC-only audio,
+  AS-10 / AS-11, XDCAM HD MXF, P2, OpenEXR sequences, MP3 and AAC-only audio,
   ProRes 4444 / XQ in the export UI (#342; the encoder has the profiles), interlaced encoding,
   smart render, HEVC software encoder (HEVC exists only where a hardware encoder does).
+- **Have:** PNG, TIFF, BMP, JPEG, Targa and DPX (10-bit) image sequences (#779).
 - **Estimate:** 60–110 h. Doc: [file-format-parity.md](file-format-parity.md).
 
 ## G14. Localization: 8 of the 12 key languages missing

@@ -109,6 +109,57 @@ fn image_sequences_are_numbered_like_premiere() {
     }
 }
 
+/// JPEG, Targa and DPX sequences (#779): numbered like the others, JPEG at the export quality,
+/// Targa with alpha when asked; every still decoded by ffmpeg (external test oracle).
+#[test]
+fn jpeg_targa_and_dpx_sequences() {
+    let (p, seq, m) = matte([0.0, 0.0, 1.0, 0.5], 64, 36, None);
+    let mut jpeg_sizes = Vec::new();
+    for (fmt, ext, alpha, quality) in [
+        (Format::JpegSequence, "jpg", false, 95),
+        (Format::JpegSequence, "jpg", false, 20),
+        (Format::TgaSequence, "tga", false, 90),
+        (Format::TgaSequence, "tga", true, 90),
+        (Format::DpxSequence, "dpx", false, 90),
+    ] {
+        let dir = Scratch::new(&format!("seq3-{ext}-{alpha}-{quality}"));
+        let mut s = ExportSettings { format: fmt, path: dir.path(&format!("Shot.{ext}")), alpha, quality, ..Default::default() };
+        s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(3)));
+        assert_eq!(Format::from_name(fmt.id()), Some(fmt));
+        assert!(fmt.is_image_sequence() && s.is_image_sequence() && !s.has_audio());
+        let r = export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        assert_eq!(r.frames, 3);
+        let want: Vec<String> = (0..3).map(|i| format!("Shot{i:03}.{ext}")).collect();
+        assert_eq!(files_in(&dir.0), want, "{fmt:?}");
+        let first = dir.0.join(&want[0]);
+        let bytes = std::fs::read(&first).unwrap();
+        match fmt {
+            Format::JpegSequence => {
+                let px = image::load_from_memory(&bytes).unwrap().to_rgb8().get_pixel(32, 18).0;
+                assert!(px[2] > 100 && px[0] < 20, "{px:?}");
+                jpeg_sizes.push(bytes.len());
+            }
+            Format::DpxSequence => assert_eq!(bytes.len(), 2048 + 64 * 36 * 4),
+            _ => assert_eq!(bytes.len(), 18 + 64 * 36 * if alpha { 4 } else { 3 } + 26),
+        }
+        let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("jpeg / targa / dpx sequences") else { continue };
+        let first = first.to_string_lossy().to_string();
+        let out = std::process::Command::new(ffmpeg).args(["-v", "error", "-i", &first, "-f", "rawvideo", "-pix_fmt", "rgba", "-"]).output().unwrap();
+        assert!(out.status.success(), "{first}: {}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(out.stdout.len(), 64 * 36 * 4, "{first}");
+        let at = (18 * 64 + 32) * 4;
+        let px = &out.stdout[at..at + 4];
+        if alpha {
+            assert!((100..=160).contains(&px[3]) && px[2] > 200 && px[0] < 15, "{first} straight alpha: {px:?}");
+        } else {
+            assert!(px[3] == 255 && px[2] > 100 && px[2] < 240 && px[0] < 20, "{first} flattened over black: {px:?}");
+        }
+        // the top-left pixel is the top row (Targa is stored bottom-up), and all of it is blue
+        assert!(out.stdout.as_chunks::<4>().0.iter().all(|p| p[2] > 100 && p[0] < 20), "{first}");
+    }
+    assert!(jpeg_sizes[0] > jpeg_sizes[1], "quality 95 must be larger than quality 20: {jpeg_sizes:?}");
+}
+
 /// `alpha` keeps straight alpha in PNG and TIFF sequences; off (the default) flattens over black (#160).
 #[test]
 fn image_sequences_keep_alpha_when_asked() {
@@ -607,7 +658,7 @@ fn h265_is_a_format_that_needs_a_registered_encoder() {
     }
     assert_eq!(Format::from_name(Format::Hevc.id()), Some(Format::Hevc));
     assert_eq!((Format::Hevc.extension(), Format::Hevc.label()), ("mp4", "H.265 (HEVC)"));
-    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 15);
+    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 18);
     let s: ExportSettings = serde_json::from_value(serde_json::json!({"format": "hevc"})).unwrap();
     assert_eq!(s.format, Format::Hevc);
     assert_eq!(serde_json::to_value(&s).unwrap()["format"], "hevc");

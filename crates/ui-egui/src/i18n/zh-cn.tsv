@@ -3156,6 +3156,15 @@
 	Nudge Volume -1dB	微调音量 -1dB
 	Nudge Volume -3dB	微调音量 -3dB
 	Numbered BMP stills (24-bit)	带编号的 BMP 静帧（24 位）
+	JPEG	JPEG
+	Targa	Targa
+	DPX	DPX
+	JPEG Sequence	JPEG 序列
+	Targa Sequence	Targa 序列
+	DPX Sequence	DPX 序列
+	Numbered JPEG stills (quality 90)	带编号的 JPEG 静帧（质量 90）
+	Numbered Targa stills (24-bit, uncompressed)	带编号的 Targa 静帧（24 位，未压缩）
+	Numbered DPX stills (10-bit RGB)	带编号的 DPX 静帧（10 位 RGB）
 	Numbered PNG stills at the sequence's frame size	带编号的 PNG 静帧（采用序列帧大小）
 	Numbered TIFF stills (RGB, 8-bit)	带编号的 TIFF 静帧（RGB，8 位）
 	Opacity 0 → 100 % over the first second	在最初一秒内不透明度从 0 → 100%

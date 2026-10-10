@@ -378,11 +378,11 @@ impl ExportSettings {
         if self.format.is_mxf() { self.mxf_video_codec.encoder_format() } else { self.format }
     }
 
-    /// Whether the output can carry an alpha channel ([`ExportSettings::alpha`]): PNG and TIFF
-    /// sequences and ProRes 4444 / 4444 XQ QuickTime movies.
+    /// Whether the output can carry an alpha channel ([`ExportSettings::alpha`]): PNG, TIFF and
+    /// Targa sequences and ProRes 4444 / 4444 XQ QuickTime movies.
     pub fn supports_alpha(&self) -> bool {
         match self.format {
-            Format::PngSequence | Format::TiffSequence => true,
+            Format::PngSequence | Format::TiffSequence | Format::TgaSequence => true,
             Format::ProRes => crate::prores_profile(&self.prores_profile).chroma() == filmcraft_prores::ChromaFormat::Yuv444,
             _ => false,
         }
@@ -395,7 +395,7 @@ impl ExportSettings {
 
     /// Whether the output is a numbered image sequence.
     pub fn is_image_sequence(&self) -> bool {
-        matches!(self.format, Format::PngSequence | Format::TiffSequence | Format::BmpSequence)
+        self.format.is_image_sequence()
     }
 
     /// Output size, rate, audio format and bitrate for a sequence of `seq_w`×`seq_h` at `seq_rate`.
@@ -482,9 +482,12 @@ impl ExportSettings {
                 };
                 px * fps * bpp
             }
-            Format::Mjpeg => px * 8.0 * (0.4 + self.quality as f64 / 100.0 * 2.0) * fps / 8.0,
+            Format::Mjpeg | Format::JpegSequence => px * 8.0 * (0.4 + self.quality as f64 / 100.0 * 2.0) * fps / 8.0,
             Format::PngSequence => px * 4.0 * 0.45 * 8.0 * fps,
             Format::TiffSequence | Format::BmpSequence => px * if self.format == Format::BmpSequence { 3.0 } else { 4.0 } * 8.0 * fps,
+            Format::TgaSequence => px * if self.keeps_alpha() { 4.0 } else { 3.0 } * 8.0 * fps,
+            // 10-bit RGB in one 32-bit word per pixel
+            Format::DpxSequence => px * 4.0 * 8.0 * fps,
             Format::Gif => px * 0.6 * 8.0 * fps,
             Format::Wav | Format::Aiff | Format::MxfOp1a | Format::MxfOpAtom => 0.0,
         };
@@ -566,7 +569,8 @@ impl ExportSettings {
                 }
                 Format::DnxHr => v += &format!(", DNxHR {}", if self.dnx_profile.is_empty() { "HQ".into() } else { self.dnx_profile.to_ascii_uppercase() }),
                 Format::Apv => v += &format!(", {}", crate::apv_profile(&self.apv_profile).name()),
-                Format::Mjpeg => v += &format!(", quality {}", self.quality),
+                Format::Mjpeg | Format::JpegSequence => v += &format!(", quality {}", self.quality),
+                Format::DpxSequence => v += ", 10-bit RGB",
                 _ => {}
             }
             v
@@ -589,7 +593,7 @@ impl ExportSettings {
             Format::H264 | Format::Hevc | Format::Av1 => "MP4",
             Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg => "QuickTime",
             Format::MxfOp1a | Format::MxfOpAtom => self.mxf_video_codec.label(),
-            Format::PngSequence | Format::TiffSequence | Format::BmpSequence => "Image sequence",
+            f if f.is_image_sequence() => "Image sequence",
             _ => "",
         };
         let format = if container.is_empty() { self.format.label().to_string() } else { format!("{} ({container})", self.format.label()) };
