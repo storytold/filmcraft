@@ -238,3 +238,27 @@ fn delete_key_clears_the_selected_timeline_clip() {
     d.key("Cmd+Z");
     assert!(items(&mut d).iter().any(|i| i["clip"].as_u64() == Some(clip)), "and undo brings it back");
 }
+
+#[test]
+fn shift_delete_ripple_deletes_with_the_timeline_focused() {
+    // #680: the Timeline's own `Delete` (Clear) was tried before the app-wide `Shift+Delete`
+    // (Ripple Delete), and egui ignores the extra Shift, so Shift+Delete left a gap.
+    let mut d = Driver::new();
+    // the demo's other tracks have clips in the way of a sync-locked ripple
+    for t in ["V2", "V3", "A2", "A3"] {
+        d.exec("timeline.setTrack", json!({"track": t, "syncLock": false}));
+    }
+    let items = |d: &mut Driver| d.exec("sequence.inspect", json!({}))["video"][0]["items"].as_array().unwrap().clone();
+    let v1 = items(&mut d);
+    let (clip, start) = (v1[1]["clip"].as_u64().unwrap(), v1[1]["start"].as_i64().unwrap());
+    let next = v1[2]["clip"].as_u64().unwrap();
+    d.exec("playhead.set", json!({"time": start + 1_000_000_000}));
+    d.focus("Timeline");
+    d.key("D");
+    assert!(d.app().session.state.selection.iter().any(|c| c.0 == clip), "D selects the clip under the playhead");
+    d.key("Shift+Delete");
+    let after = items(&mut d);
+    assert!(!after.iter().any(|i| i["clip"].as_u64() == Some(clip)), "Shift+Delete removed the selected clip");
+    let moved = after.iter().find(|i| i["clip"].as_u64() == Some(next)).map(|i| i["start"].as_i64().unwrap());
+    assert_eq!(moved, Some(start), "and closed the gap");
+}

@@ -133,6 +133,8 @@ pub struct Tokens {
     pub tl_ruler_tick: Color32,
     pub tl_ruler_text: Color32,
     pub playhead: Color32,
+    /// Fill of a track header's source-patch / track-targeting button while it is on.
+    pub track_target: Color32,
     pub in_out_shade: Color32,
     pub clip_selected_border: Color32,
     pub render_red: Color32,
@@ -225,6 +227,7 @@ impl Tokens {
             tl_ruler_tick: Color32::from_rgb(0x8d, 0x8d, 0x8d),
             tl_ruler_text: Color32::from_rgb(0xb0, 0xb0, 0xb0),
             playhead: Color32::from_rgb(0x58, 0x95, 0xec),
+            track_target: Color32::from_rgb(0x26, 0x5b, 0xc1),
             in_out_shade: Color32::from_rgb(0x3f, 0x3f, 0x3f),
             clip_selected_border: Color32::from_rgb(0xeb, 0xeb, 0xeb),
             render_red: Color32::from_rgb(0xe3, 0x48, 0x50),
@@ -330,11 +333,28 @@ impl Tokens {
         }
     }
 
-    /// Settings ▸ Appearance on top of a theme: the highlight colour (selections, focus, primary
-    /// buttons) and accessible colour contrast (brighter secondary text and borders).
+    /// Settings ▸ Appearance on top of a theme: the highlight colour (selections, primary buttons,
+    /// the focus outline, the playhead, timecodes, drag values and track targeting) and accessible
+    /// colour contrast (brighter secondary text and borders).
     pub fn with_appearance(mut self, highlight: Option<[u8; 3]>, accessible_contrast: bool) -> Self {
         if let Some([r, g, b]) = highlight {
             let c = Color32::from_rgb(r, g, b);
+            // A highlight of the user's own also colours the theme's other blues: the same hue, as
+            // much more or less saturated and bright as each of them is than the theme's highlight.
+            // The theme's own highlight leaves them exactly as designed.
+            if c != self.accent {
+                let tint = |s: f32, v: f32| {
+                    let mut h = egui::ecolor::HsvaGamma::from(c);
+                    h.s = (h.s * s).clamp(0.0, 1.0);
+                    h.v = (h.v * v).clamp(0.0, 1.0);
+                    Color32::from(h)
+                };
+                self.focus = tint(0.92, 1.06);
+                self.playhead = self.focus;
+                self.timecode = tint(0.98, 1.09);
+                self.hot_text = self.timecode;
+                self.track_target = tint(1.0, 0.865);
+            }
             let lift = |v: u8| v.saturating_add(16);
             self.accent = c;
             self.accent_hover = Color32::from_rgb(lift(r), lift(g), lift(b));
@@ -548,6 +568,32 @@ mod tests {
             assert_eq!(t.keyframe_plot_axis, Color32::from_gray(0x33));
             assert_eq!(t.keyframe_handle, Color32::from_gray(0xd0));
         }
+    }
+
+    /// The colours the highlight drives besides the accent (#707).
+    fn highlight_blues(t: &Tokens) -> [Color32; 5] {
+        [t.focus, t.playhead, t.timecode, t.hot_text, t.track_target]
+    }
+
+    #[test]
+    fn the_default_highlight_leaves_the_theme_blues_as_designed() {
+        let default = filmcraft_engine::settings::parse_hex(filmcraft_engine::settings::DEFAULT_HIGHLIGHT);
+        for k in [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Light] {
+            assert_eq!(highlight_blues(&Tokens::for_kind(k).with_appearance(default, false)), highlight_blues(&Tokens::for_kind(k)), "{k:?}");
+        }
+    }
+
+    #[test]
+    fn a_highlight_of_ones_own_colours_the_playhead_timecodes_focus_and_targeting() {
+        let pink = Color32::from_rgb(0xe0, 0x45, 0x7b);
+        let t = Tokens::for_kind(ThemeKind::Dark).with_appearance(Some([0xe0, 0x45, 0x7b]), false);
+        let hue = |c: Color32| egui::ecolor::HsvaGamma::from(c).h;
+        for (c, was) in highlight_blues(&t).into_iter().zip(highlight_blues(&Tokens::for_kind(ThemeKind::Dark))) {
+            assert_ne!(c, was);
+            assert!((hue(c) - hue(pink)).abs() < 0.01, "{c:?} has the highlight's hue");
+        }
+        let v = |c: Color32| egui::ecolor::HsvaGamma::from(c).v;
+        assert!(v(t.playhead) > v(pink) && v(t.timecode) > v(pink) && v(t.track_target) < v(pink), "lighter and darker as the default blues are");
     }
 
     /// Chinese media and track names must render even when the interface stays in English.

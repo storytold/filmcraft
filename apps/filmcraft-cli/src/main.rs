@@ -252,12 +252,6 @@ async fn main() {
 }
 
 async fn cli() {
-    if matches!(std::env::args().nth(1).as_deref(), Some("--version" | "-V")) {
-        outln!("filmcraft-cli {}", env!("CARGO_PKG_VERSION"));
-        return;
-    }
-    register_hardware_decoders();
-    register_gpu_frame_renderer();
     let a = Args::parse(std::env::args().skip(1));
     // `--help` anywhere (`filmcraft-cli --help`, `filmcraft-cli export --help`) prints the reference:
     // the parser takes it as a flag option, so it never reaches the subcommand match.
@@ -265,6 +259,13 @@ async fn cli() {
         out!("{HELP}");
         return;
     }
+    // `--version` anywhere and `-V` as the subcommand, also after global options (`--demo --version`, #710).
+    if a.wants_version() {
+        outln!("filmcraft-cli {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    register_hardware_decoders();
+    register_gpu_frame_renderer();
     let Some(cmd) = a.pos(0) else { usage("missing subcommand") };
     match cmd {
         "help" | "-h" => out!("{HELP}"),
@@ -462,6 +463,9 @@ async fn cli() {
             diag(format_args!("rendered {}x{} in {:.1} ms → {out}", img.w, img.h, dt.as_secs_f64() * 1000.0));
         }
         "mcp" => {
+            if let Some(opt) = a.unknown_opt(&["--bridge", "--project", "--demo", "--data-dir"]) {
+                usage(format!("unknown mcp option `{opt}`"));
+            }
             let server = match a.opt("--bridge") {
                 Some(addr) => filmcraft_automation::FilmcraftMcp::bridge(addr).unwrap_or_else(|e| fail(e)),
                 None => match Backend::open(&a) {

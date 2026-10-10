@@ -196,3 +196,37 @@ fn a_single_frame_source_range_starts_at_the_marked_last_frame() {
     assert!(!h.state().source_playback.clock.playing);
     assert_eq!(h.state().session.state.source_playhead, last);
 }
+
+#[test]
+fn j_and_l_shuttle_the_source_both_ways_and_double_the_speed() {
+    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |_cc| app(5));
+    h.step();
+    h.state_mut().ui.focused = PanelKind::Source;
+    let before = h.state().session.project.to_json();
+    let program = h.state().session.playhead();
+    let ctx = h.ctx.clone();
+    for speed in [1.0, 2.0, 4.0, 8.0, 8.0] {
+        let r = menus::invoke(h.state_mut(), &ctx, "playback.forward", json!({})).unwrap();
+        assert_eq!(r["speed"], speed);
+    }
+    // J while running forward turns around at normal speed, then runs backward to the first frame
+    h.state_mut().session.execute("source.setPlayhead", json!({"seconds":2})).unwrap();
+    assert_eq!(menus::invoke(h.state_mut(), &ctx, "playback.reverse", json!({})).unwrap()["speed"], -1.0);
+    let at = h.state().session.state.source_playhead;
+    h.step();
+    h.step();
+    assert!(h.state().session.state.source_playhead < at, "J plays the Source backward");
+    assert!(!h.state().source_playback.clock.audio_clock, "shuttle speeds play without sound");
+    assert_eq!(menus::invoke(h.state_mut(), &ctx, "playback.reverse", json!({})).unwrap()["speed"], -2.0);
+    for _ in 0..8 {
+        h.step();
+    }
+    assert!(!h.state().source_playback.clock.playing);
+    assert_eq!(h.state().session.state.source_playhead, Tick::ZERO);
+    assert_eq!(menus::invoke(h.state_mut(), &ctx, "playback.slowForward", json!({})).unwrap()["speed"], 0.25);
+    menus::invoke(h.state_mut(), &ctx, "playback.stop", json!({})).unwrap();
+    assert!(!h.state().source_playback.clock.playing);
+    assert_eq!(h.state().session.playhead(), program);
+    assert!(!h.state().playback.playing);
+    assert_eq!(h.state().session.project.to_json(), before);
+}

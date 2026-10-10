@@ -19,7 +19,7 @@
 //! for H.264, VPS / SPS / PPS and VideoToolbox's own `hvcC` record for HEVC) come with the first
 //! compressed frame, and the muxer asks for them after the first group of frames.
 
-use std::ffi::{c_int, c_void};
+use std::ffi::{CStr, c_char, c_int, c_void};
 use std::panic::AssertUnwindSafe;
 use std::ptr::NonNull;
 use std::sync::{Mutex, PoisonError};
@@ -39,10 +39,10 @@ use objc2_core_video::{
 use objc2_video_toolbox::{
     VTCompressionSession, VTEncodeInfoFlags, VTSessionCopyProperty, VTSessionSetProperty, kVTCompressionPropertyKey_AllowFrameReordering,
     kVTCompressionPropertyKey_AllowOpenGOP, kVTCompressionPropertyKey_AverageBitRate, kVTCompressionPropertyKey_ColorPrimaries,
-    kVTCompressionPropertyKey_ConstantBitRate, kVTCompressionPropertyKey_DataRateLimits, kVTCompressionPropertyKey_ExpectedFrameRate,
-    kVTCompressionPropertyKey_MaxKeyFrameInterval, kVTCompressionPropertyKey_ProfileLevel, kVTCompressionPropertyKey_RealTime,
-    kVTCompressionPropertyKey_TransferFunction, kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder, kVTCompressionPropertyKey_YCbCrMatrix,
-    kVTProfileLevel_H264_Baseline_AutoLevel, kVTProfileLevel_H264_High_AutoLevel, kVTProfileLevel_H264_Main_AutoLevel, kVTProfileLevel_HEVC_Main_AutoLevel,
+    kVTCompressionPropertyKey_DataRateLimits, kVTCompressionPropertyKey_ExpectedFrameRate, kVTCompressionPropertyKey_MaxKeyFrameInterval,
+    kVTCompressionPropertyKey_ProfileLevel, kVTCompressionPropertyKey_RealTime, kVTCompressionPropertyKey_TransferFunction,
+    kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder, kVTCompressionPropertyKey_YCbCrMatrix, kVTProfileLevel_H264_Baseline_AutoLevel,
+    kVTProfileLevel_H264_High_AutoLevel, kVTProfileLevel_H264_Main_AutoLevel, kVTProfileLevel_HEVC_Main_AutoLevel,
     kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder,
 };
 
@@ -421,6 +421,28 @@ fn set_bool(session: &VTCompressionSession, key: &CFString, on: bool) -> i32 {
     set_value(session, key, CFBoolean::new(on).as_ref())
 }
 
+unsafe extern "C" {
+    fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+}
+
+/// `kVTCompressionPropertyKey_ConstantBitRate`, or `None` on a macOS that does not have it.
+///
+/// The key exists from macOS 13. Naming it as a linked symbol makes dyld refuse to start the whole
+/// app on macOS 11 and 12 ("Symbol not found"), although the encoder already falls back to an
+/// average bitrate when the key is unavailable. So it is looked up at run time instead.
+fn constant_bitrate_key() -> Option<&'static CFString> {
+    // `RTLD_DEFAULT` on macOS: search every image loaded into the process, VideoToolbox included.
+    const RTLD_DEFAULT: *mut c_void = -2isize as *mut c_void;
+    const NAME: &CStr = c"kVTCompressionPropertyKey_ConstantBitRate";
+    // SAFETY: `NAME` is a valid NUL-terminated string; `dlsym` only reads it.
+    let symbol = unsafe { dlsym(RTLD_DEFAULT, NAME.as_ptr()) };
+    let slot = NonNull::new(symbol)?.cast::<*const CFString>();
+    // SAFETY: the symbol is a `CFStringRef` constant exported by VideoToolbox, so `slot` points at a
+    // pointer to an immutable CFString that lives as long as the framework stays loaded (the whole
+    // process); it is read once and never written.
+    unsafe { slot.read().as_ref() }
+}
+
 fn set_value(session: &VTCompressionSession, key: &CFString, value: &CFType) -> i32 {
     // SAFETY: the session is valid, `key` is a framework constant and `value` a live CF object.
     unsafe { VTSessionSetProperty(session.as_ref(), key, Some(value)) }
@@ -527,14 +549,14 @@ impl VtEncoder {
         let _ = set_value(session, fps_key, CFNumber::new_f64(fps).as_ref());
 
         // SAFETY: reading immutable framework constants.
-        let (avg_key, limits_key, cbr_key) =
-            unsafe { (kVTCompressionPropertyKey_AverageBitRate, kVTCompressionPropertyKey_DataRateLimits, kVTCompressionPropertyKey_ConstantBitRate) };
+        let (avg_key, limits_key) = unsafe { (kVTCompressionPropertyKey_AverageBitRate, kVTCompressionPropertyKey_DataRateLimits) };
+        let cbr_key = constant_bitrate_key();
         let bps = |kbps: u32| i32::try_from(u64::from(kbps).saturating_mul(1000)).unwrap_or(i32::MAX);
         match c.rate {
             VtRate::Cbr { kbps } => {
                 // true constant bitrate where the OS offers it (macOS 13+); otherwise an average
                 // with a one-second ceiling at the same rate
-                if set_value(session, cbr_key, CFNumber::new_i32(bps(kbps)).as_ref()) != 0 {
+                if !cbr_key.is_some_and(|key| set_value(session, key, CFNumber::new_i32(bps(kbps)).as_ref()) == 0) {
                     require(set_value(session, avg_key, CFNumber::new_i32(bps(kbps)).as_ref()), "the bitrate")?;
                     let limits = CFArray::<CFType>::from_objects(&[CFNumber::new_i32(bps(kbps) / 8).as_ref(), CFNumber::new_f64(1.0).as_ref()]);
                     let _ = set_value(session, limits_key, limits.as_ref());

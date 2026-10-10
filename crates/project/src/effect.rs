@@ -17,7 +17,7 @@ use crate::mask::Mask;
 pub use audio::{GEQ10_LABELS, GEQ20_LABELS, GEQ30_LABELS, PREMIERE_AUDIO_EFFECTS};
 
 mod vfx;
-pub use vfx::{EASINGS, ECHO_OPERATORS, FRAME_LAYOUTS, LIGHT_IDS, SIMPLE_BLEND, TRACK_CHOICES, auto_point};
+pub use vfx::{EASINGS, ECHO_OPERATORS, FRAME_LAYOUTS, LIGHT_IDS, SIMPLE_BLEND, TRACK_CHOICES, auto_point, ultra_key_setting};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EffectKind {
@@ -619,7 +619,8 @@ fn build_effects() -> Vec<EffectDef> {
                 ang("skew_axis", "Skew Axis", 0.0),
                 ang("rotation", "Rotation", 0.0),
                 f("opacity", "Opacity", 100.0, 0.0, 100.0, ""),
-                f("shutter_angle", "Shutter Angle", 0.0, 0.0, 360.0, ""),
+                b("shutter_override", "Use Effect Shutter Angle", false),
+                f("shutter_angle", "Shutter Angle", 180.0, 0.0, 360.0, ""),
             ],
         ),
         video("mirror", "Mirror", DISTORT, vec![pt("center", "Reflection Center", f64::NAN, f64::NAN), ang("angle", "Reflection Angle", 0.0)]),

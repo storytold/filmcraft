@@ -87,4 +87,6 @@ pub fn sniff(bytes: &[u8]) -> bool {
 }
 
 #[cfg(test)]
+mod hostile_tests;
+#[cfg(test)]
 mod tests;
