@@ -61,7 +61,7 @@ and `filmcraft-cli`.
 | `audio-dsp` | L1 | loudness metering (BS.1770 / R128), audio effects, channel layouts (BS.775 up/downmix, 5.1 panner), music remix analysis; no dependencies |
 | `text` | L1 | text engine: font database (bundled OFL fonts + system fonts), shaping (harfrust), bidi, line breaking, paragraph layout, glyph/path rasteriser, strokes ([crates/text/README.md](../crates/text/README.md)) |
 | `edit` | L2 | pure edit algebra (insert, overwrite, razor, ripple, roll, slip, slide, rate stretch…; text-based editing: `edit::transcript`) |
-| `speech` | L2 | speech-to-text: `Transcriber` trait, Whisper model catalogue + verified downloader (feature `download`), pure-Rust Whisper inference on candle with word timestamps (feature `whisper`), speaker labelling ([transcripts.md](transcripts.md)) |
+| `speech` | L2 | speech-to-text: `Transcriber` trait, Whisper model catalogue + verified downloader (feature `download`), pure-Rust Whisper inference (faer matrix products + own CPU kernels) with word timestamps (feature `whisper`), safetensors / CTranslate2 weight readers, speaker labelling ([transcripts.md](transcripts.md)) |
 | `codecs` | L2 | container + codec hub: MP4/MOV, MKV, MXF, Ogg and MPEG TS / PS / video elementary stream sources, GOP-aware seeking, decoder registry, audio decoding |
 | `interchange` | L2 | EDL, FCP7 XML, FCPXML, OTIO, AAF (on `cfb`) and OMF 2.0 import/export (no file I/O; the engine supplies rendered audio essence) ([README](../crates/interchange/README.md)) |
 | `render` | L3 | sequence evaluation, CPU compositor, video effects (`effects`, `vfx`; effects needing other frames or tracks read them through `vfx::FxEnv`), transitions, audio mix |

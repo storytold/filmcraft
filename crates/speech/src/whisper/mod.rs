@@ -2,19 +2,25 @@
 //!
 //! 1. The whole clip's log-mel spectrogram is computed once ([`crate::mel`]), padded with 30 s of
 //!    silence (whose frames give the padding value of short windows).
-//! 2. The clip is cut into windows of at most 30 s at pauses ([`plan`]); long silences are
-//!    skipped. Because the windows are independent, a batch of them is encoded one by one and
-//!    then decoded **together**: every decoding step reads the decoder weights once for all
-//!    windows of the batch. Each window's cross-attention keys/values are projected once.
+//! 2. The clip is cut into regions of about 90 s at its longest pauses ([`plan`]). Inside a region
+//!    the procedure the model was published with runs: 30-second windows, each starting where the
+//!    previous one's last complete segment ended. The regions are independent, so the current
+//!    window of every region is encoded and then all of them are decoded **together**: every
+//!    decoding step reads the decoder weights once for the whole batch. Each window's
+//!    cross-attention keys/values are projected once. Silence of 1.5 s or more at the start of a
+//!    window is skipped.
 //! 3. **Language**: unless given, the decoder logits after `<|startoftranscript|>` on the first
 //!    window are compared over the language tokens and the most likely language is used.
 //! 4. **Decoding** is greedy with timestamp tokens: the first token must be a timestamp (≤ 1 s),
 //!    timestamps come in pairs and never go backwards, timestamps win whenever their summed
 //!    probability beats the best text token, and special tokens are suppressed. Windows whose
 //!    `<|nospeech|>` probability exceeds 0.6 while the text is improbable are skipped. A loop
-//!    guard stops a window that keeps repeating itself.
-//! 5. A window whose text ends in an unfinished segment keeps only the complete segments; the rest
-//!    of the window is decoded again as a new window in the next batch.
+//!    guard stops a window that keeps repeating itself; such a window (or one that runs out of
+//!    tokens) is decoded again with seeded sampling at temperature 0.2, 0.4, … 1.0.
+//! 5. A window whose text ends in an unfinished segment keeps only the complete segments; its
+//!    region's next window starts at the end of the last one. A window still reads the 30 s of
+//!    audio after its start, past its region's end; words that start (after trimming silence)
+//!    beyond the region's end are left to the next region.
 //! 6. **Word timestamps**: the window's text tokens are run once more through the decoder
 //!    (`<|notimestamps|>` prompt; layers after the last alignment head and the output projection
 //!    are skipped) and the cross-attention logits of the model's alignment heads
