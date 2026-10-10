@@ -54,6 +54,7 @@ struct Fs {
 
 thread_local! {
     static FS: RefCell<Fs> = RefCell::new(Fs::default());
+    static DOWNLOADS: RefCell<crate::download_pacing::Pacer> = RefCell::new(crate::download_pacing::Pacer::default());
 }
 
 /// Wake-up hook for arriving data.
@@ -405,7 +406,8 @@ impl Services for WebServices {
     }
 }
 
-/// Offer bytes as a browser download named `name`.
+/// Offer bytes as a browser download named `name`. Downloads are clicked at least
+/// [`crate::download_pacing::GAP_MS`] apart: Chrome drops a burst of them (#378).
 pub fn download(name: &str, data: &[u8]) -> Result<(), wasm_bindgen::JsValue> {
     let doc = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
     let blob = bytes_to_blob(data, "application/octet-stream")?;
@@ -414,10 +416,20 @@ pub fn download(name: &str, data: &[u8]) -> Result<(), wasm_bindgen::JsValue> {
     a.set_href(&url);
     a.set_download(file_name(name));
     a.style().set_property("display", "none")?;
-    doc.body().ok_or("no body")?.append_child(&a)?;
-    a.click();
-    a.remove();
+    let delay = DOWNLOADS.with(|d| d.borrow_mut().reserve(js_sys::Date::now()));
+    let name = name.to_owned();
     wasm_bindgen_futures::spawn_local(async move {
+        if delay > 0.0 {
+            sleep(delay as i32).await;
+        }
+        let clicked = match doc.body() {
+            Some(body) => body.append_child(&a).map(|_| a.click()),
+            None => Err("no body".into()),
+        };
+        a.remove();
+        if let Err(e) = clicked {
+            log::warn!("download {name}: {e:?}");
+        }
         sleep(60_000).await;
         let _ = web_sys::Url::revoke_object_url(&url);
     });

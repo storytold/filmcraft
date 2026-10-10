@@ -365,12 +365,24 @@ pub fn instantiate(p: &EffectPreset, target: &TrackItem, size: (u32, u32)) -> Ve
     out
 }
 
-/// Put preset effects on a clip: intrinsic ones replace the clip's instance, others are inserted
-/// before the intrinsic effects.
+/// Keep `old`'s keyframes that lie outside the span `new` animates, so presets keyframing the same
+/// parameter at different times (Fade In, then Fade Out) add up instead of replacing each other.
+fn merge_keyframes(new: &mut EffectInstance, old: &EffectInstance) {
+    for (id, p) in new.params.iter_mut() {
+        let (Some(first), Some(last)) = (p.keyframes.first().map(|k| k.time), p.keyframes.last().map(|k| k.time)) else { continue };
+        let Some(o) = old.params.get(id) else { continue };
+        p.keyframes.extend(o.keyframes.iter().filter(|k| k.time < first || k.time > last).cloned());
+        p.keyframes.sort_by_key(|k| k.time);
+    }
+}
+
+/// Put preset effects on a clip: intrinsic ones replace the clip's instance (keeping its keyframes
+/// outside the span the preset animates), others are inserted before the intrinsic effects.
 pub fn put_effects(it: &mut TrackItem, effects: Vec<EffectInstance>) {
-    for e in effects {
+    for mut e in effects {
         let intrinsic = e.def().is_some_and(|d| d.intrinsic);
         if intrinsic && let Some(slot) = it.effects.iter_mut().find(|x| x.effect == e.effect) {
+            merge_keyframes(&mut e, slot);
             *slot = e;
             continue;
         }

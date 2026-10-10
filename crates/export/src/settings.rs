@@ -102,6 +102,9 @@ pub enum BitrateMode {
     Vbr1Pass,
     /// Variable bitrate, two passes (the picture is rendered and analysed first).
     Vbr2Pass,
+    /// Constant quality: every frame is coded at [`ExportSettings::crf`] and the bitrate follows the
+    /// picture (H.264, built-in encoder only).
+    Crf,
 }
 
 impl BitrateMode {
@@ -110,6 +113,7 @@ impl BitrateMode {
             BitrateMode::Cbr => "CBR",
             BitrateMode::Vbr1Pass => "VBR, 1 pass",
             BitrateMode::Vbr2Pass => "VBR, 2 pass",
+            BitrateMode::Crf => "CRF (constant quality)",
         }
     }
 }
@@ -406,16 +410,7 @@ impl ExportSettings {
             6.. => 6,
             _ => 2,
         };
-        Resolved {
-            width: w,
-            height: h,
-            rate,
-            sample_rate: self.audio.sample_rate.filter(|r| (8000..=192_000).contains(r)).unwrap_or(seq_sr),
-            channels,
-            target_kbps: target,
-            max_kbps: max,
-            keyint,
-        }
+        Resolved { width: w, height: h, rate, sample_rate: self.audio.sample_rate.unwrap_or(seq_sr), channels, target_kbps: target, max_kbps: max, keyint }
     }
 
     /// The audio codec actually used.
@@ -520,6 +515,7 @@ impl ExportSettings {
                     );
                     v += &match self.bitrate_mode {
                         BitrateMode::Cbr => format!(", {}", mbps(r.target_kbps)),
+                        BitrateMode::Crf => format!(" {}", self.crf),
                         _ => format!(", Target {}, Max {}", mbps(r.target_kbps), mbps(r.max_kbps)),
                     };
                     v += &format!(", keyframe every {} frames", r.keyint);

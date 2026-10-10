@@ -31,6 +31,7 @@ pub mod mixer;
 pub mod multicam;
 pub mod narration;
 pub mod panels;
+pub mod paste_media;
 pub mod perf;
 pub mod presets;
 pub mod previews;
@@ -1090,6 +1091,8 @@ mod nesting_tests;
 mod panels_tests;
 #[cfg(test)]
 mod par_tests;
+#[cfg(test)]
+mod paste_media_tests;
 #[cfg(test)]
 mod presets_tests;
 #[cfg(test)]

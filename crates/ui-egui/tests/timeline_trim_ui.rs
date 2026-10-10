@@ -298,3 +298,29 @@ fn dragging_a_caption_edge_inward_trims_it() {
     assert_eq!(s1, s0, "the caption's start stayed: trimmed, not moved");
     assert!(e1 < e0, "the caption's end moved in: {e0} → {e1}");
 }
+
+/// Dragging a picture in the Trim Monitor must not deadlock: the shift bookkeeping used to call
+/// `drag_delta()` inside `data_mut()`, and both take egui's non-reentrant context write-lock, so
+/// the drag froze the whole app on its first recognised frame (the delta is read before locking
+/// now). The drag commits one normal trim on release.
+#[test]
+fn dragging_in_the_trim_monitor_trims_without_hanging() {
+    let mut d = Driver::demo();
+    let city = d.v1_clip(CITY);
+    d.exec("trim.selectEditPoint", json!({"clip": city, "edge": "out", "kind": "trim"}));
+    d.frames(2);
+    // the Program panel shows the two-up Trim Monitor once an edit point is selected
+    let els = d.ok("ui.elements", json!({"prefix": "trimMonitor."}));
+    let out =
+        els.as_array().expect("elements").iter().find(|e| e["id"] == "trimMonitor.outgoing").unwrap_or_else(|| panic!("trim monitor not shown: {els}")).clone();
+    let r: Vec<f32> = out["rect"].as_array().expect("rect").iter().map(|v| v.as_f64().expect("number") as f32).collect();
+    let (cx, cy) = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    // about 66 px of drag = the 6 pt threshold + 60 px of motion, at 6 px per frame;
+    // inward (left) trims into the clip's media, outward would clamp at the seamless cut
+    let (_, e0) = d.span(city);
+    d.drag(pos2(cx, cy), pos2(cx - 66.0, cy), 33);
+    let (_, e1) = d.span(city);
+    let frames = (e1 - e0) / d.frame();
+    assert!(e1 < e0, "the Out edge moved in by {} frames", frames.abs());
+    assert!((6..=14).contains(&-frames), "about 11 frames expected for 60 px at 6 px/frame, moved {}", frames.abs());
+}

@@ -2,7 +2,7 @@
 //!
 //! **Channel order.** 5.1 audio is always in the SMPTE / WAVE order **L, R, C, LFE, Ls, Rs**
 //! ([`L`], [`R`], [`C`], [`LFE`], [`LS`], [`RS`]); stereo is L, R; mono is one channel. Codecs with a
-//! different native order (AAC: C, L, R, Ls, Rs, LFE) reorder at the encoder boundary.
+//! different native order (AAC: C, L, R, Ls, Rs, LFE) reorder at the codec boundary.
 //!
 //! **Downmix** follows ITU-R BS.775 (Table 2, "3/2 source" rows), with `k = 1/√2` (−3 dB):
 //!

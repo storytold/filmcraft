@@ -1010,8 +1010,23 @@ pub fn clip_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let m = meters.get(&tr.id.0).cloned().unwrap_or_default();
             draw_meters(ui, mrect, &m, if m.is_empty() { filmcraft_render::mixer::width_of(tr.channels) } else { m.len() }, &t);
         }
-        small_text(ui, pos2(sr.min.x + 8.0, sr.max.y - 34.0), Align2::LEFT_CENTER, &db_text(vol), 11.5, dimc(t.hot_text));
-        app.auto.add(&format!("{ap}.value"), Rect::from_min_size(pos2(sr.min.x + 4.0, sr.max.y - 42.0), vec2(50.0, 16.0)), &db_text(vol));
+        // dB readout: drag to scrub, click to type a value (clamped to the fader range), like the track mixer
+        let vr = Rect::from_min_size(pos2(sr.min.x + 4.0, sr.max.y - 42.0), vec2(50.0, 16.0));
+        let mut vui = ui.new_child(egui::UiBuilder::new().max_rect(vr));
+        if !active {
+            vui.set_opacity(0.4);
+        }
+        let (vresp, nv) = crate::widgets::hot_number(&mut vui, egui::Id::new((&ap, "value")), vol.max(-96.0), 0.1, (FADER_MIN_DB, FADER_MAX_DB), 1, "", &t);
+        app.auto.add(&format!("{ap}.value"), vresp.rect, &db_text(vol));
+        if let (Some(v), true) = (nv, active) {
+            set(&mut acts, "volume", "level", v, !vresp.dragged() || vresp.drag_started());
+            if !vresp.dragged() {
+                release(&mut acts, "volume");
+            }
+        }
+        if vresp.drag_stopped() {
+            release(&mut acts, "volume");
+        }
         small_text(ui, pos2(sr.min.x + 6.0, sr.max.y - 10.0), Align2::LEFT_CENTER, &label, 12.0, t.text);
         small_text(ui, pos2(sr.min.x + 30.0, sr.max.y - 10.0), Align2::LEFT_CENTER, &tr.name, 12.0, t.text);
     }
