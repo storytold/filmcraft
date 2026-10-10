@@ -1253,6 +1253,10 @@ pub struct Project {
     /// made from, keyed by that item. Schema v14.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub narrations: BTreeMap<ItemId, Narration>,
+    /// Project notes (Window ▸ Project Notes): free plain text kept with the project, for to-dos,
+    /// instructions for whoever opens it next, frame numbers and the like. Schema v15.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notes: String,
 }
 
 /// How a sequence is shown in the Timeline panel: its zoom, scroll position and track heights.
@@ -1348,6 +1352,7 @@ impl Project {
             search_bins: Vec::new(),
             source_graphics: BTreeMap::new(),
             narrations: BTreeMap::new(),
+            notes: String::new(),
         }
     }
 

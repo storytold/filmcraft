@@ -3502,6 +3502,10 @@
 	Edit Narration	编辑旁白
 	Clear Transition	清除过渡
 	Set Transition Duration	设置过渡持续时间
+	Project Notes	项目备注
+	Get Project Notes	获取项目备注
+	Edit Project Notes	编辑项目备注
+	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	此项目的备注：待办事项、说明、帧号等… 随项目一起保存。
 	GPU acceleration is unavailable; preview renders on the CPU	GPU 加速不可用；预览在 CPU 上渲染
 	Caption Tracks	字幕轨道
 	Delete Caption Track	删除字幕轨道
