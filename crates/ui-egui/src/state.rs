@@ -442,6 +442,10 @@ pub struct UiState {
     pub lumetri_grid_folder: Option<String>,
     /// Collapsed effect sections in Effect Controls ("clip:index").
     pub collapsed_fx: Vec<String>,
+    /// Width of Effect Controls' effect list, left of the keyframe area (points; 0 = the default
+    /// share of the panel). Dragging the divider sets it (#643).
+    #[serde(default)]
+    pub effect_controls_split: f32,
     pub show_menu_bar: bool,
     /// The header bar (Home, Import, Edit, Export, workspaces). An app that embeds FilmCraft can hide it.
     #[serde(default = "shown")]
@@ -950,6 +954,7 @@ impl Default for UiState {
             expanded_fx: vec!["Video Transitions".into(), "Video Transitions/Dissolve".into()],
             lumetri_grid_folder: None,
             collapsed_fx: vec![],
+            effect_controls_split: 0.0,
             show_menu_bar: true,
             show_header: true,
             show_status_bar: true,

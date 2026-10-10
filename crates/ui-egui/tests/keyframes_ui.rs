@@ -258,3 +258,42 @@ fn clicking_a_lane_keyframe_selects_only_that_keyframe() {
     d.click("effectControls.motion.position.addKeyframe");
     assert_eq!(selection(&mut d), json!([]), "a deleted keyframe is not selected");
 }
+
+/// Effect Controls' divider (#643): dragging it widens the effect list or the keyframe area, each
+/// keeping a minimum width, and the width stays. The mouse wheel scrolls the rows over the
+/// keyframe area too, not only over the effect list.
+#[test]
+fn effect_controls_divider_and_scrolling_anywhere() {
+    let (mut d, clip) = Driver::demo();
+    let lane = d.rect("effectControls.lane");
+    let div = d.rect("effectControls.divider");
+    let (x, y) = (div[0] + div[2] / 2.0, div[1] + div[3] / 2.0);
+    d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + 80.0, "y": y}, "steps": 6}));
+    let narrower = d.rect("effectControls.lane");
+    assert!((narrower[0] - (lane[0] + 80.0)).abs() <= 1.0, "the keyframe area starts 80 points further right: {narrower:?} vs {lane:?}");
+    assert!((narrower[0] + narrower[2] - (lane[0] + lane[2])).abs() <= 1.0, "and still ends at the panel's edge");
+    d.frames(3);
+    assert_eq!(d.rect("effectControls.lane"), narrower, "the width stays");
+    // dragged all the way right, the keyframe area keeps its minimum width
+    let drag_divider = |d: &mut Driver, by: f64| {
+        let div = d.rect("effectControls.divider");
+        let (x, y) = (div[0] + div[2] / 2.0, div[1] + div[3] / 2.0);
+        d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + by, "y": y}, "steps": 6}));
+    };
+    drag_divider(&mut d, 3000.0);
+    assert!(d.rect("effectControls.lane")[2] >= 59.0, "the keyframe area can't vanish");
+    // and all the way left, the effect list keeps the width its rows are laid out for
+    drag_divider(&mut d, -3000.0);
+    assert!(d.rect("effectControls.effect.motion")[2] >= 259.0, "the effect list stays wide enough for its values");
+
+    // enough effects to scroll; the wheel over the keyframe area scrolls the rows
+    for fx in ["gaussian_blur", "transform", "crop", "tint"] {
+        d.exec("effects.apply", json!({"clips": [clip.id], "effect": fx}));
+    }
+    let before = d.rect("effectControls.motion.scale.stopwatch");
+    let lane = d.rect("effectControls.lane");
+    d.ok("ui.scroll", json!({"x": lane[0] + lane[2] / 2.0, "y": lane[1] + lane[3] * 0.7, "dx": 0.0, "dy": -80.0}));
+    d.frames(4);
+    let after = d.find("effectControls.motion.scale.stopwatch");
+    assert!(after.is_none_or(|r| r[1] < before[1] - 20.0), "the rows scrolled up: {before:?} → {after:?}");
+}

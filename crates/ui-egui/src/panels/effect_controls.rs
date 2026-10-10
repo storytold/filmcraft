@@ -13,6 +13,10 @@ use crate::state::KeyframeRef;
 use crate::theme::Tokens;
 
 const ROW_H: f32 = 22.0;
+/// The narrowest the effect list and the keyframe area can be dragged (#643): the list's rows are
+/// laid out for at least 260 points (values from 150 points in, the reset button at the end).
+const MIN_LIST_W: f32 = 260.0;
+const MIN_LANE_W: f32 = 60.0;
 /// Keyframe lane header: the time ruler (beside the Source / Sequence pills) and the clip's bar.
 const RULER_H: f32 = 24.0;
 const CLIP_BAR_H: f32 = 18.0;
@@ -99,7 +103,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         crate::dock::placeholder(ui, rect, &t, tl!("(no sequences)"));
         return;
     };
-    let split = rect.min.x + (rect.width() * 0.58).max(260.0).min(rect.width() - 60.0);
+    // the divider between the effect list and the keyframe area; dragging it sets the list's width
+    // (#643), each side keeping a minimum width
+    // (the keyframe area has 4 points of margin left of it and 6 right)
+    let max_list = (rect.width() - MIN_LANE_W - 10.0).max(MIN_LIST_W);
+    let list_w = if app.ui.effect_controls_split > 0.0 { app.ui.effect_controls_split } else { (rect.width() * 0.58).max(260.0) };
+    let list_w = list_w.clamp(MIN_LIST_W, max_list);
+    let split = rect.min.x + list_w;
     let head = Rect::from_min_size(rect.min + vec2(8.0, 4.0), vec2(split - rect.min.x - 12.0, 24.0));
     // Premiere: two pill tabs — "Source · clip" and "Sequence · clip" (active)
     let pill = |ui: &mut egui::Ui, r: Rect, text: &str, active: bool| {
@@ -123,22 +133,14 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let rate = seq.settings.frame_rate;
     let ruler = Rect::from_min_max(lane.min, pos2(lane.max.x, lane.min.y + RULER_H));
     let bar = Rect::from_min_max(pos2(lane.min.x, ruler.max.y + 4.0), pos2(lane.max.x, ruler.max.y + 4.0 + CLIP_BAR_H));
-    // click or drag anywhere on the ruler (or the bar) to move the playhead
     let scrub = Rect::from_min_max(ruler.min, bar.max);
-    let sresp = ui.interact(scrub, egui::Id::new(("ec-scrub", clip.0)), Sense::click_and_drag());
     app.auto.add("effectControls.lane", lane, "keyframe lane");
     app.auto.add("effectControls.ruler", scrub, "time ruler");
-    if (sresp.dragged() || sresp.clicked())
-        && let Some(pos) = sresp.interact_pointer_pos()
-    {
-        let f = ((pos.x - lane.min.x) / lane.width()).clamp(0.0, 1.0) as f64;
-        let tk = rate.snap_nearest(it.start + Tick((f * it.duration.0 as f64) as i64));
-        app.stop();
-        app.session.set_playhead(tk);
-    }
     let body = Rect::from_min_max(pos2(rect.min.x, head.max.y + 4.0), pos2(split, rect.max.y - 26.0));
     let mut actions: Vec<(String, Value)> = Vec::new();
-    let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("ec-body"));
+    // the rows span the list and the keyframe area: the wheel scrolls anywhere over them and the
+    // scrollbar sits at the panel's right edge (#643)
+    let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(body.min, pos2(lane.max.x, body.max.y))).id_salt("ec-body"));
     bui.set_clip_rect(Rect::from_min_max(body.min, pos2(rect.max.x, body.max.y)));
     let scroll_out = egui::ScrollArea::vertical().id_salt("ec-scroll").auto_shrink([false, false]).show(&mut bui, |bui| {
         for (clip, it, kind) in &clips {
@@ -176,7 +178,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 if fxresp.clicked() {
                     actions.push(("effects.toggleEnabled".into(), json!({"clip": clip.0, "index": idx})));
                 }
-                bui.painter().text(pos2(r.min.x + 42.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::t(def.name), Tokens::ui(12.0), t.text);
+                // (the reset button sits at the row's right end)
+                row_label(bui, pos2(r.min.x + 42.0, r.center().y), crate::i18n::t(def.name), r.max.x - 26.0 - (r.min.x + 42.0), Tokens::ui(12.0), t.text);
                 // reset button
                 let rr = Rect::from_center_size(pos2(r.max.x - 14.0, r.center().y), vec2(16.0, 16.0));
                 let rresp = bui.interact(rr, egui::Id::new(("fxreset", clip.0, idx)), Sense::click()).on_hover_text(tl!("Reset Effect"));
@@ -238,6 +241,26 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     paint_ruler(ui.painter(), ruler, &it, rate, seq.settings.drop_frame, &t);
     ui.painter().rect_filled(bar.shrink2(vec2(0.0, 2.0)), 2.0, t.clip_bar_bg);
     ui.painter().with_clip_rect(bar).text(pos2(bar.min.x + 4.0, bar.center().y), Align2::LEFT_CENTER, &it.name, Tokens::ui(10.0), t.text);
+    // click or drag anywhere on the ruler (or the bar) to move the playhead (after the rows, which
+    // reach under it, so it gets the pointer first)
+    let sresp = ui.interact(scrub, egui::Id::new(("ec-scrub", clip.0)), Sense::click_and_drag());
+    if (sresp.dragged() || sresp.clicked())
+        && let Some(pos) = sresp.interact_pointer_pos()
+    {
+        let f = ((pos.x - lane.min.x) / lane.width()).clamp(0.0, 1.0) as f64;
+        let tk = rate.snap_nearest(it.start + Tick((f * it.duration.0 as f64) as i64));
+        app.stop();
+        app.session.set_playhead(tk);
+    }
+    // the divider: a line the height of the panel, a resize cursor and a wider grab area
+    let divider = Rect::from_min_max(pos2(split - 2.0, rect.min.y), pos2(split + 4.0, rect.max.y - 26.0));
+    let dresp = ui.interact(divider, egui::Id::new("ec-divider"), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+    if dresp.dragged() {
+        app.ui.effect_controls_split = (list_w + dresp.drag_delta().x).clamp(MIN_LIST_W, max_list);
+    }
+    let dcol = if dresp.hovered() || dresp.dragged() { t.accent } else { t.separator };
+    ui.painter().line_segment([pos2(split + 1.5, rect.min.y), pos2(split + 1.5, rect.max.y - 26.0)], Stroke::new(1.0, dcol));
+    app.auto.add("effectControls.divider", divider, "divider");
     // playhead: a handle on the ruler and a line down the lane, while it is on the clip
     if ph >= it.start && ph <= it.end() {
         let px = lx(ph);
@@ -261,8 +284,20 @@ pub(crate) fn row_line(ui: &egui::Ui, r: Rect, lane: &Rect, t: &Tokens) {
     ui.painter().line_segment([pos2(r.min.x, y), pos2(lane.max.x, y)], Stroke::new(1.0, t.separator));
 }
 
-/// Make a dropdown in a row fit inside the row, clear of its row lines.
-pub(crate) fn fit_dropdown_to_row(ui: &mut egui::Ui) {
+/// A row's label, cut off with "…" where it would run into what follows it, as Premiere does when
+/// the effect list is narrow (#643).
+pub(crate) fn row_label(ui: &egui::Ui, left_center: Pos2, text: &str, max_w: f32, font: egui::FontId, color: Color32) {
+    let mut job = egui::text::LayoutJob::single_section(text.to_owned(), egui::TextFormat::simple(font, color));
+    job.wrap.max_width = max_w.max(0.0);
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    job.wrap.overflow_character = Some('…');
+    let g = ui.fonts_mut(|f| f.layout_job(job));
+    ui.painter().galley(pos2(left_center.x, left_center.y - g.size().y / 2.0), g, color);
+}
+
+/// Make a dropdown or a checkbox in a row fit inside the row, centred between its row lines.
+pub(crate) fn fit_to_row(ui: &mut egui::Ui) {
     ui.spacing_mut().interact_size.y = ROW_H - 4.0;
     ui.spacing_mut().button_padding.y = 1.0;
 }
@@ -361,10 +396,11 @@ fn keyframe_nav(
         for (d, target, name, tip) in
             [(-1.0, param.prev_keyframe(mt), "prevKeyframe", "Go to previous keyframe"), (1.0, param.next_keyframe(mt), "nextKeyframe", "Go to next keyframe")]
         {
-            let r = Rect::from_center_size(at + vec2(d * NAV_STEP, 0.0), vec2(12.0, 14.0));
+            // the arrows almost the row's height to click, as Premiere's
+            let r = Rect::from_center_size(at + vec2(d * NAV_STEP, 0.0), vec2(14.0, 20.0));
             let resp = ui.interact(r, id.with(name), Sense::click()).on_hover_text(crate::i18n::t(tip));
             let c = r.center();
-            let pts = vec![c + vec2(-3.0 * d, -4.0), c + vec2(-3.0 * d, 4.0), c + vec2(3.0 * d, 0.0)];
+            let pts = vec![c + vec2(-3.5 * d, -5.5), c + vec2(-3.5 * d, 5.5), c + vec2(3.5 * d, 0.0)];
             ui.painter().add(egui::Shape::convex_polygon(pts, if target.is_some() { t.text } else { t.text_faint }, Stroke::NONE));
             app.auto.add(&format!("{auto}.{name}"), r, tip);
             if resp.clicked()
@@ -374,12 +410,12 @@ fn keyframe_nav(
             }
         }
     }
-    let r = Rect::from_center_size(at, vec2(13.0, 13.0));
+    let r = Rect::from_center_size(at, vec2(15.0, 15.0));
     let resp = ui.interact(r.expand(1.5), id.with("key"), Sense::click()).on_hover_text(crate::i18n::t(tip));
     if param.is_some_and(|p| p.keyframes.iter().any(|k| k.time == mt)) {
         icons::paint(ui.painter(), r, Icon::Keyframe, t.hot_text);
     } else {
-        let s = 4.0;
+        let s = 4.7;
         let outline = vec![at + vec2(0.0, -s), at + vec2(s, 0.0), at + vec2(0.0, s), at + vec2(-s, 0.0)];
         ui.painter().add(egui::Shape::closed_line(outline, Stroke::new(1.2, if resp.hovered() { t.text } else { t.text_dim })));
     }
@@ -483,8 +519,8 @@ pub(crate) fn param_row(
         app.auto.add(&format!("effectControls.{}.{}.stopwatch", e.effect, pkey), sw, "Toggle animation");
     }
     x += 14.0;
-    ui.painter().text(pos2(x, r.center().y), Align2::LEFT_CENTER, crate::i18n::t(pd.label), Tokens::ui(12.0), t.text);
     let vx = r.min.x + (r.width() * 0.5).max(150.0);
+    row_label(ui, pos2(x, r.center().y), crate::i18n::t(pd.label), vx - 6.0 - x, Tokens::ui(12.0), t.text);
     let value = param.value_at(mt);
     let mut vui = ui.new_child(
         egui::UiBuilder::new()
@@ -516,14 +552,17 @@ pub(crate) fn param_row(
         }
         (ParamKind::Bool, ParamValue::Bool(b)) => {
             let mut v = *b;
+            fit_to_row(&mut vui);
             if vui.checkbox(&mut v, "").changed() {
                 set = Some(json!(v));
             }
         }
         (ParamKind::Choice(opts), ParamValue::Choice(c)) => {
             let mut sel = *c as usize;
-            fit_dropdown_to_row(&mut vui);
-            egui::ComboBox::from_id_salt(id).selected_text(opts.get(sel).map_or("", |o| crate::i18n::t(o))).width(130.0).show_ui(&mut vui, |ui| {
+            fit_to_row(&mut vui);
+            // (narrower when the effect list is narrow, so it stays left of the divider)
+            let w = vui.available_width().min(130.0);
+            egui::ComboBox::from_id_salt(id).selected_text(opts.get(sel).map_or("", |o| crate::i18n::t(o))).width(w).show_ui(&mut vui, |ui| {
                 for (i, o) in opts.iter().enumerate() {
                     if ui.selectable_value(&mut sel, i, crate::i18n::t(o)).changed() {
                         set = Some(json!(i));
@@ -594,7 +633,8 @@ pub(crate) fn param_row(
             let id = egui::Id::new(("kf", clip.0, idx, pkey, k.time.0));
             let drag_off: Option<f32> = ui.data(|d| d.get_temp(id));
             let kx = lane.min.x + f * lane.width() + drag_off.unwrap_or(0.0);
-            let kr = Rect::from_center_size(pos2(kx, y), vec2(11.0, 11.0));
+            // about Premiere's size: a diamond ~9 points wide
+            let kr = Rect::from_center_size(pos2(kx, y), vec2(15.0, 15.0));
             let resp = ui.interact(kr.expand(2.0), id, Sense::click_and_drag());
             app.auto.add(&format!("effectControls.{}.{}.keyframe.{}", e.effect, pkey, k.time.0), kr, "keyframe");
             // highlighted when selected (not merely under the playhead: that lit up every
@@ -607,11 +647,11 @@ pub(crate) fn param_row(
             let col = if sel { t.hot_text } else { Color32::from_rgb(0xb0, 0xb0, 0xb0) };
             match k.interp {
                 filmcraft_project::Interpolation::Hold => {
-                    ui.painter().rect_filled(Rect::from_center_size(kr.center(), vec2(8.0, 8.0)), 0.0, col);
+                    ui.painter().rect_filled(Rect::from_center_size(kr.center(), vec2(9.0, 9.0)), 0.0, col);
                 }
                 filmcraft_project::Interpolation::Linear => icons::paint(ui.painter(), kr, Icon::Keyframe, col),
                 _ => {
-                    ui.painter().circle_filled(kr.center(), 4.5, col);
+                    ui.painter().circle_filled(kr.center(), 5.5, col);
                 }
             }
             if resp.dragged() {
