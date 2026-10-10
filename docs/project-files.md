@@ -152,9 +152,11 @@ Premiere's auto-save can lose up to one interval of work. FilmCraft also keeps a
   over the original file. The recovered state goes into the new session's own journal before the old
   journal is deleted.
 - A normal quit with nothing unsaved removes the session directory. Quitting with unsaved changes
-  keeps the snapshot, marked `cleanExit`, and FilmCraft offers it on the next launch ("FilmCraft was
-  closed while … had unsaved changes"). There is no "Save changes?" prompt on quit yet, so this
-  keeps the work.
+  (Quit, Cmd+Q or the window's close button) first asks *"Save changes to 'X' before closing?"*
+  with **Cancel**, **Don't Save** and **Save** (Save on a never-saved project opens the Save dialog);
+  Don't Save discards the changes and their snapshot. A quit that does not ask (the control
+  channel's `app.quit`, the OS ending the session) keeps the snapshot, marked `cleanExit`, and FilmCraft offers it on the next launch ("FilmCraft was
+  closed while … had unsaved changes").
 
 Desktop flags: `--recover` recovers the newest candidate without asking. `--no-recover` starts
 without asking; the changes stay available through File ▸ Recover Unsaved Changes…. `--data-dir

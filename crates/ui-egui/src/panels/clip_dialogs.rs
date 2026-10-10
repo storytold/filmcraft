@@ -1,7 +1,7 @@
 //! Edit / Clip / File menu dialogs (M3.10): Paste Attributes, Remove Attributes, Offline File,
 //! Make Subclip, Edit Subclip, Modify ▸ Audio Channels, Modify ▸ Timecode, Frame Hold Options,
-//! Field Options, Clip Speed / Duration, Nest… (Nested Sequence Name), and the Close Project
-//! "save changes?" prompt.
+//! Field Options, Clip Speed / Duration, Nest… (Nested Sequence Name), and the Close Project and
+//! Quit "save changes?" prompts.
 //!
 //! The open dialog lives in `UiState::clip_dialog` (serde): the engine command it runs and the
 //! parameters being edited — the same JSON the command takes — so agents can open a dialog from
@@ -26,7 +26,9 @@
 //! - Field Options `fieldOptions.*`: `reverseFieldDominance`, `processing.<none|alwaysDeinterlace|flickerRemoval>`;
 //! - Clip Speed / Duration `speedDuration.*`: `speed`, `reverse`, `ripple`,
 //!   `interpolation.<frameSampling|frameBlending|opticalFlow>`;
-//! - Close Project `closeProject.save`, `closeProject.dontSave`, `closeProject.cancel`.
+//! - Close Project `closeProject.save`, `closeProject.dontSave`, `closeProject.cancel`;
+//! - Quit (asked when the window is closed with unsaved changes, see [`intercept_quit`])
+//!   `quit.save`, `quit.dontSave`, `quit.cancel`.
 
 use egui::{Align2, RichText};
 use filmcraft_project::{AudioChannelMap, AudioChannels, ItemKind, TrackKind};
@@ -56,6 +58,7 @@ fn meta(command: &str) -> Option<(&'static str, &'static str)> {
         "clip.fieldOptions" => (tl!("Field Options"), "fieldOptions"),
         "clip.speedDuration" => (tl!("Clip Speed / Duration"), "speedDuration"),
         "file.closeProject" => (tl!("Save Project"), "closeProject"),
+        "app.quit" => (tl!("Save Project"), "quit"),
         _ => return None,
     })
 }
@@ -89,7 +92,7 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     if id == "file.saveAll" && app.session.path.is_none() {
         return Some(app.file_dialog("file.save", params));
     }
-    if id == "file.closeProject" && !app.session.is_dirty() {
+    if (id == "file.closeProject" && !app.session.is_dirty()) || id == "app.quit" {
         return None;
     }
     meta(id)?;
@@ -100,6 +103,19 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     let (params, info) = defaults(app, id);
     app.ui.clip_dialog = Some(ClipDialogDraft { command: id.into(), params, info, error: String::new() });
     Some(Ok(json!({"dialog": meta(id).map(|m| m.1)})))
+}
+
+/// A request to close the window (Quit, the title bar's close button, the OS): with unsaved
+/// changes it is cancelled and Save / Don't Save / Cancel is asked first, as in Premiere (#266).
+/// Returns whether the close must be cancelled.
+pub fn intercept_quit(app: &mut FilmcraftApp) -> bool {
+    if app.quit_confirmed || !app.session.is_dirty() {
+        return false;
+    }
+    if app.ui.clip_dialog.as_ref().is_none_or(|d| d.command != "app.quit") {
+        app.ui.clip_dialog = Some(ClipDialogDraft { command: "app.quit".into(), params: json!({}), info: Value::Null, error: String::new() });
+    }
+    true
 }
 
 /// Initial parameters (and display info) of a command's dialog.
@@ -290,7 +306,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut elems: Elems = Vec::new();
     let mut action: Option<&'static str> = None;
     let project_name = app.session.project.name.clone();
-    let can_save = app.session.path.is_some();
+    // a never-saved project is saved through the Save dialog
+    let can_save = app.session.path.is_some() || app.hooks.pick_save.is_some();
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::new(("clip-dialog", pre));
     egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(360.0).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
@@ -520,7 +537,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     }
                 }
             }
-            "file.closeProject" => {
+            "file.closeProject" | "app.quit" => {
                 ui.label(tlf!("Save changes to “{project_name}” before closing?", project_name));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -586,15 +603,32 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
         }
         Some("dontSave") | Some("save") => {
-            if action == Some("save")
-                && let Err(e) = app.session.execute("file.save", json!({}))
-            {
-                app.ui.status = e.to_string();
-                app.ui.clip_dialog = None;
-                return;
+            if action == Some("save") {
+                let saved = if app.session.path.is_some() {
+                    app.session.execute("file.save", json!({})).map(|_| ()).map_err(|e| e.to_string())
+                } else {
+                    app.file_dialog("file.save", &json!({})).map(|_| ())
+                };
+                if let Err(e) = saved {
+                    app.ui.status = e;
+                    app.ui.clip_dialog = None;
+                    return;
+                }
+                // the Save dialog was cancelled: back to the prompt
+                if app.session.is_dirty() {
+                    app.ui.clip_dialog = Some(d);
+                    return;
+                }
             }
-            if let Err(e) = app.session.execute("file.closeProject", json!({"force": true})) {
+            // Quit ▸ Don't Save discards the changes: closing the project also clears their recovery
+            // snapshot, so the next launch doesn't offer them back
+            let close = d.command != "app.quit" || app.session.is_dirty();
+            if close && let Err(e) = app.session.execute("file.closeProject", json!({"force": true})) {
                 app.ui.status = e.to_string();
+            }
+            if d.command == "app.quit" {
+                app.quit_confirmed = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
             app.ui.clip_dialog = None;
             return;
