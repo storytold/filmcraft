@@ -10,6 +10,7 @@
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
+use crate::native_dialogs::FileDialog;
 
 #[derive(Clone, Debug, PartialEq)]
 struct Draft {
@@ -176,8 +177,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         let (ext, filter) = if d.omf { ("omf", "OMF") } else { ("aaf", "AAF") };
         let stem = if d.title.is_empty() { "Sequence".to_string() } else { d.title.replace(['/', '\\', ':'], "_") };
         let suggested = format!("{stem}.{ext}");
-        match app.hooks.pick_save_as.as_mut().and_then(|f| f(filter, &[ext], &suggested)) {
-            Some(path) => {
+        let dialog = FileDialog::save_as(filter, &[ext], &suggested);
+        if dialog.available(&app.hooks) {
+            // the dialog closes now: the export takes its settings as they are
+            let d = d.clone();
+            app.pick_ui(dialog, move |app, paths| {
+                let Some(path) = paths.into_iter().next() else { return };
                 let mut params = json!({
                     "path": path,
                     "breakoutToMono": d.breakout,
@@ -199,9 +204,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     Ok(v) => app.ui.status = tlf!("Exported {path}", path = v["path"].as_str().unwrap_or_default()),
                     Err(e) => app.ui.status = e.to_string(),
                 }
-            }
-            None if app.hooks.pick_save_as.is_none() => app.ui.status = "no save dialog available: run the command with a `path`".into(),
-            None => {}
+            });
+        } else {
+            app.ui.status = "no save dialog available: run the command with a `path`".into();
         }
     }
     ctx.data_mut(|m| m.insert_temp(draft_id(), if close { None } else { Some(d) }));

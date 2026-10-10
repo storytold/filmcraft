@@ -42,6 +42,7 @@ pub mod i18n;
 pub mod icons;
 pub mod links;
 pub mod menus;
+pub mod native_dialogs;
 pub mod panels;
 pub mod perf;
 #[cfg(not(target_arch = "wasm32"))]
@@ -63,6 +64,7 @@ use serde_json::{Value, json};
 pub use control::ControlRequest;
 use dock::PanelKind;
 use frames::{FrameKey, FrameServer, Target};
+use native_dialogs::FileDialog;
 use state::UiState;
 use theme::{ThemeKind, Tokens};
 
@@ -131,6 +133,11 @@ pub struct HostHooks {
     /// Open a file in its default application, or (`true`) reveal it in the file manager (Edit ▸
     /// Edit Original, Help ▸ Reveal Log Files).
     pub open_path: Option<Box<dyn FnMut(&str, bool) -> Result<(), String>>>,
+    /// Show a file dialog without blocking the UI thread and answer on the returned channel with
+    /// the chosen paths (none: cancelled). With it, [`FilmcraftApp::pick`] keeps the frame loop
+    /// running while the dialog is open (the desktop app on Linux, #260); without it the
+    /// synchronous pickers above are used.
+    pub run_dialog: Option<Box<dyn FnMut(native_dialogs::FileDialog) -> Receiver<Vec<String>>>>,
 }
 
 /// The command a [`HostHooks::pick_file_for_relink`] caller runs with the chosen file, for hosts
@@ -226,6 +233,8 @@ pub struct FilmcraftApp {
     pub hooks: HostHooks,
     pub dialog: Option<Dialog>,
     pub file_dialogs: panels::file_dialogs::FileDialogState,
+    /// The native file dialog the host is showing ([`Self::pick`]).
+    native_dialog: Option<native_dialogs::PendingDialog>,
     pub auto: automation::Registry,
     /// Named textures (monitors, thumbnails) with the key they show.
     textures: HashMap<String, (FrameKey, TextureHandle)>,
@@ -430,6 +439,7 @@ impl FilmcraftApp {
             // Unsaved changes left by a session that died are offered first thing.
             dialog: recovery.then_some(Dialog::Recovery),
             file_dialogs: Default::default(),
+            native_dialog: None,
             auto: Default::default(),
             textures: HashMap::new(),
             control_rx: None,
@@ -1032,65 +1042,69 @@ impl FilmcraftApp {
                     .chain(&["srt", "vtt", "scc", "edl", "xml", "fcpxml", "otio", "aaf", "omf"])
                     .copied()
                     .collect();
-                let paths = self.hooks.pick_files.as_mut().map(|f| f(&exts)).unwrap_or_default();
-                if paths.is_empty() {
-                    return Ok(Value::Null);
-                }
-                let bin = params.get("bin").cloned().unwrap_or_else(|| json!(self.import_bin().0));
-                let r = self.session.execute("file.import", json!({"paths": paths, "bin": bin})).map_err(|e| e.to_string());
-                if let Ok(v) = &r
-                    && let Some(errs) = v.get("errors").and_then(Value::as_array)
-                    && !errs.is_empty()
-                {
-                    self.ui.status = errs.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
-                }
-                r
+                let bin = params.get("bin").cloned();
+                self.pick(FileDialog::open_files(&exts), move |app, paths| {
+                    if paths.is_empty() {
+                        return Ok(Value::Null);
+                    }
+                    let bin = bin.unwrap_or_else(|| json!(app.import_bin().0));
+                    let r = app.session.execute("file.import", json!({"paths": paths, "bin": bin})).map_err(|e| e.to_string());
+                    if let Ok(v) = &r
+                        && let Some(errs) = v.get("errors").and_then(Value::as_array)
+                        && !errs.is_empty()
+                    {
+                        app.ui.status = errs.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
+                    }
+                    r
+                })
             }
             // File ▸ Import with Image Sequence: choose the first numbered still
-            "file.importImageSequence" => {
-                let paths = self.hooks.pick_files.as_mut().map(|f| f(filmcraft_media::STILL_EXTENSIONS)).unwrap_or_default();
+            "file.importImageSequence" => self.pick(FileDialog::open_files(filmcraft_media::STILL_EXTENSIONS), |app, paths| {
                 let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
-                let r = self.session.execute("file.importImageSequence", json!({"path": path})).map_err(|e| e.to_string());
+                let r = app.session.execute("file.importImageSequence", json!({"path": path})).map_err(|e| e.to_string());
                 if let Err(e) = &r {
-                    self.ui.status = e.clone();
+                    app.ui.status = e.clone();
                 }
                 r
-            }
+            }),
             "file.saveAs" | "file.save" | "file.saveCopy" => {
                 let suggested =
                     if id == "file.saveCopy" { format!("{} copy.fcproj", self.session.project.name) } else { format!("{}.fcproj", self.session.project.name) };
-                let Some(path) = self.hooks.pick_save.as_mut().and_then(|f| f(&suggested)) else { return Ok(Value::Null) };
                 let cmd = if id == "file.saveCopy" { "file.saveCopy" } else { "file.saveAs" };
-                self.session.execute(cmd, json!({"path": path})).map_err(|e| e.to_string())
+                self.pick(FileDialog::SaveProject { name: suggested }, move |app, paths| {
+                    let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                    app.session.execute(cmd, json!({"path": path})).map_err(|e| e.to_string())
+                })
             }
-            "file.open" => {
-                let Some(path) = self.hooks.pick_open_project.as_mut().and_then(|f| f()) else { return Ok(Value::Null) };
-                self.session.execute("file.open", json!({"path": path})).map_err(|e| e.to_string())
-            }
+            "file.open" => self.pick(FileDialog::OpenProject, |app, paths| {
+                let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                app.session.execute("file.open", json!({"path": path})).map_err(|e| e.to_string())
+            }),
             "graphics.newFromFile" => {
                 let exts: Vec<&str> = filmcraft_media::STILL_EXTENSIONS.iter().chain(filmcraft_media::VIDEO_EXTENSIONS).copied().collect();
-                let paths = self.hooks.pick_files.as_mut().map(|f| f(&exts)).unwrap_or_default();
-                let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
-                self.session.execute("graphics.newFromFile", json!({"path": path})).map_err(|e| e.to_string())
+                self.pick(FileDialog::open_files(&exts), |app, paths| {
+                    let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                    app.session.execute("graphics.newFromFile", json!({"path": path})).map_err(|e| e.to_string())
+                })
             }
-            "captions.import" => {
-                let paths = self.hooks.pick_files.as_mut().map(|f| f(&["srt", "vtt", "scc", "mcc", "stl", "ttml", "dfxp", "xml"])).unwrap_or_default();
+            "captions.import" => self.pick(FileDialog::open_files(&["srt", "vtt", "scc", "mcc", "stl", "ttml", "dfxp", "xml"]), |app, paths| {
                 let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
-                self.session.execute("captions.import", json!({"path": path})).map_err(|e| e.to_string())
-            }
+                app.session.execute("captions.import", json!({"path": path})).map_err(|e| e.to_string())
+            }),
             "captions.export" => {
                 let name = self.session.state.active_sequence.and_then(|s| self.session.project.item(s)).map(|i| i.name.clone()).unwrap_or_default();
                 let suggested = format!("{}.srt", name.replace(' ', "_"));
-                let Some(path) =
-                    self.hooks.pick_save_as.as_mut().and_then(|f| {
-                        f("Captions (SRT, WebVTT, SCC, MCC, EBU STL, TTML, DFXP)", &["srt", "vtt", "scc", "mcc", "stl", "ttml", "dfxp"], &suggested)
-                    })
-                else {
-                    return Ok(Value::Null);
-                };
+                let dialog = FileDialog::save_as(
+                    "Captions (SRT, WebVTT, SCC, MCC, EBU STL, TTML, DFXP)",
+                    &["srt", "vtt", "scc", "mcc", "stl", "ttml", "dfxp"],
+                    &suggested,
+                );
                 let mut p = params.clone();
-                p["path"] = json!(path);
-                self.session.execute("captions.export", p).map_err(|e| e.to_string())
+                self.pick(dialog, move |app, paths| {
+                    let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                    p["path"] = json!(path);
+                    app.session.execute("captions.export", p).map_err(|e| e.to_string())
+                })
             }
             _ => match EXPORT_SAVE_DIALOGS.iter().find(|(c, ..)| *c == id) {
                 Some(&(_, filter, ext)) => self.export_save_dialog(id, filter, ext, params),
@@ -1103,9 +1117,9 @@ impl FilmcraftApp {
     /// run the command with that `path` and the rest of `params`.
     fn export_save_dialog(&mut self, id: &str, filter: &str, ext: &str, params: &Value) -> Result<Value, String> {
         filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&self.session))?;
-        let Some(pick) = self.hooks.pick_save_as.as_mut() else {
+        if !FileDialog::save_as(filter, &[ext], "").available(&self.hooks) {
             return Err("no save dialog available: run the command with a `path`".into());
-        };
+        }
         // Timelines are named after the sequence; a selection must not suggest the open project's file.
         let sequence = self.session.state.active_sequence.and_then(|s| self.session.project.item(s)).map(|i| i.name.clone());
         let stem = match id {
@@ -1115,15 +1129,18 @@ impl FilmcraftApp {
         };
         let stem: String = stem.chars().map(|c| if matches!(c, '/' | '\\') || c.is_control() { '-' } else { c }).collect();
         let stem = if stem.trim().is_empty() { "Untitled".to_string() } else { stem };
-        let Some(path) = pick(filter, &[ext], &format!("{stem}.{ext}")) else { return Ok(Value::Null) };
         let mut p = params.as_object().cloned().unwrap_or_default();
-        p.insert("path".into(), json!(path));
-        let r = self.session.execute(id, Value::Object(p)).map_err(|e| e.to_string());
-        self.ui.status = match &r {
-            Ok(_) => tlf!("Exported {path}", path),
-            Err(e) => e.clone(),
-        };
-        r
+        let id = id.to_string();
+        self.pick(FileDialog::save_as(filter, &[ext], &format!("{stem}.{ext}")), move |app, paths| {
+            let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+            p.insert("path".into(), json!(path));
+            let r = app.session.execute(&id, Value::Object(p)).map_err(|e| e.to_string());
+            app.ui.status = match &r {
+                Ok(_) => tlf!("Exported {path}", path),
+                Err(e) => e.clone(),
+            };
+            r
+        })
     }
 
     /// Import dropped files.
@@ -1608,6 +1625,8 @@ impl eframe::App for FilmcraftApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // a native file dialog's answer first, so the panels draw what it chose (#260)
+        self.poll_native_dialog(ctx);
         if !self.styled {
             theme::install(ctx, &self.tokens);
             // theme::install replaces the fonts: add the system Japanese font back (or fall back to

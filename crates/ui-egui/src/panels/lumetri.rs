@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
+use crate::native_dialogs::FileDialog;
 use crate::theme::Tokens;
 
 type Actions = Vec<Value>;
@@ -255,8 +256,14 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             continue;
         }
         if p.get("browse").is_some() {
-            let Some(path) = app.hooks.pick_open_file.as_mut().and_then(|f| f(tl!("LUT"), &["cube", "3dl"])) else { continue };
-            p = json!({"path": path});
+            let (cmd, clip) = (cmd.to_string(), clip.0);
+            app.pick_ui(FileDialog::open_file(tl!("LUT"), &["cube", "3dl"]), move |app, paths| {
+                let Some(path) = paths.into_iter().next() else { return };
+                if let Err(err) = app.session.execute(&cmd, json!({"path": path, "clip": clip})) {
+                    app.ui.status = err.to_string();
+                }
+            });
+            continue;
         }
         p["clip"] = json!(clip.0);
         if let Err(err) = app.session.execute(cmd, p) {

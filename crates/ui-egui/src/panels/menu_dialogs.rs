@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
 use crate::dock::PanelKind;
+use crate::native_dialogs::FileDialog;
 use crate::state::ClipDialogDraft;
 
 /// Frontend state of the M3.11 menu items (`UiState::extras`).
@@ -213,26 +214,30 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             } else {
                 (tl!("FilmCraft Project"), "fcproj", tlf!("{name} Selection.fcproj", name = app.session.project.name))
             };
-            let Some(path) = app.hooks.pick_save_as.as_mut().and_then(|f| f(filter, &[ext], &name)) else {
-                return Some(Ok(Value::Null));
-            };
             let mut p = params.clone();
             if !p.is_object() {
                 p = json!({});
             }
-            p["path"] = json!(path);
-            return Some(app.session.execute(id, p).map_err(|e| e.to_string()));
+            let id = id.to_string();
+            return Some(app.pick(FileDialog::save_as(filter, &[ext], &name), move |app, paths| {
+                let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                p["path"] = json!(path);
+                app.session.execute(&id, p).map_err(|e| e.to_string())
+            }));
         }
         "file.mediaPropertiesFile" if params.get("path").is_none() => {
             let exts: Vec<&str> =
                 filmcraft_media::VIDEO_EXTENSIONS.iter().chain(filmcraft_media::AUDIO_EXTENSIONS).chain(filmcraft_media::STILL_EXTENSIONS).copied().collect();
-            let Some(path) = app.hooks.pick_open_file.as_mut().and_then(|f| f(tl!("Media"), &exts)) else { return Some(Ok(Value::Null)) };
-            let r = app.session.execute(id, json!({"path": path})).map_err(|e| e.to_string());
-            if let Ok(v) = &r {
-                app.ui.extras.dialog =
-                    Some(ClipDialogDraft { command: "file.mediaProperties".into(), params: json!({}), info: json!([v]), error: String::new() });
-            }
-            return Some(r);
+            let id = id.to_string();
+            return Some(app.pick(FileDialog::open_file(tl!("Media"), &exts), move |app, paths| {
+                let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                let r = app.session.execute(&id, json!({"path": path})).map_err(|e| e.to_string());
+                if let Ok(v) = &r {
+                    app.ui.extras.dialog =
+                        Some(ClipDialogDraft { command: "file.mediaProperties".into(), params: json!({}), info: json!([v]), error: String::new() });
+                }
+                r
+            }));
         }
         _ => {}
     }
@@ -822,10 +827,16 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
-    if let Some(k) = browse
-        && let Some(dir) = app.hooks.pick_folder.as_mut().and_then(|f| f())
-    {
-        d.params[k.as_str()] = json!(dir);
+    if let Some(k) = browse {
+        // into the dialog's parameters, if the same dialog is still open when the folder comes back
+        let command = d.command.clone();
+        app.pick_ui(FileDialog::Folder { at: None }, move |app, paths| {
+            if let (Some(dir), Some(d)) = (paths.into_iter().next(), app.ui.extras.dialog.as_mut())
+                && d.command == command
+            {
+                d.params[k.as_str()] = json!(dir);
+            }
+        });
     }
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         action = Some("cancel");

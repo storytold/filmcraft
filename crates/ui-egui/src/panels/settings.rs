@@ -17,6 +17,7 @@ use filmcraft_project::Label;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use crate::native_dialogs::FileDialog;
 use crate::theme::Tokens;
 use crate::{AudioDevices, Dialog, FilmcraftApp};
 
@@ -323,10 +324,13 @@ fn draw_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, f: &Fi
                     if matches!(f.kind, Kind::Path) {
                         let b = ui.button(tl!("Browse…"));
                         app.auto.add(&format!("settings.{}.browse", f.key), b.rect, "Browse…");
-                        if b.clicked()
-                            && let Some(dir) = app.hooks.pick_folder.as_mut().and_then(|p| p())
-                        {
-                            put(&mut d.values, f.key, json!(dir));
+                        if b.clicked() {
+                            let key = f.key;
+                            app.pick_ui(FileDialog::Folder { at: None }, move |app, paths| {
+                                if let (Some(dir), Some(d)) = (paths.into_iter().next(), app.ui.settings.as_mut()) {
+                                    put(&mut d.values, key, json!(dir));
+                                }
+                            });
                         }
                     }
                 }

@@ -226,6 +226,13 @@ fn main() -> eframe::Result {
             app.hooks.pick_folder = Some(Box::new(|| rfd::FileDialog::new().pick_folder().map(|p| p.to_string_lossy().to_string())));
             app.hooks.pick_folder_at =
                 Some(Box::new(|dir: &str| rfd::FileDialog::new().set_directory(dir).pick_folder().map(|p| p.to_string_lossy().into_owned())));
+            // Linux: the XDG portal call blocks until the user chooses, which would stop the frame
+            // loop (GNOME offers to force-quit the window after about five seconds, #260). Show the
+            // dialog on its own thread instead; the app keeps running and acts on the answer.
+            #[cfg(target_os = "linux")]
+            {
+                app.hooks.run_dialog = Some(Box::new(run_dialog_off_thread));
+            }
             app.hooks.open_path = Some(Box::new(open_path));
             // Settings ▸ General ▸ Interface Language ▸ System Language (#218).
             app.hooks.system_languages = Some(Box::new(|| sys_locale::get_locales().collect()));
@@ -319,6 +326,60 @@ fn agent_event_loop(agent: bool) -> Option<eframe::EventLoopBuilderHook> {
     }
     let _ = agent;
     None
+}
+
+/// Show `dialog` with rfd on a worker thread and answer on the returned channel (#260). Filter
+/// names are translated here, on the UI thread (the interface language is per thread). A dialog
+/// thread that can't start or panics drops the sender: the app takes that as cancelled.
+#[cfg(target_os = "linux")]
+fn run_dialog_off_thread(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> std::sync::mpsc::Receiver<Vec<String>> {
+    use filmcraft_ui_egui::native_dialogs::FileDialog;
+    let t = |s: &str| filmcraft_ui_egui::i18n::t(s).to_string();
+    let media = t("Media");
+    let project = t("FilmCraft Project");
+    let dialog = match dialog {
+        FileDialog::OpenFile { filter, exts } => FileDialog::OpenFile { filter: t(&filter), exts },
+        FileDialog::SaveAs { filter, exts, name } => FileDialog::SaveAs { filter: t(&filter), exts, name },
+        other => other,
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new().name("file-dialog".into()).spawn(move || {
+        let shown = std::panic::catch_unwind(move || {
+            let path = |p: std::path::PathBuf| p.to_string_lossy().into_owned();
+            match dialog {
+                FileDialog::OpenFiles { exts } => {
+                    rfd::FileDialog::new().add_filter(&media, &exts).pick_files().unwrap_or_default().into_iter().map(path).collect()
+                }
+                FileDialog::OpenFile { filter, exts } => rfd::FileDialog::new().add_filter(&filter, &exts).pick_file().map(path).into_iter().collect(),
+                FileDialog::Relink { exts, .. } => rfd::FileDialog::new().add_filter(&media, &exts).pick_file().map(path).into_iter().collect(),
+                FileDialog::OpenProject => rfd::FileDialog::new().add_filter(&project, &["fcproj"]).pick_file().map(path).into_iter().collect(),
+                FileDialog::SaveProject { name } => {
+                    rfd::FileDialog::new().add_filter(&project, &["fcproj"]).set_file_name(name).save_file().map(path).into_iter().collect()
+                }
+                FileDialog::SaveAs { filter, exts, name } => {
+                    rfd::FileDialog::new().add_filter(&filter, &exts).set_file_name(name).save_file().map(path).into_iter().collect()
+                }
+                FileDialog::Folder { at } => {
+                    let d = rfd::FileDialog::new();
+                    let d = match at {
+                        Some(dir) if !dir.is_empty() => d.set_directory(dir),
+                        _ => d,
+                    };
+                    d.pick_folder().map(path).into_iter().collect::<Vec<_>>()
+                }
+            }
+        });
+        match shown {
+            Ok(paths) => {
+                let _ = tx.send(paths);
+            }
+            Err(_) => log::warn!("the file dialog thread panicked; taken as cancelled"),
+        }
+    });
+    if let Err(e) = spawned {
+        log::warn!("could not start the file dialog thread: {e}");
+    }
+    rx
 }
 
 #[cfg(test)]

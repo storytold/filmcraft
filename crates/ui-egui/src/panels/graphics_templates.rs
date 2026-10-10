@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
+use crate::native_dialogs::FileDialog;
 use crate::theme::Tokens;
 
 /// One candidate property in the Export As Motion Graphics Template dialog.
@@ -589,10 +590,13 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
     let empty = params.as_object().is_none_or(|m| m.is_empty());
     match id {
         "graphics.template.install" if params.get("path").is_none() => {
-            let path = app.hooks.pick_open_file.as_mut().and_then(|f| f(tl!("FilmCraft Graphics Template"), &["fcgt"]))?;
-            let r = app.session.execute(id, json!({"path": path})).map_err(|e| e.to_string());
-            invalidate(ctx);
-            Some(r)
+            let (id, ctx) = (id.to_string(), ctx.clone());
+            Some(app.pick(FileDialog::open_file(tl!("FilmCraft Graphics Template"), &["fcgt"]), move |app, paths| {
+                let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                let r = app.session.execute(&id, json!({"path": path})).map_err(|e| e.to_string());
+                invalidate(&ctx);
+                r
+            }))
         }
         "graphics.template.export" | "file.exportGraphicsTemplate" if empty => {
             let clip = filmcraft_engine::graphics::target_clip(&app.session, &Value::Null);
