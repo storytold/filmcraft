@@ -83,6 +83,16 @@ Essential Sound: `essentialSound.inspect`, `essentialSound.setType {type: dialog
 `essentialSound.ducking.against.<Type>`, `essentialSound.generateDucking`, `essentialSound.volume.on`,
 `essentialSound.volume.levelDb`, `essentialSound.mute`, `essentialSound.browse.<Type>.<preset>`.
 
+ComfyUI clips ([comfyui.md](comfyui.md)): `comfyui.settings {server?, outputDir?, timeoutMinutes?,
+check?}`, `comfyui.inspect`, `comfyui.newClip`, `comfyui.setInputs`, `comfyui.expose {workflow? |
+item?, inputs?, exposed?, set?}` and `comfyui.generate`. The server is only ever the one in the
+settings; input files named by a project file are uploaded only once confirmed (`unconfirmedFiles`
+in `comfyui.inspect`). UI ids: `comfyui.server`, `comfyui.test`, `comfyui.loadWorkflow`,
+`comfyui.name`, `comfyui.duration`, `comfyui.allInputs`, `comfyui.node.<node>`,
+`comfyui.input.<node>.<input>[.expose|.browse|.reset]`, `comfyui.exposed.<node>.<input>[…]`,
+`comfyui.unconfirmed`, `comfyui.allowUploads`, `comfyui.create`, `comfyui.createGenerate`,
+`comfyui.apply`, `comfyui.generate`, `comfyui.generateNewSeeds`, `comfyui.status`.
+
 Project files, auto-save, crash recovery and preferences commands (`file.recover`, `prefs.set`, …) and their
 automation ids are listed in [project-files.md](project-files.md). That file also lists the media
 management commands and dialog ids: offline media and relinking (`media.findMissing`,

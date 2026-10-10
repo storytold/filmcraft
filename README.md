@@ -274,6 +274,7 @@ The control protocol is documented in [docs/control-protocol.md](docs/control-pr
 | [docs/control-protocol.md](docs/control-protocol.md) | Control-channel and MCP reference |
 | [docs/project-files.md](docs/project-files.md) | `.fcproj` format, schema migrations, auto-save and crash recovery |
 | [docs/graphics.md](docs/graphics.md) · [docs/captions.md](docs/captions.md) | Text engine, graphic clips and tools; caption tracks and formats |
+| [docs/comfyui.md](docs/comfyui.md) | ComfyUI clips: media made by any ComfyUI workflow on your ComfyUI server |
 | [ROADMAP.md](ROADMAP.md) | Honest assessment, what's missing, milestones and estimates |
 
 ## Status
@@ -291,7 +292,7 @@ The biggest gaps today:
 - **No plugins.** No VST3 / Audio Units or OpenFX hosting.
 - **Delivery codecs.** H.264 is our only software delivery-codec export; H.265 exports only through a hardware encoder (NVIDIA on Windows: Main 8-bit SDR and Main 10 HDR PQ / HLG; VideoToolbox on macOS: 8-bit Main, SDR); no AV1 export yet.
 - **Real-world media and platforms.** Our decoders are bit-exact on conformance streams, but camera and phone files in the wild are less tested. Windows and Linux get far less testing than macOS.
-- **AI features.** Few so far; speech to text is optional and off by default.
+- **AI features.** Few so far: speech to text (optional, off by default), and ComfyUI clips, made by any ComfyUI workflow on your own ComfyUI server ([docs/comfyui.md](docs/comfyui.md)).
 
 Bug reports with real footage are the most useful thing you can send us: [open an issue](https://github.com/storytold/filmcraft/issues) or tell us in [Discord](https://discord.gg/artcraft).
 

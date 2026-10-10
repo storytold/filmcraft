@@ -23,6 +23,7 @@ filmcraft-text = { workspace = true }
 filmcraft-audio-dsp = { workspace = true }
 filmcraft-engine = { workspace = true }
 filmcraft-export = { workspace = true }
+filmcraft-comfyui = { workspace = true }
 filmcraft-gpu = { workspace = true }
 filmcraft-scopes = { workspace = true }
 egui = { workspace = true }

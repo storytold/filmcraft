@@ -3494,3 +3494,41 @@
 	Edit Narration	编辑旁白
 	Clear Transition	清除过渡
 	Set Transition Duration	设置过渡持续时间
+
+# ComfyUI clips (Window ▸ ComfyUI…)
+	ComfyUI…	ComfyUI…
+	Generate ComfyUI Clip	生成 ComfyUI 剪辑
+	Exposed: shown first for this workflow (click to stop)	已公开：在此工作流中优先显示（点击取消）
+	Expose: show this input first for this workflow	公开：在此工作流中优先显示此输入
+	Named by the project file: uploaded only after Allow Uploads	由项目文件指定：仅在「允许上传」后才会上传
+	Choose a file to upload	选择要上传的文件
+	Back to the workflow's value	恢复为工作流中的值
+	Generating…	正在生成…
+	Server	服务器
+	Test	测试
+	Load Workflow…	加载工作流…
+	A workflow saved with ComfyUI's Workflow ▸ Export (API)	使用 ComfyUI 的 Workflow ▸ Export (API) 保存的工作流
+	New clip	新剪辑
+	Selected ComfyUI clip	所选 ComfyUI 剪辑
+	Load a workflow, or select a ComfyUI clip	加载工作流，或选择一个 ComfyUI 剪辑
+	Exposed	已公开
+	All Inputs ({count})	所有输入（{count}）
+	This clip uploads files named by the project file: {files}	此剪辑会上传项目文件指定的文件：{files}
+	A project can come from anyone: its files are sent to the server only after you allow them	项目可能来自任何人：其中的文件只有在你允许后才会发送到服务器
+	Allow Uploads	允许上传
+	Send these files to the ComfyUI server when the clip is generated	生成剪辑时将这些文件发送到 ComfyUI 服务器
+	Create Clip	创建剪辑
+	Create & Generate	创建并生成
+	New Seeds	新种子
+	Generate again with new random seeds	使用新的随机种子重新生成
+	Text output	文本输出
+	Connected (ComfyUI {ver})	已连接（ComfyUI {ver}）
+	not reachable	无法连接
+	ComfyUI workflow (API)	ComfyUI 工作流（API）
+	Created {name}	已创建 {name}
+	Applied	已应用
+	{n} inputs	{n} 个输入
+	{n} file(s) allowed	已允许 {n} 个文件
+	Exposed {input}	已公开 {input}
+	{input} no longer exposed	已取消公开 {input}
+	select a ComfyUI clip	请选择一个 ComfyUI 剪辑

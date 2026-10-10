@@ -3505,3 +3505,47 @@
 	Edit Narration	ナレーションを編集
 	Clear Transition	トランジションを消去
 	Set Transition Duration	トランジションのデュレーションを設定
+
+# ComfyUI clips (Window ▸ ComfyUI…)
+	ComfyUI	ComfyUI
+	ComfyUI…	ComfyUI…
+	Generate ComfyUI Clip	ComfyUI クリップを生成
+	New ComfyUI Clip	新規 ComfyUI クリップ
+	ComfyUI Clip Settings	ComfyUI クリップ設定
+	ComfyUI Settings	ComfyUI 設定
+	Expose ComfyUI Inputs	ComfyUI の入力を公開
+	Inspect ComfyUI Workflow	ComfyUI ワークフローを調べる
+	Exposed: shown first for this workflow (click to stop)	公開中: このワークフローでは最初に表示 (クリックで解除)
+	Expose: show this input first for this workflow	公開: このワークフローではこの入力を最初に表示
+	Named by the project file: uploaded only after Allow Uploads	プロジェクトファイルが指定したファイル: 「アップロードを許可」の後にのみアップロード
+	Choose a file to upload	アップロードするファイルを選択
+	Back to the workflow's value	ワークフローの値に戻す
+	Generating…	生成中…
+	Server	サーバー
+	Test	テスト
+	Load Workflow…	ワークフローを読み込み…
+	A workflow saved with ComfyUI's Workflow ▸ Export (API)	ComfyUI の Workflow ▸ Export (API) で保存したワークフロー
+	New clip	新規クリップ
+	Selected ComfyUI clip	選択中の ComfyUI クリップ
+	Load a workflow, or select a ComfyUI clip	ワークフローを読み込むか、ComfyUI クリップを選択
+	Exposed	公開中
+	All Inputs ({count})	すべての入力 ({count})
+	This clip uploads files named by the project file: {files}	このクリップはプロジェクトファイルが指定したファイルをアップロードします: {files}
+	A project can come from anyone: its files are sent to the server only after you allow them	プロジェクトは誰からでも届きます: そのファイルは許可した後にのみサーバーへ送られます
+	Allow Uploads	アップロードを許可
+	Send these files to the ComfyUI server when the clip is generated	クリップの生成時にこれらのファイルを ComfyUI サーバーへ送信
+	Create Clip	クリップを作成
+	Create & Generate	作成して生成
+	New Seeds	新しいシード
+	Generate again with new random seeds	新しいランダムシードで再生成
+	Text output	テキスト出力
+	Connected (ComfyUI {ver})	接続済み (ComfyUI {ver})
+	not reachable	接続できません
+	ComfyUI workflow (API)	ComfyUI ワークフロー (API)
+	Created {name}	{name} を作成しました
+	Applied	適用しました
+	{n} inputs	{n} 個の入力
+	{n} file(s) allowed	{n} 個のファイルを許可しました
+	Exposed {input}	{input} を公開しました
+	{input} no longer exposed	{input} の公開を解除しました
+	select a ComfyUI clip	ComfyUI クリップを選択してください

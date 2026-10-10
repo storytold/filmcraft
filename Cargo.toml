@@ -46,6 +46,7 @@ filmcraft-captions = { path = "crates/captions" }
 filmcraft-speech = { path = "crates/speech" }
 filmcraft-tts = { path = "crates/tts" }
 filmcraft-tts-text = { path = "crates/tts-text" }
+filmcraft-comfyui = { path = "crates/comfyui" }
 filmcraft-render = { path = "crates/render" }
 filmcraft-gpu = { path = "crates/gpu" }
 filmcraft-scopes = { path = "crates/scopes" }

@@ -3512,3 +3512,46 @@
 	Composite on the GPU when available	Componer en la GPU cuando esté disponible
 	Text to Speech	Texto a voz
 	Edit Narration	Editar narración
+# ComfyUI clips (Window ▸ ComfyUI…)
+	ComfyUI	ComfyUI
+	ComfyUI…	ComfyUI…
+	Generate ComfyUI Clip	Generar clip de ComfyUI
+	New ComfyUI Clip	Nuevo clip de ComfyUI
+	ComfyUI Clip Settings	Ajustes del clip de ComfyUI
+	ComfyUI Settings	Ajustes de ComfyUI
+	Expose ComfyUI Inputs	Exponer entradas de ComfyUI
+	Inspect ComfyUI Workflow	Inspeccionar flujo de trabajo de ComfyUI
+	Exposed: shown first for this workflow (click to stop)	Expuesta: se muestra primero en este flujo de trabajo (clic para dejar de exponerla)
+	Expose: show this input first for this workflow	Exponer: mostrar esta entrada primero en este flujo de trabajo
+	Named by the project file: uploaded only after Allow Uploads	Indicado por el archivo de proyecto: solo se sube tras Permitir subidas
+	Choose a file to upload	Elegir un archivo para subir
+	Back to the workflow's value	Volver al valor del flujo de trabajo
+	Generating…	Generando…
+	Server	Servidor
+	Test	Probar
+	Load Workflow…	Cargar flujo de trabajo…
+	A workflow saved with ComfyUI's Workflow ▸ Export (API)	Un flujo de trabajo guardado con Workflow ▸ Export (API) de ComfyUI
+	New clip	Clip nuevo
+	Selected ComfyUI clip	Clip de ComfyUI seleccionado
+	Load a workflow, or select a ComfyUI clip	Carga un flujo de trabajo o selecciona un clip de ComfyUI
+	Exposed	Expuestas
+	All Inputs ({count})	Todas las entradas ({count})
+	This clip uploads files named by the project file: {files}	Este clip sube archivos indicados por el archivo de proyecto: {files}
+	A project can come from anyone: its files are sent to the server only after you allow them	Un proyecto puede venir de cualquiera: sus archivos solo se envían al servidor cuando los permites
+	Allow Uploads	Permitir subidas
+	Send these files to the ComfyUI server when the clip is generated	Enviar estos archivos al servidor de ComfyUI al generar el clip
+	Create Clip	Crear clip
+	Create & Generate	Crear y generar
+	New Seeds	Semillas nuevas
+	Generate again with new random seeds	Generar de nuevo con semillas aleatorias nuevas
+	Text output	Salida de texto
+	Connected (ComfyUI {ver})	Conectado (ComfyUI {ver})
+	not reachable	no accesible
+	ComfyUI workflow (API)	Flujo de trabajo de ComfyUI (API)
+	Created {name}	Creado {name}
+	Applied	Aplicado
+	{n} inputs	{n} entradas
+	{n} file(s) allowed	{n} archivo(s) permitido(s)
+	Exposed {input}	{input} expuesta
+	{input} no longer exposed	{input} ya no está expuesta
+	select a ComfyUI clip	selecciona un clip de ComfyUI

@@ -56,3 +56,6 @@ sync_github_name = false
 
 [people.liangforstudy]
 sync_github_name = true
+
+[people.XmYx]
+sync_github_name = true

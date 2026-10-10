@@ -1843,6 +1843,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-comfyui"
+version = "0.5.0"
+dependencies = [
+ "rustls",
+ "rustls-rustcrypto",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "ureq",
+]
+
+[[package]]
 name = "filmcraft-dnx"
 version = "0.5.0"
 dependencies = [
@@ -1873,6 +1885,7 @@ dependencies = [
  "filmcraft-captions",
  "filmcraft-codecs",
  "filmcraft-color",
+ "filmcraft-comfyui",
  "filmcraft-edit",
  "filmcraft-export",
  "filmcraft-format",
@@ -2268,6 +2281,7 @@ dependencies = [
  "filmcraft-audio-dsp",
  "filmcraft-codecs",
  "filmcraft-color",
+ "filmcraft-comfyui",
  "filmcraft-edit",
  "filmcraft-engine",
  "filmcraft-export",

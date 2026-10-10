@@ -13,9 +13,11 @@ name = "filmcraft-cli"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["comfyui"]
 # Speech-to-text (Text panel ▸ Transcribe) with Whisper on the CPU, and model downloads.
 whisper = ["filmcraft-engine/whisper", "filmcraft-engine/speech-download"]
+# ComfyUI clips (Window ▸ ComfyUI…) talking to a ComfyUI server over HTTP(S).
+comfyui = ["filmcraft-engine/comfyui"]
 
 [dependencies]
 filmcraft-engine = { workspace = true }
