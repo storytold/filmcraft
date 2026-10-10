@@ -386,6 +386,19 @@ const TEXT_EDIT_ID: &str = "gfx-text-edit";
 fn end_edit(app: &mut FilmcraftApp, ui: &egui::Ui) {
     app.ui.gfx_edit = None;
     ui.memory_mut(|m| m.surrender_focus(egui::Id::new(TEXT_EDIT_ID)));
+    ui.data_mut(|d| d.remove::<crate::dock::PanelKind>(egui::Id::new(TEXT_EDIT_ID).with("panel")));
+}
+
+/// A click on the Program monitor's empty space (the picture's, or around it): end the text edit
+/// and let go of the selected graphic layers and mask (#683).
+pub(crate) fn deselect_on_monitor(app: &mut FilmcraftApp, ui: &egui::Ui) {
+    end_edit(app, ui);
+    app.session.state.graphic_layers.clear();
+    if app.session.state.selected_mask.is_some()
+        && let Err(e) = app.session.execute("masks.select", json!({"none": true}))
+    {
+        app.ui.status = e.to_string();
+    }
 }
 
 /// Draw the overlay and handle graphics tools on the Program monitor picture `pic`.
@@ -678,10 +691,8 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                         end_edit(app, ui);
                     }
                     actions.push(("graphics.selectLayer".into(), json!({"clip": v.clip.0, "layers": [v.layer]})));
-                } else if app.ui.gfx_edit.is_some() {
-                    end_edit(app, ui);
-                } else if sel_clip.is_some() && !sel_layers.is_empty() {
-                    app.session.state.graphic_layers.clear();
+                } else {
+                    deselect_on_monitor(app, ui);
                 }
             }
             Tool::Pen => {
@@ -806,10 +817,26 @@ fn start_edit_at(app: &mut FilmcraftApp, ui: &egui::Ui, v: &LayerView, p: Pos2, 
 /// Keyboard handling while a text layer is being edited.
 fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView, mut ed: GfxEdit, resp: &egui::Response, actions: &mut Vec<(String, Value)>) {
     let _ = resp;
+    // moving to another panel ends the edit; Properties and Essential Graphics style the text
+    // being edited, so working there keeps it (#683). Only a move counts: an edit started with
+    // another panel focused (an agent's `ui.set`) goes on until the focus moves.
+    use crate::dock::PanelKind;
+    let panel_id = egui::Id::new(TEXT_EDIT_ID).with("panel");
+    let before = ui.data(|d| d.get_temp::<PanelKind>(panel_id));
+    ui.data_mut(|d| d.insert_temp(panel_id, app.ui.focused));
+    if before.is_some_and(|b| b != app.ui.focused) && !matches!(app.ui.focused, PanelKind::Program | PanelKind::Properties | PanelKind::EssentialGraphics) {
+        end_edit(app, ui);
+        return;
+    }
     let eid = egui::Id::new(TEXT_EDIT_ID);
     // a real (non-clickable) widget holds keyboard focus so shortcuts pause while typing
     let fr = ui.interact(Rect::from_points(&v.quad()), eid, Sense::focusable_noninteractive());
     fr.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Text layer"));
+    // while another field has the keyboard (a value typed in Properties) the keys are its own;
+    // the text takes the keyboard back once nothing has it (#683)
+    if ui.memory(|m| m.focused().is_some_and(|f| f != eid)) {
+        return;
+    }
     ui.memory_mut(|m| {
         m.request_focus(eid);
         m.set_focus_lock_filter(eid, egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true });

@@ -20,6 +20,7 @@
 
 pub mod api;
 pub mod audio;
+pub mod download_pacing;
 pub mod fs;
 pub mod import;
 pub mod opfs;

@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
+use crate::state::KeyframeRef;
 use crate::theme::Tokens;
 
 const ROW_H: f32 = 22.0;
@@ -17,6 +18,8 @@ const RULER_H: f32 = 24.0;
 const CLIP_BAR_H: f32 = 18.0;
 /// Distance between the keyframe navigator's buttons (◀ ◆ ▶).
 const NAV_STEP: f32 = 16.0;
+/// The Y curve of a point parameter's value graph (X uses the accent colour).
+const Y_CURVE: Color32 = Color32::from_rgb(0x60, 0xc0, 0x80);
 /// Properties panel: the keyframe diamonds' column, from a row's right edge (the arrows sit one
 /// [`NAV_STEP`] to either side of it, and a section's reset button above it).
 const PROPS_NAV_X: f32 = 26.0;
@@ -39,6 +42,16 @@ fn graph_drag_offset(ui: &egui::Ui, response: &egui::Response, previous: egui::V
     } else {
         previous + response.drag_delta()
     }
+}
+
+/// Whether `k` names a keyframe of the clip `it` (its effect, parameter and media time).
+fn keyframe_exists(it: &TrackItem, k: &KeyframeRef) -> bool {
+    let Some(e) = it.effects.get(k.effect) else { return false };
+    let param = match k.mask {
+        Some(m) => e.masks.get(m).and_then(|m| m.param(&k.param)),
+        None => e.params.get(&k.param),
+    };
+    param.is_some_and(|p| p.keyframes.iter().any(|kf| kf.time == k.time))
 }
 
 fn selected_clip(app: &FilmcraftApp) -> Option<(ClipId, TrackItem, TrackKind)> {
@@ -71,6 +84,8 @@ fn selected_clips(app: &FilmcraftApp) -> Vec<(ClipId, TrackItem, TrackKind)> {
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let clips = selected_clips(app);
+    // keep only selected keyframes that still exist on a clip shown here
+    app.ui.keyframe_selection.retain(|k| clips.iter().any(|(c, it, _)| c.0 == k.clip && keyframe_exists(it, k)));
     let Some((clip, it, _)) = clips.first().cloned() else {
         // a transition clicked in the Timeline (#430)
         if let Some(id) = crate::panels::transition_controls::selected(app) {
@@ -207,7 +222,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     if app.ui.expanded_fx.contains(&graph_key(clip, idx, pd.id))
                         && let Some(param) = e.params.get(pd.id)
                         && param.is_animated()
-                        && matches!(param.value, ParamValue::Float(_))
+                        && graphable(&param.value)
                     {
                         graph_rows(app, bui, body, clip, idx, None, pd, param, &lane, it, &mut actions);
                     }
@@ -422,8 +437,8 @@ pub(crate) fn param_row(
     };
     let (r, _) = ui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::hover());
     let mut x = r.min.x + 26.0;
-    // twirl-down for the value/velocity graphs (animated scalar params)
-    if param.is_animated() && matches!(param.value, ParamValue::Float(_)) {
+    // twirl-down for the value/velocity graphs (animated scalar and point params)
+    if param.is_animated() && graphable(&param.value) {
         let key = graph_key(clip, idx, pkey);
         let open = app.ui.expanded_fx.contains(&key);
         let tw = Rect::from_center_size(pos2(r.min.x + 12.0, r.center().y), vec2(12.0, 12.0));
@@ -561,7 +576,13 @@ pub(crate) fn param_row(
             let kr = Rect::from_center_size(pos2(kx, y), vec2(11.0, 11.0));
             let resp = ui.interact(kr.expand(2.0), id, Sense::click_and_drag());
             app.auto.add(&format!("effectControls.{}.{}.keyframe.{}", e.effect, pkey, k.time.0), kr, "keyframe");
-            let sel = k.time == mt || resp.dragged();
+            // highlighted when selected (not merely under the playhead: that lit up every
+            // parameter's keyframe at the same time, #412)
+            let is_this = |s: &KeyframeRef| s.clip == clip.0 && s.effect == idx && s.mask == mask && s.param == pd.id && s.time == k.time;
+            if resp.clicked() || resp.drag_started() {
+                app.ui.keyframe_selection = vec![KeyframeRef { clip: clip.0, effect: idx, param: pd.id.to_string(), mask, time: k.time }];
+            }
+            let sel = resp.dragged() || app.ui.keyframe_selection.iter().any(is_this);
             let col = if sel { t.hot_text } else { Color32::from_rgb(0xb0, 0xb0, 0xb0) };
             match k.interp {
                 filmcraft_project::Interpolation::Hold => {
@@ -583,6 +604,10 @@ pub(crate) fn param_row(
                     rate.snap_nearest(it.start + Tick(((f + off / lane.width()) as f64 * dur) as i64)).clamp(it.start, it.end() - rate.frame_duration());
                 let new_media = it.source_in + Tick(((new_tl - it.start).0 as f64 * it.speed.abs()) as i64);
                 if new_media != k.time {
+                    // the moved keyframe stays selected
+                    for s in app.ui.keyframe_selection.iter_mut().filter(|s| is_this(s)) {
+                        s.time = new_media;
+                    }
                     actions.push((
                         "effects.moveKeyframe".into(),
                         with_mask(json!({"clip": clip.0, "effect": eff_json, "param": pd.id, "mediaTime": k.time.0, "to": new_media.0})),
@@ -887,7 +912,22 @@ pub(crate) fn graph_key(clip: ClipId, idx: usize, pid: &str) -> String {
     format!("graph:{}:{}:{}", clip.0, idx, pid)
 }
 
-/// Value and velocity graphs of an animated scalar parameter, drawn across the keyframe lane.
+/// Parameters with value/velocity graphs: scalars, and points such as Position (#239).
+pub(crate) fn graphable(v: &ParamValue) -> bool {
+    matches!(v, ParamValue::Float(_) | ParamValue::Vec2(_))
+}
+
+/// The curves a graphed value draws: a scalar's one, or a point's X and Y.
+fn graph_components(v: &ParamValue) -> Vec<f64> {
+    match v {
+        ParamValue::Float(x) => vec![*x],
+        ParamValue::Vec2(p) => vec![p.x, p.y],
+        _ => Vec::new(),
+    }
+}
+
+/// Value and velocity graphs of an animated scalar or point parameter, drawn across the keyframe
+/// lane. A point draws an X and a Y curve, and its velocity graph is the speed along its path.
 /// Keyframes drag vertically (value); Bezier influence handles drag horizontally.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn graph_rows(
@@ -917,15 +957,14 @@ pub(crate) fn graph_rows(
     let to_media = |f: f64| it.source_in + Tick((f * dur * speed) as i64);
     let to_f = |m: Tick| ((m - it.source_in).0 as f64 / speed / dur) as f32;
     let x_of = |f: f32| lane.min.x + f * lane.width();
-    // samples
+    // samples: one row of curve values per sample (a point's NaN "auto" coordinate is skipped)
     let n = (lane.width() / 2.0).max(8.0) as usize;
-    let vals: Vec<f64> = (0..=n).map(|i| param.f64_at(to_media(i as f64 / n as f64))).collect();
-    let (mut lo, mut hi) = vals.iter().fold((f64::MAX, f64::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
-    for k in &param.keyframes {
-        if let ParamValue::Float(v) = k.value {
-            lo = lo.min(v);
-            hi = hi.max(v);
-        }
+    let vals: Vec<Vec<f64>> = (0..=n).map(|i| graph_components(&param.value_at(to_media(i as f64 / n as f64)))).collect();
+    let curves = graph_components(&param.value).len();
+    let at_keys: Vec<Vec<f64>> = param.keyframes.iter().map(|k| graph_components(&k.value)).collect();
+    let (mut lo, mut hi) = vals.iter().chain(&at_keys).flatten().filter(|v| v.is_finite()).fold((f64::MAX, f64::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+    if lo > hi {
+        (lo, hi) = (0.0, 0.0);
     }
     if hi - lo < 1e-6 {
         lo -= 1.0;
@@ -951,17 +990,35 @@ pub(crate) fn graph_rows(
     p.text(pos2(vr.max.x - 30.0, area.min.y + 6.0), Align2::RIGHT_CENTER, format!("{hi:.dec$}"), Tokens::ui(10.0), t.text_dim);
     p.text(pos2(vr.max.x - 30.0, area.max.y - 6.0), Align2::RIGHT_CENTER, format!("{lo:.dec$}"), Tokens::ui(10.0), t.text_dim);
     p.text(pos2(vr.min.x + 44.0, area.center().y), Align2::LEFT_CENTER, tl!("Value"), Tokens::ui(11.0), t.text_dim);
-    let line: Vec<Pos2> = vals.iter().enumerate().map(|(i, v)| pos2(x_of(i as f32 / n as f32), y_of(*v))).collect();
-    p.add(egui::Shape::line(line, Stroke::new(1.5, t.accent)));
-    // velocity (units per second, derivative of the sampled value)
-    let secs = dur * speed / filmcraft_time::TICKS_PER_SECOND as f64 / n as f64;
-    let vel: Vec<f64> = (0..n).map(|i| (vals[i + 1] - vals[i]) / secs.max(1e-9)).collect();
-    let vmax = vel.iter().fold(1e-6f64, |a, v| a.max(v.abs())) * 1.15;
+    let curve_color = |c: usize| if c == 0 { t.accent } else { Y_CURVE };
+    if curves > 1 {
+        p.text(pos2(vr.min.x + 44.0, area.center().y + 14.0), Align2::LEFT_CENTER, "X", Tokens::ui(10.5), curve_color(0));
+        p.text(pos2(vr.min.x + 58.0, area.center().y + 14.0), Align2::LEFT_CENTER, "Y", Tokens::ui(10.5), curve_color(1));
+    }
+    for c in 0..curves {
+        let line: Vec<Pos2> =
+            vals.iter().enumerate().filter_map(|(i, v)| v.get(c).filter(|v| v.is_finite()).map(|v| pos2(x_of(i as f32 / n as f32), y_of(*v)))).collect();
+        p.add(egui::Shape::line(line, Stroke::new(1.5, curve_color(c))));
+    }
+    // velocity (units per second, derivative of the sampled value; a point's speed along its path)
+    let secs = (dur * speed / filmcraft_time::TICKS_PER_SECOND as f64 / n as f64).max(1e-9);
+    let vel: Vec<f64> = vals
+        .windows(2)
+        .map(|w| {
+            let [a, b] = w else { return 0.0 };
+            let d: Vec<f64> = a.iter().zip(b).map(|(a, b)| (b - a) / secs).collect();
+            match d.as_slice() {
+                [v] => *v,
+                d => d.iter().map(|v| v * v).sum::<f64>().sqrt(),
+            }
+        })
+        .collect();
+    let vmax = vel.iter().filter(|v| v.is_finite()).fold(1e-6f64, |a, v| a.max(v.abs())) * 1.15;
     let varea = Rect::from_min_max(pos2(lane.min.x, velr.min.y + 2.0), pos2(lane.max.x, velr.max.y - 4.0));
     p.rect_filled(varea, 0.0, t.keyframe_plot_bg);
     let vy = |v: f64| varea.center().y - (v / vmax) as f32 * varea.height() / 2.0;
     p.line_segment([pos2(varea.min.x, varea.center().y), pos2(varea.max.x, varea.center().y)], Stroke::new(1.0, t.keyframe_plot_axis));
-    let vline: Vec<Pos2> = vel.iter().enumerate().map(|(i, v)| pos2(x_of((i as f32 + 0.5) / n as f32), vy(*v))).collect();
+    let vline: Vec<Pos2> = vel.iter().enumerate().filter(|(_, v)| v.is_finite()).map(|(i, v)| pos2(x_of((i as f32 + 0.5) / n as f32), vy(*v))).collect();
     p.add(egui::Shape::line(vline, Stroke::new(1.2, Color32::from_rgb(0xd0, 0xa0, 0x40))));
     p.text(pos2(velr.min.x + 44.0, varea.center().y), Align2::LEFT_CENTER, tl!("Velocity"), Tokens::ui(11.0), t.text_dim);
     p.text(pos2(velr.max.x - 30.0, varea.min.y + 6.0), Align2::RIGHT_CENTER, format!("{vmax:.1}/s"), Tokens::ui(10.0), t.text_dim);
@@ -969,55 +1026,83 @@ pub(crate) fn graph_rows(
     // keyframes + handles
     let ks = &param.keyframes;
     for (i, k) in ks.iter().enumerate() {
-        let ParamValue::Float(v) = k.value else { continue };
         let f = to_f(k.time);
         if !(-0.01..=1.01).contains(&f) {
             continue;
         }
-        let id = egui::Id::new(("kfg", clip.0, idx, mask, pd.id, k.time.0));
-        let dy: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(0.0);
-        let c = pos2(x_of(f), y_of(v) + dy);
-        let r = Rect::from_center_size(c, vec2(10.0, 10.0));
-        let resp = ui.interact(r.expand(2.0), id, Sense::drag());
-        app.auto.add(&format!("effectControls.{}.graph.keyframe.{}", pd.id, k.time.0), r, "keyframe value");
-        // influence handles: flat (ease) tangents with length ∝ influence × neighbouring segment
         let eases_out =
             !matches!(k.interp, filmcraft_project::Interpolation::Linear | filmcraft_project::Interpolation::Hold | filmcraft_project::Interpolation::EaseIn);
         let eases_in =
             !matches!(k.interp, filmcraft_project::Interpolation::Linear | filmcraft_project::Interpolation::Hold | filmcraft_project::Interpolation::EaseOut);
-        for (side, on, nb) in [(1.0f32, eases_out, ks.get(i + 1)), (-1.0f32, eases_in && i > 0, if i > 0 { ks.get(i - 1) } else { None })] {
-            let (true, Some(nb)) = (on, nb) else { continue };
-            let seg = (x_of(to_f(nb.time)) - c.x).abs();
-            let infl = if side > 0.0 { k.out_influence } else { k.in_influence } as f32;
-            let hid = id.with(if side > 0.0 { "out" } else { "in" });
-            let hdx: f32 = ui.data(|d| d.get_temp(hid)).unwrap_or(0.0);
-            let hx = c.x + side * (infl * seg + hdx * side).clamp(seg * 0.01, seg);
-            let hp = pos2(hx, c.y);
-            p.line_segment([c, hp], Stroke::new(1.0, t.plot_handle_dim));
-            p.circle_filled(hp, 3.5, t.keyframe_handle);
-            let hr = ui.interact(Rect::from_center_size(hp, vec2(10.0, 10.0)), hid.with("h"), Sense::drag());
-            if hr.dragged() {
-                let nx = graph_drag_offset(ui, &hr, vec2(hdx, 0.0)).x;
-                ui.data_mut(|d| d.insert_temp(hid, nx));
+        let comps = graph_components(&k.value);
+        for (ci, &v) in comps.iter().enumerate() {
+            if !v.is_finite() {
+                continue;
             }
-            if hr.drag_stopped() {
-                ui.data_mut(|d| d.remove::<f32>(hid));
-                let ni = ((infl * seg + hdx * side) / seg.max(1.0)).clamp(0.01, 1.0);
-                let key = if side > 0.0 { "outInfluence" } else { "inInfluence" };
-                actions.push(("effects.setKeyframe".into(), with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "mediaTime": k.time.0, key: ni}))));
+            let id = egui::Id::new(("kfg", clip.0, idx, mask, pd.id, k.time.0));
+            let id = if ci == 0 { id } else { id.with(ci) };
+            let dy: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(0.0);
+            let c = pos2(x_of(f), y_of(v) + dy);
+            let r = Rect::from_center_size(c, vec2(10.0, 10.0));
+            let resp = ui.interact(r.expand(2.0), id, Sense::drag());
+            let auto_id = match (comps.len(), ci) {
+                (1, _) => format!("effectControls.{}.graph.keyframe.{}", pd.id, k.time.0),
+                (_, 0) => format!("effectControls.{}.graph.keyframe.{}.x", pd.id, k.time.0),
+                _ => format!("effectControls.{}.graph.keyframe.{}.y", pd.id, k.time.0),
+            };
+            app.auto.add(&auto_id, r, "keyframe value");
+            // influence handles: flat (ease) tangents with length ∝ influence × neighbouring segment;
+            // a point's sit on its X curve only, as both coordinates share the influence
+            let (eases_out, eases_in) = (ci == 0 && eases_out, ci == 0 && eases_in);
+            for (side, on, nb) in [(1.0f32, eases_out, ks.get(i + 1)), (-1.0f32, eases_in && i > 0, if i > 0 { ks.get(i - 1) } else { None })] {
+                let (true, Some(nb)) = (on, nb) else { continue };
+                let seg = (x_of(to_f(nb.time)) - c.x).abs();
+                let infl = if side > 0.0 { k.out_influence } else { k.in_influence } as f32;
+                let hid = id.with(if side > 0.0 { "out" } else { "in" });
+                let hdx: f32 = ui.data(|d| d.get_temp(hid)).unwrap_or(0.0);
+                let hx = c.x + side * (infl * seg + hdx * side).clamp(seg * 0.01, seg);
+                let hp = pos2(hx, c.y);
+                p.line_segment([c, hp], Stroke::new(1.0, t.plot_handle_dim));
+                p.circle_filled(hp, 3.5, t.keyframe_handle);
+                let hr = ui.interact(Rect::from_center_size(hp, vec2(10.0, 10.0)), hid.with("h"), Sense::drag());
+                if hr.dragged() {
+                    let nx = graph_drag_offset(ui, &hr, vec2(hdx, 0.0)).x;
+                    ui.data_mut(|d| d.insert_temp(hid, nx));
+                }
+                if hr.drag_stopped() {
+                    ui.data_mut(|d| d.remove::<f32>(hid));
+                    let ni = ((infl * seg + hdx * side) / seg.max(1.0)).clamp(0.01, 1.0);
+                    let key = if side > 0.0 { "outInfluence" } else { "inInfluence" };
+                    actions.push((
+                        "effects.setKeyframe".into(),
+                        with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "mediaTime": k.time.0, key: ni})),
+                    ));
+                }
             }
-        }
-        p.circle_filled(c, 4.5, if resp.dragged() { t.hot_text } else { t.plot_handle });
-        if resp.dragged() {
-            let ny = graph_drag_offset(ui, &resp, vec2(0.0, dy)).y;
-            ui.data_mut(|d| d.insert_temp(id, ny));
-            p.text(c + vec2(8.0, -10.0), Align2::LEFT_BOTTOM, format!("{:.dec$}", v_of(c.y)), Tokens::ui(10.5), t.hot_text);
-        }
-        if resp.drag_stopped() {
-            ui.data_mut(|d| d.remove::<f32>(id));
-            let nv = v_of(c.y);
-            let nv = if let ParamKind::Float { min, max, .. } = pd.kind { nv.clamp(min, max) } else { nv };
-            actions.push(("effects.setKeyframe".into(), with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "mediaTime": k.time.0, "value": nv}))));
+            p.circle_filled(c, 4.5, if resp.dragged() { t.hot_text } else { t.plot_handle });
+            if resp.dragged() {
+                let ny = graph_drag_offset(ui, &resp, vec2(0.0, dy)).y;
+                ui.data_mut(|d| d.insert_temp(id, ny));
+                p.text(c + vec2(8.0, -10.0), Align2::LEFT_BOTTOM, format!("{:.dec$}", v_of(c.y)), Tokens::ui(10.5), t.hot_text);
+            }
+            if resp.drag_stopped() {
+                ui.data_mut(|d| d.remove::<f32>(id));
+                let nv = v_of(c.y);
+                let nv = if let ParamKind::Float { min, max, .. } = pd.kind { nv.clamp(min, max) } else { nv };
+                let value = if comps.len() == 1 {
+                    json!(nv)
+                } else {
+                    let mut moved = comps.clone();
+                    if let Some(slot) = moved.get_mut(ci) {
+                        *slot = nv;
+                    }
+                    json!(moved)
+                };
+                actions.push((
+                    "effects.setKeyframe".into(),
+                    with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "mediaTime": k.time.0, "value": value})),
+                ));
+            }
         }
     }
 }
@@ -1201,33 +1286,33 @@ mod graph_drag_tests {
         ctx: egui::Context,
         clip: ClipId,
         time: f64,
+        param: &'static str,
     }
 
     impl Driver {
         fn new() -> Self {
+            Self::with("scale", ParamValue::Float(40.0), ParamValue::Float(80.0))
+        }
+
+        fn with(param: &'static str, from: ParamValue, to: ParamValue) -> Self {
             let mut session = filmcraft_engine::Session::default();
             session.execute("file.openDemoProject", json!({})).unwrap();
             let seq = session.state.active_sequence.unwrap();
             let clip = session.active_sequence().unwrap().video_tracks[0].items[0].id;
             let it = std::sync::Arc::make_mut(&mut session.project).sequence_mut(seq).unwrap().find_item_mut(clip).unwrap().1;
-            let mut a = Keyframe::new(it.source_in + Tick(it.duration.0 / 4), ParamValue::Float(40.0));
-            let mut b = Keyframe::new(it.source_in + Tick(it.duration.0 * 3 / 4), ParamValue::Float(80.0));
+            let mut a = Keyframe::new(it.source_in + Tick(it.duration.0 / 4), from.clone());
+            let mut b = Keyframe::new(it.source_in + Tick(it.duration.0 * 3 / 4), to);
             a.interp = Interpolation::Bezier;
             b.interp = Interpolation::Bezier;
-            it.effects
-                .iter_mut()
-                .find(|e| e.effect == "motion")
-                .unwrap()
-                .params
-                .insert("scale".into(), Param { value: ParamValue::Float(40.0), keyframes: vec![a, b] });
+            it.effects.iter_mut().find(|e| e.effect == "motion").unwrap().params.insert(param.into(), Param { value: from, keyframes: vec![a, b] });
             let app = FilmcraftApp::new(session);
             let ctx = egui::Context::default();
             crate::theme::install(&ctx, &app.tokens);
-            Self { app, ctx, clip, time: 0.0 }
+            Self { app, ctx, clip, time: 0.0, param }
         }
 
         fn param(&self) -> Param {
-            self.app.session.active_sequence().unwrap().find_item(self.clip).unwrap().1.effect("motion").unwrap().params["scale"].clone()
+            self.app.session.active_sequence().unwrap().find_item(self.clip).unwrap().1.effect("motion").unwrap().params[self.param].clone()
         }
 
         fn undo_len(&mut self) -> usize {
@@ -1243,11 +1328,11 @@ mod graph_drag_tests {
                 let it = self.app.session.active_sequence().unwrap().find_item(self.clip).unwrap().1.clone();
                 let index = it.effects.iter().position(|e| e.effect == "motion").unwrap();
                 let effect = &it.effects[index];
-                let pd = effect.def().unwrap().param("scale").unwrap();
+                let pd = effect.def().unwrap().param(self.param).unwrap();
                 let body = Rect::from_min_size(pos2(8.0, 8.0), vec2(320.0, 200.0));
                 let lane = Rect::from_min_max(pos2(360.0, 8.0), pos2(760.0, 220.0));
                 let mut actions = Vec::new();
-                graph_rows(&mut self.app, ui, body, self.clip, index, None, pd, &effect.params["scale"], &lane, &it, &mut actions);
+                graph_rows(&mut self.app, ui, body, self.clip, index, None, pd, &effect.params[self.param], &lane, &it, &mut actions);
                 run(&mut self.app, ui.ctx(), actions);
             });
             out.textures_delta.clear();
@@ -1319,5 +1404,27 @@ mod graph_drag_tests {
                 assert_eq!(d.undo_len(), undo + 1);
             }
         }
+    }
+
+    /// #239: Position (a point) has graphs too; dragging its X keyframe moves only X, in one undo step.
+    #[test]
+    fn position_graph_drags_one_coordinate_of_a_point_keyframe() {
+        use filmcraft_geom::Vec2;
+        let mut d = Driver::with("position", ParamValue::Vec2(Vec2::new(400.0, 300.0)), ParamValue::Vec2(Vec2::new(800.0, 500.0)));
+        assert!(graphable(&d.param().value));
+        let before = d.param();
+        let undo = d.undo_len();
+        let start = d.frame(vec![])[0];
+        assert!(d.app.auto.find(&format!("effectControls.position.graph.keyframe.{}.y", before.keyframes[0].time.0)).is_some());
+        d.frame(vec![egui::Event::PointerMoved(start), button(start, true)]);
+        d.frame(vec![egui::Event::PointerMoved(start - vec2(0.0, 20.0))]);
+        d.frame(vec![button(start - vec2(0.0, 20.0), false)]);
+        d.frame(vec![]);
+        let changed = d.param();
+        assert_eq!(d.undo_len(), undo + 1);
+        let (old, new) = (before.keyframes[0].value.as_vec2().unwrap(), changed.keyframes[0].value.as_vec2().unwrap());
+        assert!(new.x > old.x, "dragging the X keyframe up raises X: {old:?} -> {new:?}");
+        assert_eq!(new.y, old.y);
+        assert_eq!(changed.keyframes[1], before.keyframes[1]);
     }
 }

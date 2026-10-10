@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use filmcraft_color::ColorInfo;
 use filmcraft_frame::{AudioBuffer, Region, VideoFrame};
-use filmcraft_isobmff::{CleanAperture, CodecConfig, Mp4File, TrackKind};
+use filmcraft_isobmff::{ByteSource, CleanAperture, CodecConfig, Mp4File, TrackKind};
 use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, SharedSource, VideoStreamInfo};
 use filmcraft_time::{FrameRate, Tick};
 
@@ -162,6 +162,48 @@ fn color_from(entry: &filmcraft_isobmff::SampleEntry, w: u32, h: u32) -> ColorIn
     crate::stream_color::resolve(w, h, &sources)
 }
 
+/// First bytes of a Sony `rtmd` sample needed for the start-timecode block (`frames` is last).
+const RTMD_HEADER_LEN: usize = 0x12;
+
+/// Sony XAVC `rtmd` (real-time metadata) start timecode fields, read from the first sample: hours,
+/// minutes, seconds, a drop-frame flag and frames. Sony stores them as raw decimal bytes in the
+/// sample's fixed header. The layout is proprietary and undocumented, so it is reproduced here from
+/// real footage; it is the same block ffmpeg reports as the `timecode` tag of an `rtmd` stream.
+///
+/// Fields outside SMPTE bounds — including the labels drop-frame counting skips — are rejected
+/// (no fabricated start time from damaged metadata).
+fn rtmd_fields(sample: &[u8], rate: FrameRate) -> Option<(i64, i64, i64, i64, bool)> {
+    let f = sample.get(0x0d..0x12)?;
+    let (h, m, s) = (f[0] as i64, f[1] as i64, f[2] as i64);
+    let frames = f[4] as i64;
+    let drop = f[3] != 0;
+    let base = rate.timecode_base();
+    if h > 23 || m > 59 || s > 59 || frames >= base {
+        return None;
+    }
+    // Drop-frame counting skips the first `base / 15` frame labels of every minute except each
+    // tenth minute, so those labels never occur in valid footage (SMPTE ST 12-1).
+    if drop && rate.supports_drop_frame() && s == 0 && m % 10 != 0 && frames < base / 15 {
+        return None;
+    }
+    Some((h, m, s, frames, drop))
+}
+
+/// Start timecode from a Sony `rtmd` track as a frame count at `rate` (issue #460), used when the
+/// file has no `tmcd` track. `None` if there is no `rtmd` track or it has no usable first sample.
+/// Only the fixed-size header is read (a damaged `stsz` size can't drive a huge allocation).
+fn rtmd_start_timecode(file: &Mp4File, bytes: &crate::Src, rate: FrameRate) -> Option<i64> {
+    let t = file.tracks.iter().find(|t| t.entries.first().is_some_and(|e| e.format.0 == *b"rtmd"))?;
+    let s = t.samples.first()?;
+    if s.size < RTMD_HEADER_LEN as u32 {
+        return None;
+    }
+    let mut buf = [0u8; RTMD_HEADER_LEN];
+    bytes.read_at(s.offset, &mut buf).ok()?;
+    let (h, m, s, f, drop) = rtmd_fields(&buf, rate)?;
+    Some(filmcraft_time::fields_to_frames(h, m, s, f, rate, drop))
+}
+
 impl Mp4Source {
     pub fn open(name: &str, bytes: Arc<[u8]>) -> crate::Result<Self> {
         Self::open_reader(name, Arc::new(filmcraft_media::reader::MemReader(bytes)))
@@ -271,6 +313,9 @@ impl Mp4Source {
             Some(CodecConfig::Timecode(tc)) => tc.start_frame.map(|f| f as i64),
             _ => None,
         });
+        // Sony XAVC files with no `tmcd` track carry the start timecode in an `rtmd` metadata
+        // track; convert its fields to a frame count using the video frame rate.
+        let start_timecode = start_timecode.or_else(|| rtmd_start_timecode(&file, &bytes, video.as_ref()?.frame_rate));
         let info = MediaInfo {
             name: name.to_string(),
             kind: if video.is_some() { MediaKind::Movie } else { MediaKind::AudioOnly },
@@ -913,6 +958,48 @@ mod tests {
             let v = s.info().video.as_ref().expect("video");
             assert_eq!((v.pixel_format.as_str(), v.has_alpha), (want, alpha), "{}", String::from_utf8_lossy(fourcc));
         }
+    }
+
+    #[test]
+    fn rtmd_fields_parse_and_reject_damaged_metadata() {
+        let rate = FrameRate::FPS_59_94;
+        // 03:37:12:34, non-drop (a Sony FX3/a6400 XAVC header).
+        let mut s = [0u8; 24];
+        s[0x0d..0x12].copy_from_slice(&[3, 37, 12, 0, 34]);
+        assert_eq!(rtmd_fields(&s, rate), Some((3, 37, 12, 34, false)));
+        s[0x10] = 1;
+        assert_eq!(rtmd_fields(&s, rate), Some((3, 37, 12, 34, true)));
+        // Too short to hold the block: no fields, no panic.
+        assert_eq!(rtmd_fields(&[0u8; 6], rate), None);
+        // Damaged fields are rejected rather than normalized into a plausible time.
+        for bad in [[3, 37, 12, 0, 60], [3, 60, 0, 0, 0], [24, 0, 0, 0, 0], [0, 0, 60, 0, 0]] {
+            let mut b = [0u8; 24];
+            b[0x0d..0x12].copy_from_slice(&bad);
+            assert_eq!(rtmd_fields(&b, rate), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn rtmd_fields_reject_drop_frame_skipped_labels() {
+        let df = |h, m, s, f| {
+            let mut b = [0u8; 24];
+            b[0x0d..0x12].copy_from_slice(&[h, m, s, 1, f]);
+            rtmd_fields(&b, FrameRate::FPS_59_94)
+        };
+        // At 59.94 DF, frames 00-03 of a non-tenth minute are skipped, so they never occur.
+        assert_eq!(df(0, 1, 0, 0), None);
+        assert_eq!(df(0, 1, 0, 3), None);
+        assert_eq!(df(0, 1, 0, 4), Some((0, 1, 0, 4, true)));
+        assert_eq!(df(0, 10, 0, 0), Some((0, 10, 0, 0, true))); // tenth minute: label exists
+        assert_eq!(df(0, 1, 1, 0), Some((0, 1, 1, 0, true))); // seconds > 0: label exists
+        // At 29.97 DF only frames 00-01 are skipped.
+        let df30 = |m, s, f| {
+            let mut b = [0u8; 24];
+            b[0x0d..0x12].copy_from_slice(&[0, m, s, 1, f]);
+            rtmd_fields(&b, FrameRate::FPS_29_97)
+        };
+        assert_eq!(df30(1, 0, 0), None);
+        assert_eq!(df30(1, 0, 2), Some((0, 1, 0, 2, true)));
     }
 }
 

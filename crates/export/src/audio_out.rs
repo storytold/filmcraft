@@ -145,6 +145,11 @@ impl AudioOut {
         Some(buf)
     }
 
+    /// Output samples still to come (per channel).
+    pub fn remaining(&self) -> u64 {
+        u64::try_from(self.end.saturating_sub(self.out)).unwrap_or(0)
+    }
+
     /// Everything still to come (to the end of the range).
     pub fn rest(&mut self, sources: &dyn SourceProvider) -> Option<Vec<Vec<f32>>> {
         self.pull(self.end, sources)

@@ -60,6 +60,11 @@ impl Args {
         self.opts.iter().any(|(n, _)| n == k)
     }
 
+    /// The first option that is not in `allowed`, if any.
+    pub fn unknown_opt(&self, allowed: &[&str]) -> Option<&str> {
+        self.opts.iter().map(|(n, _)| n.as_str()).find(|n| !allowed.contains(n))
+    }
+
     /// Command params from positionals `from..`: one JSON object, or `key=value` pairs
     /// (dotted keys nest: `color.r=1`).
     pub fn params_from(&self, from: usize) -> Result<Value, String> {
@@ -133,6 +138,14 @@ mod tests {
     fn json_params() {
         let a = Args::parse(["exec".into(), "x".into(), r#"{"a": {"b": [1]}}"#.into()]);
         assert_eq!(a.params_from(2).unwrap(), json!({"a": {"b": [1]}}));
+    }
+
+    #[test]
+    fn unknown_opt_reports_first_unlisted_option() {
+        let allowed = ["--bridge", "--project"];
+        assert_eq!(args("mcp --automation-read-root X").unknown_opt(&allowed), Some("--automation-read-root"));
+        assert_eq!(args("mcp --bridge=a --typo=1").unknown_opt(&allowed), Some("--typo"));
+        assert_eq!(args("mcp --project p --bridge a").unknown_opt(&allowed), None);
     }
 
     #[test]

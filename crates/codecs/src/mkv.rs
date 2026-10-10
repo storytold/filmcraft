@@ -58,6 +58,8 @@ pub struct MkvSource {
     /// Video codec as an ISO-BMFF sample entry (for the decoder factories).
     ventry: Option<SampleEntry>,
     video: GopCache,
+    /// The alpha layer of a VP9 track with `AlphaMode` 1 (WebM transparency, #402).
+    alpha: Option<Arc<crate::webm_alpha::AlphaLayer>>,
     /// The playable audio tracks in file order: `info.audio_streams[k]` describes `audios[k]`.
     audios: Vec<MkvAudio>,
 }
@@ -380,7 +382,12 @@ impl MkvSource {
                 Some(MkvAudio { track: i, state, starts, preroll })
             })
             .collect();
-        Ok(Self { info, bytes, file, vtrack, ventry, video: GopCache::new(explicit_color).with_rotation(rotation), audios })
+        // WebM transparency: VP9 alpha in each block's BlockAdditional (ID 1)
+        let alpha = vtrack.and_then(|i| file.tracks.get(i)).filter(|t| {
+            matches!(t.codec, Codec::Vp9 { .. }) && t.video.as_ref().is_some_and(|v| v.alpha_mode != 0) && t.samples.iter().any(|s| s.addition.is_some())
+        });
+        let alpha = alpha.map(|t| Arc::new(crate::webm_alpha::AlphaLayer::new(bytes.clone(), t.samples.iter().map(|s| (s.pts, s.addition)))));
+        Ok(Self { info, bytes, file, vtrack, ventry, video: GopCache::new(explicit_color).with_rotation(rotation), alpha, audios })
     }
 
     fn read(&self, track: usize, i: usize) -> crate::Result<Vec<u8>> {
@@ -486,9 +493,15 @@ impl VideoSamples for MkvVideo<'_> {
         self.src.read(self.track, i)
     }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
-        match &self.src.ventry {
-            Some(e) => make_video_decoder(e),
-            None => Err(CodecError::Unsupported(format!("no decoder for {} video", codec_label(&self.src.file.tracks[self.track].codec)))),
+        let Some(e) = &self.src.ventry else {
+            return Err(CodecError::Unsupported(format!("no decoder for {} video", codec_label(&self.src.file.tracks[self.track].codec))));
+        };
+        let color = make_video_decoder(e)?;
+        let Some(layer) = &self.src.alpha else { return Ok(color) };
+        // the alpha layer always goes through our own decoder (it is luma only)
+        match crate::software_video_decoder(e) {
+            Ok(alpha) => Ok(Box::new(crate::webm_alpha::AlphaDecoder::new(color, alpha, layer.clone()))),
+            Err(_) => Ok(color),
         }
     }
 }

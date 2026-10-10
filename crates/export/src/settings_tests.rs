@@ -325,6 +325,40 @@ fn two_pass_and_cbr_h264() {
 }
 
 #[test]
+fn crf_h264() {
+    // settings saved before CRF existed read as the default; the range is checked
+    let old: ExportSettings = serde_json::from_value(serde_json::json!({"format": "h264", "bitrateMode": "vbr1Pass"})).unwrap();
+    assert_eq!(old.crf, DEFAULT_CRF);
+    let c: ExportSettings = serde_json::from_value(serde_json::json!({"bitrateMode": "crf", "crf": 18.0})).unwrap();
+    assert_eq!((c.bitrate_mode, c.crf), (BitrateMode::Crf, 18.0));
+    for bad in [-1.0, 51.5, f32::NAN, f32::INFINITY] {
+        assert!(ExportSettings { bitrate_mode: BitrateMode::Crf, crf: bad, ..Default::default() }.validate().is_err(), "{bad}");
+    }
+    // the value only matters in CRF mode
+    assert!(ExportSettings { crf: f32::NAN, ..Default::default() }.validate().is_ok());
+    let summary = c.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
+    assert!(summary.video.contains("CRF (constant quality) 18"), "{}", summary.video);
+
+    // one pass at constant quality: a lower factor spends more bits, and both decode to the picture
+    let (p, seq, m) = matte([0.2, 0.5, 0.8, 1.0], 320, 180, None);
+    let dir = Scratch::new("crf");
+    let mut sizes = Vec::new();
+    for crf in [10.0, 40.0] {
+        let path = dir.path(&format!("crf{crf}.mp4"));
+        let s = ExportSettings { format: Format::H264, path: path.clone(), bitrate_mode: BitrateMode::Crf, crf, include_audio: false, ..Default::default() };
+        let prog = Progress::default();
+        let r = export(&p, seq, &s, &m, &prog).unwrap();
+        assert_eq!((r.frames, prog.total.load(Ordering::Relaxed)), (24, 24));
+        let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+        sizes.push(bytes.len());
+        let src = filmcraft_codecs::open_bytes("x.mp4", bytes).unwrap();
+        let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 2))).unwrap().to_rgba8();
+        assert!((f[2] as i32 - 204).abs() < 12 && (f[1] as i32 - 127).abs() < 12, "CRF {crf}: {:?}", &f[..4]);
+    }
+    assert!(sizes[0] > sizes[1], "CRF 10 {} bytes, CRF 40 {} bytes", sizes[0], sizes[1]);
+}
+
+#[test]
 fn h264_profile_level_and_keyframes() {
     let (p, seq, m) = matte([0.5, 0.5, 0.5, 1.0], 320, 180, None);
     let dir = Scratch::new("profile");
@@ -516,6 +550,8 @@ fn h265_is_a_format_that_needs_a_registered_encoder() {
     let e = ExportSettings { bitrate_mode: BitrateMode::Vbr2Pass, ..h.clone() }.validate().unwrap_err();
     assert!(e.to_string().contains("two-pass"), "{e}");
     assert!(ExportSettings { bitrate_mode: BitrateMode::Cbr, ..h.clone() }.validate().is_ok());
+    let e = ExportSettings { bitrate_mode: BitrateMode::Crf, ..h.clone() }.validate().unwrap_err();
+    assert!(e.to_string().contains("CRF"), "{e}");
 
     // formats with a built-in encoder are always available; this one only when a registered probe says so
     assert!(Format::ALL.iter().filter(|f| f.has_builtin_encoder()).all(|f| available(*f)));
