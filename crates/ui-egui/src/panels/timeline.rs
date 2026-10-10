@@ -2481,6 +2481,8 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             if ctx.input(|i| i.pointer.any_released()) {
                 let r = if let Some(name) = effect.strip_prefix("preset:") {
                     app.session.execute("presets.apply", json!({"preset": name, "clips": [clip.0]}))
+                } else if let Some(name) = effect.strip_prefix(crate::panels::LUMETRI_PRESET_PREFIX) {
+                    app.session.execute("lumetri.applyPreset", json!({"name": name, "clips": [clip.0]}))
                 } else if transition_kind.is_some() {
                     app.session.execute("effects.apply", params)
                 } else {
