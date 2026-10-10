@@ -2066,7 +2066,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             Drag::Trim { clip, edge, mode, from, .. } => seq.find_item(clip).map(|(_, it)| {
                 let base = if edge == filmcraft_edit::Edge::In { it.start } else { it.end() };
                 let target = snap(app, seq, layout, rate.snap_nearest(base + (t_here - from)), &[clip]);
-                Drag::Trim { clip, edge, mode, delta: target - base, from }
+                // stop the edge where the trim will land: at the end of the media, a neighbour or one frame
+                let raw = target - base;
+                let delta = filmcraft_engine::commands::trim_drag_delta(&app.session, clip, edge, mode, raw).unwrap_or(raw);
+                Drag::Trim { clip, edge, mode, delta, from }
             }),
             Drag::Remix { clip, from, .. } => seq.find_item(clip).map(|(_, it)| {
                 let target = rate.snap_nearest(it.end() + (t_here - from)).max(it.start + rate.frame_duration());

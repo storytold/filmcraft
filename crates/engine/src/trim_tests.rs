@@ -236,3 +236,29 @@ fn extend_to_playhead_moves_each_unequal_out_point_to_the_playhead() {
     assert_eq!(q.find_item(a).unwrap().1.end(), ph);
     assert_eq!(q.find_item(b).unwrap().1.end(), ph);
 }
+
+/// Dragging a clip's Out edge past the end of its media drew the clip longer than it can get until
+/// the mouse was let go (#653): the drag delta stops at the end of the media, where the trim lands.
+#[test]
+fn trim_drag_stops_at_the_end_of_the_media() {
+    use filmcraft_edit::{Edge, TrimMode};
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    s.execute("file.newSequence", json!({"name": "Handles", "video": 1, "audio": 1})).unwrap();
+    let rate = s.sequence_rate();
+    let item = s.project.items.values().find(|i| i.has_video() && i.has_audio() && i.as_media().is_some()).map(|i| i.id).unwrap();
+    let media = media_duration(&s.project, &s.media, item).unwrap();
+    let len = rate.tick_of(24);
+    let source_in = media - len - rate.tick_of(10);
+    s.execute("timeline.place", json!({"item": item.0, "track": "V1", "audioTrack": "A1", "frame": 0, "sourceIn": source_in.0, "duration": len.0})).unwrap();
+    let it = s.active_sequence().unwrap().video_tracks[0].items[0].clone();
+    let far = rate.tick_of(100);
+    let d = commands::trim_drag_delta(&s, it.id, Edge::Out, TrimMode::Regular, far).unwrap();
+    assert!(d > Tick::ZERO && d < far, "{d:?}");
+    assert_eq!(d, media - it.source_out(), "the edge stops at the end of the media");
+    let r = s.execute("timeline.trim", json!({"clip": it.id.0, "edge": "out", "mode": "regular", "delta": far.0})).unwrap();
+    assert_eq!(r["delta"], json!(d.0), "the drag shows what the trim applies");
+    // within the media the edge follows the mouse
+    let back = -rate.tick_of(5);
+    assert_eq!(commands::trim_drag_delta(&s, it.id, Edge::Out, TrimMode::Regular, back).unwrap(), back);
+}

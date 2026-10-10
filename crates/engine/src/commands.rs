@@ -366,6 +366,30 @@ pub fn with_links(s: &Session, clips: &[ClipId]) -> Vec<ClipId> {
     out
 }
 
+/// The delta a trim of `clips` (a clip and its linked partners) may apply: each edge stays within
+/// its media, its neighbours (a Regular trim) and one frame of duration, and the smallest delta wins.
+fn clamp_trim_linked(q: &filmcraft_project::Sequence, clips: &[ClipId], edge: Edge, mode: TrimMode, delta: Tick, ctx: &edit::EditCtx) -> Result<Tick> {
+    let mut dd = delta;
+    for c in clips {
+        let x = edit::clamp_trim(q, *c, edge, mode, dd, ctx)?;
+        if x.abs() < dd.abs() {
+            dd = x;
+        }
+    }
+    Ok(dd)
+}
+
+/// The delta `timeline.trim` would apply to `clip` (and its linked partners) for `delta`, so a trim
+/// drag can draw the edge where it will land instead of past the end of the media (#653).
+pub fn trim_drag_delta(s: &Session, clip: ClipId, edge: Edge, mode: TrimMode, delta: Tick) -> Result<Tick> {
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let durations = |id: ItemId| crate::media_duration(&s.project, &s.media, id);
+    let starts = |id: ItemId| crate::media_start(&s.project, id);
+    let mut next = s.project.next_id;
+    let ctx = edit::EditCtx { next_id: &mut next, media_duration: &durations, media_start: &starts, min_duration: q.settings.frame_rate.frame_duration() };
+    clamp_trim_linked(q, &with_links(s, &[clip]), edge, mode, delta, &ctx)
+}
+
 /// Sequence settings matching a media clip (New Sequence From Clip, New Sequence from an item):
 /// its frame size, rate and pixel aspect ratio (Interpret Footage's, else the file's), so a
 /// 1440 x 1080 clip with 4:3 pixels makes a 1440 x 1080 sequence that displays 16:9.
@@ -2198,13 +2222,7 @@ fn build() -> Vec<CommandSpec> {
                 let applied = s.edit_sequence(if mode == TrimMode::Ripple { "Ripple Trim" } else { "Trim" }, |q, ctx, st| {
                     let before = q.find_item(c).map(|(_, i)| i.range());
                     // clamp across all linked partners, then apply the common delta
-                    let mut dd = d;
-                    for c in &clips {
-                        let x = edit::clamp_trim(q, *c, edge, mode, dd, ctx)?;
-                        if x.abs() < dd.abs() {
-                            dd = x;
-                        }
-                    }
+                    let mut dd = clamp_trim_linked(q, &clips, edge, mode, d, ctx)?;
                     if mode == TrimMode::Ripple {
                         // the clip and its linked partners ripple as one edit
                         let mut group = vec![c];
