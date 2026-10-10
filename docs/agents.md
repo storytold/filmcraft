@@ -14,6 +14,10 @@ FilmCraft from an agent. Part 2 covers developing FilmCraft as an agent.
 | Headless | `filmcraft-cli mcp --demo` or `--project p.fcproj` (neither = empty project) | an in-process engine session, no window |
 | Bridge | `filmcraft-cli mcp --bridge 127.0.0.1:9876` | the running desktop app started with `filmcraft --control 9876` |
 
+Headless mode also takes `--data-dir DIR` (user presets). Any other option is rejected (exit 2):
+there are no folder-confinement flags such as `--automation-read-root`, so the server can read
+and write wherever the user can.
+
 **Claude Code.** The repository's `.mcp.json` registers both servers (`filmcraft` = bridge,
 `filmcraft-headless` = demo). Both point at `target/release/filmcraft-cli`, so build it first:
 
@@ -244,8 +248,8 @@ media, sidecar and `ATTRIBUTION.md` entry.
 
 1. [AGENTS.md](../AGENTS.md): absolute rules (assets, clean-room, licences).
 2. [CLAUDE.md](../CLAUDE.md): working instructions and non-negotiables.
-3. [ROADMAP.md](../ROADMAP.md): read the **honest assessment** and **Where we are lacking** first, then
-   milestones, what's done and what's running.
+3. [ROADMAP.md](../ROADMAP.md) for the summary, then [gaps.md](gaps.md) (the ranked shortfalls) first,
+   [target-app-parity.md](target-app-parity.md) and [roadmap.md](roadmap.md) (milestones, current focus).
 4. [architecture.md](architecture.md), then the README and tests of the crate you'll touch.
 5. [contributing.md](contributing.md) (how to add things, gates) and [testing.md](testing.md).
 
@@ -256,15 +260,16 @@ everything you need to contribute is in the public docs above. Ask a maintainer 
 ## 5. Autonomous work loop
 
 1. **Orient.** Pick the next task: the next unchecked task in the maintainer status file, or an open
-   ROADMAP item. Prefer the gaps in ROADMAP's *Where we are lacking* (speed, correctness on real
-   media, measurement, Windows/Linux) over adding more checklist items. Read the relevant
+   [gaps.md](gaps.md) entry. Prefer those gaps (stability, `.prproj`, camera media, measurement,
+   hardware, Windows/Linux) over adding more checklist items. Read the relevant
    architecture section and crate README.
 2. **Plan tests first.** Write down the acceptance test before writing code.
 3. **Implement and test.**
 4. **Verify.** Run all gates (`cargo xtask ci`). For UI work, run the app with `--control`, drive it
    and look at the screenshots (§3).
 5. **Record.** Update the crate README (behaviour decisions, test results, limitations) and
-   ROADMAP.md when a milestone moves. Commit as `M<n>.<k>: …`, then move on to the next task.
+   the progress docs when a milestone moves (ROADMAP.md, docs/roadmap.md, the relevant parity doc
+   and gaps.md, with their timestamps). Commit as `M<n>.<k>: …`, then move on to the next task.
 
 For parallel agents, use one git worktree and one `CARGO_TARGET_DIR` per agent, and keep each crate
 with one owner ([contributing.md §5](contributing.md#5-parallel-work-several-agents-or-worktrees)).
@@ -295,17 +300,17 @@ A feature is done when:
 - [ ] every new interactive widget has an automation id;
 - [ ] you have driven it through the control channel and reviewed a screenshot;
 - [ ] all gates pass (`cargo xtask ci`), and new assets have sidecars;
-- [ ] the crate README and ROADMAP.md are updated where relevant;
+- [ ] the crate README and the progress docs (ROADMAP.md, docs/gaps.md, the parity docs) are updated where relevant;
 - [ ] it is committed with its task id.
 
 ### Reporting progress honestly
 
-ROADMAP.md keeps two numbers: the **feature checklist** (does it exist?) and **ready for real
-work** (does it hold up?). When you update either:
+ROADMAP.md and [target-app-parity.md](target-app-parity.md) keep two numbers: **feature breadth**
+(does it exist?) and **ready for real work** (does it hold up?). When you update either:
 
 - say how a number was obtained: *measured* (a test, a diff, a benchmark you ran) or *estimated*;
 - count an approximation, a stub or a partly wired setting as such, never as done;
-- record known bugs and limitations in the crate README and the honest assessment, not only
+- record known bugs and limitations in the crate README and [gaps.md](gaps.md), not only
   what works;
 - benchmarks state the machine, the load average and before/after on the same build;
 - don't raise a percentage without evidence a reviewer can rerun.

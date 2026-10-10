@@ -190,6 +190,9 @@ pub struct TimelineView {
     pub audio_track_h: f32,
     pub header_w: f32,
     pub show_thumbnails: bool,
+    /// Which frames a video clip shows while `show_thumbnails` is on (the wrench menu).
+    #[serde(default)]
+    pub thumbnail_mode: ThumbnailMode,
     pub show_waveforms: bool,
     /// Follow playhead during playback (page scroll).
     pub follow: bool,
@@ -225,12 +228,42 @@ impl Default for TimelineView {
             audio_track_h: 56.0,
             header_w: 204.0,
             show_thumbnails: true,
+            thumbnail_mode: ThumbnailMode::Head,
             show_waveforms: true,
             follow: true,
             fit_pending: true,
             fit_empty: None,
             track_lanes: Default::default(),
         }
+    }
+}
+
+/// Video thumbnails on timeline clips (Timeline wrench menu ▸ Show Video Thumbnails).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ThumbnailMode {
+    /// The clip's first frame at its head.
+    #[default]
+    Head,
+    /// The first frame at the head and the last one at the tail.
+    HeadAndTail,
+    /// Frames side by side across the whole clip.
+    Continuous,
+}
+
+impl ThumbnailMode {
+    pub const ALL: [ThumbnailMode; 3] = [ThumbnailMode::Head, ThumbnailMode::HeadAndTail, ThumbnailMode::Continuous];
+
+    /// The name used by automation ids and `ui.set` (`timeline.thumbnails`).
+    pub fn name(self) -> &'static str {
+        match self {
+            ThumbnailMode::Head => "head",
+            ThumbnailMode::HeadAndTail => "headAndTail",
+            ThumbnailMode::Continuous => "continuous",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<ThumbnailMode> {
+        Self::ALL.into_iter().find(|m| m.name().eq_ignore_ascii_case(name))
     }
 }
 
@@ -277,6 +310,8 @@ pub struct MonitorView {
     pub pan: [f32; 2],
     pub safe_margins: bool,
     pub show_transport: bool,
+    /// Transport buttons hidden through the monitor's Button Editor. Stored per monitor.
+    pub transport_hidden: Vec<String>,
     /// Program monitor display mode Multi-Camera (angle grid + program).
     pub multicam: bool,
     pub display: DisplayMode,
@@ -300,6 +335,8 @@ impl Default for MonitorView {
             pan: [0.0, 0.0],
             safe_margins: false,
             show_transport: true,
+            // The optional Loop button is available from the editor without altering default layouts.
+            transport_hidden: vec!["playback.loop".into()],
             multicam: false,
             display: DisplayMode::Composite,
             compare_ref: None,
@@ -368,6 +405,19 @@ pub struct Eyedropper {
     pub mask: Option<usize>,
 }
 
+/// A keyframe selected in the Effect Controls keyframe lane: clip, effect index, parameter (of an
+/// effect mask when `mask` is set) and the keyframe's media time. The panel drops references that
+/// no longer match a keyframe (deleted, moved, another clip selected).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyframeRef {
+    pub clip: u64,
+    pub effect: usize,
+    pub param: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask: Option<usize>,
+    pub time: filmcraft_time::Tick,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiState {
     #[serde(default)]
@@ -392,6 +442,10 @@ pub struct UiState {
     pub lumetri_grid_folder: Option<String>,
     /// Collapsed effect sections in Effect Controls ("clip:index").
     pub collapsed_fx: Vec<String>,
+    /// Width of Effect Controls' effect list, left of the keyframe area (points; 0 = the default
+    /// share of the panel). Dragging the divider sets it (#643).
+    #[serde(default)]
+    pub effect_controls_split: f32,
     pub show_menu_bar: bool,
     /// The header bar (Home, Import, Edit, Export, workspaces). An app that embeds FilmCraft can hide it.
     #[serde(default = "shown")]
@@ -408,6 +462,9 @@ pub struct UiState {
     /// monitor (Esc or a click elsewhere disarms it). Never saved.
     #[serde(skip)]
     pub eyedropper: Option<Eyedropper>,
+    /// Effect Controls: the selected keyframes, highlighted in the keyframe lane (a click selects one).
+    #[serde(default)]
+    pub keyframe_selection: Vec<KeyframeRef>,
     /// Essential Sound sub-tab: "Edit" or "Browse".
     #[serde(default)]
     pub essential_sound_tab: String,
@@ -827,7 +884,7 @@ impl Default for SequenceSettingsDraft {
 }
 
 /// The Delete Tracks dialog (Sequence ▸ Delete Tracks…): per kind, whether to delete and which
-/// track (`"empty"` = All Empty Tracks, or a track name such as `"V2"`).
+/// track (`"empty"` = All Empty Tracks, or a track name such as `"V2"` / `"C2"`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DeleteTracksDraft {
@@ -835,11 +892,13 @@ pub struct DeleteTracksDraft {
     pub video_target: String,
     pub audio: bool,
     pub audio_target: String,
+    pub captions: bool,
+    pub captions_target: String,
 }
 
 impl Default for DeleteTracksDraft {
     fn default() -> Self {
-        Self { video: false, video_target: "empty".into(), audio: false, audio_target: "empty".into() }
+        Self { video: false, video_target: "empty".into(), audio: false, audio_target: "empty".into(), captions: false, captions_target: "empty".into() }
     }
 }
 
@@ -897,6 +956,7 @@ impl Default for UiState {
             expanded_fx: vec!["Video Transitions".into(), "Video Transitions/Dissolve".into()],
             lumetri_grid_folder: None,
             collapsed_fx: vec![],
+            effect_controls_split: 0.0,
             show_menu_bar: true,
             show_header: true,
             show_status_bar: true,
@@ -904,6 +964,7 @@ impl Default for UiState {
             show_scopes: false,
             status: String::new(),
             eyedropper: None,
+            keyframe_selection: Vec::new(),
             essential_sound_tab: "Edit".into(),
             tts: Default::default(),
             export: Default::default(),

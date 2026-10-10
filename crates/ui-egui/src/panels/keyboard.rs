@@ -210,7 +210,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
         }
         "graphics.beginTextEditing" => begin_text_editing(app),
         "help.filmcraftHelp" => {
-            crate::links::open(ctx, HELP_URL);
+            crate::links::open(app, ctx, HELP_URL);
             Ok(json!({"url": HELP_URL}))
         }
         "app.quit" => {
@@ -232,8 +232,11 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
 
 // ------------------------------------------------------------------ frames and panels
 
-fn toggle_maximize(app: &mut FilmcraftApp, p: PanelKind) -> Value {
-    app.ui.keys.maximized = if app.ui.keys.maximized.is_some() { None } else { Some(p) };
+/// Maximize `p`, or restore the layout when a panel is maximized (also the panel menu's Maximize /
+/// Restore Frame). A maximized panel that has since been closed counts as restored.
+pub(crate) fn toggle_maximize(app: &mut FilmcraftApp, p: PanelKind) -> Value {
+    let current = app.ui.keys.maximized.filter(|q| app.ui.dock.contains(*q));
+    app.ui.keys.maximized = if current.is_some() { None } else { Some(p) };
     if let Some(p) = app.ui.keys.maximized {
         app.ui.dock.activate(p);
         app.ui.focused = p;

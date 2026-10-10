@@ -139,10 +139,25 @@ pub struct HostHooks {
     /// Open a file in its default application, or (`true`) reveal it in the file manager (Edit ▸
     /// Edit Original, Help ▸ Reveal Log Files).
     pub open_path: Option<Box<dyn FnMut(&str, bool) -> Result<(), String>>>,
+    /// Open a URL in the system browser (Help menu links, About dialog, Discord button, Import
+    /// screen). Without it, or when it fails, links go through `egui::Context::open_url`, which
+    /// opens a new tab on the web (the native egui backend is built without its `links` feature).
+    pub open_url: Option<Box<dyn FnMut(&str) -> Result<(), String>>>,
     /// The operating system's light or dark appearance when egui cannot report it (Linux desktops
     /// whose Wayland compositor sends no theme to winit). Without it, or without an answer, Auto
     /// uses `egui::Context::system_theme`.
     pub system_theme: Option<SystemThemeFn>,
+    /// Files or an image on the system clipboard, for Paste in the Timeline and the Project panel
+    /// (#611). Without it Paste only pastes clips copied in FilmCraft.
+    pub clipboard_media: Option<Box<dyn FnMut() -> Option<ClipboardMedia>>>,
+}
+
+/// What [`HostHooks::clipboard_media`] found on the system clipboard.
+pub enum ClipboardMedia {
+    /// Files copied in the file manager.
+    Files(Vec<String>),
+    /// An image (a screenshot, an image copied in a browser): 8-bit RGBA, row by row.
+    Image { width: usize, height: usize, rgba: Vec<u8> },
 }
 
 /// Reads the system appearance (Settings ▸ Appearance ▸ Appearance Mode ▸ Sync with system).
@@ -280,6 +295,9 @@ pub struct FilmcraftApp {
     /// Fault injection for robustness tests: the next UI pass panics.
     #[doc(hidden)]
     pub panic_next_frame: bool,
+    /// The next close request quits without asking to save (Save / Don't Save was chosen in the
+    /// quit prompt, or the control channel's `app.quit`).
+    pub quit_confirmed: bool,
     fonts_ready: bool,
     pub integrated_titlebar: bool,
     pub last_timeline_width: f32,
@@ -302,12 +320,16 @@ pub struct FilmcraftApp {
     pub tl: panels::timeline::TlState,
     /// Commands from outside the UI (native menu bar), invoked on the UI thread.
     pub command_inbox: Option<Receiver<String>>,
+    /// A V key press (or a Ctrl+V paste) reached the app and its release hasn't yet.
+    v_down: bool,
     /// GPU compositor (when running on wgpu): device state + compositor + the egui texture it feeds.
     pub gpu: Option<GpuState>,
     /// Preview render job being watched (job id, where to start playing when it completes).
     watched_render: Option<(u64, Tick)>,
     /// Settings last applied to the UI (theme, tooltips, frame cache, audio device).
     applied_prefs: Option<filmcraft_engine::autosave::Preferences>,
+    /// Settings ▸ Appearance ▸ UI Scale last applied, with the system scale it was applied for.
+    applied_ui_scale: Option<(Option<f32>, f32)>,
     workspace_restored: bool,
     /// Window ▸ Workspaces: saved layouts ([`dock::WORKSPACES_FILE`] in the data directory).
     pub workspaces: dock::WorkspacePrefs,
@@ -335,12 +357,31 @@ fn plan_side(plan: &filmcraft_render::plan::FramePlan) -> usize {
     plan.max_side()
 }
 
+/// A software rasterizer (llvmpipe, SwiftShader, softpipe — VMs and containers without GPU device
+/// access, missing or broken drivers) runs wgpu entirely on the CPU. Compositing through one is
+/// slower than the native CPU compositor and hides the cause: GPU usage stays at 0 % while the
+/// CPU saturates. Returns a description when the adapter is one.
+pub fn software_rasterizer(info: &eframe::wgpu::AdapterInfo) -> Option<String> {
+    rasterizer_reason(&info.name, info.device_type)
+}
+
+fn rasterizer_reason(name: &str, device_type: eframe::wgpu::DeviceType) -> Option<String> {
+    let lower = name.to_ascii_lowercase();
+    if device_type == eframe::wgpu::DeviceType::Cpu || ["llvmpipe", "swiftshader", "softpipe"].iter().any(|s| lower.contains(s)) {
+        return Some(format!("software rasterizer ({name}, {device_type:?})"));
+    }
+    None
+}
+
 /// Whether the GPU compositor can run on this adapter: it renders and blends Rgba16Float
 /// targets and uploads whole frames as textures. Older or OpenGL-backed GPUs (some Intel Macs,
 /// VMs, Linux without Vulkan, WebGL) can't; those use the CPU compositor, which renders the same
 /// frames. Returns the reason when unsupported.
 pub fn gpu_compositor_unsupported(adapter: &eframe::wgpu::Adapter) -> Option<String> {
     use eframe::wgpu::{TextureFormat, TextureFormatFeatureFlags as F, TextureUsages as U};
+    if let Some(why) = software_rasterizer(&adapter.get_info()) {
+        return Some(why);
+    }
     let f = adapter.get_texture_format_features(TextureFormat::Rgba16Float);
     if !f.allowed_usages.contains(U::RENDER_ATTACHMENT | U::TEXTURE_BINDING) {
         return Some("Rgba16Float is not renderable".into());
@@ -360,6 +401,9 @@ impl FilmcraftApp {
     pub fn set_wgpu(&mut self, rs: eframe::egui_wgpu::RenderState) {
         if let Some(why) = gpu_compositor_unsupported(&rs.adapter) {
             log::warn!("GPU compositor disabled ({why}); compositing on the CPU");
+            // Say so instead of letting the preview quietly crawl: "GPU 0 %, CPU 100 %" with no
+            // explanation read like a renderer bug when the machine simply has no GPU access.
+            self.ui.status = format!("{} ({why})", tl!("GPU acceleration is unavailable; preview renders on the CPU"));
             return;
         }
         // wgpu's default reaction to a validation error or lost device is to panic, which closed
@@ -474,6 +518,7 @@ impl FilmcraftApp {
             styled: false,
             ui_error: None,
             panic_next_frame: false,
+            quit_confirmed: false,
             fonts_ready: false,
             integrated_titlebar: false,
             last_timeline_width: 1000.0,
@@ -489,9 +534,11 @@ impl FilmcraftApp {
             toast: None,
             tl: Default::default(),
             command_inbox: None,
+            v_down: false,
             gpu: None,
             watched_render: None,
             applied_prefs: None,
+            applied_ui_scale: None,
             workspace_restored: false,
             workspaces,
             menu_workspaces: Default::default(),
@@ -551,9 +598,28 @@ impl FilmcraftApp {
         ctx.global_style_mut(|s| s.interaction.tooltip_delay = delay);
     }
 
+    /// Settings ▸ Appearance ▸ UI Scale: a fixed scale makes a point that many physical pixels,
+    /// whatever scale the system reports. It is applied only when the setting or the system scale
+    /// changes, so Ctrl+- / Ctrl++ still zoom the interface for the session; going back to Auto
+    /// restores the system's scale.
+    fn apply_ui_scale(&mut self, ctx: &egui::Context) {
+        let want = self.session.prefs.appearance.ui_scale_factor();
+        let native = ctx.native_pixels_per_point().filter(|v| v.is_finite() && *v > 0.0).unwrap_or(1.0);
+        if self.applied_ui_scale == Some((want, native)) {
+            return;
+        }
+        let prev = self.applied_ui_scale.replace((want, native));
+        match want {
+            Some(scale) => ctx.set_zoom_factor(scale / native),
+            None if prev.is_some_and(|(p, _)| p.is_some()) => ctx.set_zoom_factor(1.0),
+            None => {}
+        }
+    }
+
     /// Make the UI follow the settings after they change (theme, tooltips, frame cache budget,
     /// play after rendering, audio device).
     pub fn apply_prefs(&mut self, ctx: &egui::Context) {
+        self.apply_ui_scale(ctx);
         // Appearance Mode ▸ Sync with system: follow the system while running. The host reports
         // changes as they happen (no polling) and wakes the UI only when the value changes.
         if self.applied_prefs.is_some() {
@@ -694,6 +760,8 @@ impl FilmcraftApp {
 
     pub fn set_workspace(&mut self, name: &str) {
         self.ui.workspace = name.to_string();
+        // a workspace is shown whole: no frame stays maximized over it
+        self.ui.keys.maximized = None;
         self.ui.dock = dock::saved_layout(&self.workspaces, name);
         if self.workspaces.current != name {
             let mut next = self.workspaces.clone();
@@ -1285,15 +1353,44 @@ impl FilmcraftApp {
         if self.session.trim_play.dynamic.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             let _ = self.session.execute("trim.cancelDynamic", json!({}));
         }
-        // Panel shortcuts of the focused panel first: they override application shortcuts.
+        // Panel shortcuts of the focused panel override application shortcuts on the same chord.
+        // egui ignores extra Shift and Alt when matching, so the most specific chords go first
+        // across both scopes (the sort is stable, so the panel still wins a tie): otherwise the
+        // Timeline's `Delete` (Clear) swallows the app-wide `Shift+Delete` (Ripple Delete) (#680).
         let focused = self.ui.focused.title();
         let mut fire = Vec::new();
         ctx.input_mut(|i| {
             let modifiers = i.modifiers;
+            // With no text on the system clipboard, egui-winit drops the Ctrl+V press but still
+            // passes its release: put the press back, so Paste can paste files or an image (#611).
+            let mut swallowed = None;
+            for e in &i.events {
+                match e {
+                    egui::Event::Key { key: egui::Key::V, pressed, modifiers: m, .. } => {
+                        if !pressed && !self.v_down {
+                            swallowed = Some(*m);
+                        }
+                        self.v_down = *pressed;
+                    }
+                    egui::Event::Paste(_) if modifiers.command => self.v_down = true,
+                    _ => {}
+                }
+            }
+            if let Some(m) = swallowed {
+                i.events.push(egui::Event::Key {
+                    key: egui::Key::V,
+                    physical_key: Some(egui::Key::V),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: m | egui::Modifiers::COMMAND,
+                });
+            }
             clipboard_events_as_keys(&mut i.events, modifiers);
             let panel = self.bindings.iter().filter(|b| b.3.as_deref() == Some(focused));
             let app_wide = self.bindings.iter().filter(|b| b.3.is_none());
-            for (m, k, id, _) in panel.chain(app_wide) {
+            let mut candidates: Vec<&menus::KeyBinding> = panel.chain(app_wide).collect();
+            candidates.sort_by_key(|b| std::cmp::Reverse(menus::specificity(b.0)));
+            for (m, k, id, _) in candidates {
                 if i.consume_key(*m, *k) {
                     fire.push(id.clone());
                 }
@@ -1301,11 +1398,27 @@ impl FilmcraftApp {
         });
         for mut id in fire {
             // Select All / Deselect All act on the Project panel's items when it has focus (#168).
-            if self.ui.focused == PanelKind::Project && matches!(id.as_str(), "edit.selectAll" | "edit.deselectAll") {
-                id = id.replacen("edit.", "project.", 1);
+            // Select All takes only what the shown bin lists, not the whole project (#456).
+            if self.ui.focused == PanelKind::Project && id == "edit.selectAll" {
+                let (cmd, params) = panels::project::select_all_command(self);
+                if let Err(e) = menus::invoke(self, ctx, &cmd, params) {
+                    self.ui.status = e;
+                }
+                continue;
             }
+            if self.ui.focused == PanelKind::Project && id == "edit.deselectAll" {
+                id = "project.deselectAll".into();
+            }
+            // Clear in the Project panel removes the selected bin when no item is selected (#587).
+            let clear = if self.ui.focused == PanelKind::Project && id == "project.delete" {
+                crate::panels::project_views::clear_params(&self.session.state.project_selection, self.ui.project_panel.selected_bin)
+            } else {
+                None
+            };
             // Mark In/Out in the Source monitor when it has focus.
-            let params = if self.ui.focused == PanelKind::Source
+            let params = if let Some(p) = clear {
+                p
+            } else if self.ui.focused == PanelKind::Source
                 && (matches!(id.as_str(), "markers.markIn" | "markers.markOut" | "markers.clearInOut")
                     || id.starts_with("markers.markSplit")
                     || id.starts_with("markers.goToSplit"))
@@ -1430,6 +1543,41 @@ impl FilmcraftApp {
 
     // ---------------------------------------------------------------- frame
 
+    /// Settings ▸ Media ▸ Automatically refresh growing files: every *Refresh growing files every*
+    /// seconds, and as soon as the window comes back to the front (after a render in another app),
+    /// stamp the project's media files on a worker thread and read the changed ones again
+    /// ([`filmcraft_engine::media_watch`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn tick_media_refresh(&mut self, ctx: &egui::Context) {
+        if let Some(r) = self.session.poll_media_scan() {
+            match r {
+                Ok(r) => {
+                    if let Some(n) = r["refreshed"].as_array().map(Vec::len).filter(|n| *n > 0) {
+                        self.toast = Some((format!("Refreshed {n} media item(s) changed on disk"), ctx.input(|i| i.time)));
+                    }
+                }
+                Err(e) => self.toast = Some((e.to_string(), ctx.input(|i| i.time))),
+            }
+        }
+        let media = &self.session.prefs.media;
+        let (on, every) = (media.refresh_growing_files, f64::from(media.growing_refresh_seconds.max(1)));
+        let (last_key, focus_key) = (egui::Id::new("mediaWatch.lastScan"), egui::Id::new("mediaWatch.focused"));
+        let now = ctx.input(|i| i.time);
+        let focused = ctx.input(|i| i.focused);
+        let was_focused: bool = ctx.data(|d| d.get_temp(focus_key)).unwrap_or(focused);
+        ctx.data_mut(|d| d.insert_temp(focus_key, focused));
+        if !on || filmcraft_engine::media_watch::media_files(&self.session.project).is_empty() {
+            return;
+        }
+        let last: f64 = ctx.data(|d| d.get_temp(last_key)).unwrap_or(f64::NEG_INFINITY);
+        if now - last >= every || (focused && !was_focused) {
+            ctx.data_mut(|d| d.insert_temp(last_key, now));
+            self.session.start_media_scan();
+        }
+        let wait = if self.session.media_scan.is_some() { 0.1 } else { (every - (now - last)).clamp(0.1, every) };
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
+    }
+
     fn frame(&mut self, ui: &mut egui::Ui) {
         i18n::set_current(self.ui.language);
         if std::mem::take(&mut self.panic_next_frame) {
@@ -1446,6 +1594,8 @@ impl FilmcraftApp {
         }
         self.sync_pool();
         self.apply_prefs(&ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.tick_media_refresh(&ctx);
         for ev in self.session.drain_events() {
             match ev {
                 filmcraft_engine::Event::OpenSequence(_) => {
@@ -1735,7 +1885,21 @@ impl eframe::App for FilmcraftApp {
                     .position(|e| pointer(e) || matches!(e, egui::Event::Key { pressed: false, .. }))
                     .map_or(self.synthetic.len(), |i| if pointer(&self.synthetic[i]) { i.max(1) } else { i + 1 })
             };
-            raw_input.events.extend(self.synthetic.drain(..n));
+            // A press's modifiers go down before it and up after its release, as real keys would,
+            // so a drag that egui recognises frames after the press still sees Shift / Ctrl.
+            for e in self.synthetic.drain(..n) {
+                match e {
+                    egui::Event::PointerButton { pressed: true, modifiers, .. } if !modifiers.is_none() => {
+                        raw_input.events.push(egui::Event::ModifiersChanged(modifiers));
+                        raw_input.events.push(e);
+                    }
+                    egui::Event::PointerButton { pressed: false, modifiers, .. } if !modifiers.is_none() => {
+                        raw_input.events.push(e);
+                        raw_input.events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                    }
+                    _ => raw_input.events.push(e),
+                }
+            }
         }
     }
 
@@ -1765,6 +1929,10 @@ impl eframe::App for FilmcraftApp {
             self.playback.hidden = true;
         }
         self.timeline_still = if self.ui.timeline.animating() { 0 } else { self.timeline_still.saturating_add(1) };
+        // Quitting with unsaved changes asks to save them first.
+        if ctx.input(|i| i.viewport().close_requested()) && panels::clip_dialogs::intercept_quit(self) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
         let had_synthetic = !self.synthetic.is_empty();
         self.drain_control(ctx);
         if !self.synthetic.is_empty() && !had_synthetic {
@@ -1953,6 +2121,20 @@ mod clipboard_key_tests {
 #[cfg(test)]
 mod gpu_fallback_tests {
     use filmcraft_render::plan::{FramePlan, PlanLayer};
+
+    /// Software rasterizers must not be treated as a GPU compositor: the preview crawled while
+    /// "GPU" usage read 0 % because wgpu had silently fallen back to llvmpipe.
+    #[test]
+    fn software_rasterizers_are_detected() {
+        use eframe::wgpu::DeviceType as D;
+        let r = super::rasterizer_reason;
+        assert!(r("llvmpipe (LLVM 23.1.1, 256 bits)", D::Cpu).is_some());
+        assert!(r("NVIDIA GeForce RTX 4080", D::Cpu).is_some());
+        assert!(r("SwiftShader Device", D::Other).is_some());
+        assert!(r("softpipe", D::Cpu).is_some());
+        assert!(r("AMD Radeon RX 5700 XT", D::DiscreteGpu).is_none());
+        assert!(r("Apple M3 Pro", D::IntegratedGpu).is_none());
+    }
 
     #[test]
     fn plan_side_covers_output_and_every_layer() {

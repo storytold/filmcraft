@@ -101,3 +101,54 @@ fn frame_export_snapshots_are_independent_of_later_monitor_selection() {
     Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().settings.frame_rate = FrameRate { num: 1, den: i64::MAX };
     assert!(keyboard::frame_export_target(&s, &json!({})).is_err());
 }
+
+/// A source whose pictures are still on their way, as a WebCodecs decode or a Blob read on the web.
+struct Loading(filmcraft_media::MediaInfo);
+
+impl filmcraft_media::MediaSource for Loading {
+    fn info(&self) -> &filmcraft_media::MediaInfo {
+        &self.0
+    }
+    fn video_frame(&self, _: filmcraft_media::FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+        filmcraft_media::pending::mark();
+        Err(filmcraft_media::MediaError::Decode("still decoding".into()))
+    }
+    fn audio(&self, _: i64, _: usize, _: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+        filmcraft_media::pending::mark();
+        Err(filmcraft_media::MediaError::Decode("still loading".into()))
+    }
+}
+
+#[test]
+fn a_frame_still_loading_is_reported_not_saved_blank() {
+    let (mut s, item) = session();
+    let generator = s.media.cached(item).unwrap();
+    s.media.insert(item, Arc::new(Loading(generator.info().clone())));
+    let dir = std::env::temp_dir().join(format!("fc-frame-loading-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for target in ["program", "source"] {
+        let path = dir.join(format!("{target}.png"));
+        let err = s.execute("file.exportFrame", json!({"target":target,"path":path.to_string_lossy()})).unwrap_err();
+        assert!(err.to_string().contains("still loading"), "{target}: {err}");
+        assert!(!path.exists(), "{target}: nothing is written");
+    }
+    // once the picture is there, the same export succeeds
+    s.media.insert(item, generator);
+    for target in ["program", "source"] {
+        let path = dir.join(format!("{target}.png"));
+        s.execute("file.exportFrame", json!({"target":target,"path":path.to_string_lossy()})).unwrap();
+        assert!(path.exists(), "{target}");
+    }
+    drop(s);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn an_earlier_deferred_read_does_not_fail_the_export() {
+    let (mut s, _) = session();
+    filmcraft_media::pending::mark();
+    let path = std::env::temp_dir().join(format!("fc-frame-stale-pending-{}.png", std::process::id()));
+    s.execute("file.exportFrame", json!({"target":"program","path":path.to_string_lossy()})).unwrap();
+    assert!(!filmcraft_media::pending::is_set());
+    std::fs::remove_file(path).unwrap();
+}

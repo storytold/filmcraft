@@ -158,7 +158,7 @@ fn every_panel_opens_from_the_window_menu() {
     let menu = d.ok("ui.menu.list", json!({}));
     let window: Vec<String> =
         menu.as_array().unwrap().iter().filter(|m| m["path"] == json!(["Window"])).filter_map(|m| m["label"].as_str().map(str::to_string)).collect();
-    for p in ["Events", "Lumetri Scopes", "Metadata", "Progress", "Reference Monitor", "Timecode"] {
+    for p in ["Events", "Lumetri Scopes", "Metadata", "Progress", "Project Notes", "Reference Monitor", "Timecode"] {
         assert!(window.iter().any(|w| w == p), "{p} not in Window: {window:?}");
     }
     for (panel, key) in [
@@ -168,6 +168,7 @@ fn every_panel_opens_from_the_window_menu() {
         ("Events", "events.clearAll"),
         ("Progress", "progress.showFinished"),
         ("ReferenceMonitor", "reference.gang"),
+        ("ProjectNotes", "notes.text"),
     ] {
         d.ok("ui.menu.invoke", json!({"id": format!("window.panel.{panel}")}));
         d.frames(3);
@@ -175,6 +176,37 @@ fn every_panel_opens_from_the_window_menu() {
         assert!(!d.ids(key).is_empty(), "{panel}: no {key} widgets");
         assert_eq!(d.ok("ui.inspect", json!({}))["ui"]["focused"], json!(panel));
     }
+}
+
+/// #284 point 3: the panel menu's Maximize Frame keeps the layout (Restore Frame brings it back),
+/// and closing every panel still leaves a dock that Window ▸ can reopen panels into.
+#[test]
+fn panel_menu_maximize_restores_and_an_empty_dock_reopens() {
+    use filmcraft_ui_egui::dock::{DockNode, PanelKind};
+    let mut d = Driver::demo();
+    let layout = d.app().ui.dock.clone();
+    d.click("panel.menu.Program");
+    assert_eq!(d.label("panel.menu.Program.maximize"), "Maximize Frame");
+    d.click("panel.menu.Program.maximize");
+    assert_eq!(d.app().ui.keys.maximized, Some(PanelKind::Program));
+    assert!(!d.has("panel.Timeline"), "only the maximized panel is shown");
+    d.click("panel.menu.Program");
+    assert_eq!(d.label("panel.menu.Program.maximize"), "Restore Frame");
+    d.click("panel.menu.Program.maximize");
+    assert_eq!(d.app().ui.keys.maximized, None);
+    assert_eq!(d.app().ui.dock, layout, "the layout survives maximize / restore");
+    assert!(d.has("panel.Timeline"));
+
+    let mut all = Vec::new();
+    layout.panels(&mut all);
+    for p in all {
+        d.ok("ui.panel.close", json!({"panel": p.id()}));
+    }
+    assert_eq!(d.app().ui.dock, DockNode::Tabs { panels: vec![], active: 0 });
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.Program"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.Timeline"}));
+    d.frames(3);
+    assert!(d.has("panel.tab.Program") && d.has("panel.tab.Timeline"));
 }
 
 #[test]
@@ -265,6 +297,31 @@ fn metadata_panel_edits_a_field_with_undo() {
     d.exec("metadata.set", json!({"item": item.0, "field": "Tape Name", "value": "A001"}));
     d.frames(2);
     assert_eq!(d.label("metadata.field.TapeName"), "A001");
+}
+
+/// #620: notes typed into Project Notes land in the project; one typing session is one undo step.
+#[test]
+fn project_notes_panel_types_into_the_project_with_undo() {
+    let mut d = Driver::demo();
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.ProjectNotes"}));
+    d.frames(3);
+    let undo0 = d.app().session.history.undo.len();
+    d.click("notes.text");
+    d.ok("ui.type", json!({"text": "Fix logo"}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.ok("ui.type", json!({"text": "at 1:02"}));
+    d.frames(3);
+    assert_eq!(d.app().session.project.notes, "Fix logo\nat 1:02");
+    assert_eq!(d.app().session.history.undo.len(), undo0 + 1);
+    assert_eq!(d.label("notes.text"), "Fix logo\nat 1:02");
+    d.exec("edit.undo", json!({}));
+    d.frames(2);
+    assert_eq!(d.app().session.project.notes, "");
+    // an agent writes them, the panel shows them
+    d.exec("project.setNotes", json!({"text": "From the script"}));
+    d.frames(2);
+    assert_eq!(d.label("notes.text"), "From the script");
 }
 
 #[test]

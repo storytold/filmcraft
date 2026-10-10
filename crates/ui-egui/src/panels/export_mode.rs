@@ -606,7 +606,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             }
         });
     }
-    if matches!(s.format, Format::PngSequence | Format::TiffSequence) {
+    if s.supports_alpha() {
         row(ui, t, tl!("Alpha"), |ui| {
             check(ui, reg, "export.video.alpha", &mut s.alpha, tl!("Include Alpha Channel"));
         });
@@ -648,14 +648,22 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 });
             }
             row(ui, t, tl!("Bitrate Encoding"), |ui| {
-                // a hardware encoder has one pass: H.265 offers no two-pass mode
-                let o = [BitrateMode::Cbr, BitrateMode::Vbr1Pass, BitrateMode::Vbr2Pass];
-                let labels: Vec<(String, bool)> = o.iter().map(|m| (m.label().to_string(), !(hevc && *m == BitrateMode::Vbr2Pass))).collect();
+                // a hardware encoder has one pass and no constant-quality mode: H.265 offers neither
+                let o = [BitrateMode::Cbr, BitrateMode::Vbr1Pass, BitrateMode::Vbr2Pass, BitrateMode::Crf];
+                let labels: Vec<(String, bool)> =
+                    o.iter().map(|m| (m.label().to_string(), !(hevc && matches!(m, BitrateMode::Vbr2Pass | BitrateMode::Crf)))).collect();
                 if let Some(i) = combo(ui, reg, "export.video.bitrateMode", s.bitrate_mode.label(), &labels, 140.0) {
                     s.bitrate_mode = o[i];
                 }
             });
-            if let Some(bpp) = s.adaptive_bitrate {
+            if s.bitrate_mode == BitrateMode::Crf {
+                row(ui, t, tl!("Quality (CRF)"), |ui| {
+                    let mut crf = if s.crf.is_finite() { f64::from(s.crf) } else { f64::from(filmcraft_engine::export::DEFAULT_CRF) };
+                    if drag(ui, reg, "export.video.crf", &mut crf, 0.0..=51.0, 0.1, "", 0) {
+                        s.crf = crf.round() as f32;
+                    }
+                });
+            } else if let Some(bpp) = s.adaptive_bitrate {
                 row(ui, t, tl!("Target Bitrate"), |ui| {
                     ui.label(egui::RichText::new(tlf!("Adaptive ({bpp} bits per pixel)", bpp)).size(12.0));
                     let r = ui.small_button(tl!("Set"));
@@ -706,8 +714,9 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         }
         Format::ProRes => {
             row(ui, t, tl!("Profile"), |ui| {
-                let keys = ["proxy", "lt", "standard", "hq"];
-                let labels = ["Apple ProRes 422 Proxy", "Apple ProRes 422 LT", "Apple ProRes 422", "Apple ProRes 422 HQ"];
+                let keys = ["proxy", "lt", "standard", "hq", "4444", "4444xq"];
+                let labels =
+                    ["Apple ProRes 422 Proxy", "Apple ProRes 422 LT", "Apple ProRes 422", "Apple ProRes 422 HQ", "Apple ProRes 4444", "Apple ProRes 4444 XQ"];
                 let cur = keys.iter().position(|k| *k == s.prores_profile).unwrap_or(3);
                 if let Some(i) = combo(ui, reg, "export.video.proresProfile", labels[cur], &opts(&labels), 220.0) {
                     s.prores_profile = keys[i].into();

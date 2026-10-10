@@ -255,7 +255,7 @@ pub struct ExportSettings {
     /// `progress.total`, `finished` and the final status; this call only adds to `done`.
     #[serde(default)]
     pub part_of_batch: bool,
-    /// ProRes flavour: `proxy`, `lt`, `standard` or `hq` (empty = HQ).
+    /// ProRes flavour: `proxy`, `lt`, `standard`, `hq`, `4444` or `4444xq` (empty = HQ).
     #[serde(default)]
     pub prores_profile: String,
     /// DNxHR profile: `lb`, `sq`, `hq` or `hqx` (empty = HQ).
@@ -272,8 +272,9 @@ pub struct ExportSettings {
     /// sequence's HDR space and signal it (VUI / `colr` / `mdcv` / `clli` / SEI).
     #[serde(default)]
     pub sdr: bool,
-    /// Keep the alpha channel in PNG and TIFF sequences (straight alpha, Premiere's "Include
-    /// Alpha Channel"). Off, every frame is flattened over black (#160). Other formats ignore it.
+    /// Keep the alpha channel in PNG and TIFF sequences and ProRes 4444 / 4444 XQ QuickTime movies
+    /// (straight alpha, Premiere's "Include Alpha Channel"). Off, every frame is flattened over
+    /// black (#160). Other formats ignore it.
     #[serde(default)]
     pub alpha: bool,
     /// Output frame size (None = Match Source: the sequence size times `scale`).
@@ -290,6 +291,10 @@ pub struct ExportSettings {
     /// stream needs is raised.
     pub h264_level: Option<u8>,
     pub bitrate_mode: BitrateMode,
+    /// Constant rate factor of [`BitrateMode::Crf`], 0 (best) to 51 (smallest); 23 by default,
+    /// 18 is visually near-lossless.
+    #[serde(default = "default_crf")]
+    pub crf: f32,
     /// May H.264 be encoded by the system's hardware encoder (VideoToolbox on macOS, NVENC on
     /// Windows)? Off unless asked for: hardware output depends on the machine, so it is not
     /// byte-reproducible like the built-in encoder's (`determinism_tests`).
@@ -487,6 +492,7 @@ impl Default for ExportSettings {
             h264_profile: H264Profile::High,
             h264_level: None,
             bitrate_mode: BitrateMode::default(),
+            crf: DEFAULT_CRF,
             hardware_encoding: HardwareEncoding::default(),
             gpu_rendering: GpuRendering::Off,
             max_bitrate_kbps: None,
@@ -504,6 +510,13 @@ impl Default for ExportSettings {
             sink: None,
         }
     }
+}
+
+/// [`ExportSettings::crf`] of new settings and of settings saved before it existed.
+pub const DEFAULT_CRF: f32 = 23.0;
+
+fn default_crf() -> f32 {
+    DEFAULT_CRF
 }
 
 impl ExportSettings {
@@ -542,6 +555,17 @@ impl ExportSettings {
         }
         if self.format == Format::Av1 && self.bitrate_mode == BitrateMode::Vbr2Pass {
             return Err(ExportError::Unsupported("AV1 export has no two-pass mode: choose CBR or VBR, 1 pass".into()));
+        }
+        if self.bitrate_mode == BitrateMode::Crf {
+            if self.format == Format::Hevc {
+                return Err(ExportError::Unsupported("H.265 export has no CRF mode: choose CBR or VBR, 1 pass".into()));
+            }
+            if self.format == Format::Av1 {
+                return Err(ExportError::Unsupported("AV1 export has no CRF mode: choose CBR or VBR, 1 pass".into()));
+            }
+            if !self.crf.is_finite() || !(0.0..=51.0).contains(&self.crf) {
+                return Err(ExportError::Unsupported("CRF must be between 0 and 51".into()));
+            }
         }
         Ok(())
     }
@@ -1005,6 +1029,8 @@ fn aac_factory(_format: Format, sample_rate: u32, channels: u32, s: &ExportSetti
 struct ProResEncoder {
     enc: filmcraft_prores::Encoder,
     profile: filmcraft_prores::Profile,
+    /// Code the frames' alpha channel (4444 profiles with Include Alpha Channel).
+    alpha: bool,
     w: u32,
     h: u32,
     rate: FrameRate,
@@ -1021,19 +1047,66 @@ impl VideoEncoder for ProResEncoder {
         self.rate.num as u32
     }
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
-        let mut fr = filmcraft_prores::Frame::new(f.width, f.height, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
-        timed(Stage::Convert, || match f.hdr {
-            Some(rgb) => {
-                let (kr, kb) = self.signal.kr_kb();
-                rgbf_to_yuv422_10(rgb, f.width as usize, f.height as usize, kr, kb, &mut fr.y, &mut fr.cb, &mut fr.cr)
+        let chroma = self.profile.chroma();
+        let mut fr = filmcraft_prores::Frame::new(f.width, f.height, chroma, 10, self.alpha);
+        let (w, h) = (f.width as usize, f.height as usize);
+        timed(Stage::Convert, || match (chroma, f.hdr) {
+            (filmcraft_prores::ChromaFormat::Yuv444, hdr) => {
+                let (kr, kb) = if hdr.is_some() { self.signal.kr_kb() } else { (0.2126, 0.0722) };
+                to_yuv444_10(f.rgba, hdr, w, h, kr, kb, &mut fr.y, &mut fr.cb, &mut fr.cr, fr.alpha.as_deref_mut())
             }
-            None => rgba_to_yuv422_10(f.rgba, f.width as usize, f.height as usize, &mut fr.y, &mut fr.cb, &mut fr.cr),
+            (_, Some(rgb)) => {
+                let (kr, kb) = self.signal.kr_kb();
+                rgbf_to_yuv422_10(rgb, w, h, kr, kb, &mut fr.y, &mut fr.cb, &mut fr.cr)
+            }
+            (_, None) => rgba_to_yuv422_10(f.rgba, w, h, &mut fr.y, &mut fr.cb, &mut fr.cr),
         });
         let data = self.enc.encode(&fr).map_err(|e| ExportError::Encode(e.to_string()))?;
         Ok(vec![EncodedPacket { data, key: true, duration: self.rate.den as u32, composition_offset: 0 }])
     }
     fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
         Ok(Vec::new())
+    }
+}
+
+/// Limited-range 10-bit 4:4:4 with matrix (Kr, Kb) from straight RGBA8, or from encoded R'G'B'
+/// floats (3 per pixel) when `hdr` is given. `alpha` (full range, 0 = transparent) takes the
+/// RGBA8 alpha; it stays opaque for float input, which carries none.
+#[allow(clippy::too_many_arguments)]
+pub fn to_yuv444_10(
+    rgba: &[u8],
+    hdr: Option<&[f32]>,
+    w: usize,
+    h: usize,
+    kr: f32,
+    kb: f32,
+    y: &mut [u16],
+    cb: &mut [u16],
+    cr: &mut [u16],
+    alpha: Option<&mut [u16]>,
+) {
+    let (w, n) = (w.max(1), w.saturating_mul(h));
+    let kg = 1.0 - kr - kb;
+    let (sb, sr) = (2.0 * (1.0 - kb), 2.0 * (1.0 - kr));
+    let rgb_at = |i: usize| -> [f32; 3] {
+        match hdr {
+            Some(f) => f.get(i * 3..i * 3 + 3).map_or([0.0; 3], |p| [p[0], p[1], p[2]]),
+            None => rgba.get(i * 4..i * 4 + 3).map_or([0.0; 3], |p| [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0]),
+        }
+    };
+    y.par_chunks_mut(w).zip(cb.par_chunks_mut(w).zip(cr.par_chunks_mut(w))).enumerate().for_each(|(row, (yr, (cbr, crr)))| {
+        for (x, (yv, (cbv, crv))) in yr.iter_mut().zip(cbr.iter_mut().zip(crr.iter_mut())).enumerate() {
+            let [r, g, b] = rgb_at(row * w + x);
+            let yy = kr * r + kg * g + kb * b;
+            *yv = (64.0 + 876.0 * yy).round().clamp(4.0, 1019.0) as u16;
+            *cbv = (512.0 + 896.0 * (b - yy) / sb).round().clamp(4.0, 1019.0) as u16;
+            *crv = (512.0 + 896.0 * (r - yy) / sr).round().clamp(4.0, 1019.0) as u16;
+        }
+    });
+    if let (Some(a), None) = (alpha, hdr) {
+        for (i, dst) in a.iter_mut().enumerate().take(n) {
+            *dst = rgba.get(i * 4 + 3).map_or(1023, |&v| ((v as u32 * 1023 + 127) / 255) as u16);
+        }
     }
 }
 
@@ -1070,6 +1143,8 @@ pub fn prores_profile(name: &str) -> filmcraft_prores::Profile {
         "proxy" => Profile::Proxy,
         "lt" => Profile::Lt,
         "standard" | "422" => Profile::Standard,
+        "4444" => Profile::P4444,
+        "4444xq" | "4444 xq" | "4444-xq" | "xq" => Profile::P4444Xq,
         _ => Profile::Hq,
     }
 }
@@ -1108,7 +1183,10 @@ fn prores_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSet
         if s.signal.is_hdr() {
             cfg.color = filmcraft_prores::ColorInfo { primaries: s.signal.primaries, transfer: s.signal.transfer, matrix: s.signal.matrix };
         }
-        Ok(Box::new(ProResEncoder { enc: filmcraft_prores::Encoder::with_config(cfg), profile, w, h, rate, signal: s.signal }) as Box<dyn VideoEncoder>)
+        let alpha = s.keeps_alpha();
+        cfg.encode_alpha = alpha;
+        let enc = filmcraft_prores::Encoder::with_config(cfg);
+        Ok(Box::new(ProResEncoder { enc, profile, alpha, w, h, rate, signal: s.signal }) as Box<dyn VideoEncoder>)
     })
 }
 
@@ -1461,6 +1539,8 @@ fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSetti
     let max = s.max_bitrate_kbps.filter(|m| *m >= kbps).unwrap_or_else(|| (u64::from(kbps) * 3 / 2).min(u64::from(u32::MAX)) as u32);
     cfg.rate = match s.bitrate_mode {
         BitrateMode::Cbr => filmcraft_h264enc::RateControl::Cbr { kbps },
+        // the encoder clamps to 0..=51; a NaN from a hand-edited preset becomes the default
+        BitrateMode::Crf => filmcraft_h264enc::RateControl::Crf(if s.crf.is_finite() { s.crf } else { DEFAULT_CRF }),
         _ => filmcraft_h264enc::RateControl::Vbr { target_kbps: kbps, max_kbps: max },
     };
     cfg.pass = match &s.h264_pass {
@@ -1591,20 +1671,41 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
     let batch = rayon::current_num_threads().clamp(2, 16) as i64;
     let (bytes, nframes) = match settings.format {
         Format::Wav | Format::Aiff => {
+            let mut a = audio_out::AudioOut::new(project.clone(), seq, settings, range)?;
+            let (ch, sr, bits) = (a.channels as u16, a.sr, settings.audio.bits);
+            let container = if settings.format == Format::Wav { pcm::PcmContainer::Wav } else { pcm::PcmContainer::Aiff };
+            let frames = a.remaining();
+            // the sizes are known up front: refuse an AIFF that cannot hold them before measuring
+            let head = pcm::header(container, ch, sr, bits, frames).map_err(ExportError::Unsupported)?;
+            // one second per chunk: memory stays flat however long the range is
+            let chunk = i64::from(sr.max(1));
             if !settings.part_of_batch {
-                progress.total.store(1, Ordering::Relaxed);
+                progress.total.store(frames.div_ceil(chunk as u64).max(1), Ordering::Relaxed);
                 progress.set_status(format!("Exporting audio ({})", settings.format.label()));
             }
-            let mut a = audio_out::AudioOut::new(project.clone(), seq, settings, range)?;
             a.measure(settings, sources, &cancelled)?;
             *progress.loudness.lock().unwrap_or_else(|e| e.into_inner()) = a.loudness;
-            let planar = a.rest(sources).unwrap_or_else(|| vec![Vec::new(); a.channels]);
-            let inter = audio_out::interleave(&planar);
-            let (ch, sr, bits) = (a.channels as u16, a.sr, settings.audio.bits);
-            let data = if settings.format == Format::Wav { pcm::write_wav(&inter, ch, sr, bits) } else { pcm::write_aiff(&inter, ch, sr, bits) };
-            let n = write_output(settings, &settings.path, data)?;
-            progress.done.store(1, Ordering::Relaxed);
-            (n, planar.first().map_or(0, Vec::len) as u64)
+            let mut out = Out::create(settings)?;
+            let io = |e: std::io::Error| ExportError::Io(e.to_string());
+            out.write_all(&head).map_err(io)?;
+            let mut buf = Vec::new();
+            while let Some(planar) = a.pull(a.out.saturating_add(chunk), sources) {
+                if cancelled() {
+                    return Err(ExportError::Cancelled);
+                }
+                buf.clear();
+                pcm::encode(container, &audio_out::interleave(&planar), bits, &mut buf);
+                out.write_all(&buf).map_err(io)?;
+                if !settings.part_of_batch {
+                    progress.done.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            out.write_all(pcm::pad(frames, ch, bits)).map_err(io)?;
+            let n = out.finish(settings)?;
+            if settings.part_of_batch {
+                progress.done.store(1, Ordering::Relaxed);
+            }
+            (n, frames)
         }
         Format::PngSequence | Format::TiffSequence | Format::BmpSequence | Format::Gif => {
             let pipe = pipeline::Pipeline::new(project.clone(), seq, settings, false)?;

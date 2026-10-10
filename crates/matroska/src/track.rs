@@ -191,6 +191,10 @@ pub struct Sample {
     pub block_offset: u64,
     /// Index of this frame within a laced block.
     pub lace: u16,
+    /// (offset, size) of the block's `BlockAdditional` with `BlockAddID` 1, when it has one and
+    /// is not laced. In WebM this is the alpha layer of a VP8/VP9 track with `AlphaMode` 1: a
+    /// second, independently coded stream whose luma plane is the frame's alpha.
+    pub addition: Option<(u64, u32)>,
 }
 
 /// A Matroska track (`TrackEntry`) plus, once indexed, its sample table.

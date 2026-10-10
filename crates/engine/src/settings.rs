@@ -33,9 +33,9 @@ pub const PREFS_VERSION: u32 = 2;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct GeneralPrefs {
-    /// Interface language (persisted independently of projects): `en`, `ja`, `es`, `pt-br`, or
-    /// `system` (the default: the operating system's preferred language when the interface has it,
-    /// otherwise English).
+    /// Interface language (persisted independently of projects): `en`, `ja`, `es`, `pt-br`, `uk`,
+    /// `zh-cn`, `de`, or `system` (the default: the operating system's preferred language when the
+    /// interface has it, otherwise English).
     pub interface_language: String,
     /// "At Startup": `showHome` (FilmCraft: the demo project), `openMostRecent`, `emptyProject`.
     pub at_startup: String,
@@ -104,6 +104,9 @@ pub struct AppearancePrefs {
     pub accessible_contrast: bool,
     /// Highlight (accent) colour of selections, focus and primary buttons (`#rrggbb`).
     pub highlight_color: String,
+    /// "UI Scale": `auto` (default: the scale the operating system reports) or a fixed
+    /// percentage of [`UI_SCALES`] (`100` = one point per physical pixel).
+    pub ui_scale: String,
 }
 
 impl Default for AppearancePrefs {
@@ -115,11 +118,19 @@ impl Default for AppearancePrefs {
             light_theme: "light".into(),
             accessible_contrast: false,
             highlight_color: DEFAULT_HIGHLIGHT.into(),
+            ui_scale: "auto".into(),
         }
     }
 }
 
 impl AppearancePrefs {
+    /// The fixed UI scale (physical pixels per point) "UI Scale" asks for, or `None` for `auto`
+    /// (and for a value outside [`UI_SCALES`]), which keeps the operating system's scale.
+    pub fn ui_scale_factor(&self) -> Option<f32> {
+        // `auto` doesn't parse; every other listed value is a positive whole percentage
+        UI_SCALES.iter().any(|(k, _)| *k == self.ui_scale).then(|| self.ui_scale.parse::<f32>().ok()).flatten().map(|pct| pct / 100.0)
+    }
+
     /// The theme to show (`darkest` | `dark` | `light`): the light or dark theme of the mode. Auto
     /// follows `system_light` (the operating system's appearance) and is dark without an answer.
     pub fn shown_theme(&self, system_light: Option<bool>) -> &str {
@@ -669,6 +680,17 @@ const BIN_OPEN: &[(&str, &str)] = &[("openInPlace", "Open in place"), ("openNewT
 const PROJECT_OPEN: &[(&str, &str)] = &[("openNewTab", "Open new tab"), ("openNewWindow", "Open in new window")];
 const THEMES: &[(&str, &str)] = &[("darkest", "Darkest"), ("dark", "Dark"), ("light", "Light")];
 pub const APPEARANCE_MODES: &[(&str, &str)] = &[("auto", "Sync with system"), ("dark", "Dark"), ("light", "Light")];
+pub const UI_SCALES: &[(&str, &str)] = &[
+    ("auto", "Auto (system)"),
+    ("75", "75%"),
+    ("100", "100%"),
+    ("125", "125%"),
+    ("150", "150%"),
+    ("175", "175%"),
+    ("200", "200%"),
+    ("250", "250%"),
+    ("300", "300%"),
+];
 pub const DARK_THEMES: &[(&str, &str)] = &[("darkest", "Darkest"), ("dark", "Dark")];
 pub const LIGHT_THEMES: &[(&str, &str)] = &[("light", "Light")];
 const MIXDOWN: &[(&str, &str)] = &[("front", "Front Only"), ("frontRear", "Front + Rear"), ("frontLfe", "Front + LFE"), ("frontRearLfe", "Front + Rear + LFE")];
@@ -752,6 +774,8 @@ static CATEGORIES: &[Category] = &[
                     ("pt-br", "Português (Brasil)"),
                     ("uk", "Українська"),
                     ("zh-cn", "简体中文"),
+                    ("de", "Deutsch"),
+                    ("ru", "Русский"),
                 ]),
                 true,
             ),
@@ -795,6 +819,7 @@ static CATEGORIES: &[Category] = &[
             f("appearance.colorTheme", "Color Theme", Kind::Choice(THEMES), true),
             b("appearance.accessibleContrast", "Accessible color contrast", true),
             f("appearance.highlightColor", "Highlight Color", Kind::Color, true),
+            f("appearance.uiScale", "UI Scale", Kind::Choice(UI_SCALES), true),
         ],
     },
     Category {
@@ -964,9 +989,9 @@ static CATEGORIES: &[Category] = &[
             Row::Group(
                 "Growing Files",
                 &[
-                    b("media.refreshGrowingFiles", "Automatically refresh growing files", false),
+                    b("media.refreshGrowingFiles", "Automatically refresh growing files", true),
                     b("media.resumeGrowingPlayback", "Automatically resume playback for growing files in Source Monitor", false),
-                    sub("media.growingRefreshSeconds", "Refresh growing Files Every", int(1.0, 3600.0, "seconds"), "media.refreshGrowingFiles", false),
+                    sub("media.growingRefreshSeconds", "Refresh growing Files Every", int(1.0, 3600.0, "seconds"), "media.refreshGrowingFiles", true),
                 ],
             ),
             b("media.hardwareDecoding", "Enable hardware accelerated decoding (requires restart)", false),
@@ -1074,7 +1099,7 @@ static CATEGORIES: &[Category] = &[
                     f("timeline.multichannelMonoMediaTracks", "Multichannel Mono Media", Kind::Choice(TRACKS), false),
                 ],
             ),
-            b("timeline.focusTimelineOnEdit", "Set focus on the Timeline when performing Insert/Overwrite edits", true),
+            b("timeline.focusTimelineOnEdit", "Set focus on the Timeline when performing Insert/Overwrite edits", false),
             b("timeline.snapPlayhead", "Snap playhead in Timeline when Snap is enabled", true),
             b("timeline.returnToBeginning", "At playback end, return to beginning when restarting playback", true),
             b("timeline.outOfSyncUnlinked", "Display out of sync indicators for unlinked clips", false),

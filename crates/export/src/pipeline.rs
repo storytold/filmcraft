@@ -12,7 +12,7 @@ use filmcraft_time::FrameRate;
 use rayon::prelude::*;
 
 use crate::settings::{ExportEffects, Placement, Scaling, TextOverlay};
-use crate::{ExportError, ExportSettings, Format, FrameRenderer, GpuRendering, Result, build_frame_renderer, note_gpu_fallback, note_gpu_frame};
+use crate::{ExportError, ExportSettings, FrameRenderer, GpuRendering, Result, build_frame_renderer, note_gpu_fallback, note_gpu_frame};
 
 /// Where the rendered picture lands in the output frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -201,7 +201,7 @@ impl Pipeline {
             geom,
             opts,
             hdr_out,
-            alpha: settings.alpha && matches!(settings.format, Format::PngSequence | Format::TiffSequence),
+            alpha: settings.keeps_alpha(),
             out_tf,
             effects,
             overlay,
@@ -213,8 +213,12 @@ impl Pipeline {
     pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> (Vec<u8>, Vec<f32>) {
         let t = self.rate.tick_of(f);
         // The registered GPU renderer goes first; `None` (no adapter, a plan the GPU cannot
-        // draw, any internal error) falls back to the CPU reference renderer below.
-        let gpu = match self.renderer.as_ref() {
+        // draw, any internal error) falls back to the CPU reference renderer below. A frame the
+        // planner hands back as one CPU image anyway (an adjustment layer, a complex transition,
+        // HDR) does not take a pooled renderer: it would render on the CPU inside the pool, as
+        // many frames at a time as there are renderers instead of one per export thread.
+        let pool = self.renderer.as_ref().filter(|_| !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t));
+        let gpu = match pool {
             Some(pool) => {
                 let asked = web_time::Instant::now();
                 pool.with(|r| {

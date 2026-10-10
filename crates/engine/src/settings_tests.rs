@@ -29,11 +29,13 @@ fn interface_language_persists_and_rejects_hostile_values() {
     let mut s = Session { prefs_path: Some(path.clone()), ..Session::default() };
     set(&mut s, "general.interfaceLanguage", json!("es"));
     assert_eq!(Preferences::load(&path).general.interface_language, "es");
-    for value in [json!("xx"), json!("es-MX"), json!(null), json!(-1), json!({}), json!("x".repeat(4096))] {
+    for value in [json!("xx"), json!("es-MX"), json!("de-DE"), json!(null), json!(-1), json!({}), json!("x".repeat(4096))] {
         assert!(s.execute("prefs.set", json!({"key": "general.interfaceLanguage", "value": value})).is_err());
         assert_eq!(s.prefs.general.interface_language, "es");
     }
     assert_eq!(Preferences::load(&path).general.interface_language, "es");
+    set(&mut s, "general.interfaceLanguage", json!("de"));
+    assert_eq!(Preferences::load(&path).general.interface_language, "de");
     // back to following the operating system (#218)
     set(&mut s, "general.interfaceLanguage", json!("system"));
     assert_eq!(Preferences::load(&path).general.interface_language, "system");
@@ -251,6 +253,18 @@ fn schema_command_describes_every_category() {
     assert_eq!(auto["value"], "pageScroll");
     assert_eq!(auto["wired"], true);
     assert!(auto["kind"]["choices"].as_array().unwrap().iter().any(|c| c["value"] == "smoothScroll"));
+
+    // This option is stored, but Insert/Overwrite does not yet implement focus transfer.
+    let focus = tl["fields"].as_array().unwrap().iter().find(|f| f["key"] == "timeline.focusTimelineOnEdit").unwrap();
+    assert_eq!(focus["kind"], json!({"type": "bool"}));
+    assert_eq!(focus["wired"], false);
+    assert_eq!(focus["value"], false);
+    set(&mut s, "timeline.focusTimelineOnEdit", json!(true));
+    let updated = s.execute("prefs.schema", json!({"category": "timeline"})).unwrap();
+    let focus = updated["categories"][0]["fields"].as_array().unwrap().iter().find(|f| f["key"] == "timeline.focusTimelineOnEdit").unwrap();
+    assert_eq!(focus["value"], true);
+    assert_eq!(focus["wired"], false);
+
     let one = s.execute("prefs.schema", json!({"category": "trim"})).unwrap();
     assert_eq!(one["categories"].as_array().unwrap().len(), 1);
     assert!(s.execute("prefs.schema", json!({"category": "nope"})).is_err());

@@ -4,6 +4,7 @@
 //! |---|---|
 //! | `events.list` / `events.clear` | the Events panel: warnings and errors of commands, background jobs and the auto-save worker ([`EventLog`]) |
 //! | `metadata.get` / `metadata.set` | the Metadata panel: an item's clip and file properties; editable log fields (undoable) |
+//! | `project.notes` / `project.setNotes` | the Project Notes panel: free plain text saved in the project (undoable) |
 //!
 //! The Progress panel uses `jobs.list` / `jobs.cancel`; the Timecode panel and the Reference
 //! Monitor are frontend state only.
@@ -339,6 +340,38 @@ fn metadata_set(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"item": id.0, "name": it.name, "label": it.label.name(), "metadata": it.metadata, "changed": !unchanged}))
 }
 
+// ------------------------------------------------------------------------------------ project notes
+
+/// Longest project notes accepted (bytes of UTF-8), so a script or a pasted file cannot grow the
+/// project (and every undo step) without bound.
+pub const MAX_NOTES_BYTES: usize = 1 << 20;
+
+/// `project.notes`: the project notes.
+fn notes_get(s: &mut Session, _: &Value) -> Result<Value> {
+    Ok(json!({"text": s.project.notes}))
+}
+
+/// `project.setNotes {text, merge?}`: replace the project notes as one undo step. Calls with the
+/// same `merge` key and no other edit in between share that step (typing in the panel).
+fn notes_set(s: &mut Session, p: &Value) -> Result<Value> {
+    let text = p.get("text").and_then(Value::as_str).ok_or_else(|| bad("project.setNotes", "need `text` (a string)"))?;
+    if text.len() > MAX_NOTES_BYTES {
+        return Err(bad("project.setNotes", format!("the notes are too long ({} bytes; at most {MAX_NOTES_BYTES})", text.len())));
+    }
+    let changed = s.project.notes != text;
+    if changed {
+        let body = |pr: &mut Project, _: &mut crate::EditorState| {
+            pr.notes = text.to_string();
+            Ok(())
+        };
+        match str_p(p, "merge") {
+            Some(key) => s.edit_merged("Edit Project Notes", &format!("project.notes:{key}"), body)?,
+            None => s.edit("Edit Project Notes", body)?,
+        }
+    }
+    Ok(json!({"text": s.project.notes, "changed": changed}))
+}
+
 // ------------------------------------------------------------------------------------ registry
 
 pub(crate) fn commands() -> Vec<CommandSpec> {
@@ -368,6 +401,17 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             params: r#"{"item":id?,"clip":id?,"field":"Name|Label|Description|Scene|Shot|Log Note|Comment|Tape Name|Client|Camera Angle|…","value":str} | {"item":id?,"fields":{name:str}}"#,
             enabled: always,
             run: metadata_set,
+            journal: true,
+        },
+        q("project.notes", "Get Project Notes", "{}", notes_get),
+        CommandSpec {
+            id: "project.setNotes",
+            label: "Edit Project Notes",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"text":str,"merge":str?}"#,
+            enabled: always,
+            run: notes_set,
             journal: true,
         },
     ]

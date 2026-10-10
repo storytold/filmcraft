@@ -351,6 +351,42 @@ fn delete_tracks_empty_and_specific() {
 }
 
 #[test]
+fn delete_tracks_removes_caption_tracks() {
+    let mut s = demo();
+    let before = s.active_sequence().unwrap().clone();
+    let n0 = before.caption_tracks.len();
+    for _ in 0..3 {
+        s.execute("captions.newTrack", json!({"format": "Subtitle"})).unwrap();
+    }
+    // new tracks are inserted on top: C1 gets a caption, C2 and C3 stay empty
+    let cap = s.execute("captions.add", json!({"track": "C1", "text": "Hi", "seconds": 1.0})).unwrap()["caption"].as_u64().unwrap();
+    s.execute("captions.select", json!({"captions": [cap]})).unwrap();
+    let empty = s.active_sequence().unwrap().caption_tracks.iter().filter(|t| t.captions.is_empty()).count();
+    assert!(empty >= 2);
+    let r = s.execute("sequence.deleteTracks", json!({"captions": "empty"})).unwrap();
+    assert_eq!(r["deleted"], json!(empty));
+    let q = s.active_sequence().unwrap();
+    assert!(q.caption_tracks.iter().all(|t| !t.captions.is_empty()));
+    assert_eq!(q.video_tracks.len(), before.video_tracks.len(), "video tracks untouched");
+    assert!(s.execute("sequence.deleteTracks", json!({"captions": "empty"})).is_err(), "nothing left to delete");
+    // unknown names, ids and value types are errors, not panics
+    for bad in [json!("C99"), json!("C0"), json!("Cx"), json!(999_999), json!(true), json!(["C1"])] {
+        assert!(s.execute("sequence.deleteTracks", json!({"captions": bad})).is_err(), "{bad}");
+    }
+    // a specific track (with its captions); the last caption track may go too
+    let left = s.active_sequence().unwrap().caption_tracks.len();
+    for _ in 0..left {
+        s.execute("sequence.deleteTracks", json!({"captions": "C1"})).unwrap();
+    }
+    assert!(s.active_sequence().unwrap().caption_tracks.is_empty());
+    assert!(s.state.caption_selection.is_empty(), "selection of deleted captions cleared");
+    for _ in 0..left + 1 {
+        s.execute("edit.undo", json!({})).unwrap();
+    }
+    assert_eq!(s.active_sequence().unwrap().caption_tracks.len(), n0 + 3);
+}
+
+#[test]
 fn split_points_on_the_sequence() {
     let (mut s, bars) = fresh();
     place(&mut s, bars, "V1", 0, 0, 240);
@@ -538,4 +574,36 @@ fn go_to_in_out_without_marks_go_to_the_sequence_ends() {
     s.execute("playhead.set", json!({"time": mid.0})).unwrap();
     s.execute("markers.goToIn", json!({})).unwrap();
     assert_eq!(s.playhead(), s.active_sequence().unwrap().mark_in.unwrap());
+}
+
+/// #483: media dropped in the empty space past the last track goes on a new track (with
+/// `"new"`), one undo step; a placement that fails leaves no new track behind.
+#[test]
+fn place_on_new_tracks_adds_them_in_one_undo_step() {
+    let (mut s, item) = fresh();
+    let before = s.active_sequence().unwrap().clone();
+    let (nv, na) = (before.video_tracks.len(), before.audio_tracks.len());
+    let undo = s.history.undo.len();
+    let r = s.execute("timeline.place", json!({"item": item, "track": "new", "audioTrack": "new", "time": 0})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!((q.video_tracks.len(), q.audio_tracks.len()), (nv + 1, na + 1));
+    let clips: Vec<ClipId> = r["clips"].as_array().unwrap().iter().map(|c| ClipId(c.as_u64().unwrap())).collect();
+    assert_eq!(clips.len(), 2);
+    assert_eq!(q.video_tracks[nv].items.iter().map(|i| i.id).collect::<Vec<_>>(), [clips[0]], "the picture is on the new top video track");
+    assert_eq!(q.audio_tracks[na].items.iter().map(|i| i.id).collect::<Vec<_>>(), [clips[1]], "the sound is on the new last audio track");
+    assert_eq!(s.history.undo.len(), undo + 1, "one undo step");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.active_sequence().unwrap(), before);
+
+    // only the picture gets a new track; the sound follows the given track
+    s.execute("timeline.place", json!({"item": item, "track": "new", "audioTrack": "A1", "time": 0})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!((q.video_tracks.len(), q.audio_tracks.len()), (nv + 1, na));
+    assert_eq!((q.video_tracks[nv].items.len(), q.audio_tracks[0].items.len()), (1, 1));
+    s.execute("edit.undo", json!({})).unwrap();
+
+    // a placement that fails after the tracks were added: nothing changes
+    assert!(s.execute("timeline.place", json!({"item": item, "track": "new", "audioTrack": "A99", "time": 0})).is_err());
+    assert_eq!(*s.active_sequence().unwrap(), before);
+    assert_eq!(s.history.undo.len(), undo);
 }

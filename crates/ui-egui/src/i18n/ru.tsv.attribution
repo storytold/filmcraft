@@ -1,0 +1,8 @@
+asset:        ru.tsv
+title:        Russian interface translation catalog
+author:       FilmCraft contributors
+source:       original work
+license:      MIT OR Apache-2.0
+license-file: LICENSE-MIT and LICENSE-APACHE
+added:        2026-10-10 by grib_job
+notes:        Original English-to-Russian menu translations using clean-room NLE vocabulary.
