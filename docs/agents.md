@@ -267,6 +267,8 @@ everything you need to contribute is in the public docs above. Ask a maintainer 
 
 For parallel agents, use one git worktree and one `CARGO_TARGET_DIR` per agent, and keep each crate
 with one owner ([contributing.md §5](contributing.md#5-parallel-work-several-agents-or-worktrees)).
+Watch the disk too: `cargo xtask target-size --check` before and after build waves, and
+`cargo xtask clean-target` when it is over the cap ([contributing.md §2](contributing.md#2-build-and-run)).
 
 ## 6. Decision rules
 

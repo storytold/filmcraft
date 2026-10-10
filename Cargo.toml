@@ -80,11 +80,23 @@ too_many_arguments = "allow"
 needless_range_loop = "allow"
 type_complexity = "allow"
 
-[profile.dev.package."*"]
-opt-level = 2
-
+# Line tables keep backtrace file:line; the dbg profile is the full-debuginfo opt-in.
 [profile.dev]
 opt-level = 1
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
+# Full debuginfo for a debugging session.
+[profile.dbg]
+inherits = "dev"
+debug = "full"
+
+# "*" matches dependencies only, never workspace members.
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
 
 # Codec hot loops: debug-build tests (RFC/oracle vectors) are minutes slower below opt-level 3.
 [profile.dev.package.filmcraft-h264]

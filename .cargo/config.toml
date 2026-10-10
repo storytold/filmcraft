@@ -1,2 +1,6 @@
 [alias]
 xtask = "run --quiet --package xtask --"
+
+# Repo-wide; opt back in for one session with CARGO_INCREMENTAL=1.
+[build]
+incremental = false

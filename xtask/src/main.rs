@@ -11,6 +11,10 @@
 //! - `fixtures [crate…]`: pre-generate the ffmpeg fixture matrix of the oracle tests (runs each
 //!   crate's ignored `generate_fixtures` test, i.e. the same generators the tests use) and print
 //!   what was made, reused or skipped.
+//! - `target-size [--check]`: report `<target>/` subtree sizes against a cap (`TARGET_CAP_GB`,
+//!   default 30 GB); `--check` exits non-zero over the cap so build waves can self-police.
+//! - `clean-target [--incremental|--debug|--release|--dbg]`: reclaim target-dir space — the
+//!   incremental session caches, a whole profile tree, or everything via `cargo clean`.
 //! - `ico <out.ico> <in.png>…`: pack PNGs into a Windows `.ico` (used by `packaging/icons.sh`).
 //! - `ci`: fmt check, clippy -D warnings, tests, layers, assets, wasm.
 
@@ -469,6 +473,115 @@ fn root() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask lives in the workspace").to_path_buf()
 }
 
+/// The workspace target dir, anchored at the workspace root: `CARGO_TARGET_DIR` may be relative
+/// and `cargo xtask` may be invoked from a member directory.
+fn target_root() -> std::path::PathBuf {
+    match std::env::var_os("CARGO_TARGET_DIR") {
+        Some(dir) => {
+            let p = std::path::PathBuf::from(dir);
+            if p.is_absolute() { p } else { root().join(p) }
+        }
+        None => root().join("target"),
+    }
+}
+
+/// Approximate size of everything under `dir`, in bytes. Symlinks are not followed; unreadable
+/// entries are skipped (the target dir can change while a report runs).
+fn dir_size(dir: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else { continue };
+        for e in entries.flatten() {
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() {
+                stack.push(e.path());
+            } else if let Ok(meta) = e.metadata() {
+                total = total.saturating_add(meta.len());
+            }
+        }
+    }
+    total
+}
+
+/// Human-readable byte count for reports ("42.0 MB"); binary units, one decimal, like `du -h`.
+fn human(bytes: u64) -> String {
+    const UNITS: [(&str, u64); 5] = [("B", 1), ("KB", 1 << 10), ("MB", 1 << 20), ("GB", 1 << 30), ("TB", 1 << 40)];
+    let mut i = UNITS.len() - 1;
+    while i > 0 && bytes < UNITS[i].1 {
+        i -= 1;
+    }
+    let (unit, scale) = UNITS[i];
+    format!("{:.1} {unit}", bytes as f64 / scale as f64)
+}
+
+/// `target-size [--check]`: report every `<target>/` subtree against a cap (`TARGET_CAP_GB` GB,
+/// default 30); `--check` fails when the total is over it (docs/contributing.md §2).
+fn target_size(args: &[String]) -> Result<(), String> {
+    if let Some(bad) = args.iter().find(|a| *a != "--check") {
+        return Err(format!("target-size: unknown argument {bad:?} (only --check)"));
+    }
+    let cap_gb = match std::env::var("TARGET_CAP_GB") {
+        Ok(v) => {
+            let n: f64 = v.trim().parse().map_err(|_| format!("target-size: TARGET_CAP_GB={v:?} is not a number"))?;
+            if !n.is_finite() || n <= 0.0 {
+                return Err(format!("target-size: TARGET_CAP_GB={v:?} must be a positive number"));
+            }
+            n
+        }
+        Err(std::env::VarError::NotPresent) => 30.0,
+        Err(_) => return Err("target-size: TARGET_CAP_GB is not valid Unicode".into()),
+    };
+    let root = target_root();
+    let mut entries: Vec<(String, u64)> = Vec::new();
+    let mut total = 0u64;
+    if let Ok(rd) = std::fs::read_dir(&root) {
+        for e in rd.flatten() {
+            let size = if e.file_type().map(|t| t.is_dir()).unwrap_or(false) { dir_size(&e.path()) } else { e.metadata().map(|m| m.len()).unwrap_or(0) };
+            total = total.saturating_add(size);
+            entries.push((e.file_name().to_string_lossy().into_owned(), size));
+        }
+    }
+    entries.sort_by_key(|(_, s)| std::cmp::Reverse(*s));
+    println!("{}: {} total (cap {:.0} GB)", root.display(), human(total), cap_gb);
+    for (name, size) in entries {
+        println!("  {name:<16} {}", human(size));
+    }
+    if args.iter().any(|a| a == "--check") && total as f64 / 1_073_741_824.0 > cap_gb {
+        return Err(format!("target/ is {} over the {cap_gb:.0} GB cap: run `cargo xtask clean-target` (docs/contributing.md §2)", human(total)));
+    }
+    Ok(())
+}
+
+/// `clean-target [--incremental|--debug|--release|--dbg]`: reclaim target-dir space — the
+/// incremental session caches, a whole profile tree, or everything via `cargo clean`
+/// (docs/contributing.md §2).
+fn clean_target(args: &[String]) -> Result<(), String> {
+    let sub = match args {
+        [] => None,
+        [one] => match one.as_str() {
+            "--incremental" => Some("debug/incremental"),
+            "--debug" => Some("debug"),
+            "--release" => Some("release"),
+            "--dbg" => Some("dbg"),
+            other => return Err(format!("clean-target: unknown mode {other:?} (use --incremental, --debug, --release or --dbg)")),
+        },
+        _ => return Err("clean-target: at most one mode: --incremental, --debug, --release or --dbg".into()),
+    };
+    let Some(sub) = sub else {
+        return run(Command::new(env!("CARGO")).arg("clean"));
+    };
+    let dir = target_root().join(sub);
+    if !dir.exists() {
+        println!("clean-target: {} does not exist, nothing to do", dir.display());
+        return Ok(());
+    }
+    let reclaimed = dir_size(&dir);
+    std::fs::remove_dir_all(&dir).map_err(|e| format!("clean-target: {}: {e}", dir.display()))?;
+    println!("clean-target: {} reclaimed ({})", dir.display(), human(reclaimed));
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let task = std::env::args().nth(1).unwrap_or_default();
     let r = match task.as_str() {
@@ -476,6 +589,8 @@ fn main() -> ExitCode {
         "wasm" => wasm(),
         "assets" => assets(),
         "fixtures" => fixtures(&std::env::args().skip(2).collect::<Vec<_>>()),
+        "target-size" => target_size(&std::env::args().skip(2).collect::<Vec<_>>()),
+        "clean-target" => clean_target(&std::env::args().skip(2).collect::<Vec<_>>()),
         "ci" => ci(),
         "bench" => bench(),
         "bench-playback" => bench_playback(),
@@ -488,10 +603,9 @@ fn main() -> ExitCode {
             let rest: Vec<String> = std::env::args().skip(2).collect();
             ico::run(&rest.iter().map(String::as_str).collect::<Vec<_>>())
         }
-        _ => Err(
-            "usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|ico OUT IN…|version [set X.Y.Z]|ci|bench [args]|bench-playback [args]>"
-                .into(),
-        ),
+        _ => Err("usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|ico OUT IN…|version [set X.Y.Z]\
+             |target-size [--check]|clean-target [--incremental|--debug|--release|--dbg]|ci|bench [args]|bench-playback [args]>"
+            .into()),
     };
     match r {
         Ok(()) => ExitCode::SUCCESS,

@@ -9,7 +9,7 @@ of the crate you will change.
 | | All platforms |
 |---|---|
 | Rust | stable ≥ 1.95 (edition 2024; egui 0.36 requires it), via [rustup](https://rustup.rs) |
-| wasm target | `rustup target add wasm32-unknown-unknown` (for `cargo xtask wasm`) |
+| wasm target | `rustup target add wasm32-unknown-unknown` (for `cargo xtask wasm`). Distros ship their own rust with a separate sysroot: on Arch install `rust-wasm` or run cargo from a rustup toolchain that has the target. |
 | Components | `rustup component add rustfmt clippy` |
 | ffmpeg + ffprobe (optional) | test oracle and fixture generator only; tests skip without it |
 
@@ -47,8 +47,28 @@ cargo xtask web --serve 8765                          # the web app on http://12
 not a number (from `--control` or from `FILMCRAFT_CONTROL_PORT`), is an error on stderr with exit
 code 2 instead of a window.
 
-Dev builds compile dependencies at `opt-level = 2` and workspace crates at `opt-level = 1`. For
-playback and codec speed, use `--release`.
+Dev builds compile dependencies at `opt-level = 2` and workspace crates at `opt-level = 1`, with
+line-table debug info only (`debug = "line-tables-only"`; third-party dependencies carry none) —
+enough for backtraces and line breakpoints at a fraction of the disk cost. For playback and codec
+speed, use `--release`. For a debugging session that needs variable inspection, build
+`cargo test --profile dbg` and clean `target/dbg` afterwards.
+
+### Target-dir hygiene
+
+Cargo never garbage-collects `target/`, and the incremental caches grow with every build: a
+single build day measured 62 GB — two thirds of it the 43 `ui-egui` integration-test binaries at
+~0.97 GB each (full DWARF × the whole statically-linked app stack), enough to fill a disk.
+The profile settings above keep a full dev+test tree at a few GB; the rest is discipline:
+
+- `cargo xtask target-size` reports every subtree and the total against a 30 GB cap
+  (`TARGET_CAP_GB` overrides it); `--check` exits non-zero over the cap, so run it before and
+  after build waves, in every worktree (`CARGO_TARGET_DIR` is honored).
+- `cargo xtask clean-target --incremental` reclaims the session caches; `--debug`, `--release`
+  and `--dbg` drop whole profile trees; with no mode it runs `cargo clean` — the whole `target/`,
+  `fixtures/` included, which regenerate on first use.
+- The `ci` gate's `cargo test --workspace --release` costs about 5 GB of `target/release` per
+  full run; `cargo xtask clean-target --release` reclaims it. Prefer `cargo check` in verify
+  loops that don't need to run binaries.
 
 ### Logs
 
@@ -150,6 +170,8 @@ export CARGO_TARGET_DIR=target/agent-hevc     # separate build dir, no lock figh
 - The workspace includes `crates/*` and `apps/*` by glob, so one broken `Cargo.toml` breaks every
   build. Keep every manifest valid at all times, including half-finished crates.
 - Test fixtures always go to `<repo>/target/fixtures/`, whatever `CARGO_TARGET_DIR` says.
+- Check the disk before and after build waves: `cargo xtask target-size --check` (cap via
+  `TARGET_CAP_GB`, default 30 GB); when it fails, `cargo xtask clean-target`.
 - `.mcp.json` points at `target/release/filmcraft-cli`. With a custom target dir, use your own path.
 
 ## 6. How to add…
