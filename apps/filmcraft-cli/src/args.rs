@@ -61,6 +61,12 @@ impl Args {
         self.opts.iter().any(|(n, _)| n == k)
     }
 
+    /// A version query: `--version` anywhere, or `-V` in the subcommand position, so global
+    /// options may come first (`--demo --version`, `--compact -V`).
+    pub fn wants_version(&self) -> bool {
+        self.flag("--version") || self.pos(0) == Some("-V")
+    }
+
     /// The first option that is not in `allowed`, if any.
     pub fn unknown_opt(&self, allowed: &[&str]) -> Option<&str> {
         self.opts.iter().map(|(n, _)| n.as_str()).find(|n| !allowed.contains(n))
@@ -139,6 +145,16 @@ mod tests {
     fn json_params() {
         let a = Args::parse(["exec".into(), "x".into(), r#"{"a": {"b": [1]}}"#.into()]);
         assert_eq!(a.params_from(2).unwrap(), json!({"a": {"b": [1]}}));
+    }
+
+    #[test]
+    fn version_after_global_options() {
+        for s in ["--version", "-V", "--demo --version", "--compact -V", "--data-dir d --version", "export --version"] {
+            assert!(args(s).wants_version(), "{s}");
+        }
+        for s in ["version", "--data-dir -V", "exec x -V", "-- --version"] {
+            assert!(!args(s).wants_version(), "{s}");
+        }
     }
 
     #[test]
