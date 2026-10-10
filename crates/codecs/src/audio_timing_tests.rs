@@ -176,3 +176,32 @@ fn playing_at_another_rate_leaves_no_holes() {
     let tail: Vec<Vec<f32>> = got.iter().map(|c| c[2048..].to_vec()).collect();
     assert_eq!(holes(&tail), 0);
 }
+
+/// #790: the encoder priming stored as `CodecDelay` (1024 samples: 21.333 ms at 48 kHz, 23.220 ms
+/// at 44.1 kHz) is trimmed exactly. The demuxer takes it off the millisecond timestamps rounded to
+/// whole milliseconds; starting the first packet there played the track 16 (48 kHz) or 10 (44.1 kHz)
+/// samples late.
+#[test]
+fn matroska_codec_delay_is_trimmed_to_the_sample() {
+    for rate in [48_000u32, 44_100] {
+        let (asc, units) = aac(rate);
+        let want = continuous(&asc, rate, &units);
+        let delay_ns = (1024 * 1_000_000_000 + rate as i64 / 2) / rate as i64;
+        let mut spec = TrackSpec::new(TrackKind::Audio, "A_AAC");
+        spec.codec_private = asc.clone();
+        spec.audio = Some((rate as f64, 2, None));
+        spec.codec_delay_ns = delay_ns as u64;
+        let mut w = MkvWriter::new(Cursor::new(Vec::new()), vec![spec], MuxOptions::default()).unwrap();
+        for (k, u) in units.iter().enumerate() {
+            let start_ns = (k as i64 * 1024 * 1_000_000_000 + rate as i64 / 2) / rate as i64;
+            w.write_frame(0, start_ns - delay_ns, true, u, None).unwrap();
+        }
+        let bytes: Arc<[u8]> = w.finish().unwrap().into_inner().into();
+        let src = MkvSource::open("primed.mkv", bytes).unwrap();
+        let frames = units.len().saturating_sub(2) * 1024;
+        let got = played(&src, rate, frames);
+        let trimmed: Vec<Vec<f32>> = want.iter().map(|c| c[1024..].to_vec()).collect();
+        let (n, first) = mismatches(&got, &trimmed, 0);
+        assert_eq!(n, 0, "{rate} Hz: {n} samples differ from the decode with the priming trimmed, first (channel, sample) {first:?}");
+    }
+}
