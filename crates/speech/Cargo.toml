@@ -11,8 +11,9 @@ workspace = true
 
 [features]
 default = []
-# Whisper inference on the CPU via candle (pure Rust). Off by default (and in wasm builds).
-whisper = ["dep:candle-core", "dep:candle-nn"]
+# Whisper inference on the CPU (pure Rust: faer matrix products, own kernels). Off by default
+# (and in wasm builds).
+whisper = ["dep:candle-core", "dep:candle-nn", "dep:faer"]
 # Model downloads over HTTPS (pure-Rust TLS: rustls + RustCrypto, OS certificate verification).
 download = ["dep:ureq", "dep:rustls", "dep:rustls-rustcrypto", "dep:sha2"]
 
@@ -24,6 +25,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 candle-core = { version = "0.9", default-features = false, optional = true }
 candle-nn = { version = "0.9", default-features = false, optional = true }
+faer = { version = "0.23", default-features = false, features = ["std", "rayon"], optional = true }
 rayon = { workspace = true }
 ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "platform-verifier"], optional = true }
 rustls = { version = "0.23", default-features = false, optional = true }

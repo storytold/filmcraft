@@ -11,6 +11,8 @@
 //! - [`safetensors`], [`ct2`]: readers of model weight files (Hugging Face `model.safetensors`;
 //!   CTranslate2 `model.bin`, the format of "faster-whisper" conversions). Both treat the file as
 //!   hostile input and read one tensor at a time.
+//! - [`nn`] (feature `whisper`): CPU kernels for transformer inference (matrix products through
+//!   faer, vectorised row kernels, attention).
 //! - [`diarize`]: speaker labelling by clustering per-chunk MFCC statistics (classical, no model).
 //! - [`mel`]: the log-mel front end shared by Whisper and diarization.
 //! - [`vad`]: energy-based tightening of word bounds (keeps pauses out of words).
@@ -23,6 +25,8 @@ pub mod ct2;
 pub mod diarize;
 pub mod mel;
 pub mod models;
+#[cfg(feature = "whisper")]
+pub mod nn;
 pub mod safetensors;
 pub mod vad;
 #[cfg(feature = "whisper")]
