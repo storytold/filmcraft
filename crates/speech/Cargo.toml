@@ -1,6 +1,6 @@
 [package]
 name = "filmcraft-speech"
-description = "FilmCraft speech-to-text: the Transcriber trait, the Whisper model catalogue and downloader, pure-Rust Whisper inference (candle) with word timestamps, and speaker labelling"
+description = "FilmCraft speech-to-text: the Transcriber trait, the model catalogue and downloader, pure-Rust Whisper and Parakeet TDT inference (candle) with word timestamps, and speaker labelling"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,7 +13,9 @@ workspace = true
 default = []
 # Whisper inference on the CPU (pure Rust: faer matrix products, own kernels). Off by default
 # (and in wasm builds).
-whisper = ["dep:candle-core", "dep:candle-nn", "dep:faer"]
+whisper = ["dep:faer"]
+# NVIDIA Parakeet TDT inference on the CPU via candle (pure Rust), read from `.nemo` archives.
+parakeet = ["dep:candle-core", "dep:candle-nn"]
 # Model downloads over HTTPS (pure-Rust TLS: rustls + RustCrypto, OS certificate verification).
 download = ["dep:ureq", "dep:rustls", "dep:rustls-rustcrypto", "dep:sha2"]
 
@@ -35,3 +37,7 @@ sha2 = { version = "0.10", optional = true }
 [[example]]
 name = "transcribe"
 required-features = ["whisper"]
+
+[[example]]
+name = "parakeet"
+required-features = ["parakeet"]

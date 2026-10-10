@@ -14,6 +14,8 @@
 //!   hostile input and read one tensor at a time.
 //! - [`nn`] (feature `whisper`): CPU kernels for transformer inference (matrix products through
 //!   faer, vectorised row kernels, attention).
+//! - [`parakeet`] (feature `parakeet`): NVIDIA Parakeet TDT (FastConformer + token-and-duration
+//!   transducer) in pure Rust on candle, read from the `.nemo` archive ([`nemo`]).
 //! - [`diarize`]: speaker labelling by clustering per-chunk MFCC statistics (classical, no model).
 //! - [`mel`]: the log-mel front end shared by Whisper and diarization.
 //! - [`vad`]: energy-based tightening of word bounds (keeps pauses out of words).
@@ -26,8 +28,11 @@ pub mod ct2;
 pub mod diarize;
 pub mod mel;
 pub mod models;
+pub mod nemo;
 #[cfg(feature = "whisper")]
 pub mod nn;
+#[cfg(feature = "parakeet")]
+pub mod parakeet;
 pub mod safetensors;
 pub mod vad;
 #[cfg(feature = "whisper")]
@@ -141,11 +146,18 @@ impl Transcriber for FixedTranscriber {
     }
 }
 
-/// Load the transcriber for catalogue model `id` from `models_dir` (feature `whisper`).
+/// Load the transcriber for catalogue model `id` from `models_dir` (feature `whisper` or
+/// `parakeet`, by the model's [`models::Engine`]).
 pub fn load(models_dir: &std::path::Path, id: &str) -> Result<std::sync::Arc<dyn Transcriber>, SpeechError> {
     let m = models::find(id).ok_or_else(|| SpeechError::UnknownModel(id.into()))?;
     // installed, or already downloaded by another tool (Hugging Face cache, faster-whisper)
     let dir = models::usable_dir(models_dir, m).ok_or_else(|| SpeechError::NotInstalled(id.into()))?;
+    if m.engine() == models::Engine::Parakeet {
+        #[cfg(feature = "parakeet")]
+        return Ok(std::sync::Arc::new(parakeet::Parakeet::load(&dir, m.id)?));
+        #[cfg(not(feature = "parakeet"))]
+        return Err(SpeechError::Unavailable("built without the `parakeet` feature".into()));
+    }
     #[cfg(feature = "whisper")]
     {
         Ok(std::sync::Arc::new(whisper::Whisper::load(&dir, m.id)?))
@@ -159,7 +171,7 @@ pub fn load(models_dir: &std::path::Path, id: &str) -> Result<std::sync::Arc<dyn
 
 /// Whether this build can run speech models.
 pub const fn available() -> bool {
-    cfg!(feature = "whisper")
+    cfg!(any(feature = "whisper", feature = "parakeet"))
 }
 
 /// Mix a multi-channel buffer down to mono.

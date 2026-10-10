@@ -5,8 +5,9 @@
 //! transcript are addressed by index (`from`, `to`, inclusive), as `transcript.inspect` lists them.
 //!
 //! Speech recognition goes through a [`Transcriber`]: [`Session::transcriber`] when a host or a
-//! test installed one, else the Whisper model named by `model` from `<data dir>/models` (needs the
-//! engine feature `whisper`; without it `transcript.generate` fails with a clear error, and agents
+//! test installed one, else the catalogue model named by `model` (Whisper or Parakeet TDT) from
+//! `<data dir>/models` (needs the engine feature `whisper`, or `parakeet` for Parakeet only; without
+//! them `transcript.generate` fails with a clear error, and agents
 //! can still bring their own transcript with `transcript.set`).
 
 use std::collections::BTreeMap;
@@ -877,7 +878,7 @@ fn models(_: &mut Session, _: &Value) -> Result<Value> {
         "dir": dir.as_ref().map(|d| d.to_string_lossy().to_string()),
         "models": filmcraft_speech::models::catalogue().iter().map(|m| json!({
             "id": m.id, "name": m.name, "multilingual": m.multilingual, "description": m.description,
-            "license": m.license, "source": m.source, "size": m.size(),
+            "license": m.license, "licenseUrl": m.license_url, "attribution": m.attribution(), "source": m.source, "size": m.size(),
             "installed": dir.as_ref().is_some_and(|d| filmcraft_speech::models::installed(d, m)),
         })).collect::<Vec<_>>(),
     }))
