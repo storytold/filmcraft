@@ -4,7 +4,9 @@
 //! - Sources are cached per item **and per reference** (the file path, the offline flag), so a
 //!   relink, Make Offline or their undo picks up the right file on the next frame.
 //! - Media that can't be opened (missing, unreadable) or was made offline renders the offline
-//!   slate ([`filmcraft_render::offline`]) instead of failing; the reason is kept for the UI.
+//!   slate ([`filmcraft_render::offline`]) instead of failing; the reason is kept for the UI. So
+//!   do the frames of a file that opens but whose picture FilmCraft cannot decode (a codec or
+//!   profile without a decoder).
 //! - With proxies enabled ([`MediaPool::set_use_proxies`]) items with an attached proxy are read
 //!   from it. Proxy frames are smaller; the source still reports the full-resolution size, and the
 //!   compositor derives its pixel scale from the frame it gets, so effects and Motion render the
@@ -34,7 +36,7 @@ pub struct MediaPool {
     /// item → (reference key, source)
     sources: RwLock<HashMap<ItemId, (String, SharedSource)>>,
     proxies: RwLock<HashMap<ItemId, (String, SharedSource)>>,
-    offline: RwLock<HashMap<ItemId, OfflineStatus>>,
+    offline: Arc<RwLock<HashMap<ItemId, OfflineStatus>>>,
     use_proxies: AtomicBool,
     /// Openers tried before the built-in ones (MP4/MOV + codecs register here).
     pub openers: RwLock<Vec<Opener>>,
@@ -46,7 +48,7 @@ impl Default for MediaPool {
         Self {
             sources: RwLock::new(HashMap::new()),
             proxies: RwLock::new(HashMap::new()),
-            offline: RwLock::new(HashMap::new()),
+            offline: Arc::new(RwLock::new(HashMap::new())),
             use_proxies: AtomicBool::new(false),
             openers: RwLock::new(filmcraft_codecs::openers()),
         }
@@ -139,8 +141,16 @@ impl MediaPool {
 
     /// Cache a source opened from `path` for an item.
     pub fn insert_file(&self, item: ItemId, path: &str, src: SharedSource) {
-        self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (format!("file:{path}"), src));
         self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
+        let src = self.unsupported_as_slate(item, path, src);
+        self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (format!("file:{path}"), src));
+    }
+
+    /// `src` (opened from `path` for `item`) showing the unreadable slate for the frames it
+    /// cannot decode.
+    fn unsupported_as_slate(&self, item: ItemId, path: &str, src: SharedSource) -> SharedSource {
+        let slate = SlateSource::new(src.info().clone(), &file_name(path), OfflineReason::Unreadable);
+        Arc::new(UnsupportedAsSlate { inner: src, slate, item, path: path.to_string(), offline: self.offline.clone() })
     }
 
     pub fn remove(&self, item: ItemId) {
@@ -249,7 +259,7 @@ impl MediaPool {
             } {
                 Ok(s) => {
                     self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
-                    s
+                    self.unsupported_as_slate(item, path, s)
                 }
                 Err(_) if filmcraft_media::pending::is_set() => {
                     // the host is still fetching the file's bytes: show the slate for now, retry later
@@ -370,6 +380,42 @@ impl MediaSource for SlateSource {
     }
     fn audio(&self, _start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
         Ok(AudioBuffer::silence(sample_rate, self.info.audio().map_or(2, |a| a.channels as usize), frames))
+    }
+}
+
+/// A file's source whose picture shows the unreadable slate for each frame its decoder reports as
+/// unsupported (H.264 High 4:2:2, a codec without a decoder...), instead of no picture at all,
+/// and marks the item unreadable with the reason, so the monitors and the Project panel say why
+/// (#626). Its sound plays as before.
+struct UnsupportedAsSlate {
+    inner: SharedSource,
+    slate: SlateSource,
+    item: ItemId,
+    path: String,
+    offline: Arc<RwLock<HashMap<ItemId, OfflineStatus>>>,
+}
+
+impl MediaSource for UnsupportedAsSlate {
+    fn info(&self) -> &MediaInfo {
+        self.inner.info()
+    }
+    fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+        match self.inner.video_frame(req) {
+            Err(MediaError::Unsupported(why)) => {
+                self.offline.write().unwrap_or_else(|e| e.into_inner()).entry(self.item).or_insert_with(|| {
+                    log::warn!("media unreadable: {}: {why}", self.path);
+                    OfflineStatus { reason: OfflineReason::Unreadable, path: self.path.clone(), error: why }
+                });
+                self.slate.video_frame(req)
+            }
+            r => r,
+        }
+    }
+    fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
+        self.inner.audio(start, frames, sample_rate)
+    }
+    fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
+        self.inner.audio_stream(stream, start, frames, sample_rate)
     }
 }
 
@@ -500,5 +546,76 @@ mod tests {
         let missing = dir.join("missing.wav").to_string_lossy().to_string();
         assert!(matches!(MediaPool::default().open_file(&missing, &crate::FsServices), Err(MediaError::Offline(_))));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A file whose first frame decodes and whose later frames need a decoder FilmCraft lacks.
+    struct PartlyDecodable(MediaInfo);
+    impl MediaSource for PartlyDecodable {
+        fn info(&self) -> &MediaInfo {
+            &self.0
+        }
+        fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+            match req.time.0 {
+                0 => Ok(Arc::new(VideoFrame::rgba8(2, 2, vec![7; 16]))),
+                1 => Err(MediaError::Decode("damaged slice".into())),
+                _ => Err(MediaError::Unsupported("H.264: field pictures".into())),
+            }
+        }
+        fn audio(&self, _start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
+            Ok(AudioBuffer::silence(sample_rate, 3, frames))
+        }
+    }
+
+    /// #626: frames the decoder does not support show the unreadable slate (not nothing) and the
+    /// item says why; decodable frames, damaged ones and the sound are left alone.
+    #[test]
+    fn undecodable_frames_show_the_unreadable_slate() {
+        let info = GeneratorSource::new(filmcraft_media::Generator::ColorMatte { color: [0.0; 4] }, 16, 8, Default::default(), filmcraft_time::Tick(100))
+            .info()
+            .clone();
+        let pool = MediaPool::default();
+        let item = ItemId(1);
+        pool.insert_file(item, "/media/cam/a.mov", Arc::new(PartlyDecodable(info)));
+        let src = pool.cached(item).unwrap();
+        let at = |t| src.video_frame(FrameRequest { time: filmcraft_time::Tick(t), scale: 1.0 });
+        assert_eq!(at(0).unwrap().to_rgba8(), vec![7; 16]);
+        assert!(matches!(at(1), Err(MediaError::Decode(_))));
+        assert!(pool.offline_status(item).is_none(), "nothing unsupported yet");
+        let f = at(2).unwrap();
+        assert_eq!((f.width, f.height), (16, 8));
+        assert_eq!(f.to_rgba8(), filmcraft_render::offline::slate_rgba8(16, 8, "a.mov", OfflineReason::Unreadable));
+        let st = pool.offline_status(item).unwrap();
+        assert_eq!((st.reason, st.path.as_str(), st.error.as_str()), (OfflineReason::Unreadable, "/media/cam/a.mov", "H.264: field pictures"));
+        assert_eq!(src.audio(0, 4, 48_000).unwrap().channels.len(), 3);
+        // linking the item to another file forgets the reason
+        pool.insert_file(item, "/media/cam/b.mov", src.clone());
+        assert!(pool.offline_status(item).is_none());
+    }
+
+    /// #626 end to end: an H.264 profile FilmCraft does not decode yet (4:4:4) imports and shows
+    /// the unreadable slate with the decoder's reason, instead of a black picture.
+    #[test]
+    fn ffmpeg_unsupported_h264_profile_shows_the_unreadable_slate() {
+        let Some(ffmpeg) = filmcraft_testkit::oracle::ffmpeg_or_skip("media_pool") else { return };
+        let path = filmcraft_testkit::fixtures_dir("engine/media_pool").join("h264_444_64x32.mp4");
+        let Some(path) = filmcraft_testkit::fixtures::generate(&path, |tmp| {
+            std::process::Command::new(&ffmpeg)
+                .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=64x32:rate=24:duration=0.5"])
+                .args(["-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv444p"])
+                .arg(tmp)
+                .status()
+                .is_ok_and(|s| s.success())
+        }) else {
+            return;
+        };
+        let mut s = crate::Session::default();
+        let r = s.execute("file.import", serde_json::json!({"paths": [path.to_string_lossy()]})).unwrap();
+        let item = ItemId(r["items"][0].as_u64().unwrap());
+        let src = s.media.source_for(&s.project, item, &*s.services).unwrap();
+        let f = src.video_frame(FrameRequest { time: filmcraft_time::Tick::ZERO, scale: 1.0 }).unwrap();
+        assert_eq!(f.to_rgba8(), filmcraft_render::offline::slate_rgba8(64, 32, "h264_444_64x32.mp4", OfflineReason::Unreadable));
+        let st = s.media.offline_status(item).unwrap();
+        assert_eq!(st.reason, OfflineReason::Unreadable);
+        assert!(st.error.contains("H.264") && st.error.contains("chroma_format_idc 3"), "{}", st.error);
     }
 }
