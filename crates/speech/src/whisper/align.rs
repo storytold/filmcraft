@@ -1,36 +1,32 @@
 //! Word timing from cross-attention: token-to-audio alignment by dynamic time warping over the
 //! averaged, normalised attention of the alignment heads (see the module docs of `whisper`).
 
-use candle_core::{Result, Tensor};
-
-use super::model::Model;
-
-/// Start/end (in mel frames from the window start, 10 ms) of every token of `text`.
-pub fn align(m: &mut Model, xa: &Tensor, prompt: &[u32], text: &[u32], eot: u32, heads: &[(usize, usize)], seg_frames: usize) -> Result<Vec<(usize, usize)>> {
-    let mut tokens = prompt.to_vec();
-    tokens.extend_from_slice(text);
-    tokens.push(eot);
-    m.decoder.reset();
-    let (_, qk) = m.decoder.forward(&tokens, xa, false, Some(heads))?;
-    m.decoder.reset();
-    let Some(qk) = qk else { return Ok(vec![(0, 0); text.len()]) };
-    let (h, t, f_all) = qk.dims3()?;
-    let f = (seg_frames / 2).clamp(1, f_all);
-    let qk = qk.narrow(2, 0, f)?.contiguous()?;
-    let w = candle_nn::ops::softmax_last_dim(&qk)?;
-    let w: Vec<Vec<Vec<f32>>> = w.to_vec3()?;
-    let rows = text.len() + 1;
-    let first = prompt.len() - 1;
+/// Start/end (in mel frames from the window start, 10 ms) of each of `n_text` text tokens, from
+/// the cross-attention logits of the alignment heads (each `tokens × n_ctx`, row-major) of a pass
+/// over `prompt ‖ text ‖ <|endoftext|>`; `first` is the row that predicts the first text token.
+pub fn align(qk: &[Vec<f32>], tokens: usize, n_ctx: usize, first: usize, n_text: usize, seg_frames: usize) -> Vec<(usize, usize)> {
+    let h = qk.len();
+    let rows = n_text + 1;
+    let f = (seg_frames / 2).clamp(1, n_ctx.max(1));
+    if h == 0 || n_ctx == 0 || first + rows > tokens || qk.iter().any(|m| m.len() < tokens * n_ctx) {
+        return vec![(0, 0); n_text];
+    }
     let mut matrix = vec![0f32; rows * f];
-    for head in w.iter().take(h) {
+    for head in qk {
+        // softmax over the window's audio frames, row by row
+        let mut w = vec![0f32; tokens * f];
+        for (i, r) in w.chunks_mut(f).enumerate() {
+            r.copy_from_slice(&head[i * n_ctx..i * n_ctx + f]);
+            crate::nn::softmax(r);
+        }
         // standardise over tokens for every frame
-        let mut z = vec![0f32; t * f];
+        let mut z = vec![0f32; tokens * f];
         for j in 0..f {
-            let mean = (0..t).map(|i| head[i][j]).sum::<f32>() / t as f32;
-            let var = (0..t).map(|i| (head[i][j] - mean).powi(2)).sum::<f32>() / t as f32;
+            let mean = (0..tokens).map(|i| w[i * f + j]).sum::<f32>() / tokens as f32;
+            let var = (0..tokens).map(|i| (w[i * f + j] - mean).powi(2)).sum::<f32>() / tokens as f32;
             let sd = var.sqrt().max(1e-8);
-            for i in 0..t {
-                z[i * f + j] = (head[i][j] - mean) / sd;
+            for i in 0..tokens {
+                z[i * f + j] = (w[i * f + j] - mean) / sd;
             }
         }
         for r in 0..rows {
@@ -49,15 +45,14 @@ pub fn align(m: &mut Model, xa: &Tensor, prompt: &[u32], text: &[u32], eot: u32,
             jump[i] = j;
         }
     }
-    let mut out = Vec::with_capacity(text.len());
-    for i in 0..text.len() {
+    let mut out = Vec::with_capacity(n_text);
+    for i in 0..n_text {
         let s = jump[i].min(f);
         let e = jump[i + 1].min(f).max(s);
         out.push((s * 2, e * 2));
     }
-    Ok(out)
+    out
 }
-
 /// Median filter with reflect padding.
 pub fn median_filter(x: &[f32], width: usize) -> Vec<f32> {
     let n = x.len();

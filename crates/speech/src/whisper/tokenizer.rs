@@ -39,7 +39,7 @@ fn unicode_to_byte() -> HashMap<char, u8> {
             n += 1;
         }
     }
-    bs.iter().zip(&cs).map(|(&b, &c)| (char::from_u32(c).expect("valid"), b as u8)).collect()
+    bs.iter().zip(&cs).filter_map(|(&b, &c)| Some((char::from_u32(c)?, b as u8))).collect()
 }
 
 impl Tokenizer {
@@ -48,7 +48,12 @@ impl Tokenizer {
         let v: serde_json::Value = serde_json::from_str(json).map_err(|e| bad(&e.to_string()))?;
         let vocab = v["model"]["vocab"].as_object().ok_or_else(|| bad("no model.vocab"))?;
         let table = unicode_to_byte();
-        let max = vocab.values().filter_map(|x| x.as_u64()).max().unwrap_or(0) as usize;
+        let max = vocab.values().filter_map(|x| x.as_u64()).max().unwrap_or(0);
+        // ids index a table: a hostile file must not make it huge (Whisper has ~50 000 entries)
+        if max >= 1 << 22 {
+            return Err(bad("vocabulary id out of range"));
+        }
+        let max = max as usize;
         let mut bytes = vec![Vec::new(); max + 1];
         for (tok, id) in vocab {
             let id = id.as_u64().ok_or_else(|| bad("vocab id"))? as usize;
@@ -67,8 +72,10 @@ impl Tokenizer {
         let translate = get("<|translate|>");
         let mut languages: Vec<(String, u32)> = special
             .iter()
-            .filter(|(k, id)| **id > sot && translate.is_none_or(|t| **id < t) && k.starts_with("<|") && k.ends_with("|>"))
-            .map(|(k, id)| (k[2..k.len() - 2].to_string(), *id))
+            .filter_map(|(k, id)| {
+                let code = k.strip_prefix("<|")?.strip_suffix("|>")?;
+                (*id > sot && translate.is_none_or(|t| *id < t) && !code.is_empty()).then(|| (code.to_string(), *id))
+            })
             .collect();
         languages.sort_by_key(|x| x.1);
         Ok(Self {
@@ -163,4 +170,33 @@ pub fn group_words(tok: &Tokenizer, ids: &[u32]) -> Vec<(String, std::ops::Range
         groups.push((pre, start..ids.len()));
     }
     groups.into_iter().map(|(b, r)| (String::from_utf8_lossy(&b).trim().to_string(), r)).filter(|(t, _)| !t.is_empty()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn json(vocab: &str, added: &str) -> String {
+        format!(r#"{{"model": {{"vocab": {{{vocab}}}}}, "added_tokens": [{added}]}}"#)
+    }
+
+    const SPECIALS: &str = r#"{"id": 10, "content": "<|endoftext|>"}, {"id": 11, "content": "<|startoftranscript|>"}, {"id": 12, "content": "<|>"}, {"id": 13, "content": "<|en|>"}, {"id": 14, "content": "<|translate|>"}, {"id": 15, "content": "<|transcribe|>"}, {"id": 16, "content": "<|notimestamps|>"}, {"id": 17, "content": "<|0.00|>"}"#;
+
+    #[test]
+    fn parses_and_decodes() {
+        let t = Tokenizer::from_json(&json(r#""a": 0, "Ġb": 1"#, SPECIALS)).unwrap();
+        assert_eq!(t.languages, vec![("en".to_string(), 13)]);
+        assert_eq!(t.decode(&[0, 1, 10, 17]), "a b");
+        assert_eq!(t.timestamp_begin, 17);
+    }
+
+    #[test]
+    fn hostile_tokenizers_are_errors() {
+        // a vocabulary id far too large to index a table
+        assert!(Tokenizer::from_json(&json(r#""a": 1000000000000"#, SPECIALS)).is_err());
+        // missing specials, broken JSON, wrong types
+        assert!(Tokenizer::from_json(&json(r#""a": 0"#, r#"{"id": 1, "content": "<|endoftext|>"}"#)).is_err());
+        assert!(Tokenizer::from_json("{").is_err());
+        assert!(Tokenizer::from_json(r#"{"model": {"vocab": {"a": "x"}}, "added_tokens": []}"#).is_err());
+    }
 }

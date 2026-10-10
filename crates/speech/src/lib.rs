@@ -6,8 +6,14 @@
 //! - [`models`]: the catalogue of downloadable Whisper models (source URL pinned to a revision,
 //!   SHA-256, size, licence), where they live in the per-user data directory, and (feature
 //!   `download`) the verified downloader. Weights are **never** bundled or committed.
-//! - [`whisper`] (feature `whisper`): Whisper inference in pure Rust on candle, with timestamp
-//!   decoding, language detection and word-level timestamps from cross-attention alignment (DTW).
+//! - [`whisper`] (feature `whisper`): Whisper inference in pure Rust on the CPU, with timestamp
+//!   decoding, language detection, word-level timestamps from cross-attention alignment (DTW),
+//!   batched decoding of independent regions, temperature fallback and per-window progress.
+//! - [`safetensors`], [`ct2`]: readers of model weight files (Hugging Face `model.safetensors`;
+//!   CTranslate2 `model.bin`, the format of "faster-whisper" conversions). Both treat the file as
+//!   hostile input and read one tensor at a time.
+//! - [`nn`] (feature `whisper`): CPU kernels for transformer inference (matrix products through
+//!   faer, vectorised row kernels, attention).
 //! - [`diarize`]: speaker labelling by clustering per-chunk MFCC statistics (classical, no model).
 //! - [`mel`]: the log-mel front end shared by Whisper and diarization.
 //! - [`vad`]: energy-based tightening of word bounds (keeps pauses out of words).
@@ -16,9 +22,13 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod ct2;
 pub mod diarize;
 pub mod mel;
 pub mod models;
+#[cfg(feature = "whisper")]
+pub mod nn;
+pub mod safetensors;
 pub mod vad;
 #[cfg(feature = "whisper")]
 pub mod whisper;
@@ -134,15 +144,15 @@ impl Transcriber for FixedTranscriber {
 /// Load the transcriber for catalogue model `id` from `models_dir` (feature `whisper`).
 pub fn load(models_dir: &std::path::Path, id: &str) -> Result<std::sync::Arc<dyn Transcriber>, SpeechError> {
     let m = models::find(id).ok_or_else(|| SpeechError::UnknownModel(id.into()))?;
-    if !models::installed(models_dir, m) {
-        return Err(SpeechError::NotInstalled(id.into()));
-    }
+    // installed, or already downloaded by another tool (Hugging Face cache, faster-whisper)
+    let dir = models::usable_dir(models_dir, m).ok_or_else(|| SpeechError::NotInstalled(id.into()))?;
     #[cfg(feature = "whisper")]
     {
-        Ok(std::sync::Arc::new(whisper::Whisper::load(&models::model_dir(models_dir, m), m.id)?))
+        Ok(std::sync::Arc::new(whisper::Whisper::load(&dir, m.id)?))
     }
     #[cfg(not(feature = "whisper"))]
     {
+        let _ = dir;
         Err(SpeechError::Unavailable("built without the `whisper` feature".into()))
     }
 }
