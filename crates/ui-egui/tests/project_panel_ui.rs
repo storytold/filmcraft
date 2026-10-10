@@ -718,7 +718,7 @@ fn double_click_imports_with_audio_in_the_timeline() {
     let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |_cc| app);
     let mut d = Driver { harness, tx, snapshots: None };
     d.frames(10);
-    let mut double_click = |d: &mut Driver, at: egui::Pos2| {
+    let double_click = |d: &mut Driver, at: egui::Pos2| {
         let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);
         d.frames(60);
         push(d, egui::Event::PointerMoved(at));
