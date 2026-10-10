@@ -3057,6 +3057,7 @@
 	Go to Sequence End	シーケンスの終了位置へ移動
 	Go to Sequence Start	シーケンスの開始位置へ移動
 	H.264	H.264
+	AV1	AV1
 	H.264 1920×1080 for video sharing sites, VBR 1 pass, 16 Mbps	動画共有サイト向けの H.264 1920×1080、VBR 1 パス、16 Mbps
 	H.264 1920×1080, VBR 1 pass, 20 Mbps target, AAC 320 kbps	H.264 1920×1080、VBR 1 パス、ターゲット 20 Mbps、AAC 320 kbps
 	H.264 1920×1080, VBR 2 pass, 18 Mbps	H.264 1920×1080、VBR 2 パス、18 Mbps
@@ -3410,6 +3411,7 @@
 	Main (8-bit; Main 10 for HDR sequences)	メイン (8 ビット、HDR シーケンスではメイン 10)
 	Encoder	エンコーダー
 	Hardware (H.265 has no software encoder)	ハードウェア (H.265 にはソフトウェアエンコーダーがありません)
+	Hardware (AV1 has no software encoder)	ハードウェア (AV1 にはソフトウェアエンコーダーがありません)
 	Text Properties	テキストのプロパティ
 	Text Box Height	テキストボックスの高さ
 	Paragraph Text	段落テキスト

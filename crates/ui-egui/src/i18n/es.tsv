@@ -3062,6 +3062,7 @@
 	Go to Sequence End	Ir al final de la secuencia
 	Go to Sequence Start	Ir al inicio de la secuencia
 	H.264	H.264
+	AV1	AV1
 	H.264 1920×1080 for video sharing sites, VBR 1 pass, 16 Mbps	H.264 1920×1080 para sitios de video, VBR 1 pasada, 16 Mbps
 	H.264 1920×1080, VBR 1 pass, 20 Mbps target, AAC 320 kbps	H.264 1920×1080, VBR 1 pasada, 20 Mbps objetivo, AAC 320 kbps
 	H.264 1920×1080, VBR 2 pass, 18 Mbps	H.264 1920×1080, VBR 2 pasadas, 18 Mbps
@@ -3415,6 +3416,7 @@
 	Main (8-bit; Main 10 for HDR sequences)	Main (8 bits; Main 10 para secuencias HDR)
 	Encoder	Codificador
 	Hardware (H.265 has no software encoder)	Hardware (H.265 no tiene codificador por software)
+	Hardware (AV1 has no software encoder)	Hardware (AV1 no tiene codificador por software)
 	Text Properties	Propiedades de texto
 	Text Box Height	Altura del cuadro de texto
 	Paragraph Text	Texto de párrafo
