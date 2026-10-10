@@ -258,3 +258,189 @@ fn clicking_a_lane_keyframe_selects_only_that_keyframe() {
     d.click("effectControls.motion.position.addKeyframe");
     assert_eq!(selection(&mut d), json!([]), "a deleted keyframe is not selected");
 }
+
+/// #641: zoom is local to Effect Controls, keeps the cursor's time fixed, and increases
+/// keyframe spacing without changing project data.
+#[test]
+fn effect_controls_zoom_preserves_the_cursor_time() {
+    let (mut d, clip) = Driver::demo();
+    let t0 = d.seek(0.5);
+    d.click(&format!("{SCALE}.addKeyframe"));
+    let t1 = d.seek(1.0);
+    d.click(&format!("{SCALE}.addKeyframe"));
+    let keys = d.scale(&clip).0;
+    let key = |time| format!("effectControls.motion.scale.keyframe.{time}");
+    let a = d.rect(&key(keys[0]));
+    let b = d.rect(&key(keys[1]));
+    let before = d.harness.state().session.project.clone();
+    let timeline = d.ok("ui.inspect", json!({}))["ui"]["timeline"].clone();
+    let [x, y, w, h] = d.rect("effectControls.ruler");
+    d.ok("ui.click", json!({"x": x + w * 0.5, "y": y + h * 0.2}));
+    let anchor = d.playhead();
+    d.ok("ui.scroll", json!({"id": "effectControls.ruler", "fx": 0.5, "fy": 0.2, "dy": 20.0, "modifiers": {"alt": true}}));
+    d.frames(3);
+    let za = d.rect(&key(keys[0]));
+    let zb = d.rect(&key(keys[1]));
+    assert!(zb[0] - za[0] > (b[0] - a[0]) * 1.1, "zoom must spread the keyframes");
+    d.ok("ui.click", json!({"x": x + w * 0.5, "y": y + h * 0.2}));
+    assert_eq!(d.playhead(), anchor, "the time under the cursor stays fixed");
+    assert!(std::sync::Arc::ptr_eq(&before, &d.harness.state().session.project), "zoom must not edit the project");
+    assert_eq!(d.ok("ui.inspect", json!({}))["ui"]["timeline"], timeline);
+    assert_eq!(d.scale(&clip).0, keys);
+    assert!(t1 > t0);
+    d.shot("keyframes-zoom");
+}
+
+#[test]
+fn zoomed_keyframe_drag_uses_the_visible_range_and_one_undo_step() {
+    let (mut d, clip) = Driver::demo();
+    let original = d.seek(0.5);
+    d.click(&format!("{SCALE}.addKeyframe"));
+    let before = d.scale(&clip).0;
+    let start = Tick::from_seconds_f64(0.25).0;
+    let duration = Tick::from_seconds_f64(1.5).0;
+    d.ok("ui.set", json!({"effectControls": {"start": start, "duration": duration}}));
+    let view = d.ok("ui.inspect", json!({}))["ui"]["effect_controls"].clone();
+    assert_eq!(view["duration"], duration);
+    let [x, y, w, h] = d.rect("effectControls.ruler");
+    d.ok("ui.click", json!({"x": x + w * 0.5, "y": y + h * 0.2}));
+    let rate = d.harness.state().session.sequence_rate();
+    assert_eq!(d.playhead(), rate.snap_nearest(Tick::from_seconds_f64(1.0)).0);
+    let k = d.rect(&format!("effectControls.motion.scale.keyframe.{}", before[0]));
+    let (kx, ky) = (k[0] + k[2] / 2.0, k[1] + k[3] / 2.0);
+    let dx = w * rate.tick_of(3).0 as f64 / duration as f64;
+    d.ok("ui.drag", json!({"from": {"x": kx, "y": ky}, "to": {"x": kx + dx, "y": ky}, "steps": 6}));
+    let after = d.scale(&clip).0;
+    let it = d.harness.state().session.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1;
+    assert_eq!(after, [it.effect_time_at(rate.snap_nearest(Tick(original) + rate.tick_of(3))).0]);
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.scale(&clip).0, before);
+    d.exec("edit.redo", json!({}));
+    assert_eq!(d.scale(&clip).0, after);
+}
+
+#[test]
+fn effect_controls_pan_and_fit_keep_graphs_aligned() {
+    let (mut d, clip) = Driver::demo();
+    d.seek(1.0);
+    d.click(&format!("{SCALE}.addKeyframe"));
+    let keys = d.scale(&clip).0;
+    d.click("effectControls.motion.scale.graphs");
+    d.ok("ui.set", json!({"effectControls": {"start": clip.start, "duration": Tick::from_seconds_f64(3.0).0}}));
+    let key_id = format!("effectControls.motion.scale.keyframe.{}", keys[0]);
+    let graph_id = format!("effectControls.scale.graph.keyframe.{}", keys[0]);
+    let a = d.rect(&key_id);
+    let ga = d.rect(&graph_id);
+    assert!((a[0] + a[2] / 2.0 - ga[0] - ga[2] / 2.0).abs() < 0.1);
+    d.ok("ui.scroll", json!({"id": "effectControls.ruler", "dx": -20.0, "dy": 0.0}));
+    let b = d.rect(&key_id);
+    let gb = d.rect(&graph_id);
+    assert!((a[0] - b[0] - 20.0).abs() < 0.2, "horizontal wheel pans by its screen distance");
+    assert!((b[0] + b[2] / 2.0 - gb[0] - gb[2] / 2.0).abs() < 0.1);
+    assert_eq!(d.scale(&clip).0, keys);
+    d.click("effectControls.fit");
+    let view = d.ok("ui.inspect", json!({}))["ui"]["effect_controls"].clone();
+    assert_eq!(view["start"], clip.start);
+    assert_eq!(view["duration"], clip.duration);
+    d.shot("keyframes-pan-fit");
+}
+
+#[test]
+fn effect_controls_commands_validate_bounds_and_route_by_focus() {
+    let (mut d, clip) = Driver::demo();
+    let timeline = d.ok("ui.inspect", json!({}))["ui"]["timeline"].clone();
+    d.ok("ui.set", json!({"focused": "EffectControls"}));
+    d.exec("view.zoomIn", json!({}));
+    let view = d.ok("ui.inspect", json!({}))["ui"]["effect_controls"].clone();
+    assert!(view["duration"].as_i64().unwrap() < clip.duration);
+    for patch in [json!(null), json!({"start": "bad"}), json!({"duration": -1}), json!({"duration": 1.5}), json!({"fit": 1})] {
+        let reply = d.call("ui.set", json!({"effectControls": patch}));
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert_eq!(d.ok("ui.inspect", json!({}))["ui"]["effect_controls"], view, "invalid commands are atomic");
+    }
+    for factor in [json!(0), json!(-1), json!("NaN"), json!(null)] {
+        assert_eq!(d.call("engine.execute", json!({"command": "effectControls.zoomIn", "params": {"factor": factor}}))["ok"], false);
+    }
+    let clamped = d.exec("effectControls.setView", json!({"start": i64::MAX, "duration": 1}));
+    let frame = d.harness.state().session.sequence_rate().frame_duration().0;
+    assert_eq!(clamped["duration"], frame);
+    assert_eq!(clamped["start"], clip.start + clip.duration - frame);
+    d.exec("effectControls.zoomOut", json!({"factor": 1e-300}));
+    let fit = d.exec("view.zoomToSequence", json!({}));
+    assert_eq!(fit["duration"], clip.duration);
+    assert_eq!(d.ok("ui.inspect", json!({}))["ui"]["timeline"], timeline);
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    d.exec("view.zoomIn", json!({}));
+    assert_ne!(d.ok("ui.inspect", json!({}))["ui"]["timeline"], timeline);
+    d.exec("timeline.select", json!({"clips": []}));
+    assert_eq!(d.call("engine.execute", json!({"command": "effectControls.fit", "params": {}}))["ok"], false);
+}
+
+#[test]
+fn effect_controls_overview_pans_and_resizes_without_editing() {
+    let (mut d, clip) = Driver::demo();
+    let duration = clip.duration / 3;
+    d.exec("effectControls.setView", json!({"start": clip.start, "duration": duration}));
+    let project = d.harness.state().session.project.clone();
+    let [x, y, w, h] = d.rect("effectControls.scrollbar.thumb");
+    let [_, _, track_width, _] = d.rect("effectControls.scrollbar.track");
+    let (cx, cy) = (x + w * 0.5, y + h * 0.5);
+    d.ok("ui.drag", json!({"from": {"x": cx, "y": cy}, "to": {"x": cx + (track_width - w) * 0.5, "y": cy}, "steps": 8}));
+    let view = d.ok("ui.inspect", json!({}))["ui"]["effect_controls"].clone();
+    let tolerance = d.harness.state().session.sequence_rate().frame_duration().0 / 1000;
+    assert!((view["start"].as_i64().unwrap() - clip.start - (clip.duration - duration) / 2).abs() < tolerance, "{view}");
+    assert_eq!(view["duration"], duration);
+    let [x, y, w, h] = d.rect("effectControls.scrollbar.right");
+    let (cx, cy) = (x + w * 0.5, y + h * 0.5);
+    d.ok("ui.drag", json!({"from": {"x": cx, "y": cy}, "to": {"x": cx - track_width * 0.1, "y": cy}, "steps": 8}));
+    let resized = d.ok("ui.inspect", json!({}))["ui"]["effect_controls"].clone();
+    assert_eq!(resized["start"], view["start"]);
+    assert!(resized["duration"].as_i64().unwrap() < duration);
+    assert!(std::sync::Arc::ptr_eq(&project, &d.harness.state().session.project));
+    d.click("effectControls.fit");
+}
+
+#[test]
+fn zoomed_reversed_trimmed_clip_and_mask_keys_share_the_time_mapping() {
+    let (mut d, clip) = Driver::demo();
+    // Synthetic trimmed/reversed clip at double speed: keyframe times remain media times.
+    let s = &mut d.harness.state_mut().session;
+    let seq = s.state.active_sequence.unwrap();
+    let it = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().find_item_mut(ClipId(clip.id)).unwrap().1;
+    it.source_in = Tick::from_seconds_f64(3.0);
+    it.speed = 2.0;
+    it.reverse = true;
+    d.frames(3);
+    let original = d.seek(1.0);
+    d.click(&format!("{SCALE}.addKeyframe"));
+    d.exec("masks.add", json!({"clip": clip.id, "effect": "opacity", "shape": "ellipse"}));
+    d.exec("effects.addKeyframe", json!({"clip": clip.id, "effect": "opacity", "mask": 0, "param": "feather"}));
+    d.exec("effectControls.setView", json!({"start": Tick::from_seconds_f64(0.5).0, "duration": Tick::from_seconds_f64(2.0).0}));
+    d.click("effectControls.motion.scale.graphs");
+    let key = d.scale(&clip).0[0];
+    let a = d.rect(&format!("effectControls.motion.scale.keyframe.{key}"));
+    let graph = d.rect(&format!("effectControls.scale.graph.keyframe.{key}"));
+    let mask = d.rect(&format!("effectControls.opacity.mask0.feather.keyframe.{key}"));
+    for r in [graph, mask] {
+        assert!((a[0] + a[2] / 2.0 - r[0] - r[2] / 2.0).abs() < 0.1);
+    }
+    let [x, y, w, h] = d.rect("effectControls.ruler");
+    d.ok("ui.click", json!({"x": x + w * 0.25, "y": y + h * 0.2}));
+    let rate = d.harness.state().session.sequence_rate();
+    assert_eq!(d.playhead(), rate.snap_nearest(Tick::from_seconds_f64(1.0)).0);
+    let (cx, cy) = (a[0] + a[2] / 2.0, a[1] + a[3] / 2.0);
+    d.ok(
+        "ui.drag",
+        json!({"from": {"x": cx, "y": cy}, "to": {"x": cx + w * rate.tick_of(3).0 as f64 / Tick::from_seconds_f64(2.0).0 as f64, "y": cy}, "steps": 6}),
+    );
+    let it = d.harness.state().session.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1;
+    assert_eq!(it.effect("motion").unwrap().param("scale").unwrap().keyframes[0].time, it.effect_time_at(rate.snap_nearest(Tick(original) + rate.tick_of(3))));
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.scale(&clip).0, [key]);
+    let later = d.seek(1.5);
+    d.click(&format!("{SCALE}.addKeyframe"));
+    d.click("effectControls.motion.scale.prevKeyframe");
+    assert_eq!(d.playhead(), original, "left seeks to the earlier visible key on a reversed clip");
+    d.click("effectControls.motion.scale.nextKeyframe");
+    assert_eq!(d.playhead(), later, "right seeks to the later visible key");
+}

@@ -429,6 +429,8 @@ pub struct UiState {
     /// Focused panel (blue outline, receives shortcuts).
     pub focused: PanelKind,
     pub timeline: TimelineView,
+    #[serde(default)]
+    pub effect_controls: crate::panels::effect_controls_view::EffectControlsView,
     pub program: MonitorView,
     pub source: MonitorView,
     pub project_search: String,
@@ -944,6 +946,7 @@ impl Default for UiState {
             dock: crate::dock::workspace("Editing"),
             focused: PanelKind::Timeline,
             timeline: TimelineView::default(),
+            effect_controls: Default::default(),
             program: MonitorView::default(),
             source: MonitorView::default(),
             project_search: String::new(),
