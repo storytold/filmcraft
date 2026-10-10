@@ -1,8 +1,8 @@
 //! Design tokens. Every widget reads colours/sizes from [`Tokens`] so themes apply everywhere.
 //!
 //! The default theme follows the look of Premiere Pro's current dark UI (values measured from
-//! black-box screenshots, see `plan/premiere/02-ui-ux.md`); the Linux UI uses the system sans-serif
-//! font, with Inter as a fallback. Timecode uses JetBrains Mono (OFL).
+//! black-box screenshots, see `plan/premiere/02-ui-ux.md`); the desktop UI uses the system font,
+//! with Inter as a fallback. Timecode uses JetBrains Mono (OFL).
 
 use std::sync::Arc;
 
@@ -445,37 +445,25 @@ fn add_system_fonts(fonts: &mut FontDefinitions, system: &[SystemFont]) {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn system_fonts() -> Vec<SystemFont> {
     static FONTS: std::sync::OnceLock<Vec<SystemFont>> = std::sync::OnceLock::new();
     FONTS
         .get_or_init(|| {
-            let Some(exe) = ["/usr/bin/fc-match", "/bin/fc-match"].into_iter().find(|p| std::path::Path::new(p).is_file()) else {
-                return Vec::new();
-            };
             filmcraft_text::fonts::scan_system();
             let faces = filmcraft_text::fonts::all_faces();
+            let selected = system_ui_faces(&faces);
             [
-                (FontFamily::Proportional, "system-ui", "sans-serif:weight=regular"),
-                (FontFamily::Name("medium".into()), "system-ui-medium", "sans-serif:weight=medium"),
-                (FontFamily::Name("semibold".into()), "system-ui-semibold", "sans-serif:weight=demibold"),
+                (FontFamily::Proportional, "system-ui", 400),
+                (FontFamily::Name("medium".into()), "system-ui-medium", 500),
+                (FontFamily::Name("semibold".into()), "system-ui-semibold", 600),
             ]
             .into_iter()
-            .filter_map(|(family, name, pattern)| {
-                let output = std::process::Command::new(exe).args(["-f", "%{file}\n%{index}\n", pattern]).output().ok()?;
-                if !output.status.success() {
-                    return None;
-                }
-                let text = std::str::from_utf8(&output.stdout).ok()?;
-                let mut lines = text.lines();
-                let path = std::path::Path::new(lines.next()?);
-                let index = lines.next()?.parse::<u32>().ok()?;
-                let face = faces.iter().find(|f| f.info.index == index && matches!(&f.info.data, filmcraft_text::fonts::FaceData::File(p) if p == path))?;
-                if !face.has_char('A') {
-                    return None;
-                }
+            .filter_map(|(family, name, weight)| {
+                let face = selected.iter().filter(|f| !f.info.italic && f.has_char('A')).min_by_key(|f| f.info.weight.abs_diff(weight))?;
                 let mut data = FontData::from_owned(face.data()?);
-                data.index = index;
+                data.index = face.info.index;
+                set_system_font_axes(&mut data, weight);
                 Some((family, name.into(), Arc::new(data)))
             })
             .collect()
@@ -483,7 +471,95 @@ fn system_fonts() -> Vec<SystemFont> {
         .clone()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", test))]
+fn set_system_font_axes(data: &mut FontData, weight: u16) {
+    for axis in data.variation_axes() {
+        let value = match axis.tag.into_bytes() {
+            tag if tag == *b"wght" => f32::from(weight),
+            tag if tag == *b"opsz" => 13.0,
+            _ => continue,
+        };
+        if axis.range.min.is_finite() && axis.range.max.is_finite() && axis.range.min <= axis.range.max {
+            data.tweak.coords.push(axis.tag, value.clamp(axis.range.min, axis.range.max));
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn system_ui_faces(faces: &[Arc<filmcraft_text::fonts::Face>]) -> Vec<Arc<filmcraft_text::fonts::Face>> {
+    let Some(exe) = ["/usr/bin/fc-match", "/bin/fc-match"].into_iter().find(|p| std::path::Path::new(p).is_file()) else { return Vec::new() };
+    ["sans-serif:weight=regular", "sans-serif:weight=medium", "sans-serif:weight=demibold"]
+        .into_iter()
+        .filter_map(|pattern| {
+            let output = std::process::Command::new(exe).args(["-f", "%{file}\n%{index}\n", pattern]).output().ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            let text = std::str::from_utf8(&output.stdout).ok()?;
+            let mut lines = text.lines();
+            let path = std::path::Path::new(lines.next()?);
+            let index = lines.next()?.parse::<u32>().ok()?;
+            faces.iter().find(|f| f.info.index == index && matches!(&f.info.data, filmcraft_text::fonts::FaceData::File(p) if p == path)).cloned()
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn system_ui_faces(faces: &[Arc<filmcraft_text::fonts::Face>]) -> Vec<Arc<filmcraft_text::fonts::Face>> {
+    // Core Text's safe wrapper panics on a failed native font query; retain the bundled fallback.
+    let native = std::panic::catch_unwind(|| {
+        let font = core_text::font::new_ui_font_for_language(core_text::font::kCTFontSystemFontType, 13.0, None);
+        Some((font.copy_descriptor().font_path()?, font.family_name()))
+    })
+    .ok()
+    .flatten();
+    let Some((path, family)) = native else { return Vec::new() };
+    let path = path.canonicalize().unwrap_or(path);
+    let matching: Vec<_> = faces
+        .iter()
+        .filter(|f| matches!(&f.info.data, filmcraft_text::fonts::FaceData::File(p) if p.canonicalize().ok().as_ref() == Some(&path)))
+        .cloned()
+        .collect();
+    let family_faces = select_system_family(&matching, &[&family]);
+    if family_faces.is_empty() { matching } else { family_faces }
+}
+
+#[cfg(target_os = "windows")]
+fn system_ui_faces(faces: &[Arc<filmcraft_text::fonts::Face>]) -> Vec<Arc<filmcraft_text::fonts::Face>> {
+    let configured = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+        .open_subkey("Control Panel\\Desktop\\WindowMetrics")
+        .ok()
+        .and_then(|key| key.get_raw_value("MessageFont").ok())
+        .filter(|value| value.vtype == winreg::enums::REG_BINARY)
+        .and_then(|value| windows_message_font_family(&value.bytes));
+    let mut families = Vec::new();
+    if let Some(name) = configured.as_deref() {
+        families.push(name);
+    }
+    families.extend(["Segoe UI Variable", "Segoe UI", "Tahoma"]);
+    select_system_family(faces, &families)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+fn select_system_family(faces: &[Arc<filmcraft_text::fonts::Face>], families: &[&str]) -> Vec<Arc<filmcraft_text::fonts::Face>> {
+    for family in families {
+        let matching: Vec<_> = faces.iter().filter(|f| f.info.family.eq_ignore_ascii_case(family) && !f.info.italic && f.has_char('A')).cloned().collect();
+        if !matching.is_empty() {
+            return matching;
+        }
+    }
+    Vec::new()
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_message_font_family(logfont: &[u8]) -> Option<String> {
+    // LOGFONTW: five 32-bit fields, eight byte fields, then a 32-code-unit UTF-16 face name.
+    let units: Vec<_> = logfont.get(28..92)?.as_chunks::<2>().0.iter().copied().map(u16::from_le_bytes).take_while(|unit| *unit != 0).collect();
+    let family = String::from_utf16(&units).ok()?;
+    (!family.trim().is_empty()).then_some(family)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn system_fonts() -> Vec<SystemFont> {
     Vec::new()
 }
@@ -566,6 +642,104 @@ pub fn apply_visuals(ctx: &egui::Context, t: &Tokens) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn native_desktop_system_fonts_load_for_every_ui_weight() {
+        let fonts = system_fonts();
+        assert_eq!(fonts.len(), 3, "native system UI font query must resolve regular, medium, and semibold faces");
+        let ctx = installed();
+        ctx.fonts_mut(|f| {
+            for (family, name, _) in fonts {
+                assert_eq!(f.definitions().families[&family].first(), Some(&name));
+                assert!(f.has_glyph(&FontId::new(13.0, family), 'A'));
+            }
+        });
+    }
+
+    #[test]
+    fn windows_message_font_reads_utf16_and_rejects_malformed_settings() {
+        let mut settings = vec![0u8; 92];
+        for (slot, unit) in settings[28..92].as_chunks_mut::<2>().0.iter_mut().zip("Segoe UI".encode_utf16()) {
+            slot.copy_from_slice(&unit.to_le_bytes());
+        }
+        assert_eq!(windows_message_font_family(&settings).as_deref(), Some("Segoe UI"));
+        assert_eq!(windows_message_font_family(&settings[..91]), None);
+        assert_eq!(windows_message_font_family(&[0; 92]), None);
+        settings[28..30].copy_from_slice(&0xd800u16.to_le_bytes());
+        assert_eq!(windows_message_font_family(&settings), None);
+    }
+
+    #[test]
+    fn platform_font_selection_keeps_the_requested_family_and_weight() {
+        use filmcraft_text::fonts::{FaceData, FaceInfo, FontSource};
+        struct Source;
+        impl FontSource for Source {
+            fn faces(&self) -> Vec<FaceInfo> {
+                [("System Font Test", 400, false), ("System Font Test", 600, false), ("System Font Test", 400, true), ("Other Font Test", 400, false)]
+                    .into_iter()
+                    .map(|(family, weight, italic)| FaceInfo {
+                        family: family.into(),
+                        style: format!("{weight}-{italic}"),
+                        weight,
+                        italic,
+                        index: 0,
+                        data: FaceData::Static(filmcraft_text::fonts::INTER_REGULAR),
+                        origin: "test",
+                    })
+                    .collect()
+            }
+        }
+        filmcraft_text::fonts::add_source(&Source);
+        let faces = filmcraft_text::fonts::all_faces();
+        let selected = select_system_family(&faces, &["Missing Font Test", "system font test", "Other Font Test"]);
+        assert_eq!(selected.len(), 2);
+        assert!(selected.iter().all(|face| face.info.family == "System Font Test" && !face.info.italic));
+        for weight in [400u16, 600] {
+            assert_eq!(selected.iter().min_by_key(|f| f.info.weight.abs_diff(weight)).unwrap().info.weight, weight);
+        }
+        assert!(select_system_family(&faces, &["Missing Font Test"]).is_empty());
+    }
+
+    #[test]
+    fn system_font_weight_does_not_add_variations_to_static_faces() {
+        let mut data = FontData::from_static(filmcraft_text::fonts::INTER_REGULAR);
+        set_system_font_axes(&mut data, 600);
+        assert!(data.tweak.coords.as_ref().is_empty());
+    }
+
+    #[test]
+    fn variable_system_fonts_keep_ui_weights_and_optical_size_in_range() {
+        // A minimal SFNT with an fvar table; no glyphs are needed to inspect its axes.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[0, 1, 0, 0, 0, 1, 0, 16, 0, 0, 0, 0]);
+        bytes.extend_from_slice(b"fvar");
+        for field in [0u32, 28, 56] {
+            bytes.extend_from_slice(&field.to_be_bytes());
+        }
+        for field in [1u16, 0, 16, 2, 2, 20, 0, 12] {
+            bytes.extend_from_slice(&field.to_be_bytes());
+        }
+        for (tag, min, default, max, name) in [(b"wght", 100u32, 400u32, 900u32, 256u16), (b"opsz", 16, 24, 72, 257)] {
+            bytes.extend_from_slice(tag);
+            for value in [min, default, max] {
+                bytes.extend_from_slice(&(value << 16).to_be_bytes());
+            }
+            bytes.extend_from_slice(&0u16.to_be_bytes());
+            bytes.extend_from_slice(&name.to_be_bytes());
+        }
+        let mut data = FontData::from_owned(bytes);
+        assert_eq!(data.variation_axes().len(), 2);
+        set_system_font_axes(&mut data, 600);
+        let coords: Vec<_> = data.tweak.coords.as_ref().iter().map(|(tag, value)| (tag.into_bytes(), *value)).collect();
+        assert_eq!(coords, [(*b"wght", 600.0), (*b"opsz", 16.0)]);
+        let mut malformed = data.clone();
+        malformed.font.to_mut()[48..52].copy_from_slice(&(900u32 << 16).to_be_bytes());
+        malformed.font.to_mut()[56..60].copy_from_slice(&(100u32 << 16).to_be_bytes());
+        malformed.tweak.coords.clear();
+        set_system_font_axes(&mut malformed, 600);
+        assert_eq!(malformed.tweak.coords.as_ref().len(), 1, "inverted axis ranges are ignored without panicking");
+    }
 
     #[test]
     fn system_ui_fonts_take_priority_without_replacing_fallbacks_or_timecode() {
