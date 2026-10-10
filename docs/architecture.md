@@ -1,5 +1,7 @@
 # Architecture
 
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** trivial (status line, revision history and roadmap link added; content checked against the crate list) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+
 FilmCraft is a Cargo workspace of small crates with strictly enforced layering. The engine is
 headless: every feature can be reached without a window, and the egui UI is one client among the
 CLI, the JSON control channel and the MCP server.
@@ -752,4 +754,10 @@ The layer table reserves names for crates that don't exist yet: `riff`, `mjpeg`,
 other OS integration stays in `apps/filmcraft`.)
 Until they exist, that work lives elsewhere: keyframes and effect definitions in `project`, effects
 and the audio mix in `render`, playback in `ui-egui`, and OS integration (cpal, rfd,
-native menus) in `apps/filmcraft`. [ROADMAP.md](../ROADMAP.md) has the milestone status.
+native menus) in `apps/filmcraft`. [roadmap.md](roadmap.md) has the milestone status and [gaps.md](gaps.md) what is missing.
+
+## Revision history
+
+| Date | Change | Summary |
+|---|---|---|
+| 2026-10-10 | trivial | Status line and revision history added (craftrules progress-docs standard); milestone link points at docs/roadmap.md |
