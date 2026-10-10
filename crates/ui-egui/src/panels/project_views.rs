@@ -311,7 +311,7 @@ fn bin_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: u64, actio
         ui.close();
     }
     if ui.button(tl!("New Bin")).clicked() {
-        actions.push(("file.newBin".into(), json!({"name": "New Bin", "parent": bin})));
+        actions.push(("file.newBin".into(), json!({"parent": bin, "panel": v.prefix})));
         ui.close();
     }
 }
@@ -517,7 +517,7 @@ fn background_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Opt
         (tl!("Import…"), "file.import"),
     ] {
         if ui.button(label).clicked() {
-            let p = if cmd == "file.newBin" { json!({"name": tl!("New Bin"), "parent": bin}) } else { json!({}) };
+            let p = if cmd == "file.newBin" { json!({"parent": bin, "panel": v.prefix}) } else { json!({}) };
             actions.push((cmd.into(), p));
             ui.close();
         }
