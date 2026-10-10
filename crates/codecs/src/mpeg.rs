@@ -120,7 +120,7 @@ fn vkind(c: &Codec) -> Option<VKind> {
 }
 
 fn audio_supported(c: &Codec) -> bool {
-    matches!(c, Codec::MpegAudio | Codec::AacAdts | Codec::AacLatm | Codec::LpcmBluray | Codec::LpcmDvd | Codec::Ac3)
+    matches!(c, Codec::MpegAudio | Codec::AacAdts | Codec::AacLatm | Codec::LpcmBluray | Codec::LpcmDvd | Codec::Ac3 | Codec::Eac3)
 }
 
 /// The coded rate unless the timestamps say otherwise (3:2 pulldown, field-rate coding). Never
@@ -505,7 +505,7 @@ impl MpegSource {
         };
         let mut latm = None;
         let (codec, rate, channels, per_frame, bits) = match &st.codec {
-            Codec::MpegAudio | Codec::AacAdts | Codec::Ac3 => {
+            Codec::MpegAudio | Codec::AacAdts | Codec::Ac3 | Codec::Eac3 => {
                 let Some(fi) = filmcraft_mpegts::frame_info(&st.codec, &first) else {
                     return self.audio_unsupported(&codec_name, format!("{codec_name}: bad frame header"));
                 };

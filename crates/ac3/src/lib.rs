@@ -1,5 +1,6 @@
-//! Clean-room AC-3 (Dolby Digital) audio decoder, written from ATSC A/52:2012 ("Digital Audio
-//! Compression Standard", §5 bit stream syntax, §6-7 decoding).
+//! Clean-room AC-3 (Dolby Digital) and E-AC-3 (Dolby Digital Plus) audio decoder, written from
+//! ATSC A/52:2012 ("Digital Audio Compression Standard", §5 bit stream syntax, §6-7 decoding,
+//! Annex E for E-AC-3).
 //!
 //! - All audio coding modes (1+1, 1/0 … 3/2) with or without LFE, 32 / 44.1 / 48 kHz, every
 //!   frame size (Table 5.18).
@@ -11,10 +12,15 @@
 //! - Output: planar f32 at full scale ±1, channels in WAV / SMPTE order (L R C LFE Ls Rs); no
 //!   downmix.
 //!
-//! E-AC-3 (bsid 11-16) is recognised and refused.
+//! E-AC-3 (bsid 11-16, Annex E): independent substream 0 (dependent substreams and further
+//! programs are skipped), 1 / 2 / 3 / 6 blocks per syncframe, the reduced sample rates, frame-based
+//! exponent strategies and the other frame-level syntax, and spectral extension (§E3.6). The
+//! adaptive hybrid transform and enhanced coupling are refused with [`Error::Unsupported`];
+//! transient pre-noise processing data is read and not applied.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+mod eac3;
 mod tables;
 
 use std::sync::OnceLock;
@@ -47,12 +53,35 @@ pub struct Header {
     pub bsid: u8,
     pub acmod: u8,
     pub lfeon: bool,
+    /// Audio blocks (of 256 samples per channel) in the syncframe: 6 for AC-3; 1, 2, 3 or 6 for
+    /// E-AC-3.
+    pub blocks: u8,
+    /// E-AC-3 stream type (Table E2.1): 0 independent, 1 dependent, 2 independent converted from
+    /// AC-3. 0 for AC-3.
+    pub strmtyp: u8,
+    /// E-AC-3 substream id (0 for AC-3).
+    pub substreamid: u8,
 }
 
 impl Header {
     /// Output channels (full bandwidth + LFE).
     pub fn channels(&self) -> usize {
-        NFCHANS[self.acmod as usize] + self.lfeon as usize
+        NFCHANS[self.acmod as usize & 7] + self.lfeon as usize
+    }
+    /// Samples per channel the syncframe decodes to.
+    pub fn samples(&self) -> usize {
+        256 * self.blocks as usize
+    }
+    /// Whether this is an E-AC-3 syncframe (bsid 11-16).
+    pub fn is_eac3(&self) -> bool {
+        self.bsid > 10
+    }
+    /// Whether the syncframe carries the program [`Decoder::decode`] outputs: AC-3, or E-AC-3
+    /// independent substream 0 (§E2.3.1.2). [`Decoder::decode`] returns no channels for the
+    /// others: dependent substreams (the channels beyond 5.1 of a 7.1 program) and further
+    /// independent programs.
+    pub fn is_primary(&self) -> bool {
+        self.strmtyp != 1 && self.substreamid == 0
     }
 }
 
@@ -64,8 +93,11 @@ pub fn parse_header(b: &[u8]) -> Result<Header> {
     let fscod = b[4] >> 6;
     let frmsizecod = b[4] & 0x3F;
     let bsid = b[5] >> 3;
-    if bsid > 10 {
-        return Err(Error::Unsupported(format!("bsid {bsid} (E-AC-3)")));
+    if (11..=16).contains(&bsid) {
+        return eac3::parse_header(b, bsid);
+    }
+    if bsid > 16 {
+        return Err(Error::Unsupported(format!("bsid {bsid}")));
     }
     if fscod == 3 || frmsizecod >= 38 {
         return Err(Error::Invalid("reserved fscod / frmsizecod"));
@@ -91,7 +123,7 @@ pub fn parse_header(b: &[u8]) -> Result<Header> {
         r.skip(2);
     }
     let lfeon = r.read(1) == 1;
-    Ok(Header { sample_rate, bitrate_kbps: kbps >> shift, frame_bytes: words as usize * 2, bsid, acmod, lfeon })
+    Ok(Header { sample_rate, bitrate_kbps: kbps >> shift, frame_bytes: words as usize * 2, bsid, acmod, lfeon, blocks: 6, strmtyp: 0, substreamid: 0 })
 }
 
 /// MSB-first bit reader; reads past the end give zeros.
@@ -469,7 +501,9 @@ struct Frame {
     chincpl: [bool; 5],
     phsflginu: bool,
     cplbegf: usize,
-    cplendf: usize,
+    /// cplendf + 3: one past the last coupling sub-band (with spectral extension cplendf may be
+    /// negative, §E3.3.1).
+    cplend: usize,
     /// Coupling band of each coupling sub-band (relative to cplbegf).
     sub_to_band: [usize; 18],
     ncplbnd: usize,
@@ -500,7 +534,7 @@ impl Frame {
             chincpl: [false; 5],
             phsflginu: false,
             cplbegf: 0,
-            cplendf: 0,
+            cplend: 0,
             sub_to_band: [0; 18],
             ncplbnd: 0,
             cplco: [[0.0; 18]; 5],
@@ -523,7 +557,7 @@ impl Frame {
         37 + 12 * self.cplbegf
     }
     fn cplendmant(&self) -> usize {
-        37 + 12 * (self.cplendf + 3)
+        37 + 12 * self.cplend
     }
 }
 
@@ -622,6 +656,9 @@ pub struct Decoder {
     delay: [[f32; 256]; 6],
     dither: u32,
     seed: u32,
+    /// E-AC-3: the block state of the last syncframe (acmod, lfeon, sample rate code), whose
+    /// exponents a syncframe of fewer than six blocks may reuse.
+    carry: Option<(usize, bool, usize, Box<Frame>)>,
 }
 
 impl Default for Decoder {
@@ -630,7 +667,8 @@ impl Default for Decoder {
     }
 }
 
-/// A decoded syncframe: 1536 samples per channel, WAV channel order.
+/// A decoded syncframe: [`Header::samples`] samples per channel (1536 for AC-3), WAV channel
+/// order. No channels for an E-AC-3 syncframe that is not [`Header::is_primary`].
 #[derive(Clone, Debug)]
 pub struct Decoded {
     pub header: Header,
@@ -639,7 +677,7 @@ pub struct Decoded {
 
 impl Decoder {
     pub fn new() -> Decoder {
-        Decoder { delay: [[0.0; 256]; 6], dither: 0, seed: 0x1234_5678 }
+        Decoder { delay: [[0.0; 256]; 6], dither: 0, seed: 0x1234_5678, carry: None }
     }
 
     /// Seed the dither generator (dither is decoder-specific noise; tests compare two seeds).
@@ -650,6 +688,7 @@ impl Decoder {
     /// Forget the overlap (before decoding from another position).
     pub fn reset(&mut self) {
         self.delay = [[0.0; 256]; 6];
+        self.carry = None;
     }
 
     fn dither(&mut self) -> f32 {
@@ -658,11 +697,19 @@ impl Decoder {
         ((self.dither >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0) * 0.707
     }
 
+    /// Zero-mean, unit-variance noise for spectral extension (§E3.6.4.2.4): uniform in ±√3.
+    fn noise(&mut self) -> f32 {
+        self.dither() * (3f32.sqrt() / 0.707)
+    }
+
     /// Decode one syncframe.
     pub fn decode(&mut self, frame: &[u8]) -> Result<Decoded> {
         let h = parse_header(frame)?;
         if frame.len() < h.frame_bytes {
             return Err(Error::Invalid("truncated syncframe"));
+        }
+        if h.is_eac3() {
+            return self.decode_eac3(&frame[..h.frame_bytes], h);
         }
         let fscod = (frame[4] >> 6) as usize;
         // Dither is reseeded per syncframe from its CRC words (plus the configured seed), so a
@@ -708,39 +755,83 @@ impl Decoder {
             let l = r.read(6) as usize;
             r.skip((l + 1) * 8);
         }
-        let nfchans = NFCHANS[acmod];
-        let mut f = Frame::new(nfchans, fscod);
+        let mut f = Frame::new(NFCHANS[acmod], fscod);
+        let pcm = self.blocks(&mut r, &mut f, acmod, lfeon, 6, None)?;
+        Ok(Decoded { header: h, channels: wav_order(pcm, acmod, lfeon) })
+    }
+
+    /// Decode one E-AC-3 syncframe (`frame` is exactly the syncframe).
+    fn decode_eac3(&mut self, frame: &[u8], h: Header) -> Result<Decoded> {
+        if !h.is_primary() {
+            return Ok(Decoded { header: h, channels: Vec::new() });
+        }
+        // E-AC-3 has a single CRC, at the end (§E2.2.6): reseed the dither from the last words
+        let n = frame.len();
+        let tail = frame.get(n.saturating_sub(4)..).and_then(|t| <[u8; 4]>::try_from(t).ok()).unwrap_or_default();
+        self.dither = self.seed ^ u32::from_be_bytes(tail).wrapping_mul(0x9E37_79B9);
+        let mut r = Bits::new(frame);
+        let bsi = eac3::read_bsi(&mut r)?;
+        let (acmod, lfeon) = (h.acmod as usize & 7, h.lfeon);
+        let nblocks = h.blocks as usize;
+        let mut e = eac3::FrameInfo::read(&mut r, &bsi, acmod, lfeon, nblocks, n / 2)?;
+        let mut f = match self.carry.take() {
+            Some((a, l, fs, f)) if (a, l, fs) == (acmod, lfeon, bsi.fscod) => f,
+            _ => Box::new(Frame::new(NFCHANS[acmod], bsi.fscod)),
+        };
+        let pcm = self.blocks(&mut r, &mut f, acmod, lfeon, nblocks, Some(&mut e))?;
+        self.carry = Some((acmod, lfeon, bsi.fscod, f));
+        Ok(Decoded { header: h, channels: wav_order(pcm, acmod, lfeon) })
+    }
+
+    /// Decode `nblocks` audio blocks and synthesize them (inverse transform, overlap-add), in coded
+    /// channel order with the LFE last.
+    fn blocks(&mut self, r: &mut Bits, f: &mut Frame, acmod: usize, lfeon: bool, nblocks: usize, mut x: Option<&mut eac3::FrameInfo>) -> Result<Vec<Vec<f32>>> {
+        let nfchans = f.nfchans;
         let nout = nfchans + lfeon as usize;
-        let mut pcm: Vec<Vec<f32>> = vec![Vec::with_capacity(1536); nout];
-        for blk in 0..6 {
+        let mut pcm: Vec<Vec<f32>> = vec![Vec::with_capacity(256 * nblocks); nout];
+        for blk in 0..nblocks {
             let mut coefs = [[0f32; 256]; 6];
-            self.audio_block(&mut r, &mut f, acmod, lfeon, blk, &mut coefs)?;
+            self.audio_block(r, f, acmod, lfeon, blk, &mut coefs, x.as_deref_mut())?;
             if r.overrun() {
                 return Err(Error::Invalid("audio block runs past the frame"));
             }
             // inverse transform, overlap-add
             let mut buf = [0f32; 512];
-            for ch in 0..nout {
+            for (ch, out) in pcm.iter_mut().enumerate() {
                 let src = if ch < nfchans { ch } else { LFE };
                 let short = ch < nfchans && f.blksw[ch];
                 imdct(&coefs[src], short, &mut buf);
                 let d = &mut self.delay[src];
                 for n in 0..256 {
-                    pcm[ch].push(2.0 * (buf[n] + d[n]));
+                    out.push(2.0 * (buf[n] + d[n]));
                     d[n] = buf[256 + n];
                 }
             }
         }
-        Ok(Decoded { header: h, channels: wav_order(pcm, acmod, lfeon) })
+        Ok(pcm)
     }
 
-    fn audio_block(&mut self, r: &mut Bits, f: &mut Frame, acmod: usize, lfeon: bool, blk: usize, coefs: &mut [[f32; 256]; 6]) -> Result<()> {
+    #[allow(clippy::too_many_arguments)]
+    fn audio_block(
+        &mut self,
+        r: &mut Bits,
+        f: &mut Frame,
+        acmod: usize,
+        lfeon: bool,
+        blk: usize,
+        coefs: &mut [[f32; 256]; 6],
+        mut x: Option<&mut eac3::FrameInfo>,
+    ) -> Result<()> {
         let nf = f.nfchans;
-        for ch in 0..nf {
-            f.blksw[ch] = r.bit();
+        let eac3 = x.is_some();
+        match x.as_deref() {
+            Some(e) if !e.blkswe => f.blksw = [false; 5],
+            _ => (0..nf).for_each(|ch| f.blksw[ch] = r.bit()),
         }
-        for ch in 0..nf {
-            f.dithflag[ch] = r.bit();
+        match x.as_deref() {
+            // dither on when the flags are not sent (§E2.2.4)
+            Some(e) if !e.dithflage => f.dithflag = [true; 5],
+            _ => (0..nf).for_each(|ch| f.dithflag[ch] = r.bit()),
         }
         for k in 0..if acmod == 0 { 2 } else { 1 } {
             if r.bit() {
@@ -749,26 +840,62 @@ impl Decoder {
                 f.dynrng[k] = 1.0;
             }
         }
+        // E-AC-3 spectral extension strategy and coordinates
+        if let Some(e) = x.as_deref_mut() {
+            e.spx.read(r, blk, acmod, nf)?;
+        }
+        let spx = x.as_deref().map(|e| &e.spx).filter(|s| s.inu);
+        let spxbegf = spx.map(|s| s.begf);
+        let spx_begin = spx.map(|s| s.begin_bin());
+        let spx_chans = spx.map(|s| s.chinspx).unwrap_or([false; 5]);
         // coupling strategy
-        if r.bit() {
-            f.cplinu = r.bit();
+        let strategy = match x.as_deref() {
+            Some(e) => e.cplstre[blk].then_some(e.cplinu[blk]),
+            None => r.bit().then(|| r.bit()),
+        };
+        if let Some(inu) = strategy {
+            f.cplinu = inu;
             if f.cplinu {
-                for ch in 0..nf {
-                    f.chincpl[ch] = r.bit();
+                if eac3 && r.bit() {
+                    return Err(Error::Unsupported("E-AC-3 enhanced coupling".into()));
+                }
+                if eac3 && acmod == 2 {
+                    f.chincpl = [true, true, false, false, false];
+                } else {
+                    for ch in 0..nf {
+                        f.chincpl[ch] = r.bit();
+                    }
                 }
                 if acmod == 2 {
                     f.phsflginu = r.bit();
                 }
                 f.cplbegf = r.read(4) as usize;
-                f.cplendf = r.read(4) as usize;
-                if f.cplendf + 3 <= f.cplbegf {
+                f.cplend = match spxbegf {
+                    // the coupling region ends where spectral extension begins (§E2.2.4)
+                    Some(b) if b < 6 => b + 1,
+                    Some(b) => 2 * b - 4,
+                    None => r.read(4) as usize + 3,
+                };
+                if f.cplend <= f.cplbegf {
                     return Err(Error::Invalid("coupling end below start"));
                 }
-                let nsub = 3 + f.cplendf - f.cplbegf;
+                // coupling band structure, by absolute sub-band
+                let mut strc = [false; 18];
+                match x.as_deref_mut() {
+                    Some(e) => {
+                        if r.bit() {
+                            for s in f.cplbegf + 1..f.cplend {
+                                e.cplbndstrc[s] = r.bit();
+                            }
+                        }
+                        strc = e.cplbndstrc;
+                    }
+                    None => (f.cplbegf + 1..f.cplend).for_each(|s| strc[s] = r.bit()),
+                }
                 let mut band = 0;
                 f.sub_to_band[0] = 0;
-                for s in 1..nsub {
-                    if !r.bit() {
+                for s in 1..f.cplend - f.cplbegf {
+                    if !strc[f.cplbegf + s] {
                         band += 1;
                     }
                     f.sub_to_band[s] = band;
@@ -776,15 +903,33 @@ impl Decoder {
                 f.ncplbnd = band + 1;
             } else {
                 f.chincpl = [false; 5];
+                if let Some(e) = x.as_deref_mut() {
+                    e.firstcplcos = [true; 5];
+                    e.firstcplleak = true;
+                    f.phsflginu = false;
+                }
             }
-        } else if blk == 0 {
+        } else if blk == 0 && !eac3 {
             return Err(Error::Invalid("no coupling strategy in block 0"));
         }
         // coupling coordinates
         if f.cplinu {
             let mut any = false;
             for ch in 0..nf {
-                if f.chincpl[ch] && r.bit() {
+                if !f.chincpl[ch] {
+                    if let Some(e) = x.as_deref_mut() {
+                        e.firstcplcos[ch] = true;
+                    }
+                    continue;
+                }
+                let coe = match x.as_deref_mut() {
+                    Some(e) if e.firstcplcos[ch] => {
+                        e.firstcplcos[ch] = false;
+                        true
+                    }
+                    _ => r.bit(),
+                };
+                if coe {
                     any = true;
                     let mstr = r.read(2) as i32;
                     for bnd in 0..f.ncplbnd {
@@ -792,7 +937,7 @@ impl Decoder {
                         let m = r.read(4) as f32;
                         let v = if e == 15 { m / 16.0 } else { (m + 16.0) / 32.0 };
                         let co = v * 2f32.powi(-(e + 3 * mstr));
-                        for s in 0..(3 + f.cplendf - f.cplbegf) {
+                        for s in 0..(f.cplend - f.cplbegf) {
                             if f.sub_to_band[s] == bnd {
                                 f.cplco[ch][s] = co;
                             }
@@ -803,7 +948,7 @@ impl Decoder {
             if acmod == 2 && f.phsflginu && any {
                 for bnd in 0..f.ncplbnd {
                     let flag = r.bit();
-                    for s in 0..(3 + f.cplendf - f.cplbegf) {
+                    for s in 0..(f.cplend - f.cplbegf) {
                         if f.sub_to_band[s] == bnd {
                             f.phsflg[s] = flag;
                         }
@@ -811,34 +956,55 @@ impl Decoder {
                 }
             }
         }
-        // rematrixing
-        if acmod == 2 && r.bit() {
-            let n = if !f.cplinu || f.cplbegf > 2 {
-                4
-            } else if f.cplbegf > 0 {
-                3
+        // rematrixing (E-AC-3 always sends the flags in block 0)
+        if acmod == 2 && ((eac3 && blk == 0) || r.bit()) {
+            let n = if f.cplinu {
+                match f.cplbegf {
+                    0 => 2,
+                    1 | 2 => 3,
+                    _ => 4,
+                }
             } else {
-                2
+                match spxbegf {
+                    Some(b) if b < 2 => 3,
+                    _ => 4,
+                }
             };
             f.rematflg = [false; 4];
             for k in 0..n {
                 f.rematflg[k] = r.bit();
             }
         }
-        // exponent strategies
-        if f.cplinu {
-            f.expstr[CPL] = r.read(2) as u8;
-        }
-        for ch in 0..nf {
-            f.expstr[ch] = r.read(2) as u8;
-        }
-        if lfeon {
-            f.expstr[LFE] = r.read(1) as u8;
+        // exponent strategies (E-AC-3: from the audio frame)
+        match x.as_deref() {
+            Some(e) => {
+                if f.cplinu {
+                    f.expstr[CPL] = e.cplexpstr[blk];
+                }
+                f.expstr[..nf].copy_from_slice(&e.chexpstr[blk][..nf]);
+                if lfeon {
+                    f.expstr[LFE] = e.lfeexpstr[blk];
+                }
+            }
+            None => {
+                if f.cplinu {
+                    f.expstr[CPL] = r.read(2) as u8;
+                }
+                for ch in 0..nf {
+                    f.expstr[ch] = r.read(2) as u8;
+                }
+                if lfeon {
+                    f.expstr[LFE] = r.read(1) as u8;
+                }
+            }
         }
         for ch in 0..nf {
             if f.expstr[ch] != 0 {
                 if f.chincpl[ch] && f.cplinu {
                     f.endmant[ch] = f.cplstrtmant();
+                } else if let (true, Some(begin)) = (spx_chans[ch], spx_begin) {
+                    // §E3.3.3: the channel ends where spectral extension begins
+                    f.endmant[ch] = begin;
                 } else {
                     let bw = r.read(6) as usize;
                     if bw > 60 {
@@ -870,40 +1036,105 @@ impl Decoder {
             decode_exponents(r, abs, 2, 1, &mut f.exps[LFE], 0, false)?;
         }
         // bit allocation parametric information
-        if r.bit() {
-            f.g.sdcycod = r.read(2) as usize;
-            f.g.fdcycod = r.read(2) as usize;
-            f.g.sgaincod = r.read(2) as usize;
-            f.g.dbpbcod = r.read(2) as usize;
-            f.g.floorcod = r.read(3) as usize;
-        } else if blk == 0 {
-            return Err(Error::Invalid("no bit allocation information in block 0"));
+        match x.as_deref() {
+            Some(e) if !e.bamode => {
+                // §E2.2.4 defaults
+                (f.g.sdcycod, f.g.fdcycod, f.g.sgaincod, f.g.dbpbcod, f.g.floorcod) = (2, 1, 1, 2, 7);
+            }
+            _ => {
+                if r.bit() {
+                    f.g.sdcycod = r.read(2) as usize;
+                    f.g.fdcycod = r.read(2) as usize;
+                    f.g.sgaincod = r.read(2) as usize;
+                    f.g.dbpbcod = r.read(2) as usize;
+                    f.g.floorcod = r.read(3) as usize;
+                } else if blk == 0 && !eac3 {
+                    return Err(Error::Invalid("no bit allocation information in block 0"));
+                }
+            }
         }
-        if r.bit() {
-            f.csnroffst = r.read(6) as i32;
-            if f.cplinu {
-                f.fsnroffst[CPL] = r.read(4) as i32;
-                f.fgaincod[CPL] = r.read(3) as usize;
+        match x.as_deref() {
+            Some(e) => {
+                // SNR offset strategies (Table E2.9), fast gain codes
+                let sets = [CPL, 0, 1, 2, 3, 4, LFE];
+                match e.snroffststr {
+                    0 => {
+                        f.csnroffst = e.frmcsnroffst;
+                        sets.iter().for_each(|&c| f.fsnroffst[c] = e.frmfsnroffst);
+                    }
+                    s if blk == 0 || r.bit() => {
+                        f.csnroffst = r.read(6) as i32;
+                        if s == 1 {
+                            let v = r.read(4) as i32;
+                            sets.iter().for_each(|&c| f.fsnroffst[c] = v);
+                        } else {
+                            if f.cplinu {
+                                f.fsnroffst[CPL] = r.read(4) as i32;
+                            }
+                            for ch in 0..nf {
+                                f.fsnroffst[ch] = r.read(4) as i32;
+                            }
+                            if lfeon {
+                                f.fsnroffst[LFE] = r.read(4) as i32;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                if e.frmfgaincode && r.bit() {
+                    if f.cplinu {
+                        f.fgaincod[CPL] = r.read(3) as usize;
+                    }
+                    for ch in 0..nf {
+                        f.fgaincod[ch] = r.read(3) as usize;
+                    }
+                    if lfeon {
+                        f.fgaincod[LFE] = r.read(3) as usize;
+                    }
+                } else {
+                    f.fgaincod = [4; 7];
+                }
+                if e.strmtyp == 0 && r.bit() {
+                    r.skip(10); // convsnroffst
+                }
             }
-            for ch in 0..nf {
-                f.fsnroffst[ch] = r.read(4) as i32;
-                f.fgaincod[ch] = r.read(3) as usize;
+            None => {
+                if r.bit() {
+                    f.csnroffst = r.read(6) as i32;
+                    if f.cplinu {
+                        f.fsnroffst[CPL] = r.read(4) as i32;
+                        f.fgaincod[CPL] = r.read(3) as usize;
+                    }
+                    for ch in 0..nf {
+                        f.fsnroffst[ch] = r.read(4) as i32;
+                        f.fgaincod[ch] = r.read(3) as usize;
+                    }
+                    if lfeon {
+                        f.fsnroffst[LFE] = r.read(4) as i32;
+                        f.fgaincod[LFE] = r.read(3) as usize;
+                    }
+                } else if blk == 0 {
+                    return Err(Error::Invalid("no SNR offsets in block 0"));
+                }
             }
-            if lfeon {
-                f.fsnroffst[LFE] = r.read(4) as i32;
-                f.fgaincod[LFE] = r.read(3) as usize;
-            }
-        } else if blk == 0 {
-            return Err(Error::Invalid("no SNR offsets in block 0"));
         }
-        if f.cplinu && r.bit() {
-            f.cplleak = (((r.read(3) as i32) << 8) + 768, ((r.read(3) as i32) << 8) + 768);
+        if f.cplinu {
+            let leak = match x.as_deref_mut() {
+                Some(e) if e.firstcplleak => {
+                    e.firstcplleak = false;
+                    true
+                }
+                _ => r.bit(),
+            };
+            if leak {
+                f.cplleak = (((r.read(3) as i32) << 8) + 768, ((r.read(3) as i32) << 8) + 768);
+            }
         }
         // delta bit allocation
         if blk == 0 {
             f.deltbae = [2; 7];
         }
-        if r.bit() {
+        if x.as_deref().is_none_or(|e| e.dbaflde) && r.bit() {
             if f.cplinu {
                 f.deltbae[CPL] = r.read(2) as u8;
             }
@@ -921,7 +1152,7 @@ impl Decoder {
             }
         }
         // skip field
-        if r.bit() {
+        if x.as_deref().is_none_or(|e| e.skipflde) && r.bit() {
             let l = r.read(9) as usize;
             r.skip(l * 8);
         }
@@ -1011,6 +1242,16 @@ impl Decoder {
                         coefs[0][bin] = l + rr;
                         coefs[1][bin] = l - rr;
                     }
+                }
+            }
+        }
+        // spectral extension: synthesize the high band of each channel from its low band
+        if let Some(e) = x.as_deref()
+            && e.spx.inu
+        {
+            for ch in 0..nf {
+                if e.spx.chinspx[ch] {
+                    e.spx.synthesize(ch, e.spxatten[ch], &mut coefs[ch], || self.noise());
                 }
             }
         }

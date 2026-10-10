@@ -1,6 +1,6 @@
 [package]
 name = "filmcraft-ac3"
-description = "Clean-room AC-3 (Dolby Digital, ATSC A/52) audio decoder"
+description = "Clean-room AC-3 and E-AC-3 (Dolby Digital / Dolby Digital Plus, ATSC A/52) audio decoder"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

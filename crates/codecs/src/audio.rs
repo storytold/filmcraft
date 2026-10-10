@@ -25,7 +25,7 @@ enum Inner {
     Opus { dec: Box<filmcraft_opus::Decoder>, order: Option<&'static [usize]> },
     /// Bootstrap decoders (MP3, ALAC, FLAC, HE-AAC…) via symphonia.
     Symphonia(Box<dyn Decoder>),
-    /// Our AC-3 decoder (ATSC A/52).
+    /// Our AC-3 and E-AC-3 decoder (ATSC A/52, Annex E).
     Ac3(Box<filmcraft_ac3::Decoder>),
 }
 
@@ -148,7 +148,7 @@ impl PacketDecoder {
         self.inner = Inner::Aac { dec: Box::new(dec), asc: asc.to_vec(), up: None };
         Ok(())
     }
-    /// AC-3 (ATSC A/52).
+    /// AC-3 and E-AC-3 (ATSC A/52, Annex E).
     pub fn ac3() -> Result<Self> {
         Ok(Self { inner: Inner::Ac3(Box::new(filmcraft_ac3::Decoder::new())), channels: 0 })
     }
@@ -161,7 +161,7 @@ impl PacketDecoder {
         match c {
             C::Aac(a) => Self::aac(&a.asc, if rate > 0 { rate } else { a.sample_rate }),
             C::Mp3 => Self::new(CODEC_TYPE_MP3, rate, None),
-            C::Ac3 { .. } => Self::ac3(),
+            C::Ac3 { .. } | C::Eac3 { .. } => Self::ac3(),
             C::Alac { cookie } => Self::new(CODEC_TYPE_ALAC, rate, Some(cookie.clone())),
             C::Flac(_) => Self::new(CODEC_TYPE_FLAC, rate, None),
             C::Opus(o) => Self::opus(filmcraft_opus::OpusHead::from_dops(&o.to_bytes()).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?),
@@ -193,12 +193,16 @@ impl PacketDecoder {
             Inner::Symphonia(d) => d,
             Inner::AacPending => return Err(CodecError::Decode("AAC: no configuration yet".into())),
             Inner::Ac3(d) => {
-                // a packet may hold several syncframes (MP4 / Matroska)
+                // a packet may hold several syncframes (MP4 / Matroska); E-AC-3 dependent
+                // substreams and further programs decode to no channels and are skipped
                 let mut out: Vec<Vec<f32>> = Vec::new();
                 let mut p = 0;
                 while p < data.len() {
                     let f = d.decode(&data[p..]).map_err(|e| CodecError::Decode(e.to_string()))?;
                     p += f.header.frame_bytes;
+                    if f.channels.is_empty() {
+                        continue;
+                    }
                     if out.is_empty() {
                         out = f.channels;
                     } else {
@@ -279,20 +283,38 @@ pub enum FixedFrames<'a> {
     Aac(&'a [u8]),
     /// MPEG-1/2 audio, layer I, II or III.
     MpegAudio,
-    /// AC-3 (and E-AC-3).
+    /// AC-3 (and E-AC-3 in a stream of single syncframes, MPEG-TS).
     Ac3,
+    /// E-AC-3 packets of whole syncframes (MP4, Matroska): an access unit may hold several
+    /// syncframes and dependent substreams.
+    Eac3,
 }
 
 /// Samples each packet decodes to at the stream's output `rate`, for codecs where that is the same
 /// for every packet: AAC 1024 (2048 when [`PacketDecoder::aac`] upsamples an HE-AAC core); MPEG
-/// audio and AC-3 from the frame header of `first`, the stream's first packet. `None` when it is
-/// not known: an AAC configuration our decoder does not read, a header that does not parse, or a
-/// header whose rate is not `rate`.
+/// audio and AC-3 from the frame header of `first`, the stream's first packet; E-AC-3 from the
+/// syncframes of the program we decode in `first`. `None` when it is not known: an AAC
+/// configuration our decoder does not read, a header that does not parse, or a header whose rate
+/// is not `rate`.
 pub fn fixed_packet_samples(codec: FixedFrames, first: &[u8], rate: u32) -> Option<i64> {
     let mpegts = match codec {
         FixedFrames::Aac(asc) => {
             let core = filmcraft_aac::Decoder::new(asc).ok()?.sample_rate();
             return Some(if upsamples_core(core, rate) { 2048 } else { 1024 });
+        }
+        FixedFrames::Eac3 => {
+            let mut samples = 0usize;
+            let mut p = 0;
+            while let Some(h) = first.get(p..).and_then(|b| filmcraft_ac3::parse_header(b).ok()) {
+                if h.is_primary() {
+                    if h.sample_rate != rate {
+                        return None;
+                    }
+                    samples += h.samples();
+                }
+                p += h.frame_bytes;
+            }
+            return i64::try_from(samples).ok().filter(|&n| n > 0);
         }
         FixedFrames::MpegAudio => filmcraft_mpegts::Codec::MpegAudio,
         FixedFrames::Ac3 => filmcraft_mpegts::Codec::Ac3,
@@ -405,7 +427,7 @@ impl Upsample2x {
     }
 }
 
-/// Whether AC-3 audio decodes (our ATSC A/52 decoder).
+/// Whether AC-3 and E-AC-3 audio decode (our ATSC A/52 decoder).
 pub const AC3_DECODER: bool = true;
 
 /// An AudioSpecificConfig for AAC with these parameters (ISO/IEC 14496-3 §1.6.2.1, GA specific
@@ -967,5 +989,14 @@ mod packet_time_tests {
         assert_eq!(fixed_packet_samples(FixedFrames::MpegAudio, &[0xFF, 0xFB, 0x90, 0x44], 48_000), None);
         assert_eq!(fixed_packet_samples(FixedFrames::MpegAudio, &[0xFF], 44_100), None);
         assert_eq!(fixed_packet_samples(FixedFrames::Ac3, &[0x0B, 0x77], 48_000), None);
+        // E-AC-3 access units: 8-byte syncframes (frmsiz 3) at 48 kHz, stereo. A six-block
+        // independent frame with a dependent substream (7.1) is 1536 samples; two one-block
+        // frames are 512
+        let frame = |strmtyp: u8, numblkscod: u8| [0x0B, 0x77, strmtyp << 6, 3, (numblkscod << 4) | (2 << 1), 16 << 3, 0, 0];
+        let au = |frames: &[[u8; 8]]| frames.concat();
+        assert_eq!(fixed_packet_samples(FixedFrames::Eac3, &au(&[frame(0, 3), frame(1, 3)]), 48_000), Some(1536));
+        assert_eq!(fixed_packet_samples(FixedFrames::Eac3, &au(&[frame(0, 0), frame(0, 0)]), 48_000), Some(512));
+        assert_eq!(fixed_packet_samples(FixedFrames::Eac3, &au(&[frame(0, 3)]), 44_100), None);
+        assert_eq!(fixed_packet_samples(FixedFrames::Eac3, &[0x0B, 0x77], 48_000), None);
     }
 }
