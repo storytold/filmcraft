@@ -6,8 +6,8 @@
 //!
 //! Interaction is tool-driven; every gesture ends in exactly one engine command, so it is undoable,
 //! journaled and reproducible over the control channel. Zoom and scroll are *animated* (critically
-//! damped exponential easing, anchored under the cursor) so navigation feels fluid; all geometry is
-//! drawn as GPU meshes by egui's wgpu backend and culled to the visible range.
+//! damped exponential easing); manual zoom stays anchored on the playhead so navigation feels
+//! fluid. All geometry is drawn as GPU meshes by egui's wgpu backend and culled to the visible range.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -52,6 +52,7 @@ pub struct TlState {
     /// Source peak of each cached peak list (keyed by the list's address), for the waveform
     /// display gain: scanning the whole source per clip per frame cost more than drawing.
     peak_max: HashMap<ItemId, (usize, f32)>,
+    /// Manual zoom anchor: (sequence seconds, x within the Timeline content rect).
     zoom_anchor: Option<(f64, f32)>,
 }
 
@@ -138,9 +139,10 @@ pub enum Drag {
     },
     Divider,
     ZoomBar {
-        /// Where the pointer was pressed, and the view's left edge (seconds) at that moment.
+        /// Where the pointer was pressed, the view's left edge, and zoom at that moment.
         grab: f32,
         start: f64,
+        start_pps: f64,
         mode: u8,
     },
 }
@@ -194,14 +196,53 @@ pub fn max_scroll(sequence_seconds: f64, width: f32, pps: f64) -> f64 {
     (timeline_extent(sequence_seconds) - width as f64 / pps).max(0.0)
 }
 
-/// Zoom about a time (keeps it under the same screen x).
-pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32) {
-    let old = v.target_pps;
-    let new = (old * factor).clamp(0.05, 24_000.0);
-    let x = ((anchor_secs - v.target_scroll) * old) as f32;
-    let x = if (0.0..=width).contains(&x) { x } else { width / 2.0 };
-    v.target_pps = new;
-    v.target_scroll = (anchor_secs - x as f64 / new).max(0.0);
+/// Set a zoom while keeping the playhead fixed on screen. A visible playhead stays where it is;
+/// an off-screen one is brought to the middle. Keyboard zoom passes `center = true`, so it always
+/// recenters first. Both the displayed and target views are clamped to the Timeline extent.
+fn set_playhead_zoom(
+    v: &mut TimelineView,
+    playhead: f64,
+    sequence_seconds: f64,
+    width: f32,
+    new_pps: f64,
+    center: bool,
+    animate: bool,
+) -> Option<(f64, f32)> {
+    let width = if width.is_finite() { width.max(0.0) } else { 0.0 };
+    let current_pps = if v.pps.is_finite() && v.pps > 0.0 { v.pps.clamp(0.05, 24_000.0) } else { 1.0 };
+    let new_pps = if new_pps.is_finite() && new_pps > 0.0 { new_pps.clamp(0.05, 24_000.0) } else { current_pps };
+    v.pps = current_pps;
+    v.target_pps = new_pps;
+    if width <= 0.0 {
+        if !animate {
+            v.pps = new_pps;
+        }
+        return None;
+    }
+
+    let current_x = ((playhead - v.scroll) * current_pps) as f32;
+    let anchor_x = if !center && current_x.is_finite() && (0.0..=width).contains(&current_x) { current_x } else { width / 2.0 };
+    v.scroll = (playhead - anchor_x as f64 / current_pps).clamp(0.0, max_scroll(sequence_seconds, width, current_pps));
+    v.target_scroll = (playhead - anchor_x as f64 / new_pps).clamp(0.0, max_scroll(sequence_seconds, width, new_pps));
+
+    if animate {
+        Some((playhead, anchor_x))
+    } else {
+        v.pps = new_pps;
+        v.scroll = v.target_scroll;
+        None
+    }
+}
+
+/// Zoom by `factor` about the playhead. Pointer-driven entry points preserve the playhead's
+/// current x when it is visible; keyboard entry points pass `center = true`.
+pub fn zoom_about_playhead(app: &mut FilmcraftApp, factor: f64, center: bool) {
+    let playhead = app.session.playhead().seconds();
+    let sequence_seconds = app.session.active_sequence().map_or(0.0, |q| q.duration().seconds());
+    let width = app.last_timeline_width;
+    let new_pps = app.ui.timeline.target_pps * factor;
+    let anchor = set_playhead_zoom(&mut app.ui.timeline, playhead, sequence_seconds, width, new_pps, center, true);
+    app.tl.zoom_anchor = anchor;
 }
 
 fn label_color(app: &FilmcraftApp, l: filmcraft_project::Label) -> Color32 {
@@ -251,8 +292,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let zooming = (v.pps - v.target_pps).abs() / v.target_pps > 0.001;
         v.pps += (v.target_pps - v.pps) * k;
         if let Some((anchor_t, anchor_x)) = app.tl.zoom_anchor.filter(|_| zooming) {
-            v.scroll = (anchor_t - (anchor_x - content.min.x) as f64 / v.pps).max(0.0);
-            v.target_scroll = (anchor_t - (anchor_x - content.min.x) as f64 / v.target_pps).max(0.0);
+            v.scroll = (anchor_t - anchor_x as f64 / v.pps).max(0.0);
+            v.target_scroll = (anchor_t - anchor_x as f64 / v.target_pps).max(0.0);
         } else {
             v.scroll += (v.target_scroll - v.scroll) * k;
             app.tl.zoom_anchor = None;
@@ -1357,34 +1398,35 @@ fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, seq_seco
         } else {
             0
         };
-        app.tl.drag = Some(Drag::ZoomBar { grab: pos.x, start: app.ui.timeline.target_scroll, mode });
+        app.tl.drag = Some(Drag::ZoomBar {
+            grab: pos.x,
+            start: app.ui.timeline.target_scroll,
+            start_pps: app.ui.timeline.pps,
+            mode,
+        });
     }
-    if let Some(Drag::ZoomBar { grab, start, mode }) = app.tl.drag.clone()
+    if let Some(Drag::ZoomBar { grab, start, start_pps, mode }) = app.tl.drag.clone()
         && resp.dragged()
     {
-        let v = &mut app.ui.timeline;
         match mode {
             // the thumb's middle: scroll, the thumb staying under the pointer
             0 => {
                 if let Some(pos) = resp.interact_pointer_pos() {
+                    let v = &mut app.ui.timeline;
                     v.target_scroll = (start + (pos.x - grab) as f64 * per_point).clamp(0.0, range);
                     v.scroll = v.target_scroll;
                 }
             }
-            // a handle: zoom, the other end of the view staying where it is
+            // a handle: derive the zoom from the view at press time, while the playhead stays put
             _ => {
-                let dx = resp.drag_delta().x as f64 / bar.width().max(1.0) as f64 * total;
-                if mode == 1 {
-                    let end = v.scroll + vis;
-                    let ns = (v.scroll + dx).clamp(0.0, (end - 0.05).max(0.0));
-                    v.pps = (bar.width() as f64 / (end - ns).max(0.05)).clamp(0.05, 24_000.0);
-                    v.scroll = ns;
-                    v.target_scroll = ns;
-                } else {
-                    let ne = (v.scroll + vis + dx).max(v.scroll + 0.05);
-                    v.pps = (bar.width() as f64 / (ne - v.scroll)).clamp(0.05, 24_000.0);
-                }
-                v.target_pps = v.pps;
+                let start_vis = bar.width() as f64 / start_pps.max(1e-9);
+                let start_total = timeline_extent(seq_seconds).max(start_vis);
+                let dx = resp.drag_delta().x as f64 / bar.width().max(1.0) as f64 * start_total;
+                let new_vis = if mode == 1 { (start_vis - dx).max(0.05) } else { (start_vis + dx).max(0.05) };
+                let new_pps = (bar.width() as f64 / new_vis).clamp(0.05, 24_000.0);
+                let playhead = app.session.playhead().seconds();
+                let anchor = set_playhead_zoom(&mut app.ui.timeline, playhead, seq_seconds, bar.width(), new_pps, false, false);
+                app.tl.zoom_anchor = anchor;
             }
         }
     }
@@ -1552,6 +1594,18 @@ fn shift_track(seq: &Sequence, tid: TrackId, delta: i32) -> Option<TrackId> {
         }
     }
     Some(tid)
+}
+
+/// The effective shortcut while the Timeline has focus: panel bindings win over application-wide
+/// bindings, matching keyboard dispatch.
+fn timeline_shortcut<'a>(app: &'a FilmcraftApp, command: &str) -> Option<&'a str> {
+    app.session
+        .shortcuts
+        .bindings
+        .iter()
+        .find(|b| b.command == command && b.panel.as_deref() == Some("Timeline"))
+        .or_else(|| app.session.shortcuts.bindings.iter().find(|b| b.command == command && b.panel.is_none()))
+        .map(|b| b.keys.as_str())
 }
 
 /// The clip context menu: groups (separated by rules) of (label, command id). Entries marked `…`
@@ -1778,10 +1832,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         app.tl.pressed = Some(Pressed { pos: p, tick: layout.tick_at(p.x), grab: grab_at(seq, layout, p, tool, mods, roll_ripple) });
     }
 
-    // ---- wheel, as in Premiere Pro on macOS (checked in 26.5.2):
+    // ---- wheel modifiers, as in Premiere Pro on macOS (checked in 26.5.2):
     //   wheel            the tracks under the pointer, up and down
     //   Cmd + wheel      the Timeline, sideways
-    //   Option + wheel   zoom about the pointer
+    //   Option + wheel   zoom about the playhead
     // Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal" swaps the first two. A sideways
     // gesture (trackpad swipe, tilt wheel, Shift + wheel) always scrolls sideways; a pinch zooms.
     if ui.rect_contains_pointer(rect)
@@ -1790,10 +1844,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         let w = wheel_input(&ctx);
         if (w.pinch - 1.0).abs() > 1e-4 || (w.alt && w.delta.y != 0.0) {
             let f = if (w.pinch - 1.0).abs() > 1e-4 { w.pinch as f64 } else { (1.0_f64 + w.delta.y as f64 * 0.01).clamp(0.5, 2.0) };
-            let anchor_t = layout.tick_at(p.x).seconds();
-            let v = &mut app.ui.timeline;
-            v.target_pps = (v.target_pps * f).clamp(0.05, 24_000.0);
-            app.tl.zoom_anchor = Some((anchor_t, p.x));
+            zoom_about_playhead(app, f, false);
         } else if w.delta != egui::Vec2::ZERO {
             let wheel_sideways = (app.session.prefs.timeline.mouse_scrolling == "horizontal") != w.command;
             let sideways = if w.delta.x.abs() > w.delta.y.abs() {
@@ -1873,8 +1924,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             (Tool::Zoom, _) => {
                 if resp.clicked() {
                     let f = if mods.alt { 1.0 / 2.0 } else { 2.0 };
-                    app.ui.timeline.target_pps = (app.ui.timeline.target_pps * f).clamp(0.05, 24_000.0);
-                    app.tl.zoom_anchor = Some((t.seconds(), p.x));
+                    zoom_about_playhead(app, f, false);
                 }
                 None
             }
@@ -2192,13 +2242,19 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     multicam_menu(app, ui, &picked);
                     continue;
                 }
-                let label = match cmd {
-                    "clip.enable" if all_enabled => tl!("✓ Enable"),
-                    "clip.link" if linked => tl!("Unlink"),
-                    _ => crate::i18n::t(label),
+                let mut label = match cmd {
+                    "clip.enable" if all_enabled => tl!("✓ Enable").to_owned(),
+                    "clip.link" if linked => tl!("Unlink").to_owned(),
+                    _ => crate::i18n::t(label).to_owned(),
                 };
-                let r = ui.add_enabled(!sel.is_empty() && app.session.is_enabled(cmd), egui::Button::new(label));
-                app.auto.add(&format!("timeline.clipMenu.{cmd}"), r.rect, label);
+                if matches!(cmd, "edit.clear" | "edit.rippleDelete")
+                    && let Some(keys) = timeline_shortcut(app, cmd)
+                {
+                    label.push_str("    ");
+                    label.push_str(keys);
+                }
+                let r = ui.add_enabled(!sel.is_empty() && app.session.is_enabled(cmd), egui::Button::new(label.as_str()));
+                app.auto.add(&format!("timeline.clipMenu.{cmd}"), r.rect, label.as_str());
                 if r.clicked() {
                     match crate::menus::invoke(app, &ctx, cmd, json!({})) {
                         // Unlink (#220): the clips were selected together because they were linked;
@@ -2366,4 +2422,4 @@ mod waveform_tests {
         // clip gain still applies
         assert!((db(waveform_display_gain(1.0, -6.0)) - (-6.0)).abs() < 0.1);
     }
-}
+                      }

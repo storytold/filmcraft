@@ -7,6 +7,7 @@ use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
+use filmcraft_time::Tick;
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
 use filmcraft_ui_egui::panels::timeline::{max_scroll, timeline_extent};
@@ -107,6 +108,17 @@ impl Driver {
     fn seconds(&mut self) -> f64 {
         self.app().session.active_sequence().unwrap().duration().seconds()
     }
+
+    fn set_playhead(&mut self, seconds: f64) {
+        self.app().session.set_playhead(Tick::from_seconds_f64(seconds));
+        self.frames(1);
+    }
+
+    /// Playhead x within the Timeline content rect.
+    fn playhead_x(&mut self) -> f64 {
+        let app = self.app();
+        (app.session.playhead().seconds() - app.ui.timeline.scroll) * app.ui.timeline.pps
+    }
 }
 
 fn none() -> Value {
@@ -134,7 +146,7 @@ fn the_wheel_moves_the_tracks_up_and_down() {
 }
 
 #[test]
-fn cmd_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
+fn cmd_wheel_moves_the_timeline_sideways_and_option_wheel_zooms_about_playhead() {
     let mut d = Driver::tall();
     // Cmd + wheel: sideways, a point of wheel for a point of Timeline; the tracks stay
     d.wheel(0.2, 0.0, -100.0, json!({"command": true}));
@@ -143,18 +155,19 @@ fn cmd_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
     assert_eq!(d.view(), (1.0, 50.0, 0.0, 0.0));
     d.wheel(0.8, 0.0, 1e5, json!({"command": true}));
     assert_eq!(d.view().0, 0.0, "not before the start");
-    // Option + wheel: zoom about the pointer; it is not what Cmd + wheel does
-    d.ok("ui.set", json!({"timeline": {"scroll": 4.0}}));
+    // Option + wheel: a visible playhead stays at the same x, regardless of the pointer.
+    d.ok("ui.set", json!({"timeline": {"pps": 50.0, "scroll": 4.0}}));
     d.frames(3);
-    let tracks = d.rect("timeline.tracks");
-    let under_pointer = 4.0 + (tracks[2] as f64 * 0.5) / 50.0;
+    d.set_playhead(10.0);
+    let before_x = d.playhead_x();
     d.wheel(0.2, 0.0, 20.0, json!({"alt": true}));
-    let (scroll, pps, v, a) = d.view();
+    let (_, pps, v, a) = d.view();
     assert!((pps - 60.0).abs() < 1e-6, "zoomed in by a fifth: {pps}");
-    assert!((scroll + (tracks[2] as f64 * 0.5) / pps - under_pointer).abs() < 0.02, "the time under the pointer stays there: {scroll}");
+    assert!((d.playhead_x() - before_x).abs() < 0.5, "playhead moved on screen");
     assert_eq!((v, a), (0.0, 0.0));
     d.wheel(0.2, 0.0, -20.0, json!({"alt": true}));
     assert!((d.view().1 - 48.0).abs() < 1e-6, "and out again");
+    assert!((d.playhead_x() - before_x).abs() < 0.5, "playhead moved on zoom out");
     // a sideways gesture (trackpad swipe, tilt wheel) is sideways whatever is held; so is Shift
     d.ok("ui.set", json!({"timeline": {"pps": 50.0, "scroll": 4.0}}));
     d.frames(3);
@@ -162,6 +175,46 @@ fn cmd_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
     assert_eq!(d.view(), (5.0, 50.0, 0.0, 0.0));
     d.wheel(0.2, 0.0, -50.0, json!({"shift": true}));
     assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0));
+}
+
+#[test]
+fn offscreen_keyboard_and_zoom_tool_zoom_about_the_playhead() {
+    let mut d = Driver::tall();
+    let width = d.rect("timeline.tracks")[2] as f64;
+
+    // A pointer-driven zoom centers an off-screen playhead before zooming.
+    d.ok("ui.set", json!({"timeline": {"pps": 100.0, "scroll": 4.0}}));
+    d.frames(3);
+    let offscreen = (d.seconds() - 1.0).max(1.0);
+    d.set_playhead(offscreen);
+    assert!(d.playhead_x() > width, "precondition: playhead is off-screen");
+    d.wheel(0.2, 0.0, 20.0, json!({"alt": true}));
+    let _ = d.view();
+    assert!((d.playhead_x() - width / 2.0).abs() < 1.0, "off-screen playhead was not centered");
+
+    // The actual keyboard shortcut always centers the playhead, even when it was already visible.
+    d.ok("ui.set", json!({"timeline": {"pps": 50.0, "scroll": 4.0}, "focused": "Timeline"}));
+    d.frames(3);
+    d.set_playhead(20.0);
+    d.ok("ui.key", json!({"key": "="}));
+    d.frames(3);
+    let _ = d.view();
+    assert!((d.playhead_x() - width / 2.0).abs() < 1.0, "keyboard zoom did not center the playhead");
+
+    // The Zoom Tool uses the playhead too, not the point clicked.
+    d.ok("ui.set", json!({"timeline": {"pps": 50.0, "scroll": 4.0}}));
+    d.frames(3);
+    d.set_playhead(10.0);
+    let before_x = d.playhead_x();
+    d.ok("ui.menu.invoke", json!({"id": "tool.zoom"}));
+    let tracks = d.rect("timeline.tracks");
+    d.ok(
+        "ui.click",
+        json!({"x": tracks[0] + tracks[2] * 0.8, "y": tracks[1] + tracks[3] * 0.2}),
+    );
+    let (_, pps, ..) = d.view();
+    assert!((pps - 100.0).abs() < 1e-6, "{pps}");
+    assert!((d.playhead_x() - before_x).abs() < 0.5, "Zoom Tool moved the playhead on screen");
 }
 
 /// Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal": the wheel moves the Timeline
@@ -256,10 +309,23 @@ fn the_scroll_bar_thumb_follows_the_pointer_and_reaches_both_ends() {
     d.frames(3);
     let jumped = d.rect("timeline.zoomBar");
     assert!((jumped[0] + jumped[2] / 2.0 - target).abs() < 2.0, "{jumped:?}");
-    // the handles at its ends still zoom: the right one out, the left edge of the view staying
-    let at = d.view().0;
-    d.ok("ui.drag", json!({"from": {"x": jumped[0] + jumped[2] - 3.0, "y": y}, "to": {"x": jumped[0] + jumped[2] + 60.0, "y": y}, "steps": 8}));
+    // The handles zoom around a visible playhead rather than pinning a viewport edge.
+    d.ok("ui.set", json!({"timeline": {"pps": 50.0, "scroll": 4.0}}));
     d.frames(3);
-    let (scroll, pps, ..) = d.view();
-    assert!(pps < 50.0 && (scroll - at).abs() < 1e-6, "{pps} {scroll}");
+    d.set_playhead(15.0);
+    let anchored = d.rect("timeline.zoomBar");
+    let y = anchored[1] + anchored[3] / 2.0;
+    let before_x = d.playhead_x();
+    d.ok(
+        "ui.drag",
+        json!({
+            "from": {"x": anchored[0] + anchored[2] - 3.0, "y": y},
+            "to": {"x": anchored[0] + anchored[2] + 10.0, "y": y},
+            "steps": 8
+        }),
+    );
+    d.frames(3);
+    let (_, pps, ..) = d.view();
+    assert!(pps < 50.0, "{pps}");
+    assert!((d.playhead_x() - before_x).abs() < 0.5, "zoom bar moved the playhead on screen");
 }
