@@ -17,8 +17,9 @@ the committed span and undo. Set `FILMCRAFT_UI_SNAPSHOT_DIR` to render screensho
 
 ## Localisation
 
-Edit > Language offers English, Japanese and Spanish. The language is stored in the engine's
-`general.interfaceLanguage` preference, restored on startup, and also available in Settings > General.
+Edit > Language offers English, Japanese, Spanish, Brazilian Portuguese, Ukrainian, Simplified
+Chinese and German. The language is stored in the engine's `general.interfaceLanguage` preference,
+restored on startup, and also available in Settings > General.
 Its default, System Language (`system`), follows the operating system: the first of the user's
 preferred languages that the interface has (the host supplies them through
 `HostHooks::system_languages`: `sys-locale` on the desktop, `navigator.languages` on the web),
@@ -34,7 +35,8 @@ original work using ordinary language, without proprietary localisation resource
 Spanish and Japanese cover menus, panels, dialogs, settings and registry labels. Searches accept both the
 translated label and its English source, including Unicode capitals. Project content, command ids
 and preference values retain their original values. Engine errors, CLI and MCP messages remain
-English; Brazilian Portuguese currently covers core menus and falls back to English elsewhere.
+English. Brazilian Portuguese and Ukrainian currently cover the core menus, German every menu; they
+fall back to English elsewhere.
 
 Verification: `cargo test -p filmcraft-ui-egui` checks catalog syntax, duplicate keys, placeholders,
 literal/menu/registry coverage and UI behaviour; `cargo xtask ci` runs the workspace gates. Visual
