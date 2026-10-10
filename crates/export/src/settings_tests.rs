@@ -676,3 +676,13 @@ fn extreme_bitrates_do_not_overflow_encoder_setup() {
         assert!(result.unwrap().unwrap().is_err(), "an unrepresentable encoder buffer rate must be rejected");
     }
 }
+
+#[test]
+fn gpu_rendering_is_off_by_default() {
+    assert_eq!(ExportSettings::default().gpu_rendering, crate::GpuRendering::Off);
+    // settings saved before the field existed get the default too
+    let s: ExportSettings = serde_json::from_value(serde_json::json!({"format": "h264"})).unwrap();
+    assert_eq!(s.gpu_rendering, crate::GpuRendering::Off);
+    let auto: ExportSettings = serde_json::from_value(serde_json::json!({"format": "h264", "gpuRendering": "auto"})).unwrap();
+    assert_eq!(auto.gpu_rendering, crate::GpuRendering::Auto);
+}

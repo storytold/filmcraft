@@ -97,6 +97,17 @@ fn frame_size(app: &FilmcraftApp, w: Which) -> Option<(u32, u32)> {
     }
 }
 
+/// Width over height of one pixel of a monitor's picture: the active sequence's pixel aspect
+/// ratio (Program) or the Source item's (Interpret Footage first). Monitors show the picture at
+/// its display aspect, so a 1440 x 1080 frame with 4:3 pixels is drawn 16:9.
+pub fn pixel_aspect(app: &FilmcraftApp, w: Which) -> f64 {
+    let par = match w {
+        Which::Program => app.session.active_sequence().map(|q| q.settings.par),
+        Which::Source => app.session.state.source_item.and_then(|i| app.session.project.source_par(i)),
+    };
+    par.map_or(1.0, filmcraft_project::par_ratio)
+}
+
 /// Handle a `view.*` command (None for other ids).
 pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
     let rest = id.strip_prefix("view.")?;

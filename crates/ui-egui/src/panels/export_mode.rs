@@ -22,8 +22,8 @@
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
 use filmcraft_engine::export::presets::{DEFAULT_PRESET, preset_key};
 use filmcraft_engine::export::{
-    AudioCodec, BitrateMode, ExportSettings, FieldOrder, Format, H264Profile, HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, Scaling, TextOverlay,
-    builtin_presets, format_bytes,
+    AudioCodec, BitrateMode, ExportSettings, FieldOrder, Format, GpuRendering, H264Profile, HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, Scaling,
+    TextOverlay, builtin_presets, format_bytes,
 };
 use filmcraft_engine::time::{FrameRate, Tick};
 use serde::{Deserialize, Serialize};
@@ -737,6 +737,14 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         }
         _ => {}
     }
+    // Composite the picture on the GPU (filmcraft-gpu) instead of the CPU reference renderer;
+    // Auto falls back to the CPU wherever the GPU cannot render the frame.
+    row(ui, t, tl!("GPU Rendering"), |ui| {
+        let mut on = s.gpu_rendering == GpuRendering::Auto;
+        if check(ui, reg, "export.gpuRendering", &mut on, tl!("Composite on the GPU when available")) {
+            s.gpu_rendering = if on { GpuRendering::Auto } else { GpuRendering::Off };
+        }
+    });
     row(ui, t, "", |ui| check(ui, reg, "export.video.maxDepth", &mut s.render_at_max_depth, tl!("Render at Maximum Depth")));
     row(ui, t, "", |ui| check(ui, reg, "export.video.maxQuality", &mut s.max_render_quality, tl!("Use Maximum Render Quality")));
 }

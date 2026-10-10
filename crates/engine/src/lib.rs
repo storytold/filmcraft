@@ -29,6 +29,7 @@ pub mod media_browser;
 pub mod media_pool;
 pub mod mixer;
 pub mod multicam;
+pub mod narration;
 pub mod panels;
 pub mod perf;
 pub mod presets;
@@ -261,6 +262,10 @@ pub struct EditorState {
     /// Selected captions (caption tracks / Captions panel).
     #[serde(default)]
     pub caption_selection: Vec<ClipId>,
+    /// Selected transitions (clicked in the Timeline): Effect Controls shows one, Delete removes
+    /// them. Selecting clips clears it and selecting transitions clears the clip selection.
+    #[serde(default)]
+    pub transition_selection: Vec<filmcraft_project::TransitionId>,
     /// Selected layers (indices among the graphic layers, 0 = back) of the selected graphic clip.
     #[serde(default)]
     pub graphic_layers: Vec<usize>,
@@ -349,6 +354,10 @@ pub struct Session {
     pub mcrec: multicam::Recorder,
     /// Voice-over recording: the input device and the take in progress.
     pub voiceover: voiceover::VoiceOver,
+    /// The last `tts.preview` result, for the host to play (Text to Speech ▸ Preview).
+    pub tts_preview: Option<Arc<filmcraft_tts::Audio>>,
+    /// Synthesized narrations (`tts.render` fills it from a background job).
+    pub tts_cache: narration::SynthCache,
     /// Dynamic (J/K/L) trimming and trim-mode loop playback in progress.
     pub trim_play: trim::TrimPlayback,
     /// Keyboard shortcuts (active bindings, presets; `shortcuts.*` commands).
@@ -451,6 +460,8 @@ impl Session {
             mixrec: Default::default(),
             mcrec: Default::default(),
             voiceover: Default::default(),
+            tts_preview: None,
+            tts_cache: Default::default(),
             trim_play: Default::default(),
             shortcuts: shortcuts::Shortcuts::new(),
             offline: Default::default(),
@@ -1065,6 +1076,8 @@ mod mixer_tests;
 #[cfg(test)]
 mod multicam_tests;
 #[cfg(test)]
+mod narration_tests;
+#[cfg(test)]
 mod nest_editing_tests;
 #[cfg(test)]
 mod nest_fidelity_tests;
@@ -1072,6 +1085,8 @@ mod nest_fidelity_tests;
 mod nesting_tests;
 #[cfg(test)]
 mod panels_tests;
+#[cfg(test)]
+mod par_tests;
 #[cfg(test)]
 mod presets_tests;
 #[cfg(test)]

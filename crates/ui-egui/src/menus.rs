@@ -26,6 +26,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("app.language.japanese", "日本語", ["Edit", "Language"], None),
     uic!("app.language.spanish", "Español", ["Edit", "Language"], None),
     uic!("app.language.portuguese", "Português (Brasil)", ["Edit", "Language"], None),
+    uic!("app.language.ukrainian", "Українська", ["Edit", "Language"], None),
+    uic!("app.language.chinese", "简体中文", ["Edit", "Language"], None),
     uic!("source.playback.toggle", "Source Play/Stop", [], None),
     uic!("source.playback.play", "Play Source", [], None),
     uic!("source.playback.stop", "Stop Source", [], None),
@@ -90,9 +92,11 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("multicam.editCamerasDialog", "Edit Cameras…", [], None),
     uic!("voiceover.recordToggle", "Voice-over Record", [], None),
     uic!("voiceover.settingsDialog", "Voice-Over Record Settings…", [], None),
+    // ids follow `ThemeKind`, labels follow Settings ▸ Appearance ▸ Color Theme (`darkest`, `dark`, `light`)
     uic!("view.theme.dark", "Darkest", ["View", "Appearance"], None),
-    uic!("view.theme.medium", "Medium", ["View", "Appearance"], None),
+    uic!("view.theme.medium", "Dark", ["View", "Appearance"], None),
     uic!("view.theme.light", "Light", ["View", "Appearance"], None),
+    uic!("view.appearanceMode.next", "Next Appearance Mode", ["View", "Appearance"], None),
     uic!("window.workspace.editing", "Editing", ["Window", "Workspaces"], Some("Alt+Shift+1")),
     uic!("window.workspace.assembly", "Assembly", ["Window", "Workspaces"], Some("Alt+Shift+2")),
     uic!("window.workspace.color", "Color", ["Window", "Workspaces"], Some("Alt+Shift+3")),
@@ -168,15 +172,29 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         let object = params.as_object_mut().ok_or("command parameters must be an object")?;
         object.insert("target".into(), json!("source"));
     }
-    if matches!(id, "app.language.english" | "app.language.japanese" | "app.language.spanish" | "app.language.portuguese") {
+    if matches!(
+        id,
+        "app.language.english"
+            | "app.language.japanese"
+            | "app.language.spanish"
+            | "app.language.portuguese"
+            | "app.language.ukrainian"
+            | "app.language.chinese"
+    ) {
         // Japanese needs the craft-fonts (built with CRAFT_FONTS_DIR) or a font installed on the system
         if id == "app.language.japanese" && !crate::i18n::install_japanese_font(ctx) {
             return Err("no Japanese font is installed on this system (for example Noto Sans CJK JP); the interface stays in English".into());
+        }
+        // Chinese needs the Chinese fallback theme::install adds (craft-fonts or a system face)
+        if id == "app.language.chinese" && !crate::i18n::chinese_font_available() {
+            return Err("no Chinese font is installed on this system (for example Noto Sans CJK SC or Microsoft YaHei); the interface stays in English".into());
         }
         let language = match id {
             "app.language.japanese" => crate::i18n::Language::Ja,
             "app.language.spanish" => crate::i18n::Language::Es,
             "app.language.portuguese" => crate::i18n::Language::PtBr,
+            "app.language.ukrainian" => crate::i18n::Language::Uk,
+            "app.language.chinese" => crate::i18n::Language::ZhCn,
             _ => crate::i18n::Language::En,
         };
         // The preference is updated in memory before it is written, so a failed write (read-only
@@ -415,7 +433,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             return Ok(json!({"dialog": "audioGain"}));
         }
         // Colour dialogs from the menus; with params the engine command applies directly.
-        "clip.interpretFootage" if params.get("colorSpace").is_none() => {
+        "clip.interpretFootage" if params.get("colorSpace").is_none() && params.get("pixelAspect").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             crate::panels::color_dialogs::open_interpret(app, &params);
             return Ok(json!({"dialog": "interpretFootage"}));
@@ -482,6 +500,10 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         }
         _ => {}
     }
+    if id == "view.appearanceMode.next" {
+        crate::panels::settings::cycle_appearance(app, ctx);
+        return Ok(json!({"appearanceMode": app.session.prefs.appearance.appearance_mode}));
+    }
     if let Some(th) = id.strip_prefix("view.theme.") {
         let k = crate::theme::ThemeKind::from_name(th).ok_or("unknown theme")?;
         crate::panels::settings::set_theme(app, ctx, k);
@@ -547,6 +569,8 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             "app.language.japanese" => it.checked = Some(app.ui.language == crate::i18n::Language::Ja),
             "app.language.spanish" => it.checked = Some(app.ui.language == crate::i18n::Language::Es),
             "app.language.portuguese" => it.checked = Some(app.ui.language == crate::i18n::Language::PtBr),
+            "app.language.ukrainian" => it.checked = Some(app.ui.language == crate::i18n::Language::Uk),
+            "app.language.chinese" => it.checked = Some(app.ui.language == crate::i18n::Language::ZhCn),
             _ => {}
         }
         if it.id.starts_with("view.") {

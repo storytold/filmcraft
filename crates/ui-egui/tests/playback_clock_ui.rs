@@ -16,6 +16,7 @@ struct FakeOut {
     played: Arc<AtomicU64>,
     per_poll: u64,
     started: bool,
+    note: Option<String>,
 }
 
 impl AudioOut for FakeOut {
@@ -33,6 +34,9 @@ impl AudioOut for FakeOut {
     fn played_frames(&self) -> Option<u64> {
         self.started.then(|| self.played.fetch_add(self.per_poll, Ordering::SeqCst) + self.per_poll)
     }
+    fn note(&self) -> Option<String> {
+        self.note.clone()
+    }
 }
 
 /// Play for `steps` × 0.25 s of simulated time with the given output; the playhead in seconds.
@@ -41,7 +45,7 @@ fn play_with(per_poll: u64, steps: usize) -> (f64, bool) {
     s.execute("file.openDemoProject", json!({})).unwrap();
     s.set_playhead(Tick::ZERO);
     let mut app = FilmcraftApp::new(s);
-    app.audio = Some(Box::new(FakeOut { played: Arc::new(AtomicU64::new(0)), per_poll, started: false }));
+    app.audio = Some(Box::new(FakeOut { played: Arc::new(AtomicU64::new(0)), per_poll, started: false, note: None }));
     let mut h = Harness::builder().with_size(egui::vec2(1280.0, 800.0)).with_step_dt(0.25).build_eframe(move |_cc| app);
     h.step();
     h.state_mut().play(1.0);
@@ -67,4 +71,24 @@ fn a_playing_audio_device_drives_the_clock() {
     let (t, audio_clock) = play_with(4_800, 8);
     assert!(t > 0.2, "{t:.2} s");
     assert!(audio_clock);
+}
+
+/// A fallback note from the audio device (broken ALSA `default`, #23/#106) reaches the status
+/// bar on the first frame, and survives while playback runs.
+#[test]
+fn a_fallback_note_from_the_audio_device_reaches_the_status_bar() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    s.set_playhead(Tick::ZERO);
+    let note = "Audio hardware: the default output device cannot be opened; using 'sofhdadsp'".to_string();
+    let mut app = FilmcraftApp::new(s);
+    app.audio = Some(Box::new(FakeOut { played: Arc::new(AtomicU64::new(0)), per_poll: 4_800, started: false, note: Some(note.clone()) }));
+    let mut h = Harness::builder().with_size(egui::vec2(1280.0, 800.0)).with_step_dt(0.25).build_eframe(move |_cc| app);
+    h.step();
+    assert_eq!(h.state_mut().ui.status, note, "the note surfaces on the first frame (apply_prefs)");
+    h.state_mut().play(1.0);
+    for _ in 0..16 {
+        h.step();
+    }
+    assert_eq!(h.state_mut().ui.status, note, "the note survives while playback runs");
 }

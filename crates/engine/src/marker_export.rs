@@ -118,8 +118,7 @@ mod tests {
         }
     }
     fn session(files: Arc<Files>) -> Session {
-        let mut s = Session::default();
-        s.services = files;
+        let mut s = Session { services: files, ..Default::default() };
         s.execute("file.newSequence", json!({"name":"Review, 日本語", "fps":24})).unwrap();
         s
     }

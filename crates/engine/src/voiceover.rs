@@ -386,6 +386,13 @@ fn sync(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Directory recordings are written to.
 fn record_dir(s: &Session, p: &Value) -> String {
+    media_dir(s, p, "Voice-over Recordings")
+}
+
+/// Directory generated media (recordings, narrations) is written to: `dir`, else Project
+/// Settings ▸ Scratch Disks ▸ Captured, else next to the project, else `fallback` in the data or
+/// temporary directory.
+pub(crate) fn media_dir(s: &Session, p: &Value, fallback: &str) -> String {
     if let Some(d) = str_p(p, "dir") {
         return d.to_string();
     }
@@ -396,7 +403,21 @@ fn record_dir(s: &Session, p: &Value) -> String {
         return d.to_string_lossy().into_owned();
     }
     let base = s.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| d.to_path_buf()).unwrap_or_else(|| crate::temp_dir().join("FilmCraft"));
-    base.join("Voice-over Recordings").to_string_lossy().into_owned()
+    base.join(fallback).to_string_lossy().into_owned()
+}
+
+/// `<dir>/<base> <n>.wav` with the first `n` used by neither a project item nor an existing file;
+/// an error once `n` passes 99 999 (bounded: `file_size` is a filesystem call per try).
+pub(crate) fn unique_wav_path(s: &Session, dir: &str, base: &str) -> Result<String> {
+    let names: std::collections::HashSet<String> = s.project.items.values().map(|i| i.name.clone()).collect();
+    for k in 1..=99_999u32 {
+        let file = format!("{base} {k}.wav");
+        let path = std::path::Path::new(dir).join(&file).to_string_lossy().into_owned();
+        if !names.contains(&file) && s.services.file_size(&path).is_err() {
+            return Ok(path);
+        }
+    }
+    Err(EngineError::Other(format!("{dir}: no free file name for \"{base} <n>.wav\"")))
 }
 
 fn stop(s: &mut Session, p: &Value) -> Result<Value> {
@@ -449,16 +470,7 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
     // write the file
     let dir = record_dir(s, p);
     let base = s.prefs.voice_over.name.clone();
-    let names: std::collections::HashSet<String> = s.project.items.values().map(|i| i.name.clone()).collect();
-    let mut k = 1;
-    let path = loop {
-        let file = format!("{base} {k}.wav");
-        let path = std::path::Path::new(&dir).join(&file).to_string_lossy().into_owned();
-        if !names.contains(&file) && s.services.file_size(&path).is_err() {
-            break path;
-        }
-        k += 1;
-    };
+    let path = unique_wav_path(s, &dir, &base)?;
     if !cfg!(target_arch = "wasm32") {
         std::fs::create_dir_all(&dir).map_err(|e| EngineError::Other(format!("{dir}: {e}")))?;
     }

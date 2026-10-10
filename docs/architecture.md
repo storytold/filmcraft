@@ -24,7 +24,7 @@ Design principles:
  L5  ui-egui · automation · platform
  L4  engine
  L3  render · gpu · export · golden (test-only)
- L2  edit · codecs · interchange · captions · speech
+ L2  edit · codecs · interchange · captions · speech · tts · tts-text
  L1  frame · media · project · audio-dsp · text
  L0  foundation: time · geom · color · bitstream · testkit (dev-dependency only)
      codecs/containers: isobmff · matroska · mxf · cfb · mpegts · ogg · h264 · h264enc · hevc · vp9 · av1 · mpeg2v · prores · dnx · apv · aac · ac3 · opus
@@ -62,6 +62,8 @@ and `filmcraft-cli`.
 | `text` | L1 | text engine: font database (bundled OFL fonts + system fonts), shaping (harfrust), bidi, line breaking, paragraph layout, glyph/path rasteriser, strokes ([crates/text/README.md](../crates/text/README.md)) |
 | `edit` | L2 | pure edit algebra (insert, overwrite, razor, ripple, roll, slip, slide, rate stretch…; text-based editing: `edit::transcript`) |
 | `speech` | L2 | speech-to-text: `Transcriber` trait, Whisper model catalogue + verified downloader (feature `download`), pure-Rust Whisper inference on candle with word timestamps (feature `whisper`), speaker labelling ([transcripts.md](transcripts.md)) |
+| `tts` | L2 | text to speech: `Voice` trait, voice catalogue, pause markers, built-in formant voices; Kokoro-82M natural voices on candle and their pinned package catalogue (feature `kokoro`). Same-layer edge to `tts-text` |
+| `tts-text` | L2 | text front end for narration: normalizer (numbers, money, dates, acronyms, pauses) and English pronunciation (CMUdict + letter-to-sound) to Kokoro phonemes |
 | `codecs` | L2 | container + codec hub: MP4/MOV, MKV, MXF, Ogg and MPEG TS / PS / video elementary stream sources, GOP-aware seeking, decoder registry, audio decoding |
 | `interchange` | L2 | EDL, FCP7 XML, FCPXML, OTIO, AAF (on `cfb`) and OMF 2.0 import/export (no file I/O; the engine supplies rendered audio essence) ([README](../crates/interchange/README.md)) |
 | `render` | L3 | sequence evaluation, CPU compositor, video effects (`effects`, `vfx`; effects needing other frames or tracks read them through `vfx::FxEnv`), transitions, audio mix |
@@ -220,6 +222,16 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   `audio(start, frames, rate)` in media time. Sources are `Send + Sync` and shared by monitors,
   thumbnails, playback and export. The engine's `MediaPool` creates one per project item, lazily,
   through registered openers (`codecs::openers()`: MP4/MOV, MKV/WebM, audio files).
+- **Pixel aspect ratio.** Demuxers report it in `VideoStreamInfo::par` (MP4/MOV `pasp`, Matroska
+  display size, MXF aspect ratio, MPEG sequence header / VUI); Interpret Footage's
+  `Interpretation::par` overrides it (`clip.interpretFootage {pixelAspect}`), and
+  `SequenceSettings::par` is the sequence's. Both go through `project::checked_par` (a zero term
+  or more than 8:1 either way = square). `render::motion_matrix` works in square display units,
+  so a 1440 x 1080 clip with 4:3 pixels fills a 1920 x 1080 square-pixel sequence at 100 %
+  (Scale to Frame Size, Set to Frame Size and Fit / Fill use `Project::conformed_source_size`);
+  graphics and adjustment layers are in sequence pixels. New Sequence From Clip copies the clip's
+  ratio, and the Source and Program monitors draw the picture at its display aspect. The
+  renderer does not read decoded frames' own `VideoFrame::par`.
 - **Offline media and proxies.** The pool caches each item's source per reference (path, offline
   flag), so relinking and undo take effect at once. Media that can't be opened renders the offline
   slate (`render::offline`) instead of failing. With proxies enabled, an item with a proxy reads
@@ -291,7 +303,7 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   Balance, Leave Color, Change to Color, Color Pass, Color Replace, Channel Mix, ASC CDL, Gamma
   Correction, Levels, Extract, Invert, Posterize, Alpha Adjust, Gaussian Blur and Directional Blur
   (and their legacy aliases), Camera Blur, Sharpen, Unsharp Mask, Crop, Edge Feather, Transform,
-  Horizontal / Vertical Flip, Mirror and Offset. When every enabled effect of a media clip is in
+  Horizontal / Vertical Flip, Mirror, Offset, Vignette and Video Limiter. When every enabled effect of a media clip is in
   that set (unmasked, with finite parameters, and no Transform shrinking the picture below half
   size, which the CPU pre-filters), the plan hands the GPU the clip's source with
   the effects' parameters evaluated at that time: the source is drawn into an `Rgba32Float`
@@ -444,6 +456,10 @@ stereo / mono track ──5.1 panner───┼─► 5.1 submix / 5.1 Mix ─�
 ### 5.1.2 Voice-over recording
 
 **Voice-over recording** (`engine::voiceover`, `audio.voiceover.*`). The record point R is the playhead, or the In point when In/Out are set (punch-in; punch-out at Out). Playback starts the pre-roll before it (C = max(0, R − pre-roll)) and the input is captured from C. When the UI's audio clock really starts, `audio.voiceover.sync` restarts the capture there. `audio.voiceover.stop` keeps the audio from R to min(stop, Out), writes a mono 32-bit float WAV `<Name> <n>.wav` (Scratch Disks ▸ Captured, else next to the project, else the data or temporary directory), imports it and overwrites it onto the record track at R as one undo step. The record track is the given one, else the record-armed one, else the first targeted one. Input goes through the `AudioInput` trait: cpal in the desktop app (`apps/filmcraft/src/audio_in.rs`, on its own thread), and `SyntheticInput` headless, which produces exactly the samples the timeline asks for so recordings land sample-accurately. Voice-Over Record Settings (Source, Input channel, Name, Countdown Sound Cues, Pre-/Post-roll) are preferences (`voiceOver`). The track header's microphone records or stops, and a right-click opens the settings dialog. Countdown beeps (1 kHz, 100 ms, each whole second of pre-roll and at R) are mixed into playback, an overlay counts down, and playback stops at Out + post-roll.
+
+### 5.1.2a Text to Speech (narrations)
+
+**Narrations** (`engine::narration`, `tts.*`; voices in `filmcraft-tts`). The Text to Speech panel (Window ▸ Text to Speech) writes a script with pause markers (`[pause 1s]`), a voice, a vocal pitch and a pace; `tts.create` synthesizes it, writes `Narration <n>.wav` (mono 32-bit float, 24 kHz, where voice-over recordings go), imports it and places it at the playhead on the first free targeted audio track, else the first free audio track, else a new one, as one undo step. The settings are kept per generated item in `Project::narrations` (schema v14). Selecting a narration clip loads it into the panel; `tts.edit` writes a new file (beside the previous one) and swaps the clip to it, keeping the clip's start, duration and speed: longer speech is kept whole in the file but plays only to the clip's end; shorter speech is padded with silence to the clip's length. The old item and narration stay, so undo is exact. `tts.preview` synthesizes without changing the project and the UI plays `Session::tts_preview` on the audio output. Built-in voices are an original formant synthesizer (robotic, no download). The natural voices (feature `neural-voices` of the desktop app, off by default like `whisper`) are Kokoro-82M on candle (`filmcraft-tts`) fed by `filmcraft-tts-text` (normalizer, CMUdict + letter-to-sound); their 336 MB package is downloaded once after the user confirms (`tts.downloadVoices`, a job). The UI synthesizes with `tts.render` (a job filling `Session::tts_cache`) and then runs create / edit / preview, which use the cache.
 
 ### 5.1.3 Remix
 

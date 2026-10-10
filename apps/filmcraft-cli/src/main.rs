@@ -75,6 +75,7 @@ SUBCOMMANDS
   inspect [project|sequence]    project tree or active sequence as JSON (default: both)
   import <file>...              import media into the project
   export <out> [--preset name] [--format f] [--range r] [--start s --end s] [--settings json]
+         [--gpu-rendering auto|off]
          [--scale f] [--quality 0-100] [--no-audio] [--queue]
                                 export the active sequence and wait for it to finish: with an
                                 export preset (`export --list-presets`; built-in or the user's), or
@@ -214,6 +215,30 @@ fn format_for(path: &str) -> Option<&'static str> {
 
 /// OS hardware video decoders (VideoToolbox on macOS, Media Foundation on Windows) in front of our
 /// own, as in the desktop app. Also what `mcp` and the headless commands decode with.
+/// The GPU export frame renderer (filmcraft-gpu's off-screen compositor behind filmcraft-export's
+/// frame-renderer hook): exports with GPU rendering Auto composite on the GPU and fall back to the
+/// CPU reference renderer wherever it cannot.
+struct GpuFrameRenderer(filmcraft_gpu::ExportRenderer);
+
+impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
+    fn render(
+        &mut self,
+        project: &filmcraft_project::Project,
+        seq: filmcraft_project::ItemId,
+        t: filmcraft_time::Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn filmcraft_render::SourceProvider,
+    ) -> Option<filmcraft_render::Image> {
+        self.0.render(project, seq, t, opts, sources)
+    }
+}
+
+fn register_gpu_frame_renderer() {
+    filmcraft_export::register_frame_renderer(|| {
+        filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(GpuFrameRenderer(r)) as Box<dyn filmcraft_export::FrameRenderer>)
+    });
+}
+
 fn register_hardware_decoders() -> filmcraft_platform::Availability {
     filmcraft_platform::register()
 }
@@ -232,10 +257,17 @@ async fn cli() {
         return;
     }
     register_hardware_decoders();
+    register_gpu_frame_renderer();
     let a = Args::parse(std::env::args().skip(1));
+    // `--help` anywhere (`filmcraft-cli --help`, `filmcraft-cli export --help`) prints the reference:
+    // the parser takes it as a flag option, so it never reaches the subcommand match.
+    if a.flag("--help") {
+        out!("{HELP}");
+        return;
+    }
     let Some(cmd) = a.pos(0) else { usage("missing subcommand") };
     match cmd {
-        "help" | "--help" | "-h" => out!("{HELP}"),
+        "help" | "-h" => out!("{HELP}"),
         "version" => outln!("filmcraft-cli {}", env!("CARGO_PKG_VERSION")),
         "probe" => {
             let path = a.pos(1).unwrap_or_else(|| usage("probe <media> [--image-sequence]"));
@@ -390,6 +422,9 @@ async fn cli() {
             if a.flag("--no-audio") {
                 p["audio"] = json!(false);
             }
+            if let Some(v) = a.opt("--gpu-rendering") {
+                p["gpuRendering"] = json!(v); // off | auto (validated by the export command)
+            }
             let mut b = Backend::open(&a);
             let t0 = std::time::Instant::now();
             let r = if a.flag("--queue") {
@@ -420,7 +455,7 @@ async fn cli() {
             let out = a.opt("--out").unwrap_or("frame.png");
             s.set_playhead(filmcraft_time::Tick::from_seconds_f64(secs));
             let t0 = std::time::Instant::now();
-            let Some(img) = s.render_program(scale) else { fail("no sequence") };
+            let img = render_at_playhead(&s, scale).unwrap_or_else(|e| fail(e));
             let dt = t0.elapsed();
             let png = filmcraft_automation::png_rgba(img.w as u32, img.h as u32, img.over_black_rgba8(), 0).unwrap_or_else(|e| fail(e));
             std::fs::write(out, png).unwrap_or_else(|e| fail(format!("{out}: {e}")));
@@ -460,6 +495,11 @@ fn written_paths(result: &Value, requested: &str) -> Vec<String> {
     if paths.is_empty() { vec![requested.to_string()] } else { paths }
 }
 
+/// The active sequence at the playhead, or the reason it cannot be rendered (no sequence, bad scale).
+fn render_at_playhead(s: &Session, scale: f32) -> Result<filmcraft_engine::render::Image, String> {
+    s.try_render_program_at(scale, s.playhead()).map_err(|e| e.to_string())
+}
+
 /// `--start` / `--end` ask for a custom range. A lone bound is forwarded too, so the engine reports the missing one
 /// instead of the export silently running over the whole sequence.
 fn set_custom_bounds(p: &mut Value, start: Option<&str>, end: Option<&str>) {
@@ -477,12 +517,24 @@ fn set_custom_bounds(p: &mut Value, start: Option<&str>, end: Option<&str>) {
 
 #[cfg(test)]
 mod format_tests {
+    #[test]
+    fn render_reports_the_real_reason() {
+        let mut s = filmcraft_engine::Session::default();
+        assert!(super::render_at_playhead(&s, 0.5).unwrap_err().contains("sequence"));
+        s.execute("file.newSequence", serde_json::json!({"width": 16, "height": 16})).unwrap();
+        for scale in [0.0, -1.0, f32::NAN] {
+            let e = super::render_at_playhead(&s, scale).unwrap_err();
+            assert!(e.contains("finite and positive"), "{e}");
+        }
+        assert_eq!(super::render_at_playhead(&s, 0.5).unwrap().w, 8);
+    }
+
     /// The CLI (and MCP / headless runs, which share its entry point) registers the hardware
     /// decoders at start-up.
     #[test]
     fn startup_registers_the_hardware_decoders() {
         let hardware = super::register_hardware_decoders();
-        // always on macOS and Windows; on Linux when a VA-API driver is there
+        // always on macOS and Windows; on Linux when a VA-API driver or NVIDIA's driver (NVDEC) is there
         let expected = cfg!(any(target_os = "macos", target_os = "windows"))
             || (cfg!(target_os = "linux") && matches!(hardware, filmcraft_platform::Availability::Available(_)));
         assert_eq!(filmcraft_platform::registered(), expected, "{hardware:?}");

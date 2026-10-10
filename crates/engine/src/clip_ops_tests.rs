@@ -910,9 +910,8 @@ fn linked_slip_keeps_picture_and_sound_aligned_at_unequal_media_limits() {
     let r = s.execute("file.newOfflineFile", json!({"name": "Media", "seconds": 4, "fps": 25, "video": true, "audio": true})).unwrap();
     let item = r["item"].as_u64().unwrap();
     let fr = s.sequence_rate().tick_of(1);
-    let r = s
-        .execute("timeline.place", json!({"item": item, "track": "V1", "audioTrack": "A1", "time": 0, "sourceIn": fr.0 * 20, "duration": fr.0 * 60}))
-        .unwrap();
+    let r =
+        s.execute("timeline.place", json!({"item": item, "track": "V1", "audioTrack": "A1", "time": 0, "sourceIn": fr.0 * 20, "duration": fr.0 * 60})).unwrap();
     let (v, a) = (r["clips"][0].as_u64().unwrap(), r["clips"][1].as_u64().unwrap());
     // lengthen only the picture so the pair has unequal tail handles
     s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();

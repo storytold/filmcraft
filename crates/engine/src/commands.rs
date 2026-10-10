@@ -82,6 +82,15 @@ pub(crate) fn has_selection(s: &Session) -> std::result::Result<(), String> {
 /// Clips or captions selected (Clear / Ripple Delete work on either).
 fn has_any_selection(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
+    if s.state.selection.is_empty() && s.state.caption_selection.is_empty() && s.state.transition_selection.is_empty() {
+        Err("nothing selected".into())
+    } else {
+        Ok(())
+    }
+}
+/// Clips or captions selected (Ripple Delete: a transition has no length of its own to close).
+fn has_clip_or_caption_selection(s: &Session) -> std::result::Result<(), String> {
+    has_seq(s)?;
     if s.state.selection.is_empty() && s.state.caption_selection.is_empty() { Err("nothing selected".into()) } else { Ok(()) }
 }
 fn has_source(s: &Session) -> std::result::Result<(), String> {
@@ -357,12 +366,17 @@ pub fn with_links(s: &Session, clips: &[ClipId]) -> Vec<ClipId> {
     out
 }
 
-pub(crate) fn default_seq_settings_for(info: &filmcraft_media::MediaInfo) -> SequenceSettings {
+/// Sequence settings matching a media clip (New Sequence From Clip, New Sequence from an item):
+/// its frame size, rate and pixel aspect ratio (Interpret Footage's, else the file's), so a
+/// 1440 x 1080 clip with 4:3 pixels makes a 1440 x 1080 sequence that displays 16:9.
+pub(crate) fn default_seq_settings_for(media: &MediaClip) -> SequenceSettings {
+    let info = &media.info;
     let mut st = SequenceSettings::default();
     if let Some(v) = &info.video {
         st.width = v.width;
         st.height = v.height;
         st.frame_rate = v.frame_rate;
+        st.par = media.pixel_aspect();
         st.preset = format!("{}x{} {}", v.width, v.height, v.frame_rate.label());
     }
     if let Some(a) = info.audio() {
@@ -455,8 +469,15 @@ fn new_generator(s: &mut Session, g: Generator, name: &str, label: Label, p: &Va
     let name = str_p(p, "name").unwrap_or(name).to_string();
     let src = GeneratorSource::new(g, w, h, st.frame_rate, Tick::from_seconds_f64(secs));
     let pool = s.media.clone();
+    let par = filmcraft_project::sane_par(st.par);
     let id = s.edit(&format!("New {name}"), |pr, st| {
         let id = crate::demo::add_generator(pr, &pool, src, &name, label, None);
+        // made for the sequence: its pixels have the sequence's aspect, as in Premiere
+        if let Some(ItemKind::Media(m)) = pr.item_mut(id).map(|i| &mut i.kind)
+            && let Some(v) = m.info.video.as_mut()
+        {
+            v.par = par;
+        }
         st.project_selection = vec![id];
         Ok(id)
     })?;
@@ -585,6 +606,8 @@ pub(crate) fn place_item(
         _ => None,
     }
     .unwrap_or((1920, 1080));
+    // `None`: drawn in the pixels of the sequence it is placed in
+    let src_par = s.project.source_par(item);
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     let media = s.media.clone();
     let scaling = s.prefs.media.default_media_scaling.clone();
@@ -593,6 +616,7 @@ pub(crate) fn place_item(
         let seq = p.sequence(seq_id).ok_or(EngineError::NoSequence)?;
         let rate = seq.settings.frame_rate;
         let frame = (seq.settings.width, seq.settings.height);
+        let seq_par = seq.settings.par;
         let mut placements = Vec::new();
         let link = if has_v && has_a { Some(p.alloc_id()) } else { None };
         if let Some(vdest) = vdest.filter(|_| has_v) {
@@ -601,8 +625,10 @@ pub(crate) fn place_item(
             for e in &mut v.effects {
                 resolve_auto_points(e, frame, src_size);
             }
-            if is_media && src_size != frame {
-                crate::settings::apply_media_scaling(&mut v, &scaling, frame, src_size);
+            // the picture's size at its display aspect, in sequence pixels
+            let shown = filmcraft_project::conformed_size(src_size, src_par.unwrap_or(seq_par), seq_par);
+            if is_media && shown != (f64::from(frame.0), f64::from(frame.1)) {
+                crate::settings::apply_media_scaling(&mut v, &scaling, frame, shown);
             }
             placements.push((vdest, v));
         }
@@ -753,7 +779,7 @@ fn build() -> Vec<CommandSpec> {
             |s, p| {
                 let mut st = SequenceSettings::default();
                 if let Some(from) = item_p(p, "fromItem").and_then(|i| s.project.item(i)).and_then(|i| i.as_media()) {
-                    st = default_seq_settings_for(&from.info);
+                    st = default_seq_settings_for(from);
                 }
                 if let Some(w) = checked_u32_p(p, "width", "file.newSequence")? {
                     st.width = w;
@@ -1187,6 +1213,11 @@ fn build() -> Vec<CommandSpec> {
         cmd!("edit.pasteInsert", "Paste Insert", ["Edit"], Some("Cmd+Shift+V"), "{}", has_clipboard, |s, _| paste(s, true)),
         cmd!("edit.clear", "Clear", ["Edit"], Some("Backspace"), r#"{"clips":[id]?}"#, has_any_selection, |s, p| {
             if p.get("clips").is_none() && p.get("clip").is_none() && s.state.selection.is_empty() {
+                // a selected transition (clicked in the Timeline) goes, as a clip would
+                if !s.state.transition_selection.is_empty() {
+                    let ids = s.state.transition_selection.clone();
+                    return remove_transitions(s, &ids, "Clear");
+                }
                 let caps = s.state.caption_selection.clone();
                 return crate::captions::delete(s, &caps, false);
             }
@@ -1198,7 +1229,7 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(Value::Null)
         }),
-        cmd!("edit.rippleDelete", "Ripple Delete", ["Edit"], Some("Shift+Delete"), r#"{"clips":[id]?}"#, has_any_selection, |s, p| {
+        cmd!("edit.rippleDelete", "Ripple Delete", ["Edit"], Some("Shift+Delete"), r#"{"clips":[id]?}"#, has_clip_or_caption_selection, |s, p| {
             if p.get("clips").is_none() && p.get("clip").is_none() && s.state.selection.is_empty() {
                 let caps = s.state.caption_selection.clone();
                 return crate::captions::delete(s, &caps, true);
@@ -1346,10 +1377,70 @@ fn build() -> Vec<CommandSpec> {
             let sel = clips_p(s, p);
             let linked = sel.iter().all(|c| s.active_sequence().and_then(|q| q.find_item(*c)).is_some_and(|(_, i)| i.link.is_some()));
             s.edit_sequence(if linked { "Unlink" } else { "Link" }, |q, ctx, _| {
-                let l = if linked { None } else { Some(ctx.alloc()) };
-                for c in &sel {
-                    if let Some((_, i)) = q.find_item_mut(*c) {
-                        i.link = l;
+                if linked {
+                    for c in &sel {
+                        if let Some((_, i)) = q.find_item_mut(*c) {
+                            i.link = None;
+                        }
+                    }
+                } else {
+                    // each selected clip with its track kind, worked out once
+                    type Spec = (ClipId, filmcraft_project::ItemId, filmcraft_time::TimeRange);
+                    let (mut v_clips, mut audio_specs): (Vec<Spec>, Vec<Spec>) = (Vec::new(), Vec::new());
+                    for c in &sel {
+                        if let Some((tid, i)) = q.find_item(*c) {
+                            if q.video_tracks.iter().any(|t| t.id == tid) {
+                                v_clips.push((*c, i.item, i.range()));
+                            } else {
+                                audio_specs.push((*c, i.item, i.range()));
+                            }
+                        }
+                    }
+                    if !audio_specs.is_empty() && v_clips.len() > 1 {
+                        let mut linked_audios = std::collections::HashSet::new();
+                        for (vid, item_id, vrange) in &v_clips {
+                            // Pair with overlapping audio clips from the same item, or overlapping audio clips if no same-item audio
+                            let matching: Vec<ClipId> = audio_specs
+                                .iter()
+                                .filter(|(aid, aitem, arange)| !linked_audios.contains(aid) && aitem == item_id && arange.overlaps(vrange))
+                                .map(|(aid, _, _)| *aid)
+                                .collect();
+                            let to_link = if !matching.is_empty() {
+                                matching
+                            } else {
+                                audio_specs
+                                    .iter()
+                                    .filter(|(aid, _, arange)| !linked_audios.contains(aid) && arange.overlaps(vrange))
+                                    .map(|(aid, _, _)| *aid)
+                                    .collect()
+                            };
+                            // a video clip with no audio partner stays unlinked: a one-member link would read as "linked"
+                            let l = (!to_link.is_empty()).then(|| ctx.alloc());
+                            if let Some((_, vi)) = q.find_item_mut(*vid) {
+                                vi.link = l;
+                            }
+                            for aid in to_link {
+                                linked_audios.insert(aid);
+                                if let Some((_, ai)) = q.find_item_mut(aid) {
+                                    ai.link = l;
+                                }
+                            }
+                        }
+                        // selected audio clips with no overlapping video stay unlinked
+                        for (aid, _, _) in audio_specs {
+                            if !linked_audios.contains(&aid)
+                                && let Some((_, ai)) = q.find_item_mut(aid)
+                            {
+                                ai.link = None;
+                            }
+                        }
+                    } else {
+                        let l = ctx.alloc();
+                        for c in &sel {
+                            if let Some((_, i)) = q.find_item_mut(*c) {
+                                i.link = Some(l);
+                            }
+                        }
                     }
                 }
                 Ok(())
@@ -1540,10 +1631,20 @@ fn build() -> Vec<CommandSpec> {
             "Edit Transition Settings",
             [],
             None,
-            r#"{"transition":id,"params":{param:value}?,"reverse":bool?,"reset":bool?}"#,
+            r#"{"transition":id,"params":{param:value}?,"reverse":bool?,"reset":bool?,"duration":ticks?|"frames":n?,"align":"center"|"start"|"end"?|"start":ticks?,"merge":bool?,"begin":bool?}"#,
             has_seq,
             set_transition
         ),
+        cmd!("sequence.removeTransition", "Clear Transition", [], None, r#"{"transitions":[id]?}"#, has_seq, |s, p| {
+            let ids: Vec<TransitionId> = match p.get("transitions").or_else(|| p.get("transition")) {
+                Some(v) => transition_ids_p(v).ok_or_else(|| bad("sequence.removeTransition", "`transitions` is a list of transition ids"))?,
+                None => s.state.transition_selection.clone(),
+            };
+            if ids.is_empty() {
+                return Err(bad("sequence.removeTransition", "no transition given or selected"));
+            }
+            remove_transitions(s, &ids, "Clear Transition")
+        }),
         cmd!("sequence.closeGap", "Close Gap", ["Sequence"], None, r#"{"track":"V1"|id,"time":ticks}"#, has_seq, |s, p| {
             let tr = track_p(s, p, "track", "sequence.closeGap")?.ok_or_else(|| bad("sequence.closeGap", "need `track`"))?;
             let t = time_p(s, p, "").unwrap_or(s.playhead());
@@ -2035,13 +2136,18 @@ fn build() -> Vec<CommandSpec> {
                 Ok(json!({"clips": ids.iter().map(|c| c.0).collect::<Vec<_>>()}))
             }
         ),
-        cmd!("timeline.select", "Select Clips", [], None, r#"{"clips":[id],"add":bool,"toggle":bool}"#, has_seq, |s, p| {
+        cmd!("timeline.select", "Select Clips", [], None, r#"{"clips":[id],"transitions":[id]?,"add":bool,"toggle":bool}"#, has_seq, |s, p| {
+            if let Some(ids) = p.get("transitions") {
+                return select_transitions(s, ids, bool_p(p, "add").unwrap_or(false), bool_p(p, "toggle").unwrap_or(false));
+            }
             let clips: Vec<ClipId> =
                 p.get("clips").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_u64().map(ClipId)).collect()).unwrap_or_default();
             let clips = with_links(s, &clips);
             // selecting clips leaves trim mode (Premiere: clip and edit point selections are exclusive)
             s.state.edit_points.clear();
             s.state.trim_shift = Default::default();
+            // and a clip selection replaces a transition one
+            s.state.transition_selection.clear();
             if bool_p(p, "toggle").unwrap_or(false) {
                 for c in clips {
                     if let Some(i) = s.state.selection.iter().position(|x| *x == c) {
@@ -2415,13 +2521,14 @@ fn build() -> Vec<CommandSpec> {
             "Set Effect Parameter",
             [],
             None,
-            r##"{"clip":id,"effect":"motion"|index,"param":str,"mask":n?,"value":num|[x,y]|"#rrggbb"|bool|path,"time":ticks?,"merge":bool?,"begin":bool?}"##,
+            r##"{"clip":id,"effect":"motion"|index,"param":str,"mask":n?,"value":num|[x,y]|"#rrggbb"|bool|path|"option name" (a choice takes its index or its name),"time":ticks? (where the keyframe goes when the parameter is animated; a parameter that is not animated gets a new static value whatever the time),"keyframe":bool? (true: write a keyframe at `time` and animate the parameter),"merge":bool?,"begin":bool?}"##,
             has_seq,
             |s, p| {
                 let c = clip_p(p, "clip").ok_or_else(|| bad("effects.setParam", "need `clip`"))?;
                 let pid = str_p(p, "param").ok_or_else(|| bad("effects.setParam", "need `param`"))?.to_string();
                 let val = p.get("value").cloned().ok_or_else(|| bad("effects.setParam", "need `value`"))?;
                 let eff = p.get("effect").cloned().unwrap_or(json!("motion"));
+                let keyframe = bool_p(p, "keyframe").unwrap_or(false);
                 let ph = s.playhead();
                 let tl = time_p(s, p, "").unwrap_or(ph);
                 let pq = p.clone();
@@ -2430,7 +2537,7 @@ fn build() -> Vec<CommandSpec> {
                 if bool_p(p, "begin").unwrap_or(false) {
                     s.history.merge_key = None;
                 }
-                s.edit_sequence_as("Change Effect Parameter", merge.as_deref(), |q, _, _| {
+                let keyframes = s.edit_sequence_as("Change Effect Parameter", merge.as_deref(), |q, _, _| {
                     let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
                     let mt = it.source_time_at(tl.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
                     let e = match &eff {
@@ -2439,6 +2546,22 @@ fn build() -> Vec<CommandSpec> {
                         _ => None,
                     }
                     .ok_or_else(|| bad("effects.setParam", "no such effect on clip"))?;
+                    // the parameter's definition (a mask's own parameters have none)
+                    let def = if pq.get("mask").is_none_or(Value::is_null) { e.def().and_then(|d| d.param(&pid)) } else { None };
+                    // a choice takes its option name as well as its index, as transition parameters do
+                    let val = match (def.map(|d| &d.kind), &val) {
+                        (Some(filmcraft_project::ParamKind::Choice(opts)), Value::String(name)) => {
+                            let i = opts
+                                .iter()
+                                .position(|o| o.eq_ignore_ascii_case(name))
+                                .ok_or_else(|| bad("effects.setParam", format!("`{pid}` must be one of {opts:?}")))?;
+                            json!(i)
+                        }
+                        _ => val.clone(),
+                    };
+                    if keyframe && def.is_some_and(|d| !d.animatable) {
+                        return Err(bad("effects.setParam", format!("`{pid}` cannot be animated")));
+                    }
                     if eff == json!("opacity") || eff == json!("motion") {
                         e.enabled = true;
                     }
@@ -2450,10 +2573,16 @@ fn build() -> Vec<CommandSpec> {
                     }
                     let prm = crate::masks::target_param(e, &pq, &pid).ok_or_else(|| bad("effects.setParam", format!("no param `{pid}`")))?;
                     let v = json_to_param(&prm.value, &val).ok_or_else(|| bad("effects.setParam", "value has the wrong type"))?;
-                    prm.set_at(mt, v);
-                    Ok(())
+                    if keyframe {
+                        // the stopwatch and the value in one step
+                        prm.put_keyframe(mt, v);
+                    } else {
+                        prm.set_at(mt, v);
+                    }
+                    Ok(prm.keyframes.len())
                 })?;
-                Ok(Value::Null)
+                // 0 keyframes: the value is static (`time` was not used)
+                Ok(json!({"keyframes": keyframes}))
             }
         ),
         cmd!("effects.toggleAnimation", "Toggle Animation", [], None, r#"{"clip":id,"effect":str|index,"param":str,"mask":n?}"#, has_seq, |s, p| {
@@ -2701,6 +2830,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::scopes::commands());
     v.extend(crate::remix::commands());
     v.extend(crate::voiceover::commands());
+    v.extend(crate::narration::commands());
     v.extend(crate::keyboard::commands());
     v.extend(crate::project_panel::commands());
     v.extend(crate::media_browser::commands());
@@ -3183,13 +3313,109 @@ fn set_transition_params(e: &mut filmcraft_project::EffectInstance, params: &Val
     Ok(())
 }
 
-/// `sequence.setTransition`: edit an applied transition's settings (Effect Controls).
+/// A JSON list of transition ids (or one id).
+fn transition_ids_p(v: &Value) -> Option<Vec<TransitionId>> {
+    match v {
+        Value::Array(a) => a.iter().map(|x| x.as_u64().map(TransitionId)).collect(),
+        x => x.as_u64().map(|i| vec![TransitionId(i)]),
+    }
+}
+
+/// `timeline.select {"transitions": […]}`: select transitions (clicking one in the Timeline). It
+/// replaces the clip, edit point and caption selections, as a clip selection replaces it.
+fn select_transitions(s: &mut Session, ids: &Value, add: bool, toggle: bool) -> Result<Value> {
+    const CMD: &str = "timeline.select";
+    let ids = transition_ids_p(ids).ok_or_else(|| bad(CMD, "`transitions` is a list of transition ids"))?;
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    if let Some(missing) = ids.iter().find(|id| !q.all_tracks().any(|t| t.transitions.iter().any(|x| x.id == **id))) {
+        return Err(bad(CMD, format!("no transition {}", missing.0)));
+    }
+    if toggle {
+        for id in ids {
+            match s.state.transition_selection.iter().position(|x| *x == id) {
+                Some(i) => {
+                    s.state.transition_selection.remove(i);
+                }
+                None => s.state.transition_selection.push(id),
+            }
+        }
+    } else if add {
+        for id in ids {
+            if !s.state.transition_selection.contains(&id) {
+                s.state.transition_selection.push(id);
+            }
+        }
+    } else {
+        s.state.transition_selection = ids;
+    }
+    s.state.selection.clear();
+    s.state.caption_selection.clear();
+    s.state.edit_points.clear();
+    s.state.trim_shift = Default::default();
+    Ok(json!({"selection": [], "transitionSelection": s.state.transition_selection.iter().map(|t| t.0).collect::<Vec<_>>()}))
+}
+
+/// Remove transitions in one undo step and drop them from the selection.
+fn remove_transitions(s: &mut Session, ids: &[TransitionId], label: &str) -> Result<Value> {
+    let ids = ids.to_vec();
+    let n = s.edit_sequence(label, |q, _, st| {
+        let n = edit::transitions::remove(q, &ids)?;
+        st.transition_selection.retain(|x| !ids.contains(x));
+        Ok(n)
+    })?;
+    Ok(json!({"removed": n}))
+}
+
+/// `sequence.setTransition`: edit an applied transition (Effect Controls, the Timeline): its
+/// settings, Reverse, and where it sits. `duration` / `frames` resize it the way its alignment
+/// says (Center at Cut and Custom Start: both ends; Start at Cut: the end; End at Cut: the
+/// beginning), `align` re-aligns it on its cut, `start` moves it (dragging it over the cut; with
+/// `duration`, dragging one edge). One undo step; with `merge`, a drag's steps share one.
 fn set_transition(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "sequence.setTransition";
     let id = p.get("transition").and_then(Value::as_u64).ok_or_else(|| bad(CMD, "need `transition`"))?;
+    let tid = TransitionId(id);
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
-    let found = q.video_tracks.iter().chain(q.audio_tracks.iter()).find_map(|tr| tr.transitions.iter().find(|x| x.id.0 == id)).cloned();
-    let mut cur = found.ok_or_else(|| bad(CMD, format!("no transition {id}")))?;
+    let rate = q.settings.frame_rate.sane();
+    let frame = rate.frame_duration();
+    let found = q.all_tracks().find_map(|tr| tr.transitions.iter().find(|x| x.id == tid).map(|x| (tr, x)));
+    let (track, cur) = found.ok_or_else(|| bad(CMD, format!("no transition {id}")))?;
+    let mut cur = cur.clone();
+    let (lo, cut, hi) = edit::transitions::bounds(track, &cur).ok_or_else(|| bad(CMD, "the transition's clips are gone"))?;
+    // times outside the clips it joins are refused before any frame arithmetic (hostile input)
+    let room = Tick(hi.0.saturating_sub(lo.0));
+    let duration = match (p.get("frames").and_then(Value::as_i64), p.get("duration").and_then(Value::as_i64)) {
+        (Some(_), Some(_)) => return Err(bad(CMD, "give `duration` or `frames`, not both")),
+        (Some(f), None) if (1..=10_000_000).contains(&f) && rate.tick_of(f) <= room => Some(rate.tick_of(f)),
+        (None, Some(d)) if d > 0 && d <= room.0 => Some(rate.snap_nearest(Tick(d)).max(frame)),
+        (Some(_), None) | (None, Some(_)) => return Err(bad(CMD, "a transition lasts at least one frame and can't extend past the clips it joins")),
+        (None, None) => None,
+    };
+    let align = match str_p(p, "align") {
+        Some(a) => Some(edit::transitions::Alignment::parse(a).ok_or_else(|| bad(CMD, format!("`align` is center, start or end, not `{a}`")))?),
+        None => None,
+    };
+    let start = match p.get("start").and_then(Value::as_i64) {
+        Some(t) if (lo.0..=hi.0).contains(&t) => Some(rate.snap_nearest(Tick(t))),
+        Some(_) => return Err(bad(CMD, "a transition can't extend past the clips it joins")),
+        None => None,
+    };
+    if start.is_some() && align.is_some() {
+        return Err(bad(CMD, "give `start` or `align`, not both"));
+    }
+    let span = if duration.is_some() || align.is_some() || start.is_some() {
+        let d = duration.unwrap_or(cur.duration);
+        let st = match start {
+            Some(st) => st,
+            None => {
+                let al = align.unwrap_or_else(|| edit::transitions::alignment(&cur, cut, frame));
+                edit::transitions::start_for(q, tid, d, al, frame, |t| rate.snap(t)).ok_or_else(|| bad(CMD, format!("no transition {id}")))?
+            }
+        };
+        Some((st, d))
+    } else {
+        None
+    };
     if p.get("reset").and_then(Value::as_bool).unwrap_or(false)
         && let Some(def) = cur.effect.def()
     {
@@ -3202,16 +3428,32 @@ fn set_transition(s: &mut Session, p: &Value) -> Result<Value> {
         cur.reverse = r;
     }
     let name = cur.effect.def().map_or("Transition", |d| d.name).to_string();
-    s.edit_sequence(&format!("Edit {name}"), |q, _, _| {
+    if bool_p(p, "begin").unwrap_or(false) {
+        s.history.merge_key = None;
+    }
+    let merge = bool_p(p, "merge").unwrap_or(false).then(|| format!("setTransition:{id}"));
+    let after = s.edit_sequence_as(&format!("Edit {name}"), merge.as_deref(), |q, _, _| {
+        if let Some((st, d)) = span {
+            edit::transitions::set_span(q, tid, st, d, frame, frame)?;
+        }
+        let mut after = None;
         for tr in q.video_tracks.iter_mut().chain(q.audio_tracks.iter_mut()) {
-            if let Some(x) = tr.transitions.iter_mut().find(|x| x.id.0 == id) {
+            if let Some(x) = tr.transitions.iter_mut().find(|x| x.id == tid) {
                 x.effect = cur.effect.clone();
                 x.reverse = cur.reverse;
+                after = Some((x.start, x.duration));
             }
         }
-        Ok(())
+        Ok(after)
     })?;
-    Ok(json!({"transition": id, "effect": cur.effect.effect, "reverse": cur.reverse}))
+    let (st, d) = after.unwrap_or((cur.start, cur.duration));
+    let al = s
+        .active_sequence()
+        .and_then(|q| {
+            q.all_tracks().find_map(|tr| tr.transitions.iter().find(|x| x.id == tid).and_then(|x| edit::transitions::bounds(tr, x).map(|b| (x.clone(), b.1))))
+        })
+        .map(|(x, cut)| edit::transitions::alignment(&x, cut, frame).id());
+    Ok(json!({"transition": id, "effect": cur.effect.effect, "reverse": cur.reverse, "start": st.0, "duration": d.0, "align": al}))
 }
 
 fn apply_transition(s: &mut Session, p: &Value, kind: TrackKind) -> Result<Value> {
@@ -3328,7 +3570,7 @@ pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence
                 "enabled": i.enabled, "link": i.link, "label": i.label.name(),
                 "effects": i.effects.iter().map(|e| json!({"effect": e.effect, "enabled": e.enabled, "masks": e.masks.len(), "params": e.params.iter().map(|(k, p)| (k.clone(), json!({"value": format!("{:?}", p.value), "keyframes": p.keyframes.len()}))).collect::<serde_json::Map<_, _>>()})).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
-            "transitions": t.transitions.iter().map(|x| json!({"id": x.id.0, "effect": x.effect.effect, "start": x.start.0, "duration": x.duration.0, "from": x.from.map(|c| c.0), "to": x.to.map(|c| c.0), "reverse": x.reverse, "params": x.effect.params.iter().map(|(k, v)| (k.clone(), serde_json::to_value(&v.value).unwrap_or_default())).collect::<serde_json::Map<_, _>>()})).collect::<Vec<_>>(),
+            "transitions": t.transitions.iter().map(|x| json!({"id": x.id.0, "effect": x.effect.effect, "start": x.start.0, "duration": x.duration.0, "from": x.from.map(|c| c.0), "to": x.to.map(|c| c.0), "reverse": x.reverse, "align": filmcraft_edit::transitions::bounds(t, x).map(|b| filmcraft_edit::transitions::alignment(x, b.1, rate.frame_duration()).id()), "params": x.effect.params.iter().map(|(k, v)| (k.clone(), serde_json::to_value(&v.value).unwrap_or_default())).collect::<serde_json::Map<_, _>>()})).collect::<Vec<_>>(),
         })
     };
     json!({
@@ -3345,6 +3587,7 @@ pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence
         "video": q.video_tracks.iter().map(tr).collect::<Vec<_>>(),
         "audio": q.audio_tracks.iter().map(tr).collect::<Vec<_>>(),
         "selection": s.state.selection.iter().map(|c| c.0).collect::<Vec<_>>(),
+        "transitionSelection": s.state.transition_selection.iter().map(|t| t.0).collect::<Vec<_>>(),
     })
 }
 

@@ -387,7 +387,7 @@ impl Builder {
     /// Add an empty sequence item (filled later with [`Builder::put_sequence`]).
     pub fn reserve_sequence(&mut self, name: &str, settings: SequenceSettings, bin: Option<BinId>) -> ItemId {
         let seq = empty_sequence(settings);
-        self.p.add_item(name, Label::Forest, ItemKind::Sequence(Box::new(seq)), bin)
+        self.p.add_item(name, Label::Forest, ItemKind::Sequence(std::sync::Arc::new(seq)), bin)
     }
 
     pub fn put_sequence(&mut self, id: ItemId, mut seq: Sequence) {

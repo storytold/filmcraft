@@ -436,7 +436,11 @@ fn add_craft_fonts(fonts: &mut FontDefinitions) {
 }
 
 pub fn apply_visuals(ctx: &egui::Context, t: &Tokens) {
-    let mut v = if t.kind == ThemeKind::Light { Visuals::light() } else { Visuals::dark() };
+    let light = t.kind == ThemeKind::Light;
+    // FilmCraft decides between light and dark itself (Settings ▸ Appearance ▸ Appearance Mode), so
+    // egui must not switch to its other built-in style when the system appearance changes.
+    ctx.set_theme(if light { egui::Theme::Light } else { egui::Theme::Dark });
+    let mut v = if light { Visuals::light() } else { Visuals::dark() };
     v.panel_fill = t.panel_bg;
     v.window_fill = t.panel_bg;
     v.extreme_bg_color = t.field_bg;

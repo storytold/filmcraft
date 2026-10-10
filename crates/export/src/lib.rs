@@ -291,6 +291,10 @@ pub struct ExportSettings {
     /// byte-reproducible like the built-in encoder's (`determinism_tests`).
     #[serde(default)]
     pub hardware_encoding: HardwareEncoding,
+    /// Composite the exported frames on the GPU instead of the CPU reference renderer (Export ▸
+    /// GPU rendering: Auto / Off, Off by default). Off = the CPU reference renderer exactly.
+    #[serde(default)]
+    pub gpu_rendering: GpuRendering,
     /// VBR maximum bitrate (None = 1.5 × target).
     pub max_bitrate_kbps: Option<u32>,
     /// Adaptive bitrate (the Match Source presets): bits per pixel per frame; replaces
@@ -486,6 +490,7 @@ impl Default for ExportSettings {
             h264_level: None,
             bitrate_mode: BitrateMode::default(),
             hardware_encoding: HardwareEncoding::default(),
+            gpu_rendering: GpuRendering::Off,
             max_bitrate_kbps: None,
             adaptive_bitrate: None,
             keyframe_distance: None,
@@ -786,6 +791,99 @@ pub fn register_encoder(f: EncoderFactory) {
 /// Whether `f` is among the registered video encoder factories (startup diagnostics, tests).
 pub fn encoder_registered(f: EncoderFactory) -> bool {
     video_factories().read().unwrap_or_else(|e| e.into_inner()).iter().any(|x| std::ptr::fn_addr_eq(*x, f))
+}
+
+/// Renders one export frame on something other than the CPU reference renderer — today the GPU
+/// compositor (`filmcraft-gpu`), registered by the app or CLI at startup. `render` returns the
+/// frame exactly as [`filmcraft_render::render_sequence`] would (same size, premultiplied
+/// linear-light RGBA), or `None` to let the CPU render this frame (no adapter, a plan the GPU
+/// cannot draw, any internal error): the CPU renderer is the reference and the fallback.
+pub trait FrameRenderer: Send {
+    fn render(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn SourceProvider,
+    ) -> Option<filmcraft_render::Image>;
+}
+
+/// Builds the frame renderer for one export, or `None` when this host cannot (no adapter).
+pub type FrameRendererFactory = fn() -> Option<Box<dyn FrameRenderer>>;
+
+fn frame_renderer_factories() -> &'static RwLock<Vec<FrameRendererFactory>> {
+    static F: OnceLock<RwLock<Vec<FrameRendererFactory>>> = OnceLock::new();
+    F.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Register a frame-renderer factory (tried before those registered earlier). Registering the
+/// same factory twice is harmless.
+pub fn register_frame_renderer(f: FrameRendererFactory) {
+    let mut g = frame_renderer_factories().write().unwrap_or_else(|e| e.into_inner());
+    if !g.iter().any(|x| std::ptr::fn_addr_eq(*x, f)) {
+        g.insert(0, f);
+    }
+}
+
+/// Whether `f` is among the registered frame-renderer factories (startup diagnostics, tests).
+pub fn frame_renderer_registered(f: FrameRendererFactory) -> bool {
+    frame_renderer_factories().read().unwrap_or_else(|e| e.into_inner()).iter().any(|x| std::ptr::fn_addr_eq(*x, f))
+}
+
+/// Clear the registered frame-renderer factories. Test-only: registration is a process-wide
+/// startup step and tests that register their own must not see each other's.
+#[cfg(test)]
+pub(crate) fn reset_frame_renderers_for_tests() {
+    frame_renderer_factories().write().unwrap_or_else(|e| e.into_inner()).clear();
+    GPU_FRAMES.store(0, Ordering::Relaxed);
+    GPU_FALLBACKS.store(0, Ordering::Relaxed);
+}
+
+/// Pick the first registered factory that can build a renderer for this host.
+pub(crate) fn build_frame_renderer() -> Option<Box<dyn FrameRenderer>> {
+    let g = frame_renderer_factories().read().unwrap_or_else(|e| e.into_inner());
+    g.iter().filter_map(|f| f()).next()
+}
+
+static GPU_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static GPU_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static LOCK_WAIT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A frame was composited by the registered GPU renderer.
+pub fn note_gpu_frame() {
+    GPU_FRAMES.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The GPU renderer declined a frame (the CPU reference renderer took it).
+pub fn note_gpu_fallback() {
+    GPU_FALLBACKS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Time an export worker waited for a free GPU renderer (process-wide, for the bench).
+pub(crate) fn note_lock_wait(d: std::time::Duration) {
+    LOCK_WAIT_NS.fetch_add(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX), Ordering::Relaxed);
+}
+
+/// Total time export workers waited for a GPU renderer since [`reset_export_lock_wait`].
+pub fn export_lock_wait() -> std::time::Duration {
+    std::time::Duration::from_nanos(LOCK_WAIT_NS.load(Ordering::Relaxed))
+}
+
+/// Start [`export_lock_wait`] again from zero.
+pub fn reset_export_lock_wait() {
+    LOCK_WAIT_NS.store(0, Ordering::Relaxed);
+}
+
+/// GPU-vs-CPU frame counters of the export renderer (per-process, like the hardware ones).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GpuRenderStats {
+    pub frames: u64,
+    pub fallbacks: u64,
+}
+
+pub fn gpu_render_stats() -> GpuRenderStats {
+    GpuRenderStats { frames: GPU_FRAMES.load(Ordering::Relaxed), fallbacks: GPU_FALLBACKS.load(Ordering::Relaxed) }
 }
 pub fn register_audio_encoder(f: AudioEncoderFactory) {
     audio_factories().write().unwrap_or_else(|e| e.into_inner()).insert(0, f);

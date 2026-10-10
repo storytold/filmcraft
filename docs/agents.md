@@ -61,7 +61,7 @@ claude mcp add filmcraft -- filmcraft-cli mcp
 | `render_preview` | both | same as `render_frame` |
 | `project_inspect` | both | bins and items with ids, types, durations; active sequence |
 | `sequence_inspect` | both | the active sequence: tracks, clips (`start` / `end` and `sourceIn` / `sourceOut` in ticks, frames, `speed`, `reverse`: the clip plays its `sourceIn` to `sourceOut` stretch backward, `gainDb`), effects, transitions, markers (name and `comment`), playhead, selection |
-| `media_import` | both | import files by absolute path (`text`, one path per line) |
+| `media_import` | both | import files by absolute path (`paths`, an array; optional `bin`, `image_sequence`) |
 | `render_frame` | both | PNG of the program frame at `seconds` (headless renders; bridge screenshots the Program monitor). Read-only: the playhead and selection are left as they were |
 | `ui_inspect` | bridge | UI state: tool, workspace, panels, zoom, playback, fps |
 | `ui_elements` | bridge | on-screen interactive elements with id, label and rect (`prefix` filter) |
@@ -182,7 +182,8 @@ Notes:
 ## 2b. Command-line interface
 
 Every command is also one shell call away. Options go anywhere; output is JSON; exit status is 0 on
-success, 1 when a command fails and 2 on a usage error. `filmcraft-cli help` prints the reference.
+success, 1 when a command fails and 2 on a usage error. `filmcraft-cli help`, `filmcraft-cli --help`
+and `filmcraft-cli -h` print the reference and exit successfully.
 If the reader of stdout closes the pipe early (`filmcraft-cli commands | head`), the CLI drops the rest
 of its output but still finishes the work, saves included, and the exit status still reports
 failures; any other stdout write error is reported and makes the status 1.

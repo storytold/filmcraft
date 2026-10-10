@@ -428,7 +428,7 @@ fn simplify(s: &mut Session, p: &Value) -> Result<Value> {
         let report = simplify_sequence(pr, &mut q, &o);
         q.check().map_err(EngineError::Other)?;
         let bin = pr.root.parent_of(seq_id).filter(|b| b.0 != 0);
-        let id = pr.add_item(&name, src.label, ItemKind::Sequence(Box::new(q)), bin);
+        let id = pr.add_item(&name, src.label, ItemKind::Sequence(std::sync::Arc::new(q)), bin);
         st.active_sequence = Some(id);
         if !st.open_sequences.contains(&id) {
             st.open_sequences.push(id);

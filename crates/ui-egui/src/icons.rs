@@ -114,6 +114,10 @@ pub enum Icon {
     Network,
     /// Media Browser: recent directories (a clock face).
     Clock,
+    /// Appearance Mode: Auto (a display on a stand), Light (a sun), Dark (a crescent moon).
+    Monitor,
+    Sun,
+    Moon,
     /// Colour parameters: pick a colour from the Program monitor (a pipette).
     Eyedropper,
 }
@@ -727,6 +731,31 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.circle(8.0, 8.0, 6.0);
             pen.line(&[(8.0, 4.5), (8.0, 8.0), (10.5, 9.5)]);
         }
+        Monitor => {
+            pen.rect(2.0, 2.5, 14.0, 11.0);
+            pen.line(&[(8.0, 11.0), (8.0, 13.5)]);
+            pen.line(&[(5.0, 13.5), (11.0, 13.5)]);
+        }
+        Sun => {
+            pen.circle(8.0, 8.0, 2.8);
+            for i in 0..8 {
+                let a = (i as f32 * 45.0).to_radians();
+                let (c, s) = (a.cos(), a.sin());
+                pen.line(&[(8.0 + 4.6 * c, 8.0 + 4.6 * s), (8.0 + 6.2 * c, 8.0 + 6.2 * s)]);
+            }
+        }
+        Moon => {
+            // The outer circle's arc through the bottom left, back along a smaller circle that
+            // bites the top right out of it.
+            let arc = |cx: f32, cy: f32, r: f32, a0: f32, a1: f32| {
+                (0..=12).map(move |i| {
+                    let a = (a0 + (a1 - a0) * i as f32 / 12.0).to_radians();
+                    (cx + r * a.cos(), cy + r * a.sin())
+                })
+            };
+            let pts: Vec<(f32, f32)> = arc(8.0, 8.5, 5.5, 8.56, 261.44).chain(arc(11.2, 5.3, 4.6, 209.12, 60.88).skip(1)).collect();
+            pen.closed(&pts);
+        }
         Eyedropper => {
             // a pipette: bulb at the top right, glass tube running to a tip at the bottom left
             pen.closed(&[(10.0, 4.5), (11.5, 3.0), (13.0, 3.0), (13.0, 4.5), (11.5, 6.0)]);
@@ -768,6 +797,9 @@ mod tests {
     use egui::epaint::{ColorMode, Shape};
 
     const ALL: &[Icon] = &[
+        Monitor,
+        Sun,
+        Moon,
         Selection,
         TrackSelectFwd,
         TrackSelectBack,

@@ -10,6 +10,7 @@
 //! - `ui.elements {prefix?}`: registered widgets (optionally filtered by id prefix)
 //! - `ui.set {tool?, workspace?, mode?, theme?, focused?, playbackRes?, timeline?:{pps,scroll}}`
 //! - `ui.panel.show {panel}` / `ui.panel.close {panel}`
+//! - `ui.set {tts: {voice, pitch, pace, text…}}`: patch the Text to Speech panel draft
 //! - `ui.click {id | x,y, button?, count?, modifiers?}` / `ui.move {x,y}` / `ui.scroll {x,y,dx,dy}`
 //! - `ui.drag {from:{id|x,y}, to:{id|x,y}, steps?, modifiers?}`: synthetic press-move-release
 //! - `ui.key {key, command?, shift?, alt?, ctrl?}` / `ui.type {text}`
@@ -123,6 +124,15 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             ok(serde_json::to_value(app.auto.query(prefix)).unwrap_or_default())
         }
         "ui.set" => {
+            // Text to Speech panel draft (voice, pitch, pace, text…), merged into the current one
+            if let Some(patch) = p.get("tts") {
+                let mut cur = serde_json::to_value(&app.ui.tts).unwrap_or_default();
+                merge(&mut cur, patch);
+                match serde_json::from_value(cur) {
+                    Ok(d) => app.ui.tts = d,
+                    Err(e) => return err(format!("bad `tts`: {e}")),
+                }
+            }
             if let Some(t) = s("tool") {
                 match Tool::from_name(t) {
                     Some(t) => app.ui.tool = t,

@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use filmcraft_export::presets::{DEFAULT_PRESET, preset_key};
-use filmcraft_export::{ExportPreset, ExportSettings, Format, HardwareEncoding};
+use filmcraft_export::{ExportPreset, ExportSettings, Format, GpuRendering, HardwareEncoding};
 use filmcraft_project::{ItemId, Project};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
 use serde::{Deserialize, Serialize};
@@ -228,6 +228,18 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
                 }
             }
             other => serde_json::from_value(other.clone()).map_err(|_| bad(cmd, "hardwareEncoding: off | auto"))?,
+        };
+    }
+    if let Some(v) = p.get("gpuRendering") {
+        settings.gpu_rendering = match v {
+            Value::Bool(on) => {
+                if *on {
+                    GpuRendering::Auto
+                } else {
+                    GpuRendering::Off
+                }
+            }
+            other => serde_json::from_value(other.clone()).map_err(|_| bad(cmd, "gpuRendering: off | auto"))?,
         };
     }
     if let Some(v) = bool_p(p, "burnCaptions") {

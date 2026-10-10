@@ -22,6 +22,11 @@ real_name = "Brandon Thomas"
 display_name = "Brandon Thomas"
 sync_github_name = false
 
+[people.ahmedhosnypro]
+real_name = "Ahmed Hosny"
+display_name = "Ahmed Hosny"
+sync_github_name = false
+
 [people.sanyamsingh001]
 display_name = "sanyamsingh001"
 sync_github_name = false
@@ -40,6 +45,14 @@ sync_github_name = true
 
 [people.ItzBloxy]
 display_name = "Bloxy"
+
+[people.Hathor875]
+real_name = "Krzysztof Cieślik"
+sync_github_name = true
+
+[people.ReReddo]
+display_name = "ReReddo"
+sync_github_name = false
 
 [people.liangforstudy]
 sync_github_name = true

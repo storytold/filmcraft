@@ -340,7 +340,7 @@ fn push_item(
         && let Some(angle) = item.multicam_angle(nested)
         && !(opts.effects && item.has_standard_effects())
         && (nested.settings.width, nested.settings.height) == (seq.settings.width, seq.settings.height)
-        && near_identity(&motion_matrix(seq, item, (nested.settings.width, nested.settings.height), mt))
+        && near_identity(&motion_matrix(seq, item, (nested.settings.width, nested.settings.height), Some(nested.settings.par), mt))
         && let Some(tr) = nested.angle_video_track_index(angle).and_then(|i| nested.video_tracks.get(i))
         && !tr.transitions.iter().any(|x| x.range().contains(ft))
         && tr.item_at(ft).is_none_or(|i| crate::opacity_blend(i, i.effect_time_at(ft)).1 != Blend::Dissolve)
@@ -362,7 +362,7 @@ fn push_item(
         && !item.has_opacity_masks()
         && bl == Blend::Normal
         && extra_opacity * op >= 1.0 - 1e-6
-        && near_identity(&motion_matrix(seq, item, (nested.settings.width, nested.settings.height), mt))
+        && near_identity(&motion_matrix(seq, item, (nested.settings.width, nested.settings.height), Some(nested.settings.par), mt))
         && nest_is_plain(project, seq, nested, ft)
     {
         push_tracks(project, nested, ft, opts, sources, nest + 1, out);
@@ -384,7 +384,7 @@ fn push_item(
     {
         let Some(size) = crate::source_size(project, item.item) else { return };
         let (w, h) = output_size(seq, opts.scale);
-        let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion_matrix(seq, item, size, mt));
+        let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion_matrix(seq, item, size, None, mt));
         if let Some((img, x, y)) = crate::graphic_clip::render_graphic_tight(item, mt, size, &m, w, h) {
             out.push(PlanLayer::new(cpu_frame(img), Affine::translate(x as f64, y as f64), op * extra_opacity, bl));
         }
@@ -393,7 +393,7 @@ fn push_item(
     if let Some(chain) = gpu_chain(project, item, opts) {
         let Some(src) = sources.source(item.item) else { return };
         let Some(size) = crate::source_size(project, item.item) else { return };
-        let motion = motion_matrix(seq, item, size, mt);
+        let motion = motion_matrix(seq, item, size, crate::source_par(project, item.item), mt);
         let lin = ((motion.a * motion.a + motion.b * motion.b).sqrt()).max((motion.c * motion.c + motion.d * motion.d).sqrt());
         let want = (lin * opts.scale as f64).clamp(1.0 / 64.0, 1.0) as f32;
         let time = crate::video_source_time(item, t, src.info().frame_rate());
