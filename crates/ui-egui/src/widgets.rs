@@ -1,6 +1,7 @@
 //! Small custom widgets in Premiere's visual language.
 
 use egui::{Align2, Color32, Rect, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
+use filmcraft_time::{FrameRate, Tick, parse_timecode};
 
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
@@ -58,11 +59,108 @@ pub fn hot_number(ui: &mut Ui, id: egui::Id, value: f64, speed: f64, range: (f64
     (resp, out)
 }
 
-/// A large blue timecode readout (monitors/timeline). Click to type a new time.
-pub fn timecode_label(ui: &mut Ui, rect: Rect, text: &str, size: f32, color: Color32, align: Align2) -> Response {
-    let resp = ui.interact(rect, ui.id().with(("tc", rect.min.x as i32, rect.min.y as i32)), Sense::click_and_drag());
-    ui.painter().text(align.pos_in_rect(&rect), align, text, Tokens::mono(size), color);
-    resp
+/// A large blue timecode readout (monitors/timeline) that moves its playhead: drag horizontally to
+/// scrub (1 frame per point, Shift ×10), click to type a time (Enter or clicking away commits,
+/// Escape cancels). Returns the time to go to (never before `min`), or why a typed time is invalid.
+#[allow(clippy::too_many_arguments)]
+pub fn timecode_field(
+    ui: &mut Ui,
+    id: egui::Id,
+    rect: Rect,
+    text: &str,
+    time: Tick,
+    min: Tick,
+    rate: FrameRate,
+    drop_frame: bool,
+    color: Color32,
+) -> Option<Result<Tick, String>> {
+    let editing_id = id.with("editing");
+    let edit_id = id.with("edit");
+    let select_all_id = id.with("select-all");
+    if let Some(mut buf) = ui.data(|d| d.get_temp::<String>(editing_id)) {
+        // Left/Right on the whole selected value start from its last digit (egui would jump to the start)
+        let arrow = ui.input(|i| i.modifiers.is_none() && (i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::ArrowRight)));
+        if arrow && let Some(mut st) = egui::text_edit::TextEditState::load(ui.ctx(), edit_id) {
+            let len = buf.chars().count();
+            let all = [egui::text::CCursor::new(0), egui::text::CCursor::new(len)];
+            if len > 0 && st.cursor.char_range().is_some_and(|c| c.sorted_cursors() == all) {
+                st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(len))));
+                st.store(ui.ctx(), edit_id);
+            }
+        }
+        let r = ui.put(rect, egui::TextEdit::singleline(&mut buf).id(edit_id).font(Tokens::timecode()).desired_width(rect.width()));
+        if r.lost_focus() {
+            ui.data_mut(|d| d.remove::<String>(editing_id));
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                return None;
+            }
+            let typed = parse_timecode(&buf, rate, drop_frame, rate.frame_at(time));
+            return Some(typed.map(|f| rate.tick_of(f).max(min)).map_err(|e| e.to_string()));
+        }
+        // select the whole value once the field has focus: egui collapses a selection to a caret
+        // in a field that does not have it yet
+        let selected_now = r.has_focus() && ui.data_mut(|d| d.remove_temp::<bool>(select_all_id)).is_some();
+        if selected_now {
+            let mut st = egui::text_edit::TextEditState::load(ui.ctx(), edit_id).unwrap_or_default();
+            st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(buf.chars().count()))));
+            st.store(ui.ctx(), edit_id);
+        }
+        // the focus and the selection show on the next frame, which nothing else would trigger
+        if !r.has_focus() || selected_now {
+            ui.ctx().request_repaint();
+        }
+        ui.data_mut(|d| d.insert_temp(editing_id, buf));
+        // only until it has focus: `request_focus` resets the field's focus-lock filter, and the
+        // arrow keys would then move focus out of the field (committing it) instead of the caret
+        if !r.has_focus() {
+            r.request_focus();
+        }
+        return None;
+    }
+    let resp = ui.interact(rect, id, Sense::click_and_drag());
+    ui.painter().text(pos2(rect.min.x, rect.center().y), Align2::LEFT_CENTER, text, Tokens::timecode(), color);
+    // (frame at the press, frames dragged so far, where the pointer was pressed)
+    let drag_id = id.with("drag");
+    let mult = if ui.input(|i| i.modifiers.shift) { 10.0 } else { 1.0 };
+    if resp.drag_started() {
+        let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(rect.center());
+        let now = resp.interact_pointer_pos().unwrap_or(origin);
+        // egui reports a drag only past its click threshold: count the movement before that,
+        // less this frame's delta, which the `dragged` branch below adds
+        let early = f64::from(now.x - origin.x - resp.drag_delta().x) * mult;
+        ui.data_mut(|d| d.insert_temp(drag_id, (rate.frame_at(time), early, origin)));
+    }
+    let mut out = None;
+    if resp.dragged() {
+        // hidden while scrubbing, put back where it was pressed on release (below)
+        ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+        if let Some((start, acc, origin)) = ui.data(|d| d.get_temp::<(i64, f64, egui::Pos2)>(drag_id)) {
+            // held at `min` so dragging back moves again at once
+            let acc = (acc + f64::from(resp.drag_delta().x) * mult).max((rate.frame_at(min) - start) as f64);
+            ui.data_mut(|d| d.insert_temp(drag_id, (start, acc, origin)));
+            let target = rate.tick_of(start.saturating_add(acc.trunc() as i64)).max(min);
+            if target != time {
+                out = Some(Ok(target));
+            }
+        }
+    } else if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    if resp.drag_stopped()
+        && let Some((_, _, origin)) = ui.data_mut(|d| d.remove_temp::<(i64, f64, egui::Pos2)>(drag_id))
+    {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorPosition(origin));
+    }
+    if resp.clicked() {
+        // the field asks for focus itself next frame: asking now, before it exists, leaves the
+        // accessibility tree focused on a node it does not have
+        ui.data_mut(|d| {
+            d.insert_temp(editing_id, text.to_string());
+            d.insert_temp(select_all_id, true);
+        });
+        ui.ctx().request_repaint();
+    }
+    out
 }
 
 /// A twirl-down section header (Effect Controls / Lumetri style). Returns open state.

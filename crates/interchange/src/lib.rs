@@ -438,6 +438,7 @@ pub fn merge_into(target: &mut Project, fragment: Imported, bin: Option<BinId>) 
         it.created = it.id.0;
         match &mut it.kind {
             ItemKind::Sequence(seq) => {
+                let seq = std::sync::Arc::make_mut(seq);
                 for m in &mut seq.markers {
                     m.id = MarkerId(target.alloc_id());
                 }
@@ -510,6 +511,7 @@ pub fn rebase_source_timecode(project: &mut Project, item: ItemId, start_tc_fram
     }
     for it in project.items.values_mut() {
         if let ItemKind::Sequence(seq) = &mut it.kind {
+            let seq = std::sync::Arc::make_mut(seq);
             for t in seq.all_tracks_mut() {
                 for ti in t.items.iter_mut().filter(|ti| ti.item == item) {
                     ti.source_in -= off;

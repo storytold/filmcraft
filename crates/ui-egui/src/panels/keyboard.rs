@@ -478,7 +478,8 @@ fn text_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
     let n = words.len();
     let paras = filmcraft_edit::transcript::paragraphs(&words, filmcraft_time::Tick::from_seconds_f64(1.5));
     let para_of = |i: usize| paras.iter().position(|p| p.contains(&i)).unwrap_or(0);
-    let (anchor, cur) = app.ui.transcript_sel.unwrap_or_else(|| {
+    // a selection left over from a longer transcript (e.g. after `transcript.extract` over the control channel) counts as none, as when drawing
+    let (anchor, cur) = app.ui.transcript_sel.filter(|(a, b)| *a < n && *b < n).unwrap_or_else(|| {
         let i = filmcraft_edit::transcript::word_at(&words, app.session.playhead()).unwrap_or(0);
         (i, i)
     });
@@ -512,4 +513,33 @@ fn text_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
     // the playhead follows the caret
     app.session.set_playhead(words[to].start);
     Ok(json!({"selection": [anchor.min(to), anchor.max(to)], "word": to}))
+}
+
+#[cfg(test)]
+mod transcript_selection_tests {
+    use serde_json::{Value, json};
+
+    #[test]
+    fn prev_word_after_the_transcript_shrank_under_the_selection_does_not_panic() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let a = session.active_sequence().unwrap().audio_tracks[0].items[0].clone();
+        let tk = |s: f64| a.source_in.0 + (s * filmcraft_time::TICKS_PER_SECOND as f64) as i64;
+        let words: Vec<Value> = ["one", "two", "three", "four"]
+            .iter()
+            .enumerate()
+            .map(|(i, w)| json!({"text": w, "start": tk(0.5 + i as f64 * 0.5), "end": tk(0.9 + i as f64 * 0.5)}))
+            .collect();
+        session.execute("transcript.set", json!({"item": a.item.0, "transcript": {"language": "en", "words": words}})).unwrap();
+        let mut app = crate::FilmcraftApp::new(session);
+        app.ui.text_tab = "Transcript".into();
+        app.ui.transcript_sel = Some((3, 3));
+        // the transcript shrinks behind the panel's back, as with `transcript.extract` over the control channel
+        app.session.execute("transcript.extract", json!({"from": 0, "to": 1})).unwrap();
+        assert_eq!(filmcraft_engine::transcript::sequence_words(&app.session).len(), 2);
+        let r = super::text_panel(&mut app, "prevWord").unwrap();
+        let (sa, sb) = app.ui.transcript_sel.unwrap();
+        assert!(sa < 2 && sb < 2, "selection {sa}..{sb} outside the 2-word transcript");
+        assert_eq!(r["word"], json!(sb));
+    }
 }

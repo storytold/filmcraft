@@ -210,3 +210,29 @@ fn trim_monitor_sides_and_shift_counters() {
     let seq = s.execute("sequence.inspect", json!({})).unwrap();
     assert!(!seq["video"][0]["transitions"].as_array().unwrap().is_empty());
 }
+
+#[test]
+fn extend_to_playhead_moves_each_unequal_out_point_to_the_playhead() {
+    let mut s = demo();
+    s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+    let rate = s.sequence_rate();
+    let q = s.active_sequence().unwrap();
+    // a clip on V1 and the overlay on V2 that overlap in time but end at different frames
+    let mut found = None;
+    for a in &q.video_tracks[0].items {
+        for b in &q.video_tracks[1].items {
+            let (lo, hi) = (a.start.max(b.start), a.end().min(b.end()));
+            if found.is_none() && a.end() != b.end() && hi - lo > rate.tick_of(2) {
+                found = Some((a.id, b.id, lo + rate.tick_of(1)));
+            }
+        }
+    }
+    let (a, b, ph) = found.expect("demo has overlapping clips on V1 and V2 with different ends");
+    s.execute("playhead.set", json!({"time": ph.0})).unwrap();
+    s.execute("trim.selectEditPoint", json!({"clip": a.0, "edge": "out", "kind": "trim"})).unwrap();
+    s.execute("trim.selectEditPoint", json!({"clip": b.0, "edge": "out", "kind": "trim", "add": true})).unwrap();
+    s.execute("trim.extendToPlayhead", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.find_item(a).unwrap().1.end(), ph);
+    assert_eq!(q.find_item(b).unwrap().1.end(), ph);
+}

@@ -1,95 +1,3504 @@
-# Japanese (ja) catalog. Same format as `es.tsv`: context <TAB> source <TAB> translation.
+# Japanese (ja) catalog. Same format as `es.tsv`: context <TAB> source <TAB> translation. It covers the
+# whole interface (the same entries as `es.tsv`); a string without an entry is shown in English.
 #
-# Clean-room: every entry was written from the plain meaning of the English label using ordinary
-# Japanese computing vocabulary. No proprietary localisation resource, string table or product UI
-# was consulted or copied. This catalog covers the menus only; anything else is shown in English.
+# Clean-room: every entry was written from the plain meaning of the English text using ordinary
+# Japanese computing and video-editing vocabulary (クリップ, シーケンス, トラック, 再生ヘッド, ぼかし ...). No
+# proprietary localisation resource, string table or product UI was consulted or copied; add entries
+# the same way. Product and technology names (FilmCraft, ArtCraft, Lumetri, ProRes, LUFS ...) keep
+# their spelling.
+#
+# House style, so new entries read like the rest:
+#   - Menu commands and buttons are short noun phrases or "〜を + verb" with no する/します ending
+#     (別名で保存…, 編集点を追加). Tooltips and messages are です・ます sentences ending in 。
+#   - One half-width space between Japanese text and an adjacent Latin word, number or {placeholder}
+#     (Lumetri カラー, {n} 個). Half-width ":" and "( )", full-width "？". Always "…", never "...".
+#   - The long vowel mark is kept (フォルダー, モニター). Terms: 既定 (not デフォルト), リセット, エフェクト
+#     (not 効果), ぼかし, 音量, ビデオ, 再生ヘッド, イン点/アウト点.
+#   - "Horizontal"/"Vertical" are 水平/垂直 (guides, blur, axes); vertical text is "Vertical Text".
 
-	Clip	クリップ
-	Sequence	シーケンス
-	Markers	マーカー
+	About FilmCraft	FilmCraft について
+	Add Audio Submix Track	オーディオサブミックストラックを追加
+	Add Caption at Playhead	再生ヘッドの位置にキャプションを追加
+	Add Chapter Marker…	チャプターマーカーを追加…
+	Add Edit	編集点を追加
+	Add Edit to All Tracks	すべてのトラックに編集点を追加
+	Add Flash Cue Marker…	フラッシュキューマーカーを追加…
+	Add Frame Hold	フレームホールドを追加
+	Add Guide…	ガイドを追加…
+	Add Marker	マーカーを追加
+	Add New Caption Track…	新規キャプショントラックを追加…
+	Add Range Marker	範囲マーカーを追加
+	Add Range Marker to In and Out	イン点からアウト点までの範囲マーカーを追加
+	Add Tracks…	トラックを追加…
+	Adjustment Layer…	調整レイヤー…
+	Align to Selection	選択範囲に整列
+	Align to Video Frame	ビデオフレームに整列
+	Align to Video Frame as Group	グループとしてビデオフレームに整列
+	All Panels	すべてのパネル
+	Alpha	アルファ
+	Appearance	外観
+	Appearance…	外観…
+	Apply Audio Transition	オーディオトランジションを適用
+	Apply Default Transitions to Selection	選択範囲に既定のトランジションを適用
+	Apply Video Transition	ビデオトランジションを適用
+	Arrange	重ね順
+	ArtCraft Website	ArtCraft の Web サイト
+	Assembly	アセンブリ
+	Attach Proxies…	プロキシを関連付け…
+	Audio Channels…	オーディオチャンネル…
+	Audio Clip Mixer	オーディオクリップミキサー
+	Audio Gain…	オーディオゲイン…
+	Audio Hardware…	オーディオハードウェア…
+	Audio In	オーディオのイン点
+	Audio Meters	オーディオメーター
+	Audio Options	オーディオオプション
+	Audio Out	オーディオのアウト点
+	Audio Track Mixer	オーディオトラックミキサー
+	Audio Waveform	オーディオ波形
+	Auto Save…	自動保存…
+	Automate to Sequence…	シーケンスに自動配置…
+	Bars and Tone…	カラーバーとトーン…
+	Bin	ビン
+	Bin From Selection	選択項目からビンを作成
+	Black Video…	ブラックビデオ…
+	Blue	ブルー
+	Bottom	下
+	Breakout to Mono	モノラルに分割
+	Bring Forward	前面へ
+	Bring to Front	最前面へ
+	Brown	ブラウン
+	Captions	キャプション
+	Captions and Graphics	キャプションとグラフィックス
+	Captions…	キャプション…
+	Caribbean	カリビアン
+	Center Horizontally	水平方向の中央に整列
+	Center Vertically	垂直方向の中央に整列
+	Cerulean	セルリアン
+	Clear	消去
+	Clear Guides	ガイドをクリア
+	Clear In	イン点をクリア
+	Clear In and Out	イン点とアウト点をクリア
+	Clear Markers	マーカーをクリア
+	Clear Out	アウト点をクリア
+	Clear Selected Marker	選択したマーカーをクリア
+	Close	閉じる
+	Close All Other Projects	他のプロジェクトをすべて閉じる
+	Close All Projects	すべてのプロジェクトを閉じる
+	Close Gap	ギャップを詰める
+	Close Project	プロジェクトを閉じる
+	Color Management…	カラーマネジメント…
+	Color Matte…	カラーマット…
+	Comparison View	比較表示
+	Composite Video	コンポジットビデオ
+	Consolidate Duplicates	重複を統合
+	Copy	コピー
+	Copy Paste Includes Sequence Markers	コピーと貼り付けにシーケンスマーカーを含める
+	Create Captions from Transcript…	文字起こしからキャプションを作成…
+	Create Multi-Camera Source Sequence…	マルチカメラソースシーケンスを作成…
+	Create Proxies…	プロキシを作成…
+	Cut	切り取り
+	Darkest	最も暗い
+	Delete Render Files	レンダリングファイルを削除
+	Delete Render Files In to Out	イン点からアウト点までのレンダリングファイルを削除
+	Delete Tracks…	トラックを削除…
+	Delete Transcript	文字起こしを削除
+	Demo Footage	デモ素材
+	Demo Project	デモプロジェクト
+	Deselect All	すべての選択を解除
+	Detach Proxies	プロキシの関連付けを解除
+	Display Mode	表示モード
+	Distribute	均等配置
+	Distribute Horizontally	水平方向に均等配置
+	Distribute Space Horizontally	水平方向の間隔を均等化
+	Distribute Space Vertically	垂直方向の間隔を均等化
+	Distribute Vertically	垂直方向に均等配置
+	Duplicate	複製
+	Dynamic Audio Waveforms	動的なオーディオ波形
+	Edit	編集
+	Edit Offline…	オフラインファイルを編集…
+	Edit Original	オリジナルを編集
+	Edit Subclip…	サブクリップを編集…
+	Editing	編集
+	Effect Controls	エフェクトコントロール
+	Effects	エフェクト
+	Ellipse	楕円
+	Enable	有効
+	Enable Remix	リミックスを有効にする
+	Essential Graphics	基本グラフィックス
+	Essential Sound	基本サウンド
+	Events	イベント
+	Export	書き出し
+	Export As Motion Graphics Template…	モーショングラフィックステンプレートとして書き出し…
+	Extract	抽出
+	Extract Audio	オーディオを抽出
+	Field Options…	フィールドオプション…
+	File	ファイル
+	File…	ファイル…
+	Fill frame	フレームを埋める
+	FilmCraft Help…	FilmCraft ヘルプ…
+	FilmCraft on GitHub	GitHub の FilmCraft
+	FilmCraft on getartcraft.com	getartcraft.com の FilmCraft
+	Find Next	次を検索
+	Find…	検索…
+	Fit	合わせる
+	Fit to frame	フレームに合わせる
+	Flatten	フラット化
+	Forest	フォレスト
+	Frame Blending	フレームブレンド
+	Frame Hold Options…	フレームホールドオプション…
+	Frame Sampling	フレームサンプリング
+	From Bin	ビンから
+	From Source Monitor	ソースモニターから
+	From Source Monitor, Match Frame	ソースモニターから (マッチフレーム)
+	From file…	ファイルから…
+	Full	フル
+	Generate Audio Waveform	オーディオ波形を生成
+	Get Media File Properties for	メディアファイルのプロパティを取得
+	Go to Gap	ギャップへ移動
+	Go to In	イン点へ移動
+	Go to Next Caption Segment	次のキャプションセグメントへ移動
+	Go to Next Marker	次のマーカーへ移動
+	Go to Out	アウト点へ移動
+	Go to Previous Caption Segment	前のキャプションセグメントへ移動
+	Go to Previous Marker	前のマーカーへ移動
+	Go to Split	スプリットへ移動
 	Graphics and Titles	グラフィックスとタイトル
-	Settings	環境設定
-	Object	オブジェクト
-	Effect	効果
-	Settings…	環境設定…
-	Image	画像
-	Layer	レイヤー
-	Type	書式
-	Select	選択
-	Filter	フィルター
-	Window	ウィンドウ
-	Language	表示言語
-	Save As…	別名で保存…
-	Exit	終了
-	New…	新規…
-	New	新規
-	Horizontal	横書き
-	Vertical	縦書き
-	Orientation	組み方向
-	Layers	レイヤー
+	Graphics…	グラフィックス…
+	Green	グリーン
+	Group	グループ
+	Guide Templates	ガイドテンプレート
+	Help	ヘルプ
+	Hide All Caption Tracks	すべてのキャプショントラックを非表示
+	High Quality Playback	高画質再生
 	History	履歴
+	Import From	読み込み元
+	Import Image Sequence…	連番画像を読み込み…
+	Import from Media Browser	メディアブラウザーから読み込み
+	Import…	読み込み…
+	Info	情報
+	Ingest Settings…	取り込み設定…
+	Insert	挿入
+	Insert Frame Hold Segment	フレームホールドセグメントを挿入
+	Install Motion Graphics Template…	モーショングラフィックステンプレートをインストール…
+	Interpret Footage…	素材を解釈…
+	Join the ArtCraft Discord…	ArtCraft の Discord に参加…
+	Keyboard Shortcuts…	キーボードショートカット…
+	Label	ラベル
+	Labels…	ラベル…
+	Language	表示言語
+	Lavender	ラベンダー
+	Learning	学習
+	Left	左
+	Libraries	ライブラリ
+	Lift	リフト
+	Light	ライト
+	Link	リンク
+	Link Media…	メディアをリンク…
+	Linked Selection	リンクされた選択
+	Lock Guides	ガイドをロック
+	Lumetri Color	Lumetri カラー
+	Lumetri Scopes	Lumetri スコープ
+	Magnification	倍率
+	Make Offline…	オフラインに設定…
+	Make Subclip…	サブクリップを作成…
+	Make Subsequence	サブシーケンスを作成
+	Manage Guides…	ガイドを管理…
+	Mark Clip	クリップをマーク
+	Mark In	イン点をマーク
+	Mark Out	アウト点をマーク
+	Mark Selection	選択範囲をマーク
+	Mark Split	スプリットをマーク
+	Markers	マーカー
+	Match Frame	マッチフレーム
+	Media Analysis & Transcription…	メディア分析と文字起こし…
+	Media Browser	メディアブラウザー
+	Media Cache…	メディアキャッシュ…
+	Media…	メディア…
+	Medium	中
+	Memory…	メモリー…
+	Merge Clips…	クリップを結合…
+	Metadata	メタデータ
+	Modify	変更
+	Motion Graphics Template…	モーショングラフィックステンプレート…
+	Multi-Camera	マルチカメラ
+	Multi-Camera View	マルチカメラ表示
+	Nest…	ネスト…
+	New	新規
+	New Layer	新規レイヤー
+	New Project Panel	新規プロジェクトパネル
+	Next in Sequence	シーケンス内の次
+	Next in Track	トラック内の次
+	Normalize Mix Track…	ミックストラックをノーマライズ…
+	Offline File…	オフラインファイル…
+	Open Project…	プロジェクトを開く…
+	Optical Flow	オプティカルフロー
+	Overwrite	上書き
+	Paste	貼り付け
+	Paste Attributes…	属性を貼り付け…
+	Paste Insert	挿入して貼り付け
+	Paused Resolution	一時停止時の解像度
+	Playback Resolution	再生時の解像度
+	Playback…	再生…
+	Plugins…	プラグイン…
+	Polygon	多角形
+	Preferences	環境設定
+	Previous in Sequence	シーケンス内の前
+	Previous in Track	トラック内の前
+	Program	プログラム
+	Progress	進行状況
+	Project	プロジェクト
+	Project Manager…	プロジェクトマネージャー…
+	Project Settings	プロジェクト設定
+	Project…	プロジェクト…
 	Properties	プロパティ
-	Color	カラー
-	Brush Settings	ブラシ設定
+	Purple	パープル
+	Reconnect Full Resolution Media…	フル解像度メディアに再接続…
+	Recover Unsaved Changes…	未保存の変更を復元…
+	Rectangle	長方形
+	Red	レッド
+	Redo	やり直し
+	Reference Monitor	リファレンスモニター
+	Remix	リミックス
+	Remix Properties…	リミックスのプロパティ…
+	Remove Attributes…	属性を削除…
+	Remove Filler Words	フィラーワードを削除
+	Remove Pauses	無音部分を削除
+	Remove Unused	未使用の項目を削除
+	Rename…	名前を変更…
+	Render Audio	オーディオをレンダリング
+	Render Effects In to Out	イン点からアウト点までのエフェクトをレンダリング
+	Render In to Out	イン点からアウト点までをレンダリング
+	Render Selection	選択範囲をレンダリング
+	Replace Fonts in Projects…	プロジェクト内のフォントを置換…
+	Replace With Clip	クリップで置換
+	Report an Issue…	問題を報告…
+	Reset All Parameters	すべてのパラメーターをリセット
+	Reset Duration	長さをリセット
+	Reset to Saved Layout	保存したレイアウトにリセット
+	Restore Captions from Source Clip	ソースクリップからキャプションを復元
+	Reveal Log Files…	ログファイルを表示…
+	Reverse Match Frame	逆マッチフレーム
+	Revert	保存済みの状態に戻す
+	Revert Remix	リミックスを元に戻す
+	Review	レビュー
+	Right	右
+	Ripple Delete	リップル削除
+	Ripple Sequence Markers	シーケンスマーカーをリップル
+	Rose	ローズ
+	Safe Margins	セーフマージン
+	Save	保存
+	Save All	すべて保存
+	Save As…	別名で保存…
+	Save Guides as Template…	ガイドをテンプレートとして保存…
+	Save a Copy…	コピーを保存…
+	Save as Template…	テンプレートとして保存…
+	Scale to Frame Size	フレームサイズに合わせてスケール
+	Scene Edit Detection…	シーンの編集点を検出…
+	Scratch Disks…	スクラッチディスク…
+	Search Bin	検索ビン
+	Select	選択
+	Select All	すべて選択
+	Select All Matching	一致するクリップをすべて選択
+	Select Label Group	ラベルグループを選択
+	Select Next Graphic	次のグラフィックを選択
+	Select Next Layer	次のレイヤーを選択
+	Select Previous Graphic	前のグラフィックを選択
+	Select Previous Layer	前のレイヤーを選択
+	Selection Follows Playhead	選択範囲が再生ヘッドに追従
+	Selection as FilmCraft Project…	選択項目を FilmCraft プロジェクトとして書き出し…
+	Selection…	選択項目…
+	Send Backward	背面へ
+	Send to Back	最背面へ
+	Sequence	シーケンス
+	Sequence From Clip	クリップからシーケンスを作成
+	Sequence Settings…	シーケンス設定…
+	Sequence…	シーケンス…
+	Show Active Caption Tracks Only	アクティブなキャプショントラックのみ表示
+	Show All Caption Tracks	すべてのキャプショントラックを表示
+	Show All Marker Colors	すべての色のマーカーを表示
+	Show Guides	ガイドを表示
+	Show Rulers	ルーラーを表示
+	Show Through Edits	スルー編集点を表示
+	Simplify Sequence…	シーケンスを簡略化…
+	Snap in Program Monitor	プログラムモニターでスナップ
+	Snap in Timeline	タイムラインでスナップ
+	Source	ソース
+	Source Settings…	ソース設定…
+	Speed/Duration…	速度・長さ…
+	Synchronize…	同期…
+	System Compatibility Report…	システム互換性レポート…
+	Tan	タン
+	Teal	ティール
+	Text	テキスト
+	Time Interpolation	時間補間
+	Timecode	タイムコード
+	Timecode…	タイムコード…
+	Timeline	タイムライン
+	Timeline…	タイムライン…
+	Toggle Proxies	プロキシを切り替え
 	Tools	ツール
-	Options	オプション
+	Top	上
+	Transcribe Sequence…	シーケンスを文字起こし…
+	Transcribe…	文字起こし…
+	Transcript	文字起こし
+	Transparent Video…	透明ビデオ…
+	Trim Edit	トリム編集
+	Trim…	トリム…
+	Undo	取り消し
+	Ungroup	グループ解除
+	Universal Counting Leader…	ユニバーサルカウントリーダー…
+	Update Metadata…	メタデータを更新…
+	Upgrade Caption to Graphic	キャプションをグラフィックに変換
+	Upgrade to Source Graphic	ソースグラフィックに変換
+	Vertical Text	縦書き
+	Video In	ビデオのイン点
+	Video Options	ビデオオプション
+	Video Out	ビデオのアウト点
+	Video and Audio Waveform Split	ビデオとオーディオ波形の分割表示
+	View	表示
+	Violet	バイオレット
+	Window	ウィンドウ
+	Workspaces	ワークスペース
+	Yellow	イエロー
 	Zoom In	ズームイン
 	Zoom Out	ズームアウト
-	Fit on Screen	画面に合わせる
-	Copy	コピー
-	Cut	切り取り
-	Paste	貼り付け
-	Select All	すべて選択
-	Deselect	選択を解除
-	Export	書き出し
-	Export As…	形式を指定して書き出し…
-	Search…	検索…
-	Theme	テーマ
-	Menu	メニュー
-	File	ファイル
-	Edit	編集
-	Pages	ページ
-	View	表示
-	Help	ヘルプ
-	Preferences	環境設定
-	Preferences…	環境設定…
-	Interface language	表示言語
-	Open…	開く…
-	New blank PDF	空白の PDF を作成
-	Create PDF from file…	ファイルから PDF を作成…
-	Create PDF from images…	画像から PDF を作成…
-	Create PDF from clipboard	クリップボードから PDF を作成
-	Combine files…	ファイルを結合…
-	Save	保存
-	Save as…	別名で保存…
-	Close file	ファイルを閉じる
-	Close all	すべて閉じる
-	Revert	保存済みの状態に戻す
-	Print…	印刷…
-	Document properties…	文書のプロパティ…
-	Undo	取り消し
-	Redo	やり直し
-	Find…	検索…
-	Advanced search…	高度な検索…
-	Copy pages	ページをコピー
-	Cut pages	ページを切り取り
-	Paste pages	ページを貼り付け
-	Fit visible	表示範囲に合わせる
-	Marquee zoom	範囲指定ズーム
-	Take a snapshot	スナップショットを作成
-	Full screen mode	全画面表示
-	Read mode	閲覧モード
-	Switch light / dark theme	明るい／暗いテーマを切り替え
-	Comments panel	コメントパネル
-	Form fields panel	フォームフィールドパネル
-	Clear form	フォームをクリア
-	Find tools and commands…	ツールとコマンドを検索…
-	Zoom	ズーム
-	Actual size	実際のサイズ
-	Zoom to page level	ページ全体を表示
-	Fit to width	幅に合わせる
-	Display theme	表示テーマ
-	Side panels	サイドパネル
+	Zoom to Sequence	シーケンス全体にズーム
+	Home	ホーム
+	Import	読み込み
+	{name} - Edited	{name} - 編集済み
+	Full screen	全画面表示
+	Volume	音量
+	Master volume: use the Audio Track Mixer	マスター音量はオーディオトラックミキサーで調整してください
+	Search	検索
+	Quick Export	クイック書き出し
+	Join the ArtCraft Discord (discord.gg/artcraft)	ArtCraft の Discord に参加 (discord.gg/artcraft)
+	Cancel	キャンセル
 	OK	OK
+	Interpret Footage	素材を解釈
+	Color Management · {n} item	カラーマネジメント · {n} 項目
+	Color Management · {n} items	カラーマネジメント · {n} 項目
+	Media colour space (from file metadata): {detected}	メディアのカラースペース (ファイルのメタデータから): {detected}
+	Override media colour space:	メディアのカラースペースを上書き:
+	Use file metadata	ファイルのメタデータを使用
+	Sequence Color Management	シーケンスのカラーマネジメント
+	Working Color Space	作業用カラースペース
+	Wide gamut color (composite in BT.2020)	広色域カラー (BT.2020 で合成)
+	Auto tone map media (HDR and log into SDR)	メディアを自動的にトーンマッピングする (HDR と Log を SDR に)
+	Audio Gain	オーディオゲイン
+	Set Gain to:	ゲインを設定:
+	Adjust Gain by:	ゲインを調整:
+	Normalize Max Peak to:	最大ピークをノーマライズ:
+	Normalize All Peaks to:	すべてのピークをノーマライズ:
+	Peak Amplitude: {peak}	ピーク振幅: {peak}
+	Standard	標準
+	Adaptive	アダプティブ
+	Mono	モノラル
+	Stereo	ステレオ
+	Add Tracks	トラックを追加
+	Amount	量
+	Placement	配置
+	Track type	トラックの種類
+	Add video tracks	ビデオトラックを追加
+	Add audio tracks	オーディオトラックを追加
+	Add audio submix tracks	オーディオサブミックストラックを追加
+	After {name}	{name} の後
+	Before First Track	最初のトラックの前
+	Delete Tracks	トラックを削除
+	Video Tracks	ビデオトラック
+	Audio Tracks	オーディオトラック
+	Delete Video Tracks	ビデオトラックを削除する
+	Delete Audio Tracks	オーディオトラックを削除する
+	All Empty Tracks	すべての空のトラック
+	Version {version}	バージョン {version}
+	A clean-room, pure-Rust non-linear video editor. Part of the ArtCraft family.	Rust だけで書かれた、クリーンルーム設計のノンリニアビデオ編集ソフトです。ArtCraft ファミリーの一員です。
+	Join the ArtCraft Discord	ArtCraft の Discord に参加
+	Source code on GitHub	GitHub のソースコード
+	Report an issue	問題を報告
+	MIT OR Apache-2.0. Fonts: Inter, Noto Serif and JetBrains Mono (SIL OFL 1.1).	MIT OR Apache-2.0。フォント: Inter、Noto Serif、JetBrains Mono (SIL OFL 1.1)。
+	just now	たった今
+	{n} s ago	{n} 秒前
+	{n} min ago	{n} 分前
+	{n} h ago	{n} 時間前
+	All Events	すべてのイベント
+	Warnings and Errors	警告とエラー
+	Errors Only	エラーのみ
+	Clear All	すべてクリア
+	No events.	イベントはありません。
+	Show finished jobs	終了したジョブを表示
+	Cancelled	キャンセル済み
+	Failed: {e}	失敗しました: {e}
+	Done	完了
+	No background jobs.	バックグラウンドジョブはありません。
+	Recover Unsaved Changes	未保存の変更を復元
+	Untitled	名称未設定
+	FilmCraft was closed while “{name}” had unsaved changes.	「{name}」に未保存の変更がある状態で FilmCraft が終了しました。
+	FilmCraft quit unexpectedly while “{name}” had unsaved changes.	「{name}」に未保存の変更がある状態で FilmCraft が予期せず終了しました。
+	Recover unsaved changes from {when}?	{when} の未保存の変更を復元しますか？
+	The project had not been saved yet.	このプロジェクトはまだ保存されていませんでした。
+	{n} sessions have unsaved changes:	{n} 件のセッションに未保存の変更があります:
+	Discard	破棄
+	Recover	復元
+	Not Now	後で
+	Are you sure you want to discard your changes to '{file}'?	「{file}」への変更を破棄してもよろしいですか？
+	Yes	はい
+	No	いいえ
+	Add media to your project. Drop files anywhere in the window, or choose a source below.	プロジェクトにメディアを追加します。ウィンドウ内の任意の場所にファイルをドロップするか、下のソースを選択してください。
+	Browse files…	ファイルを参照…
+	Movies, audio and stills from disk	ディスク上のムービー、オーディオ、静止画
+	Demo footage	デモ素材
+	Six procedural 1080p clips with sound	サウンド付きの 1080p クリップ 6 本 (プロシージャル生成)
+	Demo project	デモプロジェクト
+	A cut sequence with transitions, effects and music	トランジション、エフェクト、音楽を含む編集済みのシーケンス
+	Bars and Tone	カラーバーとトーン
+	SMPTE HD bars with 1 kHz reference tone	1 kHz 基準トーン付きの SMPTE HD カラーバー
+	Community	コミュニティ
+	Join us on Discord	Discord に参加
+	OMF Export Settings	OMF 書き出し設定
+	AAF Export Settings	AAF 書き出し設定
+	OMF Title:	OMF タイトル:
+	Mixdown video	ビデオをミックスダウンする
+	Audio:	オーディオ:
+	Encapsulate	カプセル化
+	Separate Audio	オーディオを分離
+	Embed	埋め込み
+	Separate Files	個別のファイル
+	Link to Media	メディアにリンク
+	Audio File Format:	オーディオファイル形式:
+	Sample Rate:	サンプルレート:
+	Bits per Sample:	サンプルあたりのビット数:
+	Rendering:	レンダリング:
+	Trim audio files	オーディオファイルをトリムする
+	Handle Frames:	ハンドルフレーム:
+	Render audio clip effects	オーディオクリップのエフェクトをレンダリングする
+	Breakout to mono	モノラルに分割する
+	Exported {path}	{path} を書き出しました
+	Select a clip to view its metadata.	クリップを選択すると、メタデータを表示します。
+	Clip: {name}	クリップ: {name}
+	Open	開く
+	(no sequence)	(シーケンスなし)
+	Show or hide {color} markers	{color} のマーカーの表示/非表示
+	Marker	マーカー
+	{tc}  Chapter	{tc}  チャプター
+	No markers. Press M to add one.	マーカーはありません。M キーを押すと追加できます。
+	All markers are hidden by the colour filter.	色フィルターにより、すべてのマーカーが非表示になっています。
+	Type:	種類:
+	Video:	ビデオ:
+	Codec:	コーデック:
+	Duration:	長さ:
+	Settings:	設定:
+	Playhead:	再生ヘッド:
+	Video {n}:	ビデオ {n}:
+	Audio {n}:	オーディオ {n}:
+	UI:	UI:
+	{fps} fps · {n} frames queued	{fps} fps · {n} フレーム待機中
+	{panel} — coming in a later milestone	{panel} — 今後のマイルストーンで実装予定
+	Close Panel	パネルを閉じる
+	Close Other Timeline Panels	他のタイムラインパネルを閉じる
+	Maximize Frame	パネルを最大化
+	Restore Workspace	ワークスペースを復元
+	Reveal Sequence in Project	プロジェクトでシーケンスを表示
+	Video Thumbnails	ビデオサムネイル
+	Audio Waveforms	オーディオ波形
+	Delete Preset	プリセットを削除
+	Export Preset…	プリセットを書き出し…
+	Import Presets…	プリセットを読み込み…
+	Effect presets	エフェクトプリセット
+	Save Preset	プリセットを保存
+	Name:	名前:
+	Type	種類
+	Scale	スケール
+	Anchor to In Point	イン点に固定
+	Anchor to Out Point	アウト点に固定
+	Without keyframes	キーフレームなし
+	Description:	説明:
+	Saved preset “{name}”	プリセット「{name}」を保存しました
+	Current duration {seconds} s	現在の長さ {seconds} s
+	Remix Properties	リミックスのプロパティ
+	Target Duration:	目標の長さ:
+	Segments:	セグメント:
+	Fewer · More	少なく · 多く
+	Variations:	バリエーション:
+	Remixed to {seconds} s	{seconds} s にリミックスしました
+	{mode} · no clip	{mode} · クリップなし
+	{mode} · no sequence	{mode} · シーケンスなし
+	Remove Row	行を削除
+	Add a timecode row	タイムコードの行を追加
+	Panner	パンナー
+	Mute	ミュート
+	Send {n} Level	センド {n} のレベル
+	Show Keyframes	キーフレームを表示
+	Clip Keyframes	クリップのキーフレーム
+	Track Keyframes	トラックのキーフレーム
+	Delete	削除
+	Untitled Workspace	名称未設定のワークスペース
+	New Workspace	新規ワークスペース
+	Edit Workspaces	ワークスペースを編集
+	Rename	名前を変更
+	Restore Original	元の状態に復元
+	Search effects	エフェクトを検索
+	Apply to Selected Clips	選択したクリップに適用
+	Metadata Display	メタデータ表示
+	Save As New View Preset	新規表示プリセットとして保存
+	Manage Saved View Presets	保存した表示プリセットを管理
+	Freeform View Options	フリーフォーム表示のオプション
+	Save Arrangement	配置を保存
+	Saves the view, columns, sort, thumbnail and font size.	表示モード、列、並べ替え、サムネイルサイズ、フォントサイズを保存します。
+	Grid spacing:	グリッド間隔:
+	Default clip size:	既定のクリップサイズ:
+	Snap to grid	グリッドにスナップ
+	Show clip names	クリップ名を表示
+	Show durations	長さを表示
+	Show:	表示:
+	Search fields	フィールドを検索
+	Project Metadata	プロジェクトのメタデータ
+	Add Property…	プロパティを追加…
+	Column order	列の順序
+	{n}. (empty)	{n}. (空き)
+	Restore	復元
+	Overwrite with Current View	現在の表示で上書き
+	Graphics text search arrives with M10.1–M10.2	グラフィックスのテキスト検索は M10.1–M10.2 で対応予定です
+	Open a sequence to work with captions	キャプションを扱うにはシーケンスを開いてください
+	Add captions	キャプションを追加
+	Create a caption track or import a caption file.	キャプショントラックを作成するか、キャプションファイルを読み込んでください。
+	Create new caption track	新規キャプショントラックを作成
+	Import captions file…	キャプションファイルを読み込み…
+	New {format} track	新規 {format} トラック
+	Add caption at playhead	再生ヘッドの位置にキャプションを追加
+	Split caption at playhead	再生ヘッドの位置でキャプションを分割
+	Merge selected captions	選択したキャプションを結合
+	Delete selected captions	選択したキャプションを削除
+	No captions on this track. Press + to add one at the playhead.	このトラックにはキャプションがありません。+ を押すと、再生ヘッドの位置に追加できます。
+	No matching captions.	一致するキャプションはありません。
+	Open a sequence to see its transcript	文字起こしを表示するにはシーケンスを開いてください
+	Transcribe sequence	シーケンスを文字起こし
+	Speech-to-text turns the dialogue into editable text.	音声認識で、セリフを編集できるテキストに変換します。
+	This build has no speech-to-text; import a transcript with transcript.set.	このビルドには音声認識機能がありません。transcript.set で文字起こしを読み込んでください。
+	Transcribe	文字起こし
+	Extract selected text	選択したテキストを抽出
+	Lift selected text	選択したテキストをリフト
+	Remove filler words	フィラーワードを削除
+	Create captions	キャプションを作成
+	Speaker	話者
+	Box	ボックス
+	Align	整列
+	Align left	左揃え
+	Align center	中央揃え
+	Align right	右揃え
+	Position	位置
+	Position: top	位置: 上
+	Position: middle	位置: 中央
+	Position: bottom	位置: 下
+	(gap)	(ギャップ)
+	Out: {name}	アウト: {name}
+	In: {name}	イン: {name}
+	Play Around Edit (Space loops, Shift+K once)	編集点の前後を再生 (Space でループ、Shift+K で 1 回)
+	Trim Backward Many	後方へ複数フレームトリム
+	Trim Backward	後方へトリム
+	Apply Default Transitions	既定のトランジションを適用
+	Apply Default Transitions to Selection (Shift+D)	選択項目に既定のトランジションを適用 (Shift+D)
+	Trim Forward	前方へトリム
+	Trim Forward Many	前方へ複数フレームトリム
+	Exit Trim Mode	トリムモードを終了
+	Voice-over record (right-click: Voice-Over Record Settings…)	ナレーションを録音 (右クリック: ナレーション録音設定…)
+	Voice-Over Record Settings…	ナレーション録音設定…
+	Recording voice-over…	ナレーションを録音中…
+	Voice-over recorded: {p}	ナレーションを録音しました: {p}
+	Voice-over recording stopped (nothing recorded)	ナレーションの録音を停止しました (何も録音されていません)
+	Post-roll	ポストロール
+	● Recording	● 録音中
+	Voice-Over Record Settings	ナレーション録音設定
+	Source:	ソース:
+	Default Input	既定の入力
+	Input:	入力:
+	Channel {n}	チャンネル {n}
+	Countdown Sound Cues	カウントダウン音
+	Pre-roll:	プリロール:
+	 seconds	 秒
+	Post-roll:	ポストロール:
+	Playback starts the pre-roll before the playhead (or the In point); with In/Out marked, recording punches in and out there.	再生は、再生ヘッド (またはイン点) のプリロール分手前から始まります。イン点とアウト点を設定している場合は、その位置でパンチイン・パンチアウトして録音します。
+	Effect	エフェクト
+	Clip Fx Editor	クリップ Fx エディター
+	Track Fx Editor	トラック Fx エディター
+	Master Gain	マスターゲイン
+	Reset	リセット
+	Band {n}	バンド {n}
+	Solo	ソロ
+	Bypass	バイパス
+	Thr	しきい値
+	Ratio	レシオ
+	Att	アタック
+	Rel	リリース
+	Gain	ゲイン
+	Output Gain	出力ゲイン
+	Limiter	リミッター
+	Link Channels	チャンネルをリンク
+	Limiter Threshold	リミッターのしきい値
+	Limiter Release	リミッターのリリース
+	Auto Gate	自動ゲート
+	Threshold	しきい値
+	Attack	アタック
+	Release	リリース
+	Hold	ホールド
+	Compressor	コンプレッサー
+	Auto Makeup	自動メイクアップ
+	Makeup	メイクアップ
+	Expander	エキスパンダー
+	Soft Clip	ソフトクリップ
+	(no sequences)	(シーケンスなし)
+	(no clips)	(クリップなし)
+	Show Transport Controls	トランスポートコントロールを表示
+	Loop	ループ
+	Multi-Camera Audio Follows Video	マルチカメラでオーディオをビデオに追従させる
+	Multi-Camera Record	マルチカメラ記録
+	Multi-Camera Selection Top Down	マルチカメラの選択を上から順に
+	Show Multi-Camera Preview Monitor	マルチカメラプレビューモニターを表示
+	Auto-Adjust Multi-Camera Playback Quality	マルチカメラの再生画質を自動調整
+	Transmit Multi-Camera View	マルチカメラ表示を送出
+	Multi-Camera Layout	マルチカメラのレイアウト
+	Automatic	自動
+	Edit Cameras…	カメラを編集…
+	Add Marker (M)	マーカーを追加 (M)
+	Mark In (I)	イン点をマーク (I)
+	Mark Out (O)	アウト点をマーク (O)
+	Go to In (Shift+I)	イン点へ移動 (Shift+I)
+	Step Back 1 Frame (Left)	1 フレーム戻る (Left)
+	Play-Stop Toggle (Space)	再生/停止を切り替え (Space)
+	Step Forward 1 Frame (Right)	1 フレーム進む (Right)
+	Go to Out (Shift+O)	アウト点へ移動 (Shift+O)
+	Insert (,)	挿入 (,)
+	Overwrite (.)	上書き (.)
+	Export Frame (Shift+E)	フレームを書き出し (Shift+E)
+	Lift (;)	リフト (;)
+	Extract (')	抽出 (')
+	Export Frame: use Export mode (M6)	フレームの書き出し: 書き出しモードを使用してください (M6)
+	Button Editor	ボタンエディター
+	Multi-Camera Record on	マルチカメラ記録: オン
+	Multi-Camera Record off	マルチカメラ記録: オフ
+	{first} - Merged	{first} - 結合済み
+	{first} Multicam	{first} マルチカメラ
+	In Points	イン点
+	Out Points	アウト点
+	Clip Marker	クリップマーカー
+	Audio	オーディオ
+	Merge Clips	クリップを結合
+	Create Multi-Camera Source Sequence	マルチカメラソースシーケンスを作成
+	Synchronize Clips	クリップを同期
+	Clip Name:	クリップ名:
+	Sequence Name:	シーケンス名:
+	{n} clip(s): {names}	{n} 個のクリップ: {names}
+	{n} clip(s) selected; the clip on the reference track stays put.	{n} 個のクリップを選択中。基準トラックのクリップは移動しません。
+	Synchronize Point	同期ポイント
+	Ignore Hours	時間の桁を無視
+	first marker	最初のマーカー
+	Offset Audio by:	オーディオのオフセット:
+	Offset:	オフセット:
+	 frames	 フレーム
+	Reference track:	基準トラック:
+	lowest (V1…)	最下段 (V1…)
+	Remove Audio from AV Clip	AV クリップからオーディオを削除
+	Camera 1	カメラ 1
+	All Cameras	すべてのカメラ
+	Switch Audio	オーディオを切り替え
+	Camera Names	カメラ名
+	Clip Names	クリップ名
+	Enumerate Cameras	カメラの連番
+	Camera Angle Metadata	カメラアングルのメタデータ
+	Move source clips to Processed Clips bin	ソースクリップを「Processed Clips」ビンに移動
+	Synchronized {n} clip group(s)	{n} 個のクリップグループを同期しました
+	Merged clip created	結合クリップを作成しました
+	Multi-camera source sequence with {n} camera(s)	マルチカメラソースシーケンス (カメラ {n} 台)
+	No multi-camera clip at the playhead	再生ヘッドの位置にマルチカメラクリップがありません
+	Camera {n} — {name}	カメラ {n} — {name}
+	Page {page} of {pages}	{page} / {pages} ページ
+	Previous page	前のページ
+	Next page	次のページ
+	Multi-Camera Record On/Off (0)	マルチカメラ記録のオン/オフ (0)
+	Record	記録
+	Edit Cameras	カメラを編集
+	Cameras shown in the Multi-Camera view (uncheck to hide).	マルチカメラ表示に含めるカメラです (チェックを外すと非表示になります)。
+	Recorded {n} multi-camera cut(s)	{n} 個のマルチカメラカットを記録しました
+	Clamp Signal	信号をクランプ
+	Presets	プリセット
+	Parade ({kind})	パレード ({kind})
+	Waveform ({kind})	波形 ({kind})
+	Parade Type	パレードの種類
+	Waveform Type	波形の種類
+	Vectorscope Targets	ベクトルスコープのターゲット
+	Colour Space	カラースペース
+	Brightness	明るさ
+	Signal Scale	信号スケール
+	Histogram	ヒストグラム
+	Paste Attributes	属性を貼り付け
+	Remove Attributes	属性を削除
+	New Offline File	新規オフラインファイル
+	Nested Sequence Name	ネストされたシーケンス名
+	Make Subclip	サブクリップを作成
+	Edit Subclip	サブクリップを編集
+	Modify Clip: Audio Channels	クリップの変更: オーディオチャンネル
+	Modify Clip: Timecode	クリップの変更: タイムコード
+	Frame Hold Options	フレームホールドのオプション
+	Field Options	フィールドのオプション
+	Save Project	プロジェクトを保存
+	Motion	モーション
+	Opacity	不透明度
+	Time Remapping	タイムリマップ
+	Channel Volume	チャンネル音量
+	In Point	イン点
+	Out Point	アウト点
+	Playhead	再生ヘッド
+	Source Timecode	ソースタイムコード
+	Sequence Time	シーケンス時間
+	Video Attributes	ビデオ属性
+	Audio Attributes	オーディオ属性
+	No effects	エフェクトはありません
+	Scale Attribute Times	属性の時間を伸縮する
+	File Name:	ファイル名:
+	Tape Name:	テープ名:
+	Contains:	内容:
+	Video	ビデオ
+	Width:	幅:
+	Height:	高さ:
+	Frame Rate:	フレームレート:
+	Media Start:	メディアの開始:
+	Subclip: {name}	サブクリップ: {name}
+	Start:	開始:
+	End:	終了:
+	Restrict Trims To Subclip Boundaries	トリムをサブクリップの範囲内に制限する
+	Convert to Master Clip	マスタークリップに変換
+	Clip Channel Format:	クリップのチャンネル形式:
+	Number of Audio Clips:	オーディオクリップ数:
+	Media Source Channels	メディアソースのチャンネル
+	Ch. {n}	Ch {n}
+	Clip {n}	クリップ {n}
+	Source channels the selected audio clips play:	選択したオーディオクリップで再生するソースチャンネル:
+	Set Timecode:	タイムコードを設定:
+	Use the file's timecode	ファイルのタイムコードを使用する
+	Hold On	ホールド位置
+	Timecode:	タイムコード:
+	Hold Filters	フィルターをホールドする
+	Reverse Field Dominance	フィールドオーダーを反転する
+	Processing Options	処理オプション
+	None	なし
+	Always Deinterlace	常にインターレース解除
+	Flicker Removal	フリッカー除去
+	Save changes to “{project_name}” before closing?	閉じる前に「{project_name}」への変更を保存しますか？
+	Don't Save	保存しない
+	All media is online.	すべてのメディアがオンラインです。
+	{name} (copy)	{name} (コピー)
+	Offline	オフライン
+	Missing	見つかりません
+	Link Media	メディアをリンク
+	{n} clip(s) can't find their media. Locate them, search a folder, or leave them offline.	{n} 個のクリップのメディアが見つかりません。場所を指定するか、フォルダーを検索するか、オフラインのままにしてください。
+	Clip Name	クリップ名
+	File Name	ファイル名
+	File Path	ファイルパス
+	Status	状態
+	Match file properties:	照合するファイルのプロパティ:
+	File Extension	ファイル拡張子
+	Clip ID (fingerprint)	クリップ ID (フィンガープリント)
+	Duration	長さ
+	Media Start	メディア開始
+	Frame Size / Rate	フレームサイズ / レート
+	Align Timecode	タイムコードを揃える
+	Relink others automatically	他のクリップを自動的に再リンク
+	Search in:	検索場所:
+	Browse…	参照…
+	A file dialog is already open	ファイルダイアログはすでに開いています
+	Exact name matches only	名前の完全一致のみ
+	No candidates yet — Search a folder or Locate the file.	候補はまだありません。フォルダーを検索するか、ファイルの場所を指定してください。
+	✔ same file	✔ 同じファイル
+	✔ matches	✔ 一致
+	✖ different file	✖ 別のファイル
+	Preview	プレビュー
+	Offline All	すべてオフライン
+	Locate…	場所を指定…
+	Linked {n} clip(s)	{n} 個のクリップをリンクしました
+	Nothing found with that name.	その名前に一致するものは見つかりませんでした。
+	Make Offline	オフラインに設定
+	Make {n} selected clip(s) offline. Their clips show the offline slate until you link them again.	選択した {n} 個のクリップをオフラインにします。再びリンクするまで、クリップにはオフライン画面が表示されます。
+	Media files remain on disk	メディアファイルをディスクに残す
+	Media files are deleted	メディアファイルを削除する
+	Create Proxies	プロキシを作成
+	{n} clip(s) selected.	{n} 個のクリップが選択されています。
+	Format and size	形式とサイズ
+	Destination	出力先
+	Next to the original media, in a Proxies folder	元のメディアと同じ場所の Proxies フォルダー
+	Proxies are made in the background and attached when done. Export always uses full-resolution media.	プロキシはバックグラウンドで作成され、完了すると関連付けられます。書き出しには常にフル解像度のメディアが使われます。
+	Creating {n} proxy file(s)…	{n} 個のプロキシファイルを作成中…
+	Project Manager	プロジェクトマネージャー
+	Sequences	シーケンス
+	Resulting Project	処理後のプロジェクト
+	Collect Files and Copy to New Location	ファイルを収集して新しい場所にコピー
+	Consolidate and Transcode	統合してトランスコード
+	Options	オプション
+	Exclude Unused Clips	未使用のクリップを除外
+	Include Handles:	ハンドルを含める:
+	Include Proxies	プロキシを含める
+	Include Preview Files	プレビューファイルを含める
+	Destination Path	出力先のパス
+	Disk space: original {original} · resulting {result} ({n} files)	ディスク容量: 処理前 {original} · 処理後 {result} ({n} ファイル)
+	Disk space: —	ディスク容量: —
+	Calculate	計算
+	Project Manager: writing {path}	プロジェクトマネージャー: {path} を書き込み中
+	Timeline: (no sequences)	タイムライン: (シーケンスなし)
+	Browse	参照
+	Select audio clips, then click a preset to apply it.	オーディオクリップを選択し、プリセットをクリックして適用します。
+	{name} (user)	{name} (ユーザー)
+	Select audio clips to edit them here	オーディオクリップを選択すると、ここで編集できます
+	Multiple Clips Selected	複数のクリップを選択中
+	The selected clips have different audio types. Assign one type to edit them together.	選択したクリップはオーディオの種類が異なります。1 つの種類を割り当てると、まとめて編集できます。
+	Assign an audio type to the selection:	選択したクリップにオーディオの種類を割り当て:
+	Clear Audio Type	オーディオの種類をクリア
+	Preset:	プリセット:
+	(Custom)	(カスタム)
+	Preset name	プリセット名
+	Reduce Noise	ノイズを軽減
+	Reduce Rumble	ランブルを軽減
+	DeHum	ハム除去
+	DeEss	歯擦音除去
+	Reduce Reverb	リバーブを軽減
+	Dynamics	ダイナミクス
+	EQ	EQ
+	Enhance Speech	音声を強調
+	Low Tone	低い声
+	High Tone	高い声
+	Mix	ミックス
+	Reverb	リバーブ
+	Stereo Width	ステレオ幅
+	Remixing music to a target duration is not available yet. Trim the clip and add a crossfade instead.	音楽を目標の長さにリミックスする機能は、まだ利用できません。代わりにクリップをトリムして、クロスフェードを追加してください。
+	Pan	パン
+	Auto-Match	自動マッチ
+	Not matched yet	まだマッチしていません
+	Matches each of the {n} clips on its own.	{n} 個のクリップをそれぞれ個別にマッチさせます。
+	Duck against:	ダッキングのトリガー:
+	Untagged	タグなし
+	Sensitivity	感度
+	Reduce By	減衰量
+	Fades	フェード
+	Generate Keyframes	キーフレームを生成
+	Clip Volume	クリップの音量
+	(no clip selected)	(クリップが選択されていません)
+	Master · {name}	マスター · {name}
+	Add Lumetri Color to clip	クリップに Lumetri カラーを追加
+	Input LUT	入力 LUT
+	Color	カラー
+	Temperature	色温度
+	Tint	色合い
+	Saturation	彩度
+	Exposure	露出
+	Contrast	コントラスト
+	Highlights	ハイライト
+	Shadows	シャドウ
+	Whites	ホワイト
+	Blacks	ブラック
+	HDR	HDR
+	HDR White	HDR ホワイト
+	HDR Specular	HDR スペキュラー
+	Look	ルック
+	Look LUT	ルック LUT
+	Intensity	強さ
+	Adjustments	調整
+	Faded Film	色あせたフィルム
+	Sharpen	シャープ
+	Vibrance	自然な彩度
+	RGB Curves	RGB カーブ
+	HDR Range	HDR 範囲
+	Hue Saturation Curves	色相/彩度カーブ
+	Hue vs Sat	色相 vs 彩度
+	Hue vs Hue	色相 vs 色相
+	Hue vs Luma	色相 vs 輝度
+	Luma vs Sat	輝度 vs 彩度
+	Sat vs Sat	彩度 vs 彩度
+	Midtones	中間調
+	Key	キー
+	Hue	色相
+	Hue Range	色相の範囲
+	Saturation Min	最小彩度
+	Luma Min	最小輝度
+	Luma Max	最大輝度
+	Soften	ソフト化
+	Show Mask	マスク表示
+	Off	オフ
+	Color/Gray	カラー/グレー
+	Color/Black	カラー/ブラック
+	White/Black	ホワイト/ブラック
+	Refine	リファイン
+	Denoise	ノイズ除去
+	Blur	ぼかし
+	Correction	補正
+	Hue Shift	色相シフト
+	Midpoint	中間点
+	Roundness	丸み
+	Feather	ぼかし
+	LUT	LUT
+	Color Match	カラーマッチ
+	Reference	参照
+	Face Detection (protect skin tones)	顔検出 (肌の色を保護)
+	Apply Match	マッチを適用
+	Create ellipse mask	楕円マスクを作成
+	Create 4-point polygon mask	4 点の多角形マスクを作成
+	Free draw bezier	ベジェで自由に描画
+	Click in the Program monitor to place mask points (drag for curves); click the first point or press Enter to close	プログラムモニターをクリックしてマスクのポイントを配置します (ドラッグで曲線)。最初のポイントをクリックするか Enter キーを押すと、マスクが閉じます
+	Delete Mask	マスクを削除
+	Inverted	反転
+	Drag: move · Alt-click: smooth/corner · Cmd-click: delete	ドラッグ: 移動 · Alt+クリック: スムーズ/コーナー · Cmd+クリック: 削除
+	Track selected mask backward	選択したマスクを逆方向にトラッキング
+	Track selected mask backward 1 frame	選択したマスクを 1 フレーム逆方向にトラッキング
+	Track selected mask forward 1 frame	選択したマスクを 1 フレーム順方向にトラッキング
+	Track selected mask forward	選択したマスクを順方向にトラッキング
+	Stop tracking	トラッキングを停止
+	Tracking method: {method}	トラッキング方法: {method}
+	Composite	コンポジット
+	Comparison	比較
+	Video and Waveform	ビデオと波形
+	System Default	システムの既定
+	Default location	既定の場所
+	Font family	フォントファミリー
+	Label Colors	ラベルカラー
+	Decoded frames held for the monitors and thumbnails: {used} of {budget}.	モニターとサムネイル用に保持するデコード済みフレームに、{budget} のうち {used} を使用しています。
+	FilmCraft keeps the rest of the RAM free for other applications.	FilmCraft は残りの RAM をほかのアプリケーション用に空けておきます。
+	not available in this session	このセッションでは利用できません
+	Currently: {loc} — {files} file(s), {size}	現在: {loc} — {files} 個のファイル、{size}
+	 ({ch} output channels)	 (出力 {ch} チャンネル)
+	Programme left → device output {l}, right → device output {r}{dev}. Outputs beyond the device's channels fall back to 1 and 2.	プログラムの左 → デバイス出力 {l}、右 → デバイス出力 {r}{dev}。デバイスのチャンネル数を超える出力は、代わりに 1 と 2 に送られます。
+	Auto-saves go to: {dir}	自動保存先: {dir}
+	Recovery copy: {dir}	復旧用コピー: {dir}
+	Last auto-save {a} · last recovery copy {j}	前回の自動保存 {a} · 前回の復旧用コピー {j}
+	Last auto-save {a}	前回の自動保存 {a}
+	Last recovery copy {j}	前回の復旧用コピー {j}
+	Remove Media Cache Files	メディアキャッシュファイルの削除
+	Deleted {n} file(s), {size}.	{n} 個のファイル、{size} を削除しました。
+	Reset…	リセット…
+	Source · {name}	ソース · {name}
+	Reset Effect	エフェクトをリセット
+	Save Preset…	プリセットを保存…
+	Custom Setup	カスタム設定
+	Edit…	編集…
+	Show graphs	グラフを表示
+	Toggle animation	アニメーションのオン / オフを切り替え
+	Add/Remove Keyframe	キーフレームを追加/削除
+	Temporal Interpolation	時間補間
+	Linear	リニア
+	Bezier	ベジェ
+	Auto Bezier	自動ベジェ
+	Continuous Bezier	連続ベジェ
+	Ease In	イーズイン
+	Ease Out	イーズアウト
+	Select a clip to grade	クリップを選択すると、グレーディングできます
+	Select a clip to see its properties	クリップを選択すると、プロパティを表示します
+	Anchor point	アンカーポイント
+	Rotation	回転
+	Level	レベル
+	Speed {n}%	速度 {n}%
+	Value	値
+	Velocity	速度
+	Default	既定
+	Custom ({n} points)	カスタム ({n} ポイント)
+	Select a graphic clip, or use the Type tool (T) on the Program monitor	グラフィッククリップを選択するか、プログラムモニターでテキストツール (T) を使用してください
+	Create new graphic	新規グラフィックを作成
+	New Text Layer	新規テキストレイヤー
+	New Text	新規テキスト
+	New Rectangle	新規長方形
+	New Ellipse	新規楕円
+	Delete Layer	レイヤーを削除
+	Select a layer to edit its properties.	レイヤーを選択すると、プロパティを編集できます。
+	Align Left	左揃え
+	Align Center Horizontally	水平方向の中央揃え
+	Align Right	右揃え
+	Align Top	上揃え
+	Align Center Vertically	垂直方向の中央揃え
+	Align Bottom	下揃え
+	Font	フォント
+	Font Style	フォントスタイル
+	Font Size	フォントサイズ
+	Alignment	整列
+	Left Align Text	テキストを左揃え
+	Center Align Text	テキストを中央揃え
+	Right Align Text	テキストを右揃え
+	Justify	両端揃え
+	Tracking	トラッキング
+	Leading	行送り
+	Baseline Shift	ベースラインシフト
+	Text Box Width	テキストボックスの幅
+	Style	スタイル
+	Faux Bold	疑似ボールド
+	Faux Italic	疑似イタリック
+	All Caps	すべて大文字
+	Small Caps	スモールキャップ
+	Underline	下線
+	OpenType	OpenType
+	Kerning	カーニング
+	Ligatures	合字
+	Shape	シェイプ
+	Size	サイズ
+	Corner Radius	角丸の半径
+	Polygon Sides	多角形の辺の数
+	Fill	塗り
+	Stroke	線
+	Stroke 2	線 2
+	Background	背景
+	   Opacity	   不透明度
+	   Size	   サイズ
+	   Corner Radius	   角丸の半径
+	Shadow	シャドウ
+	   Angle	   角度
+	   Distance	   距離
+	   Blur	   ぼかし
+	Search templates	テンプレートを検索
+	All Categories	すべてのカテゴリ
+	Install…	インストール…
+	Install Motion Graphics Template (.fcgt)	モーショングラフィックステンプレートをインストール (.fcgt)
+	No templates match.	一致するテンプレートはありません。
+	{category} · My Template	{category} · マイテンプレート
+	Apply	適用
+	Remove	削除
+	{n} editable properties	{n} 個の編集可能なプロパティ
+	   Template: {name}	   テンプレート: {name}
+	Intro Duration	イントロの長さ
+	Outro Duration	アウトロの長さ
+	Roll	ロール
+	Start Off Screen	画面外から開始
+	End Off Screen	画面外で終了
+	Preroll	プリロール
+	Postroll	ポストロール
+	Video Frame	ビデオフレーム
+	Pin To	固定先
+	Pinned Edges	固定する辺
+	FilmCraft Graphics Template	FilmCraft グラフィックステンプレート
+	{n} Font	{n} のフォント
+	{n} Size	{n} のサイズ
+	{n} Color	{n} の色
+	{n} Position	{n} の位置
+	Show {n}	{n} を表示
+	My Templates	マイテンプレート
+	Export As Motion Graphics Template	モーショングラフィックステンプレートとして書き出し
+	Category:	カテゴリ:
+	Editable properties:	編集可能なプロパティ:
+	Saved as a FilmCraft graphics template (.fcgt) in your templates folder.	テンプレートフォルダーに FilmCraft グラフィックステンプレート (.fcgt) として保存されます。
+	Exported graphics template to {path}	グラフィックステンプレートを {path} に書き出しました
+	Replace Fonts in Projects	プロジェクト内のフォントを置換
+	Fonts used in the project:	プロジェクトで使用されているフォント:
+	{f} (missing)	{f} (見つかりません)
+	Replace:	置換前:
+	Replaced {n} font uses	{n} 箇所のフォントを置換しました
+	Show/Hide Effects and Sends	エフェクトとセンドの表示/非表示
+	Audio Track Mixer menu	オーディオトラックミキサーのメニュー
+	Show/Hide Tracks…	トラックの表示/非表示…
+	Meter Input(s) Only	入力のみをメーター表示
+	Show/Hide Tracks	トラックの表示/非表示
+	Show All	すべてを表示
+	Post-Fader	ポストフェーダー
+	Remove Effect	エフェクトを削除
+	Fill the slots above first	先に上のスロットを埋めてください
+	pre 	プリ 
+	Pre-Fader	プリフェーダー
+	Mute Send	センドをミュート
+	Remove Send	センドを削除
+	New Submix	新規サブミックス
+	Pan / balance (drag; double-click: centre)	パン / バランス (ドラッグで調整、ダブルクリックで中央)
+	Solo safe	ソロセーフ
+	Enable track for recording	トラックの録音を有効にする
+	Volume (drag; double-click: 0 dB)	音量 (ドラッグで調整、ダブルクリックで 0 dB)
+	5.1 panner (drag the puck; double-click: front centre)	5.1 パンナー (ポイントをドラッグ、ダブルクリックで前方中央)
+	Center	中央
+	Go to In Point	イン点へ移動
+	Go to Out Point	アウト点へ移動
+	Play In to Out	イン点からアウト点まで再生
+	Record (voice-over on the record-enabled track)	録音 (録音が有効なトラックにナレーションを収録)
+	Write keyframes	キーフレームを書き込み
+	Something went wrong while drawing the window. Your project is still open; save it to be safe.	ウィンドウの描画中に問題が発生しました。プロジェクトは開いたままです。念のため保存してください。
+	Continue	続行
+	Go Back	戻る
+	Go Forward	進む
+	Up One Level	上の階層へ移動
+	File Types Displayed	表示するファイルの種類
+	List View	リスト表示
+	Thumbnail View	サムネイル表示
+	Ingest	取り込み
+	Open Ingest Settings	取り込み設定を開く
+	Import as Image Sequence	連番画像として読み込む
+	{sel} of {total} items selected	{total} 項目中 {sel} 項目を選択中
+	{total} items	{total} 項目
+	Cannot open {dir}: {e}	{dir} を開けません: {e}
+	Favorites	お気に入り
+	Local Drives	ローカルドライブ
+	Network	ネットワーク
+	Recent Directories	最近使用したディレクトリ
+	  (none)	  (なし)
+	Remove from Favorites	お気に入りから削除
+	Add to Favorites	お気に入りに追加
+	Clear Recent Directories	最近使用したディレクトリをクリア
+	Open In Source Monitor	ソースモニターで開く
+	Reveal in Finder	Finder で表示
+	Edit Columns…	列を編集…
+	Hover Scrub	ホバースクラブ
+	New Media Browser Panel	新規メディアブラウザーパネル
+	Create Folder For Imported Projects	読み込んだプロジェクト用のフォルダーを作成
+	Allow Duplicate Media During Project Import	プロジェクトの読み込み時にメディアの重複を許可
+	Refresh	更新
+	Edit Columns	列を編集
+	Guides	ガイド
+	(no audio)	(オーディオなし)
+	Generating waveform…	波形を生成中…
+	Reference  {tc}	参照  {tc}
+	Set	設定
+	Set the reference to the playhead	参照位置を再生ヘッドに設定
+	Reference: next frame	参照: 次のフレーム
+	Reference: previous frame	参照: 前のフレーム
+	RGBA Channels	RGBA チャンネル
+	Add Guide	ガイドを追加
+	Save Guides as Template	ガイドをテンプレートとして保存
+	Manage Guides	ガイドを管理
+	Orientation:	向き:
+	Vertical	垂直
+	Horizontal	水平
+	Position:	位置:
+	No saved guide templates.	保存されたガイドテンプレートはありません。
+	Project: {name}	プロジェクト: {name}
+	Bin: {name}	ビン: {name}
+	Up one level	上の階層へ移動
+	Video Usage: {vu}  Audio Usage: {au}	ビデオ使用: {vu}  オーディオ使用: {au}
+	Icon View	アイコン表示
+	Freeform View	フリーフォーム表示
+	Sort Icons	アイコンを並べ替え
+	Clear (Delete)	消去 (Delete)
+	New Item	新規項目
+	New Bin	新規ビン
+	Find	検索
+	Automate to Sequence	シーケンスに自動配置
+	Select items to clear	消去する項目を選択してください
+	User Order	ユーザー定義の順序
+	Descending	降順
+	Refresh Project	プロジェクトを更新
+	Reveal Project in Finder…	Finder でプロジェクトを表示…
+	New Bin From Selection	選択項目から新規ビン
+	New Search Bin	新規検索ビン
+	New Project Shortcut	新規プロジェクトショートカット
+	List	リスト
+	Icon	アイコン
+	Freeform	フリーフォーム
+	Preview Area	プレビューエリア
+	Thumbnails	サムネイル
+	Thumbnails show effects applied	サムネイルに適用済みのエフェクトを表示
+	Thumbnail controls for all pointing devices	すべてのポインティングデバイスでサムネイルを操作
+	Refresh Sort Order	並べ替え順を更新
+	Metadata Display…	メタデータ表示…
+	Save Current View Preset	現在の表示をプリセットとして保存
+	Restore View Preset	表示プリセットを復元
+	Project View Preset {n}	プロジェクト表示プリセット {n}
+	Freeform View Options…	フリーフォーム表示のオプション…
+	Media missing	メディアが見つかりません
+	Unreadable	読み取れません
+	Open in Source Monitor	ソースモニターで開く
+	Open in Timeline	タイムラインで開く
+	New Sequence From Clip	クリップから新規シーケンス
+	Set Poster Frame	ポスターフレームを設定
+	Proxy	プロキシ
+	Open in Place	その場で開く
+	Open in New Tab	新しいタブで開く
+	Open in New Window	新しいウィンドウで開く
+	{n} items	{n} 項目
+	Stack	スタック
+	Unstack	スタックを解除
+	Clip Size	クリップサイズ
+	Larger	大きく
+	Smaller	小さく
+	Align to Grid	グリッドに整列
+	Reset to Grid	グリッドにリセット
+	Save Arrangement…	配置を保存…
+	Restore Arrangement	配置を復元
+	Delete Arrangement	配置を削除
+	Drop media here to create sequence.	ここにメディアをドロップすると、シーケンスを作成します。
+	Double-click a sequence in the Project panel to open it here.	プロジェクトパネルでシーケンスをダブルクリックすると、ここで開きます。
+	Open Demo Project	デモプロジェクトを開く
+	Insert and overwrite sequences as nests or individual clips	シーケンスをネストまたは個別のクリップとして挿入・上書き
+	Snap in Timeline (S)	タイムラインでスナップ (S)
+	Caption track options	キャプショントラックのオプション
+	Timeline Display Settings	タイムライン表示設定
+	Show Video Thumbnails	ビデオのサムネイルを表示
+	Show Audio Waveform	オーディオ波形を表示
+	Expand All Tracks	すべてのトラックを展開
+	Minimize All Tracks	すべてのトラックを最小化
+	Unrendered: should play back in real time	未レンダリング: リアルタイムで再生できるはずです
+	Unrendered: render to play back in real time	未レンダリング: リアルタイム再生にはレンダリングが必要です
+	Rendered preview	レンダリング済みプレビュー
+	✓ Enable	✓ 有効
+	Unlink	リンク解除
+	(Default)	(既定)
+	(RGB) Gamma	(RGB) ガンマ
+	(RGB) Input Black Level	(RGB) 入力黒レベル
+	(RGB) Input White Level	(RGB) 入力白レベル
+	(RGB) Output Black Level	(RGB) 出力黒レベル
+	(RGB) Output White Level	(RGB) 出力白レベル
+	+ Cmd	+ Cmd
+	+ Opt	+ Opt
+	10 Bit Black Point	10 ビットのブラックポイント
+	10 Bit White Point	10 ビットのホワイトポイント
+	105mm Prime	105mm 単焦点
+	29.97 fps Drop-Frame	29.97 fps ドロップフレーム
+	29.97 fps Non Drop-Frame	29.97 fps ノンドロップフレーム
+	35mm Prime	35mm 単焦点
+	3D Roll	3D ロール
+	3D Rotate	3D 回転
+	3D Spin	3D スピン
+	3D Spinback	3D スピンバック
+	4-Color Gradient	4 色グラデーション
+	5.1 Media	5.1 メディア
+	5.1 Mixdown Type	5.1 ミックスダウンの種類
+	50-300mm Zoom	50-300mm ズーム
+	59.94 fps Drop-Frame	59.94 fps ドロップフレーム
+	59.94 fps Non Drop-Frame	59.94 fps ノンドロップフレーム
+	ASC CDL	ASC CDL
+	Accessible color contrast	アクセシビリティに配慮したカラーコントラスト
+	Action-Safe Margin	アクションセーフの余白
+	Active Monitor	アクティブなモニター
+	Add	加算
+	Add tracks automatically when editing source clips onto the Timeline	ソースクリップをタイムラインに配置するとき、トラックを自動的に追加する
+	Place files dropped onto the Timeline directly on the Timeline	タイムラインにドロップしたファイルをタイムラインに直接配置
+	1 file	1 個のファイル
+	{n} files	{n} 個のファイル
+	Additional Scale	追加スケール
+	Additive Dissolve	加算ディゾルブ
+	Additive Dissolve (Legacy)	加算ディゾルブ (従来版)
+	Adjust	調整
+	Advanced	詳細設定
+	Aggressive	強め
+	Align and Transform	整列と変形
+	All lines	すべての行
+	Allow Selection tool to choose Roll and Ripple trims without modifier key	選択ツールで修飾キーなしにロールトリムとリップルトリムを選べるようにする
+	Allow current tool to change trim type of previously selected edit point	前に選択した編集点のトリムの種類を現在のツールで変更できるようにする
+	Allow duplicate media during project import	プロジェクトの読み込み時にメディアの重複を許可する
+	Alpha Adjust	アルファ調整
+	Alpha Blurriness	アルファのぼかし
+	Alpha Channel	アルファチャンネル
+	Alpha Glow	アルファグロー
+	Always import embedded CEA-708 closed captions with wide aspect.	埋め込まれた CEA-708 クローズドキャプションを常にワイドアスペクトで読み込む
+	Always override audio tags	オーディオタグを常に上書きする
+	Ambience	環境音
+	Ambience Intensity	環境光の強さ
+	Ambience Light Color	環境光の色
+	Amount of Noise	ノイズの量
+	Amount to Decolor	脱色の量
+	Amount to Tint	色合いの適用量
+	Amplifier	アンプ
+	Amplify	増幅
+	Amplitude	振幅
+	Amplitude and Compression	振幅とコンプレッション
+	Analog	アナログ
+	Analog Delay	アナログディレイ
+	Analyze all imported media to search for visuals or audio	読み込んだすべてのメディアを解析して、ビジュアルやオーディオを検索できるようにする
+	Anamorphic	アナモルフィック
+	Anchor	アンカー
+	Anchor Point	アンカーポイント
+	Angle	角度
+	Animation	アニメーション
+	Anti-aliasing Quality	アンチエイリアスの品質
+	Anti-flicker Filter	ちらつき防止フィルター
+	Antialiasing for Best Quality	最高画質時のアンチエイリアス
+	Asymmetry	非対称
+	At Startup	起動時
+	At playback end, return to beginning when restarting playback	最後まで再生した後に再生を再開すると、先頭に戻る
+	Attempt to force hardware to document sample rate	ハードウェアをシーケンスのサンプルレートで動作させるよう試みる
+	Audio Codec	オーディオコーデック
+	Audio Duration	オーディオの長さ
+	Audio Effects	オーディオエフェクト
+	Audio Hardware	オーディオハードウェア
+	Audio In Point	オーディオのイン点
+	Audio Info	オーディオ情報
+	Audio Out Point	オーディオのアウト点
+	Audio Samples	オーディオサンプル
+	Audio Time Units	オーディオ時間単位
+	Audio Transition Default Duration	オーディオトランジションの既定の長さ
+	Audio Transitions	オーディオトランジション
+	Audio Usage	オーディオの使用状況
+	Auto	自動
+	Auto Align	自動位置合わせ
+	Auto Reframe	自動リフレーム
+	Auto Save	自動保存
+	Auto Save also saves the current project(s)	自動保存時に現在のプロジェクトも保存する
+	Auto-tag audio types in the timeline	タイムラインでオーディオの種類を自動でタグ付けする
+	Auto-transcribe all imported clips	読み込んだすべてのクリップを自動で文字起こし
+	Auto-transcribe only clips in sequences	シーケンス内のクリップのみ自動で文字起こし
+	Automatch Time	オートマッチ時間
+	Automatic Click Remover	クリックノイズ自動除去
+	Automatically Hide Dependent Clips	依存クリップを自動的に非表示にする
+	Automatically Save Every	自動保存の間隔
+	Automatically delete cache files older than	一定期間を過ぎたキャッシュファイルを自動的に削除
+	Automatically delete oldest cache files when cache exceeds	キャッシュが上限を超えたら古いファイルから自動的に削除
+	Automatically refresh growing files	書き込み中のファイルを自動的に更新する
+	Automatically resume playback for growing files in Source Monitor	ソースモニターで書き込み中のファイルの再生を自動的に再開する
+	Automatically save projects	プロジェクトを自動保存する
+	Automatically transcribe clips	クリップを自動的に文字起こしする
+	Automation Keyframe Optimization	オートメーションキーフレームの最適化
+	Background Color	背景色
+	Background Corner Radius	背景の角丸の半径
+	Background Opacity	背景の不透明度
+	Background Size	背景のサイズ
+	Background fill	背景の塗り
+	Balance	バランス
+	Balanced Voice	バランスの良い音声
+	Band 1	バンド 1
+	Band 2	バンド 2
+	Band 3	バンド 3
+	Band 4	バンド 4
+	Band 5	バンド 5
+	Band Pass	バンドパス
+	Band Slide	バンドスライド
+	Band Stop	バンドストップ
+	Bandpass	バンドパス
+	Barn Doors	観音開き
+	Basic	基本
+	Basic 3D	基本 3D
+	Basic Correction	基本補正
+	Bass	低音
+	Behind	背面
+	Bessel	ベッセル
+	Bevel Alpha	アルファベベル
+	Bevel join	面取りした角
+	Binauralizer - Ambisonics	バイノーラライザー - アンビソニックス
+	Bins	ビン
+	Black	黒
+	Black & White	白黒
+	Black Input Level	入力黒レベル
+	Black and white	白黒
+	Black and white with crushed blacks and strong contrast	黒をつぶし、コントラストを強めた白黒
+	Bleach Bypass	銀残し
+	Bleach-bypass style: desaturated with hard contrast	銀残し風: 彩度を抑え、コントラストを強めた色調
+	Blend	ブレンド
+	Blend Mode	描画モード
+	Blend With Original	元の画像とのブレンド
+	Blending Mode	描画モード
+	Block Dissolve	ブロックディゾルブ
+	Block Height	ブロックの高さ
+	Block Motion	ブロックモーション
+	Block Size	ブロックサイズ
+	Block Width	ブロックの幅
+	Blocks	ブロック数
+	Blue Blurriness	青のぼかし
+	Blue Curve	ブルーカーブ
+	Blue Offset	青のオフセット
+	Blue Power	青のパワー
+	Blue Slope	青のスロープ
+	Blue-Blue	青-青
+	Blue-Const	青-定数
+	Blue-Green	青-緑
+	Blue-Red	青-赤
+	Blur & Sharpen	ぼかし・シャープ
+	Blur Amount	ぼかし量
+	Blur Angle	ぼかしの角度
+	Blur Dimensions	ぼかしの方向
+	Blur Dissolve	ぼかしディゾルブ
+	Blur Layer	ぼかしレイヤー
+	Blur Length	ぼかしの長さ
+	Blurriness	ぼかしの量
+	Bokeh Blur	ボケ風ぼかし
+	Boost	ブースト
+	Border	境界
+	Border Color	境界線の色
+	Border Width	境界線の幅
+	Borders	境界
+	Bottom Center	下中央
+	Bottom Left	左下
+	Bottom Right	右下
+	Bounce	バウンス
+	Branching	分岐
+	Bright	明るめ
+	Bright Air	明るい空気感
+	Bright Studio	明るいスタジオ
+	Brightness & Contrast	明るさ・コントラスト
+	British Stack	ブリティッシュスタック
+	Brush Hardness	ブラシの硬さ
+	Brush Opacity	ブラシの不透明度
+	Brush Position	ブラシの位置
+	Brush Size	ブラシサイズ
+	Brush Spacing (secs)	ブラシの間隔 (秒)
+	Brush Strokes	ブラシストローク
+	Bubbles	泡
+	Bulge	膨らみ
+	Bulge Smoother	膨らみ (より滑らか)
+	Bump Height	バンプの高さ
+	Burn Alpha	バーンアルファ
+	Burn Chroma	バーンクロマ
+	Burn Color	バーンの色
+	Butt cap	平らな端
+	Butterworth	バターワース
+	CEA-608	CEA-608
+	CEA-708	CEA-708
+	Cache analysis results for re-use	再利用する解析結果のキャッシュ先
+	Camera Angle	カメラアングル
+	Camera Blur	カメラぼかし
+	Camera Shake	カメラの揺れ
+	Capitalisation	大文字化
+	Cathedral	大聖堂
+	Cell Pattern	セルパターン
+	Center Channel Pan	センターチャンネルのパン
+	Center Gradient	中央に配置
+	Center Input	センター入力
+	Center Out	中央から外へ
+	Center Point (Latitude)	中心点 (緯度)
+	Center Point (Longitude)	中心点 (経度)
+	Center Split	中央分割
+	Center of Sphere	球の中心
+	Cents	セント
+	Change to Color	指定色に変更
+	Changes are copied in the background a moment after each edit. If FilmCraft quits unexpectedly, they are offered the next time it starts.	変更内容は、編集のたびに少し遅れてバックグラウンドでコピーされます。FilmCraft が予期せず終了した場合は、次回の起動時に復元できます。
+	Channel	チャンネル
+	Channel Blur	チャンネルぼかし
+	Channel Mix	チャンネルミックス
+	Channel Mixer	チャンネルミキサー
+	Chaos	カオス
+	Chebyshev	チェビシェフ
+	Checker Wipe	チェッカーワイプ
+	Checkerboard	チェッカーボード
+	Chinese	中国語
+	Choke	チョーク
+	Chorus	コーラス
+	Chorus/Flanger	コーラス/フランジャー
+	Chroma	クロマ
+	Chroma Leak	クロマリーク
+	Chromatic Aberration (Blue)	色収差 (青)
+	Chromatic Aberration (Green)	色収差 (緑)
+	Chromatic Aberration (Red)	色収差 (赤)
+	Cineon Converter	Cineon コンバーター
+	Circle	円形
+	Clarity	明瞭度
+	Clean Combo	クリーンコンボ
+	Clean Up Noisy Dialogue	ノイズの多いセリフをクリアに
+	Clear Muddiness	こもりを解消
+	Client	クライアント
+	Clip	クリップ
+	Clip Level	クリッピングレベル
+	Clipping	クリッピング
+	Clock Wipe	クロックワイプ
+	Clock Wipe (Legacy)	クロックワイプ (従来版)
+	Clockwise	時計回り
+	Clone	クローン
+	Closed Captions	クローズドキャプション
+	Color & Alpha	カラーとアルファ
+	Color 1	カラー 1
+	Color 2	カラー 2
+	Color 3	カラー 3
+	Color 4	カラー 4
+	Color Balance	カラーバランス
+	Color Burn	焼き込みカラー
+	Color Channel	カラーチャンネル
+	Color Correction	カラー補正
+	Color Distortion	色のゆがみ
+	Color Dodge	覆い焼きカラー
+	Color Emboss	カラーエンボス
+	Color Key	カラーキー
+	Color Pass	カラーパス
+	Color Replace	色の置換
+	Color Space	カラースペース
+	Color Theme	カラーテーマ
+	Color To Leave	残す色
+	Color Tolerance	色の許容値
+	Color Wheels & Match	カラーホイールとマッチ
+	Colorize	カラー化
+	Columns	列
+	Comment	コメント
+	Complexity	複雑さ
+	Composite In Back	背面に合成
+	Composite In Front	前面に合成
+	Composite Using	合成に使用
+	Composite on Original	元の画像に合成
+	Compound Blur	複合ぼかし
+	Compression Before Clipping	クリッピング前の圧縮
+	Constant Gain	コンスタントゲイン
+	Constant Power	コンスタントパワー
+	Conversion Type	変換の種類
+	Convolution Reverb	コンボリューションリバーブ
+	Cool Blue	クールブルー
+	Cool, desaturated and punchy	寒色寄りで彩度を抑えた、メリハリのある色調
+	Core Width	コアの幅
+	Corner	コーナー
+	Corner Pin	コーナーピン
+	Count	個数
+	Counter-clockwise	反時計回り
+	Crash Recovery	クラッシュからの復旧
+	Crawl Left	左へクロール
+	Crawl Right	右へクロール
+	Create folder for imported projects	読み込んだプロジェクト用のフォルダーを作成する
+	Creative	クリエイティブ
+	Crop	クロップ
+	Crop Less <-> Smooth More	クロップを減らす <-> 滑らかさを増す
+	Cross Displacement	クロスディスプレイスメント
+	Cross Dissolve	クロスディゾルブ
+	Cross Dissolve (Legacy)	クロスディゾルブ (従来版)
+	Cross Zoom	クロスズーム
+	Cross Zoom (Legacy)	クロスズーム (従来版)
+	Crossfade	クロスフェード
+	Crossovers	クロスオーバー
+	Crystallize	結晶化
+	Crystals	結晶
+	Cube Spin	キューブスピン
+	Curl Radius	カールの半径
+	Current Time	現在の時間
+	Cursor	カーソル
+	Curvature	曲率
+	Curve	カーブ
+	Curves	カーブ
+	Custom	カスタム
+	Custom Color	カスタムカラー
+	Cutoff	カットオフ
+	Cyan-teal shadows and warm highlights with a little more contrast	シアン寄りのティールのシャドウと暖色のハイライトに、少し強めのコントラスト
+	Cycle (in Revolutions)	周期 (回転数)
+	Cycle Evolution	展開をループ
+	Damping	ダンピング
+	Damping HF	高域ダンピング
+	Damping LF	低域ダンピング
+	Dark	ダーク
+	Darken	比較 (暗)
+	Darker Color	カラー比較 (暗)
+	Date Created	作成日
+	Date Modified	変更日
+	Day for night: darker, cooler and less saturated	疑似夜景: 暗めで寒色寄り、彩度を抑えた色調
+	DeEsser	ディエッサー
+	DeHummer	ハムノイズ除去
+	DeNoise	ノイズ除去
+	DeReverb	リバーブ除去
+	Decay	減衰
+	Decay Time (RT60)	残響時間 (RT60)
+	Default Audio Tracks	既定のオーディオトラック
+	Default Emoji font	既定の絵文字フォント
+	Default Media Scaling	既定のメディアスケーリング
+	Default Output	既定の出力
+	Default closed caption font	既定のクローズドキャプションフォント
+	Default language	既定の言語
+	Default paragraph direction	既定の段落の方向
+	Default subtitle and text font	既定の字幕・テキストフォント
+	Delay	ディレイ
+	Delay 1	ディレイ 1
+	Delay 2	ディレイ 2
+	Delay 3	ディレイ 3
+	Delay 4	ディレイ 4
+	Delay and Echo	ディレイとエコー
+	Delete files older than	次より古いファイルを削除
+	Delete oldest files when the cache exceeds	キャッシュが次のサイズを超えたら古いファイルから削除
+	Delete…	削除…
+	Depth	深さ
+	Desaturate	彩度低減
+	Description	説明
+	Detail Amplitude	ディテールの振幅
+	Detail Level	ディテールレベル
+	Detailed Analysis	詳細な分析
+	Device Class	デバイスクラス
+	Dialogue	セリフ
+	Diamond	ひし形
+	Difference	差の絶対値
+	Dimensions	方向
+	Dimmed	暗め
+	Dip to Black	黒にディップ
+	Dip to Black (Legacy)	黒にディップ (従来版)
+	Dip to Color	カラーにディップ
+	Dip to White	白にディップ
+	Dip to White (Legacy)	白にディップ (従来版)
+	Direction	方向
+	Directional	平行光源
+	Directional Blur	方向ぼかし
+	Directional Blur (Legacy)	方向ぼかし (従来版)
+	Disable video output when in the background	バックグラウンド時はビデオ出力を無効にする
+	Disperse	分散
+	Displacement	ディスプレイスメント
+	Display Color Management	ディスプレイのカラーマネジメント
+	Display Color Settings	ディスプレイのカラー設定
+	Display out of sync indicators for unlinked clips	リンク解除したクリップの同期ずれインジケーターを表示
+	Dissolve	ディゾルブ
+	Dissolve Blocks	ブロックをディゾルブ
+	Distance	距離
+	Distance to Image	画像までの距離
+	Distort	ゆがみ
+	Distortion	ディストーション
+	Distortion Complexity	ゆがみの複雑さ
+	Distortion Rate	ゆがみの速度
+	Distortion Type	ディストーションの種類
+	Divide	除算
+	Do not delete cache files automatically	キャッシュファイルを自動的に削除しない
+	Don't label speakers	話者にラベルを付けない
+	Double-click	ダブルクリック
+	Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)	再生解像度を下げたときのドラフトデコード (H.264: 高速化、一部のフレームはフィルター処理を軽減)
+	Drive	ドライブ
+	Drop Shadow	ドロップシャドウ
+	Dry	ドライ
+	Dry Out	ドライ出力
+	Dry Up a Roomy Voice	響きの多い音声をドライに
+	Duck Deep Under Dialogue	セリフに合わせて深くダッキング
+	Duck Under Dialogue	セリフに合わせてダッキング
+	Duck Under Voice and Effects	音声と効果音に合わせてダッキング
+	Ducking	ダッキング
+	Dutch	オランダ語
+	Dynamic Link	ダイナミックリンク
+	Dynamics Processing	ダイナミクス処理
+	Early Reflections	初期反射
+	Earthquake	地震
+	Ease In and Out	イーズイン・アウト
+	Easing	イージング
+	Echo	エコー
+	Echo Glow	エコーグロー
+	Echo Operator	エコーの合成方法
+	Echo Time (seconds)	エコー時間 (秒)
+	Echoes	エコー数
+	Edge Color	エッジの色
+	Edge Feather	エッジのぼかし
+	Edge Glow	エッジグロー
+	Edge Sharpness	エッジのシャープさ
+	Edge Softness	エッジの柔らかさ
+	Edge Thickness	エッジの太さ
+	Edge Thin	エッジの細さ
+	Edge Threshold	エッジのしきい値
+	Edge Type	エッジの種類
+	Edge Width	エッジの幅
+	Elliptical	楕円
+	Emboss	エンボス
+	Enable HSL Secondary	HSL セカンダリを有効にする
+	Enable Mercury Transmit	Mercury Transmit を有効にする
+	Enable ProRes hardware accelerated encoding, if available	可能な場合は、ハードウェアアクセラレーションによる ProRes エンコードを有効にする
+	Enable clip and XMP metadata linking	クリップと XMP メタデータのリンクを有効にする
+	Enable developer mode	開発者モードを有効にする
+	Enable hardware accelerated decoding (requires restart)	ハードウェアアクセラレーションによるデコードを有効にする (再起動が必要)
+	Enable language auto-detection	言語の自動検出を有効にする
+	Enable proxies	プロキシを有効にする
+	End Color	終了色
+	End Point	終点
+	End of Ramp	ランプの終了点
+	Error	エラー
+	Evolution	展開
+	Evolution Options	展開オプション
+	Exciter Amount	エキサイター量
+	Exciter Mode	エキサイターモード
+	Exclusion	除外
+	Exponential Fade	指数フェード
+	Extended Dynamic Range Monitoring	拡張ダイナミックレンジのモニタリング
+	FFT Filter	FFT フィルター
+	Fade	フェード
+	Fade Out	フェードアウト
+	Faded Matte	フェードマット
+	Falloff	減衰
+	Far Away	遠くで
+	Fast	高速
+	Faster Motion	より速い動き
+	Feedback	フィードバック
+	Feedback 1	フィードバック 1
+	Feedback 2	フィードバック 2
+	Feedback 3	フィードバック 3
+	Feedback 4	フィードバック 4
+	Feet + Frames 16mm	フィート + フレーム 16mm
+	Feet + Frames 35mm	フィート + フレーム 35mm
+	Female	女性
+	File Size	ファイルサイズ
+	Fill Background	背景を塗りつぶし
+	Fill Color	塗りの色
+	Fill Left with Right	右チャンネルを左にコピー
+	Fill Point	塗りつぶしの基点
+	Fill Right with Left	左チャンネルを右にコピー
+	Fill Selector	塗りつぶしの基準
+	Film Dissolve	フィルムディゾルブ
+	Film Dissolve (Legacy)	フィルムディゾルブ (従来版)
+	Film Roll	フィルムロール
+	Filter	フィルター
+	Filter Frequency	フィルター周波数
+	Filter Resonance	フィルターレゾナンス
+	Filter and EQ	フィルターと EQ
+	Final Delay	最終ディレイ
+	Find Edges	輪郭検出
+	Flanger	フランジャー
+	Flare	フレア
+	Flare Brightness	フレアの明るさ
+	Flare Center	フレアの中心
+	Flare Color	フレアの色
+	Flash	フラッシュ
+	Flicker	ちらつき
+	Flickers	ちらつき回数
+	Flip Motion	フリップモーション
+	Flip Over	フリップオーバー
+	Float	浮動小数点
+	Focus	フォーカス
+	Focus Blur	フォーカスぼかし
+	Focus Point	フォーカスポイント
+	Focus Shape	フォーカスの形状
+	Focus Size	フォーカスのサイズ
+	Fold Motion	フォールドモーション
+	Foldback	フォールドバック
+	For color management parameters, go to the Settings tab in the Lumetri Color panel.	カラーマネジメントのパラメーターは、Lumetri カラーパネルの「設定」タブにあります。
+	Format	形式
+	Four Scopes (RGB, 8 bit)	4 つのスコープ (RGB、8 bit)
+	Four Scopes (YUV, float, no clamp)	4 つのスコープ (YUV、浮動小数点、クランプなし)
+	Fractal Influence	フラクタルの影響
+	Fractal Type	フラクタルの種類
+	Frame	フレーム
+	Frame Color	フレームの色
+	Frame Count	フレームカウント
+	Frame Layout	フレームレイアウト
+	Frame Rate	フレームレート
+	Frame Width	フレームの幅
+	Frame cache for monitors and thumbnails	モニターとサムネイル用のフレームキャッシュ
+	Frames	フレーム
+	Framing	フレーミング
+	French	フランス語
+	Frequency	周波数
+	From	変更元
+	From East	右から
+	From North	上から
+	From South	下から
+	From West	左から
+	From the Left	左から
+	From the Right	右から
+	Front + LFE	フロント + LFE
+	Front + Rear	フロント + リア
+	Front + Rear + LFE	フロント + リア + LFE
+	Front Only	フロントのみ
+	Fuzz	ファズ
+	GB	GB
+	Gamma	ガンマ
+	Gamma Correction	ガンマ補正
+	Gamut Warning	色域外警告
+	Gamut Warning Color	色域外警告の色
+	Gap	ギャップ
+	Gap Color	ギャップの色
+	Gaussian Blur	ガウスぼかし
+	Gaussian Blur (Legacy)	ガウスぼかし (従来版)
+	General	一般
+	Generate	生成
+	Generate Timecode	タイムコードを生成
+	Generate waveforms and conform audio using multithreading	マルチスレッドを使用して波形の生成とオーディオのコンフォームを行う
+	Generate waveforms automatically during import	読み込み時に波形を自動的に生成する
+	German	ドイツ語
+	Ghosts	ゴースト数
+	Glass	ガラス
+	Glint	きらめき
+	Glitch	グリッチ
+	Glow	グロー
+	Glow Brightness	グローの明るさ
+	Glow Color	グローの色
+	Glow Only	グローのみ
+	Glow Radius	グローの半径
+	Glow Saturation	グローの彩度
+	Glow Width	グローの幅
+	Golden Hour	ゴールデンアワー
+	Good	良好
+	Gradient	グラデーション
+	Gradient End	グラデーションの終点
+	Gradient Layer	グラデーションレイヤー
+	Gradient Placement	グラデーションの配置
+	Gradient Scatter	グラデーションの拡散
+	Gradient Shape	グラデーションの形状
+	Gradient Start	グラデーションの始点
+	Gradient Wipe	グラデーションワイプ
+	Gradient Wipe (Legacy)	グラデーションワイプ (従来版)
+	Grain Size	グレインのサイズ
+	Graphic Equalizer (10 Bands)	グラフィックイコライザー (10 バンド)
+	Graphic Equalizer (20 Bands)	グラフィックイコライザー (20 バンド)
+	Graphic Equalizer (30 Bands)	グラフィックイコライザー (30 バンド)
+	Graphics	グラフィックス
+	Green Blurriness	緑のぼかし
+	Green Curve	グリーンカーブ
+	Green Offset	緑のオフセット
+	Green Power	緑のパワー
+	Green Slope	緑のスロープ
+	Green-Blue	緑-青
+	Green-Const	緑-定数
+	Green-Green	緑-緑
+	Green-Red	緑-赤
+	Grid	グリッド
+	Grow	拡大
+	Growing Files	書き込み中のファイル
+	Grunge	グランジ
+	Grunge & Distort	グランジとゆがみ
+	GuitarSuite	ギタースイート
+	HDR Graphics White (Nits)	HDR グラフィックスのホワイトレベル (Nits)
+	HLS Vectorscope + Histogram	HLS ベクトルスコープ + ヒストグラム
+	HSL Secondary	HSL セカンダリ
+	Hard	ハード
+	Hard Clip	ハードクリップ
+	Hard Light	ハードライト
+	Hard Limiter	ハードリミッター
+	Hard Mix	ハードミックス
+	Hardware decoding	ハードウェアデコード
+	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	ハードウェアデコード: 「自動」では、対応しているストリームにはシステムのビデオデコーダー (macOS では VideoToolbox、Windows では Media Foundation、Linux では H.264・HEVC 用の VA-API) を使用し、それ以外のストリームや、ハードウェアで失敗した場合は FilmCraft 独自のデコーダーを使用します。すでに開いているメディアは、開き直すまで現在のデコーダーを使い続けます。
+	Head Size	頭部サイズ
+	Heart	ハート
+	Height	高さ
+	Hexagon	六角形
+	Hide Back Face	裏面を非表示
+	High	高
+	High Cutoff	高域カットオフ
+	High Frequency Cut	高域カット
+	High Frequency Damping	高域ダンピング
+	High Pass	ハイパス
+	High Shelf	ハイシェルフ
+	High Shelf Gain	ハイシェルフゲイン
+	High contrast with held highlights and deep shadows	ハイライトを保ちつつシャドウを深く沈めた、高コントラストの色調
+	Highlight	ハイライト
+	Highlight Blue Balance	ハイライトのブルーバランス
+	Highlight Brightness	ハイライトの明るさ
+	Highlight Color	ハイライトカラー
+	Highlight Green Balance	ハイライトのグリーンバランス
+	Highlight Red Balance	ハイライトのレッドバランス
+	Highlight Rolloff	ハイライトのロールオフ
+	Highlight Threshold	ハイライトのしきい値
+	Highlight Tint	ハイライトの色合い
+	Highlights Lightness	ハイライトの明度
+	Highpass	ハイパス
+	Hindi	ヒンディー語
+	Hindi digits	ヒンディー数字
+	Horizontal 16:9	横長 16:9
+	Horizontal Alignment	水平方向の整列
+	Horizontal Blocks	水平ブロック数
+	Horizontal Decentering	水平方向の偏心
+	Horizontal Displacement	水平ディスプレイスメント
+	Horizontal Flip	左右反転
+	Horizontal Margin	水平方向の余白
+	Horizontal and Vertical	水平と垂直
+	Hue Center	色相の中心
+	Hue Tolerance	色相の許容値
+	I/O Buffer Size	I/O バッファーサイズ
+	Ignore Alpha	アルファを無視
+	Image Control	画像コントロール
+	Immersive Video	イマーシブビデオ
+	Import numbered stills as image sequences	連番の静止画を画像シーケンスとして読み込む
+	Impulse	インパルス
+	In a Room	部屋の中で
+	In the Media Cache	メディアキャッシュ内
+	In the project	プロジェクト内
+	In/Out Duration	イン/アウト間の長さ
+	Include captions on import	読み込み時にキャプションを含める
+	Incoming	次のクリップ
+	Indeterminate Media Timebase	不定メディアのタイムベース
+	Initial Delay	初期ディレイ
+	Inner	内側
+	Inner Radius	内側の半径
+	Input Boost	入力ブースト
+	Inset	インセット
+	Inside	内側
+	Inside Color	内側の色
+	Inter	Inter
+	Interior Room Tone	屋内のルームトーン
+	Internal Black Point	内部ブラックポイント
+	Internal White Point	内部ホワイトポイント
+	Interpolation	補間
+	Intersect	交差
+	Inverse Falloff	減衰を反転
+	Invert	反転
+	Invert Alpha	アルファを反転
+	Invert Blur	ぼかしを反転
+	Invert Fill	塗りつぶしを反転
+	Invert Gradient	グラデーションを反転
+	Invert Left	左の位相を反転
+	Invert Right	右の位相を反転
+	Iris	アイリス
+	Iris Box	四角形アイリス
+	Iris Cross	十字アイリス
+	Iris Diamond	ひし形アイリス
+	Iris Radius	アイリスの半径
+	Iris Rotation	アイリスの回転
+	Iris Round	円形アイリス
+	Iris Shape	アイリスの形状
+	Italian	イタリア語
+	Japanese	日本語
+	JetBrains Mono	JetBrains Mono
+	Join Through Edits	スルー編集点を結合
+	Kaleidoscope	万華鏡
+	Keep a recovery copy of unsaved changes	未保存の変更の復旧用コピーを保持する
+	Key Color	キーカラー
+	Keying	キーイング
+	Korean	韓国語
+	Label Defaults	既定のラベル
+	Label speakers	話者にラベルを付ける
+	Labels	ラベル
+	Large Hall	大きなホール
+	Large Trim Offset	大幅トリムのオフセット
+	Large Volume Adjustment	大幅な音量調整
+	Latch	ラッチ
+	Layer Name	レイヤー名
+	Layers	レイヤー
+	Leave Color	色を残す
+	Left - Left	左 - 左
+	Left - Right	左 - 右
+	Left channel to device output	左チャンネルを割り当てるデバイス出力
+	Left to Right	左から右へ
+	Left to right	左から右
+	Legacy	従来版
+	Length	長さ
+	Lens Blur	レンズぼかし
+	Lens Distortion	レンズゆがみ
+	Lens Flare	レンズフレア
+	Lens Type	レンズの種類
+	Level 1	レベル 1
+	Level 2	レベル 2
+	Level 3	レベル 3
+	Level 4	レベル 4
+	Levels	レベル
+	Lifted blacks, softer contrast, muted colour	黒を浮かせ、コントラストを弱めた、くすんだ色調
+	Light 1	光源 1
+	Light 2	光源 2
+	Light 3	光源 3
+	Light 4	光源 4
+	Light 5	光源 5
+	Light Angle	光の角度
+	Light Color	光の色
+	Light Intensity	光の強さ
+	Light Leak	光漏れ
+	Light Leaks	光漏れ
+	Light Sweep	ライトスイープ
+	Light Type	光源の種類
+	Lighten	比較 (明)
+	Lighter Color	カラー比較 (明)
+	Lighting Effects	照明エフェクト
+	Lightning	稲妻
+	Lights & Blurs	光とぼかし
+	Lights & Glows	光とグロー
+	Line Thickness	線の太さ
+	Linear Burn	焼き込み (リニア)
+	Linear Dodge (Add)	覆い焼き (リニア) - 加算
+	Linear Light	リニアライト
+	Linear Ramp	リニアランプ
+	Linear Wipe	リニアワイプ
+	Linear Wipe (Legacy)	リニアワイプ (従来版)
+	Linear keyframe thinning	リニアキーフレームの間引き
+	Linear to Log	リニアからログ
+	Liquid Distortion	液状ゆがみ
+	Local Projects	ローカルプロジェクト
+	Location	場所
+	Log Note	ログメモ
+	Log to Linear	ログからリニア
+	Log to Log	ログからログ
+	Logo Cutout	ロゴの切り抜き
+	Long Shadow	ロングシャドウ
+	Look-Ahead Time	先読み時間
+	Loudness	ラウドネス
+	Loudness Maximizer	ラウドネスマキシマイザー
+	Loudness Meter	ラウドネスメーター
+	Louver	ルーバー
+	Low	低
+	Low Frequency Cut	低域カット
+	Low Pass	ローパス
+	Low Shelf	ローシェルフ
+	Low Shelf Gain	ローシェルフゲイン
+	Lower Left	左下
+	Lower Right	右下
+	Lowpass	ローパス
+	Luma	輝度
+	Luma Curve	輝度カーブ
+	Luma Fade	輝度フェード
+	Luma Key	輝度キー
+	Luma Source	輝度のソース
+	Luma and Chroma	輝度とクロマ
+	Lumetri Presets	Lumetri プリセット
+	Luminance	輝度
+	Luminance Threshold	輝度のしきい値
+	Luminosity	輝度
+	MB	MB
+	Magenta	マゼンタ
+	Magnify	拡大鏡
+	Magnify (Legacy)	拡大鏡 (従来版)
+	Maintain pitch while shuttling	シャトル再生時にピッチを維持する
+	Major Radius	長半径
+	Male	男性
+	Mango	マンゴー
+	Map Black To	黒に割り当てる色
+	Map White To	白に割り当てる色
+	Maps full-range levels into 16–235 (video range) with a luma curve	輝度カーブで、フルレンジのレベルを 16–235 (ビデオレンジ) に収めます
+	Mask Only	マスクのみ
+	Master Amplitude	マスター振幅
+	Mastering	マスタリング
+	Match frame sets in point	マッチフレームでイン点を設定する
+	Matte	マット
+	Matte Alpha	マットのアルファ
+	Matte Cleanup	マットのクリーンアップ
+	Matte Generation	マットの生成
+	Matte Luma	マットの輝度
+	Maximum	最大値
+	Maximum Amplitude	最大振幅
+	Maximum Block Size	最大ブロックサイズ
+	Maximum Blur	最大ぼかし
+	Maximum Project Versions	プロジェクトの最大バージョン数
+	Maximum Reduction	最大低減量
+	Maximum Scale	最大スケール
+	Media	メディア
+	Media Analysis	メディア解析
+	Media Analysis & Transcription	メディア解析と文字起こし
+	Media Cache	メディアキャッシュ
+	Media Cache Database	メディアキャッシュデータベース
+	Media Cache Files	メディアキャッシュファイル
+	Media Cache Management	メディアキャッシュの管理
+	Media Duration	メディアの長さ
+	Media End	メディア終了
+	Media Time	メディア時間
+	Media Timecode	メディアのタイムコード
+	Media Type	メディアの種類
+	Media analysis and transcriptions will be cached in the Media Cache folder. Reanalysis won't be required if the media is imported into another project on this computer.	メディアの解析結果と文字起こしは、メディアキャッシュフォルダーにキャッシュされます。このコンピューター上の別のプロジェクトにメディアを読み込んだ場合でも、再解析は必要ありません。
+	Median	中央値
+	Medium Room	中くらいの部屋
+	Memory	メモリー
+	Metadata & Timecode Burn-in	メタデータとタイムコードの焼き込み
+	Method	方法
+	Metrics Kerning	メトリクスカーニング
+	Mid	中
+	Mid Point	中間点
+	Midtone Blue Balance	中間調のブルーバランス
+	Midtone Green Balance	中間調のグリーンバランス
+	Midtone Red Balance	中間調のレッドバランス
+	Midtones Lightness	中間調の明度
+	Minimum	最小値
+	Minimum time	最小時間
+	Minimum time interval thinning	最小時間間隔での間引き
+	Minor Radius	短半径
+	Mirror	ミラー
+	Mirror Alternate	交互にミラー
+	Missing font replacement	見つからないフォントの代替
+	Miter join	とがった角
+	Miter limit	マイター制限
+	Mixed Crystals	混合結晶
+	Mode	モード
+	Modern High Gain	モダンハイゲイン
+	Modulation	モジュレーション
+	Modulation Rate	モジュレーションレート
+	Mono Media	モノラルメディア
+	Monochrome	モノクロ
+	Monochrome toned cyan-blue	シアンブルーで調色したモノクロ
+	Monochrome toned warm brown	温かみのあるブラウンで調色したモノクロ
+	Monoscopic	モノスコピック
+	Monospace only	等幅フォントのみ
+	More colour in the less saturated areas	彩度の低い部分の色を強調
+	Morph Cut	モーフカット
+	Mosaic	モザイク
+	Mosaic (Legacy)	モザイク (従来版)
+	Motion Blur	モーションぼかし
+	Motion Camera	モーションカメラ
+	Motion Preset	モーションプリセット
+	Motion Tween	モーショントゥイーン
+	Move	移動
+	Movie	ムービー
+	Movie (audio and video)	ムービー (オーディオとビデオ)
+	Multiband Compressor	マルチバンドコンプレッサー
+	Multichannel Mono Media	マルチチャンネルのモノラルメディア
+	Multiply	乗算
+	Multitap Delay	マルチタップディレイ
+	Music	音楽
+	Mute input during timeline recording	タイムラインでの録音中は入力をミュートする
+	Name	名前
+	Narrow	狭い
+	Neon Color	ネオンの色
+	Neon Wipe	ネオンワイプ
+	Next to original media files	元のメディアファイルと同じ場所
+	Night	夜
+	No Motion	動きなし
+	No Scroll	スクロールなし
+	No plugins are installed. Changes will take effect the next time you start FilmCraft.	プラグインはインストールされていません。変更は次回 FilmCraft の起動時に反映されます。
+	Noise	ノイズ
+	Noise & Grain	ノイズ・グレイン
+	Noise (Legacy)	ノイズ (従来版)
+	Noise Level	ノイズレベル
+	Noise Reduction/Restoration	ノイズ除去/修復
+	Noise Type	ノイズの種類
+	Non-Additive Dissolve	非加算ディゾルブ
+	Normal	通常
+	Notch 1	ノッチ 1
+	Notch 2	ノッチ 2
+	Notch 3	ノッチ 3
+	Notch 4	ノッチ 4
+	Notch 5	ノッチ 5
+	Notch 6	ノッチ 6
+	Notch Filter	ノッチフィルター
+	Notch Width	ノッチ幅
+	Number Of Echoes	エコーの数
+	Number of Harmonics	倍音の数
+	Obsolete	旧式
+	Octagon	八角形
+	Offset	オフセット
+	Offset (Turbulence)	オフセット (乱流)
+	Offset From	開始オフセット
+	Offset To	終了オフセット
+	Omni	全方向光源
+	On	オン
+	On Original Image	元の画像上
+	On Transparent	透明背景上
+	Open Air	屋外
+	Open Most Recent	前回のプロジェクトを開く
+	Open in new window	新しいウィンドウで開く
+	Open in place	その場で開く
+	Open new tab	新しいタブで開く
+	Opens up the shadows	シャドウを明るくします
+	Order	オーダー
+	Orientation	向き
+	Outer	外側
+	Outgoing	前のクリップ
+	Output	出力
+	Output Mapping	出力マッピング
+	Outside	外側
+	Outside Color	外側の色
+	Overflow	オーバーフロー
+	Overlay	オーバーレイ
+	Overshoot	オーバーシュート
+	Page Peel	ページピール
+	Page Scroll	ページスクロール
+	Page Turn	ページめくり
+	Paint Bucket	ペイントバケツ
+	Paint On Black	黒に描画
+	Paint On Original Image	元の画像に描画
+	Paint On Transparent	透明背景に描画
+	Paint On White	白に描画
+	Paint Style	描画スタイル
+	Paint Surface	描画面
+	Pan (Y Axis)	パン (Y 軸)
+	Panel Wipe	パネルワイプ
+	Panels	パネル数
+	Panner - Ambisonics	パンナー - アンビソニックス
+	Parade	パレード
+	Parade (RGB)	パレード (RGB)
+	Parametric Equalizer	パラメトリックイコライザー
+	Passband Ripple	通過帯域リップル
+	Path	パス
+	Path Points	パスのポイント
+	Pause Media Encoder queue during playback	再生中は Media Encoder のキューを一時停止する
+	Peak Frequency	ピーク周波数
+	Peak Gain	ピークゲイン
+	Pedestal	ペデスタル
+	Pentagon	五角形
+	Per line	行ごと
+	Percent Blur	ぼかし率
+	Perspective	遠近
+	Phase Difference	位相差
+	Phaser	フェイザー
+	Phone Call	電話越しの声
+	Phosphor	蛍光体
+	Phosphor Color	蛍光体の色
+	Photocopy	コピー機風
+	Photocopy Color	コピー機風 (カラー)
+	Pillow	ピロー
+	Pin All	すべて固定
+	Pin Horizontal	水平方向を固定
+	Pin Light	ピンライト
+	Pin Vertical	垂直方向を固定
+	Pinning	固定
+	Pitch Shifter	ピッチシフター
+	Plate	プレート
+	Plateau Wipe	プラトーワイプ
+	Plateaus	プラトー数
+	Plates	プレート
+	Play after rendering previews	プレビューのレンダリング後に再生する
+	Play audio while scrubbing in Source and Program Monitors	ソースモニターとプログラムモニターでのスクラブ中にオーディオを再生する
+	Playback	再生
+	Playhead position determines trim monitor loop playback	トリムモニターのループ再生で再生ヘッドの位置を基準にする
+	Plugins	プラグイン
+	Podcast Voice	ポッドキャスト向けの声
+	Point 1	ポイント 1
+	Point 1 Color	ポイント 1 の色
+	Point 1 Latitude	ポイント 1 の緯度
+	Point 1 Longitude	ポイント 1 の経度
+	Point 2	ポイント 2
+	Point 2 Color	ポイント 2 の色
+	Point 2 Latitude	ポイント 2 の緯度
+	Point 2 Longitude	ポイント 2 の経度
+	Point 3	ポイント 3
+	Point 3 Color	ポイント 3 の色
+	Point 3 Latitude	ポイント 3 の緯度
+	Point 3 Longitude	ポイント 3 の経度
+	Point 4	ポイント 4
+	Point 5	ポイント 5
+	Point 6	ポイント 6
+	Point 7	ポイント 7
+	Point 8	ポイント 8
+	Points	頂点数
+	Policy	ポリシー
+	Pop Motion	ポップモーション
+	Portuguese	ポルトガル語
+	Position & Rotation	位置・回転
+	Position Amount	移動量
+	Position, Scale & Rotation	位置・スケール・回転
+	Position, Scale, Rotation	位置・スケール・回転
+	Posterize	ポスタライズ
+	Posterize Time	時間のポスタライズ
+	Pre-Delay	プリディレイ
+	Prefix	接頭辞
+	Presence Lift	プレゼンスを強調
+	Preserve Luminosity	輝度を保持
+	Preserve Scale	スケールを保持
+	ProcAmp	プロセスアンプ
+	Projecting cap	突き出た端
+	Projects	プロジェクト
+	Pull Motion	プルモーション
+	Pulls highlights and whites down	ハイライトとホワイトを抑えます
+	Push	プッシュ
+	Push (Legacy)	プッシュ (従来版)
+	Q	Q
+	RAM reserved for other applications	他のアプリケーション用に確保する RAM
+	RGB	RGB
+	RGB Split	RGB 分割
+	RGB-White	RGB (白)
+	Radial	円形
+	Radial Blur	放射状ぼかし
+	Radial Ramp	放射状ランプ
+	Radial Wipe	放射状ワイプ
+	Radial Wipe (Legacy)	放射状ワイプ (従来版)
+	Radio Announcer	ラジオアナウンサー
+	Radio Voice	ラジオ風の声
+	Radius	半径
+	Ramp	ランプ
+	Ramp Shape	ランプの形状
+	Random	ランダム
+	Random Seed	ランダムシード
+	Range	範囲
+	Ray	光線
+	Ray Color	光線の色
+	Ray Length	光線の長さ
+	Rays	光線数
+	Rays Only	光線のみ
+	Read	読み取り
+	Rec. 2100	Rec. 2100
+	Rec. 601	Rec. 601
+	Rec. 709	Rec. 709
+	Red Blurriness	赤のぼかし
+	Red Curve	レッドカーブ
+	Red Offset	赤のオフセット
+	Red Power	赤のパワー
+	Red Slope	赤のスロープ
+	Red-Blue	赤-青
+	Red-Const	赤-定数
+	Red-Green	赤-緑
+	Red-Red	赤-赤
+	Reduce Axis	低減の対象
+	Reduce Interlace Flicker	インターレースのちらつきを軽減
+	Reflected	反射形
+	Reflection Angle	反射の角度
+	Reflection Center	反射の中心
+	Refraction	屈折
+	Reframe Offset	リフレームのオフセット
+	Reframe Zoom	リフレームのズーム
+	Refresh growing Files Every	書き込み中のファイルの更新間隔
+	Relaxed	控えめ
+	Release Time	リリース時間
+	Relief	レリーフ
+	Remaining	残り時間
+	Remove Fringe	フリンジを除去
+	Render Edit in Audition files to:	Audition で編集するファイルのレンダリング先:
+	Render audio when rendering video	ビデオのレンダリング時にオーディオもレンダリングする
+	Repair	修復
+	Repeat Edge Pixels	エッジピクセルを繰り返す
+	Replace Color	置換後の色
+	Replace With Clip From Source Monitor	ソースモニターのクリップで置換
+	Replicate	複製
+	Responsive Design - Position	レスポンシブデザイン - 位置
+	Responsive Design - Time	レスポンシブデザイン - 時間
+	Restore open sequences when opening projects	プロジェクトを開くときに、開いていたシーケンスを復元する
+	Result	結果
+	Retro	レトロ
+	Reveal Nested Sequence	ネストされたシーケンスを表示
+	Reveal Original Image	元の画像を表示
+	Reveal in Project	プロジェクトで表示
+	Reverb Amount	リバーブ量
+	Reverse	反転
+	Right - Left	右 - 左
+	Right - Right	右 - 右
+	Right channel to device output	右チャンネルを割り当てるデバイス出力
+	Right to left	右から左
+	Ripple trim adds edits to keep both sides of trim in sync	リップルトリムで編集点を追加し、トリムの両側の同期を保つ
+	Roll (Z Axis)	ロール (Z 軸)
+	Room Size	ルームサイズ
+	Rotation Amount	回転量
+	Roughen	粗い
+	Roughen Color	粗い (カラー)
+	Roughen Edges	エッジを粗く
+	Round cap	丸い端
+	Round join	丸い角
+	Rounded Crop	角丸クロップ
+	Rows	行
+	Russian	ロシア語
+	Rusty	さびた
+	Rusty Color	さびた (カラー)
+	SFX	効果音
+	Sample Rate	サンプルレート
+	Saturation at 50 %	彩度 50 %
+	Save .cfa and .pek media cache files next to original media files when possible	可能な場合は、.cfa と .pek のメディアキャッシュファイルを元のメディアファイルと同じ場所に保存する
+	Scale (Degrees)	スケール (度)
+	Scale Amount	スケール量
+	Scale From	開始スケール
+	Scale Height	高さのスケール
+	Scale Match	スケール合わせ
+	Scale To	終了スケール
+	Scale Width	幅のスケール
+	Scale to frame size	フレームサイズに合わせてスケール
+	Scan Lines	走査線
+	Scene	シーン
+	Scientific Filter	サイエンティフィックフィルター
+	Scratch disk location for Captured Audio	キャプチャしたオーディオのスクラッチディスクの場所
+	Screen	スクリーン
+	Seconds	秒
+	Segments	セグメント数
+	Semi-tones	半音
+	Sequence Name	シーケンス名
+	Sequence Timecode	シーケンスのタイムコード
+	Set focus on the Timeline when performing Insert/Overwrite edits	挿入/上書き編集の実行時にタイムラインにフォーカスを移す
+	Set to frame size	フレームサイズに設定
+	Setting	設定
+	Shadow Angle	シャドウの角度
+	Shadow Blue Balance	シャドウのブルーバランス
+	Shadow Blur	シャドウのぼかし
+	Shadow Color	シャドウの色
+	Shadow Distance	シャドウの距離
+	Shadow Green Balance	シャドウのグリーンバランス
+	Shadow Only	シャドウのみ
+	Shadow Opacity	シャドウの不透明度
+	Shadow Red Balance	シャドウのレッドバランス
+	Shadow Size	シャドウのサイズ
+	Shadow Tint	シャドウの色合い
+	Shadows Lightness	シャドウの明度
+	Shake	揺れ
+	Shape Dissolve	シェイプディゾルブ
+	Shape Flow	シェイプフロー
+	Shape Size	シェイプのサイズ
+	Shapes	シェイプ
+	Shard Size	破片のサイズ
+	Sharp Colors	シャープな色
+	Sharpen Amount	シャープの量
+	Shift Center To	中心の移動先
+	Shift clips that overlap trim point during ripple trimming	リップルトリム時に、トリムポイントに重なるクリップをずらす
+	Shot	ショット
+	Show "Project:" and "Bin:" in Project panel tab	プロジェクトパネルのタブに「プロジェクト:」と「ビン:」を表示
+	Show Clip Mismatch Warning dialog	クリップの不一致警告ダイアログを表示
+	Show Event Indicator	イベントインジケーターを表示
+	Show Focus Area	フォーカス範囲を表示
+	Show Home	ホームを表示
+	Show Mask Tracker Preview	マスクトラッカーのプレビューを表示
+	Show Only Noise	ノイズのみ表示
+	Show Open Dialog	「開く」ダイアログを表示
+	Show Project Load Error Dialog	プロジェクトの読み込みエラーダイアログを表示
+	Show Rich Tool Tips	詳細なツールヒントを表示
+	Show Tool Tips	ツールヒントを表示
+	Show Workspace Reset Warning dialog on double click	ダブルクリック時にワークスペースのリセット警告ダイアログを表示
+	Show system compatibility issues at startup	起動時にシステムの互換性の問題を表示
+	Shrink	縮小
+	Shutter Angle	シャッター角度
+	Similarity	類似度
+	Simple Notch Filter	簡易ノッチフィルター
+	Simple Parametric EQ	簡易パラメトリック EQ
+	Simple Text	シンプルテキスト
+	Single-band Compressor	シングルバンドコンプレッサー
+	Sinusoidal	正弦波
+	Skew	傾斜
+	Skew Axis	傾斜の軸
+	Slats	羽根の数
+	Slice	スライス
+	Slices	スライス数
+	Slide	スライド
+	Slide (Legacy)	スライド (従来版)
+	Slope	スロープ
+	Slow	低速
+	Slower Motion	より遅い動き
+	Small Room	小さな部屋
+	Smart Limit	スマート制限
+	Smart Tools	スマートツール
+	Smart quotes	スマート引用符
+	Smooth	スムーズ
+	Smooth Motion	滑らかな動き
+	Smooth Scroll	スムーズスクロール
+	Smoothness	滑らかさ
+	Snap playhead in Timeline when Snap is enabled	スナップが有効なときにタイムラインで再生ヘッドをスナップする
+	Soft	ソフト
+	Soft Clamp	ソフトクランプ
+	Soft Edges (Best Quality)	ソフトエッジ (最高画質)
+	Soft Light	ソフトライト
+	Soft Wipe	ソフトワイプ
+	Soften Harshness	きつさを和らげる
+	Softness	柔らかさ
+	Solarize	ソラリゼーション
+	Solid Colors	単色
+	Source Point	ソースポイント
+	Source Text	ソーステキスト
+	Spacer	スペーサー
+	Spanish	スペイン語
+	Speaker Angle	スピーカー角度
+	Speaker Labeling	話者のラベル付け
+	Special	特殊
+	Special Effects	特殊エフェクト
+	Speech model	音声認識モデル
+	Speed	速度
+	Spherize	球面
+	Spiky	とげ状
+	Spill	スピル
+	Spill Suppression	スピル抑制
+	Spin	スピン
+	Spin Direction	回転方向
+	Spin Motion	スピンモーション
+	Split	分割
+	Split (Legacy)	分割 (従来版)
+	Spotlight	スポットライト
+	Spread	スプレッド
+	Spring Motion	スプリングモーション
+	Square	正方形
+	Square (Width Only)	正方形 (幅のみ)
+	Square 1:1	正方形 1:1
+	Stabilization	手ぶれ補正
+	Stabilize Only	手ぶれ補正のみ
+	Stabilize, Crop	手ぶれ補正、クロップ
+	Stabilize, Crop, Auto-scale	手ぶれ補正、クロップ、自動スケール
+	Stabilize, Synthesize Edges	手ぶれ補正、エッジを合成
+	Stages	ステージ数
+	Star	星形
+	Star Wipe	星形ワイプ
+	Start Angle	開始角度
+	Start Color	開始色
+	Start Point	始点
+	Start at 0	0 から開始
+	Start at 1	1 から開始
+	Start of Ramp	ランプの開始点
+	Start with an Empty Project	空のプロジェクトで開始
+	Starting Intensity	開始時の強さ
+	Static Plates	静止プレート
+	Step forward/back many	複数フレーム単位で前後にステップ
+	Stereo Expand	ステレオ拡張
+	Stereo Expander	ステレオエキスパンダー
+	Stereo Imagery	ステレオイメージ
+	Stereo Media	ステレオメディア
+	Stereo Phasing	ステレオ位相
+	Stereoscopic - Over/Under	ステレオスコピック - 上下
+	Stereoscopic - Side by Side	ステレオスコピック - 左右
+	Still	静止画
+	Still Image Default Duration	静止画の既定の長さ
+	Stone Church	石造りの教会
+	Stopband Attenuation	阻止帯域減衰量
+	Straight Color	カラーのみ
+	Strength	強さ
+	Stretch	引き伸ばし
+	Stretch Gradient to Fit	全体に合わせて伸縮
+	Stretch Map to Fit	マップを伸縮して合わせる
+	Stretch Width or Height	幅または高さの伸縮
+	Stretch Wipe	引き伸ばしワイプ
+	Stretch to Fit Frame	フレームに合わせて伸縮
+	Stripe	ストライプ
+	Stripes	ストライプ数
+	Strobe Color	ストロボの色
+	Strobe Duration (secs)	ストロボの長さ (秒)
+	Strobe Light	ストロボライト
+	Strobe Period (secs)	ストロボの周期 (秒)
+	Stroke 2 Color	線 2 の色
+	Stroke 2 Type	線 2 の位置
+	Stroke 2 Width	線 2 の幅
+	Stroke Angle	ストロークの角度
+	Stroke Color	線の色
+	Stroke Density	ストロークの密度
+	Stroke Length	ストロークの長さ
+	Stroke Length (secs)	ストロークの長さ (秒)
+	Stroke Only	ストロークのみ
+	Stroke Randomness	ストロークのランダムさ
+	Stroke Type	線の位置
+	Stroke Width	線の幅
+	Stroke line cap	線の端の形状
+	Stroke line join	線の角の形状
+	Studio Reverb	スタジオリバーブ
+	Stylize	スタイライズ
+	Subclip End	サブクリップの終了
+	Subclip Start	サブクリップの開始
+	Subspace Warp	サブスペースワープ
+	Subtitle	字幕
+	Subtract	減算
+	Sum multichannel outputs to mono in Source Monitor	ソースモニターでマルチチャンネル出力をモノラルにミックスダウンする
+	Super Narrow	極めて狭い
+	Surface Gloss	表面の光沢
+	Surface Material	表面の材質
+	Surround Reverb	サラウンドリバーブ
+	Swap	左右入れ替え
+	Swap Channels	チャンネルを入れ替え
+	Swivel	スイベル
+	Synthetic	生成メディア
+	TV Power	TV 電源
+	Tape	テープ
+	Tape Name	テープ名
+	Tape/Tube	テープ/真空管
+	Target Aspect	目標のアスペクト比
+	Target Color	対象の色
+	Target Field of View	目標の視野角
+	Target Loudness	目標ラウドネス
+	Teal & Orange	ティール＆オレンジ
+	Telephone	電話風
+	Teletext	テレテキスト
+	Template Properties	テンプレートのプロパティ
+	Text Animator	テキストアニメーター
+	Text Color	テキストの色
+	The media cache holds render previews of unsaved projects and other files FilmCraft can recreate. Deleting them is always safe; FilmCraft rebuilds them as needed.	メディアキャッシュには、未保存のプロジェクトのレンダリングプレビューなど、FilmCraft が再作成できるファイルが保存されています。これらはいつ削除しても問題ありません。FilmCraft が必要に応じて再構築します。
+	Thickness	太さ
+	Tile Gradient	タイル状に配置
+	Tilt	チルト
+	Tilt (X Axis)	チルト (X 軸)
+	Time	時間
+	Time and Pitch	時間とピッチ
+	Timecode Conversion	タイムコード変換
+	Timeline Mouse Scrolling	タイムラインのマウススクロール
+	Timeline Playback Auto-Scrolling	タイムライン再生時の自動スクロール
+	Tint Color	色合い
+	To	変更先
+	Tolerance	許容値
+	Tone	トーン
+	Top Center	上中央
+	Top Left	左上
+	Top Right	右上
+	Touch	タッチ
+	Track Matte Key	トラックマットキー
+	Transcription	文字起こし
+	Transcription preferences	文字起こしの設定
+	Transform	変形
+	Transformers	変形
+	Transience	トランジェント
+	Transition Completion	トランジションの完了率
+	Transition Softness	トランジションの柔らかさ
+	Transparency	透明度
+	Trash	汚し
+	Travel Motion	トラベルモーション
+	Treble	高音
+	Triangle	三角形
+	Trim	トリム
+	Tube	真空管
+	Tube-modeled Compressor	真空管モデリングコンプレッサー
+	Tubular	管状
+	Turbulent	乱流
+	Turbulent Displace	乱流ディスプレイス
+	Turbulent Sharp	乱流 (シャープ)
+	Turbulent Smooth	乱流 (滑らか)
+	Turbulent Smoother	乱流 (より滑らか)
+	Tweed	ツイード
+	Twirl	渦巻き
+	Twirl (Legacy)	渦巻き (従来版)
+	Twirl Center	渦巻きの中心
+	Twirl Radius	渦巻きの半径
+	Twist	ねじり
+	Twist Smoother	ねじり (より滑らか)
+	Typewriter	タイプライター
+	Ultra Key	ウルトラキー
+	Uniform Scale	縦横比を固定
+	Uniform Spacing	等間隔
+	Unsharp Mask	アンシャープマスク
+	Update it at least every	更新間隔の上限
+	Update timeline dynamically during ripple edits.	リップル編集中にタイムラインを動的に更新する
+	Upper Frequency	上限周波数
+	Upper Left	左上
+	Upper Right	右上
+	Use Color Noise	カラーノイズを使用
+	Use End Color	終了色を使用
+	Use File	ファイルに従う
+	Use Glow Color	グローの色を使用
+	Use Media Source	メディアソースを使用
+	Use Tint Color	色合いを使用
+	Utility	ユーティリティ
+	VHS Damage	VHS ダメージ
+	VR Blur	VR ぼかし
+	VR Chroma Leaks	VR クロマリーク
+	VR Chromatic Aberrations	VR 色収差
+	VR Color Gradients	VR カラーグラデーション
+	VR De-Noise	VR ノイズ除去
+	VR Digital Glitch	VR デジタルグリッチ
+	VR Fractal Noise	VR フラクタルノイズ
+	VR Glow	VR グロー
+	VR Gradient Wipe	VR グラデーションワイプ
+	VR Iris Wipe	VR アイリスワイプ
+	VR Light Leaks	VR ライトリーク
+	VR Light Rays	VR 光線
+	VR Mobius Zoom	VR メビウスズーム
+	VR Plane to Sphere	VR 平面から球面へ
+	VR Projection	VR 投影
+	VR Random Blocks	VR ランダムブロック
+	VR Rotate Sphere	VR 球面の回転
+	VR Sharpen	VR シャープ
+	VR Spherical Blur	VR 球面ぼかし
+	Validate Content Credentials on import	読み込み時にコンテンツクレデンシャルを検証する
+	Vectorscope (YUV)	ベクトルスコープ (YUV)
+	Vectorscope + Waveform YC	ベクトルスコープ + YC 波形
+	Vectorscope HLS	ベクトルスコープ HLS
+	Vectorscope YUV	ベクトルスコープ YUV
+	Venetian Blinds	ベネチアンブラインド
+	Vertical 4:5	縦長 4:5
+	Vertical 9:16	縦長 9:16
+	Vertical Alignment	垂直方向の整列
+	Vertical Blocks	垂直ブロック数
+	Vertical Decentering	垂直方向の偏心
+	Vertical Displacement	垂直ディスプレイスメント
+	Vertical Flip	上下反転
+	Vertical Margin	垂直方向の余白
+	Very Narrow	とても狭い
+	Video 1	ビデオ 1
+	Video 2	ビデオ 2
+	Video 3	ビデオ 3
+	Video 4	ビデオ 4
+	Video 5	ビデオ 5
+	Video 6	ビデオ 6
+	Video 7	ビデオ 7
+	Video 8	ビデオ 8
+	Video Codec	ビデオコーデック
+	Video Duration	ビデオの長さ
+	Video Effects	ビデオエフェクト
+	Video In Point	ビデオのイン点
+	Video Info	ビデオ情報
+	Video Limiter	ビデオリミッター
+	Video Out Point	ビデオのアウト点
+	Video Transition Default Duration	ビデオトランジションの既定の長さ
+	Video Transitions	ビデオトランジション
+	Video Usage	ビデオの使用状況
+	Vignette	ビネット
+	Vivid Light	ビビッドライト
+	Vocal Booth	ボーカルブース
+	Vocal Enhancer	ボーカルエンハンサー
+	Voice	音声
+	Voice in a Hall	ホールに響く声
+	Volumetric Rays	ボリューメトリック光線
+	Warm Film	ウォームフィルム
+	Warm Room	温かみのある部屋
+	Warm Voice	温かみのある声
+	Warm print stock with gentle roll-off	なだらかなロールオフを持つ、暖かみのあるプリントフィルム調
+	Warm, soft late-afternoon light	夕方の暖かく柔らかな光
+	Warning	警告
+	Warp Stabilizer	ワープスタビライザー
+	Wave	ウェーブ
+	Wave Height	波の高さ
+	Wave Speed	波の速度
+	Wave Warp	波状ワープ
+	Wave Width	波の幅
+	Waveform	波形
+	Waveform (Luma)	波形 (輝度)
+	Waveform (RGB)	波形 (RGB)
+	Wavelength	波長
+	Wet	ウェット
+	Wet Out	ウェット出力
+	When Opening a Project	プロジェクトを開くとき
+	Whip	ウィップ
+	Whip (Legacy)	ウィップ (従来版)
+	Whisper base (balanced)	Whisper base (バランス重視)
+	Whisper small (most accurate)	Whisper small (最高精度)
+	Whisper tiny (fastest)	Whisper tiny (最速)
+	White	白
+	White Input Level	入力白レベル
+	White Is High	白を高く
+	Wide Outdoor	広い屋外
+	Widener	ワイドナー
+	Width	幅
+	Wiggle	ウィグル
+	Wipe	ワイプ
+	Wipe Angle	ワイプの角度
+	Wonder Glow	ワンダーグロー
+	Wrap Back	折り返し
+	Write	書き込み
+	Write XMP ID to files on import	読み込み時に XMP ID をファイルに書き込む
+	Write clip markers to XMP	クリップマーカーを XMP に書き込む
+	Write-on	手書き
+	X Rotation	X 軸回転
+	Y Rotation	Y 軸回転
+	YC	YC
+	YC no Chroma	YC (クロマなし)
+	YUV	YUV
+	Yellow-green highlights and blue-lifted shadows from crossed channel curves	チャンネルカーブを交差させた、黄緑のハイライトと青く浮いたシャドウ
+	Z Position	Z 位置
+	Z Rotation	Z 軸回転
+	Zoom	ズーム
+	Zoom Amount	ズーム量
+	Zoom Blur	ズームぼかし
+	Zoom Strength	ズームの強さ
+	days	日
+	frames	フレーム
+	milliseconds	ミリ秒
+	minute(s)	分
+	second(s)	秒
+	seconds	秒
+	AAF…	AAF…
+	Audio…	オーディオ…
+	Avid Log Exchange…	Avid Log Exchange…
+	Color…	カラー…
+	EDL…	EDL…
+	Edit Workspaces…	ワークスペースを編集…
+	FCPXML…	FCPXML…
+	Final Cut Pro XML…	Final Cut Pro XML…
+	General…	一般…
+	OMF…	OMF…
+	OpenTimelineIO…	OpenTimelineIO…
+	Save Changes to this Workspace	このワークスペースへの変更を保存
+	Save as New Workspace…	新規ワークスペースとして保存…
+	Create Search Bin	検索ビンを作成
+	Edit Offline File	オフラインファイルを編集
+	Source Settings	ソース設定
+	Update Metadata	メタデータを更新
+	Automate To Sequence	シーケンスに自動配置
+	Scene Edit Detection	シーン編集の検出
+	Analyze	分析
+	Normalize Mix Track	ミックストラックをノーマライズ
+	Simplify Sequence	シーケンスを単純化
+	Simplify	単純化
+	Transcribe Sequence	シーケンスを文字起こし
+	Save as Template	テンプレートとして保存
+	Flash Cue Marker	フラッシュキューマーカー
+	System Compatibility Report	システム互換性レポート
+	no GPU adapter: the CPU compositor is used	GPU アダプターがありません: CPU コンポジターを使用します
+	Avid Log Exchange	Avid Log Exchange
+	FilmCraft Project	FilmCraft プロジェクト
+	{name} Selection.fcproj	{name} 選択項目.fcproj
+	{name} (Simplified)	{name} (単純化済み)
+	Find in:	検索場所:
+	Find:	検索文字列:
+	Search:	検索対象:
+	Clip Names and Markers	クリップ名とマーカー
+	Match:	一致条件:
+	All	すべて
+	Any	いずれか
+	Case Sensitive	大文字と小文字を区別
+	Scratch Disks	スクラッチディスク
+	Ingest Settings	取り込み設定
+	Captured and Generated:	キャプチャ・生成メディア:
+	Video Previews:	ビデオプレビュー:
+	Audio Previews:	オーディオプレビュー:
+	Project Auto Save:	プロジェクトの自動保存:
+	Same as Project	プロジェクトと同じ
+	Path: {path}	パス: {path}
+	Transcode	トランスコード
+	Copy and Create Proxies	コピーしてプロキシを作成
+	Action:	処理:
+	Destination:	出力先:
+	Next to the media	メディアと同じ場所
+	Video Rendering and Playback	ビデオのレンダリングと再生
+	Renderer:	レンダラー:
+	Display Format:	表示形式:
+	Milliseconds	ミリ秒
+	Capture	キャプチャ
+	Capture Format:	キャプチャ形式:
+	Action and Title Safe Areas	アクションセーフ・タイトルセーフエリア
+	Title Safe Area	タイトルセーフエリア
+	Action Safe Area	アクションセーフエリア
+	Total Duration	全体の長さ
+	Average Data Rate	平均データレート
+	Colour	カラー
+	{codec} · {rate} Hz · {n} channel(s)	{codec} · {rate} Hz · {n} チャンネル
+	Media Name:	メディア名:
+	Scene:	シーン:
+	Shot/Take:	ショット/テイク:
+	Log Note:	ログメモ:
+	Codec: {codec}	コーデック: {codec}
+	Write the metadata of the selected clip(s) ({n}) to XMP files next to their media?	選択したクリップ ({n} 個) のメタデータを、メディアと同じ場所にある XMP ファイルに書き込みますか？
+	Existing XMP files written by other applications are left unchanged.	他のアプリケーションが書き込んだ既存の XMP ファイルは変更されません。
+	To {name}	配置先: {name}
+	Ordering:	並び順:
+	Sort Order	並べ替え順
+	Selection Order	選択順
+	Placement:	配置:
+	Sequentially	順番に
+	At Unnumbered Markers	番号なしマーカーの位置に
+	Method:	方法:
+	Insert Edit	挿入編集
+	Overwrite Edit	上書き編集
+	Clip Overlap:	クリップの重なり:
+	Frames per Still:	静止画あたりのフレーム数:
+	Transitions	トランジション
+	Apply Default Audio Transition	既定のオーディオトランジションを適用
+	Apply Default Video Transition	既定のビデオトランジションを適用
+	Ignore Options	無視オプション
+	Ignore Audio	オーディオを無視
+	Ignore Video	ビデオを無視
+	Apply a cut at each detected cut point	検出したカット点ごとにカットを適用
+	Create a subclip for each detected cut point	検出したカット点ごとにサブクリップを作成
+	Generate clip markers at each detected cut point	検出したカット点ごとにクリップマーカーを生成
+	Sensitivity:	感度:
+	Normalize Mix Track to:	ミックストラックのノーマライズ値:
+	Disabled clips	無効なクリップ
+	Empty tracks	空のトラック
+	Gaps	ギャップ
+	Video effects	ビデオエフェクト
+	Audio effects	オーディオエフェクト
+	Text (graphics and captions)	テキスト (グラフィックスとキャプション)
+	Clips	クリップ
+	Move clips to the lowest track possible	クリップをできるだけ下のトラックへ移動
+	Keep:	保持:
+	Video and Audio	ビデオとオーディオ
+	Video Only	ビデオのみ
+	Audio Only	オーディオのみ
+	Language:	言語:
+	Audio on track {t}	トラック {t} のオーディオ
+	Audio analysis:	分析するオーディオ:
+	Recognize when different speakers are talking	話者の切り替わりを認識
+	Template Name:	テンプレート名:
+	Comments:	コメント:
+	 (unavailable)	 (使用不可)
+	Decoders	デコーダー
+	Containers	コンテナー
+	Export formats	書き出し形式
+	Match {n} of {total}	{total} 件中 {n} 件目
+	Saved template {path}	テンプレートを保存しました: {path}
+	Scene Edit Detection: analysing in the background (see Progress)	シーン編集の検出: バックグラウンドで分析中 (進行状況を参照)
+	Delete Search Bin	検索ビンを削除
+	 (removed from {list})	 ({list} から削除)
+	{key} can't be used as a shortcut	{key} はショートカットに使用できません
+	Keyboard Shortcuts	キーボードショートカット
+	{active} (modified)	{active} (変更あり)
+	Loaded “{name}”	「{name}」をロードしました
+	My Shortcuts	マイショートカット
+	Deleted preset “{active}”	プリセット「{active}」を削除しました
+	Export…	書き出し…
+	Exported to {path}	{path} に書き出しました
+	Export: no file chosen (agents: shortcuts.export {path})	書き出し: ファイルが選択されていません (エージェント: shortcuts.export {path})
+	Imported “{name}”	「{name}」を読み込みました
+	Import: no file chosen (agents: shortcuts.import {path})	読み込み: ファイルが選択されていません (エージェント: shortcuts.import {path})
+	Keyboard: US (macOS)	キーボード: US 配列 (macOS)
+	Keyboard: US	キーボード: US 配列
+	Save preset as:	保存するプリセット名:
+	Commands:	コマンド:
+	{panel} Panel	{panel}パネル
+	Application shortcuts work whatever panel has focus	アプリケーションのショートカットは、どのパネルにフォーカスがあっても機能します
+	Panel shortcuts override application shortcuts while that panel has focus	パネルのショートカットは、そのパネルにフォーカスがある間、アプリケーションのショートカットより優先されます
+	Modifier held / selected	押下中 / 選択中の修飾キー
+	Search commands or keys	コマンドまたはキーを検索
+	Selected: {command}	選択中: {command}
+	Command	コマンド
+	Shortcut	ショートカット
+	Type a shortcut… (Esc cancels)	ショートカットを入力… (Esc でキャンセル)
+	Add another shortcut	別のショートカットを追加
+	No matching commands	一致するコマンドがありません
+	Key:	キー:
+	Modifiers	修飾キー
+	Nothing is assigned to this key	このキーには何も割り当てられていません
+	Click a key on the keyboard to see its shortcuts	キーボードのキーをクリックすると、割り当てられたショートカットを表示します
+	Assign {key} to {command}	{key} を「{command}」に割り当て
+	Conflict: {key} is assigned to {commands} ({ctx})	競合: {key} は「{commands}」に割り当てられています ({ctx})
+	 and 	 と 
+	Click a command's Shortcut cell and press keys to assign it; + adds another shortcut.	コマンドの「ショートカット」セルをクリックしてキーを押すと割り当てられます。+ で別のショートカットを追加できます。
+	Cleared {n} shortcut(s) of {command}	「{command}」のショートカットを {n} 個クリアしました
+	No export preset named `{name}`	「{name}」という名前の書き出しプリセットはありません
+	Open a sequence to export	書き出すシーケンスを開いてください
+	Destinations	出力先
+	Media File	メディアファイル
+	Queue ({n})	キュー ({n})
+	Send exports here with Send to Queue, then start the queue.	「キューに送信」で書き出しをここに追加してから、キューを開始してください。
+	Ready	準備完了
+	Encoding {n}%	エンコード中 {n}%
+	Start Queue	キューを開始
+	Stop	停止
+	Clear Finished	終了した項目をクリア
+	Not supported by FilmCraft's encoders yet	FilmCraft のエンコーダーはまだ対応していません
+	Sequence name	シーケンス名
+	Folder	フォルダー
+	Preset	プリセット
+	More presets…	その他のプリセット…
+	Multiplexer	マルチプレクサー
+	The sequence has no caption track.	このシーケンスにはキャプショントラックがありません。
+	Export Options	書き出しオプション
+	Burn Captions Into Video	キャプションをビデオに焼き込み
+	Create Sidecar File	サイドカーファイルを作成
+	File Format	ファイル形式
+	SubRip Subtitle (.srt)	SubRip 字幕 (.srt)
+	WebVTT (.vtt)	WebVTT (.vtt)
+	Title	タイトル
+	Creator	作成者
+	Copyright	著作権
+	Image	画像
+	Frame Size	フレームサイズ
+	Match Source	ソースに合わせる
+	Field Order	フィールドオーダー
+	Aspect	アスペクト比
+	Profile	プロファイル
+	Bitrate Encoding	ビットレート方式
+	Target Bitrate	ターゲットビットレート
+	Adaptive ({bpp} bits per pixel)	アダプティブ (1 ピクセルあたり {bpp} ビット)
+	Maximum Bitrate	最大ビットレート
+	Key Frame Distance	キーフレーム間隔
+	Quality	画質
+	Render at Maximum Depth	最大深度でレンダリングする
+	Use Maximum Render Quality	最高レンダリング画質を使用する
+	Export Audio	オーディオを書き出す
+	Audio Format	オーディオ形式
+	Uncompressed (PCM)	非圧縮 (PCM)
+	Match Source ({seq_sr} Hz)	ソースに合わせる ({seq_sr} Hz)
+	Channels	チャンネル
+	Audio Bitrate	オーディオビットレート
+	Sample Size	サンプルサイズ
+	16 bit	16 ビット
+	24 bit	24 ビット
+	Size / Opacity	サイズ / 不透明度
+	Image Overlay	画像のオーバーレイ
+	PNG or JPEG file	PNG または JPEG ファイル
+	Name Overlay	名前のオーバーレイ
+	Timecode Overlay	タイムコードのオーバーレイ
+	Luma Min / Max	輝度の最小 / 最大
+	Loudness Normalization	ラウドネスのノーマライズ
+	True Peak Limit	トゥルーピークの上限
+	Audio only	オーディオのみ
+	Scaling	拡大・縮小
+	Scale To Fit	収まるように拡大・縮小
+	Scale To Fill	埋まるように拡大・縮小
+	Stretch To Fill	引き伸ばして埋める
+	Summary	概要
+	Sequence, {w}x{h}, {fps} fps, {rate} Hz	シーケンス、{w}x{h}、{fps} fps、{rate} Hz
+	Estimated file size: {size}	推定ファイルサイズ: {size}
+	Send to Queue	キューに送信
+	Exporting {path}	{path} を書き出し中
+	Added to the export queue	書き出しキューに追加しました
+	Preset Manager	プリセットマネージャー
+	Search presets	プリセットを検索
+	Favorites only	お気に入りのみ
+	Show in the Preset menu	プリセットメニューに表示
+	User	ユーザー
+	Save current settings as:	現在の設定を次の名前で保存:
+	Export presets	書き出しプリセット
+	Import: no file chosen (agents: export.presets.import {path})	読み込み: ファイルが選択されていません (エージェント: export.presets.import {path})
+	Export: no file chosen (agents: export.presets.export {path, names})	書き出し: ファイルが選択されていません (エージェント: export.presets.export {path, names})
+	Quick Export: open a sequence first	クイック書き出し: 先にシーケンスを開いてください
+	File Name & Location	ファイル名と場所
+	Quick Export: {path}	クイック書き出し: {path}
+	Graphics problem: switched to software compositing	グラフィックスに問題が発生したため、ソフトウェア合成に切り替えました
+	Exporting	書き出し中
+	Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.	クリックで選択します。何もない場所からドラッグすると範囲選択になります。Shift、Opt、Cmd キーを併用すると、ほかのオプションも使えます。
+	Click to select all clips to the right in all tracks. Shift-click for a single track.	クリックすると、全トラックでクリック位置より右にあるクリップをすべて選択します。Shift+クリックでは 1 つのトラックだけが対象になります。
+	Click to select all clips to the left in all tracks. Shift-click for a single track.	クリックすると、全トラックでクリック位置より左にあるクリップをすべて選択します。Shift+クリックでは 1 つのトラックだけが対象になります。
+	Drag an edit point to ripple trim; later clips move to keep the gap closed.	編集点をドラッグしてリップルトリムします。後続のクリップも移動するため、ギャップは生じません。
+	Drag an edit point to roll it: the out of one clip and the in of the next move together.	編集点をドラッグしてロールトリムします。前のクリップのアウト点と次のクリップのイン点が一緒に動きます。
+	Drag an edge to change the clip's speed so it fills the new duration.	端をドラッグすると、新しい長さに収まるようにクリップの速度を変更します。
+	Drag the edge of a music clip to remix it to the new duration at musically matching beats.	音楽クリップの端をドラッグすると、曲のビートが合う位置で新しい長さにリミックスします。
+	Click to split a clip. Shift-click to split all tracks.	クリックでクリップを分割します。Shift+クリックではすべてのトラックを分割します。
+	Drag a clip to slip its source in/out without moving it.	クリップをドラッグすると、位置はそのままでソースのイン点とアウト点をずらします。
+	Drag a clip to slide it between its neighbours.	クリップをドラッグすると、前後のクリップの間でスライドします。
+	Drag to scroll the timeline.	ドラッグしてタイムラインをスクロールします。
+	Click to zoom in; Opt-click to zoom out.	クリックでズームイン、Opt+クリックでズームアウトします。
+	FilmCraft hit an error	FilmCraft でエラーが発生しました
+	Details: {path}	詳細: {path}
+	Opened {url}	{url} を開きました
+	(empty)	(空)
+	Step Back 1 Frame	1 フレーム戻る
+	Step Forward 1 Frame	1 フレーム進む
+	Match Playhead	再生ヘッドに合わせる
+	Gang to Program	プログラムと連動
+	AIFF	AIFF
+	AIFF 48 kHz 16-bit	AIFF 48 kHz 16-bit
+	AIFF, stereo 48 kHz 16-bit PCM	AIFF、ステレオ 48 kHz 16-bit PCM
+	APV	APV
+	APV 422-10	APV 422-10
+	APV 422-12	APV 422-12
+	Anamorphic 2:1 (2.0)	アナモルフィック 2:1 (2.0)
+	Animated GIF	アニメーション GIF
+	Animated GIF 640×360	アニメーション GIF 640×360
+	Apple ProRes	Apple ProRes
+	Apple ProRes 422	Apple ProRes 422
+	Apple ProRes 422 HQ	Apple ProRes 422 HQ
+	Apple ProRes 422 LT	Apple ProRes 422 LT
+	Apple ProRes 422 Proxy	Apple ProRes 422 Proxy
+	Application	アプリケーション
+	Apply Guide Template	ガイドテンプレートを適用
+	Auto Save Now	今すぐ自動保存
+	Auto-Match Loudness	ラウドネスを自動マッチ
+	Avid DNxHR	Avid DNxHR
+	Avid DNxHR HQ	Avid DNxHR HQ
+	Avid DNxHR LB	Avid DNxHR LB
+	Avid DNxHR SQ	Avid DNxHR SQ
+	Avid-style OP-Atom: DNxHR HQ picture file plus one 24-bit 48 kHz PCM file per channel (_A1, _A2…)	Avid 方式の OP-Atom: DNxHR HQ のビデオファイルと、チャンネルごとに 1 つの 24-bit 48 kHz PCM ファイル (_A1、_A2…)
+	BMP	BMP
+	BMP Sequence	BMP 連番画像
+	Baseline	ベースライン
+	Begin Text Editing for a Graphic Layer	グラフィックレイヤーのテキスト編集を開始
+	Begins With	前方一致
+	Blur In	ぼかしイン
+	Blur Out	ぼかしアウト
+	Brightens inside a feathered circular mask	境界をぼかした円形マスクの内側を明るくします
+	Broadcast	放送
+	CBR	CBR
+	Cancel Dynamic Trim	ダイナミックトリムをキャンセル
+	Cancel Queued Export	キュー内の書き出しをキャンセル
+	Center Left	左中央
+	Center Right	右中央
+	Center align text	テキストを中央揃え
+	Change Mask	マスクを変更
+	Clear All Events	すべてのイベントをクリア
+	Clear Edit Point Selection	編集点の選択を解除
+	Clear Finished Exports	終了した書き出しをクリア
+	Clear Poster Frame	ポスターフレームをクリア
+	Close Bin	ビンを閉じる
+	Close Sequence	シーケンスを閉じる
+	Contains	含む
+	Cut to Camera 1	カメラ 1 にカット
+	Cut to Camera 2	カメラ 2 にカット
+	Cut to Camera 3	カメラ 3 にカット
+	Cut to Camera 4	カメラ 4 にカット
+	Cut to Camera 5	カメラ 5 にカット
+	Cut to Camera 6	カメラ 6 にカット
+	Cut to Camera 7	カメラ 7 にカット
+	Cut to Camera 8	カメラ 8 にカット
+	Cut to Camera 9	カメラ 9 にカット
+	D1/DV NTSC (0.9091)	D1/DV NTSC (0.9091)
+	D1/DV PAL (1.0940)	D1/DV PAL (1.0940)
+	DVCPRO HD (1.5)	DVCPRO HD (1.5)
+	Darkens outside a feathered oval mask	境界をぼかした楕円マスクの外側を暗くします
+	Decrease Audio Tracks Height	オーディオトラックの高さを縮小
+	Decrease Clip Volume	クリップの音量を下げる
+	Decrease Clip Volume Many	クリップの音量を大幅に下げる
+	Decrease Font Size by Five Units	フォントサイズを 5 単位下げる
+	Decrease Font Size by One Unit	フォントサイズを 1 単位下げる
+	Decrease Leading by Five Units	行送りを 5 単位減らす
+	Decrease Leading by One Unit	行送りを 1 単位減らす
+	Decrease Video Tracks Height	ビデオトラックの高さを縮小
+	Delete Captions	キャプションを削除
+	Delete Graphic Layer	グラフィックレイヤーを削除
+	Delete Guide Template	ガイドテンプレートを削除
+	Delete Media Cache Files	メディアキャッシュファイルを削除
+	Discard Unsaved Changes	未保存の変更を破棄
+	Does Not Contain	含まない
+	Download Speech Model	音声認識モデルをダウンロード
+	Dynamic Trim Stop	ダイナミックトリムを停止
+	Edit Caption Text	キャプションのテキストを編集
+	Ellipse Tool	楕円ツール
+	Ends With	後方一致
+	Entire Source	ソース全体
+	EssentialSound	エッセンシャルサウンド
+	Export Frame	フレームを書き出し
+	Extend Next Edit To Playhead	次の編集点を再生ヘッドまで延長
+	Extend Previous Edit To Playhead	前の編集点を再生ヘッドまで延長
+	Extend Selected Edit to Playhead	選択した編集点を再生ヘッドまで延長
+	Extend Selection Down	選択範囲を下に拡張
+	Extend Selection Left	選択範囲を左に拡張
+	Extend Selection Right	選択範囲を右に拡張
+	Extend Selection Up	選択範囲を上に拡張
+	Fade In	フェードイン
+	Gaussian Blur from 0 to 60 over the last second	最後の 1 秒でガウスぼかしを 0 から 60 に変化
+	Gaussian Blur from 60 to 0 over the first second	最初の 1 秒でガウスぼかしを 60 から 0 に変化
+	Generate Ducking Keyframes	ダッキングキーフレームを生成
+	Go to Next Edit Point	次の編集点へ移動
+	Go to Next Edit Point on Any Track	いずれかのトラックの次の編集点へ移動
+	Go to Previous Edit Point	前の編集点へ移動
+	Go to Previous Edit Point on Any Track	いずれかのトラックの前の編集点へ移動
+	Go to Selected Clip End	選択したクリップの終了位置へ移動
+	Go to Selected Clip Start	選択したクリップの開始位置へ移動
+	Go to Sequence End	シーケンスの終了位置へ移動
+	Go to Sequence Start	シーケンスの開始位置へ移動
+	H.264	H.264
+	H.264 1920×1080 for video sharing sites, VBR 1 pass, 16 Mbps	動画共有サイト向けの H.264 1920×1080、VBR 1 パス、16 Mbps
+	H.264 1920×1080, VBR 1 pass, 20 Mbps target, AAC 320 kbps	H.264 1920×1080、VBR 1 パス、ターゲット 20 Mbps、AAC 320 kbps
+	H.264 1920×1080, VBR 2 pass, 18 Mbps	H.264 1920×1080、VBR 2 パス、18 Mbps
+	H.264 3840×2160 for video sharing sites, VBR 1 pass, 45 Mbps	動画共有サイト向けの H.264 3840×2160、VBR 1 パス、45 Mbps
+	H.264 3840×2160, VBR 1 pass, 60 Mbps target, AAC 320 kbps	H.264 3840×2160、VBR 1 パス、ターゲット 60 Mbps、AAC 320 kbps
+	H.264 3840×2160, VBR 2 pass, 50 Mbps	H.264 3840×2160、VBR 2 パス、50 Mbps
+	H.264 9:16 portrait for short-form social video, scaled to fill, 12 Mbps	SNS ショート動画向けの H.264 9:16 縦型、フレームを埋めるようにスケール、12 Mbps
+	H.264 at the sequence's frame size and rate; 0.05 bits per pixel	シーケンスと同じフレームサイズ・フレームレートの H.264、1 ピクセルあたり 0.05 ビット
+	H.264 at the sequence's frame size and rate; 0.1 bits per pixel	シーケンスと同じフレームサイズ・フレームレートの H.264、1 ピクセルあたり 0.1 ビット
+	H.264 at the sequence's frame size and rate; bitrate adapts to the frame size (0.2 bits per pixel)	シーケンスと同じフレームサイズ・フレームレートの H.264、ビットレートはフレームサイズに応じて変化 (1 ピクセルあたり 0.2 ビット)
+	HD Anamorphic 1080 (1.333)	HD アナモルフィック 1080 (1.333)
+	Hand Tool	手のひらツール
+	High Quality 1080p HD	高画質 1080p HD
+	High Quality 2160p 4K	高画質 2160p 4K
+	Image Sequence	連番画像
+	Increase Audio Tracks Height	オーディオトラックの高さを拡大
+	Increase Clip Volume	クリップの音量を上げる
+	Increase Clip Volume Many	クリップの音量を大幅に上げる
+	Increase Font Size by Five Units	フォントサイズを 5 単位上げる
+	Increase Font Size by One Unit	フォントサイズを 1 単位上げる
+	Increase Leading by Five Units	行送りを 5 単位増やす
+	Increase Leading by One Unit	行送りを 1 単位増やす
+	Increase Video Tracks Height	ビデオトラックの高さを拡大
+	Large blocks resolving to the picture over the first second	最初の 1 秒で大きなブロックから元の画像に変化
+	Left align text	テキストを左揃え
+	Looping GIF, 640×360 at 15 fps	ループする GIF、640×360、15 fps
+	Lower First	下位フィールド優先
+	Lumetri	Lumetri
+	MXF OP-Atom	MXF OP-Atom
+	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
+	MXF OP1a	MXF OP1a
+	MXF OP1a DNxHR HQ	MXF OP1a DNxHR HQ
+	MXF OP1a H.264	MXF OP1a H.264
+	MXF OP1a ProRes 422 HQ	MXF OP1a ProRes 422 HQ
+	MXF OP1a, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM, start timecode	MXF OP1a、DNxHR HQ (8-bit 4:2:2)、24-bit 48 kHz PCM、開始タイムコード付き
+	MXF OP1a, H.264 High long GOP (0.3 bits per pixel), 24-bit 48 kHz PCM	MXF OP1a、H.264 High ロング GOP (1 ピクセルあたり 0.3 ビット)、24-bit 48 kHz PCM
+	MXF OP1a, ProRes 422 HQ, 24-bit 48 kHz PCM, start timecode	MXF OP1a、ProRes 422 HQ、24-bit 48 kHz PCM、開始タイムコード付き
+	Main	メイン
+	Mark In (Hover Scrub)	イン点をマーク (ホバースクラブ)
+	Mark Out (Hover Scrub)	アウト点をマーク (ホバースクラブ)
+	Masks	マスク
+	Match Source – Adaptive High Bitrate	ソースに合わせる – アダプティブ高ビットレート
+	Match Source – Adaptive Low Bitrate	ソースに合わせる – アダプティブ低ビットレート
+	Match Source – Adaptive Medium Bitrate	ソースに合わせる – アダプティブ中ビットレート
+	Matches	一致
+	Maximize or Restore Active Frame	アクティブなパネルを最大化 / 元に戻す
+	Maximize or Restore Frame Under Cursor	カーソル下のパネルを最大化 / 元に戻す
+	Media Browser Settings	メディアブラウザーの設定
+	MediaBrowser	メディアブラウザー
+	MediaCache	メディアキャッシュ
+	Merge Captions	キャプションを結合
+	Mixer	ミキサー
+	Mosaic In	モザイクイン
+	Move All Audio Targets Down	すべてのオーディオターゲットを下へ移動
+	Move All Audio Targets Up	すべてのオーディオターゲットを上へ移動
+	Move All Video Targets Down	すべてのビデオターゲットを下へ移動
+	Move All Video Targets Up	すべてのビデオターゲットを上へ移動
+	Move Selection Down	選択を下に移動
+	Move Selection End	選択を末尾に移動
+	Move Selection Home	選択を先頭に移動
+	Move Selection Left	選択を左に移動
+	Move Selection Page Down	選択を 1 ページ下に移動
+	Move Selection Page Up	選択を 1 ページ上に移動
+	Move Selection Right	選択を右に移動
+	Move Selection Up	選択を上に移動
+	Multi-Camera Record On/Off Toggle	マルチカメラ記録のオン/オフを切り替え
+	Multicam	マルチカメラ
+	Navigate to End of Segment	セグメントの末尾へ移動
+	Navigate to Next Line	次の行へ移動
+	Navigate to Next Word	次の単語へ移動
+	Navigate to Previous Line	前の行へ移動
+	Navigate to Previous Word	前の単語へ移動
+	Navigate to Start of Segment	セグメントの先頭へ移動
+	Navigation	ナビゲーション
+	Next Multi-Camera Page	次のマルチカメラページ
+	Nudge Clip Selection Down	選択したクリップを下へ微調整
+	Nudge Clip Selection Left Five Frames	選択したクリップを 5 フレーム左へ微調整
+	Nudge Clip Selection Left One Frame	選択したクリップを 1 フレーム左へ微調整
+	Nudge Clip Selection Right Five Frames	選択したクリップを 5 フレーム右へ微調整
+	Nudge Clip Selection Right One Frame	選択したクリップを 1 フレーム右へ微調整
+	Nudge Clip Selection Up	選択したクリップを上へ微調整
+	Nudge Selected Object down by five	選択したオブジェクトを 5 単位下へ微調整
+	Nudge Selected Object down by one	選択したオブジェクトを 1 単位下へ微調整
+	Nudge Selected Object to left by five	選択したオブジェクトを 5 単位左へ微調整
+	Nudge Selected Object to left by one	選択したオブジェクトを 1 単位左へ微調整
+	Nudge Selected Object to right by five	選択したオブジェクトを 5 単位右へ微調整
+	Nudge Selected Object to right by one	選択したオブジェクトを 1 単位右へ微調整
+	Nudge Selected Object up by five	選択したオブジェクトを 5 単位上へ微調整
+	Nudge Selected Object up by one	選択したオブジェクトを 1 単位上へ微調整
+	Nudge Volume +1dB	音量を +1dB 微調整
+	Nudge Volume +3dB	音量を +3dB 微調整
+	Nudge Volume -1dB	音量を -1dB 微調整
+	Nudge Volume -3dB	音量を -3dB 微調整
+	Numbered BMP stills (24-bit)	連番 BMP 静止画 (24-bit)
+	Numbered PNG stills at the sequence's frame size	シーケンスと同じフレームサイズの連番 PNG 静止画
+	Numbered TIFF stills (RGB, 8-bit)	連番 TIFF 静止画 (RGB、8-bit)
+	Opacity 0 → 100 % over the first second	最初の 1 秒で不透明度を 0 → 100 % に変化
+	Opacity 100 → 0 % over the last second	最後の 1 秒で不透明度を 100 → 0 % に変化
+	Open Bin	ビンを開く
+	Open Search	検索を開く
+	PNG	PNG
+	PNG Sequence	PNG 連番画像
+	Panel	パネル
+	Pen Tool	ペンツール
+	PiP 35% Upper Right	PiP 35% 右上
+	Picture-in-picture: 35 % scale in the upper right	ピクチャーインピクチャー: スケール 35 % で右上に配置
+	Play Around	前後を再生
+	Play In to Out with Preroll/Postroll	プリロール/ポストロール付きでインからアウトまで再生
+	Play from Playhead to Out Point	再生ヘッドからアウト点まで再生
+	Play/Stop	再生/停止
+	Previous Multi-Camera Page	前のマルチカメラページ
+	Progressive	プログレッシブ
+	ProjectPanel	プロジェクトパネル
+	QuickTime (Motion JPEG)	QuickTime (Motion JPEG)
+	QuickTime, APV 422-10 (10-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime、APV 422-10 (10-bit 4:2:2)、24-bit 48 kHz PCM
+	QuickTime, APV 422-12 (12-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime、APV 422-12 (12-bit 4:2:2)、24-bit 48 kHz PCM
+	QuickTime, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime、DNxHR HQ (8-bit 4:2:2)、24-bit 48 kHz PCM
+	QuickTime, DNxHR LB (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime、DNxHR LB (8-bit 4:2:2)、24-bit 48 kHz PCM
+	QuickTime, DNxHR SQ (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime、DNxHR SQ (8-bit 4:2:2)、24-bit 48 kHz PCM
+	QuickTime, ProRes 422 HQ, 24-bit 48 kHz PCM	QuickTime、ProRes 422 HQ、24-bit 48 kHz PCM
+	QuickTime, ProRes 422 LT, 24-bit 48 kHz PCM	QuickTime、ProRes 422 LT、24-bit 48 kHz PCM
+	QuickTime, ProRes 422 Proxy, 24-bit 48 kHz PCM	QuickTime、ProRes 422 Proxy、24-bit 48 kHz PCM
+	QuickTime, ProRes 422, 24-bit 48 kHz PCM	QuickTime、ProRes 422、24-bit 48 kHz PCM
+	Quit FilmCraft	FilmCraft を終了
+	Rate Stretch Tool	レートストレッチツール
+	Razor Tool	カミソリツール
+	Rectangle Tool	長方形ツール
+	Remix Tool	リミックスツール
+	Right align text	テキストを右揃え
+	Ripple Edit Tool	リップル編集ツール
+	Ripple Trim Next Edit to Playhead	次の編集点を再生ヘッドまでリップルトリム
+	Ripple Trim Previous Edit to Playhead	前の編集点を再生ヘッドまでリップルトリム
+	Rolling Edit Tool	ロール編集ツール
+	Select Camera 1	カメラ 1 を選択
+	Select Camera 2	カメラ 2 を選択
+	Select Camera 3	カメラ 3 を選択
+	Select Camera 4	カメラ 4 を選択
+	Select Camera 5	カメラ 5 を選択
+	Select Camera 6	カメラ 6 を選択
+	Select Camera 7	カメラ 7 を選択
+	Select Camera 8	カメラ 8 を選択
+	Select Camera 9	カメラ 9 を選択
+	Select Clip at Playhead	再生ヘッドの位置のクリップを選択
+	Select Find Box	検索ボックスを選択
+	Select Next Clip	次のクリップを選択
+	Select Next Panel	次のパネルを選択
+	Select Previous Clip	前のクリップを選択
+	Select Previous Panel	前のパネルを選択
+	Select to Next Line	次の行まで選択
+	Select to Next Word	次の単語まで選択
+	Select to Previous Line	前の行まで選択
+	Select to Previous Word	前の単語まで選択
+	Select to Segment End	セグメントの末尾まで選択
+	Select to Segment Start	セグメントの先頭まで選択
+	Selection Tool	選択ツール
+	Set Comparison Reference	比較の基準を設定
+	Set Creative Look	クリエイティブのルックを設定
+	Set Input LUT	入力 LUT を設定
+	Set Project Panel View	プロジェクトパネルの表示を設定
+	Show Next Screen	次の画面を表示
+	Show Previous Screen	前の画面を表示
+	Show Program Transcript	プログラムの文字起こしを表示
+	Shuttle Left	左へシャトル
+	Shuttle Right	右へシャトル
+	Shuttle Slow Left	低速で左へシャトル
+	Shuttle Slow Right	低速で右へシャトル
+	Shuttle Stop	シャトルを停止
+	Slide Clip Selection Left Five Frames	選択したクリップを 5 フレーム左へスライド
+	Slide Clip Selection Left One Frame	選択したクリップを 1 フレーム左へスライド
+	Slide Clip Selection Right Five Frames	選択したクリップを 5 フレーム右へスライド
+	Slide Clip Selection Right One Frame	選択したクリップを 1 フレーム右へスライド
+	Slide Tool	スライドツール
+	Slip Clip Selection Left Five Frames	選択したクリップを 5 フレーム左へスリップ
+	Slip Clip Selection Left One Frame	選択したクリップを 1 フレーム左へスリップ
+	Slip Clip Selection Right Five Frames	選択したクリップを 5 フレーム右へスリップ
+	Slip Clip Selection Right One Frame	選択したクリップを 1 フレーム右へスリップ
+	Slip Tool	スリップツール
+	Social Vertical 1080×1920	SNS 縦型 1080×1920
+	Soft Vignette	ソフトビネット
+	Source In/Out	ソースのイン/アウト
+	Split Caption	キャプションを分割
+	Square Pixels (1.0)	正方形ピクセル (1.0)
+	Stack Clips	クリップをスタック
+	Start Export Queue	書き出しキューを開始
+	Start Voice-over Recording	ナレーションの録音を開始
+	Step Back Five Frames	5 フレーム戻る
+	Step Back One Frame	1 フレーム戻る
+	Step Forward Five Frames	5 フレーム進む
+	Step Forward One Frame	1 フレーム進む
+	Stop Export Queue	書き出しキューを停止
+	Stop Multi-Camera Recording	マルチカメラの記録を停止
+	Stop Voice-over Recording	ナレーションの録音を停止
+	Sync Voice-over Capture	ナレーションのキャプチャを同期
+	TIFF	TIFF
+	TIFF Sequence	TIFF 連番画像
+	TextPanel	テキストパネル
+	Thumbnail Size Next	次のサムネイルサイズ
+	Thumbnail Size Previous	前のサムネイルサイズ
+	Toggle All Audio Targets	すべてのオーディオターゲットを切り替え
+	Toggle All Source Audio	すべてのソースオーディオを切り替え
+	Toggle All Source Video	すべてのソースビデオを切り替え
+	Toggle All Video Targets	すべてのビデオターゲットを切り替え
+	Toggle Audio During Scrubbing	スクラブ中のオーディオを切り替え
+	Toggle Full Screen	全画面表示を切り替え
+	Toggle Mute for All Targeted Audio Tracks	ターゲット設定されたすべてのオーディオトラックのミュートを切り替え
+	Toggle Solo for All Targeted Audio Tracks	ターゲット設定されたすべてのオーディオトラックのソロを切り替え
+	Toggle Source/Program Monitor Focus	ソース/プログラムモニターのフォーカスを切り替え
+	Toggle Target Audio 1	オーディオ 1 のターゲットを切り替え
+	Toggle Target Audio 2	オーディオ 2 のターゲットを切り替え
+	Toggle Target Audio 3	オーディオ 3 のターゲットを切り替え
+	Toggle Target Audio 4	オーディオ 4 のターゲットを切り替え
+	Toggle Target Audio 5	オーディオ 5 のターゲットを切り替え
+	Toggle Target Audio 6	オーディオ 6 のターゲットを切り替え
+	Toggle Target Audio 7	オーディオ 7 のターゲットを切り替え
+	Toggle Target Audio 8	オーディオ 8 のターゲットを切り替え
+	Toggle Target Video 1	ビデオ 1 のターゲットを切り替え
+	Toggle Target Video 2	ビデオ 2 のターゲットを切り替え
+	Toggle Target Video 3	ビデオ 3 のターゲットを切り替え
+	Toggle Target Video 4	ビデオ 4 のターゲットを切り替え
+	Toggle Target Video 5	ビデオ 5 のターゲットを切り替え
+	Toggle Target Video 6	ビデオ 6 のターゲットを切り替え
+	Toggle Target Video 7	ビデオ 7 のターゲットを切り替え
+	Toggle Target Video 8	ビデオ 8 のターゲットを切り替え
+	Toggle Track Output for All Targeted Video Tracks	ターゲット設定されたすべてのビデオトラックの出力を切り替え
+	Toggle Trim Type	トリムの種類を切り替え
+	Toggle View	表示を切り替え
+	Track Select Backward Tool	後方トラック選択ツール
+	Track Select Forward Tool	前方トラック選択ツール
+	Track Selected Mask	選択したマスクをトラッキング
+	Trim Next Edit to Playhead	次の編集点を再生ヘッドまでトリム
+	Trim Previous Edit to Playhead	前の編集点を再生ヘッドまでトリム
+	Trimming	トリム
 	Type Tool	文字ツール
+	Unstack Clips	クリップのスタックを解除
+	Upper First	上位フィールド優先
+	VBR, 1 pass	VBR、1 パス
+	VBR, 2 pass	VBR、2 パス
+	Vimeo 1080p Full HD	Vimeo 1080p Full HD
+	Vimeo 2160p 4K Ultra HD	Vimeo 2160p 4K Ultra HD
+	Voice-over Record	ナレーションを録音
+	Voiceover	ナレーション
+	WAV, stereo 48 kHz 16-bit PCM	WAV、ステレオ 48 kHz 16-bit PCM
+	WAV, stereo 48 kHz 24-bit PCM	WAV、ステレオ 48 kHz 24-bit PCM
+	Warm Tint	暖かい色合い
+	Warm highlights, brown shadows	暖色のハイライト、茶色のシャドウ
+	Waveform Audio	Waveform Audio
+	Waveform Audio 48 kHz 16-bit	Waveform Audio 48 kHz 16-bit
+	Waveform Audio 48 kHz 24-bit	Waveform Audio 48 kHz 24-bit
+	Web & Social	Web・SNS
+	Work Area	ワークエリア
+	Write Automation	オートメーションを書き込み
+	YouTube 1080p Full HD	YouTube 1080p Full HD
+	YouTube 2160p 4K Ultra HD	YouTube 2160p 4K Ultra HD
+	Zoom Program Monitor to 100%	プログラムモニターを 100% にズーム
+	Zoom Program Monitor to Fit	プログラムモニターを画面に合わせてズーム
+	Zoom Source Monitor to 100%	ソースモニターを 100% にズーム
+	Zoom Source Monitor to Fit	ソースモニターを画面に合わせてズーム
+	Zoom Tool	ズームツール
+	with:	置換後:
+	Interface Language	表示言語
+	System Language	システムの言語
+	Cinematic	シネマティック
+	Film Emulation	フィルム再現
+	Technical	テクニカル
+	Teal Shadows, Warm Skin	ティールのシャドウと暖かな肌色
+	Night Exterior	夜の屋外
+	Golden Dusk	黄金色の夕暮れ
+	Steel Blue	スチールブルー
+	Hard Sun	強い日差し
+	Faded Print	色あせたプリント
+	Silver Retention	銀残し
+	Cross Processed	クロスプロセス
+	Warm Negative	暖色ネガ
+	Neutral Mono	ニュートラルモノクロ
+	Hard Mono	硬調モノクロ
+	Sepia Tone	セピア調
+	Cold Mono	寒色モノクロ
+	Lift Shadows	シャドウを持ち上げ
+	Protect Highlights	ハイライトを保護
+	Half Saturation	彩度半減
+	Boost Vibrance	自然な彩度を強化
+	Legal Range Squeeze	リーガルレンジに圧縮
+	A boxed label with a round pointer; move the label and the pointer follows.	丸いポインター付きのボックス型ラベルです。ラベルを動かすと、ポインターも追従します。
+	A rounded tag that fits its text, with a status dot.	テキストに合わせて大きさが変わる、ステータスドット付きの角丸タグです。
+	A title on a rounded card with a soft shadow.	ソフトなシャドウ付きの角丸カードに載せたタイトルです。
+	Accent Color	アクセントカラー
+	Bar Color	バーの色
+	Box Color	ボックスの色
+	Box Opacity	ボックスの不透明度
+	Callout – Pointer	コールアウト – ポインター
+	Callout – Tag	コールアウト – タグ
+	Callouts	コールアウト
+	Credits	クレジット
+	Dot Color	ドットの色
+	Heading	見出し
+	Large centred title, accent rule and subtitle.	中央に大きなタイトルを置き、アクセントの罫線とサブタイトルを添えたデザインです。
+	Lower Third – Rule	ロワーサード – 罫線
+	Lower Third – Slab	ロワーサード – 帯
+	Lower Thirds	ロワーサード
+	Name Color	名前の色
+	Name Size	名前のサイズ
+	Name and role on a coloured slab that widens with the name.	名前の長さに合わせて幅が広がる色付きの帯に、名前と肩書きを表示します。
+	Name over a thin rule that always matches the name's width.	名前の下に、常に名前と同じ幅の細い罫線を引きます。
+	Pointer Color	ポインターの色
+	Role	肩書き
+	Rule Color	罫線の色
+	Show Dot	ドットを表示
+	Show Role	肩書きを表示
+	Slab Color	帯の色
+	Tag Color	タグの色
+	Title Color	タイトルの色
+	Title Size	タイトルのサイズ
+	Title – Boxed	タイトル – ボックス
+	Title – Centered	タイトル – 中央揃え
+	Titles	タイトル
+	Select an item to preview it	プレビューする項目を選択してください
+	End Credits	エンドクレジット
+	End Credits – Roll	エンドクレジット – ロール
+	Ticker – Crawl	ティッカー – クロール
+	Centred credits that roll up from below the frame and leave at the top.	中央揃えのクレジットが画面の下から現れて上へ流れ、上端から抜けていきます。
+	A news-style line that crawls in from the right and leaves at the left.	ニュース風のテキスト行が右から流れ込み、左へ抜けていきます。
+	out	アウト
+	in	イン
+	The language changed but could not be saved: {e}	表示言語は変更されましたが、保存できませんでした: {e}
+	no Chinese font is installed on this system; the interface stays in English	このシステムには中国語フォントがインストールされていないため、表示は英語のままです
+	no Japanese font is installed on this system; the interface stays in English	このシステムには日本語フォントがインストールされていないため、表示は英語のままです
+	Show	表示
+	Sort	並べ替え
+	Reverse the order	順序を反転
+	Grab bag	一覧
+	Table	表
+	No contributor data was built into this copy.	このビルドにはコントリビューターのデータが含まれていません。
+	No model credits were built into this copy.	このビルドにはモデルのクレジットが含まれていません。
+	Company	会社
+	Model	モデル
+	Version	バージョン
+	Commits	コミット
+	% of all commits	全コミットに占める割合 (%)
+	Lines +/−	行数 +/−
+	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	オーディオ出力に失敗したため、無音で再生しています (「環境設定 ▸ オーディオハードウェア」を確認してください)
+	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	オーディオ出力が応答しないため、無音で再生しています (「環境設定 ▸ オーディオハードウェア」を確認してください)
+	Clip Speed / Duration	クリップの速度 / 長さ
+	Speed:	速度:
+	Reverse Speed	逆再生する
+	Ripple Edit, Shifting Trailing Clips	後続のクリップをずらしてリップル編集する
+	About	バージョン情報
+	Contributors	コントリビューター
+	Models	モデル
+	Main (8-bit)	メイン (8 ビット)
+	Main 10 (10-bit, HDR)	メイン 10 (10 ビット、HDR)
+	Main (8-bit; Main 10 for HDR sequences)	メイン (8 ビット、HDR シーケンスではメイン 10)
+	Encoder	エンコーダー
+	Hardware (H.265 has no software encoder)	ハードウェア (H.265 にはソフトウェアエンコーダーがありません)
+	Text Properties	テキストのプロパティ
+	Text Box Height	テキストボックスの高さ
+	Paragraph Text	段落テキスト
+	Point Text	ポイントテキスト
+	Text Layer Type	テキストレイヤーの種類
+	Text Styling	テキストのスタイル
+	New Color Matte	新規カラーマット
+	Color Matte Color	カラーマットの色
+	Color:	色:
+	 · {time} left	 · 残り {time}
+	Discard take	テイクを破棄
+	Voice-over take discarded	ナレーションのテイクを破棄しました
+	Binary assets added	追加したバイナリアセット
+	Binary assets removed	削除したバイナリアセット
+	Deselect All Project Items	すべてのプロジェクト項目の選択を解除
+	Display name	表示名
+	First commit	最初のコミット
+	H.265 (HEVC)	H.265 (HEVC)
+	Last commit	最後のコミット
+	Line delta	行数の増減
+	Lines added	追加した行数
+	Lines deleted	削除した行数
+	Merged PRs	マージされた PR
+	Name (A–Z)	名前 (A–Z)
+	Real name	本名
+	Select All Project Items	すべてのプロジェクト項目を選択
+	Username	ユーザー名
 	Vertical Type Tool	縦書き文字ツール
+
+# System appearance modes and theme cards.
+	Active	使用中
+	Appearance Mode	外観モード
+	Dark Theme	ダークテーマ
+	Light Theme	ライトテーマ
+	Next Appearance Mode	次の外観モード
+	Sync with system	システムと同期
+	Go to previous keyframe	前のキーフレームへ移動
+	Go to next keyframe	次のキーフレームへ移動
+	Add keyframe	キーフレームを追加
+	Remove keyframe	キーフレームを削除
+	Turn on animation and add keyframe	アニメーションをオンにしてキーフレームを追加
+	Click to select, or click in empty space and drag to marquee select. Use Shift, Alt, and Ctrl for other options.	クリックで選択します。何もない場所からドラッグすると範囲選択になります。Shift、Alt、Ctrl キーを併用すると、ほかのオプションも使えます。
+	Click to zoom in; Alt-click to zoom out.	クリックでズームイン、Alt+クリックでズームアウトします。
+	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	ドラッグ: 移動 · Alt+クリック: スムーズ/コーナー · Ctrl+クリック: 削除
+	Include Alpha Channel	アルファチャンネルを含める
+	Sequence Settings	シーケンス設定
+	Color Management	カラーマネジメント
+	VR Properties	VR プロパティ
+	Editing Mode:	編集モード:
+	Timebase:	タイムベース:
+	Frame Size:	フレームサイズ:
+	Pixel Aspect Ratio:	ピクセルアスペクト比:
+	Fields:	フィールド:
+	Channel Format:	チャンネル形式:
+	Number of Channels:	チャンネル数:
+	Preview File Format:	プレビューファイル形式:
+	Working Color Space:	作業用カラースペース:
+	Projection:	投影法:
+	Layout:	レイアウト:
+	Captured View:	撮影視野:
+	Video Previews	ビデオプレビュー
+	No Fields (Progressive Scan)	フィールドなし (プログレッシブスキャン)
+	Custom ({ratio})	カスタム ({ratio})
+	{rate} frames/second	{rate} フレーム/秒
+	{rate} fps Drop-Frame Timecode	{rate} fps ドロップフレームタイムコード
+	{rate} fps Non Drop-Frame Timecode	{rate} fps ノンドロップフレームタイムコード
+	{rate} fps Timecode	{rate} fps タイムコード
+	horizontal	水平
+	vertical	垂直
+	Scale motion effects proportionally when changing frame size	フレームサイズの変更時にモーションエフェクトを比例してスケールする
+	Maximum Bit Depth	最大ビット深度
+	Maximum Render Quality	最高レンダリング画質
+	Composite in Linear Color	リニアカラーで合成
+	Auto Tone Map Media (HDR and log into SDR)	メディアの自動トーンマッピング (HDR と log を SDR に変換)
+	Configure…	設定…
+	Not supported in FilmCraft yet	FilmCraft ではまだサポートされていません
+	FilmCraft always composites in linear light	FilmCraft は常にリニアライトで合成します
+	Loop marked range	マークした範囲をループ
+	Play Source	ソースを再生
+	Source Play/Stop	ソースの再生/停止
+	Stop Source	ソースを停止
+	New Sequence	新規シーケンス
+	Tracks	トラック
+	tracks	トラック
+	Export Markers as CSV…	マーカーを CSV として書き出し…
+	Fill Type	塗りの種類
+	Gradient Angle	グラデーションの角度
+	Linear Gradient	線形グラデーション
+	Solid	べた塗り
+	Clear Transition	トランジションを消去
+	Set Transition Duration	トランジションのデュレーションを設定

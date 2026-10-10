@@ -44,6 +44,15 @@ pub fn used_ranges(p: &Project, seqs: &[ItemId]) -> (BTreeMap<ItemId, (Tick, Tic
                     Some(ItemKind::Subclip { parent, .. }) => {
                         used.insert(ti.item);
                         target = *parent;
+                        // Loaded projects can nest subclips; keep every link up to the media (bounded like `resolve_media`).
+                        let mut up = *parent;
+                        for _ in 0..16 {
+                            used.insert(up);
+                            match p.item(up).map(|i| &i.kind) {
+                                Some(ItemKind::Subclip { parent, .. }) => up = *parent,
+                                _ => break,
+                            }
+                        }
                     }
                     Some(_) => {}
                     None => continue,

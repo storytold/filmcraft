@@ -291,7 +291,7 @@ fn set_controls(s: &mut Session, clip: ClipId, values: &serde_json::Map<String, 
                 props.insert(c.param.clone(), v.clone());
             }
         }
-        set_props(s, clip, ei, &props, tl, "Change Template Property")?;
+        set_props(s, clip, ei, &props, tl, "Change Template Property", None)?;
         n += 1;
     }
     Ok(n)
@@ -316,7 +316,7 @@ fn apply_template(s: &mut Session, p: &Value) -> Result<Value> {
     let (layers, meta) = t.instantiate((w, h));
     let before = s.history.undo.len();
     let dur = t.duration;
-    let clip = place_video_clip(s, &t.name, p, "Apply Graphics Template", layers, move |pr, (w, h, rate)| {
+    let clip = place_video_clip(s, "graphics.template.apply", &t.name, p, "Apply Graphics Template", layers, move |pr, (w, h, rate)| {
         let src = crate::graphics::graphic_source(pr, w, h, rate);
         (src, rate.snap_nearest(dur))
     })?;
@@ -911,7 +911,7 @@ fn upgrade_caption(s: &mut Session, p: &Value) -> Result<Value> {
         let name = text.lines().next().unwrap_or("Caption").chars().take(40).collect::<String>();
         let dur = c.duration;
         let q = json!({"time": c.start.0});
-        let clip = place_video_clip(s, &name, &q, "Upgrade Caption to Graphic", vec![layer], move |pr, (w, h, rate)| {
+        let clip = place_video_clip(s, "graphics.upgradeCaption", &name, &q, "Upgrade Caption to Graphic", vec![layer], move |pr, (w, h, rate)| {
             (crate::graphics::graphic_source(pr, w, h, rate), dur)
         })?;
         clips.push(clip.0);

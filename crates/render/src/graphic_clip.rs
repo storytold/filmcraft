@@ -12,7 +12,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use filmcraft_geom::{Affine, Vec2};
-use filmcraft_project::graphic::{LayerContent, LayerSpec, ShapeProps, TextProps, eval_layer};
+use filmcraft_project::graphic::{LayerContent, LayerSpec, LinearGradient, ShapeProps, TextProps, eval_layer};
 use filmcraft_project::graphic_design::{GraphicMeta, PinNode, remap_time, resolve_pins, roll_offset};
 use filmcraft_project::{EffectInstance, TrackItem};
 use filmcraft_text::raster::{Xform, apply, fill_into, xform_scale};
@@ -20,7 +20,7 @@ use filmcraft_text::{Align, Caps, Layout, Mask, ParagraphStyle, StrokeKind, Styl
 use filmcraft_time::Tick;
 use rayon::prelude::*;
 
-use crate::graphics::premul_linear;
+use crate::graphics::{premul_linear, premul_linear_lerp};
 use crate::image::Image;
 
 /// f64 affine → the text crate's f32 transform.
@@ -191,6 +191,109 @@ fn over_mask(px: &mut [f32], m: &Mask, c: [f32; 4]) {
     });
 }
 
+fn invert_xform(m: &Xform) -> Option<Xform> {
+    let det = m[0] * m[3] - m[1] * m[2];
+    if det.abs() < 1e-8 {
+        return None;
+    }
+    let inv = 1.0 / det;
+    let a = m[3] * inv;
+    let b = -m[1] * inv;
+    let c = -m[2] * inv;
+    let d = m[0] * inv;
+    Some([a, b, c, d, -(a * m[4] + c * m[5]), -(b * m[4] + d * m[5])])
+}
+
+/// Paint `grad` through `msk`. 0° runs left to right across `lb` in layer space; the angle is
+/// clockwise on screen and turns with `inv` (the device→layer transform).
+fn over_linear_gradient(px: &mut [f32], msk: &Mask, grad: &LinearGradient, lb: [f32; 4], inv: &Xform, origin: (i32, i32)) {
+    if msk.w == 0 {
+        return;
+    }
+    let (cx, cy) = ((lb[0] + lb[2]) * 0.5, (lb[1] + lb[3]) * 0.5);
+    let (sin, cos) = grad.angle.to_radians().sin_cos();
+    let (ax, ay) = (cos, sin);
+    let corners = [(lb[0], lb[1]), (lb[2], lb[1]), (lb[0], lb[3]), (lb[2], lb[3])];
+    let half = corners.iter().map(|(x, y)| ((x - cx) * ax + (y - cy) * ay).abs()).fold(1e-3_f32, f32::max);
+    let w = msk.w;
+    let (start, end) = (grad.start, grad.end);
+    px.par_chunks_mut(4 * w).enumerate().for_each(|(row, dest)| {
+        let py = origin.1 as f32 + row as f32 + 0.5;
+        let mrow = &msk.a[row * w..(row + 1) * w];
+        for (col, (p, &cov)) in dest.as_chunks_mut::<4>().0.iter_mut().zip(mrow).enumerate() {
+            if cov <= 0.0 {
+                continue;
+            }
+            let (lx, ly) = apply(inv, origin.0 as f32 + col as f32 + 0.5, py);
+            let t = (((((lx - cx) * ax + (ly - cy) * ay) / half) + 1.0) * 0.5).clamp(0.0, 1.0);
+            let c = premul_linear_lerp(start, end, t);
+            let k = 1.0 - c[3] * cov;
+            for i in 0..4 {
+                p[i] = c[i] * cov + p[i] * k;
+            }
+        }
+    });
+}
+
+/// Solid fill, one mask per distinct colour when text runs carry their own.
+fn paint_solid(px: &mut [f32], cover: &Mask, color: [f32; 4], text: Option<&Layout>, m: &Xform, run_fills: &[Option<[f32; 4]>], origin: (i32, i32)) {
+    let Some(layout) = text.filter(|_| run_fills.iter().any(Option::is_some)) else {
+        over_mask(px, cover, premul_linear(color));
+        return;
+    };
+    let mut groups: Vec<([f32; 4], Vec<u16>)> = Vec::new();
+    for r in 0..=run_fills.len() {
+        let col = if r == 0 { color } else { run_fills[r - 1].unwrap_or(color) };
+        match groups.iter_mut().find(|g| g.0 == col) {
+            Some(g) => g.1.push(r as u16),
+            None => groups.push((col, vec![r as u16])),
+        }
+    }
+    for (col, runs) in groups {
+        let mut m_run = Mask::new(cover.w, cover.h);
+        for r in runs {
+            render::draw_run(layout, m, &mut m_run, origin, Some(r));
+        }
+        over_mask(px, &m_run, premul_linear(col));
+    }
+}
+
+/// Gradient for runs that have no fill of their own; runs with a fill stay that solid colour.
+fn paint_mixed_gradient(
+    px: &mut [f32],
+    cover: &Mask,
+    grad: &LinearGradient,
+    lb: [f32; 4],
+    inv: &Xform,
+    origin: (i32, i32),
+    layout: &Layout,
+    m: &Xform,
+    run_fills: &[Option<[f32; 4]>],
+) {
+    let mut grad_mask = Mask::new(cover.w, cover.h);
+    render::draw_run(layout, m, &mut grad_mask, origin, Some(0));
+    let mut solids: Vec<([f32; 4], Vec<u16>)> = Vec::new();
+    for (i, fill) in run_fills.iter().enumerate() {
+        let run = (i + 1) as u16;
+        if let Some(col) = fill {
+            match solids.iter_mut().find(|g| g.0 == *col) {
+                Some(g) => g.1.push(run),
+                None => solids.push((*col, vec![run])),
+            }
+        } else {
+            render::draw_run(layout, m, &mut grad_mask, origin, Some(run));
+        }
+    }
+    over_linear_gradient(px, &grad_mask, grad, lb, inv, origin);
+    for (col, runs) in solids {
+        let mut m_run = Mask::new(cover.w, cover.h);
+        for r in runs {
+            render::draw_run(layout, m, &mut m_run, origin, Some(r));
+        }
+        over_mask(px, &m_run, premul_linear(col));
+    }
+}
+
 /// Rasterise one layer with layer→device transform `m`, clipped to a `cw`×`ch` canvas.
 pub fn raster_layer(spec: &LayerSpec, m: &Xform, cw: usize, ch: usize) -> Option<LayerRaster> {
     if !spec.enabled || spec.transform.opacity <= 0.0 {
@@ -294,32 +397,22 @@ pub fn raster_layer(spec: &LayerSpec, m: &Xform, cw: usize, ch: usize) -> Option
             over_mask(&mut px, sm, premul_linear(*c));
         }
     }
-    if let Some(c) = ap.fill {
-        // per-character fills: each style run with its own colour is drawn on its own
-        let run_fills: Vec<Option<[f32; 4]>> = match &spec.content {
-            LayerContent::Text(t) => t.runs.iter().map(|(_, s)| s.fill).collect(),
-            _ => Vec::new(),
-        };
-        match &text {
-            Some(l) if run_fills.iter().any(Option::is_some) => {
-                let mut groups: Vec<([f32; 4], Vec<u16>)> = Vec::new();
-                for r in 0..=run_fills.len() {
-                    let col = if r == 0 { c } else { run_fills[r - 1].unwrap_or(c) };
-                    match groups.iter_mut().find(|g| g.0 == col) {
-                        Some(g) => g.1.push(r as u16),
-                        None => groups.push((col, vec![r as u16])),
-                    }
-                }
-                for (col, runs) in groups {
-                    let mut m_run = Mask::new(w, h);
-                    for r in runs {
-                        render::draw_run(l, m, &mut m_run, (x0, y0), Some(r));
-                    }
-                    over_mask(&mut px, &m_run, premul_linear(col));
-                }
-            }
-            _ => over_mask(&mut px, &cover, premul_linear(c)),
+    let run_fills: Vec<Option<[f32; 4]>> = match &spec.content {
+        LayerContent::Text(t) => t.runs.iter().map(|(_, s)| s.fill).collect(),
+        _ => Vec::new(),
+    };
+    if let Some(grad) = &ap.gradient
+        && let Some(inv) = invert_xform(m)
+    {
+        if run_fills.iter().any(Option::is_some)
+            && let Some(layout) = &text
+        {
+            paint_mixed_gradient(&mut px, &cover, grad, lb, &inv, (x0, y0), layout, m, &run_fills);
+        } else {
+            over_linear_gradient(&mut px, &cover, grad, lb, &inv, (x0, y0));
         }
+    } else if let Some(c) = ap.fill {
+        paint_solid(&mut px, &cover, c, text.as_deref(), m, &run_fills, (x0, y0));
     }
     for ((sm, c), (_, _, k)) in strokes.iter().zip(&ap.strokes).rev() {
         if !outer(*k) {
@@ -700,6 +793,103 @@ mod tests {
         let sh = img.get(150, 135);
         assert!(sh[3] > 0.5 && sh[0] < 0.05 && sh[2] < 0.05, "black shadow {sh:?}");
         assert_eq!(img.get(20, 20)[3], 0.0);
+    }
+
+    #[test]
+    fn linear_gradient_runs_left_to_right_on_a_shape_and_on_text() {
+        let mut shape = new_shape_layer(0, Vec2::new(100.0, 100.0), Vec2::new(80.0, 40.0), vec![]);
+        set(&mut shape, "fill_kind", ParamValue::Choice(1));
+        set(&mut shape, "gradient_start", ParamValue::Color([1.0, 0.0, 0.0, 1.0]));
+        set(&mut shape, "gradient_end", ParamValue::Color([0.0, 0.0, 1.0, 1.0]));
+        set(&mut shape, "gradient_angle", ParamValue::Float(0.0));
+        let mut img = Image::new(200, 200);
+        render_graphic_layers(&[shape], Tick::ZERO, (200, 200), &Affine::IDENTITY, &mut img);
+        let left = img.get(70, 100);
+        let right = img.get(130, 100);
+        assert!(left[3] > 0.9 && left[0] > left[2], "redder on the left {left:?}");
+        assert!(right[3] > 0.9 && right[2] > right[0], "bluer on the right {right:?}");
+
+        let mut text = new_text_layer("HHHHHHHH", Vec2::new(16.0, 90.0), 64.0);
+        set(&mut text, "fill_kind", ParamValue::Choice(1));
+        set(&mut text, "gradient_start", ParamValue::Color([1.0, 0.0, 0.0, 1.0]));
+        set(&mut text, "gradient_end", ParamValue::Color([0.0, 0.0, 1.0, 1.0]));
+        let mut img = Image::new(500, 180);
+        render_graphic_layers(&[text], Tick::ZERO, (500, 180), &Affine::IDENTITY, &mut img);
+        let ink: Vec<(usize, usize)> = (0..img.h).flat_map(|y| (0..img.w).map(move |x| (x, y))).filter(|&(x, y)| img.get(x, y)[3] > 0.8).collect();
+        let minx = ink.iter().map(|p| p.0).min().unwrap();
+        let maxx = ink.iter().map(|p| p.0).max().unwrap();
+        let span = (maxx - minx).max(1);
+        let (mut ln, mut rn, mut ls, mut rs) = (0.0_f32, 0.0, 0.0, 0.0);
+        for &(x, y) in &ink {
+            let p = img.get(x, y)[0];
+            if x < minx + span / 3 {
+                ls += p;
+                ln += 1.0;
+            } else if x > maxx - span / 3 {
+                rs += p;
+                rn += 1.0;
+            }
+        }
+        assert!(ln > 30.0 && rn > 30.0, "ink on both ends of the title: {ln} {rn} x {minx}..{maxx}");
+        assert!(ls / ln > rs / rn + 0.15, "text ramps from red to blue: {} {}", ls / ln, rs / rn);
+    }
+
+    #[test]
+    fn linear_gradient_blends_in_linear_light_and_turns_with_the_layer() {
+        let mut shape = new_shape_layer(0, Vec2::new(100.0, 100.0), Vec2::new(80.0, 40.0), vec![]);
+        set(&mut shape, "fill_kind", ParamValue::Choice(1));
+        set(&mut shape, "gradient_start", ParamValue::Color([0.0, 0.0, 0.0, 1.0]));
+        set(&mut shape, "gradient_end", ParamValue::Color([1.0, 1.0, 1.0, 1.0]));
+        let mut img = Image::new(200, 200);
+        render_graphic_layers(&[shape.clone()], Tick::ZERO, (200, 200), &Affine::IDENTITY, &mut img);
+        let mid = img.get(100, 100)[0];
+        // Linear-light midpoint is ~0.5. An sRGB midpoint converted to linear is ~0.21.
+        assert!(mid > 0.4 && mid < 0.6, "centre of black→white is linear 0.5, got {mid}");
+        assert!(img.get(70, 100)[0] < mid && mid < img.get(130, 100)[0]);
+
+        set(&mut shape, "gradient_start", ParamValue::Color([1.0, 0.0, 0.0, 1.0]));
+        set(&mut shape, "gradient_end", ParamValue::Color([0.0, 0.0, 1.0, 1.0]));
+        set(&mut shape, "rotation", ParamValue::Float(90.0));
+        let mut turned = Image::new(200, 200);
+        render_graphic_layers(&[shape], Tick::ZERO, (200, 200), &Affine::IDENTITY, &mut turned);
+        let top = turned.get(100, 70);
+        let bot = turned.get(100, 130);
+        assert!(top[3] > 0.9 && bot[3] > 0.9, "the rotated ramp is inside the shape: {top:?} {bot:?}");
+        assert!(top[0] > top[2], "clockwise 90° carries the start colour to the top {top:?}");
+        assert!(bot[2] > bot[0], "and the end colour to the bottom {bot:?}");
+    }
+
+    #[test]
+    fn linear_gradient_keeps_a_per_character_fill_solid() {
+        use filmcraft_project::graphic_design::{CharStyle, LayerExtra, StyleRun};
+        let mut e = new_text_layer("AAAA", Vec2::new(20.0, 100.0), 60.0);
+        set(&mut e, "fill_kind", ParamValue::Choice(1));
+        set(&mut e, "gradient_start", ParamValue::Color([0.0, 1.0, 0.0, 1.0]));
+        set(&mut e, "gradient_end", ParamValue::Color([0.0, 0.0, 1.0, 1.0]));
+        let red = CharStyle { fill: Some([1.0, 0.0, 0.0, 1.0]), ..Default::default() };
+        e.layer = Some(Box::new(LayerExtra { runs: vec![StyleRun { start: 2, end: 4, style: red }], ..Default::default() }));
+        let mut img = Image::new(400, 200);
+        render_graphic_layers(&[e.clone()], Tick::ZERO, (400, 200), &Affine::IDENTITY, &mut img);
+        let l = text_layout(match &eval_layer(&e, Tick::ZERO, (400, 200)).unwrap().content {
+            LayerContent::Text(t) => t,
+            _ => unreachable!(),
+        });
+        let split = 20.0 + l.caret(2).0;
+        let (mut green, mut red_px) = (0, 0);
+        for y in 0..200 {
+            for x in 0..400 {
+                let p = img.get(x, y);
+                if p[3] < 0.8 {
+                    continue;
+                }
+                if (x as f32) < split - 1.0 && p[1] > p[0] && p[1] > p[2] {
+                    green += 1;
+                } else if (x as f32) > split + 1.0 && p[0] > 0.9 && p[1] < 0.05 {
+                    red_px += 1;
+                }
+            }
+        }
+        assert!(green > 80 && red_px > 80, "gradient on the plain letters, solid red on the styled ones: {green} {red_px}");
     }
 
     #[test]

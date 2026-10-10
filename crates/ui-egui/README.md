@@ -3,6 +3,18 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## Transition drop previews
+
+Dragging a video or audio transition over a compatible clip shows its actual time span, the
+selected cut and an In/Out label. Shared cuts center the span; isolated edges use a one-sided
+span. The preview uses the engine's read-only transition planner, including Timeline duration
+preferences, and release dispatches `effects.apply` with the same edge. Locked tracks and
+incompatible clip types show no valid transition preview. Ordinary effects retain their clip
+outline. `timeline.transitionDropPreview` exposes the span and edge to automation.
+
+`transition_drop_ui` covers both edges of short video/audio clips, hover without project edits,
+the committed span and undo. Set `FILMCRAFT_UI_SNAPSHOT_DIR` to render screenshots with wgpu.
+
 ## Localisation
 
 Edit > Language offers English, Japanese and Spanish. The language is stored in the engine's
@@ -19,10 +31,10 @@ fills translated templates, and `i18n::t` translates names from registries. Plac
 (including user filenames containing braces) are inserted literally. Catalog translations are
 original work using ordinary language, without proprietary localisation resources.
 
-Spanish covers menus, panels, dialogs, settings and registry labels. Searches accept both the
+Spanish and Japanese cover menus, panels, dialogs, settings and registry labels. Searches accept both the
 translated label and its English source, including Unicode capitals. Project content, command ids
 and preference values retain their original values. Engine errors, CLI and MCP messages remain
-English; Japanese currently covers core menus and falls back to English elsewhere.
+English; Brazilian Portuguese currently covers core menus and falls back to English elsewhere.
 
 Verification: `cargo test -p filmcraft-ui-egui` checks catalog syntax, duplicate keys, placeholders,
 literal/menu/registry coverage and UI behaviour; `cargo xtask ci` runs the workspace gates. Visual

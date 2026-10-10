@@ -7,7 +7,7 @@ use common::*;
 #[test]
 #[ignore]
 fn adhoc_compare() {
-    let Some(ff) = ffmpeg() else { return };
+    let Some(ff) = ffmpeg_dav1d() else { return };
     let Some(path) = std::env::var_os("AV1_IVF") else { return };
     let path = std::path::PathBuf::from(path);
     let pics = decode_all(&path).unwrap();

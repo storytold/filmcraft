@@ -152,3 +152,81 @@ fn type_tool_edit_style_and_move() {
     d.ok("ui.set", json!({"tool": "Selection"}));
     d.shot("shape-layer");
 }
+
+/// The value of `param` on the text layer of graphic clip `clip`, at its first frame.
+fn text_param(d: &mut Driver, clip: u64, param: &str) -> Option<filmcraft_project::ParamValue> {
+    let s = &d.harness.state().session;
+    let (_, it) = s.active_sequence()?.find_item(filmcraft_project::ClipId(clip))?;
+    let e = it.effects.iter().find(|e| e.effect == "graphic_text")?;
+    Some(e.param(param)?.value_at(filmcraft_time::Tick::ZERO))
+}
+
+/// A drag of a property in the Properties panel is one undo step, so one Cmd+Z restores the
+/// original value (a drag was committing one undo step per frame, so undo only stepped back one
+/// frame's worth; the shadow color picker showed it as "sometimes undo works, sometimes not").
+#[test]
+fn a_property_drag_is_one_undo_step() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let r = d.exec("graphics.newText", json!({"text": "Title"}));
+    let clip = r["clip"].as_u64().unwrap();
+    d.exec("graphics.selectLayer", json!({"clip": clip, "layers": [0]}));
+    d.frames(4);
+    // the layer's Opacity number (visible in the Align and Transform section)
+    d.exec("graphics.set", json!({"clip": clip, "layer": 0, "props": {"opacity": 50}}));
+    d.frames(2);
+    let opacity = |d: &mut Driver| -> f64 { text_param(d, clip, "opacity").and_then(|v| v.as_f64()).unwrap() };
+    let before = opacity(&mut d);
+    let undo0 = d.exec("history.list", json!({}))["undo"].as_array().unwrap().len();
+    // drag the Opacity number to the left: several move frames, one undo step
+    let n = d.rect("graphics.prop.opacity");
+    let (cx, cy) = (n[0] + n[2] / 2.0, n[1] + n[3] / 2.0);
+    d.ok("ui.drag", json!({"from": {"x": cx, "y": cy}, "to": {"x": cx - 60.0, "y": cy}, "steps": 6}));
+    d.frames(4);
+    let after = opacity(&mut d);
+    assert!(after < before - 5.0, "the drag changed the opacity: {before} -> {after}");
+    let undo1 = d.exec("history.list", json!({}))["undo"].as_array().unwrap().len();
+    assert_eq!(undo1, undo0 + 1, "a property drag is one undo step");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(opacity(&mut d), before, "one undo restores the original value");
+}
+
+/// The shadow color picker popup: a drag in the 2D picker is one undo step, so one Cmd+Z
+/// restores the original color (a drag was committing one undo step per frame, so undo only
+/// stepped back one frame's worth — the reported "sometimes undo works, sometimes not").
+#[test]
+fn shadow_color_drag_is_one_undo_step() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let r = d.exec("graphics.newText", json!({"text": "Title"}));
+    let clip = r["clip"].as_u64().unwrap();
+    d.exec("graphics.selectLayer", json!({"clip": clip, "layers": [0]}));
+    d.frames(4);
+    let color = |d: &mut Driver| text_param(d, clip, "shadow_color").and_then(|v| v.as_color());
+    // scroll the properties panel so the shadow row is visible, then open the picker
+    d.ok("ui.scroll", json!({"x": 1400.0, "y": 500.0, "dx": 0.0, "dy": -400.0}));
+    d.frames(3);
+    let sw = d.rect("graphics.prop.shadow_color");
+    d.ok("ui.click", json!({"x": sw[0] + sw[2] / 2.0, "y": sw[1] + sw[3] / 2.0}));
+    d.frames(3);
+    // the popup flips above the swatch (it does not fit below); find a point in its 2D picker
+    let undo0 = d.exec("history.list", json!({}))["undo"].as_array().unwrap().len();
+    let mut hit = None;
+    for (dx, dy) in [(30.0, 30.0), (150.0, 30.0), (30.0, 150.0), (150.0, 150.0)] {
+        let (px, py) = (sw[0] + dx, sw[1] - dy);
+        let before = color(&mut d);
+        d.ok("ui.drag", json!({"from": {"x": px, "y": py}, "to": {"x": px + 60.0, "y": py + 40.0}, "steps": 4}));
+        d.frames(3);
+        let after = color(&mut d);
+        if after != before {
+            hit = Some((before, after));
+            break;
+        }
+    }
+    let (before, after) = hit.expect("no drag point hit the color picker");
+    assert_ne!(after, before, "the drag changed the shadow color");
+    let undo1 = d.exec("history.list", json!({}))["undo"].as_array().unwrap().len();
+    assert_eq!(undo1, undo0 + 1, "a color drag is one undo step");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(color(&mut d), before, "one undo restores the original color");
+}

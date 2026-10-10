@@ -87,11 +87,17 @@ pub fn selected_graphic(app: &FilmcraftApp) -> Option<(ClipId, TrackItem)> {
 
 /// Layers of the graphic clips visible at the playhead, front-most first. A layer whose
 /// visibility is off is not in the picture, so it has no box and cannot be clicked either.
+/// Sequence pixels → screen points on the monitor picture `pic`. The picture shows the frame at its
+/// display aspect, so with non-square sequence pixels the two axes scale differently.
+fn frame_to_screen(pic: Rect, frame: (u32, u32)) -> Affine {
+    let (kx, ky) = (pic.width() as f64 / frame.0.max(1) as f64, pic.height() as f64 / frame.1.max(1) as f64);
+    Affine::translate(pic.min.x as f64, pic.min.y as f64).then_apply(&Affine::scale(kx, ky))
+}
+
 pub fn visible_layers(app: &FilmcraftApp, pic: Rect, frame: (u32, u32)) -> Vec<LayerView> {
     let Some(seq) = app.session.active_sequence() else { return Vec::new() };
     let t = app.session.playhead();
-    let k = pic.width() as f64 / frame.0.max(1) as f64;
-    let screen = Affine::translate(pic.min.x as f64, pic.min.y as f64).then_apply(&Affine::scale(k, k));
+    let screen = frame_to_screen(pic, frame);
     let mut out = Vec::new();
     for tr in seq.video_tracks.iter().rev() {
         if !tr.enabled {
@@ -104,7 +110,7 @@ pub fn visible_layers(app: &FilmcraftApp, pic: Rect, frame: (u32, u32)) -> Vec<L
         let Some(ItemKind::Graphic { width, height, .. }) = app.session.project.item(it.item).map(|p| &p.kind) else { continue };
         let size = (*width, *height);
         let mt = it.source_time_at(t);
-        let base = screen.then_apply(&filmcraft_render::motion_matrix(seq, it, size, mt));
+        let base = screen.then_apply(&filmcraft_render::motion_matrix(seq, it, size, None, mt));
         let idx = layer_indices(&it.effects);
         for (li, &ei) in idx.iter().enumerate().rev() {
             if let Some(spec) = eval_layer(&it.effects[ei], mt, size).filter(|s| s.enabled) {
@@ -119,15 +125,14 @@ pub fn visible_layers(app: &FilmcraftApp, pic: Rect, frame: (u32, u32)) -> Vec<L
 /// Screen → graphic-canvas mapping for new layers: the selected graphic clip under the playhead
 /// (its Motion applies), else the sequence frame.
 fn canvas_target(app: &FilmcraftApp, pic: Rect, frame: (u32, u32)) -> (Option<ClipId>, Affine) {
-    let k = pic.width() as f64 / frame.0.max(1) as f64;
-    let screen = Affine::translate(pic.min.x as f64, pic.min.y as f64).then_apply(&Affine::scale(k, k));
+    let screen = frame_to_screen(pic, frame);
     let t = app.session.playhead();
     if let Some((c, it)) = selected_graphic(app)
         && it.range().contains(t)
         && let Some(seq) = app.session.active_sequence()
         && let Some(ItemKind::Graphic { width, height, .. }) = app.session.project.item(it.item).map(|p| &p.kind)
     {
-        let m = screen.then_apply(&filmcraft_render::motion_matrix(seq, &it, (*width, *height), it.source_time_at(t)));
+        let m = screen.then_apply(&filmcraft_render::motion_matrix(seq, &it, (*width, *height), None, it.source_time_at(t)));
         return (Some(c), m);
     }
     (None, screen)
@@ -1536,8 +1541,22 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         // ---- appearance
         if section(ui, app, "Appearance", &t) {
             let (_, mut vui) = cx.row(ui, tl!("Fill"));
-            cx.check(&mut vui, "fill", "");
+            let fill_on = cx.check(&mut vui, "fill", "");
             cx.color(&mut vui, "fill_color");
+            if fill_on {
+                vui.add_space(6.0);
+                cx.choice(&mut vui, "fill_kind", graphic::FILL_KIND_OPTS, 130.0);
+            }
+            let fill_kind = match pv(e, "fill_kind", mt) {
+                ParamValue::Choice(c) => c,
+                _ => 0,
+            };
+            if fill_on && fill_kind == 1 {
+                let (_, mut vui) = cx.row(ui, tl!("Gradient"));
+                cx.color(&mut vui, "gradient_start");
+                cx.color(&mut vui, "gradient_end");
+                cx.number(ui, tl!("   Angle"), "gradient_angle", 0.5, (-3600.0, 3600.0), 0, " °");
+            }
             for (on, col, w, kind, label) in [
                 ("stroke", "stroke_color", "stroke_width", "stroke_type", tl!("Stroke")),
                 ("stroke2", "stroke2_color", "stroke2_width", "stroke2_type", tl!("Stroke 2")),
@@ -1575,7 +1594,17 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     for (id, r, label) in autos {
         app.auto.add(&id, r, &label);
     }
-    for (cmd, p) in actions {
+    for (cmd, mut p) in actions {
+        // a drag of a property is one undo step: the first change of each press begins a new one,
+        // the rest fold into it (like Effect Controls, #201)
+        if cmd == "graphics.set" && ui.ctx().input(|i| i.pointer.any_down()) {
+            let key = egui::Id::new("gfx-props-drag-step");
+            let press = ui.ctx().input(|i| i.pointer.press_start_time());
+            let begun = ui.ctx().data(|d| d.get_temp::<Option<f64>>(key)).flatten();
+            p["merge"] = json!(true);
+            p["begin"] = json!(begun != press);
+            ui.ctx().data_mut(|d| d.insert_temp(key, press));
+        }
         if let Err(e) = app.session.execute(&cmd, p) {
             app.ui.status = e.to_string();
         }

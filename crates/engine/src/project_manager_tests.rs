@@ -101,3 +101,24 @@ fn consolidate_trims_to_used_ranges_with_handles() {
     }
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn nested_subclip_keeps_its_whole_parent_chain_used() {
+    use filmcraft_project::{ItemKind, Label};
+    use filmcraft_time::{Tick, TimeRange};
+    let root = tmp_dir("pm-nested-subclip");
+    let (s, items, _) = project(&root);
+    let seq = s.state.active_sequence.unwrap();
+    let mut p = (*s.project).clone();
+    let range = TimeRange::new(Tick::ZERO, Tick(1000));
+    let inner = p.add_item("Inner", Label::Iris, ItemKind::Subclip { parent: items[0], range, restrict_trims: false }, None);
+    let outer = p.add_item("Outer", Label::Iris, ItemKind::Subclip { parent: inner, range, restrict_trims: false }, None);
+    for t in p.sequence_mut(seq).unwrap().all_tracks_mut() {
+        for x in t.items.iter_mut().filter(|i| i.item == items[0]) {
+            x.item = outer;
+        }
+    }
+    let (_, used) = super::project_manager::used_ranges(&p, &[seq]);
+    assert!(used.contains(&outer) && used.contains(&inner) && used.contains(&items[0]), "{used:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}

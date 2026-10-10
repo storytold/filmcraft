@@ -126,6 +126,25 @@ fn layouts_match_the_header() {
         (112, 4),
         "NV_ENC_CONFIG_HEVC_VUI_PARAMETERS"
     );
+    // The header typedefs the HEVC VUI to the H.264 one; pin the fields session.rs writes, both
+    // inside the VUI and where they land in NV_ENC_CONFIG_HEVC (hevcVUIParameters at 64), so a
+    // binding mismatch cannot hide behind the typedef (#442: HEVC timing came out reversed).
+    for (field, offset, name) in [
+        (offset_of!(NV_ENC_CONFIG_HEVC_VUI_PARAMETERS, videoSignalTypePresentFlag), 8, "videoSignalTypePresentFlag"),
+        (offset_of!(NV_ENC_CONFIG_HEVC_VUI_PARAMETERS, videoFormat), 12, "videoFormat"),
+        (offset_of!(NV_ENC_CONFIG_HEVC_VUI_PARAMETERS, videoFullRangeFlag), 16, "videoFullRangeFlag"),
+        (offset_of!(NV_ENC_CONFIG_HEVC_VUI_PARAMETERS, colourDescriptionPresentFlag), 20, "colourDescriptionPresentFlag"),
+        (offset_of!(NV_ENC_CONFIG_HEVC_VUI_PARAMETERS, colourPrimaries), 24, "colourPrimaries"),
+        (offset_of!(NV_ENC_CONFIG_HEVC_VUI_PARAMETERS, transferCharacteristics), 28, "transferCharacteristics"),
+        (offset_of!(NV_ENC_CONFIG_HEVC_VUI_PARAMETERS, colourMatrix), 32, "colourMatrix"),
+        (offset_of!(NV_ENC_CONFIG_HEVC_VUI_PARAMETERS, timingInfoPresentFlag), 52, "timingInfoPresentFlag"),
+        (offset_of!(NV_ENC_CONFIG_HEVC_VUI_PARAMETERS, numUnitInTicks), 56, "numUnitInTicks"),
+        (offset_of!(NV_ENC_CONFIG_HEVC_VUI_PARAMETERS, timeScale), 60, "timeScale"),
+        (offset_of!(NV_ENC_CONFIG_HEVC_VUI_PARAMETERS, reserved), 64, "reserved"),
+    ] {
+        assert_eq!(field, offset, "NV_ENC_CONFIG_HEVC_VUI_PARAMETERS.{name}");
+        assert_eq!(offset_of!(NV_ENC_CONFIG_HEVC, hevcVUIParameters) + field, 64 + offset, "NV_ENC_CONFIG_HEVC.hevcVUIParameters.{name}");
+    }
     assert_eq!((size_of::<NV_ENC_CONFIG_HEVC>(), align_of::<NV_ENC_CONFIG_HEVC>()), (1560, 8), "NV_ENC_CONFIG_HEVC");
     assert_eq!(offset_of!(NV_ENC_CONFIG_HEVC, level), 0, "NV_ENC_CONFIG_HEVC.level");
     assert_eq!(offset_of!(NV_ENC_CONFIG_HEVC, tier), 4, "NV_ENC_CONFIG_HEVC.tier");
@@ -444,6 +463,7 @@ fn constants_match_the_header() {
     assert_eq!(NV_ENC_LEVEL_HEVC_62 as i64, 186, "NV_ENC_LEVEL_HEVC_62");
     assert_eq!(NVENCAPI_VERSION as i64, 16777228, "NVENCAPI_VERSION");
     assert_eq!(NV_ENC_BUFFER_FORMAT_YUV420_10BIT as i64, 65536, "NV_ENC_BUFFER_FORMAT_YUV420_10BIT");
+    assert_eq!(NV_ENC_BUFFER_FORMAT_ABGR as i64, 268435456, "NV_ENC_BUFFER_FORMAT_ABGR");
     assert_eq!(NV_ENC_CAPS_SUPPORT_10BIT_ENCODE as i64, 39, "NV_ENC_CAPS_SUPPORT_10BIT_ENCODE");
     assert_eq!(NV_ENC_VUI_COLOR_PRIMARIES_BT2020 as i64, 9, "NV_ENC_VUI_COLOR_PRIMARIES_BT2020");
     assert_eq!(NV_ENC_VUI_TRANSFER_CHARACTERISTIC_SMPTE2084 as i64, 16, "NV_ENC_VUI_TRANSFER_CHARACTERISTIC_SMPTE2084");

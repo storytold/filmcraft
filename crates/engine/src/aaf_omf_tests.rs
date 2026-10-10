@@ -311,3 +311,192 @@ fn commands_are_registered_with_menus_and_validate_params() {
     assert!(s.execute("file.importAaf", json!({"path": dir.join("a.mov").to_string_lossy()})).is_err());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// Selected-stream essence uses only PR361 schema13 placement and decoder fields.
+mod selected_streams {
+    use crate::{Services, Session};
+    use filmcraft_frame::{AudioBuffer, VideoFrame};
+    use filmcraft_media::{FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource};
+    use filmcraft_project::{ClipId, ItemId, ItemKind, Label, MediaClip, MediaRef, SequenceSettings};
+    use filmcraft_time::{FrameRate, Tick};
+    use serde_json::json;
+    use std::sync::{Arc, Mutex};
+
+    type Calls = Arc<Mutex<Vec<(usize, i64, usize, u32)>>>;
+
+    struct Tones {
+        info: MediaInfo,
+        calls: Calls,
+    }
+
+    impl Tones {
+        fn new(streams: usize) -> Self {
+            let source = filmcraft_media::generators::GeneratorSource::new(
+                filmcraft_media::Generator::BarsAndTone,
+                32,
+                18,
+                FrameRate::FPS_24,
+                Tick::from_seconds_f64(2.0),
+            );
+            let mut info = source.info().clone();
+            info.kind = MediaKind::AudioOnly;
+            info.video = None;
+            info.audio_streams = vec![info.audio_streams[0].clone(); streams];
+            Self { info, calls: Arc::default() }
+        }
+
+        fn sample(stream: usize, channel: usize, frame: i64, rate: u32) -> f32 {
+            let frequency = (stream * 2 + channel + 1) as f64 * 240.0;
+            let amplitude = 0.05 * (stream + 1) as f64;
+            (amplitude * (std::f64::consts::TAU * frequency * frame as f64 / rate as f64).sin()) as f32
+        }
+    }
+
+    impl MediaSource for Tones {
+        fn info(&self) -> &MediaInfo {
+            &self.info
+        }
+        fn video_frame(&self, _: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+            Err(MediaError::NoStream("video"))
+        }
+        fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
+            self.audio_stream(0, start, frames, sample_rate)
+        }
+        fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
+            if stream >= self.info.audio_streams.len() {
+                return Err(MediaError::NoStream("audio"));
+            }
+            self.calls.lock().unwrap().push((stream, start, frames, sample_rate));
+            Ok(AudioBuffer {
+                sample_rate,
+                channels: (0..2).map(|channel| (0..frames).map(|i| Self::sample(stream, channel, start + i as i64, sample_rate)).collect()).collect(),
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct MemoryFiles {
+        writes: Mutex<Vec<(String, Vec<u8>)>>,
+    }
+    impl Services for MemoryFiles {
+        fn read_file(&self, _: &str) -> std::io::Result<Vec<u8>> {
+            Err(std::io::ErrorKind::NotFound.into())
+        }
+        fn write_file(&self, path: &str, bytes: &[u8]) -> std::io::Result<()> {
+            self.writes.lock().unwrap().push((path.to_owned(), bytes.to_vec()));
+            Ok(())
+        }
+        fn export_in_memory(&self) -> bool {
+            true
+        }
+    }
+
+    fn add_source(s: &mut Session, streams: usize) -> (ItemId, Calls) {
+        let source = Arc::new(Tones::new(streams));
+        let calls = source.calls.clone();
+        let mut project = (*s.project).clone();
+        let item = project.add_item(
+            "distinct tones",
+            Label::Iris,
+            ItemKind::Media(MediaClip {
+                media: MediaRef::File { path: format!("tone-source-{streams}.wav") },
+                info: source.info.clone(),
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: None,
+            }),
+            None,
+        );
+        s.project = Arc::new(project);
+        s.media.insert(item, source);
+        (item, calls)
+    }
+
+    fn fixture() -> (Session, ItemId, ItemId, Calls, Arc<MemoryFiles>) {
+        let files = Arc::new(MemoryFiles::default());
+        let mut session = Session::new(files.clone());
+        let mut project = (*session.project).clone();
+        let sequence =
+            project.new_sequence("streams", SequenceSettings { width: 32, height: 18, frame_rate: FrameRate::FPS_24, ..Default::default() }, 0, 1, None);
+        session.project = Arc::new(project);
+        session.state.active_sequence = Some(sequence);
+        session.state.open_sequences = vec![sequence];
+        let (item, calls) = add_source(&mut session, 3);
+        session.state.project_selection = vec![item];
+        session.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+        (session, item, sequence, calls, files)
+    }
+
+    fn place(s: &mut Session, item: ItemId, seconds: f64) -> Vec<ClipId> {
+        let result = s.execute("timeline.place", json!({"item": item.0, "track": "A1", "seconds": seconds})).unwrap();
+        result["clips"].as_array().unwrap().iter().map(|id| ClipId(id.as_u64().unwrap())).collect()
+    }
+
+    #[test]
+    fn aaf_essence_distinguishes_streams_and_linked_refusal_precedes_writes() {
+        use crate::aaf_omf::{AudioMode, AudioPlan};
+        use filmcraft_interchange::essence::{EssenceData, EssenceKey, NestNeeds};
+        let (mut s, item, sequence, calls, files) = fixture();
+        place(&mut s, item, 0.0);
+        let plan = AudioPlan {
+            mode: AudioMode::Embedded,
+            aiff: false,
+            mxf: false,
+            sample_rate: 48_000,
+            bits: 16,
+            trim: true,
+            handles: Tick::ZERO,
+            render_effects: false,
+            breakout: false,
+            nests: NestNeeds::Inside,
+        };
+        let (essences, paths) = crate::aaf_omf::prepare_audio(&s, sequence, &plan, "ignored").unwrap();
+        assert!(paths.is_empty());
+        assert_eq!(essences.len(), 3);
+        for (stream, essence) in essences.iter().enumerate() {
+            assert_eq!(essence.key, EssenceKey::media(item, stream));
+            let EssenceData::Embedded(bytes) = &essence.data else { panic!("expected embedded PCM") };
+            for channel in 0..2 {
+                let offset = (25 * 2 + channel) * 2;
+                let actual = i16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+                let expected = (Tones::sample(stream, channel, 25, 48_000) * 32767.0).round() as i16;
+                assert_eq!(actual, expected);
+            }
+        }
+        let options = filmcraft_interchange::aaf::AafOptions {
+            media: filmcraft_interchange::essence::MediaOptions { essence: essences, ..Default::default() },
+            ..Default::default()
+        };
+        let (aaf, _) = filmcraft_interchange::aaf::export(&s.project, sequence, &options).unwrap();
+        let omf_options = filmcraft_interchange::omf::OmfOptions { media: options.media.clone(), ..Default::default() };
+        let (omf, _) = filmcraft_interchange::omf::export(&s.project, sequence, &omf_options).unwrap();
+        for (kind, document) in [("AAF", aaf), ("OMF", omf)] {
+            let (imported, extracted, _) = if kind == "AAF" {
+                filmcraft_interchange::aaf::import(&document, &Default::default()).unwrap()
+            } else {
+                filmcraft_interchange::omf::import(&document, &Default::default()).unwrap()
+            };
+            assert_eq!(extracted.len(), 3, "{kind}: composition memo must retain distinct selected-stream essence");
+            let tracks = &imported.project.sequence(imported.sequences[0]).unwrap().audio_tracks;
+            assert_eq!(tracks.len(), 3, "{kind}");
+            let mut source_ids: Vec<_> = tracks.iter().map(|track| track.items[0].item).collect();
+            source_ids.sort();
+            source_ids.dedup();
+            assert_eq!(source_ids.len(), 3, "{kind}: each stream remains a distinct imported source");
+            let mut waveforms: Vec<_> = extracted.iter().map(|media| media.wav.clone()).collect();
+            waveforms.sort();
+            waveforms.dedup();
+            assert_eq!(waveforms.len(), 3, "{kind}");
+        }
+        assert!(calls.lock().unwrap().iter().any(|call| call.0 == 2));
+        assert!(files.writes.lock().unwrap().is_empty());
+        let error =
+            s.execute("file.exportAaf", json!({"path": "must-not-be-written.aaf", "sequence": sequence.0, "audio": "linked", "trimAudio": false})).unwrap_err();
+        assert!(error.to_string().contains("embedded") || error.to_string().contains("separate"));
+        assert!(files.writes.lock().unwrap().is_empty());
+    }
+}

@@ -20,6 +20,7 @@ use std::ops::{Add, AddAssign, Neg, Sub, SubAssign};
 pub const TICKS_PER_SECOND: i64 = 254_016_000_000;
 
 /// A point or duration in time, in ticks.
+/// Arithmetic saturates at the i64 storage limits; representable results remain exact.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Tick(pub i64);
@@ -37,20 +38,26 @@ impl Tick {
     }
     /// Exact conversion from a count of `units` at `per_second` (e.g. samples at 48 000).
     pub fn from_units(units: i64, per_second: i64) -> Tick {
-        Tick((units as i128 * TICKS_PER_SECOND as i128).checked_div(per_second as i128).unwrap_or(0) as i64)
+        Tick(clamp_i64((units as i128 * TICKS_PER_SECOND as i128).checked_div(per_second as i128).unwrap_or(0)))
     }
     /// Floor conversion to a count of units at `per_second`.
     pub fn to_units_floor(self, per_second: i64) -> i64 {
-        (self.0 as i128 * per_second as i128).div_euclid(TICKS_PER_SECOND as i128) as i64
+        clamp_i64((self.0 as i128 * per_second as i128).div_euclid(TICKS_PER_SECOND as i128))
     }
     /// Conversion from a rational timestamp `pts * num / den` seconds (container timebases).
     pub fn from_rational(pts: i64, num: i64, den: i64) -> Tick {
-        let t = pts as i128 * num as i128 * TICKS_PER_SECOND as i128;
-        Tick(t.checked_div_euclid(den as i128).unwrap_or(0) as i64)
+        if den == 0 {
+            return Tick::ZERO;
+        }
+        let Some(t) = (pts as i128 * num as i128).checked_mul(TICKS_PER_SECOND as i128) else {
+            // A product beyond i128 divided by an i64 cannot fit back into i64.
+            return Tick(if (pts < 0) ^ (num < 0) ^ (den < 0) { i64::MIN } else { i64::MAX });
+        };
+        Tick(clamp_i64(t.div_euclid(den as i128)))
     }
     /// Inverse of [`Tick::from_rational`], floored to the timebase.
     pub fn to_rational_floor(self, num: i64, den: i64) -> i64 {
-        (self.0 as i128 * den as i128).checked_div_euclid(num as i128 * TICKS_PER_SECOND as i128).unwrap_or(0) as i64
+        clamp_i64((self.0 as i128 * den as i128).checked_div_euclid(num as i128 * TICKS_PER_SECOND as i128).unwrap_or(0))
     }
     /// Inverse of [`Tick::from_rational`], rounded to the nearest timebase unit (halves up).
     ///
@@ -63,10 +70,10 @@ impl Tick {
         let (n, unit) = if unit < 0 { (-n, -unit) } else { (n, unit) };
         let (Some(q), Some(r)) = (n.checked_div_euclid(unit), n.checked_rem_euclid(unit)) else { return 0 };
         // 0 <= r < unit: round up from the halfway point
-        (if r * 2 >= unit { q + 1 } else { q }) as i64
+        clamp_i64(if r * 2 >= unit { q + 1 } else { q })
     }
     pub fn abs(self) -> Tick {
-        Tick(self.0.abs())
+        Tick(self.0.saturating_abs())
     }
     pub fn min(self, o: Tick) -> Tick {
         Tick(self.0.min(o.0))
@@ -80,36 +87,36 @@ impl Tick {
     }
     /// Scale by a rational factor (`num/den`), flooring.
     pub fn mul_ratio(self, num: i64, den: i64) -> Tick {
-        Tick((self.0 as i128 * num as i128).checked_div_euclid(den as i128).unwrap_or(0) as i64)
+        Tick(clamp_i64((self.0 as i128 * num as i128).checked_div_euclid(den as i128).unwrap_or(0)))
     }
 }
 
 impl Add for Tick {
     type Output = Tick;
     fn add(self, o: Tick) -> Tick {
-        Tick(self.0 + o.0)
+        Tick(self.0.saturating_add(o.0))
     }
 }
 impl Sub for Tick {
     type Output = Tick;
     fn sub(self, o: Tick) -> Tick {
-        Tick(self.0 - o.0)
+        Tick(self.0.saturating_sub(o.0))
     }
 }
 impl Neg for Tick {
     type Output = Tick;
     fn neg(self) -> Tick {
-        Tick(-self.0)
+        Tick(self.0.saturating_neg())
     }
 }
 impl AddAssign for Tick {
     fn add_assign(&mut self, o: Tick) {
-        self.0 += o.0;
+        self.0 = self.0.saturating_add(o.0);
     }
 }
 impl SubAssign for Tick {
     fn sub_assign(&mut self, o: Tick) {
-        self.0 -= o.0;
+        self.0 = self.0.saturating_sub(o.0);
     }
 }
 
@@ -188,8 +195,8 @@ impl FrameRate {
     ];
 
     pub fn new(num: i64, den: i64) -> Self {
-        let g = gcd(num.abs(), den.abs()).max(1);
-        FrameRate { num: num / g, den: den / g }
+        let g = i128::from(gcd(num.unsigned_abs(), den.unsigned_abs()).max(1));
+        FrameRate { num: (i128::from(num) / g) as i64, den: (i128::from(den) / g) as i64 }
     }
 
     /// Closest standard rate for a float (e.g. from a container's average rate).
@@ -213,49 +220,52 @@ impl FrameRate {
     }
 
     /// Exact duration of one frame (rounded down only for exotic rates).
+    /// Values outside the integer tick range saturate at its limit.
     pub fn frame_duration(self) -> Tick {
         let r = self.sane();
-        Tick(((TICKS_PER_SECOND as i128 * r.den as i128) / r.num as i128) as i64)
+        Tick(clamp_i64((TICKS_PER_SECOND as i128 * r.den as i128) / r.num as i128))
     }
 
-    /// Index of the frame containing `t` (floor).
+    /// Index of the frame containing `t` (floor), saturated to the integer frame range.
     pub fn frame_at(self, t: Tick) -> i64 {
-        let r = self.sane();
-        (t.0 as i128 * r.num as i128).div_euclid(TICKS_PER_SECOND as i128 * r.den as i128) as i64
+        clamp_i64(frame_index(self.sane(), t))
     }
 
     /// Start tick of frame `f` (ceiling division).
     ///
     /// Uses ceiling (not floor) so that `frame_at(tick_of(f)) == f` holds for every
-    /// frame index, even when the frame duration is not an integer number of ticks
+    /// representable frame boundary with at least one tick per frame, even when the frame duration is not an integer number of ticks
     /// (exotic rates like 37.516 fps where `TICKS_PER_SECOND * den / num` has a
     /// fractional remainder).  Floor division truncates the remainder, causing each
     /// frame boundary to drift backward by one tick until `frame_at` returns `f - 1`
     /// instead of `f` — frame stepping then stalls or moves backward.
-    /// Ceiling is correct because the frame duration is always > 1 tick, so
-    /// `floor(ceil(f·D) / D) == f` for every integer `f`.
+    /// Values outside the integer tick range saturate at its limit.
     pub fn tick_of(self, f: i64) -> Tick {
-        let r = self.sane();
-        let n = f as i128 * TICKS_PER_SECOND as i128 * r.den as i128;
-        Tick((-(-n).div_euclid(r.num as i128)) as i64)
+        Tick(clamp_i64(frame_boundary(self.sane(), i128::from(f))))
     }
 
     /// Snap `t` down to a frame boundary.
     pub fn snap(self, t: Tick) -> Tick {
-        self.tick_of(self.frame_at(t))
+        let r = self.sane();
+        Tick(clamp_i64(frame_boundary(r, frame_index(r, t))))
     }
 
     /// Snap `t` to the nearest frame boundary.
     pub fn snap_nearest(self, t: Tick) -> Tick {
-        let a = self.snap(t);
-        let b = self.tick_of(self.frame_at(t) + 1);
-        if (t - a) <= (b - t) { a } else { b }
+        let r = self.sane();
+        // Keep the frame index and both boundaries wide until choosing the nearest. Saturating
+        // an unrepresentable upper boundary first would make it seem closer than it really is.
+        let f = frame_index(r, t);
+        let a = frame_boundary(r, f);
+        let b = frame_boundary(r, f.saturating_add(1));
+        let t = i128::from(t.0);
+        Tick(clamp_i64(if t - a <= b - t { a } else { b }))
     }
 
     /// Timecode base (frames counted per timecode second): 30 for 29.97, 24 for 23.976.
     pub fn timecode_base(self) -> i64 {
         let r = self.sane();
-        ((r.num + r.den - 1) / r.den).max(1)
+        (r.num / r.den).saturating_add(i64::from(r.num % r.den != 0)).max(1)
     }
 
     /// NTSC (x/1001) rates can use drop-frame timecode.
@@ -286,7 +296,29 @@ impl fmt::Display for FrameRate {
     }
 }
 
-fn gcd(mut a: i64, mut b: i64) -> i64 {
+/// Narrow only after applying the storage bounds, never by a wrapping integer cast.
+fn clamp_i64(value: i128) -> i64 {
+    value.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
+}
+
+/// Callers pass a positive rate. Products of two i64 values fit in i128.
+fn frame_index(rate: FrameRate, t: Tick) -> i128 {
+    (i128::from(t.0) * i128::from(rate.num)).div_euclid(i128::from(TICKS_PER_SECOND) * i128::from(rate.den))
+}
+
+/// Ceiling of the rational boundary. An overflowing numerator divided by an i64 rate cannot
+/// fit in an i64 tick, so saturating that intermediate preserves the public result. Boundaries
+/// derived from frame_index remain within i128 (at most one frame away from an i64 tick).
+fn frame_boundary(rate: FrameRate, frame: i128) -> i128 {
+    let Some(n) = frame.checked_mul(i128::from(TICKS_PER_SECOND)).and_then(|n| n.checked_mul(i128::from(rate.den))) else {
+        return if frame < 0 { i128::MIN } else { i128::MAX };
+    };
+    let d = i128::from(rate.num);
+    // Flooring a fractional boundary puts the tick in the preceding frame.
+    n.div_euclid(d) + i128::from(n.rem_euclid(d) != 0)
+}
+
+fn gcd(mut a: u64, mut b: u64) -> u64 {
     while b != 0 {
         (a, b) = (b, a % b);
     }
@@ -329,8 +361,9 @@ fn df_params(rate: FrameRate) -> (i64, i64) {
 /// Convert a frame count to SMPTE fields `(negative, h, m, s, f)`.
 pub fn frames_to_fields(frame: i64, rate: FrameRate, drop_frame: bool) -> (bool, i64, i64, i64, i64) {
     let neg = frame < 0;
-    let mut n = frame.saturating_abs();
+    let mut n = i128::from(frame).abs();
     let (drop, base) = df_params(rate);
+    let (drop, base) = (i128::from(drop), i128::from(base));
     if drop_frame && rate.supports_drop_frame() {
         let per_min = base * 60 - drop;
         let per_10 = per_min * 10 + drop;
@@ -345,18 +378,20 @@ pub fn frames_to_fields(frame: i64, rate: FrameRate, drop_frame: bool) -> (bool,
     let s = (n / base) % 60;
     let mi = (n / (base * 60)) % 60;
     let h = n / (base * 3600);
-    (neg, h, mi, s, f)
+    (neg, clamp_i64(h), clamp_i64(mi), clamp_i64(s), clamp_i64(f))
 }
 
 /// Convert SMPTE fields back to a frame count.
 pub fn fields_to_frames(h: i64, m: i64, s: i64, f: i64, rate: FrameRate, drop_frame: bool) -> i64 {
     let (drop, base) = df_params(rate);
-    let mut n = h.saturating_mul(3600).saturating_add(m.saturating_mul(60)).saturating_add(s).saturating_mul(base).saturating_add(f);
+    let seconds = i128::from(h) * 3600 + i128::from(m) * 60 + i128::from(s);
+    // Nominal drop-frame labels can exceed i64 even when the final frame count fits.
+    let mut n = seconds.saturating_mul(i128::from(base)).saturating_add(i128::from(f));
     if drop_frame && rate.supports_drop_frame() {
-        let total_min = h.saturating_mul(60).saturating_add(m);
-        n = n.saturating_sub(drop.saturating_mul(total_min - total_min / 10));
+        let total_min = i128::from(h) * 60 + i128::from(m);
+        n = n.saturating_sub(i128::from(drop) * (total_min - total_min / 10));
     }
-    n
+    clamp_i64(n)
 }
 
 /// Format a frame count as SMPTE timecode (`HH:MM:SS:FF`, or `HH;MM;SS;FF` for drop-frame).
@@ -377,7 +412,7 @@ pub fn format_time(t: Tick, rate: FrameRate, drop_frame: bool, display: TimeDisp
         TimeDisplay::Feet35 | TimeDisplay::Feet16 => {
             let per_ft = if display == TimeDisplay::Feet35 { 16 } else { 40 };
             let neg = frame < 0;
-            let a = frame.abs();
+            let a = frame.unsigned_abs();
             format!("{}{}+{:02}", if neg { "-" } else { "" }, a / per_ft, a % per_ft)
         }
         TimeDisplay::AudioSamples => {
@@ -508,6 +543,119 @@ mod tests {
         for tc in ["99999999999:99:99:99", "9223372036854775807", "+9223372036854775807", "99999999999;59;59;29"] {
             let _ = parse_timecode(tc, FrameRate::FPS_29_97, true, i64::MAX);
             let _ = parse_timecode(tc, FrameRate::FPS_25, false, i64::MIN);
+        }
+    }
+
+    #[test]
+    fn boundary_rates_saturate_without_wrapping_and_keep_representable_values_exact() {
+        let slow = FrameRate { num: 1, den: i64::MAX };
+        assert_eq!(slow.frame_duration(), Tick(i64::MAX));
+        assert_eq!(slow.tick_of(i64::MAX), Tick(i64::MAX));
+        assert_eq!(slow.tick_of(i64::MIN), Tick(i64::MIN));
+        assert_eq!(slow.snap_nearest(Tick(i64::MAX)), Tick::ZERO, "compare the real boundary before saturating");
+        assert_eq!(slow.snap_nearest(Tick(i64::MIN)), Tick::ZERO);
+        let fast = FrameRate { num: i64::MAX, den: 1 };
+        assert_eq!(fast.tick_of(i64::MAX), Tick(TICKS_PER_SECOND), "large factors can cancel exactly");
+        assert_eq!(fast.tick_of(-i64::MAX), Tick(-TICKS_PER_SECOND));
+        assert_eq!(fast.frame_at(Tick(TICKS_PER_SECOND)), i64::MAX);
+        assert_eq!(fast.frame_at(Tick(i64::MAX)), i64::MAX);
+        assert_eq!(fast.frame_at(Tick(i64::MIN)), i64::MIN);
+        assert_eq!(fast.timecode_base(), i64::MAX);
+        for t in [i64::MIN, -TICKS_PER_SECOND, -1, 0, 1, TICKS_PER_SECOND, i64::MAX] {
+            assert_eq!(fast.snap(Tick(t)), Tick(t), "sub-tick frames include every integer tick");
+            assert_eq!(fast.snap_nearest(Tick(t)), Tick(t));
+        }
+        let balanced = FrameRate { num: i64::MAX, den: i64::MAX };
+        assert_eq!(balanced.frame_duration(), Tick(TICKS_PER_SECOND));
+        assert_eq!(balanced.tick_of(2), Tick(2 * TICKS_PER_SECOND));
+        assert_eq!(balanced.frame_at(Tick(2 * TICKS_PER_SECOND)), 2);
+        assert_eq!(balanced.timecode_base(), 1);
+        assert_eq!(FrameRate::new(i64::MIN, i64::MIN), FrameRate { num: -1, den: -1 });
+        assert_eq!(FrameRate::new(i64::MIN, 0), FrameRate { num: -1, den: 0 });
+        assert_eq!(FrameRate::new(i64::MIN, 1), FrameRate { num: i64::MIN, den: 1 });
+    }
+
+    #[test]
+    fn scalar_time_conversions_saturate_at_storage_limits() {
+        assert_eq!(Tick::from_units(i64::MAX, 1), Tick(i64::MAX));
+        assert_eq!(Tick::from_units(i64::MIN, 1), Tick(i64::MIN));
+        assert_eq!(Tick(i64::MAX).to_units_floor(i64::MAX), i64::MAX);
+        assert_eq!(Tick(i64::MIN).to_units_floor(i64::MAX), i64::MIN);
+        assert_eq!(Tick::from_rational(i64::MAX, i64::MAX, 1), Tick(i64::MAX));
+        assert_eq!(Tick::from_rational(i64::MIN, i64::MAX, 1), Tick(i64::MIN));
+        assert_eq!(Tick::from_rational(i64::MIN, i64::MAX, -1), Tick(i64::MAX));
+        assert_eq!(Tick::from_rational(i64::MAX, i64::MAX, 0), Tick::ZERO);
+        assert_eq!(Tick(i64::MAX).to_rational_floor(1, i64::MAX), i64::MAX);
+        assert_eq!(Tick(i64::MIN).to_rational_round(1, i64::MAX), i64::MIN);
+        assert_eq!(Tick(i64::MAX).mul_ratio(i64::MAX, 1), Tick(i64::MAX));
+        assert_eq!(Tick(i64::MIN).abs(), Tick(i64::MAX));
+    }
+
+    #[test]
+    fn drop_frame_fields_keep_cancelling_terms_wide_at_storage_limits() {
+        for rate in [FrameRate::FPS_29_97, FrameRate::FPS_59_94, FrameRate::FPS_119_88] {
+            for frame in [0, 1, 999_999, i64::MAX - 1, i64::MAX] {
+                let (negative, h, m, s, f) = frames_to_fields(frame, rate, true);
+                assert!(!negative);
+                assert_eq!(fields_to_frames(h, m, s, f, rate, true), frame, "{rate}: {frame}");
+                assert_eq!(fields_to_frames(-h, -m, -s, -f, rate, true), -frame);
+            }
+            let (negative, h, m, s, f) = frames_to_fields(i64::MIN, rate, true);
+            assert!(negative);
+            assert_eq!(fields_to_frames(-h, -m, -s, -f, rate, true), i64::MIN);
+        }
+    }
+
+    #[test]
+    fn tick_arithmetic_saturates_only_outside_storage_limits() {
+        let values = [i64::MIN, i64::MIN + 1, Tick::MIN.0, -1, 0, 1, Tick::MAX.0, i64::MAX - 1, i64::MAX];
+        for a in values {
+            assert_eq!(-Tick(a), Tick(clamp_i64(-i128::from(a))));
+            for b in values {
+                let sum = Tick(clamp_i64(i128::from(a) + i128::from(b)));
+                let difference = Tick(clamp_i64(i128::from(a) - i128::from(b)));
+                assert_eq!(Tick(a) + Tick(b), sum);
+                assert_eq!(Tick(a) - Tick(b), difference);
+                let mut assigned = Tick(a);
+                assigned += Tick(b);
+                assert_eq!(assigned, sum);
+                assigned = Tick(a);
+                assigned -= Tick(b);
+                assert_eq!(assigned, difference);
+            }
+        }
+        assert_eq!(Tick::MAX + Tick(1), Tick(Tick::MAX.0 + 1), "project bounds are not storage bounds");
+        assert_eq!(Tick::MIN - Tick(1), Tick(Tick::MIN.0 - 1));
+        assert_eq!(TimeRange::new(Tick(i64::MAX), Tick(1)).end(), Tick(i64::MAX));
+        assert_eq!(TimeRange::new(Tick(i64::MIN), Tick(-1)).end(), Tick(i64::MIN));
+        assert_eq!(TimeRange::from_bounds(Tick(i64::MIN), Tick(i64::MAX)).duration, Tick(i64::MAX));
+        assert_eq!(TimeRange::from_bounds(Tick(i64::MAX), Tick(i64::MIN)).duration, Tick(i64::MIN));
+        let ordinary = TimeRange::from_bounds(Tick::MIN, Tick::MAX);
+        assert_eq!(ordinary.end(), Tick::MAX);
+    }
+
+    #[test]
+    fn numeric_limits_are_total_across_frame_conversion_and_display() {
+        let values = [i64::MIN, -i64::MAX, -1, 0, 1, TICKS_PER_SECOND, i64::MAX];
+        for num in values {
+            for den in values {
+                let r = FrameRate { num, den };
+                let _ = FrameRate::new(num, den);
+                let _ = r.frame_duration();
+                assert!(r.timecode_base() >= 1);
+                for value in values {
+                    let tick = Tick(value);
+                    let _ = r.tick_of(value);
+                    let _ = r.frame_at(tick);
+                    let _ = r.snap(tick);
+                    let _ = r.snap_nearest(tick);
+                    for display in TimeDisplay::ALL {
+                        let _ = format_time(tick, r, true, display, 48_000);
+                    }
+                    let (_, h, m, sec, f) = frames_to_fields(value, r, true);
+                    let _ = fields_to_frames(h, m, sec, f, r, true);
+                }
+            }
         }
     }
 
@@ -660,6 +808,18 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn extreme_frame_math_stays_monotonic(num in 1i64..=i64::MAX, den in 1i64..=i64::MAX, a in any::<i64>(), b in any::<i64>()) {
+            let r = FrameRate { num, den };
+            let (lo, hi) = (a.min(b), a.max(b));
+            prop_assert!(r.tick_of(lo) <= r.tick_of(hi));
+            prop_assert!(r.frame_at(Tick(lo)) <= r.frame_at(Tick(hi)));
+            prop_assert!(r.snap(Tick(lo)) <= r.snap(Tick(hi)));
+            prop_assert!(r.snap_nearest(Tick(lo)) <= r.snap_nearest(Tick(hi)));
+            let snapped = r.snap_nearest(Tick(a));
+            prop_assert_eq!(r.snap_nearest(snapped), snapped);
+        }
+
         #[test]
         fn frame_tick_roundtrip(f in -1_000_000i64..10_000_000, ri in 0usize..11) {
             let r = FrameRate::COMMON[ri];

@@ -143,7 +143,7 @@ fn decode(s: &Session, need: &AudioNeed, sample_rate: u32) -> Result<Vec<Vec<f32
     let mut done = 0usize;
     while done < frames {
         let n = chunk.min(frames - done);
-        let b = src.audio(start + done as i64, n, sample_rate).map_err(|e| EngineError::Other(e.to_string()))?;
+        let b = src.audio_stream(need.audio_stream, start + done as i64, n, sample_rate).map_err(|e| EngineError::Other(e.to_string()))?;
         for (c, o) in out.iter_mut().enumerate() {
             match b.channels.get(c).or(b.channels.first()) {
                 Some(x) => o.extend(x.iter().copied().chain(std::iter::repeat(0.0)).take(n)),
@@ -230,8 +230,19 @@ fn ensure_dir(s: &Session, dir: &str) {
     }
 }
 
+fn check_linked_streams(s: &Session, seq: ItemId, plan: &AudioPlan) -> Result<()> {
+    if plan.mode == AudioMode::Linked && !plan.trim && !plan.render_effects {
+        let needs = audio_needs(&s.project, seq, &NeedOptions { nests: plan.nests, ..Default::default() });
+        if needs.iter().any(|need| need.audio_stream > 0) {
+            return Err(EngineError::Other("linked AAF media cannot select container audio streams; choose embedded or separate audio".into()));
+        }
+    }
+    Ok(())
+}
+
 /// Prepare the audio essence of an export; returns the essence and the files written.
 pub fn prepare_audio(s: &Session, seq: ItemId, plan: &AudioPlan, media_dir: &str) -> Result<(Vec<AudioEssence>, Vec<String>)> {
+    check_linked_streams(s, seq, plan)?;
     if plan.mode == AudioMode::Linked && !plan.trim && !plan.render_effects {
         return Ok((Vec::new(), Vec::new()));
     }
@@ -255,7 +266,7 @@ pub fn prepare_audio(s: &Session, seq: ItemId, plan: &AudioPlan, media_dir: &str
                 let name = audio_clip(&s.project, seq, c).map(|(_, _, ti)| ti.name.clone()).unwrap_or_default();
                 format!("{} {}", safe_name(&name), c.0)
             }
-            EssenceKey::Media(_) => safe_name(
+            EssenceKey::Media(_) | EssenceKey::MediaStream { .. } => safe_name(
                 need.path
                     .as_deref()
                     .map(|p| std::path::Path::new(p).file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default())
@@ -380,6 +391,7 @@ pub fn export_aaf(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_p(p, "path").ok_or_else(|| bad(cmd, "need `path`"))?.to_string();
     let seq = crate::export_tools::sequence_param(s, p, cmd)?;
     let plan = plan_from(s, p, seq, cmd, false)?;
+    check_linked_streams(s, seq, &plan)?;
     let (dir, stem) = split(&path);
     let media_dir = join(&dir, &format!("{stem} Media"));
     let mut files = Vec::new();

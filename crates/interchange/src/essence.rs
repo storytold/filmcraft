@@ -19,7 +19,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum EssenceKey {
     Media(ItemId),
+    MediaStream { item: ItemId, stream: usize },
     Clip(ClipId),
+}
+
+impl EssenceKey {
+    pub fn media(item: ItemId, stream: usize) -> Self {
+        if stream == 0 { Self::Media(item) } else { Self::MediaStream { item, stream } }
+    }
 }
 
 /// One range of source audio an export references.
@@ -28,6 +35,9 @@ pub struct AudioNeed {
     pub key: EssenceKey,
     /// The media item (for a clip key: the clip's media).
     pub item: ItemId,
+    /// Selected container stream; zero for legacy and sequence sources.
+    #[serde(default)]
+    pub audio_stream: usize,
     /// The media file, when the item is file media.
     pub path: Option<String>,
     /// Media time range to supply (handles included, clamped to the media).
@@ -120,7 +130,8 @@ pub struct NeedOptions {
     /// Extra media before and after every used range.
     pub handles: Tick,
     /// One range per clip ([`EssenceKey::Clip`]; for rendering clip effects) instead of one range
-    /// per media item covering all its uses ([`EssenceKey::Media`]).
+    /// per media item and container stream covering all its uses. Stream zero keeps
+    /// the legacy [`EssenceKey::Media`] identity.
     pub per_clip: bool,
     /// Whole media instead of the used range (embedding / copying without trimming).
     pub whole_media: bool,
@@ -163,7 +174,7 @@ fn collect_needs(
             let (mut start, mut end) = ((lo - opts.handles).max(Tick::ZERO), hi + opts.handles);
             match project.item(item).map(|i| &i.kind) {
                 Some(ItemKind::Media(m)) => {
-                    let Some(a) = m.info.audio() else { continue };
+                    let Some(a) = m.info.audio_streams.get(c.audio_stream) else { continue };
                     let path = match &m.media {
                         MediaRef::File { path } => Some(path.clone()),
                         MediaRef::Generator(_) => None,
@@ -176,8 +187,17 @@ fn collect_needs(
                         start = Tick::ZERO;
                         end = dur.max(end);
                     }
-                    let key = if opts.per_clip { EssenceKey::Clip(c.id) } else { EssenceKey::Media(item) };
-                    let e = by_item.entry(key).or_insert_with(|| AudioNeed { key, item, path, start, end, channels: a.channels, sample_rate: a.sample_rate });
+                    let key = if opts.per_clip { EssenceKey::Clip(c.id) } else { EssenceKey::media(item, c.audio_stream) };
+                    let e = by_item.entry(key).or_insert_with(|| AudioNeed {
+                        key,
+                        item,
+                        audio_stream: c.audio_stream,
+                        path,
+                        start,
+                        end,
+                        channels: a.channels,
+                        sample_rate: a.sample_rate,
+                    });
                     e.start = e.start.min(start);
                     e.end = e.end.max(end);
                 }
@@ -196,7 +216,10 @@ fn collect_needs(
                             _ => 2,
                         };
                         let key = EssenceKey::Clip(c.id);
-                        by_item.insert(key, AudioNeed { key, item, path: None, start, end, channels, sample_rate: nested.settings.sample_rate.max(1) });
+                        by_item.insert(
+                            key,
+                            AudioNeed { key, item, audio_stream: 0, path: None, start, end, channels, sample_rate: nested.settings.sample_rate.max(1) },
+                        );
                     }
                 },
                 _ => {}

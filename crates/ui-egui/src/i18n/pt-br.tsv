@@ -86,6 +86,7 @@
 	Create Multi-Camera Source Sequence…	Criar sequência de origem multicâmera…
 	Create Proxies…	Criar proxies…
 	Cut	Recortar
+	Dark	Escuro
 	Darkest	Mais escuro
 	Delete Render Files	Excluir arquivos de renderização
 	Delete Render Files In to Out	Excluir arquivos de renderização da entrada à saída
@@ -203,7 +204,6 @@
 	Media Browser	Navegador de mídia
 	Media Cache…	Cache de mídia…
 	Media…	Mídia…
-	Medium	Médio
 	Memory…	Memória…
 	Merge Clips…	Mesclar clipes…
 	Metadata	Metadados
@@ -352,3 +352,6 @@
 	Zoom In	Ampliar
 	Zoom Out	Reduzir
 	Zoom to Sequence	Zoom para a sequência
+
+# System appearance mode menu command.
+	Next Appearance Mode	Próximo modo de aparência

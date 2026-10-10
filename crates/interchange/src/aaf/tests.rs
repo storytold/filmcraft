@@ -94,6 +94,32 @@ fn keys(dict: &Obj, p: u16) -> HashSet<Vec<u8>> {
     dict.objs(p).iter().filter_map(|d| d.data(pid::IDENTIFICATION).map(<[u8]>::to_vec)).collect()
 }
 
+/// #323: readers that load the meta-dictionary (pyaaf2) need its ClassDefinitions and
+/// TypeDefinitions sets. They are empty: everything written uses the baseline classes and types
+/// those readers already know.
+#[test]
+fn the_meta_dictionary_has_its_class_and_type_definition_sets() {
+    let (p, s) = project();
+    for small in [false, true] {
+        let (bytes, _) = export(&p, s, &AafOptions { small_sectors: small, ..Default::default() }).unwrap();
+        let cf = filmcraft_cfb::CompoundFile::open(&bytes).unwrap();
+        assert_eq!(cf.entries[cf.find("MetaDictionary-1").unwrap()].clsid, ids::META_DICTIONARY);
+        for name in ["ClassDefinitions-3", "TypeDefinitions-4"] {
+            // u32 count, u32 first free key, u32 last free key, u16 key pid, u8 key size
+            let index = cf.read_path(&format!("MetaDictionary-1/{name} index")).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(index.len(), 15, "{name}: an empty set");
+            assert_eq!(index[0..4], 0u32.to_le_bytes(), "{name}: no entries");
+            assert_eq!(u16::from_le_bytes([index[12], index[13]]), pid::META_IDENTIFICATION, "{name}: keyed by the definition's AUID");
+            assert_eq!(index[14], 16, "{name}: 16-byte keys");
+        }
+        let root = store::read(&bytes).unwrap();
+        let meta = root.strong(pid::ROOT_META_DICTIONARY).unwrap();
+        for set in [pid::META_CLASS_DEFINITIONS, pid::META_TYPE_DEFINITIONS] {
+            assert!(matches!(meta.get(set), Some(Value::StrongSet(items, k)) if items.is_empty() && *k == pid::META_IDENTIFICATION), "{set:#06x}");
+        }
+    }
+}
+
 #[test]
 fn written_files_have_the_required_structure() {
     let (p, s) = project();

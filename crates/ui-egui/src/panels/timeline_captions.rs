@@ -21,7 +21,6 @@ pub const ROW_H: f32 = 28.0;
 /// Caption block colours (fill, selected fill).
 const FILL: Color32 = Color32::from_rgb(0x6b, 0x4f, 0x8f);
 const FILL_SEL: Color32 = Color32::from_rgb(0x8c, 0x6c, 0xb4);
-const ROW_BG: Color32 = Color32::from_rgb(0x23, 0x20, 0x2a);
 
 /// Row rects (full width incl. header) for each caption track, top first.
 pub fn rows(area: Rect, n: usize) -> Vec<Rect> {
@@ -73,7 +72,7 @@ pub fn paint(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, area: Re
     let mut actions: Vec<(String, Value)> = Vec::new();
     for (i, (tr, row)) in seq.caption_tracks.iter().zip(rows(area, seq.caption_tracks.len())).enumerate() {
         let lane = Rect::from_min_max(pos2(content.min.x, row.min.y), pos2(content.max.x, row.max.y));
-        painter.rect_filled(lane, 0.0, ROW_BG);
+        painter.rect_filled(lane, 0.0, t.caption_track_bg);
         painter.line_segment([pos2(row.min.x, row.max.y - 0.5), pos2(row.max.x, row.max.y - 0.5)], Stroke::new(1.0, t.tl_bg));
         // header
         let label = format!("C{}", i + 1);
@@ -92,7 +91,7 @@ pub fn paint(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, area: Re
             true,
             t,
             egui::Id::new(("cap-lock", tr.id.0)),
-            Some(if tr.locked { Color32::from_rgb(0xd1, 0xd1, 0xd1) } else { t.text_dim }),
+            Some(if tr.locked { t.icon_active } else { t.text_dim }),
         );
         app.auto.add(&format!("timeline.captionTrack.{label}.locked"), lock_r, "Toggle Caption Track Lock");
         if lresp.clicked() {

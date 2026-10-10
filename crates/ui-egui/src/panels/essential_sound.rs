@@ -360,7 +360,7 @@ fn ducking(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, on: bool) {
             br,
             4.0,
             if sel {
-                Color32::from_gray(0x4b)
+                cx.t.pressed
             } else if resp.hovered() {
                 t.hover
             } else {
@@ -387,7 +387,7 @@ fn ducking(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, on: bool) {
         br,
         4.0,
         if sel {
-            Color32::from_gray(0x4b)
+            cx.t.pressed
         } else if resp.hovered() {
             t.hover
         } else {
@@ -467,11 +467,11 @@ fn switch(ui: &mut egui::Ui, cx: &mut Ctx, r: Rect, on: bool, id: &str, label: &
     let p = ui.painter();
     let rad = r.height() / 2.0;
     if on {
-        p.rect_filled(r, rad, Color32::from_gray(0xd4));
-        p.circle_filled(pos2(r.max.x - rad, r.center().y), rad - 3.0, Color32::from_gray(0x1d));
+        p.rect_filled(r, rad, cx.t.switch_fill);
+        p.circle_filled(pos2(r.max.x - rad, r.center().y), rad - 3.0, cx.t.switch_knob);
     } else {
-        p.rect_stroke(r, rad, Stroke::new(1.5, Color32::from_gray(if resp.hovered() { 0xb0 } else { 0x8a })), StrokeKind::Inside);
-        p.circle_stroke(pos2(r.min.x + rad, r.center().y), rad - 3.0, Stroke::new(1.5, Color32::from_gray(0xd4)));
+        p.rect_stroke(r, rad, Stroke::new(1.5, if resp.hovered() { cx.t.control_handle_dim } else { cx.t.switch_border }), StrokeKind::Inside);
+        p.circle_stroke(pos2(r.min.x + rad, r.center().y), rad - 3.0, Stroke::new(1.5, cx.t.switch_fill));
     }
     cx.auto.add(id, r, label);
     resp.clicked()
@@ -521,7 +521,7 @@ fn slider_track(ui: &mut egui::Ui, cx: &mut Ctx, track: Rect, key: &str, v: f64,
     let f = ((v - lo) / (hi - lo)).clamp(0.0, 1.0) as f32;
     let kx = track.min.x + f * track.width();
     let resp = ui.interact(track.expand2(vec2(6.0, 4.0)), egui::Id::new(("es-slider", key)), Sense::click_and_drag());
-    let line = if active { Color32::from_gray(0x8a) } else { Color32::from_gray(0x4a) };
+    let line = if active { cx.t.switch_border } else { cx.t.slider_disabled_track };
     ui.painter().line_segment([pos2(track.min.x, y), pos2(kx - 7.0, y)], Stroke::new(1.5, line));
     ui.painter().line_segment([pos2(kx + 7.0, y), pos2(track.max.x, y)], Stroke::new(1.5, line));
     ui.painter().circle_filled(pos2(kx, y), 6.0, t.panel_bg);
@@ -533,9 +533,9 @@ fn slider_track(ui: &mut egui::Ui, cx: &mut Ctx, track: Rect, key: &str, v: f64,
             if resp.dragged() {
                 t.hot_text
             } else if active {
-                Color32::from_gray(0xd4)
+                cx.t.switch_fill
             } else {
-                Color32::from_gray(0x6a)
+                cx.t.slider_disabled_knob
             },
         ),
     );
@@ -587,7 +587,7 @@ fn choice_row(ui: &mut egui::Ui, cx: &mut Ctx, key: &str, opts: &[&str], sel: us
             br,
             4.0,
             if on {
-                Color32::from_gray(0x4b)
+                cx.t.pressed
             } else if resp.hovered() && active {
                 t.hover
             } else {
@@ -605,8 +605,8 @@ fn choice_row(ui: &mut egui::Ui, cx: &mut Ctx, key: &str, opts: &[&str], sel: us
 fn button(ui: &mut egui::Ui, cx: &mut Ctx, r: Rect, text: &str, id: &str) -> bool {
     let t = cx.t;
     let resp = ui.interact(r, egui::Id::new(("es-btn", id)), Sense::click());
-    ui.painter().rect_filled(r, 4.0, if resp.hovered() { Color32::from_gray(0x2a) } else { t.field_bg });
-    ui.painter().rect_stroke(r, 4.0, Stroke::new(1.0, Color32::from_gray(0x4b)), StrokeKind::Inside);
+    ui.painter().rect_filled(r, 4.0, if resp.hovered() { cx.t.button_hover } else { t.field_bg });
+    ui.painter().rect_stroke(r, 4.0, Stroke::new(1.0, cx.t.button_border), StrokeKind::Inside);
     ui.painter().text(r.center(), Align2::CENTER_CENTER, text, Tokens::ui(12.0), t.text);
     cx.auto.add(id, r, text);
     resp.clicked()

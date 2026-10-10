@@ -639,7 +639,7 @@ fn sequence_from_clip(s: &mut Session, p: &Value) -> Result<Value> {
     let pi = s.project.item(first).ok_or_else(|| bad("file.newSequenceFromClip", "no such item"))?.clone();
     let mut settings = match &pi.kind {
         ItemKind::Sequence(q) => q.settings.clone(),
-        _ => media_root(&s.project, first).map(|(_, m, _)| crate::commands::default_seq_settings_for(&m.info)).unwrap_or_default(),
+        _ => media_root(&s.project, first).map(|(_, m, _)| crate::commands::default_seq_settings_for(m)).unwrap_or_default(),
     };
     if let ItemKind::AdjustmentLayer { width, height, rate, .. } = &pi.kind {
         settings.width = *width;
@@ -949,6 +949,7 @@ fn consolidate_duplicates(s: &mut Session, _: &Value) -> Result<Value> {
         for it in pr.items.values_mut() {
             match &mut it.kind {
                 ItemKind::Sequence(q) => {
+                    let q = std::sync::Arc::make_mut(q);
                     for t in q.all_tracks_mut() {
                         for i in &mut t.items {
                             if let Some(k) = map.get(&i.item) {
@@ -1519,17 +1520,24 @@ fn fit_fill(s: &mut Session, p: &Value, fill: bool) -> Result<Value> {
     let clips = video_clips(s, p);
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let (fw, fh) = (q.settings.width as f64, q.settings.height as f64);
-    let sizes: Vec<(ClipId, (u32, u32))> =
-        clips.iter().filter_map(|c| q.find_item(*c).and_then(|(_, i)| filmcraft_render::source_size(&s.project, i.item)).map(|sz| (*c, sz))).collect();
+    let frame_par = q.settings.par;
+    // (clip, storage size for the anchor, size at the display aspect in sequence pixels for the scale)
+    let sizes: Vec<(ClipId, (u32, u32), (f64, f64))> = clips
+        .iter()
+        .filter_map(|c| {
+            let (_, i) = q.find_item(*c)?;
+            Some((*c, filmcraft_render::source_size(&s.project, i.item)?, s.project.conformed_source_size(i.item, frame_par)?))
+        })
+        .collect();
     if sizes.is_empty() {
         return Err(bad(if fill { "clip.fillFrame" } else { "clip.fitToFrame" }, "select a video clip"));
     }
     let label = if fill { "Fill Frame" } else { "Fit to Frame" };
     let out = s.edit_sequence(label, |q, _, _| {
         let mut out = Vec::new();
-        for (c, (w, h)) in &sizes {
+        for (c, (w, h), (dw, dh)) in &sizes {
             let Some((_, it)) = q.find_item_mut(*c) else { continue };
-            let (sx, sy) = (fw / (*w).max(1) as f64, fh / (*h).max(1) as f64);
+            let (sx, sy) = (fw / dw.max(1.0), fh / dh.max(1.0));
             let pct = (if fill { sx.max(sy) } else { sx.min(sy) }) * 100.0;
             it.scale_to_frame = false;
             let Some(m) = it.effect_mut("motion") else { continue };

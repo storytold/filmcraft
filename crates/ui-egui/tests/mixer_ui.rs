@@ -151,6 +151,19 @@ impl Driver {
 }
 
 #[test]
+fn audio_chrome_switches_between_themes() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Audio"}));
+    for theme in ["light", "dark", "medium"] {
+        d.ok("ui.set", json!({"theme": theme}));
+        d.frames(3);
+        assert!(d.element("mixer.A1.fader").is_some());
+        assert!(d.element("mixer.A1.pan").is_some());
+        d.snapshot(&format!("mixer-theme-{theme}"), None);
+    }
+}
+
+#[test]
 fn track_mixer_controls_by_id_and_by_drag() {
     let mut d = Driver::demo();
     d.ok("ui.set", json!({"workspace": "Audio"}));

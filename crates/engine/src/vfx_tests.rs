@@ -12,6 +12,38 @@ fn demo() -> Session {
     s
 }
 
+#[test]
+fn transition_preview_is_read_only_and_matches_apply_and_undo() {
+    use crate::commands::preview_transition;
+    use filmcraft_project::TrackKind;
+    for (kind, effect) in [(TrackKind::Video, "cross_dissolve"), (TrackKind::Audio, "constant_power")] {
+        let mut s = demo();
+        let clips: Vec<_> = s.active_sequence().unwrap().tracks(kind)[0].items.iter().map(|c| c.id).collect();
+        for clip in clips {
+            for edge in ["in", "out"] {
+                let params = json!({"effect": effect, "clip": clip.0, "edge": edge, "frames": 7});
+                let before = s.project.to_json();
+                let revision = s.revision;
+                let (track, planned) = preview_transition(&s, &params, kind).unwrap();
+                assert_eq!(s.project.to_json(), before);
+                assert_eq!(s.revision, revision);
+                let result = s.execute("effects.apply", params).unwrap();
+                let applied =
+                    s.active_sequence().unwrap().track(track).unwrap().transitions.iter().find(|t| Some(t.id.0) == result["transition"].as_u64()).unwrap();
+                assert_eq!((applied.start, applied.duration, applied.from, applied.to), (planned.start, planned.duration, planned.from, planned.to));
+                s.execute("edit.undo", json!({})).unwrap();
+                assert_eq!(s.project.to_json(), before);
+                s.execute("edit.redo", json!({})).unwrap();
+                s.execute("edit.undo", json!({})).unwrap();
+            }
+        }
+        assert!(preview_transition(&s, &json!({"effect": effect, "clip": u64::MAX}), kind).is_err());
+        let track = s.active_sequence().unwrap().tracks(kind)[0].id;
+        std::sync::Arc::make_mut(&mut s.project).sequence_mut(s.state.active_sequence.unwrap()).unwrap().track_mut(track).unwrap().locked = true;
+        assert!(preview_transition(&s, &json!({"effect": effect, "clip": s.active_sequence().unwrap().track(track).unwrap().items[0].id.0}), kind).is_err());
+    }
+}
+
 fn first_v1_clip(s: &Session) -> u64 {
     s.active_sequence().unwrap().video_tracks[0].items[0].id.0
 }

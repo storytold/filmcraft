@@ -235,6 +235,27 @@ fn close_gap_works() {
 }
 
 #[test]
+fn reversed_trim_uses_the_handle_its_playback_direction_consumes() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    // source frames [5, 15) played backwards; the media is 1000 frames long
+    let a = fx.put(v1, 30, 10, 5);
+    fx.seq.find_item_mut(a).unwrap().1.reverse = true;
+    let mut n = fx.next;
+    // out extends into the 5 frames before source_in, not into the 985 after source_out
+    let d = trim(&mut fx.seq, a, Edge::Out, TrimMode::Regular, f(20), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(d, f(5));
+    let it = fx.seq.find_item(a).unwrap().1;
+    assert_eq!((it.source_in, it.source_out()), (f(0), f(15)));
+    // in extends into the media after source_out
+    let d = trim(&mut fx.seq, a, Edge::In, TrimMode::Regular, -f(10), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(d, -f(10));
+    let it = fx.seq.find_item(a).unwrap().1;
+    assert_eq!((it.source_in, it.source_out()), (f(0), f(25)));
+    fx.seq.check().unwrap();
+}
+
+#[test]
 fn regular_trim_respects_neighbours_and_handles() {
     let mut fx = Fx::new();
     let v1 = fx.v(0);
@@ -250,6 +271,24 @@ fn regular_trim_respects_neighbours_and_handles() {
     let d = trim(&mut fx.seq, a, Edge::In, TrimMode::Regular, f(3), &mut Fx::ctx(&mut n)).unwrap();
     assert_eq!(d, f(3));
     assert_eq!(fx.seq.find_item(a).unwrap().1.source_in, f(8));
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn held_regular_in_trim_stops_at_previous_clip() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    fx.put(v1, 0, 10, 0);
+    let b = fx.put(v1, 15, 10, 5);
+    fx.seq.find_item_mut(b).unwrap().1.frame_hold = Some(f(5));
+    let mut n = fx.next;
+    // 5 frames of gap: a 20 frame extension is clamped to 5 instead of overlapping the previous clip
+    let d = trim(&mut fx.seq, b, Edge::In, TrimMode::Regular, -f(20), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(d, -f(5));
+    assert_eq!(fx.spans(v1), vec![(0, 10), (10, 15)]);
+    // no space left: nothing to do, and no error
+    let d = trim(&mut fx.seq, b, Edge::In, TrimMode::Regular, -f(3), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(d, Tick::ZERO);
     fx.seq.check().unwrap();
 }
 
@@ -356,6 +395,25 @@ fn roll_slip_slide() {
     assert_eq!(d, -f(10), "slip clamps at media start");
     slide(&mut fx.seq, b, f(2), &mut Fx::ctx(&mut n)).unwrap();
     assert_eq!(fx.spans(v1), vec![(0, 15), (15, 7), (22, 8)]);
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn slide_keeps_reversed_neighbours_content() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let a = fx.put(v1, 0, 30, 20);
+    let b = fx.put(v1, 30, 30, 50);
+    let c = fx.put(v1, 60, 30, 70);
+    for id in [a, c] {
+        fx.seq.find_item_mut(id).unwrap().1.reverse = true;
+    }
+    let mut n = fx.next;
+    slide(&mut fx.seq, b, f(10), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(fx.spans(v1), vec![(0, 40), (40, 30), (70, 20)]);
+    assert_eq!(fx.seq.find_item(a).unwrap().1.source_in, f(10));
+    assert_eq!(fx.seq.find_item(b).unwrap().1.source_in, f(50));
+    assert_eq!(fx.seq.find_item(c).unwrap().1.source_in, f(70));
     fx.seq.check().unwrap();
 }
 
@@ -672,4 +730,22 @@ fn shorter_head_closes_the_stretch_after_the_cut_on_sync_locked_tracks() {
         assert!(matches!(r, Err(EditError::SyncLockConflict(_))), "group {group}");
         assert_eq!(fx.spans(v1), vec![(0, 10), (10, 10), (20, 10)], "unchanged on failure");
     }
+}
+
+#[test]
+fn roll_reversed_clips_keeps_media_mapping() {
+    let mut fx = Fx::new();
+    let v = fx.v(0);
+    let mut a = fx.item(0, 30, 20);
+    a.reverse = true;
+    let mut b = fx.item(30, 30, 50);
+    b.reverse = true;
+    let (ia, ib) = (a.id, b.id);
+    fx.seq.track_mut(v).unwrap().items.extend([a, b]);
+    let mut n = 0;
+    roll(&mut fx.seq, ia, ib, f(10), &mut Fx::ctx(&mut n)).unwrap();
+    let (_, l) = fx.seq.find_item(ia).unwrap();
+    assert_eq!((l.start, l.duration, l.source_in), (f(0), f(40), f(10)));
+    let (_, r) = fx.seq.find_item(ib).unwrap();
+    assert_eq!((r.start, r.duration, r.source_in), (f(40), f(20), f(50)));
 }

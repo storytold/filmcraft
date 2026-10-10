@@ -52,7 +52,7 @@ Details of each format and the SCC encoder are in [`crates/captions/README.md`](
 | `captions.setStyle` | Text panel style strip | `track`, `size`, `color`, `background`, `backgroundColor`, `outline`, `outlineColor`, `align`, `anchor`, `margin`, `lineSpacing`, `reset` |
 | `captions.deleteTrack` | | `track` |
 | `captions.import` / `captions.export` | File ▸ Export ▸ Captions… | `path`, `format`, `track`, `dropFrame` |
-| `captions.list` | (query) | `track` — tracks, styles and captions with timecodes |
+| `captions.list` | (query) | `track` — tracks, styles and captions with timecodes (a `track` that names no caption track is an error) |
 
 Tracks are addressed by id or `"C1"`, `"C2"`… (top first). Edits are limited by neighbouring
 captions and a one-frame minimum. Sync-locked caption tracks follow insert and extract edits on

@@ -59,6 +59,11 @@ pub fn through_edits(seq: &Sequence) -> Vec<ThroughEdit> {
 /// piece is listed. The left piece absorbs the right one (keeping its own effects and attributes);
 /// a transition sitting on the cut is removed. Returns the number of edits joined.
 pub fn join_through_edits(seq: &mut Sequence, only: &[ClipId]) -> usize {
+    join_through_edits_where(seq, |a, b| only.is_empty() || only.contains(&a) || only.contains(&b))
+}
+
+/// Join the through edits on unlocked tracks whose (left, right) pieces `wanted` accepts.
+pub fn join_through_edits_where(seq: &mut Sequence, wanted: impl Fn(ClipId, ClipId) -> bool) -> usize {
     let mut n = 0;
     for tr in seq.all_tracks_mut() {
         if tr.locked {
@@ -67,8 +72,7 @@ pub fn join_through_edits(seq: &mut Sequence, only: &[ClipId]) -> usize {
         let mut i = 0;
         while i + 1 < tr.items.len() {
             let (a, b) = (&tr.items[i], &tr.items[i + 1]);
-            let wanted = only.is_empty() || only.contains(&a.id) || only.contains(&b.id);
-            if !(wanted && is_through_edit(a, b)) {
+            if !(wanted(a.id, b.id) && is_through_edit(a, b)) {
                 i += 1;
                 continue;
             }

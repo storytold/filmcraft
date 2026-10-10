@@ -9,7 +9,7 @@ const VECTORS: &[&str] =
 
 #[test]
 fn conformance_vectors() {
-    let Some(ff) = ffmpeg() else { return };
+    let Some(ff) = ffmpeg_dav1d() else { return };
     for name in VECTORS {
         let Some(path) = test_vector(name) else { return };
         check_file(&ff, name, &path);
@@ -21,7 +21,7 @@ fn conformance_vectors() {
 #[test]
 #[ignore]
 fn conformance_vectors_extended() {
-    let Some(ff) = ffmpeg() else { return };
+    let Some(ff) = ffmpeg_dav1d() else { return };
     let list: Vec<String> = match std::env::var("AV1_VECTORS") {
         Ok(v) => v.split(',').map(str::to_string).collect(),
         Err(_) => EXTENDED.iter().map(|s| s.to_string()).collect(),

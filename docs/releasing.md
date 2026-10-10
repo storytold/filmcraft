@@ -138,7 +138,9 @@ runs `filmcraft-cli --version` in the sandbox. Users install it with
 `flatpak install --user <file>`; the freedesktop runtime comes from Flathub.
 `packaging/linux/flatpak/ai.storyteller.filmcraft.yml` is the from-source manifest for a Flathub
 submission (its header says how to build it). Both manifests must keep the same runtime and
-`finish-args` (packaging-lint checks this).
+`finish-args`, and install the same programs: the app and `filmcraft-cli`, which runs the
+headless commands and the MCP server in the sandbox
+(`flatpak run --command=filmcraft-cli ai.storyteller.filmcraft mcp`). packaging-lint checks this.
 
 ### FreeBSD
 

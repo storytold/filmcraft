@@ -407,12 +407,18 @@ pub fn relink(s: &mut Session, p: &Value) -> Result<Value> {
         Some(MediaRef::File { path }) => path,
         _ => return Err(bad("media.relink", format!("item {} is not file media", item.0))),
     };
-    let c = check_candidate(s, item, &path, &o)?;
+    let mut c = check_candidate(s, item, &path, &o)?;
     if !c.ok && !force {
         return Err(EngineError::Other(format!("{} doesn't match {}: {}", file_name(&path), file_name(&old), c.problems.join("; "))));
     }
-    if c.source.is_none() && s.media.open_file(&path, &*s.services).is_err() {
-        return Err(EngineError::Other(format!("{path} can't be opened")));
+    if c.source.is_none() {
+        // Forced past a failed check: the file was never opened for its properties, so do it now
+        // and let the item take the new file's own info instead of keeping the old file's.
+        let Ok(src) = s.media.open_file(&path, &*s.services) else {
+            return Err(EngineError::Other(format!("{path} can't be opened")));
+        };
+        c.info = Some(src.info().clone());
+        c.source = Some(src);
     }
     let mut plans = vec![Plan { item, cand: c }];
     if o.relink_others {
