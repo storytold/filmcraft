@@ -179,3 +179,182 @@ fn generate_without_a_transcriber() {
     let r = s.execute("transcript.generate", json!({})).unwrap();
     assert!(r["items"].as_array().unwrap().len() >= 2, "{r}");
 }
+
+#[test]
+fn transcript_correction_preserves_timing_and_round_trips() {
+    let (mut s, item, _) = session();
+    s.execute("transcript.generate", json!({"item": item.0})).unwrap();
+    let original = s.project.transcripts[&item].words[0].clone();
+    s.execute("transcript.correctWord", json!({"item": item.0, "index": 0, "text": "Hallo", "expected": "Hello"})).unwrap();
+    let corrected = &s.project.transcripts[&item].words[0];
+    assert_eq!(corrected.text, "Hallo");
+    assert_eq!((corrected.start, corrected.end, corrected.speaker), (original.start, original.end, original.speaker));
+    let encoded = filmcraft_format::encode(&s.project, false);
+    let decoded = filmcraft_format::decode(&encoded).unwrap().project;
+    assert_eq!(decoded.transcripts[&item].words[0].text, "Hallo");
+    assert!(s.execute("transcript.correctWord", json!({"item": item.0, "index": 0, "text": "Oops", "expected": "Hello"})).is_err());
+    for params in [
+        json!({"item": item.0, "index": u64::MAX, "text": "x"}),
+        json!({"item": item.0, "index": 0, "text": ""}),
+        json!({"item": item.0, "index": 0, "text": "two words"}),
+        json!({"item": item.0, "index": 0, "text": "x".repeat(1025)}),
+    ] {
+        assert!(s.execute("transcript.correctWord", params).is_err());
+    }
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project.transcripts[&item].words[0], original);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(s.project.transcripts[&item].words[0].text, "Hallo");
+}
+
+#[test]
+fn transcript_source_view_resolves_subclips() {
+    let (mut s, item, _) = session();
+    s.execute("transcript.generate", json!({"item": item.0})).unwrap();
+    s.execute("source.open", json!({"item": item.0})).unwrap();
+    let root_words = crate::transcript::source_words(&s);
+    assert_eq!(root_words.len(), 6);
+    let a = s.project.transcripts[&item].words[0].start;
+    let b = s.project.transcripts[&item].words[1].end;
+    let id = s
+        .edit("Test subclip", |p, _| {
+            let id = ItemId(p.alloc_id());
+            let mut sub = p.item(item).unwrap().clone();
+            sub.id = id;
+            sub.kind = filmcraft_project::ItemKind::Subclip { parent: item, range: filmcraft_time::TimeRange::from_bounds(a, b), restrict_trims: true };
+            p.items.insert(id, sub);
+            Ok(id)
+        })
+        .unwrap();
+    s.execute("source.open", json!({"item": id.0})).unwrap();
+    let words = crate::transcript::source_words(&s);
+    assert_eq!(words.len(), 2);
+    assert!(words.iter().all(|w| w.item == item));
+    let reply = s.execute("transcript.source", json!({})).unwrap();
+    assert_eq!(reply["words"][0]["item"], item.0);
+    assert_eq!(reply["words"][1]["index"], 1);
+    let seq = s.state.active_sequence.unwrap();
+    s.edit("Use subclip", |p, _| {
+        let clip = &mut p.sequence_mut(seq).unwrap().audio_tracks[0].items[0];
+        clip.item = id;
+        clip.source_in = a;
+        clip.duration = b - a;
+        Ok(())
+    })
+    .unwrap();
+    let words = crate::transcript::sequence_words(&s);
+    assert_eq!(words.len(), 2, "parent transcript also resolves through sequence subclip references");
+    assert!(words.iter().all(|w| w.item == item));
+}
+
+struct GateTranscriber {
+    started: Arc<std::sync::atomic::AtomicBool>,
+    release: Arc<std::sync::atomic::AtomicBool>,
+    transcript: Transcript,
+    panic: bool,
+}
+impl filmcraft_speech::Transcriber for GateTranscriber {
+    fn id(&self) -> String {
+        "gate".into()
+    }
+    fn transcribe(
+        &self,
+        _: &[f32],
+        _: &filmcraft_speech::Options,
+        progress: filmcraft_speech::ProgressFn,
+    ) -> Result<Transcript, filmcraft_speech::SpeechError> {
+        use std::sync::atomic::Ordering;
+        self.started.store(true, Ordering::Release);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !self.release.load(Ordering::Acquire) && std::time::Instant::now() < until {
+            if !progress(0.5, "Waiting in test recognizer") {
+                return Err(filmcraft_speech::SpeechError::Cancelled);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(!self.panic, "test worker panic");
+        Ok(self.transcript.clone())
+    }
+}
+
+fn gated() -> (Session, ItemId, Arc<std::sync::atomic::AtomicBool>, Arc<std::sync::atomic::AtomicBool>) {
+    let (mut s, item, _) = session();
+    s.execute("transcript.generate", json!({"item": item.0})).unwrap();
+    let transcript = (*s.project.transcripts[&item]).clone();
+    let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    s.transcriber = Some(Arc::new(GateTranscriber { started: started.clone(), release: release.clone(), transcript, panic: false }));
+    (s, item, started, release)
+}
+
+fn finish(s: &mut Session, job: u64) -> serde_json::Value {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        s.poll_persistence();
+        let status = s.jobs.iter().find(|j| j.id == job).unwrap().to_json();
+        if status["finished"] == true && s.transcript_jobs.is_empty() {
+            return status;
+        }
+        assert!(std::time::Instant::now() < until, "transcription timed out: {status}");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn transcript_background_progress_cancel_and_stale_results() {
+    use std::sync::atomic::Ordering;
+    let (mut s, item, started, release) = gated();
+    let before = s.project.clone();
+    let r = s.execute("transcript.generate", json!({"item": item.0, "wait": false})).unwrap();
+    let job = r["job"].as_u64().unwrap();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !started.load(Ordering::Acquire) {
+        assert!(std::time::Instant::now() < until);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(s.execute("transcript.generate", json!({"item": item.0, "wait": false})).is_err());
+    assert!(s.execute("transcript.inspect", json!({})).is_ok(), "session remains usable during inference");
+    s.execute("jobs.cancel", json!({"job": job})).unwrap();
+    release.store(true, Ordering::Release);
+    assert!(finish(&mut s, job)["result"]["error"].is_string());
+    assert_eq!(*s.project, *before);
+
+    let (mut s, item, _, release) = gated();
+    let r = s.execute("transcript.generate", json!({"item": item.0, "wait": false})).unwrap();
+    s.execute("transcript.correctWord", json!({"item": item.0, "index": 0, "text": "Corrected"})).unwrap();
+    release.store(true, Ordering::Release);
+    let status = finish(&mut s, r["job"].as_u64().unwrap());
+    assert!(status["result"]["error"].as_str().unwrap().contains("changed"));
+    assert_eq!(s.project.transcripts[&item].words[0].text, "Corrected");
+}
+
+#[test]
+fn transcript_background_success_applies_once_and_worker_panic_is_reported() {
+    use std::sync::atomic::Ordering;
+    let (mut s, item, _, release) = gated();
+    let before = s.project.clone();
+    let r = s.execute("transcript.generate", json!({"item": item.0, "wait": false})).unwrap();
+    release.store(true, Ordering::Release);
+    assert!(finish(&mut s, r["job"].as_u64().unwrap())["result"]["error"].is_null());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.project, *before);
+
+    let transcript = (*s.project.transcripts[&item]).clone();
+    s.transcriber =
+        Some(Arc::new(GateTranscriber { started: Default::default(), release: Arc::new(std::sync::atomic::AtomicBool::new(true)), transcript, panic: true }));
+    let r = s.execute("transcript.generate", json!({"item": item.0, "wait": false})).unwrap();
+    assert!(finish(&mut s, r["job"].as_u64().unwrap())["result"]["error"].as_str().unwrap().contains("internal error"));
+    assert_eq!(*s.project, *before);
+}
+
+#[test]
+fn transcript_background_cannot_apply_to_a_reopened_project() {
+    use std::sync::atomic::Ordering;
+    let (mut s, item, _, release) = gated();
+    let r = s.execute("transcript.generate", json!({"item": item.0, "wait": false})).unwrap();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let reopened = s.project.clone();
+    release.store(true, Ordering::Release);
+    assert!(finish(&mut s, r["job"].as_u64().unwrap())["result"]["error"].is_string());
+    assert_eq!(*s.project, *reopened);
+}

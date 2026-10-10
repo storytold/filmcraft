@@ -3505,3 +3505,11 @@
 	Edit Narration	ナレーションを編集
 	Clear Transition	トランジションを消去
 	Set Transition Duration	トランジションのデュレーションを設定
+	Speech models	音声モデル
+	Installed	インストール済み
+	Download model	モデルをダウンロード
+	Open a sequence or Source clip to see its transcript	文字起こしを表示するにはシーケンスまたはソースクリップを開いてください
+	Correct transcript word	文字起こしの単語を修正
+	Correct Transcript Word	文字起こしの単語を修正
+	Inspect Source Transcript	ソースの文字起こしを確認
+	Use model	モデルを使用

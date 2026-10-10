@@ -25,7 +25,7 @@ impl Driver {
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
         let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
+        let mut b = Harness::builder().with_step_dt(1.0 / 60.0).with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
         if snapshots.is_some() {
             b = b.wgpu();
         }
@@ -109,4 +109,53 @@ fn transcript_tab_selects_and_extracts_words() {
     let left: Vec<&str> = r["words"].as_array().unwrap().iter().filter_map(|w| w["text"].as_str()).collect();
     assert_eq!(left, ["Hello", "there", "friend."]);
     assert_eq!(d.ids("text.transcript.word.").len(), 3);
+
+    d.ok("engine.execute", json!({"command": "source.open", "params": {"item": a.item.0}}));
+    d.frames(3);
+    d.ok("ui.panel.show", json!({"panel": "Text"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "text.transcript.view.source"}));
+    d.frames(3);
+    d.snapshot("source-before");
+    assert_eq!(
+        d.ids("text.transcript.word.").len(),
+        4,
+        "source still contains extracted words; source={:?}, view={:?}",
+        d.harness.state().session.state.source_item,
+        d.harness.state().ui.transcript_source
+    );
+    d.frames(40);
+    d.ok("ui.click", json!({"id": "text.transcript.word.0"}));
+    d.ok("ui.click", json!({"id": "text.transcript.word.0"}));
+    d.frames(3);
+    d.snapshot("correction");
+    assert_eq!(d.ids("text.transcript.correction").len(), 3, "editor state: {:?}", d.harness.state().ui.transcript_edit);
+    d.ok("ui.click", json!({"id": "text.transcript.correction"}));
+    d.ok("ui.key", json!({"key": "A", "command": true}));
+    d.ok("ui.type", json!({"text": "Howdy"}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "text.transcript.correction.apply"}));
+    d.frames(3);
+    let source = d.ok("engine.execute", json!({"command": "transcript.source", "params": {}}));
+    assert_eq!(source["words"][0]["text"], "Howdy");
+    d.snapshot("source");
+    d.ok("ui.click", json!({"id": "text.transcript.models"}));
+    d.frames(3);
+    assert_eq!(d.ids("text.transcript.model.").len(), 3);
+    d.snapshot("models");
+    d.ok("ui.key", json!({"key": "Escape"}));
+    d.frames(3);
+
+    let job = filmcraft_engine::Job { id: 1, label: "Transcribe".into(), progress: Default::default(), result: Default::default() };
+    job.progress.total.store(100, std::sync::atomic::Ordering::Relaxed);
+    job.progress.done.store(25, std::sync::atomic::Ordering::Relaxed);
+    *job.progress.status.lock().unwrap() = "Recognizing dialogue".into();
+    let progress = job.progress.clone();
+    d.harness.state_mut().session.jobs.push(job);
+    d.frames(3);
+    assert_eq!(d.ids("text.transcript.progress").len(), 1);
+    d.snapshot("progress");
+    d.ok("ui.click", json!({"id": "text.transcript.cancel"}));
+    d.frames(3);
+    assert!(progress.cancel.load(std::sync::atomic::Ordering::Relaxed));
 }
