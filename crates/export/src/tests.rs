@@ -101,6 +101,51 @@ fn prores_export_roundtrip() {
     assert!(f[0] > 240 && f[1] < 15 && f[2] < 15, "{:?}", &f[..4]);
 }
 
+/// ProRes 4444 / 4444 XQ export (#342): 4:4:4 frames under the `ap4h` / `ap4x` codes, and with
+/// Include Alpha Channel the picture's alpha survives instead of being flattened over black.
+#[test]
+fn prores_4444_export_roundtrip() {
+    let (p, seq, m) = project();
+    for (profile, label) in [("4444", "ProRes 4444"), ("4444xq", "ProRes 4444 XQ")] {
+        let path = tmp(&format!("pr_{profile}.mov"));
+        let s = ExportSettings { format: Format::ProRes, path: path.clone(), prores_profile: profile.into(), ..Default::default() };
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+        let src = filmcraft_codecs::open_bytes("pr.mov", bytes).unwrap();
+        let codec = src.info().video.as_ref().unwrap().codec.clone();
+        assert!(codec.contains(label), "{profile}: {codec}");
+        let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 3))).unwrap();
+        assert!(f.format_label().contains("4:4:4"), "{profile}: {}", f.format_label());
+        let px = f.to_rgba8();
+        assert!(px[0] > 240 && px[1] < 15 && px[2] < 15 && px[3] == 255, "{profile}: {:?}", &px[..4]);
+    }
+
+    // a half-transparent matte keeps its alpha with Include Alpha Channel, and only then
+    let mut p = (*p).clone();
+    let half = GeneratorSource::new(Generator::ColorMatte { color: [1.0, 0.0, 0.0, 0.5] }, 320, 180, FrameRate::FPS_24, Tick(2 * TICKS_PER_SECOND));
+    let item = p.sequence(seq).unwrap().video_tracks[0].items[0].item;
+    if let ItemKind::Media(mc) = &mut p.item_mut(item).unwrap().kind {
+        mc.media = MediaRef::Generator(half.generator.clone());
+    }
+    let mut m = m;
+    m.0.insert(item, Arc::new(half));
+    let p = Arc::new(p);
+    for alpha in [true, false] {
+        let path = tmp(&format!("pr_4444_alpha_{alpha}.mov"));
+        let s = ExportSettings { format: Format::ProRes, path: path.clone(), prores_profile: "4444".into(), alpha, ..Default::default() };
+        assert!(s.keeps_alpha() == alpha);
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+        let src = filmcraft_codecs::open_bytes("pr.mov", bytes).unwrap();
+        let px = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 3))).unwrap().to_rgba8();
+        if alpha {
+            assert!((px[3] as i32 - 128).abs() <= 3, "alpha kept: {:?}", &px[..4]);
+        } else {
+            assert_eq!(px[3], 255, "flattened: {:?}", &px[..4]);
+        }
+    }
+}
+
 #[test]
 fn dnxhr_export_roundtrip() {
     let (p, seq, m) = project();

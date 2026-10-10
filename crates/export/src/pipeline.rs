@@ -12,7 +12,7 @@ use filmcraft_time::FrameRate;
 use rayon::prelude::*;
 
 use crate::settings::{ExportEffects, Placement, Scaling, TextOverlay};
-use crate::{ExportError, ExportSettings, Format, FrameRenderer, GpuRendering, Result, build_frame_renderer, note_gpu_fallback, note_gpu_frame};
+use crate::{ExportError, ExportSettings, FrameRenderer, GpuRendering, Result, build_frame_renderer, note_gpu_fallback, note_gpu_frame};
 
 /// Where the rendered picture lands in the output frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -201,7 +201,7 @@ impl Pipeline {
             geom,
             opts,
             hdr_out,
-            alpha: settings.alpha && matches!(settings.format, Format::PngSequence | Format::TiffSequence),
+            alpha: settings.keeps_alpha(),
             out_tf,
             effects,
             overlay,
