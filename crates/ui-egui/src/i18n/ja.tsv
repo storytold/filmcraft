@@ -3505,3 +3505,7 @@
 	Edit Narration	ナレーションを編集
 	Clear Transition	トランジションを消去
 	Set Transition Duration	トランジションのデュレーションを設定
+	Project Notes	プロジェクトメモ
+	Get Project Notes	プロジェクトメモを取得
+	Edit Project Notes	プロジェクトメモを編集
+	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	このプロジェクトのメモ: やること、指示、フレーム番号など… プロジェクトと一緒に保存されます。
