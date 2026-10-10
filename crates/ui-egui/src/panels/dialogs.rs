@@ -32,7 +32,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut open = true;
     match d {
         Dialog::About => {
-            egui::Window::new(tl!("About FilmCraft"))
+            crate::dialog_style::Window::new(tl!("About FilmCraft"))
                 .id(egui::Id::new("About FilmCraft"))
                 .open(&mut open)
                 .collapsible(false)
@@ -107,7 +107,7 @@ fn audio_gain(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let mut keep = true;
     let mut apply = false;
     let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
-    egui::Window::new(tl!("Audio Gain"))
+    crate::dialog_style::Window::new(tl!("Audio Gain"))
         .id(egui::Id::new("Audio Gain"))
         .collapsible(false)
         .resizable(false)
@@ -137,13 +137,13 @@ fn audio_gain(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             let pk = ui.label(&pk_text);
             elems.push(("audioGain.peak".into(), pk.rect, pk_text));
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let c = ui.button(tl!("Cancel"));
+            crate::dialog_style::actions(ui, |ui| {
+                let c = ui.add(crate::dialog_style::secondary(tl!("Cancel")));
                 elems.push(("audioGain.cancel".into(), c.rect, "Cancel".into()));
                 if c.clicked() {
                     keep = false;
                 }
-                let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(app.tokens.accent));
+                let o = ui.add(crate::dialog_style::primary(tl!("OK")));
                 elems.push(("audioGain.ok".into(), o.rect, "OK".into()));
                 if o.clicked() {
                     apply = true;
@@ -193,7 +193,7 @@ fn add_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
     let audio_types: [(&str, &str); 4] = [("standard", tl!("Standard")), ("5.1", "5.1"), ("adaptive", tl!("Adaptive")), ("mono", tl!("Mono"))];
     let submix_types: [(&str, &str); 4] = [("stereo", tl!("Stereo")), ("5.1", "5.1"), ("adaptive", tl!("Adaptive")), ("mono", tl!("Mono"))];
-    egui::Window::new(tl!("Add Tracks"))
+    crate::dialog_style::Window::new(tl!("Add Tracks"))
         .id(egui::Id::new("Add Tracks"))
         .collapsible(false)
         .resizable(false)
@@ -267,12 +267,12 @@ fn add_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             }
             ui.add_space(10.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(app.tokens.accent));
+                let o = ui.add(crate::dialog_style::primary(tl!("OK")));
                 elems.push(("addTracks.ok".into(), o.rect, "OK".into()));
                 if o.clicked() {
                     apply = true;
                 }
-                let c = ui.button(tl!("Cancel"));
+                let c = ui.add(crate::dialog_style::secondary(tl!("Cancel")));
                 elems.push(("addTracks.cancel".into(), c.rect, "Cancel".into()));
                 if c.clicked() {
                     keep = false;
@@ -322,7 +322,7 @@ fn delete_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let mut keep = true;
     let mut apply = false;
     let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
-    egui::Window::new(tl!("Delete Tracks"))
+    crate::dialog_style::Window::new(tl!("Delete Tracks"))
         .id(egui::Id::new("Delete Tracks"))
         .collapsible(false)
         .resizable(false)
@@ -355,16 +355,13 @@ fn delete_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                 });
             }
             ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                let c = ui.button(tl!("Cancel"));
+            crate::dialog_style::actions(ui, |ui| {
+                let c = ui.add(crate::dialog_style::secondary(tl!("Cancel")));
                 elems.push(("deleteTracks.cancel".into(), c.rect, "Cancel".into()));
                 if c.clicked() {
                     keep = false;
                 }
-                let o = ui.add_enabled(
-                    draft.video || draft.audio,
-                    egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(app.tokens.accent),
-                );
+                let o = ui.add_enabled(draft.video || draft.audio, crate::dialog_style::primary(tl!("OK")));
                 elems.push(("deleteTracks.ok".into(), o.rect, "OK".into()));
                 if o.clicked() {
                     apply = true;

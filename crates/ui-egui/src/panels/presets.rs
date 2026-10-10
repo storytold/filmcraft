@@ -90,9 +90,13 @@ pub fn save_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut open = true;
     let mut close = false;
     let mut apply = false;
-    egui::Window::new(tl!("Save Preset")).id(egui::Id::new("Save Preset")).open(&mut open).collapsible(false).resizable(false).default_width(340.0).show(
-        ctx,
-        |ui| {
+    crate::dialog_style::Window::new(tl!("Save Preset"))
+        .id(egui::Id::new("Save Preset"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .default_width(340.0)
+        .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label(tl!("Name:"));
                 let r = ui.text_edit_singleline(&mut d.name);
@@ -117,16 +121,15 @@ pub fn save_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             let r = ui.text_edit_multiline(&mut d.description);
             app.auto.add("savePreset.description", r.rect, "Description");
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                let c = ui.button(tl!("Cancel"));
+            crate::dialog_style::actions(ui, |ui| {
+                let c = ui.add(crate::dialog_style::secondary(tl!("Cancel")));
                 app.auto.add("savePreset.cancel", c.rect, "Cancel");
-                let o = ui.add_enabled(!d.name.trim().is_empty(), egui::Button::new(tl!("OK")));
+                let o = ui.add_enabled(!d.name.trim().is_empty(), crate::dialog_style::primary(tl!("OK")));
                 app.auto.add("savePreset.ok", o.rect, "OK");
                 apply = o.clicked();
                 close = apply || c.clicked();
             });
-        },
-    );
+        });
     app.ui.save_preset = if close || !open { None } else { Some(d.clone()) };
     if apply {
         let r = app.session.execute(

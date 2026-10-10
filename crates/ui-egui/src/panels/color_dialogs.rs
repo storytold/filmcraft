@@ -47,10 +47,10 @@ fn radio(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: &str, selected: bool, la
 fn buttons(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> (bool, bool) {
     let mut out = (false, false);
     ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        let c = ui.button(tl!("Cancel"));
+    crate::dialog_style::actions(ui, |ui| {
+        let c = ui.add(crate::dialog_style::secondary(tl!("Cancel")));
         app.auto.add("colorDialog.cancel", c.rect, "Cancel");
-        let o = ui.button(tl!("OK"));
+        let o = ui.add(crate::dialog_style::primary(tl!("OK")));
         app.auto.add("colorDialog.ok", o.rect, "OK");
         out = (o.clicked(), c.clicked());
     });
@@ -70,7 +70,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 .and_then(|v| v["detectedLabel"].as_str().map(str::to_string))
                 .unwrap_or_else(|| "—".into());
             let n = items.len();
-            egui::Window::new(tl!("Interpret Footage"))
+            crate::dialog_style::Window::new(tl!("Interpret Footage"))
                 .id(egui::Id::new("Interpret Footage"))
                 .open(&mut open)
                 .collapsible(false)
@@ -101,7 +101,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 });
         }
         ColorDialog::Sequence { working_space, wide_gamut, auto_tone_map } => {
-            egui::Window::new(tl!("Sequence Color Management"))
+            crate::dialog_style::Window::new(tl!("Sequence Color Management"))
                 .id(egui::Id::new("Sequence Color Management"))
                 .open(&mut open)
                 .collapsible(false)

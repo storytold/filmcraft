@@ -24,7 +24,11 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         ProjectDialog::FreeformOptions { .. } => tl!("Freeform View Options"),
         ProjectDialog::SaveArrangement { .. } => tl!("Save Arrangement"),
     };
-    let mut win = egui::Window::new(title).id(egui::Id::new("project-dialog")).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]);
+    let mut win = crate::dialog_style::Window::new(title)
+        .id(egui::Id::new("project-dialog"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(Align2::CENTER_CENTER, [0.0, 0.0]);
     // a fixed size keeps the two-list dialog from shifting while its lists settle
     if matches!(d, ProjectDialog::MetadataDisplay { .. }) {
         win = win.fixed_size(egui::vec2(480.0, 470.0));
@@ -106,13 +110,13 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
 fn ok_cancel(app: &mut FilmcraftApp, ui: &mut egui::Ui, close: &mut bool) -> bool {
     ui.separator();
     let mut ok = false;
-    ui.horizontal(|ui| {
-        let r = ui.button(tl!("Cancel"));
+    crate::dialog_style::actions(ui, |ui| {
+        let r = ui.add(crate::dialog_style::secondary(tl!("Cancel")));
         push(app, "projectDialog.cancel", &r, "Cancel");
         if r.clicked() {
             *close = true;
         }
-        let r = ui.button(tl!("OK"));
+        let r = ui.add(crate::dialog_style::primary(tl!("OK")));
         push(app, "projectDialog.ok", &r, "OK");
         ok = r.clicked();
     });
@@ -245,7 +249,7 @@ fn manage_presets(app: &mut FilmcraftApp, ui: &mut egui::Ui, selected: &mut usiz
         }
     });
     ui.separator();
-    let r = ui.button(tl!("Done"));
+    let r = crate::dialog_style::actions(ui, |ui| ui.add(crate::dialog_style::primary(tl!("Done")))).inner;
     push(app, "projectDialog.ok", &r, "Done");
     if r.clicked() {
         *close = true;

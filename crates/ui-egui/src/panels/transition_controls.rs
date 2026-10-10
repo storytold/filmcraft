@@ -245,10 +245,9 @@ pub fn duration_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let Some((_, _, max_frames)) = lookup(app, id) else { return false };
     let Some(seq) = app.session.active_sequence() else { return false };
     let (rate, drop_frame) = (seq.settings.frame_rate.sane(), seq.settings.drop_frame);
-    let accent = app.tokens.accent;
     let (mut keep, mut apply) = (true, false);
     let mut elems: Elems = Vec::new();
-    egui::Window::new(tl!("Set Transition Duration"))
+    crate::dialog_style::Window::new(tl!("Set Transition Duration"))
         .collapsible(false)
         .resizable(false)
         .default_width(260.0)
@@ -260,13 +259,11 @@ pub fn duration_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                 elems.push(("transitionDuration.value".into(), r.rect, timecode(d.frames as f64, rate, drop_frame)));
             });
             ui.add_space(8.0);
-            // one row high: a right-to-left layout would otherwise take the window's whole height
-            let row = egui::vec2(ui.available_width().max(220.0), ui.spacing().interact_size.y);
-            ui.allocate_ui_with_layout(row, egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let o = ui.add(egui::Button::new(RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(accent));
+            crate::dialog_style::actions(ui, |ui| {
+                let o = ui.add(crate::dialog_style::primary(tl!("OK")));
                 elems.push(("transitionDuration.ok".into(), o.rect, "OK".into()));
                 apply |= o.clicked();
-                let c = ui.button(tl!("Cancel"));
+                let c = ui.add(crate::dialog_style::secondary(tl!("Cancel")));
                 elems.push(("transitionDuration.cancel".into(), c.rect, "Cancel".into()));
                 keep &= !c.clicked();
             });

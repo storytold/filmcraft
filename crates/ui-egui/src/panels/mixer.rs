@@ -241,9 +241,12 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if show_hide {
         let mut open = true;
         let mut close = false;
-        egui::Window::new(tl!("Show/Hide Tracks")).id(egui::Id::new("mixer-show-hide")).collapsible(false).resizable(false).open(&mut open).show(
-            ui.ctx(),
-            |ui| {
+        crate::dialog_style::Window::new(tl!("Show/Hide Tracks"))
+            .id(egui::Id::new("mixer-show-hide"))
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ui.ctx(), |ui| {
                 for id in seq.audio_tracks.iter().chain(&seq.submix_tracks).map(|t| t.id) {
                     let label = strip_label(&seq, id);
                     let name = seq.mix_track(id).map(|t| t.name.clone()).unwrap_or_default();
@@ -264,14 +267,13 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     if r.clicked() {
                         app.ui.mixer_hidden.clear();
                     }
-                    let r = ui.button(tl!("OK"));
+                    let r = ui.add(crate::dialog_style::primary(tl!("OK")));
                     app.auto.add("mixer.showHide.ok", r.rect, "OK");
                     if r.clicked() {
                         close = true;
                     }
                 });
-            },
-        );
+            });
         show_hide = open && !close;
     }
     ui.data_mut(|d| d.insert_temp(show_hide_id, show_hide));

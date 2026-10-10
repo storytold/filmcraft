@@ -68,103 +68,109 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
     let title = if d.omf { "OMF Export Settings" } else { "AAF Export Settings" };
     let shown = if d.omf { tl!("OMF Export Settings") } else { tl!("AAF Export Settings") };
-    egui::Window::new(shown).id(egui::Id::new(title)).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        ui.set_min_width(380.0);
-        egui::Grid::new("interchange-export-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-            if d.omf {
-                ui.label(tl!("OMF Title:"));
-                let r = ui.text_edit_singleline(&mut d.title);
-                elems.push((format!("{p}.title"), r.rect, d.title.clone()));
-                ui.end_row();
-            } else {
-                ui.label("");
-                let r = ui.checkbox(&mut d.mixdown_video, tl!("Mixdown video"));
-                elems.push((format!("{p}.mixdownVideo"), r.rect, d.mixdown_video.to_string()));
-                ui.end_row();
-            }
-            ui.label(tl!("Audio:"));
-            ui.horizontal(|ui| {
-                let modes: Vec<(&'static str, &str)> = if d.omf {
-                    vec![("embedded", tl!("Encapsulate")), ("separate", tl!("Separate Audio"))]
+    crate::dialog_style::Window::new(shown).id(egui::Id::new(title)).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(
+        ctx,
+        |ui| {
+            ui.set_min_width(380.0);
+            egui::Grid::new("interchange-export-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                if d.omf {
+                    ui.label(tl!("OMF Title:"));
+                    let r = ui.text_edit_singleline(&mut d.title);
+                    elems.push((format!("{p}.title"), r.rect, d.title.clone()));
+                    ui.end_row();
                 } else {
-                    vec![("embedded", tl!("Embed")), ("separate", tl!("Separate Files")), ("linked", tl!("Link to Media"))]
-                };
-                for (k, label) in &modes {
-                    let r = ui.radio(d.audio == *k, *label);
-                    if r.clicked() {
-                        d.audio = k;
+                    ui.label("");
+                    let r = ui.checkbox(&mut d.mixdown_video, tl!("Mixdown video"));
+                    elems.push((format!("{p}.mixdownVideo"), r.rect, d.mixdown_video.to_string()));
+                    ui.end_row();
+                }
+                ui.label(tl!("Audio:"));
+                ui.horizontal(|ui| {
+                    let modes: Vec<(&'static str, &str)> = if d.omf {
+                        vec![("embedded", tl!("Encapsulate")), ("separate", tl!("Separate Audio"))]
+                    } else {
+                        vec![("embedded", tl!("Embed")), ("separate", tl!("Separate Files")), ("linked", tl!("Link to Media"))]
+                    };
+                    for (k, label) in &modes {
+                        let r = ui.radio(d.audio == *k, *label);
+                        if r.clicked() {
+                            d.audio = k;
+                        }
+                        elems.push((format!("{p}.audio.{k}"), r.rect, label.to_string()));
                     }
-                    elems.push((format!("{p}.audio.{k}"), r.rect, label.to_string()));
+                });
+                ui.end_row();
+                ui.label(tl!("Audio File Format:"));
+                ui.horizontal(|ui| {
+                    let formats: &[(&'static str, &str)] = if d.omf {
+                        &[("wav", "Broadcast Wave"), ("aiff", "AIFF")]
+                    } else {
+                        &[("wav", "Broadcast Wave"), ("aiff", "AIFF"), ("mxf", "OP-Atom MXF")]
+                    };
+                    for &(k, label) in formats {
+                        let r = ui.add_enabled(d.audio == "separate", egui::RadioButton::new(d.format == k, label));
+                        if r.clicked() {
+                            d.format = k;
+                        }
+                        elems.push((format!("{p}.audioFormat.{k}"), r.rect, label.to_string()));
+                    }
+                });
+                ui.end_row();
+                ui.label(tl!("Sample Rate:"));
+                ui.horizontal(|ui| {
+                    for r in RATES {
+                        let b = ui.radio(d.sample_rate == r, format!("{r}"));
+                        if b.clicked() {
+                            d.sample_rate = r;
+                        }
+                        elems.push((format!("{p}.sampleRate.{r}"), b.rect, format!("{r} Hz")));
+                    }
+                });
+                ui.end_row();
+                ui.label(tl!("Bits per Sample:"));
+                ui.horizontal(|ui| {
+                    for b in [16u16, 24] {
+                        let r = ui.radio(d.bits == b, format!("{b}"));
+                        if r.clicked() {
+                            d.bits = b;
+                        }
+                        elems.push((format!("{p}.bitDepth.{b}"), r.rect, format!("{b}-bit")));
+                    }
+                });
+                ui.end_row();
+                ui.label(tl!("Rendering:"));
+                let linked = d.audio == "linked";
+                let r = ui.add_enabled(!linked, egui::Checkbox::new(&mut d.trim, tl!("Trim audio files")));
+                elems.push((format!("{p}.trimAudio"), r.rect, d.trim.to_string()));
+                ui.end_row();
+                ui.label(tl!("Handle Frames:"));
+                let r = ui.add_enabled(d.trim && !linked, egui::DragValue::new(&mut d.handles).range(0..=10_000));
+                elems.push((format!("{p}.handles"), r.rect, d.handles.to_string()));
+                ui.end_row();
+                ui.label("");
+                let r = ui.add_enabled(!linked, egui::Checkbox::new(&mut d.render_effects, tl!("Render audio clip effects")));
+                elems.push((format!("{p}.renderAudioEffects"), r.rect, d.render_effects.to_string()));
+                ui.end_row();
+                ui.label("");
+                let r = ui.checkbox(&mut d.breakout, tl!("Breakout to mono"));
+                elems.push((format!("{p}.breakoutToMono"), r.rect, d.breakout.to_string()));
+                ui.end_row();
+            });
+            ui.add_space(8.0);
+            crate::dialog_style::actions(ui, |ui| {
+                let c = ui.add(crate::dialog_style::secondary(tl!("Cancel")));
+                elems.push((format!("{p}.cancel"), c.rect, "Cancel".into()));
+                if c.clicked() {
+                    close = true;
+                }
+                let o = ui.add(crate::dialog_style::primary(tl!("OK")));
+                elems.push((format!("{p}.ok"), o.rect, "OK".into()));
+                if o.clicked() {
+                    apply = true;
                 }
             });
-            ui.end_row();
-            ui.label(tl!("Audio File Format:"));
-            ui.horizontal(|ui| {
-                let formats: &[(&'static str, &str)] =
-                    if d.omf { &[("wav", "Broadcast Wave"), ("aiff", "AIFF")] } else { &[("wav", "Broadcast Wave"), ("aiff", "AIFF"), ("mxf", "OP-Atom MXF")] };
-                for &(k, label) in formats {
-                    let r = ui.add_enabled(d.audio == "separate", egui::RadioButton::new(d.format == k, label));
-                    if r.clicked() {
-                        d.format = k;
-                    }
-                    elems.push((format!("{p}.audioFormat.{k}"), r.rect, label.to_string()));
-                }
-            });
-            ui.end_row();
-            ui.label(tl!("Sample Rate:"));
-            ui.horizontal(|ui| {
-                for r in RATES {
-                    let b = ui.radio(d.sample_rate == r, format!("{r}"));
-                    if b.clicked() {
-                        d.sample_rate = r;
-                    }
-                    elems.push((format!("{p}.sampleRate.{r}"), b.rect, format!("{r} Hz")));
-                }
-            });
-            ui.end_row();
-            ui.label(tl!("Bits per Sample:"));
-            ui.horizontal(|ui| {
-                for b in [16u16, 24] {
-                    let r = ui.radio(d.bits == b, format!("{b}"));
-                    if r.clicked() {
-                        d.bits = b;
-                    }
-                    elems.push((format!("{p}.bitDepth.{b}"), r.rect, format!("{b}-bit")));
-                }
-            });
-            ui.end_row();
-            ui.label(tl!("Rendering:"));
-            let linked = d.audio == "linked";
-            let r = ui.add_enabled(!linked, egui::Checkbox::new(&mut d.trim, tl!("Trim audio files")));
-            elems.push((format!("{p}.trimAudio"), r.rect, d.trim.to_string()));
-            ui.end_row();
-            ui.label(tl!("Handle Frames:"));
-            let r = ui.add_enabled(d.trim && !linked, egui::DragValue::new(&mut d.handles).range(0..=10_000));
-            elems.push((format!("{p}.handles"), r.rect, d.handles.to_string()));
-            ui.end_row();
-            ui.label("");
-            let r = ui.add_enabled(!linked, egui::Checkbox::new(&mut d.render_effects, tl!("Render audio clip effects")));
-            elems.push((format!("{p}.renderAudioEffects"), r.rect, d.render_effects.to_string()));
-            ui.end_row();
-            ui.label("");
-            let r = ui.checkbox(&mut d.breakout, tl!("Breakout to mono"));
-            elems.push((format!("{p}.breakoutToMono"), r.rect, d.breakout.to_string()));
-            ui.end_row();
-        });
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            let c = ui.button(tl!("Cancel"));
-            elems.push((format!("{p}.cancel"), c.rect, "Cancel".into()));
-            if c.clicked() {
-                close = true;
-            }
-            let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(app.tokens.accent));
-            elems.push((format!("{p}.ok"), o.rect, "OK".into()));
-            if o.clicked() {
-                apply = true;
-            }
-        });
-    });
+        },
+    );
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }

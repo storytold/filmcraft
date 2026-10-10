@@ -182,7 +182,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         let mut ed = Ed { t: app.tokens, fx: &fx_id, target: &target, inst, mt, drafts, acts: Vec::new(), autos: Vec::new() };
         let mut open = true;
         let mut closed = false;
-        egui::Window::new(title).id(egui::Id::new(("fx-editor", &k))).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+        crate::dialog_style::Window::new(title).id(egui::Id::new(("fx-editor", &k))).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             match ed.fx {
                 "parametric_eq" => parametric(ui, &mut ed),
                 "graphic_eq" | "graphic_eq_20" | "graphic_eq_30" => graphic(ui, &mut ed),
@@ -191,7 +191,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             ui.separator();
             ui.horizontal(|ui| {
-                let r = ui.button(tl!("Close"));
+                let r = crate::dialog_style::actions(ui, |ui| ui.add(crate::dialog_style::primary(tl!("Close")))).inner;
                 ed.auto(format!("fxEditor.{}.close", ed.fx), r.rect, "Close");
                 if r.clicked() {
                     closed = true;

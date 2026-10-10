@@ -455,370 +455,379 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let info_only = matches!(d.command.as_str(), "file.mediaProperties" | "clip.sourceSettings" | "help.systemCompatibilityReport");
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::new(("menu-dialog", pre));
-    egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(420.0).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        let p = &mut d.params;
-        match d.command.as_str() {
-            "edit.find" => {
-                radios(ui, &mut elems, pre, p, "scope", tl!("Find in:"), &[("project", tl!("Project")), ("timeline", tl!("Timeline"))]);
-                ui.separator();
-                if p["scope"] == "timeline" {
-                    let mut t = p["rows"][0]["text"].as_str().unwrap_or_default().to_string();
+    crate::dialog_style::Window::new(title).id(id).collapsible(false).resizable(false).default_width(420.0).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(
+        ctx,
+        |ui| {
+            let p = &mut d.params;
+            match d.command.as_str() {
+                "edit.find" => {
+                    radios(ui, &mut elems, pre, p, "scope", tl!("Find in:"), &[("project", tl!("Project")), ("timeline", tl!("Timeline"))]);
+                    ui.separator();
+                    if p["scope"] == "timeline" {
+                        let mut t = p["rows"][0]["text"].as_str().unwrap_or_default().to_string();
+                        ui.horizontal(|ui| {
+                            ui.label(tl!("Find:"));
+                            let r = ui.add(egui::TextEdit::singleline(&mut t).desired_width(240.0));
+                            push(&mut elems, "find.row.0.text", &r, "Find");
+                        });
+                        p["rows"][0]["text"] = json!(t);
+                        radios(
+                            ui,
+                            &mut elems,
+                            pre,
+                            p,
+                            "in",
+                            tl!("Search:"),
+                            &[("all", tl!("Clip Names and Markers")), ("clips", tl!("Clip Names")), ("markers", tl!("Markers"))],
+                        );
+                    } else {
+                        let cols = pairs(&COLUMNS);
+                        let ops: Vec<(String, String)> = FindOp::ALL.iter().map(|o| (o.name().to_string(), o.label().to_string())).collect();
+                        for n in 0..2 {
+                            let mut row = p["rows"][n].clone();
+                            ui.horizontal(|ui| {
+                                combo(ui, &mut elems, &format!("find.row.{n}.column"), "", &mut row["column"], &cols);
+                                combo(ui, &mut elems, &format!("find.row.{n}.operator"), "", &mut row["operator"], &ops);
+                                let mut t = row["text"].as_str().unwrap_or_default().to_string();
+                                let r = ui.add(egui::TextEdit::singleline(&mut t).desired_width(160.0));
+                                push(&mut elems, format!("find.row.{n}.text"), &r, "Find What");
+                                row["text"] = json!(t);
+                            });
+                            p["rows"][n] = row;
+                        }
+                        ui.horizontal(|ui| {
+                            ui.label(tl!("Match:"));
+                            for (v, key, l) in [(true, "all", tl!("All")), (false, "any", tl!("Any"))] {
+                                let r = ui.radio(p["matchAll"].as_bool() == Some(v), l);
+                                push(&mut elems, format!("find.match.{key}"), &r, l);
+                                if r.clicked() {
+                                    p["matchAll"] = json!(v);
+                                }
+                            }
+                            check(ui, &mut elems, pre, p, "caseSensitive", tl!("Case Sensitive"));
+                        });
+                    }
+                    if let Some(m) = d.info.get("result").and_then(Value::as_str) {
+                        ui.label(RichText::new(m).weak());
+                    }
+                }
+                "file.newSearchBin" => {
+                    text(ui, &mut elems, pre, p, "name", tl!("Name:"), 220.0);
+                    combo(ui, &mut elems, "searchBin.column", tl!("Search:"), &mut p["column"], &pairs(&COLUMNS));
+                    let ops: Vec<(String, String)> = FindOp::ALL.iter().map(|o| (o.name().to_string(), o.label().to_string())).collect();
+                    combo(ui, &mut elems, "searchBin.operator", "", &mut p["operator"], &ops);
+                    text(ui, &mut elems, pre, p, "text", tl!("Find:"), 220.0);
+                }
+                "project.settings" => {
+                    ui.label(tlf!("Project: {name}", name = d.info["project"].as_str().unwrap_or_default()));
                     ui.horizontal(|ui| {
-                        ui.label(tl!("Find:"));
-                        let r = ui.add(egui::TextEdit::singleline(&mut t).desired_width(240.0));
-                        push(&mut elems, "find.row.0.text", &r, "Find");
+                        for (k, l) in [("general", tl!("General")), ("scratchDisks", tl!("Scratch Disks")), ("ingest", tl!("Ingest Settings"))] {
+                            let r = ui.selectable_label(p["tab"].as_str() == Some(k), l);
+                            push(&mut elems, format!("projectSettings.tab.{k}"), &r, l);
+                            if r.clicked() {
+                                p["tab"] = json!(k);
+                            }
+                        }
                     });
-                    p["rows"][0]["text"] = json!(t);
+                    ui.separator();
+                    match p["tab"].as_str().unwrap_or("general") {
+                        "scratchDisks" => {
+                            for (k, l) in [
+                                ("captured", tl!("Captured and Generated:")),
+                                ("videoPreviews", tl!("Video Previews:")),
+                                ("audioPreviews", tl!("Audio Previews:")),
+                                ("autoSave", tl!("Project Auto Save:")),
+                            ] {
+                                ui.label(RichText::new(l).strong());
+                                ui.horizontal(|ui| {
+                                    let mut v = p[k].as_str().unwrap_or_default().to_string();
+                                    let r = ui.add(egui::TextEdit::singleline(&mut v).hint_text(tl!("Same as Project")).desired_width(240.0));
+                                    push(&mut elems, format!("projectSettings.scratch.{k}"), &r, l);
+                                    if r.changed() {
+                                        p[k] = if v.is_empty() { Value::Null } else { json!(v) };
+                                    }
+                                    let r = ui.button(tl!("Browse…"));
+                                    push(&mut elems, format!("projectSettings.scratch.{k}.browse"), &r, "Browse");
+                                    if r.clicked() {
+                                        browse = Some(k.to_string());
+                                    }
+                                    let r = ui.button(tl!("Same as Project"));
+                                    push(&mut elems, format!("projectSettings.scratch.{k}.same"), &r, "Same as Project");
+                                    if r.clicked() {
+                                        p[k] = Value::Null;
+                                    }
+                                });
+                                let path = d.info["scratch"][k]["path"].as_str().unwrap_or_default();
+                                ui.label(RichText::new(tlf!("Path: {path}", path)).weak().small());
+                            }
+                        }
+                        "ingest" => {
+                            let mut ing = p["ingest"].clone();
+                            let mut on = ing["enabled"].as_bool().unwrap_or(false);
+                            let r = ui.checkbox(&mut on, tl!("Ingest"));
+                            push(&mut elems, "projectSettings.ingest.enabled", &r, "Ingest");
+                            ing["enabled"] = json!(on);
+                            let actions = vec![
+                                ("copy".to_string(), tl!("Copy").to_string()),
+                                ("transcode".to_string(), tl!("Transcode").to_string()),
+                                ("createProxies".to_string(), tl!("Create Proxies").to_string()),
+                                ("copyAndCreateProxies".to_string(), tl!("Copy and Create Proxies").to_string()),
+                            ];
+                            combo(ui, &mut elems, "projectSettings.ingest.action", tl!("Action:"), &mut ing["action"], &actions);
+                            ui.horizontal(|ui| {
+                                ui.label(tl!("Destination:"));
+                                let mut v = ing["destination"].as_str().unwrap_or_default().to_string();
+                                let r = ui.add(egui::TextEdit::singleline(&mut v).hint_text(tl!("Next to the media")).desired_width(220.0));
+                                push(&mut elems, "projectSettings.ingest.destination", &r, "Destination");
+                                if r.changed() {
+                                    ing["destination"] = if v.is_empty() { Value::Null } else { json!(v) };
+                                }
+                            });
+                            p["ingest"] = ing;
+                        }
+                        _ => {
+                            ui.label(RichText::new(tl!("Video Rendering and Playback")).strong());
+                            let rs = vec![
+                                (filmcraft_engine::project_tools::RENDERER_GPU.to_string(), filmcraft_engine::project_tools::RENDERER_GPU.to_string()),
+                                (
+                                    filmcraft_engine::project_tools::RENDERER_SOFTWARE.to_string(),
+                                    filmcraft_engine::project_tools::RENDERER_SOFTWARE.to_string(),
+                                ),
+                            ];
+                            combo(ui, &mut elems, "projectSettings.renderer", tl!("Renderer:"), &mut p["renderer"], &rs);
+                            ui.label(RichText::new(tl!("Video")).strong());
+                            let vd: Vec<(String, String)> =
+                                filmcraft_time::TimeDisplay::ALL.iter().map(|t| (t.label().to_string(), t.label().to_string())).collect();
+                            combo(ui, &mut elems, "projectSettings.videoDisplay", tl!("Display Format:"), &mut p["videoDisplay"], &vd);
+                            ui.label(RichText::new(tl!("Audio")).strong());
+                            combo(
+                                ui,
+                                &mut elems,
+                                "projectSettings.audioDisplay",
+                                tl!("Display Format:"),
+                                &mut p["audioDisplay"],
+                                &[
+                                    ("Audio Samples".to_string(), tl!("Audio Samples").to_string()),
+                                    ("Milliseconds".to_string(), tl!("Milliseconds").to_string()),
+                                ],
+                            );
+                            ui.label(RichText::new(tl!("Capture")).strong());
+                            combo(ui, &mut elems, "projectSettings.captureFormat", tl!("Capture Format:"), &mut p["captureFormat"], &pairs(&["DV", "HDV"]));
+                            ui.label(RichText::new(tl!("Action and Title Safe Areas")).strong());
+                            for (k, l) in [("titleSafe", tl!("Title Safe Area")), ("actionSafe", tl!("Action Safe Area"))] {
+                                ui.horizontal(|ui| {
+                                    ui.label(l);
+                                    for (i, axis) in ["horizontal", "vertical"].iter().enumerate() {
+                                        let mut v = p[k][i].as_f64().unwrap_or(0.0);
+                                        let r = ui.add(egui::DragValue::new(&mut v).range(0.0..=50.0).suffix(" %"));
+                                        push(&mut elems, format!("projectSettings.{k}.{axis}"), &r, format!("{l} {axis}"));
+                                        p[k][i] = json!(v);
+                                        ui.label(*axis);
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+                "file.mediaProperties" => {
+                    let list = d.info.as_array().cloned().unwrap_or_default();
+                    egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                        for v in list {
+                            ui.label(RichText::new(v["name"].as_str().unwrap_or_default()).strong());
+                            let line = |ui: &mut egui::Ui, k: &str, val: String| {
+                                if !val.is_empty() && val != "null" {
+                                    ui.label(format!("{}: {val}", crate::i18n::t(k)));
+                                }
+                            };
+                            let s = |x: &Value| x.as_str().map(str::to_string).unwrap_or_else(|| if x.is_null() { String::new() } else { x.to_string() });
+                            line(ui, tl!("File Path"), s(&v["path"]));
+                            line(ui, tl!("Type"), format!("{} ({})", s(&v["type"]), s(&v["container"])));
+                            line(ui, tl!("File Size"), v["fileSize"].as_u64().map(|b| format!("{:.2} MB", b as f64 / 1e6)).unwrap_or_default());
+                            line(ui, tl!("Total Duration"), s(&v["duration"]["timecode"]));
+                            line(ui, tl!("Average Data Rate"), v["dataRateKbps"].as_f64().map(|k| format!("{k} kbit/s")).unwrap_or_default());
+                            if v["video"].is_object() {
+                                let x = &v["video"];
+                                line(
+                                    ui,
+                                    tl!("Video"),
+                                    format!(
+                                        "{} · {} x {} ({}) · {} fps · {}",
+                                        s(&x["codec"]),
+                                        x["width"],
+                                        x["height"],
+                                        s(&x["pixelAspectRatio"]),
+                                        s(&x["frameRateLabel"]),
+                                        s(&x["pixelFormat"])
+                                    ),
+                                );
+                                line(ui, tl!("Colour"), s(&x["color"]));
+                            }
+                            if v["audio"].is_object() {
+                                let x = &v["audio"];
+                                line(
+                                    ui,
+                                    tl!("Audio"),
+                                    tlf!("{codec} · {rate} Hz · {n} channel(s)", codec = s(&x["codec"]), rate = x["sampleRate"], n = x["channels"]),
+                                );
+                            }
+                            ui.separator();
+                        }
+                    });
+                }
+                "clip.editOffline" => {
+                    text(ui, &mut elems, pre, p, "mediaName", tl!("Media Name:"), 220.0);
+                    text(ui, &mut elems, pre, p, "tapeName", tl!("Tape Name:"), 220.0);
+                    text(ui, &mut elems, pre, p, "description", tl!("Description:"), 220.0);
+                    text(ui, &mut elems, pre, p, "scene", tl!("Scene:"), 220.0);
+                    text(ui, &mut elems, pre, p, "shot", tl!("Shot/Take:"), 220.0);
+                    text(ui, &mut elems, pre, p, "logNote", tl!("Log Note:"), 220.0);
+                }
+                "clip.sourceSettings" => {
+                    ui.label(tlf!("Codec: {codec}", codec = d.info["codec"].as_str().unwrap_or_default()));
+                    ui.label(RichText::new(d.info["message"].as_str().unwrap_or_default()).weak());
+                }
+                "clip.updateMetadata" => {
+                    ui.label(tlf!("Write the metadata of the selected clip(s) ({n}) to XMP files next to their media?", n = d.info["count"]));
+                    ui.label(RichText::new(tl!("Existing XMP files written by other applications are left unchanged.")).weak());
+                }
+                "clip.automateToSequence" => {
+                    ui.label(tlf!("To {name}", name = d.info["sequence"].as_str().unwrap_or_default()));
+                    radios(ui, &mut elems, pre, p, "ordering", tl!("Ordering:"), &[("sort", tl!("Sort Order")), ("selection", tl!("Selection Order"))]);
                     radios(
                         ui,
                         &mut elems,
                         pre,
                         p,
-                        "in",
-                        tl!("Search:"),
-                        &[("all", tl!("Clip Names and Markers")), ("clips", tl!("Clip Names")), ("markers", tl!("Markers"))],
+                        "placement",
+                        tl!("Placement:"),
+                        &[("sequentially", tl!("Sequentially")), ("unnumberedMarkers", tl!("At Unnumbered Markers"))],
                     );
-                } else {
-                    let cols = pairs(&COLUMNS);
-                    let ops: Vec<(String, String)> = FindOp::ALL.iter().map(|o| (o.name().to_string(), o.label().to_string())).collect();
-                    for n in 0..2 {
-                        let mut row = p["rows"][n].clone();
-                        ui.horizontal(|ui| {
-                            combo(ui, &mut elems, &format!("find.row.{n}.column"), "", &mut row["column"], &cols);
-                            combo(ui, &mut elems, &format!("find.row.{n}.operator"), "", &mut row["operator"], &ops);
-                            let mut t = row["text"].as_str().unwrap_or_default().to_string();
-                            let r = ui.add(egui::TextEdit::singleline(&mut t).desired_width(160.0));
-                            push(&mut elems, format!("find.row.{n}.text"), &r, "Find What");
-                            row["text"] = json!(t);
-                        });
-                        p["rows"][n] = row;
-                    }
+                    radios(ui, &mut elems, pre, p, "method", tl!("Method:"), &[("insert", tl!("Insert Edit")), ("overwrite", tl!("Overwrite Edit"))]);
+                    number(ui, &mut elems, pre, p, "overlapFrames", tl!("Clip Overlap:"), 0.0..=600.0, " frames");
+                    number(ui, &mut elems, pre, p, "stillFrames", tl!("Frames per Still:"), 1.0..=100_000.0, " frames");
+                    ui.label(RichText::new(tl!("Transitions")).strong());
+                    check(ui, &mut elems, pre, p, "audioTransition", tl!("Apply Default Audio Transition"));
+                    check(ui, &mut elems, pre, p, "videoTransition", tl!("Apply Default Video Transition"));
+                    ui.label(RichText::new(tl!("Ignore Options")).strong());
+                    check(ui, &mut elems, pre, p, "ignoreAudio", tl!("Ignore Audio"));
+                    check(ui, &mut elems, pre, p, "ignoreVideo", tl!("Ignore Video"));
+                }
+                "clip.sceneEditDetection" => {
+                    check(ui, &mut elems, pre, p, "applyCuts", tl!("Apply a cut at each detected cut point"));
+                    check(ui, &mut elems, pre, p, "createSubclips", tl!("Create a subclip for each detected cut point"));
+                    check(ui, &mut elems, pre, p, "generateMarkers", tl!("Generate clip markers at each detected cut point"));
                     ui.horizontal(|ui| {
-                        ui.label(tl!("Match:"));
-                        for (v, key, l) in [(true, "all", tl!("All")), (false, "any", tl!("Any"))] {
-                            let r = ui.radio(p["matchAll"].as_bool() == Some(v), l);
-                            push(&mut elems, format!("find.match.{key}"), &r, l);
-                            if r.clicked() {
-                                p["matchAll"] = json!(v);
-                            }
-                        }
-                        check(ui, &mut elems, pre, p, "caseSensitive", tl!("Case Sensitive"));
+                        ui.label(tl!("Sensitivity:"));
+                        let mut v = p["sensitivity"].as_f64().unwrap_or(50.0);
+                        let r = ui.add(egui::Slider::new(&mut v, 0.0..=100.0));
+                        push(&mut elems, "sceneDetect.sensitivity", &r, "Sensitivity");
+                        p["sensitivity"] = json!(v);
                     });
                 }
-                if let Some(m) = d.info.get("result").and_then(Value::as_str) {
-                    ui.label(RichText::new(m).weak());
+                "sequence.normalizeMixTrack" => number(ui, &mut elems, pre, p, "db", tl!("Normalize Mix Track to:"), -96.0..=24.0, " dB"),
+                "sequence.simplify" => {
+                    text(ui, &mut elems, pre, p, "name", tl!("Sequence Name:"), 240.0);
+                    ui.label(RichText::new(tl!("Remove")).strong());
+                    check(ui, &mut elems, pre, p, "removeDisabled", tl!("Disabled clips"));
+                    check(ui, &mut elems, pre, p, "removeEmptyTracks", tl!("Empty tracks"));
+                    check(ui, &mut elems, pre, p, "closeGaps", tl!("Gaps"));
+                    check(ui, &mut elems, pre, p, "removeVideoEffects", tl!("Video effects"));
+                    check(ui, &mut elems, pre, p, "removeAudioEffects", tl!("Audio effects"));
+                    check(ui, &mut elems, pre, p, "removeText", tl!("Text (graphics and captions)"));
+                    ui.label(RichText::new(tl!("Clips")).strong());
+                    check(ui, &mut elems, pre, p, "moveClipsDown", tl!("Move clips to the lowest track possible"));
+                    radios(
+                        ui,
+                        &mut elems,
+                        pre,
+                        p,
+                        "keep",
+                        tl!("Keep:"),
+                        &[("both", tl!("Video and Audio")), ("video", tl!("Video Only")), ("audio", tl!("Audio Only"))],
+                    );
                 }
-            }
-            "file.newSearchBin" => {
-                text(ui, &mut elems, pre, p, "name", tl!("Name:"), 220.0);
-                combo(ui, &mut elems, "searchBin.column", tl!("Search:"), &mut p["column"], &pairs(&COLUMNS));
-                let ops: Vec<(String, String)> = FindOp::ALL.iter().map(|o| (o.name().to_string(), o.label().to_string())).collect();
-                combo(ui, &mut elems, "searchBin.operator", "", &mut p["operator"], &ops);
-                text(ui, &mut elems, pre, p, "text", tl!("Find:"), 220.0);
-            }
-            "project.settings" => {
-                ui.label(tlf!("Project: {name}", name = d.info["project"].as_str().unwrap_or_default()));
-                ui.horizontal(|ui| {
-                    for (k, l) in [("general", tl!("General")), ("scratchDisks", tl!("Scratch Disks")), ("ingest", tl!("Ingest Settings"))] {
-                        let r = ui.selectable_label(p["tab"].as_str() == Some(k), l);
-                        push(&mut elems, format!("projectSettings.tab.{k}"), &r, l);
-                        if r.clicked() {
-                            p["tab"] = json!(k);
-                        }
-                    }
-                });
-                ui.separator();
-                match p["tab"].as_str().unwrap_or("general") {
-                    "scratchDisks" => {
-                        for (k, l) in [
-                            ("captured", tl!("Captured and Generated:")),
-                            ("videoPreviews", tl!("Video Previews:")),
-                            ("audioPreviews", tl!("Audio Previews:")),
-                            ("autoSave", tl!("Project Auto Save:")),
-                        ] {
-                            ui.label(RichText::new(l).strong());
-                            ui.horizontal(|ui| {
-                                let mut v = p[k].as_str().unwrap_or_default().to_string();
-                                let r = ui.add(egui::TextEdit::singleline(&mut v).hint_text(tl!("Same as Project")).desired_width(240.0));
-                                push(&mut elems, format!("projectSettings.scratch.{k}"), &r, l);
-                                if r.changed() {
-                                    p[k] = if v.is_empty() { Value::Null } else { json!(v) };
-                                }
-                                let r = ui.button(tl!("Browse…"));
-                                push(&mut elems, format!("projectSettings.scratch.{k}.browse"), &r, "Browse");
-                                if r.clicked() {
-                                    browse = Some(k.to_string());
-                                }
-                                let r = ui.button(tl!("Same as Project"));
-                                push(&mut elems, format!("projectSettings.scratch.{k}.same"), &r, "Same as Project");
-                                if r.clicked() {
-                                    p[k] = Value::Null;
-                                }
-                            });
-                            let path = d.info["scratch"][k]["path"].as_str().unwrap_or_default();
-                            ui.label(RichText::new(tlf!("Path: {path}", path)).weak().small());
-                        }
-                    }
-                    "ingest" => {
-                        let mut ing = p["ingest"].clone();
-                        let mut on = ing["enabled"].as_bool().unwrap_or(false);
-                        let r = ui.checkbox(&mut on, tl!("Ingest"));
-                        push(&mut elems, "projectSettings.ingest.enabled", &r, "Ingest");
-                        ing["enabled"] = json!(on);
-                        let actions = vec![
-                            ("copy".to_string(), tl!("Copy").to_string()),
-                            ("transcode".to_string(), tl!("Transcode").to_string()),
-                            ("createProxies".to_string(), tl!("Create Proxies").to_string()),
-                            ("copyAndCreateProxies".to_string(), tl!("Copy and Create Proxies").to_string()),
-                        ];
-                        combo(ui, &mut elems, "projectSettings.ingest.action", tl!("Action:"), &mut ing["action"], &actions);
-                        ui.horizontal(|ui| {
-                            ui.label(tl!("Destination:"));
-                            let mut v = ing["destination"].as_str().unwrap_or_default().to_string();
-                            let r = ui.add(egui::TextEdit::singleline(&mut v).hint_text(tl!("Next to the media")).desired_width(220.0));
-                            push(&mut elems, "projectSettings.ingest.destination", &r, "Destination");
-                            if r.changed() {
-                                ing["destination"] = if v.is_empty() { Value::Null } else { json!(v) };
-                            }
-                        });
-                        p["ingest"] = ing;
-                    }
-                    _ => {
-                        ui.label(RichText::new(tl!("Video Rendering and Playback")).strong());
-                        let rs = vec![
-                            (filmcraft_engine::project_tools::RENDERER_GPU.to_string(), filmcraft_engine::project_tools::RENDERER_GPU.to_string()),
-                            (filmcraft_engine::project_tools::RENDERER_SOFTWARE.to_string(), filmcraft_engine::project_tools::RENDERER_SOFTWARE.to_string()),
-                        ];
-                        combo(ui, &mut elems, "projectSettings.renderer", tl!("Renderer:"), &mut p["renderer"], &rs);
-                        ui.label(RichText::new(tl!("Video")).strong());
-                        let vd: Vec<(String, String)> =
-                            filmcraft_time::TimeDisplay::ALL.iter().map(|t| (t.label().to_string(), t.label().to_string())).collect();
-                        combo(ui, &mut elems, "projectSettings.videoDisplay", tl!("Display Format:"), &mut p["videoDisplay"], &vd);
-                        ui.label(RichText::new(tl!("Audio")).strong());
-                        combo(
-                            ui,
-                            &mut elems,
-                            "projectSettings.audioDisplay",
-                            tl!("Display Format:"),
-                            &mut p["audioDisplay"],
-                            &[("Audio Samples".to_string(), tl!("Audio Samples").to_string()), ("Milliseconds".to_string(), tl!("Milliseconds").to_string())],
-                        );
-                        ui.label(RichText::new(tl!("Capture")).strong());
-                        combo(ui, &mut elems, "projectSettings.captureFormat", tl!("Capture Format:"), &mut p["captureFormat"], &pairs(&["DV", "HDV"]));
-                        ui.label(RichText::new(tl!("Action and Title Safe Areas")).strong());
-                        for (k, l) in [("titleSafe", tl!("Title Safe Area")), ("actionSafe", tl!("Action Safe Area"))] {
-                            ui.horizontal(|ui| {
-                                ui.label(l);
-                                for (i, axis) in ["horizontal", "vertical"].iter().enumerate() {
-                                    let mut v = p[k][i].as_f64().unwrap_or(0.0);
-                                    let r = ui.add(egui::DragValue::new(&mut v).range(0.0..=50.0).suffix(" %"));
-                                    push(&mut elems, format!("projectSettings.{k}.{axis}"), &r, format!("{l} {axis}"));
-                                    p[k][i] = json!(v);
-                                    ui.label(*axis);
-                                }
-                            });
-                        }
-                    }
+                "sequence.transcribe" => {
+                    let langs = pairs(&["auto", "en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh", "nl", "ru"]);
+                    combo(ui, &mut elems, "transcribe.language", tl!("Language:"), &mut p["language"], &langs);
+                    let mut tracks: Vec<(String, String)> = vec![("mix".into(), tl!("Mix").into())];
+                    tracks.extend(
+                        d.info["tracks"]
+                            .as_array()
+                            .cloned()
+                            .unwrap_or_default()
+                            .iter()
+                            .filter_map(|t| t.as_str())
+                            .map(|t| (t.to_string(), tlf!("Audio on track {t}", t))),
+                    );
+                    combo(ui, &mut elems, "transcribe.track", tl!("Audio analysis:"), &mut p["track"], &tracks);
+                    check(ui, &mut elems, pre, p, "diarize", tl!("Recognize when different speakers are talking"));
                 }
-            }
-            "file.mediaProperties" => {
-                let list = d.info.as_array().cloned().unwrap_or_default();
-                egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
-                    for v in list {
-                        ui.label(RichText::new(v["name"].as_str().unwrap_or_default()).strong());
-                        let line = |ui: &mut egui::Ui, k: &str, val: String| {
-                            if !val.is_empty() && val != "null" {
-                                ui.label(format!("{}: {val}", crate::i18n::t(k)));
-                            }
-                        };
-                        let s = |x: &Value| x.as_str().map(str::to_string).unwrap_or_else(|| if x.is_null() { String::new() } else { x.to_string() });
-                        line(ui, tl!("File Path"), s(&v["path"]));
-                        line(ui, tl!("Type"), format!("{} ({})", s(&v["type"]), s(&v["container"])));
-                        line(ui, tl!("File Size"), v["fileSize"].as_u64().map(|b| format!("{:.2} MB", b as f64 / 1e6)).unwrap_or_default());
-                        line(ui, tl!("Total Duration"), s(&v["duration"]["timecode"]));
-                        line(ui, tl!("Average Data Rate"), v["dataRateKbps"].as_f64().map(|k| format!("{k} kbit/s")).unwrap_or_default());
-                        if v["video"].is_object() {
-                            let x = &v["video"];
-                            line(
-                                ui,
-                                tl!("Video"),
-                                format!(
-                                    "{} · {} x {} ({}) · {} fps · {}",
-                                    s(&x["codec"]),
-                                    x["width"],
-                                    x["height"],
-                                    s(&x["pixelAspectRatio"]),
-                                    s(&x["frameRateLabel"]),
-                                    s(&x["pixelFormat"])
-                                ),
-                            );
-                            line(ui, tl!("Colour"), s(&x["color"]));
-                        }
-                        if v["audio"].is_object() {
-                            let x = &v["audio"];
-                            line(
-                                ui,
-                                tl!("Audio"),
-                                tlf!("{codec} · {rate} Hz · {n} channel(s)", codec = s(&x["codec"]), rate = x["sampleRate"], n = x["channels"]),
-                            );
-                        }
-                        ui.separator();
-                    }
-                });
-            }
-            "clip.editOffline" => {
-                text(ui, &mut elems, pre, p, "mediaName", tl!("Media Name:"), 220.0);
-                text(ui, &mut elems, pre, p, "tapeName", tl!("Tape Name:"), 220.0);
-                text(ui, &mut elems, pre, p, "description", tl!("Description:"), 220.0);
-                text(ui, &mut elems, pre, p, "scene", tl!("Scene:"), 220.0);
-                text(ui, &mut elems, pre, p, "shot", tl!("Shot/Take:"), 220.0);
-                text(ui, &mut elems, pre, p, "logNote", tl!("Log Note:"), 220.0);
-            }
-            "clip.sourceSettings" => {
-                ui.label(tlf!("Codec: {codec}", codec = d.info["codec"].as_str().unwrap_or_default()));
-                ui.label(RichText::new(d.info["message"].as_str().unwrap_or_default()).weak());
-            }
-            "clip.updateMetadata" => {
-                ui.label(tlf!("Write the metadata of the selected clip(s) ({n}) to XMP files next to their media?", n = d.info["count"]));
-                ui.label(RichText::new(tl!("Existing XMP files written by other applications are left unchanged.")).weak());
-            }
-            "clip.automateToSequence" => {
-                ui.label(tlf!("To {name}", name = d.info["sequence"].as_str().unwrap_or_default()));
-                radios(ui, &mut elems, pre, p, "ordering", tl!("Ordering:"), &[("sort", tl!("Sort Order")), ("selection", tl!("Selection Order"))]);
-                radios(
-                    ui,
-                    &mut elems,
-                    pre,
-                    p,
-                    "placement",
-                    tl!("Placement:"),
-                    &[("sequentially", tl!("Sequentially")), ("unnumberedMarkers", tl!("At Unnumbered Markers"))],
-                );
-                radios(ui, &mut elems, pre, p, "method", tl!("Method:"), &[("insert", tl!("Insert Edit")), ("overwrite", tl!("Overwrite Edit"))]);
-                number(ui, &mut elems, pre, p, "overlapFrames", tl!("Clip Overlap:"), 0.0..=600.0, " frames");
-                number(ui, &mut elems, pre, p, "stillFrames", tl!("Frames per Still:"), 1.0..=100_000.0, " frames");
-                ui.label(RichText::new(tl!("Transitions")).strong());
-                check(ui, &mut elems, pre, p, "audioTransition", tl!("Apply Default Audio Transition"));
-                check(ui, &mut elems, pre, p, "videoTransition", tl!("Apply Default Video Transition"));
-                ui.label(RichText::new(tl!("Ignore Options")).strong());
-                check(ui, &mut elems, pre, p, "ignoreAudio", tl!("Ignore Audio"));
-                check(ui, &mut elems, pre, p, "ignoreVideo", tl!("Ignore Video"));
-            }
-            "clip.sceneEditDetection" => {
-                check(ui, &mut elems, pre, p, "applyCuts", tl!("Apply a cut at each detected cut point"));
-                check(ui, &mut elems, pre, p, "createSubclips", tl!("Create a subclip for each detected cut point"));
-                check(ui, &mut elems, pre, p, "generateMarkers", tl!("Generate clip markers at each detected cut point"));
-                ui.horizontal(|ui| {
-                    ui.label(tl!("Sensitivity:"));
-                    let mut v = p["sensitivity"].as_f64().unwrap_or(50.0);
-                    let r = ui.add(egui::Slider::new(&mut v, 0.0..=100.0));
-                    push(&mut elems, "sceneDetect.sensitivity", &r, "Sensitivity");
-                    p["sensitivity"] = json!(v);
-                });
-            }
-            "sequence.normalizeMixTrack" => number(ui, &mut elems, pre, p, "db", tl!("Normalize Mix Track to:"), -96.0..=24.0, " dB"),
-            "sequence.simplify" => {
-                text(ui, &mut elems, pre, p, "name", tl!("Sequence Name:"), 240.0);
-                ui.label(RichText::new(tl!("Remove")).strong());
-                check(ui, &mut elems, pre, p, "removeDisabled", tl!("Disabled clips"));
-                check(ui, &mut elems, pre, p, "removeEmptyTracks", tl!("Empty tracks"));
-                check(ui, &mut elems, pre, p, "closeGaps", tl!("Gaps"));
-                check(ui, &mut elems, pre, p, "removeVideoEffects", tl!("Video effects"));
-                check(ui, &mut elems, pre, p, "removeAudioEffects", tl!("Audio effects"));
-                check(ui, &mut elems, pre, p, "removeText", tl!("Text (graphics and captions)"));
-                ui.label(RichText::new(tl!("Clips")).strong());
-                check(ui, &mut elems, pre, p, "moveClipsDown", tl!("Move clips to the lowest track possible"));
-                radios(
-                    ui,
-                    &mut elems,
-                    pre,
-                    p,
-                    "keep",
-                    tl!("Keep:"),
-                    &[("both", tl!("Video and Audio")), ("video", tl!("Video Only")), ("audio", tl!("Audio Only"))],
-                );
-            }
-            "sequence.transcribe" => {
-                let langs = pairs(&["auto", "en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh", "nl", "ru"]);
-                combo(ui, &mut elems, "transcribe.language", tl!("Language:"), &mut p["language"], &langs);
-                let mut tracks: Vec<(String, String)> = vec![("mix".into(), tl!("Mix").into())];
-                tracks.extend(
-                    d.info["tracks"]
-                        .as_array()
-                        .cloned()
-                        .unwrap_or_default()
-                        .iter()
-                        .filter_map(|t| t.as_str())
-                        .map(|t| (t.to_string(), tlf!("Audio on track {t}", t))),
-                );
-                combo(ui, &mut elems, "transcribe.track", tl!("Audio analysis:"), &mut p["track"], &tracks);
-                check(ui, &mut elems, pre, p, "diarize", tl!("Recognize when different speakers are talking"));
-            }
-            "file.saveAsTemplate" => text(ui, &mut elems, pre, p, "name", tl!("Template Name:"), 240.0),
-            "file.newColorMatte" => {
-                color(ui, &mut elems, pre, p, "color", tl!("Color:"));
-                text(ui, &mut elems, pre, p, "name", tl!("Name:"), 220.0);
-                number(ui, &mut elems, pre, p, "width", tl!("Width:"), 1.0..=16384.0, " px");
-                number(ui, &mut elems, pre, p, "height", tl!("Height:"), 1.0..=16384.0, " px");
-                number(ui, &mut elems, pre, p, "seconds", tl!("Duration:"), 0.04..=36000.0, " s");
-            }
-            "project.matteColor" => color(ui, &mut elems, pre, p, "color", tl!("Color:")),
-            "markers.addFlashCue" => {
-                text(ui, &mut elems, pre, p, "name", tl!("Name:"), 220.0);
-                text(ui, &mut elems, pre, p, "comment", tl!("Comments:"), 220.0);
-            }
-            "help.systemCompatibilityReport" => {
-                let r = &d.info;
-                ui.label(RichText::new(r["app"].as_str().unwrap_or_default()).strong());
-                for c in r["checks"].as_array().cloned().unwrap_or_default() {
-                    let ok = c["ok"].as_bool().unwrap_or(false);
-                    ui.label(format!(
-                        "{} {}: {}",
-                        if ok { "✔" } else { "⚠" },
-                        c["name"].as_str().unwrap_or_default(),
-                        c["detail"].as_str().unwrap_or_default()
-                    ));
+                "file.saveAsTemplate" => text(ui, &mut elems, pre, p, "name", tl!("Template Name:"), 240.0),
+                "file.newColorMatte" => {
+                    color(ui, &mut elems, pre, p, "color", tl!("Color:"));
+                    text(ui, &mut elems, pre, p, "name", tl!("Name:"), 220.0);
+                    number(ui, &mut elems, pre, p, "width", tl!("Width:"), 1.0..=16384.0, " px");
+                    number(ui, &mut elems, pre, p, "height", tl!("Height:"), 1.0..=16384.0, " px");
+                    number(ui, &mut elems, pre, p, "seconds", tl!("Duration:"), 0.04..=36000.0, " s");
                 }
-                ui.separator();
-                let list = |ui: &mut egui::Ui, k: &str, v: &Value| {
-                    let items: Vec<String> = v
-                        .as_array()
-                        .cloned()
-                        .unwrap_or_default()
-                        .iter()
-                        .map(|x| {
-                            x.as_str().map(str::to_string).unwrap_or_else(|| {
-                                format!("{}{}", x["format"].as_str().unwrap_or_default(), if x["available"] == false { tl!(" (unavailable)") } else { "" })
+                "project.matteColor" => color(ui, &mut elems, pre, p, "color", tl!("Color:")),
+                "markers.addFlashCue" => {
+                    text(ui, &mut elems, pre, p, "name", tl!("Name:"), 220.0);
+                    text(ui, &mut elems, pre, p, "comment", tl!("Comments:"), 220.0);
+                }
+                "help.systemCompatibilityReport" => {
+                    let r = &d.info;
+                    ui.label(RichText::new(r["app"].as_str().unwrap_or_default()).strong());
+                    for c in r["checks"].as_array().cloned().unwrap_or_default() {
+                        let ok = c["ok"].as_bool().unwrap_or(false);
+                        ui.label(format!(
+                            "{} {}: {}",
+                            if ok { "✔" } else { "⚠" },
+                            c["name"].as_str().unwrap_or_default(),
+                            c["detail"].as_str().unwrap_or_default()
+                        ));
+                    }
+                    ui.separator();
+                    let list = |ui: &mut egui::Ui, k: &str, v: &Value| {
+                        let items: Vec<String> = v
+                            .as_array()
+                            .cloned()
+                            .unwrap_or_default()
+                            .iter()
+                            .map(|x| {
+                                x.as_str().map(str::to_string).unwrap_or_else(|| {
+                                    format!("{}{}", x["format"].as_str().unwrap_or_default(), if x["available"] == false { tl!(" (unavailable)") } else { "" })
+                                })
                             })
-                        })
-                        .collect();
-                    ui.label(format!("{k}: {}", items.join(", ")));
-                };
-                list(ui, tl!("Decoders"), &r["decoders"]);
-                list(ui, tl!("Containers"), &r["containers"]);
-                list(ui, tl!("Export formats"), &r["exportFormats"]);
-            }
-            _ => {}
-        }
-        if !d.error.is_empty() {
-            ui.colored_label(egui::Color32::from_rgb(0xe0, 0x60, 0x60), &d.error);
-        }
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            if !info_only {
-                let r = ui.button(if d.command == "edit.find" { tl!("Done") } else { tl!("Cancel") });
-                push(&mut elems, format!("{pre}.cancel"), &r, "Cancel");
-                if r.clicked() {
-                    action = Some("cancel");
+                            .collect();
+                        ui.label(format!("{k}: {}", items.join(", ")));
+                    };
+                    list(ui, tl!("Decoders"), &r["decoders"]);
+                    list(ui, tl!("Containers"), &r["containers"]);
+                    list(ui, tl!("Export formats"), &r["exportFormats"]);
                 }
+                _ => {}
             }
-            let r = ui.button(ok_text);
-            push(&mut elems, format!("{pre}.ok"), &r, ok_text);
-            if r.clicked() {
-                action = Some(if info_only { "cancel" } else { "ok" });
+            if !d.error.is_empty() {
+                ui.colored_label(egui::Color32::from_rgb(0xe0, 0x60, 0x60), &d.error);
             }
-        });
-    });
+            ui.add_space(6.0);
+            crate::dialog_style::actions(ui, |ui| {
+                if !info_only {
+                    let r = ui.add(crate::dialog_style::secondary(if d.command == "edit.find" { tl!("Done") } else { tl!("Cancel") }));
+                    push(&mut elems, format!("{pre}.cancel"), &r, "Cancel");
+                    if r.clicked() {
+                        action = Some("cancel");
+                    }
+                }
+                let r = ui.add(crate::dialog_style::primary(ok_text));
+                push(&mut elems, format!("{pre}.ok"), &r, ok_text);
+                if r.clicked() {
+                    action = Some(if info_only { "cancel" } else { "ok" });
+                }
+            });
+        },
+    );
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }

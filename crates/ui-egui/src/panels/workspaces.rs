@@ -165,7 +165,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         WorkspaceDialog::SaveAs { .. } => ("New Workspace", tl!("New Workspace")),
         WorkspaceDialog::Edit { .. } => ("Edit Workspaces", tl!("Edit Workspaces")),
     };
-    egui::Window::new(shown).id(egui::Id::new(title)).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(
+    crate::dialog_style::Window::new(shown).id(egui::Id::new(title)).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(
         ctx,
         |ui| match &mut d {
             WorkspaceDialog::SaveAs { name } => {
@@ -174,11 +174,11 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     let r = ui.text_edit_singleline(name);
                     push("workspaces.save.name", &r, "Name");
                 });
-                ui.horizontal(|ui| {
-                    let r = ui.button(tl!("Cancel"));
+                crate::dialog_style::actions(ui, |ui| {
+                    let r = ui.add(crate::dialog_style::secondary(tl!("Cancel")));
                     push("workspaces.save.cancel", &r, "Cancel");
                     close |= r.clicked();
-                    let r = ui.button(tl!("OK"));
+                    let r = ui.add(crate::dialog_style::primary(tl!("OK")));
                     push("workspaces.save.ok", &r, "OK");
                     if r.clicked() {
                         act = Some(("window.workspace.saveAs", json!({"name": name.clone()})));
@@ -225,7 +225,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
                             name.clear();
                         }
                     }
-                    let r = ui.button(tl!("Close"));
+                    let r = crate::dialog_style::actions(ui, |ui| ui.add(crate::dialog_style::primary(tl!("Close")))).inner;
                     push("workspaces.edit.close", &r, "Close");
                     close |= r.clicked();
                 });

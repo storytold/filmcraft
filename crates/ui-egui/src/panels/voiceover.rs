@@ -235,93 +235,99 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut close = false;
     let mut apply = false;
     let mut discard = false;
-    let accent = app.tokens.accent;
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::new("voiceover-settings");
-    egui::Window::new(tl!("Voice-Over Record Settings")).id(id).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        egui::Grid::new("voiceover-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-            ui.label(tl!("Name:"));
-            let r = ui.add(egui::TextEdit::singleline(&mut d.prefs.name).desired_width(220.0));
-            elems.push(("voiceover.name".into(), r.rect, d.prefs.name.clone()));
-            ui.end_row();
-            ui.label(tl!("Source:"));
-            let shown = if d.prefs.source.is_empty() { tl!("Default Input").to_string() } else { d.prefs.source.clone() };
-            let previous_source = d.prefs.source.clone();
-            let cb = egui::ComboBox::from_id_salt("voiceover-source").selected_text(&shown).width(220.0).show_ui(ui, |ui| {
-                let mut opts = vec![(String::new(), tl!("Default Input").to_string())];
-                opts.extend(d.devices.iter().map(|x| (x.clone(), x.clone())));
-                for (i, (val, label)) in opts.into_iter().enumerate() {
-                    let r = ui.selectable_label(d.prefs.source == val, &label);
-                    elems.push((format!("voiceover.source.{i}"), r.rect, label));
-                    if r.clicked() {
-                        d.prefs.source = val;
+    crate::dialog_style::Window::new(tl!("Voice-Over Record Settings"))
+        .id(id)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            egui::Grid::new("voiceover-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                ui.label(tl!("Name:"));
+                let r = ui.add(egui::TextEdit::singleline(&mut d.prefs.name).desired_width(220.0));
+                elems.push(("voiceover.name".into(), r.rect, d.prefs.name.clone()));
+                ui.end_row();
+                ui.label(tl!("Source:"));
+                let shown = if d.prefs.source.is_empty() { tl!("Default Input").to_string() } else { d.prefs.source.clone() };
+                let previous_source = d.prefs.source.clone();
+                let cb = egui::ComboBox::from_id_salt("voiceover-source").selected_text(&shown).width(220.0).show_ui(ui, |ui| {
+                    let mut opts = vec![(String::new(), tl!("Default Input").to_string())];
+                    opts.extend(d.devices.iter().map(|x| (x.clone(), x.clone())));
+                    for (i, (val, label)) in opts.into_iter().enumerate() {
+                        let r = ui.selectable_label(d.prefs.source == val, &label);
+                        elems.push((format!("voiceover.source.{i}"), r.rect, label));
+                        if r.clicked() {
+                            d.prefs.source = val;
+                        }
+                    }
+                });
+                elems.push(("voiceover.source".into(), cb.response.rect, shown));
+                if d.prefs.source != previous_source {
+                    let device = if d.prefs.source.is_empty() { app.session.prefs.audio_hardware.default_input.as_str() } else { d.prefs.source.as_str() };
+                    if let Some(input) = app.session.voiceover.input.as_ref() {
+                        d.channels = input.channels(device);
+                        d.prefs.input_channel = d.prefs.input_channel.min(u32::from(d.channels.saturating_sub(1)));
                     }
                 }
-            });
-            elems.push(("voiceover.source".into(), cb.response.rect, shown));
-            if d.prefs.source != previous_source {
-                let device = if d.prefs.source.is_empty() { app.session.prefs.audio_hardware.default_input.as_str() } else { d.prefs.source.as_str() };
-                if let Some(input) = app.session.voiceover.input.as_ref() {
-                    d.channels = input.channels(device);
-                    d.prefs.input_channel = d.prefs.input_channel.min(u32::from(d.channels.saturating_sub(1)));
-                }
-            }
-            ui.end_row();
-            ui.label(tl!("Input:"));
-            let n = u32::from(d.channels.clamp(1, 64));
-            d.prefs.input_channel = d.prefs.input_channel.min(63);
-            let cur = tlf!("Channel {n}", n = d.prefs.input_channel + 1);
-            let cb = egui::ComboBox::from_id_salt("voiceover-input").selected_text(&cur).width(220.0).show_ui(ui, |ui| {
-                for c in 0..n.max(d.prefs.input_channel + 1) {
-                    let label = tlf!("Channel {n}", n = c + 1);
-                    let r = ui.selectable_label(d.prefs.input_channel == c, &label);
-                    elems.push((format!("voiceover.input.{c}"), r.rect, label));
-                    if r.clicked() {
-                        d.prefs.input_channel = c;
+                ui.end_row();
+                ui.label(tl!("Input:"));
+                let n = u32::from(d.channels.clamp(1, 64));
+                d.prefs.input_channel = d.prefs.input_channel.min(63);
+                let cur = tlf!("Channel {n}", n = d.prefs.input_channel + 1);
+                let cb = egui::ComboBox::from_id_salt("voiceover-input").selected_text(&cur).width(220.0).show_ui(ui, |ui| {
+                    for c in 0..n.max(d.prefs.input_channel + 1) {
+                        let label = tlf!("Channel {n}", n = c + 1);
+                        let r = ui.selectable_label(d.prefs.input_channel == c, &label);
+                        elems.push((format!("voiceover.input.{c}"), r.rect, label));
+                        if r.clicked() {
+                            d.prefs.input_channel = c;
+                        }
                     }
-                }
+                });
+                elems.push(("voiceover.input".into(), cb.response.rect, cur));
+                ui.end_row();
+                ui.label("");
+                let r = ui.checkbox(&mut d.prefs.countdown_sound_cues, tl!("Countdown Sound Cues"));
+                elems.push(("voiceover.countdown".into(), r.rect, "Countdown Sound Cues".into()));
+                ui.end_row();
+                ui.label(tl!("Pre-roll:"));
+                let r = ui.add(egui::DragValue::new(&mut d.prefs.preroll_seconds).speed(0.1).range(0.0..=60.0).suffix(tl!(" seconds")));
+                elems.push(("voiceover.preroll".into(), r.rect, format!("{}", d.prefs.preroll_seconds)));
+                ui.end_row();
+                ui.label(tl!("Post-roll:"));
+                let r = ui.add(egui::DragValue::new(&mut d.prefs.postroll_seconds).speed(0.1).range(0.0..=60.0).suffix(tl!(" seconds")));
+                elems.push(("voiceover.postroll".into(), r.rect, format!("{}", d.prefs.postroll_seconds)));
+                ui.end_row();
             });
-            elems.push(("voiceover.input".into(), cb.response.rect, cur));
-            ui.end_row();
-            ui.label("");
-            let r = ui.checkbox(&mut d.prefs.countdown_sound_cues, tl!("Countdown Sound Cues"));
-            elems.push(("voiceover.countdown".into(), r.rect, "Countdown Sound Cues".into()));
-            ui.end_row();
-            ui.label(tl!("Pre-roll:"));
-            let r = ui.add(egui::DragValue::new(&mut d.prefs.preroll_seconds).speed(0.1).range(0.0..=60.0).suffix(tl!(" seconds")));
-            elems.push(("voiceover.preroll".into(), r.rect, format!("{}", d.prefs.preroll_seconds)));
-            ui.end_row();
-            ui.label(tl!("Post-roll:"));
-            let r = ui.add(egui::DragValue::new(&mut d.prefs.postroll_seconds).speed(0.1).range(0.0..=60.0).suffix(tl!(" seconds")));
-            elems.push(("voiceover.postroll".into(), r.rect, format!("{}", d.prefs.postroll_seconds)));
-            ui.end_row();
-        });
-        ui.label(
-            RichText::new(tl!("Playback starts the pre-roll before the playhead (or the In point); with In/Out marked, recording punches in and out there."))
+            ui.label(
+                RichText::new(tl!(
+                    "Playback starts the pre-roll before the playhead (or the In point); with In/Out marked, recording punches in and out there."
+                ))
                 .weak()
                 .small(),
-        );
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if app.session.voiceover.recording() {
-                let r = ui.button(tl!("Discard take"));
-                elems.push(("voiceover.discard".into(), r.rect, "Discard the active take".into()));
-                if r.clicked() {
-                    discard = true;
+            );
+            ui.add_space(8.0);
+            crate::dialog_style::actions(ui, |ui| {
+                if app.session.voiceover.recording() {
+                    let r = ui.button(tl!("Discard take"));
+                    elems.push(("voiceover.discard".into(), r.rect, "Discard the active take".into()));
+                    if r.clicked() {
+                        discard = true;
+                    }
                 }
-            }
-            let c = ui.button(tl!("Cancel"));
-            elems.push(("voiceover.cancel".into(), c.rect, "Cancel".into()));
-            if c.clicked() {
-                close = true;
-            }
-            let o = ui.add(egui::Button::new(RichText::new(tl!("OK")).color(Color32::WHITE)).fill(accent));
-            elems.push(("voiceover.ok".into(), o.rect, "OK".into()));
-            if o.clicked() {
-                apply = true;
-            }
+                let c = ui.add(crate::dialog_style::secondary(tl!("Cancel")));
+                elems.push(("voiceover.cancel".into(), c.rect, "Cancel".into()));
+                if c.clicked() {
+                    close = true;
+                }
+                let o = ui.add(crate::dialog_style::primary(tl!("OK")));
+                elems.push(("voiceover.ok".into(), o.rect, "OK".into()));
+                if o.clicked() {
+                    apply = true;
+                }
+            });
         });
-    });
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }

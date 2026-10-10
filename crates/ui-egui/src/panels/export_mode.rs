@@ -1064,7 +1064,7 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let all = app.session.export_presets.all();
     let favorite = |n: &str| app.session.export_presets.is_favorite(n);
     let q = m.query.to_lowercase();
-    egui::Window::new(tl!("Preset Manager"))
+    crate::dialog_style::Window::new(tl!("Preset Manager"))
         .id(egui::Id::new("Preset Manager"))
         .id(egui::Id::new("preset-manager"))
         .open(&mut open)
@@ -1126,14 +1126,14 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 ui.label(tl!("Save current settings as:"));
                 let r = ui.add(egui::TextEdit::singleline(&mut m.save_name).hint_text(tl!("Preset name")).desired_width(200.0));
                 reg.add("presetManager.saveName", r.rect, "Preset name");
-                let r = ui.add_enabled(!m.save_name.trim().is_empty(), egui::Button::new(tl!("Save")));
+                let r = ui.add_enabled(!m.save_name.trim().is_empty(), crate::dialog_style::primary(tl!("Save")));
                 reg.add("presetManager.save", r.rect, "Save");
                 if r.clicked() {
                     cmd = Some(("export.presets.save", json!({"name": m.save_name.trim(), "settings": settings_json(&app.ui.export.settings)})));
                     m.selected = m.save_name.trim().to_string();
                 }
             });
-            ui.horizontal(|ui| {
+            crate::dialog_style::actions(ui, |ui| {
                 let r = ui.button(tl!("Import…"));
                 reg.add("presetManager.import", r.rect, "Import…");
                 if r.clicked() {
@@ -1150,12 +1150,12 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     cmd = Some(("export.presets.delete", json!({"name": m.selected})));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let r = ui.add_enabled(sel.is_some(), egui::Button::new(tl!("OK")));
+                    let r = ui.add_enabled(sel.is_some(), crate::dialog_style::primary(tl!("OK")));
                     reg.add("presetManager.ok", r.rect, "OK");
                     if r.clicked() {
                         apply = Some(m.selected.clone());
                     }
-                    let r = ui.button(tl!("Cancel"));
+                    let r = ui.add(crate::dialog_style::secondary(tl!("Cancel")));
                     reg.add("presetManager.cancel", r.rect, "Cancel");
                     close |= r.clicked();
                 });
@@ -1292,9 +1292,7 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
             ui.add_space(4.0);
             ui.label(egui::RichText::new(tlf!("Estimated file size: {size}", size = est.as_deref().unwrap_or("–"))).color(t.text_dim).size(11.5));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let r = ui.add(
-                    egui::Button::new(egui::RichText::new(tl!("Export")).color(Color32::WHITE)).fill(t.accent).corner_radius(12.0).min_size(vec2(90.0, 26.0)),
-                );
+                let r = ui.add(crate::dialog_style::primary(tl!("Export")).corner_radius(12.0).min_size(vec2(90.0, 26.0)));
                 reg.add("quickExport.go", r.rect, "Export");
                 go = r.clicked();
             });

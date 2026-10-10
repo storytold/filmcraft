@@ -789,7 +789,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut cols) = app.ui.media_browser.edit_columns.clone() else { return };
     let mut close = false;
     let mut ok = false;
-    egui::Window::new(tl!("Edit Columns"))
+    crate::dialog_style::Window::new(tl!("Edit Columns"))
         .id(egui::Id::new("mb-edit-columns"))
         .collapsible(false)
         .resizable(false)
@@ -822,11 +822,11 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 cols.swap(i, (i as isize + d) as usize);
             }
             ui.separator();
-            ui.horizontal(|ui| {
-                let r = ui.button(tl!("Cancel"));
+            crate::dialog_style::actions(ui, |ui| {
+                let r = ui.add(crate::dialog_style::secondary(tl!("Cancel")));
                 app.auto.add("mediaBrowser.columns.cancel", r.rect, "Cancel");
                 close |= r.clicked();
-                let r = ui.button(tl!("OK"));
+                let r = ui.add(crate::dialog_style::primary(tl!("OK")));
                 app.auto.add("mediaBrowser.columns.ok", r.rect, "OK");
                 ok = r.clicked();
             });

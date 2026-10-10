@@ -148,7 +148,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let size = vec2((screen.width() - 40.0).clamp(760.0, 1320.0), (screen.height() - 60.0).clamp(560.0, 900.0));
     let mut close: Option<bool> = None; // Some(true) = OK, Some(false) = Cancel
     let mut open = true;
-    egui::Window::new(tl!("Keyboard Shortcuts"))
+    crate::dialog_style::Window::new(tl!("Keyboard Shortcuts"))
         .id(egui::Id::new("Keyboard Shortcuts"))
         .id(egui::Id::new("keyboard-shortcuts"))
         .open(&mut open)

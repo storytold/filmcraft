@@ -100,9 +100,8 @@ pub fn show_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     };
     let mut elems: Elems = Vec::new();
     let mut action: Option<&str> = None;
-    let accent = app.tokens.accent;
     let names: Vec<String> = d.items.iter().filter_map(|i| app.session.project.item(ItemId(*i)).map(|it| it.name.clone())).collect();
-    egui::Window::new(title)
+    crate::dialog_style::Window::new(title)
         .id(egui::Id::new(("sync-dialog", pre)))
         .collapsible(false)
         .resizable(false)
@@ -197,13 +196,13 @@ pub fn show_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 ui.colored_label(Color32::from_rgb(0xe0, 0x8a, 0x6a), &d.message);
             }
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                let r = ui.button(tl!("Cancel"));
+            crate::dialog_style::actions(ui, |ui| {
+                let r = ui.add(crate::dialog_style::secondary(tl!("Cancel")));
                 push(&mut elems, format!("{pre}.cancel"), &r, "Cancel");
                 if r.clicked() {
                     action = Some("cancel");
                 }
-                let r = ui.add(egui::Button::new(RichText::new(tl!("OK")).color(Color32::WHITE)).fill(accent));
+                let r = ui.add(crate::dialog_style::primary(tl!("OK")));
                 push(&mut elems, format!("{pre}.ok"), &r, "OK");
                 if r.clicked() {
                     action = Some("ok");
@@ -450,7 +449,7 @@ pub fn show_edit_cameras(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
     let th = thumb_w * q.settings.height.max(1) as f32 / q.settings.width.max(1) as f32;
     let tokens = app.tokens;
-    egui::Window::new(tl!("Edit Cameras"))
+    crate::dialog_style::Window::new(tl!("Edit Cameras"))
         .id(egui::Id::new("Edit Cameras"))
         .collapsible(false)
         .resizable(false)
@@ -482,13 +481,13 @@ pub fn show_edit_cameras(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
             });
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                let r = ui.button(tl!("Cancel"));
+            crate::dialog_style::actions(ui, |ui| {
+                let r = ui.add(crate::dialog_style::secondary(tl!("Cancel")));
                 push(&mut elems, "editCameras.cancel", &r, "Cancel");
                 if r.clicked() {
                     action = Some("cancel");
                 }
-                let r = ui.add(egui::Button::new(RichText::new(tl!("OK")).color(Color32::WHITE)).fill(tokens.accent));
+                let r = ui.add(crate::dialog_style::primary(tl!("OK")));
                 push(&mut elems, "editCameras.ok", &r, "OK");
                 if r.clicked() {
                     action = Some("ok");

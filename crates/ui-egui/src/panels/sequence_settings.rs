@@ -473,7 +473,6 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         (q.settings.clone(), name)
     };
     let audio_samples = app.session.project.settings.audio_display_samples;
-    let accent = app.tokens.accent;
     let mut d = app.ui.sequence_settings.clone();
     let mut keep = true;
     let mut apply = false;
@@ -485,7 +484,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     } else {
         &[("general", "General"), ("color", "Color Management"), ("vr", "VR Properties")]
     };
-    egui::Window::new(title)
+    crate::dialog_style::Window::new(title)
         .id(egui::Id::new("Sequence Settings"))
         .collapsible(false)
         .resizable(false)
@@ -511,12 +510,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             });
             ui.add_space(10.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(accent));
+                let o = ui.add(crate::dialog_style::primary(tl!("OK")));
                 elems.push(("sequenceSettings.ok".into(), o.rect, "OK".into()));
                 if o.clicked() {
                     apply = true;
                 }
-                let c = ui.button(tl!("Cancel"));
+                let c = ui.add(crate::dialog_style::secondary(tl!("Cancel")));
                 elems.push(("sequenceSettings.cancel".into(), c.rect, "Cancel".into()));
                 if c.clicked() {
                     keep = false;

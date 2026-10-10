@@ -63,7 +63,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut replace = false;
     let mut elems = Vec::new();
     let mut popup_rects = Vec::new();
-    let frame = egui::Frame::new().fill(app.tokens.panel_bg).inner_margin(0).corner_radius(6);
+    let frame = crate::dialog_style::frame(&app.tokens);
     let position_id = egui::Id::new("frame-export-position");
     let position = ctx.data(|m| m.get_temp::<egui::Pos2>(position_id));
     let mut movement = egui::Vec2::ZERO;
@@ -83,15 +83,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
     let shown = window.show(ctx, |ui| {
         ui.set_width(440.0);
-        let (bar, _) = ui.allocate_exact_size(egui::vec2(440.0, 30.0), egui::Sense::hover());
-        ui.painter().rect_filled(bar, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, egui::Color32::WHITE);
-        ui.painter().text(
-            bar.left_center() + egui::vec2(10.0, 0.0),
-            egui::Align2::LEFT_CENTER,
-            "Export Frame",
-            egui::FontId::proportional(13.0),
-            egui::Color32::from_gray(90),
-        );
+        let bar = crate::dialog_style::header(ui, "Export Frame", 440.0);
         let x = egui::Rect::from_center_size(bar.right_center() - egui::vec2(16.0, 0.0), egui::vec2(24.0, 24.0));
         let header = egui::Rect::from_min_max(bar.min, egui::pos2(x.left(), bar.bottom()));
         let drag = ui.interact(header, egui::Id::new("export-frame-header"), egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::Grab);
@@ -160,25 +152,22 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ui.add_space(12.0);
             if let Some(path) = d.replace.clone() {
                 ui.label(format!("This file already exists: {path}"));
-                ui.horizontal(|ui| {
-                    let r = ui.button("Replace");
+                crate::dialog_style::actions(ui, |ui| {
+                    let r = ui.add(crate::dialog_style::primary("Replace"));
                     replace = r.clicked();
                     elems.push(("exportFrame.replace".into(), r.rect, "Replace".into()));
-                    let r = ui.button("Keep existing file");
+                    let r = ui.add(crate::dialog_style::secondary("Keep existing file"));
                     if r.clicked() {
                         d.replace = None;
                     }
                     elems.push(("exportFrame.keep".into(), r.rect, "Keep existing file".into()));
                 });
             } else {
-                ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 26.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let r = ui.button("Cancel");
+                crate::dialog_style::actions(ui, |ui| {
+                    let r = ui.add(crate::dialog_style::secondary("Cancel"));
                     close |= r.clicked();
                     elems.push(("exportFrame.cancel".into(), r.rect, "Cancel".into()));
-                    let r = ui.add_enabled(
-                        !d.name.trim().is_empty() && !d.folder.trim().is_empty(),
-                        egui::Button::new(egui::RichText::new("OK").color(egui::Color32::WHITE)).fill(app.tokens.accent),
-                    );
+                    let r = ui.add_enabled(!d.name.trim().is_empty() && !d.folder.trim().is_empty(), crate::dialog_style::primary("OK"));
                     apply = r.clicked();
                     elems.push(("exportFrame.export".into(), r.rect, "OK".into()));
                 });

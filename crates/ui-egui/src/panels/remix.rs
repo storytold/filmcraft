@@ -47,7 +47,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut close = false;
     let mut apply = false;
     let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
-    egui::Window::new(tl!("Remix Properties"))
+    crate::dialog_style::Window::new(tl!("Remix Properties"))
         .id(egui::Id::new("Remix Properties"))
         .collapsible(false)
         .resizable(false)
@@ -72,13 +72,13 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             let i = ui.weak(&d.info);
             elems.push(("remixProperties.info".into(), i.rect, d.info.clone()));
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let c = ui.button(tl!("Cancel"));
+            crate::dialog_style::actions(ui, |ui| {
+                let c = ui.add(crate::dialog_style::secondary(tl!("Cancel")));
                 elems.push(("remixProperties.cancel".into(), c.rect, "Cancel".into()));
                 if c.clicked() {
                     close = true;
                 }
-                let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(app.tokens.accent));
+                let o = ui.add(crate::dialog_style::primary(tl!("OK")));
                 elems.push(("remixProperties.ok".into(), o.rect, "OK".into()));
                 if o.clicked() {
                     apply = true;

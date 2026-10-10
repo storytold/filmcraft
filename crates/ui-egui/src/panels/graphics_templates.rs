@@ -636,7 +636,7 @@ fn export_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.gfx_templates.export.clone() else { return };
     let mut elems: Elems = Vec::new();
     let mut action: Option<bool> = None;
-    egui::Window::new(tl!("Export As Motion Graphics Template"))
+    crate::dialog_style::Window::new(tl!("Export As Motion Graphics Template"))
         .id(egui::Id::new("Export As Motion Graphics Template"))
         .collapsible(false)
         .resizable(false)
@@ -673,10 +673,10 @@ fn export_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             if !d.error.is_empty() {
                 ui.colored_label(Color32::from_rgb(0xff, 0x80, 0x80), &d.error);
             }
-            ui.horizontal(|ui| {
-                let ok = ui.button(tl!("Export"));
+            crate::dialog_style::actions(ui, |ui| {
+                let ok = ui.add(crate::dialog_style::primary(tl!("Export")));
                 elems.push(("exportTemplate.ok".into(), ok.rect, "Export".into()));
-                let cancel = ui.button(tl!("Cancel"));
+                let cancel = ui.add(crate::dialog_style::secondary(tl!("Cancel")));
                 elems.push(("exportTemplate.cancel".into(), cancel.rect, "Cancel".into()));
                 if ok.clicked() {
                     action = Some(true);
@@ -715,7 +715,7 @@ fn replace_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let used = filmcraft_engine::graphic_templates::fonts_used(&app.session);
     let mut elems: Elems = Vec::new();
     let mut action: Option<bool> = None;
-    egui::Window::new(tl!("Replace Fonts in Projects"))
+    crate::dialog_style::Window::new(tl!("Replace Fonts in Projects"))
         .id(egui::Id::new("Replace Fonts in Projects"))
         .collapsible(false)
         .resizable(false)
@@ -758,10 +758,10 @@ fn replace_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             if !d.error.is_empty() {
                 ui.colored_label(Color32::from_rgb(0xff, 0x80, 0x80), &d.error);
             }
-            ui.horizontal(|ui| {
-                let ok = ui.button(tl!("OK"));
+            crate::dialog_style::actions(ui, |ui| {
+                let ok = ui.add(crate::dialog_style::primary(tl!("OK")));
                 elems.push(("replaceFonts.ok".into(), ok.rect, "OK".into()));
-                let cancel = ui.button(tl!("Cancel"));
+                let cancel = ui.add(crate::dialog_style::secondary(tl!("Cancel")));
                 elems.push(("replaceFonts.cancel".into(), cancel.rect, "Cancel".into()));
                 if ok.clicked() {
                     action = Some(true);

@@ -1619,33 +1619,36 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut ok = false;
     let name = |paragraph: bool| if paragraph { tl!("Paragraph Text") } else { tl!("Point Text") };
     let id = egui::Id::new("gfx-text-properties");
-    egui::Window::new(tl!("Text Properties")).id(id).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        ui.label(tl!("Text Layer Type"));
-        let r = egui::ComboBox::from_id_salt("gfx-text-type").selected_text(name(d.paragraph)).width(190.0).show_ui(ui, |ui| {
-            for paragraph in [false, true] {
-                // vertical text has no box to wrap in
-                let r = ui.add_enabled_ui(!(paragraph && d.vertical), |ui| ui.selectable_label(d.paragraph == paragraph, name(paragraph))).inner;
-                elems.push((format!("graphics.textProperties.type.{}", if paragraph { "paragraph" } else { "point" }), r.rect, name(paragraph)));
-                if r.clicked() {
-                    d.paragraph = paragraph;
+    crate::dialog_style::Window::new(tl!("Text Properties")).id(id).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(
+        ctx,
+        |ui| {
+            ui.label(tl!("Text Layer Type"));
+            let r = egui::ComboBox::from_id_salt("gfx-text-type").selected_text(name(d.paragraph)).width(190.0).show_ui(ui, |ui| {
+                for paragraph in [false, true] {
+                    // vertical text has no box to wrap in
+                    let r = ui.add_enabled_ui(!(paragraph && d.vertical), |ui| ui.selectable_label(d.paragraph == paragraph, name(paragraph))).inner;
+                    elems.push((format!("graphics.textProperties.type.{}", if paragraph { "paragraph" } else { "point" }), r.rect, name(paragraph)));
+                    if r.clicked() {
+                        d.paragraph = paragraph;
+                    }
                 }
-            }
-        });
-        elems.push(("graphics.textProperties.type".into(), r.response.rect, "Text Layer Type"));
-        ui.add_space(6.0);
-        ui.label(tl!("Text Styling"));
-        let r = ui.checkbox(&mut d.ligatures, tl!("Ligatures"));
-        elems.push(("graphics.textProperties.ligatures".into(), r.rect, "Ligatures"));
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            let r = ui.button(tl!("Cancel"));
-            elems.push(("graphics.textProperties.cancel".into(), r.rect, "Cancel"));
-            close |= r.clicked();
-            let r = ui.button(tl!("OK"));
-            elems.push(("graphics.textProperties.ok".into(), r.rect, "OK"));
-            ok |= r.clicked();
-        });
-    });
+            });
+            elems.push(("graphics.textProperties.type".into(), r.response.rect, "Text Layer Type"));
+            ui.add_space(6.0);
+            ui.label(tl!("Text Styling"));
+            let r = ui.checkbox(&mut d.ligatures, tl!("Ligatures"));
+            elems.push(("graphics.textProperties.ligatures".into(), r.rect, "Ligatures"));
+            ui.add_space(6.0);
+            crate::dialog_style::actions(ui, |ui| {
+                let r = ui.add(crate::dialog_style::secondary(tl!("Cancel")));
+                elems.push(("graphics.textProperties.cancel".into(), r.rect, "Cancel"));
+                close |= r.clicked();
+                let r = ui.add(crate::dialog_style::primary(tl!("OK")));
+                elems.push(("graphics.textProperties.ok".into(), r.rect, "OK"));
+                ok |= r.clicked();
+            });
+        },
+    );
     for (id, r, l) in elems {
         app.auto.add(&id, r, l);
     }

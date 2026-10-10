@@ -35,6 +35,7 @@ mod cjk;
 pub mod control;
 pub mod crash;
 pub mod credits;
+pub mod dialog_style;
 pub mod dock;
 pub mod frames;
 pub mod header;
@@ -1690,7 +1691,7 @@ impl FilmcraftApp {
     fn error_window(&mut self, ctx: &egui::Context) {
         let Some(msg) = self.ui_error.clone() else { return };
         let mut close = false;
-        egui::Window::new(tl!("FilmCraft hit an error"))
+        crate::dialog_style::Window::new(tl!("FilmCraft hit an error"))
             .id(egui::Id::new("FilmCraft hit an error"))
             .collapsible(false)
             .resizable(false)
@@ -1704,13 +1705,13 @@ impl FilmcraftApp {
                     ui.label(egui::RichText::new(tlf!("Details: {path}", path = p.display())).small());
                 }
                 ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    let s = ui.button(tl!("Save Project"));
+                crate::dialog_style::actions(ui, |ui| {
+                    let s = ui.add(crate::dialog_style::secondary(tl!("Save Project")));
                     self.auto.add("error.save", s.rect, "Save Project");
                     if s.clicked() {
                         let _ = crate::menus::invoke(self, ctx, "file.save", serde_json::json!({}));
                     }
-                    let d = ui.button(tl!("Continue"));
+                    let d = ui.add(crate::dialog_style::primary(tl!("Continue")));
                     self.auto.add("error.dismiss", d.rect, "Continue");
                     close |= d.clicked();
                 });

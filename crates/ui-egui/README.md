@@ -57,3 +57,18 @@ range validation and undo; the UI owns the drag gesture. See `source_drag_ui` an
 Source range handles use transient gesture previews and the engine's integer-frame
 `source_monitor::adjust_range`; release dispatches one mark edit. Monitor command routing
 keeps Source navigation, markers and marked-range playback separate from Program.
+
+## Application dialogs
+
+`dialog_style` owns the shared white header, gray title text, six-point frame corners,
+right-aligned actions and blue primary button. Application dialogs use its `Window` builder
+and `primary` / `secondary` / `actions` helpers. Blocking Settings/Recovery/Revert modals and
+the custom movable Export Frame dialog share its `frame` / `header` helpers. Native host file
+and folder pickers retain their operating-system style. Window sizing, movement, enabled states,
+keyboard handling and command dispatch remain with the original callers.
+
+The title-bar style is scoped and restored before body/popups render, including unwind paths;
+it cannot turn ordinary app controls or dropdown text gray. The UI regression covers the Save
+Project action order/alignment and Cancel preserving a dirty project, plus a source guard that
+new titled dialogs cannot bypass the shared component. Floating Project/bin panels are panels,
+not dialogs, and retain their panel appearance.
