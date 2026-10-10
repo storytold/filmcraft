@@ -17,6 +17,7 @@ filmcraft-geom = { path = "crates/geom" }
 filmcraft-color = { path = "crates/color" }
 filmcraft-bitstream = { path = "crates/bitstream" }
 filmcraft-isobmff = { path = "crates/isobmff" }
+filmcraft-avi = { path = "crates/avi" }
 filmcraft-matroska = { path = "crates/matroska" }
 filmcraft-mxf = { path = "crates/mxf" }
 filmcraft-cfb = { path = "crates/cfb" }

@@ -54,7 +54,7 @@ impl Default for MediaPool {
 }
 
 /// Largest file [`MediaPool::probe_file`] reads whole when no streaming reader takes it (WAV,
-/// MP3 and other byte-opened formats, or an unsupported container such as AVI).
+/// MP3 and other byte-opened formats, or an unsupported container).
 pub const PROBE_WHOLE_FILE_MAX: u64 = 64 * 1024 * 1024;
 
 /// Cache key of a media clip's full-resolution reference ("" matches anything: sources inserted

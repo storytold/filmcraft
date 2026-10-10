@@ -29,6 +29,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("color", 0),
     ("bitstream", 0),
     ("isobmff", 0),
+    ("avi", 0),
     ("matroska", 0),
     ("mxf", 0),
     ("cfb", 0),

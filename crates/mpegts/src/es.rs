@@ -175,6 +175,20 @@ pub struct FrameInfo {
 const ADTS_RATES: [u32; 13] = [96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350];
 
 /// Parse the frame header at the start of `b` (MPEG audio, ADTS, AC-3, E-AC-3).
+/// Bytes of the audio frame whose header starts `b` (MPEG audio, ADTS, LATM, AC-3, E-AC-3), or
+/// `None` without a valid header there. For containers that store frames in chunks that need not
+/// follow them (AVI): the frames are found again with it.
+pub fn frame_bytes(codec: &Codec, b: &[u8]) -> Option<usize> {
+    let sync = match codec {
+        Codec::MpegAudio => AudioSync::Mpa,
+        Codec::AacAdts => AudioSync::Adts,
+        Codec::AacLatm => AudioSync::Loas,
+        Codec::Ac3 | Codec::Eac3 => AudioSync::Ac3,
+        _ => return None,
+    };
+    frame_len(sync, b)
+}
+
 pub fn frame_info(codec: &Codec, b: &[u8]) -> Option<FrameInfo> {
     match codec {
         Codec::MpegAudio => {

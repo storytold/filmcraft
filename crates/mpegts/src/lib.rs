@@ -21,7 +21,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 mod es;
-pub use es::{FrameInfo, frame_info};
+pub use es::{FrameInfo, frame_bytes, frame_info};
 mod pes;
 mod ps;
 mod ts;

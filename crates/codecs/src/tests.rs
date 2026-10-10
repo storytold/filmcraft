@@ -7,7 +7,7 @@ use std::sync::Arc;
 use filmcraft_media::FrameRequest;
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
 
-fn ffmpeg() -> Option<&'static str> {
+pub(crate) fn ffmpeg() -> Option<&'static str> {
     ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].into_iter().find(|p| std::path::Path::new(p).exists())
 }
 
@@ -231,13 +231,13 @@ fn matroska_prores_pcm() {
 
 /// Path of a fixture under `target/fixtures/codecs/`, generated with ffmpeg when missing
 /// (`None` when ffmpeg or the encoder is unavailable).
-fn fixture_path(name: &str, args: &[&str]) -> Option<PathBuf> {
+pub(crate) fn fixture_path(name: &str, args: &[&str]) -> Option<PathBuf> {
     fixture(name, args)?;
     Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/fixtures/codecs").join(name))
 }
 
 /// ffmpeg's decode of `src` as raw planar video (the oracle).
-fn reference_yuv(src: &std::path::Path, pix_fmt: &str) -> Option<Vec<u8>> {
+pub(crate) fn reference_yuv(src: &std::path::Path, pix_fmt: &str) -> Option<Vec<u8>> {
     let name = format!("{}.{pix_fmt}.yuv", src.file_name()?.to_str()?);
     let path = src.to_str()?;
     let b = fixture(&name, &["-i", path, "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", pix_fmt])?;
@@ -245,7 +245,7 @@ fn reference_yuv(src: &std::path::Path, pix_fmt: &str) -> Option<Vec<u8>> {
 }
 
 /// Planes of a decoded YUV frame as little-endian bytes (ffmpeg rawvideo layout).
-fn yuv_bytes(f: &filmcraft_frame::VideoFrame) -> Vec<u8> {
+pub(crate) fn yuv_bytes(f: &filmcraft_frame::VideoFrame) -> Vec<u8> {
     match &f.data {
         filmcraft_frame::PixelData::Yuv8 { planes, .. } => planes.iter().flat_map(|p| p.iter().copied()).collect(),
         filmcraft_frame::PixelData::Yuv16 { planes, .. } => planes.iter().flat_map(|p| p.iter().flat_map(|s| s.to_le_bytes())).collect(),
