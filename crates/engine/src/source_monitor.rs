@@ -3,7 +3,7 @@
 use crate::clip_ops::source_view;
 use crate::commands::bad;
 use crate::{EngineError, Result, Session};
-use filmcraft_project::{ItemId, Label, Marker, MarkerId, MarkerKind, Project};
+use filmcraft_project::{ClipId, ItemId, ItemKind, Label, Marker, MarkerId, MarkerKind, Project};
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
 use serde_json::{Value, json};
 
@@ -203,6 +203,27 @@ pub(crate) fn route(s: &mut Session, id: &str, p: &Value) -> Result<Option<Value
     Ok(Some(Value::Null))
 }
 
+/// `source.open {"clip"}` (double-clicking a Timeline clip, as in Premiere): the clip's media
+/// opens in the Source monitor, parked on the frame shown under the playhead when the playhead
+/// is over the clip, otherwise on the clip's first frame.
+pub(crate) fn open_clip(s: &mut Session, clip: ClipId) -> Result<Value> {
+    let id = "source.open";
+    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let (_, it) = seq.find_item(clip).ok_or_else(|| bad(id, "no such clip in the active sequence"))?;
+    let t = s.playhead();
+    let time = it.source_time_at(if t >= it.start && t < it.end() { t } else { it.start });
+    let item = it.item;
+    match s.project.item(item).map(|i| &i.kind) {
+        None => return Err(bad(id, "the clip's source is unavailable")),
+        Some(ItemKind::Graphic { .. }) => return Err(bad(id, "a graphic clip has no source to open")),
+        Some(_) => {}
+    }
+    s.execute(id, json!({"item": item.0}))?;
+    // source.setPlayhead snaps to the source frame grid and keeps the playhead inside a subclip
+    s.execute("source.setPlayhead", json!({"time": time.0}))?;
+    Ok(json!({"item": item.0, "time": s.state.source_playhead.0}))
+}
+
 fn text<'a>(p: &'a Value, key: &str, id: &str) -> Result<Option<&'a str>> {
     p.get(key).map(|v| v.as_str().ok_or_else(|| bad(id, format!("{key} must be text")))).transpose()
 }
@@ -287,6 +308,30 @@ mod tests {
         assert_eq!(source_view(&s, ItemId(5)).unwrap().markers[0].name, "Changed");
         s.execute("markers.clearCurrent", json!({"target":"source"})).unwrap();
         assert!(source_view(&s, ItemId(5)).unwrap().markers.is_empty());
+    }
+    #[test]
+    fn timeline_clip_opens_in_source_at_the_matching_frame() {
+        let mut s = fixture();
+        let seq = s.active_sequence().unwrap();
+        let it = seq
+            .all_tracks()
+            .flat_map(|t| t.items.iter())
+            .find(|i| i.source_in > Tick::ZERO && s.project.item(i.item).is_some_and(|p| p.as_media().is_some()))
+            .unwrap()
+            .clone();
+        let rate = s.sequence_rate();
+        let inside = it.start + rate.tick_of(3);
+        s.set_playhead(inside);
+        let r = s.execute("source.open", json!({"clip": it.id.0})).unwrap();
+        assert_eq!(r["item"], it.item.0);
+        assert_eq!(s.state.source_item, Some(it.item));
+        let view = source_view(&s, it.item).unwrap();
+        assert_eq!(s.state.source_playhead, view.rate.snap(it.source_time_at(inside)));
+        // playhead off the clip: the clip's first frame
+        s.set_playhead(it.end() + rate.tick_of(1));
+        s.execute("source.open", json!({"clip": it.id.0})).unwrap();
+        assert_eq!(s.state.source_playhead, view.rate.snap(it.source_in));
+        assert!(s.execute("source.open", json!({"clip": u64::MAX})).is_err());
     }
     #[test]
     fn invalid_marker_parameters_do_not_edit_the_project() {

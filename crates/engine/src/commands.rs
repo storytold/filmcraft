@@ -2118,7 +2118,10 @@ fn build() -> Vec<CommandSpec> {
             Ok(Value::Null)
         }),
         // ================= Source monitor =================
-        cmd!("source.open", "Open in Source Monitor", [], None, r#"{"item":id?}"#, always, |s, p| {
+        cmd!("source.open", "Open in Source Monitor", [], None, r#"{"item":id?,"clip":id?}"#, always, |s, p| {
+            if let Some(clip) = clip_p(p, "clip") {
+                return crate::source_monitor::open_clip(s, clip);
+            }
             let id = item_p(p, "item")
                 .or(s.state.project_selection.first().copied())
                 .ok_or_else(|| bad("source.open", "need `item` (or a Project panel selection)"))?;
