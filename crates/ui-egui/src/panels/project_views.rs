@@ -1017,7 +1017,13 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
                 app.auto.add(&format!("{}.stack.{s}", v.prefix), br, &format!("Stack of {n}"));
             }
             item_interactions(app, ui, &resp, ItemId(c.item), &kind, actions, false, false);
-            if resp.dragged() {
+            // Escape puts the cards back and drops nothing until the button comes up (#580); egui
+            // also ends the drag on Escape, so it arrives as a stop as often as during the drag
+            let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            if (resp.dragged() || resp.drag_stopped()) && (escape || crate::panels::drag_cancelled(ui)) {
+                ui.ctx().data_mut(|d| d.remove::<(u64, egui::Vec2)>(drag_key));
+                crate::panels::cancel_drag(ui);
+            } else if resp.dragged() {
                 let total = dragging.filter(|d| d.0 == c.item).map(|d| d.1).unwrap_or_default() + resp.drag_delta();
                 ui.ctx().data_mut(|d| d.insert_temp(drag_key, (c.item, total)));
                 // leaving the panel turns the move into an item drag (to the Timeline, a monitor)
@@ -1028,7 +1034,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
                     crate::panels::start_drag_item(ui, ItemId(c.item));
                 }
             }
-            if resp.drag_stopped() {
+            if resp.drag_stopped() && !crate::panels::drag_cancelled(ui) {
                 released = dragging.filter(|d| d.0 == c.item).map(|d| (d.0, d.1 + resp.drag_delta()));
             }
             resp.context_menu(|ui| card_menu(app, ui, v, c.item, actions));

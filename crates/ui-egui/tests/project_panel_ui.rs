@@ -962,3 +962,39 @@ fn marquee_selects_cards_in_freeform_view() {
     assert_eq!(selection(&mut d), sorted(vec![i0, i1]));
     assert!(!d.app().session.project.item(ItemId(i0)).unwrap().metadata.contains_key(FREEFORM_POS), "the marquee moved no card");
 }
+
+/// Escape during a Media Browser drag (#580) takes the import back, even over the Timeline.
+#[test]
+fn escape_takes_back_a_media_browser_drag() {
+    let dir = media_dir("drag-escape");
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).unwrap();
+    let mut d = Driver::with(session);
+    d.ok("ui.set", json!({"workspace": "Editing"}));
+    d.ok("ui.panel.show", json!({"panel": "MediaBrowser"}));
+    d.exec("mediaBrowser.navigate", json!({"path": dir.to_string_lossy()}));
+    d.frames(3);
+    d.wait_for("mediaBrowser.entry.b-roll.wav");
+    let (n0, before) = (d.app().session.project.items.len(), d.app().session.project.to_json());
+    let e = d.rect("mediaBrowser.entry.b-roll.wav");
+    let tl = d.rect("panel.Timeline");
+    let (from, to) = (egui::pos2(e[0] + 40.0, e[1] + e[3] / 2.0), egui::pos2(tl[0] + tl[2] * 0.6, tl[1] + tl[3] * 0.75));
+    let mut send = |e: egui::Event| {
+        d.harness.input_mut().events.push(e);
+        d.frames(1);
+    };
+    let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+    send(egui::Event::PointerMoved(from));
+    send(button(from, true));
+    for k in 1..=20 {
+        send(egui::Event::PointerMoved(from.lerp(to, k as f32 / 20.0)));
+        if k == 10 {
+            send(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+        }
+    }
+    send(button(to, false));
+    d.frames(6);
+    assert_eq!(d.app().session.project.items.len(), n0, "the import was taken back");
+    assert_eq!(d.app().session.project.to_json(), before, "nothing was placed on the Timeline");
+    let _ = std::fs::remove_dir_all(&dir);
+}

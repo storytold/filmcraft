@@ -470,8 +470,9 @@ fn finish_drag(app: &mut FilmcraftApp, ui: &egui::Ui) {
     }
     let pos = with_cache(ui.ctx(), |c| c.drag.take().map(|d| d.2)).unwrap_or_default();
     let targets = ["panel.Project", "panel.Timeline", "panel.Source", "panel.Program"];
-    let landed =
-        targets.iter().any(|t| app.auto.find(t).is_some_and(|e| Rect::from_min_size(pos2(e.rect[0], e.rect[1]), vec2(e.rect[2], e.rect[3])).contains(pos)));
+    // a drag cancelled with Escape (#580) landed nowhere, wherever the pointer is
+    let landed = !crate::panels::drag_cancelled(ui)
+        && targets.iter().any(|t| app.auto.find(t).is_some_and(|e| Rect::from_min_size(pos2(e.rect[0], e.rect[1]), vec2(e.rect[2], e.rect[3])).contains(pos)));
     let used_elsewhere = app.session.history.undo.len() > hist;
     if !landed && !used_elsewhere && items.iter().all(|i| app.session.project.item(ItemId(*i)).is_some()) {
         // dropped nowhere: take the import back
