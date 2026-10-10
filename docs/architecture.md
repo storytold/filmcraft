@@ -303,13 +303,20 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   Balance, Leave Color, Change to Color, Color Pass, Color Replace, Channel Mix, ASC CDL, Gamma
   Correction, Levels, Extract, Invert, Posterize, Alpha Adjust, Gaussian Blur and Directional Blur
   (and their legacy aliases), Camera Blur, Sharpen, Unsharp Mask, Crop, Edge Feather, Transform,
-  Horizontal / Vertical Flip, Mirror, Offset, Vignette and Video Limiter. When every enabled effect of a media clip is in
-  that set (unmasked, with finite parameters, and no Transform shrinking the picture below half
+  Horizontal / Vertical Flip, Mirror, Offset, Vignette, Video Limiter, SDR Lumetri (basic, curves, wheels, looks/LUTs, HSL Secondary with refinement, sharpen),
+  Ultra Key, Color Key and Luma Key. Keying evaluates animated colours, thresholds and spill
+  parameters at the clip's time, then runs a single compute pass on premultiplied RGBA. Its
+  matte, spill and correction math matches the current CPU implementation, including Ultra Key's
+  Composite, Alpha Channel and Color Channel outputs. Ultra Key with nonzero Choke or Soften
+  stays on the CPU because those controls require spatial matte filtering. The CPU path uses the
+  same fused single-pixel Ultra Key operation when eligible, avoiding the intermediate matte
+  allocation and repeated colour conversion. When every enabled effect of a media clip is in
+  that set (with finite parameters, and no Transform shrinking the picture below half
   size, which the CPU pre-filters), the plan hands the GPU the clip's source with
   the effects' parameters evaluated at that time: the source is drawn into an `Rgba32Float`
   working image at the size the CPU decodes it, each effect runs as compute passes with the CPU
   reference's math (effects, then Motion, then Opacity / blend, as on the CPU), and the result is
-  placed like any layer. Other standard effects, effect and opacity masks, adjustment layers,
+  placed like any layer. Other standard effects, HDR colour grading, adjustment layers,
   nested sequences (except a plain one, whose own layers go into the plan: same frame size and
   colour settings as its parent, nothing on the clip that changes the picture, every layer inside
   blended normally) and non-dissolve transitions are rendered on the CPU for that layer or frame
@@ -525,7 +532,7 @@ with different vertex counts hold). Feather, Opacity and Expansion are ordinary 
   (the effect only applies inside); Opacity masks scale the clip's layer before Motion, so they
   follow the clip's transform. Adjustment-layer masks are in sequence pixels.
 - **GPU.** `filmcraft-gpu::GpuMask` evaluates the same coverage and mix in WGSL (compute), tested
-  to agree with the CPU within 3·10⁻⁶. Layers with masks are CPU-rendered images in frame plans.
+  to agree with the CPU within 3·10⁻⁶. The live effect stage now evaluates effect and opacity masks on GPU textures; masks around unsupported effects or adjustment layers retain CPU rendering.
 - **Editing.** `masks.*` commands (add / remove / set / moveVertex / translate / addVertex /
   removeVertex / toggleVertexSmooth / select / list); keyframe commands take `"mask": n`. The
   Program monitor overlay drags vertices, Bézier handles, the whole mask and the feather /
@@ -753,3 +760,90 @@ other OS integration stays in `apps/filmcraft`.)
 Until they exist, that work lives elsewhere: keyframes and effect definitions in `project`, effects
 and the audio mix in `render`, playback in `ui-egui`, and OS integration (cpal, rfd,
 native menus) in `apps/filmcraft`. [ROADMAP.md](../ROADMAP.md) has the milestone status.
+
+
+### GPU pass fusion, live masks and native export
+
+`gpu::fx` batches up to 16 consecutive point operations into one compute dispatch: every
+operation still sees the preceding operation's premultiplied float32 result. Spatial operations
+are barriers. No precision reduction or reassociation of the grading chain is used. Masked
+operations preserve their input until the final coverage mix, with a fourth working texture when
+spatial effects also need an original. Flattened paths and animated mask parameters are evaluated
+at clip effect time, before Motion, including when standard effects are disabled. Geometry beyond
+64 masks, 4096 points per mask or 16384 points combined keeps the CPU fallback.
+
+Advanced SDR Lumetri evaluates into input LUT, basic correction, an advanced grade, HSL Secondary
+and optional sharpen, in the original CPU order. The advanced grade covers nine 1024-sample
+curve tables, wheels, procedural looks and 1D/shaper/tetrahedral 3D LUTs. GPU LUT cubes are bounded
+to 64³; larger cubes and HDR grading remain on CPU. HSL Denoise uses the CPU's cropped-neighbour
+median (radius ≤3), then its three-box Gaussian Blur. Neither standalone `GpuMask` nor `GpuLut`
+readback helpers are used for these live passes.
+
+`export::NativeFrame` carries an opaque, owned OS surface. The chosen encoder advertises a
+format; a renderer can return that format only when export placement and post-effects need no
+CPU processing. On macOS `platform::gpu_export` waits for the completed wgpu Metal accumulator,
+converts it directly to two IOSurface-backed NV12 planes, then hands the retained CoreVideo buffer
+to VideoToolbox. OS/GPU FFI stays in platform; gpu and export remain safe and portable. There is
+no pixel readback, CPU RGBA image or CPU RGB→YUV conversion in this path. Fences are still
+synchronous. The path covers plain SDR layered H.264/HEVC hardware exports at the render size;
+export overlays, resizing/cropping, HDR, CPU frame plans and unsupported devices use the existing
+portable route. Decoding has its own native path, described below.
+
+### Shared RAM policy
+
+`frame::memory` derives soft media-cache budgets from physical RAM, reported by platform startup.
+Unknown hosts retain historical ceilings. At 8 GiB, decoded-frame budget is 512 MiB, each clip
+128 MiB (within that pool), byte/word idle shelves 64 MiB each, float shelf 128 MiB, process GPU
+upload-cache target 256 MiB and export overlap 128 MiB. Necessary active frames and in-flight GPU
+commands can exceed soft targets; these are not a process RSS cap. GPU renderer count also follows
+output size and working-memory allowance instead of always opening four compositors.
+
+A best-effort macOS/Linux monitor samples available memory every 15 seconds. Below 20% available
+it halves cache targets, below 10% divides them by eight, and uses a 25% recovery threshold to
+avoid oscillation. This is an available-memory heuristic, not a native OS pressure notification.
+It immediately frees excess idle plane/float buffers and try-locks idle decoded caches; playback
+is never waited on. GPU upload caches and export overlap respond on their next operation. macOS
+queries have a two-second deadline. Windows receives startup RAM sizing; automatic pressure
+sampling there remains future work.
+
+
+### Native decoded frames and Metal execution
+
+`PixelData::Native` owns an immutable `NativeYuv` image without introducing OS or GPU
+dependencies into the frame crate. VideoToolbox requests IOSurface-backed Metal-compatible
+buffers. Uncropped 8/10-bit 4:2:0 and 4:2:2 pictures retain that buffer; other layouts keep
+the previous copy path. The platform validates row spans once and retains a read-only
+CoreVideo mapping for infallible lazy CPU materialization. This mapping is a deliberate
+compatibility tradeoff: the GPU path creates no planar CPU arrays, but it still takes a
+read-only buffer lock. CPU consumers get a cached, exact planar snapshot. Native cache
+charges reserve this possible snapshot from insertion and remain stable after materialization.
+
+The platform registers a safe importer with the GPU crate. It creates R8/RG8 or R16/RG16
+views on the compositor's actual Metal device. P010 keeps the high-bit encoding, and the
+shader reads interleaved Cb/Cr directly, preserving transfer, primaries and range. Each HAL
+texture's drop callback retains both the CVMetalTexture and decoded surface until GPU
+references are released. Frame eviction and decoder reset cannot invalidate in-flight work.
+Unsupported devices and missing 16-bit-normalized texture support materialize and upload
+the original CPU planes. Export and the desktop device request that feature only when
+the adapter supports it. All unsafe backend imports remain in the platform OS media module.
+
+Color-managed/HDR source conversion that needs the CPU retains its existing path.
+
+Point chains use operation-specialized shaders after background compilation. The chain
+shape is the cache key; numeric values, LUT offsets and keyframes remain uniforms. Until
+a variant is ready, the existing fused shader processes frames. Compilation is limited
+to two workers process-wide and 64 variants per compositor; a failed variant retains the
+generic path. WebAssembly uses the generic fused path.
+
+Live masks cache full-precision R32Float coverage by exact evaluated geometry and working
+size. Values, mode, inversion, feather, expansion and opacity all participate in the key.
+A cache miss submits independent coverage generation before publication; hits only sample
+the texture during effect mixing. The per-compositor LRU target is min(64 MiB, one quarter
+of the RAM-derived upload budget), with the direct geometry shader as the fallback.
+
+Box radii 8–32 use a cooperative shared-memory prefix scan over 128 output samples plus
+halo, along either axis. Each window uses a prefix subtraction; samples outside the image
+preserve repeat/transparent behavior and the original denominator. Float32 scan summation
+can differ in the last bits; CPU parity is tested. Smaller radii retain the direct kernel,
+and larger radii retain the running-sum kernel: measured crossover checks found both faster
+than a tile scan in their respective ranges on A18 Pro.

@@ -107,6 +107,7 @@ impl RendererPool {
 
 /// The immutable part of an export: everything needed to produce one output frame.
 pub(crate) struct Pipeline {
+    pub native_format: Option<&'static str>,
     pub project: Arc<Project>,
     /// The registered frame renderers (GPU compositors) when the setting allows and factories
     /// provide them; pooled because `frame` runs on several export threads at once.
@@ -174,9 +175,12 @@ impl Pipeline {
         let renderer = if settings.gpu_rendering == GpuRendering::Off {
             None
         } else {
-            // Four renderers: as fast as one per worker (measured on 16 threads, where more only
-            // contend for memory bandwidth in the read-back), with a quarter of the GPU memory.
-            let count = rayon::current_num_threads().clamp(2, 4);
+            // At most four renderers; bound concurrency by the estimated GPU working memory
+            // as well as worker count, especially on low-RAM machines at 4K.
+            let frame_working = u64::from(w).saturating_mul(u64::from(h)).saturating_mul(80).max(1);
+            let working_budget = (filmcraft_frame::memory::budgets().gpu_uploads as u64).saturating_mul(4);
+            let fit = usize::try_from(working_budget / frame_working).unwrap_or(1).max(1);
+            let count = rayon::current_num_threads().clamp(1, 4).min(fit);
             let mut list = Vec::with_capacity(count);
             for _ in 0..count {
                 if let Some(r) = build_frame_renderer() {
@@ -188,6 +192,7 @@ impl Pipeline {
             RendererPool::new(list)
         };
         Ok(Pipeline {
+            native_format: None,
             renderer,
             seq_rate: q.settings.frame_rate,
             start_tc: q.start_timecode,
@@ -206,6 +211,29 @@ impl Pipeline {
             effects,
             overlay,
         })
+    }
+
+    /// Native surfaces are eligible only when placement and export effects need no CPU work.
+    /// Sequence effects, opacity and captions are already part of the GPU frame plan.
+    pub(crate) fn encoder_frame(&self, f: i64, sources: &dyn SourceProvider) -> crate::job::Frame {
+        let eligible = !self.hdr_out
+            && self.out_tf.is_none()
+            && !self.alpha
+            && self.geom.content.is_none()
+            && self.geom.offset == (0, 0)
+            && !self.effects.video_limiter.enabled
+            && !self.effects.image_overlay.enabled
+            && !self.effects.name_overlay.enabled
+            && !self.effects.timecode_overlay.enabled;
+        if eligible && let (Some(format), Some(pool)) = (self.native_format, &self.renderer) {
+            let native = pool.with(|r| r.render_native(&self.project, self.seq, self.rate.tick_of(f), self.opts, sources, format)).flatten();
+            if let Some(frame) = native.filter(|frame| frame.format == format && frame.width == self.w && frame.height == self.h) {
+                note_gpu_frame();
+                return crate::job::Frame::Native(frame);
+            }
+        }
+        let (rgba, hdr) = self.frame(f, sources);
+        crate::job::Frame::Cpu(rgba, hdr)
     }
 
     /// Output frame `f` as straight sRGB RGBA8 at the output size, or for HDR exports the encoded

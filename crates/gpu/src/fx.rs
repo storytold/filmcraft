@@ -2,8 +2,8 @@
 //!
 //! A layer with effects is first drawn from its source (YUV planes or RGBA, through the
 //! compositor's own `fs` shader, so decoding is the same as for a plain layer) into a working
-//! texture of the size the CPU decodes it at; each [`FxOp`] then runs as compute passes that
-//! ping-pong between two working textures (three for Unsharp Mask, which keeps the original);
+//! texture of the size the CPU decodes it at. Consecutive point operations share a compute pass;
+//! spatial operations use separate passes and masks preserve their original in up to four textures;
 //! the last one is drawn into the accumulator with the layer's matrix, opacity and blend mode
 //! like any RGBA layer. Working textures are `Rgba32Float` (the CPU reference's precision) and
 //! pooled per size; layers without effects never touch any of this.
@@ -52,6 +52,17 @@ const OP_MIRROR: u32 = 28;
 const OP_OFFSET: u32 = 29;
 const OP_VIDEO_LIMITER: u32 = 30;
 const OP_LUMETRI: u32 = 31;
+const OP_CHROMA_KEY: u32 = 32;
+const OP_LUMA_KEY: u32 = 33;
+const OP_ULTRA_KEY: u32 = 34;
+const OP_MASK_MIX: u32 = 35;
+const OP_MASK_ALPHA: u32 = 36;
+const OP_LUT: u32 = 37;
+const OP_GRADE: u32 = 38;
+const OP_HSL: u32 = 39;
+const OP_HSL_MASK: u32 = 40;
+const OP_MEDIAN: u32 = 41;
+const OP_HSL_COMBINE: u32 = 42;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -59,15 +70,43 @@ pub(crate) struct FxStage {
     px: wgpu::ComputePipeline,
     run: wgpu::ComputePipeline,
     bgl: wgpu::BindGroupLayout,
+    #[cfg(not(target_arch = "wasm32"))]
+    layout: wgpu::PipelineLayout,
+    #[cfg(not(target_arch = "wasm32"))]
+    specialised: HashMap<Vec<u32>, Specialised>,
+    masks: crate::mask_cache::MaskCache,
+    tiled: wgpu::ComputePipeline,
+    #[cfg(test)]
+    optimise: bool,
     /// Draws a layer's source into a working texture (`composite.wgsl` `fs`, no blending).
     source: wgpu::RenderPipeline,
     pool: HashMap<(u32, u32), Vec<Target>>,
     used: HashSet<(u32, u32)>,
+    #[cfg(test)]
+    fuse: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+enum Specialised {
+    Pending(std::sync::mpsc::Receiver<Option<wgpu::ComputePipeline>>),
+    Ready(wgpu::ComputePipeline),
+    Failed,
+}
+#[cfg(not(target_arch = "wasm32"))]
+static COMPILERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(not(target_arch = "wasm32"))]
+struct CompilePermit;
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for CompilePermit {
+    fn drop(&mut self) {
+        COMPILERS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// One compute pass of a job.
 struct Dispatch {
     run: bool,
+    pipeline: Option<wgpu::ComputePipeline>,
     bg: wgpu::BindGroup,
     groups: (u32, u32),
 }
@@ -93,6 +132,9 @@ struct Step {
     combine: bool,
     /// A blur pass of Unsharp Mask (the original stays untouched until the combine).
     unsharp_blur: bool,
+    mask_start: bool,
+    data: Vec<[f32; 4]>,
+    masks: Vec<filmcraft_render::mask::FlatMask>,
 }
 
 fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
@@ -100,7 +142,7 @@ fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
     for (d, s) in q.iter_mut().zip(p) {
         *d = *s;
     }
-    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false }
+    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, mask_start: false, data: Vec::new(), masks: Vec::new() }
 }
 
 /// Box passes along x (vertical = false) or y for the radii (radius 0 is a no-op on the CPU).
@@ -116,6 +158,95 @@ fn boxes(radii: &[u32], vertical: bool, repeat: bool, out: &mut Vec<Step>) {
 fn steps(op: &FxOp) -> Vec<Step> {
     let mut out = Vec::new();
     match op {
+        FxOp::Chain(ops) => {
+            for op in ops {
+                out.extend(steps(op));
+            }
+        }
+        FxOp::Lut { lut } => {
+            let mut s = step(OP_LUT, [0; 4], &[]);
+            pack_lut(lut, &mut s.data);
+            out.push(s);
+        }
+        FxOp::Grade(grade) => {
+            let mask = grade.curves.iter().enumerate().fold(0u32, |mask, (i, t)| mask | (u32::from(t.is_some()) << i));
+            let wheels = grade.wheels.unwrap_or([[0.0; 3]; 3]);
+            let mut s = step(
+                OP_GRADE,
+                [mask, grade.look, u32::from(grade.wheels.is_some()), 0],
+                &[
+                    grade.intensity,
+                    0.0,
+                    0.0,
+                    0.0,
+                    wheels[0][0],
+                    wheels[0][1],
+                    wheels[0][2],
+                    0.0,
+                    wheels[1][0],
+                    wheels[1][1],
+                    wheels[1][2],
+                    0.0,
+                    wheels[2][0],
+                    wheels[2][1],
+                    wheels[2][2],
+                ],
+            );
+            for table in &grade.curves {
+                for i in 0..filmcraft_render::grading::CURVE_SIZE {
+                    s.data.push([table.as_ref().and_then(|t| t.get(i)).copied().unwrap_or(0.0), 0.0, 0.0, 0.0]);
+                }
+            }
+            if let Some(lut) = &grade.look_lut {
+                s.i1[1] = 9;
+                pack_lut(lut, &mut s.data);
+            }
+            out.push(s);
+        }
+        FxOp::Hsl { params, output, radius, rx, ry } => {
+            if params[11] > 0.0 || params[10] >= 0.3 {
+                let mut mask = step(OP_HSL_MASK, [0; 4], params);
+                mask.unsharp_blur = true;
+                out.push(mask);
+                if params[11] > 0.0 {
+                    let mut median = step(OP_MEDIAN, [*radius, 0, 0, 0], &[params[11]]);
+                    median.unsharp_blur = true;
+                    out.push(median);
+                }
+                let start = out.len();
+                boxes(rx, false, true, &mut out);
+                boxes(ry, true, true, &mut out);
+                for s in &mut out[start..] {
+                    s.unsharp_blur = true;
+                }
+                let mut combine = step(OP_HSL_COMBINE, [*output, 0, 0, 0], params);
+                combine.combine = true;
+                out.push(combine);
+            } else {
+                out.push(step(OP_HSL, [*output, 0, 0, 0], params));
+            }
+        }
+        FxOp::Masked { op, masks } => {
+            out = steps(op);
+            if let Some(first) = out.first_mut() {
+                first.mask_start = true;
+            }
+            if !out.is_empty() {
+                let mut mix = step(OP_MASK_MIX, [masks.len() as u32, 0, 0, 0], &[]);
+                mix.masks = masks.clone();
+                out.push(mix);
+            }
+        }
+        FxOp::OpacityMask { masks } => {
+            let mut alpha = step(OP_MASK_ALPHA, [masks.len() as u32, 0, 0, 0], &[]);
+            alpha.masks = masks.clone();
+            out.push(alpha);
+        }
+        FxOp::UltraKey { params, dominant, output } => out.push(step(OP_ULTRA_KEY, [*dominant, *output, 0, 0], params)),
+        FxOp::ChromaKey { key_ycc, tolerance, softness, spill, dominant, output } => {
+            out.push(step(OP_CHROMA_KEY, [*dominant, *output, 0, 0], &[key_ycc[0], key_ycc[1], key_ycc[2], *tolerance, *softness, *spill]));
+        }
+        FxOp::LumaKey { threshold, cutoff } => out.push(step(OP_LUMA_KEY, [0; 4], &[*threshold, *cutoff])),
         FxOp::BrightnessContrast { br, co } => out.push(step(OP_BRIGHTNESS_CONTRAST, [0; 4], &[*br, *co])),
         FxOp::ProcAmp { br, co, hue, sat } => out.push(step(OP_PROC_AMP, [0; 4], &[*br, *co, *hue, *sat])),
         FxOp::Tint { black, white, amount } => {
@@ -249,12 +380,146 @@ fn steps(op: &FxOp) -> Vec<Step> {
     out
 }
 
+fn pack_lut(lut: &filmcraft_color::Lut, data: &mut Vec<[f32; 4]>) {
+    let shaper = lut.shaper.as_ref();
+    let cube = lut.cube.as_ref();
+    data.push([shaper.map_or(0, |l| l.data.len()) as f32, cube.map_or(0, |l| l.size) as f32, 0.0, 0.0]);
+    for v in [
+        shaper.map_or([0.0; 3], |l| l.domain_min),
+        shaper.map_or([1.0; 3], |l| l.domain_max),
+        cube.map_or([0.0; 3], |l| l.domain_min),
+        cube.map_or([1.0; 3], |l| l.domain_max),
+    ] {
+        data.push([v[0], v[1], v[2], 0.0]);
+    }
+    for c in shaper.into_iter().flat_map(|l| &l.data).chain(cube.into_iter().flat_map(|l| &l.data)) {
+        data.push([c[0], c[1], c[2], 0.0]);
+    }
+}
+
+/// Uniform batches fit even the minimum WebGPU uniform binding limit. Spatial passes are
+/// barriers: subsequent point operations must see their completed image, not the old source.
+const MAX_FUSED: usize = 16;
+#[cfg(not(target_arch = "wasm32"))]
+const SPECIALISE_LOOP: &str = "for (var i = 0u; i < batch.header.x; i++) {\n        u = batch.ops[i];\n        value = pixel(u.i0.x, p, value);\n    }";
+
+fn pointwise(s: &Step) -> bool {
+    !s.mask_start
+        && matches!(s.code, 1..=19 | OP_CROP | OP_VIDEO_LIMITER | OP_LUMETRI | OP_CHROMA_KEY | OP_LUMA_KEY | OP_ULTRA_KEY | OP_LUT | OP_GRADE | OP_HSL)
+}
+
+fn batches(steps: &[Step]) -> Vec<&[Step]> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at < steps.len() {
+        let mut end = at + 1;
+        if pointwise(&steps[at]) {
+            while end < steps.len() && end - at < MAX_FUSED && pointwise(&steps[end]) {
+                end += 1;
+            }
+        }
+        out.push(&steps[at..end]);
+        at = end;
+    }
+    out
+}
+
 impl FxStage {
+    #[cfg(test)]
+    pub(crate) fn set_fusion(&mut self, enabled: bool) {
+        self.fuse = enabled;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_optimise(&mut self, enabled: bool) {
+        self.optimise = enabled;
+    }
+
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn compiled_variants(&self) -> usize {
+        self.specialised.values().filter(|v| matches!(v, Specialised::Ready(_))).count()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn specialised(&mut self, _device: &wgpu::Device, _batch: &[Step]) -> Option<wgpu::ComputePipeline> {
+        None
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn specialised(&mut self, device: &wgpu::Device, batch: &[Step]) -> Option<wgpu::ComputePipeline> {
+        #[cfg(test)]
+        if !self.optimise {
+            return None;
+        }
+        if batch.len() < 2 || !batch.iter().all(pointwise) {
+            return None;
+        }
+        let key: Vec<u32> = batch.iter().map(|s| s.code).collect();
+        if let Some(entry) = self.specialised.get_mut(&key) {
+            match entry {
+                Specialised::Ready(p) => return Some(p.clone()),
+                Specialised::Failed => return None,
+                Specialised::Pending(rx) => match rx.try_recv() {
+                    Ok(Some(p)) => {
+                        *entry = Specialised::Ready(p.clone());
+                        return Some(p);
+                    }
+                    Ok(None) | Err(std::sync::mpsc::TryRecvError::Disconnected) => *entry = Specialised::Failed,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                },
+            }
+            return None;
+        }
+        // Bound both driver memory and concurrent compilation across playback/export devices.
+        // Keyframes update uniforms; only a change of operation order creates a new variant.
+        if self.specialised.len() >= 64
+            || COMPILERS.fetch_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |n| (n < 2).then_some(n + 1)).is_err()
+        {
+            return None;
+        }
+        let permit = CompilePermit;
+        let body = key.iter().enumerate().map(|(i, code)| format!("u = batch.ops[{i}u]; value = pixel({code}u, p, value);\n")).collect::<String>();
+        let source = include_str!("fx.wgsl").replace(SPECIALISE_LOOP, &body);
+        let device = device.clone();
+        let layout = self.layout.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::Builder::new().name("gpu-fx-compile".into()).spawn(move || {
+            let _permit = permit;
+            let compiled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let shader = device
+                    .create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("specialised-fx"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("specialised-fx"),
+                    layout: Some(&layout),
+                    module: &shader,
+                    entry_point: Some("fx_px"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                })
+            }))
+            .ok();
+            if compiled.is_none() {
+                log::warn!("effect shader compilation failed; using generic GPU pipeline");
+            }
+            let _ = tx.send(compiled);
+        });
+        if let Err(err) = worker {
+            log::warn!("cannot start effect shader compiler: {err}");
+            self.specialised.insert(key, Specialised::Failed);
+            return None;
+        }
+        self.specialised.insert(key, Specialised::Pending(rx));
+        // First frames keep using the existing fused shader: compilation never blocks playback.
+        None
+    }
+
     /// Whether `device` can run the stage: compute shaders with 16×16 workgroups and a storage
     /// texture (WebGL2-class devices can't; they render effects on the CPU).
     pub(crate) fn supported(device: &wgpu::Device) -> bool {
         let l = device.limits();
         l.max_storage_textures_per_shader_stage >= 1
+            && l.max_storage_buffers_per_shader_stage >= 3
+            && l.max_compute_workgroup_storage_size >= 4096
             && l.max_compute_invocations_per_workgroup >= 256
             && l.max_compute_workgroup_size_x >= 64
             && l.max_compute_workgroup_size_y >= 16
@@ -297,6 +562,37 @@ impl FxStage {
                     count: None,
                 },
                 tex(3),
+                tex(7),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("fx"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0 });
@@ -331,12 +627,30 @@ impl FxStage {
             multiview_mask: None,
             cache: None,
         });
-        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, source, pool: HashMap::new(), used: HashSet::new() }
+        Self {
+            px: compute("fx_px"),
+            run: compute("fx_run"),
+            tiled: compute("fx_tile"),
+            #[cfg(not(target_arch = "wasm32"))]
+            layout: pl.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            specialised: HashMap::new(),
+            masks: crate::mask_cache::MaskCache::new(device),
+            bgl,
+            #[cfg(test)]
+            optimise: true,
+            source,
+            pool: HashMap::new(),
+            used: HashSet::new(),
+            #[cfg(test)]
+            fuse: true,
+        }
     }
 
     /// Start a frame: pooled textures of sizes no layer uses by [`end_frame`](Self::end_frame)
     /// are released then.
     pub(crate) fn begin_frame(&mut self) {
+        self.masks.trim_to_budget();
         self.used.clear();
     }
 
@@ -386,37 +700,83 @@ impl FxStage {
         source_bg: wgpu::BindGroup,
         dummy: &wgpu::TextureView,
     ) -> Option<FxJob> {
+        if !fx.ops.iter().all(FxOp::gpu_ok) {
+            return None;
+        }
         let (w, h) = (fx.size.0.max(1), fx.size.1.max(1));
         let max = device.limits().max_texture_dimension_2d;
         if w > max || h > max {
             return None;
         }
         let all: Vec<Step> = fx.ops.iter().flat_map(steps).collect();
-        let n = if all.iter().any(|s| s.combine) { 3 } else { 2 };
-        let targets = self.targets(device, (w, h), n);
+        let n = if all.iter().any(|s| s.mask_start) {
+            4
+        } else if all.iter().any(|s| s.combine) {
+            3
+        } else {
+            2
+        };
+        let targets = self.targets(device, (w, h), n).to_vec();
         let views: Vec<wgpu::TextureView> = targets.iter().map(|t| t.1.clone()).collect();
         let mut dispatches = Vec::with_capacity(all.len());
         let mut cur = 0usize;
         // Unsharp: the image its blur started from (kept while its blur passes run)
         let mut orig: Option<usize> = None;
-        for s in &all {
+        let mut mask_orig: Option<usize> = None;
+        let groups = batches(&all);
+        #[cfg(test)]
+        let groups = if self.fuse { groups } else { all.chunks(1).collect() };
+        for batch in groups {
+            let s = batch.first()?;
+            if s.mask_start {
+                mask_orig = Some(cur);
+            }
             // (an Unsharp without blur passes, radius 0, combines the original with itself)
             if (s.unsharp_blur || s.combine) && orig.is_none() {
                 orig = Some(cur);
             }
             let keep = if s.unsharp_blur || s.combine { orig } else { None };
-            let dst = (0..n).find(|k| *k != cur && Some(*k) != keep)?;
-            let aux = match (s.combine, orig) {
-                (true, Some(o)) => views.get(o)?,
-                _ => dummy,
+            let dst = (0..n).find(|k| *k != cur && Some(*k) != keep && Some(*k) != mask_orig)?;
+            let aux = if s.code == OP_MASK_MIX {
+                views.get(mask_orig?)?
+            } else {
+                match (s.combine, orig) {
+                    (true, Some(o)) => views.get(o)?,
+                    _ => dummy,
+                }
             };
-            let mut bytes = Vec::with_capacity(128);
-            for v in [s.code, w, h, 0].iter().chain(&s.i1) {
+            let mut bytes = Vec::with_capacity(16 + MAX_FUSED * 128);
+            let optimise = {
+                #[cfg(test)]
+                {
+                    self.optimise
+                }
+                #[cfg(not(test))]
+                {
+                    true
+                }
+            };
+            let cached_mask = if optimise && !s.masks.is_empty() { self.masks.coverage(device, queue, &s.masks, w, h) } else { None };
+            for v in [batch.len() as u32, w, h, u32::from(cached_mask.is_some())] {
                 bytes.extend_from_slice(&v.to_le_bytes());
             }
-            for v in &s.p {
-                bytes.extend_from_slice(&v.to_le_bytes());
+            let mut data = Vec::new();
+            for s in batch {
+                let mut ints = s.i1;
+                if !s.data.is_empty() {
+                    ints[3] = (data.len() / 16) as u32;
+                }
+                for v in s.data.iter().flatten() {
+                    data.extend_from_slice(&v.to_le_bytes());
+                }
+                for v in [s.code, w, h, 0].iter().chain(&ints) {
+                    bytes.extend_from_slice(&v.to_le_bytes());
+                }
+                for v in &s.p {
+                    bytes.extend_from_slice(&v.to_le_bytes());
+                }
             }
+            bytes.resize(16 + MAX_FUSED * 128, 0);
             let buf = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("fx-u"),
                 size: bytes.len() as u64,
@@ -424,6 +784,46 @@ impl FxStage {
                 mapped_at_creation: false,
             });
             queue.write_buffer(&buf, 0, &bytes);
+            use wgpu::util::DeviceExt;
+            let mut infos = Vec::new();
+            let mut points = Vec::new();
+            let mut start = 0u32;
+            for mask in &s.masks {
+                for v in [start, mask.pts.len() as u32, mask.mode.index(), u32::from(mask.inverted)] {
+                    infos.extend_from_slice(&v.to_le_bytes());
+                }
+                for v in [mask.feather, mask.expansion, mask.opacity, 0.0] {
+                    infos.extend_from_slice(&v.to_le_bytes());
+                }
+                for v in mask.pts.iter().flatten() {
+                    points.extend_from_slice(&v.to_le_bytes());
+                }
+                start += mask.pts.len() as u32;
+            }
+            if infos.is_empty() {
+                infos.resize(32, 0);
+            }
+            if points.is_empty() {
+                points.resize(8, 0);
+            }
+            let mb =
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("fx-masks"), contents: &infos, usage: wgpu::BufferUsages::STORAGE });
+            let pb = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("fx-mask-points"),
+                contents: &points,
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+            if data.is_empty() {
+                data.resize(16, 0);
+            }
+            if data.len() as u64 > device.limits().max_storage_buffer_binding_size {
+                return None;
+            }
+            let db = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("fx-grade-data"),
+                contents: &data,
+                usage: wgpu::BufferUsages::STORAGE,
+            });
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("fx"),
                 layout: &self.bgl,
@@ -432,18 +832,33 @@ impl FxStage {
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(views.get(cur)?) },
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(views.get(dst)?) },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(aux) },
+                    wgpu::BindGroupEntry { binding: 4, resource: mb.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 5, resource: pb.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 6, resource: db.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(cached_mask.as_ref().unwrap_or(dummy)) },
                 ],
             });
-            let groups = if s.run {
+            let tiled = optimise && s.code == OP_BOX && (8..=BOX_PER_PIXEL_MAX).contains(&s.i1[0]);
+            let pipeline = if tiled { Some(self.tiled.clone()) } else { self.specialised(device, batch) };
+            let groups = if tiled {
+                let (length, lines) = if s.i1[2] != 0 { (h, w) } else { (w, h) };
+                (length.div_ceil(128), lines)
+            } else if s.run {
                 let lines = if s.i1[2] != 0 { w } else { h };
                 (lines.div_ceil(64), 1)
             } else {
                 (w.div_ceil(16), h.div_ceil(16))
             };
-            dispatches.push(Dispatch { run: s.run, bg, groups });
+            if groups.0 > device.limits().max_compute_workgroups_per_dimension || groups.1 > device.limits().max_compute_workgroups_per_dimension {
+                return None;
+            }
+            dispatches.push(Dispatch { run: s.run, pipeline, bg, groups });
             cur = dst;
             if s.combine {
                 orig = None;
+            }
+            if s.code == OP_MASK_MIX {
+                mask_orig = None;
             }
         }
         Some(FxJob {
@@ -480,9 +895,24 @@ impl FxStage {
         }
         let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("fx"), timestamp_writes: None });
         for d in &job.dispatches {
-            pass.set_pipeline(if d.run { &self.run } else { &self.px });
+            pass.set_pipeline(d.pipeline.as_ref().unwrap_or(if d.run { &self.run } else { &self.px }));
             pass.set_bind_group(0, &d.bg, &[]);
             pass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
         }
+    }
+}
+
+#[cfg(test)]
+mod fusion_tests {
+    use super::*;
+
+    #[test]
+    fn fusion_stops_at_spatial_operations_and_bounds_uniform_size() {
+        let mut chain = vec![step(OP_TINT, [0; 4], &[])];
+        chain.extend((0..18).map(|_| step(OP_BRIGHTNESS_CONTRAST, [0; 4], &[])));
+        chain.push(step(OP_BOX, [1, 1, 0, 0], &[]));
+        chain.push(step(OP_LUMETRI, [0; 4], &[]));
+        chain.push(step(OP_ULTRA_KEY, [0; 4], &[]));
+        assert_eq!(batches(&chain).iter().map(|b| b.len()).collect::<Vec<_>>(), [16, 3, 1, 2]);
     }
 }

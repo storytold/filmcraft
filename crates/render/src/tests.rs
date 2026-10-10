@@ -393,6 +393,38 @@ fn draft_reduced_resolution_plans_carry_decimated_yuv() {
     }
 }
 
+#[test]
+fn animated_keying_chains_keep_decoded_frames_in_gpu_plans() {
+    for (id, parameter) in [("color_key", "tolerance"), ("ultra_key", "tolerance"), ("luma_key", "threshold")] {
+        let (mut p, red, _ocean, seq, mut map) = setup();
+        let matte = GeneratorSource::new(Generator::ColorMatte { color: [0.0, 0.0, 0.0, 1.0] }, 320, 180, FrameRate::FPS_24, Tick(10 * TICKS_PER_SECOND));
+        map.0.insert(red, Arc::new(YuvSource(matte)) as SharedSource);
+        let clip = place(&mut p, seq, 0, red, 0, 48);
+        let mut key = filmcraft_project::find_effect(id).unwrap().instance();
+        let param = key.params.get_mut(parameter).unwrap();
+        param.put_keyframe(Tick::ZERO, ParamValue::Float(10.0));
+        param.put_keyframe(Tick::from_seconds_f64(1.0), ParamValue::Float(90.0));
+        let (_, item) = p.sequence_mut(seq).unwrap().find_item_mut(clip).unwrap();
+        item.effects.push(filmcraft_project::find_effect("brightness_contrast").unwrap().instance());
+        item.effects.push(key);
+        let mut previous = None;
+        for seconds in [0.0, 0.5, 1.0] {
+            let t = Tick::from_seconds_f64(seconds);
+            let plan = plan::plan_frame(&p, seq, t, RenderOptions::default(), &map);
+            let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("keying must stay GPU-drawable") };
+            assert!(matches!(layers[0].frame.data, filmcraft_frame::PixelData::Yuv8 { .. }), "{id}: no CPU-rendered replacement");
+            let fx = layers[0].fx.as_ref().expect("GPU effect chain");
+            assert_eq!(fx.ops.len(), 2);
+            assert_ne!(previous.as_ref(), Some(&fx.ops), "{id}: keyframes must change GPU parameters");
+            previous = Some(fx.ops.clone());
+            let cpu = plan::execute_cpu(&plan);
+            let reference = render_sequence(&p, seq, t, RenderOptions::default(), &map);
+            let max = cpu.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(max < 1e-5, "{id} t={seconds}: {max}");
+        }
+    }
+}
+
 /// A damaged project can hold a multi-camera clip whose angle is the clip itself. Planning and
 /// rendering its frame must end: the plan's multi-camera shortcut used to recurse until the stack
 /// overflowed.
@@ -494,4 +526,29 @@ fn a_reversed_clip_shows_exactly_its_source_range() {
     // every timeline frame stays inside the clip's source range, each source frame shown once
     let all: Vec<i64> = (0..20).flat_map(|f| shown(&p, f, false)).collect();
     assert_eq!(all, (10..=29).rev().collect::<Vec<_>>());
+}
+
+#[test]
+fn masked_effects_and_opacity_stay_in_gpu_plans_at_reduced_resolution() {
+    use filmcraft_project::{Mask, MaskPath};
+    let (mut p, _, ocean, seq, map) = setup();
+    let clip = place(&mut p, seq, 0, ocean, 0, 48);
+    let item = p.sequence_mut(seq).unwrap().find_item_mut(clip).unwrap().1;
+    let mut effect = filmcraft_project::find_effect("lumetri").unwrap().instance();
+    effect.params.get_mut("wheel_midtones_l").unwrap().value = ParamValue::Float(20.0);
+    effect.masks.push(Mask::new("effect", MaskPath::rect(10.0, 10.0, 230.0, 150.0)));
+    item.effects.push(effect);
+    item.effect_mut("opacity").unwrap().masks.push(Mask::new("opacity", MaskPath::rect(20.0, 20.0, 280.0, 170.0)));
+    for scale in [1.0, 0.5, 0.25] {
+        for effects in [true, false] {
+            let opts = RenderOptions { scale, effects, ..Default::default() };
+            let plan = plan::plan_frame(&p, seq, Tick::ZERO, opts, &map);
+            let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("expected GPU layers") };
+            assert!(layers[0].fx.is_some());
+            let reference = render_sequence(&p, seq, Tick::ZERO, opts, &map);
+            let actual = plan::execute_cpu(&plan);
+            let difference = reference.px.iter().zip(&actual.px).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(difference < 1e-5, "scale {scale}, effects {effects}, difference {difference}");
+        }
+    }
 }

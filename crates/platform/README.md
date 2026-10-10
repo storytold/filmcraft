@@ -18,7 +18,10 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   hardware decoder *required*; samples go in as `CMSampleBuffer`s with asynchronous decompression
   (two access units in flight); the output callback copies each NV12 / P010-style biplanar
   `CVPixelBuffer` into planar `Yuv8` / `Yuv16` (chroma deinterleaved, 10-bit samples shifted down
-  from the high bits, cropped to the conformance window when the buffer is the coded size). A
+  from the high bits, cropped to the conformance window when the buffer is the coded size).
+  Chroma copies use exact-size iterators in `chroma.rs`, allowing LLVM to vectorise the strided
+  reads on Apple Silicon (including the A18 Pro in MacBook Neo), without intrinsics, additional
+  threads or temporary planes. The same routines handle 4:2:0 and 4:2:2 rows. A
   reorder buffer of the stream's own depth (`max_num_reorder_frames` /
   `sps_max_num_reorder_pics`) restores presentation order; a run starting at an HEVC CRA leaves
   out its RASL pictures, as our decoder does. Each seek (`reset`) starts a fresh session.
@@ -357,3 +360,16 @@ Linux registers the export factory even without a driver; `register()`'s return 
 `registered()` still describe hardware **decoding**, which this backend does not provide.
 Absent / old drivers decline once per export, with an informational log and
 `perf.stats` → `export.hardware.declined`; hardware encoding Off never opens the driver.
+
+
+The macOS native export bridge (`gpu_export`) consumes a completed wgpu Metal accumulator and
+writes IOSurface-backed NV12 on the GPU for VideoToolbox H.264/HEVC. Compatible SDR exports with
+GPU rendering Auto and a hardware encoder avoid CPU image readback and RGB→YUV conversion.
+Export overlays, output resizing/cropping, HDR and unsupported frame plans retain the portable
+path. The `gpu_decode` bridge additionally retains VideoToolbox NV12/P010-style decoder surfaces
+and imports their Metal views directly, without CPU planar copying or GPU plane uploads.
+CPU fallback materializes exact planes once; native cache charges reserve that possible copy.
+A read-only CoreVideo mapping remains held for safe lazy CPU access. Texture lifetime guards
+retain the buffer and CVMetalTexture through in-flight GPU work. All backend/CoreVideo access
+remains in the OS media FFI modules. Platform startup also configures media-cache budgets from physical RAM; macOS
+and Linux have a bounded best-effort available-memory monitor.

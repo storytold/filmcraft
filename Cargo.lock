@@ -2120,6 +2120,8 @@ dependencies = [
  "filmcraft-color",
  "filmcraft-export",
  "filmcraft-frame",
+ "filmcraft-geom",
+ "filmcraft-gpu",
  "filmcraft-h264",
  "filmcraft-hevc",
  "filmcraft-isobmff",
@@ -2130,10 +2132,15 @@ dependencies = [
  "filmcraft-time",
  "libloading",
  "log",
+ "objc2 0.6.4",
  "objc2-core-foundation",
  "objc2-core-media",
  "objc2-core-video",
+ "objc2-foundation 0.3.2",
+ "objc2-metal 0.3.2",
  "objc2-video-toolbox",
+ "pollster 0.4.0",
+ "wgpu",
  "windows 0.62.2",
 ]
 
@@ -3982,6 +3989,7 @@ checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
 dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
+ "libc",
  "objc2 0.6.4",
  "objc2-core-foundation",
 ]
@@ -4029,7 +4037,9 @@ checksum = "a0125f776a10d00af4152d74616409f0d4a2053a6f57fa5b7d6aa2854ac04794"
 dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
+ "dispatch2",
  "objc2 0.6.4",
+ "objc2-core-foundation",
  "objc2-foundation 0.3.2",
 ]
 

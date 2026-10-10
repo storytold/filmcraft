@@ -254,6 +254,27 @@ engine behaviour without a window.
 
 ## 5. Performance
 
+Keying GPU parity is covered by `filmcraft-gpu`'s effect cases, chains and
+`keyframed_keying_follows_time`. Render tests compare evaluated keying ops against the original
+CPU functions and assert that animated keying chains retain decoded YUV sources in GPU plans.
+`bench_keying_compositor` is ignored by default and compares CPU/GPU compositing on a warm decoded
+source at 1080p and 4K. It waits for each GPU frame to finish and excludes decode and readback:
+
+```sh
+cargo test --release -p filmcraft-gpu --lib bench_keying_compositor -- --ignored --nocapture
+```
+
+Run GPU tests with access to the OS graphics services; a sandbox without Metal access may skip
+adapter-dependent tests. For a faster local benchmark build, reuse the dev dependencies while
+optimizing the three crates measured at level 3:
+
+```sh
+cargo test -j 2 --config 'profile.dev.package.filmcraft-render.opt-level=3' \
+  --config 'profile.dev.package.filmcraft-frame.opt-level=3' \
+  --config 'profile.dev.package.filmcraft-gpu.opt-level=3' \
+  -p filmcraft-gpu --lib bench_keying_compositor -- --ignored --nocapture
+```
+
 | Benchmark | Command |
 |---|---|
 | H.264 decode, 1080p, threads sweep | `cargo test --release -p filmcraft-h264 --test perf -- --ignored --nocapture` |
@@ -354,3 +375,45 @@ thread's CPU time, so it runs with the rest of the suite. Hosts without a per-th
 explicitly with
 `cargo test --release -p filmcraft-render --lib perf_24_tracks_3_effects_realtime_factor -- --ignored --nocapture`
 and record the machine with the result.
+
+
+Pass fusion and advanced SDR Lumetri are checked against separate CPU references, including
+curves, all looks, LUT shapers/non-unit domains, HSL Denoise/Blur, transparent pixels, chains
+longer than sixteen operations, masks around spatial effects, all mask combination modes and
+reduced-resolution planning. `filmcraft-platform` tests `gpu_export::tests` additionally compare
+native NV12 byte-for-byte with the portable conversion, encode eight native frames for each of H.264 and HEVC, and roundtrip
+a 24-frame export with/without a CPU text overlay. These hardware tests must run with actual Metal
+and VideoToolbox access; a headless adapter skip does not validate the native route.
+
+`bench_fused_color_chain` is an ignored `filmcraft-gpu` unit benchmark. It alternates fused and
+separate passes on the same five-effect decoded-YUV plan, waits for GPU completion, and reports
+median frame time across five rounds. It excludes decode, UI and readback and is not playback FPS.
+
+Validation on A18 Pro (2026-10-10): frame 13, codecs 86, render 177, GPU 36, export 72,
+platform 17 tests passed (401 total; five optional benchmarks ignored). Clippy with warnings
+denied passed for these libraries, the desktop app and CLI, including their test targets;
+format, dependency-layer and asset checks passed. This is targeted validation, not a complete
+workspace CI run or validation on Windows/Linux.
+
+
+Native decode/Metal validation (2026-10-10) includes `videotoolbox` integration tests:
+H.264 High, HEVC Main and Main 10 decode, reseek and recovery remain sample-exact; native
+GPU plans upload zero CPU pixel bytes and match planar GPU rendering within one 8-bit
+channel code at full, half and quarter resolution. The platform native-image unit test
+checks deferred CPU materialization, stable cache charging and surface lifetime after
+source-cache eviction. GPU tests cover tiled blur across odd dimensions, both axes,
+repeat/transparent edges and radii around kernel boundaries; mask geometry changes
+invalidate coverage; shader variants compile in the background and reuse animated values.
+
+`bench_metal_optimisations`, `bench_blur_kernel_thresholds` and
+`gpu_decode::tests::bench_native_decode_upload` are ignored hardware benchmarks. Run them
+sequentially after building, with actual Metal access and `--nocapture --test-threads=1`.
+Native timing compares the previous planar-copy/half-conversion/upload path with retaining
+and importing the same pre-decoded buffer; compressed decoding and CPU image readback
+are excluded. Source caches are cleared each iteration. GPU-effect timing keeps its source
+cached and uses a warmed geometry/shader cache; it is not a cold-start or whole-app FPS test.
+
+Final targeted validation for native decode and the three Metal optimisations: frame 13,
+codecs 86, render 177, GPU 38, export 72 and platform 18 unit tests, plus five actual
+VideoToolbox integration tests: 409 distinct tests passed. Optimised hot-module builds also
+passed the GPU and platform unit suites. This does not cover full workspace CI or other OSes.

@@ -134,7 +134,10 @@ pub fn videotoolbox_encoder_factory(
         }
     };
     match VtEncoder::new(config) {
-        Ok(vt) => Some(Ok(Box::new(HardwareEncoder { vt, y: Vec::new(), u: Vec::new(), v: Vec::new(), decoded: 0 }))),
+        Ok(vt) => {
+            filmcraft_export::note_hw_encode_session();
+            Some(Ok(Box::new(HardwareEncoder { vt, y: Vec::new(), u: Vec::new(), v: Vec::new(), decoded: 0 })))
+        }
         Err(why) => {
             log::info!("hardware {name} encoding declined: {why}");
             None
@@ -187,6 +190,25 @@ impl HardwareEncoder {
 }
 
 impl VideoEncoder for HardwareEncoder {
+    fn native_format(&self) -> Option<&'static str> {
+        Some(crate::gpu_export::NATIVE_FORMAT)
+    }
+    fn encode_native(&mut self, frame: &filmcraft_export::NativeFrame, index: u64) -> filmcraft_export::Result<Vec<EncodedPacket>> {
+        if frame.format != crate::gpu_export::NATIVE_FORMAT {
+            return Err(ExportError::Encode("wrong native surface format".into()));
+        }
+        let surface = frame.surface.downcast_ref::<crate::gpu_export::Surface>().ok_or_else(|| ExportError::Encode("wrong native surface type".into()))?;
+        let packets = self.vt.encode_buffer(index, &surface.buffer).map_err(ExportError::Encode)?;
+        if index == 0 {
+            let params = self.vt.parameter_sets().ok_or_else(|| ExportError::Encode("VideoToolbox returned no parameter sets for the first frame".into()))?;
+            if self.vt.config().profile.codec() == VtCodec::Hevc {
+                hevc_config(&params).map_err(ExportError::Encode)?;
+            }
+        }
+        filmcraft_export::note_hw_encode_frame();
+        self.samples(packets)
+    }
+
     fn sample_entry(&self) -> SampleEntry {
         let c = self.vt.config();
         let (w, h) = (c.width.min(u32::from(u16::MAX)) as u16, c.height.min(u32::from(u16::MAX)) as u16);
@@ -226,6 +248,7 @@ impl VideoEncoder for HardwareEncoder {
                 hevc_config(&params).map_err(ExportError::Encode)?;
             }
         }
+        filmcraft_export::note_hw_encode_frame();
         self.samples(packets)
     }
 

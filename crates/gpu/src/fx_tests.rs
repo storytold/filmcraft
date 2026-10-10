@@ -23,6 +23,82 @@ use filmcraft_time::Tick;
 const EXACT: f32 = 1e-4;
 const FLIPS: f64 = 0.01;
 
+/// Compositor throughput on an already-decoded, cached YUV source; excludes video decoding and
+/// GPU readback. GPU waits for each frame's work, rather than timing only command submission.
+#[test]
+#[ignore = "keying compositor benchmark; use optimized render/frame/GPU crates and --nocapture"]
+fn bench_keying_compositor() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    let (dev, q) = device().expect("GPU adapter required for benchmark");
+    let mut c = GpuCompositor::new(&dev, &q);
+    assert!(c.fx.is_some(), "compute effect stage required");
+    for (w, h) in [(1920u32, 1080u32), (3840, 2160)] {
+        let frame = yuv_frame(w, h);
+        for (id, params) in [
+            ("ultra_key", vec![("tolerance", fl(20.0))]),
+            ("color_key", vec![("tolerance", fl(80.0)), ("feather", fl(10.0))]),
+            ("luma_key", vec![("threshold", fl(80.0)), ("cutoff", fl(20.0))]),
+        ] {
+            let e = effect(id, &params);
+            let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w as usize, h as usize).expect("keying op");
+            if id == "ultra_key" {
+                let px = frame.to_linear_f32();
+                let mut img = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+                let mut times = [Vec::new(), Vec::new()];
+                for round in 0..5 {
+                    for index in [round % 2, 1 - round % 2] {
+                        img.px.copy_from_slice(&px);
+                        let start = Instant::now();
+                        if index == 0 {
+                            assert!(filmcraft_render::vfx::apply(&mut img, &e, &cx(Tick::ZERO, 1.0)));
+                        } else {
+                            op.apply(&mut img);
+                        }
+                        times[index].push(start.elapsed());
+                        black_box(&img.px);
+                    }
+                }
+                for t in &mut times {
+                    t.sort();
+                }
+                eprintln!(
+                    "Ultra Key CPU stage {w}x{h}: previous {:?}, fused {:?}, {:.2}x",
+                    times[0][2],
+                    times[1][2],
+                    times[0][2].as_secs_f64() / times[1][2].as_secs_f64()
+                );
+            }
+            let mut layer = PlanLayer::new(frame.clone(), Affine::IDENTITY, 1.0, Blend::Normal);
+            layer.fx = Some(Arc::new(LayerFx { size: (w, h), decimation: 1, ops: vec![op] }));
+            let plan = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![layer] };
+            black_box(execute_cpu(&plan));
+            c.composite(&plan);
+            dev.poll(wgpu::PollType::wait_indefinitely()).expect("GPU warm-up");
+            let mut times = [Vec::new(), Vec::new()];
+            for round in 0..5 {
+                for index in [round % 2, 1 - round % 2] {
+                    let start = Instant::now();
+                    for _ in 0..6 {
+                        if index == 0 {
+                            black_box(execute_cpu(black_box(&plan)));
+                        } else {
+                            black_box(c.composite(black_box(&plan)));
+                            dev.poll(wgpu::PollType::wait_indefinitely()).expect("GPU frame completion");
+                        }
+                    }
+                    times[index].push(start.elapsed() / 6);
+                }
+            }
+            for t in &mut times {
+                t.sort();
+            }
+            let (cpu, gpu) = (times[0][2], times[1][2]);
+            eprintln!("{id} {w}x{h}: CPU {cpu:?}, GPU {gpu:?}, {:.2}x", cpu.as_secs_f64() / gpu.as_secs_f64());
+        }
+    }
+}
+
 fn cx(t: Tick, px_scale: f32) -> FxCtx<'static> {
     FxCtx { t, px_scale, seconds: 0.0, timecode: "", clip_name: "", project: None, env: None, working: filmcraft_color::WorkingSpace::Rec709 }
 }
@@ -103,6 +179,19 @@ fn compare(cpu: &[f32], gpu: &[f32]) -> (f32, f64) {
 /// Effect cases: (effect id, parameters, whether a threshold may flip pixels).
 fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
     vec![
+        ("color_key", vec![], false),
+        ("color_key", vec![("color", col(0.0, 0.8, 0.2)), ("tolerance", fl(80.0)), ("feather", fl(15.0))], false),
+        ("color_key", vec![("color", col(1.0, 0.1, 0.0)), ("tolerance", fl(255.0)), ("feather", fl(50.0))], false),
+        ("ultra_key", vec![], false),
+        ("ultra_key", vec![("setting", ch(1)), ("contrast", fl(40.0)), ("mid_point", fl(35.0))], false),
+        ("ultra_key", vec![("setting", ch(2)), ("cc_saturation", fl(140.0)), ("cc_hue", fl(-45.0)), ("cc_luminance", fl(80.0))], false),
+        ("ultra_key", vec![("key_color", col(0.1, 0.2, 0.9)), ("spill", fl(100.0)), ("output", ch(1))], false),
+        ("ultra_key", vec![("key_color", col(0.9, 0.2, 0.1)), ("spill", fl(100.0)), ("output", ch(2))], false),
+        ("ultra_key", vec![("pedestal", fl(100.0)), ("tolerance", fl(0.0)), ("transparency", fl(0.0))], false),
+        ("luma_key", vec![], false),
+        ("luma_key", vec![("threshold", fl(80.0)), ("cutoff", fl(20.0))], false),
+        ("luma_key", vec![("threshold", fl(20.0)), ("cutoff", fl(80.0))], false),
+        ("luma_key", vec![("threshold", fl(50.0)), ("cutoff", fl(50.0))], false),
         ("brightness_contrast", vec![("brightness", fl(30.0)), ("contrast", fl(40.0))], false),
         ("brightness_contrast", vec![("brightness", fl(-100.0)), ("contrast", fl(-100.0))], false),
         ("brightness_contrast", vec![("brightness", fl(100.0)), ("contrast", fl(100.0))], false),
@@ -342,6 +431,12 @@ fn gpu_effect_chains_match_cpu() {
     let frame = VideoFrame::rgba_f32(w, h, px.clone());
     let chains: Vec<Vec<EffectInstance>> = vec![
         vec![
+            effect("brightness_contrast", &[("brightness", fl(10.0))]),
+            effect("ultra_key", &[("tolerance", fl(20.0))]),
+            effect("gaussian_blur", &[("blurriness", fl(3.0)), ("repeat_edge", ParamValue::Bool(true))]),
+            effect("luma_key", &[("threshold", fl(80.0)), ("cutoff", fl(10.0))]),
+        ],
+        vec![
             effect("brightness_contrast", &[("brightness", fl(20.0)), ("contrast", fl(30.0))]),
             effect("gaussian_blur", &[("blurriness", fl(8.0))]),
             effect("tint", &[("amount", fl(50.0))]),
@@ -378,6 +473,44 @@ fn gpu_effect_chains_match_cpu() {
 }
 
 /// Keyframed parameters are evaluated at the layer's time on the CPU: the GPU result follows them.
+#[test]
+fn keyframed_keying_follows_time() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (67u32, 41u32);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    for (id, parameter, from, to) in [("color_key", "tolerance", 0.0, 180.0), ("ultra_key", "tolerance", 0.0, 100.0), ("luma_key", "threshold", 20.0, 90.0)] {
+        let mut e = effect(id, &[]);
+        let p = e.params.get_mut(parameter).expect("animated parameter");
+        p.put_keyframe(Tick::ZERO, fl(from));
+        p.put_keyframe(Tick::from_seconds_f64(1.0), fl(to));
+        let mut last = None;
+        for s in [0.0, 0.25, 0.7, 1.0] {
+            let op = FxOp::eval(&e, &cx(Tick::from_seconds_f64(s), 1.0), w as usize, h as usize).expect("keying op");
+            assert!(op.gpu_ok());
+            let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+            op.apply(&mut cpu);
+            let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("keying image");
+            let (worst, flips) = compare(&cpu.px, &gpu);
+            assert!(worst < EXACT && flips == 0.0, "{id}, t={s}: {worst}, {flips}");
+            assert_ne!(last.as_ref(), Some(&gpu), "{id}: animated picture at {s}");
+            last = Some(gpu);
+        }
+    }
+}
+
+#[test]
+fn spatial_ultra_key_stays_on_cpu() {
+    for id in ["choke", "soften"] {
+        let e = effect("ultra_key", &[(id, fl(10.0))]);
+        assert!(FxOp::eval(&e, &cx(Tick::ZERO, 1.0), 67, 41).is_none(), "{id}: spatial cleanup requires CPU fallback");
+    }
+}
+
 #[test]
 fn keyframed_effects_follow_time() {
     let Some((dev, q)) = device() else {
@@ -418,6 +551,9 @@ fn keyframed_effects_follow_time() {
 fn hostile_parameters_are_bounded() {
     let (w, h) = (40usize, 24usize);
     let nan = [
+        effect("color_key", &[("color", ParamValue::Color([f32::NAN, 0.0, 1.0, 1.0]))]),
+        effect("ultra_key", &[("spill", fl(f64::INFINITY))]),
+        effect("luma_key", &[("threshold", fl(f64::NAN))]),
         effect("brightness_contrast", &[("brightness", fl(f64::NAN))]),
         effect("gaussian_blur", &[("blurriness", fl(f64::INFINITY))]),
         effect("directional_blur", &[("length", fl(f64::NAN))]),
@@ -482,56 +618,6 @@ fn hostile_parameters_are_bounded() {
 #[test]
 fn lumetri_unsupported_sections_fall_back() {
     let (w, h) = (40usize, 24usize);
-    // sharpen > 0 and input LUT (explicitly required by brief)
-    let e = effect("lumetri", &[("sharpen", fl(10.0)), ("input_lut", ParamValue::Text("custom.cube".into()))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()), "sharpen > 0 and input_lut must fall back to CPU");
-
-    // sharpen alone
-    let e = effect("lumetri", &[("sharpen", fl(20.0))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
-
-    // input_lut alone
-    let e = effect("lumetri", &[("input_lut", ParamValue::Text("test.cube".into()))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
-
-    // look_lut
-    let e = effect("lumetri", &[("look_lut", ParamValue::Text("look.cube".into()))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
-
-    // look > 0
-    let e = effect("lumetri", &[("look", ch(1))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
-
-    // curve_luma modified
-    let e = effect("lumetri", &[("curve_luma", ParamValue::Curve(vec![[0.0, 0.1], [1.0, 0.9]]))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
-
-    // hue_vs_sat non-empty
-    let e = effect("lumetri", &[("hue_vs_sat", ParamValue::Curve(vec![[0.5, 0.5]]))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
-
-    // wheel offset
-    let e = effect("lumetri", &[("wheel_shadows", pt(0.5, 0.0))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
-
-    // wheel lightness
-    let e = effect("lumetri", &[("wheel_midtones_l", fl(20.0))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
-
-    // HSL secondary on
-    let e = effect("lumetri", &[("hsl_on", ParamValue::Bool(true))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
-
     // HDR working space
     let e = effect("lumetri", &[]);
     let mut cx_hdr = cx(Tick::ZERO, 1.0);
@@ -741,5 +827,320 @@ fn effect_source_integer_decimation_preserves_cpu_box_oracle() {
             let (worst, flips) = compare(&cpu, &gpu);
             assert!(worst <= EXACT && flips == 0.0, "{w}x{h} n{n} source box: {worst}, {flips}");
         }
+    }
+}
+
+#[test]
+fn advanced_lumetri_and_fused_masked_spatial_chains_match_cpu() {
+    use filmcraft_project::MaskMode;
+    use filmcraft_render::mask::FlatMask;
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (67, 41);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let curve = ParamValue::Curve(vec![[0.0, 0.1], [0.3, 0.2], [0.8, 0.95], [1.0, 0.9]]);
+    let mut params = vec![
+        ("wheel_shadows", pt(0.4, 0.2)),
+        ("wheel_midtones_l", fl(15.0)),
+        ("wheel_highlights", pt(-0.2, 0.3)),
+        ("look", ch(1)),
+        ("look_intensity", fl(70.0)),
+    ];
+    for id in ["curve_luma", "curve_red", "curve_green", "curve_blue", "hue_vs_sat", "hue_vs_hue", "hue_vs_luma", "luma_vs_sat", "sat_vs_sat"] {
+        params.push((id, curve.clone()));
+    }
+    let mut chains = Vec::new();
+    for look in 0..=8 {
+        let mut params = params.clone();
+        params.push(("look", ch(look)));
+        chains.push(vec![FxOp::eval(&effect("lumetri", &params), &cx(Tick::ZERO, 1.0), w as usize, h as usize).unwrap()]);
+    }
+    for output in 0..=3 {
+        chains.push(vec![
+            FxOp::eval(
+                &effect(
+                    "lumetri",
+                    &[
+                        ("hsl_on", ParamValue::Bool(true)),
+                        ("hsl_show_mask", ch(output)),
+                        ("hsl_denoise", fl(60.0)),
+                        ("hsl_blur", fl(45.0)),
+                        ("hsl_temp", fl(50.0)),
+                        ("hsl_tint", fl(-30.0)),
+                        ("hsl_hue_shift", fl(45.0)),
+                        ("sharpen", fl(20.0)),
+                    ],
+                ),
+                &cx(Tick::ZERO, 1.0),
+                w as usize,
+                h as usize,
+            )
+            .unwrap(),
+        ]);
+    }
+    chains.push(vec![
+        FxOp::eval(
+            &effect(
+                "lumetri",
+                &[("input_lut", ParamValue::Text("builtin:look-teal-orange".into())), ("look_lut", ParamValue::Text("builtin:look-teal-orange".into()))],
+            ),
+            &cx(Tick::ZERO, 1.0),
+            w as usize,
+            h as usize,
+        )
+        .unwrap(),
+    ]);
+    // Non-unit domains and a 1D shaper before a non-affine cube exercise the actual LUT layout.
+    let mut lut = filmcraft_color::Lut::from_cube(filmcraft_color::Lut3d::from_fn(5, |v| [v[0] * v[1], v[1] * v[1], v[2].sqrt()]));
+    lut.shaper = Some(filmcraft_color::Lut1d::identity(17));
+    if let Some(s) = &mut lut.shaper {
+        s.domain_min = [-0.1; 3];
+        s.domain_max = [1.1; 3];
+    }
+    chains.push(vec![FxOp::Lut { lut: Arc::new(lut) }]);
+    for mode in [MaskMode::Add, MaskMode::Subtract, MaskMode::Intersect, MaskMode::Lighten, MaskMode::Darken, MaskMode::Difference] {
+        let masks = vec![
+            FlatMask { pts: vec![[5.0, 4.0], [58.0, 7.0], [45.0, 35.0], [10.0, 30.0]], feather: 5.0, expansion: -1.0, opacity: 0.7, inverted: false, mode },
+            FlatMask {
+                pts: vec![[20.0, 10.0], [48.0, 10.0], [35.0, 32.0]],
+                feather: 1.0,
+                expansion: 2.0,
+                opacity: 0.5,
+                inverted: true,
+                mode: MaskMode::Difference,
+            },
+        ];
+        let sharp = FxOp::eval(&effect("unsharp_mask", &[("radius", fl(4.0)), ("amount", fl(40.0))]), &cx(Tick::ZERO, 1.0), w as usize, h as usize).unwrap();
+        let masked = FxOp::Masked { op: Box::new(sharp), masks: masks.clone() };
+        chains.push(vec![
+            FxOp::BrightnessContrast { br: 0.1, co: 1.2 },
+            masked,
+            FxOp::OpacityMask { masks },
+            FxOp::Tint { black: [0.1; 3], white: [0.9; 3], amount: 0.3 },
+        ]);
+    }
+    // More than sixteen point operations exercise bounded batch splitting.
+    chains.push(vec![FxOp::BrightnessContrast { br: 0.01, co: 0.98 }; 37]);
+    for (index, ops) in chains.into_iter().enumerate() {
+        assert!(ops.iter().all(FxOp::gpu_ok));
+        let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+        for op in &ops {
+            op.apply(&mut cpu);
+        }
+        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops }).expect("effect result");
+        let (worst, flips) = compare(&cpu.px, &gpu);
+        assert!(worst < 2e-4 && flips == 0.0, "chain {index}: {worst}, flips {flips}");
+    }
+}
+
+#[test]
+#[ignore = "GPU fusion throughput benchmark; optimized crates, real GPU, --nocapture"]
+fn bench_fused_color_chain() {
+    let (dev, q) = device().expect("GPU adapter");
+    let mut c = GpuCompositor::new(&dev, &q);
+    let ids = [
+        ("brightness_contrast", vec![("brightness", fl(10.0))]),
+        ("tint", vec![("amount", fl(20.0))]),
+        ("lumetri", vec![("exposure", fl(0.2))]),
+        ("color_balance", vec![("mid_r", fl(10.0))]),
+        ("luma_key", vec![("threshold", fl(60.0)), ("cutoff", fl(10.0))]),
+    ];
+    for (w, h) in [(1920, 1080), (3840, 2160)] {
+        let frame = yuv_frame(w, h);
+        let ops = ids.iter().map(|(id, p)| FxOp::eval(&effect(id, p), &cx(Tick::ZERO, 1.0), w as usize, h as usize).unwrap()).collect();
+        let mut layer = filmcraft_render::plan::PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal);
+        layer.fx = Some(Arc::new(LayerFx { size: (w, h), decimation: 1, ops }));
+        let plan = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![layer] };
+        let prep = prepare(&plan);
+        let mut times = [Vec::new(), Vec::new()];
+        for round in 0..5 {
+            for index in [round % 2, 1 - round % 2] {
+                c.fx.as_mut().unwrap().set_fusion(index == 1);
+                for _ in 0..2 {
+                    c.composite_prepared(&plan, Some(&prep));
+                    dev.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                }
+                let start = std::time::Instant::now();
+                for _ in 0..6 {
+                    std::hint::black_box(c.composite_prepared(&plan, Some(&prep)));
+                    dev.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                }
+                times[index].push(start.elapsed().as_secs_f64() * 1000.0 / 6.0);
+            }
+        }
+        for t in &mut times {
+            t.sort_by(f64::total_cmp);
+        }
+        eprintln!("fusion {w}x{h}: separate {:.3}ms -> fused {:.3}ms ({:.2}x)", times[0][2], times[1][2], times[0][2] / times[1][2]);
+    }
+}
+
+#[test]
+fn tiled_blur_and_mask_cache_preserve_edges_and_invalidation() {
+    use filmcraft_project::MaskMode;
+    use filmcraft_render::mask::FlatMask;
+    let Some((dev, q)) = device() else { return };
+    let mut c = GpuCompositor::new(&dev, &q);
+    for (w, h) in [(259, 73), (65, 257)] {
+        let px = picture(w, h);
+        let frame = VideoFrame::rgba_f32(w, h, px.clone());
+        for repeat in [false, true] {
+            for r in [1, 8, 32, 33, 64, 65, 127] {
+                let op = FxOp::Gaussian { rx: vec![r; 3], ry: vec![r; 3], repeat };
+                let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+                op.apply(&mut cpu);
+                let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).unwrap();
+                let (error, flips) = compare(&cpu.px, &gpu);
+                assert!(error < 2e-4 && flips == 0.0, "blur {w}x{h} r{r} repeat{repeat}: {error}");
+            }
+        }
+        for x in [0.0, 11.0, 0.0] {
+            let mask = FlatMask {
+                pts: vec![[x, 0.0], [w as f32 * 0.8, 5.0], [w as f32 * 0.5, h as f32], [x, h as f32 * 0.7]],
+                feather: 7.0,
+                expansion: -2.0,
+                opacity: 0.8,
+                inverted: false,
+                mode: MaskMode::Add,
+            };
+            let op = FxOp::Masked { op: Box::new(FxOp::Tint { black: [0.1; 3], white: [0.8; 3], amount: 0.5 }), masks: vec![mask] };
+            let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+            op.apply(&mut cpu);
+            for _ in 0..2 {
+                let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op.clone()] }).unwrap();
+                let (error, flips) = compare(&cpu.px, &gpu);
+                assert!(error < 2e-4 && flips == 0.0, "mask x{x}: {error}");
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "Metal optimisation throughput; actual GPU and --nocapture"]
+fn bench_metal_optimisations() {
+    use filmcraft_project::MaskMode;
+    use filmcraft_render::mask::FlatMask;
+    let (dev, q) = device().expect("GPU adapter");
+    let mut c = GpuCompositor::new(&dev, &q);
+    for (w, h) in [(1920, 1080), (3840, 2160)] {
+        let color = vec![
+            FxOp::BrightnessContrast { br: 0.1, co: 1.1 },
+            FxOp::Tint { black: [0.05; 3], white: [0.9; 3], amount: 0.2 },
+            FxOp::Gamma { g: 0.9 },
+            FxOp::ColorBalance { sh: [1.1, 1.0, 0.9], md: [1.0; 3], hi: [0.9, 1.0, 1.1], preserve: true },
+            FxOp::LumaKey { threshold: 0.6, cutoff: 0.1 },
+        ];
+        let mask = FlatMask {
+            pts: (0..64)
+                .map(|i| {
+                    let a = i as f32 * std::f32::consts::TAU / 64.0;
+                    [w as f32 * (0.5 + 0.4 * a.cos()), h as f32 * (0.5 + 0.4 * a.sin())]
+                })
+                .collect(),
+            feather: 20.0,
+            expansion: 2.0,
+            opacity: 1.0,
+            inverted: false,
+            mode: MaskMode::Add,
+        };
+        let cases = [
+            ("specialised color", color),
+            ("cached 64-edge mask", vec![FxOp::Masked { op: Box::new(FxOp::BrightnessContrast { br: 0.1, co: 1.2 }), masks: vec![mask] }]),
+            ("tiled six-pass blur", vec![FxOp::Gaussian { rx: vec![32; 3], ry: vec![32; 3], repeat: true }]),
+        ];
+        for (name, ops) in cases {
+            let mut layer = PlanLayer::new(yuv_frame(w, h), Affine::IDENTITY, 1.0, Blend::Normal);
+            layer.fx = Some(Arc::new(LayerFx { size: (w, h), decimation: 1, ops }));
+            let plan = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![layer] };
+            let prep = prepare(&plan);
+            let mut times = [Vec::new(), Vec::new()];
+            for round in 0..5 {
+                for index in [round % 2, 1 - round % 2] {
+                    c.fx.as_mut().unwrap().set_optimise(index == 1);
+                    for _ in 0..2 {
+                        c.composite_prepared(&plan, Some(&prep));
+                        dev.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                    }
+                    let start = std::time::Instant::now();
+                    for _ in 0..6 {
+                        c.composite_prepared(&plan, Some(&prep));
+                        dev.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                    }
+                    times[index].push(start.elapsed().as_secs_f64() * 1000.0 / 6.0);
+                }
+            }
+            for t in &mut times {
+                t.sort_by(f64::total_cmp);
+            }
+            eprintln!("Metal {name} {w}x{h}: {:.3}ms -> {:.3}ms ({:.2}x)", times[0][2], times[1][2], times[0][2] / times[1][2]);
+        }
+    }
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn specialised_variants_compile_without_blocking_and_reuse_keyframed_parameters() {
+    let Some((dev, q)) = device() else { return };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (67, 41);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    for br in [0.1, -0.05, 0.3] {
+        let ops = vec![FxOp::BrightnessContrast { br, co: 1.1 }, FxOp::Tint { black: [0.05; 3], white: [0.9; 3], amount: 0.2 }, FxOp::Gamma { g: 0.9 }];
+        let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+        for op in &ops {
+            op.apply(&mut cpu);
+        }
+        let start = std::time::Instant::now();
+        loop {
+            let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: ops.clone() }).unwrap();
+            let (error, flips) = compare(&cpu.px, &gpu);
+            assert!(error < 2e-4 && flips == 0.0, "brightness {br}: {error}");
+            if c.fx.as_ref().unwrap().compiled_variants() > 0 {
+                break;
+            }
+            assert!(start.elapsed() < std::time::Duration::from_secs(10), "background shader compilation completed");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(c.fx.as_ref().unwrap().compiled_variants(), 1, "changing parameters reuses the same operation variant");
+    }
+}
+
+#[test]
+#[ignore = "Select tiled blur crossover on actual GPU"]
+fn bench_blur_kernel_thresholds() {
+    let (dev, q) = device().expect("GPU adapter");
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (1920, 1080);
+    let frame = yuv_frame(w, h);
+    for r in [1, 4, 8, 16, 32, 33, 64] {
+        let mut layer = PlanLayer::new(frame.clone(), Affine::IDENTITY, 1.0, Blend::Normal);
+        layer.fx = Some(Arc::new(LayerFx { size: (w, h), decimation: 1, ops: vec![FxOp::Gaussian { rx: vec![r], ry: vec![r], repeat: true }] }));
+        let plan = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![layer] };
+        let prep = prepare(&plan);
+        let mut times = [Vec::new(), Vec::new()];
+        for round in 0..5 {
+            for index in [round % 2, 1 - round % 2] {
+                c.fx.as_mut().unwrap().set_optimise(index == 1);
+                for _ in 0..2 {
+                    c.composite_prepared(&plan, Some(&prep));
+                    dev.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                }
+                let start = std::time::Instant::now();
+                for _ in 0..6 {
+                    c.composite_prepared(&plan, Some(&prep));
+                    dev.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                }
+                times[index].push(start.elapsed().as_secs_f64() * 1000.0 / 6.0);
+            }
+        }
+        for t in &mut times {
+            t.sort_by(f64::total_cmp);
+        }
+        eprintln!("blur radius {r}: {:.3}ms -> {:.3}ms ({:.2}x)", times[0][2], times[1][2], times[0][2] / times[1][2]);
     }
 }

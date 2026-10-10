@@ -34,12 +34,21 @@
 mod annexb;
 #[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
 mod biplanar;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod chroma;
 pub mod cursor;
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod gpu_decode;
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+pub mod gpu_export;
 #[cfg(target_os = "macos")]
 pub mod hardware_encode;
 pub mod hybrid;
 #[cfg(target_os = "windows")]
 pub mod media_foundation;
+mod memory;
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 pub mod nvdec;
 #[cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
@@ -68,6 +77,9 @@ pub enum Availability {
 /// harmless). Streams they do not take, and every stream while hardware decoding is Off, keep
 /// using FilmCraft's own decoders.
 pub fn register() -> Availability {
+    memory::configure();
+    #[cfg(target_os = "macos")]
+    filmcraft_gpu::register_native_import(gpu_decode::import);
     #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
     filmcraft_export::register_encoder(nvenc::export::factory);
     #[cfg(target_os = "macos")]
