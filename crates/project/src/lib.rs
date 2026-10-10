@@ -1380,20 +1380,35 @@ impl Project {
         id
     }
 
-    /// Move items into a bin (the root when `bin` is None). Returns how many moved; unknown items
-    /// are skipped. Fails (returns None) when the bin does not exist.
+    /// Move items, and bins named by id, into a bin (the root when `bin` is None). A bin goes with
+    /// everything in it. Returns how many moved; unknown ids are skipped, and so is a bin that
+    /// would land in itself or in one of its own sub-bins. Fails (returns None) when the target
+    /// bin does not exist.
     pub fn move_to_bin(&mut self, items: &[ItemId], bin: Option<BinId>) -> Option<usize> {
         let target = bin.unwrap_or(self.root.id);
         self.root.find_bin(target)?;
         let mut moved = 0;
         for &id in items {
-            if !self.items.contains_key(&id) || !self.root.remove_item(id) {
-                continue;
+            let entry = if self.items.contains_key(&id) {
+                if !self.root.remove_item(id) {
+                    continue;
+                }
+                BinEntry::Item(id)
+            } else {
+                let b = BinId(id.0);
+                // never the root, nor a bin that holds the target (or is it)
+                if b == self.root.id || self.root.find_bin(b).is_none_or(|x| x.find_bin(target).is_some()) {
+                    continue;
+                }
+                let Some(sub) = self.root.remove_bin(b) else { continue };
+                BinEntry::Bin(sub)
+            };
+            match self.root.find_bin_mut(target) {
+                Some(t) => t.children.push(entry),
+                // cannot happen (the target is outside what was taken out), but never lose it
+                None => self.root.children.push(entry),
             }
-            if let Some(b) = self.root.find_bin_mut(target) {
-                b.children.push(BinEntry::Item(id));
-                moved += 1;
-            }
+            moved += 1;
         }
         Some(moved)
     }
@@ -1992,6 +2007,29 @@ mod tests {
         assert_eq!(p.root.parent_of(i), Some(b));
         assert!(p.root.remove_item(i));
         assert_eq!(p.root.parent_of(i), None);
+    }
+
+    #[test]
+    fn a_bin_moves_into_another_bin_with_its_contents() {
+        let mut p = Project::new("x");
+        let outer = p.add_bin("Footage", None);
+        let inner = p.add_bin("B-Roll", None);
+        let deep = p.add_bin("Drone", Some(inner));
+        let i = p.add_item("a", Label::Iris, ItemKind::AdjustmentLayer { width: 10, height: 10, rate: FrameRate::FPS_24, duration: Tick(1) }, Some(deep));
+        assert_eq!(p.move_to_bin(&[ItemId(inner.0)], Some(outer)), Some(1));
+        let o = p.root.find_bin(outer).unwrap();
+        assert!(o.children.iter().any(|c| matches!(c, BinEntry::Bin(b) if b.id == inner)));
+        assert!(!p.root.children.iter().any(|c| matches!(c, BinEntry::Bin(b) if b.id == inner)));
+        assert_eq!(p.root.parent_of(i), Some(deep));
+        assert!(o.find_bin(deep).is_some());
+        // never into itself or its own sub-bin, and the root never moves
+        assert_eq!(p.move_to_bin(&[ItemId(outer.0)], Some(outer)), Some(0));
+        assert_eq!(p.move_to_bin(&[ItemId(outer.0)], Some(deep)), Some(0));
+        assert_eq!(p.move_to_bin(&[ItemId(p.root.id.0)], Some(outer)), Some(0));
+        assert!(p.root.find_bin(outer).unwrap().find_bin(deep).is_some());
+        // and back out to the root
+        assert_eq!(p.move_to_bin(&[ItemId(inner.0)], None), Some(1));
+        assert!(p.root.children.iter().any(|c| matches!(c, BinEntry::Bin(b) if b.id == inner)));
     }
 
     #[test]
