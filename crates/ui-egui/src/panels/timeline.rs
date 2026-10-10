@@ -2341,6 +2341,21 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         }
     }
 
+    // ---- double-click any other clip (not on its edge): open its media in the Source monitor at
+    // the matching frame (Premiere); graphic clips have no source to show
+    if resp.double_clicked()
+        && tool == Tool::Selection
+        && let Some(p) = resp.interact_pointer_pos()
+        && let Hit::Clip { clip, edge: None, .. } = hit(seq, layout, p)
+        && seq
+            .find_item(clip)
+            .and_then(|(_, it)| app.session.project.item(it.item))
+            .is_some_and(|i| !matches!(i.kind, filmcraft_project::ItemKind::Sequence(_) | filmcraft_project::ItemKind::Graphic { .. }))
+        && let Err(e) = app.session.execute("source.open", json!({"clip": clip.0}))
+    {
+        app.ui.status = e.to_string();
+    }
+
     // ---- context menu on clips (right-clicking an unselected clip selects it first); on a clip's
     // edge, the edit point menu instead (right-clicking an unselected edit point selects it first)
     let edit_point_menu_id = egui::Id::new("timeline.editPointMenu.target");
