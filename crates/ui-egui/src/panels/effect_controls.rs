@@ -122,10 +122,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let lx = |tk: Tick| -> f32 { lane.min.x + (((tk - it.start).0 as f64 / dur) as f32).clamp(0.0, 1.0) * lane.width() };
     let rate = seq.settings.frame_rate;
     let ruler = Rect::from_min_max(lane.min, pos2(lane.max.x, lane.min.y + RULER_H));
-    paint_ruler(ui.painter(), ruler, &it, rate, seq.settings.drop_frame, &t);
     let bar = Rect::from_min_max(pos2(lane.min.x, ruler.max.y + 4.0), pos2(lane.max.x, ruler.max.y + 4.0 + CLIP_BAR_H));
-    ui.painter().rect_filled(bar.shrink2(vec2(0.0, 2.0)), 2.0, t.clip_bar_bg);
-    ui.painter().with_clip_rect(bar).text(pos2(bar.min.x + 4.0, bar.center().y), Align2::LEFT_CENTER, &it.name, Tokens::ui(10.0), t.text);
     // click or drag anywhere on the ruler (or the bar) to move the playhead
     let scrub = Rect::from_min_max(ruler.min, bar.max);
     let sresp = ui.interact(scrub, egui::Id::new(("ec-scrub", clip.0)), Sense::click_and_drag());
@@ -162,6 +159,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 if resp.hovered() {
                     bui.painter().rect_filled(r, 0.0, t.hover);
                 }
+                row_line(bui, r, &lane, &t);
                 icons::paint(
                     bui.painter(),
                     Rect::from_center_size(pos2(r.min.x + 10.0, r.center().y), vec2(10.0, 10.0)),
@@ -215,7 +213,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     continue;
                 }
                 if crate::panels::audio_fx_editor::has_editor(&e.effect) {
-                    custom_setup_row(app, bui, body, clip, idx, &e.effect);
+                    custom_setup_row(app, bui, body, &lane, clip, idx, &e.effect);
                 }
                 for pd in &def.params {
                     param_row(app, bui, body, clip, idx, e, None, pd, mt_now, &mut actions, &lane, &lx, it);
@@ -234,6 +232,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     });
     let _ = scroll_out;
+    // the ruler and the clip's bar, painted after the rows so rows scrolled up under them (their
+    // lines and keyframes) stay hidden
+    ui.painter().rect_filled(Rect::from_min_max(lane.min, pos2(lane.max.x, bar.max.y)), 0.0, t.tl_bg);
+    paint_ruler(ui.painter(), ruler, &it, rate, seq.settings.drop_frame, &t);
+    ui.painter().rect_filled(bar.shrink2(vec2(0.0, 2.0)), 2.0, t.clip_bar_bg);
+    ui.painter().with_clip_rect(bar).text(pos2(bar.min.x + 4.0, bar.center().y), Align2::LEFT_CENTER, &it.name, Tokens::ui(10.0), t.text);
     // playhead: a handle on the ruler and a line down the lane, while it is on the clip
     if ph >= it.start && ph <= it.end() {
         let px = lx(ph);
@@ -249,10 +253,25 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     run(app, ui.ctx(), actions);
 }
 
+/// The thin line under a row, across the names, the values and the keyframe lane, so a row can be
+/// followed across the panel, as in Premiere (#640). It runs through the middle of the spacing
+/// between rows, so each row sits centred between its two lines.
+pub(crate) fn row_line(ui: &egui::Ui, r: Rect, lane: &Rect, t: &Tokens) {
+    let y = r.max.y + ui.spacing().item_spacing.y / 2.0;
+    ui.painter().line_segment([pos2(r.min.x, y), pos2(lane.max.x, y)], Stroke::new(1.0, t.separator));
+}
+
+/// Make a dropdown in a row fit inside the row, clear of its row lines.
+pub(crate) fn fit_dropdown_to_row(ui: &mut egui::Ui) {
+    ui.spacing_mut().interact_size.y = ROW_H - 4.0;
+    ui.spacing_mut().button_padding.y = 1.0;
+}
+
 /// Premiere's "Custom Setup ▸ Edit…" row: opens the effect's Clip Fx Editor window.
-fn custom_setup_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, body: Rect, clip: ClipId, idx: usize, effect: &str) {
+fn custom_setup_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, body: Rect, lane: &Rect, clip: ClipId, idx: usize, effect: &str) {
     let t = app.tokens;
     let (r, _) = ui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::hover());
+    row_line(ui, r, lane, &t);
     ui.painter().text(pos2(r.min.x + 42.0, r.center().y), Align2::LEFT_CENTER, tl!("Custom Setup"), Tokens::ui(12.0), t.text_dim);
     let br = Rect::from_min_size(pos2(r.min.x + 160.0, r.min.y + 2.0), vec2(60.0, ROW_H - 4.0));
     let resp = ui.interact(br, egui::Id::new(("fx-custom-setup", clip.0, idx)), Sense::click());
@@ -436,6 +455,7 @@ pub(crate) fn param_row(
         v
     };
     let (r, _) = ui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::hover());
+    row_line(ui, r, lane, &t);
     let mut x = r.min.x + 26.0;
     // twirl-down for the value/velocity graphs (animated scalar and point params)
     if param.is_animated() && graphable(&param.value) {
@@ -502,6 +522,7 @@ pub(crate) fn param_row(
         }
         (ParamKind::Choice(opts), ParamValue::Choice(c)) => {
             let mut sel = *c as usize;
+            fit_dropdown_to_row(&mut vui);
             egui::ComboBox::from_id_salt(id).selected_text(opts.get(sel).map_or("", |o| crate::i18n::t(o))).width(130.0).show_ui(&mut vui, |ui| {
                 for (i, o) in opts.iter().enumerate() {
                     if ui.selectable_value(&mut sel, i, crate::i18n::t(o)).changed() {
@@ -952,6 +973,7 @@ pub(crate) fn graph_rows(
     let t = app.tokens;
     let (vr, _) = ui.allocate_exact_size(vec2(body.width(), 110.0), Sense::hover());
     let (velr, _) = ui.allocate_exact_size(vec2(body.width(), 64.0), Sense::hover());
+    row_line(ui, velr, lane, &t);
     let speed = it.speed.abs().max(1e-6);
     let dur = it.duration.0.max(1) as f64;
     let to_media = |f: f64| it.source_in + Tick((f * dur * speed) as i64);
