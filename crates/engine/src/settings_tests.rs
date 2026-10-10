@@ -29,13 +29,15 @@ fn interface_language_persists_and_rejects_hostile_values() {
     let mut s = Session { prefs_path: Some(path.clone()), ..Session::default() };
     set(&mut s, "general.interfaceLanguage", json!("es"));
     assert_eq!(Preferences::load(&path).general.interface_language, "es");
-    for value in [json!("xx"), json!("es-MX"), json!("de-DE"), json!(null), json!(-1), json!({}), json!("x".repeat(4096))] {
+    for value in [json!("xx"), json!("es-MX"), json!("de-DE"), json!("fr-FR"), json!(null), json!(-1), json!({}), json!("x".repeat(4096))] {
         assert!(s.execute("prefs.set", json!({"key": "general.interfaceLanguage", "value": value})).is_err());
         assert_eq!(s.prefs.general.interface_language, "es");
     }
     assert_eq!(Preferences::load(&path).general.interface_language, "es");
     set(&mut s, "general.interfaceLanguage", json!("de"));
     assert_eq!(Preferences::load(&path).general.interface_language, "de");
+    set(&mut s, "general.interfaceLanguage", json!("fr"));
+    assert_eq!(Preferences::load(&path).general.interface_language, "fr");
     // back to following the operating system (#218)
     set(&mut s, "general.interfaceLanguage", json!("system"));
     assert_eq!(Preferences::load(&path).general.interface_language, "system");

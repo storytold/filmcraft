@@ -10,14 +10,15 @@ Portuguese (Brazil), Russian, Simplified Chinese.
 
 Edit ▸ Language (also Settings ▸ General, `general.interfaceLanguage`) switches the interface and
 persists across restarts; System Language (the default) follows the OS's or browser's preferred
-languages and falls back to English. Commands `app.language.<english|japanese|spanish|portuguese|ukrainian|chinese>`
+languages and falls back to English. Commands `app.language.<english|japanese|spanish|portuguese|ukrainian|chinese|german|russian|french>`
 are reachable over the control channel. One catalog per language,
 `crates/ui-egui/src/i18n/<code>.tsv` (format in the header of `es.tsv`); UI code wraps strings in
 `tl!("…")` / `tlf!("…{name}", name)`, and registry names (effects and their parameters, settings,
 commands, panels, workspaces, presets) are translated where they are drawn. Searches match the
 displayed labels as well as English sources. Tests fail when a `tl!` literal, a menu label or a
 registry name has no Spanish entry; `zh-cn.tsv` must also cover every `tl!` literal and menu
-label; `ja.tsv` has the same entries but is not yet required by tests. Engine error messages, the
+label; `ja.tsv` and `fr.tsv` have the same entries but are not yet required by tests (French must
+cover the core menus and keep no entry without a Spanish one). Engine error messages, the
 control channel, the CLI and MCP stay English.
 
 Fonts come from [craft-fonts](https://github.com/storytold/craft-fonts) (`CRAFT_FONTS_DIR`, all
@@ -41,7 +42,7 @@ whole interface, one PR) at ~4–8 h per language for the catalog plus tests.
 | Spanish | es | 3,496 (99.9%) | as above | Latin | not recorded | partial | 4–8 h + review |
 | Hindi | hi | 0 (0%) | — | **no Devanagari shaping in the interface** | — | none | 30–50 h (shaping in UI + catalog + fonts) |
 | Arabic | ar | 0 (0%) | — | **no RTL layout, no shaping in the interface**; titles broken (#395) | — | none | 40–70 h |
-| French | fr | 0 (0%) | — | Latin | — | none (requested #498) | 6–10 h + review |
+| French | fr | 3,526 (same entries as Spanish, plus the macOS Settings item) | as Spanish | Latin (bundled fonts) | not recorded; welcome | partial (#498) | review |
 | Portuguese (Brazil) | pt-br | 348 (9.9%) | menus only | Latin | not recorded | menus only | 5–9 h + review |
 | Indonesian | id | 0 (0%) | — | Latin | — | none | 6–10 h + review |
 | Japanese | ja | 3,487 (99.7%) | as zh-cn; system-font kanji may pick the Chinese fallback (#547) | CJK fonts, vertical title text | not recorded | partial | 4–8 h + review |
@@ -52,9 +53,9 @@ whole interface, one PR) at ~4–8 h per language for the catalog plus tests.
 
 Premiere also ships Italian and Russian, which we don't (6–10 h each).
 
-**Localization dimension:** 4 of the 12 key languages near-complete (English, Spanish, Japanese,
-Simplified Chinese), 1 menus-only, 7 none; against Premiere's 10 languages we cover 4 well and 1
-partly. **~35%, 150–230 h** for all twelve to `full` plus Italian and Russian, of which the script
+**Localization dimension:** 5 of the 12 key languages near-complete (English, Spanish, Japanese,
+Simplified Chinese, French), 1 menus-only, 6 none; against Premiere's 10 languages we cover 5 well
+and 1 partly. **~35%, 150–230 h** for all twelve to `full` plus Italian and Russian, of which the script
 work (RTL and complex shaping in the egui interface) is the largest and least parallel part.
 Every language needs native-speaker review (human).
 
