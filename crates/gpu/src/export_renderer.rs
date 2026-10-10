@@ -98,12 +98,19 @@ pub struct ExportRenderer {
 }
 
 impl ExportRenderer {
-    /// The off-screen device, or `None` when this host has no usable adapter.
+    /// The off-screen device, or `None` when this host has no usable adapter or this build no
+    /// wgpu backend.
     pub fn new() -> Option<Self> {
         // `None` is kept too: a machine without an adapter does not search again on every export
         static SHARED: std::sync::OnceLock<Option<(wgpu::Instance, wgpu::Device, wgpu::Queue)>> = std::sync::OnceLock::new();
         let (instance, device, queue) = SHARED
             .get_or_init(|| {
+                // A build without a wgpu backend for this platform (`cargo build -p filmcraft-cli`
+                // alone: this crate asks for none) has no GPU to offer, and `Instance::default()`
+                // panics there.
+                if wgpu::Instance::enabled_backend_features().is_empty() {
+                    return None;
+                }
                 let instance = wgpu::Instance::default();
                 let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
                 let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
