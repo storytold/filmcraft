@@ -517,9 +517,33 @@ fn plain_layer(frame: &VideoFrame, n: usize, opacity: f32, blend: Blend) -> Laye
 /// convert it with.
 fn media_frame(item: &TrackItem, t: Tick, sources: &dyn SourceProvider, want: f32, src_size: (u32, u32)) -> Option<(SharedSource, Arc<VideoFrame>, usize)> {
     let src = sources.source(item.item)?;
-    let frame = src.video_frame(FrameRequest { time: video_source_time(item, t, src.info().frame_rate()), scale: want }).ok()?;
+    let frame = video_frame_or_slate(&*src, FrameRequest { time: video_source_time(item, t, src.info().frame_rate()), scale: want })?;
     let n = decimation(frame.width as f32, src_size.0 as f32 * want);
     Some((src, frame, n))
+}
+
+/// Decode failures are visible in every render path, without changing the source or its audio.
+/// Cancellation and absent video streams still contribute no picture.
+pub(crate) fn video_frame_or_slate(src: &dyn filmcraft_media::MediaSource, req: FrameRequest) -> Option<Arc<VideoFrame>> {
+    match src.video_frame(req) {
+        Ok(frame) => Some(frame),
+        Err(filmcraft_media::MediaError::Cancelled | filmcraft_media::MediaError::NoStream(_)) => None,
+        Err(_) => {
+            let info = src.info();
+            let video = info.video.as_ref()?;
+            // Bound allocation even when malformed metadata advertises enormous dimensions.
+            // A diagnostic slate needs no more than HD resolution; Motion places it as usual.
+            let scale = if req.scale.is_finite() { req.scale.clamp(1.0 / 64.0, 1.0) } else { 1.0 };
+            let scale = scale.min(1920.0 / video.width.max(video.height).max(1) as f32);
+            let w = (video.width as f32 * scale).ceil().clamp(1.0, 1920.0) as usize;
+            let h = (video.height as f32 * scale).ceil().clamp(1.0, 1920.0) as usize;
+            let img = offline::slate(w, h, &info.name, offline::OfflineReason::Unreadable);
+            let mut frame = VideoFrame::rgba_f32(w as u32, h as u32, img.px);
+            frame.par = video.par;
+            frame.pts = req.time;
+            Some(Arc::new(frame))
+        }
+    }
 }
 
 /// The media time to ask a source for the video frame a clip shows at timeline `t`. A reversed
@@ -659,7 +683,7 @@ pub fn render_item(project: &Project, item: ItemId, t: Tick, scale: f32, sources
         ItemKind::Sequence(s) => Some(render_seq(project, s, t, RenderOptions { scale, ..Default::default() }, sources)),
         _ => {
             let src = sources.source(item)?;
-            let f = src.video_frame(FrameRequest { time: t, scale }).ok()?;
+            let f = video_frame_or_slate(&*src, FrameRequest { time: t, scale })?;
             let full_w = src.info().video.as_ref().map_or(f.width, |v| v.width) as f32;
             let n = decimation(f.width as f32, full_w * scale);
             // the Source monitor shows media as SDR Rec. 709 (log/HDR tone mapped per its colour space)

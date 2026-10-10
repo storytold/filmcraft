@@ -342,6 +342,77 @@ fn offline_slate_is_deterministic_and_marked() {
     }
 }
 
+struct FailingVideoSource {
+    source: GeneratorSource,
+    failure: u8,
+}
+
+impl MediaSource for FailingVideoSource {
+    fn info(&self) -> &filmcraft_media::MediaInfo {
+        self.source.info()
+    }
+
+    fn video_frame(&self, _req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+        use filmcraft_media::MediaError;
+        Err(match self.failure {
+            0 => MediaError::Unsupported("unsupported chroma format".into()),
+            1 => MediaError::Decode("corrupt picture".into()),
+            2 => MediaError::Io("unreadable file".into()),
+            3 => MediaError::Cancelled,
+            _ => MediaError::NoStream("video"),
+        })
+    }
+
+    fn audio(&self, start: i64, frames: usize, rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+        self.source.audio(start, frames, rate)
+    }
+}
+
+#[test]
+fn decode_failure_shows_unreadable_slate_in_source_cpu_and_gpu_plan() {
+    for failure in 0..3 {
+        let (mut p, red, _, seq, mut map) = setup();
+        place(&mut p, seq, 0, red, 0, 24);
+        let source = GeneratorSource::new(Generator::ColorMatte { color: [1.0, 0.0, 0.0, 1.0] }, 320, 180, FrameRate::FPS_24, Tick(TICKS_PER_SECOND));
+        let name = source.info().name.clone();
+        map.0.insert(red, Arc::new(FailingVideoSource { source, failure }));
+        for scale in [1.0, 0.5] {
+            let opts = RenderOptions { scale, ..Default::default() };
+            let cpu = render_sequence(&p, seq, Tick::ZERO, opts, &map);
+            let gpu = plan::execute_cpu(&plan::plan_frame(&p, seq, Tick::ZERO, opts, &map));
+            if failure == 0
+                && scale == 1.0
+                && let Some(path) = std::env::var_os("FILMCRAFT_UNREADABLE_PNG")
+            {
+                ::image::save_buffer(path, &cpu.to_rgba8(), cpu.w as u32, cpu.h as u32, ::image::ExtendedColorType::Rgba8).unwrap();
+            }
+            let monitor = render_item(&p, red, Tick::ZERO, scale, &map).unwrap();
+            let expected = offline::slate((320.0 * scale) as usize, (180.0 * scale) as usize, &name, offline::OfflineReason::Unreadable);
+            assert_eq!(monitor.px, expected.px, "Source monitor must identify unreadable media");
+            for rendered in [cpu, gpu] {
+                assert_eq!((rendered.w, rendered.h), (expected.w, expected.h));
+                let diff = rendered.px.iter().zip(&expected.px).map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
+                assert!(diff < 1e-4, "failure {failure}, scale {scale}: {diff}");
+            }
+        }
+        // The render fallback must not permanently mark the clip offline or mask recovery.
+        let source = GeneratorSource::new(Generator::ColorMatte { color: [1.0, 0.0, 0.0, 1.0] }, 320, 180, FrameRate::FPS_24, Tick(TICKS_PER_SECOND));
+        map.0.insert(red, Arc::new(source));
+        assert_eq!(render_item(&p, red, Tick::ZERO, 1.0, &map).unwrap().get(10, 10), [1.0, 0.0, 0.0, 1.0]);
+    }
+}
+
+#[test]
+fn cancellation_and_absent_video_do_not_show_unreadable_slate() {
+    for failure in [3, 4] {
+        let source = FailingVideoSource {
+            source: GeneratorSource::new(Generator::ColorMatte { color: [1.0, 0.0, 0.0, 1.0] }, 320, 180, FrameRate::FPS_24, Tick(TICKS_PER_SECOND)),
+            failure,
+        };
+        assert!(video_frame_or_slate(&source, filmcraft_media::FrameRequest::full(Tick::ZERO)).is_none());
+    }
+}
+
 /// A 320×180 4:2:0 source with smooth gradients (what decoders hand the renderer).
 struct YuvSource(GeneratorSource);
 

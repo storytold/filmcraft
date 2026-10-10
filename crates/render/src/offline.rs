@@ -87,7 +87,8 @@ pub fn slate(w: usize, h: usize, file_name: &str, reason: OfflineReason) -> Imag
     }
     let hint = match reason {
         OfflineReason::MadeOffline => "Link Media… brings it back",
-        _ => "File ▸ Link Media… reconnects it",
+        OfflineReason::Missing => "File ▸ Link Media… reconnects it",
+        OfflineReason::Unreadable => "Unsupported or damaged video. Try another format.",
     };
     text(&mut img, hint, "Regular", Vec2::new(cx as f64, (ty0 + tri_h + s * 0.205) as f64), s * 0.028, [0.85, 0.72, 0.72, 1.0], pw * 0.94);
     img
