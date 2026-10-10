@@ -189,6 +189,26 @@ impl Layout {
     }
 }
 
+/// #483: where a drop at `y` adds a track: the empty space above the top video track (a video
+/// track) or below the last audio track (an audio track), never over a track, the caption tracks
+/// or the Mix row. Gives the kind and the band the new track would take (`vh` / `ah` high).
+fn new_track_at(seq: &Sequence, layout: &Layout, y: f32, vh: f32, ah: f32) -> Option<(TrackKind, Rect)> {
+    if layout.row_at(y).is_some() {
+        return None;
+    }
+    let cap_n = seq.caption_tracks.len();
+    let tracks_top = layout.content.min.y + if cap_n > 0 { cap_n as f32 * super::timeline_captions::ROW_H + DIVIDER_H } else { 0.0 };
+    let band = |y0: f32, y1: f32| Rect::from_min_max(pos2(layout.content.min.x, y0), pos2(layout.content.max.x, y1));
+    if y < layout.split_y {
+        let top = layout.rows.iter().filter(|r| r.kind == TrackKind::Video).map(|r| r.rect.min.y).fold(layout.split_y, f32::min);
+        (y >= tracks_top && y < top).then(|| (TrackKind::Video, band((top - vh).max(tracks_top), top)))
+    } else {
+        let bottom = layout.rows.iter().filter(|r| r.kind == TrackKind::Audio).map(|r| r.rect.max.y).fold(layout.split_y + DIVIDER_H, f32::max);
+        let mix = layout.content.max.y - MASTER_H;
+        (y >= bottom && y < mix).then(|| (TrackKind::Audio, band(bottom, (bottom + ah).min(mix))))
+    }
+}
+
 /// How far the Timeline reaches, in seconds: ten minutes past the end of the sequence. Premiere
 /// Pro's Timeline does the same (on a 6 s sequence its view stops with 00:10:06 at the right
 /// edge). The view cannot be scrolled past it and the scroll bar spans it.
@@ -2380,21 +2400,34 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         let dur = source
             .map(|s| s.range.duration)
             .unwrap_or_else(|| app.session.project.item(item).map(|i| i.duration()).filter(|d| d.0 > 0 && !is_still).unwrap_or(still));
-        if let Some(row) = &row {
-            let r = Rect::from_min_max(pos2(layout.x_of(t), row.rect.min.y + 1.0), pos2(layout.x_of(t + dur), row.rect.max.y - 1.0));
+        // #483: in the empty space above the top video track or below the last audio track, a new track
+        let new_track = if row.is_some() { None } else { new_track_at(seq, layout, p.y, app.ui.timeline.video_track_h, app.ui.timeline.audio_track_h) }.filter(
+            |(kind, _)| {
+                let carries = app.session.project.item(item).is_some_and(|i| if *kind == TrackKind::Video { i.has_video() } else { i.has_audio() });
+                carries && source.is_none_or(|s| if *kind == TrackKind::Video { s.video } else { s.audio })
+            },
+        );
+        if let Some(band) = row.as_ref().map(|r| r.rect).or(new_track.map(|(_, band)| band)) {
+            let r = Rect::from_min_max(pos2(layout.x_of(t), band.min.y + 1.0), pos2(layout.x_of(t + dur), band.max.y - 1.0));
             ui.painter().rect_filled(r, 3.0, Color32::from_white_alpha(40));
             ui.painter().rect_stroke(r, 3.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Inside);
             if mods.command {
                 ui.painter().text(r.left_top() + vec2(4.0, -2.0), Align2::LEFT_BOTTOM, tl!("Insert"), Tokens::ui(10.0), Color32::WHITE);
             }
         }
+        let target = match (&row, new_track) {
+            (Some(row), _) => Some(match row.kind {
+                TrackKind::Video => (json!(row.track.0), json!(seq.audio_tracks.get(row.index).or(seq.audio_tracks.first()).map(|t| t.id.0))),
+                TrackKind::Audio => (json!(seq.video_tracks.get(row.index).or(seq.video_tracks.first()).map(|t| t.id.0)), json!(row.track.0)),
+            }),
+            // the other stream goes on the track of the same number, or on a new one as well
+            (None, Some((TrackKind::Video, _))) => Some((json!("new"), seq.audio_tracks.get(seq.video_tracks.len()).map_or(json!("new"), |t| json!(t.id.0)))),
+            (None, Some((TrackKind::Audio, _))) => Some((seq.video_tracks.get(seq.audio_tracks.len()).map_or(json!("new"), |t| json!(t.id.0)), json!("new"))),
+            (None, None) => None,
+        };
         if ctx.input(|i| i.pointer.any_released())
-            && let Some(row) = row
+            && let Some((vt, at)) = target
         {
-            let (vt, at) = match row.kind {
-                TrackKind::Video => (Some(row.track.0), seq.audio_tracks.get(row.index).or(seq.audio_tracks.first()).map(|t| t.id.0)),
-                TrackKind::Audio => (seq.video_tracks.get(row.index).or(seq.video_tracks.first()).map(|t| t.id.0), Some(row.track.0)),
-            };
             let mut params = json!({"item": item.0, "track": vt, "audioTrack": at, "time": t.0, "insert": mods.command});
             if let Some(source) = source {
                 params["sourceIn"] = json!(source.range.start.0);
@@ -2646,5 +2679,42 @@ mod thumbnail_tiles_tests {
         assert!(thumbnail_tiles(ThumbnailMode::Head, 900.0, 1300.0, 80.0, (0.0, 800.0), dur, FRAME).is_empty());
         assert!(thumbnail_tiles(ThumbnailMode::Continuous, 0.0, 400.0, f32::NAN, (0.0, 800.0), dur, FRAME).is_empty());
         assert!(thumbnail_tiles(ThumbnailMode::Continuous, 0.0, 0.0, 80.0, (0.0, 800.0), dur, FRAME).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod new_track_tests {
+    use super::*;
+    use filmcraft_project::{Project, SequenceSettings};
+
+    /// #483: a drop above the top video track adds a video track, one below the last audio track an
+    /// audio track; over a track, between the areas or on the Mix row it adds none.
+    #[test]
+    fn empty_space_past_the_tracks_adds_a_track() {
+        let mut p = Project::new("t");
+        let id = p.new_sequence("s", SequenceSettings::default(), 1, 1, None);
+        let seq = p.sequence(id).cloned().expect("sequence");
+        // video area 0..200 (V1 at 150..200), divider, audio area 205..466 (A1 at 205..255), Mix 466..500
+        let row = |kind, track: &filmcraft_project::Track, y0: f32| Row {
+            track: track.id,
+            kind,
+            index: 0,
+            rect: Rect::from_min_max(pos2(0.0, y0), pos2(800.0, y0 + 50.0)),
+            lane: false,
+        };
+        let layout = Layout {
+            content: Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 500.0)),
+            ruler: Rect::from_min_max(pos2(0.0, -20.0), pos2(800.0, 0.0)),
+            rows: vec![row(TrackKind::Video, &seq.video_tracks[0], 150.0), row(TrackKind::Audio, &seq.audio_tracks[0], 205.0)],
+            pps: 100.0,
+            scroll: 0.0,
+            split_y: 200.0,
+        };
+        let at = |y| new_track_at(&seq, &layout, y, 50.0, 50.0);
+        assert_eq!(at(40.0), Some((TrackKind::Video, Rect::from_min_max(pos2(0.0, 100.0), pos2(800.0, 150.0)))));
+        assert_eq!(at(300.0), Some((TrackKind::Audio, Rect::from_min_max(pos2(0.0, 255.0), pos2(800.0, 305.0)))));
+        for y in [160.0, 202.0, 230.0, 480.0] {
+            assert_eq!(at(y), None, "y = {y}");
+        }
     }
 }
