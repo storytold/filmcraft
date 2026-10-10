@@ -19,18 +19,16 @@ fn tmp(name: &str) -> std::path::PathBuf {
 
 /// A 64×36 24 fps sequence: V1 = matte with Tint (0..24) + plain matte (24..48), A1 = tone (0..48).
 fn session(name: &str) -> (Session, ClipId) {
+    session_with(name, Generator::ColorMatte { color: [0.2, 0.5, 0.8, 1.0] })
+}
+
+/// [`session`] with `video` in place of the matte on V1.
+fn session_with(name: &str, video: Generator) -> (Session, ClipId) {
     let mut s = Session::default();
     s.previews.set_dir(Some(tmp(name)));
     let r = FrameRate::FPS_24;
     let mut p = (*s.project).clone();
-    let matte = crate::demo::add_generator(
-        &mut p,
-        &s.media,
-        GeneratorSource::new(Generator::ColorMatte { color: [0.2, 0.5, 0.8, 1.0] }, 64, 36, r, Tick(10 * TICKS_PER_SECOND)),
-        "Matte",
-        Label::Iris,
-        None,
-    );
+    let matte = crate::demo::add_generator(&mut p, &s.media, GeneratorSource::new(video, 64, 36, r, Tick(10 * TICKS_PER_SECOND)), "Matte", Label::Iris, None);
     let tone = crate::demo::add_generator(
         &mut p,
         &s.media,
@@ -132,6 +130,79 @@ fn render_turns_green_edit_invalidates_and_undo_restores() {
     assert_eq!(states(&s), vec!["yellow", "none"]);
     assert_eq!(s.previews.count(), 0);
     assert!(!s.is_enabled("sequence.deleteRenderFiles"), "disabled with no files");
+    let _ = std::fs::remove_dir_all(s.previews.dir().unwrap());
+}
+
+fn max_diff(a: &[u8], b: &[u8]) -> i32 {
+    a.iter().zip(b).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap()
+}
+
+fn set_marks(s: &mut Session, marks: Option<(i64, i64)>) {
+    let r = FrameRate::FPS_24;
+    s.edit_sequence("marks", |q, _, _| {
+        q.mark_in = marks.map(|m| r.tick_of(m.0));
+        q.mark_out = marks.map(|m| r.tick_of(m.1));
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// Render-bar spans as (first frame, end frame, state).
+fn spans(s: &Session) -> Vec<(i64, i64, BarState)> {
+    let r = FrameRate::FPS_24;
+    s.previews.bar(&s.project, s.state.active_sequence.unwrap()).iter().map(|b| (r.frame_at(b.start), r.frame_at(b.end), b.state)).collect()
+}
+
+/// #424: Render Effects In to Out renders the frames between In and Out, not every segment that
+/// In/Out touches; a later render fills only the gaps, and Delete Render Files In to Out removes
+/// only the files holding marked frames.
+#[test]
+fn render_in_to_out_renders_only_the_marked_frames() {
+    use BarState::{Green, None as NoBar, Yellow};
+    let (mut s, _) = session_with("range", Generator::CountingLeader);
+    let seq = s.state.active_sequence.unwrap();
+    set_marks(&mut s, Some((6, 11)));
+    let v = s.execute("sequence.renderEffectsInToOut", json!({"wait": true})).unwrap();
+    job_ok(&s, &v);
+    assert_eq!(v["frames"], 6, "frames 6..=11, not the whole 24-frame segment: {v}");
+    assert_eq!(spans(&s), vec![(0, 6, Yellow), (6, 12, Green), (12, 24, Yellow), (24, 48, NoBar)]);
+    assert_eq!(states(&s), vec!["yellow", "none"], "a partly rendered segment is not green");
+    assert_eq!(crate::previews::bar_json(&s).unwrap()["segments"][0]["renderedFrames"], 6);
+    for f in [5, 12, 30] {
+        assert!(s.previews.frame(&s.media, &s.project, seq, f, 1.0).is_none(), "frame {f} has no preview");
+    }
+    // the preview's frames line up with the sequence (the leader changes from frame to frame)
+    let live = |s: &Session, f: i64| {
+        filmcraft_render::render_sequence(
+            &s.project,
+            seq,
+            FrameRate::FPS_24.tick_of(f),
+            Default::default(),
+            &s.media.provider(s.project.clone(), s.services.clone()),
+        )
+        .over_black_rgba8()
+    };
+    let prev = s.previews.frame(&s.media, &s.project, seq, 9, 1.0).expect("frame 9 has a preview").to_rgba8();
+    assert!(max_diff(&live(&s, 9), &live(&s, 3)) > 16, "the test needs frames that differ");
+    let d = max_diff(&live(&s, 9), &prev);
+    assert!(d <= 4, "preview of frame 9 differs from the live frame 9 by {d}");
+    // the files survive re-indexing the folder (as on reopening the project)
+    s.previews.set_dir(s.previews.dir());
+    assert_eq!(spans(&s)[1], (6, 12, Green));
+    // In/Out over the whole sequence: only the two gaps around the part are rendered
+    set_marks(&mut s, None);
+    let v = s.execute("sequence.renderEffectsInToOut", json!({"wait": true})).unwrap();
+    job_ok(&s, &v);
+    assert_eq!((v["segments"].as_i64(), v["frames"].as_i64()), (Some(2), Some(18)), "{v}");
+    assert_eq!(states(&s), vec!["green", "none"]);
+    assert_eq!(s.previews.count(), 3);
+    let prev = s.previews.frame(&s.media, &s.project, seq, 20, 1.0).expect("frame 20 has a preview").to_rgba8();
+    assert!(max_diff(&live(&s, 20), &prev) <= 4);
+    // Delete Render Files In to Out keeps the parts outside In/Out
+    set_marks(&mut s, Some((7, 8)));
+    let v = s.execute("sequence.deleteRenderFilesInToOut", json!({})).unwrap();
+    assert_eq!(v["deleted"], 1);
+    assert_eq!(spans(&s), vec![(0, 6, Green), (6, 12, Yellow), (12, 24, Green), (24, 48, NoBar)]);
     let _ = std::fs::remove_dir_all(s.previews.dir().unwrap());
 }
 
