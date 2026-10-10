@@ -62,6 +62,9 @@ real_name = "Max Murphy"
 display_name = "Max Murphy"
 sync_github_name = false
 
+[people.ossini]
+sync_github_name = true
+
 [people.vangel76]
 real_name = "Valentin Klein"
 display_name = "Valentin Klein"

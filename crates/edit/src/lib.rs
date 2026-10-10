@@ -448,6 +448,10 @@ pub fn ripple_delete_items(seq: &mut Sequence, items: &[ClipId]) -> Result<Vec<T
 /// Close the gap containing `t` on a track (Ripple Delete on a gap).
 pub fn close_gap(seq: &mut Sequence, track: TrackId, t: Tick) -> Result<()> {
     let tr = seq.track(track).ok_or(EditError::NoTrack(track))?;
+    if tr.locked {
+        // the other tracks would move while this one stayed put
+        return Err(EditError::Locked);
+    }
     if tr.item_at(t).is_some() {
         return Err(EditError::Nothing);
     }
