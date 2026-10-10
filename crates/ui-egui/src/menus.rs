@@ -881,7 +881,6 @@ mod parse_shortcut_tests {
         assert_eq!(label_menu_swatch("edit.label.invalid", &labels), None);
     }
 
-
     /// Off macOS `Ctrl` and `Cmd` are the same key, so either spelling parses to the modifiers a
     /// physical Ctrl press carries and matches a binding written the other way (#245).
     #[test]
