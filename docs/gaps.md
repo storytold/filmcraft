@@ -163,6 +163,8 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Estimate:** 120–200 h (camera RAW alone 60–100 h, and some SDKs have licences we cannot use:
   clean-room from public specs only where specs exist). Docs: [codec-parity.md](codec-parity.md),
   [file-format-parity.md](file-format-parity.md).
+- **Have:** Matroska AAC / MP3 / AC-3 sample-aligned with ffmpeg's decode (the exact
+  `CodecDelay` is trimmed, not the 1 ms-rounded one; #790).
 
 ## G11. No plugin hosting
 

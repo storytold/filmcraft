@@ -71,15 +71,14 @@ pub struct MkvSource {
 /// length (AAC, MPEG audio, AC-3) therefore run on from one another, resynchronising to the
 /// timestamp only across gaps of more than half a packet (and more than two ticks); see
 /// [`crate::audio::contiguous_starts`]. Opus packets: [`opus_starts`]. Other codecs start at their
-/// timestamps.
+/// timestamps. Timestamps are taken with the exact `CodecDelay` off (see [`stamp_to_samples`]).
 fn audio_starts(file: &MkvFile, bytes: &crate::Src, ti: usize, rate: i64) -> Vec<i64> {
     use crate::audio::{FixedFrames, PacketTime, contiguous_starts, fixed_packet_samples};
     let Some(t) = file.tracks.get(ti) else { return Vec::new() };
     if let Some(h) = opus_head(&t.codec) {
         return opus_starts(file, bytes, ti, &h, rate);
     }
-    let (n, d) = tb(t);
-    let at = |pts: i64| (pts as i128 * n as i128 * rate as i128 / d as i128) as i64;
+    let at = stamp_to_samples(t, rate, codec_delay_samples(t, rate));
     let first = || file.read_sample(bytes, ti, 0).unwrap_or_default();
     let out_rate = u32::try_from(rate).unwrap_or(0);
     let frame = match &t.codec {
@@ -97,24 +96,41 @@ fn audio_starts(file: &MkvFile, bytes: &crate::Src, ti: usize, rate: i64) -> Vec
 
 /// Sample-exact Opus packet start positions (48 kHz frames, pre-skip removed).
 ///
-/// The demuxer also subtracts a rounded `CodecDelay` from the timestamps. Starts are accumulated
-/// from each packet's TOC duration, resynchronising to the timestamp only across real gaps (more
-/// than two ticks off). Pre-skip is the exact `CodecDelay` (or the header's pre-skip when it is
-/// absent).
+/// Starts are accumulated from each packet's TOC duration, resynchronising to the timestamp only
+/// across real gaps (more than two ticks off). Pre-skip is the exact `CodecDelay` (or the header's
+/// pre-skip when it is absent).
 fn opus_starts(file: &MkvFile, bytes: &crate::Src, ti: usize, head: &filmcraft_opus::OpusHead, rate: i64) -> Vec<i64> {
     let Some(t) = file.tracks.get(ti) else { return Vec::new() };
-    let (n, d) = tb(t);
-    let delay_ns = t.codec_delay_ns as i128;
-    // The demuxer's rounding of CodecDelay to ticks, undone here.
-    let delay_ticks = codec_delay_ticks(t);
-    let skip = if t.codec_delay_ns > 0 { (delay_ns * rate as i128 / 1_000_000_000) as i64 } else { head.pre_skip as i64 };
-    let at = |pts: i64| ((pts.saturating_add(delay_ticks) as i128 * n as i128 * rate as i128 / d as i128) as i64).saturating_sub(skip);
+    let skip = if t.codec_delay_ns > 0 { codec_delay_samples(t, rate) } else { head.pre_skip as i64 };
+    let at = stamp_to_samples(t, rate, skip);
     let packets = t.samples.iter().enumerate().map(|(i, s)| crate::audio::PacketTime {
         stamp: at(s.pts),
         stamped: own_stamp(s),
         samples: file.read_sample(bytes, ti, i).ok().and_then(|p| crate::audio::opus_packet_samples(&p)).map(|k| k as i64),
     });
     crate::audio::contiguous_starts(packets, stamp_tolerance(t, rate))
+}
+
+/// A block timestamp (with the demuxer's rounded `CodecDelay` taken off) as a position in sample
+/// frames at `rate`, `skip` frames of priming removed (#790). The demuxer's rounding is undone first:
+/// `CodecDelay` is rarely a whole number of ticks (1024 AAC samples at 48 kHz are 21.333 ms, 256
+/// AC-3 samples at 44.1 kHz 5.805 ms), so starting the first packet at the rounded delay played the
+/// whole track up to 16 samples late.
+fn stamp_to_samples(t: &filmcraft_matroska::Track, rate: i64, skip: i64) -> impl Fn(i64) -> i64 {
+    let (n, d) = tb(t);
+    let delay_ticks = codec_delay_ticks(t);
+    move |pts: i64| {
+        let ticks = pts.saturating_add(delay_ticks) as i128;
+        let at = ticks.checked_mul(n as i128).and_then(|x| x.checked_mul(rate as i128)).map_or(ticks.signum() * i128::MAX, |x| x / d as i128);
+        i64::try_from(at).unwrap_or(if at < 0 { i64::MIN } else { i64::MAX }).saturating_sub(skip)
+    }
+}
+
+/// `CodecDelay` in sample frames at `rate`, rounded to the nearest (the element holds whole
+/// nanoseconds: 1024 samples at 48 kHz are stored as 21 333 333 ns).
+fn codec_delay_samples(t: &filmcraft_matroska::Track, rate: i64) -> i64 {
+    let ns = (t.codec_delay_ns as i128).saturating_mul(rate.max(0) as i128);
+    i64::try_from(ns.saturating_add(500_000_000) / 1_000_000_000).unwrap_or(i64::MAX)
 }
 
 /// `CodecDelay` in timestamp ticks, rounded as the demuxer rounds it (half away from zero) before
