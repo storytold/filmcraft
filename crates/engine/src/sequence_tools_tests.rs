@@ -575,3 +575,35 @@ fn go_to_in_out_without_marks_go_to_the_sequence_ends() {
     s.execute("markers.goToIn", json!({})).unwrap();
     assert_eq!(s.playhead(), s.active_sequence().unwrap().mark_in.unwrap());
 }
+
+/// #483: media dropped in the empty space past the last track goes on a new track (with
+/// `"new"`), one undo step; a placement that fails leaves no new track behind.
+#[test]
+fn place_on_new_tracks_adds_them_in_one_undo_step() {
+    let (mut s, item) = fresh();
+    let before = s.active_sequence().unwrap().clone();
+    let (nv, na) = (before.video_tracks.len(), before.audio_tracks.len());
+    let undo = s.history.undo.len();
+    let r = s.execute("timeline.place", json!({"item": item, "track": "new", "audioTrack": "new", "time": 0})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!((q.video_tracks.len(), q.audio_tracks.len()), (nv + 1, na + 1));
+    let clips: Vec<ClipId> = r["clips"].as_array().unwrap().iter().map(|c| ClipId(c.as_u64().unwrap())).collect();
+    assert_eq!(clips.len(), 2);
+    assert_eq!(q.video_tracks[nv].items.iter().map(|i| i.id).collect::<Vec<_>>(), [clips[0]], "the picture is on the new top video track");
+    assert_eq!(q.audio_tracks[na].items.iter().map(|i| i.id).collect::<Vec<_>>(), [clips[1]], "the sound is on the new last audio track");
+    assert_eq!(s.history.undo.len(), undo + 1, "one undo step");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.active_sequence().unwrap(), before);
+
+    // only the picture gets a new track; the sound follows the given track
+    s.execute("timeline.place", json!({"item": item, "track": "new", "audioTrack": "A1", "time": 0})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!((q.video_tracks.len(), q.audio_tracks.len()), (nv + 1, na));
+    assert_eq!((q.video_tracks[nv].items.len(), q.audio_tracks[0].items.len()), (1, 1));
+    s.execute("edit.undo", json!({})).unwrap();
+
+    // a placement that fails after the tracks were added: nothing changes
+    assert!(s.execute("timeline.place", json!({"item": item, "track": "new", "audioTrack": "A99", "time": 0})).is_err());
+    assert_eq!(*s.active_sequence().unwrap(), before);
+    assert_eq!(s.history.undo.len(), undo);
+}

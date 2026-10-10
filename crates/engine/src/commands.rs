@@ -2158,9 +2158,12 @@ fn build() -> Vec<CommandSpec> {
             "Place Clip",
             [],
             None,
-            r#"{"item":id,"track":"V1"|id|"A1" (sound only)?,"audioTrack":"A1"|id?,"time":ticks|"frame":i64|"seconds":f64,"insert":bool,"sourceIn":ticks?,"duration":ticks?,"video":bool=true,"audio":bool=true}"#,
+            r#"{"item":id,"track":"V1"|id|"A1" (sound only)|"new" (a video track after the last)?,"audioTrack":"A1"|id|"new"?,"time":ticks|"frame":i64|"seconds":f64,"insert":bool,"sourceIn":ticks?,"duration":ticks?,"video":bool=true,"audio":bool=true}"#,
             has_seq,
             |s, p| {
+                if crate::sequence_tools::wants_new_track(p) {
+                    return crate::sequence_tools::place_on_new_tracks(s, p);
+                }
                 let stream_flag = |key: &str| match p.get(key) {
                     None => Ok(true),
                     Some(Value::Bool(v)) => Ok(*v),
