@@ -1,0 +1,8 @@
+asset:        fr.tsv
+title:        French interface translation catalog
+author:       FilmCraft contributors
+source:       original work
+license:      MIT OR Apache-2.0
+license-file: LICENSE-MIT and LICENSE-APACHE
+added:        2026-10-10 by vangel76
+notes:        Original English-to-French interface translations using clean-room NLE vocabulary.

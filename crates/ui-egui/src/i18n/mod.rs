@@ -44,6 +44,7 @@ pub enum Language {
     ZhCn,
     De,
     Ru,
+    Fr,
 }
 
 static JAPANESE: OnceLock<Catalog> = OnceLock::new();
@@ -53,9 +54,10 @@ static UKRAINIAN: OnceLock<Catalog> = OnceLock::new();
 static CHINESE: OnceLock<Catalog> = OnceLock::new();
 static GERMAN: OnceLock<Catalog> = OnceLock::new();
 static RUSSIAN: OnceLock<Catalog> = OnceLock::new();
+static FRENCH: OnceLock<Catalog> = OnceLock::new();
 
 impl Language {
-    pub const ALL: [Self; 8] = [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru];
+    pub const ALL: [Self; 9] = [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru, Self::Fr];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -67,6 +69,7 @@ impl Language {
             Self::ZhCn => "简体中文",
             Self::De => "Deutsch",
             Self::Ru => "Русский",
+            Self::Fr => "Français",
         }
     }
 
@@ -80,6 +83,7 @@ impl Language {
             "zh-cn" => Some(Self::ZhCn),
             "de" => Some(Self::De),
             "ru" => Some(Self::Ru),
+            "fr" => Some(Self::Fr),
             _ => None,
         }
     }
@@ -87,11 +91,12 @@ impl Language {
     /// Interface Language ▸ System Language (#218): the first of the user's preferred languages
     /// (BCP 47 or POSIX locale tags such as `es-419`, `pt_BR.UTF-8`, most preferred first) that the
     /// interface has, else English. Any Portuguese gets the Brazilian catalog, the only one there is;
-    /// any German (`de-AT`, `de_CH.UTF-8`…) gets the German one. Chinese gets the Simplified catalog
+    /// any German (`de-AT`, `de_CH.UTF-8`…) gets the German one and any French (`fr-CA`, `fr_BE.UTF-8`…)
+    /// the French one. Chinese gets the Simplified catalog
     /// only for Simplified locales (`zh`, `zh-CN`, `zh-SG`, `zh-Hans…`); Traditional ones (`zh-TW`,
     /// `zh-HK`, `zh-MO`, `zh-Hant…`) are skipped.
     pub fn from_locales(tags: &[String]) -> Self {
-        const PRIMARY: [(&str, Language); 7] = [
+        const PRIMARY: [(&str, Language); 8] = [
             ("en", Language::En),
             ("ja", Language::Ja),
             ("es", Language::Es),
@@ -99,6 +104,7 @@ impl Language {
             ("uk", Language::Uk),
             ("de", Language::De),
             ("ru", Language::Ru),
+            ("fr", Language::Fr),
         ];
         tags.iter()
             .find_map(|tag| {
@@ -127,6 +133,7 @@ impl Language {
             Self::ZhCn => "zh-cn",
             Self::De => "de",
             Self::Ru => "ru",
+            Self::Fr => "fr",
         }
     }
 
@@ -141,6 +148,7 @@ impl Language {
             Self::ZhCn => Some(CHINESE.get_or_init(|| Catalog::parse(include_str!("zh-cn.tsv")))),
             Self::De => Some(GERMAN.get_or_init(|| Catalog::parse(include_str!("de.tsv")))),
             Self::Ru => Some(RUSSIAN.get_or_init(|| Catalog::parse(include_str!("ru.tsv")))),
+            Self::Fr => Some(FRENCH.get_or_init(|| Catalog::parse(include_str!("fr.tsv")))),
         }
     }
 
@@ -310,6 +318,7 @@ mod tests {
             ("zh-cn", include_str!("zh-cn.tsv")),
             ("de", include_str!("de.tsv")),
             ("ru", include_str!("ru.tsv")),
+            ("fr", include_str!("fr.tsv")),
         ] {
             let (entries, errors) = catalog::parse_entries(text);
             assert!(errors.is_empty(), "{code}: {errors:?}");
@@ -350,6 +359,13 @@ mod tests {
         assert_eq!(Language::Ru.tr("File"), "Файл");
         assert_eq!(Language::Ru.tr("мой клип.mp4"), "мой клип.mp4");
         assert_eq!(Language::Ru.tr("An untranslated label"), "An untranslated label");
+        assert_eq!(Language::Fr.name(), "Français");
+        assert_eq!(Language::Fr.tr("File"), "Fichier");
+        assert_eq!(Language::Fr.tr("Save As…"), "Enregistrer sous…");
+        assert_eq!(Language::Fr.tr("Montage d'été.mp4"), "Montage d'été.mp4");
+        assert_eq!(Language::Fr.tr("An untranslated label"), "An untranslated label");
+        assert_eq!(Language::parse("fr"), Some(Language::Fr));
+        assert_eq!(Language::parse("fr-FR"), None, "the preference stores the bare code");
         for l in Language::ALL {
             assert_eq!(Language::parse(l.code()), Some(l));
             let json = serde_json::to_string(&l).unwrap();
@@ -801,6 +817,23 @@ mod tests {
         let mut restarted = filmcraft_engine::Session::default();
         restarted.prefs = serde_json::from_str(&prefs).unwrap();
         assert_eq!(crate::FilmcraftApp::new(restarted).ui.language, Language::De);
+        let result = crate::menus::invoke(&mut app, &ctx, "app.language.french", serde_json::json!({})).unwrap();
+        assert_eq!(result, serde_json::json!("fr"));
+        assert_eq!((app.ui.language, current()), (Language::Fr, Language::Fr));
+        assert_eq!(app.session.prefs.general.interface_language, "fr");
+        for it in crate::menus::menu_items(&app).iter().filter(|it| it.id.starts_with("app.language.")) {
+            assert_eq!(it.checked, Some(it.id == "app.language.french"), "{}", it.id);
+        }
+        let items = crate::menus::menu_items(&app);
+        let label = |id: &str| items.iter().find(|it| it.id == id).map(|it| it.label.as_str());
+        assert_eq!(label("file.saveAs"), Some("Enregistrer sous…"));
+        assert_eq!(label("app.language.german"), Some("Deutsch"));
+        let saved = serde_json::to_string(&app.ui).unwrap();
+        assert!(saved.contains("\"language\":\"fr\""), "{saved}");
+        let prefs = serde_json::to_string(&app.session.prefs).unwrap();
+        let mut restarted = filmcraft_engine::Session::default();
+        restarted.prefs = serde_json::from_str(&prefs).unwrap();
+        assert_eq!(crate::FilmcraftApp::new(restarted).ui.language, Language::Fr);
         crate::menus::invoke(&mut app, &ctx, "app.language.english", serde_json::json!({})).unwrap();
         assert_eq!(app.ui.language, Language::En);
         set_current(Language::En);
@@ -829,11 +862,15 @@ mod tests {
         for tag in ["de", "DE", "de-DE", "de-AT", "de-CH", "de-LI", "de-LU", "de_DE.UTF-8", "de_AT.UTF-8@euro", "de_CH"] {
             assert_eq!(l(&[tag]), Language::De, "{tag}");
         }
-        assert_eq!(l(&["fr-FR", "it", "es-MX", "ja"]), Language::Es, "the first one the interface has");
-        assert_eq!(l(&["fr-CH", "de-CH", "en"]), Language::De);
+        for tag in ["fr", "FR", "fr-FR", "fr-CA", "fr-BE", "fr-CH", "fr_FR.UTF-8", "fr_BE.UTF-8@euro", "fr_CA"] {
+            assert_eq!(l(&[tag]), Language::Fr, "{tag}");
+        }
+        assert_eq!(l(&["it-IT", "nl", "es-MX", "ja"]), Language::Es, "the first one the interface has");
+        assert_eq!(l(&["it-CH", "de-CH", "fr-CH", "en"]), Language::De);
+        assert_eq!(l(&["it-CH", "fr-CH", "de-CH", "en"]), Language::Fr);
         assert_eq!(l(&["en-GB", "es"]), Language::En);
         assert_eq!(l(&["en-US", "de"]), Language::En);
-        for none in [&[][..], &["fr"], &["C"], &["POSIX"], &[""], &["e"], &["esp"], &["-es"], &["deu"], &["d"], &["-de"]] {
+        for none in [&[][..], &["it"], &["C"], &["POSIX"], &[""], &["e"], &["esp"], &["-es"], &["deu"], &["d"], &["-de"], &["fra"], &["f"], &["-fr"]] {
             assert_eq!(l(none), Language::En, "{none:?}");
         }
         assert_eq!(l(&[&"x".repeat(1 << 20), "es"]), Language::Es);
@@ -856,7 +893,7 @@ mod tests {
         let count = asked.clone();
         app.hooks.system_languages = Some(Box::new(move || {
             count.set(count.get() + 1);
-            vec!["fr-FR".into(), "es-ES".into()]
+            vec!["it-IT".into(), "es-ES".into()]
         }));
         app.apply_prefs(&ctx);
         assert_eq!(app.ui.language, Language::Es);
@@ -915,6 +952,36 @@ mod tests {
         assert_eq!(Language::De.tr("Settings"), "Voreinstellungen");
     }
 
+    /// French covers the whole interface (the Spanish catalog's entries and the native macOS
+    /// Settings menu), but, like Japanese, the tests require only the core menus, so strings added
+    /// later show in English until they are translated. Every entry must still have a Spanish
+    /// counterpart: a renamed or removed source would otherwise leave a dead French entry.
+    #[test]
+    fn french_covers_the_menus_and_has_no_dead_entries() {
+        let (entries, errors) = catalog::parse_entries(include_str!("fr.tsv"));
+        assert!(errors.is_empty(), "{errors:?}");
+        for (ctx, en, _) in &entries {
+            assert!(ctx.is_empty() && (Language::Es.has(en) || en == "Settings"), "French entry without a Spanish one: {ctx:?} {en:?}");
+        }
+        let (portuguese, _) = catalog::parse_entries(include_str!("pt-br.tsv"));
+        for (_, en, _) in portuguese {
+            assert!(Language::Fr.has(&en), "missing French menu label: {en}");
+        }
+        for en in crate::menus::MENUS.into_iter().chain(["Audio", "Settings"]) {
+            assert!(Language::Fr.has(en), "untranslated French menu: {en}");
+        }
+        // beyond the menus: panels, effects and their parameters, settings, status messages
+        for (en, fr) in
+            [("Settings", "Préférences"), ("Gaussian Blur", "Flou gaussien"), ("Audio Track Mixer", "Mixeur de pistes audio"), ("Sequence", "Séquence")]
+        {
+            assert_eq!(Language::Fr.tr(en), fr);
+        }
+        set_current(Language::Fr);
+        assert!(matches_query("Gaussian Blur", "flou"));
+        assert!(matches_query("Gaussian Blur", "gaussian"));
+        set_current(Language::En);
+    }
+
     #[test]
     fn russian_entries_cover_the_original_menu_catalog() {
         let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
@@ -933,22 +1000,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn ukrainian_renders_with_bundled_fonts() {
+    /// Every non-ASCII character of `text` renders with the bundled interface fonts, in every family.
+    fn assert_bundled_fonts_cover(text: impl Iterator<Item = char>) {
         let ctx = egui::Context::default();
         crate::theme::install(&ctx, &crate::theme::Tokens::for_kind(crate::theme::ThemeKind::default()));
         let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
         output.textures_delta.clear();
-        let (entries, _) = catalog::parse_entries(include_str!("uk.tsv"));
+        let chars: std::collections::BTreeSet<_> = text.filter(|ch| !ch.is_ascii()).collect();
         ctx.fonts_mut(|fonts| {
-            // Include the entire alphabet, even letters not yet used by a translated menu label.
-            let alphabet = "АБВГҐДЕЄЖЗИІЇЙКЛМНОПРСТУФХЦЧШЩЬЮЯабвгґдеєжзиіїйклмнопрстуфхцчшщьюя";
-            let chars: std::collections::BTreeSet<_> = alphabet
-                .chars()
-                .chain(Language::Uk.name().chars())
-                .chain(entries.iter().flat_map(|(_, _, uk)| uk.chars()))
-                .filter(|ch| !ch.is_ascii())
-                .collect();
             for family in crate::theme::font_families() {
                 let font = egui::FontId::new(13.0, family);
                 // has_glyph compares font faces, giving false negatives when Inter also supplies
@@ -964,6 +1023,24 @@ mod tests {
                 }
             }
         });
+    }
+
+    #[test]
+    fn ukrainian_renders_with_bundled_fonts() {
+        let (entries, _) = catalog::parse_entries(include_str!("uk.tsv"));
+        // Include the entire alphabet, even letters not yet used by a translated menu label.
+        let alphabet = "АБВГҐДЕЄЖЗИІЇЙКЛМНОПРСТУФХЦЧШЩЬЮЯабвгґдеєжзиіїйклмнопрстуфхцчшщьюя";
+        assert_bundled_fonts_cover(alphabet.chars().chain(Language::Uk.name().chars()).chain(entries.iter().flat_map(|(_, _, uk)| uk.chars())));
+    }
+
+    #[test]
+    fn french_renders_with_bundled_fonts() {
+        let (entries, _) = catalog::parse_entries(include_str!("fr.tsv"));
+        // every French letter and quotation mark, even ones no entry uses yet, and every letter the
+        // entries use (symbols such as ✔ come from the English sources)
+        let alphabet = "ÀÂÆÇÉÈÊËÎÏÔŒÙÛÜŸàâæçéèêëîïôœùûüÿ«»’";
+        let letters = entries.iter().flat_map(|(_, _, fr)| fr.chars()).filter(|ch| ch.is_alphabetic());
+        assert_bundled_fonts_cover(alphabet.chars().chain(Language::Fr.name().chars()).chain(letters));
     }
 
     #[test]

@@ -190,10 +190,10 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G14. Localization: 8 of the 12 key languages missing
 
-- **Have:** Spanish, Japanese and Simplified Chinese catalogs cover ~99.6–99.9% of the ~3,500
-  cataloged strings; Portuguese (Brazil) and Ukrainian ~10% (menus).
+- **Have:** Spanish, Japanese, Simplified Chinese and French (#498) catalogs cover ~99.6–100% of
+  the ~3,500 cataloged strings; Portuguese (Brazil) and Ukrainian ~10% (menus).
 - **Missing:** Hindi, Arabic (no RTL interface layout; Arabic titles reported broken, #395),
-  French (#498), Indonesian, German (#490), Korean (#508; needs Hangul fonts in craft-fonts),
+  Indonesian, German beyond menus (#490), Korean (#508; needs Hangul fonts in craft-fonts),
   Vietnamese, Portuguese beyond menus; Premiere also ships Italian and Russian. Engine errors,
   CLI and MCP stay English. No language has a recorded native-speaker review.
 - **Estimate:** 150–230 h. Doc: [localization-parity.md](localization-parity.md).
