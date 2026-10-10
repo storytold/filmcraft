@@ -12,7 +12,7 @@
 //! | `mediaBrowser.favorite` | Add to / Remove from Favorites |
 //! | `mediaBrowser.clearRecent` | Clear Recent Directories |
 //! | `mediaBrowser.settings` | file types, view (list / thumbnails), columns (Edit Columns…), Import as Image Sequence, Hover Scrub, thumbnail size |
-//! | `mediaBrowser.import` | Import (the selection or `paths`; Project ▸ Ingest settings apply) |
+//! | `mediaBrowser.import` | Import (the selection or `paths`; a folder becomes a bin, its sub-folders bins inside it; Project ▸ Ingest settings apply) |
 //! | `mediaBrowser.openInSource` | Open In Source Monitor (Shift+O) |
 //! | `mediaBrowser.probe` | a file's media properties (frame rate, duration, video / audio info), cached |
 //!
@@ -421,32 +421,134 @@ fn paths_p(s: &Session, p: &Value) -> Vec<String> {
     }
 }
 
-/// `mediaBrowser.import {paths?, bin?, imageSequence?}`: imports files (directories import their
-/// supported files, like dragging a folder in Premiere).
+/// Most folders one import walks, and how deep it goes: a folder import mirrors the tree as bins,
+/// and symlinked folders can loop.
+const FOLDER_IMPORT_MAX_FOLDERS: usize = 4096;
+const FOLDER_IMPORT_MAX_DEPTH: usize = 32;
+
+/// A folder to import as a bin: its name, its files and its sub-folders that hold files.
+struct Folder {
+    name: String,
+    files: Vec<String>,
+    subs: Vec<Folder>,
+}
+
+/// The files the browser shows in `dir` and its sub-folders, as a tree; `None` when the tree
+/// holds none (or `budget` folders were walked already).
+fn walk_folder(services: &dyn Services, dir: &str, depth: usize, budget: &mut usize) -> Option<Folder> {
+    *budget = budget.checked_sub(1)?;
+    let entries = list(services, dir, "all").ok()?;
+    let mut folder = Folder { name: base_name(dir), files: Vec::new(), subs: Vec::new() };
+    for e in entries {
+        if !e.is_dir {
+            folder.files.push(e.path);
+        } else if depth < FOLDER_IMPORT_MAX_DEPTH
+            && let Some(sub) = walk_folder(services, &e.path, depth + 1, budget)
+        {
+            folder.subs.push(sub);
+        }
+    }
+    (!folder.files.is_empty() || !folder.subs.is_empty()).then_some(folder)
+}
+
+/// Add a `file.import` result to the merged one: arrays add up, other values (the Ingest result)
+/// are listed.
+fn merge_import(out: &mut serde_json::Map<String, Value>, r: Value) {
+    let Value::Object(r) = r else { return };
+    for (k, v) in r {
+        let slot = out.entry(k).or_insert_with(|| json!([]));
+        let Value::Array(all) = slot else { continue };
+        match v {
+            Value::Null => {}
+            Value::Array(a) => all.extend(a),
+            other => all.push(other),
+        }
+    }
+}
+
+/// Run `file.import` and merge its result; a failure becomes an error of the merged result.
+fn import_into(s: &mut Session, files: &[String], bin: Option<u64>, out: &mut serde_json::Map<String, Value>) {
+    let mut q = json!({"paths": files, "imageSequence": false});
+    if let Some(b) = bin {
+        q["bin"] = json!(b);
+    }
+    match s.execute("file.import", q) {
+        Ok(r) => merge_import(out, r),
+        Err(e) => merge_import(out, json!({"errors": [e.to_string()]})),
+    }
+}
+
+/// Import a folder as a bin named after it, in `parent`: its files go into the bin, each
+/// sub-folder becomes a bin inside it (Premiere's Media Browser keeps the folder structure).
+fn import_folder(s: &mut Session, folder: &Folder, parent: Option<u64>, out: &mut serde_json::Map<String, Value>) -> Result<()> {
+    let name = folder.name.clone();
+    let bin = s.edit("New Bin", |pr, _| Ok(pr.add_bin(&name, parent.map(filmcraft_project::BinId))))?;
+    merge_import(out, json!({"bins": [bin.0]}));
+    if !folder.files.is_empty() {
+        import_into(s, &folder.files, Some(bin.0), out);
+    }
+    // recursion as deep as the walk went, which is bounded
+    for sub in &folder.subs {
+        import_folder(s, sub, Some(bin.0), out)?;
+    }
+    Ok(())
+}
+
+/// `mediaBrowser.import {paths?, bin?, imageSequence?}`: imports files. A folder becomes a bin
+/// named after it (in `bin`) holding its files, and each sub-folder a bin inside that, as in
+/// Premiere; the result then also lists the new `bins`. Import as Image Sequence takes the first
+/// file instead.
 fn import(s: &mut Session, p: &Value) -> Result<Value> {
     let paths = paths_p(s, p);
     if paths.is_empty() {
         return Err(bad("mediaBrowser.import", "select files in the Media Browser"));
     }
     let seq = bool_p(p, "imageSequence").unwrap_or(s.prefs.media_browser.import_as_image_sequence);
+    let bin = u64_p(p, "bin");
     let mut files = Vec::new();
+    let mut folders = Vec::new();
+    let mut empty = Vec::new();
+    let mut budget = FOLDER_IMPORT_MAX_FOLDERS;
     for path in paths {
-        // a directory imports its media files (not recursive)
         let is_dir = matches!(s.services.list_entries(&path), Some(Ok(_))) && kind_of(&path).is_none();
-        match list(&*s.services, &path, "all") {
-            Ok(entries) if is_dir => files.extend(entries.into_iter().filter(|e| !e.is_dir).map(|e| e.path)),
-            _ => files.push(path),
+        if !is_dir {
+            files.push(path);
+        } else if seq {
+            // an image sequence: the folder's frames
+            match list(&*s.services, &path, "all") {
+                Ok(entries) => files.extend(entries.into_iter().filter(|e| !e.is_dir).map(|e| e.path)),
+                Err(_) => files.push(path),
+            }
+        } else {
+            match walk_folder(&*s.services, &path, 0, &mut budget) {
+                Some(f) => folders.push(f),
+                None => empty.push(path),
+            }
         }
     }
     // an image sequence imports from its first selected frame only
     if seq {
         files.truncate(1);
     }
-    let mut q = json!({"paths": files, "imageSequence": seq});
-    if let Some(b) = u64_p(p, "bin") {
-        q["bin"] = json!(b);
+    if folders.is_empty() {
+        if files.is_empty() && !empty.is_empty() {
+            return Err(bad("mediaBrowser.import", format!("no media files in {}", empty.join(", "))));
+        }
+        let mut q = json!({"paths": files, "imageSequence": seq});
+        if let Some(b) = bin {
+            q["bin"] = json!(b);
+        }
+        return s.execute("file.import", q);
     }
-    s.execute("file.import", q)
+    let mut out = serde_json::Map::new();
+    merge_import(&mut out, json!({"items": [], "errors": empty.iter().map(|e| format!("{e}: no media files")).collect::<Vec<_>>(), "bins": []}));
+    if !files.is_empty() {
+        import_into(s, &files, bin, &mut out);
+    }
+    for f in &folders {
+        import_folder(s, f, bin, &mut out)?;
+    }
+    Ok(Value::Object(out))
 }
 
 /// The project item that already references a file.

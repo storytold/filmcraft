@@ -460,8 +460,6 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
     match e.effect.as_str() {
         // Adjust / Color / Image Control / Keying / Utility colour
         "lighting_effects" => color::lighting(img, e, cx),
-        "video_limiter" => color::video_limiter(img, e, cx),
-        "vignette" => color::vignette(img, e, cx),
         "logo_cutout" => color::logo_cutout(img, e, cx),
         "ultra_key" => color::ultra_key(img, e, cx),
         "track_matte" => color::track_matte(img, e, cx),
@@ -486,6 +484,7 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
         "spin" => distort::spin(img, e, cx),
         "wiggle" => distort::wiggle(img, e, cx),
         "camera_shake" => distort::camera_shake(img, e, cx),
+        "transform" if bv(e, "shutter_override") && fv(e, "shutter_angle", cx) > 0.5 => distort::transform_fx(img, e, cx),
         "spacer" => distort::spacer(img, e, cx),
         "clone" => distort::clone_fx(img, e, cx),
         "auto_align" => distort::auto_align(img, e, cx),

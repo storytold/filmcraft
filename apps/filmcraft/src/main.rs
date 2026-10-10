@@ -28,6 +28,8 @@ mod args;
 mod audio;
 mod audio_in;
 mod control_server;
+#[cfg(target_os = "linux")]
+mod dev_icon;
 mod file_filters;
 #[cfg(any(target_os = "windows", test))]
 mod graphics;
@@ -108,12 +110,15 @@ fn main() -> eframe::Result {
         }
     }
     app_nap::disable();
+    #[cfg(target_os = "linux")]
+    dev_icon::ensure_dev_desktop_entry();
     // Panics anywhere go to <data dir>/Logs/crash-<day>.log with a backtrace; the UI pass and
     // frame workers catch them and keep running (see filmcraft_ui_egui::crash).
     filmcraft_ui_egui::crash::install(log_dir);
     // OS hardware video decoders (VideoToolbox on macOS) in front of our own; Settings ▸ Playback ▸
     // Hardware decoding switches them off. Unsupported streams and failures use our decoders.
     register_hardware_decoders();
+    register_gpu_frame_renderer();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("FilmCraft")
@@ -239,6 +244,11 @@ fn main() -> eframe::Result {
                 app.hooks.run_dialog = Some(Box::new(run_dialog_off_thread));
             }
             app.hooks.open_path = Some(Box::new(open_path));
+            // Help menu, About and Discord links (#642): eframe is built without its `links`
+            // feature, so `ctx.open_url` does nothing on the desktop. Detached, so a launcher
+            // that waits for the browser never freezes the UI.
+            app.hooks.open_url = Some(Box::new(|url: &str| open::that_detached(url).map_err(|e| e.to_string())));
+            app.hooks.clipboard_media = Some(Box::new(clipboard_media));
             // Settings ▸ General ▸ Interface Language ▸ System Language (#218).
             app.hooks.cursor_screen_position = Some(Box::new(filmcraft_platform::cursor::cursor_screen_position));
             app.hooks.system_languages = Some(Box::new(|| sys_locale::get_locales().collect()));
@@ -285,6 +295,18 @@ fn main() -> eframe::Result {
     started
 }
 
+/// Files copied in the file manager, else an image, on the system clipboard (Paste, #611).
+fn clipboard_media() -> Option<filmcraft_ui_egui::ClipboardMedia> {
+    let mut clipboard = arboard::Clipboard::new().ok()?;
+    if let Ok(files) = clipboard.get().file_list()
+        && !files.is_empty()
+    {
+        return Some(filmcraft_ui_egui::ClipboardMedia::Files(files.iter().map(|p| p.to_string_lossy().into_owned()).collect()));
+    }
+    let image = clipboard.get_image().ok()?;
+    Some(filmcraft_ui_egui::ClipboardMedia::Image { width: image.width, height: image.height, rgba: image.bytes.into_owned() })
+}
+
 /// Open a file in its default application, or reveal it in the file manager (Edit Original,
 /// Reveal Log Files).
 fn open_path(path: &str, reveal: bool) -> Result<(), String> {
@@ -310,6 +332,30 @@ fn open_path(path: &str, reveal: bool) -> Result<(), String> {
         c
     };
     cmd.spawn().map(|_| ()).map_err(|e| format!("can't open {path}: {e}"))
+}
+
+/// The GPU export frame renderer (filmcraft-gpu's off-screen compositor behind filmcraft-export's
+/// frame-renderer hook): exports with GPU rendering Auto composite on the GPU and fall back to the
+/// CPU reference renderer wherever it cannot.
+struct GpuFrameRenderer(filmcraft_gpu::ExportRenderer);
+
+impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
+    fn render(
+        &mut self,
+        project: &filmcraft_project::Project,
+        seq: filmcraft_project::ItemId,
+        t: filmcraft_time::Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn filmcraft_render::SourceProvider,
+    ) -> Option<filmcraft_render::Image> {
+        self.0.render(project, seq, t, opts, sources)
+    }
+}
+
+fn register_gpu_frame_renderer() {
+    filmcraft_export::register_frame_renderer(|| {
+        filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(GpuFrameRenderer(r)) as Box<dyn filmcraft_export::FrameRenderer>)
+    });
 }
 
 /// Put the OS hardware video decoders in front of our own. Registered in a statement of its own:

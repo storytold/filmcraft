@@ -274,11 +274,19 @@ pub struct ExportSettings {
     /// stream needs is raised.
     pub h264_level: Option<u8>,
     pub bitrate_mode: BitrateMode,
+    /// Constant rate factor of [`BitrateMode::Crf`], 0 (best) to 51 (smallest); 23 by default,
+    /// 18 is visually near-lossless.
+    #[serde(default = "default_crf")]
+    pub crf: f32,
     /// May H.264 be encoded by the system's hardware encoder (VideoToolbox on macOS, NVENC on
     /// Windows)? Off unless asked for: hardware output depends on the machine, so it is not
     /// byte-reproducible like the built-in encoder's (`determinism_tests`).
     #[serde(default)]
     pub hardware_encoding: HardwareEncoding,
+    /// Composite the exported frames on the GPU instead of the CPU reference renderer (Export ▸
+    /// GPU rendering: Auto / Off, Off by default). Off = the CPU reference renderer exactly.
+    #[serde(default)]
+    pub gpu_rendering: GpuRendering,
     /// VBR maximum bitrate (None = 1.5 × target).
     pub max_bitrate_kbps: Option<u32>,
     /// Adaptive bitrate (the Match Source presets): bits per pixel per frame; replaces
@@ -467,7 +475,9 @@ impl Default for ExportSettings {
             h264_profile: H264Profile::High,
             h264_level: None,
             bitrate_mode: BitrateMode::default(),
+            crf: DEFAULT_CRF,
             hardware_encoding: HardwareEncoding::default(),
+            gpu_rendering: GpuRendering::Off,
             max_bitrate_kbps: None,
             adaptive_bitrate: None,
             keyframe_distance: None,
@@ -483,6 +493,13 @@ impl Default for ExportSettings {
             sink: None,
         }
     }
+}
+
+/// [`ExportSettings::crf`] of new settings and of settings saved before it existed.
+pub const DEFAULT_CRF: f32 = 23.0;
+
+fn default_crf() -> f32 {
+    DEFAULT_CRF
 }
 
 impl ExportSettings {
@@ -518,6 +535,14 @@ impl ExportSettings {
         }
         if self.format == Format::Hevc && self.bitrate_mode == BitrateMode::Vbr2Pass {
             return Err(ExportError::Unsupported("H.265 export has no two-pass mode: choose CBR or VBR, 1 pass".into()));
+        }
+        if self.bitrate_mode == BitrateMode::Crf {
+            if self.format == Format::Hevc {
+                return Err(ExportError::Unsupported("H.265 export has no CRF mode: choose CBR or VBR, 1 pass".into()));
+            }
+            if !self.crf.is_finite() || !(0.0..=51.0).contains(&self.crf) {
+                return Err(ExportError::Unsupported("CRF must be between 0 and 51".into()));
+            }
         }
         Ok(())
     }
@@ -757,6 +782,99 @@ pub fn register_encoder(f: EncoderFactory) {
 /// Whether `f` is among the registered video encoder factories (startup diagnostics, tests).
 pub fn encoder_registered(f: EncoderFactory) -> bool {
     video_factories().read().unwrap_or_else(|e| e.into_inner()).iter().any(|x| std::ptr::fn_addr_eq(*x, f))
+}
+
+/// Renders one export frame on something other than the CPU reference renderer — today the GPU
+/// compositor (`filmcraft-gpu`), registered by the app or CLI at startup. `render` returns the
+/// frame exactly as [`filmcraft_render::render_sequence`] would (same size, premultiplied
+/// linear-light RGBA), or `None` to let the CPU render this frame (no adapter, a plan the GPU
+/// cannot draw, any internal error): the CPU renderer is the reference and the fallback.
+pub trait FrameRenderer: Send {
+    fn render(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn SourceProvider,
+    ) -> Option<filmcraft_render::Image>;
+}
+
+/// Builds the frame renderer for one export, or `None` when this host cannot (no adapter).
+pub type FrameRendererFactory = fn() -> Option<Box<dyn FrameRenderer>>;
+
+fn frame_renderer_factories() -> &'static RwLock<Vec<FrameRendererFactory>> {
+    static F: OnceLock<RwLock<Vec<FrameRendererFactory>>> = OnceLock::new();
+    F.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Register a frame-renderer factory (tried before those registered earlier). Registering the
+/// same factory twice is harmless.
+pub fn register_frame_renderer(f: FrameRendererFactory) {
+    let mut g = frame_renderer_factories().write().unwrap_or_else(|e| e.into_inner());
+    if !g.iter().any(|x| std::ptr::fn_addr_eq(*x, f)) {
+        g.insert(0, f);
+    }
+}
+
+/// Whether `f` is among the registered frame-renderer factories (startup diagnostics, tests).
+pub fn frame_renderer_registered(f: FrameRendererFactory) -> bool {
+    frame_renderer_factories().read().unwrap_or_else(|e| e.into_inner()).iter().any(|x| std::ptr::fn_addr_eq(*x, f))
+}
+
+/// Clear the registered frame-renderer factories. Test-only: registration is a process-wide
+/// startup step and tests that register their own must not see each other's.
+#[cfg(test)]
+pub(crate) fn reset_frame_renderers_for_tests() {
+    frame_renderer_factories().write().unwrap_or_else(|e| e.into_inner()).clear();
+    GPU_FRAMES.store(0, Ordering::Relaxed);
+    GPU_FALLBACKS.store(0, Ordering::Relaxed);
+}
+
+/// Pick the first registered factory that can build a renderer for this host.
+pub(crate) fn build_frame_renderer() -> Option<Box<dyn FrameRenderer>> {
+    let g = frame_renderer_factories().read().unwrap_or_else(|e| e.into_inner());
+    g.iter().filter_map(|f| f()).next()
+}
+
+static GPU_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static GPU_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static LOCK_WAIT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A frame was composited by the registered GPU renderer.
+pub fn note_gpu_frame() {
+    GPU_FRAMES.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The GPU renderer declined a frame (the CPU reference renderer took it).
+pub fn note_gpu_fallback() {
+    GPU_FALLBACKS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Time an export worker waited for a free GPU renderer (process-wide, for the bench).
+pub(crate) fn note_lock_wait(d: std::time::Duration) {
+    LOCK_WAIT_NS.fetch_add(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX), Ordering::Relaxed);
+}
+
+/// Total time export workers waited for a GPU renderer since [`reset_export_lock_wait`].
+pub fn export_lock_wait() -> std::time::Duration {
+    std::time::Duration::from_nanos(LOCK_WAIT_NS.load(Ordering::Relaxed))
+}
+
+/// Start [`export_lock_wait`] again from zero.
+pub fn reset_export_lock_wait() {
+    LOCK_WAIT_NS.store(0, Ordering::Relaxed);
+}
+
+/// GPU-vs-CPU frame counters of the export renderer (per-process, like the hardware ones).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GpuRenderStats {
+    pub frames: u64,
+    pub fallbacks: u64,
+}
+
+pub fn gpu_render_stats() -> GpuRenderStats {
+    GpuRenderStats { frames: GPU_FRAMES.load(Ordering::Relaxed), fallbacks: GPU_FALLBACKS.load(Ordering::Relaxed) }
 }
 pub fn register_audio_encoder(f: AudioEncoderFactory) {
     audio_factories().write().unwrap_or_else(|e| e.into_inner()).insert(0, f);
@@ -1344,6 +1462,8 @@ fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSetti
     let max = s.max_bitrate_kbps.filter(|m| *m >= kbps).unwrap_or_else(|| (u64::from(kbps) * 3 / 2).min(u64::from(u32::MAX)) as u32);
     cfg.rate = match s.bitrate_mode {
         BitrateMode::Cbr => filmcraft_h264enc::RateControl::Cbr { kbps },
+        // the encoder clamps to 0..=51; a NaN from a hand-edited preset becomes the default
+        BitrateMode::Crf => filmcraft_h264enc::RateControl::Crf(if s.crf.is_finite() { s.crf } else { DEFAULT_CRF }),
         _ => filmcraft_h264enc::RateControl::Vbr { target_kbps: kbps, max_kbps: max },
     };
     cfg.pass = match &s.h264_pass {
@@ -1474,20 +1594,41 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
     let batch = rayon::current_num_threads().clamp(2, 16) as i64;
     let (bytes, nframes) = match settings.format {
         Format::Wav | Format::Aiff => {
+            let mut a = audio_out::AudioOut::new(project.clone(), seq, settings, range)?;
+            let (ch, sr, bits) = (a.channels as u16, a.sr, settings.audio.bits);
+            let container = if settings.format == Format::Wav { pcm::PcmContainer::Wav } else { pcm::PcmContainer::Aiff };
+            let frames = a.remaining();
+            // the sizes are known up front: refuse an AIFF that cannot hold them before measuring
+            let head = pcm::header(container, ch, sr, bits, frames).map_err(ExportError::Unsupported)?;
+            // one second per chunk: memory stays flat however long the range is
+            let chunk = i64::from(sr.max(1));
             if !settings.part_of_batch {
-                progress.total.store(1, Ordering::Relaxed);
+                progress.total.store(frames.div_ceil(chunk as u64).max(1), Ordering::Relaxed);
                 progress.set_status(format!("Exporting audio ({})", settings.format.label()));
             }
-            let mut a = audio_out::AudioOut::new(project.clone(), seq, settings, range)?;
             a.measure(settings, sources, &cancelled)?;
             *progress.loudness.lock().unwrap_or_else(|e| e.into_inner()) = a.loudness;
-            let planar = a.rest(sources).unwrap_or_else(|| vec![Vec::new(); a.channels]);
-            let inter = audio_out::interleave(&planar);
-            let (ch, sr, bits) = (a.channels as u16, a.sr, settings.audio.bits);
-            let data = if settings.format == Format::Wav { pcm::write_wav(&inter, ch, sr, bits) } else { pcm::write_aiff(&inter, ch, sr, bits) };
-            let n = write_output(settings, &settings.path, data)?;
-            progress.done.store(1, Ordering::Relaxed);
-            (n, planar.first().map_or(0, Vec::len) as u64)
+            let mut out = Out::create(settings)?;
+            let io = |e: std::io::Error| ExportError::Io(e.to_string());
+            out.write_all(&head).map_err(io)?;
+            let mut buf = Vec::new();
+            while let Some(planar) = a.pull(a.out.saturating_add(chunk), sources) {
+                if cancelled() {
+                    return Err(ExportError::Cancelled);
+                }
+                buf.clear();
+                pcm::encode(container, &audio_out::interleave(&planar), bits, &mut buf);
+                out.write_all(&buf).map_err(io)?;
+                if !settings.part_of_batch {
+                    progress.done.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            out.write_all(pcm::pad(frames, ch, bits)).map_err(io)?;
+            let n = out.finish(settings)?;
+            if settings.part_of_batch {
+                progress.done.store(1, Ordering::Relaxed);
+            }
+            (n, frames)
         }
         Format::PngSequence | Format::TiffSequence | Format::BmpSequence | Format::Gif => {
             let pipe = pipeline::Pipeline::new(project.clone(), seq, settings, false)?;

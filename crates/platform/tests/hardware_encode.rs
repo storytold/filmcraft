@@ -106,6 +106,7 @@ fn declines_what_the_hardware_path_does_not_take() {
     let declined = |s: &ExportSettings, what: &str| assert!(config_for(W, H, FPS, s).is_err(), "{what} must not use the hardware encoder");
     declined(&ExportSettings { hardware_encoding: HardwareEncoding::Off, ..ok.clone() }, "hardware encoding off");
     declined(&ExportSettings { bitrate_mode: BitrateMode::Vbr2Pass, ..ok.clone() }, "two-pass VBR");
+    declined(&ExportSettings { bitrate_mode: BitrateMode::Crf, ..ok.clone() }, "CRF");
     declined(&ExportSettings { h264_pass: H264Pass::First, ..ok.clone() }, "an analysis pass");
     declined(&ExportSettings { signal: filmcraft_export::ColorSignal::PQ, ..ok.clone() }, "HDR");
     declined(&ExportSettings { pixel_aspect: Some((4, 3)), ..ok.clone() }, "non-square pixels");

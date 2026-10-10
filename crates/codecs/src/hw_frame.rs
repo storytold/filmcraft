@@ -82,6 +82,13 @@ pub(crate) fn obus(data: &[u8]) -> Vec<(u8, &[u8])> {
     out
 }
 
+/// What an AV1 sequence header fixes about the pictures: profile, maximum size and the colour
+/// configuration (bit depth, chroma format, colour description). `None` when it does not parse.
+fn av1_format(seq: &[u8]) -> Option<(u8, u32, u32, filmcraft_av1::ColorConfig)> {
+    let h = filmcraft_av1::SequenceHeader::parse(seq).ok()?;
+    Some((h.profile, h.max_frame_width, h.max_frame_height, h.color))
+}
+
 /// VP9 colour as our decoder reports it: `color_space` and range from the bitstream, transfer and
 /// primaries from the container when it says. (Shared with `Vp9Decoder`.)
 pub(crate) fn vp9_color(width: u32, height: u32, color_space: u8, full_range: bool, transfer: Option<Transfer>, primaries: Option<Primaries>) -> ColorInfo {
@@ -243,14 +250,58 @@ impl FrameStreamInfo {
     }
 
     /// Whether `sample` declares parameters the hardware session was not set up for: an AV1
-    /// sequence header that differs from `av1C`'s, a VP9 key frame of another size, bit depth or
-    /// chroma format. The decoder then hands the stream to our software decoder.
+    /// sequence header whose picture format (profile, size, colour configuration) differs from
+    /// `av1C`'s, a VP9 key frame of another size, bit depth or chroma format. The decoder then
+    /// hands the stream to our software decoder.
     pub fn parameters_changed(&self, sample: &[u8]) -> bool {
         match self.codec {
-            FrameCodec::Av1 => obus(sample).into_iter().any(|(t, p)| t == 1 && self.sequence_header.as_deref() != Some(p)),
+            // Only what the picture format depends on counts: encoders such as SVT-AV1 put a
+            // provisional sequence header in `av1C` whose coding tool flags (CDEF, restoration,
+            // warped motion…) differ from the in-band one, and decoders follow the in-band one.
+            FrameCodec::Av1 => obus(sample).into_iter().any(|(t, p)| t == 1 && self.sequence_header.as_deref().is_none_or(|s| av1_format(s) != av1_format(p))),
             FrameCodec::Vp9 => {
                 self.picture_params(sample).is_some_and(|p| p.size != self.size || p.bit_depth != self.bit_depth || p.subsampling != self.subsampling)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An `av1C` sequence header from SVT-AV1 (1280x720 10-bit) and the in-band one of the same
+    /// stream: they differ only in coding tool flags.
+    const AV1C: [u8; 14] = [0x0a, 0x0c, 0x02, 0x00, 0x00, 0x2d, 0x6a, 0x67, 0xfd, 0x9e, 0x01, 0x7c, 0x20, 0x20];
+    const IN_BAND: [u8; 14] = [0x0a, 0x0c, 0x02, 0x00, 0x00, 0x2d, 0x6a, 0x67, 0xfd, 0x9e, 0x35, 0x7c, 0xe0, 0x20];
+
+    fn info() -> FrameStreamInfo {
+        let c = filmcraft_isobmff::Av1Config {
+            seq_profile: 0,
+            seq_level_idx_0: 0,
+            seq_tier_0: false,
+            high_bitdepth: true,
+            twelve_bit: false,
+            monochrome: false,
+            chroma_subsampling_x: true,
+            chroma_subsampling_y: true,
+            chroma_sample_position: 0,
+            initial_presentation_delay_minus_one: None,
+            config_obus: AV1C.to_vec(),
+        };
+        FrameStreamInfo::from_av1(&c, (0, 0)).unwrap()
+    }
+
+    #[test]
+    fn av1_sequence_headers_compare_by_picture_format() {
+        let i = info();
+        assert_eq!((i.size, i.bit_depth), ((1280, 720), 10));
+        assert!(!i.parameters_changed(&AV1C), "the same header");
+        // used to send every SVT-AV1 MP4 to the software decoder from its first frame
+        assert!(!i.parameters_changed(&IN_BAND), "only coding tool flags differ");
+        // a header that does not parse is a change
+        assert!(i.parameters_changed(&[0x0a, 0x02, 0xe0, 0x00]));
+        // no sequence header in the sample: nothing changed
+        assert!(!i.parameters_changed(&[0x12, 0x00]));
     }
 }

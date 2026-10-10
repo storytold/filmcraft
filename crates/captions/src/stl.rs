@@ -215,15 +215,22 @@ fn encode_text(text: &str) -> Vec<u8> {
         if ch == '<'
             && let Some(end) = rest.find('>')
         {
-            match rest[1..end].trim().to_ascii_lowercase().as_str() {
-                "i" => out.push(0x80),
-                "/i" => out.push(0x81),
-                "u" => out.push(0x82),
-                "/u" => out.push(0x83),
-                _ => {}
+            let tag = &rest[1..end];
+            // Only a syntactically plausible tag is markup. Comparisons such as
+            // "2 < 3 > 1" and "x < y > z" must not lose their middle text.
+            let name = tag.strip_prefix('/').unwrap_or(tag);
+            let is_tag = name.as_bytes().first().is_some_and(u8::is_ascii_alphabetic);
+            if is_tag {
+                match tag.trim().to_ascii_lowercase().as_str() {
+                    "i" => out.push(0x80),
+                    "/i" => out.push(0x81),
+                    "u" => out.push(0x82),
+                    "/u" => out.push(0x83),
+                    _ => {}
+                }
+                rest = &rest[end + 1..];
+                continue;
             }
-            rest = &rest[end + 1..];
-            continue;
         }
         if ch == '\n' {
             out.push(0x8a);
@@ -449,6 +456,22 @@ mod tests {
         assert_eq!(back.cues[1].text, long);
         assert_eq!(back.cues[1].start, FrameRate::FPS_25.tick_of(100));
         assert!(parse(&b[..500]).is_err());
+    }
+
+    #[test]
+    fn literal_angle_brackets_are_not_discarded_as_markup() {
+        let literal = "2 < 3 > 1, x < y > z, and 5 <7> 6";
+        let doc = Document {
+            cues: vec![Cue { start: FrameRate::FPS_25.tick_of(25), end: FrameRate::FPS_25.tick_of(75), text: literal.into(), ..Default::default() }],
+            ..Default::default()
+        };
+        let encoded = write(&doc, Some(FrameRate::FPS_25));
+        let decoded = parse(&encoded).expect("valid EBU STL");
+        assert_eq!(decoded.cues.len(), 1);
+        assert_eq!(decoded.cues[0].text, literal);
+        // Recognized styling still becomes STL control bytes.
+        assert_eq!(encode_text("<i>Hi</i>"), vec![0x80, b'H', b'i', 0x81]);
+        assert_eq!(encode_text("<i >Hi</i >"), vec![0x80, b'H', b'i', 0x81]);
     }
 
     #[test]

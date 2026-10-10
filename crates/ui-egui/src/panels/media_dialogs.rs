@@ -159,120 +159,125 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let sel_path = d.candidate.and_then(|c| d.candidates.get(c)).map(|c| c.0.clone());
     let preview = sel_path.as_deref().and_then(|p| preview_texture(app, ctx, p));
     let rows_max_h = (ctx.content_rect().height() * 0.3).clamp(90.0, 320.0);
+    let width = (ctx.content_rect().width() - 40.0).clamp(1.0, 760.0);
     egui::Window::new(tl!("Link Media"))
         .id(egui::Id::new("Link Media"))
         .collapsible(false)
         .resizable(false)
-        .default_width(760.0)
+        .default_width(width)
+        .max_width(width)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
-            ui.label(tlf!("{n} clip(s) can't find their media. Locate them, search a folder, or leave them offline.", n = rows.len()));
-            ui.add_space(6.0);
-            egui::ScrollArea::vertical().id_salt("link-media-rows-scroll").max_height(rows_max_h).auto_shrink([false, true]).show(ui, |ui| {
-                egui::Grid::new("link-media-rows").num_columns(4).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
-                    for h in [tl!("Clip Name"), tl!("File Name"), tl!("File Path"), tl!("Status")] {
-                        ui.label(RichText::new(h).strong());
-                    }
-                    ui.end_row();
-                    for (k, (_, name, fname, path, status)) in rows.iter().enumerate() {
-                        let r = ui.selectable_label(d.row == k, name);
-                        push(&mut elems, format!("linkMedia.row.{k}"), &r, name.clone());
-                        if r.clicked() && d.row != k {
-                            d.row = k;
-                            d.candidates.clear();
-                            d.candidate = None;
+            egui::ScrollArea::vertical().id_salt("link-media-body-scroll").max_height((ctx.content_rect().height() - 140.0).max(1.0)).show(ui, |ui| {
+                ui.label(tlf!("{n} clip(s) can't find their media. Locate them, search a folder, or leave them offline.", n = rows.len()));
+                ui.add_space(6.0);
+                egui::ScrollArea::both().id_salt("link-media-rows-scroll").max_height(rows_max_h).auto_shrink([false, true]).show(ui, |ui| {
+                    egui::Grid::new("link-media-rows").num_columns(4).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
+                        for h in [tl!("Clip Name"), tl!("File Name"), tl!("File Path"), tl!("Status")] {
+                            ui.label(RichText::new(h).strong());
                         }
-                        ui.label(fname);
-                        ui.label(RichText::new(path).small());
-                        ui.label(RichText::new(*status).color(Color32::from_rgb(0xe0, 0x5a, 0x5a)));
                         ui.end_row();
-                    }
-                });
-            });
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label(tl!("Match file properties:"));
-                for (id, label, v) in [
-                    ("fileName", tl!("File Name"), &mut d.file_name),
-                    ("extension", tl!("File Extension"), &mut d.extension),
-                    ("clipId", tl!("Clip ID (fingerprint)"), &mut d.clip_id),
-                    ("duration", tl!("Duration"), &mut d.duration),
-                    ("mediaStart", tl!("Media Start"), &mut d.media_start),
-                    ("metadata", tl!("Frame Size / Rate"), &mut d.metadata),
-                ] {
-                    let r = ui.checkbox(v, label);
-                    push(&mut elems, format!("linkMedia.match.{id}"), &r, label);
-                }
-            });
-            ui.horizontal(|ui| {
-                let r = ui.checkbox(&mut d.align_timecode, tl!("Align Timecode"));
-                push(&mut elems, "linkMedia.alignTimecode", &r, "Align Timecode");
-                let r = ui.checkbox(&mut d.relink_others, tl!("Relink others automatically"));
-                push(&mut elems, "linkMedia.relinkOthers", &r, "Relink others automatically");
-            });
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label(tl!("Search in:"));
-                let r = ui.add(egui::TextEdit::singleline(&mut d.folder).desired_width(360.0).hint_text(tl!("Folder")));
-                push(&mut elems, "linkMedia.folder", &r, "folder");
-                let r = ui.button(tl!("Browse…"));
-                push(&mut elems, "linkMedia.browse", &r, "Browse…");
-                if r.clicked() {
-                    action = Some("browse");
-                }
-                let r = ui.checkbox(&mut d.exact_name, tl!("Exact name matches only"));
-                push(&mut elems, "linkMedia.exactName", &r, "Exact name matches only");
-                let r = ui.button(tl!("Search"));
-                push(&mut elems, "linkMedia.search", &r, "Search");
-                if r.clicked() {
-                    action = Some("search");
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.set_width(520.0);
-                    if d.candidates.is_empty() {
-                        ui.label(RichText::new(tl!("No candidates yet — Search a folder or Locate the file.")).weak());
-                    }
-                    egui::ScrollArea::vertical().id_salt("link-media-candidates-scroll").max_height(108.0).auto_shrink([false, true]).show(ui, |ui| {
-                        for (k, (path, ok, idm, problems)) in d.candidates.iter().enumerate() {
-                            let mark = match (ok, idm) {
-                                (true, Some(true)) => tl!("✔ same file"),
-                                (true, _) => tl!("✔ matches"),
-                                (false, Some(false)) => tl!("✖ different file"),
-                                _ => "✖",
-                            };
-                            let text = format!("{mark}  {path}");
-                            let r = ui.selectable_label(
-                                d.candidate == Some(k),
-                                RichText::new(&text).color(if *ok { Color32::LIGHT_GREEN } else { Color32::from_rgb(0xe0, 0x8a, 0x6a) }),
-                            );
-                            let r = if problems.is_empty() { r } else { r.on_hover_text(problems) };
-                            push(&mut elems, format!("linkMedia.candidate.{k}"), &r, text);
-                            if r.clicked() {
-                                d.candidate = Some(k);
+                        for (k, (_, name, fname, path, status)) in rows.iter().enumerate() {
+                            let r = ui.selectable_label(d.row == k, name);
+                            push(&mut elems, format!("linkMedia.row.{k}"), &r, name.clone());
+                            if r.clicked() && d.row != k {
+                                d.row = k;
+                                d.candidates.clear();
+                                d.candidate = None;
                             }
+                            ui.label(fname);
+                            ui.label(RichText::new(path).small());
+                            ui.label(RichText::new(*status).color(Color32::from_rgb(0xe0, 0x5a, 0x5a)));
+                            ui.end_row();
                         }
                     });
                 });
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(192.0, 108.0), egui::Sense::hover());
-                ui.painter().rect_filled(rect, 3.0, Color32::from_rgb(12, 12, 12));
-                match &preview {
-                    Some(t) => {
-                        let fitted = crate::panels::monitor::fit(rect, t.size()[0] as f32, t.size()[1] as f32);
-                        ui.painter().image(t.id(), fitted, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+                ui.separator();
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(tl!("Match file properties:"));
+                    for (id, label, v) in [
+                        ("fileName", tl!("File Name"), &mut d.file_name),
+                        ("extension", tl!("File Extension"), &mut d.extension),
+                        ("clipId", tl!("Clip ID (fingerprint)"), &mut d.clip_id),
+                        ("duration", tl!("Duration"), &mut d.duration),
+                        ("mediaStart", tl!("Media Start"), &mut d.media_start),
+                        ("metadata", tl!("Frame Size / Rate"), &mut d.metadata),
+                    ] {
+                        let r = ui.checkbox(v, label);
+                        push(&mut elems, format!("linkMedia.match.{id}"), &r, label);
                     }
-                    None => {
-                        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, tl!("Preview"), crate::theme::Tokens::ui(11.0), Color32::GRAY);
+                });
+                ui.horizontal_wrapped(|ui| {
+                    let r = ui.checkbox(&mut d.align_timecode, tl!("Align Timecode"));
+                    push(&mut elems, "linkMedia.alignTimecode", &r, "Align Timecode");
+                    let r = ui.checkbox(&mut d.relink_others, tl!("Relink others automatically"));
+                    push(&mut elems, "linkMedia.relinkOthers", &r, "Relink others automatically");
+                });
+                ui.separator();
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(tl!("Search in:"));
+                    let r = ui.add(egui::TextEdit::singleline(&mut d.folder).desired_width((ui.available_width() * 0.5).min(360.0)).hint_text(tl!("Folder")));
+                    push(&mut elems, "linkMedia.folder", &r, "folder");
+                    let r = ui.button(tl!("Browse…"));
+                    push(&mut elems, "linkMedia.browse", &r, "Browse…");
+                    if r.clicked() {
+                        action = Some("browse");
                     }
+                    let r = ui.checkbox(&mut d.exact_name, tl!("Exact name matches only"));
+                    push(&mut elems, "linkMedia.exactName", &r, "Exact name matches only");
+                    let r = ui.button(tl!("Search"));
+                    push(&mut elems, "linkMedia.search", &r, "Search");
+                    if r.clicked() {
+                        action = Some("search");
+                    }
+                });
+                ui.horizontal(|ui| {
+                    let candidates_width = (ui.available_width() - 192.0 - ui.spacing().item_spacing.x).max(1.0);
+                    ui.vertical(|ui| {
+                        ui.set_width(candidates_width);
+                        if d.candidates.is_empty() {
+                            ui.label(RichText::new(tl!("No candidates yet — Search a folder or Locate the file.")).weak());
+                        }
+                        egui::ScrollArea::vertical().id_salt("link-media-candidates-scroll").max_height(108.0).auto_shrink([false, true]).show(ui, |ui| {
+                            for (k, (path, ok, idm, problems)) in d.candidates.iter().enumerate() {
+                                let mark = match (ok, idm) {
+                                    (true, Some(true)) => tl!("✔ same file"),
+                                    (true, _) => tl!("✔ matches"),
+                                    (false, Some(false)) => tl!("✖ different file"),
+                                    _ => "✖",
+                                };
+                                let text = format!("{mark}  {path}");
+                                let r = ui.selectable_label(
+                                    d.candidate == Some(k),
+                                    RichText::new(&text).color(if *ok { Color32::LIGHT_GREEN } else { Color32::from_rgb(0xe0, 0x8a, 0x6a) }),
+                                );
+                                let r = if problems.is_empty() { r } else { r.on_hover_text(problems) };
+                                push(&mut elems, format!("linkMedia.candidate.{k}"), &r, text);
+                                if r.clicked() {
+                                    d.candidate = Some(k);
+                                }
+                            }
+                        });
+                    });
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(192.0, 108.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 3.0, Color32::from_rgb(12, 12, 12));
+                    match &preview {
+                        Some(t) => {
+                            let fitted = crate::panels::monitor::fit(rect, t.size()[0] as f32, t.size()[1] as f32);
+                            ui.painter().image(t.id(), fitted, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+                        }
+                        None => {
+                            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, tl!("Preview"), crate::theme::Tokens::ui(11.0), Color32::GRAY);
+                        }
+                    }
+                    elems.push(("linkMedia.preview".into(), rect, "preview".into()));
+                });
+                if !d.message.is_empty() {
+                    ui.colored_label(Color32::from_rgb(0xe0, 0x8a, 0x6a), &d.message);
                 }
-                elems.push(("linkMedia.preview".into(), rect, "preview".into()));
             });
-            if !d.message.is_empty() {
-                ui.colored_label(Color32::from_rgb(0xe0, 0x8a, 0x6a), &d.message);
-            }
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 for (id, label) in [("offlineAll", tl!("Offline All")), ("offline", tl!("Offline")), ("cancel", tl!("Cancel")), ("locate", tl!("Locate…"))] {
                     let r = ui.button(label);
                     push(&mut elems, format!("linkMedia.{id}"), &r, label);

@@ -236,3 +236,21 @@ fn extend_to_playhead_moves_each_unequal_out_point_to_the_playhead() {
     assert_eq!(q.find_item(a).unwrap().1.end(), ph);
     assert_eq!(q.find_item(b).unwrap().1.end(), ph);
 }
+
+/// #653: the delta the Timeline previews while an edge is dragged is the one `timeline.trim`
+/// applies on release: dragging the last clip's Out edge far past the end of its media stops at
+/// the media's end instead of following the pointer.
+#[test]
+fn trim_delta_stops_at_the_end_of_the_media() {
+    let mut s = demo();
+    let last = *v1(&s).last().unwrap();
+    let clip = ClipId(last.0);
+    let far = Tick(3600 * filmcraft_time::TICKS_PER_SECOND);
+    let shown = commands::trim_delta(&s, clip, filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, far).unwrap();
+    assert!(Tick::ZERO < shown && shown < far, "clamped to the media left after the clip: {shown:?}");
+    let r = s.execute("timeline.trim", json!({"clip": last.0, "edge": "out", "mode": "regular", "delta": far.0})).unwrap();
+    assert_eq!(r["delta"], json!(shown.0), "the preview and the trim agree");
+    let small = s.sequence_rate().frame_duration();
+    let back = commands::trim_delta(&s, clip, filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, -small).unwrap();
+    assert_eq!(back, -small, "a trim within the media is not clamped");
+}

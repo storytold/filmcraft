@@ -487,15 +487,43 @@ pub fn move_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
         it.start = (*start).max(Tick::ZERO);
         placed.push((*dest, it));
     }
-    // carry transitions with moved clips? Premiere drops transitions whose partner is not moved.
+    let carried = carried_transitions(&work, &placed);
+    // a transition whose partner stays behind is dropped, as in Premiere
     delete_items(&mut work, &moves.iter().map(|m| m.0).collect::<Vec<_>>());
     if insert_mode {
         insert(&mut work, placed, ctx)?;
     } else {
         overwrite(&mut work, placed, ctx)?;
     }
+    for (dest, tr) in carried {
+        let t = track_mut(&mut work, dest)?;
+        if [tr.from, tr.to].into_iter().flatten().all(|c| t.item(c).is_some()) {
+            t.transitions.push(tr);
+            t.sort();
+        }
+    }
     *seq = work;
     Ok(())
+}
+
+/// The transitions that travel with a move (#227, #374): those whose clips all move, onto one
+/// track and by one offset (a fade at a moved clip's edge, or the cut between two clips that move
+/// together), shifted to where those clips land.
+fn carried_transitions(seq: &Sequence, placed: &[(TrackId, TrackItem)]) -> Vec<(TrackId, Transition)> {
+    let landing = |c: ClipId| {
+        let (dest, it) = placed.iter().find(|(_, it)| it.id == c)?;
+        let (_, old) = seq.find_item(c)?;
+        Some((*dest, it.start - old.start))
+    };
+    let mut carried = Vec::new();
+    for tr in seq.all_tracks().filter(|t| !t.locked).flat_map(|t| t.transitions.iter()) {
+        let lands: Option<Vec<(TrackId, Tick)>> = [tr.from, tr.to].into_iter().flatten().map(landing).collect();
+        let Some((&(dest, delta), rest)) = lands.as_deref().and_then(<[_]>::split_first) else { continue };
+        if rest.iter().all(|l| *l == (dest, delta)) {
+            carried.push((dest, Transition { start: tr.start + delta, ..tr.clone() }));
+        }
+    }
+    carried
 }
 
 fn media_len(ctx: &EditCtx, item: &TrackItem) -> Option<Tick> {
@@ -873,6 +901,27 @@ pub fn slide(seq: &mut Sequence, clip: ClipId, delta: Tick, ctx: &mut EditCtx) -
     let me = t.item_mut(clip).ok_or(EditError::NoItem(clip))?;
     me.start += d;
     transitions_follow_cuts(&before, seq);
+    Ok(d)
+}
+
+/// Slide several items (a linked picture/sound pair, a selection) by one common delta: the most
+/// restrictive item's neighbour limit clamps them all, so their relative timing is kept.
+/// Returns the delta applied.
+pub fn slide_items(seq: &mut Sequence, clips: &[ClipId], delta: Tick, ctx: &mut EditCtx) -> Result<Tick> {
+    let mut d = delta;
+    for c in clips {
+        let x = slide(&mut seq.clone(), *c, d, ctx)?;
+        if x.0.signum() != d.0.signum() {
+            d = Tick::ZERO;
+        } else if x.abs() < d.abs() {
+            d = x;
+        }
+    }
+    if d != Tick::ZERO {
+        for c in clips {
+            slide(seq, *c, d, ctx)?;
+        }
+    }
     Ok(d)
 }
 

@@ -95,6 +95,29 @@ compositor's savings are a larger part of the export.
 What is left in a frame without overlays is the Y'CbCr → linear float conversion of the camera
 picture (4.5 ms in the synthetic case) and the conversion to 8 bits (2 ms).
 
+## Results (GPU3: GPU export rendering, Off → Auto, #30)
+
+Export ▸ GPU Rendering composites the exported frames on the GPU (`filmcraft-gpu`'s off-screen
+compositor, a pool of up to four renderers) instead of the CPU reference renderer, which stays the
+fallback for anything the GPU stage does not run. Linux, Ryzen 7 9700X (16 threads) + Radeon
+RX 7900 (Mesa 26.2.2), 2026-10-08 / 09, same build, `cargo xtask bench --sections export --only
+<scene> --hw off|auto`: 191 frames to H.264 + AAC with the built-in encoder. `h264` is one 1080p
+clip; `h264_fx` the same clip on V1 with Proc Amp, Gaussian Blur and Vignette, plus two
+picture-in-picture copies (50 % with Brightness & Contrast, 33 % at 70 % opacity with Sharpen).
+Every Auto row rendered all its frames on the GPU, without fallbacks.
+
+| scene | Off: s / CPU ms per frame | **Auto**: s / CPU ms per frame |
+|---|---|---|
+| `h264`, 1080p (load 12–33) | 5.96, 6.08 / 292 | 6.07, 6.36 / 281 |
+| `h264_fx`, 1080p (load 12–33) | 13.00, 12.67 / 737 | **5.63, 5.00 / 238** |
+| `h264_fx`, 4K sequence and clip (load 2–19) | 38.74, 39.34 / 2955 | **11.99 / 775** |
+
+On a plain clip the export is decoding- and encoding-bound and both take the same time; with
+layers and effects the GPU is 2.4× (1080p) to 3.2× (4K) faster, with a third to a quarter of the
+CPU. GPU rendering is nevertheless **Off by default** (opt-in per export) until it has been
+measured on Windows and macOS: the GPU result matches the CPU within the compositor's parity
+tolerance, not bit for bit, and Off keeps exports byte-reproducible on every machine. (The 4K row used the same scene with the sequence, clip and positions scaled to 4K.)
+
 ### Memory after an export
 
 The recycled images stay on the shelves of `filmcraft_frame::pool` (up to 320 MiB of them, and

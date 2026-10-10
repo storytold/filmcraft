@@ -22,8 +22,8 @@
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
 use filmcraft_engine::export::presets::{DEFAULT_PRESET, preset_key};
 use filmcraft_engine::export::{
-    AudioCodec, BitrateMode, ExportSettings, FieldOrder, Format, H264Profile, HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, Scaling, TextOverlay,
-    builtin_presets, format_bytes,
+    AudioCodec, BitrateMode, ExportSettings, FieldOrder, Format, GpuRendering, H264Profile, HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, Scaling,
+    TextOverlay, builtin_presets, format_bytes,
 };
 use filmcraft_engine::time::{FrameRate, Tick};
 use serde::{Deserialize, Serialize};
@@ -651,14 +651,22 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 });
             }
             row(ui, t, tl!("Bitrate Encoding"), |ui| {
-                // a hardware encoder has one pass: H.265 offers no two-pass mode
-                let o = [BitrateMode::Cbr, BitrateMode::Vbr1Pass, BitrateMode::Vbr2Pass];
-                let labels: Vec<(String, bool)> = o.iter().map(|m| (m.label().to_string(), !(hevc && *m == BitrateMode::Vbr2Pass))).collect();
+                // a hardware encoder has one pass and no constant-quality mode: H.265 offers neither
+                let o = [BitrateMode::Cbr, BitrateMode::Vbr1Pass, BitrateMode::Vbr2Pass, BitrateMode::Crf];
+                let labels: Vec<(String, bool)> =
+                    o.iter().map(|m| (m.label().to_string(), !(hevc && matches!(m, BitrateMode::Vbr2Pass | BitrateMode::Crf)))).collect();
                 if let Some(i) = combo(ui, reg, "export.video.bitrateMode", s.bitrate_mode.label(), &labels, 140.0) {
                     s.bitrate_mode = o[i];
                 }
             });
-            if let Some(bpp) = s.adaptive_bitrate {
+            if s.bitrate_mode == BitrateMode::Crf {
+                row(ui, t, tl!("Quality (CRF)"), |ui| {
+                    let mut crf = if s.crf.is_finite() { f64::from(s.crf) } else { f64::from(filmcraft_engine::export::DEFAULT_CRF) };
+                    if drag(ui, reg, "export.video.crf", &mut crf, 0.0..=51.0, 0.1, "", 0) {
+                        s.crf = crf.round() as f32;
+                    }
+                });
+            } else if let Some(bpp) = s.adaptive_bitrate {
                 row(ui, t, tl!("Target Bitrate"), |ui| {
                     ui.label(egui::RichText::new(tlf!("Adaptive ({bpp} bits per pixel)", bpp)).size(12.0));
                     let r = ui.small_button(tl!("Set"));
@@ -746,6 +754,14 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         }
         _ => {}
     }
+    // Composite the picture on the GPU (filmcraft-gpu) instead of the CPU reference renderer;
+    // Auto falls back to the CPU wherever the GPU cannot render the frame.
+    row(ui, t, tl!("GPU Rendering"), |ui| {
+        let mut on = s.gpu_rendering == GpuRendering::Auto;
+        if check(ui, reg, "export.gpuRendering", &mut on, tl!("Composite on the GPU when available")) {
+            s.gpu_rendering = if on { GpuRendering::Auto } else { GpuRendering::Off };
+        }
+    });
     row(ui, t, "", |ui| check(ui, reg, "export.video.maxDepth", &mut s.render_at_max_depth, tl!("Render at Maximum Depth")));
     row(ui, t, "", |ui| check(ui, reg, "export.video.maxQuality", &mut s.max_render_quality, tl!("Use Maximum Render Quality")));
 }

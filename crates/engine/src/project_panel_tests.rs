@@ -2,7 +2,7 @@
 //! sorting, view presets, Freeform positions / stacks / arrangements (undoable, saved with the
 //! project) and bin renames.
 
-use filmcraft_project::{ItemId, ItemKind};
+use filmcraft_project::{BinEntry, ItemId, ItemKind};
 use serde_json::{Value, json};
 
 use crate::Session;
@@ -304,4 +304,76 @@ fn select_all_selects_every_project_item() {
     s.execute("edit.selectAll", json!({})).unwrap();
     assert!(!s.state.selection.is_empty());
     assert_eq!(s.state.project_selection, before);
+}
+
+#[test]
+fn select_all_in_a_bin_skips_closed_bins_and_other_bins() {
+    // #456: Cmd+A in the Project panel selected every item in the project, closed bins included
+    let mut s = demo();
+    let outer = s.execute("file.newBin", json!({"name": "Footage A"})).unwrap()["bin"].as_u64().unwrap();
+    let inner = s.execute("file.newBin", json!({"name": "Day 1", "parent": outer})).unwrap()["bin"].as_u64().unwrap();
+    let ids = media(&s);
+    assert!(ids.len() >= 2);
+    s.execute("project.moveToBin", json!({"items": [ids[0].0], "bin": outer})).unwrap();
+    s.execute("project.moveToBin", json!({"items": [ids[1].0], "bin": inner})).unwrap();
+    s.state.project_selection.clear();
+
+    // only the bin's own items: the closed sub-bin's item stays unselected
+    let r = s.execute("project.selectAll", json!({"bin": outer})).unwrap();
+    assert_eq!(r["selected"].as_u64(), Some(1));
+    assert_eq!(s.state.project_selection, vec![ids[0]]);
+
+    // a sub-bin twirled open in List view counts
+    s.execute("project.selectAll", json!({"bin": outer, "expanded": [inner]})).unwrap();
+    let mut sel = s.state.project_selection.clone();
+    sel.sort();
+    assert_eq!(sel, vec![ids[0], ids[1]]);
+
+    // the root: its direct items only, nothing from the (closed) bins
+    let root = s.project.root.id;
+    let mut want: Vec<ItemId> = s
+        .project
+        .root
+        .children
+        .iter()
+        .filter_map(|e| if let BinEntry::Item(i) = e { Some(*i) } else { None })
+        .filter(|i| s.project.item(*i).is_some_and(|it| project_panel::listed(&s.project, it)))
+        .collect();
+    want.sort();
+    s.execute("project.selectAll", json!({"bin": root.0})).unwrap();
+    let mut sel = s.state.project_selection.clone();
+    sel.sort();
+    assert_eq!(sel, want);
+    assert!(!sel.contains(&ids[0]) && !sel.contains(&ids[1]));
+    assert!(sel.len() < s.project.items.len());
+
+    // an open bin inside a closed one is not shown, so it does not count either
+    s.execute("project.selectAll", json!({"bin": root.0, "expanded": [inner]})).unwrap();
+    assert!(!s.state.project_selection.contains(&ids[1]));
+    // ... but open all the way down, it does
+    s.execute("project.selectAll", json!({"bin": root.0, "expanded": [outer, inner]})).unwrap();
+    assert!(s.state.project_selection.contains(&ids[0]) && s.state.project_selection.contains(&ids[1]));
+}
+
+#[test]
+fn select_all_rejects_bad_bins_without_touching_the_selection() {
+    let mut s = demo();
+    let ids = media(&s);
+    let root = s.project.root.id.0;
+    s.execute("project.select", json!({"items": [ids[0].0]})).unwrap();
+    for p in [
+        json!({"bin": 987_654_321u64}),
+        json!({"bin": "footage"}),
+        json!({"bin": -1}),
+        json!({"bin": root, "expanded": "all"}),
+        json!({"bin": root, "expanded": ["x"]}),
+    ] {
+        assert!(s.execute("project.selectAll", p.clone()).is_err(), "{p}");
+        assert_eq!(s.state.project_selection, vec![ids[0]], "{p}");
+    }
+    // unknown ids in `expanded` are simply not open bins
+    assert!(s.execute("project.selectAll", json!({"bin": root, "expanded": [987_654_321u64]})).is_ok());
+    // `bin: null` is the same as no bin: the whole project
+    let r = s.execute("project.selectAll", json!({"bin": null})).unwrap();
+    assert_eq!(r["selected"].as_u64(), Some(s.project.items.len() as u64));
 }

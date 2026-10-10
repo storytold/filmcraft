@@ -298,3 +298,61 @@ fn dragging_a_caption_edge_inward_trims_it() {
     assert_eq!(s1, s0, "the caption's start stayed: trimmed, not moved");
     assert!(e1 < e0, "the caption's end moved in: {e0} → {e1}");
 }
+
+/// #653: an Out edge dragged far past the end of the clip's media stops there while the drag is
+/// still in progress, at the same place the trim lands on release. It used to follow the pointer
+/// past the media and then jump back when the button came up.
+#[test]
+fn an_edge_dragged_past_the_media_stops_at_its_end() {
+    use filmcraft_ui_egui::panels::timeline::Drag;
+    let mut d = Driver::demo();
+    let last = d.app().session.active_sequence().expect("sequence").video_tracks[0].items.last().expect("a clip on V1").id.0;
+    let (_, x1, y) = d.edges(last);
+    let (_, e0) = d.span(last);
+    let far = filmcraft_time::Tick(3600 * filmcraft_time::TICKS_PER_SECOND);
+    let limit = filmcraft_engine::commands::trim_delta(&d.app().session, ClipId(last), filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, far)
+        .expect("limit");
+    let (from, to) = (pos2(x1 - 3.0, y), pos2(x1 + 300.0, y));
+    let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);
+    push(&mut d, egui::Event::PointerMoved(from));
+    d.frames(1);
+    push(&mut d, egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    d.frames(1);
+    for i in 1..=60 {
+        push(&mut d, egui::Event::PointerMoved(from + (to - from) * (i as f32 / 60.0)));
+        d.frames(1);
+    }
+    match &d.app().tl.drag {
+        Some(Drag::Trim { delta, .. }) => assert_eq!(*delta, limit, "the dragged edge stops at the end of the media"),
+        other => panic!("not trimming: {other:?}"),
+    }
+    push(&mut d, egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+    d.frames(2);
+    assert_eq!(d.span(last).1, e0 + limit.0, "released where it was shown");
+}
+
+/// Dragging a picture in the Trim Monitor must not deadlock: the shift bookkeeping used to call
+/// `drag_delta()` inside `data_mut()`, and both take egui's non-reentrant context write-lock, so
+/// the drag froze the whole app on its first recognised frame (the delta is read before locking
+/// now). The drag commits one normal trim on release.
+#[test]
+fn dragging_in_the_trim_monitor_trims_without_hanging() {
+    let mut d = Driver::demo();
+    let city = d.v1_clip(CITY);
+    d.exec("trim.selectEditPoint", json!({"clip": city, "edge": "out", "kind": "trim"}));
+    d.frames(2);
+    // the Program panel shows the two-up Trim Monitor once an edit point is selected
+    let els = d.ok("ui.elements", json!({"prefix": "trimMonitor."}));
+    let out =
+        els.as_array().expect("elements").iter().find(|e| e["id"] == "trimMonitor.outgoing").unwrap_or_else(|| panic!("trim monitor not shown: {els}")).clone();
+    let r: Vec<f32> = out["rect"].as_array().expect("rect").iter().map(|v| v.as_f64().expect("number") as f32).collect();
+    let (cx, cy) = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    // about 66 px of drag = the 6 pt threshold + 60 px of motion, at 6 px per frame;
+    // inward (left) trims into the clip's media, outward would clamp at the seamless cut
+    let (_, e0) = d.span(city);
+    d.drag(pos2(cx, cy), pos2(cx - 66.0, cy), 33);
+    let (_, e1) = d.span(city);
+    let frames = (e1 - e0) / d.frame();
+    assert!(e1 < e0, "the Out edge moved in by {} frames", frames.abs());
+    assert!((6..=14).contains(&-frames), "about 11 frames expected for 60 px at 6 px/frame, moved {}", frames.abs());
+}

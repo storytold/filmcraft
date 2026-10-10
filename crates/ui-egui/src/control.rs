@@ -10,6 +10,7 @@
 //! - `ui.elements {prefix?}`: registered widgets (optionally filtered by id prefix)
 //! - `ui.set {tool?, workspace?, mode?, theme?, focused?, playbackRes?, timeline?:{pps,scroll}}`
 //! - `ui.panel.show {panel}` / `ui.panel.close {panel}`
+//! - `ui.set {tts: {voice, pitch, pace, text…}}`: patch the Text to Speech panel draft
 //! - `ui.click {id | x,y, button?, count?, modifiers?}` / `ui.move {x,y}` / `ui.scroll {x,y,dx,dy}`
 //! - `ui.drag {from:{id|x,y}, to:{id|x,y}, steps?, modifiers?}`: synthetic press-move-release
 //! - `ui.key {key, command?, shift?, alt?, ctrl?}` / `ui.type {text}`
@@ -26,7 +27,7 @@ use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
 use crate::dock::PanelKind;
-use crate::state::{Mode, PlaybackRes, Tool};
+use crate::state::{Mode, PlaybackRes, ThumbnailMode, Tool};
 
 /// Prefix marking errors that may resolve after another frame.
 pub const RETRY: &str = "\u{1}";
@@ -123,6 +124,15 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             ok(serde_json::to_value(app.auto.query(prefix)).unwrap_or_default())
         }
         "ui.set" => {
+            // Text to Speech panel draft (voice, pitch, pace, text…), merged into the current one
+            if let Some(patch) = p.get("tts") {
+                let mut cur = serde_json::to_value(&app.ui.tts).unwrap_or_default();
+                merge(&mut cur, patch);
+                match serde_json::from_value(cur) {
+                    Ok(d) => app.ui.tts = d,
+                    Err(e) => return err(format!("bad `tts`: {e}")),
+                }
+            }
             if let Some(t) = s("tool") {
                 match Tool::from_name(t) {
                     Some(t) => app.ui.tool = t,
@@ -179,9 +189,29 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                 if let Some(v) = tl.get("audioTrackHeight").and_then(Value::as_f64) {
                     app.ui.timeline.audio_track_h = v as f32;
                 }
+                // Show Video Thumbnails: "off" or a mode ("head", "headAndTail", "continuous")
+                if let Some(m) = tl.get("thumbnails").and_then(Value::as_str) {
+                    if m.eq_ignore_ascii_case("off") {
+                        app.ui.timeline.show_thumbnails = false;
+                    } else {
+                        let Some(mode) = ThumbnailMode::from_name(m) else {
+                            return err(format!("unknown thumbnail mode `{m}` (off, head, headAndTail, continuous)"));
+                        };
+                        app.ui.timeline.show_thumbnails = true;
+                        app.ui.timeline.thumbnail_mode = mode;
+                    }
+                }
             }
             if let Some(q) = s("effectsSearch") {
                 app.ui.effects_search = q.to_string();
+            }
+            // Effect Controls keyframe selection (`[{clip, effect, param, mask?, time}]`), replaced;
+            // references to missing keyframes are dropped by the panel
+            if let Some(v) = p.get("keyframeSelection") {
+                match serde_json::from_value(v.clone()) {
+                    Ok(sel) => app.ui.keyframe_selection = sel,
+                    Err(e) => return err(format!("`keyframeSelection`: {e}")),
+                }
             }
             if let Some(v) = p.get("safeMargins").and_then(Value::as_bool) {
                 app.ui.program.safe_margins = v;

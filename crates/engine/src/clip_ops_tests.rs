@@ -923,3 +923,64 @@ fn linked_slip_keeps_picture_and_sound_aligned_at_unequal_media_limits() {
     s.execute("timeline.slip", json!({"clip": v, "deltaFrames": -10})).unwrap();
     assert_eq!((clip(&s, v).source_in, clip(&s, a).source_in), (Tick(fr.0 * 10), Tick(fr.0 * 10)));
 }
+
+#[test]
+fn reset_keeps_keyframes_and_resets_one_parameter() {
+    // #284: Reset Effect used to replace the effect with a fresh one, deleting every keyframe
+    let mut s = demo();
+    let a = v1(&s)[0].clone();
+    let sec = Tick(TICKS_PER_SECOND);
+    let (t0, t1, mid) = (a.start, a.start + sec, a.start + Tick(TICKS_PER_SECOND / 2));
+    for (t, v) in [(t0, 150.0), (t1, 50.0)] {
+        s.execute("effects.setParam", json!({"clip": a.id.0, "effect": "motion", "param": "scale", "value": v, "keyframe": true, "time": t.0})).unwrap();
+    }
+    s.execute("effects.setParam", json!({"clip": a.id.0, "effect": "motion", "param": "rotation", "value": 30.0})).unwrap();
+    let idx = clip(&s, a.id.0).effects.iter().position(|e| e.effect == "motion").unwrap();
+    s.execute("playhead.set", json!({"time": mid.0})).unwrap();
+    s.execute("effects.reset", json!({"clip": a.id.0, "index": idx})).unwrap();
+    let it = clip(&s, a.id.0);
+    let scale = it.effect("motion").unwrap().param("scale").unwrap();
+    // (the playhead snaps to a frame)
+    let mid_media = it.source_time_at(s.playhead());
+    let kf: Vec<(Tick, f64)> = scale.keyframes.iter().map(|k| (k.time, k.value.as_f64().unwrap())).collect();
+    assert_eq!(kf, vec![(it.source_time_at(t0), 150.0), (mid_media, 100.0), (it.source_time_at(t1), 50.0)], "keyframes kept, default at the playhead");
+    assert_eq!(f64_param(&it, "motion", "rotation"), 0.0);
+    // one parameter: only it goes back to its default
+    s.execute("effects.setParam", json!({"clip": a.id.0, "effect": "motion", "param": "rotation", "value": 45.0})).unwrap();
+    s.execute("effects.setParam", json!({"clip": a.id.0, "effect": "opacity", "param": "opacity", "value": 40.0})).unwrap();
+    s.execute("effects.resetParam", json!({"clip": a.id.0, "effect": "motion", "param": "rotation"})).unwrap();
+    let it = clip(&s, a.id.0);
+    assert_eq!(f64_param(&it, "motion", "rotation"), 0.0);
+    assert_eq!(f64_param(&it, "opacity", "opacity"), 40.0);
+    assert_eq!(it.effect("motion").unwrap().param("scale").unwrap().keyframes.len(), 3);
+    assert!(s.execute("effects.resetParam", json!({"clip": a.id.0, "effect": "motion", "param": "nope"})).is_err());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(f64_param(&clip(&s, a.id.0), "motion", "rotation"), 45.0);
+}
+
+#[test]
+fn keyboard_slip_keeps_linked_clips_in_sync_past_the_shorter_handle() {
+    let mut s = Session::default();
+    s.execute("file.newProject", json!({"name": "Slip"})).unwrap();
+    s.execute("file.newSequence", json!({"name": "Sequence", "fps": 25, "video": 1, "audio": 1, "width": 16, "height": 16})).unwrap();
+    let r = s.execute("file.newOfflineFile", json!({"name": "Media", "seconds": 4, "fps": 25, "video": true, "audio": true})).unwrap();
+    let item = r["item"].as_u64().unwrap();
+    let fr = s.sequence_rate().tick_of(1);
+    let r =
+        s.execute("timeline.place", json!({"item": item, "track": "V1", "audioTrack": "A1", "time": 0, "sourceIn": fr.0 * 20, "duration": fr.0 * 60})).unwrap();
+    let (v, a) = (r["clips"][0].as_u64().unwrap(), r["clips"][1].as_u64().unwrap());
+    // lengthen only the picture: it keeps 10 frames of tail handle, the sound keeps 20
+    s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+    s.execute("timeline.trim", json!({"clip": v, "edge": "out", "deltaFrames": 10})).unwrap();
+    s.execute("sequence.linkedSelection", json!({"on": true})).unwrap();
+    s.execute("timeline.select", json!({"clips": [v, a]})).unwrap();
+    for _ in 0..3 {
+        s.execute("timeline.slipLeft5", json!({})).unwrap();
+    }
+    assert_eq!((clip(&s, v).source_in, clip(&s, a).source_in), (Tick(fr.0 * 30), Tick(fr.0 * 30)));
+    // with linked selection off each selected clip still slips on its own
+    s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+    s.execute("timeline.select", json!({"clips": [v, a]})).unwrap();
+    s.execute("timeline.slipLeft5", json!({})).unwrap();
+    assert_eq!((clip(&s, v).source_in, clip(&s, a).source_in), (Tick(fr.0 * 30), Tick(fr.0 * 35)));
+}
