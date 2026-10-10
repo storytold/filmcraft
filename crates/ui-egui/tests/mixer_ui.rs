@@ -270,6 +270,27 @@ fn clip_mixer_strips_follow_the_playhead() {
 }
 
 #[test]
+fn clip_mixer_db_value_can_be_typed() {
+    let mut d = Driver::demo();
+    d.ok("ui.panel.show", json!({"panel": "AudioClipMixer"}));
+    d.frames(3);
+    d.exec("playhead.set", json!({"seconds": 1.0}));
+    d.frames(2);
+    d.click("clipMixer.A1.value");
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.frames(1);
+    d.ok("ui.type", json!({"text": "-20"}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(3);
+    let seq = d.exec("sequence.inspect", json!({}));
+    let fx = &seq["audio"][0]["items"][0]["effects"];
+    let vol = fx.as_array().unwrap().iter().find(|e| e["effect"] == "volume").unwrap();
+    let level: f64 = vol["params"]["level"]["value"].as_str().and_then(|v| v.strip_prefix("Float(")?.strip_suffix(')')?.parse().ok()).unwrap();
+    assert!((level + 20.0).abs() < 1e-6, "typed -20 dB into the clip mixer readout: {level}");
+}
+
+#[test]
 fn audio_gain_dialog_normalizes_the_selection() {
     let mut d = Driver::demo();
     let seq = d.exec("sequence.inspect", json!({}));

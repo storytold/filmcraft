@@ -57,5 +57,10 @@ sync_github_name = false
 [people.liangforstudy]
 sync_github_name = true
 
+[people.maxm11]
+real_name = "Max Murphy"
+display_name = "Max Murphy"
+sync_github_name = false
+
 [people.ossini]
 sync_github_name = true

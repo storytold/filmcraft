@@ -17,9 +17,9 @@
 //! | `project.freeform.saveArrangement` / `.restoreArrangement` / `.arrangements` / `.deleteArrangement` | saved arrangements |
 //! | `project.freeform.options` | Freeform View Options… (grid, snap, names, durations) |
 //! | `project.renameBin` | rename a bin (inline rename, undoable) |
-//! | `project.selectAll` / `project.deselectAll` | select every item in the project / clear the Project panel selection (Cmd+A / Cmd+Shift+A with the panel focused) |
+//! | `project.selectAll` / `project.deselectAll` | select the items a bin shows (`bin`, plus the sub-bins open in List view in `expanded`; without `bin` every item in the project) / clear the Project panel selection (Cmd+A / Cmd+Shift+A with the panel focused) |
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use filmcraft_project::{Bin, BinEntry, BinId, ItemId, ItemKind, MediaRef, Project, ProjectItem, TrackKind};
 use filmcraft_time::{Tick, TimeDisplay, format_time};
@@ -1171,6 +1171,43 @@ fn rename_bin(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"bin": bin.0, "name": name}))
 }
 
+/// Select All in the Project panel. With `bin`, only what a panel showing that bin lists: its
+/// items, plus the items of the sub-bins named in `expanded` (bins twirled open in List view),
+/// never those of a closed bin. Without `bin`, every item in the project.
+fn select_all(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "project.selectAll";
+    // strict: a negative or fractional `bin` is an error, not bin 0
+    let id = match p.get("bin") {
+        None | Some(Value::Null) => {
+            s.state.project_selection = s.project.items.keys().copied().collect();
+            return Ok(json!({"selected": s.state.project_selection.len()}));
+        }
+        Some(b) => BinId(b.as_u64().ok_or_else(|| bad(CMD, "`bin` must be a bin id"))?),
+    };
+    let bin = s.project.root.find_bin(id).ok_or_else(|| bad(CMD, format!("no bin {}", id.0)))?;
+    let expanded: BTreeSet<BinId> = match p.get("expanded") {
+        None | Some(Value::Null) => Default::default(),
+        Some(Value::Array(a)) => {
+            a.iter().map(|v| v.as_u64().map(BinId).ok_or_else(|| bad(CMD, "`expanded` must be a list of bin ids"))).collect::<Result<_>>()?
+        }
+        Some(_) => return Err(bad(CMD, "`expanded` must be a list of bin ids")),
+    };
+    // iterative walk: a hostile project file cannot overflow the stack with deeply nested bins
+    let mut sel = Vec::new();
+    let mut stack = vec![bin];
+    while let Some(b) = stack.pop() {
+        for e in &b.children {
+            match e {
+                BinEntry::Item(i) if s.project.item(*i).is_some_and(|it| listed(&s.project, it)) => sel.push(*i),
+                BinEntry::Bin(sub) if expanded.contains(&sub.id) => stack.push(sub),
+                _ => {}
+            }
+        }
+    }
+    s.state.project_selection = sel;
+    Ok(json!({"bin": id.0, "selected": s.state.project_selection.len()}))
+}
+
 // ------------------------------------------------------------------------------------ registry
 
 pub(crate) fn commands() -> Vec<CommandSpec> {
@@ -1223,10 +1260,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             freeform_options,
         ),
         c("project.renameBin", "Rename Bin", r#"{"bin":binId,"name":str}"#, always, rename_bin),
-        c("project.selectAll", "Select All Project Items", "{}", always, |s, _| {
-            s.state.project_selection = s.project.items.keys().copied().collect();
-            Ok(json!({"selected": s.state.project_selection.len()}))
-        }),
+        c("project.selectAll", "Select All Project Items", r#"{"bin":binId?,"expanded":[binId]?}"#, always, select_all),
         c("project.deselectAll", "Deselect All Project Items", "{}", always, |s, _| {
             s.state.project_selection.clear();
             Ok(Value::Null)

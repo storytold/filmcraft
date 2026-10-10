@@ -297,7 +297,60 @@ pub struct Encoder {
 const LOG2_MAX_FRAME_NUM: u32 = 8;
 const LOG2_MAX_POC_LSB: u32 = 8;
 
+/// The bitrate a level must allow for constant quality `crf`, which has no bitrate cap. It
+/// assumes the worst footage: about 3 bits per pixel at CRF 0 (FilmCraft's CRF 0 exports of real
+/// camera footage measured 1.7 on average and 2.4 in their busiest second), halving every 6 steps
+/// (one doubling of the quantiser step). The default CRF 23 keeps 1080p30 at level 4.
+fn crf_level_kbps(crf: f32, mbw: usize, mbh: usize, fps: f64) -> u32 {
+    let crf = if crf.is_finite() { f64::from(crf.clamp(0.0, 51.0)) } else { 23.0 };
+    let bpp = 3.0 * (-crf / 6.0).exp2();
+    let pixels = (mbw as f64) * (mbh as f64) * 256.0;
+    // a float-to-int `as` saturates, and NaN (a hostile fps) becomes 0
+    (pixels * fps * bpp / 1000.0).ceil() as u32
+}
+
 impl Encoder {
+    /// The settings that shaped the stream, x264-style (`key=value` separated by spaces), for the
+    /// user_data_unregistered SEI: a file says how it was made (`strings`, `ffprobe -show_data`).
+    fn options(&self) -> String {
+        let c = &self.cfg;
+        let rate = match c.rate {
+            RateControl::Qp(q) => format!("rc=cqp qp={q}"),
+            RateControl::Crf(f) => format!("rc=crf crf={:.1}", f.clamp(0.0, 51.0)),
+            RateControl::Cbr { kbps } => format!("rc=cbr bitrate={kbps}"),
+            RateControl::Vbr { target_kbps, max_kbps } => format!("rc=vbr bitrate={target_kbps} vbv_maxrate={max_kbps}"),
+        };
+        let pass = match c.pass {
+            Pass::Single => "",
+            Pass::First => " pass=1",
+            Pass::Second(_) => " pass=2",
+        };
+        let profile = match c.profile {
+            Profile::Baseline => "baseline",
+            Profile::Main => "main",
+            Profile::High => "high",
+        };
+        let preset = match c.preset {
+            Preset::Speed => "speed",
+            Preset::Balanced => "balanced",
+            Preset::Quality => "quality",
+        };
+        let level = self.sps.level_idc;
+        format!(
+            "{rate}{pass} profile={profile} level={}.{} preset={preset} keyint={} bframes={} refs={} cabac={} 8x8dct={} slices={} aq={:.2} scenecut={}",
+            level / 10,
+            level % 10,
+            c.keyint,
+            c.bframes,
+            self.max_refs,
+            u8::from(c.profile != Profile::Baseline),
+            u8::from(c.profile == Profile::High),
+            self.slices,
+            c.aq_strength,
+            u8::from(c.scenecut),
+        )
+    }
+
     pub fn new(mut cfg: EncoderConfig) -> Result<Self, Error> {
         if cfg.width == 0 || cfg.height == 0 || !cfg.width.is_multiple_of(2) || !cfg.height.is_multiple_of(2) || cfg.width > 16384 || cfg.height > 16384 {
             return Err(Error::InvalidDimensions(cfg.width, cfg.height));
@@ -376,7 +429,7 @@ impl Encoder {
         let max_refs = if cfg.bframes > 0 { 2 } else { 1 };
         let (kbps_for_level, rc_kind, vbv) = match (&cfg.rate, &cfg.pass) {
             (RateControl::Qp(q), _) => (None, RcKind::Qp((*q).min(51)), (None, None)),
-            (RateControl::Crf(c), _) => (None, RcKind::Crf(c.clamp(0.0, 51.0)), (None, None)),
+            (RateControl::Crf(c), _) => (Some(crf_level_kbps(*c, mbw, mbh, fps)), RcKind::Crf(c.clamp(0.0, 51.0)), (None, None)),
             (RateControl::Cbr { kbps }, Pass::Second(st)) => (Some(*kbps), ratecontrol::RateControl::plan_two_pass(st, *kbps), (Some(*kbps), Some(*kbps))),
             (RateControl::Cbr { kbps }, Pass::First) => (Some(*kbps), RcKind::Abr { kbps: *kbps }, (None, None)),
             (RateControl::Cbr { kbps }, Pass::Single) => (Some(*kbps), RcKind::Abr { kbps: *kbps }, (Some(*kbps), Some(*kbps))),
@@ -832,7 +885,7 @@ impl Encoder {
             }
             if !self.sei_sent {
                 self.sei_sent = true;
-                let text = format!("filmcraft-h264enc {} - clean-room H.264 encoder", env!("CARGO_PKG_VERSION"));
+                let text = format!("filmcraft-h264enc {} - clean-room H.264 encoder - options: {}", env!("CARGO_PKG_VERSION"), self.options());
                 nals.push(nal::nal(0, NAL_SEI, &nal::sei_user_data_rbsp(&text)));
                 if self.cfg.mastering_display.is_some() || self.cfg.content_light.is_some() {
                     nals.push(nal::nal(0, NAL_SEI, &nal::sei_hdr_rbsp(self.cfg.mastering_display.as_ref(), self.cfg.content_light)));

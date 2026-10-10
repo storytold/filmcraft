@@ -254,6 +254,21 @@ pub fn visible_items(app: &FilmcraftApp, inst: Inst) -> Vec<ItemId> {
     crate::panels::project_views::items_in_view(app, &v, &app.ui.project_search.to_ascii_lowercase())
 }
 
+/// The command Select All (Cmd+A) runs with the Project panel focused: the items of the shown
+/// bin, plus those of sub-bins twirled open in List view (`project.selectAll {bin, expanded}`).
+/// Items in closed bins and in bins of other tabs stay unselected, as in Premiere (#456). While a
+/// search filters the panel, exactly the rows it shows (`project.select {items}`).
+pub fn select_all_command(app: &FilmcraftApp) -> (String, Value) {
+    let inst = shown_inst(app);
+    if !app.ui.project_search.is_empty() {
+        let items: Vec<u64> = visible_items(app, inst).into_iter().map(|i| i.0).collect();
+        return ("project.select".into(), json!({"items": items}));
+    }
+    let v = view_of(app, inst);
+    let expanded: &[u64] = if v.mode == ViewMode::List { &app.ui.expanded_bins } else { &[] };
+    ("project.selectAll".into(), json!({"bin": v.bin.0, "expanded": expanded}))
+}
+
 // ------------------------------------------------------------------------------------ panel
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
@@ -609,7 +624,10 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
                     let parent = (v.bin != app.session.project.root.id).then_some(v.bin.0);
                     actions.push(("file.newBin".into(), json!({"name": "New Bin", "parent": parent})));
                 }
-                "project.delete" if app.session.state.project_selection.is_empty() => app.ui.status = tl!("Select items to clear").into(),
+                "project.delete" => match crate::panels::project_views::clear_params(&app.session.state.project_selection, app.ui.project_panel.selected_bin) {
+                    Some(p) => actions.push((id.into(), p)),
+                    None => app.ui.status = tl!("Select items to clear").into(),
+                },
                 _ => actions.push((id.into(), json!({}))),
             }
         }
@@ -673,6 +691,7 @@ pub fn panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
     let inst = shown_inst(app);
     let v = view_of(app, inst);
     let has_sel = !app.session.state.project_selection.is_empty() || app.ui.project_panel.selected_bin.is_some();
+    let clear = crate::panels::project_views::clear_params(&app.session.state.project_selection, app.ui.project_panel.selected_bin);
     let has_project_path = app.session.path.is_some();
     let sc = |id: &str| app.session.shortcuts.primary(id);
     let (s_close, s_save, s_bin, s_find) = (sc("file.closeProject"), sc("file.save"), sc("file.newBin"), sc("edit.find"));
@@ -712,8 +731,8 @@ pub fn panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
         if item(ui, "rename", tl!("Rename"), has_sel, None) {
             actions.push(("projectPanel.rename".into(), json!({})));
         }
-        if item(ui, "delete", tl!("Delete"), !app.session.state.project_selection.is_empty(), Some("Backspace")) {
-            actions.push(("project.delete".into(), json!({})));
+        if item(ui, "delete", tl!("Delete"), clear.is_some(), Some("Backspace")) {
+            actions.push(("project.delete".into(), clear.unwrap_or_default()));
         }
         ui.separator();
         if item(ui, "automateToSequence", tl!("Automate to Sequence…"), !app.session.state.project_selection.is_empty(), None) {

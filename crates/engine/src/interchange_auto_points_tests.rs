@@ -1,6 +1,6 @@
 //! Interchange imports and the "auto" (NaN) point defaults of the effects they add: the points
 //! are resolved as placing a clip resolves them, the anchor once the media's real size is known,
-//! and a project saved after an import opens again.
+//! and a project saved after an import opens again. Also how the media they name are linked.
 
 use filmcraft_geom::Vec2;
 use filmcraft_media::DemoScene;
@@ -214,5 +214,45 @@ fn relinking_later_resolves_the_anchor_that_waited_for_the_real_size() {
     make_movie(&other, DemoScene::OceanSunset, 160, 90, 24);
     t.execute("media.relink", json!({"item": clip.item.0, "path": other.to_string_lossy(), "force": true})).unwrap();
     assert_eq!(motion_point(&first_clip(&t, seq), "anchor"), Vec2::new(160.0, 90.0));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Linking the media an interchange document names opens each file through the host's reader, as
+/// a direct import does, instead of reading it whole into memory (#461: minutes for 4K files).
+#[cfg(any(unix, windows))]
+#[test]
+fn an_interchange_import_links_media_without_reading_the_files_whole() {
+    /// The desktop filesystem, except that reading a media file whole fails.
+    struct NoWholeMediaReads;
+    impl crate::Services for NoWholeMediaReads {
+        fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+            if path.ends_with(".mov") {
+                return Err(std::io::Error::other(format!("{path}: read whole")));
+            }
+            crate::FsServices.read_file(path)
+        }
+        fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+            crate::FsServices.write_file(path, data)
+        }
+        fn file_size(&self, path: &str) -> std::io::Result<u64> {
+            crate::FsServices.file_size(path)
+        }
+        fn read_range(&self, path: &str, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+            crate::FsServices.read_range(path, offset, len)
+        }
+        fn reader(&self, path: &str) -> Option<std::io::Result<filmcraft_media::SharedReader>> {
+            crate::FsServices.reader(path)
+        }
+    }
+    let d = tmp_dir("ix-streamed-link");
+    std::fs::create_dir_all(d.join("media")).unwrap();
+    make_movie(&d.join("media/shot.mov"), DemoScene::OceanSunset, 320, 180, 24);
+    let doc = d.join("cut.xml");
+    std::fs::write(&doc, xml_with_a_scale_only_motion_filter()).unwrap();
+    let mut s = Session::new(std::sync::Arc::new(NoWholeMediaReads));
+    let (r, seq) = import(&mut s, &doc);
+    assert_eq!(r["linkedMedia"], 1, "{r}");
+    let clip = first_clip(&s, seq);
+    assert_eq!(s.project.source_size(clip.item), Some((320, 180)), "the file's real size, from its index");
     let _ = std::fs::remove_dir_all(&d);
 }
