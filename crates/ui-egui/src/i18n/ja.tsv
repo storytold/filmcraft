@@ -970,6 +970,7 @@
 	Reset…	リセット…
 	Source · {name}	ソース · {name}
 	Reset Effect	エフェクトをリセット
+	Reset Parameter	パラメーターをリセット
 	Save Preset…	プリセットを保存…
 	Custom Setup	カスタム設定
 	Edit…	編集…
@@ -3512,4 +3513,8 @@
 	Edit Narration	ナレーションを編集
 	Clear Transition	トランジションを消去
 	Set Transition Duration	トランジションのデュレーションを設定
+	Project Notes	プロジェクトメモ
+	Get Project Notes	プロジェクトメモを取得
+	Edit Project Notes	プロジェクトメモを編集
+	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	このプロジェクトのメモ: やること、指示、フレーム番号など… プロジェクトと一緒に保存されます。
 	GPU acceleration is unavailable; preview renders on the CPU	GPU アクセラレーションを利用できません。プレビューは CPU でレンダリングされます

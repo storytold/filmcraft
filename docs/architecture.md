@@ -731,7 +731,8 @@ All of these dispatch the same command ids.
 - **Panels with engine data** (M8.9 / M12.6): Lumetri Scopes (`scopes.read` returns the same
   scopes as numbers), Metadata (`metadata.get` / `metadata.set`, one undo step per edit, stored in
   `ProjectItem::metadata`), Events (`events.list` / `events.clear`), Progress (`jobs.list` /
-  `jobs.cancel`). Timecode and Reference Monitor are frontend-only views. Their settings are
+  `jobs.cancel`), Project Notes (`project.notes` / `project.setNotes`, plain text in
+  `Project::notes`, schema v15; one typing session is one undo step). Timecode and Reference Monitor are frontend-only views. Their settings are
   `UiState::panels` (`ui.set {"panels": {...}}`).
 - **Project panel and Media Browser** (M12.7). View settings (List / Icon / Freeform, thumbnail
   and font size, Preview Area, Hover Scrub), the List view's columns, widths and sort, and ten view

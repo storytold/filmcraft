@@ -695,8 +695,11 @@ impl Session {
         }
         let clips = commands::named_clips(self, spec, params);
         let items = commands::named_items(self, spec, params);
+        // clips were named but none is one of the active sequence: say which and why, rather
+        // than "no clips selected" to a caller that did not mean the selection (#591)
+        let missing = if clips.is_none() { commands::named_clips_missing(self, spec, params) } else { None };
         if clips.is_none() && items.is_none() {
-            return by_selection;
+            return by_selection.map_err(|why| missing.unwrap_or(why));
         }
         let mut clips = clips.unwrap_or_else(|| self.state.selection.clone());
         let mut items = items.unwrap_or_else(|| self.state.project_selection.clone());
@@ -705,7 +708,7 @@ impl Session {
         let by_params = (spec.enabled)(self);
         self.state.selection = clips;
         self.state.project_selection = items;
-        by_params
+        by_params.map_err(|why| missing.unwrap_or(why))
     }
 
     /// Whether the command can run on the current selection (what the menus show).

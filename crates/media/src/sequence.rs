@@ -75,7 +75,15 @@ impl Numbered {
 
     /// The frame number of a sibling file name of this sequence (same prefix, suffix and padding).
     pub fn number_of(&self, file_name: &str) -> Option<u64> {
-        let mid = file_name.strip_prefix(self.prefix.as_str())?.strip_suffix(self.suffix.as_str())?;
+        let rest = file_name.strip_prefix(self.prefix.as_str())?;
+        let mid = {
+            let n = rest.as_bytes();
+            let s = self.suffix.as_bytes();
+            if n.len() < s.len() || !n[n.len() - s.len()..].eq_ignore_ascii_case(s) {
+                return None;
+            }
+            &rest[..n.len() - s.len()]
+        };
         if mid.is_empty() || !mid.bytes().all(|b| b.is_ascii_digit()) || mid.len() > 18 {
             return None;
         }
@@ -231,6 +239,7 @@ mod tests {
         assert!(!u.padded());
         assert_eq!(u.file_name(10), "frame10.TIF");
         assert_eq!(u.number_of("frame10.TIF"), Some(10));
+        assert_eq!(u.number_of("frame10.tif"), Some(10), "Linux stills often mix .TIF and .tif");
         assert_eq!(Numbered::parse("clip.mov"), None, "not a still");
         assert_eq!(Numbered::parse("nodigits.png"), None);
         let w = Numbered::parse("C:\\renders\\out.0010.exr.png").unwrap();

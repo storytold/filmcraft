@@ -139,6 +139,10 @@ pub struct HostHooks {
     /// Open a file in its default application, or (`true`) reveal it in the file manager (Edit ▸
     /// Edit Original, Help ▸ Reveal Log Files).
     pub open_path: Option<Box<dyn FnMut(&str, bool) -> Result<(), String>>>,
+    /// Open a URL in the system browser (Help menu links, About dialog, Discord button, Import
+    /// screen). Without it, or when it fails, links go through `egui::Context::open_url`, which
+    /// opens a new tab on the web (the native egui backend is built without its `links` feature).
+    pub open_url: Option<Box<dyn FnMut(&str) -> Result<(), String>>>,
     /// The operating system's light or dark appearance when egui cannot report it (Linux desktops
     /// whose Wayland compositor sends no theme to winit). Without it, or without an answer, Auto
     /// uses `egui::Context::system_theme`.

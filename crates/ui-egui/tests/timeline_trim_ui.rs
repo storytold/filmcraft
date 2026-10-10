@@ -299,6 +299,72 @@ fn dragging_a_caption_edge_inward_trims_it() {
     assert!(e1 < e0, "the caption's end moved in: {e0} → {e1}");
 }
 
+/// #374: renders the Ambient_Score music clip mid-way through a trim of its In edge, with the
+/// mouse button still down, for visual review (needs a GPU): `cargo test -p filmcraft-ui-egui
+/// --test timeline_trim_ui -- --ignored trim_waveform_screenshots`. The waveform stays where it was
+/// and is cut off at the moving edge; it used to squeeze the whole clip's waveform into the shorter
+/// clip, so the sound under the pointer moved while dragging.
+#[test]
+#[ignore]
+fn trim_waveform_screenshots() {
+    let mut d = Driver::demo();
+    let seq = d.app().session.active_sequence().expect("sequence");
+    let music = seq.audio_tracks.iter().flat_map(|t| &t.items).find(|i| i.name.contains("Ambient")).expect("music clip").id.0;
+    let (x0, _, y) = d.edges(music);
+    // waveform peaks are read on a background thread
+    for _ in 0..40 {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        d.frames(1);
+    }
+    d.screenshot("trim-waveform-before");
+    let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);
+    let to = pos2(x0 + 160.0, y);
+    push(&mut d, egui::Event::PointerMoved(pos2(x0, y)));
+    d.frames(1);
+    push(&mut d, egui::Event::PointerButton { pos: pos2(x0, y), button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    d.frames(1);
+    for i in 1..=20 {
+        push(&mut d, egui::Event::PointerMoved(pos2(x0 + 160.0 * i as f32 / 20.0, y)));
+        d.frames(1);
+    }
+    d.screenshot("trim-waveform-dragging");
+    push(&mut d, egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+    d.frames(2);
+    d.screenshot("trim-waveform-released");
+}
+
+/// #653: an Out edge dragged far past the end of the clip's media stops there while the drag is
+/// still in progress, at the same place the trim lands on release. It used to follow the pointer
+/// past the media and then jump back when the button came up.
+#[test]
+fn an_edge_dragged_past_the_media_stops_at_its_end() {
+    use filmcraft_ui_egui::panels::timeline::Drag;
+    let mut d = Driver::demo();
+    let last = d.app().session.active_sequence().expect("sequence").video_tracks[0].items.last().expect("a clip on V1").id.0;
+    let (_, x1, y) = d.edges(last);
+    let (_, e0) = d.span(last);
+    let far = filmcraft_time::Tick(3600 * filmcraft_time::TICKS_PER_SECOND);
+    let limit = filmcraft_engine::commands::trim_delta(&d.app().session, ClipId(last), filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, far)
+        .expect("limit");
+    let (from, to) = (pos2(x1 - 3.0, y), pos2(x1 + 300.0, y));
+    let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);
+    push(&mut d, egui::Event::PointerMoved(from));
+    d.frames(1);
+    push(&mut d, egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    d.frames(1);
+    for i in 1..=60 {
+        push(&mut d, egui::Event::PointerMoved(from + (to - from) * (i as f32 / 60.0)));
+        d.frames(1);
+    }
+    match &d.app().tl.drag {
+        Some(Drag::Trim { delta, .. }) => assert_eq!(*delta, limit, "the dragged edge stops at the end of the media"),
+        other => panic!("not trimming: {other:?}"),
+    }
+    push(&mut d, egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+    d.frames(2);
+    assert_eq!(d.span(last).1, e0 + limit.0, "released where it was shown");
+}
+
 /// Dragging a picture in the Trim Monitor must not deadlock: the shift bookkeeping used to call
 /// `drag_delta()` inside `data_mut()`, and both take egui's non-reentrant context write-lock, so
 /// the drag froze the whole app on its first recognised frame (the delta is read before locking

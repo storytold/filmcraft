@@ -74,6 +74,11 @@ pub fn effect_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, id
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(10.0, 6.0))).id_salt(("tr-ec", id.0)));
     child.label(RichText::new(format!("{seq_name} · {name}")).color(t.text_dim));
     child.add_space(4.0);
+    // the line under each row, as for a clip's effects (#640): halfway into the row spacing
+    let row_line = |ui: &egui::Ui| {
+        let y = ui.cursor().top() - 4.0;
+        ui.painter().line_segment([egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)], egui::Stroke::new(1.0, t.separator));
+    };
     egui::ScrollArea::vertical().id_salt(("tr-ec-scroll", id.0)).auto_shrink([false, false]).show(&mut child, |ui| {
         egui::Grid::new(("tr-ec-grid", id.0)).num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
             ui.label(tl!("Duration"));
@@ -84,6 +89,7 @@ pub fn effect_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, id
                 changes.push(json!({"frames": frames, "merge": true, "begin": r.drag_started() || !r.dragged()}));
             }
             ui.end_row();
+            row_line(ui);
 
             ui.label(tl!("Alignment"));
             let shown = align.label();
@@ -106,6 +112,7 @@ pub fn effect_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, id
                 .inner;
             elems.push(("effectControls.transition.alignment".into(), r.rect, shown.to_string()));
             ui.end_row();
+            row_line(ui);
 
             ui.label(tl!("Reverse"));
             let mut rev = x.reverse;
@@ -115,6 +122,7 @@ pub fn effect_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, id
                 changes.push(json!({"reverse": rev}));
             }
             ui.end_row();
+            row_line(ui);
 
             for pd in def.map(|d| d.params.as_slice()).unwrap_or(&[]) {
                 let value = x.effect.params.get(pd.id).map_or(&pd.default, |p| &p.value);
@@ -123,6 +131,7 @@ pub fn effect_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, id
                     changes.push(v);
                 }
                 ui.end_row();
+                row_line(ui);
             }
         });
         ui.add_space(8.0);

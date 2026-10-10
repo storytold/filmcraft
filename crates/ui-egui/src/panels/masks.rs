@@ -45,6 +45,7 @@ pub fn effect_rows(
     let t = app.tokens;
     // creation tools: ellipse, 4-point polygon, free-draw Bézier
     let (r, _) = ui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::hover());
+    crate::panels::effect_controls::row_line(ui, r, lane, &t);
     let pen_on = app.ui.mask_pen.as_ref().is_some_and(|p| p.clip == clip.0 && p.effect == idx);
     for (i, (icon, kind, tip)) in [
         (Icon::Ellipse, "ellipse", tl!("Create ellipse mask")),
@@ -85,6 +86,7 @@ pub fn effect_rows(
         } else if resp.hovered() {
             ui.painter().rect_filled(r, 0.0, t.hover);
         }
+        crate::panels::effect_controls::row_line(ui, r, lane, &t);
         let tw = Rect::from_center_size(pos2(r.min.x + 26.0, r.center().y), vec2(10.0, 10.0));
         icons::paint(ui.painter(), tw, if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_dim);
         let twresp = ui.interact(tw.expand(3.0), egui::Id::new(("mask-twirl", clip.0, idx, k)), Sense::click());
@@ -99,13 +101,22 @@ pub fn effect_rows(
             Icon::Pen
         };
         icons::paint(ui.painter(), glyph, gi, if selected { t.accent } else { t.text_dim });
-        ui.painter().text(pos2(r.min.x + 54.0, r.center().y), Align2::LEFT_CENTER, &m.name, Tokens::ui(12.0), t.text);
+        // (the mode dropdown starts 118 points from the row's right end)
+        crate::panels::effect_controls::row_label(
+            ui,
+            pos2(r.min.x + 54.0, r.center().y),
+            &m.name,
+            r.max.x - 122.0 - (r.min.x + 54.0),
+            Tokens::ui(12.0),
+            t.text,
+        );
         let base = format!("effectControls.{}.mask{k}", e.effect);
         app.auto.add(&base, r, &m.name);
         // mode
         let mr = Rect::from_min_size(pos2(r.max.x - 118.0, r.min.y + 2.0), vec2(96.0, ROW_H - 4.0));
         let mut mui = ui.new_child(egui::UiBuilder::new().max_rect(mr).layout(egui::Layout::left_to_right(egui::Align::Center)));
         let mut mode = m.mode;
+        crate::panels::effect_controls::fit_to_row(&mut mui);
         egui::ComboBox::from_id_salt(("mask-mode", clip.0, idx, k)).selected_text(crate::i18n::t(mode.label())).width(88.0).show_ui(&mut mui, |ui| {
             for md in MaskMode::ALL {
                 if ui.selectable_value(&mut mode, md, crate::i18n::t(md.label())).changed() {
@@ -148,9 +159,11 @@ pub fn effect_rows(
         }
         // Inverted
         let (r, _) = ui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::hover());
+        crate::panels::effect_controls::row_line(ui, r, lane, &t);
         ui.painter().text(pos2(r.min.x + 40.0, r.center().y), Align2::LEFT_CENTER, tl!("Inverted"), Tokens::ui(12.0), t.text);
         let cr = Rect::from_min_size(pos2(r.min.x + (r.width() * 0.5).max(150.0), r.min.y + 2.0), vec2(20.0, ROW_H - 4.0));
-        let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(cr));
+        let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(cr).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        crate::panels::effect_controls::fit_to_row(&mut cui);
         let mut inv = m.inverted;
         if cui.checkbox(&mut inv, "").changed() {
             actions.push(("masks.set".into(), json!({"clip": clip.0, "effect": idx, "mask": k, "inverted": inv})));
