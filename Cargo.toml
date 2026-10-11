@@ -68,6 +68,7 @@ serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 log = "0.4"
 rayon = "1"
+wide = "0.7"
 proptest = "1"
 roxmltree = "0.21"
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "82a24b006eefa036b43c09a67fb9a3fbd17ffe63" }
