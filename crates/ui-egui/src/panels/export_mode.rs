@@ -8,8 +8,10 @@
 //! action runs an engine command (`file.exportMedia`, `export.queue.*`, `export.presets.*`,
 //! `export.quick`).
 //!
-//! Automation ids: `export.fileName`, `export.location`, `export.preset`, `export.preset.more`,
-//! `export.format`, `export.section.<video|audio|multiplexer|captions|effects|metadata>`,
+//! Automation ids: `export.fileName`, `export.location` (the folder link, also
+//! `export.location.browse`; opens the save dialog), `export.preset`, `export.preset.more`,
+//! `export.format`, `export.section.<video|audio|multiplexer|captions|effects|metadata>`
+//! (`export.audio.include` is the Audio section's switch),
 //! `export.video.*`, `export.audio.*`, `export.effects.*`, `export.metadata.*`, `export.range`,
 //! `export.scaling`, `export.summary`, `export.estimate`, `export.sendToQueue`, `export.button`,
 //! `export.queue.start|stop|clear`, `export.queue.item.<id>` and `….<id>.<up|down|cancel|retry|remove>`;
@@ -168,6 +170,25 @@ pub fn export_params(app: &FilmcraftApp) -> Value {
         p["endSeconds"] = json!(ex.custom_end);
     }
     p
+}
+
+/// `e` is the extension of one of the export formats.
+fn known_ext(app: &FilmcraftApp, e: &str) -> bool {
+    !e.is_empty() && app.session.export_presets.all().iter().any(|p| p.settings.extension().eq_ignore_ascii_case(e))
+}
+
+/// Set the folder and file name from a full path (the save dialog, a pasted path). An export
+/// format's extension is dropped, because the chosen format adds its own.
+fn set_output_path(app: &mut FilmcraftApp, path: &str) {
+    let p = std::path::Path::new(path.trim());
+    if let Some(d) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
+        app.ui.export.location = d.to_string_lossy().to_string();
+    }
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let name = if known_ext(app, ext) { p.file_stem() } else { p.file_name() };
+    if let Some(n) = name.map(|n| n.to_string_lossy().to_string()).filter(|n| !n.trim().is_empty()) {
+        app.ui.export.file_name = n;
+    }
 }
 
 fn sync_sequence(app: &mut FilmcraftApp) {
