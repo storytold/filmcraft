@@ -53,6 +53,22 @@ fn hardware_hevc_availability_does_not_create_cpu_support() {
 }
 
 #[test]
+fn registered_av1_export_does_not_create_cpu_encoder() {
+    assert_eq!(filmcraft_export::Format::from_name("av1"), Some(filmcraft_export::Format::Av1));
+    assert!(!filmcraft_export::Format::Av1.has_builtin_encoder());
+    let before = software_encoder_capabilities().unwrap();
+    filmcraft_export::register_format_probe(filmcraft_export::Format::Av1, fake_hardware_available);
+    assert!(filmcraft_export::available(filmcraft_export::Format::Av1));
+    let records = software_encoder_capabilities().unwrap();
+    assert_eq!(records, before);
+    let av1 = records.iter().find(|record| record.codec == VideoCodec::Av1).unwrap();
+    assert_eq!(av1.status, CapabilityStatus::NotImplemented);
+    assert!(av1.formats.is_empty());
+    assert!(av1.evidence.is_empty());
+    assert_eq!(av1.reason.as_deref(), Some("FilmCraft has no CPU AV1 encoder."));
+}
+
+#[test]
 fn six_software_records_form_a_valid_portable_snapshot() {
     let mut snapshot = CapabilitySnapshot::new(0);
     snapshot.capabilities = filmcraft_codecs::capabilities::software_decoder_capabilities().unwrap();

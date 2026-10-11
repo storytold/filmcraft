@@ -50,7 +50,7 @@ pub fn software_encoder_capabilities() -> Result<Vec<CodecCapability>> {
     let records = vec![
         h264,
         missing(VideoCodec::Hevc, "filmcraft-hevcenc", "FilmCraft has no CPU HEVC encoder."),
-        missing(VideoCodec::Av1, "filmcraft-av1enc", "FilmCraft has no CPU AV1 encoder or AV1 export format."),
+        missing(VideoCodec::Av1, "filmcraft-av1enc", "FilmCraft has no CPU AV1 encoder."),
     ];
     for record in &records {
         record.validate().map_err(|e| ExportError::Unsupported(format!("software encoder capabilities: {e}")))?;
