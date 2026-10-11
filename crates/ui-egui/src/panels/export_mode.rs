@@ -51,6 +51,7 @@ use queue::queue_column;
 pub use quick::quick_export;
 #[cfg(test)]
 pub(crate) use settings::PARS;
+pub(crate) use settings::location_link;
 use settings::settings_column;
 #[cfg(test)]
 use settings::{MAX_LOCATION_DISPLAY_BYTES, location_tail};

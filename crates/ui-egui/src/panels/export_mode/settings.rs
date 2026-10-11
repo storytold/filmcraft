@@ -214,7 +214,7 @@ pub(super) fn location_tail(s: &str) -> (&str, bool) {
 
 /// The output folder as a link (folder icon, accent colour, underlined); the caller opens the save
 /// dialog on a click. A path too long for the row loses its start, so the folder's name stays.
-pub(super) fn location_link(ui: &mut egui::Ui, t: &Tokens, folder: &str) -> egui::Response {
+pub(crate) fn location_link(ui: &mut egui::Ui, t: &Tokens, folder: &str) -> egui::Response {
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ui.spacing().interact_size.y.max(22.0)), Sense::click());
     let col = if resp.hovered() { t.accent_hover } else { t.accent };
     crate::icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 8.0, r.center().y), vec2(14.0, 14.0)), crate::icons::Icon::Folder, col);
