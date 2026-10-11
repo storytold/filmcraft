@@ -120,16 +120,16 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
             actions.push(("timeline.setTargeting".into(), json!({"track": r.track.0, "sourcePatch": !patched})));
         }
         // 2. track lock
-        let small = |x: f32, y: f32| Rect::from_center_size(pos2(hrect.min.x + x, y), vec2(18.0, 18.0));
+        let small = |x: f32, y: f32| Rect::from_center_size(pos2(hrect.min.x + x, y), vec2(22.0, 22.0));
         let lock_r = small(49.0, hrect.center().y);
         let lresp = crate::widgets::icon_toggle(
             ui,
             lock_r.intersect(visible),
             if tr.locked { Icon::Lock } else { Icon::Unlock },
-            true,
+            tr.locked,
             t,
             egui::Id::unique(("locked", r.track.0)),
-            Some(if tr.locked { t.icon_active } else { t.text_dim }),
+            Some(t.icon_active),
         );
         app.auto.add(&format!("timeline.track.{label}.locked"), lock_r, "Toggle Track Lock");
         if lresp.clicked() {
@@ -227,7 +227,7 @@ fn header_line_buttons(
     vo_action: &mut Option<crate::panels::voiceover::Action>,
 ) {
     let upper_y = hrect.min.y + (16.0f32).min(hrect.height() / 2.0);
-    let small = |x: f32, y: f32| Rect::from_center_size(pos2(hrect.min.x + x, y), vec2(18.0, 18.0));
+    let small = |x: f32, y: f32| Rect::from_center_size(pos2(hrect.min.x + x, y), vec2(22.0, 22.0));
     let mut x = 102.0;
     let sr = small(x, upper_y);
     let sresp =
@@ -243,7 +243,7 @@ fn header_line_buttons(
             ui,
             er.intersect(visible),
             if tr.enabled { Icon::Eye } else { Icon::EyeOff },
-            true,
+            tr.enabled,
             t,
             egui::Id::unique(("enabled", r.track.0)),
             Some(t.text_dim),
@@ -253,7 +253,7 @@ fn header_line_buttons(
             actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "enabled": !tr.enabled})));
         }
     } else {
-        let mr = Rect::from_center_size(pos2(hrect.min.x + x, upper_y), vec2(14.0, 14.0));
+        let mr = Rect::from_center_size(pos2(hrect.min.x + x, upper_y), vec2(16.0, 16.0));
         let mresp = crate::widgets::letter_toggle_clipped(
             ui,
             mr,
@@ -268,7 +268,7 @@ fn header_line_buttons(
         if mresp.clicked() {
             actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "muted": !tr.muted})));
         }
-        let s2 = Rect::from_center_size(pos2(hrect.min.x + x + 20.0, upper_y), vec2(14.0, 14.0));
+        let s2 = Rect::from_center_size(pos2(hrect.min.x + x + 20.0, upper_y), vec2(16.0, 16.0));
         let so =
             crate::widgets::letter_toggle_clipped(ui, s2, visible, "S", tr.solo, Color32::from_rgb(0xf0, 0xf0, 0x4f), t, egui::Id::unique(("solo", r.track.0)));
         app.auto.add(&format!("timeline.track.{label}.solo"), s2, "Solo Track");
