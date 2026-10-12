@@ -3,13 +3,14 @@
 //! Warp Stabilizer is a 2-D (similarity / translation) stabilizer: on first use it analyses the
 //! clip — every frame decoded small, Shi–Tomasi features tracked frame to frame with pyramidal
 //! Lucas–Kanade and a RANSAC similarity fit (the mask tracker in [`crate::track`]) — and caches
-//! the per-frame steps in memory. Rendering smooths the accumulated camera path with a Gaussian
+//! the per-frame steps in memory. The analysis runs once per clip however many frame workers
+//! ask for it, and holds only a chunk of frames at a time whatever the clip's length. Rendering smooths the accumulated camera path with a Gaussian
 //! (Smoothness) or holds it fixed (No Motion), warps each frame onto the smoothed path and frames
 //! the result (crop / auto-scale / synthesise edges). Perspective and Subspace Warp use the
 //! similarity model (no per-region warping).
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use filmcraft_project::{EffectInstance, TrackMethod};
 use rayon::prelude::*;
@@ -241,47 +242,97 @@ pub fn clear_stabilizer_cache() {
     }
 }
 
+/// One gate per clip being analysed: the first caller analyses, the others wait for its result.
+type GateMap = Mutex<HashMap<u64, Arc<Mutex<()>>>>;
+fn analysis_gates() -> &'static GateMap {
+    static G: OnceLock<GateMap> = OnceLock::new();
+    G.get_or_init(Default::default)
+}
+
+/// Frames decoded and prepared together during an analysis. Each prepared frame holds a grey
+/// pyramid (about 0.7 MB at 480 px, 2.8 MB Detailed), so a whole long clip at once used gigabytes.
+const ANALYSIS_CHUNK: usize = 64;
+
+fn cached_path(key: u64) -> Option<Arc<StabilizerPath>> {
+    path_cache().lock().unwrap_or_else(PoisonError::into_inner).get(&key).cloned()
+}
+
 /// Analyse (or fetch the cached analysis of) the clip `env` describes.
+///
+/// Concurrent callers for the same clip (the frame workers rendering neighbouring frames) wait
+/// for one analysis instead of each decoding and tracking the whole clip.
 pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed: bool) -> Option<Arc<StabilizerPath>> {
     let key = env.clip_key() ^ (method as u64).wrapping_mul(0x9E37) ^ (detailed as u64).wrapping_mul(0x51_7CC1);
-    if let Some(p) = path_cache().lock().ok().and_then(|c| c.get(&key).cloned()) {
+    if let Some(p) = cached_path(key) {
         return Some(p);
     }
-    let fps = env.frame_rate().max(1.0);
-    let n = ((env.clip_seconds() * fps).round() as usize).clamp(1, 20_000);
-    let src_w = env.source_size().0.max(1) as f32;
-    let target_w = if detailed { 960.0 } else { 480.0 };
-    let scale = (target_w / src_w).min(1.0);
-    let frames: Vec<Option<Prepared>> = (0..n)
-        .into_par_iter()
-        .map(|k| {
-            if filmcraft_media::cancel::cancelled() {
-                return None;
-            }
-            env.source_frame(k as f64 / fps - now, scale).map(|f| Prepared::new(gray_of(&f)))
-        })
-        .collect();
-    if filmcraft_media::cancel::cancelled() {
-        return None;
+    let gate = analysis_gates().lock().unwrap_or_else(PoisonError::into_inner).entry(key).or_default().clone();
+    let _turn = gate.lock().unwrap_or_else(PoisonError::into_inner);
+    // whoever held the gate before may have finished the analysis meanwhile
+    if let Some(p) = cached_path(key) {
+        return Some(p);
     }
-    let (w, h) = frames.iter().flatten().next().map(|p| (p.base().w, p.base().h))?;
-    let m = 8.0;
-    let region = [Vec2::new(m, m), Vec2::new(w as f64 - m, m), Vec2::new(w as f64 - m, h as f64 - m), Vec2::new(m, h as f64 - m)];
-    let steps: Vec<Affine> = (0..n.saturating_sub(1))
-        .into_par_iter()
-        .map(|k| match (&frames[k], &frames[k + 1]) {
-            (Some(a), Some(b)) if a.base().w == b.base().w => track_step(a, b, &region, method).map(|s| s.transform).unwrap_or(Affine::IDENTITY),
-            _ => Affine::IDENTITY,
-        })
-        .collect();
-    let path = Arc::new(StabilizerPath { w, h, steps, fps });
-    if let Ok(mut c) = path_cache().lock() {
+    let path = Arc::new(analyse(env, now, method, detailed)?);
+    {
+        let mut c = path_cache().lock().unwrap_or_else(PoisonError::into_inner);
         if c.len() > 64 {
             c.clear();
         }
         c.insert(key, path.clone());
     }
+    // later callers hit the cache; waiters still hold their clone of the gate
+    analysis_gates().lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
     Some(path)
+}
+
+/// Track the clip frame to frame, [`ANALYSIS_CHUNK`] frames at a time. `None` when cancelled or
+/// when no frame could be read.
+fn analyse(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed: bool) -> Option<StabilizerPath> {
+    let fps = env.frame_rate().max(1.0);
+    let n = ((env.clip_seconds() * fps).round() as usize).clamp(1, 20_000);
+    let src_w = env.source_size().0.max(1) as f32;
+    let target_w = if detailed { 960.0 } else { 480.0 };
+    let scale = (target_w / src_w).min(1.0);
+    let m = 8.0;
+    let mut size: Option<(usize, usize)> = None;
+    let mut steps: Vec<Affine> = Vec::with_capacity(n.saturating_sub(1));
+    // the last frame of the previous chunk, paired with the first of the next
+    let mut carry: Option<Option<Prepared>> = None;
+    let mut start = 0;
+    while start < n {
+        let end = start.saturating_add(ANALYSIS_CHUNK).min(n);
+        let fresh: Vec<Option<Prepared>> = (start..end)
+            .into_par_iter()
+            .map(|k| {
+                if filmcraft_media::cancel::cancelled() {
+                    return None;
+                }
+                env.source_frame(k as f64 / fps - now, scale).map(|f| Prepared::new(gray_of(&f)))
+            })
+            .collect();
+        if filmcraft_media::cancel::cancelled() {
+            return None;
+        }
+        let mut frames: Vec<Option<Prepared>> = carry.take().into_iter().chain(fresh).collect();
+        if size.is_none() {
+            size = frames.iter().flatten().next().map(|p| (p.base().w, p.base().h));
+        }
+        let region = size.map(|(w, h)| [Vec2::new(m, m), Vec2::new(w as f64 - m, m), Vec2::new(w as f64 - m, h as f64 - m), Vec2::new(m, h as f64 - m)]);
+        let chunk_steps: Vec<Affine> = frames
+            .par_windows(2)
+            .map(|pair| match (&pair[0], &pair[1], &region) {
+                (Some(a), Some(b), Some(region)) if a.base().w == b.base().w => {
+                    track_step(a, b, region, method).map(|s| s.transform).unwrap_or(Affine::IDENTITY)
+                }
+                _ => Affine::IDENTITY,
+            })
+            .collect();
+        steps.extend(chunk_steps);
+        carry = frames.pop();
+        start = end;
+    }
+    let (w, h) = size?;
+    Some(StabilizerPath { w, h, steps, fps })
 }
 
 /// Similarity parameters (tx, ty, angle, log-scale) of an affine.
