@@ -855,16 +855,19 @@ fn snap_to_frame_grid(file: &mut Mp4File, vtrack: Option<usize>) {
     }
 }
 
-/// Start the file at its first picture when its video track has no edit list (#714). Without an
-/// edit list the media timeline is the presentation, so a B-frame stream's first picture sits at its
-/// composition delay (two frames on an x264 MP4 written without `elst`, and on fragmented MP4s):
-/// media time zero repeated it and the clip, which lasts the media duration, lost its last pictures.
-/// Every track moves back by the earliest start among them, video and audio alike, so the streams
-/// stay in sync and a delay between them keeps its meaning; a track with an edit list is never
-/// rebased on its own.
+/// Start the file at its first picture (#714, #1276). The first presented picture can sit after
+/// media time zero in two ways: without an edit list, a B-frame stream's first picture sits at its
+/// composition delay (two frames on an x264 MP4 written without `elst`, and on fragmented MP4s) —
+/// media time zero repeated it and the clip, which lasts the media duration, lost its last
+/// pictures; with a leading empty edit (a start offset, e.g. `-output_ts_offset`), the whole
+/// presentation begins after zero and every picture rendered one frame early against ffprobe's
+/// own timeline. The first presentation is `min pts + edit_offset` either way (an edit list that
+/// skips into the media yields a non-positive start and needs no shift). Every track moves back by
+/// the earliest start among them, video and audio alike, so the streams stay in sync and a delay
+/// between them keeps its meaning.
 fn rebase_unedited_video(file: &mut Mp4File, vtrack: Option<usize>, audios: &mut [Mp4Audio]) {
     let Some(vi) = vtrack else { return };
-    let Some(t) = file.tracks.get(vi).filter(|t| t.edits.is_empty() && t.timescale > 0) else { return };
+    let Some(t) = file.tracks.get(vi).filter(|t| t.timescale > 0) else { return };
     let Some(first) = t.samples.iter().map(|s| s.pts).min().map(|p| p.saturating_add(t.edit_offset)).filter(|&p| p > 0) else { return };
     let vts = i64::from(t.timescale);
     let video_start = Tick::from_rational(first, 1, vts);
