@@ -9,7 +9,7 @@ gamut mapping, and LUT files.
 | `lib.rs` | `Matrix`/`Transfer`/`Primaries`/`Range`/`ColorInfo` (stream metadata), Y'CbCr↔R'G'B', sRGB, PQ (ST 2084), HLG (ARIB STD-B67), HSL, hex colours |
 | `log` | camera log curves (encode/decode), their signal domains |
 | `spaces` | gamuts and 3×3 matrices (SMPTE RP 177), `ColorSpace` (Interpret Footage choices), `WorkingSpace`, `ColorPipeline` |
-| `transform` | `InputTransform` (source → working), `OutputTransform` (working → monitor / export), BT.2390 tone mapping, gamut compression |
+| `transform` | `InputTransform` (source → working), `OutputTransform` (working → monitor / export), BT.2446 A (HLG → SDR), BT.2390 (PQ → SDR), gamut compression |
 | `lut` | `.cube` (1D, 3D, shaper + 3D) and `.3dl` parse/write, tetrahedral interpolation |
 
 ## Working units
@@ -73,8 +73,24 @@ the result against the published BT.709 RGB→XYZ and BT.2087 BT.709→BT.2020 m
 
 ## Tone mapping (HDR/log → SDR)
 
-When an HDR or log source enters a Rec. 709 working space with **Auto Tone Map Media** on (the
-default), and on the monitors of an HDR sequence, FilmCraft applies the **ITU-R BT.2390 EETF**:
+**HLG → SDR** uses [ITU-R BT.2446-1 (03/2021), §4.1 Method A, tables 2–3](https://www.itu.int/pub/R-REP-BT.2446-1-2021).
+After the HLG OOTF, BT.2020 working light (203 cd/m² = 1) is normalized to the method's 1000-nit
+HDR peak. Method A maps to a 100-nit SDR peak, with its gamma-2.4 perceptual luma knee and chroma
+correction (including the red-dependent luma adjustment). Its output is decoded back to relative
+SDR linear light, then mapped from BT.2020 to the working/monitor gamut; monitors encode it as
+sRGB. The method must run **before** the gamut matrix because its luma/chroma coefficients are
+BT.2020. Negative and above-peak input components are bounded to its normalized domain, NaN
+contributes black, and reconstructed SDR super-whites survive until display encoding.
+
+Source, HLG media in an SDR sequence with **Auto Tone Map Media** on (the default), HLG sequence
+monitors and SDR exports use this same conversion. HLG 50 % maps to ≈ 0.128 SDR linear (39 % sRGB),
+and 75 % to ≈ 0.406 (67 % sRGB), instead of the former brighter BT.2390 mapping. Existing projects
+using automatic HLG → SDR conversion get the new appearance without a schema migration. Auto
+Tone Map Off, HDR working values/reference white and HDR export are unchanged. This is HLG
+base-layer processing, not Dolby Vision dynamic-metadata rendering; monitors are still SDR, and
+their appearance is not guaranteed to match QuickTime's HDR/EDR playback.
+
+**PQ → SDR** retains the **ITU-R BT.2390 EETF**:
 
 1. m = max(R, G, B) in working units, converted to cd/m² (×203) and PQ-encoded, normalised by the
    PQ value of the source peak;
@@ -82,10 +98,9 @@ default), and on the monitors of an HDR sequence, FilmCraft applies the **ITU-R 
    unchanged; above it a Hermite spline maps the rest of the range onto [KS, maxLum];
 3. RGB is scaled by m'/m, which keeps hue and saturation.
 
-Source peak: the content's mastering peak for PQ when known (default 1000 cd/m²), 1000 cd/m² for
-HLG, and for log media the curve's own peak capped at 4000 cd/m² (so the knee starts above mid
-grey). Target peak: 203 cd/m² = SDR white. HDR reference white then lands at ≈ 0.79 linear (≈ 90 %
-on the sRGB curve).
+Source peak: the content's mastering peak for PQ when known (default 1000 cd/m²). Target peak:
+203 cd/m² = SDR white. PQ HDR reference white then lands at ≈ 0.79 linear (≈ 90 % on the sRGB
+curve). Camera-log conversion is unchanged.
 
 ## Grading signal (`grade`)
 
@@ -142,4 +157,9 @@ the full signal range in both file ranges), published reference points (S-Log3 9
 128/433/602, LogC3 18 % → 0.391, LogC4 18 % → 0.2784, Canon Log 2/3 18 % → 39.2 %/34.3 % IRE, Apple
 Log 18 % → 0.488, D-Log 0 → 0.0929), PQ/HLG reference white, EETF continuity/monotonicity and peak,
 hue preservation, gamut compression, BT.709/BT.2087 matrices, LUT interpolation and file round
-trips.
+trips. Method A has independent f64 reference values for neutral/coloured pixels, black/peak,
+hostile values, ramp monotonicity and sub-code knee steps; direct HLG → SDR agrees with HLG →
+HDR working → SDR monitoring. `filmcraft-gpu` compares limited/full-range HLG CPU/GPU outputs
+within two 8-bit codes, including prepared uploads. `filmcraft-export --test hlg_sdr` checks
+procedural 10-bit patches through Source, Program, layer plans, PNG (pixel-exact) and H.264 /
+ProRes SDR exports (patch interiors within three codes; BT.709 signalling; ffmpeg decode).

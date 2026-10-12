@@ -3,7 +3,7 @@
 //! Executes a [`FramePlan`](filmcraft_render::plan::FramePlan) on the GPU: every layer's source is
 //! uploaded as textures (Y/Cb/Cr planes stay YUV — conversion to linear RGB happens per pixel in
 //! the shader), drawn as a transformed quad with premultiplied "over" blending into a Rgba16Float
-//! accumulator, then resolved over black into an sRGB `Rgba8UnormSrgb` texture that the UI
+//! accumulator, then resolved over black into a gamma-encoded `Rgba8Unorm` texture that the UI
 //! registers as a native texture. Uploads are cached by pixel-buffer identity, so a paused frame or
 //! a still costs nothing.
 //!
@@ -637,14 +637,18 @@ impl GpuCompositor {
             };
             let (hl, hk) = p.hlg.unwrap_or(([0.0; 3], 0.0));
             let mx = p.matrix.unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
-            let (sp, dp) = p.tone.unwrap_or((0.0, 0.0));
+            let (method, sp, dp) = match p.tone {
+                None => (0.0, 0.0, 0.0),
+                Some(filmcraft_color::GpuToneMap::Bt2390 { source_peak_nits, target_peak_nits }) => (1.0, source_peak_nits, target_peak_nits),
+                Some(filmcraft_color::GpuToneMap::Bt2446A) => (2.0, 1000.0, 100.0),
+            };
             let dl = p.desaturate.unwrap_or([0.0; 3]);
             let on = |b: bool| if b { 1.0 } else { 0.0 };
             #[rustfmt::skip]
             let q = [
                 1.0, curve, hk, filmcraft_color::REFERENCE_WHITE_NITS as f32,
                 hl[0], hl[1], hl[2], on(p.matrix.is_some()),
-                mx[0][0], mx[0][1], mx[0][2], on(p.tone.is_some()),
+                mx[0][0], mx[0][1], mx[0][2], method,
                 mx[1][0], mx[1][1], mx[1][2], sp,
                 mx[2][0], mx[2][1], mx[2][2], dp,
                 dl[0], dl[1], dl[2], on(p.desaturate.is_some()),

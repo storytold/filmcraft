@@ -18,7 +18,7 @@ struct U {
     // Colour management of HDR / wide-gamut Y'CbCr (`filmcraft_color::InputTransform`, #965):
     q0: vec4<f32>,   // on, curve (0 sdr, 1 linear, 2 pq, 3 hlg), HLG OOTF scale (0: none), reference white cd/m²
     q1: vec4<f32>,   // HLG OOTF luma weights, gamut matrix on
-    q2: vec4<f32>,   // gamut matrix row 0, tone mapping on
+    q2: vec4<f32>,   // gamut matrix row 0, tone mapping (0 off, 1 BT.2390, 2 BT.2446 A)
     q3: vec4<f32>,   // gamut matrix row 1, tone-mapping source peak cd/m²
     q4: vec4<f32>,   // gamut matrix row 2, tone-mapping target peak cd/m²
     q5: vec4<f32>,   // desaturation luma weights, desaturation on
@@ -122,7 +122,28 @@ fn eetf(nits: f32, s: f32, d: f32) -> f32 {
     return pq1(e2 * smax) * 10000.0;
 }
 
-// Signal → working linear: `InputTransform::convert` (curve, HLG OOTF, gamut matrix, tone
+// BT.2446-1 (03/2021) §4.1 tables 2–3: BT.2020 1000-nit display light (203 nits = 1)
+// to relative SDR linear light (100-nit peak = 1), before the gamut matrix.
+fn bt2446a(rgb: vec3<f32>) -> vec3<f32> {
+    let c = pow(clamp(rgb * (u.q0.w / 1000.0), vec3(0.0), vec3(1.0)), vec3(1.0 / 2.4));
+    let y = dot(vec3(0.2627, 0.6780, 0.0593), c);
+    if y <= 0.0 { return vec3(0.0); }
+    let yp = log(1.0 + 12.259798 * y) / 2.5847368;
+    var yc = 0.5 * yp + 0.5;
+    if yp <= 0.7399 { yc = 1.0770 * yp; }
+    else if yp < 0.9909 { yc = -1.1510 * yp * yp + 2.7811 * yp - 0.6302; }
+    let sdr = (exp(yc * 1.7399323) - 1.0) / 4.696958;
+    let scale = sdr / (1.1 * y);
+    let cb = scale * (c.b - y) / 1.8814;
+    let cr = scale * (c.r - y) / 1.4746;
+    let luma = sdr - max(0.1 * cr, 0.0);
+    let r = luma + 1.4746 * cr;
+    let b = luma + 1.8814 * cb;
+    let g = (luma - 0.2627 * r - 0.0593 * b) / 0.6780;
+    return pow(max(vec3(r, g, b), vec3(0.0)), vec3(2.4));
+}
+
+// Signal → working linear: `InputTransform::convert` (curve, HLG OOTF, HLG tone mapping, gamut matrix, PQ tone
 // mapping, desaturation into the working gamut). The CPU's decode tables clamp the signal to 0..1.
 fn managed(rgb: vec3<f32>) -> vec3<f32> {
     let v = clamp(rgb, vec3(0.0), vec3(1.0));
@@ -138,10 +159,11 @@ fn managed(rgb: vec3<f32>) -> vec3<f32> {
         if ys > 0.0 { g = u.q0.z * pow(ys, 0.2); }
         c = c * g;
     }
+    if u.q2.w > 1.5 { c = bt2446a(c); }
     if u.q1.w > 0.5 {
         c = vec3(dot(u.q2.xyz, c), dot(u.q3.xyz, c), dot(u.q4.xyz, c));
     }
-    if u.q2.w > 0.5 {
+    if u.q2.w > 0.5 && u.q2.w < 1.5 {
         let m = max(max(c.r, c.g), c.b);
         if m > 0.0 {
             let nits = m * white;
