@@ -130,6 +130,22 @@ pub fn register() -> Availability {
             }
             Err(why) => log::info!("no NVDEC hardware decoding: {why}"),
         }
+        // NVENC encodes on Linux as well as on Windows, for H.264 (Export ▸ Hardware encoding, off
+        // by default) and for H.265 (where choosing the format is the opt-in). Opening the probe's
+        // session takes about half a second, so it is asked on a thread of its own now rather than
+        // by the first draw of the format list.
+        #[cfg(target_pointer_width = "64")]
+        {
+            static ENCODERS: std::sync::Once = std::sync::Once::new();
+            ENCODERS.call_once(|| {
+                filmcraft_export::register_encoder(nvenc::export::factory);
+                filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, nvenc::hevc_available);
+                // HDR sequences export as HEVC Main 10 (PQ / HLG) only where NVENC has a 10-bit
+                // encoder; elsewhere they are tone-mapped to SDR, as on macOS
+                filmcraft_export::register_hdr_probe(filmcraft_export::Format::Hevc, nvenc::hevc_hdr_available);
+            });
+            nvenc::warm_hevc_probe();
+        }
         available
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]

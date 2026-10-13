@@ -5,7 +5,7 @@
 //! our importer reads back as PQ / HLG, 10-bit; whose pixels follow a ProRes HDR export of the same
 //! sequence. SDR stays Main 8-bit BT.709, `settings.sdr` forces it. Its own test binary: the encoder
 //! registry and the counters are process-wide. Skips (SKIPPED) only without a 10-bit HEVC encoder.
-#![cfg(target_os = "windows")]
+#![cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 
 use std::path::Path;
 use std::process::Command;

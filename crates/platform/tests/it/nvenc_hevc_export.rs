@@ -4,7 +4,7 @@
 //! counters; and what NVENC declines (an error that says why, counted, never a crash). Its own test
 //! binary: the encoder registry and the counters are process-wide. Skips without an NVIDIA GPU with
 //! an HEVC encoder.
-#![cfg(target_os = "windows")]
+#![cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 
 use std::path::Path;
 use std::process::Command;
