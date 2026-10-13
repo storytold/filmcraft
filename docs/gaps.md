@@ -108,7 +108,8 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   (Windows); Media Foundation H.264 / HEVC 8-bit on Windows behind NVENC (#1575), which is the
   vendor-neutral path for Intel, AMD and Qualcomm (verified on a Snapdragon X / Adreno X1-85);
   GPU compositing, blend modes, 34 effect ids incl. Lumetri basic / creative / vignette,
-  GPU export rendering (#421).
+  GPU export rendering (#421). GPU export read-back is bounded, so an export with
+  `gpuRendering: auto` finishes even where the GPU does not answer a map in time (#1575).
 - **Missing:** zero-copy decoded frames into wgpu (every frame is read back to the CPU and
   re-uploaded); VideoToolbox Main 10 / HDR HEVC encode and B-frames; ProRes hardware decode /
   encode on Apple silicon; 10-bit / HDR in the Media Foundation encoder (a fixed picture delay is taken and written as an
@@ -121,11 +122,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   as it stands; ~48 of Premiere's
   ~82 accelerated effects (keys, masks, Lumetri curves / wheels / HSL, distortions, transitions);
   external video I/O (DeckLink / AJA, Mercury Transmit), control surfaces (EUCON / Mackie);
-  a CPU fallback adapter renders everything on the CPU (#632);
-  **exports with `gpuRendering: auto` stall** — reproducible 8/8 on a Snapdragon X with
-  `hardwareEncoding: off`, 0/8 without it, the process parked at 0 ms CPU on every thread inside a
-  driver call; already reported in #1532's "Not in this PR" (13/27 on an AMD laptop) and unexplained
-  there (#799 for the related reporting gap).
+  a CPU fallback adapter renders everything on the CPU (#632).
 - **Estimate:** 120–200 h (hardware we don't own needs a human). Doc:
   [hardware-parity.md](hardware-parity.md).
 
