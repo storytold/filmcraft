@@ -26,6 +26,40 @@ pub fn zlib(src: &[u8], expected: usize) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
+pub fn gzip(src: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
+    const FHCRC: u8 = 0x02;
+    const FEXTRA: u8 = 0x04;
+    const FNAME: u8 = 0x08;
+    const FCOMMENT: u8 = 0x10;
+    let [0x1f, 0x8b, 8, flags, _, _, _, _, _, _, rest @ ..] = src else {
+        return Err("not a gzip stream");
+    };
+    let mut body = rest;
+    if flags & FEXTRA != 0 {
+        let [lo, hi, tail @ ..] = body else { return Err("truncated gzip header") };
+        body = tail.get(usize::from(u16::from_le_bytes([*lo, *hi]))..).ok_or("truncated gzip header")?;
+    }
+    for flag in [FNAME, FCOMMENT] {
+        if flags & flag != 0 {
+            let end = body.iter().position(|&b| b == 0).ok_or("truncated gzip header")?;
+            body = body.get(end + 1..).unwrap_or_default();
+        }
+    }
+    if flags & FHCRC != 0 {
+        body = body.get(2..).ok_or("truncated gzip header")?;
+    }
+    let [.., a, b, c, d] = body else { return Err("truncated gzip stream") };
+    let size = usize::try_from(u32::from_le_bytes([*a, *b, *c, *d])).unwrap_or(usize::MAX);
+    if size > limit {
+        return Err("gzip stream is larger than allowed");
+    }
+    let out = inflate(body, size)?;
+    if out.len() != size {
+        return Err("gzip stream ends early");
+    }
+    Ok(out)
+}
+
 /// Inflate raw DEFLATE data, producing at most `limit` bytes (more is an error).
 pub fn inflate(src: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
     let mut bits = Bits { src, pos: 0, buf: 0, cnt: 0 };
