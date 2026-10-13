@@ -1314,6 +1314,21 @@ impl FilmcraftApp {
                 let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
                 app.session.execute("file.open", json!({"path": path})).map_err(|e| e.to_string())
             }),
+            // Sequence ▸ Decupador Inteligente ▸ Apply Decoupage Plan: choose the premiere_cuts.json
+            "decupador.applyPlan" => self.pick(FileDialog::open_files(&["json"]), |app, paths| {
+                let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                let r = app.session.execute("decupador.applyPlan", json!({"path": path})).map_err(|e| e.to_string());
+                match &r {
+                    Ok(v) => {
+                        let missing = v.get("missingFiles").and_then(Value::as_array).map(Vec::len).unwrap_or(0);
+                        if missing > 0 {
+                            app.ui.status = format!("{missing} file(s) of the plan are missing");
+                        }
+                    }
+                    Err(e) => app.ui.status = e.clone(),
+                }
+                r
+            }),
             "graphics.newFromFile" => {
                 let exts: Vec<&str> = filmcraft_media::STILL_EXTENSIONS.iter().chain(filmcraft_media::VIDEO_EXTENSIONS).copied().collect();
                 self.pick(FileDialog::open_files(&exts), |app, paths| {

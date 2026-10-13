@@ -8,6 +8,8 @@
 //!   `download`) the verified downloader. Weights are **never** bundled or committed.
 //! - [`whisper`] (feature `whisper`): Whisper inference in pure Rust on candle, with timestamp
 //!   decoding, language detection and word-level timestamps from cross-attention alignment (DTW).
+//! - [`decupador`] (not on the web): the studio's Decupador Inteligente transcriber (faster-whisper
+//!   through its own Python pipeline), the default when it is configured.
 //! - [`diarize`]: speaker labelling by clustering per-chunk MFCC statistics (classical, no model).
 //! - [`mel`]: the log-mel front end shared by Whisper and diarization.
 //! - [`vad`]: energy-based tightening of word bounds (keeps pauses out of words).
@@ -16,6 +18,8 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod decupador;
 pub mod diarize;
 pub mod mel;
 pub mod models;
