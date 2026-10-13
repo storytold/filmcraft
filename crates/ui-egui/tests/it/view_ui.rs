@@ -473,11 +473,9 @@ fn time_zoom_bar_zooms_and_scrolls_the_monitor_ruler() {
     assert!((d.rect("program.zoomBar")[2] - track[2]).abs() < 0.5, "the whole sequence at first");
     let bar = d.rect("program.scrubBar");
     let full = tick_frames(&ruler_ticks(&d, bar), bar, (0.0, 1.0), frames);
-    // the right handle dragged in zooms about the playhead (which the view eases toward as the
-    // drag goes on): by as much as halves the span (the zoom follows the drag exponentially, a
-    // whole bar going from the narrowest view to all)
+    // the right handle dragged in by half the bar halves the span, about the playhead (at the start)
     let y = track[1] + track[3] / 2.0;
-    let half = 0.5f64.ln().abs() / (frames / 5.0).ln() * track[2];
+    let half = track[2] * 0.5;
     d.ok("ui.drag", json!({"from": {"x": track[0] + track[2] - 4.0, "y": y}, "to": {"x": track[0] + track[2] - 4.0 - half, "y": y}, "steps": 8}));
     d.frames(2);
     let z = d.program()["time_zoom"].clone();
@@ -584,41 +582,37 @@ fn time_zoom_bar_middle_drag_never_shows_the_resize_cursor() {
     d.release(track[0] + track[2] - 3.0, y);
 }
 
-/// A handle of a monitor's zoom bar zooms about the playhead: the view stays centred on it, and
-/// the dragged handle follows the pointer.
+/// A handle of a monitor's zoom bar zooms about the playhead: the view ends up centred on it (not
+/// held where it was, not at an end), and the span follows the drag in thumb widths.
 #[test]
 fn time_zoom_bar_handles_zoom_about_the_playhead() {
     let mut d = Driver::demo();
     let duration = num(&d.exec("sequence.inspect", json!({}))["duration"]);
-    d.exec("playhead.set", json!({"time": (duration * 0.5) as i64}));
+    d.exec("playhead.set", json!({"time": (duration * 0.4) as i64}));
     d.frames(2);
     let track = d.rect("program.zoomBar.track");
     let y = track[1] + track[3] / 2.0;
-    let seq = d.exec("sequence.inspect", json!({}));
-    let rate = &seq["settings"]["frame_rate"];
-    let frames = duration * num(&rate["num"]) / num(&rate["den"]) / 254_016_000_000.0;
-    // two fifths of a bar's drag (past the distance the view takes to settle on the playhead)
-    // change the span by exp(0.4 * ln(frames / 5)), about the playhead
-    let fifth = track[2] * 0.4;
-    let factor = (0.4 * (frames / 5.0).ln()).exp();
-    d.ok("ui.drag", json!({"from": {"x": track[0] + track[2] - 4.0, "y": y}, "to": {"x": track[0] + track[2] - 4.0 - fifth, "y": y}, "steps": 8}));
+    let centre = |z: &Value| (num(&z[0]) + num(&z[1])) / 2.0;
+    // the right handle dragged in by 0.7 of the bar: 0.3 of the sequence, centred on the playhead
+    // (holding its place would give 0.28..0.58)
+    d.ok("ui.drag", json!({"from": {"x": track[0] + track[2] - 4.0, "y": y}, "to": {"x": track[0] + track[2] - 4.0 - track[2] * 0.7, "y": y}, "steps": 8}));
     d.frames(2);
     let z = d.program()["time_zoom"].clone();
     let span = num(&z[1]) - num(&z[0]);
-    assert!((span - 1.0 / factor).abs() < 0.03, "the span {span} for a factor of {factor}: {z}");
-    assert!(((num(&z[0]) + num(&z[1])) / 2.0 - 0.5).abs() < 0.01, "centred on the playhead: {z}");
-    // the left handle dragged right zooms in about the playhead again, still centred
+    assert!((span - 0.3).abs() < 0.01, "the span {span} after dragging in 0.7 of the bar: {z}");
+    assert!((centre(&z) - 0.4).abs() < 0.01, "centred on the playhead: {z}");
+    // the left handle dragged right by 0.3 of the thumb zooms in to 0.7 of it, still centred
     let thumb = d.rect("program.zoomBar");
-    d.ok("ui.drag", json!({"from": {"x": thumb[0] + 4.0, "y": y}, "to": {"x": thumb[0] + 4.0 + fifth, "y": y}, "steps": 8}));
+    d.ok("ui.drag", json!({"from": {"x": thumb[0] + 4.0, "y": y}, "to": {"x": thumb[0] + 4.0 + thumb[2] * 0.3, "y": y}, "steps": 8}));
     d.frames(2);
     let z2 = d.program()["time_zoom"].clone();
     let span2 = num(&z2[1]) - num(&z2[0]);
-    assert!(span2 < span * 0.9, "narrower: {span2} from {span}");
-    assert!(((num(&z2[0]) + num(&z2[1])) / 2.0 - 0.5).abs() < 0.01, "centred on the playhead: {z2}");
+    assert!((span2 - span * 0.7).abs() < 0.01, "narrower by 0.3: {span2} from {span}");
+    assert!((centre(&z2) - 0.4).abs() < 0.01, "centred on the playhead: {z2}");
 }
 
 /// Pressing a handle does not move the view: the thumb stays under the pointer as the drag starts,
-/// and eases onto the playhead as it goes on, not in one jump.
+/// and the view moves onto the playhead as the span changes, not in one jump.
 #[test]
 fn time_zoom_bar_handles_do_not_snap_away_from_the_pointer() {
     let mut d = Driver::demo();
@@ -629,8 +623,8 @@ fn time_zoom_bar_handles_do_not_snap_away_from_the_pointer() {
     let track = d.rect("program.zoomBar.track");
     let thumb = d.rect("program.zoomBar");
     let y = track[1] + track[3] / 2.0;
-    // the right handle, a few points: the playhead is far outside the view, so a jump to centre it
-    // would have moved the thumb by hundreds of points
+    // the right handle, a few points: the playhead is far outside the view, so centring on it at
+    // once would have moved the thumb by hundreds of points
     d.ok("ui.drag", json!({"from": {"x": thumb[0] + thumb[2] - 3.0, "y": y}, "to": {"x": thumb[0] + thumb[2] + 5.0, "y": y}, "steps": 4}));
     d.frames(2);
     let after = d.rect("program.zoomBar");

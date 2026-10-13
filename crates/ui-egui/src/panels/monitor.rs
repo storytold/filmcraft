@@ -795,7 +795,8 @@ fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Wh
     let min_span = if len > 0 { (rate.frame_duration().0.saturating_mul(MIN_ZOOM_FRAMES) as f64 / len as f64).min(1.0) } else { 1.0 };
     let (s, e) = time_zoom_range(monitor_view::view(app, which).time_zoom);
     let span = e - s;
-    let w = (span as f32 * bar.width()).clamp(MIN_ZOOM_THUMB_W.min(bar.width()), bar.width());
+    let thumb_w = |span: f64| (span as f32 * bar.width()).clamp(MIN_ZOOM_THUMB_W.min(bar.width()), bar.width());
+    let w = thumb_w(span);
     let travel = (bar.width() - w).max(0.0);
     let range = (1.0 - span).max(0.0);
     let left = bar.min.x + if range > 0.0 { (s / range).clamp(0.0, 1.0) as f32 * travel } else { 0.0 };
@@ -851,14 +852,14 @@ fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Wh
                     set = Some((ns, ns + span));
                 }
             }
-            // a handle: zoom about the playhead, by the distance dragged (the right handle out to
-            // the right, the left handle out to the left)
+            // a handle: zoom about the playhead, the thumb's edge following the pointer (the right
+            // handle out to the right, the left handle out to the left)
             _ => {
                 if let Some(pos) = resp.interact_pointer_pos() {
-                    let drag = (pos.x - grab) as f64 / bar.width().max(1.0) as f64 * if mode == 1 { -1.0 } else { 1.0 };
-                    let playhead = if len > 0 { time.0.saturating_sub(origin.0) as f64 / len as f64 } else { 0.0 };
                     let span = end_at_press - start;
-                    set = Some(super::timeline::zoom_by_drag(span, start + span / 2.0, drag, playhead, 1.0, min_span));
+                    let grow = (pos.x - grab) as f64 / thumb_w(span).max(1.0) as f64 * if mode == 1 { -1.0 } else { 1.0 };
+                    let playhead = if len > 0 { time.0.saturating_sub(origin.0) as f64 / len as f64 } else { 0.0 };
+                    set = Some(super::timeline::zoom_by_drag(start, span, grow, playhead, 1.0, min_span));
                 }
             }
         }

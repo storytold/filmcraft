@@ -130,9 +130,10 @@ from the playhead to translate the marked range.
 Under each monitor's time ruler is a zoom scroll bar like the Timeline's. Its thumb is the part of
 the clip or sequence the ruler shows: drag a handle at either end to zoom in or out, drag the
 middle to scroll, or press beside the thumb to move it there. A handle zooms about the playhead, as
-the Timeline's bar does: the view eases onto it as the drag goes on (it does not jump when the handle
-is pressed), and the span changes exponentially with the drag (a whole bar's width goes from the
-narrowest view to all of it), so a few points of drag stay controllable at high zoom. A thumb filling the bar shows the
+the Timeline's bar does: the view ends up centred on it (moved in from the ends as far as needed),
+its centre moving onto the playhead as the span changes, so a press never moves the view. The thumb's
+edge follows the pointer in thumb widths, so a few points of drag are a small change when the thumb
+is small. A thumb filling the bar shows the
 whole duration; the ruler zooms in as far as five frames. The playhead, markers, In/Out and ticks
 follow the part shown, and clicking or scrubbing the ruler sets a time within it; what lies
 outside it is not drawn. While the monitor plays, a zoomed ruler follows the playhead as the

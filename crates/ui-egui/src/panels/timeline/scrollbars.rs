@@ -92,15 +92,16 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
                     v.scroll = v.target_scroll;
                 }
             }
-            // a handle: zoom about the playhead, by the distance dragged (the right handle out to
-            // the right, the left handle out to the left)
+            // a handle: zoom about the playhead, the thumb's edge following the pointer (the right
+            // handle out to the right, the left handle out to the left)
             _ => {
                 if let Some(pos) = resp.interact_pointer_pos() {
-                    let drag = (pos.x - grab) as f64 / bar.width().max(1.0) as f64 * if mode == 1 { -1.0 } else { 1.0 };
+                    let (_, thumb_w, _) = zoom_thumb(bar, seq_seconds, start, start_pps);
+                    let grow = (pos.x - grab) as f64 / thumb_w.max(1.0) as f64 * if mode == 1 { -1.0 } else { 1.0 };
                     let floor = min_pps(seq_seconds, bar.width());
                     let min_span = (bar.width() as f64 / 24_000.0).max(0.05);
                     let start_span = bar.width() as f64 / start_pps.max(1e-9);
-                    let (ns, ne) = zoom_by_drag(start_span, start + start_span / 2.0, drag, playhead, total, min_span);
+                    let (ns, ne) = zoom_by_drag(start, start_span, grow, playhead, total, min_span);
                     v.pps = (bar.width() as f64 / (ne - ns).max(min_span)).clamp(floor, 24_000.0);
                     v.scroll = ns;
                     v.target_scroll = ns;
