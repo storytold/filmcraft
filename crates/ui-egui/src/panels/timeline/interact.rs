@@ -1,5 +1,5 @@
 use super::clips::paint_hatch;
-use super::layout::{Layout, max_scroll, min_pps, new_track_at};
+use super::layout::{Layout, Row, max_scroll, min_pps, new_track_at};
 use super::menus::{CLIP_MENU, EditPointTarget, edit_point_menu, gap_menu, marker_menu, multicam_menu, ruler_menu};
 use super::snap::{snap, snap_playhead};
 use super::{
@@ -170,6 +170,110 @@ fn move_is_locked(seq: &Sequence, clips: &[ClipId], delta: i32) -> bool {
             seq.track(track).is_some_and(|t| t.locked) || shift_track(seq, track, delta).and_then(|id| seq.track(id)).is_some_and(|t| t.locked)
         })
     })
+}
+
+/// Radius, in points, of a fade handle's hit area.
+const FADE_HANDLE_R: f32 = 6.0;
+
+/// The fade handles of the clip `it` on `row`: its free top corners, as (centre, edge), just
+/// inside the edge zones where a press trims. A clip too
+/// narrow to hold them, a disabled one, one on a locked track, and an edge that already has a
+/// transition have none there.
+fn fade_handles(seq: &Sequence, layout: &Layout, row: &Row, it: &TrackItem) -> Vec<(Pos2, filmcraft_edit::Edge)> {
+    let (x0, x1) = (layout.x_of(it.start), layout.x_of(it.end()));
+    let Some(track) = seq.track(row.track) else { return Vec::new() };
+    if x1 - x0 < 60.0 || !it.enabled || track.locked {
+        return Vec::new();
+    }
+    let y = row.rect.min.y + 9.0;
+    let mut out = Vec::new();
+    if !track.transitions.iter().any(|t| t.to == Some(it.id)) {
+        out.push((pos2(x0 + 13.0, y), filmcraft_edit::Edge::In));
+    }
+    if !track.transitions.iter().any(|t| t.from == Some(it.id)) {
+        out.push((pos2(x1 - 13.0, y), filmcraft_edit::Edge::Out));
+    }
+    out
+}
+
+/// The fade handle under `p`: (clip, edge, whether it is on an audio track).
+fn fade_handle_at(seq: &Sequence, layout: &Layout, p: Pos2) -> Option<(ClipId, filmcraft_edit::Edge, bool)> {
+    let row = layout.rows.iter().find(|r| r.rect.contains(p))?;
+    let track = seq.track(row.track)?;
+    track.items.iter().find_map(|it| {
+        fade_handles(seq, layout, row, it)
+            .into_iter()
+            .find(|(c, _)| c.distance(p) <= FADE_HANDLE_R)
+            .map(|(_, edge)| (it.id, edge, row.kind == TrackKind::Audio))
+    })
+}
+
+/// Apply the default video or audio transition at `clip`'s `edge`, `frames` long (the preference's
+/// default when `None`): a fade, as the edge has no neighbour to dissolve with.
+fn run_fade(app: &mut FilmcraftApp, clip: ClipId, edge: filmcraft_edit::Edge, audio: bool, frames: Option<i64>) {
+    let cmd = if audio { "sequence.applyAudioTransition" } else { "sequence.applyVideoTransition" };
+    let mut params = json!({"clip": clip.0, "edge": if edge == filmcraft_edit::Edge::In { "in" } else { "out" }});
+    if let Some(n) = frames {
+        params["frames"] = json!(n);
+    }
+    if let Err(e) = app.session.execute(cmd, params) {
+        app.ui.status = e.to_string();
+    }
+}
+
+/// The fade handles on the hovered and the selected clips, and the fade being dragged (#1385).
+fn fade_overlay(app: &FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &Layout, pos: Option<Pos2>) {
+    let ctx = ui.ctx().clone();
+    if app.ui.tool == Tool::Selection {
+        let painter = ui.painter().with_clip_rect(layout.content);
+        let hot_text = app.tokens.hot_text;
+        let ring = |c: Pos2, hot: bool| {
+            painter.circle_filled(c, 4.5, if hot { hot_text } else { Color32::from_black_alpha(150) });
+            painter.circle_stroke(c, 4.5, Stroke::new(1.2, Color32::WHITE));
+        };
+        match &app.tl.drag {
+            None => {
+                let over = pos.and_then(|p| {
+                    layout.rows.iter().find(|r| r.rect.contains(p)).and_then(|r| {
+                        seq.track(r.track).and_then(|t| t.items.iter().find(|i| layout.x_of(i.start) <= p.x && p.x <= layout.x_of(i.end())).map(|i| i.id))
+                    })
+                });
+                for row in &layout.rows {
+                    let Some(track) = seq.track(row.track) else { continue };
+                    for it in track.items.iter().filter(|i| over == Some(i.id) || app.session.state.selection.contains(&i.id)) {
+                        for (c, _) in fade_handles(seq, layout, row, it) {
+                            ring(c, pos.is_some_and(|p| c.distance(p) <= FADE_HANDLE_R));
+                        }
+                    }
+                }
+                if let Some(p) = pos
+                    && fade_handle_at(seq, layout, p).is_some()
+                {
+                    ctx.set_cursor_icon(CursorIcon::ResizeColumn);
+                }
+            }
+            Some(Drag::Fade { clip, edge, audio, frames }) => {
+                // the range the release will commit: at a free edge a fade inside the clip, at a cut
+                // a dissolve centred on it
+                let kind = if *audio { TrackKind::Audio } else { TrackKind::Video };
+                let edge_name = if *edge == filmcraft_edit::Edge::In { "in" } else { "out" };
+                let params = json!({"clip": clip.0, "edge": edge_name, "frames": frames});
+                if *frames > 0
+                    && let Ok((track, tr)) = filmcraft_engine::commands::preview_transition(&app.session, &params, kind)
+                    && let Some(row) = layout.rows.iter().find(|r| r.track == track)
+                {
+                    let (top, bottom) = (row.rect.min.y + 1.0, row.rect.max.y - 1.0);
+                    let (a, b) = (layout.x_of(tr.start), layout.x_of(tr.start + tr.duration));
+                    painter.rect_filled(Rect::from_min_max(pos2(a, top), pos2(b, bottom)), 0.0, Color32::from_black_alpha(70));
+                    let (from, to) = if *edge == filmcraft_edit::Edge::In { (pos2(a, bottom), pos2(b, top)) } else { (pos2(a, top), pos2(b, bottom)) };
+                    painter.line_segment([from, to], Stroke::new(1.5, Color32::WHITE));
+                    painter.text(pos2((a + b) / 2.0, top + 9.0), Align2::CENTER_CENTER, format!("{frames} f"), Tokens::ui(10.5), Color32::WHITE);
+                }
+                ctx.set_cursor_icon(CursorIcon::ResizeColumn);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn shift_track(seq: &Sequence, tid: TrackId, delta: i32) -> Option<TrackId> {
@@ -411,6 +515,7 @@ fn start_drag(
     let mods = ctx.input(|i| i.modifiers);
     let rate = seq.settings.frame_rate;
     let roll_ripple = app.session.prefs.trim.selection_tool_roll_ripple;
+    let fade = if tool == Tool::Selection { fade_handle_at(seq, layout, p) } else { None };
     let started = match (tool, grab) {
         // a middle-button drag pans whatever the tool and whatever it starts on, as in the
         // monitors (#824) and DaVinci Resolve (#1490); only a primary press is kept in
@@ -420,6 +525,15 @@ fn start_drag(
             let tv = &app.ui.timeline;
             Some(Drag::Pan { last, start_scroll: tv.target_scroll, start_v: tv.v_scroll, audio: last.y >= layout.split_y, start_a: tv.a_scroll })
         }
+        // a fade handle: a click applies the default transition at that edge, a drag sets its length
+        (Tool::Selection, _) if fade.is_some() => fade.and_then(|(clip, edge, audio)| {
+            if resp.clicked() {
+                run_fade(app, clip, edge, audio, None);
+                None
+            } else {
+                Some(Drag::Fade { clip, edge, audio, frames: 0 })
+            }
+        }),
         (_, Grab::Other(Hit::Ruler)) => Some(Drag::Scrub { initial: app.session.playhead() }),
         (_, Grab::Other(Hit::WorkArea { edge })) => {
             seq.work_area.filter(|_| resp.drag_started()).map(|w| Drag::WorkArea { edge, from: t, start: w.start, end: w.end() })
@@ -760,6 +874,16 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
                 };
                 Some(Drag::WorkArea { edge, from, start, end })
             }
+            Drag::Fade { clip, edge, audio, .. } => {
+                // how far in from its edge the pointer is, in frames, up to half the clip
+                let frames = seq.find_item(clip).map_or(0, |(_, it)| {
+                    let frame_px = (layout.x_of(it.start + rate.frame_duration()) - layout.x_of(it.start)).max(0.001);
+                    let along = if edge == filmcraft_edit::Edge::In { p.x - layout.x_of(it.start) } else { layout.x_of(it.end()) - p.x };
+                    let most = rate.frame_at(it.duration) / 2;
+                    ((along / frame_px).round() as i64).clamp(0, most.max(0))
+                });
+                Some(Drag::Fade { clip, edge, audio, frames })
+            }
             Drag::Volume(v) => Some(Drag::Volume(crate::panels::timeline_volume::drag(app, ui, seq, layout, v, p.y))),
             Drag::Marquee { start, before, add, individual } => {
                 let r = start.rect_to(layout, p);
@@ -845,6 +969,10 @@ fn commit_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respons
                 Drag::Roll { left, right, delta, .. } if delta != Tick::ZERO => Some(app.session.execute("timeline.roll", json!({"left": left.0, "right": right.0, "delta": delta.0}))),
                 Drag::Slip { clip, delta } if delta != Tick::ZERO => Some(app.session.execute("timeline.slip", json!({"clip": clip.0, "delta": delta.0}))),
                 Drag::Slide { clip, delta } if delta != Tick::ZERO => Some(app.session.execute("timeline.slide", json!({"clip": clip.0, "delta": delta.0}))),
+                Drag::Fade { clip, edge, audio, frames } if frames > 0 => {
+                    run_fade(app, clip, edge, audio, Some(frames));
+                    None
+                }
                 Drag::Transition { id, start, duration, .. } => {
                     let moved = seq.all_tracks().find_map(|tr| tr.transitions.iter().find(|x| x.id == id)).is_some_and(|x| (x.start, x.duration) != (start, duration));
                     moved.then(|| app.session.execute("sequence.setTransition", json!({"transition": id.0, "start": start.0, "duration": duration.0})))
@@ -1170,6 +1298,8 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
     wheel_scroll(app, ui, rect, layout, seq);
 
     hover_cursor(app, ui, seq, layout, pos);
+
+    fade_overlay(app, ui, seq, layout, pos);
 
     if press_action(app, &ctx, &resp, seq, layout) {
         return;
