@@ -114,6 +114,7 @@ impl FilmcraftApp {
         let mut row = ui.new_child(egui::UiBuilder::new().max_rect(text).id_salt("status-text").layout(egui::Layout::left_to_right(egui::Align::Center)));
         let shown = row.add(egui::Label::new(egui::RichText::new(&hint).font(Tokens::ui(11.0)).color(t.text_dim)).selectable(true).truncate());
         self.auto.add("status.text", shown.rect, &hint);
+        self.job_window(ui.ctx());
     }
 
     /// The running job (export / render previews), if any; plays the rendered range when a preview
@@ -146,6 +147,56 @@ impl FilmcraftApp {
     fn running_job(&self) -> Option<filmcraft_engine::Job> {
         use std::sync::atomic::Ordering;
         self.session.jobs.iter().rev().find(|j| !j.progress.finished.load(Ordering::Relaxed)).cloned()
+    }
+
+    /// A window with the running job's progress while Preferences ▸ General ▸ "Show a progress window
+    /// while exporting or rendering" is on (#1192): what it is doing, a bar with the percentage, how
+    /// much of the work is done, the time left, and Cancel. Closing it hides it for that job only.
+    /// Automation ids `progress.window`, `.bar`, `.cancel`.
+    fn job_window(&mut self, ctx: &egui::Context) {
+        use std::sync::atomic::Ordering;
+        if !self.session.prefs.general.show_progress_window {
+            return;
+        }
+        let Some(job) = self.running_job() else { return };
+        if self.ui.progress_window_hidden == Some(job.id) {
+            return;
+        }
+        let (done, total) = (job.progress.done.load(Ordering::Relaxed), job.progress.total.load(Ordering::Relaxed));
+        let f = job.progress.fraction().clamp(0.0, 1.0);
+        let left = job.progress.eta().map(panels::left_text).unwrap_or_default();
+        let verb = if job.label.starts_with("Rendering") { crate::i18n::t(&job.label).to_string() } else { tl!("Exporting").to_string() };
+        let mut open = true;
+        let mut cancel = false;
+        let window = egui::Window::new(tl!("Progress"))
+            .id(egui::Id::unique("job-progress-window"))
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(crate::widgets::dialog_center(ctx))
+            .show(ctx, |ui| {
+                ui.set_min_width(300.0);
+                ui.label(format!("{verb}…"));
+                let bar = ui.add(egui::ProgressBar::new(f).text(format!("{:.0}%{left}", f * 100.0)));
+                self.auto.add("progress.window.bar", bar.rect, &format!("{:.0}%", f * 100.0));
+                if total > 0 {
+                    ui.label(egui::RichText::new(format!("{done} / {total}")).weak());
+                }
+                let button = ui.button(tl!("Cancel"));
+                self.auto.add("progress.window.cancel", button.rect, "Cancel");
+                cancel = button.clicked();
+            });
+        if let Some(window) = window {
+            self.auto.add("progress.window", window.response.rect, &verb);
+        }
+        if cancel {
+            job.progress.cancel.store(true, Ordering::Relaxed);
+            self.watched_render = None;
+        }
+        if !open || cancel {
+            self.ui.progress_window_hidden = Some(job.id);
+        }
     }
 
     /// Right side of the status bar: the running job (export / render previews) with a progress

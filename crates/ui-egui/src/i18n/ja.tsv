@@ -3653,6 +3653,7 @@
 	Invalid duration: {error}	無効なデュレーション: {error}
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) にはハードウェアエンコーダー（NVIDIA GPU の NVENC、macOS の VideoToolbox）が必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの H.265 エンコーダーがありません。代わりに H.264 または ProRes を選んでください。
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 にはハードウェアエンコーダーが必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの AV1 エンコーダーがありません。
+	Show a progress window while exporting or rendering	書き出しまたはレンダリング中に進行状況ウィンドウを表示
 	Enter a positive duration within the supported speed range.	対応する速度の範囲内で正の長さを入力してください。
 	Show Video Names	ビデオ名を表示
 	Show Audio Names	オーディオ名を表示

@@ -492,6 +492,8 @@ pub struct UiState {
     pub show_scopes: bool,
     /// Transient status line shown in the footer.
     pub status: String,
+    /// The job whose progress window was closed: it stays closed until another job runs.
+    pub progress_window_hidden: Option<u64>,
     /// A link the web browser couldn't open, shown with its address until closed
     /// ([`crate::links::show_failed`]).
     #[serde(default)]
@@ -1018,6 +1020,7 @@ impl Default for UiState {
             dark: true,
             show_scopes: false,
             status: String::new(),
+            progress_window_hidden: None,
             failed_link: None,
             eyedropper: None,
             keyframe_selection: Vec::new(),

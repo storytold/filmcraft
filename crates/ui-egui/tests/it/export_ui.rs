@@ -632,3 +632,28 @@ fn the_export_range_follows_the_sequence_marks() {
     d.frames(2);
     assert_eq!(d.app().ui.export.range, "inOut");
 }
+
+/// Preferences ▸ General ▸ "Show a progress window while exporting or rendering" (#1192): a window
+/// with the running job's bar and a Cancel, closed for that job by its close button.
+#[test]
+fn a_progress_window_shows_the_running_job_when_the_preference_is_on() {
+    use std::sync::atomic::Ordering;
+
+    use filmcraft_engine::Job;
+    let mut d = Driver::new("progress-window");
+    let job = Job { id: 901, label: "Exporting".into(), progress: Default::default(), result: Default::default() };
+    job.progress.total.store(1000, Ordering::Relaxed);
+    job.progress.done.store(250, Ordering::Relaxed);
+    d.app().session.jobs.push(job);
+    d.frames(4);
+    assert!(!d.has("progress.window"), "off by default: only the status bar shows the job");
+    d.app().session.prefs.general.show_progress_window = true;
+    d.frames(4);
+    assert!(d.has("progress.window"), "the window shows the running job");
+    assert!(d.has("progress.window.bar") && d.has("progress.window.cancel"));
+    // Cancel asks the job to stop and closes the window for it
+    d.click("progress.window.cancel");
+    assert!(d.app().session.jobs[0].progress.cancel.load(Ordering::Relaxed));
+    d.frames(3);
+    assert!(!d.has("progress.window"));
+}
