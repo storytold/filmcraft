@@ -539,20 +539,12 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             }
         }
         ti.markers = read_markers(c, rate, &mut self.b);
-        let src_frame = self.source_frame(item).unwrap_or(frame);
+        let src_frame = self.b.source_size(item).unwrap_or(frame);
         for f in c.children().filter(|x| x.has_tag_name("filter")) {
             self.filter(&mut ti, f, rate, frame, src_frame);
         }
         let refs: Vec<String> = children(c, "link").filter_map(|l| child_text(l, "linkclipref")).map(str::to_string).collect();
         Some((ti, refs))
-    }
-
-    fn source_frame(&self, item: ItemId) -> Option<(u32, u32)> {
-        match &self.b.p.item(item)?.kind {
-            ItemKind::Media(m) => m.info.video.as_ref().map(|v| (v.width, v.height)),
-            ItemKind::Sequence(s) => Some((s.settings.width, s.settings.height)),
-            _ => None,
-        }
     }
 
     fn filter(&mut self, ti: &mut TrackItem, f: Node, rate: FrameRate, frame: (u32, u32), src: (u32, u32)) {
