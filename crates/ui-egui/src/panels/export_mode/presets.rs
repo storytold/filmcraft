@@ -122,13 +122,13 @@ pub(super) fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
     if let Some((c, p)) = cmd
         && let Err(e) = app.session.execute(c, p)
     {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
     match pick {
         Some("import") => app.pick_ui(FileDialog::open_file(tl!("Export presets"), &["json"]), |app, paths| match paths.into_iter().next() {
             Some(path) => {
                 if let Err(e) = app.session.execute("export.presets.import", json!({"path": path})) {
-                    app.ui.status = e.to_string();
+                    app.ui.fail(e.to_string());
                 }
             }
             None => app.ui.status = tl!("Import: no file chosen (agents: export.presets.import {path})").into(),
@@ -138,7 +138,7 @@ pub(super) fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
             app.pick_ui(FileDialog::save_as(tl!("Export presets"), &["json"], &format!("{selected}.json")), move |app, paths| match paths.into_iter().next() {
                 Some(path) => {
                     if let Err(e) = app.session.execute("export.presets.export", json!({"path": path, "names": [selected]})) {
-                        app.ui.status = e.to_string();
+                        app.ui.fail(e.to_string());
                     }
                 }
                 None => app.ui.status = tl!("Export: no file chosen (agents: export.presets.export {path, names})").into(),

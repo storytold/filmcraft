@@ -233,7 +233,7 @@ pub fn run(app: &mut FilmcraftApp, ctx: &egui::Context, cmd: &str, name: &str) {
             app.pick_ui(FileDialog::save_as(tl!("Effect presets"), &["json"], &format!("{name}.json")), move |app, paths| {
                 let Some(path) = paths.into_iter().next() else { return };
                 if let Err(e) = app.session.execute("presets.export", json!({"path": path, "names": [name]})) {
-                    app.ui.status = e.to_string();
+                    app.ui.fail(e.to_string());
                 }
             });
         }
@@ -256,9 +256,11 @@ pub fn run(app: &mut FilmcraftApp, ctx: &egui::Context, cmd: &str, name: &str) {
                 if imported > 0 && !app.ui.expanded_fx.contains(&"Presets".to_string()) {
                     app.ui.expanded_fx.push("Presets".to_string());
                 }
-                app.ui.status = if let Some(e) = errors.first() {
-                    if imported > 0 { tlf!("Imported {n} preset(s); not imported: {error}", n = imported, error = e) } else { e.clone() }
-                } else if skipped > 0 && warnings > 0 {
+                if let Some(e) = errors.first() {
+                    app.ui.fail(if imported > 0 { tlf!("Imported {n} preset(s); not imported: {error}", n = imported, error = e) } else { e.clone() });
+                    return;
+                }
+                app.ui.status = if skipped > 0 && warnings > 0 {
                     tlf!(
                         "Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters",
                         n = imported,
@@ -279,9 +281,11 @@ pub fn run(app: &mut FilmcraftApp, ctx: &egui::Context, cmd: &str, name: &str) {
                 let imported = v["imported"].as_u64().unwrap_or(0);
                 let removed = v["removed"].as_u64().unwrap_or(0);
                 let changed = v["changed"].as_bool().unwrap_or(false);
-                app.ui.status = if let Some(e) = v["errors"].as_array().and_then(|a| a.first()).and_then(|v| v.as_str()) {
-                    e.to_string()
-                } else if imported > 0 || removed > 0 {
+                if let Some(e) = v["errors"].as_array().and_then(|a| a.first()).and_then(|v| v.as_str()) {
+                    app.ui.fail(e);
+                    return;
+                }
+                app.ui.status = if imported > 0 || removed > 0 {
                     tlf!("Preset library updated: {imported} loaded, {removed} removed", imported = imported, removed = removed)
                 } else if changed {
                     tl!("Preset library updated").to_string()
@@ -289,7 +293,7 @@ pub fn run(app: &mut FilmcraftApp, ctx: &egui::Context, cmd: &str, name: &str) {
                     tl!("Preset library is up to date").to_string()
                 };
             }
-            Err(e) => app.ui.status = e.to_string(),
+            Err(e) => app.ui.fail(e.to_string()),
         },
         _ => {}
     }
@@ -350,7 +354,7 @@ pub fn save_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
         );
         match r {
             Ok(_) => app.ui.status = tlf!("Saved preset “{name}”", name = d.name.trim()),
-            Err(e) => app.ui.status = e.to_string(),
+            Err(e) => app.ui.fail(e.to_string()),
         }
     }
 }

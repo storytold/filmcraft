@@ -23,7 +23,7 @@ impl FilmcraftApp {
             let mut next = self.workspaces.clone();
             next.current = name.to_string();
             if let Err(e) = self.set_workspaces(next) {
-                self.ui.status = e;
+                self.ui.fail(e);
             }
         }
         if name == "Color" {
