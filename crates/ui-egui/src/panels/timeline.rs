@@ -274,26 +274,15 @@ pub enum Drag {
 const TRACK_HEADER_TINT: f32 = 0.18;
 const TRACK_LANE_TINT: f32 = 0.10;
 
-/// The tools whose icon is the pointer over the tracks (the others use a system pointer).
-fn tool_draws_pointer(tool: Tool) -> bool {
-    matches!(
-        tool,
-        Tool::Razor
-            | Tool::Ripple
-            | Tool::Rolling
-            | Tool::RateStretch
-            | Tool::Remix
-            | Tool::Slip
-            | Tool::Slide
-            | Tool::TrackSelectForward
-            | Tool::TrackSelectBackward
-    )
+/// Every tool but Selection (the arrow) shows its own icon as the pointer, wherever it acts.
+pub(crate) fn tool_draws_pointer(tool: Tool) -> bool {
+    tool != Tool::Selection
 }
 
 /// The tool's icon centred on the pointer, outlined so it reads over clips of any colour.
-fn paint_tool_pointer(ctx: &egui::Context, tool: Tool, at: Pos2) {
+pub(crate) fn paint_tool_pointer(ctx: &egui::Context, tool: Tool, at: Pos2) {
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("tool-pointer")));
-    let r = Rect::from_center_size(at, vec2(20.0, 20.0));
+    let r = Rect::from_center_size(at, vec2(22.0, 22.0));
     for d in [vec2(-1.0, 0.0), vec2(1.0, 0.0), vec2(0.0, -1.0), vec2(0.0, 1.0)] {
         icons::paint(&painter, r.translate(d), tool.icon(), Color32::BLACK);
     }

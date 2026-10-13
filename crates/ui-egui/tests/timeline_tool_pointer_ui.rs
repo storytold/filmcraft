@@ -1,7 +1,6 @@
-//! Headless UI tests of the editing tools' pointers in the Timeline: the Razor, Ripple, Rolling,
-//! Rate Stretch, Slip, Slide and Track Select tools show their own icon as the pointer (the system
-//! pointer hidden) wherever they act in the tracks, and the Razor's preview line crosses the clip
-//! and the clips linked to it, or every track with Shift.
+//! Headless UI tests of the tools' pointers in the Timeline: every tool but Selection shows its
+//! own icon as the pointer (the system pointer hidden) wherever it acts in the tracks, and the
+//! Razor's preview line crosses the clip and the clips linked to it, or every track with Shift.
 
 use std::sync::mpsc::{Sender, channel};
 
@@ -104,19 +103,33 @@ fn the_editing_tools_draw_their_own_pointer_over_the_tracks() {
     let mut d = Driver::demo();
     let city = d.v1_clip(CITY);
     let at = clip_center(&mut d, city);
-    for tool in ["Razor", "Ripple", "Rolling", "RateStretch", "Slip", "Slide", "TrackSelectForward", "TrackSelectBackward", "Remix"] {
+    for tool in [
+        "Razor",
+        "Ripple",
+        "Rolling",
+        "RateStretch",
+        "Slip",
+        "Slide",
+        "TrackSelectForward",
+        "TrackSelectBackward",
+        "Remix",
+        "Hand",
+        "Zoom",
+        "Pen",
+        "Type",
+        "Rectangle",
+        "Ellipse",
+    ] {
         d.ok("ui.set", json!({"tool": tool}));
         d.frames(2);
         d.hover(at);
         assert_eq!(d.cursor(), CursorIcon::None, "{tool}: its own icon is the pointer, the system one hidden");
     }
-    // the tools that have a system pointer keep it, and so does the Selection tool
-    for (tool, icon) in [("Selection", CursorIcon::Default), ("Hand", CursorIcon::Grab), ("Zoom", CursorIcon::ZoomIn)] {
-        d.ok("ui.set", json!({"tool": tool}));
-        d.frames(2);
-        d.hover(at);
-        assert_eq!(d.cursor(), icon, "{tool}");
-    }
+    // only the Selection tool keeps the system arrow
+    d.ok("ui.set", json!({"tool": "Selection"}));
+    d.frames(2);
+    d.hover(at);
+    assert_eq!(d.cursor(), CursorIcon::Default, "Selection");
 }
 
 #[test]
