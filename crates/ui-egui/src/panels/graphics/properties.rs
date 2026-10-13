@@ -240,7 +240,7 @@ impl Ctx<'_> {
     }
     fn check(&mut self, vui: &mut egui::Ui, id: &str, label: &str) -> bool {
         let mut b = self.value(id).as_bool().unwrap_or(false);
-        let r = vui.checkbox(&mut b, label);
+        let r = vui.checkbox_drag(&mut b, label);
         self.auto(id, r.rect, label);
         if r.changed() {
             self.set(id, json!(b));
@@ -696,7 +696,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let vertical = pv(e, "vertical", mt).as_bool().unwrap_or(false);
             let (_, mut vui) = cx.row(ui, tl!("Orientation"));
             let mut value = vertical;
-            let response = vui.checkbox(&mut value, tl!("Vertical Text"));
+            let response = vui.checkbox_drag(&mut value, tl!("Vertical Text"));
             cx.auto("vertical", response.rect, "Vertical Text");
             if response.changed() {
                 cx.set("vertical", json!(value));
@@ -837,7 +837,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         elems.push(("graphics.textProperties.type".into(), r.response.rect, "Text Layer Type"));
         ui.add_space(6.0);
         ui.label(tl!("Text Styling"));
-        let r = ui.checkbox(&mut d.ligatures, tl!("Ligatures"));
+        let r = ui.checkbox_drag(&mut d.ligatures, tl!("Ligatures"));
         elems.push(("graphics.textProperties.ligatures".into(), r.rect, "Ligatures"));
         ui.add_space(6.0);
         ui.horizontal(|ui| {

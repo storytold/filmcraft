@@ -5,6 +5,7 @@
 //! `events.clearAll`, `events.row.<id>`, `events.details`; Progress — `progress.job.<id>`,
 //! `progress.cancel.<id>`, `progress.showFinished`. State: `ui.panels.events` / `ui.panels.progress`.
 
+use crate::widgets::DragCheckbox as _;
 use egui::{Align2, Color32, Rect, RichText, Sense, Stroke, pos2, vec2};
 use filmcraft_engine::panels::{Level, LogEntry};
 use serde_json::json;
@@ -153,7 +154,7 @@ pub fn progress(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut elems: Vec<(String, Rect, String)> = Vec::new();
     let mut cancel = None;
     let mut finished = show_finished;
-    let r = ui.checkbox(&mut finished, tl!("Show finished jobs"));
+    let r = ui.checkbox_drag(&mut finished, tl!("Show finished jobs"));
     elems.push(("progress.showFinished".into(), r.rect, "Show finished jobs".into()));
     ui.add_space(4.0);
     let active = jobs.iter().filter(|j| j["finished"] != json!(true)).count();

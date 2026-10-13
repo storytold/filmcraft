@@ -1,7 +1,10 @@
 //! Marker editing and project palette creation are separate, undoable operations.
 use crate::{
     FilmcraftApp,
-    widgets::color_picker::{self, ColorDraft},
+    widgets::{
+        DragCheckbox as _,
+        color_picker::{self, ColorDraft},
+    },
 };
 use egui::{Color32, Sense, Stroke, vec2};
 use filmcraft_project::{HexColor, Label, Marker, MarkerKind};
@@ -347,7 +350,7 @@ fn fields(app: &mut FilmcraftApp, ui: &mut egui::Ui, draft: &mut Draft, rate: fi
             let response = timecode_field(ui, &mut draft.time, rate, tl!("Time"));
             app.auto.add_response("markerProperties.time", &response, tl!("Time"));
             ui.add_space(16.0);
-            let response = ui.checkbox(&mut draft.range, tl!("Duration")).on_hover_text(tl!("Range marker"));
+            let response = ui.checkbox_drag(&mut draft.range, tl!("Duration")).on_hover_text(tl!("Range marker"));
             app.auto.add_response("markerProperties.range", &response, tl!("Range marker"));
             if response.changed() && draft.range && draft.original_duration == filmcraft_time::Tick::ZERO && draft.duration == draft.initial_duration {
                 draft.duration = filmcraft_time::format_timecode_frames(1, rate, false);

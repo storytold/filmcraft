@@ -2,6 +2,7 @@
 //! Premiere, then standard effects), generated from parameter schemas, with stopwatches and a
 //! keyframe lane on the right. Also hosts the Lumetri Color panel body (same editor, grouped).
 
+use crate::widgets::DragCheckbox as _;
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use filmcraft_project::{ClipId, EffectInstance, ParamKind, ParamValue, TrackItem, TrackKind};
 use filmcraft_time::Tick;
@@ -777,7 +778,7 @@ fn param_value_widget(
         (ParamKind::Bool, ParamValue::Bool(b)) => {
             let mut v = *b;
             fit_to_row(vui);
-            if crate::widgets::accessible_name(vui.checkbox(&mut v, ""), crate::i18n::t(pd.label)).changed() {
+            if crate::widgets::accessible_name(vui.checkbox_drag(&mut v, ""), crate::i18n::t(pd.label)).changed() {
                 set = Some(json!(v));
             }
         }
