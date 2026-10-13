@@ -416,10 +416,18 @@ impl MfApi {
     }
 
     /// The decoder MFTs taking input of `subtype`, hardware ones first, as activation objects.
+    ///
+    /// `subtype` goes in `MFTEnumEx`'s **output** slot, with the input left unconstrained. That
+    /// reads backwards — a decoder's compressed type is its input — but it is what actually matches:
+    /// with the type in the input slot and no output constraint, this returns nothing at all on
+    /// Windows, and every decoder MFT disappears. Measured on a Snapdragon X (Adreno X1-85, driver
+    /// `31.0.137.0`): `Some(&type)` here lists Microsoft's H.264 decoder and the HEVC, VP9 and AV1
+    /// extensions; `None, Some(&type)` lists none of them, and FilmCraft decodes everything in
+    /// software without saying why. Do not "correct" this.
     fn decoders(&self, subtype: GUID) -> Result<Vec<IMFActivate>, String> {
         let input = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: subtype };
         let flags = MFT_ENUM_FLAG(MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_ASYNCMFT.0 | MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0);
-        self.enumerate(MFT_CATEGORY_VIDEO_DECODER, flags, None, Some(&input))
+        self.enumerate(MFT_CATEGORY_VIDEO_DECODER, flags, Some(&input), None)
     }
 
     /// The encoder MFTs writing `output` from `input`, as activation objects. The output type comes
