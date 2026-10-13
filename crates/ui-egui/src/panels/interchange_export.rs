@@ -204,7 +204,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 let cmd = if d.omf { "file.exportOmf" } else { "file.exportAaf" };
                 match app.session.execute(cmd, params) {
                     Ok(v) => app.ui.status = tlf!("Exported {path}", path = v["path"].as_str().unwrap_or_default()),
-                    Err(e) => app.ui.status = e.to_string(),
+                    Err(e) => app.ui.fail(e.to_string()),
                 }
             });
         } else {

@@ -29,7 +29,7 @@ impl FilmcraftApp {
                         && let Some(errs) = v.get("errors").and_then(Value::as_array)
                         && !errs.is_empty()
                     {
-                        app.ui.status = errs.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
+                        app.ui.fail(errs.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; "));
                     }
                     r
                 })
@@ -39,7 +39,7 @@ impl FilmcraftApp {
                 let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
                 let r = app.session.execute("file.importImageSequence", json!({"path": path})).map_err(|e| e.to_string());
                 if let Err(e) = &r {
-                    app.ui.status = e.clone();
+                    app.ui.fail(e.clone());
                 }
                 r
             }),

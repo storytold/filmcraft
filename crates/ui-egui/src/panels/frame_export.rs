@@ -276,7 +276,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     close = true;
                 }
                 Err(e) => {
-                    app.ui.status = e.to_string();
+                    app.ui.fail(e.to_string());
                     d.error = Some(e.to_string());
                 }
             }

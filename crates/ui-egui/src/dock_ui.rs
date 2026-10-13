@@ -314,7 +314,7 @@ impl FilmcraftApp {
                 }
             };
             if let Err(error) = result {
-                self.ui.status = error.to_string();
+                self.ui.fail(error.to_string());
             }
         }
         if let Some((panel, pos, viewport)) = menu {

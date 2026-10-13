@@ -139,7 +139,7 @@ pub fn events(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if clear {
         app.ui.panels.events.selected = None;
         if let Err(e) = app.session.execute("events.clear", json!({})) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
     }
 }
@@ -220,7 +220,7 @@ pub fn progress(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if let Some(id) = cancel
         && let Err(e) = app.session.execute("jobs.cancel", json!({"job": id}))
     {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
     if active > 0 {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));

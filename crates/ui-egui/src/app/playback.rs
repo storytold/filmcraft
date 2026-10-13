@@ -128,7 +128,7 @@ impl FilmcraftApp {
         if self.session.mixrec.active() {
             let t = self.session.playhead();
             if let Err(e) = self.session.execute("mixer.recordStop", json!({"time": t.0})) {
-                self.ui.status = e.to_string();
+                self.ui.fail(e.to_string());
             }
         }
         panels::multicam::on_stop(self);

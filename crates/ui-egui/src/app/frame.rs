@@ -77,10 +77,12 @@ impl FilmcraftApp {
         let sb = egui::Rect::from_min_max(egui::pos2(full.min.x, full.max.y - status_h), full.max);
         ui.painter().rect_filled(sb, 0.0, t.header_bg);
         let now = ui.input(|i| i.time);
+        // an error stays longer than a note, and is drawn larger in the danger colour so it is not missed
+        let is_error = self.ui.status_is_error();
         if self.ui.status != self.status_seen.0 {
             self.status_seen = (self.ui.status.clone(), now);
         } else if !self.ui.status.is_empty() {
-            if now - self.status_seen.1 > 8.0 {
+            if now - self.status_seen.1 > if is_error { 20.0 } else { 8.0 } {
                 self.ui.status.clear();
             } else {
                 ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
@@ -102,6 +104,14 @@ impl FilmcraftApp {
             }
         }
         let hint = if !self.ui.status.is_empty() { self.ui.status.clone() } else { self.hint_text() };
+        let mut text_x = sb.min.x + 10.0;
+        if is_error {
+            ui.painter().rect_filled(sb, 0.0, t.danger.gamma_multiply(0.14));
+            let dot = egui::Rect::from_center_size(egui::pos2(text_x + 6.0, sb.center().y), egui::vec2(12.0, 12.0));
+            ui.painter().circle_filled(dot.center(), 6.0, t.danger);
+            ui.painter().text(dot.center(), egui::Align2::CENTER_CENTER, "!", Tokens::semibold(10.0), egui::Color32::WHITE);
+            text_x += 20.0;
+        }
         // the bar goes under the text and the job's controls, so they get their own clicks
         let resp = ui.interact(sb, egui::Id::unique("status-bar"), egui::Sense::click());
         if resp.clicked() {
@@ -110,10 +120,11 @@ impl FilmcraftApp {
         let right = self.job_status(ui, sb, &t).unwrap_or(sb.max.x);
         // A label, not painted text, so a path or an error can be selected and copied (#2295);
         // too long a message ends in "…" before the job's progress and shows in full on hover.
-        let text = egui::Rect::from_min_max(egui::pos2(sb.min.x + 10.0, sb.min.y), egui::pos2((right - 10.0).max(sb.min.x + 10.0), sb.max.y));
+        let text = egui::Rect::from_min_max(egui::pos2(text_x, sb.min.y), egui::pos2((right - 10.0).max(text_x), sb.max.y));
+        let (font, color) = if is_error { (Tokens::semibold(12.0), t.text) } else { (Tokens::ui(11.0), t.text_dim) };
         let mut row = ui.new_child(egui::UiBuilder::new().max_rect(text).id_salt("status-text").layout(egui::Layout::left_to_right(egui::Align::Center)));
-        let shown = row.add(egui::Label::new(egui::RichText::new(&hint).font(Tokens::ui(11.0)).color(t.text_dim)).selectable(true).truncate());
-        self.auto.add("status.text", shown.rect, &hint);
+        let shown = row.add(egui::Label::new(egui::RichText::new(&hint).font(font).color(color)).selectable(true).truncate());
+        self.auto.add(if is_error { "status.error" } else { "status.text" }, shown.rect, &hint);
     }
 
     /// The running job (export / render previews), if any; plays the rendered range when a preview

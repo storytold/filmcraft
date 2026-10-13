@@ -24,7 +24,7 @@ pub(super) fn marker_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut 
         app.auto.add(&format!("timeline.markerMenu.{cmd}"), r.rect, label);
         if r.clicked() {
             if let Err(e) = crate::menus::invoke(app, ctx, cmd, json!({"target":"program"})) {
-                app.ui.status = e;
+                app.ui.fail(e);
             }
             ui.close();
         }
@@ -119,7 +119,7 @@ pub(super) fn edit_point_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &
         {
             let e = if out { "out" } else { "in" };
             if let Err(e) = app.session.execute("trim.selectEditPoint", json!({"clip": c.0, "edge": e, "kind": kind})) {
-                app.ui.status = e.to_string();
+                app.ui.fail(e.to_string());
             }
             ui.close();
         }
@@ -130,7 +130,7 @@ pub(super) fn edit_point_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &
     app.auto.add("timeline.editPointMenu.applyDefaultTransitions", r.rect, label);
     if r.clicked() {
         if let Err(e) = crate::menus::invoke(app, ctx, "trim.applyDefaultTransition", json!({})) {
-            app.ui.status = e;
+            app.ui.fail(e);
         }
         ui.close();
     }
@@ -143,7 +143,7 @@ pub(super) fn edit_point_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &
         && let (Some(left), Some(right)) = (target.left, target.right)
     {
         if let Err(e) = app.session.execute("sequence.joinThroughEdits", json!({"cut": [left.0, right.0]})) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
         ui.close();
     }
@@ -246,7 +246,7 @@ pub(super) fn gap_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egu
     app.auto.add("timeline.gapMenu.edit.rippleDelete", r.rect, label);
     if r.clicked() {
         if let Err(e) = crate::menus::invoke(app, ctx, "edit.rippleDelete", json!({})) {
-            app.ui.status = e;
+            app.ui.fail(e);
         }
         ui.close();
     }
@@ -290,7 +290,7 @@ pub(super) fn multicam_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, picked: &
     });
     if let Some((cmd, params)) = run {
         if let Err(e) = app.session.execute(cmd, params) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
         ui.close();
     }
