@@ -1,27 +1,20 @@
-//! this is the importer for Premiere Pro project files (.prproj)
-//! so you can take a project made in Premiere and open it up in FilmCraft
+//! this is the importer for premiere pro project files (.prproj)
+//! so you can take a project made in premiere and open it in filmcraft
+//! i worked out the format from project files premiere saved, i never looked inside premiere itself
 //!
-//! there isn't any public spec for the format so everything here was figured out by looking at
-//! project files that Premiere saved itself, we never looked inside Premiere or any of its code
+//! what this brings over is the bins, the media files, the sequences and their tracks,
+//! the clips with their in points speed reverse and gain, linked audio and video, nested sequences
+//! and the track mixer mute and fader volume
+//! for media it tries the path premiere saved first and if thats missing it uses the relative one
 //!
-//! a .prproj is really just a gzip'd XML file and everything in it is an object with an id
-//! and the objects point at each other using those ids
-//! the nice thing is Premiere counts time in ticks the exact same way FilmCraft does
-//! so all the times and frame rates come over without any rounding
-//!
-//! what we bring over is the bins, the media files, the sequences and their tracks,
-//! the clips with their in points speed and reverse, linked audio and video and nested sequences
-//!
-//! for effects we match the Premiere effect to the FilmCraft one by name since FilmCraft copies
-//! Premiere's effects pretty closely, and the settings get matched by name too
-//! theres a small alias list for the few settings Premiere doesn't name or names differently
+//! for effects i match the premiere effect to the filmcraft one by name since filmcraft copies
+//! premiere's effects pretty closely, and the settings get matched by name too
+//! theres a small alias list for the few settings premiere doesn't name or names differently
 //! and the values get converted where the units are different like volume and position
-//! keyframes come over too, Premiere saves them in the source clips time and FilmCraft
-//! uses that same time so they come over as is
-//! and transitions get hooked up to the clips on each side of the cut
+//! keyframes come over too, premiere saves them in the source clips time and filmcraft uses
+//! that same time so they come over as is, and transitions get hooked up to the clips on each side of the cut
 //!
-//! some stuff cant come over yet like third party plugins, titles and shapes, and masks
-//! and anything that gets skipped is listed in the import report so nothing just goes missing
+//! some stuff cant come over yet like titles and shapes, and masks
 
 use std::collections::{HashMap, HashSet};
 
