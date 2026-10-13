@@ -1321,18 +1321,29 @@ mod zoom_by_drag_tests {
     use super::zoom_by_drag;
 
     #[test]
-    fn no_drag_keeps_the_span_and_centres_the_view_on_the_playhead() {
-        assert_eq!(zoom_by_drag(20.0, 0.0, 50.0, 100.0, 1.0), (40.0, 60.0));
+    fn a_press_without_drag_leaves_the_view_where_it_was() {
+        // centre 30 of 100, span 20: the view stays 20..40 whatever the playhead
+        assert_eq!(zoom_by_drag(20.0, 30.0, 0.0, 80.0, 100.0, 1.0), (20.0, 40.0));
+        assert_eq!(zoom_by_drag(20.0, 30.0, 0.0, 5.0, 100.0, 1.0), (20.0, 40.0));
+    }
+
+    #[test]
+    fn the_view_eases_onto_the_playhead_as_the_drag_goes_on() {
+        // a drag of the whole centring distance centres it on the playhead; half of it, halfway there
+        let (s, e) = zoom_by_drag(20.0, 30.0, 0.35, 70.0, 100.0, 1.0);
+        assert!(((s + e) / 2.0 - 70.0).abs() < 1e-6 || e > 99.0, "centred on 70: {s}..{e}");
+        let (s, e) = zoom_by_drag(20.0, 30.0, 0.175, 70.0, 100.0, 1.0);
+        assert!(((s + e) / 2.0 - 50.0).abs() < 1e-6 || s == 0.0, "halfway from 30 to 70: {s}..{e}");
         // near an end the view is moved in from it
-        assert_eq!(zoom_by_drag(20.0, 0.0, 5.0, 100.0, 1.0), (0.0, 20.0));
-        assert_eq!(zoom_by_drag(20.0, 0.0, 99.0, 100.0, 1.0), (80.0, 100.0));
+        assert_eq!(zoom_by_drag(20.0, 10.0, 0.3, 5.0, 100.0, 1.0).0, 0.0);
+        assert_eq!(zoom_by_drag(20.0, 90.0, 0.3, 99.0, 100.0, 1.0).1, 100.0);
     }
 
     #[test]
     fn a_whole_bar_of_drag_goes_from_the_narrowest_view_to_the_whole_range() {
-        let (s, e) = zoom_by_drag(1.0, 1.0, 50.0, 100.0, 1.0);
+        let (s, e) = zoom_by_drag(1.0, 50.0, 1.0, 50.0, 100.0, 1.0);
         assert_eq!((s, e), (0.0, 100.0), "out: the whole range");
-        let (s, e) = zoom_by_drag(100.0, -1.0, 50.0, 100.0, 1.0);
+        let (s, e) = zoom_by_drag(100.0, 50.0, -1.0, 50.0, 100.0, 1.0);
         assert!((e - s - 1.0).abs() < 1e-9, "in: the narrowest view, {s}..{e}");
         assert!(((s + e) / 2.0 - 50.0).abs() < 1e-9, "centred on the playhead");
     }
@@ -1341,25 +1352,25 @@ mod zoom_by_drag_tests {
     fn the_same_drag_zooms_by_the_same_factor_at_every_level() {
         // a twentieth of the bar: the span changes by the same ratio whether it is wide or narrow
         let ratio = |start: f64| {
-            let (s, e) = zoom_by_drag(start, 0.05, 500.0, 1000.0, 0.05);
+            let (s, e) = zoom_by_drag(start, 500.0, 0.05, 500.0, 1000.0, 0.05);
             (e - s) / start
         };
         let (wide, narrow) = (ratio(10.0), ratio(0.2));
         assert!((wide - narrow).abs() < 1e-9, "{wide} vs {narrow}");
-        // a few points of a 700 point bar at a 0.3 s view stay a small change (a tenth of a percent a point)
-        let (s, e) = zoom_by_drag(0.3, 3.0 / 700.0, 100.0, 640.0, 0.05);
+        // a few points of a 700 point bar at a 0.3 s view stay a small change
+        let (s, e) = zoom_by_drag(0.3, 100.0, 3.0 / 700.0, 100.0, 640.0, 0.05);
         assert!((e - s) / 0.3 < 1.05, "3 points changed the span by {}", (e - s) / 0.3);
     }
 
     #[test]
     fn numbers_that_are_not_numbers_do_no_harm() {
         for v in [f64::NAN, f64::INFINITY, -1.0] {
-            let (s, e) = zoom_by_drag(v, v, v, 100.0, 1.0);
+            let (s, e) = zoom_by_drag(v, v, v, v, 100.0, 1.0);
             assert!(s.is_finite() && e.is_finite() && 0.0 <= s && s <= e && e <= 100.0, "{s} {e}");
         }
-        let (s, e) = zoom_by_drag(1.0, 1.0, 1.0, f64::NAN, f64::NAN);
+        let (s, e) = zoom_by_drag(1.0, 1.0, 1.0, 1.0, f64::NAN, f64::NAN);
         assert!(s.is_finite() && e.is_finite());
         // no room to zoom: the whole range
-        assert_eq!(zoom_by_drag(5.0, 1.0, 1.0, 5.0, 5.0), (0.0, 5.0));
+        assert_eq!(zoom_by_drag(5.0, 2.0, 1.0, 1.0, 5.0, 5.0), (0.0, 5.0));
     }
 }

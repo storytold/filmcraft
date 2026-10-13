@@ -135,7 +135,11 @@ pub(crate) fn reveal_playhead(app: &mut FilmcraftApp, ctx: &egui::Context) {
 /// controllable at high zoom, where a distance on the bar is much longer than the view. The view
 /// stays centred on `playhead` (moved in from the ends as far as needed). Time units are the
 /// caller's (seconds for the Timeline, a fraction of the clip for a monitor).
-pub fn zoom_by_drag(start_span: f64, drag: f64, playhead: f64, total: f64, min_span: f64) -> (f64, f64) {
+///
+/// The view's centre eases from where it was (`start_centre`) onto the playhead over the first
+/// `CENTRE_DRAG` bar widths of drag, so pressing a handle never moves the view, and the thumb does
+/// not jump away from the pointer.
+pub fn zoom_by_drag(start_span: f64, start_centre: f64, drag: f64, playhead: f64, total: f64, min_span: f64) -> (f64, f64) {
     let total = if total.is_finite() { total.max(0.0) } else { 0.0 };
     let min_span = if min_span.is_finite() { min_span.clamp(0.0, total) } else { total };
     let at = if playhead.is_finite() { playhead.clamp(0.0, total) } else { 0.0 };
@@ -143,9 +147,14 @@ pub fn zoom_by_drag(start_span: f64, drag: f64, playhead: f64, total: f64, min_s
     let start_span = if start_span.is_finite() { start_span.clamp(min_span, total) } else { total };
     let span = if min_span > 0.0 && total > min_span { start_span * (drag * (total / min_span).ln()).exp() } else { total };
     let span = span.clamp(min_span, total);
-    let start = (at - span / 2.0).clamp(0.0, total - span);
+    let from = if start_centre.is_finite() { start_centre.clamp(0.0, total) } else { at };
+    let centre = from + (at - from) * (drag.abs() / CENTRE_DRAG).min(1.0);
+    let start = (centre - span / 2.0).clamp(0.0, total - span);
     (start, start + span)
 }
+
+/// How far, in bar widths, a handle is dragged before the view is centred on the playhead.
+const CENTRE_DRAG: f64 = 0.35;
 
 /// Zoom about a time (keeps it under the same screen x).
 pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32, sequence_seconds: f64) {

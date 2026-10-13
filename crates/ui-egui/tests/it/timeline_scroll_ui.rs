@@ -354,7 +354,7 @@ fn the_scroll_bar_thumb_follows_the_pointer_and_reaches_both_ends() {
     // the handles at its ends zoom about the playhead: the right one out, the view centred on it
     let seconds = d.seconds();
     let playhead = d.app().session.playhead().seconds();
-    d.ok("ui.drag", json!({"from": {"x": jumped[0] + jumped[2] - 3.0, "y": y}, "to": {"x": jumped[0] + jumped[2] + 60.0, "y": y}, "steps": 8}));
+    d.ok("ui.drag", json!({"from": {"x": jumped[0] + jumped[2] - 3.0, "y": y}, "to": {"x": jumped[0] + jumped[2] + 300.0, "y": y}, "steps": 8}));
     d.frames(3);
     let (scroll, pps, ..) = d.view();
     let shown = track[2] as f64 / pps;
@@ -384,7 +384,7 @@ fn the_zoom_bar_handles_zoom_about_the_playhead() {
     assert!((scroll + shown / 2.0 - playhead).abs() < 1e-3 || scroll == 0.0, "centred on the playhead: {scroll} {shown} {playhead}");
     // the left handle dragged to the right: zoomed in, the playhead in the middle of the view
     let thumb = d.rect("timeline.zoomBar");
-    d.ok("ui.drag", json!({"from": {"x": thumb[0] + 3.0, "y": y}, "to": {"x": thumb[0] + 3.0 + 250.0, "y": y}, "steps": 8}));
+    d.ok("ui.drag", json!({"from": {"x": thumb[0] + 3.0, "y": y}, "to": {"x": thumb[0] + 3.0 + 330.0, "y": y}, "steps": 8}));
     d.frames(3);
     let (scroll, pps2, ..) = d.view();
     assert!(pps2 > pps * 5.0, "zoomed in a long way: {pps2}");
