@@ -57,7 +57,7 @@ pub use snap::{hit_json, locate};
 pub(super) use snap::{snap, snap_caption};
 pub(crate) use waveforms::request_peaks;
 #[cfg(test)]
-use waveforms::{source_peaks, waveform_display_gain, waveform_zone_height};
+use waveforms::{source_peaks, wave_extent, waveform_display_gain, waveform_zone_height};
 
 const TOP_H: f32 = 58.0; // timecode + toolbar (left) / ruler (right)
 const RULER_H: f32 = 44.0;
@@ -1311,5 +1311,37 @@ mod waveform_zone_tests {
         assert_eq!(waveform_zone_height(49.0), 47.0);
         // never smaller than the minimum
         assert_eq!(waveform_zone_height(4.0), 8.0);
+    }
+}
+
+#[cfg(test)]
+mod wave_extent_tests {
+    use super::wave_extent;
+
+    #[test]
+    fn rectified_rises_from_the_bottom_by_the_larger_peak() {
+        // linear, full scale: the whole zone; the louder side decides
+        assert_eq!(wave_extent(false, false, -0.5, 0.25, 1.0, 40.0), (20.0, 0.0));
+        assert_eq!(wave_extent(false, false, -0.25, 1.0, 1.0, 40.0), (40.0, 0.0));
+        assert_eq!(wave_extent(false, false, 0.0, 0.0, 1.0, 40.0), (0.0, 0.0));
+    }
+
+    #[test]
+    fn centered_draws_each_side_on_half_the_height() {
+        assert_eq!(wave_extent(false, true, -0.5, 0.25, 1.0, 40.0), (5.0, 10.0));
+        // a one-sided column has nothing on the other side
+        assert_eq!(wave_extent(false, true, 0.0, 1.0, 1.0, 40.0), (20.0, 0.0));
+        assert_eq!(wave_extent(false, true, -1.0, 0.0, 1.0, 40.0), (0.0, 20.0));
+    }
+
+    #[test]
+    fn the_dynamic_scale_is_logarithmic_and_clamped() {
+        // -48 dB is nothing, 0 dB is full, and louder than full scale stays inside the zone
+        let (up, _) = wave_extent(true, false, 0.0, 1.0, 1.0, 40.0);
+        assert!((up - 40.0).abs() < 1e-3);
+        let (quiet, _) = wave_extent(true, false, 0.0, 0.001, 1.0, 40.0);
+        assert!(quiet < 0.01);
+        let (loud, _) = wave_extent(true, true, -4.0, 4.0, 1.0, 40.0);
+        assert!(loud <= 20.0);
     }
 }
