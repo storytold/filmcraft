@@ -130,21 +130,22 @@ pub fn register() -> Availability {
             }
             Err(why) => log::info!("no NVDEC hardware decoding: {why}"),
         }
-        // NVENC encodes on Linux as well as on Windows, for H.264 (Export ▸ Hardware encoding, off
-        // by default) and for H.265 (where choosing the format is the opt-in). Opening the probe's
-        // session takes about half a second, so it is asked on a thread of its own now rather than
-        // by the first draw of the format list.
+        // NVENC's H.264 encoder factory is already registered above for 64-bit Linux; what is missing is
+        // H.265. The format is available where a small HEVC session opens, and HDR sequences export
+        // as HEVC Main 10 (PQ / HLG) only where NVENC has a 10-bit encoder; elsewhere they are
+        // tone-mapped to SDR, as on macOS.
+        //
+        // The probe is deliberately **not** warmed here, as it is on Windows. Warming starts a
+        // thread that opens a hardware session, and the CLI is short-lived: a fast export finishes
+        // and the process exits while the probe is still inside the driver, whose exit handler then
+        // waits on a join that the probe cannot reach because it is on a driver mutex. Measured by
+        // @tydude001 on Linux with an NVIDIA GPU, `filmcraft-cli --test cli` hung in 21 of 45 runs
+        // with the thread started and in 0 of 45 without it. Whoever answers that properly should
+        // join the probe before shutdown rather than not starting it.
         #[cfg(target_pointer_width = "64")]
         {
-            static ENCODERS: std::sync::Once = std::sync::Once::new();
-            ENCODERS.call_once(|| {
-                filmcraft_export::register_encoder(nvenc::export::factory);
-                filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, nvenc::hevc_available);
-                // HDR sequences export as HEVC Main 10 (PQ / HLG) only where NVENC has a 10-bit
-                // encoder; elsewhere they are tone-mapped to SDR, as on macOS
-                filmcraft_export::register_hdr_probe(filmcraft_export::Format::Hevc, nvenc::hevc_hdr_available);
-            });
-            nvenc::warm_hevc_probe();
+            filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, nvenc::hevc_available);
+            filmcraft_export::register_hdr_probe(filmcraft_export::Format::Hevc, nvenc::hevc_hdr_available);
         }
         available
     }
