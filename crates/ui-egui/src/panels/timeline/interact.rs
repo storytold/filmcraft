@@ -4,8 +4,8 @@ use super::menus::{CLIP_MENU, EditPointTarget, edit_point_menu, gap_menu, marker
 use super::snap::{snap, snap_playhead};
 use super::{
     Align2, ClipId, Color32, CursorIcon, Drag, EdgeKind, FilmcraftApp, Grab, HashMap, Hit, MarkerId, MarqueeAnchor, Pos2, Pressed, Rect, Sense, Sequence,
-    Stroke, StrokeKind, Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, json, marker_at, marker_under_pointer, pos2,
-    selection_trim_kind, vec2,
+    Stroke, StrokeKind, Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, json, marker_at, marker_under_pointer,
+    paint_tool_pointer, pos2, razor_line_tracks, selection_trim_kind, tool_draws_pointer, vec2,
 };
 
 pub(super) fn preview_drag(
@@ -338,18 +338,30 @@ fn hover_cursor(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
             }
         };
         ctx.set_cursor_icon(cur);
+        // the editing tools show their own icon as the pointer wherever they act in the tracks (the
+        // system pointer is hidden); a blocked edit, a volume line and the ruler keep the system one
+        if !blocked && tool_draws_pointer(tool) && !matches!(g, Grab::Volume { .. } | Grab::Other(Hit::Ruler | Hit::None)) {
+            ctx.set_cursor_icon(CursorIcon::None);
+            paint_tool_pointer(&ctx, tool, p);
+        }
         // the edge a press here would grab, and the trim it starts (#259)
         if let Grab::Edge { track, clip, edge, kind } = g {
             crate::panels::trim_monitor::paint_hover_bracket(ui.painter(), seq, layout, track, clip, edge, kind);
         }
-        // razor preview line
+        // razor preview line: where a click cuts, through the clip and the clips linked to it
+        // (every track with Shift), as the click does
         if tool == Tool::Razor
-            && let Grab::Other(Hit::Clip { track, .. }) = g
-            && let Some(row) = layout.rows.iter().find(|r| r.track == track)
+            && let Grab::Other(Hit::Clip { clip, .. }) = g
         {
             let t = snap(app, seq, layout, rate.snap_nearest(layout.tick_at(p.x)), &[]);
             let x = layout.x_of(t);
-            ui.painter().line_segment([pos2(x, row.rect.min.y), pos2(x, row.rect.max.y)], Stroke::new(1.0, Color32::WHITE));
+            let tracks = razor_line_tracks(app, clip, mods.shift);
+            let painter = ui.painter().with_clip_rect(Rect::from_min_max(pos2(layout.content.min.x, layout.content.min.y), layout.content.max));
+            for row in layout.rows.iter().filter(|r| tracks.contains(&r.track)) {
+                let seg = [pos2(x, row.rect.min.y), pos2(x, row.rect.max.y)];
+                painter.line_segment(seg, Stroke::new(3.0, Color32::from_black_alpha(110)));
+                painter.line_segment(seg, Stroke::new(1.0, Color32::WHITE));
+            }
         }
     }
 }
