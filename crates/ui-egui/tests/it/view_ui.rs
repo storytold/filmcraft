@@ -473,12 +473,14 @@ fn time_zoom_bar_zooms_and_scrolls_the_monitor_ruler() {
     assert!((d.rect("program.zoomBar")[2] - track[2]).abs() < 0.5, "the whole sequence at first");
     let bar = d.rect("program.scrubBar");
     let full = tick_frames(&ruler_ticks(&d, bar), bar, (0.0, 1.0), frames);
-    // the right handle dragged to the middle: the ruler shows the first half
+    // the right handle dragged in zooms about the playhead (at the start): by as much as halves the
+    // span (the zoom follows the drag exponentially, a whole bar going from the narrowest view to all)
     let y = track[1] + track[3] / 2.0;
-    d.ok("ui.drag", json!({"from": {"x": track[0] + track[2] - 4.0, "y": y}, "to": {"x": track[0] + track[2] / 2.0, "y": y}, "steps": 8}));
+    let half = 0.5f64.ln().abs() / (frames / 5.0).ln() * track[2];
+    d.ok("ui.drag", json!({"from": {"x": track[0] + track[2] - 4.0, "y": y}, "to": {"x": track[0] + track[2] - 4.0 - half, "y": y}, "steps": 8}));
     d.frames(2);
     let z = d.program()["time_zoom"].clone();
-    assert!(num(&z[0]) == 0.0 && (num(&z[1]) - 0.5).abs() < 0.02, "{z}");
+    assert!(num(&z[0]) == 0.0 && (num(&z[1]) - 0.5).abs() < 0.05, "{z}");
     let thumb = d.rect("program.zoomBar");
     assert!((thumb[2] - track[2] * num(&z[1])).abs() < 1.0, "thumb {thumb:?} for {z}");
     // the ticks follow the zoom: still on whole frames, no further apart in time, and spread
@@ -588,17 +590,26 @@ fn time_zoom_bar_handles_zoom_about_the_playhead() {
     d.frames(2);
     let track = d.rect("program.zoomBar.track");
     let y = track[1] + track[3] / 2.0;
-    // the right handle dragged to three quarters: the half around the playhead
-    d.ok("ui.drag", json!({"from": {"x": track[0] + track[2] - 4.0, "y": y}, "to": {"x": track[0] + track[2] * 0.75, "y": y}, "steps": 8}));
+    let seq = d.exec("sequence.inspect", json!({}));
+    let rate = &seq["settings"]["frame_rate"];
+    let frames = duration * num(&rate["num"]) / num(&rate["den"]) / 254_016_000_000.0;
+    // a tenth of a bar's drag changes the span by exp(0.1 * ln(frames / 5)), about the playhead
+    let tenth = track[2] * 0.1;
+    let factor = (0.1 * (frames / 5.0).ln()).exp();
+    d.ok("ui.drag", json!({"from": {"x": track[0] + track[2] - 4.0, "y": y}, "to": {"x": track[0] + track[2] - 4.0 - tenth, "y": y}, "steps": 8}));
     d.frames(2);
     let z = d.program()["time_zoom"].clone();
-    assert!((num(&z[0]) - 0.25).abs() < 0.02 && (num(&z[1]) - 0.75).abs() < 0.02, "{z}");
-    // the left handle dragged in to 0.4: the fifth around the playhead
+    let span = num(&z[1]) - num(&z[0]);
+    assert!((span - 1.0 / factor).abs() < 0.03, "the span {span} for a factor of {factor}: {z}");
+    assert!(((num(&z[0]) + num(&z[1])) / 2.0 - 0.5).abs() < 0.01, "centred on the playhead: {z}");
+    // the left handle dragged right zooms in about the playhead again, still centred
     let thumb = d.rect("program.zoomBar");
-    d.ok("ui.drag", json!({"from": {"x": thumb[0] + 4.0, "y": y}, "to": {"x": track[0] + track[2] * 0.4, "y": y}, "steps": 8}));
+    d.ok("ui.drag", json!({"from": {"x": thumb[0] + 4.0, "y": y}, "to": {"x": thumb[0] + 4.0 + tenth, "y": y}, "steps": 8}));
     d.frames(2);
-    let z = d.program()["time_zoom"].clone();
-    assert!((num(&z[0]) - 0.4).abs() < 0.02 && (num(&z[1]) - 0.6).abs() < 0.02, "{z}");
+    let z2 = d.program()["time_zoom"].clone();
+    let span2 = num(&z2[1]) - num(&z2[0]);
+    assert!(span2 < span * 0.9, "narrower: {span2} from {span}");
+    assert!(((num(&z2[0]) + num(&z2[1])) / 2.0 - 0.5).abs() < 0.01, "centred on the playhead: {z2}");
 }
 
 /// While a monitor plays, its zoomed ruler pages to keep the playhead in view, keeping its width,

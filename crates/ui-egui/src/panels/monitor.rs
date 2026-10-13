@@ -851,15 +851,13 @@ fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Wh
                     set = Some((ns, ns + span));
                 }
             }
-            // a handle: zoom about the playhead, the handle following the pointer (by the offset
-            // it was grabbed at)
+            // a handle: zoom about the playhead, by the distance dragged (the right handle out to
+            // the right, the left handle out to the left)
             _ => {
                 if let Some(pos) = resp.interact_pointer_pos() {
-                    let frac_at = |x: f32| (x - bar.min.x) as f64 / bar.width().max(1.0) as f64;
-                    let edge = if mode == 1 { start } else { end_at_press };
-                    let handle = frac_at(pos.x) - (frac_at(grab) - edge);
+                    let drag = (pos.x - grab) as f64 / bar.width().max(1.0) as f64 * if mode == 1 { -1.0 } else { 1.0 };
                     let playhead = if len > 0 { time.0.saturating_sub(origin.0) as f64 / len as f64 } else { 0.0 };
-                    set = Some(super::timeline::handle_zoom(mode == 1, handle, playhead, 1.0, min_span));
+                    set = Some(super::timeline::zoom_by_drag(end_at_press - start, drag, playhead, 1.0, min_span));
                 }
             }
         }

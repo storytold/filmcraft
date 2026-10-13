@@ -1,4 +1,4 @@
-use super::layout::{handle_zoom, min_pps, timeline_extent};
+use super::layout::{min_pps, timeline_extent, zoom_by_drag};
 use super::{Drag, FilmcraftApp, Rect, Sense, Stroke, Tokens, pos2, vec2};
 use crate::widgets::ZoomThumbPart;
 
@@ -92,16 +92,14 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
                     v.scroll = v.target_scroll;
                 }
             }
-            // a handle: zoom about the playhead, the handle following the pointer (by the offset
-            // it was grabbed at)
+            // a handle: zoom about the playhead, by the distance dragged (the right handle out to
+            // the right, the left handle out to the left)
             _ => {
                 if let Some(pos) = resp.interact_pointer_pos() {
-                    let time_at = |x: f32| (x - bar.min.x) as f64 / bar.width().max(1.0) as f64 * total;
-                    let edge = if mode == 1 { start } else { start + bar.width() as f64 / start_pps.max(1e-9) };
-                    let handle = time_at(pos.x) - (time_at(grab) - edge);
+                    let drag = (pos.x - grab) as f64 / bar.width().max(1.0) as f64 * if mode == 1 { -1.0 } else { 1.0 };
                     let floor = min_pps(seq_seconds, bar.width());
                     let min_span = (bar.width() as f64 / 24_000.0).max(0.05);
-                    let (ns, ne) = handle_zoom(mode == 1, handle, playhead, total, min_span);
+                    let (ns, ne) = zoom_by_drag(bar.width() as f64 / start_pps.max(1e-9), drag, playhead, total, min_span);
                     v.pps = (bar.width() as f64 / (ne - ns).max(min_span)).clamp(floor, 24_000.0);
                     v.scroll = ns;
                     v.target_scroll = ns;
