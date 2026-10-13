@@ -105,15 +105,23 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Have:** hardware decode on macOS (VideoToolbox H.264 / HEVC), Windows (Media Foundation /
   D3D11: H.264, HEVC, VP9, AV1) and Linux (VA-API and NVDEC: H.264, HEVC); hardware encode
   VideoToolbox H.264 / HEVC 8-bit, NVENC H.264 (Windows, Linux) and HEVC incl. Main 10 HDR
-  (Windows); GPU compositing, blend modes, 34 effect ids incl. Lumetri basic / creative / vignette,
+  (Windows); Media Foundation H.264 / HEVC 8-bit on Windows behind NVENC (#1575), which is the
+  vendor-neutral path for Intel, AMD and Qualcomm (verified on a Snapdragon X / Adreno X1-85);
+  GPU compositing, blend modes, 34 effect ids incl. Lumetri basic / creative / vignette,
   GPU export rendering (#421).
 - **Missing:** zero-copy decoded frames into wgpu (every frame is read back to the CPU and
   re-uploaded); VideoToolbox Main 10 / HDR HEVC encode and B-frames; ProRes hardware decode /
-  encode on Apple silicon; Intel Quick Sync and AMD AMF encoders (and their 4:2:2 decode);
-  VA-API VP9 / AV1 and VA-API encode; HEVC encode on Linux; AV1 hardware encode; ~48 of Premiere's
+  encode on Apple silicon; 10-bit / HDR and B-frames in the Media Foundation encoder (an encoder
+  that reorders is declined by its presentation-time check);
+  VA-API VP9 / AV1 and VA-API encode; HEVC encode on Linux; AV1 hardware encode (no AV1 encoder
+  plumbing at all, though the MFTs exist); ~48 of Premiere's
   ~82 accelerated effects (keys, masks, Lumetri curves / wheels / HSL, distortions, transitions);
   external video I/O (DeckLink / AJA, Mercury Transmit), control surfaces (EUCON / Mackie);
-  a CPU fallback adapter renders everything on the CPU (#632).
+  a CPU fallback adapter renders everything on the CPU (#632);
+  **exports with `gpuRendering: auto` stall** — reproducible 8/8 on a Snapdragon X with
+  `hardwareEncoding: off`, 0/8 without it, the process parked at 0 ms CPU on every thread inside a
+  driver call; already reported in #1532's "Not in this PR" (13/27 on an AMD laptop) and unexplained
+  there (#799 for the related reporting gap).
 - **Estimate:** 120–200 h (hardware we don't own needs a human). Doc:
   [hardware-parity.md](hardware-parity.md).
 
