@@ -29,6 +29,7 @@
 //! `.timeline.playhead`; `effectControls.divider`;
 //! the dialog's `transitionDuration.value`, `.ok`, `.cancel`.
 
+use crate::widgets::DragCheckbox as _;
 use egui::{Align2, Pos2, Rect, RichText, Sense, Stroke, pos2, vec2};
 use filmcraft_edit::Edge;
 use filmcraft_edit::transitions::{self as trn, Alignment};
@@ -159,7 +160,7 @@ pub fn effect_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, id
 
             ui.label(tl!("Reverse"));
             let mut rev = x.reverse;
-            let r = ui.checkbox(&mut rev, "");
+            let r = ui.checkbox_drag(&mut rev, "");
             elems.push(("effectControls.transition.reverse".into(), r.rect, rev.to_string()));
             if r.changed() {
                 changes.push(json!({"reverse": rev}));
@@ -499,7 +500,7 @@ fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, label: &str, ki
         }
         (ParamKind::Bool, ParamValue::Bool(b)) => {
             let mut b = *b;
-            let r = crate::widgets::accessible_name(ui.checkbox(&mut b, ""), label);
+            let r = crate::widgets::accessible_name(ui.checkbox_drag(&mut b, ""), label);
             elems.push((eid, r.rect, b.to_string()));
             r.changed().then(|| json!({"params": { pid: b }}))
         }
