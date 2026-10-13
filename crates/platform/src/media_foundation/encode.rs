@@ -137,7 +137,67 @@ pub fn factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettin
     };
     log::info!("hardware {} encoding on {}", if hard { "H.265" } else { "H.264" }, mft.name());
     filmcraft_export::note_hw_encode_session();
-    Some(Ok(Box::new(MfVideoEncoder { mft, api, cfg, rate, planes: Planes::default(), entry: None, written: 0 })))
+    Some(Ok(Box::new(MfVideoEncoder { mft, api, cfg, rate, planes: Planes::default(), entry: None, written: 0, timeline: Timeline::default() })))
+}
+
+/// What the encoder's picture times say about the stream it is producing.
+///
+/// A hardware encoder hands its pictures back in decode order, each stamped with the presentation
+/// time of the picture it came from. Many stamp nothing useful (time zero, or no check possible),
+/// but some run a pipeline a picture or two deep and stamp everything late: Qualcomm's AV1 encoder
+/// by exactly one picture, as does any B-frame encoder.
+///
+/// A **constant** offset is ordinary. The pictures are in order and complete, and the file wants an
+/// edit list that starts the video that far in — which is what
+/// [`VideoEncoder::media_start`](filmcraft_export::VideoEncoder::media_start) is for. A **changing**
+/// offset is not something this path can describe, so it is an error naming the encoder rather than a
+/// file with wrong timestamps.
+#[derive(Clone, Copy, Debug, Default)]
+struct Timeline {
+    /// How many pictures late every one of them is. `None` until the first picture with a time.
+    delay: Option<u64>,
+}
+
+/// The most pictures an encoder may run behind and still be a stream rather than a reorder. A DPB
+/// is at most 16 frames, so more than that is not an encoder we can describe.
+const MAX_DELAY_PICTURES: u64 = 16;
+
+impl Timeline {
+    /// Check the picture numbered `written` that came back stamped `time` (100 ns units).
+    fn accept(&mut self, rate: FrameRate, written: u64, time: i64) -> std::result::Result<(), ExportError> {
+        // Picture 0 is stamped 0 whether the encoder is telling us the time or not, so its stamp
+        // says nothing; from the second picture on, 0 is not a time any of ours can have.
+        if time == 0 && written == 0 {
+            return Ok(());
+        }
+        // The delay is measured in pictures, not in 100 ns units: a picture's length is
+        // `TIME_100NS / rate` nanoseconds, which does not divide evenly, and converting the
+        // difference back would round a one-picture delay away to nothing.
+        let matches = |k: u64| time_100ns(rate, written.saturating_add(k)) == time;
+        match self.delay {
+            None => {
+                let found = (0..=MAX_DELAY_PICTURES).find(|k| matches(*k));
+                self.delay = Some(found.ok_or_else(|| reorder(&rate, written, time))?);
+            }
+            Some(k) if !matches(k) => return Err(reorder(&rate, written, time)),
+            Some(_) => {}
+        }
+        Ok(())
+    }
+
+    /// How far into the file the first picture starts, in the encoder's timescale.
+    fn media_start(&self, rate: FrameRate) -> Option<i64> {
+        let delay = self.delay.filter(|d| *d != 0)?;
+        i64::try_from(delay.saturating_mul(u64::try_from(rate.den.max(1)).ok()?)).ok().filter(|v| *v != 0)
+    }
+}
+
+/// The error for a picture that is not the one due, or the one after the encoder's delay.
+fn reorder(rate: &FrameRate, written: u64, time: i64) -> ExportError {
+    ExportError::Encode(format!(
+        "Media Foundation: the encoder returned the picture after number {written} at {time} ns, which is not its turn at {} fps (it reorders frames)",
+        rate.num as f64 / rate.den as f64
+    ))
 }
 
 /// The Media Foundation presentation time of picture `index` at `rate`, in 100 ns units. A frame
@@ -185,23 +245,17 @@ struct MfVideoEncoder {
     entry: Option<SampleEntry>,
     /// Access units written so far, which is what their times are checked against.
     written: u64,
+    /// What the encoder's picture times say (see [`Timeline`]).
+    timeline: Timeline,
 }
 
 impl MfVideoEncoder {
     /// One finished access unit as an MP4 sample, with the parameter sets taken out.
     fn packet(&mut self, annex_b: &[u8], time: i64) -> Result<EncodedPacket> {
         let codec = self.cfg.codec;
-        // The MFT hands its samples back in decode order, each carrying the presentation time of
-        // the picture it came from. When it reports times at all they must be the pictures in
-        // turn: an encoder that reorders (B-frames) would need a composition offset this path
-        // cannot work out, so that is an error rather than a file with wrong times. A transform
-        // that reports no times (all zero) gives us nothing to check, and the order is all we have.
-        let expected = self.time_100ns(self.written);
-        if time != 0 && time != expected {
-            return Err(ExportError::Encode(format!(
-                "Media Foundation: the encoder returned a picture at {time} when {expected} was due (it reorders frames)"
-            )));
-        }
+        // Check the picture's time before anything else: a wrong clock means a wrong file, and the
+        // rest of the work would be wasted.
+        self.timeline.accept(self.rate, self.written, time)?;
         let key = annexb::is_key(annex_b, codec);
         let data = annexb::to_length_prefixed(codec, annex_b).map_err(|e| ExportError::Encode(format!("Media Foundation: {e}")))?;
         if self.entry.is_none() {
@@ -310,6 +364,10 @@ impl VideoEncoder for MfVideoEncoder {
         Ok(ready)
     }
 
+    fn media_start(&self) -> Option<i64> {
+        self.timeline.media_start(self.rate)
+    }
+
     fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
         self.mft.drain().map_err(|e| ExportError::Encode(format!("Media Foundation: {e}")))?;
         // everything the encoder still holds, which is a pipeline delay's worth of pictures
@@ -409,6 +467,41 @@ mod tests {
         // the bit rate an encoder is given never wraps to zero
         let huge = ExportSettings { bitrate_kbps: u32::MAX, ..s };
         assert_eq!(config(Format::H264, 640, 360, FrameRate::FPS_24, &huge).unwrap().bitrate_bps, u32::MAX);
+    }
+
+    #[test]
+    fn a_constant_encoder_delay_is_an_edit_list_not_a_failure() {
+        // Most encoders report the picture's own time: nothing to correct.
+        let mut t = Timeline::default();
+        for n in 0..5u64 {
+            t.accept(FrameRate::FPS_24, n, time_100ns(FrameRate::FPS_24, n)).unwrap();
+        }
+        assert_eq!(t.media_start(FrameRate::FPS_24), None);
+
+        // An encoder a picture deep (Qualcomm's AV1 one does exactly this) is fine too: the same
+        // offset on every picture, and the edit list carries it.
+        let mut t = Timeline::default();
+        for n in 0..5u64 {
+            t.accept(FrameRate::FPS_24, n, time_100ns(FrameRate::FPS_24, n + 1)).unwrap();
+        }
+        assert_eq!(t.media_start(FrameRate::FPS_24), Some(1), "one picture late at 24 fps is one tick of the timescale");
+
+        // An encoder that reports no times at all cannot be checked on its first picture, which is
+        // stamped 0 either way; from the second on, a 0 is not a time any of ours can have.
+        let mut t = Timeline::default();
+        t.accept(FrameRate::FPS_24, 0, 0).unwrap();
+        assert_eq!(t.media_start(FrameRate::FPS_24), None);
+        assert!(t.accept(FrameRate::FPS_24, 1, 0).is_err(), "only picture 0 can legitimately be stamped 0");
+
+        // A picture at a different offset than the rest is reordering, and is an error that names it.
+        let mut t = Timeline::default();
+        t.accept(FrameRate::FPS_24, 0, time_100ns(FrameRate::FPS_24, 1)).unwrap();
+        let e = t.accept(FrameRate::FPS_24, 1, time_100ns(FrameRate::FPS_24, 5)).unwrap_err().to_string();
+        assert!(e.contains("reorders frames"), "{e}");
+        // a picture that arrives *early* is reordering too
+        let mut t = Timeline::default();
+        t.accept(FrameRate::FPS_24, 0, time_100ns(FrameRate::FPS_24, 2)).unwrap();
+        assert!(t.accept(FrameRate::FPS_24, 1, time_100ns(FrameRate::FPS_24, 2)).is_err(), "a picture that arrives early is reordering too");
     }
 
     #[test]
