@@ -12,9 +12,11 @@
 
 pub mod bridge;
 pub mod long_job;
+pub mod roots;
 pub mod server;
 
 pub use bridge::BridgeClient;
+pub use roots::AutomationRoots;
 pub use server::FilmcraftMcp;
 
 #[derive(Debug, thiserror::Error)]

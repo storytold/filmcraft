@@ -502,3 +502,52 @@ async fn failed_output_stops_the_reader() {
     let ended = tokio::time::timeout(std::time::Duration::from_secs(30), server).await;
     assert!(ended.is_ok(), "the server kept reading after its output failed");
 }
+
+/// #985: with roots in force, a command reading outside the read root or writing outside the
+/// write root is refused with an error the agent can act on, and one inside passes.
+#[tokio::test(flavor = "multi_thread")]
+async fn confined_server_rejects_paths_outside_the_roots() {
+    let base = std::env::temp_dir().join(format!("fc-mcp-roots-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    for d in ["in", "out", "outside"] {
+        std::fs::create_dir_all(base.join(d)).unwrap();
+    }
+    std::fs::write(base.join("outside/clip.wav"), b"x").unwrap();
+    let roots = AutomationRoots::new(Some(&base.join("in").to_string_lossy()), Some(&base.join("out").to_string_lossy())).unwrap().unwrap();
+    let m = FilmcraftMcp::headless(demo()).with_roots(Some(Arc::new(roots)));
+    // A write inside the write root works and lands there.
+    let r = m.run("markers.exportCsv", json!({"path": base.join("out/markers.csv").to_string_lossy()})).await.unwrap();
+    assert!(base.join("out/markers.csv").exists(), "{r}");
+    // The same write into the read root is refused before the engine touches anything.
+    let e = m.run("markers.exportCsv", json!({"path": base.join("in/markers.csv").to_string_lossy()})).await.unwrap_err();
+    assert!(e.to_string().contains("outside the write root"), "{e}");
+    // Reading a file outside the read root is refused before the engine opens it.
+    let e = m.run("file.mediaPropertiesFile", json!({"path": base.join("outside/clip.wav").to_string_lossy()})).await.unwrap_err();
+    assert!(e.to_string().contains("outside the read root"), "{e}");
+    // Inside the root the check passes: what the engine then says is about the file, not its place.
+    let e = m.run("file.mediaPropertiesFile", json!({"path": base.join("in/clip.wav").to_string_lossy()})).await.unwrap_err();
+    assert!(!e.to_string().contains("automation path rejected"), "{e}");
+    let _ = std::fs::remove_dir_all(base);
+}
+
+/// #985: while confined, the tools that drive the live app's input are refused (they could
+/// drive its file dialogs past the roots), and `initialize` names the confinement.
+#[tokio::test(flavor = "multi_thread")]
+async fn driving_the_ui_is_refused_while_confined() {
+    let base = std::env::temp_dir().join(format!("fc-mcp-roots-ui-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let roots = AutomationRoots::new(Some(&base.to_string_lossy()), None).unwrap().unwrap();
+    let plain = FilmcraftMcp::headless(Session::default());
+    assert!(!plain.get_info().instructions.unwrap().contains("confined"), "unconfined by default");
+    let m = plain.with_roots(Some(Arc::new(roots)));
+    assert!(m.get_info().instructions.unwrap().contains("confined"), "{:?}", m.get_info().instructions);
+    let click = Parameters(ClickParams { id: Some("tools.Razor".into()), x: None, y: None, button: None, count: None, modifiers: None });
+    let r = m.ui_click(click).await.unwrap();
+    assert_eq!(r.is_error, Some(true));
+    let text = serde_json::to_string(&r.content).unwrap();
+    assert!(text.contains("not available while file access is confined"), "{text}");
+    let r = m.ui_control(Parameters(ControlParams { method: "ui.set".into(), params: None })).await.unwrap();
+    assert_eq!(r.is_error, Some(true), "{r:?}");
+    let _ = std::fs::remove_dir_all(base);
+}
