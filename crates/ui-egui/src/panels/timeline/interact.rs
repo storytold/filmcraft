@@ -24,10 +24,10 @@ pub(super) fn preview_drag(
     let Some(d) = &app.tl.drag else { return };
     match d {
         Drag::Move { new_track: Some(_), .. } => {}
-        Drag::Move { clips, offset, track_delta, .. } => {
+        Drag::Move { clips, offset, track_delta, start_track, .. } => {
             for c in clips {
                 if let Some((tid, it)) = seq.find_item(*c) {
-                    let dest = shift_track(seq, tid, *track_delta);
+                    let dest = move_dest(seq, *start_track, tid, *track_delta);
                     out.insert(*c, ((it.start + *offset).max(Tick::ZERO), it.duration, dest));
                 }
             }
@@ -93,7 +93,7 @@ pub(super) fn preview_drag(
 /// transition does not ride along on a clip whose partner stays. Returns the transition's
 /// `(start, end, destination track)` when the drag carries it.
 pub(super) fn move_transition_preview(app: &FilmcraftApp, seq: &Sequence, trn: &filmcraft_project::Transition) -> Option<(Tick, Tick, TrackId)> {
-    let Some(Drag::Move { clips, offset, track_delta, .. }) = &app.tl.drag else { return None };
+    let Some(Drag::Move { clips, offset, track_delta, start_track, .. }) = &app.tl.drag else { return None };
     let endpoints: Vec<ClipId> = [trn.from, trn.to].into_iter().flatten().collect();
     // where each clip it sits on that moves lands (the same track shift as the clip preview), and
     // by how much: clamped like the drop clamps each clip's start
@@ -104,7 +104,7 @@ pub(super) fn move_transition_preview(app: &FilmcraftApp, seq: &Sequence, trn: &
                 return None;
             }
             let (tid, it) = seq.find_item(*c)?;
-            let dest = shift_track(seq, tid, *track_delta)?;
+            let dest = move_dest(seq, *start_track, tid, *track_delta)?;
             Some((dest, (it.start + *offset).max(Tick::ZERO) - it.start))
         })
         .collect();
@@ -155,21 +155,37 @@ fn marquee_clips(seq: &Sequence, layout: &Layout, r: Rect) -> Vec<ClipId> {
 /// A move previews the same track-lock restrictions as its eventual edit.
 fn drag_is_locked(session: &filmcraft_engine::Session, seq: &Sequence, drag: &Drag) -> bool {
     let clips = match drag {
-        Drag::Move { clips, track_delta, .. } => return move_is_locked(seq, clips, *track_delta),
+        Drag::Move { clips, track_delta, start_track, .. } => return move_is_locked(seq, clips, Some(*start_track), *track_delta),
         Drag::Trim { clip, .. } | Drag::Stretch { clip, .. } | Drag::Remix { clip, .. } | Drag::Slip { clip, .. } | Drag::Slide { clip, .. } => vec![*clip],
         Drag::Roll { left, right, .. } => vec![*left, *right],
         Drag::Transition { id, .. } => return seq.all_tracks().any(|t| t.locked && t.transitions.iter().any(|tr| tr.id == *id)),
         _ => return false,
     };
-    move_is_locked(seq, &filmcraft_engine::commands::with_links(session, &clips), 0)
+    move_is_locked(seq, &filmcraft_engine::commands::with_links(session, &clips), None, 0)
 }
 
-fn move_is_locked(seq: &Sequence, clips: &[ClipId], delta: i32) -> bool {
+/// Whether a move is refused by a locked track: any clip's own, or the one it would land on when
+/// the clip grabbed on `grabbed` moves `delta` tracks.
+fn move_is_locked(seq: &Sequence, clips: &[ClipId], grabbed: Option<TrackId>, delta: i32) -> bool {
     clips.iter().any(|clip| {
         seq.find_item(*clip).is_some_and(|(track, _)| {
-            seq.track(track).is_some_and(|t| t.locked) || shift_track(seq, track, delta).and_then(|id| seq.track(id)).is_some_and(|t| t.locked)
+            let dest = grabbed.map_or(Some(track), |g| move_dest(seq, g, track, delta));
+            seq.track(track).is_some_and(|t| t.locked) || dest.and_then(|id| seq.track(id)).is_some_and(|t| t.locked)
         })
     })
+}
+
+/// Whether tracks `a` and `b` are both video or both audio.
+fn same_kind(seq: &Sequence, a: TrackId, b: TrackId) -> bool {
+    let video = |t: TrackId| seq.video_tracks.iter().any(|x| x.id == t);
+    video(a) == video(b)
+}
+
+/// Where a clip on `tid` lands when the clip grabbed on `grabbed` moves `delta` tracks: clips of
+/// the grabbed clip's kind change track, a linked partner of the other kind stays on its own
+/// track (#1484).
+fn move_dest(seq: &Sequence, grabbed: TrackId, tid: TrackId, delta: i32) -> Option<TrackId> {
+    if same_kind(seq, grabbed, tid) { shift_track(seq, tid, delta) } else { Some(tid) }
 }
 
 fn shift_track(seq: &Sequence, tid: TrackId, delta: i32) -> Option<TrackId> {
@@ -315,7 +331,7 @@ fn hover_cursor(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                     } else {
                         filmcraft_engine::commands::with_links(&app.session, &[clip])
                     };
-                    move_is_locked(seq, &clips, 0)
+                    move_is_locked(seq, &clips, None, 0)
                 }
                 _ => false,
             };
@@ -691,7 +707,7 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
                     (Some(c), Some(s)) if c.kind == s.kind => c.index as i32 - s.index as i32,
                     _ => 0,
                 };
-                if move_is_locked(seq, &clips, track_delta) {
+                if move_is_locked(seq, &clips, Some(start_track), track_delta) {
                     ctx.set_cursor_icon(CursorIcon::NotAllowed);
                     Some(Drag::Move { clips, grab_tick, start_track, offset: Tick::ZERO, track_delta: 0, new_track: None, copy: mods.alt })
                 } else {
@@ -819,9 +835,10 @@ fn commit_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respons
         let cancelled = std::mem::take(&mut app.tl.cancelled);
         if !cancelled && let Some(d) = app.tl.drag.take() {
             let r = match d {
-                Drag::Move { clips, offset, track_delta, new_track, copy, .. } if offset != Tick::ZERO || track_delta != 0 || new_track.is_some() => {
-                    // #1104: dropped past the last track, the clips go onto a new one
-                    let to = |tid| new_track.map_or_else(|| json!(shift_track(seq, tid, track_delta).unwrap_or(tid).0), |_| json!("new"));
+                Drag::Move { clips, offset, track_delta, new_track, copy, start_track, .. } if offset != Tick::ZERO || track_delta != 0 || new_track.is_some() => {
+                    // #1104: dropped past the last track, the clips go onto a new one; moved between
+                    // tracks, a linked partner of the other kind stays on its own track (#1484)
+                    let to = |tid| new_track.map_or_else(|| json!(move_dest(seq, start_track, tid, track_delta).unwrap_or(tid).0), |_| json!("new"));
                     let mut seen = std::collections::HashSet::new();
                     let moves: Vec<Value> = clips
                         .iter()
