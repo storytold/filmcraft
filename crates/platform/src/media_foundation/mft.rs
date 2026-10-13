@@ -12,15 +12,17 @@ use std::ffi::c_void;
 use std::mem::ManuallyDrop;
 use std::sync::OnceLock;
 
-use windows::Win32::Foundation::HMODULE;
+use windows::Win32::Foundation::{E_UNEXPECTED, HMODULE};
 use windows::Win32::Graphics::Direct3D11::ID3D11Device;
 use windows::Win32::Media::MediaFoundation::{
     IMFActivate, IMFDXGIDeviceManager, IMFMediaBuffer, IMFMediaType, IMFSample, IMFTransform, MF_E_NO_MORE_TYPES, MF_E_NOTACCEPTING,
-    MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MINIMUM_DISPLAY_APERTURE,
-    MF_MT_SUBTYPE, MF_SA_D3D11_AWARE, MF_TRANSFORM_ASYNC, MF_VERSION, MFMediaType_Video, MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_FLAG, MFT_ENUM_FLAG_ASYNCMFT,
-    MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT, MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_COMMAND_DRAIN,
-    MFT_MESSAGE_COMMAND_FLUSH, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER,
-    MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MFVideoFormat_NV12, MFVideoFormat_P010, MFVideoInterlace_Progressive,
+    MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
+    MF_MT_MAJOR_TYPE, MF_MT_MINIMUM_DISPLAY_APERTURE, MF_MT_SUBTYPE, MF_SA_D3D11_AWARE, MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION,
+    MFMediaType_Video, MFT_CATEGORY_VIDEO_DECODER, MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG, MFT_ENUM_FLAG_ASYNCMFT, MFT_ENUM_FLAG_HARDWARE,
+    MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT, MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_COMMAND_DRAIN, MFT_MESSAGE_COMMAND_FLUSH,
+    MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER,
+    MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MFVideoFormat_NV12, MFVideoFormat_P010,
+    MFVideoInterlace_Progressive,
 };
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
@@ -41,6 +43,259 @@ pub struct MfApi {
     create_memory_buffer: CreateBufferFn,
     create_manager: CreateManagerFn,
     enum_transforms: EnumFn,
+}
+
+/// How long [`MfEncoder::wait`] sleeps between asks of an asynchronous MFT that has nothing ready
+/// yet. A few milliseconds each: the export is offline, so latency costs nothing and a short wait
+/// covers an encoder's pipeline delay.
+const POLL_WAIT: std::time::Duration = std::time::Duration::from_millis(5);
+/// How long an MFT may say it has nothing ready before [`MfEncoder::wait`] believes it. Long enough
+/// for a pipeline delay, short enough that a picture's worth of waiting is not felt: this is an
+/// offline export, and the encoder runs far faster than the CPU render that feeds it.
+const IDLE: std::time::Duration = std::time::Duration::from_millis(30);
+
+/// What [`MfEncoder::poll`] produced.
+pub enum EncPoll {
+    /// One finished access unit (Annex B) and its timestamp in 100 ns units.
+    Frame(Vec<u8>, i64),
+    /// Nothing is ready yet: feed another picture.
+    NeedInput,
+}
+
+/// What [`MfEncoder::try_input`] made of a picture.
+pub enum Input {
+    Taken,
+    /// The MFT's input queue is full: it needs to be asked for its output before it takes more.
+    Full,
+}
+
+/// What the encoder MFT is asked to produce.
+pub struct EncSpec {
+    /// Output subtype (`MFVideoFormat_H264` or `MFVideoFormat_HEVC`).
+    pub subtype: GUID,
+    /// The codec's name, for logs and errors.
+    pub label: &'static str,
+    /// Picture size in luma samples.
+    pub size: (u32, u32),
+    /// Frame rate, numerator and denominator.
+    pub rate: (u32, u32),
+    /// Average bit rate in bits per second (never zero: encoders refuse a type without one).
+    pub bitrate: u32,
+}
+
+/// A hardware encoder MFT, configured for one stream.
+///
+/// Vendors' encoders are usually **asynchronous** MFTs (Qualcomm's, Intel's and AMD's are), and
+/// an asynchronous MFT answers `MF_E_TRANSFORM_ASYNC_LOCKED` to every call until the caller sets
+/// `MF_TRANSFORM_ASYNC_UNLOCK`, so that happens right after activation — see
+/// <https://learn.microsoft.com/windows/win32/medfound/asynchronous-mfts>. They also do not
+/// declare their media types up front: `MFTEnumEx` filtered on the input subtype finds none of
+/// them, which is why the candidates come from an unfiltered [`MfApi::all_video_encoders`].
+pub struct MfEncoder {
+    transform: IMFTransform,
+    /// The MFT hands out its finished samples itself, so the output descriptor carries none.
+    provides: bool,
+    /// Bytes an output buffer needs when the MFT does not provide samples.
+    buffer_size: u32,
+    name: String,
+}
+
+// SAFETY: the encoder MFTs are free-threaded COM objects and an `MfEncoder` is only used through
+// `&mut` / `&` of its owning export encoder.
+unsafe impl Send for MfEncoder {}
+
+impl MfEncoder {
+    /// Create a hardware encoder for `spec`, encoding on the device of `gpu`. Every candidate is
+    /// tried and the reasons are joined, so a decline says what the machine has.
+    pub fn new(api: &MfApi, gpu: &Gpu, spec: &EncSpec) -> Result<MfEncoder, String> {
+        ensure_com()?;
+        let candidates = api.all_video_encoders(true)?;
+        if candidates.is_empty() {
+            return Err("no hardware video encoder MFT".into());
+        }
+        let mut reasons = Vec::new();
+        for activate in &candidates {
+            match Self::configure(api, gpu, activate, spec) {
+                Ok(m) => return Ok(m),
+                Err(e) => reasons.push(e),
+            }
+        }
+        Err(reasons.join("; "))
+    }
+
+    fn configure(api: &MfApi, gpu: &Gpu, activate: &IMFActivate, spec: &EncSpec) -> Result<MfEncoder, String> {
+        let name = friendly_name(activate).unwrap_or_else(|| "an encoder MFT".into());
+        // SAFETY: plain COM calls on live interfaces.
+        let transform: IMFTransform = unsafe { activate.ActivateObject() }.map_err(|e| format!("{name}: cannot be created: {e}"))?;
+        // SAFETY: as above; the attributes store belongs to this transform.
+        let attributes = unsafe { transform.GetAttributes() }.map_err(|e| format!("{name}: no attributes: {e}"))?;
+        {
+            // SAFETY: a plain COM read of a documented UINT32 attribute.
+            let asynchronous = unsafe { attributes.GetUINT32(&MF_TRANSFORM_ASYNC).unwrap_or(0) } != 0;
+            if asynchronous {
+                // An asynchronous MFT answers MF_E_TRANSFORM_ASYNC_LOCKED to every call until the
+                // caller says it drives it asynchronously.
+                // SAFETY: a plain COM write of a documented UINT32 attribute.
+                unsafe { attributes.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1) }.map_err(|e| format!("{name}: refuses to be unlocked: {e}"))?;
+            }
+        }
+        // Output type first: an encoder will not accept an input type before it has one.
+        let output = api.media_type()?;
+        // SAFETY: plain COM calls on live interfaces.
+        unsafe {
+            output.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video).map_err(|e| e.to_string())?;
+            output.SetGUID(&MF_MT_SUBTYPE, &spec.subtype).map_err(|e| e.to_string())?;
+            output.SetUINT64(&MF_MT_FRAME_SIZE, (u64::from(spec.size.0) << 32) | u64::from(spec.size.1)).map_err(|e| e.to_string())?;
+            output.SetUINT64(&MF_MT_FRAME_RATE, (u64::from(spec.rate.0) << 32) | u64::from(spec.rate.1)).map_err(|e| e.to_string())?;
+            output.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32).map_err(|e| e.to_string())?;
+            output.SetUINT32(&MF_MT_AVG_BITRATE, spec.bitrate.max(1)).map_err(|e| e.to_string())?;
+            transform.SetOutputType(0, &output, 0).map_err(|e| format!("{name}: does not encode {}: {e}", spec.label))?;
+        }
+        // SAFETY: as above.
+        let input = api.media_type()?;
+        // SAFETY: as above.
+        unsafe {
+            input.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video).map_err(|e| e.to_string())?;
+            input.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12).map_err(|e| e.to_string())?;
+            input.SetUINT64(&MF_MT_FRAME_SIZE, (u64::from(spec.size.0) << 32) | u64::from(spec.size.1)).map_err(|e| e.to_string())?;
+            input.SetUINT64(&MF_MT_FRAME_RATE, (u64::from(spec.rate.0) << 32) | u64::from(spec.rate.1)).map_err(|e| e.to_string())?;
+            input.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32).map_err(|e| e.to_string())?;
+            transform.SetInputType(0, &input, 0).map_err(|e| format!("{name}: does not take NV12 pictures: {e}"))?;
+            transform
+                .ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, gpu.manager_param())
+                .map_err(|e| format!("{name}: refused the Direct3D device manager: {e}"))?;
+            transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0).map_err(|e| e.to_string())?;
+            transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0).map_err(|e| e.to_string())?;
+        }
+        // SAFETY: a plain COM call on a live interface.
+        let info = unsafe { transform.GetOutputStreamInfo(0) }.map_err(|e| format!("{name}: no output stream info: {e}"))?;
+        let flags = info.dwFlags;
+        let provides = flags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 != 0;
+        let can_provide = flags & MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES.0 as u32 != 0;
+        if !provides && !can_provide {
+            return Err(format!("{name}: will not provide output samples"));
+        }
+        Ok(MfEncoder { transform, provides, buffer_size: if provides { 0 } else { info.cbSize.max(1) }, name })
+    }
+
+    /// The MFT's name, for logs.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Feed one NV12 picture, timestamped in 100 ns units, or say the MFT's input queue is full. The
+    /// caller waits for its output and offers the picture again, which is the only backpressure an
+    /// asynchronous MFT gives.
+    pub fn try_input(&self, api: &MfApi, nv12: &[u8], time: i64) -> Result<Input, String> {
+        let sample = api.sample_of(nv12, time)?;
+        // SAFETY: plain COM call on live interfaces; `sample` is a live object the MFT may keep.
+        match unsafe { self.transform.ProcessInput(0, &sample, 0) } {
+            Ok(()) => Ok(Input::Taken),
+            Err(e) if e.code() == MF_E_NOTACCEPTING => Ok(Input::Full),
+            Err(e) => Err(format!("{}: ProcessInput failed: {e}", self.name)),
+        }
+    }
+
+    /// Ask for the next finished access unit, without waiting: `EncPoll::NeedInput` means the MFT has
+    /// nothing ready *yet*. An asynchronous MFT (every vendor's encoder) needs a moment after a
+    /// picture goes in, so the caller asks again — see [`MfEncoder::wait`].
+    pub fn poll(&self, api: &MfApi) -> Result<EncPoll, String> {
+        match self.take(api)? {
+            Some((bytes, time)) => Ok(EncPoll::Frame(bytes, time)),
+            None => Ok(EncPoll::NeedInput),
+        }
+    }
+
+    /// Collect everything the MFT has finished, waiting up to `budget` for an asynchronous one.
+    /// Bounded twice over: by `budget`, and by how long the MFT stays quiet, so an encoder that has
+    /// said it has nothing left ends the wait at once instead of costing the caller `budget`.
+    pub fn wait(&self, api: &MfApi, budget: std::time::Duration) -> Result<Vec<(Vec<u8>, i64)>, String> {
+        let deadline = std::time::Instant::now() + budget;
+        let mut quiet_since: Option<std::time::Instant> = None;
+        let mut out = Vec::new();
+        loop {
+            match self.poll(api)? {
+                EncPoll::Frame(bytes, time) => {
+                    out.push((bytes, time));
+                    quiet_since = None;
+                }
+                EncPoll::NeedInput => {
+                    let now = std::time::Instant::now();
+                    if now >= deadline {
+                        return Ok(out);
+                    }
+                    // An encoder with a pipeline delay answers "not yet" for a moment after a
+                    // picture goes in, so give it IDLE before believing it has nothing left.
+                    if quiet_since.is_none_or(|q| now.duration_since(q) >= IDLE) {
+                        return Ok(out);
+                    }
+                    quiet_since.get_or_insert(now);
+                    std::thread::sleep(POLL_WAIT);
+                }
+            }
+        }
+    }
+
+    /// One finished access unit and its timestamp, or `None` when the MFT has nothing ready yet.
+    fn take(&self, api: &MfApi) -> Result<Option<(Vec<u8>, i64)>, String> {
+        // A transform that provides its own samples must be given a descriptor with no sample at
+        // all; only one that wants our buffer gets one.
+        let sample = if self.provides {
+            None
+        } else {
+            let buffer = api.memory_buffer(self.buffer_size)?;
+            let sample = api.sample()?;
+            // SAFETY: a plain COM call on two live interfaces.
+            unsafe { sample.AddBuffer(&buffer) }.map_err(|e| format!("{}: cannot attach the output buffer: {e}", self.name))?;
+            Some(sample)
+        };
+        let mut out = [MFT_OUTPUT_DATA_BUFFER { dwStreamID: 0, pSample: ManuallyDrop::new(sample), dwStatus: 0, pEvents: ManuallyDrop::new(None) }];
+        let mut status = 0u32;
+        // SAFETY: one output descriptor; `pSample` is either absent or a live sample we own, and
+        // the status out-pointer is a live local.
+        let r = unsafe { self.transform.ProcessOutput(0, &mut out, &mut status) };
+        // SAFETY: the descriptor's fields were initialised above; taking them hands the references
+        // the MFT filled in over to us (and releases them when the locals drop).
+        let (got, _events) = unsafe { (ManuallyDrop::take(&mut out[0].pSample), ManuallyDrop::take(&mut out[0].pEvents)) };
+        match r {
+            Ok(()) => {
+                let sample = got.ok_or_else(|| format!("{}: produced no sample", self.name))?;
+                // SAFETY: a plain COM call on a live interface.
+                let time = unsafe { sample.GetSampleTime() }.unwrap_or(0);
+                Ok(Some((sample_bytes(&sample)?, time)))
+            }
+            // nothing ready yet, or the MFT wants more input before it says so
+            Err(e) if matches!(e.code(), MF_E_NOTACCEPTING | E_UNEXPECTED | MF_E_TRANSFORM_NEED_MORE_INPUT) => Ok(None),
+            Err(e) if e.code() == MF_E_TRANSFORM_STREAM_CHANGE => Err(format!("{}: changed its output format mid-stream", self.name)),
+            Err(e) => Err(format!("{}: ProcessOutput failed: {e}", self.name)),
+        }
+    }
+
+    /// Ask for whatever is left after the last picture.
+    pub fn drain(&self) -> Result<(), String> {
+        // SAFETY: a plain COM call on a live interface.
+        unsafe { self.transform.ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0) }.map_err(|e| format!("{}: drain failed: {e}", self.name))
+    }
+}
+
+/// The bytes of a compressed sample, copied out of its buffer.
+fn sample_bytes(sample: &IMFSample) -> Result<Vec<u8>, String> {
+    // SAFETY: a plain COM call on a live interface.
+    let buffer = unsafe { sample.ConvertToContiguousBuffer() }.map_err(|e| format!("cannot read the encoded sample: {e}"))?;
+    // SAFETY: `Lock` gives a readable block of `len` bytes valid until `Unlock`, which we always call.
+    unsafe {
+        let mut ptr = std::ptr::null_mut::<u8>();
+        let mut len = 0u32;
+        buffer.Lock(&mut ptr, Some(&mut len), None).map_err(|e| format!("cannot lock the encoded sample: {e}"))?;
+        let bytes = if ptr.is_null() { Vec::new() } else { std::slice::from_raw_parts(ptr, len as usize).to_vec() };
+        buffer.Unlock().map_err(|e| format!("cannot unlock the encoded sample: {e}"))?;
+        Ok(bytes)
+    }
+}
+
+/// An activation object's friendly name, for diagnostics (`examples/mfencprobe.rs`).
+pub fn activate_name(a: &IMFActivate) -> String {
+    friendly_name(a).unwrap_or_else(|| "?".into())
 }
 
 /// The exported function `name` of `module` as a function pointer of type `F`.
@@ -121,17 +376,27 @@ impl MfApi {
         made(hr, raw, "MFCreateMediaType")
     }
 
-    /// An input sample holding a copy of `data`, timestamped `time`.
-    fn sample_of(&self, data: &[u8], time: i64) -> Result<IMFSample, String> {
-        let len = u32::try_from(data.len()).map_err(|_| "sample is too large".to_string())?;
+    /// An empty media buffer of `len` bytes.
+    pub(super) fn memory_buffer(&self, len: u32) -> Result<IMFMediaBuffer, String> {
         let mut raw = std::ptr::null_mut();
         // SAFETY: the out-pointer refers to a live local.
         let hr = unsafe { (self.create_memory_buffer)(len, &mut raw) };
-        let buffer: IMFMediaBuffer = made(hr, raw, "MFCreateMemoryBuffer")?;
+        made(hr, raw, "MFCreateMemoryBuffer")
+    }
+
+    /// An empty sample.
+    pub(super) fn sample(&self) -> Result<IMFSample, String> {
         let mut raw = std::ptr::null_mut();
         // SAFETY: the out-pointer refers to a live local.
         let hr = unsafe { (self.create_sample)(&mut raw) };
-        let sample: IMFSample = made(hr, raw, "MFCreateSample")?;
+        made(hr, raw, "MFCreateSample")
+    }
+
+    /// An input sample holding a copy of `data`, timestamped `time`.
+    fn sample_of(&self, data: &[u8], time: i64) -> Result<IMFSample, String> {
+        let len = u32::try_from(data.len()).map_err(|_| "sample is too large".to_string())?;
+        let buffer = self.memory_buffer(len)?;
+        let sample = self.sample()?;
         // SAFETY: `Lock` gives a writable block of at least `max` bytes valid until `Unlock`; the
         // copy stays within `len <= max` bytes and the buffer is unlocked before it is used.
         unsafe {
@@ -154,9 +419,48 @@ impl MfApi {
     fn decoders(&self, subtype: GUID) -> Result<Vec<IMFActivate>, String> {
         let input = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: subtype };
         let flags = MFT_ENUM_FLAG(MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_ASYNCMFT.0 | MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0);
+        self.enumerate(MFT_CATEGORY_VIDEO_DECODER, flags, None, Some(&input))
+    }
+
+    /// The encoder MFTs writing `output` from `input`, as activation objects. The output type comes
+    /// first in `MFTEnumEx`'s argument list: it is what the filter is chosen for. With
+    /// `hardware_only` cleared the list also holds the software encoders, so a machine with no
+    /// hardware encoder at all can still be told apart from one that has no encoder.
+    pub fn encoders(&self, output: GUID, input: GUID, hardware_only: bool) -> Result<Vec<IMFActivate>, String> {
+        let out_info = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: output };
+        let in_info = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: input };
+        let mut flags = MFT_ENUM_FLAG_SORTANDFILTER.0;
+        if hardware_only {
+            flags |= MFT_ENUM_FLAG_HARDWARE.0;
+        }
+        self.enumerate(MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG(flags), Some(&out_info), Some(&in_info))
+    }
+
+    /// Every MFT in `MFT_CATEGORY_VIDEO_ENCODER`, with no constraint on either side's media type.
+    /// Some vendors' encoder MFTs only declare their input type once they have been activated with a
+    /// Direct3D device manager, so filtering on the input subtype can miss them; this does not.
+    pub fn all_video_encoders(&self, hardware_only: bool) -> Result<Vec<IMFActivate>, String> {
+        let mut flags = MFT_ENUM_FLAG_SORTANDFILTER.0;
+        if hardware_only {
+            flags |= MFT_ENUM_FLAG_HARDWARE.0;
+        }
+        self.enumerate(MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG(flags), None, None)
+    }
+
+    /// The MFTs of `category` taking `input` and producing `output` (either may be `None` to leave
+    /// that side unconstrained), hardware ones first, as activation objects.
+    fn enumerate(
+        &self,
+        category: GUID,
+        flags: MFT_ENUM_FLAG,
+        output: Option<&MFT_REGISTER_TYPE_INFO>,
+        input: Option<&MFT_REGISTER_TYPE_INFO>,
+    ) -> Result<Vec<IMFActivate>, String> {
+        let out_ptr = output.map_or(std::ptr::null(), |o| o as *const _);
+        let in_ptr = input.map_or(std::ptr::null(), |i| i as *const _);
         let (mut list, mut count) = (std::ptr::null_mut::<*mut c_void>(), 0u32);
         // SAFETY: the type info and the out-pointers refer to live locals.
-        let hr = unsafe { (self.enum_transforms)(MFT_CATEGORY_VIDEO_DECODER, flags.0 as u32, &input, std::ptr::null(), &mut list, &mut count) };
+        let hr = unsafe { (self.enum_transforms)(category, flags.0 as u32, out_ptr, in_ptr, &mut list, &mut count) };
         if hr.is_err() {
             return Err(format!("MFTEnumEx failed ({hr:?})"));
         }
@@ -409,6 +713,31 @@ pub fn describe(api: &MfApi, subtype: GUID) -> Vec<String> {
                 }
             };
             format!("{name} (async {asynchronous}, Direct3D 11 aware {d3d11})")
+        })
+        .collect()
+}
+
+/// One line per activation object: the MFT's friendly name, or `?`.
+pub fn describe_activates(list: &[IMFActivate]) -> Vec<String> {
+    list.iter().map(|a| friendly_name(a).unwrap_or_else(|| "?".into())).collect()
+}
+
+/// One line per encoder MFT writing `output` from `input` (name, Direct3D-aware or not):
+/// diagnostics (`examples/mfcaps.rs`).
+pub fn describe_encoders(api: &MfApi, output: GUID, input: GUID, hardware_only: bool) -> Vec<String> {
+    let Ok(list) = api.encoders(output, input, hardware_only) else { return vec!["enumeration failed".into()] };
+    list.iter()
+        .map(|a| {
+            let name = friendly_name(a).unwrap_or_else(|| "?".into());
+            // SAFETY: plain COM calls on live interfaces.
+            let d3d11 = unsafe {
+                a.ActivateObject::<IMFTransform>()
+                    .ok()
+                    .and_then(|t| t.GetAttributes().ok())
+                    .and_then(|attrs| attrs.GetUINT32(&MF_SA_D3D11_AWARE).ok())
+                    .is_some_and(|v| v != 0)
+            };
+            format!("{name} (Direct3D 11 aware {d3d11})")
         })
         .collect()
 }
