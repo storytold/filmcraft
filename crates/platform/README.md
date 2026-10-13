@@ -98,10 +98,13 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   H.264 is opt-in (Export ▸ Hardware encoding) exactly as with NVENC; H.265, which has no software
   encoder, fails with the reason and its availability probe makes the format offered wherever either
   encoder opens a session. It declines CRF, two-pass, HDR, MXF, interlaced output, non-square pixels
-  in H.265 and odd picture sizes. **An encoder that reorders frames (B-frames) is declined by the
-  presentation-time check** — a picture at an unexpected time is an error naming the encoder, never a
-  file with wrong timestamps. Verified on a Snapdragon X (Adreno X1-85, Windows 11 ARM64, driver
-  `31.0.137.0`) with `QCOM Hardware Encoder - H264` and `- HEVC`.
+  in H.265 and odd picture sizes. **An encoder that runs a fixed number of pictures behind is taken**:
+  the delay is measured in pictures and written as an edit list (`VideoEncoder::media_start`, the
+  same field NVENC uses for its B-frame delay), because the pictures are in order and complete and
+  the file just wants the video to start that far in. A delay that *changes* is reordering, and that
+  is an error naming the encoder rather than a file with wrong timestamps. Verified on a Snapdragon X
+  (Adreno X1-85, Windows 11 ARM64, driver `31.0.137.0`) with `QCOM Hardware Encoder - H264` and
+  `- HEVC`.
 - **Linux: NVDEC, H.264 (`avcC`) and HEVC (`hvcC`)** on NVIDIA's proprietary driver (`nvdec/`): H.264
   8-bit and HEVC 8- / 10-bit, 4:2:0 progressive. `libnvcuvid.so.1` and `libcuda.so.1` are loaded at
   run time; without them (or without a device) nothing is registered. NVIDIA's own parser takes the

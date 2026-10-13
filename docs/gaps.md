@@ -111,10 +111,14 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   GPU export rendering (#421).
 - **Missing:** zero-copy decoded frames into wgpu (every frame is read back to the CPU and
   re-uploaded); VideoToolbox Main 10 / HDR HEVC encode and B-frames; ProRes hardware decode /
-  encode on Apple silicon; 10-bit / HDR and B-frames in the Media Foundation encoder (an encoder
-  that reorders is declined by its presentation-time check);
-  VA-API VP9 / AV1 and VA-API encode; HEVC encode on Linux; AV1 hardware encode (no AV1 encoder
-  plumbing at all, though the MFTs exist); ~48 of Premiere's
+  encode on Apple silicon; 10-bit / HDR in the Media Foundation encoder (a fixed picture delay is taken and written as an
+  edit list; only a delay that changes, which is reordering, is declined);
+  VA-API VP9 / AV1 and VA-API encode; HEVC encode on Linux; AV1 hardware encode — there is no AV1
+  encoder plumbing at all, though the MFTs exist and open: on a Snapdragon X (Adreno X1-85, driver
+  `31.0.137.0`) `QCOM Hardware Encoder - AV1` takes NV12 and writes pictures, but its output is not
+  a whole number of low-overhead OBUs (some samples parse to exactly the sample length, others leave
+  an OBU whose declared size runs past the end), so the `av01` / `av1C` writer cannot be fed by it
+  as it stands; ~48 of Premiere's
   ~82 accelerated effects (keys, masks, Lumetri curves / wheels / HSL, distortions, transitions);
   external video I/O (DeckLink / AJA, Mercury Transmit), control surfaces (EUCON / Mackie);
   a CPU fallback adapter renders everything on the CPU (#632);
