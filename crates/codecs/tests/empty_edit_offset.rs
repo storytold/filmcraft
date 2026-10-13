@@ -7,6 +7,7 @@
 //! Sequence time 2.1042 s (inside frame 50 of a Sequence From Clip at 24 fps) must show the
 //! picture ffprobe places on screen there — before the fix the source answered one frame early.
 
+#[path = "it/common/mod.rs"]
 mod common;
 
 use common::*;

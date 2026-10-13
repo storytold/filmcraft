@@ -372,7 +372,7 @@ impl Mp4Source {
         // Sony XAVC files with no `tmcd` track carry the start timecode in an `rtmd` metadata
         // track; convert its fields to a frame count using the video frame rate.
         let start_timecode = start_timecode.or_else(|| rtmd_start_timecode(&file, &bytes, video.as_ref()?.frame_rate));
-        let info = MediaInfo {
+        let mut info = MediaInfo {
             name: name.to_string(),
             kind: if video.is_some() { MediaKind::Movie } else { MediaKind::AudioOnly },
             duration,
@@ -402,7 +402,16 @@ impl Mp4Source {
             })
             .collect();
         snap_to_frame_grid(&mut file, vtrack);
-        rebase_unedited_video(&mut file, vtrack, &mut audios);
+        if let (Some(shift), Some(ti)) = (rebase_unedited_video(&mut file, vtrack, &mut audios), vtrack) {
+            // The edit-list duration counted the leading empty edit; the content now starts at its
+            // first presented picture, so the clip ends one shift earlier (review on #1289). Only
+            // the edit-list duration is affected: the media duration already excludes the delay,
+            // and fragmented files keep the media duration regardless.
+            let edit_list = file.tracks.get(ti).is_some_and(|t| !t.edits.is_empty());
+            if edit_list && !file.fragmented {
+                info.duration = Tick((info.duration.0 - shift.0).max(0));
+            }
+        }
         let snap = vtrack.zip(info.video.as_ref()).is_some_and(|(i, v)| {
             let t = &file.tracks[i];
             crate::gop::snap_coarse_units(t.samples.iter().map(|s| s.pts.saturating_add(t.edit_offset)), 1, i64::from(t.timescale), v.frame_rate)
@@ -865,17 +874,20 @@ fn snap_to_frame_grid(file: &mut Mp4File, vtrack: Option<usize>) {
 /// skips into the media yields a non-positive start and needs no shift). Every track moves back by
 /// the earliest start among them, video and audio alike, so the streams stay in sync and a delay
 /// between them keeps its meaning.
-fn rebase_unedited_video(file: &mut Mp4File, vtrack: Option<usize>, audios: &mut [Mp4Audio]) {
-    let Some(vi) = vtrack else { return };
-    let Some(t) = file.tracks.get(vi).filter(|t| t.timescale > 0) else { return };
-    let Some(first) = t.samples.iter().map(|s| s.pts).min().map(|p| p.saturating_add(t.edit_offset)).filter(|&p| p > 0) else { return };
+fn rebase_unedited_video(file: &mut Mp4File, vtrack: Option<usize>, audios: &mut [Mp4Audio]) -> Option<Tick> {
+    let vi = vtrack?;
+    let t = file.tracks.get(vi).filter(|t| t.timescale > 0)?;
+    let first = t.samples.iter().map(|s| s.pts).min()?.saturating_add(t.edit_offset);
+    if first <= 0 {
+        return None;
+    }
     let vts = i64::from(t.timescale);
     let video_start = Tick::from_rational(first, 1, vts);
     let audio_ts = |a: &Mp4Audio| file.tracks.get(a.track).map_or(1, |t| i64::from(t.timescale.max(1)));
     // an audio track starts at its offset (a negative one only hides priming before zero)
     let shift = audios.iter().fold(video_start, |m, a| m.min(Tick::from_rational(a.offset.max(0), 1, audio_ts(a))));
     if shift <= Tick::ZERO {
-        return;
+        return None;
     }
     for a in audios.iter_mut() {
         let d = shift.to_rational_round(1, audio_ts(a));
@@ -885,6 +897,7 @@ fn rebase_unedited_video(file: &mut Mp4File, vtrack: Option<usize>, audios: &mut
     if let Some(t) = file.tracks.get_mut(vi) {
         t.edit_offset = t.edit_offset.saturating_sub(v);
     }
+    Some(shift)
 }
 
 /// How long a track plays. With an edit list that is the sum of its edits (ISO/IEC 14496-12
