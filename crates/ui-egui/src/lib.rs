@@ -173,6 +173,9 @@ pub struct Playback {
     /// of jumping a frame at a time or by a device buffer. The session playhead stays on the
     /// frame shown.
     smooth_playhead: Option<(Tick, f64)>,
+    /// Where playback began: what a stop that returns goes back to. Kept across speed changes and
+    /// loop restarts, set again by the next play from a stop.
+    pub origin: Tick,
 }
 
 /// Incoming composition identity for the Program monitor. Interrupted compositions remain
