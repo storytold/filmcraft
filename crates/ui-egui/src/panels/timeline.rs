@@ -245,6 +245,27 @@ pub enum Drag {
     },
     /// The Timeline dragged by the middle button or the Hand tool: sideways in time, and up and down
     /// the half it began in (`audio`: the audio tracks below the divider, else the video tracks).
+    /// A marker's range end dragged on the ruler (#1348); `duration` is shown live, committed on
+    /// release as one `markers.edit`.
+    MarkerEnd {
+        marker: MarkerId,
+        /// As in [`Drag::Trim`].
+        from: Tick,
+        before: Tick,
+        duration: Tick,
+        /// Where the playhead was: it follows the range end while dragging, Escape puts it back.
+        playhead: Tick,
+    },
+    /// A marker dragged along the ruler (#1348); `start` is shown live, committed on release.
+    MarkerMove {
+        marker: MarkerId,
+        /// As in [`Drag::Trim`].
+        from: Tick,
+        before: Tick,
+        start: Tick,
+        /// As in [`Drag::MarkerEnd`]; the playhead follows the start.
+        playhead: Tick,
+    },
     Pan {
         last: Pos2,
         start_scroll: f64,
