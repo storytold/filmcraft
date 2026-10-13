@@ -1,10 +1,11 @@
 use super::convert::{
-    Matrix, Planes444, covers, rgba_to_yuv420_8, rgba_to_yuv420_10, rgba_to_yuv422_10, rgbf_to_yuv420_8, rgbf_to_yuv420_10, rgbf_to_yuv422_10, to_yuv444_10,
+    Matrix, Planes444, covers, rgba_to_rgb24, rgba_to_uyvy8, rgba_to_yuv420_8, rgba_to_yuv420_10, rgba_to_yuv422_10, rgbf_to_yuv420_8, rgbf_to_yuv420_10,
+    rgbf_to_yuv422_10, to_yuv444_10, yuv422_10_to_v210,
 };
 use super::format::{ColorSignal, DEFAULT_CRF, ExportSettings, Format, H264Pass};
 use super::registry::{AudioEncoder, EncodedPacket, EncoderFrame, PrepareAhead, VideoEncoder};
 use super::stats::{Stage, timed};
-use super::{BitrateMode, ExportError, FrameRate, H264Profile, Result, SampleEntry, SampleFormat};
+use super::{BitrateMode, ExportError, FrameRate, H264Profile, Result, SampleEntry, SampleFormat, UncompressedPixelFormat};
 use std::sync::{Arc, Mutex, PoisonError};
 
 struct MjpegEncoder {
@@ -35,6 +36,89 @@ impl VideoEncoder for MjpegEncoder {
 
 pub(crate) fn mjpeg_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     (format == Format::Mjpeg).then(|| Ok(Box::new(MjpegEncoder { w: w as u16, h: h as u16, quality: s.quality.clamp(1, 100), rate }) as Box<dyn VideoEncoder>))
+}
+
+/// Uncompressed QuickTime encoder: straight RGBA8 to the chosen pixel layout, one sample per
+/// picture. Nothing is compressed, so every sample is a keyframe and the file is as large as the
+/// picture and its rate say ([`UncompressedPixelFormat::frame_bytes`]). An HDR sequence arrives
+/// tone-mapped here, like Motion-JPEG's: this format does not signal HDR.
+struct UncompressedEncoder {
+    layout: UncompressedPixelFormat,
+    w: u32,
+    h: u32,
+    rate: FrameRate,
+    /// `v210`'s 10-bit 4:2:2 planes, kept between frames.
+    y: Vec<u16>,
+    cb: Vec<u16>,
+    cr: Vec<u16>,
+}
+
+impl VideoEncoder for UncompressedEncoder {
+    fn sample_entry(&self) -> SampleEntry {
+        // `CodecConfig::Unknown` is written payload-verbatim, so the VisualSampleEntry header the
+        // muxer cannot build for it is built here: reserved, data reference index, the fourcc's
+        // pre_defined/reserved words, the quality words, the frame size and the fixed 32/32 dpi,
+        // then `compressorname` and depth 24 with the -1 colour-table id. `colr` follows below.
+        let mut raw = Vec::with_capacity(78);
+        raw.extend_from_slice(&[0; 6]);
+        raw.extend_from_slice(&1u16.to_be_bytes());
+        // pre_defined, reserved, the two quality words
+        raw.extend_from_slice(&[0; 16]);
+        raw.extend_from_slice(&(self.w as u16).to_be_bytes());
+        raw.extend_from_slice(&(self.h as u16).to_be_bytes());
+        raw.extend_from_slice(&0x0048_0000u32.to_be_bytes());
+        raw.extend_from_slice(&0x0048_0000u32.to_be_bytes());
+        raw.extend_from_slice(&0u32.to_be_bytes());
+        raw.extend_from_slice(&1u16.to_be_bytes());
+        // compressorname: one length byte and 31 characters
+        raw.extend_from_slice(&[0; 32]);
+        raw.extend_from_slice(&24u16.to_be_bytes());
+        raw.extend_from_slice(&0xFFFFu16.to_be_bytes());
+        let mut e = SampleEntry::video(
+            filmcraft_isobmff::FourCc(self.layout.fourcc()),
+            filmcraft_isobmff::CodecConfig::Unknown { fourcc: filmcraft_isobmff::FourCc(self.layout.fourcc()), raw },
+            self.w as u16,
+            self.h as u16,
+        );
+        // Uncompressed video carries no colour description of its own and the picture is BT.709
+        // limited range (every other format here signals it in the bitstream or its frame headers):
+        // the `colr` box is the only place a decoder can learn it.
+        if let Some(v) = e.video.as_mut() {
+            v.color = Some(filmcraft_isobmff::ColorInfo::Nclc { primaries: 1, transfer: 1, matrix: 1 });
+        }
+        e
+    }
+    fn timescale(&self) -> u32 {
+        self.rate.num as u32
+    }
+    fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
+        let (w, h) = (f.width as usize, f.height as usize);
+        let layout = self.layout;
+        let mut data = Vec::with_capacity(layout.frame_bytes(f.width, f.height));
+        timed(Stage::Convert, || match layout {
+            UncompressedPixelFormat::Uyvy8 => rgba_to_uyvy8(f.rgba, w, h, &mut data),
+            UncompressedPixelFormat::Rgb24 => rgba_to_rgb24(f.rgba, w, h, &mut data),
+            UncompressedPixelFormat::V210 => {
+                self.y.resize(w * h, 0);
+                self.cb.resize(w.div_ceil(2) * h, 0);
+                self.cr.resize(w.div_ceil(2) * h, 0);
+                // the shared 4:2:2 10-bit conversion, used by the DNxHR and APV encoders too
+                rgba_to_yuv422_10(f.rgba, w, h, &mut self.y, &mut self.cb, &mut self.cr);
+                yuv422_10_to_v210(&self.y, &self.cb, &self.cr, w, h, &mut data);
+            }
+        });
+        Ok(vec![EncodedPacket { data, key: true, duration: self.rate.den as u32, composition_offset: 0 }])
+    }
+    fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
+        Ok(Vec::new())
+    }
+}
+
+pub(crate) fn uncompressed_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+    (format == Format::Uncompressed).then(|| {
+        Ok(Box::new(UncompressedEncoder { layout: s.uncompressed_pixel_format, w, h, rate, y: Vec::new(), cb: Vec::new(), cr: Vec::new() })
+            as Box<dyn VideoEncoder>)
+    })
 }
 
 /// AAC-LC (our encoder), 320 kbps stereo by default.

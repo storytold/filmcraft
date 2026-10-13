@@ -256,6 +256,8 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   explicit 128/255 alpha threshold; decoded synthetic animation tests cover moving transparent
   regions and clearing prior frames. Partial transparency remains a GIF limitation. See the
   [export README](../crates/export/README.md). No readiness estimate changes.
+- **Uncompressed QuickTime:** written as 8-bit 4:2:2 `2vuy`, 10-bit 4:2:2 `v210` or 24-bit RGB
+  `raw `; reading it landed in #2415.
 - **Estimate:** 60–110 h. Doc: [file-format-parity.md](file-format-parity.md).
 
 ## G14. Localization: 3 of the 12 key languages missing (Hindi, Arabic, Vietnamese)

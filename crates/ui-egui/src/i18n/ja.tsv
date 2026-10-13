@@ -2918,6 +2918,10 @@
 	Match Source	ソースに合わせる
 	Field Order	フィールドオーダー
 	Aspect	アスペクト比
+	Pixel Format	ピクセルフォーマット
+	UYVY 8-bit 4:2:2	UYVY 8-bit 4:2:2
+	v210 10-bit 4:2:2	v210 10-bit 4:2:2
+	RGB 24-bit	RGB 24-bit
 	Profile	プロファイル
 	Bitrate Encoding	ビットレート方式
 	Target Bitrate	ターゲットビットレート
@@ -3236,6 +3240,7 @@
 	Progressive	プログレッシブ
 	ProjectPanel	プロジェクトパネル
 	QuickTime (Motion JPEG)	QuickTime (Motion JPEG)
+	QuickTime (Uncompressed)	QuickTime (非圧縮)
 	QuickTime, APV 422-10 (10-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime、APV 422-10 (10-bit 4:2:2)、24-bit 48 kHz PCM
 	QuickTime, APV 422-12 (12-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime、APV 422-12 (12-bit 4:2:2)、24-bit 48 kHz PCM
 	QuickTime, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime、DNxHR HQ (8-bit 4:2:2)、24-bit 48 kHz PCM
@@ -3251,6 +3256,12 @@
 	Settings	設定
 	Hide FilmCraft	FilmCraft を隠す
 	Hide Others	ほかを隠す
+	QuickTime, uncompressed 10-bit 4:2:2 (v210), 24-bit 48 kHz PCM	QuickTime、非圧縮 10-bit 4:2:2 (v210)、24-bit 48 kHz PCM
+	QuickTime, uncompressed 24-bit RGB (raw), 24-bit 48 kHz PCM	QuickTime、非圧縮 24-bit RGB (raw)、24-bit 48 kHz PCM
+	QuickTime, uncompressed 8-bit 4:2:2 (2vuy), 24-bit 48 kHz PCM	QuickTime、非圧縮 8-bit 4:2:2 (2vuy)、24-bit 48 kHz PCM
+	Uncompressed 10-bit 4:2:2 (v210)	非圧縮 10-bit 4:2:2 (v210)
+	Uncompressed 8-bit 4:2:2 (UYVY)	非圧縮 8-bit 4:2:2 (UYVY)
+	Uncompressed 8-bit RGB	非圧縮 8-bit RGB
 	Quit FilmCraft	FilmCraft を終了
 	Rate Stretch Tool	レートストレッチツール
 	Razor Tool	カミソリツール
