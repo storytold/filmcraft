@@ -7,11 +7,29 @@ use filmcraft_engine::Session;
 impl FilmcraftApp {
     // ---------------------------------------------------------------- playback
 
+    /// Play/Stop (Space): the stop goes where Settings ▸ Playback ▸ "Stop returns the playhead to
+    /// where playback started" says.
     pub fn toggle_play(&mut self, speed: f64) {
+        self.toggle_play_to(self.session.prefs.playback.stop_returns_to_start, speed);
+    }
+
+    /// Play/Stop whose stop returns to where playback began if `back`, else stays.
+    pub fn toggle_play_to(&mut self, back: bool, speed: f64) {
         if self.playback.playing {
-            self.stop();
+            self.stop_playback(back);
         } else {
             self.play(speed);
+        }
+    }
+
+    /// [`stop`](Self::stop), and with `back` the playhead goes back to where playback began. A take
+    /// being recorded ends where it was stopped.
+    pub fn stop_playback(&mut self, back: bool) {
+        let back = back && self.playback.playing && !self.session.voiceover.recording() && !self.session.mcrec.active();
+        let origin = self.playback.origin;
+        self.stop();
+        if back {
+            self.session.set_playhead(origin);
         }
     }
 
@@ -34,6 +52,9 @@ impl FilmcraftApp {
         // A loop restart keeps counting into the same meter.
         if !self.playback.playing || self.playback.speed != speed {
             self.playback.meter.start(speed);
+        }
+        if !self.playback.playing {
+            self.playback.origin = self.session.playhead();
         }
         self.playback.playing = true;
         self.playback.speed = speed;
@@ -267,7 +288,7 @@ impl FilmcraftApp {
         };
         if let Some(end) = self.playback.stop_at.filter(|e| t >= *e && self.playback.speed > 0.0 && !self.playback.looping) {
             self.session.set_playhead(self.playback.rest_at.unwrap_or(end));
-            self.stop();
+            self.stop_playback(self.session.prefs.playback.stop_returns_to_start);
         } else if t >= hi && self.playback.speed > 0.0 && (self.playback.looping || !self.session.voiceover.recording()) {
             // a voice-over take keeps playing (and recording) into the empty timeline past the end
             if self.playback.looping {
@@ -275,11 +296,11 @@ impl FilmcraftApp {
                 self.play(self.playback.speed);
             } else {
                 self.session.set_playhead(hi - rate.frame_duration());
-                self.stop();
+                self.stop_playback(self.session.prefs.playback.stop_returns_to_start);
             }
         } else if t <= Tick::ZERO && self.playback.speed < 0.0 {
             self.session.set_playhead(Tick::ZERO);
-            self.stop();
+            self.stop_playback(self.session.prefs.playback.stop_returns_to_start);
         } else {
             self.session.set_playhead(t);
         }
