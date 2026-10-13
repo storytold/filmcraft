@@ -391,7 +391,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
 
     // ---- mini timeline / scrub bar
     follow_playhead(app, which, origin, duration, time);
-    time_zoom_bar(app, ui, zoom_bar, which, origin, duration, rate);
+    time_zoom_bar(app, ui, zoom_bar, which, origin, time, duration, rate);
     mini_timeline(app, ui, bar, which, origin, time, duration, rate, mark_in, mark_out);
 
     // ---- transport buttons
@@ -785,8 +785,10 @@ fn follow_playhead(app: &mut FilmcraftApp, which: Which, origin: Tick, end: Tick
 
 /// The zoom scroll bar under the time ruler. Its thumb is the part of the clip or sequence
 /// (`origin..end`) the ruler shows: drag a handle at either end to zoom, the middle to scroll, or
-/// press beside the thumb to bring it there. A thumb filling the bar shows all of it.
-fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Which, origin: Tick, end: Tick, rate: filmcraft_time::FrameRate) {
+/// press beside the thumb to bring it there. A thumb filling the bar shows all of it. Dragging a
+/// handle zooms about the playhead `time`, as the Timeline's bar does.
+#[allow(clippy::too_many_arguments)]
+fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Which, origin: Tick, time: Tick, end: Tick, rate: filmcraft_time::FrameRate) {
     let t = app.tokens;
     let prefix = if which == Which::Program { "program" } else { "source" };
     let len = end.0.saturating_sub(origin.0);
@@ -836,10 +838,10 @@ fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Wh
             ZoomThumbPart::Right => 2,
             ZoomThumbPart::Beside | ZoomThumbPart::Middle => 0,
         };
-        ui.data_mut(|d| d.insert_temp(drag_id, (pos.x, start, mode)));
+        ui.data_mut(|d| d.insert_temp(drag_id, (pos.x, start, mode, e)));
     }
     if resp.dragged_by(egui::PointerButton::Primary)
-        && let Some((grab, start, mode)) = ui.data(|d| d.get_temp::<(f32, f64, u8)>(drag_id))
+        && let Some((grab, start, mode, end_at_press)) = ui.data(|d| d.get_temp::<(f32, f64, u8, f64)>(drag_id))
     {
         match mode {
             // the thumb's middle: scroll, the thumb staying under the pointer
@@ -849,17 +851,23 @@ fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Wh
                     set = Some((ns, ns + span));
                 }
             }
-            // a handle: zoom, the other end staying where it is
+            // a handle: zoom about the playhead, the handle following the pointer (by the offset
+            // it was grabbed at)
             _ => {
-                let dx = resp.drag_delta().x as f64 / bar.width().max(1.0) as f64;
-                set = Some(if mode == 1 { ((s + dx).clamp(0.0, (e - min_span).max(0.0)), e) } else { (s, (e + dx).clamp((s + min_span).min(1.0), 1.0)) });
+                if let Some(pos) = resp.interact_pointer_pos() {
+                    let frac_at = |x: f32| (x - bar.min.x) as f64 / bar.width().max(1.0) as f64;
+                    let edge = if mode == 1 { start } else { end_at_press };
+                    let handle = frac_at(pos.x) - (frac_at(grab) - edge);
+                    let playhead = if len > 0 { time.0.saturating_sub(origin.0) as f64 / len as f64 } else { 0.0 };
+                    set = Some(super::timeline::handle_zoom(mode == 1, handle, playhead, 1.0, min_span));
+                }
             }
         }
     }
     if resp.drag_stopped() {
-        ui.data_mut(|d| d.remove::<(f32, f64, u8)>(drag_id));
+        ui.data_mut(|d| d.remove::<(f32, f64, u8, f64)>(drag_id));
     }
-    let handle_grabbed = ui.data(|d| d.get_temp::<(f32, f64, u8)>(drag_id)).is_some_and(|(_, _, mode)| mode != 0);
+    let handle_grabbed = ui.data(|d| d.get_temp::<(f32, f64, u8, f64)>(drag_id)).is_some_and(|(_, _, mode, _)| mode != 0);
     crate::widgets::zoom_thumb_cursor(ui, &resp, thumb, handle_grabbed);
     if let Some((s, e)) = set {
         monitor_view::view_mut(app, which).time_zoom = (s > 0.0 || e < 1.0).then_some([s, e.min(1.0)]);

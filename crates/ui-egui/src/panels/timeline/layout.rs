@@ -128,6 +128,24 @@ pub(crate) fn reveal_playhead(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
 }
 
+/// The view `(start, end)` inside `0..=total` after a zoom bar's handle is dragged to `handle`
+/// (the time the pointer puts it at): the view stays centred on `playhead` (moved in from the
+/// ends as far as needed), so the dragged handle follows the pointer until it reaches the
+/// playhead, and the view never gets narrower than `min_span` nor wider than `total`. Time units
+/// are the caller's (seconds for the Timeline, a fraction of the clip for a monitor).
+pub fn handle_zoom(left_handle: bool, handle: f64, playhead: f64, total: f64, min_span: f64) -> (f64, f64) {
+    let total = if total.is_finite() { total.max(0.0) } else { 0.0 };
+    let min_span = if min_span.is_finite() { min_span.clamp(0.0, total) } else { total };
+    let at = if playhead.is_finite() { playhead.clamp(0.0, total) } else { 0.0 };
+    let handle = if handle.is_finite() { handle.clamp(0.0, total) } else { 0.0 };
+    // a handle at the pointer, the playhead in the middle of the view: the span doubles the
+    // handle's distance from the playhead, or reaches the far end if that comes first
+    let span = if left_handle { (2.0 * (at - handle)).min(total - handle) } else { (2.0 * (handle - at)).min(handle) };
+    let span = span.clamp(min_span, total);
+    let start = (at - span / 2.0).clamp(0.0, total - span);
+    (start, start + span)
+}
+
 /// Zoom about a time (keeps it under the same screen x).
 pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32, sequence_seconds: f64) {
     let old = v.target_pps;

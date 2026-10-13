@@ -47,7 +47,7 @@ use interact::{interact, move_transition_preview, preview_drag};
 use layout::new_track_at;
 pub(crate) use layout::reveal_playhead;
 use layout::video_row_tops;
-pub use layout::{Layout, Row, max_scroll, min_pps, scroll_to_reveal, timeline_extent, zoom_about};
+pub use layout::{Layout, Row, handle_zoom, max_scroll, min_pps, scroll_to_reveal, timeline_extent, zoom_about};
 #[cfg(test)]
 pub(crate) use menus::{CLIP_MENU, EDIT_POINT_TYPES};
 use ruler::draw_top;
@@ -1313,5 +1313,46 @@ mod waveform_zone_tests {
         assert_eq!(waveform_zone_height(49.0), 47.0);
         // never smaller than the minimum
         assert_eq!(waveform_zone_height(4.0), 8.0);
+    }
+}
+
+#[cfg(test)]
+mod handle_zoom_tests {
+    use super::handle_zoom;
+
+    #[test]
+    fn the_view_stays_centred_on_the_playhead_and_the_handle_follows_the_pointer() {
+        // a left handle at 20 of 100, the playhead at 50: the view is 20..80
+        assert_eq!(handle_zoom(true, 20.0, 50.0, 100.0, 1.0), (20.0, 80.0));
+        // a right handle at 70: 30..70
+        assert_eq!(handle_zoom(false, 70.0, 50.0, 100.0, 1.0), (30.0, 70.0));
+    }
+
+    #[test]
+    fn near_an_end_the_view_is_moved_in_from_it() {
+        // playhead at 10: the left handle at 0 asks for 0..20 at least; the far end wins at 100
+        assert_eq!(handle_zoom(true, 0.0, 10.0, 100.0, 1.0), (0.0, 20.0));
+        // the right handle at 100 with the playhead at 90: the view reaches the end
+        assert_eq!(handle_zoom(false, 100.0, 90.0, 100.0, 1.0), (80.0, 100.0));
+        // the whole range: the handles at the ends
+        assert_eq!(handle_zoom(true, 0.0, 50.0, 100.0, 1.0), (0.0, 100.0));
+    }
+
+    #[test]
+    fn a_handle_dragged_past_the_playhead_leaves_the_smallest_view() {
+        assert_eq!(handle_zoom(true, 80.0, 50.0, 100.0, 4.0), (48.0, 52.0));
+        assert_eq!(handle_zoom(false, 10.0, 50.0, 100.0, 4.0), (48.0, 52.0));
+    }
+
+    #[test]
+    fn numbers_that_are_not_numbers_do_no_harm() {
+        for v in [f64::NAN, f64::INFINITY, -1.0] {
+            for left in [true, false] {
+                let (s, e) = handle_zoom(left, v, v, 100.0, 1.0);
+                assert!(s.is_finite() && e.is_finite() && 0.0 <= s && s <= e && e <= 100.0, "{s} {e}");
+            }
+        }
+        let (s, e) = handle_zoom(true, 1.0, 1.0, f64::NAN, f64::NAN);
+        assert!(s.is_finite() && e.is_finite());
     }
 }

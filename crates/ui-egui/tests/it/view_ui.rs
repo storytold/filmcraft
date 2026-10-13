@@ -554,7 +554,8 @@ fn time_zoom_bar_handle_drag_keeps_the_resize_cursor_off_the_bar() {
     d.press(handle, y);
     d.move_to(handle + 40.0, y);
     let z = d.program()["time_zoom"].clone();
-    assert!(z[1].as_f64().is_some_and(|end| end > 0.75), "the right handle dragged right zooms out: {z}");
+    let span = z[1].as_f64().zip(z[0].as_f64()).map(|(end, start)| end - start);
+    assert!(span.is_some_and(|span| span > 0.5), "the right handle dragged right zooms out: {z}");
     assert_eq!(d.cursor(), egui::CursorIcon::ResizeHorizontal, "dragging along the bar");
     d.move_to(handle + 40.0, y - 300.0);
     assert_eq!(d.cursor(), egui::CursorIcon::ResizeHorizontal, "dragging above the bar");
@@ -575,6 +576,29 @@ fn time_zoom_bar_middle_drag_never_shows_the_resize_cursor() {
     assert!((end[0] + end[2] - (track[0] + track[2])).abs() < 0.5, "the thumb is at the end of the bar: {end:?}");
     assert_eq!(d.cursor(), egui::CursorIcon::Default, "pointer over the right handle's place");
     d.release(track[0] + track[2] - 3.0, y);
+}
+
+/// A handle of a monitor's zoom bar zooms about the playhead: the view stays centred on it, and
+/// the dragged handle follows the pointer.
+#[test]
+fn time_zoom_bar_handles_zoom_about_the_playhead() {
+    let mut d = Driver::demo();
+    let duration = num(&d.exec("sequence.inspect", json!({}))["duration"]);
+    d.exec("playhead.set", json!({"time": (duration * 0.5) as i64}));
+    d.frames(2);
+    let track = d.rect("program.zoomBar.track");
+    let y = track[1] + track[3] / 2.0;
+    // the right handle dragged to three quarters: the half around the playhead
+    d.ok("ui.drag", json!({"from": {"x": track[0] + track[2] - 4.0, "y": y}, "to": {"x": track[0] + track[2] * 0.75, "y": y}, "steps": 8}));
+    d.frames(2);
+    let z = d.program()["time_zoom"].clone();
+    assert!((num(&z[0]) - 0.25).abs() < 0.02 && (num(&z[1]) - 0.75).abs() < 0.02, "{z}");
+    // the left handle dragged in to 0.4: the fifth around the playhead
+    let thumb = d.rect("program.zoomBar");
+    d.ok("ui.drag", json!({"from": {"x": thumb[0] + 4.0, "y": y}, "to": {"x": track[0] + track[2] * 0.4, "y": y}, "steps": 8}));
+    d.frames(2);
+    let z = d.program()["time_zoom"].clone();
+    assert!((num(&z[0]) - 0.4).abs() < 0.02 && (num(&z[1]) - 0.6).abs() < 0.02, "{z}");
 }
 
 /// While a monitor plays, its zoomed ruler pages to keep the playhead in view, keeping its width,
