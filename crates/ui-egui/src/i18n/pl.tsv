@@ -3621,3 +3621,13 @@
 	No matching text.	Brak pasującego tekstu.
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) wymaga sprzętowego kodera (NVENC na kartach NVIDIA, VideoToolbox w macOS); na tym komputerze nie znaleziono żadnego, a FilmCraft nie ma jeszcze programowego kodera H.265. Wybierz H.264 lub ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 wymaga sprzętowego kodera; na tym komputerze nie znaleziono żadnego, a FilmCraft nie ma jeszcze programowego kodera AV1.
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	Kolor 10-bitowy
+	All Intra	Tylko intra
+	Every frame a keyframe (edit-friendly, larger files)	Każda klatka kluczowa (wygodne w montażu, większe pliki)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a master without banding	H.264 High 10 (10-bit 4:2:0) w rozmiarze sekwencji, stała jakość CRF 16, AAC 320 kb/s; master bez bandingu
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10-bit 4:2:0, każda klatka kluczowa), CRF 12, AAC 320 kb/s; plik pośredni wygodny w montażu

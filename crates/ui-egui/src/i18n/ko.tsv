@@ -3631,3 +3631,13 @@
 	Flash Cue Point	Flash 큐 포인트
 	Invalid duration: {error}	잘못된 지속 시간: {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	10비트 색상
+	All Intra	올 인트라
+	Every frame a keyframe (edit-friendly, larger files)	모든 프레임을 키프레임으로(편집하기 쉬움, 파일 크기 증가)
+	H.264 High 10 Master	H.264 High 10 마스터
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a master without banding	H.264 High 10 (10비트 4:2:0), 시퀀스 크기, 고정 품질 CRF 16, AAC 320 kbps, 밴딩 없는 마스터
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10비트 4:2:0, 모든 프레임이 키프레임), CRF 12, AAC 320 kbps, 편집하기 쉬운 중간 파일

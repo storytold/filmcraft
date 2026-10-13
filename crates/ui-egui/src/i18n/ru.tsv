@@ -3596,3 +3596,13 @@
 	Couldn't open your web browser	Не удалось открыть браузер
 	Open this address in your browser yourself:	Этот адрес нужно открыть в браузере вручную:
 	Reset Interface Zoom	Сбросить масштаб интерфейса
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	10-битный цвет
+	All Intra	Только intra
+	Every frame a keyframe (edit-friendly, larger files)	Каждый кадр ключевой (удобно для монтажа, файлы больше)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a master without banding	H.264 High 10 (10 бит 4:2:0) в размере последовательности, постоянное качество CRF 16, AAC 320 кбит/с; мастер без бандинга
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 бит 4:2:0, каждый кадр ключевой), CRF 12, AAC 320 кбит/с; промежуточный файл, удобный для монтажа

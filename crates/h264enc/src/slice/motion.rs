@@ -1,6 +1,6 @@
 use super::{
-    Avail, Cand, MbCtx, MbEdges, MbInfo, MbKind, Mv, MvNb, Part, PartGeom, PartSearch, PredOut, RefPic, SearchBlock, Shape, SliceEnc, Src, mv_bits, sad, sad8,
-    sad16, satd,
+    Avail, Cand, MbCtx, MbEdges, MbInfo, MbKind, Mv, MvNb, Part, PartGeom, PartSearch, Pixel, PredOut, RefPic, SearchBlock, Shape, SliceEnc, Src, mv_bits, sad,
+    sad8, sad16, satd,
 };
 use crate::picture::McBlock;
 
@@ -39,11 +39,11 @@ impl<const W: usize> Visited<W> {
     }
 }
 
-impl<'a, 'b> SliceEnc<'a, 'b> {
+impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
     // ------------------------------------------------------------------ motion estimation
 
     /// Integer + sub-pel search for a w x h block at picture (bx, by). Returns (mv, cost, satd).
-    fn search(&self, r: &RefPic, blk: &SearchBlock, mvp: Mv, cands: &[Mv], lam: u32) -> (Mv, u32) {
+    fn search(&self, r: &RefPic<P>, blk: &SearchBlock<'_, P>, mvp: Mv, cands: &[Mv], lam: u32) -> (Mv, u32) {
         let SearchBlock { x: bx, y: by, w, h, src, sstride } = *blk;
         let pl = &r.frame.y;
         let p = self.f.p;
@@ -120,8 +120,8 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             }
         }
         // sub-pel refinement with SATD
-        let mut buf = [0u8; 256];
-        let scost = |mv: Mv, buf: &mut [u8; 256]| -> u32 {
+        let mut buf = [P::default(); 256];
+        let scost = |mv: Mv, buf: &mut [P; 256]| -> u32 {
             let (pr, ps) = r.luma_ref(bx, by, mv, w, h, buf);
             satd(src, sstride, pr, ps, w, h) + ((lam * mv_bits(mv, mvp)) >> 8)
         };
@@ -158,7 +158,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
 
     /// Motion-compensated luma + chroma prediction of `rect` (x, y, w, h within the macroblock whose
     /// top-left luma sample is `origin`) into `out`.
-    pub(super) fn pred_block(&self, r: &RefPic, origin: (usize, usize), rect: (usize, usize, usize, usize), mv: Mv, out: PredOut) {
+    pub(super) fn pred_block(&self, r: &RefPic<P>, origin: (usize, usize), rect: (usize, usize, usize, usize), mv: Mv, out: PredOut<'_, P>) {
         let (px, py) = origin;
         let (x, yy, w, h) = rect;
         r.mc_luma(McBlock { x: px + x, y: py + yy, w, h }, mv, &mut out.y[yy * 16 + x..], 16);
@@ -166,7 +166,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         r.mc_chroma(McBlock { x: (px + x) / 2, y: (py + yy) / 2, w: w / 2, h: h / 2 }, mv, (&mut out.u[co..], &mut out.v[co..]), 8);
     }
 
-    pub(super) fn cand_inter_info(c: &mut Cand, part: Part, refs: [[i8; 4]; 2], mvs: [[Mv; 4]; 2], mvds: [[Mv; 4]; 2]) {
+    pub(super) fn cand_inter_info(c: &mut Cand<P>, part: Part, refs: [[i8; 4]; 2], mvs: [[Mv; 4]; 2], mvds: [[Mv; 4]; 2]) {
         for p in 0..part.count() {
             let (x, y, w, h) = part.rect(p);
             for by in y / 4..(y + h) / 4 {
@@ -213,7 +213,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     }
 
     /// Search each partition of `ps.part` for list `ps.list` sequentially (mvp depends on earlier partitions).
-    pub(super) fn search_part(&self, r: &RefPic, ps: &PartSearch, src: &Src) -> ([Mv; 4], [Mv; 4], u32) {
+    pub(super) fn search_part(&self, r: &RefPic<P>, ps: &PartSearch, src: &Src<P>) -> ([Mv; 4], [Mv; 4], u32) {
         let PartSearch { mx, my, part, list, lam, seed } = *ps;
         let (px, py) = (mx * 16, my * 16);
         let mut info = MbInfo::default();
@@ -245,7 +245,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         (mvs, mvps, total)
     }
 
-    pub(super) fn analyse_p(&self, mx: usize, my: usize, qp: u8, av: Avail, e: &MbEdges, src: &Src) -> Box<Cand> {
+    pub(super) fn analyse_p(&self, mx: usize, my: usize, qp: u8, av: Avail, e: &MbEdges<P>, src: &Src<P>) -> Box<Cand<P>> {
         let f = self.f;
         // P slices always have a reference; without one the macroblock is coded intra.
         let Some(r) = f.l0 else { return self.analyse_intra(&MbCtx { mx, my, qp, av, e, src }, u64::MAX) };
@@ -256,9 +256,9 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         // --- try P_Skip early
         let mut skip_pred = None;
         if skip_ok {
-            let mut y = [0u8; 256];
-            let mut u = [0u8; 64];
-            let mut v = [0u8; 64];
+            let mut y = [P::default(); 256];
+            let mut u = [P::default(); 64];
+            let mut v = [P::default(); 64];
             self.pred_block(r, (px, py), (0, 0, 16, 16), skip_mv, PredOut { y: &mut y, u: &mut u, v: &mut v });
             let s = sad16(&src.y, 16, &y, 16, 16);
             let qstep_thresh = (f.qt.v4[(qp % 6) as usize][0] << (qp / 6)) as u32 * 16;
@@ -298,7 +298,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         let mut best_mvps = mvp16;
         let mut best_cost = cost16 as u64 + (lam >> 8) as u64;
         if f.p.partitions {
-            let big = cost16 as u64 > (256 * 4) as u64;
+            let big = cost16 as u64 > (256 * 4) << f.p.depth.shift;
             if big {
                 for part in [Part::P16x8, Part::P8x16, Part::P8x8] {
                     let (m, p, c) = self.search_part(r, &PartSearch { mx, my, part, list: 0, lam, seed: mv16[0] }, src);
@@ -320,9 +320,9 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         let mut ci = Cand::new();
         ci.code.kind = MbKind::PInter;
         ci.code.part = best_part;
-        let mut py_ = [0u8; 256];
-        let mut pu = [0u8; 64];
-        let mut pv = [0u8; 64];
+        let mut py_ = [P::default(); 256];
+        let mut pu = [P::default(); 64];
+        let mut pv = [P::default(); 64];
         if let (Part::P16x16, true, Some((a, b, c))) = (best_part, best_mvs[0] == skip_mv, skip_pred) {
             py_ = a;
             pu = b;
@@ -353,7 +353,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             return ci;
         }
         // --- intra
-        let need_intra = f.p.always_intra || best_cost > (256 * 3 + 16 * lam as u64 / 256) * 2;
+        let need_intra = f.p.always_intra || best_cost > (((256 * 3) << f.p.depth.shift) + 16 * lam as u64 / 256) * 2;
         if need_intra {
             let ic = self.analyse_intra(&MbCtx { mx, my, qp, av, e, src }, best_cost);
             if f.p.rd {

@@ -228,6 +228,21 @@ fn export_integer_parameters_cannot_wrap_or_overflow() {
     assert!(s.execute("export.resolve", json!({"bitrateKbps":8000.0, "keyframeDistance":48.0})).is_ok(), "integer-valued floats are integers");
 }
 
+/// The flat `h264Profile` / `h264IntraOnly` parameters (and the same keys in `settings`) choose
+/// High 10 and all-intra; a profile that does not exist is an error (#1221).
+#[test]
+fn h264_profile_and_intra_parameters() {
+    let mut s = demo();
+    let r = s.execute("export.resolve", json!({"format": "h264", "h264Profile": "high10", "h264IntraOnly": true})).unwrap();
+    assert_eq!((r["settings"]["h264Profile"].as_str(), r["settings"]["h264IntraOnly"].as_bool()), (Some("high10"), Some(true)));
+    let r = s.execute("export.resolve", json!({"format": "h264", "settings": {"h264Profile": "high10"}})).unwrap();
+    assert_eq!(r["settings"]["h264Profile"], "high10");
+    assert_eq!(r["settings"]["h264IntraOnly"], false);
+    for bad in [json!({"h264Profile": "high12"}), json!({"settings": {"h264Profile": "high444"}})] {
+        assert!(s.execute("export.resolve", bad.clone()).is_err(), "{bad}");
+    }
+}
+
 #[test]
 fn wav_resolve_honours_explicit_sample_rates() {
     let mut s = demo();
@@ -423,7 +438,7 @@ fn verify_video_preset(name: &str, format: &str, format_name: &str, settings: &V
     let video_bitrate = num(&video["bit_rate"]) / 1e6;
     let pixel_rate = (width * height) as f64 / (1920.0 * 1080.0) * (24000.0 / 1001.0) / 29.97;
     match format {
-        "h264" => verify_h264_preset(name, format_name, video, audio),
+        "h264" => verify_h264_preset(name, format_name, settings, video, audio),
         "prores" => verify_prores_preset(name, settings, video, audio, video_bitrate, pixel_rate, format_name),
         "dnxhr" => verify_dnx_preset(name, settings, video, audio, video_bitrate, pixel_rate),
         "apv" => verify_apv_preset(name, settings, video, audio, format_name),
@@ -432,10 +447,16 @@ fn verify_video_preset(name: &str, format: &str, format_name: &str, settings: &V
     }
 }
 
-fn verify_h264_preset(name: &str, format_name: &str, video: &Value, audio: &Value) {
+fn verify_h264_preset(name: &str, format_name: &str, settings: &Value, video: &Value, audio: &Value) {
     assert!(format_name.contains("mp4"), "{name}: {format_name}");
     assert_eq!(video["codec_name"], "h264", "{name}");
-    assert_eq!(video["profile"], "High", "{name}");
+    let (profile, pix) = match (settings["h264Profile"].as_str(), settings["h264IntraOnly"].as_bool().unwrap_or(false)) {
+        (Some("high10"), true) => ("High 10 Intra", "yuv420p10le"),
+        (Some("high10"), false) => ("High 10", "yuv420p10le"),
+        _ => ("High", "yuv420p"),
+    };
+    assert_eq!(video["profile"], profile, "{name}");
+    assert_eq!(video["pix_fmt"], pix, "{name}");
     assert_eq!(audio["codec_name"], "aac", "{name}");
     assert!((num(&audio["bit_rate"]) / 1000.0 - 320.0).abs() < 80.0, "{name}: AAC {}", audio["bit_rate"]);
 }
