@@ -657,3 +657,32 @@ fn a_progress_window_shows_the_running_job_when_the_preference_is_on() {
     d.frames(3);
     assert!(!d.has("progress.window"));
 }
+
+/// The progress window is offered where the export starts and next to the status bar's bar, not
+/// only in Preferences (#1192).
+#[test]
+fn the_export_window_and_the_status_bar_offer_the_progress_window() {
+    use std::sync::atomic::Ordering;
+
+    use filmcraft_engine::Job;
+    let mut d = Driver::new("progress-offer");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    assert!(d.has("export.progressWindow"), "the Export window has the switch");
+    assert!(!d.app().session.prefs.general.show_progress_window);
+    d.click("export.progressWindow");
+    assert!(d.app().session.prefs.general.show_progress_window, "it turns the preference on");
+    d.click("export.progressWindow");
+    assert!(!d.app().session.prefs.general.show_progress_window, "and off");
+    // with the preference off, the status bar's own button opens the window for the running job
+    let job = Job { id: 902, label: "Exporting".into(), progress: Default::default(), result: Default::default() };
+    job.progress.total.store(1000, Ordering::Relaxed);
+    job.progress.done.store(100, Ordering::Relaxed);
+    d.app().session.jobs.push(job);
+    d.frames(4);
+    assert!(d.has("status.job.window"), "the status bar offers it");
+    assert!(!d.has("progress.window"));
+    d.click("status.job.window");
+    d.frames(2);
+    assert!(d.has("progress.window"), "one click opens it");
+}
