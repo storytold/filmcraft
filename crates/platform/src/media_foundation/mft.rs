@@ -282,12 +282,20 @@ impl MfEncoder {
 fn sample_bytes(sample: &IMFSample) -> Result<Vec<u8>, String> {
     // SAFETY: a plain COM call on a live interface.
     let buffer = unsafe { sample.ConvertToContiguousBuffer() }.map_err(|e| format!("cannot read the encoded sample: {e}"))?;
-    // SAFETY: `Lock` gives a readable block of `len` bytes valid until `Unlock`, which we always call.
+    // SAFETY: a plain COM read of the valid byte count.
+    let valid = unsafe { buffer.GetCurrentLength() }.unwrap_or(0) as usize;
+    // SAFETY: `Lock` gives a readable block valid until `Unlock`, which we always call.
     unsafe {
         let mut ptr = std::ptr::null_mut::<u8>();
-        let mut len = 0u32;
-        buffer.Lock(&mut ptr, Some(&mut len), None).map_err(|e| format!("cannot lock the encoded sample: {e}"))?;
-        let bytes = if ptr.is_null() { Vec::new() } else { std::slice::from_raw_parts(ptr, len as usize).to_vec() };
+        let mut locked = 0u32;
+        buffer.Lock(&mut ptr, Some(&mut locked), None).map_err(|e| format!("cannot lock the encoded sample: {e}"))?;
+        // `Lock` hands back the whole buffer, and an encoder MFT recycles one buffer across every
+        // picture it writes: only `GetCurrentLength` bytes of it are this picture. Taking the rest
+        // would put whatever the driver left there into the file — measured, the first keyframe of
+        // a session carried 9 kB of stale bytes out to offset 262 kB. The minimum is belt and
+        // braces against a driver that counts differently.
+        let take = valid.min(locked as usize);
+        let bytes = if ptr.is_null() { Vec::new() } else { std::slice::from_raw_parts(ptr, take).to_vec() };
         buffer.Unlock().map_err(|e| format!("cannot unlock the encoded sample: {e}"))?;
         Ok(bytes)
     }
