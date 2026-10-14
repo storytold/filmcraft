@@ -327,8 +327,9 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
                 .map(|p| p.to_string_lossy().to_string())
         }));
         app.hooks.pick_open_project = Some(Box::new(|| {
-            rfd::FileDialog::new()
-                .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &file_filters::extensions(&["fcproj"]))
+            open_project_filters()
+                .into_iter()
+                .fold(rfd::FileDialog::new(), |d, (name, exts)| d.add_filter(name, &exts))
                 .pick_file()
                 .map(|p| p.to_string_lossy().to_string())
         }));
@@ -449,6 +450,7 @@ fn run_dialog_off_thread(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) 
     let media = t("Media");
     let project = t("FilmCraft Project");
     let project_exts = project_patterns();
+    let open_filters = open_project_filters();
     let dialog = prepare_dialog(dialog);
     let (tx, rx) = std::sync::mpsc::channel();
     let spawned = std::thread::Builder::new().name("file-dialog".into()).spawn(move || {
@@ -460,7 +462,13 @@ fn run_dialog_off_thread(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) 
                 }
                 FileDialog::OpenFile { filter, exts } => rfd::FileDialog::new().add_filter(&filter, &exts).pick_file().map(path).into_iter().collect(),
                 FileDialog::Relink { exts, .. } => rfd::FileDialog::new().add_filter(&media, &exts).pick_file().map(path).into_iter().collect(),
-                FileDialog::OpenProject => rfd::FileDialog::new().add_filter(&project, &project_exts).pick_file().map(path).into_iter().collect(),
+                FileDialog::OpenProject => open_filters
+                    .into_iter()
+                    .fold(rfd::FileDialog::new(), |d, (name, exts)| d.add_filter(name, &exts))
+                    .pick_file()
+                    .map(path)
+                    .into_iter()
+                    .collect(),
                 FileDialog::SaveProject { name } => {
                     rfd::FileDialog::new().add_filter(&project, &project_exts).set_file_name(name).save_file().map(path).into_iter().collect()
                 }
@@ -505,6 +513,15 @@ fn prepare_dialog(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> film
         FileDialog::Relink { exts, hint } => FileDialog::Relink { exts: patterns(exts), hint },
         other => other,
     }
+}
+
+fn open_project_filters() -> Vec<(String, Vec<String>)> {
+    let t = |s: &str| filmcraft_ui_egui::i18n::t(s).to_string();
+    vec![
+        (t("Supported Files"), file_filters::extensions(&["fcproj", "prproj"])),
+        (t("FilmCraft Project"), file_filters::extensions(&["fcproj"])),
+        (t("Premiere Pro Project"), file_filters::extensions(&["prproj"])),
+    ]
 }
 
 /// The project dialogs' filter patterns (`EDIT.FCPROJ` included).
