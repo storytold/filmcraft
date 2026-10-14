@@ -17,8 +17,8 @@ use windows::Win32::Graphics::Direct3D11::ID3D11Device;
 use windows::Win32::Media::MediaFoundation::{
     IMFActivate, IMFDXGIDeviceManager, IMFMediaBuffer, IMFMediaType, IMFSample, IMFTransform, MF_E_NO_MORE_TYPES, MF_E_NOTACCEPTING,
     MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
-    MF_MT_MAJOR_TYPE, MF_MT_MINIMUM_DISPLAY_APERTURE, MF_MT_SUBTYPE, MF_SA_D3D11_AWARE, MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION,
-    MFMediaType_Video, MFT_CATEGORY_VIDEO_DECODER, MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG, MFT_ENUM_FLAG_ASYNCMFT, MFT_ENUM_FLAG_HARDWARE,
+    MF_MT_MAJOR_TYPE, MF_MT_MINIMUM_DISPLAY_APERTURE, MF_MT_MPEG2_PROFILE, MF_MT_SUBTYPE, MF_SA_D3D11_AWARE, MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK,
+    MF_VERSION, MFMediaType_Video, MFT_CATEGORY_VIDEO_DECODER, MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG, MFT_ENUM_FLAG_ASYNCMFT, MFT_ENUM_FLAG_HARDWARE,
     MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT, MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_COMMAND_DRAIN, MFT_MESSAGE_COMMAND_FLUSH,
     MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER,
     MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MFVideoFormat_NV12, MFVideoFormat_P010,
@@ -73,6 +73,9 @@ pub enum Input {
 pub struct EncSpec {
     /// Output subtype (`MFVideoFormat_H264` or `MFVideoFormat_HEVC`).
     pub subtype: GUID,
+    /// `MF_MT_MPEG2_PROFILE` for the output, where the codec has one this path sets. Left unset,
+    /// the encoder picks its own — the export asks for High and an AMD MFT answers Main.
+    pub profile: Option<u32>,
     /// The codec's name, for logs and errors.
     pub label: &'static str,
     /// Picture size in luma samples.
@@ -149,6 +152,10 @@ impl MfEncoder {
             output.SetUINT64(&MF_MT_FRAME_RATE, (u64::from(spec.rate.0) << 32) | u64::from(spec.rate.1)).map_err(|e| e.to_string())?;
             output.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32).map_err(|e| e.to_string())?;
             output.SetUINT32(&MF_MT_AVG_BITRATE, spec.bitrate.max(1)).map_err(|e| e.to_string())?;
+            // The profile the export asks for, not whatever the encoder would pick on its own.
+            if let Some(p) = spec.profile {
+                output.SetUINT32(&MF_MT_MPEG2_PROFILE, p).map_err(|e| e.to_string())?;
+            }
             transform.SetOutputType(0, &output, 0).map_err(|e| format!("{name}: does not encode {}: {e}", spec.label))?;
         }
         // SAFETY: as above.

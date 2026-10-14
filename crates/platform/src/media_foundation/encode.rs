@@ -27,7 +27,7 @@ use std::sync::{Once, OnceLock};
 
 use filmcraft_codecs::hw::NalCodec;
 use filmcraft_export::{
-    BitrateMode, EncodedPacket, EncoderFrame, ExportError, ExportSettings, FieldOrder, Format, H264Pass, HardwareEncoding, Result, VideoEncoder,
+    BitrateMode, EncodedPacket, EncoderFrame, ExportError, ExportSettings, FieldOrder, Format, H264Pass, H264Profile, HardwareEncoding, Result, VideoEncoder,
 };
 use filmcraft_isobmff::{AvcConfig, SampleEntry};
 use filmcraft_time::FrameRate;
@@ -56,6 +56,8 @@ struct Config {
     codec: NalCodec,
     /// The output media subtype (`MFVideoFormat_H264` / `MFVideoFormat_HEVC`).
     subtype: windows::core::GUID,
+    /// `MF_MT_MPEG2_PROFILE` to ask for, where the codec has a defined mapping.
+    profile: Option<u32>,
 }
 
 /// Why Media Foundation does not take this export (the software encoder does, for H.264), or the
@@ -93,7 +95,9 @@ fn config(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -
     if num == 0 || den == 0 {
         return Err("frame rate".into());
     }
-    use windows::Win32::Media::MediaFoundation::{MFVideoFormat_H264, MFVideoFormat_HEVC};
+    use windows::Win32::Media::MediaFoundation::{
+        MFVideoFormat_H264, MFVideoFormat_HEVC, eAVEncH264VProfile_Base, eAVEncH264VProfile_High, eAVEncH264VProfile_Main,
+    };
     Ok(Config {
         size: (w, h),
         rate: (num, den),
@@ -101,6 +105,20 @@ fn config(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -
         bitrate_bps: s.bitrate_kbps.max(100).saturating_mul(1000),
         codec: if hevc { NalCodec::Hevc } else { NalCodec::H264 },
         subtype: if hevc { MFVideoFormat_HEVC } else { MFVideoFormat_H264 },
+        // H.264 only. HEVC's `MF_MT_MPEG2_PROFILE` values are `eAVEncH265VProfile_*`, and every
+        // encoder this path has met already writes Main without being asked, so there is nothing to
+        // correct there and nothing to check it against.
+        // The eAVEncH264VProfile values are the H.264 `profile_idc` (66 / 77 / 100) and
+        // `MF_MT_MPEG2_PROFILE` is a UINT32, so they cross over as positive constants.
+        profile: if hevc {
+            None
+        } else {
+            Some(match s.h264_profile {
+                H264Profile::Baseline => eAVEncH264VProfile_Base.0 as u32,
+                H264Profile::Main => eAVEncH264VProfile_Main.0 as u32,
+                H264Profile::High => eAVEncH264VProfile_High.0 as u32,
+            })
+        },
     })
 }
 
@@ -121,7 +139,14 @@ pub fn factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettin
         Ok(a) => a,
         Err(why) => return declined(&why, hard),
     };
-    let spec = EncSpec { subtype: cfg.subtype, label: if hard { "H.265" } else { "H.264" }, size: cfg.size, rate: cfg.rate, bitrate: cfg.bitrate_bps };
+    let spec = EncSpec {
+        subtype: cfg.subtype,
+        profile: cfg.profile,
+        label: if hard { "H.265" } else { "H.264" },
+        size: cfg.size,
+        rate: cfg.rate,
+        bitrate: cfg.bitrate_bps,
+    };
     let mft = match super::open(api, &spec) {
         Ok(m) => m,
         Err(why) => {
@@ -376,6 +401,31 @@ impl VideoEncoder for MfVideoEncoder {
 }
 
 static HEVC_PROBE: OnceLock<bool> = OnceLock::new();
+static H264_PROBE: OnceLock<bool> = OnceLock::new();
+
+/// Whether this machine has a hardware H.264 encoder, by opening a small session (asked once).
+/// A machine has an H.264 encoder or an HEVC one or both; a caller counting which factory takes
+/// an export needs to know whether anything will before the software encoder does.
+pub fn h264_available() -> bool {
+    *H264_PROBE.get_or_init(|| {
+        let Ok(api) = super::mft::api() else { return false };
+        let spec = EncSpec {
+            subtype: windows::Win32::Media::MediaFoundation::MFVideoFormat_H264,
+            profile: Some(windows::Win32::Media::MediaFoundation::eAVEncH264VProfile_High.0 as u32),
+            label: "H.264",
+            size: (640, 360),
+            rate: (30, 1),
+            bitrate: 2_000_000,
+        };
+        match super::open(api, &spec) {
+            Ok(_) => true,
+            Err(why) => {
+                log::info!("no Media Foundation hardware H.264 encoder: {why}");
+                false
+            }
+        }
+    })
+}
 
 /// Whether this machine has a hardware HEVC encoder, which is what makes `Format::Hevc` available
 /// (asked once, by creating a small session). Registered alongside NVENC's probe, so a machine with
@@ -384,7 +434,7 @@ pub fn hevc_available() -> bool {
     *HEVC_PROBE.get_or_init(|| {
         let Ok(api) = super::mft::api() else { return false };
         use windows::Win32::Media::MediaFoundation::MFVideoFormat_HEVC;
-        let spec = EncSpec { subtype: MFVideoFormat_HEVC, label: "H.265", size: (640, 360), rate: (30, 1), bitrate: 2_000_000 };
+        let spec = EncSpec { subtype: MFVideoFormat_HEVC, profile: None, label: "H.265", size: (640, 360), rate: (30, 1), bitrate: 2_000_000 };
         match super::open(api, &spec) {
             Ok(_) => true,
             Err(why) => {
@@ -439,6 +489,12 @@ mod tests {
         let s = settings(Format::H264);
         let c = config(Format::H264, 1280, 720, FrameRate::FPS_24, &s).unwrap();
         assert_eq!((c.size, c.rate, c.bitrate_bps, c.codec), ((1280, 720), (24, 1), 4_000_000, NalCodec::H264));
+        // the export's H.264 profile reaches the encoder as `MF_MT_MPEG2_PROFILE` (profile_idc)
+        assert_eq!(c.profile, Some(100), "high by default");
+        for (p, idc) in [(H264Profile::Baseline, 66), (H264Profile::Main, 77), (H264Profile::High, 100)] {
+            let s = ExportSettings { h264_profile: p, ..s.clone() };
+            assert_eq!(config(Format::H264, 1280, 720, FrameRate::FPS_24, &s).unwrap().profile, Some(idc), "{p:?}");
+        }
         assert_eq!(config(Format::Hevc, 1280, 720, FrameRate::FPS_24, &ExportSettings { format: Format::Hevc, ..s.clone() }).unwrap().codec, NalCodec::Hevc);
 
         for (what, s) in [
