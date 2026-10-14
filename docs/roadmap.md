@@ -77,6 +77,8 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 | M12–M16 | Multicam, web (WASM), platform, long tail | 🟡 | Multicam: audio sync (GCC-PHAT, sub-sample), Merge Clips, multi-camera source sequences, Multi-Camera view with live switching (1–9); L0–L4 crates compile to wasm32 | Web app shell (file access, WebCodecs, audio), scene detection, auto reframe, ~800 remaining commands and dialogs, performance hardening | 35–55 |
 | HW | Hardware acceleration (#30) | 🟡 | Blend modes and 34 effect ids on the GPU incl. Color Grading basic / creative / vignette (#32, GPU2–GPU7); GPU export rendering (#421); decode: VideoToolbox (#33, #41), Media Foundation / D3D11 H.264 / HEVC / VP9 / AV1 (HW2, HW3), VA-API H.264 / HEVC (#358), NVDEC H.264 / HEVC (#549); encode: VideoToolbox H.264 / HEVC, NVENC H.264 (Windows, Linux) and HEVC incl. Main 10 HDR (#328, #360) | Zero-copy, remaining GPU effects, VideoToolbox Main 10, Quick Sync / AMF, VA-API VP9 / AV1 and encode | 120–200 |
 | L10N | Localization | 🟡 | Whole interface: Spanish, Japanese, Simplified Chinese, French, Portuguese (Brazil), Indonesian, Italian, Korean, German, Russian, Czech, Polish, Swedish, Turkish, Bosnian; Ukrainian the core menus | Hindi, Arabic (RTL), Vietnamese; native review of every language | 150–230 |
+| L10N | Localization | 🟡 | Spanish, Japanese, Simplified Chinese, French, Portuguese (Brazil), Indonesian, Italian, Korean whole interface; German, Ukrainian, Arabic menus (Arabic in display order) | Hindi, whole-interface catalogs for the menus-only languages, mirrored RTL layout, Vietnamese, Russian; native review | 150–230 |
+
 
 ## After beta
 
