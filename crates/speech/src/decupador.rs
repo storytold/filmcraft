@@ -27,10 +27,26 @@ pub const ID_PREFIX: &str = "decupador";
 /// `transcript.json` into the output folder.
 const BRIDGE: &str = r#"import sys
 from pathlib import Path
-home, wav, out, model, language = sys.argv[1:6]
+import json
+home, wav, out, model, language, options = sys.argv[1:7]
 sys.path.insert(0, home)
 from src.transcriber import transcribe_audio
-print(transcribe_audio(Path(wav), Path(out), model_size=model, language=language, force=True))
+opts = json.loads(options) or None
+try:
+    print(transcribe_audio(Path(wav), Path(out), model_size=model, language=language, force=True, whisper_options=opts))
+except TypeError:
+    # a decupador without `whisper_options`
+    print(transcribe_audio(Path(wav), Path(out), model_size=model, language=language, force=True))
+"#;
+
+/// Reads a script (PDF, Markdown or text) with the decupador's own reader and splits it into
+/// blocks (`src/multitake.py`: Markdown headings, else paragraphs); prints them as JSON.
+const SCRIPT_BRIDGE: &str = r#"import sys, json
+from pathlib import Path
+home, path = sys.argv[1:3]
+sys.path.insert(0, home)
+from src.multitake import read_script_text, split_script_blocks
+print(json.dumps([{"title": b["titulo"], "text": b["texto"]} for b in split_script_blocks(read_script_text(Path(path)))], ensure_ascii=False))
 "#;
 
 /// Where the decupador is and how to run it (`decupador.json`).
@@ -47,6 +63,11 @@ pub struct Config {
     /// Language when the request names none.
     #[serde(default = "default_language")]
     pub language: String,
+    /// Extra faster-whisper options (`whisperOptions`). `{"vad_filter": true,
+    /// "condition_on_previous_text": false}` keeps long sessions from looping on one word and
+    /// then skipping minutes of speech.
+    #[serde(default, rename = "whisperOptions")]
+    pub whisper_options: serde_json::Value,
 }
 
 fn default_python() -> String {
@@ -65,7 +86,7 @@ impl Config {
     pub fn load(path: &Path) -> Option<Config> {
         let mut cfg = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<Config>(&t).ok());
         if let Some(home) = std::env::var_os("FILMCRAFT_DECUPADOR_HOME").filter(|h| !h.is_empty()) {
-            let c = cfg.get_or_insert_with(|| Config { home: PathBuf::new(), python: default_python(), model: default_model(), language: default_language() });
+            let c = cfg.get_or_insert_with(|| Config { home: PathBuf::new(), python: default_python(), model: default_model(), language: default_language(), whisper_options: serde_json::Value::Null });
             c.home = PathBuf::from(home);
         }
         cfg.filter(|c| c.home.join("src").join("transcriber.py").is_file())
@@ -148,6 +169,33 @@ fn to_transcript(out: Output, fallback_language: &str, source: String) -> Transc
     Transcript { language, source, speakers: vec![Speaker { name: "Speaker 1".into() }], words }
 }
 
+impl Decupador {
+    /// The blocks of a script file, read by the decupador (`(title, text)`, in order).
+    pub fn read_script(&self, path: &Path) -> Result<Vec<(String, String)>, SpeechError> {
+        let out = Command::new(&self.config.python)
+            .arg("-c")
+            .arg(SCRIPT_BRIDGE)
+            .arg(&self.config.home)
+            .arg(path)
+            .current_dir(&self.config.home)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| SpeechError::Unavailable(format!("could not run the decupador with `{}`: {e}", self.config.python)))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            let tail: Vec<&str> = err.lines().rev().take(4).collect();
+            return Err(SpeechError::Model(format!("the decupador could not read the script: {}", tail.into_iter().rev().collect::<Vec<_>>().join("\n"))));
+        }
+        #[derive(Deserialize)]
+        struct Block {
+            title: String,
+            text: String,
+        }
+        let blocks: Vec<Block> = serde_json::from_slice(&out.stdout).map_err(|e| SpeechError::Model(format!("script blocks: {e}")))?;
+        Ok(blocks.into_iter().map(|b| (b.title, b.text)).collect())
+    }
+}
+
 impl Transcriber for Decupador {
     fn id(&self) -> String {
         format!("{ID_PREFIX}-{}", self.config.model)
@@ -174,6 +222,7 @@ impl Transcriber for Decupador {
                 .arg(&out_dir)
                 .arg(&self.config.model)
                 .arg(&language)
+                .arg(if self.config.whisper_options.is_object() { self.config.whisper_options.to_string() } else { "{}".into() })
                 .current_dir(&self.config.home)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
