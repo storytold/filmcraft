@@ -3596,3 +3596,14 @@
 	Shows the version, community links and credits in a FilmCraft window.	FilmCraft 창에 버전, 커뮤니티 링크, 제작진을 보여 줍니다.
 	Couldn't open your web browser	웹 브라우저를 열 수 없습니다
 	Open this address in your browser yourself:	이 주소를 브라우저에서 직접 여세요:
+	Describe the video and sound	동영상과 사운드를 설명하세요
+	Generate and import	생성하고 가져오기
+	Generate with Reactor…	Reactor로 생성…
+	Generate with Reactor FastH3 Omni	Reactor FastH3 Omni로 생성
+	Generation is available in the desktop app after adding a Reactor API key in Settings.	설정에서 Reactor API 키를 추가하면 데스크톱 앱에서 생성할 수 있습니다.
+	Picture	Picture
+	Reference audio	참조 오디오
+	Reference images	참조 이미지
+	Use Picture 1 and Audio 1 in the prompt to refer to the first selected files.	프롬프트에서 Picture 1과 Audio 1을 사용해 첫 번째로 선택한 파일을 지정하세요.
+	Save the project before generating. Clips are saved beside the project and imported automatically.	생성하기 전에 프로젝트를 저장하세요. 클립은 프로젝트 옆에 저장되고 자동으로 가져옵니다.
+	Reactor	Reactor

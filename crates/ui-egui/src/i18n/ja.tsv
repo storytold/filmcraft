@@ -3609,3 +3609,52 @@
 	Shows the version, community links and credits in a FilmCraft window.	バージョン、コミュニティへのリンク、クレジットを FilmCraft のウィンドウに表示します。
 	Couldn't open your web browser	ウェブブラウザーを開けませんでした
 	Open this address in your browser yourself:	このアドレスをご自身でブラウザーで開いてください：
+	API key	API キー
+	API key is too long.	API キーが長すぎます。
+	API key storage is available in the desktop app.	API キーの保存はデスクトップ版で利用できます。
+	API key saved on this computer.	API キーをこのコンピューターに保存しました。
+	API key removed from this computer.	API キーをこのコンピューターから削除しました。
+	Account and billing…	アカウントと請求…
+	An API key is saved on this computer.	このコンピューターには API キーが保存されています。
+	Checking the credential store…	認証情報ストアを確認中…
+	Credential store stopped responding.	認証情報ストアが応答しなくなりました。
+	Get an API key…	API キーを取得…
+	No API key is saved on this computer.	このコンピューターには API キーが保存されていません。
+	Reactor	Reactor
+	Remove key	キーを削除
+	Save and Remove take effect immediately.	保存と削除はすぐに反映されます。
+	Save key	キーを保存
+	Use your own Reactor account for video generation. Your API key is stored in this computer's credential store, outside FilmCraft projects and preferences.	動画生成には、ご自身の Reactor アカウントを使用してください。API キーは FilmCraft のプロジェクトや設定とは別に、このコンピューターの認証情報ストアに保存されます。
+	Describe the video and sound	動画と音声の内容を入力
+	Generate and import	生成して読み込む
+	Generate with Reactor…	Reactorで生成…
+	Generate with Reactor FastH3 Omni	Reactor FastH3 Omniで生成
+	Generation is available in the desktop app after adding a Reactor API key in Settings.	Reactor APIキーを設定すると、デスクトップ版で生成できます。
+	Picture	Picture
+	Reference audio	参照音声
+	Reference images	参照画像
+	Use Picture 1 and Audio 1 in the prompt to refer to the first selected files.	プロンプトで Picture 1 と Audio 1 を使用して、最初に選択したファイルを指定してください。
+	Save the project before generating. Clips are saved beside the project and imported automatically.	生成する前にプロジェクトを保存してください。クリップはプロジェクトの隣に保存され、自動的に読み込まれます。
+	Failed	失敗
+	Pause	一時停止
+	Play	再生
+	Queued	待機中
+	Generations	生成履歴
+	Grid View	グリッド表示
+	Your next shot starts here	次のショットをここから
+	Add references and describe your shot.	参照素材を追加し、ショットを説明してください。
+	In project	プロジェクトに追加済み
+	Reuse	再利用
+	Remove reference	参照素材を削除
+	Describe your shot	ショットを説明
+	Describe the scene, movement, and sound…	シーン、動き、音を説明…
+	Prompt exceeds 2048 bytes	プロンプトが2048バイトを超えています
+	Current frame	現在のフレーム
+	Saved and imported automatically	自動保存・読み込み
+	Reactor View	Reactor 表示
+	Reactor References	Reactor 参照素材
+	Reuse Reactor Generation	Reactor 生成設定を再利用
+	Capture Reactor Reference	Reactor 参照フレームを撮影
+	Reactor Audio Preview	Reactor 音声プレビュー
+	Reactor Generations	Reactor 生成履歴
+	Cancel Queued Reactor Generation	待機中の Reactor 生成をキャンセル

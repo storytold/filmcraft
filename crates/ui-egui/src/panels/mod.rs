@@ -35,6 +35,7 @@ pub mod presets;
 pub mod project;
 pub mod project_dialogs;
 pub mod project_views;
+pub mod reactor;
 pub mod reference;
 pub mod remix;
 pub mod scopes;
@@ -104,6 +105,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect)
         PanelKind::EssentialSound => essential_sound::show(app, ui, rect),
         PanelKind::TextToSpeech => tts::show(app, ui, rect),
         PanelKind::ProjectNotes => notes::show(app, ui, rect),
+        PanelKind::Reactor => reactor::show(app, ui, rect),
         other => crate::dock::placeholder(ui, rect, &app.tokens, &tlf!("{panel} — coming in a later milestone", panel = crate::i18n::t(other.title()))),
     }
 }

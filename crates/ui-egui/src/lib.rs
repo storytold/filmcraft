@@ -122,6 +122,11 @@ pub struct AudioDevices {
 /// Host hooks for native file dialogs etc.
 #[derive(Default)]
 pub struct HostHooks {
+    /// Store a user-supplied Reactor key outside preferences and project files. The host performs
+    /// credential-store work off the UI thread and returns only whether a key is saved.
+    pub reactor_key: Option<Box<dyn FnMut(ReactorKeyAction) -> Receiver<Result<bool, String>>>>,
+    /// Start a Reactor generation in the desktop host. The key never enters UI state.
+    pub reactor_generate: Option<Box<dyn FnMut(panels::reactor::Request) -> Receiver<panels::reactor::Event>>>,
     pub pick_files: Option<Box<dyn FnMut(&[&str]) -> Vec<String>>>,
     /// The cursor in physical screen pixels. Where the windowing layer reports no pointer while files are dragged in from the OS (Windows), a drop is placed where this says it landed.
     pub cursor_screen_position: Option<Box<dyn Fn() -> Option<(i32, i32)>>>,
@@ -170,6 +175,13 @@ pub struct HostHooks {
     /// Files or an image on the system clipboard, for Paste in the Timeline and the Project panel
     /// (#611). Without it Paste only pastes clips copied in FilmCraft.
     pub clipboard_media: Option<Box<dyn FnMut() -> Option<ClipboardMedia>>>,
+}
+
+/// Operations supported by the desktop credential store. The key is never returned to UI state.
+pub enum ReactorKeyAction {
+    Check,
+    Save(String),
+    Remove,
 }
 
 /// What [`HostHooks::clipboard_media`] found on the system clipboard.
@@ -282,6 +294,9 @@ pub struct FilmcraftApp {
     /// Audio during scrubbing (#211).
     pub scrub: scrub::ScrubAudio,
     pub hooks: HostHooks,
+    pub(crate) reactor_key_ui: panels::settings::ReactorKeyUi,
+    pub(crate) reactor_running: Option<panels::reactor::Running>,
+    pub(crate) reactor_runtime: panels::reactor::Runtime,
     pub dialog: Option<Dialog>,
     pub file_dialogs: panels::file_dialogs::FileDialogState,
     /// The native file dialog the host is showing ([`Self::pick`]).
@@ -547,6 +562,9 @@ impl FilmcraftApp {
             audio: None,
             scrub: Default::default(),
             hooks: HostHooks::default(),
+            reactor_key_ui: Default::default(),
+            reactor_running: None,
+            reactor_runtime: Default::default(),
             // Unsaved changes left by a session that died are offered first thing.
             dialog: recovery.then_some(Dialog::Recovery),
             file_dialogs: Default::default(),
@@ -855,7 +873,7 @@ impl FilmcraftApp {
         if !self.ui.dock.contains(p) && !self.ui.floating.iter().any(|group| group.panels.contains(&p)) {
             let near = match p {
                 // a side panel beside Properties (or Essential Sound), never over the Program monitor
-                PanelKind::TextToSpeech => [PanelKind::Properties, PanelKind::EssentialSound, PanelKind::EssentialGraphics]
+                PanelKind::TextToSpeech | PanelKind::Reactor => [PanelKind::Properties, PanelKind::EssentialSound, PanelKind::EssentialGraphics]
                     .into_iter()
                     .find(|k| self.ui.dock.contains(*k))
                     .unwrap_or(PanelKind::Program),
@@ -2041,6 +2059,7 @@ impl eframe::App for FilmcraftApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // a native file dialog's answer first, so the panels draw what it chose (#260)
         self.poll_native_dialog(ctx);
+        panels::reactor::poll(self, ctx);
         if !self.styled {
             theme::install(ctx, &self.tokens);
             // theme::install replaces the fonts: add the system Japanese font back (or fall back to

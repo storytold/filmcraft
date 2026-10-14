@@ -3578,3 +3578,14 @@
 
 # The native macOS application menu (Settings…).
 	Settings	Preferências
+	Describe the video and sound	Descreva o vídeo e o som
+	Generate and import	Gerar e importar
+	Generate with Reactor…	Gerar com o Reactor…
+	Generate with Reactor FastH3 Omni	Gerar com Reactor FastH3 Omni
+	Generation is available in the desktop app after adding a Reactor API key in Settings.	A geração está disponível no aplicativo para desktop após adicionar uma chave de API da Reactor nas Preferências.
+	Picture	Picture
+	Reference audio	Áudio de referência
+	Reference images	Imagens de referência
+	Use Picture 1 and Audio 1 in the prompt to refer to the first selected files.	Use Picture 1 e Audio 1 no prompt para se referir aos primeiros arquivos selecionados.
+	Save the project before generating. Clips are saved beside the project and imported automatically.	Salve o projeto antes de gerar. Os clipes são salvos junto ao projeto e importados automaticamente.
+	Reactor	Reactor

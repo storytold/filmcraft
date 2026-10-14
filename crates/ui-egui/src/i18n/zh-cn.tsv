@@ -3585,3 +3585,52 @@
 	Shows the version, community links and credits in a FilmCraft window.	在 FilmCraft 窗口中显示版本、社区链接和致谢。
 	Couldn't open your web browser	无法打开网页浏览器
 	Open this address in your browser yourself:	请自行在浏览器中打开此地址：
+	API key	API 密钥
+	API key is too long.	API 密钥过长。
+	API key storage is available in the desktop app.	API 密钥存储仅在桌面应用中可用。
+	API key saved on this computer.	API 密钥已保存到此计算机。
+	API key removed from this computer.	已从此计算机移除 API 密钥。
+	Account and billing…	账户与账单…
+	An API key is saved on this computer.	此计算机上已保存 API 密钥。
+	Checking the credential store…	正在检查凭据存储…
+	Credential store stopped responding.	凭据存储停止响应。
+	Get an API key…	获取 API 密钥…
+	No API key is saved on this computer.	此计算机上未保存 API 密钥。
+	Reactor	Reactor
+	Remove key	移除密钥
+	Save and Remove take effect immediately.	保存和移除会立即生效。
+	Save key	保存密钥
+	Use your own Reactor account for video generation. Your API key is stored in this computer's credential store, outside FilmCraft projects and preferences.	请使用自己的 Reactor 账户生成视频。API 密钥保存在此计算机的凭据存储中，不会写入 FilmCraft 项目或首选项。
+	Describe the video and sound	描述视频和声音
+	Generate and import	生成并导入
+	Generate with Reactor…	使用 Reactor 生成…
+	Generate with Reactor FastH3 Omni	使用 Reactor FastH3 Omni 生成
+	Generation is available in the desktop app after adding a Reactor API key in Settings.	在“设置”中添加 Reactor API 密钥后，可在桌面应用中生成内容。
+	Picture	Picture
+	Reference audio	参考音频
+	Reference images	参考图像
+	Use Picture 1 and Audio 1 in the prompt to refer to the first selected files.	在提示词中使用 Picture 1 和 Audio 1 指代所选的第一个文件。
+	Save the project before generating. Clips are saved beside the project and imported automatically.	请在生成前保存项目。片段将保存在项目旁边并自动导入。
+	Failed	失败
+	Pause	暂停
+	Play	播放
+	Queued	排队中
+	Generations	生成记录
+	Grid View	网格视图
+	Your next shot starts here	从这里开始创作下一个镜头
+	Add references and describe your shot.	添加参考素材并描述镜头。
+	In project	已加入项目
+	Reuse	复用
+	Remove reference	移除参考素材
+	Describe your shot	描述镜头
+	Describe the scene, movement, and sound…	描述场景、运动和声音…
+	Prompt exceeds 2048 bytes	提示词超过 2048 字节
+	Current frame	当前帧
+	Saved and imported automatically	自动保存并导入
+	Reactor View	Reactor 视图
+	Reactor References	Reactor 参考素材
+	Reuse Reactor Generation	复用 Reactor 生成设置
+	Capture Reactor Reference	捕获 Reactor 参考帧
+	Reactor Audio Preview	Reactor 音频试听
+	Reactor Generations	Reactor 生成记录
+	Cancel Queued Reactor Generation	取消排队中的 Reactor 生成任务

@@ -136,6 +136,22 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("mode.import", "Import", [], None),
     uic!("mode.edit", "Edit", [], None),
     uic!("mode.export", "Export", ["File", "Export"], Some("Cmd+M")),
+    #[cfg(not(target_arch = "wasm32"))]
+    uic!("reactor.cancelQueued", "Cancel Queued Reactor Generation", [], None),
+    #[cfg(not(target_arch = "wasm32"))]
+    uic!("reactor.view", "Reactor View", [], None),
+    #[cfg(not(target_arch = "wasm32"))]
+    uic!("reactor.references", "Reactor References", [], None),
+    #[cfg(not(target_arch = "wasm32"))]
+    uic!("reactor.reuse", "Reuse Reactor Generation", [], None),
+    #[cfg(not(target_arch = "wasm32"))]
+    uic!("reactor.captureFrame", "Capture Reactor Reference", [], None),
+    #[cfg(not(target_arch = "wasm32"))]
+    uic!("reactor.audio", "Reactor Audio Preview", [], None),
+    #[cfg(not(target_arch = "wasm32"))]
+    uic!("reactor.jobs", "Reactor Generations", [], None),
+    #[cfg(not(target_arch = "wasm32"))]
+    uic!("reactor.generate", "Generate with Reactor FastH3 Omni", [], None),
     uic!("help.discord", "Join the ArtCraft Discord…", ["Help"], None),
     uic!("help.website", "ArtCraft Website", ["Help"], None),
     uic!("help.appPage", "FilmCraft on getartcraft.com", ["Help"], None),
@@ -178,6 +194,9 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
 
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    if let Some(result) = crate::panels::reactor::route(app, id, &params) {
+        return result;
+    }
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
     }

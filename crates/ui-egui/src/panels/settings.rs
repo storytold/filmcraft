@@ -17,11 +17,13 @@ use filmcraft_engine::settings::{self, DeviceList, Field, Kind, Row};
 use filmcraft_project::Label;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use std::sync::mpsc::{Receiver, TryRecvError};
+use zeroize::Zeroize;
 
 use crate::icons::Icon;
 use crate::native_dialogs::FileDialog;
 use crate::theme::Tokens;
-use crate::{AudioDevices, Dialog, FilmcraftApp};
+use crate::{AudioDevices, Dialog, FilmcraftApp, ReactorKeyAction};
 
 /// Window size (Premiere's is 927 × 724 pt).
 const W: f32 = 900.0;
@@ -52,6 +54,33 @@ pub struct SettingsDraft {
     #[serde(default)]
     pub preset_message: String,
 }
+
+/// Transient credential editor state. It must not be part of `UiState` or the preferences JSON:
+/// both are available through the control channel and can be saved to disk.
+#[derive(Default)]
+pub struct ReactorKeyUi {
+    checked: bool,
+    present: Option<bool>,
+    input: String,
+    message: String,
+    pending: Option<(KeyOperation, Receiver<Result<bool, String>>)>,
+}
+
+impl Drop for ReactorKeyUi {
+    fn drop(&mut self) {
+        self.input.zeroize();
+    }
+}
+
+#[derive(Clone, Copy)]
+enum KeyOperation {
+    Check,
+    Save,
+    Remove,
+}
+
+const REACTOR_KEYS_URL: &str = "https://www.reactor.inc/account/api-keys";
+const REACTOR_BILLING_URL: &str = "https://www.reactor.inc/account/billing";
 
 /// Open the dialog on a category page.
 pub fn open(app: &mut FilmcraftApp, page: &str) -> Result<Value, String> {
@@ -719,9 +748,108 @@ fn mb(bytes: u64) -> String {
     if bytes >= 1 << 30 { format!("{:.1} GB", bytes as f64 / (1u64 << 30) as f64) } else { format!("{:.1} MB", bytes as f64 / (1u64 << 20) as f64) }
 }
 
+fn reactor_key(app: &mut FilmcraftApp, ui: &mut Ui) {
+    let mut state = std::mem::take(&mut app.reactor_key_ui);
+    if !state.checked {
+        state.checked = true;
+        if let Some(action) = app.hooks.reactor_key.as_mut() {
+            state.pending = Some((KeyOperation::Check, action(ReactorKeyAction::Check)));
+        }
+    }
+    if let Some((operation, receiver)) = state.pending.as_ref() {
+        let completed = match receiver.try_recv() {
+            Ok(result) => Some((Some(*operation), result)),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some((None, Err(tl!("Credential store stopped responding.").into()))),
+        };
+        if let Some((operation, result)) = completed {
+            state.pending = None;
+            match result {
+                Ok(present) => {
+                    state.present = Some(present);
+                    state.message = match operation {
+                        Some(KeyOperation::Save) => {
+                            state.input.zeroize();
+                            tl!("API key saved on this computer.").into()
+                        }
+                        Some(KeyOperation::Remove) => {
+                            state.input.zeroize();
+                            tl!("API key removed from this computer.").into()
+                        }
+                        _ => String::new(),
+                    };
+                }
+                Err(error) => state.message = error,
+            }
+        }
+    }
+
+    ui.label(tl!("Use your own Reactor account for video generation. Your API key is stored in this computer's credential store, outside FilmCraft projects and preferences."));
+    ui.label(tl!("Save and Remove take effect immediately."));
+    ui.add_space(8.0);
+    if app.hooks.reactor_key.is_none() {
+        note(ui, &app.tokens, tl!("API key storage is available in the desktop app."));
+    } else {
+        let status = match state.present {
+            Some(true) => tl!("An API key is saved on this computer."),
+            Some(false) => tl!("No API key is saved on this computer."),
+            None => tl!("Checking the credential store…"),
+        };
+        ui.label(status);
+        ui.horizontal(|ui| {
+            field_label(ui, tl!("API key"));
+            let edit = ui.add(egui::TextEdit::singleline(&mut state.input).password(true).desired_width(260.0).hint_text("rk_…"));
+            app.auto.add("settings.reactor.apiKey", edit.rect, "Reactor API key");
+        });
+        ui.horizontal(|ui| {
+            let saving = state.pending.is_some();
+            let save = ui.add_enabled(!saving && !state.input.trim().is_empty(), egui::Button::new(tl!("Save key")));
+            app.auto.add("settings.reactor.saveKey", save.rect, "Save key");
+            if save.clicked() {
+                let key = state.input.trim();
+                if key.len() > 4096 {
+                    state.message = tl!("API key is too long.").into();
+                } else if let Some(action) = app.hooks.reactor_key.as_mut() {
+                    state.message.clear();
+                    state.pending = Some((KeyOperation::Save, action(ReactorKeyAction::Save(key.to_owned()))));
+                }
+            }
+            let remove = ui.add_enabled(!saving && state.present == Some(true), egui::Button::new(tl!("Remove key")));
+            app.auto.add("settings.reactor.removeKey", remove.rect, "Remove key");
+            if remove.clicked()
+                && let Some(action) = app.hooks.reactor_key.as_mut()
+            {
+                state.message.clear();
+                state.pending = Some((KeyOperation::Remove, action(ReactorKeyAction::Remove)));
+            }
+        });
+        if !state.message.is_empty() {
+            note(ui, &app.tokens, &state.message);
+        }
+    }
+    if state.pending.is_some() {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+    }
+    ui.add_space(12.0);
+    ui.horizontal(|ui| {
+        let keys = ui.button(tl!("Get an API key…"));
+        app.auto.add("settings.reactor.manageKeys", keys.rect, "Get an API key");
+        if keys.clicked() {
+            crate::links::open(app, ui.ctx(), REACTOR_KEYS_URL);
+        }
+        let billing = ui.button(tl!("Account and billing…"));
+        app.auto.add("settings.reactor.billing", billing.rect, "Account and billing");
+        if billing.clicked() {
+            crate::links::open(app, ui.ctx(), REACTOR_BILLING_URL);
+        }
+    });
+    app.reactor_key_ui = state;
+}
+
 fn custom(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, name: &str) {
     let t = app.tokens;
     match name {
+        "reactorApiKey" => reactor_key(app, ui),
         "labelColors" => {
             let tt = t;
             group(ui, &tt, tl!("Label Colors"), |ui| {
@@ -909,7 +1037,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             if button(app, ui, "settings.help", tl!("Help"), false) {
                 crate::links::open(app, ctx, &format!("{}/blob/main/docs/project-files.md#settings", crate::links::GITHUB));
             }
-            if button(app, ui, "settings.reset", tl!("Reset…"), false) {
+            if d.page != "reactor" && button(app, ui, "settings.reset", tl!("Reset…"), false) {
                 // this category back to its defaults (OK applies it)
                 let defaults = filmcraft_engine::autosave::Preferences::default().to_value();
                 let keep = get(&d.values, "general.recentProjects").clone();
@@ -945,6 +1073,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     }
     if !close {
         app.ui.settings = Some(d);
+    } else {
+        app.reactor_key_ui.input.zeroize();
     }
     !close
 }
@@ -953,6 +1083,19 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
 mod tests {
     use super::*;
     use crate::theme::ThemeKind;
+
+    #[test]
+    fn reactor_key_is_absent_from_serialized_ui_and_preferences() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        open(&mut app, "reactor").unwrap();
+        app.reactor_key_ui.input = "rk_test_private_value".into();
+
+        let ui = serde_json::to_string(&app.ui).unwrap();
+        let prefs = serde_json::to_string(&app.session.prefs.to_value()).unwrap();
+        assert!(!ui.contains("rk_test_private_value"));
+        assert!(!prefs.contains("rk_test_private_value"));
+        assert_eq!(app.ui.settings.as_ref().map(|draft| draft.page.as_str()), Some("reactor"));
+    }
 
     #[test]
     fn favorite_theme_star_and_shortcut_select_explicit_family() {
