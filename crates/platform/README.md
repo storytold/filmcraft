@@ -91,7 +91,13 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
     one, so the output type is set first).
   A transform with `MFT_OUTPUT_STREAM_PROVIDES_SAMPLES` set must be given an output descriptor with
   no sample attached (`cbSize` is then 0); attaching one, as is natural, makes `ProcessOutput` fail
-  forever while the MFT encodes correctly. An asynchronous MFT also answers "not yet" for a few
+  forever while the MFT encodes correctly. **`IMFMediaBuffer::Lock` reports the buffer's size, not the
+  sample's**: an encoder MFT recycles one buffer across every picture it writes, and only
+  `GetCurrentLength` bytes of it are this picture. Reading what `Lock` returns puts the driver's
+  leftovers in the file — measured on a Snapdragon X, the first keyframe of a session carried 9 kB of
+  stale bytes out to offset 262 kB, which showed up as a hardware export coming out *larger* than the
+  software one at the same bitrate. Compare the two sizes when something looks wrong here.
+  An asynchronous MFT also answers "not yet" for a few
   milliseconds after a picture goes in, so `MfEncoder::wait` asks again until it has been quiet for a
   moment — bounded by a budget *and* by the quiet period. `mfcaps` lists the machine's encoder MFTs,
   which is the first thing to ask on a machine that should have an encoder and does not.
