@@ -62,6 +62,39 @@ pub enum EncPoll {
     NeedInput,
 }
 
+/// How long an [`MfEncoder::wait`] should keep going. Pure arithmetic on elapsed time rather than
+/// the clock, so the decision can be tested without a live encoder.
+///
+/// An asynchronous encoder answers "not yet" for a while after a picture goes in, so the first
+/// `NeedInput` is never the end of the wait: the encoder gets [`IDLE`] to produce something. Only
+/// once it has been quiet for that long, or `budget` is spent, does the wait end. A finished
+/// picture resets the quiet period, so a stream arriving steadily is never cut off mid-GOP.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Wait {
+    elapsed: std::time::Duration,
+    quiet: std::time::Duration,
+    budget: std::time::Duration,
+}
+
+impl Wait {
+    fn new(budget: std::time::Duration) -> Self {
+        Self { elapsed: std::time::Duration::ZERO, quiet: std::time::Duration::ZERO, budget }
+    }
+
+    /// A picture came out: the encoder is producing again, so the quiet period starts over.
+    fn produced(&mut self) {
+        self.quiet = std::time::Duration::ZERO;
+    }
+
+    /// Nothing came out this time round. `step` is how long we will sleep before asking again.
+    /// Returns whether to stop waiting.
+    fn nothing_yet(&mut self, step: std::time::Duration, idle: std::time::Duration) -> bool {
+        self.elapsed = self.elapsed.saturating_add(step);
+        self.quiet = self.quiet.saturating_add(step);
+        self.quiet >= idle || self.elapsed >= self.budget
+    }
+}
+
 /// What [`MfEncoder::try_input`] made of a picture.
 pub enum Input {
     Taken,
@@ -215,28 +248,28 @@ impl MfEncoder {
 
     /// Collect everything the MFT has finished, waiting up to `budget` for an asynchronous one.
     /// Bounded twice over: by `budget`, and by how long the MFT stays quiet, so an encoder that has
-    /// said it has nothing left ends the wait at once instead of costing the caller `budget`.
+    /// said it has nothing left ends the wait instead of costing the caller `budget`.
     pub fn wait(&self, api: &MfApi, budget: std::time::Duration) -> Result<Vec<(Vec<u8>, i64)>, String> {
-        let deadline = std::time::Instant::now() + budget;
-        let mut quiet_since: Option<std::time::Instant> = None;
+        let start = std::time::Instant::now();
+        let mut last = start;
+        let mut wait = Wait::new(budget);
         let mut out = Vec::new();
         loop {
             match self.poll(api)? {
                 EncPoll::Frame(bytes, time) => {
                     out.push((bytes, time));
-                    quiet_since = None;
+                    wait.produced();
+                    last = std::time::Instant::now();
                 }
                 EncPoll::NeedInput => {
+                    // The step is what really passed, not how long we asked to sleep: a 5 ms sleep
+                    // on Windows is nearer 16, and adding the nominal figure would under-count the
+                    // quiet period by three times over and spend the whole budget every picture.
                     let now = std::time::Instant::now();
-                    if now >= deadline {
+                    if wait.nothing_yet(now.duration_since(last), IDLE) {
                         return Ok(out);
                     }
-                    // An encoder with a pipeline delay answers "not yet" for a moment after a
-                    // picture goes in, so give it IDLE before believing it has nothing left.
-                    if quiet_since.is_none_or(|q| now.duration_since(q) >= IDLE) {
-                        return Ok(out);
-                    }
-                    quiet_since.get_or_insert(now);
+                    last = now;
                     std::thread::sleep(POLL_WAIT);
                 }
             }
@@ -432,13 +465,12 @@ impl MfApi {
 
     /// The decoder MFTs taking input of `subtype`, hardware ones first, as activation objects.
     ///
-    /// `subtype` goes in `MFTEnumEx`'s **output** slot, with the input left unconstrained. That
-    /// reads backwards — a decoder's compressed type is its input — but it is what actually matches:
-    /// with the type in the input slot and no output constraint, this returns nothing at all on
-    /// Windows, and every decoder MFT disappears. Measured on a Snapdragon X (Adreno X1-85, driver
-    /// `31.0.137.0`): `Some(&type)` here lists Microsoft's H.264 decoder and the HEVC, VP9 and AV1
-    /// extensions; `None, Some(&type)` lists none of them, and FilmCraft decodes everything in
-    /// software without saying why. Do not "correct" this.
+    /// `subtype` goes in `MFTEnumEx`'s **input** slot — which is where a decoder's compressed type
+    /// belongs — with the output left unconstrained, and every decoder MFT is found that way. Passing
+    /// the codec subtype as the *output* type instead returns nothing at all on Windows and FilmCraft
+    /// decodes everything in software without saying why. Measured on a Snapdragon X (Adreno X1-85,
+    /// driver `31.0.137.0`): this lists Microsoft's H.264 decoder and the HEVC, VP9 and AV1
+    /// extensions, and swapping the two arguments lists none of them.
     fn decoders(&self, subtype: GUID) -> Result<Vec<IMFActivate>, String> {
         let input = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: subtype };
         let flags = MFT_ENUM_FLAG(MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_ASYNCMFT.0 | MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0);
@@ -456,7 +488,7 @@ impl MfApi {
         if hardware_only {
             flags |= MFT_ENUM_FLAG_HARDWARE.0;
         }
-        self.enumerate(MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG(flags), Some(&out_info), Some(&in_info))
+        self.enumerate(MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG(flags), Some(&in_info), Some(&out_info))
     }
 
     /// Every MFT in `MFT_CATEGORY_VIDEO_ENCODER`, with no constraint on either side's media type.
@@ -470,20 +502,25 @@ impl MfApi {
         self.enumerate(MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG(flags), None, None)
     }
 
-    /// The MFTs of `category` taking `input` and producing `output` (either may be `None` to leave
-    /// that side unconstrained), hardware ones first, as activation objects.
+    /// The MFTs of `category` taking `input` and producing `output` (either may be `None` to leave that
+    /// side unconstrained), hardware ones first, as activation objects.
+    ///
+    /// The order is `MFTEnumEx`'s own: **input first, then output**
+    /// (<https://learn.microsoft.com/windows/win32/api/mfapi/nf-mfapi-mftenumex>). Get it backwards
+    /// and a filtered encoder search matches nothing at all, because the codec's own subtype is
+    /// being looked for on the wrong side.
     fn enumerate(
         &self,
         category: GUID,
         flags: MFT_ENUM_FLAG,
-        output: Option<&MFT_REGISTER_TYPE_INFO>,
         input: Option<&MFT_REGISTER_TYPE_INFO>,
+        output: Option<&MFT_REGISTER_TYPE_INFO>,
     ) -> Result<Vec<IMFActivate>, String> {
-        let out_ptr = output.map_or(std::ptr::null(), |o| o as *const _);
         let in_ptr = input.map_or(std::ptr::null(), |i| i as *const _);
+        let out_ptr = output.map_or(std::ptr::null(), |o| o as *const _);
         let (mut list, mut count) = (std::ptr::null_mut::<*mut c_void>(), 0u32);
         // SAFETY: the type info and the out-pointers refer to live locals.
-        let hr = unsafe { (self.enum_transforms)(category, flags.0 as u32, out_ptr, in_ptr, &mut list, &mut count) };
+        let hr = unsafe { (self.enum_transforms)(category, flags.0 as u32, in_ptr, out_ptr, &mut list, &mut count) };
         if hr.is_err() {
             return Err(format!("MFTEnumEx failed ({hr:?})"));
         }
@@ -775,5 +812,68 @@ fn friendly_name(a: &IMFActivate) -> Option<String> {
         let name = s.to_string().ok();
         CoTaskMemFree(Some(s.0 as *const c_void));
         name
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    const STEP: Duration = Duration::from_millis(5);
+    const IDLE: Duration = Duration::from_millis(30);
+    const BUDGET: Duration = Duration::from_millis(100);
+
+    /// An asynchronous encoder says "not yet" before it has anything. The wait must keep asking
+    /// rather than stopping at the first silence, or a picture that arrives a moment later is lost.
+    #[test]
+    fn a_first_silence_does_not_end_the_wait() {
+        let mut w = Wait::new(BUDGET);
+        // the encoder is a few milliseconds behind: silence, silence, then a picture
+        assert!(!w.nothing_yet(STEP, IDLE), "the first silence must not end the wait");
+        assert!(!w.nothing_yet(STEP, IDLE), "nor the second");
+        w.produced();
+        // and after a picture it is quiet again from the start, so the same grace applies
+        assert!(!w.nothing_yet(STEP, IDLE));
+        assert!(!w.nothing_yet(STEP, IDLE));
+    }
+
+    #[test]
+    fn a_sustained_silence_ends_the_wait() {
+        let mut w = Wait::new(BUDGET);
+        let mut steps = 0;
+        while !w.nothing_yet(STEP, IDLE) {
+            steps += 1;
+            assert!(steps < 1000, "the wait never ended");
+        }
+        // it stopped on the quiet period, not the budget
+        assert!(w.quiet >= IDLE, "quiet for {:?} but still waiting", w.quiet);
+        assert!(w.elapsed < BUDGET, "the budget ended it, not the quiet period");
+    }
+
+    /// Whatever the encoder does, the wait ends inside `budget`: it is the backstop for a driver
+    /// that never answers, and the reason an export cannot hang here.
+    #[test]
+    fn the_budget_bounds_a_wait_that_never_ends() {
+        let mut w = Wait::new(BUDGET);
+        // IDLE longer than the budget, so only the budget can end this
+        let forever = Duration::from_secs(60);
+        let mut steps = 0;
+        while !w.nothing_yet(STEP, forever) {
+            steps += 1;
+            assert!(steps < 1000, "the budget did not bound the wait");
+        }
+        assert!(w.elapsed >= BUDGET, "ended after {:?}, short of the budget", w.elapsed);
+    }
+
+    /// A steady stream never trips the quiet period: the wait keeps going until the encoder says it
+    /// has nothing, so a long group of pictures is not cut off part way through.
+    #[test]
+    fn a_producing_encoder_is_never_cut_off_by_the_quiet_period() {
+        let mut w = Wait::new(Duration::from_secs(60));
+        for _ in 0..10_000 {
+            w.produced();
+            assert!(!w.nothing_yet(STEP, IDLE), "a picture arrived, so the wait continues");
+        }
     }
 }

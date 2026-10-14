@@ -37,11 +37,15 @@ use crate::annexb;
 
 /// Media Foundation timestamps are 100 ns units.
 const TIME_100NS: i64 = 10_000_000;
-/// How long one picture waits for the encoder to have finished something, and how long the drain at
-/// the end of an export waits for the last pictures. Both bounded: an encoder that stops answering
-/// costs the export that long, not more.
-const FRAME_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
+/// How long the drain at the end of an export waits for the encoder's last pictures. Generous:
+/// this is the only place where nothing else will ask the MFT again.
 const DRAIN_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Mid-stream, the encoder is not waited for. An asynchronous MFT is about a picture period
+/// behind, so asking for output immediately after each picture always costs a wait; the picture is
+/// not lost, because the MFT's input queue fills and `try_input` then blocks on its output until it
+/// is taken. Waiting only where nothing else would pull keeps an export at render speed instead of
+/// encoder latency.
+const FRAME_WAIT: std::time::Duration = std::time::Duration::ZERO;
 /// How long a full input queue waits for the encoder to catch up before the export is called off.
 /// Generous: this is the encoder setting the pace, and a real encode never gets near it.
 const INPUT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
