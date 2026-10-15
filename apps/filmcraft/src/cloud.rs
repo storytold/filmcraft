@@ -314,9 +314,14 @@ fn remember_account(subject: &str, display: &str) {
 /// even for an instant.
 fn write_session_to(path: &Path, value: &serde_json::Value) -> std::io::Result<()> {
     use std::io::Write as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Unique per call so parallel tests (and overlapping writes) never share one
+    // `.fc-session-{pid}.tmp` and trip create_new AlreadyExists / cross-cleanup NotFound.
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
     let text = serde_json::to_vec(value).map_err(std::io::Error::other)?;
     let dir = path.parent().ok_or_else(|| std::io::Error::other("token path has no parent directory"))?;
-    let tmp_path = dir.join(format!(".fc-session-{}.tmp", std::process::id()));
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp_path = dir.join(format!(".fc-session-{}-{seq}.tmp", std::process::id()));
     let result = (|| -> std::io::Result<()> {
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true); // fail if the tmp file somehow already exists
