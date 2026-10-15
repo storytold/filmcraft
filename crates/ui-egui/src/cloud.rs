@@ -125,10 +125,8 @@ const PROJECT_EXTS: [&str; 1] = ["fcproj"];
 /// Media extensions for File ▸ Import from cloud… (aligned with `filmcraft_media`).
 const MEDIA_EXTS: [&str; 35] = [
     // video
-    "mp4", "m4v", "mov", "mkv", "webm", "avi", "mxf", "mts", "m2ts", "mpg", "mpeg", "3gp",
-    // audio
-    "wav", "aif", "aiff", "mp3", "m4a", "aac", "flac", "ogg", "opus",
-    // stills
+    "mp4", "m4v", "mov", "mkv", "webm", "avi", "mxf", "mts", "m2ts", "mpg", "mpeg", "3gp", // audio
+    "wav", "aif", "aiff", "mp3", "m4a", "aac", "flac", "ogg", "opus", // stills
     "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "tga", "dpx", "exr", "hdr", "dng", "psd",
 ];
 
@@ -136,20 +134,10 @@ const PROJECT_MIMES: [&str; 2] = ["application/x-filmcraft-project", "applicatio
 const MEDIA_MIMES: [&str; 1] = ["application/octet-stream"];
 
 /// What a FilmCraft project archive is in the cloud file list.
-pub const PROJECT: DocumentKind = DocumentKind {
-    extensions: &PROJECT_EXTS,
-    mimes: &PROJECT_MIMES,
-    noun: "project",
-    default_extension: "fcproj",
-};
+pub const PROJECT: DocumentKind = DocumentKind { extensions: &PROJECT_EXTS, mimes: &PROJECT_MIMES, noun: "project", default_extension: "fcproj" };
 
 /// Media files listed on the Import-from-cloud page (extension filter is authoritative).
-pub const MEDIA: DocumentKind = DocumentKind {
-    extensions: &MEDIA_EXTS,
-    mimes: &MEDIA_MIMES,
-    noun: "media file",
-    default_extension: "mp4",
-};
+pub const MEDIA: DocumentKind = DocumentKind { extensions: &MEDIA_EXTS, mimes: &MEDIA_MIMES, noun: "media file", default_extension: "mp4" };
 
 /// The Save a Copy formats available in the Share menu.
 ///
@@ -243,8 +231,7 @@ impl CloudApp for FilmcraftApp {
     fn open_bytes(&mut self, name: &str, bytes: Vec<u8>) -> Result<Option<u64>, String> {
         let ext = std::path::Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
         // Import page (or a media file opened from a mixed list): pull into the project bin.
-        if self.cloud_page == Some(CloudPage::Import) || (ext != "fcproj" && !ext.is_empty() && filmcraft_media::is_importable(std::path::Path::new(name)))
-        {
+        if self.cloud_page == Some(CloudPage::Import) || (ext != "fcproj" && !ext.is_empty() && filmcraft_media::is_importable(std::path::Path::new(name))) {
             let arc: std::sync::Arc<[u8]> = bytes.into();
             filmcraft_engine::commands::import_bytes(&mut self.session, name, arc, None).map_err(|e| e.to_string())?;
             self.ui.status = format!("Imported {name} from cloud");
@@ -394,15 +381,12 @@ pub fn modal(app: &mut FilmcraftApp, ctx: &egui::Context) {
         ui.label(egui::RichText::new(title).strong().size(16.0));
         ui.add_space(10.0);
         let body = (room.y - ui.min_size().y - 48.0).max(1.0);
-        egui::ScrollArea::vertical()
-            .id_salt(("filmcraft_cloud_page", page as u8))
-            .max_height(body)
-            .show(ui, |ui| match page {
-                CloudPage::Open | CloudPage::Import => open_page(app, ui),
-                CloudPage::SaveAs => {
-                    close = save_page(app, ui);
-                }
-            });
+        egui::ScrollArea::vertical().id_salt(("filmcraft_cloud_page", page as u8)).max_height(body).show(ui, |ui| match page {
+            CloudPage::Open | CloudPage::Import => open_page(app, ui),
+            CloudPage::SaveAs => {
+                close = save_page(app, ui);
+            }
+        });
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

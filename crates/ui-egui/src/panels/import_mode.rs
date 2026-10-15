@@ -26,10 +26,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         (tl!("Bars and Tone"), "file.newBarsAndTone", tl!("SMPTE HD bars with 1 kHz reference tone"), crate::icons::Icon::Grid),
     ];
     if crate::cloud::available(app) {
-        cards.insert(
-            1,
-            (tl!("Import from cloud…"), "file.cloudImport", tl!("Movies, audio and stills from CollabCraft"), crate::icons::Icon::Globe),
-        );
+        cards.insert(1, (tl!("Import from cloud…"), "file.cloudImport", tl!("Movies, audio and stills from CollabCraft"), crate::icons::Icon::Globe));
     }
     let cw = 260.0;
     for (i, (title, cmd, sub, icon)) in cards.iter().enumerate() {
