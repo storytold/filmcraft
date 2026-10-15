@@ -457,7 +457,57 @@ fn gpu_hook_scenarios() {
         assert_eq!(frame("adj-off", f), frame("adj-auto", f), "frame {f}: an adjustment layer frame is the CPU's");
     }
     assert_eq!((gpu_render_stats().frames, gpu_render_stats().fallbacks), (12, 12), "{:?}", gpu_render_stats());
+
+    // 6. Nothing left to do to the picture after rendering: the renderer's own 8-bit frame is the
+    //    export's. With an overlay to draw, the float frame is used and finished as before.
+    let (p, seq, m) = project();
+    let mk_final = |path: &String, overlay: bool| {
+        let mut s = ExportSettings { format: Format::PngSequence, path: path.clone(), ..Default::default() };
+        s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2)));
+        s.gpu_rendering = crate::GpuRendering::Auto;
+        s.effects.timecode_overlay.enabled = overlay;
+        export(&p, seq, &s, &m, &Progress::default()).unwrap()
+    };
     crate::reset_frame_renderers_for_tests();
+    crate::register_frame_renderer(|| Some(Box::new(FinalFrameRenderer) as Box<dyn FrameRenderer>));
+    mk_final(&tmp("final.png"), false);
+    mk_final(&tmp("final-tc.png"), true);
+    crate::reset_frame_renderers_for_tests();
+    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer) as Box<dyn FrameRenderer>));
+    mk_final(&tmp("float.png"), false);
+    mk_final(&tmp("float-tc.png"), true);
+    let first = |name: &str| std::fs::read(tmp(&format!("{name}000.png"))).unwrap();
+    assert_ne!(first("final"), first("float"), "the renderer's 8-bit frame is the export's");
+    assert_eq!(first("final-tc"), first("float-tc"), "with an overlay the float frame is finished as before");
+    crate::reset_frame_renderers_for_tests();
+}
+
+/// [`FakeRenderer`] that hands over a frame of its own (solid green) when asked for the final
+/// 8-bit one.
+struct FinalFrameRenderer;
+
+impl FrameRenderer for FinalFrameRenderer {
+    fn render(
+        &mut self,
+        _project: &Project,
+        _seq: ItemId,
+        _t: Tick,
+        _opts: filmcraft_render::RenderOptions,
+        _sources: &dyn SourceProvider,
+    ) -> Option<filmcraft_render::Image> {
+        Some(filmcraft_render::Image::new(320, 180))
+    }
+
+    fn render_rgba8(
+        &mut self,
+        _project: &Project,
+        _seq: ItemId,
+        _t: Tick,
+        _opts: filmcraft_render::RenderOptions,
+        _sources: &dyn SourceProvider,
+    ) -> Option<(usize, usize, Vec<u8>)> {
+        Some((320, 180, [10u8, 200, 30, 255].repeat(320 * 180)))
+    }
 }
 
 static PANICS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

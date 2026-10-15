@@ -406,5 +406,8 @@ fn fs_full(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let c = clamp(textureLoad(accum, vec2<i32>(pos.xy), 0).rgb, vec3(0.0), vec3(1.0));
     let lo = c * 12.92;
     let hi = 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055;
-    return vec4(select(hi, lo, c <= vec3(0.0031308)), 1.0);
+    // Round to the nearest code here: the float-to-UNORM conversion of the target may be off by
+    // up to 0.6 of a code, so a value just above a half would come out a code low.
+    let e = round(select(hi, lo, c <= vec3(0.0031308)) * 255.0) / 255.0;
+    return vec4(e, 1.0);
 }
