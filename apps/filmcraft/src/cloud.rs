@@ -282,10 +282,10 @@ fn load_token_from(path: &Path, required_origin: &str) -> Option<String> {
 fn save_token(token: &str) {
     let service = base_url().unwrap_or_default();
     let value = serde_json::json!({"token": token, "service": service});
-    if let Some(path) = token_path() {
-        if let Err(e) = write_session_to(&path, &value) {
-            log::warn!("could not save the cloud session: {e}");
-        }
+    if let Some(path) = token_path()
+        && let Err(e) = write_session_to(&path, &value)
+    {
+        log::warn!("could not save the cloud session: {e}");
     }
 }
 
@@ -298,10 +298,10 @@ fn remember_account(subject: &str, display: &str) {
         "subject": subject,
         "display": display,
     });
-    if let Some(path) = token_path() {
-        if let Err(e) = write_session_to(&path, &value) {
-            log::warn!("could not update the cloud account record: {e}");
-        }
+    if let Some(path) = token_path()
+        && let Err(e) = write_session_to(&path, &value)
+    {
+        log::warn!("could not update the cloud account record: {e}");
     }
 }
 
@@ -314,8 +314,8 @@ fn remember_account(subject: &str, display: &str) {
 /// even for an instant.
 fn write_session_to(path: &Path, value: &serde_json::Value) -> std::io::Result<()> {
     use std::io::Write as _;
-    let text = serde_json::to_vec(value).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    let dir = path.parent().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "token path has no parent directory"))?;
+    let text = serde_json::to_vec(value).map_err(|e| std::io::Error::other(e))?;
+    let dir = path.parent().ok_or_else(|| std::io::Error::other("token path has no parent directory"))?;
     let tmp_path = dir.join(format!(".fc-session-{}.tmp", std::process::id()));
     let result = (|| -> std::io::Result<()> {
         let mut options = std::fs::OpenOptions::new();
@@ -345,6 +345,27 @@ fn write_session_to(path: &Path, value: &serde_json::Value) -> std::io::Result<(
 fn forget_token() {
     if let Some(path) = token_path() {
         let _ = std::fs::remove_file(path);
+    }
+}
+
+// ---------------------------------------------------------------- browser
+
+fn open_browser(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        // `cmd` splits on `&` before anything else; percent-encode `"` for safety.
+        use std::os::windows::process::CommandExt as _;
+        let mut c = std::process::Command::new("cmd");
+        c.raw_arg(format!("/C start \"\" \"{}\"", url.replace('"', "%22")));
+        c.spawn().map(|_| ())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(url).spawn().map(|_| ())
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open").arg(url).spawn().map(|_| ())
     }
 }
 
@@ -416,26 +437,5 @@ mod token_tests {
         let loaded = load_token_from(&path, "https://craft.example.com");
         assert!(loaded.is_none(), "empty token string should be treated as absent");
         let _ = std::fs::remove_file(&path);
-    }
-}
-
-// ---------------------------------------------------------------- browser
-
-fn open_browser(url: &str) -> std::io::Result<()> {
-    #[cfg(target_os = "windows")]
-    {
-        // `cmd` splits on `&` before anything else; percent-encode `"` for safety.
-        use std::os::windows::process::CommandExt as _;
-        let mut c = std::process::Command::new("cmd");
-        c.raw_arg(format!("/C start \"\" \"{}\"", url.replace('"', "%22")));
-        c.spawn().map(|_| ())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open").arg(url).spawn().map(|_| ())
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        std::process::Command::new("xdg-open").arg(url).spawn().map(|_| ())
     }
 }

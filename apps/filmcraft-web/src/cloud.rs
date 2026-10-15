@@ -52,11 +52,12 @@ impl Service {
         };
         match job {
             Job::Account => {
-                let answer = self.client.me().await.map(|me| Account {
-                    display: me.display,
-                    capabilities: me.capabilities,
-                    provider_linked: me.provider_linked,
-                }).map_err(fault);
+                let answer = self
+                    .client
+                    .me()
+                    .await
+                    .map(|me| Account { display: me.display, capabilities: me.capabilities, provider_linked: me.provider_linked })
+                    .map_err(fault);
                 if matches!(&answer, Err(Fault::Unauthenticated)) {
                     offer_login();
                 }
@@ -114,12 +115,8 @@ fn fault(e: Error) -> Fault {
         Error::NotLinked => Fault::NotLinked,
         Error::Unreachable(detail) => Fault::Unreachable(detail),
         Error::Refused { code, .. } if matches!(code.as_str(), "conflict" | "409" | "412") => Fault::Conflict,
-        Error::Refused { code, detail } => {
-            Fault::Refused(if detail.trim().is_empty() { code } else { detail })
-        }
-        Error::Malformed(detail) => {
-            Fault::Refused(format!("the cloud service gave an answer FilmCraft could not read: {detail}"))
-        }
+        Error::Refused { code, detail } => Fault::Refused(if detail.trim().is_empty() { code } else { detail }),
+        Error::Malformed(detail) => Fault::Refused(format!("the cloud service gave an answer FilmCraft could not read: {detail}")),
         Error::Unsendable(detail) => {
             log::error!("cloud request could not be encoded: {detail}");
             Fault::Refused("FilmCraft could not build that request".to_owned())
@@ -142,23 +139,14 @@ fn offer_login() {
 /// POST to the service's logout endpoint and let the browser clear the cookie.
 async fn post_logout() -> Result<(), String> {
     let global = js_sys::global();
-    let fetch = js_sys::Reflect::get(&global, &wasm_bindgen::JsValue::from_str("fetch"))
-        .ok()
-        .and_then(|v| v.dyn_into::<js_sys::Function>().ok())
-        .ok_or("no fetch")?;
+    let fetch =
+        js_sys::Reflect::get(&global, &wasm_bindgen::JsValue::from_str("fetch")).ok().and_then(|v| v.dyn_into::<js_sys::Function>().ok()).ok_or("no fetch")?;
     let init = web_sys::RequestInit::new();
     init.set_method("POST");
     init.set_credentials(web_sys::RequestCredentials::Include);
-    let req = web_sys::Request::new_with_str_and_init("/logout", &init)
-        .map_err(|e| format!("{e:?}"))?;
-    let promised = fetch
-        .call1(global.as_ref(), req.as_ref())
-        .map_err(|e| format!("{e:?}"))?;
-    let promised: js_sys::Promise = promised
-        .dyn_into()
-        .map_err(|_| "not a promise".to_owned())?;
-    wasm_bindgen_futures::JsFuture::from(promised)
-        .await
-        .map_err(|e| format!("{e:?}"))?;
+    let req = web_sys::Request::new_with_str_and_init("/logout", &init).map_err(|e| format!("{e:?}"))?;
+    let promised = fetch.call1(global.as_ref(), req.as_ref()).map_err(|e| format!("{e:?}"))?;
+    let promised: js_sys::Promise = promised.dyn_into().map_err(|_| "not a promise".to_owned())?;
+    wasm_bindgen_futures::JsFuture::from(promised).await.map_err(|e| format!("{e:?}"))?;
     Ok(())
 }
