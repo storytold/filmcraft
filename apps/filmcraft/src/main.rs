@@ -304,6 +304,14 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         {
             app.hooks.run_dialog = Some(Box::new(run_dialog_off_thread));
         }
+        // macOS: the synchronous picker runs the panel modally inside the UI pass, and a Finder
+        // drag onto the open dialog queues a winit event while the outer event is still being
+        // handled — the re-entrancy guard aborts the app (#2018). Begin the panel as a
+        // completion-handler sheet instead: the frame loop keeps running while it is open.
+        #[cfg(target_os = "macos")]
+        {
+            app.hooks.run_dialog = Some(Box::new(run_dialog_sheet));
+        }
         app.hooks.open_path = Some(Box::new(open_path));
         // Help menu, About and Discord links (#642): eframe is built without its `links`
         // feature, so `ctx.open_url` does nothing on the desktop. Detached, so a launcher
@@ -489,10 +497,10 @@ fn run_dialog_off_thread(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) 
     rx
 }
 
-/// A dialog as the Linux dialog thread shows it: filter names translated (here, on the UI thread:
-/// the interface language is per thread) and every extension list turned into the
+/// A dialog as the Linux and macOS dialog threads show it: filter names translated (here, on the
+/// UI thread: the interface language is per thread) and every extension list turned into the
 /// case-insensitive patterns the synchronous pickers use, so `CLIP.MP4` stays visible (#262).
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn prepare_dialog(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> filmcraft_ui_egui::native_dialogs::FileDialog {
     use filmcraft_ui_egui::native_dialogs::FileDialog;
     let t = |s: &str| filmcraft_ui_egui::i18n::t(s).to_string();
@@ -507,9 +515,73 @@ fn prepare_dialog(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> film
 }
 
 /// The project dialogs' filter patterns (`EDIT.FCPROJ` included).
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn project_patterns() -> Vec<String> {
     file_filters::extensions(&["fcproj"])
+}
+
+/// macOS: begin the panel as a completion-handler sheet (rfd's async API) and answer on a
+/// channel. The future is created here — on the main thread, as AppKit requires — and begins
+/// the sheet without blocking: the main run loop stays free, so a Finder drag onto the open
+/// dialog cannot trip winit's re-entrancy guard (#2018). The future is `Send`, so a worker
+/// thread parks on it while the sheet is up and the answer lands on the channel.
+#[cfg(target_os = "macos")]
+fn run_dialog_sheet(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> std::sync::mpsc::Receiver<Vec<String>> {
+    use filmcraft_ui_egui::native_dialogs::FileDialog;
+    let media = filmcraft_ui_egui::i18n::t("Media").to_string();
+    let project = filmcraft_ui_egui::i18n::t("FilmCraft Project").to_string();
+    let project_exts = project_patterns();
+    let dialog = prepare_dialog(dialog);
+    let path = |f: rfd::FileHandle| f.path().to_string_lossy().into_owned();
+    type Paths = std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send>>;
+    let future: Paths = match dialog {
+        FileDialog::OpenFiles { exts } => {
+            let f = rfd::AsyncFileDialog::new().add_filter(&media, &exts).pick_files();
+            Box::pin(async move { f.await.unwrap_or_default().into_iter().map(path).collect() })
+        }
+        FileDialog::OpenFile { filter, exts } => {
+            let f = rfd::AsyncFileDialog::new().add_filter(&filter, &exts).pick_file();
+            Box::pin(async move { f.await.map(&path).into_iter().collect() })
+        }
+        FileDialog::Relink { exts, .. } => {
+            let f = rfd::AsyncFileDialog::new().add_filter(&media, &exts).pick_file();
+            Box::pin(async move { f.await.map(&path).into_iter().collect() })
+        }
+        FileDialog::OpenProject => {
+            let f = rfd::AsyncFileDialog::new().add_filter(&project, &project_exts).pick_file();
+            Box::pin(async move { f.await.map(&path).into_iter().collect() })
+        }
+        FileDialog::SaveProject { name } => {
+            let f = rfd::AsyncFileDialog::new().add_filter(&project, &project_exts).set_file_name(name).save_file();
+            Box::pin(async move { f.await.map(&path).into_iter().collect() })
+        }
+        FileDialog::SaveAs { filter, exts, name } => {
+            let f = rfd::AsyncFileDialog::new().add_filter(&filter, &exts).set_file_name(name).save_file();
+            Box::pin(async move { f.await.map(&path).into_iter().collect() })
+        }
+        FileDialog::Folder { at } => {
+            let mut f = rfd::AsyncFileDialog::new();
+            if let Some(dir) = at.filter(|d| !d.is_empty()) {
+                f = f.set_directory(dir);
+            }
+            let f = f.pick_folder();
+            Box::pin(async move { f.await.map(&path).into_iter().collect() })
+        }
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new().name("file-dialog".into()).spawn(move || {
+        let shown = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || pollster::block_on(future)));
+        match shown {
+            Ok(paths) => {
+                let _ = tx.send(paths);
+            }
+            Err(_) => log::warn!("the file dialog thread panicked; taken as cancelled"),
+        }
+    });
+    if let Err(e) = spawned {
+        log::warn!("could not start the file dialog thread: {e}");
+    }
+    rx
 }
 
 #[cfg(test)]
