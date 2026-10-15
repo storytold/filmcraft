@@ -561,6 +561,10 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         app.session.set_prefs(next).map_err(|e| e.to_string())?;
         return Ok(Value::Null);
     }
+    // Cloud: Save routes back to the cloud when the project came from there.
+    if id == "file.save" && params.get("path").is_none() && crate::cloud::has_target(app) {
+        return crate::cloud::save(app);
+    }
     // File dialogs for commands that need a path.
     if (id == "file.import" && params.get("paths").is_none() && params.get("path").is_none())
         || (id == "file.importImageSequence" && params.get("path").is_none())

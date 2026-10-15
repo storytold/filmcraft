@@ -112,6 +112,86 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             Ok(v) => ok(v),
             Err(e) => err(e),
         },
+        // Cloud storage commands (see crate::cloud).
+        "cloud.status" => ok(crate::cloud::status(app)),
+        "cloud.open" => {
+            if !crate::cloud::available(app) {
+                return err(crate::cloud::UNAVAILABLE);
+            }
+            crate::cloud::start(app);
+            ok(crate::cloud::status(app))
+        }
+        "cloud.browse" => {
+            if !crate::cloud::available(app) {
+                return err(crate::cloud::UNAVAILABLE);
+            }
+            let path = s("path").unwrap_or("");
+            crate::cloud::browse(app, path);
+            ok(crate::cloud::status(app))
+        }
+        "cloud.shared" => {
+            if !crate::cloud::available(app) {
+                return err(crate::cloud::UNAVAILABLE);
+            }
+            crate::cloud::load_shared(app);
+            ok(crate::cloud::status(app))
+        }
+        "cloud.link" => {
+            if !crate::cloud::available(app) {
+                return err(crate::cloud::UNAVAILABLE);
+            }
+            crate::cloud::link(app);
+            ok(crate::cloud::status(app))
+        }
+        "cloud.openFile" => {
+            if !crate::cloud::available(app) {
+                return err(crate::cloud::UNAVAILABLE);
+            }
+            let entry = {
+                if let Some(id) = s("id") {
+                    app.cloud.mine.entries.iter().chain(app.cloud.shared.entries.iter()).find(|e| e.id == id).cloned()
+                } else if let Some(name) = s("name") {
+                    app.cloud.mine.entries.iter().chain(app.cloud.shared.entries.iter()).filter(|e| crate::cloud::opens(e)).find(|e| e.name == name).cloned()
+                } else {
+                    return err("need `id` or `name`");
+                }
+            };
+            match entry {
+                Some(e) if crate::cloud::opens(&e) => {
+                    crate::cloud::open_entry(app, e, None);
+                    ok(crate::cloud::status(app))
+                }
+                Some(_) => err("that file cannot be opened by FilmCraft"),
+                None => err("no such file in the cloud listing"),
+            }
+        }
+        "cloud.save" => match crate::cloud::save(app) {
+            Ok(v) => ok(v),
+            Err(e) => err(e),
+        },
+        "cloud.saveAs" => {
+            let folder = s("folder");
+            let name = s("name");
+            match (folder, name) {
+                (Some(folder), Some(name)) => match crate::cloud::save_as(app, folder, name) {
+                    Ok(v) => ok(v),
+                    Err(e) => err(e),
+                },
+                _ => {
+                    if !crate::cloud::available(app) {
+                        return err(crate::cloud::UNAVAILABLE);
+                    }
+                    // No folder/name: open the header area so the user can type one.
+                    // FilmCraft has no ribbon backstage; surface a toast.
+                    app.ui.status = "Type a Cloud folder and file name with cloud.saveAs {folder, name}".to_owned();
+                    ok(crate::cloud::status(app))
+                }
+            }
+        }
+        "cloud.reload" => match crate::cloud::reload_active(app) {
+            Ok(v) => ok(v),
+            Err(e) => err(e),
+        },
         "ui.menu.list" => ok(serde_json::to_value(crate::menus::menu_items(app)).unwrap_or_default()),
         "ui.inspect" => ok(inspect(app, ctx)),
         "perf.stats" => ok(crate::perf::stats(app)),

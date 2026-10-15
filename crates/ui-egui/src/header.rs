@@ -121,7 +121,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     app.auto.add("header.workspaceName", wr, &ws);
     p.galley_with_override_text_color(pos2(wr.min.x + 4.0, rect.center().y - wg.size().y / 2.0), wg, if wresp.hovered() { t.text } else { t.text_dim });
     // Community: a labelled Discord button, always one click away.
-    {
+    let discord_left = {
         let label = "Discord";
         let g = p.layout_no_wrap(label.to_string(), Tokens::ui(12.0), Color32::WHITE);
         let w = g.size().x + 34.0;
@@ -131,9 +131,42 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.painter().rect_filled(r, 12.0, if resp.hovered() { t.accent_hover } else { t.accent });
         icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 14.0, r.center().y), vec2(14.0, 14.0)), Icon::Chat, Color32::WHITE);
         ui.painter().galley(pos2(r.min.x + 25.0, r.center().y - g.size().y / 2.0), g, Color32::WHITE);
-        // Localized menus and user titles can be wider than English. Use the actual gap.
+        if resp.clicked() {
+            crate::links::open(app, ui.ctx(), crate::links::DISCORD);
+        }
+        r.min.x
+    };
+    // Cloud: account badge, presence avatars and Share split button.
+    // Placed between Discord and the document title so neither overlaps.
+    // Nothing is drawn when no cloud service is configured.
+    let cloud_right = {
+        // ~8 px gap left of Discord.
+        let mut cloud_right = discord_left - 8.0;
+        if crate::cloud::available(app) {
+            // Reserve a horizontal strip. The badge is ~34 px; the share split button
+            // is variable. Give 150 px and let the right_to_left layout clip if the
+            // window is very narrow (the title will have already collapsed by then).
+            let cloud_w: f32 = 150.0;
+            let cloud_left = (cloud_right - cloud_w).max(left_end + 4.0);
+            let cloud_rect = Rect::from_min_max(pos2(cloud_left, rect.min.y + 4.0), pos2(cloud_right, rect.max.y - 4.0));
+            if cloud_rect.width() > 32.0 {
+                let mut cu = ui.new_child(egui::UiBuilder::new().max_rect(cloud_rect).layout(egui::Layout::right_to_left(egui::Align::Center)));
+                // Account badge and collaborator presence (rightmost in the cloud cluster).
+                crate::cloud::who(app, &mut cu);
+                // Share split button: only when the provider supports sharing.
+                if crate::cloud::shares(app) {
+                    cu.add_space(6.0);
+                    crate::cloud::share_button(app, &mut cu, &crate::cloud::copies());
+                }
+                cloud_right = cloud_left;
+            }
+        }
+        cloud_right
+    };
+    // Document title, centred in the gap between the mode tabs and the cloud cluster.
+    {
         let left = left_end + 12.0;
-        let right = r.min.x - 12.0;
+        let right = cloud_right - 12.0;
         if right > left + 40.0 {
             let mut job = egui::text::LayoutJob::simple_singleline(title, Tokens::ui(14.0), t.tab_text_active);
             job.wrap.max_width = right - left;
@@ -146,10 +179,6 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 galley,
                 t.tab_text_active,
             );
-        }
-
-        if resp.clicked() {
-            crate::links::open(app, ui.ctx(), crate::links::DISCORD);
         }
     }
     let popup_id = egui::Id::new("workspaces-popup");
