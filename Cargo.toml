@@ -73,8 +73,18 @@ roxmltree = "0.21"
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "82a24b006eefa036b43c09a67fb9a3fbd17ffe63" }
 
 # ui
-# Shared frontend components; keep this dependency above the engine boundary.
-craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "5c874d51eeb3de70e735c8ce87a59a7dedd47675", features = ["serde"] }
+# Shared frontend components. Bumped to 289d562 (same rev wordcraft/deckcraft use) to gain the
+# craft-ui `cloud` feature (Open/Save pages, share dialog, account/presence controls).
+# One revision of craft-ui in the whole dependency graph: two would produce two backend traits.
+craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "289d562cc6e8b567819aee51f759a78f41a65454", features = ["serde"] }
+# Vendor-neutral cloud contracts (Entry, Capability, Files/Sharing traits). No IO, no provider
+# names: buildable for the web and testable with no service.
+craft-cloud = { git = "https://github.com/storytold/craft-libs", rev = "289d562cc6e8b567819aee51f759a78f41a65454" }
+# HTTP transport to CollabCraft. No provider credential or URL compiled in.
+craft-cloud-client = { git = "https://github.com/wdunn001/collab-craft", rev = "80bfaec" }
+# The share dialog's backend: the half that opens a socket to CollabCraft. craft-ui states the
+# work; this crate answers it. Lives in the host application because the session lives there.
+collabcraft-share = { git = "https://github.com/wdunn001/collab-craft", rev = "80bfaec" }
 egui = "0.36"
 eframe = { version = "0.36", default-features = false }
 egui_kittest = "0.36"
