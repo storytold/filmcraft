@@ -1053,9 +1053,7 @@ mod tests {
         let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
         let items = crate::menus::menu_items(&app);
         let known = |text: &str| {
-            crate::menus::MENUS.contains(&text)
-                || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text))
-                || is_cloud_ui_label(text)
+            crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text)) || is_cloud_ui_label(text)
         };
         let (entries, _) = catalog::parse_entries(include_str!("uk.tsv"));
         for (_, en, _) in entries {
@@ -1073,9 +1071,7 @@ mod tests {
         let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
         let items = crate::menus::menu_items(&app);
         let known = |text: &str| {
-            crate::menus::MENUS.contains(&text)
-                || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text))
-                || is_cloud_ui_label(text)
+            crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text)) || is_cloud_ui_label(text)
         };
         let (entries, _) = catalog::parse_entries(include_str!("de.tsv"));
         for (_, en, _) in entries {
@@ -1126,9 +1122,7 @@ mod tests {
         let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
         let items = crate::menus::menu_items(&app);
         let known = |text: &str| {
-            crate::menus::MENUS.contains(&text)
-                || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text))
-                || is_cloud_ui_label(text)
+            crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text)) || is_cloud_ui_label(text)
         };
         let (entries, _) = catalog::parse_entries(include_str!("ru.tsv"));
         for (_, en, _) in entries {
