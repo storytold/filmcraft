@@ -262,6 +262,29 @@ fn tree(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, dir: &str) {
     child.set_clip_rect(r.intersect(ui.clip_rect()));
     let mut go: Option<String> = None;
     egui::ScrollArea::vertical().id_salt("mb-tree-scroll").auto_shrink([false, false]).show(&mut child, |ui| {
+        // CollabCraft cloud storage: opens the Import-from-cloud page (media into the project).
+        if crate::cloud::available(app) {
+            let title = tl!("CollabCraft");
+            let hr = ui.label(egui::RichText::new(title).size(11.0).color(app.tokens.text_dim).strong());
+            app.auto.add("mediaBrowser.tree.collabcraft", hr.rect, title);
+            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click());
+            if resp.hovered() {
+                ui.painter().rect_filled(r, 2.0, app.tokens.hover);
+            }
+            icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 19.0, r.center().y), vec2(13.0, 13.0)), Icon::Globe, app.tokens.icon);
+            ui.painter().with_clip_rect(r).text(
+                pos2(r.min.x + 30.0, r.center().y),
+                Align2::LEFT_CENTER,
+                tl!("Cloud storage"),
+                Tokens::ui(11.5),
+                app.tokens.text,
+            );
+            app.auto.add("mediaBrowser.tree.collabcraft.cloud", r, tl!("Cloud storage"));
+            if resp.clicked() {
+                app.cloud_page = Some(crate::cloud::CloudPage::Import);
+            }
+            ui.add_space(6.0);
+        }
         let sections: [(&str, &str, Icon); 4] = [
             ("favorites", tl!("Favorites"), Icon::Star),
             ("localDrives", tl!("Local Drives"), Icon::Drive),

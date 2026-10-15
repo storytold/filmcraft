@@ -14,18 +14,16 @@
 //! the pages state a [`Job`], the host runs it on a worker thread, and the answer arrives on a
 //! channel that [`pump`] drains on a later frame.
 //!
-//! # Large-media constraint
+//! # Projects vs media
 //!
-//! A `.fcproj` archive carries project metadata, sequences, settings, proxy references and
-//! trim-region markers. It does NOT embed the raw video, audio or image-sequence files. Those
-//! stay on the local or shared storage the project references by path. Upload and download
-//! here transfer the metadata file only; they do not and cannot move media. Nothing in this
-//! module bypasses that: the whole-file contract is preserved, not worked around.
+//! - **Open / Save As** transfer the `.fcproj` archive (sequences, settings, clip references).
+//! - **Import** downloads individual media files (video / audio / stills) into the project via
+//!   [`filmcraft_engine::commands::import_bytes`]. Large files go through the same Job/worker
+//!   path as project Open; a provider size limit surfaces as [`Fault::Refused`].
 //!
-//! A provider that imposes a file-size limit well below the project archive should be flagged
-//! by [`Fault::Refused`] from the server, not silently truncated here. If a project archive
-//! grows very large (many long-form sequences with dense automation), Save As to a local path
-//! and a manual upload to large-file storage is the right path.
+//! Saving a project to the cloud does **not** re-upload every media file. Imported cloud media
+//! is held in the session like any other import; re-linking or re-importing from cloud is how
+//! another machine gets the bits.
 
 use std::collections::HashMap;
 
@@ -121,26 +119,37 @@ use serde_json::{Value as Json, json};
 use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
 
-/// Extensions FilmCraft opens from cloud storage. The same set as the desktop file picker.
-///
-/// Only the project archive is opened here. Raw media files are not imported through cloud
-/// pages (they have no reliable file-size ceiling, and the provider knows nothing about them).
-const OPENS: [&str; 1] = ["fcproj"];
+/// Project archive extensions for File ▸ Open from cloud… / Save as to cloud….
+const PROJECT_EXTS: [&str; 1] = ["fcproj"];
 
-/// Content types FilmCraft project files carry.
-///
-/// Most WebDAV servers return `application/octet-stream` for unknown types, so the MIME match
-/// is a safety net, not the primary filter. The extension is checked first.
-const MIMES: [&str; 2] = [
-    "application/x-filmcraft-project",
-    "application/octet-stream", // WebDAV fallback for unknown types
+/// Media extensions for File ▸ Import from cloud… (aligned with `filmcraft_media`).
+const MEDIA_EXTS: [&str; 35] = [
+    // video
+    "mp4", "m4v", "mov", "mkv", "webm", "avi", "mxf", "mts", "m2ts", "mpg", "mpeg", "3gp",
+    // audio
+    "wav", "aif", "aiff", "mp3", "m4a", "aac", "flac", "ogg", "opus",
+    // stills
+    "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "tga", "dpx", "exr", "hdr", "dng", "psd",
 ];
 
-/// What a FilmCraft project is, as a cloud file list needs to know.
-///
-/// One file per project. No embedded media: the project references media by path. Cloud
-/// Open/Save transfers the archive only. See the module-level doc for the full constraint.
-pub const PROJECT: DocumentKind = DocumentKind { extensions: &OPENS, mimes: &MIMES, noun: "project", default_extension: "fcproj" };
+const PROJECT_MIMES: [&str; 2] = ["application/x-filmcraft-project", "application/octet-stream"];
+const MEDIA_MIMES: [&str; 1] = ["application/octet-stream"];
+
+/// What a FilmCraft project archive is in the cloud file list.
+pub const PROJECT: DocumentKind = DocumentKind {
+    extensions: &PROJECT_EXTS,
+    mimes: &PROJECT_MIMES,
+    noun: "project",
+    default_extension: "fcproj",
+};
+
+/// Media files listed on the Import-from-cloud page (extension filter is authoritative).
+pub const MEDIA: DocumentKind = DocumentKind {
+    extensions: &MEDIA_EXTS,
+    mimes: &MEDIA_MIMES,
+    noun: "media file",
+    default_extension: "mp4",
+};
 
 /// The Save a Copy formats available in the Share menu.
 ///
@@ -153,9 +162,9 @@ const COPIES: [(&str, &str); 2] = [("fcpxml", "Save a Copy as Final Cut Pro XML 
 /// do not confuse each other's dirty-flag updates.
 pub type Sent = HashMap<u64, ()>;
 
-/// Whether FilmCraft can open this cloud entry.
+/// Whether FilmCraft can open this cloud entry as a project or importable media.
 pub fn opens(entry: &Entry) -> bool {
-    craft_ui::cloud::opens(entry, PROJECT)
+    craft_ui::cloud::opens(entry, PROJECT) || craft_ui::cloud::opens(entry, MEDIA)
 }
 
 /// A typed name as a project file name. Folder separators are dropped; a missing or unknown
@@ -214,7 +223,10 @@ impl CloudApp for FilmcraftApp {
     }
 
     fn kind(&self) -> DocumentKind {
-        PROJECT
+        match self.cloud_page {
+            Some(CloudPage::Import) => MEDIA,
+            _ => PROJECT,
+        }
     }
 
     fn active(&self) -> Option<u64> {
@@ -228,11 +240,18 @@ impl CloudApp for FilmcraftApp {
         self.session.project.name.clone()
     }
 
-    fn open_bytes(&mut self, _name: &str, bytes: Vec<u8>) -> Result<Option<u64>, String> {
-        // Write the bytes to a temporary file the engine can open. The engine's project loader
-        // takes a path, not a byte slice, because a project archive may reference media relative
-        // to its own directory. A temp file in the same folder as the existing project gives the
-        // relative paths the best chance of resolving.
+    fn open_bytes(&mut self, name: &str, bytes: Vec<u8>) -> Result<Option<u64>, String> {
+        let ext = std::path::Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+        // Import page (or a media file opened from a mixed list): pull into the project bin.
+        if self.cloud_page == Some(CloudPage::Import) || (ext != "fcproj" && !ext.is_empty() && filmcraft_media::is_importable(std::path::Path::new(name)))
+        {
+            let arc: std::sync::Arc<[u8]> = bytes.into();
+            filmcraft_engine::commands::import_bytes(&mut self.session, name, arc, None).map_err(|e| e.to_string())?;
+            self.ui.status = format!("Imported {name} from cloud");
+            self.cloud_page = None;
+            return Ok(None);
+        }
+        // Project archive: stage to a temp path the engine can open.
         let tmp = std::env::temp_dir().join(format!(
             "filmcraft-cloud-open-{}.fcproj",
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
@@ -240,13 +259,11 @@ impl CloudApp for FilmcraftApp {
         std::fs::write(&tmp, &bytes).map_err(|e| format!("could not stage the downloaded project: {e}"))?;
         let path = tmp.to_string_lossy().to_string();
         let result = self.session.execute("file.open", json!({"path": path}));
-        let _ = std::fs::remove_file(&tmp); // always clean up, ignore errors
+        let _ = std::fs::remove_file(&tmp);
         match result {
             Ok(_) => {
-                // Mark the cloud origin so Save knows where to go back.
-                // The session path is set by the engine to the temp path; clear it so the
-                // window title and Save As show the cloud name, not the temp path.
                 self.session.path = None;
+                self.cloud_page = None;
                 Ok(Some(1u64))
             }
             Err(e) => Err(e.to_string()),
@@ -348,20 +365,24 @@ impl CloudApp for FilmcraftApp {
     }
 }
 
-/// Which cloud page the File menu opened, if any.
+/// Which cloud page the File menu / Media Browser / Import screen opened, if any.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CloudPage {
+    /// File ▸ Open from cloud… — `.fcproj` projects.
     Open,
+    /// File ▸ Save as to cloud… — write the project archive.
     SaveAs,
+    /// File ▸ Import from cloud… / Media Browser ▸ CollabCraft — media into the project.
+    Import,
 }
 
-/// The Open and Save As pages as a modal over the editor, from File ▸ Open from cloud… /
-/// Save as to cloud….
+/// Cloud Open / Import / Save As as a modal over the editor.
 pub fn modal(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(page) = app.cloud_page else { return };
     let title = match page {
         CloudPage::Open => tl!("Open from cloud"),
         CloudPage::SaveAs => tl!("Save as to cloud"),
+        CloudPage::Import => tl!("Import from cloud"),
     };
     let mut close = false;
     egui::Modal::new(egui::Id::new("filmcraft_cloud_page")).show(ctx, |ui| {
@@ -373,12 +394,15 @@ pub fn modal(app: &mut FilmcraftApp, ctx: &egui::Context) {
         ui.label(egui::RichText::new(title).strong().size(16.0));
         ui.add_space(10.0);
         let body = (room.y - ui.min_size().y - 48.0).max(1.0);
-        egui::ScrollArea::vertical().id_salt(("filmcraft_cloud_page", page == CloudPage::SaveAs)).max_height(body).show(ui, |ui| match page {
-            CloudPage::Open => open_page(app, ui),
-            CloudPage::SaveAs => {
-                close = save_page(app, ui);
-            }
-        });
+        egui::ScrollArea::vertical()
+            .id_salt(("filmcraft_cloud_page", page as u8))
+            .max_height(body)
+            .show(ui, |ui| match page {
+                CloudPage::Open | CloudPage::Import => open_page(app, ui),
+                CloudPage::SaveAs => {
+                    close = save_page(app, ui);
+                }
+            });
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

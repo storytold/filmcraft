@@ -151,13 +151,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let cloud_rect = Rect::from_min_max(pos2(cloud_left, rect.min.y + 4.0), pos2(cloud_right, rect.max.y - 4.0));
             if cloud_rect.width() > 32.0 {
                 let mut cu = ui.new_child(egui::UiBuilder::new().max_rect(cloud_rect).layout(egui::Layout::right_to_left(egui::Align::Center)));
-                // Account badge and collaborator presence (rightmost in the cloud cluster).
+                // Account badge, presence, and Share (Share stays visible whenever CollabCraft
+                // is connected; the control itself reports when sharing is unavailable).
                 crate::cloud::who(app, &mut cu);
-                // Share split button: only when the provider supports sharing.
-                if crate::cloud::shares(app) {
-                    cu.add_space(6.0);
-                    crate::cloud::share_button(app, &mut cu, &crate::cloud::copies());
-                }
+                cu.add_space(6.0);
+                crate::cloud::share_button(app, &mut cu, &crate::cloud::copies());
                 cloud_right = cloud_left;
             }
         }
