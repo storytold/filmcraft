@@ -137,6 +137,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     // CollabCraft cloud storage. Commands exist for invoke/control; File menu placement is
     // injected by `cloud_menu` only when a service is connected.
     uic!("file.cloudOpen", "Open from cloud…", [], None),
+    uic!("file.cloudImport", "Import from cloud…", [], None),
     uic!("file.cloudSaveAs", "Save as to cloud…", [], None),
     uic!("help.discord", "Join the ArtCraft Discord…", ["Help"], None),
     uic!("help.website", "ArtCraft Website", ["Help"], None),
@@ -576,6 +577,13 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         app.cloud_page = Some(crate::cloud::CloudPage::Open);
         return Ok(json!({"page": "open"}));
     }
+    if id == "file.cloudImport" {
+        if !crate::cloud::available(app) {
+            return Err(crate::cloud::UNAVAILABLE.into());
+        }
+        app.cloud_page = Some(crate::cloud::CloudPage::Import);
+        return Ok(json!({"page": "import"}));
+    }
     if id == "file.cloudSaveAs" {
         if !crate::cloud::available(app) {
             return Err(crate::cloud::UNAVAILABLE.into());
@@ -741,6 +749,14 @@ fn cloud_menu(items: &mut Vec<MenuItem>, app: &FilmcraftApp) {
             MenuItem {
                 id: "file.cloudOpen".into(),
                 label: app.ui.language.tr("Open from cloud…").to_string(),
+                path: path.clone(),
+                shortcut: None,
+                enabled: true,
+                checked: None,
+            },
+            MenuItem {
+                id: "file.cloudImport".into(),
+                label: app.ui.language.tr("Import from cloud…").to_string(),
                 path: path.clone(),
                 shortcut: None,
                 enabled: true,
@@ -1141,15 +1157,19 @@ mod tests {
 
         let no_cloud = FilmcraftApp::new(filmcraft_engine::Session::default());
         let items = menu_items(&no_cloud);
-        assert!(items.iter().all(|it| it.id != "file.cloudOpen" && it.id != "file.cloudSaveAs"), "cloud entries must be absent without a backend");
+        assert!(
+            items.iter().all(|it| !matches!(it.id.as_str(), "file.cloudOpen" | "file.cloudImport" | "file.cloudSaveAs")),
+            "cloud entries must be absent without a backend"
+        );
 
         let mut with_cloud = FilmcraftApp::new(filmcraft_engine::Session::default());
         with_cloud.cloud.connect(Noop);
         let items = menu_items(&with_cloud);
         let open_at = items.iter().position(|it| it.id == "file.open").expect("Open Project");
         let cloud_open = items.iter().position(|it| it.id == "file.cloudOpen").expect("Open from cloud");
+        let cloud_import = items.iter().position(|it| it.id == "file.cloudImport").expect("Import from cloud");
         let cloud_save = items.iter().position(|it| it.id == "file.cloudSaveAs").expect("Save as to cloud");
-        assert!(cloud_open > open_at && cloud_save > cloud_open, "cloud entries sit after Open Project / Open Recent");
+        assert!(cloud_open > open_at && cloud_import > cloud_open && cloud_save > cloud_import);
     }
 
     #[test]

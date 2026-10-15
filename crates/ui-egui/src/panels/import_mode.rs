@@ -19,29 +19,32 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         t.text_dim,
     );
     let ctx = ui.ctx().clone();
-    let cards = [
-        (tl!("Browse files…"), "file.import", tl!("Movies, audio and stills from disk")),
-        (tl!("Demo footage"), "file.importDemoFootage", tl!("Six procedural 1080p clips with sound")),
-        (tl!("Demo project"), "file.openDemoProject", tl!("A cut sequence with transitions, effects and music")),
-        (tl!("Bars and Tone"), "file.newBarsAndTone", tl!("SMPTE HD bars with 1 kHz reference tone")),
+    let mut cards: Vec<(&str, &str, &str, crate::icons::Icon)> = vec![
+        (tl!("Browse files…"), "file.import", tl!("Movies, audio and stills from disk"), crate::icons::Icon::Folder),
+        (tl!("Demo footage"), "file.importDemoFootage", tl!("Six procedural 1080p clips with sound"), crate::icons::Icon::Film),
+        (tl!("Demo project"), "file.openDemoProject", tl!("A cut sequence with transitions, effects and music"), crate::icons::Icon::Sequence),
+        (tl!("Bars and Tone"), "file.newBarsAndTone", tl!("SMPTE HD bars with 1 kHz reference tone"), crate::icons::Icon::Grid),
     ];
+    if crate::cloud::available(app) {
+        cards.insert(
+            1,
+            (tl!("Import from cloud…"), "file.cloudImport", tl!("Movies, audio and stills from CollabCraft"), crate::icons::Icon::Globe),
+        );
+    }
     let cw = 260.0;
-    for (i, (title, cmd, sub)) in cards.iter().enumerate() {
+    for (i, (title, cmd, sub, icon)) in cards.iter().enumerate() {
         let r = Rect::from_min_size(rect.min + vec2(24.0 + i as f32 * (cw + 16.0), 90.0), vec2(cw, 150.0));
         let resp = ui.interact(r, egui::Id::new(("imp", *cmd)), Sense::click());
         app.auto.add(&format!("import.{cmd}"), r, title);
         ui.painter().rect_filled(r, 8.0, if resp.hovered() { t.hover } else { t.tl_header_bg });
         ui.painter().text(r.min + vec2(16.0, 110.0), Align2::LEFT_CENTER, *title, Tokens::semibold(14.0), t.text);
         ui.painter().text(r.min + vec2(16.0, 132.0), Align2::LEFT_CENTER, *sub, Tokens::ui(11.5), t.text_dim);
-        crate::icons::paint(
-            ui.painter(),
-            Rect::from_min_size(r.min + vec2(16.0, 18.0), vec2(56.0, 56.0)),
-            [crate::icons::Icon::Folder, crate::icons::Icon::Film, crate::icons::Icon::Sequence, crate::icons::Icon::Grid][i],
-            Color32::from_rgb(140, 150, 255),
-        );
+        crate::icons::paint(ui.painter(), Rect::from_min_size(r.min + vec2(16.0, 18.0), vec2(56.0, 56.0)), *icon, Color32::from_rgb(140, 150, 255));
         if resp.clicked() {
             let _ = crate::menus::invoke(app, &ctx, cmd, json!({}));
-            app.ui.mode = crate::state::Mode::Edit;
+            if *cmd != "file.cloudImport" {
+                app.ui.mode = crate::state::Mode::Edit;
+            }
         }
     }
     let y = recent(app, ui, rect, 90.0 + 150.0 + 36.0);
