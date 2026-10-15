@@ -326,7 +326,7 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         }
         // The share dialog's backend. Separate from the Open/Save worker so a save does not
         // hold up an autocomplete or a share notification. They share the saved session.
-        app.share.connect(collabcraft_share::CollabCraft::from_fn(cloud::client));
+        app.share.connect(collabcraft_share::CollabCraft::from_fn(cloud::client).for_app("filmcraft"));
         app.hooks.raise_without_focus = Some(Box::new(|| {
             window_raise::raise_without_focus();
         }));

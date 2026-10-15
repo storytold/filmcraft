@@ -80,10 +80,10 @@ craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "289d562cc6e
 # names: buildable for the web and testable with no service.
 craft-cloud = { git = "https://github.com/storytold/craft-libs", rev = "289d562cc6e8b567819aee51f759a78f41a65454" }
 # HTTP transport to CollabCraft. No provider credential or URL compiled in.
-craft-cloud-client = { git = "https://github.com/wdunn001/collab-craft", rev = "80bfaec" }
+craft-cloud-client = { git = "https://github.com/wdunn001/collab-craft", rev = "3c77c3e" }
 # The share dialog's backend: the half that opens a socket to CollabCraft. craft-ui states the
 # work; this crate answers it. Lives in the host application because the session lives there.
-collabcraft-share = { git = "https://github.com/wdunn001/collab-craft", rev = "80bfaec" }
+collabcraft-share = { git = "https://github.com/wdunn001/collab-craft", rev = "3c77c3e" }
 egui = "0.36"
 eframe = { version = "0.36", default-features = false }
 egui_kittest = "0.36"
