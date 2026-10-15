@@ -218,10 +218,10 @@ impl CloudApp for FilmcraftApp {
     }
 
     fn active(&self) -> Option<u64> {
-        // FilmCraft tracks the open project as the session itself. There is at most one project
-        // per window. Use a stable 64-bit hash of the autosave path as the uid, falling back to
-        // a compile-time sentinel when no project is open (an empty session has no cloud target).
-        self.session.path.as_ref().map(|_| 1u64)
+        // One project per window. Addressable for cloud Save / Save As whether the project lives
+        // on disk or was opened from CollabCraft (open_bytes clears session.path so the title
+        // shows the cloud name).
+        Some(1u64)
     }
 
     fn title(&self, _uid: u64) -> String {
@@ -313,9 +313,7 @@ impl CloudApp for FilmcraftApp {
     }
 
     fn go_to_save_as(&mut self) {
-        // FilmCraft has no ribbon backstage. Show a status message that directs the user to
-        // the cloud.saveAs control channel command or the File menu.
-        self.ui.status = tl!("Save As: use File \u{203a} Save As or cloud.saveAs {folder, name} via the control channel").to_owned();
+        self.cloud_page = Some(CloudPage::SaveAs);
     }
 
     fn app_name(&self) -> &str {
@@ -347,5 +345,75 @@ impl CloudApp for FilmcraftApp {
             family: egui::FontFamily::Proportional,
             bold: egui::FontFamily::Name("semibold".into()),
         }
+    }
+}
+
+/// Which cloud page the File menu opened, if any.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloudPage {
+    Open,
+    SaveAs,
+}
+
+/// The Open and Save As pages as a modal over the editor, from File ▸ Open from cloud… /
+/// Save as to cloud….
+pub fn modal(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let Some(page) = app.cloud_page else { return };
+    let title = match page {
+        CloudPage::Open => tl!("Open from cloud"),
+        CloudPage::SaveAs => tl!("Save as to cloud"),
+    };
+    let mut close = false;
+    egui::Modal::new(egui::Id::new("filmcraft_cloud_page")).show(ctx, |ui| {
+        let margin = egui::Frame::popup(ui.style()).total_margin().sum();
+        let room = (ctx.content_rect().size() - margin - egui::vec2(16.0, 16.0)).max(egui::Vec2::splat(1.0));
+        let width = 680.0_f32.min(room.x);
+        ui.set_min_width(360.0_f32.min(width));
+        ui.set_max_width(width);
+        ui.label(egui::RichText::new(title).strong().size(16.0));
+        ui.add_space(10.0);
+        let body = (room.y - ui.min_size().y - 48.0).max(1.0);
+        egui::ScrollArea::vertical().id_salt(("filmcraft_cloud_page", page == CloudPage::SaveAs)).max_height(body).show(ui, |ui| match page {
+            CloudPage::Open => open_page(app, ui),
+            CloudPage::SaveAs => {
+                close = save_page(app, ui);
+            }
+        });
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(tl!("Close")).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    close = true;
+                }
+            });
+        });
+    });
+    if close {
+        app.cloud_page = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Noop;
+    impl CloudBackend for Noop {
+        fn submit(&self, _job: Job, _post: Post) {}
+    }
+
+    #[test]
+    fn go_to_save_as_opens_the_cloud_save_page() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.cloud.connect(Noop);
+        CloudApp::go_to_save_as(&mut app);
+        assert_eq!(app.cloud_page, Some(CloudPage::SaveAs));
+    }
+
+    #[test]
+    fn active_is_addressable_without_a_disk_path() {
+        let app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        assert!(app.session.path.is_none());
+        assert_eq!(CloudApp::active(&app), Some(1));
     }
 }

@@ -412,6 +412,8 @@ pub struct FilmcraftApp {
     /// should draw a lock overlay for ranges where `holder != our_identity`. Enforcement
     /// (refusing clip edits that intersect a foreign lock) requires the live collab session.
     pub cloud_locks: Vec<cloud::LockRange>,
+    /// Cloud Open / Save As page from the File menu, if any.
+    pub cloud_page: Option<cloud::CloudPage>,
 }
 
 pub struct GpuState {
@@ -635,6 +637,7 @@ impl FilmcraftApp {
             share: craft_ui::share::ShareDialog::new(),
             presence: craft_ui::presence::PresenceBar::new().badges_only(),
             cloud_locks: Vec::new(),
+            cloud_page: None,
         }
     }
 
@@ -2142,6 +2145,7 @@ impl eframe::App for FilmcraftApp {
         }
         self.error_window(ui.ctx());
         cloud::conflict_modal(self, ui.ctx());
+        cloud::modal(self, ui.ctx());
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| graphics_notice::show(self, ui.ctx()))).is_err() {
             // a broken notice must not take the session down: drop it
             self.graphics_notice = None;

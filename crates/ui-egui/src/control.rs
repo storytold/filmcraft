@@ -181,9 +181,8 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                     if !crate::cloud::available(app) {
                         return err(crate::cloud::UNAVAILABLE);
                     }
-                    // No folder/name: open the header area so the user can type one.
-                    // FilmCraft has no ribbon backstage; surface a toast.
-                    app.ui.status = "Type a Cloud folder and file name with cloud.saveAs {folder, name}".to_owned();
+                    // No folder/name: open the same Save As page as File ▸ Save as to cloud….
+                    app.cloud_page = Some(crate::cloud::CloudPage::SaveAs);
                     ok(crate::cloud::status(app))
                 }
             }
