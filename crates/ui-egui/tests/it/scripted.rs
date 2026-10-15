@@ -598,6 +598,9 @@ fn eyedropper_picks_a_key_color_on_a_selected_clip() {
     d.exec("effects.apply", json!({"effect": "Color Key"}));
     d.ok("ui.panel.show", json!({"panel": "EffectControls"}));
     d.frames(4);
+    // fold Time Remapping so the Color Key rows are on screen in the test window
+    d.ok("ui.click", json!({"id": "effectControls.effect.time_remap.twirl"}));
+    d.frames(2);
     let color = |d: &mut Driver| {
         let seq = d.sequence();
         seq["video"][0]["items"][0]["effects"].as_array().unwrap().iter().find(|e| e["effect"] == "color_key").unwrap()["params"]["color"]["value"].clone()

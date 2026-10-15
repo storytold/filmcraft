@@ -49,6 +49,9 @@ pub fn gain_at(it: &TrackItem, t: Tick) -> f32 {
 
 /// Timeline time of media time `m`, the inverse of [`TrackItem::moving_source_time_at`].
 fn timeline_time(it: &TrackItem, m: Tick) -> Tick {
+    if it.is_remapped() {
+        return it.timeline_time_of(m);
+    }
     let rel = if it.reverse { it.source_out().0.saturating_sub(1).saturating_sub(m.0) } else { m.0.saturating_sub(it.source_in.0) };
     Tick(it.start.0.saturating_add((rel as f64 / it.speed.abs().max(1e-6)).round() as i64))
 }

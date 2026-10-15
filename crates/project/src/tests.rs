@@ -409,3 +409,23 @@ fn sequence_display_format_round_trips_and_old_files_load_as_timecode() {
     let old: SequenceSettings = serde_json::from_value(v).unwrap();
     assert_eq!(old.display, TimeDisplay::Timecode);
 }
+
+#[test]
+fn held_filters_keep_exact_values_between_remapped_keyframes() {
+    let (mut project, item, _) = demo_project();
+    let rate = FrameRate::FPS_24;
+    let mut clip = project.make_track_item(item, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(96)), rate).unwrap();
+    let s = TICKS_PER_SECOND;
+    let speed = clip.effect_mut("time_remap").unwrap().param_mut("speed").unwrap();
+    speed.put_keyframe(Tick::ZERO, ParamValue::Float(100.0));
+    speed.put_keyframe(Tick(2 * s), ParamValue::Float(200.0));
+    let held = Tick(s);
+    let nearby = held + Tick(rate.frame_duration().0 / 8);
+    let mut opacity = Param::new(ParamValue::Float(0.0));
+    opacity.put_keyframe(nearby, ParamValue::Float(100.0));
+    assert_eq!(clip.keyframe_near(&opacity, held, rate.frame_duration()), Some(nearby));
+    clip.frame_hold = Some(held);
+    clip.hold_filters = true;
+    assert_eq!(clip.keyframe_near(&opacity, held, rate.frame_duration()), None);
+    assert_eq!(clip.keyframe_near(&opacity, nearby, rate.frame_duration()), Some(nearby));
+}

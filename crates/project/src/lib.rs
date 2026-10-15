@@ -25,6 +25,7 @@ pub mod mask;
 pub mod mixer;
 pub mod multicam;
 pub mod narration;
+pub mod time_remap;
 pub mod transcript;
 pub mod vtransition;
 
@@ -45,6 +46,7 @@ pub use mask::{Mask, MaskMode, MaskPath, MaskVertex, TrackMethod};
 pub use mixer::{AutomationMode, InputMap, MixerStrip, TrackSend};
 pub use multicam::{Camera, MergedClip, MulticamAudio, MulticamSel, MulticamSource};
 pub use narration::{Narration, VocalPitch};
+pub use time_remap::TimeMap;
 pub use transcript::{Speaker, Transcript, Word};
 
 macro_rules! id_type {
@@ -73,7 +75,7 @@ pub use sequence::{
 pub use settings::{IngestAction, IngestSettings, ProjectSettings, ScratchDisks};
 pub use source::resolve_auto_points;
 pub use track::{
-    AudioChannels, FieldOptions, FieldProcessing, Marker, MarkerKind, TimeInterpolation, Track, TrackItem, TrackKind, Transition, TransitionAlign,
+    AudioChannels, FieldOptions, FieldProcessing, Marker, MarkerKind, SourceClock, TimeInterpolation, Track, TrackItem, TrackKind, Transition, TransitionAlign,
 };
 pub use view::{MAX_LUT_TEXT_BYTES, ProjectLut, ProjectView, SequenceView};
 id_type!(ItemId);

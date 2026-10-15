@@ -58,7 +58,7 @@ fn continuous(a: &TrackItem, b: &TrackItem) -> bool {
         && a.item == b.item
         && a.multicam.is_some()
         && a.multicam == b.multicam
-        && a.speed == b.speed
+        && (a.speed == b.speed || a.is_remapped())
         && !a.reverse
         && !b.reverse
         && a.frame_hold.is_none()
@@ -155,7 +155,7 @@ pub fn record(seq: &mut Sequence, tracks: &[TrackId], source: ItemId, cuts: &[Cu
 /// Inner links are remapped through `links` (so a flattened video/audio pair stays linked).
 /// Fails for clips with a speed change, reverse or frame hold (no exact flattening).
 pub fn flatten_items(outer: &TrackItem, source_track: &Track, ctx: &mut EditCtx, links: &mut HashMap<u64, u64>) -> Result<Vec<TrackItem>> {
-    if (outer.speed - 1.0).abs() > 1e-9 || outer.reverse || outer.frame_hold.is_some() {
+    if (outer.speed - 1.0).abs() > 1e-9 || outer.is_remapped() || outer.reverse || outer.frame_hold.is_some() {
         return Err(EditError::Other("can't flatten a clip with a speed change, reverse or frame hold".into()));
     }
     let (s0, s1) = (outer.source_in, outer.source_out());
@@ -164,7 +164,7 @@ pub fn flatten_items(outer: &TrackItem, source_track: &Track, ctx: &mut EditCtx,
         let mut it = ni.clone();
         if it.start < s0 {
             let cut = s0 - it.start;
-            it.source_in += Tick((cut.0 as f64 * it.speed.abs()).round() as i64);
+            it.source_in = it.media_after(it.source_in, cut);
             it.duration -= cut;
             it.start = s0;
         }

@@ -1002,3 +1002,36 @@ fn a_stretched_clip_aligns_on_the_channels_it_plays() {
     both.source_channels = vec![0, 1];
     assert!(stretched(&both, &ltc, 60_000, 4_800, 1024)[1].iter().any(|s| s.abs() > 0.5));
 }
+
+/// Time Remapping on a sound (the copy its picture's curve leaves on it): every sample plays the
+/// source where the speed curve puts it, so it speeds up and slows down, pitch and all.
+#[test]
+fn a_time_remapped_clip_plays_along_its_speed_curve() {
+    let (mut p, outer, map, tone) = nested_tone(48_000);
+    // the inner sequence's tone clip, ramped from 100 % (at 1 s of media) to 300 % (at 3 s), and
+    // played directly in the outer sequence
+    let inner = p.sequences().find(|i| i.name == "inner").map(|i| i.id).unwrap();
+    let mut clip = p.sequence(inner).unwrap().audio_tracks[0].items[0].clone();
+    let mut tr = filmcraft_project::effect::find_effect("time_remap").unwrap().instance();
+    let speed = tr.param_mut("speed").unwrap();
+    speed.put_keyframe(Tick(TICKS_PER_SECOND), ParamValue::Float(100.0));
+    speed.put_keyframe(Tick(3 * TICKS_PER_SECOND), ParamValue::Float(300.0));
+    clip.effects.push(tr);
+    clip.duration = Tick(4 * TICKS_PER_SECOND);
+    p.sequence_mut(outer).unwrap().audio_tracks[0].items = vec![clip.clone()];
+    let clock = clip.source_clock();
+    for start in [0, 48_000 + 17, 48_000 * 2 + 5, 48_000 * 3 + 999] {
+        let mix = mix_graph(&p, p.sequence(outer).unwrap(), start, 4800, &map, None);
+        let w = worst(&mix, start, 0, |t| tone.at(clock.at(Tick((t * TICKS_PER_SECOND as f64).round() as i64)).seconds()));
+        assert!(w < 0.02, "at sample {start}: off by {w}");
+    }
+    // a reversed ramp plays it backwards
+    let rev = &mut p.sequence_mut(outer).unwrap().audio_tracks[0].items[0];
+    rev.reverse = true;
+    let clip = rev.clone();
+    let clock = clip.source_clock();
+    let start = 48_000 + 321;
+    let mix = mix_graph(&p, p.sequence(outer).unwrap(), start, 4800, &map, None);
+    let w = worst(&mix, start, 0, |t| tone.at(clock.at(Tick((t * TICKS_PER_SECOND as f64).round() as i64)).seconds()));
+    assert!(w < 0.02, "reversed: off by {w}");
+}

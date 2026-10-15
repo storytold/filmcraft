@@ -37,6 +37,9 @@ const PROPS_VALUE_R: f32 = PROPS_NAV_X + NAV_STEP + 12.0;
 
 /// Timeline time at which the clip shows media time `m` (where a keyframe sits in the sequence).
 fn timeline_time_of(it: &TrackItem, m: Tick) -> Tick {
+    if it.is_remapped() {
+        return it.timeline_time_of(m);
+    }
     let offset = if it.reverse { it.source_out() - m - Tick(1) } else { m - it.source_in };
     it.start + Tick((offset.0 as f64 / it.speed.abs().max(1e-6)).round() as i64)
 }
@@ -274,6 +277,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             for idx in order {
                 let e = &it.effects[idx];
                 let Some(def) = e.def() else { continue };
+                // a sound's copy of its picture's Time Remapping follows the picture's and is edited there
+                if *kind == TrackKind::Audio && def.kind == filmcraft_project::EffectKind::Video {
+                    continue;
+                }
                 // the first effect added from the library after the fixed ones gets a line on top
                 // (#2328); drawn on its edge, so no row moves
                 let first_added = if def.intrinsic {
@@ -540,10 +547,15 @@ fn keyframe_nav(
     actions: &mut Vec<(String, Value)>,
 ) -> bool {
     let t = app.tokens;
+    // (a remapped clip's playhead can sit a hair off the keyframe it is on)
+    let frame = app.session.active_sequence().map_or(Tick(1), |q| q.settings.frame_rate.frame_duration());
+    let on_key = param.and_then(|p| it.keyframe_near(p, mt, frame));
+    let from = on_key.unwrap_or(mt);
     if let Some(param) = param.filter(|p| p.is_animated()) {
-        for (d, target, name, tip) in
-            [(-1.0, param.prev_keyframe(mt), "prevKeyframe", "Go to previous keyframe"), (1.0, param.next_keyframe(mt), "nextKeyframe", "Go to next keyframe")]
-        {
+        for (d, target, name, tip) in [
+            (-1.0, param.prev_keyframe(from), "prevKeyframe", "Go to previous keyframe"),
+            (1.0, param.next_keyframe(from), "nextKeyframe", "Go to next keyframe"),
+        ] {
             // the arrows almost the row's height to click, as Premiere's
             let r = Rect::from_center_size(at + vec2(d * NAV_STEP, 0.0), vec2(14.0, 20.0));
             let resp = ui.interact(r, id.with(name), Sense::click()).on_hover_text(crate::i18n::t(tip));
@@ -554,13 +566,22 @@ fn keyframe_nav(
             if resp.clicked()
                 && let Some(k) = target
             {
-                actions.push(("playhead.set".into(), json!({"time": timeline_time_of(it, k).0})));
+                // a remapped clip's keyframes sit between frames: the playhead (which snaps to frames)
+                // goes to the nearest one, within half a frame of the keyframe, so it is on it
+                let mut at = timeline_time_of(it, k);
+                if it.is_remapped()
+                    && let Some(rate) = app.session.active_sequence().map(|q| q.settings.frame_rate)
+                    && it.range().contains(rate.snap_nearest(at))
+                {
+                    at = rate.snap_nearest(at);
+                }
+                actions.push(("playhead.set".into(), json!({"time": at.0})));
             }
         }
     }
     let r = Rect::from_center_size(at, vec2(15.0, 15.0));
     let resp = ui.interact(r.expand(1.5), id.with("key"), Sense::click()).on_hover_text(crate::i18n::t(tip));
-    if param.is_some_and(|p| p.keyframes.iter().any(|k| k.time == mt)) {
+    if on_key.is_some() {
         icons::paint(ui.painter(), r, Icon::Keyframe, t.hot_text);
     } else {
         let s = 4.7;
@@ -713,7 +734,9 @@ pub(crate) fn param_row(
             actions.push(("effects.resetParam".into(), json!({"clip": clip.0, "effect": idx, "param": pd.id})));
         }
     }
-    let value = param.value_at(mt);
+    // on a keyframe (on a remapped clip, a hair off it), its value: a drag carries on from it
+    let frame = app.session.active_sequence().map_or(Tick(1), |q| q.settings.frame_rate.frame_duration());
+    let value = param.value_at(it.keyframe_near(param, mt, frame).unwrap_or(mt));
     let mut vui = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(Rect::from_min_max(pos2(vx, r.min.y + 1.0), pos2(r.max.x - 26.0, r.max.y - 1.0)))
@@ -794,8 +817,9 @@ fn param_value_widget(
     match (&pd.kind, value) {
         (ParamKind::Float { min, max, soft_min, soft_max, unit, decimals }, ParamValue::Float(v)) => {
             let speed = ((soft_max - soft_min) / 400.0).max(0.01);
-            let (_, nv) =
+            let (resp, nv) =
                 crate::widgets::hot_number(vui, crate::i18n::t(pd.label), id, *v, HotNumberOptions::new(speed, (*min, *max), *decimals as usize, unit, &t));
+            app.auto.add(&format!("effectControls.{}.{}.value", e.effect, pkey), resp.rect, crate::i18n::t(pd.label));
             if let Some(nv) = nv {
                 set = Some(json!(nv));
             }
@@ -1367,6 +1391,33 @@ fn graph_components(v: &ParamValue) -> Vec<f64> {
     }
 }
 
+/// The velocity graph's samples: each pair of neighbouring value samples differentiated per second
+/// of *media*, the media each sample stands for being `media[i]` (see [`graph_rows`]). A point's
+/// velocity is the speed along its path, a scalar's its rate of change.
+///
+/// A clip that is not Time Remapped samples its parameter at equal media steps, so every pair
+/// divides by the same one. On a remapped clip the graph's samples sit one timeline step apart, so
+/// along a speed ramp they cover different amounts of media: the pair covering 4x the media of
+/// another is not 4x as fast, and dividing both by one average step read it as if it were.
+fn graph_velocities(vals: &[Vec<f64>], media: &[Tick]) -> Vec<f64> {
+    let secs = |i: usize| {
+        let ticks = media.get(i + 1).zip(media.get(i)).map_or(0, |(b, a)| b.0.abs_diff(a.0));
+        (ticks as f64 / filmcraft_time::TICKS_PER_SECOND as f64).max(1e-9)
+    };
+    vals.windows(2)
+        .enumerate()
+        .map(|(i, w)| {
+            let [a, b] = w else { return 0.0 };
+            let secs = secs(i);
+            let d: Vec<f64> = a.iter().zip(b).map(|(a, b)| (b - a) / secs).collect();
+            match d.as_slice() {
+                [v] => *v,
+                d => d.iter().map(|v| v * v).sum::<f64>().sqrt(),
+            }
+        })
+        .collect()
+}
+
 /// Value and velocity graphs of an animated scalar or point parameter, drawn across the keyframe
 /// lane. A point draws an X and a Y curve, and its velocity graph is the speed along its path.
 /// Keyframes drag vertically (value); Bezier influence handles drag horizontally.
@@ -1390,11 +1441,19 @@ pub(crate) fn graph_rows(
     row_line(ui, velr, lane, &t);
     let speed = it.speed.abs().max(1e-6);
     let dur = it.duration.0.max(1) as f64;
-    let to_media = |f: f64| it.source_in + Tick((f * dur * speed) as i64);
+    // a remapped clip's media runs along its speed curve (built once for the whole graph)
+    let map = it.time_map();
+    let to_media = |f: f64| match &map {
+        Some(m) => m.advance(it.source_in, Tick((f * dur) as i64)),
+        None => it.source_in + Tick((f * dur * speed) as i64),
+    };
     let x_of = |f: f32| lane.min.x + f * lane.width();
     // samples: one row of curve values per sample (a point's NaN "auto" coordinate is skipped)
     let n = (lane.width() / 2.0).max(8.0) as usize;
-    let vals: Vec<Vec<f64>> = (0..=n).map(|i| graph_components(&param.value_at(to_media(i as f64 / n as f64)))).collect();
+    // the media each sample stands for: a ramped clip's samples sit a constant timeline step apart,
+    // so they cover different amounts of media (see `graph_velocities`)
+    let media: Vec<Tick> = (0..=n).map(|i| to_media(i as f64 / n as f64)).collect();
+    let vals: Vec<Vec<f64>> = media.iter().map(|m| graph_components(&param.value_at(*m))).collect();
     let curves = graph_components(&param.value).len();
     let at_keys: Vec<Vec<f64>> = param.keyframes.iter().map(|k| graph_components(&k.value)).collect();
     let (mut lo, mut hi) = vals.iter().chain(&at_keys).flatten().filter(|v| v.is_finite()).fold((f64::MAX, f64::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
@@ -1444,19 +1503,9 @@ pub(crate) fn graph_rows(
             vals.iter().enumerate().filter_map(|(i, v)| v.get(c).filter(|v| v.is_finite()).map(|v| pos2(x_of(i as f32 / n as f32), y_of(*v)))).collect();
         p.add(egui::Shape::line(line, Stroke::new(1.5, curve_color(c))));
     }
-    // velocity (units per second, derivative of the sampled value; a point's speed along its path)
-    let secs = (dur * speed / filmcraft_time::TICKS_PER_SECOND as f64 / n as f64).max(1e-9);
-    let vel: Vec<f64> = vals
-        .windows(2)
-        .map(|w| {
-            let [a, b] = w else { return 0.0 };
-            let d: Vec<f64> = a.iter().zip(b).map(|(a, b)| (b - a) / secs).collect();
-            match d.as_slice() {
-                [v] => *v,
-                d => d.iter().map(|v| v * v).sum::<f64>().sqrt(),
-            }
-        })
-        .collect();
+    // velocity (units per second of media, the derivative of the sampled value; a point's speed
+    // along its path)
+    let vel = graph_velocities(&vals, &media);
     let vmax = vel.iter().filter(|v| v.is_finite()).fold(1e-6f64, |a, v| a.max(v.abs())) * 1.15;
     let varea = Rect::from_min_max(pos2(lane.min.x, velr.min.y + 2.0), pos2(lane.max.x, velr.max.y - 4.0));
     p.rect_filled(varea, 0.0, t.keyframe_plot_bg);
@@ -1492,7 +1541,12 @@ fn draw_graph_keyframes(
     let t = app.tokens;
     let speed = it.speed.abs().max(1e-6);
     let dur = it.duration.0.max(1) as f64;
-    let to_f = |m: Tick| ((m - it.source_in).0 as f64 / speed / dur) as f32;
+    // a remapped clip's keyframes sit along its speed curve, where its graphed values are sampled
+    let map = it.time_map();
+    let to_f = |m: Tick| match &map {
+        Some(map) => (map.span(it.source_in, m) / dur) as f32,
+        None => ((m - it.source_in).0 as f64 / speed / dur) as f32,
+    };
     let x_of = |f: f32| lane.min.x + f * lane.width();
     let y_of = |v: f64| area.max.y - ((v - lo) / (hi - lo)) as f32 * area.height();
     let v_of = |y: f32| lo + ((area.max.y - y) / area.height()) as f64 * (hi - lo);
@@ -1978,6 +2032,43 @@ mod graph_drag_tests {
         assert!(new.x > old.x, "dragging the X keyframe up raises X: {old:?} -> {new:?}");
         assert_eq!(new.y, old.y);
         assert_eq!(changed.keyframes[1], before.keyframes[1]);
+    }
+
+    /// #510 follow-up: the velocity graph divides each pair of samples by the media that pair covers.
+    /// On a Time Remapped clip the samples sit one timeline step apart, so along a speed ramp they
+    /// cover different amounts of media; a value that rises evenly with the media is the same speed
+    /// everywhere, which one average step for the whole clip (the rate of the clip) used to miss.
+    #[test]
+    fn the_velocity_graph_divides_by_the_media_each_sample_covers() {
+        const S: i64 = filmcraft_time::TICKS_PER_SECOND;
+        // 400 % down to 100 % over a second of media, so the clip plays it in less than that
+        let mut speed = Param::new(ParamValue::Float(100.0));
+        speed.put_keyframe(Tick(0), ParamValue::Float(400.0));
+        speed.put_keyframe(Tick(S), ParamValue::Float(100.0));
+        let map = filmcraft_project::TimeMap::from_param(&speed).expect("a keyframed speed curve");
+        // the graph's samples, as `graph_rows` takes them: a constant timeline step from the clip's In
+        let (n, dur) = (240usize, S);
+        let media: Vec<Tick> = (0..=n).map(|i| map.advance(Tick(0), Tick(dur * i as i64 / n as i64))).collect();
+        // the media those samples cover really does differ, by about the ratio of the ramp's ends
+        let steps: Vec<u64> = media.windows(2).map(|w| w[1].0.abs_diff(w[0].0)).collect();
+        let (first, last) = (steps.first().copied().unwrap_or(0), steps.last().copied().unwrap_or(0));
+        assert!(first > last * 2, "a 400 % -> 100 % ramp covers {first} media ticks per sample at first and {last} at last");
+        // a value rising one unit per second of media: 1 unit/s at every sample, fast end or slow
+        let vals: Vec<Vec<f64>> = media.iter().map(|m| vec![m.seconds()]).collect();
+        for (i, v) in graph_velocities(&vals, &media).iter().enumerate() {
+            assert!((v - 1.0).abs() < 1e-6, "sample {i} of {n}: {v} units/s (media {:?})", media[i]);
+        }
+        // a point moving one unit per second in each axis travels sqrt(2) units/s along its path
+        let diagonal: Vec<Vec<f64>> = media.iter().map(|m| vec![m.seconds(), m.seconds()]).collect();
+        for (i, v) in graph_velocities(&diagonal, &media).iter().enumerate() {
+            assert!((v - std::f64::consts::SQRT_2).abs() < 1e-6, "sample {i}: {v} units/s along the path");
+        }
+        // a clip whose samples do cover equal media reads the slope it always did
+        let even: Vec<Tick> = (0..=n).map(|i| Tick(dur * i as i64 / n as i64)).collect();
+        let rising: Vec<Vec<f64>> = even.iter().map(|m| vec![2.0 * m.seconds()]).collect();
+        for (i, v) in graph_velocities(&rising, &even).iter().enumerate() {
+            assert!((v - 2.0).abs() < 1e-6, "sample {i}: {v} units/s over equal media steps");
+        }
     }
 }
 

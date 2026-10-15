@@ -769,17 +769,20 @@ pub fn render_clip(
     item_layer(project, seq, item, t, opts, sources, &tc).map(|(img, _, _)| img)
 }
 
-/// Frame Blending / Optical Flow on a speed-changed clip, or on media whose frame rate differs from
-/// the sequence's (24 fps on 29.97 at 100 %): the later source frame to mix in and its weight
-/// (0..1) at timeline `t`, or None when the exact media time falls on a source frame (or the clip
-/// plays at 100 % at the sequence's rate, is frame-held, or uses Frame Sampling), or when the later
-/// frame lies past the clip's source out. Frame Blending cross-fades the two frames; Optical Flow
-/// synthesises the in-between frame from their motion ([`flow`]).
+/// Frame Blending / Optical Flow on a speed-changed or time-remapped clip, or on media whose frame
+/// rate differs from the sequence's (24 fps on 29.97 at 100 %): the later source frame to mix in and
+/// its weight (0..1) at timeline `t`, or None when the exact media time falls on a source frame (or
+/// the clip plays at 100 % at the sequence's rate without Time Remapping, is frame-held, or uses
+/// Frame Sampling), or when the later frame lies past the clip's source out. Frame Blending
+/// cross-fades the two frames; Optical Flow synthesises the in-between frame from their motion
+/// ([`flow`]).
 pub fn interpolation_blend(item: &TrackItem, t: Tick, src_rate: filmcraft_time::FrameRate, seq_rate: filmcraft_time::FrameRate) -> Option<(Tick, f32)> {
     if item.time_interpolation == filmcraft_project::TimeInterpolation::FrameSampling || item.frame_hold.is_some() {
         return None;
     }
-    if (item.speed.abs() - 1.0).abs() < 1e-9 && src_rate.frame_duration() == seq_rate.frame_duration() {
+    // at full speed and the sequence's own rate the media time lands on source frames: nothing to
+    // mix in (a Time Remapped clip plays off that grid even when its average speed is 100 %)
+    if (item.speed.abs() - 1.0).abs() < 1e-9 && src_rate.frame_duration() == seq_rate.frame_duration() && !item.is_remapped() {
         return None;
     }
     let mt = item.source_time_at(t);

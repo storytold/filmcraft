@@ -219,6 +219,8 @@ fn effect_controls_lut_browse_imports_and_sets_in_one_undo_step() {
     d.ok("ui.set", json!({"focused": "EffectControls"}));
     d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
     d.frames(4);
+    // Keep this LUT-menu test independent of the extra Time Remapping controls above it.
+    d.click("effectControls.effect.time_remap.twirl");
     let luts = |d: &mut Driver| d.harness.state().session.project.luts.len();
     let before = luts(&mut d);
     d.click("effectControls.lumetri.input_lut");
