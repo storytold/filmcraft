@@ -206,7 +206,7 @@ async fn modern_clients_get_result_type_and_cache_hints() {
 
 /// docs/agents.md § Long exports: a blocking export reports `notifications/progress` for its
 /// token (none without one), answers `ping` meanwhile, and `notifications/cancelled` stops
-/// it, deletes the partial file and sends no response.
+/// it, retains output whose ownership is unconfirmed and sends no response.
 #[tokio::test(flavor = "multi_thread")]
 async fn export_progress_and_cancel() {
     let dir = std::env::temp_dir().join(format!("filmcraft-mcp-progress-{}", std::process::id()));
@@ -267,51 +267,48 @@ async fn export_progress_and_cancel() {
         pong = false;
     }
     assert!(notes >= 2 && pong, "{notes} notifications, ping answered during the export: {pong}");
-    // cancel after the first notification: no response, no partial file
+    // Wait for an actual output artifact before cancellation. Completion is observed
+    // through jobs.list, never inferred from removal of an ownership-unconfirmed file.
     c.send(&export(4, "b.mp4", Some(json!(7)), 20.0)).await;
-    loop {
-        let m = c.next().await;
-        assert_ne!(m["id"], 4, "finished before the cancel: {m}");
-        if m["method"] == "notifications/progress" {
-            break;
+    let partial = dir.join("b.mp4");
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let m = c.next().await;
+            assert_ne!(m["id"], 4, "finished before the cancel: {m}");
+            if m["method"] == "notifications/progress" && partial.exists() {
+                break;
+            }
         }
-    }
-    c.send(r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":4}}"#).await;
-    // The export stops at its next frame, which a slow machine (software rendering in a CI
-    // container) can be well into: wait until the job has finished, not for a fixed time.
-    let (t0, mut id) = (std::time::Instant::now(), 100u64);
-    let last = loop {
-        id += 1;
-        c.send(&json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"command_run","arguments":{"id":"jobs.list"}}}).to_string()).await;
-        let m = loop {
+        c.send(r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":4}}"#).await;
+        loop {
+            c.send(r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"command_run","arguments":{"id":"jobs.list"}}}"#).await;
+            let m = loop {
+                let m = c.next().await;
+                assert_ne!(m["id"], 4, "no response for a cancelled request: {m}");
+                if m["id"] == 5 {
+                    break m;
+                }
+            };
+            let jobs: Value = serde_json::from_str(m["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+            let last = jobs.as_array().and_then(|a| a.last()).cloned().unwrap_or_default();
+            if last["finished"] == true {
+                assert_eq!(last["result"]["error"], "cancelled", "{jobs}");
+                assert!(partial.exists(), "output with unconfirmed ownership must be retained");
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        c.send(r#"{"jsonrpc":"2.0","id":6,"method":"ping"}"#).await;
+        loop {
             let m = c.next().await;
             assert_ne!(m["id"], 4, "no response for a cancelled request: {m}");
-            if m["id"] == id {
-                break m;
+            if m["id"] == 6 {
+                break;
             }
-        };
-        let jobs: Value = serde_json::from_str(m["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
-        let last = jobs.as_array().and_then(|a| a.last()).cloned().unwrap_or_default();
-        if last["finished"] == true {
-            break last;
         }
-        assert!(t0.elapsed().as_secs() < 30, "the cancelled export is still running: {jobs}");
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    };
-    assert_eq!(last["result"]["error"], "cancelled", "{last}");
-    while dir.join("b.mp4").exists() {
-        assert!(t0.elapsed().as_secs() < 30, "partial file still there");
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    // and still no response for the cancelled request
-    c.send(r#"{"jsonrpc":"2.0","id":5,"method":"ping"}"#).await;
-    loop {
-        let m = c.next().await;
-        assert_ne!(m["id"], 4, "no response for a cancelled request: {m}");
-        if m["id"] == 5 {
-            break;
-        }
-    }
+    })
+    .await
+    .expect("cancelled export must reach an observed terminal job state within 30 seconds");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -137,9 +137,11 @@ progress and stop it:
 - With `"_meta": {"progressToken": T}` on the `tools/call`, the server sends
   `notifications/progress` `{progressToken: T, progress: <frames done>, total: <frames>, message:
   <job status>}` at most every 100 ms while frames advance. Without a token it sends none.
-- `notifications/cancelled` for the request stops the encode at the next batch (`jobs.cancel`),
-  deletes the partial output (the movie, or the frames and caption sidecar written so far) and sends
-  no response, as the MCP cancellation utility asks.
+- `notifications/cancelled` for the request asks the encode to stop at the next batch
+  (`jobs.cancel`) and waits for its terminal result. It sends no response, as the MCP cancellation
+  utility asks. Output files are retained because the job result does not establish which files
+  that job owns; a filename and modification time can match another completed export. Check
+  retained files before removing incomplete output manually.
 - Without `wait` the command returns `{job, path, poll: "jobs.list", cancel: "jobs.cancel"}` at
   once: poll `jobs.list` for the job's `progress`, `etaSeconds`, `finished` and `result`, and stop it
   with `jobs.cancel` (`export.queue.list` lists the Export Queue only, not direct exports, #1544). Other exports (`file.exportFrame`, interchange formats, …) finish quickly and

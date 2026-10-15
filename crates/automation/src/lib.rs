@@ -12,7 +12,9 @@
 
 pub mod bridge;
 pub mod long_job;
+mod request_lifecycle;
 pub mod server;
+mod stdio_input;
 
 pub use bridge::BridgeClient;
 pub use server::FilmcraftMcp;
