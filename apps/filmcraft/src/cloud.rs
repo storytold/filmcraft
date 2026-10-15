@@ -314,7 +314,7 @@ fn remember_account(subject: &str, display: &str) {
 /// even for an instant.
 fn write_session_to(path: &Path, value: &serde_json::Value) -> std::io::Result<()> {
     use std::io::Write as _;
-    let text = serde_json::to_vec(value).map_err(|e| std::io::Error::other(e))?;
+    let text = serde_json::to_vec(value).map_err(std::io::Error::other)?;
     let dir = path.parent().ok_or_else(|| std::io::Error::other("token path has no parent directory"))?;
     let tmp_path = dir.join(format!(".fc-session-{}.tmp", std::process::id()));
     let result = (|| -> std::io::Result<()> {
