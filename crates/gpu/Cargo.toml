@@ -20,6 +20,9 @@ wgpu = { version = "30", default-features = false, features = ["wgsl"] }
 log = { workspace = true }
 pollster = "0.4"
 rayon = { workspace = true }
+# read-back conversion: half's slice conversion runs F16C SIMD where the CPU has it (runtime check)
+half = "2.7"
+bytemuck = "1"
 
 [dev-dependencies]
 pollster = "0.4"

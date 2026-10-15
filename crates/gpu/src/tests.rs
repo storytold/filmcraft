@@ -552,3 +552,47 @@ fn hdr_input_gpu_matches_cpu() {
         assert!(apart > 20, "{name}: colour management changed nothing ({apart})");
     }
 }
+
+/// The read-back conversion gives the same values as converting each half on its own (F16C or
+/// not: every one of the 65 536 halves, NaNs as NaNs), skips each row's padding, and reports a
+/// missing row instead of leaving stale values.
+#[test]
+fn readback_rows_convert_like_each_half() {
+    // every half once, as 64 rows of 256 pixels, rows padded to 2304 bytes
+    let (width, height) = (256usize, 64usize);
+    let row = (width * 8).div_ceil(256) * 256 + 256;
+    let halves: Vec<u16> = (0..=u16::MAX).collect();
+    let mut bytes = vec![0xAAu8; row * height];
+    for (y, src) in halves.chunks_exact(width * 4).enumerate() {
+        for (x, h) in src.iter().enumerate() {
+            bytes[y * row + x * 2..y * row + x * 2 + 2].copy_from_slice(&h.to_le_bytes());
+        }
+    }
+    // aligned, so the rows go through `half`'s F16C conversion on x86 with F16C
+    assert!(bytemuck::try_cast_slice::<u8, u16>(&bytes).is_ok());
+    let mut out = vec![0f32; width * height * 4];
+    assert!(f16_rows_to_f32(&bytes, &mut out, width, row));
+    for (&h, &got) in halves.iter().zip(&out) {
+        let want = f16_to_f32(h);
+        assert!(got.to_bits() == want.to_bits() || (got.is_nan() && want.is_nan()), "half {h:#06x}: {got} instead of {want}");
+    }
+
+    let (width, height) = (37usize, 53usize);
+    // rows padded to 256 bytes, as `copy_accumulator` lays them out
+    let row = (width * 8).div_ceil(256) * 256;
+    let halves: Vec<u16> = (0..width * height * 4).map(|i| f32_to_f16((i as f32 * 0.37).sin() * 4.0)).collect();
+    let mut bytes = vec![0xAAu8; row * height];
+    for (y, src) in halves.chunks_exact(width * 4).enumerate() {
+        for (x, h) in src.iter().enumerate() {
+            bytes[y * row + x * 2..y * row + x * 2 + 2].copy_from_slice(&h.to_le_bytes());
+        }
+    }
+    let mut out = vec![f32::NAN; width * height * 4];
+    assert!(f16_rows_to_f32(&bytes, &mut out, width, row));
+    let expected: Vec<f32> = halves.iter().map(|&h| f16_to_f32(h)).collect();
+    assert_eq!(out, expected);
+    // the last row cut short: not converted
+    let mut short = vec![0f32; width * height * 4];
+    assert!(!f16_rows_to_f32(&bytes[..row * (height - 1) + width * 8 - 2], &mut short, width, row));
+    assert!(!f16_rows_to_f32(&bytes, &mut short, 0, row));
+}

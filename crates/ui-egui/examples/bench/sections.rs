@@ -29,6 +29,17 @@ fn gpu_export_frame_renderer_factory() -> Option<Box<dyn filmcraft_export::Frame
         ) -> Option<filmcraft_render::Image> {
             self.0.render(project, seq, t, opts, sources)
         }
+
+        fn render_rgba8(
+            &mut self,
+            project: &filmcraft_project::Project,
+            seq: ItemId,
+            t: Tick,
+            opts: filmcraft_render::RenderOptions,
+            sources: &dyn filmcraft_render::SourceProvider,
+        ) -> Option<(usize, usize, Vec<u8>)> {
+            self.0.render_rgba8(project, seq, t, opts, sources)
+        }
     }
     filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(R(r)) as Box<dyn filmcraft_export::FrameRenderer>)
 }
@@ -500,6 +511,7 @@ pub fn export(o: &Opts) -> Vec<Value> {
             let out = dir.join(format!("out.{ext}"));
             filmcraft_export::reset_export_lock_wait();
             filmcraft_gpu::export_renderer::timing::reset();
+            let stages0 = filmcraft_export::stage_times();
             let (t0, c0) = (Instant::now(), cpu_now());
             // `--hw auto`: the hardware encoder too (NVENC H.264 on Windows); `--hw off`: ours
             let hardware = if o.hw == "off" { "off" } else { "auto" };
@@ -513,6 +525,14 @@ pub fn export(o: &Opts) -> Vec<Value> {
                 eprintln!("export {format}: {e}");
                 break;
             }
+            // where this export's wall time went (render overlaps encode + audio + mux; `wait` is the
+            // encoding side waiting for the render)
+            let stages: Vec<String> = filmcraft_export::stage_times()
+                .iter()
+                .zip(&stages0)
+                .map(|((s, after), (_, before))| format!("{} {:.0}", s.name(), after.saturating_sub(*before) as f64 / 1e6))
+                .collect();
+            eprintln!("  [stages for {id}, ms] {}", stages.join(", "));
             let lock_wait = filmcraft_export::export_lock_wait();
             let gpu_timings = filmcraft_gpu::export_renderer::timing::get();
             if gpu_timings.frames > 0 {
