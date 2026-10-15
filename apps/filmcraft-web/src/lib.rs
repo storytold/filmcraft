@@ -198,7 +198,7 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 // uninitialised for the whole session.
                 filmcraft_ui_egui::cloud::start(&mut app);
                 if let Some(share) = collabcraft_share::CollabCraft::from_env() {
-                    app.share.connect(share);
+                    app.share.connect(share.for_app("filmcraft"));
                 }
                 let (tx, rx) = std::sync::mpsc::channel();
                 api::set_sender(tx);
