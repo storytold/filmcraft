@@ -192,6 +192,11 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                     Some(Box::new(|| web_sys::window().map(|w| w.navigator().languages().iter().filter_map(|v| v.as_string()).collect()).unwrap_or_default()));
                 // Cloud: same-origin cookie transport — no device flow, no token file.
                 app.cloud.connect(cloud::Service::new(cc.egui_ctx.clone()));
+                // Bootstrap account fetch and root-folder listing now that the backend is
+                // bound.  Without this call CloudFiles::asked_account stays false, Job::Account
+                // is never submitted, and the account badge and cloud controls remain
+                // uninitialised for the whole session.
+                filmcraft_ui_egui::cloud::start(&mut app);
                 if let Some(share) = collabcraft_share::CollabCraft::from_env() {
                     app.share.connect(share);
                 }
