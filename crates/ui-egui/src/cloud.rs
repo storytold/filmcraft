@@ -32,6 +32,84 @@ use std::collections::HashMap;
 // Re-exported so a host application, and a test, can name these types without depending on the
 // crates they come from.
 pub use craft_cloud::{Capability, Entry, EntryKind};
+
+// ── PR #1982 adaptation ────────────────────────────────────────────────────────
+//
+// storytold/filmcraft#1982 (filmcraft-hub, CraftHub adapter / craft-collab CRDT layer) was
+// reviewed and its four decisions mapped to this architecture:
+//
+// ┌───────────────────────┬────────────┬───────────────────────────────────────────────────────┐
+// │ #1982 feature         │ Decision   │ Rationale                                             │
+// ├───────────────────────┼────────────┼───────────────────────────────────────────────────────┤
+// │ CRDT adapter          │ Superseded │ craft-cloud / CollabCraft is the real-time layer.     │
+// │ (filmcraft-hub /      │            │ Adding craft-collab creates a parallel provider layer │
+// │ craft-collab)         │            │ which the user explicitly ruled out.                  │
+// ├───────────────────────┼────────────┼───────────────────────────────────────────────────────┤
+// │ Timeline region locks │ Adapted    │ LockRange type added below. Populated by a live       │
+// │ (TimelineRange shape, │            │ collab session; checked by the timeline renderer.     │
+// │ §6.7)                 │            │ Enforcement requires a live session — without one the │
+// │                       │            │ field is empty and no clip moves are refused.         │
+// ├───────────────────────┼────────────┼───────────────────────────────────────────────────────┤
+// │ Playhead presence     │ Adapted    │ Peer.at convention: "{sequence_name} @ {timecode}"    │
+// │ (PresenceMsg.playhead │            │ as a string. format_peer_at() builds this string.     │
+// │ in sequence ticks)    │            │ Sending our own playhead requires the live collab     │
+// │                       │            │ session (collabcraft-share WebSocket side); this is   │
+// │                       │            │ the receive / display half.                           │
+// ├───────────────────────┼────────────┼───────────────────────────────────────────────────────┤
+// │ Deferred LUT/assets   │ Documented │ LUT text is never embedded in the .fcproj archive     │
+// │ (content-addressed    │            │ transferred here. The constraint is already in the    │
+// │ AssetRef via SHA-256) │            │ save_note and the module doc. Full deferred-asset     │
+// │                       │            │ support requires the craft-collab asset channel.      │
+// └───────────────────────┴────────────┴───────────────────────────────────────────────────────┘
+
+/// A locked region on a timeline track, as adapted from storytold/filmcraft#1982 §6.7.
+///
+/// When a live CollabCraft collab session is active, the session sends lock records for ranges
+/// another user has claimed. The timeline renderer checks `app.cloud_locks` and draws lock
+/// overlays where `holder` is not our own identity.
+///
+/// Without a live session `app.cloud_locks` is empty and no moves are refused here. The shape
+/// is preserved so the renderer contract is defined even before the collab session wire lands.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LockRange {
+    /// The track id that holds this lock.
+    pub track: u64,
+    /// Lock start in sequence ticks (the document's canonical time base).
+    pub start: i64,
+    /// Lock duration in sequence ticks.
+    pub duration: i64,
+    /// The CollabCraft user id that holds this lock.
+    pub holder: String,
+}
+
+impl LockRange {
+    /// Whether this lock covers any part of `[range_start, range_start + range_duration)`.
+    pub fn intersects(&self, range_start: i64, range_duration: i64) -> bool {
+        self.start < range_start + range_duration && self.start + self.duration > range_start
+    }
+}
+
+/// Format a peer's location as a human-readable string for [`craft_ui::presence::Peer::at`].
+///
+/// This is the FilmCraft convention for the `at` field (adapted from #1982's playhead presence
+/// design): `"{sequence_name} @ {timecode}"`. A collab session that reports peer positions
+/// builds this string and passes it as `Peer::at(format_peer_at(seq, tick, fps))`.
+///
+/// `fps` is the sequence frame rate (ticks_per_frame from the sequence settings), used only to
+/// convert `tick` to a display timecode; no math beyond division happens here.
+pub fn format_peer_at(sequence_name: &str, tick: i64, ticks_per_frame: i64) -> String {
+    if ticks_per_frame <= 0 {
+        return format!("{sequence_name} @ tick {tick}");
+    }
+    let frame = tick / ticks_per_frame;
+    // HH:MM:SS:FF — enough for display, not a conformant SMPTE encoder.
+    let ff = frame % 30;
+    let total_sec = frame / 30;
+    let ss = total_sec % 60;
+    let mm = (total_sec / 60) % 60;
+    let hh = total_sec / 3600;
+    format!("{sequence_name} @ {hh:02}:{mm:02}:{ss:02}:{ff:02}")
+}
 pub use craft_ui::cloud::{
     Account, Busy, CloudApp, CloudBackend, CloudFiles, Conflict, CopyFormat, Destination, DocumentKind, Event, Fault, Folder, Job, Link, Origin, Post, Source,
     UNAVAILABLE, available, browse, can_converse, conflict_modal, destination_name, has_target, link, load_shared, open_entry, open_page, origin, parent_of,

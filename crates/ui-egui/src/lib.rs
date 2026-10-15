@@ -405,6 +405,13 @@ pub struct FilmcraftApp {
     pub share: craft_ui::share::ShareDialog,
     /// Collaborator presence bar, drawn beside the account badge in the header.
     pub presence: craft_ui::presence::PresenceBar,
+    /// Timeline region locks received from the live collab session.
+    ///
+    /// Populated by the collabcraft-share WebSocket when another user holds a lock (adapted
+    /// from storytold/filmcraft#1982 §6.7). Empty without a live session. The timeline renderer
+    /// should draw a lock overlay for ranges where `holder != our_identity`. Enforcement
+    /// (refusing clip edits that intersect a foreign lock) requires the live collab session.
+    pub cloud_locks: Vec<cloud::LockRange>,
 }
 
 pub struct GpuState {
@@ -627,6 +634,7 @@ impl FilmcraftApp {
             cloud: cloud::CloudFiles::new(),
             share: craft_ui::share::ShareDialog::new(),
             presence: craft_ui::presence::PresenceBar::new().badges_only(),
+            cloud_locks: Vec::new(),
         }
     }
 
