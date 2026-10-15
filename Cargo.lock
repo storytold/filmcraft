@@ -2430,6 +2430,8 @@ dependencies = [
 name = "filmcraft-web"
 version = "0.7.2"
 dependencies = [
+ "collabcraft-share",
+ "craft-cloud-client",
  "eframe",
  "egui",
  "filmcraft-codecs",

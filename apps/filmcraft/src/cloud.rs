@@ -255,36 +255,91 @@ fn token_path() -> Option<PathBuf> {
     Some(dir.join("collabcraft-session.json"))
 }
 
+/// Load the saved token, but only when it was stored for the same service
+/// origin that is currently configured.
+///
+/// A token stored for `https://craft.example.com` is never returned when the
+/// current service is `https://craft.other.com`. This prevents the credential
+/// from a past deployment from silently reaching a different one.
 fn load_token() -> Option<String> {
-    let raw = std::fs::read(token_path()?).ok()?;
+    let path = token_path()?;
+    load_token_from(&path, &base_url().unwrap_or_default())
+}
+
+fn load_token_from(path: &Path, required_origin: &str) -> Option<String> {
+    let raw = std::fs::read(path).ok()?;
     let value: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+    // An unbound legacy token is unsafe: after a URL change there is no way
+    // to know which service issued it.
+    let stored = value.get("service")?.as_str()?;
+    if stored.trim().trim_end_matches('/') != required_origin.trim().trim_end_matches('/') {
+        log::warn!("discarding stored token for {stored}: current service is {required_origin}");
+        return None;
+    }
     value.get("token")?.as_str().map(str::to_owned).filter(|t| !t.is_empty())
 }
 
 fn save_token(token: &str) {
     let service = base_url().unwrap_or_default();
-    write_session(serde_json::json!({"token": token, "service": service}));
+    let value = serde_json::json!({"token": token, "service": service});
+    if let Some(path) = token_path() {
+        if let Err(e) = write_session_to(&path, &value) {
+            log::warn!("could not save the cloud session: {e}");
+        }
+    }
 }
 
 fn remember_account(subject: &str, display: &str) {
     let Some(token) = load_token() else { return };
     let service = base_url().unwrap_or_default();
-    write_session(serde_json::json!({
+    let value = serde_json::json!({
         "token": token,
         "service": service,
         "subject": subject,
         "display": display,
-    }));
+    });
+    if let Some(path) = token_path() {
+        if let Err(e) = write_session_to(&path, &value) {
+            log::warn!("could not update the cloud account record: {e}");
+        }
+    }
 }
 
-fn write_session(value: serde_json::Value) {
-    let Some(path) = token_path() else { return };
-    let Ok(text) = serde_json::to_vec(&value) else { return };
-    if let Err(e) = std::fs::write(&path, text) {
-        log::warn!("could not save the cloud session: {e}");
-        return;
+/// Write a session record atomically with mode 0600 (Unix) or no extra work
+/// (Windows, where the per-user AppData directory is already owner-scoped).
+///
+/// Writes to a uniquely named temporary file in the same directory, sets
+/// 0600 on Unix *before* renaming, then renames into place. The rename is
+/// atomic on POSIX file systems; the file is never visible to other users
+/// even for an instant.
+fn write_session_to(path: &Path, value: &serde_json::Value) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let text = serde_json::to_vec(value).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let dir = path.parent().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "token path has no parent directory"))?;
+    let tmp_path = dir.join(format!(".fc-session-{}.tmp", std::process::id()));
+    let result = (|| -> std::io::Result<()> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true); // fail if the tmp file somehow already exists
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut f = options.open(&tmp_path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        f.write_all(&text)?;
+        f.flush()?;
+        drop(f);
+        std::fs::rename(&tmp_path, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
     }
-    restrict(&path);
+    result
 }
 
 fn forget_token() {
@@ -293,15 +348,76 @@ fn forget_token() {
     }
 }
 
-#[cfg(unix)]
-fn restrict(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-}
+// ---------------------------------------------------------------- token tests
 
-/// On Windows the per-user AppData directory is already owner-scoped.
-#[cfg(not(unix))]
-fn restrict(_path: &Path) {}
+#[cfg(test)]
+mod token_tests {
+    use super::*;
+
+    fn tmp_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("fc-cloud-test-{label}-{}.json", std::process::id()))
+    }
+
+    #[test]
+    fn roundtrip_same_origin() {
+        let path = tmp_path("roundtrip");
+        let _ = std::fs::remove_file(&path);
+        let value = serde_json::json!({"token": "tok-abc", "service": "https://craft.example.com"});
+        write_session_to(&path, &value).expect("write");
+        let loaded = load_token_from(&path, "https://craft.example.com");
+        assert_eq!(loaded.as_deref(), Some("tok-abc"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn rejects_different_origin() {
+        let path = tmp_path("origin-mismatch");
+        let _ = std::fs::remove_file(&path);
+        let value = serde_json::json!({"token": "tok-xyz", "service": "https://craft.example.com"});
+        write_session_to(&path, &value).expect("write");
+        // A different origin should be rejected.
+        let loaded = load_token_from(&path, "https://craft.other.com");
+        assert!(loaded.is_none(), "should reject a token from a different origin");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn rejects_legacy_token_without_origin() {
+        let path = tmp_path("empty-origin");
+        let _ = std::fs::remove_file(&path);
+        // Stored without service (legacy / missing).
+        let value = serde_json::json!({"token": "tok-leg"});
+        write_session_to(&path, &value).expect("write");
+        let loaded = load_token_from(&path, "https://craft.example.com");
+        assert!(loaded.is_none(), "an unbound legacy token must not be forwarded");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_mode_is_0600() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = tmp_path("mode");
+        let _ = std::fs::remove_file(&path);
+        let value = serde_json::json!({"token": "tok-mode", "service": "https://craft.example.com"});
+        write_session_to(&path, &value).expect("write");
+        let meta = std::fs::metadata(&path).expect("metadata");
+        let mode = meta.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "token file must be owner-read-write only (0600), got {mode:03o}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn empty_token_is_treated_as_missing() {
+        let path = tmp_path("empty-token");
+        let _ = std::fs::remove_file(&path);
+        let value = serde_json::json!({"token": "", "service": "https://craft.example.com"});
+        write_session_to(&path, &value).expect("write");
+        let loaded = load_token_from(&path, "https://craft.example.com");
+        assert!(loaded.is_none(), "empty token string should be treated as absent");
+        let _ = std::fs::remove_file(&path);
+    }
+}
 
 // ---------------------------------------------------------------- browser
 
