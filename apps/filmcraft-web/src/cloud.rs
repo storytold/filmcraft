@@ -14,6 +14,10 @@ use wasm_bindgen_futures::spawn_local;
 
 use filmcraft_ui_egui::cloud::{Account, CloudBackend, Event, Fault, Job, Post};
 
+#[path = "cloud_paths.rs"]
+mod cloud_paths;
+use cloud_paths::{LOGIN_PATH, LOGOUT_PATH};
+
 /// Hands cloud jobs to async fetch tasks.  Cheap to clone because `Client`
 /// carries only a `String` base URL and an optional token string.
 #[derive(Clone)]
@@ -133,7 +137,7 @@ fn offer_login() {
     if path.starts_with("/auth/") {
         return;
     }
-    let _ = window.location().set_href("/auth/login");
+    let _ = window.location().set_href(LOGIN_PATH);
 }
 
 /// POST to the service's logout endpoint and let the browser clear the cookie.
@@ -144,7 +148,7 @@ async fn post_logout() -> Result<(), String> {
     let init = web_sys::RequestInit::new();
     init.set_method("POST");
     init.set_credentials(web_sys::RequestCredentials::Include);
-    let req = web_sys::Request::new_with_str_and_init("/logout", &init).map_err(|e| format!("{e:?}"))?;
+    let req = web_sys::Request::new_with_str_and_init(LOGOUT_PATH, &init).map_err(|e| format!("{e:?}"))?;
     let promised = fetch.call1(global.as_ref(), req.as_ref()).map_err(|e| format!("{e:?}"))?;
     let promised: js_sys::Promise = promised.dyn_into().map_err(|_| "not a promise".to_owned())?;
     wasm_bindgen_futures::JsFuture::from(promised).await.map_err(|e| format!("{e:?}"))?;
