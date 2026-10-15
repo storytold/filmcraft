@@ -1032,11 +1032,31 @@ mod tests {
         set_current(Language::En);
     }
 
+    /// Cloud File-menu / Import strings live in the TSV even when CollabCraft is not
+    /// connected (so `menu_items` omits them). Still valid menu-adjacent UI labels.
+    fn is_cloud_ui_label(en: &str) -> bool {
+        matches!(
+            en,
+            "Open from cloud…"
+                | "Import from cloud…"
+                | "Save as to cloud…"
+                | "Open from cloud"
+                | "Import from cloud"
+                | "Save as to cloud"
+                | "CollabCraft"
+                | "Movies, audio and stills from CollabCraft"
+        )
+    }
+
     #[test]
     fn ukrainian_entries_cover_the_original_menu_catalog() {
         let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
         let items = crate::menus::menu_items(&app);
-        let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
+        let known = |text: &str| {
+            crate::menus::MENUS.contains(&text)
+                || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text))
+                || is_cloud_ui_label(text)
+        };
         let (entries, _) = catalog::parse_entries(include_str!("uk.tsv"));
         for (_, en, _) in entries {
             assert!(known(&en) || en == "Settings", "not a menu label: {en}");
@@ -1052,7 +1072,11 @@ mod tests {
     fn german_entries_cover_the_original_menu_catalog() {
         let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
         let items = crate::menus::menu_items(&app);
-        let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
+        let known = |text: &str| {
+            crate::menus::MENUS.contains(&text)
+                || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text))
+                || is_cloud_ui_label(text)
+        };
         let (entries, _) = catalog::parse_entries(include_str!("de.tsv"));
         for (_, en, _) in entries {
             assert!(known(&en) || crate::menus::NATIVE_APP_MENU.contains(&en.as_str()), "not a menu label: {en}");
@@ -1101,7 +1125,11 @@ mod tests {
     fn russian_entries_cover_the_original_menu_catalog() {
         let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
         let items = crate::menus::menu_items(&app);
-        let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
+        let known = |text: &str| {
+            crate::menus::MENUS.contains(&text)
+                || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text))
+                || is_cloud_ui_label(text)
+        };
         let (entries, _) = catalog::parse_entries(include_str!("ru.tsv"));
         for (_, en, _) in entries {
             assert!(known(&en) || en == "Settings", "not a menu label: {en}");
