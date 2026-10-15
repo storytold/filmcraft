@@ -209,6 +209,49 @@ fn plan_matches_reference_renderer() {
 }
 
 #[test]
+fn raster_mask_plan_matches_reference_at_source_frame_times() {
+    use filmcraft_project::{
+        Mask, MaskPath,
+        raster_mask::{RasterFrame, RasterMask},
+    };
+    let (mut p, red, ocean, seq, map) = setup();
+    place(&mut p, seq, 0, ocean, 0, 48);
+    let top = place(&mut p, seq, 1, red, 10, 20);
+    let rate = FrameRate::FPS_24;
+    let item = p.sequence_mut(seq).unwrap().find_item_mut(top).unwrap().1;
+    item.source_in = rate.tick_of(3);
+    let mut mask = Mask::new("cached alpha", MaskPath::default());
+    mask.raster = Some(Arc::new(RasterMask {
+        width: 2,
+        height: 1,
+        end: rate.tick_of(5),
+        quality: true,
+        frames: vec![
+            RasterFrame { time: rate.tick_of(3), runs: Arc::new(vec![(1, 0), (1, 32768)]) },
+            RasterFrame { time: rate.tick_of(4), runs: Arc::new(vec![(1, 65535), (1, 0)]) },
+        ],
+    }));
+    item.effect_mut("opacity").unwrap().masks.push(mask);
+    for scale in [1.0, 0.5] {
+        for frame in [10, 11, 12] {
+            let opts = RenderOptions { scale, ..Default::default() };
+            let reference = render_sequence(&p, seq, rate.tick_of(frame), opts, &map);
+            let plan = plan::plan_frame(&p, seq, rate.tick_of(frame), opts, &map);
+            assert!(matches!(plan, plan::FramePlan::Layers { .. }));
+            let got = plan::execute_cpu(&plan);
+            let max = got.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+            assert!(max < 0.02, "source time {frame}, scale {scale}: {max}");
+            if frame == 10 {
+                assert!(reference.get(319.min(reference.w - 1), 0)[0] < 1.0);
+            }
+            if frame == 12 {
+                assert_eq!(reference.get(reference.w / 2, reference.h / 2)[0], 1.0);
+            }
+        }
+    }
+}
+
+#[test]
 fn push_plan_preserves_reference_track_order_and_reverse() {
     let (mut p, red, ocean, seq, map) = setup();
     place(&mut p, seq, 0, ocean, 0, 48);

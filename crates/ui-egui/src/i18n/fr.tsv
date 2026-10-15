@@ -3577,3 +3577,10 @@
 	Export the labels to a preset file…	Exporter les étiquettes dans un fichier de paramètre prédéfini…
 	Show the presets folder	Afficher le dossier des paramètres prédéfinis
 	Delete this preset	Supprimer ce paramètre prédéfini
+
+	AI Rotoscope…	Rotoscopie IA…
+	AI Rotoscope Settings	Réglages de rotoscopie IA
+	AI Mask Point	Point de masque IA
+	Remove AI Mask Point	Supprimer un point de masque IA
+	Generate AI Mask	Générer un masque IA
+	Preview AI Mask	Aperçu du masque IA

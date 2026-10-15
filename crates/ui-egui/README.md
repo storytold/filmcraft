@@ -3,6 +3,21 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## Experimental AI Rotoscope
+
+`experiments/rotoscope/run-editor.sh` prepares verified models for in-process Rust EdgeTAM/ViTMatte inference. Opacity's
+mask editor exposes Include/Exclude clicks with a transient green selection overlay;
+the red background overlay is visible only while Exclude is selected. Tool switches
+reuse cached alpha immediately. It also supports
+Option/Alt-click point removal (Cmd/Ctrl-click also works), temporary Exclude points
+with Option/Alt-click away from a dot, Cmd/Ctrl-Z and redo for point edits, automatic ViTMatte inference after Refine
+Edge strokes, inferred edge-region/Alpha/Composite views, Fast/Quality modes,
+frame/edge-band limits and Generate/Cancel. Program-monitor points use source-image
+coordinates through the clip's Motion transform. Every action dispatches `masks.ai.*`
+or `jobs.cancel`; automation ids start with `aiMask.` and `program.aiMask`.
+Model inference is disabled in standard builds; completed raster alpha is part of
+the project and can be displayed without the worker. See the [experiment instructions](../../experiments/rotoscope/README.md).
+
 ## Transition drop previews
 
 Dragging a video or audio transition over a compatible clip shows its actual time span, the

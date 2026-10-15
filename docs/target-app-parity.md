@@ -165,6 +165,10 @@ Evidence for the cross-cutting rows:
   narration with Kokoro-82M landed 10-10 (#278, beyond Premiere); scene edit detection; Enhance
   Speech and Auto Reframe are DSP / heuristics. Missing: Object Mask (#406, #694), Generative
   Extend, media-intelligence search, caption translation, auto colour.
+  An opt-in [native Object Mask experiment (#1733)](../experiments/rotoscope/README.md)
+  runs EdgeTAM / ViTMatte through native Rust CPU inference, with click previews and
+  cached raster alpha. Its 720-pixel / 120-frame limits and missing shipping Rust runtime,
+  temporal refinement and GPU alpha kernel do not change the readiness assessment.
 
 ## Three readiness numbers
 

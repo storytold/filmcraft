@@ -30,6 +30,24 @@ fn select(s: &mut Session, clips: &[u64]) {
     s.execute("timeline.select", json!({"clips": clips})).unwrap();
 }
 
+#[test]
+fn selection_can_override_linked_partners_without_changing_the_setting() {
+    let mut s = demo();
+    let video = v1(&s)[0].clone();
+    let audio = s.active_sequence().unwrap().audio_tracks.iter().flat_map(|tr| &tr.items).find(|it| it.link == video.link).unwrap().id;
+    select(&mut s, &[video.id.0]);
+    assert!(s.state.selection.contains(&audio));
+    s.execute("timeline.select", json!({"clips": [video.id.0], "linked": false})).unwrap();
+    assert_eq!(s.state.selection, [video.id]);
+    assert!(s.state.linked_selection);
+    s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+    select(&mut s, &[video.id.0]);
+    assert_eq!(s.state.selection, [video.id]);
+    s.execute("timeline.select", json!({"clips": [video.id.0], "linked": true})).unwrap();
+    assert_eq!(s.state.selection, [video.id]);
+    assert!(!s.state.linked_selection);
+}
+
 fn menu_of(id: &str) -> Vec<&'static str> {
     crate::commands::find(id).unwrap_or_else(|| panic!("no command {id}")).menu.to_vec()
 }

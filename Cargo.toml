@@ -49,6 +49,7 @@ filmcraft-interchange = { path = "crates/interchange" }
 filmcraft-text = { path = "crates/text" }
 filmcraft-captions = { path = "crates/captions" }
 filmcraft-speech = { path = "crates/speech" }
+filmcraft-rotoscope = { path = "crates/rotoscope" }
 filmcraft-tts = { path = "crates/tts" }
 filmcraft-tts-text = { path = "crates/tts-text" }
 filmcraft-render = { path = "crates/render" }
@@ -140,6 +141,19 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.filmcraft-vp9]
+opt-level = 3
+
+# Neural inference and preprocessing hot loops also run in interactive debug builds.
+[profile.dev.package.filmcraft-rotoscope]
+opt-level = 3
+
+[profile.dev.package.rten]
+opt-level = 3
+
+[profile.dev.package.rten-gemm]
+opt-level = 3
+
+[profile.dev.package.rten-vecmath]
 opt-level = 3
 
 [profile.release]

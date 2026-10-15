@@ -391,6 +391,9 @@ pub struct Mask {
     pub mode: MaskMode,
     #[serde(default)]
     pub track_method: TrackMethod,
+    /// Cached AI alpha; path tools and vector feather/expansion do not apply to this mask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raster: Option<std::sync::Arc<crate::raster_mask::RasterMask>>,
 }
 
 /// Mask parameter ids (keyframe commands address them with `"mask": n`).
@@ -407,6 +410,7 @@ impl Mask {
             inverted: false,
             mode: MaskMode::Add,
             track_method: TrackMethod::default(),
+            raster: None,
         }
     }
     pub fn param(&self, id: &str) -> Option<&Param> {
