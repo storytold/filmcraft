@@ -1,7 +1,7 @@
 //! Keyboard shortcuts: chords, presets, conflicts, panel scope, undo, files.
 
 use super::*;
-use crate::shortcuts::{Binding, Chord, CommandInfo, Platform, Shortcuts};
+use crate::shortcuts::{Binding, Chord, CommandInfo, Platform, PresetFile, Shortcuts};
 use serde_json::json;
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {
@@ -289,6 +289,39 @@ fn list_searches_labels_and_keys() {
     assert!(v.as_array().unwrap().iter().any(|c| c["id"] == "sequence.addEdit"), "{v}");
     let v = s.execute("shortcuts.list", json!({"panel": "History", "assigned": true})).unwrap();
     assert_eq!(v.as_array().unwrap().len(), 2, "{v}");
+}
+
+#[test]
+fn saved_sets_drop_stale_control_collisions() {
+    // #1737: `Ctrl+M` became the Range marker binding on Windows/Linux before `Cmd+M` (export)
+    // was added. Built-in presets drop Control collisions, but a saved active set kept it.
+    let dir = temp_dir("stale-control-collisions");
+    let file = dir.join("Keyboard Shortcuts").join("active.json");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        serde_json::to_vec(&PresetFile {
+            format: "filmcraft-keyboard-shortcuts".into(),
+            version: 1,
+            name: "FilmCraft Default".into(),
+            platform: None,
+            modified: true,
+            bindings: vec![
+                Binding { command: "mode.export".into(), keys: "Cmd+M".into(), panel: None },
+                Binding { command: "markers.addRangeInOut".into(), keys: "Ctrl+M".into(), panel: None },
+            ],
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    let mut s = Shortcuts::new();
+    s.set_dir(&dir);
+    let p = Platform::current();
+    let chord = Chord::parse("Ctrl+M").unwrap();
+    assert_eq!(s.resolve(&chord, None, p).unwrap().command, "mode.export");
+    assert!(!s.for_command("markers.addRangeInOut").iter().any(|b| b.keys == "Ctrl+M"), "Control collision should be dropped like a built-in preset");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
