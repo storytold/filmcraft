@@ -274,8 +274,9 @@ fn effects_and_keyframes() {
     s.execute("effects.setParam", json!({"clip": c, "effect": "gaussian_blur", "param": "blurriness", "value": 25.0})).unwrap();
     let q = s.active_sequence().unwrap();
     let it = q.find_item(filmcraft_project::ClipId(c)).unwrap().1;
-    assert_eq!(it.effects[0].effect, "gaussian_blur", "standard effects render before intrinsics");
-    assert_eq!(it.effects[0].params["blurriness"].value, filmcraft_project::ParamValue::Float(25.0));
+    let blur = it.effects.last().unwrap();
+    assert_eq!(blur.effect, "gaussian_blur", "applied effects go after the intrinsic ones (#1879)");
+    assert_eq!(blur.params["blurriness"].value, filmcraft_project::ParamValue::Float(25.0));
     s.execute("effects.toggleAnimation", json!({"clip": c, "effect": "motion", "param": "scale"})).unwrap();
     let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1.clone();
     assert!(it.effect("motion").unwrap().params["scale"].is_animated());
@@ -904,11 +905,19 @@ fn selecting_an_effect_replaces_the_mask_selection() {
     let motion_sel = Some(EffectSel { clip: ClipId(id), effect: "motion".into(), instance: 0 });
     s.execute("effects.select", json!({"clip": id, "effect": "motion"})).unwrap();
     assert_eq!(s.state.selected_effect, motion_sel);
-    // applying an effect puts it first; Motion stays the selected effect
+    // applying an effect leaves Motion the selected effect
     s.execute("effects.apply", json!({"clips": [id], "effect": "gaussian_blur"})).unwrap();
     assert_eq!(s.state.selected_effect, motion_sel);
-    s.execute("effects.remove", json!({"clip": id, "index": 0})).unwrap();
-    assert_eq!(s.state.selected_effect, motion_sel, "and when one before it is removed");
+    // and the selection follows its effect when one before it is removed
+    s.execute("effects.apply", json!({"clips": [id], "effect": "tint"})).unwrap();
+    s.execute("effects.select", json!({"clip": id, "effect": "tint"})).unwrap();
+    let tint_sel = s.state.selected_effect.clone();
+    let blur = s.active_sequence().unwrap().find_item(ClipId(id)).unwrap().1.effects.iter().position(|e| e.effect == "gaussian_blur").unwrap();
+    s.execute("effects.remove", json!({"clip": id, "index": blur})).unwrap();
+    assert_eq!(s.state.selected_effect, tint_sel, "and when one before it is removed");
+    let tint = s.active_sequence().unwrap().find_item(ClipId(id)).unwrap().1.effects.iter().position(|e| e.effect == "tint").unwrap();
+    s.execute("effects.remove", json!({"clip": id, "index": tint})).unwrap();
+    s.execute("effects.select", json!({"clip": id, "effect": "motion"})).unwrap();
     let motion = s.active_sequence().unwrap().find_item(ClipId(id)).unwrap().1.effects.iter().position(|e| e.effect == "motion").unwrap();
     s.execute("masks.add", json!({"clip": id, "shape": "ellipse"})).unwrap();
     assert!(s.state.selected_effect.is_none(), "a new mask is selected instead");

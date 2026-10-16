@@ -9,7 +9,7 @@
 //! - **Geometry.** Point parameters and mask paths are in clip pixels; they are scaled by the
 //!   target / source frame-size ratio so a preset made on 4K media lands in the same place on HD.
 //! - **Intrinsic effects** (Motion, Opacity, Time Remapping) replace the target clip's own instance;
-//!   standard effects are added before the intrinsic ones (render order), like `effects.apply`.
+//!   standard effects are added at the end of the clip's effects, like `effects.apply`.
 //! - **Library.** Built-in presets are authored in code ([`builtin_presets`]); user presets persist
 //!   in `<data dir>/effect-presets.json`. Preset files (export/import) are JSON:
 //!   `{"format": "filmcraft.effect-presets", "version": 1, "presets": [EffectPreset…]}`.
@@ -377,7 +377,7 @@ fn merge_keyframes(new: &mut EffectInstance, old: &EffectInstance) {
 }
 
 /// Put preset effects on a clip: intrinsic ones replace the clip's instance (keeping its keyframes
-/// outside the span the preset animates), others are inserted before the intrinsic effects.
+/// outside the span the preset animates), others are added at the end, like `effects.apply`.
 pub fn put_effects(it: &mut TrackItem, effects: Vec<EffectInstance>) {
     for mut e in effects {
         let intrinsic = e.def().is_some_and(|d| d.intrinsic);
@@ -386,9 +386,7 @@ pub fn put_effects(it: &mut TrackItem, effects: Vec<EffectInstance>) {
             *slot = e;
             continue;
         }
-        let audio = e.def().is_some_and(|d| d.kind == filmcraft_project::EffectKind::Audio);
-        let pos = if audio { it.effects.len() } else { it.effects.iter().position(|x| x.def().is_some_and(|d| d.intrinsic)).unwrap_or(it.effects.len()) };
-        it.effects.insert(pos, e);
+        it.effects.push(e);
     }
 }
 

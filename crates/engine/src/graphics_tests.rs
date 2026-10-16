@@ -689,3 +689,22 @@ fn align_to_frame_moves_selected_video_clips_by_position_only() {
     s.execute("edit.undo", json!({})).unwrap();
     assert!((pos(&s).0.y - 200.0).abs() < 1e-6, "one undo step per alignment");
 }
+
+#[test]
+fn applied_effects_stack_after_the_clip_s_own_and_keep_their_indices() {
+    // #1879
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name": "R", "width": 1920, "height": 1080, "fps": 30, "video": 2, "audio": 1})).unwrap();
+    let r = s.execute("graphics.newEllipse", json!({"position": [960, 540], "size": [400, 400], "track": 1, "time": 0, "seconds": 2})).unwrap();
+    let clip = r["clip"].as_u64().unwrap();
+    let ids = |s: &Session| s.active_sequence().unwrap().find_item(ClipId(clip)).unwrap().1.effects.iter().map(|e| e.effect.clone()).collect::<Vec<_>>();
+    let before = ids(&s);
+    let layer = s.execute("graphics.list", json!({"clip": clip})).unwrap()["layers"][0]["effectIndex"].clone();
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "gaussian_blur"})).unwrap();
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "tint"})).unwrap();
+    let after = ids(&s);
+    assert_eq!(after[..before.len()], before[..], "{after:?}");
+    assert_eq!(after[before.len()..], ["gaussian_blur", "tint"], "{after:?}");
+    assert_eq!(s.execute("graphics.list", json!({"clip": clip})).unwrap()["layers"][0]["effectIndex"], layer);
+    s.execute("effects.setParam", json!({"clip": clip, "effect": layer, "param": "position", "value": [100, 100]})).unwrap();
+}
