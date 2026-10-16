@@ -12,6 +12,7 @@
 use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 use filmcraft_engine::Session;
 use filmcraft_engine::project_panel::{FREEFORM_POS, FREEFORM_STACK, ViewMode};
 use filmcraft_project::{BinEntry, ItemId};
@@ -284,6 +285,28 @@ fn icon_view_hover_scrub_sets_in_and_out() {
     // up one level
     d.click("project.up");
     assert_eq!(d.app().ui.project_panel.bin, None);
+}
+
+#[test]
+fn icon_view_cuts_long_names_and_shows_them_on_hover() {
+    // a bin name too long for its card ends in "…" before the item count and is shown in full on hover
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "icon"}));
+    let long = "Home Video Editing Summer 2026 — Family Trip to the Coast";
+    let bin = d.exec("file.newBin", json!({"name": long}))["bin"].as_u64().expect("bin id");
+    let card = format!("project.bin.{bin}");
+    d.wait_for(&card);
+    assert!(d.harness.query_by_label(long).is_none(), "no tooltip before hovering");
+    d.ok("ui.move", json!({"id": card, "fx": 0.5, "fy": 0.5}));
+    for _ in 0..60 {
+        if d.harness.query_by_label(long).is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        d.frames(1);
+    }
+    assert!(d.harness.query_by_label(long).is_some(), "hovering a cut-off name shows it in full");
+    d.snapshot("project-icon-long-name", Some("panel.Project"));
 }
 
 #[test]

@@ -824,7 +824,7 @@ fn hover_time(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Response, r: R
 fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &str, show_name: bool, show_dur: bool, sense: Sense) -> Option<egui::Response> {
     let t = app.tokens;
     let it = app.session.project.item(id).cloned()?;
-    let resp = ui.interact(r.expand(2.0), egui::Id::new((pre, "card", id.0)), sense);
+    let mut resp = ui.interact(r.expand(2.0), egui::Id::new((pre, "card", id.0)), sense);
     let th = Rect::from_min_size(r.min, vec2(r.width(), r.width() * 9.0 / 16.0));
     let selected = app.session.state.project_selection.contains(&id);
     let card_bg = Rect::from_min_max(th.min - vec2(6.0, 6.0), pos2(th.max.x + 6.0, r.max.y + 2.0));
@@ -897,22 +897,32 @@ fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &st
     let nr = Rect::from_min_max(pos2(th.min.x, th.max.y + 2.0), pos2(th.max.x - dw - 6.0, th.max.y + 20.0));
     if show_name && !rename_field(app, ui, nr, Some(id.0), None, pre) {
         ui.painter().rect_filled(Rect::from_min_size(pos2(th.min.x, ty - 5.0), vec2(8.0, 10.0)), 1.5, label_color(app, it.label));
-        ui.painter().with_clip_rect(nr).text(
-            pos2(th.min.x + 12.0, ty),
-            Align2::LEFT_CENTER,
-            &it.name,
-            Tokens::ui(f - 0.5),
-            if badge.offline { OFFLINE } else { t.text },
-        );
+        let g = elided_name(ui, &it.name, Tokens::ui(f - 0.5), if badge.offline { OFFLINE } else { t.text }, nr.max.x - th.min.x - 12.0);
+        let elided = g.elided;
+        ui.painter().galley(pos2(th.min.x + 12.0, ty - g.size().y / 2.0), g, t.text);
+        if elided {
+            resp = resp.on_hover_text(&it.name);
+        }
     }
     app.auto.add(&format!("{pre}.item.{}", id.0), th, &it.name);
     Some(resp)
 }
 
+/// A one-line tile name cut to `max_width` with a trailing "…"; `elided` says whether it was cut,
+/// so the caller can show the full name on hover.
+fn elided_name(ui: &egui::Ui, name: &str, font: egui::FontId, color: Color32, max_width: f32) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::single_section(name.to_owned(), egui::TextFormat::simple(font, color));
+    job.wrap.max_width = max_width.max(0.0);
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    job.wrap.overflow_character = Some('…');
+    ui.fonts_mut(|f| f.layout_job(job))
+}
+
 fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &View, actions: &mut Actions) {
     let t = app.tokens;
     let th = Rect::from_min_size(r.min, vec2(r.width(), r.width() * 9.0 / 16.0));
-    let resp = ui.interact(r.expand(2.0), egui::Id::new((&v.prefix, "bincard", b.id.0)), Sense::click_and_drag());
+    let mut resp = ui.interact(r.expand(2.0), egui::Id::new((&v.prefix, "bincard", b.id.0)), Sense::click_and_drag());
     let selected = app.ui.project_panel.selected_bin == Some(b.id.0);
     let bg = Rect::from_min_max(th.min - vec2(6.0, 6.0), pos2(th.max.x + 6.0, r.max.y + 2.0));
     ui.painter().rect_filled(bg, 4.0, if selected { t.tl_header_bg } else { t.panel_bg });
@@ -926,8 +936,15 @@ fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &Vie
     let f = font(app);
     let nr = Rect::from_min_max(pos2(th.min.x, th.max.y + 2.0), pos2(th.max.x, th.max.y + 20.0));
     if !rename_field(app, ui, nr, None, Some(b.id.0), &v.prefix) {
-        ui.painter().with_clip_rect(nr).text(pos2(th.min.x, th.max.y + 11.0), Align2::LEFT_CENTER, &b.name, Tokens::ui(f - 0.5), t.text);
-        ui.painter().text(pos2(th.max.x, th.max.y + 11.0), Align2::RIGHT_CENTER, tlf!("{n} items", n = n.len()), Tokens::ui(f - 1.5), t.text_dim);
+        let cg = ui.painter().layout_no_wrap(tlf!("{n} items", n = n.len()), Tokens::ui(f - 1.5), t.text_dim);
+        let cw = cg.size().x;
+        ui.painter().galley(pos2(th.max.x - cw, th.max.y + 11.0 - cg.size().y / 2.0), cg, t.text_dim);
+        let g = elided_name(ui, &b.name, Tokens::ui(f - 0.5), t.text, nr.width() - cw - 6.0);
+        let elided = g.elided;
+        ui.painter().galley(pos2(th.min.x, th.max.y + 11.0 - g.size().y / 2.0), g, t.text);
+        if elided {
+            resp = resp.on_hover_text(&b.name);
+        }
     }
     app.auto.add(&format!("{}.bin.{}", v.prefix, b.id.0), th, &b.name);
     accept_bin_drop(app, ui, th, b.id.0, actions);
