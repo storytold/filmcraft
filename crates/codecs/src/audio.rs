@@ -729,6 +729,12 @@ pub fn decode_dvd_lpcm(data: &[u8], channels: usize, bits: u32) -> Vec<Vec<f32>>
 /// Decode interleaved PCM bytes into planar f32.
 pub fn decode_pcm(data: &[u8], cfg: &filmcraft_isobmff::PcmConfig) -> Vec<Vec<f32>> {
     let ch = cfg.channels.max(1) as usize;
+    // A hostile `ipcm`/`fpcm` sample entry can declare `bits == 0` (`a.sample_size` is
+    // applied unchecked, unlike the `sowt`/`twos` arms of `qt_pcm` which default it): `bps`
+    // would be 0 and the length division below would panic. There are no samples to decode.
+    if cfg.bits == 0 {
+        return vec![Vec::new(); ch];
+    }
     let bps = (cfg.bits as usize).div_ceil(8);
     let n = data.len() / (bps * ch);
     let mut out = vec![Vec::with_capacity(n); ch];
@@ -1353,5 +1359,27 @@ mod gapless_tests {
     fn mp3_encoder_delay_is_trimmed() {
         let src = AudioFileSource::decode("tagged.mp3", Arc::from(tagged_mp3())).unwrap();
         assert_eq!(src.samples[0].len(), AUDIO_FRAMES * 1152 - (576 + 529));
+    }
+}
+
+#[cfg(test)]
+mod decode_pcm_tests {
+    use super::*;
+
+    #[test]
+    fn zero_bits_decode_to_empty_channels_without_panicking() {
+        // A hostile `ipcm`/`fpcm` sample entry with `sample_size == 0` used to divide by zero
+        // (`bps * ch == 0`) and panic the audio worker on import/playback.
+        let cfg = filmcraft_isobmff::PcmConfig {
+            bits: 0,
+            float: false,
+            big_endian: true,
+            signed: true,
+            channels: 2,
+            sample_rate: 48_000.0,
+        };
+        let out = decode_pcm(&[0u8; 64], &cfg);
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(Vec::is_empty));
     }
 }
