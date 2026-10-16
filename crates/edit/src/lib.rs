@@ -176,13 +176,16 @@ pub fn track_range_empty(track: &Track, range: TimeRange) -> bool {
     !track.items.iter().any(|i| i.range().overlaps(&range))
 }
 
-/// Drop transitions whose clips no longer exist or are no longer adjacent to them.
+/// Drop transitions whose clips no longer exist or are no longer adjacent to them (a transition
+/// between two clips must sit on their cut: the outgoing clip's end = the incoming clip's start).
+/// A one-sided fade needs only its clip. `Session::edit` runs this on every sequence an edit
+/// changed, so commands need not call it themselves.
 pub fn remove_orphan_transitions(track: &mut Track) {
     let ids: HashMap<ClipId, (Tick, Tick)> = track.items.iter().map(|i| (i.id, (i.start, i.end()))).collect();
-    track.transitions.retain(|tr| {
-        let from_ok = tr.from.is_none_or(|f| ids.contains_key(&f));
-        let to_ok = tr.to.is_none_or(|t| ids.contains_key(&t));
-        from_ok && to_ok && (tr.from.is_some() || tr.to.is_some())
+    track.transitions.retain(|tr| match (tr.from, tr.to) {
+        (Some(f), Some(t)) => matches!((ids.get(&f), ids.get(&t)), (Some(&(_, end)), Some(&(start, _))) if end == start),
+        (Some(c), None) | (None, Some(c)) => ids.contains_key(&c),
+        (None, None) => false,
     });
 }
 

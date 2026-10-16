@@ -1,7 +1,7 @@
 //! Tests of the M3.10 Edit / Clip / File menu commands (`clip_ops`): each one executes, checks the
 //! result, undoes / redoes where it edits, and checks its disabled state.
 
-use filmcraft_project::{AudioChannels, FieldProcessing, ItemId, ItemKind, Label, TimeInterpolation, TrackItem};
+use filmcraft_project::{AudioChannels, ClipId, FieldProcessing, ItemId, ItemKind, Label, TimeInterpolation, TrackItem};
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
 use serde_json::json;
 
@@ -915,6 +915,77 @@ fn speed_duration_moves_fade_out_to_the_new_clip_end() {
     assert_eq!((rate.frame_at(fade.start), rate.frame_at(fade.end())), (40, 50));
     assert_eq!(fade.from, Some(filmcraft_project::ClipId(c)));
     assert_eq!(fade.to, None);
+}
+
+/// An edit that moves a crossfade's clips apart drops the crossfade, whatever the command: a
+/// regular trim opening a gap, a razor through the outgoing clip, an insert on the cut. Ripple
+/// trims keep the cut, so the crossfade stays on it. `Session::edit` does this for every command.
+#[test]
+fn a_regular_trim_that_opens_a_gap_drops_the_crossfade() {
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name": "Trim crossfade", "video": 1, "audio": 0})).unwrap();
+    let rate = s.sequence_rate();
+    let matte = s.execute("file.newColorMatte", json!({"color": "#00aa00", "seconds": 5.0})).unwrap()["item"].as_u64().unwrap();
+    let dur = rate.tick_of(60);
+    let a = s.execute("timeline.place", json!({"item": matte, "track": "V1", "time": Tick::ZERO.0, "insert": true, "duration": dur.0})).unwrap()["clips"][0]
+        .as_u64()
+        .unwrap();
+    let b = s.execute("timeline.place", json!({"item": matte, "track": "V1", "time": dur.0, "insert": true, "duration": dur.0})).unwrap()["clips"][0]
+        .as_u64()
+        .unwrap();
+    s.execute("sequence.applyVideoTransition", json!({"clip": a, "edge": "out", "frames": 24})).unwrap();
+    let transitions = |s: &Session| s.active_sequence().unwrap().video_tracks[0].transitions.len();
+    assert_eq!(transitions(&s), 1);
+    // a's end trimmed back: gap before b, the crossfade goes away
+    s.execute("timeline.trim", json!({"clip": a, "edge": "out", "mode": "regular", "deltaFrames": -10})).unwrap();
+    assert_eq!(transitions(&s), 0, "a gap before b must drop the crossfade");
+    // b's start trimmed later is just as fatal
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(transitions(&s), 1);
+    s.execute("timeline.trim", json!({"clip": b, "edge": "in", "mode": "regular", "deltaFrames": 10})).unwrap();
+    assert_eq!(transitions(&s), 0, "a gap after a must drop the crossfade");
+    // ripples keep the cut, so the crossfade stays centred on it
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("timeline.trim", json!({"clip": a, "edge": "out", "mode": "ripple", "deltaFrames": -10})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.video_tracks[0].transitions.len(), 1, "a ripple trim keeps the crossfade");
+    let tr = &q.video_tracks[0].transitions[0];
+    let cut = q.video_tracks[0].items.iter().find(|i| i.id.0 == b).unwrap().start;
+    assert_eq!(tr.start + rate.tick_of(12), cut, "still centred on the surviving cut");
+    // a razor through the crossfade's outgoing half splits a away from b
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(transitions(&s), 1);
+    s.execute("timeline.razor", json!({"frame": 54})).unwrap();
+    assert_eq!(transitions(&s), 0, "a cut through the outgoing clip drops the crossfade");
+    // a clip inserted on the cut pushes b away from a
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("timeline.place", json!({"item": matte, "track": "V1", "time": dur.0, "insert": true, "duration": rate.tick_of(5).0})).unwrap();
+    assert_eq!(transitions(&s), 0, "an insert on the cut drops the crossfade");
+}
+
+/// The sweep runs on the sequences an edit changes only: a project saved with a stale transition
+/// still opens and keeps it, in a sequence no command touched.
+#[test]
+fn edits_leave_untouched_sequences_alone() {
+    let mut s = Session::default();
+    let old = s.execute("file.newSequence", json!({"name": "Old", "video": 1, "audio": 0})).unwrap()["sequence"].as_u64().unwrap();
+    {
+        let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(ItemId(old)).unwrap();
+        q.video_tracks[0].transitions.push(filmcraft_project::Transition {
+            id: filmcraft_project::TransitionId(9999),
+            effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+            start: Tick::ZERO,
+            duration: Tick(1),
+            from: Some(ClipId(1)),
+            to: Some(ClipId(2)),
+            align: Default::default(),
+            reverse: false,
+        });
+    }
+    s.execute("file.newSequence", json!({"name": "New", "video": 1, "audio": 0})).unwrap();
+    let matte = s.execute("file.newColorMatte", json!({"color": "#00aa00", "seconds": 5.0})).unwrap()["item"].as_u64().unwrap();
+    s.execute("timeline.place", json!({"item": matte, "track": "V1", "time": 0})).unwrap();
+    assert_eq!(s.project.sequence(ItemId(old)).unwrap().video_tracks[0].transitions.len(), 1);
 }
 
 /// A damaged project whose subclip is its own parent (#66): `media_duration` followed the chain

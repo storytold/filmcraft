@@ -527,6 +527,36 @@ fn fades_follow_a_non_ripple_speed_change() {
     fx.seq.check().unwrap();
 }
 
+/// A crossfade needs both clips and their cut; a fade needs only its clip.
+#[test]
+fn orphan_transitions_are_ones_whose_clips_are_gone_or_apart() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let a = fx.put(v1, 0, 10, 0);
+    let b = fx.put(v1, 10, 10, 0);
+    let c = fx.put(v1, 25, 10, 0);
+    let tr = |id, from, to| Transition {
+        id: TransitionId(id),
+        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        start: f(8),
+        duration: f(4),
+        from,
+        to,
+        align: Default::default(),
+        reverse: false,
+    };
+    let t = fx.seq.track_mut(v1).unwrap();
+    t.transitions = vec![
+        tr(1, Some(a), Some(b)),        // on the a|b cut: stays
+        tr(2, Some(b), Some(c)),        // b and c are 5 frames apart: goes
+        tr(3, Some(c), None),           // fade out of c: stays
+        tr(4, Some(ClipId(999)), None), // its clip is gone: goes
+        tr(5, None, None),              // joins nothing: goes
+    ];
+    remove_orphan_transitions(t);
+    assert_eq!(t.transitions.iter().map(|x| x.id.0).collect::<Vec<_>>(), vec![1, 3]);
+}
+
 #[test]
 fn transitions_travel_with_moved_clips() {
     // V1: a [0,10) fading in, b [10,20), c [20,30); b→c crossfade, c fading out

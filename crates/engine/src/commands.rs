@@ -3304,7 +3304,6 @@ fn build() -> Vec<CommandSpec> {
                     if let Some(q) = pr.sequence_mut(sid) {
                         for t in q.all_tracks_mut() {
                             t.items.retain(|x| !gone.contains(&x.item));
-                            filmcraft_edit::remove_orphan_transitions(t);
                         }
                     }
                 }
@@ -3775,7 +3774,6 @@ fn nest(s: &mut Session, p: &Value) -> Result<Value> {
             }
             for t in nq.all_tracks_mut() {
                 t.sort();
-                edit::remove_orphan_transitions(t);
             }
             nq.check().map_err(EngineError::Other)?;
         }
