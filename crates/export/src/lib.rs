@@ -369,6 +369,18 @@ pub struct ExportSettings {
     /// 18 is visually near-lossless.
     #[serde(default = "default_crf")]
     pub crf: f32,
+    /// Constant QP parameter of [`BitrateMode::Cqp`], 0 (best) to 51 (smallest); None = default (23).
+    #[serde(default)]
+    pub qp: Option<u32>,
+    /// Lookahead frames for rate control (hardware encoders).
+    #[serde(default)]
+    pub lookahead: Option<u32>,
+    /// Multipass rate control for hardware encoders (e.g. NVENC two-pass quarter/full res, AMF two-pass).
+    #[serde(default)]
+    pub multipass: bool,
+    /// Spatial Adaptive Quantization for hardware encoders.
+    #[serde(default)]
+    pub spatial_aq: bool,
     /// May H.264 be encoded by the system's hardware encoder (VideoToolbox on macOS, NVENC on
     /// Windows)? Off unless asked for: hardware output depends on the machine, so it is not
     /// byte-reproducible like the built-in encoder's (`determinism_tests`).
@@ -574,6 +586,10 @@ impl Default for ExportSettings {
             h264_level: None,
             bitrate_mode: BitrateMode::default(),
             crf: DEFAULT_CRF,
+            qp: default_qp(),
+            lookahead: None,
+            multipass: false,
+            spatial_aq: false,
             hardware_encoding: HardwareEncoding::default(),
             gpu_rendering: GpuRendering::Off,
             max_bitrate_kbps: None,
@@ -598,6 +614,10 @@ pub const DEFAULT_CRF: f32 = 23.0;
 
 fn default_crf() -> f32 {
     DEFAULT_CRF
+}
+
+fn default_qp() -> Option<u32> {
+    Some(23)
 }
 
 impl ExportSettings {
@@ -639,22 +659,25 @@ impl ExportSettings {
         if self.effects.image_overlay.enabled && self.effects.image_overlay.path.trim().is_empty() {
             return Err(ExportError::Unsupported("image overlay: no image file chosen".into()));
         }
-        if self.format == Format::Hevc && self.bitrate_mode == BitrateMode::Vbr2Pass {
-            return Err(ExportError::Unsupported("H.265 export has no two-pass mode: choose CBR or VBR, 1 pass".into()));
-        }
-        if self.format == Format::Av1 && self.bitrate_mode == BitrateMode::Vbr2Pass {
-            return Err(ExportError::Unsupported("AV1 export has no two-pass mode: choose CBR or VBR, 1 pass".into()));
+        if (self.format == Format::Hevc || self.format == Format::Av1) && self.bitrate_mode == BitrateMode::Vbr2Pass {
+            return Err(ExportError::Unsupported(format!("{} export has no two-pass mode: choose CBR, VBR or CQP", self.format.label())));
         }
         if self.bitrate_mode == BitrateMode::Crf {
             if self.format == Format::Hevc {
-                return Err(ExportError::Unsupported("H.265 export has no CRF mode: choose CBR or VBR, 1 pass".into()));
+                return Err(ExportError::Unsupported("H.265 export has no CRF mode: choose CBR, VBR or CQP".into()));
             }
             if self.format == Format::Av1 {
-                return Err(ExportError::Unsupported("AV1 export has no CRF mode: choose CBR or VBR, 1 pass".into()));
+                return Err(ExportError::Unsupported("AV1 export has no CRF mode: choose CBR, VBR or CQP".into()));
             }
             if !self.crf.is_finite() || !(0.0..=51.0).contains(&self.crf) {
                 return Err(ExportError::Unsupported("CRF must be between 0 and 51".into()));
             }
+        }
+        if self.bitrate_mode == BitrateMode::Cqp
+            && let Some(qp) = self.qp
+            && qp > 51
+        {
+            return Err(ExportError::Unsupported("QP must be between 0 and 51".into()));
         }
         Ok(())
     }

@@ -3577,3 +3577,9 @@
 	Export the labels to a preset file…	Exporter les étiquettes dans un fichier de paramètre prédéfini…
 	Show the presets folder	Afficher le dossier des paramètres prédéfinis
 	Delete this preset	Supprimer ce paramètre prédéfini
+	CQP (constant quantizer)	CQP (quantificateur constant)
+	Hardware or built-in	Matériel ou intégré
+	Lookahead	Anticipation
+	Multipass	Multipasses
+	Quantizer (QP)	Quantificateur (QP)
+	Spatial AQ	AQ spatiale

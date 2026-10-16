@@ -3609,3 +3609,9 @@
 	Shows the version, community links and credits in a FilmCraft window.	バージョン、コミュニティへのリンク、クレジットを FilmCraft のウィンドウに表示します。
 	Couldn't open your web browser	ウェブブラウザーを開けませんでした
 	Open this address in your browser yourself:	このアドレスをご自身でブラウザーで開いてください：
+	CQP (constant quantizer)	CQP (固定量子化)
+	Hardware or built-in	ハードウェアまたは内蔵
+	Lookahead	先読み
+	Multipass	マルチパス
+	Quantizer (QP)	量子化パラメーター (QP)
+	Spatial AQ	空間適応量子化 (AQ)
