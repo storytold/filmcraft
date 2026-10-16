@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: ROADMAP's "Where we are lacking" re-measured against Premiere Pro 26.5.2 and the open issue list) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-12 · **Change:** minor (G14 heading, summary row and counts re-measured) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -27,7 +27,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | G11 | No plugin hosting | ecosystem | no | 200–400 h |
 | G12 | AI features | AI | no | 150–300 h |
 | G13 | Delivery formats | file format | no | 60–110 h |
-| G14 | Localization: 8 of the 12 key languages missing | localization | no | 150–230 h |
+| G14 | Localization: 3 of the 12 key languages missing | localization | no | 150–230 h |
 | G15 | Interchange never validated in Avid / Pro Tools; slow XML import | file format | partly | 20–40 h |
 | G16 | Performance reports on 0.5.0 | performance | partly | 30–60 h |
 | G17 | Audio device and playback reliability | stability | partly | 20–40 h |
@@ -231,17 +231,19 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   (audio-only `.m4a`, or ADTS `.aac`; #814); ProRes 4444 / 4444 XQ in the export UI (#342).
 - **Estimate:** 60–110 h. Doc: [file-format-parity.md](file-format-parity.md).
 
-## G14. Localization: 8 of the 12 key languages missing
+## G14. Localization: 3 of the 12 key languages missing
 
-- **Have:** Spanish, Japanese, Simplified Chinese, French (#498) and Portuguese (Brazil) (#859)
-  catalogs cover ~99.6–100% of the ~3,500 cataloged strings; Ukrainian ~10% (menus).
+- **Have:** Spanish, Japanese, Simplified Chinese, French (#498, #804), Portuguese (Brazil) (#859,
+  #866), Indonesian (#867, #878), Korean (#508) and Italian catalogs cover 99.1–99.9% of the 3,576 cataloged strings
+  (measured 2026-10-12 from `crates/ui-egui/src/i18n/*.tsv`: distinct context + source pairs);
+  German (#630, 374 strings), Russian (#610, 352) and Ukrainian (352) are menus only (~10% each).
 - **Missing:** Hindi, Arabic (no RTL interface layout or catalog; the interface has Arabic and Hebrew
   fallback fonts and shows captions in reading order, but other names and fields keep egui's
   left-to-right run order; Arabic titles reported broken, #395),
-  German beyond menus (#490), Korean (#508; needs Hangul fonts in craft-fonts),
-  Vietnamese; Premiere also ships Russian. Engine errors,
+  Vietnamese (no catalog on main); German
+  beyond menus (#490); Premiere also ships Russian beyond menus. Engine errors,
   CLI and MCP stay English. No language has a recorded native-speaker review.
-- **Done:** Indonesian (#867): `id.tsv` has every entry of the Spanish catalog (~100%), in Edit ▸
+- **Done:** Indonesian (#867): `id.tsv` covers 3,544 of 3,576 strings (99.1%), in Edit ▸
   Language, Settings ▸ General and the native macOS menu; System Language picks it for `id-*` (and
   legacy `in-*`) locales. Native-speaker review welcome.
 - **Done:** Italian: `it.tsv` has every entry of the Spanish catalog (~100%), in Edit ▸ Language,
@@ -313,6 +315,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-12 | minor | G14: heading and summary row now say 3 of the 12 key languages missing (Hindi, Arabic, Vietnamese; German menus only; Korean and Italian merged from upstream); catalog counts re-measured on main (union 3,576 strings); other entries untouched (see #1412) |
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
