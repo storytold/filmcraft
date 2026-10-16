@@ -110,9 +110,9 @@ fn parity(name: &str, s: &Stream) {
 
     // reset + reseek to each later sync sample, decode a stretch. After a seek to a non-IDR I picture
     // (open GOP), the pictures shown before it are predicted from frames that were never decoded:
-    // both decoders conceal them (the software decoder from mid-gray stand-ins, the hardware also
-    // from motion data those stand-ins do not have), so only the pictures from the seek point on
-    // must match, as they must.
+    // both decoders conceal them differently (the software decoder predicts from mid-gray
+    // stand-ins, the hardware path copies the latest picture it decoded and submits nothing), so
+    // only the pictures from the seek point on must match, as they must.
     let info = NalStreamInfo::from_entry(&s.entry).unwrap().unwrap();
     let syncs: Vec<usize> = (1..s.samples.len()).filter(|&i| s.sync[i]).collect();
     assert!(!syncs.is_empty(), "{name}: more than one GOP");
