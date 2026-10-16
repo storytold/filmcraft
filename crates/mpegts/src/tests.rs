@@ -331,6 +331,143 @@ fn timestamps_unwrap_across_the_33_bit_wrap() {
     assert_eq!(u.unwrap(4200), (1 << 33) + 4200);
 }
 
+/// Audio-only TS: `n` PES packets of two MPEG-1 layer II frames each (7 transport packets apiece).
+fn audio_ts(n: u8) -> Vec<u8> {
+    let mut mux = TsMux::new(false);
+    mux.psi(&[(0x03, 0x1100)]);
+    for k in 0..n {
+        let a: Vec<u8> = [mp2_frame(2 * k), mp2_frame(2 * k + 1)].concat();
+        mux.pes(0x1100, &pes(0xC0, Some(90_000 + 4320 * k as i64), None, &a, true));
+    }
+    mux.out
+}
+
+/// Byte offset of the `n`-th (0-based) packet of `pid` that has no unit start.
+fn nth_continuation(data: &[u8], pid: u16, n: usize) -> usize {
+    (0..data.len() / 188)
+        .map(|i| i * 188)
+        .filter(|&o| data[o] == 0x47 && (((data[o + 1] & 0x1F) as u16) << 8 | data[o + 2] as u16) == pid && data[o + 1] & 0x40 == 0)
+        .nth(n)
+        .expect("packet exists")
+}
+
+fn audio_bytes(f: &File, data: &[u8]) -> Vec<Vec<u8>> {
+    let a = f.find(Kind::Audio, |_| true).unwrap();
+    (0..f.streams[a].units.len()).map(|i| f.read_unit(data, a, i).unwrap()).collect()
+}
+
+#[test]
+fn packet_with_transport_error_indicator_is_dropped() {
+    let clean = audio_ts(6);
+    let base = open(&clean).unwrap();
+    assert!(base.warnings.is_empty(), "{:?}", base.warnings);
+    let mut data = clean.clone();
+    let o = nth_continuation(&data, 0x1100, 10);
+    data[o + 1] |= 0x80;
+    // a corrupted payload must not reach the splitter either
+    data[o + 20] ^= 0xFF;
+    let f = open(&data).unwrap();
+    assert!(f.warnings.iter().any(|w| w.contains("1 packet(s) with the transport error indicator")), "{:?}", f.warnings);
+    let a = f.find(Kind::Audio, |_| true).unwrap();
+    let total = |f: &File| f.streams[a].units.iter().map(|u| u.size as u64).sum::<u64>();
+    assert!(total(&f) < total(&base), "the 184 payload bytes of the flagged packet are gone");
+    for unit in audio_bytes(&f, &data) {
+        assert!(!unit.is_empty());
+    }
+}
+
+#[test]
+fn scrambled_packet_is_skipped_with_a_warning() {
+    let clean = audio_ts(6);
+    let base = open(&clean).unwrap();
+    let mut data = clean.clone();
+    let o = nth_continuation(&data, 0x1100, 10);
+    data[o + 3] |= 0x80; // transport_scrambling_control = 2 (even key)
+    let f = open(&data).unwrap();
+    assert!(f.warnings.iter().any(|w| w.contains("1 scrambled packet(s) skipped")), "{:?}", f.warnings);
+    assert!(!f.warnings.iter().any(|w| w.contains("continuity")), "{:?}", f.warnings);
+    let a = f.find(Kind::Audio, |_| true).unwrap();
+    let total = |f: &File| f.streams[a].units.iter().map(|u| u.size as u64).sum::<u64>();
+    assert!(total(&f) < total(&base));
+}
+
+#[test]
+fn duplicate_packet_is_dropped_but_a_different_payload_with_the_same_counter_is_kept() {
+    let clean = audio_ts(6);
+    let base = open(&clean).unwrap();
+    let expect = audio_bytes(&base, &clean);
+    let o = nth_continuation(&clean, 0x1100, 10);
+    // exact duplicate right behind the original
+    let mut dup = clean.clone();
+    let copy = dup[o..o + 188].to_vec();
+    dup.splice(o + 188..o + 188, copy);
+    let f = open(&dup).unwrap();
+    assert!(f.warnings.iter().any(|w| w.contains("1 duplicate packet(s) dropped")), "{:?}", f.warnings);
+    assert!(!f.warnings.iter().any(|w| w.contains("continuity")), "{:?}", f.warnings);
+    assert_eq!(audio_bytes(&f, &dup), expect, "the repeated payload is not fed twice");
+    // same counter but other content: not a duplicate, kept
+    let mut other = clean.clone();
+    let mut copy = other[o..o + 188].to_vec();
+    copy[187] ^= 0x55;
+    other.splice(o + 188..o + 188, copy);
+    let f = open(&other).unwrap();
+    assert!(!f.warnings.iter().any(|w| w.contains("duplicate")), "{:?}", f.warnings);
+    let a = f.find(Kind::Audio, |_| true).unwrap();
+    let total = |f: &File| f.streams[a].units.iter().map(|u| u.size as u64).sum::<u64>();
+    assert!(total(&f) > total(&base), "the differing packet's payload is kept");
+}
+
+/// A PMT section for program 1 with the given version / current_next / streams (valid CRC).
+fn pmt_section(version: u8, current_next: bool, streams: &[(u8, u16)]) -> Vec<u8> {
+    let mut pmt = vec![0x02, 0xB0, 0, 0, 1, 0xC0 | (version << 1) | current_next as u8, 0, 0, 0xE1, 0x00, 0xF0, 0];
+    for &(st, pid) in streams {
+        pmt.extend([st, 0xE0 | (pid >> 8) as u8, pid as u8, 0xF0, 0]);
+    }
+    let len = pmt.len() - 3 + 4;
+    pmt[1] = 0xB0 | (len >> 8) as u8;
+    pmt[2] = len as u8;
+    pmt
+}
+
+#[test]
+fn first_pmt_wins_later_changes_are_ignored_with_one_warning() {
+    let mut mux = TsMux::new(false);
+    mux.psi(&[(0x03, 0x1100)]);
+    let audio = |mux: &mut TsMux, k: u8| {
+        let a: Vec<u8> = [mp2_frame(2 * k), mp2_frame(2 * k + 1)].concat();
+        mux.pes(0x1100, &pes(0xC0, Some(90_000 + 4320 * k as i64), None, &a, true));
+    };
+    audio(&mut mux, 0);
+    // version 1: the PID becomes AAC and a second stream appears; version 2: PID removed
+    mux.section(0x100, &pmt_section(1, true, &[(0x0F, 0x1100), (0x03, 0x1200)]));
+    audio(&mut mux, 1);
+    mux.section(0x100, &pmt_section(2, true, &[(0x03, 0x1200)]));
+    mux.section(0x100, &pmt_section(2, true, &[(0x03, 0x1200)]));
+    audio(&mut mux, 2);
+    let f = open(&mux.out).unwrap();
+    assert_eq!(f.streams.len(), 1, "{:?}", f.streams.iter().map(|s| s.id).collect::<Vec<_>>());
+    assert_eq!(f.streams[0].id, StreamId::Pid(0x1100));
+    assert_eq!(f.streams[0].codec, Codec::MpegAudio);
+    assert_eq!(f.streams[0].units.len(), 6, "audio kept flowing through the first PMT's splitter");
+    assert_eq!(f.warnings.iter().filter(|w| w.contains("program map table changed")).count(), 1, "{:?}", f.warnings);
+}
+
+#[test]
+fn pmt_not_yet_applicable_is_ignored() {
+    let mut mux = TsMux::new(false);
+    let pat = [0x00, 0xB0, 13, 0, 1, 0xC1, 0, 0, 0, 1, 0xE1, 0x00];
+    mux.section(0, &pat);
+    // current_next_indicator 0: describes a future table, must not be used
+    mux.section(0x100, &pmt_section(3, false, &[(0x03, 0x1200)]));
+    mux.section(0x100, &pmt_section(0, true, &[(0x03, 0x1100)]));
+    let a: Vec<u8> = [mp2_frame(0), mp2_frame(1)].concat();
+    mux.pes(0x1100, &pes(0xC0, Some(90_000), None, &a, true));
+    let f = open(&mux.out).unwrap();
+    assert_eq!(f.streams.len(), 1);
+    assert_eq!(f.streams[0].id, StreamId::Pid(0x1100));
+    assert!(f.warnings.is_empty(), "{:?}", f.warnings);
+}
+
 fn adts_frame(k: u8) -> Vec<u8> {
     let mut v = vec![0xFF, 0xF1, 0x50, 0x80, 0x0C, 0x9F, 0xFC];
     v.extend([k; 93]);
