@@ -3,7 +3,29 @@ use filmcraft_geom::{Affine, Vec2};
 use filmcraft_render::Blend;
 use filmcraft_render::plan::execute_cpu;
 
+/// One GPU test at a time in this process: the calling test thread holds a process-wide lock
+/// until it exits (libtest runs every test on a thread of its own). Several tests opening their
+/// own devices and submitting at once crash inside the Vulkan driver some of the time (RADV on
+/// Linux: a segfault in `libvulkan.so.1` under `vkCreateDevice` or `queue.submit`, 7 of 10 runs
+/// without this lock, 0 of 10 with it). Every test that opens a device or adapter
+/// calls this first; calling it again on the same thread is a no-op.
+pub(crate) fn hold_gpu_lock() {
+    use std::cell::RefCell;
+    use std::sync::{Mutex, MutexGuard, PoisonError};
+    static GPU_LOCK: Mutex<()> = Mutex::new(());
+    thread_local! {
+        static HELD: RefCell<Option<MutexGuard<'static, ()>>> = const { RefCell::new(None) };
+    }
+    HELD.with(|h| {
+        let mut h = h.borrow_mut();
+        if h.is_none() {
+            *h = Some(GPU_LOCK.lock().unwrap_or_else(PoisonError::into_inner));
+        }
+    });
+}
+
 fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
+    hold_gpu_lock();
     let instance = wgpu::Instance::default();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()

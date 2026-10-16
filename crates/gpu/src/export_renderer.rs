@@ -256,6 +256,7 @@ mod tests {
 
     #[test]
     fn solid_frame_matches_cpu() {
+        crate::tests::hold_gpu_lock();
         let Some(mut r) = ExportRenderer::new() else {
             eprintln!("SKIPPED (gpu export parity): no adapter");
             return;
@@ -274,6 +275,7 @@ mod tests {
 
     #[test]
     fn transformed_frame_matches_cpu() {
+        crate::tests::hold_gpu_lock();
         let Some(mut r) = ExportRenderer::new() else {
             eprintln!("SKIPPED (gpu export parity): no adapter");
             return;
@@ -294,6 +296,7 @@ mod tests {
                 self.0.render(project, seq, t, opts, sources)
             }
         }
+        crate::tests::hold_gpu_lock();
         let Some(r) = ExportRenderer::new() else {
             eprintln!("SKIPPED (gpu export parity): no adapter");
             return;
