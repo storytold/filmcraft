@@ -1865,11 +1865,24 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("clip.link", "Link", ["Clip"], Some("Cmd+L"), r#"{"clips":[id]?}"#, has_selection, |s, p| {
             let sel = clips_p(s, p);
-            let linked = sel.iter().all(|c| s.active_sequence().and_then(|q| q.find_item(*c)).is_some_and(|(_, i)| i.link.is_some()));
+            // Unlink when any selected clip is linked, as the Timeline's context menu says (#1103):
+            // a title or a music clip among the selection must not turn Unlink into a re-link
+            let linked = sel.iter().any(|c| s.active_sequence().and_then(|q| q.find_item(*c)).is_some_and(|(_, i)| i.link.is_some()));
             s.edit_sequence(if linked { "Unlink" } else { "Link" }, |q, ctx, _| {
                 if linked {
+                    let mut links = Vec::new();
                     for c in &sel {
                         if let Some((_, i)) = q.find_item_mut(*c) {
+                            links.extend(i.link.take());
+                        }
+                    }
+                    // a partner left alone in its link (one half unlinked on its own) is unlinked
+                    // too: a one-member link would read as "linked" with nothing to follow
+                    for l in links {
+                        let members: Vec<ClipId> = q.all_tracks().flat_map(|t| t.items.iter()).filter(|i| i.link == Some(l)).map(|i| i.id).collect();
+                        if let [lonely] = members[..]
+                            && let Some((_, i)) = q.find_item_mut(lonely)
+                        {
                             i.link = None;
                         }
                     }
