@@ -45,7 +45,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if r.changed() {
         let key = ui.data(|d| d.get_temp::<u64>(typing)).unwrap_or(0);
         if let Err(e) = app.session.execute("project.setNotes", json!({"text": text, "merge": key.to_string()})) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
     }
     let label: String = app.session.project.notes.chars().take(LABEL_CHARS).collect();

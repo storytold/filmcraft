@@ -225,7 +225,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
         _ => return None,
     };
     if let Err(e) = &r {
-        app.ui.status = e.clone();
+        app.ui.fail(e.clone());
     }
     Some(r)
 }

@@ -1033,7 +1033,7 @@ pub(crate) fn run(app: &mut FilmcraftApp, ctx: &egui::Context, actions: Vec<(Str
             wrote = true;
         }
         if let Err(e) = app.session.execute(&cmd, p) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
     }
     if down && (wrote || begun.is_some()) {

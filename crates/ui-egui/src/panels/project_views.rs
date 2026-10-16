@@ -336,7 +336,7 @@ fn bin_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: u64, actio
         if b.clicked() {
             let r = open_bin(app, v.inst, bin, Some(&format!("open{}{}", how[..1].to_uppercase(), &how[1..])), egui::Modifiers::NONE);
             if let Err(e) = r {
-                app.ui.status = e;
+                app.ui.fail(e);
             }
             ui.close();
         }
@@ -716,7 +716,7 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         if resp.double_clicked() {
             let mods = click_modifiers(ui);
             if let Err(e) = open_bin(app, v.inst, b.id.0, None, mods) {
-                app.ui.status = e;
+                app.ui.fail(e);
             }
         }
         resp.context_menu(|ui| bin_menu(app, ui, v, b.id.0, actions));
@@ -941,7 +941,7 @@ fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &Vie
     if resp.double_clicked() {
         let mods = click_modifiers(ui);
         if let Err(e) = open_bin(app, v.inst, b.id.0, None, mods) {
-            app.ui.status = e;
+            app.ui.fail(e);
         }
     }
     resp.context_menu(|ui| bin_menu(app, ui, v, b.id.0, actions));

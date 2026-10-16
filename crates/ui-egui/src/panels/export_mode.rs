@@ -289,7 +289,7 @@ fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if let Some((cmd, p)) = action
         && let Err(e) = app.session.execute(cmd, p)
     {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
 }
 
@@ -1152,7 +1152,7 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
         let r = app.session.execute("file.exportMedia", export_params(app));
         match r {
             Ok(v) => app.ui.status = tlf!("Exporting {path}", path = v["path"].as_str().unwrap_or("")),
-            Err(e) => app.ui.status = e.to_string(),
+            Err(e) => app.ui.fail(e.to_string()),
         }
     }
     if qresp.clicked() {
@@ -1163,7 +1163,7 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
         }
         match app.session.execute("export.queue.add", p) {
             Ok(_) => app.ui.status = tl!("Added to the export queue").into(),
-            Err(e) => app.ui.status = e.to_string(),
+            Err(e) => app.ui.fail(e.to_string()),
         }
     }
 }
@@ -1300,13 +1300,13 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
     if let Some((c, p)) = cmd
         && let Err(e) = app.session.execute(c, p)
     {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
     match pick {
         Some("import") => app.pick_ui(FileDialog::open_file(tl!("Export presets"), &["json"]), |app, paths| match paths.into_iter().next() {
             Some(path) => {
                 if let Err(e) = app.session.execute("export.presets.import", json!({"path": path})) {
-                    app.ui.status = e.to_string();
+                    app.ui.fail(e.to_string());
                 }
             }
             None => app.ui.status = tl!("Import: no file chosen (agents: export.presets.import {path})").into(),
@@ -1316,7 +1316,7 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
             app.pick_ui(FileDialog::save_as(tl!("Export presets"), &["json"], &format!("{selected}.json")), move |app, paths| match paths.into_iter().next() {
                 Some(path) => {
                     if let Err(e) = app.session.execute("export.presets.export", json!({"path": path, "names": [selected]})) {
-                        app.ui.status = e.to_string();
+                        app.ui.fail(e.to_string());
                     }
                 }
                 None => app.ui.status = tl!("Export: no file chosen (agents: export.presets.export {path, names})").into(),
@@ -1481,7 +1481,7 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
         let p = json!({"preset": app.ui.export.quick_preset, "path": app.ui.export.quick_path});
         match app.session.execute("export.quick", p) {
             Ok(v) => app.ui.status = tlf!("Quick Export: {path}", path = v["path"].as_str().unwrap_or("")),
-            Err(e) => app.ui.status = e.to_string(),
+            Err(e) => app.ui.fail(e.to_string()),
         }
         close = true;
     }

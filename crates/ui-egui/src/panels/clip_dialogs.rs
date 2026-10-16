@@ -98,7 +98,7 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     }
     meta(id)?;
     if let Err(e) = filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session)) {
-        app.ui.status = e.clone();
+        app.ui.fail(e.clone());
         return Some(Err(e));
     }
     let (params, info) = defaults(app, id);
@@ -612,7 +612,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     app.file_dialog("file.save", &json!({})).map(|_| ())
                 };
                 if let Err(e) = saved {
-                    app.ui.status = e;
+                    app.ui.fail(e);
                     app.ui.clip_dialog = None;
                     return;
                 }
@@ -626,7 +626,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             // snapshot, so the next launch doesn't offer them back
             let close = d.command != "app.quit" || app.session.is_dirty();
             if close && let Err(e) = app.session.execute("file.closeProject", json!({"force": true})) {
-                app.ui.status = e.to_string();
+                app.ui.fail(e.to_string());
             }
             if d.command == "app.quit" {
                 app.quit_confirmed = true;

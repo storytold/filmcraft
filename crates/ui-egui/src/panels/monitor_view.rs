@@ -758,7 +758,7 @@ pub fn wrench_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which) {
     for (key, r, label, clicked) in out {
         app.auto.add(&format!("{pfx}.settings.{key}"), r, &label);
         if clicked && let Some(Err(e)) = route(app, &format!("view.{key}"), &json!({"monitor": pfx})) {
-            app.ui.status = e;
+            app.ui.fail(e);
         }
     }
 }
@@ -905,7 +905,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
     app.ui.guide_dialog = Some(d);
     if let Some((id, p)) = act {
         match route(app, &id, &p) {
-            Some(Err(e)) => app.ui.status = e,
+            Some(Err(e)) => app.ui.fail(e),
             _ => close |= !keep_open || id == "view.guideTemplates.apply",
         }
     }

@@ -168,7 +168,7 @@ fn audio_gain(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             _ => draft.adjust_db,
         };
         if let Err(e) = app.session.execute("clip.audioGain", serde_json::json!({"mode": draft.mode, "db": db})) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
         keep = false;
     }
@@ -303,7 +303,7 @@ fn add_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                 "submix": d.submix, "submixAfter": d.submix_after, "submixType": d.submix_type,
             });
             if let Err(e) = app.session.execute("sequence.addTracks", params) {
-                app.ui.status = e.to_string();
+                app.ui.fail(e.to_string());
             }
         }
         keep = false;
@@ -401,7 +401,7 @@ fn delete_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             p.insert("captions".into(), serde_json::json!(draft.captions_target));
         }
         if let Err(e) = app.session.execute("sequence.deleteTracks", serde_json::Value::Object(p)) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
         keep = false;
     }

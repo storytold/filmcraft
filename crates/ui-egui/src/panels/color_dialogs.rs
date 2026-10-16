@@ -132,6 +132,6 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     if let Some((cmd, p)) = apply
         && let Err(e) = app.session.execute(cmd, p)
     {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
 }

@@ -441,7 +441,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     }
     for (c, p) in actions {
         if let Err(e) = app.session.execute(&c, p) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
     }
 }
@@ -693,7 +693,7 @@ fn pen_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, frame: (u32
             .session
             .execute("masks.add", json!({"clip": draft.clip, "effect": draft.effect, "shape": "bezier", "path": filmcraft_engine::masks::path_to_json(&path)}));
         if let Err(e) = r {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         } else {
             app.ui.status.clear();
         }

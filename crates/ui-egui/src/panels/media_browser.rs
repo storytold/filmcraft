@@ -84,7 +84,7 @@ fn exec(app: &mut FilmcraftApp, ctx: &egui::Context, cmd: &str, p: Value) -> Opt
     match crate::menus::invoke(app, ctx, cmd, p) {
         Ok(v) => Some(v),
         Err(e) => {
-            app.ui.status = e;
+            app.ui.fail(e);
             None
         }
     }
@@ -860,7 +860,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
     if ok {
         let r = app.session.execute("mediaBrowser.settings", json!({"columns": cols}));
         if let Err(e) = r {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
         close = true;
     }

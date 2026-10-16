@@ -126,7 +126,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if let Some(name) = lumetri_apply
         && let Err(e) = app.session.execute("lumetri.applyPreset", json!({"name": name}))
     {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
     if let Some((cmd, name)) = preset_action {
         crate::panels::presets::run(app, &cmd, &name);
@@ -134,7 +134,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if let Some(id) = apply {
         let r = app.session.execute("effects.apply", json!({"effect": id}));
         if let Err(e) = r {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
     }
 }

@@ -380,7 +380,7 @@ pub fn floating(app: &mut FilmcraftApp, ctx: &egui::Context) {
 fn run(app: &mut FilmcraftApp, ctx: &egui::Context, actions: Actions) {
     for (cmd, p) in actions {
         if let Err(e) = crate::menus::invoke(app, ctx, &cmd, p) {
-            app.ui.status = e;
+            app.ui.fail(e);
         }
     }
 }
@@ -1022,7 +1022,7 @@ pub fn commit_rename(app: &mut FilmcraftApp) {
         _ => return,
     };
     if let Err(e) = res {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
 }
 

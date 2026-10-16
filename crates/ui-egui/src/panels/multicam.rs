@@ -417,7 +417,7 @@ pub fn grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) {
     if let Some((n, video_only)) = click
         && let Err(e) = app.session.execute("multicam.cut", json!({"camera": n, "videoOnly": video_only}))
     {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
 }
 
@@ -511,7 +511,7 @@ pub fn show_edit_cameras(app: &mut FilmcraftApp, ctx: &egui::Context) {
             match app.session.execute("multicam.editCameras", json!({"sequence": src.0, "cameras": cameras})) {
                 Ok(_) => app.ui.edit_cameras = None,
                 Err(e) => {
-                    app.ui.status = e.to_string();
+                    app.ui.fail(e.to_string());
                     app.ui.edit_cameras = Some(d);
                 }
             }
@@ -537,7 +537,7 @@ pub fn on_stop(app: &mut FilmcraftApp) {
         match app.session.execute("multicam.recordStop", json!({"time": t.0})) {
             Ok(v) if v["cuts"].as_u64().unwrap_or(0) > 0 => app.ui.status = tlf!("Recorded {n} multi-camera cut(s)", n = v["cuts"]),
             Ok(_) => {}
-            Err(e) => app.ui.status = e.to_string(),
+            Err(e) => app.ui.fail(e.to_string()),
         }
     }
 }

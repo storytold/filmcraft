@@ -243,7 +243,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     crate::panels::effect_controls::run(app, ui.ctx(), actions.into_iter().map(|a| ("effects.setParam".to_string(), a)).collect());
     for sec in sections {
         if let Err(err) = app.session.execute("lumetri.setSection", json!({"clip": clip.0, "section": sec})) {
-            app.ui.status = err.to_string();
+            app.ui.fail(err.to_string());
         }
     }
     for (cmd, mut p) in lut_actions {
@@ -251,7 +251,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             // Comparison View on / off (a Program monitor display mode)
             let d = p["display"].as_str().unwrap_or("composite").to_string();
             if let Some(Err(err)) = crate::panels::monitor_view::route(app, &format!("view.display.{d}"), &json!({"monitor": "program"})) {
-                app.ui.status = err;
+                app.ui.fail(err);
             }
             continue;
         }
@@ -260,14 +260,14 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             app.pick_ui(FileDialog::open_file(tl!("LUT"), &["cube", "3dl"]), move |app, paths| {
                 let Some(path) = paths.into_iter().next() else { return };
                 if let Err(err) = app.session.execute(&cmd, json!({"path": path, "clip": clip})) {
-                    app.ui.status = err.to_string();
+                    app.ui.fail(err.to_string());
                 }
             });
             continue;
         }
         p["clip"] = json!(clip.0);
         if let Err(err) = app.session.execute(cmd, p) {
-            app.ui.status = err.to_string();
+            app.ui.fail(err.to_string());
         }
     }
 }

@@ -193,7 +193,7 @@ pub fn effect_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, id
     for mut c in changes {
         c["transition"] = json!(id.0);
         if let Err(e) = app.session.execute("sequence.setTransition", c) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
     }
 }
@@ -541,7 +541,7 @@ pub fn duration_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         if cur != Some(d.frames)
             && let Err(e) = app.session.execute("sequence.setTransition", json!({"transition": id.0, "frames": d.frames}))
         {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
         keep = false;
     }
