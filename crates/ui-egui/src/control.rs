@@ -124,6 +124,20 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             ok(serde_json::to_value(app.auto.query(prefix)).unwrap_or_default())
         }
         "ui.set" => {
+            if let Some(value) = p.get("fontSearch") {
+                let queries = match serde_json::from_value::<std::collections::BTreeMap<String, String>>(value.clone()) {
+                    Ok(queries) => queries,
+                    Err(e) => return err(format!("fontSearch: {e}")),
+                };
+                if queries.keys().any(|key| !matches!(key.as_str(), "graphics" | "captions" | "template" | "replace")) {
+                    return err("fontSearch keys must be graphics, captions, template or replace");
+                }
+                app.ui.font_search.extend(queries);
+            }
+            if let Some(value) = p.get("speedDurationRipple") {
+                let Some(value) = value.as_bool() else { return err("speedDurationRipple must be a boolean") };
+                app.ui.speed_duration_ripple = value;
+            }
             // Text to Speech panel draft (voice, pitch, pace, text…), merged into the current one
             if let Some(patch) = p.get("tts") {
                 let mut cur = serde_json::to_value(&app.ui.tts).unwrap_or_default();

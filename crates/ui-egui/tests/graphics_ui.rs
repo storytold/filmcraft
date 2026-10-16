@@ -161,6 +161,40 @@ fn text_param(d: &mut Driver, clip: u64, param: &str) -> Option<filmcraft_projec
     Some(e.param(param)?.value_at(filmcraft_time::Tick::ZERO))
 }
 
+#[test]
+fn font_search_filters_without_changing_the_title_until_selection() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let r = d.exec("graphics.newText", json!({"text": "Searchable fonts"}));
+    d.ok("ui.set", json!({"fontSearch": {"graphics": "", "captions": "Sans"}}));
+    assert_eq!(d.harness.state().ui.font_search["captions"], "Sans");
+    assert_eq!(d.call("ui.set", json!({"fontSearch": {"graphics": 42}}))["ok"], false);
+    assert_eq!(d.harness.state().ui.font_search["graphics"], "");
+    let clip = r["clip"].as_u64().unwrap();
+    d.exec("graphics.selectLayer", json!({"clip": clip, "layers": [0]}));
+    d.frames(4);
+    let before = text_param(&mut d, clip, "font");
+    d.ok("ui.click", json!({"id": "graphics.prop.font"}));
+    d.frames(3);
+    d.shot("font-search-open");
+    d.ok("ui.click", json!({"id": "graphics.prop.font.search"}));
+    d.ok("ui.type", json!({"text": "no-such-family-482991"}));
+    d.frames(3);
+    let choices = d.ok("ui.elements", json!({"prefix": "graphics.prop.font.option."}));
+    assert!(choices.as_array().unwrap().is_empty(), "{choices}");
+    assert_eq!(text_param(&mut d, clip, "font"), before);
+    let family = filmcraft_text::families().into_iter().map(|(name, _)| name).find(|name| !name.starts_with('.')).unwrap();
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.ok("ui.type", json!({"text": family.to_uppercase()}));
+    d.frames(3);
+    let choices = d.ok("ui.elements", json!({"prefix": "graphics.prop.font.option."}));
+    assert!(!choices.as_array().unwrap().is_empty(), "{choices}");
+    assert!(choices.as_array().unwrap().iter().all(|e| e["label"].as_str().unwrap().to_lowercase().contains(&family.to_lowercase())), "{choices}");
+    d.shot("font-search");
+    d.ok("ui.click", json!({"id": format!("graphics.prop.font.option.{family}")}));
+    assert_eq!(text_param(&mut d, clip, "font"), Some(filmcraft_project::ParamValue::Text(family)));
+}
+
 /// A drag of a property in the Properties panel is one undo step, so one Cmd+Z restores the
 /// original value (a drag was committing one undo step per frame, so undo only stepped back one
 /// frame's worth; the shadow color picker showed it as "sometimes undo works, sometimes not").

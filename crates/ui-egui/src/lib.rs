@@ -39,6 +39,7 @@ pub mod credits;
 pub mod dock;
 mod dock_shared;
 mod dock_ui;
+mod font_search;
 pub mod frames;
 pub mod graphics_notice;
 pub mod header;

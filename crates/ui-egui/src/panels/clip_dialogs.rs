@@ -224,7 +224,7 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
             let speed = it.as_ref().map_or(1.0, |i| i.speed);
             let interp = it.as_ref().map_or(filmcraft_project::TimeInterpolation::default(), |i| i.time_interpolation);
             (
-                json!({"speed": (speed.abs() * 100.0 * 100.0).round() / 100.0, "reverse": speed < 0.0, "ripple": false, "interpolation": interp.name()}),
+                json!({"speed": (speed.abs() * 100.0 * 100.0).round() / 100.0, "reverse": speed < 0.0, "ripple": app.ui.speed_duration_ripple, "interpolation": interp.name()}),
                 json!({"duration": it.as_ref().map_or(0, |i| i.duration.0), "speed": speed.abs(), "fps": fps}),
             )
         }
@@ -598,6 +598,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             let params = finish(&d);
             match app.session.execute(&d.command, params) {
                 Ok(_) => {
+                    if d.command == "clip.speedDuration" {
+                        app.ui.speed_duration_ripple = d.params.get("ripple").and_then(Value::as_bool).unwrap_or(false);
+                    }
                     app.ui.clip_dialog = None;
                     return;
                 }

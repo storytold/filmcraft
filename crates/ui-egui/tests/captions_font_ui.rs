@@ -93,3 +93,29 @@ fn caption_font_picker_sets_the_track_font() {
     d.frames(3);
     assert_eq!(d.font(track), "Noto Serif");
 }
+
+#[test]
+fn caption_font_search_filters_and_preserves_the_font_until_chosen() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let track = d.ok("engine.execute", json!({"command": "captions.newTrack", "params": {"format": "Subtitle"}}))["track"].as_u64().unwrap();
+    d.ok("ui.click", json!({"id": "text.tab.Captions"}));
+    d.ok("ui.click", json!({"id": "text.captions.style.font"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "text.captions.style.font.search"}));
+    d.ok("ui.type", json!({"text": "no-such-family-482991"}));
+    d.frames(3);
+    assert_eq!(d.harness.state().ui.font_search["captions"], "no-such-family-482991");
+    assert!(d.ids("text.captions.style.font.option.").is_empty());
+    assert_eq!(d.font(track), "Inter");
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.ok("ui.type", json!({"text": "noto serif"}));
+    d.frames(3);
+    let options = d.ids("text.captions.style.font.option.");
+    assert!(options.contains(&"text.captions.style.font.option.Noto Serif".to_string()), "{options:?}");
+    assert!(options.iter().all(|id| id.to_lowercase().contains("noto serif")), "{options:?}");
+    d.ok("ui.click", json!({"id": "text.captions.style.font.option.Noto Serif"}));
+    assert_eq!(d.font(track), "Noto Serif");
+    d.ok("engine.execute", json!({"command": "edit.undo", "params": {}}));
+    assert_eq!(d.font(track), "Inter");
+}
