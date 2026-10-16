@@ -7,6 +7,7 @@
 //! (`filmcraft_engine::media_browser`, `mediaBrowser.*`); this module draws them and keeps only view
 //! state ([`MediaBrowserUi`], `ui.set {"mediaBrowser": …}`).
 
+use crate::widgets::DragCheckbox as _;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -179,7 +180,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let row2 = Rect::from_min_size(pos2(bar.min.x, bar.max.y + 4.0), vec2(bar.width(), 20.0));
     let mut ingest = app.session.project.settings.ingest.enabled;
     let mut c = ui.new_child(egui::UiBuilder::new().max_rect(row2).id_salt("mb-row2").layout(egui::Layout::left_to_right(egui::Align::Center)));
-    let r = c.checkbox(&mut ingest, tl!("Ingest"));
+    let r = c.checkbox_drag(&mut ingest, tl!("Ingest"));
     app.auto.add("mediaBrowser.ingest", r.rect, "Ingest");
     if r.changed() {
         exec(app, &ctx, "project.ingestSettings", json!({"enabled": ingest}));
@@ -191,7 +192,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     c.add_space(12.0);
     let mut seq = prefs.import_as_image_sequence;
-    let r = c.checkbox(&mut seq, tl!("Import as Image Sequence"));
+    let r = c.checkbox_drag(&mut seq, tl!("Import as Image Sequence"));
     app.auto.add("mediaBrowser.importAsImageSequence", r.rect, "Import as Image Sequence");
     if r.changed() {
         exec(app, &ctx, "mediaBrowser.settings", json!({"importAsImageSequence": seq}));
@@ -825,7 +826,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
             for c in mb::ALL_COLUMNS {
                 ui.horizontal(|ui| {
                     let mut on = cols.iter().any(|x| x == c);
-                    let r = ui.add_enabled(c != "Name", egui::Checkbox::new(&mut on, crate::i18n::t(c)));
+                    let r = ui.checkbox_drag_enabled(c != "Name", &mut on, crate::i18n::t(c));
                     app.auto.add(&format!("mediaBrowser.columns.{c}"), r.rect, c);
                     if r.changed() {
                         if on {

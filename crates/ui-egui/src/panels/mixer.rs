@@ -18,6 +18,7 @@
 //! (six for 5.1 strips). The panel menu (`mixer.menu`) holds Show/Hide Tracks (`mixer.menu.showHide`,
 //! then `mixer.showHide.<A1|S1>` per strip) and Meter Input(s) Only (`mixer.menu.meterInputOnly`).
 
+use crate::widgets::DragCheckbox as _;
 use std::collections::HashMap;
 
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
@@ -256,7 +257,7 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let label = strip_label(seq, id);
                     let name = seq.mix_track(id).map(|t| t.name.clone()).unwrap_or_default();
                     let mut shown = !app.ui.mixer_hidden.contains(&id.0);
-                    let r = ui.checkbox(&mut shown, format!("{label}  {name}"));
+                    let r = ui.checkbox_drag(&mut shown, format!("{label}  {name}"));
                     app.auto.add(&format!("mixer.showHide.{label}"), r.rect, &format!("Show {label}"));
                     if r.changed() {
                         if shown {

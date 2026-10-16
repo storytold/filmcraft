@@ -13,6 +13,7 @@
 //! `scopes.menu.colorSpace.<space>`, `scopes.menu.brightness.<b>`, `scopes.menu.targets.<75|100>`;
 //! `scopes.hdrWaveform` while levels are shown in cd/m². State: `ui.panels.scopes`.
 
+use crate::widgets::DragCheckbox as _;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -131,7 +132,7 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, space: Option<Colo
     let cr = Rect::from_min_size(pos2(sr.min.x - cw - 10.0, r.min.y + 4.0), vec2(cw, 22.0));
     let mut clamp = clamp0;
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(cr));
-    let cresp = child.checkbox(&mut clamp, tl!("Clamp Signal"));
+    let cresp = child.checkbox_drag(&mut clamp, tl!("Clamp Signal"));
     app.auto.add("scopes.clamp", cresp.rect, "Clamp Signal");
     let wr = Rect::from_center_size(pos2(cr.min.x - 16.0, r.center().y), vec2(22.0, 22.0));
     let wresp = ui.interact(wr, egui::Id::new("scopes-wrench"), Sense::click());

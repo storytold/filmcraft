@@ -9,6 +9,7 @@
 //! damped exponential easing, anchored under the cursor) so navigation feels fluid; all geometry is
 //! drawn as GPU meshes by egui's wgpu backend and culled to the visible range.
 
+use crate::widgets::DragCheckbox as _;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -1477,7 +1478,7 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
         }
         if key == "settings" {
             egui::Popup::menu(&resp).show(|ui| {
-                let c = ui.checkbox(&mut app.ui.timeline.show_thumbnails, tl!("Show Video Thumbnails"));
+                let c = ui.checkbox_drag(&mut app.ui.timeline.show_thumbnails, tl!("Show Video Thumbnails"));
                 app.auto.add("timeline.settings.showThumbnails", c.rect, "Show Video Thumbnails");
                 let on = app.ui.timeline.show_thumbnails;
                 ui.indent("timeline.settings.thumbnails", |ui| {
@@ -1491,10 +1492,10 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
                         }
                     }
                 });
-                ui.checkbox(&mut app.ui.timeline.show_waveforms, tl!("Show Audio Waveform"));
+                ui.checkbox_drag(&mut app.ui.timeline.show_waveforms, tl!("Show Audio Waveform"));
                 ui.separator();
                 let mut te = app.session.state.show_through_edits;
-                let c = ui.checkbox(&mut te, tl!("Show Through Edits"));
+                let c = ui.checkbox_drag(&mut te, tl!("Show Through Edits"));
                 app.auto.add("timeline.settings.showThroughEdits", c.rect, "Show Through Edits");
                 if c.changed() {
                     let _ = app.session.execute("sequence.showThroughEdits", json!({"on": te}));

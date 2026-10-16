@@ -8,6 +8,7 @@
 //! `hsl_blur`); Color Match: `lumetri.match.comparisonView` (toggles the Program monitor's
 //! Comparison View, whose reference frame Apply Match then uses).
 
+use crate::widgets::DragCheckbox as _;
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_project::{ClipId, EffectInstance, ParamValue};
 use filmcraft_time::Tick;
@@ -648,7 +649,7 @@ fn match_controls(ui: &mut egui::Ui, app: &mut FilmcraftApp, out: &mut Vec<(&'st
         let r = ui.add(egui::TextEdit::singleline(&mut tc).desired_width(96.0));
         app.auto.add("lumetri.match.reference", r.rect, "Reference timecode");
     });
-    let r = ui.checkbox(&mut face, tl!("Face Detection (protect skin tones)"));
+    let r = ui.checkbox_drag(&mut face, tl!("Face Detection (protect skin tones)"));
     app.auto.add("lumetri.match.faceDetection", r.rect, "Face Detection");
     let b = ui.button(tl!("Apply Match"));
     app.auto.add("lumetri.match.apply", b.rect, "Apply Match");

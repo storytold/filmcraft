@@ -1,5 +1,6 @@
 //! Monitor Export Frame settings, with captured target/time and a destination folder.
 use crate::native_dialogs::FileDialog;
+use crate::widgets::DragCheckbox as _;
 use crate::{
     FilmcraftApp,
     icons::{self, Icon},
@@ -150,7 +151,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             });
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                let r = ui.checkbox(&mut d.import, "Import into project");
+                let r = ui.checkbox_drag(&mut d.import, "Import into project");
                 elems.push(("exportFrame.import".into(), r.rect, d.import.to_string()));
                 ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 26.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let r = ui.add_enabled(FileDialog::Folder { at: Some(String::new()) }.available(&app.hooks), egui::Button::new("Browse…"));

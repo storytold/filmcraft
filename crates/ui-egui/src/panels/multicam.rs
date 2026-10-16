@@ -20,6 +20,7 @@
 //!   `mcam.marker`, `mcam.offset`, `mcam.audio.<camera1|all|switch>`,
 //!   `mcam.cameraNames.<clip|track|metadata>`, `mcam.processedBin`, `mcam.ok`, `mcam.cancel`.
 
+use crate::widgets::DragCheckbox as _;
 use egui::{Align2, Color32, Rect, RichText, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_project::ItemId;
 use filmcraft_time::Tick;
@@ -135,7 +136,7 @@ pub fn show_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         }
                         match m {
                             "timecode" => {
-                                let r = ui.add_enabled(d.method == "timecode", egui::Checkbox::new(&mut d.ignore_hours, tl!("Ignore Hours")));
+                                let r = ui.checkbox_drag_enabled(d.method == "timecode", &mut d.ignore_hours, tl!("Ignore Hours"));
                                 push(&mut elems, format!("{pre}.ignoreHours"), &r, "Ignore Hours");
                             }
                             "marker" => {
@@ -164,7 +165,7 @@ pub fn show_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     });
                 }
                 "merge" => {
-                    let r = ui.checkbox(&mut d.remove_video_audio, tl!("Remove Audio from AV Clip"));
+                    let r = ui.checkbox_drag(&mut d.remove_video_audio, tl!("Remove Audio from AV Clip"));
                     push(&mut elems, "merge.removeVideoAudio", &r, "Remove Audio from AV Clip");
                 }
                 _ => {
@@ -191,7 +192,7 @@ pub fn show_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                             }
                         });
                     });
-                    let r = ui.checkbox(&mut d.processed_bin, tl!("Move source clips to Processed Clips bin"));
+                    let r = ui.checkbox_drag(&mut d.processed_bin, tl!("Move source clips to Processed Clips bin"));
                     push(&mut elems, "mcam.processedBin", &r, "Move source clips to Processed Clips bin");
                 }
             }
@@ -464,7 +465,7 @@ pub fn show_edit_cameras(app: &mut FilmcraftApp, ctx: &egui::Context) {
             egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
                 for a in 0..d.names.len() {
                     ui.horizontal(|ui| {
-                        let r = ui.checkbox(&mut d.enabled[a], "");
+                        let r = ui.checkbox_drag(&mut d.enabled[a], "");
                         push(&mut elems, format!("editCameras.enabled.{a}"), &r, "Enabled");
                         let (tr, _) = ui.allocate_exact_size(vec2(thumb_w, th), Sense::hover());
                         ui.painter().rect_filled(tr, 2.0, tokens.monitor_bg);

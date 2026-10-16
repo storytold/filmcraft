@@ -12,6 +12,7 @@
 //! `settings.page` (the category's page), `settings.help`, `settings.reset`, `settings.cancel`,
 //! `settings.ok`.
 
+use crate::widgets::DragCheckbox as _;
 use egui::{Align, Align2, Color32, CornerRadius, Frame, Layout, Margin, Rect, RichText, Sense, Stroke, Ui, vec2};
 use filmcraft_engine::settings::{self, DeviceList, Field, Kind, Row};
 use filmcraft_project::Label;
@@ -495,7 +496,7 @@ fn draw_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, f: &Fi
                     // a long label wraps at the page edge
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                     let mut b = cur.as_bool().unwrap_or(false);
-                    let r = ui.checkbox(&mut b, RichText::new(crate::i18n::t(f.label)).size(12.5));
+                    let r = ui.checkbox_drag(&mut b, RichText::new(crate::i18n::t(f.label)).size(12.5));
                     app.auto.add(&format!("settings.{}", f.key), r.rect, f.label);
                     if r.changed() {
                         put(&mut d.values, f.key, json!(b));

@@ -5,6 +5,7 @@
 //! sequence transcript as speaker paragraphs of clickable words (click, Shift+click to extend);
 //! the selection marks In/Out and can be extracted or lifted (`transcript.*` commands).
 
+use crate::widgets::DragCheckbox as _;
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_project::{CaptionAlign, CaptionAnchor, CaptionFormat};
 use filmcraft_time::{TimeDisplay, format_time};
@@ -451,7 +452,7 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
             actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "color": c})));
         }
         let mut bg = st.background;
-        let resp = ui.checkbox(&mut bg, tl!("Box"));
+        let resp = ui.checkbox_drag(&mut bg, tl!("Box"));
         app.auto.add("text.captions.style.background", resp.rect, "Background box");
         if resp.changed() {
             actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "background": bg})));

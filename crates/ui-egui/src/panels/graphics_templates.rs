@@ -18,6 +18,7 @@
 //! The UI state (`UiState::gfx_templates`) is serde, so agents can read and set it.
 
 use crate::widgets::CenteredDialog as _;
+use crate::widgets::DragCheckbox as _;
 use std::sync::Arc;
 
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
@@ -375,7 +376,7 @@ pub fn template_controls(
         match c.kind {
             _ if c.param == "enabled" => {
                 let mut b = e.enabled;
-                let r = vui.checkbox(&mut b, "");
+                let r = vui.checkbox_drag(&mut b, "");
                 autos.push((id, r.rect, c.name.clone()));
                 if r.changed() {
                     set(json!(b), actions);
@@ -415,7 +416,7 @@ pub fn template_controls(
             }
             ControlKind::Checkbox => {
                 let mut b = pv.and_then(|v| v.as_bool()).unwrap_or(false);
-                let r = vui.checkbox(&mut b, "");
+                let r = vui.checkbox_drag(&mut b, "");
                 autos.push((id, r.rect, c.name.clone()));
                 if r.changed() {
                     set(json!(b), actions);
@@ -494,7 +495,7 @@ pub fn responsive_time(app: &FilmcraftApp, ui: &mut egui::Ui, clip: ClipId, it: 
         [("startOffScreen", tl!("Start Off Screen"), m.roll.start_off_screen), ("endOffScreen", tl!("End Off Screen"), m.roll.end_off_screen)]
     {
         let mut b = v;
-        let r = vui.checkbox(&mut b, label);
+        let r = vui.checkbox_drag(&mut b, label);
         autos.push((format!("graphics.roll.{key}"), r.rect, label.into()));
         if r.changed() {
             actions.push(("graphics.setRoll".into(), json!({"clip": clip.0, key: b})));
@@ -672,7 +673,7 @@ fn export_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
                 for (n, c) in d.controls.iter_mut().enumerate() {
                     ui.horizontal(|ui| {
-                        let r = ui.checkbox(&mut c.on, "");
+                        let r = ui.checkbox_drag(&mut c.on, "");
                         elems.push((format!("exportTemplate.control.{n}"), r.rect, c.name.clone()));
                         ui.add(egui::TextEdit::singleline(&mut c.name).desired_width(220.0));
                         ui.label(egui::RichText::new(c.param.replace('_', " ")).weak());

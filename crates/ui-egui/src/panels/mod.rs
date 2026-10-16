@@ -56,6 +56,7 @@ pub mod tts;
 pub mod voiceover;
 pub mod workspaces;
 
+use crate::widgets::DragCheckbox as _;
 use egui::{Align2, Color32, Rect};
 use filmcraft_project::ItemId;
 
@@ -328,8 +329,8 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                             let _ = app.session.execute("sequence.revealInProject", serde_json::json!({}));
                             close = true;
                         }
-                        ui.checkbox(&mut app.ui.timeline.show_thumbnails, tl!("Video Thumbnails"));
-                        ui.checkbox(&mut app.ui.timeline.show_waveforms, tl!("Audio Waveforms"));
+                        ui.checkbox_drag(&mut app.ui.timeline.show_thumbnails, tl!("Video Thumbnails"));
+                        ui.checkbox_drag(&mut app.ui.timeline.show_waveforms, tl!("Audio Waveforms"));
                     }
                     if p == PanelKind::Project {
                         ui.separator();
