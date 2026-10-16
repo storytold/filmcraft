@@ -326,6 +326,33 @@ fn add_keyframe_toggles_the_keyframe_at_the_playhead() {
     assert_eq!(scale(&s), (0, 100.0));
 }
 
+/// A clip with a Frame Hold (Hold Filters off) still animates its effects through the hold, so
+/// Add/Remove Keyframe at two playhead positions gives two keyframes, and a value set at the second
+/// one changes only that one (#1675: they all landed on the held frame, and the second click
+/// removed the first keyframe).
+#[test]
+fn keyframes_on_a_frame_hold_go_where_the_playhead_is() {
+    let mut s = demo();
+    let c = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    s.execute("clip.frameHoldOptions", json!({"clips": [c], "holdOn": "in", "holdFilters": false})).unwrap();
+    let scale = |s: &Session, t: Tick| {
+        let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1;
+        assert!(it.frame_hold.is_some() && !it.hold_filters);
+        let p = &it.effect("motion").unwrap().params["scale"];
+        (p.keyframes.len(), p.f64_at(it.effect_time_at(t)))
+    };
+    let key = json!({"clip": c, "effect": "motion", "param": "scale"});
+    s.execute("playhead.set", json!({"seconds": 0.5})).unwrap();
+    let first = s.playhead();
+    s.execute("effects.addKeyframe", key.clone()).unwrap();
+    s.execute("playhead.set", json!({"seconds": 2.5})).unwrap();
+    let second = s.playhead();
+    s.execute("effects.addKeyframe", key).unwrap();
+    s.execute("effects.setParam", json!({"clip": c, "effect": "motion", "param": "scale", "value": 50.0})).unwrap();
+    assert_eq!(scale(&s, first), (2, 100.0));
+    assert_eq!(scale(&s, second), (2, 50.0));
+}
+
 /// `effects.setParam` writes a keyframe only on an animated parameter. An agent that sends a value
 /// with a `time` to a parameter that is not animated gets a static value (the result says so:
 /// 0 keyframes); `"keyframe": true` is the stopwatch and the value in one step.
