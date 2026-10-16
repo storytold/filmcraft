@@ -1948,6 +1948,7 @@ dependencies = [
  "filmcraft-h264enc",
  "filmcraft-isobmff",
  "filmcraft-media",
+ "filmcraft-mp3enc",
  "filmcraft-mxf",
  "filmcraft-project",
  "filmcraft-prores",
@@ -2118,6 +2119,15 @@ dependencies = [
  "png",
  "rayon",
  "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "filmcraft-mp3enc"
+version = "0.7.2"
+dependencies = [
+ "filmcraft-bitstream",
+ "filmcraft-testkit",
  "thiserror 2.0.21",
 ]
 

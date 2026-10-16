@@ -2990,6 +2990,9 @@
 	AAC Audio	AAC Audio
 	AAC Audio 48 kHz 320 kbps	AAC Audio 48 kHz 320 kbps
 	MPEG-4 audio (.m4a), stereo 48 kHz AAC-LC at 320 kbps	Audio MPEG-4 (.m4a), estéreo, AAC-LC de 48 kHz a 320 kbps
+	MP3	MP3
+	MP3 48 kHz 320 kbps	MP3 48 kHz 320 kbps
+	MPEG audio (.mp3), joint stereo 48 kHz at 320 kbps	Audio MPEG (.mp3), estéreo conjunto de 48 kHz a 320 kbps
 	AIFF	AIFF
 	AIFF 48 kHz 16-bit	AIFF 48 kHz 16 bits
 	AIFF, stereo 48 kHz 16-bit PCM	AIFF, estéreo, PCM de 48 kHz y 16 bits

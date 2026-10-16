@@ -189,6 +189,18 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
                 assert!((num(&j["format"]["duration"]) - 0.25).abs() < 0.03, "{name}: {}", j["format"]["duration"]);
                 continue;
             }
+            "mp3" => {
+                // MP3: a plain Layer III stream, sound only, as long as the range plus the encoder
+                // delay (1057 samples) rounded up to whole 1152-sample frames
+                assert!(out.ends_with(".mp3"), "{name}: {out}");
+                assert_eq!(fmt_name, "mp3", "{name}");
+                assert_eq!(j["streams"].as_array().unwrap().len(), 1, "{name}");
+                let a = stream(&j, "audio").unwrap();
+                assert_eq!((a["codec_name"].as_str(), a["sample_rate"].as_str(), a["channels"].as_u64()), (Some("mp3"), Some("48000"), Some(2)), "{name}");
+                let d = num(&j["format"]["duration"]) - 0.25;
+                assert!((0.0..0.06).contains(&d), "{name}: {}", j["format"]["duration"]);
+                continue;
+            }
             "gif" => {
                 let v = stream(&j, "video").unwrap();
                 assert_eq!(v["codec_name"], "gif");

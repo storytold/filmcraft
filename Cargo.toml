@@ -36,6 +36,7 @@ filmcraft-apv = { path = "crates/apv" }
 filmcraft-dng = { path = "crates/dng" }
 filmcraft-av1 = { path = "crates/av1" }
 filmcraft-aac = { path = "crates/aac" }
+filmcraft-mp3enc = { path = "crates/mp3enc" }
 filmcraft-flac = { path = "crates/flac" }
 filmcraft-opus = { path = "crates/opus" }
 filmcraft-h264enc = { path = "crates/h264enc" }
@@ -121,6 +122,9 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.filmcraft-aac]
+opt-level = 3
+
+[profile.dev.package.filmcraft-mp3enc]
 opt-level = 3
 
 [profile.dev.package.filmcraft-flac]
