@@ -1033,6 +1033,23 @@ impl FilmcraftApp {
         panels::voiceover::on_stop(self);
     }
 
+    /// The playhead was moved while playback runs (`playhead.set`): re-base the playback clock
+    /// on the new position (`now` = the frame's time), so the next tick continues from it instead
+    /// of snapping back to the old anchor — the pump sets the playhead every frame and would
+    /// otherwise overwrite the move (#1622). Does nothing while stopped, or during the preroll:
+    /// the clock then starts from wherever the playhead is.
+    pub fn reanchor_playback(&mut self, now: f64) {
+        if !self.playback.playing || self.playback.preroll.is_some() {
+            return;
+        }
+        self.playback.anchor_tick = self.session.playhead();
+        self.playback.anchor_time = now;
+        if self.playback.audio_clock {
+            // re-aim the audio stream at the new position; its played-frame count restarts there
+            self.start_audio();
+        }
+    }
+
     fn start_audio(&mut self) {
         let Some(seq_id) = self.session.state.active_sequence else { return };
         let start_tick = self.session.playhead();
@@ -2587,6 +2604,39 @@ mod audio_recovery_tests {
         assert_eq!(starts.load(Ordering::Relaxed), 2);
         assert!(app.playback.audio_clock);
         assert_eq!(app.playback.anchor_tick, app.session.playhead());
+        app.stop();
+    }
+
+    /// #1622: `playhead.set` while playback runs moves the playing playhead, and the clock
+    /// continues from the new position — it used to report success and be overwritten by the
+    /// next playback tick.
+    #[test]
+    fn playhead_set_during_playback_continues_from_the_new_position() {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = FilmcraftApp::new(session);
+        let starts = Arc::new(AtomicUsize::new(0));
+        // a device that never consumes: the audio clock holds the playhead at its anchor
+        app.audio = Some(Box::new(Device { ready: true, starts: starts.clone(), reading: Some(0) }));
+        app.play(1.0);
+        app.end_preroll(0.0);
+        assert!(app.playback.audio_clock);
+        let run = |time: f64, app: &mut FilmcraftApp| {
+            let mut out = ctx.run_ui(egui::RawInput { time: Some(time), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
+            out.textures_delta.clear();
+        };
+        run(0.5, &mut app);
+        // an agent moves the playhead through the command path the control channel uses
+        let r = crate::menus::invoke(&mut app, &ctx, "playhead.set", json!({"seconds": 5.0})).unwrap();
+        let want = Tick(r["time"].as_i64().expect("the set time"));
+        assert!(want > Tick::from_seconds_f64(4.9), "the playhead moved to the requested second: {want:?}");
+        assert_eq!(app.session.playhead(), want);
+        assert!(app.playback.playing, "playback keeps running through the move");
+        assert_eq!(app.playback.anchor_tick, want, "the playback clock re-based on the move");
+        // the next playback tick continues from the moved playhead
+        run(1.0, &mut app);
+        assert_eq!(app.session.playhead(), want, "playback did not snap back to the old anchor");
         app.stop();
     }
 
