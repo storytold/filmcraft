@@ -104,9 +104,43 @@ pub struct Models {
     pub track: Graph,
     pub memory: Graph,
     pub matte: Graph,
+    preview_pool: Arc<ThreadPool>,
+    sequence_pool: Arc<ThreadPool>,
+    sequence_workers: usize,
+}
+
+fn thread_budgets(available: usize, requested: Option<&str>) -> Result<(usize, usize), String> {
+    let available = available.clamp(1, 64);
+    match requested {
+        Some(value) => value
+            .parse::<usize>()
+            .ok()
+            .filter(|n| (1..=available).contains(n))
+            .map(|n| (n, n))
+            .ok_or_else(|| format!("FILMCRAFT_AI_ROTO_THREADS must be 1..{available}")),
+        None => Ok((available.min(4), available.min(8))),
+    }
+}
+
+fn tile_worker_budget(threads: usize, requested: Option<&str>) -> Result<usize, String> {
+    let limit = threads.clamp(1, 4);
+    match requested {
+        Some(value) => {
+            value.parse::<usize>().ok().filter(|n| (1..=limit).contains(n)).ok_or_else(|| format!("FILMCRAFT_AI_ROTO_TILE_WORKERS must be 1..{limit}"))
+        }
+        None => Ok(limit),
+    }
 }
 
 impl Models {
+    pub(crate) fn sequence_mode(&mut self, sequence: bool) -> usize {
+        let pool = if sequence { &self.sequence_pool } else { &self.preview_pool };
+        for graph in [&mut self.image, &mut self.prompt_one, &mut self.prompt_many, &mut self.track, &mut self.memory, &mut self.matte] {
+            graph.pool = pool.clone();
+        }
+        if sequence { self.sequence_workers } else { 1 }
+    }
+
     pub fn load(directory: &Path) -> Result<Self, String> {
         let manifest_path = directory.join("manifest.json");
         if std::fs::metadata(&manifest_path).map_err(|_| "Prepare native models with experiments/rotoscope/run-editor.sh")?.len() > 16 * 1024 {
@@ -118,19 +152,23 @@ impl Models {
             return Err("Native model package does not match the pinned model revisions".into());
         }
         let mut graphs = Vec::new();
-        // Leave cores available to decoding and the editor, and avoid excessive fan-out
-        // in small neural layers. All graphs share this bounded thread pool.
+        // Interactive previews keep a small budget. Explicit multi-frame jobs can
+        // use more cores; all graphs within a job still share one bounded pool.
         let available = std::thread::available_parallelism().map(usize::from).unwrap_or(1).min(64);
-        let threads = match std::env::var("FILMCRAFT_AI_ROTO_THREADS") {
-            Ok(value) => value
-                .parse::<usize>()
-                .ok()
-                .filter(|n| (1..=available).contains(n))
-                .ok_or_else(|| format!("FILMCRAFT_AI_ROTO_THREADS must be 1..{available}"))?,
-            Err(std::env::VarError::NotPresent) => available.min(4),
+        let requested = match std::env::var("FILMCRAFT_AI_ROTO_THREADS") {
+            Ok(value) => Some(value),
+            Err(std::env::VarError::NotPresent) => None,
             Err(error) => return Err(format!("Invalid inference thread setting: {error}")),
         };
-        let pool = Arc::new(ThreadPool::with_num_threads(threads));
+        let (preview_threads, sequence_threads) = thread_budgets(available, requested.as_deref())?;
+        let workers = match std::env::var("FILMCRAFT_AI_ROTO_TILE_WORKERS") {
+            Ok(value) => Some(value),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(error) => return Err(format!("Invalid matte worker setting: {error}")),
+        };
+        let sequence_workers = tile_worker_budget(sequence_threads, workers.as_deref())?;
+        let pool = Arc::new(ThreadPool::with_num_threads(preview_threads));
+        let sequence_pool = if preview_threads == sequence_threads { pool.clone() } else { Arc::new(ThreadPool::with_num_threads(sequence_threads)) };
         for (name, (size, checksum)) in NAMES.into_iter().zip(PINS) {
             let matches: Vec<_> = manifest.files.iter().filter(|f| f.name == name).collect();
             let [entry] = matches.as_slice() else {
@@ -158,6 +196,9 @@ impl Models {
             track: graphs.next().ok_or("missing tracking model")?,
             memory: graphs.next().ok_or("missing memory model")?,
             matte: graphs.next().ok_or("missing matte model")?,
+            preview_pool: pool,
+            sequence_pool,
+            sequence_workers,
         })
     }
 }
@@ -165,6 +206,25 @@ impl Models {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inference_thread_budgets_bound_preview_and_sequence_and_honor_overrides() {
+        for (available, expected) in [(0, (1, 1)), (1, (1, 1)), (2, (2, 2)), (4, (4, 4)), (8, (4, 8)), (128, (4, 8))] {
+            assert_eq!(thread_budgets(available, None).unwrap(), expected);
+        }
+        assert_eq!(thread_budgets(8, Some("2")).unwrap(), (2, 2));
+        for invalid in ["0", "9", "-1", "NaN", "", "999999999999999999999999999999"] {
+            assert!(thread_budgets(8, Some(invalid)).is_err());
+        }
+        assert_eq!(tile_worker_budget(1, None).unwrap(), 1);
+        assert_eq!(tile_worker_budget(8, None).unwrap(), 4);
+        assert_eq!(tile_worker_budget(8, Some("1")).unwrap(), 1);
+        assert_eq!(tile_worker_budget(8, Some("2")).unwrap(), 2);
+        for invalid in ["0", "5", "-1", "NaN", "", "999999999999999999999999999999"] {
+            assert!(tile_worker_budget(8, Some(invalid)).is_err());
+        }
+        assert!(tile_worker_budget(2, Some("3")).is_err());
+    }
 
     #[test]
     fn malformed_truncated_and_modified_model_packages_fail_safely() {

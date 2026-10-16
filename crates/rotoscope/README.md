@@ -35,8 +35,15 @@ Limits are 720 pixels on the longest side, 120 frames, 40 million aggregate pixe
 512 points, 16 prompted frames, edge bands 1..32 and bounded temporal memory. Feature,
 tracking and alpha caches retain at most 192 MiB / 40 MB / 80 MB respectively. Brush
 changes reuse tracking and unchanged alpha. Cancelled jobs publish no new alpha entries.
-Four model threads by default preserve editor responsiveness; the bounded override is
-`FILMCRAFT_AI_ROTO_THREADS`. Model kernels and preprocessing are optimized in debug builds.
+Single-frame previews use at most four model threads and serial matte tiles. Multi-frame
+jobs use up to eight model threads and four concurrent matte tiles sharing that thread
+pool, bounded by available CPUs. `FILMCRAFT_AI_ROTO_THREADS` overrides the neural budget;
+`FILMCRAFT_AI_ROTO_TILE_WORKERS=1` reduces memory by restoring serial tiles independently
+of that budget (allowed range 1..min(4, sequence threads)). Position embeddings reuse a
+four-entry, 6 MiB cache. Worker failures/cancellation join all outstanding work before
+returning; incomplete alpha is not published. Model kernels and preprocessing are
+optimized in debug builds. See [Colab measurements](../../experiments/rotoscope/PERFORMANCE.md)
+for timing, peak-memory tradeoffs and the separate T4 research probe.
 
 ```sh
 cargo +1.95 test -p filmcraft-rotoscope --features inference

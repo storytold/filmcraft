@@ -71,12 +71,75 @@ struct Memory {
     mask: Floats,
 }
 
+struct MattePositions {
+    base: Floats,
+    cache: Cache<Floats>,
+}
+
+struct MatteTile {
+    core: (usize, usize, usize, usize),
+    origin: (usize, usize),
+    pixels: Floats,
+    position: Arc<Floats>,
+}
+
+/// Join every worker before returning, including on cancellation, spawn failure,
+/// model error or panic. The model kernels share the job's existing thread pool.
+fn tile_map<T: Sync, R: Send>(items: &[T], workers: usize, operation: impl Fn(&T) -> Result<R, String> + Sync) -> Result<Vec<R>, String> {
+    if !(1..=4).contains(&workers) || items.len() > 4 {
+        return Err("Matte tile worker budget exceeded".into());
+    }
+    let guarded =
+        |item: &T| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(item))).map_err(|_| "Matte tile inference failed safely".to_string())?;
+    if workers == 1 || items.len() < 2 {
+        return items.iter().map(guarded).collect();
+    }
+    let mut results = Vec::with_capacity(items.len());
+    for chunk in items.chunks(workers) {
+        std::thread::scope(|scope| -> Result<(), String> {
+            let mut jobs = Vec::with_capacity(chunk.len());
+            for item in chunk {
+                let guarded = &guarded;
+                jobs.push(std::thread::Builder::new().name("filmcraft-matte".into()).spawn_scoped(scope, move || guarded(item)).map_err(|e| e.to_string())?);
+            }
+            for job in jobs {
+                results.push(job.join().map_err(|_| "Matte worker failed safely".to_string())??);
+            }
+            Ok(())
+        })?;
+    }
+    Ok(results)
+}
+
+impl MattePositions {
+    fn new(base: Floats) -> Result<Self, String> {
+        Ok(Self { base: base.checked(&[1, 197, 384])?, cache: Cache::new(4, 6 * 1024 * 1024) })
+    }
+
+    fn get(&mut self, height: usize, width: usize) -> Result<Arc<Floats>, String> {
+        if !(1..=32).contains(&height) || !(1..=32).contains(&width) {
+            return Err("Invalid matte position dimensions".into());
+        }
+        let mut key = [0; 32];
+        key[0] = height as u8;
+        key[1] = width as u8;
+        if let Some(position) = self.cache.get(&key) {
+            return Ok(position);
+        }
+        // Tile shapes repeat throughout a clip. These embeddings depend only on
+        // the pinned model and tile dimensions, never the image or brush.
+        let position = Arc::new(Floats { shape: vec![1, height, width, 384], data: pixels::absolute_position(&self.base.data, height, width)? });
+        self.cache.put(key, position.clone(), position.data.len() * 4);
+        Ok(position)
+    }
+}
+
 pub struct Runtime {
     models: Models,
     features: Cache<Features>,
     tracked: Cache<Vec<Vec<bool>>>,
     alpha: Cache<Vec<u16>>,
-    position_base: Floats,
+    positions: MattePositions,
 }
 
 fn cancelled(cancel: &AtomicBool) -> Result<(), String> {
@@ -90,7 +153,7 @@ impl Runtime {
             let [position_base]: [Floats; 1] = models.matte.run(vec![], &["position_base"])?.try_into().map_err(|_| "missing matte position embedding")?;
             Ok(Self {
                 models,
-                position_base: position_base.checked(&[1, 197, 384])?,
+                positions: MattePositions::new(position_base)?,
                 features: Cache::new(2, 192 * 1024 * 1024),
                 tracked: Cache::new(4, 40_000_000),
                 alpha: Cache::new(120, 80_000_000),
@@ -202,6 +265,7 @@ impl Runtime {
     fn infer_inner(&mut self, input: &Input<'_>, cancel: &AtomicBool, progress: &mut impl FnMut(usize, &str)) -> Result<RasterMask, String> {
         let pixels = input.validate()?;
         cancelled(cancel)?;
+        let matte_workers = self.models.sequence_mode(input.frames.len() > 1);
         let mut digest = Sha256::new();
         digest.update(input.width.to_le_bytes());
         digest.update(input.height.to_le_bytes());
@@ -266,7 +330,7 @@ impl Runtime {
                 let alpha = if let Some(alpha) = self.alpha.get(&key) {
                     alpha
                 } else {
-                    let alpha = Arc::new(self.refine(frame.rgba, input.width, input.height, &trimap, cancel)?);
+                    let alpha = Arc::new(self.refine(frame.rgba, input.width, input.height, &trimap, cancel, matte_workers)?);
                     pending.push((key, alpha.clone()));
                     alpha
                 };
@@ -290,8 +354,9 @@ impl Runtime {
         Ok(result)
     }
 
-    fn refine(&self, rgba: &[u8], width: usize, height: usize, trimap: &[u8], cancel: &AtomicBool) -> Result<Vec<u16>, String> {
+    fn refine(&mut self, rgba: &[u8], width: usize, height: usize, trimap: &[u8], cancel: &AtomicBool, workers: usize) -> Result<Vec<u16>, String> {
         let mut alpha: Vec<_> = trimap.iter().map(|p| if *p == 255 { 65535u16 } else { 0 }).collect();
+        let mut tiles = Vec::with_capacity(4);
         for y in (0..height).step_by(384) {
             for x in (0..width).step_by(384) {
                 cancelled(cancel)?;
@@ -319,19 +384,30 @@ impl Runtime {
                     }
                 }
                 let pixels = Floats { shape: vec![1, 4, ph, pw], data: pixels };
-                let position = Floats { shape: vec![1, ph / 16, pw / 16, 384], data: pixels::absolute_position(&self.position_base.data, ph / 16, pw / 16)? };
-                let [prediction]: [Floats; 1] = self
-                    .models
-                    .matte
-                    .run(vec![("pixels", pixels.view()?), ("position", position.view()?)], &["alpha"])?
-                    .try_into()
-                    .map_err(|_| "Matte output count differs")?;
-                let prediction = prediction.checked(&[1, 1, ph, pw])?;
-                for iy in y..y1 {
-                    for ix in x..x1 {
-                        if trimap[iy * width + ix] == 128 {
-                            alpha[iy * width + ix] = (prediction.data[(iy - ry) * pw + ix - rx].clamp(0.0, 1.0) * 65535.0).round_ties_even() as u16;
-                        }
+                let position = self.positions.get(ph / 16, pw / 16)?;
+                tiles.push(MatteTile { core: (x, y, x1, y1), origin: (rx, ry), pixels, position });
+            }
+        }
+        let predictions = tile_map(&tiles, workers, |tile| {
+            cancelled(cancel)?;
+            let [prediction]: [Floats; 1] = self
+                .models
+                .matte
+                .run(vec![("pixels", tile.pixels.view()?), ("position", tile.position.view()?)], &["alpha"])?
+                .try_into()
+                .map_err(|_| "Matte output count differs")?;
+            cancelled(cancel)?;
+            prediction.checked(&[1, 1, tile.pixels.shape[2], tile.pixels.shape[3]])
+        })?;
+        cancelled(cancel)?;
+        for (tile, prediction) in tiles.iter().zip(predictions) {
+            let (x, y, x1, y1) = tile.core;
+            let (rx, ry) = tile.origin;
+            let pw = tile.pixels.shape[3];
+            for iy in y..y1 {
+                for ix in x..x1 {
+                    if trimap[iy * width + ix] == 128 {
+                        alpha[iy * width + ix] = (prediction.data[(iy - ry) * pw + ix - rx].clamp(0.0, 1.0) * 65535.0).round_ties_even() as u16;
                     }
                 }
             }
@@ -417,6 +493,50 @@ fn runs(values: &[u16]) -> Result<Vec<(u32, u16)>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tile_workers_preserve_order_and_join_after_errors_and_panics() {
+        use std::sync::atomic::AtomicUsize;
+        assert_eq!(tile_map(&[3, 2, 1, 0], 4, |n| Ok(n * 7)).unwrap(), [21, 14, 7, 0]);
+        for panic in [false, true] {
+            let finished = AtomicUsize::new(0);
+            let result = tile_map(&[0, 1, 2, 3], 4, |n| {
+                if *n == 0 {
+                    if panic {
+                        panic!("simulated model panic");
+                    }
+                    return Err("simulated cancellation".into());
+                }
+                finished.fetch_add(1, Ordering::Relaxed);
+                Ok(*n)
+            });
+            assert!(result.is_err());
+            assert_eq!(finished.load(Ordering::Relaxed), 3, "no worker remains after failure");
+        }
+        assert!(tile_map(&[0; 5], 4, |n| Ok(*n)).is_err());
+        assert!(tile_map(&[0], 0, |n| Ok(*n)).is_err());
+        assert!(tile_map(&[0], 5, |n| Ok(*n)).is_err());
+        assert!(tile_map(&[0], 1, |_| -> Result<(), String> { panic!("serial model panic") }).is_err());
+    }
+
+    #[test]
+    fn matte_positions_reuse_exact_embeddings_and_bound_changing_tile_sizes() {
+        let base = Floats { shape: vec![1, 197, 384], data: (0..197 * 384).map(|i| (i % 113) as f32 / 113.0).collect() };
+        let expected = pixels::absolute_position(&base.data, 26, 28).unwrap();
+        let mut positions = MattePositions::new(base).unwrap();
+        let first = positions.get(26, 28).unwrap();
+        assert_eq!(first.data, expected);
+        assert!(Arc::ptr_eq(&first, &positions.get(26, 28).unwrap()));
+        for size in 1..=32 {
+            positions.get(size, size).unwrap();
+            assert!(positions.cache.entries.len() <= 4);
+            assert!(positions.cache.bytes <= 6 * 1024 * 1024);
+        }
+        assert_eq!(positions.get(26, 28).unwrap().data, expected);
+        assert!(positions.get(0, 28).is_err());
+        assert!(positions.get(26, usize::MAX).is_err());
+        assert!(MattePositions::new(Floats { shape: vec![1, 197, 384], data: vec![f32::NAN; 197 * 384] }).is_err());
+    }
 
     #[test]
     fn caches_evict_by_bytes_and_entries_and_refresh_lru() {

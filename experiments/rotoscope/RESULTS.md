@@ -328,3 +328,36 @@ Spanish-notice fixes, and the new crate's lockfile version matches 0.8.0.
 The AI controls are hidden when no inference backend is configured, preserving the
 standard editor's mask/keyframe layout. Their existing UI regressions passed in
 the complete run. These changes add no model runtime to standard builds.
+
+## Full-clip CPU optimization and T4 probe — October 16
+
+[The detailed Colab report](PERFORMANCE.md) records the before/after measurements,
+output comparisons and memory tradeoff. The final adjacent 30-frame, 720×405 Quality
+pair took **93.613 s before / 77.648 s after**, with byte-identical alpha (17.1% less
+elapsed inference/serialization time). Refinement after tracking took 51.499 s /
+39.243 s. Single-frame previews keep their smaller thread budget; full clips share
+up to eight inference threads across at most four concurrent matte tiles. A bounded
+position cache avoids repeated interpolation. No model, resolution, precision or
+padding changed. Sampled peak process RSS increased from 875 to 1,400 MiB; set
+`FILMCRAFT_AI_ROTO_TILE_WORKERS=1` for serial tiles and lower memory use.
+
+The separate T4 research probe reached a 46 ms median for one warm ViTMatte tile
+using ONNX Runtime CUDA with FP32 and TF32 disabled. That runtime is not part of
+FilmCraft; native Rust GPU acceleration remains open. This is neither a full-clip
+GPU result nor an accuracy benchmark. The report includes the initial CPU-fallback
+failure, successful provider verification and numerical differences.
+
+### Audio gate follow-up — October 16
+
+The combined performance changes passed the full Colab `cargo xtask ci` gate:
+3,518 passed, zero failed, 44 existing ignored tests; formatting, strict Clippy,
+layering, 69 asset attributions and WebAssembly (50 crates) passed. Additional
+inference-enabled strict Clippy, 655 engine tests (3 existing ignored) and all 10
+native inference tests passed.
+
+The unchanged 4× mixer gate now passes with a settled-stereo reverb specialization.
+Three alternating same-VM comparisons measured 2.426 seconds of baseline CPU time
+versus 2.224, 2.201 and 2.225 seconds (4.49–4.54× realtime), an 8.6% average reduction
+without changing the workload, threshold or DSP arithmetic. The sample-exact
+reference test also covers damping and wet/dry automation. See
+[PERFORMANCE.md](PERFORMANCE.md) for host variability, reproduction and results.
