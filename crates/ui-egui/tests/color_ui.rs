@@ -10,6 +10,7 @@ use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
+use filmcraft_project::BinEntry;
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
@@ -202,6 +203,52 @@ fn interpret_footage_and_sequence_color_dialogs_and_hdr_scopes() {
     d.exec("edit.undo", json!({}));
     let info = d.exec("media.colorInfo", json!({"item": item}));
     assert_eq!(info["override"], Value::Null, "{info}");
+}
+
+/// The demo's Footage bin and its media items.
+fn footage(d: &mut Driver) -> (u64, Vec<u64>) {
+    let p = &d.app().session.project;
+    let bin = p
+        .root
+        .children
+        .iter()
+        .find_map(|e| match e {
+            BinEntry::Bin(b) if b.name == "Footage" => Some(b.clone()),
+            _ => None,
+        })
+        .expect("Footage bin");
+    (bin.id.0, bin.children.iter().filter_map(|e| if let BinEntry::Item(i) = e { Some(i.0) } else { None }).collect())
+}
+
+/// #1910: Interpret Footage… from an item's context menu applies to the whole Project panel
+/// selection when the right-clicked item is part of it, like the other selection-wide actions.
+#[test]
+fn item_menu_interpret_footage_applies_to_the_whole_selection() {
+    let mut d = Driver::demo();
+    let (bin, items) = footage(&mut d);
+    assert!(items.len() >= 2, "demo Footage bin: {items:?}");
+    let (a, b) = (items[0], items[1]);
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+    d.frames(3);
+    d.exec("project.select", json!({"items": [a, b]}));
+    d.frames(2);
+    // right-click the first of the two selected items: the menu must take the selection
+    d.ok("ui.click", json!({"id": format!("project.item.{a}"), "button": "right"}));
+    d.frames(3);
+    d.click("project.itemMenu.interpretFootage");
+    d.frames(2);
+    d.click("colorDialog.space.rec709");
+    d.click("colorDialog.ok");
+    for id in [a, b] {
+        let info = d.exec("media.colorInfo", json!({"item": id}));
+        assert_eq!(info["override"], "rec709", "item {id} of the selection was not interpreted: {info}");
+    }
+    // one undo step restores both
+    d.exec("edit.undo", json!({}));
+    for id in [a, b] {
+        let info = d.exec("media.colorInfo", json!({"item": id}));
+        assert_eq!(info["override"], Value::Null, "after the undo, item {id}: {info}");
+    }
 }
 
 #[test]

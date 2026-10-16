@@ -257,8 +257,14 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
         actions.push(("clip.setPosterFrame".into(), h.map(|h| json!({"item": id.0, "time": h.time})).unwrap_or(json!({}))));
         ui.close();
     }
-    if ui.button(tl!("Interpret Footage…")).clicked() {
-        actions.push(("clip.interpretFootage".into(), json!({"items": [id.0]})));
+    let b = ui.button(tl!("Interpret Footage…"));
+    app.auto.add("project.itemMenu.interpretFootage", b.rect, tl!("Interpret Footage…"));
+    if b.clicked() {
+        // The whole open selection when the right-clicked item is part of it (the dialog shows
+        // "Color Management · N items"), else just that item (#1910).
+        let sel = &app.session.state.project_selection;
+        let items: Vec<u64> = if sel.contains(&id) { sel.iter().map(|i| i.0).collect() } else { vec![id.0] };
+        actions.push(("clip.interpretFootage".into(), json!({"items": items})));
         ui.close();
     }
     // subclips: Make Subclip (media), Edit Subclip and Convert to Master Clip (subclips)
