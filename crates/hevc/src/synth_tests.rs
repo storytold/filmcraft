@@ -533,11 +533,17 @@ fn sequence(tiles: &Tiles, pcm_lf_disabled: bool, segments: Vec<Segment>) -> (Ve
 }
 
 fn decode_all(stream: &[u8], threads: usize) -> Vec<crate::Picture> {
+    decode_all_cfg(stream, threads, None).0
+}
+
+/// Decode with decoding inside pictures forced on / off (None: the decoder's choice).
+fn decode_all_cfg(stream: &[u8], threads: usize, intra: Option<bool>) -> (Vec<crate::Picture>, crate::DecodeStats) {
     let mut dec = Decoder::with_threads(threads);
+    dec.set_intra_picture_parallel(intra);
     let mut pics = dec.decode(stream, 0).expect("decode");
     pics.extend(dec.flush());
     assert!(dec.take_error().is_none());
-    pics
+    (pics, dec.stats())
 }
 
 fn as_u8(p: &crate::Plane) -> &[u8] {
@@ -594,6 +600,18 @@ fn run(name: &str, tiles: Tiles, pcm_lf_disabled: bool, segments: Vec<Segment>) 
         if threads == 1 {
             check_ffmpeg(name, &stream, &pics);
         }
+    }
+    // tiles on several threads, or (no tiles) filters running next to the parsing thread: the
+    // same pictures as one thread
+    let serial = decode_all(&stream, 1);
+    for threads in [2, 3, 8] {
+        let (pics, stats) = decode_all_cfg(&stream, threads, Some(true));
+        // (without the thread pool everything is decoded on the calling thread)
+        assert!(stats.parallel_pictures > 0 || cfg!(not(feature = "threads")), "{name}: no picture decoded in parallel");
+        for (i, (a, b)) in pics.iter().zip(&serial).enumerate() {
+            assert!(a.y == b.y && a.u == b.u && a.v == b.v, "{name} (threads {threads}): picture {i} differs from one thread");
+        }
+        assert_eq!(pics.len(), serial.len(), "{name}");
     }
 }
 

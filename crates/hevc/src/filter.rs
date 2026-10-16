@@ -3,11 +3,30 @@
 //!
 //! Row r is deblocked once rows 0..=r+1 are decoded (row r+1 still needs the unfiltered bottom samples
 //! of row r for intra prediction); SAO of row r runs once row r+1 is deblocked; then row r is final.
+//!
+//! Pictures decoded in units on several threads ([`crate::parallel`]) deblock each unit in its
+//! window ([`deblock_unit`]): every edge whose two sides lie in the unit. The picture state then
+//! only filters the horizontal edges on the CTB row boundaries between units
+//! ([`StageDeblock::Top`]), or nothing when units can't share filtered edges
+//! ([`StageDeblock::None`]: tiles without filtering across tile boundaries).
 
 use crate::picture::{ColMv, FrameRow, Sample};
 use crate::slicedec::{E_PU_H, E_PU_V, E_TU_H, E_TU_V, F_CBF, F_CODED, F_INTRA, F_NOFILTER, MvField, PicState};
 use crate::spec_tables::{BETA_TABLE, TC_TABLE};
 use crate::tables::qpc_420;
+
+/// Which deblocking [`advance`] does.
+#[cfg_attr(not(feature = "threads"), allow(dead_code))] // used by `parallel` (thread pool only)
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StageDeblock {
+    /// All edges of each row (the picture is decoded in this state).
+    #[default]
+    Full,
+    /// Only the horizontal edges on the top boundary of each CTB row (the rest was done per unit).
+    Top,
+    /// Nothing (done per unit).
+    None,
+}
 
 /// Called after each decoded CTB of CTB row `ry`.
 pub fn ctb_decoded<S: Sample>(pic: &mut PicState<S>, ry: usize) {
@@ -21,10 +40,17 @@ pub fn ctb_decoded<S: Sample>(pic: &mut PicState<S>, ry: usize) {
 /// Run the filters / publication as far as the decoded rows allow (`all`: end of picture).
 pub fn advance<S: Sample>(pic: &mut PicState<S>, all: bool) {
     let h = pic.hctb;
+    // decoding in this state needs row r unfiltered until row r + 1 is decoded; a state filled
+    // from unit windows only needs rows r - 1 and r for the edges on top of row r
+    let ahead = if pic.stage_deblock == StageDeblock::Full { 2 } else { 1 };
     loop {
         let r = pic.rows_deblocked;
-        if r < h && (all || pic.rows_complete >= (r + 2).min(h)) {
-            deblock_row(pic, r);
+        if r < h && (all || pic.rows_complete >= (r + ahead).min(h)) {
+            match pic.stage_deblock {
+                StageDeblock::Full => deblock_part(pic, r, true, true, true),
+                StageDeblock::Top => deblock_part(pic, r, false, false, true),
+                StageDeblock::None => {}
+            }
             pic.rows_deblocked += 1;
             continue;
         }
@@ -130,8 +156,23 @@ fn edge_params<S: Sample>(pic: &PicState<S>, px: usize, py: usize, qx: usize, qy
     Some((sq.tc_offset, sq.beta_offset, ps, qs))
 }
 
-/// Deblock CTB row `r`: vertical edges of the row, then horizontal edges whose q side is in the row.
-fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
+/// Deblock the CTB rows `r0..r1` of the unit window `pic` (a wavefront row or a tile; see
+/// [`crate::parallel`]): every edge whose two sides lie in the unit, i.e. all but the horizontal
+/// edges on top of row `r0`. Edges to CTBs outside the unit are left alone (those CTBs are not
+/// decoded in the window).
+#[cfg_attr(not(feature = "threads"), allow(dead_code))] // used by `parallel` (thread pool only)
+pub fn deblock_unit<S: Sample>(pic: &mut PicState<S>, r0: usize, r1: usize) {
+    for r in r0..r1.min(pic.hctb) {
+        // horizontal edges of a row read the samples of the vertical edges of that row and the row
+        // above, which are done by then
+        deblock_part(pic, r, true, true, r > r0);
+    }
+}
+
+/// Deblock CTB row `r`: vertical edges of the row (`vertical`), then horizontal edges whose q side
+/// is in the row: those inside it (`inner`) and those on its top boundary (`top`). Positions are
+/// picture positions; `pic` may hold a window of rows ([`PicState::y_base`]).
+fn deblock_part<S: Sample>(pic: &mut PicState<S>, r: usize, vertical: bool, inner: bool, top: bool) {
     if !pic.deblocking_enabled_anywhere || pic.draft {
         return;
     }
@@ -141,11 +182,14 @@ fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
     let (w, w4) = (pic.width, pic.w4);
     let (bd, bdc) = (pic.bd_y, pic.bd_c);
     let (cb_off, cr_off) = (pic.pps.cb_qp_offset, pic.pps.cr_qp_offset);
+    // first luma line, chroma line and 4x4 block row held by the planes
+    let (yb, ycb, yb4) = (pic.y_base, pic.y_base / 2, pic.y_base / 4);
+    let cw = pic.cwidth;
     // vertical edges
     let mut bs_v = vec![0i8; w4 * ((y1 - y0) / 4)];
-    for by in y0 / 4..y1 / 4 {
+    for by in (y0 / 4..y1 / 4).filter(|_| vertical) {
         for bx in (2..w4).step_by(2) {
-            let qi = by * w4 + bx;
+            let qi = (by - yb4) * w4 + bx;
             let e = pic.blk[qi].edges;
             if e & (E_TU_V | E_PU_V) == 0 || pic.blk[qi].flags & F_CODED == 0 {
                 continue;
@@ -161,18 +205,17 @@ fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
             let qpl = (p.qp as i32 + q.qp as i32 + 1) >> 1;
             let (tc, beta) = tc_beta(qpl, bs, tc_off, beta_off, bd);
             let (nfp, nfq) = (p.flags & F_NOFILTER != 0, q.flags & F_NOFILTER != 0);
-            filter_luma(&mut pic.planes[0], y * w + x, 1, w, tc, beta, nfp, nfq, bd);
+            filter_luma(&mut pic.planes[0], (y - yb) * w + x, 1, w, tc, beta, nfp, nfq, bd);
         }
     }
     // chroma vertical edges (8x8 chroma grid = 16 luma samples), bS == 2 only
-    let cw = pic.cwidth;
-    for by in (y0 / 4..y1 / 4).step_by(2) {
+    for by in (y0 / 4..y1 / 4).step_by(2).filter(|_| vertical) {
         for bx in (4..w4).step_by(4) {
             if bs_v[(by - y0 / 4) * w4 + bx] != 2 {
                 continue;
             }
             let (x, y) = (bx * 4, by * 4);
-            let qi = by * w4 + bx;
+            let qi = (by - yb4) * w4 + bx;
             let Some((tc_off, ..)) = edge_params(pic, x - 1, y, x, y) else { continue };
             let (p, q) = (pic.blk[qi - 1], pic.blk[qi]);
             let (nfp, nfq) = (p.flags & F_NOFILTER != 0, q.flags & F_NOFILTER != 0);
@@ -180,15 +223,16 @@ fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
                 let qpi = ((p.qp as i32 + q.qp as i32 + 1) >> 1) + off;
                 let qt = (qpc_420(qpi) + 2 + tc_off).clamp(0, 53);
                 let tc = (TC_TABLE[qt as usize] as i32) << (bdc - 8);
-                filter_chroma(&mut pic.planes[c], (y / 2) * cw + x / 2, 1, cw, tc, nfp, nfq, bdc);
+                filter_chroma(&mut pic.planes[c], (y / 2 - ycb) * cw + x / 2, 1, cw, tc, nfp, nfq, bdc);
             }
         }
     }
     // horizontal edges with the q side in this row
+    let wanted = |b: usize| b.is_multiple_of(2) && b > 0 && if b == y0 / 4 { top } else { inner };
     let mut bs_h = vec![0i8; w4 * ((y1 - y0) / 4)];
-    for by in (y0 / 4..y1 / 4).filter(|b| b % 2 == 0 && *b > 0) {
+    for by in (y0 / 4..y1 / 4).filter(|&b| wanted(b)) {
         for bx in 0..w4 {
-            let qi = by * w4 + bx;
+            let qi = (by - yb4) * w4 + bx;
             let e = pic.blk[qi].edges;
             if e & (E_TU_H | E_PU_H) == 0 || pic.blk[qi].flags & F_CODED == 0 {
                 continue;
@@ -205,16 +249,16 @@ fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
             let qpl = (p.qp as i32 + q.qp as i32 + 1) >> 1;
             let (tc, beta) = tc_beta(qpl, bs, tc_off, beta_off, bd);
             let (nfp, nfq) = (p.flags & F_NOFILTER != 0, q.flags & F_NOFILTER != 0);
-            filter_luma(&mut pic.planes[0], y * w + x, w, 1, tc, beta, nfp, nfq, bd);
+            filter_luma(&mut pic.planes[0], (y - yb) * w + x, w, 1, tc, beta, nfp, nfq, bd);
         }
     }
-    for by in (y0 / 4..y1 / 4).filter(|b| b % 4 == 0 && *b > 0) {
+    for by in (y0 / 4..y1 / 4).filter(|&b| b % 4 == 0 && wanted(b)) {
         for bx in (0..w4).step_by(2) {
             if bs_h[(by - y0 / 4) * w4 + bx] != 2 {
                 continue;
             }
             let (x, y) = (bx * 4, by * 4);
-            let qi = by * w4 + bx;
+            let qi = (by - yb4) * w4 + bx;
             let Some((tc_off, ..)) = edge_params(pic, x, y - 1, x, y) else { continue };
             let (p, q) = (pic.blk[qi - w4], pic.blk[qi]);
             let (nfp, nfq) = (p.flags & F_NOFILTER != 0, q.flags & F_NOFILTER != 0);
@@ -222,7 +266,7 @@ fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
                 let qpi = ((p.qp as i32 + q.qp as i32 + 1) >> 1) + off;
                 let qt = (qpc_420(qpi) + 2 + tc_off).clamp(0, 53);
                 let tc = (TC_TABLE[qt as usize] as i32) << (bdc - 8);
-                filter_chroma(&mut pic.planes[c], (y / 2) * cw + x / 2, cw, 1, tc, nfp, nfq, bdc);
+                filter_chroma(&mut pic.planes[c], (y / 2 - ycb) * cw + x / 2, cw, 1, tc, nfp, nfq, bdc);
             }
         }
     }

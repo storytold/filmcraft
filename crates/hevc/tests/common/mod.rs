@@ -208,9 +208,16 @@ pub fn decode_file_threads(path: &Path, threads: usize) -> Result<Vec<Picture>, 
 
 /// [`decode_file_threads`] with draft mode on or off.
 pub fn decode_file_opts(path: &Path, threads: usize, draft: bool) -> Result<Vec<Picture>, DecodeFailure> {
+    decode_file_cfg(path, threads, draft, None).map(|(p, _)| p)
+}
+
+/// [`decode_file_opts`] with decoding inside pictures on several threads forced on / off (None:
+/// the decoder's choice); also returns the decoder statistics.
+pub fn decode_file_cfg(path: &Path, threads: usize, draft: bool, intra: Option<bool>) -> Result<(Vec<Picture>, filmcraft_hevc::DecodeStats), DecodeFailure> {
     let data = std::fs::read(path).unwrap();
     let mut dec = if threads == 0 { Decoder::new() } else { Decoder::with_threads(threads) };
     dec.set_draft(draft);
+    dec.set_intra_picture_parallel(intra);
     let mut out = Vec::new();
     for (i, au) in split_access_units(&data).into_iter().enumerate() {
         match dec.decode(au, i as i64) {
@@ -222,7 +229,7 @@ pub fn decode_file_opts(path: &Path, threads: usize, draft: bool) -> Result<Vec<
     if let Some(e) = dec.take_error() {
         return Err((usize::MAX, e, out));
     }
-    Ok(out)
+    Ok((out, dec.stats()))
 }
 
 /// Compare decoded pictures with a raw yuv420p / yuv420p10le reference; returns a diagnostic on the
@@ -284,16 +291,26 @@ pub fn check_fixture(name: &str) -> Result<bool, String> {
     let f = fixture(name);
     let Some((hevc, yuv)) = ensure(f) else { return Ok(false) };
     let reference = std::fs::read(&yuv).unwrap();
-    // Single-threaded, frame threads with a small pool, and every core.
-    for threads in [1, 3, 0] {
-        let pics = match decode_file_threads(&hevc, threads) {
-            Ok(p) => p,
+    // Single-threaded, frame threads with small pools, every core, and small pools that also split
+    // pictures (wavefront rows / tiles, or filters next to parsing) as larger ones do.
+    for (threads, intra) in [(1, None), (2, None), (3, None), (0, None), (2, Some(true)), (3, Some(true))] {
+        let pics = match decode_file_cfg(&hevc, threads, false, intra) {
+            Ok((p, stats)) => {
+                if intra == Some(true) && stats.parallel_pictures == 0 && f.height > 64 && cfg!(feature = "threads") {
+                    return Err(format!("{name} (threads {threads}): no picture decoded in parallel"));
+                }
+                p
+            }
             Err((au, e, partial)) => {
                 let cmp = compare(&partial, &reference, f.width as usize, f.height as usize, f.bit_depth).err().unwrap_or_default();
-                return Err(format!("{name} (threads {threads}): decode error at access unit {au}: {e} (after {} pictures) {cmp}", partial.len()));
+                return Err(format!(
+                    "{name} (threads {threads}, intra {intra:?}): decode error at access unit {au}: {e} (after {} pictures) {cmp}",
+                    partial.len()
+                ));
             }
         };
-        compare(&pics, &reference, f.width as usize, f.height as usize, f.bit_depth).map_err(|e| format!("{name} (threads {threads}): {e}"))?;
+        compare(&pics, &reference, f.width as usize, f.height as usize, f.bit_depth)
+            .map_err(|e| format!("{name} (threads {threads}, intra {intra:?}): {e}"))?;
         check_pts(&pics).map_err(|e| format!("{name} (threads {threads}): {e}"))?;
         if pics.iter().any(|p| p.draft) {
             return Err(format!("{name} (threads {threads}): picture flagged draft without draft mode"));

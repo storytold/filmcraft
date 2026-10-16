@@ -3,7 +3,7 @@
 //! compensation, scaling and inverse transforms. In-loop filters and row publication live in
 //! `filter.rs`.
 
-use crate::cabac::{Cabac, Contexts, init_contexts};
+use crate::cabac::{Cabac, CabacState, Contexts, init_contexts};
 use crate::error::{Result, ensure, invalid};
 use crate::inter;
 use crate::intra::{self, Refs};
@@ -71,6 +71,7 @@ pub struct SaoParams {
 }
 
 /// Slice-level data needed after parsing (in-loop filters, collocated motion).
+#[derive(Clone)]
 pub struct SliceInfo {
     pub addr_rs: u32,
     pub deblock_disabled: bool,
@@ -91,13 +92,131 @@ pub struct SliceJob {
     pub pps: Arc<Pps>,
     pub sps: Arc<Sps>,
     pub rbsp: Vec<u8>,
+    /// Emulation prevention bytes removed from the NAL unit payload: for each, the number of
+    /// `rbsp` bytes before it (to locate the entry points, which count those bytes).
+    #[cfg_attr(not(feature = "threads"), allow(dead_code))]
+    pub epb: Vec<u32>,
     pub refs: [Vec<RefPic>; 2],
+}
+
+#[cfg_attr(not(feature = "threads"), allow(dead_code))] // used by `parallel` (thread pool only)
+impl SliceJob {
+    /// `rbsp` positions of the substreams of the slice segment data (the first at `data_offset`,
+    /// then one per `entry_point_offset_minus1`, 7.4.7.1). None when one lies outside the data.
+    pub fn substream_starts(&self) -> Option<Vec<usize>> {
+        let d = self.sh.data_offset;
+        // escaped (NAL payload) position of the slice data and of every substream
+        let mut e = d.checked_add(self.epb.iter().take_while(|&&p| (p as usize) < d).count())?;
+        let mut out = Vec::with_capacity(self.sh.entry_points.len() + 1);
+        out.push(d);
+        // removed bytes before escaped position e: the j-th lies at escaped position epb[j] + j
+        let mut j = 0;
+        for &off in &self.sh.entry_points {
+            e = e.checked_add(off as usize)?;
+            while self.epb.get(j).is_some_and(|&p| (p as usize).saturating_add(j) < e) {
+                j += 1;
+            }
+            let pos = e - j;
+            if pos >= self.rbsp.len() {
+                return None;
+            }
+            out.push(pos);
+        }
+        Some(out)
+    }
+}
+
+/// Index of a slice segment's slice in [`PicState::slices`] and its SliceAddrRs.
+#[derive(Clone, Copy, Debug)]
+pub struct SliceMeta {
+    pub idx: u32,
+    pub addr: u32,
+}
+
+/// Register the slices of a picture in `pic.slices` (one [`SliceInfo`] per independent slice
+/// segment, in decoding order) and return each segment's slice (None: a dependent segment
+/// without a preceding slice).
+pub fn prepare_slices<S: Sample>(pic: &mut PicState<S>, jobs: &[SliceJob]) -> Vec<Option<SliceMeta>> {
+    let mut out = Vec::with_capacity(jobs.len());
+    for job in jobs {
+        let sh = &job.sh;
+        if !sh.dependent {
+            let ids = |l: usize| job.refs[l].iter().map(|r| r.frame.id).collect::<Vec<_>>();
+            let pocs = |l: usize| job.refs[l].iter().map(|r| r.poc).collect::<Vec<_>>();
+            let lts = |l: usize| job.refs[l].iter().map(|r| r.long_term).collect::<Vec<_>>();
+            pic.slices.push(SliceInfo {
+                addr_rs: sh.segment_address,
+                deblock_disabled: sh.deblocking_disabled,
+                beta_offset: sh.beta_offset_div2 * 2,
+                tc_offset: sh.tc_offset_div2 * 2,
+                lf_across: sh.loop_filter_across_slices,
+                sao_luma: sh.sao_luma,
+                sao_chroma: sh.sao_chroma,
+                ref_ids: [ids(0), ids(1)],
+                ref_pocs: [pocs(0), pocs(1)],
+                ref_lt: [lts(0), lts(1)],
+            });
+            if !sh.deblocking_disabled {
+                pic.deblocking_enabled_anywhere = true;
+            }
+        }
+        out.push(pic.slices.len().checked_sub(1).and_then(|i| Some(SliceMeta { idx: i as u32, addr: pic.slices.get(i)?.addr_rs })));
+    }
+    out
+}
+
+/// Called around each CTU decoded by a unit (wavefront row synchronisation).
+pub trait CtuHooks<S> {
+    /// Before CTU (rx, ry): copy in what it reads of the row above; false when that is not
+    /// decoded yet (the decoder then stops and returns where to resume).
+    fn before(&self, pic: &mut PicState<S>, rx: usize, ry: usize) -> bool;
+    /// After CTU (rx, ry); `stored_wpp`: its contexts were stored for the next row (9.3.2.3).
+    fn after(&self, pic: &mut PicState<S>, rx: usize, ry: usize, stored_wpp: bool);
+}
+
+/// Where a suspended substream continues: CTB `ts`, the CABAC engine and contexts, qPY_PREV.
+#[cfg_attr(not(feature = "threads"), allow(dead_code))] // used by `parallel` (thread pool only)
+#[derive(Clone)]
+pub struct Resume {
+    pub ts: u32,
+    cabac: CabacState,
+    last_qp: i32,
+    /// No CTB of the substream decoded yet.
+    first: bool,
+}
+
+/// Where a [`SliceDecoder::decode_unit`] starts.
+#[cfg_attr(not(feature = "threads"), allow(dead_code))] // used by `parallel` (thread pool only)
+#[allow(clippy::large_enum_variant)] // short-lived
+pub enum Start {
+    /// A substream at `rbsp` byte `pos` with CTB `ts`.
+    At { pos: usize, ts: u32 },
+    /// A suspended substream.
+    Resume(Resume),
+}
+
+/// What a [`SliceDecoder`] decodes.
+#[cfg_attr(not(feature = "threads"), allow(dead_code))] // used by `parallel` (thread pool only)
+#[derive(Clone, Copy)]
+pub enum Mode<'h, S> {
+    /// The rest of the slice segment into the whole picture, filtering rows as they complete.
+    Picture,
+    /// One substream of a unit (a WPP row or a tile) into a window, up to CTB `end_ts` (tile
+    /// scan, exclusive) or the end of the slice segment.
+    Unit { end_ts: u32, hooks: Option<&'h dyn CtuHooks<S>> },
+}
+
+/// The large buffers of a [`PicState`], kept for re-use.
+pub struct WinBufs<S> {
+    planes: [Vec<S>; 3],
+    blk: Vec<Blk>,
+    mvf: Vec<MvField>,
 }
 
 /// Per-picture decoding state.
 pub struct PicState<S> {
     pub frame: FrameRef,
-    #[allow(dead_code)]
+    #[cfg_attr(not(feature = "threads"), allow(dead_code))]
     pub sps: Arc<Sps>,
     pub pps: Arc<Pps>,
     pub layout: Arc<Layout>,
@@ -113,6 +232,10 @@ pub struct PicState<S> {
     pub hctb: usize,
     pub bd_y: u32,
     pub bd_c: u32,
+    /// First luma line held by `planes`, `blk` and `mvf` (a multiple of 4): 0 for a whole picture,
+    /// 4 lines above the first CTB row of a window decoded on a worker thread (see
+    /// [`PicState::window`]). Chroma planes start at line `y_base / 2`.
+    pub y_base: usize,
     /// Reconstructed (pre-SAO) planes.
     pub planes: [Vec<S>; 3],
     pub blk: Vec<Blk>,
@@ -134,19 +257,29 @@ pub struct PicState<S> {
     pub deblocking_enabled_anywhere: bool,
     /// Draft mode: no deblocking or SAO.
     pub draft: bool,
+    /// Which deblocking the row filters do (all of it unless units deblock themselves).
+    pub stage_deblock: crate::filter::StageDeblock,
 }
 
 impl<S: Sample> PicState<S> {
     pub fn new(frame: FrameRef, sps: Arc<Sps>, pps: Arc<Pps>, layout: Arc<Layout>, scaling: Option<Arc<Vec<Vec<u8>>>>) -> Self {
+        let hctb = sps.pic_height_in_ctbs() as usize;
+        Self::window(frame, sps, pps, layout, scaling, 0, hctb)
+    }
+
+    /// State holding only CTB rows `r0..r1` of the picture (plus the bottom 4 luma lines of row
+    /// `r0 - 1`, which intra prediction, motion vector prediction and context selection read): the
+    /// private state of a unit (a WPP row or a tile) decoded on a worker thread. Coordinates stay
+    /// picture coordinates; per-CTB arrays cover the whole picture. `r0 = 0, r1 = hctb` is the
+    /// whole picture.
+    pub fn window(frame: FrameRef, sps: Arc<Sps>, pps: Arc<Pps>, layout: Arc<Layout>, scaling: Option<Arc<Vec<Vec<u8>>>>, r0: usize, r1: usize) -> Self {
         let (width, height) = (sps.width as usize, sps.height as usize);
         let (cwidth, cheight) = (width / 2, height / 2);
         let (w4, h4) = (width.div_ceil(4), height.div_ceil(4));
         let log2_ctb = sps.log2_ctb;
         let (wctb, hctb) = (sps.pic_width_in_ctbs() as usize, sps.pic_height_in_ctbs() as usize);
         let (bd_y, bd_c) = (sps.bit_depth_luma, sps.bit_depth_chroma);
-        let gy = S::from_u16(1u16 << (bd_y - 1));
-        let gc = S::from_u16(1u16 << (bd_c - 1));
-        PicState {
+        let mut pic = PicState {
             poc: frame.poc,
             frame,
             sps,
@@ -163,9 +296,10 @@ impl<S: Sample> PicState<S> {
             hctb,
             bd_y,
             bd_c,
-            planes: [vec![gy; width * height], vec![gc; cwidth * cheight], vec![gc; cwidth * cheight]],
-            blk: vec![Blk::default(); w4 * h4],
-            mvf: vec![MvField::default(); w4 * h4],
+            y_base: 0,
+            planes: [Vec::new(), Vec::new(), Vec::new()],
+            blk: Vec::new(),
+            mvf: Vec::new(),
             ctb_slice: vec![u32::MAX; wctb * hctb],
             ctb_addr: vec![u32::MAX; wctb * hctb],
             sao: vec![SaoParams::default(); wctb * hctb],
@@ -179,7 +313,73 @@ impl<S: Sample> PicState<S> {
             scaling,
             deblocking_enabled_anywhere: false,
             draft: false,
+            stage_deblock: crate::filter::StageDeblock::Full,
+        };
+        pic.reset_window(r0, r1, true);
+        pic
+    }
+
+    /// Set this state up for CTB rows `r0..r1` (see [`PicState::window`]): no CTB of rows
+    /// `r0 - 1 .. r1` decoded, no stored contexts. `fresh`: grey samples and no decoded blocks;
+    /// otherwise a re-used window keeps what it held (only reads of decoded CTBs follow: every
+    /// neighbour read is gated by [`PicState::zavail`] or the CTB slice index, and only decoded
+    /// CTBs leave a window).
+    pub fn reset_window(&mut self, r0: usize, r1: usize, fresh: bool) {
+        let ctb = 1usize << self.log2_ctb;
+        let y_end = r1.saturating_mul(ctb).min(self.height);
+        self.y_base = if r0 > 0 { (r0 * ctb).saturating_sub(4).min(y_end) } else { 0 };
+        let lines = y_end - self.y_base;
+        let gy = S::from_u16(1u16 << (self.bd_y - 1));
+        let gc = S::from_u16(1u16 << (self.bd_c - 1));
+        let fill = |v: &mut Vec<S>, n: usize, g: S| {
+            if fresh {
+                v.clear();
+            }
+            v.resize(n, g);
+        };
+        fill(&mut self.planes[0], self.width * lines, gy);
+        fill(&mut self.planes[1], self.cwidth * (lines / 2), gc);
+        fill(&mut self.planes[2], self.cwidth * (lines / 2), gc);
+        let rows4 = y_end.div_ceil(4) - self.y_base / 4;
+        if fresh {
+            self.blk.clear();
+            self.mvf.clear();
         }
+        self.blk.resize(self.w4 * rows4, Blk::default());
+        self.mvf.resize(self.w4 * rows4, MvField::default());
+        let rows = r0.saturating_sub(1).min(self.hctb)..r1.min(self.hctb);
+        let ctbs = rows.start * self.wctb..rows.end * self.wctb;
+        for v in [&mut self.ctb_slice, &mut self.ctb_addr] {
+            if let Some(s) = v.get_mut(ctbs.clone()) {
+                s.fill(u32::MAX);
+            }
+        }
+        self.wpp_ctx = None;
+        self.ds_ctx = None;
+    }
+
+    /// Move the sample planes and block arrays out (leaving them empty), to re-use them.
+    #[cfg_attr(not(feature = "threads"), allow(dead_code))]
+    pub fn take_bufs(&mut self) -> WinBufs<S> {
+        WinBufs { planes: std::mem::take(&mut self.planes), blk: std::mem::take(&mut self.blk), mvf: std::mem::take(&mut self.mvf) }
+    }
+
+    /// Use `b` (from [`PicState::take_bufs`]) as storage; call [`PicState::reset_window`] next.
+    #[cfg_attr(not(feature = "threads"), allow(dead_code))]
+    pub fn put_bufs(&mut self, b: WinBufs<S>) {
+        (self.planes, self.blk, self.mvf) = (b.planes, b.blk, b.mvf);
+    }
+
+    /// Index into `blk` / `mvf` of the 4x4 block containing luma sample (x, y).
+    #[inline(always)]
+    pub fn bidx(&self, x: i32, y: i32) -> usize {
+        ((y as usize).wrapping_sub(self.y_base) >> 2) * self.w4 + (x as usize >> 2)
+    }
+
+    /// First line of plane `c` held by `planes[c]`.
+    #[inline(always)]
+    pub fn line0(&self, c: usize) -> usize {
+        if c == 0 { self.y_base } else { self.y_base / 2 }
     }
 
     /// z-scan order availability (6.4.1) of luma location (xn, yn) for the block at (xc, yc) in the slice
@@ -204,7 +404,7 @@ impl<S: Sample> PicState<S> {
 
     #[inline]
     pub fn blk_at(&self, x: i32, y: i32) -> &Blk {
-        &self.blk[(y as usize >> 2) * self.w4 + (x as usize >> 2)]
+        &self.blk[self.bidx(x, y)]
     }
 }
 
@@ -293,11 +493,40 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         v.checked_shl(left).unwrap_or(0) | self.c.decode_bypass_bits(left)
     }
 
-    /// Decode the slice segment `job` into `pic`.
-    pub fn decode(pic: &'a mut PicState<S>, job: &'a SliceJob) -> Result<()> {
+    /// Decode the slice segment `job` (slice `meta`, from [`prepare_slices`]) into the whole picture `pic`.
+    pub fn decode(pic: &'a mut PicState<S>, job: &'a SliceJob, meta: Option<SliceMeta>) -> Result<()> {
+        let Some(meta) = meta else { return invalid("dependent slice segment without a preceding slice") };
+        ensure!(job.sh.data_offset < job.rbsp.len(), "empty slice segment data");
+        let ts = *pic.layout.rs_to_ts.get(job.sh.segment_address as usize).ok_or(crate::Error::Invalid("slice segment address out of range".into()))?;
+        let mut d = Self::new(pic, job, meta, None, job.sh.data_offset)?;
+        d.decode_data(ts, Mode::Picture, true).map(|_| ())
+    }
+
+    /// Decode a substream of slice segment `job` (from `start`, tile scan) into the window `pic`,
+    /// up to the end of the unit or of the segment. Returns where to resume when a hook said to
+    /// stop.
+    #[cfg_attr(not(feature = "threads"), allow(dead_code))]
+    pub fn decode_unit(pic: &'a mut PicState<S>, job: &'a SliceJob, meta: Option<SliceMeta>, start: Start, mode: Mode<'_, S>) -> Result<Option<Resume>> {
+        let Some(meta) = meta else { return invalid("dependent slice segment without a preceding slice") };
+        match start {
+            Start::At { pos, ts } => {
+                ensure!(pos < job.rbsp.len(), "empty substream");
+                let mut d = Self::new(pic, job, meta, None, pos)?;
+                d.decode_data(ts, mode, true)
+            }
+            Start::Resume(r) => {
+                let mut d = Self::new(pic, job, meta, Some(&r.cabac), 0)?;
+                d.last_qp = r.last_qp;
+                d.decode_data(r.ts, mode, r.first)
+            }
+        }
+    }
+
+    /// A decoder of slice segment `job` reading from `rbsp` byte `pos` with initialised contexts,
+    /// or continuing from `resume`.
+    fn new(pic: &'a mut PicState<S>, job: &'a SliceJob, meta: SliceMeta, resume: Option<&CabacState>, pos: usize) -> Result<Self> {
         let sh = &job.sh;
         let (sps, pps) = (&*job.sps, &*job.pps);
-        ensure!(sh.data_offset < job.rbsp.len(), "empty slice segment data");
         let slice_qp = pps.init_qp + sh.qp_delta;
         let init_type = match sh.slice_type {
             SliceType::I => 0,
@@ -317,35 +546,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             }
         };
         // SliceAddrRs: address of the first CTB of the (independent) slice
-        let slice_addr = if sh.dependent {
-            match pic.slices.last() {
-                Some(s) => s.addr_rs,
-                None => return invalid("dependent slice segment without a preceding slice"),
-            }
-        } else {
-            sh.segment_address
-        };
-        if !sh.dependent {
-            let ids = |l: usize| job.refs[l].iter().map(|r| r.frame.id).collect::<Vec<_>>();
-            let pocs = |l: usize| job.refs[l].iter().map(|r| r.poc).collect::<Vec<_>>();
-            let lts = |l: usize| job.refs[l].iter().map(|r| r.long_term).collect::<Vec<_>>();
-            pic.slices.push(SliceInfo {
-                addr_rs: slice_addr,
-                deblock_disabled: sh.deblocking_disabled,
-                beta_offset: sh.beta_offset_div2 * 2,
-                tc_offset: sh.tc_offset_div2 * 2,
-                lf_across: sh.loop_filter_across_slices,
-                sao_luma: sh.sao_luma,
-                sao_chroma: sh.sao_chroma,
-                ref_ids: [ids(0), ids(1)],
-                ref_pocs: [pocs(0), pocs(1)],
-                ref_lt: [lts(0), lts(1)],
-            });
-            if !sh.deblocking_disabled {
-                pic.deblocking_enabled_anywhere = true;
-            }
-        }
-        let slice_idx = (pic.slices.len() - 1) as u32;
+        let (slice_idx, slice_addr) = (meta.idx, meta.addr);
         let col = if sh.temporal_mvp && !sh.is_intra() {
             let l = if sh.is_b() && !sh.collocated_from_l0 { 1 } else { 0 };
             job.refs[l].get(sh.collocated_ref_idx as usize).cloned()
@@ -354,8 +555,11 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         };
         let no_backward_pred = job.refs.iter().flatten().all(|r| r.poc <= pic.poc);
         let log2_min_cu_qp_delta = sps.log2_ctb - pps.diff_cu_qp_delta_depth;
-        let c = Cabac::new(&job.rbsp, sh.data_offset, slice_qp, init_type)?;
-        let mut d = SliceDecoder {
+        let c = match resume {
+            Some(s) => Cabac::resume(&job.rbsp, s),
+            None => Cabac::new(&job.rbsp, pos, slice_qp, init_type)?,
+        };
+        Ok(SliceDecoder {
             pic,
             sh,
             sps,
@@ -389,23 +593,30 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             no_backward_pred,
             ctb_x: 0,
             ctb_y: 0,
-        };
-        d.decode_data()
+        })
     }
 
-    fn decode_data(&mut self) -> Result<()> {
+    /// Decode CTBs from `ts` (tile scan) on, as `mode` says (`first`: no CTB of the substream
+    /// decoded yet). Returns where to resume when a hook said to stop.
+    fn decode_data(&mut self, mut ts: u32, mode: Mode<'_, S>, mut first: bool) -> Result<Option<Resume>> {
         let layout = self.pic.layout.clone();
         let wctb = self.pic.wctb as u32;
         let npic = (self.pic.wctb * self.pic.hctb) as u32;
-        let mut ts = layout.rs_to_ts[self.sh.segment_address as usize];
-        let mut first = true;
+        // first CTB of the slice segment (dependent segments restore contexts there)
+        let seg_start = layout.rs_to_ts.get(self.sh.segment_address as usize).copied();
         loop {
+            ensure!(ts < npic, "CTB address out of range");
             let rs = layout.ts_to_rs[ts as usize];
             ensure!(self.pic.ctb_slice[rs as usize] == u32::MAX, "CTB {rs} decoded twice");
             let (rx, ry) = ((rs % wctb) as i32, (rs / wctb) as i32);
             let ctb = 1i32 << self.sps.log2_ctb;
             self.ctb_x = rx * ctb;
             self.ctb_y = ry * ctb;
+            if let Mode::Unit { hooks: Some(h), .. } = mode
+                && !h.before(self.pic, rx as usize, ry as usize)
+            {
+                return Ok(Some(Resume { ts, cabac: self.c.save(), last_qp: self.last_qp, first }));
+            }
             self.pic.ctb_slice[rs as usize] = self.slice_idx;
             self.pic.ctb_addr[rs as usize] = self.slice_addr;
             // context initialisation / synchronisation (9.3.1, 9.3.2.1)
@@ -425,7 +636,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
                     _ => init_contexts(&mut self.c.ctx, self.slice_qp, self.init_type),
                 }
                 self.last_qp = self.slice_qp;
-            } else if first && self.sh.dependent {
+            } else if first && self.sh.dependent && seg_start == Some(ts) {
                 match &self.pic.ds_ctx {
                     Some((saved, qp)) => {
                         self.c.ctx = **saved;
@@ -442,17 +653,28 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             let end = self.c.decode_terminate() == 1;
             ensure!(!self.c.overrun(), "slice data overrun");
             // WPP storage after the second CTB of a row in a tile (9.3.1)
-            if self.pps.entropy_coding_sync
-                && (rs % wctb == 1 || (rs > 1 && layout.tile_id[ts as usize] != layout.tile_id[layout.rs_to_ts[rs as usize - 2] as usize]))
-            {
+            let store = self.pps.entropy_coding_sync
+                && (rs % wctb == 1 || (rs > 1 && layout.tile_id[ts as usize] != layout.tile_id[layout.rs_to_ts[rs as usize - 2] as usize]));
+            if store {
                 self.pic.wpp_ctx = Some(Box::new(self.c.ctx));
             }
-            crate::filter::ctb_decoded(self.pic, ry as usize);
+            match mode {
+                Mode::Picture => crate::filter::ctb_decoded(self.pic, ry as usize),
+                Mode::Unit { hooks: Some(h), .. } => h.after(self.pic, rx as usize, ry as usize, store),
+                Mode::Unit { hooks: None, .. } => {}
+            }
             ts += 1;
             if end {
                 if self.pps.dependent_slice_segments_enabled {
                     self.pic.ds_ctx = Some((Box::new(self.c.ctx), self.last_qp));
                 }
+                break;
+            }
+            if let Mode::Unit { end_ts, .. } = mode
+                && ts >= end_ts
+            {
+                // the substream ends with the unit (a WPP row or a tile)
+                ensure!(self.c.decode_terminate() == 1, "end_of_subset_one_bit is 0");
                 break;
             }
             ensure!(ts < npic, "slice data continues past the last CTB");
@@ -467,7 +689,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
                 self.c.init_engine()?;
             }
         }
-        Ok(())
+        Ok(None)
     }
 
     fn parse_sao(&mut self, rx: i32, ry: i32, rs: u32) -> Result<()> {
@@ -596,7 +818,8 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         let (bx0, by0) = ((x0 >> 2) as usize, (y0 >> 2) as usize);
         let bx1 = (((x0 + w) as usize).min(self.pic.width).div_ceil(4)).max(bx0);
         let by1 = (((y0 + h) as usize).min(self.pic.height).div_ceil(4)).max(by0);
-        for by in by0..by1 {
+        let yb = self.pic.y_base >> 2;
+        for by in by0 - yb..by1 - yb {
             for b in &mut self.pic.blk[by * self.pic.w4 + bx0..by * self.pic.w4 + bx1] {
                 f(b);
             }
@@ -738,9 +961,10 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
     /// Mark the left (vertical) and top (horizontal) edges of a rectangle.
     fn mark_edges(&mut self, x0: i32, y0: i32, w: i32, h: i32, v: u8, hz: u8) {
         let w4 = self.pic.w4;
-        let (bx0, by0) = ((x0 >> 2) as usize, (y0 >> 2) as usize);
+        let yb = self.pic.y_base >> 2;
+        let (bx0, by0) = ((x0 >> 2) as usize, (y0 >> 2) as usize - yb);
         if v != 0 {
-            let by1 = ((y0 + h) as usize).min(self.pic.height).div_ceil(4);
+            let by1 = ((y0 + h) as usize).min(self.pic.height).div_ceil(4) - yb;
             for by in by0..by1 {
                 self.pic.blk[by * w4 + bx0].edges |= v;
             }
@@ -799,10 +1023,11 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         let mut r = filmcraft_bitstream::BitReader::new(&data[start..]);
         let (sy, sc) = (self.pic.bd_y - bl, self.pic.bd_c - bc);
         let w = self.pic.width;
+        let (ly0, cy0) = (y0 as usize - self.pic.line0(0), y0 as usize / 2 - self.pic.line0(1));
         for y in 0..n {
             for x in 0..n {
                 let v = r.read_bits(bl)? as u16;
-                self.pic.planes[0][(y0 as usize + y) * w + x0 as usize + x] = S::from_u16(v << sy);
+                self.pic.planes[0][(ly0 + y) * w + x0 as usize + x] = S::from_u16(v << sy);
             }
         }
         let cw = self.pic.cwidth;
@@ -810,7 +1035,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             for y in 0..n / 2 {
                 for x in 0..n / 2 {
                     let v = r.read_bits(bc)? as u16;
-                    self.pic.planes[c][(y0 as usize / 2 + y) * cw + x0 as usize / 2 + x] = S::from_u16(v << sc);
+                    self.pic.planes[c][(cy0 + y) * cw + x0 as usize / 2 + x] = S::from_u16(v << sc);
                 }
             }
         }
@@ -999,12 +1224,14 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         let avail =
             |pic: &PicState<S>, xn: i32, yn: i32| -> bool { pic.zavail(xl, yl, xn, yn, addr) && (!constrained || pic.blk_at(xn, yn).flags & F_INTRA != 0) };
         let plane = &self.pic.planes[c];
+        // window line of component line y (y >= the window's first line wherever it is read)
+        let yb = self.pic.line0(c);
         let r = &mut self.refs_buf;
         // corner
         if avail(self.pic, xl - 1, yl - 1) {
             al[0] = true;
             at[0] = true;
-            let v = plane[(y0 - 1) as usize * stride + (x0 - 1) as usize].to_u16();
+            let v = plane[((y0 - 1) as usize - yb) * stride + (x0 - 1) as usize].to_u16();
             r.left[0] = v;
             r.top[0] = v;
         }
@@ -1014,12 +1241,12 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             if avail(self.pic, xl - 1, yn * sc) {
                 for i in 0..unit {
                     al[1 + k + i] = true;
-                    r.left[1 + k + i] = plane[(yn as usize + i) * stride + (x0 - 1) as usize].to_u16();
+                    r.left[1 + k + i] = plane[(yn as usize + i - yb) * stride + (x0 - 1) as usize].to_u16();
                 }
             }
             let xn = x0 + k as i32;
             if avail(self.pic, xn * sc, yl - 1) {
-                let o = (y0 - 1) as usize * stride + xn as usize;
+                let o = ((y0 - 1) as usize - yb) * stride + xn as usize;
                 for i in 0..unit {
                     at[1 + k + i] = true;
                     r.top[1 + k + i] = plane[o + i].to_u16();
@@ -1032,7 +1259,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         if c == 0 {
             intra::filter(r, mode, n, self.sps.strong_intra_smoothing, true, bd);
         }
-        let off = y0 as usize * stride + x0 as usize;
+        let off = (y0 as usize - yb) * stride + x0 as usize;
         intra::predict(r, mode, n, c == 0, bd, &mut self.pic.planes[c][off..], stride);
     }
 
@@ -1314,9 +1541,10 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         }
         let _ = dc_only;
         let (stride, max) = (if c == 0 { self.pic.width } else { self.pic.cwidth }, (1i32 << bd) - 1);
+        let yb = self.pic.line0(c);
         let plane = &mut self.pic.planes[c];
         for y in 0..n {
-            let row = &mut plane[(y0 as usize + y) * stride + x0 as usize..][..n];
+            let row = &mut plane[(y0 as usize + y - yb) * stride + x0 as usize..][..n];
             for (x, s) in row.iter_mut().enumerate() {
                 *s = S::from_i32((s.to_i32() + coeffs[y * n + x]).clamp(0, max));
             }
@@ -1396,8 +1624,8 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             }
         }
         // store motion
-        let w4 = self.pic.w4;
-        for by in (yp >> 2)..((yp + h) >> 2) {
+        let (w4, yb) = (self.pic.w4, (self.pic.y_base >> 2) as i32);
+        for by in (yp >> 2) - yb..((yp + h) >> 2) - yb {
             let o = by as usize * w4;
             self.pic.mvf[o + (xp >> 2) as usize..o + ((xp + w) >> 2) as usize].fill(mvf);
         }
@@ -1464,7 +1692,8 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
                     let sh = if c == 0 { 2 } else { 3 };
                     let stride = if c == 0 { self.pic.width } else { self.pic.cwidth };
                     let frame = &self.refs[l][f.ref_idx[l] as usize].frame;
-                    let dst = &mut self.pic.planes[c][y as usize * stride + x as usize..];
+                    let yb = self.pic.line0(c);
+                    let dst = &mut self.pic.planes[c][(y as usize - yb) * stride + x as usize..];
                     frame.copy_block(c, x + (mv[0] as i32 >> sh), y + (mv[1] as i32 >> sh), bw, bh, dst, stride);
                     continue;
                 }
@@ -1484,7 +1713,8 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
                 }
             }
             let stride = if c == 0 { self.pic.width } else { self.pic.cwidth };
-            let dst = &mut self.pic.planes[c][y as usize * stride + x as usize..];
+            let yb = self.pic.line0(c);
+            let dst = &mut self.pic.planes[c][(y as usize - yb) * stride + x as usize..];
             let Some(pwt) = pwt else {
                 if bi {
                     inter::put_bi(&self.pred0, &self.pred1, bw, bh, bd, dst, stride);

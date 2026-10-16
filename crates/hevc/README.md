@@ -29,8 +29,8 @@ and fixture generators.
 | Scaling (flat and scaling lists), DCT 4..32, DST 4x4, transform skip, sign data hiding | done |
 | Deblocking (bS, slice / tile boundary rules, PCM / bypass exemption), SAO (band / edge, boundary rules) | done |
 | Frame-level multithreading (CTB-row granularity dependencies) | done |
+| Multithreading inside a picture: WPP rows and tiles on several threads (entry points), in-loop filters next to the parsing thread for other pictures | done (4+ threads) |
 | Draft mode (non-reference pictures skip deblocking / SAO; reduced-resolution playback only) | done |
-| Tiles / WPP | parsed and decoded sequentially within a picture (parallelism is across pictures) |
 | 4:2:2 / 4:4:4 / monochrome, range-extension tools (RExt), 12-bit+ with extended precision | not yet (`Error::Unsupported`) |
 | SCC, multilayer (SHVC / MV-HEVC), 3D extensions | not supported (layers > 0 are ignored) |
 
@@ -69,6 +69,33 @@ the memory traffic in prediction reads, in-loop filters and output) and as `u16`
 slice decoder and the filters are generic over the sample type (`picture::Sample`), monomorphised
 once per type.
 
+With 4 threads or more, pictures are also split inside (`parallel`), on the same pool (no extra
+threads; `Decoder::with_threads` bounds everything):
+
+- **WPP** (`entropy_coding_sync_enabled_flag`): each CTB row is a unit whose substreams start at
+  the entry points of the slice segment headers (`entry_point_offset_minus1`, which count
+  emulation prevention bytes: the slice NAL keeps where they were removed). A thread decodes a row
+  into a private window of the row plus the bottom 4 lines of the row above; before CTB x it
+  copies in what the row above has published of CTBs up to x + 1 (bottom sample line, 4x4 block
+  state and motion, CTB slice addresses and SAO parameters, and after its second CTB the stored
+  contexts, 9.3.2.4). When the row above is not that far, the row is *parked* (CABAC engine state,
+  contexts, qPY_PREV and window saved) and the thread does other work; the row above resumes it
+  (a pool task once it is far enough, or the thread finishing the row above adopts it, so a
+  parked row never needs a free thread and nothing waits on a row nobody decodes). Helpers start
+  lazily: a row starts one when its second CTB is done.
+- **Tiles** (without WPP): each tile is a unit; tiles need nothing from each other.
+- **Other pictures** (no WPP / tiles, or entry points that don't match the picture): the job
+  thread parses and reconstructs serially, but into one window per CTB row that it hands to
+  another thread at the row end; deblocking, SAO and publication run there meanwhile.
+
+Units deblock their own edges in their windows (vertical edges and horizontal edges inside the
+unit); the finished windows are copied into the picture state, where whichever thread holds it
+(never waiting for it) filters the edges between CTB rows, applies SAO and publishes rows; the
+thread finishing the last unit finishes the picture. A unit that fails or panics counts as done
+(the picture then publishes grey rows), so readers never block. With 2 or 3 threads, frame-level
+parallelism already keeps the threads busy and the split only adds its copies, so it is off
+(`Decoder::set_intra_picture_parallel` forces it for tests).
+
 Draft mode (`Decoder::set_draft(true)`; FilmCraft enables it with Settings ▸ Playback ▸ Draft
 decoding while the Program monitor plays at 1/2 or 1/4): sub-layer non-reference pictures
 (TRAIL_N, RASL_N, ...) of the highest temporal sub-layer — no later picture predicts from them,
@@ -78,7 +105,8 @@ pictures.
 
 Modules: `params` (VPS/SPS/PPS/tile layout), `slice` (NAL + slice header), `dpb` (POC, RPS, lists,
 bumping), `cabac`, `slicedec` (CTU syntax + reconstruction), `mvpred` (merge / AMVP / TMVP),
-`intra`, `inter`, `transform`, `filter` (deblocking, SAO, row publication).
+`intra`, `inter`, `transform`, `filter` (deblocking, SAO, row publication), `parallel` (splitting
+pictures over threads).
 
 ## Tests
 
@@ -95,9 +123,15 @@ with ffmpeg; tests print a message and skip when ffmpeg is absent).
   output is known exactly where filters leave PCM samples alone; every stream is also compared with
   ffmpeg.
 - Robustness: hvcC input with pts round trip; randomly corrupted, truncated and garbage input never
-  panics or deadlocks (single- and multi-threaded).
-- Conformance (`tests/conformance.rs`): every fixture is decoded with 1 thread, 3 threads and every
-  core and compared sample-exactly with `ffmpeg -f rawvideo -pix_fmt yuv420p / yuv420p10le`; on mismatch
+  panics or deadlocks (single- and multi-threaded, pictures split over threads or not); corrupted
+  slice segment headers (entry points) neither.
+- Splitting pictures over threads: every fixture is also decoded with 2 and 3 threads with the
+  split forced on; `intra_picture_parallel_matches_single_thread` checks WPP fixtures (x265's
+  default, also with 4 slices per picture), `no_wpp` and B pyramids at 2, 4 and 8 threads against
+  one thread and that every picture was split; the synthetic tile / slice / dependent-segment
+  streams are decoded at 2, 3 and 8 threads against one thread.
+- Conformance (`tests/conformance.rs`): every fixture is decoded with 1, 2 and 3 threads, every
+  core, and 2 and 3 threads splitting pictures, and compared sample-exactly with `ffmpeg -f rawvideo -pix_fmt yuv420p / yuv420p10le`; on mismatch
   the first differing frame, plane, sample, CTB and 8x8 block are reported. Output pts/POC order is
   checked too, and that no picture is flagged draft without draft mode. `compare_detects_mismatch`
   guards the harness itself. Draft mode (`draft_mode_changes_only_flagged_non_reference_pictures`):
@@ -159,7 +193,9 @@ loop for samples whose neighbours are inside the CTB. Together: ~60 % less CPU p
 (1080p 78 → 33 ms, 2160p 320 → 129 ms of CPU per frame through the media stack, alternating A/B), see
 [docs/performance.md](../../docs/performance.md).
 `cargo run --release -p filmcraft-hevc --example hevcdec -- in.hevc out.yuv` decodes a file
-(`HEVC_THREADS=n`, `HEVC_LOOPS=k`, `HEVC_DRAFT=1`).
+(`HEVC_THREADS=n`, `HEVC_LOOPS=k`, `HEVC_DRAFT=1`; `HEVC_AU=1` feeds one access unit per call and
+drops the pictures, like a player or `ffmpeg -f null`; `HEVC_INTRA=0|1` forces splitting pictures
+over threads off or on).
 
 M4.10 (2026-10-03), CPU cycles per frame counted by the kernel (`/usr/bin/time -l`, all threads
 summed; mean of two interleaved base / after rounds at load average 190-320) on the
@@ -191,8 +227,9 @@ context-coded bins are branch-free. Single-threaded 4K now splits into CABAC res
   extension tools (implicit / explicit RDPCM, cross-component prediction, extended precision,
   persistent Rice adaptation, bypass alignment, chroma QP offset lists) are rejected with
   `Error::Unsupported`.
-- Tiles and WPP substreams are decoded sequentially (entry points are parsed but the decoder finds
-  substream starts itself); parallelism is at the picture level.
+- Pictures with both tiles and WPP are not split over threads (decoded serially, with the
+  filters next to the parsing thread); without WPP the parsing of a picture stays serial (only
+  its in-loop filters move to other threads).
 - Error concealment is minimal: missing references are replaced by grey pictures, undecodable
   slices leave grey / partial content.
 - No fixture covers the `pic_output_flag = 0` path or decoding-order-only CRA handling after EOS

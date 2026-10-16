@@ -50,7 +50,7 @@ impl<'a, S: crate::picture::Sample> SliceDecoder<'a, S> {
 
     #[inline]
     fn mv_at(&self, x: i32, y: i32) -> MvField {
-        self.pic.mvf[(y as usize >> 2) * self.pic.w4 + (x as usize >> 2)]
+        self.pic.mvf[self.pic.bidx(x, y)]
     }
 
     #[inline]

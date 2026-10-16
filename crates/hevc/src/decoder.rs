@@ -10,7 +10,7 @@ use crate::error::{Error, Result, ensure, invalid};
 use crate::params::{Layout, Pps, Sps, Vps};
 use crate::picture::{Frame, FrameRef, Sample, stores_u8};
 use crate::slice::{NalHeader, SliceHeader, nal_type};
-use crate::slicedec::{Blk, F_INTRA, F_SKIP, PicState, SliceDecoder, SliceJob};
+use crate::slicedec::{Blk, F_INTRA, F_SKIP, PicState, SliceDecoder, SliceJob, prepare_slices};
 use crate::{ColorInfo, Picture};
 use filmcraft_bitstream::{annexb_nals, length_prefixed_nals, unescape_rbsp};
 use std::collections::VecDeque;
@@ -58,12 +58,52 @@ pub struct DecodeStats {
     pub missing_refs: u64,
     /// Pictures decoded in draft mode without in-loop filters ([`Decoder::set_draft`]).
     pub draft_pictures: u64,
+    /// Pictures whose wavefront rows or tiles were decoded by several threads.
+    pub parallel_pictures: u64,
 }
 
+/// State shared by the decoder and its decoding jobs.
 #[derive(Default)]
-struct Shared {
+pub(crate) struct Shared {
     error: Mutex<Option<Error>>,
     stats: Mutex<DecodeStats>,
+    /// Window buffers ([`crate::slicedec::WinBufs`] of either sample type) of finished pictures,
+    /// for the next ones, at most `max_bufs`.
+    bufs: Mutex<Vec<Box<dyn std::any::Any + Send>>>,
+    max_bufs: usize,
+}
+
+impl Shared {
+    /// Window buffers of sample type `S` to re-use, if any.
+    #[cfg_attr(not(feature = "threads"), allow(dead_code))]
+    pub(crate) fn take_bufs<S: Sample>(&self) -> Option<crate::slicedec::WinBufs<S>> {
+        let b = self.bufs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).pop()?;
+        b.downcast().ok().map(|b| *b)
+    }
+
+    /// Keep window buffers for later pictures.
+    #[cfg_attr(not(feature = "threads"), allow(dead_code))]
+    pub(crate) fn put_bufs<S: Sample>(&self, b: crate::slicedec::WinBufs<S>) {
+        let mut bufs = self.bufs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if bufs.len() < self.max_bufs {
+            bufs.push(Box::new(b));
+        }
+    }
+
+    /// A picture is done: count it and its blocks, keep the first error.
+    pub(crate) fn report<S: Sample>(&self, pic: &PicState<S>, err: Option<Error>, parallel: bool) {
+        if let Ok(mut s) = self.stats.lock() {
+            s.pictures += 1;
+            s.parallel_pictures += parallel as u64;
+            let [intra, skip, inter] = block_counts(&pic.blk);
+            s.intra_4x4_blocks += intra;
+            s.skip_4x4_blocks += skip;
+            s.inter_4x4_blocks += inter;
+        }
+        if let (Some(e), Ok(mut slot)) = (err, self.error.lock()) {
+            slot.get_or_insert(e);
+        }
+    }
 }
 
 /// H.265 / HEVC decoder.
@@ -88,6 +128,10 @@ pub struct Decoder {
     pool: Option<rayon::ThreadPool>,
     in_flight: VecDeque<FrameRef>,
     max_in_flight: usize,
+    /// Threads a picture may use beyond its own job (0 without a pool).
+    helpers: usize,
+    /// Decode inside pictures on several threads: None = with 4 threads or more.
+    intra_parallel: Option<bool>,
     draft: bool,
 }
 
@@ -96,6 +140,10 @@ impl Default for Decoder {
         Self::new()
     }
 }
+
+/// Pool threads beyond a picture's own job from which pictures are also decoded in parallel
+/// inside (wavefront rows, tiles, in-loop filters next to parsing) by default.
+const MIN_INTRA_HELPERS: usize = 3;
 
 fn default_threads() -> usize {
     #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
@@ -122,6 +170,10 @@ impl Decoder {
         } else {
             None
         };
+        #[cfg(feature = "threads")]
+        let helpers = if pool.is_some() { threads - 1 } else { 0 };
+        #[cfg(not(feature = "threads"))]
+        let helpers = 0;
         Decoder {
             vpss: vec![None; 16],
             spss: vec![None; 16],
@@ -137,11 +189,13 @@ impl Decoder {
             skip_rasl: false,
             layout_cache: Vec::new(),
             out_queue: VecDeque::new(),
-            shared: Arc::new(Shared::default()),
+            shared: Arc::new(Shared { max_bufs: 2 * threads.min(64), ..Shared::default() }),
             #[cfg(feature = "threads")]
             pool,
             in_flight: VecDeque::new(),
             max_in_flight: threads.max(1) + 2,
+            helpers,
+            intra_parallel: None,
             draft: false,
         }
     }
@@ -249,6 +303,14 @@ impl Decoder {
         self.draft = on;
     }
 
+    /// Force decoding inside pictures (wavefront rows, tiles, filters next to parsing) on or off;
+    /// None (the default) decides per picture. Has no effect without a thread pool. For tests and
+    /// benchmarks.
+    #[doc(hidden)]
+    pub fn set_intra_picture_parallel(&mut self, on: Option<bool>) {
+        self.intra_parallel = on;
+    }
+
     pub fn take_error(&mut self) -> Option<Error> {
         self.shared.error.lock().ok().and_then(|mut e| e.take())
     }
@@ -313,7 +375,7 @@ impl Decoder {
     }
 
     fn handle_slice(&mut self, nal: &[u8], hdr: NalHeader, pts: i64) -> Result<()> {
-        let rbsp = unescape_rbsp(&nal[2..]);
+        let (rbsp, epb) = unescape_with_positions(&nal[2..]);
         // a first_slice_segment_in_pic_flag of 1 starts a new picture
         let first = rbsp.first().is_some_and(|b| b & 0x80 != 0);
         if first {
@@ -355,7 +417,7 @@ impl Decoder {
         }
         let (st, dependent, weighted, tmvp, sao, dbk_off, lt) =
             (sh.slice_type, sh.dependent, sh.pwt.is_some(), sh.temporal_mvp, sh.sao_luma || sh.sao_chroma, sh.deblocking_disabled, !sh.lt.is_empty());
-        pending.slices.push(SliceJob { sh, pps, sps, rbsp, refs });
+        pending.slices.push(SliceJob { sh, pps, sps, rbsp, epb, refs });
         self.stat(|s| {
             match st {
                 crate::slice::SliceType::I => s.slices_i += 1,
@@ -472,7 +534,11 @@ impl Decoder {
         let Some(p) = self.pending.take() else { return };
         let PendingPic { frame, sps, pps, layout, first_sh, poc, output, meta, slices, .. } = p;
         let scaling = self.layout_cache.iter().find(|(pp, ss, _, _)| Arc::ptr_eq(pp, &pps) && Arc::ptr_eq(ss, &sps)).and_then(|(_, _, _, s)| s.clone());
-        self.dispatch(frame.clone(), sps, pps, layout, scaling, slices, meta.draft);
+        // With 2 or 3 threads, decoding pictures concurrently keeps the threads busy and the
+        // intra-picture split only adds its copies (measured: up to 11 % slower at 2 threads).
+        let on = self.intra_parallel.unwrap_or(self.helpers >= MIN_INTRA_HELPERS);
+        let helpers = if on { self.helpers } else { 0 };
+        self.dispatch(frame.clone(), sps, pps, layout, scaling, slices, meta.draft, helpers);
         self.poc_state.update(&first_sh, poc);
         let mut outs = Vec::new();
         self.dpb.insert(frame, poc, output, meta, &mut outs);
@@ -489,6 +555,7 @@ impl Decoder {
         scaling: Option<Arc<Vec<Vec<u8>>>>,
         slices: Vec<SliceJob>,
         draft: bool,
+        helpers: usize,
     ) {
         let shared = self.shared.clone();
         #[cfg(feature = "threads")]
@@ -500,11 +567,30 @@ impl Decoder {
                 }
             }
             self.in_flight.push_back(frame.clone());
-            pool.spawn_fifo(move || run_job(frame, sps, pps, layout, scaling, slices, draft, &shared));
+            pool.spawn_fifo(move || run_job(frame, sps, pps, layout, scaling, slices, draft, helpers, shared));
             return;
         }
-        run_job(frame, sps, pps, layout, scaling, slices, draft, &shared);
+        let _ = helpers;
+        run_job(frame, sps, pps, layout, scaling, slices, draft, 0, shared);
     }
+}
+
+/// Unescape a NAL unit payload (7.4.2), also returning for each removed emulation prevention
+/// byte the number of payload bytes before it.
+fn unescape_with_positions(data: &[u8]) -> (Vec<u8>, Vec<u32>) {
+    let mut out = Vec::with_capacity(data.len());
+    let mut removed = Vec::new();
+    let mut zeros = 0;
+    for &b in data {
+        if zeros >= 2 && b == 3 {
+            zeros = 0;
+            removed.push(out.len() as u32);
+            continue;
+        }
+        out.push(b);
+        zeros = if b == 0 { zeros + 1 } else { 0 };
+    }
+    (out, removed)
 }
 
 /// Decode all slices of one picture and publish its rows, in the picture's sample type.
@@ -517,12 +603,13 @@ fn run_job(
     scaling: Option<Arc<Vec<Vec<u8>>>>,
     slices: Vec<SliceJob>,
     draft: bool,
-    shared: &Shared,
+    helpers: usize,
+    shared: Arc<Shared>,
 ) {
     if stores_u8(frame.bit_depth, frame.bit_depth_c) {
-        run_job_as::<u8>(frame, sps, pps, layout, scaling, slices, draft, shared)
+        run_job_as::<u8>(frame, sps, pps, layout, scaling, slices, draft, helpers, shared)
     } else {
-        run_job_as::<u16>(frame, sps, pps, layout, scaling, slices, draft, shared)
+        run_job_as::<u16>(frame, sps, pps, layout, scaling, slices, draft, helpers, shared)
     }
 }
 
@@ -535,14 +622,27 @@ fn run_job_as<S: Sample>(
     scaling: Option<Arc<Vec<Vec<u8>>>>,
     slices: Vec<SliceJob>,
     draft: bool,
-    shared: &Shared,
+    helpers: usize,
+    shared: Arc<Shared>,
 ) {
     let mut pic = PicState::<S>::new(frame.clone(), sps, pps, layout, scaling);
     pic.draft = draft;
+    let metas = prepare_slices(&mut pic, &slices);
+    // wavefront rows / tiles on several threads
+    #[cfg(feature = "threads")]
+    if helpers > 0 {
+        let (wpp, tiles) = (pic.pps.entropy_coding_sync, pic.pps.tiles_enabled);
+        let plan = crate::parallel::Plan::new(&pic.layout, wpp, tiles, &slices).or_else(|| crate::parallel::Plan::serial(&pic.layout, tiles));
+        if let Some(plan) = plan {
+            crate::parallel::Job::run(pic, slices, metas, plan, helpers, shared);
+            return;
+        }
+    }
+    let _ = helpers;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut first_err = None;
-        for s in &slices {
-            if let Err(e) = SliceDecoder::decode(&mut pic, s) {
+        for (s, &meta) in slices.iter().zip(&metas) {
+            if let Err(e) = SliceDecoder::decode(&mut pic, s, meta) {
                 first_err.get_or_insert(e);
             }
         }
@@ -557,16 +657,7 @@ fn run_job_as<S: Sample>(
             Some(Error::Invalid("internal error while decoding a picture".into()))
         }
     };
-    if let Ok(mut s) = shared.stats.lock() {
-        s.pictures += 1;
-        let [intra, skip, inter] = block_counts(&pic.blk);
-        s.intra_4x4_blocks += intra;
-        s.skip_4x4_blocks += skip;
-        s.inter_4x4_blocks += inter;
-    }
-    if let (Some(e), Ok(mut slot)) = (err, shared.error.lock()) {
-        slot.get_or_insert(e);
-    }
+    shared.report(&pic, err, false);
 }
 
 /// Intra, skipped and other inter 4x4 blocks of a picture, branch-free (one pass over every

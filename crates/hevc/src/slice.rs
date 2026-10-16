@@ -368,7 +368,7 @@ impl SliceHeader {
                 let len = r.read_ue()? + 1;
                 ensure!(len <= 32, "offset_len_minus1 out of range");
                 for _ in 0..n {
-                    sh.entry_points.push(r.read_bits(len)? + 1);
+                    sh.entry_points.push(r.read_bits(len)?.saturating_add(1));
                 }
             }
         }
