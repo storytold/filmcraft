@@ -56,6 +56,8 @@ pub struct GeneralPrefs {
     pub show_compatibility_issues: bool,
     pub show_project_bin_in_tab: bool,
     pub show_mask_tracker_preview: bool,
+    /// A window with the running export or render's progress (off: the status bar's bar only).
+    pub show_progress_window: bool,
     /// Most recently opened / saved projects (newest first; not shown in the dialog).
     pub recent_projects: Vec<String>,
 }
@@ -79,6 +81,7 @@ impl Default for GeneralPrefs {
             show_compatibility_issues: true,
             show_project_bin_in_tab: true,
             show_mask_tracker_preview: true,
+            show_progress_window: false,
             recent_projects: Vec::new(),
         }
     }
@@ -1037,6 +1040,7 @@ static CATEGORIES: &[Category] = &[
             b("general.showCompatibilityIssues", "Show system compatibility issues at startup", false),
             b("general.showProjectBinInTab", "Show \"Project:\" and \"Bin:\" in Project panel tab", false),
             b("general.showMaskTrackerPreview", "Show Mask Tracker Preview", false),
+            b("general.showProgressWindow", "Show a progress window while exporting or rendering", false),
         ],
     },
     Category {
