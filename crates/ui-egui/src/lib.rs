@@ -416,6 +416,8 @@ pub struct FilmcraftApp {
     pub cloud_page: Option<cloud::CloudPage>,
     /// Encoded Export / Quick Export bytes waiting for [`cloud::upload_export`] / `encode`.
     pub pending_cloud_upload: Option<Vec<u8>>,
+    /// Etag of the cloud origin before a Share-dialog save, used to detect success.
+    pub share_save_prior_etag: Option<Option<String>>,
 }
 
 pub struct GpuState {
@@ -641,6 +643,7 @@ impl FilmcraftApp {
             cloud_locks: Vec::new(),
             cloud_page: None,
             pending_cloud_upload: None,
+            share_save_prior_etag: None,
         }
     }
 
@@ -2149,6 +2152,8 @@ impl eframe::App for FilmcraftApp {
         self.error_window(ui.ctx());
         cloud::conflict_modal(self, ui.ctx());
         cloud::modal(self, ui.ctx());
+        // Also pump share here so the modal paints in the same pass as other cloud UI.
+        cloud::pump_share(self, ui.ctx());
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| graphics_notice::show(self, ui.ctx()))).is_err() {
             // a broken notice must not take the session down: drop it
             self.graphics_notice = None;
