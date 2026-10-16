@@ -134,12 +134,48 @@ pub fn show_revert(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     open && !(r.should_close() && !ctx.input(|i| i.pointer.any_down()))
 }
 
+fn show_overwrite(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
+    let Some((command, mut params, path)) = app.pending_overwrite.clone() else { return false };
+    let t = app.tokens;
+    let mut open = true;
+    egui::Modal::new(egui::Id::new("overwrite-modal")).frame(modal_frame(&t)).show(ctx, |ui| {
+        ui.set_width(500.0);
+        Frame::new().inner_margin(Margin { left: 28, right: 28, top: 24, bottom: 20 }).show(ui, |ui| {
+            ui.label(RichText::new(tl!("Replace existing file?")).size(18.0).strong().color(t.text));
+            ui.add_space(8.0);
+            ui.label(RichText::new(tlf!("A file with this name already exists at {path}.", path)).size(13.0).color(t.text));
+            ui.add_space(18.0);
+            ui.horizontal(|ui| {
+                if button(app, ui, "overwrite.cancel", tl!("Cancel"), false) {
+                    open = false;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if button(app, ui, "overwrite.replace", tl!("Replace"), true) {
+                        params["overwrite"] = serde_json::Value::Bool(true);
+                        match app.session.execute(&command, params) {
+                            Ok(_) => app.ui.status = format!("Replacing {path}"),
+                            Err(e) => app.ui.status = e.to_string(),
+                        }
+                        open = false;
+                    }
+                });
+            });
+        });
+    });
+    let keep_open = open && !crate::widgets::escape_closes(ctx);
+    if !keep_open {
+        app.pending_overwrite = None;
+    }
+    keep_open
+}
+
 /// Draw the dialog if it is one of ours; returns Some(still open).
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context, d: Dialog) -> Option<bool> {
     match d {
         Dialog::Preferences => Some(crate::panels::settings::show(app, ctx)),
         Dialog::Recovery => Some(show_recovery(app, ctx)),
         Dialog::RevertConfirm => Some(show_revert(app, ctx)),
+        Dialog::OverwriteConfirm => Some(show_overwrite(app, ctx)),
         _ => None,
     }
 }

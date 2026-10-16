@@ -21,6 +21,7 @@
 //! `export.resolve`, `export.queue.{add,list,start,stop,cancel,retry,remove,move,clear}`,
 //! `export.quick`; `file.exportMedia` uses the same settings builder.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -320,6 +321,7 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
         settings.effects.loudness.target_lufs = v;
     }
     settings.validate().map_err(|e| bad(cmd, e.to_string()))?;
+    settings.overwrite = bool_p(p, "overwrite").unwrap_or(false);
     Ok((preset, settings))
 }
 
@@ -443,7 +445,7 @@ fn output_path(s: &Session, p: &Value, seq: ItemId, settings: &ExportSettings, s
 }
 
 /// Write the caption sidecar (`settings.caption_sidecar`) next to `path` for `range` of `seq`.
-fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportSettings) -> Result<Option<String>> {
+fn sidecar_output(s: &Session, project: &Project, seq: ItemId, settings: &ExportSettings) -> Result<Option<(String, Vec<u8>)>> {
     let Some(kind) = settings.caption_sidecar.as_deref() else { return Ok(None) };
     let q = project.sequence(seq).ok_or(EngineError::NoSequence)?;
     let Some(track) = q.caption_tracks.first() else { return Ok(None) };
@@ -458,8 +460,109 @@ fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportS
         filmcraft_captions::write(&doc, format, filmcraft_captions::WriteOptions { drop_frame: q.settings.drop_frame, rate: Some(q.settings.frame_rate) });
     let ext = if format == filmcraft_captions::Format::WebVtt { "vtt" } else { kind };
     let path = format!("{}.{ext}", settings.path.rsplit_once('.').map_or(settings.path.as_str(), |x| x.0));
-    s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-    Ok(Some(path))
+    if !settings.overwrite {
+        match s.services.file_size(&path) {
+            Ok(_) => return Err(bad("export", format!("caption sidecar already exists: {path}; confirm replacement with `overwrite: true`"))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(EngineError::Other(format!("cannot inspect caption sidecar {path}: {e}"))),
+        }
+    }
+    Ok(Some((path, bytes)))
+}
+
+/// Native snapshots used to roll back a single-file media replacement if its caption sidecar fails.
+pub(crate) struct ReplacementRollback(Vec<ReplacementFile>);
+
+struct ReplacementFile {
+    destination: PathBuf,
+    backup: Option<PathBuf>,
+    keep_backup: bool,
+}
+
+impl ReplacementRollback {
+    pub(crate) fn capture(settings: &ExportSettings, sidecar: Option<&(String, Vec<u8>)>, in_memory: bool) -> Result<Option<Self>> {
+        if !settings.overwrite || sidecar.is_none() || in_memory || settings.format.is_image_sequence() || settings.format == Format::MxfOpAtom {
+            return Ok(None);
+        }
+        let mut files = Vec::new();
+        for path in [settings.path.as_str(), sidecar.map(|(path, _)| path.as_str()).unwrap_or("")].into_iter().filter(|path| !path.is_empty()) {
+            match snapshot_native_file(Path::new(path)) {
+                Ok(backup) => files.push(ReplacementFile { destination: PathBuf::from(path), backup, keep_backup: false }),
+                Err(error) => {
+                    for file in &files {
+                        if let Some(backup) = &file.backup {
+                            let _ = std::fs::remove_file(backup);
+                        }
+                    }
+                    return Err(EngineError::Other(format!("cannot preserve {path} before replacement: {error}")));
+                }
+            }
+        }
+        Ok(Some(Self(files)))
+    }
+
+    /// Restore the previous media and sidecar after a sidecar write failed. A failed restore keeps
+    /// its backup beside the destination and includes that path in the returned error.
+    pub(crate) fn restore(&mut self) -> Option<String> {
+        let mut failures = Vec::new();
+        for file in self.0.iter_mut().rev() {
+            let result = match file.backup.as_ref() {
+                Some(backup) => std::fs::rename(backup, &file.destination).map(|()| file.backup = None),
+                None => match std::fs::remove_file(&file.destination) {
+                    Ok(()) => Ok(()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(error) => Err(error),
+                },
+            };
+            if let Err(error) = result {
+                file.keep_backup = file.backup.is_some();
+                let suffix = file.backup.as_ref().map(|path| format!("; preserved backup at {}", path.display())).unwrap_or_default();
+                failures.push(format!("{}: {error}{suffix}", file.destination.display()));
+            }
+        }
+        (!failures.is_empty()).then(|| failures.join("; "))
+    }
+}
+
+impl Drop for ReplacementRollback {
+    fn drop(&mut self) {
+        for file in &self.0 {
+            if !file.keep_backup
+                && let Some(backup) = &file.backup
+            {
+                let _ = std::fs::remove_file(backup);
+            }
+        }
+    }
+}
+
+fn snapshot_native_file(path: &Path) -> std::io::Result<Option<PathBuf>> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    match std::fs::metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+        Ok(metadata) if !metadata.is_file() => return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "destination is not a regular file")),
+        Ok(_) => {}
+    }
+    let parent = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    for _ in 0..100 {
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let backup = parent.join(format!(".{name}.{}-{id}.rollback", std::process::id()));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&backup) {
+            Ok(mut output) => {
+                let mut input = std::fs::File::open(path)?;
+                if let Err(error) = std::io::copy(&mut input, &mut output).and_then(|_| output.sync_all()) {
+                    let _ = output.set_len(0);
+                    return Err(error);
+                }
+                return Ok(Some(backup));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "could not reserve a rollback backup"))
 }
 
 /// Run an export of `seq` in `project` as a background job (or now, with `wait`); returns the job id.
@@ -468,14 +571,38 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
     if !filmcraft_export::available(format) {
         return Err(EngineError::Other(format!("{} export is not available (no encoder registered)", format.label())));
     }
+    if !s.services.export_in_memory()
+        && let Some(dir) = Path::new(&settings.path).parent().filter(|d| !d.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(dir).map_err(|e| EngineError::Other(format!("I/O: cannot create output directory {}: {e}", dir.display())))?;
+    }
+    if !settings.overwrite {
+        let sequence_format = matches!(
+            format,
+            Format::PngSequence
+                | Format::TiffSequence
+                | Format::BmpSequence
+                | Format::JpegSequence
+                | Format::TgaSequence
+                | Format::DpxSequence
+                | Format::ExrSequence
+        );
+        let sequence_collision = if sequence_format { existing_sequence_frame(s, &settings.path)? } else { None };
+        if let Some(path) = sequence_collision {
+            return Err(bad("export", format!("image-sequence output already exists: {path}; confirm replacement with `overwrite: true`")));
+        }
+        match s.services.file_size(&settings.path) {
+            Ok(_) => return Err(bad("export", format!("destination already exists: {}; confirm replacement with `overwrite: true`", settings.path))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(EngineError::Other(format!("I/O: cannot inspect destination {}: {e}", settings.path))),
+        }
+    }
     if s.services.export_in_memory() {
         let services = s.services.clone();
         settings.sink = Some(filmcraft_export::OutputSink(Arc::new(move |path: &str, data: Vec<u8>| services.write_file(path, &data))));
     }
-    if let Some(dir) = Path::new(&settings.path).parent().filter(|d| !d.as_os_str().is_empty() && !s.services.export_in_memory()) {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    write_sidecar(s, &project, seq, &settings)?;
+    let sidecar = sidecar_output(s, &project, seq, &settings)?;
+    let rollback = ReplacementRollback::capture(&settings, sidecar.as_ref(), s.services.export_in_memory())?;
     let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
     let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
     // Export always renders full-resolution media, whatever the proxy toggle says.
@@ -487,11 +614,27 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
         let mut exporter = filmcraft_export::Exporter::new(project, seq, &settings, &prog).map_err(|e| EngineError::Other(e.to_string()))?;
         exporter.set_batch(1);
         s.jobs.push(job);
-        s.stepped.push(crate::SteppedJob { job: id, exporter, provider, progress: prog, result: res });
+        s.stepped.push(crate::SteppedJob { job: id, exporter, provider, progress: prog, result: res, sidecar, overwrite: settings.overwrite, rollback });
         return Ok(id);
     }
+    let services = s.services.clone();
+    let mut rollback = rollback;
     let run = move || {
-        let r = filmcraft_export::export(&project, seq, &settings, &provider, &prog).map_err(|e| e.to_string());
+        let r = filmcraft_export::export(&project, seq, &settings, &provider, &prog).map_err(|e| e.to_string()).and_then(|mut report| {
+            if let Some((path, bytes)) = sidecar {
+                let write = if settings.overwrite { services.write_file(&path, &bytes) } else { services.write_file_new(&path, &bytes) };
+                if let Err(error) = write {
+                    let rollback_error = rollback.as_mut().and_then(ReplacementRollback::restore);
+                    let message = match rollback_error {
+                        Some(restore) => format!("{path}: {error}; restoring previous output failed: {restore}"),
+                        None => format!("{path}: {error}; previous media and sidecar were restored"),
+                    };
+                    return Err(message);
+                }
+                report.extra_files.push(path);
+            }
+            Ok(report)
+        });
         *offline.lock().unwrap_or_else(|x| x.into_inner()) = provider.offline_used();
         if let Err(e) = &r {
             *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
@@ -507,6 +650,29 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
         std::thread::Builder::new().name("filmcraft-export".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
     }
     Ok(id)
+}
+
+fn existing_sequence_frame(s: &Session, path: &str) -> Result<Option<String>> {
+    let first = filmcraft_export::image_sequence_path(path, 0, 1);
+    let output = Path::new(&first);
+    let dir = output.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    let Some(stem) = Path::new(path).file_stem().and_then(|s| s.to_str()) else { return Ok(None) };
+    let Some(ext) = output.extension().and_then(|e| e.to_str()) else { return Ok(None) };
+    let dir = dir.to_string_lossy();
+    let Some(entries) = s.services.list_dir(&dir) else { return Ok(None) };
+    let entries = entries.map_err(|e| EngineError::Other(format!("cannot inspect image-sequence directory {dir}: {e}")))?;
+    Ok(entries
+        .into_iter()
+        .find(|name| {
+            name.strip_prefix(stem)
+                .and_then(|tail| tail.strip_suffix(&format!(".{ext}")))
+                .is_some_and(|digits| digits.len() >= 3 && digits.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .map(|name| dir_path(&dir, &name)))
+}
+
+fn dir_path(dir: &str, name: &str) -> String {
+    Path::new(dir).join(name).to_string_lossy().into_owned()
 }
 
 /// Last-resort guard for a background job body (export, previews, proxies, …): a panic marks the
@@ -750,6 +916,18 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
             st.path = output_path(s, p, seq, &st, suffix);
             n += 1;
             items.push((seq, st));
+        }
+    }
+    let mut destinations: HashSet<String> = s
+        .export_queue
+        .items
+        .iter()
+        .filter(|item| matches!(item.status, QueueStatus::Ready | QueueStatus::Encoding))
+        .map(|item| item.settings.path.clone())
+        .collect();
+    for (_, settings) in &items {
+        if !destinations.insert(settings.path.clone()) {
+            return Err(bad(cmd, format!("multiple queued exports target the same file: {}", settings.path)));
         }
     }
     for (seq, st) in items {
@@ -1163,7 +1341,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         spec("export.queue.remove", "Remove Queued Export", r#"{"id":id}"#, always, queue_remove, true),
         spec("export.queue.move", "Reorder Queued Export", r#"{"id":id,"to":index?,"by":int?}"#, always, queue_move, true),
         spec("export.queue.clear", "Clear Finished Exports", r#"{"all":bool=false}"#, always, queue_clear, true),
-        spec("export.quick", "Quick Export", r#"{"preset":str?,"path":str?,"wait":bool?, …settings params}"#, has_seq, quick, true),
+        spec("export.quick", "Quick Export", r#"{"preset":str?,"path":str?,"overwrite":bool=false,"wait":bool?, …settings params}"#, has_seq, quick, true),
     ]
 }
 

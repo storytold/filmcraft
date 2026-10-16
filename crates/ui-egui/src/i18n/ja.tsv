@@ -3609,3 +3609,6 @@
 	Shows the version, community links and credits in a FilmCraft window.	バージョン、コミュニティへのリンク、クレジットを FilmCraft のウィンドウに表示します。
 	Couldn't open your web browser	ウェブブラウザーを開けませんでした
 	Open this address in your browser yourself:	このアドレスをご自身でブラウザーで開いてください：
+	A file with this name already exists at {path}.	この名前のファイルは既に {path} にあります。
+	Replace	置換
+	Replace existing file?	既存のファイルを置換しますか？

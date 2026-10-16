@@ -81,7 +81,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             return;
         }
-        Dialog::NewSequence | Dialog::Preferences | Dialog::Recovery | Dialog::RevertConfirm => {}
+        Dialog::NewSequence | Dialog::Preferences | Dialog::Recovery | Dialog::RevertConfirm | Dialog::OverwriteConfirm => {}
     }
     if !open {
         app.dialog = None;

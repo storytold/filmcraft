@@ -47,6 +47,70 @@ fn saved_file_is_versioned_and_save_copy_keeps_state() {
 }
 
 #[test]
+fn save_as_and_save_copy_require_explicit_replacement() {
+    let d = temp_dir("save-collision");
+    let original = d.join("source.fcproj").to_string_lossy().to_string();
+    let target = d.join("existing.fcproj").to_string_lossy().to_string();
+    let mut s = demo();
+    s.execute("file.saveAs", json!({"path": original})).unwrap();
+    std::fs::write(&target, b"preserve me").unwrap();
+    let project_before = s.project.to_json();
+    for command in ["file.saveAs", "file.saveCopy"] {
+        let err = s.execute(command, json!({"path":target})).unwrap_err().to_string();
+        assert!(err.contains("destination already exists"), "{command}: {err}");
+        assert_eq!(std::fs::read(&target).unwrap(), b"preserve me");
+        assert_eq!(s.project.to_json(), project_before);
+    }
+    s.execute("file.saveCopy", json!({"path":target,"overwrite":true})).unwrap();
+    assert_ne!(std::fs::read(&target).unwrap(), b"preserve me");
+    assert_eq!(s.path.as_deref(), Some(original.as_str()));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn failed_save_as_keeps_project_name_path_and_revision() {
+    let d = temp_dir("save-fail-state");
+    let mut s = demo();
+    let old_name = s.project.name.clone();
+    let old_project = s.project.to_json();
+    let old_path = s.path.clone();
+    let old_revision = s.revision;
+    let failed_path = d.join("failed.fcproj");
+    std::fs::create_dir(&failed_path).unwrap();
+    let error = s.execute("file.saveAs", json!({"path":failed_path})).unwrap_err().to_string();
+    assert!(!error.is_empty());
+    assert_eq!(s.project.name, old_name);
+    assert_eq!(s.project.to_json(), old_project);
+    assert_eq!(s.path, old_path);
+    assert_eq!(s.revision, old_revision);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn native_create_new_allows_only_one_concurrent_writer() {
+    let d = temp_dir("write-new-race");
+    let path = d.join("race.fcproj").to_string_lossy().to_string();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let workers: Vec<_> = [b"writer one".as_slice(), b"writer two".as_slice()]
+        .into_iter()
+        .map(|bytes| {
+            let path = path.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                (bytes.to_vec(), crate::FsServices.write_file_new(&path, bytes))
+            })
+        })
+        .collect();
+    barrier.wait();
+    let results: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
+    let successes: Vec<_> = results.iter().filter(|(_, result)| result.is_ok()).collect();
+    assert_eq!(successes.len(), 1, "{results:?}");
+    assert_eq!(std::fs::read(&path).unwrap(), successes[0].0);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn legacy_project_opens_and_first_save_keeps_a_backup() {
     let d = temp_dir("legacy");
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../format/tests/fixtures/v1-edit.fcproj");

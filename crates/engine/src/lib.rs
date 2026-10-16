@@ -101,6 +101,15 @@ pub type Result<T> = std::result::Result<T, EngineError>;
 pub trait Services: Send + Sync {
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>>;
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()>;
+    /// Create a file only if it does not exist. Filesystem hosts should override this with an
+    /// atomic no-replace operation; the default is best-effort for virtual filesystems.
+    fn write_file_new(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+        match self.file_size(path) {
+            Ok(_) => Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "destination exists")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => self.write_file(path, data),
+            Err(e) => Err(e),
+        }
+    }
     /// Size of a file in bytes (an error when it is missing). Hosts should override this: the
     /// default reads the whole file.
     fn file_size(&self, path: &str) -> std::io::Result<u64> {
@@ -157,6 +166,18 @@ impl Services for FsServices {
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
         // Atomic + durable: temp file in the same directory, fsync, rename, fsync the directory.
         filmcraft_format::atomic_write(std::path::Path::new(path), data)
+    }
+    fn write_file_new(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+        if let Err(e) = file.write_all(data).and_then(|()| file.sync_all()) {
+            // The handle still identifies our create_new reservation. Cleaning up by path after
+            // closing it could unlink a different file another process installed in the meantime.
+            let _ = file.set_len(0);
+            let _ = file.sync_all();
+            return Err(e);
+        }
+        Ok(())
     }
     fn file_size(&self, path: &str) -> std::io::Result<u64> {
         let m = std::fs::metadata(path)?;
@@ -456,6 +477,9 @@ pub struct SteppedJob {
     pub provider: media_pool::PoolProvider,
     pub progress: Arc<filmcraft_export::Progress>,
     pub result: Arc<std::sync::Mutex<Option<std::result::Result<filmcraft_export::Report, String>>>>,
+    pub sidecar: Option<(String, Vec<u8>)>,
+    pub overwrite: bool,
+    pub(crate) rollback: Option<export_tools::ReplacementRollback>,
 }
 
 /// A background job with shared progress.
@@ -552,7 +576,26 @@ impl Session {
                 Ok(filmcraft_export::Step::Progress) => {}
                 Ok(filmcraft_export::Step::Pending) => return true,
                 Ok(filmcraft_export::Step::Done(r)) => {
-                    *j.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(Ok(r));
+                    let mut r = Ok(r);
+                    if let Some((path, bytes)) = j.sidecar.take() {
+                        let write = if j.overwrite { self.services.write_file(&path, &bytes) } else { self.services.write_file_new(&path, &bytes) };
+                        match write {
+                            Ok(()) => {
+                                if let Ok(report) = &mut r {
+                                    report.extra_files.push(path);
+                                }
+                            }
+                            Err(e) => {
+                                let rollback_error = j.rollback.as_mut().and_then(export_tools::ReplacementRollback::restore);
+                                r = Err(match rollback_error {
+                                    Some(restore) => format!("{path}: {e}; restoring previous output failed: {restore}"),
+                                    None if j.rollback.is_some() => format!("{path}: {e}; previous media and sidecar were restored"),
+                                    None => format!("{path}: {e}"),
+                                });
+                            }
+                        }
+                    }
+                    *j.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
                     self.stepped.remove(0);
                 }
                 Err(e) => {

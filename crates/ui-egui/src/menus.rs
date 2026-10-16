@@ -584,6 +584,20 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     {
         return app.file_dialog(id, &params);
     }
+    if matches!(id, "file.saveAs" | "file.saveCopy" | "file.save" | "file.exportMedia" | "export.quick" | "export.queue.add" | "file.exportFrame")
+        && let Some(path) = params.get("path").and_then(Value::as_str)
+    {
+        let path = if matches!(id, "file.exportMedia" | "export.quick" | "export.queue.add") {
+            app.session
+                .execute("export.resolve", params.clone())
+                .ok()
+                .and_then(|v| v["settings"]["path"].as_str().map(str::to_owned))
+                .unwrap_or_else(|| path.to_string())
+        } else {
+            path.to_string()
+        };
+        return crate::execute_with_overwrite_confirmation(app, id, params, &path).inspect_err(|e| app.ui.status = e.clone());
+    }
     let r = app.session.execute(id, params).map_err(|e| e.to_string());
     if let Err(e) = &r {
         app.ui.status = e.clone();

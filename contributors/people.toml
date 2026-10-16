@@ -22,6 +22,10 @@ real_name = "Brandon Thomas"
 display_name = "Brandon Thomas"
 sync_github_name = false
 
+[people.UdayaSri0]
+real_name = "Udaya Sri"
+sync_github_name = false
+
 [people.ahmedhosnypro]
 real_name = "Ahmed Hosny"
 display_name = "Ahmed Hosny"

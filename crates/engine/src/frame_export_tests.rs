@@ -152,3 +152,19 @@ fn an_earlier_deferred_read_does_not_fail_the_export() {
     assert!(!filmcraft_media::pending::is_set());
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn frame_export_preserves_existing_file_until_replacement_is_explicit() {
+    let (mut s, _) = session();
+    let path = std::env::temp_dir().join(format!("fc-frame-collision-{}.png", std::process::id()));
+    std::fs::write(&path, b"original user bytes").unwrap();
+    let params = json!({"target":"program","path":path.to_string_lossy()});
+    let err = s.execute("file.exportFrame", params.clone()).unwrap_err().to_string();
+    assert!(err.contains("destination already exists"), "{err}");
+    assert_eq!(std::fs::read(&path).unwrap(), b"original user bytes");
+    let mut replace = params;
+    replace["overwrite"] = json!(true);
+    s.execute("file.exportFrame", replace).unwrap();
+    assert_ne!(std::fs::read(&path).unwrap(), b"original user bytes");
+    std::fs::remove_file(path).unwrap();
+}

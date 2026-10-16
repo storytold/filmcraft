@@ -110,6 +110,12 @@ one. If a step fails, the temp file is removed and the old file is untouched.
 
 In the UI, Save / Save As / Save a Copy without a `path` show a file dialog.
 
+Save As and Save a Copy refuse an existing different destination unless the caller explicitly
+passes `overwrite: true`; the desktop asks for confirmation and Cancel leaves the destination
+unchanged. Ordinary Save to the project's current path continues to update it without prompting.
+The native filesystem host creates a new destination without replacing a file created concurrently.
+Virtual filesystem hosts use a best-effort existence check unless they override `Services::write_file_new`.
+
 ## Auto Save
 
 Preferences ▸ Auto Save (Edit ▸ Preferences ▸ Auto Save…, ⌘,; FilmCraft ▸ Settings… on macOS) works

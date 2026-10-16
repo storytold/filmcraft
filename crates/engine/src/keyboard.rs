@@ -605,6 +605,7 @@ pub fn frame_export_target(s: &Session, p: &Value) -> Result<FrameExportTarget> 
 
 /// Export the captured Source or Program frame as a full-resolution SDR still.
 fn export_frame(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "file.exportFrame";
     let target = frame_export_target(s, p)?;
     let fmt = match p.get("format") {
         None => "png".to_string(),
@@ -637,6 +638,14 @@ fn export_frame(s: &mut Session, p: &Value) -> Result<Value> {
             candidate.ok_or_else(|| bad("file.exportFrame", "choose a path: all default still names already exist"))?
         }
     };
+    let overwrite = p.get("overwrite").and_then(Value::as_bool).unwrap_or(false);
+    if !overwrite {
+        match s.services.file_size(&path) {
+            Ok(_) => return Err(bad(CMD, format!("destination already exists: {path}; confirm replacement with `overwrite: true`"))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(EngineError::Other(format!("cannot inspect destination {path}: {e}"))),
+        }
+    }
     let provider = s.media.full_res_provider(s.project.clone(), s.services.clone());
     // On the web a frame can still be decoding (WebCodecs) or its bytes loading (Blob reads): the
     // render then leaves that clip out, so saving it would pass a blank or partial picture off as
@@ -657,7 +666,8 @@ fn export_frame(s: &mut Session, p: &Value) -> Result<Value> {
         u32::try_from(img.h).map_err(|_| bad("file.exportFrame", "image height exceeds limits"))?,
     );
     let bytes = filmcraft_export::still::encode(&img, format, depth).map_err(|e| EngineError::Other(e.to_string()))?;
-    s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let write = if overwrite { s.services.write_file(&path, &bytes) } else { s.services.write_file_new(&path, &bytes) };
+    write.map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let mut out =
         json!({"path": path, "width": w, "height": h, "depth": depth, "target": if target.source { "source" } else { "program" }, "time": target.time.0});
     if import {
@@ -806,7 +816,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "file.exportFrame",
             "Export Frame",
             None,
-            r#"{"path":str?,"format":"png|jpeg|tiff|bmp"?,"depth":8|16?,"import":bool?,"target":"source|program"?,"item":id?,"sequence":id?,"time":ticks?}"#,
+            r#"{"path":str?,"format":"png|jpeg|tiff|bmp"?,"depth":8|16?,"import":bool?,"overwrite":bool=false,"target":"source|program"?,"item":id?,"sequence":id?,"time":ticks?}"#,
             always,
             export_frame,
         ),

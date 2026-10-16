@@ -1149,7 +1149,12 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
     reg.add("export.button", go, "Export");
     reg.flush(app);
     if resp.clicked() {
-        let r = app.session.execute("file.exportMedia", export_params(app));
+        let params = export_params(app);
+        let path = app.session.execute("export.resolve", params.clone()).ok().and_then(|v| v["settings"]["path"].as_str().map(str::to_owned));
+        let r = match path {
+            Some(path) => crate::execute_with_overwrite_confirmation(app, "file.exportMedia", params, &path),
+            None => Err("cannot resolve the export destination".into()),
+        };
         match r {
             Ok(v) => app.ui.status = tlf!("Exporting {path}", path = v["path"].as_str().unwrap_or("")),
             Err(e) => app.ui.status = e.to_string(),
@@ -1161,7 +1166,12 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
             // the queue shows which preset an item came from
             p["preset"] = json!(app.ui.export.preset);
         }
-        match app.session.execute("export.queue.add", p) {
+        let path = app.session.execute("export.resolve", p.clone()).ok().and_then(|v| v["settings"]["path"].as_str().map(str::to_owned));
+        let r = match path {
+            Some(path) => crate::execute_with_overwrite_confirmation(app, "export.queue.add", p, &path),
+            None => Err("cannot resolve the export destination".into()),
+        };
+        match r {
             Ok(_) => app.ui.status = tl!("Added to the export queue").into(),
             Err(e) => app.ui.status = e.to_string(),
         }
@@ -1479,7 +1489,12 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
     }
     if go {
         let p = json!({"preset": app.ui.export.quick_preset, "path": app.ui.export.quick_path});
-        match app.session.execute("export.quick", p) {
+        let path = app.session.execute("export.resolve", p.clone()).ok().and_then(|v| v["settings"]["path"].as_str().map(str::to_owned));
+        let result = match path {
+            Some(path) => crate::execute_with_overwrite_confirmation(app, "export.quick", p, &path),
+            None => Err("cannot resolve the export destination".into()),
+        };
+        match result {
             Ok(v) => app.ui.status = tlf!("Quick Export: {path}", path = v["path"].as_str().unwrap_or("")),
             Err(e) => app.ui.status = e.to_string(),
         }

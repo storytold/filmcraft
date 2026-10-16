@@ -309,6 +309,9 @@ pub enum H264Pass {
 pub struct ExportSettings {
     pub format: Format,
     pub path: String,
+    /// Caller explicitly confirmed replacement of an existing output.
+    #[serde(skip)]
+    pub overwrite: bool,
     /// Timeline range (default: In/Out if set, else the whole sequence).
     pub range: Option<TimeRange>,
     /// Output scale (1.0 = sequence frame size).
@@ -426,8 +429,191 @@ enum AudioWriter {
 
 /// An export's output file: on disk, or in memory for an [`OutputSink`].
 enum Out {
-    File(std::io::BufWriter<std::fs::File>),
+    File(StagedOutput),
     Mem(std::io::Cursor<Vec<u8>>),
+}
+
+struct StagedOutput {
+    writer: Option<std::io::BufWriter<std::fs::File>>,
+    temp: Option<std::path::PathBuf>,
+    path: std::path::PathBuf,
+    overwrite: bool,
+}
+
+static OUTPUT_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn output_sibling(path: &std::path::Path, suffix: &str) -> std::path::PathBuf {
+    use std::sync::atomic::Ordering;
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| std::path::Path::new("."));
+    let name = path.file_name().unwrap_or_else(|| std::ffi::OsStr::new("output")).to_string_lossy();
+    let id = OUTPUT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    parent.join(format!(".{name}.{}-{id}.{suffix}", std::process::id()))
+}
+
+impl Drop for StagedOutput {
+    fn drop(&mut self) {
+        if let Some(temp) = self.temp.take() {
+            let _ = std::fs::remove_file(temp);
+        }
+    }
+}
+
+fn temp_output(path: &std::path::Path) -> Result<(std::fs::File, std::path::PathBuf)> {
+    for _ in 0..100 {
+        let temp = output_sibling(path, "tmp");
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&temp) {
+            Ok(file) => return Ok((file, temp)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(ExportError::Io(format!("{}: {e}", path.display()))),
+        }
+    }
+    Err(ExportError::Io(format!("could not reserve a temporary output beside {}", path.display())))
+}
+
+fn publish_outputs(outputs: &PendingOutputs, overwrite: bool) -> Result<()> {
+    let mut backups = Vec::with_capacity(outputs.0.len());
+    let mut backup_error = None;
+    for output in &outputs.0 {
+        if !overwrite {
+            backups.push(None);
+            continue;
+        }
+        match std::fs::metadata(&output.path) {
+            Ok(_) => match copy_to_unique_sibling(&output.path, "bak") {
+                Ok(backup) => backups.push(Some(backup)),
+                Err(e) => {
+                    backup_error = Some(ExportError::Io(format!("cannot preserve existing {} before replacement: {e}", output.path.display())));
+                    break;
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => backups.push(None),
+            Err(e) => {
+                backup_error = Some(ExportError::Io(format!("cannot inspect existing {}: {e}", output.path.display())));
+                break;
+            }
+        }
+    }
+    if let Some(error) = backup_error {
+        for backup in backups.iter().flatten() {
+            let _ = std::fs::remove_file(backup);
+        }
+        return Err(error);
+    }
+    for (published, output) in outputs.0.iter().enumerate() {
+        if let Err(error) = publish_output(&output.temp, &output.path, overwrite) {
+            let mut rollback_errors = Vec::new();
+            let mut unrestored_backups = Vec::new();
+            for i in (0..published).rev() {
+                let restore = match backups[i].as_ref() {
+                    Some(backup) => std::fs::rename(backup, &outputs.0[i].path),
+                    None => std::fs::remove_file(&outputs.0[i].path),
+                };
+                if let Err(e) = restore {
+                    rollback_errors.push(format!("{}: {e}", outputs.0[i].path.display()));
+                    if let Some(backup) = backups[i].as_ref() {
+                        unrestored_backups.push(backup.clone());
+                    }
+                }
+            }
+            for backup in backups.iter().flatten() {
+                if !unrestored_backups.contains(backup) {
+                    let _ = std::fs::remove_file(backup);
+                }
+            }
+            return Err(ExportError::Io(if rollback_errors.is_empty() {
+                format!("publishing {} failed; previous files were restored: {error}", output.path.display())
+            } else {
+                let retained = unrestored_backups.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join(", ");
+                format!(
+                    "publishing {} failed ({error}); rollback failed for {}; preserved original backup(s): {retained}",
+                    output.path.display(),
+                    rollback_errors.join("; ")
+                )
+            }));
+        }
+    }
+    for backup in backups.iter().flatten() {
+        let _ = std::fs::remove_file(backup);
+    }
+    Ok(())
+}
+
+fn copy_to_unique_sibling(source: &std::path::Path, suffix: &str) -> std::io::Result<std::path::PathBuf> {
+    for _ in 0..100 {
+        let backup = output_sibling(source, suffix);
+        let mut input = std::fs::File::open(source)?;
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&backup) {
+            Ok(mut output) => {
+                let result = std::io::copy(&mut input, &mut output).and_then(|_| output.sync_all());
+                if let Err(error) = result {
+                    drop(output);
+                    let _ = std::fs::remove_file(&backup);
+                    return Err(error);
+                }
+                return Ok(backup);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "could not reserve a sibling backup"))
+}
+
+fn publish_output(temp: &std::path::Path, path: &std::path::Path, overwrite: bool) -> std::io::Result<()> {
+    if overwrite {
+        std::fs::rename(temp, path)?;
+    } else {
+        let mut source = std::fs::File::open(temp)?;
+        let mut destination = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+        if let Err(error) = std::io::copy(&mut source, &mut destination).and_then(|_| destination.sync_all()) {
+            // Keep cleanup attached to the exclusively opened file handle; removing by path could
+            // race with another process that replaces the name after unlinking our reservation.
+            let _ = destination.set_len(0);
+            let _ = destination.sync_all();
+            return Err(error);
+        }
+        drop(destination);
+        // Publication has succeeded. A temp cleanup error must not report failure after commit.
+        let _ = std::fs::remove_file(temp);
+    }
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty())
+        && let Ok(dir) = std::fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
+struct PendingOutput {
+    temp: std::path::PathBuf,
+    path: std::path::PathBuf,
+    bytes: u64,
+}
+
+#[derive(Default)]
+struct PendingOutputs(Vec<PendingOutput>);
+
+impl Drop for PendingOutputs {
+    fn drop(&mut self) {
+        for output in &self.0 {
+            let _ = std::fs::remove_file(&output.temp);
+        }
+    }
+}
+
+fn stage_output(settings: &ExportSettings, path: &str, data: Vec<u8>) -> Result<(u64, Option<PendingOutput>)> {
+    if settings.sink.is_some() {
+        return write_output(settings, path, data).map(|n| (n, None));
+    }
+    let path = std::path::PathBuf::from(path);
+    let (mut file, temp) = temp_output(&path)?;
+    let result = file.write_all(&data).and_then(|()| file.sync_all());
+    if let Err(e) = result {
+        let _ = std::fs::remove_file(&temp);
+        return Err(ExportError::Io(format!("{}: {e}", path.display())));
+    }
+    let bytes = data.len() as u64;
+    Ok((bytes, Some(PendingOutput { temp, path, bytes })))
 }
 
 impl Out {
@@ -440,8 +626,8 @@ impl Out {
         if settings.sink.is_some() {
             return Ok(Out::Mem(std::io::Cursor::new(Vec::new())));
         }
-        let f = std::fs::File::create(path).map_err(|e| ExportError::Io(format!("{path}: {e}")))?;
-        Ok(Out::File(std::io::BufWriter::new(f)))
+        let (f, temp) = temp_output(std::path::Path::new(path))?;
+        Ok(Out::File(StagedOutput { writer: Some(std::io::BufWriter::new(f)), temp: Some(temp), path: path.into(), overwrite: settings.overwrite }))
     }
 
     /// Flush (and hand in-memory output to the sink); returns the file size.
@@ -451,9 +637,16 @@ impl Out {
 
     fn finish_path(self, settings: &ExportSettings, path: &str) -> Result<u64> {
         match self {
-            Out::File(mut w) => {
-                w.flush().map_err(|e| ExportError::Io(e.to_string()))?;
-                Ok(std::fs::metadata(path).map(|m| m.len()).unwrap_or(0))
+            Out::File(mut output) => {
+                let writer = output.writer.as_mut().ok_or_else(|| ExportError::Io("output is already closed".into()))?;
+                writer.flush().map_err(|e| ExportError::Io(e.to_string()))?;
+                writer.get_ref().sync_all().map_err(|e| ExportError::Io(e.to_string()))?;
+                let bytes = writer.get_ref().metadata().map_err(|e| ExportError::Io(e.to_string()))?.len();
+                output.writer = None;
+                let temp = output.temp.as_deref().ok_or_else(|| ExportError::Io("temporary output is missing".into()))?;
+                publish_output(temp, &output.path, output.overwrite).map_err(|e| ExportError::Io(format!("{}: {e}", output.path.display())))?;
+                output.temp = None;
+                Ok(bytes)
             }
             Out::Mem(c) => write_output(settings, path, c.into_inner()),
         }
@@ -465,7 +658,15 @@ fn write_output(settings: &ExportSettings, path: &str, data: Vec<u8>) -> Result<
     let n = data.len() as u64;
     match &settings.sink {
         Some(sink) => (sink.0)(path, data),
-        None => std::fs::write(path, &data),
+        None => {
+            let path_buf = std::path::Path::new(path);
+            let (mut file, temp) = temp_output(path_buf)?;
+            let result = file.write_all(&data).and_then(|()| file.sync_all()).and_then(|()| publish_output(&temp, path_buf, settings.overwrite));
+            if result.is_err() {
+                let _ = std::fs::remove_file(&temp);
+            }
+            result
+        }
     }
     .map_err(|e| ExportError::Io(e.to_string()))?;
     Ok(n)
@@ -474,13 +675,13 @@ fn write_output(settings: &ExportSettings, path: &str, data: Vec<u8>) -> Result<
 impl Write for Out {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self {
-            Out::File(w) => w.write(buf),
+            Out::File(o) => o.writer.as_mut().map_or_else(|| Err(std::io::Error::other("output is closed")), |w| w.write(buf)),
             Out::Mem(w) => w.write(buf),
         }
     }
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
-            Out::File(w) => w.flush(),
+            Out::File(o) => o.writer.as_mut().map_or_else(|| Err(std::io::Error::other("output is closed")), std::io::Write::flush),
             Out::Mem(w) => w.flush(),
         }
     }
@@ -489,7 +690,7 @@ impl Write for Out {
 impl std::io::Seek for Out {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
         match self {
-            Out::File(w) => w.seek(pos),
+            Out::File(o) => o.writer.as_mut().map_or_else(|| Err(std::io::Error::other("output is closed")), |w| w.seek(pos)),
             Out::Mem(w) => w.seek(pos),
         }
     }
@@ -551,6 +752,7 @@ impl Default for ExportSettings {
         Self {
             format: Format::H264,
             path: String::new(),
+            overwrite: false,
             range: None,
             scale: 1.0,
             include_audio: true,
@@ -1933,6 +2135,7 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
                 progress.set_status(format!("Exporting {count} frames ({})", settings.format.label()));
             }
             let mut total = 0u64;
+            let mut pending_outputs = PendingOutputs::default();
             let gif_buf = SharedBuf::default();
             let mut gif = if settings.format == Format::Gif {
                 let mut enc = image::codecs::gif::GifEncoder::new_with_speed(gif_buf.clone(), 10);
@@ -1955,7 +2158,7 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
                         enc.encode_frame(image::Frame::from_parts(img, 0, 0, delay)).map_err(|e| ExportError::Encode(e.to_string()))?;
                     }
                 } else {
-                    let written: Vec<Result<u64>> = (f..end)
+                    let written: Vec<Result<(u64, Option<PendingOutput>)>> = (f..end)
                         .into_par_iter()
                         .map(|fi| {
                             let data = encode_still_with(
@@ -1967,11 +2170,23 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
                                 settings.quality,
                                 settings.exr_compression,
                             )?;
-                            write_output(settings, &pcm::image_sequence_path(&settings.path, (fi - f0) as u64, count), data)
+                            stage_output(settings, &pcm::image_sequence_path(&settings.path, (fi - f0) as u64, count), data)
                         })
                         .collect();
+                    let mut failure = None;
                     for r in written {
-                        total += r?;
+                        match r {
+                            Ok((n, Some(output))) => {
+                                total += n;
+                                pending_outputs.0.push(output);
+                            }
+                            Ok((n, None)) => total += n,
+                            Err(e) if failure.is_none() => failure = Some(e),
+                            Err(_) => {}
+                        }
+                    }
+                    if let Some(error) = failure {
+                        return Err(error);
                     }
                 }
                 progress.done.fetch_add((end - f) as u64, Ordering::Relaxed);
@@ -1983,6 +2198,14 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
                 let data = std::mem::take(&mut *buf.0.lock().unwrap_or_else(|e| e.into_inner()));
                 total = write_output(settings, &settings.path, data)?;
             }
+            // shortcut: a sequence spans many filesystems operations; rollback covers ordinary
+            // publish errors, but a process crash or power loss during the final rename loop can
+            // leave a partially replaced sequence.
+            publish_outputs(&pending_outputs, settings.overwrite)?;
+            for output in &pending_outputs.0 {
+                total = total.saturating_add(output.bytes);
+            }
+            pending_outputs.0.clear();
             (total, count)
         }
         _ => {
