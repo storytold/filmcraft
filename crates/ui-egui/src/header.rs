@@ -155,7 +155,18 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 // is connected; the control itself reports when sharing is unavailable).
                 crate::cloud::who(app, &mut cu);
                 cu.add_space(6.0);
-                crate::cloud::share_button(app, &mut cu, &crate::cloud::copies());
+                if let Some(fmt) = crate::cloud::share_button(app, &mut cu, &crate::cloud::copies()) {
+                    // Chevron "Save a Copy" formats from the Share split button.
+                    match fmt.as_str() {
+                        "fcpxml" => {
+                            let _ = crate::menus::invoke(app, cu.ctx(), "file.exportFcpxml", serde_json::json!({}));
+                        }
+                        "aaf" => {
+                            let _ = crate::menus::invoke(app, cu.ctx(), "file.exportAaf", serde_json::json!({}));
+                        }
+                        _ => app.ui.status = format!("Unknown share copy format: {fmt}"),
+                    }
+                }
                 cloud_right = cloud_left;
             }
         }
