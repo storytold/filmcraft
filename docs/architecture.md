@@ -701,8 +701,9 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 Video encoders implement `export::VideoEncoder`. Codec crates plug in with `register_encoder` and
 `register_audio_encoder`.
 
-Timelines can be exchanged as EDL, FCP7 XML, FCPXML, OTIO, AAF or OMF. `file.import` detects these
-formats and merges the result into the project as one undoable step (AAF / OMF embedded audio is
+Timelines can be exchanged as EDL, FCP7 XML, FCPXML, OTIO, AAF or OMF. `file.import` also reads
+gzip-wrapped Premiere `.prproj` projects (currently media and basic sequence clip placements).
+It detects interchange formats and merges the result into the project as one undoable step (AAF / OMF embedded audio is
 written next to the document first). `file.import {replace: true}` starts from an empty project
 with the same name (`file.newProject`) so a headless import→export round-trip contains only the
 imported timeline. `file.exportInterchange`, `file.exportEdl`,

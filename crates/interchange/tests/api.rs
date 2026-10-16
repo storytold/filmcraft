@@ -15,6 +15,7 @@ fn detect_by_content_and_extension() {
     assert_eq!(detect(b"<?xml version=\"1.0\"?><fcpxml version=\"1.11\"/>", Some("xml")), Some(Format::Fcpxml));
     assert_eq!(detect(b"{\"OTIO_SCHEMA\": \"Timeline.1\"}", None), Some(Format::Otio));
     assert_eq!(detect(b"TITLE: x\n", None), Some(Format::Edl));
+    assert_eq!(detect(&[0x1f, 0x8b, 0x08], Some("prproj")), Some(Format::Prproj));
     assert_eq!(detect(b"", Some("EDL")), Some(Format::Edl));
     assert_eq!(Format::from_extension(".fcpxml"), Some(Format::Fcpxml));
 }

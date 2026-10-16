@@ -10,7 +10,7 @@ use crate::{EngineError, Result, Session};
 /// The interchange format of a file, if it is one (by content, with the extension as a hint).
 pub fn detect(path: &str, bytes: &[u8]) -> Option<Format> {
     let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-    if !matches!(ext.as_deref(), Some("edl" | "xml" | "fcpxml" | "otio" | "aaf" | "omf" | "omfi")) {
+    if !matches!(ext.as_deref(), Some("edl" | "xml" | "fcpxml" | "otio" | "aaf" | "omf" | "omfi" | "prproj")) {
         return None;
     }
     filmcraft_interchange::detect(bytes, ext.as_deref())
@@ -126,8 +126,8 @@ pub fn export(s: &mut Session, p: &Value) -> Result<Value> {
     // else, so the error can list exactly what is accepted.
     let format = match p.get("format") {
         None | Some(Value::Null) => Format::Fcp7Xml,
-        Some(v) => v.as_str().and_then(|name| Format::ALL.into_iter().find(|f| f.extension().eq_ignore_ascii_case(name))).ok_or_else(|| {
-            let names: Vec<&str> = Format::ALL.iter().map(|f| f.extension()).collect();
+        Some(v) => v.as_str().and_then(|name| Format::EXPORTABLE.into_iter().find(|f| f.extension().eq_ignore_ascii_case(name))).ok_or_else(|| {
+            let names: Vec<&str> = Format::EXPORTABLE.iter().map(|f| f.extension()).collect();
             crate::commands::bad("file.exportInterchange", format!("unknown format {v}: use one of {}", names.join(", ")))
         })?,
     };

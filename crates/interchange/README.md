@@ -1,15 +1,16 @@
 # filmcraft-interchange
 
-Timeline interchange for FilmCraft: CMX 3600 EDL, Final Cut Pro 7 XML (xmeml), FCPXML,
+Timeline interchange for FilmCraft: Premiere project (`.prproj`) import, CMX 3600 EDL, Final Cut Pro 7 XML (xmeml), FCPXML,
 OpenTimelineIO, AAF and OMF import and export, plus Avid ALE. Layer L2: no file I/O; media
 references are strings and audio essence is supplied by the caller (the engine).
 
 ## Specifications
 
-Clean-room: written from public specifications only. The AAF SDK, pyaaf2, the OMF Toolkit and
-other implementations were not consulted. Where a specification leaves a layout open (how a
-nested sequence is written, how several video tracks share a slot), what Premiere Pro does was
-read off files it exports, never from the application itself.
+Clean-room: formats are implemented from public specifications or, for proprietary project
+structures, from user-provided files and observed application behavior. The AAF SDK, pyaaf2, the
+OMF Toolkit and other implementations were not consulted. Where a specification leaves a layout
+open (how a nested sequence is written, how several video tracks share a slot), what Premiere Pro
+does was read off files it exports, never from the application itself.
 
 | Format | Document | Edition | Used for |
 |---|---|---|---|
@@ -21,6 +22,13 @@ read off files it exports, never from the application itself.
 | OMF | Avid *OMF Interchange Specification* | Version 2.0 (1997) | classes (`HEAD`, `CMOB`, `MMOB`, `SMOB`, `MSLT`, `TRKD`, `SEQU`, `SCLP`, `FILL`, `TRAN`, `EFFE`, `ESLT`, `CVAL`, `VVAL`, `TCCP`, `WAVD`, `AIFD`, `WAVE`, `AIFC`, locators), property and type names |
 | OMF | Apple *Bento Specification* | revision 1.0d5 | container label, TOC encoding, objects / properties / types, references |
 | WAVE / AIFF | Microsoft RIFF WAVE; Apple AIFF 1.3 | — | embedded and separate audio files |
+| Premiere project | PremiereData XML observed in a user-provided Premiere Pro 26.5.1 project | project Version 45 | gzip wrapper, object references, media paths, basic sequence settings, tracks and clip timing |
+
+The `.prproj` reader accepts Premiere's gzip-wrapped `PremiereData` XML project representation.
+It imports linked media items and basic sequence clip placements. This is a proprietary, versioned
+object graph rather than a public interchange specification; unknown project objects are ignored,
+and unsupported effects, markers and nested bins are reported as limitations. Gzip expansion is
+capped at 64 MiB and object counts are bounded.
 
 The other formats' editions are listed in the module docs (`edl`, `fcp7`, `fcpxml`, `otio`, `ale`).
 

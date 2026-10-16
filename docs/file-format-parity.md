@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** major (new file: every file type Premiere Pro 26.5.2 reads or writes, against ours) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
+> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-13 · **Change:** `.prproj` import coverage added · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
 
 Containers, stills, audio files, project and interchange files, captions and presets. Codecs inside
 the containers are in [codec-parity.md](codec-parity.md). Our import list is
@@ -13,7 +13,7 @@ only). "Tested" names the evidence.
 
 | Format | Premiere | Read | Write | Tested | % |
 |---|---|---|---|---|---|
-| **Premiere project `.prproj`** | native | **no** | **no** | — | **0%** ([G2](gaps.md#g2-premieres-prproj-cannot-be-opened)) |
+| **Premiere project `.prproj`** | native | partial: gzip XML, media and basic sequence clips | **no** | one Premiere 26.5.1 project; synthetic malformed / bounds tests | 15% ([G2](gaps.md#g2-premieres-prproj-import-is-partial)) |
 | Our project `.fcproj` | — | yes, schema migrations | yes, atomic, auto-save, recovery journal | migration tests | — |
 | FCP7 XML (`xmeml`) | read + write | yes | yes | round-trip tests; Premiere-exported XML slow (#461) | 75% |
 | FCPXML | read (via XtoCC) | yes | yes | round-trip tests | 80% |
@@ -85,11 +85,13 @@ only). "Tested" names the evidence.
 ## Summary
 
 **File formats dimension: ~60%, 140–240 h** (codecs counted separately). The beta blocker is
-`.prproj`. After it, by user impact: AVI and WMV import, EXR / PSD stills, AAF / OMF
-validation in Avid and Pro Tools, DVD / Blu-ray / DCP / broadcast MXF delivery.
+full-fidelity `.prproj` import remains the beta blocker. After it, by user impact: AVI and WMV
+import, EXR / PSD stills, AAF / OMF validation in Avid and Pro Tools, DVD / Blu-ray / DCP /
+broadcast MXF delivery.
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-13 | minor | Added partial `.prproj` import coverage based on a user-provided Premiere 26.5.1 project |
 | 2026-10-10 | major | Created: format-by-format comparison with Premiere 26.5.2 from the import / export registries, crate READMEs, the installed bundle's exporter listings and open issues |

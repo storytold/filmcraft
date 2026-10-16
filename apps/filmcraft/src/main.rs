@@ -297,10 +297,9 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         app.hooks.pick_folder = Some(Box::new(|| rfd::FileDialog::new().pick_folder().map(|p| p.to_string_lossy().to_string())));
         app.hooks.pick_folder_at =
             Some(Box::new(|dir: &str| rfd::FileDialog::new().set_directory(dir).pick_folder().map(|p| p.to_string_lossy().into_owned())));
-        // Linux: the XDG portal call blocks until the user chooses, which would stop the frame
-        // loop (GNOME offers to force-quit the window after about five seconds, #260). Show the
-        // dialog on its own thread instead; the app keeps running and acts on the answer.
-        #[cfg(target_os = "linux")]
+        // Linux's XDG portal and Windows' native picker both block until the user chooses.
+        // Show them on their own thread so the frame loop keeps running, then act on the answer.
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
             app.hooks.run_dialog = Some(Box::new(run_dialog_off_thread));
         }
@@ -441,7 +440,7 @@ fn agent_event_loop(agent: bool) -> Option<eframe::EventLoopBuilderHook> {
 /// Show `dialog` with rfd on a worker thread and answer on the returned channel (#260). Filter
 /// names are translated here, on the UI thread (the interface language is per thread). A dialog
 /// thread that can't start or panics drops the sender: the app takes that as cancelled.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn run_dialog_off_thread(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> std::sync::mpsc::Receiver<Vec<String>> {
     use filmcraft_ui_egui::native_dialogs::FileDialog;
     let t = |s: &str| filmcraft_ui_egui::i18n::t(s).to_string();

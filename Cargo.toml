@@ -70,6 +70,7 @@ log = "0.4"
 rayon = "1"
 proptest = "1"
 roxmltree = "0.21"
+flate2 = "1.1"
 
 # ui
 # Shared frontend components; keep this dependency above the engine boundary.
