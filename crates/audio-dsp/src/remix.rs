@@ -59,7 +59,7 @@ impl Plan {
     }
     /// Output length (samples).
     pub fn len(&self) -> i64 {
-        self.pieces.iter().map(|p| p.len).sum()
+        self.pieces.iter().fold(0i64, |a, p| a.saturating_add(p.len))
     }
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -69,14 +69,14 @@ impl Plan {
         let mut out = Vec::new();
         let mut d = 0;
         for p in &self.pieces[..self.pieces.len().saturating_sub(1)] {
-            d += p.len;
+            d = i64::saturating_add(d, p.len);
             out.push(d);
         }
         out
     }
     /// The source positions each joint cuts at: (end of the outgoing piece, start of the incoming one).
     pub fn cuts(&self) -> Vec<(i64, i64)> {
-        self.pieces.windows(2).map(|w| (w[0].src + w[0].len, w[1].src)).collect()
+        self.pieces.windows(2).map(|w| (w[0].src.saturating_add(w[0].len), w[1].src)).collect()
     }
 }
 
@@ -188,7 +188,8 @@ fn stft_mag(x: &[f32], n: usize, hop: usize) -> Vec<Vec<f32>> {
 /// STFT frame for the onset envelope: the power of two nearest to 46 ms (1024 at 22.05 kHz, 2048
 /// at 44.1/48 kHz).
 fn onset_frame(sr: u32) -> usize {
-    let n = (sr as f64 * 0.046).max(256.0);
+    // capped so a corrupt sample rate cannot ask for a gigabyte FFT
+    let n = (sr as f64 * 0.046).clamp(256.0, 32768.0);
     1usize << n.log2().round() as u32
 }
 
@@ -454,13 +455,18 @@ pub fn joints_for(segments: f64) -> usize {
 /// Plan a remix of the analysed music to `target` samples.
 pub fn plan(a: &Analysis, target: i64, params: Params) -> Result<Plan, RemixError> {
     let xfade = (XFADE_S * a.sample_rate as f64).round() as i64;
-    let len = a.len;
+    let len = a.len.clamp(0, i64::MAX / 4);
+    // a corrupt or absurd target must not overflow the arithmetic below or make the joint search run for ages
+    let target = target.clamp(i64::MIN / 4, i64::MAX / 4);
     let half = (a.period / 2.0) as i64;
     if (target - len).abs() <= half {
         return Ok(Plan::identity(len, xfade));
     }
     let b = &a.beats;
     let m = b.len();
+    if m == 0 {
+        return Err(RemixError::NoBeat);
+    }
     let min_piece = (MIN_PIECE_BEATS as f64 * a.period) as i64;
     if target < 2 * min_piece {
         return Err(RemixError::TargetTooShort);
@@ -474,7 +480,7 @@ pub fn plan(a: &Analysis, target: i64, params: Params) -> Result<Plan, RemixErro
     // a backwards jump can span at most the music between the intro and outro pieces
     if target > len {
         let max_span = (len - 2 * min_piece).max(a.period as i64);
-        while ((target - len) as f64 / k as f64) > max_span as f64 * 0.9 && (target / (k as i64 + 2)) >= min_piece {
+        while ((target - len) as f64 / k as f64) > max_span as f64 * 0.9 && (target / (k as i64 + 2)) >= min_piece && k < m {
             k += 1;
         }
     }
@@ -562,31 +568,31 @@ pub fn render(plan: &Plan, out0: i64, n: usize, channels: usize, read: &mut dyn 
     let x = plan.xfade.max(0);
     let h0 = x / 2;
     let h1 = x - h0;
-    let end = out0 + n as i64;
+    let end = out0.saturating_add(n as i64);
     let last = plan.pieces.len().saturating_sub(1);
     let mut d = 0i64;
     for (pi, p) in plan.pieces.iter().enumerate() {
-        let (ds, de) = (d, d + p.len);
+        let (ds, de) = (d, d.saturating_add(p.len));
         d = de;
         let fade_in = pi > 0 && x > 0;
         let fade_out = pi < last && x > 0;
-        let s = if fade_in { ds - h0 } else { ds };
-        let e = if fade_out { de + h1 } else { de };
+        let s = if fade_in { ds.saturating_sub(h0) } else { ds };
+        let e = if fade_out { de.saturating_add(h1) } else { de };
         let (a, z) = (s.max(out0), e.min(end));
         if z <= a {
             continue;
         }
         let len = (z - a) as usize;
-        let buf = read(p.src + (a - ds), len);
+        let buf = read(p.src.saturating_add(a.saturating_sub(ds)), len);
         for i in 0..len {
             let o = a + i as i64;
             let mut g = 1.0f64;
-            if fade_in && o < ds + h1 {
-                let u = (o - (ds - h0)) as f64 + 0.5;
+            if fade_in && o < ds.saturating_add(h1) {
+                let u = o.saturating_sub(ds.saturating_sub(h0)) as f64 + 0.5;
                 g *= (u / x as f64 * std::f64::consts::FRAC_PI_2).sin();
             }
-            if fade_out && o >= de - h0 {
-                let u = (o - (de - h0)) as f64 + 0.5;
+            if fade_out && o >= de.saturating_sub(h0) {
+                let u = o.saturating_sub(de.saturating_sub(h0)) as f64 + 0.5;
                 g *= (u / x as f64 * std::f64::consts::FRAC_PI_2).cos();
             }
             let g = g as f32;

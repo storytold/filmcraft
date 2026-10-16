@@ -16,9 +16,10 @@ pub struct Fft {
 }
 
 impl Fft {
-    /// Plan an FFT of size `n` (must be a power of two ≥ 2).
+    /// Plan an FFT of size `n`. A size that is not a power of two ≥ 2 (at most 2^26) is rounded up
+    /// to the next one in that range, so a hostile length can neither panic nor allocate wildly.
     pub fn new(n: usize) -> Fft {
-        assert!(n >= 2 && n.is_power_of_two(), "FFT size must be a power of two");
+        let n = n.clamp(2, 1 << 26).next_power_of_two();
         let bits = n.trailing_zeros();
         let rev = (0..n as u32).map(|i| i.reverse_bits() >> (32 - bits)).collect();
         let (tw_re, tw_im) = (0..n / 2)
@@ -38,7 +39,7 @@ impl Fft {
         false
     }
 
-    /// Forward transform (e^{-iωt}), unscaled.
+    /// Forward transform (e^{-iωt}), unscaled. Buffers shorter than [`Fft::len`] are left untouched.
     pub fn forward(&self, re: &mut [f32], im: &mut [f32]) {
         self.run(re, im, false);
     }
@@ -50,7 +51,9 @@ impl Fft {
 
     fn run(&self, re: &mut [f32], im: &mut [f32], inverse: bool) {
         let n = self.n;
-        assert!(re.len() >= n && im.len() >= n);
+        if re.len() < n || im.len() < n {
+            return;
+        }
         for i in 0..n {
             let j = self.rev[i] as usize;
             if j > i {

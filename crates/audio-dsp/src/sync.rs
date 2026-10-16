@@ -77,6 +77,9 @@ pub fn mixdown(channels: &[&[f32]]) -> Vec<f32> {
 /// Low-pass filter (Blackman-windowed sinc, cutoff at 0.42 × the new sample rate) and keep every
 /// `d`-th sample.
 pub fn decimate(x: &[f32], d: usize) -> Vec<f32> {
+    // a factor beyond the signal length gains nothing (find_offset rejects such signals): cap it
+    // so the filter taps stay bounded
+    let d = d.min(x.len());
     if d <= 1 {
         return x.to_vec();
     }
@@ -190,6 +193,10 @@ pub fn find_offset(a: &[f32], b: &[f32], sample_rate: u32, opts: &SyncOptions) -
     }
     // ---- coarse
     let d = (sr.div_ceil(opts.coarse_rate.max(500) as usize)).max((a.len() + b.len()).div_ceil(opts.max_coarse_samples.max(1 << 12))).max(1);
+    // too short for this decimation factor (huge `max_coarse_samples`/rate mismatch): no estimate
+    if d > a.len().min(b.len()) {
+        return None;
+    }
     let mut ca = a.to_vec();
     let mut cb = b.to_vec();
     normalise(&mut ca);
@@ -202,7 +209,7 @@ pub fn find_offset(a: &[f32], b: &[f32], sample_rate: u32, opts: &SyncOptions) -
     let r = gcc(&ca, &cb, n, opts.phat_beta, band);
     // valid lags: b[0..lb) against a[L..L+lb) must overlap by a minimum amount
     let min_overlap = ((rate_c as i64) / 2).min(la.min(lb) / 4).max(8);
-    let max_lag_c = opts.max_lag.map(|m| m.abs() / d as i64 + 1);
+    let max_lag_c = opts.max_lag.map(|m| (m.saturating_abs() / d as i64).saturating_add(1));
     let lo = -(lb - min_overlap);
     let hi = la - min_overlap;
     if hi < lo {
@@ -490,6 +497,14 @@ mod tests {
         assert!(!r.reliable(), "{r:?}");
         assert!(find_offset(&a, &[0.0; 48_000], sr, &SyncOptions::default()).is_none());
         assert!(find_offset(&a[..100], &a, sr, &SyncOptions::default()).is_none());
+    }
+
+    #[test]
+    fn too_short_for_the_decimation_factor_gives_none() {
+        // the long signal forces d = 300_064 / 4096 = 74 > the 64-sample one: no estimate
+        let long: Vec<f32> = (0..300_000).map(|i| (i as f32 * 0.05).sin()).collect();
+        let short: Vec<f32> = (0..64).map(|i| (i as f32 * 0.05).sin()).collect();
+        assert!(find_offset(&long, &short, 640, &SyncOptions { max_coarse_samples: 1, ..Default::default() }).is_none());
     }
 
     #[test]

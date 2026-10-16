@@ -51,7 +51,7 @@ pub fn tighten_words(audio: &[f32], words: &mut [Word]) {
     let frame_ticks = TICKS_PER_SAMPLE * FRAME as i64;
     for w in words {
         let a = (w.start.0 / frame_ticks).max(0) as usize;
-        let b = (((w.end.0 + frame_ticks - 1) / frame_ticks).max(0) as usize).min(db.len());
+        let b = ((w.end.0.saturating_add(frame_ticks - 1) / frame_ticks).max(0) as usize).min(db.len());
         if b <= a + MIN_WORD_FRAMES {
             continue;
         }

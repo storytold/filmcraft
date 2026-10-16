@@ -601,8 +601,8 @@ pub struct Prototype(Zpk);
 /// The analog prototype for a family, order, pass-band ripple and stop-band attenuation.
 pub fn prototype(family: Family, order: usize, ripple_db: f64, stop_db: f64) -> Prototype {
     let n = order.clamp(1, MAX_ORDER);
-    let rp = ripple_db.clamp(0.01, 10.0);
-    let rs = stop_db.clamp(rp + 1.0, 150.0);
+    let rp = if ripple_db.is_nan() { 1.0 } else { ripple_db.clamp(0.01, 10.0) };
+    let rs = if stop_db.is_nan() { 60.0 } else { stop_db.clamp(rp + 1.0, 150.0) };
     Prototype(match family {
         Family::Butterworth => butterworth(n),
         Family::Bessel => bessel(n),
@@ -614,6 +614,9 @@ pub fn prototype(family: Family, order: usize, ripple_db: f64, stop_db: f64) -> 
 /// Transform a prototype to `band` at `f1` (and `f2` for band-pass/stop) and digitise it.
 pub fn realize(proto: &Prototype, band: Band, f1: f64, f2: f64, sample_rate: f64) -> Sections {
     let mut f = proto.0;
+    // a non-positive / non-finite rate or NaN edge would cross the clamp bounds
+    let sample_rate = if sample_rate.is_finite() && sample_rate > 2.1 { sample_rate } else { 48_000.0 };
+    let (f1, f2) = (if f1.is_nan() { 1000.0 } else { f1 }, if f2.is_nan() { 1000.0 } else { f2 });
     let nyq = sample_rate * 0.5;
     let warp = |hz: f64| 2.0 * sample_rate * (PI * hz.clamp(1.0, nyq * 0.98) / sample_rate).tan();
     match band {

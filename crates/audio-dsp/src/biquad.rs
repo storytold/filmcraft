@@ -50,8 +50,12 @@ impl Coeffs {
     /// RBJ cookbook design. `freq` in Hz (clamped below Nyquist), `q` > 0, `gain_db` used by
     /// peaking and shelving types (shelves use `q` as the shelf "Q", S=1 ≙ Q=1/√2).
     pub fn design(kind: FilterType, sample_rate: f64, freq: f64, q: f64, gain_db: f64) -> Coeffs {
-        let f = freq.clamp(1.0, sample_rate * 0.49);
+        // corrupt inputs: a non-positive / non-finite rate and NaN or infinite gain would
+        // otherwise cross the clamp bounds or poison the coefficients with NaN
+        let sample_rate = if sample_rate.is_finite() && sample_rate > 0.0 { sample_rate } else { 48_000.0 };
+        let f = freq.max(1.0).min(sample_rate * 0.49);
         let q = q.max(1e-3);
+        let gain_db = if gain_db.is_nan() { 0.0 } else { gain_db.clamp(-200.0, 200.0) };
         let w0 = 2.0 * PI * f / sample_rate;
         let (sn, cs) = w0.sin_cos();
         let alpha = sn / (2.0 * q);

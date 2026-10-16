@@ -30,7 +30,7 @@ pub fn envelope_db(channels: &[&[f32]], sample_rate: f32, hop_s: f32, window_s: 
     (0..len.div_ceil(hop))
         .map(|k| {
             let c = k * hop;
-            let (a, b) = (c.saturating_sub(half), (c + half).min(len));
+            let (a, b) = (c.saturating_sub(half), c.saturating_add(half).min(len));
             let ms = (pre[b] - pre[a]).max(0.0) / (b - a).max(1) as f64;
             if ms <= 1e-12 { FLOOR_DB } else { ((10.0 * ms.log10()) as f32).max(FLOOR_DB) }
         })
