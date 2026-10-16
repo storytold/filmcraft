@@ -66,10 +66,6 @@ pub struct StillSource {
 
 impl StillSource {
     pub fn decode(name: &str, bytes: &[u8]) -> Result<Self> {
-        // a DNG is a TIFF too: develop its raw image instead of reading its preview
-        if dng::sniff(bytes) {
-            return dng::still(name, bytes);
-        }
         if hdr::sniff(bytes) {
             return hdr::still(name, bytes);
         }

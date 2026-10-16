@@ -3562,6 +3562,22 @@
 	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	このプロジェクトのメモ: やること、指示、フレーム番号など… プロジェクトと一緒に保存されます。
 	GPU acceleration is unavailable; preview renders on the CPU	GPU アクセラレーションを利用できません。プレビューは CPU でレンダリングされます
 
+# Clip ▸ Source Settings… for camera raw footage (#1065)
+	White Balance	ホワイトバランス
+	White balance:	ホワイトバランス:
+	As Shot	撮影時の設定
+	Temperature:	色温度:
+	Tint:	色かぶり補正:
+	As shot: {temperature} K, tint {tint}	撮影時の設定: {temperature} K、色かぶり補正 {tint}
+	Exposure:	露光量:
+	 stops	 段
+	Highlights: clipped (highlight recovery is not available yet)	ハイライト: クリップ (ハイライトの復元はまだ使用できません)
+	Decode Quality	デコード品質
+	Demosaic:	デモザイク:
+	High (gradient-corrected)	高 (勾配補正)
+	Fast (bilinear)	高速 (バイリニア)
+	Output color space: scene-linear Rec. 709	出力カラースペース: シーンリニア Rec. 709
+	Reset to As Shot	撮影時の設定に戻す
 	Appearance Settings…	外観設定…
 
 	Add to favorites	お気に入りに追加

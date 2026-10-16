@@ -22,6 +22,7 @@ when it is installed, never linked.
 | Malvar, He, Cutler, "High-quality linear interpolation for demosaicing of Bayer-patterned color images", IEEE ICASSP | 2004 | the Bayer demosaic filters |
 | McCamy, "Correlated color temperature as an explicit function of chromaticity coordinates", Color Res. Appl. 17(2) | 1992 | white xy → temperature for the calibration interpolation |
 | IEC 61966-2-1 (sRGB) | 1999 | Rec. 709 / sRGB primaries and D65 white |
+| Krystek, "An algorithm to calculate correlated colour temperature", Color Res. Appl. 10(1) | 1985 | the Planckian locus in CIE 1960 uv for temperature / tint white balance |
 
 ## API
 
@@ -33,7 +34,17 @@ if filmcraft_dng::sniff(&bytes) {
     let img = dng.develop()?;   // linear Rec. 709 RGBA f32 (alpha 1), info.width × info.height
 }
 let img = filmcraft_dng::decode(&bytes)?; // parse + develop
+// raw settings: white balance (as shot or temperature / tint), exposure, highlights, demosaic
+// quality, output space, and a target size for a reduced-resolution fast path
+let o = filmcraft_dng::ProcessOptions { exposure: 0.5, ..Default::default() };
+let img = filmcraft_dng::decode_with(&bytes, &o)?;
 ```
+
+`ProcessOptions::default()` develops exactly like `decode`. `Highlights::Recover` is accepted but
+not implemented yet (it develops like `Clip`). `Dng::as_shot_temperature_tint` gives the as-shot
+white as kelvin and tint, the starting point of a white-balance control; temperature and tint
+are a point on the Planckian locus (Krystek 1985) and a CIE 1960 Δuv (tint 150 = Δuv +0.05, a
+greener white, so a more magenta picture; D65 is about tint +10).
 
 `writer` (feature `writer`, tests only) writes synthetic DNGs: uncompressed at any depth or
 lossless JPEG with any predictor, strips or tiles, either byte order, an optional preview IFD with
@@ -60,8 +71,21 @@ the raw image in a SubIFD, and arbitrary extra tags.
   values to XYZ and a Bradford adaptation moves the as-shot white to D50. Decoders in the dcraw
   tradition (LibRaw included) scale the camera channels instead, so under a white far from D65
   their saturated colours differ from ours (greys agree).
-- **Speed:** a 4096 × 2160 12-bit frame develops in about 80–100 ms on 16 threads (raw decode
-  ~15 ms, the rest demosaic and colour).
+- **Speed:** a 4096 × 2160 12-bit lossless-JPEG frame decodes and develops about 2–3 times
+  faster than in the first version (best of 9 on a shared 16-thread machine: tiles 256 × 256
+  about 82 ms on 1 thread and 21 ms on 16, one strip 30 ms of serial entropy decoding plus the
+  processing). Lossless JPEG decodes a code and its difference bits with one 13-bit lookup and
+  refills its bit buffer eight bytes at a time; tiles decode in parallel straight into place (a
+  single strip is used without a copy); without black-level deltas a lookup table per CFA /
+  black-level site replaces the normalisation arithmetic; demosaic, crop and colour run row by
+  row without intermediate pictures. Output is bit-identical to the first version
+  (`tests/equivalence.rs` compares f32 bit patterns with the kept `reference` module).
+- **Reduced resolution:** with `ProcessOptions::target_size`, a Bayer, LinearRaw or monochrome
+  picture develops at 1/2, 1/4 or 1/8 size (the smallest that still covers the target) by
+  averaging each colour over 2 × 2 (4 × 4, 8 × 8) blocks of the crop, without a demosaic: about
+  three times less processing at half size.
+- `cargo run --release -p filmcraft-dng --example bench` times the current pipeline against the
+  reference at 1, 4 and 16 threads, interleaved in one run.
 
 ## Not supported (errors name them)
 

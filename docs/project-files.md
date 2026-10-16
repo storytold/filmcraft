@@ -53,6 +53,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 | 11 | M3.11 | search bins (`project.search_bins`), Flash Cue markers, Project Settings safe areas, capture format and scratch disks; no-op step |
 | 12 | M10.7 | graphics design data: `TrackItem::graphic` (roll / crawl, responsive time, template link), `EffectInstance::layer` (layer uid, per-character styles, responsive pins), `project.source_graphics`; no-op step |
 | 13 | Multi-stream audio | `MediaInfo::audio_streams` and `TrackItem::audio_stream`; older `audio` objects load as stream zero, missing clip indices default to zero; no-op step |
+| 16 | #1065 | camera raw Source Settings on media items (`Interpretation::raw`: white balance, exposure, highlights, demosaic quality, output colour space); absent = as the file says; no-op step |
 
 ### Migrations
 

@@ -234,21 +234,46 @@ pub fn read(t: &Tiff, ifd: &Ifd) -> Result<RawImage> {
             return Err(Error::Truncated);
         }
     }
-    #[cfg(feature = "threads")]
-    let decoded: Vec<Result<Vec<u16>>> = chunks.par_iter().map(|c| decode_chunk(c, &l, t.big_endian)).collect();
-    #[cfg(not(feature = "threads"))]
-    let decoded: Vec<Result<Vec<u16>>> = chunks.iter().map(|c| decode_chunk(c, &l, t.big_endian)).collect();
-    let mut data = vec![0u16; total];
-    let row_len = l.width * spp;
-    for (c, d) in chunks.iter().zip(decoded) {
-        let d = d?;
-        let cw = c.w.min(l.width - c.x);
-        let ch = c.h.min(l.height - c.y);
-        for r in 0..ch {
-            let src = d.get(r * c.w * spp..(r * c.w + cw) * spp).ok_or(Error::Truncated)?;
-            let at = (c.y + r) * row_len + c.x * spp;
-            data.get_mut(at..at + cw * spp).ok_or(Error::Truncated)?.copy_from_slice(src);
+    let raw = |data| RawImage { width: l.width, height: l.height, samples_per_pixel: spp, bits: l.bits, data };
+    // one chunk covering the image (a single strip): its samples are the image, no copy
+    if let [c] = chunks.as_slice()
+        && (c.x, c.y, c.w) == (0, 0, l.width)
+        && c.h >= l.height
+    {
+        let mut d = decode_chunk(c, &l, t.big_endian)?;
+        d.truncate(total);
+        if d.len() == total {
+            return Ok(raw(d));
         }
+        return Err(Error::Truncated);
     }
-    Ok(RawImage { width: l.width, height: l.height, samples_per_pixel: spp, bits: l.bits, data })
+    // bands of one row of tiles (or one strip): decoded in parallel, each band copying its own
+    // chunks into place
+    let row_len = l.width * spp;
+    let (Some(first), true) = (chunks.first(), row_len > 0) else { return Err(Error::Malformed("no strips or tiles")) };
+    let (band_rows, across) = (first.h.max(1), l.width.div_ceil(first.w.max(1)));
+    let mut data = vec![0u16; total];
+    let band = |k: usize, out: &mut [u16]| -> Result<()> {
+        let mine = chunks.get(k * across..((k + 1) * across).min(chunks.len())).unwrap_or(&[]);
+        #[cfg(feature = "threads")]
+        let decoded: Vec<Result<Vec<u16>>> = mine.par_iter().map(|c| decode_chunk(c, &l, t.big_endian)).collect();
+        #[cfg(not(feature = "threads"))]
+        let decoded: Vec<Result<Vec<u16>>> = mine.iter().map(|c| decode_chunk(c, &l, t.big_endian)).collect();
+        for (c, d) in mine.iter().zip(decoded) {
+            let d = d?;
+            let cw = c.w.min(l.width.saturating_sub(c.x));
+            let ch = c.h.min(l.height.saturating_sub(c.y));
+            for r in 0..ch {
+                let src = d.get(r * c.w * spp..(r * c.w + cw) * spp).ok_or(Error::Truncated)?;
+                let at = r * row_len + c.x * spp;
+                out.get_mut(at..at + cw * spp).ok_or(Error::Truncated)?.copy_from_slice(src);
+            }
+        }
+        Ok(())
+    };
+    #[cfg(feature = "threads")]
+    data.par_chunks_mut(band_rows * row_len).enumerate().try_for_each(|(k, out)| band(k, out))?;
+    #[cfg(not(feature = "threads"))]
+    data.chunks_mut(band_rows * row_len).enumerate().try_for_each(|(k, out)| band(k, out))?;
+    Ok(raw(data))
 }

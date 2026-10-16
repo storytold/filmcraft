@@ -259,3 +259,40 @@ fn v10_minimal_loads_with_m3_11_defaults() {
     assert_eq!(again.schema_version, SCHEMA_VERSION);
     assert_eq!(&again.project, p);
 }
+
+/// Schema 15 (before camera raw Source Settings): a DNG sequence item whose Interpret Footage
+/// has no `raw` settings loads with none (developed as the file says) and resaves unchanged.
+#[test]
+fn v15_dng_item_loads_without_raw_settings() {
+    let l = decode(&fixture("v15-dng.fcproj")).unwrap();
+    assert_eq!(l.schema_version, 15);
+    assert!(l.migrated());
+    let p = &l.project;
+    assert_eq!(p.name, "Before Raw Settings");
+    let m = p.item(filmcraft_project::ItemId(1)).and_then(|i| i.as_media()).unwrap();
+    assert_eq!(m.interpret.raw, None);
+    assert_eq!(m.interpret.par, Some((1, 1)));
+    assert_eq!(m.info.video.as_ref().unwrap().codec, "DNG sequence");
+    let again = decode(&encode(p, true)).unwrap();
+    assert_eq!(again.schema_version, SCHEMA_VERSION);
+    const { assert!(SCHEMA_VERSION >= 16) };
+    assert_eq!(&again.project, p);
+    // no settings: nothing new is written
+    assert!(!String::from_utf8(encode(p, false)).unwrap().contains("\"raw\""));
+}
+
+/// Raw settings round-trip through the current schema.
+#[test]
+fn raw_settings_roundtrip() {
+    use filmcraft_media::raw::{DemosaicQuality, RawSettings, WhiteBalance};
+    let mut p = decode(&fixture("v15-dng.fcproj")).unwrap().project;
+    let s = RawSettings {
+        white_balance: WhiteBalance::Custom { temperature: 3200.0, tint: 12.5 },
+        exposure: -0.75,
+        demosaic: DemosaicQuality::Fast,
+        ..Default::default()
+    };
+    p.item_mut(filmcraft_project::ItemId(1)).and_then(|i| i.as_media_mut()).unwrap().interpret.raw = Some(s);
+    let l = decode(&encode(&p, false)).unwrap();
+    assert_eq!(l.project.item(filmcraft_project::ItemId(1)).and_then(|i| i.as_media()).unwrap().interpret.raw, Some(s));
+}

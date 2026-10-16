@@ -823,6 +823,10 @@ fn build_track(
                     }
                 }
             }
+            // CinemaDNG §7.1.1.2: a "TIFF" picture element type names DNG pictures
+            if codec == Codec::Unknown && elements.first().is_some_and(|e| e.key.0[12] == 0x15 && e.key.0[14] == crate::essence::CINEMADNG_ELEMENT_TYPE) {
+                codec = Codec::CinemaDng;
+            }
             t.codec = codec;
             t.picture = Some(pi);
             build_pictures(src, &mut t, elements, index, warnings)?;

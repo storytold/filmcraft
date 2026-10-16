@@ -27,6 +27,9 @@ pub enum Codec {
     Dv,
     /// Uncompressed pictures (ST 384).
     Uncompressed,
+    /// CinemaDNG: one DNG (TIFF) dataset per frame-wrapped picture element (CinemaDNG Image Data
+    /// Format Specification §7), or TIFF/EP pictures under the registered MXF-GC TIFF/EP labels.
+    CinemaDng,
     /// Linear PCM, little-endian (Broadcast Wave and AES3 descriptors, ST 382).
     Pcm,
     /// 8-channel AES3 element data (ST 331, D-10 sound).
@@ -46,6 +49,7 @@ impl Codec {
             Codec::Jpeg2000 => "JPEG 2000",
             Codec::Dv => "DV",
             Codec::Uncompressed => "Uncompressed",
+            Codec::CinemaDng => "CinemaDNG",
             Codec::Pcm => "PCM",
             Codec::Aes3Element => "AES3 PCM",
             Codec::Unknown => "unknown",
@@ -53,8 +57,24 @@ impl Codec {
     }
     /// Every picture is coded independently.
     pub fn intra_only(&self) -> bool {
-        matches!(self, Codec::Avc { intra: true } | Codec::Vc3 | Codec::ProRes { .. } | Codec::Jpeg2000 | Codec::Dv | Codec::Uncompressed)
+        matches!(self, Codec::Avc { intra: true } | Codec::Vc3 | Codec::ProRes { .. } | Codec::Jpeg2000 | Codec::Dv | Codec::Uncompressed | Codec::CinemaDng)
     }
+}
+
+/// The CinemaDNG essence container labels (CinemaDNG Image Data Format Specification 1.0.0.0,
+/// §7.2.1): provisional, unregistered labels from Adobe's experimental range (byte 9 = 0F h),
+/// `…0F 0A 0D 0B 02 7F cc 00` with content kind `cc` 01 (CFA) or 02 (LinearRaw).
+pub const CINEMADNG_CONTAINER_PREFIX: [u8; 6] = [0x0F, 0x0A, 0x0D, 0x0B, 0x02, 0x7F];
+
+/// Element type (byte 15 of the picture element key) of a frame-wrapped CinemaDNG picture: the
+/// "TIFF" type of ST 331 (CinemaDNG specification §7.1.1.2).
+pub const CINEMADNG_ELEMENT_TYPE: u8 = 0x42;
+
+/// Whether `ul` is a CinemaDNG essence container label (CFA or LinearRaw content), or the
+/// registered MXF-GC TIFF/EP container (`…0D 01 03 01 02 14 ww 00`, RP 224).
+pub fn is_cinemadng_container(ul: &Ul) -> bool {
+    ul.is_smpte()
+        && (ul.item_starts_with(&CINEMADNG_CONTAINER_PREFIX) && matches!(ul.0[14], 0x01 | 0x02) || ul.item_starts_with(&[0x0D, 0x01, 0x03, 0x01, 0x02, 0x14]))
 }
 
 /// Identify a picture codec from the picture essence coding label and the essence container label.
@@ -64,6 +84,9 @@ pub fn identify_picture(coding: Option<Ul>, container: Option<Ul>, mpeg_descript
         // 04 01 02 02 .. : compressed picture coding
         if b[8..12] == [0x04, 0x01, 0x02, 0x02] {
             match (b[12], b[13]) {
+                // TIFF/EP Profile 2 picture coding (RP 224: 03 02 01 01 uncompressed CFA … 04
+                // compressed LinearRaw), the coding of DNG pictures
+                (0x03, 0x02) if b[14] == 0x01 => return Codec::CinemaDng,
                 // 01: MPEG compression (ISO/IEC 13818-2 profiles, 14496-2, 14496-10)
                 (0x01, 0x01..=0x1F) => return Codec::Mpeg2,
                 (0x01, 0x20..=0x2F) => return Codec::Mpeg4Visual,
@@ -81,6 +104,9 @@ pub fn identify_picture(coding: Option<Ul>, container: Option<Ul>, mpeg_descript
         if b[8..11] == [0x04, 0x01, 0x02] && b[11] == 0x01 {
             return Codec::Uncompressed;
         }
+    }
+    if container.is_some_and(|c| is_cinemadng_container(&c)) {
+        return Codec::CinemaDng;
     }
     if let Some(c) = container.filter(Ul::is_smpte)
         && c.item_starts_with(&[0x0D, 0x01, 0x03, 0x01, 0x02])
@@ -102,6 +128,10 @@ pub fn identify_picture(coding: Option<Ul>, container: Option<Ul>, mpeg_descript
 
 /// Identify a picture codec from the first bytes of an essence element.
 pub fn sniff_picture(b: &[u8]) -> Option<Codec> {
+    // a TIFF header (TIFF 6.0 §2): a DNG dataset
+    if b.len() >= 8 && (b[..4] == *b"II*\0" || b[..4] == *b"MM\0*") {
+        return Some(Codec::CinemaDng);
+    }
     if b.len() >= 8 && &b[4..8] == b"icpf" {
         return Some(Codec::ProRes { profile: None });
     }
@@ -282,12 +312,29 @@ mod tests {
     }
 
     #[test]
+    fn identifies_cinemadng() {
+        // CinemaDNG specification §7.2.1: CFA and LinearRaw containers (any registry version byte)
+        let adobe = |kind: u8| Ul([0x06, 0x0E, 0x2B, 0x34, 0x04, 0x01, 0x01, 0x01, 0x0F, 0x0A, 0x0D, 0x0B, 0x02, 0x7F, kind, 0x00]);
+        assert_eq!(identify_picture(None, Some(adobe(1)), false), Codec::CinemaDng);
+        assert_eq!(identify_picture(None, Some(adobe(2)), false), Codec::CinemaDng);
+        assert_eq!(identify_picture(None, Some(adobe(3)), false), Codec::Unknown);
+        // RP 224: MXF-GC frame-wrapped TIFF/EP container, TIFF/EP picture coding
+        assert_eq!(identify_picture(None, Some(ul(&[0x0D, 1, 3, 1, 2, 0x14, 1])), false), Codec::CinemaDng);
+        assert_eq!(identify_picture(Some(ul(&[4, 1, 2, 2, 3, 2, 1, 3])), None, false), Codec::CinemaDng);
+        assert!(Codec::CinemaDng.intra_only());
+        assert_eq!(Codec::CinemaDng.name(), "CinemaDNG");
+    }
+
+    #[test]
     fn sniffs_essence() {
         assert_eq!(sniff_picture(&[0, 0, 0, 1, 0x09, 0x10]), Some(Codec::Avc { intra: false }));
         assert_eq!(sniff_picture(&[0, 0, 1, 0xB3, 0]), Some(Codec::Mpeg2));
         assert_eq!(sniff_picture(&[0, 0, 2, 0x80, 1]), Some(Codec::Vc3));
         assert_eq!(sniff_picture(&[0, 0, 0, 9, b'i', b'c', b'p', b'f']), Some(Codec::ProRes { profile: None }));
         assert_eq!(sniff_picture(&[1, 2, 3]), None);
+        assert_eq!(sniff_picture(b"II*\0\x08\0\0\0"), Some(Codec::CinemaDng));
+        assert_eq!(sniff_picture(b"MM\0*\0\0\0\x08"), Some(Codec::CinemaDng));
+        assert_eq!(sniff_picture(b"II*\0"), None);
     }
 
     #[test]

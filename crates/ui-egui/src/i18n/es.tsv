@@ -3583,6 +3583,22 @@
 	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	Notas de este proyecto: tareas pendientes, instrucciones, números de fotograma… Se guardan con el proyecto.
 	Use Effect Shutter Angle	Usar el ángulo de obturación del efecto
 
+# Clip ▸ Source Settings… for camera raw footage (#1065)
+	White Balance	Balance de blancos
+	White balance:	Balance de blancos:
+	As Shot	Como se tomó
+	Temperature:	Temperatura:
+	Tint:	Matiz:
+	As shot: {temperature} K, tint {tint}	Como se tomó: {temperature} K, matiz {tint}
+	Exposure:	Exposición:
+	 stops	 pasos
+	Highlights: clipped (highlight recovery is not available yet)	Altas luces: recortadas (la recuperación de altas luces aún no está disponible)
+	Decode Quality	Calidad de decodificación
+	Demosaic:	Interpolación cromática:
+	High (gradient-corrected)	Alta (con corrección de gradiente)
+	Fast (bilinear)	Rápida (bilineal)
+	Output color space: scene-linear Rec. 709	Espacio de color de salida: Rec. 709 lineal de escena
+	Reset to As Shot	Restablecer a Como se tomó
 	Appearance Settings…	Ajustes de apariencia…
 
 	Add to favorites	Añadir a favoritos

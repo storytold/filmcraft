@@ -16,6 +16,7 @@ pub mod digits;
 pub mod dpx;
 pub mod generators;
 pub mod pending;
+pub mod raw;
 pub mod reader;
 pub mod sequence;
 pub mod still;
@@ -167,6 +168,16 @@ pub trait MediaSource: Send + Sync {
     fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer> {
         if stream == 0 { self.audio(start, frames, sample_rate) } else { Err(MediaError::NoStream("audio")) }
     }
+    /// Camera raw sources (DNG stills and sequences, CinemaDNG in MXF): the as-shot white balance
+    /// and the settings in use. None for every other source.
+    fn raw_info(&self) -> Option<raw::RawInfo> {
+        None
+    }
+    /// Camera raw sources: the same media developed with `settings` (a new source; this one is
+    /// unchanged). None for every other source.
+    fn with_raw_settings(&self, _settings: &raw::RawSettings) -> Option<SharedSource> {
+        None
+    }
 }
 
 pub type SharedSource = Arc<dyn MediaSource>;
@@ -202,6 +213,10 @@ pub fn open_bytes(name: &str, bytes: Arc<[u8]>, extra: &[Opener]) -> Result<Shar
     }
     if wav::sniff(&bytes) {
         return Ok(Arc::new(wav::WavSource::parse(name, bytes)?));
+    }
+    // a DNG is a TIFF too: develop its raw image instead of reading its preview
+    if still::dng::sniff(&bytes) {
+        return Ok(Arc::new(still::dng::DngStill::open(name, bytes, raw::RawSettings::default())?));
     }
     // APNG and animated GIF play as movies (#402); single-frame files fall through to the stills
     if let Some(r) = animated::open(name, &bytes) {

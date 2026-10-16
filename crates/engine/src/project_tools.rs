@@ -16,7 +16,7 @@
 //! | `edit.editOriginal` | Edit ▸ Edit Original (⌘E): the frontend opens the files |
 //! | `file.reveal` | Project panel ▸ Reveal in Finder / Show in Explorer: the frontend reveals the media file |
 //! | `clip.editOffline` | Clip ▸ Edit Offline… |
-//! | `clip.sourceSettings` | Clip ▸ Source Settings… |
+//! | `clip.sourceSettings` | Clip ▸ Source Settings… (camera raw; `crate::raw_settings`, placed here) |
 //! | `clip.restoreCaptionsFromSource` | Clip ▸ Restore Captions from Source Clip (always disabled: no embedded caption reader) |
 //! | `clip.updateMetadata` | Clip ▸ Update Metadata… (XMP sidecars) |
 //! | `clip.generateAudioWaveform` | Clip ▸ Generate Audio Waveform (the frontend rebuilds its peaks) |
@@ -176,7 +176,6 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             has_offline_selection,
             edit_offline,
         ),
-        query("clip.sourceSettings", "Source Settings…", &["Clip"], None, r#"{"item":id?}"#, has_media_selection, source_settings),
         spec("clip.restoreCaptionsFromSource", "Restore Captions from Source Clip", &["Clip"], None, "{}", no_embedded_captions, |_, _| {
             Err(EngineError::Other(NO_CAPTIONS.into()))
         }),
@@ -348,7 +347,7 @@ fn has_find(s: &Session) -> std::result::Result<(), String> {
 
 /// Project items the command works on: `items`, else the Project panel selection, else the media
 /// of the selected timeline clips.
-fn targets(s: &Session, p: &Value) -> Vec<ItemId> {
+pub(crate) fn targets(s: &Session, p: &Value) -> Vec<ItemId> {
     if let Some(a) = p.get("items").and_then(Value::as_array) {
         return a.iter().filter_map(|v| v.as_u64().map(ItemId)).filter(|i| s.project.items.contains_key(i)).collect();
     }
@@ -1044,19 +1043,6 @@ fn edit_offline(s: &mut Session, p: &Value) -> Result<Value> {
     })?;
     let it = s.project.item(id).ok_or_else(|| bad("clip.editOffline", "no such item"))?;
     Ok(json!({"item": id.0, "name": it.name, "metadata": it.metadata}))
-}
-
-fn source_settings(s: &mut Session, p: &Value) -> Result<Value> {
-    let id = targets(s, p).into_iter().find(|i| media_of(&s.project, *i).is_some()).ok_or_else(|| EngineError::Other("select a clip".into()))?;
-    let (_, m) = media_of(&s.project, id).ok_or_else(|| EngineError::Other("select a clip".into()))?;
-    let codec = m.info.video.as_ref().map(|v| v.codec.clone()).or_else(|| m.info.audio().map(|a| a.codec.clone())).unwrap_or_default();
-    Ok(json!({
-        "item": id.0,
-        "codec": codec,
-        "container": m.info.container,
-        "settings": [],
-        "message": format!("{} has no source settings in FilmCraft. Source settings apply to camera raw formats (R3D, ARRIRAW, CinemaDNG, ProRes RAW…), which FilmCraft does not decode.", if codec.is_empty() { "This clip".to_string() } else { codec.to_uppercase() }),
-    }))
 }
 
 fn xml_escape(s: &str) -> String {

@@ -27,6 +27,10 @@ pub struct Decoded {
 }
 
 const LOOKUP_BITS: u32 = 9;
+/// Bits of the combined code + difference lookup.
+const FULL_BITS: u32 = 13;
+/// A combined lookup entry: bit 8 set, the bits used in 0–7, the difference in 16–31.
+const FULL_VALID: u32 = 0x100;
 
 /// A Huffman table for decoding (T.81 Annex C and F.2.2.3).
 #[derive(Clone)]
@@ -38,6 +42,10 @@ struct Huffman {
     valptr: [i32; 17],
     mincode: [i32; 17],
     values: Vec<u8>,
+    /// For a code and its extra bits that fit in FULL_BITS together (difference categories
+    /// 0–15): `FULL_VALID | used bits | difference << 16`, indexed by the next FULL_BITS bits;
+    /// 0 means "decode the slow way".
+    full: Vec<u32>,
 }
 
 impl Huffman {
@@ -96,7 +104,28 @@ impl Huffman {
                 }
             }
         }
-        Ok(Huffman { fast, maxcode, valptr, mincode, values })
+        let mut full = vec![0u32; 1 << FULL_BITS];
+        for (&c, (&s, &ssss)) in codes.iter().zip(sizes.iter().zip(&values)) {
+            let (s, ssss) = (u32::from(s), u32::from(ssss));
+            if ssss >= 16 || s + ssss > FULL_BITS {
+                continue;
+            }
+            let total = s + ssss;
+            for v in 0..1u32 << ssss {
+                let diff = match ssss {
+                    0 => 0,
+                    k if v < 1 << (k - 1) => v as i32 - (1 << k) + 1,
+                    _ => v as i32,
+                };
+                let entry = FULL_VALID | total | (u32::from(diff as i16 as u16) << 16);
+                let shift = FULL_BITS - total;
+                let base = (((c << ssss) | v) << shift) as usize;
+                for f in full.iter_mut().skip(base).take(1 << shift) {
+                    *f = entry;
+                }
+            }
+        }
+        Ok(Huffman { fast, maxcode, valptr, mincode, values, full })
     }
 }
 
@@ -116,6 +145,23 @@ impl<'a> Bits<'a> {
     }
 
     fn fill(&mut self) {
+        // fast path: eight bytes without a 0xFF (no stuffing, no marker) go in at once
+        if self.marker.is_none()
+            && let Some(b) = self.data.get(self.pos..self.pos + 8)
+        {
+            let chunk = u64::from_be_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
+            let inv = !chunk;
+            let has_ff = inv.wrapping_sub(0x0101_0101_0101_0101) & !inv & 0x8080_8080_8080_8080 != 0;
+            if !has_ff {
+                let take = (64 - self.n) / 8;
+                if take > 0 {
+                    self.acc |= (chunk >> (64 - 8 * take)) << (64 - self.n - 8 * take);
+                    self.pos += take as usize;
+                    self.n += 8 * take;
+                    return;
+                }
+            }
+        }
         while self.n <= 56 {
             let mut byte = 0u8;
             if self.marker.is_none() {
@@ -325,6 +371,25 @@ pub fn decode(data: &[u8], max_samples: usize) -> Result<Decoded> {
     }
 }
 
+/// The next difference (F.2.2.1 and H.1.2.2): category and extra bits from the combined table
+/// when they fit, else symbol by symbol.
+#[inline(always)]
+fn difference(bits: &mut Bits, h: &Huffman) -> Result<i32> {
+    let e = h.full.get(bits.peek(FULL_BITS) as usize).copied().unwrap_or(0);
+    if e & FULL_VALID != 0 {
+        bits.skip(e & 0xFF);
+        return Ok(i32::from((e >> 16) as u16 as i16));
+    }
+    Ok(match u32::from(bits.decode(h)?) {
+        0 => 0,
+        16 => 32768,
+        s => {
+            let v = bits.bits(s) as i32;
+            if v < (1 << (s - 1)) { v - (1 << s) + 1 } else { v }
+        }
+    })
+}
+
 /// Decode the entropy-coded data of one scan (H.1.2).
 fn scan(data: &[u8], start: usize, hufs: &[&Huffman], width: usize, height: usize, precision: u8, predictor: u8, pt: u8, restart: usize) -> Result<Vec<u16>> {
     let nc = hufs.len();
@@ -342,34 +407,17 @@ fn scan(data: &[u8], start: usize, hufs: &[&Huffman], width: usize, height: usiz
             bits.restart()?;
             line_in_interval = 0;
         }
-        let first_line = line_in_interval == 0;
-        let (above, cur) = if y == 0 {
-            (None, &mut out[..row_len])
-        } else {
-            let (a, c) = out.split_at_mut(y * row_len);
-            (Some(&a[(y - 1) * row_len..]), &mut c[..row_len])
-        };
-        for x in 0..width {
-            for (c, h) in hufs.iter().enumerate() {
-                let i = x * nc + c;
-                let ssss = u32::from(bits.decode(h)?);
-                let diff = match ssss {
-                    0 => 0,
-                    16 => 32768,
-                    s => {
-                        let v = bits.bits(s) as i32;
-                        if v < (1 << (s - 1)) { v - (1 << s) + 1 } else { v }
-                    }
-                };
-                let px = match above {
-                    _ if first_line && x == 0 => initial,
-                    _ if first_line => i32::from(cur[i - nc]),
-                    Some(a) if x == 0 => i32::from(a[i]),
-                    Some(a) => predict(predictor, i32::from(cur[i - nc]), i32::from(a[i]), i32::from(a[i - nc])),
-                    None => initial,
-                };
-                cur[i] = ((px + diff) & 0xFFFF) as u16;
-            }
+        let (above, cur) = out.split_at_mut(y * row_len);
+        let cur = cur.get_mut(..row_len).ok_or(Error::TooLarge)?;
+        let above = if line_in_interval == 0 { None } else { above.get((y - 1) * row_len..) };
+        match predictor {
+            1 => line::<1>(&mut bits, hufs, cur, above, initial)?,
+            2 => line::<2>(&mut bits, hufs, cur, above, initial)?,
+            3 => line::<3>(&mut bits, hufs, cur, above, initial)?,
+            4 => line::<4>(&mut bits, hufs, cur, above, initial)?,
+            5 => line::<5>(&mut bits, hufs, cur, above, initial)?,
+            6 => line::<6>(&mut bits, hufs, cur, above, initial)?,
+            _ => line::<7>(&mut bits, hufs, cur, above, initial)?,
         }
         line_in_interval += 1;
     }
@@ -381,7 +429,52 @@ fn scan(data: &[u8], start: usize, hufs: &[&Huffman], width: usize, height: usiz
     Ok(out)
 }
 
+/// One line of samples (H.1.2.1): the first line of a restart interval (`above` is `None`)
+/// predicts from the left with `initial` for its first sample; other lines predict their first
+/// sample from above and the rest with predictor `P`.
+#[inline(always)]
+fn line<const P: u8>(bits: &mut Bits, hufs: &[&Huffman], cur: &mut [u16], above: Option<&[u16]>, initial: i32) -> Result<()> {
+    let nc = hufs.len();
+    let row_len = cur.len();
+    let above = match above {
+        Some(a) => Some(a.get(..row_len).ok_or(Error::TooLarge)?),
+        None => None,
+    };
+    for (c, h) in hufs.iter().enumerate() {
+        let d = difference(bits, h)?;
+        let px = match above {
+            Some(a) => i32::from(a[c]),
+            None => initial,
+        };
+        cur[c] = ((px + d) & 0xFFFF) as u16;
+    }
+    let mut i = nc;
+    match above {
+        None => {
+            while i < row_len {
+                for h in hufs {
+                    let d = difference(bits, h)?;
+                    cur[i] = ((i32::from(cur[i - nc]) + d) & 0xFFFF) as u16;
+                    i += 1;
+                }
+            }
+        }
+        Some(a) => {
+            while i < row_len {
+                for h in hufs {
+                    let d = difference(bits, h)?;
+                    let px = predict(P, i32::from(cur[i - nc]), i32::from(a[i]), i32::from(a[i - nc]));
+                    cur[i] = ((px + d) & 0xFFFF) as u16;
+                    i += 1;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Table H.1 predictors (`ra` left, `rb` above, `rc` above left).
+#[inline(always)]
 pub fn predict(p: u8, ra: i32, rb: i32, rc: i32) -> i32 {
     match p {
         1 => ra,

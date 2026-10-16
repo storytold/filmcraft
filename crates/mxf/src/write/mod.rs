@@ -104,6 +104,10 @@ pub enum PictureCoding {
     ProRes { profile: u8 },
     /// H.264 / AVC Annex B byte stream; `profile_idc` from the SPS (66, 77, 100, …).
     Avc { profile_idc: u8, intra: bool },
+    /// CinemaDNG: one DNG dataset per picture (CinemaDNG specification §7), frame-wrapped only,
+    /// with an RGBA descriptor of the decoded 16-bit RGB image. `linear_raw`: the pictures are
+    /// LinearRaw (PhotometricInterpretation 34892) rather than CFA (32803).
+    CinemaDng { linear_raw: bool },
 }
 
 impl PictureCoding {
@@ -113,9 +117,10 @@ impl PictureCoding {
             _ => true,
         }
     }
-    /// Picture essence coding label.
-    fn coding_label(&self) -> [u8; 16] {
-        match *self {
+    /// Picture essence coding label (None: CinemaDNG, which has no registered one, §7.2.2.2).
+    fn coding_label(&self) -> Option<[u8; 16]> {
+        Some(match *self {
+            PictureCoding::CinemaDng { .. } => return None,
             PictureCoding::Vc3 { cid } => {
                 let code = if (1235..=1234 + 0x7F).contains(&cid) { (cid - 1234) as u8 } else { 0 };
                 [0x06, 0x0E, 0x2B, 0x34, 0x04, 0x01, 0x01, 0x0A, 0x04, 0x01, 0x02, 0x02, 0x71, code, 0x00, 0x00]
@@ -142,7 +147,7 @@ impl PictureCoding {
                 };
                 [0x06, 0x0E, 0x2B, 0x34, 0x04, 0x01, 0x01, 0x0A, 0x04, 0x01, 0x02, 0x02, 0x01, b13, b14, 0x01]
             }
-        }
+        })
     }
     /// (essence container label, element type) for frame or clip wrapping.
     fn container(&self, clip: bool) -> ([u8; 16], u8) {
@@ -151,6 +156,11 @@ impl PictureCoding {
             PictureCoding::Vc3 { .. } => (essence_container(0x0A, 0x11, w, 0x00), if clip { 0x0D } else { 0x0C }),
             PictureCoding::ProRes { .. } => (essence_container(0x0D, 0x1C, w, 0x00), if clip { 0x18 } else { 0x17 }),
             PictureCoding::Avc { .. } => (essence_container(0x0A, 0x10, 0x60, w), if clip { 0x16 } else { 0x15 }),
+            // CinemaDNG §7.2.1 (provisional label) and §7.1.1.2 (element type 42h); always frame
+            // wrapped (`MxfWriter::new` refuses clip wrapping)
+            PictureCoding::CinemaDng { linear_raw } => {
+                ([0x06, 0x0E, 0x2B, 0x34, 0x04, 0x01, 0x01, 0x01, 0x0F, 0x0A, 0x0D, 0x0B, 0x02, 0x7F, if *linear_raw { 0x02 } else { 0x01 }, 0x00], 0x42)
+            }
         }
     }
 }
@@ -192,6 +202,8 @@ impl PictureDesc {
             PictureCoding::Vc3 { cid } => {
                 (if matches!(cid, 1235 | 1241 | 1250 | 1256 | 1270 | 1271) { 10 } else { 8 }, if matches!(cid, 1256 | 1270) { (1, 1) } else { (2, 1) })
             }
+            // §7.2.2.3: the decoded image is described as 16 bits per component
+            PictureCoding::CinemaDng { .. } => (16, (1, 1)),
         };
         PictureDesc {
             coding,
@@ -540,6 +552,10 @@ impl<W: Write + Seek> MxfWriter<W> {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid PCM sound description"));
         }
         let clip = cfg.pattern == Pattern::OpAtom;
+        if clip && matches!(cfg.picture.as_ref().map(|p| p.coding), Some(PictureCoding::CinemaDng { .. })) {
+            // CinemaDNG §7.1.1: a TIFF dataset has no length field, so DNG pictures can't be clip wrapped
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "CinemaDNG pictures are frame wrapped only (this writer's OP-Atom is clip wrapped)"));
+        }
         let mut tracks = Vec::new();
         let mut id = cfg.first_track_id.max(2);
         if let Some(p) = &cfg.picture {
@@ -866,7 +882,8 @@ impl<W: Write + Seek> MxfWriter<W> {
                 TrackKind::Picture => {
                     // Picture tracks exist only with a picture configuration.
                     let Some(p) = cfg.picture.as_ref() else { continue };
-                    let mut s = Set::new(0x28, uid);
+                    let rgba = matches!(p.coding, PictureCoding::CinemaDng { .. });
+                    let mut s = Set::new(if rgba { 0x29 } else { 0x28 }, uid);
                     if multiple {
                         s.u32(0x3006, t.id);
                     }
@@ -892,9 +909,22 @@ impl<W: Write + Seek> MxfWriter<W> {
                         .u32(0x3209, p.width)
                         .u32(0x3208, p.height)
                         .rat(0x320E, p.aspect)
-                        .p(0x320D, &batch(&[&0u32.to_be_bytes(), &0u32.to_be_bytes()], 4))
-                        .p(0x3201, &p.coding.coding_label())
-                        .p(0x3210, &tcl)
+                        .p(0x320D, &batch(&[&0u32.to_be_bytes(), &0u32.to_be_bytes()], 4));
+                    if let Some(label) = p.coding.coding_label() {
+                        s.p(0x3201, &label);
+                    }
+                    if rgba {
+                        // RGBA descriptor (ST 377-1 G.2.40): pixel layout R, G, B of `depth` bits
+                        // each, and the component reference levels (CinemaDNG §7.2.2.3)
+                        let d = depth as u8;
+                        let mut layout = [0u8; 16];
+                        layout[..6].copy_from_slice(&[b'R', d, b'G', d, b'B', d]);
+                        let max = if depth >= 32 { u32::MAX } else { (1u32 << depth) - 1 };
+                        s.p(0x3401, &layout).u32(0x3406, max).u32(0x3407, 0);
+                        s.write(&mut out);
+                        continue;
+                    }
+                    s.p(0x3210, &tcl)
                         .p(0x321A, &ce)
                         .p(0x3219, &cp)
                         .u32(0x3301, depth)

@@ -18,7 +18,8 @@
 use rayon::prelude::*;
 
 use crate::color::{M3, V3};
-use crate::demosaic::{Pattern, demosaic};
+use crate::demosaic::Pattern;
+use crate::options::ProcessOptions;
 use crate::raw::RawImage;
 use crate::{Error, Result};
 
@@ -70,8 +71,69 @@ pub fn crop_rect(p: &Params, aw: usize, ah: usize) -> Rect {
     (x, y, w, h)
 }
 
-/// Normalised, white-balanced samples of the active area (steps 1–4), one plane per sample.
-fn normalise(raw: &RawImage, p: &Params, (ax, ay, aw, ah): Rect, neutral: &V3, planes: usize) -> Result<Vec<f32>> {
+/// Rows-parallel map over `out` in rows of `row_len` values (sequential without `threads`).
+fn for_rows(out: &mut [f32], row_len: usize, f: impl Fn(usize, &mut [f32]) + Sync + Send) {
+    let row_len = row_len.max(1);
+    #[cfg(feature = "threads")]
+    out.par_chunks_mut(row_len).enumerate().for_each(|(y, o)| f(y, o));
+    #[cfg(not(feature = "threads"))]
+    out.chunks_mut(row_len).enumerate().for_each(|(y, o)| f(y, o));
+}
+
+fn gcd(a: usize, b: usize) -> usize {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
+fn lcm(a: usize, b: usize) -> usize {
+    a / gcd(a, b).max(1) * b
+}
+
+/// Most values in a normalisation lookup table (sites × codes).
+const MAX_LUT: usize = 1 << 21;
+
+/// Steps 2–4 for one sample: linearisation, black and white levels, and (with `wb`) white
+/// balance with the clip at 1.
+struct Normaliser<'a> {
+    spp: usize,
+    br: usize,
+    bc: usize,
+    black: Vec<f64>,
+    white: Vec<f64>,
+    lin: Option<&'a [u16]>,
+    inv_neutral: Vec<f32>,
+    cfa: Option<&'a Pattern>,
+    wb: bool,
+}
+
+impl Normaliser<'_> {
+    #[inline]
+    fn value(&self, code: u16, x: usize, y: usize, s: usize, dh: f64, dv: f64) -> f32 {
+        let v = match self.lin {
+            Some(t) => f64::from(t.get(usize::from(code)).or(t.last()).copied().unwrap_or(0)),
+            None => f64::from(code),
+        };
+        let b = self.black.get(((y % self.br) * self.bc + x % self.bc) * self.spp + s).copied().unwrap_or(0.0) + dh + dv;
+        let range = self.white.get(s).copied().unwrap_or(1.0) - b;
+        let n = if range > 0.0 { ((v - b) / range).clamp(0.0, 1.0) } else { 0.0 };
+        if !self.wb {
+            return n as f32;
+        }
+        let plane = match self.cfa {
+            Some(c) => usize::from(c.color(x, y)),
+            None => s,
+        };
+        let wb = self.inv_neutral.get(plane).copied().unwrap_or(1.0);
+        (n as f32 * wb).min(1.0)
+    }
+}
+
+/// Normalised samples of the active area (steps 1–4), one plane per sample; white balanced and
+/// clipped at 1 when `wb` (else only clipped to 0–1, for OpcodeList2).
+///
+/// Without black-level deltas every sample is a function of its code and its position in the
+/// black-level and CFA repeat, so a lookup table per site replaces the arithmetic (same values:
+/// each entry is computed by the same expression).
+fn normalise_with(raw: &RawImage, p: &Params, (ax, ay, aw, ah): Rect, neutral: &V3, planes: usize, wb: bool) -> Result<Vec<f32>> {
     let spp = raw.samples_per_pixel;
     let (br, bc) = (p.black_repeat.0.max(1), p.black_repeat.1.max(1));
     if br > 64 || bc > 64 {
@@ -84,42 +146,71 @@ fn normalise(raw: &RawImage, p: &Params, (ax, ay, aw, ah): Rect, neutral: &V3, p
         n if n >= need => p.black[..need].to_vec(),
         _ => return Err(Error::Malformed("BlackLevel has too few values")),
     };
-    let max_code = ((1u32 << raw.bits) - 1) as f64;
+    let max_code = ((1u32 << raw.bits.min(16)) - 1) as f64;
     let white: Vec<f64> = (0..spp).map(|s| p.white.get(s).or(p.white.first()).copied().unwrap_or(max_code)).collect();
     let lin = p.linearization.as_deref().filter(|t| !t.is_empty());
     let inv_neutral: Vec<f32> = (0..planes).map(|c| (1.0 / neutral.get(c).copied().unwrap_or(1.0)) as f32).collect();
     let cfa = p.cfa.as_ref();
+    let n = Normaliser { spp, br, bc, black, white, lin, inv_neutral, cfa, wb };
+    let row_len = aw * spp;
+    let src = |y: usize| raw.data.get((ay + y) * raw.width * spp + ax * spp..).unwrap_or(&[]);
     let mut out = vec![0f32; aw * ah * spp];
-    let row = |y: usize, o: &mut [f32]| {
-        let dv = p.black_delta_v.get(y).copied().unwrap_or(0.0);
-        let src_row = (ay + y) * raw.width * spp;
-        for x in 0..aw {
-            let dh = p.black_delta_h.get(x).copied().unwrap_or(0.0);
-            for s in 0..spp {
-                let code = raw.data.get(src_row + (ax + x) * spp + s).copied().unwrap_or(0);
-                let v = match lin {
-                    Some(t) => f64::from(t.get(usize::from(code)).or(t.last()).copied().unwrap_or(0)),
-                    None => f64::from(code),
+    // the repeat of the black levels and the CFA together
+    let (rr, rc) = match cfa {
+        Some(c) => (lcm(br, c.rows.max(1)), lcm(bc, c.cols.max(1))),
+        None => (br, bc),
+    };
+    let deltas = p.black_delta_h.iter().chain(&p.black_delta_v).any(|&d| d != 0.0);
+    let lut_len = 1usize << raw.bits.clamp(1, 16);
+    let sites = rr * rc * spp;
+    let use_lut = !deltas && sites.saturating_mul(lut_len) <= MAX_LUT && sites * lut_len <= out.len();
+    if use_lut {
+        // lut[((y % rr) * rc + x % rc) * spp + s][code]
+        let mut lut = vec![0f32; sites * lut_len];
+        let fill = |site: usize, t: &mut [f32]| {
+            let (s, xy) = (site % spp, site / spp);
+            let (y, x) = (xy / rc, xy % rc);
+            for (code, v) in t.iter_mut().enumerate() {
+                *v = n.value(code as u16, x, y, s, 0.0, 0.0);
+            }
+        };
+        for_rows(&mut lut, lut_len, fill);
+        let lut = &lut;
+        for_rows(&mut out, row_len, |y, o| {
+            let src = src(y);
+            let row_sites = (y % rr) * rc * spp;
+            let mut site = row_sites;
+            let row_end = row_sites + rc * spp;
+            for (x, (o, &code)) in o.iter_mut().zip(src).enumerate() {
+                let table = lut.get(site * lut_len..(site + 1) * lut_len).unwrap_or(&[]);
+                *o = match table.get(usize::from(code)) {
+                    Some(&v) => v,
+                    None => n.value(code, x / spp, y, x % spp, 0.0, 0.0),
                 };
-                let b = black[((y % br) * bc + x % bc) * spp + s] + dh + dv;
-                let range = white[s] - b;
-                let n = if range > 0.0 { ((v - b) / range).clamp(0.0, 1.0) } else { 0.0 };
-                let plane = match cfa {
-                    Some(c) => usize::from(c.color(x, y)),
-                    None => s,
-                };
-                let wb = inv_neutral.get(plane).copied().unwrap_or(1.0);
-                if let Some(o) = o.get_mut(x * spp + s) {
-                    *o = (n as f32 * wb).min(1.0);
+                site += 1;
+                if site == row_end {
+                    site = row_sites;
                 }
             }
-        }
-    };
-    #[cfg(feature = "threads")]
-    out.par_chunks_mut((aw * spp).max(1)).enumerate().for_each(|(y, o)| row(y, o));
-    #[cfg(not(feature = "threads"))]
-    out.chunks_mut((aw * spp).max(1)).enumerate().for_each(|(y, o)| row(y, o));
+        });
+    } else {
+        for_rows(&mut out, row_len, |y, o| {
+            let src = src(y);
+            let dv = p.black_delta_v.get(y).copied().unwrap_or(0.0);
+            for (x, (px, codes)) in o.chunks_exact_mut(spp).zip(src.chunks_exact(spp)).enumerate() {
+                let dh = p.black_delta_h.get(x).copied().unwrap_or(0.0);
+                for (s, (o, &code)) in px.iter_mut().zip(codes).enumerate() {
+                    *o = n.value(code, x, y, s, dh, dv);
+                }
+            }
+        });
+    }
     Ok(out)
+}
+
+/// Normalised, white-balanced samples of the active area (steps 1–4), one plane per sample.
+fn normalise(raw: &RawImage, p: &Params, rect: Rect, neutral: &V3, planes: usize) -> Result<Vec<f32>> {
+    normalise_with(raw, p, rect, neutral, planes, true)
 }
 
 /// A developed picture: premultiplied linear Rec. 709 RGBA floats (alpha 1).
@@ -131,6 +222,37 @@ pub struct Developed {
 
 /// Develop `raw` (steps 1–7). `neutral` and `matrix` come from [`crate::color::Calibration::solve`].
 pub fn develop(raw: &RawImage, p: &Params, neutral: &V3, matrix: &M3) -> Result<Developed> {
+    develop_with(raw, p, neutral, matrix, &ProcessOptions::default())
+}
+
+/// The output pixel of white-balanced camera values `c` (step 7).
+#[inline(always)]
+fn to_output(m: &[[f32; 3]; 3], mono: bool, c: [f32; 3], d: &mut [f32; 4]) {
+    let px = if mono {
+        // grey: the matrix's luminance gain only
+        let g = c[0] * (m[1][0] + m[1][1] + m[1][2]);
+        [g, g, g]
+    } else {
+        [0, 1, 2].map(|i| m[i][0] * c[0] + m[i][1] * c[1] + m[i][2] * c[2])
+    };
+    *d = [px[0].max(0.0), px[1].max(0.0), px[2].max(0.0), 1.0];
+}
+
+/// The reduction factor (1, 2, 4 or 8) for a `cw` × `ch` picture when the caller needs at least
+/// `target`: the largest that still covers it.
+pub fn reduction(target: Option<(usize, usize)>, cw: usize, ch: usize) -> usize {
+    let Some((tw, th)) = target else { return 1 };
+    let mut f = 1;
+    while f < 8 && cw / (f * 2) >= tw.max(1) && ch / (f * 2) >= th.max(1) {
+        f *= 2;
+    }
+    f
+}
+
+/// [`develop`] with raw settings. White balance and exposure are already in `neutral` and
+/// `matrix` ([`crate::Dng::develop_with`] solves them); this applies the demosaic quality and the
+/// reduced-resolution path.
+pub fn develop_with(raw: &RawImage, p: &Params, neutral: &V3, matrix: &M3, o: &ProcessOptions) -> Result<Developed> {
     let spp = raw.samples_per_pixel;
     if p.cfa.is_some() && spp != 1 {
         return Err(Error::Malformed("a CFA image with more than one sample per pixel"));
@@ -138,41 +260,128 @@ pub fn develop(raw: &RawImage, p: &Params, neutral: &V3, matrix: &M3) -> Result<
     if p.cfa.is_none() && !matches!(spp, 1 | 3) {
         return Err(Error::Unsupported(format!("LinearRaw with {spp} samples per pixel")));
     }
+    if raw.data.len() < raw.width.saturating_mul(raw.height).saturating_mul(spp) {
+        return Err(Error::Truncated);
+    }
     let active = active_rect(p, raw.width, raw.height)?;
     let (_, _, aw, ah) = active;
     let planes = if p.cfa.is_some() { 3 } else { spp };
     let norm = normalise(raw, p, active, neutral, planes)?;
-    // three samples per pixel
-    let rgb = match (&p.cfa, spp) {
-        (Some(pat), _) => demosaic(&norm, aw, ah, pat),
-        (None, 3) => norm,
-        _ => norm.iter().flat_map(|&v| [v, v, v]).collect(),
-    };
-    let (cx, cy, cw, ch) = crop_rect(p, aw, ah);
+    let crop = crop_rect(p, aw, ah);
     let m: [[f32; 3]; 3] = matrix.map(|r| r.map(|v| v as f32));
-    let mono = p.cfa.is_none() && spp == 1;
+    let f = reduction(o.target_size, crop.2, crop.3);
+    if f > 1 && p.cfa.as_ref().is_none_or(Pattern::is_bayer) {
+        return Ok(binned(&norm, aw, spp, p.cfa.as_ref(), crop, f, &m));
+    }
+    Ok(full(norm, aw, ah, spp, p.cfa.as_ref(), crop, o, &m))
+}
+
+/// Steps 5–7 at full resolution: demosaic, crop and colour, row by row without intermediate
+/// pictures for 2 × 2 Bayer patterns and LinearRaw.
+fn full(norm: Vec<f32>, aw: usize, ah: usize, spp: usize, cfa: Option<&Pattern>, (cx, cy, cw, ch): Rect, o: &ProcessOptions, m: &[[f32; 3]; 3]) -> Developed {
+    let mono = cfa.is_none() && spp == 1;
     let mut rgba = vec![0f32; cw * ch * 4];
-    let row = |y: usize, o: &mut [f32]| {
-        let src = (cy + y) * aw + cx;
-        for x in 0..cw {
-            let Some(c) = rgb.get((src + x) * 3..(src + x) * 3 + 3) else { continue };
-            let px = if mono {
-                // grey: the matrix's luminance gain only
-                let g = c[0] * (m[1][0] + m[1][1] + m[1][2]);
-                [g, g, g]
-            } else {
-                [0, 1, 2].map(|i| m[i][0] * c[0] + m[i][1] * c[1] + m[i][2] * c[2])
-            };
-            if let Some(d) = o.get_mut(x * 4..x * 4 + 4) {
-                d.copy_from_slice(&[px[0].max(0.0), px[1].max(0.0), px[2].max(0.0), 1.0]);
+    match cfa {
+        Some(pat) if pat.is_bayer() && aw >= 3 && ah >= 3 => {
+            let norm = &norm;
+            for_rows(&mut rgba, cw * 4, |y, out| {
+                let mut out = out.as_chunks_mut::<4>().0.iter_mut();
+                crate::demosaic::BayerRow::new(norm, aw, ah, pat, o.demosaic, cy + y).span(cx, cx + cw, |rgb| {
+                    if let Some(d) = out.next() {
+                        to_output(m, false, rgb, d);
+                    }
+                });
+            });
+        }
+        Some(pat) => {
+            let rgb = crate::demosaic::demosaic_with(&norm, aw, ah, pat, o.demosaic);
+            for_rows(&mut rgba, cw * 4, |y, out| {
+                let src = (cy + y) * aw + cx;
+                for (x, d) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                    if let Some(c) = rgb.get((src + x) * 3..(src + x) * 3 + 3) {
+                        to_output(m, false, [c[0], c[1], c[2]], d);
+                    }
+                }
+            });
+        }
+        None => {
+            let norm = &norm;
+            for_rows(&mut rgba, cw * 4, |y, out| {
+                let src = (cy + y) * aw + cx;
+                for (x, d) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                    let c = if spp == 3 {
+                        let Some(c) = norm.get((src + x) * 3..(src + x) * 3 + 3) else { continue };
+                        [c[0], c[1], c[2]]
+                    } else {
+                        let Some(&v) = norm.get(src + x) else { continue };
+                        [v, v, v]
+                    };
+                    to_output(m, mono, c, d);
+                }
+            });
+        }
+    }
+    Developed { width: cw, height: ch, rgba }
+}
+
+/// Steps 5–7 at 1/`f` resolution: each output pixel averages every colour over an `f` × `f`
+/// block of the crop (a 2 × 2 Bayer block has all three; no demosaic needed).
+fn binned(norm: &[f32], aw: usize, spp: usize, cfa: Option<&Pattern>, (cx, cy, cw, ch): Rect, f: usize, m: &[[f32; 3]; 3]) -> Developed {
+    let mono = cfa.is_none() && spp == 1;
+    let (w, h) = ((cw / f).max(1), (ch / f).max(1));
+    let mut rgba = vec![0f32; w * h * 4];
+    // the colours of a 2 × 2 Bayer pattern (the only patterns binned), and how many samples of
+    // each an f × f block holds (f is even, so every block starts on the same phase)
+    let quad: [u8; 4] = cfa.map(|p| [p.color(0, 0), p.color(1, 0), p.color(0, 1), p.color(1, 1)]).unwrap_or([0; 4]);
+    let mut n = [0u32; 3];
+    for by in 0..f {
+        for bx in 0..f {
+            match cfa {
+                Some(_) => n[usize::from(quad[((cy + by) & 1) * 2 + ((cx + bx) & 1)]).min(2)] += 1,
+                None => n = n.map(|v| v + 1),
             }
         }
-    };
-    #[cfg(feature = "threads")]
-    rgba.par_chunks_mut(cw * 4).enumerate().for_each(|(y, o)| row(y, o));
-    #[cfg(not(feature = "threads"))]
-    rgba.chunks_mut(cw * 4).enumerate().for_each(|(y, o)| row(y, o));
-    Ok(Developed { width: cw, height: ch, rgba })
+    }
+    let inv = n.map(|v| if v > 0 { 1.0 / v as f32 } else { 0.0 });
+    for_rows(&mut rgba, w * 4, |y, out| {
+        let mut sums = vec![[0f32; 3]; w];
+        for by in 0..f {
+            let ay = cy + y * f + by;
+            let start = (ay * aw + cx) * spp;
+            let Some(row) = norm.get(start..start + w * f * spp) else { continue };
+            match cfa {
+                Some(_) => {
+                    let even = usize::from(quad[(ay & 1) * 2 + (cx & 1)]).min(2);
+                    let odd = usize::from(quad[(ay & 1) * 2 + ((cx + 1) & 1)]).min(2);
+                    for (s, block) in sums.iter_mut().zip(row.chunks_exact(f)) {
+                        for pair in block.as_chunks::<2>().0 {
+                            s[even] += pair[0];
+                            s[odd] += pair[1];
+                        }
+                    }
+                }
+                None if spp == 3 => {
+                    for (s, block) in sums.iter_mut().zip(row.chunks_exact(f * 3)) {
+                        for px in block.as_chunks::<3>().0 {
+                            s[0] += px[0];
+                            s[1] += px[1];
+                            s[2] += px[2];
+                        }
+                    }
+                }
+                None => {
+                    for (s, block) in sums.iter_mut().zip(row.chunks_exact(f)) {
+                        s[0] += block.iter().sum::<f32>();
+                    }
+                }
+            }
+        }
+        for (s, d) in sums.iter().zip(out.as_chunks_mut::<4>().0.iter_mut()) {
+            let c = if mono { [s[0] * inv[0]; 3] } else { [s[0] * inv[0], s[1] * inv[1], s[2] * inv[2]] };
+            to_output(m, mono, c, d);
+        }
+    });
+    Developed { width: w, height: h, rgba }
 }
 
 #[cfg(test)]

@@ -3558,6 +3558,22 @@
 	Delete Caption Tracks	删除多个字幕轨道
 	Delete Empty Caption Tracks	删除空字幕轨道
 
+# Clip ▸ Source Settings… for camera raw footage (#1065)
+	White Balance	白平衡
+	White balance:	白平衡：
+	As Shot	原照设置
+	Temperature:	色温：
+	Tint:	色调：
+	As shot: {temperature} K, tint {tint}	原照设置：{temperature} K，色调 {tint}
+	Exposure:	曝光：
+	 stops	档
+	Highlights: clipped (highlight recovery is not available yet)	高光：剪切（高光恢复尚不可用）
+	Decode Quality	解码质量
+	Demosaic:	去马赛克：
+	High (gradient-corrected)	高（梯度校正）
+	Fast (bilinear)	快速（双线性）
+	Output color space: scene-linear Rec. 709	输出色彩空间：场景线性 Rec. 709
+	Reset to As Shot	重置为原照设置
 	Appearance Settings…	外观设置…
 
 	Add to favorites	添加到收藏

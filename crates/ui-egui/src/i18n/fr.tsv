@@ -3556,6 +3556,22 @@
 	Use Effect Shutter Angle	Utiliser l'angle d'obturation de l'effet
 	Settings	Préférences
 
+# Clip ▸ Source Settings… for camera raw footage (#1065)
+	White Balance	Balance des blancs
+	White balance:	Balance des blancs :
+	As Shot	Telle que prise
+	Temperature:	Température :
+	Tint:	Teinte :
+	As shot: {temperature} K, tint {tint}	Telle que prise : {temperature} K, teinte {tint}
+	Exposure:	Exposition :
+	 stops	 IL
+	Highlights: clipped (highlight recovery is not available yet)	Hautes lumières : écrêtées (la récupération des hautes lumières n’est pas encore disponible)
+	Decode Quality	Qualité du décodage
+	Demosaic:	Dématriçage :
+	High (gradient-corrected)	Haute (corrigée par gradient)
+	Fast (bilinear)	Rapide (bilinéaire)
+	Output color space: scene-linear Rec. 709	Espace colorimétrique de sortie : Rec. 709 linéaire scène
+	Reset to As Shot	Rétablir Telle que prise
 	Appearance Settings…	Réglages d’apparence…
 
 	Add to favorites	Ajouter aux favoris

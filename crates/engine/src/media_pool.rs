@@ -79,7 +79,11 @@ pub const PROBE_WHOLE_FILE_MAX: u64 = 64 * 1024 * 1024;
 pub fn media_key(m: &MediaClip) -> String {
     match &m.media {
         MediaRef::File { path } if m.offline => format!("offline:{path}"),
-        MediaRef::File { path } => format!("file:{path}"),
+        // camera raw settings change the pictures: a change (or its undo) opens the file again
+        MediaRef::File { path } => match &m.interpret.raw {
+            Some(r) => format!("file:{path}|raw:{r:?}"),
+            None => format!("file:{path}"),
+        },
         MediaRef::Generator(g) => format!("generator:{g:?}"),
     }
 }
@@ -286,6 +290,14 @@ impl MediaPool {
             } {
                 Ok(s) => {
                     self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
+                    // Clip ▸ Source Settings… of camera raw footage
+                    let s = match &m.interpret.raw {
+                        Some(r) => s.with_raw_settings(r).unwrap_or_else(|| {
+                            log::warn!("{path}: camera raw settings not applied (not camera raw, or it no longer develops)");
+                            s
+                        }),
+                        None => s,
+                    };
                     self.unsupported_as_slate(item, path, s)
                 }
                 Err(_) if filmcraft_media::pending::is_set() => {
@@ -478,6 +490,9 @@ impl MediaSource for UnsupportedAsSlate {
     }
     fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
         self.inner.audio_stream(stream, start, frames, sample_rate)
+    }
+    fn raw_info(&self) -> Option<filmcraft_media::raw::RawInfo> {
+        self.inner.raw_info()
     }
 }
 

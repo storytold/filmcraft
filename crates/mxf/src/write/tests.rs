@@ -339,3 +339,53 @@ fn long_pcm_reads_backed_by_the_file_are_not_capped() {
     // a request that is mostly not backed by data is refused before allocating
     assert!(m.read_pcm(&f, 0, 0, frames + (1 << 24)).is_err());
 }
+
+/// A TIFF-headed stand-in for a DNG dataset (the demuxer only carries the bytes).
+fn dng_like(i: usize) -> Vec<u8> {
+    let mut v = b"II*\0\x08\0\0\0".to_vec();
+    v.extend(std::iter::repeat_n(i as u8 ^ 0x33, 300 + 11 * i));
+    v
+}
+
+#[test]
+fn cinemadng_op1a_reads_back() {
+    for linear_raw in [false, true] {
+        let mut cfg = op1a_config(Rational::new(24, 1), PictureCoding::CinemaDng { linear_raw });
+        cfg.sound.truncate(1);
+        let mut w = MxfWriter::new(Cursor::new(Vec::new()), cfg).unwrap();
+        for i in 0..6 {
+            w.push_picture(&dng_like(i), FrameInfo::intra()).unwrap();
+            w.push_sound(0, &pcm16(i * 2000, 2000)).unwrap();
+        }
+        let f = w.finish().unwrap().into_inner();
+        // CinemaDNG §7.1.1.2: picture element key 06.0E.2B.34.01.02.01.01.0D.01.03.01.15.01.42.01
+        let key = [0x06, 0x0E, 0x2B, 0x34, 0x01, 0x02, 0x01, 0x01, 0x0D, 0x01, 0x03, 0x01, 0x15, 0x01, 0x42, 0x01];
+        assert_eq!(f.windows(16).filter(|k| *k == key).count(), 6);
+        // §7.2.1: the essence container label of the content kind
+        let ec = [0x06, 0x0E, 0x2B, 0x34, 0x04, 0x01, 0x01, 0x01, 0x0F, 0x0A, 0x0D, 0x0B, 0x02, 0x7F, if linear_raw { 2 } else { 1 }, 0x00];
+        assert!(f.windows(16).any(|k| k == ec));
+        let m = open(&f).unwrap();
+        assert!(m.warnings.is_empty(), "{:?}", m.warnings);
+        let v = m.track_of_kind(TrackKind::Picture).unwrap();
+        let t = &m.tracks[v];
+        assert_eq!(t.codec, Codec::CinemaDng);
+        assert_eq!(t.wrapping, Wrapping::Frame);
+        assert_eq!(t.samples.len(), 6);
+        let p = t.picture.as_ref().unwrap();
+        assert!(p.rgba, "RGBA picture essence descriptor (§7.2.2)");
+        assert_eq!((p.frame_width(), p.frame_height()), (64, 36));
+        assert!(p.picture_coding.is_none());
+        for i in 0..6 {
+            assert!(t.samples[i].key);
+            assert_eq!(m.read_sample(&f, v, i).unwrap(), dng_like(i));
+        }
+        assert_eq!(m.timecode.unwrap().format(), "01:02:30:00");
+    }
+}
+
+#[test]
+fn cinemadng_is_never_clip_wrapped() {
+    let mut cfg = WriterConfig::new(Pattern::OpAtom, Rational::new(24, 1), PackageIds::from_seed("t", "T"));
+    cfg.picture = Some(PictureDesc::new(PictureCoding::CinemaDng { linear_raw: false }, 64, 36));
+    assert!(MxfWriter::new(Cursor::new(Vec::new()), cfg).is_err());
+}
