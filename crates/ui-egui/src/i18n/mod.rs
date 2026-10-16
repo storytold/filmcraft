@@ -1043,6 +1043,7 @@ mod tests {
                 | "Open from cloud"
                 | "Import from cloud"
                 | "Save as to cloud"
+                | "Cloud storage"
                 | "CollabCraft"
                 | "Movies, audio and stills from CollabCraft"
         )
