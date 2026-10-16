@@ -453,6 +453,21 @@ fn decode_pool() -> Option<&'static rayon::ThreadPool> {
     .as_ref()
 }
 
+/// A decode pool of `cap` threads, for the caches' decoding of an export held to that many CPU
+/// threads ([`filmcraft_media::cancel::thread_cap`], #1216). One per cap asked for, kept for the next
+/// export with the same cap.
+#[cfg(not(target_arch = "wasm32"))]
+fn capped_decode_pool(cap: usize) -> Option<Arc<rayon::ThreadPool>> {
+    static POOLS: Mutex<Vec<(usize, Arc<rayon::ThreadPool>)>> = Mutex::new(Vec::new());
+    let mut pools = POOLS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((_, pool)) = pools.iter().find(|(n, _)| *n == cap) {
+        return Some(pool.clone());
+    }
+    let pool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(cap).thread_name(|i| format!("decode-capped-{i}")).build().ok()?);
+    pools.push((cap, pool.clone()));
+    Some(pool)
+}
+
 /// Run a cache's decoding, its lock held by the caller, on [`decode_pool`], the caller waiting
 /// without doing other rayon work meanwhile (#480).
 ///
@@ -467,8 +482,16 @@ fn decode_pool() -> Option<&'static rayon::ThreadPool> {
 fn isolated<T: Send>(f: impl FnOnce() -> crate::Result<T> + Send) -> crate::Result<T> {
     let ctx = filmcraft_media::cancel::Context::current();
     let job = move || ctx.run(f);
+    // under an export's thread cap the decoding runs on a pool that size instead
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(pool) = decode_pool() {
+    let capped = filmcraft_media::cancel::thread_cap().filter(|&cap| decode_pool().is_some_and(|p| cap < p.current_num_threads())).and_then(capped_decode_pool);
+    #[cfg(not(target_arch = "wasm32"))]
+    let pool = match capped.as_deref() {
+        Some(pool) => Some(pool),
+        None => decode_pool(),
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(pool) = pool {
         if rayon::current_thread_index().is_none() {
             return pool.install(job);
         }
@@ -1618,5 +1641,24 @@ mod tests {
         assert_eq!(index_of(&c.frame(&s, 81_000).expect("frame")), 81);
         assert_eq!(s.resets.load(Ordering::Relaxed), resets);
         assert!(s.decodes.load(Ordering::Relaxed) - decodes <= 8 + 2);
+    }
+
+    /// Under an export's thread cap a cache's decoding runs on a pool that size (#1216), from a
+    /// plain thread as from a rayon worker; without one it runs on the shared decode pool.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn isolated_decoding_runs_on_a_pool_the_size_of_the_thread_cap() {
+        let threads = || isolated(|| Ok(rayon::current_num_threads())).unwrap();
+        let full = decode_pool().map(|p| p.current_num_threads()).unwrap();
+        assert_eq!(threads(), full);
+        if full > 2 {
+            assert_eq!(filmcraft_media::cancel::with_thread_cap(2, threads), 2);
+            let worker = rayon::ThreadPoolBuilder::new().num_threads(3).build().unwrap();
+            assert_eq!(worker.install(|| filmcraft_media::cancel::with_thread_cap(2, threads)), 2, "from a rayon worker");
+            // the hint reaches the decoding too
+            assert_eq!(filmcraft_media::cancel::with_thread_cap(2, || isolated(|| Ok(filmcraft_media::cancel::thread_cap())).unwrap()), Some(2));
+        }
+        // a cap at or above the shared pool keeps it
+        assert_eq!(filmcraft_media::cancel::with_thread_cap(full + 4, threads), full);
     }
 }

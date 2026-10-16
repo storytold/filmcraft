@@ -17,6 +17,10 @@
 //! [`with_background`] marks work nobody waits on interactively (thumbnails of the Project panel,
 //! the Media Browser and the timeline): sources should not keep expensive state, such as a
 //! frame-threaded 4K decoder, for it once it is done.
+//!
+//! [`with_thread_cap`] carries an export's CPU thread cap (`ExportSettings::max_threads`, #1216) to
+//! the decoders it starts: a decoder made under it uses at most that many threads, and a cache's
+//! decoding runs on a pool that size.
 
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
@@ -29,6 +33,7 @@ thread_local! {
     static CATCH_UP: Cell<Option<Tick>> = const { Cell::new(None) };
     static DRAFT: Cell<bool> = const { Cell::new(false) };
     static BACKGROUND: Cell<bool> = const { Cell::new(false) };
+    static THREAD_CAP: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Run `f` as background work when `on` (restoring the previous hint after): a thumbnail, not a
@@ -50,6 +55,34 @@ pub fn with_background<R>(on: bool, f: impl FnOnce() -> R) -> R {
 /// [`with_background`]`(true, …)`).
 pub fn background() -> bool {
     BACKGROUND.with(Cell::get)
+}
+
+/// Run `f` with the CPU thread cap `cap` (0: none), restoring the previous one however `f` ends.
+pub fn with_thread_cap<R>(cap: usize, f: impl FnOnce() -> R) -> R {
+    struct Restore(usize);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            THREAD_CAP.with(|c| c.set(self.0));
+        }
+    }
+    let _restore = Restore(THREAD_CAP.with(|c| c.replace(cap)));
+    f()
+}
+
+/// Mark this thread as working under the CPU thread cap `cap` for good: for the threads of a pool
+/// made for one capped export (its start handler), which never run other work.
+pub fn set_thread_cap(cap: usize) {
+    THREAD_CAP.with(|c| c.set(cap));
+}
+
+/// The CPU thread cap of the work running on this thread (None unless inside [`with_thread_cap`]).
+pub fn thread_cap() -> Option<usize> {
+    Some(THREAD_CAP.with(Cell::get)).filter(|&n| n > 0)
+}
+
+/// `threads` held to this thread's cap, if any (at least 1).
+pub fn capped_threads(threads: usize) -> usize {
+    thread_cap().map_or(threads, |cap| threads.min(cap)).max(1)
 }
 
 /// Run `f` with the draft-decoding hint `on` (restoring the previous one after). Frames decoded
@@ -97,19 +130,26 @@ pub fn cancelled() -> bool {
 }
 
 /// The hints of the work running on this thread ([`with_cancel`], [`with_catch_up`],
-/// [`with_draft`], [`with_background`]), to carry them to another thread doing part of that work.
+/// [`with_draft`], [`with_background`], [`with_thread_cap`]), to carry them to another thread doing part of that work.
 #[derive(Clone, Default)]
 pub struct Context {
     cancel: Option<Arc<AtomicBool>>,
     catch_up: Option<Tick>,
     draft: bool,
     background: bool,
+    thread_cap: usize,
 }
 
 impl Context {
     /// This thread's hints.
     pub fn current() -> Self {
-        Context { cancel: CURRENT.with(|c| c.borrow().clone()), catch_up: catch_up(), draft: draft(), background: background() }
+        Context {
+            cancel: CURRENT.with(|c| c.borrow().clone()),
+            catch_up: catch_up(),
+            draft: draft(),
+            background: background(),
+            thread_cap: THREAD_CAP.with(Cell::get),
+        }
     }
 
     /// Run `f` with these hints, restoring this thread's however `f` ends (a pool thread must
@@ -123,6 +163,7 @@ impl Context {
                 CATCH_UP.with(|c| c.set(prev.catch_up));
                 DRAFT.with(|c| c.set(prev.draft));
                 BACKGROUND.with(|c| c.set(prev.background));
+                THREAD_CAP.with(|c| c.set(prev.thread_cap));
             }
         }
         let _restore = Restore(Context::current());
@@ -130,6 +171,7 @@ impl Context {
         CATCH_UP.with(|c| c.set(self.catch_up));
         DRAFT.with(|c| c.set(self.draft));
         BACKGROUND.with(|c| c.set(self.background));
+        THREAD_CAP.with(|c| c.set(self.thread_cap));
         f()
     }
 }
@@ -141,15 +183,15 @@ mod tests {
     #[test]
     fn context_carries_the_hints_to_another_thread_and_restores_its_own() {
         let flag = Arc::new(AtomicBool::new(true));
-        let ctx = with_cancel(&flag, || with_draft(true, || with_background(true, || with_catch_up(Some(Tick(5)), Context::current))));
+        let ctx = with_cancel(&flag, || with_draft(true, || with_background(true, || with_thread_cap(3, || with_catch_up(Some(Tick(5)), Context::current)))));
         std::thread::scope(|s| {
             s.spawn(|| {
-                let seen = with_draft(false, || ctx.clone().run(|| (cancelled(), draft(), background(), catch_up())));
-                assert_eq!(seen, (true, true, true, Some(Tick(5))));
+                let seen = with_draft(false, || ctx.clone().run(|| (cancelled(), draft(), background(), catch_up(), thread_cap())));
+                assert_eq!(seen, (true, true, true, Some(Tick(5)), Some(3)));
                 // a panic inside leaves this thread's own hints in place
                 let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.clone().run(|| panic!("job"))));
                 assert!(r.is_err());
-                assert_eq!((cancelled(), draft(), background(), catch_up()), (false, false, false, None));
+                assert_eq!((cancelled(), draft(), background(), catch_up(), thread_cap()), (false, false, false, None, None));
             });
         });
     }
@@ -193,6 +235,19 @@ mod tests {
         let r = std::panic::catch_unwind(|| with_background(true, || panic!("boom")));
         assert!(r.is_err());
         assert!(!background());
+    }
+
+    #[test]
+    fn thread_cap_is_off_by_default_scoped_and_caps_a_thread_count() {
+        assert_eq!((thread_cap(), capped_threads(16)), (None, 16));
+        with_thread_cap(4, || {
+            assert_eq!(thread_cap(), Some(4));
+            assert_eq!((capped_threads(16), capped_threads(2), capped_threads(0)), (4, 2, 1));
+            with_thread_cap(0, || assert_eq!(thread_cap(), None));
+        });
+        let r = std::panic::catch_unwind(|| with_thread_cap(2, || panic!("boom")));
+        assert!(r.is_err());
+        assert_eq!(thread_cap(), None);
     }
 
     #[test]
