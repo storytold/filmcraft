@@ -238,7 +238,8 @@ fn openexr_sequences_compress() {
     }
 }
 
-/// `alpha` keeps straight alpha in PNG and TIFF sequences; off (the default) flattens over black (#160).
+/// `alpha` keeps straight alpha in PNG and TIFF sequences; off (the default) flattens over black (#160)
+/// and writes RGB files without an alpha channel (#1863).
 #[test]
 fn image_sequences_keep_alpha_when_asked() {
     let (p, seq, m) = matte([0.0, 0.0, 1.0, 0.5], 64, 36, None);
@@ -248,16 +249,36 @@ fn image_sequences_keep_alpha_when_asked() {
             let mut s = ExportSettings { format: fmt, path: dir.path(&format!("a.{ext}")), alpha, ..Default::default() };
             s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2)));
             export(&p, seq, &s, &m, &Progress::default()).unwrap();
-            let img = image::open(dir.0.join(format!("a000.{ext}"))).unwrap();
+            let file = dir.0.join(format!("a000.{ext}"));
+            if fmt == Format::PngSequence {
+                let colour_type = std::fs::read(&file).unwrap()[25];
+                assert_eq!(colour_type, if alpha { 6 } else { 2 }, "PNG colour type, alpha={alpha}");
+            }
+            let img = image::open(&file).unwrap();
             let px = img.to_rgba8().get_pixel(32, 18).0;
+            assert_eq!(img.color().has_alpha(), alpha, "{fmt:?} alpha channel written, alpha={alpha}");
             if alpha {
-                assert!(img.color().has_alpha(), "{fmt:?} must be written with an alpha channel");
                 assert!((100..=160).contains(&px[3]) && px[2] > 200 && px[0] < 15, "{fmt:?} straight alpha: {px:?}");
             } else {
                 assert!(px[3] == 255 && px[2] > 100 && px[2] < 240 && px[0] < 15, "{fmt:?} flattened over black: {px:?}");
             }
         }
     }
+    // the PNG size estimate counts the channels actually written, as TIFF's does
+    let rate = FrameRate::FPS_24;
+    let png = |alpha| ExportSettings { format: Format::PngSequence, alpha, ..Default::default() }.estimate_bytes(320, 180, rate, 48_000, rate.tick_of(1));
+    assert_eq!(png(false) * 4, png(true) * 3, "PNG estimate: {} RGB vs {} RGBA", png(false), png(true));
+}
+
+/// Thumbnails (`encode_png`) and an 8-bit PNG Export Frame keep the alpha they are given: only the
+/// sequence's `alpha` switch drops it (#1863).
+#[test]
+fn png_stills_keep_their_alpha_channel() {
+    let half = filmcraft_render::Image::filled(4, 2, [0.0, 0.0, 0.5, 0.5]);
+    let thumb = encode_png(half.to_rgba8(), 4, 2).unwrap();
+    assert_eq!(thumb[25], 6, "encode_png colour type");
+    let frame = still::encode(&half, still::StillFormat::Png, 8).unwrap();
+    assert_eq!(frame[25], 6, "Export Frame PNG colour type");
 }
 
 #[test]
