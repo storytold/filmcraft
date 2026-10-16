@@ -251,7 +251,7 @@ impl Format {
     /// Whether the crate carries an encoder for the format; the others need one registered at runtime
     /// ([`register_format_probe`]).
     pub fn has_builtin_encoder(self) -> bool {
-        !matches!(self, Format::Hevc | Format::Av1)
+        !matches!(self, Format::Hevc)
     }
     /// Sound without picture: Waveform Audio, AIFF, AAC Audio and FLAC.
     pub fn is_audio_only(self) -> bool {
@@ -649,9 +649,6 @@ impl ExportSettings {
             if self.format == Format::Hevc {
                 return Err(ExportError::Unsupported("H.265 export has no CRF mode: choose CBR or VBR, 1 pass".into()));
             }
-            if self.format == Format::Av1 {
-                return Err(ExportError::Unsupported("AV1 export has no CRF mode: choose CBR or VBR, 1 pass".into()));
-            }
             if !self.crf.is_finite() || !(0.0..=51.0).contains(&self.crf) {
                 return Err(ExportError::Unsupported("CRF must be between 0 and 51".into()));
             }
@@ -778,7 +775,7 @@ pub type AudioEncoderFactory = fn(format: Format, sample_rate: u32, channels: u3
 
 fn video_factories() -> &'static RwLock<Vec<EncoderFactory>> {
     static F: OnceLock<RwLock<Vec<EncoderFactory>>> = OnceLock::new();
-    F.get_or_init(|| RwLock::new(vec![h264_factory, prores_factory, dnx_factory, apv_factory, mjpeg_factory]))
+    F.get_or_init(|| RwLock::new(vec![h264_factory, av1_factory, prores_factory, dnx_factory, apv_factory, mjpeg_factory]))
 }
 fn audio_factories() -> &'static RwLock<Vec<AudioEncoderFactory>> {
     static F: OnceLock<RwLock<Vec<AudioEncoderFactory>>> = OnceLock::new();
@@ -1716,6 +1713,92 @@ fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSetti
     Some(
         filmcraft_h264enc::Encoder::new(cfg)
             .map(|enc| Box::new(H264Encoder { enc, w, h, rate, y: Vec::new(), u: Vec::new(), v: Vec::new(), signal: s.signal }) as Box<dyn VideoEncoder>)
+            .map_err(|e| ExportError::Encode(e.to_string())),
+    )
+}
+
+/// AV1 Main (our pure-Rust encoder): sRGB/709 RGBA8 → 8-bit limited-range BT.709 4:2:0,
+/// length-prefixed / OBU samples with `av1C` in the sample entry.
+struct Av1Encoder {
+    enc: filmcraft_av1enc::Encoder,
+    w: u32,
+    h: u32,
+    rate: FrameRate,
+    y: Vec<u8>,
+    u: Vec<u8>,
+    v: Vec<u8>,
+    signal: ColorSignal,
+}
+
+impl Av1Encoder {
+    fn packets(&self, ps: Vec<filmcraft_av1enc::Packet>) -> Vec<EncodedPacket> {
+        let dur = self.rate.den.max(1) as u32;
+        ps.into_iter().map(|p| EncodedPacket { data: p.data, key: p.keyframe, duration: dur, composition_offset: 0 }).collect()
+    }
+}
+
+impl VideoEncoder for Av1Encoder {
+    fn sample_entry(&self) -> SampleEntry {
+        let av1c = filmcraft_isobmff::Av1Config {
+            seq_profile: 0,
+            seq_level_idx_0: 8,
+            seq_tier_0: false,
+            high_bitdepth: false,
+            twelve_bit: false,
+            monochrome: false,
+            chroma_subsampling_x: true,
+            chroma_subsampling_y: true,
+            chroma_sample_position: 0,
+            initial_presentation_delay_minus_one: None,
+            config_obus: self.enc.sequence_header_obu(),
+        };
+        let mut e = SampleEntry::av1(av1c, self.w as u16, self.h as u16);
+        self.signal.apply_to(&mut e, false);
+        e
+    }
+    fn timescale(&self) -> u32 {
+        self.rate.num.max(1) as u32
+    }
+    fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
+        timed(Stage::Convert, || match f.hdr {
+            Some(rgb) => {
+                let (kr, kb) = self.signal.kr_kb();
+                rgbf_to_yuv420_8(rgb, f.width as usize, f.height as usize, kr, kb, &mut self.y, &mut self.u, &mut self.v)
+            }
+            None => rgba_to_yuv420_8(f.rgba, f.width as usize, f.height as usize, &mut self.y, &mut self.u, &mut self.v),
+        });
+        let cw = (f.width as usize).div_ceil(2);
+        let frame = filmcraft_av1enc::YuvFrame { y: &self.y, u: &self.u, v: &self.v, y_stride: f.width as usize, uv_stride: cw };
+        let p = self.enc.encode(&frame, f.index as i64 * self.rate.den.max(1)).map_err(|e| ExportError::Encode(e.to_string()))?;
+        Ok(self.packets(vec![p]))
+    }
+    fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
+        let ps = self.enc.flush().map_err(|e| ExportError::Encode(e.to_string()))?;
+        Ok(self.packets(ps))
+    }
+}
+
+fn av1_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+    if format != Format::Av1 {
+        return None;
+    }
+    let mut cfg = filmcraft_av1enc::EncoderConfig::new(w, h, rate.num.max(1) as u32, rate.den.max(1) as u32);
+    let keyint = s.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| ((rate.num as f64 / rate.den.max(1) as f64) * 2.0).round().max(1.0) as u32);
+    cfg.key_int = keyint.max(1);
+    let kbps = s.bitrate_kbps.max(100);
+    let max = s.max_bitrate_kbps.filter(|m| *m >= kbps).unwrap_or_else(|| (u64::from(kbps) * 3 / 2).min(u64::from(u32::MAX)) as u32);
+    cfg.rate_control = match s.bitrate_mode {
+        BitrateMode::Cbr => Some(filmcraft_av1enc::RateControl::Cbr { kbps }),
+        BitrateMode::Crf => {
+            let crf = if s.crf.is_finite() { s.crf } else { DEFAULT_CRF };
+            Some(filmcraft_av1enc::RateControl::ConstantQuality(crf))
+        }
+        _ => Some(filmcraft_av1enc::RateControl::Vbr { target_kbps: kbps, max_kbps: max }),
+    };
+    cfg.spatial_aq = true;
+    Some(
+        filmcraft_av1enc::Encoder::new(cfg)
+            .map(|enc| Box::new(Av1Encoder { enc, w, h, rate, y: Vec::new(), u: Vec::new(), v: Vec::new(), signal: s.signal }) as Box<dyn VideoEncoder>)
             .map_err(|e| ExportError::Encode(e.to_string())),
     )
 }

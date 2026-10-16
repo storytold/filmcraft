@@ -35,6 +35,7 @@ filmcraft-dnx = { path = "crates/dnx" }
 filmcraft-apv = { path = "crates/apv" }
 filmcraft-dng = { path = "crates/dng" }
 filmcraft-av1 = { path = "crates/av1" }
+filmcraft-av1enc = { path = "crates/av1enc" }
 filmcraft-aac = { path = "crates/aac" }
 filmcraft-flac = { path = "crates/flac" }
 filmcraft-opus = { path = "crates/opus" }

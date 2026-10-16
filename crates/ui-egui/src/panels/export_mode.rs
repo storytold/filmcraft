@@ -696,7 +696,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             if hevc {
                 if f == Format::Av1 {
                     row(ui, t, tl!("Profile"), |ui| ui.label(tl!("Main (8-bit)")));
-                    row(ui, t, tl!("Encoder"), |ui| ui.label(tl!("Hardware (AV1 has no software encoder)")));
+                    row(ui, t, tl!("Encoder"), |ui| ui.label(tl!("Software (AV1)")));
                 } else {
                     // the hardware encoder writes Main (8-bit 4:2:0), or Main 10 for HDR sequences where it can; level chosen by the encoder
                     let label = match (filmcraft_engine::export::hdr_available(Format::Hevc), seq_hdr && !s.sdr) {
@@ -726,10 +726,19 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 });
             }
             row(ui, t, tl!("Bitrate Encoding"), |ui| {
-                // a hardware encoder has one pass and no constant-quality mode: H.265 offers neither
+                // H.265 has one pass and no CRF mode; AV1 supports CBR, VBR 1-pass and CRF
                 let o = [BitrateMode::Cbr, BitrateMode::Vbr1Pass, BitrateMode::Vbr2Pass, BitrateMode::Crf];
-                let labels: Vec<(String, bool)> =
-                    o.iter().map(|m| (m.label().to_string(), !(hevc && matches!(m, BitrateMode::Vbr2Pass | BitrateMode::Crf)))).collect();
+                let labels: Vec<(String, bool)> = o
+                    .iter()
+                    .map(|m| {
+                        let disabled = match f {
+                            Format::Hevc => matches!(m, BitrateMode::Vbr2Pass | BitrateMode::Crf),
+                            Format::Av1 => matches!(m, BitrateMode::Vbr2Pass),
+                            _ => false,
+                        };
+                        (m.label().to_string(), !disabled)
+                    })
+                    .collect();
                 if let Some(i) = combo(ui, reg, "export.video.bitrateMode", s.bitrate_mode.label(), &labels, 140.0) {
                     s.bitrate_mode = o[i];
                 }
