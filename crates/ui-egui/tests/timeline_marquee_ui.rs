@@ -122,6 +122,33 @@ fn the_selection_follows_the_box_while_it_is_dragged() {
 }
 
 #[test]
+fn alt_box_selects_only_video_and_delete_keeps_linked_audio() {
+    let mut d = Driver::demo();
+    let (_, video, _, rv, start) = d.setup();
+    let audio = {
+        let seq = d.harness.state().session.active_sequence().unwrap();
+        let link = seq.find_item(ClipId(video)).unwrap().1.link;
+        seq.audio_tracks.iter().flat_map(|tr| &tr.items).find(|clip| clip.link == link).unwrap().id.0
+    };
+    d.exec("timeline.select", json!({"clips": []}));
+    d.modifiers = egui::Modifiers::ALT;
+    d.send(egui::Event::PointerMoved(start));
+    d.button(start, true);
+    let over = egui::pos2(rv.center().x, start.y + 2.0);
+    d.move_to(start, over);
+    assert!(d.selected(video));
+    assert!(!d.selected(audio), "Alt excludes the linked audio during the drag");
+    d.button(over, false);
+    d.modifiers = egui::Modifiers::NONE;
+    d.frames(2);
+    assert!(d.selected(video) && !d.selected(audio), "release preserves the individual selection");
+    d.exec("edit.clear", json!({}));
+    let seq = d.harness.state().session.active_sequence().unwrap();
+    assert!(seq.find_item(ClipId(video)).is_none());
+    assert!(seq.find_item(ClipId(audio)).is_some(), "Delete leaves the unselected linked audio");
+}
+
+#[test]
 fn shift_adds_to_the_selection_the_drag_began_with() {
     let mut d = Driver::demo();
     let (a, b, _, rb, start) = d.setup();

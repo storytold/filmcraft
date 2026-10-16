@@ -185,14 +185,15 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   384 kbit/s). Radiance HDR (`.hdr`) stills and image sequences (#1407): RGBE as linear float, flat
   and run-length scan lines, any axis order. OpenEXR stills and image
   sequences (#828): scan-line, uncompressed / RLE / ZIPS / ZIP, half / float / uint, RGB(A) or
-  luminance, decoded to linear float frames and bit-exact against ffmpeg.
+  luminance, decoded to linear float frames and bit-exact against ffmpeg; PXR24 (lossy 24-bit
+  float, 16 lines per chunk) decodes too, bit-exact against OpenEXR (via OpenImageIO, #828).
 - **Missing:** free-format MPEG audio, E-AC-3 adaptive hybrid
   transform, enhanced coupling and the extra channels of 7.1 dependent substreams (played as the
   5.1 core), AVI (#598; listed as an extension but no
   demuxer), WMV / ASF, DV / DVCPRO / DV100, MPEG-4 Part 2, FLAC in MP4 (#603), camera RAW (R3D
   incl. R3D NE, ARRIRAW, Sony RAW / X-OCN, Canon RAW, BRAW, ProRes RAW; #345, #383), JPEG 2000 /
   JPEG XS MXF, the rest of CinemaDNG (lossy / JPEG XL DNG, MXF-wrapped, opcode lists, Raw
-  settings; DNG frames and folders import since #1065); stills: PSD, EXR beyond scan-line RLE / ZIP (PIZ, PXR24, B44, DWA,
+  settings; DNG frames and folders import since #1065); stills: PSD, EXR beyond scan-line RLE / ZIP / PXR24 (PIZ, B44, DWA,
   tiled, multi-part, deep), HEIF / HEIC,
   AI / EPS, and the rarer DPX layout, run-length encoding (Targa and DPX stills and sequences import
   since #821, packed 10/12-bit and Y'CbCr DPX since #841, deeper than 8 bits kept at 8); transparent
@@ -238,11 +239,14 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   fallback fonts and shows captions in reading order, but other names and fields keep egui's
   left-to-right run order; Arabic titles reported broken, #395),
   German beyond menus (#490), Korean (#508; needs Hangul fonts in craft-fonts),
-  Vietnamese; Premiere also ships Italian and Russian. Engine errors,
+  Vietnamese; Premiere also ships Russian. Engine errors,
   CLI and MCP stay English. No language has a recorded native-speaker review.
 - **Done:** Indonesian (#867): `id.tsv` has every entry of the Spanish catalog (~100%), in Edit ▸
   Language, Settings ▸ General and the native macOS menu; System Language picks it for `id-*` (and
   legacy `in-*`) locales. Native-speaker review welcome.
+- **Done:** Italian: `it.tsv` has every entry of the Spanish catalog (~100%), in Edit ▸ Language,
+  Settings ▸ General and the native macOS menu; System Language picks it for `it-*` locales.
+  Native-speaker review welcome.
 - **Estimate:** 150–230 h. Doc: [localization-parity.md](localization-parity.md).
 
 ## G15. Interchange never validated in Avid / Pro Tools; slow XML import
@@ -311,3 +315,4 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 |---|---|---|
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
+| 2026-10-12 | minor | G10: OpenEXR PXR24 import |

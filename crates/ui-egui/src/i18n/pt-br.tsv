@@ -298,6 +298,7 @@
 	Review	Revisão
 	Right	Direita
 	Ripple Delete	Excluir e fechar lacuna
+	Ripple Delete Head Frame	Excluir quadros iniciais e fechar lacuna
 	Ripple Sequence Markers	Deslocar marcadores da sequência
 	Rose	Rosa
 	Safe Margins	Margens de segurança
@@ -3443,6 +3444,7 @@
 	in	entrada
 	The language changed but could not be saved: {e}	O idioma mudou, mas não pôde ser salvo: {e}
 	no Chinese font is installed on this system; the interface stays in English	nenhuma fonte chinesa está instalada neste sistema; a interface permanece em inglês
+	no Korean font is installed on this system; the interface stays in English	nenhuma fonte coreana está instalada neste sistema; a interface permanece em inglês
 	no Japanese font is installed on this system; the interface stays in English	nenhuma fonte japonesa está instalada neste sistema; a interface permanece em inglês
 	Show	Mostrar
 	Sort	Ordenar

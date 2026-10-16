@@ -53,6 +53,12 @@ fn find_system_font(sample: &str, preferred: &[&str]) -> Option<Arc<FontData>> {
     Some(Arc::new(FontData { font: std::borrow::Cow::Owned(face.data()?), index: face.info.index, tweak: Default::default() }))
 }
 
+/// Whether [`install`] has a Hangul face to add (an installed system face; none is bundled).
+/// The Korean interface needs one.
+pub(crate) fn korean_available() -> bool {
+    korean_font().is_some()
+}
+
 /// Whether [`install`] has a Chinese face to add: craft-fonts Hans/Hant faces, or an installed
 /// system face (scanned once per process). The Simplified Chinese interface needs one.
 pub(crate) fn available() -> bool {

@@ -90,14 +90,25 @@ fn packet(p: &[u8]) -> std::result::Result<Packet<'_>, Bad> {
 pub(crate) struct PesAsm {
     hdr: Vec<u8>,
     waiting: bool,
+    /// The packet that started the current unit was not a PES packet: its continuation packets
+    /// are dropped until the next unit start.
+    dropping: bool,
 }
 
 impl PesAsm {
     /// The PES header completed by this packet (if any) and the packet's ES payload bytes.
     pub fn packet<'a>(&mut self, pusi: bool, payload: &'a [u8]) -> (Option<PesHeader>, &'a [u8]) {
         if pusi {
+            if payload.is_empty() {
+                // an adaptation-field-only packet carries no PES data: it must not cut short
+                // the PES packet in progress
+                return (None, &[]);
+            }
             self.hdr.clear();
             self.waiting = true;
+            self.dropping = false;
+        } else if self.dropping {
+            return (None, &[]);
         } else if !self.waiting {
             return (None, payload);
         }
@@ -113,6 +124,7 @@ impl PesAsm {
         if self.hdr.len() > 1024 || (self.hdr.len() >= 6 && !(self.hdr[0] == 0 && self.hdr[1] == 0 && self.hdr[2] == 1)) {
             // not a PES packet after all: drop until the next unit start
             self.waiting = false;
+            self.dropping = true;
             self.hdr.clear();
             return (None, &[]);
         }
@@ -453,6 +465,9 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
         e.split.finish();
         e.stream.units = std::mem::take(&mut e.split.units);
         e.stream.skipped_bytes = e.split.skipped;
+        if e.split.truncated {
+            warnings.push(format!("PID {pid}: more than {} access units, the rest are not indexed", crate::es::MAX_UNITS));
+        }
         streams.push(e.stream);
     }
     Ok(File { format: Format::Ts { packet_size, sync_offset }, streams, program, pcr_range, warnings })

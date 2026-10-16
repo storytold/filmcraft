@@ -16,6 +16,7 @@
 //! - [`AviSource`]: AVI (OpenDML included): Motion JPEG, H.264, HEVC and uncompressed video; PCM,
 //!   MP3 / MP2 and AC-3 audio.
 //! - [`AudioFileSource`]: standalone compressed audio files (MP3, FLAC, AIFF, …).
+//! - [`Y4mSource`]: uncompressed YUV4MPEG2 (`.y4m`) video, frames read on demand.
 //! - [`openers`]: the openers to register with the engine's media pool.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
@@ -34,6 +35,7 @@ pub mod ogg;
 mod stream_color;
 pub mod video;
 mod webm_alpha;
+pub mod y4m;
 
 use std::sync::{Arc, RwLock};
 
@@ -47,6 +49,7 @@ pub use mpeg::MpegSource;
 pub use mxf::MxfSource;
 pub use ogg::OggSource;
 pub use video::{DecodedFrame, VideoDecoder, VideoDecoderFactory};
+pub use y4m::Y4mSource;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CodecError {
@@ -128,9 +131,9 @@ pub fn software_video_decoder(entry: &filmcraft_isobmff::SampleEntry) -> Result<
 }
 
 /// Openers for the engine's media pool (MP4/MOV, Matroska/WebM, MXF, Ogg Opus/Vorbis, MPEG TS/PS and
-/// MPEG-1/2 video elementary streams, APV raw bitstreams, standalone audio).
+/// MPEG-1/2 video elementary streams, APV raw bitstreams, YUV4MPEG2, standalone audio).
 pub fn openers() -> Vec<filmcraft_media::Opener> {
-    vec![mp4::opener, mkv::opener, mxf::opener, ogg::opener, mpeg::opener, apv::opener, avi::opener, audio::opener]
+    vec![mp4::opener, mkv::opener, mxf::opener, ogg::opener, mpeg::opener, apv::opener, avi::opener, y4m::opener, audio::opener]
 }
 
 fn reader_registry() -> &'static RwLock<Vec<filmcraft_media::ReaderOpener>> {
@@ -143,6 +146,7 @@ fn reader_registry() -> &'static RwLock<Vec<filmcraft_media::ReaderOpener>> {
             ogg::reader_opener,
             mpeg::reader_opener,
             apv::reader_opener,
+            y4m::reader_opener,
             avi::reader_opener,
         ])
     })

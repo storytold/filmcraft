@@ -296,6 +296,7 @@
 	Review	Révision
 	Right	Droite
 	Ripple Delete	Supprimer avec décalage
+	Ripple Delete Head Frame	Supprimer le début avec décalage
 	Ripple Sequence Markers	Décaler les marqueurs de séquence
 	Rose	Rose
 	Safe Margins	Marges de sécurité
@@ -3429,6 +3430,7 @@
 	in	entrée
 	The language changed but could not be saved: {e}	La langue a été changée mais n'a pas pu être enregistrée : {e}
 	no Chinese font is installed on this system; the interface stays in English	aucune police chinoise n'est installée sur ce système ; l'interface reste en anglais
+	no Korean font is installed on this system; the interface stays in English	aucune police coréenne n'est installée sur ce système ; l'interface reste en anglais
 	no Japanese font is installed on this system; the interface stays in English	aucune police japonaise n'est installée sur ce système ; l'interface reste en anglais
 	Show	Afficher
 	Sort	Trier

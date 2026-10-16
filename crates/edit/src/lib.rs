@@ -559,7 +559,8 @@ pub fn copy_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
         it.start = (*start).max(Tick::ZERO);
         placed.push((*dest, it));
     }
-    // worked out on the original ids, then moved over to the copies
+    // worked out on the original ids, then moved over to the copies (only transitions whose every
+    // clip is copied travel; one whose partner stays with the originals is not duplicated)
     let carried = carried_transitions(&work, &placed);
     let mut ids = HashMap::new();
     let mut links = HashMap::new();
@@ -596,9 +597,10 @@ pub fn copy_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
     Ok(out)
 }
 
-/// The transitions that travel with a move (#227, #374): those whose clips all move, onto one
-/// track and by one offset (a fade at a moved clip's edge, or the cut between two clips that move
-/// together), shifted to where those clips land.
+/// The transitions that travel with a move (#227, #374): only those whose every clip moves, onto
+/// one track and by one offset (a fade at a moved clip's edge, or the cut between two clips that
+/// move together), shifted to where those clips land. A transition whose partner stays behind is
+/// dropped, as in Premiere (the drag preview leaves it where it is until the release).
 fn carried_transitions(seq: &Sequence, placed: &[(TrackId, TrackItem)]) -> Vec<(TrackId, Transition)> {
     let landing = |c: ClipId| {
         let (dest, it) = placed.iter().find(|(_, it)| it.id == c)?;
@@ -607,9 +609,14 @@ fn carried_transitions(seq: &Sequence, placed: &[(TrackId, TrackItem)]) -> Vec<(
     };
     let mut carried = Vec::new();
     for tr in seq.all_tracks().filter(|t| !t.locked).flat_map(|t| t.transitions.iter()) {
-        let lands: Option<Vec<(TrackId, Tick)>> = [tr.from, tr.to].into_iter().flatten().map(landing).collect();
-        let Some((&(dest, delta), rest)) = lands.as_deref().and_then(<[_]>::split_first) else { continue };
-        if rest.iter().all(|l| *l == (dest, delta)) {
+        let endpoints: Vec<ClipId> = [tr.from, tr.to].into_iter().flatten().collect();
+        let lands: Vec<(TrackId, Tick)> = endpoints.iter().filter_map(|c| landing(*c)).collect();
+        // every clip it sits on must move, onto one track by one offset, or the transition is
+        // dropped with the delete below (a partner that stayed behind ends the move)
+        if lands.len() == endpoints.len()
+            && let Some(&(dest, delta)) = lands.first()
+            && lands.iter().skip(1).all(|l| *l == (dest, delta))
+        {
             carried.push((dest, Transition { start: tr.start + delta, ..tr.clone() }));
         }
     }

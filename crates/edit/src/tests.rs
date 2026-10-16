@@ -554,7 +554,7 @@ fn transitions_travel_with_moved_clips() {
     // a cut whose two clips move together keeps its transition, in an insert move as well
     move_items(&mut fx.seq, &[(b, v1, f(60)), (c, v1, f(70))], true, &mut Fx::ctx(&mut n)).unwrap();
     assert_eq!(at(&fx, v1), vec![(2, 68), (3, 76)]);
-    // a crossfade whose partner stays behind is dropped; the other clip's fade stays with it
+    // a crossfade whose partner stays behind is dropped; the moving clip's own fade stays with it
     move_items(&mut fx.seq, &[(c, v1, f(90))], false, &mut Fx::ctx(&mut n)).unwrap();
     assert_eq!(at(&fx, v1), vec![(3, 96)]);
     fx.seq.check().unwrap();

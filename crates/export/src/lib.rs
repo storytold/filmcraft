@@ -1924,6 +1924,7 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
         }
         f if f.is_image_sequence() || f == Format::Gif => {
             let pipe = pipeline::Pipeline::new(project.clone(), seq, settings, false)?;
+            let batch = pipe.render_batch_limit(batch);
             let (f0, f1) = frame_span(pipe.rate, range);
             let count = (f1 - f0) as u64;
             let (w, h) = (pipe.w, pipe.h);

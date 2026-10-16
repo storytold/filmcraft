@@ -331,6 +331,78 @@ fn timestamps_unwrap_across_the_33_bit_wrap() {
     assert_eq!(u.unwrap(4200), (1 << 33) + 4200);
 }
 
+fn adts_frame(k: u8) -> Vec<u8> {
+    let mut v = vec![0xFF, 0xF1, 0x50, 0x80, 0x0C, 0x9F, 0xFC];
+    v.extend([k; 93]);
+    v
+}
+
+#[test]
+fn non_pes_payload_is_dropped_until_the_next_unit_start() {
+    // a unit start whose payload is not a PES header, then continuation packets that happen to
+    // hold ADTS frames: nothing of it may become a unit
+    let mut mux = TsMux::new(false);
+    mux.psi(&[(0x0F, 0x1100)]);
+    mux.packet(0x1100, true, &[0x55; 184]);
+    for k in 0..10 {
+        mux.packet(0x1100, false, &adts_frame(k));
+    }
+    let f = open(&mux.out).unwrap();
+    assert_eq!(f.streams.first().map(|s| s.units.len()), Some(0));
+    // a real PES packet afterwards is indexed again
+    let mut mux2 = TsMux::new(false);
+    mux2.psi(&[(0x0F, 0x1100)]);
+    mux2.packet(0x1100, true, &[0x55; 184]);
+    mux2.packet(0x1100, false, &adts_frame(1));
+    mux2.pes(0x1100, &pes(0xC0, Some(9000), None, &adts_frame(2), true));
+    let f = open(&mux2.out).unwrap();
+    let u = &f.streams[0].units;
+    assert_eq!(u.len(), 1);
+    assert_eq!(u[0].pts, Some(9000));
+}
+
+#[test]
+fn adaptation_field_only_unit_start_keeps_the_pes_in_progress() {
+    let mut mux = TsMux::new(false);
+    mux.psi(&[(0x03, 0x1100)]);
+    let data = pes(0xC0, Some(9000), None, &[mp2_frame(0), mp2_frame(1)].concat(), true);
+    mux.packet(0x1100, true, &data[..184]);
+    // PUSI set, adaptation field only (no payload)
+    let cc = mux.cc.get(&0x1100).copied().unwrap_or(0);
+    let mut af = vec![0x47, 0x40 | 0x11, 0x00, 0x20 | cc, 183, 0x00];
+    af.resize(188, 0xFF);
+    mux.out.extend(af);
+    for chunk in data[184..].chunks(184) {
+        mux.packet(0x1100, false, chunk);
+    }
+    let f = open(&mux.out).unwrap();
+    let s = &f.streams[0];
+    assert_eq!(s.units.len(), 2);
+    assert_eq!(s.units[0].pts, Some(9000));
+    assert_eq!(f.read_unit(&mux.out, 0, 1).unwrap(), mp2_frame(1));
+}
+
+#[test]
+fn oversized_unit_is_refused_without_reserving_it() {
+    let f = File {
+        format: Format::Ts { packet_size: 188, sync_offset: 0 },
+        streams: vec![Stream {
+            id: StreamId::Pid(0x100),
+            stream_type: 0x1B,
+            codec: Codec::H264,
+            language: None,
+            units: vec![Unit { pts: None, dts: None, key: true, disposable: false, size: u32::MAX, pos: 0, offset: 0, picture: None }],
+            lpcm: None,
+            pes_packets: 0,
+            skipped_bytes: 0,
+        }],
+        program: None,
+        pcr_range: None,
+        warnings: Vec::new(),
+    };
+    assert!(matches!(f.read_unit(&Vec::<u8>::new(), 0, 0), Err(Error::Invalid(_))));
+}
+
 /// A `ByteSource` that counts the bytes requested through `read_at`.
 struct Counting<'a> {
     data: &'a [u8],

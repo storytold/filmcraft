@@ -391,6 +391,88 @@ fn dragging_in_the_trim_monitor_trims_without_hanging() {
     assert!((6..=14).contains(&-frames), "about 11 frames expected for 60 px at 6 px/frame, moved {}", frames.abs());
 }
 
+fn locked_move_keeps_the_original_preview(audio: bool, destination: bool, linked_partner: bool, edge: Option<&str>) {
+    let mut d = Driver::demo();
+    d.exec("sequence.linkedSelection", json!({"on": linked_partner}));
+    let seq = d.app().session.active_sequence().unwrap();
+    let tracks = if audio { &seq.audio_tracks } else { &seq.video_tracks };
+    let clip = tracks[0].items[0].id;
+    let locked = if linked_partner { seq.audio_tracks[0].id } else { tracks[usize::from(destination)].id };
+    d.exec("timeline.setTrack", json!({"track": locked.0, "locked": true}));
+    d.frames(3);
+    let prefix = format!("timeline.clip.{}", clip.0);
+    let original = d.ok("ui.elements", json!({"prefix": prefix}))[0]["rect"].clone();
+    let r = original.as_array().unwrap();
+    let from = pos2(r[0].as_f64().unwrap() as f32 + r[2].as_f64().unwrap() as f32 * 0.5, r[1].as_f64().unwrap() as f32 + 8.0);
+    let from = if let Some(edge) = edge {
+        let point = d.ok("ui.timeline.locate", json!({"clip": clip.0, "edge": edge}));
+        pos2(point["x"].as_f64().unwrap() as f32, from.y)
+    } else {
+        from
+    };
+    let mut to = from + egui::vec2(60.0, 0.0);
+    if destination {
+        let label = if audio { "A2" } else { "V2" };
+        let rows = d.ok("ui.elements", json!({"prefix": format!("timeline.track.{label}.target")}));
+        let y = &rows[0]["rect"];
+        to.y = (y[1].as_f64().unwrap() + y[3].as_f64().unwrap() * 0.5) as f32;
+    }
+    let before = d.app().session.project.clone();
+    let undo = d.app().session.history.undo.len();
+    d.harness.input_mut().events.push(egui::Event::PointerMoved(from));
+    d.frames(1);
+    d.harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: from,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Default::default(),
+    });
+    d.frames(1);
+    for i in 1..=8 {
+        d.harness.input_mut().events.push(egui::Event::PointerMoved(from + (to - from) * (i as f32 / 8.0)));
+        d.frames(1);
+    }
+    d.frames(2);
+    let elements = d.ok("ui.elements", json!({"prefix": prefix}));
+    assert_eq!(elements[0]["rect"], original, "a prohibited move never previews a displaced clip");
+    assert_eq!(d.cursor(), CursorIcon::NotAllowed);
+    d.harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: to,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Default::default(),
+    });
+    d.frames(2);
+    assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), serde_json::to_value(&*before).unwrap());
+    assert_eq!(d.app().session.history.undo.len(), undo);
+}
+
+#[test]
+fn locked_sources_do_not_preview_a_move() {
+    for audio in [false, true] {
+        locked_move_keeps_the_original_preview(audio, false, false, None);
+    }
+}
+#[test]
+fn locked_destinations_do_not_preview_a_move() {
+    for audio in [false, true] {
+        locked_move_keeps_the_original_preview(audio, true, false, None);
+    }
+}
+#[test]
+fn a_locked_linked_partner_prevents_the_move_preview() {
+    locked_move_keeps_the_original_preview(false, false, true, None);
+}
+
+#[test]
+fn locked_edges_do_not_preview_a_trim() {
+    for audio in [false, true] {
+        for edge in ["in", "out"] {
+            locked_move_keeps_the_original_preview(audio, false, false, Some(edge));
+        }
+    }
+}
+
 fn move_existing_clip_to_a_new_track(audio: bool, linked: bool) {
     let mut d = Driver::demo();
     d.exec("sequence.linkedSelection", json!({"on": linked}));

@@ -1,5 +1,6 @@
 //! OpenEXR stills (and the frames of EXR image sequences), read from the public OpenEXR file layout:
-//! single-part scan-line files with no, RLE, ZIPS (one line per chunk) or ZIP (16 lines) compression,
+//! single-part scan-line files with no, RLE, ZIPS (one line per chunk), ZIP or PXR24 (16 lines)
+//! compression,
 //! half, float or uint channels. R, G, B and A become the frame's channels (missing colour channels
 //! are 0, missing alpha is opaque); a luminance-only file (Y) is shown grey. EXR values are
 //! scene-linear with premultiplied alpha, which is exactly the compositor's working format, so the
@@ -7,7 +8,7 @@
 //!
 //! The display window is the frame; pixels of the data window outside it are cut, and the parts of
 //! it the data window does not cover are transparent. Tiled, deep and multi-part files, chroma
-//! subsampled channels and the PIZ, PXR24, B44 and DWA compressions are refused with a clear error.
+//! subsampled channels and the PIZ, B44 and DWA compressions are refused with a clear error.
 
 mod inflate;
 
@@ -134,12 +135,15 @@ enum Compression {
     None,
     Rle,
     Zip,
+    /// Lossy 24-bit floats: deflated byte planes of per-line differences.
+    Pxr24,
 }
 
 impl Compression {
     fn lines_per_chunk(self, code: u8) -> usize {
         match self {
             Compression::Zip if code == 3 => 16,
+            Compression::Pxr24 => 16,
             _ => 1,
         }
     }
@@ -227,6 +231,7 @@ fn header(name: &str, b: &[u8]) -> Result<Header> {
                 0 => Compression::None,
                 1 => Compression::Rle,
                 2 | 3 => Compression::Zip,
+                5 => Compression::Pxr24,
                 _ => {
                     let what = ["PIZ", "PXR24", "B44", "B44A", "DWAA", "DWAB"].get(usize::from(code).wrapping_sub(4)).copied().unwrap_or("unknown");
                     return Err(MediaError::Unsupported(format!("{name}: {what} compressed OpenEXR is not supported yet")));
@@ -329,6 +334,45 @@ fn unrle(src: &[u8], expected: usize) -> Option<Vec<u8>> {
     (out.len() == expected).then_some(out)
 }
 
+/// Bytes of one sample in PXR24's byte planes (a float keeps its top 24 bits only).
+fn plane_count(ty: PixelType) -> usize {
+    match ty {
+        PixelType::Half => 2,
+        PixelType::Float => 3,
+        PixelType::Uint => 4,
+    }
+}
+
+/// Undo PXR24: per scan line and channel, the samples' differences (to the previous sample of the
+/// line, modulo 2^16 / 2^24 / 2^32) are stored as byte planes, most significant first. Returns the
+/// lines in the plain layout (little-endian samples).
+fn unpxr24(planes: &[u8], channels: &[Channel], width: usize, lines: usize) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(planes.len().checked_mul(2)?);
+    let mut at = 0usize;
+    for _ in 0..lines {
+        for c in channels {
+            let n = plane_count(c.ty);
+            let len = n.checked_mul(width)?;
+            let plane = planes.get(at..at.checked_add(len)?)?;
+            at += len;
+            let mut acc = 0u32;
+            for x in 0..width {
+                let mut d = 0u32;
+                for k in 0..n {
+                    d = d << 8 | u32::from(*plane.get(k * width + x)?);
+                }
+                acc = acc.wrapping_add(d);
+                match c.ty {
+                    PixelType::Half => out.extend_from_slice(&(acc as u16).to_le_bytes()),
+                    PixelType::Float => out.extend_from_slice(&((acc & 0xFF_FFFF) << 8).to_le_bytes()),
+                    PixelType::Uint => out.extend_from_slice(&acc.to_le_bytes()),
+                }
+            }
+        }
+    }
+    (at == planes.len()).then_some(out)
+}
+
 /// Decode an EXR file into premultiplied linear RGBA floats.
 pub fn decode(name: &str, b: &[u8]) -> Result<Decoded> {
     let h = header(name, b)?;
@@ -403,6 +447,12 @@ pub fn decode(name: &str, b: &[u8]) -> Result<Decoded> {
                 Compression::None => return Err(bad(format!("chunk {i} has the wrong size"))),
                 Compression::Rle => unpredict(unrle(data, expected).ok_or_else(|| bad(format!("chunk {i}: bad RLE data")))?).into(),
                 Compression::Zip => unpredict(inflate::zlib(data, expected).map_err(|e| bad(format!("chunk {i}: {e}")))?).into(),
+                Compression::Pxr24 => {
+                    let per_line = h.channels.iter().try_fold(0usize, |t, c| t.checked_add(plane_count(c.ty).checked_mul(dw)?));
+                    let planes = per_line.and_then(|l| l.checked_mul(n)).ok_or_else(|| bad("chunk size".into()))?;
+                    let inflated = inflate::zlib(data, planes).map_err(|e| bad(format!("chunk {i}: {e}")))?;
+                    unpxr24(&inflated, &h.channels, dw, n).ok_or_else(|| bad(format!("chunk {i}: bad PXR24 data")))?.into()
+                }
             }
         };
         for (l, out) in rows.chunks_exact_mut(row).enumerate() {
