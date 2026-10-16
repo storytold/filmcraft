@@ -67,10 +67,10 @@ pub enum Format {
     #[serde(rename = "h264", alias = "H264")]
     H264,
     /// MPEG-4 (or QuickTime, see [`Multiplexer`]), H.265 / HEVC Main (8-bit) video + AAC audio. There is no
-    /// built-in encoder: a platform hardware encoder registers one ([`register_encoder`]) and says so
-    /// with [`register_format_probe`]; [`available`] is false without it. HDR sequences export as HDR
-    /// (Main 10, PQ / HLG) only where an encoder also says so with [`register_hdr_probe`]
-    /// ([`hdr_available`]); elsewhere they are tone-mapped to SDR.
+    /// built-in software encoder (Main 8-bit SDR, single-slice I/P, `hvc1` + `hvcC`; HDR sequences
+    /// export as HDR only where an encoder also says so with [`register_hdr_probe`]
+    /// ([`hdr_available`]); elsewhere they are tone-mapped to SDR). A platform hardware encoder
+    /// may still register an alternative with [`register_encoder`].
     #[serde(rename = "hevc", alias = "Hevc")]
     Hevc,
     /// MPEG-4, AV1 Main (8-bit) video + AAC audio. Like H.265 it has no built-in encoder: offered
@@ -251,7 +251,7 @@ impl Format {
     /// Whether the crate carries an encoder for the format; the others need one registered at runtime
     /// ([`register_format_probe`]).
     pub fn has_builtin_encoder(self) -> bool {
-        !matches!(self, Format::Hevc | Format::Av1)
+        !matches!(self, Format::Av1)
     }
     /// Sound without picture: Waveform Audio, AIFF, AAC Audio and FLAC.
     pub fn is_audio_only(self) -> bool {
@@ -778,7 +778,7 @@ pub type AudioEncoderFactory = fn(format: Format, sample_rate: u32, channels: u3
 
 fn video_factories() -> &'static RwLock<Vec<EncoderFactory>> {
     static F: OnceLock<RwLock<Vec<EncoderFactory>>> = OnceLock::new();
-    F.get_or_init(|| RwLock::new(vec![h264_factory, prores_factory, dnx_factory, apv_factory, mjpeg_factory]))
+    F.get_or_init(|| RwLock::new(vec![h264_factory, hevc_factory, prores_factory, dnx_factory, apv_factory, mjpeg_factory]))
 }
 fn audio_factories() -> &'static RwLock<Vec<AudioEncoderFactory>> {
     static F: OnceLock<RwLock<Vec<AudioEncoderFactory>>> = OnceLock::new();
@@ -1549,6 +1549,76 @@ impl VideoEncoder for H264Encoder {
     }
 }
 
+/// H.265/HEVC Main (our encoder): sRGB/709 RGBA8 → 8-bit limited-range BT.709 4:2:0, I/P only
+/// (no B-frames), length-prefixed samples with the `hvcC` in the sample entry.
+/// Mirrors [`H264Encoder`] but uses `filmcraft_hevcenc` types.
+struct HevcEncoder {
+    enc: filmcraft_hevcenc::Encoder,
+    w: u32,
+    h: u32,
+    rate: FrameRate,
+    y: Vec<u8>,
+    u: Vec<u8>,
+    v: Vec<u8>,
+    signal: ColorSignal,
+}
+
+impl HevcEncoder {
+    fn packets(&self, ps: Vec<filmcraft_hevcenc::Packet>) -> Vec<EncodedPacket> {
+        ps.into_iter()
+            .map(|p| EncodedPacket {
+                data: p.data,
+                key: p.keyframe,
+                duration: self.rate.den as u32,
+                // DTS == PTS: phase 1 has no B-frames (`Encoder::delay()` is always 0).
+                // H.264 computes `(p.pts - p.dts) as i32` for its B-frame delay; here it is 0.
+                // `p.qp` / `p.frame_type` are dropped exactly like `H264Encoder::packets`
+                // drops them (`EncodedPacket` carries no qp field).
+                composition_offset: 0,
+            })
+            .collect()
+    }
+}
+
+impl VideoEncoder for HevcEncoder {
+    fn sample_entry(&self) -> SampleEntry {
+        // H.264 does `AvcConfig::parse(&enc.avcc())` with an `sps_pps()` fallback;
+        // `hvcc()` is infallible (built from known-good VPS/SPS/PPS), so `unwrap_or_default()`.
+        let cfg = filmcraft_isobmff::HevcConfig::parse(&self.enc.hvcc()).unwrap_or_default();
+        let mut e = SampleEntry::hevc(cfg, self.w as u16, self.h as u16);
+        // Same `false` (MP4 `nclx`) as `H264Encoder::sample_entry`; ProRes/DNx/APV pass `true`.
+        self.signal.apply_to(&mut e, false);
+        e
+    }
+    fn timescale(&self) -> u32 {
+        self.rate.num as u32
+    }
+    fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
+        timed(Stage::Convert, || match f.hdr {
+            Some(rgb) => {
+                let (kr, kb) = self.signal.kr_kb();
+                rgbf_to_yuv420_8(rgb, f.width as usize, f.height as usize, kr, kb, &mut self.y, &mut self.u, &mut self.v)
+            }
+            None => rgba_to_yuv420_8(f.rgba, f.width as usize, f.height as usize, &mut self.y, &mut self.u, &mut self.v),
+        });
+        let cw = (f.width as usize).div_ceil(2);
+        let frame = filmcraft_hevcenc::YuvFrame { y: &self.y, u: &self.u, v: &self.v, y_stride: f.width as usize, uv_stride: cw };
+        let ps = self.enc.try_encode(&frame, f.index as i64 * self.rate.den).map_err(|e| ExportError::Encode(e.to_string()))?;
+        Ok(self.packets(ps))
+    }
+    fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
+        // Reorder delay is 0 (no B-frames); `flush()` yields no packets, same call shape as H.264.
+        let ps = self.enc.flush();
+        Ok(self.packets(ps))
+    }
+    // `media_start()` keeps the trait default (`None`): `Encoder::delay()` is always 0, so no
+    // edit-list offset. (H.264 returns `Some(rate.den)` when its `delay() > 0`.)
+    // `pass_stats()` keeps the trait default (`None`): the trait returns
+    // `Option<filmcraft_h264enc::PassStats>`, which cannot carry
+    // `filmcraft_hevcenc::PassStats`, and HEVC export is single-pass only
+    // (`job.rs` two-pass gates on `Format::H264`; `hevcenc` rejects `Pass::Second`).
+}
+
 /// BT.709 limited-range 8-bit 4:2:0 from straight RGBA8 (2×2 chroma average).
 pub fn rgba_to_yuv420_8(rgba: &[u8], w: usize, h: usize, y: &mut Vec<u8>, u: &mut Vec<u8>, v: &mut Vec<u8>) {
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
@@ -1716,6 +1786,54 @@ fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSetti
     Some(
         filmcraft_h264enc::Encoder::new(cfg)
             .map(|enc| Box::new(H264Encoder { enc, w, h, rate, y: Vec::new(), u: Vec::new(), v: Vec::new(), signal: s.signal }) as Box<dyn VideoEncoder>)
+            .map_err(|e| ExportError::Encode(e.to_string())),
+    )
+}
+
+fn hevc_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+    if format != Format::Hevc {
+        return None;
+    }
+    let mut cfg = filmcraft_hevcenc::EncoderConfig::new(w, h, rate.num as u32, rate.den as u32);
+    // MP4 carries length-prefixed samples with out-of-band `hvcC`; MXF would carry Annex B.
+    // (No MXF HEVC mapping exists today — `MxfVideoCodec` has no HEVC — so this is always
+    // `LengthPrefixed` in practice; mirrored from `h264_factory` for symmetry.)
+    cfg.format = if s.format.is_mxf() { filmcraft_hevcenc::PacketFormat::AnnexB } else { filmcraft_hevcenc::PacketFormat::LengthPrefixed };
+    cfg.aud = s.format.is_mxf();
+    cfg.keyint = s.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| (rate.num as f64 / rate.den as f64 * 2.0).round().max(1.0) as u32);
+    // Phase 1 codes I/P only; any other value makes `Encoder::new` fail.
+    cfg.bframes = 0;
+    // No `ExportSettings` preset selector: keep the encoder default (`Balanced`), like
+    // `h264_factory` keeps its own preset/threads/AQ defaults.
+    cfg.preset = filmcraft_hevcenc::Preset::Balanced;
+    // `threads = 0` (auto) and `aq_strength = 0.6` / `scenecut = true` defaults: no settings fields.
+    cfg.threads = 0;
+    // `cfg.pass` stays `Single`: HEVC export is single-pass only (`Encoder::new` rejects
+    // `Pass::Second`; `job.rs` two-pass gates on `Format::H264`).
+    let kbps = s.bitrate_kbps.max(100);
+    let max = s.max_bitrate_kbps.filter(|m| *m >= kbps).unwrap_or_else(|| (u64::from(kbps) * 3 / 2).min(u64::from(u32::MAX)) as u32);
+    cfg.rate = match s.bitrate_mode {
+        BitrateMode::Cbr => filmcraft_hevcenc::RateControl::Cbr { kbps },
+        // the encoder clamps to 0..=51; a NaN from a hand-edited preset becomes the default.
+        // (`ExportSettings::validate` currently rejects CRF for HEVC; kept for forward-compat.)
+        BitrateMode::Crf => filmcraft_hevcenc::RateControl::Crf(if s.crf.is_finite() { s.crf } else { DEFAULT_CRF }),
+        _ => filmcraft_hevcenc::RateControl::Vbr { target_kbps: kbps, max_kbps: max },
+    };
+    // HEVC Main only (phase 1); no `ExportSettings` profile selector like `h264_profile`.
+    // `cfg.profile` stays `Main`.
+    // No `h265_level` setting: keep `None` (auto-pick); `h264_factory` maps `s.h264_level`.
+    if let Some((n, d)) = s.pixel_aspect {
+        cfg.sar = (n.clamp(1, 65535) as u16, d.clamp(1, 65535) as u16);
+    }
+    if s.signal.is_hdr() {
+        cfg.color = filmcraft_hevcenc::ColorConfig { primaries: s.signal.primaries, transfer: s.signal.transfer, matrix: s.signal.matrix, full_range: false };
+        // NOTE: no `mastering_display` / `content_light` fields on `hevcenc::EncoderConfig`
+        // (unlike `h264enc`); HDR static metadata rides only in `colr`/`mdcv`/`clli` via
+        // `ColorSignal::apply_to` in `sample_entry` for now.
+    }
+    Some(
+        filmcraft_hevcenc::Encoder::new(cfg)
+            .map(|enc| Box::new(HevcEncoder { enc, w, h, rate, y: Vec::new(), u: Vec::new(), v: Vec::new(), signal: s.signal }) as Box<dyn VideoEncoder>)
             .map_err(|e| ExportError::Encode(e.to_string())),
     )
 }

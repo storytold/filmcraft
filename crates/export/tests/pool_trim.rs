@@ -76,8 +76,10 @@ fn the_float_shelf_is_empty_when_a_standalone_export_ends_however_it_ended() {
     check("a cancelled video");
 
     // an encoder that is not there: the pipeline was built, the export never started
+    // (AV1, the one format without a built-in software encoder; HEVC used to stand
+    // here before filmcraft-hevcenc landed as its built-in encoder).
     leave_something();
-    assert!(export(&p, seq, &settings(Format::Hevc, "c.mp4"), &sources, &Progress::default()).is_err());
+    assert!(export(&p, seq, &settings(Format::Av1, "c.mp4"), &sources, &Progress::default()).is_err());
     check("an export that could not start");
 
     // stepped by the host (the web build), dropped half way: 6 frames of 24
