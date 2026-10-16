@@ -200,7 +200,7 @@ pub(crate) fn timebase(rate: FrameRate) -> (i64, bool) {
 /// Rate from FCP7-style `(timebase, ntsc)`.
 pub(crate) fn rate_from_timebase(timebase: i64, ntsc: bool) -> FrameRate {
     let tb = timebase.max(1);
-    if ntsc { FrameRate::new(tb * 1000, 1001) } else { FrameRate::new(tb, 1) }
+    if ntsc { FrameRate::new(tb.saturating_mul(1000), 1001) } else { FrameRate::new(tb, 1) }
 }
 
 /// Snap a floating rate (OTIO) to an exact rate.
@@ -708,6 +708,9 @@ mod tests {
         assert_eq!(rate_from_timebase(30, true), FrameRate::FPS_29_97);
         assert_eq!(rate_from_timebase(60, true), FrameRate::FPS_59_94);
         assert_eq!(rate_from_timebase(25, false), FrameRate::FPS_25);
+        // a hostile NTSC timebase overflowed `timebase * 1000` (a panic in debug builds)
+        assert_eq!(rate_from_timebase(i64::MAX, true), FrameRate::new(i64::MAX, 1001));
+        assert_eq!(rate_from_timebase(-5, true), FrameRate::new(1000, 1001));
         assert_eq!(rate_from_f64(24000.0 / 1001.0), FrameRate::FPS_23_976);
         assert_eq!(rate_from_f64(23.976), FrameRate::FPS_23_976);
         assert_eq!(rate_from_f64(48000.0), FrameRate::new(48000, 1));
