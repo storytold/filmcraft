@@ -776,7 +776,8 @@ fn timeline_clip_label_is_disabled_without_a_selected_clip() {
     let mut d = Driver::demo();
     d.exec("markers.clearAll", json!({}));
     d.exec("timeline.select", json!({"clips":[]}));
-    d.ok("ui.click", json!({"id":"timeline.ruler","fx":0.8,"fy":0.5,"button":"right"}));
+    // (past the last clip: the ruler has a menu of its own, #1535)
+    d.ok("ui.click", json!({"id":"timeline.tracks","fx":0.97,"fy":0.5,"button":"right"}));
     d.frames(3);
     let enabled = |d: &mut Driver| {
         let elements = d.ok("ui.elements", json!({"prefix":"timeline.clipMenu.edit.label"}));
