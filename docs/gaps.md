@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: ROADMAP's "Where we are lacking" re-measured against Premiere Pro 26.5.2 and the open issue list) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (G1: Premiere side scripted, first real numbers: 11 / 20 pass; findings filed) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -14,7 +14,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 | # | Gap | Kind | Blocks beta | Estimate |
 |---|---|---|---|---|
-| G1 | Nothing compares our output with Premiere's | measurement | no, but every ready number depends on it | 40–70 h |
+| G1 | Nothing compares our output with Premiere's | measurement | no, but every ready number depends on it | 25–50 h (harness built; renders and corpus breadth remain) |
 | G2 | Premiere's `.prproj` cannot be opened | file format | **yes** | 60–120 h |
 | G3 | 10-bit and 4:2:2 camera media needs hardware | codec | yes | 30–50 h |
 | G4 | Crashes at start-up, and no test CI on pull requests | stability | yes | 40–80 h |
@@ -37,18 +37,43 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G1. Nothing compares our output with Premiere's
 
-- **Missing:** a fidelity harness. Every effect, transition, Lumetri control, blend mode, keyframe
-  interpolation and audio effect counts once it exists; nothing renders the same project in
-  Premiere and FilmCraft and compares frames or samples. Effects described as approximations
-  count the same as exact ones.
+- **Have:** the harness, `cargo xtask fidelity` (`crates/fidelity`,
+  [README](../crates/fidelity/README.md), [testing.md §6](testing.md#6-fidelity-against-premiere-pro)):
+  an original media corpus FilmCraft generates itself (ProRes 422 HQ, WAV), 20 authored cases (a
+  baseline cut, Motion, opacity, keyframe ramps, Cross Dissolve, Dip to Black, five standard
+  effects, speed changes, five audio cases) written as FCP7 XML / OTIO / `.fcproj`, rendered
+  through our export pipeline, and scored against Premiere's renders from the local
+  `plan/premiere/fidelity/` with PSNR and CIEDE2000 per case for pictures and aligned sample-level
+  SNR for sound; a Markdown report, JSON results, `--min`, and a generated `PREMIERE.md` with the
+  per-case steps for the Premiere side, and `crates/fidelity/premiere/render.py`, which performs
+  those steps through premiere-cli on the maintainer's machine (import, settings check, the effect
+  cases' values by Effect Controls name, PNG / WAV export through Media Encoder). First full run
+  2026-10-16 against Premiere Pro 26.5.2: **11 / 20 pass**. Baseline cut 47.8 dB PSNR, mean
+  ΔE₀₀ 0.14; Motion, scale / opacity ramps, Crop, Black & White, Invert and both speed cases pass
+  at 40–60 dB. Gaussian Blur (33.0 dB) and Brightness & Contrast (34.4 dB) just miss the 35 dB
+  line (kernel and curve differences). Cross Dissolve fails at 28.1 dB: Premiere blends in
+  gamma-encoded space, our mid-dissolve is brighter. Dip to Black is not comparable yet: Premiere
+  imports our `Dip to Black` transition as a Cross Dissolve (its own XML calls it `Dip to Color
+  Dissolve` with a `dipcolor`). Every audio case fails at 1–15 dB SNR because our FCP7 XML writes a
+  stereo clip as one clip item with source track 1, which Premiere plays as mono channel 1 centred
+  at −3 dB; Premiere writes a stereo clip as two linked clip items on audio tracks 1 and 2 with
+  `outputchannelindex`.
+- **Missing:** the interchange fixes the first run exposed (stereo clip items, `Dip to Color
+  Dissolve`, Premiere's effect ids for Gaussian Blur / Brightness & Contrast / Black & White /
+  Invert so the five effect cases need no hand step) and the render fixes for the dissolve curve,
+  the blur kernel and the Brightness & Contrast curves, each its own task: the nine failing
+  cases carry `known_failure` marks with these reasons until then; calibrated tolerances; the corpus covers 20 features, not every effect,
+  transition, Lumetri control, blend mode and audio effect. Effects described as approximations
+  still count the same as exact ones until they are in the corpus.
 - **Evidence:** catalogue tests check names and folders only. EffectCraft's live After Effects
   comparison (its gaps.md G1) found real bugs in features marked done on its first run.
 - **Impact:** "ready for real work" stays an estimate; colour and effect differences surface only
   when a user notices.
-- **Done when:** a corpus of original test projects (our own media), opened in Premiere through
-  FCP7 XML / OTIO, rendered by both, with per-effect PSNR / ΔE and audio-sample scores reproducible
-  from one command; Premiere output stays local in `plan/premiere/` (gitignored). Owner runs
-  Premiere (installed). **40–70 h.** Doc: [target-app-parity.md](target-app-parity.md).
+- **Done when:** every effect, transition, Lumetri control, blend mode, keyframe interpolation and
+  audio effect gets a case, each one `CaseDef`, the tolerances are set from the baseline, and the
+  scripted Premiere run is part of the maintainer's release check. Premiere output stays local in
+  `plan/premiere/` (gitignored). **Remaining: 20–40 h** (of 40–70). Doc:
+  [target-app-parity.md](target-app-parity.md).
 
 ## G2. Premiere's `.prproj` cannot be opened
 
@@ -316,3 +341,4 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
+| 2026-10-15 | minor | G1: the fidelity harness exists (`crates/fidelity`, `cargo xtask fidelity`: original media corpus, 20 cases as FCP7 XML / OTIO, PSNR / ΔE₀₀ and aligned audio SNR scoring, `PREMIERE.md` protocol); remaining: the Premiere renders and corpus breadth, 25–50 h |
