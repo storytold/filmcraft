@@ -14,3 +14,4 @@ filmcraft-color = { workspace = true }
 filmcraft-time = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
+wide = { workspace = true }

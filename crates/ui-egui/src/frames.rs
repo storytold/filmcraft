@@ -9,7 +9,7 @@
 
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -110,6 +110,10 @@ struct Shared {
     /// started, and the workers can finish at most `workers / cost` of them per second.
     render_cost: Mutex<f64>,
     workers: usize,
+    /// Worker threads that actually spawned. Zero on the single-threaded web build —
+    /// and the pump's cue: it runs jobs itself only while this is zero, so a threaded
+    /// build whose spawns fail (no worker support) still gets frames via the pump.
+    live_workers: AtomicUsize,
     /// Always-on counters for `perf.stats`.
     stats: Mutex<FrameStats>,
 }
@@ -358,6 +362,10 @@ pub struct FrameServer {
     pub services: Arc<dyn Services>,
     pub previews: Arc<PreviewStore>,
     repaint: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
+    /// Threaded-wasm repaint path: `egui::Context` is not `Send` there, so workers set
+    /// this flag instead of calling `request_repaint` themselves; the UI pass polls it
+    /// (see `set_context` and `repaint_requested`). Never set on other builds.
+    repaint_flag: Arc<AtomicBool>,
 }
 
 /// Frames queued ahead of the playhead while playing (and how far ahead a queued job may be
@@ -421,21 +429,28 @@ impl FrameServer {
             records: Mutex::new(Vec::new()),
             render_cost: Mutex::new(0.0),
             workers: workers.max(1),
+            live_workers: AtomicUsize::new(0),
             stats: Mutex::new(FrameStats::default()),
         });
         let repaint: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>> = Arc::new(Mutex::new(None));
-        #[cfg(not(target_arch = "wasm32"))]
+        // Native always has threads; the web has them only in the threaded build
+        // (`fc_wasm_threads`, set by `cargo xtask web --threads`). A spawn can still
+        // fail at runtime (worker support missing): count the ones that started —
+        // `pump` covers for a pool that never got going.
+        #[cfg(any(not(target_arch = "wasm32"), fc_wasm_threads))]
         for i in 0..workers.max(1) {
             let sh = shared.clone();
             let pool = pool.clone();
             let services = services.clone();
             let rp = repaint.clone();
             let pv = previews.clone();
-            std::thread::Builder::new().name(format!("filmcraft-frames-{i}")).spawn(move || worker(sh, pool, services, pv, rp)).ok();
+            if std::thread::Builder::new().name(format!("filmcraft-frames-{i}")).spawn(move || worker(sh, pool, services, pv, rp)).is_ok() {
+                shared.live_workers.fetch_add(1, Ordering::Relaxed);
+            }
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", not(fc_wasm_threads)))]
         let _ = workers;
-        Self { shared, pool, services, previews, repaint }
+        Self { shared, pool, services, previews, repaint, repaint_flag: Arc::new(AtomicBool::new(false)) }
     }
 
     /// The default number of frame workers for this machine.
@@ -446,9 +461,27 @@ impl FrameServer {
     pub fn set_context(&self, ctx: &egui::Context) {
         let mut g = self.repaint.lock().unwrap_or_else(|e| e.into_inner());
         if g.is_none() {
-            let ctx = ctx.clone();
-            *g = Some(Box::new(move || ctx.request_repaint()));
+            #[cfg(not(fc_wasm_threads))]
+            {
+                let ctx = ctx.clone();
+                *g = Some(Box::new(move || ctx.request_repaint()));
+            }
+            // Threaded wasm: the context cannot cross to a worker thread (above), so
+            // workers raise a flag and the UI pass — which polls it next to the queue
+            // heartbeat — requests the repaint on their behalf.
+            #[cfg(fc_wasm_threads)]
+            {
+                let _ = ctx;
+                let flag = self.repaint_flag.clone();
+                *g = Some(Box::new(move || flag.store(true, Ordering::Relaxed)));
+            }
         }
+    }
+
+    /// Whether a worker asked for a repaint since the last call (threaded wasm only;
+    /// always false where workers hold the context themselves).
+    pub fn repaint_requested(&self) -> bool {
+        self.repaint_flag.swap(false, Ordering::Relaxed)
     }
 
     /// Collect a [`JobRecord`] per finished job (benchmarks); `take_records` drains them.
@@ -468,6 +501,11 @@ impl FrameServer {
     /// Worker threads.
     pub fn workers(&self) -> usize {
         self.shared.workers
+    }
+
+    /// Worker threads that actually started (0 on single-threaded wasm).
+    pub fn live_workers(&self) -> usize {
+        self.shared.live_workers.load(Ordering::Relaxed)
     }
 
     /// (cached images, their bytes, cached GPU plans, their bytes).
@@ -650,11 +688,12 @@ impl FrameServer {
         None
     }
 
-    /// Without worker threads (wasm32): run queued jobs on the calling (UI) thread, highest
-    /// priority first, until `budget` has passed (at least one job). Jobs whose media is still
-    /// loading go back to the queue. Returns the number of jobs finished. A no-op with workers.
+    /// Without worker threads (the single-threaded web build): run queued jobs on the
+    /// calling (UI) thread, highest priority first, until `budget` has passed (at least
+    /// one job). Jobs whose media is still loading go back to the queue. Returns the
+    /// number of jobs finished. A no-op once any worker thread is live.
     pub fn pump(&self, budget: Duration) -> usize {
-        if cfg!(not(target_arch = "wasm32")) {
+        if self.shared.live_workers.load(Ordering::Relaxed) > 0 {
             return 0;
         }
         let t0 = Instant::now();
@@ -763,7 +802,7 @@ impl PlaybackMeter {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), fc_wasm_threads))]
 fn worker(
     sh: Arc<Shared>,
     pool: Arc<MediaPool>,

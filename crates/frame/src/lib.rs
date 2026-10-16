@@ -527,16 +527,7 @@ impl VideoFrame {
                     let yrow = &planes[0][y * w..y * w + w];
                     let urow = &planes[1][cy * cw..cy * cw + cw];
                     let vrow = &planes[2][cy * cw..cy * cw + cw];
-                    for x in 0..w {
-                        let yy = (yrow[x] as f32 - yo) * ys;
-                        let u = urow[x >> sx] as f32 - 128.0;
-                        let v = vrow[x >> sx] as f32 - 128.0;
-                        let o = &mut row[x * 4..x * 4 + 4];
-                        o[0] = (yy + crr * v).round().clamp(0.0, 255.0) as u8;
-                        o[1] = (yy - cgr * v - cgb * u).round().clamp(0.0, 255.0) as u8;
-                        o[2] = (yy + cbb * u).round().clamp(0.0, 255.0) as u8;
-                        o[3] = 255;
-                    }
+                    yuv8_row_display(yrow, urow, vrow, sx, ys, yo, crr, cgr, cgb, cbb, row);
                 });
                 out
             }
@@ -556,6 +547,87 @@ impl VideoFrame {
             _ => self.to_rgba8().as_chunks::<4>().0.iter().map(|p| (0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32) as u8).collect(),
         }
     }
+}
+
+/// One row of the direct Y'CbCr → R'G'B' display conversion (`Frame::to_rgba8` fast
+/// path): `ys`/`yo` are the luma scale/offset, `cs`-folded matrix coefficients are
+/// `crr`/`cgr`/`cgb`/`cbb`, chroma is subsampled by `1 << sx` horizontally.
+fn yuv8_row_display(yrow: &[u8], urow: &[u8], vrow: &[u8], sx: u32, ys: f32, yo: f32, crr: f32, cgr: f32, cgb: f32, cbb: f32, row: &mut [u8]) {
+    #[cfg(any(target_arch = "wasm32", test))]
+    if yuv8_row_display_wide(yrow, urow, vrow, sx, ys, yo, crr, cgr, cgb, cbb, row) {
+        return;
+    }
+    yuv8_row_display_scalar(yrow, urow, vrow, sx, ys, yo, crr, cgr, cgb, cbb, row, 0..yrow.len());
+}
+
+fn yuv8_row_display_scalar(
+    yrow: &[u8],
+    urow: &[u8],
+    vrow: &[u8],
+    sx: u32,
+    ys: f32,
+    yo: f32,
+    crr: f32,
+    cgr: f32,
+    cgb: f32,
+    cbb: f32,
+    row: &mut [u8],
+    range: std::ops::Range<usize>,
+) {
+    for x in range {
+        let yy = (yrow[x] as f32 - yo) * ys;
+        let u = urow[x >> sx] as f32 - 128.0;
+        let v = vrow[x >> sx] as f32 - 128.0;
+        let o = &mut row[x * 4..x * 4 + 4];
+        o[0] = (yy + crr * v).round().clamp(0.0, 255.0) as u8;
+        o[1] = (yy - cgr * v - cgb * u).round().clamp(0.0, 255.0) as u8;
+        o[2] = (yy + cbb * u).round().clamp(0.0, 255.0) as u8;
+        o[3] = 255;
+    }
+}
+
+/// Vector form of [`yuv8_row_display_scalar`] over four pixels at a time (`wide` maps
+/// to wasm SIMD128 in the web build, SSE/NEON on desktop). The per-lane expressions are
+/// the scalar ones in the same order, and rounding/clamping stays scalar, so the output
+/// is bit-identical to the scalar path (the display checksums rely on it). Returns false
+/// for chroma subsampling it does not handle (sx > 1), leaving the row to the scalar path.
+#[cfg(any(target_arch = "wasm32", test))]
+fn yuv8_row_display_wide(yrow: &[u8], urow: &[u8], vrow: &[u8], sx: u32, ys: f32, yo: f32, crr: f32, cgr: f32, cgb: f32, cbb: f32, row: &mut [u8]) -> bool {
+    use wide::f32x4;
+    if sx > 1 {
+        return false;
+    }
+    let w = yrow.len();
+    let (ysv, yov) = (f32x4::splat(ys), f32x4::splat(yo));
+    let c128 = f32x4::splat(128.0);
+    let (crrv, cgrv, cgbv, cbbv) = (f32x4::splat(crr), f32x4::splat(cgr), f32x4::splat(cgb), f32x4::splat(cbb));
+    let mut x = 0;
+    while x + 4 <= w {
+        let yy = (f32x4::new([yrow[x] as f32, yrow[x + 1] as f32, yrow[x + 2] as f32, yrow[x + 3] as f32]) - yov) * ysv;
+        let (u, v) = if sx == 0 {
+            (
+                f32x4::new([urow[x] as f32, urow[x + 1] as f32, urow[x + 2] as f32, urow[x + 3] as f32]) - c128,
+                f32x4::new([vrow[x] as f32, vrow[x + 1] as f32, vrow[x + 2] as f32, vrow[x + 3] as f32]) - c128,
+            )
+        } else {
+            let (u0, u1) = (urow[x >> 1] as f32 - 128.0, urow[(x >> 1) + 1] as f32 - 128.0);
+            let (v0, v1) = (vrow[x >> 1] as f32 - 128.0, vrow[(x >> 1) + 1] as f32 - 128.0);
+            (f32x4::new([u0, u0, u1, u1]), f32x4::new([v0, v0, v1, v1]))
+        };
+        let (ra, ga, ba) = ((yy + crrv * v).to_array(), (yy - cgrv * v - cgbv * u).to_array(), (yy + cbbv * u).to_array());
+        for i in 0..4 {
+            let o = &mut row[(x + i) * 4..(x + i) * 4 + 4];
+            o[0] = ra[i].round().clamp(0.0, 255.0) as u8;
+            o[1] = ga[i].round().clamp(0.0, 255.0) as u8;
+            o[2] = ba[i].round().clamp(0.0, 255.0) as u8;
+            o[3] = 255;
+        }
+        x += 4;
+    }
+    if x < w {
+        yuv8_row_display_scalar(yrow, urow, vrow, sx, ys, yo, crr, cgr, cgb, cbb, row, x..w);
+    }
+    true
 }
 
 /// Convert a row of premultiplied linear f32 RGBA into straight sRGB RGBA8.
@@ -839,6 +911,37 @@ mod tests {
         let lin = f.to_linear_f32();
         let back = VideoFrame::rgba_f32(256, 1, lin).to_rgba8();
         assert_eq!(back, px);
+    }
+
+    #[test]
+    fn yuv8_row_display_wide_matches_scalar() {
+        // The vector row conversion must be bit-identical to the scalar one: the
+        // compositor/display checksums treat any pixel difference as a regression.
+        let mut s: u32 = 0x1234_5678;
+        let mut next = move || {
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (s >> 24) as u8
+        };
+        for w in [1usize, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31] {
+            for sx in [0u32, 1] {
+                let cw = w.div_ceil(1 << sx);
+                let yrow: Vec<u8> = (0..w).map(|_| next()).collect();
+                let urow: Vec<u8> = (0..cw).map(|_| next()).collect();
+                let vrow: Vec<u8> = (0..cw).map(|_| next()).collect();
+                // limited and full range, BT.709 coefficients as to_rgba8 computes them
+                for (ys, yo, cs) in [(255.0f32 / 219.0, 16.0f32, 255.0f32 / 224.0), (1.0, 0.0, 1.0)] {
+                    let (kr, kb) = (0.2126f32, 0.0722f32);
+                    let kg = 1.0 - kr - kb;
+                    let (crr, cbb) = (2.0 * (1.0 - kr) * cs, 2.0 * (1.0 - kb) * cs);
+                    let (cgr, cgb) = (crr * kr / kg, cbb * kb / kg);
+                    let mut a = vec![0u8; w * 4];
+                    let mut b = vec![0u8; w * 4];
+                    yuv8_row_display_scalar(&yrow, &urow, &vrow, sx, ys, yo, crr, cgr, cgb, cbb, &mut a, 0..w);
+                    assert!(yuv8_row_display_wide(&yrow, &urow, &vrow, sx, ys, yo, crr, cgr, cgb, cbb, &mut b), "sx {sx} handled");
+                    assert_eq!(a, b, "w {w} sx {sx} ys {ys}");
+                }
+            }
+        }
     }
 
     #[test]

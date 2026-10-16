@@ -74,7 +74,7 @@ pub mod timing {
 
 /// Set once the shared export device reported an uncaptured error (validation, out of memory)
 /// or was lost: every export renders on the CPU from then on. The device is shared by every
-/// renderer and lives in a `OnceLock`, so it is not recreated in this process.
+/// renderer and cached process-wide, so it is not recreated in this process.
 static DEVICE_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Retire the shared export device, logging the first reason only.
@@ -97,31 +97,55 @@ pub struct ExportRenderer {
     compositor: GpuCompositor,
 }
 
+/// The shared off-screen device trio, created on first use. `None` is cached too: a
+/// machine without an adapter does not search again on every export.
+#[cfg(not(fc_wasm_threads))]
+fn shared_device() -> Option<(wgpu::Instance, wgpu::Device, wgpu::Queue)> {
+    static SHARED: std::sync::OnceLock<Option<(wgpu::Instance, wgpu::Device, wgpu::Queue)>> = std::sync::OnceLock::new();
+    SHARED.get_or_init(create_device).clone()
+}
+
+/// Threaded-wasm variant: wgpu's web handles are neither `Send` nor `Sync` (each belongs
+/// to one JS realm), so no shared static can hold them once the target has real threads.
+/// Each thread keeps its own device — also the only usable arrangement, since a device
+/// created on one thread cannot be used from another.
+#[cfg(fc_wasm_threads)]
+fn shared_device() -> Option<(wgpu::Instance, wgpu::Device, wgpu::Queue)> {
+    thread_local! {
+        static SHARED: std::cell::RefCell<Option<Option<(wgpu::Instance, wgpu::Device, wgpu::Queue)>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    SHARED.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.is_none() {
+            *c = Some(create_device());
+        }
+        c.clone().flatten()
+    })
+}
+
+fn create_device() -> Option<(wgpu::Instance, wgpu::Device, wgpu::Queue)> {
+    // A build without a wgpu backend for this platform (`cargo build -p filmcraft-cli`
+    // alone: this crate asks for none) has no GPU to offer, and `Instance::default()`
+    // panics there.
+    if wgpu::Instance::enabled_backend_features().is_empty() {
+        return None;
+    }
+    let instance = wgpu::Instance::default();
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+    // wgpu's default handler panics on a validation or out-of-memory error; log it and
+    // send the remaining frames to the CPU instead.
+    device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| mark_device_failed(&format!("GPU error: {e}"))));
+    device.set_device_lost_callback(|reason, msg| mark_device_failed(&format!("GPU device lost ({reason:?}): {msg}")));
+    Some((instance, device, queue))
+}
+
 impl ExportRenderer {
     /// The off-screen device, or `None` when this host has no usable adapter or this build no
     /// wgpu backend.
     pub fn new() -> Option<Self> {
-        // `None` is kept too: a machine without an adapter does not search again on every export
-        static SHARED: std::sync::OnceLock<Option<(wgpu::Instance, wgpu::Device, wgpu::Queue)>> = std::sync::OnceLock::new();
-        let (instance, device, queue) = SHARED
-            .get_or_init(|| {
-                // A build without a wgpu backend for this platform (`cargo build -p filmcraft-cli`
-                // alone: this crate asks for none) has no GPU to offer, and `Instance::default()`
-                // panics there.
-                if wgpu::Instance::enabled_backend_features().is_empty() {
-                    return None;
-                }
-                let instance = wgpu::Instance::default();
-                let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-                let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
-                // wgpu's default handler panics on a validation or out-of-memory error; log it and
-                // send the remaining frames to the CPU instead.
-                device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| mark_device_failed(&format!("GPU error: {e}"))));
-                device.set_device_lost_callback(|reason, msg| mark_device_failed(&format!("GPU device lost ({reason:?}): {msg}")));
-                Some((instance, device, queue))
-            })
-            .as_ref()?
-            .clone();
+        let (instance, device, queue) = shared_device()?;
         if device_failed() {
             return None;
         }

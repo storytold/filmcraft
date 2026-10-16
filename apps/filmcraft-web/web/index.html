@@ -65,23 +65,35 @@
     addEventListener("unhandledrejection", (ev) => { if (window.filmcraftLoad.readyMs && isFatal(ev.reason)) window.filmcraftFatal(ev.reason); });
   </script>
   <script type="module">
-    // `__FC_BUILD__` is replaced by `cargo xtask web` with a hash of the build: the glue and the
-    // wasm are cached as immutable, so their URLs must change with every build.
+    // `__FC_BUILD__` / `__FC_BUILD_MT__` are replaced by `cargo xtask web` with hashes of the
+    // builds: the glue and the wasm are cached as immutable, so their URLs must change with
+    // every build. The MT stamp equals the ST stamp unless `cargo xtask web --threads` also
+    // produced the threaded build in mt/ (docs/web-optimization-plan.md, phase 2).
     const build = "__FC_BUILD__";
-    const v = build.startsWith("__") ? "" : "?v=" + build;
+    const buildMt = "__FC_BUILD_MT__";
     const t0 = performance.now();
     const params = new URLSearchParams(location.search);
+    // Threaded build: real worker threads, chosen only when the page is cross-origin
+    // isolated (SharedArrayBuffer available) and the artifacts exist. `?nothreads`
+    // forces the single-threaded build; a threaded start that throws retries it once.
+    const useMt = self.crossOriginIsolated === true && !buildMt.startsWith("__") && buildMt !== build && !params.has("nothreads");
+    const dir = useMt ? "mt/" : "";
+    const v = build.startsWith("__") ? "" : "?v=" + (useMt ? buildMt : build);
+    window.filmcraftLoad.threaded = useMt;
     try {
-      const { default: init, start } = await import("./filmcraft_web.js" + v);
-      await init({ module_or_path: new URL("filmcraft_web_bg.wasm" + v, location.href) });
+      const { default: init, start } = await import("./" + dir + "filmcraft_web.js" + v);
+      await init({ module_or_path: new URL(dir + "filmcraft_web_bg.wasm" + v, location.href) });
       window.filmcraftLoad.wasmMs = performance.now() - t0;
       await start("filmcraft_canvas");
       window.filmcraftLoad.readyMs = performance.now() - t0;
     } catch (e) {
       const text = String(e && e.stack || e);
       window.filmcraftLoad.error = String(e);
-      // WebGPU was found but could not be started: try again on WebGL2 (once)
-      if (!params.has("webgl") && !params.has("cpu") && /wgpu|webgpu|requestDevice|requestAdapter|GPUDevice|surface/i.test(text)) {
+      if (useMt) {
+        // The threaded build failed to start: fall back to the single-threaded one (once)
+        params.set("nothreads", "");
+        location.replace(location.pathname + "?" + params.toString().replace(/=(&|$)/g, "$1") + location.hash);
+      } else if (!params.has("webgl") && !params.has("cpu") && /wgpu|webgpu|requestDevice|requestAdapter|GPUDevice|surface/i.test(text)) {
         params.set("webgl", "");
         location.replace(location.pathname + "?" + params.toString().replace(/=(&|$)/g, "$1") + location.hash);
       } else {
