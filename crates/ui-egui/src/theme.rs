@@ -174,7 +174,9 @@ impl Tokens {
             field_border: Color32::from_rgb(0x30, 0x30, 0x30),
             separator: Color32::from_rgb(0x30, 0x30, 0x30),
             row_alt: Color32::from_rgb(0x21, 0x21, 0x21),
-            row_selected: Color32::from_rgb(0x33, 0x33, 0x33),
+            // a selected row reads as selected against the stripes (0x21 / 0x2a): the highlight's
+            // hue, darkened for white text
+            row_selected: Color32::from_rgb(0x2a, 0x48, 0x82),
             hot_text: Color32::from_rgb(0x40, 0x96, 0xf3),
             pill_active_bg: Color32::from_rgb(0x3a, 0x3a, 0x3a),
             clip_bar_bg: Color32::from_rgb(58, 58, 70),
@@ -349,6 +351,12 @@ impl Tokens {
                     h.v = (h.v * v).clamp(0.0, 1.0);
                     Color32::from(h)
                 };
+                // a selected row: the highlight, mixed into the theme's selection colour
+                let mix = |a: Color32, b: Color32, t: f32| {
+                    let f = |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * t).round() as u8;
+                    Color32::from_rgb(f(a.r(), b.r()), f(a.g(), b.g()), f(a.b(), b.b()))
+                };
+                self.row_selected = if self.kind == ThemeKind::Light { mix(Color32::WHITE, c, 0.35) } else { mix(Color32::from_gray(0x26), c, 0.5) };
                 self.focus = tint(0.92, 1.06);
                 self.playhead = self.focus;
                 self.timecode = tint(0.98, 1.09);
@@ -575,6 +583,33 @@ mod tests {
     /// The colours the highlight drives besides the accent (#707).
     fn highlight_blues(t: &Tokens) -> [Color32; 5] {
         [t.focus, t.playhead, t.timecode, t.hot_text, t.track_target]
+    }
+
+    /// The perceived brightness difference of two colours (0 … 255).
+    fn luma_gap(a: Color32, b: Color32) -> f32 {
+        let l = |c: Color32| 0.299 * f32::from(c.r()) + 0.587 * f32::from(c.g()) + 0.114 * f32::from(c.b());
+        (l(a) - l(b)).abs()
+    }
+
+    #[test]
+    fn a_selected_row_shows_in_every_theme_and_keeps_its_text_readable() {
+        // #1445: the selection was 0x33 grey on 0x21 stripes in the dark themes, hard to tell apart
+        for k in [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Light] {
+            let t = Tokens::for_kind(k);
+            let blue_over_red = i32::from(t.row_selected.b()) - i32::from(t.row_selected.r());
+            assert!(blue_over_red >= 24, "{k:?}: the selection is tinted with the highlight's hue ({:?})", t.row_selected);
+            assert!(luma_gap(t.row_selected, t.row_alt) >= 12.0, "{k:?}: differs from the stripes");
+            assert!(luma_gap(t.row_selected, t.text) >= 90.0, "{k:?}: text stays readable on it");
+        }
+    }
+
+    #[test]
+    fn a_highlight_of_ones_own_tints_the_selected_row() {
+        let pink = Some([0xe0, 0x45, 0x7b]);
+        for k in [ThemeKind::Dark, ThemeKind::Light] {
+            let t = Tokens::for_kind(k).with_appearance(pink, false);
+            assert!(t.row_selected.r() > t.row_selected.b(), "{k:?}: reddish, as the highlight is ({:?})", t.row_selected);
+        }
     }
 
     #[test]
