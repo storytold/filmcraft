@@ -2964,6 +2964,50 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(Value::Null)
         }),
+        cmd!("effects.reorder", "Reorder Effect", [], None, r#"{"clip":id,"from":index,"to":index}"#, has_seq, |s, p| {
+            let c = p.get("clip").and_then(Value::as_u64).map(ClipId).ok_or_else(|| bad("effects.reorder", "need an integer `clip`"))?;
+            let index = |key| {
+                checked_u32_p(p, key, "effects.reorder")?.map(|v| v as usize).ok_or_else(|| bad("effects.reorder", format!("need a valid `{key}` index")))
+            };
+            let (from, to) = (index("from")?, index("to")?);
+            let (_, item) = s.active_sequence().and_then(|q| q.find_item(c)).ok_or(filmcraft_edit::EditError::NoItem(c))?;
+            if from >= item.effects.len() || to >= item.effects.len() {
+                return Err(bad("effects.reorder", "effect index out of range"));
+            }
+            // Fixed effects retain their positions, including in audio stacks.
+            if item.effects[from.min(to)..=from.max(to)].iter().any(|e| e.def().is_none_or(|d| d.intrinsic)) {
+                return Err(bad("effects.reorder", "intrinsic effects cannot be reordered or crossed"));
+            }
+            if from == to {
+                return Ok(Value::Null);
+            }
+            s.edit_sequence("Reorder Effect", |q, _, state| {
+                let (_, item) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
+                let selected = state.selected_effect.as_ref().filter(|e| e.clip == c).and_then(|e| e.index(&item.effects));
+                let mask = state.selected_mask.filter(|m| m.clip == c);
+                let moved = item.effects.remove(from);
+                item.effects.insert(to, moved);
+                let remap = |selected| {
+                    if selected == from {
+                        to
+                    } else if from < to && selected > from && selected <= to {
+                        selected - 1
+                    } else if from > to && selected >= to && selected < from {
+                        selected + 1
+                    } else {
+                        selected
+                    }
+                };
+                if let Some(selected) = selected {
+                    state.selected_effect = crate::EffectSel::of(c, &item.effects, remap(selected));
+                }
+                if let Some(mask) = mask {
+                    state.selected_mask = Some(crate::masks::MaskSel { effect: remap(mask.effect), ..mask });
+                }
+                Ok(())
+            })?;
+            Ok(Value::Null)
+        }),
         cmd!("effects.remove", "Remove Effect", [], None, r#"{"clip":id,"index":n}"#, has_seq, |s, p| {
             let c = clip_p(p, "clip").ok_or_else(|| bad("effects.remove", "need `clip`"))?;
             let idx = u64_p(p, "index").ok_or_else(|| bad("effects.remove", "need `index`"))? as usize;
