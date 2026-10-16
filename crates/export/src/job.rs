@@ -223,6 +223,7 @@ impl Exporter {
         if !stepped(settings.format) {
             return Err(ExportError::Unsupported(format!("{} is not a stepped export", settings.format.label())));
         }
+        crate::validate_output_path(&settings.path).map_err(|message| ExportError::Unsupported(message.into()))?;
         settings.validate()?;
         let q = project.sequence(seq).ok_or(ExportError::NoSequence)?;
         // HDR sequences export HDR (H.264 / ProRes / DNxHR / APV, and H.265 where a registered encoder

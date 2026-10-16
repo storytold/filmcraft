@@ -1334,3 +1334,17 @@ fn own_importer_reads_32_bit_flac_at_full_scale() {
         }
     }
 }
+
+#[test]
+fn invalid_output_names_are_rejected_by_both_exporters_before_file_creation() {
+    let dir = Scratch::new("invalid-output-filename");
+    let path = dir.path("uncreated/movie<draft.mp4");
+    let (project, seq, sources) = matte([0.1, 0.2, 0.3, 1.0], 16, 16, None);
+    let settings = ExportSettings { path, ..Default::default() };
+    let progress = Progress::default();
+    let error = export(&project, seq, &settings, &sources, &progress).err().unwrap();
+    assert!(error.to_string().to_ascii_lowercase().contains("file name"));
+    let error = Exporter::new(project, seq, &settings, &progress).err().unwrap();
+    assert!(error.to_string().to_ascii_lowercase().contains("file name"));
+    assert!(!dir.0.join("uncreated").exists());
+}

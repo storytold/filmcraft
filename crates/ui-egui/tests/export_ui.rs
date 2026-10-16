@@ -510,3 +510,199 @@ fn sample_size_lists_every_size_and_greys_out_what_the_format_cannot_store() {
     assert_eq!(d.app().ui.export.settings.audio.sample_format(), SampleFormat::Float32);
     d.snapshot("export-sample-size-prores");
 }
+
+#[test]
+fn invalid_movie_file_names_cannot_start_an_export_or_enter_the_queue() {
+    let mut d = Driver::new("invalid-filename");
+    let loc = d.dir.to_string_lossy().to_string();
+    d.ok(
+        "ui.set",
+        json!({"mode":"export","export":{"preset":"Waveform Audio 48 kHz 16-bit","location":loc,"range":"custom","customStart":0.0,"customEnd":0.1}}),
+    );
+    d.frames(4);
+    for character in ['<', '>', ':', '"', '/', '\\', '|', '?', '*'] {
+        let name = format!("movie{character}draft");
+        d.click("export.fileName");
+        d.ok("ui.key", json!({"key":"Cmd+A"}));
+        d.ok("ui.type", json!({"text":name}));
+        d.frames(2);
+        assert_eq!(d.app().ui.export.file_name, name, "the entered name remains available for correction");
+        assert!(d.has("export.fileName.error"), "unsupported filename {name:?} needs immediate feedback");
+        for id in ["export.button", "export.sendToQueue"] {
+            let rows = d.ok("ui.elements", json!({"prefix":id}));
+            let button = rows.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap();
+            assert_eq!(button["enabled"], false, "{id} must be disabled for {name:?}");
+            d.click(id);
+        }
+        assert!(d.app().session.jobs.is_empty());
+        assert!(d.queue().is_empty());
+        assert_eq!(std::fs::read_dir(&d.dir).unwrap().count(), 1, "only the preset-data directory exists");
+    }
+    d.snapshot("export-invalid-filename");
+    d.ok("ui.set", json!({"theme":"light"}));
+    d.frames(2);
+    assert_eq!(d.app().tokens.kind, filmcraft_ui_egui::theme::ThemeKind::Light);
+    d.snapshot("export-invalid-filename-light");
+    d.ok("ui.set", json!({"theme":"dark"}));
+    d.click("export.fileName");
+    d.ok("ui.key", json!({"key":"Cmd+A"}));
+    d.ok("ui.type", json!({"text":"映像 final 100%"}));
+    d.frames(2);
+    assert!(!d.has("export.fileName.error"));
+    d.snapshot("export-corrected-filename");
+    d.click("export.button");
+    assert_eq!(d.app().session.jobs.len(), 1, "correcting the name enables Export again");
+    d.wait_until("corrected filename export", |d| d.app().session.jobs.last().is_some_and(|j| j.to_json()["finished"] == true));
+    assert!(d.app().session.jobs.last().unwrap().to_json()["result"]["error"].is_null());
+    let bytes = std::fs::read(d.path("映像 final 100%.wav")).unwrap();
+    assert!(bytes.len() > 44);
+    assert_eq!(&bytes[..4], b"RIFF");
+}
+
+#[test]
+fn quick_export_preserves_an_invalid_path_until_it_is_corrected() {
+    let mut d = Driver::new("invalid-quick-filename");
+    let inspect = d.exec("sequence.inspect", json!({}));
+    let item = inspect["video"][0]["items"][0]["item"].as_u64().unwrap();
+    d.exec("file.newSequence", json!({"name":"Quick filenames","width":16,"height":16,"fps":24,"video":1,"audio":1}));
+    d.exec(
+        "timeline.place",
+        json!({"item":item,"sourceIn":2 * filmcraft_engine::time::TICKS_PER_SECOND,"duration":filmcraft_engine::time::TICKS_PER_SECOND / 12,"frame":0}),
+    );
+    let invalid = d.path("movie?draft.wav");
+    d.ok("ui.set", json!({"export":{"quickPreset":"Waveform Audio 48 kHz 16-bit","quickPath":invalid}}));
+    d.click("header.quickExport");
+    d.click("quickExport.path");
+    d.ok("ui.key", json!({"key":"Cmd+A"}));
+    d.ok("ui.type", json!({"text":invalid}));
+    d.frames(2);
+    assert_eq!(d.app().ui.export.quick_path, invalid);
+    assert!(d.has("quickExport.path.error"));
+    let elements = d.ok("ui.elements", json!({"prefix":"quickExport.go"}));
+    assert_eq!(elements[0]["enabled"], false);
+    d.snapshot("export-quick-invalid-filename");
+    d.ok("ui.set", json!({"theme":"light"}));
+    d.frames(2);
+    assert_eq!(d.app().tokens.kind, filmcraft_ui_egui::theme::ThemeKind::Light);
+    d.snapshot("export-quick-invalid-filename-light");
+    d.click("quickExport.go");
+    assert!(d.app().ui.export.quick_open, "disabled Export keeps the popup and input available");
+    assert!(d.app().session.jobs.is_empty());
+    assert!(!Path::new(&invalid).exists());
+    let corrected = d.path("音声 final.wav");
+    d.click("quickExport.path");
+    d.ok("ui.key", json!({"key":"Cmd+A"}));
+    d.ok("ui.type", json!({"text":corrected}));
+    d.frames(2);
+    assert!(!d.has("quickExport.path.error"));
+    d.click("quickExport.go");
+    assert!(!d.app().ui.export.quick_open);
+    assert_eq!(d.app().session.jobs.len(), 1);
+    d.wait_until("corrected quick filename export", |d| d.app().session.jobs.last().is_some_and(|j| j.to_json()["finished"] == true));
+    assert!(d.app().session.jobs.last().unwrap().to_json()["result"]["error"].is_null());
+    let bytes = std::fs::read(&corrected).unwrap();
+    assert!(bytes.len() > 44);
+    assert_eq!(&bytes[..4], b"RIFF");
+}
+
+#[test]
+fn quick_export_checks_typed_names_and_chosen_paths_without_losing_the_folder() {
+    let mut d = Driver::new("quick-name-validation");
+    let initial = d.path("original.wav");
+    d.ok("ui.set", json!({"export":{"quickPreset":"Waveform Audio 48 kHz 16-bit","quickPath":initial}}));
+    d.click("header.quickExport");
+    for character in ['<', '>', ':', '"', '|', '?', '*'] {
+        let name = format!("movie{character}draft");
+        d.click("quickExport.path");
+        d.ok("ui.key", json!({"key":"Cmd+A"}));
+        d.ok("ui.type", json!({"text":name}));
+        d.frames(2);
+        let expected = d.path(&format!("{name}.wav"));
+        assert_eq!(d.app().ui.export.quick_path, expected);
+        assert!(d.has("quickExport.path.error"));
+        let elements = d.ok("ui.elements", json!({"prefix":"quickExport.go"}));
+        assert_eq!(elements[0]["enabled"], false);
+        let location = d.ok("ui.elements", json!({"prefix":"quickExport.location"}));
+        assert_eq!(location[0]["label"], d.dir.to_string_lossy().as_ref());
+        d.click("quickExport.go");
+        assert!(d.app().ui.export.quick_open);
+        assert!(d.app().session.jobs.is_empty());
+    }
+    d.click("quickExport.preset.Match Source – Adaptive Low Bitrate");
+    let changed_extension = d.path("movie*draft.mp4");
+    assert_eq!(d.app().ui.export.quick_path, changed_extension);
+    assert!(d.has("quickExport.path.error"), "changing the extension cannot hide a bad name");
+    d.ok("ui.set", json!({"theme":"medium","export":{"quickPreset":"Waveform Audio 48 kHz 16-bit"}}));
+    d.frames(2);
+    d.snapshot("export-quick-invalid-name-medium");
+
+    // Clear and retype through the new draft field; its empty draft keeps the stored name.
+    d.click("quickExport.path");
+    d.ok("ui.key", json!({"key":"Cmd+A"}));
+    d.ok("ui.key", json!({"key":"Backspace"}));
+    d.frames(2);
+    assert!(d.has("quickExport.path.error"));
+    d.ok("ui.type", json!({"text":"音声 final 100%"}));
+    d.frames(2);
+    let corrected = d.path("音声 final 100%.wav");
+    assert_eq!(d.app().ui.export.quick_path, corrected);
+    assert!(!d.has("quickExport.path.error"));
+    let elements = d.ok("ui.elements", json!({"prefix":"quickExport.go"}));
+    assert_eq!(elements[0]["enabled"], true);
+
+    // The location link may supply a new filename too; it goes through the same validation.
+    let chosen = d.path("chosen?draft.wav");
+    let chosen_for_dialog = chosen.clone();
+    d.app().hooks.pick_save_as = Some(Box::new(move |_title, _extensions, _suggested| Some(chosen_for_dialog.clone())));
+    d.click("quickExport.location");
+    d.frames(2);
+    assert_eq!(d.app().ui.export.quick_path, chosen);
+    assert!(d.has("quickExport.path.error"));
+    let elements = d.ok("ui.elements", json!({"prefix":"quickExport.go"}));
+    assert_eq!(elements[0]["enabled"], false);
+    d.click("quickExport.go");
+    assert!(d.app().ui.export.quick_open);
+    assert!(d.app().session.jobs.is_empty());
+    assert!(!Path::new(&chosen).exists());
+    d.snapshot("export-quick-invalid-dialog-name");
+    d.app().hooks.pick_save_as = Some(Box::new(|_, _, _| None));
+    d.click("quickExport.location");
+    assert_eq!(d.app().ui.export.quick_path, chosen, "cancelling the save dialog preserves the path");
+    d.click("quickExport.path");
+    d.ok("ui.key", json!({"key":"Cmd+A"}));
+    d.ok("ui.type", json!({"text":"音声 final 100%"}));
+    d.frames(2);
+    assert_eq!(d.app().ui.export.quick_path, corrected);
+    assert!(!d.has("quickExport.path.error"));
+    assert!(d.app().session.jobs.is_empty());
+    d.snapshot("export-quick-corrected-name-medium");
+}
+
+#[cfg(not(windows))]
+#[test]
+fn quick_export_rejects_backslashes_without_replacing_the_folder() {
+    let mut d = Driver::new("quick-backslash-validation");
+    let initial = d.path("original.wav");
+    d.ok("ui.set", json!({"export":{"quickPreset":"Waveform Audio 48 kHz 16-bit","quickPath":initial}}));
+    d.click("header.quickExport");
+    for name in [r"movie\", r"movie\draft"] {
+        d.click("quickExport.path");
+        d.ok("ui.key", json!({"key":"Cmd+A"}));
+        d.ok("ui.type", json!({"text":name}));
+        d.frames(6);
+        let expected = d.path(&format!("{name}.wav"));
+        assert_eq!(d.app().ui.export.quick_path, expected);
+        assert!(d.has("quickExport.path.error"), "the next frame must not turn the invalid name into a folder");
+        let location = d.ok("ui.elements", json!({"prefix":"quickExport.location"}));
+        assert_eq!(location[0]["label"], d.dir.to_string_lossy().as_ref());
+        let elements = d.ok("ui.elements", json!({"prefix":"quickExport.go"}));
+        assert_eq!(elements[0]["enabled"], false);
+        d.click("quickExport.go");
+        assert!(d.app().ui.export.quick_open);
+        assert!(d.app().session.jobs.is_empty());
+        assert!(d.queue().is_empty());
+        assert!(!Path::new(&d.path(name)).exists(), "disabled export creates no folder");
+        assert!(!Path::new(&d.path(&format!("{name}.wav"))).exists());
+    }
+    d.snapshot("export-quick-invalid-backslash");
+}

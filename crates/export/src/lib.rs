@@ -18,6 +18,7 @@ use std::io::Write;
 mod aac_out;
 mod audio_out;
 mod deflate;
+mod filename;
 mod job;
 mod mxf_out;
 mod pace;
@@ -28,6 +29,7 @@ mod raster;
 pub mod settings;
 pub mod still;
 pub use audio_out::LoudnessReport;
+pub use filename::{validate_output_filename, validate_output_path};
 pub use job::{Exporter, Step, stepped};
 pub use mxf_out::opatom_audio_paths;
 pub use pcm::{image_sequence_path, write_aiff, write_wav};
@@ -1839,6 +1841,7 @@ pub fn encode_still_with(format: Format, rgba: Vec<u8>, w: u32, h: u32, alpha: b
 
 /// Run an export (blocking; call from a worker thread).
 pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, sources: &dyn SourceProvider, progress: &Progress) -> Result<Report> {
+    validate_output_path(&settings.path).map_err(|message| ExportError::Unsupported(message.into()))?;
     settings.validate()?;
     if stepped(settings.format) {
         let mut ex = Exporter::new(project.clone(), seq, settings, progress)?;

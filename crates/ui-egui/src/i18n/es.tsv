@@ -3610,3 +3610,5 @@
 	Shows the version, community links and credits in a FilmCraft window.	Muestra la versión, los enlaces de la comunidad y los créditos en una ventana de FilmCraft.
 	Couldn't open your web browser	No se pudo abrir el navegador web
 	Open this address in your browser yourself:	Abre esta dirección tú mismo en el navegador:
+	Choose an output file name.	Indica un nombre para el archivo de salida.
+	File name cannot contain < > : " / \\ | ? * or control characters.	El nombre del archivo no puede contener < > : " / \\ | ? * ni caracteres de control.
