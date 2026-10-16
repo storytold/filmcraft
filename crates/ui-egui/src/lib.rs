@@ -170,6 +170,38 @@ pub struct HostHooks {
     /// Files or an image on the system clipboard, for Paste in the Timeline and the Project panel
     /// (#611). Without it Paste only pastes clips copied in FilmCraft.
     pub clipboard_media: Option<Box<dyn FnMut() -> Option<ClipboardMedia>>>,
+    /// The files the operating system asks us to open and its quit requests (macOS Apple events,
+    /// see [`OsEvent`]), polled every frame. Without it a file opened from Finder reaches only
+    /// AppKit, which answers that FilmCraft cannot open files in that format.
+    pub os_events: Option<OsEventsFn>,
+}
+
+/// A request from the operating system, delivered by the platform shell through
+/// [`HostHooks::os_events`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OsEvent {
+    /// Open these files (absolute paths): a Finder double-click, Open With, a drop on the Dock
+    /// icon. Handled as launch files are: a `.fcproj` opens as the project, the rest is imported.
+    Open(Vec<String>),
+    /// Quit (the Dock menu's Quit, log out, AppleScript): goes through the normal close path,
+    /// which asks about unsaved changes.
+    Quit,
+}
+
+/// Requests from the operating system since the last call (see [`OsEvent`]).
+pub type OsEventsFn = Box<dyn FnMut() -> Vec<OsEvent>>;
+
+/// The files the OS asked us to open, split as the launch files are: the first FilmCraft project
+/// (`.fcproj` in any case, as the Windows file associations and the Linux MIME glob start the app
+/// for `CUT.FCPROJ` too) is the project to open, and every file that is not a project is media
+/// to import.
+pub fn os_open_split(paths: &[String]) -> (Option<String>, Vec<String>) {
+    fn is_project(path: &str) -> bool {
+        std::path::Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("fcproj"))
+    }
+    let project = paths.iter().find(|p| is_project(p)).cloned();
+    let media = paths.iter().filter(|p| !is_project(p)).cloned().collect();
+    (project, media)
 }
 
 /// What [`HostHooks::clipboard_media`] found on the system clipboard.
@@ -1377,6 +1409,50 @@ impl FilmcraftApp {
         })
     }
 
+    /// Handle the requests the operating system queued since the last frame (see
+    /// [`HostHooks::os_events`]).
+    pub fn drain_os_events(&mut self, ctx: &egui::Context) {
+        let events = self.hooks.os_events.as_mut().map(|f| f()).unwrap_or_default();
+        for e in events {
+            match e {
+                OsEvent::Open(paths) if paths.is_empty() => {}
+                OsEvent::Open(paths) => {
+                    self.open_os_paths(ctx, paths);
+                    // Another app (Finder, the Dock) asked us to open: bring the window forward.
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    ctx.request_repaint();
+                }
+                OsEvent::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            }
+        }
+    }
+
+    /// Open the files the OS handed us as launch arguments are opened (`args::project_and_media`
+    /// in the desktop app): the first `.fcproj` as the project, as File ▸ Open Recent does, and
+    /// the others imported into the shown bin, as a drop on the window does. Failures go to the
+    /// status bar.
+    fn open_os_paths(&mut self, ctx: &egui::Context, paths: Vec<String>) {
+        let (project, media) = os_open_split(&paths);
+        if let Some(path) = project
+            && let Err(e) = menus::invoke(self, ctx, "file.open", json!({"path": path}))
+        {
+            self.ui.status = e;
+        }
+        if media.is_empty() {
+            return;
+        }
+        match self.session.execute("file.import", json!({"paths": media, "bin": self.import_bin().0})) {
+            Ok(v) => {
+                if let Some(errs) = v.get("errors").and_then(Value::as_array)
+                    && !errs.is_empty()
+                {
+                    self.ui.status = errs.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
+                }
+            }
+            Err(e) => self.ui.status = e.to_string(),
+        }
+    }
+
     /// Import dropped files. With Timeline ▸ drop imports to the timeline, the new items are also
     /// queued to be placed at the pointer (see `timeline::interact`).
     fn handle_drops(&mut self, ctx: &egui::Context) {
@@ -1752,6 +1828,7 @@ impl FilmcraftApp {
         }
         self.sync_timeline_view();
         self.handle_drops(&ctx);
+        self.drain_os_events(&ctx);
         if let Some(rx) = self.command_inbox.take() {
             while let Ok(id) = rx.try_recv() {
                 if self.control_input_only {
@@ -2810,5 +2887,80 @@ mod native_menu_tests {
         app.sync_native_menu();
         assert_eq!(last(&sent, "edit.undo"), Some(false));
         assert_eq!(last(&sent, "edit.redo"), Some(true), "the undone edit can be redone");
+    }
+}
+
+#[cfg(test)]
+mod os_event_tests {
+    //! Files and quit requests the operating system hands us (macOS Apple events; see `OsEvent`).
+    use super::*;
+    use filmcraft_engine::Session;
+
+    fn demo_app() -> FilmcraftApp {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        FilmcraftApp::new(session)
+    }
+
+    fn queue(app: &mut FilmcraftApp, mut events: Vec<OsEvent>) {
+        app.hooks.os_events = Some(Box::new(move || std::mem::take(&mut events)));
+    }
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("filmcraft-os-open-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn media_the_os_opens_is_imported_into_the_project() {
+        let dir = tmp("media");
+        let png = dir.join("shot.png");
+        image::RgbaImage::from_pixel(16, 9, image::Rgba([40, 120, 200, 255])).save(&png).unwrap();
+        let mut app = demo_app();
+        let before = app.session.project.items.len();
+        queue(&mut app, vec![OsEvent::Open(vec![png.to_string_lossy().into_owned()])]);
+        let ctx = egui::Context::default();
+        app.drain_os_events(&ctx);
+        assert_eq!(app.session.project.items.len(), before + 1, "the still is in the project");
+        // Drained: a second poll imports nothing more.
+        app.drain_os_events(&ctx);
+        assert_eq!(app.session.project.items.len(), before + 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_project_the_os_opens_replaces_the_current_one() {
+        let dir = tmp("project");
+        let path = dir.join("Cut.FCPROJ");
+        let path_str = path.to_string_lossy().into_owned();
+        let mut saved = demo_app();
+        saved.session.execute("file.saveAs", json!({"path": path_str})).unwrap();
+        let items = saved.session.project.items.len();
+        assert!(items > 0, "the demo project has items");
+        let mut app = FilmcraftApp::new(Session::default());
+        assert_eq!(app.session.project.items.len(), 0);
+        queue(&mut app, vec![OsEvent::Open(vec![path_str.clone()])]);
+        app.drain_os_events(&egui::Context::default());
+        assert_eq!(app.session.project.items.len(), items, "the project opened despite its upper-case extension");
+        assert_eq!(app.session.path.as_deref(), Some(path_str.as_str()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_first_project_opens_and_the_rest_is_media() {
+        let paths: Vec<String> = ["/a/clip.mp4", "/b/Cut.FCPROJ", "/c/other.fcproj", "/d/still.png"].map(String::from).into();
+        let (project, media) = os_open_split(&paths);
+        assert_eq!(project.as_deref(), Some("/b/Cut.FCPROJ"));
+        assert_eq!(media, vec!["/a/clip.mp4".to_string(), "/d/still.png".to_string()]);
+    }
+
+    #[test]
+    fn quit_and_empty_requests_do_not_panic() {
+        let mut app = demo_app();
+        let before = app.session.project.items.len();
+        queue(&mut app, vec![OsEvent::Open(Vec::new()), OsEvent::Quit]);
+        app.drain_os_events(&egui::Context::default());
+        assert_eq!(app.session.project.items.len(), before);
     }
 }

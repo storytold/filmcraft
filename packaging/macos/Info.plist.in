@@ -65,9 +65,110 @@
         <string>ai.storyteller.filmcraft.project</string>
       </array>
     </dict>
+    <!-- Media Finder may open with FilmCraft (Open With, drops on the Dock icon, `open -a`): it is
+         imported into the project, as a launch argument is. Alternate: FilmCraft never becomes
+         the default app for movies, sounds or images. The files arrive through the open-documents
+         Apple event (apps/filmcraft/src/apple_events.rs); without these claims Launch Services
+         reports that FilmCraft cannot open files in that format. Formats without a system type
+         (MXF, VOB, Y4M, Ogg, Opus, DPX) still import through File ▸ Import, drops and arguments. -->
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Movie</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.mpeg-4</string>
+        <string>com.apple.m4v-video</string>
+        <string>com.apple.quicktime-movie</string>
+        <string>public.avi</string>
+        <string>public.mpeg</string>
+        <string>public.mpeg-2-video</string>
+        <string>public.mpeg-2-transport-stream</string>
+        <string>public.3gpp</string>
+        <string>org.matroska.mkv</string>
+        <string>org.webmproject.webm</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Audio</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>com.microsoft.waveform-audio</string>
+        <string>public.aiff-audio</string>
+        <string>public.mp3</string>
+        <string>public.mp2</string>
+        <string>public.mpeg-4-audio</string>
+        <string>public.aac-audio</string>
+        <string>org.xiph.flac</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Image</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.png</string>
+        <string>public.jpeg</string>
+        <string>com.compuserve.gif</string>
+        <string>org.webmproject.webp</string>
+        <string>public.tiff</string>
+        <string>com.microsoft.bmp</string>
+        <string>com.truevision.tga-image</string>
+        <string>com.ilm.openexr-image</string>
+        <string>public.radiance</string>
+        <string>com.adobe.raw-image</string>
+      </array>
+    </dict>
   </array>
 
   <!-- Filmcraft's own format. -->
+  <!-- Container formats macOS declares no type for; imported so the Movie claim above resolves. -->
+  <key>UTImportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>org.matroska.mkv</string>
+      <key>UTTypeDescription</key>
+      <string>Matroska Video</string>
+      <key>UTTypeConformsTo</key>
+      <array><string>public.movie</string></array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array><string>mkv</string></array>
+        <key>public.mime-type</key>
+        <array><string>video/x-matroska</string></array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>org.webmproject.webm</string>
+      <key>UTTypeDescription</key>
+      <string>WebM Video</string>
+      <key>UTTypeConformsTo</key>
+      <array><string>public.movie</string></array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array><string>webm</string></array>
+        <key>public.mime-type</key>
+        <array><string>video/webm</string></array>
+      </dict>
+    </dict>
+  </array>
+
   <key>UTExportedTypeDeclarations</key>
   <array>
     <dict>
