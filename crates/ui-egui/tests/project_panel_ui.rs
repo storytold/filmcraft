@@ -500,6 +500,40 @@ fn select_all_takes_only_the_shown_bin() {
     assert_eq!(sorted(&d.app().session.state.project_selection), footage);
 }
 
+/// With a sequence open, the native macOS menu has Select All enabled and takes Cmd+A (and
+/// Cmd+Shift+A) before the window sees the key: with the Project panel focused they still act on
+/// its items, not on the Timeline's clips (#1752).
+#[test]
+fn native_menu_select_all_acts_on_the_focused_project_panel() {
+    let mut d = Driver::demo();
+    assert!(d.app().session.active_sequence().is_some());
+    d.ok("ui.panel.show", json!({"panel": "Project"}));
+    d.exec("project.view.set", json!({"view": "list"}));
+    let (bin, shown) = d.footage();
+    d.app().ui.expanded_bins = vec![bin];
+    d.frames(2);
+    let clip = d.app().session.active_sequence().and_then(|q| q.all_tracks().find_map(|t| t.items.first().map(|i| i.id))).unwrap();
+    d.exec("timeline.select", json!({"clips": [clip.0]}));
+    let timeline = d.app().session.state.selection.clone();
+    assert!(shown.len() > 1, "{shown:?}");
+    let item = shown[0];
+    d.wait_for(&format!("project.item.{item}"));
+    d.click(&format!("project.item.{item}"));
+    assert_eq!(d.app().ui.focused, filmcraft_ui_egui::dock::PanelKind::Project);
+    assert_eq!(selection(&mut d), vec![item]);
+
+    let (tx, rx) = channel();
+    d.app().command_inbox = Some(rx);
+    tx.send("edit.selectAll".to_string()).unwrap();
+    d.frames(2);
+    assert_eq!(selection(&mut d), sorted(shown), "Select All selects the panel's items");
+    assert_eq!(d.app().session.state.selection, timeline, "and leaves the timeline selection alone");
+    tx.send("edit.deselectAll".to_string()).unwrap();
+    d.frames(2);
+    assert!(selection(&mut d).is_empty(), "Deselect All clears the panel's selection");
+    assert_eq!(d.app().session.state.selection, timeline, "and leaves the timeline selection alone");
+}
+
 #[test]
 fn a_dragged_bin_nests_in_another_and_back_out() {
     // #456: a bin stayed wherever it was created; dragging it onto another bin did nothing
