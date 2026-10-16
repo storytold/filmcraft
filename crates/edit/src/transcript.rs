@@ -270,6 +270,215 @@ pub fn ripple_delete_ranges(seq: &mut Sequence, ranges: Vec<TimeRange>, ctx: &mu
     total
 }
 
+/// Lift every range on every unlocked track, leaving gaps (Delete with Lift chosen).
+pub fn lift_ranges(seq: &mut Sequence, ranges: Vec<TimeRange>, ctx: &mut EditCtx) -> Tick {
+    let tracks: Vec<TrackId> = seq.all_tracks().filter(|t| !t.locked).map(|t| t.id).collect();
+    let mut total = Tick::ZERO;
+    for r in merge_ranges(ranges) {
+        if r.duration <= Tick::ZERO {
+            continue;
+        }
+        crate::lift(seq, &tracks, r, ctx);
+        total += r.duration;
+    }
+    total
+}
+
+// ---------------------------------------------------------------------------------------------
+// Voice and pauses
+// ---------------------------------------------------------------------------------------------
+
+/// Where the sequence's transcribed clips have voice, in sequence time.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SeqVoice {
+    /// Voiced ranges, sorted and merged. From each transcript's waveform voice map; for a
+    /// transcript without one (imported, or older), its words.
+    pub spans: Vec<TimeRange>,
+    /// The ranges a transcribed clip covers (sorted, merged), with the empty stretches of the
+    /// timeline between them: the only places a pause can be. An untranscribed clip is never read
+    /// as silence, so its dialogue can't be deleted as a pause.
+    pub covered: Vec<TimeRange>,
+}
+
+/// `r` minus every range in `cut` (any order).
+fn subtract(r: TimeRange, cut: &[TimeRange]) -> Vec<TimeRange> {
+    let mut out = vec![r];
+    for c in cut {
+        let mut next = Vec::with_capacity(out.len() + 1);
+        for p in out {
+            if !p.overlaps(c) {
+                next.push(p);
+                continue;
+            }
+            if c.start > p.start {
+                next.push(TimeRange::from_bounds(p.start, c.start));
+            }
+            if c.end() < p.end() {
+                next.push(TimeRange::from_bounds(c.end(), p.end()));
+            }
+        }
+        out = next;
+    }
+    out.retain(|p| p.duration > Tick::ZERO);
+    out
+}
+
+/// The voice of the sequence (see [`SeqVoice`]); clips are read like [`sequence_words`] (top
+/// track first, a lower track's clip only where no higher transcribed clip plays).
+pub fn sequence_voice(seq: &Sequence, transcripts: &Transcripts) -> SeqVoice {
+    let mut spans = Vec::new();
+    let mut covered = Vec::new();
+    let mut claimed: Vec<TimeRange> = Vec::new();
+    for track in &seq.audio_tracks {
+        let mut mine = Vec::new();
+        for it in &track.items {
+            if !it.enabled || it.reverse || it.frame_hold.is_some() || it.speed <= 0.0 {
+                continue;
+            }
+            let Some(tr) = transcripts.get(&it.item) else { continue };
+            mine.push(it.range());
+            let visible = subtract(it.range(), &claimed);
+            if visible.is_empty() {
+                continue;
+            }
+            let speed = it.speed;
+            let to_tl = |m: Tick| it.start + ticks((m - it.source_in).0 as f64 / speed);
+            let media_end = it.source_in + ticks(it.duration.0 as f64 * speed);
+            let media: Vec<(Tick, Tick)> =
+                if tr.voice.is_empty() { tr.words.iter().map(|w| (w.start, w.end.max(w.start))).collect() } else { tr.voice.clone() };
+            for (a, b) in media {
+                if b <= it.source_in || a >= media_end {
+                    continue;
+                }
+                let r = TimeRange::from_bounds(to_tl(a.max(it.source_in)), to_tl(b.min(media_end)));
+                for v in &visible {
+                    let (s, e) = (r.start.max(v.start), r.end().min(v.end()));
+                    if e > s {
+                        spans.push(TimeRange::from_bounds(s, e));
+                    }
+                }
+            }
+            covered.extend(visible);
+        }
+        claimed.extend(mine);
+    }
+    // an empty stretch of the timeline (no clip on any track) between two transcribed ranges is
+    // silence too: it joins the silence around it, so Delete closes it with the pause
+    let covered = merge_ranges(covered);
+    let mut used: Vec<TimeRange> = seq.all_tracks().flat_map(|t| t.items.iter().map(|i| i.range())).collect();
+    used.sort_by_key(|r| r.start);
+    let mut gaps = Vec::new();
+    for w in covered.windows(2) {
+        let g = TimeRange::from_bounds(w[0].end(), w[1].start);
+        let lo = used.partition_point(|u| u.end() <= g.start);
+        if g.duration > Tick::ZERO && !used[lo..].iter().take_while(|u| u.start < g.end()).any(|u| u.overlaps(&g)) {
+            gaps.push(g);
+        }
+    }
+    SeqVoice { spans: merge_ranges(spans), covered: merge_ranges(covered.into_iter().chain(gaps).collect()) }
+}
+
+/// A pause: silence between voice inside the transcribed part of the sequence.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pause {
+    /// From the end of the voice before it to the start of the voice after it.
+    pub range: TimeRange,
+    /// The last word before it and the first word after it (`None` at the start or the end).
+    pub before: Option<usize>,
+    pub after: Option<usize>,
+    /// Voice on that side. False where the pause runs to the edge of the transcribed range: a
+    /// take's lead-in before its first word, or its tail after the last.
+    pub voiced_before: bool,
+    pub voiced_after: bool,
+}
+
+/// Pauses of at least `min`: silences between the voiced spans of `voice` within its covered
+/// ranges, and never inside a recognised word, whatever the waveform says there (a stop closure,
+/// a quiet syllable or word ending below the gate): a pause is cut, a word is speech.
+pub fn find_voice_pauses(words: &[SeqWord], voice: &SeqVoice, min: Tick) -> Vec<Pause> {
+    let mid = |w: &SeqWord| Tick(w.start.0 + (w.end.0 - w.start.0) / 2);
+    // everything that is speech, merged once (sorted): the pauses are what the covered ranges
+    // leave of it, found in one sweep however long the sequence is
+    let mut speech: Vec<TimeRange> = voice.spans.clone();
+    speech.extend(words.iter().map(SeqWord::range).filter(|r| r.duration > Tick::ZERO));
+    let speech = merge_ranges(speech);
+    let mut out = Vec::new();
+    for c in &voice.covered {
+        let lo = speech.partition_point(|v| v.end() <= c.start);
+        let mut gaps = Vec::new();
+        let mut at = c.start;
+        for v in speech[lo..].iter().take_while(|v| v.start < c.end()) {
+            if v.start > at {
+                gaps.push(TimeRange::from_bounds(at, v.start));
+            }
+            at = at.max(v.end());
+        }
+        if at < c.end() {
+            gaps.push(TimeRange::from_bounds(at, c.end()));
+        }
+        for g in gaps {
+            if g.duration < min.max(Tick(1)) {
+                continue;
+            }
+            let m = Tick(g.start.0 + g.duration.0 / 2);
+            let after_i = words.partition_point(|w| mid(w) < m);
+            out.push(Pause {
+                range: g,
+                before: after_i.checked_sub(1),
+                after: (after_i < words.len()).then_some(after_i),
+                voiced_before: g.start > c.start,
+                voiced_after: g.end() < c.end(),
+            });
+        }
+    }
+    out.sort_by_key(|p| p.range.start);
+    out
+}
+
+/// What Delete removes for a pause: the silence less `keep_after` after the voice before it and
+/// `keep_before` before the voice after it (a tight YouTube pause cut keeps about 30 ms and 35 ms), rounded
+/// inward to frames. `None` when less than a frame would go.
+pub fn pause_cut(p: &Pause, keep_after: Tick, keep_before: Tick, rate: FrameRate) -> Option<TimeRange> {
+    let s = p.range.start + if p.voiced_before { keep_after.max(Tick::ZERO) } else { Tick::ZERO };
+    let e = p.range.end() - if p.voiced_after { keep_before.max(Tick::ZERO) } else { Tick::ZERO };
+    let (s, e) = (rate.snap_edit(s), rate.snap_frame(e));
+    (e > s).then(|| TimeRange::from_bounds(s, e))
+}
+
+/// Voice with no word on it (a stutter or restart the recogniser tidied away, a laugh) of at least
+/// `min`. The Text panel shows these, and they are never pauses.
+pub fn unlabelled_speech(words: &[SeqWord], voice: &SeqVoice, min: Tick) -> Vec<TimeRange> {
+    let pad = Tick(TICKS_PER_SECOND / 12);
+    let near: Vec<TimeRange> = words.iter().map(|w| TimeRange::from_bounds(w.start - pad, w.end.max(w.start) + pad)).collect();
+    let mut out = Vec::new();
+    for v in &voice.spans {
+        let lo = near.partition_point(|n| n.end() <= v.start);
+        let hits: Vec<TimeRange> = near[lo..].iter().take_while(|n| n.start < v.end()).copied().collect();
+        out.extend(subtract(*v, &hits).into_iter().filter(|r| r.duration >= min));
+    }
+    out
+}
+
+/// One entry of the Text panel's transcript, in time order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Token {
+    Word(usize),
+    Pause(usize),
+    /// Index into the unlabelled speech list.
+    Speech(usize),
+}
+
+/// Words, pauses and unlabelled speech in time order (a pause sits between the words around it).
+pub fn layout(words: &[SeqWord], pauses: &[Pause], speech: &[TimeRange]) -> Vec<Token> {
+    let mut v: Vec<(Tick, u8, Token)> = Vec::with_capacity(words.len() + pauses.len() + speech.len());
+    let mid = |a: Tick, b: Tick| Tick(a.0 + (b.0 - a.0) / 2);
+    v.extend(words.iter().enumerate().map(|(i, w)| (mid(w.start, w.end), 1, Token::Word(i))));
+    v.extend(pauses.iter().enumerate().map(|(i, p)| (mid(p.range.start, p.range.end()), 0, Token::Pause(i))));
+    v.extend(speech.iter().enumerate().map(|(i, r)| (mid(r.start, r.end()), 2, Token::Speech(i))));
+    v.sort_by_key(|(t, k, _)| (*t, *k));
+    v.into_iter().map(|(_, _, t)| t).collect()
+}
+
 /// Rules for Create Captions from a transcript (Premiere's dialog defaults).
 #[derive(Clone, Debug, PartialEq)]
 pub struct CaptionRules {

@@ -13,6 +13,10 @@ workspace = true
 default = []
 # Whisper inference on the CPU via candle (pure Rust). Off by default (and in wasm builds).
 whisper = ["dep:candle-core", "dep:candle-nn"]
+# Run Whisper on the Apple GPU through candle's Metal backend (objc2-metal bindings; the Metal
+# shaders are compiled by macOS at first use). Optional, like VideoToolbox decoding: the CPU path
+# stays the tested fallback, and `load` falls back to it when no Metal device can be created.
+metal = ["whisper", "candle-core/metal", "candle-nn/metal"]
 # Model downloads over HTTPS (pure-Rust TLS: rustls + RustCrypto, OS certificate verification).
 download = ["dep:ureq", "dep:rustls", "dep:rustls-rustcrypto", "dep:sha2"]
 
@@ -33,3 +37,4 @@ sha2 = { version = "0.10", optional = true }
 [[example]]
 name = "transcribe"
 required-features = ["whisper"]
+

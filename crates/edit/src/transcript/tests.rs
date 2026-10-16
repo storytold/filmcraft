@@ -296,3 +296,207 @@ fn captions_never_overlap_with_dense_words() {
     let b = caption_blocks(&words, &rules, R);
     check_blocks(&b, &rules);
 }
+
+// ---- voice and pauses ----------------------------------------------------------------------
+
+const VOICED: ItemId = ItemId(2);
+
+/// "so but then", with voice measured from a waveform: lead-in silence to 0.5 s, "so" 0.5–0.8,
+/// a 60 ms flicker, "but" 0.86–1.30 with a 100 ms stop closure inside it (1.00–1.10), a 0.4 s
+/// pause, "then" 1.70–2.00, then a 0.3 s voiced stretch with no word (a tidied-away restart),
+/// silence to 3.0 s.
+fn voiced() -> Transcript {
+    let w = |t: &str, a: f64, b: f64| filmcraft_project::Word::new(t, s(a), s(b));
+    let mut t = Transcript {
+        language: "en".into(),
+        words: vec![w("so", 0.50, 0.80), w("but", 0.86, 1.30), w("then", 1.70, 2.00)],
+        voice: vec![(s(0.50), s(0.80)), (s(0.86), s(1.00)), (s(1.10), s(1.30)), (s(1.70), s(2.00)), (s(2.20), s(2.50))],
+        ..Default::default()
+    };
+    t.normalize();
+    t.check().unwrap();
+    t
+}
+
+fn voiced_seq(clips: Vec<TrackItem>) -> (Sequence, Transcripts) {
+    let mut q = seq();
+    q.audio_tracks[0].items = clips
+        .into_iter()
+        .map(|mut c| {
+            c.item = VOICED;
+            c
+        })
+        .collect();
+    let mut m = Transcripts::new();
+    m.insert(VOICED, Arc::new(voiced()));
+    (q, m)
+}
+
+#[test]
+fn voice_maps_through_the_clip_like_words() {
+    // the clip shows media 0.6–3.0 at timeline 10.0, at double speed
+    let mut c = clip(1, 10.0, 1.2, 0.6);
+    c.speed = 2.0;
+    let (q, m) = voiced_seq(vec![c]);
+    let v = sequence_voice(&q, &m);
+    assert_eq!(v.covered, vec![TimeRange::from_bounds(s(10.0), s(11.2))]);
+    // 0.5–0.8 is clipped to the In point (0.6) and halved: 10.00–10.10
+    assert_eq!(v.spans.first(), Some(&TimeRange::from_bounds(s(10.0), s(10.1))));
+    assert_eq!(v.spans.last(), Some(&TimeRange::from_bounds(s(10.8), s(10.95))));
+    // a transcript without a voice map: its words are the voice
+    let mut plain = voiced();
+    plain.voice.clear();
+    let mut m2 = Transcripts::new();
+    m2.insert(VOICED, Arc::new(plain));
+    let (q2, _) = voiced_seq(vec![clip(1, 0.0, 3.0, 0.0)]);
+    let v2 = sequence_voice(&q2, &m2);
+    assert_eq!(v2.spans.len(), 3);
+    assert_eq!(v2.spans[1], TimeRange::from_bounds(s(0.86), s(1.30)));
+}
+
+#[test]
+fn pauses_come_from_the_voice_not_the_words() {
+    let (q, m) = voiced_seq(vec![clip(1, 0.0, 3.0, 0.0)]);
+    let w = sequence_words(&q, &m);
+    let v = sequence_voice(&q, &m);
+    let p = find_voice_pauses(&w, &v, s(0.08));
+    let ranges: Vec<(Tick, Tick)> = p.iter().map(|p| (p.range.start, p.range.end())).collect();
+    // lead-in, the 0.4 s pause, the gap before the wordless voice and the tail; not the 60 ms
+    // flicker (below the minimum) nor the stop closure inside "but"
+    assert_eq!(ranges, vec![(s(0.0), s(0.5)), (s(1.3), s(1.7)), (s(2.0), s(2.2)), (s(2.5), s(3.0))]);
+    assert!(!p[0].voiced_before && p[0].voiced_after && p[0].before.is_none() && p[0].after == Some(0));
+    assert_eq!((p[1].before, p[1].after), (Some(1), Some(2)));
+    assert!(p[3].voiced_before && !p[3].voiced_after && p[3].after.is_none());
+    // with a 0.3 s pause length only the lead-in, the 0.4 s pause and the tail are pauses
+    assert_eq!(find_voice_pauses(&w, &v, s(0.3)).len(), 3);
+    // a word is never cut, even where the waveform is quiet all through it (a soft syllable
+    // below the gate): "but" spans 0.86–1.30 but has voice only at its edges
+    let mut quiet = voiced();
+    quiet.voice = vec![(s(0.50), s(0.80)), (s(0.86), s(0.90)), (s(1.25), s(1.30)), (s(1.70), s(2.00))];
+    let mut m3 = Transcripts::new();
+    m3.insert(VOICED, Arc::new(quiet));
+    let p3 = find_voice_pauses(&sequence_words(&q, &m3), &sequence_voice(&q, &m3), s(0.08));
+    assert!(p3.iter().all(|p| p.range.end() <= s(0.86) || p.range.start >= s(1.30)), "{p3:?}");
+    // a pause that runs into a word stops at the word
+    let mut early = voiced();
+    early.voice = vec![(s(0.50), s(0.80)), (s(0.86), s(1.30)), (s(1.80), s(2.00))];
+    let mut m4 = Transcripts::new();
+    m4.insert(VOICED, Arc::new(early));
+    let p4 = find_voice_pauses(&sequence_words(&q, &m4), &sequence_voice(&q, &m4), s(0.08));
+    assert!(p4.iter().any(|p| p.range == TimeRange::from_bounds(s(1.30), s(1.70))), "{p4:?}");
+}
+
+#[test]
+fn an_untranscribed_clip_is_never_a_pause() {
+    // transcribed 0–3 s, an untranscribed clip 3–5 s, transcribed again 5–8 s
+    let (mut q, m) = voiced_seq(vec![clip(1, 0.0, 3.0, 0.0), clip(3, 5.0, 3.0, 0.0)]);
+    let mut other = clip(2, 3.0, 2.0, 0.0);
+    other.item = ItemId(99);
+    q.audio_tracks[0].items.insert(1, other);
+    let v = sequence_voice(&q, &m);
+    assert_eq!(v.covered, vec![TimeRange::from_bounds(s(0.0), s(3.0)), TimeRange::from_bounds(s(5.0), s(8.0))]);
+    let p = find_voice_pauses(&sequence_words(&q, &m), &v, s(0.08));
+    assert!(p.iter().all(|p| p.range.end() <= s(3.0) || p.range.start >= s(5.0)), "{p:?}");
+}
+
+#[test]
+fn an_empty_timeline_gap_joins_the_silence_around_it() {
+    // the same take twice with 1.5 s of empty timeline between: its tail (2.0–3.0), the gap
+    // (3.0–4.5) and the second copy's lead-in (4.5–5.0) are one pause
+    let (q, m) = voiced_seq(vec![clip(1, 0.0, 3.0, 0.0), clip(2, 4.5, 3.0, 0.0)]);
+    let v = sequence_voice(&q, &m);
+    assert_eq!(v.covered, vec![TimeRange::from_bounds(s(0.0), s(7.5))]);
+    let p = find_voice_pauses(&sequence_words(&q, &m), &v, s(0.3));
+    assert!(p.iter().any(|p| p.range == TimeRange::from_bounds(s(2.5), s(5.0)) && p.voiced_before && p.voiced_after), "{p:?}");
+    // with anything on any track in the gap (here a video clip) it is not silence we may cut
+    let (mut q2, m2) = voiced_seq(vec![clip(1, 0.0, 3.0, 0.0), clip(2, 4.5, 3.0, 0.0)]);
+    q2.video_tracks[0].items.push(clip(9, 3.2, 0.5, 0.0));
+    assert_eq!(sequence_voice(&q2, &m2).covered.len(), 2);
+}
+
+#[test]
+fn pause_cuts_keep_pats_margins_and_round_inward_to_frames() {
+    let (q, m) = voiced_seq(vec![clip(1, 0.0, 3.0, 0.0)]);
+    let w = sequence_words(&q, &m);
+    let p = find_voice_pauses(&w, &sequence_voice(&q, &m), s(0.08));
+    let fd = R.frame_duration(); // 40 ms at 25 fps
+    let (after, before) = (s(0.030), s(0.035));
+    // 1.30–1.70: 1.33 rounds up to 1.36, 1.665 down to 1.64
+    assert_eq!(pause_cut(&p[1], after, before, R), Some(TimeRange::from_bounds(s(1.36), s(1.64))));
+    // the lead-in keeps nothing before the take starts: 0.0 to 0.465 → 0.44
+    assert_eq!(pause_cut(&p[0], after, before, R), Some(TimeRange::from_bounds(s(0.0), s(0.44))));
+    // the tail runs to the end: 2.53 → 2.56 to 3.0
+    assert_eq!(pause_cut(&p[3], after, before, R), Some(TimeRange::from_bounds(s(2.56), s(3.0))));
+    // 0.2 s less two 80 ms margins is exactly one frame; with 90 ms margins nothing is left
+    assert_eq!(pause_cut(&p[2], s(0.08), s(0.08), R), Some(TimeRange::from_bounds(s(2.08), s(2.12))));
+    assert_eq!(pause_cut(&p[2], s(0.09), s(0.09), R), None);
+    for c in p.iter().filter_map(|p| pause_cut(p, after, before, R)) {
+        assert_eq!(R.snap(c.start), c.start);
+        assert_eq!(R.snap(c.end()), c.end());
+        assert!(c.duration >= fd);
+    }
+}
+
+#[test]
+fn wordless_voice_is_shown_and_the_layout_is_in_time_order() {
+    let (q, m) = voiced_seq(vec![clip(1, 0.0, 3.0, 0.0)]);
+    let w = sequence_words(&q, &m);
+    let v = sequence_voice(&q, &m);
+    let speech = unlabelled_speech(&w, &v, s(0.1));
+    assert_eq!(speech, vec![TimeRange::from_bounds(s(2.20), s(2.50))]);
+    let p = find_voice_pauses(&w, &v, s(0.3));
+    assert_eq!(
+        layout(&w, &p, &speech),
+        vec![Token::Pause(0), Token::Word(0), Token::Word(1), Token::Pause(1), Token::Word(2), Token::Speech(0), Token::Pause(2)]
+    );
+}
+
+#[test]
+fn lift_leaves_the_gaps_extract_closes_them() {
+    let (q, m) = voiced_seq(vec![clip(1, 0.0, 3.0, 0.0)]);
+    let w = sequence_words(&q, &m);
+    let p = find_voice_pauses(&w, &sequence_voice(&q, &m), s(0.3));
+    let cuts: Vec<TimeRange> = p.iter().filter_map(|p| pause_cut(p, s(0.03), s(0.035), R)).collect();
+    let total = cuts.iter().fold(Tick::ZERO, |a, c| a + c.duration);
+    let mut next = 1000;
+    let mut ctx = EditCtx { next_id: &mut next, media_duration: &media_dur, media_start: &|_| Tick::ZERO, min_duration: R.frame_duration() };
+    let mut lifted = q.clone();
+    assert_eq!(lift_ranges(&mut lifted, cuts.clone(), &mut ctx), total);
+    lifted.check().unwrap();
+    // lifting leaves every word where it was (only the tail after the last voice is gone)
+    let lw = sequence_words(&lifted, &m);
+    assert_eq!(lw.iter().map(|x| (x.start, x.end)).collect::<Vec<_>>(), w.iter().map(|x| (x.start, x.end)).collect::<Vec<_>>());
+    let mut extracted = q.clone();
+    assert_eq!(ripple_delete_ranges(&mut extracted, cuts, &mut ctx), total);
+    extracted.check().unwrap();
+    assert_eq!(extracted.duration(), q.duration() - total);
+    // the words all survive, closer together
+    assert_eq!(texts(&sequence_words(&extracted, &m)), texts(&w));
+}
+
+/// An hour of speech (a word and its voice every 0.5 s, 0.2 s pauses): finding the pauses stays
+/// fast (it used to compare every span with every other).
+#[test]
+fn pauses_of_an_hour_long_transcript_are_found_quickly() {
+    let n = 7200;
+    let mut t = Transcript { language: "en".into(), ..Default::default() };
+    for i in 0..n {
+        let a = i as f64 * 0.5;
+        t.words.push(filmcraft_project::Word::new("w", s(a), s(a + 0.3)));
+        t.voice.push((s(a), s(a + 0.3)));
+    }
+    let mut q = seq();
+    let mut c = clip(1, 0.0, n as f64 * 0.5, 0.0);
+    c.item = VOICED;
+    q.audio_tracks[0].items.push(c);
+    let mut m = Transcripts::new();
+    m.insert(VOICED, Arc::new(t));
+    let t0 = std::time::Instant::now();
+    let w = sequence_words(&q, &m);
+    let v = sequence_voice(&q, &m);
+    let p = find_voice_pauses(&w, &v, s(0.15));
+    let sp = unlabelled_speech(&w, &v, s(0.1));
+    let _ = layout(&w, &p, &sp);
+    assert_eq!(p.len(), n, "a pause after every word (the last one is the tail)");
+    assert!(t0.elapsed() < std::time::Duration::from_secs(2), "{:?}", t0.elapsed());
+}
