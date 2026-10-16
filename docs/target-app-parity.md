@@ -1,6 +1,6 @@
 # Parity with Adobe Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (full re-measure against Premiere Pro 2026 26.5.2; replaces the scorecard and estimate that lived in ROADMAP.md) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (AVI import #650, E-AC-3 decode #647 and Russian menus #610 no longer counted as missing; percentages and hours not re-measured) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
 
 The authoritative assessment of how close FilmCraft is to Premiere Pro, and how much work is left.
 [ROADMAP.md](../ROADMAP.md) summarizes it; [gaps.md](gaps.md) lists every shortfall one at a time.
@@ -23,7 +23,7 @@ The deep checklists are [file-format-parity.md](file-format-parity.md),
 
 The previous estimate (2026-10-05) was breadth ~87%, ready ~50–60%, and "~210–325 agent-hours to
 100%". The breadth figure is one point lower now because this pass counts the file formats Premiere
-lists and we lack (AVI, WMV, camera RAW, EXR / DPX / PSD stills, `.prproj`, DVD / Blu-ray / DCP
+lists and we lack (WMV, camera RAW, EXR / DPX / PSD stills, `.prproj`, DVD / Blu-ray / DCP
 export) rather than only the formats we have. The hours went up because the old figure covered the
 checklist only and left out plugins, AI, localization, `.prproj` and the depth work that 188 open
 issues now document. That is new evidence, not drift: see [Calibration](#calibration).
@@ -109,7 +109,7 @@ agent-hours to close the area to Premiere, sequential.
 |---|---|---|---|---|---|---|
 | Editing, timeline, trimming, multicam | 20% | ~90% | ~70% | 80–140 | Edit algebra, trim modes, Trim Monitor, multicam with audio sync, Premiere default keyboard (143 commands), Source playback and range dragging (10-08). Open: ripple-delete of a gap by column (#668), Backspace on gaps (#648), clip stretching (#653), deselect on empty space (#683), new tracks by dragging media (#483), Escape cancelling drags (#580 fixed), time remapping (#510), effects on a whole track (#623) | [ui-parity.md](ui-parity.md) |
 | Effects and transitions | 12% | 100% (measured) | ~60% | 80–140 | Every effect exists; Warp Stabilizer is 2-D, Auto Reframe approximate, Morph Cut morphs with optical flow but without face tracking (#805); Optical Flow time interpolation is motion compensated on the CPU (#780). 34 effect ids run on the GPU against ~82 of Premiere's ~92 marked Accelerated. No Object Mask (26.0, AI). | [hardware-parity.md](hardware-parity.md) |
-| Media import and codecs | 12% | ~75% | ~60% | 150–250 | Own bit-exact decoders for H.264, HEVC, VP9, AV1, ProRes, DNx, APV, MPEG-2, AAC, AC-3, Opus. But H.264 only 8-bit 4:2:0 and HEVC no 4:2:2 in software (most 10-bit cameras, #626); no camera RAW (R3D, ARRIRAW, BRAW, Sony RAW, Canon RAW, ProRes RAW, #345, #383); no E-AC-3 (#647), AVI (#598), WMV, DV, XAVC / P2 metadata; Sony start timecode (#460); WebM black (#432) | [codec-parity.md](codec-parity.md), [file-format-parity.md](file-format-parity.md) |
+| Media import and codecs | 12% | ~75% | ~60% | 150–250 | Own bit-exact decoders for H.264, HEVC, VP9, AV1, ProRes, DNx, APV, MPEG-2, AAC, AC-3, Opus. But H.264 only 8-bit 4:2:0 and HEVC no 4:2:2 in software (most 10-bit cameras, #626); no camera RAW (R3D, ARRIRAW, BRAW, Sony RAW, Canon RAW, ProRes RAW, #345, #383); E-AC-3 plays its 5.1 core only (#647), no WMV, DV, XAVC / P2 metadata; Sony start timecode (#460) | [codec-parity.md](codec-parity.md), [file-format-parity.md](file-format-parity.md) |
 | Audio | 10% | ~88% | ~65% | 50–90 | Mixer graph, automation, all 53 effects, Essential Sound, 5.1, voice-over, Remix, multi-stream container audio (#361). Device and playback reports: crackle / cut-outs (#336, #410, #602, #605, #617); Enhance Speech is DSP, not a model; ALSA fallback fixed (#254) | |
 | Panels and UI fidelity | 10% | ~88% | ~60% | 120–200 | All main panels. Missing: on-screen transform handles in the Program monitor (#639), Effect Controls keyframe zoom / divider / row lines (#640–#645), docking rearrangement (#493), multi-monitor windows (#466), filmstrip thumbnails (#614), marquee in Project panel (#578) | [ui-parity.md](ui-parity.md) |
 | Colour | 8% | ~90% | ~70% | 40–70 | Lumetri complete incl. scopes, LUTs, colour management, HDR export. Lumetri on the GPU covers basic, creative and vignette only; HDR-aware Lumetri maths, macOS EDR display, D-Log M; a Lumetri report (#628) | |
@@ -128,7 +128,7 @@ agent-hours to close the area to Premiere, sequential.
 | File formats (containers, project, interchange, captions, stills) | ~60% | 140–240 | [file-format-parity.md](file-format-parity.md) |
 | Codecs (decode and encode, fidelity, camera media) | ~60% | 150–250 | [codec-parity.md](codec-parity.md) |
 | Hardware acceleration (decode, encode, GPU effects, I/O devices) | ~45% | 120–200 | [hardware-parity.md](hardware-parity.md) |
-| Localization (12 key languages) | ~35% of Premiere's set; 4 of 12 key languages near-complete | 150–230 | [localization-parity.md](localization-parity.md) |
+| Localization (12 key languages) | ~35% of Premiere's set; 7 of 12 key languages near-complete | 150–230 | [localization-parity.md](localization-parity.md) |
 | Performance (beyond hardware) | ~55% | 60–120 | [performance.md](performance.md) |
 | Stability | ~45% | 60–120 | [gaps.md](gaps.md#g4-crashes-at-start-up-and-no-test-ci-on-pull-requests) |
 | Platforms | ~60% | 50–90 | [gaps.md](gaps.md#g9-windows-and-linux-at-run-time) |
@@ -211,7 +211,7 @@ full-area depth (e.g. the ~20 common effects rather than all 93 and their approx
 | Area | Weight | Depth | Why |
 |---|---|---|---|
 | Editing and trimming | 28% | 80% | Insert / overwrite, ripple / roll / slip / slide, razor, J/K/L, markers, multicam all work; gap deletion (#648, #668) and deselect (#683) are friction |
-| Importing everyday footage | 14% | 65% | Phone and 8-bit camera H.264 / HEVC, ProRes, DNx, MXF open; 10-bit / 4:2:2 H.264 (Sony XAVC S-I, Canon) does not (#626); E-AC-3, AVI missing |
+| Importing everyday footage | 14% | 65% | Phone and 8-bit camera H.264 / HEVC, ProRes, DNx, MXF open; 10-bit / 4:2:2 H.264 (Sony XAVC S-I, Canon) does not (#626); WMV and DV missing |
 | Common effects and transitions | 9% | 75% | Lumetri, Transform, Crop, blurs, Cross Dissolve, keys exist; Warp Stabilizer is 2-D, Object Mask missing |
 | Colour (Lumetri, scopes, LUTs) | 9% | 80% | Complete, parity-tested CPU / GPU; curves / wheels on CPU |
 | Audio (levels, Essential Sound, loudness, ducking) | 11% | 75% | Complete; audio-device reports off macOS |
@@ -248,7 +248,7 @@ interchange and pro formats.
 
 | Feature | Weight | Depth | Why |
 |---|---|---|---|
-| New project, import clips | 15% | 80% | Drag-and-drop and Import work for phone MP4 / MOV (H.264, HEVC); MKV multi-audio (#601), AVI (#598) fail |
+| New project, import clips | 15% | 80% | Drag-and-drop and Import work for phone MP4 / MOV (H.264, HEVC); MKV multi-audio (#601) fails |
 | Put clips on the timeline, arrange | 15% | 85% | Drop to timeline (#517), snapping, tracks; new tracks by dropping missing (#483) |
 | Trim, split, delete | 15% | 80% | Razor, trim, ripple delete; Backspace on gaps (#648) and deselect (#683) confuse |
 | Undo / redo | 5% | 95% | Snapshot undo for every command |
@@ -267,8 +267,8 @@ Discounts a beginner actually hits:
   #687).
 - **Discoverability and UI clarity ×0.90:** a dense Premiere-style interface with no guided start;
   reports about deselecting, deleting gaps and transitions controls (#683, #648, #577).
-- **Opening files people send them ×0.95:** phone and web video mostly opens; AVI, E-AC-3 audio
-  (#647), FLAC-in-MP4 (#603) and some WebM (#432) do not.
+- **Opening files people send them ×0.95:** phone and web video mostly opens; FLAC-in-MP4 (#603) and
+  MKV multi-audio (#601) do not. (AVI #598, E-AC-3 #647 and WebM black #432 are closed.)
 
 80.0 × 0.88 × 0.90 × 0.95 = **60.2% ≈ ~60%.**
 
@@ -310,7 +310,7 @@ Distance to beta: ~19 points of ready-for-real-work plus `.prproj` import, ~400�
 | UI fidelity top issues (Program monitor handles, Effect Controls, docking, deselect) | 60–100 |
 | Hardware: zero-copy, VideoToolbox Main 10, Quick Sync / AMF encode, more GPU effects | 60–100 |
 | Windows / Linux runtime fixes, audio device issues | 30–60 |
-| Container gaps users hit: E-AC-3, AVI, multi-track audio, still formats | 30–50 |
+| Container gaps users hit: multi-track audio, still formats | 30–50 |
 | Interchange validation (AAF / OMF in Avid and Pro Tools, XML speed) | 20–40 |
 | Performance: lag / CPU reports, AV1 speed | 30–60 |
 | **Total** | **~400–730** |
@@ -354,6 +354,7 @@ control surfaces), and validation in Avid Media Composer / Pro Tools.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-12 | minor | Outdated entries corrected from merged work: AVI import (#650) and E-AC-3 decode (#647, via #788) removed from the failing lists; VP8 WebM decodes (#432, via #1064); localization "4 of 12" now 7 of 12 (localization-parity.md); scores and hours not re-measured |
 | 2026-10-10 | minor | Readiness table: hours to ~95% for each audience (full ~1,450–2,600, mainstream ~500–850, essentials ~180–350); full number confirmed as an additive weighted sum (no change) |
 | 2026-10-10 | minor | Added the three readiness numbers: full ready-for-real-work formula written out (~55% -> ~56%, same inputs, now computed rather than rounded down), mainstream practitioner ~55% and essentials user ~60% with written weights and discounts, and counted user evidence (31 people praising, 0 switch reports, ~64 core-path vs ~29 niche open bugs) |
 | 2026-10-10 | minor | Stage checked against the new core-workflow gate (docs/roadmap.md#alpha-gate): passes, stays alpha |
