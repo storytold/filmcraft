@@ -446,3 +446,26 @@ fn clip_context_menu_adds_a_marker_at_the_playhead_with_one_undo() {
         assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), serde_json::to_value(&*after).unwrap());
     }
 }
+
+/// File ▸ Close All Projects with unsaved changes refused ("save it first, or pass force"); like
+/// Close Project, it asks Save / Don't Save / Cancel, and closes right away when nothing is unsaved.
+#[test]
+fn close_all_projects_asks_to_save() {
+    let mut d = Driver::new();
+    d.edit();
+    assert_eq!(d.menu("file.closeAllProjects")["dialog"], "closeProject");
+    assert!(d.has("closeProject.save") && d.has("closeProject.dontSave") && d.has("closeProject.cancel"));
+    d.click("closeProject.cancel");
+    assert!(!d.app().session.project.items.is_empty() && d.app().session.is_dirty(), "Cancel keeps the project");
+    d.menu("file.closeAllProjects");
+    d.click("closeProject.dontSave");
+    assert!(d.app().session.project.items.is_empty(), "closed without saving");
+    assert!(d.app().ui.clip_dialog.is_none());
+    // nothing unsaved: no question
+    d.exec("file.openDemoProject", json!({}));
+    d.exec("file.saveAs", json!({"path": std::env::temp_dir().join(format!("fc-close-all-{}.fcproj", std::process::id())).to_string_lossy()}));
+    assert!(!d.app().session.is_dirty());
+    d.menu("file.closeAllProjects");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert!(d.app().session.project.items.is_empty(), "closed at once");
+}

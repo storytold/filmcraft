@@ -89,6 +89,11 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     if !empty {
         return None;
     }
+    // One project is open at a time, so Close All Projects is Close Project: it asks the same "save
+    // changes?" question first instead of refusing because there are unsaved changes
+    if id == "file.closeAllProjects" {
+        return route(app, "file.closeProject", params);
+    }
     // Save All on a never-saved project asks where to save, like Save
     if id == "file.saveAll" && app.session.path.is_none() {
         return Some(app.file_dialog("file.save", params));
