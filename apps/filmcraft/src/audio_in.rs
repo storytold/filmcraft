@@ -37,7 +37,7 @@ fn host(name: &str) -> cpal::Host {
 fn device(h: &cpal::Host, name: &str) -> Option<cpal::Device> {
     if !name.is_empty()
         && let Ok(mut devs) = h.input_devices()
-        && let Some(d) = devs.find(|d| d.name().is_ok_and(|n| n == name))
+        && let Some(d) = devs.find(|d| d.description().is_ok_and(|d| d.name() == name))
     {
         return Some(d);
     }
@@ -89,10 +89,10 @@ where
 
 fn input_stream<T: cpal::SizedSample>(
     dev: &cpal::Device,
-    config: &cpal::StreamConfig,
+    config: cpal::StreamConfig,
     buf: Arc<Mutex<Vec<Vec<f32>>>>,
     error: Arc<Mutex<Option<String>>>,
-) -> Result<cpal::Stream, cpal::BuildStreamError>
+) -> Result<cpal::Stream, cpal::Error>
 where
     f32: cpal::FromSample<T>,
 {
@@ -106,7 +106,7 @@ impl AudioInput for CpalIn {
         self.host = name.to_string();
     }
     fn devices(&self) -> Vec<String> {
-        host(&self.host).input_devices().map(|d| d.filter_map(|x| x.name().ok()).collect()).unwrap_or_default()
+        host(&self.host).input_devices().map(|d| d.filter_map(|x| x.description().ok().map(|d| d.name().to_string())).collect()).unwrap_or_default()
     }
     fn channels(&self, name: &str) -> u16 {
         device(&host(&self.host), name).and_then(|d| d.default_input_config().ok()).map(|c| c.channels()).unwrap_or(0)
@@ -133,29 +133,29 @@ impl AudioInput for CpalIn {
                             .supported_input_configs()
                             .ok()
                             .and_then(|it| {
-                                it.filter(|c| c.channels() > 0 && (c.min_sample_rate().0..=c.max_sample_rate().0).contains(&sample_rate))
+                                it.filter(|c| c.channels() > 0 && (c.min_sample_rate()..=c.max_sample_rate()).contains(&sample_rate))
                                     .max_by_key(|c| (c.channels() == default.channels(), c.sample_format() == cpal::SampleFormat::F32))
-                                    .and_then(|c| c.try_with_sample_rate(cpal::SampleRate(sample_rate)))
+                                    .and_then(|c| c.try_with_sample_rate(sample_rate))
                             })
                             .unwrap_or(default);
-                        if cfg.channels() == 0 || cfg.channels() > 256 || cfg.sample_rate().0 == 0 {
+                        if cfg.channels() == 0 || cfg.channels() > 256 || cfg.sample_rate() == 0 {
                             return Err("the input device returned an invalid format".into());
                         }
-                        let fmt = InputFormat { sample_rate: cfg.sample_rate().0, channels: cfg.channels() };
+                        let fmt = InputFormat { sample_rate: cfg.sample_rate(), channels: cfg.channels() };
                         let format = cfg.sample_format();
-                        let config = cfg.into();
+                        let config: cpal::StreamConfig = cfg.into();
                         let stream = match format {
-                            cpal::SampleFormat::I8 => input_stream::<i8>(&dev, &config, buf.clone(), error.clone()),
-                            cpal::SampleFormat::I16 => input_stream::<i16>(&dev, &config, buf.clone(), error.clone()),
-                            cpal::SampleFormat::I24 => input_stream::<cpal::I24>(&dev, &config, buf.clone(), error.clone()),
-                            cpal::SampleFormat::I32 => input_stream::<i32>(&dev, &config, buf.clone(), error.clone()),
-                            cpal::SampleFormat::I64 => input_stream::<i64>(&dev, &config, buf.clone(), error.clone()),
-                            cpal::SampleFormat::U8 => input_stream::<u8>(&dev, &config, buf.clone(), error.clone()),
-                            cpal::SampleFormat::U16 => input_stream::<u16>(&dev, &config, buf.clone(), error.clone()),
-                            cpal::SampleFormat::U32 => input_stream::<u32>(&dev, &config, buf.clone(), error.clone()),
-                            cpal::SampleFormat::U64 => input_stream::<u64>(&dev, &config, buf.clone(), error.clone()),
-                            cpal::SampleFormat::F32 => input_stream::<f32>(&dev, &config, buf.clone(), error.clone()),
-                            cpal::SampleFormat::F64 => input_stream::<f64>(&dev, &config, buf.clone(), error.clone()),
+                            cpal::SampleFormat::I8 => input_stream::<i8>(&dev, config, buf.clone(), error.clone()),
+                            cpal::SampleFormat::I16 => input_stream::<i16>(&dev, config, buf.clone(), error.clone()),
+                            cpal::SampleFormat::I24 => input_stream::<cpal::I24>(&dev, config, buf.clone(), error.clone()),
+                            cpal::SampleFormat::I32 => input_stream::<i32>(&dev, config, buf.clone(), error.clone()),
+                            cpal::SampleFormat::I64 => input_stream::<i64>(&dev, config, buf.clone(), error.clone()),
+                            cpal::SampleFormat::U8 => input_stream::<u8>(&dev, config, buf.clone(), error.clone()),
+                            cpal::SampleFormat::U16 => input_stream::<u16>(&dev, config, buf.clone(), error.clone()),
+                            cpal::SampleFormat::U32 => input_stream::<u32>(&dev, config, buf.clone(), error.clone()),
+                            cpal::SampleFormat::U64 => input_stream::<u64>(&dev, config, buf.clone(), error.clone()),
+                            cpal::SampleFormat::F32 => input_stream::<f32>(&dev, config, buf.clone(), error.clone()),
+                            cpal::SampleFormat::F64 => input_stream::<f64>(&dev, config, buf.clone(), error.clone()),
                             other => return Err(format!("unsupported input sample format {other:?}")),
                         }
                         .map_err(|e| e.to_string())?;
