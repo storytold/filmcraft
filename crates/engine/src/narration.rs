@@ -496,7 +496,7 @@ fn spec(
     run: fn(&mut Session, &Value) -> Result<Value>,
     journal: bool,
 ) -> CommandSpec {
-    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled, run, journal }
+    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled, run, journal, named: crate::commands::NamedKeys::NONE }
 }
 
 pub fn commands() -> Vec<CommandSpec> {

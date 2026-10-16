@@ -404,7 +404,7 @@ fn spec(
     run: Run,
     journal: bool,
 ) -> CommandSpec {
-    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled, run, journal }
+    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled, run, journal, named: crate::commands::NamedKeys::NONE }
 }
 
 pub(crate) fn commands() -> Vec<CommandSpec> {

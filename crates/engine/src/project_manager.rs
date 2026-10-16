@@ -362,5 +362,6 @@ pub fn commands() -> Vec<CommandSpec> {
         enabled: |s| if s.project.sequences().next().is_some() { Ok(()) } else { Err("the project has no sequences".into()) },
         run,
         journal: false,
+        named: crate::commands::NamedKeys::NONE,
     }]
 }

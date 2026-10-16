@@ -1745,7 +1745,7 @@ impl Session {
 // ------------------------------------------------------------------ commands
 
 fn spec(id: &'static str, label: &'static str, params: &'static str, run: fn(&mut Session, &Value) -> Result<Value>, journal: bool) -> CommandSpec {
-    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: always, run, journal }
+    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: always, run, journal, named: crate::commands::NamedKeys::NONE }
 }
 
 fn kind_json(k: Kind) -> Value {

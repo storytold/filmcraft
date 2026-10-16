@@ -33,22 +33,70 @@ pub struct CommandSpec {
     pub run: Run,
     /// Record in the journal (false for pure queries).
     pub journal: bool,
+    /// The keys through which a caller may name this command's targets instead of selecting them
+    /// (see [`Session::execute`]). Set once for the whole registry by [`command_specs`] from the
+    /// parameter doc, and checked against what each command really reads by the
+    /// `named_targets_are_read_by_the_commands_that_declare_them` test; a command that documents
+    /// a key but reads only the selection is listed in [`SELECTION_ONLY`].
+    pub named: NamedKeys,
 }
+
+/// Which target keys a command accepts (#65): `clips` (list of clip ids), `clip` (one clip id),
+/// `items` (list of project item ids), `item` (one project item id).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NamedKeys(u8);
+
+impl NamedKeys {
+    pub const NONE: NamedKeys = NamedKeys(0);
+    pub const CLIPS: NamedKeys = NamedKeys(1);
+    pub const CLIP: NamedKeys = NamedKeys(2);
+    pub const ITEMS: NamedKeys = NamedKeys(4);
+    pub const ITEM: NamedKeys = NamedKeys(8);
+
+    pub fn contains(self, other: NamedKeys) -> bool {
+        self.0 & other.0 == other.0
+    }
+    pub fn is_none(self) -> bool {
+        self.0 == 0
+    }
+    /// The keys the parameter doc of a command declares as ids (`"clips":[id]`, `"item":id`).
+    fn from_doc(doc: &str) -> NamedKeys {
+        let has = |k: &str| doc.contains(k);
+        let mut bits = 0;
+        for (bit, doc_form) in [(1, "\"clips\":[id]"), (2, "\"clip\":id"), (4, "\"items\":[id]"), (8, "\"item\":id")] {
+            if has(doc_form) {
+                bits |= bit;
+            }
+        }
+        NamedKeys(bits)
+    }
+}
+
+/// Commands whose parameter doc names a target key that their `run` does not read: they act on
+/// the selection only, so naming targets must not stand in for one. Empty today; the
+/// differential test in `named_targets_tests` fails for a command that belongs here.
+const SELECTION_ONLY: &[&str] = &[];
 
 macro_rules! cmd {
     ($id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr, $run:expr) => {
-        CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: true }
+        CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: true, named: NamedKeys::NONE }
     };
 }
 macro_rules! query {
     ($id:literal, $label:literal, $params:literal, $run:expr) => {
-        CommandSpec { id: $id, label: $label, menu: &[], shortcut: None, params: $params, enabled: always, run: $run, journal: false }
+        CommandSpec { id: $id, label: $label, menu: &[], shortcut: None, params: $params, enabled: always, run: $run, journal: false, named: NamedKeys::NONE }
     };
 }
 
 pub fn command_specs() -> &'static [CommandSpec] {
     static SPECS: OnceLock<Vec<CommandSpec>> = OnceLock::new();
-    SPECS.get_or_init(build)
+    SPECS.get_or_init(|| {
+        let mut v = build();
+        for c in &mut v {
+            c.named = if SELECTION_ONLY.contains(&c.id) { NamedKeys::NONE } else { NamedKeys::from_doc(c.params) };
+        }
+        v
+    })
 }
 
 pub fn find(id: &str) -> Option<&'static CommandSpec> {
@@ -125,13 +173,13 @@ fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
 
 /// The ids a caller named under `many` (a list) or `one` (a single id), when the command documents
 /// that key as ids (`"clips":[id]`, `"item":id`); `None` when it named none.
-fn named_ids(spec: &CommandSpec, p: &Value, many: &str, one: &str) -> Option<Vec<u64>> {
-    let ids: Vec<u64> = if spec.params.contains(&format!("\"{many}\":[id]"))
-        && let Some(a) = p.get(many).and_then(Value::as_array)
+fn named_ids(spec: &CommandSpec, p: &Value, many: (&str, NamedKeys), one: (&str, NamedKeys)) -> Option<Vec<u64>> {
+    let ids: Vec<u64> = if spec.named.contains(many.1)
+        && let Some(a) = p.get(many.0).and_then(Value::as_array)
     {
         a.iter().filter_map(Value::as_u64).collect()
-    } else if spec.params.contains(&format!("\"{one}\":id")) {
-        u64_p(p, one).into_iter().collect()
+    } else if spec.named.contains(one.1) {
+        u64_p(p, one.0).into_iter().collect()
     } else {
         Vec::new()
     };
@@ -141,7 +189,8 @@ fn named_ids(spec: &CommandSpec, p: &Value, many: &str, one: &str) -> Option<Vec
 /// the active sequence count, so an id of nothing does not stand in for a selection.
 pub(crate) fn named_clips(s: &Session, spec: &CommandSpec, p: &Value) -> Option<Vec<ClipId>> {
     let seq = s.active_sequence()?;
-    let clips: Vec<ClipId> = named_ids(spec, p, "clips", "clip")?.into_iter().map(ClipId).filter(|c| seq.find_item(*c).is_some()).collect();
+    let clips: Vec<ClipId> =
+        named_ids(spec, p, ("clips", NamedKeys::CLIPS), ("clip", NamedKeys::CLIP))?.into_iter().map(ClipId).filter(|c| seq.find_item(*c).is_some()).collect();
     (!clips.is_empty()).then_some(clips)
 }
 /// Why the clips a caller named in `clips` / `clip` stand in for no selection (#591): a clip of
@@ -149,11 +198,11 @@ pub(crate) fn named_clips(s: &Session, spec: &CommandSpec, p: &Value) -> Option<
 /// `None` when the caller named nothing or no sequence is open, so the selection's reason stands.
 pub(crate) fn named_clips_missing(s: &Session, spec: &CommandSpec, p: &Value) -> Option<String> {
     s.active_sequence()?;
-    let first = if spec.params.contains("\"clips\":[id]")
+    let first = if spec.named.contains(NamedKeys::CLIPS)
         && let Some(a) = p.get("clips").and_then(Value::as_array)
     {
         a.first()?
-    } else if spec.params.contains("\"clip\":id") {
+    } else if spec.named.contains(NamedKeys::CLIP) {
         p.get("clip").filter(|v| !v.is_null())?
     } else {
         return None;
@@ -176,7 +225,7 @@ pub(crate) fn named_items(s: &Session, spec: &CommandSpec, p: &Value) -> Option<
         let b = filmcraft_project::BinId(i.0);
         s.project.item(*i).is_some() || (b != root && s.project.root.find_bin(b).is_some())
     };
-    let items: Vec<ItemId> = named_ids(spec, p, "items", "item")?.into_iter().map(ItemId).filter(exists).collect();
+    let items: Vec<ItemId> = named_ids(spec, p, ("items", NamedKeys::ITEMS), ("item", NamedKeys::ITEM))?.into_iter().map(ItemId).filter(exists).collect();
     (!items.is_empty()).then_some(items)
 }
 
@@ -2739,6 +2788,7 @@ fn build() -> Vec<CommandSpec> {
             enabled: has_seq,
             run: |s, p| crate::trim::tick(s, p.get("clock").and_then(Value::as_f64).unwrap_or(0.0)),
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         query!("trim.monitor", "Trim Monitor State", "{}", |s, _| Ok(crate::trim::monitor_info(s))),
         cmd!("trim.nudge", "Trim by Frames", [], None, r#"{"frames":i64}"#, has_edit_points, |s, p| crate::trim::nudge(s, p)),
@@ -3001,6 +3051,7 @@ fn build() -> Vec<CommandSpec> {
             enabled: has_seq,
             run: select_effect,
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         cmd!(
             "effects.setParam",
