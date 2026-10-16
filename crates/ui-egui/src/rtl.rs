@@ -20,7 +20,7 @@ use std::sync::{Arc, OnceLock};
 use egui::epaint::text::{ByteIndex, LayoutJob, LayoutSection, TextFormat};
 use egui::{Color32, FontData, FontDefinitions, FontId, Galley, Painter, Rect, Vec2, pos2};
 use filmcraft_text::fonts::{CraftFont, Face};
-use unicode_bidi::{BidiClass, BidiInfo, bidi_class};
+use unicode_bidi::{BidiClass, BidiInfo, Level, bidi_class};
 
 /// A right-to-left script: its ISO 15924 code (as in the craft-fonts manifest), letters a face
 /// must cover, and installed families to prefer, best first.
@@ -122,6 +122,12 @@ pub(crate) fn install(fonts: &mut FontDefinitions) {
     }
 }
 
+/// Whether an Arabic face is available for the interface: a craft-fonts `Arab` face, or an
+/// installed one ([`install`] added it as `system-arab`). The gate for switching to العربية.
+pub(crate) fn arabic_available() -> bool {
+    craft_fonts().any(|f| f.scripts.contains(&"Arab")) || system_fonts().iter().any(|(name, _)| name == "system-arab")
+}
+
 /// Whether `name` is an installed right-to-left face added by [`install`].
 #[cfg(test)]
 pub(crate) fn is_system_face(name: &str) -> bool {
@@ -139,15 +145,15 @@ fn in_word(c: char) -> bool {
     matches!(bidi_class(c), BidiClass::R | BidiClass::AL | BidiClass::NSM | BidiClass::BN)
 }
 
-/// A bracket shown right to left takes its mirrored glyph (UAX #9 rule L4).
+/// A bracket shown right to left takes its mirrored glyph (UAX #9 rule L4). Curly brackets
+/// are left alone: in an interface label they are almost always a `{placeholder}`'s own
+/// syntax, and mirroring them would break the fill.
 fn mirror(c: char) -> char {
     match c {
         '(' => ')',
         ')' => '(',
         '[' => ']',
         ']' => '[',
-        '{' => '}',
-        '}' => '{',
         '<' => '>',
         '>' => '<',
         '«' => '»',
@@ -156,6 +162,101 @@ fn mirror(c: char) -> char {
         '›' => '‹',
         _ => c,
     }
+}
+
+
+/// One line of interface text (a translated label) in visual order — the order egui draws its
+/// runs in: the runs left to right, as a right-to-left reader meets them, the characters inside
+/// each run in logical order for the shaper (which reverses them itself), and brackets on their
+/// mirrored glyphs (UAX #9 L2 and L4). The `ar` catalog's rows are stored this way, since a
+/// plain label lays its runs out left to right with no bidi of its own. A line with nothing
+/// right-to-left in it is left as it is; lines of one text are reordered on their own.
+pub(crate) fn visual_line(text: &str) -> String {
+    if !has_rtl(text) {
+        return text.to_owned();
+    }
+    // Each placeholder becomes one private-use character (a left-to-right one, like the name
+    // inside it) for the pass, and is restored afterwards; the mapping is per placeholder, so
+    // a reordered sentence still finds its own.
+    let mut tokens: Vec<&str> = Vec::new();
+    let mut guarded = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('{') {
+        guarded.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        if let Some(close) = after.find('}') {
+            tokens.push(&rest[open..open + close + 2]);
+            guarded.push(char::from_u32(0xE000 + tokens.len() as u32 - 1).unwrap_or('\u{E000}'));
+            rest = &after[close + 1..];
+        } else {
+            guarded.push('{');
+            rest = after;
+        }
+    }
+    guarded.push_str(rest);
+    let mut out = String::with_capacity(text.len());
+    let mut first = true;
+    for line in guarded.split('\n') {
+        if !first {
+            out.push('\n');
+        }
+        first = false;
+        let bidi = BidiInfo::new(line, Some(Level::rtl()));
+        let Some(para) = bidi.paragraphs.first() else {
+            out.push_str(line);
+            continue;
+        };
+        let chars: Vec<char> = line.chars().collect();
+        let levels = bidi.reordered_levels_per_char(para, para.range.clone());
+        let order = BidiInfo::reorder_visual(&levels);
+        let mut p = 0;
+        while p < order.len() {
+            let i = order[p];
+            if in_word(chars[i]) {
+                // one shaping run: a stretch of right-to-left characters, contiguous in the line
+                let (mut lo, mut hi) = (i, i);
+                let mut end = p + 1;
+                loop {
+                    if let Some(&j) = order.get(end)
+                        && in_word(chars[j])
+                        && (j + 1 == lo || j == hi + 1)
+                    {
+                        lo = lo.min(j);
+                        hi = hi.max(j);
+                        end += 1;
+                    } else {
+                        break;
+                    }
+                }
+                let mut j = lo;
+                while j <= hi {
+                    out.push(chars[j]);
+                    j += 1;
+                }
+                p = end;
+            } else {
+                // a left-to-right run (a Latin word, a number) or a character between runs: it
+                // stands where the reordering put it; a bracket in a right-to-left context takes
+                // its mirrored glyph
+                let c = chars[i];
+                out.push(if levels[i].is_rtl() { mirror(c) } else { c });
+                p += 1;
+            }
+        }
+    }
+    if tokens.is_empty() {
+        return out;
+    }
+    let mut restored = String::with_capacity(out.len());
+    for c in out.chars() {
+        let k = c as u32;
+        if (0xE000..0xE000 + tokens.len() as u32).contains(&k) {
+            restored.push_str(tokens[(k - 0xE000) as usize]);
+        } else {
+            restored.push(c);
+        }
+    }
+    restored
 }
 
 /// The layout sections of one line of `bidi.text` (byte range `line`, inside one paragraph), left
@@ -412,4 +513,50 @@ mod tests {
         assert_eq!(ranges.last().and_then(|r| text.get(r.clone())), Some("four"));
         ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
     }
+
+    /// The pass for interface labels: the runs in visual order, the letters inside each run in
+    /// logical order for the shaper.
+    #[test]
+    fn visual_line_orders_runs_not_letters() {
+        assert_eq!(visual_line("كلمة أخرى"), "أخرى كلمة");
+        assert_eq!(visual_line("حفظ كـ PDF…"), "…PDF كـ حفظ");
+        assert_eq!(visual_line("تصدير كـ SVG"), "SVG كـ تصدير");
+        assert_eq!(visual_line("سنة ١٤٤٥"), "١٤٤٥ سنة");
+        // A `{placeholder}` rides through as one unit, never mirrored.
+        assert_eq!(visual_line("لون مميز {n}"), "{n} مميز لون");
+        assert_eq!(visual_line("نعم، (نص)"), "(نص) ،نعم");
+        assert_eq!(visual_line("سطر أول\nPDF"), "أول سطر\nPDF");
+        assert_eq!(visual_line("Lesson 3: (draft)"), "Lesson 3: (draft)");
+        assert_eq!(visual_line(""), "");
+    }
+
+    /// A translated label, stored in visual order ([`visual_line`]), draws with its first word
+    /// rightmost on a plain egui layout — what the interface's labels go through, unlike
+    /// [`Lines`], which builds its own sections.
+    #[test]
+    fn labels_draw_arabic_in_reading_order() {
+        let ctx = egui::Context::default();
+        let mut fonts = FontDefinitions::default();
+        install(&mut fonts);
+        if !craft_fonts().any(|f| f.scripts.contains(&"Arab")) && !system_fonts().iter().any(|(name, _)| name == "system-arab") {
+            eprintln!("SKIPPED: no craft-fonts or installed Arabic font");
+            return;
+        }
+        ctx.set_fonts(fonts);
+        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+        let painter = Painter::new(ctx.clone(), egui::LayerId::background(), Rect::EVERYTHING);
+        let font = FontId::proportional(13.0);
+        let galley = painter.layout_no_wrap(visual_line("كلمة أخرى"), font, Color32::WHITE);
+        let row = galley.rows.first().map(|r| r.glyphs.clone()).unwrap_or_default();
+        let drawn: Vec<_> = row.iter().filter(|g| !g.uv_rect.is_nothing()).collect();
+        let xs = |word: &str| drawn.iter().filter(|g| word.contains(g.chr)).map(|g| g.pos.x).collect::<Vec<f32>>();
+        let (first, second) = (xs("كلمة"), xs("أخرى"));
+        assert!(!first.is_empty() && !second.is_empty());
+        assert!(
+            second.iter().fold(f32::MIN, |a, &b| a.max(b)) < first.iter().fold(f32::MAX, |a, &b| a.min(b)),
+            "the first word must sit rightmost"
+        );
+        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+    }
+
 }

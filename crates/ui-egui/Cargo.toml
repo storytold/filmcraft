@@ -39,6 +39,12 @@ unicode-bidi = "0.3.18"
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Thread/process CPU clocks for frame-job profiling (safe wrappers; see frames.rs).
+# Craft AI's model-runtime bridge (`craft_ai/engine.rs`): the loopback HTTP client. Native only —
+# the web build draws the panel's note instead, and ureq's TLS stack does not build for wasm32.
+# The speech crate keeps its own optional ureq 3 behind its feature; two majors in one tree are fine.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ureq = { version = "2", features = ["json"] }
+
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", default-features = false, features = ["std", "time"] }
 # the same clocks on Windows (GetThreadTimes / GetProcessTimes behind a safe API; MIT OR Apache-2.0)

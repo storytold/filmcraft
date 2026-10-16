@@ -72,7 +72,7 @@ Evidence for every row: [docs/target-app-parity.md](docs/target-app-parity.md#by
 
 ## Languages
 
-Premiere ships 10 interface languages. Measured from our catalogs (3,498 strings):
+Premiere ships 10 interface languages. Measured from our catalogs (3,577 strings):
 
 | Language | Status | Strings |
 |---|---|---|
@@ -80,7 +80,7 @@ Premiere ships 10 interface languages. Measured from our catalogs (3,498 strings
 | Simplified Chinese | partial (whole interface; engine errors English) | 99.6% |
 | Spanish | partial (whole interface) | 99.9% |
 | Hindi | none (no Devanagari shaping in the interface) | 0% |
-| Arabic | none (no RTL interface) | 0% |
+| Arabic | partial (whole interface; engine errors English) | ~100% |
 | French | partial (whole interface; native review welcome) | ~100% |
 | Portuguese (Brazil) | partial (whole interface; native review welcome) | ~100% |
 | Indonesian | partial (whole interface; native review welcome) | ~100% |

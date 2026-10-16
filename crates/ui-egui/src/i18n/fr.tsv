@@ -3420,6 +3420,7 @@
 	out	sortie
 	in	entrée
 	The language changed but could not be saved: {e}	La langue a été changée mais n'a pas pu être enregistrée : {e}
+	no Arabic font is installed on this system; the interface stays in English	aucune police arabe n'est installée sur ce système ; l'interface reste en anglais
 	no Chinese font is installed on this system; the interface stays in English	aucune police chinoise n'est installée sur ce système ; l'interface reste en anglais
 	no Korean font is installed on this system; the interface stays in English	aucune police coréenne n'est installée sur ce système ; l'interface reste en anglais
 	no Japanese font is installed on this system; the interface stays in English	aucune police japonaise n'est installée sur ce système ; l'interface reste en anglais
@@ -3577,3 +3578,50 @@
 	Export the labels to a preset file…	Exporter les étiquettes dans un fichier de paramètre prédéfini…
 	Show the presets folder	Afficher le dossier des paramètres prédéfinis
 	Delete this preset	Supprimer ce paramètre prédéfini
+
+# Craft AI: the built-in local assistant panel, its models and tasks.
+	A local model is not a frontier cloud model: it can be wrong, and a long answer takes its time on CPU. Check anything critical, and mind a model's size against this machine before downloading it.	Un modèle local n'est pas un modèle de pointe du cloud : il peut se tromper, et une longue réponse prend son temps sur le processeur. Vérifiez tout ce qui est critique, et pesez la taille du modèle face à cette machine avant de le télécharger.
+	Ask	Demander
+	Ask anything	Posez n'importe quelle question
+	Ask in any language	Posez vos questions dans n'importe quelle langue
+	Assistant	Assistant
+	Best for: a step up in quality, still light	Idéal pour : un cran de plus en qualité, toujours léger
+	Best for: balanced everyday and technical work	Idéal pour : l'équilibre du quotidien et du technique
+	Best for: everyday help on the lightest machines	Idéal pour : l'aide quotidienne sur les machines les plus légères
+	Best for: near-flagship answers at MoE speed	Idéal pour : des réponses presque de pointe à la vitesse MoE
+	Best for: the deepest reasoning this family has	Idéal pour : le raisonnement le plus profond de cette famille
+	Caption and transcript cleanup	Nettoyage des sous-titres et transcriptions
+	Craft AI runs a local Gemma model on this machine. Nothing you write here leaves it: no account, no cloud service, no telemetry — the panel talks to a model runtime on 127.0.0.1.	Craft AI exécute un modèle Gemma local sur cette machine. Rien de ce que vous écrivez ici n'en sort : pas de compte, pas de service cloud, pas de télémétrie — le panneau parle à un moteur de modèles sur 127.0.0.1.
+	Craft AI runs in the native app — it needs a local model runtime.	Craft AI fonctionne dans l'application native — il lui faut un moteur de modèles local.
+	Craft AI talks to a model runtime on this machine — Ollama, LM Studio or llama.cpp's server — and never to a cloud service. Start one, then Refresh.	Craft AI parle à un moteur de modèles sur cette machine — Ollama, LM Studio ou le serveur de llama.cpp — et jamais à un service cloud. Lancez-en un, puis Actualisez.
+	Cut plan feedback	Retour sur le plan de montage
+	Delete file	Supprimer le fichier
+	Disk {size}	Disque {size}
+	Download with Ollama	Télécharger avec Ollama
+	Downloading… {pct}% — {note}	Téléchargement… {pct} % — {note}
+	Effect or transition choice	Choix d’effet ou de transition
+	Fits this machine	Convient à cette machine
+	Limits	Limites
+	Local and private	Local et privé
+	Looking for a local model runtime…	Recherche d'un moteur de modèles local…
+	Name this sequence	Nommer cette séquence
+	Needs {disk} GB of disk	Exige {disk} Go de disque
+	Needs {ram} GB of RAM	Exige {ram} Go de RAM
+	No local model runtime found.	Aucun moteur de modèles local trouvé.
+	No model installed yet — see the Models tab.	Aucun modèle installé pour l'instant — voir l'onglet Modèles.
+	One download serves every ArtCraft app: the model lands in a shared folder all of them read.	Un seul téléchargement sert toutes les applications ArtCraft : le modèle arrive dans un dossier partagé qu'elles lisent toutes.
+	Pacing and montage advice	Conseils de rythme et montage
+	Paste the transcript or captions	Collez la transcription ou les sous-titres
+	RAM {gb} GB	RAM {gb} Go
+	Runtime	Moteur
+	Save model file	Enregistrer le fichier du modèle
+	Saved in the shared folder	Enregistré dans le dossier partagé
+	Saving… {pct}%	Enregistrement… {pct} %
+	Task	Tâche
+	The moment and the feel you want	Le moment et le ressenti voulu
+	The sequence and what it is for	La séquence et son usage
+	The shared folder:	Le dossier partagé :
+	The shots, in order, and the mood	Les plans, dans l’ordre, et l’ambiance
+	Thinking… {s}s	Réflexion… {s} s
+	This machine: {ram} GB RAM, {disk} GB free	Cette machine : {ram} Go de RAM, {disk} Go libres
+	What is in it, for names	Ce qu’elle contient, pour des noms
