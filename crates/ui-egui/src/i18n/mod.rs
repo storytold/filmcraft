@@ -1051,6 +1051,8 @@ mod tests {
                 | "Choose a folder, then use it as the export location."
                 | "Upload to cloud"
                 | "Cloud exports use Export (the queue is for Media File destinations)."
+                | "Encoding for cloud upload…"
+                | "A cloud export is already running"
         )
     }
 

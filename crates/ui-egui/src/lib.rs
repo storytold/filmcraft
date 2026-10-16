@@ -424,6 +424,17 @@ pub struct FilmcraftApp {
     pub pending_cloud_upload: Option<Vec<u8>>,
     /// Etag of the cloud origin before a Share-dialog save, used to detect success.
     pub share_save_prior_etag: Option<Option<String>>,
+    /// Local encode in flight whose bytes should upload to CollabCraft when the job finishes.
+    pub pending_cloud_export: Option<PendingCloudExport>,
+}
+
+/// Export → Cloud storage: wait for `job` to finish writing `path`, then upload.
+#[derive(Clone, Debug)]
+pub struct PendingCloudExport {
+    pub job: u64,
+    pub path: String,
+    pub folder: String,
+    pub name: String,
 }
 
 pub struct GpuState {
@@ -651,6 +662,7 @@ impl FilmcraftApp {
             cloud_page: None,
             pending_cloud_upload: None,
             share_save_prior_etag: None,
+            pending_cloud_export: None,
         }
     }
 
@@ -2200,6 +2212,7 @@ impl eframe::App for FilmcraftApp {
         self.collect_screenshots(ctx);
         // Drain answers from the cloud worker and advance link/transfer state.
         cloud::pump(self, ctx);
+        panels::export_mode::poll_cloud_export(self);
     }
 
     fn on_exit(&mut self) {
