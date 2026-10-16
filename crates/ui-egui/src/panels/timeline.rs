@@ -926,8 +926,9 @@ fn draw_clip(
         draw_waveform(app, p, body, it, Color32::from_rgb(fill.r() / 2, fill.g() / 2, fill.b() / 2));
     }
     let clip_p = p.with_clip_rect(body.shrink2(vec2(1.0, 0.0)).intersect(p.clip_rect()));
-    // name band
-    if w > 24.0 {
+    // name band (View ▸ the wrench menu's Show Video Names / Show Audio Names)
+    let names = if kind == TrackKind::Video { app.ui.timeline.show_video_names } else { app.ui.timeline.show_audio_names };
+    if w > 24.0 && names {
         let mut label = it.name.clone();
         if let Some(m) = it.multicam.filter(|m| m.enabled) {
             let cam = app.session.project.sequence(it.item).and_then(|q| q.cameras().cameras.get(m.angle as usize).map(|c| c.name.clone()));
@@ -1492,6 +1493,10 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
                     }
                 });
                 ui.checkbox(&mut app.ui.timeline.show_waveforms, tl!("Show Audio Waveform"));
+                let c = ui.checkbox(&mut app.ui.timeline.show_video_names, tl!("Show Video Names"));
+                app.auto.add("timeline.settings.showVideoNames", c.rect, "Show Video Names");
+                let c = ui.checkbox(&mut app.ui.timeline.show_audio_names, tl!("Show Audio Names"));
+                app.auto.add("timeline.settings.showAudioNames", c.rect, "Show Audio Names");
                 ui.separator();
                 let mut te = app.session.state.show_through_edits;
                 let c = ui.checkbox(&mut te, tl!("Show Through Edits"));

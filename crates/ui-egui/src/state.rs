@@ -194,7 +194,13 @@ pub struct TimelineView {
     #[serde(default)]
     pub thumbnail_mode: ThumbnailMode,
     pub show_waveforms: bool,
-    /// Follow playhead during playback (page scroll).
+    /// The wrench menu's Show Video Names / Show Audio Names: the name strip of the clips on video
+    /// and audio tracks (on by default; off leaves the clip picture or waveform uncovered).
+    #[serde(default = "yes")]
+    pub show_video_names: bool,
+    #[serde(default = "yes")]
+    pub show_audio_names: bool,
+    /// Follow during playback (page scroll).
     pub follow: bool,
     pub fit_pending: bool,
     /// The playhead the view last saw: a jump while stopped (Home, End, edit points) scrolls to it.
@@ -233,6 +239,8 @@ impl Default for TimelineView {
             show_thumbnails: true,
             thumbnail_mode: ThumbnailMode::Head,
             show_waveforms: true,
+            show_video_names: true,
+            show_audio_names: true,
             follow: true,
             fit_pending: true,
             seen_playhead: None,
