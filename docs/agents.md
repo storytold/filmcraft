@@ -14,9 +14,22 @@ FilmCraft from an agent. Part 2 covers developing FilmCraft as an agent.
 | Headless | `filmcraft-cli mcp --demo` or `--project p.fcproj` (neither = empty project) | an in-process engine session, no window |
 | Bridge | `filmcraft-cli mcp --bridge 127.0.0.1:9876` | the running desktop app started with `filmcraft --control 9876` |
 
-Headless mode also takes `--data-dir DIR` (user presets). Any other option is rejected (exit 2):
-there are no folder-confinement flags such as `--automation-read-root`, so the server can read
-and write wherever the user can.
+Headless mode also takes `--data-dir DIR` (user presets) and the file-confinement flags below.
+Any other option is rejected (exit 2).
+
+**File confinement** (#985, as in VectorCraft and EffectCraft). Start the server with
+`--automation-read-root DIR` and/or `--automation-write-root DIR` (each an existing folder; a
+missing or non-folder one is a usage error, exit 2). A command may then only read files under a
+read root and only write files under a write root: `file.import`, `lut.import`, `mediaBrowser.*`,
+`media.linkMedia` … under the read root; `file.save*`, `file.exportMedia`, `export.*`,
+`markers.exportCsv`, `captions.export` … under the write root. A root left out grants no access of
+its kind; without both flags nothing is confined. Before a command runs, every path it names — and
+any other absolute path in its parameters — is resolved (links followed, `..` refused) and must land
+inside a root, or the tool returns an error naming the root so the agent can correct itself. Bridge
+mode enforces the same roots before each command reaches the app, and refuses the UI-driving tools
+(`ui_click`, `ui_drag`, `ui_key`, `ui_type`, `ui_control`) while confined, since they could drive
+the app's file dialogs past the roots. What the person at the keyboard does is not confined: the
+`--project` the server was started with, and the desktop app's own panels in bridge mode.
 
 **Claude Code.** The repository's `.mcp.json` registers both servers (`filmcraft` = bridge,
 `filmcraft-headless` = demo). Both point at `target/release/filmcraft-cli`, so build it first:
