@@ -389,6 +389,12 @@ impl FxOp {
                 FxOp::crop_rect(w, h, 0.0, 0.0, 0.0, 0.0, amt)
             }
             "transform" => {
+                // With its own shutter angle the CPU blurs the motion over seven samples
+                // (`vfx::distort::transform_fx`, under the same condition); the GPU op places one
+                // picture, so this stays on the CPU rather than losing the blur
+                if crate::vfx::bv(e, "shutter_override") && crate::vfx::fv(e, "shutter_angle", cx) > 0.5 {
+                    return None;
+                }
                 let img = Image { w, h, px: Vec::new() };
                 let anchor = point(e, "anchor", cx, &img);
                 let pos = point(e, "position", cx, &img);
@@ -1149,5 +1155,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Transform with its own shutter angle blurs the motion on the CPU
+    /// (`vfx::distort::transform_fx`). The GPU op has no such blur, so that effect must leave
+    /// the GPU chain instead of silently losing its blur in the Program monitor and GPU exports.
+    #[test]
+    fn transform_with_its_own_shutter_angle_stays_on_the_cpu() {
+        let cx = FxCtx {
+            t: Tick::ZERO,
+            px_scale: 1.0,
+            seconds: 0.0,
+            timecode: "",
+            clip_name: "",
+            project: None,
+            env: None,
+            frame_rate: 24.0,
+            working: filmcraft_color::WorkingSpace::Rec709,
+        };
+        let on_gpu = |e: &EffectInstance| FxOp::eval(e, &cx, 64, 36).is_some_and(|op| op.gpu_ok());
+        let mut e = find_effect("transform").unwrap().instance();
+        e.params.get_mut("position").unwrap().value = ParamValue::Vec2(filmcraft_geom::Vec2::new(40.0, 20.0));
+        assert!(on_gpu(&e), "a plain transform runs on the GPU");
+        e.params.get_mut("shutter_override").unwrap().value = ParamValue::Bool(true);
+        assert!(!on_gpu(&e), "the default 180° shutter blurs the motion: CPU");
+        e.params.get_mut("shutter_angle").unwrap().value = ParamValue::Float(0.0);
+        assert!(on_gpu(&e), "a closed shutter blurs nothing");
+        e.params.get_mut("shutter_override").unwrap().value = ParamValue::Bool(false);
+        e.params.get_mut("shutter_angle").unwrap().value = ParamValue::Float(360.0);
+        assert!(on_gpu(&e), "the angle counts only with the override");
     }
 }
