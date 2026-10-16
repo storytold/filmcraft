@@ -374,8 +374,8 @@ whether our render of a project is Premiere's render of the same project.
   `<target>/fidelity/ours/<id>/`.
 - **The Premiere side is local.** The run writes `<target>/fidelity/PREMIERE.md`: import each case's XML,
   apply the listed steps for the five effect cases FCP7 XML cannot carry, export PNG stills (or a 24-bit WAV)
-  into `plan/premiere/fidelity/<id>/`. `crates/fidelity/premiere/render.py` does the same by script through
-  premiere-cli on the maintainer's machine (the effect steps are `PremiereEffect`s in the case definitions).
+  into `plan/premiere/fidelity/<id>/`. `crates/fidelity/premiere/render.py` does the same by script on any machine with Premiere Pro, through the
+  bridge panel in `crates/fidelity/premiere/bridge/` (the effect steps are `PremiereEffect`s in the case definitions).
   That directory is maintainer-local and gitignored ([AGENTS.md §1](../AGENTS.md)); nothing Premiere
   produces is ever committed. Without it every case reports
   *no reference* and the command still succeeds (`--min` then fails, like `cargo xtask parity`).

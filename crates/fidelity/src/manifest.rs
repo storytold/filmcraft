@@ -119,11 +119,11 @@ pub fn premiere_md(m: &Manifest) -> String {
     );
     out.push_str("## By script\n\n");
     out.push_str(
-        "With [premiere-cli](https://github.com/strangeparts/premiere-cli) installed and Premiere Pro open on this machine, \
+        "With the FilmCraft Fidelity bridge panel installed (`crates/fidelity/premiere/install.sh`, then Window ▸ Extensions ▸ \
+         FilmCraft Fidelity once) and the `fidelity-png` / `fidelity-wav` export presets saved from Premiere's export dialog, \
          `python3 crates/fidelity/premiere/render.py <manifest.json>` does steps 1–4 for every case: import, settings check, \
-         the effects below by their Effect Controls names, one PNG per frame through Premiere's frame export at the exact tick of \
-         every frame, and the sound cases through Media Encoder given `--audio-preset <file>.epr` (a Waveform Audio 48 kHz 24-bit \
-         preset saved once from Premiere's export dialog). Then step 5.\n\n",
+         the effects below by their Effect Controls names, and the export through Media Encoder (see the crate README). \
+         Then step 5.\n\n",
     );
     out.push_str("## Media\n\n| File | Bytes | Fingerprint |\n|---|---|---|\n");
     for e in &m.media {

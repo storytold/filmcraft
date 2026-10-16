@@ -46,7 +46,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   `plan/premiere/fidelity/` with PSNR and CIEDE2000 per case for pictures and aligned sample-level
   SNR for sound; a Markdown report, JSON results, `--min`, and a generated `PREMIERE.md` with the
   per-case steps for the Premiere side, and `crates/fidelity/premiere/render.py`, which performs
-  those steps through premiere-cli on the maintainer's machine (import, settings check, the effect
+  those steps through its own bridge panel on any machine with Premiere Pro (import, settings check, the effect
   cases' values by Effect Controls name, PNG / WAV export through Media Encoder). First full run
   2026-10-16 against Premiere Pro 26.5.2: **11 / 20 pass**. Baseline cut 47.8 dB PSNR, mean
   ΔE₀₀ 0.14; Motion, scale / opacity ramps, Crop, Black & White, Invert and both speed cases pass

@@ -5,8 +5,8 @@ does FilmCraft render what Adobe Premiere Pro renders? Layer L3 (depends on `ren
 `interchange`, `format`, `codecs`, `media`, `project`, `color`, `time`; no UI; builds for wasm32).
 One command, `cargo xtask fidelity`, does everything that can be done on this side. The Premiere
 side is a documented step (`PREMIERE.md`, generated per run) that a person follows, or that
-`premiere/render.py` performs through [premiere-cli](https://github.com/strangeparts/premiere-cli)
-on the maintainer's machine; the crate itself never drives Premiere.
+`premiere/render.py` performs on a machine with Premiere Pro through the small bridge panel in
+`premiere/bridge/`; the crate itself never drives Premiere.
 
 ```sh
 cargo xtask fidelity                 # corpus, exports, our renders, report; scores plan/premiere/fidelity/ if present
@@ -54,21 +54,34 @@ speed}`), the Premiere steps when the XML cannot carry it (as text for a person 
 
 ## The Premiere side, by script
 
-`premiere/render.py MANIFEST [--case ID]… [--reference DIR] [--dry-run]` reads `manifest.json`
-and, through the `premiere` command of premiere-cli against a running Premiere Pro on this
-machine, makes a fresh `.prproj` under `plan/premiere/fidelity/_premiere/`, and per case: imports
-the FCP7 XML (dismissing Premiere's Translation Report dialog), checks the sequence settings
-against the corpus, applies the case's `PremiereEffect`s to the clip on V1 (setting an existing
-same-named component when the import made one, as it does for Crop; every value is read back),
-waits until frame 0 renders the same twice (media linked), and exports: picture through Media
-Encoder as a PNG sequence with the `fidelity-png` preset, sound as a WAV with `fidelity-wav`.
-Both presets are saved once from Premiere's export dialog (PNG, Export As Sequence, 8 bpc, no
-alpha; Waveform Audio 48 kHz 24-bit stereo) and found by name under `~/Documents/Adobe/Adobe
-Media Encoder/<version>/Presets/`. Without the PNG preset, or with `--frame-export`,
+Premiere Pro has no command line, so the script talks to a panel inside it. One-time setup on a
+machine with Premiere Pro (2020 or later) and Adobe Media Encoder:
+
+1. `crates/fidelity/premiere/install.sh` (macOS; `install.ps1` on Windows, untested so far) copies
+   `premiere/bridge/` into Premiere's per-user extension folder and turns on CEP's PlayerDebugMode,
+   which lets Premiere load an unsigned panel. Restart Premiere.
+2. Open any project and open Window ▸ Extensions ▸ **FilmCraft Fidelity** once. The panel stays in
+   the workspace; it watches `~/.filmcraft/fidelity-bridge/`, runs the ExtendScript the script
+   drops there, and answers in the same directory. Nothing of Adobe's is involved but Premiere's
+   own scripting API.
+3. Save two export presets from File ▸ Export ▸ Media (Save Preset on the Preset row):
+   `fidelity-png` (Format PNG, Export As Sequence, 8 bpc, no alpha, Match Source) and
+   `fidelity-wav` (Waveform Audio, 48 kHz, 24-bit, stereo). The script finds them by name under
+   `~/Documents/Adobe/Adobe Media Encoder/<version>/Presets/`.
+
+Then `premiere/render.py MANIFEST [--case ID]… [--reference DIR] [--dry-run]` reads
+`manifest.json`, makes a fresh `.prproj` under `plan/premiere/fidelity/_premiere/`, and per
+case: imports the FCP7 XML (UI suppressed), checks the sequence settings against the corpus,
+applies the case's `PremiereEffect`s to the clip on V1 (setting an existing same-named component
+when the import made one, as it does for Crop; every value is read back), waits until frame 0
+renders the same twice (media linked), and exports through Media Encoder: a PNG sequence with
+`fidelity-png`, a WAV with `fidelity-wav`. Without the PNG preset, or with `--frame-export`,
 picture cases come out of Premiere's frame export at the exact tick of every frame in one
-ExtendScript call (72 frames in about 2.5 s); without the WAV preset the sound cases are skipped
-and the run says so. Then `cargo xtask fidelity` scores. Stdlib Python, never run in CI, writes
-only under the reference root.
+ExtendScript call; without the WAV preset the sound cases are skipped and the run says so. The
+project is saved and closed at the end (`--keep-open` to look at it); a later run with no panel
+heartbeat opens the newest saved project in Premiere itself to wake it. Then `cargo xtask
+fidelity` scores. Stdlib Python, never run in CI, writes only under the reference root and the
+bridge directory. Do not use Premiere while a run drives it.
 
 ## Scores
 
