@@ -141,19 +141,23 @@ impl FilmcraftApp {
     /// cannot decide whether a Timeline is covered. Use the same geometry and layer
     /// ordering as our renderer before any panel can dispatch an edit.
     pub(crate) fn timeline_drop_target(&self, ctx: &egui::Context, pos: egui::Pos2) -> bool {
+        self.panel_drop_target(ctx, pos, PanelKind::Timeline)
+    }
+
+    pub(crate) fn panel_drop_target(&self, ctx: &egui::Context, pos: egui::Pos2, target: PanelKind) -> bool {
         if !ctx.content_rect().contains(pos) {
             return false;
         }
         if let Some(panel) =
             self.ui.keys.maximized.filter(|panel| self.ui.dock.contains(*panel) || self.ui.floating.iter().any(|group| group.panels.contains(panel)))
         {
-            return panel == PanelKind::Timeline;
+            return panel == target;
         }
         for index in self.floating_order(ctx).into_iter().rev() {
             if let Some(group) = self.ui.floating.get(index)
                 && floating_rect(group, ctx.content_rect()).contains(pos)
             {
-                return group.panels.get(group.active) == Some(&PanelKind::Timeline);
+                return group.panels.get(group.active) == Some(&target);
             }
         }
         true

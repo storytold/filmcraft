@@ -131,6 +131,7 @@ fn parity(name: &str, s: &Stream) {
         }
         assert!(!a.is_empty(), "{name}: pictures after seeking to {k}");
         assert_same(&format!("{name} from sample {k}"), &a, &b);
+        assert!(hw.name().starts_with("VA-API"), "{name} from sample {k}: stayed in hardware ({})", hw.name());
     }
     // a flush in the middle of a GOP, then carrying on: H.264 only, where references survive a
     // flush (an HEVC flush ends the stream; the GOP cache always seeks after one)
@@ -149,6 +150,7 @@ fn parity(name: &str, s: &Stream) {
             out.extend(decode_all(d.as_mut(), &s.samples[mid..]));
         }
         assert_same(&format!("{name} with a flush at {mid}"), &a, &b);
+        assert!(hw.name().starts_with("VA-API"), "{name} with a flush at {mid}: stayed in hardware ({})", hw.name());
     }
     // back to the start after seeking around: the whole stream again
     hw.reset();

@@ -1,6 +1,6 @@
 # UI and interaction parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: tools, handles, panels, keyboard and feel against Premiere Pro 26.5.2, with the open UI issues) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** minor (file-manager drops into Source and Timeline; Linux XWayland fallback) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
 
 How FilmCraft looks, feels and responds compared with Premiere: tools, on-screen handles, snapping,
 nudging, modifier keys, shortcuts, drag behaviour, numeric entry, panels, context menus. Keyboard
@@ -26,7 +26,7 @@ open interaction reports (about 40 of the 188 open issues).
 | Timeline display | filmstrip thumbnails, waveforms, track heights, renaming | clip thumbnails, waveforms, heights; no continuous filmstrip (#614), no track rename (#654), wheel scroll in audio area (#400) | 70% | #614, #654, #400 | 8–15 h |
 | Transitions | drag, resize, alignment, edit in Effect Controls | drag / select / resize (#503); settings and the transition's own timeline in Effect Controls, drag to slide or resize (#577); no A/B previews with Start / End sliders | 70% | #577 | 5–10 h |
 | Numeric entry and scrubbing | scrubbable hot text, typed values | scrubbable values, timecode scrub-edit (#576); audio clip mixer values cannot be typed (#481) | 80% | #481 | 3–6 h |
-| Drag and drop | OS files into Project / Timeline, clipboard paste | OS drops into the timeline (#517); no clipboard paste of images / files (#611) | 70% | #519, #611 | 5–10 h |
+| Drag and drop | OS files into Project / Timeline, clipboard paste | OS drops into Source for preview and Timeline for linked placement (#517), visible import errors; Linux uses X11/XWayland for file drops; no clipboard paste of images / files (#611) | 70% | #519, #611; native Wayland file drops need a newer windowing backend | 5–10 h |
 | Theme and appearance | dark / light, brightness | dark / light / system (#505, #555) | 85% | macOS window controls (#637), Wayland title bar (#433), X11 scale (#457) | 5–10 h |
 | Context menus | per panel and per item | most panels; check against Premiere not done | 70% | — | 5–10 h |
 | Accessibility | screen reader partial, keyboard navigation | keyboard navigation; every widget has an automation id; no screen-reader support | 30% | — | 15–30 h |
@@ -35,4 +35,5 @@ open interaction reports (about 40 of the 188 open issues).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-14 | minor | Source file drops open the first imported clip; Timeline video drops keep linked sound and matching sequence creation. Synthetic MP4 regression coverage; Linux selects a usable X11/XWayland connection and queries the drop cursor. Readiness estimates unchanged. |
 | 2026-10-10 | major | Created: UI areas against Premiere 26.5.2, menu label diff, keyboard parity from keyboard.md, open UI issues itemized |

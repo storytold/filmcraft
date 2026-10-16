@@ -109,6 +109,13 @@ management commands and dialog ids: offline media and relinking (`media.findMiss
 proxies (`media.createProxies`, `media.attachProxies`, `media.toggleProxies`, `proxies.*`), ingest
 (`project.ingestSettings`) and the Project Manager (`file.projectManager`, `pm.*`).
 
+**Selecting clips**: `timeline.select {clips: [id], add?, toggle?, linked?}` returns `selection`.
+The Linked Selection toggle controls partner expansion; `linked: false` suppresses partners for
+one call without changing the toggle, including for add/toggle gestures. `linked: true` still
+respects the global Off setting. `edit.clear {}` deletes exactly the selected clips, preserving
+unselected linked partners. With explicit targets (`edit.clear {clips: [id]}`), linked partners
+are still included while Linked Selection is on.
+
 **Moving clips**: `timeline.move {moves: [{clip, track, time}], insert?, linked?}` → `{moved: [clip ids]}`.
 With Linked Selection on (the default; `linked` overrides the toggle for one call) the linked
 partners of a listed clip that are not listed themselves move by the same time offset and stay on

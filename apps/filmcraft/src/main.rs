@@ -32,6 +32,8 @@ mod control_server;
 mod dev_icon;
 mod file_filters;
 mod graphics;
+#[cfg(target_os = "linux")]
+mod linux_window;
 mod logging;
 #[cfg(target_os = "macos")]
 mod native_menu;
@@ -117,6 +119,8 @@ fn main() -> eframe::Result {
     // Panics anywhere go to <data dir>/Logs/crash-<day>.log with a backtrace; the UI pass and
     // frame workers catch them and keep running (see filmcraft_ui_egui::crash).
     filmcraft_ui_egui::crash::install(log_dir);
+    #[cfg(target_os = "linux")]
+    let window_backend = linux_window::backend().map_err(|e| eframe::Error::AppCreation(e.into()))?;
     // OS hardware video decoders (VideoToolbox on macOS) in front of our own; Settings ▸ Playback ▸
     // Hardware decoding switches them off. Unsupported streams and failures use our decoders.
     register_hardware_decoders();
@@ -132,6 +136,10 @@ fn main() -> eframe::Result {
     }
     let started = loop {
         let mut options = native_options(launch.control_port.is_some());
+        #[cfg(target_os = "linux")]
+        {
+            options.event_loop_builder = window_backend.map(linux_window::event_loop_hook);
+        }
         // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
         graphics::apply(&mut options, graphics.mode(), backend_override);
         let app_created = Arc::new(AtomicBool::new(false));
@@ -312,6 +320,10 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         app.hooks.clipboard_media = Some(Box::new(clipboard_media));
         // Settings ▸ General ▸ Interface Language ▸ System Language (#218).
         app.hooks.cursor_screen_position = Some(Box::new(filmcraft_platform::cursor::cursor_screen_position));
+        #[cfg(target_os = "linux")]
+        if let Some(window) = cc.winit_window() {
+            app.hooks.cursor_screen_position = linux_window::cursor_hook(window);
+        }
         app.hooks.system_languages = Some(Box::new(|| sys_locale::get_locales().collect()));
         // Settings ▸ Appearance ▸ Appearance Mode ▸ Sync with system on Linux desktops whose
         // compositor reports no theme to winit (no polling: see appearance.rs).

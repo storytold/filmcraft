@@ -22,7 +22,11 @@ fn harness() -> Harness<'static, FilmcraftApp> {
     let mut s = Session::default();
     s.execute("file.openDemoProject", json!({})).unwrap();
     s.execute("file.newSequence", json!({"name":"Drop test","width":1280,"height":720,"fps":24})).unwrap();
-    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).build_eframe(move |_cc| FilmcraftApp::new(s));
+    let mut builder = Harness::builder().with_size(egui::vec2(1600.0, 980.0));
+    if std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").is_some() {
+        builder = builder.wgpu();
+    }
+    let mut h = builder.build_eframe(move |_cc| FilmcraftApp::new(s));
     for _ in 0..4 {
         step(&mut h);
     }
@@ -88,6 +92,165 @@ fn still(name: &str) -> PathBuf {
     let p = fixture(name);
     image::RgbaImage::from_pixel(64, 36, image::Rgba([40, 140, 220, 255])).save(&p).unwrap();
     p
+}
+
+/// Original procedural video and sound, encoded by FilmCraft; no external tools or media.
+fn video(name: &str) -> PathBuf {
+    let path = fixture(name);
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    s.execute("file.newSequence", json!({"fromItem":5,"width":64,"height":36,"fps":24})).unwrap();
+    let seq = s.state.active_sequence.unwrap();
+    let settings = filmcraft_export::ExportSettings {
+        path: path.to_string_lossy().into_owned(),
+        range: Some(filmcraft_time::TimeRange::new(filmcraft_time::Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(12))),
+        ..Default::default()
+    };
+    let provider = s.media.full_res_provider(s.project.clone(), s.services.clone());
+    filmcraft_export::export(&s.project, seq, &settings, &provider, &Default::default()).unwrap();
+    path
+}
+
+fn snapshot(h: &mut Harness<'static, FilmcraftApp>, name: &str) {
+    if let Some(dir) = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR") {
+        let dir = PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        h.render().unwrap().save(dir.join(name)).unwrap();
+    }
+}
+
+#[test]
+fn video_dropped_on_source_opens_for_preview_without_editing_the_timeline() {
+    for enabled in [true, false] {
+        let mut h = harness();
+        h.state_mut().session.prefs.timeline.drop_import_to_timeline = enabled;
+        let before = h.state().session.active_sequence().unwrap().clone();
+        let items_before = h.state().session.project.items.len();
+        let at = control_rect(&h, "panel.Source").center();
+        let path = video(&format!("drop_source_{enabled}.mp4"));
+        drop_at(&mut h, at, &path);
+        assert_eq!(h.state().session.project.items.len(), items_before + 1);
+        let id = h.state().session.state.source_item.expect("dropped video opens in Source");
+        let media = h.state().session.project.item(id).unwrap().as_media().unwrap();
+        assert_eq!(media.media, filmcraft_project::MediaRef::File { path: path.to_string_lossy().into_owned() });
+        assert!(media.info.video.is_some() && media.info.audio().is_some());
+        assert_eq!(h.state().session.active_sequence().unwrap(), &before);
+        snapshot(&mut h, "file-drop-source.png");
+    }
+}
+
+#[test]
+fn video_dropped_on_timeline_places_linked_picture_and_sound_and_undoes() {
+    let mut h = harness();
+    drop_on_row(&mut h, "timeline.track.V1.target", &video("drop_video_音声 with spaces.mp4"));
+    assert_eq!(clip_counts(&h), (1, 1), "{}", h.state().ui.status);
+    let q = h.state().session.active_sequence().unwrap();
+    let video = &q.video_tracks[0].items[0];
+    let audio = &q.audio_tracks[0].items[0];
+    assert!(video.link.is_some());
+    assert_eq!(video.link, audio.link);
+    assert_eq!((video.start, video.duration), (audio.start, audio.duration));
+    let placed = h.state().session.project.to_json();
+    snapshot(&mut h, "file-drop-timeline.png");
+    h.state_mut().session.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(clip_counts(&h), (0, 0));
+    h.state_mut().session.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(h.state().session.project.to_json(), placed);
+}
+
+#[test]
+fn failed_file_drop_reports_the_error_and_preserves_the_project() {
+    for path in [fixture("missing-dropped-video.mp4"), fixture("corrupt-dropped-video.mp4")] {
+        if path.file_name().unwrap() == "corrupt-dropped-video.mp4" {
+            std::fs::write(&path, b"not a movie").unwrap();
+        } else if path.exists() {
+            std::fs::remove_file(&path).unwrap();
+        }
+        let mut h = harness();
+        let before = h.state().session.project.to_json();
+        let at = control_rect(&h, "panel.Source").center();
+        drop_at(&mut h, at, &path);
+        assert!(!h.state().ui.status.is_empty(), "failed drop must be visible");
+        assert!(h.state().ui.status.contains(path.file_name().unwrap().to_str().unwrap()));
+        assert_eq!(h.state().session.project.to_json(), before);
+    }
+}
+
+#[test]
+fn mixed_file_drop_places_the_good_video_and_reports_the_failed_path() {
+    let mut h = harness();
+    let good = video("drop_partial_success.mp4");
+    let bad = fixture("drop_partial_failure.mp4");
+    std::fs::write(&bad, b"broken movie").unwrap();
+    let at = point_on_row(&h, "timeline.track.V1.target");
+    pointer_to(&mut h, at);
+    for path in [bad, good] {
+        h.input_mut().dropped_files.push(std::sync::Arc::new(OsFile(path)));
+    }
+    step(&mut h);
+    h.input_mut().dropped_files.clear();
+    step(&mut h);
+    assert_eq!(clip_counts(&h), (1, 1));
+    assert!(h.state().ui.status.contains("drop_partial_failure.mp4"));
+}
+
+#[test]
+fn excessive_file_drop_is_refused_without_changing_the_project() {
+    let mut h = harness();
+    let before = h.state().session.project.to_json();
+    let file: egui::DroppedFileHandle = std::sync::Arc::new(OsFile(fixture("never-imported.mp4")));
+    h.input_mut().dropped_files = vec![file; 1025];
+    step(&mut h);
+    h.input_mut().dropped_files.clear();
+    assert!(h.state().ui.status.contains("1024"));
+    assert_eq!(h.state().session.project.to_json(), before);
+}
+
+#[test]
+fn source_drop_uses_the_os_cursor_and_ignores_covered_panels() {
+    let mut h = harness();
+    // egui's last cursor position is stale, as it is during a native file drag.
+    let stale = point_on_row(&h, "timeline.track.V1.target");
+    pointer_to(&mut h, stale);
+    let at = control_rect(&h, "panel.Source").center();
+    h.state_mut().hooks.cursor_screen_position = Some(Box::new(move || Some((at.x.round() as i32, at.y.round() as i32))));
+    h.input_mut().viewports.get_mut(&egui::ViewportId::ROOT).unwrap().inner_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 980.0)));
+    h.input_mut().hovered_files.push(Default::default());
+    let before = h.state().session.project.to_json();
+    step(&mut h);
+    assert!(h.state().auto.elements.iter().any(|e| e.id == "source.fileDropPreview"));
+    assert_eq!(h.state().session.project.to_json(), before);
+    h.input_mut().hovered_files.clear();
+    h.input_mut().dropped_files.push(std::sync::Arc::new(OsFile(video("drop_source_os_cursor.mp4"))));
+    step(&mut h);
+    h.input_mut().dropped_files.clear();
+    step(&mut h);
+    let source = h.state().session.state.source_item;
+    assert!(source.is_some());
+    assert_eq!(clip_counts(&h), (0, 0));
+    float_panel(&mut h, "Info", [at.x - 60.0, at.y - 60.0, 320.0, 200.0]);
+    h.input_mut().hovered_files.push(Default::default());
+    step(&mut h);
+    assert!(!h.state().auto.elements.iter().any(|e| e.id == "source.fileDropPreview"));
+    h.input_mut().hovered_files.clear();
+    h.input_mut().dropped_files.push(std::sync::Arc::new(OsFile(still("drop_covered_source.png"))));
+    step(&mut h);
+    h.input_mut().dropped_files.clear();
+    step(&mut h);
+    assert_eq!(h.state().session.state.source_item, source, "covered Source must not open a new clip");
+    assert_eq!(clip_counts(&h), (0, 0));
+}
+
+#[test]
+fn video_dropped_on_empty_timeline_creates_a_matching_sequence() {
+    let mut h = empty_harness();
+    drop_on_empty_timeline(&mut h, &video("drop_video_empty_timeline.mp4"));
+    let q = h.state().session.active_sequence().unwrap();
+    assert_eq!((q.settings.width, q.settings.height), (64, 36));
+    assert_eq!(q.settings.frame_rate, filmcraft_time::FrameRate::FPS_24);
+    assert_eq!(clip_counts(&h), (1, 1));
+    h.state_mut().session.execute("edit.undo", json!({})).unwrap();
+    assert!(h.state().session.active_sequence().is_none());
 }
 
 /// A 0.5 s mono 48 kHz 16-bit WAV tone (audio only).

@@ -2593,7 +2593,12 @@ fn build() -> Vec<CommandSpec> {
             }
             let clips: Vec<ClipId> =
                 p.get("clips").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_u64().map(ClipId)).collect()).unwrap_or_default();
-            let clips = if bool_p(p, "linked").unwrap_or(true) { with_links(s, &clips) } else { clips };
+            let follow = match p.get("linked") {
+                None => true,
+                Some(Value::Bool(follow)) => *follow,
+                Some(_) => return Err(bad("timeline.select", "`linked` must be a boolean")),
+            };
+            let clips = if follow { with_links(s, &clips) } else { clips };
             // selecting clips leaves trim mode (Premiere: clip and edit point selections are exclusive)
             s.state.edit_points.clear();
             s.state.trim_shift = Default::default();

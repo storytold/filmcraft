@@ -15,6 +15,38 @@ outline. `timeline.transitionDropPreview` exposes the span and edge to automatio
 `transition_drop_ui` covers both edges of short video/audio clips, hover without project edits,
 the committed span and undo. Set `FILMCRAFT_UI_SNAPSHOT_DIR` to render screenshots with wgpu.
 
+## File-manager video drops
+
+Drop video files from the file manager onto Source to import them into the current bin and
+open the first successful import for preview. The timeline stays unchanged. Source shows a
+border while files hover. Drop onto Timeline to place imported clips at the pointer with linked
+sound; an empty Timeline creates a sequence matching the first clip. Multiple files are placed
+back to back. Preferences ▸ Timeline ▸ "Place files dropped onto the Timeline directly on the
+Timeline" controls timeline placement; Source preview works independently of that preference.
+Drops elsewhere import into the bin. Covered panels do not receive the drop.
+
+Failed and partially failed imports report their paths in the status bar. Batches over 1024
+files are refused without changing the project. Native hosts can supply the cursor position
+during file drags, when egui receives no motion events. `timeline_drop_ui` covers Source,
+Timeline, matching sequence creation, linked sound, undo/redo, stale cursor input, panel
+occlusion, preferences, corrupt/missing files and batch limits with original generated media.
+
+On Linux, the desktop app prefers a working X11/XWayland connection because winit 0.30 does
+not receive native Wayland file drops. X11 cursor queries use safe Rust bindings. Without a
+working X11 server the default backend remains available. `FILMCRAFT_WINDOW_BACKEND=x11` or
+`wayland` explicitly selects a backend; native Wayland currently requires Import… for files.
+The browser's file-drop handler continues to import files into the bin.
+
+## Timeline selection
+
+Box selection previews and commits the same clips. Alt selects individual clips without their
+linked partners; turning Linked Selection off does the same for an ordinary box. Release sends
+the chosen link behavior through `timeline.select`. Clear/Delete acts on that exact selection,
+so deleting an individually selected video preserves its unselected audio. Normal linked
+selections still delete both sides. `timeline_marquee_ui` covers preview, release, deletion,
+Shift addition and Escape cancellation; engine tests cover link overrides, add/toggle, malformed
+overrides, explicit deletion targets and undo/redo.
+
 ## Localisation
 
 Edit > Language offers English, Japanese, Spanish, Brazilian Portuguese, Ukrainian, Simplified

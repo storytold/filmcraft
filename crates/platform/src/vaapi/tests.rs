@@ -23,6 +23,7 @@ use crate::biplanar::{self, Biplanar, Geometry};
 struct Recorder {
     ids: Vec<ffi::VASurfaceID>,
     decoded: Vec<bool>,
+    h264_metadata: Vec<bool>,
     pictures: usize,
     frame: VideoFrame,
 }
@@ -31,7 +32,7 @@ impl Recorder {
     fn new(count: usize) -> Self {
         let g = Geometry { crop: (0, 0, 2, 2), bits: 8, color: Default::default(), par: (1, 1) };
         let frame = biplanar::to_frame(&Biplanar { luma: &[128; 4], chroma: &[128; 2], stride: 2, rows: 2 }, &g).unwrap();
-        Self { ids: (0..count as u32).map(|i| 0x100 + i).collect(), decoded: vec![false; count], pictures: 0, frame }
+        Self { ids: (0..count as u32).map(|i| 0x100 + i).collect(), decoded: vec![false; count], h264_metadata: vec![false; count], pictures: 0, frame }
     }
 }
 
@@ -104,6 +105,7 @@ impl Accel for Recorder {
         for r in &refs {
             let i = self.ids.iter().position(|&id| id == r.picture_id).expect("reference is a decoder surface");
             assert!(self.decoded[i], "reference surface {i} holds a picture");
+            assert!(self.h264_metadata[i], "reference surface {i} has H.264 decode metadata; uploading pixels is insufficient");
             assert!(r.flags & (ffi::VA_PICTURE_H264_SHORT_TERM_REFERENCE | ffi::VA_PICTURE_H264_LONG_TERM_REFERENCE) != 0, "reference flags");
         }
         assert!(!slices.is_empty());
@@ -124,6 +126,7 @@ impl Accel for Recorder {
             }
         }
         self.decoded[target] = true;
+        self.h264_metadata[target] = true;
         self.pictures += 1;
         Ok(())
     }
@@ -136,6 +139,7 @@ impl Accel for Recorder {
     fn fill(&mut self, index: usize, from: Option<usize>) -> Result<(), String> {
         assert!(from.is_none_or(|f| self.decoded[f]));
         self.decoded[index] = true;
+        self.h264_metadata[index] = false;
         Ok(())
     }
 }
@@ -231,6 +235,29 @@ fn output_order_and_buffers_match_the_software_decoder() {
         b.extend(run_software(sw.as_mut(), &s.samples[mid..]));
         assert_eq!(a, b, "{name} with a flush at {mid}");
     }
+}
+
+/// A fresh open-GOP seek has no decoded pictures before the I picture. Uploaded gray pixels
+/// cannot supply the motion/reference metadata a stateless hardware decoder needs.
+#[test]
+fn open_gop_seek_uses_only_decoded_hardware_references() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let (name, profile, params) = STREAMS[2];
+    let Some(path) = fixture(&ff, name, profile, params) else { return };
+    let s = read_stream(&path);
+    let k = (1..s.samples.len()).find(|&i| s.sync[i]).expect("later open-GOP I picture");
+    let info = NalStreamInfo::from_entry(&s.entry).unwrap().unwrap();
+    assert!(!info.nal_types(&s.samples[k].0).contains(&5), "seek starts at a non-IDR picture");
+    let mut f = front(&s);
+    let mut sw = filmcraft_codecs::software_video_decoder(&s.entry).unwrap();
+    assert_eq!(run_front(&mut f, &s.samples[k..]), run_software(sw.as_mut(), &s.samples[k..]));
+    assert!(f.accel().pictures > 1, "decoded leading and following pictures");
+
+    // Starting with an inter picture and no real reference must fail before calling hardware.
+    let mut f = front(&s);
+    let (sample, pts) = &s.samples[1];
+    assert!(f.decode(sample, *pts).is_err());
+    assert_eq!(f.accel().pictures, 0);
 }
 
 /// Damaged samples give errors (the hybrid decoder then continues in software), never a panic.

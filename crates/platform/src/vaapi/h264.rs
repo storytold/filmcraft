@@ -32,7 +32,7 @@ pub struct Surface {
     pub seq: u64,
 }
 
-/// A frame_num gap frame not given a surface yet.
+/// A non-existing frame keeps its DPB bookkeeping but has no decoded hardware surface.
 const UNASSIGNED: usize = usize::MAX;
 
 /// The picture whose slices are being collected.
@@ -213,16 +213,23 @@ impl<A: Accel> Front<A> {
             return Err(unsupported("a picture whose slices use different PPSs"));
         }
         let surfaces = self.accel.surfaces();
+        // Uploading pixels for a non-existing frame does not create the codec's motion/reference
+        // metadata. Some drivers reject those surfaces even though vaPutImage succeeded. Conceal
+        // missing references with the most recently decoded reference, including its metadata.
+        let fallback =
+            self.dpb.entries.iter().filter(|e| !e.non_existing && e.mark != RefMark::Unused).max_by_key(|e| e.frame.seq).map(|e| va_ref(e, surfaces));
         let lists = self
             .dpb
-            .build_ref_lists(&sh, pending.poc.frame(), sps.max_frame_num(), |e| (va_ref(e, surfaces), e.mark != RefMark::Unused))
+            .build_ref_lists(&sh, pending.poc.frame(), sps.max_frame_num(), |e| {
+                (if e.non_existing { fallback.unwrap_or(VAPictureH264::INVALID) } else { va_ref(e, surfaces) }, e.mark != RefMark::Unused)
+            })
             .map_err(decode_err)?;
         if !sh.slice_type.is_intra() && (lists[0].is_empty() || (sh.slice_type.is_b() && lists[1].is_empty())) {
             return Err(decode_err("no reference pictures available for an inter slice"));
         }
-        // a missing reference (the software decoder conceals it with another picture) is not
-        // something to hand the hardware
-        if lists.iter().flatten().any(|(_, is_ref)| !is_ref) {
+        // Never submit a non-reference or an invalid surface. Without a decoded fallback,
+        // let the hybrid decoder replay the run in software.
+        if lists.iter().flatten().any(|(pic, is_ref)| !is_ref || pic.flags & ffi::VA_PICTURE_H264_INVALID != 0) {
             return Err(decode_err("a reference picture is missing"));
         }
         let refs = lists.map(|l| l.into_iter().map(|(p, _)| p).collect::<Vec<_>>());
@@ -256,7 +263,7 @@ impl<A: Accel> Front<A> {
         } else {
             let max = sps.max_frame_num();
             if sh.frame_num != self.prev_ref_frame_num && sh.frame_num != (self.prev_ref_frame_num + 1) % max {
-                self.fill_frame_num_gap(sh, sps, pts)?;
+                self.fill_frame_num_gap(sh, sps, pts);
             }
         }
         self.read_out(outs, frames)?;
@@ -267,32 +274,17 @@ impl<A: Accel> Front<A> {
         Ok(())
     }
 
-    /// frame_num gap (8.2.5.2; also every start at a non-IDR picture, an open-GOP seek): "non-existing"
-    /// frames as the software decoder makes them, copies of the latest decoded frame (mid-gray when
-    /// there is none), so pictures predicted from them come out the same.
-    fn fill_frame_num_gap(&mut self, sh: &SliceHeader, sps: &Arc<Sps>, pts: i64) -> Result<()> {
+    /// frame_num gap (8.2.5.2; also an open-GOP seek): keep "non-existing" frames for reference
+    /// marking/list ordering, without inventing decoded hardware surfaces for them. A slice that
+    /// needs one uses a real decoded reference for concealment, or fails safely when none exists.
+    fn fill_frame_num_gap(&mut self, sh: &SliceHeader, sps: &Arc<Sps>, pts: i64) {
         let max = sps.max_frame_num();
-        let last = self.dpb.entries.iter().filter(|e| !e.non_existing).max_by_key(|e| e.frame.seq).map(|e| e.frame.index);
         let meta = Arc::new(output_meta(sps, pts, false));
         let poc_state = &mut self.poc_state;
-        // surfaces are given afterwards, to the frames the sliding window keeps
         let mut make = |_| (Surface { index: UNASSIGNED, top: 0, bottom: 0, seq: 0 }, 0, meta.clone());
         let mut update = |frame_num| poc_state.update_gap_frame(frame_num, sps);
         self.dpb.fill_frame_num_gap(self.prev_ref_frame_num, sh.frame_num, max, sps.max_num_ref_frames as usize, &mut make, &mut update);
         self.prev_ref_frame_num = (sh.frame_num + max - 1) % max;
-        let used: Vec<usize> = self.dpb.entries.iter().map(|e| e.frame.index).filter(|&i| i != UNASSIGNED).collect();
-        let mut free = (0..self.accel.surfaces().len()).filter(|i| !used.contains(i));
-        let mut fills = Vec::new();
-        for e in self.dpb.entries.iter_mut().filter(|e| e.frame.index == UNASSIGNED) {
-            let index = free.next().ok_or_else(|| decode_err("no free surface for a frame_num gap"))?;
-            self.seq += 1;
-            e.frame = Surface { index, top: 0, bottom: 0, seq: self.seq };
-            fills.push(index);
-        }
-        for index in fills {
-            self.accel.fill(index, last).map_err(decode_err)?;
-        }
-        Ok(())
     }
 
     /// Decode the collected picture, then do its reference marking and DPB insertion.
@@ -315,7 +307,7 @@ impl<A: Accel> Front<A> {
             BottomFieldOrderCnt: p.poc.bottom,
             va_reserved: [0; ffi::VA_PADDING_LOW],
         };
-        for (slot, e) in pic.ReferenceFrames.iter_mut().zip(self.dpb.entries.iter().filter(|e| e.mark != RefMark::Unused)) {
+        for (slot, e) in pic.ReferenceFrames.iter_mut().zip(self.dpb.entries.iter().filter(|e| !e.non_existing && e.mark != RefMark::Unused)) {
             *slot = va_ref(e, surfaces);
         }
         let iq = iq_matrix(&p.pps);

@@ -123,6 +123,15 @@ fn the_selection_follows_the_box_while_it_is_dragged() {
 
 #[test]
 fn alt_box_selects_only_video_and_delete_keeps_linked_audio() {
+    individual_box_selection_keeps_linked_audio(egui::Modifiers::ALT, true);
+}
+
+#[test]
+fn box_with_linked_selection_off_and_delete_keeps_linked_audio() {
+    individual_box_selection_keeps_linked_audio(egui::Modifiers::NONE, false);
+}
+
+fn individual_box_selection_keeps_linked_audio(modifiers: egui::Modifiers, linked_selection: bool) {
     let mut d = Driver::demo();
     let (_, video, _, rv, start) = d.setup();
     let audio = {
@@ -130,14 +139,15 @@ fn alt_box_selects_only_video_and_delete_keeps_linked_audio() {
         let link = seq.find_item(ClipId(video)).unwrap().1.link;
         seq.audio_tracks.iter().flat_map(|tr| &tr.items).find(|clip| clip.link == link).unwrap().id.0
     };
+    d.exec("sequence.linkedSelection", json!({"on": linked_selection}));
     d.exec("timeline.select", json!({"clips": []}));
-    d.modifiers = egui::Modifiers::ALT;
+    d.modifiers = modifiers;
     d.send(egui::Event::PointerMoved(start));
     d.button(start, true);
     let over = egui::pos2(rv.center().x, start.y + 2.0);
     d.move_to(start, over);
     assert!(d.selected(video));
-    assert!(!d.selected(audio), "Alt excludes the linked audio during the drag");
+    assert!(!d.selected(audio), "the individual selection excludes linked audio during the drag");
     d.button(over, false);
     d.modifiers = egui::Modifiers::NONE;
     d.frames(2);

@@ -122,6 +122,79 @@ fn source_insert_three_point() {
 }
 
 #[test]
+fn timeline_selection_linked_override_preserves_add_toggle_and_the_global_setting() {
+    let mut s = demo();
+    let q = s.active_sequence().unwrap();
+    let video = q.video_tracks[0].items[0].clone();
+    let audio = q.audio_tracks.iter().flat_map(|tr| &tr.items).find(|i| i.link == video.link).unwrap().id;
+    let other = q.video_tracks[0].items[1].id;
+    for global in [true, false] {
+        s.execute("sequence.linkedSelection", json!({"on": global})).unwrap();
+        for linked in [None, Some(false), Some(true)] {
+            let mut params = json!({"clips": [video.id.0]});
+            if let Some(follow) = linked {
+                params["linked"] = json!(follow);
+            }
+            s.execute("timeline.select", params.clone()).unwrap();
+            assert!(s.state.selection.contains(&video.id));
+            assert_eq!(s.state.selection.contains(&audio), global && linked.unwrap_or(true));
+            params["toggle"] = json!(true);
+            s.execute("timeline.select", params.clone()).unwrap();
+            assert!(s.state.selection.is_empty(), "toggle removes exactly the selected sides");
+            s.state.selection = vec![other];
+            params["toggle"] = json!(false);
+            params["add"] = json!(true);
+            s.execute("timeline.select", params).unwrap();
+            assert!(s.state.selection.contains(&other) && s.state.selection.contains(&video.id));
+            assert_eq!(s.state.selection.contains(&audio), global && linked.unwrap_or(true));
+            assert_eq!(s.state.linked_selection, global, "the per-call override leaves the toggle alone");
+        }
+    }
+    for linked in [json!(null), json!("false"), json!(0), json!([]), json!({})] {
+        let before = serde_json::to_value(&s.state).unwrap();
+        let error = s.execute("timeline.select", json!({"clips": [video.id.0], "linked": linked})).unwrap_err();
+        assert!(error.to_string().contains("`linked` must be a boolean"));
+        assert_eq!(serde_json::to_value(&s.state).unwrap(), before, "invalid parameters leave selection state intact");
+    }
+}
+
+#[test]
+fn clear_respects_individual_selection_and_keeps_explicit_targets_linked() {
+    for audio_only in [false, true] {
+        for mode in ["individual", "normal", "explicit"] {
+            let mut s = demo();
+            let q = s.active_sequence().unwrap();
+            let video = q.video_tracks[0].items[0].clone();
+            let audio = q.audio_tracks.iter().flat_map(|tr| &tr.items).find(|i| i.link == video.link).unwrap().clone();
+            let (target, partner) = if audio_only { (&audio, &video) } else { (&video, &audio) };
+            if mode != "explicit" {
+                let mut params = json!({"clips": [target.id.0]});
+                if mode == "individual" {
+                    params["linked"] = json!(false);
+                }
+                s.execute("timeline.select", params).unwrap();
+            }
+            let before = s.project.clone();
+            let undo = s.history.undo.len();
+            s.execute("edit.clear", if mode == "explicit" { json!({"clips": [target.id.0]}) } else { json!({}) }).unwrap();
+            let q = s.active_sequence().unwrap();
+            assert!(q.find_item(target.id).is_none());
+            if mode == "individual" {
+                assert_eq!(q.find_item(partner.id).map(|(_, i)| i), Some(partner), "the unselected partner is untouched");
+            } else {
+                assert!(q.find_item(partner.id).is_none(), "normal selections and explicit targets include their partners");
+            }
+            assert_eq!(s.history.undo.len(), undo + 1);
+            let after = s.project.clone();
+            s.execute("edit.undo", json!({})).unwrap();
+            assert_eq!(*s.project, *before);
+            s.execute("edit.redo", json!({})).unwrap();
+            assert_eq!(*s.project, *after);
+        }
+    }
+}
+
+#[test]
 fn trim_linked_and_ripple_delete() {
     let mut s = demo();
     let first = s.active_sequence().unwrap().video_tracks[0].items[0].clone();
