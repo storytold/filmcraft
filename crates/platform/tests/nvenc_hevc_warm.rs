@@ -3,10 +3,14 @@
 //! `hevc_available` first would make the wait meaningless.
 #![cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 
+#[cfg(target_os = "windows")]
 use std::time::{Duration, Instant};
 
-use filmcraft_platform::nvenc::{hevc_available, hevc_hdr_available, hevc_hdr_probed, hevc_probed};
+use filmcraft_platform::nvenc::{hevc_hdr_probed, hevc_probed};
+#[cfg(target_os = "windows")]
+use filmcraft_platform::nvenc::{hevc_available, hevc_hdr_available};
 
+#[cfg(target_os = "windows")]
 #[test]
 fn register_answers_the_hevc_question_in_the_background() {
     assert!(!hevc_probed() && !hevc_hdr_probed(), "nothing has asked yet");
@@ -29,4 +33,16 @@ fn register_answers_the_hevc_question_in_the_background() {
     let answer = hevc_available();
     filmcraft_platform::register();
     assert_eq!(hevc_available(), answer);
+}
+
+
+#[cfg(target_os = "linux")]
+#[test]
+fn register_does_not_start_hevc_probes_on_linux() {
+    assert!(!hevc_probed() && !hevc_hdr_probed(), "nothing has asked yet");
+
+    filmcraft_platform::register();
+
+    assert!(!hevc_probed(), "register() must not probe HEVC on Linux");
+    assert!(!hevc_hdr_probed(), "register() must not probe Main 10 on Linux");
 }
