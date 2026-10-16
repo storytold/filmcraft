@@ -115,16 +115,40 @@ struct Ahead {
 /// must be rendered again.
 fn render_batch(pipe: &Pipeline, f: i64, end: i64, sources: &dyn SourceProvider) -> Option<Vec<Frame>> {
     let pending = AtomicBool::new(false);
-    let frames: Vec<Frame> = (f..end)
-        .into_par_iter()
-        .map(|fi| {
-            let frame = pipe.frame(fi, sources);
-            if filmcraft_media::pending::take() {
-                pending.store(true, Ordering::Relaxed);
-            }
-            frame
-        })
+    let count = usize::try_from(end.saturating_sub(f)).unwrap_or(0);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let slots = std::sync::Mutex::new(
+        (0..count).map(|_| None).collect::<Vec<Option<Frame>>>()
+    );
+
+    // Frame jobs run on ordinary threads so waiting for a GPU renderer
+    // cannot occupy Rayon's workers needed by nested rendering operations.
+    let workers = count.min(4);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                if i >= count {
+                    break;
+                }
+
+                let frame = pipe.frame(f + i as i64, sources);
+                if filmcraft_media::pending::take() {
+                    pending.store(true, Ordering::Relaxed);
+                }
+
+                slots.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)[i] = Some(frame);
+            });
+        }
+    });
+
+    let frames = slots.into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .into_iter()
+        .map(|frame| frame.expect("frame worker did not produce its assigned frame"))
         .collect();
+
     (!pending.load(Ordering::Relaxed)).then_some(frames)
 }
 

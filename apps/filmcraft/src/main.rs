@@ -150,6 +150,10 @@ fn main() -> eframe::Result {
         }
         break result;
     };
+    // Finish NVIDIA capability probing before the process shuts down.
+    #[cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
+    filmcraft_platform::nvenc::wait_for_hevc_probe();
+
     // However it ended, this start no longer counts as one that died.
     graphics.finish();
     // The window could not be created (no usable GPU / graphics driver, no display): say so
@@ -415,6 +419,8 @@ fn register_gpu_frame_renderer() {
 /// hardware decoders out of every run.
 fn register_hardware_decoders() -> filmcraft_platform::Availability {
     let hardware = filmcraft_platform::register();
+    #[cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
+    filmcraft_platform::nvenc::warm_hevc_probe();
     log::info!("hardware decoding: {hardware:?}");
     hardware
 }

@@ -167,6 +167,9 @@ static HEVC_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 /// first draw of Export's format list does not wait for the probe session. Whoever asks while it
 /// runs waits for the same answer; if the thread cannot start, or the probe panics (caught), the
 /// first caller asks, as before.
+static HEVC_PROBE_THREAD: std::sync::Mutex<Option<std::thread::JoinHandle<()>>> =
+    std::sync::Mutex::new(None);
+
 pub fn warm_hevc_probe() {
     static STARTED: std::sync::Once = std::sync::Once::new();
     STARTED.call_once(|| {
@@ -178,10 +181,23 @@ pub fn warm_hevc_probe() {
                 log::warn!("the hardware HEVC Main 10 probe panicked; the export will ask again");
             }
         });
-        if let Err(e) = spawned {
-            log::info!("hardware HEVC probe thread not started: {e}");
+        match spawned {
+            Ok(handle) => {
+                *HEVC_PROBE_THREAD.lock().unwrap() = Some(handle);
+            }
+            Err(e) => log::info!("hardware HEVC probe thread not started: {e}"),
         }
     });
+}
+
+/// Wait for the background NVENC probe before normal application shutdown.
+pub fn wait_for_hevc_probe() {
+    let handle = HEVC_PROBE_THREAD.lock().unwrap().take();
+    if let Some(handle) = handle {
+        if handle.join().is_err() {
+            log::warn!("hardware HEVC probe thread panicked");
+        }
+    }
 }
 
 /// Whether this system's NVENC can encode HEVC Main 10 (10-bit): HEVC works and a Main 10 session

@@ -212,7 +212,7 @@ fn config(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -
 pub fn factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     if format == Format::Hevc {
         // H.265 through NVENC is Windows-only for now; on Linux this backend takes H.264 only
-        return if cfg!(target_os = "windows") { hevc_factory(w, h, rate, s) } else { None };
+        return hevc_factory(w, h, rate, s);
     }
     factory_with(format, w, h, rate, s, |cfg| open(cfg, &Signal::default()))
 }
