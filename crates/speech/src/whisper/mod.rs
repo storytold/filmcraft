@@ -324,7 +324,7 @@ impl Transcriber for Whisper {
                 return Err(SpeechError::Cancelled);
             }
             let p = crate::diarize::Params { max_speakers: opts.max_speakers, ..Default::default() };
-            crate::diarize::diarize(audio, &mut t, &p);
+            crate::diarize::diarize_with_progress(audio, &mut t, &p, &mut |fraction, status| progress(0.96 + 0.04 * fraction, status))?;
         }
         progress(1.0, "Done");
         Ok(t)

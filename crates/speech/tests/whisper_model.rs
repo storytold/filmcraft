@@ -91,3 +91,41 @@ fn tiny_model_transcribes_public_domain_speech() {
     eprintln!("whisper-tiny WER {:.1}% over {words} words", wer * 100.0);
     assert!(wer < 0.25, "WER {wer}");
 }
+
+#[test]
+fn tiny_model_speaker_analysis_reports_cancellation() {
+    let Some(dir) = model_dir("whisper-tiny") else {
+        eprintln!("SKIPPED: whisper-tiny weights not found");
+        return;
+    };
+    let samples = samples();
+    let Some((path, _)) = samples.first() else {
+        eprintln!("SKIPPED: no speech samples");
+        return;
+    };
+    let audio = read_f32(path);
+    let recognizer = filmcraft_speech::whisper::Whisper::load(&dir, "whisper-tiny").unwrap();
+    let opts = Options { language: Some("en".into()), diarize: true, ..Default::default() };
+    let mut analysis_seen = false;
+    let transcript = recognizer
+        .transcribe(&audio, &opts, &mut |_, status| {
+            analysis_seen |= status == "Checking speaker analysis";
+            true
+        })
+        .unwrap();
+    assert!(analysis_seen, "real speech must exercise the speaker path");
+    transcript.check().unwrap();
+    assert!(!transcript.speakers.is_empty());
+    assert!(transcript.words.iter().all(|w| w.speaker.is_some()));
+    let mut cancelled_at_analysis = false;
+    let result = recognizer.transcribe(&audio, &opts, &mut |_, status| {
+        if status == "Checking speaker analysis" {
+            cancelled_at_analysis = true;
+            false
+        } else {
+            true
+        }
+    });
+    assert!(cancelled_at_analysis);
+    assert_eq!(result.unwrap_err(), filmcraft_speech::SpeechError::Cancelled);
+}

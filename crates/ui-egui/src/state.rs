@@ -501,6 +501,18 @@ pub struct UiState {
     /// Text panel ▸ Transcript: search text.
     #[serde(default)]
     pub transcript_search: String,
+    /// Show the open Source clip instead of the sequence transcript.
+    #[serde(default)]
+    pub transcript_source: bool,
+    /// Word correction: media id, word index, replacement, original text.
+    #[serde(default)]
+    pub transcript_edit: Option<(u64, usize, String, String)>,
+    /// Name input shared by the transcript's speaker menus.
+    #[serde(default)]
+    pub transcript_speaker_name: String,
+    /// Maximum number of voices to group during local speaker identification.
+    #[serde(default = "default_speaker_limit")]
+    pub transcript_speaker_limit: u32,
     /// Preferences ▸ Playback: play the rendered range when a preview render finishes.
     #[serde(default = "yes")]
     pub play_after_render: bool,
@@ -948,6 +960,10 @@ fn captions_tab() -> String {
     "Captions".into()
 }
 
+fn default_speaker_limit() -> u32 {
+    6
+}
+
 fn yes() -> bool {
     true
 }
@@ -988,6 +1004,10 @@ impl Default for UiState {
             caption_search: String::new(),
             transcript_sel: None,
             transcript_search: String::new(),
+            transcript_source: false,
+            transcript_edit: None,
+            transcript_speaker_name: String::new(),
+            transcript_speaker_limit: 6,
             play_after_render: true,
             mixer_fx_open: false,
             mixer_hidden: Vec::new(),
