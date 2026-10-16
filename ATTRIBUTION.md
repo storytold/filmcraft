@@ -168,12 +168,3 @@ SHA-256 (`crates/speech/src/models.rs`, `docs/transcripts.md`).
 | Asset | Author | Source | Licence |
 |---|---|---|---|
 | Whisper tiny / base / small speech-recognition weights (`model.safetensors`, `config.json`, `generation_config.json`, `tokenizer.json`) | OpenAI | `https://huggingface.co/openai/whisper-{tiny,base,small}` (revisions `169d4a43…`, `e37978b9…`, `973afd24…`); weights released with `https://github.com/openai/whisper` | MIT (weights and code, github.com/openai/whisper); the Hugging Face conversion is labelled Apache-2.0 |
-
-## Linux Wayland frame (Cargo dependency)
-
-| Dependency asset | Title | Author | Source | Licence |
-|---|---|---|---|---|
-| `sctk-adwaita` 0.10.1: `src/title/Cantarell-Regular.ttf` | Cantarell Regular, unmodified fallback window-title font; Linux only | Understanding Limited; Jakub Steiner | [sctk-adwaita at d5f343c](https://github.com/PolyMeilex/sctk-adwaita/blob/d5f343c45c04d4a026db57f76760819b7325db00/src/title/Cantarell-Regular.ttf) | OFL-1.1; full copyright and licence in `NOTICE` |
-
-The font is embedded by the dependency, with no font file added to this repository.
-Adwaita window buttons are vector paths and do not depend on font glyphs.
