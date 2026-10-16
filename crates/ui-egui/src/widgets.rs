@@ -271,7 +271,8 @@ pub fn search_field(ui: &mut Ui, text: &mut String, hint: &str, width: f32, t: &
     ui.painter().rect_stroke(rect, h / 2.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     icons::paint(ui.painter(), Rect::from_center_size(pos2(rect.min.x + 12.0, rect.center().y), vec2(12.0, 12.0)), Icon::Search, t.text_dim);
     let inner = Rect::from_min_max(pos2(rect.min.x + 22.0, rect.min.y + 2.0), pos2(rect.max.x - 8.0, rect.max.y - 2.0));
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+    // centred across the field: a Ui lays a widget out from its top, which left the text high
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)));
     let resp = child.add(egui::TextEdit::singleline(text).hint_text(hint).frame(egui::Frame::NONE).desired_width(inner.width()).font(Tokens::ui(12.0)));
     // Select Find Box (Shift+F) / Open Search (Cmd+Shift+F)
     crate::panels::keyboard::take_search_focus(ui, rect, &resp);
@@ -358,6 +359,38 @@ pub fn number_drag<Num: egui::emath::Numeric>(value: &mut Num) -> egui::DragValu
 mod tests {
     use super::*;
     use crate::theme::ThemeKind;
+
+    /// The vertical centres of the text shapes `search_field` draws, for a field 22 points tall
+    /// drawn at the top of the Ui (its centre is at y = 11).
+    fn search_text_centres(text: &str) -> Vec<f32> {
+        let ctx = egui::Context::default();
+        let t = Tokens::for_kind(ThemeKind::Dark);
+        let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 200.0))), ..Default::default() }, |ui| {
+            let mut value = text.to_string();
+            search_field(ui, &mut value, "Search", 200.0, &t);
+        });
+        out.textures_delta.clear();
+        out.shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.visual_bounding_rect().center().y),
+                _ => None,
+            })
+            // (an empty text has no extent)
+            .filter(|c| c.is_finite())
+            .collect()
+    }
+
+    #[test]
+    fn the_text_of_a_search_field_is_centred_vertically_in_it() {
+        for text in ["", "effects"] {
+            let centres = search_text_centres(text);
+            assert!(!centres.is_empty(), "no text drawn for {text:?}");
+            for c in centres {
+                assert!((c - 11.0).abs() <= 1.0, "{text:?}: text centred at {c}, the field's centre is 11");
+            }
+        }
+    }
 
     fn frame(ctx: &egui::Context, events: Vec<egui::Event>, id: egui::Id) {
         let t = Tokens::for_kind(ThemeKind::Dark);
