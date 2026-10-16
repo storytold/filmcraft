@@ -484,6 +484,18 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if copying {
         ctx.set_cursor_icon(CursorIcon::Copy);
     }
+    // transitions a clip drag carries, keyed by the row they land on: a carried transition draws
+    // where the drop leaves it — also when that is another track, so a fade dragged from V1 to V2
+    // previews on V2 instead of vanishing until the release. Each row keeps its own carried ones
+    // at home (a copy's originals) and adds the ones landing on it.
+    let mut carried_transitions: HashMap<TrackId, Vec<(&filmcraft_project::Transition, Tick, Tick)>> = HashMap::new();
+    for t in seq.all_tracks() {
+        for trn in &t.transitions {
+            if let Some((s, e, dest)) = move_transition_preview(app, seq, trn) {
+                carried_transitions.entry(dest).or_default().push((trn, s, e));
+            }
+        }
+    }
     for r in &rows {
         let Some(tr) = seq.track(r.track) else { continue };
         let clip_rect = if r.kind == TrackKind::Video { vclip } else { aclip };
@@ -543,6 +555,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 if volume_line {
                     super::timeline_volume::paint(&p, body, it);
                 }
+                app.auto.add(&format!("timeline.clip.{}", it.id.0), body.intersect(content), &it.name);
             }
         }
         for (cid, (start, dur, mt)) in &copies {
@@ -569,8 +582,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         super::trim_monitor::paint_edit_points(app, &p, seq, tr, r, &layout);
         // transitions (one being dragged where the drag puts it; the selected ones outlined). A
         // clip drag also shows where the drop will carry its transitions (those whose clips all
-        // move to one track by one offset): a plain move draws them on their destination track
-        // right away, a copy adds a ghost beside the copies while the originals stay at home.
+        // move to one track by one offset): a carried one draws where it lands — its own row or
+        // another — right away, a copy adds a ghost beside the copies while the originals stay
+        // at home.
+        let mut draws: Vec<(&filmcraft_project::Transition, Tick, Tick, bool)> = Vec::new();
         for trn in &tr.transitions {
             let carried = move_transition_preview(app, seq, trn);
             // the transition's home span (a transition dragged by an end still takes over)
@@ -578,27 +593,30 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 Some(Drag::Transition { id, start, duration, .. }) if *id == trn.id => (*start, *start + *duration),
                 _ => (trn.start, trn.end()),
             };
-            // (start, end, is the copy's ghost)
-            let show: Vec<(Tick, Tick, bool)> = match (carried, copying) {
-                (Some((s, e, dest)), false) if dest == r.track => vec![(s, e, false)],
-                (Some((s, e, dest)), true) if dest == r.track => vec![(start, end, false), (s, e, true)],
-                (Some(_), false) => Vec::new(), // drawn on its destination row
-                _ => vec![(start, end, false)], // at home: not carried, or a copy's original
-            };
-            for (start, end, ghost) in show {
-                let x0 = layout.x_of(start);
-                let x1 = layout.x_of(end);
-                let tr_rect = Rect::from_min_max(pos2(x0, r.rect.min.y + 17.0), pos2(x1, r.rect.max.y - 1.0));
-                let selected = app.session.state.transition_selection.contains(&trn.id);
-                draw_transition(&p, tr_rect, trn, ghost || selected, &t);
-                let suffix = if ghost { ".copy" } else { "" };
-                app.auto.add(&format!("timeline.transition.{}{}", trn.id.0, suffix), tr_rect, &trn.effect.effect);
-                // its ends, for dragging the duration (the same zones as the hit test)
-                let zone = super::timeline_hit::EDGE_PX.min(tr_rect.width() / 3.0);
-                if !ghost {
-                    app.auto.add(&format!("timeline.transition.{}.in", trn.id.0), Rect::from_min_max(tr_rect.min, pos2(x0 + zone, tr_rect.max.y)), "start");
-                    app.auto.add(&format!("timeline.transition.{}.out", trn.id.0), Rect::from_min_max(pos2(x1 - zone, tr_rect.min.y), tr_rect.max), "end");
-                }
+            // (start, end, is the copy's ghost): a plain move's carried transition draws where
+            // the drop leaves it (appended below), a copy keeps the original at home, and one
+            // that is not carried stays on its cut
+            if carried.is_some() && !copying {
+                continue;
+            }
+            draws.push((trn, start, end, false));
+        }
+        for (trn, s, e) in carried_transitions.get(&r.track).into_iter().flatten() {
+            draws.push((trn, *s, *e, copying));
+        }
+        for (trn, start, end, ghost) in draws {
+            let x0 = layout.x_of(start);
+            let x1 = layout.x_of(end);
+            let tr_rect = Rect::from_min_max(pos2(x0, r.rect.min.y + 17.0), pos2(x1, r.rect.max.y - 1.0));
+            let selected = app.session.state.transition_selection.contains(&trn.id);
+            draw_transition(&p, tr_rect, trn, ghost || selected, &t);
+            let suffix = if ghost { ".copy" } else { "" };
+            app.auto.add(&format!("timeline.transition.{}{}", trn.id.0, suffix), tr_rect, &trn.effect.effect);
+            // its ends, for dragging the duration (the same zones as the hit test)
+            let zone = super::timeline_hit::EDGE_PX.min(tr_rect.width() / 3.0);
+            if !ghost {
+                app.auto.add(&format!("timeline.transition.{}.in", trn.id.0), Rect::from_min_max(tr_rect.min, pos2(x0 + zone, tr_rect.max.y)), "start");
+                app.auto.add(&format!("timeline.transition.{}.out", trn.id.0), Rect::from_min_max(pos2(x1 - zone, tr_rect.min.y), tr_rect.max), "end");
             }
         }
         if tr.locked {
