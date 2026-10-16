@@ -192,3 +192,13 @@ resizes the root split; path entries use `false` for the first child and `true` 
 the second. `{"action":{"MoveFloating":{"panel":"Info","rect":[45,65,420,320]}}}`
 repositions and resizes the floating group containing Info. Invalid actions leave the
 layout unchanged. Pointer gestures dispatch through this same catalog command.
+
+### Importing an external EDL with an explicit rate
+
+`file.import` accepts an optional `edlFrameRate` object containing positive integer
+`num` and `den` fields (frames per second as an exact rational). For example,
+`{"paths":["cut.edl"],"edlFrameRate":{"num":25,"den":1}}` imports at 25 fps;
+use `{"num":24000,"den":1001}` for 23.976 fps. This overrides a FilmCraft EDL
+frame-rate comment. If omitted, the comment or normal EDL rate inference applies.
+Other interchange formats retain the rate stored in their document. Invalid rate
+parameters return an error before `replace` can clear the current project.

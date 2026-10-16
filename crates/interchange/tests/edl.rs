@@ -197,6 +197,7 @@ fn export_golden_text() {
     let text = String::from_utf8(bytes).unwrap();
     let expected = "TITLE: Edit 1
 FCM: NON-DROP FRAME
+* FILMCRAFT FRAME RATE: 25/1
 
 001  BEACH_DA B     C        00:00:00:10 00:00:04:10 00:00:00:00 00:00:04:00
 * FROM CLIP NAME: Beach Day.mov
@@ -277,12 +278,12 @@ fn drop_frame_roundtrip_59_94() {
     assert!(text.contains("FCM: DROP FRAME"));
     assert!(text.contains("01;00;59;50 01;01;00;24"), "{text}");
     let si = only_seq(&imp);
-    // 59.94 is not guessable from the list alone, pass it.
+    // An explicit rate still gives the same result as the exported comment.
     let (imp2, _) = import_with(text.as_bytes(), Format::Edl, &ImportOptions { edl_frame_rate: Some(r), ..Default::default() }).unwrap();
     let si2 = only_seq(&imp2);
     assert_eq!(structure(&imp2.project, si2, TrackKind::Video), structure(&p, s, TrackKind::Video));
     assert_eq!(imp2.project.sequence(si2).unwrap().start_timecode, p.sequence(s).unwrap().start_timecode);
-    // The guessed rate (59.94 because frame fields exceed 29) also works.
+    // The exported comment also preserves the rate without an explicit option.
     assert_eq!(imp.project.sequence(si).unwrap().settings.frame_rate, r);
 }
 
@@ -435,4 +436,43 @@ fn a_nested_sequence_is_one_event_from_reel_ax() {
     let q = imp.project.sequence(only_seq(&imp)).unwrap();
     let c = &q.video_tracks[0].items[0];
     assert_eq!((c.name.as_str(), c.start, c.duration, c.source_in), ("Nested Sequence 02", rate.tick_of(72), rate.tick_of(48), rate.tick_of(24)));
+}
+
+#[test]
+fn own_edl_roundtrip_preserves_the_sequence_frame_rate() {
+    for rate in [FrameRate::FPS_25, FrameRate::FPS_23_976, FrameRate::FPS_59_94] {
+        let mut p = filmcraft_project::Project::new("P");
+        let a = media(&mut p, "/m/a.mov", true, false, rate);
+        let s = sequence(&mut p, "S", rate, false);
+        clip(&mut p, s, TrackKind::Video, 0, a, 0, 10, 0);
+        let (imp, _, _) = roundtrip(&p, s, Format::Edl, &ExportOptions::default());
+        let si = only_seq(&imp);
+        assert_eq!(imp.project.sequence(si).unwrap().settings.frame_rate, rate);
+        assert_eq!(structure(&imp.project, si, TrackKind::Video), structure(&p, s, TrackKind::Video));
+    }
+}
+
+#[test]
+fn edl_frame_rate_comment_keeps_overrides_and_unannotated_fallback() {
+    let event = "001  CAM V C 00:00:00:00 00:00:01:00 00:00:00:00 00:00:01:00\n";
+    let plain = format!("TITLE: T\nFCM: NON-DROP FRAME\n{event}");
+    let annotated = format!("* FILMCRAFT FRAME RATE: 25/1\n{plain}");
+    let (imp, report) = import(annotated.as_bytes(), Format::Edl, None).unwrap();
+    assert_eq!(imp.project.sequence(only_seq(&imp)).unwrap().settings.frame_rate, FrameRate::FPS_25);
+    assert!(!report.mentions("assumed"));
+    let (imp, _) = import_with(annotated.as_bytes(), Format::Edl, &ImportOptions { edl_frame_rate: Some(FrameRate::FPS_30), ..Default::default() }).unwrap();
+    assert_eq!(imp.project.sequence(only_seq(&imp)).unwrap().settings.frame_rate, FrameRate::FPS_30);
+    let (imp, report) = import(plain.as_bytes(), Format::Edl, None).unwrap();
+    assert_eq!(imp.project.sequence(only_seq(&imp)).unwrap().settings.frame_rate, FrameRate::FPS_24);
+    assert!(report.mentions("assumed 24"));
+    for value in ["25/0", "0/1", "-25/1", "25/-1", "nope", "25/1/2", "9223372036854775808/1"] {
+        let text = format!("* FILMCRAFT FRAME RATE: {value}\n{plain}");
+        let (imp, report) = import(text.as_bytes(), Format::Edl, None).unwrap();
+        assert_eq!(imp.project.sequence(only_seq(&imp)).unwrap().settings.frame_rate, FrameRate::FPS_24, "{value}");
+        assert!(report.mentions("invalid FilmCraft frame-rate"), "{value}");
+    }
+    let repeated = format!("* FILMCRAFT FRAME RATE: 25/1\n* FILMCRAFT FRAME RATE: 30/1\n{plain}");
+    let (imp, report) = import(repeated.as_bytes(), Format::Edl, None).unwrap();
+    assert_eq!(imp.project.sequence(only_seq(&imp)).unwrap().settings.frame_rate, FrameRate::FPS_25);
+    assert!(report.mentions("repeated FilmCraft frame-rate"));
 }

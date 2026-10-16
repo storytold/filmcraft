@@ -6,7 +6,9 @@
 //! black, reel names up to 8 (strict) or 32+ (extended) characters, and the comment extensions
 //! `* FROM CLIP NAME:`, `* TO CLIP NAME:`, `* SOURCE FILE:`, `* EFFECT NAME:` and `* LOC:` markers.
 //!
-//! EDLs carry no frame rate and no media identity beyond reels/comments; see [`ImportOptions`].
+//! Standard EDLs carry no frame rate; our exports add `* FILMCRAFT FRAME RATE: num/den`
+//! so they round-trip exactly. Explicit [`ImportOptions`] still override that comment.
+//! Media identity comes from reels/comments; see [`ImportOptions`].
 //! Source timecodes are imported as media time (a file starting at 01:00:00:00 would need
 //! [`crate::rebase_source_timecode`] after probing).
 
@@ -142,15 +144,18 @@ struct Event {
     df: bool,
 }
 
+const FRAME_RATE_COMMENT: &str = "FILMCRAFT FRAME RATE:";
+
 struct Parsed {
     title: Option<String>,
+    frame_rate: Option<FrameRate>,
     events: Vec<Event>,
     any_df: bool,
     max_ff: i64,
 }
 
 fn parse(text: &str, report: &mut Report) -> Parsed {
-    let mut p = Parsed { title: None, events: Vec::new(), any_df: false, max_ff: 0 };
+    let mut p = Parsed { title: None, frame_rate: None, events: Vec::new(), any_df: false, max_ff: 0 };
     let mut df = false;
     for raw in text.lines() {
         let l = raw.trim();
@@ -169,6 +174,24 @@ fn parse(text: &str, report: &mut Report) -> Parsed {
         }
         if let Some(c) = l.strip_prefix('*') {
             let c = c.trim();
+            if c.to_ascii_uppercase().starts_with(FRAME_RATE_COMMENT) {
+                let rate = c.get(FRAME_RATE_COMMENT.len()..).and_then(|v| {
+                    let (num, den) = v.trim().split_once('/')?;
+                    let num = num.trim().parse::<i64>().ok()?;
+                    let den = den.trim().parse::<i64>().ok()?;
+                    (num > 0 && den > 0).then(|| FrameRate::new(num, den))
+                });
+                if let Some(rate) = rate {
+                    if p.frame_rate.is_none() {
+                        p.frame_rate = Some(rate);
+                    } else {
+                        report.warn("Ignored repeated FilmCraft frame-rate comment");
+                    }
+                } else {
+                    report.warn("Ignored invalid FilmCraft frame-rate comment (expected positive num/den)");
+                }
+                continue;
+            }
             let Some(ev) = p.events.last_mut() else { continue };
             let cu = c.to_ascii_uppercase();
             let value = |prefix: &str| c[prefix.len()..].trim().to_string();
@@ -395,7 +418,7 @@ pub(crate) fn import(text: &str, opts: &ImportOptions, report: &mut Report) -> R
     if parsed.events.is_empty() {
         return Err(crate::Error::parse(Format::Edl, "no events found"));
     }
-    let rate = match opts.edl_frame_rate {
+    let rate = match opts.edl_frame_rate.or(parsed.frame_rate) {
         Some(r) => r,
         None => {
             let r = guess_rate(&parsed);
@@ -938,6 +961,7 @@ pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: 
     let mut out = String::new();
     out.push_str(&format!("TITLE: {title}\n"));
     out.push_str(if df { "FCM: DROP FRAME\n" } else { "FCM: NON-DROP FRAME\n" });
+    out.push_str(&format!("* {FRAME_RATE_COMMENT} {}/{}\n", rate.num, rate.den));
     let w = opts.edl.reel_len.max(8);
     let mut markers: Vec<&Marker> = if opts.edl.markers { seq.markers.iter().collect() } else { Vec::new() };
     markers.sort_by_key(|m| m.start);
