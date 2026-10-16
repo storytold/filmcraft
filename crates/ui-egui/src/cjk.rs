@@ -23,10 +23,21 @@ pub(crate) fn craft_fonts() -> impl Iterator<Item = &'static filmcraft_text::fon
     filmcraft_text::fonts::CRAFT_FONTS.iter().filter(|f| f.scripts.iter().any(|s| matches!(*s, "Hans" | "Hant")))
 }
 
-// Hangul: neither the UI fonts nor the Chinese/Japanese fallbacks have it, so typed, pasted and
-// IME-composed Korean drew as missing-glyph boxes (artcraft#2093).
+// Hangul. The Japanese craft faces do not cover it. Noto Sans CJK (the Hans/Hant face) does, and
+// egui draws a code point from the first face that has it, so that pan-CJK Hangul was what the
+// Korean UI used. Dedicated Korean faces come first instead: Malgun Gothic on Windows, Apple SD
+// Gothic Neo on macOS, then the shared OFL faces (Noto Sans KR, Nanum Gothic). The pan-CJK faces
+// stay last, for a machine with nothing else (artcraft#2093).
 const KOREAN_SAMPLE: &str = "한국어입력테스트";
-const KOREAN_PREFERRED: &[&str] = &["Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR", "Noto Sans KR", "Source Han Sans K", "NanumGothic"];
+const KOREAN_PREFERRED: &[&str] = &[
+    "Malgun Gothic",
+    "Apple SD Gothic Neo",
+    "Noto Sans KR",
+    "NanumGothic",
+    "Nanum Gothic",
+    "Noto Sans CJK KR",
+    "Source Han Sans K",
+];
 
 fn system_font() -> Option<Arc<FontData>> {
     static FONT: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
@@ -65,17 +76,18 @@ pub(crate) fn available() -> bool {
     craft_fonts().next().is_some() || system_font().is_some()
 }
 
-/// Append Chinese faces after the Latin UI fonts and the Japanese fallbacks. This keeps the
-/// interface's Latin typography and Japanese glyph forms, and covers the simplified and
-/// traditional hanzi in media and track names that Japanese fonts lack.
+/// Korean faces, then Chinese. Japanese craft faces are already in the stack (and do not cover
+/// Hangul), so kana and kanji keep Japanese forms. Hangul is taken from the Korean face because it
+/// is inserted before Noto Sans CJK, which also covers Hangul. Chinese faces still cover the hanzi
+/// the Japanese ones lack.
 pub(crate) fn install(fonts: &mut FontDefinitions) {
-    install_chinese(fonts);
     if let Some(font) = korean_font() {
         fonts.font_data.insert("system-korean".into(), font);
         for stack in fonts.families.values_mut() {
             stack.push("system-korean".into());
         }
     }
+    install_chinese(fonts);
 }
 
 fn install_chinese(fonts: &mut FontDefinitions) {
