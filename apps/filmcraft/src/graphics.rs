@@ -18,13 +18,25 @@
 //! so concurrent launches never write the same file) that is removed once the window has painted
 //! two frames, when the process ends normally, or [`DEATH_WINDOW`] after launch, whatever happened
 //! by then. An attempt file found by a later launch therefore means a process that died within
-//! [`DEATH_WINDOW`] of its start without painting: a driver crash, typically. A start that hangs,
-//! or is force-quit or crashes later, is not counted; neither is another instance that is still
-//! starting (its attempt is younger than [`DEATH_WINDOW`] and is left alone). After
-//! [`FAILURES_TO_MOVE_ON`] such failures in a row in the same mode, the launch moves on to the next
-//! [`Mode`] of the platform's [`LADDER`] and keeps it; a start that paints resets the count. A
-//! start-up error that wgpu does report (no adapter, device creation failed) moves on at once,
-//! within the same process.
+//! [`DEATH_WINDOW`] of its start without painting: a driver crash, typically. A start that is
+//! force-quit or crashes later is not counted; neither is another instance that is still starting
+//! (its attempt is younger than [`DEATH_WINDOW`] and is left alone). After [`FAILURES_TO_MOVE_ON`]
+//! such failures in a row in the same mode, the launch moves on to the next [`Mode`] of the
+//! platform's [`LADDER`] and keeps it; a start that paints resets the count. A start-up error that
+//! wgpu does report (no adapter, device creation failed) moves on at once, within the same process.
+//!
+//! # A start that hangs
+//! A driver can also hang inside instance, adapter or device creation instead of crashing (#1061):
+//! the process lives on without a window, so no later launch ever finds a dead attempt. A watchdog
+//! ([`GraphicsStart::watch_for_hang`]) gives the graphics device [`HANG_TIMEOUT`] from launch; if
+//! it still isn't there, the next mode is saved at once, like a reported error, so the next launch
+//! opens in it. The stuck process can't recover or even end itself: on a GTX 1050 laptop neither
+//! starting a new process nor `abort` got past the hang, most likely because a driver stuck while
+//! being loaded holds the Windows loader lock. Another process can end it, so the watchdog leaves
+//! a marker ([`HUNG_DIR`]) and the next launch ends the stuck start before it loads the driver
+//! itself ([`GraphicsStart::end_stuck_starts`]).
+//! A mode picked by hand (`--graphics`, `WGPU_BACKEND`) and the last mode of the ladder are left
+//! as they are: the hang is only logged.
 //!
 //! # Getting back
 //! A fallback mode shows a notice with a reset button in the window (`graphics.notice.reset`,
@@ -38,8 +50,8 @@
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use eframe::{
@@ -52,11 +64,17 @@ use eframe::{
 pub const STATE_FILE: &str = "graphics-start.json";
 /// The folder in the data folder with one attempt file per start that has not painted yet.
 pub const ATTEMPTS_DIR: &str = "graphics-start";
+/// The folder in the data folder with one marker per start the watchdog found stuck:
+/// `<pid>.json` with its launch time, `{"started": <Unix seconds>}`.
+pub const HUNG_DIR: &str = "graphics-hung";
 /// How long after launch a start that has not painted may die and still count as failed. A
 /// driver crash in instance or device creation happens within a second or two.
 pub const DEATH_WINDOW: Duration = Duration::from_secs(15);
 /// Failed starts in a row, in the same mode, that move on to the next mode.
 pub const FAILURES_TO_MOVE_ON: u32 = 2;
+/// How long after launch the graphics device may take before the start counts as hung. Creating
+/// it takes a second or two; a cold start from a slow disk well under this.
+pub const HANG_TIMEOUT: Duration = Duration::from_secs(30);
 /// Attempt files looked at per launch; anything beyond is left for a later launch.
 const MAX_ATTEMPTS: usize = 64;
 /// The state and attempt files are a few bytes; anything longer is not ours.
@@ -202,6 +220,17 @@ fn parse_attempt(file_name: &str, text: &str) -> Option<Attempt> {
     Some(Attempt { pid, mode: Mode::parse(v.get("mode")?.as_str()?)?, started: v.get("started")?.as_u64()? })
 }
 
+fn hung_json(started: u64) -> String {
+    serde_json::json!({ "started": started }).to_string()
+}
+
+/// A [`HUNG_DIR`] marker from its file name (`<pid>.json`) and text: process id and launch time.
+fn parse_hung(file_name: &str, text: &str) -> Option<(u32, u64)> {
+    let pid = file_name.strip_suffix(".json")?.parse().ok()?;
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    Some((pid, v.get("started")?.as_u64()?))
+}
+
 fn attempt_json(mode: Mode, started: u64) -> String {
     serde_json::json!({ "mode": mode.name(), "started": started }).to_string()
 }
@@ -260,8 +289,18 @@ pub struct GraphicsStart {
     /// This start's attempt file (with `state`).
     attempt: Option<PathBuf>,
     mode: Mode,
+    /// The mode was picked with `--graphics`: a hang does not move on from it.
+    forced: bool,
     /// [`Self::reset_to_default`] was used: a later [`Self::confirm`] must not save this mode over it.
     reset: Arc<AtomicBool>,
+    /// The graphics device exists, or this start is over: the hang watchdog stands down.
+    ready: Arc<AtomicBool>,
+    /// The mode this process is starting in now, shared with the watchdog's clone (which a
+    /// [`Self::step_down`] after it was made would otherwise not see).
+    running: Arc<Mutex<Mode>>,
+    /// This process, and its launch in Unix seconds: what a [`HUNG_DIR`] marker records.
+    pid: u32,
+    launched: u64,
 }
 
 impl GraphicsStart {
@@ -281,8 +320,11 @@ impl GraphicsStart {
         let first = LADDER.first().copied().unwrap_or(Mode::Default);
         let forced = forced.map(|m| if LADDER.contains(&m) { m } else { first });
         let reset = Arc::new(AtomicBool::new(false));
+        let ready = Arc::new(AtomicBool::new(false));
         let Some(dir) = data_dir.filter(|_| !explicit_backend) else {
-            return Self { state: None, attempt: None, mode: forced.unwrap_or(Mode::Default), reset };
+            let mode = forced.unwrap_or(Mode::Default);
+            let running = Arc::new(Mutex::new(mode));
+            return Self { state: None, attempt: None, mode, forced: forced.is_some(), reset, ready, running, pid, launched: now };
         };
         let state = dir.join(STATE_FILE);
         let attempts_dir = dir.join(ATTEMPTS_DIR);
@@ -323,7 +365,8 @@ impl GraphicsStart {
         {
             log::warn!("can't write {file}: {e}");
         }
-        let start = Self { state: Some(state), attempt: None, mode: next.mode, reset };
+        let running = Arc::new(Mutex::new(next.mode));
+        let start = Self { state: Some(state), attempt: None, mode: next.mode, forced: forced.is_some(), reset, ready, running, pid, launched: now };
         start.with_new_attempt(&attempts_dir, now, pid)
     }
 
@@ -355,6 +398,7 @@ impl GraphicsStart {
         };
         log::warn!("graphics mode {} failed to start; trying {}", self.mode.name(), next.name());
         self.mode = next;
+        *self.running.lock().unwrap_or_else(PoisonError::into_inner) = next;
         if let Some(state) = self.state.clone() {
             self.save(&state, Saved { mode: next, failures: 0 });
             if let Some(old) = self.attempt.take() {
@@ -387,8 +431,87 @@ impl GraphicsStart {
     /// This start is over, whether it painted or not (the window closed, or every mode failed
     /// with an error that was reported): its attempt no longer means a crash.
     pub fn finish(&self) {
+        self.device_ready();
         if let Some(path) = &self.attempt {
             remove_quietly(path);
+        }
+    }
+
+    /// The graphics device exists (eframe is creating the app): this start did not hang, however
+    /// long the app itself then takes to open a project and paint.
+    pub fn device_ready(&self) {
+        self.ready.store(true, Ordering::Relaxed);
+    }
+
+    /// After [`HANG_TIMEOUT`], save the next mode for the next launch if the graphics device still
+    /// isn't there (see the module docs), and say so in the crash log.
+    pub fn watch_for_hang(&self) {
+        let start = self.clone();
+        let spawned = std::thread::Builder::new().name("graphics-watchdog".into()).spawn(move || {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                std::thread::sleep(HANG_TIMEOUT);
+                if let Some(next) = start.hung() {
+                    filmcraft_ui_egui::crash::record(&format!("the graphics start hung; the next start uses graphics mode {}", next.name()));
+                }
+            }));
+        });
+        if let Err(e) = spawned {
+            log::warn!("can't start the graphics watchdog: {e}");
+        }
+    }
+
+    /// The start has not created its graphics device in [`HANG_TIMEOUT`]: save the next mode and
+    /// return it, or `None` when the device is there after all, or the mode is left alone (picked
+    /// by hand, the last one, or no data folder to save it in).
+    fn hung(&self) -> Option<Mode> {
+        if self.ready.load(Ordering::Relaxed) {
+            return None;
+        }
+        // stuck whatever the mode: the next launch ends this process
+        if let Some(dir) = self.state.as_deref().and_then(Path::parent) {
+            let marker = dir.join(HUNG_DIR).join(format!("{}.json", self.pid));
+            if let Err(e) = write_atomic(&marker, &hung_json(self.launched)) {
+                log::warn!("can't write {}: {e}", marker.display());
+            }
+        }
+        let secs = HANG_TIMEOUT.as_secs();
+        let mode = *self.running.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = mode.name();
+        let next = next_in(LADDER, mode).filter(|_| !self.forced && !self.reset.load(Ordering::Relaxed));
+        let (Some(next), Some(state)) = (next, &self.state) else {
+            log::error!("no window after {secs} s with graphics mode {now}; the graphics driver may be stuck (`--graphics <mode>` picks another)");
+            return None;
+        };
+        log::error!(
+            "no window after {secs} s with graphics mode {now}; the graphics driver seems stuck: the next start uses {} and ends this one",
+            next.name()
+        );
+        self.save(state, Saved { mode: next, failures: 0 });
+        Some(next)
+    }
+
+    /// End the starts an earlier watchdog found stuck in the graphics driver ([`HUNG_DIR`]) with
+    /// `end(pid, launched)`, before this start loads the driver. `end` must only end a process
+    /// that is still that start (`filmcraft_platform::stuck_process::end_stuck_process`). Each
+    /// marker is used once, whatever `end` says.
+    pub fn end_stuck_starts(&self, end: impl Fn(u32, u64) -> Result<bool, String>) {
+        let Some(dir) = self.state.as_deref().and_then(Path::parent) else { return };
+        let Ok(entries) = std::fs::read_dir(dir.join(HUNG_DIR)) else { return };
+        for entry in entries.filter_map(Result::ok).take(MAX_ATTEMPTS) {
+            let Ok(name) = entry.file_name().into_string() else { continue };
+            if !name.ends_with(".json") {
+                continue;
+            }
+            let path = entry.path();
+            // our own id on a marker is a dead process whose id was reused
+            if let Some((pid, launched)) = read_small(&path).and_then(|t| parse_hung(&name, &t)).filter(|(pid, _)| *pid != self.pid) {
+                match end(pid, launched) {
+                    Ok(true) => log::info!("ended FilmCraft process {pid}, stuck in the graphics driver since it started"),
+                    Ok(false) => {}
+                    Err(e) => log::warn!("can't end FilmCraft process {pid}, stuck in the graphics driver: {e}"),
+                }
+            }
+            remove_quietly(&path);
         }
     }
 
@@ -866,6 +989,101 @@ mod tests {
         start.finish();
         assert_eq!(attempt_files(&dir), 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_start_that_hangs_moves_on_unless_the_mode_was_picked_by_hand() {
+        let dir = temp_dir("hang");
+        let second = LADDER.get(1).copied();
+        // the device came up: no hang, however long the app then takes to paint
+        let start = launch(&dir, 100, NOW);
+        start.device_ready();
+        assert_eq!(start.hung(), None);
+        assert_eq!(state_of(&dir), saved(Mode::Default, 0));
+        start.finish();
+        // stuck in the driver (#1061): the watchdog's clone saves the next mode at once, and the
+        // start after it opens in that mode
+        let stuck = launch(&dir, 101, NOW + 60);
+        assert_eq!(stuck.clone().hung(), second);
+        if let Some(next) = second {
+            assert_eq!(state_of(&dir), saved(next, 0));
+            assert_eq!(launch(&dir, 102, NOW + 120).mode(), next);
+        }
+        // a clone made before a reported error stepped down sees the mode the process is in now
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut stepped = launch(&dir, 103, NOW);
+        let watchdog = stepped.clone();
+        if stepped.step_down() {
+            assert_eq!(watchdog.hung(), next_in(LADDER, stepped.mode()));
+        }
+        // a mode picked by hand stays, and so does a start that has finished or was reset
+        let _ = std::fs::remove_dir_all(&dir);
+        let forced = GraphicsStart::begin_at(Some(&dir), false, Some(Mode::Default), NOW, 104);
+        assert_eq!(forced.hung(), None);
+        assert_eq!(state_of(&dir), saved(Mode::Default, 0));
+        let finished = launch(&dir, 105, NOW + 60);
+        finished.finish();
+        assert_eq!(finished.hung(), None);
+        let reset = launch(&dir, 106, NOW + 120);
+        assert_eq!(reset.reset_to_default(), Ok(()));
+        assert_eq!(reset.hung(), None);
+        assert_eq!(state_of(&dir), saved(Mode::Default, 0));
+        // `WGPU_BACKEND` set: the data folder is left alone
+        let explicit = GraphicsStart::begin_at(Some(&dir), true, None, NOW + 180, 107);
+        assert_eq!(explicit.hung(), None);
+        assert_eq!(state_of(&dir), saved(Mode::Default, 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stuck_start_is_marked_and_the_next_launch_ends_it_once() {
+        let dir = temp_dir("stuck");
+        let hung = |pid: u32| dir.join(HUNG_DIR).join(format!("{pid}.json")).exists();
+        // stuck: marked with its launch time, whatever its mode
+        let _ = launch(&dir, 200, NOW).hung();
+        let _ = GraphicsStart::begin_at(Some(&dir), false, Some(Mode::Default), NOW + 1, 201).hung();
+        assert!(hung(200) && hung(201));
+        // a start that came up, or one with `WGPU_BACKEND` (data folder left alone): no marker
+        let fine = launch(&dir, 202, NOW + 2);
+        fine.device_ready();
+        assert_eq!(fine.hung(), None);
+        let _ = GraphicsStart::begin_at(Some(&dir), true, None, NOW + 3, 203).hung();
+        assert!(!hung(202) && !hung(203));
+        // debris, and a marker with the next launch's own id (a dead process whose id was reused)
+        let _ = std::fs::write(dir.join(HUNG_DIR).join("junk.json"), "{");
+        let _ = std::fs::write(dir.join(HUNG_DIR).join("204.json"), hung_json(NOW));
+        let _ = std::fs::write(dir.join(HUNG_DIR).join("notes.txt"), "x");
+        // the next launch ends the stuck ones it is given, with their launch times
+        let next = launch(&dir, 204, NOW + 60);
+        let asked = std::cell::RefCell::new(Vec::new());
+        next.end_stuck_starts(|pid, launched| {
+            asked.borrow_mut().push((pid, launched));
+            if pid == 200 { Ok(true) } else { Err("access denied".into()) }
+        });
+        let mut asked = asked.into_inner();
+        asked.sort_unstable();
+        assert_eq!(asked, [(200, NOW), (201, NOW + 1)]);
+        // every marker is used once, ended or not; other files stay
+        assert!(!hung(200) && !hung(201) && !hung(204) && !dir.join(HUNG_DIR).join("junk.json").exists());
+        assert!(dir.join(HUNG_DIR).join("notes.txt").exists());
+        next.end_stuck_starts(|_, _| panic!("no markers left"));
+        // without a data folder there is nothing to read
+        GraphicsStart::begin_at(None, false, None, NOW, 205).end_stuck_starts(|_, _| panic!("no data folder"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn markers_round_trip_and_reject_anything_else() {
+        assert_eq!(parse_hung("12.json", &hung_json(NOW)), Some((12, NOW)));
+        for (name, text) in [
+            ("12.json", "{"),
+            ("12.json", r#"{"started":-1}"#),
+            ("x.json", r#"{"started":1}"#),
+            ("12-0.json", r#"{"started":1}"#),
+            ("12.txt", r#"{"started":1}"#),
+        ] {
+            assert_eq!(parse_hung(name, text), None, "{name} {text}");
+        }
     }
 
     #[test]
