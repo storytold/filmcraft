@@ -78,20 +78,22 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 if f.name == "Label" {
                     let cur = Label::from_name(&f.value).unwrap_or(Label::Violet);
                     let mut sel = cur;
-                    let r = egui::ComboBox::from_id_salt(("md-label", item.0))
-                        .selected_text(crate::i18n::t(cur.name()))
-                        .width(ui.available_width().min(200.0))
-                        .show_ui(ui, |ui| {
-                            for l in Label::ALL {
-                                let c = l.rgb();
-                                let rr = ui.horizontal(|ui| {
-                                    let (sw, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
-                                    ui.painter().rect_filled(sw, 2.0, egui::Color32::from_rgb(c[0], c[1], c[2]));
-                                    ui.selectable_value(&mut sel, l, crate::i18n::t(l.name()))
-                                });
-                                elems.push((format!("metadata.label.{}", l.name()), rr.inner.rect, l.name().to_string()));
-                            }
-                        });
+                    let combo_w = ui.available_width().min(200.0);
+                    let r = egui::ComboBox::from_id_salt(("md-label", item.0)).selected_text(crate::i18n::t(cur.name())).width(combo_w).show_ui(ui, |ui| {
+                        // egui's combo popup shrinks its scroll area to the content, so with
+                        // short colour names the scrollbar stuck to the text instead of the
+                        // popup's right edge; span the popup's inner width to fix it
+                        ui.set_min_width(ui.available_width());
+                        for l in Label::ALL {
+                            let c = l.rgb();
+                            let rr = ui.horizontal(|ui| {
+                                let (sw, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
+                                ui.painter().rect_filled(sw, 2.0, egui::Color32::from_rgb(c[0], c[1], c[2]));
+                                ui.selectable_value(&mut sel, l, crate::i18n::t(l.name()))
+                            });
+                            elems.push((format!("metadata.label.{}", l.name()), rr.inner.rect, l.name().to_string()));
+                        }
+                    });
                     elems.push(("metadata.label".into(), r.response.rect, cur.name().to_string()));
                     if sel != cur {
                         commit = Some(("Label".into(), sel.name().to_string()));
