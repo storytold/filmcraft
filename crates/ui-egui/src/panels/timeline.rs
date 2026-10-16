@@ -588,7 +588,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             for (start, end, ghost) in show {
                 let x0 = layout.x_of(start);
                 let x1 = layout.x_of(end);
-                let tr_rect = Rect::from_min_max(pos2(x0, r.rect.min.y + 17.0), pos2(x1, r.rect.max.y - 1.0));
+                let tr_rect = Rect::from_min_max(pos2(x0, super::timeline_hit::transition_top(r.rect)), pos2(x1, r.rect.max.y - 1.0));
                 let selected = app.session.state.transition_selection.contains(&trn.id);
                 draw_transition(&p, tr_rect, trn, ghost || selected, &t);
                 let suffix = if ghost { ".copy" } else { "" };
