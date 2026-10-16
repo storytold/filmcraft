@@ -28,6 +28,26 @@ pub(crate) fn craft_fonts() -> impl Iterator<Item = &'static filmcraft_text::fon
 const KOREAN_SAMPLE: &str = "한국어입력테스트";
 const KOREAN_PREFERRED: &[&str] = &["Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR", "Noto Sans KR", "Source Han Sans K", "NanumGothic"];
 
+// Thai: neither the UI fonts nor CJK fallbacks have it, so typed, pasted and UI Thai needs a fallback.
+const THAI_SAMPLE: &str = "ภาษาไทยตัวอย่างการทดสอบ";
+const THAI_PREFERRED: &[&str] = &[
+    "Leelawadee UI",
+    "Leelawadee",
+    "Tahoma",
+    "Thonburi",
+    "Ayuthaya",
+    "Sathu",
+    "Noto Sans Thai",
+    "Noto Sans Thai Looped",
+    "Sarabun",
+    "TH Sarabun New",
+    "TH SarabunPSK",
+    "Garuda",
+    "Loma",
+    "Kinnari",
+    "Waree",
+];
+
 fn system_font() -> Option<Arc<FontData>> {
     static FONT: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
     FONT.get_or_init(|| find_system_font(SAMPLE, PREFERRED)).clone()
@@ -36,6 +56,15 @@ fn system_font() -> Option<Arc<FontData>> {
 fn korean_font() -> Option<Arc<FontData>> {
     static FONT: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
     FONT.get_or_init(|| find_system_font(KOREAN_SAMPLE, KOREAN_PREFERRED)).clone()
+}
+
+fn thai_font() -> Option<Arc<FontData>> {
+    static FONT: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
+    FONT.get_or_init(|| find_system_font(THAI_SAMPLE, THAI_PREFERRED)).clone()
+}
+
+pub(crate) fn craft_thai_fonts() -> impl Iterator<Item = &'static filmcraft_text::fonts::CraftFont> {
+    filmcraft_text::fonts::CRAFT_FONTS.iter().filter(|f| f.scripts.contains(&"Thai"))
 }
 
 /// A font collection's face index matters: Windows CJK UI fonts commonly live in TTC files.
@@ -59,6 +88,12 @@ pub(crate) fn korean_available() -> bool {
     korean_font().is_some()
 }
 
+/// Whether [`install`] has a Thai face to add: craft-fonts Thai faces, or an installed system
+/// face (scanned once per process). The Thai interface needs one.
+pub(crate) fn thai_available() -> bool {
+    craft_thai_fonts().next().is_some() || thai_font().is_some()
+}
+
 /// Whether [`install`] has a Chinese face to add: craft-fonts Hans/Hant faces, or an installed
 /// system face (scanned once per process). The Simplified Chinese interface needs one.
 pub(crate) fn available() -> bool {
@@ -75,6 +110,27 @@ pub(crate) fn install(fonts: &mut FontDefinitions) {
         for stack in fonts.families.values_mut() {
             stack.push("system-korean".into());
         }
+    }
+    install_thai(fonts);
+}
+
+fn install_thai(fonts: &mut FontDefinitions) {
+    let thai: Vec<_> = craft_thai_fonts().collect();
+    if thai.is_empty() {
+        if let Some(font) = thai_font() {
+            fonts.font_data.insert("system-thai".into(), font);
+            for stack in fonts.families.values_mut() {
+                stack.push("system-thai".into());
+            }
+        }
+        return;
+    }
+    let name = |f: &filmcraft_text::fonts::CraftFont| format!("craft:{} {}", f.family, f.style);
+    for f in &thai {
+        fonts.font_data.insert(name(f), Arc::new(FontData::from_static(f.bytes)));
+    }
+    for stack in fonts.families.values_mut() {
+        stack.extend(thai.iter().map(|f| name(f)));
     }
 }
 

@@ -11,13 +11,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     ui.painter().rect_filled(rect, t.radius, t.panel_bg);
     ui.painter().text(rect.min + vec2(24.0, 30.0), Align2::LEFT_CENTER, tl!("Import"), Tokens::semibold(22.0), t.text);
-    ui.painter().text(
-        rect.min + vec2(24.0, 58.0),
-        Align2::LEFT_CENTER,
-        tl!("Add media to your project. Drop files anywhere in the window, or choose a source below."),
-        Tokens::ui(13.0),
-        t.text_dim,
-    );
+    // On Wayland the windowing layer never delivers file drops, so promise only
+    // what works there (the Browse card); everywhere else drops land anywhere.
+    let subtitle = if app.os_file_drop_unsupported {
+        tl!("Add media to your project. Drag-and-drop needs X11 (run with WAYLAND_DISPLAY unset), or choose a source below.")
+    } else {
+        tl!("Add media to your project. Drop files anywhere in the window, or choose a source below.")
+    };
+    let sub_r = ui.painter().text(rect.min + vec2(24.0, 58.0), Align2::LEFT_CENTER, subtitle, Tokens::ui(13.0), t.text_dim);
+    if app.os_file_drop_unsupported {
+        app.auto.add("import.dropTip", sub_r, subtitle);
+    }
     let ctx = ui.ctx().clone();
     let cards = [
         (tl!("Browse files…"), "file.import", tl!("Movies, audio and stills from disk")),

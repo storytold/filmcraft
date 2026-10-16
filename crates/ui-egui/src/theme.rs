@@ -660,6 +660,33 @@ mod tests {
         ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
     }
 
+    /// Typed, pasted or UI Thai text draws real glyphs, not the missing-glyph box.
+    #[test]
+    fn thai_text_renders_with_an_installed_thai_font() {
+        const THAI: &str = "ภาษาไทยทดสอบ";
+        filmcraft_text::fonts::scan_system();
+        let available = filmcraft_text::fonts::all_faces().iter().any(|f| f.info.origin == "system" && THAI.chars().all(|c| f.has_char(c)));
+        if !available {
+            eprintln!("SKIPPED: no installed Thai font");
+            return;
+        }
+        let ctx = egui::Context::default();
+        install(&ctx, &Tokens::for_kind(ThemeKind::Dark));
+        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+        ctx.fonts_mut(|fonts| {
+            for family in font_families() {
+                let font = FontId::new(13.0, family);
+                let missing = fonts.layout_no_wrap("\u{fffd}".into(), font.clone(), Color32::WHITE);
+                let missing_uv = missing.rows[0].glyphs[0].uv_rect;
+                let text = fonts.layout_no_wrap(THAI.into(), font.clone(), Color32::WHITE);
+                for glyph in text.rows.iter().flat_map(|r| &r.glyphs).filter(|g| g.chr != ' ') {
+                    assert_ne!(glyph.uv_rect, missing_uv, "missing {} in {font:?}", glyph.chr);
+                }
+            }
+        });
+        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+    }
+
     /// Built with craft-fonts: every font family ends with the Japanese faces (BIZ UDPGothic
     /// first), and Japanese text gets real glyphs, not the replacement box.
     #[test]

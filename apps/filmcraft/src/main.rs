@@ -248,6 +248,13 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         }
         let mut app = FilmcraftApp::new(session);
         app.graphics_notice = notice;
+        // winit has no file drag-and-drop on Wayland: say so (Import mode points at
+        // Browse files… instead) rather than silently swallowing drops. X11
+        // (`WAYLAND_DISPLAY` unset), Windows and macOS deliver them.
+        app.os_file_drop_unsupported = filmcraft_ui_egui::os_file_drop_unsupported();
+        if app.os_file_drop_unsupported {
+            log::warn!("OS file drag-and-drop is unavailable on Wayland; run with WAYLAND_DISPLAY unset (X11) to drag files in, or use File ▸ Import…");
+        }
         if recover == Some(false) {
             app.dialog = None;
         }

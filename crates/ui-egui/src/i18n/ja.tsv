@@ -3428,6 +3428,7 @@
 	The language changed but could not be saved: {e}	表示言語は変更されましたが、保存できませんでした: {e}
 	no Chinese font is installed on this system; the interface stays in English	このシステムには中国語フォントがインストールされていないため、表示は英語のままです
 	no Korean font is installed on this system; the interface stays in English	このシステムには韓国語フォントがインストールされていないため、表示は英語のままです
+	no Thai font is installed on this system; the interface stays in English	このシステムにはタイ語フォントがインストールされていないため、表示は英語のままです
 	no Japanese font is installed on this system; the interface stays in English	このシステムには日本語フォントがインストールされていないため、表示は英語のままです
 	Show	表示
 	Sort	並べ替え
@@ -3609,3 +3610,9 @@
 	Shows the version, community links and credits in a FilmCraft window.	バージョン、コミュニティへのリンク、クレジットを FilmCraft のウィンドウに表示します。
 	Couldn't open your web browser	ウェブブラウザーを開けませんでした
 	Open this address in your browser yourself:	このアドレスをご自身でブラウザーで開いてください：
+	Could not import the dropped files	ドロップされたファイルを読み込めませんでした
+	Imported 1 file	1 個のファイルを読み込みました
+	Imported {n} files	{n} 個のファイルを読み込みました
+	Drop to import	ドロップして読み込む
+	Drop on the Timeline to place the clips	タイムラインにドロップするとクリップを配置します
+	Add media to your project. Drag-and-drop needs X11 (run with WAYLAND_DISPLAY unset), or choose a source below.	プロジェクトにメディアを追加します。ドラッグ＆ドロップには X11 が必要です（WAYLAND_DISPLAY を外して実行）。または下から選んでください。
