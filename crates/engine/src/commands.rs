@@ -3424,6 +3424,18 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::project_panel::commands());
     v.extend(crate::media_browser::commands());
     v.extend(crate::paste_media::commands());
+    // The desktop frontend intercepts this command to run its native, asynchronous updater. It is
+    // still an engine command so menus, shortcuts and automation discover one stable command id.
+    v.push(CommandSpec {
+        id: "help.checkForUpdates",
+        label: "Check for Updates…",
+        menu: &["Help"],
+        shortcut: None,
+        params: "{}",
+        enabled: always,
+        run: |_, _| Ok(Value::Null),
+        journal: false,
+    });
     // Edit ▸ Label ▸ <colour>, Paste Attributes, subclips, Video / Audio Options, Replace With Clip…
     // and their menu order
     crate::clip_ops::apply_layout(&mut v);

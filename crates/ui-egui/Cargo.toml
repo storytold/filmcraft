@@ -41,6 +41,11 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # Thread/process CPU clocks for frame-job profiling (safe wrappers; see frames.rs).
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", default-features = false, features = ["std", "time"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Native-only: the web frontend has no executable to replace.  Keeping this target-specific
+# preserves the UI crate's WASM build.
+filmcraft-updater = { workspace = true }
 # the same clocks on Windows (GetThreadTimes / GetProcessTimes behind a safe API; MIT OR Apache-2.0)
 [target.'cfg(windows)'.dependencies]
 cpu-time = "1"

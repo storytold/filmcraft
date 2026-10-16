@@ -37,7 +37,7 @@ mod logging;
 mod native_menu;
 mod window_raise;
 
-use args::{Cli, Launch};
+use args::{Cli, Launch, UpdateApply};
 use chrono::TimeZone;
 use filmcraft_engine::Session;
 use filmcraft_engine::autosave::{AutosaveConfig, default_data_dir};
@@ -76,6 +76,18 @@ fn tell(text: &str, error: bool) {
     }
 }
 
+/// The deliberately small helper mode used after the editor has flushed its recovery journal and
+/// exited. It performs no GUI, project or media initialisation.
+fn apply_staged_update(args: UpdateApply) -> filmcraft_updater::Result<()> {
+    if !filmcraft_updater::swap::wait_for_exit(args.pid, std::time::Duration::from_secs(10)) {
+        return Err(filmcraft_updater::UpdateError::Unsupported(format!("the previous FilmCraft process ({}) did not exit within 10 seconds", args.pid)));
+    }
+    let staged = filmcraft_updater::Staged::load(&args.staged)?;
+    filmcraft_updater::swap::apply(&staged, &args.target)?;
+    filmcraft_updater::swap::relaunch(&args.target, &[])?;
+    Ok(())
+}
+
 fn main() -> eframe::Result {
     // First, so the panic hook and every start-up record are logged (`logging`).
     let logger = logging::install();
@@ -83,6 +95,13 @@ fn main() -> eframe::Result {
     let env_port = std::env::var_os("FILMCRAFT_CONTROL_PORT").map(|p| p.to_string_lossy().into_owned());
     let launch = match args::parse(env_port, std::env::args_os().skip(1)) {
         Ok(Cli::Run(l)) => l,
+        Ok(Cli::UpdateApply(apply)) => {
+            if let Err(e) = apply_staged_update(apply) {
+                tell(&format!("filmcraft: could not apply update: {e}\n"), true);
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
         Ok(Cli::Help) => {
             tell(args::USAGE, false);
             return Ok(());
@@ -111,6 +130,25 @@ fn main() -> eframe::Result {
             }
         }
     }
+    // Do this before graphics, audio, project recovery or any GUI work. A build that repeatedly
+    // dies during startup is restored before it can touch the user's current session.
+    let update_exe = match std::env::current_exe() {
+        Ok(path) => Some(path),
+        Err(e) => {
+            log::warn!("automatic updates are unavailable: cannot find this executable: {e}");
+            None
+        }
+    };
+    if let Some(exe) = update_exe.as_deref() {
+        match filmcraft_updater::on_boot(exe) {
+            Ok(filmcraft_updater::BootOutcome::RolledBack { failed, restored }) => {
+                log::warn!("Update to {failed} failed to start and was rolled back to {restored}.");
+            }
+            Ok(_) => {}
+            Err(e) => log::warn!("could not check update rollback state: {e}"),
+        }
+        filmcraft_updater::swap::cleanup_old_backups(exe);
+    }
     app_nap::disable();
     #[cfg(target_os = "linux")]
     dev_icon::ensure_dev_desktop_entry();
@@ -135,7 +173,11 @@ fn main() -> eframe::Result {
         // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
         graphics::apply(&mut options, graphics.mode(), backend_override);
         let app_created = Arc::new(AtomicBool::new(false));
-        let result = eframe::run_native("FilmCraft", options, app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created)));
+        let result = eframe::run_native(
+            "FilmCraft",
+            options,
+            app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created), update_exe.clone(), data_root.clone()),
+        );
         let app_created = app_created.load(Ordering::Relaxed);
         match &result {
             // wgpu reported the failure (no adapter, device creation failed) before the app
@@ -186,7 +228,13 @@ fn native_options(agent: bool) -> eframe::NativeOptions {
 
 /// Creates the app once eframe has its window and graphics device; sets `created` when it runs,
 /// and confirms the graphics mode once two frames have painted.
-fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<AtomicBool>) -> eframe::AppCreator<'static> {
+fn app_creator(
+    launch: Launch,
+    graphics: graphics::GraphicsStart,
+    created: Arc<AtomicBool>,
+    update_exe: Option<std::path::PathBuf>,
+    update_data_dir: Option<std::path::PathBuf>,
+) -> eframe::AppCreator<'static> {
     let Launch { control_port, control_input_only, files, demo, startup_flag, recover, data_dir, graphics: _ } = launch;
     Box::new(move |cc| {
         created.store(true, Ordering::Relaxed);
@@ -247,11 +295,33 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             }
         }
         let mut app = FilmcraftApp::new(session);
+        if let (Some(exe), Some(data_dir)) = (update_exe.clone(), update_data_dir.clone()) {
+            match semver::Version::parse(env!("CARGO_PKG_VERSION")) {
+                Ok(current) => {
+                    app.updates.configure(filmcraft_updater::Updater { current, exe, cache_dir: data_dir.join("updates") }, data_dir.join("update_state.json"))
+                }
+                Err(e) => log::warn!("automatic updates are unavailable: invalid build version: {e}"),
+            }
+        }
         app.graphics_notice = notice;
         if recover == Some(false) {
             app.dialog = None;
         }
         app.integrated_titlebar = cfg!(target_os = "macos");
+        if let Some(exe) = update_exe.clone() {
+            let confirmed = Arc::new(AtomicBool::new(false));
+            cc.egui_ctx.on_end_pass(
+                "update-health",
+                Arc::new(move |ui| {
+                    if ui.ctx().cumulative_frame_nr() >= 2
+                        && !confirmed.swap(true, Ordering::Relaxed)
+                        && let Err(e) = filmcraft_updater::confirm(&exe)
+                    {
+                        log::warn!("could not confirm healthy updated build: {e}");
+                    }
+                }),
+            );
+        }
         if let Some(rs) = cc.wgpu_render_state.clone()
             && std::env::var_os("FILMCRAFT_CPU_COMPOSITE").is_none()
         {

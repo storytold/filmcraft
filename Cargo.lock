@@ -1673,6 +1673,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "filetime"
+version = "0.2.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c287a33c7f0a620c38e641e7f60827713987b3c0f26e8ddc9462cc69cf75759"
+dependencies = [
+ "cfg-if",
+ "libc",
+]
+
+[[package]]
 name = "filmcraft"
 version = "0.8.0"
 dependencies = [
@@ -1689,6 +1699,7 @@ dependencies = [
  "filmcraft-render",
  "filmcraft-time",
  "filmcraft-ui-egui",
+ "filmcraft-updater",
  "glob",
  "log",
  "muda",
@@ -1698,6 +1709,7 @@ dependencies = [
  "open",
  "pollster 0.4.0",
  "rfd",
+ "semver",
  "serde_json",
  "sys-locale",
  "winit",
@@ -2341,6 +2353,7 @@ dependencies = [
  "filmcraft-text",
  "filmcraft-time",
  "filmcraft-tts",
+ "filmcraft-updater",
  "image",
  "log",
  "pollster 0.4.0",
@@ -2351,6 +2364,24 @@ dependencies = [
  "toml 1.1.6+spec-1.1.0",
  "unicode-bidi",
  "web-time",
+]
+
+[[package]]
+name = "filmcraft-updater"
+version = "0.7.2"
+dependencies = [
+ "flate2",
+ "log",
+ "rustls",
+ "rustls-rustcrypto",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.21",
+ "ureq",
 ]
 
 [[package]]
@@ -5964,6 +5995,16 @@ dependencies = [
  "pkg-config",
  "toml 0.8.2",
  "version-compare",
+]
+
+[[package]]
+name = "tar"
+version = "0.4.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+dependencies = [
+ "filetime",
+ "libc",
 ]
 
 [[package]]

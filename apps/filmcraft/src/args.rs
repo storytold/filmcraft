@@ -23,14 +23,27 @@ Options:
                      `--graphics default` undoes an automatic fallback
   --version          print the version and exit
   -h, --help         print this help and exit
+
+Internal updater helper (started by FilmCraft only):
+  --update-apply --pid <pid> --staged <dir> --target <path>
 ";
 
 /// What the command line asks for.
 #[derive(Debug, PartialEq)]
 pub enum Cli {
     Run(Launch),
+    /// The short-lived process that replaces an already staged update after its parent exits.
+    UpdateApply(UpdateApply),
     Help,
     Version,
+}
+
+/// Arguments required by `--update-apply`. All paths stay as `OsString`-backed `PathBuf`s.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UpdateApply {
+    pub pid: u32,
+    pub staged: PathBuf,
+    pub target: PathBuf,
 }
 
 /// Options of a normal start.
@@ -61,6 +74,10 @@ pub struct Launch {
 /// in Latin-1), and `std::env::args` panics on one. A file name that is not is passed on lossily
 /// (its import then reports it missing); `--data-dir` keeps the folder exactly.
 pub fn parse(env_control_port: Option<String>, args: impl IntoIterator<Item = OsString>) -> Result<Cli, String> {
+    let args: Vec<OsString> = args.into_iter().collect();
+    if update_apply_requested(&args) {
+        return parse_update_apply(args);
+    }
     let mut l = Launch {
         control_port: None,
         control_input_only: false,
@@ -116,6 +133,77 @@ pub fn parse(env_control_port: Option<String>, args: impl IntoIterator<Item = Os
         return Err("--control-input-only requires --control or FILMCRAFT_CONTROL_PORT".into());
     }
     Ok(Cli::Run(l))
+}
+
+/// `--` protects a media file named `--update-apply`, just as it protects every other option.
+fn update_apply_requested(args: &[OsString]) -> bool {
+    for arg in args {
+        let arg = arg.to_string_lossy();
+        if arg == "--" {
+            return false;
+        }
+        if arg == "--update-apply" {
+            return true;
+        }
+    }
+    false
+}
+
+/// Parse the updater's intentionally narrow helper protocol. It refuses extra arguments so a
+/// malformed command can never accidentally fall through to normal GUI startup.
+fn parse_update_apply(args: Vec<OsString>) -> Result<Cli, String> {
+    let mut update_apply = false;
+    let mut pid = None;
+    let mut staged = None;
+    let mut target = None;
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.to_string_lossy().as_ref() {
+            "--update-apply" if !update_apply => update_apply = true,
+            "--update-apply" => return Err("--update-apply was passed more than once".into()),
+            "--pid" => {
+                if pid.is_some() {
+                    return Err("--pid was passed more than once".into());
+                }
+                let value = args.next().ok_or("--pid needs a process id")?;
+                let value = value.to_string_lossy();
+                let parsed: u32 = value.parse().map_err(|_| format!("--pid needs a positive process id, got `{value}`"))?;
+                if parsed == 0 {
+                    return Err("--pid needs a positive process id".into());
+                }
+                pid = Some(parsed);
+            }
+            "--staged" => {
+                if staged.is_some() {
+                    return Err("--staged was passed more than once".into());
+                }
+                let value = args.next().ok_or("--staged needs a folder")?;
+                if value.is_empty() {
+                    return Err("--staged needs a folder".into());
+                }
+                staged = Some(PathBuf::from(value));
+            }
+            "--target" => {
+                if target.is_some() {
+                    return Err("--target was passed more than once".into());
+                }
+                let value = args.next().ok_or("--target needs an executable path")?;
+                if value.is_empty() {
+                    return Err("--target needs an executable path".into());
+                }
+                target = Some(PathBuf::from(value));
+            }
+            other => return Err(format!("unknown updater helper option `{other}`")),
+        }
+    }
+    if !update_apply {
+        return Err("missing --update-apply".into());
+    }
+    Ok(Cli::UpdateApply(UpdateApply {
+        pid: pid.ok_or("--update-apply needs --pid")?,
+        staged: staged.ok_or("--update-apply needs --staged")?,
+        target: target.ok_or("--update-apply needs --target")?,
+    }))
 }
 
 /// Whether a launch file is a FilmCraft project. The extension's case does not matter: Windows file
@@ -181,6 +269,22 @@ mod tests {
         assert_eq!(parse_args(&["a.mp4", "--version"]), Ok(Cli::Version));
         for flag in ["--control", "--demo", "--empty", "--recover", "--no-recover", "--data-dir", "--version", "--help"] {
             assert!(USAGE.contains(flag), "usage lists {flag}");
+        }
+    }
+
+    #[test]
+    fn update_apply_requires_the_complete_helper_protocol() {
+        let parsed = parse_args(&["--update-apply", "--pid", "42", "--staged", "/tmp/staged", "--target", "/opt/filmcraft/bin/filmcraft"]);
+        assert_eq!(
+            parsed,
+            Ok(Cli::UpdateApply(UpdateApply { pid: 42, staged: PathBuf::from("/tmp/staged"), target: PathBuf::from("/opt/filmcraft/bin/filmcraft") }))
+        );
+        for args in [
+            vec!["--update-apply"],
+            vec!["--update-apply", "--pid", "0", "--staged", "/tmp/a", "--target", "/tmp/b"],
+            vec!["--update-apply", "--pid", "1", "--staged", "/tmp/a", "--target", "/tmp/b", "clip.mov"],
+        ] {
+            assert!(parse_args(&args).is_err(), "{args:?}");
         }
     }
 

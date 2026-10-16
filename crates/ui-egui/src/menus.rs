@@ -178,6 +178,12 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
 
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    if id == "help.checkForUpdates" {
+        app.updates.start_check()?;
+        app.ui.status = "Checking for FilmCraft updates…".into();
+        ctx.request_repaint();
+        return Ok(Value::Null);
+    }
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
     }
