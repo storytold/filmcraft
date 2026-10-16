@@ -40,6 +40,9 @@ impl Driver {
         d.ok("ui.set", json!({"workspace": "Effects"}));
         d
     }
+    fn app(&mut self) -> &mut FilmcraftApp {
+        self.harness.state_mut()
+    }
     fn frames(&mut self, n: usize) {
         for _ in 0..n {
             let ctx = self.harness.ctx.clone();
@@ -477,4 +480,32 @@ fn rotating_from_beside_an_edge() {
     d.drag_from((x, y), 0.0, -60.0);
     let r = d.num(clip, "motion", "rotation");
     assert!(r > 5.0, "up from beside the left edge turns clockwise: {r}");
+}
+
+/// Backspace with an effect selected in Effect Controls removes that effect, not the clip (#1354);
+/// Motion cannot be removed and the clip stays too.
+#[test]
+fn backspace_in_effect_controls_removes_the_selected_effect_not_the_clip() {
+    let mut d = Driver::demo();
+    let (clip, _) = d.first_clip();
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "transform"}));
+    d.frames(2);
+    for fx in ["motion", "opacity", "time_remap"] {
+        d.click(&format!("effectControls.effect.{fx}.twirl"));
+    }
+    d.click("effectControls.effect.transform");
+    assert_eq!(d.app().ui.focused, filmcraft_ui_egui::dock::PanelKind::EffectControls, "the click focused Effect Controls");
+    let has = |d: &mut Driver, fx: &str| d.app().session.active_sequence().unwrap().find_item(ClipId(clip)).is_some_and(|(_, it)| it.effect(fx).is_some());
+    assert!(has(&mut d, "transform"));
+    d.ok("ui.key", json!({"key": "Backspace"}));
+    d.frames(3);
+    assert!(d.app().session.active_sequence().unwrap().find_item(ClipId(clip)).is_some(), "the clip stays");
+    assert!(!has(&mut d, "transform"), "the selected effect is gone");
+    // Motion is fixed: Backspace leaves both alone
+    d.click("effectControls.effect.motion");
+    assert_eq!(d.app().ui.focused, filmcraft_ui_egui::dock::PanelKind::EffectControls, "the click focused Effect Controls");
+    d.ok("ui.key", json!({"key": "Backspace"}));
+    d.frames(3);
+    assert!(has(&mut d, "motion"));
+    assert!(d.app().session.active_sequence().unwrap().find_item(ClipId(clip)).is_some(), "the clip stays");
 }
