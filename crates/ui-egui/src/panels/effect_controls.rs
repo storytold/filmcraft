@@ -202,7 +202,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let Some(def) = e.def() else { continue };
                 let key = format!("{}:{}", clip.0, idx);
                 let open = !app.ui.collapsed_fx.contains(&key);
-                let selected = app.session.state.selected_effect.as_ref().is_some_and(|s| s.clip == clip && s.index(&it.effects) == Some(idx));
+                let selected = app.ui.fx_multi.contains(&(clip.0, idx))
+                    || app.session.state.selected_effect.as_ref().is_some_and(|s| s.clip == clip && s.index(&it.effects) == Some(idx));
                 let (r, resp) = bui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::click());
                 if selected {
                     bui.painter().rect_filled(crate::panels::effect_controls::row_fill(r), 0.0, t.row_selected);
@@ -243,6 +244,21 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 } else if resp.clicked() && !fxresp.clicked() && !rresp.clicked() {
                     actions.push(("effects.select".into(), json!({"clip": clip.0, "effect": idx})));
+                    // #1394: Ctrl-click adds the row to the preset selection; a plain click replaces it.
+                    let ctrl = ui.input(|i| {
+                        let ev = i.events.iter().any(|e| matches!(e, egui::Event::PointerButton { modifiers: m, .. } if m.ctrl || m.command));
+                        i.modifiers.ctrl || i.modifiers.command || ev
+                    });
+                    if ctrl {
+                        let key = (clip.0, idx);
+                        if app.ui.fx_multi.contains(&key) {
+                            app.ui.fx_multi.retain(|k| *k != key);
+                        } else {
+                            app.ui.fx_multi.push(key);
+                        }
+                    } else {
+                        app.ui.fx_multi = vec![(clip.0, idx)];
+                    }
                 }
                 let mut save_preset = false;
                 let fx_id = e.effect.clone();
@@ -259,7 +275,14 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 });
                 if save_preset {
-                    crate::panels::presets::open_save(app, clip.0, vec![idx], def.name);
+                    // #1394: if the clicked row is part of a multi-selection, the dialog
+                    // captures every selected effect of this clip, not just this row.
+                    let mut group: Vec<usize> = app.ui.fx_multi.iter().filter(|(c, _)| *c == clip.0).map(|(_, i)| *i).collect();
+                    if group.is_empty() {
+                        group.push(idx);
+                    }
+                    group.sort_unstable();
+                    crate::panels::presets::open_save(app, clip.0, group, def.name);
                 }
                 if !open {
                     continue;
