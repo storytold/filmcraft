@@ -52,7 +52,7 @@ only). "Tested" names the evidence.
 
 | Format | Premiere | Read | Write (frame / sequence) | % |
 |---|---|---|---|---|
-| PNG, JPEG, TIFF, BMP, GIF | read + write | yes | PNG / TIFF / BMP / JPEG sequences, GIF | 90% |
+| PNG, JPEG, TIFF, BMP, GIF | read + write | yes; JPEG EXIF and ordinary TIFF orientation applied; DNG and custom YCbCr TIFF keep their dedicated decoders | PNG / TIFF / BMP / JPEG sequences, GIF | 90% |
 | WebP | — | yes | no | ahead |
 | **PSD** (layers as sequence) | read (layered) | no | — | 0% |
 | **OpenEXR** | read + write | stills and sequences: scan-line, none / RLE / ZIPS / ZIP / PXR24, half / float / uint, RGB(A) or Y, kept as linear float (#828); no PIZ, B44, DWA, tiled, multi-part or deep | sequences (half float, linear RGB / premultiplied RGBA; uncompressed, RLE, ZIPS or ZIP; #806, #874) | 70% |
@@ -92,4 +92,5 @@ validation in Avid and Pro Tools, DVD / Blu-ray / DCP / broadcast MXF delivery.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-13 | minor | Still imports apply JPEG EXIF and ordinary TIFF orientation; specialized DNG and YCbCr TIFF paths remain separate |
 | 2026-10-10 | major | Created: format-by-format comparison with Premiere 26.5.2 from the import / export registries, crate READMEs, the installed bundle's exporter listings and open issues |
