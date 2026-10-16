@@ -2575,26 +2575,35 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 // snap the moved block's start or end
                 let first = clips.iter().filter_map(|c| seq.find_item(*c).map(|(_, i)| i.start)).min().unwrap_or_default();
                 let last = clips.iter().filter_map(|c| seq.find_item(*c).map(|(_, i)| i.end())).max().unwrap_or_default();
-                let s1 = snap(app, seq, layout, first + raw, &clips) - first;
-                let offset = if s1 != raw { s1 } else { snap(app, seq, layout, last + raw, &clips) - last };
-                let offset = offset.max(-first);
                 let cur_row = layout.row_at(p.y);
                 let start_row = layout.rows.iter().find(|r| r.track == start_track);
                 let track_delta = match (cur_row, start_row) {
                     (Some(c), Some(s)) if c.kind == s.kind => c.index as i32 - s.index as i32,
                     _ => 0,
                 };
+                // A linked or multitrack selection gets one destination per source track.
+                let new_track = start_row
+                    .filter(|_| clips.iter().all(|c| seq.find_item(*c).is_some_and(|(tid, _)| seq.track(tid).is_some_and(|t| !t.locked))))
+                    .and_then(|s| {
+                        let (vh, ah) = (app.ui.timeline.video_track_h, app.ui.timeline.audio_track_h);
+                        new_track_at(seq, layout, p.y, vh, ah).filter(|(kind, _)| *kind == s.kind)
+                    });
+                // Moved to another track, the block keeps its own time when that is in snapping
+                // reach, ahead of any nearby edit, as in Premiere (#1893).
+                let keep_time =
+                    app.session.state.snapping && (track_delta != 0 || new_track.is_some()) && (layout.x_of(first + raw) - layout.x_of(first)).abs() < SNAP_PX;
+                let offset = if keep_time {
+                    app.tl.snap_x = Some(layout.x_of(first));
+                    Tick::ZERO
+                } else {
+                    let s1 = snap(app, seq, layout, first + raw, &clips) - first;
+                    if s1 != raw { s1 } else { snap(app, seq, layout, last + raw, &clips) - last }
+                };
+                let offset = offset.max(-first);
                 if move_is_locked(seq, &clips, track_delta) {
                     ctx.set_cursor_icon(CursorIcon::NotAllowed);
                     Some(Drag::Move { clips, grab_tick, start_track, offset: Tick::ZERO, track_delta: 0, new_track: None, copy: mods.alt })
                 } else {
-                    // A linked or multitrack selection gets one destination per source track.
-                    let new_track = start_row
-                        .filter(|_| clips.iter().all(|c| seq.find_item(*c).is_some_and(|(tid, _)| seq.track(tid).is_some_and(|t| !t.locked))))
-                        .and_then(|s| {
-                            let (vh, ah) = (app.ui.timeline.video_track_h, app.ui.timeline.audio_track_h);
-                            new_track_at(seq, layout, p.y, vh, ah).filter(|(kind, _)| *kind == s.kind)
-                        });
                     Some(Drag::Move { clips, grab_tick, start_track, offset, track_delta, new_track, copy: mods.alt })
                 }
             }
