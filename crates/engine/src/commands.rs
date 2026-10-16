@@ -1722,8 +1722,7 @@ fn build() -> Vec<CommandSpec> {
                 let caps = s.state.caption_selection.clone();
                 return crate::captions::delete(s, &caps, false);
             }
-            // Selection commands already expand linked partners. Preserve an individual
-            // Alt-selection; explicit command targets retain their linked expansion.
+            // An Alt selection is already exact; explicit targets keep the command's linked behavior.
             let sel = if p.get("clips").is_some() || p.get("clip").is_some() { with_links(s, &clips_p(s, p)) } else { s.state.selection.clone() };
             s.edit_sequence("Clear", |q, _, st| {
                 edit::delete_items(q, &sel);
@@ -1742,7 +1741,7 @@ fn build() -> Vec<CommandSpec> {
                 let caps = s.state.caption_selection.clone();
                 return crate::captions::delete(s, &caps, true);
             }
-            let sel = with_links(s, &clips_p(s, p));
+            let sel = if p.get("clips").is_some() || p.get("clip").is_some() { with_links(s, &clips_p(s, p)) } else { s.state.selection.clone() };
             s.edit_sequence("Ripple Delete", |q, _, st| {
                 let spans = edit::ripple_delete_items(q, &sel)?;
                 if st.ripple_sequence_markers {
@@ -2664,47 +2663,39 @@ fn build() -> Vec<CommandSpec> {
                 None => place_one(s, p),
             }
         ),
-        cmd!(
-            "timeline.select",
-            "Select Clips",
-            [],
-            None,
-            r#"{"clips":[id],"transitions":[id]?,"add":bool,"toggle":bool,"linked":bool=true (false skips linked partners)}"#,
-            has_seq,
-            |s, p| {
-                if let Some(ids) = p.get("transitions") {
-                    return select_transitions(s, ids, bool_p(p, "add").unwrap_or(false), bool_p(p, "toggle").unwrap_or(false));
-                }
-                let clips: Vec<ClipId> =
-                    p.get("clips").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_u64().map(ClipId)).collect()).unwrap_or_default();
-                let clips = if bool_p(p, "linked") == Some(false) { clips } else { with_links(s, &clips) };
-                // selecting clips leaves trim mode (Premiere: clip and edit point selections are exclusive)
-                s.state.edit_points.clear();
-                s.state.trim_shift = Default::default();
-                // and a clip selection replaces a transition or gap one
-                s.state.transition_selection.clear();
-                s.state.gap_selection = None;
-                if bool_p(p, "toggle").unwrap_or(false) {
-                    for c in clips {
-                        if let Some(i) = s.state.selection.iter().position(|x| *x == c) {
-                            s.state.selection.remove(i);
-                        } else {
-                            s.state.selection.push(c);
-                        }
-                    }
-                } else if bool_p(p, "add").unwrap_or(false) {
-                    for c in clips {
-                        if !s.state.selection.contains(&c) {
-                            s.state.selection.push(c);
-                        }
-                    }
-                } else {
-                    s.state.selection = clips;
-                    s.state.caption_selection.clear();
-                }
-                Ok(json!({"selection": s.state.selection.iter().map(|c| c.0).collect::<Vec<_>>()}))
+        cmd!("timeline.select", "Select Clips", [], None, r#"{"clips":[id],"transitions":[id]?,"add":bool,"toggle":bool,"linked":bool?}"#, has_seq, |s, p| {
+            if let Some(ids) = p.get("transitions") {
+                return select_transitions(s, ids, bool_p(p, "add").unwrap_or(false), bool_p(p, "toggle").unwrap_or(false));
             }
-        ),
+            let clips: Vec<ClipId> =
+                p.get("clips").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_u64().map(ClipId)).collect()).unwrap_or_default();
+            let clips = if bool_p(p, "linked").unwrap_or(true) { with_links(s, &clips) } else { clips };
+            // selecting clips leaves trim mode (Premiere: clip and edit point selections are exclusive)
+            s.state.edit_points.clear();
+            s.state.trim_shift = Default::default();
+            // and a clip selection replaces a transition or gap one
+            s.state.transition_selection.clear();
+            s.state.gap_selection = None;
+            if bool_p(p, "toggle").unwrap_or(false) {
+                for c in clips {
+                    if let Some(i) = s.state.selection.iter().position(|x| *x == c) {
+                        s.state.selection.remove(i);
+                    } else {
+                        s.state.selection.push(c);
+                    }
+                }
+            } else if bool_p(p, "add").unwrap_or(false) {
+                for c in clips {
+                    if !s.state.selection.contains(&c) {
+                        s.state.selection.push(c);
+                    }
+                }
+            } else {
+                s.state.selection = clips;
+                s.state.caption_selection.clear();
+            }
+            Ok(json!({"selection": s.state.selection.iter().map(|c| c.0).collect::<Vec<_>>()}))
+        }),
         cmd!("timeline.selectGap", "Select Gap", [], None, r#"{"track":"V1"|id,"time":ticks|"frame":n|"seconds":f}"#, has_seq, select_gap),
         cmd!(
             "timeline.move",
