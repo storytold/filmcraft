@@ -3590,7 +3590,6 @@
 	32 bit float	32비트 부동 소수점
 	FLAC stores whole-number samples only	FLAC은 정수 샘플만 저장합니다
 	MXF export writes integer PCM only	MXF 내보내기는 정수 PCM만 기록합니다
-	Opens in your web browser: {url}	웹 브라우저에서 엽니다: {url}
 	Saves this session's log and shows it in your file manager.	이 세션의 로그를 저장하고 파일 관리자에서 보여 줍니다.
 	Shows a report on this computer.	이 컴퓨터에 대한 보고서를 보여 줍니다.
 	Shows the version, community links and credits in a FilmCraft window.	FilmCraft 창에 버전, 커뮤니티 링크, 제작진을 보여 줍니다.

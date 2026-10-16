@@ -990,6 +990,28 @@ fn paint_swatch(ui: &egui::Ui, row: egui::Rect, color: egui::Color32) {
     ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color), egui::StrokeKind::Inside);
 }
 
+/// Where a menu item's hover hint opens, from the point the pointer entered the item: +x right,
+/// +y down, in points. The hint's top-left corner goes there, so 0, 18 puts it just below the
+/// arrow cursor, lined up with its tip.
+const HINT_NUDGE: egui::Vec2 = egui::vec2(0.0, 18.0);
+
+/// A hover hint that opens like a menu: below the pointer, where the hover began, and stays put
+/// while the pointer moves within the same item.
+fn hint_at_pointer(ui: &egui::Ui, r: &egui::Response, hint: String) {
+    let key = r.id.with("hint-at");
+    let Some(pointer) = r.hover_pos().filter(|_| r.hovered()) else {
+        ui.data_mut(|d| d.remove::<egui::Pos2>(key));
+        return;
+    };
+    let at = ui.data_mut(|d| *d.get_temp_mut_or_insert_with(key, || pointer));
+    let mut tip = egui::Tooltip::for_enabled(r);
+    tip.popup = tip.popup.at_position(at + HINT_NUDGE).align(egui::RectAlign::BOTTOM_START).gap(0.0);
+    tip.show(|ui| {
+        ui.set_max_width(ui.spacing().tooltip_width);
+        ui.label(hint);
+    });
+}
+
 fn menu_entry(ui: &mut egui::Ui, it: &MenuItem, auto: &mut crate::automation::Registry, labels: &filmcraft_engine::settings::LabelPrefs) -> bool {
     // Checkmarks and label swatches each occupy the same left gutter.
     let swatch = label_menu_swatch(&it.id, labels);
@@ -998,10 +1020,10 @@ fn menu_entry(ui: &mut egui::Ui, it: &MenuItem, auto: &mut crate::automation::Re
     if let Some(s) = &it.shortcut {
         b = b.shortcut_text(shortcut_text(s));
     }
-    let mut r = ui.add_enabled(it.enabled, b);
-    // Help items say whether they open the web browser (and which address) or stay in FilmCraft
+    let r = ui.add_enabled(it.enabled, b);
+    // Help items show the address they open, or say what they do inside FilmCraft
     if let Some(hint) = crate::links::menu_hint(&it.id) {
-        r = r.on_hover_text(hint);
+        hint_at_pointer(ui, &r, hint);
     }
     auto.add(&format!("menu.{}", it.id), r.rect, &it.label);
     if let Some(color) = swatch {

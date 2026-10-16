@@ -3595,7 +3595,6 @@
 	32 bit float	32 bit in virgola mobile
 	FLAC stores whole-number samples only	FLAC memorizza solo campioni interi
 	MXF export writes integer PCM only	L'esportazione MXF scrive solo PCM intero
-	Opens in your web browser: {url}	Si apre nel browser web: {url}
 	Saves this session's log and shows it in your file manager.	Salva il registro di questa sessione e lo mostra nel gestore file.
 	Shows a report on this computer.	Mostra un rapporto su questo computer.
 	Shows the version, community links and credits in a FilmCraft window.	Mostra la versione, i link della community e i riconoscimenti in una finestra di FilmCraft.
