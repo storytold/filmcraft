@@ -1046,6 +1046,11 @@ mod tests {
                 | "Cloud storage"
                 | "CollabCraft"
                 | "Movies, audio and stills from CollabCraft"
+                | "Export to cloud"
+                | "Use this folder"
+                | "Choose a folder, then use it as the export location."
+                | "Upload to cloud"
+                | "Cloud exports use Export (the queue is for Media File destinations)."
         )
     }
 
