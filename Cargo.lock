@@ -1917,6 +1917,7 @@ dependencies = [
  "filmcraft-media",
  "filmcraft-mxf",
  "filmcraft-project",
+ "filmcraft-prores",
  "filmcraft-render",
  "filmcraft-scopes",
  "filmcraft-speech",

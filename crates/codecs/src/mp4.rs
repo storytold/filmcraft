@@ -161,7 +161,12 @@ fn color_from(entry: &filmcraft_isobmff::SampleEntry, w: u32, h: u32) -> ColorIn
         codec => crate::stream_color::from_codec_config(codec),
     };
     let sources: Vec<ColorCodes> = [colr, stream].into_iter().flatten().collect();
-    crate::stream_color::resolve(w, h, &sources)
+    let mut color = crate::stream_color::resolve(w, h, &sources);
+    if entry.video.as_ref().and_then(|v| v.log_transfer_function.as_deref()) == Some("com.apple.rec2020.apple-log") {
+        color.transfer = filmcraft_color::Transfer::AppleLog;
+        color.primaries = filmcraft_color::Primaries::Bt2020;
+    }
+    color
 }
 
 /// First bytes of a Sony `rtmd` sample needed for the start-timecode block (`frames` is last).
@@ -362,7 +367,18 @@ impl Mp4Source {
         // Nearest, not floor: with a coarse timescale (1000) sample times are rounded, and a
         // floored lookup lands one unit short of every frame whose time was rounded up.
         let late = filmcraft_media::cancel::catch_up().map(|m| (t - m).to_rational_round(1, ts));
-        self.video.frame_late(&Mp4Video { src: self, track: ti }, t.to_rational_round(1, ts), late)
+        let frame = self.video.frame_late(&Mp4Video { src: self, track: ti }, t.to_rational_round(1, ts), late)?;
+        // With no colr box, the decoder still owns matrix and range. The explicit
+        // logs identifier changes only the transfer function and named gamut.
+        if self.info.video.as_ref().is_some_and(|v| v.color.transfer == filmcraft_color::Transfer::AppleLog) {
+            let color = ColorInfo { transfer: filmcraft_color::Transfer::AppleLog, primaries: filmcraft_color::Primaries::Bt2020, ..frame.color };
+            if frame.color != color {
+                let mut frame = (*frame).clone();
+                frame.color = color;
+                return Ok(Arc::new(frame));
+            }
+        }
+        Ok(frame)
     }
 
     /// Decoded packet `i` of audio stream `a` (`ainfo` is its `AudioStreamInfo`; `st` its decoder state).

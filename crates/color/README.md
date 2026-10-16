@@ -141,3 +141,9 @@ the full signal range in both file ranges), published reference points (S-Log3 9
 Log 18 % → 0.488, D-Log 0 → 0.0929), PQ/HLG reference white, EETF continuity/monotonicity and peak,
 hue preservation, gamut compression, BT.709/BT.2087 matrices, LUT interpolation and file round
 trips.
+
+Explicit container Apple Log metadata is represented by `Transfer::AppleLog`
+and maps to `ColorSpace::AppleLog`, using the existing published curve above.
+It has no ISO transfer-characteristic code point: ordinary BT.2020 / BT.709
+metadata does not select Apple Log. Manual interpretation still uses the same
+input transform and takes priority over detection.

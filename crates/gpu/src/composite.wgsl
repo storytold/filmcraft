@@ -11,12 +11,12 @@ struct U {
     m0: vec4<f32>,   // a b c d
     m1: vec4<f32>,   // e f out_w out_h
     src: vec4<f32>,  // src_w src_h chroma_w chroma_h
-    p0: vec4<f32>,   // opacity, kind (0 rgba8 srgb straight, 1 rgba16f premul linear, 2 yuv), taps, transfer (0 srgb, 1 linear, 2 pq, 3 hlg)
+    p0: vec4<f32>,   // opacity, kind (0 rgba8 srgb straight, 1 rgba16f premul linear, 2 yuv), taps, transfer (0 srgb, 1 linear, 2 pq, 3 hlg, 4 Apple Log)
     p1: vec4<f32>,   // y_off y_scale c_off c_scale (code units)
     p2: vec4<f32>,   // kr kb code_scale footprint
     p3: vec4<f32>,   // blend mode, alpha-plane scale (0: none), effect-source integer decimation, unused
     // Colour management of HDR / wide-gamut Y'CbCr (`filmcraft_color::InputTransform`, #965):
-    q0: vec4<f32>,   // on, curve (0 sdr, 1 linear, 2 pq, 3 hlg), HLG OOTF scale (0: none), reference white cd/m²
+    q0: vec4<f32>,   // on, curve (0 sdr, 1 linear, 2 pq, 3 hlg, 4 Apple Log), HLG OOTF scale (0: none), reference white cd/m²
     q1: vec4<f32>,   // HLG OOTF luma weights, gamut matrix on
     q2: vec4<f32>,   // gamut matrix row 0, tone mapping on
     q3: vec4<f32>,   // gamut matrix row 1, tone-mapping source peak cd/m²
@@ -84,11 +84,22 @@ fn hlg_inv(e: vec3<f32>) -> vec3<f32> {
     return select(hi, lo, e <= vec3(0.5));
 }
 
+// Apple Log Profile (Apple, September 2023), matching filmcraft_color::log.
+fn apple_log_inv(v: vec3<f32>) -> vec3<f32> {
+    let p = clamp(v, vec3(0.0), vec3(1.0));
+    let r0 = -0.05641088; let rt = 0.01; let c = 47.28711236;
+    let beta = 0.00964052; let gamma = 0.08550479; let delta = 0.69336945;
+    let lo = sqrt(p / c) + r0;
+    let hi = exp2((p - delta) / gamma) - beta;
+    return select(lo, hi, p >= vec3(c * (rt - r0) * (rt - r0)));
+}
+
 fn to_linear(v: vec3<f32>) -> vec3<f32> {
     let t = u32(u.p0.w);
     if t == 1u { return v; }
     if t == 2u { return pq_eotf(v); }
     if t == 3u { return hlg_inv(v); }
+    if t == 4u { return apple_log_inv(v); }
     return srgb_to_linear(clamp(v, vec3(0.0), vec3(1.0)));
 }
 

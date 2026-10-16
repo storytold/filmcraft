@@ -63,6 +63,8 @@ pub enum Transfer {
     Pq,
     /// ARIB STD-B67.
     Hlg,
+    /// Explicit CoreMedia Apple Log signal. This has no ISO transfer code point.
+    AppleLog,
 }
 
 impl Transfer {
@@ -195,6 +197,7 @@ pub fn to_linear(v: f32, t: Transfer) -> f32 {
         Transfer::Linear => v,
         Transfer::Pq => pq_eotf(v) * 100.0,
         Transfer::Hlg => hlg_inverse_oetf(v),
+        Transfer::AppleLog => log::LogCurve::AppleLog.decode(f64::from(v)) as f32,
     }
 }
 
@@ -204,6 +207,7 @@ pub fn from_linear(v: f32, t: Transfer) -> f32 {
         Transfer::Linear => v,
         Transfer::Pq => pq_inverse_eotf(v / 100.0),
         Transfer::Hlg => hlg_oetf(v),
+        Transfer::AppleLog => log::LogCurve::AppleLog.encode(f64::from(v)) as f32,
     }
 }
 

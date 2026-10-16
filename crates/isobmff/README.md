@@ -144,3 +144,23 @@ let bytes = w.finish_faststart()?.into_inner(); // or finish() for moov-at-end
 - Muxer: one `mdat`, no chunk-size or duration limits (the caller controls interleaving), no `sdtp`,
   `sgpd`/`sbgp` or `cslg` output, ISO-style `meta/ilst` metadata is not written, and the fragmented
   writer has no PCM, `sidx` or `mfra`.
+
+### QuickTime log metadata
+
+Video sample entries preserve the `logs` child box as
+`VideoParams::log_transfer_function`. This is a UTF-8 identifier, with a bounded
+255-byte reader/writer policy. Empty, invalid UTF-8, NUL-containing, oversized
+or duplicate identifiers remain unknown; writers reject invalid owned values.
+The container layer preserves unknown valid identifiers without assigning a
+colour space. `tests/log_metadata.rs` covers round trips and writer rejection.
+
+The wire representation was checked using Apple's public CoreMedia
+`CMVideoFormatDescriptionCreate` and
+`CMVideoFormatDescriptionCopyAsBigEndianImageDescriptionBlockBuffer` APIs:
+[LogTransferFunction extension](https://developer.apple.com/documentation/coremedia/cmformatdescription/extensions-swift.struct/key/logtransferfunction)
+and [Apple Log identifier](https://developer.apple.com/documentation/coremedia/kcmformatdescriptionlogtransferfunction_applelog).
+Apple Log serialized as a 35-byte `logs` box containing the 27 UTF-8 bytes
+`com.apple.rec2020.apple-log`, without a terminator.
+The macOS-only cross-check is reproducible with
+`swift tests/support/coremedia_log_description.swift`; it prints the serialized
+public-API description and writes no files.

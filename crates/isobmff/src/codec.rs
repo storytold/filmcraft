@@ -35,6 +35,8 @@ pub struct VideoParams {
     pub temporal_quality: u32,
     pub spatial_quality: u32,
     pub color: Option<ColorInfo>,
+    /// QuickTime `logs`: CoreMedia log transfer-function identifier (UTF-8, at most 255 bytes).
+    pub log_transfer_function: Option<String>,
     /// `pasp`: (hSpacing, vSpacing).
     pub pixel_aspect: Option<(u32, u32)>,
     pub clean_aperture: Option<CleanAperture>,
@@ -943,6 +945,7 @@ pub(crate) fn parse_sample_entry(format: FourCc, payload: &[u8], handler: FourCc
         let _ctab = c.i16()?;
         let mut codec = None;
         let mut bitrate = None;
+        let mut log_seen = false;
         for b in boxes(c.rest()).map_while(|b| b.ok()) {
             let p = b.payload;
             match &b.kind.0 {
@@ -952,6 +955,15 @@ pub(crate) fn parse_sample_entry(format: FourCc, payload: &[u8], handler: FourCc
                 b"vpcC" if f == b"vp09" => codec = Some(CodecConfig::Vp9(VpcConfig::parse(p)?)),
                 b"apvC" if f == b"apv1" => codec = Some(CodecConfig::Apv(ApvConfig::parse(p)?)),
                 b"colr" => v.color = parse_colr(p).ok(),
+                b"logs" => {
+                    // Duplicate signals are ambiguous; malformed/large identifiers stay unknown.
+                    v.log_transfer_function = if log_seen || p.len() > 255 {
+                        None
+                    } else {
+                        std::str::from_utf8(p).ok().filter(|s| !s.is_empty() && !s.as_bytes().contains(&0)).map(str::to_owned)
+                    };
+                    log_seen = true;
+                }
                 b"mdcv" => v.mastering_display = MasteringDisplay::parse(p),
                 b"clli" if p.len() >= 4 => v.content_light = Some((u16::from_be_bytes([p[0], p[1]]), u16::from_be_bytes([p[2], p[3]]))),
                 b"pasp" => {
@@ -1337,6 +1349,9 @@ impl SampleEntry {
 
     /// Serialize as a complete sample entry box. For PCM the format is chosen from the brand.
     pub(crate) fn write(&self, b: &mut BoxBuf, qt: bool) -> Result<()> {
+        if self.video.as_ref().and_then(|v| v.log_transfer_function.as_ref()).is_some_and(|s| s.is_empty() || s.len() > 255 || s.as_bytes().contains(&0)) {
+            return Err(Error::Invalid("invalid log transfer-function identifier".into()));
+        }
         if let CodecConfig::Unknown { fourcc, raw } = &self.codec {
             let m = b.start(&fourcc.0);
             b.bytes(raw);
@@ -1422,6 +1437,9 @@ impl SampleEntry {
                     }
                 }
                 b.end(m);
+            }
+            if let Some(log) = &v.log_transfer_function {
+                b.leaf(b"logs", log.as_bytes());
             }
             if let Some(md) = &v.mastering_display {
                 b.leaf(b"mdcv", &md.to_bytes());

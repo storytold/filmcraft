@@ -45,6 +45,7 @@ log = { workspace = true }
 web-time = "1"
 
 [dev-dependencies]
+filmcraft-prores = { workspace = true }
 filmcraft-testkit = { workspace = true }
 filmcraft-dng = { workspace = true, features = ["writer"] }
 filmcraft-isobmff = { workspace = true }
