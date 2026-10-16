@@ -520,6 +520,66 @@ impl MediaSource for Mp4Source {
     }
 }
 
+/// Channel layout and sample rate metadata for AC-3 / E-AC-3 in ISO-BMFF. The sample-entry channel
+/// count is required to be two, but the real layout is in `dac3` / `dec3` (ETSI TS 102 366 Annex F).
+/// Without a usable descriptor, a primary syncframe header is a safe fallback.
+fn ac3_stream_info(t: &filmcraft_isobmff::Track, bytes: &crate::Src) -> Option<(u32, u32)> {
+    let entry = t.entries.first()?;
+    if let Some((rate, channels)) = match &entry.codec {
+        CodecConfig::Ac3 { dac3 } => dac3_layout(dac3),
+        CodecConfig::Eac3 { dec3 } => dec3_layout(dec3),
+        _ => None,
+    } {
+        return Some((rate, channels));
+    }
+    let data = t.samples.first().and_then(|s| filmcraft_media::reader::read_range(&*bytes.0, s.offset, s.size as usize).ok());
+    let h = filmcraft_ac3::parse_header(data.as_deref()?).ok()?;
+    // A dependent E-AC-3 substream doesn't describe the full program; report only if the first
+    // packet is the primary independent substream.
+    let is_primary = if let CodecConfig::Eac3 { .. } = &entry.codec { h.is_primary() } else { true };
+    if !is_primary {
+        return None;
+    }
+    let rate = h.sample_rate;
+    let channels = u32::try_from(h.channels()).ok()?;
+    (rate > 0 && channels > 0).then_some((rate, channels))
+}
+
+/// E-AC-3 `ec-3` entry: the program-layout fields are the 24 bits starting at byte 2 of the
+/// descriptor, then `bsmod(5) | acmod(3) | lfeon(1)`. Matches FFmpeg's `dec3` demuxer.
+fn dec3_layout(payload: &[u8]) -> Option<(u32, u32)> {
+    if payload.len() < 5 {
+        return None;
+    }
+    let bits = u32::from(payload[2]) << 16 | u32::from(payload[3]) << 8 | u32::from(payload[4]);
+    let acmod = ((bits >> 9) & 0x7) as u8;
+    let lfeon = bits & 0x100 != 0;
+    let channels = dac3_channels(acmod, lfeon)?;
+    Some((0, channels))
+}
+
+/// AC-3 `ac-3` entry: `dac3` begins with the syncframe bitstream information: sample rate code,
+/// bit stream id, bit stream mode, channel mode and LFE flag. The descriptor has no sample rate,
+/// so the caller keeps the sample-entry rate.
+fn dac3_layout(payload: &[u8]) -> Option<(u32, u32)> {
+    if payload.len() < 3 {
+        return None;
+    }
+    // The descriptor begins with the bitstream information: fscod(2), bsid(5), bsmod(3),
+    // acmod(3) and lfeon(1), continuing in the second payload byte.
+    let bits = u32::from_be_bytes([0, 0, payload[1], payload[2]]);
+    let acmod = ((bits >> 11) & 0x7) as u8;
+    let lfeon = bits & 0x400 != 0;
+    let channels = dac3_channels(acmod, lfeon)?;
+    Some((0, channels))
+}
+
+/// Full-bandwidth channels per AC-3 channel mode (Table 5.8) plus the optional LFE channel.
+fn dac3_channels(acmod: u8, lfeon: bool) -> Option<u32> {
+    let n = [2u32, 1, 2, 3, 3, 4, 4, 5].get(usize::from(acmod & 7))?.checked_add(u32::from(lfeon))?;
+    (n > 0).then_some(n)
+}
+
 /// What the file says about one audio track (`None`: the track has no sample description).
 fn audio_stream_info(t: &filmcraft_isobmff::Track, bytes: &crate::Src) -> Option<AudioStreamInfo> {
     let entry = t.entries.first()?;
@@ -547,6 +607,17 @@ fn audio_stream_info(t: &filmcraft_isobmff::Track, bytes: &crate::Src) -> Option
         ),
         CodecConfig::Pcm(p) => (p.sample_rate as u32, p.channels, Some(p.bits as u32)),
         CodecConfig::Opus(o) => (crate::audio::OPUS_RATE, (o.output_channels as u32).max(1), None),
+        CodecConfig::Ac3 { .. } | CodecConfig::Eac3 { .. } => match ac3_stream_info(t, bytes) {
+            // A syncframe fallback names the sample rate; a descriptor alone does not, so keep
+            // the sample-entry rate, which the muxer must supply.
+            Some((rate, ch)) if rate > 0 => (rate, ch, None),
+            // A partial descriptor can still say the exact number of channels even without
+            // enough bytes for the sample-rate field.
+            Some((_, ch)) => (if ap.sample_rate > 0.0 { ap.sample_rate as u32 } else { t.timescale }, ch, None),
+            // Without a descriptor, a normal primary-frame fallback gives both fields.
+            None if ap.sample_rate > 0.0 => (ap.sample_rate as u32, ap.channels.max(1), None),
+            None => (t.timescale, ap.channels.max(1), None),
+        },
         _ => (if ap.sample_rate > 0.0 { ap.sample_rate as u32 } else { t.timescale }, ap.channels.max(1), None),
     };
     let codec = match &entry.codec {
