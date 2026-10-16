@@ -1212,27 +1212,7 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
     reg.add("export.button", go, "Export");
     reg.flush(app);
     if resp.clicked() {
-        let cloud = app.ui.export.destination == "cloud" && crate::cloud::available(app);
-        let mut params = export_params(app);
-        if cloud {
-            // wait for the local encode so we can upload the finished bytes
-            params["wait"] = json!(true);
-        }
-        let r = app.session.execute("file.exportMedia", params);
-        match r {
-            Ok(v) => {
-                let path = v["path"].as_str().unwrap_or("").to_string();
-                if cloud {
-                    match finish_cloud_export(app, &path) {
-                        Ok(name) => app.ui.status = tlf!("Uploading {name} to cloud", name),
-                        Err(e) => app.ui.status = e,
-                    }
-                } else {
-                    app.ui.status = tlf!("Exporting {path}", path);
-                }
-            }
-            Err(e) => app.ui.status = e.to_string(),
-        }
+        start_export(app, false);
     }
     if qresp.clicked() {
         if app.ui.export.destination == "cloud" {
@@ -1251,20 +1231,109 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
     }
 }
 
-/// Read a finished local export and start a CollabCraft upload.
-fn finish_cloud_export(app: &mut FilmcraftApp, local_path: &str) -> Result<String, String> {
-    let bytes = std::fs::read(local_path).map_err(|e| format!("could not read the export for upload: {e}"))?;
-    let name = std::path::Path::new(local_path)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| {
-            let base = if app.ui.export.file_name.trim().is_empty() { "Export" } else { app.ui.export.file_name.trim() };
-            format!("{base}.{}", app.ui.export.settings.extension())
-        });
+/// Stage path for cloud uploads: under `/opfs/` on the web so write_file does not trigger a download.
+fn cloud_export_stage_path(ex: &ExportUi) -> String {
+    let name = if ex.file_name.trim().is_empty() { "Export" } else { ex.file_name.trim() };
+    let file = format!("{name}.{}", ex.settings.extension());
+    format!("/opfs/cloud-export/{file}")
+}
+
+/// Start Export (or Quick Export). When destination is cloud, encode to a staging path and upload
+/// after the job finishes — never `wait:true` on the web (that skips stepped encode and freezes).
+fn start_export(app: &mut FilmcraftApp, quick: bool) {
+    let cloud = if quick {
+        app.ui.export.quick_cloud && crate::cloud::available(app)
+    } else {
+        app.ui.export.destination == "cloud" && crate::cloud::available(app)
+    };
+    if cloud && app.pending_cloud_export.is_some() {
+        app.ui.status = tl!("A cloud export is already running").into();
+        return;
+    }
+    let mut params = if quick {
+        json!({"preset": app.ui.export.quick_preset, "path": app.ui.export.quick_path})
+    } else {
+        export_params(app)
+    };
     let folder = app.ui.export.cloud_folder.clone();
-    crate::cloud::upload_export(app, &folder, &name, bytes)?;
-    Ok(name)
+    let stage = if cloud {
+        let path = if quick {
+            let name = std::path::Path::new(&app.ui.export.quick_path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Export.mp4".into());
+            format!("/opfs/cloud-export/{name}")
+        } else {
+            cloud_export_stage_path(&app.ui.export)
+        };
+        params["path"] = json!(path);
+        Some(path)
+    } else {
+        None
+    };
+    let cmd = if quick { "export.quick" } else { "file.exportMedia" };
+    match app.session.execute(cmd, params) {
+        Ok(v) => {
+            let path = v["path"].as_str().unwrap_or("").to_string();
+            if let Some(stage) = stage {
+                let name = std::path::Path::new(&stage)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "Export.mp4".into());
+                let job = v["job"].as_u64().unwrap_or(0);
+                // Job may already be finished (native sync / non-stepped wasm).
+                if job_finished(&app.session, job) {
+                    match finish_cloud_export(app, &stage, &folder, &name) {
+                        Ok(n) => app.ui.status = tlf!("Uploading {name} to cloud", name = n),
+                        Err(e) => app.ui.status = e,
+                    }
+                } else {
+                    app.pending_cloud_export = Some(crate::PendingCloudExport { job, path: stage, folder, name });
+                    app.ui.status = tl!("Encoding for cloud upload…").into();
+                }
+            } else if quick {
+                app.ui.status = tlf!("Quick Export: {path}", path);
+            } else {
+                app.ui.status = tlf!("Exporting {path}", path);
+            }
+        }
+        Err(e) => app.ui.status = e.to_string(),
+    }
+}
+
+fn job_finished(session: &filmcraft_engine::Session, job: u64) -> bool {
+    session.jobs.iter().find(|j| j.id == job).is_some_and(|j| j.progress.finished.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// After stepped/native encode completes, read staging bytes and start CollabCraft upload.
+pub fn poll_cloud_export(app: &mut FilmcraftApp) {
+    let Some(pending) = app.pending_cloud_export.clone() else { return };
+    if !job_finished(&app.session, pending.job) {
+        return;
+    }
+    app.pending_cloud_export = None;
+    let err = app
+        .session
+        .jobs
+        .iter()
+        .find(|j| j.id == pending.job)
+        .and_then(|j| j.result.lock().ok().and_then(|g| g.as_ref().and_then(|r| r.as_ref().err().cloned())));
+    if let Some(e) = err {
+        app.ui.status = format!("Cloud export failed: {e}");
+        return;
+    }
+    match finish_cloud_export(app, &pending.path, &pending.folder, &pending.name) {
+        Ok(name) => app.ui.status = tlf!("Uploading {name} to cloud", name),
+        Err(e) => app.ui.status = e,
+    }
+}
+
+/// Read a finished local/virtual export and start a CollabCraft upload.
+fn finish_cloud_export(app: &mut FilmcraftApp, local_path: &str, folder: &str, name: &str) -> Result<String, String> {
+    // Web writes through Services (in-memory / OPFS); native may use the real filesystem.
+    let bytes = app.session.services.read_file(local_path).or_else(|e| std::fs::read(local_path).map_err(|_| e)).map_err(|e| format!("could not read the export for upload: {e}"))?;
+    crate::cloud::upload_export(app, folder, name, bytes)?;
+    Ok(name.to_owned())
 }
 
 /// The export range in sequence ticks (for the summary).
@@ -1586,26 +1655,7 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
         app.ui.export.quick_path = p;
     }
     if go {
-        let cloud = app.ui.export.quick_cloud && crate::cloud::available(app);
-        let mut p = json!({"preset": app.ui.export.quick_preset, "path": app.ui.export.quick_path});
-        if cloud {
-            p["wait"] = json!(true);
-        }
-        match app.session.execute("export.quick", p) {
-            Ok(v) => {
-                let path = v["path"].as_str().unwrap_or("").to_string();
-                if cloud {
-                    // reuse Export cloud folder when set
-                    match finish_cloud_export(app, &path) {
-                        Ok(name) => app.ui.status = tlf!("Quick Export: uploading {name} to cloud", name),
-                        Err(e) => app.ui.status = e,
-                    }
-                } else {
-                    app.ui.status = tlf!("Quick Export: {path}", path);
-                }
-            }
-            Err(e) => app.ui.status = e.to_string(),
-        }
+        start_export(app, true);
         close = true;
     }
     if close || crate::widgets::escape_closes(ctx) || (clicked_elsewhere && !toggled) {
