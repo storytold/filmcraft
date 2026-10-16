@@ -56,6 +56,8 @@ winit = { version = "0.30", default-features = false }
 # Settings ▸ Appearance ▸ Sync with system: the XDG desktop portal's colour scheme. The zbus the
 # portal file dialogs (rfd) and accesskit already use.
 zbus = "5.19"
+# Same winit as eframe: Linux event-loop options (enables --x11 backend for drag-and-drop).
+winit = { version = "0.30", default-features = false, features = ["x11"] }
 
 # Icon + VERSIONINFO for filmcraft.exe (build.rs); only needed when building on Windows.
 [target.'cfg(windows)'.build-dependencies]
