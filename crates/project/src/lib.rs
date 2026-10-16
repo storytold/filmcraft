@@ -691,7 +691,10 @@ impl TrackItem {
 
 fn param_eq_default(v: &ParamValue, d: &ParamValue) -> bool {
     match (v, d) {
-        (ParamValue::Vec2(_), ParamValue::Vec2(dd)) if dd.x.is_nan() => true,
+        // A NaN default marks an "auto" point (motion position/anchor): it only equals a value
+        // that is itself still auto. (The interchange `param_modified` helper uses the same
+        // both-NaN rule; the old arm ignored `v`, so a moved clip never counted as modified.)
+        (ParamValue::Vec2(vv), ParamValue::Vec2(dd)) if dd.x.is_nan() => vv.x.is_nan() && vv.y.is_nan(),
         _ => v == d,
     }
 }
@@ -1900,6 +1903,20 @@ mod tests {
         path["vertices"][0]["p"]["x"] = serde_json::Value::Null;
         assert!(serde_json::from_value::<MaskPath>(path.clone()).is_err());
         assert!(serde_json::from_value::<ParamValue>(serde_json::json!({ "Path": path })).is_err());
+    }
+
+    #[test]
+    fn auto_point_default_only_matches_unset_points() {
+        let auto = || ParamValue::Vec2(Vec2::new(f64::NAN, f64::NAN));
+        // an untouched auto point is still the default
+        assert!(param_eq_default(&auto(), &auto()));
+        // the user moved the clip: no longer the default (this used to report `true`, so
+        // `has_modified_intrinsics` never fired for motion and the fx badge, the render
+        // fast path and multicam `take_intrinsics` all treated moved clips as untouched)
+        assert!(!param_eq_default(&ParamValue::Vec2(Vec2::new(960.0, 540.0)), &auto()));
+        // ordinary parameters are unaffected
+        assert!(param_eq_default(&ParamValue::Float(1.0), &ParamValue::Float(1.0)));
+        assert!(!param_eq_default(&ParamValue::Float(1.0), &ParamValue::Float(2.0)));
     }
 
     #[test]
