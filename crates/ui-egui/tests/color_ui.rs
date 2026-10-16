@@ -364,3 +364,45 @@ fn lumetri_rows_keep_their_width_when_the_clip_name_is_long() {
     let long = d.element("lumetri.param.hdr_white").expect("hdr_white row");
     assert_eq!(short, long, "a long clip name must not move or widen the control rows");
 }
+
+/// #1910: Project panel ▸ right-click one of several selected clips ▸ Interpret Footage… sets the
+/// colour space of every selected clip in one undo step; a clip right-clicked outside the
+/// selection is interpreted alone.
+#[test]
+fn interpret_footage_from_the_item_menu_takes_the_whole_selection() {
+    let mut d = Driver::demo();
+    d.ok("ui.panel.show", json!({"panel": "Project"}));
+    d.exec("project.view.set", json!({"view": "list"}));
+    let wav: std::sync::Arc<[u8]> = filmcraft_engine::previews::write_wav_f32(&[0.0; 9_600], 48_000).into();
+    let media: Vec<u64> = ["/takes/a.wav", "/takes/b.wav", "/takes/c.wav"]
+        .iter()
+        .map(|n| filmcraft_engine::commands::import_bytes(&mut d.harness.state_mut().session, n, wav.clone(), None).unwrap().0)
+        .collect();
+    let (a, b, c) = (media[0], media[1], media[2]);
+    d.exec("project.select", json!({"items": [a, b]}));
+    d.frames(4);
+    let over = |d: &mut Driver, item: u64| -> Value { d.exec("media.colorInfo", json!({"item": item}))["override"].clone() };
+    let before = [over(&mut d, a), over(&mut d, b), over(&mut d, c)];
+    // right-click the second of the two selected clips
+    d.ok("ui.click", json!({"id": format!("project.item.{b}"), "button": "right"}));
+    d.frames(3);
+    d.click("project.itemMenu.interpretFootage");
+    d.frames(3);
+    d.click("colorDialog.space.slog3-sgamut3cine");
+    d.click("colorDialog.ok");
+    assert_eq!(over(&mut d, a), json!("slog3-sgamut3cine"));
+    assert_eq!(over(&mut d, b), json!("slog3-sgamut3cine"));
+    assert_eq!(over(&mut d, c), before[2], "an unselected clip is untouched");
+    // one undo step reverts both
+    d.exec("edit.undo", json!({}));
+    assert_eq!([over(&mut d, a), over(&mut d, b)], [before[0].clone(), before[1].clone()]);
+    // right-click a clip outside the selection: only that one
+    d.ok("ui.click", json!({"id": format!("project.item.{c}"), "button": "right"}));
+    d.frames(3);
+    d.click("project.itemMenu.interpretFootage");
+    d.frames(3);
+    d.click("colorDialog.space.slog3-sgamut3cine");
+    d.click("colorDialog.ok");
+    assert_eq!(over(&mut d, c), json!("slog3-sgamut3cine"));
+    assert_eq!(over(&mut d, a), before[0]);
+}

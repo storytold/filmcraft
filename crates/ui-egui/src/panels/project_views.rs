@@ -227,6 +227,12 @@ pub fn item_interactions(
     }
 }
 
+/// What Interpret Footage… acts on (#1910): the whole Project selection when the item
+/// right-clicked is part of it, else just that item.
+fn interpret_targets(selection: &[ItemId], id: ItemId) -> Vec<ItemId> {
+    if selection.contains(&id) { selection.to_vec() } else { vec![id] }
+}
+
 fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemKind, actions: &mut Actions) {
     let sel = || json!({"items": [id.0]});
     if ui.button(tl!("Rename")).clicked() {
@@ -257,8 +263,11 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
         actions.push(("clip.setPosterFrame".into(), h.map(|h| json!({"item": id.0, "time": h.time})).unwrap_or(json!({}))));
         ui.close();
     }
-    if ui.button(tl!("Interpret Footage…")).clicked() {
-        actions.push(("clip.interpretFootage".into(), json!({"items": [id.0]})));
+    let b = ui.button(tl!("Interpret Footage…"));
+    app.auto.add("project.itemMenu.interpretFootage", b.rect, "Interpret Footage…");
+    if b.clicked() {
+        let items = interpret_targets(&app.session.state.project_selection, id);
+        actions.push(("clip.interpretFootage".into(), json!({"items": items.iter().map(|i| i.0).collect::<Vec<_>>()})));
         ui.close();
     }
     // subclips: Make Subclip (media), Edit Subclip and Convert to Master Clip (subclips)
