@@ -27,9 +27,9 @@
 //! (docs/adr/0001-platform-ffi.md); this one is safe code.
 
 #[allow(unsafe_code)]
-mod gpu;
+pub(crate) mod gpu;
 #[allow(unsafe_code)]
-mod mft;
+pub(crate) mod mft;
 mod stream;
 
 use std::sync::Arc;
