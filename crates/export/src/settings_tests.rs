@@ -953,7 +953,7 @@ fn h265_is_a_format_that_needs_a_registered_encoder() {
     }
     assert_eq!(Format::from_name(Format::Hevc.id()), Some(Format::Hevc));
     assert_eq!((Format::Hevc.extension(), Format::Hevc.label()), ("mp4", "H.265 (HEVC)"));
-    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 21);
+    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 22);
     let s: ExportSettings = serde_json::from_value(serde_json::json!({"format": "hevc"})).unwrap();
     assert_eq!(s.format, Format::Hevc);
     assert_eq!(serde_json::to_value(&s).unwrap()["format"], "hevc");
@@ -1332,5 +1332,53 @@ fn own_importer_reads_32_bit_flac_at_full_scale() {
                 assert!((g - w).abs() <= 1e-6, "level {level} channel {c} sample {i}: {g} vs {w}");
             }
         }
+    }
+}
+
+/// Uncompressed QuickTime: names, the pixel layout setting and what the summary and the size say.
+#[test]
+fn uncompressed_quicktime_settings_and_names() {
+    assert_eq!(Format::from_name("uncompressed"), Some(Format::Uncompressed));
+    assert_eq!(Format::from_name("Uncompressed"), Some(Format::Uncompressed));
+    assert_eq!(Format::from_name(Format::Uncompressed.id()), Some(Format::Uncompressed));
+    assert_eq!((Format::Uncompressed.extension(), Format::Uncompressed.label()), ("mov", "QuickTime (Uncompressed)"));
+    assert!(Format::Uncompressed.has_builtin_encoder() && !Format::Uncompressed.is_image_sequence() && !Format::Uncompressed.is_audio_only());
+
+    // the three layouts and the fourcc each is stored under
+    assert_eq!(UncompressedPixelFormat::ALL.map(|l| l.fourcc()), [*b"2vuy", *b"v210", *b"raw "]);
+    assert_eq!(UncompressedPixelFormat::default(), UncompressedPixelFormat::Uyvy8);
+    // v210 rows are padded to a multiple of 48 pixels (128 bytes); the others are tight
+    assert_eq!(UncompressedPixelFormat::V210.row_bytes(320), 896);
+    assert_eq!(UncompressedPixelFormat::V210.row_bytes(384), 1024);
+    assert_eq!(UncompressedPixelFormat::Uyvy8.row_bytes(320), 640);
+    assert_eq!(UncompressedPixelFormat::Rgb24.row_bytes(320), 960);
+
+    // the layout survives settings JSON, and its absence means the default
+    let s = ExportSettings { format: Format::Uncompressed, uncompressed_pixel_format: UncompressedPixelFormat::V210, ..Default::default() };
+    assert_eq!(serde_json::to_value(&s).unwrap()["uncompressedPixelFormat"], "v210");
+    let back: ExportSettings = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+    assert_eq!(back.uncompressed_pixel_format, UncompressedPixelFormat::V210);
+    let old: ExportSettings = serde_json::from_value(serde_json::json!({"format": "uncompressed"})).unwrap();
+    assert_eq!(old.uncompressed_pixel_format, UncompressedPixelFormat::Uyvy8);
+
+    // QuickTime with PCM, and a size that is the picture's own bytes, not a bitrate estimate
+    assert_eq!((s.audio_codec(), s.extension()), (AudioCodec::Pcm, "mov"));
+    let sum = s.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
+    assert_eq!(sum.format, "QuickTime (Uncompressed) (QuickTime)");
+    assert!(sum.video.contains("v210 10-bit 4:2:2"), "{}", sum.video);
+    // 10 s of 1920x1080 at 25 fps: 250 pictures of the layout's own bytes (1920 pixels are a
+    // multiple of 48, so a v210 row is 5120 bytes) plus stereo PCM
+    assert_eq!(UncompressedPixelFormat::V210.row_bytes(1920), 5120);
+    let video = UncompressedPixelFormat::V210.frame_bytes(1920, 1080) as u64 * 250;
+    let audio = 10 * 48_000 * 2 * u64::from(s.audio.sample_format().bits()) / 8;
+    assert_eq!(sum.estimated_bytes, video + audio);
+
+    // every layout has a built-in preset, and every preset that names the format carries its layout
+    for layout in UncompressedPixelFormat::ALL {
+        let preset = presets::builtin_presets()
+            .into_iter()
+            .find(|p| p.settings.format == Format::Uncompressed && p.settings.uncompressed_pixel_format == layout)
+            .unwrap_or_else(|| panic!("no preset for {layout:?}"));
+        assert!(preset.name.starts_with("Uncompressed"), "{}", preset.name);
     }
 }

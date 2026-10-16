@@ -180,6 +180,12 @@ pub enum CodecConfig {
     },
     /// Advanced Professional Video (`apv1` + `apvC`).
     Apv(ApvConfig),
+    /// Uncompressed QuickTime video: 8-bit 4:2:2 (`2vuy`), 10-bit 4:2:2 (`v210`) or 24-bit RGB
+    /// (`raw `, whose sample entry depth says how wide a pixel is). There is no codec-specific box:
+    /// the fourcc and the depth are the whole description.
+    Uncompressed {
+        fourcc: FourCc,
+    },
     Aac(AacConfig),
     /// MPEG-1/2 audio (esds object type 0x69/0x6B, or QuickTime `.mp3` / `.mp2`). Usually layer
     /// III, but these name no layer: ffmpeg stores MP2 as `mp4a` + 0x6B. Each frame header has it.
@@ -219,6 +225,7 @@ impl CodecConfig {
             CodecConfig::Jpeg { .. } => "mjpeg",
             CodecConfig::Dnx { .. } => "dnxhd",
             CodecConfig::Apv(_) => "apv",
+            CodecConfig::Uncompressed { .. } => "uncompressed",
             CodecConfig::Aac(_) => "aac",
             CodecConfig::Mp3 => "mp3",
             CodecConfig::Pcm(_) => "pcm",
@@ -921,7 +928,9 @@ pub(crate) fn parse_sample_entry(format: FourCc, payload: &[u8], handler: FourCc
         }
         return Ok(SampleEntry { format, data_reference_index, codec: CodecConfig::Timecode(tc), video: None, audio: None, bitrate: None });
     }
-    let video_like = is_video_fourcc(f) || (handler == b"vide" && !is_audio_fourcc(f));
+    // QuickTime `raw ` names 24-bit RGB in a video track and 8-bit PCM in a sound track: it is the
+    // only fourcc that means both, so only it needs the handler's word.
+    let video_like = (is_video_fourcc(f) && !(f == b"raw " && handler == b"soun")) || (handler == b"vide" && !is_audio_fourcc(f));
     let audio_like = is_audio_fourcc(f) || (handler == b"soun" && !video_like);
     if video_like {
         let mut v = VideoParams::default();
@@ -983,6 +992,7 @@ pub(crate) fn parse_sample_entry(format: FourCc, payload: &[u8], handler: FourCc
                 b"jpeg" | b"mjpa" | b"mjpb" => CodecConfig::Jpeg { fourcc: format },
                 b"AVdn" | b"AVdh" => CodecConfig::Dnx { fourcc: format },
                 b"apv1" => CodecConfig::Apv(ApvConfig::default()),
+                b"2vuy" | b"v210" | b"raw " => CodecConfig::Uncompressed { fourcc: format },
                 _ => unknown(),
             },
         };
@@ -1311,6 +1321,22 @@ impl SampleEntry {
         }
         e
     }
+    /// Uncompressed QuickTime video entry: `2vuy` (8-bit 4:2:2), `v210` (10-bit 4:2:2) or `raw `
+    /// (24-bit RGB). The depth is 24 for all three, as QuickTime writers (and ffmpeg) put it: only a
+    /// 24-bit `raw ` entry is read as RGB.
+    pub fn uncompressed(fourcc: FourCc, width: u16, height: u16) -> Self {
+        let mut e = Self::video(fourcc, CodecConfig::Uncompressed { fourcc }, width, height);
+        if let Some(v) = e.video.as_mut() {
+            v.depth = 24;
+            v.compressor_name = match &fourcc.0 {
+                b"2vuy" => "Uncompressed 8-bit 4:2:2",
+                b"v210" => "Uncompressed 10-bit 4:2:2",
+                _ => "Uncompressed RGB",
+            }
+            .into();
+        }
+        e
+    }
     /// Motion-JPEG entry (`jpeg`).
     pub fn jpeg(width: u16, height: u16) -> Self {
         let f = FourCc(*b"jpeg");
@@ -1582,6 +1608,33 @@ mod tests {
         e.write(&mut b, qt).unwrap();
         let bx = crate::bytes::boxes(&b.buf).next().unwrap().unwrap();
         parse_sample_entry(bx.kind, bx.payload, FourCc(*handler), qt).unwrap()
+    }
+
+    /// Uncompressed QuickTime video entries keep their fourcc, their size and the depth that says
+    /// how wide a `raw ` pixel is.
+    #[test]
+    fn uncompressed_roundtrip() {
+        for fourcc in [b"2vuy", b"v210", b"raw "] {
+            let e = SampleEntry::uncompressed(FourCc(*fourcc), 1920, 1080);
+            let back = roundtrip(&e, true, b"vide");
+            assert_eq!(back, e, "{fourcc:?}");
+            assert_eq!(back.video.as_ref().unwrap().depth, 24);
+            assert!(matches!(back.codec, CodecConfig::Uncompressed { .. }));
+        }
+        assert_eq!(CodecConfig::Uncompressed { fourcc: FourCc(*b"v210") }.name(), "uncompressed");
+    }
+
+    /// `raw ` is 24-bit RGB in a video sample entry and 8-bit PCM in a sound one: the track handler
+    /// tells them apart (QuickTime files of either kind exist).
+    #[test]
+    fn raw_fourcc_follows_the_track_handler() {
+        let video = roundtrip(&SampleEntry::uncompressed(FourCc(*b"raw "), 64, 48), true, b"vide");
+        assert_eq!(video.codec, CodecConfig::Uncompressed { fourcc: FourCc(*b"raw ") });
+        let pcm = PcmConfig { channels: 1, sample_rate: 48_000.0, bits: 8, signed: false, big_endian: true, ..Default::default() };
+        let e = SampleEntry::audio(FourCc(*b"raw "), CodecConfig::Pcm(pcm), 1, 48_000.0, 8);
+        let audio = roundtrip(&e, true, b"soun");
+        assert_eq!(audio.codec, CodecConfig::Pcm(pcm), "a sound track's `raw ` is PCM, not RGB");
+        assert!(audio.video.is_none());
     }
 
     #[test]

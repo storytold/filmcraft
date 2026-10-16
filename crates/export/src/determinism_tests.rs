@@ -32,7 +32,7 @@ fn export_stepped(batch: i64, settings: &ExportSettings) -> Vec<u8> {
 #[test]
 fn same_file_whatever_the_core_count() {
     // 24 frames: one full interleave group and a partial one
-    for (format, ext) in [(Format::ProRes, "mov"), (Format::H264, "mp4"), (Format::Mjpeg, "mov")] {
+    for (format, ext) in [(Format::ProRes, "mov"), (Format::H264, "mp4"), (Format::Mjpeg, "mov"), (Format::Uncompressed, "mov")] {
         let settings = |name: &str| ExportSettings { format, path: tmp(&format!("{name}.{ext}")), ..Default::default() };
         let reference = export_with_cores(2, &settings(&format!("{}-2", format.id())));
         for threads in [3, 5, 16] {
@@ -127,7 +127,7 @@ fn export_overlapped(threads: usize, batch: i64, overlap: bool, settings: &Expor
 
 #[test]
 fn rendering_ahead_does_not_change_the_file() {
-    for (format, ext) in [(Format::ProRes, "mov"), (Format::H264, "mp4"), (Format::Mjpeg, "mov")] {
+    for (format, ext) in [(Format::ProRes, "mov"), (Format::H264, "mp4"), (Format::Mjpeg, "mov"), (Format::Uncompressed, "mov")] {
         let settings = |name: &str| ExportSettings { format, path: tmp(&format!("{name}.{ext}")), ..Default::default() };
         let (reference, ahead) = export_overlapped(3, 7, false, &settings(&format!("ov-{}-off", format.id())));
         assert_eq!(ahead, 0, "{}: overlap is off", format.label());
