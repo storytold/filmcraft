@@ -620,10 +620,16 @@ fn yuv_label(chroma_format_idc: u32, bits: u32) -> String {
     format!("YUV {sub} {bits}-bit")
 }
 
-/// `chroma_format_idc` and luma bit depth of an H.264 track: from the `avcC` High-profile extension
-/// (ISO/IEC 14496-15 §5.3.3), else from its first SPS. The profile alone can't say (High 4:2:2 is
-/// 8 or 10-bit, High 10 can be 8-bit).
+/// `chroma_format_idc` and luma bit depth of an H.264 track: from its first SPS, which is what the
+/// decoder decodes, else from the `avcC` High-profile extension (ISO/IEC 14496-15 §5.3.3). The
+/// extension is not trusted over the SPS: muxers have been seen writing `chroma_format` 0 (4:0:0)
+/// into it for 4:2:0 files, which labelled them "4:0:0" (#1959). The profile alone can't say (High
+/// 4:2:2 is 8 or 10-bit, High 10 can be 8-bit).
 fn avc_format(a: &filmcraft_isobmff::AvcConfig) -> Option<(u32, u32)> {
+    let from_sps = a.sps.first().and_then(|n| n.get(1..)).and_then(|rbsp| filmcraft_h264::params::Sps::parse(&filmcraft_bitstream::unescape_rbsp(rbsp)).ok());
+    if let Some(sps) = from_sps {
+        return Some((sps.chroma_format_idc, sps.bit_depth_luma));
+    }
     // reserved bits set: '111111' chroma_format, '11111' bit_depth_luma_minus8 (else not an extension)
     if !matches!(a.profile, 66 | 77 | 88)
         && let &[chroma, depth, ..] = a.ext.as_slice()
@@ -632,14 +638,26 @@ fn avc_format(a: &filmcraft_isobmff::AvcConfig) -> Option<(u32, u32)> {
     {
         return Some(((chroma & 3) as u32, (depth & 7) as u32 + 8));
     }
-    let sps = filmcraft_h264::params::Sps::parse(&filmcraft_bitstream::unescape_rbsp(a.sps.first()?.get(1..)?)).ok()?;
-    Some((sps.chroma_format_idc, sps.bit_depth_luma))
+    None
+}
+
+/// `chroma_format_idc` and luma bit depth of an HEVC track: from its first SPS, which is what the
+/// decoder decodes, else the `hvcC` record's own fields (which a muxer may leave at 0, i.e. "4:0:0").
+fn hevc_format(h: &filmcraft_isobmff::HevcConfig) -> (u32, u32) {
+    let from_sps = h.sps().first().and_then(|n| n.get(2..)).and_then(|rbsp| filmcraft_hevc::params::Sps::parse(&filmcraft_bitstream::unescape_rbsp(rbsp)).ok());
+    match from_sps {
+        Some(sps) => (sps.chroma_format_idc, sps.bit_depth_luma),
+        None => (h.chroma_format_idc as u32, h.bit_depth_luma as u32),
+    }
 }
 
 fn pixfmt_label(c: &CodecConfig) -> String {
     match c {
         CodecConfig::Avc(a) => avc_format(a).map(|(chroma, bits)| yuv_label(chroma, bits)).unwrap_or_default(),
-        CodecConfig::Hevc(h) => yuv_label(h.chroma_format_idc as u32, h.bit_depth_luma as u32),
+        CodecConfig::Hevc(h) => {
+            let (chroma, bits) = hevc_format(h);
+            yuv_label(chroma, bits)
+        }
         CodecConfig::Vp9(c) => {
             let sub = match c.chroma_subsampling {
                 2 => "4:2:2",
@@ -1061,6 +1079,84 @@ mod tests {
         assert_eq!(pixfmt_label(&avc(244, high_sps(244, 3, 10), Vec::new())), "YUV 4:4:4 10-bit");
         // an unreadable SPS and no extension: unknown, not a guess
         assert_eq!(pixfmt_label(&avc(122, vec![0x67, 122], Vec::new())), "");
+        // the SPS outranks the extension: an avcC claiming 4:0:0 for a 4:2:0 stream labels 4:2:0 (#1959)
+        assert_eq!(pixfmt_label(&avc(100, high_sps(100, 1, 8), vec![0xFC, 0xF8, 0xF8, 0])), "YUV 4:2:0 8-bit");
+        // only without a readable SPS does the extension speak for itself
+        assert_eq!(pixfmt_label(&avc(100, vec![0x67, 100], vec![0xFC, 0xF8, 0xF8, 0])), "YUV 4:0:0 8-bit");
+    }
+
+    /// An HEVC Main SPS NAL unit (ITU-T H.265 §7.3.2.2) with the given chroma format and bit depth, 64×64.
+    fn hevc_sps(chroma: u32, bits: u32) -> Vec<u8> {
+        let mut w = filmcraft_bitstream::BitWriter::new();
+        w.write_bits(0, 4); // vps id
+        w.write_bits(0, 3); // max_sub_layers_minus1
+        w.write_bits(1, 1); // temporal_id_nesting
+        // profile_tier_level: Main, level 3.1
+        w.write_bits(0, 2);
+        w.write_bits(0, 1);
+        w.write_bits(1, 5);
+        w.write_bits(0x6000_0000, 32);
+        w.write_bits(0b1001, 4);
+        w.write_bits(0, 32);
+        w.write_bits(0, 11);
+        w.write_bits(0, 1);
+        w.write_bits(93, 8);
+        w.write_ue(0); // sps id
+        w.write_ue(chroma);
+        if chroma == 3 {
+            w.write_bit(false); // separate_colour_plane
+        }
+        w.write_ue(64);
+        w.write_ue(64);
+        w.write_bits(0, 1); // conformance window
+        w.write_ue(bits - 8); // luma
+        w.write_ue(bits - 8); // chroma
+        w.write_ue(4); // log2_max_poc_lsb_minus4
+        w.write_bits(1, 1); // sub_layer_ordering_info_present
+        w.write_ue(4);
+        w.write_ue(0);
+        w.write_ue(0);
+        w.write_ue(0); // min CB 8
+        w.write_ue(1); // CTB 16
+        w.write_ue(0); // min TB 4
+        w.write_ue(2); // max TB 16
+        w.write_ue(0);
+        w.write_ue(0);
+        w.write_bits(0, 1); // scaling lists
+        w.write_bits(0, 1); // amp
+        w.write_bits(0, 1); // sao
+        w.write_bits(0, 1); // pcm
+        w.write_ue(0); // num_short_term_ref_pic_sets
+        w.write_bits(0, 1); // long_term_ref_pics_present
+        w.write_bits(0, 1); // temporal mvp
+        w.write_bits(0, 1); // strong intra smoothing
+        w.write_bits(0, 1); // vui
+        w.write_bits(0, 1); // extensions
+        w.rbsp_trailing();
+        let mut nal = vec![33 << 1, 1];
+        nal.extend(filmcraft_bitstream::escape_rbsp(&w.finish()));
+        nal
+    }
+
+    /// The hvcC's own chroma/bit-depth fields can be left at 0 by a muxer: the SPS it carries says.
+    #[test]
+    fn hevc_pixel_format_prefers_the_sps_over_the_hvcc_fields() {
+        let with_sps = |chroma: u32, bits: u32, field_chroma: u8, field_bits: u8| {
+            let arrays = vec![filmcraft_isobmff::HevcNalArray { completeness: true, nal_type: 33, nalus: vec![hevc_sps(chroma, bits)] }];
+            CodecConfig::Hevc(filmcraft_isobmff::HevcConfig {
+                general_profile_idc: 1,
+                chroma_format_idc: field_chroma,
+                bit_depth_luma: field_bits,
+                arrays,
+                ..Default::default()
+            })
+        };
+        assert_eq!(pixfmt_label(&with_sps(1, 8, 0, 0)), "YUV 4:2:0 8-bit", "hvcC fields at 0, SPS 4:2:0");
+        assert_eq!(pixfmt_label(&with_sps(2, 10, 1, 8)), "YUV 4:2:2 10-bit", "the SPS outranks the fields");
+        assert_eq!(pixfmt_label(&with_sps(3, 12, 3, 12)), "YUV 4:4:4 12-bit");
+        // no SPS in the record: its fields
+        let bare = CodecConfig::Hevc(filmcraft_isobmff::HevcConfig { general_profile_idc: 1, chroma_format_idc: 1, bit_depth_luma: 10, ..Default::default() });
+        assert_eq!(pixfmt_label(&bare), "YUV 4:2:0 10-bit");
     }
 
     /// A one-frame 32×16 ProRes MOV with the given profile, chroma format and fourcc.
