@@ -413,6 +413,17 @@ pub struct Eyedropper {
     pub mask: Option<usize>,
 }
 
+/// Effects selected in Effect Controls together with the selected effect (the engine's
+/// `selected_effect`, here `anchor`): Ctrl/Cmd-click adds or removes one, Shift-click takes the
+/// effects between the selected one and the one clicked. They count only while `anchor` is still
+/// the selected effect, so any other selection change drops them. Save Preset… on one of them
+/// saves them all.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectMultiSelection {
+    pub anchor: filmcraft_engine::EffectSel,
+    pub also: Vec<filmcraft_engine::EffectSel>,
+}
+
 /// A keyframe selected in the Effect Controls keyframe lane: clip, effect index, parameter (of an
 /// effect mask when `mask` is set) and the keyframe's media time. The panel drops references that
 /// no longer match a keyframe (deleted, moved, another clip selected).
@@ -479,6 +490,10 @@ pub struct UiState {
     /// Effect Controls: the selected keyframes, highlighted in the keyframe lane (a click selects one).
     #[serde(default)]
     pub keyframe_selection: Vec<KeyframeRef>,
+    /// Effect Controls: effects selected with Ctrl/Cmd-click or Shift-click besides the selected
+    /// effect ([`EffectMultiSelection`]).
+    #[serde(default)]
+    pub effect_multi_selection: Option<EffectMultiSelection>,
     /// Essential Sound sub-tab: "Edit" or "Browse".
     #[serde(default)]
     pub essential_sound_tab: String,
@@ -981,6 +996,7 @@ impl Default for UiState {
             failed_link: None,
             eyedropper: None,
             keyframe_selection: Vec::new(),
+            effect_multi_selection: None,
             essential_sound_tab: "Edit".into(),
             tts: Default::default(),
             export: Default::default(),

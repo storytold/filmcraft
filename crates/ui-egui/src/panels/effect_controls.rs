@@ -1,6 +1,10 @@
 //! Effect Controls: the selected clip's effects (fixed Motion/Opacity/Time Remapping first, as in
 //! Premiere, then standard effects), generated from parameter schemas, with stopwatches and a
 //! keyframe lane on the right. Also hosts the Lumetri Color panel body (same editor, grouped).
+//!
+//! Clicking an effect's header selects it; Ctrl/Cmd-click adds or removes effects and Shift-click
+//! takes a range, as in Premiere, and right-click ▸ Save Preset… on a selected effect saves all
+//! the selected ones as one preset (#1519).
 
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use filmcraft_project::{ClipId, EffectInstance, ParamKind, ParamValue, TrackItem, TrackKind};
@@ -197,12 +201,14 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             // Premiere lists the fixed effects (Motion, Opacity, Time Remapping / Volume…) first.
             let mut order: Vec<usize> = (0..it.effects.len()).collect();
             order.sort_by_key(|i| !it.effects[*i].def().is_some_and(|d| d.intrinsic));
+            let shown_order = order.clone();
+            let selected_fx = selected_effects(app, clip, &it.effects);
             for idx in order {
                 let e = &it.effects[idx];
                 let Some(def) = e.def() else { continue };
                 let key = format!("{}:{}", clip.0, idx);
                 let open = !app.ui.collapsed_fx.contains(&key);
-                let selected = app.session.state.selected_effect.as_ref().is_some_and(|s| s.clip == clip && s.index(&it.effects) == Some(idx));
+                let selected = selected_fx.contains(&idx);
                 let (r, resp) = bui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::click());
                 if selected {
                     bui.painter().rect_filled(crate::panels::effect_controls::row_fill(r), 0.0, t.row_selected);
@@ -242,7 +248,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         app.ui.collapsed_fx.retain(|k| *k != key);
                     }
                 } else if resp.clicked() && !fxresp.clicked() && !rresp.clicked() {
-                    actions.push(("effects.select".into(), json!({"clip": clip.0, "effect": idx})));
+                    let mods = bui.input(|i| i.modifiers);
+                    click_effect(app, clip, &it.effects, &shown_order, idx, mods, &mut actions);
                 }
                 let mut save_preset = false;
                 let fx_id = e.effect.clone();
@@ -259,7 +266,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 });
                 if save_preset {
-                    crate::panels::presets::open_save(app, clip.0, vec![idx], def.name);
+                    // a selected effect saves the whole selection (Premiere), another one itself
+                    let effects = if selected_fx.contains(&idx) { selected_fx.clone() } else { vec![idx] };
+                    crate::panels::presets::open_save(app, clip.0, effects, def.name);
                 }
                 if !open {
                     continue;
@@ -1001,6 +1010,66 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         app.auto.add("properties.speed", br, "Speed");
     });
     run(app, ui.ctx(), actions);
+}
+
+/// The selected effects of `clip` (indices into `effects`, in the clip's order): the selected effect
+/// and those added to it with Ctrl/Cmd-click or Shift-click ([`crate::state::EffectMultiSelection`]).
+pub(crate) fn selected_effects(app: &FilmcraftApp, clip: ClipId, effects: &[EffectInstance]) -> Vec<usize> {
+    let Some(anchor) = app.session.state.selected_effect.as_ref().filter(|s| s.clip == clip) else { return Vec::new() };
+    let mut v: Vec<usize> = anchor.index(effects).into_iter().collect();
+    if let Some(m) = app.ui.effect_multi_selection.as_ref().filter(|m| &m.anchor == anchor) {
+        v.extend(m.also.iter().filter(|e| e.clip == clip).filter_map(|e| e.index(effects)));
+    }
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// A click on the header of effect `idx` of `clip`. A plain click selects that effect alone. With
+/// an effect of the clip selected, Ctrl/Cmd-click adds the clicked one to the selection or takes
+/// it out (the next selected effect then becomes the selected one), and Shift-click selects the
+/// effects from the selected one to the clicked one in the panel's order (`shown`).
+fn click_effect(
+    app: &mut FilmcraftApp,
+    clip: ClipId,
+    effects: &[EffectInstance],
+    shown: &[usize],
+    idx: usize,
+    mods: egui::Modifiers,
+    actions: &mut Vec<(String, Value)>,
+) {
+    use filmcraft_engine::EffectSel;
+    let select = |actions: &mut Vec<(String, Value)>, i: usize| actions.push(("effects.select".into(), json!({"clip": clip.0, "effect": i})));
+    let anchor = app.session.state.selected_effect.clone().filter(|s| s.clip == clip).and_then(|s| s.index(effects).map(|i| (s, i)));
+    let (Some((anchor, at)), true) = (anchor, mods.command || mods.shift) else {
+        app.ui.effect_multi_selection = None;
+        select(actions, idx);
+        return;
+    };
+    let Some(this) = EffectSel::of(clip, effects, idx) else { return };
+    let mut also: Vec<EffectSel> = app.ui.effect_multi_selection.as_ref().filter(|m| m.anchor == anchor).map(|m| m.also.clone()).unwrap_or_default();
+    let mut anchor = anchor;
+    if mods.shift {
+        let pos = |i: usize| shown.iter().position(|x| *x == i);
+        let (Some(a), Some(b)) = (pos(at), pos(idx)) else { return };
+        also = shown.get(a.min(b)..=a.max(b)).unwrap_or_default().iter().filter(|i| **i != at).filter_map(|i| EffectSel::of(clip, effects, *i)).collect();
+    } else if this == anchor {
+        // Ctrl/Cmd-click on the selected effect: the next one takes over, or nothing is selected
+        if also.is_empty() {
+            app.ui.effect_multi_selection = None;
+            actions.push(("effects.select".into(), json!({"none": true})));
+            return;
+        }
+        anchor = also.remove(0);
+        if let Some(i) = anchor.index(effects) {
+            select(actions, i);
+        }
+    } else if let Some(p) = also.iter().position(|e| *e == this) {
+        also.remove(p);
+    } else {
+        also.push(this);
+    }
+    app.ui.effect_multi_selection = (!also.is_empty()).then_some(crate::state::EffectMultiSelection { anchor, also });
 }
 
 /// Where a row's highlight (hover, selection) is painted: the row less its first point, which is
