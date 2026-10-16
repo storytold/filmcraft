@@ -143,6 +143,7 @@ fn export_mode_settings_and_summary() {
         "export.video.bitrateMode",
         "export.video.hardwareEncoding",
         "export.video.maxQuality",
+        "export.video.maxThreads",
         "export.audio.sampleRate",
         "export.range",
         "export.scaling",
@@ -509,4 +510,62 @@ fn sample_size_lists_every_size_and_greys_out_what_the_format_cannot_store() {
     d.click("export.audio.bits.option.3");
     assert_eq!(d.app().ui.export.settings.audio.sample_format(), SampleFormat::Float32);
     d.snapshot("export-sample-size-prores");
+}
+
+/// #1216: the Export Settings dialog caps how many CPU threads an export uses.
+#[test]
+fn cpu_threads_can_be_capped_from_the_dialog() {
+    let mut d = Driver::new("cpu-threads");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    let elem = |d: &mut Driver, id: &str| -> Value {
+        let e = d.ok("ui.elements", json!({"prefix": id}));
+        e.as_array().and_then(|a| a.iter().find(|e| e["id"] == json!(id))).cloned().unwrap_or(Value::Null)
+    };
+    assert!(d.has("export.video.maxThreads"), "the CPU Threads control is in the Video section");
+    assert_eq!(elem(&mut d, "export.video.maxThreads")["label"], json!("All cores"), "all cores unless asked");
+    assert_eq!(d.app().ui.export.settings.max_threads, 0);
+
+    // open the combo: "All cores", then 1, 2, … up to the machine's core count
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
+    d.click("export.video.maxThreads");
+    assert_eq!(elem(&mut d, "export.video.maxThreads.option.0")["label"], json!("All cores"));
+    for n in 1..=cores.min(3) {
+        let id = format!("export.video.maxThreads.option.{n}");
+        assert_eq!(elem(&mut d, &id)["label"], json!(n.to_string()), "{id}");
+    }
+    // pick the smallest non-zero cap this machine can offer: the setting follows, and the preset
+    // becomes Custom like any other edit
+    let pick = cores.min(2);
+    d.click(&format!("export.video.maxThreads.option.{pick}"));
+    assert_eq!(d.app().ui.export.settings.max_threads, pick as u32);
+    assert_eq!(elem(&mut d, "export.video.maxThreads")["label"], json!(pick.to_string()));
+    assert_eq!(d.app().ui.export.preset, "Custom");
+
+    // `ui.set` reaches it too, and a cap above the core count shows the machine's cores
+    d.ok("ui.set", json!({"export": {"settings": {"maxThreads": 3}}}));
+    d.frames(3);
+    assert_eq!(d.app().ui.export.settings.max_threads, 3);
+    d.ok("ui.set", json!({"export": {"settings": {"maxThreads": 4096}}}));
+    d.frames(3);
+    assert_eq!(elem(&mut d, "export.video.maxThreads")["label"], json!(cores.to_string()), "a cap above the core count shows the core count");
+    d.snapshot("export-cpu-threads");
+}
+
+/// #1216: Settings ▸ Playback ▸ Export CPU Threads is the app-wide default for Export mode.
+#[test]
+fn the_export_thread_default_seeds_export_mode() {
+    let mut d = Driver::new("export-threads-default");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    assert_eq!(d.app().ui.export.settings.max_threads, 0, "all cores by default");
+    // the app-wide default seeds Export mode while it has not set its own cap
+    d.app().session.prefs.playback.export_threads = 2;
+    d.frames(4);
+    assert_eq!(d.app().ui.export.settings.max_threads, 2);
+    // a value picked in Export mode is left alone when the default changes
+    d.app().ui.export.settings.max_threads = 5;
+    d.app().session.prefs.playback.export_threads = 3;
+    d.frames(4);
+    assert_eq!(d.app().ui.export.settings.max_threads, 5, "an export's own cap wins");
 }

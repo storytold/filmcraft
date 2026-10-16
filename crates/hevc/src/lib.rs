@@ -41,7 +41,7 @@ mod synth_tests;
 mod tables;
 mod transform;
 
-pub use decoder::{DecodeStats, Decoder};
+pub use decoder::{DecodeStats, Decoder, default_threads};
 pub use error::{Error, Result};
 
 /// Colour description from the VUI (ITU-T H.273 code points).

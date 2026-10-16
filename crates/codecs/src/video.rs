@@ -45,9 +45,11 @@ pub trait VideoDecoder: Send {
     /// shortcuts that only change pictures nothing references, which come out flagged
     /// [`DecodedFrame::draft`]. Decoders without such a mode ignore it.
     fn set_draft(&mut self, _on: bool) {}
-    /// Made with fewer worker threads than a decoder for playback gets, because it was made for
-    /// background work ([`filmcraft_media::cancel::with_background`]). A request for a monitor
-    /// replaces such a decoder.
+    /// Made with a different number of worker threads than a decoder for playback gets now: fewer
+    /// because it was made for background work ([`filmcraft_media::cancel::with_background`]), or
+    /// a different count while an export caps the threads
+    /// ([`filmcraft_media::cancel::with_max_threads`]). A request for a monitor replaces such a
+    /// decoder.
     fn thread_limited(&self) -> bool {
         false
     }
@@ -277,7 +279,8 @@ pub struct H264Decoder {
 impl H264Decoder {
     /// The worker threads for a decoder made now.
     fn threads_now() -> usize {
-        if filmcraft_media::cancel::background() { BACKGROUND_H264_THREADS.min(h264_threads()) } else { h264_threads() }
+        let base = if filmcraft_media::cancel::background() { BACKGROUND_H264_THREADS.min(h264_threads()) } else { h264_threads() };
+        capped_threads(base)
     }
 
     fn make_inner(avcc: &[u8], threads: usize) -> Result<filmcraft_h264::Decoder> {
@@ -351,7 +354,9 @@ impl VideoDecoder for H264Decoder {
         "FilmCraft H.264"
     }
     fn thread_limited(&self) -> bool {
-        self.threads < h264_threads()
+        // Not the count a monitor's decoder gets now: a thumbnail's decoder is replaced by a full
+        // one, and a full one by a smaller one while an export caps the threads (#1216).
+        self.threads != h264_full_threads()
     }
     fn set_draft(&mut self, on: bool) {
         self.draft = on;
@@ -380,6 +385,21 @@ pub fn h264_threads() -> usize {
     filmcraft_h264::default_threads()
 }
 
+/// The worker threads a decoder made on this thread may use: `default` capped by an export's thread
+/// limit ([`filmcraft_media::cancel::max_threads`], #1216). A cap below 1 means 1 thread.
+fn capped_threads(default: usize) -> usize {
+    match filmcraft_media::cancel::max_threads() {
+        Some(cap) => default.min(cap.max(1)),
+        None => default,
+    }
+}
+
+/// The worker threads an H.264 decoder made for a monitor gets now: the default, capped by an
+/// export's limit.
+fn h264_full_threads() -> usize {
+    capped_threads(h264_threads())
+}
+
 pub fn h264_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
     match &e.codec {
         CodecConfig::Avc(a) => Some(H264Decoder::new(a.to_bytes()).map(|d| Box::new(d) as Box<dyn VideoDecoder>)),
@@ -393,17 +413,22 @@ pub struct HevcDecoder {
     dec: filmcraft_hevc::Decoder,
     length_size: usize,
     highest_tid: Option<u8>,
+    /// Worker threads (the default, capped by an export; #1216).
+    threads: usize,
 }
 
 impl HevcDecoder {
     pub fn new(hvcc: Vec<u8>) -> Result<Self> {
-        let dec = filmcraft_hevc::Decoder::from_hvcc(&hvcc).map_err(hevc_error)?;
+        let threads = capped_threads(filmcraft_hevc::default_threads());
+        let mut dec = filmcraft_hevc::Decoder::with_threads(threads);
+        dec.configure_hvcc(&hvcc).map_err(hevc_error)?;
         let (length_size, highest_tid) = hvcc_length_size_and_tid(&hvcc);
-        Ok(Self { hvcc, dec, length_size, highest_tid })
+        Ok(Self { hvcc, dec, length_size, highest_tid, threads })
     }
     /// A decoder for Annex B byte-stream samples (start codes, in-band parameter sets: TS).
     pub fn annexb() -> Self {
-        Self { hvcc: Vec::new(), dec: filmcraft_hevc::Decoder::new(), length_size: 0, highest_tid: None }
+        let threads = capped_threads(filmcraft_hevc::default_threads());
+        Self { hvcc: Vec::new(), dec: filmcraft_hevc::Decoder::with_threads(threads), length_size: 0, highest_tid: None, threads }
     }
     fn convert(p: filmcraft_hevc::Picture) -> DecodedFrame {
         use filmcraft_hevc::Plane;
@@ -454,14 +479,16 @@ impl VideoDecoder for HevcDecoder {
         self.dec.flush().into_iter().map(Self::convert).collect()
     }
     fn reset(&mut self) {
-        if self.hvcc.is_empty() {
-            self.dec = filmcraft_hevc::Decoder::new();
-        } else if let Ok(d) = filmcraft_hevc::Decoder::from_hvcc(&self.hvcc) {
-            self.dec = d;
+        let mut dec = filmcraft_hevc::Decoder::with_threads(self.threads);
+        if self.hvcc.is_empty() || dec.configure_hvcc(&self.hvcc).is_ok() {
+            self.dec = dec;
         }
     }
     fn name(&self) -> &str {
         "FilmCraft HEVC"
+    }
+    fn thread_limited(&self) -> bool {
+        self.threads != capped_threads(filmcraft_hevc::default_threads())
     }
     fn is_disposable(&self, sample: &[u8]) -> bool {
         hevc_disposable(sample, self.length_size, self.highest_tid)
@@ -492,6 +519,8 @@ pub struct Vp9Decoder {
     /// bitstream.
     transfer: Option<filmcraft_color::Transfer>,
     primaries: Option<filmcraft_color::Primaries>,
+    /// Worker threads (the default, capped by an export; #1216).
+    threads: usize,
 }
 
 /// Colour primaries from an ISO/IEC 23091-2 code.
@@ -509,10 +538,12 @@ pub(crate) fn primaries_from_code(c: u8) -> Option<filmcraft_color::Primaries> {
 
 impl Vp9Decoder {
     pub fn new(cfg: Option<&filmcraft_isobmff::VpcConfig>) -> Self {
+        let threads = capped_threads(filmcraft_vp9::default_threads());
         Self {
-            dec: filmcraft_vp9::Decoder::new(),
+            dec: filmcraft_vp9::Decoder::with_threads(threads),
             transfer: cfg.and_then(|c| filmcraft_color::Transfer::from_code(c.transfer_characteristics)),
             primaries: cfg.and_then(|c| primaries_from_code(c.colour_primaries)),
+            threads,
         }
     }
 
@@ -591,6 +622,9 @@ impl VideoDecoder for Vp9Decoder {
     fn name(&self) -> &str {
         "FilmCraft VP9"
     }
+    fn thread_limited(&self) -> bool {
+        self.threads != capped_threads(filmcraft_vp9::default_threads())
+    }
     fn set_draft(&mut self, on: bool) {
         self.dec.set_draft(on);
     }
@@ -666,11 +700,14 @@ pub struct Av1Decoder {
     dec: filmcraft_av1::Decoder,
     config_obus: Vec<u8>,
     primed: bool,
+    /// Worker threads (the default, capped by an export; #1216).
+    threads: usize,
 }
 
 impl Av1Decoder {
     pub fn new(config_obus: Vec<u8>) -> Av1Decoder {
-        Av1Decoder { dec: filmcraft_av1::Decoder::new(), config_obus, primed: false }
+        let threads = capped_threads(filmcraft_av1::default_threads());
+        Av1Decoder { dec: filmcraft_av1::Decoder::with_threads(threads), config_obus, primed: false, threads }
     }
 
     fn convert(p: filmcraft_av1::Picture, pts: i64) -> DecodedFrame {
@@ -731,11 +768,14 @@ impl VideoDecoder for Av1Decoder {
             .collect()
     }
     fn reset(&mut self) {
-        self.dec = filmcraft_av1::Decoder::new();
+        self.dec = filmcraft_av1::Decoder::with_threads(self.threads);
         self.primed = false;
     }
     fn name(&self) -> &str {
         "FilmCraft AV1"
+    }
+    fn thread_limited(&self) -> bool {
+        self.threads != capped_threads(filmcraft_av1::default_threads())
     }
     fn set_draft(&mut self, on: bool) {
         self.dec.set_draft(on);
@@ -1308,5 +1348,31 @@ impl VideoDecoder for RawVideoDecoder {
     }
     fn intra_only(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod cap_tests {
+    use super::{H264Decoder, VideoDecoder, capped_threads, h264_full_threads, h264_threads};
+    use filmcraft_media::cancel;
+
+    /// #1216: a decoder made under an export's cap uses at most that many threads, and a monitor
+    /// replaces it once the cap is gone.
+    #[test]
+    fn an_export_cap_limits_decoder_threads() {
+        let full = h264_threads();
+        assert_eq!(capped_threads(8), 8, "no cap: the default stands");
+        cancel::with_max_threads(Some(2), || {
+            assert_eq!(capped_threads(8), 2, "a decoder made under a cap uses the cap");
+            assert_eq!(capped_threads(1), 1, "a cap never goes below one thread");
+            assert_eq!(h264_full_threads(), full.min(2));
+        });
+        assert_eq!(capped_threads(8), 8, "the cap is scoped to the thread");
+        if full > 2 {
+            // a decoder made under the cap is not what a monitor gets without one, so it is replaced
+            let capped = cancel::with_max_threads(Some(2), H264Decoder::annexb);
+            assert!(capped.thread_limited(), "two threads is not a monitor's decoder without a cap");
+            assert!(!H264Decoder::annexb().thread_limited());
+        }
     }
 }

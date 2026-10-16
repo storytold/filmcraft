@@ -235,6 +235,9 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
         settings.bitrate_kbps = v;
         settings.adaptive_bitrate = None;
     }
+    if let Some(v) = crate::commands::checked_u32_p(p, "maxThreads", cmd)? {
+        settings.max_threads = v;
+    }
     if let Some(v) = crate::commands::checked_u32_p(p, "maxBitrateKbps", cmd)? {
         settings.max_bitrate_kbps = Some(v);
     }

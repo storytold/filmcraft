@@ -39,7 +39,7 @@ mod transform;
 #[allow(dead_code, clippy::all)]
 mod transform_gen;
 
-pub use decoder::{DecodeStats, Decoder};
+pub use decoder::{DecodeStats, Decoder, default_threads};
 
 /// Stream parameters read from a key frame's uncompressed header (see [`keyframe_info`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

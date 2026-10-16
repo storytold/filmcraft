@@ -442,15 +442,41 @@ const MIN_FRAMES: usize = 64;
 /// rather than restarting at the sync sample.
 const CONTINUE_THROUGH: usize = 48;
 
-/// Threads that run the caches' decoding (see [`isolated`]); `None` where none can be made.
+/// Threads that run the caches' decoding (see [`isolated`]); `None` where none can be made. While
+/// an export caps the threads ([`filmcraft_media::cancel::max_threads`], #1216) the decoding runs
+/// on a pool of that size instead of the shared, full-size one.
 #[cfg(not(target_arch = "wasm32"))]
 fn decode_pool() -> Option<&'static rayon::ThreadPool> {
+    match filmcraft_media::cancel::max_threads() {
+        Some(cap) => capped_decode_pool(cap.max(1)),
+        None => shared_decode_pool(),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn shared_decode_pool() -> Option<&'static rayon::ThreadPool> {
     static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
     POOL.get_or_init(|| {
         let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
         rayon::ThreadPoolBuilder::new().num_threads(n).thread_name(|i| format!("decode-{i}")).build().ok()
     })
     .as_ref()
+}
+
+/// A decode pool of `cap` threads, kept per cap for the process (#1216). The pool is leaked on
+/// purpose: every cache shares it and it lives as long as the process. `cap` is bounded by the
+/// machine's cores, so at most a handful of pools exist.
+#[cfg(not(target_arch = "wasm32"))]
+fn capped_decode_pool(cap: usize) -> Option<&'static rayon::ThreadPool> {
+    static POOLS: std::sync::OnceLock<Mutex<std::collections::HashMap<usize, &'static rayon::ThreadPool>>> = std::sync::OnceLock::new();
+    let mut pools = POOLS.get_or_init(|| Mutex::new(std::collections::HashMap::new())).lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(pool) = pools.get(&cap) {
+        return Some(pool);
+    }
+    let built = rayon::ThreadPoolBuilder::new().num_threads(cap).thread_name(|i| format!("decode-cap-{i}")).build().ok()?;
+    let pool: &'static rayon::ThreadPool = Box::leak(Box::new(built));
+    pools.insert(cap, pool);
+    Some(pool)
 }
 
 /// Run a cache's decoding, its lock held by the caller, on [`decode_pool`], the caller waiting
@@ -1618,5 +1644,20 @@ mod tests {
         assert_eq!(index_of(&c.frame(&s, 81_000).expect("frame")), 81);
         assert_eq!(s.resets.load(Ordering::Relaxed), resets);
         assert!(s.decodes.load(Ordering::Relaxed) - decodes <= 8 + 2);
+    }
+
+    /// #1216: an export's thread cap sizes the pool the caches decode on.
+    #[test]
+    fn an_export_cap_sizes_the_decode_pool() {
+        use filmcraft_media::cancel::with_max_threads;
+        // no hint: the shared, full-size pool
+        assert!(decode_pool().is_some());
+        // a cap: a pool of that size (a job run on it sees that many threads)
+        let seen = with_max_threads(Some(2), || decode_pool().map(|p| p.install(rayon::current_num_threads)));
+        assert_eq!(seen, Some(2));
+        let seen = with_max_threads(Some(3), || decode_pool().map(|p| p.install(rayon::current_num_threads)));
+        assert_eq!(seen, Some(3));
+        // back to the shared pool
+        assert!(decode_pool().is_some());
     }
 }

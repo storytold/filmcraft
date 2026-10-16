@@ -88,6 +88,9 @@ pub struct PlaybackPrefs {
     /// or `off` (always FilmCraft's own decoders). Media already open keeps its decoder until it
     /// is reopened.
     pub hardware_decoding: String,
+    /// "Export CPU Threads": how many CPU threads an export uses by default (0 = all cores; #1216).
+    /// Seeds Export mode's CPU Threads control; an export may still set its own cap.
+    pub export_threads: u32,
 }
 
 impl Default for PlaybackPrefs {
@@ -101,6 +104,7 @@ impl Default for PlaybackPrefs {
             disable_video_in_background: true,
             draft_decode: false,
             hardware_decoding: "auto".into(),
+            export_threads: 0,
         }
     }
 }

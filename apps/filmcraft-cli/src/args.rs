@@ -10,6 +10,7 @@ const VALUED: &[&str] = &[
     "--format",
     "--scale",
     "--quality",
+    "--threads",
     "--seconds",
     "--out",
     "--frames",

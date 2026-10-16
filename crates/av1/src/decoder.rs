@@ -212,7 +212,9 @@ pub struct Decoder {
     pts: i64,
 }
 
-fn default_threads() -> usize {
+/// The worker threads [`Decoder::new`] uses: the available cores (at most 16) with the `threads`
+/// feature on native targets, 1 otherwise.
+pub fn default_threads() -> usize {
     #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
     {
         std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(16)
