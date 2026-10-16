@@ -16,12 +16,14 @@ fn roughness(x: &[f32], from: usize) -> f32 {
 #[test]
 fn matroska_audio_plays_without_holes() {
     let ff = filmcraft_testkit::require_ffmpeg!();
-    let cases: [(&str, u32, &[&str]); 5] = [
+    let cases: [(&str, u32, &[&str]); 7] = [
         ("tone_aac_48k.mkv", 48_000, &["-c:a", "aac", "-b:a", "160k"]),
         ("tone_aac_44k.mkv", 44_100, &["-c:a", "aac", "-b:a", "160k"]),
         ("tone_mp3_44k.mkv", 44_100, &["-c:a", "libmp3lame", "-b:a", "192k"]),
         ("tone_mp2_44k.mkv", 44_100, &["-c:a", "mp2", "-b:a", "192k"]),
         ("tone_ac3_44k.mkv", 44_100, &["-c:a", "ac3", "-b:a", "192k"]),
+        ("tone_pcm24_48k.mkv", 48_000, &["-c:a", "pcm_s24le"]),
+        ("tone_pcm16_48k.mkv", 48_000, &["-c:a", "pcm_s16le"]),
     ];
     for (name, rate, codec) in cases {
         let input = format!("sine=frequency=440:sample_rate={rate}:duration=3");
