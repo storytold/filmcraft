@@ -656,7 +656,7 @@
 	Auto Makeup	Compensação automática
 	Makeup	Compensação
 	Expander	Expansor
-	Soft Clip	Clipping suave
+	Soft Clip	Recorte suave
 	(no sequences)	(nenhuma sequência)
 	(no clips)	(nenhum clipe)
 	Show Transport Controls	Mostrar controles de transporte
@@ -685,6 +685,7 @@
 	Extract (')	Extrair (')
 	Export Frame: use Export mode (M6)	Exportar quadro: use o modo Exportar (M6)
 	Button Editor	Editor de botões
+	More transport controls	Mais controles de reprodução
 	Multi-Camera Record on	Gravação multicâmera ativada
 	Multi-Camera Record off	Gravação multicâmera desativada
 	{first} - Merged	{first} - Mesclado
@@ -816,6 +817,7 @@
 	Relink others automatically	Revincular os demais automaticamente
 	Search in:	Pesquisar em:
 	Browse…	Procurar…
+	A file dialog is already open	Uma janela de seleção de arquivos já está aberta
 	Exact name matches only	Somente correspondências exatas de nome
 	No candidates yet — Search a folder or Locate the file.	Ainda não há candidatos: pesquise uma pasta ou localize o arquivo.
 	✔ same file	✔ mesmo arquivo
@@ -1521,7 +1523,7 @@
 	Composite Using	Compor usando
 	Composite on Original	Compor sobre o original
 	Compound Blur	Desfoque composto
-	Compression Before Clipping	Compressão antes do clipping
+	Compression Before Clipping	Compactação antes do recorte
 	Constant Gain	Ganho constante
 	Constant Power	Potência constante
 	Conversion Type	Tipo de conversão
@@ -1826,8 +1828,8 @@
 	HDR Graphics White (Nits)	Branco de gráficos HDR (nits)
 	HLS Vectorscope + Histogram	Vetorscópio HLS + histograma
 	HSL Secondary	HSL secundário
-	Hard	Duro
-	Hard Clip	Clipping duro
+	Hard	Rígido
+	Hard Clip	Recorte rígido
 	Hard Light	Luz direta
 	Hard Limiter	Limitador rígido
 	Hard Mix	Mistura sólida
@@ -1838,6 +1840,8 @@
 	Height	Altura
 	Hexagon	Hexágono
 	Hide Back Face	Ocultar face traseira
+	Hide FilmCraft	Ocultar FilmCraft
+	Hide Others	Ocultar outros
 	High	Alta
 	High Cutoff	Corte de agudos
 	High Frequency Cut	Corte de altas frequências
@@ -1988,9 +1992,9 @@
 	Logo Cutout	Recorte de logotipo
 	Long Shadow	Sombra longa
 	Look-Ahead Time	Tempo de antecipação
-	Loudness	Loudness
-	Loudness Maximizer	Maximizador de loudness
-	Loudness Meter	Medidor de loudness
+	Loudness	Sonoridade
+	Loudness Maximizer	Maximizador de sonoridade
+	Loudness Meter	Medidor de volume
 	Louver	Persiana
 	Low	Baixa
 	Low Frequency Cut	Corte de baixas frequências
@@ -2354,6 +2358,7 @@
 	Set focus on the Timeline when performing Insert/Overwrite edits	Focar a linha do tempo ao fazer edições de inserção/sobrescrita
 	Set to frame size	Definir para o tamanho do quadro
 	Setting	Configuração
+	Settings	Preferências
 	Shadow Angle	Ângulo da sombra
 	Shadow Blue Balance	Balanço de azul nas sombras
 	Shadow Blur	Desfoque da sombra
@@ -2531,7 +2536,7 @@
 	Target Aspect	Proporção de destino
 	Target Color	Cor de destino
 	Target Field of View	Campo de visão de destino
-	Target Loudness	Loudness de destino
+	Target Loudness	Sonoridade desejada
 	Teal & Orange	Verde-azulado e laranja
 	Telephone	Telefone
 	Teletext	Teletexto
@@ -2903,7 +2908,7 @@
 	WebVTT (.vtt)	WebVTT (.vtt)
 	Title	Título
 	Creator	Autor
-	Copyright	Copyright
+	Copyright	Direitos autorais
 	Image	Imagem
 	Frame Size	Tamanho do quadro
 	Match Source	Igual à origem
@@ -2938,7 +2943,7 @@
 	Name Overlay	Sobreposição de nome
 	Timecode Overlay	Sobreposição de timecode
 	Luma Min / Max	Luma mín. / máx.
-	Loudness Normalization	Normalização de loudness
+	Loudness Normalization	Normalização de sonoridade
 	True Peak Limit	Limite de pico real
 	Audio only	Somente áudio
 	Scaling	Escala
@@ -2992,6 +2997,12 @@
 	AIFF	AIFF
 	AIFF 48 kHz 16-bit	AIFF 48 kHz 16 bits
 	AIFF, stereo 48 kHz 16-bit PCM	AIFF, estéreo, PCM de 48 kHz e 16 bits
+	FLAC	FLAC
+	FLAC 48 kHz 24-bit	FLAC 48 kHz 24 bits
+	FLAC, stereo 48 kHz 24-bit, lossless	FLAC, estéreo 48 kHz 24 bits, sem perdas
+	FLAC (lossless)	FLAC (sem perdas)
+	Compression Level	Nível de compressão
+	0 fastest, 8 smallest	0 mais rápido, 8 menor tamanho
 	APV	APV
 	APV 422-10	APV 422-10
 	APV 422-12	APV 422-12
@@ -3009,7 +3020,7 @@
 	Application	Aplicativo
 	Apply Guide Template	Aplicar modelo de guias
 	Auto Save Now	Salvar automaticamente agora
-	Auto-Match Loudness	Correspondência automática de loudness
+	Auto-Match Loudness	Correspondência automática de volume
 	Avid DNxHR	Avid DNxHR
 	Avid DNxHR HQ	Avid DNxHR HQ
 	Avid DNxHR LB	Avid DNxHR LB
@@ -3501,6 +3512,7 @@
 	Click to select, or click in empty space and drag to marquee select. Use Shift, Alt, and Ctrl for other options.	Clique para selecionar, ou clique em um espaço vazio e arraste para selecionar com um retângulo. Use Shift, Alt e Ctrl para outras opções.
 	Click to zoom in; Alt-click to zoom out.	Clique para ampliar; Alt+clique para reduzir.
 	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	Arrastar: mover · Alt+clique: suave/canto · Ctrl+clique: excluir
+	Drag inward to round the corners	Arraste para dentro para arredondar os cantos
 	Include Alpha Channel	Incluir canal alfa
 	Sequence Settings	Configurações da sequência
 	Color Management	Gerenciamento de cores
@@ -3564,17 +3576,41 @@
 	Composite on the GPU when available	Compor na GPU quando disponível
 	Text to Speech	Texto para fala
 	Edit Narration	Editar narração
+
+	Dock Panel	Encaixar painel
+	Undock Panel	Desencaixar painel
+	Docking Action	Ação de encaixe
+	Resize floating panel	Redimensionar painel flutuante
 	Project Notes	Notas do projeto
+	Get Project Notes	Obter notas do projeto
+	Edit Project Notes	Editar notas do projeto
+	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	Notas deste projeto: tarefas, instruções, números de quadro… Salvas com o projeto.
+	Use Effect Shutter Angle	Usar o ângulo do obturador do efeito
 
 	Appearance Settings…	Configurações de aparência…
 
 	Add to favorites	Adicionar aos favoritos
 
 	Remove from favorites	Remover dos favoritos
-	Get Project Notes	Obter notas do projeto
-	Edit Project Notes	Editar notas do projeto
-	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	Notas deste projeto: tarefas, instruções, números de quadro… Salvas com o projeto.
-	Use Effect Shutter Angle	Usar o ângulo do obturador do efeito
-
-# The native macOS application menu (Settings…).
-	Settings	Preferências
+	Compression	Compressão
+	ZIP (1 scan line)	ZIP (1 linha de varredura)
+	ZIP (16 scan lines)	ZIP (16 linhas de varredura)
+	Safe graphics mode: {mode}	Modo gráfico seguro: {mode}
+	An earlier start failed with the default graphics. Updating the graphics driver usually fixes this.	Uma inicialização anterior falhou com os gráficos padrão. Atualizar o driver gráfico geralmente resolve isso.
+	Use Default Graphics	Usar gráficos padrão
+	The default graphics are used from the next start.	Os gráficos padrão serão usados a partir da próxima inicialização.
+	DirectX 12 only	Somente DirectX 12
+	software rendering	renderização por software
+	Label Color Presets	Predefinições de cores dos rótulos
+	{name} (Modified)	{name} (Modificado)
+	Revert to the preset's colors and names	Restaurar as cores e os nomes da predefinição
+	Import a preset file…	Importar um arquivo de predefinição…
+	Export the labels to a preset file…	Exportar os rótulos para um arquivo de predefinição…
+	Show the presets folder	Mostrar a pasta de predefinições
+	Delete this preset	Excluir esta predefinição
+	Opens in your web browser: {url}	Abre no seu navegador: {url}
+	Saves this session's log and shows it in your file manager.	Salva o registro desta sessão e o mostra no gerenciador de arquivos.
+	Shows a report on this computer.	Mostra um relatório sobre este computador.
+	Shows the version, community links and credits in a FilmCraft window.	Mostra a versão, os links da comunidade e os créditos em uma janela do FilmCraft.
+	Couldn't open your web browser	Não foi possível abrir seu navegador
+	Open this address in your browser yourself:	Abra este endereço manualmente no seu navegador:
