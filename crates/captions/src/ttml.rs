@@ -434,7 +434,12 @@ impl Out {
 }
 
 /// Collect a `<p>`'s (or `<span>`'s) text with `<i>`/`<b>`/`<u>` tags, collapsing whitespace.
-fn collect(n: roxmltree::Node, styles: &std::collections::HashMap<String, Fmt>, fmt: Fmt, out: &mut Out) {
+fn collect(n: roxmltree::Node, styles: &std::collections::HashMap<String, Fmt>, fmt: Fmt, out: &mut Out, depth: usize) {
+    // Inline `<span>` (or unknown wrapper) nesting is attacker-controlled too: stop descending
+    // rather than overflowing the stack; the cue keeps the text collected so far.
+    if depth > MAX_DEPTH {
+        return;
+    }
     for c in n.children() {
         if c.is_text() {
             for ch in c.text().unwrap_or("").chars() {
@@ -464,12 +469,12 @@ fn collect(n: roxmltree::Node, styles: &std::collections::HashMap<String, Fmt>, 
                     for t in &tags {
                         out.s.push_str(&format!("<{t}>"));
                     }
-                    collect(c, styles, f, out);
+                    collect(c, styles, f, out, depth + 1);
                     for t in tags.iter().rev() {
                         out.s.push_str(&format!("</{t}>"));
                     }
                 }
-                _ => collect(c, styles, fmt, out),
+                _ => collect(c, styles, fmt, out, depth + 1),
             }
         }
     }
@@ -504,7 +509,7 @@ pub fn parse(text: &str) -> Result<Document> {
     }
     // the body is a time container like a div: its begin offsets, and its end clips, everything inside
     let t = times(body, Scope { begin: Tick::ZERO, end: None }, tm, &mut doc);
-    walk(body, Scope { begin: t.begin.unwrap_or(Tick::ZERO), end: t.end }, &tm, &styles, &speakers, Fmt::default(), &mut doc);
+    walk(body, Scope { begin: t.begin.unwrap_or(Tick::ZERO), end: t.end }, 0, &tm, &styles, &speakers, Fmt::default(), &mut doc);
     doc.cues.sort_by_key(|c| (c.start, c.end));
     Ok(doc)
 }
@@ -556,13 +561,23 @@ fn times(n: roxmltree::Node, parent: Scope, tm: Timing, doc: &mut Document) -> T
     Times { begin, end, bad }
 }
 
-fn walk(n: roxmltree::Node, parent: Scope, tm: &Timing, styles: &HashMap<String, Fmt>, speakers: &HashMap<String, String>, fmt: Fmt, doc: &mut Document) {
+/// How deeply time containers (`walk`) and inline elements (`collect`) may nest. The AAF and OMF
+/// importers cap the same class of attacker-controlled recursion at 32 (`depth > 32`).
+const MAX_DEPTH: usize = 32;
+
+fn walk(n: roxmltree::Node, parent: Scope, depth: usize, tm: &Timing, styles: &HashMap<String, Fmt>, speakers: &HashMap<String, String>, fmt: Fmt, doc: &mut Document) {
     for c in n.children().filter(|c| c.is_element()) {
         let f = style_of(c, styles, fmt);
         match c.tag_name().name() {
             "div" => {
+                // A hostile file can nest `<div>` arbitrarily deep: without a cap this recursed
+                // once per level until the stack overflowed. Drop the subtree with a warning.
+                if depth > MAX_DEPTH {
+                    doc.warnings.push("div elements nested too deeply were skipped".into());
+                    continue;
+                }
                 let t = times(c, parent, *tm, doc);
-                walk(c, Scope { begin: t.begin.unwrap_or(parent.begin), end: t.end }, tm, styles, speakers, f, doc);
+                walk(c, Scope { begin: t.begin.unwrap_or(parent.begin), end: t.end }, depth + 1, tm, styles, speakers, f, doc);
             }
             "p" => {
                 let t = times(c, parent, *tm, doc);
@@ -582,7 +597,7 @@ fn walk(n: roxmltree::Node, parent: Scope, tm: &Timing, styles: &HashMap<String,
                         for t in &tags {
                             o.s.push_str(&format!("<{t}>"));
                         }
-                        collect(c, styles, f, &mut o);
+                        collect(c, styles, f, &mut o, 0);
                         for t in tags.iter().rev() {
                             o.s.push_str(&format!("</{t}>"));
                         }
@@ -599,7 +614,7 @@ fn walk(n: roxmltree::Node, parent: Scope, tm: &Timing, styles: &HashMap<String,
                             let sb = st.begin.unwrap_or(scope.begin);
                             if let (false, Some(se)) = (st.bad, st.end) {
                                 let mut o = Out { s: String::new(), pending: false };
-                                collect(sp, styles, style_of(sp, styles, f), &mut o);
+                                collect(sp, styles, style_of(sp, styles, f), &mut o, 0);
                                 let text = clean(&o.s);
                                 if se > sb && !text.is_empty() {
                                     doc.cues.push(Cue {
@@ -776,5 +791,26 @@ mod tests {
         assert_eq!(back.cues[0].speaker.as_deref(), Some("Ann Lee"));
         let d = write(&doc, Flavor::Dfxp, Some(r), "en");
         assert!(d.contains(DFXP_PROFILE) && d.contains("begin=\"00:00:01.001\""), "{d}");
+    }
+
+    #[test]
+    fn hostile_nesting_depth_is_capped_not_a_stack_overflow() {
+        // `<div>` (and inline `<span>`) nesting is attacker-controlled: without the depth cap
+        // `walk`/`collect` recursed once per nesting level until the stack overflowed.
+        let mut xml = String::from(r#"<tt xmlns="http://www.w3.org/ns/ttml"><body>"#);
+        xml.push_str(&"<div>".repeat(1000));
+        xml.push_str(r#"<p begin="1s" end="2s">deep</p>"#);
+        xml.push_str(&"</div>".repeat(1000));
+        xml.push_str("</body></tt>");
+        let doc = parse(&xml).expect("import survives hostile div nesting");
+        assert!(doc.cues.is_empty());
+        assert!(doc.warnings.iter().any(|w| w.contains("deeply")), "{:?}", doc.warnings);
+        let mut spans = String::from(r#"<tt xmlns="http://www.w3.org/ns/ttml"><body><div><p begin="1s" end="2s">"#);
+        spans.push_str(&"<span>".repeat(1000));
+        spans.push_str("deep");
+        spans.push_str(&"</span>".repeat(1000));
+        spans.push_str("</p></div></body></tt>");
+        let doc = parse(&spans).expect("import survives hostile span nesting");
+        assert!(doc.cues.is_empty());
     }
 }
