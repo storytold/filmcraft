@@ -181,6 +181,25 @@ pub(crate) fn import(text_in: &str, opts: &ImportOptions, report: &mut Report) -
     Ok(imp.b.finish())
 }
 
+// A -1 clip edge is defined by its immediately adjacent transition (Apple
+// xmeml Elements Catalog: clipitem/start, end; transitionitem/alignment).
+fn adjacent_transition_edge(c: Node<'_, '_>, before: bool, rate: FrameRate) -> std::result::Result<Option<(Tick, Tick)>, ()> {
+    let node = if before { c.prev_sibling_element() } else { c.next_sibling_element() };
+    let Some(t) = node.filter(|n| n.has_tag_name("transitionitem")) else { return Ok(None) };
+    let start = child_i64(t, "start").ok_or(())?;
+    let end = child_i64(t, "end").ok_or(())?;
+    if start < 0 || end <= start || rate.frame_at(rate.tick_of(end)) != end {
+        return Err(());
+    }
+    let cut = match child_text(t, "alignment").unwrap_or("center").to_ascii_lowercase().as_str() {
+        "center" | "" => start + (end - start) / 2,
+        "start" | "start-black" => start,
+        "end" | "end-black" => end,
+        _ => return Err(()),
+    };
+    Ok(Some((rate.tick_of(cut), rate.tick_of(start))))
+}
+
 impl<'a, 'i> Imp<'a, 'i, '_> {
     /// Walk `xmeml`, `project`, `bin` and `children` containers.
     fn walk_container(&mut self, n: Node<'a, 'i>, bin: Option<BinId>, top: bool) {
@@ -439,6 +458,18 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
 
         let start = child_i64(c, "start").unwrap_or(-1);
         let end = child_i64(c, "end").unwrap_or(-1);
+        if start < -1 || end < -1 {
+            self.report.warn(format!("clip \"{name}\" has an invalid negative edge; skipped"));
+            return None;
+        }
+        let incoming = if start == -1 { adjacent_transition_edge(c, true, seq_rate) } else { Ok(None) };
+        let outgoing = if end == -1 { adjacent_transition_edge(c, false, seq_rate) } else { Ok(None) };
+        let (Ok(incoming), Ok(outgoing)) = (incoming, outgoing) else {
+            self.report.warn(format!("clip \"{name}\" has an invalid adjacent transition; skipped"));
+            return None;
+        };
+        let start_edge = (start >= 0).then(|| seq_rate.tick_of(start)).or(incoming.map(|x| x.0));
+        let end_edge = (end >= 0).then(|| seq_rate.tick_of(end)).or(outgoing.map(|x| x.0));
         let in_f = child_i64(c, "in").unwrap_or(0);
         let out_f = child_i64(c, "out").unwrap_or(in_f);
         let src_in = child_i64(c, "pproTicksIn").map(Tick).unwrap_or_else(|| rate.tick_of(in_f));
@@ -473,19 +504,23 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 }
             }
         }
+        if !speed.is_finite() || speed <= 0.0 {
+            self.report.warn(format!("clip \"{name}\" has an unrepresentable speed; skipped"));
+            return None;
+        }
         let src_len = (src_out - src_in).abs();
-        let (start_t, dur) = match (start >= 0, end >= 0) {
-            (true, true) => (seq_rate.tick_of(start), seq_rate.tick_of(end) - seq_rate.tick_of(start)),
-            (true, false) => {
-                let d = if hold { rate.tick_of(out_f - in_f) } else { unscaled(src_len, speed) };
-                (seq_rate.tick_of(start), d)
+        let (start_t, dur) = match (start_edge, end_edge) {
+            (Some(s), Some(e)) => (s, e - s),
+            (Some(s), None) if start >= 0 => {
+                let d = if hold { rate.tick_of(out_f.saturating_sub(in_f)) } else { unscaled(src_len, speed) };
+                (s, d)
             }
-            (false, true) => {
-                let d = if hold { rate.tick_of(out_f - in_f) } else { unscaled(src_len, speed) };
-                (seq_rate.tick_of(end) - d, d)
+            (None, Some(e)) if end >= 0 => {
+                let d = if hold { rate.tick_of(out_f.saturating_sub(in_f)) } else { unscaled(src_len, speed) };
+                (e - d, d)
             }
-            (false, false) => {
-                self.report.warn(format!("clip \"{name}\" has neither start nor end; skipped"));
+            _ => {
+                self.report.warn(format!("clip \"{name}\" has neither resolvable start nor end; skipped"));
                 return None;
             }
         };
@@ -497,7 +532,28 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         if !has_remap && !hold && src_len != dur && src_len > Tick::ZERO {
             speed = (src_len.0 as f64 / dur.0 as f64 * 10_000.0).round() / 10_000.0;
         }
-        let mut ti = self.b.clip(item, kind, if name.is_empty() { "Clip" } else { &name }, start_t, dur, src_in.min(src_out));
+        // Resolve writes the incoming transition handle into in/out. Keep the
+        // same source frame at the cut; explicit Premiere ticks already name it.
+        let mut source_in = src_in.min(src_out);
+        if child_i64(c, "pproTicksIn").is_none()
+            && !hold
+            && let Some((cut, transition_start)) = incoming
+        {
+            let handle = cut - transition_start;
+            let offset = if speed == speed.round() && speed < 1e6 {
+                handle.0.checked_mul(speed as i64)
+            } else {
+                let value = (handle.0 as f64 * speed).round();
+                if value.is_finite() && value >= 0.0 && value < i64::MAX as f64 { Some(value as i64) } else { None }
+            };
+            let adjusted = offset.and_then(|offset| source_in.0.checked_add(if reverse { -offset } else { offset }));
+            let Some(adjusted) = adjusted.filter(|v| *v >= 0) else {
+                self.report.warn(format!("clip \"{name}\" has an unrepresentable transition source handle; skipped"));
+                return None;
+            };
+            source_in = Tick(adjusted);
+        }
+        let mut ti = self.b.clip(item, kind, if name.is_empty() { "Clip" } else { &name }, start_t, dur, source_in);
         ti.speed = speed;
         ti.reverse = reverse;
         if hold {
