@@ -1,0 +1,53 @@
+name: OpenSSF Scorecard
+
+on:
+  schedule:
+    - cron: '23 6 * * 1'
+  push:
+    branches: [main]
+    paths: [.github/workflows/scorecard.yml]
+
+# Publishing requires a dedicated job with only Scorecard-approved actions.
+# https://github.com/ossf/scorecard-action#workflow-restrictions
+permissions: {}
+
+concurrency:
+  group: scorecard-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  analysis:
+    name: Analyze repository security practices
+    if: github.repository == 'storytold/filmcraft' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+      id-token: write
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run Scorecard and publish results
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+      - name: Retain the report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scorecard-sarif
+          path: results.sarif
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload code scanning results
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
+        with:
+          sarif_file: results.sarif
+          category: openssf-scorecard

@@ -181,3 +181,17 @@ warning, never a failed build.
 | `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | notarization (`APPLE_PASSWORD` is an app-specific password) |
 | `WINDOWS_CERTIFICATE`, `WINDOWS_CERTIFICATE_PASSWORD` | Windows signing with a `.pfx` |
 | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT`, `AZURE_CERT_PROFILE` | Windows signing with Azure Trusted Signing |
+
+## Release notes and history
+
+The draft notes are generated from merged pull requests. `.github/release.yml`
+groups existing `enhancement`, `bug` and `documentation` labels, with a catch-all
+for other changes. Label PRs accurately, then review the generated draft for user
+impact, migration instructions and known limitations before publishing it.
+
+After publishing, add the version, release link and UTC publication date to
+[`CHANGELOG.md`](../CHANGELOG.md). Link the published notes instead of copying them
+into a second maintained list. Do not list an unmerged PR as a shipped change.
+
+Repository security-practice monitoring is documented in
+[Security scorecard](security-scorecard.md).
