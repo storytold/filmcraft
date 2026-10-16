@@ -558,6 +558,41 @@ fn crf_param_picks_constant_quality() {
     assert!(e.contains("crf"), "{e}");
 }
 
+/// Without a preset an H.264 export starts from the default preset, as Export mode and Quick
+/// Export do: its bitrate follows the frame size instead of `ExportSettings::default()`'s fixed
+/// 20 Mbit/s, ten times the default preset's for 720x480. Other formats keep the plain defaults,
+/// and a bitrate given in `settings` is the bitrate, as the flat `bitrateKbps` is.
+#[test]
+fn unpreset_h264_exports_start_from_the_default_preset() {
+    use filmcraft_export::ExportSettings;
+    use filmcraft_export::presets::{DEFAULT_PRESET, find_builtin};
+    use filmcraft_time::FrameRate;
+    let s = demo();
+    let settings = |p: &Value| crate::export_tools::settings_from_params(&s, p, "file.exportMedia").map(|(_, st)| st).unwrap();
+    let target = |st: &ExportSettings| st.resolve(720, 480, FrameRate::FPS_29_97, 48_000).target_kbps;
+    let preset = find_builtin(DEFAULT_PRESET).unwrap().settings;
+    for p in [json!({"path": "x.mp4"}), json!({"path": "x.mp4", "format": "h264"}), json!({"path": "x.mp4", "settings": {"format": "h264"}})] {
+        let st = settings(&p);
+        assert_eq!(st.adaptive_bitrate, preset.adaptive_bitrate, "{p}");
+        // 720 x 480 x 29.97 fps x 0.2 bits per pixel, not 20,000
+        assert_eq!(target(&st), 2072, "{p}");
+    }
+    // other formats are unchanged: a QuickTime export keeps its own audio default
+    let prores = settings(&json!({"path": "x.mov", "format": "prores"}));
+    assert_eq!(prores.audio, ExportSettings::default().audio);
+    assert_eq!(prores.adaptive_bitrate, None);
+    // a bitrate asked for is used: flat, in `settings`, and in `settings` over a preset
+    for p in [
+        json!({"path": "x.mp4", "bitrateKbps": 5000}),
+        json!({"path": "x.mp4", "settings": {"bitrateKbps": 5000}}),
+        json!({"path": "x.mp4", "preset": DEFAULT_PRESET, "settings": {"bitrateKbps": 5000}}),
+    ] {
+        assert_eq!(target(&settings(&p)), 5000, "{p}");
+    }
+    // and an adaptive bitrate in `settings` is still adaptive
+    assert_eq!(target(&settings(&json!({"path": "x.mp4", "settings": {"bitrateKbps": 5000, "adaptiveBitrate": 0.1}}))), 1036);
+}
+
 #[test]
 fn exr_compression_param_is_parsed_and_defaults_to_none() {
     use filmcraft_export::ExrCompression::{None as Plain, Rle, Zip, Zips};
