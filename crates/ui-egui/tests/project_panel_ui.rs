@@ -734,6 +734,31 @@ fn media_browser_navigation_import_and_columns() {
 }
 
 #[test]
+fn media_browser_list_columns_resize_by_their_right_edge() {
+    let dir = media_dir("resize");
+    let mut d = Driver::with(Session::default());
+    d.ok("ui.panel.show", json!({"panel": "MediaBrowser"}));
+    d.ok("ui.set", json!({"focused": "MediaBrowser"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    d.exec("mediaBrowser.navigate", json!({"path": dir.to_string_lossy()}));
+    d.frames(3);
+    d.wait_for("mediaBrowser.entry.b-roll.wav");
+    let name0 = d.rect("mediaBrowser.header.Name");
+    let next0 = d.rect("mediaBrowser.header.Frame Rate");
+    // drag the Name header's right edge 60 points to the right (saved in preferences)
+    let (ex, ey) = (name0[0] + name0[2] - 1.0, name0[1] + name0[3] / 2.0);
+    d.ok("ui.drag", json!({"from": {"x": ex, "y": ey}, "to": {"x": ex + 60.0, "y": ey}}));
+    d.frames(3);
+    let name1 = d.rect("mediaBrowser.header.Name");
+    let next1 = d.rect("mediaBrowser.header.Frame Rate");
+    assert!(name1[2] > name0[2] + 30.0, "Name {} → {}", name0[2], name1[2]);
+    assert!(next1[0] > next0[0] + 30.0, "Frame Rate starts at {} → {}", next0[0], next1[0]);
+    let saved = d.app().session.prefs.media_browser.column_widths.get("Name").copied().unwrap_or_default();
+    assert!((saved - name1[2]).abs() < 1.0, "saved {saved}, drawn {}", name1[2]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn media_browser_drag_imports_into_the_project_panel() {
     let dir = media_dir("drag");
     let mut session = Session::default();

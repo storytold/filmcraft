@@ -507,7 +507,8 @@ fn finish_drag(app: &mut FilmcraftApp, ui: &egui::Ui) {
 fn list(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Entry], columns: &[String]) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
-    let widths: Vec<f32> = columns.iter().map(|c| if c == "Name" { 220.0 } else { 110.0 }).collect();
+    let saved = &app.session.prefs.media_browser.column_widths;
+    let widths: Vec<f32> = columns.iter().map(|c| saved.get(c).copied().unwrap_or(if c == "Name" { 220.0 } else { 110.0 })).collect();
     let total: f32 = widths.iter().sum::<f32>() + 8.0;
     let header = Rect::from_min_size(r.min, vec2(r.width(), 20.0));
     let body = Rect::from_min_max(pos2(r.min.x, header.max.y), r.max);
@@ -586,6 +587,20 @@ fn list(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Entry], c
                     ui.close();
                 }
             });
+        }
+        // resize handle on the column's right edge, as in the Project panel's List view
+        let hr = Rect::from_center_size(pos2(cr.max.x, header.center().y), vec2(8.0, 20.0));
+        if hr.intersects(header) {
+            let resp = ui.interact(hr.intersect(header), egui::Id::new(("mb-colsize", c)), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeColumn);
+            app.auto.add(&format!("mediaBrowser.resize.{c}"), hr.intersect(header), "Resize column");
+            hp.line_segment([pos2(cr.max.x, header.min.y + 4.0), pos2(cr.max.x, header.max.y - 4.0)], Stroke::new(1.0, t.separator));
+            if resp.dragged() {
+                app.session.prefs.media_browser.column_widths.insert(c.clone(), (w + resp.drag_delta().x).clamp(30.0, 800.0));
+            }
+            if resp.drag_stopped() {
+                let w = app.session.prefs.media_browser.column_widths.get(c).copied().unwrap_or(*w);
+                exec(app, &ctx, "mediaBrowser.settings", json!({"columnWidths": {c: w}}));
+            }
         }
         x += w;
     }

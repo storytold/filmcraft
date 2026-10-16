@@ -131,6 +131,18 @@ fn file_type_filter() {
 }
 
 #[test]
+fn column_widths_persist_clamped() {
+    let mut s = session();
+    s.execute("mediaBrowser.settings", json!({"columnWidths": {"name": 300, "Size": 5}})).unwrap();
+    s.execute("mediaBrowser.settings", json!({"columnWidths": {"Frame Rate": 90}})).unwrap();
+    let w = &s.prefs.media_browser.column_widths;
+    assert_eq!((w.get("Name"), w.get("Size"), w.get("Frame Rate")), (Some(&300.0), Some(&30.0), Some(&90.0)));
+    assert!(s.execute("mediaBrowser.settings", json!({"columnWidths": {"Colour": 100}})).is_err());
+    assert!(s.execute("mediaBrowser.settings", json!({"columnWidths": {"Name": "wide"}})).is_err());
+    assert_eq!(s.prefs.media_browser.column_widths.len(), 3);
+}
+
+#[test]
 fn navigation_back_forward_up_and_recent() {
     let mut s = session();
     s.execute("mediaBrowser.navigate", json!({"path": "/home/me/Movies"})).unwrap();
