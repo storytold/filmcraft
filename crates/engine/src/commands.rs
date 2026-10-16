@@ -592,6 +592,23 @@ pub fn with_links(s: &Session, clips: &[ClipId]) -> Vec<ClipId> {
     out
 }
 
+/// Targets of a regular edge drag: the selection when the grabbed clip belongs to it,
+/// plus linked partners. Other trim tools retain their single-edit behavior.
+pub fn trim_targets(s: &Session, clip: ClipId, mode: TrimMode, selection: bool) -> Result<Vec<ClipId>> {
+    let selected = selection && mode == TrimMode::Regular && s.state.selection.contains(&clip);
+    let ids = if selected { s.state.selection.as_slice() } else { std::slice::from_ref(&clip) };
+    if ids.len() > 10_000 {
+        return Err(bad("timeline.trim", "at most 10000 selected clips"));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let ids: Vec<_> = ids.iter().copied().filter(|id| seen.insert(*id)).collect();
+    let targets = with_links(s, &ids);
+    if targets.len() > 10_000 {
+        return Err(bad("timeline.trim", "at most 10000 clips including linked partners"));
+    }
+    Ok(targets)
+}
+
 /// The delta a trim of `clips` (a clip and its linked partners) can apply together: `delta`
 /// clamped by each one's media and neighbours.
 fn clamp_trim_linked(q: &filmcraft_project::Sequence, clips: &[ClipId], edge: Edge, mode: TrimMode, delta: Tick, ctx: &edit::EditCtx) -> Result<Tick> {
@@ -619,12 +636,17 @@ fn clamp_trim_linked(q: &filmcraft_project::Sequence, clips: &[ClipId], edge: Ed
 /// trim drag shows this, so the edge stops at the end of the media or the neighbouring clip
 /// instead of following the pointer past it (#653).
 pub fn trim_delta(s: &Session, clip: ClipId, edge: Edge, mode: TrimMode, delta: Tick) -> Result<Tick> {
+    trim_selection_delta(s, clip, edge, mode, delta, false)
+}
+
+/// Common constrained delta for the same targets used by `timeline.trim`.
+pub fn trim_selection_delta(s: &Session, clip: ClipId, edge: Edge, mode: TrimMode, delta: Tick, selection: bool) -> Result<Tick> {
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let durations = |id: ItemId| crate::media_duration(&s.project, &s.media, id);
     let starts = |id: ItemId| crate::media_start(&s.project, id);
     let mut next = s.project.next_id;
     let ctx = edit::EditCtx { next_id: &mut next, media_duration: &durations, media_start: &starts, min_duration: q.settings.frame_rate.frame_duration() };
-    clamp_trim_linked(q, &with_links(s, &[clip]), edge, mode, delta, &ctx)
+    clamp_trim_linked(q, &trim_targets(s, clip, mode, selection)?, edge, mode, delta, &ctx)
 }
 
 /// Sequence settings matching a media clip (New Sequence From Clip, New Sequence from an item):
@@ -2635,7 +2657,7 @@ fn build() -> Vec<CommandSpec> {
             "Trim Edit",
             [],
             None,
-            r#"{"clip":id,"edge":"in|out","mode":"regular|ripple","delta":ticks|"deltaFrames":i64}"#,
+            r#"{"clip":id,"edge":"in|out","mode":"regular|ripple","delta":ticks|"deltaFrames":i64,"selection":bool?}"#,
             has_seq,
             |s, p| {
                 let c = clip_p(p, "clip").ok_or_else(|| bad("timeline.trim", "need `clip`"))?;
@@ -2647,7 +2669,12 @@ fn build() -> Vec<CommandSpec> {
                     .map(Tick)
                     .or_else(|| p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)))
                     .unwrap_or_default();
-                let clips = with_links(s, &[c]);
+                let selection = match p.get("selection") {
+                    None => false,
+                    Some(Value::Bool(on)) => *on,
+                    _ => return Err(bad("timeline.trim", "`selection` must be a boolean")),
+                };
+                let clips = trim_targets(s, c, mode, selection)?;
                 let applied = s.edit_sequence(if mode == TrimMode::Ripple { "Ripple Trim" } else { "Trim" }, |q, ctx, st| {
                     if q.find_item(c).is_some_and(|(t, _)| q.track(t).is_some_and(|tr| tr.locked)) {
                         return Err(edit::EditError::Locked.into());

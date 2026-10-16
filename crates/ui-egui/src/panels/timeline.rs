@@ -1844,9 +1844,11 @@ fn preview_drag(app: &FilmcraftApp, seq: &Sequence, out: &mut HashMap<ClipId, (T
                 out.insert(*clip, (it.start, it.duration + *delta, None));
             }
         }
-        Drag::Trim { clip, edge, delta, .. } => {
-            for c in filmcraft_engine::commands::with_links(&app.session, &[*clip]) {
-                if let Some((_, it)) = seq.find_item(c) {
+        Drag::Trim { clip, edge, mode, delta, .. } => {
+            for c in filmcraft_engine::commands::trim_targets(&app.session, *clip, *mode, true).unwrap_or_default() {
+                if let Some((tid, it)) = seq.find_item(c)
+                    && seq.track(tid).is_some_and(|tr| !tr.locked)
+                {
                     moved(it, *edge, *delta);
                 }
             }
@@ -2600,9 +2602,16 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             }
             Drag::Trim { clip, edge, mode, from, .. } => seq.find_item(clip).map(|(_, it)| {
                 let base = if edge == filmcraft_edit::Edge::In { it.start } else { it.end() };
-                let target = snap(app, seq, layout, rate.snap_nearest(base + (t_here - from)), &[clip]);
-                // stop at the end of the media (or the neighbour), as the trim on release will (#653)
-                let delta = filmcraft_engine::commands::trim_delta(&app.session, clip, edge, mode, target - base).unwrap_or(target - base);
+                let targets = filmcraft_engine::commands::trim_targets(&app.session, clip, mode, true).unwrap_or_default();
+                let target = snap(app, seq, layout, rate.snap_nearest(base + (t_here - from)), &targets);
+                // All selected edges stop together at the most restrictive media/neighbor limit.
+                let delta = match filmcraft_engine::commands::trim_selection_delta(&app.session, clip, edge, mode, target - base, true) {
+                    Ok(delta) => delta,
+                    Err(e) => {
+                        app.ui.status = e.to_string();
+                        Tick::ZERO
+                    }
+                };
                 Drag::Trim { clip, edge, mode, delta, from }
             }),
             Drag::Remix { clip, from, .. } => seq.find_item(clip).map(|(_, it)| {
@@ -2693,7 +2702,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 }
                 Drag::Trim { clip, edge, mode, delta, .. } if delta != Tick::ZERO => Some(app.session.execute(
                     "timeline.trim",
-                    json!({"clip": clip.0, "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"}, "mode": if mode == filmcraft_edit::TrimMode::Ripple {"ripple"} else {"regular"}, "delta": delta.0}),
+                    json!({"clip": clip.0, "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"}, "mode": if mode == filmcraft_edit::TrimMode::Ripple {"ripple"} else {"regular"}, "delta": delta.0, "selection": true}),
                 )),
                 Drag::Stretch { clip, edge, delta, .. } if delta != Tick::ZERO => Some(app.session.execute("timeline.rateStretch", json!({"clip": clip.0, "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"}, "delta": delta.0}))),
                 Drag::Remix { clip, delta, .. } if delta != Tick::ZERO => {
