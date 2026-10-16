@@ -356,3 +356,7 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
 }
 
 pub(crate) mod transcript_cache;
+
+pub(crate) mod media_search;
+
+pub(crate) mod visual_search;

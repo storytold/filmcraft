@@ -49,6 +49,7 @@ filmcraft-interchange = { path = "crates/interchange" }
 filmcraft-text = { path = "crates/text" }
 filmcraft-captions = { path = "crates/captions" }
 filmcraft-speech = { path = "crates/speech" }
+filmcraft-vision = { path = "crates/vision" }
 filmcraft-tts = { path = "crates/tts" }
 filmcraft-tts-text = { path = "crates/tts-text" }
 filmcraft-render = { path = "crates/render" }

@@ -1,6 +1,6 @@
 # Parity with Adobe Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (full re-measure against Premiere Pro 2026 26.5.2; replaces the scorecard and estimate that lived in ROADMAP.md) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** major (full re-measure against Premiere Pro 2026 26.5.2; replaces the scorecard and estimate that lived in ROADMAP.md) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
 
 The authoritative assessment of how close FilmCraft is to Premiere Pro, and how much work is left.
 [ROADMAP.md](../ROADMAP.md) summarizes it; [gaps.md](gaps.md) lists every shortfall one at a time.
@@ -164,7 +164,11 @@ Evidence for the cross-cutting rows:
 - **AI ~25%.** Speech to text exists (local Whisper) but is off in release builds; text-to-speech
   narration with Kokoro-82M landed 10-10 (#278, beyond Premiere); scene edit detection; Enhance
   Speech and Auto Reframe are DSP / heuristics. Missing: Object Mask (#406, #694), Generative
-  Extend, media-intelligence search, caption translation, auto colour.
+  Extend, full media-intelligence search, caption translation, auto colour. Project-wide source
+  transcript phrase search and optional local CLIP sampled visual retrieval now provide a Search
+  workflow with source navigation ([visual-search.md](visual-search.md)); exact shot boundaries,
+  multilingual retrieval and broad real-world accuracy remain unverified. Readiness percentages
+  above have not been re-measured for this contribution.
 
 ## Three readiness numbers
 

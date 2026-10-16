@@ -1,0 +1,24 @@
+[package]
+name = "filmcraft-vision"
+description = "Optional local text/image embeddings for media search"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+clip = ["dep:candle-core", "dep:candle-nn", "dep:tokenizers", "dep:image"]
+
+[dependencies]
+candle-core = { version = "0.9", default-features = false, optional = true }
+candle-nn = { version = "0.9", default-features = false, optional = true }
+tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"], optional = true }
+image = { version = "0.25", default-features = false, optional = true }
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+serde_json = { workspace = true }
