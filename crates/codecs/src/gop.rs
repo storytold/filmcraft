@@ -272,7 +272,7 @@ struct Pool {
     hard_decoders: usize,
     /// Bytes of the frames the caches hold.
     bytes: AtomicUsize,
-    budget: usize,
+    budget: AtomicUsize,
 }
 
 /// The part of a [`GopCache`] its pool reaches.
@@ -308,7 +308,7 @@ impl Pool {
             recent: idle,
             hard_decoders: max_decoders,
             bytes: AtomicUsize::new(0),
-            budget,
+            budget: AtomicUsize::new(budget),
         }
     }
 
@@ -395,7 +395,7 @@ impl Pool {
     /// budget. Caches in use keep theirs (each within its own budget): a frame evicted before it is shown costs a
     /// re-decode from the keyframe.
     fn trim_frames(&self, me: &Shared) {
-        let over = || self.bytes.load(Ordering::Relaxed) > self.budget;
+        let over = || self.bytes.load(Ordering::Relaxed) > self.budget.load(Ordering::Relaxed);
         if !over() {
             return;
         }
@@ -408,6 +408,16 @@ impl Pool {
             }
         }
     }
+}
+
+/// Dynamically set the process-wide decoded frame cache budget.
+pub fn set_frame_budget(bytes: usize) {
+    Pool::global().budget.store(bytes, Ordering::Relaxed);
+}
+
+/// The process-wide decoded frame cache budget.
+pub fn frame_budget() -> usize {
+    Pool::global().budget.load(Ordering::Relaxed)
 }
 
 /// Caches that hold a decoder right now, process-wide (`perf.stats`).
@@ -519,7 +529,19 @@ impl GopCache {
             pool: pool.clone(),
         });
         pool.register(&shared);
-        Self { shared, explicit_color, rotation: 0, crop: None, budget: 384 << 20 }
+        let per_cache = (Pool::global().budget.load(Ordering::Relaxed) / 3).clamp(32 << 20, 384 << 20);
+        Self { shared, explicit_color, rotation: 0, crop: None, budget: per_cache }
+    }
+
+    /// Set an explicit byte budget for this source's decoded frame cache.
+    pub fn with_budget(mut self, bytes: usize) -> Self {
+        self.budget = bytes;
+        self
+    }
+
+    /// Update this source's decoded frame cache budget.
+    pub fn set_budget(&mut self, bytes: usize) {
+        self.budget = bytes;
     }
 
     /// Turn every decoded frame clockwise by `quarter_turns` × 90° (the container's display

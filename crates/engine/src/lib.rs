@@ -494,7 +494,7 @@ impl Default for Session {
 
 impl Session {
     pub fn new(services: Arc<dyn Services>) -> Self {
-        Self {
+        let s = Self {
             project: Arc::new(Project::new("Untitled")),
             history: History { limit: 200, ..Default::default() },
             revision: 1,
@@ -539,7 +539,16 @@ impl Session {
             exec_depth: 0,
             media_stamps: Default::default(),
             media_scan: None,
-        }
+        };
+        s.apply_memory_prefs();
+        s
+    }
+
+    /// Apply the active memory preferences to the GOP cache and frame buffer shelves.
+    pub fn apply_memory_prefs(&self) {
+        filmcraft_codecs::set_frame_budget(self.prefs.memory.gop_cache_budget_bytes());
+        let (u8_b, u16_b, f32_b) = self.prefs.memory.pool_shelves_bytes();
+        filmcraft_frame::pool::set_shelves_budget(u8_b, u16_b, f32_b);
     }
 
     /// Advance stepped jobs ([`SteppedJob`]) for up to `budget` (at least one step). Returns
@@ -583,6 +592,7 @@ impl Session {
         self.export_presets.set_dir(&cfg.data_dir);
         self.prefs_path = Some(prefs_path);
         self.apply_media_cache();
+        self.apply_memory_prefs();
         self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone())?);
         self.sync_persistence();
         Ok(())
