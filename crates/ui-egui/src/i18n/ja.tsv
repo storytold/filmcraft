@@ -1096,6 +1096,10 @@
 	Show All	すべてを表示
 	Post-Fader	ポストフェーダー
 	Remove Effect	エフェクトを削除
+	Copy Effect	エフェクトをコピー
+	Cut Effect	エフェクトを切り取り
+	Paste Effects	エフェクトを貼り付け
+	Delete Keyframes	キーフレームを削除
 	Fill the slots above first	先に上のスロットを埋めてください
 	pre 	プリ 
 	Pre-Fader	プリフェーダー

@@ -269,6 +269,13 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     if let Some(r) = crate::panels::keyboard::route(app, ctx, id, &params) {
         return r;
     }
+    if let Some(r) = crate::panels::effect_controls::route(app, id, &params) {
+        if r.is_ok() && matches!(id, "edit.copy" | "edit.cut") {
+            remember_stale_clipboard_media(app);
+            put_clip_names_on_system_clipboard(app, ctx);
+        }
+        return r;
+    }
     if !targets_source(app, &params)
         && let Some(r) = crate::panels::trim_monitor::route_transport(app, ctx, id)
     {
@@ -621,9 +628,10 @@ fn clipboard_media_key(media: &crate::ClipboardMedia) -> String {
 /// Copied clips live in the session, but on Windows and Linux Ctrl+V only reaches the app when the
 /// system clipboard holds text (an empty clipboard sends no paste at all, #199). Put the copied
 /// clip names there, like other editors put their own data on the clipboard, so Ctrl+V pastes the
-/// clips right after a copy.
+/// clips right after a copy. Copied effects put their names there for the same reason.
 fn put_clip_names_on_system_clipboard(app: &FilmcraftApp, ctx: &egui::Context) {
-    let names: Vec<&str> = app.session.state.clipboard.iter().map(|(_, _, c)| c.name.as_str()).collect();
+    let effects = app.session.state.effect_clipboard.iter().flat_map(|c| c.effects.iter()).map(|e| e.def().map_or(e.effect.as_str(), |d| d.name));
+    let names: Vec<&str> = app.session.state.clipboard.iter().map(|(_, _, c)| c.name.as_str()).chain(effects).collect();
     if names.is_empty() {
         return;
     }

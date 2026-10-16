@@ -122,6 +122,13 @@ fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
     if s.state.clipboard.is_empty() { Err("clipboard is empty".into()) } else { Ok(()) }
 }
+/// Paste: copied clips, or copied effects and clips to put them on.
+fn has_paste(s: &Session) -> std::result::Result<(), String> {
+    if s.state.effect_clipboard.is_some() {
+        return crate::effect_clipboard::has_effects(s).and_then(|()| has_selection(s).map_err(|_| "select the clips to paste the effect on".into()));
+    }
+    has_clipboard(s)
+}
 
 /// The ids a caller named under `many` (a list) or `one` (a single id), when the command documents
 /// that key as ids (`"clips":[id]`, `"item":id`); `None` when it named none.
@@ -1628,7 +1635,10 @@ fn build() -> Vec<CommandSpec> {
             copy_selection(s);
             Ok(json!({"copied": s.state.clipboard.len()}))
         }),
-        cmd!("edit.paste", "Paste", ["Edit"], Some("Cmd+V"), "{}", has_clipboard, |s, _| paste(s, false)),
+        cmd!("edit.paste", "Paste", ["Edit"], Some("Cmd+V"), "{}", has_paste, |s, _| {
+            // effects copied in Effect Controls go on the selected clips
+            if s.state.effect_clipboard.is_some() { crate::effect_clipboard::paste(s, &json!({})) } else { paste(s, false) }
+        }),
         cmd!("edit.pasteInsert", "Paste Insert", ["Edit"], Some("Cmd+Shift+V"), "{}", has_clipboard, |s, _| paste(s, true)),
         cmd!("edit.clear", "Clear", ["Edit"], Some("Backspace"), r#"{"clips":[id]?}"#, has_any_selection, |s, p| {
             if p.get("clips").is_none() && p.get("clip").is_none() && s.state.selection.is_empty() {
@@ -3405,6 +3415,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::multicam::commands());
     v.extend(crate::essential_sound::commands());
     v.extend(crate::color::commands());
+    v.extend(crate::effect_clipboard::commands());
     v.extend(crate::graphics::commands());
     v.extend(crate::graphic_templates::commands());
     v.extend(crate::shortcuts::commands());
@@ -3635,6 +3646,7 @@ fn copy_selection(s: &mut Session) {
     }
     s.state.clipboard = clip;
     s.state.clipboard_markers = markers;
+    s.state.effect_clipboard = None;
 }
 
 fn paste(s: &mut Session, insert: bool) -> Result<Value> {

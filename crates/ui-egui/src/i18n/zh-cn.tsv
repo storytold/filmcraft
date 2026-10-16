@@ -1090,6 +1090,10 @@
 	Show All	全部显示
 	Post-Fader	后推子
 	Remove Effect	移除效果
+	Copy Effect	复制效果
+	Cut Effect	剪切效果
+	Paste Effects	粘贴效果
+	Delete Keyframes	删除关键帧
 	Fill the slots above first	请先填满上方的插槽
 	pre 	前
 	Pre-Fader	前推子

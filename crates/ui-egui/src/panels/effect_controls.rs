@@ -125,6 +125,52 @@ fn selected_clips(app: &FilmcraftApp) -> Vec<(ClipId, TrackItem, TrackKind)> {
     out
 }
 
+/// Edit ▸ Cut / Copy / Clear with Effect Controls focused act on what is selected there, as in
+/// Premiere: the selected keyframes (Clear) or the selected effect, never the Timeline clip. The
+/// other delete commands a key can be bound to (Ripple Delete, the Project panel's Clear) count as
+/// Clear here, so no delete key removes a clip or a project item from Effect Controls. With nothing
+/// selected in the panel they do nothing. Paste needs no routing: `edit.paste` puts copied effects
+/// on the selected clips wherever focus is. Calls with parameters (agents naming their targets) are
+/// left alone.
+pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
+    if app.ui.focused != crate::dock::PanelKind::EffectControls
+        || !matches!(id, "edit.cut" | "edit.copy" | "edit.clear" | "edit.rippleDelete" | "project.delete")
+        || !params.as_object().is_none_or(|m| m.is_empty())
+    {
+        return None;
+    }
+    let id = if matches!(id, "edit.rippleDelete" | "project.delete") { "edit.clear" } else { id };
+    let shown = selected_clips(app);
+    let r = if id == "edit.clear" && !app.ui.keyframe_selection.is_empty() {
+        let keys = serde_json::to_value(&app.ui.keyframe_selection).unwrap_or_default();
+        let r = app.session.execute("effects.deleteKeyframes", json!({"keyframes": keys}));
+        if r.is_ok() {
+            app.ui.keyframe_selection.clear();
+        }
+        r
+    } else {
+        let Some(sel) = app.session.state.selected_effect.clone().filter(|e| shown.iter().any(|(c, ..)| *c == e.clip)) else {
+            let what = if id == "edit.clear" { "an effect or keyframes" } else { "an effect" };
+            let e = format!("select {what} in Effect Controls first");
+            app.ui.status = e.clone();
+            return Some(Err(e));
+        };
+        let index = shown.iter().find(|(c, ..)| *c == sel.clip).and_then(|(_, it, _)| sel.index(&it.effects));
+        let Some(index) = index else { return Some(Err("the selected effect is gone".into())) };
+        let target = json!({"clip": sel.clip.0, "effect": index});
+        match id {
+            "edit.copy" => app.session.execute("effects.copy", target),
+            "edit.cut" => app.session.execute("effects.cut", target),
+            _ => app.session.execute("effects.remove", json!({"clip": sel.clip.0, "index": index})),
+        }
+    };
+    let r = r.map_err(|e| e.to_string());
+    if let Err(e) = &r {
+        app.ui.status = e.clone();
+    }
+    Some(r)
+}
+
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let clips = selected_clips(app);
