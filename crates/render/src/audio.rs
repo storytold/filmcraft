@@ -1,5 +1,6 @@
 //! Clip-level audio: clip gain → clip effects → Volume / Channel Volume / Panner, audio transitions
-//! and speed changes (varispeed resampling), summed per track. The track/submix/Mix graph that
+//! and speed changes (varispeed resampling, or a time stretch that keeps the pitch with Maintain
+//! Audio Pitch, see [`crate::stretch`]), summed per track. The track/submix/Mix graph that
 //! consumes it is [`crate::mixer`].
 //!
 //! Stereo, mono and adaptive tracks carry two channels. 5.1 tracks carry six (L, R, C, LFE, Ls,
@@ -324,7 +325,7 @@ fn nested_mix(project: &Project, nested: &Sequence, m0: i64, len: usize, sr: u32
 
 /// A clip's source sound: `len` samples from sample `m0` of the source's own time, at the
 /// sequence's sample rate (a media source's audio, or a nested sequence's mix).
-type SourceAudio<'a> = &'a dyn Fn(i64, usize) -> Option<AudioBuffer>;
+pub(crate) type SourceAudio<'a> = &'a dyn Fn(i64, usize) -> Option<AudioBuffer>;
 
 /// The clip's audio after speed/reverse and clip effects (before clip gain, Volume and Panner) for
 /// timeline samples `[a0, a0 + n)`, `w` channels.
@@ -392,6 +393,9 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
         remixed
     } else if (speed - 1.0).abs() < 1e-9 && !item.reverse {
         src(src_start_ticks.to_units_floor(sr as i64), n)
+    } else if let Some(stretched) = crate::stretch::applies(item, speed).then(|| crate::stretch::read(item, src, a0, n, sr)).flatten() {
+        // Maintain Audio Pitch: time-stretched (falls back to varispeed for a span too long to read)
+        Some(stretched)
     } else {
         // varispeed: read a longer span and resample linearly
         let span = ((n as f64) * speed).ceil() as usize + 2;

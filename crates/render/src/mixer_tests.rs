@@ -749,3 +749,75 @@ fn a_nest_trimmed_in_starts_later_in_its_sequence() {
     let mix = mix_graph(&p, p.sequence(outer).unwrap(), start, 4800, &map, None);
     assert!(worst(&mix, start, 8, |t| tone.at(t + 3.0)) < 0.01);
 }
+
+// ---- Speed/Duration ▸ Maintain Audio Pitch
+
+/// Positive-going zero crossings per second of the mix's left channel.
+fn pitch_hz(mix: &AudioBuffer) -> f64 {
+    let x = &mix.channels[0];
+    let n = x.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
+    n as f64 * 48_000.0 / x.len() as f64
+}
+
+fn rms(x: &[f32]) -> f64 {
+    (x.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>() / x.len().max(1) as f64).sqrt()
+}
+
+/// The 500 Hz nest of [`nested_tone`] at `speed` (reversed with `reverse`), with Maintain Audio
+/// Pitch on or off. Each test picks its own speed and length: chains are kept per clip.
+fn tone_at_speed(speed: f64, reverse: bool, maintain_pitch: bool) -> (Project, ItemId, SourceMap) {
+    let (mut p, outer, map, _) = nested_tone(48_000);
+    let nest = &mut p.sequence_mut(outer).unwrap().audio_tracks[0].items[0];
+    nest.speed = speed;
+    nest.reverse = reverse;
+    nest.maintain_pitch = maintain_pitch;
+    nest.duration = Tick((10.0 / speed * TICKS_PER_SECOND as f64) as i64);
+    (p, outer, map)
+}
+
+#[test]
+fn maintain_audio_pitch_keeps_a_faster_or_slower_clip_at_its_pitch() {
+    for (speed, reverse) in [(2.0, false), (0.5, false), (1.5, true), (3.0, false)] {
+        let (p, outer, map) = tone_at_speed(speed, reverse, true);
+        let start = 48_000 + 123;
+        let mix = mix_graph(&p, p.sequence(outer).unwrap(), start, 24_000, &map, None);
+        let hz = pitch_hz(&mix);
+        assert!((hz - 500.0).abs() < 10.0, "{speed}× (reversed: {reverse}) with Maintain Audio Pitch: {hz} Hz");
+        // in-phase grains: the level of the tone (0.5 peak), with no dips at the crossfades
+        let level = rms(&mix.channels[0]);
+        assert!((level - 0.5 / 2f64.sqrt()).abs() < 0.02, "{speed}×: rms {level}");
+        assert!(mix.channels.iter().flatten().all(|s| s.is_finite() && s.abs() <= 0.51));
+    }
+    // without it the clip is resampled: an octave up at double speed
+    let (p, outer, map) = tone_at_speed(2.0, false, false);
+    let mix = mix_graph(&p, p.sequence(outer).unwrap(), 48_000, 24_000, &map, None);
+    assert!((pitch_hz(&mix) - 1000.0).abs() < 10.0, "{}", pitch_hz(&mix));
+}
+
+#[test]
+fn a_time_stretched_clip_sounds_the_same_however_playback_cuts_its_reads() {
+    let (p, outer, map) = tone_at_speed(1.25, false, true);
+    let seq = p.sequence(outer).unwrap();
+    let start = 48_000 * 2 + 7;
+    let whole = mix_graph(&p, seq, start, 30_000, &map, None);
+    // the same samples read in playback-sized blocks, and in odd sizes, continue one chain
+    for block in [1024usize, 997, 4096] {
+        let mut cut = vec![Vec::new(), Vec::new()];
+        let mut at = start;
+        while (at - start) < 30_000 {
+            let n = block.min(30_000 - (at - start) as usize);
+            let b = mix_graph(&p, seq, at, n, &map, None);
+            for (c, ch) in cut.iter_mut().zip(&b.channels) {
+                c.extend_from_slice(ch);
+            }
+            at += n as i64;
+        }
+        for (a, b) in whole.channels.iter().zip(&cut) {
+            let diff = a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max);
+            assert!(diff < 1e-6, "blocks of {block}: off by {diff}");
+        }
+    }
+    // a read somewhere else (a seek) starts a new chain: still the tone, at its pitch
+    let seek = mix_graph(&p, seq, 48_000 * 5 + 31, 12_000, &map, None);
+    assert!((pitch_hz(&seek) - 500.0).abs() < 12.0, "{}", pitch_hz(&seek));
+}

@@ -136,6 +136,18 @@ sub-sample estimate, and two trust figures (`confidence` = peak / RMS of the cor
   sub-sample), a 0 dB SNR room with a strong echo, inverted polarity, unrelated signals
   (unreliable) and `max_lag`. Two 10-minute recordings: 2.4 s (release, one core).
 
+## Time stretch (`stretch`)
+
+`Wsola::new(sample_rate)` time-stretches without changing the pitch (Speed/Duration ▸ Maintain
+Audio Pitch): 30 ms raised-cosine grains overlapped by half (15 ms hops). Each grain is read near
+its nominal input position, moved by at most 8 ms to where its first hop best matches the previous
+grain's natural continuation (normalised cross-correlation of a mono guide, coarse on every other
+sample and offset, then refined), so the crossfaded halves are in phase. `align` picks the
+position and `overlap` makes one output hop; the caller keeps the chain of positions and reads the
+input (the renderer keeps it per clip, see `filmcraft-render`'s `stretch`). Tested on tones from
+110 Hz to 1 kHz at 50 %–300 %: pitch within 2 %, level within 0.03 RMS, no steps larger than the
+tone's own slope.
+
 ## Known limits
 
 - Effects assume ≤ the channel count they were built with; extra channels pass through
