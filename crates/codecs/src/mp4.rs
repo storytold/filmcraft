@@ -244,11 +244,28 @@ impl Mp4Source {
             };
             aperture = vp.clean_aperture.and_then(|c| clean_aperture(c, (w, h)));
             let (w, h) = aperture.map_or((w, h), |r| (r.w as u32, r.h as u32));
-            // frame rate from the median sample duration
+            // The frame rate: the mean sample duration, rounded back onto the half-millisecond
+            // grid that phone rounders used (#1700). The median alone picks the long side of the
+            // alternating 33/34 ms pattern (30.303 fps) and the exact 33.5 ms of 59.94 fps. On
+            // the grid, divide by integer milliseconds: at 12800 units/frame the reciprocal is
+            // far enough off 25 fps (0.022 fps) for the standard-rate fallback to leave 1/40 ms
+            // misread as 25000/1.
             let mut durs: Vec<u32> = t.samples.iter().take(240).map(|s| s.duration).collect();
             durs.sort_unstable();
-            let d = durs.get(durs.len() / 2).copied().unwrap_or(1).max(1);
-            let rate = FrameRate::from_f64(t.timescale as f64 / d as f64);
+            let median = durs.get(durs.len() / 2).copied().unwrap_or(1).max(1);
+            let near: Vec<u32> = durs.iter().copied().filter(|&d| d.abs_diff(median) <= 1).collect();
+            let mean = if near.is_empty() { f64::from(median) } else { near.iter().map(|&d| f64::from(d)).sum::<f64>() / near.len() as f64 };
+            let mean_ms = mean * 1000.0 / f64::from(t.timescale);
+            // Whole milliseconds are unambiguous: 33 ms / 1 s stays its exact reduced rate.
+            let grid = mean_ms * 2.0;
+            let half = (grid / 2.0).round() * 2.0 + (grid - 2.0 * (grid / 2.0)).round();
+            let grid_ms = half / 2.0;
+            let snapped = grid_ms > 0.0 && (mean_ms - grid_ms).abs() * f64::from(t.timescale) <= 0.5;
+            let duration = if snapped { grid_ms / 1000.0 } else { mean_ms };
+            // The snapped rate is exact from the rounded duration; `from_f64`'s ms rational
+            // collapses 33 frames/s into 30303/1000 instead of 30000/1001 and 40 ms into 25000.
+            let rate =
+                if snapped && grid_ms >= 0.5 { FrameRate::new((2000.0 / grid_ms).round() as i64, 2) } else { FrameRate::from_f64(1000.0 / duration.max(1e-9)) };
             // A rate that rounds to zero (one sample per huge duration) can't be divided by.
             let rate = if rate.num > 0 && rate.den > 0 { rate } else { FrameRate::default() };
             color = color_from(entry, w, h);
@@ -694,9 +711,28 @@ fn snap_to_frame_grid(file: &mut Mp4File, vtrack: Option<usize>) {
     if mean <= 0.0 {
         return;
     }
-    let rate = FrameRate::from_f64(f64::from(t.timescale) / mean);
-    // one frame lasts `step_num / step_den` track units
-    let (step_num, step_den) = (i128::from(t.timescale) * i128::from(rate.den), i128::from(rate.num));
+    // The frames may have been stamped a whole unit off their grid, too (issue #1700): phones and
+    // messaging apps round every picture time to a whole millisecond. At 30 fps over 90 kHz a
+    // frame is 33 or 34 ms (2970 or 3060 units); the mean is 3000 or so, a rate ffprobe still says
+    // is 30/1. Snapping to that half-millisecond grid also restores the times the clip's frames
+    // would have had without the rounding, so its whole length keeps every picture.
+    let mean_ms = mean * 1000.0 / f64::from(t.timescale);
+    let grid = mean_ms * 2.0;
+    let half = (grid / 2.0).round() * 2.0 + (grid - 2.0 * (grid / 2.0)).round();
+    let grid_ms = half / 2.0;
+    let ms_snapped = grid_ms > 0.0 && (mean_ms - grid_ms).abs() * f64::from(t.timescale) <= 0.5;
+    let mean = if ms_snapped { grid_ms / 1000.0 * f64::from(t.timescale) } else { mean };
+    // On the ms grid the rate is exact from the rounded duration; `from_f64`'s ms rational
+    // collapses 33 frames/s into 30303/1000 instead of 30000/1001 and 40 ms into 25000.
+    let rate =
+        if ms_snapped && grid_ms >= 0.5 { FrameRate::new((2000.0 / grid_ms).round() as i64, 2) } else { FrameRate::from_f64(f64::from(t.timescale) / mean) };
+    // One frame lasts `step_num / step_den` track units: on the millisecond grid it is exactly the
+    // rounded mean duration, so 59.94 fps at 90 kHz keeps its alternating 1501/1502 stamps.
+    let (step_num, step_den) = if ms_snapped {
+        (i128::from((grid_ms * f64::from(t.timescale)).round() as i64), 1000)
+    } else {
+        (i128::from(t.timescale) * i128::from(rate.den), i128::from(rate.num))
+    };
     if step_num <= 0 || step_den <= 0 {
         return;
     }
