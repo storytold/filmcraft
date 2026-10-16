@@ -9,7 +9,7 @@ use filmcraft_media::Generator;
 use filmcraft_media::generators::GeneratorSource;
 use filmcraft_project::{
     ClipId, ItemId, ItemKind, Label, Marker, MarkerId, MarkerKind, MediaClip, MediaRef, ParamValue, Project, SequenceSettings, Track, TrackId, TrackKind,
-    Transition, TransitionId, resolve_auto_points,
+    Transition, TransitionAlign, TransitionId, resolve_auto_points,
 };
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange, parse_timecode};
 use serde_json::{Value, json};
@@ -2103,7 +2103,7 @@ fn build() -> Vec<CommandSpec> {
             "Apply Video Transition",
             ["Sequence"],
             Some("Cmd+D"),
-            r#"{"clip":id?,"effect":"cross_dissolve|Cross Dissolve|…"?,"frames":i64?,"edge":"in"|"out"?,"params":{param:value}?,"reverse":bool?}"#,
+            r#"{"clip":id?,"effect":"cross_dissolve|Cross Dissolve|…"?,"frames":i64?,"edge":"in"|"out"?,"align":"center"|"start"|"end"?,"params":{param:value}?,"reverse":bool?}"#,
             has_seq,
             |s, p| apply_transition(s, p, TrackKind::Video)
         ),
@@ -2112,7 +2112,7 @@ fn build() -> Vec<CommandSpec> {
             "Apply Audio Transition",
             ["Sequence"],
             Some("Cmd+Shift+D"),
-            r#"{"clip":id?,"effect":"constant_power|Constant Power|…"?,"frames":i64?,"edge":"in"|"out"?,"params":{param:value}?,"reverse":bool?}"#,
+            r#"{"clip":id?,"effect":"constant_power|Constant Power|…"?,"frames":i64?,"edge":"in"|"out"?,"align":"center"|"start"|"end"?,"params":{param:value}?,"reverse":bool?}"#,
             has_seq,
             |s, p| apply_transition(s, p, TrackKind::Audio)
         ),
@@ -4159,8 +4159,8 @@ fn apply_transition(s: &mut Session, p: &Value, kind: TrackKind) -> Result<Value
 }
 
 /// Plan an applied transition without editing the project or allocating an id.
-/// Uses the same `effect`, `clip`, `edge`, `frames` and settings as transition application,
-/// so a drag preview shows the exact range that release will commit.
+/// Uses the same `effect`, `clip`, `edge`, `align`, `frames` and settings as transition
+/// application, so a drag preview shows the exact range that release will commit.
 pub fn preview_transition(s: &Session, p: &Value, kind: TrackKind) -> Result<(TrackId, Transition)> {
     let eff_id = str_p(p, "effect")
         .map(str::to_string)
@@ -4215,14 +4215,24 @@ pub fn preview_transition(s: &Session, p: &Value, kind: TrackKind) -> Result<(Tr
     if q.track(track).is_some_and(|tr| tr.locked) {
         return Err(edit::EditError::Locked.into());
     }
-    let start = if from.is_some() && to.is_some() {
-        cut - dur.mul_ratio(1, 2)
-    } else if to.is_some() {
-        cut
-    } else {
-        cut - dur
+    // Where the transition sits on the cut: Center at Cut (default), Start at Cut (its start on
+    // the cut) or End at Cut (its end on the cut). A one-sided fade keeps its clip edge.
+    let align = match str_p(p, "align") {
+        Some(a) => edit::transitions::Alignment::parse(a).ok_or_else(|| bad("transition", format!("`align` is center, start or end, not `{a}`")))?,
+        None => edit::transitions::Alignment::Center,
     };
-    let tr = Transition { id: TransitionId(0), effect: instance, start: rate.snap(start), duration: dur, from, to, align: Default::default(), reverse };
+    let (start, align) = if from.is_some() && to.is_some() {
+        match align {
+            edit::transitions::Alignment::Start => (cut, TransitionAlign::StartAtCut),
+            edit::transitions::Alignment::End => (cut - dur, TransitionAlign::EndAtCut),
+            _ => (cut - dur.mul_ratio(1, 2), TransitionAlign::CenterAtCut),
+        }
+    } else if to.is_some() {
+        (cut, TransitionAlign::StartAtCut)
+    } else {
+        (cut - dur, TransitionAlign::EndAtCut)
+    };
+    let tr = Transition { id: TransitionId(0), effect: instance, start: rate.snap(start), duration: dur, from, to, align, reverse };
     Ok((track, tr))
 }
 
