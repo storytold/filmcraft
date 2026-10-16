@@ -35,13 +35,16 @@ pub struct Extras {
     pub dialog: Option<ClipDialogDraft>,
     /// View ▸ Dynamic Audio Waveforms: logarithmic (dB) waveform display; off = linear amplitude.
     pub dynamic_waveforms: bool,
+    /// View ▸ Centered Audio Waveforms: the waveform is drawn on both sides of its centre line (the
+    /// peaks above and below zero); off = rectified, rising from the bottom.
+    pub centered_waveforms: bool,
     /// Paths handed to the operating system's opener (Edit Original, Reveal Log Files), newest last.
     pub opened: Vec<String>,
 }
 
 impl Default for Extras {
     fn default() -> Self {
-        Extras { dialog: None, dynamic_waveforms: true, opened: Vec::new() }
+        Extras { dialog: None, dynamic_waveforms: true, centered_waveforms: false, opened: Vec::new() }
     }
 }
 
@@ -104,7 +107,11 @@ fn enabled(app: &FilmcraftApp, id: &str) -> Result<(), String> {
 
 /// Checkmark state of this module's toggles in the menus.
 pub fn checked(app: &FilmcraftApp, id: &str) -> Option<bool> {
-    (id == "view.dynamicAudioWaveforms").then_some(app.ui.extras.dynamic_waveforms)
+    match id {
+        "view.dynamicAudioWaveforms" => Some(app.ui.extras.dynamic_waveforms),
+        "view.centeredAudioWaveforms" => Some(app.ui.extras.centered_waveforms),
+        _ => None,
+    }
 }
 
 /// Project Settings ▸ General ▸ Renderer is "Software Only": the Program monitor composites on
@@ -174,6 +181,10 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
         "view.dynamicAudioWaveforms" => {
             app.ui.extras.dynamic_waveforms = params.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.extras.dynamic_waveforms);
             return Some(Ok(json!({"dynamicAudioWaveforms": app.ui.extras.dynamic_waveforms})));
+        }
+        "view.centeredAudioWaveforms" => {
+            app.ui.extras.centered_waveforms = params.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.extras.centered_waveforms);
+            return Some(Ok(json!({"centeredAudioWaveforms": app.ui.extras.centered_waveforms})));
         }
         "help.revealLogFiles" => {
             let r = write_session_log(app).and_then(|p| {

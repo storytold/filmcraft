@@ -1001,6 +1001,7 @@ fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &Tra
     };
     let gain = waveform_display_gain(peak, it.gain_db);
     let dynamic = app.ui.extras.dynamic_waveforms;
+    let centered = app.ui.extras.centered_waveforms;
     let mut mesh = egui::Mesh::default();
     let dur_px = body.width().max(1.0);
     for x in (clip.min.x.floor() as i32)..(clip.max.x.ceil() as i32) {
@@ -1010,22 +1011,20 @@ fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &Tra
         let t1 = it.start + Tick((it.duration.0 as f64 * f1 as f64) as i64);
         let s0 = (it.source_time_at(t0).seconds() * sr / spp) as usize;
         let s1 = ((it.source_time_at(t1).seconds() * sr / spp) as usize).max(s0 + 1);
-        let mut m = 0f32;
+        // the column's signed peaks: the lowest and the highest sample
+        let (mut lo, mut hi) = (0f32, 0f32);
         for (a, b) in peaks.iter().skip(s0).take(s1 - s0) {
-            m = m.max(a.abs()).max(b.abs());
+            lo = lo.min(*a).min(*b);
+            hi = hi.max(*a).max(*b);
         }
         // as in Premiere, the waveform shows the clip's Volume
-        m *= super::timeline_volume::gain_at(it, t0);
+        let volume = super::timeline_volume::gain_at(it, t0);
         // View ▸ Dynamic Audio Waveforms (default): logarithmic scale, −48 dB → 0, 0 dB → full;
-        // off: linear amplitude
-        let h = if dynamic {
-            let db = 20.0 * (m * gain).max(1e-5).log10();
-            ((db + 48.0) / 48.0).clamp(0.0, 1.0) * area.height()
-        } else {
-            (m * gain).clamp(0.0, 1.0) * area.height()
-        };
-        if h > 0.3 {
-            mesh.add_colored_rect(Rect::from_min_max(pos2(x as f32, area.max.y - h), pos2(x as f32 + 1.0, area.max.y)), col);
+        // off: linear amplitude. View ▸ Centered Audio Waveforms: both sides of the centre line.
+        let (up, down) = wave_extent(dynamic, centered, lo * volume, hi * volume, gain, area.height());
+        if up + down > 0.3 {
+            let base = if centered { area.center().y } else { area.max.y };
+            mesh.add_colored_rect(Rect::from_min_max(pos2(x as f32, base - up), pos2(x as f32 + 1.0, base + down)), col);
         }
     }
     p.add(mesh);
@@ -1034,6 +1033,24 @@ fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &Tra
     if body.width() > 30.0 {
         p.rect_filled(cb, 1.0, Color32::from_black_alpha(160));
         p.text(cb.center(), Align2::CENTER_CENTER, "1", Tokens::ui(7.5), Color32::from_rgb(0xd9, 0xd9, 0xd9));
+    }
+}
+
+/// How far a waveform column reaches above and below its baseline, in points, for the signed peaks
+/// `lo` (at most 0) and `hi` (at least 0) of the column, the display `gain` and the zone's `height`.
+/// Rectified (the default): the larger of the two rises from the bottom, so nothing goes below.
+/// Centered: the positive peak above the centre line and the negative one below it, each on half
+/// the height.
+fn wave_extent(dynamic: bool, centered: bool, lo: f32, hi: f32, gain: f32, height: f32) -> (f32, f32) {
+    let scale = |m: f32| -> f32 {
+        let m = m * gain;
+        if dynamic { ((20.0 * m.max(1e-5).log10() + 48.0) / 48.0).clamp(0.0, 1.0) } else { m.clamp(0.0, 1.0) }
+    };
+    if centered {
+        let half = height / 2.0;
+        (scale(hi.max(0.0)) * half, scale((-lo).max(0.0)) * half)
+    } else {
+        (scale(hi.abs().max(lo.abs())) * height, 0.0)
     }
 }
 
@@ -3416,5 +3433,37 @@ mod ruler_tests {
         }
         let (minor, label) = ruler_steps(1.0, i64::MAX);
         assert!(minor >= 1 && label >= 1 && label % minor == 0, "an unrepresentable rate: tick {minor}, label {label}");
+    }
+}
+
+#[cfg(test)]
+mod wave_extent_tests {
+    use super::wave_extent;
+
+    #[test]
+    fn rectified_rises_from_the_bottom_by_the_larger_peak() {
+        // linear, full scale: the whole zone; the louder side decides
+        assert_eq!(wave_extent(false, false, -0.5, 0.25, 1.0, 40.0), (20.0, 0.0));
+        assert_eq!(wave_extent(false, false, -0.25, 1.0, 1.0, 40.0), (40.0, 0.0));
+        assert_eq!(wave_extent(false, false, 0.0, 0.0, 1.0, 40.0), (0.0, 0.0));
+    }
+
+    #[test]
+    fn centered_draws_each_side_on_half_the_height() {
+        assert_eq!(wave_extent(false, true, -0.5, 0.25, 1.0, 40.0), (5.0, 10.0));
+        // a one-sided column has nothing on the other side
+        assert_eq!(wave_extent(false, true, 0.0, 1.0, 1.0, 40.0), (20.0, 0.0));
+        assert_eq!(wave_extent(false, true, -1.0, 0.0, 1.0, 40.0), (0.0, 20.0));
+    }
+
+    #[test]
+    fn the_dynamic_scale_is_logarithmic_and_clamped() {
+        // -48 dB is nothing, 0 dB is full, and louder than full scale stays inside the zone
+        let (up, _) = wave_extent(true, false, 0.0, 1.0, 1.0, 40.0);
+        assert!((up - 40.0).abs() < 1e-3);
+        let (quiet, _) = wave_extent(true, false, 0.0, 0.001, 1.0, 40.0);
+        assert!(quiet < 0.01);
+        let (loud, _) = wave_extent(true, true, -4.0, 4.0, 1.0, 40.0);
+        assert!(loud <= 20.0);
     }
 }
