@@ -2852,6 +2852,13 @@ fn build() -> Vec<CommandSpec> {
                 let tracks: Vec<TrackId> = tr.into_iter().collect();
                 s.edit_sequence("Razor", |q, ctx, _| Ok(edit::razor(q, &tracks, t, ctx)))?
             };
+            // A razor creates specific new segments, so select those rather than leaving a broad or
+            // stale selection behind (#1703). Linked selection expands the picture cut to its partner.
+            s.state.selection = with_links(s, &n);
+            s.state.caption_selection.clear();
+            s.state.transition_selection.clear();
+            s.state.gap_selection = None;
+            s.state.edit_points.clear();
             Ok(json!({"cuts": n.len()}))
         }),
         cmd!(
