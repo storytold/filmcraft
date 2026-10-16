@@ -49,6 +49,11 @@ pub enum Language {
     It,
     /// Korean; Hangul needs an installed system font ([`korean_font_available`]).
     Ko,
+    /// Arabic; its letters need a craft-fonts or installed Arabic face
+    /// ([`arabic_font_available`]) and its catalog text is stored in logical order and rearranged
+    /// for display when the catalog loads (`rtl::display_rtl`: egui lays the runs out left to
+    /// right).
+    Ar,
 }
 
 static JAPANESE: OnceLock<Catalog> = OnceLock::new();
@@ -62,9 +67,11 @@ static FRENCH: OnceLock<Catalog> = OnceLock::new();
 static KOREAN: OnceLock<Catalog> = OnceLock::new();
 static INDONESIAN: OnceLock<Catalog> = OnceLock::new();
 static ITALIAN: OnceLock<Catalog> = OnceLock::new();
+static ARABIC: OnceLock<Catalog> = OnceLock::new();
 
 impl Language {
-    pub const ALL: [Self; 12] = [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru, Self::Fr, Self::Id, Self::Ko, Self::It];
+    pub const ALL: [Self; 13] =
+        [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru, Self::Fr, Self::Id, Self::Ko, Self::It, Self::Ar];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -80,6 +87,7 @@ impl Language {
             Self::Id => "Bahasa Indonesia",
             Self::It => "Italiano",
             Self::Ko => "한국어",
+            Self::Ar => "العربية",
         }
     }
 
@@ -97,6 +105,7 @@ impl Language {
             "id" => Some(Self::Id),
             "it" => Some(Self::It),
             "ko" => Some(Self::Ko),
+            "ar" => Some(Self::Ar),
             _ => None,
         }
     }
@@ -111,7 +120,7 @@ impl Language {
     /// only for Simplified locales (`zh`, `zh-CN`, `zh-SG`, `zh-Hans…`); Traditional ones (`zh-TW`,
     /// `zh-HK`, `zh-MO`, `zh-Hant…`) are skipped.
     pub fn from_locales(tags: &[String]) -> Self {
-        const PRIMARY: [(&str, Language); 12] = [
+        const PRIMARY: [(&str, Language); 13] = [
             ("en", Language::En),
             ("ja", Language::Ja),
             ("es", Language::Es),
@@ -124,6 +133,7 @@ impl Language {
             ("in", Language::Id),
             ("it", Language::It),
             ("ko", Language::Ko),
+            ("ar", Language::Ar),
         ];
         tags.iter()
             .find_map(|tag| {
@@ -156,6 +166,7 @@ impl Language {
             Self::Id => "id",
             Self::It => "it",
             Self::Ko => "ko",
+            Self::Ar => "ar",
         }
     }
 
@@ -174,6 +185,11 @@ impl Language {
             Self::Id => Some(INDONESIAN.get_or_init(|| Catalog::parse(include_str!("id.tsv")))),
             Self::It => Some(ITALIAN.get_or_init(|| Catalog::parse(include_str!("it.tsv")))),
             Self::Ko => Some(KOREAN.get_or_init(|| Catalog::parse(include_str!("ko.tsv")))),
+            Self::Ar => Some(ARABIC.get_or_init(|| {
+                let mut c = Catalog::parse(include_str!("ar.tsv"));
+                c.map_translations(crate::rtl::display_rtl);
+                c
+            })),
         }
     }
 
@@ -336,6 +352,13 @@ pub fn korean_font_available() -> bool {
     crate::cjk::korean_available()
 }
 
+/// Whether the interface can show Arabic: `theme::install` appends the craft-fonts `Arab` faces,
+/// or one installed Arabic face, to every font family when there is one (see `rtl.rs`); none is
+/// bundled. False on systems (and the web) without one.
+pub fn arabic_font_available() -> bool {
+    crate::rtl::arabic_font_available()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,6 +377,7 @@ mod tests {
             ("id", include_str!("id.tsv")),
             ("it", include_str!("it.tsv")),
             ("ko", include_str!("ko.tsv")),
+            ("ar", include_str!("ar.tsv")),
         ] {
             let (entries, errors) = catalog::parse_entries(text);
             assert!(errors.is_empty(), "{code}: {errors:?}");
@@ -1377,5 +1401,79 @@ mod tests {
                 }
             }
         });
+    }
+
+    /// Arabic covers at least the core menus, like German and Russian: every entry is a menu
+    /// label, and the catalog's translations come back in display order — the file is stored in
+    /// logical order and `ARABIC` rearranges it for egui (`rtl::display_rtl`).
+    #[test]
+    fn arabic_entries_cover_the_original_menu_catalog_in_display_order() {
+        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+        let items = crate::menus::menu_items(&app);
+        let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
+        let (entries, errors) = catalog::parse_entries(include_str!("ar.tsv"));
+        assert!(errors.is_empty(), "{errors:?}");
+        for (ctx, en, tr) in &entries {
+            assert!(known(en) || crate::menus::NATIVE_APP_MENU.contains(&en.as_str()), "not a menu label: {en}");
+            // The stored translation is logical text; `tr` returns it in display order.
+            assert_eq!(Language::Ar.tr(en), crate::rtl::display_rtl(tr), "{en}");
+            assert!(ctx.is_empty(), "context row in a menus catalog: {en}");
+        }
+        for en in core_menu_labels() {
+            assert!(Language::Ar.has(&en), "missing Arabic menu label: {en}");
+        }
+        for en in crate::menus::MENUS.into_iter().chain(["Audio"]).chain(crate::menus::NATIVE_APP_MENU) {
+            assert!(Language::Ar.has(en), "untranslated Arabic menu: {en}");
+        }
+        // One-word labels read the same; word order flips, the ellipsis ends up on the left, and
+        // Latin names keep their own direction inside a line.
+        assert_eq!(Language::Ar.tr("File"), "ملف");
+        assert_eq!(Language::Ar.tr("Open Project…"), "…مشروع فتح");
+        assert_eq!(Language::Ar.tr("About FilmCraft"), "FilmCraft حول");
+        assert_eq!(Language::Ar.tr("An untranslated label"), "An untranslated label");
+        assert_eq!(Language::Ar.tr("مشروعي.mp4"), "مشروعي.mp4");
+        assert_eq!(Language::Ar.name(), "العربية");
+        assert_eq!(Language::Ar.code(), "ar");
+        assert_eq!(Language::parse("ar"), Some(Language::Ar));
+        assert_eq!(Language::parse("ar-SA"), None, "the preference stores the bare code");
+        for tag in ["ar", "ar-SA", "ar-EG", "ar_EG.UTF-8", "ar-MA", "AR"] {
+            assert_eq!(Language::from_locales(&[tag.to_string()]), Language::Ar, "{tag}");
+        }
+    }
+
+    /// Arabic switches and persists like the other languages when an Arabic face is available,
+    /// and is refused (the interface stays as it was) without one — the same gate Korean and
+    /// Chinese have.
+    #[test]
+    fn arabic_switches_and_persists_or_is_refused_without_a_font() {
+        let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &crate::theme::Tokens::for_kind(crate::theme::ThemeKind::default()));
+        let r = crate::menus::invoke(&mut app, &ctx, "app.language.arabic", serde_json::json!({}));
+        if !arabic_font_available() {
+            assert!(r.is_err(), "{r:?}");
+            assert_eq!(app.ui.language, Language::En);
+            assert_eq!(app.session.prefs.general.interface_language, "system");
+            // a saved Arabic preference falls back to English at startup
+            app.session.execute("prefs.set", serde_json::json!({"key": "general.interfaceLanguage", "value": "ar"})).unwrap();
+            app.apply_prefs(&ctx);
+            assert_eq!(app.ui.language, Language::En);
+            set_current(Language::En);
+            return;
+        }
+        assert_eq!(r.unwrap(), serde_json::json!("ar"));
+        assert_eq!(app.ui.language, Language::Ar);
+        assert_eq!(app.session.prefs.general.interface_language, "ar");
+        assert!(crate::menus::menu_items(&app).iter().any(|it| it.id == "app.language.arabic" && it.checked == Some(true)));
+        // the menus are drawn in Arabic, in display order; the language names stay native
+        let items = crate::menus::menu_items(&app);
+        let label = |id: &str| items.iter().find(|it| it.id == id).map(|it| it.label.as_str());
+        assert_eq!(label("file.saveAs"), Some("…باسم حفظ"));
+        let prefs = serde_json::to_string(&app.session.prefs).unwrap();
+        let mut restarted = filmcraft_engine::Session::default();
+        restarted.prefs = serde_json::from_str(&prefs).unwrap();
+        assert_eq!(crate::FilmcraftApp::new(restarted).ui.language, Language::Ar);
+        crate::menus::invoke(&mut app, &ctx, "app.language.english", serde_json::json!({})).unwrap();
+        set_current(Language::En);
     }
 }

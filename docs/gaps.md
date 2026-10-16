@@ -234,10 +234,10 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 ## G14. Localization: 8 of the 12 key languages missing
 
 - **Have:** Spanish, Japanese, Simplified Chinese, French (#498) and Portuguese (Brazil) (#859)
-  catalogs cover ~99.6–100% of the ~3,500 cataloged strings; Ukrainian ~10% (menus).
-- **Missing:** Hindi, Arabic (no RTL interface layout or catalog; the interface has Arabic and Hebrew
-  fallback fonts and shows captions in reading order, but other names and fields keep egui's
-  left-to-right run order; Arabic titles reported broken, #395),
+  catalogs cover ~99.6–100% of the ~3,500 cataloged strings; German, Ukrainian and Arabic ~10%
+  (menus; Arabic labels and names in display order).
+- **Missing:** Hindi, Arabic beyond menus (the menus ship in display order with an Arabic face;
+  no mirrored RTL layout and no catalog beyond menus; Arabic titles reported broken, #395),
   German beyond menus (#490), Korean (#508; needs Hangul fonts in craft-fonts),
   Vietnamese; Premiere also ships Russian. Engine errors,
   CLI and MCP stay English. No language has a recorded native-speaker review.
