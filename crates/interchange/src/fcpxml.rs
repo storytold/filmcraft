@@ -14,7 +14,7 @@
 //!   clip markers. Transitions are supported on the primary storyline (and read from secondary
 //!   storylines); transitions elsewhere are reported.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use filmcraft_geom::Vec2;
 use filmcraft_media::MediaKind;
@@ -132,6 +132,10 @@ struct Imp<'a, 'i, 'r> {
     assets: HashMap<String, Asset>,
     media_nodes: HashMap<String, Node<'a, 'i>>,
     media_items: HashMap<String, ItemId>,
+    /// `<media>` ids currently being expanded: a compound clip that (transitively) references
+    /// itself would otherwise recurse until the stack overflows. (The FCP7 importer carries the
+    /// same guard as `in_progress`.)
+    media_progress: HashSet<String>,
     effects: HashMap<String, String>,
 }
 
@@ -163,6 +167,7 @@ pub(crate) fn import(text: &str, opts: &ImportOptions, report: &mut Report) -> R
         assets: HashMap::new(),
         media_nodes: HashMap::new(),
         media_items: HashMap::new(),
+        media_progress: HashSet::new(),
         effects: HashMap::new(),
     };
     if let Some(res) = child(root, "resources") {
@@ -281,9 +286,17 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         }
         let n = *self.media_nodes.get(id)?;
         let s = child(n, "sequence")?;
-        // Reserve first so recursion terminates.
+        // The `media_items` memo is only filled after the nested `sequence()` returns (and the
+        // `reserve_sequence` inside it is not visible to this lookup), so a self-referential
+        // `ref-clip` never hit any memo and recursed until the stack overflowed. Guard the
+        // in-progress expansion instead, like the FCP7 importer's `in_progress` set.
+        if !self.media_progress.insert(id.to_string()) {
+            self.report.warn(format!("recursive <media> id=\"{id}\" ignored"));
+            return None;
+        }
         let name = n.attribute("name").unwrap_or("Compound Clip").to_string();
         let item = self.sequence(s, &name, None);
+        self.media_progress.remove(id);
         self.media_items.insert(id.into(), item);
         Some(item)
     }
@@ -1196,5 +1209,25 @@ mod tests {
         assert_eq!(parse_time(&fmt_time(odd, r)), Some(odd));
         assert_eq!(rate_from_frame_duration("1001/30000s"), Some(FrameRate::FPS_29_97));
         assert_eq!(rate_from_frame_duration("100/2500s"), Some(FrameRate::FPS_25));
+    }
+
+    #[test]
+    fn recursive_media_reference_is_a_warning_not_a_stack_overflow() {
+        // `<media id="b">` holds a sequence whose spine references `b` itself. `media()` used
+        // to re-enter itself forever (the `media_items` memo is only filled after the nested
+        // `sequence()` returns); the importer must warn and keep going instead.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<fcpxml version="1.11">
+<resources>
+<format id="f1" name="FFVideoFormat1080p25" frameDuration="100/2500s" width="1920" height="1080"/>
+<media id="b" name="Loop">
+<sequence format="f1" tcStart="0s"><spine><ref-clip ref="b" offset="0s" start="0s" duration="1s"/></spine></sequence>
+</media>
+</resources>
+<library><event name="E"><project name="P"><sequence format="f1" tcStart="0s"><spine><ref-clip ref="b" offset="0s" start="0s" duration="1s"/></spine></sequence></project></event></library>
+</fcpxml>"#;
+        let (imported, report) = crate::import(xml.as_bytes(), crate::Format::Fcpxml, None).expect("import succeeds");
+        assert!(report.mentions("recursive"), "{report}");
+        assert!(!imported.project.items.is_empty());
     }
 }
