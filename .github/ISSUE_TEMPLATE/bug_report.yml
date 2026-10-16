@@ -1,0 +1,71 @@
+name: Bug report
+description: Report a reproducible problem in FilmCraft.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please report one problem per issue and search existing issues first.
+        For security vulnerabilities, follow [SECURITY.md](https://github.com/storytold/filmcraft/blob/main/SECURITY.md) instead of posting sensitive details here.
+  - type: input
+    id: version
+    attributes:
+      label: FilmCraft version or commit
+      description: Copy the version from Help > About FilmCraft, or give the commit if built from source.
+      placeholder: "0.8.0"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Operating system and architecture
+      placeholder: "Windows 11 x64, macOS 15 Apple silicon, Ubuntu 24.04 x86_64, or browser and version"
+    validations:
+      required: true
+  - type: dropdown
+    id: build
+    attributes:
+      label: Installation type
+      options:
+        - Official installer
+        - Portable archive or AppImage
+        - Flatpak
+        - Web app
+        - Built from source
+        - Other or unknown
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Start from opening a project. Include the panel, tool, menu item, or command used.
+      placeholder: |
+        1. Open or create...
+        2. Select...
+        3. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include any error message and whether it happens every time.
+    validations:
+      required: true
+  - type: textarea
+    id: document
+    attributes:
+      label: Media, sequence, export, and hardware details
+      description: If relevant, include container/codec, resolution, frame rate, bit depth/HDR, sequence settings, export preset, GPU/driver, and hardware decoding or encoding settings.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Screenshots, logs, or a minimal sample
+      description: Optional. Remove secrets, personal paths, and private project or media content. Attach only files you have permission to share; do not attach malicious files.
