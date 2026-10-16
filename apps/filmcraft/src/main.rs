@@ -204,6 +204,14 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
                 }
             }),
         );
+        // macOS colour-matches the picture to each display once its Metal layer says what it is
+        // (sRGB); wgpu leaves it untagged and resets it on resize, so this runs every frame (#2115)
+        cc.egui_ctx.on_end_pass(
+            "display-color",
+            Arc::new(|_| {
+                filmcraft_platform::display_color::tag_windows_srgb();
+            }),
+        );
         let mut session = Session::default();
         if let Some(dir) = data_dir.clone().or_else(default_data_dir) {
             let mut cfg = AutosaveConfig::new(dir);
