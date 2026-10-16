@@ -9,13 +9,13 @@ use crate::state::FrameState;
 /// Run CDEF on `fs.cur`; returns the CdefFrame, or None when no block is filtered (CdefFrame
 /// equals CurrFrame). Bands of 64 luma rows (whole 8x8 blocks) are filtered in parallel: every
 /// block reads only CurrFrame and writes only its own samples.
-pub(crate) fn apply(fs: &FrameState, pool: &Pool) -> Option<FrameBuf> {
+pub(crate) fn apply(fs: &FrameState, pool: &Pool) -> crate::Result<Option<FrameBuf>> {
     let fh = &fs.fh;
     if fh.coded_lossless || fh.allow_intrabc || !fs.seq.enable_cdef {
-        return None;
+        return Ok(None);
     }
     let (mi_rows, mi_cols) = (fh.mi_rows as usize, fh.mi_cols as usize);
-    let mut out = fs.cur.clone();
+    let mut out = fs.cur.try_clone()?;
     let ranges = bands(pool, mi_rows * 4);
     let mut planes = out.row_bands(&ranges);
     let any = pool.map_mut(&mut planes, |b, band| {
@@ -36,7 +36,7 @@ pub(crate) fn apply(fs: &FrameState, pool: &Pool) -> Option<FrameBuf> {
         any
     });
     drop(planes);
-    any.contains(&true).then_some(out)
+    Ok(any.contains(&true).then_some(out))
 }
 
 fn cdef_block(fs: &FrameState, out: &mut [RowBand; 3], r: usize, c: usize, idx: usize) -> bool {

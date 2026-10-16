@@ -6,7 +6,7 @@
 
 /// Recycled plane allocations: every frame allocates (and every evicted reference frees)
 /// megabytes of planes, and fresh large allocations cost page faults and kernel calls. Buffers
-/// are zeroed again on reuse, so contents never leak between frames.
+/// are zeroed or fully overwritten on reuse, so contents never leak between frames.
 static PLANE_POOL: std::sync::Mutex<Vec<Vec<u16>>> = std::sync::Mutex::new(Vec::new());
 const POOL_MIN_LEN: usize = 1 << 16;
 /// Samples kept at most (96 M samples = 192 MB, a few 4K frames).
@@ -14,18 +14,20 @@ const POOL_MAX_SAMPLES: usize = 96 << 20;
 
 /// A zeroed buffer of `len` samples (recycled memory for large ones).
 fn zeroed(len: usize) -> Vec<u16> {
-    if len >= POOL_MIN_LEN {
-        let found = {
-            let mut pool = PLANE_POOL.lock().unwrap_or_else(|e| e.into_inner());
-            pool.iter().position(|v| v.capacity() >= len && v.capacity() <= 2 * len).map(|i| pool.swap_remove(i))
-        };
-        if let Some(mut v) = found {
-            v.clear();
-            v.resize(len, 0);
-            return v;
-        }
+    if let Some(mut v) = recycled(len) {
+        v.clear();
+        v.resize(len, 0);
+        return v;
     }
     vec![0; len]
+}
+
+fn recycled(len: usize) -> Option<Vec<u16>> {
+    if len >= POOL_MIN_LEN {
+        let mut pool = PLANE_POOL.lock().unwrap_or_else(|e| e.into_inner());
+        return pool.iter().position(|v| v.capacity() >= len && v.capacity() <= len.saturating_mul(2)).map(|i| pool.swap_remove(i));
+    }
+    None
 }
 
 /// One plane of samples (u16 at every bit depth), or a rectangular region of one.
@@ -38,14 +40,6 @@ pub struct Plane {
     /// Frame coordinates of `data[0]` (0 for whole planes).
     pub ox: usize,
     pub oy: usize,
-}
-
-impl Clone for Plane {
-    fn clone(&self) -> Plane {
-        let mut data = zeroed(self.data.len());
-        data.copy_from_slice(&self.data);
-        Plane { data, stride: self.stride, rows: self.rows, ox: self.ox, oy: self.oy }
-    }
 }
 
 impl Drop for Plane {
@@ -62,6 +56,14 @@ impl Drop for Plane {
 }
 
 impl Plane {
+    /// Fully initialize a recycled allocation by copying; no preceding zero fill is needed.
+    pub fn try_clone(&self) -> crate::Result<Plane> {
+        let mut data = recycled(self.data.len()).unwrap_or_default();
+        data.clear();
+        data.try_reserve_exact(self.data.len()).map_err(|_| crate::Error::AllocationFailed)?;
+        data.extend_from_slice(&self.data);
+        Ok(Plane { data, stride: self.stride, rows: self.rows, ox: self.ox, oy: self.oy })
+    }
     pub fn new(width: usize, height: usize) -> Plane {
         Plane { data: zeroed(width * height), stride: width, rows: height, ox: 0, oy: 0 }
     }
@@ -151,7 +153,7 @@ impl RowBand<'_> {
 }
 
 /// A frame's three planes, sized to the macroblock-aligned coded area plus margins.
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct FrameBuf {
     pub planes: [Plane; 3],
     pub num_planes: usize,
@@ -164,6 +166,17 @@ pub struct FrameBuf {
 }
 
 impl FrameBuf {
+    pub fn try_clone(&self) -> crate::Result<FrameBuf> {
+        Ok(FrameBuf {
+            planes: [self.planes[0].try_clone()?, self.planes[1].try_clone()?, self.planes[2].try_clone()?],
+            num_planes: self.num_planes,
+            subsampling_x: self.subsampling_x,
+            subsampling_y: self.subsampling_y,
+            bit_depth: self.bit_depth,
+            width: self.width,
+            height: self.height,
+        })
+    }
     /// Allocate a frame for a coded area of `width` x `height` luma samples (rounded up to the
     /// 128x128 superblock grid plus 160 samples of slack for blocks extending past the edge).
     pub fn new(width: usize, height: usize, num_planes: usize, subsampling_x: usize, subsampling_y: usize, bit_depth: u8) -> FrameBuf {
@@ -341,6 +354,34 @@ impl MiInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copying_planes_overwrites_recycled_samples_and_preserves_layout() {
+        let len = POOL_MIN_LEN;
+        let stale = Plane { data: vec![u16::MAX; len], stride: 256, rows: 256, ox: 0, oy: 0 };
+        drop(stale);
+        let source = Plane { data: (0..len).map(|i| (i % 1024) as u16).collect(), stride: 256, rows: 256, ox: 16, oy: 8 };
+        let copied = source.try_clone().unwrap();
+        assert_eq!(copied.data, source.data);
+        assert_eq!((copied.stride, copied.rows, copied.ox, copied.oy), (256, 256, 16, 8));
+        assert_ne!(copied.data.as_ptr(), source.data.as_ptr());
+        assert!(Plane::default().try_clone().unwrap().data.is_empty());
+    }
+
+    #[test]
+    fn copying_frames_preserves_padding_and_all_planes() {
+        let mut source = FrameBuf::new(203, 117, 3, 1, 1, 10);
+        for (plane, samples) in source.planes.iter_mut().enumerate() {
+            samples.data.fill((plane as u16 + 1) * 127);
+        }
+        let copied = source.try_clone().unwrap();
+        assert_eq!((copied.width, copied.height, copied.bit_depth, copied.num_planes), (203, 117, 10, 3));
+        assert_eq!((copied.subsampling_x, copied.subsampling_y), (1, 1));
+        for (a, b) in source.planes.iter().zip(&copied.planes) {
+            assert_eq!(a.data, b.data);
+            assert_eq!((a.stride, a.rows), (b.stride, b.rows));
+        }
+    }
 
     fn rows(b: &RowBand) -> (usize, usize) {
         (b.y0, b.data.len() / b.stride)

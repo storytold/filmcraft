@@ -79,6 +79,17 @@ impl<T: Clone> Slot<T> {
             g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
         }
     }
+
+    /// Consume one output. Reference slots retain their values and keep using `wait`.
+    fn wait_take(&self) -> Result<T> {
+        let mut g = self.value.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if let Some(value) = g.take() {
+                return value;
+            }
+            g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+        }
+    }
 }
 
 type FrameSlot = Slot<Arc<RefFrame>>;
@@ -94,7 +105,7 @@ struct FrameJob {
     tiles: Vec<(usize, Vec<u8>)>,
     slot: Arc<FrameSlot>,
     /// The output picture, when the frame is shown.
-    picture: Option<Arc<Slot<Arc<Picture>>>>,
+    picture: Option<Arc<Slot<Picture>>>,
     pts: i64,
     apply_film_grain: bool,
     /// Draft mode: the frame refreshes no reference slot, so its in-loop filters are skipped.
@@ -104,7 +115,7 @@ struct FrameJob {
 /// A shown picture in output order.
 #[allow(clippy::large_enum_variant)]
 enum Output {
-    Decoded(Arc<Slot<Arc<Picture>>>),
+    Decoded(Arc<Slot<Picture>>),
     /// show_existing_frame: built from the reference slot when it is finished.
     Existing {
         slot: Arc<FrameSlot>,
@@ -127,7 +138,7 @@ impl Output {
 
     fn take(self) -> Result<Picture> {
         match self {
-            Output::Decoded(s) => s.wait().map(|p| Arc::try_unwrap(p).unwrap_or_else(|p| (*p).clone())),
+            Output::Decoded(s) => s.wait_take(),
             Output::Existing { slot, seq, width, height, grain, apply_film_grain, pts } => {
                 let rf = slot.wait()?;
                 Ok(output_picture(&seq, &rf, width, height, &grain, apply_film_grain, pts))
@@ -636,7 +647,7 @@ fn run_job(job: FrameJob, pool: &Pool, stats: &Mutex<DecodeStats>) {
     match decode_frame(&job, pool, &mut st) {
         Ok((rf, pic)) => {
             if let Some(ps) = &job.picture {
-                ps.set(pic.map(Arc::new).ok_or(Error::Invalid("shown frame without picture")));
+                ps.set(pic.ok_or(Error::Invalid("shown frame without picture")));
             }
             job.slot.set(Ok(rf));
         }
@@ -710,7 +721,7 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
     {
         cdfs = s;
     }
-    crate::postfilter::apply(&mut fs, stats, pool, job.draft);
+    crate::postfilter::apply(&mut fs, stats, pool, job.draft)?;
     stats.draft_frames += job.draft as u64;
     let t = Timer::start();
     stats.frames += 1;
@@ -946,4 +957,51 @@ fn project(fs: &mut FrameState, src: usize, dst_sign: i32) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::*;
+
+    #[test]
+    fn taking_output_moves_pixel_planes_without_cloning() {
+        let y = vec![1, 2, 3, 4];
+        let original = y.as_ptr();
+        let picture = Picture {
+            width: 2,
+            height: 2,
+            bit_depth: 8,
+            subsampling_x: 1,
+            subsampling_y: 1,
+            mono_chrome: false,
+            planes: [y, vec![5], vec![6]],
+            color_primaries: 1,
+            transfer_characteristics: 1,
+            matrix_coefficients: 1,
+            full_range: false,
+            pts: 42,
+            draft: false,
+        };
+        let slot = Slot::new();
+        slot.set(Ok(picture));
+        let output = Output::Decoded(slot.clone()).take().unwrap();
+        assert_eq!(output.planes[0].as_ptr(), original);
+        assert_eq!(output.pts, 42);
+        assert!(!slot.is_set());
+    }
+
+    #[test]
+    fn taking_delayed_output_propagates_failure_and_references_remain_readable() {
+        let slot = Slot::<Picture>::new();
+        let producer = slot.clone();
+        let worker = std::thread::spawn(move || producer.set(Err(Error::Invalid("test worker failure"))));
+        assert_eq!(Output::Decoded(slot).take(), Err(Error::Invalid("test worker failure")));
+        worker.join().unwrap();
+        let reference = Slot::new();
+        let value = Arc::new(vec![1, 2, 3]);
+        reference.set(Ok(value.clone()));
+        assert!(Arc::ptr_eq(&reference.wait().unwrap(), &value));
+        assert!(Arc::ptr_eq(&reference.wait().unwrap(), &value));
+        assert!(reference.is_set());
+    }
 }
