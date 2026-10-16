@@ -165,13 +165,16 @@ fn save_switch_reset_rename_delete_and_restart() {
             "All Panels",
             "Assembly",
             "Audio",
+            "CapCut",
             "Captions and Graphics",
             "Color",
             "Cutting",
+            "DaVinci Resolve",
             "Editing",
             "Effects",
             "Learning",
             "Review",
+            "Vegas",
             "Reset to Saved Layout",
             "Save Changes to this Workspace",
             "Save as New Workspace…",
@@ -277,4 +280,67 @@ fn save_rename_and_delete_through_the_dialogs() {
     d.click("workspaces.edit.close");
     assert!(d.app().ui.workspace_dialog.is_none(), "Close closes the dialog");
     let _ = std::fs::remove_dir_all(&data);
+}
+
+#[test]
+fn familiar_workspaces_switch_save_and_restart_without_editing_the_project() {
+    for name in ["CapCut", "Vegas", "DaVinci Resolve"] {
+        let slug = filmcraft_ui_egui::dock::slug(name);
+        let data = data_dir(&slug);
+        let mut d = Driver::launch(&data);
+        let project = d.app().session.project.clone();
+        let playheads = d.app().session.state.playheads.clone();
+        let prefs = serde_json::to_value(&d.app().session.prefs).unwrap();
+        let factory = filmcraft_ui_egui::dock::workspace(name);
+        assert!(d.workspaces_menu().iter().any(|(label, _)| label == name));
+        d.menu(&format!("window.workspace.{slug}"), json!({}));
+        assert_eq!(d.workspace(), name);
+        assert_eq!(d.app().ui.dock, factory);
+        assert!(std::sync::Arc::ptr_eq(&d.app().session.project, &project));
+        assert_eq!(d.app().session.state.playheads, playheads);
+        assert_eq!(serde_json::to_value(&d.app().session.prefs).unwrap(), prefs, "layout must not alter theme or shortcuts");
+        d.frames(4);
+        assert!(d.app().ui_error.is_none());
+        d.snapshot(&slug);
+        drop(d);
+        let mut d = Driver::launch(&data);
+        assert_eq!(d.workspace(), name, "selection persists without Save Changes");
+        assert_eq!(d.app().ui.dock, factory);
+        d.ok("ui.panel.close", json!({"panel":"Project"}));
+        d.menu("window.workspace.saveChanges", json!({}));
+        let saved = d.app().ui.dock.clone();
+        d.menu("window.workspace.editing", json!({}));
+        d.ok("ui.set", json!({"workspace":name.to_ascii_lowercase()}));
+        assert_eq!(d.app().ui.dock, saved);
+        drop(d);
+        let mut d = Driver::launch(&data);
+        assert_eq!(d.workspace(), name);
+        assert_eq!(d.app().ui.dock, saved, "saved customization persists");
+        d.menu("window.workspace.delete", json!({"name":name}));
+        d.menu(&format!("window.workspace.{slug}"), json!({}));
+        assert_eq!(d.app().ui.dock, factory, "deleting an override restores the factory layout");
+        assert!(d.menu_err("window.workspace.rename", json!({"from":name,"to":"Renamed"})).contains("keeps its name"));
+    }
+}
+
+#[test]
+fn familiar_workspaces_preserve_legacy_custom_names_case_insensitively() {
+    use filmcraft_ui_egui::dock::{self, SavedWorkspace, WorkspacePrefs};
+    for name in ["capcut", "VEGAS", "DaVinciResolve"] {
+        let data = data_dir(&format!("legacy-{name}"));
+        let custom = dock::workspace("Color");
+        let prefs = WorkspacePrefs {
+            current: name.into(),
+            saved: vec![SavedWorkspace { name: name.into(), layout: serde_json::to_value(&custom).unwrap(), floating: Value::Null }],
+        };
+        prefs.save(&data.join(dock::WORKSPACES_FILE)).unwrap();
+        let mut d = Driver::launch(&data);
+        assert_eq!(d.workspace(), name, "retain the user's spelling at startup");
+        assert_eq!(d.app().ui.dock, custom);
+        let matching: Vec<_> = d.workspaces_menu().into_iter().filter(|(label, _)| dock::slug(label) == dock::slug(name)).collect();
+        assert_eq!(matching, vec![(name.into(), true)], "no duplicate, ambiguous command IDs");
+        d.menu("window.workspace.editing", json!({}));
+        d.menu(&format!("window.workspace.{}", dock::slug(name)), json!({}));
+        assert_eq!(d.app().ui.dock, custom, "the old custom layout remains reachable");
+    }
 }

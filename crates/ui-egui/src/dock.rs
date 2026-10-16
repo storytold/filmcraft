@@ -177,7 +177,8 @@ fn vsplit(size: SplitSize, a: DockNode, b: DockNode) -> DockNode {
     DockNode::Split { vertical: true, size, a: Box::new(a), b: Box::new(b) }
 }
 
-pub const WORKSPACES: [&str; 9] = ["Editing", "Assembly", "Color", "Effects", "Audio", "Captions and Graphics", "Learning", "Review", "All Panels"];
+pub const WORKSPACES: [&str; 12] =
+    ["Editing", "Assembly", "Color", "Effects", "Audio", "Captions and Graphics", "Learning", "Review", "All Panels", "CapCut", "Vegas", "DaVinci Resolve"];
 
 /// The user's workspaces file, beside `preferences.json` in the data directory.
 pub const WORKSPACES_FILE: &str = "workspaces.json";
@@ -241,7 +242,12 @@ pub fn is_builtin(name: &str) -> bool {
 pub fn names(prefs: &WorkspacePrefs) -> Vec<String> {
     let mut v: Vec<String> = WORKSPACES.iter().map(|s| s.to_string()).collect();
     for s in &prefs.saved {
-        if !v.contains(&s.name) {
+        // A newly added preset must not hide an older user workspace whose spelling
+        // differs only by case/spaces: both dispatch through the same command slug.
+        let key = slug(&s.name);
+        if let Some(existing) = v.iter_mut().find(|name| slug(name) == key) {
+            *existing = s.name.clone();
+        } else {
             v.push(s.name.clone());
         }
     }
@@ -313,6 +319,42 @@ pub fn workspace(name: &str) -> DockNode {
     use SplitSize::*;
     let bottom_editing = || hsplit(FixedA(64.0), tabs(&[Tools], 0), hsplit(FixedB(116.0), tabs(&[Timeline], 0), tabs(&[AudioMeters], 0)));
     match name {
+        // Familiar panel arrangements, implemented only with FilmCraft's own panels.
+        "CapCut" => vsplit(
+            Ratio(0.60),
+            hsplit(
+                Ratio(0.25),
+                tabs(&[Project, MediaBrowser, Effects, Text, EssentialGraphics], 0),
+                hsplit(Ratio(0.64), tabs(&[Program, Source], 0), tabs(&[Properties, EffectControls, LumetriColor, EssentialSound], 0)),
+            ),
+            bottom_editing(),
+        ),
+        "Vegas" => vsplit(
+            Ratio(0.42),
+            hsplit(
+                Ratio(0.35),
+                tabs(&[Project, MediaBrowser, Effects, EssentialGraphics, History], 0),
+                hsplit(
+                    Ratio(0.42),
+                    tabs(&[Source, EffectControls, Properties], 0),
+                    hsplit(FixedB(116.0), tabs(&[Program], 0), tabs(&[AudioMeters, AudioTrackMixer], 0)),
+                ),
+            ),
+            hsplit(FixedA(64.0), tabs(&[Tools], 0), tabs(&[Timeline], 0)),
+        ),
+        "DaVinci Resolve" => vsplit(
+            Ratio(0.56),
+            hsplit(
+                Ratio(0.20),
+                tabs(&[Project, MediaBrowser, Effects], 0),
+                hsplit(
+                    Ratio(0.74),
+                    hsplit(Ratio(0.5), tabs(&[Source], 0), tabs(&[Program], 0)),
+                    tabs(&[Properties, EffectControls, LumetriColor, Text, EssentialGraphics], 0),
+                ),
+            ),
+            hsplit(Ratio(0.80), hsplit(FixedA(64.0), tabs(&[Tools], 0), tabs(&[Timeline], 0)), tabs(&[AudioTrackMixer, AudioMeters, EssentialSound], 0)),
+        ),
         "Assembly" => vsplit(
             Ratio(0.52),
             hsplit(
@@ -927,6 +969,63 @@ mod tests {
             let d = workspace(w);
             assert!(d.contains(PanelKind::Timeline), "{w}");
             assert!(d.contains(PanelKind::Program), "{w}");
+        }
+    }
+
+    #[test]
+    fn familiar_workspaces_have_distinct_usable_panel_geometry() {
+        use PanelKind::*;
+        for dimensions in [vec2(1280.0, 720.0), vec2(1920.0, 1080.0)] {
+            let rect = Rect::from_min_size(egui::Pos2::ZERO, dimensions);
+            for name in ["CapCut", "Vegas", "DaVinci Resolve"] {
+                let mut tree = workspace(name);
+                Layout { root: tree.clone(), floating: vec![] }.validate().unwrap();
+                let ctx = egui::Context::default();
+                let mut groups = Vec::new();
+                let mut reg = crate::automation::Registry::default();
+                let tokens = Tokens::for_kind(crate::theme::ThemeKind::Dark);
+                let mut output = ctx.run_ui(egui::RawInput { screen_rect: Some(rect), ..Default::default() }, |ui| {
+                    groups.clear();
+                    layout(ui, &mut tree, rect, &tokens, "root", &mut groups, &mut reg);
+                });
+                // This geometry-only pass deliberately has no renderer.
+                output.textures_delta.clear();
+                for (i, group) in groups.iter().enumerate() {
+                    assert!(group.content.is_positive() && rect.contains_rect(group.rect), "{name}: invalid group bounds");
+                    for other in groups.iter().skip(i + 1) {
+                        assert!(!group.rect.intersect(other.rect).is_positive(), "{name}: overlapping panels");
+                    }
+                }
+                let bounds = |panel| groups.iter().find(|g| g.panels.contains(&panel)).unwrap().rect;
+                let active = |panel| groups.iter().any(|g| g.panels.get(g.active) == Some(&panel));
+                for panel in [Project, Program, Timeline, Tools] {
+                    assert!(active(panel), "{name}: {panel:?} must be accessible immediately");
+                }
+                let (media, source, program, timeline) = (bounds(Project), bounds(Source), bounds(Program), bounds(Timeline));
+                assert!(media.right() < program.left());
+                assert!(program.bottom() < timeline.top());
+                assert!(program.width() >= 240.0 && timeline.width() >= 800.0, "{name}: monitor or timeline too narrow");
+                match name {
+                    "CapCut" => {
+                        assert_eq!(source, program, "one viewer group with Program selected");
+                        assert!(!active(Source) && active(Properties));
+                        assert!(program.right() < bounds(Properties).left());
+                    }
+                    "Vegas" => {
+                        assert!(active(Source) && active(AudioMeters));
+                        assert!(source.right() < program.left());
+                        assert!(timeline.height() > program.height());
+                        assert!(bounds(AudioMeters).left() > program.right());
+                    }
+                    "DaVinci Resolve" => {
+                        assert!(active(Source) && active(Properties) && active(AudioTrackMixer));
+                        assert!(media.right() < source.left() && source.right() < program.left());
+                        assert!(program.right() < bounds(Properties).left());
+                        assert!(timeline.right() < bounds(AudioTrackMixer).left());
+                    }
+                    _ => unreachable!(),
+                }
+            }
         }
     }
 

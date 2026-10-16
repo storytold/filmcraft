@@ -84,3 +84,35 @@ buttons use `craft-ui::layout::fit_toolbar`; commands beyond the available width
 through More, including their selected state and Source/Program routing. A scrolling fallback
 retains all commands if even More cannot fit. `monitor_geometry` checks the painted readouts,
 control bounds, overflow actions and Source drag payloads across monitor widths and themes.
+
+## Familiar editing layouts
+
+Window > Workspaces includes **CapCut**, **Vegas** and **DaVinci Resolve** alongside the
+existing workspaces. These arrange FilmCraft's existing panels for familiar workflows:
+
+- CapCut: media/effects/text on the left, a single large Program viewer in the middle
+  (Source is a tab), Properties on the right and the timeline across the bottom.
+- Vegas: media/effects, Source (trimmer), Program and meters across the top; a larger
+  timeline below.
+- DaVinci Resolve: media on the left, separate Source/Program viewers, Properties on
+  the right, and timeline with a mixer below (an Edit-page-style arrangement).
+
+The selected workspace is remembered at restart. Use **Save Changes to this Workspace**
+to retain resized/moved panels. **Reset to Saved Layout** restores that saved version;
+delete the built-in workspace's saved override in **Edit Workspaces** to return to its
+factory arrangement. Existing custom workspaces keep their saved layouts, including
+ones with the same name as a new preset. Workspace names remain untranslated product
+names. Themes, shortcuts and project contents are unchanged by switching layouts.
+
+These are layout presets, not implementations of those products' editing behavior,
+project formats or additional pages. They use FilmCraft's own panels and artwork.
+Functional reference: [CapCut desktop](https://www.capcut.com/resource/how-to-use-capcut-on-pc),
+[Vegas window areas](https://help.magix-hub.com/video/vegas/23/en/content/topics/2-window/mainwindow.htm),
+[Resolve Edit page](https://www.blackmagicdesign.com/products/davinciresolve/edit).
+
+Automation: `window.workspace.capcut`, `window.workspace.vegas`,
+`window.workspace.davinciresolve`, or `ui.set` with `workspace` set to the display name.
+UI commands are available through the app's control channel / CLI bridge. The
+`familiar_workspaces` tests cover geometry, switching without project edits, persistence,
+custom overrides and reset. `FILMCRAFT_UI_SNAPSHOT_DIR` enables offscreen screenshots in
+`workspaces_ui`.

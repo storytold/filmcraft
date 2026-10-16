@@ -3578,3 +3578,8 @@
 
 # The native macOS application menu (Settings…).
 	Settings	Preferências
+
+# Familiar workspace names (product names remain unchanged).
+	CapCut	CapCut
+	Vegas	Vegas
+	DaVinci Resolve	DaVinci Resolve
