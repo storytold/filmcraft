@@ -25,6 +25,30 @@ pub struct BridgeClient {
     /// never holds up the others or leaves its late reply for the next one to read (#1538).
     idle: Mutex<Vec<Conn>>,
     next_id: AtomicU64,
+    /// The app to start (with `--control <port>`) when nothing answers on the port; tried once.
+    launcher: Option<std::path::PathBuf>,
+    launched: std::sync::atomic::AtomicBool,
+}
+
+/// How long a freshly launched app has to open its control port.
+const LAUNCH_WAIT: Duration = Duration::from_secs(45);
+
+/// The FilmCraft app next to this program: `$FILMCRAFT_APP`, else the `.app` bundle this binary is
+/// in (the MCP binary ships inside FilmCraft.app), else a `filmcraft` binary beside it (a build
+/// tree's `target/release`).
+pub fn default_app() -> Option<std::path::PathBuf> {
+    if let Some(p) = std::env::var_os("FILMCRAFT_APP").filter(|p| !p.is_empty()) {
+        return Some(p.into());
+    }
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    if dir.ends_with("Contents/MacOS")
+        && let Some(app) = dir.parent().and_then(|c| c.parent()).filter(|a| a.extension().is_some_and(|e| e == "app"))
+    {
+        return Some(app.to_path_buf());
+    }
+    let sibling = dir.join(if cfg!(windows) { "filmcraft.exe" } else { "filmcraft" });
+    sibling.is_file().then_some(sibling)
 }
 
 impl BridgeClient {
@@ -35,7 +59,63 @@ impl BridgeClient {
         if !matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "::1") {
             return Err(AutomationError::BadRequest(format!("bridge address must be loopback, got `{addr}`")));
         }
-        Ok(Self { addr, idle: Mutex::new(Vec::new()), next_id: AtomicU64::new(1) })
+        Ok(Self { addr, idle: Mutex::new(Vec::new()), next_id: AtomicU64::new(1), launcher: None, launched: Default::default() })
+    }
+
+    /// Start `app` (an `.app` bundle or the `filmcraft` binary) with `--control <port>` when the
+    /// first connection finds nothing listening, so an agent never has to ask for the app to be
+    /// opened. An app that is already running without its control port can't be reached this way:
+    /// the error then says to turn on Settings ▸ Agents.
+    pub fn with_launcher(mut self, app: Option<std::path::PathBuf>) -> Self {
+        self.launcher = app;
+        self
+    }
+
+    async fn try_connect(&self) -> Result<Conn, AutomationError> {
+        let s = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(&self.addr))
+            .await
+            .map_err(|_| AutomationError::Bridge(format!("timed out connecting to {}", self.addr)))?
+            .map_err(|e: std::io::Error| AutomationError::Bridge(e.to_string()))?;
+        let (r, w) = s.into_split();
+        Ok((BufReader::new(r), w))
+    }
+
+    async fn connect(&self) -> Result<Conn, AutomationError> {
+        let first = match self.try_connect().await {
+            Ok(s) => return Ok(s),
+            Err(e) => e,
+        };
+        let hint = "start it with `filmcraft --control <port>`, or turn on Settings ▸ Agents ▸ Let AI agents control FilmCraft and restart it";
+        let Some(app) = self.launcher.clone().filter(|_| !self.launched.swap(true, Ordering::Relaxed)) else {
+            return Err(AutomationError::Bridge(format!("cannot connect to {} ({first}); {hint}", self.addr)));
+        };
+        let port = self.addr.rsplit_once(':').map(|(_, p)| p.to_string()).unwrap_or_default();
+        let spawned = if app.extension().is_some_and(|e| e == "app") {
+            std::process::Command::new("open").arg("-a").arg(&app).args(["--args", "--control", &port]).spawn()
+        } else {
+            std::process::Command::new(&app)
+                .args(["--control", &port])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+        };
+        if let Err(e) = spawned {
+            return Err(AutomationError::Bridge(format!("cannot connect to {} and could not start {}: {e}", self.addr, app.display())));
+        }
+        let deadline = tokio::time::Instant::now() + LAUNCH_WAIT;
+        while tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if let Ok(s) = self.try_connect().await {
+                return Ok(s);
+            }
+        }
+        Err(AutomationError::Bridge(format!(
+            "started {} but nothing answered on {} within {}s (if FilmCraft was already open without agent control: {hint})",
+            app.display(),
+            self.addr,
+            LAUNCH_WAIT.as_secs()
+        )))
     }
 
     /// Run engine command `id` in the app. A blocking export (`file.exportMedia` with
@@ -64,7 +144,8 @@ impl BridgeClient {
             }
         };
         if let Some(e) = result.get("error").and_then(Value::as_str) {
-            return Err(AutomationError::App(format!("export failed: {e}")));
+            let what = if id == "file.exportMedia" { "export" } else { id };
+            return Err(AutomationError::App(format!("{what} failed: {e}")));
         }
         if let Some(o) = start.as_object_mut() {
             o.insert("result".into(), result);
@@ -87,13 +168,13 @@ impl BridgeClient {
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
             let line = format!("{}\n", json!({"id": id, "method": method, "params": params}));
             let res: Result<Value, AutomationError> = async {
-                conn.1.write_all(line.as_bytes()).await.map_err(|e| AutomationError::Bridge(e.to_string()))?;
+                conn.1.write_all(line.as_bytes()).await.map_err(|e: std::io::Error| AutomationError::Bridge(e.to_string()))?;
                 let mut buf = String::new();
                 tokio::time::timeout(Duration::from_secs(90), conn.0.read_line(&mut buf))
                     .await
                     .map_err(|_| AutomationError::Bridge("timeout".into()))?
-                    .map_err(|e| AutomationError::Bridge(e.to_string()))?;
-                serde_json::from_str(&buf).map_err(|e| AutomationError::Bridge(format!("bad reply: {e}")))
+                    .map_err(|e: std::io::Error| AutomationError::Bridge(e.to_string()))?;
+                serde_json::from_str(&buf).map_err(|e: serde_json::Error| AutomationError::Bridge(format!("bad reply: {e}")))
             }
             .await;
             match res {
@@ -114,15 +195,6 @@ impl BridgeClient {
             }
         }
         Err(AutomationError::Bridge("unreachable".into()))
-    }
-
-    async fn connect(&self) -> Result<Conn, AutomationError> {
-        let s = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(&self.addr))
-            .await
-            .map_err(|_| AutomationError::Bridge(format!("timed out connecting to {}", self.addr)))?
-            .map_err(|e| AutomationError::Bridge(format!("cannot connect to {} ({e}); start the app with `filmcraft --control <port>`", self.addr)))?;
-        let (r, w) = s.into_split();
-        Ok((BufReader::new(r), w))
     }
 }
 
@@ -204,6 +276,36 @@ mod tests {
         let b = BridgeClient::new(addr).unwrap();
         let e = b.execute("file.exportMedia", json!({"path": "/tmp/out.mov", "wait": true})).await.unwrap_err();
         assert!(e.to_string().contains("export failed: encode: disk full"), "{e}");
+    }
+
+    /// Transcription and pause analysis run as polled jobs too (unless told `wait: false`):
+    /// transcribing an hour of footage takes longer than the control server's reply limit.
+    #[test]
+    fn transcription_is_a_long_job_unless_told_not_to_wait() {
+        use crate::long_job::is_long;
+        assert!(is_long("transcript.generate", &json!({})));
+        assert!(is_long("transcript.generate", &json!({"wait": true})));
+        assert!(!is_long("transcript.generate", &json!({"wait": false})));
+        assert!(is_long("transcript.findPauses", &json!({})));
+        assert!(!is_long("file.exportMedia", &json!({})), "an export still waits only when asked");
+        assert!(is_long("file.exportMedia", &json!({"wait": true})));
+        assert!(!is_long("sequence.inspect", &json!({"wait": true})));
+    }
+
+    /// Nothing on the port and nothing to launch: the error says how to let an agent in.
+    #[tokio::test]
+    async fn an_unreachable_app_says_how_to_turn_agent_control_on() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        drop(listener);
+        let e = BridgeClient::new(addr.clone()).unwrap().call("ui.inspect", json!({})).await.unwrap_err().to_string();
+        assert!(e.contains("Settings ▸ Agents"), "{e}");
+        // a launcher that can't start fails cleanly (once), it doesn't hang
+        let b = BridgeClient::new(addr).unwrap().with_launcher(Some("/nonexistent/FilmCraft-test-binary".into()));
+        let e = b.call("ui.inspect", json!({})).await.unwrap_err().to_string();
+        assert!(e.contains("could not start"), "{e}");
+        let e2 = b.call("ui.inspect", json!({})).await.unwrap_err().to_string();
+        assert!(e2.contains("Settings ▸ Agents"), "the launch is tried once: {e2}");
     }
 
     /// A stand-in for the app that serves any number of connections and answers each request on
