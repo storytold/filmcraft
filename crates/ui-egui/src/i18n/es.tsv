@@ -3610,3 +3610,13 @@
 	Shows the version, community links and credits in a FilmCraft window.	Muestra la versión, los enlaces de la comunidad y los créditos en una ventana de FilmCraft.
 	Couldn't open your web browser	No se pudo abrir el navegador web
 	Open this address in your browser yourself:	Abre esta dirección tú mismo en el navegador:
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	Color de 10 bits
+	All Intra	Solo intra
+	Every frame a keyframe (edit-friendly, larger files)	Cada fotograma es clave (fácil de editar, archivos más grandes)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a master without banding	H.264 High 10 (10 bits 4:2:0) con el tamaño de la secuencia, calidad constante CRF 16, AAC 320 kbps; un máster sin bandas
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 bits 4:2:0, cada fotograma es clave), CRF 12, AAC 320 kbps; un intermedio fácil de editar

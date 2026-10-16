@@ -134,6 +134,45 @@ fn op1a_reads_back_with_our_demuxer_and_decoders() {
     }
 }
 
+/// MXF OP1a carries H.264 High 10 (#1221): a 10-bit CDCI descriptor and the long-GOP High 10 or
+/// the intra coding label, read back by our demuxer; ffprobe sees profile and pixel format, and
+/// ffmpeg decodes it to what it decodes from the same essence in a MOV export.
+#[test]
+fn op1a_h264_high10_and_intra() {
+    let (p, seq, m) = project();
+    for intra in [false, true] {
+        let path = tmp(&format!("high10_{intra}.mxf"));
+        let s = ExportSettings { h264_profile: H264Profile::High10, h264_intra_only: intra, ..settings(Format::MxfOp1a, MxfVideoCodec::H264, &path) };
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let mx = filmcraft_mxf::open(&bytes).unwrap();
+        assert!(mx.warnings.is_empty(), "{:?}", mx.warnings);
+        let v = &mx.tracks[mx.track_of_kind(filmcraft_mxf::TrackKind::Picture).unwrap()];
+        assert_eq!(v.samples.len(), 24);
+        assert_eq!(v.samples.iter().all(|s| s.key), intra);
+        let pic = v.picture.as_ref().unwrap();
+        assert_eq!((pic.component_depth, pic.black_ref_level, pic.white_ref_level), (10, Some(64), Some(940)));
+        // RP 2008 coding label: byte 13 0x31 long GOP (byte 14 0x50 = High 10), 0x32 intra
+        let label = pic.picture_coding.map(|u| u.0).unwrap_or_default();
+        assert_eq!((label[13], label[14]), if intra { (0x32, 0x20) } else { (0x31, 0x50) });
+        let (Some(ffprobe), Some(ffmpeg)) = (filmcraft_testkit::ffprobe_or_skip("MXF High 10 probe"), filmcraft_testkit::ffmpeg_or_skip("MXF High 10 decode"))
+        else {
+            continue;
+        };
+        let j = ffprobe_json(&ffprobe, &path);
+        let st = j["streams"].as_array().unwrap().iter().find(|s| s["codec_type"] == "video").unwrap().clone();
+        assert_eq!(st["profile"], if intra { "High 10 Intra" } else { "High 10" });
+        assert_eq!(st["pix_fmt"], "yuv420p10le");
+        assert_eq!(st["nb_read_frames"], "24");
+        let mov = tmp(&format!("high10_{intra}.mov"));
+        let ms = ExportSettings { format: Format::H264, multiplexer: Multiplexer::Mov, ..s.clone() };
+        let ms = ExportSettings { path: mov.clone(), ..ms };
+        export(&p, seq, &ms, &m, &Progress::default()).unwrap();
+        let raw = ["-f", "rawvideo", "-pix_fmt", "yuv420p10le"];
+        assert!(ffmpeg_raw(&ffmpeg, &path, "0:v:0", &raw) == ffmpeg_raw(&ffmpeg, &mov, "0:v:0", &raw), "intra {intra}: MXF and MOV decode differently");
+    }
+}
+
 #[test]
 fn op_atom_writes_one_file_per_essence() {
     let (p, seq, m) = project();

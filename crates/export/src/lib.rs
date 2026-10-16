@@ -361,6 +361,10 @@ pub struct ExportSettings {
     pub pixel_aspect: Option<(u32, u32)>,
     pub field_order: FieldOrder,
     pub h264_profile: H264Profile,
+    /// H.264 all-intra: every frame is a keyframe (IDR), for edit-friendly intermediates; High 10
+    /// becomes High 10 Intra. The keyframe distance is ignored.
+    #[serde(default)]
+    pub h264_intra_only: bool,
     /// H.264 level × 10 (41 = 4.1); None = the lowest level that fits. A level below what the
     /// stream needs is raised.
     pub h264_level: Option<u8>,
@@ -571,6 +575,7 @@ impl Default for ExportSettings {
             pixel_aspect: None,
             field_order: FieldOrder::Progressive,
             h264_profile: H264Profile::High,
+            h264_intra_only: false,
             h264_level: None,
             bitrate_mode: BitrateMode::default(),
             crf: DEFAULT_CRF,
@@ -1489,8 +1494,8 @@ fn apv_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettin
     })
 }
 
-/// H.264 High (our encoder): sRGB/709 RGBA8 → 8-bit limited-range BT.709 4:2:0, VBR at the
-/// requested bitrate, length-prefixed samples with the `avcC` in the sample entry.
+/// H.264 (our encoder): sRGB/709 RGBA8 → limited-range BT.709 4:2:0, 8-bit, or 10-bit for High 10
+/// (HDR frames from their float pixels), length-prefixed samples with the `avcC` in the sample entry.
 struct H264Encoder {
     enc: filmcraft_h264enc::Encoder,
     w: u32,
@@ -1499,6 +1504,10 @@ struct H264Encoder {
     y: Vec<u8>,
     u: Vec<u8>,
     v: Vec<u8>,
+    /// The 10-bit planes of High 10.
+    y16: Vec<u16>,
+    u16: Vec<u16>,
+    v16: Vec<u16>,
     signal: ColorSignal,
 }
 
@@ -1524,17 +1533,31 @@ impl VideoEncoder for H264Encoder {
         self.rate.num as u32
     }
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
-        timed(Stage::Convert, || match f.hdr {
-            Some(rgb) => {
-                let (kr, kb) = self.signal.kr_kb();
-                rgbf_to_yuv420_8(rgb, f.width as usize, f.height as usize, kr, kb, &mut self.y, &mut self.u, &mut self.v)
-            }
-            None => rgba_to_yuv420_8(f.rgba, f.width as usize, f.height as usize, &mut self.y, &mut self.u, &mut self.v),
-        });
-        let cw = (f.width as usize).div_ceil(2);
-        let frame = filmcraft_h264enc::YuvFrame { y: &self.y, u: &self.u, v: &self.v, y_stride: f.width as usize, uv_stride: cw };
-        let ps = self.enc.try_encode(&frame, f.index as i64 * self.rate.den).map_err(|e| ExportError::Encode(e.to_string()))?;
-        Ok(self.packets(ps))
+        let (w, h) = (f.width as usize, f.height as usize);
+        let cw = w.div_ceil(2);
+        let pts = f.index as i64 * self.rate.den;
+        let ps = if self.enc.config().bit_depth > 8 {
+            timed(Stage::Convert, || match f.hdr {
+                Some(rgb) => {
+                    let (kr, kb) = self.signal.kr_kb();
+                    rgbf_to_yuv420_10(rgb, w, h, kr, kb, &mut self.y16, &mut self.u16, &mut self.v16)
+                }
+                None => rgba_to_yuv420_10(f.rgba, w, h, &mut self.y16, &mut self.u16, &mut self.v16),
+            })?;
+            let frame = filmcraft_h264enc::YuvFrame16 { y: &self.y16, u: &self.u16, v: &self.v16, y_stride: w, uv_stride: cw };
+            self.enc.encode16(&frame, pts)
+        } else {
+            timed(Stage::Convert, || match f.hdr {
+                Some(rgb) => {
+                    let (kr, kb) = self.signal.kr_kb();
+                    rgbf_to_yuv420_8(rgb, w, h, kr, kb, &mut self.y, &mut self.u, &mut self.v)
+                }
+                None => rgba_to_yuv420_8(f.rgba, w, h, &mut self.y, &mut self.u, &mut self.v),
+            });
+            let frame = filmcraft_h264enc::YuvFrame { y: &self.y, u: &self.u, v: &self.v, y_stride: w, uv_stride: cw };
+            self.enc.try_encode(&frame, pts)
+        };
+        Ok(self.packets(ps.map_err(|e| ExportError::Encode(e.to_string()))?))
     }
     fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
         let ps = self.enc.flush();
@@ -1577,6 +1600,52 @@ pub fn rgba_to_yuv420_8(rgba: &[u8], w: usize, h: usize, y: &mut Vec<u8>, u: &mu
             vr[cx] = (128.0 + 224.0 * vs[cx] / cnt[cx]).round().clamp(1.0, 254.0) as u8;
         }
     });
+}
+
+/// BT.709 limited-range 10-bit 4:2:0 (code values 0..1023) from straight RGBA8, for High 10: the
+/// matrix and the 2×2 chroma average keep their precision instead of rounding to 8 bits (Y = 64 +
+/// 876·Y', C = 512 + 896·C, codes clamped to 4..1019 like [`rgbf_to_yuv420_10`]). The planes are
+/// resized to `w * h` and `ceil(w / 2) * ceil(h / 2)`; an `rgba` slice of the wrong length, a zero
+/// size or a size whose arithmetic overflows is an error.
+pub fn rgba_to_yuv420_10(rgba: &[u8], w: usize, h: usize, y: &mut Vec<u16>, u: &mut Vec<u16>, v: &mut Vec<u16>) -> Result<()> {
+    let bad = || ExportError::Encode(format!("a {w}x{h} picture needs w*h*4 bytes, got {}", rgba.len()));
+    let px = w.checked_mul(h).ok_or_else(bad)?;
+    if w == 0 || h == 0 || px.checked_mul(4) != Some(rgba.len()) {
+        return Err(bad());
+    }
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    y.clear();
+    y.resize(px, 0);
+    u.clear();
+    u.resize(cw * ch, 0);
+    v.clear();
+    v.resize(cw * ch, 0);
+    let code = |x: f32| x.round().clamp(4.0, 1019.0) as u16;
+    y.par_chunks_mut(w * 2).zip(u.par_chunks_mut(cw).zip(v.par_chunks_mut(cw))).enumerate().for_each(|(cy, (yr, (ur, vr)))| {
+        let mut us = vec![0f32; cw];
+        let mut vs = vec![0f32; cw];
+        let mut cnt = vec![0f32; cw];
+        for (dy, yrow) in yr.chunks_exact_mut(w).enumerate() {
+            let row = cy * 2 + dy;
+            let Some(src) = rgba.get(row * w * 4..(row + 1) * w * 4) else { continue };
+            for (x, (&[r, g, b, _], yo)) in src.as_chunks::<4>().0.iter().zip(yrow.iter_mut()).enumerate() {
+                let (r, g, b) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
+                let yy = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                *yo = code(64.0 + 876.0 * yy);
+                if let (Some(a), Some(c), Some(n)) = (us.get_mut(x / 2), vs.get_mut(x / 2), cnt.get_mut(x / 2)) {
+                    *a += (b - yy) / 1.8556;
+                    *c += (r - yy) / 1.5748;
+                    *n += 1.0;
+                }
+            }
+        }
+        for (cx, (uo, vo)) in ur.iter_mut().zip(vr.iter_mut()).enumerate() {
+            let n = cnt.get(cx).copied().unwrap_or(1.0).max(1.0);
+            *uo = code(512.0 + 896.0 * us.get(cx).copied().unwrap_or(0.0) / n);
+            *vo = code(512.0 + 896.0 * vs.get(cx).copied().unwrap_or(0.0) / n);
+        }
+    });
+    Ok(())
 }
 
 /// Limited-range 8-bit 4:2:0 from encoded R'G'B' floats with matrix (Kr, Kb).
@@ -1699,7 +1768,10 @@ fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSetti
         H264Profile::Baseline => filmcraft_h264enc::Profile::Baseline,
         H264Profile::Main => filmcraft_h264enc::Profile::Main,
         H264Profile::High => filmcraft_h264enc::Profile::High,
+        H264Profile::High10 => filmcraft_h264enc::Profile::High10,
     };
+    cfg.bit_depth = s.h264_profile.bit_depth();
+    cfg.intra_only = s.h264_intra_only;
     cfg.level = s.h264_level;
     if let Some((n, d)) = s.pixel_aspect {
         cfg.sar = (n.clamp(1, 65535) as u16, d.clamp(1, 65535) as u16);
@@ -1715,7 +1787,10 @@ fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSetti
     }
     Some(
         filmcraft_h264enc::Encoder::new(cfg)
-            .map(|enc| Box::new(H264Encoder { enc, w, h, rate, y: Vec::new(), u: Vec::new(), v: Vec::new(), signal: s.signal }) as Box<dyn VideoEncoder>)
+            .map(|enc| {
+                let (y, u, v, y16, u16, v16) = Default::default();
+                Box::new(H264Encoder { enc, w, h, rate, y, u, v, y16, u16, v16, signal: s.signal }) as Box<dyn VideoEncoder>
+            })
             .map_err(|e| ExportError::Encode(e.to_string())),
     )
 }

@@ -838,7 +838,7 @@ mod tests {
         ex::Placement::ALL.iter().for_each(|p| push(&mut out, p.label()));
         [ex::FieldOrder::Progressive, ex::FieldOrder::UpperFirst, ex::FieldOrder::LowerFirst].iter().for_each(|f| push(&mut out, f.label()));
         [ex::BitrateMode::Cbr, ex::BitrateMode::Vbr1Pass, ex::BitrateMode::Vbr2Pass, ex::BitrateMode::Crf].iter().for_each(|m| push(&mut out, m.label()));
-        [ex::H264Profile::Baseline, ex::H264Profile::Main, ex::H264Profile::High].iter().for_each(|p| push(&mut out, p.label()));
+        [ex::H264Profile::Baseline, ex::H264Profile::Main, ex::H264Profile::High, ex::H264Profile::High10].iter().for_each(|p| push(&mut out, p.label()));
         crate::panels::export_mode::RANGES.iter().for_each(|(_, l)| push(&mut out, l));
         crate::panels::export_mode::PARS.iter().for_each(|(l, _)| push(&mut out, l));
         for template in filmcraft_project::gtemplate::builtin_templates() {

@@ -3577,3 +3577,13 @@
 	Export the labels to a preset file…	Exporter les étiquettes dans un fichier de paramètre prédéfini…
 	Show the presets folder	Afficher le dossier des paramètres prédéfinis
 	Delete this preset	Supprimer ce paramètre prédéfini
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	Couleur 10 bits
+	All Intra	Tout intra
+	Every frame a keyframe (edit-friendly, larger files)	Chaque image est une image clé (facile à monter, fichiers plus gros)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a master without banding	H.264 High 10 (10 bits 4:2:0) à la taille de la séquence, qualité constante CRF 16, AAC 320 kbps ; un master sans effet de bandes
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 bits 4:2:0, chaque image est une image clé), CRF 12, AAC 320 kbps ; un intermédiaire facile à monter

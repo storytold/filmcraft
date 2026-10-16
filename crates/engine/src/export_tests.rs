@@ -64,6 +64,21 @@ fn export_integer_parameters_cannot_wrap_or_overflow() {
     assert!(s.execute("export.resolve", json!({"bitrateKbps":8000.0, "keyframeDistance":48.0})).is_ok(), "integer-valued floats are integers");
 }
 
+/// The flat `h264Profile` / `h264IntraOnly` parameters (and the same keys in `settings`) choose
+/// High 10 and all-intra; a profile that does not exist is an error (#1221).
+#[test]
+fn h264_profile_and_intra_parameters() {
+    let mut s = demo();
+    let r = s.execute("export.resolve", json!({"format": "h264", "h264Profile": "high10", "h264IntraOnly": true})).unwrap();
+    assert_eq!((r["settings"]["h264Profile"].as_str(), r["settings"]["h264IntraOnly"].as_bool()), (Some("high10"), Some(true)));
+    let r = s.execute("export.resolve", json!({"format": "h264", "settings": {"h264Profile": "high10"}})).unwrap();
+    assert_eq!(r["settings"]["h264Profile"], "high10");
+    assert_eq!(r["settings"]["h264IntraOnly"], false);
+    for bad in [json!({"h264Profile": "high12"}), json!({"settings": {"h264Profile": "high444"}})] {
+        assert!(s.execute("export.resolve", bad.clone()).is_err(), "{bad}");
+    }
+}
+
 #[test]
 fn wav_resolve_honours_explicit_sample_rates() {
     let mut s = demo();
@@ -221,7 +236,13 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
             "h264" => {
                 assert!(fmt_name.contains("mp4"), "{name}: {fmt_name}");
                 assert_eq!(v["codec_name"], "h264", "{name}");
-                assert_eq!(v["profile"], "High", "{name}");
+                let (profile, pix) = match (settings["h264Profile"].as_str(), settings["h264IntraOnly"].as_bool().unwrap_or(false)) {
+                    (Some("high10"), true) => ("High 10 Intra", "yuv420p10le"),
+                    (Some("high10"), false) => ("High 10", "yuv420p10le"),
+                    _ => ("High", "yuv420p"),
+                };
+                assert_eq!(v["profile"], profile, "{name}");
+                assert_eq!(v["pix_fmt"], pix, "{name}");
                 assert_eq!(a["codec_name"], "aac", "{name}");
                 assert!((num(&a["bit_rate"]) / 1000.0 - 320.0).abs() < 80.0, "{name}: AAC {}", a["bit_rate"]);
             }

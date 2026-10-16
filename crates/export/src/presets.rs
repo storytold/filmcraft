@@ -5,7 +5,7 @@
 use filmcraft_time::FrameRate;
 use serde::{Deserialize, Serialize};
 
-use crate::settings::{AudioCodec, AudioSettings, BitrateMode, MxfVideoCodec, Scaling};
+use crate::settings::{AudioCodec, AudioSettings, BitrateMode, H264Profile, MxfVideoCodec, Scaling};
 use crate::{ExportSettings, Format};
 
 /// A named set of export settings (`path` and `range` are left empty).
@@ -48,6 +48,20 @@ fn h264(size: Option<(u32, u32)>, kbps: u32, max_kbps: u32) -> ExportSettings {
 
 fn adaptive(bpp: f32) -> ExportSettings {
     ExportSettings { adaptive_bitrate: Some(bpp), max_bitrate_kbps: None, ..h264(None, 10_000, 0) }
+}
+
+/// H.264 High 10 at the sequence's size and constant quality `crf`: a 10-bit master or (all-intra)
+/// intermediate.
+fn high10(crf: f32, intra: bool) -> ExportSettings {
+    ExportSettings {
+        h264_profile: H264Profile::High10,
+        h264_intra_only: intra,
+        bitrate_mode: BitrateMode::Crf,
+        crf,
+        max_bitrate_kbps: None,
+        render_at_max_depth: true,
+        ..h264(None, 50_000, 0)
+    }
 }
 
 fn mov(format: Format, profile: &str) -> ExportSettings {
@@ -133,6 +147,18 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
         p("Avid DNxHR HQ", bc, "QuickTime, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM", mov(Format::DnxHr, "hq")),
         p("Avid DNxHR SQ", bc, "QuickTime, DNxHR SQ (8-bit 4:2:2), 24-bit 48 kHz PCM", mov(Format::DnxHr, "sq")),
         p("Avid DNxHR LB", bc, "QuickTime, DNxHR LB (8-bit 4:2:2), 24-bit 48 kHz PCM", mov(Format::DnxHr, "lb")),
+        p(
+            "H.264 High 10 Master",
+            bc,
+            "H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a master without banding",
+            high10(16.0, false),
+        ),
+        p(
+            "H.264 High 10 Intra",
+            bc,
+            "H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate",
+            high10(12.0, true),
+        ),
         p("APV 422-10", bc, "QuickTime, APV 422-10 (10-bit 4:2:2), 24-bit 48 kHz PCM", mov(Format::Apv, "422-10")),
         p("APV 422-12", bc, "QuickTime, APV 422-12 (12-bit 4:2:2), 24-bit 48 kHz PCM", mov(Format::Apv, "422-12")),
         p("MXF OP1a DNxHR HQ", bc, "MXF OP1a, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM, start timecode", mxf(Format::MxfOp1a, MxfVideoCodec::Dnxhr, "hq")),

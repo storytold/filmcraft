@@ -286,6 +286,12 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
     if let Some(v) = str_p(p, "apvProfile") {
         settings.apv_profile = v.to_string();
     }
+    if let Some(v) = str_p(p, "h264Profile") {
+        settings.h264_profile = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "h264Profile: baseline | main | high | high10"))?;
+    }
+    if let Some(v) = bool_p(p, "h264IntraOnly") {
+        settings.h264_intra_only = v;
+    }
     if let Some(v) = str_p(p, "audioCodec") {
         settings.audio.codec = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "audioCodec: auto | aac | pcm | flac"))?;
     }

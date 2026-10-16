@@ -317,6 +317,20 @@ fn combo(ui: &mut egui::Ui, reg: &mut Reg, id: &str, selected: &str, options: &[
 
 /// [`combo`] whose options carry why they are greyed out (label, `Some(reason)` when disabled).
 fn combo_why(ui: &mut egui::Ui, reg: &mut Reg, id: &str, selected: &str, options: &[(String, Option<&str>)], width: f32) -> Option<usize> {
+    combo_tips(ui, reg, id, selected, options, width, |_| None)
+}
+
+/// [`combo_why`] with a hover tip per option (`tip(i)`), also shown on the closed box while that
+/// option is selected.
+fn combo_tips(
+    ui: &mut egui::Ui,
+    reg: &mut Reg,
+    id: &str,
+    selected: &str,
+    options: &[(String, Option<&str>)],
+    width: f32,
+    tip: impl Fn(usize) -> Option<&'static str>,
+) -> Option<usize> {
     let mut chosen = None;
     let r = egui::ComboBox::from_id_salt(id).selected_text(crate::i18n::t(selected)).width(width).show_ui(ui, |ui| {
         for (i, (label, why)) in options.iter().enumerate() {
@@ -326,12 +340,20 @@ fn combo_why(ui: &mut egui::Ui, reg: &mut Reg, id: &str, selected: &str, options
                 Some(why) => resp.on_disabled_hover_text(*why),
                 None => resp,
             };
+            let resp = match tip(i) {
+                Some(t) => resp.on_hover_text(t),
+                None => resp,
+            };
             reg.add(format!("{id}.option.{i}"), resp.rect, label.clone());
             if resp.clicked() {
                 chosen = Some(i);
             }
         }
     });
+    let current = options.iter().position(|(l, _)| l == selected);
+    if let Some(t) = current.and_then(&tip) {
+        r.response.clone().on_hover_text(t);
+    }
     reg.add(id, r.response.rect, selected);
     chosen
 }
@@ -709,11 +731,15 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 }
             } else {
                 row(ui, t, tl!("Profile"), |ui| {
-                    let o = [H264Profile::Baseline, H264Profile::Main, H264Profile::High];
-                    let labels: Vec<(String, bool)> = o.iter().map(|p| (p.label().to_string(), true)).collect();
-                    if let Some(i) = combo(ui, reg, "export.video.profile", s.h264_profile.label(), &labels, 120.0) {
+                    let o = [H264Profile::Baseline, H264Profile::Main, H264Profile::High, H264Profile::High10];
+                    let labels: Vec<(String, Option<&str>)> = o.iter().map(|p| (p.label().to_string(), None)).collect();
+                    let tip = |i: usize| (o.get(i) == Some(&H264Profile::High10)).then(|| tl!("10-bit color"));
+                    if let Some(i) = combo_tips(ui, reg, "export.video.profile", s.h264_profile.label(), &labels, 120.0, tip) {
                         s.h264_profile = o[i];
                     }
+                });
+                row(ui, t, tl!("All Intra"), |ui| {
+                    check(ui, reg, "export.video.intraOnly", &mut s.h264_intra_only, tl!("Every frame a keyframe (edit-friendly, larger files)"));
                 });
                 row(ui, t, tl!("Level"), |ui| {
                     let levels: [Option<u8>; 13] =
@@ -767,15 +793,17 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 }
             }
             row(ui, t, tl!("Key Frame Distance"), |ui| {
-                let mut on = s.keyframe_distance.is_some();
-                if check(ui, reg, "export.video.keyframeOn", &mut on, "") {
-                    s.keyframe_distance = on.then_some(48);
-                }
-                if let Some(k) = s.keyframe_distance.as_mut() {
-                    let mut v = *k as f64;
-                    drag(ui, reg, "export.video.keyframe", &mut v, 1.0..=600.0, 1.0, " frames", 0);
-                    *k = v as u32;
-                }
+                ui.add_enabled_ui(hevc || !s.h264_intra_only, |ui| {
+                    let mut on = s.keyframe_distance.is_some();
+                    if check(ui, reg, "export.video.keyframeOn", &mut on, "") {
+                        s.keyframe_distance = on.then_some(48);
+                    }
+                    if let Some(k) = s.keyframe_distance.as_mut() {
+                        let mut v = *k as f64;
+                        drag(ui, reg, "export.video.keyframe", &mut v, 1.0..=600.0, 1.0, " frames", 0);
+                        *k = v as u32;
+                    }
+                });
             });
             // The system's hardware encoder where there is one (VideoToolbox on macOS, NVENC on NVIDIA
             // GPUs on Windows, VA-API on Linux); everything it does not take (two-pass, HDR, MXF) and

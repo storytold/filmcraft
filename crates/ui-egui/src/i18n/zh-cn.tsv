@@ -3585,3 +3585,13 @@
 	Shows the version, community links and credits in a FilmCraft window.	在 FilmCraft 窗口中显示版本、社区链接和致谢。
 	Couldn't open your web browser	无法打开网页浏览器
 	Open this address in your browser yourself:	请自行在浏览器中打开此地址：
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	10 位色彩
+	All Intra	全帧内
+	Every frame a keyframe (edit-friendly, larger files)	每一帧都是关键帧（便于剪辑，文件更大）
+	H.264 High 10 Master	H.264 High 10 母版
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a master without banding	H.264 High 10（10 位 4:2:0，采用序列的尺寸），恒定质量 CRF 16，AAC 320 kbps；无色带的母版
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra（10 位 4:2:0，每一帧都是关键帧），CRF 12，AAC 320 kbps；便于剪辑的中间文件

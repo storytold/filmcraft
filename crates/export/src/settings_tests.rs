@@ -773,6 +773,54 @@ fn h264_profile_level_and_keyframes() {
     }
 }
 
+/// H.264 High 10 (#1221): MP4 and MOV carry a 10-bit stream ffmpeg decodes without a message;
+/// All Intra makes High 10 Intra with every frame a keyframe; the grey matte keeps its 10-bit code.
+#[test]
+fn h264_high10_and_all_intra_export() {
+    let (p, seq, m) = matte([0.5, 0.5, 0.5, 1.0], 320, 180, None);
+    let dir = Scratch::new("high10");
+    for (ext, intra) in [("mp4", false), ("mov", false), ("mp4", true)] {
+        let path = dir.path(&format!("high10_{intra}.{ext}"));
+        let mut s = ExportSettings {
+            format: Format::H264,
+            path: path.clone(),
+            h264_profile: H264Profile::High10,
+            h264_intra_only: intra,
+            bitrate_mode: BitrateMode::Crf,
+            crf: 18.0,
+            include_audio: false,
+            ..Default::default()
+        };
+        if ext == "mov" {
+            s.multiplexer = Multiplexer::Mov;
+        }
+        s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(12)));
+        let summary = s.summary(320, 180, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).video;
+        assert_eq!(summary.contains("every frame a keyframe"), intra, "{summary}");
+        assert!(summary.contains(if intra { "High 10 Intra (10-bit)" } else { "High 10 (10-bit)" }), "{summary}");
+        let high = ExportSettings { h264_profile: H264Profile::High, ..s.clone() }.summary(320, 180, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).video;
+        assert!(high.contains("High (8-bit)") || high.contains("High Intra (8-bit)"), "{high}");
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let Some(j) = ffprobe_json(&["-show_streams"], &path) else { return };
+        let st = &j["streams"][0];
+        assert_eq!(st["profile"], if intra { "High 10 Intra" } else { "High 10" }, "{path}");
+        assert_eq!(st["pix_fmt"], "yuv420p10le", "{path}");
+        if let Some(j) = ffprobe_json(&["-show_frames", "-select_streams", "v:0", "-show_entries", "frame=key_frame"], &path) {
+            let keys = j["frames"].as_array().unwrap().iter().filter(|f| f["key_frame"] == 1).count();
+            assert_eq!(keys == 12, intra, "{path}: {keys} keyframes of 12");
+        }
+        let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("export high10") else { return };
+        let out = std::process::Command::new(ffmpeg)
+            .args(["-v", "warning", "-i", &path, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "yuv420p10le", "-"])
+            .output()
+            .unwrap();
+        assert!(out.status.success() && out.stderr.is_empty(), "{path}: {}", String::from_utf8_lossy(&out.stderr));
+        // 50 % grey renders as RGBA 127 or 128: Y = 64 + 876 * 127/255 = 500 .. 64 + 876 * 128/255 = 504
+        let y0 = u16::from_le_bytes([out.stdout[2 * (90 * 320 + 160)], out.stdout[2 * (90 * 320 + 160) + 1]]);
+        assert!((499..=505).contains(&y0), "{path}: Y {y0}");
+    }
+}
+
 #[test]
 fn video_limiter_clamps_luma() {
     let (p, seq, m) = matte([1.0, 1.0, 1.0, 1.0], 64, 36, None);
