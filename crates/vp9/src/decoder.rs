@@ -627,8 +627,10 @@ impl PostJob {
         let wave = Arc::new(Wave::new(self.frame.clone(), self.strips, self.mi, lf, self.pools, pic));
         #[cfg(feature = "threads")]
         if let Some(pool) = &self.pool {
-            // Rows that can be filtered at the same time, the post thread being one of them.
-            let rows = wave.sb_rows.min(wave.sb_cols.div_ceil(2)).min(pool.current_num_threads() + 1);
+            // The wave helpers can block in a Condvar while they wait for the row above. Rayon
+            // only lets a blocked worker steal if it entered through a nested scope/join, so
+            // keep at least one pool worker unblocked for the row that is making progress.
+            let rows = wave.sb_rows.min(wave.sb_cols.div_ceil(2)).min(pool.current_num_threads());
             for _ in 1..rows {
                 let w = wave.clone();
                 pool.spawn(move || w.work());

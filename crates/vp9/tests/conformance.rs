@@ -102,6 +102,20 @@ fn draft_mode_changes_only_flagged_non_reference_frames() {
     }
 }
 
+/// A wavefront helper must not consume the last decoder-pool worker while it waits for the row
+/// above. The previous schedule spawned `pool threads + 1` helpers, so with pool saturation the
+/// unblocked post thread could finish, every remaining worker could block on row 0, and decode
+/// would hang. `Decoder::with_threads(2)` is the smallest deterministic reproducer: one worker
+/// remains available while one helper waits.
+#[test]
+fn loop_filter_wavefront_keeps_a_pool_worker_available() {
+    let f = common::fixture("hd_1080p");
+    let Some((ivf, yuv)) = common::ensure(f) else { return };
+    let reference = std::fs::read(yuv).unwrap();
+    let pics = common::decode_file_threads(&ivf, 2).map_err(|e| e.1).unwrap();
+    common::compare(&pics, &reference, f.pix_fmt).unwrap();
+}
+
 /// The loop filter runs as a wavefront over superblock rows on the decoder's pool: repeated
 /// decodes with several thread counts all match ffmpeg (a race shows up as a mismatch).
 #[test]
