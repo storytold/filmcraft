@@ -835,8 +835,25 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, cx: &mut Ctx)
     let t = cx.t;
     let seq = cx.seq;
     ui.painter().line_segment([pos2(row.min.x, row.min.y + 0.5), pos2(row.max.x, row.min.y + 0.5)], Stroke::new(1.0, t.separator));
+    // the current time: drag to scrub, click to type a time, as on the Timeline and the monitors
     let tc = format_time(cx.now, seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, seq.settings.sample_rate as i64);
-    ui.painter().text(pos2(row.min.x + 12.0, row.center().y), Align2::LEFT_CENTER, tc, Tokens::mono(13.0), t.timecode);
+    let tc_rect = Rect::from_min_size(pos2(row.min.x + 12.0, row.min.y + 1.0), vec2(110.0, row.height() - 1.0));
+    match crate::widgets::timecode_field(
+        ui,
+        egui::Id::new("mixer-timecode"),
+        tc_rect,
+        &tc,
+        cx.now,
+        filmcraft_time::Tick::ZERO,
+        seq.settings.frame_rate,
+        seq.settings.drop_frame,
+        t.timecode,
+    ) {
+        Some(Ok(time)) => cx.cmd("playhead.set", json!({"time": time.0})),
+        Some(Err(e)) => app.ui.status = e,
+        None => {}
+    }
+    app.auto.add("audioTrackMixer.timecode", tc_rect, &tc);
     let dur = format_time(seq.duration(), seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, seq.settings.sample_rate as i64);
     ui.painter().text(pos2(row.max.x - 12.0, row.center().y), Align2::RIGHT_CENTER, dur, Tokens::mono(12.0), t.text_dim);
     let playing = app.playback.playing;

@@ -92,10 +92,23 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // ---- control bar: timecode · ◀ ▶ · Match Playhead · Gang · [Composite Video ▾]
     let bar = Rect::from_min_max(pos2(rect.min.x, area.max.y + 4.0), rect.max);
     let tc = format_time(rate.tick_of(frame), rate, q.settings.drop_frame, TimeDisplay::Timecode, 48000);
-    let tr = ui.painter().text(pos2(bar.min.x + 10.0, bar.center().y), Align2::LEFT_CENTER, &tc, Tokens::timecode(), t.timecode);
-    elems.push(("reference.timecode".into(), tr, tc.clone()));
+    // the reference frame's time: drag to scrub it, click to type a time, as on the monitors
+    let tc_w = ui.painter().layout_no_wrap(tc.clone(), Tokens::timecode(), t.timecode).size().x + 6.0;
+    let tc_rect = Rect::from_min_size(pos2(bar.min.x + 10.0, bar.center().y - 11.0), vec2(tc_w, 22.0));
+    let typed = crate::widgets::timecode_field(
+        ui,
+        egui::Id::new("reference-timecode"),
+        tc_rect,
+        &tc,
+        rate.tick_of(frame),
+        Tick::ZERO,
+        rate,
+        q.settings.drop_frame,
+        t.timecode,
+    );
+    elems.push(("reference.timecode".into(), tc_rect, tc.clone()));
     let mut step = 0i64;
-    let mut x = tr.max.x + 16.0;
+    let mut x = tc_rect.max.x + 16.0;
     let mut button = |ui: &mut egui::Ui, id: &str, label: &str, icon: Option<Icon>, on: bool, elems: &mut Vec<(String, Rect, String)>| -> bool {
         let galley_w = if icon.is_some() { 0.0 } else { ui.painter().layout_no_wrap(label.into(), Tokens::ui(11.5), t.text).size().x };
         let w = if icon.is_some() { 24.0 } else { galley_w + 16.0 };
@@ -142,8 +155,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
+    if let Some(Err(e)) = &typed {
+        app.ui.status = e.clone();
+    }
     let r = &mut app.ui.panels.reference;
     r.display = display;
+    if let Some(Ok(time)) = typed {
+        r.ganged = false;
+        r.time = time.0;
+    }
     if gang {
         r.ganged = !r.ganged;
         if !r.ganged {

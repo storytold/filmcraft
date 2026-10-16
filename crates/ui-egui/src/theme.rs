@@ -385,10 +385,11 @@ impl Tokens {
     pub fn semibold(size: f32) -> FontId {
         FontId::new(size, FontFamily::Name("semibold".into()))
     }
-    /// The big blue timecode over the timeline and under the monitors: regular weight, as in
-    /// Premiere (Premiere's reads 10 px tall and 76 px wide for 00:00:16:05 at 1x).
+    /// The font of every current-time timecode: the Timeline's, the monitors', Effect Controls',
+    /// the Audio Track Mixer's and the Reference Monitor's. Monospace, so the digits do not shift
+    /// as it counts.
     pub fn timecode() -> FontId {
-        FontId::new(16.0, FontFamily::Proportional)
+        FontId::new(13.0, FontFamily::Monospace)
     }
 }
 
