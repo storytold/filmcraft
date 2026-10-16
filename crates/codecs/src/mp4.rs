@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use filmcraft_color::ColorInfo;
 use filmcraft_frame::{AudioBuffer, Region, VideoFrame};
-use filmcraft_isobmff::{ByteSource, CleanAperture, CodecConfig, Mp4File, TrackKind};
+use filmcraft_isobmff::{ByteSource, CleanAperture, CodecConfig, Mp4File, Sample, TrackKind};
 use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, SharedSource, VideoStreamInfo};
 use filmcraft_time::{FrameRate, Tick};
 
@@ -20,6 +20,31 @@ use crate::{CodecError, make_video_decoder};
 
 /// Most bytes read from one AAC access unit when probing for HE-AAC at open (8 channels × 6144 bits).
 const MAX_AAC_PROBE_UNIT: usize = 8 * 6144 / 8;
+
+/// How far a track's nominal rate may sit from a standard rate and still be read as it. Timestamps
+/// rounded to a coarse unit (whole milliseconds in a 90 kHz track, as phones and messaging apps
+/// write them) move the average by less than this, at every rate a phone records (#1700).
+const STANDARD_RATE_TOLERANCE: f64 = 0.005;
+
+/// A video track's nominal frame rate: the mean of the sample durations within a quarter frame of
+/// their median, read as the standard rate when it is within [`STANDARD_RATE_TOLERANCE`] of one.
+///
+/// A duration within a quarter frame of the median is one frame's rounding; a longer one is a
+/// picture the file holds longer (variable rate), and averaging it in would move the rate off the
+/// frames that do repeat. The mean is what the median cannot see: whole-millisecond timestamps
+/// leave a 30 fps clip's durations alternating 2970 and 3060 units of a 90 kHz timescale, and the
+/// median, either of them, read the clip as 30.303 fps instead of the 30 their mean is (#1700).
+fn nominal_rate(timescale: u32, samples: &[Sample]) -> Option<FrameRate> {
+    let mut durs: Vec<u32> = samples.iter().map(|s| s.duration).filter(|&d| d > 0).collect();
+    durs.sort_unstable();
+    let &median = durs.get(durs.len() / 2)?;
+    let near: Vec<f64> = durs.iter().filter(|&&d| d.abs_diff(median) * 4 <= median).map(|&d| f64::from(d)).collect();
+    let mean = near.iter().sum::<f64>() / near.len().max(1) as f64;
+    if mean <= 0.0 {
+        return None;
+    }
+    Some(FrameRate::from_f64_within(f64::from(timescale) / mean, STANDARD_RATE_TOLERANCE).sane())
+}
 
 struct AudioState {
     decoder: Option<PacketDecoder>,
@@ -244,13 +269,8 @@ impl Mp4Source {
             };
             aperture = vp.clean_aperture.and_then(|c| clean_aperture(c, (w, h)));
             let (w, h) = aperture.map_or((w, h), |r| (r.w as u32, r.h as u32));
-            // frame rate from the median sample duration
-            let mut durs: Vec<u32> = t.samples.iter().take(240).map(|s| s.duration).collect();
-            durs.sort_unstable();
-            let d = durs.get(durs.len() / 2).copied().unwrap_or(1).max(1);
-            let rate = FrameRate::from_f64(t.timescale as f64 / d as f64);
             // A rate that rounds to zero (one sample per huge duration) can't be divided by.
-            let rate = if rate.num > 0 && rate.den > 0 { rate } else { FrameRate::default() };
+            let rate = nominal_rate(t.timescale, &t.samples).unwrap_or_default();
             color = color_from(entry, w, h);
             if entry
                 .video
@@ -672,7 +692,8 @@ pub fn opener(name: &str, bytes: Arc<[u8]>) -> Option<Result<SharedSource, Media
 /// first frame 34.1 ms long at 30 fps), and the frame shown at a time is the last one that starts at
 /// or before it: a sequence frame asked at the exact grid time got the picture before.
 ///
-/// The grid starts at the first picture and steps by the nominal frame duration. A file is snapped
+/// The grid starts at the first picture and steps by the nominal frame duration ([`nominal_rate`],
+/// so a rate the muxer's rounding moved stays the standard one it is). A file is snapped
 /// only when every picture is less than a quarter of a frame from its own grid point and no two land
 /// on the same one: a frame that far off was placed there (variable frame rate), so a file with one
 /// such picture keeps all its times. A picture at most one unit off is left where it is: that can't
@@ -682,19 +703,7 @@ pub fn opener(name: &str, bytes: Arc<[u8]>) -> Option<Result<SharedSource, Media
 fn snap_to_frame_grid(file: &mut Mp4File, vtrack: Option<usize>) {
     let Some(t) = vtrack.and_then(|i| file.tracks.get_mut(i)) else { return };
     let Some(first) = t.samples.iter().map(|s| s.pts).min() else { return };
-    // The nominal duration: the median sample duration, averaged with the durations one unit from
-    // it. Those are the same duration rounded to the timescale (1501 and 1502 at 59.94 fps over
-    // 90 kHz): the median alone drifts half a unit a frame, enough to snap a short clip onto the
-    // wrong points.
-    let mut durs: Vec<u32> = t.samples.iter().map(|s| s.duration).collect();
-    durs.sort_unstable();
-    let Some(&median) = durs.get(durs.len() / 2) else { return };
-    let near: Vec<f64> = durs.iter().filter(|&&d| d.abs_diff(median) <= 1).map(|&d| f64::from(d)).collect();
-    let mean = near.iter().sum::<f64>() / near.len().max(1) as f64;
-    if mean <= 0.0 {
-        return;
-    }
-    let rate = FrameRate::from_f64(f64::from(t.timescale) / mean);
+    let Some(rate) = nominal_rate(t.timescale, &t.samples) else { return };
     // one frame lasts `step_num / step_den` track units
     let (step_num, step_den) = (i128::from(t.timescale) * i128::from(rate.den), i128::from(rate.num));
     if step_num <= 0 || step_den <= 0 {

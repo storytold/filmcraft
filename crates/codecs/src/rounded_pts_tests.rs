@@ -172,6 +172,40 @@ fn mp4_with_frames_on_the_grid_shows_every_frame_once() {
     check_90k_late(0);
 }
 
+/// An MP4 at a 90 kHz timescale whose frame times are rounded to whole milliseconds, as phones and
+/// messaging apps write them (issue #1700): a 30 fps clip's samples then last 2970 and 3060 units
+/// in turn, a 60 fps clip's 1440 and 1530.
+fn mp4_ms_rounded(rate: FrameRate) -> Arc<[u8]> {
+    let mut w = Mp4Writer::new(Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).unwrap();
+    let t = w.add_track(TrackConfig::new(SampleEntry::jpeg((BITS * BLOCK) as u16, BLOCK as u16), 90_000)).unwrap();
+    // frame `k`'s start: its exact time in milliseconds, rounded halves up, in 90 kHz units
+    let start = |k: usize| ((2 * k as i128 * 1000 * rate.den as i128 + rate.num as i128) / (2 * rate.num as i128) * 90) as i64;
+    for k in 0..frame_count(rate) {
+        let duration = (start(k + 1) - start(k)) as u32;
+        w.write_sample(t, WriteSample { data: &picture(k), duration, composition_offset: 0, is_sync: true }).unwrap();
+    }
+    w.finish().unwrap().into_inner().into()
+}
+
+/// #1700: the frame rate came from the median sample duration. Times rounded to whole milliseconds
+/// leave a 30 fps clip's durations at 2970 and 3060 units (median 3060) and a 60 fps clip's at 1440
+/// and 1530, so the clip read as 30.303 / 58.824 fps: New Sequence From Clip made a sequence at
+/// that rate and five of its 240 frames were never shown or exported. The clip reads as the rate
+/// its rounded durations average to, and its pictures snap onto that rate's grid.
+#[test]
+fn mp4_with_millisecond_rounded_frame_times_reads_as_its_rate() {
+    let mut failures = Vec::new();
+    for rate in [FrameRate::FPS_30, FrameRate::FPS_60] {
+        let src = crate::open_bytes("synthetic.mov", mp4_ms_rounded(rate)).unwrap();
+        let got = src.info().video.as_ref().map(|v| v.frame_rate);
+        if got != Some(rate) {
+            failures.push(format!("{rate}: reads as {got:?}"));
+        }
+        failures.extend(problems(src.as_ref(), rate).into_iter().map(|p| format!("{rate}: {p}")));
+    }
+    assert!(failures.is_empty(), "mov:\n{}", failures.join("\n"));
+}
+
 /// An MP4 at 90 kHz with these sample durations.
 fn mp4_90k(durations: &[u32]) -> Arc<[u8]> {
     let mut w = Mp4Writer::new(Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).unwrap();

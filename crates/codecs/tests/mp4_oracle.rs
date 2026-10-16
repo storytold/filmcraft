@@ -5,6 +5,7 @@
 mod common;
 
 use common::*;
+use filmcraft_time::FrameRate;
 
 /// A source whose rate differs from the sequence's is resampled per request. An AAC track in MP4
 /// carries an edit list that skips the encoder priming (ffmpeg: 1024 samples), and every request
@@ -245,5 +246,48 @@ fn mp2_in_mp4_and_mov_matches_ffmpeg() {
         let (mid, all) = (worst(n / 2 + 77, 3000), worst(0, n));
         println!("{name}: {n} samples, max error mid {mid:.2e}, whole {all:.2e}");
         assert!(mid <= 1e-4 && all <= 1e-4, "{name}: differs from ffmpeg by {mid} (mid) / {all} (whole)");
+    }
+}
+
+/// Phone and messaging-app clips stamp frame times rounded to whole milliseconds inside a 90 kHz
+/// track (issue #1700), as this command writes them: a 30 fps clip's samples then last 2970 and
+/// 3060 units in turn (ffmpeg: 2880, 2970, 3060 and 3150), a 60 fps clip's 1350 to 1620. The median
+/// duration read the clip as 30.303 / 58.824 fps, so New Sequence From Clip made a sequence at that
+/// rate and dropped frames; the rate is the one the rounded durations average to (3000 / 1500).
+#[test]
+fn millisecond_rounded_frame_times_read_as_their_rate() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    for (rate, fps, n) in [(FrameRate::FPS_30, "30", 120u64), (FrameRate::FPS_60, "60", 240u64)] {
+        let name = format!("ms_stamps_{fps}.mp4");
+        let size = format!("testsrc2=size=320x240:rate={fps}");
+        let pts = format!("settb=1/1000,setpts='floor(N*1000/{fps}+0.5)/1000/TB'");
+        let args = [
+            "-f",
+            "lavfi",
+            "-i",
+            &size,
+            "-t",
+            "4",
+            "-vf",
+            &pts,
+            "-enc_time_base:v",
+            "1/1000",
+            "-c:v",
+            "libx264",
+            "-bf",
+            "0",
+            "-pix_fmt",
+            "yuv420p",
+            "-video_track_timescale",
+            "90000",
+        ];
+        let Some(f) = fixture(&ff, &name, &args) else {
+            eprintln!("SKIPPED: ffmpeg without libx264");
+            return;
+        };
+        let src = filmcraft_codecs::open_bytes(&name, bytes(&f)).unwrap();
+        let info = src.info();
+        assert_eq!(info.video.as_ref().map(|v| v.frame_rate), Some(rate), "{name} reads as its own rate");
+        assert_eq!(info.duration, rate.tick_of(n as i64), "{name} lasts {n} frames");
     }
 }

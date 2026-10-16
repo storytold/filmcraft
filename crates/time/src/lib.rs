@@ -209,6 +209,21 @@ impl FrameRate {
         FrameRate::new((fps * 1000.0).round() as i64, 1000)
     }
 
+    /// Closest standard rate when `fps` is within `tolerance` of it, `tolerance` a fraction of the
+    /// rate (`0.005` is half a percent), else the nearest 1/1000 rate. A rate a container reports
+    /// from timestamps rounded to a coarse unit lands slightly off a standard rate: at 90 kHz, whole
+    /// milliseconds leave a 30 fps clip's average at 30.02 or 29.95 (#1700).
+    pub fn from_f64_within(fps: f64, tolerance: f64) -> Self {
+        let mut best: Option<(f64, FrameRate)> = None;
+        for r in Self::COMMON {
+            let off = (r.as_f64() - fps).abs();
+            if off <= tolerance * r.as_f64() && best.is_none_or(|(closest, _)| off < closest) {
+                best = Some((off, r));
+            }
+        }
+        best.map_or_else(|| Self::from_f64(fps), |(_, r)| r)
+    }
+
     /// This rate if it is positive, else the default (a damaged file or project can carry a zero
     /// or negative rate; every frame computation uses this so it can't divide by zero).
     pub fn sane(self) -> FrameRate {
@@ -726,6 +741,20 @@ mod tests {
         assert_eq!(FrameRate::FPS_29_97.tick_of(15).to_rational_round(-1, -1000), 501);
         assert_eq!(FrameRate::from_f64(29.97), FrameRate::FPS_29_97);
         assert_eq!(FrameRate::FPS_23_976.label(), "23.976");
+    }
+
+    /// Rates a container reports from timestamps rounded to a coarse unit sit slightly off a
+    /// standard rate; the tolerance takes them back to it (#1700).
+    #[test]
+    fn standard_rate_within_a_tolerance() {
+        assert_eq!(FrameRate::from_f64_within(30.02, 0.005), FrameRate::FPS_30);
+        assert_eq!(FrameRate::from_f64_within(29.95, 0.005), FrameRate::FPS_29_97);
+        assert_eq!(FrameRate::from_f64_within(60.005, 0.005), FrameRate::FPS_60);
+        // the nearest standard rate wins when two are in range
+        assert_eq!(FrameRate::from_f64_within(59.99, 0.005), FrameRate::FPS_60);
+        // a rate that is near no standard rate keeps its own value, as `from_f64` does
+        assert_eq!(FrameRate::from_f64_within(20.0, 0.005), FrameRate::new(20, 1));
+        assert_eq!(FrameRate::from_f64_within(37.516, 0.005), FrameRate::from_f64(37.516));
     }
 
     #[test]
