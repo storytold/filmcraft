@@ -123,6 +123,8 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
             filmcraft_ui_egui::i18n::Language::Uk
         } else if checked("app.language.chinese") {
             filmcraft_ui_egui::i18n::Language::ZhCn
+        } else if checked("app.language.chinese.traditional") {
+            filmcraft_ui_egui::i18n::Language::ZhTw
         } else if checked("app.language.german") {
             filmcraft_ui_egui::i18n::Language::De
         } else if checked("app.language.russian") {

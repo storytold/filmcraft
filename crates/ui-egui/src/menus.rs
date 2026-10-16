@@ -32,6 +32,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("app.language.portuguese", "Português (Brasil)", ["Edit", "Language"], None),
     uic!("app.language.ukrainian", "Українська", ["Edit", "Language"], None),
     uic!("app.language.chinese", "简体中文", ["Edit", "Language"], None),
+    uic!("app.language.chinese.traditional", "繁體中文", ["Edit", "Language"], None),
     uic!("app.language.german", "Deutsch", ["Edit", "Language"], None),
     uic!("app.language.russian", "Русский", ["Edit", "Language"], None),
     uic!("app.language.french", "Français", ["Edit", "Language"], None),
@@ -193,6 +194,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             | "app.language.portuguese"
             | "app.language.ukrainian"
             | "app.language.chinese"
+            | "app.language.chinese.traditional"
             | "app.language.german"
             | "app.language.russian"
             | "app.language.french"
@@ -205,7 +207,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             return Err("no Japanese font is installed on this system (for example Noto Sans CJK JP); the interface stays in English".into());
         }
         // Chinese needs the Chinese fallback theme::install adds (craft-fonts or a system face)
-        if id == "app.language.chinese" && !crate::i18n::chinese_font_available() {
+        if matches!(id, "app.language.chinese" | "app.language.chinese.traditional") && !crate::i18n::chinese_font_available() {
             return Err("no Chinese font is installed on this system (for example Noto Sans CJK SC or Microsoft YaHei); the interface stays in English".into());
         }
         // Korean needs an installed Hangul font (none is bundled; see cjk.rs)
@@ -218,6 +220,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             "app.language.portuguese" => crate::i18n::Language::PtBr,
             "app.language.ukrainian" => crate::i18n::Language::Uk,
             "app.language.chinese" => crate::i18n::Language::ZhCn,
+            "app.language.chinese.traditional" => crate::i18n::Language::ZhTw,
             "app.language.german" => crate::i18n::Language::De,
             "app.language.russian" => crate::i18n::Language::Ru,
             "app.language.french" => crate::i18n::Language::Fr,
@@ -691,6 +694,7 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             "app.language.portuguese" => it.checked = Some(app.ui.language == crate::i18n::Language::PtBr),
             "app.language.ukrainian" => it.checked = Some(app.ui.language == crate::i18n::Language::Uk),
             "app.language.chinese" => it.checked = Some(app.ui.language == crate::i18n::Language::ZhCn),
+            "app.language.chinese.traditional" => it.checked = Some(app.ui.language == crate::i18n::Language::ZhTw),
             "app.language.german" => it.checked = Some(app.ui.language == crate::i18n::Language::De),
             "app.language.russian" => it.checked = Some(app.ui.language == crate::i18n::Language::Ru),
             "app.language.french" => it.checked = Some(app.ui.language == crate::i18n::Language::Fr),

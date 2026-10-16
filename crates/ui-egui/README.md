@@ -18,12 +18,12 @@ the committed span and undo. Set `FILMCRAFT_UI_SNAPSHOT_DIR` to render screensho
 ## Localisation
 
 Edit > Language offers English, Japanese, Spanish, Brazilian Portuguese, Ukrainian, Simplified
-Chinese, German, Russian, French, Indonesian, Korean and Italian (which cover the whole interface). The language is stored in the engine's `general.interfaceLanguage` preference,
+Chinese, Traditional Chinese, German, Russian, French, Indonesian, Korean and Italian (which cover the whole interface). The language is stored in the engine's `general.interfaceLanguage` preference,
 restored on startup, and also available in Settings > General.
 Its default, System Language (`system`), follows the operating system: the first of the user's
 preferred languages that the interface has (the host supplies them through
 `HostHooks::system_languages`: `sys-locale` on the desktop, `navigator.languages` on the web),
-otherwise English.
+including Traditional Chinese for `zh-TW`, `zh-HK`, `zh-MO` and `zh-Hant`; otherwise English.
 The `app.language.*` UI commands and `prefs.set` reach it through the control channel.
 Japanese requires a craft-fonts build or a suitable installed font.
 
@@ -31,8 +31,12 @@ English source strings are lookup keys in `src/i18n/<code>.tsv`. `tl!` translate
 fills translated templates, and `i18n::t` translates names from registries. Placeholder values
 (including user filenames containing braces) are inserted literally. Catalog translations are
 original work using ordinary language, without proprietary localisation resources.
+After adding or removing strings in `zh-cn.tsv`, run `python -m pip install opencc-python-reimplemented`
+once, then `python tools/sync_zh_tw.py` to add Traditional Chinese translations for new strings and
+remove obsolete entries while preserving reviewed Taiwan translations. Run
+`python tools/sync_zh_tw.py --check` to check catalog key synchronization without modifying files.
 
-Spanish, Japanese, Simplified Chinese, French and Brazilian Portuguese cover menus, panels, dialogs, settings and registry labels. Searches accept both the
+Spanish, Japanese, Simplified Chinese, Traditional Chinese, French and Brazilian Portuguese cover menus, panels, dialogs, settings and registry labels. Searches accept both the
 translated label and its English source, including Unicode capitals. Project content, command ids
 and preference values retain their original values. Engine errors, CLI and MCP messages remain
 English. Ukrainian and Russian currently cover the core menus, German every menu; they fall back
