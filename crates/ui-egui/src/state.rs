@@ -404,6 +404,21 @@ pub enum GuideDialog {
     },
 }
 
+/// How a pixel sampled by a curve eyedropper maps to that curve's X (input) axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CurveAxis {
+    /// `curve_luma`: the pixel's Rec.709 luma (0..1).
+    Luma,
+    /// `curve_red` / `curve_green` / `curve_blue`: one encoded channel (0, 1 or 2).
+    Channel(u8),
+    /// `hue_vs_sat`, `hue_vs_hue`, `hue_vs_luma`: the pixel's HSL hue (0..1; a circular curve).
+    Hue,
+    /// `luma_vs_sat`: the pixel's HSL lightness (0..1).
+    Lightness,
+    /// `sat_vs_sat`: the pixel's HSL saturation (0..1).
+    Saturation,
+}
+
 /// The colour parameter an armed eyedropper fills (`effects.setParam` arguments).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Eyedropper {
@@ -411,6 +426,9 @@ pub struct Eyedropper {
     pub effect: usize,
     pub param: String,
     pub mask: Option<usize>,
+    /// When `Some`, the pick adds three control points to this curve (at the value the sampled
+    /// pixel maps to) instead of filling a colour parameter.
+    pub curve: Option<CurveAxis>,
 }
 
 /// A keyframe selected in the Effect Controls keyframe lane: clip, effect index, parameter (of an

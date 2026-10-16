@@ -232,6 +232,63 @@ fn apply_match_from_the_color_wheels_section() {
     assert!(ui.to_string().contains("reference frame is inside"), "{ui}");
 }
 
+/// A curve value from `sequence.inspect`, whose params are Debug strings: `Curve([[x, y], …])`.
+fn curve_points(v: &Value) -> Vec<(f64, f64)> {
+    let s = v.as_str().expect("curve value is a Debug string");
+    let Some(inner) = s.strip_prefix("Curve([").and_then(|s| s.strip_suffix("])")) else { return Vec::new() };
+    if inner.is_empty() {
+        return Vec::new();
+    }
+    inner
+        .split("], [")
+        .map(|p| {
+            let p = p.trim_matches(|c| c == '[' || c == ']');
+            let mut it = p.split(", ");
+            (it.next().unwrap().parse().unwrap(), it.next().unwrap().parse().unwrap())
+        })
+        .collect()
+}
+
+fn close(a: f64, b: f64) -> bool {
+    (a - b).abs() < 1e-3
+}
+
+#[test]
+fn curve_eyedropper_adds_points_from_the_program_picture() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.frames(2);
+    d.click("lumetri.section.Curves");
+    assert!(d.ids("lumetri.param").iter().any(|i| i == "lumetri.param.curve_luma.eyedropper"), "eyedropper button missing");
+    let value = |d: &mut Driver| lumetri(d, clip)["params"]["curve_luma"]["value"].clone();
+    let before = curve_points(&value(&mut d));
+    assert_eq!(before.len(), 2, "a fresh Luma curve is the identity endpoints: {before:?}");
+    let old = value(&mut d);
+    d.click("lumetri.param.curve_luma.eyedropper");
+    d.frames(2);
+    d.click("program.picture");
+    for _ in 0..200 {
+        if value(&mut d) != old {
+            break;
+        }
+        d.frames(1);
+    }
+    let pts = curve_points(&value(&mut d));
+    assert!((4..=5).contains(&pts.len()), "the eyedropper added three points to the identity curve: {pts:?}");
+    // the identity endpoints survive
+    assert!(close(pts[0].0, 0.0) && close(pts[0].1, 0.0) && close(pts.last().unwrap().0, 1.0) && close(pts.last().unwrap().1, 1.0), "{pts:?}");
+    let xs: Vec<f64> = pts.iter().map(|p| p.0).collect();
+    assert!(xs.windows(2).all(|w| w[0] <= w[1]), "sorted by x: {xs:?}");
+    // the added points are level (same y) and the centre one sits on the identity line y = x
+    let mid = &pts[1..pts.len() - 1];
+    let y = mid[0].1;
+    assert!(mid.iter().all(|p| (p.1 - y).abs() < 1e-4), "the added points are level: {pts:?}");
+    assert!(mid.iter().any(|p| (p.0 - y).abs() < 1e-3), "the centre point is on the identity line: {pts:?}");
+}
+
 impl Driver {
     fn app(&mut self) -> &mut FilmcraftApp {
         self.harness.state_mut()

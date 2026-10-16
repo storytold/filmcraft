@@ -16,7 +16,7 @@ use crate::FilmcraftApp;
 use crate::frames::{FrameKey, Target};
 use crate::icons::{self, Icon};
 use crate::panels::monitor_view;
-use crate::state::{DisplayMode, PlaybackRes};
+use crate::state::{CurveAxis, DisplayMode, PlaybackRes};
 use crate::theme::Tokens;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -519,10 +519,11 @@ struct EyedropperPick {
 /// Output scale of the frame an eyedropper samples (half size is plenty and quick to render).
 const EYEDROPPER_SCALE: f32 = 0.5;
 
-/// Eyedropper: while a colour parameter's eyedropper is armed (Effect Controls), the Program picture
-/// takes a crosshair and a click fills that parameter with the colour under the pointer. The colour is
-/// read from a render of the sequence at the playhead with the armed effect switched off (an Ultra Key
-/// has already removed the green it is asked to key); Esc disarms.
+/// Eyedropper: while a colour or curve parameter's eyedropper is armed (Effect Controls / Lumetri
+/// Curves), the Program picture takes a crosshair and a click fills that parameter with the colour
+/// under the pointer. The colour is read from a render of the sequence at the playhead; a colour
+/// eyedropper switches the armed effect off (an Ultra Key has already removed the green it is asked
+/// to key), a curve eyedropper samples the frame as displayed. Esc disarms.
 fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, pic: Rect, target: Target, rate: filmcraft_time::FrameRate, time: Tick) {
     let Some(armed) = app.ui.eyedropper.clone() else { return };
     let ctx = ui.ctx().clone();
@@ -542,8 +543,12 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
     {
         let uv = (((pos.x - pic.min.x) / pic.width()).clamp(0.0, 1.0), ((pos.y - pic.min.y) / pic.height()).clamp(0.0, 1.0));
         let mut project = (*app.session.project).clone();
-        if let Some(e) =
-            project.sequence_mut(seq).and_then(|q| q.find_item_mut(filmcraft_project::ClipId(armed.clip))).and_then(|(_, it)| it.effects.get_mut(armed.effect))
+        // a curve eyedropper picks the colour the viewer shows, so it leaves the effect on
+        if armed.curve.is_none()
+            && let Some(e) = project
+                .sequence_mut(seq)
+                .and_then(|q| q.find_item_mut(filmcraft_project::ClipId(armed.clip)))
+                .and_then(|(_, it)| it.effects.get_mut(armed.effect))
         {
             e.enabled = false;
         }
@@ -565,6 +570,32 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
         app.ui.status = tl!("Eyedropper: no picture to sample").to_string();
         return;
     };
+    if let Some(axis) = armed.curve {
+        // add three control points around the sampled value, on the current curve
+        let Target::Sequence(seq) = target else { return };
+        let x = crate::panels::lumetri::curve_sample_x(axis, rgb);
+        let pts: Vec<[f32; 2]> = app
+            .session
+            .project
+            .sequence(seq)
+            .and_then(|q| q.find_item(filmcraft_project::ClipId(armed.clip)))
+            .and_then(|(_, it)| it.effects.get(armed.effect))
+            .and_then(|e| e.param(&armed.param))
+            .and_then(|p| p.value.as_curve().map(|c| c.to_vec()))
+            .unwrap_or_default();
+        let mut merged = pts.clone();
+        merged.extend(crate::panels::lumetri::curve_eyedropper_points(&pts, x, axis == CurveAxis::Hue));
+        merged.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        // like the render's curve_lut, collapse points that share an x (the clamped neighbour
+        // can land exactly on the centre at the edge of the axis)
+        merged.dedup_by(|a, b| (a[0] - b[0]).abs() < 1e-6);
+        let value: Vec<_> = merged.iter().map(|q| json!([q[0], q[1]])).collect();
+        let params = json!({"clip": armed.clip, "effect": armed.effect, "param": armed.param, "value": value});
+        if let Err(e) = app.session.execute("effects.setParam", params) {
+            app.ui.status = e.to_string();
+        }
+        return;
+    }
     // the parameter stores linear values, like the colour picker beside it
     let lin = egui::Rgba::from(Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
     let mut params = json!({"clip": armed.clip, "effect": armed.effect, "param": armed.param, "value": [lin.r(), lin.g(), lin.b(), 1.0]});
