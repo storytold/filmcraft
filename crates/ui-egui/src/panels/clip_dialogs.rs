@@ -1,7 +1,7 @@
 //! Edit / Clip / File menu dialogs (M3.10): Paste Attributes, Remove Attributes, Offline File,
 //! Make Subclip, Edit Subclip, Modify ▸ Audio Channels, Modify ▸ Timecode, Frame Hold Options,
-//! Field Options, Clip Speed / Duration, Nest… (Nested Sequence Name), and the Close Project and
-//! Quit "save changes?" prompts.
+//! Field Options, Clip Speed / Duration, Nest… (Nested Sequence Name), and the Close Project,
+//! Open Project and Quit "save changes?" prompts.
 //!
 //! The open dialog lives in `UiState::clip_dialog` (serde): the engine command it runs and the
 //! parameters being edited — the same JSON the command takes — so agents can open a dialog from
@@ -27,6 +27,8 @@
 //! - Clip Speed / Duration `speedDuration.*`: `speed`, `reverse`, `ripple`,
 //!   `interpolation.<frameSampling|frameBlending|opticalFlow>`;
 //! - Close Project `closeProject.save`, `closeProject.dontSave`, `closeProject.cancel`;
+//! - Open Project (asked once the project to open is chosen, see [`intercept_open`])
+//!   `openProject.save`, `openProject.dontSave`, `openProject.cancel`;
 //! - Quit (asked when the window is closed with unsaved changes, see [`intercept_quit`])
 //!   `quit.save`, `quit.dontSave`, `quit.cancel`.
 
@@ -59,6 +61,7 @@ fn meta(command: &str) -> Option<(&'static str, &'static str)> {
         "clip.fieldOptions" => (tl!("Field Options"), "fieldOptions"),
         "clip.speedDuration" => (tl!("Clip Speed / Duration"), "speedDuration"),
         "file.closeProject" => (tl!("Save Project"), "closeProject"),
+        "file.open" => (tl!("Save Project"), "openProject"),
         "app.quit" => (tl!("Save Project"), "quit"),
         _ => return None,
     })
@@ -93,7 +96,8 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     if id == "file.saveAll" && app.session.path.is_none() {
         return Some(app.file_dialog("file.save", params));
     }
-    if (id == "file.closeProject" && !app.session.is_dirty()) || id == "app.quit" {
+    // Open Project asks once the project to open is chosen (`intercept_open`)
+    if (id == "file.closeProject" && !app.session.is_dirty()) || id == "app.quit" || id == "file.open" {
         return None;
     }
     meta(id)?;
@@ -116,6 +120,17 @@ pub fn intercept_quit(app: &mut FilmcraftApp) -> bool {
     if app.ui.clip_dialog.as_ref().is_none_or(|d| d.command != "app.quit") {
         app.ui.clip_dialog = Some(ClipDialogDraft { command: "app.quit".into(), params: json!({}), info: Value::Null, error: String::new() });
     }
+    true
+}
+
+/// File ▸ Open Project once the project at `path` is chosen: with unsaved changes Save / Don't
+/// Save / Cancel is asked first, as Close Project asks, and `path` opens after Save or Don't Save.
+/// Returns whether it asked.
+pub fn intercept_open(app: &mut FilmcraftApp, path: &str) -> bool {
+    if !app.session.is_dirty() {
+        return false;
+    }
+    app.ui.clip_dialog = Some(ClipDialogDraft { command: "file.open".into(), params: json!({"path": path}), info: Value::Null, error: String::new() });
     true
 }
 
@@ -539,7 +554,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     }
                 }
             }
-            "file.closeProject" | "app.quit" => {
+            "file.closeProject" | "file.open" | "app.quit" => {
                 ui.label(tlf!("Save changes to “{project_name}” before closing?", project_name));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -621,6 +636,15 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     app.ui.clip_dialog = Some(d);
                     return;
                 }
+            }
+            // Open Project opens the chosen project; when that fails, this project stays open with
+            // its unsaved changes
+            if d.command == "file.open" {
+                if let Err(e) = app.session.execute("file.open", d.params.clone()) {
+                    app.ui.status = e.to_string();
+                }
+                app.ui.clip_dialog = None;
+                return;
             }
             // Quit ▸ Don't Save discards the changes: closing the project also clears their recovery
             // snapshot, so the next launch doesn't offer them back

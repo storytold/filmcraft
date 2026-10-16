@@ -109,6 +109,10 @@ one. If a step fails, the temp file is removed and the old file is untouched.
 | `file.open {path}` | File ▸ Open Project… (⌘O) | returns `{schemaVersion, migrated}` |
 
 In the UI, Save / Save As / Save a Copy without a `path` show a file dialog.
+Open Project… shows one too. In the desktop app, when the current project has unsaved changes, it
+then asks *"Save changes to 'X' before closing?"* with **Cancel**, **Don't Save** and **Save**, and
+the chosen project opens after Save or Don't Save. `file.open` with a `path` opens the project
+without asking.
 
 ## Auto Save
 

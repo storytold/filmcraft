@@ -1312,6 +1312,10 @@ impl FilmcraftApp {
             }
             "file.open" => self.pick(FileDialog::OpenProject, |app, paths| {
                 let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                // unsaved changes: Save / Don't Save / Cancel first
+                if panels::clip_dialogs::intercept_open(app, &path) {
+                    return Ok(json!({"dialog": "openProject"}));
+                }
                 app.session.execute("file.open", json!({"path": path})).map_err(|e| e.to_string())
             }),
             "graphics.newFromFile" => {
