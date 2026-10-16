@@ -79,6 +79,30 @@ impl Driver {
 }
 
 #[test]
+fn text_glow_controls_and_numeric_drag_are_undoable() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace":"Captions and Graphics"}));
+    let a = d.exec("graphics.newText", json!({"text":"Glow here"}))["clip"].as_u64().unwrap();
+    d.exec("graphics.set", json!({"clip":a,"props":{"shadow":true}}));
+    d.harness.state_mut().ui.collapsed_fx.extend(["gfx:Responsive Design - Position".into(), "gfx:Align and Transform".into(), "gfx:Text".into()]);
+    d.frames(4);
+    d.ok("ui.click", json!({"id":"graphics.prop.glow"}));
+    d.frames(3);
+    assert_eq!(text_param(&mut d, a, "glow"), Some(filmcraft_project::ParamValue::Bool(true)));
+    assert_eq!(text_param(&mut d, a, "shadow"), Some(filmcraft_project::ParamValue::Bool(true)));
+    let n = d.exec("history.list", json!({}))["undo"].as_array().unwrap().len();
+    let r = d.rect("graphics.prop.glow_range");
+    let (x, y) = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    d.ok("ui.drag", json!({"from":{"x":x,"y":y},"to":{"x":x+30.0,"y":y},"steps":6}));
+    d.frames(4);
+    assert_ne!(text_param(&mut d, a, "glow_range"), Some(filmcraft_project::ParamValue::Float(45.0)));
+    assert_eq!(d.exec("history.list", json!({}))["undo"].as_array().unwrap().len(), n + 1);
+    d.exec("edit.undo", json!({}));
+    assert_eq!(text_param(&mut d, a, "glow_range"), Some(filmcraft_project::ParamValue::Float(45.0)));
+    assert_eq!(d.exec("graphics.list", json!({"clip":a}))["layers"][0]["text"], "Glow here");
+}
+
+#[test]
 fn type_tool_edit_style_and_move() {
     let mut d = Driver::demo();
     d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));

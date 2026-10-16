@@ -3578,3 +3578,13 @@
 
 # The native macOS application menu (Settings…).
 	Settings	Preferências
+
+# Text layer glow controls
+	   Intensity	   Intensidade
+	Glow Intensity	Brilho difuso — Intensidade
+	   Range	   Alcance
+	Glow Range	Brilho difuso — Alcance
+	   X-offset	   Deslocamento X
+	Glow X-offset	Brilho difuso — Deslocamento X
+	   Y-offset	   Deslocamento Y
+	Glow Y-offset	Brilho difuso — Deslocamento Y

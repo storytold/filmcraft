@@ -76,6 +76,12 @@ fn appearance() -> Vec<ParamDef> {
         fl("background_opacity", "Background Opacity", 75.0, (0.0, 100.0), (0.0, 100.0), "%", A),
         fl("background_size", "Background Size", 12.0, (0.0, 1000.0), (0.0, 100.0), "", A),
         fl("background_radius", "Background Corner Radius", 0.0, (0.0, 1000.0), (0.0, 100.0), "", A),
+        bo("glow", "Glow", false, A),
+        co("glow_color", "Glow Color", [1.0, 1.0, 1.0, 1.0], A),
+        fl("glow_intensity", "Glow Intensity", 40.0, (0.0, 100.0), (0.0, 100.0), "%", A),
+        fl("glow_range", "Glow Range", 45.0, (0.0, 100.0), (0.0, 100.0), "px", A),
+        fl("glow_offset_x", "Glow X-offset", 0.0, (-500.0, 500.0), (-100.0, 100.0), "px", A),
+        fl("glow_offset_y", "Glow Y-offset", 0.0, (-500.0, 500.0), (-100.0, 100.0), "px", A),
         bo("shadow", "Shadow", false, A),
         co("shadow_color", "Shadow Color", [0.0, 0.0, 0.0, 1.0], A),
         fl("shadow_opacity", "Shadow Opacity", 75.0, (0.0, 100.0), (0.0, 100.0), "%", A),
@@ -158,7 +164,7 @@ pub struct LinearGradient {
     pub angle: f32,
 }
 
-/// Fill / strokes / background / shadow of a layer (colours are sRGB-encoded straight RGBA).
+/// Fill / strokes / background / glow / shadow (colours are sRGB-encoded straight RGBA).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Appearance {
     pub fill: Option<[f32; 4]>,
@@ -170,6 +176,18 @@ pub struct Appearance {
     /// (colour with opacity in alpha, padding px, corner radius px).
     pub background: Option<([f32; 4], f32, f32)>,
     pub shadow: Option<Shadow>,
+    pub glow: Option<Glow>,
+}
+
+/// A soft coloured halo, independently adjustable from fill and drop shadow.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Glow {
+    pub color: [f32; 4],
+    /// Strength from 0 to 1. Rendering amplifies blurred coverage to keep the halo visible.
+    pub intensity: f32,
+    /// Halo radius in layer pixels.
+    pub range: f32,
+    pub offset: (f32, f32),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -341,6 +359,19 @@ pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<Laye
         let d = ff(e, "shadow_distance", t);
         Shadow { color: c, offset: (a.cos() * d, a.sin() * d), size: ff(e, "shadow_size", t).max(0.0), blur: ff(e, "shadow_blur", t).max(0.0) }
     });
+    let glow = bb(e, "glow", t).then(|| {
+        let bounded = |id, fallback, lo, hi| {
+            let n = ff(e, id, t);
+            if n.is_finite() { n.clamp(lo, hi) } else { fallback }
+        };
+        let color = cc(e, "glow_color", t).map(|c| if c.is_finite() { c.clamp(0.0, 1.0) } else { 1.0 });
+        Glow {
+            color,
+            intensity: bounded("glow_intensity", 40.0, 0.0, 100.0) / 100.0,
+            range: bounded("glow_range", 45.0, 0.0, 100.0),
+            offset: (bounded("glow_offset_x", 0.0, -500.0, 500.0), bounded("glow_offset_y", 0.0, -500.0, 500.0)),
+        }
+    });
     let pos = vv(e, "position", t);
     let position = if pos.x.is_nan() || pos.y.is_nan() { Vec2::new(frame.0 as f64 / 2.0, frame.1 as f64 / 2.0) } else { pos };
     let s = ff(e, "scale", t) as f64 / 100.0;
@@ -361,6 +392,7 @@ pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<Laye
             strokes,
             background,
             shadow,
+            glow,
         },
         transform: LayerTransform {
             position,
@@ -470,6 +502,31 @@ pub fn layer_indices(effects: &[EffectInstance]) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glow_is_opt_in_round_trips_animates_and_bounds_bad_values() {
+        let mut e = new_text_layer("Legacy", Vec2::new(100.0, 200.0), 72.0);
+        e.params.retain(|k, _| !k.starts_with("glow"));
+        assert!(eval_layer(&e, Tick::ZERO, (1920, 1080)).unwrap().appearance.glow.is_none());
+        set(&mut e, "glow", ParamValue::Bool(true));
+        set(&mut e, "glow_color", ParamValue::Color([1.0, 0.8, 0.0, 1.0]));
+        set(&mut e, "glow_offset_x", ParamValue::Float(-12.0));
+        set(&mut e, "glow_offset_y", ParamValue::Float(8.0));
+        let p = e.params.entry("glow_intensity".into()).or_insert_with(|| Param::new(ParamValue::Float(40.0)));
+        p.toggle_animation(Tick::ZERO);
+        p.set_at(Tick(100), ParamValue::Float(80.0));
+        let back: EffectInstance = serde_json::from_str(&serde_json::to_string(&e).unwrap()).unwrap();
+        assert_eq!(back, e);
+        let a = eval_layer(&back, Tick::ZERO, (1920, 1080)).unwrap().appearance.glow.unwrap();
+        let b = eval_layer(&back, Tick(100), (1920, 1080)).unwrap().appearance.glow.unwrap();
+        assert_eq!((a.intensity, b.intensity, a.range, a.offset), (0.4, 0.8, 45.0, (-12.0, 8.0)));
+        assert_eq!(a.color, [1.0, 0.8, 0.0, 1.0]);
+        set(&mut e, "glow_range", ParamValue::Float(1e300));
+        set(&mut e, "glow_offset_x", ParamValue::Float(f64::NAN));
+        set(&mut e, "glow_offset_y", ParamValue::Float(-1e6));
+        let g = eval_layer(&e, Tick::ZERO, (1920, 1080)).unwrap().appearance.glow.unwrap();
+        assert_eq!((g.range, g.offset), (45.0, (0.0, -500.0)));
+    }
 
     #[test]
     fn layers_round_trip_and_evaluate() {

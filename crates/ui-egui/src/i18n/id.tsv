@@ -3575,3 +3575,13 @@
 	Appearance Settings…	Pengaturan Tampilan…
 	Add to favorites	Tambahkan ke favorit
 	Remove from favorites	Hapus dari favorit
+
+# Text layer glow controls
+	   Intensity	   Intensitas
+	Glow Intensity	Pendar — Intensitas
+	   Range	   Rentang
+	Glow Range	Pendar — Rentang
+	   X-offset	   Offset X
+	Glow X-offset	Pendar — Offset X
+	   Y-offset	   Offset Y
+	Glow Y-offset	Pendar — Offset Y

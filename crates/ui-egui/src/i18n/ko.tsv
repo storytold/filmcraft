@@ -3596,3 +3596,13 @@
 	Shows the version, community links and credits in a FilmCraft window.	FilmCraft 창에 버전, 커뮤니티 링크, 제작진을 보여 줍니다.
 	Couldn't open your web browser	웹 브라우저를 열 수 없습니다
 	Open this address in your browser yourself:	이 주소를 브라우저에서 직접 여세요:
+
+# Text layer glow controls
+	   Intensity	   강도
+	Glow Intensity	광선 — 강도
+	   Range	   범위
+	Glow Range	광선 — 범위
+	   X-offset	   X 오프셋
+	Glow X-offset	광선 — X 오프셋
+	   Y-offset	   Y 오프셋
+	Glow Y-offset	광선 — Y 오프셋

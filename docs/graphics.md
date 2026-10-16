@@ -25,7 +25,7 @@ kerning and ligatures, bidi, line breaking, all drawn as vectors in linear light
 |---|---|
 | Text | `text` (Source Text), `font`, `font_style`, `size` (px), `align` (Left/Center/Right/Justify), `tracking` (1/1000 em), `kerning`, `ligatures`, `leading` (px added to the natural line height), `baseline_shift`, `faux_bold`, `faux_italic`, `caps` (Normal/All Caps/Small Caps), `underline`, `box_width` (0 = point text, else paragraph text wrapped at that width), `box_height` (paragraph text: lines that do not fit are not shown; 0 = as tall as the text) |
 | Shape | `shape` (Rectangle/Ellipse/Polygon/Path), `size` [w, h], `sides`, `corner_radius` (one radius for all four corners, at most half the shorter side; on the Program monitor, drag one of the four small circles just inside a selected rectangle's corners), `points` (path vertices relative to the layer origin) |
-| Appearance | `fill`, `fill_color`; `stroke`, `stroke_color`, `stroke_width`, `stroke_type` (Outer/Center/Inner) and the same for `stroke2`; `background`, `background_color`, `background_opacity`, `background_size` (padding), `background_radius`; `shadow`, `shadow_color`, `shadow_opacity`, `shadow_angle` (135° = down-right), `shadow_distance`, `shadow_size`, `shadow_blur` |
+| Appearance | `fill`, `fill_color`; `stroke`, `stroke_color`, `stroke_width`, `stroke_type` (Outer/Center/Inner) and the same for `stroke2`; `background`, `background_color`, `background_opacity`, `background_size` (padding), `background_radius`; `glow`, `glow_color`, `glow_intensity` (0–100%), `glow_range` (0–100 px), `glow_offset_x`, `glow_offset_y` (±500 px); `shadow`, `shadow_color`, `shadow_opacity`, `shadow_angle` (135° = down-right), `shadow_distance`, `shadow_size`, `shadow_blur` |
 | Transform | `position` (graphic canvas px), `anchor` (layer px), `scale`, `scale_width`, `uniform_scale`, `rotation`, `opacity` |
 
 Point text's origin is its alignment point on the first baseline (the click point of the Type
@@ -77,6 +77,14 @@ comes from the text engine; strokes come from a Euclidean distance transform of 
 all parts, spread by Size, offset and blurred. Each layer's raster is cached while it stays the same.
 The GPU plan receives one tight image per graphic clip and places it with a translation. The
 Timecode and Clip Name effects also draw with the text engine.
+
+Text Glow paints a coloured soft halo behind the glyph fill and strokes, independently of
+Shadow. It does not illuminate the paragraph box or background rectangle. Range and offsets
+are in layer pixels and follow the layer's scale and rotation. Intensity controls halo strength;
+colour alpha also applies. The same raster serves Program preview and exported frames, including
+the tight GPU path. Glow is off by default, including projects saved before these parameters
+existed; enabling it starts at Intensity 40%, Range 45 px and zero offsets. Colour and numeric
+controls support animation, project persistence, Undo and redo.
 
 ## Commands
 
@@ -138,7 +146,8 @@ rotation, opacity), **Text** (Source Text field, font family and style, size, pa
 tracking, leading, baseline shift, box width and height, faux bold / faux italic / all caps /
 small caps / underline, kerning and ligatures; the wrench in the section's header opens **Text
 Properties**: Text Layer Type and Ligatures), **Shape**, and **Appearance** (fill, two strokes, background,
-shadow). Automation ids: `graphics.layers.<n>`, `graphics.prop.<parameter id>`,
+Glow for text, shadow). Glow exposes a checkbox, colour, Intensity, Range, X-offset and Y-offset.
+Automation ids: `graphics.layers.<n>`, `graphics.prop.<parameter id>`,
 `graphics.align.<how>`, `graphics.distribute.<axis>`, `graphics.sourceText`, `graphics.NewTextLayer`,
 `graphics.NewRectangle`, `graphics.NewEllipse`, `graphics.deleteLayer`, `graphics.section.<name>`,
 `graphics.textProperties` (the wrench) and in its dialog `graphics.textProperties.type`,

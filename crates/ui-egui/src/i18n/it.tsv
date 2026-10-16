@@ -3601,3 +3601,13 @@
 	Shows the version, community links and credits in a FilmCraft window.	Mostra la versione, i link della community e i riconoscimenti in una finestra di FilmCraft.
 	Couldn't open your web browser	Impossibile aprire il browser web
 	Open this address in your browser yourself:	Apri tu questo indirizzo nel browser:
+
+# Text layer glow controls
+	   Intensity	   Intensità
+	Glow Intensity	Bagliore — Intensità
+	   Range	   Raggio
+	Glow Range	Bagliore — Raggio
+	   X-offset	   Offset X
+	Glow X-offset	Bagliore — Offset X
+	   Y-offset	   Offset Y
+	Glow Y-offset	Bagliore — Offset Y

@@ -3609,3 +3609,13 @@
 	Shows the version, community links and credits in a FilmCraft window.	バージョン、コミュニティへのリンク、クレジットを FilmCraft のウィンドウに表示します。
 	Couldn't open your web browser	ウェブブラウザーを開けませんでした
 	Open this address in your browser yourself:	このアドレスをご自身でブラウザーで開いてください：
+
+# Text layer glow controls
+	   Intensity	   強さ
+	Glow Intensity	グロー — 強さ
+	   Range	   範囲
+	Glow Range	グロー — 範囲
+	   X-offset	   X オフセット
+	Glow X-offset	グロー — X オフセット
+	   Y-offset	   Y オフセット
+	Glow Y-offset	グロー — Y オフセット
