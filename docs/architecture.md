@@ -474,7 +474,7 @@ clip media (source In … +duration) ─► audio_dsp::remix::analyze: spectral-
   ─► hidden clip effect `remix` (target, sliders, original duration, plan in ticks) ─► render::remix::read (20 ms equal-power crossfades)
 ```
 
-Clip ▸ Remix ▸ Enable Remix / Remix Properties… / Revert Remix (`clip.remix.*`; agents can use `clip.remix {duration|seconds…}`) and the Remix tool in the Rate Stretch group (drag a music clip's Out edge) retime a music clip to a target duration. The analysis finds the beat and compares every pair of beats by harmony (chroma) and timbre (cepstra). Each joint leaves the music at one beat boundary and continues at the beat boundary whose four beats on either side sound most alike. The intro and outro are kept, and the result lands within one beat of the target. Segments (0–100) sets the number of joints (1–3, more for long extensions). Variations (0–100) sets how far a joint may move from its evenly spaced position (±1–8 beats). The state is a hidden effect instance with no definition, so panels, the effect chain and Paste Attributes ignore it. The plan is stored in ticks, so playback and export read it without re-analysing. A remix never moves other clips: one that would overlap the next clip is refused, and Revert restores the original duration. Results are deterministic and the analysis is cached per media range.
+Clip ▸ Remix ▸ Enable Remix / Remix Properties… / Revert Remix (`clip.remix.*`; agents can use `clip.remix {duration|seconds…}`) and the Remix tool in the Rate Stretch group (drag a music clip's Out edge) retime a music clip to a target duration. The analysis finds the beat and compares every pair of beats by harmony (chroma) and timbre (cepstra). A bounded beam search keeps up to sixteen alternative arrangements across successive joints, comparing four beats of harmonic/timbral context on either side and preferring matching four-beat phase. It balances musical similarity against duration error instead of committing greedily to each joint. The intro and outro are kept, and the result lands within one beat of the target. A protected closing phrase (up to 16 beats, capped at 35% of the source) is played only by the final piece; jumps cannot re-enter it. Beat RMS penalizes dynamics mismatches; at medium Segments a simpler one-cut candidate is also considered. Segments (0–100) sets the number of joints (1–3, more for long extensions). Variations (0–100) sets how far a joint may move from its evenly spaced position (±1–8 beats). The state is a hidden effect instance with no definition, so panels, the effect chain and Paste Attributes ignore it. The plan is stored in ticks, so playback and export read it without re-analysing. A remix never moves other clips: one that would overlap the next clip is refused, and Revert restores the original duration. Results are deterministic and the analysis is cached per source object, media range, sample rate and selected audio stream (source references are retained to prevent identity reuse across projects). Timeline waveforms for remixed clips are generated in the background through `render::remix::read`, so their peaks include rearranged pieces and crossfades. They use clip-relative output time and a separate cache keyed by media, audio stream, duration and plan; project cache reset clears it, while re-plan/undo/revert select the matching waveform. Two workers and a 32 MB peak-data budget bound this cache; its output limit is two million 256-sample peak buckets at 48 kHz (about 178 minutes).
 
 ### 5.2 Essential Sound
 
@@ -506,7 +506,7 @@ essentialSound.generateDucking   trigger clips' summed level (10 ms hops) → ac
   fade-down before it and a fade-up after it (`audio_dsp::ducking::duck_keyframes`), written as Volume
   level keyframes that replace earlier ones.
 - **Presets** (our own names and values) per type; user presets are saved in preferences
-  (`essentialSound.userPresets`). Music remixing to a duration is Clip ▸ Remix (§5.1.3).
+  (`essentialSound.userPresets`). Music remixing is available in Essential Sound ▸ Music ▸ Duration (one selected clip: target seconds, Segments, Variations, Apply Remix, Revert Remix), as well as Clip ▸ Remix (§5.1.3). The panel shows the actual duration separately; beat-aligned results can differ from the target by up to one beat.
 - **Enhance Speech** is a DSP chain (high-pass, de-mud, presence and air EQ, expander, compressor), not a
   model: no speech-enhancement model with an open licence that we could ship and verify is bundled.
   DeepFilterNet (MIT/Apache-2.0, Rust inference via tract) is the candidate for a future optional
@@ -771,3 +771,30 @@ native menus) in `apps/filmcraft`. [roadmap.md](roadmap.md) has the milestone st
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-10 | trivial | Status line and revision history added (craftrules progress-docs standard); milestone link points at docs/roadmap.md |
+
+
+Duration Lab fork: Essential Sound Duration dispatches `clip.remix` with `matchMelody:true`
+by default. The audio-dsp crate computes ordered pitch fingerprints and compatible duration
+choices; the engine returns non-mutating `applied:false` when matching fails. The UI stores
+choices per clip and applies selected lengths through the same command. Rendering retains
+the source-piece format and original playback rate.
+
+Local seam gains are measured by the engine after planning and saved in the hidden Remix
+`joinLevels` parameter. Playback/export and waveform peaks use the same DSP envelope.
+The renderer converts its persisted tick span to the output sample rate; old plans lacking
+the parameter retain their previous behavior.
+
+Short-duration choices use bounded combinations of up to four forward edits, rather
+than only a single jump. Strict pitch matching permits a strong local boundary
+match across varying wider context only with independent phase and harmony checks.
+
+Timeline audio clips display original procedural splice markers at cumulative output-piece
+boundaries from the persisted Remix plan. They are visual overlays, have automation IDs,
+follow clip geometry and disappear when the remix is reverted. No audio is modified.
+
+Essential Sound Duration uses a compact target field and Apply/Revert buttons. Enter
+commits the target field and invokes Apply once. Advanced Segments/Variations stay
+in Remix Properties; omitted parameters preserve existing settings or engine defaults.
+
+The compact Duration panel always requests melodic matching. Its former opt-out
+checkbox is removed; unsupported targets leave the clip unchanged and offer choices.

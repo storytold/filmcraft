@@ -143,3 +143,85 @@ sub-sample estimate, and two trust figures (`confidence` = peak / RMS of the cor
 - DeNoise adapts continuously; a perfectly stationary tone is (by design) treated as noise after
   ~1.5 s. There is no explicit "learn noise print" mode yet.
 - Filter type / choice changes switch immediately (continuous parameters are smoothed).
+
+## Music Duration arrangement search
+
+`remix::plan` uses a deterministic beam of sixteen alternative paths across beat boundaries.
+It preserves intro/outro, prefers four-beat phase compatibility (a heuristic, not meter detection),
+and uses harmonic/timbral context plus a duration-error cost. Segments controls the number of
+jumps, Variations the incoming-beat search radius. Plans remain readable by the existing renderer
+and project format; no external audio tools or new runtime dependencies are required.
+
+Limits: actual duration is within one beat, not sample-exact. No lyric understanding, downbeat
+or time-signature inference, or quality guarantee for arbitrary music. The planner rejects invalid
+analyses, more than 4096 beats, targets over 16 times source length, or paths needing over 32 jumps.
+The sixteen-path beam bounds memory but does not guarantee a globally optimal arrangement.
+
+### Closing-phrase and dynamics safeguards
+
+Every non-final piece must end before a protected closing phrase (up to 16 beats, capped
+at 35% of the source). Jump destinations stay outside the intro and closing phrase. The
+last piece is the only piece to play that suffix, preventing an extension from playing
+the ending and then returning to play it again. This is a conservative phrase heuristic,
+not semantic song-section recognition. Beat RMS adds a penalty for loudness mismatches
+that normalized chroma/cepstra miss. At medium Segments, a one-cut candidate competes
+with the two-cut plan using mean compatibility, a per-cut cost and duration error.
+
+Known limit: music with a very long outro may not fit a very short target under these
+constraints. The planner can reject that request instead of repeating or discarding the
+protected ending. Lyric and melody continuity still need listening on real tracks.
+
+
+### Melodic matching and duration choices
+
+The optional `plan_with_melody_floor` compares ordered quarter-beat pitch profiles
+(MIDI C3–B6, retaining octave), attenuating persistent accompaniment before normalization.
+It evaluates four beats before and after each jump; missing pitched evidence is rejected
+in strict mode. This is a polyphonic spectral heuristic, not lead transcription or a guarantee
+of an inaudible edit. A synthetic shared-chord test distinguishes repeated, reordered and
+octave-shifted notes. No time stretching or pitch shifting is performed.
+
+`melodic_alternatives` searches compatible whole-four-beat jumps and bounded repetitions,
+protects the intro and closing suffix, and offers up to three nearby lengths, including the
+unchanged source when appropriate. Temporary candidate storage is capped at 256 plans.
+The Essential Sound Duration UI enables matching by default. With `clip.remix` parameter
+`matchMelody:true`, an incompatible target returns `applied:false` and `alternatives` without
+changing the clip or undo history. Existing callers without that parameter retain their
+force-duration behavior. Users choose whether to accept a different duration.
+
+
+### Local seam level matching
+
+After arrangement, `match_levels` measures stereo-linked short-term RMS on each
+side of every seam, excluding the crossfade. Above 0.75 dB mismatch it attenuates
+only the louder side (maximum 12 dB). A held gain near the seam releases through
+a smooth dB envelope over roughly two beats, capped at 0.8–2 seconds and half the
+piece length. Very quiet sections are excluded. This is local RMS matching,
+not LUFS normalization, compression, or a guarantee of perceived equal loudness.
+Positive source correlation also compensates the equal-power crossfade surplus;
+negative correlation never causes gain boosting. Stereo balance is preserved.
+
+`render_with_levels` accepts persisted `LevelMatch` data and evaluates gains from
+absolute output position: seeks, export chunks and playback blocks share the same
+envelope. The hidden Remix `joinLevels` parameter stores its span in ticks and
+its per-joint gains and correlation. Legacy plans without it render unchanged.
+Waveform cache keys include this parameter and peaks use the same audio renderer.
+
+
+### Short-duration phrase search
+
+Melodic compatibility now evaluates both the two beats immediately around the
+seam and the wider eight-beat context. A local match can bridge wider variation
+only when it meets the usual pitch threshold, has at least 70% of that threshold
+in the wider context, keeps four-beat phase, and has harmonic/timbral similarity
+of at least 0.65 at the boundary. Brief note coincidences and incompatible harmony
+still fail. Candidate ranking weights immediate and wider pitch context 65:35.
+This remains a spectral heuristic requiring listening, not melody transcription.
+
+Shortening alternatives search combinations of up to four forward edits rather
+than one edit only. The 64-state beam, 32 destinations per outgoing beat (up to
+4096 beats) and 256 temporary completed plans bound work and memory. Plans retain
+intro and closing-phrase safeguards and local level matching. If the regular
+strict duration search fails, it also considers these multi-edit arrangements
+within one beat of the target; otherwise it offers their lengths for selection.
+No time stretching is added. Search is approximate and may miss arrangements.

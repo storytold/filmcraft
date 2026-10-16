@@ -30,10 +30,17 @@ use serde_json::{Value, json};
 use crate::commands::{CommandSpec, bad, f64_p, has_seq, u64_p};
 use crate::{EngineError, Result, Session};
 
-type Key = (u64, i64, i64, u32);
+type Key = (i64, i64, u32, usize);
 
-fn cache() -> &'static Mutex<Vec<(Key, Arc<Analysis>)>> {
-    static C: OnceLock<Mutex<Vec<(Key, Arc<Analysis>)>>> = OnceLock::new();
+struct CachedAnalysis {
+    key: Key,
+    // Keep the source alive: identity cannot be reused while its analysis is cached.
+    source: filmcraft_media::SharedSource,
+    analysis: Arc<Analysis>,
+}
+
+fn cache() -> &'static Mutex<Vec<CachedAnalysis>> {
+    static C: OnceLock<Mutex<Vec<CachedAnalysis>>> = OnceLock::new();
     C.get_or_init(Default::default)
 }
 
@@ -98,21 +105,20 @@ fn duration_p(s: &Session, p: &Value) -> Option<Tick> {
 }
 
 /// Analysis of `[source_in, source_in + dur)` of the clip's media at the sequence rate (cached).
-fn analysis(s: &Session, item: ItemId, source_in: Tick, dur: Tick) -> Result<Arc<Analysis>> {
+fn analysis(s: &Session, item: ItemId, source_in: Tick, dur: Tick, stream: usize) -> Result<Arc<Analysis>> {
     let sr = s.active_sequence().map(|q| q.settings.sample_rate).unwrap_or(48_000).max(1);
     let m0 = source_in.to_units_floor(sr as i64);
     let len = (source_in + dur).to_units_floor(sr as i64) - m0;
-    let key = (item.0, m0, len, sr);
-    if let Some((_, a)) = cache().lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(k, _)| *k == key) {
-        return Ok(a.clone());
+    let key = (m0, len, sr, stream);
+    let src = s.source(item).ok_or_else(|| EngineError::Other("the clip's media is offline".into()))?;
+    if let Some(entry) = cache().lock().unwrap_or_else(|e| e.into_inner()).iter().find(|entry| entry.key == key && Arc::ptr_eq(&entry.source, &src)) {
+        return Ok(entry.analysis.clone());
     }
-    let provider = s.media.provider(s.project.clone(), s.services.clone());
-    let src = filmcraft_render::SourceProvider::source(&provider, item).ok_or_else(|| EngineError::Other("the clip's media is offline".into()))?;
-    let buf = src.audio(m0, len.max(0) as usize, sr).map_err(|e| EngineError::Other(format!("reading the clip's audio: {e}")))?;
+    let buf = src.audio_stream(stream, m0, len.max(0) as usize, sr).map_err(|e| EngineError::Other(format!("reading the clip's audio: {e}")))?;
     let refs: Vec<&[f32]> = buf.channels.iter().map(Vec::as_slice).collect();
     let a = Arc::new(dsp::analyze(&refs, sr).map_err(|e| EngineError::Other(format!("cannot remix: {e}")))?);
     let mut c = cache().lock().unwrap_or_else(|e| e.into_inner());
-    c.push((key, a.clone()));
+    c.push(CachedAnalysis { key, source: src, analysis: a.clone() });
     if c.len() > 8 {
         c.remove(0);
     }
@@ -120,17 +126,35 @@ fn analysis(s: &Session, item: ItemId, source_in: Tick, dur: Tick) -> Result<Arc
 }
 
 /// The remix of `c` to `target` with the given sliders: (new duration, state).
-fn make_plan(s: &Session, c: ClipId, target: Tick, segments: f64, variations: f64) -> Result<(Tick, Remix, Arc<Analysis>)> {
+fn make_plan(s: &Session, c: ClipId, target: Tick, segments: f64, variations: f64, prepared: Option<dsp::Plan>) -> Result<(Tick, Remix, Arc<Analysis>)> {
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let sr = seq.settings.sample_rate.max(1) as i64;
     let (_, it) = seq.find_item(c).ok_or_else(|| EngineError::Other("no such clip".into()))?;
     let old = filmcraft_render::remix::Remix::of(it);
     let original = old.as_ref().map(|r| r.original).unwrap_or(it.duration);
-    let a = analysis(s, it.item, it.source_in, original)?;
+    let a = analysis(s, it.item, it.source_in, original, it.audio_stream)?;
     let params = Params { segments: segments.clamp(0.0, 100.0), variations: variations.clamp(0.0, 100.0) };
-    let plan = dsp::plan(&a, target.to_units_floor(sr), params).map_err(|e| EngineError::Other(format!("cannot remix: {e}")))?;
+    let plan = match prepared {
+        Some(plan) => plan,
+        None => dsp::plan(&a, target.to_units_floor(sr), params).map_err(|e| EngineError::Other(format!("cannot remix: {e}")))?,
+    };
+    let source = s.source(it.item).ok_or_else(|| EngineError::Other("the clip's media is offline".into()))?;
+    let base = it.source_in.to_units_floor(sr);
+    let mut levels = dsp::match_levels(&plan, sr as u32, a.period, &mut |start, count| {
+        source.audio_stream(it.audio_stream, base.checked_add(start)?, count, sr as u32).ok().map(|b| b.channels)
+    })
+    .ok_or_else(|| EngineError::Other("cannot read audio for remix level matching".into()))?;
+    levels.span = Tick::from_units(levels.span, sr).0;
     let pieces = plan.pieces.iter().map(|p| TickPiece { src: it.source_in + Tick::from_units(p.src, sr), len: Tick::from_units(p.len, sr) }).collect();
-    let rm = Remix { target, segments: params.segments, variations: params.variations, original, xfade: Tick::from_units(plan.xfade, sr), pieces };
+    let rm = Remix {
+        target,
+        segments: params.segments,
+        variations: params.variations,
+        original,
+        xfade: Tick::from_units(plan.xfade, sr),
+        pieces,
+        levels: Some(levels),
+    };
     Ok((Tick::from_units(plan.len(), sr), rm, a))
 }
 
@@ -200,7 +224,7 @@ fn enable(s: &mut Session, p: &Value) -> Result<Value> {
         return Ok(report(s, c, None));
     }
     let dur = it.duration;
-    let (d, rm, a) = make_plan(s, c, dur, 50.0, 50.0)?;
+    let (d, rm, a) = make_plan(s, c, dur, 50.0, 50.0, None)?;
     apply(s, "Enable Remix", c, d, Some(rm))?;
     Ok(report(s, c, Some(&a)))
 }
@@ -225,7 +249,27 @@ fn remix(s: &mut Session, p: &Value, cmd: &str, label: &str) -> Result<Value> {
     }
     let segments = segments.or(cur.as_ref().map(|r| r.segments)).unwrap_or(50.0);
     let variations = variations.or(cur.as_ref().map(|r| r.variations)).unwrap_or(50.0);
-    let (d, rm, a) = make_plan(s, c, target, segments, variations)?;
+    let prepared = if p.get("matchMelody").and_then(Value::as_bool) == Some(true) {
+        let original = cur.as_ref().map(|r| r.original).unwrap_or(it.duration);
+        let analysis = analysis(s, it.item, it.source_in, original, it.audio_stream)?;
+        let sr = i64::from(analysis.sample_rate);
+        let params = Params { segments: segments.clamp(0.0, 100.0), variations: variations.clamp(0.0, 100.0) };
+        match dsp::plan_with_melody_floor(&analysis, target.to_units_floor(sr), params, 0.50) {
+            Ok(plan) => Some(plan),
+            Err(_) => {
+                let alternatives: Vec<_> = dsp::melodic_alternatives(&analysis, target.to_units_floor(sr))
+                    .iter()
+                    .map(|plan| json!({"seconds":Tick::from_units(plan.len(),sr).seconds()}))
+                    .collect();
+                return Ok(json!({"applied":false,"clip":c.0,"requestedSeconds":target.seconds(),
+                    "reason":"No matching musical phrase was found at this duration. The clip was left unchanged.",
+                    "alternatives":alternatives}));
+            }
+        }
+    } else {
+        None
+    };
+    let (d, rm, a) = make_plan(s, c, target, segments, variations, prepared)?;
     apply(s, label, c, d, Some(rm))?;
     Ok(report(s, c, Some(&a)))
 }
@@ -255,7 +299,8 @@ pub fn remixed_clips(s: &Session) -> HashMap<ClipId, Remix> {
 }
 
 pub fn commands() -> Vec<CommandSpec> {
-    const PARAMS: &str = r#"{"clip":id?,"duration":ticks?,"seconds":f64?,"frame":n?,"timecode":str?,"segments":0..100?,"variations":0..100?}"#;
+    const PARAMS: &str =
+        r#"{"clip":id?,"duration":ticks?,"seconds":f64?,"frame":n?,"timecode":str?,"segments":0..100?,"variations":0..100?,"matchMelody":bool?}"#;
     vec![
         CommandSpec {
             id: "clip.remix.enable",
