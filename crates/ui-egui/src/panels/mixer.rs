@@ -95,6 +95,7 @@ pub fn poll_meters(app: &mut FilmcraftApp, ui: &egui::Ui) -> HashMap<u64, Vec<[f
     // without an audio device, the loudness feed is what mixes the programme (and posts meters)
     super::meters::feed_loudness(app);
     let mut fresh: Vec<(u64, Vec<f32>)> = app.session.previews.live.take_meters().into_iter().map(|(k, v)| (k.0, v)).collect();
+    filmcraft_engine::voiceover::post_input_meter(&mut app.session);
     let input = app.session.previews.live.take_input_meter();
     if !input.is_empty() {
         fresh.push((INPUT_METER, input));
