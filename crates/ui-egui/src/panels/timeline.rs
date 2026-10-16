@@ -979,12 +979,19 @@ fn draw_clip(
     }
 }
 
+/// The height of a clip's waveform for a clip body `body_height` tall: the lower part of a tall clip,
+/// under the name strip; the whole clip on a compact track (under 50 points), where a share of it
+/// would be too small to read and the name is drawn over the waveform.
+fn waveform_zone_height(body_height: f32) -> f32 {
+    if body_height < 50.0 { (body_height - 2.0).max(8.0) } else { (body_height * 0.42).max(8.0) }
+}
+
 fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &TrackItem, col: Color32) {
     let Some(peaks) = request_peaks(app, it.item, it.audio_stream) else { return };
     let pkey = (it.item, it.audio_stream);
     let spp = 256.0;
     let sr = 48_000.0;
-    let zone_h = (body.height() * 0.42).max(8.0);
+    let zone_h = waveform_zone_height(body.height());
     let area = Rect::from_min_max(pos2(body.min.x + 1.0, body.max.y - zone_h - 1.0), pos2(body.max.x - 1.0, body.max.y - 1.0));
     let clip = p.clip_rect().intersect(area);
     if clip.width() <= 0.0 {
@@ -3416,5 +3423,22 @@ mod ruler_tests {
         }
         let (minor, label) = ruler_steps(1.0, i64::MAX);
         assert!(minor >= 1 && label >= 1 && label % minor == 0, "an unrepresentable rate: tick {minor}, label {label}");
+    }
+}
+
+#[cfg(test)]
+mod waveform_zone_tests {
+    use super::waveform_zone_height;
+
+    #[test]
+    fn a_compact_clip_has_its_whole_height_for_the_waveform_and_a_tall_one_the_lower_part() {
+        // tall clips are as before
+        assert_eq!(waveform_zone_height(100.0), 42.0);
+        assert!((waveform_zone_height(60.0) - 25.2).abs() < 1e-4);
+        // compact ones fill the clip (a point of margin each side), where 42 % was 12 points of 28
+        assert_eq!(waveform_zone_height(28.0), 26.0);
+        assert_eq!(waveform_zone_height(49.0), 47.0);
+        // never smaller than the minimum
+        assert_eq!(waveform_zone_height(4.0), 8.0);
     }
 }
