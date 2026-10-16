@@ -184,6 +184,12 @@ fn click_selection(current: &[ItemId], order: &[ItemId], anchor: Option<ItemId>,
     vec![id]
 }
 
+/// What a right-click menu command acts on: the whole selection when the item right-clicked is
+/// part of it, else just that item (Premiere's rule).
+fn menu_targets(selection: &[ItemId], id: ItemId) -> Vec<ItemId> {
+    if selection.contains(&id) { selection.to_vec() } else { vec![id] }
+}
+
 /// Click / double-click / drag / context menu of an item (row, card).
 pub fn item_interactions(
     app: &mut FilmcraftApp,
@@ -307,20 +313,26 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
                 ui.close();
             }
         }
-        ui.menu_button(tl!("Proxy"), |ui| {
-            for (label, cmd) in [
-                (tl!("Create Proxies…"), "media.createProxies"),
-                (tl!("Attach Proxies…"), "media.attachProxies"),
-                (tl!("Reconnect Full Resolution Media…"), "media.reconnectFullRes"),
-                (tl!("Detach Proxies"), "media.detachProxies"),
+        // Create and Detach act on every selected clip when the one right-clicked is among them, as
+        // in Premiere (#1885); Attach and Reconnect pick a file for one clip.
+        let many: Vec<u64> = menu_targets(&app.session.state.project_selection, id).iter().map(|i| i.0).collect();
+        let r = ui.menu_button(tl!("Proxy"), |ui| {
+            for (key, label, cmd, items) in [
+                ("create", tl!("Create Proxies…"), "media.createProxies", many.clone()),
+                ("attach", tl!("Attach Proxies…"), "media.attachProxies", vec![id.0]),
+                ("reconnect", tl!("Reconnect Full Resolution Media…"), "media.reconnectFullRes", vec![id.0]),
+                ("detach", tl!("Detach Proxies"), "media.detachProxies", many.clone()),
             ] {
-                if ui.button(label).clicked() {
-                    actions.push(("project.select".into(), json!({"items": [id.0]})));
+                let b = ui.button(label);
+                app.auto.add(&format!("project.itemMenu.proxy.{key}"), b.rect, label);
+                if b.clicked() {
+                    actions.push(("project.select".into(), json!({"items": items})));
                     actions.push((cmd.into(), json!({})));
                     ui.close();
                 }
             }
         });
+        app.auto.add("project.itemMenu.proxy", r.response.rect, tl!("Proxy"));
     }
     ui.separator();
     if ui.button(tl!("Clear")).clicked() {
@@ -1201,7 +1213,7 @@ fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<
 
 #[cfg(test)]
 mod clear_tests {
-    use super::{clear_params, click_selection};
+    use super::{clear_params, click_selection, menu_targets};
     use filmcraft_project::ItemId;
     use serde_json::json;
 
@@ -1229,6 +1241,14 @@ mod clear_tests {
         assert_eq!(sel, ids(&[1, 3, 4]));
         // no anchor in the shown items: like a plain click
         assert_eq!(click_selection(&ids(&[1]), &order, Some(ItemId(9)), ItemId(4), true, false), ids(&[4]));
+    }
+
+    #[test]
+    fn a_right_click_inside_the_selection_acts_on_all_of_it() {
+        assert_eq!(menu_targets(&ids(&[1, 2, 3]), ItemId(2)), ids(&[1, 2, 3]));
+        // outside the selection: only the item right-clicked
+        assert_eq!(menu_targets(&ids(&[1, 2, 3]), ItemId(9)), ids(&[9]));
+        assert_eq!(menu_targets(&[], ItemId(4)), ids(&[4]));
     }
 
     #[test]
