@@ -40,6 +40,7 @@ pub mod hardware_encode;
 pub mod hybrid;
 #[cfg(target_os = "windows")]
 pub mod media_foundation;
+pub mod memory;
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 pub mod nvdec;
 #[cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
@@ -54,6 +55,7 @@ pub mod videotoolbox;
 pub mod videotoolbox_encode;
 
 pub use hybrid::HybridDecoder;
+pub use memory::total_physical_memory;
 
 /// What [`register`] made available.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,6 +70,16 @@ pub enum Availability {
 /// harmless). Streams they do not take, and every stream while hardware decoding is Off, keep
 /// using FilmCraft's own decoders.
 pub fn register() -> Availability {
+    static MEM_BUDGET_INIT: std::sync::Once = std::sync::Once::new();
+    MEM_BUDGET_INIT.call_once(|| {
+        if let Some(total_bytes) = memory::total_physical_memory() {
+            let budget = memory::default_frame_budget_for_ram(total_bytes);
+            let gib = total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+            log::info!("System RAM: {:.1} GiB, configured GOP frame budget: {} MB", gib, budget >> 20);
+            filmcraft_codecs::set_frame_budget(budget);
+        }
+    });
+
     #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
     filmcraft_export::register_encoder(nvenc::export::factory);
     #[cfg(target_os = "macos")]
