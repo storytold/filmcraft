@@ -1033,6 +1033,15 @@ impl FilmcraftApp {
         panels::voiceover::on_stop(self);
     }
 
+    /// [`stop`](Self::stop) for a press or drag that moves the playhead (a scrub bar, a ruler).
+    /// With nothing playing there is nothing to stop, and stopping the output would close the
+    /// scrub stream (see `scrub.rs`) that the drag keeps open, once per move.
+    pub(crate) fn stop_for_scrub(&mut self) {
+        if self.playback.playing || self.playback.preroll.is_some() {
+            self.stop();
+        }
+    }
+
     fn start_audio(&mut self) {
         let Some(seq_id) = self.session.state.active_sequence else { return };
         let start_tick = self.session.playhead();
@@ -2134,13 +2143,13 @@ impl eframe::App for FilmcraftApp {
 }
 
 /// Effective sample rate for shuttle playback. The audio device still runs at `device_rate`,
-/// so at 2x its output samples represent twice the timeline duration. Reverse and
-/// extreme shuttle speeds remain silent rather than asking the mixer for invalid rates.
+/// so at 2x its output samples represent twice the timeline duration. Speeds from 0.25x to 8x,
+/// either way, have sound; others stay silent rather than asking the mixer for invalid rates.
 fn shuttle_mix_rate(device_rate: u32, speed: f64) -> Option<u32> {
-    if device_rate == 0 || !speed.is_finite() || !(0.5..=4.0).contains(&speed) {
+    if device_rate == 0 || !speed.is_finite() || !(0.25..=8.0).contains(&speed.abs()) {
         return None;
     }
-    let rate = (f64::from(device_rate) / speed).round();
+    let rate = (f64::from(device_rate) / speed.abs()).round();
     if !(1.0..=f64::from(u32::MAX)).contains(&rate) {
         return None;
     }
@@ -2444,7 +2453,11 @@ mod audio_recovery_tests {
         assert_eq!(shuttle_mix_rate(48_000, 1.0), Some(48_000));
         assert_eq!(shuttle_mix_rate(48_000, 2.0), Some(24_000));
         assert_eq!(shuttle_mix_rate(48_000, 4.0), Some(12_000));
-        assert_eq!(shuttle_mix_rate(48_000, -1.0), None);
+        assert_eq!(shuttle_mix_rate(48_000, -1.0), Some(48_000));
+        assert_eq!(shuttle_mix_rate(48_000, -8.0), Some(6_000));
+        assert_eq!(shuttle_mix_rate(48_000, 0.25), Some(192_000));
+        assert_eq!(shuttle_mix_rate(48_000, 16.0), None);
+        assert_eq!(shuttle_mix_rate(48_000, 0.1), None);
         assert_eq!(shuttle_mix_rate(0, 2.0), None);
         assert_eq!(shuttle_mix_rate(48_000, f64::NAN), None);
 
@@ -2560,7 +2573,7 @@ mod audio_recovery_tests {
             app.apply_prefs(&ctx);
             assert_eq!(starts.load(Ordering::Relaxed), expected_starts, "unchanged settings do not restart");
         }
-        for speed in [-1.0, 8.0] {
+        for speed in [-16.0, 0.1] {
             app.play(speed);
             app.end_preroll(0.0);
             assert!(!app.playback.audio_clock, "unsupported speed {speed} remains silent");

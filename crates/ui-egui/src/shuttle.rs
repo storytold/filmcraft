@@ -13,13 +13,48 @@ const FRAME_MARGIN: i128 = 65_536;
 
 pub(crate) fn mix(session: &Session, seq_id: ItemId, device_rate: u32, speed: f64) -> Option<(u32, Mixer)> {
     let rate = super::shuttle_mix_rate(device_rate, speed)?;
-    if !session.prefs.audio.maintain_pitch_shuttling || rate == device_rate {
+    if speed < 0.0 {
+        // Reverse plays the same sped-up mix backwards, without pitch correction.
+        return Some((rate, Box::new(reversed(super::playback_mix(session, seq_id, rate)))));
+    }
+    // The pitch shifter only handles a limited range; beyond it the rate change is heard.
+    if !session.prefs.audio.maintain_pitch_shuttling || rate == device_rate || !(0.5..=4.0).contains(&speed) {
         return Some((rate, Box::new(super::playback_mix(session, seq_id, rate))));
     }
     // Slow playback needs headroom for the upward pitch correction before rate conversion.
     let internal_rate = if rate > device_rate { device_rate.checked_mul(2)? } else { device_rate };
     let semitones = (12.0 * (f64::from(rate) / f64::from(device_rate)).log2()) as f32;
     Some((rate, Box::new(corrected(super::playback_mix(session, seq_id, internal_rate), internal_rate, rate, semitones))))
+}
+
+/// Plays `mix` backwards: the first cursor it is asked for is the start, and later blocks walk
+/// back from there. Each block is rendered forwards and flipped; samples before zero are silent.
+fn reversed(mut mix: impl FnMut(i64, &mut [f32], usize) + Send + 'static) -> impl FnMut(i64, &mut [f32], usize) + Send {
+    let mut anchor: Option<i64> = None;
+    let mut block: Vec<f32> = Vec::new();
+    move |cursor, buf: &mut [f32], ch| {
+        buf.fill(0.0);
+        if ch == 0 || ch > MAX_CHANNELS || !buf.len().is_multiple_of(ch) {
+            return;
+        }
+        let n = (buf.len() / ch) as i64;
+        let start = *anchor.get_or_insert(cursor);
+        // forward index of the block's last / first frame in the source
+        let Some(last) = start.checked_mul(2).and_then(|x| x.checked_sub(cursor)) else { return };
+        let Some(first) = last.checked_sub(n - 1) else { return };
+        let skip = first.saturating_neg().clamp(0, n);
+        if skip >= n {
+            return;
+        }
+        block.clear();
+        block.resize(buf.len(), 0.0);
+        if let Some(part) = block.get_mut((skip as usize) * ch..) {
+            mix(first.max(0), part, ch);
+        }
+        for (dst, src) in buf.chunks_exact_mut(ch).zip(block.chunks_exact(ch).rev()) {
+            dst.copy_from_slice(src);
+        }
+    }
 }
 
 fn corrected(mix: impl FnMut(i64, &mut [f32], usize) + Send + 'static, from: u32, to: u32, semitones: f32) -> impl FnMut(i64, &mut [f32], usize) + Send {
@@ -142,6 +177,26 @@ impl PitchedStream {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reversed_plays_blocks_backwards_from_the_start() {
+        // the source is a ramp: sample k has the value k
+        let ramp = |start: i64, buf: &mut [f32], ch: usize| {
+            for (i, frame) in buf.chunks_exact_mut(ch).enumerate() {
+                frame.fill((start + i as i64) as f32);
+            }
+        };
+        let mut rev = super::reversed(move |c, b: &mut [f32], ch| ramp(c, b, ch));
+        let mut a = vec![0.0; 8];
+        rev(10, &mut a, 2);
+        assert_eq!(a, [10.0, 10.0, 9.0, 9.0, 8.0, 8.0, 7.0, 7.0]);
+        rev(14, &mut a, 2); // the next block continues backwards
+        assert_eq!(a, [6.0, 6.0, 5.0, 5.0, 4.0, 4.0, 3.0, 3.0]);
+        rev(18, &mut a, 2); // runs past the start of the timeline: silence there
+        assert_eq!(a, [2.0, 2.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0]);
+        rev(i64::MAX, &mut a, 2); // hostile cursor: silence, no panic
+        assert!(a.iter().all(|x| *x == 0.0));
+    }
+
     use super::*;
 
     fn tone_mix(rate: u32, tones: Vec<f64>, burst: bool) -> impl FnMut(i64, &mut [f32], usize) + Send {
