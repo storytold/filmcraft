@@ -689,3 +689,80 @@ fn align_to_frame_moves_selected_video_clips_by_position_only() {
     s.execute("edit.undo", json!({})).unwrap();
     assert!((pos(&s).0.y - 200.0).abs() < 1e-6, "one undo step per alignment");
 }
+
+/// #1877: `graphics.set` with `time` only changes a keyframe of a property that is already
+/// animated; `keyframe: true` puts keyframes on the properties it lists, as `effects.setParam` does.
+mod set_with_keyframes {
+    use super::*;
+    use filmcraft_project::ParamValue;
+
+    const AT_1_5_S: i64 = 381_024_000_000;
+
+    fn ellipse() -> (Session, ClipId) {
+        let mut s = Session::default();
+        s.execute("file.newSequence", json!({"name": "R", "width": 1920, "height": 1080, "fps": 30, "video": 4, "audio": 1})).unwrap();
+        let r = s.execute("graphics.newEllipse", json!({"position": [300, 540], "size": [200, 200], "track": 1, "time": 0, "seconds": 2})).unwrap();
+        let clip = ClipId(r["clip"].as_u64().unwrap());
+        (s, clip)
+    }
+
+    /// The layer's `position`: its keyframes (time, x) and its fixed value's x.
+    fn position(s: &Session, clip: ClipId) -> (Vec<(i64, f32)>, f32) {
+        let q = s.active_sequence().unwrap();
+        let (_, it) = q.find_item(clip).unwrap();
+        let e = &it.effects[layer_indices(&it.effects)[0]];
+        let p = &e.params["position"];
+        let x = |v: &ParamValue| v.as_vec2().unwrap().x as f32;
+        (p.keyframes.iter().map(|k| (k.time.0, x(&k.value))).collect(), x(&p.value))
+    }
+
+    #[test]
+    fn without_keyframe_the_last_call_wins_as_before() {
+        let (mut s, clip) = ellipse();
+        s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "time": 0, "props": {"position": [300, 540]}})).unwrap();
+        let r = s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "time": AT_1_5_S, "props": {"position": [1600, 540]}})).unwrap();
+        assert!(r.is_null(), "the result of a call without `keyframe` is unchanged: {r}");
+        let (keys, fixed) = position(&s, clip);
+        assert!(keys.is_empty(), "{keys:?}");
+        assert_eq!(fixed, 1600.0);
+    }
+
+    #[test]
+    fn keyframe_true_animates_the_property() {
+        let (mut s, clip) = ellipse();
+        let r = s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "time": 0, "keyframe": true, "props": {"position": [300, 540]}})).unwrap();
+        assert_eq!(r, json!({"keyframes": {"position": 1}}));
+        let r = s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "time": AT_1_5_S, "keyframe": true, "props": {"position": [1600, 540]}})).unwrap();
+        assert_eq!(r, json!({"keyframes": {"position": 2}}));
+        let (keys, _) = position(&s, clip);
+        assert_eq!(keys, vec![(0, 300.0), (AT_1_5_S, 1600.0)]);
+        // the layer really moves: between the keyframes it is between the two positions
+        let q = s.active_sequence().unwrap();
+        let (_, it) = q.find_item(clip).unwrap();
+        let e = &it.effects[layer_indices(&it.effects)[0]];
+        let mid = e.params["position"].value_at(it.source_time_at(Tick(AT_1_5_S / 2))).as_vec2().unwrap().x as f32;
+        assert!(mid > 300.0 && mid < 1600.0, "{mid}");
+    }
+
+    #[test]
+    fn a_property_that_is_already_animated_keeps_following_time() {
+        let (mut s, clip) = ellipse();
+        s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "time": 0, "keyframe": true, "props": {"position": [300, 540]}})).unwrap();
+        // no `keyframe`: the property is animated now, so a call with `time` adds a keyframe (as before)
+        s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "time": AT_1_5_S, "props": {"position": [1600, 540]}})).unwrap();
+        assert_eq!(position(&s, clip).0.len(), 2);
+    }
+
+    #[test]
+    fn one_undo_step_per_call_and_properties_that_cannot_be_animated_are_refused() {
+        let (mut s, clip) = ellipse();
+        s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "time": 0, "keyframe": true, "props": {"position": [300, 540]}})).unwrap();
+        s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "time": AT_1_5_S, "keyframe": true, "props": {"position": [1600, 540]}})).unwrap();
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(position(&s, clip).0.len(), 1, "undo takes back the second keyframe only");
+        let e = s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "keyframe": true, "props": {"font": "Inter"}}));
+        assert!(e.is_err(), "a font cannot be keyframed");
+        let e = s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "keyframe": true, "props": {"nope": 1}}));
+        assert!(e.is_err());
+    }
+}
