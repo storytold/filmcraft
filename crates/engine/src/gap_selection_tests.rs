@@ -211,7 +211,6 @@ fn close_gap_rejects_invalid_context_and_explicit_parameters_without_editing() {
     two_clips(&mut s, [0, 96]);
     let before = s.project.clone();
     let undo = s.history.undo.len();
-    assert!(s.execute("sequence.closeGap", json!({})).is_err(), "a shortcut needs a selected gap");
     s.execute("timeline.selectGap", json!({"track":"V1","frame":60})).unwrap();
     for params in [json!({"track":null}), json!({"track":false}), json!({"track":"V99","frame":60}), json!({"time":1})] {
         assert!(s.execute("sequence.closeGap", params).is_err(), "invalid explicit requests must not fall back to the selected gap");
@@ -229,6 +228,79 @@ fn close_gap_rejects_invalid_context_and_explicit_parameters_without_editing() {
     let before = s.project.clone();
     let undo = s.history.undo.len();
     assert!(s.execute("sequence.closeGap", json!({})).is_err(), "locking a selected gap must protect both picture and sound");
+    assert!(std::sync::Arc::ptr_eq(&before, &s.project));
+    assert_eq!(s.history.undo.len(), undo);
+}
+
+/// 48-frame clips (pictures on V1, linked sounds on A1) placed at `frames`, in that order.
+fn clips_at(s: &mut Session, frames: &[i64]) -> Vec<(ClipId, ClipId)> {
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    s.execute("file.newSequence", json!({"name": "Gaps", "video": 1, "audio": 1})).unwrap();
+    let rate = s.sequence_rate();
+    let item = s.project.items.values().find(|i| i.has_video() && i.has_audio() && i.as_media().is_some()).map(|i| i.id).unwrap();
+    for f in frames {
+        s.execute("timeline.place", json!({"item": item.0, "frame": f, "sourceIn": rate.tick_of(48).0, "duration": rate.tick_of(48).0})).unwrap();
+    }
+    s.execute("edit.deselectAll", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    (0..frames.len()).map(|n| (q.video_tracks[0].items[n].id, q.audio_tracks[0].items[n].id)).collect()
+}
+
+/// #1986: Sequence ▸ Close Gap with no gap selected closes every gap in the sequence, on picture and
+/// sound alike, in one undo step (Premiere's Close Gap).
+#[test]
+fn close_gap_without_a_selected_gap_closes_every_gap_in_one_undo_step() {
+    let mut s = Session::default();
+    let clips = clips_at(&mut s, &[24, 96, 200]);
+    let rate = s.sequence_rate();
+    let at = |f: i64| rate.tick_of(f);
+    let (zero, f48, f96) = (Tick::ZERO, at(48), at(96));
+    let before = serde_json::to_value(&s.project).unwrap();
+    let undo = s.history.undo.len();
+    let r = s.execute("sequence.closeGap", json!({})).unwrap();
+    assert_eq!(r["gaps"], json!(3), "the leading gap and the two between the clips: {r}");
+    for ((picture, sound), start) in clips.iter().zip([zero, f48, f96]) {
+        assert_eq!(range(&s, *picture).0, start);
+        assert_eq!(range(&s, *sound).0, start, "sound stays with its picture");
+    }
+    assert_eq!(s.history.undo.len(), undo + 1, "one undo step");
+    s.undo();
+    assert_eq!(serde_json::to_value(&s.project).unwrap(), before);
+}
+
+/// With In and Out set, only the gaps that lie between them close.
+#[test]
+fn close_gap_without_a_selected_gap_only_closes_gaps_between_in_and_out() {
+    let mut s = Session::default();
+    let clips = clips_at(&mut s, &[0, 96, 200]);
+    let rate = s.sequence_rate();
+    let at = |f: i64| rate.tick_of(f);
+    s.execute("markers.markIn", json!({"time": at(140).0})).unwrap();
+    s.execute("markers.markOut", json!({"time": at(260).0})).unwrap();
+    let r = s.execute("sequence.closeGap", json!({})).unwrap();
+    assert_eq!(r["gaps"], json!(1), "{r}");
+    assert_eq!(range(&s, clips[0].0).0, Tick::ZERO);
+    assert_eq!(range(&s, clips[1].0).0, at(96), "the gap before In stays");
+    assert_eq!(range(&s, clips[2].0).0, at(144), "the gap between In and Out closed");
+}
+
+/// Nothing to close, or a locked track that would be left behind: an error and no edit.
+#[test]
+fn close_gap_without_a_selected_gap_refuses_without_editing() {
+    let mut s = Session::default();
+    clips_at(&mut s, &[0, 48]);
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    assert!(s.execute("sequence.closeGap", json!({})).is_err(), "no gaps");
+    assert!(std::sync::Arc::ptr_eq(&before, &s.project));
+    assert_eq!(s.history.undo.len(), undo);
+
+    let mut s = Session::default();
+    clips_at(&mut s, &[0, 96]);
+    s.execute("timeline.setTrack", json!({"track":"A1","locked":true})).unwrap();
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    assert!(s.execute("sequence.closeGap", json!({})).is_err(), "A1 is locked and has a clip after the gap");
     assert!(std::sync::Arc::ptr_eq(&before, &s.project));
     assert_eq!(s.history.undo.len(), undo);
 }

@@ -2136,12 +2136,14 @@ fn build() -> Vec<CommandSpec> {
             remove_transitions(s, &ids, "Clear Transition")
         }),
         cmd!("sequence.closeGap", "Close Gap", ["Sequence"], None, r#"{"track":"V1"|id?,"time":ticks?}"#, has_seq, |s, p| {
-            // Shortcuts and menus have no parameters. Resolve that form from the selected gap
-            // (#1135); explicit requests keep their existing track/time validation.
+            // Shortcuts and menus have no parameters. That form closes the selected gap (#1135),
+            // or with none selected every gap between In and Out, as Premiere's Sequence ▸ Close
+            // Gap does (#1986); explicit requests keep their existing track/time validation.
             if p.as_object().is_some_and(|p| p.is_empty()) {
-                let gap = s.state.gap_selection.ok_or_else(|| bad("sequence.closeGap", "select a gap or provide `track`"))?;
-                ripple_delete_gap(s, gap)?;
-                return Ok(Value::Null);
+                return match s.state.gap_selection {
+                    Some(gap) => ripple_delete_gap(s, gap).map(|_| Value::Null),
+                    None => close_sequence_gaps(s),
+                };
             }
             let tr = track_p(s, p, "track", "sequence.closeGap")?.ok_or_else(|| bad("sequence.closeGap", "need `track`"))?;
             let t = time_p(s, p, "").unwrap_or(s.playhead());
@@ -4035,6 +4037,28 @@ fn ripple_delete_gap(s: &mut Session, g: crate::GapSelection) -> Result<Value> {
     close_gap(s, g.track, g.range.start)?;
     s.state.gap_selection = None;
     Ok(json!({"closed": g.range.duration.0}))
+}
+
+/// `sequence.closeGap` with no gap selected: every span where no track has anything, between In
+/// and Out (the whole sequence without them), closes in one undo step (#1986).
+fn close_sequence_gaps(s: &mut Session) -> Result<Value> {
+    let within = in_out_range(s)?;
+    let gaps = s.active_sequence().map(|q| crate::sequence_extras::sequence_gaps(q, Some(within))).unwrap_or_default();
+    let Some(first) = gaps.first().copied() else {
+        return Err(bad("sequence.closeGap", "no gaps to close"));
+    };
+    s.edit_sequence("Close Gap", |q, _, st| {
+        // a locked track would stay put while everything else moved past it
+        if q.all_tracks().any(|t| t.locked && t.items.iter().any(|i| i.start >= first.end())) {
+            return Err(edit::EditError::Locked.into());
+        }
+        for g in gaps.iter().rev() {
+            crate::sequence_extras::close_sequence_gap(q, *g, st.ripple_sequence_markers);
+        }
+        Ok(())
+    })?;
+    let closed = gaps.iter().fold(Tick::ZERO, |sum, g| sum + g.duration);
+    Ok(json!({"gaps": gaps.len(), "closed": closed.0}))
 }
 
 /// `sequence.closeGap`: ripple the gap on `track` at `t` closed (one undo step, "Ripple Delete").
