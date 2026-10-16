@@ -1308,6 +1308,8 @@ mod shortcuts_tests;
 #[cfg(test)]
 mod split_edit_ripple_trim_tests;
 #[cfg(test)]
+mod split_edit_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod timeline_move_tests;

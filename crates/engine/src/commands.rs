@@ -619,12 +619,18 @@ fn clamp_trim_linked(q: &filmcraft_project::Sequence, clips: &[ClipId], edge: Ed
 /// trim drag shows this, so the edge stops at the end of the media or the neighbouring clip
 /// instead of following the pointer past it (#653).
 pub fn trim_delta(s: &Session, clip: ClipId, edge: Edge, mode: TrimMode, delta: Tick) -> Result<Tick> {
+    trim_delta_linked(s, clip, edge, mode, delta, true)
+}
+
+/// [`trim_delta`] for a trim of the clip alone when `linked` is false (an Alt-drag, #1945).
+pub fn trim_delta_linked(s: &Session, clip: ClipId, edge: Edge, mode: TrimMode, delta: Tick, linked: bool) -> Result<Tick> {
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let durations = |id: ItemId| crate::media_duration(&s.project, &s.media, id);
     let starts = |id: ItemId| crate::media_start(&s.project, id);
     let mut next = s.project.next_id;
     let ctx = edit::EditCtx { next_id: &mut next, media_duration: &durations, media_start: &starts, min_duration: q.settings.frame_rate.frame_duration() };
-    clamp_trim_linked(q, &with_links(s, &[clip]), edge, mode, delta, &ctx)
+    let clips = if linked { with_links(s, &[clip]) } else { vec![clip] };
+    clamp_trim_linked(q, &clips, edge, mode, delta, &ctx)
 }
 
 /// Sequence settings matching a media clip (New Sequence From Clip, New Sequence from an item):
@@ -2635,7 +2641,7 @@ fn build() -> Vec<CommandSpec> {
             "Trim Edit",
             [],
             None,
-            r#"{"clip":id,"edge":"in|out","mode":"regular|ripple","delta":ticks|"deltaFrames":i64}"#,
+            r#"{"clip":id,"edge":"in|out","mode":"regular|ripple","delta":ticks|"deltaFrames":i64,"linked":bool=true}"#,
             has_seq,
             |s, p| {
                 let c = clip_p(p, "clip").ok_or_else(|| bad("timeline.trim", "need `clip`"))?;
@@ -2647,7 +2653,8 @@ fn build() -> Vec<CommandSpec> {
                     .map(Tick)
                     .or_else(|| p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)))
                     .unwrap_or_default();
-                let clips = with_links(s, &[c]);
+                // `linked: false` (Alt-drag) trims only this clip: a split edit (#1945)
+                let clips = if bool_p(p, "linked").unwrap_or(true) { with_links(s, &[c]) } else { vec![c] };
                 let applied = s.edit_sequence(if mode == TrimMode::Ripple { "Ripple Trim" } else { "Trim" }, |q, ctx, st| {
                     if q.find_item(c).is_some_and(|(t, _)| q.track(t).is_some_and(|tr| tr.locked)) {
                         return Err(edit::EditError::Locked.into());
@@ -2841,12 +2848,13 @@ fn build() -> Vec<CommandSpec> {
             let sp = s.edit_sequence("Rate Stretch", |q, ctx, _| Ok(edit::rate_stretch_items(q, &clips, edge, d, ctx)?))?;
             Ok(json!({"speed": sp}))
         }),
-        cmd!("timeline.razor", "Razor", [], None, r#"{"time":ticks,"track":"V1"|id?,"clip":id?}"#, has_seq, |s, p| {
+        cmd!("timeline.razor", "Razor", [], None, r#"{"time":ticks,"track":"V1"|id?,"clip":id?,"linked":bool=true}"#, has_seq, |s, p| {
             let t = time_p(s, p, "").unwrap_or(s.playhead());
             let tr = track_p(s, p, "track", "timeline.razor")?;
             let clip = clip_p(p, "clip");
             let n = if let Some(c) = clip {
-                let clips = with_links(s, &[c]);
+                // `linked: false` (Alt-click) cuts only this clip, not its linked partners (#1945)
+                let clips = if bool_p(p, "linked").unwrap_or(true) { with_links(s, &[c]) } else { vec![c] };
                 s.edit_sequence("Razor", |q, ctx, _| Ok(edit::razor_items(q, &clips, t, ctx)))?
             } else {
                 let tracks: Vec<TrackId> = tr.into_iter().collect();
