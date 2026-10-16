@@ -11,7 +11,7 @@ commands (frames, panels, monitor zoom, Project and Text panel navigation) run t
 channel (`engine.execute` / `ui.menu.invoke`) and MCP (`command_run`).
 
 Tests: `crates/engine/src/keyboard_tests.rs` (no key used twice in one scope; behaviour of the
-keyboard commands, with undo) and `crates/ui-egui/tests/keyboard_ui.rs` (no dangling ids in the
+keyboard commands, with undo) and `crates/ui-egui/tests/ui/keyboard_ui.rs` (no dangling ids in the
 tables, no conflicts in FilmCraft Default or the Premiere preset, keys pressed in the headless app).
 
 ## Keyboard-only commands (M3.12)

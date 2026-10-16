@@ -19,7 +19,7 @@ search highlights by query. Playhead movement reuses them; project edits, undo/r
 refresh them. Highlight lookup is constant work per word, including searches with many matches.
 
 To measure a long transcript, run
-`cargo test -p filmcraft-ui-egui --test transcript_ui long_transcript_redraw_benchmark -- --ignored --nocapture`
+`cargo test -p filmcraft-ui-egui --test ui transcript_ui::long_transcript_redraw_benchmark -- --ignored --nocapture`
 alone. It reports median and p95 redraw time for 10,000 words with an empty query and a query matching
 every word. It measures UI update work, not native display presentation, and deliberately has no
 machine-dependent timing assertion. The transcript still lays out every word; list virtualization
