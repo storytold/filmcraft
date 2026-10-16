@@ -230,3 +230,103 @@ fn hevc_422_10bit_matches_ffmpeg_when_the_hardware_takes_it() {
         assert!(planes[0][..] == raw[..y] && planes[1][..] == raw[y..y + c] && planes[2][..] == raw[y + c..], "frame {i} differs from ffmpeg");
     }
 }
+
+// ---- VP9 (vpcC) ----
+
+/// A VP9 fixture with hidden alt-ref frames (superframes), two GOPs: profile 0 8-bit or profile 2
+/// 10-bit.
+fn vp9_fixture(ff: &std::path::Path, profile: u8, size: &str) -> Option<std::path::PathBuf> {
+    let (_, h) = size.split_once('x')?;
+    let src = format!("testsrc2=s={size}:r=24:d=2,noise=alls=12:allf=t");
+    let (name, pix) = if profile == 0 { (format!("vp9_p0_{h}.mp4"), "yuv420p") } else { (format!("vp9_p2_{h}.mp4"), "yuv420p10le") };
+    let profile = profile.to_string();
+    #[rustfmt::skip]
+    let args = [
+        "-f", "lavfi", "-i", &src, "-c:v", "libvpx-vp9", "-profile:v", &profile, "-b:v", "0", "-crf", "32",
+        "-deadline", "good", "-cpu-used", "8", "-g", "24", "-auto-alt-ref", "1", "-lag-in-frames", "8",
+        "-row-mt", "1", "-pix_fmt", pix,
+    ];
+    fixture(ff, &name, &args)
+}
+
+#[test]
+fn vp9_is_bit_exact_with_the_software_decoder() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    for profile in [0, 2] {
+        for size in ["640x360", "1920x1080", "3840x2160"] {
+            let name = format!("vp9 profile {profile} {size}");
+            let Some(path) = vp9_fixture(&ff, profile, size) else { continue };
+            let s = read_stream(&path);
+            let Some(mut hw) = hardware(&s) else { continue };
+            let mut sw = software(&s);
+            let a = decode_all(hw.as_mut(), &s.samples);
+            let b = decode_all(sw.as_mut(), &s.samples);
+            assert!(a.len() >= 40, "{name}: {} pictures", a.len());
+            assert_same(&name, &a, &b);
+            assert_eq!(hw.name(), "VideoToolbox VP9", "{name}: stayed in hardware");
+            // reset + reseek to the later key frame
+            let k = (1..s.samples.len()).find(|&i| s.sync[i]).expect("two GOPs");
+            hw.reset();
+            sw.reset();
+            assert_same(&format!("{name} from sample {k}"), &decode_all(hw.as_mut(), &s.samples[k..]), &decode_all(sw.as_mut(), &s.samples[k..]));
+            for (smp, _) in &s.samples {
+                assert_eq!(hw.is_random_access(smp), sw.is_random_access(smp), "{name}");
+                assert_eq!(hw.is_disposable(smp), sw.is_disposable(smp), "{name}");
+            }
+        }
+    }
+}
+
+/// PS5 recordings say limited range in `vpcC` and full range in the bitstream: the pictures are
+/// still the software decoder's (no range conversion), with the bitstream's colour.
+#[test]
+fn vp9_container_range_differing_from_the_bitstream_is_bit_exact() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let Some(path) = vp9_fixture(&ff, 0, "640x360") else { return };
+    let mut s = read_stream(&path);
+    let filmcraft_isobmff::CodecConfig::Vp9(c) = &mut s.entry.codec else { panic!("vpcC") };
+    c.full_range = !c.full_range;
+    let Some(mut hw) = hardware(&s) else { return };
+    let a = decode_all(hw.as_mut(), &s.samples);
+    assert_same("vp9 with a flipped vpcC range", &a, &decode_all(software(&s).as_mut(), &s.samples));
+    assert_eq!(hw.name(), "VideoToolbox VP9");
+}
+
+#[test]
+fn vp9_mid_stream_failure_and_damage_fall_back_to_software() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let Some(path) = vp9_fixture(&ff, 0, "640x360") else { return };
+    let s = read_stream(&path);
+    let filmcraft_isobmff::CodecConfig::Vp9(c) = &s.entry.codec else { panic!("vpcC") };
+    let info = filmcraft_codecs::hw::FrameStreamInfo::from_entry(&s.entry).unwrap().unwrap();
+    let Ok(_) = VtDecoder::new_vp9(info.clone(), c) else {
+        eprintln!("SKIPPED: no VideoToolbox VP9 decoder");
+        return;
+    };
+    let reference = decode_all(software(&s).as_mut(), &s.samples);
+    for fail_at in [0u64, 5, 30] {
+        let mut vt = VtDecoder::new_vp9(info.clone(), c).unwrap();
+        vt.fail_after(fail_at);
+        let mut d = HybridDecoder::new(Box::new(vt), s.entry.clone(), info.clone());
+        let out = decode_all(&mut d, &s.samples);
+        assert!(!d.is_hardware(), "switched to software");
+        assert_same(&format!("vp9 failing at sample {fail_at}"), &out, &reference);
+    }
+    for seed in 1..=6u64 {
+        let (samples, entry) = (s.samples.clone(), s.entry.clone());
+        bounded(&format!("vp9 seed {seed}"), Duration::from_secs(60), move || {
+            let mut seed = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+            let mut d = filmcraft_platform::videotoolbox_factory(&entry).unwrap().unwrap();
+            for (smp, pts) in samples.iter().take(40) {
+                let mut m = smp.clone();
+                let i = (xorshift(&mut seed) as usize) % m.len();
+                m[i] ^= 1 << (xorshift(&mut seed) % 8);
+                if xorshift(&mut seed).is_multiple_of(3) {
+                    m.truncate(m.len() / 2 + 1);
+                }
+                let _ = d.decode(&m, *pts);
+            }
+            let _ = d.flush();
+        });
+    }
+}
