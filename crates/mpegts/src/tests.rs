@@ -76,17 +76,39 @@ impl TsMux {
         self.packet(pid, true, &payload);
     }
     fn psi(&mut self, streams: &[(u8, u16)]) {
+        self.psi_pcr(streams, 0x100);
+    }
+    /// PAT and PMT; the PMT names `pcr_pid` as the PCR PID. The streams' ES info is empty.
+    fn psi_pcr(&mut self, streams: &[(u8, u16)], pcr_pid: u16) {
+        let descs: Vec<(u8, u16, Vec<u8>)> = streams.iter().map(|&(st, pid)| (st, pid, Vec::new())).collect();
+        self.psi_full(&descs, pcr_pid);
+    }
+    /// PAT and PMT with ES descriptors per stream.
+    fn psi_full(&mut self, streams: &[(u8, u16, Vec<u8>)], pcr_pid: u16) {
         // PAT: program 1 → PMT PID 0x100
         let pat = [0x00, 0xB0, 13, 0, 1, 0xC1, 0, 0, 0, 1, 0xE1, 0x00];
         self.section(0, &pat);
-        let mut pmt = vec![0x02, 0xB0, 0, 0, 1, 0xC1, 0, 0, 0xE1, 0x00, 0xF0, 0];
-        for &(st, pid) in streams {
-            pmt.extend([st, 0xE0 | (pid >> 8) as u8, pid as u8, 0xF0, 0]);
+        let mut pmt = vec![0x02, 0xB0, 0, 0, 1, 0xC1, 0, 0, 0xE0 | (pcr_pid >> 8) as u8, pcr_pid as u8, 0xF0, 0];
+        for (st, pid, desc) in streams {
+            pmt.extend([*st, 0xE0 | (*pid >> 8) as u8, *pid as u8, 0xF0 | (desc.len() >> 8) as u8, desc.len() as u8]);
+            pmt.extend_from_slice(desc);
         }
         let len = pmt.len() - 3 + 4;
         pmt[1] = 0xB0 | (len >> 8) as u8;
         pmt[2] = len as u8;
         self.section(0x100, &pmt);
+    }
+    /// An adaptation-field-only packet carrying a PCR with the given 33-bit base.
+    fn pcr(&mut self, pid: u16, base: i64) {
+        let cc = self.cc.entry(pid).or_insert(0);
+        let b = base & ((1 << 33) - 1);
+        let mut p = vec![0x47, (pid >> 8) as u8, pid as u8, 0x20 | *cc, 183, 0x10];
+        p.extend([(b >> 25) as u8, (b >> 17) as u8, (b >> 9) as u8, (b >> 1) as u8, ((b & 1) as u8) << 7 | 0x7E, 0]);
+        p.resize(188, 0xFF);
+        if self.m2ts {
+            self.out.extend_from_slice(&[0, 0, 0, 0]);
+        }
+        self.out.extend(p);
     }
     fn pes(&mut self, pid: u16, data: &[u8]) {
         let mut rest = data;
@@ -329,6 +351,145 @@ fn timestamps_unwrap_across_the_33_bit_wrap() {
     // a B picture timestamp from just before the wrap
     assert_eq!(u.unwrap(near + 1000), near + 1000);
     assert_eq!(u.unwrap(4200), (1 << 33) + 4200);
+}
+
+#[test]
+fn pcr_range_follows_the_pmt_pcr_pid() {
+    // two PIDs carry PCRs on unrelated time bases; only the PMT's PCR_PID counts
+    let mut mux = TsMux::new(false);
+    mux.psi_pcr(&[(0x02, 0x101)], 0x101);
+    for k in 0..3i64 {
+        mux.pcr(0x101, 1000 + 40_500 * k);
+        mux.pcr(0x102, (1 << 32) + 5000 + 40_500 * k);
+    }
+    let f = open(&mux.out).unwrap();
+    assert_eq!(f.pcr_range, Some((1000 * 300, (1000 + 81_000) * 300)));
+    // the other PID is the clock reference instead
+    let mut mux = TsMux::new(false);
+    mux.psi_pcr(&[(0x02, 0x101)], 0x102);
+    for k in 0..3i64 {
+        mux.pcr(0x101, 1000 + 40_500 * k);
+        mux.pcr(0x102, (1 << 32) + 5000 + 40_500 * k);
+    }
+    let f = open(&mux.out).unwrap();
+    assert_eq!(f.pcr_range, Some((((1 << 32) + 5000) * 300, ((1 << 32) + 5000 + 81_000) * 300)));
+}
+
+#[test]
+fn pcr_range_without_a_usable_pcr_pid() {
+    // the PMT says "no PCR" (0x1FFF) or names a PID that never carries one
+    for pcr_pid in [0x1FFF, 0x150] {
+        let mut mux = TsMux::new(false);
+        mux.psi_pcr(&[(0x02, 0x101)], pcr_pid);
+        for base in [1000, 2000, 3000, 4000] {
+            mux.pcr(0x101, base);
+        }
+        assert_eq!(open(&mux.out).unwrap().pcr_range, None, "pcr_pid {pcr_pid:#x}");
+    }
+    // no PMT at all: the first PID seen with a PCR stands in
+    let mut mux = TsMux::new(false);
+    for k in 0..6i64 {
+        mux.pcr(0x101, 1000 + 500 * k);
+        mux.pcr(0x102, (1 << 32) + 5000 + 500 * k);
+    }
+    let f = open(&mux.out).unwrap();
+    assert_eq!(f.pcr_range, Some((1000 * 300, 3500 * 300)));
+}
+
+#[test]
+fn pcr_range_unwraps_the_33_bit_base() {
+    let mut mux = TsMux::new(false);
+    mux.psi_pcr(&[(0x02, 0x101)], 0x101);
+    let near = (1i64 << 33) - 1000;
+    for base in [near, near + 500, 2000, 2500] {
+        mux.pcr(0x101, base);
+    }
+    let f = open(&mux.out).unwrap();
+    assert_eq!(f.pcr_range, Some((near * 300, ((1 << 33) + 2500) * 300)));
+}
+
+#[test]
+fn streams_sharing_a_clock_stay_in_step_across_the_33_bit_wrap() {
+    // video's first PTS is just before the wrap, audio's just after: one clock, so audio is
+    // 2^33 + 500, not 500 (26.5 hours apart)
+    let w = 1i64 << 33;
+    for audio_first in [false, true] {
+        let mut mux = TsMux::new(false);
+        mux.psi(&[(0x03, 0x1100), (0x03, 0x1101)]);
+        let (v0, a0) = (w - 1000, 500);
+        let video = |mux: &mut TsMux, k: u8| mux.pes(0x1101, &pes(0xC0, Some((v0 + 2160 * k as i64) % w), None, &mp2_frame(k), true));
+        let audio = |mux: &mut TsMux, k: u8| mux.pes(0x1100, &pes(0xC0, Some(a0 + 2160 * k as i64), None, &mp2_frame(k), true));
+        for k in 0..3u8 {
+            if audio_first {
+                audio(&mut mux, k);
+                video(&mut mux, k);
+            } else {
+                video(&mut mux, k);
+                audio(&mut mux, k);
+            }
+        }
+        let f = open(&mux.out).unwrap();
+        let pts = |s: usize| f.streams[s].units.iter().map(|u| u.pts.unwrap()).collect::<Vec<_>>();
+        // one timeline: audio starts 1500 ticks after video (-1000 and 500 around the wrap), whichever
+        // stream the unwrapper saw first, and video steps by 2160
+        let (a, v) = (pts(0), pts(1));
+        assert_eq!(a[0] - v[0], 1500, "audio_first {audio_first}: audio {a:?} video {v:?}");
+        assert_eq!(v[1] - v[0], 2160, "video {v:?}");
+    }
+}
+
+#[test]
+fn a_late_pre_wrap_timestamp_first_after_the_wrap_goes_below_zero() {
+    let mut u = Unwrap::default();
+    assert_eq!(u.unwrap(5), 5);
+    // a B picture from just before the wrap, arriving after the wrapped one
+    assert_eq!(u.unwrap((1 << 33) - 3), -3);
+    assert_eq!(u.unwrap(10), 10, "the late one did not shift the timeline");
+}
+
+#[test]
+fn program_stream_scr_is_unwrapped_and_ordered() {
+    // two packs, the SCR wraps between them: the range is first..last, not a 2^33 jump backwards
+    fn scr_pack(base: i64) -> Vec<u8> {
+        let b = base & ((1 << 33) - 1);
+        let mut v = vec![0, 0, 1, 0xBA];
+        v.extend([
+            0x44 | (((b >> 30) & 7) as u8) << 3 | ((b >> 28) & 3) as u8,
+            (b >> 20) as u8,
+            0x04 | (((b >> 15) & 0x1F) as u8) << 3 | ((b >> 13) & 3) as u8,
+            (b >> 5) as u8,
+            0x04 | ((b & 0x1F) as u8) << 3,
+            1,
+            1,
+            0x89,
+            0xC3,
+            0xF8,
+        ]);
+        v
+    }
+    let near = (1i64 << 33) - 1000;
+    let mut out = scr_pack(near);
+    out.extend(pes(0xE0, Some(0), None, &mpeg2_frame(1, 0, false, 100), true));
+    out.extend(scr_pack(2000));
+    out.extend(pes(0xE0, Some(3600), None, &mpeg2_frame(2, 1, false, 100), true));
+    out.extend([0, 0, 1, 0xB9]);
+    let f = open(&out).unwrap();
+    assert_eq!(f.pcr_range, Some((near * 300, ((1 << 33) + 2000) * 300)));
+}
+
+#[test]
+fn language_descriptor_accepts_only_three_letters() {
+    let cases: [([u8; 3], Option<&str>); 5] = [(*b"ger", Some("ger")), (*b"ENG", Some("eng")), ([0, 0, 0], None), (*b"e\0g", None), (*b"d e", None)];
+    for (code, want) in cases {
+        let mut desc = vec![0x0A, 4];
+        desc.extend(code);
+        desc.push(0);
+        let mut mux = TsMux::new(false);
+        mux.psi_full(&[(0x03, 0x1100, desc)], 0x100);
+        mux.pes(0x1100, &pes(0xC0, Some(0), None, &mp2_frame(0), true));
+        let f = open(&mux.out).unwrap();
+        assert_eq!(f.streams[0].language.as_deref(), want, "{code:?}");
+    }
 }
 
 fn adts_frame(k: u8) -> Vec<u8> {

@@ -278,7 +278,9 @@ pub struct File {
     pub streams: Vec<Stream>,
     /// Program number of the program the streams belong to (TS).
     pub program: Option<u16>,
-    /// First and last PCR (27 MHz, unwrapped) or SCR.
+    /// Smallest and largest PCR (27 MHz, unwrapped) or SCR. For a transport stream this is the
+    /// clock of the PMT's PCR_PID; without a PMT, of the first PID seen carrying a PCR. `None` if
+    /// that PID never carries one.
     pub pcr_range: Option<(i64, i64)>,
     /// Problems found while scanning (lost sync, CRC errors, continuity errors…).
     pub warnings: Vec<String>,
@@ -328,7 +330,11 @@ pub fn open<S: ByteSource + ?Sized>(src: &S) -> Result<File> {
     }
 }
 
-/// Unwraps 33-bit timestamps into a monotonic-ish i64 timeline (relative to the first one seen).
+/// Unwraps the 33-bit PTS/DTS of ONE stream into an i64 timeline. Values are absolute, not
+/// relative to the first one: the first timestamp comes back unchanged, every later wrap adds
+/// 2^33, and a timestamp from just before a wrap that arrives after it (B pictures, slightly
+/// out-of-order audio) is mapped below the wrap (negative if the stream started after it).
+/// Keep one `Unwrap` per clock: the streams of a program share one.
 #[derive(Default, Clone, Copy)]
 pub(crate) struct Unwrap {
     last: Option<i64>,
@@ -338,19 +344,47 @@ pub(crate) struct Unwrap {
 impl Unwrap {
     const WRAP: i64 = 1 << 33;
     pub fn unwrap(&mut self, raw: i64) -> i64 {
-        let mut v = raw + self.base;
+        let mut v = raw.saturating_add(self.base);
         if let Some(l) = self.last {
-            if v < l - Self::WRAP / 2 {
-                self.base += Self::WRAP;
-                v += Self::WRAP;
-            } else if v > l + Self::WRAP / 2 && self.base > 0 {
-                // a timestamp from before the wrap (B pictures, slightly out-of-order audio)
-                v -= Self::WRAP;
-                return v;
+            if v < l.saturating_sub(Self::WRAP / 2) {
+                self.base = self.base.saturating_add(Self::WRAP);
+                v = v.saturating_add(Self::WRAP);
+            } else if v > l.saturating_add(Self::WRAP / 2) {
+                // a timestamp from before the wrap: it does not move the timeline
+                return v.saturating_sub(Self::WRAP);
             }
         }
         self.last = Some(v);
         v
+    }
+}
+
+/// Unwraps the 27 MHz clock reference (PCR/SCR: 33-bit base × 300 + 9-bit extension) of one
+/// clock into an i64 timeline and keeps the smallest and largest value seen.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct ClockRange {
+    last: Option<i64>,
+    base: i64,
+    range: Option<(i64, i64)>,
+}
+
+impl ClockRange {
+    /// 33-bit base × 300 wraps at 2^33·300.
+    const WRAP: i64 = (1 << 33) * 300;
+    /// The (min, max) of the unwrapped values so far.
+    pub fn range(&self) -> Option<(i64, i64)> {
+        self.range
+    }
+    pub fn push(&mut self, raw: i64) {
+        let mut v = raw.saturating_add(self.base);
+        if let Some(l) = self.last
+            && v < l.saturating_sub(Self::WRAP / 2)
+        {
+            self.base = self.base.saturating_add(Self::WRAP);
+            v = v.saturating_add(Self::WRAP);
+        }
+        self.last = Some(v);
+        self.range = Some(self.range.map_or((v, v), |(a, b)| (a.min(v), b.max(v))));
     }
 }
 
