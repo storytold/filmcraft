@@ -21,7 +21,7 @@ pub struct RawLayout {
     pub height: usize,
     pub samples_per_pixel: usize,
     pub bits: u32,
-    /// 1 uncompressed, 7 lossless JPEG.
+    /// 1 uncompressed, 7 lossless JPEG, 34892 lossy JPEG.
     pub compression: u64,
     pub photometric: u64,
 }
@@ -107,8 +107,19 @@ pub fn layout(t: &Tiff, ifd: &Ifd) -> Result<RawLayout> {
         }
         7 => {}
         8 => return Err(Error::Unsupported("deflate-compressed DNG".into())),
-        34892 => return Err(Error::Unsupported("lossy JPEG DNG".into())),
-        52546 => return Err(Error::Unsupported("JPEG XL DNG".into())),
+        // DNG 1.4: lossy JPEG only for 8-bit LinearRaw (or mask) data
+        34892 if photometric != PHOTOMETRIC_LINEAR_RAW => {
+            return Err(Error::Unsupported("lossy JPEG DNG of CFA data (DNG allows it only for 8-bit LinearRaw)".into()));
+        }
+        34892 if bits != 8 => return Err(Error::Unsupported(format!("lossy JPEG DNG with {bits}-bit samples (DNG allows only 8)"))),
+        34892 => {}
+        // DNG 1.7: JPEG XL for 8–16-bit integer data of one or three planes (not CFA mosaics)
+        52546 if !cfg!(feature = "jxl") => return Err(Error::Unsupported("JPEG XL DNG (this build has no JPEG XL decoder, feature `jxl`)".into())),
+        52546 if photometric != PHOTOMETRIC_LINEAR_RAW => return Err(Error::Unsupported("JPEG XL DNG of CFA data (DNG allows it only for LinearRaw)".into())),
+        52546 if !(8..=16).contains(&bits) || !matches!(spp, 1 | 3) => {
+            return Err(Error::Unsupported(format!("JPEG XL DNG with {spp} samples of {bits} bits")));
+        }
+        52546 => {}
         c => return Err(Error::Unsupported(format!("DNG compression {c}"))),
     }
     Ok(RawLayout { width: width as usize, height: height as usize, samples_per_pixel: spp as usize, bits: bits as u32, compression, photometric })
@@ -197,6 +208,9 @@ fn decode_chunk(c: &Chunk, l: &RawLayout, big_endian: bool) -> Result<Vec<u16>> 
     let need = c.w * c.h * l.samples_per_pixel;
     match l.compression {
         1 => unpack(c.bytes, c.w, c.h, l.samples_per_pixel, l.bits, big_endian),
+        34892 => lossy_jpeg(c.bytes, need),
+        #[cfg(feature = "jxl")]
+        52546 => jpeg_xl(c.bytes, need),
         _ => {
             // the JPEG's samples fill the chunk in raster order (its own width × components may
             // differ from the chunk's, e.g. two components of half the width)
@@ -211,6 +225,70 @@ fn decode_chunk(c: &Chunk, l: &RawLayout, big_endian: bool) -> Result<Vec<u16>> 
     }
 }
 
+/// Decode a baseline (lossy) JPEG tile or strip (Compression 34892) into `need` 8-bit samples:
+/// one component (greyscale) or three (colour, converted from YCbCr by the JPEG decoder as the
+/// JPEG says), in raster order.
+fn lossy_jpeg(bytes: &[u8], need: usize) -> Result<Vec<u16>> {
+    use image::ImageDecoder;
+    let bad = |_| Error::Malformed("lossy JPEG tile");
+    let decode = || -> Result<Vec<u16>> {
+        let mut d = image::codecs::jpeg::JpegDecoder::new(std::io::Cursor::new(bytes)).map_err(bad)?;
+        let channels = match d.color_type() {
+            image::ColorType::L8 => 1usize,
+            image::ColorType::Rgb8 => 3,
+            c => return Err(Error::Unsupported(format!("lossy JPEG DNG tile of colour type {c:?}"))),
+        };
+        let (w, h) = d.dimensions();
+        let total = (w as usize).checked_mul(h as usize).and_then(|v| v.checked_mul(channels)).ok_or(Error::TooLarge)?;
+        if total < need {
+            return Err(Error::Malformed("lossy JPEG smaller than its tile or strip"));
+        }
+        if total > need.saturating_mul(4).saturating_add(65_536) || total > MAX_SAMPLES {
+            return Err(Error::TooLarge);
+        }
+        let mut limits = image::Limits::default();
+        limits.max_alloc = Some(total as u64 * 4 + (1 << 20));
+        d.set_limits(limits).map_err(bad)?;
+        let mut buf = vec![0u8; total];
+        d.read_image(&mut buf).map_err(bad)?;
+        Ok(buf.iter().take(need).map(|&v| u16::from(v)).collect())
+    };
+    // a third-party decoder: a panic in it is an error for this file, not a crash
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(decode)).unwrap_or(Err(Error::Malformed("lossy JPEG decoder failed")))
+}
+
+/// Decode a JPEG XL tile or strip (Compression 52546, bare codestream or container) into `need`
+/// samples: one or three channels, integer samples back at the codestream's bit depth (exact
+/// for lossless JPEG XL), in raster order.
+#[cfg(feature = "jxl")]
+fn jpeg_xl(bytes: &[u8], need: usize) -> Result<Vec<u16>> {
+    let bad = |_| Error::Malformed("JPEG XL tile");
+    let decode = || -> Result<Vec<u16>> {
+        let img = jxl_oxide::JxlImage::builder().read(bytes).map_err(bad)?;
+        let (w, h) = (img.width() as usize, img.height() as usize);
+        let px = w.checked_mul(h).ok_or(Error::TooLarge)?;
+        // one or three channels must cover the chunk without being far larger
+        if px.saturating_mul(3) < need || px > need.saturating_add(65_536) || px > MAX_SAMPLES {
+            return Err(Error::Malformed("JPEG XL picture does not match its tile or strip"));
+        }
+        let depth = img.image_header().metadata.bit_depth;
+        let jxl_oxide::image::BitDepth::IntegerSample { bits_per_sample } = depth else {
+            return Err(Error::Unsupported("floating-point JPEG XL DNG".into()));
+        };
+        let bits = bits_per_sample.clamp(1, 16);
+        let render = img.render_frame(0).map_err(bad)?;
+        let fb = render.image_all_channels();
+        let channels = fb.channels();
+        if !matches!(channels, 1 | 3) || px.saturating_mul(channels) < need {
+            return Err(Error::Unsupported(format!("JPEG XL DNG tile with {channels} channels")));
+        }
+        let max = ((1u32 << bits) - 1) as f32;
+        Ok(fb.buf().iter().take(need).map(|&v| if v.is_finite() { (v * max).round().clamp(0.0, max) as u16 } else { 0 }).collect())
+    };
+    // a third-party decoder: a panic in it is an error for this file, not a crash
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(decode)).unwrap_or(Err(Error::Malformed("JPEG XL decoder failed")))
+}
+
 /// Read the raw image of `ifd`.
 pub fn read(t: &Tiff, ifd: &Ifd) -> Result<RawImage> {
     let l = layout(t, ifd)?;
@@ -220,9 +298,17 @@ pub fn read(t: &Tiff, ifd: &Ifd) -> Result<RawImage> {
         return Err(Error::TooLarge);
     }
     let chunks = chunks(t, ifd, &l)?;
-    // every sample takes at least one bit of file (a Huffman code is at least one bit long)
+    // every sample takes at least one bit of file (a Huffman code is at least one bit long);
+    // lossy JPEG at least two bits per 8 × 8 block and component (a DC code and an end of
+    // block), so a tiny file cannot claim a huge picture
+    let per_byte = match l.compression {
+        34892 => 256,
+        // JPEG XL codes flat areas in almost nothing; this still bounds the allocation
+        52546 => 4096,
+        _ => 8,
+    };
     let coded: usize = chunks.iter().map(|c| c.bytes.len()).fold(0usize, usize::saturating_add);
-    if total / 8 > coded {
+    if total / per_byte > coded {
         return Err(Error::Truncated);
     }
     for c in &chunks {
@@ -230,25 +316,50 @@ pub fn read(t: &Tiff, ifd: &Ifd) -> Result<RawImage> {
         if n > MAX_SAMPLES {
             return Err(Error::TooLarge);
         }
-        if n / 8 > c.bytes.len() {
+        if n / per_byte > c.bytes.len() {
             return Err(Error::Truncated);
         }
     }
-    #[cfg(feature = "threads")]
-    let decoded: Vec<Result<Vec<u16>>> = chunks.par_iter().map(|c| decode_chunk(c, &l, t.big_endian)).collect();
-    #[cfg(not(feature = "threads"))]
-    let decoded: Vec<Result<Vec<u16>>> = chunks.iter().map(|c| decode_chunk(c, &l, t.big_endian)).collect();
-    let mut data = vec![0u16; total];
-    let row_len = l.width * spp;
-    for (c, d) in chunks.iter().zip(decoded) {
-        let d = d?;
-        let cw = c.w.min(l.width - c.x);
-        let ch = c.h.min(l.height - c.y);
-        for r in 0..ch {
-            let src = d.get(r * c.w * spp..(r * c.w + cw) * spp).ok_or(Error::Truncated)?;
-            let at = (c.y + r) * row_len + c.x * spp;
-            data.get_mut(at..at + cw * spp).ok_or(Error::Truncated)?.copy_from_slice(src);
+    let raw = |data| RawImage { width: l.width, height: l.height, samples_per_pixel: spp, bits: l.bits, data };
+    // one chunk covering the image (a single strip): its samples are the image, no copy
+    if let [c] = chunks.as_slice()
+        && (c.x, c.y, c.w) == (0, 0, l.width)
+        && c.h >= l.height
+    {
+        let mut d = decode_chunk(c, &l, t.big_endian)?;
+        d.truncate(total);
+        if d.len() == total {
+            return Ok(raw(d));
         }
+        return Err(Error::Truncated);
     }
-    Ok(RawImage { width: l.width, height: l.height, samples_per_pixel: spp, bits: l.bits, data })
+    // bands of one row of tiles (or one strip): decoded in parallel, each band copying its own
+    // chunks into place
+    let row_len = l.width * spp;
+    let (Some(first), true) = (chunks.first(), row_len > 0) else { return Err(Error::Malformed("no strips or tiles")) };
+    let (band_rows, across) = (first.h.max(1), l.width.div_ceil(first.w.max(1)));
+    let mut data = vec![0u16; total];
+    let band = |k: usize, out: &mut [u16]| -> Result<()> {
+        let mine = chunks.get(k * across..((k + 1) * across).min(chunks.len())).unwrap_or(&[]);
+        #[cfg(feature = "threads")]
+        let decoded: Vec<Result<Vec<u16>>> = mine.par_iter().map(|c| decode_chunk(c, &l, t.big_endian)).collect();
+        #[cfg(not(feature = "threads"))]
+        let decoded: Vec<Result<Vec<u16>>> = mine.iter().map(|c| decode_chunk(c, &l, t.big_endian)).collect();
+        for (c, d) in mine.iter().zip(decoded) {
+            let d = d?;
+            let cw = c.w.min(l.width.saturating_sub(c.x));
+            let ch = c.h.min(l.height.saturating_sub(c.y));
+            for r in 0..ch {
+                let src = d.get(r * c.w * spp..(r * c.w + cw) * spp).ok_or(Error::Truncated)?;
+                let at = r * row_len + c.x * spp;
+                out.get_mut(at..at + cw * spp).ok_or(Error::Truncated)?.copy_from_slice(src);
+            }
+        }
+        Ok(())
+    };
+    #[cfg(feature = "threads")]
+    data.par_chunks_mut(band_rows * row_len).enumerate().try_for_each(|(k, out)| band(k, out))?;
+    #[cfg(not(feature = "threads"))]
+    data.chunks_mut(band_rows * row_len).enumerate().try_for_each(|(k, out)| band(k, out))?;
+    Ok(raw(data))
 }

@@ -323,6 +323,9 @@ pub mod tags {
     pub const CALIBRATION_ILLUMINANT_1: u16 = 50778;
     pub const CALIBRATION_ILLUMINANT_2: u16 = 50779;
     pub const ACTIVE_AREA: u16 = 50829;
+    pub const OPCODE_LIST_1: u16 = 51008;
+    pub const OPCODE_LIST_2: u16 = 51009;
+    pub const OPCODE_LIST_3: u16 = 51022;
     pub const FORWARD_MATRIX_1: u16 = 50964;
     pub const FORWARD_MATRIX_2: u16 = 50965;
     /// CinemaDNG: SMPTE ST 12-1 time codes, 8 bytes each.

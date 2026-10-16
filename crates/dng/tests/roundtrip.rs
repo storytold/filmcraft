@@ -5,7 +5,7 @@
 use filmcraft_dng::color::{D50, D65, bradford, inverse, mul, rec709_to_xyz, xy_to_xyz};
 use filmcraft_dng::tiff::tags;
 use filmcraft_dng::writer::{Compression, Layout, Options, Value, lj92, write};
-use filmcraft_dng::{Dng, Error, Timecode, decode, ljpeg, probe, sniff};
+use filmcraft_dng::{DemosaicQuality, Dng, Error, Highlights, ProcessOptions, Timecode, WhiteBalance, decode, decode_with, ljpeg, probe, sniff};
 
 /// A deterministic pseudo-random sequence.
 fn noise(n: usize, bits: u32, seed: u32) -> Vec<u16> {
@@ -362,5 +362,86 @@ fn cyclic_ifds_huge_sizes_and_bad_offsets() {
     assert!(matches!(decode(&write(&px, &o)), Err(Error::Malformed(_))));
     // unsupported compressions and depths are named
     let o = Options { raw_tags: vec![(tags::COMPRESSION, Value::Short(vec![34892]))], ..Default::default() };
-    assert_eq!(decode(&write(&px, &o)).err(), Some(Error::Unsupported("lossy JPEG DNG".into())));
+    assert!(matches!(decode(&write(&px, &o)), Err(Error::Unsupported(m)) if m.contains("lossy JPEG")));
+}
+
+#[test]
+fn process_options_default_is_the_files_development() {
+    let (w, h) = (24, 16);
+    let px = picture(w, h, 1, 12, 11);
+    // a camera that is not Rec. 709 already, white balanced away from D65
+    let cm = [[0.9, -0.3, -0.05], [-0.4, 1.2, 0.2], [-0.05, 0.15, 0.6]];
+    let main = vec![
+        (tags::COLOR_MATRIX_1, Value::srationals(&cm.iter().flatten().copied().collect::<Vec<_>>())),
+        (tags::CALIBRATION_ILLUMINANT_1, Value::Short(vec![21])),
+        (tags::AS_SHOT_NEUTRAL, Value::rationals(&[0.55, 1.0, 0.7])),
+    ];
+    let o = Options { width: w, height: h, bits: 12, main_tags: main, raw_tags: vec![(tags::WHITE_LEVEL, Value::Short(vec![4095]))], ..Default::default() };
+    let f = write(&px, &o);
+    let base = decode(&f).unwrap();
+    let same = decode_with(&f, &ProcessOptions::default()).unwrap();
+    assert_eq!(base.rgba, same.rgba, "default options change nothing");
+    // highlight recovery is not implemented yet: identical to clipping
+    let rec = decode_with(&f, &ProcessOptions { highlights: Highlights::Recover, ..Default::default() }).unwrap();
+    assert_eq!(base.rgba, rec.rgba);
+    // +1 stop doubles every value
+    let up = decode_with(&f, &ProcessOptions { exposure: 1.0, ..Default::default() }).unwrap();
+    for (a, b) in base.rgba.iter().zip(&up.rgba).filter(|(a, _)| **a != 1.0) {
+        assert!((b - 2.0 * a).abs() <= 1e-5 * a.max(1.0), "{a} {b}");
+    }
+    let nan = decode_with(&f, &ProcessOptions { exposure: f64::NAN, ..Default::default() }).unwrap();
+    assert_eq!(base.rgba, nan.rgba, "a non-finite exposure is ignored");
+    // the as-shot white as temperature / tint develops like the as-shot neutral
+    let (t, tint) = Dng::parse(&f).unwrap().as_shot_temperature_tint().unwrap().unwrap();
+    assert!((1_000.0..15_000.0).contains(&t), "{t}");
+    let custom = decode_with(&f, &ProcessOptions { white_balance: WhiteBalance::Custom { temperature: t, tint }, ..Default::default() }).unwrap();
+    for (a, b) in base.rgba.iter().zip(&custom.rgba) {
+        assert!((a - b).abs() < 2e-3, "{a} {b}");
+    }
+    // a warmer setting makes the picture bluer (the white balance compensates a warmer light)
+    let warm = decode_with(&f, &ProcessOptions { white_balance: WhiteBalance::Custom { temperature: t * 0.6, tint }, ..Default::default() }).unwrap();
+    let ratio = |img: &[f32]| img.chunks(4).map(|p| p[2] / p[0].max(1e-6)).sum::<f32>();
+    assert!(ratio(&warm.rgba) > ratio(&base.rgba));
+    assert!(decode_with(&f, &ProcessOptions { white_balance: WhiteBalance::Custom { temperature: f64::NAN, tint: 0.0 }, ..Default::default() }).is_err());
+    // the fast demosaic keeps flat fields flat and differs from the high-quality one on detail
+    let fast = decode_with(&f, &ProcessOptions { demosaic: DemosaicQuality::Fast, ..Default::default() }).unwrap();
+    assert_eq!((fast.width, fast.height), (w, h));
+    assert_ne!(fast.rgba, base.rgba);
+}
+
+#[test]
+fn process_options_serde_round_trip() {
+    let o = ProcessOptions {
+        white_balance: WhiteBalance::Custom { temperature: 5600.0, tint: -12.5 },
+        exposure: 0.75,
+        highlights: Highlights::Recover,
+        demosaic: DemosaicQuality::Fast,
+        target_size: Some((1920, 1080)),
+        ..Default::default()
+    };
+    let j = serde_json::to_string(&o).unwrap();
+    assert_eq!(serde_json::from_str::<ProcessOptions>(&j).unwrap(), o);
+    // missing fields take their defaults
+    assert_eq!(serde_json::from_str::<ProcessOptions>("{}").unwrap(), ProcessOptions::default());
+}
+
+#[test]
+fn positive_tint_makes_a_grey_more_magenta() {
+    // a grey under D65 seen by a camera whose white-balanced values are Rec. 709
+    let (w, h) = (16, 12);
+    let px = vec![2000u16; w * h];
+    let mut main = rec709_camera_tags([1.0, 1.0, 1.0]);
+    main.retain(|t| t.0 != tags::FORWARD_MATRIX_1);
+    let o = Options { width: w, height: h, bits: 12, main_tags: main, raw_tags: vec![(tags::WHITE_LEVEL, Value::Short(vec![4095]))], ..Default::default() };
+    let f = write(&px, &o);
+    let (t, tint) = Dng::parse(&f).unwrap().as_shot_temperature_tint().unwrap().unwrap();
+    assert!((t - 6504.0).abs() < 60.0 && (8.0..12.0).contains(&tint), "as shot D65: {t} K tint {tint}");
+    let dev = |tint: f64| {
+        let img = decode_with(&f, &ProcessOptions { white_balance: WhiteBalance::Custom { temperature: t, tint }, ..Default::default() }).unwrap();
+        let p = &img.rgba[(6 * w + 6) * 4..][..3];
+        p[1] / (0.5 * (p[0] + p[2]))
+    };
+    let (minus, zero, plus) = (dev(tint - 50.0), dev(tint), dev(tint + 50.0));
+    assert!((zero - 1.0).abs() < 0.01, "as-shot grey stays grey: {zero}");
+    assert!(plus < zero && zero < minus, "green over red/blue: {minus} {zero} {plus}");
 }
