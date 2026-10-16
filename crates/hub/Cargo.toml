@@ -1,0 +1,25 @@
+[package]
+name = "filmcraft-hub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "FilmCraft's CraftHub client path: the HubAdapter that maps the project (bins, items, sequences, tracks, clips) onto craft-collab's generalized object/property model, the unified hub.* command catalog, deep links and the timeline presence projections (no networking — the session wiring lands behind the app's `crafthub` feature flag)"
+
+[lints]
+workspace = true
+
+[dependencies]
+filmcraft-project = { workspace = true }
+filmcraft-time = { workspace = true }
+filmcraft-media = { workspace = true }
+# The generalized collaboration core (CraftHub spec §3.4): consumed by git reference exactly as
+# the family consumes `craft-print`, pinned to the reviewed commit. Retargeted to the org's
+# canonical home (storytold/craft-libs or storytold/crafthub) the day that PR merges — a one-line
+# change, noted in this PR's description.
+craft-collab = { git = "https://github.com/hasan-sdaif/crafthub", rev = "1e96a9fb9b8c82ac6ec31818608967b66ef7a527" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# SHA-256 for the content-addressed asset refs the LUT library rides as (spec §3.5). Pure Rust,
+# no system dependencies; already in the workspace's tree (filmcraft-speech's download feature
+# uses it for model checksums), so nothing new enters the lockfile's dependency graph.
+sha2 = "0.10"
