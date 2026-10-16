@@ -396,15 +396,16 @@ fn body(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View, actions
         Inst::Main => root_id,
         Inst::Tab(k) => BinId(app.ui.project_panel.tabs[k].bin),
     };
-    let up = Rect::from_min_size(pos2(head.min.x, head.center().y - 9.0), vec2(22.0, 18.0));
+    let up = Rect::from_min_size(pos2(head.min.x, head.center().y - 11.0), vec2(24.0, 22.0));
     let up_resp = ui.interact(up, egui::Id::new((&pre, "up")), Sense::click()).on_hover_text(tl!("Up one level"));
     app.auto.add(&format!("{pre}.up"), up, "Up one level");
     let can_up = v.bin != top;
-    if up_resp.hovered() && can_up {
-        ui.painter().rect_filled(up, 3.0, t.hover);
+    // a bordered button while there is a level to go up to, so it reads as clickable
+    if can_up {
+        ui.painter().rect_filled(up, 3.0, if up_resp.hovered() { t.hover } else { t.field_bg });
+        ui.painter().rect_stroke(up, 3.0, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
     }
-    icons::paint(ui.painter(), up.shrink(3.0), Icon::Folder, if can_up { t.icon } else { t.text_faint });
-    icons::paint(ui.painter(), Rect::from_center_size(up.center() + vec2(0.0, 1.0), vec2(8.0, 8.0)), Icon::ArrowUp, if can_up { t.icon } else { t.text_faint });
+    icons::paint(ui.painter(), Rect::from_center_size(up.center(), vec2(14.0, 14.0)), Icon::ArrowUp, if can_up { t.text } else { t.text_faint });
     if up_resp.clicked() && can_up {
         let parent = parent_bin(&app.session.project.root, v.bin);
         navigate(app, v.inst, parent.map(|b| b.0));

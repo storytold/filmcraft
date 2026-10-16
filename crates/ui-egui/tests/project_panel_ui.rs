@@ -281,7 +281,9 @@ fn icon_view_hover_scrub_sets_in_and_out() {
     d.frames(4);
     d.key("I");
     assert!(d.app().session.active_sequence().unwrap().mark_in.is_some());
-    // up one level
+    // up one level: a full-size button, not a 16 px glyph
+    let [_, _, w, h] = d.rect("project.up");
+    assert!(w >= 24.0 && h >= 22.0, "Up one level is {w}×{h}");
     d.click("project.up");
     assert_eq!(d.app().ui.project_panel.bin, None);
 }
