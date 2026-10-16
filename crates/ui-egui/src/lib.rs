@@ -286,6 +286,8 @@ pub struct FilmcraftApp {
     pub file_dialogs: panels::file_dialogs::FileDialogState,
     /// The native file dialog the host is showing ([`Self::pick`]).
     native_dialog: Option<native_dialogs::PendingDialog>,
+    /// A save dialog's answer waiting for Replace or Cancel ([`native_dialogs`]).
+    overwrite_prompt: Option<native_dialogs::PendingOverwrite>,
     pub auto: automation::Registry,
     /// Named textures (monitors, thumbnails) with the key they show.
     textures: HashMap<String, (FrameKey, TextureHandle)>,
@@ -551,6 +553,7 @@ impl FilmcraftApp {
             dialog: recovery.then_some(Dialog::Recovery),
             file_dialogs: Default::default(),
             native_dialog: None,
+            overwrite_prompt: None,
             auto: Default::default(),
             textures: HashMap::new(),
             control_rx: None,
@@ -1792,6 +1795,7 @@ impl FilmcraftApp {
         // the Timeline has had its chance to place a file drop this frame; anything left stays a bin import
         self.pending_timeline_drop = None;
         panels::dialogs::show(self, &ctx);
+        panels::file_dialogs::show_overwrite(self, &ctx);
         if !self.ui.show_status_bar {
             // no bar to draw the job in, but a finished preview render still plays
             self.watch_jobs(ui.ctx());

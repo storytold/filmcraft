@@ -219,3 +219,86 @@ fn export_location_browse_works_with_the_runner_and_with_synchronous_pickers() {
     assert_eq!(d.app().ui.export.location, "/tmp/exports-b");
     assert!(!d.app().native_dialog_open());
 }
+
+/// An empty folder for one test in Cargo's temporary folder.
+fn fresh_dir(name: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("native-dialogs").join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn s(p: &std::path::Path) -> String {
+    p.to_string_lossy().into_owned()
+}
+
+/// #1644: GTK's file chooser saves the name as typed. Save As adds `.fcproj` when the name has no
+/// such extension, and asks before replacing a file that only the added extension names (the
+/// dialog's own prompt was about the name as typed).
+#[test]
+fn save_as_adds_the_project_extension_and_asks_before_replacing_what_that_names() {
+    let dir = fresh_dir("save-extension");
+    let mut d = Driver::new(true);
+    let save_as = |d: &mut Driver, answer: String| {
+        assert_eq!(d.ok("ui.menu.invoke", json!({"id": "file.saveAs"})), json!({"dialog": "open"}));
+        let (dialog, tx) = d.asked();
+        assert!(matches!(dialog, FileDialog::SaveProject { .. }), "{dialog:?}");
+        tx.send(vec![answer]).unwrap();
+        d.frames(3);
+    };
+    // no extension: `cut` is saved as `cut.fcproj`
+    save_as(&mut d, s(&dir.join("cut")));
+    assert!(dir.join("cut.fcproj").is_file());
+    assert!(!dir.join("cut").exists());
+    assert_eq!(d.app().session.path.as_deref(), Some(s(&dir.join("cut.fcproj")).as_str()));
+    // another extension keeps it and adds ours; an upper-case `.FCPROJ` is kept as typed
+    save_as(&mut d, s(&dir.join("a.filmcraft")));
+    assert!(dir.join("a.filmcraft.fcproj").is_file());
+    save_as(&mut d, s(&dir.join("UPPER.FCPROJ")));
+    assert!(dir.join("UPPER.FCPROJ").is_file());
+    assert!(d.app().overwrite_prompt_path().is_none());
+
+    // `keep` + `.fcproj` is an existing file: nothing is written until the user answers
+    let keep = dir.join("keep.fcproj");
+    std::fs::write(&keep, "not a project").unwrap();
+    save_as(&mut d, s(&dir.join("keep")));
+    assert_eq!(d.app().overwrite_prompt_path(), Some(s(&keep).as_str()));
+    // the app keeps running, and no other dialog opens meanwhile
+    d.ok("ui.inspect", json!({}));
+    let r = d.call("ui.menu.invoke", json!({"id": "file.open"}));
+    assert_eq!(r["ok"], false, "{r}");
+    // Cancel: the file is untouched
+    d.click("overwrite.cancel");
+    assert!(d.app().overwrite_prompt_path().is_none());
+    assert_eq!(std::fs::read_to_string(&keep).unwrap(), "not a project");
+    // Replace: the project is written there
+    save_as(&mut d, s(&dir.join("keep")));
+    d.click("overwrite.replace");
+    assert!(d.app().overwrite_prompt_path().is_none());
+    assert!(std::fs::read_to_string(&keep).unwrap().starts_with('{'));
+    assert_eq!(d.app().session.path.as_deref(), Some(s(&keep).as_str()));
+    // the chosen name already ends in `.fcproj`: the dialog asked, the app doesn't ask again
+    save_as(&mut d, s(&keep));
+    assert!(d.app().overwrite_prompt_path().is_none());
+    // cancelled: nothing saved, no prompt
+    let n = std::fs::read_dir(&dir).unwrap().count();
+    assert_eq!(d.ok("ui.menu.invoke", json!({"id": "file.saveAs"})), json!({"dialog": "open"}));
+    d.asked().1.send(vec![]).unwrap();
+    d.frames(3);
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), n);
+    assert!(d.app().overwrite_prompt_path().is_none());
+}
+
+/// The synchronous pickers (no runner) get the same treatment, and so do export save dialogs:
+/// File ▸ Export ▸ EDL… answered with `cut` writes `cut.edl`.
+#[test]
+fn export_save_dialogs_add_their_extension_with_synchronous_pickers_too() {
+    let dir = fresh_dir("export-extension");
+    let mut d = Driver::new(false);
+    let answer = s(&dir.join("cut"));
+    d.app().hooks.pick_save_as = Some(Box::new(move |_, _, _| Some(answer.clone())));
+    d.ok("ui.menu.invoke", json!({"id": "file.exportEdl"}));
+    d.frames(2);
+    assert!(dir.join("cut.edl").is_file(), "{:?}", std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect::<Vec<_>>());
+    assert!(!dir.join("cut").exists());
+}

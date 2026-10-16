@@ -447,6 +447,9 @@
 	Recover	Recuperar
 	Not Now	Ahora no
 	Are you sure you want to discard your changes to '{file}'?	¿Seguro que quieres descartar los cambios en '{file}'?
+	Replace File	Reemplazar archivo
+	“{file}” already exists in “{folder}”. Do you want to replace it?	“{file}” ya existe en “{folder}”. ¿Quieres reemplazarlo?
+	Replace	Reemplazar
 	Yes	Sí
 	No	No
 	Add media to your project. Drop files anywhere in the window, or choose a source below.	Añade medios a tu proyecto. Suelta archivos en cualquier parte de la ventana o elige un origen abajo.

@@ -438,6 +438,9 @@
 	Recover	恢复
 	Not Now	暂不
 	Are you sure you want to discard your changes to '{file}'?	确定要放弃对“{file}”的更改吗？
+	Replace File	替换文件
+	“{file}” already exists in “{folder}”. Do you want to replace it?	“{file}”已存在于“{folder}”中。要替换它吗？
+	Replace	替换
 	Yes	是
 	No	否
 	Add media to your project. Drop files anywhere in the window, or choose a source below.	将媒体添加到你的项目。将文件拖到窗口任意位置，或在下方选择来源。
