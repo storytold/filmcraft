@@ -84,3 +84,31 @@ buttons use `craft-ui::layout::fit_toolbar`; commands beyond the available width
 through More, including their selected state and Source/Program routing. A scrolling fallback
 retains all commands if even More cannot fit. `monitor_geometry` checks the painted readouts,
 control bounds, overflow actions and Source drag payloads across monitor widths and themes.
+
+## Effect stack editing
+
+Select an effect header in Effect Controls to delete it with Delete/Backspace, copy/cut it
+with Cmd/Ctrl+C/X, or duplicate it with Cmd/Ctrl+D (FilmCraft Default). Paste with Cmd/Ctrl+V
+in Effect Controls or onto selected Timeline clips. Copying timeline clips switches the clipboard
+back to clips. The effect clipboard is internal to the current session; it is not a transferable
+system-clipboard preset.
+
+Drag a standard effect header onto the upper or lower half of another header to insert before
+or after it. The insertion line previews the target; release makes one undoable edit, Escape
+cancels. The context menu also offers Copy, Cut, Paste, Duplicate, Clear and Move Up/Down.
+Intrinsic effects and graphic layers cannot be removed, duplicated or reordered by these controls.
+
+Copies retain enabled state, parameters, masks and keyframes. Paste shifts keyframe media times
+by the difference in source-in points, without scaling durations or compensating for different
+playback speeds. It inserts after the selected standard effect on that clip, or at the end of
+the standard stack. Only selected clips of the matching video/audio type receive the effect;
+a locked compatible target rejects the whole edit. Each edit supports Undo/Redo.
+
+Engine commands are `effects.copy`, `effects.cut`, `effects.remove`, `effects.duplicate`,
+`effects.move` and `effects.paste`. Effect header automation addresses include clip and stack
+index (`effectControls.clip.<clip>.effect.<index>`), including repeated effects. Structural
+edits clear index-based keyframe and expansion state to avoid editing a different effect.
+
+Regression coverage: `cargo test -p filmcraft-engine --lib effect_stack` and
+`cargo test -p filmcraft-ui-egui --test effect_stack_ui`. Set `FILMCRAFT_UI_SHOTS` to save a
+rendered drag preview. Full desktop validation remains subject to the repository quality gates.

@@ -2964,34 +2964,6 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(Value::Null)
         }),
-        cmd!("effects.remove", "Remove Effect", [], None, r#"{"clip":id,"index":n}"#, has_seq, |s, p| {
-            let c = clip_p(p, "clip").ok_or_else(|| bad("effects.remove", "need `clip`"))?;
-            let idx = u64_p(p, "index").ok_or_else(|| bad("effects.remove", "need `index`"))? as usize;
-            // the selected effect: where it is, and its selection once the effect at `idx` is gone
-            let effects = s.active_sequence().and_then(|q| q.find_item(c)).map(|(_, it)| it.effects.clone()).unwrap_or_default();
-            let sel = s.state.selected_effect.clone().filter(|e| e.clip == c).and_then(|e| e.index(&effects));
-            let after = sel.filter(|i| *i != idx).and_then(|i| {
-                let mut rest = effects;
-                if idx < rest.len() {
-                    rest.remove(idx);
-                }
-                crate::EffectSel::of(c, &rest, if i > idx { i - 1 } else { i })
-            });
-            s.edit_sequence("Remove Effect", |q, _, _| {
-                let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
-                if it.effects.get(idx).and_then(|e| e.def()).is_some_and(|d| d.intrinsic) {
-                    return Err(EngineError::Other("intrinsic effects cannot be removed".into()));
-                }
-                if idx < it.effects.len() {
-                    it.effects.remove(idx);
-                }
-                Ok(())
-            })?;
-            if sel.is_some() {
-                s.state.selected_effect = after;
-            }
-            Ok(Value::Null)
-        }),
         CommandSpec {
             id: "effects.select",
             label: "Select Effect",
@@ -3413,6 +3385,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::project_manager::commands());
     v.extend(crate::masks::commands());
     v.extend(crate::presets::commands());
+    v.extend(crate::effect_stack::commands());
     v.extend(crate::export_tools::commands());
     v.extend(crate::transcript::commands());
     v.extend(crate::panels::commands());
@@ -3613,6 +3586,7 @@ pub(crate) fn json_to_param(template: &ParamValue, v: &Value) -> Option<ParamVal
 }
 
 fn copy_selection(s: &mut Session) {
+    s.state.effect_clipboard = None;
     let Some(q) = s.active_sequence() else { return };
     let sel = with_links(s, &s.state.selection);
     let min = sel.iter().filter_map(|c| q.find_item(*c).map(|(_, i)| i.start)).min().unwrap_or_default();

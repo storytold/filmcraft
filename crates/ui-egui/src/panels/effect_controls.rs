@@ -16,6 +16,70 @@ use crate::theme::Tokens;
 mod selection;
 pub(crate) use selection::Interaction;
 
+#[derive(Clone)]
+struct EffectDrag {
+    clip: ClipId,
+    index: usize,
+}
+
+/// Edit menu and keyboard routing must follow panel focus, not a stale effect selection.
+pub(crate) fn edit_command(app: &FilmcraftApp, id: &str) -> Option<&'static str> {
+    use crate::dock::PanelKind;
+    if id == "edit.paste" && app.session.state.effect_clipboard.is_some() && matches!(app.ui.focused, PanelKind::EffectControls | PanelKind::Timeline) {
+        return Some("effects.paste");
+    }
+    if app.ui.focused != PanelKind::EffectControls {
+        return None;
+    }
+    match id {
+        "edit.copy" => Some("effects.copy"),
+        "edit.cut" => Some("effects.cut"),
+        "edit.clear" => Some("effects.remove"),
+        "edit.duplicate" => Some("effects.duplicate"),
+        _ => None,
+    }
+}
+
+pub(crate) fn edit(app: &mut FilmcraftApp, ctx: &egui::Context, command: &str) -> Result<Value, String> {
+    if command != "effects.paste" {
+        if !app.ui.keyframe_selection.is_empty() {
+            if command != "effects.remove" {
+                return Err("Select an effect header to copy or duplicate an effect".into());
+            }
+            let keys = app.ui.keyframe_selection.clone();
+            app.session
+                .edit_group("Delete Keyframes", |s| {
+                    for k in keys {
+                        s.execute("effects.deleteKeyframe", json!({"clip":k.clip,"effect":k.effect,"param":k.param,"mask":k.mask,"mediaTime":k.time.0}))?;
+                    }
+                    Ok(())
+                })
+                .map_err(|e| e.to_string())?;
+            app.ui.keyframe_selection.clear();
+            return Ok(Value::Null);
+        }
+        let visible = app.session.state.selected_effect.as_ref().is_some_and(|s| selected_clips(app).iter().any(|(c, _, _)| *c == s.clip));
+        if !visible {
+            return Err("Select an effect header first".into());
+        }
+    }
+    let result = app.session.execute(command, json!({})).map_err(|e| e.to_string())?;
+    if matches!(command, "effects.copy" | "effects.cut") {
+        ctx.copy_text("FilmCraft effect".into());
+    }
+    if command != "effects.copy" {
+        clear_stack_ui(app);
+    }
+    Ok(result)
+}
+
+fn clear_stack_ui(app: &mut FilmcraftApp) {
+    // These UI addresses contain stack indices; discard them after structural edits.
+    app.ui.keyframe_selection.clear();
+    app.ui.collapsed_fx.clear();
+    app.ui.expanded_fx.clear();
+}
+
 const ROW_H: f32 = 22.0;
 /// The narrowest the effect list and the keyframe area can be dragged (#643): the list's rows are
 /// laid out for at least 260 points (values from 150 points in, the reset button at the end).
@@ -203,7 +267,21 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let key = format!("{}:{}", clip.0, idx);
                 let open = !app.ui.collapsed_fx.contains(&key);
                 let selected = app.session.state.selected_effect.as_ref().is_some_and(|s| s.clip == clip && s.index(&it.effects) == Some(idx));
-                let (r, resp) = bui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::click());
+                let (r, resp) = bui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::click_and_drag());
+                let movable = !def.intrinsic && !filmcraft_project::graphic::is_layer_id(&e.effect);
+                if movable {
+                    resp.dnd_set_drag_payload(EffectDrag { clip, index: idx });
+                    if let Some(drag) = resp.dnd_hover_payload::<EffectDrag>().filter(|d| d.clip == clip) {
+                        let after = bui.input(|i| i.pointer.interact_pos().is_some_and(|p| p.y > r.center().y));
+                        let to = (idx + usize::from(after)).saturating_sub(usize::from(drag.index < idx + usize::from(after)));
+                        let y = if after { r.bottom() } else { r.top() };
+                        bui.painter().line_segment([pos2(r.left(), y), pos2(r.right(), y)], Stroke::new(2.0, t.accent));
+                        app.auto.add("effectControls.dropTarget", r, "Move Effect");
+                        if resp.dnd_release_payload::<EffectDrag>().is_some() {
+                            actions.push(("effects.move".into(), json!({"clip":clip.0,"index":drag.index,"to":to})));
+                        }
+                    }
+                }
                 if selected {
                     bui.painter().rect_filled(crate::panels::effect_controls::row_fill(r), 0.0, t.row_selected);
                 } else if resp.hovered() {
@@ -235,13 +313,16 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     actions.push(("effects.reset".into(), json!({"clip": clip.0, "index": idx})));
                 }
                 app.auto.add(&format!("effectControls.effect.{}", e.effect), r, def.name);
+                app.auto.add(&format!("effectControls.clip.{}.effect.{idx}", clip.0), r, def.name);
                 if twresp.clicked() {
                     if open {
                         app.ui.collapsed_fx.push(key.clone());
                     } else {
                         app.ui.collapsed_fx.retain(|k| *k != key);
                     }
-                } else if resp.clicked() && !fxresp.clicked() && !rresp.clicked() {
+                } else if (resp.clicked() || resp.secondary_clicked() || resp.drag_started()) && !fxresp.clicked() && !rresp.clicked() {
+                    app.ui.focused = crate::dock::PanelKind::EffectControls;
+                    app.ui.keyframe_selection.clear();
                     actions.push(("effects.select".into(), json!({"clip": clip.0, "effect": idx})));
                 }
                 let mut save_preset = false;
@@ -253,8 +334,39 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         save_preset = true;
                         ui.close();
                     }
-                    if !def.intrinsic && ui.button(tl!("Clear")).clicked() {
-                        actions.push(("effects.remove".into(), json!({"clip": clip.0, "index": idx})));
+                    if movable {
+                        for (label, command) in [
+                            (tl!("Copy"), "effects.copy"),
+                            (tl!("Cut"), "effects.cut"),
+                            (tl!("Duplicate"), "effects.duplicate"),
+                            (tl!("Clear"), "effects.remove"),
+                        ] {
+                            let button = ui.button(label);
+                            app.auto.add(&format!("effectControls.clip.{}.effect.{idx}.{command}", clip.0), button.rect, label);
+                            if button.clicked() {
+                                actions.push((command.into(), json!({"clip":clip.0,"index":idx})));
+                                ui.close();
+                            }
+                        }
+                        for (label, action, to) in [(tl!("Move Up"), "moveUp", idx.checked_sub(1)), (tl!("Move Down"), "moveDown", idx.checked_add(1))] {
+                            let target = to.filter(|i| {
+                                it.effects.get(*i).is_some_and(|e| e.def().is_some_and(|d| !d.intrinsic) && !filmcraft_project::graphic::is_layer_id(&e.effect))
+                            });
+                            let button = ui.add_enabled(target.is_some(), egui::Button::new(label));
+                            app.auto.add(&format!("effectControls.clip.{}.effect.{idx}.{action}", clip.0), button.rect, label);
+                            if button.clicked()
+                                && let Some(to) = target
+                            {
+                                actions.push(("effects.move".into(), json!({"clip":clip.0,"index":idx,"to":to})));
+                                ui.close();
+                            }
+                        }
+                    }
+                    let paste = ui.add_enabled(app.session.state.effect_clipboard.is_some(), egui::Button::new(tl!("Paste")));
+                    app.auto.add(&format!("effectControls.clip.{}.effect.{idx}.paste", clip.0), paste.rect, "Paste");
+                    if paste.clicked() {
+                        actions.push(("effects.select".into(), json!({"clip":clip.0,"effect":idx})));
+                        actions.push(("effects.paste".into(), json!({"clips":[clip.0]})));
                         ui.close();
                     }
                 });
@@ -1034,6 +1146,11 @@ pub(crate) fn run(app: &mut FilmcraftApp, ctx: &egui::Context, actions: Vec<(Str
         }
         if let Err(e) = app.session.execute(&cmd, p) {
             app.ui.status = e.to_string();
+        } else if matches!(cmd.as_str(), "effects.remove" | "effects.cut" | "effects.duplicate" | "effects.move" | "effects.paste") {
+            clear_stack_ui(app);
+        }
+        if matches!(cmd.as_str(), "effects.copy" | "effects.cut") {
+            ctx.copy_text("FilmCraft effect".into());
         }
     }
     if down && (wrote || begun.is_some()) {

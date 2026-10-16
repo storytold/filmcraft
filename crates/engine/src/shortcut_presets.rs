@@ -14,6 +14,8 @@ pub const FILMCRAFT_PANEL: &[Entry] = &[
     // the forward-delete key (Delete on Windows and Linux keyboards) clears timeline clips too;
     // application-wide it is Project ▸ Clear (#243)
     ("edit.clear", "Delete", "Timeline"),
+    ("edit.clear", "Delete", "Effect Controls"),
+    ("edit.duplicate", "Cmd+D", "Effect Controls"),
     ("file.newBin", "Cmd+B", "Project"),
     ("edit.undo", "Left", "History"),
     ("edit.redo", "Right", "History"),

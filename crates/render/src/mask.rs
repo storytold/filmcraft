@@ -20,6 +20,7 @@
 //! premultiplied working image: a masked effect is `lerp(original, effected, coverage)` per
 //! channel, an opacity mask scales the layer's premultiplied pixels.
 
+use filmcraft_geom::Vec2;
 use filmcraft_project::{EffectInstance, Mask, MaskMode};
 use filmcraft_time::Tick;
 use rayon::prelude::*;
@@ -187,11 +188,15 @@ pub fn scale_by(img: &mut Image, cov: &[f32]) {
 
 /// Apply an effect limited to its masks (Premiere: a masked effect only applies inside the mask).
 pub fn apply_effect(img: &mut Image, e: &EffectInstance, cx: &crate::effects::FxCtx) {
+    apply_effect_at(img, e, cx, Vec2::new(0.0, 0.0));
+}
+
+pub(crate) fn apply_effect_at(img: &mut Image, e: &EffectInstance, cx: &crate::effects::FxCtx, origin: Vec2) {
     if !e.enabled || e.masks.is_empty() {
         crate::effects::apply(img, e, cx);
         return;
     }
-    let Some(cov) = effect_coverage(&e.masks, cx.t, cx.px_scale, img.w, img.h) else {
+    let Some(cov) = coverage_at_origin(&e.masks, cx.t, cx.px_scale, img.w, img.h, origin) else {
         crate::effects::apply(img, e, cx);
         return;
     };
@@ -202,8 +207,12 @@ pub fn apply_effect(img: &mut Image, e: &EffectInstance, cx: &crate::effects::Fx
 
 /// Apply the masks of an item's Opacity effect to its layer (before Motion), if any.
 pub fn apply_opacity_masks(img: &mut Image, item: &filmcraft_project::TrackItem, t: Tick, px_scale: f32) {
+    apply_opacity_masks_at(img, item, t, px_scale, Vec2::new(0.0, 0.0));
+}
+
+pub(crate) fn apply_opacity_masks_at(img: &mut Image, item: &filmcraft_project::TrackItem, t: Tick, px_scale: f32, origin: Vec2) {
     let Some(op) = item.effect("opacity").filter(|e| e.enabled && !e.masks.is_empty()) else { return };
-    if let Some(cov) = effect_coverage(&op.masks, t, px_scale, img.w, img.h) {
+    if let Some(cov) = coverage_at_origin(&op.masks, t, px_scale, img.w, img.h, origin) {
         scale_by(img, &cov);
     }
 }
@@ -235,6 +244,17 @@ pub fn coverage_at(masks: &[FlatMask], x: f32, y: f32) -> Option<f32> {
         acc = m.mode.combine(acc, v).clamp(0.0, 1.0);
     }
     Some(acc)
+}
+
+fn coverage_at_origin(masks: &[Mask], t: Tick, px_scale: f32, w: usize, h: usize, origin: Vec2) -> Option<Vec<f32>> {
+    let mut flat = prepare(masks, t, px_scale);
+    for mask in &mut flat {
+        for p in &mut mask.pts {
+            p[0] += origin.x as f32;
+            p[1] += origin.y as f32;
+        }
+    }
+    coverage(&flat, w, h)
 }
 
 #[cfg(test)]

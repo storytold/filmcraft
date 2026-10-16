@@ -178,6 +178,11 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
 
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    if params.as_object().is_some_and(|p| p.is_empty())
+        && let Some(command) = crate::panels::effect_controls::edit_command(app, id)
+    {
+        return crate::panels::effect_controls::edit(app, ctx, command);
+    }
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
     }
@@ -683,6 +688,14 @@ pub const NATIVE_APP_MENU: [&str; 4] = ["Settings", "Hide FilmCraft", "Hide Othe
 pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
     let mut v = menu_items_for(&app.session);
     for it in &mut v {
+        if let Some(command) = crate::panels::effect_controls::edit_command(app, &it.id) {
+            it.enabled = app.session.active_sequence().is_some()
+                && if command == "effects.paste" {
+                    !app.session.state.selection.is_empty()
+                } else {
+                    app.session.state.selected_effect.is_some() || !app.ui.keyframe_selection.is_empty()
+                };
+        }
         it.label = app.ui.language.tr(&it.label).to_string();
         match it.id.as_str() {
             "app.language.english" => it.checked = Some(app.ui.language == crate::i18n::Language::En),

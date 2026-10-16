@@ -64,9 +64,10 @@ pub(crate) fn color(e: &EffectInstance, id: &str, cx: &FxCtx) -> [f32; 4] {
 /// A point param in working-image pixels; NaN components default to the image centre.
 pub(crate) fn point(e: &EffectInstance, id: &str, cx: &FxCtx, img: &Image) -> Vec2 {
     let v = e.param(id).map(|p| p.vec2_at(cx.t)).unwrap_or(Vec2::new(f64::NAN, f64::NAN));
+    let origin = cx.env.map_or(Vec2::new(0.0, 0.0), |env| env.layer_origin());
     Vec2::new(
-        if v.x.is_nan() { img.w as f64 / 2.0 } else { v.x * cx.px_scale as f64 },
-        if v.y.is_nan() { img.h as f64 / 2.0 } else { v.y * cx.px_scale as f64 },
+        if v.x.is_nan() { img.w as f64 / 2.0 } else { v.x * cx.px_scale as f64 + origin.x },
+        if v.y.is_nan() { img.h as f64 / 2.0 } else { v.y * cx.px_scale as f64 + origin.y },
     )
 }
 
@@ -307,12 +308,9 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         }
         "drop_shadow" => {
             let c = color(e, "color", cx);
-            let op = f(e, "opacity", cx) / 100.0;
-            let dir = (f(e, "direction", cx) as f64).to_radians();
-            let dist = f(e, "distance", cx) as f64 * cx.px_scale as f64;
-            let soft = f(e, "softness", cx) * cx.px_scale * 0.5;
+            let op = finite_shadow_param(f(e, "opacity", cx), 0.0, 100.0) / 100.0;
+            let (dx, dy, soft) = shadow_geometry(e, cx);
             let only = b(e, "only");
-            let (dx, dy) = (dir.sin() * dist, -dir.cos() * dist);
             let lc = dec([c[0], c[1], c[2]]);
             let mut sh = img.transformed(img.w, img.h, &Affine::translate(dx, dy));
             sh.px.par_chunks_mut(4).for_each(|p| {
@@ -905,6 +903,24 @@ pub(crate) fn mosaic(img: &mut Image, bx: usize, by: usize) {
             row[x * 4..x * 4 + 4].copy_from_slice(&p);
         }
     });
+}
+
+fn finite_shadow_param(value: f32, min: f32, max: f32) -> f32 {
+    if value.is_finite() { value.clamp(min, max) } else { min }
+}
+
+/// Shared by the shadow and its canvas bounds, including hostile-value sanitisation.
+pub(crate) fn shadow_geometry(e: &EffectInstance, cx: &FxCtx) -> (f64, f64, f32) {
+    let scale = finite_shadow_param(cx.px_scale, 0.0, 1.0);
+    let direction = f(e, "direction", cx);
+    let dir = if direction.is_finite() { (direction as f64).rem_euclid(360.0).to_radians() } else { 0.0 };
+    let dist = finite_shadow_param(f(e, "distance", cx), 0.0, 4000.0) as f64 * scale as f64;
+    let soft = finite_shadow_param(f(e, "softness", cx), 0.0, 1000.0) * scale * 0.5;
+    (dir.sin() * dist, -dir.cos() * dist, soft)
+}
+
+pub(crate) fn shadow_support(soft: f32) -> usize {
+    if soft > 0.3 { boxes_for_gauss(soft, 3).iter().sum::<usize>() + 1 } else { 0 }
 }
 
 #[cfg(test)]
