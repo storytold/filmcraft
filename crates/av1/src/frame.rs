@@ -83,11 +83,6 @@ impl Plane {
         let o = (y - self.oy) * self.stride;
         &self.data[o..o + self.stride]
     }
-    #[inline(always)]
-    pub fn row_mut(&mut self, y: usize) -> &mut [u16] {
-        let o = (y - self.oy) * self.stride;
-        &mut self.data[o..o + self.stride]
-    }
     /// Row `y` from column `x` (frame coordinates) to the end of the stored row.
     #[inline(always)]
     pub fn row_from(&self, y: usize, x: usize) -> &[u16] {
@@ -208,14 +203,6 @@ impl FrameBuf {
         let [p0, p1, p2] = &mut self.planes;
         let (b1, b2) = (p1.row_bands(&chroma), p2.row_bands(&chroma));
         p0.row_bands(luma).into_iter().zip(b1).zip(b2).map(|((y, u), v)| [y, u, v]).collect()
-    }
-
-    pub fn plane_width(&self, plane: usize) -> usize {
-        if plane == 0 { self.width } else { (self.width + self.subsampling_x) >> self.subsampling_x }
-    }
-
-    pub fn plane_height(&self, plane: usize) -> usize {
-        if plane == 0 { self.height } else { (self.height + self.subsampling_y) >> self.subsampling_y }
     }
 }
 

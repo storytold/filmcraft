@@ -902,11 +902,6 @@ pub fn register_encoder(f: EncoderFactory) {
     }
 }
 
-/// Whether `f` is among the registered video encoder factories (startup diagnostics, tests).
-pub fn encoder_registered(f: EncoderFactory) -> bool {
-    video_factories().read().unwrap_or_else(|e| e.into_inner()).iter().any(|x| std::ptr::fn_addr_eq(*x, f))
-}
-
 /// Renders one export frame on something other than the CPU reference renderer — today the GPU
 /// compositor (`filmcraft-gpu`), registered by the app or CLI at startup. `render` returns the
 /// frame exactly as [`filmcraft_render::render_sequence`] would (same size, premultiplied
@@ -938,11 +933,6 @@ pub fn register_frame_renderer(f: FrameRendererFactory) {
     if !g.iter().any(|x| std::ptr::fn_addr_eq(*x, f)) {
         g.insert(0, f);
     }
-}
-
-/// Whether `f` is among the registered frame-renderer factories (startup diagnostics, tests).
-pub fn frame_renderer_registered(f: FrameRendererFactory) -> bool {
-    frame_renderer_factories().read().unwrap_or_else(|e| e.into_inner()).iter().any(|x| std::ptr::fn_addr_eq(*x, f))
 }
 
 /// Clear the registered frame-renderer factories. Test-only: registration is a process-wide

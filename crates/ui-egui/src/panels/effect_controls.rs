@@ -90,10 +90,6 @@ pub(crate) fn select_all_keyframes(app: &mut FilmcraftApp) -> bool {
     true
 }
 
-fn selected_clip(app: &FilmcraftApp) -> Option<(ClipId, TrackItem, TrackKind)> {
-    selected_clips(app).into_iter().next()
-}
-
 /// The selected clip (video first) and the audio linked to it when that audio is selected or
 /// linked selection is on — so clip audio FX (Parametric EQ, Custom Setup) stay visible on A/V pairs.
 fn selected_clips(app: &FilmcraftApp) -> Vec<(ClipId, TrackItem, TrackKind)> {
@@ -746,82 +742,6 @@ fn keyframe_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, target: KeyframeRef,
         actions.push(("effects.deleteKeyframe".into(), params));
         ui.close();
     }
-}
-
-/// Lumetri Color panel: edits (or adds) the Lumetri effect on the selected clip, grouped by section.
-pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
-    let t = app.tokens;
-    let Some((clip, it, _)) = selected_clip(app) else {
-        crate::dock::placeholder(ui, rect, &t, tl!("Select a clip to grade"));
-        return;
-    };
-    let idx = it.effects.iter().position(|e| e.effect == "lumetri");
-    let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(6.0)).id_salt("lumetri"));
-    bui.label(egui::RichText::new(tlf!("Master · {name}", name = it.name)).color(t.text_dim));
-    let Some(idx) = idx else {
-        if bui.button(tl!("Add Lumetri Color to clip")).clicked() {
-            let _ = app.session.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"}));
-        }
-        return;
-    };
-    let e = it.effects[idx].clone();
-    let Some(def) = e.def() else { return };
-    let ph = app.session.playhead();
-    let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
-    let mut actions = Vec::new();
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut bui, |ui| {
-        let mut groups: Vec<&str> = Vec::new();
-        for p in &def.params {
-            if let Some(g) = p.group
-                && !groups.contains(&g)
-            {
-                groups.push(g);
-            }
-        }
-        for g in groups {
-            let key = format!("lumetri:{g}");
-            let open = !app.ui.collapsed_fx.contains(&key);
-            let (resp, now_open) = crate::widgets::section_header(ui, egui::Id::new(&key), crate::i18n::t(g), open, &t, true);
-            app.auto.add(&format!("lumetri.section.{g}"), resp.rect, g);
-            if now_open != open {
-                if now_open {
-                    app.ui.collapsed_fx.retain(|k| *k != key);
-                } else {
-                    app.ui.collapsed_fx.push(key.clone());
-                }
-            }
-            if !now_open {
-                continue;
-            }
-            for pd in def.params.iter().filter(|p| p.group == Some(g)) {
-                let v = e.params.get(pd.id).map(|p| p.value_at(mt)).unwrap_or(pd.default.clone());
-                ui.horizontal(|ui| {
-                    ui.add_space(18.0);
-                    ui.add_sized(vec2(110.0, 18.0), egui::Label::new(egui::RichText::new(crate::i18n::t(pd.label)).size(12.0)));
-                    if let (ParamKind::Float { min, max, soft_min, soft_max, .. }, ParamValue::Float(x)) = (&pd.kind, &v) {
-                        let mut val = *x;
-                        let s = ui.add(egui::Slider::new(&mut val, *soft_min..=*soft_max).show_value(false));
-                        let (_, nv) =
-                            crate::widgets::hot_number(ui, egui::Id::new(("lum", pd.id)), val, (soft_max - soft_min) / 300.0, (*min, *max), 1, "", &t);
-                        if s.changed() {
-                            actions.push(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": val}));
-                        } else if let Some(nv) = nv {
-                            actions.push(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": nv}));
-                        }
-                        if s.double_clicked() {
-                            actions.push(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": pd.default.as_f64().unwrap_or(0.0)}));
-                        }
-                    } else if let ParamValue::Color(c) = v {
-                        let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
-                        if egui::color_picker::color_edit_button_rgba(ui, &mut rgba, egui::color_picker::Alpha::Opaque).changed() {
-                            actions.push(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": [rgba.r(), rgba.g(), rgba.b(), 1.0]}));
-                        }
-                    }
-                });
-            }
-        }
-    });
-    run(app, ui.ctx(), actions.into_iter().map(|a| ("effects.setParam".to_string(), a)).collect());
 }
 
 /// Properties panel (Premiere 26): a compact inspector for the selected clip.

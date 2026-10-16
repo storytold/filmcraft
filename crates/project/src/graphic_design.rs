@@ -16,8 +16,6 @@
 //!   Right), optionally starting and ending off screen, with preroll, ease-in, ease-out and
 //!   postroll ([`roll_offset`], [`roll_progress`]).
 
-use std::collections::BTreeMap;
-
 use filmcraft_time::Tick;
 use serde::{Deserialize, Serialize};
 
@@ -447,9 +445,6 @@ pub struct SourceGraphic {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meta: Option<GraphicMeta>,
 }
-
-/// Source graphics by project item.
-pub type SourceGraphics = BTreeMap<crate::ItemId, SourceGraphic>;
 
 #[cfg(test)]
 mod tests {

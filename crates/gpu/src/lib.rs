@@ -1041,17 +1041,6 @@ impl GpuCompositor {
         Some((w, h, out))
     }
 
-    /// Read the **linear float accumulator** back as premultiplied RGBA f32 (export rendering):
-    /// the display texture this crate's [`read_output`](Self::read_output) resolves is sRGB 8-bit
-    /// and would clip the working-space data HDR exports need. The accumulator must have been
-    /// composited first ([`composite`](Self::composite) / [`composite_prepared`](Self::composite_prepared)).
-    pub fn read_accumulator(&mut self) -> Option<(u32, u32, Vec<f32>)> {
-        let mut enc = self.device.create_command_encoder(&Default::default());
-        let size = self.copy_accumulator(&mut enc)?;
-        self.queue.submit([enc.finish()]);
-        self.map_accumulator(size)
-    }
-
     /// Record a copy of the accumulator into the staging buffer (grown when too small, reused
     /// otherwise); returns its width, height and row pitch in bytes.
     fn copy_accumulator(&mut self, enc: &mut wgpu::CommandEncoder) -> Option<(u32, u32, u32)> {

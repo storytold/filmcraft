@@ -11,6 +11,3 @@ workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
-
-[dev-dependencies]
-filmcraft-testkit = { workspace = true }

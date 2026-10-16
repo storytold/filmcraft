@@ -1509,10 +1509,6 @@ impl crate::autosave::Preferences {
         filmcraft_codecs::hw::set_hardware_decoding(self.playback.hardware_decoding != "off");
     }
 
-    /// Values of one category as a JSON object.
-    pub fn category_value(&self, id: &str) -> Option<Value> {
-        self.to_value().get(id).cloned()
-    }
     /// Reset one category to its defaults (`recentProjects` survives a General reset).
     pub fn reset_category(&mut self, id: &str) -> std::result::Result<(), String> {
         if category(id).is_none() {

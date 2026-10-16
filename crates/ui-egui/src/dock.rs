@@ -254,11 +254,6 @@ pub fn find(prefs: &WorkspacePrefs, query: &str) -> Option<String> {
     names(prefs).into_iter().find(|n| slug(n) == slug(query))
 }
 
-/// The saved layout of a workspace: the user's saved version, else the built-in default.
-pub fn saved_layout(prefs: &WorkspacePrefs, name: &str) -> DockNode {
-    saved_docking(prefs, name).root
-}
-
 pub fn saved_docking(prefs: &WorkspacePrefs, name: &str) -> Layout {
     let saved = prefs.saved.iter().find(|saved| saved.name == name).and_then(|saved| {
         let mut layout = Layout {

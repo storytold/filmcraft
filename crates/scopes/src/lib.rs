@@ -642,20 +642,6 @@ pub fn red_angle(m: Matrix) -> f32 {
     angle_deg(cb, cr)
 }
 
-/// A sample's point on the HLS vectorscope: hue as the angle from red (counter-clockwise, red →
-/// yellow → green → cyan → blue → magenta), HLS saturation as the radius (1 = 0.5).
-pub fn hls_point(rgb: [f32; 3], m: Matrix) -> [f32; 2] {
-    hls_at(rgb, red_angle(m))
-}
-
-#[inline]
-fn hls_at([r, g, b]: [f32; 3], red: f32) -> [f32; 2] {
-    let [h, s, _] = filmcraft_color::rgb_to_hsl(r, g, b);
-    let a = (red + h * 360.0).to_radians();
-    let rad = s.clamp(0.0, 1.0) * 0.5;
-    [rad * a.cos(), rad * a.sin()]
-}
-
 /// The HLS vectorscope.
 pub fn vectorscope_hls(s: &Signal, p: &Params) -> Vectorscope {
     let mut v = Vectorscope::new(p.vector_size.max(2));

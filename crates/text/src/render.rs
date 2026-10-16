@@ -168,11 +168,6 @@ pub fn is_axis_uniform(m: &Xform) -> bool {
     m[1].abs() < 1e-6 && m[2].abs() < 1e-6 && m[0] > 0.0 && (m[0] - m[3]).abs() < 1e-4 * m[0].max(1.0)
 }
 
-/// The whole layout (glyphs + underlines) as one device-space path.
-pub fn layout_path(l: &Layout, m: &Xform) -> Path {
-    layout_path_run(l, m, None)
-}
-
 /// The glyphs and underlines set in style `run` (all with None) as one device-space path.
 pub fn layout_path_run(l: &Layout, m: &Xform, run: Option<u16>) -> Path {
     let mut p = Path::new();

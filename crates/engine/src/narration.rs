@@ -39,11 +39,6 @@ use crate::{EngineError, Result, Session};
 /// Item name prefix of generated narrations.
 const BASE_NAME: &str = "Narration";
 
-/// The narration of a project item.
-pub fn narration_of(s: &Session, item: ItemId) -> Option<&Narration> {
-    s.project.narrations.get(&item)
-}
-
 /// The narration clip a command works on: `clip`, else the first selected clip whose item is a
 /// narration.
 pub fn target_clip(s: &Session, p: &Value) -> Option<ClipId> {

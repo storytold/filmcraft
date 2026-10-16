@@ -88,15 +88,6 @@ impl MulticamSource {
     pub fn shown_angles(&self) -> Vec<usize> {
         self.video_angles().filter(|(_, c)| c.enabled).map(|(i, _)| i).collect()
     }
-    /// Angle whose video is on `track`.
-    pub fn angle_of_video_track(&self, track: TrackId) -> Option<usize> {
-        self.cameras.iter().position(|c| c.video_track == Some(track))
-    }
-    /// Whether an audio track belongs to a camera with video (switchable) rather than to an
-    /// audio-only source.
-    pub fn camera_of_audio_track(&self, track: TrackId) -> Option<usize> {
-        self.cameras.iter().position(|c| c.audio_tracks.contains(&track))
-    }
     /// The audio tracks that play for `angle` (None = all of them, as in a plain nest).
     /// Audio-only sources always play; camera audio follows [`MulticamAudio`].
     pub fn audible_tracks(&self, angle: Option<usize>) -> Vec<TrackId> {

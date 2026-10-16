@@ -107,9 +107,6 @@ impl VideoFrame {
         debug_assert_eq!(data.len(), (width * height * 4) as usize);
         Self { width, height, data: PixelData::RgbaF32(Arc::new(data)), color: ColorInfo::SRGB_FULL, par: (1, 1), pts: Tick::ZERO }
     }
-    pub fn transparent_f32(width: u32, height: u32) -> Self {
-        Self::rgba_f32(width, height, vec![0.0; (width * height * 4) as usize])
-    }
     pub fn with_pts(mut self, pts: Tick) -> Self {
         self.pts = pts;
         self

@@ -1760,7 +1760,6 @@ dependencies = [
 name = "filmcraft-av1"
 version = "0.8.0"
 dependencies = [
- "filmcraft-bitstream",
  "filmcraft-testkit",
  "rayon",
  "rustix 1.1.5",
@@ -1862,7 +1861,6 @@ dependencies = [
 name = "filmcraft-color"
 version = "0.8.0"
 dependencies = [
- "proptest",
  "serde",
 ]
 
@@ -1879,7 +1877,6 @@ dependencies = [
 name = "filmcraft-dnx"
 version = "0.8.0"
 dependencies = [
- "filmcraft-bitstream",
  "filmcraft-testkit",
  "rayon",
  "thiserror 2.0.21",
@@ -1890,7 +1887,6 @@ name = "filmcraft-edit"
 version = "0.8.0"
 dependencies = [
  "filmcraft-geom",
- "filmcraft-media",
  "filmcraft-project",
  "filmcraft-time",
  "proptest",
@@ -1999,7 +1995,6 @@ dependencies = [
 name = "filmcraft-geom"
 version = "0.8.0"
 dependencies = [
- "proptest",
  "serde",
 ]
 
@@ -2143,23 +2138,16 @@ dependencies = [
 name = "filmcraft-mpegts"
 version = "0.8.0"
 dependencies = [
- "filmcraft-testkit",
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "filmcraft-mxf"
 version = "0.8.0"
-dependencies = [
- "filmcraft-testkit",
-]
 
 [[package]]
 name = "filmcraft-ogg"
 version = "0.8.0"
-dependencies = [
- "filmcraft-testkit",
-]
 
 [[package]]
 name = "filmcraft-opus"
@@ -2202,7 +2190,6 @@ dependencies = [
  "filmcraft-geom",
  "filmcraft-media",
  "filmcraft-time",
- "proptest",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -2276,7 +2263,6 @@ dependencies = [
 name = "filmcraft-text"
 version = "0.8.0"
 dependencies = [
- "filmcraft-color",
  "harfrust",
  "skrifa",
  "unicode-bidi",

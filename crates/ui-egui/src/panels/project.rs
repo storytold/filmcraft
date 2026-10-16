@@ -13,7 +13,7 @@
 
 use egui::{Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
 use filmcraft_engine::project_panel::{FontSize, ViewMode};
-use filmcraft_project::{BinId, ItemId, ItemKind};
+use filmcraft_project::{BinId, ItemId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -1024,9 +1024,4 @@ pub fn commit_rename(app: &mut FilmcraftApp) {
     if let Err(e) = res {
         app.ui.status = e.to_string();
     }
-}
-
-/// Is `kind` a sequence (double-click opens it in the Timeline)?
-pub fn is_sequence(kind: &ItemKind) -> bool {
-    matches!(kind, ItemKind::Sequence(_))
 }

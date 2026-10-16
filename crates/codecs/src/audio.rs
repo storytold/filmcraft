@@ -167,10 +167,6 @@ impl PacketDecoder {
     pub fn ac3() -> Result<Self> {
         Ok(Self { inner: Inner::Ac3(Box::new(filmcraft_ac3::Decoder::new())), channels: 0 })
     }
-    /// Whether this decodes Opus (which needs [`OPUS_PRE_ROLL`] of pre-roll after a seek).
-    pub fn is_opus(&self) -> bool {
-        matches!(self.inner, Inner::Opus { .. })
-    }
     pub fn for_isobmff(c: &filmcraft_isobmff::CodecConfig, rate: u32) -> Result<Self> {
         use filmcraft_isobmff::CodecConfig as C;
         match c {

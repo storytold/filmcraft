@@ -45,7 +45,6 @@ pub(crate) struct Block {
     pub palette_colors_v: [u16; 8],
     pub tx_size: usize,
     pub ref_frame: [i8; 2],
-    pub mv: [Mv; 2],
     pub interp_filter: [u8; 2],
     pub motion_mode: u8,
     pub comp_group_idx: u8,

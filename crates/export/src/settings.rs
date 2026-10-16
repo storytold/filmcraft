@@ -451,12 +451,6 @@ pub struct ExportEffects {
     pub loudness: LoudnessNormalization,
 }
 
-impl ExportEffects {
-    pub fn any_video(&self) -> bool {
-        self.image_overlay.enabled || self.name_overlay.enabled || self.timecode_overlay.enabled || self.video_limiter.enabled
-    }
-}
-
 /// Export ▸ Metadata (written to the MP4 / QuickTime `udta`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]

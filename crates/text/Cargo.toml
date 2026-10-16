@@ -10,7 +10,6 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-filmcraft-color = { workspace = true }
 # Font tables, glyph outlines and metrics (MIT OR Apache-2.0). Rasterisation is our own.
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
 # OpenType shaping (HarfBuzz port on read-fonts, MIT); shares font parsing with skrifa.

@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use filmcraft_project::{ClipId, ItemId, MulticamSel, Sequence, Track, TrackId, TrackItem};
+use filmcraft_project::{ClipId, ItemId, Sequence, Track, TrackId, TrackItem};
 use filmcraft_time::{Tick, TimeRange};
 
 use crate::{EditCtx, EditError, Result, remove_orphan_transitions, split_track_at};
@@ -205,9 +205,4 @@ pub fn replace_with(seq: &mut Sequence, clip: ClipId, pieces: Vec<(TrackId, Trac
     t.items.retain(|i| i.id != clip);
     remove_orphan_transitions(t);
     crate::overwrite(seq, pieces, ctx)
-}
-
-/// The multi-camera selection a freshly edited multi-camera clip gets.
-pub fn default_sel(angle: u32) -> MulticamSel {
-    MulticamSel { enabled: true, angle }
 }

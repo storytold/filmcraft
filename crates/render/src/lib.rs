@@ -714,10 +714,6 @@ impl SourceProvider for SourceMap {
     }
 }
 
-pub fn arc_source(s: impl filmcraft_media::MediaSource + 'static) -> SharedSource {
-    Arc::new(s)
-}
-
 #[cfg(test)]
 mod tests;
 

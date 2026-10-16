@@ -41,15 +41,6 @@ impl CaptionFormat {
         let n = s.to_ascii_lowercase().replace(['-', ' ', '_'], "");
         Self::ALL.iter().copied().find(|f| f.label().to_ascii_lowercase().replace(['-', ' '], "") == n)
     }
-    /// Characters per line limit used when wrapping (608 is fixed at 32 columns).
-    pub fn max_columns(self) -> Option<usize> {
-        match self {
-            CaptionFormat::Cea608 => Some(32),
-            CaptionFormat::Teletext => Some(40),
-            CaptionFormat::Cea708 => Some(42),
-            CaptionFormat::Subtitle => None,
-        }
-    }
 }
 
 /// Horizontal text alignment.

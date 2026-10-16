@@ -42,7 +42,6 @@ pub(crate) struct RefFrame {
     pub segment_ids: Vec<u8>,
     pub mi_cols: usize,
     pub mi_rows: usize,
-    pub film_grain_present: bool,
     pub color: (u8, u8, u8, bool),
     /// SavedRefFrames / SavedMvs (MfRefFrames / MfMvs of 7.19), mi units.
     pub saved_ref_frames: Vec<i8>,
@@ -199,7 +198,6 @@ pub struct Decoder {
     pub apply_film_grain: bool,
     draft: bool,
     stats: Arc<Mutex<DecodeStats>>,
-    threads: usize,
     pool: Pool,
     #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
     workers: Option<Workers>,
@@ -262,7 +260,6 @@ impl Decoder {
             apply_film_grain: true,
             draft: false,
             stats,
-            threads,
             pool,
             #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
             workers,
@@ -728,7 +725,6 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
         segment_ids: std::mem::take(&mut fs.mi.segment_id),
         mi_cols: fs.mi.cols,
         mi_rows: fs.mi.rows,
-        film_grain_present: seq.film_grain_params_present,
         color: (seq.color.color_primaries, seq.color.transfer_characteristics, seq.color.matrix_coefficients, seq.color.color_range),
         saved_ref_frames: mf_refs,
         saved_mvs: mf_mvs,

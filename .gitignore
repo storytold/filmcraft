@@ -1,6 +1,6 @@
 *~
 plan/
-/target
+target/
 /dist
 /log
 .DS_Store

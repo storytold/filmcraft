@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use filmcraft_audio_dsp::channels::{self as chans, Layout, Mixdown};
 use filmcraft_frame::AudioBuffer;
-use filmcraft_project::{AudioChannels, Project, Sequence, Track, TrackId, TrackItem};
+use filmcraft_project::{Project, Sequence, Track, TrackId, TrackItem};
 use filmcraft_time::{Tick, TimeRange};
 
 use crate::mixer::Override;
@@ -55,12 +55,6 @@ pub fn to_layout(b: AudioBuffer, layout: Layout, mixdown: Mixdown) -> AudioBuffe
         return b;
     }
     AudioBuffer { sample_rate: b.sample_rate, channels: chans::convert_owned(b.channels, layout, mixdown) }
-}
-
-/// The layout of a sequence's Mix (`SequenceSettings::audio_master`; mono and adaptive Mixes play
-/// as stereo).
-pub fn master_layout(seq: &Sequence) -> Layout {
-    if seq.settings.audio_master == AudioChannels::Surround51 { Layout::Surround51 } else { Layout::Stereo }
 }
 
 /// The summed clip audio of one track (clip gain, clip effects, Volume / Channel Volume / Panner,

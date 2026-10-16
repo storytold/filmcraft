@@ -169,12 +169,6 @@ pub fn encode_with_view(project: &Project, view: Option<&ProjectView>, pretty: b
     r.unwrap_or_default()
 }
 
-/// Detect the schema version of a parsed document.
-pub fn detect_version(doc: &Value) -> Result<u32, FormatError> {
-    let probe: Probe = serde_json::from_value(doc.clone()).map_err(|e| FormatError::NotAProject(e.to_string()))?;
-    probe_version(&probe)
-}
-
 fn probe_version(p: &Probe) -> Result<u32, FormatError> {
     if let Some(v) = p.schema_version {
         if let Some(f) = &p.format

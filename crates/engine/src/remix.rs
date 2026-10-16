@@ -18,7 +18,6 @@
 //! The analysis of a clip (beats, beat self-similarity) is cached per media range and rate, so
 //! changing the target or the sliders re-plans instantly. Everything is deterministic.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use filmcraft_audio_dsp::remix::{self as dsp, Analysis, Params};
@@ -237,21 +236,6 @@ fn revert(s: &mut Session, p: &Value) -> Result<Value> {
     let rm = Remix::of(it).ok_or_else(|| bad("clip.remix.revert", "the clip is not remixed"))?;
     apply(s, "Revert Remix", c, rm.original, None)?;
     Ok(report(s, c, None))
-}
-
-/// Remix state of every remixed clip in the active sequence (for agents and the UI).
-pub fn remixed_clips(s: &Session) -> HashMap<ClipId, Remix> {
-    let mut out = HashMap::new();
-    if let Some(q) = s.active_sequence() {
-        for t in &q.audio_tracks {
-            for i in &t.items {
-                if let Some(r) = Remix::of(i) {
-                    out.insert(i.id, r);
-                }
-            }
-        }
-    }
-    out
 }
 
 pub fn commands() -> Vec<CommandSpec> {
