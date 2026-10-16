@@ -389,6 +389,13 @@ fn record_dir(s: &Session, p: &Value) -> String {
     media_dir(s, p, "Voice-over Recordings")
 }
 
+/// Directory media the host brings in rather than reads in place is written to: files a macOS drag
+/// only promised (Photos.app hands over a dragged video as a promise, not a path), under
+/// "Dropped Media" when the project has no home of its own yet.
+pub fn captured_media_dir(s: &Session, fallback: &str) -> String {
+    media_dir(s, &Value::Null, fallback)
+}
+
 /// Directory generated media (recordings, narrations) is written to: `dir`, else Project
 /// Settings ▸ Scratch Disks ▸ Captured, else next to the project, else `fallback` in the data or
 /// temporary directory.
