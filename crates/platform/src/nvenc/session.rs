@@ -91,6 +91,7 @@ fn load() -> Result<Api, String> {
 pub enum Codec {
     H264,
     Hevc,
+    Av1,
 }
 
 impl Codec {
@@ -98,6 +99,7 @@ impl Codec {
         match self {
             Codec::H264 => NV_ENC_CODEC_H264_GUID,
             Codec::Hevc => NV_ENC_CODEC_HEVC_GUID,
+            Codec::Av1 => NV_ENC_CODEC_AV1_GUID,
         }
     }
 }
@@ -311,8 +313,8 @@ impl Session {
     /// Configure the encoder (preset P5, high quality tuning, the settings' rate control) and
     /// create `ring` pairs of input / output buffers.
     pub fn initialize(&mut self, p: &Params, ring: usize) -> Result<(), String> {
-        if p.ten_bit && p.codec != Codec::Hevc {
-            return Err("10-bit encoding is HEVC Main 10 here".into());
+        if p.ten_bit && (p.codec != Codec::Hevc && p.codec != Codec::Av1) {
+            return Err("10-bit encoding is HEVC Main 10 or AV1 Main 10 here".into());
         }
         if !p.signal.sei.is_empty() && p.codec != Codec::Hevc {
             return Err("SEI messages are written for HEVC only".into());
@@ -350,6 +352,7 @@ impl Session {
             let mut cfg: Box<NV_ENC_CONFIG> = Box::new(preset.presetCfg);
             cfg.version = NV_ENC_CONFIG_VER;
             cfg.profileGUID = match (p.codec, p.profile) {
+                (Codec::Av1, _) => NV_ENC_AV1_PROFILE_MAIN_GUID,
                 (Codec::Hevc, _) if p.ten_bit => NV_ENC_HEVC_PROFILE_MAIN10_GUID,
                 (Codec::Hevc, _) => NV_ENC_HEVC_PROFILE_MAIN_GUID,
                 (Codec::H264, 0) => NV_ENC_H264_PROFILE_BASELINE_GUID,
@@ -421,6 +424,19 @@ impl Session {
                     vui.timingInfoPresentFlag = 0;
                     vui.numUnitInTicks = 0;
                     vui.timeScale = 0;
+                }
+                Codec::Av1 => {
+                    let a = &mut cfg.encodeCodecConfig.av1Config;
+                    a.flags &= !(AV1_OUTPUT_ANNEX_B | AV1_DISABLE_SEQ_HDR | AV1_CHROMA_FORMAT_MASK | AV1_INPUT_DEPTH_MASK | AV1_OUTPUT_DEPTH_MASK);
+                    a.flags |= AV1_REPEAT_SEQ_HDR | (1 << AV1_CHROMA_FORMAT_SHIFT);
+                    if p.ten_bit {
+                        a.flags |= (2 << AV1_INPUT_DEPTH_SHIFT) | (2 << AV1_OUTPUT_DEPTH_SHIFT);
+                    }
+                    a.idrPeriod = p.gop;
+                    a.colorPrimaries = u32::from(p.signal.primaries);
+                    a.transferCharacteristics = u32::from(p.signal.transfer);
+                    a.matrixCoefficients = u32::from(p.signal.matrix);
+                    a.colorRange = 0;
                 }
             }
 

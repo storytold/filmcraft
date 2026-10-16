@@ -46,6 +46,18 @@ fn h264(size: Option<(u32, u32)>, kbps: u32, max_kbps: u32) -> ExportSettings {
     }
 }
 
+fn av1(size: Option<(u32, u32)>, kbps: u32, max_kbps: u32) -> ExportSettings {
+    ExportSettings {
+        format: Format::Av1,
+        frame_size: size,
+        bitrate_kbps: kbps,
+        max_bitrate_kbps: Some(max_kbps),
+        bitrate_mode: BitrateMode::Vbr1Pass,
+        audio: AudioSettings { codec: AudioCodec::Aac, sample_rate: Some(48_000), channels: 2, bitrate_kbps: 320, bits: 16 },
+        ..Default::default()
+    }
+}
+
 fn adaptive(bpp: f32) -> ExportSettings {
     ExportSettings { adaptive_bitrate: Some(bpp), max_bitrate_kbps: None, ..h264(None, 10_000, 0) }
 }
@@ -103,6 +115,8 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
         p("Match Source – Adaptive Low Bitrate", ms, "H.264 at the sequence's frame size and rate; 0.05 bits per pixel", adaptive(0.05)),
         p("High Quality 1080p HD", web, "H.264 1920×1080, VBR 1 pass, 20 Mbps target, AAC 320 kbps", h264(Some((1920, 1080)), 20_000, 24_000)),
         p("High Quality 2160p 4K", web, "H.264 3840×2160, VBR 1 pass, 60 Mbps target, AAC 320 kbps", h264(Some((3840, 2160)), 60_000, 72_000)),
+        p("AV1 1080p Full HD", web, "AV1 1920×1080, VBR 1 pass, 14 Mbps target, AAC 320 kbps", av1(Some((1920, 1080)), 14_000, 18_000)),
+        p("AV1 2160p 4K Ultra HD", web, "AV1 3840×2160, VBR 1 pass, 35 Mbps target, AAC 320 kbps", av1(Some((3840, 2160)), 35_000, 45_000)),
         p("YouTube 1080p Full HD", web, "H.264 1920×1080 for video sharing sites, VBR 1 pass, 16 Mbps", h264(Some((1920, 1080)), 16_000, 20_000)),
         p("YouTube 2160p 4K Ultra HD", web, "H.264 3840×2160 for video sharing sites, VBR 1 pass, 45 Mbps", h264(Some((3840, 2160)), 45_000, 54_000)),
         p(

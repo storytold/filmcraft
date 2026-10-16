@@ -482,6 +482,8 @@ fn guids_match_the_header() {
     assert_eq!(NV_ENC_CODEC_HEVC_GUID.to_u128(), 0x790cdc8845224d7b9425bda9975f7603u128, "NV_ENC_CODEC_HEVC_GUID");
     assert_eq!(NV_ENC_HEVC_PROFILE_MAIN_GUID.to_u128(), 0xb514c39ab55b40fa878ff1253b4dfdecu128, "NV_ENC_HEVC_PROFILE_MAIN_GUID");
     assert_eq!(NV_ENC_HEVC_PROFILE_MAIN10_GUID.to_u128(), 0xfa4d2b6c3a5b411a80180a3f5e3c9be5u128, "NV_ENC_HEVC_PROFILE_MAIN10_GUID");
+    assert_eq!(NV_ENC_CODEC_AV1_GUID.to_u128(), 0x0a3522890aa74759862d5d15cd16d254u128, "NV_ENC_CODEC_AV1_GUID");
+    assert_eq!(NV_ENC_AV1_PROFILE_MAIN_GUID.to_u128(), 0x5f2a39f5f14e4f959a9eb76d568fcf97u128, "NV_ENC_AV1_PROFILE_MAIN_GUID");
 }
 
 /// The bit-field masks of the `flags` words (the C compiler's layout of each bit-field set alone).
@@ -498,4 +500,18 @@ fn bit_field_masks_match_the_header() {
     assert_eq!(HEVC_OUTPUT_RECOVERY_POINT_SEI, 0x40000, "NV_ENC_CONFIG_HEVC.outputRecoveryPointSEI");
     assert_eq!(HEVC_CHROMA_FORMAT_MASK >> HEVC_CHROMA_FORMAT_SHIFT, 3, "chromaFormatIDC is 2 bits");
     assert_eq!(HEVC_PIXEL_BIT_DEPTH_MASK >> HEVC_PIXEL_BIT_DEPTH_SHIFT, 7, "pixelBitDepthMinus8 is 3 bits");
+}
+
+#[test]
+fn av1_layout_and_depth_flags_match_nvidia_api_12_1() {
+    assert_eq!((size_of::<NV_ENC_CONFIG_AV1>(), align_of::<NV_ENC_CONFIG_AV1>()), (1552, 8));
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, flags), 16);
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, idrPeriod), 20);
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, tileWidths), 48);
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, colorPrimaries), 68);
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, filmGrainParams), 96);
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, reserved1), 112);
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, reserved2), 1056);
+    // C compiler: repeatSeqHdr=1, chromaFormatIDC=1, both depth-minus-8 fields=2.
+    assert_eq!(AV1_REPEAT_SEQ_HDR | (1 << AV1_CHROMA_FORMAT_SHIFT) | (2 << AV1_INPUT_DEPTH_SHIFT) | (2 << AV1_OUTPUT_DEPTH_SHIFT), 0x120a0);
 }

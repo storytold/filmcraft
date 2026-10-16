@@ -9,6 +9,16 @@ use filmcraft_platform::nvenc::{Codec, Config, Nvenc, Packet, Profile, Signal, a
 /// NVENC sessions are a limited resource on consumer GPUs: one test at a time.
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[test]
+fn av1_rgba_input_converts_like_the_export() {
+    let _one = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !filmcraft_platform::nvenc::av1_available() {
+        eprintln!("SKIPPED: no NVENC AV1 encoder");
+        return;
+    }
+    check(Profile::Av1Main);
+}
+
 /// A moving test picture: gradient background, a moving box, a little texture.
 fn moving(w: usize, h: usize, i: usize) -> Vec<u8> {
     let mut v = vec![0u8; w * h * 4];
@@ -73,6 +83,10 @@ fn round_trip(profile: Profile, w: usize, h: usize, frames: &[Vec<u8>]) -> Vec<[
         Codec::H264 => {
             let (sps, pps) = enc.parameter_sets();
             SampleEntry::avc(AvcConfig::new(vec![sps.to_vec()], vec![pps.to_vec()], 4), w as u16, h as u16)
+        }
+        Codec::Av1 => {
+            let config = enc.av1_config().expect("an av1C record").clone();
+            SampleEntry::av1(config, w as u16, h as u16)
         }
     };
     let mut dec = filmcraft_codecs::software_video_decoder(&entry).unwrap();
