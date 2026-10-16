@@ -119,7 +119,9 @@ Prefixes containing `=`, `%` or control characters are rejected for desktop-laun
 
 The jobs run on `ubuntu-22.04`, the oldest GitHub-hosted image, so the binaries only need
 glibc 2.35 or newer: Ubuntu 22.04+, Debian 12+, Fedora 36+ and RHEL 10. The deb (`libc6 (>= 2.35)`)
-and the rpm (`glibc >= 2.35`) both declare that floor, so older systems refuse the install. Moving
+and the rpm (`libm.so.6(GLIBC_2.35)(64bit)`) both declare that floor, so older systems refuse the install.
+The rpm names libm, whose `hypot`/`hypotf` are the binaries' only GLIBC_2.35 symbols: RHEL 9's
+glibc 2.34 provides `libc.so.6(GLIBC_2.35)` through backports, so a libc floor wouldn't stop it. Moving
 the job to a newer image raises the floor, so do it deliberately and update `nfpm.yaml` with it.
 After packaging, the job prints the `.deb`'s metadata and contents, runs `ldd` on the binary and
 runs each AppImage with `--version`.
