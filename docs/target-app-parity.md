@@ -268,7 +268,7 @@ Discounts a beginner actually hits:
 - **Discoverability and UI clarity ×0.90:** a dense Premiere-style interface with no guided start;
   reports about deselecting, deleting gaps and transitions controls (#683, #648, #577).
 - **Opening files people send them ×0.95:** phone and web video mostly opens; AVI, E-AC-3 audio
-  (#647), FLAC-in-MP4 (#603) and some WebM (#432) do not.
+  (#647) and some WebM (#432) do not.
 
 80.0 × 0.88 × 0.90 × 0.95 = **60.2% ≈ ~60%.**
 

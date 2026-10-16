@@ -28,7 +28,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | G12 | AI features | AI | no | 150–300 h |
 | G13 | Delivery formats | file format | no | 60–110 h |
 | G14 | Localization: 8 of the 12 key languages missing | localization | no | 150–230 h |
-| G15 | Interchange never validated in Avid / Pro Tools; slow XML import | file format | partly | 20–40 h |
+| G15 | Interchange never validated in Avid / Pro Tools | file format | partly | 20–40 h |
 | G16 | Performance reports on 0.5.0 | performance | partly | 30–60 h |
 | G17 | Audio device and playback reliability | stability | partly | 20–40 h |
 | G18 | Effects depth: approximations and missing behaviour | feature | no | 60–110 h |
@@ -158,8 +158,8 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 - **Missing:** on-screen transform handles for Motion / Transform in the Program monitor (#639);
   Effect Controls keyframe zoom bar, draggable divider, row lines (#640–#645); panel docking
-  rearrangement (#493); clicking empty space to deselect (#683); filmstrip thumbnails (#614);
-  marquee selection in the Project panel (#578); Freeform bins and middle-mouse pan (#579);
+  rearrangement (#493); filmstrip thumbnails (#614);
+  Freeform bins and middle-mouse pan (#579);
   Program monitor Button Editor (+) (#431); keyframe curves for Position (#448); transition
   editing controls (#577: Effect Controls has the transition's own timeline, drag to slide or resize;
   the A/B previews with Start / End sliders remain); track renaming (#654); window controls on macOS (#637); UI scale on
@@ -189,8 +189,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   float, 16 lines per chunk) decodes too, bit-exact against OpenEXR (via OpenImageIO, #828).
 - **Missing:** free-format MPEG audio, E-AC-3 adaptive hybrid
   transform, enhanced coupling and the extra channels of 7.1 dependent substreams (played as the
-  5.1 core), AVI (#598; listed as an extension but no
-  demuxer), WMV / ASF, DV / DVCPRO / DV100, MPEG-4 Part 2, FLAC in MP4 (#603), camera RAW (R3D
+  5.1 core), WMV / ASF, DV / DVCPRO / DV100, MPEG-4 Part 2, camera RAW (R3D
   incl. R3D NE, ARRIRAW, Sony RAW / X-OCN, Canon RAW, BRAW, ProRes RAW; #345, #383), JPEG 2000 /
   JPEG XS MXF, the rest of CinemaDNG (lossy / JPEG XL DNG, MXF-wrapped, opcode lists, Raw
   settings; DNG frames and folders import since #1065); stills: PSD, EXR beyond scan-line RLE / ZIP / PXR24 (PIZ, B44, DWA,
@@ -203,6 +202,8 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   [file-format-parity.md](file-format-parity.md).
 - **Have:** Matroska AAC / MP3 / AC-3 / E-AC-3 sample-aligned with the signal the encoder was
   given (the exact `CodecDelay` is trimmed, not the 1 ms-rounded one; #790).
+- **Have:** AVI / OpenDML import (#598; Motion JPEG, H.264, HEVC, uncompressed video; PCM, MP3,
+  MP2, AC-3 audio) and FLAC audio in MP4 / MOV (#603; the decoder gets its STREAMINFO from `dfLa`).
 
 ## G11. No plugin hosting
 
@@ -234,12 +235,13 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 ## G14. Localization: 8 of the 12 key languages missing
 
 - **Have:** Spanish, Japanese, Simplified Chinese, French (#498) and Portuguese (Brazil) (#859)
-  catalogs cover ~99.6–100% of the ~3,500 cataloged strings; Ukrainian ~10% (menus).
+  catalogs cover ~99.6–100% of the ~3,500 cataloged strings; German (#630), Russian (#610) and
+  Ukrainian ~10% each (menus only).
 - **Missing:** Hindi, Arabic (no RTL interface layout or catalog; the interface has Arabic and Hebrew
   fallback fonts and shows captions in reading order, but other names and fields keep egui's
   left-to-right run order; Arabic titles reported broken, #395),
-  German beyond menus (#490), Korean (#508; needs Hangul fonts in craft-fonts),
-  Vietnamese; Premiere also ships Russian. Engine errors,
+  German and Russian beyond menus (#490), Korean (#508; needs Hangul fonts in craft-fonts),
+  Vietnamese. Engine errors,
   CLI and MCP stay English. No language has a recorded native-speaker review.
 - **Done:** Indonesian (#867): `id.tsv` has every entry of the Spanish catalog (~100%), in Edit ▸
   Language, Settings ▸ General and the native macOS menu; System Language picks it for `id-*` (and
@@ -249,11 +251,12 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   Native-speaker review welcome.
 - **Estimate:** 150–230 h. Doc: [localization-parity.md](localization-parity.md).
 
-## G15. Interchange never validated in Avid / Pro Tools; slow XML import
+## G15. Interchange never validated in Avid / Pro Tools
 
-- **Missing:** AAF and OMF exports have never been opened in Media Composer or Pro Tools; FCP7 XML
-  / OTIO import of a Premiere sequence took 97 s / 66 s for three media files (#461); `file.import`
-  merges into existing project content in headless round trips (#592).
+- **Missing:** AAF and OMF exports have never been opened in Media Composer or Pro Tools; `file.import`
+  merges into existing project content in headless round trips unless `replace:true` is passed (#592).
+- **Done:** FCP7 XML / OTIO / EDL / AAF import links media through the streaming reader instead of
+  reading each file whole into memory (#461).
 - **Estimate:** 20–40 h (needs a human with Avid / Pro Tools, both installed on the owner's Mac).
 
 ## G16. Performance reports on 0.5.0
@@ -284,10 +287,11 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 ## G18. Effects depth: approximations and missing behaviour
 
 - **Missing:** Warp Stabilizer is 2-D (Premiere's is 3-D subspace), Morph Cut has no face tracking
-  (and occlusion edges are soft), Lumetri HDR-aware maths, multicam paging beyond 16 angles,
+  (and occlusion edges are soft), Lumetri HDR-aware maths,
   redesigned 26.0 mask tools (a stored, re-editable
   corner radius: rounding bakes fillets into the path, so a rounded corner cannot be re-rounded later).
-- **Have:** Optical Flow time interpolation synthesises motion-compensated in-between frames (dense
+- **Have:** multicam sources with more than 16 angles are paged 4 × 4 in the Multi-Camera view;
+  Optical Flow time interpolation synthesises motion-compensated in-between frames (dense
   coarse-to-fine Lucas–Kanade, CPU; #780); Morph Cut morphs the subject along that optical flow
   instead of cross-dissolving (CPU; #805); Transform shutter angle motion blur (#415); Ultra Key
   Setting applied as a parameter preset (#458); rectangle and polygon masks round their corners
@@ -305,14 +309,14 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G20. The web app shell
 
-- **Missing:** file access, WebCodecs decode, audio in the browser build beyond what exists;
-  image-sequence export downloads drop frames in Chrome (#378).
+- **Missing:** file access, WebCodecs decode, audio in the browser build beyond what exists.
 - **Estimate:** 40–80 h. Doc: [web.md](web.md).
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-12 | minor | Removed shipped items: AVI import (#598), FLAC in MP4 (#603), multicam paging, deselect on empty space (#683), Project marquee (#578), image-sequence downloads in Chrome (#378), slow interchange import (#461); German and Russian menus listed |
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
