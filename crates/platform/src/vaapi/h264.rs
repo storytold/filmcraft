@@ -30,6 +30,10 @@ pub struct Surface {
     pub top: i32,
     pub bottom: i32,
     pub seq: u64,
+    /// A frame_num gap frame: written by [`Accel::fill`], never decoded into. Drivers mishandle
+    /// such a surface as a reference (radeonsi fails `vaEndPicture` or predicts wrongly from the
+    /// other references), so the hardware is never shown one.
+    pub stand_in: bool,
 }
 
 /// A frame_num gap frame not given a surface yet.
@@ -61,6 +65,8 @@ pub struct Front<A: Accel> {
     pending: Option<Pending>,
     /// Pictures made so far (decoding order of [`Surface::seq`]).
     seq: u64,
+    /// Output pictures read back after the next picture is submitted, so the two overlap.
+    held: Vec<Output<Surface>>,
 }
 
 fn decode_err(e: impl std::fmt::Display) -> CodecError {
@@ -88,6 +94,7 @@ impl<A: Accel> Front<A> {
             active_sps: None,
             pending: None,
             seq: 0,
+            held: Vec::new(),
         };
         f.load_parameter_sets(parameter_sets)?;
         Ok(f)
@@ -121,6 +128,8 @@ impl<A: Accel> Front<A> {
     pub fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
         let mut frames = Vec::new();
         self.submit_pending(&mut frames)?;
+        let held = std::mem::take(&mut self.held);
+        self.read_out(held, &mut frames)?;
         let mut outs = Vec::new();
         self.dpb.flush(&mut outs);
         self.read_out(outs, &mut frames)?;
@@ -134,10 +143,10 @@ impl<A: Accel> Front<A> {
         self.prev_ref_frame_num = 0;
         self.active_sps = None;
         self.pending = None;
+        self.held.clear();
     }
 
-    /// Read back the pictures the DPB output, right away: a surface leaving the DPB is reused by
-    /// the next picture.
+    /// Read back pictures the DPB output (their surfaces are not decoded into before).
     fn read_out(&mut self, outs: Vec<Output<Surface>>, frames: &mut Vec<DecodedFrame>) -> Result<()> {
         for o in outs {
             let frame = self.accel.read(o.frame.index).map_err(decode_err)?;
@@ -215,17 +224,24 @@ impl<A: Accel> Front<A> {
         let surfaces = self.accel.surfaces();
         let lists = self
             .dpb
-            .build_ref_lists(&sh, pending.poc.frame(), sps.max_frame_num(), |e| (va_ref(e, surfaces), e.mark != RefMark::Unused))
+            .build_ref_lists(&sh, pending.poc.frame(), sps.max_frame_num(), |e| (va_ref(e, surfaces), e.mark != RefMark::Unused, e.frame.stand_in))
             .map_err(decode_err)?;
         if !sh.slice_type.is_intra() && (lists[0].is_empty() || (sh.slice_type.is_b() && lists[1].is_empty())) {
             return Err(decode_err("no reference pictures available for an inter slice"));
         }
         // a missing reference (the software decoder conceals it with another picture) is not
         // something to hand the hardware
-        if lists.iter().flatten().any(|(_, is_ref)| !is_ref) {
+        if lists.iter().flatten().any(|(_, is_ref, _)| !is_ref) {
             return Err(decode_err("a reference picture is missing"));
         }
-        let refs = lists.map(|l| l.into_iter().map(|(p, _)| p).collect::<Vec<_>>());
+        // a gap frame in the lists (after an open-GOP seek, until the sliding window drops it) takes
+        // the place of a decoded reference, so the indices stay: only the leading pictures, which
+        // both decoders conceal, predict from it
+        let real = lists.iter().flatten().find(|(_, _, stand_in)| !stand_in).map(|(p, _, _)| *p);
+        if real.is_none() && lists.iter().flatten().any(|(_, _, stand_in)| *stand_in) {
+            return Err(decode_err("an inter slice with only frame_num gap frames to predict from"));
+        }
+        let refs = lists.map(|l| l.into_iter().map(|(p, _, stand_in)| if stand_in { real.unwrap_or(p) } else { p }).collect::<Vec<_>>());
         let params = slice_params(&sh, nal.len(), &refs)?;
         if let Some(p) = self.pending.as_mut() {
             p.slices.push((params, nal.to_vec()));
@@ -256,13 +272,20 @@ impl<A: Accel> Front<A> {
         } else {
             let max = sps.max_frame_num();
             if sh.frame_num != self.prev_ref_frame_num && sh.frame_num != (self.prev_ref_frame_num + 1) % max {
+                let held = std::mem::take(&mut self.held);
+                self.read_out(held, frames)?;
                 self.fill_frame_num_gap(sh, sps, pts)?;
             }
         }
-        self.read_out(outs, frames)?;
+        self.held.extend(outs);
         let poc = self.poc_state.compute(sh, sps);
-        let target =
-            (0..self.accel.surfaces().len()).find(|&i| !self.dpb.entries.iter().any(|e| e.frame.index == i)).ok_or_else(|| decode_err("no free surface"))?;
+        let free =
+            |f: &Self| (0..f.accel.surfaces().len()).find(|&i| !f.held.iter().any(|o| o.frame.index == i) && !f.dpb.entries.iter().any(|e| e.frame.index == i));
+        if free(self).is_none() {
+            let held = std::mem::take(&mut self.held);
+            self.read_out(held, frames)?;
+        }
+        let target = free(self).ok_or_else(|| decode_err("no free surface"))?;
         self.pending = Some(Pending { target, sps: sps.clone(), pps: pps.clone(), first: sh.clone(), poc, pts, slices: Vec::new() });
         Ok(())
     }
@@ -276,7 +299,7 @@ impl<A: Accel> Front<A> {
         let meta = Arc::new(output_meta(sps, pts, false));
         let poc_state = &mut self.poc_state;
         // surfaces are given afterwards, to the frames the sliding window keeps
-        let mut make = |_| (Surface { index: UNASSIGNED, top: 0, bottom: 0, seq: 0 }, 0, meta.clone());
+        let mut make = |_| (Surface { index: UNASSIGNED, top: 0, bottom: 0, seq: 0, stand_in: true }, 0, meta.clone());
         let mut update = |frame_num| poc_state.update_gap_frame(frame_num, sps);
         self.dpb.fill_frame_num_gap(self.prev_ref_frame_num, sh.frame_num, max, sps.max_num_ref_frames as usize, &mut make, &mut update);
         self.prev_ref_frame_num = (sh.frame_num + max - 1) % max;
@@ -286,7 +309,7 @@ impl<A: Accel> Front<A> {
         for e in self.dpb.entries.iter_mut().filter(|e| e.frame.index == UNASSIGNED) {
             let index = free.next().ok_or_else(|| decode_err("no free surface for a frame_num gap"))?;
             self.seq += 1;
-            e.frame = Surface { index, top: 0, bottom: 0, seq: self.seq };
+            e.frame = Surface { index, top: 0, bottom: 0, seq: self.seq, stand_in: true };
             fills.push(index);
         }
         for index in fills {
@@ -315,11 +338,13 @@ impl<A: Accel> Front<A> {
             BottomFieldOrderCnt: p.poc.bottom,
             va_reserved: [0; ffi::VA_PADDING_LOW],
         };
-        for (slot, e) in pic.ReferenceFrames.iter_mut().zip(self.dpb.entries.iter().filter(|e| e.mark != RefMark::Unused)) {
+        for (slot, e) in pic.ReferenceFrames.iter_mut().zip(self.dpb.entries.iter().filter(|e| e.mark != RefMark::Unused && !e.frame.stand_in)) {
             *slot = va_ref(e, surfaces);
         }
         let iq = iq_matrix(&p.pps);
         self.accel.decode_h264(p.target, &pic, &iq, &p.slices).map_err(decode_err)?;
+        let held = std::mem::take(&mut self.held);
+        self.read_out(held, frames)?;
 
         self.poc_state.update(&p.first, &p.poc);
         let mmco5 = p.first.has_mmco5();
@@ -329,12 +354,13 @@ impl<A: Accel> Front<A> {
         // MMCO 5: the picture's order counts become relative to itself (tempPicOrderCnt, 8.2.1)
         let temp = if mmco5 { p.poc.frame() } else { 0 };
         self.seq += 1;
-        let surface = Surface { index: p.target, top: p.poc.top.wrapping_sub(temp), bottom: p.poc.bottom.wrapping_sub(temp), seq: self.seq };
+        let surface = Surface { index: p.target, top: p.poc.top.wrapping_sub(temp), bottom: p.poc.bottom.wrapping_sub(temp), seq: self.seq, stand_in: false };
         let fpoc = if mmco5 { 0 } else { p.poc.frame() };
         let meta = Arc::new(output_meta(&p.sps, p.pts, p.first.idr));
         let mut outs = Vec::new();
         self.dpb.store_picture(&p.first, surface, fpoc, p.sps.max_frame_num(), p.sps.max_num_ref_frames as usize, meta, &mut outs);
-        self.read_out(outs, frames)
+        self.held = outs;
+        Ok(())
     }
 }
 

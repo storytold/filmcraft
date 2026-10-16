@@ -69,6 +69,8 @@ pub struct Front<A: Accel> {
     first_picture: bool,
     skip_rasl: bool,
     after_eos: bool,
+    /// Output pictures read back after the next picture is submitted, so the two overlap.
+    held: Vec<Output<Surface>>,
 }
 
 fn decode_err(e: impl std::fmt::Display) -> CodecError {
@@ -98,6 +100,7 @@ impl<A: Accel> Front<A> {
             first_picture: true,
             skip_rasl: false,
             after_eos: false,
+            held: Vec::new(),
         };
         let mut frames = Vec::new();
         for nal in parameter_sets {
@@ -126,6 +129,8 @@ impl<A: Accel> Front<A> {
     pub fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
         let mut frames = Vec::new();
         self.submit_pending(&mut frames)?;
+        let held = std::mem::take(&mut self.held);
+        self.read_out(held, &mut frames)?;
         let mut outs = Vec::new();
         self.dpb.flush(&mut outs);
         self.read_out(outs, &mut frames)?;
@@ -142,9 +147,10 @@ impl<A: Accel> Front<A> {
         self.first_picture = true;
         self.skip_rasl = false;
         self.after_eos = false;
+        self.held.clear();
     }
 
-    /// Read back the pictures the DPB output, right away: a surface leaving the DPB is reused.
+    /// Read back pictures the DPB output (their surfaces are not decoded into before).
     fn read_out(&mut self, outs: Vec<Output<Surface>>, frames: &mut Vec<DecodedFrame>) -> Result<()> {
         for o in outs {
             let frame = self.accel.read(o.frame.index).map_err(decode_err)?;
@@ -268,9 +274,15 @@ impl<A: Accel> Front<A> {
         } else {
             self.dpb.bump_before_decode(&mut outs);
         }
-        self.read_out(outs, frames)?;
+        self.held.extend(outs);
+        let free =
+            |f: &Self| (0..f.accel.surfaces().len()).find(|&i| !f.held.iter().any(|o| o.frame.index == i) && !f.dpb.entries.iter().any(|e| e.frame.index == i));
+        if free(self).is_none() {
+            let held = std::mem::take(&mut self.held);
+            self.read_out(held, frames)?;
+        }
+        let target = free(self).ok_or_else(|| decode_err("no free surface"))?;
         let surfaces = self.accel.surfaces();
-        let target = (0..surfaces.len()).find(|&i| !self.dpb.entries.iter().any(|e| e.frame.index == i)).ok_or_else(|| decode_err("no free surface"))?;
         let target_id = surfaces.get(target).copied().ok_or_else(|| decode_err("surface out of range"))?;
         let mut pic = picture_params(sps, pps, sh)?;
         pic.CurrPic = VAPictureHEVC { picture_id: target_id, pic_order_cnt: poc, flags: 0, va_reserved: [0; ffi::VA_PADDING_LOW] };
@@ -330,10 +342,13 @@ impl<A: Accel> Front<A> {
         p.pic.pic_fields |= u32::from(!p.any_b) << hevc_pic_bits::NO_BI_PRED;
         let iq = if p.sps.scaling_list_enabled { Some(iq_matrix(p.pps.scaling_list.as_ref().or(p.sps.scaling_list.as_ref()))) } else { None };
         self.accel.decode_hevc(p.target, &p.pic, iq.as_ref(), &p.slices).map_err(decode_err)?;
+        let held = std::mem::take(&mut self.held);
+        self.read_out(held, frames)?;
         self.poc_state.update(&p.first, p.poc);
         let mut outs = Vec::new();
         self.dpb.insert(Surface { index: p.target }, p.poc, p.output, p.meta, &mut outs);
-        self.read_out(outs, frames)
+        self.held = outs;
+        Ok(())
     }
 }
 

@@ -133,8 +133,8 @@ mod linux {
                     let sps = filmcraft_h264::params::Sps::parse(&rbsp).map_err(|e| e.to_string())?;
                     sps.check_supported().map_err(|e| e.to_string())?;
                     let mbs = (sps.pic_width_in_mbs, sps.frame_height_in_mbs());
-                    // the DPB, the picture being decoded, and one spare
-                    let count = sps.max_dpb_frames().saturating_add(2).min(18);
+                    // the DPB, the picture being decoded, the one being read back, and one spare
+                    let count = sps.max_dpb_frames().saturating_add(3).min(18);
                     let session = Session::new(profiles, (sps.width(), sps.height()), count, geometry)?;
                     let vendor = session.vendor().to_string();
                     (Front::H264(Box::new(h264::Front::new(session, info.length_size, mbs, &info.parameter_sets).map_err(|e| e.to_string())?)), "H.264", vendor)
@@ -148,7 +148,7 @@ mod linux {
                     if sps.range_extension {
                         return Err("HEVC range extensions are not taken".into());
                     }
-                    let count = (sps.max_dec_pic_buffering as usize).saturating_add(2).min(18);
+                    let count = (sps.max_dec_pic_buffering as usize).saturating_add(3).min(18);
                     let size = (sps.width, sps.height);
                     let session = Session::new(profiles, size, count, geometry)?;
                     let vendor = session.vendor().to_string();
