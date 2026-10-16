@@ -115,3 +115,24 @@ fn open_demo_project_clears_saved_path_so_save_does_not_overwrite() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// The desktop window title shows the saved file's name, the project's name before the first
+/// save, and reads as Untitled when there is neither (#1059).
+#[test]
+fn window_title_follows_the_project_file() {
+    assert_eq!(window_title(None, "Apollo 11"), "Apollo 11 — FilmCraft");
+    assert_eq!(window_title(Some("holiday cut.fcproj"), "Apollo 11"), "holiday cut — FilmCraft");
+    assert_eq!(window_title(Some("/movies/rooftop.fcproj"), ""), "rooftop — FilmCraft");
+    // a path with no extension still names the window after its file stem
+    assert_eq!(window_title(Some("dir/"), "Apollo 11"), "dir — FilmCraft");
+    // neither a file nor a project name reads as Untitled
+    assert_eq!(window_title(None, ""), "Untitled — FilmCraft");
+    let mut s = Session::default();
+    s.execute("file.newProject", json!({"name": "First Cut"})).unwrap();
+    assert_eq!(s.window_title(), "First Cut — FilmCraft");
+    let d = temp_dir("title");
+    let p = d.join("final.fcproj").to_string_lossy().to_string();
+    s.execute("file.saveAs", json!({"path": p})).unwrap();
+    assert_eq!(s.window_title(), "final — FilmCraft");
+    let _ = std::fs::remove_dir_all(&d);
+}

@@ -346,6 +346,8 @@ pub struct FilmcraftApp {
     fonts_ready: bool,
     pub integrated_titlebar: bool,
     pub last_timeline_width: f32,
+    /// The window title last sent to the OS (only re-sent when it changes, #1059).
+    window_title_sent: String,
     /// The sequence whose view `ui.timeline` holds, and that view as it was last exchanged with
     /// `session.state.timeline_views` (see `sync_timeline_view`).
     timeline_view_of: Option<filmcraft_engine::project::ItemId>,
@@ -580,6 +582,7 @@ impl FilmcraftApp {
             fonts_ready: false,
             integrated_titlebar: false,
             last_timeline_width: 1000.0,
+            window_title_sent: String::new(),
             timeline_view_of: None,
             pending_timeline_drop: None,
             file_drag_hover: None,
@@ -2069,6 +2072,12 @@ impl eframe::App for FilmcraftApp {
             self.playback.hidden = true;
         }
         self.timeline_still = if self.ui.timeline.animating() { 0 } else { self.timeline_still.saturating_add(1) };
+        // The OS window title follows the project (#1059).
+        let title = self.session.window_title();
+        if title != self.window_title_sent {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.window_title_sent = title;
+        }
         // Quitting with unsaved changes asks to save them first.
         if ctx.input(|i| i.viewport().close_requested()) && panels::clip_dialogs::intercept_quit(self) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);

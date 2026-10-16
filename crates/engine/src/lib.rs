@@ -688,6 +688,12 @@ impl Session {
         self.revision != self.saved_revision
     }
 
+    /// The desktop window title (#1059): the saved file's name — FilmCraft once the project has a
+    /// file, the project's name ("Untitled") before the first save.
+    pub fn window_title(&self) -> String {
+        window_title(self.path.as_deref(), &self.project.name)
+    }
+
     /// Run a command by id.
     pub fn execute(&mut self, id: &str, params: Value) -> Result<Value> {
         let spec = commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
@@ -1206,6 +1212,18 @@ pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick
 
 /// Subclips of subclips followed before giving up (real projects nest one or two deep).
 const MAX_SUBCLIP_CHAIN: usize = 16;
+
+/// The desktop window title for a project saved at `path` (`None` until the first save): the file
+/// name — FilmCraft, or the project's name — FilmCraft when there is no path or it has no file
+/// name; a nameless project reads as Untitled (#1059).
+pub fn window_title(path: Option<&str>, project_name: &str) -> String {
+    let name = path
+        .and_then(|p| std::path::Path::new(p).file_stem())
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| project_name.to_string());
+    format!("{} — FilmCraft", if name.is_empty() { "Untitled" } else { name.as_str() })
+}
 
 #[cfg(test)]
 mod aaf_omf_tests;
