@@ -186,10 +186,11 @@ fn split_frames(
         let Some(here) = win.get(pos - base..) else { break };
         match filmcraft_mpegts::frame_bytes(ts, here) {
             Some(n) if pos + n <= total => {
+                let frame = filmcraft_mpegts::frame_info(ts, here);
                 if info.is_none() {
-                    info = filmcraft_mpegts::frame_info(ts, here);
+                    info = frame;
                 }
-                let k = filmcraft_mpegts::frame_info(ts, here).map_or(0, |f| f.samples);
+                let k = frame.map_or(0, |f| f.samples);
                 first.push(pieces.len());
                 let mut p = pos;
                 while p < pos + n {
