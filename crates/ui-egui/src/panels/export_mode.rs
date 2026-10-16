@@ -223,10 +223,10 @@ fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let p = ui.painter();
     p.text(rect.min + vec2(14.0, 20.0), Align2::LEFT_CENTER, tl!("Destinations"), Tokens::semibold(13.0), t.text);
     let cloud_ok = crate::cloud::available(app);
-    let dest = app.ui.export.destination.as_str();
+    let dest_cloud = app.ui.export.destination == "cloud";
     let mf = Rect::from_min_size(rect.min + vec2(8.0, 38.0), vec2(rect.width() - 16.0, 26.0));
     let mf_resp = ui.interact(mf, egui::Id::new("export-dest-media"), Sense::click());
-    p.rect_filled(mf, 4.0, if dest != "cloud" { t.row_selected } else if mf_resp.hovered() { t.hover } else { Color32::TRANSPARENT });
+    p.rect_filled(mf, 4.0, if !dest_cloud { t.row_selected } else if mf_resp.hovered() { t.hover } else { Color32::TRANSPARENT });
     p.text(pos2(mf.min.x + 10.0, mf.center().y), Align2::LEFT_CENTER, tl!("Media File"), Tokens::ui(12.5), t.text);
     reg.add("export.destination.mediaFile", mf, "Media File");
     if mf_resp.clicked() {
@@ -236,13 +236,14 @@ fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if cloud_ok {
         let cf = Rect::from_min_size(pos2(mf.min.x, mf.max.y + 4.0), vec2(mf.width(), 26.0));
         let cf_resp = ui.interact(cf, egui::Id::new("export-dest-cloud"), Sense::click());
-        p.rect_filled(cf, 4.0, if dest == "cloud" { t.row_selected } else if cf_resp.hovered() { t.hover } else { Color32::TRANSPARENT });
+        p.rect_filled(cf, 4.0, if dest_cloud { t.row_selected } else if cf_resp.hovered() { t.hover } else { Color32::TRANSPARENT });
         p.text(pos2(cf.min.x + 10.0, cf.center().y), Align2::LEFT_CENTER, tl!("Cloud storage"), Tokens::ui(12.5), t.text);
         reg.add("export.destination.cloud", cf, "Cloud storage");
         if cf_resp.clicked() {
+            let folder = app.ui.export.cloud_folder.clone();
             app.ui.export.destination = "cloud".into();
             crate::cloud::start(app);
-            crate::cloud::browse(app, &app.ui.export.cloud_folder);
+            crate::cloud::browse(app, &folder);
         }
         qtop = cf.max.y + 18.0;
     }
@@ -670,8 +671,9 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     if pick_folder {
         if app.ui.export.destination == "cloud" && crate::cloud::available(app) {
+            let folder = app.ui.export.cloud_folder.clone();
             crate::cloud::start(app);
-            crate::cloud::browse(app, &app.ui.export.cloud_folder);
+            crate::cloud::browse(app, &folder);
             app.cloud_page = Some(crate::cloud::CloudPage::PickExportFolder);
         } else {
             app.pick_ui(FileDialog::Folder { at: None }, |app, paths| {

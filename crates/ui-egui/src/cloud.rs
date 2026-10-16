@@ -472,7 +472,8 @@ pub fn modal(app: &mut FilmcraftApp, ctx: &egui::Context) {
             CloudPage::PickExportFolder => {
                 start(app);
                 if !app.cloud.mine.loaded && !app.cloud.mine.loading {
-                    browse(app, &app.ui.export.cloud_folder);
+                    let folder = app.ui.export.cloud_folder.clone();
+                    browse(app, &folder);
                 }
                 pick_export_folder(app, ui);
             }
