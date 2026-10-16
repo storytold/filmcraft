@@ -1048,6 +1048,107 @@ fn warp_stabilizer_removes_camera_jitter() {
     assert!(stabilizer_path(&env, 0.0, filmcraft_project::TrackMethod::Position, false).is_some());
 }
 
+/// #1381: the stabilizer's analysis kept the pyramid of every frame of the clip until all steps
+/// were known, so a long clip took tens of gigabytes. It now works through the clip a block at a
+/// time and gives the same steps whatever the block size.
+mod stabilizer_analysis {
+    use super::super::temporal::{ANALYSIS_BLOCK, chunked_steps};
+    use filmcraft_geom::Affine;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A decoded frame that counts how many exist at once.
+    struct Frame<'a> {
+        id: usize,
+        w: usize,
+        live: &'a AtomicUsize,
+        most: &'a AtomicUsize,
+    }
+    impl<'a> Frame<'a> {
+        fn new(id: usize, w: usize, live: &'a AtomicUsize, most: &'a AtomicUsize) -> Self {
+            most.fetch_max(live.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+            Frame { id, w, live, most }
+        }
+    }
+    impl Drop for Frame<'_> {
+        fn drop(&mut self) {
+            self.live.fetch_sub(1, Ordering::SeqCst);
+            let _ = self.most;
+        }
+    }
+
+    /// Steps of an `n`-frame clip where frames in `missing` can't be read and frames from
+    /// `narrow_from` on are narrower. Returns the steps, the size, and the most frames alive at once.
+    fn run(n: usize, block: usize, missing: &[usize], narrow_from: usize) -> (Option<(Vec<Affine>, (usize, usize))>, usize) {
+        let (live, most) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        let r = chunked_steps(
+            n,
+            block,
+            |k| (!missing.contains(&k)).then(|| Frame::new(k, if k >= narrow_from { 30 } else { 40 }, &live, &most)),
+            |f: &Frame| (f.w, 10 + f.w),
+            // a step that tells which two frames it joins
+            |a: &Frame, b: &Frame, d| Affine::translate((a.id * 1000 + b.id) as f64, (d.0 * 7 + d.1) as f64),
+            || false,
+        );
+        assert_eq!(live.load(Ordering::SeqCst), 0, "every frame is dropped");
+        (r, most.load(Ordering::SeqCst))
+    }
+
+    #[test]
+    fn the_steps_do_not_depend_on_the_block_size() {
+        let (reference, _) = run(37, 1000, &[], 1000);
+        let (steps, size) = reference.unwrap();
+        assert_eq!((steps.len(), size), (36, (40, 50)));
+        for block in [1, 2, 3, 5, 8, 36, 37, 38] {
+            let (r, _) = run(37, block, &[], 1000);
+            let (s, d) = r.unwrap();
+            assert_eq!(d, size, "block {block}");
+            assert_eq!(s.len(), steps.len(), "block {block}");
+            assert!(s.iter().zip(&steps).all(|(a, b)| (a.e - b.e).abs() < 1e-12 && (a.f - b.f).abs() < 1e-12), "block {block}");
+        }
+    }
+
+    #[test]
+    fn unreadable_and_resized_frames_give_identity_steps_and_the_first_size_is_used() {
+        // frames 0..=2 can't be read, so the size comes from frame 3; 6 is unreadable too; from
+        // frame 8 on the frames are narrower than their neighbour
+        let missing = [0, 1, 2, 6];
+        for block in [1, 3, 4, 100] {
+            let (r, _) = run(12, block, &missing, 8);
+            let (steps, size) = r.unwrap();
+            assert_eq!(size, (40, 50), "block {block}");
+            assert_eq!(steps.len(), 11);
+            let identity: Vec<bool> = steps.iter().map(|s| s.e == 0.0 && s.f == 0.0).collect();
+            // steps 0..=2 touch an unreadable frame, 3 and 4 are real, 5 and 6 touch frame 6, 7 joins
+            // frames of different widths, 8..=10 are real again
+            assert_eq!(identity, [true, true, true, false, false, true, true, true, false, false, false], "block {block}: {identity:?}");
+            assert_eq!(steps[3].e, 3004.0, "block {block}");
+        }
+    }
+
+    #[test]
+    fn a_clip_with_no_readable_frame_has_no_analysis() {
+        let (r, _) = run(5, 2, &[0, 1, 2, 3, 4], 100);
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn only_a_block_of_frames_is_alive_at_once() {
+        let (r, most) = run(2_000, ANALYSIS_BLOCK, &[], 100_000);
+        assert_eq!(r.unwrap().0.len(), 1_999);
+        assert!(most <= ANALYSIS_BLOCK + 1, "{most} frames alive at once for a block of {ANALYSIS_BLOCK}");
+        // reading every frame first, as the analysis did, would have held all of them
+        let (_, all) = run(300, 300, &[], 100_000);
+        assert!(all > 250, "{all}");
+    }
+
+    #[test]
+    fn cancelling_stops_the_analysis() {
+        let calls = AtomicUsize::new(0);
+        let r = chunked_steps(1_000, 10, Some, |_: &usize| (1, 1), |_: &usize, _: &usize, _| Affine::IDENTITY, || calls.fetch_add(1, Ordering::SeqCst) >= 12);
+        assert!(r.is_none());
+    }
+}
+
 #[test]
 fn auto_reframe_follows_the_subject() {
     fn subject(x: f64, y: f64, _t: f64) -> [f32; 3] {
