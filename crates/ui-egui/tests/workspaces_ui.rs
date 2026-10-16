@@ -172,6 +172,7 @@ fn save_switch_reset_rename_delete_and_restart() {
             "Effects",
             "Learning",
             "Review",
+            "Vertical",
             "Reset to Saved Layout",
             "Save Changes to this Workspace",
             "Save as New Workspace…",
