@@ -91,7 +91,7 @@ impl Attention {
         };
         let mut qk = q.matmul(&k.transpose(2, 3)?.contiguous()?)?;
         if let Some(m) = mask {
-            qk = qk.broadcast_add(m)?;
+            qk = qk.broadcast_add(&m.to_dtype(qk.dtype())?)?;
         }
         let w = candle_nn::ops::softmax_last_dim(&qk)?;
         let o = w.matmul(&v)?.transpose(1, 2)?.contiguous()?;
@@ -257,14 +257,15 @@ pub struct Model {
     pub encoder: Encoder,
     pub decoder: Decoder,
     pub device: Device,
+    pub dtype: DType,
 }
 
 impl Model {
-    pub fn load(cfg: Config, weights: Vec<u8>) -> Result<Self> {
-        let device = Device::Cpu;
-        let vb = VarBuilder::from_buffered_safetensors(weights, DType::F32, &device)?;
+    /// EXPERIMENT (asr-bench): load on any candle device (e.g. Metal) with any float dtype.
+    pub fn load_on(cfg: Config, weights: Vec<u8>, device: Device, dtype: DType) -> Result<Self> {
+        let vb = VarBuilder::from_buffered_safetensors(weights, dtype, &device)?;
         let vb = vb.pp("model");
-        Ok(Self { encoder: Encoder::new(&cfg, vb.pp("encoder"))?, decoder: Decoder::new(&cfg, vb.pp("decoder"))?, cfg, device })
+        Ok(Self { encoder: Encoder::new(&cfg, vb.pp("encoder"))?, decoder: Decoder::new(&cfg, vb.pp("decoder"))?, cfg, device, dtype })
     }
 
     pub fn last_logits(logits: &Tensor) -> Result<Vec<f32>> {
