@@ -36,6 +36,10 @@ use filmcraft_engine::project_panel::ViewMode;
 pub struct KeysState {
     /// The maximized frame (Maximize or Restore Frame); None = the normal layout.
     pub maximized: Option<PanelKind>,
+    /// The maximize state to bring back when leaving full screen (`fullscreen_maximize`).
+    pub saved_maximized: Option<PanelKind>,
+    /// Set while full screen shows the Program monitor maximized for it.
+    pub full_screen: bool,
     /// Track heights before Expand / Minimize All Tracks (pressing again restores them).
     pub saved_heights: Option<[f32; 2]>,
     /// Icon view columns in the last frame (Move Selection Up / Down step).
@@ -44,7 +48,7 @@ pub struct KeysState {
 
 impl Default for KeysState {
     fn default() -> Self {
-        Self { maximized: None, saved_heights: None, icon_columns: 1 }
+        Self { maximized: None, saved_maximized: None, full_screen: false, saved_heights: None, icon_columns: 1 }
     }
 }
 
@@ -154,6 +158,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
         "window.toggleFullScreen" => {
             let fs = !ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(fs));
+            fullscreen_maximize(app, fs);
             Ok(json!({"fullScreen": fs}))
         }
         "window.nextPanel" | "window.prevPanel" => Ok(cycle_panel(app, id == "window.nextPanel")),
@@ -242,6 +247,38 @@ pub(crate) fn toggle_maximize(app: &mut FilmcraftApp, p: PanelKind) -> Value {
         app.ui.focused = p;
     }
     json!({"maximized": app.ui.keys.maximized.map(|p| p.title())})
+}
+
+/// The maximize half of `window.toggleFullScreen`: entering full screen also maximizes the
+/// Program monitor (as in Premiere, so the picture fills the screen, not the whole editor
+/// layout), and leaving it brings back the layout — or the panel — that was there before.
+/// `fs` is the full-screen state the command just switched the window to. Pure over UI state,
+/// so it is testable without a window.
+pub(crate) fn fullscreen_maximize(app: &mut FilmcraftApp, fs: bool) {
+    if fs {
+        if !app.ui.keys.full_screen {
+            app.ui.keys.full_screen = true;
+            app.ui.keys.saved_maximized = app.ui.keys.maximized;
+        }
+        if app.ui.keys.maximized != Some(PanelKind::Program) {
+            app.ui.keys.maximized = Some(PanelKind::Program);
+            let _ = app.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Program });
+            app.ui.focused = PanelKind::Program;
+        }
+    } else if app.ui.keys.full_screen {
+        app.ui.keys.full_screen = false;
+        match app.ui.keys.saved_maximized.take() {
+            // nothing was maximized before full screen: back to the normal layout
+            None => app.ui.keys.maximized = None,
+            // the Program monitor was already maximized: it stays
+            Some(PanelKind::Program) => {}
+            Some(p) => {
+                app.ui.keys.maximized = Some(p);
+                let _ = app.apply_dock(craft_ui::docking::Action::Activate { panel: p });
+                app.ui.focused = p;
+            }
+        }
+    }
 }
 
 /// The visible panel under the pointer (from last frame's automation rects).
@@ -522,6 +559,61 @@ fn text_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
     // the playhead follows the caret
     app.session.set_playhead(words[to].start);
     Ok(json!({"selection": [anchor.min(to), anchor.max(to)], "word": to}))
+}
+
+#[cfg(test)]
+mod full_screen_tests {
+    use super::*;
+
+    fn demo_app() -> FilmcraftApp {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        FilmcraftApp::new(session)
+    }
+
+    #[test]
+    fn full_screen_maximizes_the_program_monitor_and_restores_the_layout() {
+        let mut app = demo_app();
+        assert_eq!(app.ui.keys.maximized, None);
+        fullscreen_maximize(&mut app, true);
+        assert_eq!(app.ui.keys.maximized, Some(PanelKind::Program));
+        assert!(app.ui.keys.full_screen);
+        assert_eq!(app.ui.focused, PanelKind::Program);
+        fullscreen_maximize(&mut app, false);
+        assert_eq!(app.ui.keys.maximized, None);
+        assert!(!app.ui.keys.full_screen);
+    }
+
+    #[test]
+    fn leaving_full_screen_brings_back_the_panel_maximized_before_it() {
+        let mut app = demo_app();
+        toggle_maximize(&mut app, PanelKind::Source);
+        assert_eq!(app.ui.keys.maximized, Some(PanelKind::Source));
+        fullscreen_maximize(&mut app, true);
+        assert_eq!(app.ui.keys.maximized, Some(PanelKind::Program));
+        fullscreen_maximize(&mut app, false);
+        assert_eq!(app.ui.keys.maximized, Some(PanelKind::Source));
+    }
+
+    #[test]
+    fn a_second_enter_while_already_full_screen_keeps_the_original_layout_saved() {
+        let mut app = demo_app();
+        toggle_maximize(&mut app, PanelKind::Timeline);
+        fullscreen_maximize(&mut app, true);
+        // a second enter before the window reports full screen (state lag, double fire)
+        fullscreen_maximize(&mut app, true);
+        assert_eq!(app.ui.keys.maximized, Some(PanelKind::Program));
+        fullscreen_maximize(&mut app, false);
+        assert_eq!(app.ui.keys.maximized, Some(PanelKind::Timeline));
+    }
+
+    #[test]
+    fn leaving_full_screen_when_it_was_never_entered_changes_nothing() {
+        let mut app = demo_app();
+        fullscreen_maximize(&mut app, false);
+        assert_eq!(app.ui.keys.maximized, None);
+        assert!(!app.ui.keys.full_screen);
+    }
 }
 
 #[cfg(test)]
