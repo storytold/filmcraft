@@ -85,3 +85,24 @@ Apple-silicon laptop CPU).
 - Transcription runs synchronously inside the command (no background job or progress bar yet).
 - Track items that refer to a subclip are looked up by the subclip's id, so a transcript made for
   the parent media is not shown through subclip clips yet.
+
+## Search all project sources
+
+Open **Text → Search** and type a phrase. Results include transcribed sources that are not used in
+any sequence, with clip name, source In/Out timecodes and surrounding words. Click a result to open
+its source at the matching passage; searching and opening results do not change project marks or
+undo history. Search uses Unicode lowercase and ignores punctuation at word edges, matching whole
+word phrases. It does not transcribe missing sources automatically; the result summary reports
+transcribed and untranscribed audio-source counts.
+
+`transcript.search {"scope":"project","query":"hello world","limit":100}` returns `matches`
+(`item`, `name`, `from`, `to`, `start`, `end`, `text`, `context`), source counts, `scannedWords` and
+`incomplete`. Times are source ticks; `end` is exclusive. Default scope remains `sequence` for
+existing callers. Project queries accept up to 1024 bytes / 32 words and 1–500 results; work is capped
+at 100,000 project items and one million words. An incomplete result explicitly requests a narrower
+query. `transcript.openSearchResult {"item":id,"from":word,"to":word}` validates the current
+transcript and seeks the Source monitor, snapping its playhead to the source frame rate.
+
+On desktop, typing is debounced and search runs on a cancellable snapshot worker. Project edits,
+undo and project replacement invalidate results; playhead movement does not repeat the search.
+The browser uses the same bounded search synchronously until a browser-worker host is available.
