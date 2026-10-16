@@ -7,6 +7,7 @@
 mod common;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use common::*;
 use filmcraft_codecs::MpegSource;
@@ -34,6 +35,29 @@ fn spec(name: &str) -> Vec<String> {
             &["-t", "1.2", "-c:v", "libx264", "-bf", "2", "-g", "12", "-pix_fmt", "yuv420p", "-c:a", "aac", "-aac_pns", "0", "-b:a", "128k", "-f", "mpegts"],
         ]),
         // AVCHD-style BDAV (192-byte packets): H.264 + Blu-ray LPCM
+        // open GOPs: after the first picture every I picture is a non-IDR one with a recovery point SEI
+        "ts_h264_opengop.ts" => cat(&[
+            &["-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25"],
+            &[
+                "-t",
+                "2.4",
+                "-c:v",
+                "libx264",
+                "-bf",
+                "2",
+                "-pix_fmt",
+                "yuv420p",
+                "-x264-params",
+                "open-gop=1:keyint=12:min-keyint=12:scenecut=0",
+                "-f",
+                "mpegts",
+            ],
+        ]),
+        // gradual refresh: no I pictures, a recovery point SEI starts each refresh wave
+        "ts_h264_intra_refresh.ts" => cat(&[
+            &["-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25"],
+            &["-t", "2.4", "-c:v", "libx264", "-bf", "0", "-pix_fmt", "yuv420p", "-x264-params", "intra-refresh=1:keyint=12:min-keyint=12", "-f", "mpegts"],
+        ]),
         "m2ts_h264_lpcm.m2ts" => cat(&[
             &["-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30000/1001"],
             NOISE,
@@ -161,6 +185,8 @@ fn spec(name: &str) -> Vec<String> {
 pub const ALL: &[&str] = &[
     "ts_mpeg2_mp2.ts",
     "ts_h264_aac.ts",
+    "ts_h264_opengop.ts",
+    "ts_h264_intra_refresh.ts",
     "m2ts_h264_lpcm.m2ts",
     "m2ts_h264_ac3.mts",
     "ts_hevc_latm.ts",
@@ -390,6 +416,67 @@ fn transport_stream_h264_and_aac() {
     check_video(&ff, &f, 0, 10);
     let e = check_audio(&ff, &f, 1e-4);
     println!("ts_h264_aac: AAC max error {e:.2e}");
+}
+
+/// Open-GOP H.264 (non-IDR I pictures with recovery point SEI): every GOP start is a random-access
+/// point, and a stream cut to start at one (no IDR at all) opens and gives the frames of the full
+/// stream's decode from there.
+#[test]
+fn transport_stream_h264_recovery_points() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let f = make(&ff, "ts_h264_opengop.ts");
+    check_video(&ff, &f, 0, 12);
+    let data = bytes(&f);
+    let idx = filmcraft_mpegts::open(&data[..]).unwrap();
+    let vi = idx.streams.iter().position(|s| s.codec == filmcraft_mpegts::Codec::H264).unwrap();
+    let keys: Vec<usize> = (0..idx.streams[vi].units.len()).filter(|&i| idx.streams[vi].units[i].key).collect();
+    assert!(keys.len() >= 4, "{} key units in {} (IDR only: 1)", keys.len(), idx.streams[vi].units.len());
+    // cut at the third random-access point (the packet that starts its PES), keeping the PAT /
+    // PMT / SDT packets in front
+    let head = idx.read_unit(&data[..], vi, keys[2]).unwrap();
+    let hit = data.windows(100).position(|w| w == &head[..100]).unwrap();
+    let at = hit / 188 * 188;
+    assert!(data[at] == 0x47 && data[at + 1] & 0x40 != 0 && at > 3 * 188, "packet at {at}");
+    let cut: Arc<[u8]> = [&data[..3 * 188], &data[at..]].concat().into();
+    let full = open(&f);
+    let cut = MpegSource::open("cut.ts", cut).unwrap();
+    let rate = full.info().frame_rate();
+    let (n, m) = (rate.frame_at(full.info().duration), rate.frame_at(cut.info().duration));
+    assert!(m > 0 && m < n, "{m} of {n} frames");
+    let frame_of = |s: &MpegSource, i: i64| planes(&s.video_frame(FrameRequest::full(rate.tick_of(i))).unwrap());
+    // leading pictures of the cut I picture are not shown; the rest equals the full decode
+    for j in 0..m {
+        assert!(frame_of(&cut, j) == frame_of(&full, n - m + j), "cut frame {j}");
+    }
+    // seeking inside the cut stream
+    let mut rng = Rng(0xC07);
+    let fresh = MpegSource::open("cut.ts", [&data[..3 * 188], &data[at..]].concat().into()).unwrap();
+    for _ in 0..8 {
+        let j = rng.below(m as u64) as i64;
+        assert!(frame_of(&fresh, j) == frame_of(&full, n - m + j), "seek to cut frame {j}");
+    }
+}
+
+/// Gradual decoder refresh (recovery_frame_cnt > 0): its recovery points are not key units, so a
+/// stream cut mid-refresh is refused cleanly.
+#[test]
+fn transport_stream_h264_intra_refresh_cut_is_refused() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let f = make(&ff, "ts_h264_intra_refresh.ts");
+    let data = bytes(&f);
+    let idx = filmcraft_mpegts::open(&data[..]).unwrap();
+    let vi = idx.streams.iter().position(|s| s.codec == filmcraft_mpegts::Codec::H264).unwrap();
+    // recovery points with recovery_frame_cnt > 0 are not random access points: only the IDR is key
+    let n = idx.streams[vi].units.len();
+    let keys: Vec<usize> = (0..n).filter(|&i| idx.streams[vi].units[i].key).collect();
+    assert_eq!(keys, [0], "key units in {n}");
+    let head = idx.read_unit(&data[..], vi, n / 2).unwrap();
+    let hit = data.windows(100).position(|w| w == &head[..100]).unwrap();
+    let at = hit / 188 * 188;
+    assert!(data[at] == 0x47 && data[at + 1] & 0x40 != 0 && at > 3 * 188, "packet at {at}");
+    // a cut inside the refresh wave has no safe start picture: refused, never a panic
+    let cut = MpegSource::open("cut.ts", [&data[..3 * 188], &data[at..]].concat().into());
+    assert!(cut.is_err(), "a stream cut mid-refresh has no random-access picture");
 }
 
 #[test]
