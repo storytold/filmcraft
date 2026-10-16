@@ -102,15 +102,16 @@ fn upper(u: u16) -> u16 {
 /// The sibling order of directory entries (§2.6.4): shorter names first, then a code-unit
 /// comparison of the upper-cased names.
 pub fn compare_names(a: &str, b: &str) -> Ordering {
-    let ua: Vec<u16> = a.encode_utf16().collect();
-    let ub: Vec<u16> = b.encode_utf16().collect();
-    ua.len().cmp(&ub.len()).then_with(|| ua.iter().map(|&u| upper(u)).cmp(ub.iter().map(|&u| upper(u))))
+    // No allocation: the iterators are walked in place (`child` calls this once per sibling).
+    let (la, lb) = (a.encode_utf16().count(), b.encode_utf16().count());
+    la.cmp(&lb).then_with(|| a.encode_utf16().map(upper).cmp(b.encode_utf16().map(upper)))
 }
 
-/// Check a directory entry name (§2.6.1): 1–31 UTF-16 code units, none of `/ \ : !`.
+/// Check a directory entry name (§2.6.1): 1–31 UTF-16 code units, none of `/ \ : !`, and no NUL
+/// (the stored name is NUL-terminated, so a NUL would cut the name short when read back).
 pub fn validate_name(name: &str) -> Result<()> {
     let n = name.encode_utf16().count();
-    if n == 0 || n > MAX_NAME_LEN || name.contains(['/', '\\', ':', '!']) {
+    if n == 0 || n > MAX_NAME_LEN || name.contains(['/', '\\', ':', '!', '\0']) {
         return Err(Error::BadName(name.to_string()));
     }
     Ok(())

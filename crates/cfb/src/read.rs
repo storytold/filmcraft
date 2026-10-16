@@ -1,6 +1,6 @@
 //! Reading compound files ([MS-CFB] §2.2–2.6).
 
-use crate::{ENDOFCHAIN, Error, FREESECT, MAXREGSECT, MINI_SECTOR_SIZE, NOSTREAM, Result, SIGNATURE, compare_names};
+use crate::{ENDOFCHAIN, Error, MAXREGSECT, MINI_SECTOR_SIZE, NOSTREAM, Result, SIGNATURE, compare_names};
 
 /// Directory entry object type (§2.6.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,7 +26,9 @@ pub struct Entry {
     /// First sector (regular or mini) of a stream; the mini stream's for the root.
     pub start: u32,
     pub size: u64,
-    /// Child entries of a storage, in sibling-tree order (sorted by [`compare_names`]).
+    /// Child entries of a storage, in the in-order position of its sibling tree. For a well-formed
+    /// file that is sorted by [`compare_names`]; the reader does not validate the tree's order, so
+    /// a hostile file may give any order (lookups by name do not depend on it).
     pub children: Vec<usize>,
     left: u32,
     right: u32,
@@ -57,6 +59,13 @@ fn u32_at(b: &[u8], at: usize) -> u32 {
 }
 fn u64_at(b: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(b[at..at + 8].try_into().unwrap_or([0; 8]))
+}
+
+/// Byte range `[start, end)` of unit `index + skip` of `unit` bytes each, or `None` when the
+/// arithmetic overflows `usize` (reachable on 32-bit targets such as wasm32).
+pub(crate) fn span(index: usize, skip: usize, unit: usize) -> Option<(usize, usize)> {
+    let start = index.checked_add(skip)?.checked_mul(unit)?;
+    Some((start, start.checked_add(unit)?))
 }
 
 fn invalid(s: impl Into<String>) -> Error {
@@ -157,23 +166,25 @@ impl<'a> CompoundFile<'a> {
 
     /// Sector `n` (a whole sector; a truncated last sector is an error).
     fn sector(&self, n: u32) -> Result<&'a [u8]> {
-        let start = (n as usize + 1).checked_mul(self.sector_size).ok_or_else(|| invalid("sector number overflow"))?;
-        let end = start.checked_add(self.sector_size).ok_or_else(|| invalid("sector number overflow"))?;
-        if n > MAXREGSECT || end > self.data.len() {
+        if n > MAXREGSECT {
             return Err(invalid(format!("sector {n} is outside the file")));
         }
-        Ok(&self.data[start..end])
+        // sector 0 follows the header sector
+        let (start, end) = usize::try_from(n).ok().and_then(|i| span(i, 1, self.sector_size)).ok_or_else(|| invalid("sector number overflow"))?;
+        self.data.get(start..end).ok_or_else(|| invalid(format!("sector {n} is outside the file")))
     }
 
     /// Concatenate a regular sector chain; `limit` stops once that many bytes are read.
     fn read_chain(&self, start: u32, limit: Option<usize>) -> Result<Vec<u8>> {
-        let mut out = Vec::new();
+        // `limit` is at most the file length (callers check), and an unlimited chain holds at most
+        // `max_steps` sectors, so this capacity is bounded by the file's own size.
+        let max_steps = self.data.len() / self.sector_size + 1;
+        let mut out = Vec::with_capacity(limit.unwrap_or(0).min(self.data.len()));
         let mut s = start;
         let mut steps = 0usize;
         // A chain cannot visit more sectors than the file holds. Not `self.fat.len()`: the FAT can
         // be far longer (one FAT sector named by many header / DIFAT slots), and a looping chain
         // would then append a whole sector per FAT entry (hundreds of MB, or an abort).
-        let max_steps = self.data.len() / self.sector_size + 1;
         while s != ENDOFCHAIN {
             if s > MAXREGSECT {
                 return Err(invalid(format!("bad sector {s:#x} in a chain")));
@@ -187,10 +198,8 @@ impl<'a> CompoundFile<'a> {
             if limit.is_some_and(|l| out.len() >= l) {
                 break;
             }
+            // a free entry (`FREESECT`) is above `MAXREGSECT` and is rejected at the top of the loop
             s = *self.fat.get(s as usize).ok_or_else(|| invalid(format!("sector {s} has no FAT entry")))?;
-            if s == FREESECT {
-                return Err(invalid("chain runs into a free sector"));
-            }
         }
         if let Some(l) = limit {
             if out.len() < l {
@@ -213,8 +222,11 @@ impl<'a> CompoundFile<'a> {
             if steps > self.minifat.len().max(1) {
                 return Err(invalid("mini sector chain loops"));
             }
-            let at = s as usize * MINI_SECTOR_SIZE;
-            let b = self.mini_stream.get(at..at + MINI_SECTOR_SIZE).ok_or_else(|| invalid("mini sector outside the mini stream"))?;
+            let b = usize::try_from(s)
+                .ok()
+                .and_then(|i| span(i, 0, MINI_SECTOR_SIZE))
+                .and_then(|(start, end)| self.mini_stream.get(start..end))
+                .ok_or_else(|| invalid("mini sector outside the mini stream"))?;
             out.extend_from_slice(b);
             s = *self.minifat.get(s as usize).ok_or_else(|| invalid("mini sector has no mini FAT entry"))?;
         }
@@ -234,7 +246,7 @@ impl<'a> CompoundFile<'a> {
             // in-order walk of the sibling tree, iterative, cycle-safe
             let mut stack: Vec<u32> = Vec::new();
             let mut cur = self.entries[parent].child;
-            let mut steps = 0;
+            // terminates without a step counter: every push claims an unclaimed entry in `owner`
             while cur != NOSTREAM || !stack.is_empty() {
                 while cur != NOSTREAM {
                     let i = cur as usize;
@@ -244,10 +256,6 @@ impl<'a> CompoundFile<'a> {
                     owner[i] = true;
                     stack.push(cur);
                     cur = self.entries[i].left;
-                    steps += 1;
-                    if steps > n {
-                        return Err(invalid("directory tree loops"));
-                    }
                 }
                 if let Some(top) = stack.pop() {
                     kids.push(top as usize);

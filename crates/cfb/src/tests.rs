@@ -291,3 +291,92 @@ fn chains_filling_the_file_still_read() {
         assert_eq!(CompoundFile::open(&b).unwrap().read_path("big").unwrap(), data);
     }
 }
+
+#[test]
+fn nul_in_a_name_is_rejected() {
+    assert!(validate_name("a\0b").is_err());
+    assert!(validate_name("\0").is_err());
+    let mut w = Writer::default();
+    assert!(matches!(w.stream(Writer::ROOT, "a\0b", vec![1]), Err(Error::BadName(_))));
+    assert!(matches!(w.storage(Writer::ROOT, "x\0", [0; 16]), Err(Error::BadName(_))));
+}
+
+#[test]
+fn span_is_checked() {
+    use crate::read::span;
+    assert_eq!(span(0, 1, 512), Some((512, 1024)));
+    assert_eq!(span(3, 0, 64), Some((192, 256)));
+    // On a 32-bit `usize` these are the overflows of `sector` and `read_mini_chain`; the checked
+    // arithmetic is the same code on 64-bit, so usize::MAX exercises it here. (A real 32-bit
+    // target is not run.)
+    assert_eq!(span(usize::MAX, 1, 512), None);
+    assert_eq!(span(usize::MAX, 0, 64), None);
+    assert_eq!(span(usize::MAX / 64, 0, 64), None, "start fits, end does not");
+    assert_eq!(span(usize::MAX - 1, 1, 1), None);
+}
+
+/// The allocating comparison compare_names used before the iterator rewrite.
+fn compare_names_old(a: &str, b: &str) -> std::cmp::Ordering {
+    let ua: Vec<u16> = a.encode_utf16().collect();
+    let ub: Vec<u16> = b.encode_utf16().collect();
+    ua.len().cmp(&ub.len()).then_with(|| ua.iter().map(|&u| upper(u)).cmp(ub.iter().map(|&u| upper(u))))
+}
+
+#[test]
+fn compare_names_matches_the_allocating_version() {
+    let names = [
+        "",
+        "a",
+        "A",
+        "b",
+        "B",
+        "ab",
+        "AB",
+        "aB",
+        "abc",
+        "ABD",
+        "Abc",
+        "aBC",
+        "z",
+        "Z",
+        "{",
+        "_",
+        "ß",
+        "SS",
+        "ss",
+        "ü",
+        "Ü",
+        "é",
+        "É",
+        "ǆ",
+        "ǅ",
+        "Ǆ",
+        "ストリーム",
+        "ｓｔ",
+        "Ｓｔ",
+        "😀",
+        "😁",
+        "a😀",
+        "A😀",
+        "\u{ffff}",
+        "\u{10000}",
+        "Header-2",
+        "HEADER-2",
+        "header-2",
+        "Mobs-1901{a}",
+        "mobs-1901{A}",
+    ];
+    for a in names {
+        for b in names {
+            assert_eq!(compare_names(a, b), compare_names_old(a, b), "{a:?} vs {b:?}");
+        }
+    }
+    // every BMP scalar against a few fixed names
+    for c in (0u32..=0x10FFFF).filter_map(char::from_u32) {
+        let s = c.to_string();
+        for other in ["a", "Z", "ü", "ǆ"] {
+            assert_eq!(compare_names(&s, other), compare_names_old(&s, other));
+            assert_eq!(compare_names(other, &s), compare_names_old(other, &s));
+        }
+    }
+}
