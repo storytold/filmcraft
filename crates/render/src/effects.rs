@@ -737,65 +737,154 @@ fn boxes_for_gauss(sigma: f32, n: usize) -> Vec<usize> {
     (0..n as i32).map(|i| (((if i < m { wl } else { wu }) - 1) / 2).max(0) as usize).collect()
 }
 
-fn box_rows(px: &mut [f32], w: usize, r: usize, repeat: bool) {
-    if r == 0 {
+/// One box pass of radius `r` along a line of steps of `s` floats each: one RGBA pixel for a row
+/// pass, a strip of pixels side by side for a column pass, every float blurred on its own. `src` is
+/// the line before the pass and `out` yields each step's output. Past the ends of the line is the
+/// edge pixel (`repeat`) or transparent black. Row and column passes run this same arithmetic, so a
+/// column pass gives the same bits as a row pass over the transposed picture.
+fn box_line<'a>(src: &[f32], out: impl Iterator<Item = &'a mut [f32]>, s: usize, r: usize, repeat: bool, acc: &mut Vec<f32>) {
+    let n = src.len().checked_div(s).unwrap_or(0);
+    if n == 0 {
+        return;
+    }
+    let inv = 1.0 / (2 * r + 1) as f32;
+    let step = |i: isize| -> Option<&[f32]> {
+        let i = if repeat {
+            i.clamp(0, n as isize - 1) as usize
+        } else if i >= 0 && (i as usize) < n {
+            i as usize
+        } else {
+            return None;
+        };
+        src.get(i * s..(i + 1) * s)
+    };
+    acc.clear();
+    acc.resize(s, 0.0);
+    for i in -(r as isize)..=(r as isize) {
+        if let Some(p) = step(i) {
+            for (a, v) in acc.iter_mut().zip(p) {
+                *a += v;
+            }
+        }
+    }
+    for (x, o) in out.enumerate() {
+        for (o, a) in o.iter_mut().zip(acc.iter()) {
+            *o = a * inv;
+        }
+        if let Some(p) = step(x as isize - r as isize) {
+            for (a, v) in acc.iter_mut().zip(p) {
+                *a -= v;
+            }
+        }
+        if let Some(p) = step(x as isize + r as isize + 1) {
+            for (a, v) in acc.iter_mut().zip(p) {
+                *a += v;
+            }
+        }
+    }
+}
+
+/// The radii that blur (a radius of 0 leaves the picture as it is).
+fn active_radii(radii: &[u32]) -> Vec<usize> {
+    radii.iter().filter(|&&r| r > 0).map(|&r| r as usize).collect()
+}
+
+/// Box passes of `radii` (in order) along the line `from`, written to `row`; `a` and `b` are
+/// scratch lines. `from` may be a copy of `row` (in-place blur) or another picture's row.
+fn box_passes(from: &[f32], row: &mut [f32], radii: &[usize], repeat: bool, a: &mut Vec<f32>, b: &mut Vec<f32>, acc: &mut Vec<f32>) {
+    let Some((&last, rest)) = radii.split_last() else {
+        row.copy_from_slice(from);
+        return;
+    };
+    let mut src: &[f32] = from;
+    for &r in rest {
+        b.clear();
+        b.resize(from.len(), 0.0);
+        box_line(src, b.as_chunks_mut::<4>().0.iter_mut().map(|p| p.as_mut_slice()), 4, r, repeat, acc);
+        std::mem::swap(a, b);
+        src = a;
+    }
+    box_line(src, row.as_chunks_mut::<4>().0.iter_mut().map(|p| p.as_mut_slice()), 4, last, repeat, acc);
+}
+
+/// Box passes of `radii` (in order) along every row, all of a row's passes while it is in cache.
+fn box_rows(px: &mut [f32], w: usize, radii: &[u32], repeat: bool) {
+    let radii = active_radii(radii);
+    if w == 0 || radii.is_empty() {
         return;
     }
     px.par_chunks_mut(w * 4).for_each_init(
-        || vec![0f32; w * 4],
-        |tmp, row| {
-            tmp.copy_from_slice(row);
-            let inv = 1.0 / (2 * r + 1) as f32;
-            let fetch = |i: isize| -> usize { if repeat { i.clamp(0, w as isize - 1) as usize } else { i as usize } };
-            let mut acc = [0f32; 4];
-            for i in -(r as isize)..=(r as isize) {
-                if repeat || (i >= 0 && (i as usize) < w) {
-                    let j = fetch(i);
-                    for k in 0..4 {
-                        acc[k] += tmp[j * 4 + k];
-                    }
-                }
-            }
-            for x in 0..w {
-                for k in 0..4 {
-                    row[x * 4 + k] = acc[k] * inv;
-                }
-                let out_i = x as isize - r as isize;
-                let in_i = x as isize + r as isize + 1;
-                if repeat || out_i >= 0 {
-                    let j = fetch(out_i);
-                    for k in 0..4 {
-                        acc[k] -= tmp[j * 4 + k];
-                    }
-                }
-                if repeat || (in_i as usize) < w {
-                    let j = fetch(in_i);
-                    for k in 0..4 {
-                        acc[k] += tmp[j * 4 + k];
-                    }
-                }
-            }
+        || (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+        |(from, a, b, acc), row| {
+            from.clear();
+            from.extend_from_slice(row);
+            box_passes(from, row, &radii, repeat, a, b, acc);
         },
     );
 }
 
-fn transpose(img: &Image) -> Image {
-    let (w, h) = (img.w, img.h);
-    let mut out = Image::new(h, w);
-    const B: usize = 32;
-    out.px.par_chunks_mut(h * 4 * B).enumerate().for_each(|(bi, chunk)| {
-        let x0 = bi * B;
-        let rows = chunk.len() / (h * 4);
-        for y in 0..h {
-            for dx in 0..rows {
-                let x = x0 + dx;
-                let s = (y * w + x) * 4;
-                let d = (dx * h + y) * 4;
-                chunk[d..d + 4].copy_from_slice(&img.px[s..s + 4]);
-            }
+/// [`box_rows`] reading the rows of `src` and writing `dst` (the same size), without copying `src`
+/// first.
+fn box_rows_from(src: &[f32], dst: &mut [f32], w: usize, radii: &[u32], repeat: bool) {
+    let radii = active_radii(radii);
+    if w == 0 || src.len() != dst.len() {
+        return;
+    }
+    dst.par_chunks_mut(w * 4)
+        .zip(src.par_chunks(w * 4))
+        .for_each_init(|| (Vec::new(), Vec::new(), Vec::new()), |(a, b, acc), (row, from)| box_passes(from, row, &radii, repeat, a, b, acc));
+}
+
+/// Box passes of `radii` (in order) down every column, without transposing the picture (two
+/// strided copies of every pixel, which cost more than the passes at small radii). The columns are
+/// cut into strips that fit in cache: a strip is gathered once, its passes run on it, and the last
+/// pass writes straight back into the picture's rows. The rows are split into disjoint slices per
+/// band of strips, so the bands run in parallel. Same bits as the transposed pass.
+fn box_cols(px: &mut [f32], w: usize, h: usize, radii: &[u32], repeat: bool) {
+    let radii = active_radii(radii);
+    if w == 0 || h == 0 || px.len() != w * h * 4 || radii.is_empty() {
+        return;
+    }
+    // about 256 KiB of floats per strip buffer
+    let lanes = (16_384 / h).clamp(4, 64).min(w);
+    // about 64 bands of whole strips, so the per-row slices stay few
+    let band_w = w.div_ceil(lanes).div_ceil(64) * lanes;
+    let mut bands: Vec<Vec<&mut [f32]>> = (0..w.div_ceil(band_w)).map(|_| Vec::with_capacity(h)).collect();
+    for row in px.chunks_exact_mut(w * 4) {
+        let mut rest = row;
+        for band in bands.iter_mut() {
+            let (seg, tail) = rest.split_at_mut((band_w * 4).min(rest.len()));
+            band.push(seg);
+            rest = tail;
         }
-    });
-    out
+    }
+    bands.into_par_iter().for_each_init(
+        || (Vec::new(), Vec::new(), Vec::new()),
+        |(a, b, acc), mut band| {
+            let bw = band.first().map_or(0, |seg| seg.len() / 4);
+            let mut x0 = 0;
+            while x0 < bw {
+                let s = lanes.min(bw - x0) * 4;
+                let cols = x0 * 4..x0 * 4 + s;
+                a.clear();
+                for seg in band.iter() {
+                    if let Some(p) = seg.get(cols.clone()) {
+                        a.extend_from_slice(p);
+                    }
+                }
+                if let Some((&last, rest)) = radii.split_last() {
+                    for &r in rest {
+                        b.clear();
+                        b.resize(a.len(), 0.0);
+                        box_line(a, b.chunks_exact_mut(s), s, r, repeat, acc);
+                        std::mem::swap(a, b);
+                    }
+                    box_line(a, band.iter_mut().filter_map(|seg| seg.get_mut(cols.clone())), s, last, repeat, acc);
+                }
+                x0 += s / 4;
+            }
+        },
+    );
 }
 
 /// Gaussian blur via 3 box passes per axis (O(1) per pixel for any radius).
@@ -815,16 +904,8 @@ pub(crate) fn gaussian_boxes(w: usize, h: usize, sigma_x: f32, sigma_y: f32) -> 
 
 /// Box passes of radii `rx` along rows, then `ry` along columns.
 pub(crate) fn box_blur(img: &mut Image, rx: &[u32], ry: &[u32], repeat_edge: bool) {
-    for r in rx {
-        box_rows(&mut img.px, img.w, *r as usize, repeat_edge);
-    }
-    if !ry.is_empty() {
-        let mut t = transpose(img);
-        for r in ry {
-            box_rows(&mut t.px, t.w, *r as usize, repeat_edge);
-        }
-        *img = transpose(&t);
-    }
+    box_rows(&mut img.px, img.w, rx, repeat_edge);
+    box_cols(&mut img.px, img.w, img.h, ry, repeat_edge);
 }
 
 pub(crate) fn unsharp(img: &mut Image, radius: f32, amount: f32, threshold: f32) {
@@ -834,8 +915,10 @@ pub(crate) fn unsharp(img: &mut Image, radius: f32, amount: f32, threshold: f32)
 
 /// Unsharp mask against a repeat-edge box-Gaussian of radii `rx` / `ry`.
 pub(crate) fn unsharp_boxes(img: &mut Image, rx: &[u32], ry: &[u32], amount: f32, threshold: f32) {
-    let mut blurred = img.clone();
-    box_blur(&mut blurred, rx, ry, true);
+    // the first row pass reads `img` itself: no copy of the picture to blur
+    let mut blurred = Image::new(img.w, img.h);
+    box_rows_from(&img.px, &mut blurred.px, img.w, rx, true);
+    box_cols(&mut blurred.px, blurred.w, blurred.h, ry, true);
     img.px.par_chunks_mut(4).zip(blurred.px.par_chunks(4)).for_each(|(p, bq)| {
         for k in 0..3 {
             let d = p[k] - bq[k];
@@ -1611,5 +1694,183 @@ mod lumetri_cpu_parity_tests {
 
         let oval = render(-100.0);
         assert!(red(&oval, 79, 20) > red(&ellipse, 79, 20), "negative values widen the oval");
+    }
+}
+
+#[cfg(test)]
+mod box_blur_tests {
+    use super::*;
+
+    /// The blur as it was before the strip-wise column pass: each radius a separate sweep of the
+    /// rows, the columns done as rows of a transposed copy. The oracle for bit-identity.
+    fn box_rows_transposed(px: &mut [f32], w: usize, r: usize, repeat: bool) {
+        if r == 0 {
+            return;
+        }
+        px.par_chunks_mut(w * 4).for_each_init(
+            || vec![0f32; w * 4],
+            |tmp, row| {
+                tmp.copy_from_slice(row);
+                let inv = 1.0 / (2 * r + 1) as f32;
+                let fetch = |i: isize| -> usize { if repeat { i.clamp(0, w as isize - 1) as usize } else { i as usize } };
+                let mut acc = [0f32; 4];
+                for i in -(r as isize)..=(r as isize) {
+                    if repeat || (i >= 0 && (i as usize) < w) {
+                        let j = fetch(i);
+                        for k in 0..4 {
+                            acc[k] += tmp[j * 4 + k];
+                        }
+                    }
+                }
+                for x in 0..w {
+                    for k in 0..4 {
+                        row[x * 4 + k] = acc[k] * inv;
+                    }
+                    let out_i = x as isize - r as isize;
+                    let in_i = x as isize + r as isize + 1;
+                    if repeat || out_i >= 0 {
+                        let j = fetch(out_i);
+                        for k in 0..4 {
+                            acc[k] -= tmp[j * 4 + k];
+                        }
+                    }
+                    if repeat || (in_i as usize) < w {
+                        let j = fetch(in_i);
+                        for k in 0..4 {
+                            acc[k] += tmp[j * 4 + k];
+                        }
+                    }
+                }
+            },
+        );
+    }
+
+    fn transposed(img: &Image) -> Image {
+        let mut out = Image::new(img.h, img.w);
+        for y in 0..img.h {
+            for x in 0..img.w {
+                let (s, d) = ((y * img.w + x) * 4, (x * img.h + y) * 4);
+                out.px[d..d + 4].copy_from_slice(&img.px[s..s + 4]);
+            }
+        }
+        out
+    }
+
+    fn box_blur_transposed(img: &mut Image, rx: &[u32], ry: &[u32], repeat_edge: bool) {
+        for r in rx {
+            box_rows_transposed(&mut img.px, img.w, *r as usize, repeat_edge);
+        }
+        if !ry.is_empty() {
+            let mut t = transposed(img);
+            for r in ry {
+                box_rows_transposed(&mut t.px, t.w, *r as usize, repeat_edge);
+            }
+            *img = transposed(&t);
+        }
+    }
+
+    /// `unsharp_boxes` as it was: a copy of the picture, blurred by the transposed pass.
+    fn unsharp_transposed(img: &mut Image, rx: &[u32], ry: &[u32], amount: f32, threshold: f32) {
+        let mut blurred = img.clone();
+        box_blur_transposed(&mut blurred, rx, ry, true);
+        img.px.par_chunks_mut(4).zip(blurred.px.par_chunks(4)).for_each(|(p, bq)| {
+            for k in 0..3 {
+                let d = p[k] - bq[k];
+                if d.abs() >= threshold * p[3] {
+                    p[k] = (p[k] + d * amount).clamp(0.0, p[3].max(p[k] + d * amount).max(0.0));
+                    p[k] = p[k].max(0.0);
+                }
+            }
+        });
+    }
+
+    /// Premultiplied-looking pixels with HDR values, negatives and exact zeros, from a fixed seed.
+    fn noise(w: usize, h: usize, seed: u64) -> Image {
+        let mut s = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut img = Image::new(w, h);
+        for (i, v) in img.px.iter_mut().enumerate() {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            *v = if i % 11 == 0 { 0.0 } else { (s >> 40) as f32 / (1u64 << 24) as f32 * 4.5 - 0.5 };
+        }
+        img
+    }
+
+    fn bits(img: &Image) -> Vec<u32> {
+        img.px.iter().map(|v| v.to_bits()).collect()
+    }
+
+    #[test]
+    fn strip_column_pass_gives_the_same_bits_as_the_transposed_pass() {
+        let sizes = [(1, 1), (1, 9), (9, 1), (2, 3), (7, 5), (33, 17), (130, 70), (65, 300), (300, 65)];
+        let radii: [&[u32]; 7] = [&[], &[0], &[1], &[0, 0, 1], &[3, 4, 4], &[12, 13, 13], &[40]];
+        let mut cases = 0;
+        for (n, &(w, h)) in sizes.iter().enumerate() {
+            for rx in radii {
+                for ry in radii {
+                    for repeat in [true, false] {
+                        let src = noise(w, h, n as u64 + 1);
+                        let (mut a, mut b) = (src.clone(), src);
+                        box_blur(&mut a, rx, ry, repeat);
+                        box_blur_transposed(&mut b, rx, ry, repeat);
+                        assert_eq!((a.w, a.h), (b.w, b.h));
+                        assert!(bits(&a) == bits(&b), "{w}x{h} rx {rx:?} ry {ry:?} repeat {repeat}");
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 9 * 7 * 7 * 2);
+    }
+
+    #[test]
+    fn gaussian_and_unsharp_keep_their_bits() {
+        for (w, h, sigma) in [(64, 48, 0.6), (96, 54, 2.5), (40, 90, 9.0)] {
+            let src = noise(w, h, 7);
+            let (rx, ry) = gaussian_boxes(w, h, sigma, sigma);
+            let (mut a, mut b) = (src.clone(), src.clone());
+            gaussian(&mut a, sigma, sigma, true);
+            box_blur_transposed(&mut b, &rx, &ry, true);
+            assert!(bits(&a) == bits(&b), "gaussian {w}x{h} sigma {sigma}");
+            for threshold in [0.0, 0.02] {
+                let (mut a, mut b) = (src.clone(), src.clone());
+                unsharp_boxes(&mut a, &rx, &ry, 0.4, threshold);
+                unsharp_transposed(&mut b, &rx, &ry, 0.4, threshold);
+                assert!(bits(&a) == bits(&b), "unsharp {w}x{h} sigma {sigma} threshold {threshold}");
+            }
+        }
+    }
+
+    /// `cargo test --release -p filmcraft-render --lib perf_box_blur -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn perf_box_blur_1080p_and_2160p() {
+        for (w, h) in [(1920, 1080), (3840, 2160)] {
+            // Lumetri Sharpen at ½ and full render scale, then a 10 px and a 40 px Gaussian Blur
+            for sigma in [0.6f32, 1.2, 10.0, 40.0] {
+                let (rx, ry) = gaussian_boxes(w, h, sigma, sigma);
+                let src = noise(w, h, 3);
+                let time = |f: &dyn Fn(&mut Image)| {
+                    let mut best = f64::MAX;
+                    for _ in 0..7 {
+                        let mut img = src.clone();
+                        let t = std::time::Instant::now();
+                        f(&mut img);
+                        best = best.min(t.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    best
+                };
+                let before = time(&|img| box_blur_transposed(img, &rx, &ry, true));
+                let after = time(&|img| box_blur(img, &rx, &ry, true));
+                let us_before = time(&|img| unsharp_transposed(img, &rx, &ry, 0.08, 0.0));
+                let us_after = time(&|img| unsharp_boxes(img, &rx, &ry, 0.08, 0.0));
+                println!(
+                    "{w}x{h} sigma {sigma:>4}: box blur {before:6.1} -> {after:6.1} ms ({:.2}x); unsharp mask {us_before:6.1} -> {us_after:6.1} ms ({:.2}x)",
+                    before / after,
+                    us_before / us_after
+                );
+            }
+        }
     }
 }
