@@ -851,3 +851,26 @@ fn builtin_label_presets_are_complete_and_distinct() {
     }
     assert!(!settings::is_builtin_label_preset("Team"));
 }
+/// Settings ▸ Appearance ▸ "System title bar": off by default, a Boolean registry field that
+/// round-trips through `prefs.set` / `prefs.get` and the preferences file.
+#[test]
+fn system_title_bar_defaults_off_and_round_trips() {
+    assert!(!settings::AppearancePrefs::default().system_title_bar);
+    assert!(!Preferences::default().appearance.system_title_bar);
+    let (cat, f) = settings::fields().into_iter().find(|(_, f)| f.key == "appearance.systemTitleBar").expect("registry field");
+    assert_eq!(cat, "appearance");
+    assert!(matches!(f.kind, Kind::Bool));
+    let dir = tmp_dir("system-title-bar");
+    let path = dir.join("preferences.json");
+    let mut s = Session { prefs_path: Some(path.clone()), ..Session::default() };
+    set(&mut s, "appearance.systemTitleBar", json!(true));
+    assert!(s.prefs.appearance.system_title_bar);
+    assert_eq!(s.execute("prefs.get", json!({"key": "appearance.systemTitleBar"})).unwrap(), json!(true));
+    assert!(Preferences::load(&path).appearance.system_title_bar);
+    assert!(s.execute("prefs.set", json!({"key": "appearance.systemTitleBar", "value": "yes"})).is_err());
+    assert!(s.prefs.appearance.system_title_bar);
+    // files written before the key existed load it as off
+    let old = Preferences::from_value(json!({"version": 2, "appearance": {"uiScale": "100"}}));
+    assert!(!old.appearance.system_title_bar);
+    let _ = std::fs::remove_dir_all(&dir);
+}

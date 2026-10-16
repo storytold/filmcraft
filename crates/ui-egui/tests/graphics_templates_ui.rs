@@ -75,6 +75,39 @@ impl Driver {
         let v = self.ok("ui.elements", json!({"prefix": prefix}));
         v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
     }
+    fn rect(&mut self, id: &str) -> [f64; 4] {
+        let v = self.ok("ui.elements", json!({"prefix": id}));
+        let e = v.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("no element {id}: {v}")).clone();
+        let r: Vec<f64> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+        [r[0], r[1], r[2], r[3]]
+    }
+    /// Wheel `id` clear of `panel_id`'s edges before pressing it: a press on a half-clipped
+    /// row hits the scrollbar instead and never reaches the widget. Negative wheel reveals
+    /// content below, positive content above; then wait for motion to stop.
+    fn reveal(&mut self, id: &str, panel_id: &str) {
+        let panel = self.rect(panel_id);
+        let (wx, wy) = (panel[0] + panel[2] / 2.0, panel[1] + panel[3] / 2.0);
+        let lo = panel[1] + 40.0;
+        let hi = panel[1] + panel[3] - 60.0;
+        for _ in 0..6 {
+            let r = self.rect(id);
+            let c = r[1] + r[3] / 2.0;
+            if r[3] >= 18.0 && c > lo && c < hi {
+                break;
+            }
+            let dy = if c >= hi { -150.0 } else { 150.0 };
+            self.ok("ui.scroll", json!({"x": wx, "y": wy, "dy": dy}));
+            self.frames(2);
+        }
+        for _ in 0..10 {
+            let a = self.rect(id);
+            self.frames(4);
+            let b = self.rect(id);
+            if a == b {
+                break;
+            }
+        }
+    }
     fn clips_named(&mut self, name: &str) -> Vec<u64> {
         let q = self.exec("sequence.inspect", json!({}));
         let mut out = Vec::new();
@@ -196,6 +229,8 @@ fn type_tool_selection_styles_characters() {
     // a Type-tool selection of "World" (bytes 6..11)
     d.ok("ui.set", json!({"tool": "Type", "gfxEdit": {"clip": clip, "layer": 0, "caret": 11, "anchor": 6}}));
     d.frames(3);
+    // the button can sit below the fold when the panel is short: wheel it into view first
+    d.reveal("graphics.prop.faux_bold", "panel.EssentialGraphics");
     d.ok("ui.click", json!({"id": "graphics.prop.faux_bold"}));
     d.frames(2);
     let l = d.exec("graphics.list", json!({"clip": clip}));

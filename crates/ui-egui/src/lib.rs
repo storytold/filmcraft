@@ -58,6 +58,7 @@ pub mod source_playback;
 pub mod state;
 pub mod theme;
 mod theme_favorites;
+pub mod titlebar;
 pub mod widgets;
 
 use std::collections::HashMap;
@@ -345,6 +346,12 @@ pub struct FilmcraftApp {
     pub quit_confirmed: bool,
     fonts_ready: bool,
     pub integrated_titlebar: bool,
+    /// Windows/Linux draw their own title bar (caption buttons, edge resizing) unless
+    /// Settings ▸ Appearance ▸ System Title Bar asks for the system's. Set before the window
+    /// opens in `main` from the saved preferences; macOS always keeps its decorations.
+    pub custom_titlebar: bool,
+    /// Last OS window title sent (`sync_window_title` only sends on change).
+    last_window_title: String,
     pub last_timeline_width: f32,
     /// The sequence whose view `ui.timeline` holds, and that view as it was last exchanged with
     /// `session.state.timeline_views` (see `sync_timeline_view`).
@@ -579,6 +586,8 @@ impl FilmcraftApp {
             quit_confirmed: false,
             fonts_ready: false,
             integrated_titlebar: false,
+            custom_titlebar: true,
+            last_window_title: String::new(),
             last_timeline_width: 1000.0,
             timeline_view_of: None,
             pending_timeline_drop: None,
@@ -1777,10 +1786,16 @@ impl FilmcraftApp {
         let t = self.tokens;
         let full = ui.max_rect();
         ui.painter().rect_filled(full, 0.0, t.app_bg);
-        let header_h = if self.ui.show_header { 38.0 } else { 0.0 };
+        crate::titlebar::sync_window_title(self, &ctx);
+        // macOS keeps the classic single bar under its traffic lights; elsewhere the
+        // title bar sits above the mode bar.
+        let header_h = if self.ui.show_header { if self.integrated_titlebar { header::MODE_H } else { header::TITLE_H + header::MODE_H } } else { 0.0 };
         let header = egui::Rect::from_min_size(full.min, egui::vec2(full.width(), header_h));
         if self.ui.show_header {
             header::show(self, ui, header);
+        }
+        if self.custom_titlebar {
+            crate::titlebar::resize_zones(ui);
         }
         let status_h = if self.ui.show_status_bar { 20.0 } else { 0.0 };
         let body = egui::Rect::from_min_max(egui::pos2(full.min.x + 1.0, header.max.y + 1.0), egui::pos2(full.max.x - 1.0, full.max.y - status_h - 2.0));
@@ -1999,6 +2014,9 @@ fn synthesize_mac_ctrl_click(armed: &mut bool, raw_input: &mut egui::RawInput) {
 impl eframe::App for FilmcraftApp {
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.native_window_focused = Some(raw_input.focused);
+        // The compositor takes the button release of an OS resize (KDE Wayland): end the
+        // press ourselves so the edge zones keep hovering (`titlebar`).
+        titlebar::release_after_os_resize(_ctx, raw_input);
         #[cfg(target_os = "macos")]
         if !self.control_input_only {
             synthesize_mac_ctrl_click(&mut self.mac_ctrl_click_armed, raw_input);

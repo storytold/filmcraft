@@ -76,6 +76,43 @@ fn tell(text: &str, error: bool) {
     }
 }
 
+/// Windows and Linux: no OS title bar; the app's top bar is the title bar, with its own caption
+/// buttons and edge resizing (`filmcraft_ui_egui::titlebar`), as in PhotoCraft. macOS keeps its
+/// traffic lights over the integrated title strip.
+const CUSTOM_TITLEBAR: bool = !cfg!(target_os = "macos");
+
+/// Whether this start draws its own title bar: Windows and Linux do, unless Settings ▸
+/// Appearance ▸ System Title Bar asks for the system's. Read from the saved preferences before
+/// the window opens; a missing or unreadable file keeps the default.
+fn custom_titlebar(prefs_file: Option<&std::path::Path>) -> bool {
+    let prefs = prefs_file.map(filmcraft_engine::autosave::Preferences::load).unwrap_or_default();
+    CUSTOM_TITLEBAR && !prefs.appearance.system_title_bar
+}
+
+/// The main window; built for each start attempt (the options hold a one-shot hook).
+/// Without `decorations` the app draws its own title bar (see above); with the system title bar
+/// the OS draws it and the in-app bar keeps only the menus and quick actions.
+fn native_options(agent: bool, custom_titlebar: bool) -> eframe::NativeOptions {
+    eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("FilmCraft")
+            .with_inner_size([1600.0, 980.0])
+            .with_min_inner_size([900.0, 560.0])
+            .with_drag_and_drop(true)
+            .with_decorations(!custom_titlebar)
+            .with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_title_shown(false)
+            // Started for an agent (`--control`): open without taking the user's keyboard focus.
+            .with_active(!agent)
+            .with_icon(app_icon())
+            // Wayland matches the window to `packaging/linux/ai.storyteller.filmcraft.desktop`.
+            .with_app_id(APP_ID),
+        event_loop_builder: agent_event_loop(agent),
+        ..Default::default()
+    }
+}
+
 fn main() -> eframe::Result {
     // First, so the panic hook and every start-up record are logged (`logging`).
     let logger = logging::install();
@@ -120,6 +157,10 @@ fn main() -> eframe::Result {
     // OS hardware video decoders (VideoToolbox on macOS) in front of our own; Settings ▸ Playback ▸
     // Hardware decoding switches them off. Unsupported streams and failures use our decoders.
     register_hardware_decoders();
+    // Whether the app draws its own title bar: Windows and Linux do, unless Settings ▸
+    // Appearance ▸ System Title Bar asks for the system's (read before the window opens).
+    let prefs_file = launch.data_dir.clone().or_else(default_data_dir).map(|d| d.join("preferences.json"));
+    let custom = custom_titlebar(prefs_file.as_deref());
     // Which graphics backends and adapter the window starts with: `--graphics`, else the saved
     // mode, which moves on after starts that died before their window painted (a driver crash),
     // see graphics.rs.
@@ -131,11 +172,11 @@ fn main() -> eframe::Result {
         register_gpu_frame_renderer();
     }
     let started = loop {
-        let mut options = native_options(launch.control_port.is_some());
+        let mut options = native_options(launch.control_port.is_some(), custom);
         // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
         graphics::apply(&mut options, graphics.mode(), backend_override);
         let app_created = Arc::new(AtomicBool::new(false));
-        let result = eframe::run_native("FilmCraft", options, app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created)));
+        let result = eframe::run_native("FilmCraft", options, app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created), custom));
         let app_created = app_created.load(Ordering::Relaxed);
         match &result {
             // wgpu reported the failure (no adapter, device creation failed) before the app
@@ -152,6 +193,7 @@ fn main() -> eframe::Result {
     };
     // However it ended, this start no longer counts as one that died.
     graphics.finish();
+
     // The window could not be created (no usable GPU / graphics driver, no display): say so
     // instead of exiting silently, and keep the reason in the crash log.
     if let Err(e) = &started {
@@ -163,30 +205,9 @@ fn main() -> eframe::Result {
     started
 }
 
-/// The main window's options; built for each start attempt (they hold a one-shot hook).
-fn native_options(agent: bool) -> eframe::NativeOptions {
-    eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("FilmCraft")
-            .with_inner_size([1600.0, 980.0])
-            .with_min_inner_size([900.0, 560.0])
-            .with_drag_and_drop(true)
-            .with_fullsize_content_view(true)
-            .with_titlebar_shown(false)
-            .with_title_shown(false)
-            // Started for an agent (`--control`): open without taking the user's keyboard focus.
-            .with_active(!agent)
-            .with_icon(app_icon())
-            // Wayland matches the window to `packaging/linux/ai.storyteller.filmcraft.desktop`.
-            .with_app_id(APP_ID),
-        event_loop_builder: agent_event_loop(agent),
-        ..Default::default()
-    }
-}
-
 /// Creates the app once eframe has its window and graphics device; sets `created` when it runs,
 /// and confirms the graphics mode once two frames have painted.
-fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<AtomicBool>) -> eframe::AppCreator<'static> {
+fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<AtomicBool>, custom: bool) -> eframe::AppCreator<'static> {
     let Launch { control_port, control_input_only, files, demo, startup_flag, recover, data_dir, graphics: _ } = launch;
     Box::new(move |cc| {
         created.store(true, Ordering::Relaxed);
@@ -248,6 +269,7 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         }
         let mut app = FilmcraftApp::new(session);
         app.graphics_notice = notice;
+        app.custom_titlebar = custom;
         if recover == Some(false) {
             app.dialog = None;
         }
@@ -551,5 +573,25 @@ mod tests {
         let project = super::project_patterns();
         assert_eq!(project.first().map(String::as_str), Some("fcproj"));
         assert!(project.iter().any(|e| e == "[fF][cC][pP][rR][oO][jJ]"), "{project:?}");
+    }
+    /// Settings ▸ Appearance ▸ System Title Bar gives the window back its system decorations
+    /// on Windows and Linux; macOS always has them.
+    #[test]
+    fn the_system_title_bar_preference_keeps_the_window_decorations() {
+        let dir = std::env::temp_dir().join(format!("fc-titlebar-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("preferences.json");
+        assert_eq!(super::custom_titlebar(None), super::CUSTOM_TITLEBAR, "no preferences file: the default");
+        std::fs::write(&file, "not json").unwrap();
+        assert_eq!(super::custom_titlebar(Some(&file)), super::CUSTOM_TITLEBAR, "an unreadable file: the default");
+        std::fs::write(&file, r#"{"appearance":{"systemTitleBar":true}}"#).unwrap();
+        assert!(!super::custom_titlebar(Some(&file)));
+        assert_eq!(super::native_options(false, false).viewport.decorations, Some(true));
+        std::fs::write(&file, r#"{"appearance":{"systemTitleBar":false}}"#).unwrap();
+        assert_eq!(super::custom_titlebar(Some(&file)), super::CUSTOM_TITLEBAR);
+        if super::CUSTOM_TITLEBAR {
+            assert_eq!(super::native_options(false, true).viewport.decorations, Some(false));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -77,6 +77,21 @@ impl Driver {
         v.as_array().unwrap().iter().any(|e| e["id"] == json!(id))
     }
 
+    /// Wheel a row into view before clicking it: a row below the fold (or half-clipped at the
+    /// panel edge) takes the click at a stale spot, so a press scrolls the list instead and a
+    /// context menu never opens. No-op when already fully visible.
+    fn reveal(&mut self, id: &str) {
+        for _ in 0..4 {
+            let els = self.ok("ui.elements", json!({"prefix": id}));
+            let h = els.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).and_then(|e| e["rect"][3].as_f64()).unwrap_or(0.0);
+            if h >= 20.0 {
+                return;
+            }
+            self.ok("ui.scroll", json!({"id": id, "dy": -400.0}));
+            self.frames(4);
+        }
+    }
+
     fn app(&mut self) -> &mut FilmcraftApp {
         self.harness.state_mut()
     }
@@ -244,12 +259,14 @@ fn subclip_in_the_source_monitor_and_project_menu() {
     }
     let row = format!("project.item.{sub}");
     if d.has(&row) {
+        d.reveal(&row);
         d.ok("ui.click", json!({"id": row, "button": "right"}));
         d.frames(3);
         assert!(d.has("project.itemMenu.editSubclip") && d.has("project.itemMenu.convertToMaster"));
         d.click("project.itemMenu.editSubclip");
         assert_eq!(d.app().ui.clip_dialog.as_ref().map(|c| c.command.clone()).as_deref(), Some("clip.editSubclip"));
         d.click("editSubclip.cancel");
+        d.reveal(&row);
         d.ok("ui.click", json!({"id": row, "button": "right"}));
         d.frames(3);
         d.click("project.itemMenu.convertToMaster");

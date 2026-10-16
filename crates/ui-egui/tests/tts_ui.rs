@@ -156,8 +156,27 @@ fn write_add_click_to_edit_and_save_in_place() {
     d.click("tts.text");
     d.ok("ui.key", json!({"key": "Cmd+A"}));
     d.type_text("Something else");
+    // the narration lands on the bottom audio track, which can sit under the zoom-bar
+    // overlay when the timeline is short: wheel it into view, then click above the bar
+    let panel = d.ok("ui.elements", json!({"prefix": "panel.Timeline"}));
+    let pr = &panel.as_array().unwrap()[0]["rect"];
+    let (wx, wy) = (pr[0].as_f64().unwrap() + pr[2].as_f64().unwrap() / 2.0, pr[1].as_f64().unwrap() + pr[3].as_f64().unwrap() / 2.0);
+    let zb = d.ok("ui.elements", json!({"prefix": "timeline.zoomBar.track"}));
+    let ztop = zb.as_array().unwrap()[0]["rect"][1].as_f64().unwrap();
+    for _ in 0..6 {
+        let at = d.ok("ui.timeline.locate", json!({"clip": clip}));
+        if at["y"].as_f64().unwrap() < ztop - 8.0 {
+            break;
+        }
+        d.ok("ui.scroll", json!({"x": wx, "y": wy, "dy": -200.0}));
+        d.frames(2);
+    }
     let at = d.ok("ui.timeline.locate", json!({"clip": clip}));
-    d.ok("ui.click", json!({"x": at["x"], "y": at["y"]}));
+    let (x, mut y) = (at["x"].as_f64().unwrap(), at["y"].as_f64().unwrap());
+    if y >= ztop - 4.0 {
+        y = ztop - 8.0;
+    }
+    d.ok("ui.click", json!({"x": x, "y": y}));
     d.frames(4);
     assert_eq!(d.ui()["selection"], json!([clip]));
     assert_eq!(d.draft()["text"].as_str().unwrap(), text, "clicking the clip loads its script");

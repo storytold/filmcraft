@@ -43,7 +43,13 @@ fn control_rect(h: &Harness<'static, FilmcraftApp>, id: &str) -> egui::Rect {
 fn point_on_row(h: &Harness<'static, FilmcraftApp>, row_control: &str) -> egui::Pos2 {
     let row = control_rect(h, row_control);
     let panel = control_rect(h, "panel.Timeline");
-    egui::pos2(panel.min.x + h.state().ui.timeline.header_w + 60.0, row.center().y)
+    let mut p = egui::pos2(panel.min.x + h.state().ui.timeline.header_w + 60.0, row.center().y);
+    // The row control (e.g. a track patch button) can extend above the lanes when the
+    // timeline is short: a drop outside the lanes content never lands, so clamp inside.
+    if let Some(layout) = h.state().tl.layout.as_ref() {
+        p.y = p.y.clamp(layout.content.min.y + 2.0, layout.content.max.y - 2.0);
+    }
+    p
 }
 
 /// A file the OS dropped on the window, as the native integration hands it to egui.
