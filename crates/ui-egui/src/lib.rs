@@ -1398,16 +1398,26 @@ impl FilmcraftApp {
         }
         if !paths.is_empty() {
             let pointer = self.drop_pointer(ctx);
-            let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
-            if let Ok(v) = imported
-                && let Some(pos) = pointer
-                && self.session.prefs.timeline.drop_import_to_timeline
-            {
-                let items: Vec<filmcraft_engine::project::ItemId> =
-                    v["items"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect()).unwrap_or_default();
-                if !items.is_empty() {
-                    self.pending_timeline_drop = Some((items, pos));
+            // folders become bins of their media: the engine walks them (`bins`), so agents and the CLI can too
+            let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0, "bins": true}));
+            match imported {
+                Ok(v) => {
+                    if let Some(first) = v["errors"].as_array().and_then(|e| e.first()).and_then(|e| e.as_str()) {
+                        self.ui.status = first.to_string();
+                    }
+                    if let Some(pos) = pointer
+                        && self.session.prefs.timeline.drop_import_to_timeline
+                    {
+                        let items: Vec<filmcraft_engine::project::ItemId> = v["items"]
+                            .as_array()
+                            .map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect())
+                            .unwrap_or_default();
+                        if !items.is_empty() {
+                            self.pending_timeline_drop = Some((items, pos));
+                        }
+                    }
                 }
+                Err(e) => self.ui.status = e.to_string(),
             }
         }
     }
