@@ -922,9 +922,11 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
             (Icon::MarkIn, "markers.markIn", tl!("Mark In (I)")),
             (Icon::MarkOut, "markers.markOut", tl!("Mark Out (O)")),
             (Icon::GoToIn, "markers.goToIn", tl!("Go to In (Shift+I)")),
+            (Icon::PrevEdit, "playhead.prevEdit", tl!("Go to Previous Edit Point")),
             (Icon::StepBack, "playhead.stepBack", tl!("Step Back 1 Frame (Left)")),
             (if app.playback.playing { Icon::Pause } else { Icon::Play }, "playback.toggle", tl!("Play-Stop Toggle (Space)")),
             (Icon::StepFwd, "playhead.stepForward", tl!("Step Forward 1 Frame (Right)")),
+            (Icon::NextEdit, "playhead.nextEdit", tl!("Go to Next Edit Point")),
             (Icon::GoToOut, "markers.goToOut", tl!("Go to Out (Shift+O)")),
             (Icon::Lift, "sequence.lift", tl!("Lift (;)")),
             (Icon::Extract, "sequence.extract", tl!("Extract (')")),
@@ -1142,10 +1144,10 @@ mod tests {
         set_transport_visible(&mut program, "playback.loop", true);
         set_transport_visible(&mut program, "playback.loop", true);
         assert!(transport_visible(&program, "playback.loop"));
-        assert!(program.is_empty(), "enabling twice must not leave hidden entries");
+        assert!(!program.iter().any(|id| id == "playback.loop"), "enabling twice must not leave hidden entries");
         set_transport_visible(&mut program, "playhead.stepForward", false);
         set_transport_visible(&mut program, "playhead.stepForward", false);
-        assert_eq!(program, vec!["playhead.stepForward"]);
+        assert_eq!(program.iter().filter(|id| *id == "playhead.stepForward").count(), 1);
         assert!(transport_visible(&source, "playhead.stepForward"));
     }
 

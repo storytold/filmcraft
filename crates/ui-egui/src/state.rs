@@ -343,8 +343,9 @@ impl Default for MonitorView {
             time_zoom: None,
             safe_margins: false,
             show_transport: true,
-            // The optional Loop button is available from the editor without altering default layouts.
-            transport_hidden: vec!["playback.loop".into()],
+            // Optional buttons (Loop, Go to Previous/Next Edit Point) are available from the editor
+            // without altering default layouts, as in Premiere.
+            transport_hidden: vec!["playback.loop".into(), "playhead.prevEdit".into(), "playhead.nextEdit".into()],
             multicam: false,
             display: DisplayMode::Composite,
             compare_ref: None,
