@@ -121,6 +121,30 @@ fn nest_asks_for_a_name_and_numbers_the_default() {
     assert!(d.sequences().iter().any(|s| s.1 == "Nested Sequence 02"));
 }
 
+/// #2024: Nest… can be given a key in the Keyboard Shortcuts editor, and the key asks for the
+/// name as the menu item does.
+#[test]
+fn nest_can_be_assigned_a_key_that_asks_for_the_name() {
+    let mut d = Driver::new();
+    let a = d.v1(0);
+    d.exec("timeline.select", json!({"clips": [a.id.0]}));
+    d.menu("app.keyboardShortcuts");
+    d.click("shortcuts.search");
+    d.ok("ui.type", json!({"text": "Nest"}));
+    d.frames(2);
+    assert!(d.has("shortcuts.row.clip.nest"), "Nest… is listed in the editor");
+    d.click("shortcuts.cell.clip.nest");
+    d.ok("ui.key", json!({"key": "Alt+Shift+F8"}));
+    d.frames(3);
+    assert_eq!(d.app().session.shortcuts.primary("clip.nest").as_deref(), Some("Alt+Shift+F8"));
+    d.click("shortcuts.ok");
+    d.ok("ui.key", json!({"key": "Alt+Shift+F8"}));
+    d.frames(3);
+    assert_eq!(d.app().ui.clip_dialog.as_ref().map(|c| c.command.clone()).as_deref(), Some("clip.nest"), "the key asks for the name");
+    d.click("nest.ok");
+    assert!(d.sequences().iter().any(|s| s.1 == "Nested Sequence 01"));
+}
+
 #[test]
 fn clip_context_menu_offers_nest_and_make_subsequence() {
     let mut d = Driver::new();

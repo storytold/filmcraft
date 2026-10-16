@@ -1987,7 +1987,7 @@ fn build() -> Vec<CommandSpec> {
         cmd!("clip.frameHold", "Add Frame Hold", ["Clip", "Video Options"], None, r#"{"clips":[id]?,"time":ticks?}"#, has_seq, |s, p| {
             crate::clip_ops::add_frame_hold(s, p)
         }),
-        cmd!("clip.nest", "Nest…", ["Clip"], None, r#"{"name":str}"#, has_selection, |s, p| nest(s, p)),
+        cmd!("clip.nest", "Nest…", ["Clip"], None, r#"{"name":str?}"#, has_selection, |s, p| nest(s, p)),
         // Reveal in Project (clip context menu) and Reveal Sequence in Project (Timeline tab menu):
         // select the item in the Project panel and show it there
         cmd!("clip.revealInProject", "Reveal in Project", [], None, r#"{"clip":id?}"#, has_seq, |s, p| {
