@@ -38,6 +38,33 @@ fn korean_font() -> Option<Arc<FontData>> {
     FONT.get_or_init(|| find_system_font(KOREAN_SAMPLE, KOREAN_PREFERRED)).clone()
 }
 
+// Arabic: the UI fonts have no Arabic glyphs, so typed or pasted Arabic drew as missing-glyph
+// boxes. Unlike Korean, an installed Arabic face is the only source (craft-fonts has none yet).
+const ARABIC_SAMPLE: &str = "العربيةمرحبابتثجحخدذرزسشصضطظعغفقكلمنهوي";
+const ARABIC_PREFERRED: &[&str] = &[
+    "Noto Naskh Arabic",
+    "Noto Sans Arabic",
+    "Amiri",
+    "Scheherazade New",
+    "Traditional Arabic",
+    "Arabic Typesetting",
+    "Geeza Pro",
+    "Damascus",
+    "Al Bayan",
+    "Baghdad",
+];
+
+fn arabic_font() -> Option<Arc<FontData>> {
+    static FONT: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
+    FONT.get_or_init(|| find_system_font(ARABIC_SAMPLE, ARABIC_PREFERRED)).clone()
+}
+
+/// Whether [`install`] has an Arabic face to add (an installed system face; none is bundled).
+/// The Arabic interface needs one.
+pub(crate) fn arabic_available() -> bool {
+    arabic_font().is_some()
+}
+
 /// A font collection's face index matters: Windows CJK UI fonts commonly live in TTC files.
 /// Keep the owned bytes behind an Arc so theme reinstalls do not reread or leak a font file.
 fn find_system_font(sample: &str, preferred: &[&str]) -> Option<Arc<FontData>> {
@@ -74,6 +101,12 @@ pub(crate) fn install(fonts: &mut FontDefinitions) {
         fonts.font_data.insert("system-korean".into(), font);
         for stack in fonts.families.values_mut() {
             stack.push("system-korean".into());
+        }
+    }
+    if let Some(font) = arabic_font() {
+        fonts.font_data.insert("system-arabic".into(), font);
+        for stack in fonts.families.values_mut() {
+            stack.push("system-arabic".into());
         }
     }
 }

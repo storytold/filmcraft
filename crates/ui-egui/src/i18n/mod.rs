@@ -33,6 +33,8 @@ use catalog::Catalog;
 pub enum Language {
     #[default]
     En,
+    /// Arabic; needs an installed system font ([`arabic_font_available`]).
+    Ar,
     Ja,
     Es,
     /// Persisted as `pt-br` (the blanket `rename_all` would produce `ptbr`).
@@ -51,6 +53,7 @@ pub enum Language {
     Ko,
 }
 
+static ARABIC: OnceLock<Catalog> = OnceLock::new();
 static JAPANESE: OnceLock<Catalog> = OnceLock::new();
 static SPANISH: OnceLock<Catalog> = OnceLock::new();
 static PORTUGUESE: OnceLock<Catalog> = OnceLock::new();
@@ -64,11 +67,13 @@ static INDONESIAN: OnceLock<Catalog> = OnceLock::new();
 static ITALIAN: OnceLock<Catalog> = OnceLock::new();
 
 impl Language {
-    pub const ALL: [Self; 12] = [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru, Self::Fr, Self::Id, Self::Ko, Self::It];
+    pub const ALL: [Self; 13] =
+        [Self::En, Self::Ar, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru, Self::Fr, Self::Id, Self::Ko, Self::It];
 
     pub fn name(self) -> &'static str {
         match self {
             Self::En => "English",
+            Self::Ar => "العربية",
             Self::Ja => "日本語",
             Self::Es => "Español",
             Self::PtBr => "Português (Brasil)",
@@ -86,6 +91,7 @@ impl Language {
     pub fn parse(code: &str) -> Option<Self> {
         match code {
             "en" => Some(Self::En),
+            "ar" => Some(Self::Ar),
             "ja" => Some(Self::Ja),
             "es" => Some(Self::Es),
             "pt-br" => Some(Self::PtBr),
@@ -111,8 +117,9 @@ impl Language {
     /// only for Simplified locales (`zh`, `zh-CN`, `zh-SG`, `zh-Hans…`); Traditional ones (`zh-TW`,
     /// `zh-HK`, `zh-MO`, `zh-Hant…`) are skipped.
     pub fn from_locales(tags: &[String]) -> Self {
-        const PRIMARY: [(&str, Language); 12] = [
+        const PRIMARY: [(&str, Language); 13] = [
             ("en", Language::En),
+            ("ar", Language::Ar),
             ("ja", Language::Ja),
             ("es", Language::Es),
             ("pt", Language::PtBr),
@@ -145,6 +152,7 @@ impl Language {
     pub fn code(self) -> &'static str {
         match self {
             Self::En => "en",
+            Self::Ar => "ar",
             Self::Ja => "ja",
             Self::Es => "es",
             Self::PtBr => "pt-br",
@@ -163,6 +171,7 @@ impl Language {
     fn catalog(self) -> Option<&'static Catalog> {
         match self {
             Self::En => None,
+            Self::Ar => Some(ARABIC.get_or_init(|| Catalog::parse(include_str!("ar.tsv")))),
             Self::Ja => Some(JAPANESE.get_or_init(|| Catalog::parse(include_str!("ja.tsv")))),
             Self::Es => Some(SPANISH.get_or_init(|| Catalog::parse(include_str!("es.tsv")))),
             Self::PtBr => Some(PORTUGUESE.get_or_init(|| Catalog::parse(include_str!("pt-br.tsv")))),
@@ -336,6 +345,12 @@ pub fn korean_font_available() -> bool {
     crate::cjk::korean_available()
 }
 
+/// Whether the interface can show Arabic: an installed system Arabic face is added by
+/// `theme::install` (see `cjk.rs`); none is bundled. False on systems without one.
+pub fn arabic_font_available() -> bool {
+    crate::cjk::arabic_available()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,6 +359,7 @@ mod tests {
     fn catalogs_are_well_formed() {
         for (code, text) in [
             ("es", include_str!("es.tsv")),
+            ("ar", include_str!("ar.tsv")),
             ("ja", include_str!("ja.tsv")),
             ("pt-br", include_str!("pt-br.tsv")),
             ("uk", include_str!("uk.tsv")),
@@ -1377,5 +1393,26 @@ mod tests {
                 }
             }
         });
+    }
+
+    /// Arabic covers at least the core menus (`core_menu_labels`, the top-level menus and the native
+    /// macOS Settings menu); a menus-only catalog, like Ukrainian. Strings added to the interface
+    /// later show in English until they are translated.
+    #[test]
+    fn arabic_entries_cover_the_original_menu_catalog() {
+        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+        let items = crate::menus::menu_items(&app);
+        let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
+        let (entries, errors) = catalog::parse_entries(include_str!("ar.tsv"));
+        assert!(errors.is_empty(), "{errors:?}");
+        for (ctx, en, _) in entries {
+            assert!(known(&en) || en == "Settings", "not a menu label: {ctx:?} {en:?}");
+        }
+        for en in core_menu_labels() {
+            assert!(Language::Ar.has(&en), "missing Arabic menu label: {en}");
+        }
+        for en in crate::menus::MENUS.into_iter().chain(["Audio", "Settings"]) {
+            assert_ne!(Language::Ar.tr(en), en, "untranslated Arabic menu: {en}");
+        }
     }
 }
