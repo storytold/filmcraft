@@ -63,6 +63,55 @@ fn create_attach_toggle_renders_the_same_picture() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// #1831: proxies asked for while another job runs wait their turn, one at a time in the order they
+/// were asked for, instead of all encoding at once.
+#[test]
+fn proxy_jobs_wait_in_line_and_run_in_order() {
+    let root = tmp_dir("proxy-queue");
+    let (a, b) = (root.join("a.mov"), root.join("b.mov"));
+    make_movie(&a, DemoScene::OceanSunset, W, H, 12);
+    make_movie(&b, DemoScene::Aurora, W, H, 12);
+    let (mut s, items, _) = session_with(&[&a, &b]);
+    // something else is running: it holds the front of the line until it is dropped
+    let busy = crate::media_queue::MEDIA_JOBS.ticket();
+    let mut jobs = Vec::new();
+    for it in &items {
+        let r = s.execute("media.createProxies", json!({"items": [it.0], "preset": "prores_proxy_half"})).unwrap();
+        jobs.push(r["job"]["job"].as_u64().or_else(|| r["job"].as_u64()).unwrap_or_else(|| panic!("{r}")));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let listed = s.execute("jobs.list", json!({})).unwrap();
+    for id in &jobs {
+        let j = listed.as_array().unwrap().iter().find(|j| j["id"] == json!(id)).unwrap();
+        assert_eq!(j["finished"], json!(false), "{j}");
+        assert_eq!(j["done"], json!(0), "nothing is encoded while another job holds the line: {j}");
+        assert!(j["status"].as_str().unwrap().starts_with("Waiting for"), "{j}");
+    }
+    drop(busy);
+    let all_done = |s: &Session| jobs.iter().all(|id| s.jobs.iter().any(|j| j.id == *id && j.progress.finished.load(std::sync::atomic::Ordering::Relaxed)));
+    for _ in 0..1200 {
+        if all_done(&s) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(all_done(&s), "both proxies finish once the line moves");
+    s.poll_persistence();
+    let proxies: Vec<String> = items
+        .iter()
+        .map(|it| match &s.project.item(*it).unwrap().as_media().unwrap().proxy {
+            Some(filmcraft_project::MediaRef::File { path }) => path.clone(),
+            other => panic!("proxy not attached: {other:?}"),
+        })
+        .collect();
+    // the second file is created only after the first one is complete
+    let (first, second) = (std::fs::metadata(&proxies[0]).unwrap(), std::fs::metadata(&proxies[1]).unwrap());
+    if let (Ok(done), Ok(started)) = (first.modified(), second.created()) {
+        assert!(started >= done, "the second proxy started before the first was written");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn attach_checks_duration_and_export_ignores_proxies() {
     let root = tmp_dir("proxy-attach");

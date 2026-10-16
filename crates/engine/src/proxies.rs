@@ -201,7 +201,20 @@ pub fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, String, &'st
     job.progress.total.store(total, std::sync::atomic::Ordering::Relaxed);
     let outputs: Arc<Mutex<Vec<(ItemId, String)>>> = Arc::default();
     let (prog, res, outs) = (job.progress.clone(), job.result.clone(), outputs.clone());
+    // Media jobs run one after another, in the order they were started (#1831); the browser has no
+    // threads to wait on, and runs each job where it is started.
+    #[cfg(not(target_arch = "wasm32"))]
+    let ticket = {
+        let ahead = crate::media_queue::MEDIA_JOBS.ahead();
+        if ahead > 0 {
+            *job.progress.status.lock().unwrap_or_else(|e| e.into_inner()) = format!("Waiting for {ahead} earlier job{}", if ahead == 1 { "" } else { "s" });
+        }
+        crate::media_queue::MEDIA_JOBS.ticket()
+    };
     let run = move || {
+        // a job cancelled while it waits raises the same flag the loop below checks
+        #[cfg(not(target_arch = "wasm32"))]
+        ticket.wait(&prog.cancel);
         let t0 = web_time::Instant::now();
         let mut bytes = 0;
         let mut err = None;
