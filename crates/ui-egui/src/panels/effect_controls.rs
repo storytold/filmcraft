@@ -708,43 +708,61 @@ pub(crate) fn param_row(
                 actions.push(("playhead.set".into(), json!({"time": tl.0})));
             }
             resp.context_menu(|ui| {
-                keyframe_menu(app, ui, KeyframeRef { clip: clip.0, effect: idx, param: pd.id.to_string(), mask, time: k.time }, actions);
+                keyframe_menu(app, ui, KeyframeRef { clip: clip.0, effect: idx, param: pd.id.to_string(), mask, time: k.time }, k.interp, actions);
             });
         }
     }
 }
 
 /// Shared by the lane diamonds and graph points: commands use media time and preserve the mask.
-fn keyframe_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, target: KeyframeRef, actions: &mut Vec<(String, Value)>) {
+/// The rows and their order are Premiere's (Cut, Copy and Paste have no keyframe command yet);
+/// `current` is the keyframe's interpolation, the checked row.
+fn keyframe_menu(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    target: KeyframeRef,
+    current: filmcraft_project::Interpolation,
+    actions: &mut Vec<(String, Value)>,
+) {
+    use filmcraft_project::Interpolation;
     let mut params = json!({"clip": target.clip, "effect": target.effect, "param": target.param, "mediaTime": target.time.0});
     if let Some(mask) = target.mask {
         params["mask"] = json!(mask);
     }
-    ui.label(egui::RichText::new(tl!("Temporal Interpolation")).color(app.tokens.text_dim));
-    for (label, key) in [
-        (tl!("Linear"), "linear"),
-        (tl!("Bezier"), "bezier"),
-        (tl!("Auto Bezier"), "autoBezier"),
-        (tl!("Continuous Bezier"), "continuousBezier"),
-        (tl!("Hold"), "hold"),
-        (tl!("Ease In"), "easeIn"),
-        (tl!("Ease Out"), "easeOut"),
-    ] {
-        let response = ui.button(label);
-        app.auto.add(&format!("effectControls.keyframeMenu.{key}"), response.rect, label);
-        if response.clicked() {
-            let mut params = params.clone();
-            params["interpolation"] = json!(key);
-            actions.push(("effects.setInterpolation".into(), params));
-            ui.close();
-        }
-    }
-    ui.separator();
-    let response = ui.button(tl!("Clear"));
+    let response = crate::menus::checked_entry(ui, tl!("Clear"), true, false);
     app.auto.add("effectControls.keyframeMenu.clear", response.rect, "Clear");
     if response.clicked() {
-        actions.push(("effects.deleteKeyframe".into(), params));
+        actions.push(("effects.deleteKeyframe".into(), params.clone()));
         ui.close();
+    }
+    ui.separator();
+    let response = crate::menus::checked_entry(ui, tl!("Select All"), true, false);
+    app.auto.add("effectControls.keyframeMenu.selectAll", response.rect, "Select All");
+    if response.clicked() {
+        select_all_keyframes(app);
+        ui.close();
+    }
+    for group in [
+        &[
+            (tl!("Linear"), "linear", Interpolation::Linear),
+            (tl!("Bezier"), "bezier", Interpolation::Bezier),
+            (tl!("Auto Bezier"), "autoBezier", Interpolation::AutoBezier),
+            (tl!("Continuous Bezier"), "continuousBezier", Interpolation::ContinuousBezier),
+            (tl!("Hold"), "hold", Interpolation::Hold),
+        ][..],
+        &[(tl!("Ease In"), "easeIn", Interpolation::EaseIn), (tl!("Ease Out"), "easeOut", Interpolation::EaseOut)],
+    ] {
+        ui.separator();
+        for &(label, key, interpolation) in group {
+            let response = crate::menus::checked_entry(ui, label, true, current == interpolation);
+            app.auto.add(&format!("effectControls.keyframeMenu.{key}"), response.rect, label);
+            if response.clicked() {
+                let mut params = params.clone();
+                params["interpolation"] = json!(key);
+                actions.push(("effects.setInterpolation".into(), params));
+                ui.close();
+            }
+        }
     }
 }
 
@@ -1182,7 +1200,7 @@ pub(crate) fn graph_rows(
             let r = Rect::from_center_size(c, vec2(10.0, 10.0));
             let resp = ui.interact(r.expand(2.0), id, Sense::click_and_drag());
             resp.context_menu(|ui| {
-                keyframe_menu(app, ui, KeyframeRef { clip: clip.0, effect: idx, param: pd.id.to_string(), mask, time: k.time }, actions);
+                keyframe_menu(app, ui, KeyframeRef { clip: clip.0, effect: idx, param: pd.id.to_string(), mask, time: k.time }, k.interp, actions);
             });
             let auto_id = match (comps.len(), ci) {
                 (1, _) => format!("effectControls.{}.graph.keyframe.{}", pd.id, k.time.0),
