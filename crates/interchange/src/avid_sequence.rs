@@ -1,0 +1,709 @@
+//! Development bridge for Avid cuts, filler, channel combiners and automatic rate adapters.
+//! Reads only the catalog contract and native project model; no binary decoding or I/O.
+use std::collections::{BTreeMap, BTreeSet};
+
+use filmcraft_project::{AudioChannels, BinId, ItemId, MediaRef, Project, SequenceSettings, TrackKind};
+use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
+use serde::Serialize;
+use serde_json::{Value, json};
+
+use crate::{Error, Result, avid_catalog};
+
+pub const SEQUENCE_KEY: &str = "filmcraft:avid-sequence";
+const MAX_NODES: usize = 100_000;
+const MAX_SEQUENCE_TRACKS: usize = 128;
+
+#[derive(Debug, Serialize)]
+pub struct Plan {
+    sequences: Vec<SequencePlan>,
+    rejected: Vec<String>,
+    pub warnings: Vec<String>,
+    bin: BinId,
+}
+#[derive(Debug, Serialize)]
+struct SequencePlan {
+    name: String,
+    settings: SequenceSettings,
+    start_timecode: i64,
+    duration: Tick,
+    tracks: Vec<TrackPlan>,
+    evidence: Value,
+    warnings: Vec<String>,
+}
+#[derive(Debug, Serialize)]
+struct TrackPlan {
+    kind: TrackKind,
+    number: usize,
+    stereo: bool,
+    muted: bool,
+    solo: bool,
+    clips: Vec<ClipPlan>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize)]
+struct ClipPlan {
+    item: ItemId,
+    placeholder: Option<String>,
+    start: Tick,
+    source_in: Tick,
+    duration: Tick,
+    channels: Vec<u16>,
+    scale_to_frame: bool,
+}
+fn bad(s: impl Into<String>) -> Error {
+    Error::Other(format!("Avid sequence: {}", s.into()))
+}
+fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
+    v[key].as_str().filter(|s| s.len() <= 4096 && !s.contains('\0')).ok_or_else(|| bad(format!("invalid {key}")))
+}
+fn list<'a>(v: &'a Value, key: &str, max: usize) -> Result<&'a [Value]> {
+    v[key].as_array().filter(|a| a.len() <= max).map(Vec::as_slice).ok_or_else(|| bad(format!("invalid or excessive {key}")))
+}
+fn number(v: &Value, key: &str) -> Result<i64> {
+    v[key].as_i64().filter(|n| *n >= 0).ok_or_else(|| bad(format!("invalid {key}")))
+}
+fn rate(v: &Value) -> Result<FrameRate> {
+    let n = number(&v["rate"], "numerator")?;
+    let d = number(&v["rate"], "denominator")?;
+    if n == 0 || d == 0 || n > i64::from(u32::MAX) || d > i64::from(u32::MAX) || n > d * 1000 {
+        return Err(bad("invalid edit rate"));
+    }
+    Ok(FrameRate::new(n, d))
+}
+fn ticks(v: &Value, key: &str) -> Result<Tick> {
+    ticks_at(v, key, rate(v)?)
+}
+fn ticks_at(v: &Value, key: &str, r: FrameRate) -> Result<Tick> {
+    let n = i128::from(number(v, key)?)
+        .checked_mul(i128::from(r.den))
+        .and_then(|n| n.checked_mul(i128::from(TICKS_PER_SECOND)))
+        .ok_or_else(|| bad("timing overflow"))?;
+    if n % i128::from(r.num) != 0 || n / i128::from(r.num) > i128::from(Tick::MAX.0) {
+        return Err(bad("timing cannot be represented exactly"));
+    }
+    Ok(Tick((n / i128::from(r.num)) as i64))
+}
+fn add(a: Tick, b: Tick) -> Result<Tick> {
+    a.0.checked_add(b.0).filter(|n| *n <= Tick::MAX.0).map(Tick).ok_or_else(|| bad("timing overflow"))
+}
+fn flag(v: &Value, key: &str) -> Result<bool> {
+    match v.get(key) {
+        None => Ok(false),
+        Some(Value::Number(n)) if n.as_u64() == Some(0) => Ok(false),
+        Some(Value::Number(n)) if n.as_u64() == Some(1) => Ok(true),
+        _ => Err(bad(format!("unsupported {key}"))),
+    }
+}
+
+/// Resolve only masters imported for the explicitly selected bin: its own members and the
+/// referenced sources imported alongside them. Repeated imports in other bins cannot accidentally
+/// authorize a source; aliases within this bin are ambiguous.
+fn sources(p: &Project, bin: BinId) -> Result<(String, BTreeMap<[u8; 32], ItemId>)> {
+    avid_catalog::validate_project(p, Some(bin))?;
+    let mut uid = None;
+    let mut ids = BTreeMap::new();
+    // Subclips are sources too: a sequence can cut from one, and its identity is the subclip's.
+    let items = avid_catalog::imported_items(p, bin)?;
+    for id in items.placed.into_iter().chain(items.referenced).chain(items.subclips) {
+        let it = p.item(id).ok_or_else(|| bad("missing bin item"))?;
+        if it.as_media().is_none() && !matches!(it.kind, filmcraft_project::ItemKind::Subclip { .. }) {
+            continue;
+        }
+        let Some(raw) = it.metadata.get(avid_catalog::SOURCE_KEY) else { continue };
+        if raw.len() > 16 * 1024 * 1024 {
+            return Err(bad("excessive source evidence"));
+        }
+        let e: Value = serde_json::from_str(raw).map_err(|e| bad(e.to_string()))?;
+        if e["version"] != 1 {
+            return Err(bad("unsupported source evidence version"));
+        }
+        let u = text(&e, "bin_uid")?.to_owned();
+        if uid.as_ref().is_some_and(|old| old != &u) {
+            return Err(bad("mixed source bin identities"));
+        }
+        uid = Some(u);
+        if ids.insert(avid_catalog::full_identity(&e["clip"]["id"])?, id).is_some() {
+            return Err(bad("ambiguous master identity in selected bin"));
+        }
+    }
+    Ok((uid.ok_or_else(|| bad("selected bin has no imported masters"))?, ids))
+}
+
+mod formats;
+mod rates;
+mod recovery;
+use rates::automatic_source_rate_at;
+pub(crate) use rates::offline_rate_evidence;
+
+struct Walk<'a> {
+    project: &'a Project,
+    sources: &'a BTreeMap<[u8; 32], ItemId>,
+    rate: FrameRate,
+    clock: formats::Clock,
+    kind: TrackKind,
+    nodes: &'a mut usize,
+    warnings: &'a mut Vec<String>,
+    best_effort: bool,
+    audio_channels: usize,
+}
+impl Walk<'_> {
+    fn phase_warning(&mut self, c: &Value, start: Tick) {
+        if c["properties"]["phase_offset"] != 0 {
+            self.warnings.push(format!(
+                "Frame {}: Avid adapter phase offset {} is not translated. Using the recorded source-frame start at 100% playback; check trimmed picture/audio alignment against Avid. Original adapter is retained.",
+                self.rate.frame_at(start), c["properties"]["phase_offset"]
+            ));
+        }
+    }
+    fn audio_adapter(&mut self, c: &Value, start: Tick, length: Tick, depth: usize) -> Result<Vec<ClipPlan>> {
+        let (leaf, source_rate) = automatic_source_rate_at(c, depth, self.nodes, self.clock.rate(c)?, self.best_effort)?;
+        let id = avid_catalog::full_identity(&leaf["source_id"])?;
+        let item = *self.sources.get(&id).ok_or_else(|| bad("audio adapter source master missing"))?;
+        let m = self.project.item(item).and_then(|i| i.as_media()).ok_or_else(|| bad("audio adapter source is not media"))?;
+        let MediaRef::Components { channels, .. } = &m.media else {
+            return Err(bad("audio adapter source must be bound to managed components"));
+        };
+        let track = u32::try_from(number(leaf, "source_track")?).map_err(|_| bad("source track overflow"))?;
+        let mut matches = channels.iter().enumerate().filter(|(_, ch)| ch.track == track);
+        let (index, channel) = matches.next().ok_or_else(|| bad("audio adapter source track missing"))?;
+        if matches.next().is_some() {
+            return Err(bad("ambiguous audio adapter source track"));
+        }
+        let source_in = ticks_at(leaf, "start", source_rate)?;
+        let source_length = ticks_at(leaf, "length", source_rate)?;
+        if add(source_in, source_length)? > channel.length || add(source_in, length)? > m.info.duration {
+            return Err(bad("audio adapter range exceeds source media"));
+        }
+        self.phase_warning(c, start);
+        // Avid's automatic ratio changes edit units, not PCM playback speed. Samples
+        // retain wall-clock timing; only the timeline endpoint is rounded to its frames.
+        self.warnings.push(format!(
+            "Frame {}: automatic audio rate adapter mapped to 100% playback with original source timing; Avid audio processing may differ.",
+            self.rate.frame_at(start)
+        ));
+        Ok(vec![ClipPlan {
+            item,
+            start,
+            source_in,
+            duration: length,
+            channels: vec![u16::try_from(index).map_err(|_| bad("source channel overflow"))?],
+            scale_to_frame: false,
+            placeholder: None,
+        }])
+    }
+    /// Accept only constant automatic rate adaptation, not creative speed effects. Avid's
+    /// output/source rate ratio represents ordinary real-time playback in FilmCraft's tick model.
+    fn motion_adapter(&mut self, c: &Value, start: Tick, length: Tick, depth: usize) -> Result<Vec<ClipPlan>> {
+        let (leaf, derived_rate) = automatic_source_rate_at(c, depth, self.nodes, self.clock.rate(c)?, self.best_effort)?;
+        let id = avid_catalog::full_identity(&leaf["source_id"])?;
+        let item = *self.sources.get(&id).ok_or_else(|| bad("motion source master missing"))?;
+        let m = self.project.item(item).and_then(|i| i.as_media()).ok_or_else(|| bad("motion source is not media"))?;
+        let MediaRef::Components { picture: Some(picture), .. } = &m.media else {
+            return Err(bad("motion source must be bound to verified picture"));
+        };
+        let video = m.info.video.as_ref().ok_or_else(|| bad("motion source video metadata missing"))?;
+        let src_rate = video.frame_rate;
+        if src_rate != derived_rate {
+            return Err(bad("adapter and picture rates disagree"));
+        }
+        // Validate bounds/rational arithmetic before using native project metadata.
+        let exact_rate = json!({"numerator":src_rate.num,"denominator":src_rate.den});
+        rate(&json!({"rate":exact_rate}))?;
+        if !avid_catalog::picture_rate_matches(leaf, src_rate) || number(leaf, "source_track")? != i64::from(picture.track) {
+            return Err(bad("motion source track or recorded rate disagrees with verified picture"));
+        }
+        let exact = |field: &str| ticks(&json!({(field):leaf[field],"rate":exact_rate}), field);
+        let source_in = exact("start")?;
+        let source_length = exact("length")?;
+        // The child must cover exactly the output interval rounded up to whole source frames.
+        if source_length < length
+            || source_length.0 - length.0 >= src_rate.frame_duration().0
+            || add(source_in, source_length)? > picture.length
+            || add(source_in, length)? > m.info.duration
+        {
+            return Err(bad("motion input does not cover the declared output range"));
+        }
+        self.phase_warning(c, start);
+        self.warnings.push(format!("Frame {}: {}/{} fps source adapted to {}/{} fps with FilmCraft Frame Sampling at 100% playback speed; Avid interpolation/frame selection may differ.",self.rate.frame_at(start),src_rate.num,src_rate.den,self.rate.num,self.rate.den));
+        Ok(vec![ClipPlan { item, start, source_in, duration: length, channels: Vec::new(), scale_to_frame: false, placeholder: None }])
+    }
+
+    fn checked_node(&mut self, c: &Value, start: Tick, depth: usize) -> Result<Vec<ClipPlan>> {
+        *self.nodes = self.nodes.checked_add(1).ok_or_else(|| bad("node count overflow"))?;
+        if *self.nodes > MAX_NODES || depth >= 16 {
+            return Err(bad("component graph exceeds bounds"));
+        }
+        if c.get("truncated").is_some_and(|v| v != &Value::Bool(false)) {
+            return Err(bad("truncated component"));
+        }
+        if self.clock.rate(c)? != self.rate {
+            return Err(bad("mixed-rate component is unsupported"));
+        }
+        let expected = if self.kind == TrackKind::Video { 1 } else { 2 };
+        if c["media_kind"] != expected {
+            return Err(bad("component media kind disagrees with track"));
+        }
+        let length = self.clock.ticks(c, "length")?;
+        add(start, length)?;
+        let class = text(c, "class")?;
+        let combiner = class == "TKFX" && c.pointer("/properties/effect_id").and_then(Value::as_str) == Some("EFF2_AUDIO_CHANNEL_COMBINER");
+        let spatial = class == "TKFX" && c.pointer("/properties/effect_id").and_then(Value::as_str) == Some("INT_EFF_SPATIAL_ADAPTER");
+        let motion = class == "SPED" && c.pointer("/properties/effect_id").and_then(Value::as_str) == Some("EFF_TIMEWARP.MOTION_CTL");
+        let audio_adapter = class == "SPED" && c.pointer("/properties/effect_id").and_then(Value::as_str) == Some("EFF_TIMEWARP.AUDIO_TIME_WARP");
+        if c.get("unsupported").is_some() && !((combiner || spatial || motion || audio_adapter) && c["unsupported"] == "component_semantics") {
+            return Err(bad(format!(
+                "unsupported {class} at frame {} ({})",
+                self.rate.frame_at(start),
+                c.pointer("/properties/effect_id").and_then(Value::as_str).unwrap_or("unknown semantics")
+            )));
+        }
+        match class {
+            "FILL" => Ok(Vec::new()),
+            "SEQU" => {
+                let mut pos = start;
+                let mut clips = Vec::new();
+                for child in list(c, "components", MAX_NODES)? {
+                    clips.extend(self.node(child, pos, depth + 1)?);
+                    pos = add(pos, self.clock.ticks(child, "length")?)?;
+                }
+                if pos != add(start, length)? {
+                    return Err(bad("sequence child lengths disagree with parent"));
+                }
+                Ok(clips)
+            }
+            "SCLP" => {
+                if length == Tick::ZERO {
+                    return Err(bad("zero-length source clip"));
+                }
+                let id = avid_catalog::full_identity(&c["source_id"])?;
+                let item = *self.sources.get(&id).ok_or_else(|| bad("source master is missing from selected bin"))?;
+                // A source may be a subclip. Resolve to the media it restricts, keeping its range:
+                // clips of a subclip are expressed in the parent's media time.
+                let (master_item, m, span) =
+                    self.project.resolve_media(item).ok_or_else(|| bad("source is not media, or its subclip chain does not reach any"))?;
+                let MediaRef::Components { channels, picture } = &m.media else {
+                    return Err(bad(if span.is_some() {
+                        "the master this subclip restricts must be bound to managed components first"
+                    } else {
+                        "source master must be bound to managed components first"
+                    }));
+                };
+                // Saved project ranges are untrusted too. Resolve_media finds the parent, but
+                // does not validate range bounds; never let an invalid span authorize an edit.
+                let (source_in, limit) = match span {
+                    Some(range) => {
+                        if range.start < Tick::ZERO || range.duration <= Tick::ZERO {
+                            return Err(bad("invalid saved subclip range"));
+                        }
+                        let end = add(range.start, range.duration)?;
+                        if end > m.info.duration {
+                            return Err(bad("saved subclip range exceeds master duration"));
+                        }
+                        (add(range.start, self.clock.ticks(c, "start")?)?, end)
+                    }
+                    None => (self.clock.ticks(c, "start")?, m.info.duration),
+                };
+                // A cut from a subclip stays inside that subclip, not merely inside its master.
+                if add(source_in, length)? > limit {
+                    return Err(bad(if span.is_some() { "source range exceeds the subclip" } else { "source range exceeds master duration" }));
+                }
+                let mut track = u32::try_from(number(c, "source_track")?).map_err(|_| bad("source track overflow"))?;
+                if span.is_some() {
+                    let raw = self
+                        .project
+                        .item(item)
+                        .and_then(|i| i.metadata.get(avid_catalog::SOURCE_KEY))
+                        .filter(|s| s.len() <= 16 * 1024 * 1024)
+                        .ok_or_else(|| bad("subclip source evidence missing or excessive"))?;
+                    let evidence: Value = serde_json::from_str(raw).map_err(|e| bad(e.to_string()))?;
+                    let (parent, parent_track) = avid_catalog::subclip_track(&evidence["clip"], expected, track)?;
+                    if self.sources.get(&parent) != Some(&master_item) {
+                        return Err(bad("subclip routing disagrees with its parent media"));
+                    }
+                    track = parent_track;
+                }
+                let mapping = if self.kind == TrackKind::Audio {
+                    let indexes: Vec<_> = channels.iter().enumerate().filter(|(_, ch)| ch.track == track).map(|(i, _)| i).collect();
+                    if indexes.len() != 1 {
+                        return Err(bad("missing or ambiguous source audio track"));
+                    }
+                    vec![u16::try_from(indexes[0]).map_err(|_| bad("source channel overflow"))?]
+                } else {
+                    if picture.as_ref().is_none_or(|p| p.track != track) || m.info.video.as_ref().is_none_or(|v| v.frame_rate != self.rate) {
+                        return Err(bad("picture source track or rate mismatch"));
+                    }
+                    Vec::new()
+                };
+                Ok(vec![ClipPlan { item, start, source_in, duration: length, channels: mapping, scale_to_frame: false, placeholder: None }])
+            }
+            "TKFX" if spatial && self.kind == TrackKind::Video => {
+                let inputs = list(c, "input_tracks", 1)?;
+                let input = inputs.first().ok_or_else(|| bad("spatial adapter needs one input"))?;
+                if input["index"] != 1 || self.clock.ticks(&input["component"], "length")? != length {
+                    return Err(bad("spatial adapter input duration/index mismatch"));
+                }
+                let mut clips = self.node(&input["component"], start, depth + 1)?;
+                for clip in &mut clips {
+                    clip.scale_to_frame = true;
+                }
+                self.warnings.push(format!(
+                    "Frame {}: Avid spatial adapter mapped to FilmCraft Scale to Frame Size; Avid crop/reformat treatment may differ.",
+                    self.rate.frame_at(start)
+                ));
+                Ok(clips)
+            }
+            "SPED" if motion && self.kind == TrackKind::Video => self.motion_adapter(c, start, length, depth),
+            "SPED" if audio_adapter && self.kind == TrackKind::Audio => self.audio_adapter(c, start, length, depth),
+            "TKFX" if combiner && self.kind == TrackKind::Audio => {
+                let inputs = list(c, "input_tracks", 2)?;
+                if inputs.len() != 2 {
+                    return Err(bad("stereo combiner needs two inputs"));
+                }
+                let mut pair = Vec::new();
+                for input in inputs {
+                    let mut clips = self.node(&input["component"], start, depth + 1)?;
+                    if clips.len() != 1 {
+                        return Err(bad("combiner input must be one source"));
+                    }
+                    pair.push(clips.remove(0));
+                }
+                let mut left = pair.remove(0);
+                let right = pair.remove(0);
+                if left.placeholder.is_some()
+                    || right.placeholder.is_some()
+                    || left.item != right.item
+                    || left.source_in != right.source_in
+                    || left.start != start
+                    || right.start != start
+                    || left.duration != length
+                    || right.duration != length
+                    || left.channels.len() != 1
+                    || right.channels.len() != 1
+                    || left.channels == right.channels
+                {
+                    return Err(bad("combiner inputs disagree on source, range or channels"));
+                }
+                left.channels.extend(right.channels);
+                Ok(vec![left])
+            }
+            _ => Err(bad(format!("unsupported {class} at frame {}", self.rate.frame_at(start)))),
+        }
+    }
+}
+
+fn sequence(p: &Project, ids: &BTreeMap<[u8; 32], ItemId>, m: &Value, nodes: &mut usize, best_effort: bool) -> Result<SequencePlan> {
+    if m.get("unsupported").is_some() || m.get("truncated").is_some_and(|v| v != &Value::Bool(false)) {
+        return Err(bad("incomplete composition"));
+    }
+    if m["live"] != true {
+        return Err(bad("inactive composition"));
+    }
+    avid_catalog::full_identity(&m["id"])?;
+    let name = text(m, "name")?.to_owned();
+    let format = formats::resolve(m, best_effort)?;
+    let r = format.clock.actual;
+    let clock = format.clock;
+    let mut warnings = format.warnings;
+    let mut settings = format.settings;
+    let duration = clock.ticks(m, "length")?;
+    let mut tracks = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut tc = None;
+    for t in list(m, "tracks", MAX_SEQUENCE_TRACKS)? {
+        let c = &t["component"];
+        if t.get("unsupported").is_some()
+            || [t, c].iter().any(|v| v.get("truncated").is_some_and(|x| x != &Value::Bool(false)))
+            || (c["media_kind"] == 3 && t["index"] == 1 && c.get("unsupported").is_some())
+        {
+            return Err(bad("incomplete sequence track or timecode"));
+        }
+        let index = number(t, "index")?;
+        let kind = match c["media_kind"].as_u64() {
+            Some(1) => TrackKind::Video,
+            Some(2) => TrackKind::Audio,
+            Some(3) if index == 1 => {
+                // Observed TCCP flags: 0 is non-drop; 1 is drop-frame. The stored
+                // start is already a frame count (107892 = 01;00;00;00 at 29.97).
+                // Other bits remain unsupported, as does DF on an incompatible rate.
+                let drop_frame = c["flags"] == 1;
+                if tc.is_some()
+                    || c["class"] != "TCCP"
+                    || clock.rate(c)? != r
+                    || c["fps"] != r.timecode_base()
+                    || clock.ticks(c, "length")? != duration
+                    || !(c["flags"] == 0 || (drop_frame && r.supports_drop_frame()))
+                {
+                    if best_effort {
+                        warnings.push("Primary timecode could not be converted; using zero.".into());
+                        settings.drop_frame = false;
+                        tc = Some(0);
+                        continue;
+                    }
+                    return Err(bad("unsupported primary timecode"));
+                }
+                let start = number(c, "start")?;
+                clock.ticks(c, "start")?;
+                tc = Some(start);
+                settings.drop_frame = drop_frame;
+                continue;
+            }
+            Some(3 | 4) => continue, // auxiliary timecode and edgecode are retained as evidence
+            Some(7) => {
+                // Corpus auxiliary track: accept only the observed complete all-filler form. Any
+                // other shape, including an absent, empty or multi-component list, is decided
+                // here; it must never escape to the caller and placeholder the whole composition.
+                let child = c["components"].as_array().filter(|a| a.len() == 1).and_then(|a| a.first());
+                let supported = child.is_some_and(|child| {
+                    c["class"] == "SEQU"
+                        && child["class"] == "FILL"
+                        && child["media_kind"] == 7
+                        && clock.rate(c).ok() == Some(r)
+                        && clock.rate(child).ok() == Some(r)
+                        && clock.ticks(c, "length").ok() == Some(duration)
+                        && clock.ticks(child, "length").ok() == Some(duration)
+                        && ![c, child].iter().any(|v| v.get("unsupported").is_some() || v.get("truncated").is_some_and(|x| x != &Value::Bool(false)))
+                });
+                if !supported {
+                    if best_effort {
+                        warnings.push(format!("Auxiliary track {index} was not converted; source evidence retained."));
+                        continue;
+                    }
+                    return Err(bad("nonempty or unsupported auxiliary kind-7 track"));
+                }
+                continue;
+            }
+            _ if best_effort => {
+                warnings.push(format!("Track {index}: unknown track kind was not converted; source evidence retained."));
+                continue;
+            }
+            _ => return Err(bad("unknown sequence track kind")),
+        };
+        if !(1..=64).contains(&index) || !seen.insert((kind == TrackKind::Audio, index)) {
+            return Err(bad("invalid or duplicate sequence track number"));
+        }
+        if clock.ticks(c, "length")? != duration {
+            return Err(bad("track duration disagrees with composition"));
+        }
+        let attrs = &t["properties"]["attributes"];
+        let stereo = match attrs.get("_TRACK_FORMAT") {
+            None => false,
+            Some(v) if *v == 2 && kind == TrackKind::Audio => true,
+            _ => return Err(bad("unsupported audio track format")),
+        };
+        let clips =
+            Walk { project: p, sources: ids, rate: r, clock, kind, nodes, warnings: &mut warnings, best_effort, audio_channels: if stereo { 2 } else { 1 } }
+                .node(c, Tick::ZERO, 0)?;
+        if kind == TrackKind::Audio && clips.iter().any(|c| c.channels.len() != if stereo { 2 } else { 1 }) {
+            return Err(bad("source channel mapping disagrees with timeline format"));
+        }
+        tracks.push(TrackPlan {
+            kind,
+            number: index as usize,
+            stereo,
+            muted: flag(attrs, "AudioMixerCompMute")?,
+            solo: flag(attrs, "AudioMixerCompSolo")?,
+            clips,
+        });
+    }
+    let end = tracks.iter().flat_map(|t| &t.clips).map(|c| add(c.start, c.duration)).collect::<Result<Vec<_>>>()?.into_iter().max().unwrap_or(Tick::ZERO);
+    if end != duration {
+        if !best_effort || end > duration {
+            return Err(bad("empty sequence or trailing filler requires explicit native duration support"));
+        }
+        let reason = "Trailing Avid gap represented by an offline placeholder to preserve sequence duration".to_string();
+        warnings.push(reason.clone());
+        let placeholder = ClipPlan {
+            item: ItemId(0),
+            placeholder: Some(reason),
+            start: end,
+            source_in: Tick::ZERO,
+            duration: Tick(duration.0 - end.0),
+            channels: Vec::new(),
+            scale_to_frame: false,
+        };
+        if let Some(track) = tracks.iter_mut().find(|t| t.kind == TrackKind::Video) {
+            track.clips.push(placeholder);
+        } else {
+            tracks.push(TrackPlan { kind: TrackKind::Video, number: 1, stereo: false, muted: false, solo: false, clips: vec![placeholder] });
+        }
+    }
+    if best_effort && tc.is_none() {
+        warnings.push("Missing primary timecode: sequence starts at zero.".into());
+        tc = Some(0);
+    }
+    tracks.sort_by_key(|t| (t.kind == TrackKind::Audio, t.number));
+    Ok(SequencePlan { name, settings, start_timecode: tc.ok_or_else(|| bad("missing primary timecode"))?, duration, tracks, evidence: m.clone(), warnings })
+}
+
+/// Preview is read-only. Unsupported compositions are reported individually; import refuses a
+/// partially supported batch. All raw attributes (including color) survive in native metadata.
+pub fn plan(p: &Project, bytes: &[u8], bin: BinId) -> Result<Plan> {
+    plan_inner(p, bytes, bin, false)
+}
+/// Preserve interpretable edits and timing, with explicit bypass/placeholder diagnostics.
+pub fn plan_best_effort(p: &Project, bytes: &[u8], bin: BinId) -> Result<Plan> {
+    plan_inner(p, bytes, bin, true)
+}
+fn plan_inner(p: &Project, bytes: &[u8], bin: BinId, best_effort: bool) -> Result<Plan> {
+    plan_document(p, &avid_catalog::read_document(bytes)?, bin, best_effort)
+}
+/// Convert a shared parsed snapshot. The catalog is still validated; a caller cannot bypass
+/// identity/membership checks by using this entry point instead of JSON.
+pub fn plan_document(p: &Project, doc: &avid_catalog::Document, bin: BinId, best_effort: bool) -> Result<Plan> {
+    let _ = avid_catalog::plan_document(doc, avid_catalog::TransferMode::Sequences)?;
+    let (uid, ids) = match sources(p, bin) {
+        Ok(v) => v,
+        Err(_) if best_effort && doc.bins.len() == 1 && p.root.find_bin(bin).is_some_and(|b| b.children.is_empty()) => {
+            (text(&doc.bins[0]["summary"], "bin_uid")?.to_owned(), BTreeMap::new())
+        }
+        Err(e) => return Err(e),
+    };
+    let bins = &doc.bins;
+    let matching: Vec<_> = bins.iter().filter(|b| b["summary"]["bin_uid"] == uid).collect();
+    if matching.len() != 1 {
+        return Err(bad("report must identify exactly one matching source bin"));
+    }
+    let mut result = Plan { bin, sequences:Vec::new(), rejected:Vec::new(), warnings:vec!["Sequence audio output uses FilmCraft defaults: 48000 Hz stereo. Raw Avid attributes and auxiliary tracks are retained; color, mixer automation, markers and other effects are not translated.".into()] };
+    // Not every placed composition is a timeline. A bin also holds subclips, saved effect
+    // templates, group clips and motion effects, each a composition mob with its own usage code.
+    // Converting one produces a sequence item that is not a sequence, so name what was skipped
+    // instead and leave it to the parts of the importer that model those kinds.
+    let mut skipped = BTreeMap::<&str, usize>::new();
+    let mut compositions = Vec::new();
+    for m in list(matching[0], "mobs", 200_000)? {
+        if m["kind"] != "CompositionMob" || m["user_placed"] != true {
+            continue;
+        }
+        match m["usage_code"].as_i64() {
+            // Imported as bin contents by the catalog, each restricting one master.
+            Some(2) => *skipped.entry("subclips").or_default() += 1,
+            // An Avid effect template does not describe FilmCraft's own effects.
+            Some(3) => *skipped.entry("saved effect templates").or_default() += 1,
+            // Grouped media: selector decoding exists, but multicam conversion is not implemented.
+            Some(4) => *skipped.entry("group clips").or_default() += 1,
+            // A retime, with its own rendered media when the effect has been rendered.
+            Some(6) => *skipped.entry("motion effect clips").or_default() += 1,
+            _ => compositions.push(m),
+        }
+    }
+    for (kind, count) in &skipped {
+        result.warnings.push(format!("{count} {kind} in this bin are not timelines and were not converted into sequences."));
+    }
+    if compositions.len() > 1024 {
+        return Err(bad("too many compositions"));
+    }
+    let mut identities = BTreeMap::<_, usize>::new();
+    for m in &compositions {
+        if m["live"] == true
+            && let Ok(id) = avid_catalog::full_identity(&m["id"])
+        {
+            *identities.entry(id).or_default() += 1;
+        }
+    }
+    let mut nodes = 0;
+    for m in compositions {
+        // Eligibility/identity failures must never be turned into live placeholder sequences.
+        // Reject every ambiguous live copy, while allowing unrelated sequences to proceed.
+        let eligible = || -> Result<()> {
+            if m["live"] != true {
+                return Err(bad("inactive composition"));
+            }
+            let id = avid_catalog::full_identity(&m["id"])?;
+            if identities.get(&id) != Some(&1) {
+                return Err(bad("duplicate composition identity"));
+            }
+            text(m, "name")?;
+            Ok(())
+        };
+        if let Err(e) = eligible() {
+            if !best_effort {
+                return Err(e);
+            }
+            result.rejected.push(format!("{}: {e}", text(m, "name").unwrap_or("(unnamed composition)")));
+            continue;
+        }
+        let converted = sequence(p, &ids, m, &mut nodes, best_effort);
+        let converted = match converted {
+            Err(ref e) if best_effort && nodes <= MAX_NODES => recovery::sequence_placeholder(m, e),
+            other => other,
+        };
+        match converted {
+            Ok(q) => {
+                result.warnings.extend(q.warnings.iter().map(|w| format!("{}: {w}", q.name)));
+                result.sequences.push(q);
+            }
+            Err(e) => result.rejected.push(format!("{}: {e}", text(m, "name")?)),
+        }
+    }
+    if result.sequences.is_empty() && result.rejected.is_empty() {
+        return Err(bad("no placed compositions in report"));
+    }
+    Ok(result)
+}
+
+/// Apply independently planned sequences and return names/reasons for unconvertible compositions.
+pub fn apply_supported(p: &mut Project, mut plan: Plan) -> Result<(Vec<ItemId>, Vec<String>)> {
+    let rejected = std::mem::take(&mut plan.rejected);
+    Ok((apply(p, plan)?, rejected))
+}
+/// Call inside a project transaction. Strict plans reject the entire batch on an unsupported sequence.
+pub fn apply(p: &mut Project, plan: Plan) -> Result<Vec<ItemId>> {
+    if !plan.rejected.is_empty() {
+        return Err(bad(plan.rejected.join("; ")));
+    }
+    avid_catalog::validate_project(p, Some(plan.bin))?;
+    let mut required = 0u64;
+    for q in &plan.sequences {
+        required = required
+            .checked_add(129)
+            .and_then(|n| n.checked_add(q.tracks.iter().map(|t| t.clips.len() as u64 * 2).sum::<u64>()))
+            .ok_or_else(|| bad("ID overflow"))?;
+    }
+    p.next_id.checked_add(required).ok_or_else(|| bad("project ID space exhausted"))?;
+    let mut out = Vec::new();
+    for q in plan.sequences {
+        let ntracks = |kind| q.tracks.iter().filter(|t| t.kind == kind).map(|t| t.number).max().unwrap_or(0);
+        let id = p.new_sequence(&q.name, q.settings.clone(), ntracks(TrackKind::Video), ntracks(TrackKind::Audio), Some(plan.bin));
+        for t in q.tracks {
+            let mut placed = Vec::new();
+            for c in t.clips {
+                let item = if let Some(reason) = &c.placeholder { recovery::placeholder(p, plan.bin, t.kind, t.stereo, c.duration, reason)? } else { c.item };
+                let mut clip = p
+                    .make_track_item(item, t.kind, c.start, TimeRange::new(c.source_in, c.duration), q.settings.frame_rate)
+                    .ok_or_else(|| bad("source disappeared"))?;
+                if clip.duration != c.duration {
+                    return Err(bad("native placement would change duration"));
+                }
+                if c.placeholder.is_some() {
+                    // The placeholder canvas uses the sequence raster. This does not assert
+                    // geometry for the unknown Avid source, and keeps saved auto-points finite.
+                    for effect in &mut clip.effects {
+                        filmcraft_project::resolve_auto_points(effect, (q.settings.width, q.settings.height), (q.settings.width, q.settings.height));
+                    }
+                }
+                clip.source_channels = c.channels;
+                clip.scale_to_frame = c.scale_to_frame;
+                clip.time_interpolation = filmcraft_project::TimeInterpolation::FrameSampling;
+                placed.push(clip);
+            }
+            let track = p.sequence_mut(id).and_then(|s| s.tracks_mut(t.kind).get_mut(t.number - 1)).ok_or_else(|| bad("new track missing"))?;
+            track.channels = if t.stereo { AudioChannels::Stereo } else { AudioChannels::Mono };
+            track.muted = t.muted;
+            track.solo = t.solo;
+            track.items = placed;
+        }
+        let seq = p.sequence_mut(id).ok_or_else(|| bad("new sequence missing"))?;
+        seq.start_timecode = q.start_timecode;
+        if seq.duration() != q.duration {
+            return Err(bad("native duration changed"));
+        }
+        p.item_mut(id)
+            .ok_or_else(|| bad("new item missing"))?
+            .metadata
+            .insert(SEQUENCE_KEY.into(), json!({"version":1,"composition":q.evidence,"conversion_warnings":q.warnings}).to_string());
+        out.push(id);
+    }
+    // Binding has established source geometry, so native Motion anchors/positions can be
+    // resolved now instead of retaining NaN "auto" coordinates in imported video clips.
+    p.resolve_placed_auto_points(|id| out.contains(&id), |_| true);
+    Ok(out)
+}

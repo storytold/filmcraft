@@ -81,6 +81,7 @@ pub fn media_key(m: &MediaClip) -> String {
         MediaRef::File { path } if m.offline => format!("offline:{path}"),
         MediaRef::File { path } => format!("file:{path}"),
         MediaRef::Generator(g) => format!("generator:{g:?}"),
+        MediaRef::Components { channels, picture } => format!("components:{}:{channels:?}:{picture:?}", m.offline),
     }
 }
 
@@ -258,6 +259,7 @@ impl MediaPool {
         let it = p.item(item)?;
         if proxies
             && !m.offline
+            && !matches!(m.media, MediaRef::Components { .. })
             && let Some(MediaRef::File { path }) = &m.proxy
             && let Some(s) = self.proxy_source(item, path, m, services)
         {
@@ -270,6 +272,27 @@ impl MediaPool {
             return Some(s.clone());
         }
         let src: SharedSource = match &m.media {
+            MediaRef::Components { channels, picture } => {
+                if m.offline {
+                    self.set_offline(item, OfflineReason::MadeOffline, "", "made offline");
+                    Arc::new(SlateSource::new(m.info.clone(), &it.name, OfflineReason::MadeOffline))
+                } else {
+                    match crate::component_media::open(m.info.clone(), channels, picture.as_ref(), services) {
+                        Ok((source, failures)) => {
+                            if failures.is_empty() {
+                                self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
+                            } else {
+                                self.set_offline(item, OfflineReason::Unreadable, "", &failures.join("; "));
+                            }
+                            source
+                        }
+                        Err(e) => {
+                            self.set_offline(item, OfflineReason::Unreadable, "", &e.to_string());
+                            Arc::new(SlateSource::new(m.info.clone(), &it.name, OfflineReason::Unreadable))
+                        }
+                    }
+                }
+            }
             MediaRef::Generator(g) => {
                 let v = m.info.video.as_ref();
                 let (w, h, r) = v.map(|v| (v.width, v.height, v.frame_rate)).unwrap_or((1920, 1080, Default::default()));

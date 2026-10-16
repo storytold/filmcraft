@@ -103,10 +103,14 @@ struct Driver {
 
 impl Driver {
     fn new(session: Session) -> Self {
+        Self::with_size(session, 1600.0, 980.0)
+    }
+
+    fn with_size(session: Session, width: f32, height: f32) -> Self {
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
         let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
+        let mut b = Harness::builder().with_size(egui::vec2(width, height)).with_max_steps(10_000);
         if snapshots.is_some() {
             b = b.wgpu();
         }
@@ -156,6 +160,27 @@ impl Driver {
     fn ids(&mut self, prefix: &str) -> Vec<String> {
         let v = self.ok("ui.elements", json!({"prefix": prefix}));
         v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
+    }
+
+    fn label(&mut self, id: &str) -> String {
+        let v = self.ok("ui.elements", json!({"prefix": id}));
+        v.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap()["label"].as_str().unwrap().into()
+    }
+
+    fn wait_component_search(&mut self) {
+        for _ in 0..300 {
+            self.frames(1);
+            if self.app().ui.link_media.as_ref().unwrap().component_job.is_none() {
+                let draft = self.app().ui.link_media.as_ref().unwrap();
+                assert!(draft.component_report.as_ref().is_some_and(|r| r["finished"] == true), "search did not complete: {}", draft.message);
+                // The result is consumed during drawing; ui.elements reads the previous
+                // frame's registry. Let that registry catch up before inspecting labels.
+                self.frames(2);
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("component search did not finish");
     }
 
     fn app(&mut self) -> &mut FilmcraftApp {
@@ -515,4 +540,357 @@ fn locate_relinks_instead_of_importing() {
     let st = d.exec("media.status", json!({}));
     assert!(st.as_array().unwrap().iter().all(|m| m["status"] == "online"), "item {item}: {st}");
     let _ = std::fs::remove_dir_all(&root);
+}
+
+fn component_project(root: &Path) -> (Session, filmcraft_engine::project::ItemId) {
+    use filmcraft_engine::project::AudioComponent;
+    use filmcraft_media::{AudioStreamInfo, MediaInfo, MediaKind};
+    let duration = Tick::from_units(100, 48000);
+    let mut channels = Vec::new();
+    for channel in 0..2 {
+        let ids = filmcraft_mxf::PackageIds::from_seed(&format!("ui-component-{channel}"), "test");
+        let bytes = filmcraft_mxf::write_opatom_pcm(
+            &filmcraft_mxf::OpAtomPcm { sample_rate: 48000, bits: 16, channels: 1, edit_rate: None, ids: ids.clone(), timecode: None },
+            &vec![2000; 100],
+        )
+        .unwrap();
+        std::fs::write(root.join(format!("renamed-{channel}.mxf")), bytes).unwrap();
+        channels.push(AudioComponent {
+            track: channel + 1,
+            file_package: ids.file.0,
+            path: None,
+            stream: 0,
+            channel: 0,
+            source_start: Tick::ZERO,
+            length: duration,
+        });
+    }
+    let mut session = Session::default();
+    let id = Arc::make_mut(&mut session.project).add_item(
+        "Stereo source",
+        Label::Blue,
+        ItemKind::Media(MediaClip {
+            media: MediaRef::Components { channels, picture: None },
+            info: MediaInfo {
+                name: "Stereo source".into(),
+                kind: MediaKind::AudioOnly,
+                duration,
+                video: None,
+                audio_streams: vec![AudioStreamInfo { sample_rate: 48000, channels: 2, codec: "PCM".into(), bits_per_sample: Some(16) }],
+                container: "MXF components".into(),
+                start_timecode: None,
+                file_size: None,
+            },
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        }),
+        None,
+    );
+    (session, id)
+}
+
+/// A1 and A2 are separate relink targets even though both belong to one project item.
+#[test]
+fn link_media_components_search_by_identity_and_offline_one_slot() {
+    let root = tmp_dir("component-link");
+    let (mut session, id) = component_project(&root);
+    session.execute("media.linkMedia", json!({})).unwrap();
+    let mut d = Driver::new(session);
+    d.frames(3);
+    assert_eq!(d.ids("linkMedia.row.").len(), 2);
+    assert!(d.ids("linkMedia.match.").is_empty(), "filename options must not control package matching");
+    d.snapshot("media-component-missing");
+    d.app().ui.link_media.as_mut().unwrap().folder = root.to_str().unwrap().into();
+    d.click("linkMedia.search");
+    d.wait_component_search();
+    assert_eq!(d.label("linkMedia.status.0"), "Match found");
+    assert_eq!(d.label("linkMedia.status.1"), "Match found");
+    assert_eq!(d.label("linkMedia.link"), "Link 2 files");
+    assert!(d.label("linkMedia.nextStep").contains("still offline"));
+    let MediaRef::Components { channels, .. } = &d.app().session.project.item(id).unwrap().as_media().unwrap().media else { panic!("component source") };
+    assert!(channels.iter().all(|c| c.path.is_none()), "finding matches must not apply them");
+    d.click("linkMedia.relinkOthers");
+    assert_eq!(d.label("linkMedia.link"), "Link 1 file");
+    d.click("linkMedia.relinkOthers");
+    assert_eq!(d.label("linkMedia.link"), "Link 2 files");
+    // Leaving A1 offline must leave A2 visible (the rows share an item ID).
+    d.click("linkMedia.offline");
+    assert_eq!(d.ids("linkMedia.row.").len(), 1);
+    assert!(d.app().ui.link_media.is_some());
+    d.app().ui.link_media.as_mut().unwrap().folder = root.to_str().unwrap().into();
+    d.click("linkMedia.search");
+    d.wait_component_search();
+    let draft = d.app().ui.link_media.as_ref().unwrap();
+    assert!(draft.component_job.is_none());
+    assert_eq!(draft.candidates.len(), 1, "{}", draft.message);
+    assert!(draft.candidates[0].0.ends_with("renamed-1.mxf"));
+    assert_eq!(draft.candidate, Some(0));
+    assert_eq!(d.label("linkMedia.link"), "Link 1 file");
+    d.snapshot("media-component-found");
+    std::fs::copy(root.join("renamed-1.mxf"), root.join("second-copy.mxf")).unwrap();
+    d.click("linkMedia.search");
+    d.wait_component_search();
+    let draft = d.app().ui.link_media.as_ref().unwrap();
+    assert_eq!(draft.candidates.len(), 2);
+    assert_eq!(draft.candidate, None, "duplicate copies must not silently select a path");
+    assert!(draft.message.contains("Multiple files"));
+    let candidate = draft.candidates.iter().position(|c| c.0.ends_with("renamed-1.mxf")).unwrap();
+    assert_eq!(d.label("linkMedia.status.0"), "Choose a copy");
+    assert!(d.ids("linkMedia.nextStep").is_empty());
+    d.click(&format!("linkMedia.candidate.{candidate}"));
+    assert_eq!(d.label("linkMedia.status.0"), "Copy selected");
+    assert_eq!(d.label("linkMedia.link"), "Link 1 file");
+    // An incomplete search must not suggest that a unique-looking result is ready to batch apply.
+    std::fs::remove_file(root.join("second-copy.mxf")).unwrap();
+    std::fs::write(root.join("corrupt.mxf"), b"invalid MXF").unwrap();
+    d.click("linkMedia.search");
+    d.wait_component_search();
+    assert!(d.app().ui.link_media.as_ref().unwrap().candidate.is_none());
+    assert!(d.ids("linkMedia.nextStep").is_empty());
+    assert!(d.app().ui.link_media.as_ref().unwrap().message.contains("Search incomplete"));
+    d.click("linkMedia.candidate.0");
+    assert_eq!(d.label("linkMedia.link"), "Link 1 file");
+    d.click("linkMedia.link");
+    let MediaRef::Components { channels, .. } = &d.app().session.project.item(id).unwrap().as_media().unwrap().media else { panic!("component source") };
+    assert!(channels[0].path.is_none());
+    assert!(channels[1].path.as_ref().unwrap().ends_with("renamed-1.mxf"));
+    assert!(d.app().ui.link_media.is_none());
+    d.exec("edit.undo", json!({}));
+    let MediaRef::Components { channels, .. } = &d.app().session.project.item(id).unwrap().as_media().unwrap().media else { panic!("component source") };
+    assert!(channels.iter().all(|c| c.path.is_none()));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn native_avid_import_reviews_before_apply_and_cancel_keeps_project() {
+    struct EmptyBin(Vec<u8>);
+    impl filmcraft_engine::Services for EmptyBin {
+        fn read_file(&self, _: &str) -> std::io::Result<Vec<u8>> {
+            Ok(self.0.clone())
+        }
+        fn write_file(&self, _: &str, _: &[u8]) -> std::io::Result<()> {
+            panic!("must not write AVB");
+        }
+    }
+    let mut bytes = b"\x06\0DomainDJBO\x07\0AObjDoc\x04\0\0".to_vec();
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(&[0; 38]);
+    bytes.extend_from_slice(b"NIBA");
+    bytes.extend_from_slice(&119u32.to_le_bytes());
+    bytes.extend_from_slice(&[2, 14]);
+    bytes.extend_from_slice(&[0; 117]);
+    let mut d = Driver::new(Session::new(Arc::new(EmptyBin(bytes))));
+    let before = d.app().session.project.clone();
+    d.exec("file.importAvidBin", json!({}));
+    d.app().ui.avid_import.as_mut().unwrap().path = "Empty.avb".into();
+    d.frames(2);
+    d.click("avidImport.read");
+    for _ in 0..300 {
+        d.frames(1);
+        if d.app().ui.avid_import.as_ref().unwrap().report.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(d.app().ui.avid_import.as_ref().unwrap().report.is_some(), "{:?}", d.app().ui.avid_import);
+    d.frames(2);
+    assert!(d.label("avidImport.bin.0").contains("Empty — 0 clips"));
+    assert_eq!(d.app().session.project, before);
+    assert!(d.app().session.history.undo.is_empty());
+    d.snapshot("avid-native-import-preview");
+
+    d.click("avidImport.cancel");
+    assert_eq!(d.app().session.project, before);
+    d.exec("file.importAvidBin", json!({}));
+    let job = d.exec("file.prepareAvidBin", json!({"path":"Empty.avb","wait":true}));
+    d.app().ui.avid_import.as_mut().unwrap().job = job["job"].as_u64();
+    d.frames(3);
+    d.click("avidImport.import");
+    assert!(d.app().ui.avid_import.is_none());
+    assert_eq!(d.app().session.history.undo.len(), 1);
+    assert!(d.app().session.project.root.children.iter().any(|b| matches!(b,filmcraft_engine::project::BinEntry::Bin(b) if b.name=="Empty")));
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.app().session.project, before);
+}
+
+#[test]
+fn native_avid_expanded_reports_keep_actions_on_screen() {
+    for (width, height) in [(1600.0, 980.0), (1024.0, 768.0), (800.0, 600.0)] {
+        let mut d = Driver::with_size(Session::default(), width, height);
+        d.exec("file.importAvidBin", json!({}));
+        let diagnostics: Vec<_> = (0..100).map(|n| format!("/media/{}/component-{n}.mxf: skipped opaque header packet", "long-folder/".repeat(12))).collect();
+        let warnings: Vec<_> = (0..40).map(|n| format!("Clip {n}: converted using frame sampling; original interpolation may differ.")).collect();
+        d.app().ui.avid_import.as_mut().unwrap().report = Some(json!({
+            "bins":[{"name":"Example","clips":3}], "sequences":[{}],
+            "mediaSearch":{"linkedComponents":6,"offlineComponents":0,"search":{
+                "complete":true,"diagnostics":diagnostics,
+                "results":(0..6).map(|n| json!({"item":n,"component":{"kind":"audio"},"status":"unique"})).collect::<Vec<_>>()
+            }}, "warnings":warnings
+        }));
+        d.frames(8);
+        // Open bottom-to-top so expanded content does not obscure the remaining headers.
+        for id in ["avidImport.notes", "avidImport.diagnostics", "avidImport.matches"] {
+            d.click(id);
+            d.frames(12);
+        }
+        for id in ["avidImport.cancel", "avidImport.read", "avidImport.import", "avidImport.path", "avidImport.mediaFolder"] {
+            let r = d.app().auto.find(id).unwrap().rect;
+            assert!(r[0] >= 0.0 && r[1] >= 0.0 && r[0] + r[2] <= width && r[1] + r[3] <= height, "{id} at {r:?} outside {width}x{height}");
+        }
+        d.snapshot(&format!("avid-expanded-report-{width}x{height}"));
+        // Actual failures share the bounded viewport, including after a partial import.
+        let draft = d.app().ui.avid_import.as_mut().unwrap();
+        draft.completed = true;
+        draft.report.as_mut().unwrap()["errors"] = json!(vec!["Unsupported segment retained as an offline placeholder"; 100]);
+        draft.error = "Import completed with conversion problems.".into();
+        d.frames(8);
+        let r = d.app().auto.find("avidImport.cancel").unwrap().rect;
+        assert!(r[1] >= 0.0 && r[1] + r[3] <= height, "Close must remain visible: {r:?}");
+        d.click("avidImport.cancel");
+        assert!(d.app().ui.avid_import.is_none());
+    }
+}
+
+#[test]
+fn native_avid_folder_rows_invalidate_preview_and_remain_bounded() {
+    let mut d = Driver::with_size(Session::default(), 800.0, 600.0);
+    d.exec("file.importAvidBin", json!({}));
+    d.frames(3);
+    assert_eq!(d.app().ui.avid_import.as_ref().unwrap().media_folders, [""]);
+    d.app().hooks.pick_folder = Some(Box::new(|| Some("/media/first".into())));
+    d.click("avidImport.browseMedia.0");
+    d.click("avidImport.addFolder");
+    d.app().hooks.pick_folder = Some(Box::new(|| Some("/media/second".into())));
+    d.click("avidImport.browseMedia.1");
+    assert_eq!(d.app().ui.avid_import.as_ref().unwrap().media_folders, ["/media/first", "/media/second"]);
+    d.app().ui.avid_import.as_mut().unwrap().report = Some(json!({"bins":[],"warnings":[]}));
+    d.frames(3);
+    d.click("avidImport.removeFolder.1");
+    assert!(d.app().ui.avid_import.as_ref().unwrap().report.is_none());
+    assert_eq!(d.app().ui.avid_import.as_ref().unwrap().media_folders, ["/media/first"]);
+    d.click("avidImport.addFolder");
+    d.frames(8);
+    d.snapshot("avid-multiple-folder-selectors");
+    for _ in 0..35 {
+        d.click("avidImport.addFolder");
+    }
+    assert_eq!(d.app().ui.avid_import.as_ref().unwrap().media_folders.len(), 32);
+    d.app().ui.avid_import.as_mut().unwrap().report = Some(json!({"bins":[],"errors":vec!["Example failure";100]}));
+    d.frames(8);
+    for id in ["avidImport.addFolder", "avidImport.cancel", "avidImport.read", "avidImport.import"] {
+        let r = d.app().auto.find(id).unwrap().rect;
+        assert!(r[0] >= 0.0 && r[1] >= 0.0 && r[0] + r[2] <= 800.0 && r[1] + r[3] <= 600.0, "{id}: {r:?}");
+    }
+    d.snapshot("avid-multiple-folder-limit");
+    d.click("avidImport.cancel");
+    assert!(d.app().ui.avid_import.is_none());
+}
+
+type PickerRequests = Arc<std::sync::Mutex<Vec<(filmcraft_ui_egui::native_dialogs::FileDialog, Sender<Vec<String>>)>>>;
+
+fn delayed_picker(d: &mut Driver) -> PickerRequests {
+    let requests: PickerRequests = Arc::default();
+    let pending = requests.clone();
+    d.app().hooks.run_dialog = Some(Box::new(move |dialog| {
+        let (tx, rx) = channel();
+        pending.lock().unwrap().push((dialog, tx));
+        rx
+    }));
+    requests
+}
+
+#[test]
+fn avid_async_browse_updates_only_the_current_open_draft() {
+    use filmcraft_ui_egui::native_dialogs::FileDialog;
+    let mut d = Driver::new(Session::default());
+    let requests = delayed_picker(&mut d);
+    let before = d.app().session.project.clone();
+    d.exec("file.importAvidBin", json!({}));
+    d.frames(3);
+    d.click("avidImport.browse");
+    let (dialog, answer) = requests.lock().unwrap().pop().unwrap();
+    assert!(matches!(dialog, FileDialog::OpenFiles { exts } if exts == ["avb"]));
+    assert!(d.app().native_dialog_open());
+    assert!(d.app().ui.avid_import.as_ref().unwrap().path.is_empty());
+    answer.send(vec!["Selected.avb".into()]).unwrap();
+    d.frames(3);
+    assert_eq!(d.app().ui.avid_import.as_ref().unwrap().path, "Selected.avb");
+    d.click("avidImport.addFolder");
+    d.click("avidImport.browseMedia.1");
+    let (dialog, answer) = requests.lock().unwrap().pop().unwrap();
+    assert!(matches!(dialog, FileDialog::Folder { .. }));
+    answer.send(vec!["/media/second".into()]).unwrap();
+    d.frames(3);
+    assert_eq!(d.app().ui.avid_import.as_ref().unwrap().media_folders, ["", "/media/second"]);
+    // Cancellation preserves the current preview and paths.
+    d.app().ui.avid_import.as_mut().unwrap().report = Some(json!({"bins":[]}));
+    d.frames(2);
+    d.click("avidImport.browseMedia.0");
+    let (_, answer) = requests.lock().unwrap().pop().unwrap();
+    answer.send(Vec::new()).unwrap();
+    d.frames(3);
+    assert!(d.app().ui.avid_import.as_ref().unwrap().report.is_some());
+    // If the rows changed while the picker was open, its answer must not fill another row.
+    d.click("avidImport.browseMedia.1");
+    let (_, answer) = requests.lock().unwrap().pop().unwrap();
+    d.app().ui.avid_import.as_mut().unwrap().media_folders.remove(0);
+    answer.send(vec!["/wrong-slot".into()]).unwrap();
+    d.frames(3);
+    assert_eq!(d.app().ui.avid_import.as_ref().unwrap().media_folders, ["/media/second"]);
+    d.click("avidImport.browse");
+    let (_, answer) = requests.lock().unwrap().pop().unwrap();
+    d.app().ui.avid_import = None;
+    answer.send(vec!["Closed.avb".into()]).unwrap();
+    d.frames(3);
+    assert!(d.app().ui.avid_import.is_none());
+    assert_eq!(d.app().session.project, before);
+    assert!(d.app().session.history.undo.is_empty());
+}
+
+#[test]
+fn component_locate_async_preserves_identity_and_selected_slot() {
+    use filmcraft_ui_egui::native_dialogs::FileDialog;
+    let root = tmp_dir("async-component-locate");
+    let (mut session, id) = component_project(&root);
+    session.execute("media.linkMedia", json!({})).unwrap();
+    let mut d = Driver::new(session);
+    let requests = delayed_picker(&mut d);
+    d.frames(3);
+    let before = d.app().session.project.clone();
+    d.click("linkMedia.locate");
+    let (dialog, answer) = requests.lock().unwrap().pop().unwrap();
+    let FileDialog::Relink { hint, .. } = dialog else { panic!("component relink picker") };
+    assert_eq!(hint.command, "media.relinkAudioComponent");
+    assert_eq!(hint.params["item"], id.0);
+    assert_eq!(hint.params["channel"], 0);
+    // A matching extension is insufficient: A2's identity cannot replace A1.
+    answer.send(vec![root.join("renamed-1.mxf").to_str().unwrap().into()]).unwrap();
+    d.frames(3);
+    assert_eq!(d.app().session.project, before);
+    assert!(!d.app().ui.link_media.as_ref().unwrap().message.is_empty());
+    d.click("linkMedia.locate");
+    let (_, answer) = requests.lock().unwrap().pop().unwrap();
+    d.app().ui.link_media.as_mut().unwrap().row = 1;
+    d.frames(3);
+    answer.send(vec![root.join("renamed-0.mxf").to_str().unwrap().into()]).unwrap();
+    d.frames(3);
+    assert_eq!(d.app().session.project, before, "a stale row's picker must not relink");
+    d.click("linkMedia.locate");
+    let (dialog, answer) = requests.lock().unwrap().pop().unwrap();
+    let FileDialog::Relink { hint, .. } = dialog else { panic!("component relink picker") };
+    assert_eq!(hint.params["channel"], 1);
+    answer.send(vec![root.join("renamed-1.mxf").to_str().unwrap().into()]).unwrap();
+    d.frames(3);
+    let MediaRef::Components { channels, .. } = &d.app().session.project.item(id).unwrap().as_media().unwrap().media else { panic!("component source") };
+    assert!(channels[0].path.is_none());
+    assert!(channels[1].path.as_ref().unwrap().ends_with("renamed-1.mxf"));
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.app().session.project, before);
+    std::fs::remove_dir_all(root).unwrap();
 }

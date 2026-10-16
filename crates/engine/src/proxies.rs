@@ -172,7 +172,7 @@ fn media_path(p: &Project, item: ItemId) -> Option<(MediaClip, String, String)> 
     let m = it.as_media()?;
     match &m.media {
         MediaRef::File { path } => Some((m.clone(), path.clone(), it.name.clone())),
-        MediaRef::Generator(_) => None,
+        MediaRef::Generator(_) | MediaRef::Components { .. } => None,
     }
 }
 
@@ -309,6 +309,9 @@ fn check_proxy(s: &Session, item: ItemId, path: &str) -> Result<()> {
 
 /// Attach proxies (checked unless `force`). One undo step.
 pub fn attach(s: &mut Session, pairs: &[(ItemId, String)], force: bool) -> Result<Value> {
+    if pairs.iter().any(|(id, _)| s.project.item(*id).and_then(|i| i.as_media()).is_some_and(|m| matches!(m.media, MediaRef::Components { .. }))) {
+        return Err(bad("media.attachProxies", "proxies for multi-file audio are not supported yet"));
+    }
     if !force {
         for (i, p) in pairs {
             check_proxy(s, *i, p)?;

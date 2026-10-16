@@ -2073,6 +2073,7 @@ dependencies = [
 name = "filmcraft-interchange"
 version = "0.8.0"
 dependencies = [
+ "encoding_rs",
  "filmcraft-cfb",
  "filmcraft-color",
  "filmcraft-geom",
@@ -2334,6 +2335,7 @@ dependencies = [
  "filmcraft-gpu",
  "filmcraft-interchange",
  "filmcraft-media",
+ "filmcraft-mxf",
  "filmcraft-platform",
  "filmcraft-project",
  "filmcraft-render",

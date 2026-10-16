@@ -290,7 +290,7 @@ pub(crate) fn item_path(p: &Project, id: ItemId) -> Option<&str> {
     match &p.item(id)?.kind {
         ItemKind::Media(m) => match &m.media {
             MediaRef::File { path } => Some(path),
-            MediaRef::Generator(_) => None,
+            MediaRef::Generator(_) | MediaRef::Components { .. } => None,
         },
         ItemKind::Subclip { parent, .. } => item_path(p, *parent),
         _ => None,
@@ -329,7 +329,7 @@ pub(crate) fn uncarried_clip(p: &Project, c: &TrackItem, rate: FrameRate) -> Opt
 pub(crate) fn generator_of(p: &Project, id: ItemId) -> Option<&Generator> {
     match &item_media(p, id)?.media {
         MediaRef::Generator(g) => Some(g),
-        MediaRef::File { .. } => None,
+        MediaRef::File { .. } | MediaRef::Components { .. } => None,
     }
 }
 

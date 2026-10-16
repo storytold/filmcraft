@@ -177,7 +177,7 @@ fn collect_needs(
                     let Some(a) = m.info.audio_streams.get(c.audio_stream) else { continue };
                     let path = match &m.media {
                         MediaRef::File { path } => Some(path.clone()),
-                        MediaRef::Generator(_) => None,
+                        MediaRef::Generator(_) | MediaRef::Components { .. } => None,
                     };
                     let dur = m.info.duration;
                     if dur > Tick::ZERO {

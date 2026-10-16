@@ -387,3 +387,67 @@ fn a_corrupt_index_position_cannot_allocate_a_giant_sparse_table() {
     let file = open(&bytes).unwrap();
     assert_eq!(file.tracks[file.track_of_kind(TrackKind::Picture).unwrap()].samples.len(), 5);
 }
+
+#[test]
+fn opaque_header_packet_preserves_following_metadata() {
+    let original = build(2, prores_like, &[], &[]);
+    let at = original.windows(16).position(|b| b == set_key(0x2f)).unwrap();
+    let mut opaque = Vec::new();
+    klv(&mut opaque, [0x80; 16], &[0; 96]);
+    let mut data = original.clone();
+    data.splice(at..at, opaque.iter().copied());
+    let (_, width) = crate::klv::ber_length(&data[16..]).unwrap();
+    let count_at = 16 + width + 32;
+    let count = u64::from_be_bytes(data[count_at..count_at + 8].try_into().unwrap());
+    data[count_at..count_at + 8].copy_from_slice(&(count + opaque.len() as u64).to_be_bytes());
+    let file = open(data.as_slice()).unwrap();
+    assert_eq!(file.tracks.len(), 2);
+    assert!(file.warnings.iter().any(|w| w.contains("opaque non-SMPTE")));
+    let audio = file.track_of_kind(TrackKind::Sound).unwrap();
+    assert_eq!(
+        file.read_pcm(data.as_slice(), audio, 0, 100).unwrap(),
+        open(original.as_slice()).unwrap().read_pcm(original.as_slice(), audio, 0, 100).unwrap()
+    );
+    // An unbounded purported private value must not be trusted as a packet boundary.
+    data[at + 16..at + 20].copy_from_slice(&[0x83, 0xff, 0xff, 0xff]);
+    assert!(std::panic::catch_unwind(|| open(data.as_slice())).is_ok());
+}
+
+#[test]
+fn legacy_picture_audio_and_timecode_data_definitions_are_recognized() {
+    let mut data = build(2, prores_like, &[], &[]);
+    for (standard, legacy) in [
+        (PICTURE_DEF, [0x80, 0x7d, 0, 0x60, 8, 0x14, 0x3e, 0x6f, 0x6f, 0x3c, 0x8c, 0xe1, 0x6c, 0xef, 0x11, 0xd2]),
+        (SOUND_DEF, [0x80, 0x7d, 0, 0x60, 8, 0x14, 0x3e, 0x6f, 0x78, 0xe1, 0xeb, 0xe1, 0x6c, 0xef, 0x11, 0xd2]),
+        (TC_DEF, [0x80, 0x7f, 0, 0x60, 8, 0x14, 0x3e, 0x6f, 0x7f, 0x27, 0x5e, 0x81, 0x77, 0xe5, 0x11, 0xd2]),
+    ] {
+        let positions: Vec<_> = data.windows(16).enumerate().filter(|(_, b)| *b == standard).map(|(i, _)| i).collect();
+        for pos in positions {
+            data[pos..pos + 16].copy_from_slice(&legacy);
+        }
+    }
+    let file = open(data.as_slice()).unwrap();
+    assert_eq!(file.tracks[file.track_of_kind(TrackKind::Picture).unwrap()].samples.len(), 2);
+    assert!(file.track_of_kind(TrackKind::Sound).is_some());
+    assert!(file.timecode.is_some());
+}
+
+#[test]
+fn material_clock_and_duration_survive_file_unit_conversion() {
+    let (offsets, flags) = ipbb();
+    let mut bytes = build(7, |_| vec![0; 100], &offsets, &flags);
+    let original = track(14, 3, 0x1601_0300, 24);
+    let mut changed = original.clone();
+    let rate = [0x4b, 0x01, 0, 8, 0, 0, 0, 25, 0, 0, 0, 1];
+    let offset = changed.windows(rate.len()).position(|w| w == rate).unwrap();
+    changed[offset + 4..offset + 8].copy_from_slice(&48000i32.to_be_bytes());
+    let offset = bytes.windows(original.len()).position(|w| w == original).unwrap();
+    bytes[offset..offset + original.len()].copy_from_slice(&changed);
+    let file = open(&bytes).unwrap();
+    let sound = &file.tracks[file.track_of_kind(TrackKind::Sound).unwrap()];
+    assert_eq!(sound.edit_rate, Rational::new(48000, 1));
+    assert_eq!(sound.duration, Some(13440));
+    assert_eq!(sound.material_edit_rate, Some(Rational::new(25, 1)));
+    assert_eq!(sound.material_duration, Some(7));
+    assert_eq!(sound.stored_sample_frames(), 13440);
+}

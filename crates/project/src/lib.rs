@@ -160,8 +160,41 @@ impl Label {
 pub enum MediaRef {
     /// A file on disk (native) or a named blob (web).
     File { path: String },
+    /// One logical source backed by separately identified MXF picture/audio files.
+    /// Missing components retain their slot; they are never shifted onto another channel.
+    #[serde(alias = "AudioComponents")]
+    Components {
+        channels: Vec<AudioComponent>,
+        #[serde(default)]
+        picture: Option<PictureComponent>,
+    },
     /// A synthetic generator (Bars and Tone, Color Matte, demo footage…).
     Generator(Generator),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioComponent {
+    pub track: u32,
+    /// Canonical, big-endian file-package UMID; checked again when opening the file.
+    pub file_package: [u8; 32],
+    pub path: Option<String>,
+    pub stream: usize,
+    pub channel: usize,
+    pub source_start: Tick,
+    pub length: Tick,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PictureComponent {
+    /// Geometry/rate are known from source metadata, but decoder-specific format is not yet verified.
+    /// Playback remains a slate until an identity-checked relink hydrates the format.
+    #[serde(default)]
+    pub format_pending: bool,
+    pub track: u32,
+    pub file_package: [u8; 32],
+    pub path: Option<String>,
+    pub source_start: Tick,
+    pub length: Tick,
 }
 
 /// Overrides applied when interpreting footage (Modify ▸ Interpret Footage).

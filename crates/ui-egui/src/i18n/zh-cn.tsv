@@ -187,6 +187,7 @@
 	Light	浅
 	Link	链接
 	Link Media…	链接媒体…
+	Import Avid Bin…	导入 Avid 素材箱…
 	Refresh Changed Media	刷新已更改的媒体
 	Linked Selection	关联选择
 	Lock Guides	锁定参考线
@@ -788,6 +789,13 @@
 	Offline	脱机
 	Missing	缺失
 	Link Media	链接媒体
+	Click '{button}' to apply the matches. Media is still offline until then.	单击“{button}”以应用匹配结果。在此之前，媒体仍处于脱机状态。
+	Link 1 file	链接 1 个文件
+	Link {n} files	链接 {n} 个文件
+	Linked {n} media component(s)	已链接 {n} 个媒体组件
+	Match selected. Click Link to reconnect the media.	已选择匹配项。单击“链接”以重新连接媒体。
+	Search finds matching files. Click Link to reconnect them, or leave them offline.	搜索可查找匹配文件。单击“链接”以重新连接媒体，或保持脱机状态。
+	{n} media file(s) need reconnecting.	{n} 个媒体文件需要重新连接。
 	{n} clip(s) can't find their media. Locate them, search a folder, or leave them offline.	有 {n} 个剪辑找不到其媒体。请定位它们、搜索文件夹，或保持脱机状态。
 	Clip Name	剪辑名称
 	File Name	文件名
@@ -3557,6 +3565,51 @@
 	Delete Caption Track	删除字幕轨道
 	Delete Caption Tracks	删除多个字幕轨道
 	Delete Empty Caption Tracks	删除空字幕轨道
+	Import Avid Bin	导入 Avid 素材箱
+	Transfer the bin contents into a new FilmCraft bin.	将素材箱内容转入新的 FilmCraft 素材箱。
+	Choose an .avb file	选择 .avb 文件
+	Media folders (optional) · Includes subfolders	媒体文件夹（可选）· 包含子文件夹
+	Choose a folder, or leave empty for offline import	选择文件夹，或留空以导入离线媒体
+	+ Add folder	+ 添加文件夹
+	Reading bin… You can cancel without changing the project.	正在读取素材箱… 可取消，项目不会改变。
+	Search was incomplete. No automatic matches were applied.	搜索未完成。未自动应用任何匹配项。
+	Media matches	媒体匹配项
+	Reader details for troubleshooting; these messages do not by themselves mean an import failed.	用于排查问题的读取器详情；这些消息本身不表示导入失败。
+	Technical diagnostics	技术诊断
+	Media remains offline until you link its components.	媒体在链接其组件之前将保持离线。
+	Conversion notes	转换说明
+	Imported. Review the conversion problems, then close this report.	已导入。请查看转换问题，然后关闭此报告。
+	Click 'Import' to transfer this snapshot. The original Avid bin will not be changed.	点击“导入”以转入此快照。原始 Avid 素材箱不会改变。
+	Read bin	读取素材箱
+	{name} — {n} clips	{name} — {n} 个片段
+	1 sequence	1 个序列
+	{n} sequences	{n} 个序列
+	{ready} media components ready to link; {offline} will remain offline	{ready} 个媒体组件可供链接；{offline} 个将保持离线
+	Technical diagnostics ({n})	技术诊断（{n}）
+	{n} conversion problems — partial results will still be imported	{n} 个转换问题 — 仍将导入部分结果
+	Conversion notes ({n})	转换说明（{n}）
+	Imported {clips} Avid clips and {sequences} sequences.	已导入 {clips} 个 Avid 片段和 {sequences} 个序列。
+	Import completed with {n} conversion problems. Review the messages above.	导入完成，有 {n} 个转换问题。请查看上方消息。
+	Copy selected	已选择副本
+	Match found	找到匹配项
+	Choose a copy	选择副本
+	Cannot link	无法链接
+	Not found	未找到
+	Search incomplete	搜索未完成
+	Match by Avid media identity. Picture and audio channels keep their original slots.	按 Avid 媒体标识匹配。画面和音频声道保留原有位置。
+	Also link other unique component matches	同时链接其他具有唯一匹配项的组件
+	Stop search	停止搜索
+	✔ verified identity	✔ 标识已验证
+	Searching MXF identities…	正在搜索 MXF 标识…
+	Searching MXF identities… {n} entries checked	正在搜索 MXF 标识… 已检查 {n} 个条目
+	Multiple files carry this media identity. Choose the copy to use.	多个文件具有此媒体标识。请选择要使用的副本。
+	No matching media identity found in this search.	本次搜索未找到匹配的媒体标识。
+	Identity found, but the file cannot satisfy this component. Hover over the candidate for details.	已找到标识，但该文件不满足此组件的要求。将鼠标悬停在候选项上查看详情。
+	 Search incomplete: automatic linking is disabled. Choose a verified file explicitly or search a smaller folder.	 搜索未完成：已禁用自动链接。请手动选择已验证的文件，或搜索较小的文件夹。
+	Search diagnostics	搜索诊断
+	{n} additional diagnostics omitted	已省略另外 {n} 条诊断信息
+	Item {item} · {kind} · {status}	项目 {item} · {kind} · {status}
+	Showing {shown} of {total} matches.	显示 {total} 个匹配项中的 {shown} 个。
 
 	Appearance Settings…	外观设置…
 

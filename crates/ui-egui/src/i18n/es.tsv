@@ -192,6 +192,7 @@
 	Light	Claro
 	Link	Vincular
 	Link Media…	Vincular medios…
+	Import Avid Bin…	Importar bandeja de Avid…
 	Refresh Changed Media	Actualizar medios cambiados
 	Linked Selection	Selección vinculada
 	Lock Guides	Bloquear guías
@@ -798,6 +799,13 @@
 	Offline	Sin conexión
 	Missing	No encontrado
 	Link Media	Vincular medios
+	Click '{button}' to apply the matches. Media is still offline until then.	Haz clic en '{button}' para aplicar las coincidencias. Los medios seguirán sin conexión hasta entonces.
+	Link 1 file	Vincular 1 archivo
+	Link {n} files	Vincular {n} archivos
+	Linked {n} media component(s)	Componentes de medios vinculados: {n}
+	Match selected. Click Link to reconnect the media.	Coincidencia seleccionada. Haz clic en Vincular para volver a conectar los medios.
+	Search finds matching files. Click Link to reconnect them, or leave them offline.	La búsqueda encuentra archivos coincidentes. Haz clic en Vincular para volver a conectarlos, o déjalos sin conexión.
+	{n} media file(s) need reconnecting.	Archivos multimedia que deben volver a conectarse: {n}.
 	{n} clip(s) can't find their media. Locate them, search a folder, or leave them offline.	{n} clip(s) no encuentra(n) sus medios. Localízalo(s), busca en una carpeta o déjalo(s) sin conexión.
 	Clip Name	Nombre del clip
 	File Name	Nombre de archivo
@@ -3582,6 +3590,51 @@
 	Edit Project Notes	Editar notas del proyecto
 	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	Notas de este proyecto: tareas pendientes, instrucciones, números de fotograma… Se guardan con el proyecto.
 	Use Effect Shutter Angle	Usar el ángulo de obturación del efecto
+	Import Avid Bin	Importar bandeja de Avid
+	Transfer the bin contents into a new FilmCraft bin.	Transfiere el contenido a una nueva bandeja de FilmCraft.
+	Choose an .avb file	Elige un archivo .avb
+	Media folders (optional) · Includes subfolders	Carpetas de medios (opcional) · Incluye subcarpetas
+	Choose a folder, or leave empty for offline import	Elige una carpeta o deja el campo vacío para importar sin conexión
+	+ Add folder	+ Añadir carpeta
+	Reading bin… You can cancel without changing the project.	Leyendo bandeja… Puedes cancelar sin modificar el proyecto.
+	Search was incomplete. No automatic matches were applied.	La búsqueda no se completó. No se aplicaron coincidencias automáticas.
+	Media matches	Coincidencias de medios
+	Reader details for troubleshooting; these messages do not by themselves mean an import failed.	Detalles del lector para diagnosticar problemas; estos mensajes por sí solos no indican que la importación haya fallado.
+	Technical diagnostics	Diagnóstico técnico
+	Media remains offline until you link its components.	Los medios seguirán sin conexión hasta que vincules sus componentes.
+	Conversion notes	Notas de conversión
+	Imported. Review the conversion problems, then close this report.	Importación completada. Revisa los problemas de conversión y cierra este informe.
+	Click 'Import' to transfer this snapshot. The original Avid bin will not be changed.	Haz clic en 'Importar' para transferir esta instantánea. La bandeja original de Avid no se modificará.
+	Read bin	Leer bandeja
+	{name} — {n} clips	{name} — {n} clips
+	1 sequence	1 secuencia
+	{n} sequences	{n} secuencias
+	{ready} media components ready to link; {offline} will remain offline	{ready} componentes listos para vincular; {offline} seguirán sin conexión
+	Technical diagnostics ({n})	Diagnóstico técnico ({n})
+	{n} conversion problems — partial results will still be imported	{n} problemas de conversión — se importarán los resultados parciales
+	Conversion notes ({n})	Notas de conversión ({n})
+	Imported {clips} Avid clips and {sequences} sequences.	Se importaron {clips} clips de Avid y {sequences} secuencias.
+	Import completed with {n} conversion problems. Review the messages above.	Importación completada con {n} problemas de conversión. Revisa los mensajes anteriores.
+	Copy selected	Copia seleccionada
+	Match found	Coincidencia encontrada
+	Choose a copy	Elige una copia
+	Cannot link	No se puede vincular
+	Not found	No encontrado
+	Search incomplete	Búsqueda incompleta
+	Match by Avid media identity. Picture and audio channels keep their original slots.	Busca por identidad de medios de Avid. La imagen y los canales de audio conservan sus posiciones originales.
+	Also link other unique component matches	Vincular también otras coincidencias únicas de componentes
+	Stop search	Detener búsqueda
+	✔ verified identity	✔ identidad verificada
+	Searching MXF identities…	Buscando identidades MXF…
+	Searching MXF identities… {n} entries checked	Buscando identidades MXF… {n} entradas comprobadas
+	Multiple files carry this media identity. Choose the copy to use.	Varios archivos tienen esta identidad de medios. Elige la copia que deseas usar.
+	No matching media identity found in this search.	No se encontró ninguna identidad de medios coincidente en esta búsqueda.
+	Identity found, but the file cannot satisfy this component. Hover over the candidate for details.	Se encontró la identidad, pero el archivo no es compatible con este componente. Sitúa el puntero sobre el candidato para ver los detalles.
+	 Search incomplete: automatic linking is disabled. Choose a verified file explicitly or search a smaller folder.	 Búsqueda incompleta: la vinculación automática está desactivada. Elige un archivo verificado o busca en una carpeta más pequeña.
+	Search diagnostics	Diagnóstico de búsqueda
+	{n} additional diagnostics omitted	Se omitieron {n} diagnósticos adicionales
+	Item {item} · {kind} · {status}	Elemento {item} · {kind} · {status}
+	Showing {shown} of {total} matches.	Se muestran {shown} de {total} coincidencias.
 
 	Appearance Settings…	Ajustes de apariencia…
 

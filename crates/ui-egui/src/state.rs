@@ -540,6 +540,8 @@ pub struct UiState {
     /// Link Media dialog (open when Some).
     #[serde(default)]
     pub link_media: Option<LinkMediaDraft>,
+    #[serde(default)]
+    pub avid_import: Option<AvidImportDraft>,
     /// Create Proxies dialog (open when Some).
     #[serde(default)]
     pub create_proxies: Option<ProxyDraft>,
@@ -714,6 +716,12 @@ pub struct LinkMediaDraft {
     /// Search: folder and "Display only exact name matches".
     pub folder: String,
     pub exact_name: bool,
+    /// Component searches are read-only background jobs; explicit Link applies their results.
+    pub component_job: Option<u64>,
+    pub component_report: Option<serde_json::Value>,
+    pub selected_key: String,
+    pub observed_revision: Option<u64>,
+    pub skipped_components: Vec<String>,
     /// Search results for the selected row: (path, ok, identity match, problems).
     pub candidates: Vec<(String, bool, Option<bool>, String)>,
     pub candidate: Option<usize>,
@@ -736,6 +744,11 @@ impl Default for LinkMediaDraft {
             relink_others: true,
             folder: String::new(),
             exact_name: true,
+            component_job: None,
+            component_report: None,
+            selected_key: String::new(),
+            observed_revision: None,
+            skipped_components: vec![],
             candidates: vec![],
             candidate: None,
             skipped: vec![],
@@ -1001,6 +1014,7 @@ impl Default for UiState {
             gfx_edit: None,
             pen_points: vec![],
             link_media: None,
+            avid_import: None,
             create_proxies: None,
             project_manager: None,
             make_offline: None,
@@ -1023,4 +1037,17 @@ impl Default for UiState {
             media_browser: Default::default(),
         }
     }
+}
+
+/// Snapshot review for native Avid import; decoder jobs live in the engine.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct AvidImportDraft {
+    pub path: String,
+    pub completed: bool,
+    pub media_folders: Vec<String>,
+    pub parent: Option<u64>,
+    pub job: Option<u64>,
+    pub report: Option<serde_json::Value>,
+    pub error: String,
 }
