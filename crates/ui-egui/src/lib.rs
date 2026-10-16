@@ -420,6 +420,8 @@ pub struct FilmcraftApp {
     pub cloud_locks: Vec<cloud::LockRange>,
     /// Cloud Open / Save As page from the File menu, if any.
     pub cloud_page: Option<cloud::CloudPage>,
+    /// Encoded Export / Quick Export bytes waiting for [`cloud::upload_export`] / `encode`.
+    pub pending_cloud_upload: Option<Vec<u8>>,
 }
 
 pub struct GpuState {
@@ -645,6 +647,7 @@ impl FilmcraftApp {
             presence: craft_ui::presence::PresenceBar::new().badges_only(),
             cloud_locks: Vec::new(),
             cloud_page: None,
+            pending_cloud_upload: None,
         }
     }
 

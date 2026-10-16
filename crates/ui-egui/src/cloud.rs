@@ -211,9 +211,14 @@ impl CloudApp for FilmcraftApp {
     }
 
     fn kind(&self) -> DocumentKind {
-        match self.cloud_page {
-            Some(CloudPage::Import) => MEDIA,
-            _ => PROJECT,
+        // Media Browser cloud browse, Import modal, export upload, and folder pick all list media.
+        if self.ui.media_browser.cloud
+            || self.pending_cloud_upload.is_some()
+            || matches!(self.cloud_page, Some(CloudPage::Import | CloudPage::PickExportFolder))
+        {
+            MEDIA
+        } else {
+            PROJECT
         }
     }
 
@@ -230,12 +235,17 @@ impl CloudApp for FilmcraftApp {
 
     fn open_bytes(&mut self, name: &str, bytes: Vec<u8>) -> Result<Option<u64>, String> {
         let ext = std::path::Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-        // Import page (or a media file opened from a mixed list): pull into the project bin.
-        if self.cloud_page == Some(CloudPage::Import) || (ext != "fcproj" && !ext.is_empty() && filmcraft_media::is_importable(std::path::Path::new(name))) {
+        // Media Browser cloud browse, Import modal, or a media file from a mixed list: into the project.
+        let as_media = self.ui.media_browser.cloud
+            || self.cloud_page == Some(CloudPage::Import)
+            || (ext != "fcproj" && !ext.is_empty() && filmcraft_media::is_importable(std::path::Path::new(name)));
+        if as_media {
             let arc: std::sync::Arc<[u8]> = bytes.into();
             filmcraft_engine::commands::import_bytes(&mut self.session, name, arc, None).map_err(|e| e.to_string())?;
             self.ui.status = format!("Imported {name} from cloud");
-            self.cloud_page = None;
+            if self.cloud_page == Some(CloudPage::Import) {
+                self.cloud_page = None;
+            }
             return Ok(None);
         }
         // Project archive: stage to a temp path the engine can open.
@@ -258,6 +268,10 @@ impl CloudApp for FilmcraftApp {
     }
 
     fn encode(&mut self, _uid: u64, into: Destination<'_>) -> Result<Vec<u8>, String> {
+        // Export / Quick Export cloud upload: bytes already encoded to a media file.
+        if let Some(bytes) = self.pending_cloud_upload.take() {
+            return Ok(bytes);
+        }
         // Determine what the destination wants.
         let fmt = format_for(into)?;
         // The project must be saved to disk before we can encode it. Use a temp file.
@@ -352,26 +366,95 @@ impl CloudApp for FilmcraftApp {
     }
 }
 
-/// Which cloud page the File menu / Media Browser / Import screen opened, if any.
+/// Which cloud page the File menu / Export folder pick opened, if any.
+///
+/// Media Browser cloud browse uses [`FilmcraftApp::ui.media_browser.cloud`] in-panel instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CloudPage {
     /// File ▸ Open from cloud… — `.fcproj` projects.
     Open,
     /// File ▸ Save as to cloud… — write the project archive.
     SaveAs,
-    /// File ▸ Import from cloud… / Media Browser ▸ CollabCraft — media into the project.
+    /// File ▸ Import from cloud… — media into the project (modal alternate to Media Browser).
     Import,
+    /// Export / Quick Export: choose a CollabCraft folder as the destination.
+    PickExportFolder,
 }
 
-/// Cloud Open / Import / Save As as a modal over the editor.
+/// Upload already-encoded export bytes into the current cloud folder under `name`.
+///
+/// Uses [`save_as`] with [`FilmcraftApp::pending_cloud_upload`] so `encode` returns the media
+/// bytes instead of a project archive.
+pub fn upload_export(app: &mut FilmcraftApp, folder: &str, name: &str, bytes: Vec<u8>) -> Result<(), String> {
+    if !available(app) {
+        return Err(UNAVAILABLE.to_owned());
+    }
+    app.pending_cloud_upload = Some(bytes);
+    save_as(app, folder, name).map(|_| ())
+}
+
+/// Folder-only picker for Export / Quick Export cloud destinations.
+fn pick_export_folder(app: &mut FilmcraftApp, ui: &mut Ui) {
+    let style = app.style(ui);
+    let folder = app.cloud.mine.clone();
+    let here = if folder.path.is_empty() {
+        format!("{} / {}", app.tr("CollabCraft"), app.tr("Cloud storage"))
+    } else {
+        format!("{} / {}", app.tr("CollabCraft"), folder.path)
+    };
+    ui.horizontal(|ui| {
+        if let Some(parent) = parent_of(&folder.path)
+            && ui.button(app.tr("Up")).clicked()
+        {
+            browse(app, &parent);
+        }
+        ui.label(egui::RichText::new(here).size(12.0).color(style.dim));
+    });
+    ui.add_space(6.0);
+    ui.label(egui::RichText::new(app.tr("Choose a folder, then use it as the export location.")).size(12.0).color(style.dim));
+    ui.add_space(4.0);
+    if folder.loading {
+        ui.horizontal(|ui| {
+            ui.add(egui::Spinner::new().size(14.0));
+            ui.label(app.tr("Loading…"));
+        });
+        return;
+    }
+    if let Some(fault) = &folder.error {
+        ui.label(egui::RichText::new(fault.text("folder")).color(style.dim));
+        return;
+    }
+    let mut go: Option<String> = None;
+    for entry in &folder.entries {
+        if entry.kind != EntryKind::Folder {
+            continue;
+        }
+        let label = entry.name.clone();
+        if ui.selectable_label(false, &label).clicked() {
+            let next = if folder.path.is_empty() {
+                entry.name.clone()
+            } else {
+                format!("{}/{}", folder.path.trim_end_matches('/'), entry.name)
+            };
+            go = Some(next);
+        }
+    }
+    if let Some(path) = go {
+        browse(app, &path);
+    }
+}
+
+/// Cloud Open / Import / Save As / export-folder pick as a modal over the editor.
 pub fn modal(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(page) = app.cloud_page else { return };
     let title = match page {
         CloudPage::Open => tl!("Open from cloud"),
         CloudPage::SaveAs => tl!("Save as to cloud"),
         CloudPage::Import => tl!("Import from cloud"),
+        CloudPage::PickExportFolder => tl!("Export to cloud"),
     };
     let mut close = false;
+    let mut use_folder = false;
     egui::Modal::new(egui::Id::new("filmcraft_cloud_page")).show(ctx, |ui| {
         let margin = egui::Frame::popup(ui.style()).total_margin().sum();
         let room = (ctx.content_rect().size() - margin - egui::vec2(16.0, 16.0)).max(egui::Vec2::splat(1.0));
@@ -386,17 +469,31 @@ pub fn modal(app: &mut FilmcraftApp, ctx: &egui::Context) {
             CloudPage::SaveAs => {
                 close = save_page(app, ui);
             }
+            CloudPage::PickExportFolder => {
+                start(app);
+                if !app.cloud.mine.loaded && !app.cloud.mine.loading {
+                    browse(app, &app.ui.export.cloud_folder);
+                }
+                pick_export_folder(app, ui);
+            }
         });
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if page == CloudPage::PickExportFolder {
+                    use_folder = ui.button(tl!("Use this folder")).clicked();
+                }
                 if ui.button(tl!("Close")).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     close = true;
                 }
             });
         });
     });
-    if close {
+    if use_folder {
+        app.ui.export.cloud_folder = app.cloud.mine.path.clone();
+        app.ui.export.destination = "cloud".into();
+        app.cloud_page = None;
+    } else if close {
         app.cloud_page = None;
     }
 }
