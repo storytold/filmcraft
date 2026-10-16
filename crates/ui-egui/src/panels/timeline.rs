@@ -167,6 +167,8 @@ pub enum Drag {
     Marquee {
         start: Pos2,
         before: Vec<ClipId>,
+        /// The caption selection when the drag began (the box selects captions too, #1912).
+        before_captions: Vec<ClipId>,
         add: bool,
         individual: bool,
     },
@@ -2481,7 +2483,13 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             // the video and audio tracks, #683)
             (_, Grab::Other(hit @ (Hit::Empty { .. } | Hit::None))) if layout.content.contains(p) => {
                 if resp.drag_started() {
-                    Some(Drag::Marquee { start: p, before: app.session.state.selection.clone(), add: mods.shift || mods.command, individual: mods.alt })
+                    Some(Drag::Marquee {
+                        start: p,
+                        before: app.session.state.selection.clone(),
+                        before_captions: app.session.state.caption_selection.clone(),
+                        add: mods.shift || mods.command,
+                        individual: mods.alt,
+                    })
                 } else {
                     app.session.state.selection.clear();
                     app.session.state.edit_points.clear();
@@ -2535,8 +2543,9 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     v.v_scroll = start_v;
                 }
                 // the live box (#1028) already changed the selection: put back the one the drag began with
-                Drag::Marquee { before, .. } => {
+                Drag::Marquee { before, before_captions, .. } => {
                     app.session.state.selection = before;
+                    app.session.state.caption_selection = before_captions;
                 }
                 _ => {}
             }
@@ -2636,7 +2645,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 Some(Drag::Transition { id, edge, from, start, duration })
             }
             Drag::Volume(v) => Some(Drag::Volume(super::timeline_volume::drag(app, ui, seq, layout, v, p.y))),
-            Drag::Marquee { start, before, add, individual } => {
+            Drag::Marquee { start, before, before_captions, add, individual } => {
                 let r = Rect::from_two_pos(start, p);
                 ui.painter().rect_filled(r, 0.0, Color32::from_white_alpha(18));
                 ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_white_alpha(140)), StrokeKind::Inside);
@@ -2651,7 +2660,14 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     }
                 }
                 app.session.state.selection = sel;
-                Some(Drag::Marquee { start, before, add, individual })
+                let mut caps = if add { before_captions.clone() } else { Vec::new() };
+                for c in super::timeline_captions::marquee_captions(seq, layout, r) {
+                    if !caps.contains(&c) {
+                        caps.push(c);
+                    }
+                }
+                app.session.state.caption_selection = caps;
+                Some(Drag::Marquee { start, before, before_captions, add, individual })
             }
             other => Some(other),
         };
@@ -2707,13 +2723,23 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     let moved = seq.all_tracks().find_map(|tr| tr.transitions.iter().find(|x| x.id == id)).is_some_and(|x| (x.start, x.duration) != (start, duration));
                     moved.then(|| app.session.execute("sequence.setTransition", json!({"transition": id.0, "start": start.0, "duration": duration.0})))
                 }
-                Drag::Marquee { start, before, add, individual } => {
+                Drag::Marquee { start, before, before_captions, add, individual } => {
                     app.session.state.selection = before;
+                    app.session.state.caption_selection = before_captions;
                     // egui ends a drag on Escape: that cancels the box, as in the Project panel
                     match resp.interact_pointer_pos() {
                         Some(end) if !ctx.input(|i| i.key_pressed(egui::Key::Escape)) => {
-                            let ids: Vec<u64> = marquee_clips(seq, layout, Rect::from_two_pos(start, end)).iter().map(|c| c.0).collect();
-                            Some(app.session.execute("timeline.select", json!({"clips": ids, "add": add, "linked": !individual})))
+                            let r = Rect::from_two_pos(start, end);
+                            let ids: Vec<u64> = marquee_clips(seq, layout, r).iter().map(|c| c.0).collect();
+                            let caps: Vec<u64> = super::timeline_captions::marquee_captions(seq, layout, r).iter().map(|c| c.0).collect();
+                            let res = app.session.execute("timeline.select", json!({"clips": ids, "add": add, "linked": !individual}));
+                            // the captions the box touched join whatever the clip selection left
+                            // (a replacing `timeline.select` clears the caption selection)
+                            if res.is_ok() && !caps.is_empty() {
+                                Some(app.session.execute("captions.select", json!({"captions": caps, "add": true})))
+                            } else {
+                                Some(res)
+                            }
                         }
                         _ => None,
                     }

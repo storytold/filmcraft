@@ -302,6 +302,21 @@ fn upgrade_caption_to_graphic() {
 }
 
 #[test]
+fn select_all_then_upgrade_converts_every_caption() {
+    let mut s = demo("gt-caption-all");
+    for (i, t) in ["One", "Two", "Three"].iter().enumerate() {
+        s.execute("captions.add", json!({"text": t, "seconds": 600 + 3 * i, "durationSeconds": 2})).unwrap();
+    }
+    let n = s.execute("captions.list", json!({})).unwrap()["tracks"][0]["captions"].as_array().unwrap().len();
+    s.execute("edit.deselectAll", json!({})).unwrap();
+    s.execute("edit.selectAll", json!({})).unwrap();
+    assert_eq!(s.state.caption_selection.len(), n, "Select All takes the captions too");
+    let r = s.execute("graphics.upgradeCaption", json!({})).unwrap();
+    assert_eq!(r["upgraded"], n);
+    assert!(s.execute("captions.list", json!({})).unwrap()["tracks"][0]["captions"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn source_graphics_share_edits() {
     let mut s = demo("gt-source");
     let c = clip_of(&s.execute("graphics.newText", json!({"text": "Shared"})).unwrap());

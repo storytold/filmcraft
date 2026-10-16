@@ -1732,7 +1732,11 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("edit.selectAll", "Select All", ["Edit"], Some("Cmd+A"), "{}", has_seq, |s, _| {
             let all: Vec<ClipId> = s.active_sequence().map(|q| q.all_tracks().flat_map(|t| t.items.iter().map(|i| i.id)).collect()).unwrap_or_default();
+            // captions too, so they can all be converted to graphics at once (#1912)
+            let caps: Vec<ClipId> =
+                s.active_sequence().map(|q| q.caption_tracks.iter().flat_map(|t| t.captions.iter().map(|c| c.id)).collect()).unwrap_or_default();
             s.state.selection = all;
+            s.state.caption_selection = caps;
             s.state.gap_selection = None;
             Ok(json!({"selected": s.state.selection.len()}))
         }),
