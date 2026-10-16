@@ -492,6 +492,32 @@ fn selected_keyframes_move_together_and_undo_as_one_edit() {
     assert_eq!(serde_json::to_value(&d.harness.state().session.project).unwrap(), after);
 }
 
+/// #1916: with three Scale keyframes selected, the interpolation chosen in the right-click menu
+/// applies to all three as one undo step, not only to the keyframe under the pointer. A fourth,
+/// unselected keyframe is left alone, and right-clicking it changes only that one.
+#[test]
+fn keyframe_menu_interpolation_applies_to_every_selected_keyframe() {
+    let (mut d, clip) = Driver::demo();
+    let keys = lane_keys(&mut d, &clip, &[("scale", 0.5), ("scale", 1.5), ("scale", 2.5), ("scale", 3.5)]);
+    select_keys(&mut d, &keys[..3]);
+    let before = d.parameter(&clip, "motion", "scale");
+    assert!(before.keyframes.iter().all(|k| k.interp == Interpolation::Linear));
+    let undo = d.undo_len();
+    d.right_click(&key_id(&d, &keys[1]));
+    d.click("effectControls.keyframeMenu.bezier");
+    let changed = d.parameter(&clip, "motion", "scale");
+    let interps: Vec<_> = changed.keyframes.iter().map(|k| k.interp).collect();
+    assert_eq!(interps, [Interpolation::Bezier, Interpolation::Bezier, Interpolation::Bezier, Interpolation::Linear]);
+    assert_eq!(d.undo_len(), undo + 1);
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.parameter(&clip, "motion", "scale"), before, "one undo reverts all three");
+
+    d.right_click(&key_id(&d, &keys[3]));
+    d.click("effectControls.keyframeMenu.hold");
+    let interps: Vec<_> = d.parameter(&clip, "motion", "scale").keyframes.iter().map(|k| k.interp).collect();
+    assert_eq!(interps, [Interpolation::Linear, Interpolation::Linear, Interpolation::Linear, Interpolation::Hold]);
+}
+
 #[test]
 fn shift_snaps_the_group_to_other_rows_at_different_lane_widths() {
     for (width, theme) in [(280.0, "dark"), (480.0, "light")] {
