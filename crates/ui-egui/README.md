@@ -84,3 +84,16 @@ buttons use `craft-ui::layout::fit_toolbar`; commands beyond the available width
 through More, including their selected state and Source/Program routing. A scrolling fallback
 retains all commands if even More cannot fit. `monitor_geometry` checks the painted readouts,
 control bounds, overflow actions and Source drag payloads across monitor widths and themes.
+
+## Program review playback speed
+
+A session-only speed dropdown changes Program playback without editing clips or
+exports. Space/Play and Play In to Out reuse the selected rate. Source playback
+and J/K/L remain separate. See [monitors](../../docs/monitors.md#program-review-playback-speed)
+and `tests/review_speed_ui.rs` for rates, automation and regressions.
+
+Targeted verification on 2026-10-13: the three review-speed regressions and 27
+localization regressions passed, as did formatting and affected-crate Clippy.
+The unrelated Japanese font-stack assertion failed with the configured combined
+craft/system fonts and was excluded from the localization rerun; full workspace
+CI/WASM remains pending.

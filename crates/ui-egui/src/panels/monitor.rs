@@ -28,7 +28,7 @@ pub enum Which {
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
-    let stacked_controls = rect.width() < 540.0;
+    let stacked_controls = rect.width() < if which == Which::Program { 610.0 } else { 540.0 };
     let separate_source_drag = which == Which::Source && stacked_controls && rect.width() < 310.0;
     let source_drag_h = if separate_source_drag { 26.0 } else { 0.0 };
     let controls_h = 28.0 + 24.0 + 15.0 + 36.0 + if stacked_controls { 26.0 } else { 0.0 } + source_drag_h;
@@ -343,7 +343,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     let zoom_x = if stacked_controls && which == Which::Source && !separate_source_drag {
         row1.min.x
     } else if stacked_controls {
-        row1.center().x - 83.0
+        row1.center().x - if which == Which::Program { 117.0 } else { 83.0 }
     } else {
         row1.min.x + 116.0
     };
@@ -359,7 +359,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     let resolution_x = if stacked_controls && which == Which::Source && !separate_source_drag {
         row1.max.x - 90.0
     } else if stacked_controls {
-        zr.max.x + 6.0
+        zr.max.x + if which == Which::Program { 74.0 } else { 6.0 }
     } else {
         row1.max.x - 196.0
     };
@@ -369,6 +369,26 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     }
     if separate_source_drag {
         crate::panels::source_drag::controls(app, ui, Rect::from_min_size(pos2(row1.center().x - 52.0, settings_y + 26.0), vec2(104.0, 24.0)));
+    }
+    if which == Which::Program {
+        let speed = app.playback.review_speed;
+        let sr = Rect::from_min_size(pos2(rr.min.x - 68.0, settings_y), vec2(62.0, 24.0));
+        let response = crate::widgets::dropdown_text(ui, sr, &format!("{speed}×"), &t, egui::Id::new("program.review-speed"))
+            .on_hover_text(crate::i18n::t("Preview playback speed (timeline and export stay unchanged)"));
+        app.auto.add("program.playbackSpeed", sr, crate::i18n::t("Preview playback speed"));
+        egui::Popup::menu(&response).show(|ui| {
+            for rate in [0.5, 1.0, 1.5, 2.0, 2.5, 3.0] {
+                let label = format!("{rate}×");
+                let choice = ui.selectable_label(speed == rate, &label);
+                app.auto.add(&format!("program.playbackSpeed.{rate}"), choice.rect, &label);
+                if choice.clicked() {
+                    if let Err(e) = crate::menus::invoke(app, &ctx, "playback.setReviewSpeed", json!({"speed":rate})) {
+                        app.ui.status = e;
+                    }
+                    ui.close();
+                }
+            }
+        });
     }
     let rresp = crate::widgets::dropdown_text(ui, rr, crate::i18n::t(res.label()), &t, egui::Id::new((prefix, "res")));
     app.auto.add(&format!("{prefix}.resolution"), rr, "Select Playback Resolution");

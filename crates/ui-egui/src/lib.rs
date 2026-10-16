@@ -220,6 +220,8 @@ pub enum Dialog {
 pub struct Playback {
     pub playing: bool,
     pub speed: f64,
+    /// Program monitor review rate; never changes clip speed or project data.
+    pub review_speed: f64,
     pub looping: bool,
     /// Wall-clock (egui time, s) and timeline tick when playback (re)started.
     anchor_time: f64,
@@ -542,7 +544,7 @@ impl FilmcraftApp {
             ui: UiState { language, ..UiState::default() },
             tokens: Tokens::for_kind(ThemeKind::Dark),
             frames,
-            playback: Playback { speed: 1.0, ..Default::default() },
+            playback: Playback { speed: 1.0, review_speed: 1.0, ..Default::default() },
             source_playback: Default::default(),
             audio: None,
             scrub: Default::default(),

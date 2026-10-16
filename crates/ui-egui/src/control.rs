@@ -415,9 +415,9 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
         }
         "ui.playback" => {
             match s("action").unwrap_or("toggle") {
-                "play" => app.play(p.get("speed").and_then(Value::as_f64).unwrap_or(1.0)),
+                "play" => app.play(p.get("speed").and_then(Value::as_f64).unwrap_or(app.playback.review_speed)),
                 "stop" => app.stop(),
-                _ => app.toggle_play(1.0),
+                _ => app.toggle_play(app.playback.review_speed),
             }
             ok(json!({"playing": app.playback.playing, "playhead": app.session.playhead().0}))
         }
@@ -507,7 +507,7 @@ pub fn inspect(app: &FilmcraftApp, ctx: &egui::Context) -> Value {
             "nativeWindowFocused": app.native_window_focused, "effectiveWindowFocused": ctx.input(|input| input.focused)},
         "ui": app.ui,
         "sourcePlayback": {"playing": app.source_playback.clock.playing, "audioClock": app.source_playback.clock.audio_clock, "playhead": app.session.state.source_playhead.0},
-        "playback": {"playing": app.playback.playing, "speed": app.playback.speed, "loop": app.playback.looping, "audioClock": app.playback.audio_clock, "dropped": app.playback.meter.counts().1, "shown": app.playback.meter.counts().0, "preroll": app.playback.preroll.is_some()},
+        "playback": {"playing": app.playback.playing, "speed": app.playback.speed, "reviewSpeed": app.playback.review_speed, "loop": app.playback.looping, "audioClock": app.playback.audio_clock, "dropped": app.playback.meter.counts().1, "shown": app.playback.meter.counts().0, "preroll": app.playback.preroll.is_some()},
         "playhead": app.session.playhead().0,
         "activeSequence": app.session.state.active_sequence.map(|i| i.0),
         "selection": app.session.state.selection.iter().map(|c| c.0).collect::<Vec<_>>(),

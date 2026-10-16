@@ -41,6 +41,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("source.playback.toggle", "Source Play/Stop", [], None),
     uic!("source.playback.play", "Play Source", [], None),
     uic!("source.playback.stop", "Stop Source", [], None),
+    uic!("playback.setReviewSpeed", "Set Preview Playback Speed", [], None),
     uic!("playback.toggle", "Play/Stop", [], Some("Space")),
     uic!("playback.forward", "Shuttle Right", [], Some("L")),
     uic!("playback.stop", "Shuttle Stop", [], Some("K")),
@@ -314,6 +315,19 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         return r;
     }
     match id {
+        "playback.setReviewSpeed" => {
+            let speed = params.get("speed").and_then(Value::as_f64).ok_or("need numeric `speed`")?;
+            if ![0.5, 1.0, 1.5, 2.0, 2.5, 3.0].contains(&speed) {
+                return Err("Preview speed must be 0.5, 1, 1.5, 2, 2.5 or 3".into());
+            }
+            app.playback.review_speed = speed;
+            if app.playback.playing {
+                app.play(speed);
+            } else {
+                app.playback.speed = speed;
+            }
+            return Ok(json!({"playing": app.playback.playing, "speed": speed}));
+        }
         "playback.slowForward" | "playback.slowReverse" if targets_source(app, &params) => {
             app.shuttle_source(if id == "playback.slowForward" { 0.25 } else { -0.25 })?;
             return Ok(json!({"playing": app.source_playback.clock.playing, "speed": app.source_playback.clock.speed}));
@@ -341,7 +355,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             return Ok(json!({"playing": app.source_playback.clock.playing}));
         }
         "playback.toggle" => {
-            app.toggle_play(1.0);
+            app.toggle_play(app.playback.review_speed);
             return Ok(json!({"playing": app.playback.playing}));
         }
         // L / J: pressing again in the same direction doubles the speed, up to 8×
@@ -398,7 +412,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             if let Some(i) = seq.and_then(|q| q.mark_in) {
                 app.session.set_playhead(i);
             }
-            app.play(1.0);
+            app.play(app.playback.review_speed);
             app.playback.stop_at = out;
             app.playback.rest_at = marked_out;
             return Ok(Value::Null);

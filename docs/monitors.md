@@ -31,6 +31,20 @@ Automation ids: `<monitor>.zoom`, `<monitor>.zoom.<level>`, `<monitor>.settings.
 dialogs `guides.add.vertical|horizontal|position|ok|cancel`, `guides.save.name|ok|cancel`,
 `guides.manage.row.<n>|apply|delete|close`.
 
+## Program review playback speed
+
+The Program speed dropdown immediately before playback resolution offers 0.5×, 1×,
+1.5×, 2×, 2.5× and 3× in normal and maximized views. It changes only review playback:
+clip timing, speed effects, project data and exports stay unchanged. The choice is
+session-only, starts at 1× and survives Pause/Play. Changing it while playing
+reanchors the existing playback/audio clock at the current playhead.
+
+`playback.setReviewSpeed {"speed": 2.5}` is a UI command. `ui.inspect.playback` exposes
+`reviewSpeed`; `speed` still reports the active playback/shuttle rate. Automation
+ids are `program.playbackSpeed` and `program.playbackSpeed.<rate>`. Source playback
+and J/K/L shuttling retain their independent behavior. `review_speed_ui` covers
+accepted/rejected rates, project/Undo preservation, clock progression and layout.
+
 ## Source playback
 
 Video files, audio files, generated media and media subclips play in the Source monitor with its
