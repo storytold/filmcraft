@@ -253,8 +253,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 json!({"path":path,"format":ext,"depth":d.depth,"import":d.import,"target":if d.target.source{"source"}else{"program"},"time":d.target.time.0});
             params[if d.target.source { "item" } else { "sequence" }] = json!(d.target.item.0);
             match app.session.execute("file.exportFrame", params) {
-                Ok(result) => {
-                    app.ui.status = format!("Exported frame to {}", result["path"].as_str().unwrap_or_default());
+                // the engine puts up a toast with the path and a Show in Folder button
+                Ok(_) => {
                     ctx.data_mut(|m| m.insert_temp(egui::Id::new("frame-export-folder"), d.folder.clone()));
                     close = true;
                 }

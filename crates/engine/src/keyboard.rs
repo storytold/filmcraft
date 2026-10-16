@@ -663,7 +663,7 @@ fn export_frame(s: &mut Session, p: &Value) -> Result<Value> {
     if import {
         out["import"] = s.execute("file.import", json!({"paths": [path]}))?;
     }
-    s.toast(format!("Exported frame to {path}"));
+    s.toast_file(format!("Exported frame to {path}"), path.clone());
     Ok(out)
 }
 
