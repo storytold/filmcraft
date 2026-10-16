@@ -154,8 +154,9 @@ pub fn logo_cutout(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     });
 }
 
-/// Ultra Key: a colour-difference keyer working in Y′CbCr against the key colour's chroma, with
-/// Premiere's matte generation, cleanup, spill suppression and colour correction stages.
+/// Ultra Key: a colour-difference keyer (for a key colour one channel leads, a green or blue screen;
+/// otherwise a Y′CbCr chroma distance), with matte generation, cleanup, spill suppression and colour
+/// correction stages.
 pub fn ultra_key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let kc = cv(e, "key_color", cx);
     let k = rgb_to_ycbcr(kc[0], kc[1], kc[2], Matrix::Bt709);
@@ -177,6 +178,31 @@ pub fn ultra_key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     } else {
         0
     };
+    // A key that one channel clearly leads (a green or blue screen) is keyed by colour difference: the
+    // lead of that channel over the other two in a pixel, against the key colour's own lead, is the
+    // share of the key colour the pixel is made of. Fire, skin or smoke over a green screen have no
+    // green lead, so they stay opaque, and a pixel that is part screen and part foreground gets the
+    // alpha of its foreground share (a hue/chroma distance in Y′CbCr cannot tell yellow flames from
+    // the olive their edges blend with, and keyed or kept both together). Other keys (cyan, magenta,
+    // yellow, grey…) have no single leading channel and keep the chroma-distance matte.
+    //
+    // Tolerance above its default of 50 also lowers how much of a pixel's red counts against its green,
+    // down to 60 % at 100: the edge of a red or orange foreground is red mixed with the screen's green,
+    // and reads as part screen instead of as an olive fringe. Up to the default all of the red counts,
+    // since a pure yellow (red equal to green) cannot be told from that edge by its colour alone and
+    // must stay foreground, flames and yellow clothes among them.
+    let tolerance = (pf("tolerance", fv(e, "tolerance", cx)) / 100.0).clamp(0.0, 1.0);
+    let (lead1, lead2) = ((dom + 1) % 3, (dom + 2) % 3);
+    let red_weight = 1.0 - 0.4 * ((tolerance - 0.5) * 2.0).clamp(0.0, 1.0);
+    let weight = [if dom == 0 { 1.0 } else { red_weight }, 1.0, 1.0];
+    let other = |v: [f32; 3]| (v[lead1] * weight[lead1]).max(v[lead2] * weight[lead2]);
+    let key_lead = kc[dom] - other([kc[0], kc[1], kc[2]]);
+    let by_difference = key_lead >= 0.12;
+    let lead_share = |v: [f32; 3]| ((v[dom] - other(v)) / key_lead).clamp(0.0, 1.0);
+    // The share of the key colour at which a pixel is all background; Tolerance lowers it, 95 % at the
+    // default. Measured against Premiere Pro on fire and smoke shot on green, this keeps the long tail of
+    // thin smoke (a third of the screen's lead still leaves it about half opaque) instead of cutting it.
+    let full_share = (1.15 - 0.4 * tolerance).min(1.0);
     // matte
     let n = img.w * img.h;
     let mut alpha = vec![1.0f32; n];
@@ -187,14 +213,23 @@ pub fn ultra_key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         }
         let v = enc(Image::unpremul([p[0], p[1], p[2], p[3]]));
         let y = rgb_to_ycbcr(v[0], v[1], v[2], Matrix::Bt709);
-        let proj = (y[1] * k[1] + y[2] * k[2]) / kmag2;
-        let perp = ((y[1] - proj * k[1]).powi(2) + (y[2] - proj * k[2]).powi(2)).sqrt() / kmag2.sqrt();
-        let keyness = proj.clamp(0.0, 1.5) * (1.0 - smoothstep(0.0, tol, perp));
-        let mut m = (1.0 - keyness * gain).clamp(0.0, 1.0);
+        let (keyness, mut m) = if by_difference {
+            // Transparency pulls the partly transparent pixels towards transparent
+            let keyness = (lead_share(v) / full_share).clamp(0.0, 1.0);
+            (keyness, (1.0 - keyness).powf(1.0 + transparency))
+        } else {
+            let proj = (y[1] * k[1] + y[2] * k[2]) / kmag2;
+            let perp = ((y[1] - proj * k[1]).powi(2) + (y[2] - proj * k[2]).powi(2)).sqrt() / kmag2.sqrt();
+            let keyness = proj.clamp(0.0, 1.5) * (1.0 - smoothstep(0.0, tol, perp));
+            (keyness, (1.0 - keyness * gain).clamp(0.0, 1.0))
+        };
         m += (y[0] - k[0]).max(0.0) * highlight * 2.0 * keyness.min(1.0);
         m += (k[0] - y[0]).max(0.0) * shadow * 2.0 * keyness.min(1.0);
         *a = ((m.clamp(0.0, 1.0) - pedestal) / (1.0 - pedestal)).clamp(0.0, 1.0);
     });
+    // the soft edge of a foreground of one steady colour, solved against that colour
+    let key_rgb = [kc[0], kc[1], kc[2]];
+    let edge_fg = if by_difference { solve_edges(&img.px, img.w, img.h, &mut alpha, key_rgb, &lead_share, cx.px_scale) } else { vec![None; n] };
     // cleanup
     let choke = pf("choke", fv(e, "choke", cx)) / 100.0;
     let soften = pf("soften", fv(e, "soften", cx)) / 100.0;
@@ -220,15 +255,22 @@ pub fn ultra_key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let sluma = pf("spill_luma", fv(e, "spill_luma", cx)) / 100.0;
     let (cc_s, cc_h, cc_l) = (fv(e, "cc_saturation", cx) / 100.0, fv(e, "cc_hue", cx) / 360.0, fv(e, "cc_luminance", cx) / 100.0);
     let cc = (cc_s - 1.0).abs() > 1e-4 || cc_h.abs() > 1e-6 || (cc_l - 1.0).abs() > 1e-4;
-    img.px.par_chunks_mut(4).zip(alpha.par_iter()).for_each(|(p, &a)| {
+    img.px.par_chunks_mut(4).zip(alpha.par_iter()).zip(edge_fg.par_iter()).for_each(|((p, &a), edge)| {
         let src_a = p[3];
         let mut v = enc(Image::unpremul([p[0], p[1], p[2], p[3]]));
+        // A partly transparent pixel keeps its own colour with the green spill taken out below, as in
+        // Premiere Pro: thin smoke turns a soft grey and the dense parts stay golden. Taking the whole
+        // key colour back out of the mix instead left an olive cast on everything thin.
+        if let Some(f) = edge {
+            v = *f;
+        }
         let (o1, o2) = (v[(dom + 1) % 3], v[(dom + 2) % 3]);
         let limit = o1.max(o2) * (1.0 - range) + (o1 + o2) * 0.5 * range;
         let excess = (v[dom] - limit).max(0.0);
         if excess > 0.0 && spill > 0.0 {
             let l0 = luma(v);
-            v[dom] -= excess * spill;
+            // Spill Suppression at its default of 50 already takes all of the excess out
+            v[dom] -= excess * (spill * 2.0).min(1.0);
             let l1 = luma(v);
             let lm = luma(v);
             v = v.map(|q| lm + (q - lm) * (1.0 - desat * (excess * 4.0).min(1.0)));
@@ -255,6 +297,176 @@ pub fn ultra_key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             }
         }
     });
+}
+
+/// Mean of the (2r+1)² square around each pixel of a `w`×`h` plane, edges replicated: a running
+/// mean along the rows, then along the columns (as rows of the transposed plane, so both passes run
+/// in parallel).
+fn box_mean(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+    if r == 0 || w == 0 || h == 0 || src.len() < w * h {
+        return src.to_vec();
+    }
+    let rows = box_rows(src, w, h, r);
+    let cols = box_rows(&transpose(&rows, w, h), h, w, r);
+    transpose(&cols, h, w)
+}
+
+/// Running (2r+1)-wide mean along each row of a `w`×`h` plane, edges replicated.
+fn box_rows(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+    let k = (2 * r + 1) as f64;
+    let last = w.saturating_sub(1) as isize;
+    let mut out = vec![0.0f32; w * h];
+    out.par_chunks_mut(w).zip(src.par_chunks(w)).for_each(|(out, row)| {
+        let at = |x: isize| row[x.clamp(0, last) as usize] as f64;
+        let mut acc: f64 = (-(r as isize)..=r as isize).map(at).sum();
+        out[0] = (acc / k) as f32;
+        for x in 1..w {
+            acc += at(x as isize + r as isize) - at(x as isize - r as isize - 1);
+            out[x] = (acc / k) as f32;
+        }
+    });
+    out
+}
+
+/// A `w`×`h` plane as `h`×`w`.
+fn transpose(src: &[f32], w: usize, h: usize) -> Vec<f32> {
+    let mut out = vec![0.0f32; w * h];
+    out.par_chunks_mut(h).enumerate().for_each(|(x, col)| {
+        for (y, o) in col.iter_mut().enumerate() {
+            *o = src[y * w + x];
+        }
+    });
+    out
+}
+
+/// The soft edge of a keyed foreground, solved against the foreground's own colour.
+///
+/// The edge pixels of a red shirt on a green screen are red mixed with green: a colour (olive, yellow)
+/// that a pure yellow shares, which no per-pixel rule can tell from that mix. The pixels a few steps
+/// inside the edge are known foreground, though: their average colour is the foreground the edge is
+/// made of, so an edge pixel's share of foreground is where it falls on the line from the key colour
+/// to that foreground, and its colour is the foreground's (not the mix, with its green fringe).
+///
+/// Only where the foreground colour is steady and the soft zone is a thin edge: wide hazes of partly
+/// transparent flames or smoke, whose foreground colour varies, are left to the matte. Lowers `alpha`
+/// where it solves and returns, per pixel, the foreground colour to use (sRGB-encoded) or `None`.
+fn solve_edges(
+    px: &[f32],
+    w: usize,
+    h: usize,
+    alpha: &mut [f32],
+    key: [f32; 3],
+    lead_share: &(dyn Fn([f32; 3]) -> f32 + Sync),
+    px_scale: f32,
+) -> Vec<Option<[f32; 3]>> {
+    let n = w * h;
+    if n == 0 || px.len() < n * 4 || alpha.len() < n {
+        return vec![None; n];
+    }
+    // widths are in pixels of a full-size frame; a smaller render has proportionally thinner edges
+    let erode = ((3.0 * px_scale).round() as usize).clamp(1, 6);
+    let radius = ((12.0 * px_scale).round() as usize).clamp(4, 24);
+    // the wide averages below are smooth, so they are taken on a grid of `step`×`step` blocks and
+    // read back bilinearly: a 4K frame costs little more than a small one
+    let step = (radius / 3).clamp(1, 4);
+    let (lw, lh) = (w.div_ceil(step), h.div_ceil(step));
+    let low_radius = (radius / step).max(1);
+    // each pixel's colour as the key sees it (sRGB-encoded, straight), worked out once
+    let colours: Vec<[f32; 3]> =
+        px.par_chunks(4).take(n).map(|p| if p[3] <= 1e-6 { [0.0; 3] } else { enc(Image::unpremul([p[0], p[1], p[2], p[3]])) }).collect();
+    let alpha_in: &[f32] = alpha;
+    // steady foreground (opaque, not a trace of the key colour in it), and its core: at least
+    // `erode` pixels from anything that is not steady foreground
+    let core: Vec<f32> = {
+        let sure: Vec<f32> =
+            (0..n).into_par_iter().map(|i| if px[i * 4 + 3] > 1e-6 && alpha_in[i] > 0.98 && lead_share(colours[i]) <= 0.0 { 1.0 } else { 0.0 }).collect();
+        box_mean(&sure, w, h, erode).par_iter().map(|&m| if m > 0.9999 { 1.0 } else { 0.0 }).collect()
+    };
+    // per block, as shares of its pixels: the core, the sums of the core's colours and of their
+    // squares (how much that colour varies: a steady colour such as a shirt or skin, or a mix of
+    // things such as the corner of two flat areas, whose average is no foreground colour), and the
+    // partly transparent pixels outside the core (few for an edge, many for a haze)
+    const PLANES: usize = 6;
+    let blocks: Vec<[f32; PLANES]> = (0..lw * lh)
+        .into_par_iter()
+        .map(|b| {
+            let (bx, by) = (b % lw, b / lw);
+            let mut acc = [0.0f32; PLANES];
+            let mut count = 0.0f32;
+            for y in by * step..((by + 1) * step).min(h) {
+                for x in bx * step..((bx + 1) * step).min(w) {
+                    let i = y * w + x;
+                    count += 1.0;
+                    if core[i] > 0.5 {
+                        let c = colours[i];
+                        acc[0] += 1.0;
+                        acc[1] += c[0];
+                        acc[2] += c[1];
+                        acc[3] += c[2];
+                        acc[4] += c[0] * c[0] + c[1] * c[1] + c[2] * c[2];
+                    } else if alpha_in[i] > 0.02 && alpha_in[i] < 0.98 {
+                        acc[5] += 1.0;
+                    }
+                }
+            }
+            acc.map(|v| v / count.max(1.0))
+        })
+        .collect();
+    let planes: Vec<Vec<f32>> = (0..PLANES)
+        .into_par_iter()
+        .map(|c| {
+            let plane: Vec<f32> = blocks.iter().map(|b| b[c]).collect();
+            box_mean(&plane, lw, lh, low_radius)
+        })
+        .collect();
+    let sample = |x: usize, y: usize| -> [f32; PLANES] {
+        let fx = ((x as f32 + 0.5) / step as f32 - 0.5).clamp(0.0, (lw - 1) as f32);
+        let fy = ((y as f32 + 0.5) / step as f32 - 0.5).clamp(0.0, (lh - 1) as f32);
+        let (x0, y0) = (fx as usize, fy as usize);
+        let (x1, y1) = ((x0 + 1).min(lw - 1), (y0 + 1).min(lh - 1));
+        let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
+        let mut out = [0.0f32; PLANES];
+        for (o, p) in out.iter_mut().zip(&planes) {
+            let top = p[y0 * lw + x0] * (1.0 - tx) + p[y0 * lw + x1] * tx;
+            let bottom = p[y1 * lw + x0] * (1.0 - tx) + p[y1 * lw + x1] * tx;
+            *o = top * (1.0 - ty) + bottom * ty;
+        }
+        out
+    };
+    alpha
+        .par_iter_mut()
+        .enumerate()
+        .map(|(i, a)| {
+            if core[i] > 0.5 || px[i * 4 + 3] <= 1e-6 {
+                return None;
+            }
+            let s = sample(i % w, i / w);
+            let wsum = s[0];
+            if wsum <= 0.002 || s[5] >= 0.17 {
+                return None;
+            }
+            let f = [s[1] / wsum, s[2] / wsum, s[3] / wsum];
+            let spread = (s[4] / wsum - (f[0] * f[0] + f[1] * f[1] + f[2] * f[2])).max(0.0).sqrt();
+            if spread > 0.16 {
+                return None;
+            }
+            let d = [f[0] - key[0], f[1] - key[1], f[2] - key[2]];
+            let dd = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+            if dd <= 0.05 {
+                return None;
+            }
+            let v = colours[i];
+            let u = [v[0] - key[0], v[1] - key[1], v[2] - key[2]];
+            let t = ((u[0] * d[0] + u[1] * d[1] + u[2] * d[2]) / dd).clamp(0.0, 1.0);
+            // it has to lie near the line from the key to the foreground, or it is something else
+            let off = (0..3).map(|c| (u[c] - t * d[c]).powi(2)).sum::<f32>().sqrt();
+            if off >= 0.6 {
+                return None;
+            }
+            *a = a.min(t);
+            Some(f.map(|x| x.clamp(0.0, 1.0)))
+        })
+        .collect()
 }
 
 /// Track Matte Key: multiplies the layer by another video track's alpha or luma (sampled where
@@ -361,4 +573,24 @@ pub fn noise(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             p[2] = o[2] * a;
         }
     });
+}
+
+#[cfg(test)]
+mod box_mean_tests {
+    use super::box_mean;
+
+    /// The parallel row/transposed-row passes give the plain mean over the square, edges replicated.
+    #[test]
+    fn box_mean_matches_a_direct_sum_with_replicated_edges() {
+        let (w, h, r) = (7usize, 5usize, 2isize);
+        let src: Vec<f32> = (0..w * h).map(|i| ((i * 37) % 11) as f32).collect();
+        let got = box_mean(&src, w, h, r as usize);
+        let at = |x: isize, y: isize| src[(y.clamp(0, h as isize - 1) as usize) * w + x.clamp(0, w as isize - 1) as usize] as f64;
+        for (i, g) in got.iter().enumerate() {
+            let (x, y) = ((i % w) as isize, (i / w) as isize);
+            let sum: f64 = (-r..=r).flat_map(|dy| (-r..=r).map(move |dx| (dx, dy))).map(|(dx, dy)| at(x + dx, y + dy)).sum();
+            let want = sum / ((2 * r + 1) * (2 * r + 1)) as f64;
+            assert!((*g as f64 - want).abs() < 1e-4, "({x}, {y}): {g} against {want}");
+        }
+    }
 }
