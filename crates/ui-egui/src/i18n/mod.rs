@@ -49,6 +49,7 @@ pub enum Language {
     It,
     /// Korean; Hangul needs an installed system font ([`korean_font_available`]).
     Ko,
+    Pl,
 }
 
 static JAPANESE: OnceLock<Catalog> = OnceLock::new();
@@ -62,9 +63,11 @@ static FRENCH: OnceLock<Catalog> = OnceLock::new();
 static KOREAN: OnceLock<Catalog> = OnceLock::new();
 static INDONESIAN: OnceLock<Catalog> = OnceLock::new();
 static ITALIAN: OnceLock<Catalog> = OnceLock::new();
+static POLISH: OnceLock<Catalog> = OnceLock::new();
 
 impl Language {
-    pub const ALL: [Self; 12] = [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru, Self::Fr, Self::Id, Self::Ko, Self::It];
+    pub const ALL: [Self; 13] =
+        [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru, Self::Fr, Self::Id, Self::Ko, Self::It, Self::Pl];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -80,6 +83,7 @@ impl Language {
             Self::Id => "Bahasa Indonesia",
             Self::It => "Italiano",
             Self::Ko => "한국어",
+            Self::Pl => "Polski",
         }
     }
 
@@ -97,6 +101,7 @@ impl Language {
             "id" => Some(Self::Id),
             "it" => Some(Self::It),
             "ko" => Some(Self::Ko),
+            "pl" => Some(Self::Pl),
             _ => None,
         }
     }
@@ -111,7 +116,7 @@ impl Language {
     /// only for Simplified locales (`zh`, `zh-CN`, `zh-SG`, `zh-Hans…`); Traditional ones (`zh-TW`,
     /// `zh-HK`, `zh-MO`, `zh-Hant…`) are skipped.
     pub fn from_locales(tags: &[String]) -> Self {
-        const PRIMARY: [(&str, Language); 12] = [
+        const PRIMARY: [(&str, Language); 13] = [
             ("en", Language::En),
             ("ja", Language::Ja),
             ("es", Language::Es),
@@ -124,6 +129,7 @@ impl Language {
             ("in", Language::Id),
             ("it", Language::It),
             ("ko", Language::Ko),
+            ("pl", Language::Pl),
         ];
         tags.iter()
             .find_map(|tag| {
@@ -156,6 +162,7 @@ impl Language {
             Self::Id => "id",
             Self::It => "it",
             Self::Ko => "ko",
+            Self::Pl => "pl",
         }
     }
 
@@ -174,6 +181,7 @@ impl Language {
             Self::Id => Some(INDONESIAN.get_or_init(|| Catalog::parse(include_str!("id.tsv")))),
             Self::It => Some(ITALIAN.get_or_init(|| Catalog::parse(include_str!("it.tsv")))),
             Self::Ko => Some(KOREAN.get_or_init(|| Catalog::parse(include_str!("ko.tsv")))),
+            Self::Pl => Some(POLISH.get_or_init(|| Catalog::parse(include_str!("pl.tsv")))),
         }
     }
 
@@ -354,6 +362,7 @@ mod tests {
             ("id", include_str!("id.tsv")),
             ("it", include_str!("it.tsv")),
             ("ko", include_str!("ko.tsv")),
+            ("pl", include_str!("pl.tsv")),
         ] {
             let (entries, errors) = catalog::parse_entries(text);
             assert!(errors.is_empty(), "{code}: {errors:?}");
@@ -407,6 +416,14 @@ mod tests {
         assert_eq!(Language::Id.tr("Liburan keluarga.mp4"), "Liburan keluarga.mp4");
         assert_eq!(Language::Id.tr("An untranslated label"), "An untranslated label");
         assert_eq!(Language::parse("id"), Some(Language::Id));
+        assert_eq!(Language::Pl.name(), "Polski");
+        assert_eq!(Language::Pl.tr("File"), "Plik");
+        assert_eq!(Language::Pl.tr("Save As…"), "Zapisz jako…");
+        assert_eq!(Language::Pl.tr("Wakacje w górach.mp4"), "Wakacje w górach.mp4");
+        assert_eq!(Language::Pl.tr("An untranslated label"), "An untranslated label");
+        assert_eq!(Language::parse("pl"), Some(Language::Pl));
+        assert_eq!(Language::from_locales(&["pl-PL".into()]), Language::Pl);
+        assert_eq!(Language::from_locales(&["pl_PL.UTF-8".into()]), Language::Pl);
         assert_eq!(Language::parse("id-ID"), None, "the preference stores the bare code");
         assert_eq!(Language::It.name(), "Italiano");
         assert_eq!(Language::It.tr("File"), "File");
@@ -529,6 +546,34 @@ mod tests {
         set_current(Language::PtBr);
         assert!(matches_query("Gaussian Blur", "desfoque"));
         assert!(matches_query("Gaussian Blur", "gaussian"));
+        set_current(Language::En);
+    }
+
+    /// Polish covers the whole interface: every Spanish entry plus the native macOS app menu items,
+    /// and no entry without a source the UI still shows (so a renamed string can't leave a dead row).
+    #[test]
+    fn polish_covers_every_spanish_entry_and_has_no_dead_entries() {
+        let (entries, errors) = catalog::parse_entries(include_str!("pl.tsv"));
+        assert!(errors.is_empty(), "{errors:?}");
+        let mac_only = ["Settings", "Hide FilmCraft", "Hide Others"];
+        for (ctx, en, _) in &entries {
+            let native = mac_only.contains(&en.as_str()) || en.starts_with("Hardware decoding: Auto uses");
+            assert!(ctx.is_empty() && (Language::Es.has(en) || native), "Polish entry without a Spanish one: {ctx:?} {en:?}");
+        }
+        let (spanish, _) = catalog::parse_entries(include_str!("es.tsv"));
+        let missing: Vec<&String> = spanish.iter().map(|(_, en, _)| en).filter(|en| !Language::Pl.has(en)).collect();
+        assert!(missing.is_empty(), "untranslated Polish entries: {missing:#?}");
+        for (en, pl) in [
+            ("File", "Plik"),
+            ("Timeline", "Oś czasu"),
+            ("Playhead", "Głowica"),
+            ("Gaussian Blur", "Rozmycie gaussowskie"),
+            ("Keyboard Shortcuts", "Skróty klawiaturowe"),
+        ] {
+            assert_eq!(Language::Pl.tr(en), pl);
+        }
+        set_current(Language::Pl);
+        assert!(matches_query("Gaussian Blur", "rozmycie"));
         set_current(Language::En);
     }
 
