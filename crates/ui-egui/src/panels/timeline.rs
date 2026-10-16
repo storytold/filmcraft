@@ -1841,7 +1841,14 @@ fn preview_drag(app: &FilmcraftApp, seq: &Sequence, out: &mut HashMap<ClipId, (T
         }
         Drag::Remix { clip, delta, .. } => {
             if let Some((_, it)) = seq.find_item(*clip) {
-                out.insert(*clip, (it.start, it.duration + *delta, None));
+                // #1424: the preview must carry an edited item like Trim and Roll do. Without it
+                // the body shrinks while the waveform still maps through the original item, which
+                // squeezes the whole waveform into the new width until the remix commits. The
+                // commit keeps start and source_in and only changes duration, so clone and match.
+                let mut e = it.clone();
+                e.duration = (e.duration + *delta).max(Tick(1));
+                out.insert(*clip, (e.start, e.duration, None));
+                edited.insert(*clip, e);
             }
         }
         Drag::Trim { clip, edge, delta, .. } => {
@@ -3190,6 +3197,77 @@ mod trim_preview_tests {
         let (mut out, mut edited) = (HashMap::new(), HashMap::new());
         preview_drag(&app, &seq, &mut out, &mut edited);
         assert!(edited.is_empty() && out.contains_key(&left.id));
+    }
+}
+
+/// #1424: dragging a clip edge must not squeeze the waveform into the new clip width. The render
+/// loop builds each clip's `body` rect from the drag preview and maps waveform pixels to media
+/// time through the item the preview chose (the edited item when there is one, the original
+/// otherwise). A drag whose preview changes only the geometry while the waveform still maps
+/// through the original item squeezes the whole waveform into the shorter body during the drag;
+/// it only corrects itself when the drag commits.
+#[cfg(test)]
+mod waveform_drag_anchor_tests {
+    use super::*;
+
+    /// The waveform's pixel-to-media scale (see `draw_waveform`): pixel `x` of `body` maps to
+    /// `it.start + it.duration * f`, so the waveform shows `it.duration / body.width()` media
+    /// ticks per pixel. Compression during a drag is exactly this scale changing: the same media
+    /// gets squeezed into (or stretched across) the previewed width.
+    fn media_ticks_per_pixel(body: &Rect, it: &TrackItem) -> f64 {
+        it.duration.0 as f64 / body.width().max(1.0) as f64
+    }
+
+    fn layout() -> Layout {
+        Layout {
+            content: Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 400.0)),
+            ruler: Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 20.0)),
+            rows: Vec::new(),
+            pps: 100.0,
+            scroll: 0.0,
+            split_y: 0.0,
+        }
+    }
+
+    /// The (body, item) pair the render loop would use for `id` with the app's current drag.
+    fn shown(app: &FilmcraftApp, seq: &Sequence, id: ClipId) -> (Rect, TrackItem) {
+        let (mut out, mut edited) = (HashMap::new(), HashMap::new());
+        preview_drag(app, seq, &mut out, &mut edited);
+        let original = seq.find_item(id).unwrap().1.clone();
+        let (start, dur, _) = out.get(&id).copied().unwrap_or((original.start, original.duration, None));
+        let it = edited.get(&id).cloned().unwrap_or(original);
+        let l = layout();
+        let body = Rect::from_min_max(pos2(l.x_of(start), 0.0), pos2(l.x_of(start + dur), 40.0));
+        (body, it)
+    }
+
+    /// The waveform's media-per-pixel scale must not change while a drag is previewed: the clip
+    /// body may move or resize, but the waveform keeps its pixels-per-second anchoring.
+    fn assert_waveform_anchored(what: &str, before: &(Rect, TrackItem), after: &(Rect, TrackItem)) {
+        let (a, b) = (media_ticks_per_pixel(&before.0, &before.1), media_ticks_per_pixel(&after.0, &after.1));
+        let drift = ((b / a) - 1.0).abs();
+        assert!(drift < 0.01, "{what}: waveform compressed during drag: {a} -> {b} media ticks per pixel");
+    }
+
+    fn demo_music() -> (FilmcraftApp, Sequence, TrackItem) {
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        let seq = s.active_sequence().unwrap().clone();
+        let music = seq.audio_tracks.iter().flat_map(|t| &t.items).find(|i| i.name.contains("Ambient")).unwrap().clone();
+        (FilmcraftApp::new(s), seq, music)
+    }
+
+    #[test]
+    fn remix_drag_keeps_the_waveform_anchored() {
+        // #1424: dragging a music clip's Out edge with the Remix tool must show the same media at
+        // the same pixels while dragging as after the remix commits, not squeeze the whole
+        // waveform into the new, shorter width.
+        let (mut app, seq, music) = demo_music();
+        let before = shown(&app, &seq, music.id);
+        app.tl.drag = Some(Drag::Remix { clip: music.id, delta: Tick(-8 * filmcraft_time::TICKS_PER_SECOND), from: Tick::ZERO });
+        let after = shown(&app, &seq, music.id);
+        assert!(after.0.width() < before.0.width(), "the preview shortens the clip");
+        assert_waveform_anchored("remix", &before, &after);
     }
 }
 
