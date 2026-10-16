@@ -179,6 +179,32 @@ fn the_mouse_scrolling_setting_swaps_wheel_and_cmd_wheel() {
     assert!((d.view().1 - 60.0).abs() < 1e-6, "Option + wheel zooms either way");
 }
 
+#[test]
+fn optional_plain_wheel_zoom_is_pointer_anchored_and_preserves_modified_scrolling() {
+    let mut d = Driver::tall();
+    d.exec("prefs.set", json!({"key": "timeline.zoomWithScrollWheel", "value": true}));
+    let tracks = d.rect("timeline.tracks");
+    let under_pointer = 4.0 + tracks[2] as f64 * 0.5 / 50.0;
+    d.wheel(0.2, 0.0, 20.0, none());
+    let (scroll, pps, v, a) = d.view();
+    assert!((pps - 60.0).abs() < 1e-6);
+    assert!((scroll + tracks[2] as f64 * 0.5 / pps - under_pointer).abs() < 0.02);
+    assert_eq!((v, a), (0.0, 0.0));
+    for (dx, dy, modifiers) in [(0.0, -60.0, json!({"command": true})), (0.0, -60.0, json!({"shift": true})), (-60.0, 3.0, none())] {
+        let before = d.view();
+        d.wheel(0.2, dx, dy, modifiers);
+        let after = d.view();
+        assert_eq!(after.1, before.1, "modified and horizontal gestures must not zoom");
+        assert!(after.0 > before.0);
+    }
+    d.exec("prefs.set", json!({"key": "timeline.zoomWithScrollWheel", "value": false}));
+    let before = d.view();
+    d.wheel(0.2, 0.0, 20.0, none());
+    let after = d.view();
+    assert_eq!(after.1, before.1);
+    assert!(after.2 > before.2, "turning the option off restores track scrolling");
+}
+
 /// The view cannot leave the Timeline: scrolled 39 minutes past a 26 second sequence, nothing was
 /// in view and the scroll bar's thumb sat at the right end whatever was done to it.
 #[test]

@@ -923,7 +923,8 @@ fn draw_clip(
     }
     // waveform (audio): rectified, lower 40 %
     if kind == TrackKind::Audio && app.ui.timeline.show_waveforms && w > 3.0 {
-        draw_waveform(app, p, body, it, Color32::from_rgb(fill.r() / 2, fill.g() / 2, fill.b() / 2));
+        let color = waveform_color(&app.session.prefs.timeline, fill);
+        draw_waveform(app, p, body, it, color);
     }
     let clip_p = p.with_clip_rect(body.shrink2(vec2(1.0, 0.0)).intersect(p.clip_rect()));
     // name band
@@ -977,6 +978,15 @@ fn draw_clip(
         p.rect_stroke(body.shrink(1.0), 0.0, Stroke::new(1.0, Color32::BLACK), StrokeKind::Inside);
         p.rect_stroke(body, 0.0, Stroke::new(2.0, t.clip_selected_border), StrokeKind::Inside);
     }
+}
+
+fn waveform_color(prefs: &filmcraft_engine::settings::TimelinePrefs, fill: Color32) -> Color32 {
+    if prefs.custom_waveform_color
+        && let Some([r, g, b]) = filmcraft_engine::settings::parse_hex(&prefs.waveform_color)
+    {
+        return Color32::from_rgb(r, g, b);
+    }
+    Color32::from_rgb(fill.r() / 2, fill.g() / 2, fill.b() / 2)
 }
 
 fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &TrackItem, col: Color32) {
@@ -2252,7 +2262,8 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         && let Some(p) = ctx.pointer_hover_pos()
     {
         let w = wheel_input(&ctx);
-        if (w.pinch - 1.0).abs() > 1e-4 || (w.alt && w.delta.y != 0.0) {
+        let plain_zoom = app.session.prefs.timeline.zoom_with_scroll_wheel && !w.alt && !w.command && !w.shift && w.delta.y.abs() > w.delta.x.abs();
+        if (w.pinch - 1.0).abs() > 1e-4 || ((w.alt || plain_zoom) && w.delta.y != 0.0) {
             let f = if (w.pinch - 1.0).abs() > 1e-4 { w.pinch as f64 } else { (1.0_f64 + w.delta.y as f64 * 0.01).clamp(0.5, 2.0) };
             let anchor_t = layout.tick_at(p.x).seconds();
             let v = &mut app.ui.timeline;
@@ -3219,6 +3230,23 @@ mod reveal_tests {
 #[cfg(test)]
 mod waveform_tests {
     use super::waveform_display_gain;
+
+    #[test]
+    fn custom_waveform_color_applies_across_labels_and_can_be_disabled() {
+        let mut prefs = filmcraft_engine::settings::TimelinePrefs::default();
+        for fill in [egui::Color32::from_rgb(80, 160, 200), egui::Color32::from_rgb(200, 60, 40)] {
+            prefs.custom_waveform_color = false;
+            let original = super::waveform_color(&prefs, fill);
+            prefs.custom_waveform_color = true;
+            prefs.waveform_color = "#ff8040".into();
+            assert_eq!(super::waveform_color(&prefs, fill), egui::Color32::from_rgb(255, 128, 64));
+            prefs.waveform_color = "invalid".into();
+            assert_eq!(super::waveform_color(&prefs, fill), original);
+            prefs.custom_waveform_color = false;
+            prefs.waveform_color = "#ff8040".into();
+            assert_eq!(super::waveform_color(&prefs, fill), original);
+        }
+    }
 
     fn db(g: f32) -> f32 {
         20.0 * g.log10()

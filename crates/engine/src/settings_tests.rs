@@ -851,3 +851,25 @@ fn builtin_label_presets_are_complete_and_distinct() {
     }
     assert!(!settings::is_builtin_label_preset("Team"));
 }
+#[test]
+fn timeline_wheel_and_waveform_preferences_validate_and_round_trip() {
+    let mut s = Session::default();
+    assert!(!s.prefs.timeline.zoom_with_scroll_wheel);
+    assert!(!s.prefs.timeline.custom_waveform_color);
+    s.execute(
+        "prefs.set",
+        json!({"values": {
+            "timeline.zoomWithScrollWheel": true,
+            "timeline.customWaveformColor": true,
+            "timeline.waveformColor": "#f08040"
+        }}),
+    )
+    .unwrap();
+    let restored: crate::autosave::Preferences = serde_json::from_value(serde_json::to_value(&s.prefs).unwrap()).unwrap();
+    assert_eq!(restored.timeline, s.prefs.timeline);
+    assert!(s.execute("prefs.set", json!({"key": "timeline.waveformColor", "value": "red"})).is_err());
+    assert_eq!(s.prefs.timeline.waveform_color, "#f08040");
+    s.prefs.reset_category("timeline").unwrap();
+    assert!(!s.prefs.timeline.zoom_with_scroll_wheel);
+    assert!(!s.prefs.timeline.custom_waveform_color);
+}
