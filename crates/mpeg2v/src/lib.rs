@@ -163,6 +163,9 @@ struct Seq {
 /// MPEG-1 pel_aspect_ratio (height/width of a sample) ×10000, Table 2-D.2.
 const MPEG1_PEL_ASPECT: [u32; 15] = [0, 10000, 6735, 7031, 7615, 8055, 8437, 8935, 9157, 9815, 10255, 10695, 10950, 11575, 12015];
 
+/// Largest accepted luma area (8192 x 4096; 8K UHD is 7680 x 4320).
+const MAX_PICTURE_AREA: u64 = 1 << 25;
+
 impl Seq {
     fn new(hdr: SequenceHeader, ext: Option<SequenceExtension>, display: Option<DisplayExtension>) -> Result<Seq> {
         let (w, h) = match &ext {
@@ -175,7 +178,9 @@ impl Seq {
             3 => ChromaFormat::Yuv444,
             _ => return Err(Error::Invalid("reserved chroma_format".into())),
         };
-        if w > 16383 || h > 16383 {
+        // The 14-bit sizes allow 16383 x 16383 (gigabytes per frame, several frames and a gray reference
+        // held); no real stream exceeds 8K, so cap the area there.
+        if w > 16383 || h > 16383 || u64::from(w) * u64::from(h) > MAX_PICTURE_AREA {
             return Err(Error::Unsupported(format!("{w}x{h}")));
         }
         let progressive_sequence = ext.is_none_or(|e| e.progressive_sequence);

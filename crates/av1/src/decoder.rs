@@ -23,6 +23,9 @@ use crate::stats::{DecodeStats, Stage, Timer};
 use crate::tile::TileDecoder;
 use crate::{Error, Picture, Result};
 
+/// Largest accepted frame side and area: AV1 level 6.3 stops at 16384 x 8704; the sequence header allows 65536 x 65536 (gigabytes of buffers).
+const MAX_FRAME_DIM: u32 = 16384;
+const MAX_FRAME_AREA: u64 = 1 << 27;
 const OBU_SEQUENCE_HEADER_T: u32 = 1;
 const OBU_TEMPORAL_DELIMITER_T: u32 = 2;
 const OBU_FRAME_HEADER_T: u32 = 3;
@@ -505,7 +508,7 @@ impl Decoder {
         }
         // Encoders exist that code frames slightly larger than the sequence maximum (e.g. a
         // 270-line stream coded as 272 lines); like other decoders we accept them.
-        if fh.upscaled_width > 65536 || fh.frame_height > 65536 {
+        if fh.upscaled_width > MAX_FRAME_DIM || fh.frame_height > MAX_FRAME_DIM || u64::from(fh.upscaled_width) * u64::from(fh.frame_height) > MAX_FRAME_AREA {
             return Err(Error::Invalid("frame size"));
         }
         if !fh.frame_is_intra {
