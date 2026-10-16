@@ -1983,6 +1983,22 @@ fn build() -> Vec<CommandSpec> {
             has_selection,
             |s, p| crate::mixer::audio_gain(s, p)
         ),
+        cmd!(
+            "clip.removeSilence",
+            "Remove Silence…",
+            ["Clip", "Audio Options"],
+            None,
+            r#"{"threshold":f?,"preHead":n?,"postTail":n?,"minStrip":n?,"crossfade":bool?,"clips":[id]?}"#,
+            has_selection,
+            |s, p| {
+                let mut p = p.clone();
+                if p.get("clips").is_none() {
+                    let sel: Vec<u64> = s.state.selection.iter().map(|c| c.0).collect();
+                    p["clips"] = serde_json::json!(sel);
+                }
+                crate::sequence_tools::remove_silence(s, &p)
+            }
+        ),
         query!("clip.audioPeak", "Audio Clip Peak Amplitude", r#"{"clips":[id]?}"#, |s, p| crate::mixer::audio_peak(s, p)),
         cmd!("clip.frameHold", "Add Frame Hold", ["Clip", "Video Options"], None, r#"{"clips":[id]?,"time":ticks?}"#, has_seq, |s, p| {
             crate::clip_ops::add_frame_hold(s, p)

@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use egui::{Align2, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_project::{ClipId, ItemId, MarkerId, Sequence, TrackId, TrackItem, TrackKind};
-use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeDisplay, format_time};
+use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeDisplay, TimeRange, format_time};
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
@@ -36,6 +36,14 @@ const SNAP_PX: f32 = 9.0;
 
 /// Waveform peaks are kept per audio stream: (item, index into the media's `audio_streams`).
 pub type PeakKey = (ItemId, usize);
+
+/// Preview of silence removal cut ranges on the timeline.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SilencePreview {
+    pub key: (i64, i64, i64, i64, bool, Option<(i64, i64)>),
+    pub ranges: Vec<TimeRange>,
+    pub total_seconds: f64,
+}
 
 /// Transient interaction state.
 #[derive(Default)]
@@ -62,6 +70,9 @@ pub struct TlState {
     zoom_anchor: Option<(f64, f32)>,
     /// The zoom (points a second) the video thumbnails are laid out at while the view is zooming (#1094).
     thumb_pps: Option<f64>,
+    pub silence_preview: Option<SilencePreview>,
+    pub silence_change_time: Option<f64>,
+    pub silence_last_key: Option<(i64, i64, i64, i64, bool, Option<(i64, i64)>)>,
 }
 
 impl TlState {
@@ -472,6 +483,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 
     // ---- clips
     let visible = (layout.tick_at(content.min.x - 2.0), layout.tick_at(content.max.x + 2.0));
+    update_silence_preview(app, &ctx, &layout, visible, seq_id);
     let selection: Vec<ClipId> = app.session.state.selection.clone();
     let mut previews: HashMap<ClipId, (Tick, Tick, Option<TrackId>)> = HashMap::new(); // live drag preview: (start, dur, track)
     // clips whose media changes in the preview (a trimmed or rolled edge): drawn from the edited
@@ -629,6 +641,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
         }
     }
+
+    // silence removal cut preview overlay
+    paint_silence_preview(&painter, &layout, content, app);
 
     // ---- track headers
     draw_headers(app, ui, seq, &rows, rect, vclip, aclip, &t);
@@ -3082,6 +3097,102 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         }
     }
     app.auto.add("timeline.tracks", layout.content, "tracks");
+}
+
+fn update_silence_preview(app: &mut FilmcraftApp, ctx: &egui::Context, _layout: &Layout, visible: (Tick, Tick), seq_id: ItemId) {
+    let Some(d) = app.ui.clip_dialog.as_ref() else {
+        if app.tl.silence_preview.is_some() || app.tl.silence_change_time.is_some() || app.tl.silence_last_key.is_some() {
+            app.tl.silence_preview = None;
+            app.tl.silence_change_time = None;
+            app.tl.silence_last_key = None;
+        }
+        return;
+    };
+    if !d.command.ends_with(".removeSilence") {
+        if app.tl.silence_preview.is_some() || app.tl.silence_change_time.is_some() || app.tl.silence_last_key.is_some() {
+            app.tl.silence_preview = None;
+            app.tl.silence_change_time = None;
+            app.tl.silence_last_key = None;
+        }
+        return;
+    }
+
+    let p = &d.params;
+    let threshold = p.get("threshold").and_then(Value::as_f64).unwrap_or(-30.6) as f32;
+    let pre_head = p.get("preHead").and_then(Value::as_i64).unwrap_or(10) as usize;
+    let post_tail = p.get("postTail").and_then(Value::as_i64).unwrap_or(12) as usize;
+    let min_strip = p.get("minStrip").and_then(Value::as_i64).unwrap_or(23) as usize;
+    let is_clip = d.command.starts_with("clip.");
+    let scope = p.get("previewScope").and_then(Value::as_str).unwrap_or(if is_clip { "all" } else { "visible" });
+    let is_all = scope == "all";
+
+    let bounds = if is_all { None } else { Some(TimeRange::from_bounds(visible.0, visible.1)) };
+
+    let clips: Vec<ClipId> = p.get("clips").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_u64().map(ClipId)).collect()).unwrap_or_default();
+
+    let key = ((threshold * 100.0) as i64, pre_head as i64, post_tail as i64, min_strip as i64, is_all, bounds.map(|b| (b.start.0, b.duration.0)));
+
+    let now = ctx.input(|i| i.time);
+
+    if app.tl.silence_last_key.as_ref() != Some(&key) {
+        app.tl.silence_last_key = Some(key);
+        app.tl.silence_change_time = Some(now);
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        return;
+    }
+
+    if let Some(t_change) = app.tl.silence_change_time {
+        if now - t_change < 0.25 {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            return;
+        }
+        app.tl.silence_change_time = None;
+        let clips_slice = if clips.is_empty() { None } else { Some(clips.as_slice()) };
+        if let Ok(ranges) =
+            filmcraft_engine::sequence_tools::detect_silence_ranges(&app.session, seq_id, bounds, clips_slice, threshold, pre_head, post_tail, min_strip)
+        {
+            let total_ticks: i64 = ranges.iter().map(|r| r.duration.0).sum();
+            let total_seconds = total_ticks as f64 / filmcraft_time::TICKS_PER_SECOND as f64;
+            app.tl.silence_preview = Some(SilencePreview { key, ranges, total_seconds });
+            ctx.request_repaint();
+        }
+    }
+}
+
+fn paint_silence_preview(p: &egui::Painter, layout: &Layout, content: Rect, app: &FilmcraftApp) {
+    let Some(prev) = &app.tl.silence_preview else { return };
+    if !app.ui.clip_dialog.as_ref().is_some_and(|d| d.command.ends_with(".removeSilence")) {
+        return;
+    }
+    let fill = Color32::from_rgba_unmultiplied(235, 45, 45, 65);
+    let cut_stroke = Stroke::new(1.5, Color32::from_rgb(255, 65, 65));
+    for r in &prev.ranges {
+        let x0 = layout.x_of(r.start);
+        let x1 = layout.x_of(r.end());
+        if x1 < content.min.x || x0 > content.max.x {
+            continue;
+        }
+        let draw_x0 = x0.max(content.min.x);
+        let draw_x1 = x1.min(content.max.x);
+        if draw_x1 > draw_x0 {
+            let rect = Rect::from_min_max(pos2(draw_x0, content.min.y), pos2(draw_x1, content.max.y));
+            p.rect_filled(rect, 0.0, fill);
+        }
+        if x0 >= content.min.x && x0 <= content.max.x {
+            p.line_segment([pos2(x0, content.min.y), pos2(x0, content.max.y)], cut_stroke);
+            p.line_segment([pos2(x0 - 3.0, content.min.y), pos2(x0 + 3.0, content.min.y + 6.0)], cut_stroke);
+            p.line_segment([pos2(x0 - 3.0, content.max.y), pos2(x0 + 3.0, content.max.y - 6.0)], cut_stroke);
+        }
+        if x1 >= content.min.x && x1 <= content.max.x {
+            p.line_segment([pos2(x1, content.min.y), pos2(x1, content.max.y)], cut_stroke);
+            p.line_segment([pos2(x1 + 3.0, content.min.y), pos2(x1 - 3.0, content.min.y + 6.0)], cut_stroke);
+            p.line_segment([pos2(x1 + 3.0, content.max.y), pos2(x1 - 3.0, content.max.y - 6.0)], cut_stroke);
+        }
+        if draw_x1 - draw_x0 > 36.0 {
+            let sec = r.duration.0 as f64 / TICKS_PER_SECOND as f64;
+            p.text(pos2((draw_x0 + draw_x1) * 0.5, content.min.y + 12.0), Align2::CENTER_CENTER, format!("−{sec:.2}s"), Tokens::ui(10.5), Color32::WHITE);
+        }
+    }
 }
 
 /// #374: trimming an audio clip must cut its waveform off at the moving edge, not squeeze the whole

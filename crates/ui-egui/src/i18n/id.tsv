@@ -3575,3 +3575,16 @@
 	Appearance Settings…	Pengaturan Tampilan…
 	Add to favorites	Tambahkan ke favorit
 	Remove from favorites	Hapus dari favorit
+	Remove Silence…	Hapus Keheningan…
+	Remove Silence	Hapus Keheningan
+	Threshold:	Ambang batas:
+	Pre head:	Batas awal:
+	Post tail:	Batas akhir:
+	Minimum to strip:	Minimum keheningan dipotong:
+	Cross fade audio	Crossfade audio
+	Preview:	Pratinjau:
+	Visible area	Area yang terlihat
+	Entire clip	Seluruh klip
+	Entire sequence	Seluruh sekuens
+	{count} silences detected ({sec}s)	{count} keheningan terdeteksi ({sec}s)
+	Detecting silences…	Mendeteksi keheningan…

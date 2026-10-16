@@ -3577,3 +3577,16 @@
 	Export the labels to a preset file…	Exporter les étiquettes dans un fichier de paramètre prédéfini…
 	Show the presets folder	Afficher le dossier des paramètres prédéfinis
 	Delete this preset	Supprimer ce paramètre prédéfini
+	Remove Silence…	Supprimer les silences…
+	Remove Silence	Supprimer les silences
+	Threshold:	Seuil :
+	Pre head:	Marge début :
+	Post tail:	Marge fin :
+	Minimum to strip:	Silence minimal à couper :
+	Cross fade audio	Fondu enchaîné audio
+	Preview:	Aperçu :
+	Visible area	Zone visible
+	Entire clip	Clip entier
+	Entire sequence	Séquence entière
+	{count} silences detected ({sec}s)	{count} silences détectés ({sec}s)
+	Detecting silences…	Détection des silences…

@@ -3578,3 +3578,16 @@
 
 # The native macOS application menu (Settings…).
 	Settings	Preferências
+	Remove Silence…	Remover silêncio…
+	Remove Silence	Remover silêncio
+	Threshold:	Limite:
+	Pre head:	Margem inicial:
+	Post tail:	Margem final:
+	Minimum to strip:	Silencio mínimo a remover:
+	Cross fade audio	Crossfade de áudio
+	Preview:	Pré-visualização:
+	Visible area	Área visível
+	Entire clip	Clipe inteiro
+	Entire sequence	Sequência inteira
+	{count} silences detected ({sec}s)	{count} silêncios detectados ({sec}s)
+	Detecting silences…	Detectando silêncios…
