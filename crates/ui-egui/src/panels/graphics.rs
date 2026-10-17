@@ -190,6 +190,13 @@ pub(crate) fn handle_points(quad: &[Pos2; 4]) -> [Pos2; 8] {
     [quad[0], quad[1], quad[2], quad[3], mid(0), mid(1), mid(2), mid(3)]
 }
 
+/// Resize cursor for a selected graphics-box handle, following the handle's screen-space axis.
+fn resize_handle_cursor(v: &LayerView, at: Pos2) -> Option<egui::CursorIcon> {
+    let quad = v.quad();
+    let centre = quad[0] + (quad[2] - quad[0]) * 0.5;
+    handle_points(&quad).into_iter().find(|point| (*point - at).length() <= 7.0).map(|point| super::transform_handles::resize_cursor(point - centre))
+}
+
 /// Dragging handle `n` of `quad` from `start` to `cur`: the box grows towards the pointer while
 /// the opposite corner / edge stays put. A corner scales each axis by the pointer's travel along
 /// it (both alike with `keep_ratio`, Shift); an edge scales only its own.
@@ -594,15 +601,18 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             Tool::Type | Tool::VerticalType => ui.ctx().set_cursor_icon(egui::CursorIcon::Text),
             Tool::Rectangle | Tool::Ellipse | Tool::Pen => ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair),
             Tool::Selection => {
-                let corner = views
-                    .iter()
-                    .filter(|v| Some(v.clip) == sel_clip && sel_layers.contains(&v.layer))
-                    .find_map(|v| corner_handles(v).and_then(|(_, pts)| pts.iter().position(|c| (*c - p).length() <= 6.0)));
+                let selected = || views.iter().filter(|v| Some(v.clip) == sel_clip && sel_layers.contains(&v.layer));
+                let handle = selected().find_map(|v| resize_handle_cursor(v, p));
+                let radius_handle = selected().find_map(|v| {
+                    let centre = v.quad()[0] + (v.quad()[2] - v.quad()[0]) * 0.5;
+                    corner_handles(v)?.1.iter().find(|c| (**c - p).length() <= 6.0).map(|c| super::transform_handles::resize_cursor(*c - centre))
+                });
                 if editing.as_ref().is_some_and(|e| views.iter().any(|v| v.clip.0 == e.clip && v.layer == e.layer && v.hit(p))) {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
-                } else if let Some(n) = corner {
-                    // along the corner's diagonal, the way the drag works
-                    ui.ctx().set_cursor_icon(if n % 2 == 0 { egui::CursorIcon::ResizeNwSe } else { egui::CursorIcon::ResizeNeSw });
+                } else if let Some(icon) = handle {
+                    ui.ctx().set_cursor_icon(icon);
+                } else if let Some(icon) = radius_handle {
+                    ui.ctx().set_cursor_icon(icon);
                 } else if views.iter().any(|v| v.hit(p)) {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
                 }
