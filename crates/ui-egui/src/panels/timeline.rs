@@ -1272,17 +1272,17 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
             actions.push(("timeline.setTargeting".into(), json!({"track": r.track.0, "sourcePatch": !patched})));
         }
         // 2. track lock
-        let small = |x: f32, y: f32| Rect::from_center_size(pos2(hrect.min.x + x, y), vec2(18.0, 18.0));
+        let small = |x: f32, y: f32| Rect::from_center_size(pos2(hrect.min.x + x, y), vec2(22.0, 22.0));
         let upper_y = hrect.min.y + (16.0f32).min(hrect.height() / 2.0);
         let lock_r = small(49.0, hrect.center().y);
         let lresp = crate::widgets::icon_toggle(
             ui,
             lock_r.intersect(visible),
             if tr.locked { Icon::Lock } else { Icon::Unlock },
-            true,
+            tr.locked,
             t,
             egui::Id::new(("locked", r.track.0)),
-            Some(if tr.locked { t.icon_active } else { t.text_dim }),
+            Some(t.icon_active),
         );
         app.auto.add(&format!("timeline.track.{label}.locked"), lock_r, "Toggle Track Lock");
         if lresp.clicked() {
@@ -1315,7 +1315,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
                 ui,
                 er.intersect(visible),
                 if tr.enabled { Icon::Eye } else { Icon::EyeOff },
-                true,
+                tr.enabled,
                 t,
                 egui::Id::new(("enabled", r.track.0)),
                 Some(t.text_dim),
@@ -1325,7 +1325,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
                 actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "enabled": !tr.enabled})));
             }
         } else {
-            let mr = Rect::from_center_size(pos2(hrect.min.x + x, upper_y), vec2(14.0, 14.0));
+            let mr = Rect::from_center_size(pos2(hrect.min.x + x, upper_y), vec2(16.0, 16.0));
             let mresp = crate::widgets::letter_toggle(
                 ui,
                 mr.intersect(visible),
@@ -1339,7 +1339,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
             if mresp.clicked() {
                 actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "muted": !tr.muted})));
             }
-            let s2 = Rect::from_center_size(pos2(hrect.min.x + x + 20.0, upper_y), vec2(14.0, 14.0));
+            let s2 = Rect::from_center_size(pos2(hrect.min.x + x + 20.0, upper_y), vec2(16.0, 16.0));
             let so = crate::widgets::letter_toggle(
                 ui,
                 s2.intersect(visible),
@@ -1445,7 +1445,7 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
         None => {}
     }
     app.auto.add("timeline.timecode", tc_rect, &tc);
-    // toolbar: 30 × 30 buttons, "on" = #4b4b4b fill
+    // toolbar: 28 × 28 buttons with 18 pt icons
     let mut x = rect.min.x + 12.0;
     let y = rect.min.y + 26.0;
     let toggles: [(Icon, &str, bool, bool, &str); 6] = [
@@ -1460,12 +1460,14 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
         let r = Rect::from_min_size(pos2(x, y), vec2(28.0, 28.0));
         let resp = ui.interact(r, egui::Id::new(("tl-toggle", key)), Sense::click()).on_hover_text(tip);
         app.auto.add(&format!("timeline.toggle.{key}"), r, tip);
+        // the same look as the shared icon toggle (widgets::icon_toggle)
         if toggle && on {
-            p.rect_filled(r, 4.0, t.pressed);
-        } else if resp.hovered() {
-            p.rect_filled(r, 4.0, t.hover);
+            p.rect_filled(r, t.radius_sm, t.toggle_on);
         }
-        icons::paint(&p, r.shrink(7.0), icon, if toggle && on { t.text } else { t.text_dim });
+        if resp.hovered() {
+            p.rect_filled(r, t.radius_sm, if toggle && on { t.toggle_on } else { t.hover });
+        }
+        icons::paint(&p, r.shrink(5.0), icon, if toggle && on { t.text } else { t.text_dim });
         if resp.clicked() {
             let _ = match key {
                 "nest" => app.session.execute("sequence.nestSequences", json!({})),

@@ -12,14 +12,14 @@
 //! UI commands: `voiceover.recordToggle {track?}` and `voiceover.settingsDialog`.
 
 use crate::widgets::CenteredDialog as _;
-use egui::{Align2, Color32, Rect, RichText, Sense, Stroke, pos2, vec2};
+use egui::{Align2, Color32, Rect, RichText, Stroke, pos2, vec2};
 use filmcraft_engine::voiceover::VoiceOverPrefs;
 use filmcraft_project::TrackId;
 use filmcraft_time::Tick;
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
-use crate::icons::{self, Icon};
+use crate::icons::Icon;
 use crate::theme::Tokens;
 
 const RED: Color32 = Color32::from_rgb(0xd8, 0x50, 0x3f);
@@ -44,12 +44,7 @@ fn draft_id() -> egui::Id {
 /// The microphone button of an audio track header. Returns the requested action.
 pub fn header_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, track: TrackId, r: Rect, visible: Rect, label: &str, t: &Tokens) -> Option<Action> {
     let recording_here = app.session.voiceover.rec.as_ref().is_some_and(|x| x.track == track);
-    let resp = ui.interact(r.intersect(visible), egui::Id::new(("vo", track.0)), Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(r, 2.0, t.hover);
-    }
-    let col = if recording_here { RED } else { t.text_dim };
-    icons::paint(&ui.painter().with_clip_rect(visible), r.shrink(1.0), Icon::Mic, col);
+    let resp = crate::widgets::icon_toggle(ui, r.intersect(visible), Icon::Mic, recording_here, t, egui::Id::new(("vo", track.0)), Some(RED));
     let id = format!("timeline.track.{label}.voiceover");
     app.auto.add(&id, r, if recording_here { "Stop Voice-over Recording" } else { "Voice-over Record" });
     let mut act = None;

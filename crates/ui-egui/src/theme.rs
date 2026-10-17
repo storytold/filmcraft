@@ -68,6 +68,9 @@ pub struct Tokens {
     pub icon_active: Color32,
     pub hover: Color32,
     pub pressed: Color32,
+    /// Rounded background behind an icon toggle that is on: a translucent grey, so it reads on
+    /// the dark, medium and light panels alike.
+    pub toggle_on: Color32,
     pub field_bg: Color32,
     pub field_border: Color32,
     pub separator: Color32,
@@ -170,6 +173,7 @@ impl Tokens {
             icon_active: Color32::from_rgb(0xd1, 0xd1, 0xd1),
             hover: Color32::from_rgb(0x2c, 0x2c, 0x2c),
             pressed: Color32::from_rgb(0x4b, 0x4b, 0x4b),
+            toggle_on: Color32::from_rgba_unmultiplied(0x80, 0x80, 0x80, 120),
             field_bg: Color32::from_rgb(0x0e, 0x0e, 0x0e),
             field_border: Color32::from_rgb(0x30, 0x30, 0x30),
             separator: Color32::from_rgb(0x30, 0x30, 0x30),
@@ -550,6 +554,23 @@ mod tests {
         assert!(luminance(light.plot_handle) < luminance(light.plot_bg));
         assert!(luminance(light.icon_active) < luminance(light.pressed));
         assert_eq!(Tokens::for_kind(ThemeKind::Medium).plot_bg, dark.plot_bg, "Medium keeps the established dark plot treatment");
+    }
+
+    #[test]
+    fn an_icon_toggle_that_is_on_stands_out_in_every_theme() {
+        let luminance = |c: Color32| i32::from(c.r()) + i32::from(c.g()) + i32::from(c.b());
+        for kind in [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Light] {
+            let t = Tokens::for_kind(kind);
+            for bg in [t.panel_bg, t.tl_header_bg] {
+                // the translucent fill painted over the panel (premultiplied alpha)
+                let keep = 1.0 - f32::from(t.toggle_on.a()) / 255.0;
+                let over = |src: u8, dst: u8| (f32::from(src) + f32::from(dst) * keep).round() as u8;
+                let on = Color32::from_rgb(over(t.toggle_on.r(), bg.r()), over(t.toggle_on.g(), bg.g()), over(t.toggle_on.b(), bg.b()));
+                let contrast = (luminance(on) - luminance(bg)).abs();
+                assert!(contrast >= 90, "{kind:?}: the on background is too faint ({contrast})");
+                assert!(contrast > (luminance(t.hover) - luminance(bg)).abs(), "{kind:?}: on reads stronger than hover");
+            }
+        }
     }
 
     #[test]

@@ -778,6 +778,8 @@ pub fn button(ui: &mut egui::Ui, icon: Icon, size: f32, active: bool, t: &crate:
     let (rect, resp) = ui.allocate_exact_size(vec2(size, size), egui::Sense::click());
     let bg = if resp.is_pointer_button_down_on() {
         Some(t.pressed)
+    } else if active {
+        Some(t.toggle_on)
     } else if resp.hovered() {
         Some(t.hover)
     } else {
