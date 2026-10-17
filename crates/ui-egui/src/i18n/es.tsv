@@ -3610,3 +3610,52 @@
 	Shows the version, community links and credits in a FilmCraft window.	Muestra la versión, los enlaces de la comunidad y los créditos en una ventana de FilmCraft.
 	Couldn't open your web browser	No se pudo abrir el navegador web
 	Open this address in your browser yourself:	Abre esta dirección tú mismo en el navegador:
+	API key	Clave de API
+	API key is too long.	La clave de API es demasiado larga.
+	API key storage is available in the desktop app.	El almacenamiento de claves de API está disponible en la aplicación de escritorio.
+	API key saved on this computer.	La clave de API se guardó en este equipo.
+	API key removed from this computer.	La clave de API se eliminó de este equipo.
+	Account and billing…	Cuenta y facturación…
+	An API key is saved on this computer.	Hay una clave de API guardada en este equipo.
+	Checking the credential store…	Comprobando el almacén de credenciales…
+	Credential store stopped responding.	El almacén de credenciales dejó de responder.
+	Get an API key…	Obtener una clave de API…
+	No API key is saved on this computer.	No hay ninguna clave de API guardada en este equipo.
+	Reactor	Reactor
+	Remove key	Eliminar clave
+	Save and Remove take effect immediately.	Guardar y eliminar se aplican de inmediato.
+	Save key	Guardar clave
+	Use your own Reactor account for video generation. Your API key is stored in this computer's credential store, outside FilmCraft projects and preferences.	Usa tu propia cuenta de Reactor para generar videos. Tu clave de API se guarda en el almacén de credenciales de este equipo, fuera de los proyectos y las preferencias de FilmCraft.
+	Describe the video and sound	Describe el vídeo y el sonido
+	Generate and import	Generar e importar
+	Generate with Reactor…	Generar con Reactor…
+	Generate with Reactor FastH3 Omni	Generar con Reactor FastH3 Omni
+	Generation is available in the desktop app after adding a Reactor API key in Settings.	La generación está disponible en la aplicación de escritorio después de añadir una clave de API de Reactor en Ajustes.
+	Picture	Picture
+	Reference audio	Audio de referencia
+	Reference images	Imágenes de referencia
+	Use Picture 1 and Audio 1 in the prompt to refer to the first selected files.	Usa Picture 1 y Audio 1 en la indicación para referirte a los primeros archivos seleccionados.
+	Save the project before generating. Clips are saved beside the project and imported automatically.	Guarda el proyecto antes de generar. Los clips se guardan junto al proyecto y se importan automáticamente.
+	Generations	Generaciones
+	Grid View	Vista de cuadrícula
+	Your next shot starts here	Tu siguiente toma empieza aquí
+	Add references and describe your shot.	Añade referencias y describe tu toma.
+	In project	En el proyecto
+	Reuse	Reutilizar
+	Remove reference	Quitar referencia
+	Describe your shot	Describe tu toma
+	Describe the scene, movement, and sound…	Describe la escena, el movimiento y el sonido…
+	Prompt exceeds 2048 bytes	La descripción supera los 2048 bytes
+	Current frame	Fotograma actual
+	Saved and imported automatically	Guardado e importado automáticamente
+	Reactor View	Vista de Reactor
+	Reactor References	Referencias de Reactor
+	Reuse Reactor Generation	Reutilizar generación de Reactor
+	Capture Reactor Reference	Capturar referencia de Reactor
+	Reactor Audio Preview	Vista previa de audio de Reactor
+	Reactor Generations	Generaciones de Reactor
+	Cancel Queued Reactor Generation	Cancelar generación de Reactor en cola
+	Failed	Falló
+	Pause	Pausar
+	Play	Reproducir
+	Queued	En cola

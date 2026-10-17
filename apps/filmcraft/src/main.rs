@@ -35,6 +35,8 @@ mod graphics;
 mod logging;
 #[cfg(target_os = "macos")]
 mod native_menu;
+mod reactor_generation;
+mod reactor_key;
 mod window_raise;
 
 use args::{Cli, Launch};
@@ -309,6 +311,10 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         // feature, so `ctx.open_url` does nothing on the desktop. Detached, so a launcher
         // that waits for the browser never freezes the UI.
         app.hooks.open_url = Some(Box::new(|url: &str| open::that_detached(url).map_err(|e| e.to_string())));
+        let credentials = Arc::new(reactor_key::Vault::default());
+        let key_actions = credentials.clone();
+        app.hooks.reactor_key = Some(Box::new(move |action| key_actions.request(action)));
+        app.hooks.reactor_generate = Some(Box::new(move |request| reactor_generation::request(request, credentials.clone())));
         app.hooks.clipboard_media = Some(Box::new(clipboard_media));
         // Settings ▸ General ▸ Interface Language ▸ System Language (#218).
         app.hooks.cursor_screen_position = Some(Box::new(filmcraft_platform::cursor::cursor_screen_position));

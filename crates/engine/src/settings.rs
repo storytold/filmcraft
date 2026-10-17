@@ -1359,6 +1359,7 @@ static CATEGORIES: &[Category] = &[
             b("trim.dynamicRippleUpdates", "Update timeline dynamically during ripple edits.", false),
         ],
     },
+    Category { id: "reactor", title: "Reactor", rows: &[Row::Custom("reactorApiKey")] },
 ];
 
 /// Every field of every category (groups flattened), in dialog order.

@@ -3577,3 +3577,14 @@
 	Export the labels to a preset file…	Exporter les étiquettes dans un fichier de paramètre prédéfini…
 	Show the presets folder	Afficher le dossier des paramètres prédéfinis
 	Delete this preset	Supprimer ce paramètre prédéfini
+	Describe the video and sound	Décrivez la vidéo et le son
+	Generate and import	Générer et importer
+	Generate with Reactor…	Générer avec Reactor…
+	Generate with Reactor FastH3 Omni	Générer avec Reactor FastH3 Omni
+	Generation is available in the desktop app after adding a Reactor API key in Settings.	La génération est disponible dans l’application de bureau après l’ajout d’une clé API Reactor dans les paramètres.
+	Picture	Picture
+	Reference audio	Audio de référence
+	Reference images	Images de référence
+	Use Picture 1 and Audio 1 in the prompt to refer to the first selected files.	Utilisez Picture 1 et Audio 1 dans le prompt pour désigner les premiers fichiers sélectionnés.
+	Save the project before generating. Clips are saved beside the project and imported automatically.	Enregistrez le projet avant de générer. Les clips sont enregistrés à côté du projet et importés automatiquement.
+	Reactor	Reactor
