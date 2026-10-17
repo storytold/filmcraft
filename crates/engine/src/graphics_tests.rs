@@ -250,10 +250,10 @@ fn graphic_renders_in_the_program_and_survives_save() {
     assert!(fonts.as_array().unwrap().iter().any(|f| f["family"] == "Inter"));
 }
 
-/// `file.exportInterchange` wrote a title out of the document without saying so: the command's
-/// report names every graphic clip a format cannot carry.
+/// `file.exportInterchange` carries text graphics in FCPXML and names them in reports for formats
+/// that cannot carry them.
 #[test]
-fn interchange_export_reports_the_title_it_cannot_carry() {
+fn interchange_export_carries_fcpxml_text_and_reports_unsupported_formats() {
     let d = std::env::temp_dir().join(format!("fc-title-report-{}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
     let mut s = demo();
@@ -263,10 +263,15 @@ fn interchange_export_reports_the_title_it_cannot_carry() {
     let frame = s.sequence_rate().frame_at(it.start);
     let want = format!("graphic clip \"{}\" at frame {frame}", it.name);
     for format in ["xml", "fcpxml", "otio", "aaf"] {
-        let path = d.join(format!("cut.{format}")).to_string_lossy().to_string();
-        let r = s.execute("file.exportInterchange", json!({"format": format, "path": path})).unwrap();
+        let path = d.join(format!("cut.{format}"));
+        let r = s.execute("file.exportInterchange", json!({"format": format, "path": path.to_string_lossy()})).unwrap();
         let named = r["report"].as_array().unwrap().iter().filter(|l| l.as_str().is_some_and(|l| l.starts_with(&want))).count();
-        assert_eq!(named, 1, "{format}: {}", r["report"]);
+        assert_eq!(named, if format == "fcpxml" { 0 } else { 1 }, "{format}: {}", r["report"]);
+        if format == "fcpxml" {
+            let xml = std::fs::read_to_string(&path).unwrap();
+            assert!(xml.contains("<title ref=\""), "{xml}");
+            assert!(xml.contains("Opening line</text-style>"), "{xml}");
+        }
     }
     // an EDL holds one video track: the report names the title when its track is the one written
     let q = s.active_sequence().unwrap();

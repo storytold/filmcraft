@@ -1,6 +1,5 @@
-//! Graphic (title) clips and adjustment layers have no equivalent in the interchange formats. An
-//! export used to lose them without a word (FCP7 XML, OTIO, EDL) or with a line that named
-//! nothing (FCPXML, AAF): every such clip is now named in the export report.
+//! Unsupported graphic clips and adjustment layers are named in export reports. FCPXML can carry
+//! a graphic's first text layer as an editable Basic Title, while reporting omitted layers.
 
 mod support;
 
@@ -43,7 +42,7 @@ const LAYER: &str = "adjustment layer \"Grade\" at frame 48";
 #[test]
 fn every_format_names_the_title_and_the_adjustment_layer_it_cannot_carry() {
     let (p, s) = project_with_a_title();
-    for format in [Format::Fcp7Xml, Format::Fcpxml, Format::Otio, Format::Aaf] {
+    for format in [Format::Fcp7Xml, Format::Otio, Format::Aaf] {
         let (_, report) = export_report(&p, s, format);
         for clip in [TITLE, LAYER] {
             let named: Vec<_> = report.warnings().filter(|e| e.message.starts_with(clip)).collect();
@@ -51,6 +50,14 @@ fn every_format_names_the_title_and_the_adjustment_layer_it_cannot_carry() {
             assert_eq!(named[0].count, 1);
         }
     }
+    let (xml, report) = export_report(&p, s, Format::Fcpxml);
+    assert!(!report.mentions(TITLE), "the text title is carried: {report}");
+    assert!(report.mentions(LAYER), "the adjustment layer is still unsupported: {report}");
+    let xml = String::from_utf8(xml).unwrap();
+    assert!(xml.contains("<title ref=\""), "{xml}");
+    assert!(xml.contains("<text-style ref=\""));
+    assert!(xml.contains("Opening line</text-style>"));
+    assert!(xml.contains("Basic Title.moti"));
     // an EDL holds one video track: V1 by default (the layer), V2 when asked (the title)
     let (_, report) = export_report(&p, s, Format::Edl);
     assert!(report.mentions(LAYER) && !report.mentions(TITLE), "{report}");
@@ -65,11 +72,42 @@ fn two_titles_are_two_report_lines() {
     let (mut p, s) = project_with_a_title();
     let graphic = p.items.values().find(|i| matches!(i.kind, ItemKind::Graphic { .. })).map(|i| i.id).unwrap();
     let second = clip(&mut p, s, TrackKind::Video, 1, graphic, 40, 10, 0);
-    p.sequence_mut(s).unwrap().find_item_mut(second).unwrap().1.name = "Closing".into();
-    for format in [Format::Fcp7Xml, Format::Fcpxml, Format::Otio, Format::Aaf] {
+    let item = p.sequence_mut(s).unwrap().find_item_mut(second).unwrap().1;
+    item.name = "Closing".into();
+    let mut text = find_effect("graphic_text").unwrap().instance();
+    text.params.get_mut("text").unwrap().value = ParamValue::Text("Closing line".into());
+    item.effects.push(text);
+    for format in [Format::Fcp7Xml, Format::Otio, Format::Aaf] {
         let (_, report) = export_report(&p, s, format);
         assert!(report.mentions(TITLE) && report.mentions("graphic clip \"Closing\" at frame 40"), "{format:?}: {report}");
     }
+    let (xml, report) = export_report(&p, s, Format::Fcpxml);
+    assert!(!report.mentions(TITLE), "{report}");
+    assert!(!report.mentions("graphic clip \"Closing\""), "{report}");
+    assert_eq!(String::from_utf8(xml).unwrap().matches("<title ref=").count(), 2);
+}
+
+#[test]
+fn fcpxml_keeps_text_when_a_graphic_also_has_a_shape() {
+    let (mut p, s) = project_with_a_title();
+    let title = p.sequence_mut(s).unwrap().video_tracks[1].items.first_mut().unwrap();
+    title.effects.push(find_effect("graphic_shape").unwrap().instance());
+    let (xml, report) = export_report(&p, s, Format::Fcpxml);
+    let xml = String::from_utf8(xml).unwrap();
+    assert!(xml.contains("Opening line</text-style>"));
+    assert!(report.mentions("other graphic layers are omitted"), "{report}");
+    assert!(!xml.contains("name=\"Shape\""), "shape is not a portable FCPXML filter");
+}
+
+#[test]
+fn fcpxml_static_title_does_not_emit_a_time_map() {
+    let (mut p, s) = project_with_a_title();
+    p.sequence_mut(s).unwrap().video_tracks[1].items[0].speed = 2.0;
+    let (xml, report) = export_report(&p, s, Format::Fcpxml);
+    let xml = String::from_utf8(xml).unwrap();
+    assert!(xml.contains("Opening line</text-style>"));
+    assert!(!xml.contains("<timeMap>"));
+    assert!(report.mentions("clip retiming is omitted"), "{report}");
 }
 
 #[test]
@@ -98,7 +136,7 @@ fn the_reports_match_what_an_import_gives_back() {
             .count()
     };
     assert_eq!(graphics(&p), 1);
-    for format in [Format::Fcp7Xml, Format::Fcpxml, Format::Otio] {
+    for format in [Format::Fcp7Xml, Format::Otio] {
         let (bytes, _) = export_report(&p, s, format);
         let (imported, _) = import(&bytes, format, None).unwrap_or_else(|e| panic!("{format:?}: {e}"));
         assert_eq!(graphics(&imported.project), 0, "{format:?}");

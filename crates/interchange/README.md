@@ -69,14 +69,17 @@ compositions too (the top-level ones are those no other composition uses).
 
 ## Graphics and adjustment layers
 
-No format here has an equivalent of a FilmCraft graphic (title) clip or an adjustment layer, and
-none of the exports brings one back. Each such clip is named in the export `Report` as a warning
-(`graphic clip "Title" at frame 48 …`, one line per clip), with what was written instead:
+FCPXML exports the first nonempty text layer of a FilmCraft graphic as an editable Basic Title,
+including its text, base font, size, colour, alignment, and position. Other graphic layers (such
+as a card background shape), character-level styles, title animation, and retiming are not carried; the
+report warns when other layers are omitted. FilmCraft's FCPXML importer still skips `<title>`, so
+this is an outward interchange path, not a FilmCraft round trip. Other formats name unsupported
+graphic clips in the export `Report` (`graphic clip "Title" at frame 48 …`, one line per clip):
 
 | Format | Written as | On import into FilmCraft |
 |---|---|---|
 | FCP7 XML | a clip item without media (its layers as FilmCraft filter ids) | not read back; the import report names the skipped clip item |
-| FCPXML | a clip without media | not read back |
+| FCPXML | a Basic Title when it has text; otherwise a clip without media | titles are not yet read back |
 | OTIO | a clip with a `MissingReference` (effects in the `filmcraft` metadata) | offline media |
 | EDL | an ordinary event with the reel the reel mode gives | an ordinary clip |
 | AAF | a gap | nothing |
@@ -93,9 +96,9 @@ OMF carries no video at all.
   random corruption never panic. Nested sequences: AAF round trips as compositions (nests in
   nests, a nest used twice, another frame and sample rate, breakout to mono), OMF with the
   rendered sound, the audio needs of nests, a sequence inside itself.
-- `tests/uncarried_clips.rs`: every format's export report names each graphic clip and adjustment
-  layer once, as a warning; a sequence without them reports nothing; what a re-import gives back
-  matches the report; the FCP7 XML import names a clip item whose file is not defined.
+- `tests/uncarried_clips.rs`: unsupported formats name each graphic clip and adjustment layer once;
+  FCPXML writes text titles and warns when it omits other graphic layers; a sequence without such
+  clips reports nothing; the FCP7 XML import names a clip item whose file is not defined.
 - `src/aaf/tests.rs`: written files checked against the required properties of every class
   written (Header, Identification, Mobs, slots, components, descriptors), weak references
   resolving into the dictionary, source clips resolving to mobs and slots, the Edit Protocol
