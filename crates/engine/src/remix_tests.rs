@@ -119,7 +119,7 @@ fn remix_shorter_and_longer_hits_target_at_beats_with_undo() {
 }
 
 #[test]
-fn mixed_audio_is_the_source_pieces() {
+fn mixed_audio_is_the_source_pieces_outside_local_level_matching() {
     let (m, a) = music();
     let (mut s, c) = session(&m, None);
     let r = s.execute("clip.remix", json!({"seconds": 18.0})).unwrap();
@@ -134,8 +134,9 @@ fn mixed_audio_is_the_source_pieces() {
     let mut d = 0usize;
     let mut checked = 0;
     let mut worst = 0f32;
+    let margin = rm.levels.as_ref().map_or(plan.xfade as usize, |m| Tick(m.span).to_units_floor(SR as i64) as usize);
     for p in &plan.pieces {
-        for k in (plan.xfade as usize..p.len as usize - plan.xfade as usize).step_by(31) {
+        for k in (margin..(p.len as usize).saturating_sub(margin)).step_by(31) {
             let want = m[0][p.src as usize + k];
             worst = worst.max((mix.channels[0][d + k] - want).abs());
             checked += 1;
@@ -159,4 +160,156 @@ fn overlaps_are_refused_and_noise_cannot_be_remixed() {
     let (mut s, _) = session(&[tone.clone(), tone], None);
     let err = s.execute("clip.remix.enable", json!({})).unwrap_err().to_string();
     assert!(err.contains("beat") || err.contains("short"), "{err}");
+}
+
+#[test]
+fn analysis_does_not_leak_between_projects_with_reused_item_ids() {
+    let (first, _) = dsp::test_music(SR, 120.0, 16, 3);
+    let (mut second, _) = dsp::test_music(SR, 100.0, 14, 71);
+    for channel in &mut second {
+        channel.truncate(first[0].len());
+    }
+    let (mut one, a) = session(&first, None);
+    let (mut two, b) = session(&second, None);
+    assert_eq!(item(&one, a).item, item(&two, b).item);
+    assert_eq!(item(&one, a).duration, item(&two, b).duration);
+    let first_result = one.execute("clip.remix", json!({"clip":a.0,"seconds":20.0})).unwrap();
+    let second_result = two.execute("clip.remix", json!({"clip":b.0,"seconds":20.0})).unwrap();
+    assert!((first_result["bpm"].as_f64().unwrap() - 120.0).abs() < 1.0);
+    assert!((second_result["bpm"].as_f64().unwrap() - 100.0).abs() < 1.0, "second source must have its own analysis: {second_result}");
+}
+
+#[test]
+fn extending_then_reverting_then_shortening_matches_a_fresh_clip() {
+    let (m, _) = music();
+    let (mut s, c) = session(&m, None);
+    let original = item(&s, c);
+    s.execute("clip.remix", json!({"clip":c.0,"seconds":46.0})).unwrap();
+    s.execute("clip.remix.revert", json!({"clip":c.0})).unwrap();
+    assert_eq!(item(&s, c), original);
+    let after_reset = s.execute("clip.remix", json!({"clip":c.0,"seconds":16.0})).unwrap();
+    let (mut fresh, fresh_clip) = session(&m, None);
+    let direct = fresh.execute("clip.remix", json!({"clip":fresh_clip.0,"seconds":16.0})).unwrap();
+    assert_eq!(after_reset["pieces"], direct["pieces"]);
+    assert_eq!(after_reset["originalSeconds"], direct["originalSeconds"]);
+    assert_eq!(after_reset["duration"], direct["duration"]);
+}
+
+#[test]
+fn real_track_extend_revert_shorten_when_requested() {
+    let Some(path) = std::env::var_os("FILMCRAFT_REAL_REMIX_WAV") else { return };
+    let Some(output) = std::env::var_os("FILMCRAFT_REAL_REMIX_OUTPUT") else { return };
+    let path = std::path::PathBuf::from(path);
+    let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name":"real-track-remix","audio":2,"video":1})).unwrap();
+    let media = crate::commands::import_bytes(&mut s, &path.to_string_lossy(), bytes, None).unwrap();
+    let placed = s.execute("timeline.place", json!({"item":media.0,"audioTrack":"A1","seconds":0.0})).unwrap();
+    let clip = ClipId(placed["clips"][0].as_u64().unwrap());
+    let original = item(&s, clip);
+    let output = std::path::PathBuf::from(output);
+    std::fs::create_dir_all(&output).unwrap();
+    let mut reports = Vec::new();
+    for seconds in [46, 16] {
+        let report = s.execute("clip.remix", json!({"clip":clip.0,"seconds":seconds})).unwrap();
+        assert!((report["seconds"].as_f64().unwrap() - f64::from(seconds)).abs() < 0.7);
+        assert_eq!(report["originalSeconds"].as_f64().unwrap(), original.duration.seconds());
+        let seq = s.active_sequence().unwrap();
+        let provider = s.media.provider(s.project.clone(), s.services.clone());
+        let count = item(&s, clip).duration.to_units_floor(SR as i64) as usize;
+        let mix = filmcraft_render::audio::mix_sequence(&s.project, seq, 0, count, &provider);
+        let interleaved: Vec<f32> = (0..count).flat_map(|i| [mix.channels[0][i], mix.channels[1][i]]).collect();
+        assert!(interleaved.iter().all(|x| x.is_finite()));
+        std::fs::write(output.join(format!("A Brave Little Attempt - revised target {seconds}s.wav")), crate::previews::write_wav_f32(&interleaved, SR))
+            .unwrap();
+        reports.push(report);
+        s.execute("clip.remix.revert", json!({"clip":clip.0})).unwrap();
+        assert_eq!(item(&s, clip), original);
+    }
+    std::fs::write(output.join("brave-remix-validation.json"), serde_json::to_vec_pretty(&reports).unwrap()).unwrap();
+}
+
+#[test]
+fn real_track_melodic_choices_preserve_tempo_and_original_when_requested() {
+    let Some(path) = std::env::var_os("FILMCRAFT_MELODY_WAV") else { return };
+    let output = std::path::PathBuf::from(std::env::var_os("FILMCRAFT_MELODY_OUTPUT").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    let path = std::path::PathBuf::from(path);
+    let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name":"melodic-choices","audio":2,"video":1})).unwrap();
+    let media = crate::commands::import_bytes(&mut s, &path.to_string_lossy(), bytes, None).unwrap();
+    let placed = s.execute("timeline.place", json!({"item":media.0,"audioTrack":"A1","seconds":0.0})).unwrap();
+    let clip = ClipId(placed["clips"][0].as_u64().unwrap());
+    let original = item(&s, clip);
+    let mut reports = Vec::new();
+    for target in [16, 46] {
+        let undo = s.history.undo.len();
+        let response = s.execute("clip.remix", json!({"clip":clip.0,"seconds":target,"matchMelody":true})).unwrap();
+        assert_eq!(response["applied"], false, "{response}");
+        assert_eq!(item(&s, clip), original);
+        assert_eq!(s.history.undo.len(), undo);
+        let seconds = response["alternatives"][0]["seconds"].as_f64().unwrap();
+        let applied = s.execute("clip.remix", json!({"clip":clip.0,"seconds":seconds,"matchMelody":true})).unwrap();
+        assert_ne!(applied["applied"], false, "suggestion must be applicable: {applied}");
+        assert!((item(&s, clip).duration.seconds() - seconds).abs() < 0.6);
+        let seq = s.active_sequence().unwrap();
+        let provider = s.media.provider(s.project.clone(), s.services.clone());
+        let count = item(&s, clip).duration.to_units_floor(SR as i64) as usize;
+        let mix = filmcraft_render::audio::mix_sequence(&s.project, seq, 0, count, &provider);
+        let interleaved: Vec<f32> = (0..count).flat_map(|i| [mix.channels[0][i], mix.channels[1][i]]).collect();
+        assert!(interleaved.iter().all(|x| x.is_finite()));
+        std::fs::write(output.join(format!("A Brave Little Attempt - melodic alternative to {target}s.wav")), crate::previews::write_wav_f32(&interleaved, SR))
+            .unwrap();
+        reports.push(json!({"requested":target,"choices":response,"applied":applied}));
+        s.execute("clip.remix.revert", json!({"clip":clip.0})).unwrap();
+        assert_eq!(item(&s, clip), original);
+    }
+    std::fs::write(output.join("melodic-validation.json"), serde_json::to_vec_pretty(&reports).unwrap()).unwrap();
+}
+
+#[test]
+fn real_cartoon_short_duration_choices_when_requested() {
+    let Some(path) = std::env::var_os("FILMCRAFT_PHRASE_WAV") else { return };
+    let output = std::path::PathBuf::from(std::env::var_os("FILMCRAFT_PHRASE_OUTPUT").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    let path = std::path::PathBuf::from(path);
+    let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name":"short-phrase-search","audio":2,"video":1})).unwrap();
+    let media = crate::commands::import_bytes(&mut s, &path.to_string_lossy(), bytes, None).unwrap();
+    let placed = s.execute("timeline.place", json!({"item":media.0,"audioTrack":"A1","seconds":0.0})).unwrap();
+    let clip = ClipId(placed["clips"][0].as_u64().unwrap());
+    let original = item(&s, clip);
+    let response = s.execute("clip.remix", json!({"clip":clip.0,"seconds":14.0,"matchMelody":true})).unwrap();
+    assert_eq!(response["applied"], false, "{response}");
+    assert_eq!(item(&s, clip), original);
+    let first = response["alternatives"][0]["seconds"].as_f64().unwrap();
+    assert!((13.0..20.0).contains(&first), "short candidate must no longer be missed: {response}");
+    let mut reports = Vec::new();
+    for (index, choice) in response["alternatives"].as_array().unwrap().iter().enumerate() {
+        let seconds = choice["seconds"].as_f64().unwrap();
+        let report = s.execute("clip.remix", json!({"clip":clip.0,"seconds":seconds,"matchMelody":true})).unwrap();
+        assert_ne!(report["applied"], false, "every suggested length must apply: {report}");
+        let rm = filmcraft_render::remix::Remix::of(&item(&s, clip)).unwrap();
+        assert!(rm.levels.is_some());
+        assert_eq!(item(&s, clip).speed, 1.0);
+        if index == 0 {
+            let seq = s.active_sequence().unwrap();
+            let provider = s.media.provider(s.project.clone(), s.services.clone());
+            let count = item(&s, clip).duration.to_units_floor(SR as i64) as usize;
+            let mix = filmcraft_render::audio::mix_sequence(&s.project, seq, 0, count, &provider);
+            let interleaved: Vec<f32> = (0..count).flat_map(|i| [mix.channels[0][i], mix.channels[1][i]]).collect();
+            assert!(interleaved.iter().all(|x| x.is_finite()));
+            std::fs::write(output.join("Cartoon Sneaking Groove - revised short remix.wav"), crate::previews::write_wav_f32(&interleaved, SR)).unwrap();
+        }
+        reports.push(report);
+        s.execute("clip.remix.revert", json!({"clip":clip.0})).unwrap();
+        assert_eq!(item(&s, clip), original);
+    }
+    std::fs::write(
+        output.join("cartoon-phrase-validation.json"),
+        serde_json::to_vec_pretty(&json!({"requestedSeconds":14.0,"choices":response,"applied":reports})).unwrap(),
+    )
+    .unwrap();
 }
