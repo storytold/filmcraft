@@ -884,6 +884,9 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let val = |eid: &str, p: &str| it.effect(eid).and_then(|e| e.param(p)).map(|p| p.value_at(mt));
         if kind == TrackKind::Video {
             if section(bui, app, "Transform", eff_idx("motion").map(|i| (i, clip.0)), &mut actions) {
+                // Premiere's quick actions above the values: Fill frame (the frame covered) and Fit to
+                // frame (the whole clip visible); both act on every selected video clip (#1686)
+                transform_quick_actions(bui, app, &mut actions);
                 for (label, p, unit, speed, range) in [
                     (tl!("Position"), "position", "", 1.0, (-100_000.0, 100_000.0)),
                     (tl!("Anchor point"), "anchor", "", 1.0, (-100_000.0, 100_000.0)),
@@ -1001,6 +1004,46 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         app.auto.add("properties.speed", br, "Speed");
     });
     run(app, ui.ctx(), actions);
+}
+
+/// The Properties panel's Transform quick actions, as in Premiere: **Fill** (tooltip "Fill frame")
+/// scales the clip so it covers the frame, cropping the overhang; **Fit** ("Fit to frame") so all of
+/// it is visible, letterboxed. They run `clip.fillFrame` / `clip.fitToFrame` on the selection, the
+/// commands behind the timeline's Clip ▸ Video Options menu, so every selected video clip is resized
+/// in one undo step (#1686).
+fn transform_quick_actions(ui: &mut egui::Ui, app: &mut FilmcraftApp, actions: &mut Vec<(String, Value)>) {
+    let t = app.tokens;
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
+    let mut x = r.min.x + 14.0;
+    for (id, label, tip, cmd, fill) in [
+        ("properties.fillFrame", quick_action_label("Fill", "Fill frame"), tl!("Fill frame"), "clip.fillFrame", true),
+        ("properties.fitToFrame", quick_action_label("Fit", "Fit to frame"), tl!("Fit to frame"), "clip.fitToFrame", false),
+    ] {
+        let font = Tokens::ui(12.0);
+        let text_w = ui.painter().layout_no_wrap(label.to_string(), font.clone(), t.text).size().x;
+        let br = Rect::from_min_size(pos2(x, r.center().y - 12.0), vec2(8.0 + 14.0 + 6.0 + text_w + 8.0, 24.0));
+        x = br.max.x + 6.0;
+        let resp = ui.interact(br, egui::Id::new(("props-quick", id)), Sense::click()).on_hover_text(tip);
+        if resp.hovered() {
+            ui.painter().rect_filled(br, 4.0, t.hover);
+        }
+        // a frame with the picture in it: filling it edge to edge, or fitted inside it
+        let icon = Rect::from_center_size(pos2(br.min.x + 15.0, br.center().y), vec2(14.0, 11.0));
+        ui.painter().rect_stroke(icon, 1.0, Stroke::new(1.2, t.text_dim), egui::StrokeKind::Inside);
+        let pic = if fill { icon.shrink2(vec2(2.5, 1.0)) } else { icon.shrink2(vec2(4.5, 2.5)) };
+        ui.painter().rect_filled(pic, 0.5, t.text_dim);
+        ui.painter().text(pos2(br.min.x + 28.0, br.center().y), Align2::LEFT_CENTER, label, font, t.text);
+        app.auto.add(id, br, tip);
+        if resp.clicked() {
+            actions.push((cmd.into(), json!({})));
+        }
+    }
+}
+
+/// A Transform quick action's label: Premiere's short word in English; in a translated interface the
+/// translation of the full name, since the catalogs' plain "Fill" means a colour fill.
+fn quick_action_label(short: &'static str, full: &'static str) -> &'static str {
+    if crate::i18n::current().has(full) { crate::i18n::t(full) } else { short }
 }
 
 /// Where a row's highlight (hover, selection) is painted: the row less its first point, which is
