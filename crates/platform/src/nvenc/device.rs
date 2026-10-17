@@ -3,6 +3,11 @@ use std::ffi::c_void;
 
 #[cfg(target_os = "linux")]
 pub use cuda::Device;
+/// The CUDA driver API context NVDEC reads decoded pictures back with (Linux: also NVENC's device).
+#[cfg(target_os = "windows")]
+pub(crate) use cuda::Device as CudaDevice;
+#[cfg(target_os = "linux")]
+pub(crate) use cuda::Device as CudaDevice;
 #[cfg(target_os = "windows")]
 pub use directx::Device;
 
@@ -64,15 +69,22 @@ mod directx {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 mod cuda {
     use super::c_void;
+
+    /// The CUDA driver library (installed with NVIDIA's display driver).
+    const LIBRARY: &str = if cfg!(windows) { "nvcuda.dll" } else { "libcuda.so.1" };
     use std::marker::PhantomData;
     use std::rc::Rc;
     type Init = unsafe extern "C" fn(u32) -> i32;
     type GetDevice = unsafe extern "C" fn(*mut i32, i32) -> i32;
     type Retain = unsafe extern "C" fn(*mut *mut c_void, i32) -> i32;
     type Release = unsafe extern "C" fn(i32) -> i32;
+    type SetFlags = unsafe extern "C" fn(i32, u32) -> i32;
+    /// `CU_CTX_SCHED_BLOCKING_SYNC`: threads waiting on the GPU sleep instead of spinning.
+    const CU_CTX_SCHED_BLOCKING_SYNC: u32 = 4;
     type Push = unsafe extern "C" fn(*mut c_void) -> i32;
     type Pop = unsafe extern "C" fn(*mut *mut c_void) -> i32;
     type CopyToHost = unsafe extern "C" fn(*mut c_void, u64, usize) -> i32;
@@ -99,7 +111,7 @@ mod cuda {
             // SAFETY: CUDA driver API signatures from NVIDIA's public Driver API reference.
             // Resolve all symbols before retaining; keep the library alive until after release.
             unsafe {
-                let library = libloading::Library::new("libcuda.so.1").map_err(|e| format!("no NVIDIA CUDA driver: {e}"))?;
+                let library = libloading::Library::new(LIBRARY).map_err(|e| format!("no NVIDIA CUDA driver: {e}"))?;
                 let init: libloading::Symbol<Init> = library.get(b"cuInit\0").map_err(|e| e.to_string())?;
                 let get: libloading::Symbol<GetDevice> = library.get(b"cuDeviceGet\0").map_err(|e| e.to_string())?;
                 let retain: libloading::Symbol<Retain> = library.get(b"cuDevicePrimaryCtxRetain\0").map_err(|e| e.to_string())?;
@@ -112,6 +124,12 @@ mod cuda {
                 let st = get(&mut ordinal, 0);
                 if st != 0 {
                     return Err(format!("no CUDA device ({st})"));
+                }
+                // Wait for the GPU by blocking, not by spinning a CPU core per decoder (the default
+                // for a context that is first used on a many-core machine is to spin): the flag can
+                // only be set while the primary context is inactive, so a refusal is ignored.
+                if let Ok(set_flags) = library.get::<SetFlags>(b"cuDevicePrimaryCtxSetFlags_v2\0") {
+                    let _ = set_flags(ordinal, CU_CTX_SCHED_BLOCKING_SYNC);
                 }
                 let mut context = std::ptr::null_mut();
                 let st = retain(&mut context, ordinal);

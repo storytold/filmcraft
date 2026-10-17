@@ -40,7 +40,7 @@ pub mod hardware_encode;
 pub mod hybrid;
 #[cfg(target_os = "windows")]
 pub mod media_foundation;
-#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+#[cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 pub mod nvdec;
 #[cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 pub mod nvenc;
@@ -98,6 +98,16 @@ pub fn register() -> Availability {
         // Export ▸ Hardware encoding (NVENC H.264): in front of the software encoder, taking an
         // export only when asked for and when NVENC can do it
         ENCODERS.call_once(|| filmcraft_export::register_encoder(nvenc::export::factory));
+        // NVDEC goes behind Media Foundation: what the Microsoft decoders decline (4:2:2, 10-bit H.264,
+        // HEVC 4:2:2: camera footage) is still decoded in hardware by an NVIDIA GPU that can.
+        match nvdec::cuvid::probe() {
+            Ok(driver) => {
+                static NVDEC: std::sync::Once = std::sync::Once::new();
+                NVDEC.call_once(|| log::info!("hardware decoding through NVDEC: {driver}"));
+                filmcraft_codecs::register_video_decoder(nvdec_factory);
+            }
+            Err(why) => log::info!("no NVDEC hardware decoding: {why}"),
+        }
         filmcraft_codecs::register_video_decoder(media_foundation_factory);
         filmcraft_codecs::hw::set_hw_backend("Media Foundation");
         Availability::Available("Media Foundation")
@@ -172,6 +182,7 @@ pub fn hardware_decoder_for(entry: &filmcraft_isobmff::SampleEntry) -> bool {
     #[cfg(target_os = "windows")]
     {
         media_foundation::stream_info(entry).is_some_and(|info| media_foundation::MfDecoder::new(info).is_ok())
+            || filmcraft_codecs::hw::NalStreamInfo::from_entry(entry).and_then(|r| r.ok()).is_some_and(|info| nvdec::NvDecoder::new(info).is_ok())
     }
     #[cfg(target_os = "linux")]
     {
@@ -247,8 +258,9 @@ pub fn vaapi_factory(entry: &filmcraft_isobmff::SampleEntry) -> Option<filmcraft
 }
 
 /// The NVDEC factory: a [`HybridDecoder`] around [`nvdec::NvDecoder`] for H.264 and HEVC streams
-/// this system's NVIDIA GPU decodes, `None` otherwise (VA-API and the software decoders keep those).
-#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+/// this system's NVIDIA GPU decodes, `None` otherwise (VA-API / Media Foundation and the software
+/// decoders keep those).
+#[cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 pub fn nvdec_factory(entry: &filmcraft_isobmff::SampleEntry) -> Option<filmcraft_codecs::Result<Box<dyn filmcraft_codecs::VideoDecoder>>> {
     if !filmcraft_codecs::hw::hardware_decoding() {
         return None;
@@ -258,8 +270,13 @@ pub fn nvdec_factory(entry: &filmcraft_isobmff::SampleEntry) -> Option<filmcraft
         Ok(nv) => Some(Ok(Box::new(HybridDecoder::new(Box::new(nv), entry.clone(), info)))),
         Err(why) => {
             log::info!("NVDEC declined {} video: {why}", entry.codec.name());
-            // with VA-API behind this factory, that one counts the decline (or takes the stream)
-            if !filmcraft_codecs::video_decoder_registered(vaapi_factory) {
+            // with VA-API behind this factory (on Windows: Media Foundation in front of it), that one
+            // counts the decline (or takes the stream)
+            #[cfg(target_os = "linux")]
+            let counted_elsewhere = filmcraft_codecs::video_decoder_registered(vaapi_factory);
+            #[cfg(target_os = "windows")]
+            let counted_elsewhere = filmcraft_codecs::video_decoder_registered(media_foundation_factory);
+            if !counted_elsewhere {
                 filmcraft_codecs::hw::note_hw_declined();
             }
             None

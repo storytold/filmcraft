@@ -515,15 +515,30 @@ impl Sps {
         self.max_dpb_frames()
     }
 
+    /// Bits per sample of the (equal) luma and chroma depths accepted by [`Sps::check_supported`].
+    pub fn bit_depth(&self) -> u32 {
+        self.bit_depth_luma
+    }
+
+    /// 4:2:2 chroma (full vertical chroma resolution) rather than 4:2:0.
+    pub fn is_422(&self) -> bool {
+        self.chroma_format_idc == 2
+    }
+
+    /// QpBdOffsetY (= QpBdOffsetC): 6 * (bit depth - 8).
+    pub fn qp_bd_offset(&self) -> i32 {
+        6 * (self.bit_depth_luma.saturating_sub(8)) as i32
+    }
+
     pub fn check_supported(&self) -> Result<()> {
         if !self.frame_mbs_only {
             return unsupported("interlaced (field / MBAFF) coding");
         }
-        if self.chroma_array_type() != 1 {
-            return unsupported(format!("chroma_format_idc {} (only 4:2:0 is implemented)", self.chroma_format_idc));
+        if self.separate_colour_plane || !matches!(self.chroma_format_idc, 1 | 2) {
+            return unsupported(format!("chroma_format_idc {} (only 4:2:0 and 4:2:2 are implemented)", self.chroma_format_idc));
         }
-        if self.bit_depth_luma != 8 || self.bit_depth_chroma != 8 {
-            return unsupported(format!("bit depth luma {} chroma {} (only 8-bit is implemented)", self.bit_depth_luma, self.bit_depth_chroma));
+        if self.bit_depth_luma != self.bit_depth_chroma || !(8..=10).contains(&self.bit_depth_luma) {
+            return unsupported(format!("bit depth luma {} chroma {} (only equal 8 to 10 bits are implemented)", self.bit_depth_luma, self.bit_depth_chroma));
         }
         if self.qpprime_y_zero_transform_bypass {
             return unsupported("qpprime_y_zero_transform_bypass (lossless)");

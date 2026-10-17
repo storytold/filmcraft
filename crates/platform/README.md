@@ -78,9 +78,18 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   ends it with an error, since a hardware stream cannot be finished in software. The same session,
   ring and input path encode H.265, see [Hardware H.265 (HEVC) encoding (Windows,
   NVENC)](#hardware-h265-hevc-encoding-windows-nvenc).
-- **Linux: NVDEC, H.264 (`avcC`) and HEVC (`hvcC`)** on NVIDIA's proprietary driver (`nvdec/`): H.264
-  8-bit and HEVC 8- / 10-bit, 4:2:0 progressive. `libnvcuvid.so.1` and `libcuda.so.1` are loaded at
-  run time; without them (or without a device) nothing is registered. NVIDIA's own parser takes the
+- **Linux and Windows: NVDEC, H.264 (`avcC`) and HEVC (`hvcC`)** on NVIDIA's driver (`nvdec/`): H.264
+  and HEVC, 8- or 10-bit, 4:2:0 or 4:2:2 progressive, as far as the GPU's `cuvidGetDecoderCaps` says
+  (4:2:2 H.264 / HEVC needs a Blackwell GPU, RTX 50 series; output surfaces NV12 / P016 / NV16 /
+  P216). `libnvcuvid.so.1` and `libcuda.so.1` (Windows: `nvcuvid.dll`, `nvcuda.dll`) are loaded at
+  run time; without them (or without a device) nothing is registered. On Windows NVDEC sits
+  *behind* Media Foundation: what the Microsoft decoders decline (4:2:2 and 10-bit H.264, HEVC
+  4:2:2: camera footage such as Sony XAVC S-I and S) goes to NVDEC, then to the software decoders.
+  A stream with an Intra profile (`NalStreamInfo::is_all_intra`: XAVC S-I, AVC-Intra) reports
+  `intra_only`, so the frame workers decode different frames on separate sessions in parallel (a
+  4K 4:2:2 10-bit picture takes about 16 ms on one session, 9 ms of it on the GPU; six sessions
+  reach ~150 fps on an RTX 5090); the CUDA context is made with blocking-sync scheduling so
+  waiting does not spin cores. NVIDIA's own parser takes the
   stream as Annex B access units, so there is no host-side DPB: `cuvid::Session` creates the decoder
   in the parser's sequence callback, decodes in its picture callback, and reads each displayed
   picture back (NV12 / P016) through the CUDA driver into the same planes as the other backends.

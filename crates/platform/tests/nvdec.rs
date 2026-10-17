@@ -111,11 +111,9 @@ fn mid_stream_failure_continues_in_software() {
 fn declines_what_the_hardware_path_does_not_take() {
     let ff = filmcraft_testkit::require_ffmpeg!();
     let src = "testsrc2=s=640x360:r=24:d=1";
-    let cases: [(&str, Vec<&str>); 3] = [
-        ("va_h264_interlaced.mp4", vec!["-c:v", "libx264", "-x264-params", "interlaced=1:keyint=12", "-pix_fmt", "yuv420p"]),
-        ("va_h264_10bit.mp4", vec!["-c:v", "libx264", "-profile:v", "high10", "-pix_fmt", "yuv420p10le"]),
-        ("va_hevc_422.mp4", vec!["-c:v", "libx265", "-tag:v", "hvc1", "-x265-params", "log-level=error:keyint=12", "-pix_fmt", "yuv422p10le"]),
-    ];
+    // (10-bit and 4:2:2 streams are taken or declined by what the GPU's decoder supports: see
+    // `nvdec_high_bit_depth.rs`)
+    let cases: [(&str, Vec<&str>); 1] = [("va_h264_interlaced.mp4", vec!["-c:v", "libx264", "-x264-params", "interlaced=1:keyint=12", "-pix_fmt", "yuv420p"])];
     for (name, enc) in cases {
         let args: Vec<&str> = ["-f", "lavfi", "-i", src].into_iter().chain(enc).collect();
         let Some(path) = fixture(&ff, name, &args) else { continue };

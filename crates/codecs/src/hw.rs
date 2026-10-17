@@ -163,6 +163,14 @@ impl StreamInfo {
         }
     }
 
+    /// Whether every picture is independently decodable (see [`NalStreamInfo::is_all_intra`]).
+    pub fn is_all_intra(&self) -> bool {
+        match self {
+            Self::Nal(i) => i.is_all_intra(),
+            Self::Frame(_) => false,
+        }
+    }
+
     /// An HEVC CRA restarts nothing by itself (its RASL pictures need the previous restart point).
     pub fn keeps_previous_restart(&self, sample: &[u8]) -> bool {
         match self {
@@ -368,6 +376,18 @@ impl NalStreamInfo {
         })
     }
 
+    /// Whether every picture of the stream is an IDR picture: an H.264 Intra profile (High / High 10 /
+    /// High 4:2:2 / High 4:4:4 Predictive / CAVLC 4:4:4 Intra with `constraint_set3_flag`, as in
+    /// Sony XAVC S-I and AVC-Intra), whose frames decode independently and in parallel.
+    pub fn is_all_intra(&self) -> bool {
+        self.codec == NalCodec::H264
+            && self
+                .parameter_sets
+                .iter()
+                .find(|n| n.first().is_some_and(|h| h & 0x1f == 7))
+                .is_some_and(|sps| matches!((sps.get(1), sps.get(2)), (Some(44 | 86 | 100 | 110 | 122 | 244), Some(c)) if c & 0x10 != 0))
+    }
+
     /// As the software decoder's [`crate::VideoDecoder::is_random_access`] for this stream
     /// (length-prefixed samples: unknown, the container's sync flags are trusted).
     pub fn is_random_access(&self, _sample: &[u8]) -> Option<bool> {
@@ -401,6 +421,58 @@ mod tests {
         set_hardware_decoding(true);
         assert!(hardware_decoding());
         set_hardware_decoding(was);
+    }
+
+    /// An avcC with one SPS NAL (`profile`, `constraints`) and one PPS.
+    fn avcc(profile: u8, constraints: u8) -> Vec<u8> {
+        // a tiny but parseable SPS body is not needed: `from_avcc` parses it, so use real ones
+        let sps: &[u8] = &[
+            0x67,
+            profile,
+            constraints,
+            0x34,
+            0xb6,
+            0xcf,
+            0x00,
+            0xf0,
+            0x01,
+            0x0f,
+            0xb0,
+            0x14,
+            0x21,
+            0x22,
+            0x41,
+            0x28,
+            0x00,
+            0x00,
+            0x1f,
+            0x48,
+            0x00,
+            0x0e,
+            0xa6,
+            0x04,
+            0x20,
+        ];
+        let pps: &[u8] = &[0x28, 0xce, 0x31, 0x33];
+        let mut r = vec![1, profile, constraints, 0x34, 0xff, 0xe1];
+        r.extend((sps.len() as u16).to_be_bytes());
+        r.extend(sps);
+        r.push(1);
+        r.extend((pps.len() as u16).to_be_bytes());
+        r.extend(pps);
+        r
+    }
+
+    #[test]
+    fn intra_profiles_are_all_intra() {
+        // High 4:2:2 Intra (Sony XAVC S-I), High Intra, High 10 Intra: constraint_set3_flag
+        for (profile, constraints, intra) in
+            [(122, 0x10, true), (100, 0x10, true), (110, 0x10, true), (122, 0x00, false), (100, 0x00, false), (77, 0x10, false)]
+        {
+            let info = NalStreamInfo::from_avcc(&avcc(profile, constraints)).unwrap();
+            assert_eq!(info.is_all_intra(), intra, "profile {profile} constraints {constraints:#x}");
+            assert_eq!(StreamInfo::from(info).is_all_intra(), intra);
+        }
     }
 
     #[test]

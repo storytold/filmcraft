@@ -1,8 +1,9 @@
 //! Clean-room pure-Rust H.264 / AVC decoder, implemented from ITU-T Rec. H.264 (ISO/IEC 14496-10).
 //!
-//! Supported: progressive (frame) coding, 8-bit 4:2:0, Baseline / Main / High profiles — CAVLC and CABAC,
+//! Supported: progressive (frame) coding, Baseline / Main / High profiles, CAVLC and CABAC,
 //! I/P/B slices, 8x8 transform, custom scaling matrices, weighted prediction, spatial/temporal direct,
-//! multiple slices, long-term references and all MMCOs, deblocking.
+//! multiple slices, long-term references and all MMCOs, deblocking; 8 to 10 bits per sample in 4:2:0
+//! or 4:2:2 (High 10, High 4:2:2 and their Intra profiles, e.g. Sony XAVC S-I and XAVC S).
 //!
 //! ```no_run
 //! let mut dec = filmcraft_h264::Decoder::new();
@@ -56,7 +57,10 @@ pub struct ColorInfo {
     pub matrix: u8,
 }
 
-/// A decoded, cropped picture in 8-bit planar 4:2:0.
+/// A decoded, cropped picture in planar 4:2:0 or 4:2:2.
+///
+/// The samples are in `y`, `u`, `v` when [`Picture::bit_depth`] is 8 and in `y_wide`, `u_wide`,
+/// `v_wide` (values below `1 << bit_depth`) when it is more; the other set is empty.
 #[derive(Clone, Debug)]
 pub struct Picture {
     /// Cropped luma width.
@@ -64,10 +68,19 @@ pub struct Picture {
     /// Cropped luma height.
     pub height: u32,
     pub chroma_width: u32,
+    /// Chroma plane height: half the luma height for 4:2:0, the luma height for 4:2:2.
     pub chroma_height: u32,
     pub y: Vec<u8>,
     pub u: Vec<u8>,
     pub v: Vec<u8>,
+    pub y_wide: Vec<u16>,
+    pub u_wide: Vec<u16>,
+    pub v_wide: Vec<u16>,
+    /// Bits per sample (8 to 10).
+    pub bit_depth: u32,
+    /// 4:2:2 chroma (else 4:2:0).
+    pub chroma_422: bool,
+    /// Samples per line (not bytes).
     pub y_stride: usize,
     pub uv_stride: usize,
     /// Presentation timestamp passed to [`Decoder::decode`] with the access unit of this picture.

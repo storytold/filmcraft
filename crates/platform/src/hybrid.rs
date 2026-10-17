@@ -154,10 +154,18 @@ impl HybridDecoder {
         let mut frames = Vec::new();
         let mut rejected = None;
         let last = log.len().saturating_sub(1);
+        let intra = self.info.is_all_intra();
         for (i, (s, p)) in log.iter().enumerate() {
             let Some(sw) = self.sw.as_mut() else { break };
             match sw.decode(s, *p) {
-                Ok(out) => frames.extend(out),
+                Ok(out) => {
+                    frames.extend(out);
+                    if intra {
+                        // an all-intra stream's frames are decoded on separate decoders, each
+                        // expecting its picture back from the call that fed it
+                        frames.extend(sw.flush());
+                    }
+                }
                 Err(e) if i == last => rejected = Some(e),
                 Err(e) => log::warn!("software replay after the hardware decoder failed: {e}"),
             }
@@ -180,7 +188,11 @@ impl HybridDecoder {
 impl VideoDecoder for HybridDecoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
         if let Some(sw) = self.sw.as_mut() {
-            let frames = sw.decode(sample, pts)?;
+            let mut frames = sw.decode(sample, pts)?;
+            if self.info.is_all_intra() {
+                // as in `fall_back`: the picture comes back from this call, not a later one
+                frames.extend(sw.flush());
+            }
             return Ok(self.merge(frames));
         }
         self.remember(sample, pts);
@@ -233,6 +245,12 @@ impl VideoDecoder for HybridDecoder {
             (None, Some(sw)) => sw.name(),
             (None, None) => "hardware decoder",
         }
+    }
+
+    /// An all-intra stream (XAVC S-I...): separate instances decode separate frames in parallel, in
+    /// hardware as in the software fallback (which is made single-threaded for such streams).
+    fn intra_only(&self) -> bool {
+        self.info.is_all_intra()
     }
 
     fn is_random_access(&self, sample: &[u8]) -> Option<bool> {
