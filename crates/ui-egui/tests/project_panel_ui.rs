@@ -236,6 +236,44 @@ fn list_view_columns_sort_resize_and_rename() {
 }
 
 #[test]
+fn sequence_context_menu_opens_settings_for_the_clicked_sequence() {
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    let (bin, sequence) = {
+        let project = &d.app().session.project;
+        let bin = project
+            .root
+            .children
+            .iter()
+            .find_map(|entry| match entry {
+                BinEntry::Bin(bin) if bin.name == "Sequences" => Some(bin),
+                _ => None,
+            })
+            .expect("Sequences bin");
+        let sequence = bin
+            .children
+            .iter()
+            .find_map(|entry| match entry {
+                BinEntry::Item(id) if project.item(*id).is_some_and(|item| item.name == "Rough Cut") => Some(id.0),
+                _ => None,
+            })
+            .expect("Rough Cut sequence");
+        (bin.id.0, sequence)
+    };
+    d.click(&format!("project.bin.{bin}.toggle"));
+    let row = format!("project.item.{sequence}");
+    d.wait_for(&row);
+    d.ok("ui.click", json!({"id": row, "button": "right"}));
+    d.frames(3);
+    assert!(d.has("project.itemMenu.sequenceSettings"), "sequence menu offers settings");
+    d.click("project.itemMenu.sequenceSettings");
+    d.frames(3);
+    assert_eq!(d.app().session.state.active_sequence, Some(ItemId(sequence)), "opens the clicked sequence first");
+    assert_eq!(d.label("sequenceSettings.name"), "Rough Cut", "settings describe the clicked sequence");
+    d.click("sequenceSettings.cancel");
+}
+
+#[test]
 fn icon_view_hover_scrub_sets_in_and_out() {
     let mut d = project_driver();
     d.exec("project.view.set", json!({"view": "icon"}));
