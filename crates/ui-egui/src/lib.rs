@@ -58,6 +58,7 @@ pub mod source_playback;
 pub mod state;
 pub mod theme;
 mod theme_favorites;
+pub mod toast;
 pub mod widgets;
 
 use std::collections::HashMap;
@@ -2116,6 +2117,10 @@ impl eframe::App for FilmcraftApp {
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| graphics_notice::show(self, ui.ctx()))).is_err() {
             // a broken notice must not take the session down: drop it
             self.graphics_notice = None;
+        }
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| toast::show(self, ui.ctx()))).is_err() {
+            // a broken toast must not take the session down: drop it
+            self.toast = None;
         }
         let ctx = ui.ctx().clone();
         self.last_ui_time = ctx.input(|i| i.time);
