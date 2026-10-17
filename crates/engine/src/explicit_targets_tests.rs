@@ -293,6 +293,38 @@ fn link_multiple_video_and_audio_pairs_creates_one_link_per_pair() {
     assert_ne!(l0, l2, "different pairs must not share the same link id");
 }
 
+/// The menu/shortcut path (no explicit ids): an unlink narrows the selection to the first
+/// selected clip, so the break is visible in the timeline and a second Link cannot glue the pair
+/// back together; explicit ids leave the selection alone.
+#[test]
+fn link_on_the_selection_unlinks_and_narrows_but_explicit_clips_do_not() {
+    let mut s = demo();
+    s.execute("sequence.linkedSelection", json!({"on": true})).unwrap();
+    let (v, au) = (v1(&s)[0].clone(), a1(&s)[0].clone());
+    let (vid, aid) = (v.id, au.id);
+    assert_eq!(v.link, au.link, "the demo pair starts linked");
+
+    // clicking the movie clip selects the linked pair; Cmd+L unlinks both…
+    s.execute("timeline.select", json!({"clips": [vid.0]})).unwrap();
+    assert_eq!(s.state.selection.len(), 2, "linked selection selects the pair");
+    let r = s.execute("clip.link", json!({})).unwrap();
+    assert_eq!(r["linked"], json!(false), "{r}");
+    assert_eq!((clip(&s, vid).unwrap().link, clip(&s, aid).unwrap().link), (None, None), "unlinked");
+    // …and the selection narrows to the first clip: the partner deselects, showing the break
+    assert_eq!(s.state.selection, vec![vid], "only the first clip stays selected (#220)");
+    // a second Cmd+L on the lone clip links nothing: a one-member link would read as "linked"
+    let r = s.execute("clip.link", json!({})).unwrap();
+    assert_eq!(r["linked"], json!(true), "{r}");
+    assert_eq!(clip(&s, vid).unwrap().link, None, "a lone clip gains no fake link");
+
+    // explicit ids neither narrow the selection nor need one
+    let (v, au) = (v1(&s)[0].clone(), a1(&s)[0].clone());
+    s.state.selection.clear();
+    s.execute("clip.link", json!({"clips": [v.id.0, au.id.0]})).unwrap();
+    assert_eq!(clip(&s, v.id).unwrap().link, clip(&s, au.id).unwrap().link, "explicit clips link");
+    assert!(s.state.selection.is_empty(), "explicit requests leave the selection alone");
+}
+
 /// A video clip with no overlapping selected audio, and audio with no overlapping video, stay
 /// unlinked: a one-member link would make the clip read as "linked" with no partner.
 #[test]

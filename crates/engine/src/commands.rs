@@ -575,6 +575,13 @@ pub fn linked_roll_pairs(seq: &filmcraft_project::Sequence, left: ClipId, right:
     pairs
 }
 
+/// Whether every clip in `clips` is on the active sequence and linked. The `clip.link` toggle's
+/// Unlink direction, shared with the Clip ▸ Link menu label so the label always matches the command.
+pub fn all_linked(s: &Session, clips: &[ClipId]) -> bool {
+    let Some(seq) = s.active_sequence() else { return false };
+    !clips.is_empty() && clips.iter().all(|c| seq.find_item(*c).is_some_and(|(_, i)| i.link.is_some()))
+}
+
 /// Expand a clip selection with linked partners (when linked selection is on).
 pub fn with_links(s: &Session, clips: &[ClipId]) -> Vec<ClipId> {
     let Some(seq) = s.active_sequence() else { return clips.to_vec() };
@@ -1864,8 +1871,12 @@ fn build() -> Vec<CommandSpec> {
             Ok(Value::Null)
         }),
         cmd!("clip.link", "Link", ["Clip"], Some("Cmd+L"), r#"{"clips":[id]?}"#, has_selection, |s, p| {
+            // an explicit `clips`/`clip` request works on those clips alone; the menus and
+            // shortcuts fall back to the selection, which Cmd+L narrows after an unlink so the
+            // break is visible and the next Link does not glue the pair back together
+            let explicit = p.get("clips").and_then(Value::as_array).is_some() || clip_p(p, "clip").is_some();
             let sel = clips_p(s, p);
-            let linked = sel.iter().all(|c| s.active_sequence().and_then(|q| q.find_item(*c)).is_some_and(|(_, i)| i.link.is_some()));
+            let linked = all_linked(s, &sel);
             s.edit_sequence(if linked { "Unlink" } else { "Link" }, |q, ctx, _| {
                 if linked {
                     for c in &sel {
@@ -1925,16 +1936,28 @@ fn build() -> Vec<CommandSpec> {
                             }
                         }
                     } else {
-                        let l = ctx.alloc();
-                        for c in &sel {
-                            if let Some((_, i)) = q.find_item_mut(*c) {
-                                i.link = Some(l);
+                        // two or more selected clips of one kind link to each other; a lone clip
+                        // stays unlinked: a one-member link would read as "linked" with no partner
+                        if sel.len() >= 2 {
+                            let l = ctx.alloc();
+                            for c in &sel {
+                                if let Some((_, i)) = q.find_item_mut(*c) {
+                                    i.link = Some(l);
+                                }
                             }
                         }
                     }
                 }
                 Ok(())
             })?;
+            if linked && !explicit {
+                // Unlink (#220): the clips were selected together because they were linked. Keep
+                // only the first one selected, so the break is visible in the timeline and the
+                // next Link does not link the just-unlinked group back together.
+                if let Some(&first) = sel.first() {
+                    s.state.selection = vec![first];
+                }
+            }
             Ok(json!({"linked": !linked}))
         }),
         cmd!("clip.group", "Group", ["Clip"], Some("Cmd+G"), "{}", has_selection, |s, _| {

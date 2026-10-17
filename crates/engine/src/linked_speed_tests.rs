@@ -124,8 +124,11 @@ fn speed_with_ripple_on_linked_clips_of_one_track() {
     s.execute("timeline.setTrack", json!({"track": "A1", "syncLock": false})).unwrap();
     s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
     s.execute("timeline.select", json!({"clips": [picture1.0, picture2.0]})).unwrap();
-    // both are linked to their sounds, so the first call unlinks them and the second links the two
+    // both are linked to their sounds, so the first call unlinks them and narrows the selection
+    // to the first clip (#220); a shift-click re-adds the second and Link links the two pictures
     s.execute("clip.link", json!({})).unwrap();
+    assert_eq!(s.state.selection, vec![picture1]);
+    s.execute("timeline.select", json!({"clips": [picture2.0], "add": true})).unwrap();
     assert_eq!(s.execute("clip.link", json!({})).unwrap()["linked"], true);
     s.execute("sequence.linkedSelection", json!({"on": true})).unwrap();
     s.execute("clip.speedDuration", json!({"clips": [picture1.0], "speed": 50, "ripple": true})).unwrap();
