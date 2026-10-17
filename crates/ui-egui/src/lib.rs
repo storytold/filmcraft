@@ -331,7 +331,7 @@ pub struct FilmcraftApp {
     pub(crate) timeline_still: u32,
     input_waiters: Vec<Sender<Value>>,
     next_token: u64,
-    styled: bool,
+    styled: Option<i18n::Language>,
     /// A panic in the UI pass, shown in an error window until dismissed (see [`crash`]).
     pub ui_error: Option<String>,
     /// The window runs in a fallback graphics mode (set by the desktop host): a notice with a
@@ -573,7 +573,7 @@ impl FilmcraftApp {
             timeline_still: 0,
             input_waiters: Vec::new(),
             next_token: 1,
-            styled: false,
+            styled: None,
             ui_error: None,
             panic_next_frame: false,
             quit_confirmed: false,
@@ -2041,7 +2041,8 @@ impl eframe::App for FilmcraftApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // a native file dialog's answer first, so the panels draw what it chose (#260)
         self.poll_native_dialog(ctx);
-        if !self.styled {
+        if self.styled != Some(self.ui.language) {
+            i18n::set_current(self.ui.language);
             theme::install(ctx, &self.tokens);
             // theme::install replaces the fonts: add the system Japanese font back (or fall back to
             // English when a saved Japanese setting meets a system without one)
@@ -2053,7 +2054,8 @@ impl eframe::App for FilmcraftApp {
             {
                 self.ui.language = i18n::Language::En;
             }
-            self.styled = true;
+            self.styled = Some(self.ui.language);
+            self.fonts_ready = false;
             ctx.request_repaint();
         } else {
             self.fonts_ready = true;

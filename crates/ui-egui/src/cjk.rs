@@ -65,6 +65,19 @@ pub(crate) fn available() -> bool {
     craft_fonts().next().is_some() || system_font().is_some()
 }
 
+/// Windows Chinese UI: prefer the installed face (YaHei UI first), keeping Latin faces first.
+/// Existing CJK faces remain available for glyphs missing from the system face.
+pub(crate) fn prefer_system(fonts: &mut FontDefinitions) {
+    let Some(font) = system_font() else { return };
+    fonts.font_data.insert("system-chinese".into(), font);
+    for stack in fonts.families.values_mut() {
+        stack.retain(|name| name != "system-chinese");
+        let at =
+            stack.iter().position(|name| name.starts_with("craft:") || matches!(name.as_str(), "system-japanese" | "system-korean")).unwrap_or(stack.len());
+        stack.insert(at, "system-chinese".into());
+    }
+}
+
 /// Append Chinese faces after the Latin UI fonts and the Japanese fallbacks. This keeps the
 /// interface's Latin typography and Japanese glyph forms, and covers the simplified and
 /// traditional hanzi in media and track names that Japanese fonts lack.

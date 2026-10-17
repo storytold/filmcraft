@@ -431,6 +431,9 @@ pub fn install(ctx: &egui::Context, t: &Tokens) {
     // glyph forms; Chinese faces still cover the hanzi Japanese fonts lack
     add_craft_fonts(&mut fonts);
     crate::cjk::install(&mut fonts);
+    if cfg!(target_os = "windows") && crate::i18n::current() == crate::i18n::Language::ZhCn {
+        crate::cjk::prefer_system(&mut fonts);
+    }
     crate::rtl::install(&mut fonts);
     ctx.set_fonts(fonts);
     apply_visuals(ctx, t);
@@ -514,6 +517,64 @@ pub fn apply_visuals(ctx: &egui::Context, t: &Tokens) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn chinese_ui_prefers_yahei_and_language_changes_restore_fallbacks() {
+        use crate::i18n::Language;
+        filmcraft_text::fonts::scan_system();
+        let Some(yahei) = filmcraft_text::fonts::all_faces()
+            .into_iter()
+            .find(|f| f.info.origin == "system" && f.info.family == "Microsoft YaHei UI" && f.info.weight == 400 && !f.info.italic)
+        else {
+            eprintln!("SKIPPED: Microsoft YaHei UI is not installed");
+            return;
+        };
+        let shots = std::env::var_os("FILMCRAFT_UI_SHOTS").map(std::path::PathBuf::from);
+        for kind in [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Light] {
+            let mut session = filmcraft_engine::Session::default();
+            session.prefs.general.interface_language = "en".into();
+            session.prefs.appearance.select_theme(kind.pref_name());
+            let mut app = crate::FilmcraftApp::new(session);
+            app.tokens = Tokens::for_kind(kind);
+            let mut builder = egui_kittest::Harness::builder().with_size(egui::vec2(1000.0, 700.0));
+            if shots.is_some() {
+                builder = builder.wgpu();
+            }
+            let mut h = builder.build_eframe(move |_| app);
+            for language in [Language::En, Language::Ja] {
+                h.state_mut().ui.language = language;
+                h.run_steps(4);
+                let original = h.ctx.fonts_mut(|f| f.definitions().families.clone());
+                h.state_mut().ui.language = Language::ZhCn;
+                h.run_steps(4);
+                assert_eq!(h.state().tokens.kind, kind);
+                h.ctx.fonts_mut(|fonts| {
+                    let defs = fonts.definitions();
+                    let selected = &defs.font_data["system-chinese"];
+                    assert_eq!(selected.index, yahei.info.index, "use the YaHei UI face inside the TTC");
+                    assert_eq!(selected.font.as_ref(), yahei.data().unwrap().as_slice());
+                    assert_eq!(defs.families[&FontFamily::Proportional][0], "inter");
+                    assert_eq!(defs.families[&FontFamily::Monospace][0], "jbmono");
+                    for family in font_families() {
+                        let stack = &defs.families[&family];
+                        let system = stack.iter().position(|n| n == "system-chinese").unwrap();
+                        assert!(system > 0, "keep Latin UI fonts first");
+                        assert_eq!(stack.iter().filter(|n| *n == "system-chinese").count(), 1);
+                        assert!(stack.iter().position(|n| n.starts_with("craft:") || n == "system-korean").is_none_or(|other| system < other));
+                    }
+                });
+                if let Some(dir) = &shots {
+                    std::fs::create_dir_all(dir).unwrap();
+                    h.render().unwrap().save(dir.join(format!("font-zh-cn-{kind:?}.png"))).unwrap();
+                }
+                h.state_mut().ui.language = language;
+                h.run_steps(4);
+                h.ctx.fonts_mut(|f| assert_eq!(f.definitions().families, original, "restore {language:?} in {kind:?}"));
+            }
+        }
+        crate::i18n::set_current(Language::En);
+    }
 
     const JAPANESE: &str = "日本語の文字";
 
@@ -672,8 +733,9 @@ mod tests {
         ctx.fonts_mut(|fonts| {
             let defs = fonts.definitions().clone();
             for (family, stack) in &defs.families {
-                // installed right-to-left faces (Hebrew is not in craft-fonts) come after the craft run
-                let stack: Vec<&String> = stack.iter().filter(|n| !crate::rtl::is_system_face(n)).collect();
+                // Installed CJK and right-to-left faces come after the craft run.
+                let stack: Vec<&String> =
+                    stack.iter().filter(|n| !crate::rtl::is_system_face(n) && !matches!(n.as_str(), "system-chinese" | "system-korean")).collect();
                 let first = stack.iter().position(|n| n.starts_with("craft:")).unwrap_or(stack.len());
                 assert!(first > 0 && stack[first..].iter().all(|n| n.starts_with("craft:")), "{family:?}: {stack:?}");
                 let first_japanese = stack.iter().find(|n| n.starts_with("craft:BIZ") || n.starts_with("craft:Shippori"));
