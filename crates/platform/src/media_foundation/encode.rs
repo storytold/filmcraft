@@ -57,6 +57,8 @@ struct Config {
     size: (u32, u32),
     rate: (u32, u32),
     bitrate_bps: u32,
+    /// Constant bit rate (Export ▸ Bitrate Encoding ▸ CBR); otherwise VBR.
+    cbr: bool,
     codec: NalCodec,
     /// The output media subtype (`MFVideoFormat_H264` / `MFVideoFormat_HEVC`).
     subtype: windows::core::GUID,
@@ -107,6 +109,7 @@ fn config(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -
         rate: (num, den),
         // bits per second; encoders refuse a type without a bit rate
         bitrate_bps: s.bitrate_kbps.max(100).saturating_mul(1000),
+        cbr: s.bitrate_mode == BitrateMode::Cbr,
         codec: if hevc { NalCodec::Hevc } else { NalCodec::H264 },
         subtype: if hevc { MFVideoFormat_HEVC } else { MFVideoFormat_H264 },
         // H.264 only. HEVC's `MF_MT_MPEG2_PROFILE` values are `eAVEncH265VProfile_*`, and every
@@ -150,6 +153,7 @@ pub fn factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettin
         size: cfg.size,
         rate: cfg.rate,
         bitrate: cfg.bitrate_bps,
+        cbr: cfg.cbr,
     };
     let mft = match super::open(api, &spec) {
         Ok(m) => m,
@@ -420,6 +424,7 @@ pub fn h264_available() -> bool {
             size: (640, 360),
             rate: (30, 1),
             bitrate: 2_000_000,
+            cbr: false,
         };
         match super::open(api, &spec) {
             Ok(_) => true,
@@ -438,7 +443,7 @@ pub fn hevc_available() -> bool {
     *HEVC_PROBE.get_or_init(|| {
         let Ok(api) = super::mft::api() else { return false };
         use windows::Win32::Media::MediaFoundation::MFVideoFormat_HEVC;
-        let spec = EncSpec { subtype: MFVideoFormat_HEVC, profile: None, label: "H.265", size: (640, 360), rate: (30, 1), bitrate: 2_000_000 };
+        let spec = EncSpec { subtype: MFVideoFormat_HEVC, profile: None, label: "H.265", size: (640, 360), rate: (30, 1), bitrate: 2_000_000, cbr: false };
         match super::open(api, &spec) {
             Ok(_) => true,
             Err(why) => {
@@ -476,6 +481,14 @@ mod tests {
 
     fn settings(format: Format) -> ExportSettings {
         ExportSettings { format, hardware_encoding: HardwareEncoding::Auto, bitrate_kbps: 4000, ..Default::default() }
+    }
+
+    /// The export's bitrate mode reaches the encoder as its rate control mode (#936).
+    #[test]
+    fn rate_control_follows_the_export_settings() {
+        assert!(!config(Format::H264, 1280, 720, FrameRate::FPS_24, &settings(Format::H264)).unwrap().cbr);
+        let cbr = ExportSettings { bitrate_mode: BitrateMode::Cbr, ..settings(Format::H264) };
+        assert!(config(Format::H264, 1280, 720, FrameRate::FPS_24, &cbr).unwrap().cbr);
     }
 
     #[test]
