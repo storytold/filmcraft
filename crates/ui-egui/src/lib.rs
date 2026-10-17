@@ -607,6 +607,11 @@ impl FilmcraftApp {
         }
     }
 
+    /// Host overlays may use named UI fonts only after the second styled frame.
+    pub fn host_overlays_ready(&self) -> bool {
+        self.fonts_ready
+    }
+
     pub fn with_control(mut self, rx: Receiver<ControlRequest>) -> Self {
         self.control_rx = Some(rx);
         self
@@ -921,6 +926,13 @@ impl FilmcraftApp {
 
     pub fn status(&mut self, s: impl Into<String>) {
         self.ui.status = s.into();
+    }
+
+    /// Keep an ongoing condition visible in the status bar until its caller clears it.
+    pub fn keep_status_visible(&mut self, s: impl Into<String>, now: f64) {
+        let status = s.into();
+        self.status_seen = (status.clone(), now);
+        self.ui.status = status;
     }
 
     // ---------------------------------------------------------------- playback
@@ -1813,6 +1825,7 @@ impl FilmcraftApp {
         let hint = if !self.ui.status.is_empty() { self.ui.status.clone() } else { self.hint_text() };
         ui.painter().text(egui::pos2(sb.min.x + 10.0, sb.center().y), egui::Align2::LEFT_CENTER, hint, Tokens::ui(11.0), t.text_dim);
         let resp = ui.interact(sb, egui::Id::new("status-bar"), egui::Sense::click());
+        let resp = if self.ui.status.is_empty() { resp } else { resp.on_hover_text(self.ui.status.clone()) };
         if resp.clicked() {
             self.ui.status.clear();
         }

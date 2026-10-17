@@ -18,6 +18,19 @@
 # dissolve = dissolução, scopes = escopos, highlights = realces, offline = offline, legacy = legado,
 # preferences (also the native macOS Settings menu) = Preferências, settings = configurações.
 
+# Browser recovery when a snapshot cannot be opened.
+	Could not open the browser recovery file “{name}”: {error}	Não foi possível abrir o arquivo de recuperação do navegador “{name}”: {error}
+	The browser recovery file “{name}” was skipped by a launch option.	O arquivo de recuperação do navegador “{name}” foi ignorado por uma opção de inicialização.
+	Recovery paused	Recuperação pausada
+	Could not inspect the browser recovery file: {error}	Não foi possível examinar o arquivo de recuperação do navegador: {error}
+	Recovery unavailable	Recuperação indisponível
+	Could not read browser recovery storage: {error}. New recovery snapshots are paused. Save current work manually, then reload this page to retry.	Não foi possível ler o armazenamento de recuperação do navegador: {error}. Novas cópias de recuperação estão pausadas. Salve o trabalho atual manualmente e recarregue esta página para tentar novamente.
+	The file is still in this browser. New recovery snapshots are paused until you preserve it.	O arquivo ainda está neste navegador. Novas cópias de recuperação estão pausadas até que você o salve.
+	Download recovery file	Baixar arquivo de recuperação
+	I saved the recovery file	Salvei o arquivo de recuperação
+	Could not download recovery file: {error}	Não foi possível baixar o arquivo de recuperação: {error}
+	After the file has been saved, continue. Editing a new project may replace the browser recovery copy.	Depois de salvar o arquivo, continue. Editar um novo projeto pode substituir a cópia de recuperação do navegador.
+	Recovery paused for unsaved changes: {error}. Repair the invalid dimensions to resume.	Recuperação pausada para alterações não salvas: {error}. Corrija as dimensões inválidas para retomar.
 	About FilmCraft	Sobre o FilmCraft
 	Add Audio Submix Track	Adicionar faixa de submixagem de áudio
 	Add Caption at Playhead	Adicionar legenda no cursor de reprodução

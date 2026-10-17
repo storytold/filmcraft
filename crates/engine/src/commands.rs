@@ -627,18 +627,20 @@ pub fn trim_delta(s: &Session, clip: ClipId, edge: Edge, mode: TrimMode, delta: 
     clamp_trim_linked(q, &with_links(s, &[clip]), edge, mode, delta, &ctx)
 }
 
-/// Sequence settings matching a media clip (New Sequence From Clip, New Sequence from an item):
-/// its frame size, rate and pixel aspect ratio (Interpret Footage's, else the file's), so a
-/// 1440 x 1080 clip with 4:3 pixels makes a 1440 x 1080 sequence that displays 16:9.
+/// Sequence settings for a media clip (New Sequence From Clip, New Sequence from an item):
+/// use its known frame size, rate and pixel aspect ratio (Interpret Footage's, else the file's).
+/// Unknown `(0, 0)` video size keeps the default sequence dimensions.
 pub(crate) fn default_seq_settings_for(media: &MediaClip) -> SequenceSettings {
     let info = &media.info;
     let mut st = SequenceSettings::default();
     if let Some(v) = &info.video {
-        st.width = v.width;
-        st.height = v.height;
         st.frame_rate = v.frame_rate;
         st.par = media.pixel_aspect();
-        st.preset = format!("{}x{} {}", v.width, v.height, v.frame_rate.label());
+        if (v.width, v.height) != (0, 0) {
+            st.width = v.width;
+            st.height = v.height;
+        }
+        st.preset = format!("{}x{} {}", st.width, st.height, v.frame_rate.label());
     }
     if let Some(a) = info.audio() {
         st.sample_rate = a.sample_rate.max(8000);
@@ -691,6 +693,12 @@ fn import_source(
     bin: Option<filmcraft_project::BinId>,
 ) -> Result<ItemId> {
     let mut info = src.info().clone();
+    if let Some(video) = &info.video
+        && (video.width, video.height) != (0, 0)
+    {
+        filmcraft_project::validate_frame_size(video.width, video.height)
+            .map_err(|e| bad("file.import", format!("{name}: invalid video dimensions {}x{}: {e}", video.width, video.height)))?;
+    }
     // Settings ▸ Labels ▸ Label Defaults
     let label = s.prefs.labels.for_media(info.kind, info.has_video(), info.has_audio());
     // Settings ▸ Media ▸ Indeterminate Media Timebase: the frame rate stills report
@@ -722,10 +730,16 @@ fn import_source(
     Ok(id)
 }
 
-fn new_generator(s: &mut Session, g: Generator, name: &str, label: Label, p: &Value) -> Result<Value> {
+fn new_generator(s: &mut Session, g: Generator, name: &str, label: Label, p: &Value, cmd: &str) -> Result<Value> {
     let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
-    let w = u64_p(p, "width").map(|v| v as u32).unwrap_or(st.width);
-    let h = u64_p(p, "height").map(|v| v as u32).unwrap_or(st.height);
+    let (w, h) = if matches!(g, Generator::Tone { .. }) {
+        (st.width, st.height)
+    } else {
+        let w = checked_u32_p(p, "width", cmd)?.unwrap_or(st.width);
+        let h = checked_u32_p(p, "height", cmd)?.unwrap_or(st.height);
+        filmcraft_project::validate_frame_size(w, h).map_err(|e| bad(cmd, e))?;
+        (w, h)
+    };
     let secs = f64_p(p, "seconds").unwrap_or(5.0);
     let name = str_p(p, "name").unwrap_or(name).to_string();
     let src = GeneratorSource::new(g, w, h, st.frame_rate, Tick::from_seconds_f64(secs));
@@ -1273,38 +1287,45 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(json!({"item": id.0}))
         }),
-        cmd!("file.newBarsAndTone", "Bars and Tone…", ["File", "New"], None, r#"{"seconds":f64=10}"#, always, |s, p| new_generator(
-            s,
-            Generator::BarsAndTone,
-            "Bars and Tone",
-            Label::Lavender,
-            p
-        )),
-        cmd!("file.newBlackVideo", "Black Video…", ["File", "New"], None, r#"{"seconds":f64}"#, always, |s, p| new_generator(
+        cmd!("file.newBarsAndTone", "Bars and Tone…", ["File", "New"], None, r#"{"seconds":f64=10,"width":u32?,"height":u32?}"#, always, |s, p| {
+            new_generator(s, Generator::BarsAndTone, "Bars and Tone", Label::Lavender, p, "file.newBarsAndTone")
+        }),
+        cmd!("file.newBlackVideo", "Black Video…", ["File", "New"], None, r#"{"seconds":f64,"width":u32?,"height":u32?}"#, always, |s, p| new_generator(
             s,
             Generator::BlackVideo,
             "Black Video",
             Label::Lavender,
-            p
+            p,
+            "file.newBlackVideo"
         )),
-        cmd!("file.newColorMatte", "Color Matte…", ["File", "New"], None, r##"{"color":"#rrggbb","seconds":f64}"##, always, |s, p| {
-            let c = str_p(p, "color").and_then(filmcraft_color::parse_hex).unwrap_or([0.1, 0.1, 0.1, 1.0]);
-            new_generator(s, Generator::ColorMatte { color: c }, "Color Matte", Label::Lavender, p)
-        }),
+        cmd!(
+            "file.newColorMatte",
+            "Color Matte…",
+            ["File", "New"],
+            None,
+            r##"{"color":"#rrggbb","seconds":f64,"width":u32?,"height":u32?}"##,
+            always,
+            |s, p| {
+                let c = str_p(p, "color").and_then(filmcraft_color::parse_hex).unwrap_or([0.1, 0.1, 0.1, 1.0]);
+                new_generator(s, Generator::ColorMatte { color: c }, "Color Matte", Label::Lavender, p, "file.newColorMatte")
+            }
+        ),
         cmd!("project.matteColor", "Color Matte Color…", [], None, r##"{"item":id?,"color":"#rrggbb"}"##, always, set_matte_color),
-        cmd!("file.newCountingLeader", "Universal Counting Leader…", ["File", "New"], None, "{}", always, |s, p| new_generator(
+        cmd!("file.newCountingLeader", "Universal Counting Leader…", ["File", "New"], None, r#"{"width":u32?,"height":u32?}"#, always, |s, p| new_generator(
             s,
             Generator::CountingLeader,
             "Universal Counting Leader",
             Label::Lavender,
-            p
+            p,
+            "file.newCountingLeader"
         )),
-        cmd!("file.newTransparentVideo", "Transparent Video…", ["File", "New"], None, "{}", always, |s, p| new_generator(
+        cmd!("file.newTransparentVideo", "Transparent Video…", ["File", "New"], None, r#"{"width":u32?,"height":u32?}"#, always, |s, p| new_generator(
             s,
             Generator::TransparentVideo,
             "Transparent Video",
             Label::Lavender,
-            p
+            p,
+            "file.newTransparentVideo"
         )),
         cmd!(
             "file.importDemoFootage",
@@ -4313,6 +4334,7 @@ fn name_project(p: &mut filmcraft_project::Project, name: String) {
 
 fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     let t0 = web_time::Instant::now();
+    filmcraft_format::validate_project_dimensions(&s.project).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     // Save As renames the project after its new file (not an edit: no undo step, not dirty).
     if adopt
         && let Some(name) = project_name_for(path)

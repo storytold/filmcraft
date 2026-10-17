@@ -199,6 +199,109 @@ fn scan_keeps_snapshot_when_session_metadata_is_unreadable() {
 }
 
 #[test]
+fn invalid_live_dimensions_cannot_replace_the_last_reopenable_recovery_snapshot() {
+    let dir = temp_dir("invalid-journal");
+    let mut session = demo();
+    start(&mut session, &dir);
+    session.execute("sequence.addEdit", json!({"seconds": 1.0})).unwrap();
+    let revision = session.revision;
+    wait_for("valid recovery snapshot", || journaled(&mut session) == revision);
+    let snapshot = session.persistence.as_ref().unwrap().session_dir.join("snapshot.fcproj");
+    let valid_bytes = std::fs::read(&snapshot).unwrap();
+    let invalid_item = std::sync::Arc::make_mut(&mut session.project).add_item(
+        "oversized graphic",
+        filmcraft_project::Label::Iris,
+        filmcraft_project::ItemKind::Graphic { width: 32_769, height: 1, rate: filmcraft_time::FrameRate::FPS_24 },
+        None,
+    );
+    session.revision += 1;
+    session.sync_persistence();
+    session.persistence.as_ref().unwrap().flush();
+    session.poll_persistence();
+    assert_eq!(std::fs::read(&snapshot).unwrap(), valid_bytes, "invalid state replaced the last reopenable recovery snapshot");
+    assert!(session.persistence.as_ref().unwrap().status.last_error.as_deref().is_some_and(|error| error.contains("oversized graphic")));
+    assert!(filmcraft_format::decode(&std::fs::read(&snapshot).unwrap()).is_ok());
+    std::thread::sleep(std::time::Duration::from_millis(75));
+    session.persistence.as_ref().unwrap().flush();
+    let repeated_errors = session.persistence.as_mut().unwrap().drain_events();
+    assert!(
+        !repeated_errors.iter().any(|event| matches!(event, autosave::WorkerEvent::Error(_))),
+        "unchanged invalid revision must not repeatedly report the same error: {repeated_errors:?}"
+    );
+    std::sync::Arc::make_mut(&mut session.project).items.get_mut(&invalid_item).unwrap().kind =
+        filmcraft_project::ItemKind::Graphic { width: 1920, height: 1080, rate: filmcraft_time::FrameRate::FPS_24 };
+    session.revision += 1;
+    let recovered_revision = session.revision;
+    session.sync_persistence();
+    session.persistence.as_ref().unwrap().flush();
+    assert_eq!(journaled(&mut session), recovered_revision, "a repaired revision must resume recovery writes");
+    assert!(filmcraft_format::decode(&std::fs::read(&snapshot).unwrap()).is_ok());
+    session.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn repaired_dimensions_keep_the_journal_deadline_during_continuous_edits() {
+    let dir = temp_dir("repaired-journal-deadline");
+    let mut cfg = autosave::AutosaveConfig::new(&dir);
+    cfg.journal_debounce = std::time::Duration::from_secs(10);
+    let prefs = autosave::AutoSavePrefs { enabled: false, recovery_interval_seconds: 1, ..Default::default() };
+    let mut persistence = autosave::Persistence::start(&cfg, prefs).unwrap();
+    let mut project = filmcraft_project::Project::default();
+    let item = project.add_item(
+        "oversized graphic",
+        filmcraft_project::Label::Iris,
+        filmcraft_project::ItemKind::Graphic { width: 32_769, height: 1, rate: filmcraft_time::FrameRate::FPS_24 },
+        None,
+    );
+    persistence.send_dirty(std::sync::Arc::new(project.clone()), 1, None);
+    persistence.flush();
+    assert!(
+        persistence.drain_events().iter().any(|event| matches!(event, autosave::WorkerEvent::Error(error) if error.contains("oversized graphic"))),
+        "the first revision must be rejected"
+    );
+
+    project.items.get_mut(&item).unwrap().kind = filmcraft_project::ItemKind::Graphic { width: 1920, height: 1080, rate: filmcraft_time::FrameRate::FPS_24 };
+    // Each valid edit arrives before the 10-second quiet debounce. Recovery still owes a
+    // snapshot at the one-second maximum interval counted from the first repaired edit.
+    for revision in 2..=13 {
+        project.name = format!("repaired edit {revision}");
+        persistence.send_dirty(std::sync::Arc::new(project.clone()), revision, None);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        persistence.drain_events();
+        if persistence.status.journaled_revision >= 2 {
+            break;
+        }
+    }
+    assert!(persistence.status.journaled_revision >= 2, "continuous valid edits after a rejected revision must not starve recovery");
+    let snapshot = persistence.session_dir.join("snapshot.fcproj");
+    assert!(filmcraft_format::decode(&std::fs::read(&snapshot).unwrap()).is_ok());
+    persistence.close();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn unsupported_recovery_dimensions_leave_the_original_snapshot_for_repair() {
+    let dir = temp_dir("invalid-recovery");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut project = filmcraft_project::Project::default();
+    project.add_item(
+        "oversized graphic",
+        filmcraft_project::Label::Iris,
+        filmcraft_project::ItemKind::Graphic { width: 32_769, height: 1, rate: filmcraft_time::FrameRate::FPS_24 },
+        None,
+    );
+    let original = filmcraft_format::encode(&project, false);
+    let path = dir.join("snapshot.fcproj");
+    std::fs::write(&path, &original).unwrap();
+    let candidate = autosave::RecoveryCandidate { id: "invalid".into(), dir: dir.clone(), meta: autosave::JournalMeta::default() };
+    let error = autosave::load_candidate(&candidate).unwrap_err();
+    assert!(error.contains("oversized graphic") && error.contains(&path.to_string_lossy().to_string()), "{error}");
+    assert_eq!(std::fs::read(&path).unwrap(), original, "failed recovery must not erase the only snapshot");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn portable_marker_keeps_data_next_to_the_executable() {
     // #139: a portable install must not write to %APPDATA%.
     let d = temp_dir("portable");

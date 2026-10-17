@@ -1103,16 +1103,38 @@ mod tests {
         }
     }
 
-    /// German covers at least the core menus (`core_menu_labels`, the top-level menus and the native
-    /// macOS app menu); every entry must still be a menu label.
+    /// German covers the core menus, the native macOS app menu, and the browser-recovery
+    /// messages. Other entries must remain menu labels.
     #[test]
-    fn german_entries_cover_the_original_menu_catalog() {
+    fn german_entries_cover_menus_and_browser_recovery() {
         let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
         let items = crate::menus::menu_items(&app);
         let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
+        let recovery = [
+            "Could not open the browser recovery file “{name}”: {error}",
+            "The browser recovery file “{name}” was skipped by a launch option.",
+            "Recovery paused",
+            "Recover Unsaved Changes",
+            "Could not inspect the browser recovery file: {error}",
+            "Recovery unavailable",
+            "Could not read browser recovery storage: {error}. New recovery snapshots are paused. Save current work manually, then reload this page to retry.",
+            "The file is still in this browser. New recovery snapshots are paused until you preserve it.",
+            "Download recovery file",
+            "I saved the recovery file",
+            "Could not download recovery file: {error}",
+            "After the file has been saved, continue. Editing a new project may replace the browser recovery copy.",
+            "Recovery paused for unsaved changes: {error}. Repair the invalid dimensions to resume.",
+        ];
         let (entries, _) = catalog::parse_entries(include_str!("de.tsv"));
-        for (_, en, _) in entries {
-            assert!(known(&en) || crate::menus::NATIVE_APP_MENU.contains(&en.as_str()), "not a menu label: {en}");
+        for (ctx, en, _) in entries {
+            assert!(ctx.is_empty(), "unexpected German context for {en}");
+            assert!(
+                known(&en) || crate::menus::NATIVE_APP_MENU.contains(&en.as_str()) || (recovery.contains(&en.as_str()) && Language::Es.has(&en)),
+                "not a menu or browser-recovery label: {en}"
+            );
+        }
+        for en in recovery {
+            assert!(Language::De.has(en), "missing German browser-recovery label: {en}");
         }
         for en in core_menu_labels() {
             assert!(Language::De.has(&en), "missing German menu label: {en}");

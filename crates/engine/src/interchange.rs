@@ -24,6 +24,10 @@ fn is_file_media(item: &filmcraft_project::ProjectItem) -> bool {
     matches!(&item.kind, ItemKind::Media(m) if matches!(m.media, MediaRef::File { .. }))
 }
 
+fn validate_fragment_project(path: &str, project: &filmcraft_project::Project) -> Result<()> {
+    filmcraft_format::validate_project_dimensions(project).map_err(|error| EngineError::Other(format!("{path}: {error}")))
+}
+
 /// Import a document: merge its bins, media and sequences into the project (one undo step), then
 /// link each media file that exists on disk. Returns the new sequences.
 pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Result<Value> {
@@ -38,6 +42,7 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
         Format::Aaf | Format::Omf => {
             let r = if format == Format::Aaf { filmcraft_interchange::aaf::import(bytes, &opts) } else { filmcraft_interchange::omf::import(bytes, &opts) };
             let (fragment, extracted, report) = r.map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+            validate_fragment_project(path, &fragment.project)?;
             for m in extracted {
                 if let Some(dir) = std::path::Path::new(&m.path).parent().filter(|_| !s.services.export_in_memory()) {
                     let _ = std::fs::create_dir_all(dir);
@@ -46,7 +51,11 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
             }
             (fragment, report)
         }
-        _ => filmcraft_interchange::import_with(bytes, format, &opts).map_err(|e| EngineError::Other(format!("{path}: {e}")))?,
+        _ => {
+            let (fragment, report) = filmcraft_interchange::import_with(bytes, format, &opts).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+            validate_fragment_project(path, &fragment.project)?;
+            (fragment, report)
+        }
     };
     let before: std::collections::HashSet<ItemId> = s.project.items.keys().copied().collect();
     let name = opts.name.clone().unwrap_or_else(|| format.name().to_string());
@@ -141,4 +150,24 @@ pub fn export(s: &mut Session, p: &Value) -> Result<Value> {
     let (bytes, report) = filmcraft_interchange::export(&s.project, seq, format, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
     s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(e.to_string()))?;
     Ok(json!({"path": path, "bytes": bytes.len(), "report": report_json(&report)}))
+}
+
+#[cfg(test)]
+mod tests {
+    use filmcraft_project::{ItemKind, Label, Project};
+    use filmcraft_time::{FrameRate, Tick};
+
+    use super::validate_fragment_project;
+
+    #[test]
+    fn interchange_fragment_rejects_oversized_graphic_and_adjustment_canvases() {
+        for kind in [
+            ItemKind::Graphic { width: 1_000_000, height: 1080, rate: FrameRate::FPS_30 },
+            ItemKind::AdjustmentLayer { width: 1920, height: 1_000_000, rate: FrameRate::FPS_30, duration: Tick::ZERO },
+        ] {
+            let mut project = Project::new("Untrusted interchange");
+            project.add_item("Oversized canvas", Label::Rose, kind, None);
+            assert!(validate_fragment_project("import.xml", &project).is_err());
+        }
+    }
 }

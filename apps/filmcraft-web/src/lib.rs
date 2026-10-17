@@ -32,7 +32,7 @@ use std::cell::RefCell;
 use std::sync::Arc;
 
 use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
+use filmcraft_ui_egui::{FilmcraftApp, i18n};
 use serde_json::json;
 use wasm_bindgen::prelude::*;
 
@@ -82,11 +82,42 @@ pub fn info() -> serde_json::Value {
     INFO.with(|i| i.borrow().clone())
 }
 
+/// A saved browser snapshot that could not be opened. Keep it available for download before
+/// starting new recovery writes, which would replace the only copy in OPFS.
+enum RecoveryHoldReason {
+    OpenFailed(String),
+    SkippedByLaunchOption,
+    StorageReadFailed(String),
+}
+
+enum RecoveryDownload {
+    Bytes(Arc<[u8]>),
+    Blob(web_sys::Blob),
+}
+
+struct RejectedRecovery {
+    name: String,
+    download: RecoveryDownload,
+    reason: RecoveryHoldReason,
+    download_requested: bool,
+    download_error: Option<String>,
+}
+
+enum StartupRecovery {
+    Open(String, Vec<u8>),
+    Skipped(String, web_sys::Blob),
+    Unreadable(String, web_sys::Blob),
+    Unavailable(String),
+}
+
 /// The eframe app: the shared FilmCraft UI plus the web host's per-frame duties.
 pub struct WebApp {
     pub app: FilmcraftApp,
     pub audio: Option<audio::Handle>,
     pub autosave: recovery::Autosave,
+    rejected_recovery: Option<RejectedRecovery>,
+    recovery_unavailable: Option<String>,
+    active_recovery_warning: Option<String>,
 }
 
 impl eframe::App for WebApp {
@@ -95,6 +126,7 @@ impl eframe::App for WebApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        i18n::set_current(self.app.ui.language);
         let actions = ACTIONS.with(|a| std::mem::take(&mut *a.borrow_mut()));
         for f in actions {
             f(self, ctx);
@@ -108,11 +140,97 @@ impl eframe::App for WebApp {
         if let Some(a) = &self.audio {
             a.pump();
         }
-        self.autosave.tick(&self.app.session, ctx);
+        if self.rejected_recovery.is_none() && self.recovery_unavailable.is_none() {
+            if let Some(error) = self.autosave.tick(&self.app.session, ctx) {
+                if recovery_policy::should_show_warning(&self.app.ui.status, self.active_recovery_warning.as_deref()) {
+                    self.app.keep_status_visible(error.clone(), ctx.input(|i| i.time));
+                }
+                self.active_recovery_warning = Some(error);
+            } else if let Some(previous_warning) = self.active_recovery_warning.take()
+                && self.app.ui.status == previous_warning
+            {
+                self.app.ui.status.clear();
+            }
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.app.ui(ui, frame);
+        // These host dialogs use FilmCraft's named fonts after the app installs them.
+        if !self.app.host_overlays_ready() {
+            return;
+        }
+        if !self.app.ui.show_status_bar
+            && let Some(warning) = &self.active_recovery_warning
+        {
+            egui::Window::new(i18n::t("Recovery paused"))
+                .collapsible(false)
+                .resizable(false)
+                .default_width(420.0)
+                .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -16.0))
+                .show(ui.ctx(), |ui| {
+                    ui.label(warning);
+                });
+        }
+        if let Some(error) = &self.recovery_unavailable {
+            egui::Window::new(i18n::t("Recovery unavailable"))
+                .collapsible(false)
+                .resizable(false)
+                .default_width(420.0)
+                .show(ui.ctx(), |ui| {
+                    ui.label(i18n::fmt(
+                        i18n::t("Could not read browser recovery storage: {error}. New recovery snapshots are paused. Save current work manually, then reload this page to retry."),
+                        &[("error", error)],
+                    ));
+                });
+        }
+        if let Some(rejected) = self.rejected_recovery.as_mut() {
+            let mut continue_after_download = false;
+            egui::Window::new(i18n::t("Recover Unsaved Changes")).collapsible(false).default_width(420.0).show(ui.ctx(), |ui| {
+                match &rejected.reason {
+                    RecoveryHoldReason::OpenFailed(error) => ui
+                        .label(i18n::fmt(i18n::t("Could not open the browser recovery file “{name}”: {error}"), &[("name", &rejected.name), ("error", error)])),
+                    RecoveryHoldReason::SkippedByLaunchOption => {
+                        ui.label(i18n::fmt(i18n::t("The browser recovery file “{name}” was skipped by a launch option."), &[("name", &rejected.name)]))
+                    }
+                    RecoveryHoldReason::StorageReadFailed(error) => {
+                        ui.label(i18n::fmt(i18n::t("Could not inspect the browser recovery file: {error}"), &[("error", error)]))
+                    }
+                };
+                ui.label(i18n::t("The file is still in this browser. New recovery snapshots are paused until you preserve it."));
+                let download_label = i18n::t("Download recovery file");
+                let download = ui.button(download_label);
+                self.app.auto.add_response("recovery.download", &download, download_label);
+                if download.clicked() {
+                    let result = match &rejected.download {
+                        RecoveryDownload::Bytes(bytes) => fs::download_bytes_now(bytes, &rejected.name),
+                        RecoveryDownload::Blob(blob) => fs::download_blob_now(blob, &rejected.name),
+                    };
+                    match result {
+                        Ok(()) => {
+                            rejected.download_requested = true;
+                            rejected.download_error = None;
+                        }
+                        Err(error) => rejected.download_error = Some(format!("{error:?}")),
+                    }
+                }
+                if rejected.download_requested {
+                    ui.label(i18n::t("After the file has been saved, continue. Editing a new project may replace the browser recovery copy."));
+                    let continue_label = i18n::t("I saved the recovery file");
+                    let continue_button = ui.button(continue_label);
+                    self.app.auto.add_response("recovery.continue", &continue_button, continue_label);
+                    if continue_button.clicked() {
+                        continue_after_download = true;
+                    }
+                }
+                if let Some(error) = &rejected.download_error {
+                    ui.label(i18n::fmt(i18n::t("Could not download recovery file: {error}"), &[("error", error)]));
+                }
+            });
+            if continue_after_download {
+                self.rejected_recovery = None;
+            }
+        }
     }
 }
 
@@ -137,8 +255,25 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
     set_info("opfs", json!(opfs::available()));
 
     // Media kept in OPFS by earlier sessions come back under their paths (recovery).
+    let skip_recovery = query_flag("fresh") || query_flag("norecover");
     let restored = if opfs::available() && !query_flag("fresh") { recovery::restore_media().await } else { 0 };
-    let recovered = if query_flag("fresh") || query_flag("norecover") { None } else { recovery::load_snapshot().await };
+    // A skipped dirty snapshot stays in OPFS as a Blob; do not decode it or load its bytes.
+    let recovered_result = match recovery_policy::startup_recovery_mode(skip_recovery) {
+        recovery_policy::StartupRecoveryMode::Open => {
+            recovery::load_snapshot().await.map(|snapshot| snapshot.map(|(name, bytes)| StartupRecovery::Open(name, bytes)))
+        }
+        recovery_policy::StartupRecoveryMode::HoldForDownload => {
+            recovery::load_snapshot_blob().await.map(|snapshot| snapshot.map(|(name, blob)| StartupRecovery::Skipped(name, blob)))
+        }
+    };
+    let recovered = match recovered_result {
+        Ok(recovered) => recovered,
+        Err(error) => match recovery::load_raw_snapshot_blob().await {
+            Ok(Some(blob)) => Some(StartupRecovery::Unreadable(error, blob)),
+            Ok(None) => Some(StartupRecovery::Unavailable(error)),
+            Err(fallback_error) => Some(StartupRecovery::Unavailable(format!("{error}; {fallback_error}"))),
+        },
+    };
     webcodecs::probe().await;
 
     api::install()?;
@@ -170,19 +305,66 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 webcodecs::install();
                 let mut session = Session::new(Arc::new(fs::WebServices));
                 let mut toast = None;
-                if let Some((name, bytes)) = recovered {
-                    let path = format!("/recovered/{name}");
-                    fs::put(&path, bytes);
-                    match session.execute("file.open", json!({"path": path})) {
-                        Ok(_) => {
-                            // the recovered changes are unsaved
-                            session.saved_revision = 0;
-                            toast = Some(format!("Recovered unsaved changes to {name}"));
+                let mut rejected_recovery = None;
+                let mut recovery_unavailable = None;
+                match recovered {
+                    Some(StartupRecovery::Skipped(name, blob)) => {
+                        rejected_recovery = Some(RejectedRecovery {
+                            name,
+                            download: RecoveryDownload::Blob(blob),
+                            reason: RecoveryHoldReason::SkippedByLaunchOption,
+                            download_requested: false,
+                            download_error: None,
+                        });
+                        if demo {
+                            let _ = session.execute("file.openDemoProject", json!({}));
                         }
-                        Err(e) => log::warn!("recovery failed: {e}"),
                     }
-                } else if demo {
-                    let _ = session.execute("file.openDemoProject", json!({}));
+                    Some(StartupRecovery::Open(name, bytes)) => {
+                        let path = format!("/recovered/{name}");
+                        let bytes: Arc<[u8]> = bytes.into();
+                        fs::put_shared(&path, bytes.clone());
+                        match session.execute("file.open", json!({"path": path})) {
+                            Ok(_) => {
+                                // the recovered changes are unsaved
+                                session.saved_revision = 0;
+                                toast = Some(format!("Recovered unsaved changes to {name}"));
+                            }
+                            Err(e) => {
+                                log::warn!("recovery failed: {e}");
+                                rejected_recovery = Some(RejectedRecovery {
+                                    name,
+                                    download: RecoveryDownload::Bytes(bytes),
+                                    reason: RecoveryHoldReason::OpenFailed(e.to_string()),
+                                    download_requested: false,
+                                    download_error: None,
+                                });
+                            }
+                        }
+                    }
+                    Some(StartupRecovery::Unreadable(error, blob)) => {
+                        rejected_recovery = Some(RejectedRecovery {
+                            name: "Recovered.fcproj".into(),
+                            download: RecoveryDownload::Blob(blob),
+                            reason: RecoveryHoldReason::StorageReadFailed(error),
+                            download_requested: false,
+                            download_error: None,
+                        });
+                        if demo {
+                            let _ = session.execute("file.openDemoProject", json!({}));
+                        }
+                    }
+                    Some(StartupRecovery::Unavailable(error)) => {
+                        log::warn!("browser recovery unavailable: {error}");
+                        recovery_unavailable = Some(error);
+                        if demo {
+                            let _ = session.execute("file.openDemoProject", json!({}));
+                        }
+                    }
+                    None if demo => {
+                        let _ = session.execute("file.openDemoProject", json!({}));
+                    }
+                    None => {}
                 }
                 let mut app = FilmcraftApp::new(session);
                 import::install_hooks(&mut app);
@@ -214,7 +396,14 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 }
                 set_info("audio", json!(audio.is_some()));
                 set_info("restoredMedia", json!(restored));
-                Ok(Box::new(WebApp { app, audio, autosave: recovery::Autosave::default() }))
+                Ok(Box::new(WebApp {
+                    app,
+                    audio,
+                    autosave: recovery::Autosave::default(),
+                    rejected_recovery,
+                    recovery_unavailable,
+                    active_recovery_warning: None,
+                }))
             }),
         )
         .await?;

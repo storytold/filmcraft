@@ -213,8 +213,39 @@ pub fn decode(bytes: &[u8]) -> Result<Loaded, FormatError> {
     validate_loaded(env.loaded(found))
 }
 
-/// Refuse only values that would overflow or exhaust memory later (`Sequence::check_bounds`);
-/// structural rules such as overlaps are left to the editor, so projects that open today still open.
+/// Check dimensions before either loading or saving a project. The same bounds must apply at
+/// both ends so a save cannot replace a readable project file with one the loader would refuse.
+pub fn validate_project_dimensions(project: &Project) -> Result<(), FormatError> {
+    for item in project.items.values() {
+        let name = &item.name;
+        match &item.kind {
+            filmcraft_project::ItemKind::Media(m) => {
+                if let Some(video) = &m.info.video
+                    && (video.width, video.height) != (0, 0)
+                {
+                    filmcraft_project::validate_frame_size(video.width, video.height)
+                        .map_err(|e| FormatError::Corrupt(format!("media `{name}` has invalid video dimensions {}x{}: {e}", video.width, video.height)))?;
+                }
+            }
+            filmcraft_project::ItemKind::Graphic { width, height, .. } => {
+                filmcraft_project::validate_frame_size(*width, *height)
+                    .map_err(|e| FormatError::Corrupt(format!("graphic `{name}` has invalid dimensions {width}x{height}: {e}")))?;
+            }
+            filmcraft_project::ItemKind::AdjustmentLayer { width, height, .. } => {
+                filmcraft_project::validate_frame_size(*width, *height)
+                    .map_err(|e| FormatError::Corrupt(format!("adjustment layer `{name}` has invalid dimensions {width}x{height}: {e}")))?;
+            }
+            filmcraft_project::ItemKind::Sequence(sequence) => {
+                sequence.check_bounds().map_err(|e| FormatError::Corrupt(format!("sequence `{name}`: {e}")))?;
+            }
+            filmcraft_project::ItemKind::Subclip { .. } => {}
+        }
+    }
+    Ok(())
+}
+
+/// Refuse values that would overflow or exhaust memory later; repair audio stream indexes that
+/// can be made safe without discarding the rest of the project.
 fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
     // Out-of-range audio stream data is repaired, not refused: failing the load would lose the
     // whole project over one bad index. A media item keeps its first `MAX_AUDIO_STREAMS` streams; a
@@ -223,9 +254,11 @@ fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
     for item in loaded.project.items.values_mut() {
         let name = item.name.clone();
         match &mut item.kind {
-            filmcraft_project::ItemKind::Media(m) if m.info.audio_streams.len() > max => {
-                log::warn!("media `{name}`: {} audio streams, keeping the first {max}", m.info.audio_streams.len());
-                m.info.audio_streams.truncate(max);
+            filmcraft_project::ItemKind::Media(m) => {
+                if m.info.audio_streams.len() > max {
+                    log::warn!("media `{name}`: {} audio streams, keeping the first {max}", m.info.audio_streams.len());
+                    m.info.audio_streams.truncate(max);
+                }
             }
             filmcraft_project::ItemKind::Sequence(sequence) => {
                 let sequence = std::sync::Arc::make_mut(sequence);
@@ -239,11 +272,7 @@ fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
             _ => {}
         }
     }
-    for item in loaded.project.sequences() {
-        if let filmcraft_project::ItemKind::Sequence(sequence) = &item.kind {
-            sequence.check_bounds().map_err(|e| FormatError::Corrupt(format!("sequence `{}`: {e}", item.name)))?;
-        }
-    }
+    validate_project_dimensions(&loaded.project)?;
     Ok(loaded)
 }
 
@@ -368,6 +397,95 @@ mod tests {
     #[test]
     fn schema_version_matches_table() {
         assert_eq!(SCHEMA_VERSION, 15);
+    }
+
+    #[test]
+    fn damaged_media_dimensions_are_rejected_before_preview() {
+        use filmcraft_media::{Generator, MediaSource};
+        use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef};
+        use filmcraft_time::{FrameRate, Tick};
+
+        let mut project = Project::new("Untrusted project");
+        let mut info = filmcraft_media::generators::GeneratorSource::new(Generator::BlackVideo, 16, 16, FrameRate::FPS_24, Tick(1)).info().clone();
+        let item = project.add_item(
+            "Offline.mov",
+            Label::Iris,
+            ItemKind::Media(MediaClip {
+                media: MediaRef::File { path: "missing.mov".into() },
+                info: info.clone(),
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: true,
+                proxy: None,
+                identity: None,
+            }),
+            None,
+        );
+        for (width, height) in [(1_000_000, 1_000_000), (0, 16), (16, 0), (32_768, 16_384), (32_768, 8_193)] {
+            info.video.as_mut().unwrap().width = width;
+            info.video.as_mut().unwrap().height = height;
+            let ItemKind::Media(media) = &mut project.item_mut(item).unwrap().kind else { panic!("media fixture") };
+            media.info = info.clone();
+            let result = std::panic::catch_unwind(|| decode(&encode(&project, false)));
+            assert!(
+                matches!(result, Ok(Err(FormatError::Corrupt(message))) if message.contains("Offline.mov") && message.contains("invalid video dimensions")),
+                "{width}x{height}"
+            );
+        }
+        for (width, height) in [(0, 0), (15_360, 8_640), (32_768, 8_192)] {
+            info.video.as_mut().unwrap().width = width;
+            info.video.as_mut().unwrap().height = height;
+            let ItemKind::Media(media) = &mut project.item_mut(item).unwrap().kind else { panic!("media fixture") };
+            media.info = info.clone();
+            assert!(decode(&encode(&project, false)).is_ok(), "supported video metadata {width}x{height} still opens");
+        }
+        let bytes = encode(&project, false);
+        for length in (0..bytes.len()).step_by(23) {
+            assert!(std::panic::catch_unwind(|| decode(&bytes[..length])).is_ok(), "truncation at {length}");
+        }
+        for offset in (0..bytes.len()).step_by(37) {
+            let mut damaged = bytes.clone();
+            damaged[offset] ^= 0x80;
+            assert!(std::panic::catch_unwind(|| decode(&damaged)).is_ok(), "bit flip at {offset}");
+        }
+    }
+
+    #[test]
+    fn damaged_graphic_and_adjustment_layer_dimensions_are_rejected_before_rendering() {
+        use filmcraft_project::{ItemKind, Label};
+        use filmcraft_time::{FrameRate, Tick};
+
+        for (kind, label) in [
+            (ItemKind::Graphic { width: 16, height: 16, rate: FrameRate::FPS_24 }, "graphic"),
+            (ItemKind::AdjustmentLayer { width: 16, height: 16, rate: FrameRate::FPS_24, duration: Tick(1) }, "adjustment layer"),
+        ] {
+            let mut project = Project::new("Untrusted artwork");
+            let id = project.add_item("Oversized artwork", Label::Iris, kind, None);
+            for (width, height) in [(1_000_000, 1_000_000), (0, 64), (64, 0), (32_768, 8_193)] {
+                let item = project.item_mut(id).unwrap();
+                match &mut item.kind {
+                    ItemKind::Graphic { width: w, height: h, .. } | ItemKind::AdjustmentLayer { width: w, height: h, .. } => {
+                        (*w, *h) = (width, height);
+                    }
+                    _ => panic!("artwork fixture"),
+                }
+                let result = std::panic::catch_unwind(|| decode(&encode(&project, false)));
+                assert!(
+                    matches!(result, Ok(Err(FormatError::Corrupt(message))) if message.contains("Oversized artwork") && message.contains(label)),
+                    "{label} {width}x{height} should be rejected before rendering"
+                );
+            }
+            let item = project.item_mut(id).unwrap();
+            match &mut item.kind {
+                ItemKind::Graphic { width, height, .. } | ItemKind::AdjustmentLayer { width, height, .. } => {
+                    (*width, *height) = (32_768, 8_192);
+                }
+                _ => panic!("artwork fixture"),
+            }
+            assert!(decode(&encode(&project, false)).is_ok(), "{label} at the valid size boundary should still open");
+        }
     }
 
     #[test]

@@ -16,6 +16,19 @@
 #     (not 効果), ぼかし, 音量, ビデオ, 再生ヘッド, イン点/アウト点.
 #   - "Horizontal"/"Vertical" are 水平/垂直 (guides, blur, axes); vertical text is "Vertical Text".
 
+# Browser recovery when a snapshot cannot be opened.
+	Could not open the browser recovery file “{name}”: {error}	ブラウザーの復元ファイル「{name}」を開けませんでした: {error}
+	The browser recovery file “{name}” was skipped by a launch option.	起動オプションにより、ブラウザーの復元ファイル「{name}」は開かれませんでした。
+	Recovery paused	復元を一時停止
+	Could not inspect the browser recovery file: {error}	ブラウザーの復元ファイルを確認できませんでした: {error}
+	Recovery unavailable	復元を利用できません
+	Could not read browser recovery storage: {error}. New recovery snapshots are paused. Save current work manually, then reload this page to retry.	ブラウザーの復元ストレージを読み取れませんでした: {error}。新しい復元スナップショットは一時停止されています。現在の作業を手動で保存してから、ページを再読み込みして再試行してください。
+	The file is still in this browser. New recovery snapshots are paused until you preserve it.	ファイルはまだこのブラウザーにあります。保存するまで、新しい復元スナップショットは一時停止されます。
+	Download recovery file	復元ファイルをダウンロード
+	I saved the recovery file	復元ファイルを保存しました
+	Could not download recovery file: {error}	復元ファイルをダウンロードできませんでした: {error}
+	After the file has been saved, continue. Editing a new project may replace the browser recovery copy.	ファイルを保存してから続行してください。新しいプロジェクトを編集すると、ブラウザーの復元コピーが置き換わる場合があります。
+	Recovery paused for unsaved changes: {error}. Repair the invalid dimensions to resume.	未保存の変更の復元を一時停止しました: {error}。無効な寸法を修正すると再開します。
 	About FilmCraft	FilmCraft について
 	Add Audio Submix Track	オーディオサブミックストラックを追加
 	Add Caption at Playhead	再生ヘッドの位置にキャプションを追加

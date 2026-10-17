@@ -70,10 +70,47 @@ fn a_file_still_being_written_is_tried_again() {
     let bytes = std::fs::read(&full).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(30));
     std::fs::write(&a, &bytes[..64]).unwrap();
-    assert_eq!(refresh(&mut s), json!({"refreshed": []}));
+    let result = refresh(&mut s);
+    assert_eq!(result["refreshed"], json!([]));
+    assert!(result["errors"][0].as_str().is_some_and(|error| error.contains("a.mov")));
     std::thread::sleep(std::time::Duration::from_millis(30));
     std::fs::write(&a, &bytes).unwrap();
     assert_eq!(refresh(&mut s), json!({"refreshed": [items[0].0]}));
+}
+
+#[test]
+fn oversized_replacement_does_not_refresh_media_to_unreopenable_dimensions() {
+    let root = tmp_dir("watch-oversized-y4m");
+    let path = root.join("take.y4m");
+    let mut valid = b"YUV4MPEG2 W64 H36 Cmono\nFRAME\n".to_vec();
+    valid.resize(valid.len() + 64 * 36, 128);
+    std::fs::write(&path, &valid).unwrap();
+    let mut session = Session::default();
+    let imported = session.execute("file.import", json!({"paths": [path.to_string_lossy()]})).unwrap();
+    let item = filmcraft_project::ItemId(imported["items"][0].as_u64().unwrap());
+    assert_eq!(refresh(&mut session), json!({"refreshed": []}));
+    let mut hostile = b"YUV4MPEG2 W32769 H1 Cmono\nFRAME\n".to_vec();
+    hostile.resize(hostile.len() + 32_769, 128);
+    std::fs::write(&path, hostile).unwrap();
+    let preserved = session.project.clone();
+    let result = refresh(&mut session);
+    assert_eq!(result["refreshed"], json!([]));
+    assert!(result["errors"][0].as_str().is_some_and(|error| error.contains("invalid video dimensions 32769x1")));
+    assert!(std::sync::Arc::ptr_eq(&session.project, &preserved));
+    assert_eq!(session.project.source_size(item), Some((64, 36)));
+    assert_eq!(session.media.offline_status(item).map(|status| status.reason), Some(filmcraft_render::offline::OfflineReason::Unreadable));
+    let source = session.media.cached(item).expect("invalid replacement must cache a slate instead of retaining the old reader");
+    let frame = source.video_frame(filmcraft_media::FrameRequest::full(filmcraft_time::Tick::ZERO)).unwrap();
+    assert_eq!((frame.width, frame.height), (64, 36));
+    std::fs::write(&path, &valid).unwrap();
+    assert_eq!(refresh(&mut session), json!({"refreshed": [item.0]}));
+    assert!(session.media.cached(item).is_some(), "a valid replacement restores the reader");
+    assert!(session.media.offline_status(item).is_none());
+    let project = root.join("take.fcproj");
+    session.execute("file.saveAs", json!({"path": project.to_string_lossy()})).unwrap();
+    session.execute("file.open", json!({"path": project.to_string_lossy()})).unwrap();
+    assert_eq!(session.project.source_size(item), Some((64, 36)));
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

@@ -414,9 +414,7 @@ pub fn relink(s: &mut Session, p: &Value) -> Result<Value> {
     if c.source.is_none() {
         // Forced past a failed check: the file was never opened for its properties, so do it now
         // and let the item take the new file's own info instead of keeping the old file's.
-        let Ok(src) = s.media.open_file(&path, &*s.services) else {
-            return Err(EngineError::Other(format!("{path} can't be opened")));
-        };
+        let src = s.media.open_file(&path, &*s.services).map_err(|e| EngineError::Other(format!("{path} can't be opened: {e}")))?;
         c.info = Some(src.info().clone());
         c.source = Some(src);
     }

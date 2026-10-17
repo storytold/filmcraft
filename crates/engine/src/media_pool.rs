@@ -103,7 +103,7 @@ pub fn open_image_sequence(first: &str, services: &dyn Services, rate: filmcraft
             Arc::new(move |p: &str| files.get(p).map(|b| b.to_vec()).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, p.to_string())))
         }
     };
-    Ok(Arc::new(filmcraft_media::sequence::ImageSequenceSource::new(name, frames, rate, loader)?))
+    checked_source(Arc::new(filmcraft_media::sequence::ImageSequenceSource::new(name, frames, rate, loader)?))
 }
 
 /// The frames of the image sequence starting at `first` (see [`open_image_sequence`]).
@@ -138,6 +138,16 @@ fn file_name(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }
 
+pub(crate) fn checked_source(src: SharedSource) -> Result<SharedSource, MediaError> {
+    if let Some(video) = &src.info().video
+        && (video.width, video.height) != (0, 0)
+    {
+        filmcraft_project::validate_frame_size(video.width, video.height)
+            .map_err(|e| MediaError::Unsupported(format!("{}: invalid video dimensions {}x{}: {e}", src.info().name, video.width, video.height)))?;
+    }
+    Ok(src)
+}
+
 impl MediaPool {
     pub fn register_opener(&self, o: Opener) {
         self.openers.write().unwrap_or_else(|e| e.into_inner()).push(o);
@@ -157,6 +167,15 @@ impl MediaPool {
     pub fn insert_file(&self, item: ItemId, path: &str, src: SharedSource) {
         self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
         let src = self.unsupported_as_slate(item, path, src);
+        self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (format!("file:{path}"), src));
+    }
+
+    /// A changed file that failed to open must not keep a reader for its old bytes. Cache the
+    /// offline slate from the project's last valid metadata without opening the bad file again.
+    pub(crate) fn insert_unreadable(&self, item: ItemId, path: &str, info: &MediaInfo, error: &str) {
+        self.remove(item);
+        self.set_offline(item, OfflineReason::Unreadable, path, error);
+        let src: SharedSource = Arc::new(SlateSource::new(info.clone(), &file_name(path), OfflineReason::Unreadable));
         self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (format!("file:{path}"), src));
     }
 
@@ -218,7 +237,7 @@ impl MediaPool {
     /// Open a file through the registered openers.
     pub fn open_bytes(&self, name: &str, bytes: Arc<[u8]>) -> Result<SharedSource, MediaError> {
         let openers = self.openers.read().unwrap_or_else(|e| e.into_inner()).clone();
-        filmcraft_media::open_bytes(name, bytes, &openers)
+        checked_source(filmcraft_media::open_bytes(name, bytes, &openers)?)
     }
 
     /// Read and open a file through `services` (through its random-access reader when the host
@@ -227,7 +246,7 @@ impl MediaPool {
         let io = |e: std::io::Error| if e.kind() == std::io::ErrorKind::NotFound { MediaError::Offline(e.to_string()) } else { MediaError::Io(e.to_string()) };
         if let Some(r) = services.reader(path) {
             let openers = self.openers.read().unwrap_or_else(|e| e.into_inner()).clone();
-            return filmcraft_media::reader::open_reader(&file_name(path), r.map_err(io)?, &filmcraft_codecs::reader_openers(), &openers);
+            return checked_source(filmcraft_media::reader::open_reader(&file_name(path), r.map_err(io)?, &filmcraft_codecs::reader_openers(), &openers)?);
         }
         let bytes = services.read_file(path).map_err(io)?;
         self.open_bytes(&file_name(path), bytes.into())
@@ -240,7 +259,7 @@ impl MediaPool {
         let Some(r) = services.reader(path) else { return self.open_file(path, services) };
         let r = r.map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { MediaError::Offline(e.to_string()) } else { MediaError::Io(e.to_string()) })?;
         let openers = self.openers.read().unwrap_or_else(|e| e.into_inner()).clone();
-        filmcraft_media::reader::open_reader_within(&file_name(path), r, &filmcraft_codecs::reader_openers(), &openers, PROBE_WHOLE_FILE_MAX)
+        checked_source(filmcraft_media::reader::open_reader_within(&file_name(path), r, &filmcraft_codecs::reader_openers(), &openers, PROBE_WHOLE_FILE_MAX)?)
     }
 
     /// Resolve (and cache) the source for a project item, using proxies when they are enabled.
@@ -576,6 +595,128 @@ impl MediaSource for ProxySource {
 mod tests {
     use super::*;
     use filmcraft_project::ItemKind;
+
+    #[test]
+    fn byte_media_probe_enforces_total_pixel_boundary_without_decoding_a_large_frame() {
+        fn dimension_probe(_name: &str, bytes: Arc<[u8]>) -> Option<filmcraft_media::Result<SharedSource>> {
+            let height = match bytes.first().copied() {
+                Some(b'a') => 8_192,
+                Some(b'r') => 8_193,
+                _ => return None,
+            };
+            Some(Ok(Arc::new(filmcraft_media::generators::GeneratorSource::new(
+                filmcraft_media::Generator::BlackVideo,
+                32_768,
+                height,
+                filmcraft_time::FrameRate::FPS_24,
+                filmcraft_time::Tick(1),
+            ))))
+        }
+
+        let pool = MediaPool::default();
+        pool.register_opener(dimension_probe);
+        let accepted = pool.open_bytes("boundary.probe", Arc::from(&b"a"[..])).unwrap();
+        assert_eq!(accepted.info().video.as_ref().map(|video| (video.width, video.height)), Some((32_768, 8_192)));
+        let rejected = pool.open_bytes("boundary.probe", Arc::from(&b"r"[..]));
+        assert!(matches!(rejected, Err(MediaError::Unsupported(message)) if message.contains("32768x8193")));
+    }
+
+    #[test]
+    fn oversized_media_import_and_relink_preserve_project_metadata() {
+        use serde_json::json;
+
+        let dir = crate::media_test_util::tmp_dir("y4m-frame-size");
+        let mut session = crate::Session::default();
+        let original = session.project.clone();
+        for (width, accepted) in [(32_769, false), (32_768, true)] {
+            let source = dir.join(format!("{width}.y4m"));
+            let mut bytes = format!("YUV4MPEG2 W{width} H1 Cmono\nFRAME\n").into_bytes();
+            bytes.resize(bytes.len() + width, 128);
+            std::fs::write(&source, bytes).unwrap();
+            let imported = session.execute("file.import", json!({"paths": [source.to_string_lossy()]}));
+            if accepted {
+                assert_eq!(imported.unwrap()["items"].as_array().map(Vec::len), Some(1));
+            } else {
+                let error = imported.unwrap_err().to_string();
+                assert!(error.contains("invalid video dimensions") && error.contains("32769x1"), "{error}");
+                assert!(Arc::ptr_eq(&session.project, &original), "rejected import modified the project");
+            }
+        }
+        let offline = session.execute("file.newOfflineFile", json!({"fileName": "missing.mov", "width": 64, "height": 36})).unwrap();
+        let preserved = session.project.clone();
+        let oversized = dir.join("32769.y4m");
+        let error = session.execute("media.relink", json!({"item": offline["item"], "path": oversized.to_string_lossy(), "force": true})).unwrap_err();
+        assert!(error.to_string().contains("invalid video dimensions 32769x1"), "{error}");
+        assert!(Arc::ptr_eq(&session.project, &preserved), "rejected relink changed the project");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn saving_invalid_dimensions_preserves_the_last_reopenable_project_file() {
+        use serde_json::json;
+
+        let dir = crate::media_test_util::tmp_dir("save-invalid-dimensions");
+        let path = dir.join("cut.fcproj");
+        let mut session = crate::Session::default();
+        let created = session.execute("file.newOfflineFile", json!({"fileName": "offline.mov", "width": 64, "height": 36})).unwrap();
+        session.execute("file.saveAs", json!({"path": path.to_string_lossy()})).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let id = ItemId(created["item"].as_u64().unwrap());
+        if let Some(filmcraft_project::ItemKind::Media(media)) = std::sync::Arc::make_mut(&mut session.project).item_mut(id).map(|item| &mut item.kind) {
+            media.info.video.as_mut().unwrap().width = 32_769;
+        } else {
+            panic!("created offline item disappeared");
+        }
+        let error = session.execute("file.save", json!({})).unwrap_err().to_string();
+        assert!(error.contains("invalid video dimensions") && error.contains("offline.mov"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), original, "failed validation replaced the last good file");
+        let mut reopened = crate::Session::default();
+        reopened.execute("file.open", json!({"path": path.to_string_lossy()})).unwrap();
+        assert_eq!(reopened.project.source_size(id), Some((64, 36)));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn opening_a_project_with_oversized_offline_media_keeps_the_current_project() {
+        use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef};
+
+        let mut session = crate::Session::default();
+        let original = session.project.clone();
+        let mut project = Project::new("Untrusted");
+        let mut info = filmcraft_media::generators::GeneratorSource::new(
+            filmcraft_media::Generator::BlackVideo,
+            1_000_000,
+            1_000_000,
+            filmcraft_time::FrameRate::FPS_24,
+            filmcraft_time::Tick(1),
+        )
+        .info()
+        .clone();
+        info.name = "oversized.mov".into();
+        project.add_item(
+            "oversized.mov",
+            Label::Iris,
+            ItemKind::Media(MediaClip {
+                media: MediaRef::File { path: "missing.mov".into() },
+                info,
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: true,
+                proxy: None,
+                identity: None,
+            }),
+            None,
+        );
+        let dir = crate::media_test_util::tmp_dir("hostile-offline-size");
+        let path = dir.join("cut.fcproj");
+        std::fs::write(&path, filmcraft_format::encode(&project, false)).unwrap();
+        let error = session.execute("file.open", serde_json::json!({"path": path.to_string_lossy()})).unwrap_err();
+        assert!(error.to_string().contains("oversized.mov") && error.to_string().contains("invalid video dimensions"));
+        assert!(Arc::ptr_eq(&session.project, &original), "failed open discarded the current project");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     /// A host whose whole-file read fails: opening must go through the reader.
     struct ReaderOnly(Arc<[u8]>);

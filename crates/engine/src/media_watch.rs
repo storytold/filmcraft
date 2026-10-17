@@ -94,7 +94,7 @@ impl Session {
     }
 
     /// Compare the media files' stamps with the ones last seen and read the changed files
-    /// again. Returns `{refreshed: [item ids]}`.
+    /// again. Returns refreshed item IDs and any read errors for changed paths.
     fn apply_media_stamps(&mut self, now: Vec<(String, Option<Stamp>)>) -> Result<Value> {
         // Only the files the project uses now are remembered.
         let before: HashMap<String, Stamp> = std::mem::take(&mut self.media_stamps);
@@ -118,11 +118,17 @@ impl Session {
             return Ok(json!({"refreshed": []}));
         }
         let mut fresh = Vec::new();
-        let mut failed = BTreeSet::new();
+        let mut failed: HashMap<String, String> = HashMap::new();
+        let mut errors = Vec::new();
+        let mut unsupported = Vec::new();
         for (id, it) in &self.project.items {
             let Some(m) = it.as_media().filter(|m| !m.offline) else { continue };
             let MediaRef::File { path } = &m.media else { continue };
-            if !changed.contains(path) || failed.contains(path) {
+            if !changed.contains(path) {
+                continue;
+            }
+            if let Some(error) = failed.get(path) {
+                self.media.insert_unreadable(*id, path, &m.info, error);
                 continue;
             }
             // Opened the way import opens it, so the info is what a new import would get.
@@ -137,15 +143,30 @@ impl Session {
                     let identity = crate::relink::identity_of(&*self.services, path).ok();
                     fresh.push((*id, path.clone(), info, identity, src));
                 }
-                Err(_) => {
-                    failed.insert(path.clone());
+                Err(error) => {
+                    let error_text = error.to_string();
+                    failed.insert(path.clone(), error_text.clone());
+                    let message = format!("{path}: {error_text}");
+                    if matches!(error, filmcraft_media::MediaError::Unsupported(_)) {
+                        unsupported.push(message.clone());
+                    }
+                    errors.push(message);
+                    // The changed path can no longer safely use a reader opened with its old metadata.
+                    self.media.insert_unreadable(*id, path, &m.info, &error_text);
                 }
             }
         }
         // A file that can't be opened (still being written, or not media FilmCraft reads) keeps its
         // new stamp: it is tried again once it changes again, not on every look.
+        for message in &unsupported {
+            self.log.push(crate::panels::Level::Error, "media", message.clone());
+            self.events.push(crate::Event::Toast { message: message.clone(), error: true });
+        }
         if fresh.is_empty() {
-            return Ok(json!({"refreshed": []}));
+            if !failed.is_empty() {
+                self.bump_view();
+            }
+            return if errors.is_empty() { Ok(json!({"refreshed": []})) } else { Ok(json!({"refreshed": [], "errors": errors})) };
         }
         let p = Arc::make_mut(&mut self.project);
         let mut refreshed: Vec<ItemId> = Vec::new();
@@ -160,6 +181,10 @@ impl Session {
             refreshed.push(id);
         }
         self.bump_view();
-        Ok(json!({"refreshed": refreshed.iter().map(|i| i.0).collect::<Vec<_>>()}))
+        let mut result = json!({"refreshed": refreshed.iter().map(|i| i.0).collect::<Vec<_>>()});
+        if !errors.is_empty() {
+            result["errors"] = json!(errors);
+        }
+        Ok(result)
     }
 }

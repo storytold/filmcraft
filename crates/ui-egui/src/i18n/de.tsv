@@ -6,7 +6,7 @@
 # apps, text addresses the user informally ("du") and commands use the infinitive ("Projekt
 # öffnen…"). Product, format and feature names (FilmCraft, ArtCraft, Lumetri, Essential Graphics,
 # EDL, AAF…) keep their spelling. This catalog covers every menu, including the native macOS
-# app menu; anything else is shown in English.
+# app menu, plus the browser-recovery messages below; other UI text is shown in English.
 #
 # Terms: track = Spur, bin = Ablage, marker = Marker, playhead = Abspielposition, In/Out = In-/Out-
 # Punkt, transition = Übergang, frame hold = Standbild, panel = Bedienfeld, workspace =
@@ -14,6 +14,19 @@
 # menu) = Voreinstellungen. "Timeline" is not translated.
 
 	AAF…	AAF…
+# Browser recovery when a snapshot cannot be opened.
+	Could not open the browser recovery file “{name}”: {error}	Die Browser-Wiederherstellungsdatei „{name}“ konnte nicht geöffnet werden: {error}
+	The browser recovery file “{name}” was skipped by a launch option.	Die Browser-Wiederherstellungsdatei „{name}“ wurde durch eine Startoption übersprungen.
+	Recovery paused	Wiederherstellung pausiert
+	Could not inspect the browser recovery file: {error}	Die Browser-Wiederherstellungsdatei konnte nicht überprüft werden: {error}
+	Recovery unavailable	Wiederherstellung nicht verfügbar
+	Could not read browser recovery storage: {error}. New recovery snapshots are paused. Save current work manually, then reload this page to retry.	Der Browser-Wiederherstellungsspeicher konnte nicht gelesen werden: {error}. Neue Wiederherstellungskopien sind pausiert. Speichere die aktuelle Arbeit manuell und lade diese Seite erneut, um es noch einmal zu versuchen.
+	The file is still in this browser. New recovery snapshots are paused until you preserve it.	Die Datei befindet sich noch in diesem Browser. Neue Wiederherstellungskopien sind pausiert, bis du sie gespeichert hast.
+	Download recovery file	Wiederherstellungsdatei herunterladen
+	I saved the recovery file	Ich habe die Wiederherstellungsdatei gespeichert
+	Could not download recovery file: {error}	Die Wiederherstellungsdatei konnte nicht heruntergeladen werden: {error}
+	After the file has been saved, continue. Editing a new project may replace the browser recovery copy.	Fahre fort, nachdem du die Datei gespeichert hast. Wenn du ein neues Projekt bearbeitest, kann die Browser-Wiederherstellungskopie ersetzt werden.
+	Recovery paused for unsaved changes: {error}. Repair the invalid dimensions to resume.	Wiederherstellung für ungespeicherte Änderungen pausiert: {error}. Korrigiere die ungültigen Abmessungen, um sie fortzusetzen.
 	About FilmCraft	Über FilmCraft
 	Add Audio Submix Track	Audio-Submix-Spur hinzufügen
 	Add Caption at Playhead	Untertitel an Abspielposition hinzufügen
@@ -276,6 +289,7 @@
 	Quit FilmCraft	FilmCraft beenden
 	Reconnect Full Resolution Media…	Medien in voller Auflösung neu verknüpfen…
 	Recover Unsaved Changes…	Nicht gespeicherte Änderungen wiederherstellen…
+	Recover Unsaved Changes	Nicht gespeicherte Änderungen wiederherstellen
 	Rectangle	Rechteck
 	Red	Rot
 	Redo	Wiederholen

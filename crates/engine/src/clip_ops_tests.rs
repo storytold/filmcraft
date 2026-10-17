@@ -269,6 +269,105 @@ fn new_sequence_from_clip_bin_from_selection_and_offline_file() {
 }
 
 #[test]
+fn offline_file_rejects_unbounded_dimensions_without_changing_the_project() {
+    let mut session = demo();
+    let before = session.project.clone();
+    for params in [
+        json!({"width": 0, "height": 16, "audio": false}),
+        json!({"width": 16, "height": 0, "audio": false}),
+        json!({"width": 1_000_000, "height": 1_000_000, "audio": false}),
+        json!({"width": u64::from(u32::MAX) + 1, "height": 16, "audio": false}),
+        json!({"width": 1920.5, "audio": false}),
+        json!({"height": "1080", "audio": false}),
+        json!({"width": -1, "audio": false}),
+    ] {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| session.execute("file.newOfflineFile", params.clone())));
+        assert!(matches!(&result, Ok(Err(crate::EngineError::BadParams { cmd, .. })) if cmd == "file.newOfflineFile"), "{params}: {result:?}");
+        assert_eq!(*session.project, *before, "a rejected command must preserve the project");
+    }
+}
+
+#[test]
+fn audio_only_offline_file_ignores_unused_video_dimensions() {
+    let mut session = Session::default();
+    let result = session
+        .execute(
+            "file.newOfflineFile",
+            json!({
+                "fileName": "sound.wav", "video": false, "audio": true,
+                "width": "unused", "height": -1,
+            }),
+        )
+        .unwrap();
+    let item = session.project.item(ItemId(result["item"].as_u64().unwrap())).unwrap();
+    let media = item.as_media().unwrap();
+    assert!(media.info.video.is_none());
+    assert!(media.info.has_audio());
+}
+
+#[test]
+fn unknown_video_dimensions_make_a_reopenable_sequence_from_clip() {
+    let d = tmp_dir("unknown-video-sequence");
+    let path = d.join("cut.fcproj");
+    let mut session = Session::default();
+    let result = session.execute("file.newOfflineFile", json!({"fileName": "unknown.mpg", "width": 1920, "height": 1080, "fps": 25, "audio": false})).unwrap();
+    let item = ItemId(result["item"].as_u64().unwrap());
+    let media = std::sync::Arc::make_mut(&mut session.project).item_mut(item).unwrap().as_media_mut().unwrap();
+    let video = media.info.video.as_mut().unwrap();
+    video.width = 0;
+    video.height = 0;
+    session.execute("project.select", json!({"items": [item.0]})).unwrap();
+    let result = session.execute("file.newSequenceFromClip", json!({})).unwrap();
+    let sequence = ItemId(result["sequence"].as_u64().unwrap());
+    let settings = &session.project.sequence(sequence).unwrap().settings;
+    assert_eq!((settings.width, settings.height), (1920, 1080));
+    assert!(settings.preset.contains("25"), "the preset must match the source's 25 fps rate: {}", settings.preset);
+    session.execute("file.saveAs", json!({"path": path.to_string_lossy()})).unwrap();
+    let mut reopened = Session::default();
+    reopened.execute("file.open", json!({"path": path.to_string_lossy()})).unwrap();
+    assert_eq!(reopened.project.sequence(sequence).map(|q| (q.settings.width, q.settings.height)), Some((1920, 1080)));
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
+fn generated_video_rejects_unbounded_dimensions_without_changing_the_project() {
+    let mut session = Session::default();
+    let original = session.project.clone();
+    for cmd in ["file.newBarsAndTone", "file.newBlackVideo", "file.newColorMatte", "file.newCountingLeader", "file.newTransparentVideo"] {
+        let error = session.execute(cmd, json!({"width": 0, "height": 1080})).unwrap_err();
+        assert!(matches!(&error, crate::EngineError::BadParams { cmd: invoked, .. } if invoked == cmd), "{error}");
+        assert!(std::sync::Arc::ptr_eq(&session.project, &original), "rejected {cmd} modified the project");
+    }
+    for dimensions in [
+        json!({"width": 1_000_000, "height": 1_000_000}),
+        json!({"width": 0, "height": 1080}),
+        json!({"width": 4_294_967_296u64, "height": 1}),
+        json!({"width": 1920.5, "height": 1080}),
+    ] {
+        let error = session.execute("file.newBlackVideo", dimensions.clone()).unwrap_err();
+        assert!(matches!(&error, crate::EngineError::BadParams { cmd, .. } if cmd == "file.newBlackVideo"), "{error}");
+        assert!(std::sync::Arc::ptr_eq(&session.project, &original), "rejected generator modified the project");
+    }
+    session.execute("file.newBlackVideo", json!({"width": 32_768, "height": 1})).unwrap();
+}
+
+#[test]
+fn created_media_at_the_dimension_limit_saves_and_reopens() {
+    let dir = tmp_dir("created-size-roundtrip");
+    let path = dir.join("cut.fcproj");
+    let mut session = Session::default();
+    let offline = session.execute("file.newOfflineFile", json!({"fileName": "missing.mov", "width": 32_768, "height": 8_192, "audio": false})).unwrap();
+    let generated = session.execute("file.newBlackVideo", json!({"width": 32_768, "height": 8_192})).unwrap();
+    session.execute("file.saveAs", json!({"path": path.to_string_lossy()})).unwrap();
+    let mut reopened = Session::default();
+    reopened.execute("file.open", json!({"path": path.to_string_lossy()})).unwrap();
+    for item in [offline["item"].as_u64().unwrap(), generated["item"].as_u64().unwrap()] {
+        assert_eq!(reopened.project.source_size(ItemId(item)), Some((32_768, 8_192)));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn close_project_and_save_all() {
     let mut s = demo();
     assert!(s.execute("file.saveAll", json!({})).is_err(), "never saved: use Save As");

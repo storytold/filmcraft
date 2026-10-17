@@ -106,12 +106,38 @@ pub fn write_then(rel: String, data: Vec<u8>, done: Option<Done>) {
     });
 }
 
-/// Read a file (None when missing).
+fn not_found(error: &JsValue) -> bool {
+    js_sys::Reflect::get(error, &"name".into()).ok().and_then(|name| name.as_string()).as_deref() == Some("NotFoundError")
+}
+
+/// Obtain a file without loading its contents into wasm memory; distinguish absence from I/O failure.
+pub async fn file_result(rel: &str) -> Result<Option<web_sys::File>, JsValue> {
+    let fh = match file_handle(rel, false).await {
+        Ok(fh) => fh,
+        Err(error) if not_found(&error) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let file = match JsFuture::from(fh.get_file()).await {
+        Ok(file) => file,
+        Err(error) if not_found(&error) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    file.dyn_into().map(Some)
+}
+
+/// Read a file with a caller-supplied byte cap, preserving I/O errors for recovery startup.
+pub async fn read_capped_result(rel: &str, max_bytes: u64) -> Result<Option<Vec<u8>>, JsValue> {
+    let Some(file) = file_result(rel).await? else { return Ok(None) };
+    if file.size() > max_bytes as f64 {
+        return Err(JsValue::from_str("OPFS file exceeds the read size limit"));
+    }
+    let buf = JsFuture::from(file.array_buffer()).await?;
+    Ok(Some(js_sys::Uint8Array::new(&buf).to_vec()))
+}
+
+/// Read a file (None when missing or inaccessible).
 pub async fn read(rel: &str) -> Option<Vec<u8>> {
-    let fh = file_handle(rel, false).await.ok()?;
-    let file: web_sys::File = JsFuture::from(fh.get_file()).await.ok()?.dyn_into().ok()?;
-    let buf = JsFuture::from(file.array_buffer()).await.ok()?;
-    Some(js_sys::Uint8Array::new(&buf).to_vec())
+    read_capped_result(rel, u64::MAX).await.ok().flatten()
 }
 
 /// Remove a file (ignored when missing).

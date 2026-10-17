@@ -28,8 +28,9 @@ The web crate is empty on non-wasm targets, so `cargo test --workspace` and clip
 unaffected; `cargo xtask wasm` (part of `cargo xtask ci`) checks it, with `filmcraft-ui-egui`, for
 `wasm32-unknown-unknown`.
 
-URL flags: `?empty` (no demo project), `?norecover` (don't reopen the auto-saved project),
-`?fresh` (also don't restore media kept in OPFS), `?cpu` (CPU compositor), `?webgl` (WebGL2 only;
+URL flags: `?empty` (no demo project), `?norecover` (don't reopen the auto-saved project;
+a dirty copy stays available for download before new recovery writes), `?fresh` (also don't restore
+media kept in OPFS, with the same dirty-copy hold), `?cpu` (CPU compositor), `?webgl` (WebGL2 only;
 the page reloads with it when WebGPU is present but fails to start), `?nowebcodecs` (decode with
 FilmCraft's own decoders only).
 
