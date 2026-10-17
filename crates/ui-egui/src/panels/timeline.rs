@@ -2116,6 +2116,35 @@ fn gap_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::Ui) {
     }
 }
 
+/// The Timeline time-ruler menu: sequence In/Out operations belong to the ruler, even when a clip
+/// remains selected elsewhere in the Timeline.
+fn ruler_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::Ui) {
+    for (label, item, command) in [
+        ("Mark In", "markIn", "markers.markIn"),
+        ("Mark Out", "markOut", "markers.markOut"),
+        ("Mark Selection", "markSelection", "markers.markSelection"),
+        ("Mark Clip", "markClip", "markers.markClip"),
+        ("Clear In", "clearIn", "markers.clearIn"),
+        ("Clear Out", "clearOut", "markers.clearOut"),
+        ("Clear In and Out", "clearInOut", "markers.clearInOut"),
+    ] {
+        let label = crate::i18n::t(label);
+        let r = ui.add_enabled(app.session.is_enabled(command), egui::Button::new(label));
+        app.auto.add(&format!("timeline.rulerMenu.{item}"), r.rect, label);
+        if r.clicked() {
+            let params = if matches!(command, "markers.markIn" | "markers.markOut" | "markers.clearIn" | "markers.clearOut" | "markers.clearInOut") {
+                json!({"target":"program"})
+            } else {
+                json!({})
+            };
+            if let Err(e) = crate::menus::invoke(app, ctx, command, params) {
+                app.ui.status = e;
+            }
+            ui.close();
+        }
+    }
+}
+
 /// The clip menu's Multi-Camera submenu: Enable, Flatten, and the cameras of the selected nested
 /// sequence clips (greyed out when none of the selected clips is a nested sequence).
 fn multicam_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, picked: &[&TrackItem]) {
@@ -2772,6 +2801,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
     let menu_clip_id = egui::Id::new("timeline.clipMenu.clip");
     // right-clicking empty time between clips selects the gap and opens its menu (#648, #668)
     let gap_menu_id = egui::Id::new("timeline.gapMenu.open");
+    let ruler_menu_id = egui::Id::new("timeline.rulerMenu.open");
     if resp.secondary_clicked()
         && let Some(p) = resp.interact_pointer_pos()
     {
@@ -2794,7 +2824,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         if let Some(m) = marker {
             app.session.set_playhead(m.start.max(Tick::ZERO));
         }
-        ctx.data_mut(|d| d.insert_temp(marker_menu_id, marker.map(|m| m.id)));
+        ctx.data_mut(|d| {
+            d.insert_temp(marker_menu_id, marker.map(|m| m.id));
+            d.insert_temp(ruler_menu_id, layout.ruler.contains(p) && marker.is_none());
+        });
     }
     if resp.secondary_clicked()
         && let Some(p) = resp.interact_pointer_pos()
@@ -2833,6 +2866,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         }
         if ctx.data(|d| d.get_temp::<bool>(gap_menu_id)).unwrap_or(false) {
             gap_menu(app, &ctx, ui);
+            return;
+        }
+        if ctx.data(|d| d.get_temp::<bool>(ruler_menu_id)).unwrap_or(false) {
+            ruler_menu(app, &ctx, ui);
             return;
         }
         let sel = app.session.state.selection.clone();
