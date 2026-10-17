@@ -536,7 +536,8 @@ pub(crate) fn settings_for(rate: FrameRate, width: u32, height: u32, drop_frame:
 /// Source time advanced by a timeline duration at `speed` (exact for integral speeds).
 pub(crate) fn scaled(d: Tick, speed: f64) -> Tick {
     let s = speed.abs();
-    if s == s.round() && s < 1e6 { Tick(d.0 * s as i64) } else { Tick((d.0 as f64 * s).round() as i64) }
+    // saturating: a duration read from a file times a speed from the same file can exceed an i64 of ticks
+    if s == s.round() && s < 1e6 { Tick(d.0.saturating_mul(s as i64)) } else { Tick((d.0 as f64 * s).round() as i64) }
 }
 
 /// Timeline duration of a source duration at `speed`.
@@ -712,5 +713,15 @@ mod tests {
         assert_eq!(rate_from_f64(23.976), FrameRate::FPS_23_976);
         assert_eq!(rate_from_f64(48000.0), FrameRate::new(48000, 1));
         assert_eq!(frames_round(FrameRate::FPS_24, FrameRate::FPS_24.tick_of(5) + Tick(10)), 5);
+    }
+
+    /// A huge duration at an integral speed saturates instead of overflowing (an EDL with a record-out
+    /// timecode of 2147483647 hours and an `M2 ... 72.0` speed change panicked here).
+    #[test]
+    fn scaled_saturates() {
+        assert_eq!(scaled(Tick(i64::MAX / 2), 3.0), Tick(i64::MAX));
+        assert_eq!(scaled(Tick(i64::MIN / 2), 3.0), Tick(i64::MIN));
+        assert_eq!(scaled(Tick(1000), 3.0), Tick(3000));
+        assert_eq!(scaled(Tick(1000), 0.5), Tick(500));
     }
 }
