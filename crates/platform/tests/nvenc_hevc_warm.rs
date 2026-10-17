@@ -6,9 +6,9 @@
 #[cfg(target_os = "windows")]
 use std::time::{Duration, Instant};
 
-use filmcraft_platform::nvenc::{hevc_hdr_probed, hevc_probed};
 #[cfg(target_os = "windows")]
 use filmcraft_platform::nvenc::{hevc_available, hevc_hdr_available};
+use filmcraft_platform::nvenc::{hevc_hdr_probed, hevc_probed};
 
 #[cfg(target_os = "windows")]
 #[test]
@@ -34,7 +34,6 @@ fn register_answers_the_hevc_question_in_the_background() {
     filmcraft_platform::register();
     assert_eq!(hevc_available(), answer);
 }
-
 
 #[cfg(target_os = "linux")]
 #[test]
