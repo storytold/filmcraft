@@ -679,7 +679,7 @@ impl GpuCompositor {
             blend.index() as f32,
             src.alpha,
             0.0,
-            0.0,
+            if footprint < 1.0 { 1.0 } else { 0.0 },
         ];
         let mut u = [0.0; UNIFORM_FLOATS];
         u[..28].copy_from_slice(&base);
