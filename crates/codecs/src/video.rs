@@ -267,6 +267,8 @@ pub fn mjpeg_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
 /// Our pure-Rust H.264 decoder (frame-threaded).
 pub struct H264Decoder {
     avcc: Vec<u8>,
+    /// Parameter sets a container's header carries for Annex B samples ([`Self::annexb_with`]).
+    setup: Vec<u8>,
     dec: filmcraft_h264::Decoder,
     length_size: usize,
     draft: bool,
@@ -280,10 +282,13 @@ impl H264Decoder {
         if filmcraft_media::cancel::background() { BACKGROUND_H264_THREADS.min(h264_threads()) } else { h264_threads() }
     }
 
-    fn make_inner(avcc: &[u8], threads: usize) -> Result<filmcraft_h264::Decoder> {
+    fn make_inner(avcc: &[u8], setup: &[u8], threads: usize) -> Result<filmcraft_h264::Decoder> {
         let mut dec = filmcraft_h264::Decoder::with_threads(threads);
         if !avcc.is_empty() {
             dec.configure_avcc(avcc).map_err(h264_error)?;
+        }
+        if !setup.is_empty() {
+            dec.decode(setup, 0).map_err(h264_error)?;
         }
         Ok(dec)
     }
@@ -291,15 +296,24 @@ impl H264Decoder {
     pub fn new(avcc: Vec<u8>) -> Result<Self> {
         recycle_h264_planes();
         let threads = Self::threads_now();
-        let dec = Self::make_inner(&avcc, threads)?;
+        let dec = Self::make_inner(&avcc, &[], threads)?;
         let length_size = avcc_length_size(&avcc);
-        Ok(Self { avcc, dec, length_size, draft: false, threads })
+        Ok(Self { avcc, setup: Vec::new(), dec, length_size, draft: false, threads })
     }
     /// A decoder for Annex B byte-stream samples (start codes, in-band parameter sets: MXF, TS).
     pub fn annexb() -> Self {
         recycle_h264_planes();
         let threads = Self::threads_now();
-        Self { avcc: Vec::new(), dec: filmcraft_h264::Decoder::with_threads(threads), length_size: 0, draft: false, threads }
+        Self { avcc: Vec::new(), setup: Vec::new(), dec: filmcraft_h264::Decoder::with_threads(threads), length_size: 0, draft: false, threads }
+    }
+    /// [`Self::annexb`] for a stream whose parameter sets (Annex B) a container's header carries
+    /// instead of its samples (AVI written with global headers): the decoder is given them before
+    /// the first sample and again after every reset.
+    pub fn annexb_with(setup: Vec<u8>) -> Result<Self> {
+        recycle_h264_planes();
+        let threads = Self::threads_now();
+        let dec = Self::make_inner(&[], &setup, threads)?;
+        Ok(Self { avcc: Vec::new(), setup, dec, length_size: 0, draft: false, threads })
     }
     fn convert(p: filmcraft_h264::Picture) -> DecodedFrame {
         use std::sync::Arc;
@@ -342,7 +356,7 @@ impl VideoDecoder for H264Decoder {
         self.dec.flush().into_iter().map(Self::convert).collect()
     }
     fn reset(&mut self) {
-        if let Ok(d) = Self::make_inner(&self.avcc, self.threads) {
+        if let Ok(d) = Self::make_inner(&self.avcc, &self.setup, self.threads) {
             self.dec = d;
         }
         self.dec.set_draft(self.draft);
@@ -390,20 +404,36 @@ pub fn h264_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
 /// Our pure-Rust HEVC decoder (Main / Main 10, frame-threaded).
 pub struct HevcDecoder {
     hvcc: Vec<u8>,
+    /// Parameter sets a container's header carries for Annex B samples ([`Self::annexb_with`]).
+    setup: Vec<u8>,
     dec: filmcraft_hevc::Decoder,
     length_size: usize,
     highest_tid: Option<u8>,
 }
 
 impl HevcDecoder {
+    fn make_inner(hvcc: &[u8], setup: &[u8]) -> Result<filmcraft_hevc::Decoder> {
+        let mut dec = if hvcc.is_empty() { filmcraft_hevc::Decoder::new() } else { filmcraft_hevc::Decoder::from_hvcc(hvcc).map_err(hevc_error)? };
+        if !setup.is_empty() {
+            dec.decode(setup, 0).map_err(hevc_error)?;
+        }
+        Ok(dec)
+    }
     pub fn new(hvcc: Vec<u8>) -> Result<Self> {
-        let dec = filmcraft_hevc::Decoder::from_hvcc(&hvcc).map_err(hevc_error)?;
+        let dec = Self::make_inner(&hvcc, &[])?;
         let (length_size, highest_tid) = hvcc_length_size_and_tid(&hvcc);
-        Ok(Self { hvcc, dec, length_size, highest_tid })
+        Ok(Self { hvcc, setup: Vec::new(), dec, length_size, highest_tid })
     }
     /// A decoder for Annex B byte-stream samples (start codes, in-band parameter sets: TS).
     pub fn annexb() -> Self {
-        Self { hvcc: Vec::new(), dec: filmcraft_hevc::Decoder::new(), length_size: 0, highest_tid: None }
+        Self { hvcc: Vec::new(), setup: Vec::new(), dec: filmcraft_hevc::Decoder::new(), length_size: 0, highest_tid: None }
+    }
+    /// [`Self::annexb`] for a stream whose parameter sets (Annex B) a container's header carries
+    /// instead of its samples: the decoder is given them before the first sample and again after
+    /// every reset.
+    pub fn annexb_with(setup: Vec<u8>) -> Result<Self> {
+        let dec = Self::make_inner(&[], &setup)?;
+        Ok(Self { hvcc: Vec::new(), setup, dec, length_size: 0, highest_tid: None })
     }
     fn convert(p: filmcraft_hevc::Picture) -> DecodedFrame {
         use filmcraft_hevc::Plane;
@@ -454,9 +484,7 @@ impl VideoDecoder for HevcDecoder {
         self.dec.flush().into_iter().map(Self::convert).collect()
     }
     fn reset(&mut self) {
-        if self.hvcc.is_empty() {
-            self.dec = filmcraft_hevc::Decoder::new();
-        } else if let Ok(d) = filmcraft_hevc::Decoder::from_hvcc(&self.hvcc) {
+        if let Ok(d) = Self::make_inner(&self.hvcc, &self.setup) {
             self.dec = d;
         }
     }

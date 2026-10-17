@@ -230,3 +230,57 @@ fn copied_h264_keeps_its_timing_with_a_fine_time_base() {
     let mid = src.video_frame(FrameRequest::full(filmcraft_time::Tick::from_rational(1, 1, 50))).unwrap();
     assert!(yuv_bytes(&mid) == reference[0..frame]);
 }
+
+/// Out of order and back again, so the decoder restarts at key frames: each picture as ffmpeg
+/// decodes the file.
+fn check_h26x_frames(what: &str, path: &Path, src: &filmcraft_media::SharedSource) {
+    let reference = reference_yuv(path, "yuv420p").unwrap();
+    let frame = reference.len() / 50;
+    let rate = src.info().frame_rate();
+    for k in [37, 3, 24, 49, 0, 13, 12, 11, 30, 31, 32] {
+        let f = src.video_frame(FrameRequest::full(rate.tick_of(k as i64))).unwrap_or_else(|e| panic!("{what} frame {k}: {e}"));
+        assert!(yuv_bytes(&f) == reference[k * frame..(k + 1) * frame], "{what} frame {k} differs from ffmpeg");
+    }
+}
+
+/// H.264 written with global headers: its parameter sets are in the stream header only, not in
+/// the chunks. They reach the decoder, also after every restart.
+#[test]
+fn h264_with_its_parameter_sets_in_the_header() {
+    let video = ["-c:v", "libx264", "-flags", "+global_header", "-bf", "2", "-g", "12", "-pix_fmt", "yuv420p"];
+    let Some((path, src)) = avi("avi_h264_global_header.avi", &video, &["-c:a", "pcm_s16le"]) else { return };
+    check_info("global header", &src, "H.264", "PCM 16-bit");
+    check_h26x_frames("H.264 global header", &path, &src);
+}
+
+/// H.264 copied from an MP4 as it is: an `avcC` record in the header and length-prefixed chunks,
+/// with B-frames.
+#[test]
+fn h264_copied_with_its_avcc_record() {
+    let mp4 = ["-f", "lavfi", "-i", "testsrc2=s=160x120:r=25:d=2", "-c:v", "libx264", "-bf", "2", "-g", "12", "-pix_fmt", "yuv420p"];
+    let Some(src_mp4) = fixture_path("avi_avcc_source.mp4", &mp4) else { return };
+    let src_path = src_mp4.to_string_lossy().into_owned();
+    let Some(path) = fixture_path("avi_avcc_copy.avi", &["-i", &src_path, "-c:v", "copy", "-f", "avi"]) else { return };
+    let src = crate::open_bytes("avi_avcc_copy.avi", std::fs::read(&path).unwrap().into()).unwrap();
+    assert_eq!(src.info().video.as_ref().unwrap().codec, "H.264");
+    check_h26x_frames("H.264 avcC", &path, &src);
+}
+
+/// HEVC with its parameter sets in the stream header. (ffmpeg has no AVI tag for HEVC and writes
+/// none: the copy is tagged `HEVC` as other writers do.)
+#[test]
+fn hevc_with_its_parameter_sets_in_the_header() {
+    let mut args = PIC.to_vec();
+    args.extend(["-c:v", "libx265", "-flags", "+global_header", "-pix_fmt", "yuv420p", "-x265-params", "log-level=none:bframes=0:keyint=12"]);
+    let Some(untagged) = fixture_path("avi_hevc_global_header.avi", &args) else { return };
+    let mut bytes = std::fs::read(&untagged).unwrap();
+    let strh = bytes.windows(4).position(|w| w == b"strh").unwrap();
+    bytes[strh + 12..strh + 16].copy_from_slice(b"HEVC");
+    let strf = bytes.windows(4).position(|w| w == b"strf").unwrap();
+    bytes[strf + 24..strf + 28].copy_from_slice(b"HEVC");
+    let path = untagged.with_file_name("avi_hevc_global_header_tagged.avi");
+    std::fs::write(&path, &bytes).unwrap();
+    let src = crate::open_bytes("hevc.avi", bytes.into()).unwrap();
+    assert_eq!(src.info().video.as_ref().unwrap().codec, "HEVC");
+    check_h26x_frames("HEVC global header", &path, &src);
+}
