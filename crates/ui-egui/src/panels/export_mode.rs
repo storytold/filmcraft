@@ -150,11 +150,7 @@ fn destination_label(ex: &ExportUi) -> String {
     if ex.destination == "cloud" {
         let name = if ex.file_name.trim().is_empty() { "Export" } else { ex.file_name.trim() };
         let file = format!("{name}.{}", ex.settings.extension());
-        if ex.cloud_folder.is_empty() {
-            format!("collabcraft:/{file}")
-        } else {
-            format!("collabcraft:/{}/{file}", ex.cloud_folder.trim_matches('/'))
-        }
+        if ex.cloud_folder.is_empty() { format!("collabcraft:/{file}") } else { format!("collabcraft:/{}/{file}", ex.cloud_folder.trim_matches('/')) }
     } else {
         output_path(ex)
     }
@@ -226,7 +222,17 @@ fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let dest_cloud = app.ui.export.destination == "cloud";
     let mf = Rect::from_min_size(rect.min + vec2(8.0, 38.0), vec2(rect.width() - 16.0, 26.0));
     let mf_resp = ui.interact(mf, egui::Id::new("export-dest-media"), Sense::click());
-    p.rect_filled(mf, 4.0, if !dest_cloud { t.row_selected } else if mf_resp.hovered() { t.hover } else { Color32::TRANSPARENT });
+    p.rect_filled(
+        mf,
+        4.0,
+        if !dest_cloud {
+            t.row_selected
+        } else if mf_resp.hovered() {
+            t.hover
+        } else {
+            Color32::TRANSPARENT
+        },
+    );
     p.text(pos2(mf.min.x + 10.0, mf.center().y), Align2::LEFT_CENTER, tl!("Media File"), Tokens::ui(12.5), t.text);
     reg.add("export.destination.mediaFile", mf, "Media File");
     if mf_resp.clicked() {
@@ -236,7 +242,17 @@ fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if cloud_ok {
         let cf = Rect::from_min_size(pos2(mf.min.x, mf.max.y + 4.0), vec2(mf.width(), 26.0));
         let cf_resp = ui.interact(cf, egui::Id::new("export-dest-cloud"), Sense::click());
-        p.rect_filled(cf, 4.0, if dest_cloud { t.row_selected } else if cf_resp.hovered() { t.hover } else { Color32::TRANSPARENT });
+        p.rect_filled(
+            cf,
+            4.0,
+            if dest_cloud {
+                t.row_selected
+            } else if cf_resp.hovered() {
+                t.hover
+            } else {
+                Color32::TRANSPARENT
+            },
+        );
         p.text(pos2(cf.min.x + 10.0, cf.center().y), Align2::LEFT_CENTER, tl!("Cloud storage"), Tokens::ui(12.5), t.text);
         reg.add("export.destination.cloud", cf, "Cloud storage");
         if cf_resp.clicked() {
@@ -1241,27 +1257,18 @@ fn cloud_export_stage_path(ex: &ExportUi) -> String {
 /// Start Export (or Quick Export). When destination is cloud, encode to a staging path and upload
 /// after the job finishes — never `wait:true` on the web (that skips stepped encode and freezes).
 fn start_export(app: &mut FilmcraftApp, quick: bool) {
-    let cloud = if quick {
-        app.ui.export.quick_cloud && crate::cloud::available(app)
-    } else {
-        app.ui.export.destination == "cloud" && crate::cloud::available(app)
-    };
+    let cloud =
+        if quick { app.ui.export.quick_cloud && crate::cloud::available(app) } else { app.ui.export.destination == "cloud" && crate::cloud::available(app) };
     if cloud && app.pending_cloud_export.is_some() {
         app.ui.status = tl!("A cloud export is already running").into();
         return;
     }
-    let mut params = if quick {
-        json!({"preset": app.ui.export.quick_preset, "path": app.ui.export.quick_path})
-    } else {
-        export_params(app)
-    };
+    let mut params = if quick { json!({"preset": app.ui.export.quick_preset, "path": app.ui.export.quick_path}) } else { export_params(app) };
     let folder = app.ui.export.cloud_folder.clone();
     let stage = if cloud {
         let path = if quick {
-            let name = std::path::Path::new(&app.ui.export.quick_path)
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "Export.mp4".into());
+            let name =
+                std::path::Path::new(&app.ui.export.quick_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Export.mp4".into());
             format!("/opfs/cloud-export/{name}")
         } else {
             cloud_export_stage_path(&app.ui.export)
@@ -1276,10 +1283,7 @@ fn start_export(app: &mut FilmcraftApp, quick: bool) {
         Ok(v) => {
             let path = v["path"].as_str().unwrap_or("").to_string();
             if let Some(stage) = stage {
-                let name = std::path::Path::new(&stage)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "Export.mp4".into());
+                let name = std::path::Path::new(&stage).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Export.mp4".into());
                 let job = v["job"].as_u64().unwrap_or(0);
                 // Job may already be finished (native sync / non-stepped wasm).
                 if job_finished(&app.session, job) {
@@ -1331,7 +1335,12 @@ pub fn poll_cloud_export(app: &mut FilmcraftApp) {
 /// Read a finished local/virtual export and start a CollabCraft upload.
 fn finish_cloud_export(app: &mut FilmcraftApp, local_path: &str, folder: &str, name: &str) -> Result<String, String> {
     // Web writes through Services (in-memory / OPFS); native may use the real filesystem.
-    let bytes = app.session.services.read_file(local_path).or_else(|e| std::fs::read(local_path).map_err(|_| e)).map_err(|e| format!("could not read the export for upload: {e}"))?;
+    let bytes = app
+        .session
+        .services
+        .read_file(local_path)
+        .or_else(|e| std::fs::read(local_path).map_err(|_| e))
+        .map_err(|e| format!("could not read the export for upload: {e}"))?;
     crate::cloud::upload_export(app, folder, name, bytes)?;
     Ok(name.to_owned())
 }
