@@ -1,0 +1,533 @@
+{
+  "identical": {
+    "\tHDR": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tFLAC": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tLUT": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tOpenType": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tASC CDL": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tCEA-608": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tCEA-708": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tRGB": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tRec. 2100": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tRec. 601": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tRec. 709": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tTeletext": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tYC": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tYUV": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tAAF…": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tAvid Log Exchange…": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tEDL…": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tFCPXML…": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tFinal Cut Pro XML…": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tOMF…": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tOpenTimelineIO…": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tAvid Log Exchange": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tWebVTT (.vtt)": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tAIFF": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tAPV": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tAPV 422-10": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tAPV 422-12": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tApple ProRes": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tApple ProRes 422": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tApple ProRes 422 HQ": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tApple ProRes 422 LT": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tApple ProRes 422 Proxy": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tApple ProRes 4444": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tApple ProRes 4444 XQ": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tAvid DNxHR": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tAvid DNxHR HQ": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tAvid DNxHR LB": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tAvid DNxHR SQ": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tBMP": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tBaseline": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tCBR": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tH.264": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tAV1": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tMXF OP-Atom": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tMXF OP-Atom DNxHR (Avid)": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tMXF OP1a": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tMXF OP1a DNxHR HQ": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tMXF OP1a H.264": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tMXF OP1a ProRes 422 HQ": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tMain": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tJPEG": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tTarga": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tDPX": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tOpenEXR": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tPNG": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tQuickTime (Motion JPEG)": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tTIFF": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tH.265 (HEVC)": "Standard format, codec, profile, color model or specification name; spelling is part of its identity.",
+    "\tInter": "Proper font or product name; retain its published spelling.",
+    "\tJetBrains Mono": "Proper font or product name; retain its published spelling.",
+    "\tLumetri": "Proper font or product name; retain its published spelling.",
+    "\t+ Cmd": "Platform key name; modifier spelling must match the keyboard.",
+    "\t+ Opt": "Platform key name; modifier spelling must match the keyboard.",
+    "\tGB": "Standard unit, filter quality symbol or numeric playback-resolution fraction.",
+    "\tMB": "Standard unit, filter quality symbol or numeric playback-resolution fraction.",
+    "\tQ": "Standard unit, filter quality symbol or numeric playback-resolution fraction.",
+    "\t1/2": "Standard unit, filter quality symbol or numeric playback-resolution fraction.",
+    "\tVimeo 1080p Full HD": "Branded export preset composed entirely of service name and resolution/format designations.",
+    "\tVimeo 2160p 4K Ultra HD": "Branded export preset composed entirely of service name and resolution/format designations.",
+    "\tYouTube 1080p Full HD": "Branded export preset composed entirely of service name and resolution/format designations.",
+    "\tYouTube 2160p 4K Ultra HD": "Branded export preset composed entirely of service name and resolution/format designations.",
+    "\tExport": "Binding glossary: the Czech noun is Export; only the verb becomes Exportovat.",
+    "\tProxy": "Binding glossary: the Czech singular is Proxy.",
+    "\tMetadata": "Established Czech technical noun metadata; not an English phrase.",
+    "\tRemix": "Established Czech musical term remix; names the music-duration operation.",
+    "\tText": "Standard Czech noun text; no meaningful different Czech spelling.",
+    "\tVideo:": "Standard Czech noun video; punctuation is preserved.",
+    "\tVideo {n}:": "Standard Czech noun video plus an immutable track-number placeholder.",
+    "\tVideo": "Standard Czech noun video, as opposed to zvuk.",
+    "\tVideo 1": "Standard Czech noun video with track number 1.",
+    "\tVideo 2": "Standard Czech noun video with track number 2.",
+    "\tVideo 3": "Standard Czech noun video with track number 3.",
+    "\tVideo 4": "Standard Czech noun video with track number 4.",
+    "\tVideo 5": "Standard Czech noun video with track number 5.",
+    "\tVideo 6": "Standard Czech noun video with track number 6.",
+    "\tVideo 7": "Standard Czech noun video with track number 7.",
+    "\tVideo 8": "Standard Czech noun video with track number 8.",
+    "\tHistogram": "Standard Czech name for this statistical display.",
+    "\tOffline": "Established Czech computer status label offline.",
+    "\tMix": "Established Czech noun for an audio mix.",
+    "\tReference": "Standard Czech noun reference used for the comparison image.",
+    "\tReference  {tc}": "Standard Czech noun reference plus an immutable timecode placeholder.",
+    "\tChaos": "Standard Czech noun chaos; names the randomness parameter.",
+    "\tChorus": "International audio-effect name used in Czech; distinguishes it from a vocal choir.",
+    "\tFlanger": "International audio-effect name used in Czech.",
+    "\tFuzz": "International guitar-effect name used in Czech; distinguishes it from generic distortion.",
+    "\tPhaser": "International audio-effect name used in Czech.",
+    "\tLuminance": "Czech photometric quantity luminance, distinct from encoded luma (jasová složka).",
+    "\tMaximum": "Standard Czech mathematical noun maximum.",
+    "\tMinimum": "Standard Czech mathematical noun minimum.",
+    "\tRetro": "Standard Czech adjective retro.",
+    "\tTolerance": "Standard Czech noun tolerance.",
+    "\tMultiplexer": "Standard Czech technical name for the container-stream multiplexer.",
+    "\tPanel": "Standard Czech noun panel.",
+    "\tRole": "Standard Czech noun role; the lower-third person role.",
+    "\tModel": "Standard Czech noun model; AI model credits."
+  },
+  "english": {
+    "\tMIT OR Apache-2.0. Fonts: Inter, Noto Serif and JetBrains Mono (SIL OFL 1.1).": {
+      "OR": "SPDX license-expression operator in MIT OR Apache-2.0; not prose."
+    },
+    "\tName (A–Z)": {
+      "A": "Letter A in the alphabetic sort-range designation A–Z; not an English article."
+    }
+  },
+  "collisions": {
+    "\tPřidat do oblíbených": {
+      "sources": [
+        "Add to Favorites",
+        "Add to favorites"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tOdebrat z oblíbených": {
+      "sources": [
+        "Remove from Favorites",
+        "Remove from favorites"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tPřidat titulek na pozici přehrávací hlavy": {
+      "sources": [
+        "Add Caption at Playhead",
+        "Add caption at playhead"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tRozdělit na mono": {
+      "sources": [
+        "Breakout to Mono",
+        "Breakout to mono"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tUkázkové záběry": {
+      "sources": [
+        "Demo Footage",
+        "Demo footage"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tUkázkový projekt": {
+      "sources": [
+        "Demo Project",
+        "Demo project"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tOdstranit výplňová slova": {
+      "sources": [
+        "Remove Filler Words",
+        "Remove filler words"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tZměnit měřítko na velikost snímku": {
+      "sources": [
+        "Scale to Frame Size",
+        "Scale to frame size"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tZarovnat vlevo": {
+      "sources": [
+        "Align left",
+        "Align Left"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tZarovnat vpravo": {
+      "sources": [
+        "Align right",
+        "Align Right"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tKotevní bod": {
+      "sources": [
+        "Anchor point",
+        "Anchor Point"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tZarovnat text na střed": {
+      "sources": [
+        "Center Align Text",
+        "Center align text"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tZarovnat text vlevo": {
+      "sources": [
+        "Left Align Text",
+        "Left align text"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tZarovnat text vpravo": {
+      "sources": [
+        "Right Align Text",
+        "Right align text"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tO úroveň výš": {
+      "sources": [
+        "Up One Level",
+        "Up one level"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tOtevřít ve zdrojovém monitoru": {
+      "sources": [
+        "Open In Source Monitor",
+        "Open in Source Monitor"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tVytvořit složku pro importované projekty": {
+      "sources": [
+        "Create Folder For Imported Projects",
+        "Create folder for imported projects"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tPovolit duplicitní média při importu projektu": {
+      "sources": [
+        "Allow Duplicate Media During Project Import",
+        "Allow duplicate media during project import"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tOtevřít na místě": {
+      "sources": [
+        "Open in Place",
+        "Open in place"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tOtevřít v novém okně": {
+      "sources": [
+        "Open in New Window",
+        "Open in new window"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tZvukové efekty": {
+      "sources": [
+        "Audio Effects",
+        "Audio effects"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tZleva doprava": {
+      "sources": [
+        "Left to Right",
+        "Left to right"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tNázev sekvence": {
+      "sources": [
+        "Sequence Name",
+        "Sequence name"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tVideoefekty": {
+      "sources": [
+        "Video Effects",
+        "Video effects"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tPouze zvuk": {
+      "sources": [
+        "Audio Only",
+        "Audio only"
+      ],
+      "reason": "Same meaning and action; source differs only in capitalization. Czech sentence case is identical."
+    },
+    "\tVstupní bod zvuku": {
+      "sources": [
+        "Audio In",
+        "Audio In Point"
+      ],
+      "reason": "Full and abbreviated English labels denote the same edit point or navigation action."
+    },
+    "\tVýstupní bod zvuku": {
+      "sources": [
+        "Audio Out",
+        "Audio Out Point"
+      ],
+      "reason": "Full and abbreviated English labels denote the same edit point or navigation action."
+    },
+    "\tVstupní bod videa": {
+      "sources": [
+        "Video In",
+        "Video In Point"
+      ],
+      "reason": "Full and abbreviated English labels denote the same edit point or navigation action."
+    },
+    "\tVýstupní bod videa": {
+      "sources": [
+        "Video Out",
+        "Video Out Point"
+      ],
+      "reason": "Full and abbreviated English labels denote the same edit point or navigation action."
+    },
+    "\tPřejít na vstupní bod": {
+      "sources": [
+        "Go to In",
+        "Go to In Point"
+      ],
+      "reason": "Full and abbreviated English labels denote the same edit point or navigation action."
+    },
+    "\tPřejít na výstupní bod": {
+      "sources": [
+        "Go to Out",
+        "Go to Out Point"
+      ],
+      "reason": "Full and abbreviated English labels denote the same edit point or navigation action."
+    },
+    "\tVstupní bod": {
+      "sources": [
+        "In Point",
+        "In"
+      ],
+      "reason": "Full and abbreviated English labels denote the same edit point or navigation action."
+    },
+    "\tVýstupní bod": {
+      "sources": [
+        "Out Point",
+        "Out"
+      ],
+      "reason": "Full and abbreviated English labels denote the same edit point or navigation action."
+    },
+    "\tZákladní zvuk": {
+      "sources": [
+        "Essential Sound",
+        "EssentialSound"
+      ],
+      "reason": "Same panel/category name, also registered as a compact internal category spelling."
+    },
+    "\tProhlížeč médií": {
+      "sources": [
+        "Media Browser",
+        "MediaBrowser"
+      ],
+      "reason": "Same panel/category name, also registered as a compact internal category spelling."
+    },
+    "\tMezipaměť médií": {
+      "sources": [
+        "Media Cache",
+        "MediaCache"
+      ],
+      "reason": "Same panel/category name, also registered as a compact internal category spelling."
+    },
+    "\tZarovnat vodorovně na střed": {
+      "sources": [
+        "Center Horizontally",
+        "Align Center Horizontally"
+      ],
+      "reason": "Synonymous English wording for the same concept; no separate control is being conflated."
+    },
+    "\tZarovnat svisle na střed": {
+      "sources": [
+        "Center Vertically",
+        "Align Center Vertically"
+      ],
+      "reason": "Synonymous English wording for the same concept; no separate control is being conflated."
+    },
+    "\tExportováno do {path}": {
+      "sources": [
+        "Exported {path}",
+        "Exported to {path}"
+      ],
+      "reason": "Synonymous English wording for the same concept; no separate control is being conflated."
+    },
+    "\tHledat v:": {
+      "sources": [
+        "Search in:",
+        "Find in:"
+      ],
+      "reason": "Synonymous English wording for the same concept; no separate control is being conflated."
+    },
+    "\tOdstranit soubory mezipaměti médií": {
+      "sources": [
+        "Remove Media Cache Files",
+        "Delete Media Cache Files"
+      ],
+      "reason": "Synonymous English wording for the same concept; no separate control is being conflated."
+    },
+    "\tPásmová propust": {
+      "sources": [
+        "Band Pass",
+        "Bandpass"
+      ],
+      "reason": "Synonymous English wording for the same concept; no separate control is being conflated."
+    },
+    "\tRežim prolnutí": {
+      "sources": [
+        "Blend Mode",
+        "Blending Mode"
+      ],
+      "reason": "Synonymous English wording for the same concept; no separate control is being conflated."
+    },
+    "\tTlumení vysokých frekvencí": {
+      "sources": [
+        "Damping HF",
+        "High Frequency Damping"
+      ],
+      "reason": "Synonymous English wording for the same concept; no separate control is being conflated."
+    },
+    "\tBarevný prostor": {
+      "sources": [
+        "Colour Space",
+        "Color Space"
+      ],
+      "reason": "Synonymous English wording for the same concept; no separate control is being conflated."
+    },
+    "\tBarva": {
+      "sources": [
+        "Color",
+        "Colour"
+      ],
+      "reason": "Synonymous English wording for the same concept; no separate control is being conflated."
+    },
+    "\tKonec přechodu barev": {
+      "sources": [
+        "End of Ramp",
+        "Gradient End"
+      ],
+      "reason": "Synonymous English wording for the same concept; no separate control is being conflated."
+    },
+    "\tZačátek přechodu barev": {
+      "sources": [
+        "Gradient Start",
+        "Start of Ramp"
+      ],
+      "reason": "Synonymous English wording for the same concept; no separate control is being conflated."
+    },
+    "\tHorní propust": {
+      "sources": [
+        "High Pass",
+        "Highpass"
+      ],
+      "reason": "Synonymous English wording for the same concept; no separate control is being conflated."
+    },
+    "\tDolní propust": {
+      "sources": [
+        "Low Pass",
+        "Lowpass"
+      ],
+      "reason": "Synonymous English wording for the same concept; no separate control is being conflated."
+    },
+    "\tLineární přechod barev": {
+      "sources": [
+        "Linear Ramp",
+        "Linear Gradient"
+      ],
+      "reason": "Synonymous English wording for the same concept; no separate control is being conflated."
+    },
+    "\tSekvence": {
+      "sources": [
+        "Sequence",
+        "Sequences"
+      ],
+      "reason": "Czech nominative singular and plural of sekvence have the same spelling; heading and item name."
+    },
+    "\tPřednastavení": {
+      "sources": [
+        "Presets",
+        "Preset"
+      ],
+      "reason": "Czech noun přednastavení has the same singular and plural spelling; heading and individual preset."
+    },
+    "\tTitulky": {
+      "sources": [
+        "Captions",
+        "Titles"
+      ],
+      "reason": "Binding glossary explicitly uses Titulky for both caption tracks and graphics titles; they occur in separate workflows."
+    },
+    "\tZávěrečné titulky": {
+      "sources": [
+        "Credits",
+        "End Credits"
+      ],
+      "reason": "Both refer to the closing credits; English differs only in explicit mention of the end."
+    },
+    "\tObnovit neuložené změny": {
+      "sources": [
+        "Recover Unsaved Changes",
+        "Recover"
+      ],
+      "reason": "Same action; one source is the recovery-dialog title and the other its recovery button."
+    },
+    "\tPřepsat sekvenci do textu": {
+      "sources": [
+        "Transcribe sequence",
+        "Transcribe Sequence"
+      ],
+      "reason": "Same sequence-transcription command; source differs only in capitalization."
+    },
+    "\tAutomaticky sestavit sekvenci": {
+      "sources": [
+        "Automate to Sequence",
+        "Automate To Sequence"
+      ],
+      "reason": "Same automatic assembly command; source differs only in capitalization."
+    },
+    "\tPřechod barev": {
+      "sources": [
+        "Gradient",
+        "Ramp"
+      ],
+      "reason": "Ramp is the named color-gradient effect; both names denote a color gradient."
+    }
+  }
+}

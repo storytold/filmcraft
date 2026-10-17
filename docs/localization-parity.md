@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (Korean covers the whole interface, #508) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (Korean covers the whole interface, #508; Czech interface catalog) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Per-language status of FilmCraft's interface. Premiere 26.5.2 ships 10 interface languages (the
 installed bundle's `.lproj` folders): German, English, Spanish, French, Italian, Japanese, Korean,
@@ -10,7 +10,7 @@ Portuguese (Brazil), Russian, Simplified Chinese.
 
 Edit ▸ Language (also Settings ▸ General, `general.interfaceLanguage`) switches the interface and
 persists across restarts; System Language (the default) follows the OS's or browser's preferred
-languages and falls back to English. Commands `app.language.<english|japanese|spanish|portuguese|ukrainian|chinese|german|russian|french|indonesian|italian>`
+languages and falls back to English. Commands `app.language.<english|japanese|spanish|portuguese|ukrainian|chinese|german|russian|french|indonesian|italian|korean|czech>`
 are reachable over the control channel. One catalog per language,
 `crates/ui-egui/src/i18n/<code>.tsv` (format in the header of `es.tsv`); UI code wraps strings in
 `tl!("…")` / `tlf!("…{name}", name)`, and registry names (effects and their parameters, settings,
@@ -54,6 +54,7 @@ whole interface, one PR) at ~4–8 h per language for the catalog plus tests.
 | Korean | ko | 3,573 (same entries as Spanish, plus the macOS Settings item) | as Spanish | installed system Hangul font (Malgun Gothic, Apple SD Gothic Neo, Noto Sans CJK KR…); refused without one | not recorded; welcome | partial (#508) | review; Hangul in craft-fonts for the web |
 | Vietnamese | vi | 0 (0%) | — | Latin with stacked diacritics (font coverage to check) | — | none | 6–12 h + review |
 | *Other shipped:* Italian | it | 3,573 (same entries as Spanish, plus the macOS Settings item); must cover the core menus, no entry without a Spanish one | as Spanish | Latin (bundled fonts) | not recorded; welcome | partial | review |
+| Czech | cs | 3,591 (all Spanish source keys, plus the playback-resolution label `1/2`) | dialogs, Settings, effects, shortcuts, status; engine errors English | Latin (bundled fonts) | not reviewed | partial | native review |
 | *Other shipped:* Ukrainian | uk | 351 (10.0%) | menus only | Cyrillic (bundled) | not recorded | menus only | 5–9 h |
 
 Premiere also ships Italian, which we now cover like Spanish, and Russian (6–10 h).
@@ -64,9 +65,37 @@ we cover 6 well and 1 partly. **~35%, 150–230 h** for all twelve to `full` plu
 work (RTL and complex shaping in the egui interface) is the largest and least parallel part.
 Every language needs native-speaker review (human).
 
+## Czech catalog quality
+
+The Czech rows were rewritten as complete phrases in batches from the English meanings,
+with French/German entries and Rust call sites consulted for ambiguous labels. This is an
+AI-assisted translation with a binding video-editing glossary, **not yet proofread by a native
+speaker**. Coverage measures lookup keys, not linguistic approval or a complete UI walkthrough.
+In particular, Bin is **Přihrádka**, Trash is **Koš**, Lift is **Zvednout**, Extract is
+**Vyjmout s posunem**, and Timeline is **Časová osa**. The original catalog header comments
+were preserved; their older glossary shorthand is superseded by these terms and the catalog rows.
+
+`i18n::cs_quality` checks placeholders, capitalization, Czech quotation marks, ellipses, common
+English leftovers, identical text and shared translations. Exact-key exceptions with reasons
+are stored in `crates/ui-egui/src/i18n/cs-quality-exceptions.json`; a changed collision or an
+unused exception fails the test. Identical strings include formats, brands, units and standard
+Czech words whose spelling is the same as English (for example Text, Video, Export and Proxy).
+Czech grammatical homographs `a`, `to`, `by` and SPDX `OR` are explicitly distinguished from
+English leftovers. The maintainer-local `plan/check_cs_catalog.py` additionally checks raw TSV
+escapes and compares comments, contexts, source keys and order against `plan/cs-original.tsv`.
+It writes a report of every accepted exception; it does not generate translations.
+
+The current catalog parser and formatter have no plural-variant selection, and none of the
+other catalogs provide plural rows. Unused Czech plural-selector code was removed. The UI's
+existing singular branches are retained; other counts use neutral wording such as
+“Počet klipů: {n}”, valid for 0, 1, 2–4 and larger counts without a new runtime API.
+Native review should concentrate on audio automation terms, Slip/Slide/Roll operations,
+creative effect names, and the shared `Subtitle` key (caption format and graphics subtitle).
+
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-12 | minor | Added Czech (`cs`) interface catalog and locale detection; rewrote all catalog rows with a binding glossary and automated quality gate; AI-assisted, not yet proofread by a native speaker |
 | 2026-10-11 | minor | German (de) ships the menus (#630): 371 of 3,498 strings (10.6%), native-reviewed; dimension now 2 menus-only, 5 none |
 | 2026-10-10 | major | Created from ROADMAP.md's "Interface localization" section; catalog coverage measured (es 3,496, ja 3,487, zh-cn 3,485, pt-br 348, uk 351 of 3,498); the 12-language table and script-support gaps added |

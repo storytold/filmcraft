@@ -22,6 +22,8 @@
 //! refused the same way ([`chinese_font_available`]).
 
 mod catalog;
+#[cfg(test)]
+mod cs_quality;
 
 use std::cell::Cell;
 use std::sync::{Arc, OnceLock};
@@ -49,6 +51,7 @@ pub enum Language {
     It,
     /// Korean; Hangul needs an installed system font ([`korean_font_available`]).
     Ko,
+    Cs,
 }
 
 static JAPANESE: OnceLock<Catalog> = OnceLock::new();
@@ -62,9 +65,11 @@ static FRENCH: OnceLock<Catalog> = OnceLock::new();
 static KOREAN: OnceLock<Catalog> = OnceLock::new();
 static INDONESIAN: OnceLock<Catalog> = OnceLock::new();
 static ITALIAN: OnceLock<Catalog> = OnceLock::new();
+static CZECH: OnceLock<Catalog> = OnceLock::new();
 
 impl Language {
-    pub const ALL: [Self; 12] = [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru, Self::Fr, Self::Id, Self::Ko, Self::It];
+    pub const ALL: [Self; 13] =
+        [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru, Self::Fr, Self::Id, Self::Ko, Self::It, Self::Cs];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -80,6 +85,7 @@ impl Language {
             Self::Id => "Bahasa Indonesia",
             Self::It => "Italiano",
             Self::Ko => "한국어",
+            Self::Cs => "Čeština",
         }
     }
 
@@ -97,6 +103,7 @@ impl Language {
             "id" => Some(Self::Id),
             "it" => Some(Self::It),
             "ko" => Some(Self::Ko),
+            "cs" => Some(Self::Cs),
             _ => None,
         }
     }
@@ -111,7 +118,7 @@ impl Language {
     /// only for Simplified locales (`zh`, `zh-CN`, `zh-SG`, `zh-Hans…`); Traditional ones (`zh-TW`,
     /// `zh-HK`, `zh-MO`, `zh-Hant…`) are skipped.
     pub fn from_locales(tags: &[String]) -> Self {
-        const PRIMARY: [(&str, Language); 12] = [
+        const PRIMARY: [(&str, Language); 13] = [
             ("en", Language::En),
             ("ja", Language::Ja),
             ("es", Language::Es),
@@ -124,6 +131,7 @@ impl Language {
             ("in", Language::Id),
             ("it", Language::It),
             ("ko", Language::Ko),
+            ("cs", Language::Cs),
         ];
         tags.iter()
             .find_map(|tag| {
@@ -156,6 +164,7 @@ impl Language {
             Self::Id => "id",
             Self::It => "it",
             Self::Ko => "ko",
+            Self::Cs => "cs",
         }
     }
 
@@ -174,6 +183,7 @@ impl Language {
             Self::Id => Some(INDONESIAN.get_or_init(|| Catalog::parse(include_str!("id.tsv")))),
             Self::It => Some(ITALIAN.get_or_init(|| Catalog::parse(include_str!("it.tsv")))),
             Self::Ko => Some(KOREAN.get_or_init(|| Catalog::parse(include_str!("ko.tsv")))),
+            Self::Cs => Some(CZECH.get_or_init(|| Catalog::parse(include_str!("cs.tsv")))),
         }
     }
 
@@ -354,6 +364,7 @@ mod tests {
             ("id", include_str!("id.tsv")),
             ("it", include_str!("it.tsv")),
             ("ko", include_str!("ko.tsv")),
+            ("cs", include_str!("cs.tsv")),
         ] {
             let (entries, errors) = catalog::parse_entries(text);
             assert!(errors.is_empty(), "{code}: {errors:?}");
@@ -415,6 +426,11 @@ mod tests {
         assert_eq!(Language::It.tr("An untranslated label"), "An untranslated label");
         assert_eq!(Language::parse("it"), Some(Language::It));
         assert_eq!(Language::parse("it-IT"), None, "the preference stores the bare code");
+        assert_eq!(Language::Cs.name(), "Čeština");
+        assert_eq!(Language::Cs.tr("File"), "Soubor");
+        assert_eq!(Language::Cs.tr("Save As…"), "Uložit jako…");
+        assert_eq!(Language::parse("cs"), Some(Language::Cs));
+        assert_eq!(Language::parse("cs-CZ"), None, "the preference stores the bare code");
         for l in Language::ALL {
             assert_eq!(Language::parse(l.code()), Some(l));
             let json = serde_json::to_string(&l).unwrap();
@@ -423,6 +439,33 @@ mod tests {
         }
         assert_eq!(fmt("{b} y {a}", &[("a", "1"), ("b", "2")]), "2 y 1");
         assert_eq!(fmt("{a} {zz}", &[("a", "1")]), "1 {zz}");
+    }
+
+    #[test]
+    fn czech_catalog_covers_the_complete_source_catalog_and_ui_literals() {
+        let (entries, errors) = catalog::parse_entries(include_str!("cs.tsv"));
+        assert!(errors.is_empty(), "{errors:?}");
+        for catalog_text in [include_str!("es.tsv"), include_str!("fr.tsv")] {
+            let (source_entries, _) = catalog::parse_entries(catalog_text);
+            for (context, source, _) in source_entries {
+                assert!(entries.iter().any(|(c, s, _)| c == &context && s == &source), "missing catalog entry: {context:?} {source:?}");
+            }
+        }
+        for (_, source) in sources() {
+            for literal in tl_literals(&source) {
+                assert!(Language::Cs.has(&literal), "missing translated UI literal: {literal:?}");
+            }
+        }
+        for name in dynamic_names() {
+            assert!(Language::Cs.has(&name), "missing translated registry name: {name:?}");
+        }
+        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+        let menu_items = crate::menus::menu_items(&app);
+        for label in crate::menus::MENUS.into_iter().chain(menu_items.iter().map(|it| it.label.as_str())) {
+            if translatable(label) && !Language::ALL.iter().any(|language| language.name() == label) {
+                assert!(Language::Cs.has(label), "missing translated menu label: {label:?}");
+            }
+        }
     }
 
     #[test]
@@ -997,6 +1040,10 @@ mod tests {
         let mut restarted = filmcraft_engine::Session::default();
         restarted.prefs = serde_json::from_str(&prefs).unwrap();
         assert_eq!(crate::FilmcraftApp::new(restarted).ui.language, Language::It);
+        assert_eq!(crate::menus::invoke(&mut app, &ctx, "app.language.czech", serde_json::json!({})).unwrap(), serde_json::json!("cs"));
+        assert_eq!((app.ui.language, current()), (Language::Cs, Language::Cs));
+        assert_eq!(app.session.prefs.general.interface_language, "cs");
+        assert!(crate::menus::menu_items(&app).iter().any(|it| it.id == "app.language.czech" && it.checked == Some(true)));
         crate::menus::invoke(&mut app, &ctx, "app.language.english", serde_json::json!({})).unwrap();
         assert_eq!(app.ui.language, Language::En);
         set_current(Language::En);
@@ -1010,6 +1057,9 @@ mod tests {
         assert_eq!(l(&["es-419"]), Language::Es);
         assert_eq!(l(&["ES"]), Language::Es);
         assert_eq!(l(&["ja-JP"]), Language::Ja);
+        for tag in ["cs", "CS", "cs-CZ", "cs_CZ.UTF-8"] {
+            assert_eq!(l(&[tag]), Language::Cs, "{tag}");
+        }
         assert_eq!(l(&["pt-BR"]), Language::PtBr);
         for tag in ["uk", "uk-UA", "uk_UA.UTF-8", "UK-ua"] {
             assert_eq!(l(&[tag]), Language::Uk);
@@ -1336,6 +1386,14 @@ mod tests {
         let alphabet = "ÀÈÉÌÍÎÒÓÙÚàèéìíîòóùú";
         let letters = entries.iter().flat_map(|(_, _, it)| it.chars()).filter(|ch| ch.is_alphabetic() || "“”‘’–—…".contains(*ch));
         assert_bundled_fonts_cover(alphabet.chars().chain(Language::It.name().chars()).chain(letters));
+    }
+
+    #[test]
+    fn czech_renders_with_bundled_fonts() {
+        let (entries, _) = catalog::parse_entries(include_str!("cs.tsv"));
+        let alphabet = "ÁČĎÉĚÍŇÓŘŠŤÚŮÝŽáčďéěíňóřšťúůýž„“‚‘’";
+        let letters = entries.iter().flat_map(|(_, _, cs)| cs.chars()).filter(|ch| ch.is_alphabetic());
+        assert_bundled_fonts_cover(alphabet.chars().chain(Language::Cs.name().chars()).chain(letters));
     }
 
     #[test]
