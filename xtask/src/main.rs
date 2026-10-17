@@ -1,4 +1,4 @@
-//! Workspace automation: `cargo xtask <layers|wasm|ci>`.
+//! Workspace automation: `cargo xtask <fmt|layers|wasm|ci>`.
 //!
 //! - `layers`: enforces the dependency layering of `docs/architecture.md` §1 (downward-only edges,
 //!   listed same-layer edges, L0 codec crates depend on `bitstream` only, no UI/OS crates below L5).
@@ -16,8 +16,10 @@
 //!   lists, against a reference list (default: the local `plan/premiere/<area>.json`), presence and
 //!   placement reported separately (`parity.rs`, docs/gaps.md G7).
 //! - `ico <out.ico> <in.png>…`: pack PNGs into a Windows `.ico` (used by `packaging/icons.sh`).
+//! - `fmt`: complete workspace formatting check (per package on Windows).
 //! - `ci`: fmt check, clippy -D warnings, tests, layers, assets, wasm.
 
+mod fmt_check;
 mod ico;
 mod parity;
 mod version;
@@ -455,7 +457,7 @@ fn fixtures(only: &[String]) -> Result<(), String> {
 
 fn ci() -> Result<(), String> {
     let cargo = env!("CARGO");
-    run(Command::new(cargo).args(["fmt", "--check"]))?;
+    fmt_check::check()?;
     run(Command::new(cargo).args(["clippy", "--workspace", "--all-targets", "--release", "--", "-D", "warnings"]))?;
     run(Command::new(cargo).args(["test", "--workspace", "--release"]))?;
     layers()?;
@@ -486,6 +488,9 @@ fn root() -> std::path::PathBuf {
 fn main() -> ExitCode {
     let task = std::env::args().nth(1).unwrap_or_default();
     let r = match task.as_str() {
+        "fmt" => {
+            if std::env::args_os().nth(2).is_some() { Err("usage: cargo xtask fmt (check only; no extra arguments)".into()) } else { fmt_check::check() }
+        }
         "layers" => layers(),
         "wasm" => wasm(),
         "assets" => assets(),
@@ -507,7 +512,7 @@ fn main() -> ExitCode {
             ico::run(&rest.iter().map(String::as_str).collect::<Vec<_>>())
         }
         _ => Err(
-            "usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|parity [--area menus|effects|transitions] [--reference FILE] [--out FILE] [--min PERCENT]|ico OUT IN…|version [set X.Y.Z]|ci|bench [args]|bench-playback [args]>"
+            "usage: cargo xtask <fmt|layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|parity [--area menus|effects|transitions] [--reference FILE] [--out FILE] [--min PERCENT]|ico OUT IN…|version [set X.Y.Z]|ci|bench [args]|bench-playback [args]>"
                 .into(),
         ),
     };
