@@ -667,8 +667,10 @@ fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         let whl = l.clamp(0.0, 1.0).powi(3);
         let nl = (l + sh * 0.35 * ws + hl * 0.35 * whl).max(0.0);
         if l > 1e-5 {
-            let k = nl / l;
-            v = v.map(|q| q * k);
+            // cap the gain near black and add the rest as a neutral lift, so a slight colour cast
+            // in an almost black pixel is not multiplied into saturated colour (#2094)
+            let k = (nl / l).min(crate::gpufx::LUMETRI_TONE_MAX_GAIN);
+            v = v.map(|q| q * k + (nl - l * k));
         }
         // contrast: smooth S-curve around mid grey (HDR: over 0 … HDR White; speculars above it
         // keep their distance from white)
@@ -988,6 +990,28 @@ mod tests {
         e.params.get_mut("right").unwrap().value = ParamValue::Float(50.0);
         apply(&mut img, &e, &cx());
         assert_eq!(img.get(3, 0)[3], 0.0);
+    }
+
+    /// Issue #2094: the Shadows lift multiplied every channel by `new luma / luma`, which has no
+    /// upper bound near black, so an almost black pixel with a slight blue cast became saturated
+    /// blue (sRGB [0, 0, 1] came out as [0, 0, 100]).
+    #[test]
+    fn lumetri_shadows_do_not_saturate_near_black_pixels() {
+        use filmcraft_color::{linear_to_srgb, srgb_to_linear};
+        let mut e = find_effect("lumetri").unwrap().instance();
+        e.params.get_mut("shadows").unwrap().value = ParamValue::Float(8.0);
+        for px in [[0u8, 0, 1], [1, 0, 2], [0, 1, 3], [3, 0, 0]] {
+            let lin = px.map(|q| srgb_to_linear(q as f32 / 255.0));
+            let mut img = Image::filled(1, 1, [lin[0], lin[1], lin[2], 1.0]);
+            apply(&mut img, &e, &cx());
+            let o = img.get(0, 0);
+            let out = [0, 1, 2].map(|k| linear_to_srgb(o[k]) * 255.0);
+            let chroma = |c: [f32; 3]| c.iter().cloned().fold(f32::MIN, f32::max) - c.iter().cloned().fold(f32::MAX, f32::min);
+            let inf = px.map(|q| q as f32);
+            assert!(out.iter().sum::<f32>() > inf.iter().sum::<f32>(), "{px:?} -> {out:?}: not lifted");
+            assert!(chroma(out) <= chroma(inf) * 4.0 + 1.0, "{px:?} -> {out:?}: colour cast amplified");
+            assert!(!(out[2] > out[0] + 40.0 && out[2] > out[1] + 25.0 && out[2] > 60.0), "{px:?} -> {out:?}: blue speck");
+        }
     }
 
     #[test]

@@ -199,6 +199,10 @@ pub enum FxOp {
     },
 }
 
+/// Largest per-channel gain of the Lumetri Highlights / Shadows luma lift; the part of the lift
+/// beyond it is added neutrally so near-black colour casts are not amplified (`fx.wgsl` uses 4.0).
+pub const LUMETRI_TONE_MAX_GAIN: f32 = 4.0;
+
 /// Effect ids [`FxOp::eval`] understands (the GPU-capable standard effects).
 pub const GPU_EFFECTS: &[&str] = &[
     "brightness_contrast",
@@ -963,8 +967,9 @@ impl FxOp {
                     let whl = l.clamp(0.0, 1.0).powi(3);
                     let nl = (l + sh * 0.35 * ws + hl * 0.35 * whl).max(0.0);
                     if l > 1e-5 {
-                        let k = nl / l;
-                        v = v.map(|q| q * k);
+                        // cap the gain near black, the rest is a neutral lift (#2094)
+                        let k = (nl / l).min(LUMETRI_TONE_MAX_GAIN);
+                        v = v.map(|q| q * k + (nl - l * k));
                     }
                     // contrast: smooth S-curve around mid grey
                     if contrast.abs() > 1e-4 {
