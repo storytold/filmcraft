@@ -13,7 +13,7 @@
 //! `file.exportOmf {path, sequence?, audio?: "embedded"|"separate", audioFormat?, sampleRate?,
 //! bitDepth?, trimAudio? (default on), handles?, renderAudioEffects?, breakoutToMono?}`
 //!
-//! `file.importAaf {path}` (also `file.import` of `.aaf` / `.omf` files).
+//! `file.importAaf {path, bin?}` (also `file.import` of `.aaf` / `.omf` files).
 
 use std::sync::{Arc, Mutex};
 
@@ -448,5 +448,6 @@ pub fn import_document(s: &mut Session, p: &Value, cmd: &str) -> Result<Value> {
     let bytes = s.services.read_file(&path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let format = crate::interchange::detect(&path, &bytes).filter(|f| matches!(f, filmcraft_interchange::Format::Aaf | filmcraft_interchange::Format::Omf));
     let format = format.ok_or_else(|| bad(cmd, format!("{path} is not an AAF or OMF file")))?;
-    crate::interchange::import(s, &path, &bytes, format)
+    let bin = u64_p(p, "bin").map(filmcraft_project::BinId);
+    crate::interchange::import(s, &path, &bytes, format, bin)
 }
