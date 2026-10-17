@@ -49,6 +49,12 @@ pub enum Language {
     It,
     /// Korean; Hangul needs an installed system font ([`korean_font_available`]).
     Ko,
+    Nl,
+    Da,
+    /// Finnish; every `fi-*` locale (`fi-FI`, `fi_FI.UTF-8`) resolves here.
+    Fi,
+    /// Hindi; Devanagari needs an installed system font, as Korean does.
+    Hi,
 }
 
 static JAPANESE: OnceLock<Catalog> = OnceLock::new();
@@ -62,9 +68,30 @@ static FRENCH: OnceLock<Catalog> = OnceLock::new();
 static KOREAN: OnceLock<Catalog> = OnceLock::new();
 static INDONESIAN: OnceLock<Catalog> = OnceLock::new();
 static ITALIAN: OnceLock<Catalog> = OnceLock::new();
+static DUTCH: OnceLock<Catalog> = OnceLock::new();
+static DANISH: OnceLock<Catalog> = OnceLock::new();
+static FINNISH: OnceLock<Catalog> = OnceLock::new();
+static HINDI: OnceLock<Catalog> = OnceLock::new();
 
 impl Language {
-    pub const ALL: [Self; 12] = [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru, Self::Fr, Self::Id, Self::Ko, Self::It];
+    pub const ALL: [Self; 16] = [
+        Self::En,
+        Self::Ja,
+        Self::Es,
+        Self::PtBr,
+        Self::Uk,
+        Self::ZhCn,
+        Self::De,
+        Self::Ru,
+        Self::Fr,
+        Self::Id,
+        Self::Ko,
+        Self::It,
+        Self::Nl,
+        Self::Da,
+        Self::Fi,
+        Self::Hi,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -80,6 +107,10 @@ impl Language {
             Self::Id => "Bahasa Indonesia",
             Self::It => "Italiano",
             Self::Ko => "한국어",
+            Self::Nl => "Nederlands",
+            Self::Da => "Dansk",
+            Self::Fi => "Suomi",
+            Self::Hi => "हिन्दी",
         }
     }
 
@@ -97,6 +128,10 @@ impl Language {
             "id" => Some(Self::Id),
             "it" => Some(Self::It),
             "ko" => Some(Self::Ko),
+            "nl" => Some(Self::Nl),
+            "da" => Some(Self::Da),
+            "fi" => Some(Self::Fi),
+            "hi" => Some(Self::Hi),
             _ => None,
         }
     }
@@ -111,7 +146,7 @@ impl Language {
     /// only for Simplified locales (`zh`, `zh-CN`, `zh-SG`, `zh-Hans…`); Traditional ones (`zh-TW`,
     /// `zh-HK`, `zh-MO`, `zh-Hant…`) are skipped.
     pub fn from_locales(tags: &[String]) -> Self {
-        const PRIMARY: [(&str, Language); 12] = [
+        const PRIMARY: [(&str, Language); 16] = [
             ("en", Language::En),
             ("ja", Language::Ja),
             ("es", Language::Es),
@@ -124,6 +159,10 @@ impl Language {
             ("in", Language::Id),
             ("it", Language::It),
             ("ko", Language::Ko),
+            ("nl", Language::Nl),
+            ("da", Language::Da),
+            ("fi", Language::Fi),
+            ("hi", Language::Hi),
         ];
         tags.iter()
             .find_map(|tag| {
@@ -156,6 +195,10 @@ impl Language {
             Self::Id => "id",
             Self::It => "it",
             Self::Ko => "ko",
+            Self::Nl => "nl",
+            Self::Da => "da",
+            Self::Fi => "fi",
+            Self::Hi => "hi",
         }
     }
 
@@ -174,6 +217,10 @@ impl Language {
             Self::Id => Some(INDONESIAN.get_or_init(|| Catalog::parse(include_str!("id.tsv")))),
             Self::It => Some(ITALIAN.get_or_init(|| Catalog::parse(include_str!("it.tsv")))),
             Self::Ko => Some(KOREAN.get_or_init(|| Catalog::parse(include_str!("ko.tsv")))),
+            Self::Nl => Some(DUTCH.get_or_init(|| Catalog::parse(include_str!("nl.tsv")))),
+            Self::Da => Some(DANISH.get_or_init(|| Catalog::parse(include_str!("da.tsv")))),
+            Self::Fi => Some(FINNISH.get_or_init(|| Catalog::parse(include_str!("fi.tsv")))),
+            Self::Hi => Some(HINDI.get_or_init(|| Catalog::parse(include_str!("hi.tsv")))),
         }
     }
 
@@ -1042,12 +1089,12 @@ mod tests {
         for none in [&["ita"][..], &["i"], &["-it"]] {
             assert_eq!(l(none), Language::En, "{none:?}");
         }
-        assert_eq!(l(&["sv-SE", "nl", "es-MX", "ja"]), Language::Es, "the first one the interface has");
+        assert_eq!(l(&["sv-SE", "rm-CH", "es-MX", "ja"]), Language::Es, "the first one the interface has");
         assert_eq!(l(&["rm-CH", "de-CH", "fr-CH", "en"]), Language::De);
         assert_eq!(l(&["rm-CH", "fr-CH", "de-CH", "en"]), Language::Fr);
         assert_eq!(l(&["en-GB", "es"]), Language::En);
         assert_eq!(l(&["en-US", "de"]), Language::En);
-        for none in [&[][..], &["nl"], &["C"], &["POSIX"], &[""], &["e"], &["esp"], &["-es"], &["deu"], &["d"], &["-de"], &["fra"], &["f"], &["-fr"]] {
+        for none in [&[][..], &["C"], &["POSIX"], &[""], &["e"], &["esp"], &["-es"], &["deu"], &["d"], &["-de"], &["fra"], &["f"], &["-fr"]] {
             assert_eq!(l(none), Language::En, "{none:?}");
         }
         assert_eq!(l(&[&"x".repeat(1 << 20), "es"]), Language::Es);
@@ -1070,7 +1117,7 @@ mod tests {
         let count = asked.clone();
         app.hooks.system_languages = Some(Box::new(move || {
             count.set(count.get() + 1);
-            vec!["nl-NL".into(), "es-ES".into()]
+            vec!["sv-SE".into(), "es-ES".into()]
         }));
         app.apply_prefs(&ctx);
         assert_eq!(app.ui.language, Language::Es);
