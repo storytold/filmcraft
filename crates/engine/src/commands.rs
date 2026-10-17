@@ -1134,6 +1134,27 @@ fn marker_list_mut(s: &mut Session) -> Result<(ItemId, Tick)> {
     Ok((seq, s.playhead()))
 }
 
+fn aaf_or_omf_extension(path: &str) -> Option<filmcraft_interchange::Format> {
+    std::path::Path::new(path).extension().and_then(|extension| extension.to_str()).and_then(|extension| {
+        if extension.eq_ignore_ascii_case("aaf") {
+            Some(filmcraft_interchange::Format::Aaf)
+        } else if extension.eq_ignore_ascii_case("omf") || extension.eq_ignore_ascii_case("omfi") {
+            Some(filmcraft_interchange::Format::Omf)
+        } else {
+            None
+        }
+    })
+}
+
+fn replace_project_for_import(s: &mut Session, pending: &mut bool) -> Result<()> {
+    if *pending {
+        let name = s.project.name.clone();
+        s.execute("file.newProject", json!({"name": name}))?;
+        *pending = false;
+    }
+    Ok(())
+}
+
 fn build() -> Vec<CommandSpec> {
     let mut v = vec![
         // ================= File =================
@@ -1338,10 +1359,7 @@ fn build() -> Vec<CommandSpec> {
             if paths.is_empty() {
                 return Err(bad("file.import", "need `paths`"));
             }
-            if bool_p(p, "replace").unwrap_or(false) {
-                let name = s.project.name.clone();
-                s.execute("file.newProject", json!({ "name": name }))?;
-            }
+            let mut replace_pending = bool_p(p, "replace").unwrap_or(false);
             let mut ids = Vec::new();
             let mut errors = Vec::new();
             let mut sequences = Vec::new();
@@ -1352,7 +1370,13 @@ fn build() -> Vec<CommandSpec> {
             let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
             let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
             for path in paths {
-                if as_sequence || (detect && detect_image_sequence(s, &path)) {
+                let guarded_format = aaf_or_omf_extension(&path);
+                if guarded_format.is_some() && as_sequence {
+                    errors.push(format!("{path}: AAF/OMF documents cannot be imported as image sequences"));
+                    continue;
+                }
+                if guarded_format.is_none() && (as_sequence || (detect && detect_image_sequence(s, &path))) {
+                    replace_project_for_import(s, &mut replace_pending)?;
                     match import_image_sequence(s, &path, bin) {
                         Ok((id, frames, missing)) => {
                             ids.push(id.0);
@@ -1366,19 +1390,32 @@ fn build() -> Vec<CommandSpec> {
                 let streamed = filmcraft_media::is_importable(std::path::Path::new(&path)) && s.services.reader(&path).is_some();
                 let read = if streamed { Ok(Vec::new()) } else { s.services.read_file(&path) };
                 match read {
-                    Ok(_) if streamed => match import_streamed(s, &path, bin) {
-                        Ok(id) => ids.push(id.0),
-                        Err(e) => errors.push(format!("{path}: {e}")),
-                    },
+                    Ok(_) if streamed => {
+                        replace_project_for_import(s, &mut replace_pending)?;
+                        match import_streamed(s, &path, bin) {
+                            Ok(id) => ids.push(id.0),
+                            Err(e) => errors.push(format!("{path}: {e}")),
+                        }
+                    }
                     Ok(b) => {
-                        if let Some(fmt) = crate::captions::detect(&path, &b) {
+                        // Route AAF/OMF extensions to their parser even if damaged bytes resemble
+                        // another format. In replace mode, parsing must fail before project reset.
+                        let caption_format = if guarded_format.is_some() { None } else { crate::captions::detect(&path, &b) };
+                        let interchange_format = guarded_format.or_else(|| if caption_format.is_none() { crate::interchange::detect(&path, &b) } else { None });
+                        let replace_interchange =
+                            replace_pending && matches!(interchange_format, Some(filmcraft_interchange::Format::Aaf | filmcraft_interchange::Format::Omf));
+                        if !replace_interchange {
+                            replace_project_for_import(s, &mut replace_pending)?;
+                        }
+                        if let Some(fmt) = caption_format {
                             match crate::captions::import(s, &path, &b, fmt, None) {
                                 Ok(r) => reports.push(r),
                                 Err(e) => errors.push(format!("{path}: {e}")),
                             }
-                        } else if let Some(fmt) = crate::interchange::detect(&path, &b) {
-                            match crate::interchange::import(s, &path, &b, fmt) {
+                        } else if let Some(fmt) = interchange_format {
+                            match crate::interchange::import_with_replace(s, &path, &b, fmt, replace_interchange) {
                                 Ok(r) => {
+                                    replace_pending = false;
                                     sequences.extend(r["sequences"].as_array().cloned().unwrap_or_default());
                                     reports.push(r);
                                 }

@@ -88,6 +88,127 @@ fn aaf_embedded_trimmed_audio_round_trips_sample_exact() {
 }
 
 #[test]
+fn embedded_aaf_and_omf_import_leave_existing_media_files_intact() {
+    for (format, extension) in [(filmcraft_interchange::Format::Aaf, "aaf"), (filmcraft_interchange::Format::Omf, "omf")] {
+        let (mut s, _items, seq, dir) = setup(&format!("embedded-collision-{extension}"));
+        let path = dir.join(format!("cut.{extension}"));
+        let path_text = path.to_string_lossy().into_owned();
+        let command = if format == filmcraft_interchange::Format::Aaf { "file.exportAaf" } else { "file.exportOmf" };
+        s.execute(command, json!({"path": path_text, "audio": "embedded", "sequence": seq.0})).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let opts = filmcraft_interchange::ImportOptions { base_dir: Some(dir.to_string_lossy().into_owned()), name: Some("cut".into()), ..Default::default() };
+        let (_, extracted, _) = if format == filmcraft_interchange::Format::Aaf {
+            filmcraft_interchange::aaf::import(&bytes, &opts).unwrap()
+        } else {
+            filmcraft_interchange::omf::import(&bytes, &opts).unwrap()
+        };
+        let first = extracted.first().expect("embedded audio");
+        let original = b"ORIGINAL USER DATA";
+        std::fs::create_dir_all(std::path::Path::new(&first.path).parent().unwrap()).unwrap();
+        std::fs::write(&first.path, original).unwrap();
+
+        let response = s.execute("file.import", json!({"paths": [path_text]})).unwrap();
+        assert!(std::fs::read(&first.path).unwrap().as_slice() == original, "{extension}: existing file was overwritten");
+        let imported = s.project.sequence(imported_seq(&response)).unwrap();
+        let new_path = path_of(&s, imported.audio_tracks[0].items[0].item);
+        assert_ne!(new_path, first.path, "{extension}: imported audio still points at the existing file");
+        assert!(new_path.ends_with(" (2).wav"), "{extension}: {new_path}");
+        assert!(std::fs::read(&new_path).unwrap() == first.wav, "{extension}: imported audio was not extracted to the new path");
+        #[cfg(unix)]
+        {
+            let protected = dir.join("protected.wav");
+            std::fs::write(&protected, original).unwrap();
+            std::fs::remove_file(&first.path).unwrap();
+            std::os::unix::fs::symlink(&protected, &first.path).unwrap();
+            let again = s.execute("file.import", json!({"paths": [path.to_string_lossy()]})).unwrap();
+            assert!(std::fs::read(&protected).unwrap().as_slice() == original, "{extension}: symlink target was overwritten");
+            let imported_again = s.project.sequence(imported_seq(&again)).unwrap();
+            let third_path = path_of(&s, imported_again.audio_tracks[0].items[0].item);
+            assert!(third_path.ends_with(" (3).wav"), "{extension}: {third_path}");
+            assert!(std::fs::read(&third_path).unwrap() == first.wav, "{extension}: the third extraction is not the embedded audio");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[test]
+fn embedded_aaf_and_omf_replace_failures_preserve_open_project() {
+    for (extension, command) in [("aaf", "file.exportAaf"), ("omf", "file.exportOmf")] {
+        let (mut s, _items, seq, dir) = setup(&format!("embedded-blocked-directory-{extension}"));
+        let path = dir.join(format!("cut.{extension}"));
+        s.execute(command, json!({"path": path.to_string_lossy(), "audio": "embedded", "sequence": seq.0})).unwrap();
+        let blocker = dir.join("cut Media");
+        std::fs::write(&blocker, b"ORIGINAL USER DATA").unwrap();
+        s.path = Some(dir.join("open-work.fcproj").to_string_lossy().into_owned());
+        let original_project = s.project.clone();
+        let original_path = s.path.clone();
+        let before = s.project.items.len();
+
+        let ordinary_error = s.execute("file.import", json!({"paths": [path.to_string_lossy()]})).unwrap_err();
+        assert!(ordinary_error.to_string().contains("not a directory"), "{extension}: {ordinary_error}");
+        assert!(Arc::ptr_eq(&s.project, &original_project), "{extension}: failed ordinary import changed the project");
+
+        let error = s.execute("file.import", json!({"paths": [path.to_string_lossy()], "replace": true})).unwrap_err();
+        assert!(error.to_string().contains("not a directory"), "{extension}: {error}");
+        assert_eq!(std::fs::read(&blocker).unwrap(), b"ORIGINAL USER DATA");
+        assert_eq!(s.project.items.len(), before, "{extension}: open project items changed");
+        assert!(Arc::ptr_eq(&s.project, &original_project), "{extension}: failed replace import discarded the open project");
+        assert_eq!(s.path, original_path, "{extension}: failed replace import discarded the project path");
+
+        std::fs::remove_file(&blocker).unwrap();
+        let retry = s.execute("file.import", json!({"paths": [path.to_string_lossy()], "replace": true})).unwrap();
+        assert!(retry["errors"].as_array().is_some_and(Vec::is_empty), "{extension}: {retry}");
+        let imported = s.project.sequence(imported_seq(&retry)).unwrap();
+        let audio_path = path_of(&s, imported.audio_tracks[0].items[0].item);
+        assert!(std::path::Path::new(&audio_path).exists(), "{extension}: successful retry did not link extracted audio");
+        assert!(!Arc::ptr_eq(&s.project, &original_project), "{extension}: successful replace kept the old project");
+        assert!(s.path.is_none(), "{extension}: successful replace kept the old project path");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[test]
+fn malformed_aaf_and_omf_replace_preserves_open_project() {
+    for (extension, bytes, variant) in [
+        ("aaf", b"not an interchange document" as &[u8], "unknown"),
+        ("omf", b"not an interchange document" as &[u8], "unknown"),
+        ("aaf", b"TITLE: suspicious\n" as &[u8], "edl-marker"),
+        ("omf", b"TITLE: suspicious\n" as &[u8], "edl-marker"),
+        ("omfi", b"TITLE: suspicious\n" as &[u8], "edl-marker"),
+    ] {
+        let (mut s, _items, _seq, dir) = setup(&format!("malformed-replace-{extension}-{variant}"));
+        let path = dir.join(format!("bad.{extension}"));
+        std::fs::write(&path, bytes).unwrap();
+        s.path = Some(dir.join("open-work.fcproj").to_string_lossy().into_owned());
+        let original_project = s.project.clone();
+        let original_path = s.path.clone();
+
+        let override_error = s.execute("file.import", json!({"paths": [path.to_string_lossy()], "replace": true, "imageSequence": true})).unwrap_err();
+        assert!(override_error.to_string().contains("image sequences"), "{extension} {variant}: {override_error}");
+        assert!(Arc::ptr_eq(&s.project, &original_project), "{extension} {variant}: image-sequence override discarded the project");
+        assert_eq!(s.path, original_path, "{extension} {variant}: image-sequence override discarded the project path");
+
+        let parser_error = if extension == "aaf" {
+            filmcraft_interchange::aaf::import(bytes, &Default::default()).err()
+        } else {
+            filmcraft_interchange::omf::import(bytes, &Default::default()).err()
+        }
+        .expect("malformed interchange document");
+        let ordinary_error = s.execute("file.import", json!({"paths": [path.to_string_lossy()]})).unwrap_err();
+        assert!(
+            ordinary_error.to_string().ends_with(&parser_error.to_string()),
+            "{extension} {variant}: wrong parser handled ordinary import: {ordinary_error}"
+        );
+        assert!(Arc::ptr_eq(&s.project, &original_project), "{extension} {variant}: malformed ordinary import changed the project");
+        let error = s.execute("file.import", json!({"paths": [path.to_string_lossy()], "replace": true})).unwrap_err();
+        assert!(error.to_string().ends_with(&parser_error.to_string()), "{extension} {variant}: wrong parser handled malformed document: {error}");
+        assert!(Arc::ptr_eq(&s.project, &original_project), "{extension} {variant}: malformed replace discarded the open project");
+        assert_eq!(s.path, original_path, "{extension} {variant}: malformed replace discarded the project path");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[test]
 fn aaf_separate_aiff_breakout_and_linked() {
     let (mut s, items, seq, dir) = setup("aaf-separate");
     let path = dir.join("sep.aaf").to_string_lossy().into_owned();
