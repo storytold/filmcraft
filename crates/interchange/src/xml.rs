@@ -102,13 +102,13 @@ pub(crate) fn text<'a>(n: Node<'a, '_>) -> &'a str {
     n.text().map(str::trim).unwrap_or("")
 }
 
+pub(crate) fn path_node<'a, 'i>(n: Node<'a, 'i>, path: &[&str]) -> Option<Node<'a, 'i>> {
+    path.iter().try_fold(n, |cur, p| child(cur, p))
+}
+
 /// Text of the element at `path` below `n`.
 pub(crate) fn path_text<'a>(n: Node<'a, '_>, path: &[&str]) -> Option<&'a str> {
-    let mut cur = n;
-    for p in path {
-        cur = child(cur, p)?;
-    }
-    Some(text(cur))
+    path_node(n, path).map(text)
 }
 
 pub(crate) fn child_text<'a>(n: Node<'a, '_>, name: &str) -> Option<&'a str> {

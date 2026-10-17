@@ -33,6 +33,7 @@ pub mod fcp7;
 pub mod fcpxml;
 pub mod omf;
 pub mod otio;
+pub mod prproj;
 
 mod common;
 mod comp;
@@ -63,6 +64,7 @@ pub enum Format {
     Aaf,
     /// OMF Interchange 2.0 (Bento container).
     Omf,
+    Prproj,
 }
 
 impl Format {
@@ -76,6 +78,7 @@ impl Format {
             Format::Otio => "OpenTimelineIO",
             Format::Aaf => "AAF",
             Format::Omf => "OMF",
+            Format::Prproj => "Premiere Pro project",
         }
     }
 
@@ -88,6 +91,7 @@ impl Format {
             Format::Otio => "otio",
             Format::Aaf => "aaf",
             Format::Omf => "omf",
+            Format::Prproj => "prproj",
         }
     }
 
@@ -101,6 +105,7 @@ impl Format {
             "otio" => Some(Format::Otio),
             "aaf" => Some(Format::Aaf),
             "omf" | "omfi" => Some(Format::Omf),
+            "prproj" => Some(Format::Prproj),
             _ => None,
         }
     }
@@ -113,6 +118,9 @@ pub fn detect(bytes: &[u8], extension: Option<&str>) -> Option<Format> {
     }
     if omf::sniff(bytes) && extension.is_none_or(|e| matches!(Format::from_extension(e), None | Some(Format::Omf))) {
         return Some(Format::Omf);
+    }
+    if prproj::sniff(bytes) && extension.is_none_or(|e| Format::from_extension(e) == Some(Format::Prproj)) {
+        return Some(Format::Prproj);
     }
     let head = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]);
     let head = head.trim_start_matches('\u{feff}').trim_start();
@@ -236,6 +244,7 @@ pub struct Imported {
     pub project: Project,
     /// Top-level sequences, in document order (nested sequences are items too but not listed here).
     pub sequences: Vec<ItemId>,
+    pub alternates: Vec<(ItemId, String)>,
 }
 
 /// Import options beyond the defaults of [`import`].
@@ -266,6 +275,11 @@ pub fn import_with(bytes: &[u8], format: Format, opts: &ImportOptions) -> Result
         }
         return Ok((imported, report));
     }
+    if format == Format::Prproj {
+        let mut report = Report::default();
+        let imported = prproj::import(bytes, opts, &mut report)?;
+        return Ok((imported, report));
+    }
     let text = decode_text(bytes);
     let mut report = Report::default();
     let imported = match format {
@@ -273,7 +287,7 @@ pub fn import_with(bytes: &[u8], format: Format, opts: &ImportOptions) -> Result
         Format::Fcp7Xml => fcp7::import(&text, opts, &mut report)?,
         Format::Fcpxml => fcpxml::import(&text, opts, &mut report)?,
         Format::Otio => otio::import(&text, opts, &mut report)?,
-        Format::Aaf | Format::Omf => return Err(Error::Other("AAF / OMF are binary documents".into())),
+        Format::Aaf | Format::Omf | Format::Prproj => return Err(Error::Other(format!("{} is a binary document", format.name()))),
     };
     Ok((imported, report))
 }
@@ -391,6 +405,7 @@ pub fn export(project: &Project, sequence: ItemId, format: Format, opts: &Export
         Format::Fcpxml => fcpxml::export(project, sequence, opts, &mut report)?,
         Format::Otio => otio::export(project, sequence, opts, &mut report)?,
         Format::Aaf | Format::Omf => return Err(Error::Other("AAF / OMF are binary documents".into())),
+        Format::Prproj => return Err(Error::Other("Premiere Pro projects can be opened but not written".into())),
     };
     Ok((text.into_bytes(), report))
 }
@@ -424,7 +439,7 @@ pub fn export_edl_per_track(project: &Project, sequence: ItemId, opts: &ExportOp
 /// fragment's root children go into `bin` (or the root). Returns the new ids of the fragment's
 /// top-level sequences.
 pub fn merge_into(target: &mut Project, fragment: Imported, bin: Option<BinId>) -> Vec<ItemId> {
-    let Imported { project: frag, sequences } = fragment;
+    let Imported { project: frag, sequences, .. } = fragment;
     let mut items: HashMap<ItemId, ItemId> = HashMap::new();
     for id in frag.items.keys() {
         items.insert(*id, ItemId(target.alloc_id()));

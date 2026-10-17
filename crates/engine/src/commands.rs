@@ -4380,6 +4380,9 @@ fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Opti
 
 fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    if crate::interchange::detect(path, &bytes) == Some(filmcraft_interchange::Format::Prproj) {
+        return open_prproj(s, path, &bytes);
+    }
     let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
     install_project(s, loaded.project, Some(path.to_string()), true);
@@ -4397,6 +4400,20 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     }
     let missing = crate::relink::on_open(s);
     Ok(json!({"path": path, "schemaVersion": from, "migrated": migrated, "missingMedia": missing}))
+}
+
+fn open_prproj(s: &mut Session, path: &str, bytes: &[u8]) -> Result<Value> {
+    let name = std::path::Path::new(path).file_stem().map_or_else(|| "Untitled".into(), |n| n.to_string_lossy().into_owned());
+    install_project(s, filmcraft_project::Project::new(&name), None, true);
+    let r = crate::interchange::import(s, path, bytes, filmcraft_interchange::Format::Prproj)?;
+    s.history = Default::default();
+    s.history.limit = 200;
+    if let Some(seq) = s.state.active_sequence {
+        s.events.push(crate::Event::OpenSequence(seq));
+    }
+    s.note_recent(path);
+    crate::relink::on_open(s);
+    Ok(r)
 }
 
 /// Load a recovery candidate (newest when `id` is None) as the current, unsaved project.

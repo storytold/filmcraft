@@ -10,8 +10,6 @@
 //! it the data window does not cover are transparent. Tiled, deep and multi-part files, chroma
 //! subsampled channels and the PIZ, B44 and DWA compressions are refused with a clear error.
 
-mod inflate;
-
 use std::sync::Arc;
 
 use filmcraft_color::{ColorInfo, Transfer};
@@ -20,7 +18,7 @@ use filmcraft_time::FrameRate;
 use rayon::prelude::*;
 
 use super::{DEFAULT_STILL_DURATION, StillSource};
-use crate::{MediaError, MediaInfo, MediaKind, Result, VideoStreamInfo};
+use crate::{MediaError, MediaInfo, MediaKind, Result, VideoStreamInfo, inflate};
 
 /// Magic number at the start of every OpenEXR file (20000630 little-endian).
 const MAGIC: [u8; 4] = [0x76, 0x2f, 0x31, 0x01];
