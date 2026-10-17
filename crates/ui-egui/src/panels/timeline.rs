@@ -294,6 +294,42 @@ pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f3
     v.target_scroll = (anchor_secs - x as f64 / new).max(0.0);
 }
 
+/// The tools whose icon is the pointer over the tracks (the others use a system pointer).
+fn tool_draws_pointer(tool: Tool) -> bool {
+    matches!(
+        tool,
+        Tool::Razor
+            | Tool::Ripple
+            | Tool::Rolling
+            | Tool::RateStretch
+            | Tool::Remix
+            | Tool::Slip
+            | Tool::Slide
+            | Tool::TrackSelectForward
+            | Tool::TrackSelectBackward
+    )
+}
+
+/// The tool's icon centred on the pointer, outlined so it reads over clips of any colour.
+fn paint_tool_pointer(ctx: &egui::Context, tool: Tool, at: Pos2) {
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("tool-pointer")));
+    let r = Rect::from_center_size(at, vec2(20.0, 20.0));
+    for d in [vec2(-1.0, 0.0), vec2(1.0, 0.0), vec2(0.0, -1.0), vec2(0.0, 1.0)] {
+        icons::paint(&painter, r.translate(d), tool.icon(), Color32::BLACK);
+    }
+    icons::paint(&painter, r, tool.icon(), Color32::WHITE);
+}
+
+/// The tracks the Razor's preview line crosses at the pointer over `clip`: the clip's own and its
+/// linked clips' tracks, or every track with Shift (what `timeline.razor` cuts).
+pub fn razor_line_tracks(app: &FilmcraftApp, clip: ClipId, shift: bool) -> Vec<TrackId> {
+    let (Some(layout), Some(seq)) = (app.tl.layout.as_ref(), app.session.active_sequence()) else { return Vec::new() };
+    if shift {
+        return layout.rows.iter().map(|r| r.track).collect();
+    }
+    filmcraft_engine::commands::with_links(&app.session, &[clip]).into_iter().filter_map(|c| seq.find_item(c).map(|(track, _)| track)).collect()
+}
+
 fn label_color(app: &FilmcraftApp, l: filmcraft_project::Label) -> Color32 {
     crate::panels::settings::label_color(app, l)
 }
@@ -2319,18 +2355,30 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             }
         };
         ctx.set_cursor_icon(cur);
+        // the editing tools show their own icon as the pointer wherever they act in the tracks (the
+        // system pointer is hidden); a blocked edit, a volume line and the ruler keep the system one
+        if !blocked && tool_draws_pointer(tool) && !matches!(g, Grab::Volume { .. } | Grab::Other(Hit::Ruler | Hit::None)) {
+            ctx.set_cursor_icon(CursorIcon::None);
+            paint_tool_pointer(&ctx, tool, p);
+        }
         // the edge a press here would grab, and the trim it starts (#259)
         if let Grab::Edge { track, clip, edge, kind } = g {
             super::trim_monitor::paint_hover_bracket(ui.painter(), seq, layout, track, clip, edge, kind);
         }
-        // razor preview line
+        // razor preview line: where a click cuts, through the clip and the clips linked to it
+        // (every track with Shift), as the click does
         if tool == Tool::Razor
-            && let Grab::Other(Hit::Clip { track, .. }) = g
-            && let Some(row) = layout.rows.iter().find(|r| r.track == track)
+            && let Grab::Other(Hit::Clip { clip, .. }) = g
         {
             let t = snap(app, seq, layout, rate.snap_nearest(layout.tick_at(p.x)), &[]);
             let x = layout.x_of(t);
-            ui.painter().line_segment([pos2(x, row.rect.min.y), pos2(x, row.rect.max.y)], Stroke::new(1.0, Color32::WHITE));
+            let tracks = razor_line_tracks(app, clip, mods.shift);
+            let painter = ui.painter().with_clip_rect(Rect::from_min_max(pos2(layout.content.min.x, layout.content.min.y), layout.content.max));
+            for row in layout.rows.iter().filter(|r| tracks.contains(&r.track)) {
+                let seg = [pos2(x, row.rect.min.y), pos2(x, row.rect.max.y)];
+                painter.line_segment(seg, Stroke::new(3.0, Color32::from_black_alpha(110)));
+                painter.line_segment(seg, Stroke::new(1.0, Color32::WHITE));
+            }
         }
     }
 
