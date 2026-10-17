@@ -453,6 +453,8 @@ fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportS
     doc.cues.retain_mut(|cue| {
         cue.end = cue.end.min(range.duration);
         cue.start < cue.end
+            && (!matches!(format, filmcraft_captions::Format::Srt | filmcraft_captions::Format::WebVtt)
+                || cue.start.to_rational_round(1, 1000) < cue.end.to_rational_round(1, 1000))
     });
     let bytes =
         filmcraft_captions::write(&doc, format, filmcraft_captions::WriteOptions { drop_frame: q.settings.drop_frame, rate: Some(q.settings.frame_rate) });
@@ -491,7 +493,10 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
         return Ok(id);
     }
     let run = move || {
-        let r = filmcraft_export::export(&project, seq, &settings, &provider, &prog).map_err(|e| e.to_string());
+        let r = filmcraft_export::export(&project, seq, &settings, &provider, &prog).map_err(|e| {
+            prog.cancelled.store(matches!(&e, filmcraft_export::ExportError::Cancelled), Ordering::Relaxed);
+            e.to_string()
+        });
         *offline.lock().unwrap_or_else(|x| x.into_inner()) = provider.offline_used();
         if let Err(e) = &r {
             *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
@@ -520,6 +525,7 @@ pub(crate) fn guard_job(
     move || {
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).is_err() {
             let msg = "internal error (see the crash log); the job was stopped".to_string();
+            progress.cancelled.store(false, Ordering::Relaxed);
             *progress.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(msg.clone());
             progress.finished.store(true, Ordering::Relaxed);
             *result.lock().unwrap_or_else(|x| x.into_inner()) = Some(Err(msg));
@@ -1176,10 +1182,14 @@ mod guard_tests {
     fn panicking_job_is_reported_as_failed() {
         let progress: Arc<filmcraft_export::Progress> = Arc::default();
         let result: Arc<std::sync::Mutex<Option<std::result::Result<filmcraft_export::Report, String>>>> = Arc::default();
+        progress.cancel.store(true, Ordering::Relaxed);
+        progress.cancelled.store(true, Ordering::Relaxed);
         let run = guard_job(progress.clone(), result.clone(), || panic!("job bug"));
         std::thread::spawn(run).join().expect("the guard catches the panic");
         assert!(progress.finished.load(Ordering::Relaxed));
-        assert!(progress.error.lock().unwrap().is_some());
-        assert!(matches!(&*result.lock().unwrap(), Some(Err(_))));
+        assert!(progress.cancel.load(Ordering::Relaxed), "the request is still recorded");
+        assert!(!progress.cancelled.load(Ordering::Relaxed), "a panic must override a previously observed cancellation");
+        assert!(progress.error.lock().unwrap().as_deref().is_some_and(|e| e.starts_with("internal error")));
+        assert!(matches!(&*result.lock().unwrap(), Some(Err(e)) if e.starts_with("internal error")));
     }
 }

@@ -666,6 +666,9 @@ pub struct Progress {
     pub done: AtomicU64,
     pub total: AtomicU64,
     pub cancel: AtomicBool,
+    /// Terminal cancellation reported to the job UI, distinct from a cancellation request.
+    /// Producers set this before publishing their result.
+    pub cancelled: AtomicBool,
     pub finished: AtomicBool,
     pub status: Mutex<String>,
     pub error: Mutex<Option<String>>,
