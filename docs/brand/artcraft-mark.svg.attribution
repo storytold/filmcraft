@@ -1,8 +1,0 @@
-asset:        artcraft-mark.svg
-title:        ArtCraft symbol ("A" mark), blue
-author:       ArtCraft Team
-source:       original work (first-party ArtCraft brand asset supplied by the ArtCraft Team)
-license:      LicenseRef-ArtCraft-Trademark — ArtCraft name, wordmark and logos are trademarks of the ArtCraft Team, not open source; usable only unmodified and only in the context of FilmCraft, under docs/brand/LICENSE-brand.txt. Not covered by the project's MIT OR Apache-2.0 license.
-license-file: docs/brand/LICENSE-brand.txt
-added:        2026-10-01 by Claude (agent) for Brandon Thomas
-notes:        SVG. Bundled in the app (About dialog, Home screen) and shown in the README header. First-party brand mark: the one exception to the open-licence rule (AGENTS.md §1.8). Forks and modified versions must remove it (docs/brand/LICENSE-brand.txt).
