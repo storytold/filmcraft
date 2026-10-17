@@ -405,7 +405,8 @@ pub fn pump_share(app: &mut FilmcraftApp, ctx: &egui::Context) {
     // A share-initiated Create that just finished: hand the new cloud id back to the dialog.
     if app.cloud.sharing_save && app.cloud.busy.is_none() {
         let prior = app.share_save_prior_etag.take();
-        let now = origin(app).map(|o| o.entry.etag.clone());
+        // Entry.etag is Option; flatten so we compare String to String.
+        let now = origin(app).and_then(|o| o.entry.etag.clone());
         let changed = match (&prior, &now) {
             (Some(None), Some(_)) => true,              // first cloud save
             (Some(Some(a)), Some(b)) if a != b => true, // new version
@@ -424,7 +425,7 @@ pub fn pump_share(app: &mut FilmcraftApp, ctx: &egui::Context) {
     if let Some(req) = app.share.take_save_request() {
         // collabcraft-share destination id is "cloud"; write into the current cloud folder (root if empty).
         let folder = app.cloud.mine.path.clone();
-        app.share_save_prior_etag = Some(origin(app).map(|o| o.entry.etag.clone()));
+        app.share_save_prior_etag = Some(origin(app).and_then(|o| o.entry.etag.clone()));
         app.cloud.sharing_save = true;
         if let Err(e) = save_as(app, &folder, &req.name) {
             app.cloud.sharing_save = false;
