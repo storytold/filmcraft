@@ -121,7 +121,7 @@ pub fn decode_all(d: &mut dyn VideoDecoder, samples: &[(Vec<u8>, i64)]) -> Vec<D
     for (s, p) in samples {
         out.extend(d.decode(s, *p).unwrap_or_else(|e| panic!("{}: {e}", d.name())));
     }
-    out.extend(d.flush());
+    out.extend(d.flush().unwrap());
     out
 }
 

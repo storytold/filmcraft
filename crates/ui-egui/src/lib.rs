@@ -504,13 +504,17 @@ impl FilmcraftApp {
             return None;
         }
         let t0 = web_time::Instant::now();
-        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (view, size) = g.compositor.composite_prepared(&plan.plan, Some(&plan.prepared));
-            (view.clone(), size)
-        }));
-        let Ok((view, size)) = ran else {
-            self.disable_gpu("compositor panicked");
-            return None;
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| g.compositor.composite_prepared(&plan.plan, Some(&plan.prepared))));
+        let (view, size) = match ran {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => {
+                self.frames.reject_plan(key, error);
+                return None;
+            }
+            Err(_) => {
+                self.disable_gpu("compositor panicked");
+                return None;
+            }
         };
         let g = self.gpu.as_mut()?;
         g.last_ms = t0.elapsed().as_secs_f32() * 1000.0;
@@ -2106,6 +2110,10 @@ impl eframe::App for FilmcraftApp {
         // No frame worker threads on the web: render queued frames here, within a time budget
         // that leaves room for the UI pass (a no-op where workers run).
         self.frames.pump(std::time::Duration::from_millis(if self.playback.playing { 24 } else { 40 }));
+        if let Some(error) = self.frames.take_error() {
+            log::error!("{error}");
+            self.ui.status = error;
+        }
         // A panic in one panel must not close the app (losing unsaved work) or leave a blank
         // window: catch it, keep the session, and say what happened.
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.frame(ui))).is_err() {

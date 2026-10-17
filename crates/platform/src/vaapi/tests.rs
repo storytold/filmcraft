@@ -199,7 +199,7 @@ fn run_software(d: &mut dyn filmcraft_codecs::VideoDecoder, samples: &[(Vec<u8>,
     for (s, p) in samples {
         out.extend(pts(&d.decode(s, *p).unwrap()));
     }
-    out.extend(pts(&d.flush()));
+    out.extend(pts(&d.flush().unwrap()));
     out
 }
 
