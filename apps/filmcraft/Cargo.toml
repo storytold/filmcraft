@@ -27,7 +27,9 @@ filmcraft-gpu = { workspace = true }
 filmcraft-ui-egui = { workspace = true }
 filmcraft-platform = { workspace = true }
 egui = { workspace = true }
-eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11"] }
+# persistence: the main window's position, size and maximized / full-screen state between
+# launches (#1994), stored in the data directory (see `native_options`).
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "persistence"] }
 serde_json = { workspace = true }
 log = { workspace = true }
 rfd = { workspace = true }

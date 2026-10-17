@@ -2098,6 +2098,12 @@ impl eframe::App for FilmcraftApp {
         self.session.shutdown();
     }
 
+    /// The desktop app persists only the window geometry (#1994): the UI state has its own
+    /// storage, and egui's memory (open menus, scroll offsets, …) starts fresh.
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if !self.fonts_ready {
             ui.ctx().request_repaint();

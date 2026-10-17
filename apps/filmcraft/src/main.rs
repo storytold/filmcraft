@@ -131,7 +131,7 @@ fn main() -> eframe::Result {
         register_gpu_frame_renderer();
     }
     let started = loop {
-        let mut options = native_options(launch.control_port.is_some());
+        let mut options = native_options(launch.control_port.is_some(), data_root.as_deref());
         // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
         graphics::apply(&mut options, graphics.mode(), backend_override);
         let app_created = Arc::new(AtomicBool::new(false));
@@ -163,9 +163,19 @@ fn main() -> eframe::Result {
     started
 }
 
+/// The file in the data directory that remembers the main window's geometry (#1994).
+const WINDOW_FILE: &str = "window.ron";
+
 /// The main window's options; built for each start attempt (they hold a one-shot hook).
-fn native_options(agent: bool) -> eframe::NativeOptions {
+///
+/// The window's position, size and maximized / full-screen state are kept in `window.ron` in the
+/// data directory and restored on the next launch (#1994); eframe moves a remembered position back
+/// onto a monitor and sizes the window to one. Nothing else is persisted (see
+/// [`eframe::App::persist_egui_memory`] in the UI crate).
+fn native_options(agent: bool, data_dir: Option<&std::path::Path>) -> eframe::NativeOptions {
     eframe::NativeOptions {
+        persist_window: true,
+        persistence_path: data_dir.map(|d| d.join(WINDOW_FILE)),
         viewport: egui::ViewportBuilder::default()
             .with_title("FilmCraft")
             .with_inner_size([1600.0, 980.0])
