@@ -4,6 +4,7 @@
 cargo test --workspace                          # everything; oracle tests skip without ffmpeg
 cargo test -p filmcraft-h264                    # one crate
 cargo test --release -p filmcraft-hevc          # codec tests are much faster in release
+cargo xtask fmt                                 # complete workspace formatting check
 cargo xtask ci                                  # all gates (fmt, clippy, tests, layers, assets, wasm)
 cargo xtask fixtures                            # pre-generate the ffmpeg fixture matrix
 FILMCRAFT_REQUIRE_ORACLES=1 cargo test --workspace   # CI: missing ffmpeg fails instead of skipping
@@ -356,3 +357,38 @@ thread's CPU time, so it runs with the rest of the suite. Hosts without a per-th
 explicitly with
 `cargo test --release -p filmcraft-render --lib perf_24_tracks_3_effects_realtime_factor -- --ignored --nocapture`
 and record the machine with the result.
+
+### MCP response failures and shutdown ownership
+
+The automation tests exercise response write/flush failures while the request pipe remains open,
+including initialization and concurrent EOF. They require the original transport diagnostic to survive
+shutdown. The stdin tests exercise a bounded bridge, idle and backpressured cancellation, read failures
+and panics, and joining the input driver. They use synthetic readers rather than the process stdin.
+
+Request ownership tests require shutdown to reject new requests and wait for admitted handlers and
+started blocking work. Each generic transport has its own shutdown scope; sequential and concurrent
+cloned clients must remain usable when another client disconnects. Long-export tests require failed or
+malformed job observations to remain errors, cancellation to interrupt a pending observation, and
+failed cancellation to retain unconfirmed output. Successful completed exports retain their bytes even
+when completion races cancellation or a query fails. A failed job does not prove ownership of
+files at its target: filenames and modification times can also match another completed export.
+MCP therefore retains output and reports file ownership as unconfirmed instead of deleting it.
+A shared-target regression preserves another successful job's exact bytes. A gated cleanup
+regression holds an export beyond the MCP SDK's response drain.
+
+Run these component checks together:
+
+```text
+cargo test --release --locked -p filmcraft-automation --lib
+cargo test --release --locked -p filmcraft-cli --test mcp_output_lifecycle
+```
+
+The Windows CLI tests launch the actual executable, close its response pipe during initialization or
+after initialization, and retain the request pipe until the parent exits. They require exit status 1
+and a response write/flush diagnostic, with bounded fixture deadlines and cleanup of the owned parent.
+These checks prove parent exit, not an inventory of all descendants or native hardware workers.
+
+Only the dedicated input runtime uses a shutdown timeout. The main runtime remains available while
+admitted request cleanup drains. A residual blocking OS stdin read may remain until EOF or process
+exit; joining its outer input driver does not prove that the OS read itself has completed. Request or
+export cleanup deadlines report completion as unconfirmed, and do not authorize deleting active output.

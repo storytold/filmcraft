@@ -20,3 +20,5 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "syn
 base64 = "0.22"
 schemars = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
+futures-util = "0.3"
+log = "0.4"
