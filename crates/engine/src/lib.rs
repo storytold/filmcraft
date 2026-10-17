@@ -40,6 +40,7 @@ mod palette;
 pub mod panels;
 pub mod paste_media;
 pub mod perf;
+mod premiere;
 pub mod presets;
 pub mod previews;
 pub mod prfpset;
@@ -1552,14 +1553,5 @@ mod frame_export_tests;
 #[cfg(test)]
 mod wasm_clock_tests;
 
-#[cfg(all(test, unix))]
-mod private_temp_dir_tests {
-    #[test]
-    fn the_private_temp_dir_is_new_owner_only_and_stable() {
-        use std::os::unix::fs::PermissionsExt;
-        let d = super::private_temp_dir().unwrap();
-        assert!(d.is_dir());
-        assert_eq!(std::fs::metadata(&d).unwrap().permissions().mode() & 0o777, 0o700);
-        assert_eq!(d, super::private_temp_dir().unwrap());
-    }
-}
+#[cfg(test)]
+mod premiere_tests;

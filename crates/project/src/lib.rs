@@ -27,6 +27,7 @@ pub mod multicam;
 pub mod narration;
 pub mod transcript;
 pub mod vtransition;
+pub mod workflow;
 
 use std::collections::BTreeMap;
 
@@ -120,6 +121,9 @@ pub struct Project {
     /// instructions for whoever opens it next, frame numbers and the like. Schema v15.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub notes: String,
+    /// Fork workflow provenance; guarded by a distinct .fcproj format tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<std::sync::Arc<workflow::Workflow>>,
 }
 
 impl Default for Project {
@@ -149,6 +153,7 @@ impl Project {
             source_graphics: BTreeMap::new(),
             narrations: BTreeMap::new(),
             notes: String::new(),
+            workflow: None,
         }
     }
 
