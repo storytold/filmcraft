@@ -32,7 +32,7 @@ use filmcraft_time::{FrameRate, Tick, TimeRange};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, has_seq, str_p, time_p, u64_p};
+use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, has_seq, str_p, time_p_at, u64_p};
 use crate::{EngineError, Event, Result, Session};
 
 pub const FILE_FORMAT: &str = "filmcraft.export-presets";
@@ -342,8 +342,9 @@ pub fn range_param(s: &Session, project: &Project, seq: ItemId, v: Option<&Value
     q.check_bounds().map_err(|e| bad(cmd, e))?;
     let fd = q.settings.frame_rate.frame_duration();
     let whole = TimeRange::from_bounds(Tick::ZERO, q.duration().max(fd));
+    let time = |prefix| time_p_at(p, prefix, q.settings.frame_rate, q.settings.drop_frame, s.playhead());
     let mode = match v {
-        None | Some(Value::Null) if time_p(s, p, "start").is_some() || time_p(s, p, "end").is_some() => "custom".to_string(),
+        None | Some(Value::Null) if time("start").is_some() || time("end").is_some() => "custom".to_string(),
         None | Some(Value::Null) => return Ok(None),
         Some(Value::String(m)) => m.to_ascii_lowercase().replace(['-', '_', ' ', '/'], ""),
         Some(o @ Value::Object(_)) => return range_param(s, project, seq, o.get("mode").or(Some(&json!("custom"))), o, cmd),
@@ -354,8 +355,8 @@ pub fn range_param(s: &Session, project: &Project, seq: ItemId, v: Option<&Value
         "inout" | "sequenceinout" => filmcraft_export::export_range(project, seq, &ExportSettings::default()).map_err(|e| bad(cmd, e.to_string()))?,
         "workarea" => q.work_area.ok_or_else(|| bad(cmd, "the sequence has no work area"))?,
         "custom" => {
-            let a = time_p(s, p, "start").ok_or_else(|| bad(cmd, "custom range: need start (startTime / startSeconds / startFrame / startTimecode)"))?;
-            let b = time_p(s, p, "end").ok_or_else(|| bad(cmd, "custom range: need end (endTime / endSeconds / endFrame / endTimecode)"))?;
+            let a = time("start").ok_or_else(|| bad(cmd, "custom range: need start (startTime / startSeconds / startFrame / startTimecode)"))?;
+            let b = time("end").ok_or_else(|| bad(cmd, "custom range: need end (endTime / endSeconds / endFrame / endTimecode)"))?;
             if b <= a {
                 return Err(bad(cmd, "custom range: end must be after start"));
             }
@@ -453,6 +454,8 @@ fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportS
     doc.cues.retain_mut(|cue| {
         cue.end = cue.end.min(range.duration);
         cue.start < cue.end
+            && (!matches!(format, filmcraft_captions::Format::Srt | filmcraft_captions::Format::WebVtt)
+                || cue.start.to_rational_round(1, 1000) < cue.end.to_rational_round(1, 1000))
     });
     let bytes =
         filmcraft_captions::write(&doc, format, filmcraft_captions::WriteOptions { drop_frame: q.settings.drop_frame, rate: Some(q.settings.frame_rate) });

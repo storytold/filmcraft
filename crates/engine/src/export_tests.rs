@@ -815,3 +815,245 @@ fn caption_sidecars_keep_only_the_exported_interval() {
         assert!(doc.cues.is_empty(), "half-open export excludes cues touching either boundary: {doc:?}");
     }
 }
+
+fn caption_sidecar_millisecond_precision(
+    format: filmcraft_captions::Format,
+    end_time: i64,
+    expected_samples: i64,
+    expected: &str,
+    expected_cues: &[(filmcraft_time::Tick, filmcraft_time::Tick, &str)],
+) {
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    use filmcraft_captions::Format;
+    use filmcraft_media::MediaSource;
+    use filmcraft_time::{TICKS_PER_SECOND, Tick};
+
+    #[derive(Default)]
+    struct MemoryFiles(Mutex<BTreeMap<String, Vec<u8>>>);
+    impl crate::Services for MemoryFiles {
+        fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+            self.0.lock().unwrap().get(path).cloned().ok_or_else(|| std::io::ErrorKind::NotFound.into())
+        }
+        fn write_file(&self, path: &str, bytes: &[u8]) -> std::io::Result<()> {
+            self.0.lock().unwrap().insert(path.to_owned(), bytes.to_vec());
+            Ok(())
+        }
+        fn export_in_memory(&self) -> bool {
+            true
+        }
+    }
+
+    // Both input cues are non-overlapping and exactly frame-aligned at 25 fps.
+    let fixture = "WEBVTT\n\n00:00:00.000 --> 00:00:00.400\nSurviving cue\n\n00:00:01.000 --> 00:00:02.000\nClipped residue\n";
+    let input = filmcraft_captions::parse(fixture.as_bytes(), Format::WebVtt).unwrap();
+    assert!(input.warnings.is_empty(), "{input:?}");
+    let files = Arc::new(MemoryFiles::default());
+    files.0.lock().unwrap().insert("input.vtt".into(), fixture.as_bytes().to_vec());
+    let mut s = Session::new(files.clone());
+    s.execute("file.newSequence", json!({"name":"Caption precision", "fps":25, "sampleRate":48_000, "width":16, "height":16, "video":0, "audio":0})).unwrap();
+    s.execute("captions.import", json!({"path":"input.vtt"})).unwrap();
+    let imported: Vec<_> = s.active_sequence().unwrap().caption_tracks[0].captions.iter().map(|c| (c.start, c.end(), c.text.as_str())).collect();
+    assert_eq!(
+        imported,
+        [(Tick::ZERO, Tick(TICKS_PER_SECOND * 2 / 5), "Surviving cue"), (Tick(TICKS_PER_SECOND), Tick(2 * TICKS_PER_SECOND), "Clipped residue")]
+    );
+    let original = serde_json::to_value(&s.project).unwrap();
+    let history = s.execute("history.list", json!({})).unwrap();
+
+    // Both chosen raw Tick endpoints are exact sample boundaries at the explicit 48 kHz output rate.
+    let duration = Tick(end_time);
+    let result = s
+        .execute(
+            "file.exportMedia",
+            json!({"format":"wav", "path":"precision.wav", "captionSidecar":format.extension(), "wait":true,
+            "range":"custom", "startTime":0, "endTime":duration.0, "settings":{"audio":{"sample_rate":48_000}}}),
+        )
+        .unwrap();
+    assert_eq!(result["result"]["path"], "precision.wav");
+    assert!(result["result"]["bytes"].as_u64().is_some_and(|n| n > 0), "{result}");
+    let wav = files.0.lock().unwrap().get("precision.wav").unwrap().clone();
+    let audio = filmcraft_media::wav::WavSource::parse("precision.wav", wav.into()).unwrap();
+    assert_eq!(audio.info().audio().unwrap().sample_rate, 48_000);
+    assert_eq!(audio.info().duration, duration, "exported audio duration before checking the sidecar");
+    assert_eq!(audio.info().duration.0 / (TICKS_PER_SECOND / 48_000), expected_samples, "exported audio sample count");
+
+    let bytes = files.0.lock().unwrap().get(&format!("precision.{}", format.extension())).unwrap().clone();
+    let raw = std::str::from_utf8(&bytes).unwrap();
+    // Parsing alone would hide an invalid zero-duration cue because both readers skip it.
+    assert_eq!(raw, expected, "omit empty rounded intervals and retain representable captions");
+    let doc = filmcraft_captions::parse(&bytes, format).unwrap();
+    assert!(doc.warnings.is_empty(), "{doc:?}");
+    let actual: Vec<_> = doc.cues.iter().map(|c| (c.start, c.end, c.text.as_str())).collect();
+    assert_eq!(actual.as_slice(), expected_cues);
+    assert!(doc.cues.iter().all(|c| c.start < c.end));
+    assert_eq!(serde_json::to_value(&s.project).unwrap(), original, "export must not trim the project captions");
+    assert_eq!(s.execute("history.list", json!({})).unwrap(), history);
+}
+
+#[test]
+fn caption_srt_sidecar_omits_cues_empty_at_millisecond_precision() {
+    use filmcraft_time::Tick;
+
+    caption_sidecar_millisecond_precision(
+        filmcraft_captions::Format::Srt,
+        254_079_504_000,
+        48_012,
+        "1\n00:00:00,000 --> 00:00:00,400\nSurviving cue\n\n",
+        &[(Tick::ZERO, Tick(101_606_400_000), "Surviving cue")],
+    );
+}
+
+#[test]
+fn caption_vtt_sidecar_omits_cues_empty_at_millisecond_precision() {
+    use filmcraft_time::Tick;
+
+    caption_sidecar_millisecond_precision(
+        filmcraft_captions::Format::WebVtt,
+        254_079_504_000,
+        48_012,
+        "WEBVTT\n\n00:00:00.000 --> 00:00:00.400\nSurviving cue\n\n",
+        &[(Tick::ZERO, Tick(101_606_400_000), "Surviving cue")],
+    );
+}
+
+#[test]
+fn caption_srt_sidecar_retains_cues_distinct_at_millisecond_precision() {
+    use filmcraft_time::Tick;
+
+    // A 0.75 ms residue remains visible after the existing nearest-ms rounding.
+    // Its serialized 1.001 s end does not change the exact 1.00075 s media range.
+    caption_sidecar_millisecond_precision(
+        filmcraft_captions::Format::Srt,
+        254_206_512_000,
+        48_036,
+        "1\n00:00:00,000 --> 00:00:00,400\nSurviving cue\n\n2\n00:00:01,000 --> 00:00:01,001\nClipped residue\n\n",
+        &[(Tick::ZERO, Tick(101_606_400_000), "Surviving cue"), (Tick(254_016_000_000), Tick(254_270_016_000), "Clipped residue")],
+    );
+}
+
+#[test]
+fn caption_vtt_sidecar_retains_cues_distinct_at_millisecond_precision() {
+    use filmcraft_time::Tick;
+
+    // A 0.75 ms residue remains visible after the existing nearest-ms rounding.
+    // Its serialized 1.001 s end does not change the exact 1.00075 s media range.
+    caption_sidecar_millisecond_precision(
+        filmcraft_captions::Format::WebVtt,
+        254_206_512_000,
+        48_036,
+        "WEBVTT\n\n00:00:00.000 --> 00:00:00.400\nSurviving cue\n\n00:00:01.000 --> 00:00:01.001\nClipped residue\n\n",
+        &[(Tick::ZERO, Tick(101_606_400_000), "Surviving cue"), (Tick(254_016_000_000), Tick(254_270_016_000), "Clipped residue")],
+    );
+}
+
+// These command-only fixtures deliberately resolve an explicit custom range without rendering.
+// Empty sequence contents do not constrain a caller-supplied positive custom range.
+fn export_target_timebase_fixture(target_fps: f64, target_drop_frame: bool, active_fps: f64) -> (Session, u64, u64) {
+    let mut s = Session::default();
+    let target =
+        s.execute("file.newSequence", json!({"name":"Export target", "fps":target_fps, "width":16, "height":16, "video":0, "audio":0})).unwrap()["sequence"]
+            .as_u64()
+            .unwrap();
+    s.execute("sequence.settings", json!({"dropFrame":target_drop_frame})).unwrap();
+    let active =
+        s.execute("file.newSequence", json!({"name":"Active sequence", "fps":active_fps, "width":16, "height":16, "video":0, "audio":0})).unwrap()["sequence"]
+            .as_u64()
+            .unwrap();
+    s.execute("sequence.settings", json!({"dropFrame":false})).unwrap();
+    assert_ne!(target, active);
+    assert_eq!(s.state.active_sequence.unwrap().0, active);
+    (s, target, active)
+}
+
+fn resolve_target_range_without_editing(s: &mut Session, params: Value) -> Value {
+    let project = serde_json::to_value(&s.project).unwrap();
+    let state = serde_json::to_value(&s.state).unwrap();
+    let history = s.execute("history.list", json!({})).unwrap();
+    let active = s.state.active_sequence;
+    let resolved = s.execute("export.resolve", params).unwrap();
+    assert_eq!(serde_json::to_value(&s.project).unwrap(), project);
+    assert_eq!(serde_json::to_value(&s.state).unwrap(), state);
+    assert_eq!(s.execute("history.list", json!({})).unwrap(), history);
+    assert_eq!(s.state.active_sequence, active, "resolving a target must not activate it");
+    resolved
+}
+
+fn assert_resolved_target_time(resolved: &Value, start: i64, duration: i64) {
+    assert_eq!(resolved["range"]["start"], start, "absolute start must use the target timebase");
+    assert_eq!(resolved["range"]["duration"], duration, "duration must use the target timebase");
+}
+
+#[test]
+fn custom_export_frames_use_the_target_sequence_rate() {
+    let (mut s, target, _) = export_target_timebase_fixture(25.0, false, 50.0);
+    let resolved =
+        resolve_target_range_without_editing(&mut s, json!({"sequence":target, "preset":"PNG Sequence", "range":"custom", "startFrame":25, "endFrame":50}));
+    assert!(resolved["source"].as_str().unwrap().contains(", 25 fps,"));
+    assert_resolved_target_time(&resolved, 254_016_000_000, 254_016_000_000);
+    assert_eq!(resolved["frames"], 25);
+}
+
+#[test]
+fn custom_export_absolute_timecodes_use_the_target_sequence_rate() {
+    let (mut s, target, _) = export_target_timebase_fixture(25.0, false, 50.0);
+    let resolved = resolve_target_range_without_editing(
+        &mut s,
+        json!({"sequence":target, "preset":"PNG Sequence", "range":"custom",
+               "startTimecode":"00:00:00:10", "endTimecode":"00:00:01:10"}),
+    );
+    // At 25 fps these labels are 0.4 s and 1.4 s. The duration alone cannot detect this bug.
+    assert_resolved_target_time(&resolved, 101_606_400_000, 254_016_000_000);
+    assert_eq!(resolved["frames"], 25);
+}
+
+#[test]
+fn custom_export_absolute_timecodes_use_the_target_drop_frame_setting() {
+    let (mut s, target, _) = export_target_timebase_fixture(30_000.0 / 1001.0, true, 30_000.0 / 1001.0);
+    let target_id = filmcraft_project::ItemId(target);
+    assert_eq!(s.project.sequence(target_id).unwrap().settings.frame_rate, filmcraft_time::FrameRate::FPS_29_97);
+    assert!(s.project.sequence(target_id).unwrap().settings.drop_frame);
+    assert!(!s.active_sequence().unwrap().settings.drop_frame);
+    let resolved = resolve_target_range_without_editing(
+        &mut s,
+        json!({"sequence":target, "preset":"PNG Sequence", "range":"custom",
+               "startTimecode":"00;01;00;02", "endTimecode":"00;01;01;02"}),
+    );
+    // DF labels are frames 1800..1830. Each 30000/1001 frame is exactly 8,475,667,200 ticks.
+    // Semicolons are accepted separators; the sequence setting supplies the DF interpretation.
+    assert_resolved_target_time(&resolved, 15_256_200_960_000, 254_270_016_000);
+    assert_eq!(resolved["frames"], 30);
+}
+
+#[test]
+fn custom_export_seconds_are_independent_of_the_active_sequence_rate() {
+    let (mut s, target, _) = export_target_timebase_fixture(25.0, false, 50.0);
+    let resolved =
+        resolve_target_range_without_editing(&mut s, json!({"sequence":target, "preset":"PNG Sequence", "range":"custom", "startSeconds":1, "endSeconds":2}));
+    assert_resolved_target_time(&resolved, 254_016_000_000, 254_016_000_000);
+    assert_eq!(resolved["frames"], 25);
+}
+
+#[test]
+fn custom_export_frames_keep_the_active_target_behavior() {
+    let (mut s, _, active) = export_target_timebase_fixture(25.0, false, 50.0);
+    let resolved =
+        resolve_target_range_without_editing(&mut s, json!({"sequence":active, "preset":"PNG Sequence", "range":"custom", "startFrame":50, "endFrame":100}));
+    assert!(resolved["source"].as_str().unwrap().contains(", 50 fps,"));
+    assert_resolved_target_time(&resolved, 254_016_000_000, 254_016_000_000);
+    assert_eq!(resolved["frames"], 50);
+}
+
+#[test]
+fn custom_export_input_frames_do_not_use_the_output_rate_override() {
+    let (mut s, target, _) = export_target_timebase_fixture(25.0, false, 50.0);
+    let resolved = resolve_target_range_without_editing(
+        &mut s,
+        json!({"sequence":target, "preset":"PNG Sequence", "fps":10, "range":"custom", "startFrame":25, "endFrame":50}),
+    );
+    assert_eq!(resolved["output"]["fps"], "10");
+    assert!(resolved["source"].as_str().unwrap().contains(", 25 fps,"));
+    assert_resolved_target_time(&resolved, 254_016_000_000, 254_016_000_000);
+    assert_eq!(resolved["frames"], 10, "output sampling changes independently from input range units");
+}
