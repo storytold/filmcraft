@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-09 · **Change:** minor (uncompressed / PackBits YCbCr TIFF stills apply their Orientation tag) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-17 · **Change:** minor (bounded Premiere import; remaining fidelity gaps explicit) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
 
 Containers, stills, audio files, project and interchange files, captions and presets. Codecs inside
 the containers are in [codec-parity.md](codec-parity.md). Our import list is
@@ -13,7 +13,7 @@ only). "Tested" names the evidence.
 
 | Format | Premiere | Read | Write | Tested | % |
 |---|---|---|---|---|---|
-| **Premiere project `.prproj`** | native | **no** | **no** | — | **0%** ([G2](gaps.md#g2-premieres-prproj-cannot-be-opened)) |
+| **Premiere project `.prproj`** | native | **partial** | **no** | hand-written parser/engine regressions; four real Premiere projects (not committed) imported with unchanged source hashes | not scored; [limits](premiere-import.md) ([G2](gaps.md#g2-premieres-prproj-cannot-be-opened)) |
 | Our project `.fcproj` | — | yes, schema migrations | yes, atomic, auto-save, recovery journal | migration tests | — |
 | FCP7 XML (`xmeml`) | read + write | yes | yes | round-trip tests; Premiere-exported XML slow (#461) | 75% |
 | FCPXML | read (via XtoCC) | yes | yes | round-trip tests | 80% |
@@ -84,8 +84,8 @@ only). "Tested" names the evidence.
 
 ## Summary
 
-**File formats dimension: ~60%, 140–240 h** (codecs counted separately). The beta blocker is
-`.prproj`. After it, by user impact: WMV import, AVI export and DivX / Xvid / DV, EXR / PSD stills, AAF / OMF
+**File formats dimension: ~60%, 140–240 h** (codecs counted separately). These aggregate estimates have not been re-measured for the bounded `.prproj` importer.
+Reliable, broader `.prproj` fidelity remains a beta requirement. After it, by user impact: AVI and WMV import, EXR / PSD stills, AAF / OMF
 validation in Avid and Pro Tools, DVD / Blu-ray / DCP / broadcast MXF delivery.
 
 ## Revision history
@@ -95,6 +95,4 @@ validation in Avid and Pro Tools, DVD / Blu-ray / DCP / broadcast MXF delivery.
 | 2026-10-13 | minor | Stills: EXIF Orientation applied to JPEG, PNG, WebP and TIFF (#1583); YCbCr TIFF and DNG not yet |
 | 2026-10-12 | minor | VP8 WebM decodes (#1064, closes #432): Matroska row no longer lists the black-picture report. AVI import ships (#650, merged 2026-10-12): row changed from "no demuxer" to read via `crates/avi`; summary no longer lists AVI import as missing; the row's percentage and the dimension figure (~60%, 140-240 h) were not re-measured |
 | 2026-10-10 | major | Created: format-by-format comparison with Premiere 26.5.2 from the import / export registries, crate READMEs, the installed bundle's exporter listings and open issues |
-| 2026-10-21 | minor | PSD stills: 8/16-bit grayscale and RGB import of the flattened composite, merged transparency unblended from white (#2116) |
-| 2026-10-26 | minor | GIF exports preserve binary transparency when requested; synthetic decode tests cover alpha threshold and animation disposal (#3396); estimates unchanged |
-| 2026-11-09 | minor | Stills: uncompressed and PackBits YCbCr TIFF apply their Orientation tag; DNG not yet |
+| 2026-10-17 | minor | Premiere project read support is partial; record import scope and remaining gaps without inventing a fidelity percentage. |
