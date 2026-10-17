@@ -437,8 +437,27 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             id
         };
 
-        let start = child_i64(c, "start").unwrap_or(-1);
-        let end = child_i64(c, "end").unwrap_or(-1);
+        // A clip edge under a transition is written as -1: the neighbouring `transitionitem`
+        // defines it (Premiere and Resolve both write it so, #1687). The clip's visible edge is
+        // the transition's cut, and `in` / `out` are the source at the transition's start, so the
+        // source moves up by the handle before the cut.
+        let (start, end, in_shift) = {
+            let mut start = child_i64(c, "start").unwrap_or(-1);
+            let mut end = child_i64(c, "end").unwrap_or(-1);
+            let mut shift = 0;
+            if start < 0
+                && let Some((cut, t_start)) = c.prev_sibling_element().filter(|t| t.has_tag_name("transitionitem")).and_then(Self::transition_cut)
+            {
+                start = cut;
+                shift = cut - t_start;
+            }
+            if end < 0
+                && let Some((cut, _)) = c.next_sibling_element().filter(|t| t.has_tag_name("transitionitem")).and_then(Self::transition_cut)
+            {
+                end = cut;
+            }
+            (start, end, shift)
+        };
         let in_f = child_i64(c, "in").unwrap_or(0);
         let out_f = child_i64(c, "out").unwrap_or(in_f);
         let src_in = child_i64(c, "pproTicksIn").map(Tick).unwrap_or_else(|| rate.tick_of(in_f));
@@ -473,6 +492,13 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 }
             }
         }
+        // the handle before a transition-defined start: sequence frames, at the clip's speed
+        let (src_in, src_out) = if in_shift > 0 && !hold {
+            let d = Tick((seq_rate.tick_of(in_shift).0 as f64 * speed).round() as i64);
+            (src_in + d, src_out + d)
+        } else {
+            (src_in, src_out)
+        };
         let src_len = (src_out - src_in).abs();
         let (start_t, dur) = match (start >= 0, end >= 0) {
             (true, true) => (seq_rate.tick_of(start), seq_rate.tick_of(end) - seq_rate.tick_of(start)),
@@ -628,6 +654,22 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 ti.effects.push(inst);
             }
         }
+    }
+
+    /// Where a `transitionitem` cuts (its start for `start` / `start-black` alignment, its end for
+    /// `end` / `end-black`, else its middle: `center`, the default), with the transition's start.
+    fn transition_cut(t: Node) -> Option<(i64, i64)> {
+        let s = child_i64(t, "start")?;
+        let e = child_i64(t, "end").unwrap_or(s);
+        if s < 0 || e < s {
+            return None;
+        }
+        let cut = match child_text(t, "alignment").unwrap_or("").to_ascii_lowercase().as_str() {
+            "start" | "start-black" => s,
+            "end" | "end-black" => e,
+            _ => s + (e - s) / 2,
+        };
+        Some((cut, s))
     }
 
     fn transition(&mut self, seq: &mut Sequence, kind: TrackKind, ti: usize, c: Node, rate: FrameRate) {
