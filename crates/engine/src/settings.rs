@@ -1140,7 +1140,7 @@ static CATEGORIES: &[Category] = &[
                     f("color.hdrGraphicsWhite", "HDR Graphics White (Nits)", Kind::Choice(HDR_WHITE), false),
                 ],
             ),
-            Row::Note("For color management parameters, go to the Settings tab in the Lumetri Color panel."),
+            Row::Note("For color management parameters, go to the Settings tab in the Color Grade panel."),
         ],
     },
     Category {

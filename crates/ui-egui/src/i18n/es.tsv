@@ -11,7 +11,7 @@
 # Clean-room: every entry was written from the plain meaning of the English text using ordinary
 # Spanish video-editing vocabulary (pista, cabezal, secuencia, bandeja, procesar…). No proprietary
 # localisation resource, string table or product UI was consulted or copied; add entries the same
-# way. Product and technology names (FilmCraft, ArtCraft, Lumetri, ProRes, LUFS…) keep their
+# way. Product and technology names (FilmCraft, ArtCraft, ProRes, LUFS…) keep their
 # spelling. "video" is written without an accent, as in the rest of this catalog.
 
 	About FilmCraft	Acerca de FilmCraft
@@ -195,8 +195,8 @@
 	Refresh Changed Media	Actualizar medios cambiados
 	Linked Selection	Selección vinculada
 	Lock Guides	Bloquear guías
-	Lumetri Color	Color Lumetri
-	Lumetri Scopes	Ámbitos Lumetri
+	Color Grade	Gradación de color
+	Video Scopes	Ámbitos de video
 	Magnification	Ampliación
 	Make Offline…	Desconectar…
 	Make Subclip…	Crear subclip…
@@ -889,7 +889,7 @@
 	Clip Volume	Volumen del clip
 	(no clip selected)	(ningún clip seleccionado)
 	Master · {name}	Maestro · {name}
-	Add Lumetri Color to clip	Añadir Color Lumetri al clip
+	Add Color Grade to clip	Añadir Gradación de color al clip
 	Input LUT	LUT de entrada
 	Color	Color
 	Temperature	Temperatura
@@ -1735,7 +1735,7 @@
 	Focus Size	Tamaño del foco
 	Fold Motion	Movimiento de plegado
 	Foldback	Retorno
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Para los parámetros de gestión del color, ve a la pestaña Ajustes del panel Color Lumetri.
+	For color management parameters, go to the Settings tab in the Color Grade panel.	Para los parámetros de gestión del color, ve a la pestaña Ajustes del panel Gradación de color.
 	Format	Formato
 	Four Scopes (RGB, 8 bit)	Cuatro ámbitos (RGB, 8 bits)
 	Four Scopes (YUV, float, no clamp)	Cuatro ámbitos (YUV, coma flotante, sin limitar)
@@ -2006,7 +2006,7 @@
 	Luma Key	Incrustación de luminancia
 	Luma Source	Origen de luminancia
 	Luma and Chroma	Luminancia y croma
-	Lumetri Presets	Ajustes preestablecidos de Lumetri
+	Color Grade Presets	Ajustes preestablecidos de gradación de color
 	Luminance	Luminancia
 	Luminance Threshold	Umbral de luminancia
 	Luminosity	Luminosidad
@@ -3128,7 +3128,6 @@
 	Left align text	Alinear texto a la izquierda
 	Looping GIF, 640×360 at 15 fps	GIF en bucle, 640×360 a 15 fps
 	Lower First	Inferior primero
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
 	MXF OP1a	MXF OP1a

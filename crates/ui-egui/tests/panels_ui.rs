@@ -159,7 +159,7 @@ fn every_panel_opens_from_the_window_menu() {
     let menu = d.ok("ui.menu.list", json!({}));
     let window: Vec<String> =
         menu.as_array().unwrap().iter().filter(|m| m["path"] == json!(["Window"])).filter_map(|m| m["label"].as_str().map(str::to_string)).collect();
-    for p in ["Events", "Lumetri Scopes", "Metadata", "Progress", "Project Notes", "Reference Monitor", "Timecode"] {
+    for p in ["Events", "Video Scopes", "Metadata", "Progress", "Project Notes", "Reference Monitor", "Timecode"] {
         assert!(window.iter().any(|w| w == p), "{p} not in Window: {window:?}");
     }
     for (panel, key) in [

@@ -121,7 +121,7 @@ fn scopes_read(s: &mut Session, p: &Value) -> Result<Value> {
 pub(crate) fn commands() -> Vec<CommandSpec> {
     vec![CommandSpec {
         id: "scopes.read",
-        label: "Read Lumetri Scopes",
+        label: "Read Video Scopes",
         menu: &[],
         shortcut: None,
         params: r#"{"scopes":["waveform","parade","histogram","vectorscopeYuv","vectorscopeHls"]?,"waveformType":"rgb|luma|yc|ycNoChroma"?,"paradeType":"rgb|yuv|rgbWhite"?,"colorSpace":"auto|601|709|2100"?,"clamp":bool=true,"columns":n=8,"peaks":n=8,"bins":bool=true,"scale":0.5,"time":ticks?|"frame"|"seconds"|"timecode"}"#,

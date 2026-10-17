@@ -759,7 +759,7 @@ mod tests {
         crate::panels::project::NEW_ITEMS.iter().for_each(|(l, _)| push(&mut out, l));
         // section headers keyed by their English name (collapsed state), translated when drawn
         let sections = [
-            // Lumetri Color
+            // Color Grade
             "Basic Correction",
             "Creative",
             "Curves",

@@ -39,7 +39,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         bui.add_space(8.0);
         bui.label(egui::RichText::new(tlf!("Master · {name}", name = it.name)).color(t.text_dim));
         bui.add_space(8.0);
-        if bui.button(tl!("Add Lumetri Color to clip")).clicked() {
+        if bui.button(tl!("Add Color Grade to clip")).clicked() {
             let _ = app.session.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"}));
         }
         return;

@@ -48,7 +48,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 continue;
             }
-            if top == "Lumetri Presets" {
+            if top == "Color Grade Presets" || top == "Lumetri Presets" {
                 if let Some(name) = lumetri_rows(app, ui, &filter) {
                     lumetri_apply = Some(name);
                 }
@@ -159,6 +159,10 @@ fn folder_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, key: &str, depth: usize
     let name = if depth == 0 { key } else { key.split_once('/').map_or(key, |(_, folder)| folder) };
     ui.painter().text(pos2(x + 30.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::t(name), Tokens::ui(12.0), t.text);
     app.auto.add(&format!("effects.folder.{key}"), r, name);
+    if key.starts_with("Color Grade Presets") {
+        let legacy_key = key.replacen("Color Grade Presets", "Lumetri Presets", 1);
+        app.auto.add(&format!("effects.folder.{legacy_key}"), r, name);
+    }
     if resp.clicked() {
         if open {
             app.ui.expanded_fx.retain(|k| k != key);
@@ -208,7 +212,7 @@ fn preset_texture(app: &mut FilmcraftApp, ctx: &egui::Context, p: &filmcraft_ren
 fn lumetri_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui, filter: &str) -> Option<String> {
     use filmcraft_render::lumetri_presets as lp;
     let t = app.tokens;
-    let top = "Lumetri Presets";
+    let top = "Color Grade Presets";
     let presets: Vec<lp::LumetriPreset> = lp::presets().into_iter().filter(|p| crate::i18n::matches_query(p.name, filter)).collect();
     if !filter.is_empty() && presets.is_empty() {
         return None;

@@ -1181,7 +1181,7 @@ mod tests {
                 "Unsharp Mask",
             ],
         ),
-        ("Color Correction", &["ASC CDL", "Brightness & Contrast", "Lumetri Color", "Tint", "Video Limiter", "Vignette"]),
+        ("Color Correction", &["ASC CDL", "Brightness & Contrast", "Color Grade", "Tint", "Video Limiter", "Vignette"]),
         ("Distort", &["Corner Pin", "Lens Distortion", "Magnify", "Mirror", "Spherize", "Turbulent Displace", "Twirl", "Warp Stabilizer", "Wave Warp"]),
         ("Generate", &["4-Color Gradient", "Gradient"]),
         ("Image Control", &["Black & White", "Channel Mix", "Color Pass", "Color Replace", "Gamma Correction", "Invert", "Rounded Crop"]),

@@ -5,7 +5,7 @@
 # string table or product UI was consulted or copied; add entries the same way. Commands use the
 # base verb ("Simpan Sebagai…", "Tambah Penanda"), messages address the user as "Anda", and menu
 # labels keep the title case of the English source. Product, format and technology names
-# (FilmCraft, ArtCraft, Lumetri, ProRes, LUFS, EDL, AAF…) keep their spelling, and common loanwords
+# (FilmCraft, ArtCraft, ProRes, LUFS, EDL, AAF…) keep their spelling, and common loanwords
 # of the trade (render, preset, mixer, gain, ripple, roll, slip, slide, snap, scrub, offline) stay
 # as they are. Decimal fractions in descriptions use a comma (29,97 fps). This catalog has the same
 # entries as `es.tsv` plus the native macOS Settings menu; strings added later show in English until
@@ -202,8 +202,8 @@
 	Refresh Changed Media	Segarkan Media yang Berubah
 	Linked Selection	Pilihan Tertaut
 	Lock Guides	Kunci Garis Bantu
-	Lumetri Color	Lumetri Color
-	Lumetri Scopes	Lumetri Scopes
+	Color Grade	Gradasi Warna
+	Video Scopes	Scope Video
 	Magnification	Pembesaran
 	Make Offline…	Jadikan Offline…
 	Make Subclip…	Buat Subklip…
@@ -894,7 +894,7 @@
 	Clip Volume	Volume Klip
 	(no clip selected)	(tidak ada klip yang dipilih)
 	Master · {name}	Master · {name}
-	Add Lumetri Color to clip	Tambahkan Lumetri Color ke klip
+	Add Color Grade to clip	Tambahkan Gradasi Warna ke klip
 	Input LUT	LUT Input
 	Color	Warna
 	Temperature	Suhu
@@ -1740,7 +1740,7 @@
 	Focus Size	Ukuran Fokus
 	Fold Motion	Gerak Lipat
 	Foldback	Foldback
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Untuk parameter manajemen warna, buka tab Pengaturan di panel Lumetri Color.
+	For color management parameters, go to the Settings tab in the Color Grade panel.	Untuk parameter manajemen warna, buka tab Pengaturan di panel Gradasi Warna.
 	Format	Format
 	Four Scopes (RGB, 8 bit)	Empat Skop (RGB, 8 bit)
 	Four Scopes (YUV, float, no clamp)	Empat Skop (YUV, float, tanpa pembatasan)
@@ -2009,7 +2009,7 @@
 	Luma Key	Key Luma
 	Luma Source	Sumber Luma
 	Luma and Chroma	Luma dan Kroma
-	Lumetri Presets	Preset Lumetri
+	Color Grade Presets	Preset Gradasi Warna
 	Luminance	Luminans
 	Luminance Threshold	Ambang Luminans
 	Luminosity	Luminositas
@@ -3124,7 +3124,6 @@
 	Left align text	Rata kiri teks
 	Looping GIF, 640×360 at 15 fps	GIF berulang, 640×360 pada 15 fps
 	Lower First	Bawah Dulu
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
 	MXF OP1a	MXF OP1a

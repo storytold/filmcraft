@@ -4,7 +4,7 @@
 # German video-editing vocabulary. No proprietary localisation resource, string table or product UI
 # was consulted or copied; add entries the same way. Like the German catalogs of the other Craft
 # apps, text addresses the user informally ("du") and commands use the infinitive ("Projekt
-# öffnen…"). Product, format and feature names (FilmCraft, ArtCraft, Lumetri, Essential Graphics,
+# öffnen…"). Product, format and feature names (FilmCraft, ArtCraft, Essential Graphics,
 # EDL, AAF…) keep their spelling. This catalog covers every menu, including the native macOS
 # app menu; anything else is shown in English.
 #
@@ -210,8 +210,8 @@
 	Link Media…	Medien verknüpfen…
 	Linked Selection	Verknüpfte Auswahl
 	Lock Guides	Hilfslinien sperren
-	Lumetri Color	Lumetri-Farbe
-	Lumetri Scopes	Lumetri-Scopes
+	Color Grade	Farbkorrektur
+	Video Scopes	Video-Scopes
 	Magenta	Magenta
 	Magnification	Vergrößerung
 	Make Offline…	Offline setzen…
