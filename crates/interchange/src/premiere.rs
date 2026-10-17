@@ -1,5 +1,6 @@
 //! Premiere project reader, based on llm-video-editor's `premiere.py` and user-owned XML structure.
-//! No Adobe code or assets. MIT OR Apache-2.0. Unsupported features remain in the source snapshot
+//! No Adobe application code, proprietary documentation or assets were consulted or copied.
+//! MIT OR Apache-2.0. Unsupported features remain in the source snapshot
 //! and are reported; this is not a promise of pixel-identical Premiere rendering.
 
 use std::collections::{BTreeMap, BTreeSet};

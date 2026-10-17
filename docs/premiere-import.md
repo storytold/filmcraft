@@ -1,13 +1,15 @@
 # Premiere import
 
-`premiere.import` reads gzip or plain XML using the object graph documented by the local
-LLM Video Editor Python parser and structural observations from user-owned project XML.
-No Adobe application code or assets are used. New code is MIT OR Apache-2.0.
+`premiere.import` reads gzip or plain XML based on the LLM Video Editor Python parser and
+structural observations from user-owned project XML. No Adobe application code, proprietary
+documentation or assets were consulted or copied. The committed fixtures are hand-written
+with placeholder names and paths; private projects and media are not included.
+New code is MIT OR Apache-2.0.
 
 ```sh
 # Substitute your project and NEW destination. A rendered preview is not required.
 filmcraft-cli --save-as /path/to/episode.fcproj exec premiere.import \
-  '{"path":"/path/to/source.prproj","destination":"/path/to/episode-media","mediaMode":"link","frameRate":{"num":30000,"den":1001}}'
+  '{"path":"/path/to/source.prproj","destination":"/path/to/episode-media","mediaMode":"link"}'
 ```
 
 The same JSON command works through MCP `command_run` or the desktop control channel.
@@ -23,9 +25,12 @@ writing to those files. The project stores the original source paths, hashes, so
 warnings independently of timeline edits. Undo does not delete the saved source snapshot.
 
 Files with workflow provenance use the distinct `filmcraft.project.workflow` format tag and
-workflow version 1. Unmodified upstream FilmCraft rejects this tag, preventing silent provenance
-loss. Ordinary projects still use the upstream tag and schema. Save/reopen retains the records.
-Copying just the `.fcproj` is not a portable-project conversion; that is a separate port item.
+workflow version 1. Once saved with provenance, a file requires a build that understands this
+tag. Older FilmCraft versions reject it, preventing them from silently discarding provenance
+on save. Ordinary projects still use the upstream tag and schema. Undoing the import can remove
+its provenance record; save/reopen retains records that remain in the project.
+Copying just the `.fcproj` does not include its linked media or source snapshot. They must remain
+available at their recorded locations; automatic portable-project conversion is outside this importer.
 
 Supported: video/audio tracks, mute state, exact tick ranges, constant positive speed, nested
 sequences, still media, caption text, plain text graphics, static Motion scale/position/rotation,

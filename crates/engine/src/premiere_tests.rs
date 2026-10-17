@@ -108,9 +108,12 @@ fn premiere_unreadable_media_stays_offline_in_link_and_copy_modes() {
         if mode == "copy" {
             assert_eq!(std::fs::read_dir(dest.join("media")).unwrap().count(), 0);
         }
-        let report = s.execute("checks.run", json!({"rendered":false})).unwrap();
-        assert_eq!(report["valid"], false);
-        assert!(report["issues"].as_array().unwrap().iter().any(|i| i["code"] == "source-missing"));
+        let saved = fixture.0.join(format!("{mode}.fcproj"));
+        s.execute("file.saveAs", json!({"path":saved})).unwrap();
+        let mut reopened = Session::default();
+        reopened.execute("file.open", json!({"path":saved})).unwrap();
+        assert!(reopened.project.items.values().any(|i| matches!(&i.kind, filmcraft_project::ItemKind::Media(m) if m.offline)));
+        assert_eq!(reopened.project.workflow, s.project.workflow);
     }
     std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o600)).unwrap();
     assert_eq!(hash_file(&source).unwrap(), source_hash);
