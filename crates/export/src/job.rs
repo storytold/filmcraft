@@ -590,6 +590,7 @@ impl Exporter {
     /// Encode the rendered frames `f..` (the analysis pass of a two-pass export only encodes), mux
     /// them with their audio, and drop each frame as soon as it is encoded.
     fn encode_batch(&mut self, f: i64, frames: Vec<Frame>, sources: &dyn SourceProvider) -> Result<Encoded> {
+        let _conversion = crate::SerialYuvRows::enter();
         if self.first_pass {
             for (k, frame) in frames.into_iter().enumerate() {
                 timed(Stage::Encode, || self.encode(std::slice::from_ref(&frame), f + k as i64))?;
@@ -655,6 +656,51 @@ mod tests {
     use super::*;
 
     const MIB: u64 = 1 << 20;
+
+    struct CallerRows(Box<dyn VideoEncoder>, std::thread::ThreadId);
+
+    impl VideoEncoder for CallerRows {
+        fn sample_entry(&self) -> SampleEntry {
+            self.0.sample_entry()
+        }
+        fn timescale(&self) -> u32 {
+            self.0.timescale()
+        }
+        fn encode(&mut self, frame: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
+            let owner = self.1;
+            crate::for_yuv_rows(&mut [0; 32], &mut [0; 8], &mut [0; 8], 4, 2, &|_, _, _, _| {
+                assert_eq!(std::thread::current().id(), owner, "encoding must not join the render pool for conversion");
+            });
+            self.0.encode(frame)
+        }
+        fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
+            self.0.flush()
+        }
+    }
+
+    #[test]
+    fn ordinary_export_callers_keep_conversion_off_the_render_pool() {
+        assert!(rayon::current_thread_index().is_none());
+        let (project, seq, sources) = crate::tests::project();
+        let mut outputs = Vec::new();
+        for overlap in [true, false] {
+            let path = std::env::temp_dir().join(format!("fc-yuv-caller-{}-{overlap}.mp4", std::process::id()));
+            let settings = ExportSettings { format: Format::H264, path: path.to_string_lossy().into_owned(), include_audio: false, ..Default::default() };
+            let progress = Progress::default();
+            let mut exporter = Exporter::new(project.clone(), seq, &settings, &progress).unwrap();
+            let replacement = make_venc(&settings, 320, 180, FrameRate::FPS_24).unwrap();
+            let inner = std::mem::replace(&mut exporter.venc, replacement);
+            exporter.venc = Box::new(CallerRows(inner, std::thread::current().id()));
+            exporter.set_batch(2);
+            exporter.set_overlap(overlap);
+            while !matches!(exporter.step(&sources, &progress).unwrap(), Step::Done(_)) {}
+            assert_eq!(exporter.overlapped_steps() > 0, overlap);
+            assert_eq!(progress.done.load(Ordering::Relaxed), 24);
+            outputs.push(std::fs::read(&path).unwrap());
+            std::fs::remove_file(path).unwrap();
+        }
+        assert_eq!(outputs[0], outputs[1], "the conversion policy must preserve encoded bytes");
+    }
 
     #[test]
     fn frame_bytes_by_format() {

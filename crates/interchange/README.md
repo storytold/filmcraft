@@ -96,6 +96,10 @@ OMF carries no video at all.
 - `tests/uncarried_clips.rs`: every format's export report names each graphic clip and adjustment
   layer once, as a warning; a sequence without them reports nothing; what a re-import gives back
   matches the report; the FCP7 XML import names a clip item whose file is not defined.
+- `tests/fuzz.rs`: mutated EDL, FCP7 XML, FCPXML, OTIO, AAF, OMF and ALE files (truncation, bit
+  flips, hostile numbers, removed and duplicated spans, hostile 32-bit sizes) never panic under
+  `catch_unwind`; 2,000 mutations per format by default, more with `FILMCRAFT_FUZZ_ITERS=<n>`
+  (run it in a debug build too: only there does integer overflow panic).
 - `src/aaf/tests.rs`: written files checked against the required properties of every class
   written (Header, Identification, Mobs, slots, components, descriptors), weak references
   resolving into the dictionary, source clips resolving to mobs and slots, the Edit Protocol

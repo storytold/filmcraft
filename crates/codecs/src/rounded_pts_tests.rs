@@ -185,6 +185,38 @@ fn mp4_90k(durations: &[u32]) -> Arc<[u8]> {
 /// Files that are not a constant rate gone slightly off its grid keep their own times: whatever is
 /// asked (each frame's start, the unit before it, every 30 fps grid point), the frame shown is the
 /// last one starting at or before it.
+///
+/// A clip whose frame times were rounded to whole milliseconds inside a 90 kHz track (#1700). A
+/// 30 fps clip's durations are 2970 and 3060 units in turn, and a 60 fps clip's 1440 and 1530; the
+/// old median reads the first as 30.303 fps and the second as 58.824 fps. Both mean to 3000/1500.
+fn mp4_ms_rounded(rate: FrameRate) -> Arc<[u8]> {
+    let mut w = Mp4Writer::new(Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).unwrap();
+    let t = w.add_track(TrackConfig::new(SampleEntry::jpeg((BITS * BLOCK) as u16, BLOCK as u16), 90_000)).unwrap();
+    let n = frame_count(rate);
+    let nominal_scale = i128::from(rate.num) / i128::from(rate.den);
+    let grid = 90_000 / nominal_scale as i64;
+    let stamp = |k: usize| ((2 * k as i64 * grid + 90) / 180) * 90;
+    for k in 0..n {
+        w.write_sample(t, WriteSample { data: &picture(k), duration: (stamp(k + 1) - stamp(k)) as u32, composition_offset: 0, is_sync: true }).unwrap();
+    }
+    w.finish().unwrap().into_inner().into()
+}
+
+/// A phone-style 90 kHz track with whole-millisecond frame times keeps its rate and every frame.
+#[test]
+fn mp4_ms_rounded_frame_times_get_back_to_a_standard_rate() {
+    let mut failures = Vec::new();
+    for rate in [FrameRate::FPS_30, FrameRate::FPS_60] {
+        let src = crate::open_bytes("synthetic.mov", mp4_ms_rounded(rate)).unwrap();
+        let got = src.info().video.as_ref().map(|v| v.frame_rate);
+        if got != Some(rate) {
+            failures.push(format!("{rate}: reads as {got:?}"));
+        }
+        failures.extend(problems(src.as_ref(), rate).into_iter().map(|p| format!("{rate}: {p}")));
+    }
+    assert!(failures.is_empty(), "mov:\n{}", failures.join("\n"));
+}
+
 #[test]
 fn mp4_variable_rate_and_on_grid_frame_times_stay_put() {
     let cases: [(&str, Vec<u32>); 5] = [

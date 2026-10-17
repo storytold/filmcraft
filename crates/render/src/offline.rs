@@ -1,6 +1,8 @@
 //! The offline slate: what a clip whose media is missing (or was made offline) shows instead of
 //! its pictures. Our own design, drawn in code: a dark red field with diagonal hazard stripes, a
 //! dark panel with a warning triangle, "MEDIA NOT FOUND", the file name and how to fix it.
+//! Unreadable media uses a small corner badge on a transparent frame, so an unsupported overlay
+//! does not hide the composition beneath it.
 //!
 //! The slate is drawn at the size the caller asks for, so a 4K clip's slate scales with playback
 //! resolution like any other frame, and it is deterministic (tests compare renders against it).
@@ -42,9 +44,13 @@ fn srgb(c: [u8; 3]) -> [f32; 4] {
     premul_linear([c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0])
 }
 
-/// Draw the slate at `w`×`h` (premultiplied linear-light, opaque).
+/// Draw the slate at `w`×`h` (premultiplied linear-light). Unreadable media is transparent outside
+/// a corner warning badge; missing and deliberately offline media keep their opaque slate.
 pub fn slate(w: usize, h: usize, file_name: &str, reason: OfflineReason) -> Image {
     let (w, h) = (w.max(1), h.max(1));
+    if reason == OfflineReason::Unreadable {
+        return unreadable_badge(w, h, file_name);
+    }
     let field = srgb(FIELD);
     let stripe = srgb(STRIPE);
     let period = (h as f32 / 9.0).max(4.0);
@@ -90,6 +96,31 @@ pub fn slate(w: usize, h: usize, file_name: &str, reason: OfflineReason) -> Imag
         _ => "File ▸ Link Media… reconnects it",
     };
     text(&mut img, hint, "Regular", Vec2::new(cx as f64, (ty0 + tri_h + s * 0.205) as f64), s * 0.028, [0.85, 0.72, 0.72, 1.0], pw * 0.94);
+    img
+}
+
+/// Confine the warning, including long or multi-line file names, to its own small canvas.
+fn unreadable_badge(w: usize, h: usize, file_name: &str) -> Image {
+    let s = w.min(h) as f32;
+    let bw = ((w as f32 * 0.48).round() as usize).max(1).min(w);
+    let bh = ((s * 0.20).round() as usize).max(1).min(h);
+    let mut badge = Image::filled(bw, bh, PANEL);
+    fill_path(&mut badge, &filmcraft_text::Path::rect(0.0, 0.0, (s * 0.008).max(1.0), bh as f32), AMBER);
+    let cx = bw as f64 / 2.0;
+    let max_w = (bw as f32 - s * 0.08).max(1.0);
+    text(&mut badge, OfflineReason::Unreadable.headline(), "Bold", Vec2::new(cx, (s * 0.055) as f64), s * 0.040, [1.0, 1.0, 1.0, 1.0], max_w);
+    if !file_name.is_empty() {
+        text(&mut badge, file_name, "Regular", Vec2::new(cx, (s * 0.115) as f64), s * 0.030, [1.0, 0.80, 0.80, 1.0], max_w);
+    }
+    text(&mut badge, "File ▸ Link Media… reconnects it", "Regular", Vec2::new(cx, (s * 0.165) as f64), s * 0.026, [0.85, 0.72, 0.72, 1.0], max_w);
+    let pad = (s * 0.025).round() as usize;
+    let (x0, y0) = (pad.min(w - bw), pad.min(h - bh));
+    let mut img = Image::new(w, h);
+    for (row, source) in img.px.chunks_exact_mut(w * 4).skip(y0).zip(badge.px.chunks_exact(bw * 4)) {
+        if let Some(target) = row.get_mut(x0 * 4..x0 * 4 + source.len()) {
+            target.copy_from_slice(source);
+        }
+    }
     img
 }
 
