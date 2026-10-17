@@ -21,10 +21,15 @@ use crate::{CodecError, make_video_decoder};
 /// Most bytes read from one AAC access unit when probing for HE-AAC at open (8 channels × 6144 bits).
 const MAX_AAC_PROBE_UNIT: usize = 8 * 6144 / 8;
 
+struct DecodedAudioPacket {
+    samples: Vec<Vec<f32>>,
+    failed: bool,
+}
+
 struct AudioState {
     decoder: Option<PacketDecoder>,
     /// Decoded packets by sample index.
-    packets: HashMap<usize, Arc<Vec<Vec<f32>>>>,
+    packets: HashMap<usize, Arc<DecodedAudioPacket>>,
     order: Vec<usize>,
     last_decoded: Option<usize>,
 }
@@ -90,6 +95,20 @@ fn audio_starts(file: &Mp4File, bytes: &crate::Src, ti: usize, rate: u32) -> Vec
     let unit = i64::try_from((i128::from(rate) + ts - 1) / ts).unwrap_or(i64::MAX);
     let packets = stamps.iter().map(|&stamp| PacketTime { stamp, stamped: true, samples: Some(frame) });
     contiguous_starts(packets, (frame / 2).max(unit.saturating_mul(2).saturating_add(1)))
+}
+
+/// Return source-rate buffer indices overlapped by a failed packet's concealment span.
+/// Packet positions are audio frames, but duration is raw track-timescale ticks
+/// treated as a frame count here; the span is clipped to the request.
+fn failed_audio_span(packet_start: i64, request_start: i64, duration: u32, request_len: usize) -> std::ops::Range<usize> {
+    let begin = usize::try_from(packet_start.saturating_sub(request_start).max(0)).unwrap_or(usize::MAX).min(request_len);
+    let end = if duration == 0 {
+        begin
+    } else {
+        let last = packet_start.saturating_add(i64::from(duration) - 1).saturating_sub(request_start);
+        usize::try_from((i128::from(last) + 1).max(0)).unwrap_or(usize::MAX).min(request_len)
+    };
+    begin..end
 }
 
 /// HDR static metadata from the sample entry's `mdcv` / `clli` boxes (0 = unknown).
@@ -366,18 +385,18 @@ impl Mp4Source {
     }
 
     /// Decoded packet `i` of audio stream `a` (`ainfo` is its `AudioStreamInfo`; `st` its decoder state).
-    fn audio_packet(&self, a: &Mp4Audio, ainfo: &AudioStreamInfo, st: &mut AudioState, i: usize) -> crate::Result<Arc<Vec<Vec<f32>>>> {
+    fn audio_packet(&self, a: &Mp4Audio, ainfo: &AudioStreamInfo, st: &mut AudioState, i: usize) -> crate::Result<Arc<DecodedAudioPacket>> {
         if let Some(p) = st.packets.get(&i) {
             return Ok(p.clone());
         }
         let ti = a.track;
         let track = self.file.tracks.get(ti).ok_or_else(|| CodecError::Unsupported("no audio track".into()))?;
         let entry = track.entries.first().ok_or_else(|| CodecError::Container("audio track without a sample description".into()))?;
-        let sample = track.samples.get(i).ok_or_else(|| CodecError::Container("audio packet out of range".into()))?;
+        track.samples.get(i).ok_or_else(|| CodecError::Container("audio packet out of range".into()))?;
         let pk_start = a.starts.get(i).copied().unwrap_or(0);
         let data = self.read(ti, i)?;
-        let decoded = match &entry.codec {
-            CodecConfig::Pcm(p) => decode_pcm(&data, p),
+        let (samples, failed) = match &entry.codec {
+            CodecConfig::Pcm(p) => (decode_pcm(&data, p), false),
             c => {
                 if st.decoder.is_none() {
                     st.decoder = Some(PacketDecoder::for_isobmff(c, ainfo.sample_rate)?);
@@ -398,15 +417,15 @@ impl Mp4Source {
                         }
                     }
                 }
-                let r = st.decoder.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?.decode(&data, pk_start.max(0) as u64);
+                let result = st.decoder.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?.decode(&data, pk_start.max(0) as u64);
                 st.last_decoded = Some(i);
-                match r {
-                    Ok(v) => v,
-                    Err(_) => vec![vec![0.0; sample.duration as usize]; ainfo.channels.max(1) as usize],
+                match result {
+                    Ok(samples) => (samples, false),
+                    Err(_) => (Vec::new(), true),
                 }
             }
         };
-        let p = Arc::new(decoded);
+        let p = Arc::new(DecodedAudioPacket { samples, failed });
         st.packets.insert(i, p.clone());
         st.order.push(i);
         if st.order.len() > 4096 {
@@ -476,14 +495,24 @@ impl MediaSource for Mp4Source {
         let mut st = a.state.lock().unwrap_or_else(|e| e.into_inner());
         let first = a.starts.partition_point(|&x| x <= s0.max(0)).saturating_sub(1);
         let mut i = first;
-        while i < track.samples.len() {
+        while let Some(sample) = track.samples.get(i) {
             let Some(&pk_start) = a.starts.get(i) else { break };
             if pk_start >= s0.saturating_add(need) {
                 break;
             }
             let pk = self.audio_packet(a, ainfo, &mut st, i)?;
+            if pk.failed {
+                let range = failed_audio_span(pk_start, s0, sample.duration, src.first().map_or(0, Vec::len));
+                for dst in &mut src {
+                    if let Some(span) = dst.get_mut(range.clone()) {
+                        span.fill(0.0);
+                    }
+                }
+                i += 1;
+                continue;
+            }
             for (c, dst) in src.iter_mut().enumerate() {
-                let Some(chan) = pk.get(c.min(pk.len().saturating_sub(1))) else { continue };
+                let Some(chan) = pk.samples.get(c.min(pk.samples.len().saturating_sub(1))) else { continue };
                 for (k, v) in chan.iter().enumerate() {
                     let pos = pk_start.saturating_add(k as i64).saturating_sub(s0);
                     if pos >= 0 && (pos as usize) < dst.len() {
@@ -1220,5 +1249,83 @@ mod he_aac_tests {
             let buf = src.audio(0, 4800, 48_000).unwrap();
             assert!(buf.channels.iter().flatten().all(|v| v.is_finite() && v.abs() <= 1.0), "media_time {media_time}");
         }
+    }
+}
+
+#[cfg(test)]
+mod corrupt_audio_tests {
+    use filmcraft_isobmff::{Brand, Mp4Writer, SampleEntry, TrackConfig, WriteSample, WriterOptions};
+    use filmcraft_media::MediaSource;
+
+    #[test]
+    fn failed_packet_span_matches_per_sample_silence_at_extreme_timestamps() {
+        let min = i64::MIN;
+        let max = i64::MAX;
+        for start in [min, min + 1, min + 2, -10, -1, 0, 1, 10, max - 2, max - 1, max] {
+            for request in [min, min + 1, min + 2, -10, -1, 0, 1, 10, max - 2, max - 1, max] {
+                for duration in [0, 1, 2, 5, 128] {
+                    let old: Vec<_> = (0..duration)
+                        .map(|k| start.saturating_add(i64::from(k)).saturating_sub(request))
+                        .filter(|&position| (0..8).contains(&position))
+                        .map(|position| position as usize)
+                        .collect();
+                    let range = super::failed_audio_span(start, request, duration, 8);
+                    let actual: Vec<_> = (0..8).filter(|position| range.contains(position)).collect();
+                    let expected: Vec<_> = old.into_iter().collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+                    assert_eq!(actual, expected, "start={start}, request={request}, duration={duration}");
+                }
+            }
+        }
+        assert_eq!(super::failed_audio_span(0, 0, u32::MAX, 128), 0..128);
+    }
+
+    #[test]
+    fn failed_aac_packet_does_not_materialize_its_hostile_duration() {
+        // AAC-LC, 48 kHz stereo. The empty access unit cannot decode.
+        let asc = vec![0x11, 0x90];
+        let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mp4)).unwrap();
+        let track = mux.add_track(TrackConfig::new(SampleEntry::aac(asc, 2, 48_000), 48_000)).unwrap();
+        mux.write_sample(track, WriteSample { data: &[], duration: 1_000_000, composition_offset: 0, is_sync: true }).unwrap();
+        let source = super::Mp4Source::open("damaged.m4a", mux.finish().unwrap().into_inner().into()).unwrap();
+        let audio = &source.audios[0];
+        let info = &source.info.audio_streams[0];
+        let mut state = audio.state.lock().unwrap();
+        let packet = source.audio_packet(audio, info, &mut state, 0).unwrap();
+        assert!(packet.failed);
+        assert!(packet.samples.is_empty(), "failed packet must not allocate from its untrusted duration");
+        drop(state);
+
+        let window = source.audio(0, 128, 48_000).unwrap();
+        assert_eq!(window.channels.len(), 2);
+        assert!(window.channels.iter().all(|ch| ch.len() == 128 && ch.iter().all(|&v| v == 0.0)));
+    }
+
+    #[test]
+    fn failed_aac_packet_silences_overlap_independent_of_request_boundary() {
+        let rate = 48_000u32;
+        let tone: Vec<f32> = (0..8192).map(|i| 0.3 * (i as f32 * 0.13).sin()).collect();
+        let mut encoder = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(rate, 1, 64_000)).unwrap();
+        let mut units = encoder.encode(&[&tone]);
+        units.extend(encoder.flush());
+        assert!(units.len() >= 2);
+        let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mp4)).unwrap();
+        let track = mux.add_track(TrackConfig::new(SampleEntry::aac(vec![0x11, 0x88], 1, rate), rate)).unwrap();
+        mux.write_sample(track, WriteSample { data: &units[0], duration: 1024, composition_offset: 0, is_sync: true }).unwrap();
+        mux.write_sample(track, WriteSample { data: &units[1], duration: 400, composition_offset: 0, is_sync: true }).unwrap();
+        mux.write_sample(track, WriteSample { data: &[], duration: 1024, composition_offset: 0, is_sync: true }).unwrap();
+        let source = super::Mp4Source::open("overlap.m4a", mux.finish().unwrap().into_inner().into()).unwrap();
+        // The failed packet starts at 1024 + 400 = 1424, after 124 frames of the crossing read.
+        let crossing = source.audio(1300, 256, rate).unwrap();
+        let isolated = source.audio(1424, 132, rate).unwrap();
+        let prior_packet_len = {
+            let audio = &source.audios[0];
+            let info = &source.info.audio_streams[0];
+            let mut state = audio.state.lock().unwrap();
+            source.audio_packet(audio, info, &mut state, 1).unwrap().samples.first().map_or(0, Vec::len)
+        };
+        assert!(prior_packet_len > 400, "valid packet must overlap the failed packet");
+        assert!(crossing.channels[0][..124].iter().any(|v| v.abs() > 0.001));
+        assert!(isolated.channels[0].iter().all(|&v| v == 0.0));
+        assert_eq!(&crossing.channels[0][124..], &isolated.channels[0]);
     }
 }
