@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use filmcraft_frame::VideoFrame;
-use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
+use filmcraft_time::{FrameRate, Tick, TICKS_PER_SECOND};
 
 use crate::{FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, Result, VideoStreamInfo};
 
