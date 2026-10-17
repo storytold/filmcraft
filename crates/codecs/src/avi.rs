@@ -226,7 +226,10 @@ impl AviSource {
     pub fn open_reader(name: &str, reader: filmcraft_media::SharedReader) -> crate::Result<Self> {
         let bytes = crate::Src(reader);
         let file = filmcraft_avi::open(&bytes).map_err(|e| CodecError::Container(e.to_string()))?;
-        let vstream = file.streams.iter().position(|s| s.kind == StreamKind::Video && s.video.is_some() && !s.chunks.is_empty());
+        // A video stream that declares frames but whose chunks a damaged file lost is still the
+        // file's video: its frames say so, rather than the file passing for audio only.
+        let vstream = file.streams.iter().position(|s| s.kind == StreamKind::Video && s.video.is_some() && (!s.chunks.is_empty() || s.length > 0));
+        let pictures = vstream.and_then(|i| file.streams.get(i)).is_some_and(|s| !s.chunks.is_empty());
         let astreams: Vec<usize> = file
             .streams
             .iter()
@@ -235,7 +238,7 @@ impl AviSource {
             .map(|(i, _)| i)
             .take(filmcraft_media::MAX_AUDIO_STREAMS)
             .collect();
-        if vstream.is_none() && astreams.is_empty() {
+        if !pictures && astreams.is_empty() {
             return Err(CodecError::Unsupported("no playable streams".into()));
         }
         // video: frame slots, pictures and key frames
@@ -512,6 +515,9 @@ impl MediaSource for AviSource {
 
     fn video_frame(&self, req: FrameRequest) -> Result<Arc<VideoFrame>, MediaError> {
         let s = self.vstream.ok_or(MediaError::NoStream("video"))?;
+        if self.vframes.is_empty() {
+            return Err(MediaError::Decode("the video stream's frames are missing (a damaged file)".into()));
+        }
         let t = req.time.max(Tick::ZERO);
         let slot = |t: Tick| self.rate.frame_at(t);
         let late = filmcraft_media::cancel::catch_up().map(|m| slot(t - m));

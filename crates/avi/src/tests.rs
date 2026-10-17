@@ -150,6 +150,33 @@ fn not_avi_and_truncated_recordings() {
     assert!(f.read_chunk(&cut, 0, 0).is_ok());
 }
 
+/// The idx1 entries of one stream damaged (offsets past the file) while the other's are fine: the
+/// video still comes from a scan of `movi` instead of vanishing, its key frames unknown, and the
+/// audio keeps its index. A stream with no data at all stays empty.
+#[test]
+fn a_stream_whose_index_entries_are_damaged_is_scanned() {
+    let mut file = avi(true, false, false);
+    let ix = file.windows(4).rposition(|w| w == b"idx1").unwrap() + 8;
+    for e in file[ix..].as_chunks_mut::<16>().0.iter_mut().filter(|e| &e[..4] == b"00dc") {
+        e[8..12].copy_from_slice(&0xFFFF_FF00u32.to_le_bytes());
+    }
+    let f = open(&file).unwrap();
+    assert_eq!(f.index, IndexSource::Idx1);
+    assert_eq!(table(&f, 0), vec![(10, true), (6, true), (7, true)]);
+    assert!(!f.streams[0].keyframes_known);
+    assert_eq!(f.read_chunk(&file, 0, 1).unwrap(), vec![3; 6]);
+    assert_eq!(table(&f, 1), vec![(16, true), (8, true)]);
+    assert!(f.streams[1].keyframes_known);
+    // an audio-only recording of a file that declares video: nothing to find
+    let mut silent = avi(true, false, false);
+    while let Some(i) = silent.windows(4).position(|w| w == b"00dc") {
+        silent[i..i + 4].copy_from_slice(b"JUNK");
+    }
+    let f = open(&silent).unwrap();
+    assert!(f.streams[0].chunks.is_empty());
+    assert_eq!(table(&f, 1), vec![(16, true), (8, true)]);
+}
+
 /// Every single-byte change and every truncation of a valid file opens or fails, never panics, and
 /// whatever opens reads its chunks without panicking.
 #[test]

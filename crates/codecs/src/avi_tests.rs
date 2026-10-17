@@ -230,3 +230,38 @@ fn copied_h264_keeps_its_timing_with_a_fine_time_base() {
     let mid = src.video_frame(FrameRequest::full(filmcraft_time::Tick::from_rational(1, 1, 50))).unwrap();
     assert!(yuv_bytes(&mid) == reference[0..frame]);
 }
+
+/// The `idx1` entries of the video damaged, the audio's intact: the pictures come from the movie
+/// data, exactly as from the undamaged file, and the sound still plays. With the video chunks gone
+/// altogether the file is still a movie whose frames say it is damaged, not an audio file.
+#[test]
+fn damaged_video_index_entries_lose_no_pictures() {
+    let Some((path, good)) = avi("avi_mjpeg_pcm.avi", &["-c:v", "mjpeg", "-q:v", "3", "-pix_fmt", "yuvj420p"], &["-c:a", "pcm_s16le"]) else { return };
+    let bytes = std::fs::read(&path).unwrap();
+    let ix = bytes.windows(4).rposition(|w| w == b"idx1").unwrap() + 8;
+    let mut damaged = bytes.clone();
+    let mut hit = 0;
+    for e in damaged[ix..].as_chunks_mut::<16>().0.iter_mut().filter(|e| &e[..4] == b"00dc") {
+        e[8..12].copy_from_slice(&0xFFFF_FF00u32.to_le_bytes());
+        hit += 1;
+    }
+    assert_eq!(hit, 50, "every video entry");
+    let src = crate::open_bytes("damaged.avi", damaged.into()).unwrap();
+    check_info("damaged index", &src, "Motion JPEG", "PCM 16-bit");
+    let rate = src.info().frame_rate();
+    for k in [0, 31, 49, 7] {
+        let at = || FrameRequest::full(rate.tick_of(k));
+        assert!(src.video_frame(at()).unwrap().to_rgba8() == good.video_frame(at()).unwrap().to_rgba8(), "frame {k}");
+    }
+    assert_eq!(ours(&src, 4_800), ours(&good, 4_800));
+
+    let mut lost = bytes;
+    while let Some(i) = lost.windows(4).position(|w| w == b"00dc") {
+        lost[i..i + 4].copy_from_slice(b"JUNK");
+    }
+    let src = crate::open_bytes("lost.avi", lost.into()).unwrap();
+    assert_eq!(src.info().kind, filmcraft_media::MediaKind::Movie);
+    let e = src.video_frame(FrameRequest::full(filmcraft_time::Tick::ZERO)).unwrap_err().to_string();
+    assert!(e.contains("damaged"), "{e}");
+    assert_eq!(ours(&src, 4_800), ours(&good, 4_800));
+}

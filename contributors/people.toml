@@ -88,3 +88,8 @@ sync_github_name = false
 
 [people.webdevtodayjason]
 display_name = "Jason Brashear"
+
+[people.tylerjenningsw]
+real_name = "Tyler Jennings"
+display_name = "tylerjenningsw"
+sync_github_name = false

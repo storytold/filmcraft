@@ -296,11 +296,37 @@ pub fn open_with<S: ByteSource + ?Sized>(src: &S, opts: OpenOptions) -> Result<A
         for &(_, from, to) in movis.iter().skip(1) {
             scan(src, &mut streams, from, to, 0);
         }
-        if streams.iter().all(|s| s.chunks.is_empty()) { scan_all(src, &mut streams, &movis) } else { IndexSource::Idx1 }
+        if streams.iter().all(|s| s.chunks.is_empty()) {
+            scan_all(src, &mut streams, &movis)
+        } else {
+            scan_missing(src, &mut streams, &movis);
+            IndexSource::Idx1
+        }
     } else {
         scan_all(src, &mut streams, &movis)
     };
     Ok(AviFile { header, streams, index })
+}
+
+/// A stream the index left without a single chunk while others have theirs (its entries damaged
+/// or missing) gets its chunks from a scan of the `movi` lists, as a file without an index does;
+/// its key frames are then unknown. The indexed streams keep their tables, and a stream that has
+/// no data at all stays empty.
+fn scan_missing<S: ByteSource + ?Sized>(src: &S, streams: &mut [Stream], movis: &[(u64, u64, u64)]) {
+    if !streams.iter().any(|s| s.chunks.is_empty()) {
+        return;
+    }
+    let indexed: Vec<Vec<Chunk>> = streams.iter_mut().map(|s| std::mem::take(&mut s.chunks)).collect();
+    for &(_, from, to) in movis {
+        scan(src, streams, from, to, 0);
+    }
+    for (s, chunks) in streams.iter_mut().zip(indexed) {
+        if chunks.is_empty() {
+            s.keyframes_known = false;
+        } else {
+            s.chunks = chunks;
+        }
+    }
 }
 
 fn clear(streams: &mut [Stream]) {
