@@ -239,3 +239,47 @@ fn inspect_duration_frames_counts_a_partial_last_frame_like_export() {
     assert_eq!(js["durationFrames"], frames);
     assert_eq!(frames, 49);
 }
+
+/// Video and audio tracks of the active sequence that hold a clip.
+fn filled_tracks(s: &Session) -> (usize, usize) {
+    let q = s.active_sequence().unwrap();
+    (q.video_tracks.iter().filter(|t| !t.items.is_empty()).count(), q.audio_tracks.iter().filter(|t| !t.items.is_empty()).count())
+}
+
+/// #1887: the Timeline's drop preview draws `placement_lanes` tracks, so they must be the tracks
+/// `timeline.place` fills, for every way an item can spread over several tracks.
+#[test]
+fn placement_lanes_are_the_tracks_a_placement_fills() {
+    let full = |s: &Session, item: ItemId| TimeRange::new(Tick::ZERO, s.project.item(item).unwrap().duration());
+    // picture and sound, either one alone
+    for (video, audio) in [(true, true), (true, false), (false, true)] {
+        let mut s = setup();
+        let lanes = s.placement_lanes(ItemId(5), full(&s, ItemId(5)), video, audio);
+        s.execute("timeline.place", json!({"item":5,"track":"V1","audioTrack":"A1","time":0,"video":video,"audio":audio})).unwrap();
+        assert_eq!(lanes, filled_tracks(&s), "video {video}, audio {audio}");
+    }
+    // Modify ▸ Audio Channels with two clips, and a second container audio stream: three audio tracks
+    let mut s = setup();
+    let m = std::sync::Arc::make_mut(&mut s.project).item_mut(ItemId(5)).unwrap().as_media_mut().unwrap();
+    m.info.audio_streams.push(m.info.audio_streams[0].clone());
+    m.interpret.audio_channels = Some(filmcraft_project::AudioChannelMap { format: filmcraft_project::AudioChannels::Mono, clips: vec![vec![1], vec![0]] });
+    let lanes = s.placement_lanes(ItemId(5), full(&s, ItemId(5)), true, true);
+    assert_eq!(lanes, (1, 3));
+    s.execute("timeline.place", json!({"item":5,"track":"V1","audioTrack":"A1","time":0})).unwrap();
+    assert_eq!(lanes, filled_tracks(&s));
+    // the nest toggle off: a sequence edits in as its clips, one track per source track with clips
+    let mut s = setup();
+    let active = s.state.active_sequence;
+    let demo = s.project.items.values().find(|i| i.as_sequence().is_some() && Some(i.id) != active).map(|i| i.id).unwrap();
+    s.execute("sequence.nestSequences", json!({"on": false})).unwrap();
+    let lanes = s.placement_lanes(demo, full(&s, demo), true, true);
+    assert!(lanes.0 > 1 && lanes.1 > 0, "the demo sequence spans several tracks: {lanes:?}");
+    s.execute("timeline.place", json!({"item":demo.0,"track":"V1","audioTrack":"A1","time":0})).unwrap();
+    assert_eq!(lanes, filled_tracks(&s));
+    // nested, the same sequence is one clip per kind
+    let mut s = setup();
+    let lanes = s.placement_lanes(demo, full(&s, demo), true, true);
+    s.execute("timeline.place", json!({"item":demo.0,"track":"V1","audioTrack":"A1","time":0})).unwrap();
+    assert_eq!(lanes, filled_tracks(&s));
+    assert_eq!(lanes, (1, 1));
+}
