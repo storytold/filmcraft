@@ -426,35 +426,74 @@ pub fn raster_layer(spec: &LayerSpec, m: &Xform, cw: usize, ch: usize) -> Option
     Some(LayerRaster { x: x0, y: y0, img: Image { w, h, px } })
 }
 
-type Cache = Mutex<HashMap<u64, (u64, Option<Arc<LayerRaster>>)>>;
+const MAX_LAYER_RASTER_CACHE_BYTES: usize = 256 << 20;
+const MAX_LAYER_RASTER_CACHE_ENTRIES: usize = 96;
+
+#[derive(Default)]
+struct LayerRasterCache {
+    entries: HashMap<u64, (u64, Option<Arc<LayerRaster>>)>,
+    bytes: usize,
+    clock: u64,
+}
+
+impl LayerRasterCache {
+    fn next_tick(&mut self) -> u64 {
+        self.clock = self.clock.wrapping_add(1);
+        self.clock
+    }
+
+    fn cost(raster: &Option<Arc<LayerRaster>>) -> usize {
+        raster.as_ref().map_or(0, |r| r.img.px.len().saturating_mul(std::mem::size_of::<f32>()))
+    }
+
+    fn get(&mut self, key: u64) -> Option<Option<Arc<LayerRaster>>> {
+        let now = self.next_tick();
+        self.entries.get_mut(&key).map(|(last, raster)| {
+            *last = now;
+            raster.clone()
+        })
+    }
+
+    fn insert(&mut self, key: u64, raster: Option<Arc<LayerRaster>>, budget: usize) {
+        let cost = Self::cost(&raster);
+        if cost > budget {
+            return;
+        }
+        if let Some((_, old)) = self.entries.remove(&key) {
+            self.bytes = self.bytes.saturating_sub(Self::cost(&old));
+        }
+        while self.entries.len() >= MAX_LAYER_RASTER_CACHE_ENTRIES || self.bytes.saturating_add(cost) > budget {
+            let Some(oldest) = self.entries.iter().min_by_key(|(_, (last, _))| last).map(|(key, _)| *key) else { break };
+            if let Some((_, old)) = self.entries.remove(&oldest) {
+                self.bytes = self.bytes.saturating_sub(Self::cost(&old));
+            }
+        }
+        let now = self.next_tick();
+        self.entries.insert(key, (now, raster));
+        self.bytes = self.bytes.saturating_add(cost);
+    }
+}
+
+type Cache = Mutex<LayerRasterCache>;
 
 fn raster_cache() -> &'static Cache {
     static C: OnceLock<Cache> = OnceLock::new();
     C.get_or_init(Default::default)
 }
 
-/// [`raster_layer`] through a small cache (static titles re-composite without re-rasterising).
+/// [`raster_layer`] through a byte-bounded cache (static titles re-composite without re-rasterising).
 pub fn raster_layer_cached(spec: &LayerSpec, m: &Xform, cw: usize, ch: usize) -> Option<Arc<LayerRaster>> {
     let mut hs = std::collections::hash_map::DefaultHasher::new();
     format!("{spec:?}").hash(&mut hs);
     m.iter().for_each(|v| v.to_bits().hash(&mut hs));
     (cw, ch).hash(&mut hs);
     let key = hs.finish();
-    static CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let now = CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if let Some(e) = raster_cache().lock().unwrap_or_else(|e| e.into_inner()).get_mut(&key) {
-        e.0 = now;
-        return e.1.clone();
+    if let Some(raster) = raster_cache().lock().unwrap_or_else(|e| e.into_inner()).get(key) {
+        return raster;
     }
-    let r = raster_layer(spec, m, cw, ch).map(Arc::new);
-    let mut c = raster_cache().lock().unwrap_or_else(|e| e.into_inner());
-    if c.len() >= 96
-        && let Some(k) = c.iter().min_by_key(|(_, v)| v.0).map(|(k, _)| *k)
-    {
-        c.remove(&k);
-    }
-    c.insert(key, (now, r.clone()));
-    r
+    let raster = raster_layer(spec, m, cw, ch).map(Arc::new);
+    raster_cache().lock().unwrap_or_else(|e| e.into_inner()).insert(key, raster.clone(), MAX_LAYER_RASTER_CACHE_BYTES);
+    raster
 }
 
 /// Over-composite a raster at (`r.x` + `dx`, `r.y` + `dy`) onto `img`.
@@ -640,6 +679,23 @@ mod tests {
     use super::*;
     use filmcraft_project::graphic::{new_shape_layer, new_text_layer};
     use filmcraft_project::{ParamValue, find_effect};
+
+    #[test]
+    fn layer_raster_cache_evicts_by_bytes_and_skips_oversized_entries() {
+        let mut cache = LayerRasterCache::default();
+        let small = || Some(Arc::new(LayerRaster { x: 0, y: 0, img: Image::new(2, 2) }));
+        cache.insert(1, small(), 128);
+        cache.insert(2, small(), 128);
+        assert_eq!(cache.bytes, 128);
+        assert!(cache.get(1).is_some());
+        cache.insert(3, small(), 128);
+        assert!(cache.get(1).is_some());
+        assert!(cache.get(2).is_none(), "least recently used raster must be released");
+        assert!(cache.get(3).is_some());
+        cache.insert(4, Some(Arc::new(LayerRaster { x: 0, y: 0, img: Image::new(3, 2) })), 64);
+        assert!(cache.get(4).is_none(), "one raster cannot exceed the byte budget");
+        assert!(cache.bytes <= 128);
+    }
 
     fn set(e: &mut EffectInstance, k: &str, v: ParamValue) {
         e.params.get_mut(k).unwrap_or_else(|| panic!("{k}")).value = v;
