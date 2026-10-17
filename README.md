@@ -36,6 +36,11 @@
   <a href="https://getartcraft.com/apps">All Crafting Apps</a>
 </p>
 
+<p align="center">
+  <a href="README.md">English</a> ·
+  <a href="README.ar.md">العربية</a>
+</p>
+
 <br>
 
 <p align="center">
