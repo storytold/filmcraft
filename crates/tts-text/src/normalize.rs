@@ -561,16 +561,11 @@ fn parse_fraction(rest: &str) -> Option<(Vec<Token>, usize)> {
 fn parse_number_core(rest: &str, lang: Lang) -> Option<(Vec<Token>, usize)> {
     let mut digits = String::new();
     let mut used = 0usize;
-    let mut overflowed = false;
     let mut grouped = false;
     for (i, ch) in rest.char_indices() {
         if ch.is_ascii_digit() {
             digits.push(ch);
             used = i + 1;
-            if digits.len() > 19 {
-                overflowed = true;
-                break;
-            }
         } else if ch == ',' && !digits.is_empty() {
             if grouping_followed_by_3(rest, i) {
                 // Grouping is visual only; drop the mark.
@@ -586,7 +581,7 @@ fn parse_number_core(rest: &str, lang: Lang) -> Option<(Vec<Token>, usize)> {
     if digits.is_empty() {
         return None;
     }
-    if overflowed || digits.len() > MAX_CARDINAL_DIGITS {
+    if digits.len() > MAX_CARDINAL_DIGITS {
         let words: Vec<Token> = digits.chars().map(|c| Token::Word(english_digit_word(c).into())).collect();
         return Some((words, used));
     }
@@ -1167,6 +1162,18 @@ mod tests {
         assert_eq!(words("007", Lang::EnUs), "zero zero seven");
         assert_eq!(words("12345678901234", Lang::EnUs), "one two three four five six seven eight nine zero one two three four");
         assert_eq!(words("0.5", Lang::EnUs), "zero point five");
+    }
+
+    #[test]
+    fn numbers_longer_than_twenty_digits_are_read_fully_digit_by_digit() {
+        assert_eq!(
+            words("12345678901234567890123", Lang::EnUs),
+            "one two three four five six seven eight nine zero one two three four five six seven eight nine zero one two three"
+        );
+        assert_eq!(
+            words("1234567890123456789000123", Lang::EnUs),
+            "one two three four five six seven eight nine zero one two three four five six seven eight nine zero zero zero one two three"
+        );
     }
 
     #[test]
