@@ -227,6 +227,10 @@ pub fn item_interactions(
     }
 }
 
+fn context_selection(selection: &[ItemId], id: ItemId) -> Vec<ItemId> {
+    if selection.contains(&id) { selection.to_vec() } else { vec![id] }
+}
+
 fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemKind, actions: &mut Actions) {
     let sel = || json!({"items": [id.0]});
     if ui.button(tl!("Rename")).clicked() {
@@ -307,6 +311,7 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
                 ui.close();
             }
         }
+        let proxy_selection = context_selection(&app.session.state.project_selection, id);
         ui.menu_button(tl!("Proxy"), |ui| {
             for (label, cmd) in [
                 (tl!("Create Proxies…"), "media.createProxies"),
@@ -315,7 +320,12 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
                 (tl!("Detach Proxies"), "media.detachProxies"),
             ] {
                 if ui.button(label).clicked() {
-                    actions.push(("project.select".into(), json!({"items": [id.0]})));
+                    let items = if matches!(cmd, "media.createProxies" | "media.attachProxies" | "media.detachProxies") {
+                        proxy_selection.iter().map(|item| item.0).collect::<Vec<_>>()
+                    } else {
+                        vec![id.0]
+                    };
+                    actions.push(("project.select".into(), json!({"items": items})));
                     actions.push((cmd.into(), json!({})));
                     ui.close();
                 }
@@ -1201,7 +1211,7 @@ fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<
 
 #[cfg(test)]
 mod clear_tests {
-    use super::{clear_params, click_selection};
+    use super::{clear_params, click_selection, context_selection};
     use filmcraft_project::ItemId;
     use serde_json::json;
 
@@ -1237,5 +1247,11 @@ mod clear_tests {
         assert_eq!(click_selection(&ids(&[1]), &order, None, ItemId(3), false, true), ids(&[1, 3]));
         assert_eq!(click_selection(&ids(&[1, 3]), &order, None, ItemId(3), false, true), ids(&[1]));
         assert_eq!(click_selection(&ids(&[1, 3]), &order, None, ItemId(2), false, false), ids(&[2]));
+    }
+
+    #[test]
+    fn context_menu_keeps_a_multi_selection_when_opened_on_a_selected_item() {
+        assert_eq!(context_selection(&ids(&[2, 4, 6]), ItemId(4)), ids(&[2, 4, 6]));
+        assert_eq!(context_selection(&ids(&[2, 6]), ItemId(4)), ids(&[4]));
     }
 }

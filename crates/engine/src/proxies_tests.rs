@@ -92,6 +92,37 @@ fn attach_checks_duration_and_export_ignores_proxies() {
 }
 
 #[test]
+fn attach_proxy_batch_is_atomic_and_rejects_mismatched_item_path_lists() {
+    let root = tmp_dir("proxy-attach-batch");
+    let a = root.join("a.mov");
+    let b = root.join("b.mov");
+    make_movie(&a, DemoScene::Aurora, W, H, 12);
+    make_movie(&b, DemoScene::Plasma, W, H, 12);
+    let (mut s, items, _) = session_with(&[&a, &b]);
+
+    let result = s.execute("media.attachProxies", json!({"items": [items[0].0, items[1].0], "paths": [a.to_string_lossy(), b.to_string_lossy()]})).unwrap();
+    assert_eq!(result["attached"].as_array().map(Vec::len), Some(2));
+    for (item, path) in items.iter().zip([&a, &b]) {
+        assert_eq!(
+            s.project.item(*item).and_then(|i| i.as_media()).and_then(|m| m.proxy.as_ref()),
+            Some(&filmcraft_project::MediaRef::File { path: path.to_string_lossy().into_owned() })
+        );
+    }
+
+    s.execute("edit.undo", json!({})).unwrap();
+    for item in &items {
+        assert_eq!(s.project.item(*item).and_then(|i| i.as_media()).and_then(|m| m.proxy.as_ref()), None);
+    }
+
+    let revision = s.revision;
+    assert!(s.execute("media.attachProxies", json!({"items": [items[0].0, items[1].0], "paths": [a.to_string_lossy()]})).is_err());
+    assert_eq!(s.revision, revision, "a malformed batch must not partially attach proxies");
+    assert!(s.execute("media.attachProxies", json!({"items": [items[0].0, "bad"], "paths": [a.to_string_lossy(), b.to_string_lossy()]})).is_err());
+    assert_eq!(s.revision, revision, "invalid item ids must be rejected before editing");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn ingest_copies_and_creates_proxies_on_import() {
     let root = tmp_dir("proxy-ingest");
     let cards = root.join("Card");

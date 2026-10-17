@@ -515,12 +515,29 @@ pub fn commands() -> Vec<CommandSpec> {
             params: r#"{"item":id,"path":str}|{"items":[id],"paths":[str]},"force":bool=false"#,
             enabled: has_file_media,
             run: |s, p| {
-                let pairs: Vec<(ItemId, String)> = match (p.get("items").and_then(Value::as_array), p.get("paths").and_then(Value::as_array)) {
-                    (Some(i), Some(ps)) => i.iter().zip(ps).filter_map(|(i, p)| Some((ItemId(i.as_u64()?), p.as_str()?.to_string()))).collect(),
-                    _ => vec![(
+                let pairs: Vec<(ItemId, String)> = if p.get("items").is_some() || p.get("paths").is_some() {
+                    let items = p.get("items").and_then(Value::as_array).ok_or_else(|| bad("media.attachProxies", "`items` must be an array"))?;
+                    let paths = p.get("paths").and_then(Value::as_array).ok_or_else(|| bad("media.attachProxies", "`paths` must be an array"))?;
+                    if items.is_empty() || items.len() != paths.len() {
+                        return Err(bad("media.attachProxies", "`items` and `paths` must have the same non-zero length"));
+                    }
+                    items
+                        .iter()
+                        .zip(paths)
+                        .map(|(item, path)| {
+                            let item = item.as_u64().ok_or_else(|| bad("media.attachProxies", "each item must be an id"))?;
+                            let path = path
+                                .as_str()
+                                .filter(|path| !path.is_empty())
+                                .ok_or_else(|| bad("media.attachProxies", "each path must be a non-empty string"))?;
+                            Ok((ItemId(item), path.to_string()))
+                        })
+                        .collect::<Result<Vec<_>>>()?
+                } else {
+                    vec![(
                         u64_p(p, "item").map(ItemId).ok_or_else(|| bad("media.attachProxies", "need `item`"))?,
-                        str_p(p, "path").ok_or_else(|| bad("media.attachProxies", "need `path`"))?.to_string(),
-                    )],
+                        str_p(p, "path").filter(|path| !path.is_empty()).ok_or_else(|| bad("media.attachProxies", "need non-empty `path`"))?.to_string(),
+                    )]
                 };
                 attach(s, &pairs, bool_p(p, "force").unwrap_or(false))
             },
