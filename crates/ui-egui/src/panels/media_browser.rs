@@ -406,7 +406,7 @@ fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Respon
             exec(app, &ctx, "mediaBrowser.openInSource", json!({"path": e.path}));
         }
     }
-    if resp.drag_started() && !e.is_dir {
+    if resp.drag_started_by(egui::PointerButton::Primary) && !e.is_dir {
         start_file_drag(app, ui, e);
     }
     resp.context_menu(|ui| {

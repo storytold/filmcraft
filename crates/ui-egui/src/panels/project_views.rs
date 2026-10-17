@@ -219,7 +219,7 @@ pub fn item_interactions(
             actions.push((cmd.into(), json!({"item": id.0})));
         }
     }
-    if drag && resp.drag_started() {
+    if drag && resp.drag_started_by(egui::PointerButton::Primary) {
         crate::panels::start_drag_item(ui, id);
     }
     if menu {
@@ -698,7 +698,7 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         app.auto.add(&format!("{}.bin.{}", v.prefix, b.id.0), r.intersect(ui.clip_rect()), &b.name);
         app.auto.add(&format!("{}.bin.{}.toggle", v.prefix, b.id.0), tri, "Expand");
         accept_bin_drop(app, ui, r, b.id.0, actions);
-        if resp.drag_started() {
+        if resp.drag_started_by(egui::PointerButton::Primary) {
             crate::panels::start_drag_bin(ui, b.id.0);
         }
         if resp.clicked() {
@@ -931,7 +931,7 @@ fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &Vie
     }
     app.auto.add(&format!("{}.bin.{}", v.prefix, b.id.0), th, &b.name);
     accept_bin_drop(app, ui, th, b.id.0, actions);
-    if resp.drag_started() {
+    if resp.drag_started_by(egui::PointerButton::Primary) {
         crate::panels::start_drag_bin(ui, b.id.0);
     }
     if resp.clicked() {

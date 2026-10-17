@@ -232,7 +232,7 @@ fn interact_block(
     }
     // decide on what was under the pointer when the button went down, not where egui recognised
     // the drag (6 pt later, past the 5 px edge zones) (#259)
-    if resp.drag_started()
+    if resp.drag_started_by(egui::PointerButton::Primary)
         && let Some(p) = ctx.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
     {
         let g = match gesture_at(p.x) {
