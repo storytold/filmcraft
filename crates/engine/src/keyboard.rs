@@ -131,9 +131,29 @@ fn select_clip_at_playhead(s: &mut Session) -> Result<Value> {
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let ids: Vec<ClipId> = seq.all_tracks().filter(|tr| tg.contains(&tr.id)).filter_map(|tr| tr.item_at(t).map(|i| i.id)).collect();
     s.state.selection = with_links(s, &ids);
+    s.state.gap_selection = None;
     s.state.edit_points.clear();
     s.state.caption_selection.clear();
     Ok(json!({"selection": s.state.selection.iter().map(|c| c.0).collect::<Vec<_>>()}))
+}
+
+/// Select Clip at Playhead (D): the clips under the playhead on the targeted tracks or, over empty
+/// time, the gap there, as in Premiere Pro (#1577). One gap can be selected at a time: the first
+/// targeted, unlocked track (V1 up, then the audio tracks) that has one.
+fn select_at_playhead(s: &mut Session) -> Result<Value> {
+    let t = s.playhead();
+    let tg = s.targeting().targeted;
+    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let tracks = || seq.all_tracks().filter(|tr| tg.contains(&tr.id));
+    let gap_track = if tracks().all(|tr| tr.item_at(t).is_none()) {
+        tracks().find(|tr| !tr.locked && edit::through::track_gaps(tr).iter().any(|g| g.contains(t))).map(|tr| tr.id)
+    } else {
+        None
+    };
+    if let Some(track) = gap_track {
+        return s.execute("timeline.selectGap", json!({"track": track.0, "time": t.0}));
+    }
+    select_clip_at_playhead(s)
 }
 
 /// Select Next / Previous Clip: the clip after (before) the selection on each selected clip's
@@ -721,7 +741,7 @@ pub fn commands() -> Vec<CommandSpec> {
         spec("playhead.selectedClipEnd", "Go to Selected Clip End", Some("Shift+End"), "{}", has_selection, |s, _| go_to_selected(s, true)),
         spec("sequence.revealNested", "Reveal Nested Sequence", Some("Cmd+Alt+F"), "{}", has_seq, |s, _| reveal_nested(s)),
         // ---- selection
-        spec("timeline.selectClipAtPlayhead", "Select Clip at Playhead", Some("D"), "{}", has_seq, |s, _| select_clip_at_playhead(s)),
+        spec("timeline.selectClipAtPlayhead", "Select Clip at Playhead", Some("D"), "{}", has_seq, |s, _| select_at_playhead(s)),
         spec("timeline.selectNextClip", "Select Next Clip", Some("Cmd+Down"), "{}", has_seq, |s, _| select_step(s, true)),
         spec("timeline.selectPrevClip", "Select Previous Clip", Some("Cmd+Up"), "{}", has_seq, |s, _| select_step(s, false)),
         // ---- trimming

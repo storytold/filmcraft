@@ -232,3 +232,33 @@ fn close_gap_rejects_invalid_context_and_explicit_parameters_without_editing() {
     assert!(std::sync::Arc::ptr_eq(&before, &s.project));
     assert_eq!(s.history.undo.len(), undo);
 }
+
+/// Select Clip at Playhead (D) over empty time selects the gap on a targeted track, as clicking
+/// it would (#1577); over a clip it still selects the clip.
+#[test]
+fn select_clip_at_playhead_over_a_gap_selects_the_gap() {
+    let mut s = Session::default();
+    let [(_, sound1), _] = two_clips(&mut s, [0, 96]);
+    let rate = s.sequence_rate();
+    let f = |n: i64| rate.tick_of(n);
+    let (v1, a1) = {
+        let q = s.active_sequence().unwrap();
+        (q.video_tracks[0].id, q.audio_tracks[0].id)
+    };
+    s.set_playhead(f(60));
+    s.execute("timeline.selectClipAtPlayhead", json!({})).unwrap();
+    assert_eq!(s.state.gap_selection.map(|g| (g.track, g.range.start, g.range.end())), Some((v1, f(48), f(96))));
+    assert!(s.state.selection.is_empty());
+    assert!(s.is_enabled("edit.rippleDelete"), "Ripple Delete closes the gap D selected");
+
+    // only the targeted tracks count
+    s.execute("timeline.setTargeting", json!({"track": v1.0, "targeted": false})).unwrap();
+    s.execute("timeline.selectClipAtPlayhead", json!({})).unwrap();
+    assert_eq!(s.state.gap_selection.map(|g| g.track), Some(a1));
+
+    // over a clip, D selects the clip and drops the gap
+    s.set_playhead(f(10));
+    s.execute("timeline.selectClipAtPlayhead", json!({})).unwrap();
+    assert!(s.state.selection.contains(&sound1));
+    assert!(s.state.gap_selection.is_none());
+}
