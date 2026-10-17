@@ -414,6 +414,8 @@ impl Lut {
         if !self.title.is_empty() {
             let _ = writeln!(s, "# {}", self.title);
         }
+        // state the output depth: the reader would otherwise guess it from the peak value
+        s.push_str("Mesh 10 12\n");
         let mesh: Vec<String> = (0..n).map(|i| ((i as f64 * 1023.0 / (n - 1) as f64).round() as u32).to_string()).collect();
         let _ = writeln!(s, "{}", mesh.join(" "));
         let q = |v: f32| (v.clamp(0.0, 1.0) * 4095.0).round() as u32;
@@ -611,11 +613,25 @@ mod tests {
     }
 
     #[test]
+    fn dark_lut_3dl_roundtrip_keeps_output_depth() {
+        for scale in [0.2f32, 0.1, 0.05] {
+            let lut = Lut::from_cube(Lut3d::from_fn(5, |c| [c[0] * scale, c[1] * scale, c[2] * scale]));
+            let text = lut.to_3dl().unwrap();
+            let back = Lut::parse_3dl(&text).unwrap();
+            for c in [[1.0, 1.0, 1.0], [0.5, 0.25, 0.75]] {
+                let (a, b) = (lut.apply(c), back.apply(c));
+                assert!((0..3).all(|k| (a[k] - b[k]).abs() < 1.0 / 4095.0 + 1e-4), "scale {scale}: {a:?} vs {b:?}");
+            }
+        }
+    }
+
+    #[test]
     fn threedl_roundtrip_and_orientation() {
         // a LUT that swaps red and blue, so orientation errors show
         let swap = Lut::from_cube(Lut3d::from_fn(17, |c| [c[2], c[1] * 0.5, c[0]]));
         let text = swap.to_3dl().unwrap();
-        assert!(text.lines().nth(1).unwrap().starts_with("0 64 128"));
+        assert_eq!(text.lines().nth(1), Some("Mesh 10 12"));
+        assert!(text.lines().nth(2).unwrap().starts_with("0 64 128"));
         let back = Lut::parse_3dl(&text).unwrap();
         for c in [[0.1, 0.2, 0.9], [0.8, 0.5, 0.3]] {
             let (a, b) = (swap.apply(c), back.apply(c));
