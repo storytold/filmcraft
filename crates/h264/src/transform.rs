@@ -88,10 +88,30 @@ fn clip_u8(v: i32) -> u8 {
     v.clamp(0, 255) as u8
 }
 
+/// Inverse 4-point 1D (8.5.12.2) on four columns at once.
+#[inline(always)]
+fn idct4_1d_x4(d0: wide::i32x4, d1: wide::i32x4, d2: wide::i32x4, d3: wide::i32x4) -> [wide::i32x4; 4] {
+    let e = d0 + d2;
+    let f = d0 - d2;
+    let g = (d1 >> 1u32) - d3;
+    let h = d1 + (d3 >> 1u32);
+    [e + h, f + g, f - g, e - h]
+}
+
+#[inline(always)]
+fn add_clip4(line: &mut [u8; 4], v: wide::i32x4) {
+    let p = wide::i32x4::from([line[0] as i32, line[1] as i32, line[2] as i32, line[3] as i32]);
+    let sum: wide::i32x4 = p + ((v + wide::i32x4::splat(32)) >> 6u32);
+    let r: [i32; 4] = sum.max(wide::i32x4::splat(0)).min(wide::i32x4::splat(255)).into();
+    for i in 0..4 {
+        line[i] = r[i] as u8;
+    }
+}
+
 /// Inverse 4x4 transform of raster-order `d` and add to `dst` (8.5.12.2, 8.5.14).
 ///
-/// Rows first, then columns (the spec's order: the `>> 1` steps make it matter). The column
-/// pass and the reconstruction run across all columns at once so they vectorise.
+/// Rows first, then columns (the spec's order: the `>> 1` steps make it matter). Columns and
+/// reconstruction use `wide::i32x4`.
 pub fn idct4_add(d: &[i32; 16], dst: &mut [u8], stride: usize) {
     let mut t = [[0i32; 4]; 4];
     for (i, row) in t.iter_mut().enumerate() {
@@ -102,24 +122,12 @@ pub fn idct4_add(d: &[i32; 16], dst: &mut [u8], stride: usize) {
         let h = r[1] + (r[3] >> 1);
         *row = [e + h, f + g, f - g, e - h];
     }
-    let mut o = [[0i32; 4]; 4];
-    for j in 0..4 {
-        let e = t[0][j] + t[2][j];
-        let f = t[0][j] - t[2][j];
-        let g = (t[1][j] >> 1) - t[3][j];
-        let h = t[1][j] + (t[3][j] >> 1);
-        o[0][j] = e + h;
-        o[1][j] = f + g;
-        o[2][j] = f - g;
-        o[3][j] = e - h;
-    }
-    for (i, row) in o.iter().enumerate() {
+    let o = idct4_1d_x4(wide::i32x4::from(t[0]), wide::i32x4::from(t[1]), wide::i32x4::from(t[2]), wide::i32x4::from(t[3]));
+    for (i, v) in o.into_iter().enumerate() {
         let Some(line) = dst.get_mut(i * stride..).and_then(|d| d.first_chunk_mut::<4>()) else {
             return;
         };
-        for (p, &v) in line.iter_mut().zip(row) {
-            *p = clip_u8(*p as i32 + ((v + 32) >> 6));
-        }
+        add_clip4(line, v);
     }
 }
 
@@ -132,6 +140,27 @@ pub fn idct4_dc_add(dc: i32, dst: &mut [u8], stride: usize) {
             *p = clip_u8(*p as i32 + v);
         }
     }
+}
+
+#[inline(always)]
+fn idct8_1d_lanes(d: [wide::i32x8; 8]) -> [wide::i32x8; 8] {
+    let a0 = d[0] + d[4];
+    let a4 = d[0] - d[4];
+    let a2 = (d[2] >> 1u32) - d[6];
+    let a6 = d[2] + (d[6] >> 1u32);
+    let b0 = a0 + a6;
+    let b2 = a4 + a2;
+    let b4 = a4 - a2;
+    let b6 = a0 - a6;
+    let a1 = wide::i32x8::splat(0) - d[3] + d[5] - d[7] - (d[7] >> 1u32);
+    let a3 = d[1] + d[7] - d[3] - (d[3] >> 1u32);
+    let a5 = wide::i32x8::splat(0) - d[1] + d[7] + d[5] + (d[5] >> 1u32);
+    let a7 = d[3] + d[5] + d[1] + (d[1] >> 1u32);
+    let b1 = a1 + (a7 >> 2u32);
+    let b7 = a7 - (a1 >> 2u32);
+    let b3 = a3 + (a5 >> 2u32);
+    let b5 = (a3 >> 2u32) - a5;
+    [b0 + b7, b2 + b5, b4 + b3, b6 + b1, b6 - b1, b4 - b3, b2 - b5, b0 - b7]
 }
 
 #[inline(always)]
@@ -155,27 +184,38 @@ fn idct8_1d(d: [i32; 8]) -> [i32; 8] {
     [b0 + b7, b2 + b5, b4 + b3, b6 + b1, b6 - b1, b4 - b3, b2 - b5, b0 - b7]
 }
 
-/// Inverse 8x8 transform of raster-order `d` and add to `dst` (8.5.13.2): rows, then columns,
-/// the column pass and reconstruction across all columns at once (they vectorise).
+#[inline(always)]
+fn add_clip8(line: &mut [u8; 8], v: wide::i32x8) {
+    let p = wide::i32x8::from([
+        line[0] as i32,
+        line[1] as i32,
+        line[2] as i32,
+        line[3] as i32,
+        line[4] as i32,
+        line[5] as i32,
+        line[6] as i32,
+        line[7] as i32,
+    ]);
+    let sum: wide::i32x8 = p + ((v + wide::i32x8::splat(32)) >> 6u32);
+    let r: [i32; 8] = sum.max(wide::i32x8::splat(0)).min(wide::i32x8::splat(255)).into();
+    for i in 0..8 {
+        line[i] = r[i] as u8;
+    }
+}
+
+/// Inverse 8x8 transform of raster-order `d` and add to `dst` (8.5.13.2): rows, then all eight
+/// columns as `wide::i32x8` lanes, then clipped add.
 pub fn idct8_add(d: &[i32; 64], dst: &mut [u8], stride: usize) {
     let mut t = [[0i32; 8]; 8];
     for (row, src) in t.iter_mut().zip(d.as_chunks::<8>().0) {
         *row = idct8_1d(*src);
     }
-    let mut o = [[0i32; 8]; 8];
-    for j in 0..8 {
-        let col = idct8_1d(std::array::from_fn(|i| t[i][j]));
-        for i in 0..8 {
-            o[i][j] = col[i];
-        }
-    }
-    for (i, row) in o.iter().enumerate() {
+    let o = idct8_1d_lanes(std::array::from_fn(|i| wide::i32x8::from(t[i])));
+    for (i, v) in o.into_iter().enumerate() {
         let Some(line) = dst.get_mut(i * stride..).and_then(|d| d.first_chunk_mut::<8>()) else {
             return;
         };
-        for (p, &v) in line.iter_mut().zip(row) {
-            *p = clip_u8(*p as i32 + ((v + 32) >> 6));
-        }
+        add_clip8(line, v);
     }
 }
 
@@ -279,6 +319,29 @@ mod tests {
         chroma_dc_dequant_420(&mut c, 6, 16 * 16);
         // f = [1,1,1,1] -> ((1*256) << 1) >> 5 = 16
         assert_eq!(c, [16, 16, 16, 16]);
+    }
+
+    #[test]
+    fn idct8_1d_lanes_match_scalar() {
+        let mut rng = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            (rng as i32) % 4096
+        };
+        for _ in 0..200 {
+            let cols: [[i32; 8]; 8] = std::array::from_fn(|_| std::array::from_fn(|_| next()));
+            let lanes = idct8_1d_lanes(std::array::from_fn(|i| wide::i32x8::from(std::array::from_fn(|j| cols[j][i]))));
+            for j in 0..8 {
+                let got: [i32; 8] = std::array::from_fn(|i| {
+                    let a: [i32; 8] = lanes[i].into();
+                    a[j]
+                });
+                let want = idct8_1d(std::array::from_fn(|i| cols[j][i]));
+                assert_eq!(got, want);
+            }
+        }
     }
 
     #[test]
