@@ -264,6 +264,17 @@ fn the_scroll_bar_thumb_follows_the_pointer_and_reaches_both_ends() {
     assert!(pps < 50.0 && (scroll - at).abs() < 1e-6, "{pps} {scroll}");
 }
 
+#[test]
+fn timeline_zoom_settings_default_off_and_set_custom_playhead_range() {
+    let mut d = Driver::demo();
+    assert!(!d.app().session.state.timeline_ui.smooth_animations);
+    assert_eq!(d.app().session.state.timeline_ui.shift_drag_percent, 25.0);
+    d.ok("ui.set", json!({"timeline": {"smoothAnimations": true, "playheadSideSeconds": 17.5, "shiftDragPercent": 42.5}}));
+    assert!(d.app().session.state.timeline_ui.smooth_animations);
+    assert_eq!(d.app().session.state.timeline_ui.playhead_side_seconds, 17.5);
+    assert_eq!(d.app().session.state.timeline_ui.shift_drag_percent, 42.5);
+}
+
 /// Show Video Thumbnails ▸ Continuous asks for frames across each video clip, not only its head;
 /// `ui.set` switches the mode (and Off) and refuses an unknown one.
 #[test]
