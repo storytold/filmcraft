@@ -707,11 +707,44 @@ pub struct PlaybackMeter {
     current: Option<(i64, bool)>,
     /// Frames advanced per displayed frame (speed), and direction.
     step: i64,
+    /// Recent completed frame outcomes for the Program monitor's live health indicator.
+    recent: VecDeque<bool>,
 }
+
+/// Recent real-time playback quality shown by the Program monitor's status dot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaybackHealth {
+    Smooth,
+    SomeDrops,
+    FrequentDrops,
+}
+
+const PLAYBACK_HEALTH_WINDOW: usize = 120;
+const PLAYBACK_HEALTH_RED_DROPS: usize = 12;
 
 impl PlaybackMeter {
     pub fn start(&mut self, speed: f64) {
         *self = Self { step: (speed.abs().max(1.0) as i64) * if speed < 0.0 { -1 } else { 1 }, ..Default::default() };
+    }
+
+    fn record_recent(&mut self, dropped: bool) {
+        if self.recent.len() == PLAYBACK_HEALTH_WINDOW {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(dropped);
+    }
+
+    /// Current health over the last 120 due frames: green while smooth, yellow for occasional
+    /// drops, and red when at least 12 recent frames were missed (10% of a full window).
+    pub fn health(&self) -> PlaybackHealth {
+        let dropped = self.recent.iter().filter(|dropped| **dropped).count();
+        if dropped == 0 {
+            PlaybackHealth::Smooth
+        } else if dropped >= PLAYBACK_HEALTH_RED_DROPS {
+            PlaybackHealth::FrequentDrops
+        } else {
+            PlaybackHealth::SomeDrops
+        }
     }
 
     /// Record one display refresh: `frame` is due now and `exact` says whether it is on screen.
@@ -721,11 +754,17 @@ impl PlaybackMeter {
             Some((f, seen)) if f == frame => self.current = Some((f, seen || exact)),
             Some((f, seen)) => {
                 self.close(seen);
-                let moved = (frame - f) / step;
+                let moved = frame.saturating_sub(f) / step;
                 // Forward progress: count frames passed over without a refresh. A jump backwards
                 // (loop restart) or a huge jump is a discontinuity, not a drop.
                 if moved > 1 && moved < 1000 {
-                    self.dropped += (moved - 1) as u64;
+                    let skipped = (moved - 1) as usize;
+                    self.dropped = self.dropped.saturating_add(skipped as u64);
+                    for _ in 0..skipped {
+                        self.record_recent(true);
+                    }
+                } else if moved <= 0 || moved >= 1000 {
+                    self.recent.clear();
                 }
                 self.current = Some((frame, exact));
             }
@@ -735,16 +774,18 @@ impl PlaybackMeter {
 
     fn close(&mut self, seen: bool) {
         if seen {
-            self.shown += 1;
+            self.shown = self.shown.saturating_add(1);
         } else {
-            self.dropped += 1;
+            self.dropped = self.dropped.saturating_add(1);
         }
+        self.record_recent(!seen);
     }
 
     /// Continue from `frame` without counting what happened since the last refresh (the window
     /// was hidden, so nothing could be shown).
     pub fn resync(&mut self, frame: i64, exact: bool) {
         self.current = Some((frame, exact));
+        self.recent.clear();
     }
 
     /// Playback stopped: account for the frame on screen.
@@ -916,7 +957,15 @@ fn plan_job(job: &Job, seq: ItemId, pool: &Arc<MediaPool>, services: &Arc<dyn Se
         // captions (they are not part of the preview hash), so captions are layered on live.
         let (w, h) = filmcraft_render::output_size(q, job.scale);
         let matrix = filmcraft_geom::Affine::scale(w as f64 / frame.width.max(1) as f64, h as f64 / frame.height.max(1) as f64);
-        let mut layers = vec![filmcraft_render::plan::PlanLayer { frame, matrix, opacity: 1.0, blend: filmcraft_render::Blend::Normal, fx: None, input: None }];
+        let mut layers = vec![filmcraft_render::plan::PlanLayer {
+            frame,
+            matrix,
+            opacity: 1.0,
+            blend: filmcraft_render::Blend::Normal,
+            fx: None,
+            input: None,
+            opacity_masks: None,
+        }];
         for o in filmcraft_render::caption_overlays(q, job.time, w, h) {
             layers.push(filmcraft_render::plan::PlanLayer {
                 frame: Arc::new(filmcraft_frame::VideoFrame::rgba_f32(o.w as u32, o.h as u32, o.px)),
@@ -925,6 +974,7 @@ fn plan_job(job: &Job, seq: ItemId, pool: &Arc<MediaPool>, services: &Arc<dyn Se
                 blend: filmcraft_render::Blend::Normal,
                 fx: None,
                 input: None,
+                opacity_masks: None,
             });
         }
         return (filmcraft_render::plan::FramePlan::Layers { width: w, height: h, layers }, true);

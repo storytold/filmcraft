@@ -3596,3 +3596,13 @@
 	Shows the version, community links and credits in a FilmCraft window.	FilmCraft 창에 버전, 커뮤니티 링크, 제작진을 보여 줍니다.
 	Couldn't open your web browser	웹 브라우저를 열 수 없습니다
 	Open this address in your browser yourself:	이 주소를 브라우저에서 직접 여세요:
+	Audio Peak Generation	오디오 피크 생성
+	Audio Peak Generation · {count} pending	오디오 피크 생성 · {count}개 대기 중
+	Estimated time remaining: {time}	예상 남은 시간: {time}
+	{count} audio streams pending	오디오 스트림 {count}개 대기 중
+	{count} audio streams complete	오디오 스트림 {count}개 완료
+	{count} audio peak jobs failed	오디오 피크 작업 {count}개 실패
+	No audio peak jobs.	오디오 피크 작업이 없습니다.
+	Queued	대기 중
+	Failed: {error}	실패: {error}
+	And {count} more	외 {count}개

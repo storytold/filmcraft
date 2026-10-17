@@ -605,3 +605,28 @@ fn eyedropper_picks_a_key_color_on_a_selected_clip() {
     }
     assert_ne!(color(&mut d), before, "the eyedropper filled Key Color from the Program picture");
 }
+
+#[test]
+fn eyedropper_picks_ultra_key_color_on_a_selected_clip() {
+    let mut d = Driver::demo();
+    let clip = track_clips(&d.sequence(), 0)[0]["clip"].clone();
+    d.exec("timeline.select", json!({"clips": [clip]}));
+    d.exec("effects.apply", json!({"effect": "ultra_key"}));
+    d.ok("ui.panel.show", json!({"panel": "EffectControls"}));
+    d.frames(4);
+    let color = |d: &mut Driver| {
+        let seq = d.sequence();
+        seq["video"][0]["items"][0]["effects"].as_array().unwrap().iter().find(|e| e["effect"] == "ultra_key").unwrap()["params"]["key_color"]["value"].clone()
+    };
+    let before = color(&mut d);
+    d.ok("ui.click", json!({"id": "effectControls.ultra_key.key_color.eyedropper"}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "program.picture"}));
+    for _ in 0..200 {
+        if color(&mut d) != before {
+            break;
+        }
+        d.frames(1);
+    }
+    assert_ne!(color(&mut d), before, "the eyedropper filled Ultra Key's Key Color from the Program picture");
+}

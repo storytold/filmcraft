@@ -67,6 +67,19 @@ struct Uploaded {
     _pixels: PixelData,
 }
 
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct OpacityMaskKey {
+    size: (u32, u32),
+    data: Vec<u32>,
+}
+
+struct CachedOpacityMask {
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    bytes: usize,
+    last_used: u64,
+}
+
 pub struct GpuCompositor {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -82,7 +95,10 @@ pub struct GpuCompositor {
     backdrop: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     output: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     accum_readback_buf: Option<(wgpu::Buffer, u64)>,
+    output_readback_buf: Option<(wgpu::Buffer, u64)>,
     uploads: HashMap<(usize, u32, u32), Uploaded>,
+    opacity_mask_cache: HashMap<OpacityMaskKey, CachedOpacityMask>,
+    opacity_mask_cache_bytes: usize,
     clock: u64,
     dummy: wgpu::TextureView,
     /// The effect stage (None on devices without compute shaders or storage textures: layers
@@ -294,6 +310,7 @@ impl GpuCompositor {
                 tex_entry(2),
                 tex_entry(3),
                 tex_entry(5),
+                tex_entry(6),
             ],
         });
         let blend_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -310,6 +327,7 @@ impl GpuCompositor {
                 tex_entry(3),
                 tex_entry(4),
                 tex_entry(5),
+                tex_entry(6),
             ],
         });
         let final_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -418,7 +436,10 @@ impl GpuCompositor {
             backdrop: None,
             output: None,
             accum_readback_buf: None,
+            output_readback_buf: None,
             uploads: HashMap::new(),
+            opacity_mask_cache: HashMap::new(),
+            opacity_mask_cache_bytes: 0,
             clock: 0,
             dummy,
             fx,
@@ -699,6 +720,101 @@ impl GpuCompositor {
         buf
     }
 
+    fn opacity_mask_texture(&mut self, masks: Option<&[filmcraft_render::mask::FlatMask]>, size: (u32, u32)) -> Option<(wgpu::TextureView, u32)> {
+        const MAX_MASKS: usize = 16;
+        const MAX_POINTS: usize = 4096;
+        const CACHE_BYTES: usize = 64 * 1024 * 1024;
+        const CACHE_ENTRIES: usize = 64;
+        let Some(masks) = masks else {
+            return Some((self.dummy.clone(), 0));
+        };
+        let active_count = masks.iter().filter(|m| m.mode != filmcraft_project::MaskMode::None).count();
+        if active_count == 0 {
+            return Some((self.dummy.clone(), 0));
+        }
+        if active_count > MAX_MASKS {
+            return None;
+        }
+        let point_count = masks.iter().filter(|m| m.mode != filmcraft_project::MaskMode::None).try_fold(0usize, |n, m| n.checked_add(m.pts.len()))?;
+        if point_count > MAX_POINTS {
+            return None;
+        }
+        let area = usize::try_from(size.0).ok()?.checked_mul(usize::try_from(size.1).ok()?)?;
+        let texture_bytes = area.checked_mul(std::mem::size_of::<f32>())?;
+        let max_side = self.device.limits().max_texture_dimension_2d;
+        if size.0 == 0 || size.1 == 0 || size.0 > max_side || size.1 > max_side || texture_bytes > CACHE_BYTES {
+            return None;
+        }
+        let mut key_data = Vec::new();
+        key_data.try_reserve_exact(1usize.checked_add(active_count.checked_mul(6)?)?.checked_add(point_count.checked_mul(2)?)?).ok()?;
+        key_data.push(u32::try_from(active_count).ok()?);
+        for mask in masks.iter().filter(|m| m.mode != filmcraft_project::MaskMode::None) {
+            let len = u32::try_from(mask.pts.len()).ok()?;
+            if !mask.feather.is_finite() || !mask.expansion.is_finite() || !mask.opacity.is_finite() {
+                return None;
+            }
+            key_data.extend_from_slice(&[
+                mask.mode.index(),
+                u32::from(mask.inverted),
+                mask.feather.to_bits(),
+                mask.expansion.to_bits(),
+                mask.opacity.to_bits(),
+                len,
+            ]);
+            for [x, y] in &mask.pts {
+                if !x.is_finite() || !y.is_finite() {
+                    return None;
+                }
+                key_data.extend_from_slice(&[x.to_bits(), y.to_bits()]);
+            }
+        }
+        let key = OpacityMaskKey { size, data: key_data };
+        self.clock = self.clock.wrapping_add(1);
+        if let Some(cached) = self.opacity_mask_cache.get_mut(&key) {
+            cached.last_used = self.clock;
+            return Some((cached.view.clone(), u32::try_from(active_count).ok()?));
+        }
+        let coverage = filmcraft_render::mask::coverage(masks, usize::try_from(size.0).ok()?, usize::try_from(size.1).ok()?)?;
+        if coverage.len() != area {
+            return None;
+        }
+        let row_bytes = size.0.checked_mul(4)?;
+        let entry_bytes = texture_bytes.checked_add(key.data.len().checked_mul(std::mem::size_of::<u32>())?)?;
+        if entry_bytes > CACHE_BYTES {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(texture_bytes).ok()?;
+        for value in &coverage {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("opacity-mask-coverage"),
+            size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            &bytes,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row_bytes), rows_per_image: Some(size.1) },
+            wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+        );
+        let view = texture.create_view(&Default::default());
+        while self.opacity_mask_cache.len() >= CACHE_ENTRIES || self.opacity_mask_cache_bytes.saturating_add(entry_bytes) > CACHE_BYTES {
+            let oldest = self.opacity_mask_cache.iter().min_by_key(|(_, value)| value.last_used).map(|(key, _)| key.clone())?;
+            let removed = self.opacity_mask_cache.remove(&oldest)?;
+            self.opacity_mask_cache_bytes = self.opacity_mask_cache_bytes.saturating_sub(removed.bytes);
+        }
+        self.opacity_mask_cache_bytes = self.opacity_mask_cache_bytes.saturating_add(entry_bytes);
+        self.opacity_mask_cache.insert(key, CachedOpacityMask { _texture: texture, view: view.clone(), bytes: entry_bytes, last_used: self.clock });
+        Some((view, u32::try_from(active_count).ok()?))
+    }
+
     /// Composite a plan; returns the output view (sRGB, over black) and its size.
     pub fn composite(&mut self, plan: &FramePlan) -> (wgpu::TextureView, (u32, u32)) {
         self.composite_prepared(plan, None)
@@ -725,8 +841,15 @@ impl GpuCompositor {
                     },
                     None => VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px.clone()),
                 };
-                owned =
-                    [PlanLayer { frame: Arc::new(frame), matrix: filmcraft_geom::Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None }];
+                owned = [PlanLayer {
+                    frame: Arc::new(frame),
+                    matrix: filmcraft_geom::Affine::IDENTITY,
+                    opacity: 1.0,
+                    blend: Blend::Normal,
+                    fx: None,
+                    input: None,
+                    opacity_masks: None,
+                }];
                 (img.w as u32, img.h as u32, &owned[..])
             }
             FramePlan::Composite { width, height, steps } => return self.composite_steps(*width, *height, steps, prep),
@@ -750,11 +873,25 @@ impl GpuCompositor {
                     return None;
                 }
                 let img = filmcraft_render::plan::effect_image(&l.frame, lfx);
-                Some(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px)), l.matrix, l.opacity, l.blend))
+                Some(PlanLayer {
+                    opacity_masks: l.opacity_masks.clone(),
+                    ..PlanLayer::new(Arc::new(VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px)), l.matrix, l.opacity, l.blend)
+                })
             })
             .collect();
         let resolved: Vec<&PlanLayer> = layers.iter().zip(&cpu_fx).map(|(l, c)| c.as_ref().unwrap_or(l)).collect();
         let layers = resolved;
+        let mask_textures: Option<Vec<_>> = layers
+            .iter()
+            .map(|l| {
+                let size = l.fx.as_ref().map_or((l.frame.width, l.frame.height), |fx| fx.size);
+                self.opacity_mask_texture(l.opacity_masks.as_deref(), size)
+            })
+            .collect();
+        let Some(mask_textures) = mask_textures else {
+            let image = filmcraft_render::plan::execute_cpu(plan);
+            return self.render_plan(&FramePlan::Image(image), None, clear, resolve);
+        };
         let keys: Vec<(usize, u32, u32)> = layers
             .iter()
             .enumerate()
@@ -773,7 +910,7 @@ impl GpuCompositor {
         if let Some(f) = self.fx.as_mut() {
             f.begin_frame();
         }
-        for (l, k) in layers.iter().zip(&keys) {
+        for ((l, k), (mask_view, mask_count)) in layers.iter().zip(&keys).zip(&mask_textures) {
             // (every frame was just uploaded; a missing upload draws transparent texels)
             let src = self.src_info(&l.frame, *k).unwrap_or(SrcInfo {
                 kind: 1,
@@ -806,6 +943,7 @@ impl GpuCompositor {
                             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&views[1]) },
                             wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&views[2]) },
                             wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&views[3]) },
+                            wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&self.dummy) },
                         ],
                     });
                     match self.fx.as_mut() {
@@ -837,6 +975,8 @@ impl GpuCompositor {
                 }
             };
             jobs.push(job);
+            let mut u = u;
+            u[27] = *mask_count as f32;
             let buf = self.uniform_buffer(&u);
             let mut entries = vec![
                 wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() },
@@ -844,6 +984,7 @@ impl GpuCompositor {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&tex[1]) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&tex[2]) },
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&tex[3]) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(mask_view) },
             ];
             let (layout, region) = match (&backdrop_view, l.blend.reads_destination()) {
                 (Some(b), true) => {
@@ -980,6 +1121,23 @@ impl GpuCompositor {
         self.map_accumulator(size)
     }
 
+    /// Export rendering for opaque SDR output: resolve to sRGB RGBA8 on the GPU and reuse a
+    /// staging buffer, avoiding the float readback and per-pixel half-float conversion.
+    pub fn render_export_rgba8_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> Option<(u32, u32, Vec<u8>)> {
+        if matches!(plan, FramePlan::Composite { .. }) {
+            return None;
+        }
+        let t = std::time::Instant::now();
+        self.render_plan(plan, prep, true, true);
+        export_renderer::timing::add_submit(t.elapsed());
+        let result = self.read_output_export();
+        if result.is_some() {
+            export_renderer::timing::add_frame();
+            export_renderer::timing::add_rgba8_frame();
+        }
+        result
+    }
+
     /// Run the effect stage of a layer alone: `frame` decoded into its working image and `fx`
     /// applied, read back as linear premultiplied RGBA f32 (what `LayerFx` ops produce on the
     /// CPU from the same frame). None when the working image does not fit in a texture.
@@ -1002,6 +1160,7 @@ impl GpuCompositor {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&views[1]) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&views[2]) },
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&views[3]) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&self.dummy) },
             ],
         });
         let stage = self.fx.as_mut()?;
@@ -1144,6 +1303,79 @@ impl GpuCompositor {
         drop(data);
         buf.unmap();
         Some((*w, *h, out))
+    }
+
+    fn read_output_export(&mut self) -> Option<(u32, u32, Vec<u8>)> {
+        let (w, h) = self.output.as_ref()?.2;
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let row = w.checked_mul(4)?.div_ceil(256).checked_mul(256)?;
+        let needed = u64::from(row).checked_mul(u64::from(h))?;
+        let capacity = usize::try_from(w.checked_mul(h)?.checked_mul(4)?).ok()?;
+        let row_bytes = usize::try_from(w.checked_mul(4)?).ok()?;
+        let row_stride = usize::try_from(row).ok()?;
+        if self.output_readback_buf.as_ref().is_none_or(|(_, size)| *size < needed) {
+            let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("export-rgba8-readback"),
+                size: needed,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            self.output_readback_buf = Some((buffer, needed));
+        }
+        let texture = self.output.as_ref()?.0.clone();
+        let buffer = &self.output_readback_buf.as_ref()?.0;
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        let t = std::time::Instant::now();
+        self.queue.submit([encoder.finish()]);
+        export_renderer::timing::add_submit(t.elapsed());
+        let slice = buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        let t = std::time::Instant::now();
+        if wait_mapped(&self.device).is_none() {
+            buffer.unmap();
+            return None;
+        }
+        if !matches!(rx.recv(), Ok(Ok(()))) {
+            buffer.unmap();
+            return None;
+        }
+        export_renderer::timing::add_map_wait(t.elapsed());
+        let t = std::time::Instant::now();
+        let Ok(data) = slice.get_mapped_range() else {
+            buffer.unmap();
+            return None;
+        };
+        let mut out = Vec::with_capacity(capacity);
+        let mut complete = true;
+        for y in 0..h {
+            let Some(start) = usize::try_from(y).ok().and_then(|y| y.checked_mul(row_stride)) else {
+                complete = false;
+                break;
+            };
+            let Some(end) = start.checked_add(row_bytes) else {
+                complete = false;
+                break;
+            };
+            let Some(src) = data.get(start..end) else {
+                complete = false;
+                break;
+            };
+            out.extend_from_slice(src);
+        }
+        drop(data);
+        buffer.unmap();
+        export_renderer::timing::add_convert(t.elapsed());
+        complete.then_some((w, h, out))
     }
 }
 

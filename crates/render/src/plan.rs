@@ -43,6 +43,8 @@ pub struct PlanLayer {
     /// P3 media on a Rec. 709 sequence; [`crate::colorman::gpu_input`]): run on the GPU as on the
     /// CPU. None: the default decode.
     pub input: Option<Arc<filmcraft_color::InputTransform>>,
+    /// Opacity masks evaluated in source working-image pixels, before Motion.
+    pub opacity_masks: Option<Arc<[crate::mask::FlatMask]>>,
 }
 
 /// The GPU effect stage of a layer: the frame is decoded into a working image of `size` (the
@@ -58,7 +60,7 @@ pub struct LayerFx {
 impl PlanLayer {
     /// A layer drawing `frame` directly.
     pub fn new(frame: Arc<VideoFrame>, matrix: Affine, opacity: f32, blend: Blend) -> Self {
-        Self { frame, matrix, opacity, blend, fx: None, input: None }
+        Self { frame, matrix, opacity, blend, fx: None, input: None, opacity_masks: None }
     }
 
     /// Size of the picture the matrix places: the working image with effects, else the frame.
@@ -171,7 +173,7 @@ fn simple_transition(id: &str) -> bool {
 /// with effects off). None: the clip is rendered on the CPU.
 fn gpu_chain<'a>(project: &Project, item: &'a TrackItem, opts: RenderOptions) -> Option<Vec<&'a filmcraft_project::EffectInstance>> {
     let is_media = project.item(item.item).is_some_and(|p| matches!(p.kind, ItemKind::Media(_) | ItemKind::Subclip { .. }));
-    if !is_media || item.has_opacity_masks() {
+    if !is_media {
         return None;
     }
     if !opts.effects {
@@ -189,6 +191,39 @@ fn gpu_chain<'a>(project: &Project, item: &'a TrackItem, opts: RenderOptions) ->
         chain.push(e);
     }
     Some(chain)
+}
+
+/// Prepare active opacity masks for a direct GPU layer. Very large mask data stays on the
+/// established CPU path so untrusted project geometry cannot create unbounded GPU buffers.
+fn gpu_opacity_masks(item: &TrackItem, t: Tick, px_scale: f32) -> Option<Option<Arc<[crate::mask::FlatMask]>>> {
+    const MAX_MASKS: usize = 16;
+    const MAX_POINTS: usize = 4096;
+    const MAX_SOURCE_VERTICES: usize = 64;
+    let Some(opacity) = item.effect("opacity").filter(|e| e.enabled) else { return Some(None) };
+    if !opacity.masks.iter().any(|m| m.mode != filmcraft_project::MaskMode::None) {
+        return Some(None);
+    }
+    if opacity.masks.iter().any(filmcraft_project::Mask::is_animated) {
+        return None;
+    }
+    let active_count = opacity.masks.iter().filter(|m| m.mode != filmcraft_project::MaskMode::None).count();
+    let source_vertices = opacity
+        .masks
+        .iter()
+        .filter(|m| m.mode != filmcraft_project::MaskMode::None)
+        .try_fold(0usize, |n, m| n.checked_add(m.path.value.as_path().map_or(0, |path| path.vertices.len())))?;
+    if active_count > MAX_MASKS || source_vertices > MAX_SOURCE_VERTICES {
+        return None;
+    }
+    let masks = crate::mask::prepare(&opacity.masks, t, px_scale);
+    if masks.len() > MAX_MASKS {
+        return None;
+    }
+    let points = masks.iter().try_fold(0usize, |n, m| n.checked_add(m.pts.len()))?;
+    if points > MAX_POINTS {
+        return None;
+    }
+    Some(Some(Arc::from(masks)))
 }
 
 /// Plan the frame at timeline `t`.
@@ -442,12 +477,12 @@ fn push_item(
                 working: seq.settings.color.working,
             };
             let ops: Option<Vec<FxOp>> = chain.iter().map(|e| FxOp::eval(e, &cx, lw, lh).filter(FxOp::gpu_ok)).collect();
-            if let Some(ops) = ops {
+            if let (Some(ops), Some(opacity_masks)) = (ops, gpu_opacity_masks(item, mt, px_scale)) {
                 let m = Affine::scale(opts.scale as f64, opts.scale as f64)
                     .then_apply(&motion)
                     .then_apply(&Affine::scale(1.0 / px_scale as f64, 1.0 / px_scale as f64));
                 let fx = LayerFx { size: (lw as u32, lh as u32), decimation: n as u32, ops };
-                out.push(PlanLayer { frame, matrix: m, opacity: op * extra_opacity, blend: bl, fx: Some(Arc::new(fx)), input });
+                out.push(PlanLayer { frame, matrix: m, opacity: op * extra_opacity, blend: bl, fx: Some(Arc::new(fx)), input, opacity_masks });
                 return;
             }
         } else if plain {
@@ -462,8 +497,10 @@ fn push_item(
             };
             let px_scale = frame.width as f64 / size.0.max(1) as f64;
             let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion).then_apply(&Affine::scale(1.0 / px_scale, 1.0 / px_scale));
-            out.push(PlanLayer { input, ..PlanLayer::new(frame, m, op * extra_opacity, bl) });
-            return;
+            if let Some(opacity_masks) = gpu_opacity_masks(item, mt, px_scale as f32) {
+                out.push(PlanLayer { input, opacity_masks, ..PlanLayer::new(frame, m, op * extra_opacity, bl) });
+                return;
+            }
         }
     }
     // CPU-rendered layer (standard effects): drawn by the GPU as a pre-rendered canvas image.
@@ -536,10 +573,15 @@ fn linear_image(frame: &VideoFrame, n: usize, input: Option<&filmcraft_color::In
 fn execute_layers(canvas: &mut crate::Image, layers: &[PlanLayer]) {
     let (width, height) = (canvas.w, canvas.h);
     for l in layers {
-        let src = match &l.fx {
+        let mut src = match &l.fx {
             Some(fx) => effect_image_with(&l.frame, fx, l.input.as_deref()),
             None => linear_image(&l.frame, 1, l.input.as_deref()),
         };
+        if let Some(masks) = l.opacity_masks.as_deref()
+            && let Some(coverage) = crate::mask::coverage(masks, src.w, src.h)
+        {
+            crate::mask::scale_by(&mut src, &coverage);
+        }
         let placed = if l.matrix == Affine::scale(width as f64, height as f64) && src.w == 1 && src.h == 1 {
             crate::Image::filled(width, height, src.get(0, 0))
         } else {

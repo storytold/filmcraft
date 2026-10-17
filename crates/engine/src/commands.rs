@@ -4362,12 +4362,18 @@ fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Opti
     s.state = crate::Session::default().state;
     s.state.active_sequence = first;
     s.state.open_sequences = first.into_iter().collect();
-    if let Some(p) = &path
+    s.path = path;
+    if let Some(p) = s.path.as_deref()
         && !cfg!(target_arch = "wasm32")
     {
-        s.previews.set_dir(Some(crate::project_tools::previews_dir_for(&s.project, p)));
+        let preview_dir = crate::project_tools::previews_dir_for(&s.project, p);
+        if let Some(cache_dir) = s.media_cache_dir()
+            && !preview_dir.starts_with(cache_dir)
+        {
+            crate::settings::enforce_policy(&preview_dir, &s.prefs.media_cache, None, std::time::SystemTime::now());
+        }
+        s.previews.set_dir(Some(preview_dir));
     }
-    s.path = path;
     s.revision += 1;
     // A recovered project is unsaved: its saved revision is one that never existed.
     s.saved_revision = if clean { s.revision } else { 0 };

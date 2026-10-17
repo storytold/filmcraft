@@ -3601,3 +3601,13 @@
 	Shows the version, community links and credits in a FilmCraft window.	Mostra la versione, i link della community e i riconoscimenti in una finestra di FilmCraft.
 	Couldn't open your web browser	Impossibile aprire il browser web
 	Open this address in your browser yourself:	Apri tu questo indirizzo nel browser:
+	Audio Peak Generation	Generazione dei picchi audio
+	Audio Peak Generation · {count} pending	Generazione dei picchi audio · {count} in attesa
+	Estimated time remaining: {time}	Tempo rimanente stimato: {time}
+	{count} audio streams pending	{count} flussi audio in attesa
+	{count} audio streams complete	{count} flussi audio completati
+	{count} audio peak jobs failed	Operazioni di picco audio non riuscite: {count}
+	No audio peak jobs.	Nessuna operazione di picco audio.
+	Queued	In coda
+	Failed: {error}	Errore: {error}
+	And {count} more	E altri {count}

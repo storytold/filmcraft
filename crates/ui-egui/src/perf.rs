@@ -9,6 +9,11 @@ use crate::FilmcraftApp;
 
 pub fn stats(app: &FilmcraftApp) -> Value {
     let mut v = filmcraft_engine::perf::stats(&app.session);
+    let gpu_export = filmcraft_gpu::export_renderer::timing::get();
+    v["export"]["gpuRendering"]["submitMs"] = json!(gpu_export.submit.as_secs_f64() * 1e3);
+    v["export"]["gpuRendering"]["readbackWaitMs"] = json!(gpu_export.map_wait.as_secs_f64() * 1e3);
+    v["export"]["gpuRendering"]["pixelConvertMs"] = json!(gpu_export.convert.as_secs_f64() * 1e3);
+    v["export"]["gpuRendering"]["directRgba8Frames"] = json!(filmcraft_gpu::export_renderer::timing::rgba8_frames());
     let (shown, dropped) = app.playback.meter.counts();
     let (images, image_bytes, plans, plan_bytes) = app.frames.cache_entries();
     v["playback"] = json!({

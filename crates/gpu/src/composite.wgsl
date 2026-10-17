@@ -32,6 +32,7 @@ struct U {
 @group(0) @binding(4) var backdrop: texture_2d<f32>;
 // The alpha plane of a Y'CbCr source (ProRes 4444, ...); a dummy texture when `u.p3.y` is 0.
 @group(0) @binding(5) var tex3: texture_2d<f32>;
+@group(0) @binding(6) var opacity_mask: texture_2d<f32>;
 
 struct VOut {
     @builtin(position) pos: vec4<f32>,
@@ -201,6 +202,35 @@ fn sample(p: vec2<f32>) -> vec4<f32> {
     return vec4(lin * a, a);
 }
 
+fn opacity_mask_texel(pixel: vec2<i32>) -> f32 {
+    if u.p3.w < 0.5 { return 1.0; }
+    let d = vec2<i32>(textureDimensions(opacity_mask));
+    return textureLoad(opacity_mask, clamp(pixel, vec2<i32>(0), d - 1), 0).r;
+}
+
+// Apply opacity per source texel before bilinear resampling, matching the CPU order: mask the
+// working image first, then transform that image onto the sequence canvas.
+fn sample_masked(p: vec2<f32>) -> vec4<f32> {
+    if u.p3.w < 0.5 { return sample(p); }
+    let d = vec2<i32>(textureDimensions(tex0));
+    var q = p - 0.5;
+    let rq = round(q);
+    if abs(q.x - rq.x) < 1e-4 { q.x = rq.x; }
+    if abs(q.y - rq.y) < 1e-4 { q.y = rq.y; }
+    let i = vec2<i32>(floor(q));
+    let f = q - floor(q);
+    let hi = d - 1;
+    let p00 = clamp(i, vec2<i32>(0), hi);
+    let p10 = clamp(i + vec2<i32>(1, 0), vec2<i32>(0), hi);
+    let p01 = clamp(i + vec2<i32>(0, 1), vec2<i32>(0), hi);
+    let p11 = clamp(i + vec2<i32>(1, 1), vec2<i32>(0), hi);
+    let a = sample(vec2<f32>(p00) + 0.5) * opacity_mask_texel(p00);
+    let b = sample(vec2<f32>(p10) + 0.5) * opacity_mask_texel(p10);
+    let c = sample(vec2<f32>(p01) + 0.5) * opacity_mask_texel(p01);
+    let e = sample(vec2<f32>(p11) + 0.5) * opacity_mask_texel(p11);
+    return mix(mix(a, b, f.x), mix(c, e, f.x), f.y);
+}
+
 // The layer's premultiplied linear colour at this pixel, opacity applied.
 fn layer_color(sp: vec2<f32>) -> vec4<f32> {
     let n = max(u32(u.p0.z), 1u);
@@ -209,7 +239,8 @@ fn layer_color(sp: vec2<f32>) -> vec4<f32> {
     for (var j = 0u; j < n; j++) {
         for (var i = 0u; i < n; i++) {
             let off = (vec2(f32(i), f32(j)) + 0.5) / f32(n) - 0.5;
-            acc += sample(sp + off * fp);
+            let p = sp + off * fp;
+            acc += sample_masked(p);
         }
     }
     return acc / f32(n * n) * u.p0.x;

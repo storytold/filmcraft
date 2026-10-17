@@ -17,6 +17,13 @@ use filmcraft_render::plan::{FramePlan, plan_frame};
 use filmcraft_render::{Image, RenderOptions, SourceProvider};
 use filmcraft_time::Tick;
 
+/// A GPU export result. The opaque byte path lets the export pipeline bypass its linear-float
+/// conversion when no later image processing is needed.
+pub enum ExportRender {
+    Linear(Image),
+    Rgba8 { width: u32, height: u32, pixels: Vec<u8> },
+}
+
 /// Where export rendering spends its time (process-wide totals, for the bench).
 pub mod timing {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,6 +33,7 @@ pub mod timing {
     static MAP_WAIT_NS: AtomicU64 = AtomicU64::new(0);
     static CONVERT_NS: AtomicU64 = AtomicU64::new(0);
     static FRAMES: AtomicU64 = AtomicU64::new(0);
+    static RGBA8_FRAMES: AtomicU64 = AtomicU64::new(0);
 
     /// Totals since the last [`reset`].
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -60,13 +68,21 @@ pub mod timing {
         FRAMES.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn add_rgba8_frame() {
+        RGBA8_FRAMES.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn rgba8_frames() -> u64 {
+        RGBA8_FRAMES.load(Ordering::Relaxed)
+    }
+
     pub fn get() -> GpuTimings {
         let d = |c: &AtomicU64| Duration::from_nanos(c.load(Ordering::Relaxed));
         GpuTimings { submit: d(&SUBMIT_NS), map_wait: d(&MAP_WAIT_NS), convert: d(&CONVERT_NS), frames: FRAMES.load(Ordering::Relaxed) }
     }
 
     pub fn reset() {
-        for c in [&SUBMIT_NS, &MAP_WAIT_NS, &CONVERT_NS, &FRAMES] {
+        for c in [&SUBMIT_NS, &MAP_WAIT_NS, &CONVERT_NS, &FRAMES, &RGBA8_FRAMES] {
             c.store(0, Ordering::Relaxed);
         }
     }
@@ -153,6 +169,35 @@ impl ExportRenderer {
             FramePlan::Composite { .. } => None,
         }
     }
+
+    /// Render opaque SDR export frames directly to RGBA8 where the pipeline can consume them,
+    /// avoiding the intermediate linear-float readback and CPU conversion.
+    pub fn render_for_export(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: RenderOptions,
+        sources: &dyn SourceProvider,
+        prefer_rgba8: bool,
+    ) -> Option<ExportRender> {
+        if !prefer_rgba8 {
+            return self.render(project, seq, t, opts, sources).map(ExportRender::Linear);
+        }
+        let plan = plan_frame(project, seq, t, opts, sources);
+        let FramePlan::Layers { .. } = &plan else {
+            return self.render(project, seq, t, opts, sources).map(ExportRender::Linear);
+        };
+        if device_failed() {
+            return None;
+        }
+        let prep = prepare(&plan);
+        let (width, height, pixels) = self.compositor.render_export_rgba8_prepared(&plan, Some(&prep))?;
+        if device_failed() {
+            return None;
+        }
+        Some(ExportRender::Rgba8 { width, height, pixels })
+    }
 }
 
 #[cfg(test)]
@@ -162,7 +207,7 @@ mod tests {
     use filmcraft_export::FrameRenderer;
     use filmcraft_media::generators::GeneratorSource;
     use filmcraft_media::{Generator, MediaSource};
-    use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
+    use filmcraft_project::{ItemKind, Label, Mask, MaskPath, MediaClip, MediaRef, ParamValue, Project, SequenceSettings, TrackKind};
     use filmcraft_render::SourceMap;
     use filmcraft_time::{TICKS_PER_SECOND, Tick, TimeRange};
     use std::sync::Arc;
@@ -205,8 +250,9 @@ mod tests {
         let seq =
             p.new_sequence("s", SequenceSettings { width: 320, height: 180, frame_rate: filmcraft_time::FrameRate::FPS_24, ..Default::default() }, 1, 1, None);
         let r = filmcraft_time::FrameRate::FPS_24;
-        let _v = p.make_track_item(red, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).unwrap();
+        let v = p.make_track_item(red, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).unwrap();
         let a = p.make_track_item(t, TrackKind::Audio, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).unwrap();
+        p.sequence_mut(seq).unwrap().video_tracks[0].items.push(v);
         if transform {
             // Motion + opacity as fixed effects (the way the golden transform scene does it).
             if let Some(clip) = p.sequence_mut(seq).unwrap().video_tracks[0].items.last_mut() {
@@ -283,6 +329,79 @@ mod tests {
         let cpu = filmcraft_render::render_sequence(&p, seq, t, RenderOptions::default(), &m);
         let gpu = r.render(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
         assert_parity(&cpu, &gpu, "transformed");
+    }
+
+    #[test]
+    fn opacity_masked_media_stays_on_the_gpu_and_matches_cpu() {
+        let Some(mut renderer) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (gpu opacity mask parity): no adapter");
+            return;
+        };
+        let (project, seq, sources) = project(false);
+        let mut project = (*project).clone();
+        let clip = project
+            .sequence_mut(seq)
+            .and_then(|sequence| sequence.video_tracks.get_mut(0))
+            .and_then(|track| track.items.last_mut())
+            .expect("fixture video clip");
+        let opacity = clip.effect_mut("opacity").expect("fixture opacity effect");
+        let mut mask = Mask::new("GPU parity", MaskPath::ellipse(filmcraft_geom::Vec2::new(160.0, 90.0), filmcraft_geom::Vec2::new(105.0, 70.0)));
+        mask.feather.value = ParamValue::Float(7.0);
+        opacity.masks.push(mask);
+        let project = Arc::new(project);
+
+        let plan = plan_frame(&project, seq, Tick::ZERO, RenderOptions::default(), &sources);
+        let FramePlan::Layers { layers, .. } = &plan else {
+            panic!("an opacity-masked SDR clip should remain a GPU layer plan");
+        };
+        assert!(layers.first().is_some_and(|layer| layer.opacity_masks.is_some()), "planned layer carries the active mask");
+        let cpu = filmcraft_render::render_sequence(&project, seq, Tick::ZERO, RenderOptions::default(), &sources);
+        let gpu = renderer.render(&project, seq, Tick::ZERO, RenderOptions::default(), &sources).expect("GPU rendered the masked clip");
+        assert_parity(&cpu, &gpu, "opacity mask");
+        let Some(ExportRender::Rgba8 { pixels, .. }) = renderer.render_for_export(&project, seq, Tick::ZERO, RenderOptions::default(), &sources, true) else {
+            panic!("opaque SDR mask should use the direct RGBA8 GPU export path");
+        };
+        let cpu_rgba8 = cpu.over_black_rgba8();
+        let mut differences = cpu_rgba8
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(pixels.as_chunks::<4>().0)
+            .map(|(a, b)| (0..3).map(|c| u32::from(a[c]).abs_diff(u32::from(b[c]))).max().unwrap_or(0))
+            .collect::<Vec<_>>();
+        differences.sort_unstable();
+        let p99 = differences[differences.len() * 99 / 100];
+        let mean = differences.iter().sum::<u32>() as f64 / differences.len() as f64;
+        assert!(p99 <= 6 && mean < 1.5, "direct RGBA8 opacity mask parity p99 {p99}, mean {mean:.3}");
+    }
+
+    #[test]
+    fn opaque_sdr_export_reads_rgba8_directly_with_cpu_parity() {
+        let Some(mut r) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (gpu export parity): no adapter");
+            return;
+        };
+        let (p, seq, m) = project(false);
+        let opts = RenderOptions::default();
+        let cpu = filmcraft_render::render_sequence(&p, seq, Tick::ZERO, opts, &m).over_black_rgba8();
+        let Some(ExportRender::Rgba8 { width, height, pixels }) = r.render_for_export(&p, seq, Tick::ZERO, opts, &m, true) else {
+            panic!("eligible layered SDR export should use the direct RGBA8 GPU path");
+        };
+        assert_eq!((width as usize, height as usize), (320, 180));
+        assert_eq!(pixels.len(), cpu.len());
+        assert!(pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 255), "direct export must be opaque over black");
+        let differences = cpu
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(pixels.as_chunks::<4>().0)
+            .map(|(a, b)| (0..3).map(|c| (a[c] as u32).abs_diff(b[c] as u32)).max().unwrap_or(0))
+            .collect::<Vec<_>>();
+        let mut sorted = differences.clone();
+        sorted.sort_unstable();
+        let p99 = sorted[sorted.len() * 99 / 100];
+        let mean = differences.iter().sum::<u32>() as f64 / differences.len() as f64;
+        assert!(p99 <= 6 && mean < 1.5, "direct RGBA8 GPU parity p99 {p99}, mean {mean:.3}");
     }
 
     #[test]

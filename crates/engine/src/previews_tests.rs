@@ -60,6 +60,23 @@ fn states(s: &Session) -> Vec<String> {
     v["segments"].as_array().unwrap().iter().map(|g| g["state"].as_str().unwrap().to_string()).collect()
 }
 
+#[test]
+fn unsaved_preview_cache_folder_is_stable_between_stores() {
+    let root = tmp("stable-unsaved-cache");
+    let first = crate::previews::PreviewStore::temp();
+    first.set_temp_root(Some(root.clone()));
+    first.reset_temp();
+    let first_dir = first.dir();
+
+    let second = crate::previews::PreviewStore::temp();
+    second.set_temp_root(Some(root.clone()));
+    second.reset_temp();
+
+    assert_eq!(first_dir, Some(root.join("Unsaved")));
+    assert_eq!(second.dir(), first_dir);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 fn job_ok(s: &Session, v: &Value) {
     let id = v["job"].as_u64().expect("a job was started");
     let j = s.jobs.iter().find(|j| j.id == id).unwrap().to_json();
@@ -221,6 +238,47 @@ fn previews_survive_save_and_open() {
     let mut t = Session::default();
     t.execute("file.open", json!({"path": path})).unwrap();
     assert_eq!(states(&t), vec!["green", "none"], "hashes are stable across save/load");
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
+fn media_cache_retention_cleans_old_saved_project_previews() {
+    let (mut s, _) = session("saved-retention");
+    let folder = tmp("saved-preview-retention");
+    std::fs::create_dir_all(&folder).unwrap();
+    let path = folder.join("Film.fcproj").to_string_lossy().to_string();
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+    let preview_dir = s.previews.dir().unwrap();
+    let old = preview_dir.join("0123456789abcdef0123456789abcdef.mov");
+    let fresh = preview_dir.join("fedcba9876543210fedcba9876543210.mov");
+    std::fs::create_dir_all(&preview_dir).unwrap();
+    std::fs::write(&old, b"old render preview").unwrap();
+    std::fs::write(&fresh, b"fresh render preview").unwrap();
+    let two_days_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 86_400);
+    std::fs::File::options().write(true).open(&old).unwrap().set_modified(two_days_ago).unwrap();
+
+    s.prefs_path = Some(folder.join("preferences.json"));
+    s.prefs.media_cache.management = "olderThan".into();
+    s.prefs.media_cache.older_than_days = 1;
+    s.apply_media_cache();
+
+    assert!(!old.exists());
+    assert!(fresh.exists());
+    assert_eq!(s.previews.dir(), Some(preview_dir.clone()));
+
+    // On a fresh session, preferences are loaded before the saved project; opening it applies the
+    // same age policy to its project-side preview folder before the folder is indexed.
+    std::fs::write(&old, b"old render preview").unwrap();
+    std::fs::File::options().write(true).open(&old).unwrap().set_modified(two_days_ago).unwrap();
+    let mut reopened = Session::default();
+    reopened.prefs_path = Some(folder.join("preferences.json"));
+    reopened.prefs.media_cache.management = "olderThan".into();
+    reopened.prefs.media_cache.older_than_days = 1;
+    reopened.apply_media_cache();
+    reopened.execute("file.open", json!({"path": path})).unwrap();
+    assert!(!old.exists());
+    assert!(fresh.exists());
+    assert_eq!(reopened.previews.dir(), Some(preview_dir));
     let _ = std::fs::remove_dir_all(&folder);
 }
 

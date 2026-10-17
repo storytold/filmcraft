@@ -1730,6 +1730,8 @@ impl FilmcraftApp {
         }
         self.sync_pool();
         self.apply_prefs(&ctx);
+        panels::timeline::queue_imported_audio_peaks(self);
+        panels::timeline::start_next_audio_peak(self, &ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_media_refresh(&ctx);
         for ev in self.session.drain_events() {
@@ -2394,6 +2396,7 @@ mod gpu_fallback_tests {
             blend: filmcraft_render::Blend::Normal,
             fx: None,
             input: None,
+            opacity_masks: None,
         };
         // a 4K source in an HD sequence still needs a 3840-wide texture on the GPU
         let p = FramePlan::Layers { width: 1920, height: 1080, layers: vec![layer(64, 64), layer(3840, 2160)] };

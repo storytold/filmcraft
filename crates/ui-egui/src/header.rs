@@ -93,8 +93,31 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if btn(ui, Icon::Bell, "notifications", tl!("Progress"), app).clicked() {
         app.ui.mode = Mode::Export;
     }
+    let peak_progress = crate::panels::timeline::audio_peak_progress(app);
+    let pending_peaks = peak_progress.active.saturating_add(peak_progress.queued);
+    let peak_tip = if pending_peaks > 0 {
+        tlf!("Audio Peak Generation · {count} pending", count = pending_peaks)
+    } else if peak_progress.failed > 0 {
+        tlf!("{count} audio peak jobs failed", count = peak_progress.failed)
+    } else {
+        tl!("Audio Peak Generation").to_string()
+    };
+    let peak_button = btn(ui, Icon::Audio, "audioPeaks", &peak_tip, app);
+    if peak_button.clicked() {
+        let id = egui::Id::new("audio-peaks-popup");
+        let open = ui.ctx().data(|d| d.get_temp::<bool>(id).unwrap_or(false));
+        ui.ctx().data_mut(|d| d.insert_temp(id, !open));
+    }
+    let badge_count = if pending_peaks > 0 { pending_peaks } else { peak_progress.failed };
+    if badge_count > 0 {
+        let badge = Rect::from_center_size(pos2(peak_button.rect.max.x - 2.0, peak_button.rect.min.y + 2.0), vec2(11.0, 11.0));
+        ui.painter().circle_filled(badge.center(), 5.5, if pending_peaks > 0 { t.accent } else { t.danger });
+        let label = if badge_count > 99 { "99+".to_string() } else { badge_count.to_string() };
+        ui.painter().text(badge.center(), egui::Align2::CENTER_CENTER, label, Tokens::ui(6.5), Color32::WHITE);
+    }
+    audio_peak_popup(app, ui, peak_button.rect, peak_button.clicked(), &peak_progress);
     // Quick Export: a popup with File Name & Location, a preset list and Export (Premiere 26)
-    let qx = rect.max.x - 14.0 - 4.0 * 38.0; // the fifth button from the right
+    let qx = rect.max.x - 14.0 - 5.0 * 38.0; // the sixth button from the right
     if btn(ui, Icon::Export, "quickExport", tl!("Quick Export"), app).clicked() {
         app.ui.export.quick_open = !app.ui.export.quick_open;
         ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("quick-export-toggled"), true));
@@ -180,5 +203,92 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if area.response.clicked_elsewhere() && !(ws_resp.clicked() || wresp.clicked()) {
             ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
         }
+    }
+}
+
+fn format_eta(seconds: u64) -> String {
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 60 * 60 {
+        format!("{}m {:02}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{}h {:02}m", seconds / (60 * 60), (seconds / 60) % 60)
+    }
+}
+
+fn audio_peak_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui, button: Rect, button_clicked: bool, progress: &crate::panels::timeline::PeakProgressSnapshot) {
+    let popup_id = egui::Id::new("audio-peaks-popup");
+    let open = ui.ctx().data(|d| d.get_temp::<bool>(popup_id).unwrap_or(false));
+    if !open {
+        return;
+    }
+    if progress.active > 0 || progress.queued > 0 {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+    }
+    let viewport = ui.ctx().content_rect();
+    let viewport_width = viewport.width();
+    let width = if viewport_width.is_nan() { 1.0 } else { viewport_width.clamp(1.0, 360.0) };
+    let x = (button.right() - width).max(viewport.left() + 8.0).min((viewport.right() - width - 8.0).max(viewport.left() + 8.0));
+    let pos = pos2(x, button.bottom() + 4.0);
+    let area = egui::Area::new(popup_id.with("area")).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
+        egui::Frame::popup(ui.style()).show(ui, |ui| {
+            ui.set_min_width(width);
+            ui.set_max_width(width);
+            ui.heading(tl!("Audio Peak Generation"));
+            let pending = progress.active.saturating_add(progress.queued);
+            if progress.total_samples > 0 {
+                let fraction = (progress.done_samples as f64 / progress.total_samples as f64).clamp(0.0, 1.0) as f32;
+                ui.add(egui::ProgressBar::new(fraction).show_percentage());
+                let summary = if let Some(seconds) = progress.remaining_seconds {
+                    tlf!("Estimated time remaining: {time}", time = format_eta(seconds))
+                } else if pending > 0 {
+                    tlf!("{count} audio streams pending", count = pending)
+                } else {
+                    tlf!("{count} audio streams complete", count = progress.complete)
+                };
+                ui.label(summary);
+            } else if pending > 0 {
+                ui.label(tlf!("{count} audio streams pending", count = pending));
+            }
+            if progress.failed > 0 {
+                ui.colored_label(app.tokens.danger, tlf!("{count} audio peak jobs failed", count = progress.failed));
+            }
+            ui.separator();
+            if progress.tasks.is_empty() {
+                ui.label(tl!("No audio peak jobs."));
+            } else {
+                egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                    for task in &progress.tasks {
+                        let (status_text, fraction, color) = match &task.status {
+                            crate::panels::timeline::PeakTaskStatus::Queued => (tl!("Queued").to_string(), 0.0, app.tokens.text_dim),
+                            crate::panels::timeline::PeakTaskStatus::Processing => {
+                                let pct =
+                                    if task.total_samples > 0 { (task.done_samples as f64 / task.total_samples as f64).clamp(0.0, 1.0) as f32 } else { 1.0 };
+                                let status = if let Some(seconds) = task.estimated_seconds {
+                                    format!("{:.0}% · {} left", pct * 100.0, format_eta(seconds))
+                                } else {
+                                    format!("{:.0}%", pct * 100.0)
+                                };
+                                (status, pct, app.tokens.accent)
+                            }
+                            crate::panels::timeline::PeakTaskStatus::Complete => (tl!("Done").to_string(), 1.0, app.tokens.text_dim),
+                            crate::panels::timeline::PeakTaskStatus::Failed(error) => (tlf!("Failed: {error}", error), 0.0, app.tokens.danger),
+                        };
+                        ui.label(egui::RichText::new(&task.name).color(app.tokens.text));
+                        ui.horizontal(|ui| {
+                            ui.add(egui::ProgressBar::new(fraction).desired_width((width - 140.0).max(80.0)));
+                            ui.label(egui::RichText::new(status_text).color(color).small());
+                        });
+                    }
+                    let total_jobs = progress.active.saturating_add(progress.queued).saturating_add(progress.complete).saturating_add(progress.failed);
+                    if total_jobs > progress.tasks.len() {
+                        ui.label(tlf!("And {count} more", count = total_jobs - progress.tasks.len()));
+                    }
+                });
+            }
+        });
+    });
+    if area.response.clicked_elsewhere() && !button_clicked {
+        ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
     }
 }

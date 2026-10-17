@@ -12,7 +12,7 @@ use filmcraft_time::FrameRate;
 use rayon::prelude::*;
 
 use crate::settings::{ExportEffects, Placement, Scaling, TextOverlay};
-use crate::{ExportError, ExportSettings, FrameRenderer, GpuRendering, Result, build_frame_renderer, note_gpu_fallback, note_gpu_frame};
+use crate::{ExportError, ExportFrame, ExportSettings, FrameRenderer, GpuRendering, Result, build_frame_renderer, note_gpu_fallback, note_gpu_frame};
 
 /// Where the rendered picture lands in the output frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -234,19 +234,28 @@ impl Pipeline {
         // HDR) does not take a pooled renderer: it would render on the CPU inside the pool, as
         // many frames at a time as there are renderers instead of one per export thread.
         let pool = self.renderer.as_ref().filter(|_| !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t));
+        let can_use_rgba8 = !self.hdr_out && !self.alpha && self.geom.content.is_none() && self.geom.offset == (0, 0) && !self.effects.any_video();
         let gpu = match pool {
             Some(pool) => {
                 let asked = web_time::Instant::now();
                 pool.with(|r| {
                     crate::note_lock_wait(asked.elapsed());
-                    r.render(&self.project, self.seq, t, self.opts, sources)
+                    r.render_for_export(&self.project, self.seq, t, self.opts, sources, can_use_rgba8)
                 })
                 .flatten()
             }
             None => None,
         };
         let img = match gpu {
-            Some(img) => {
+            Some(ExportFrame::Rgba8 { width, height, pixels }) if can_use_rgba8 && (width, height) == (self.w, self.h) => {
+                note_gpu_frame();
+                return (pixels, Vec::new());
+            }
+            Some(ExportFrame::Rgba8 { .. }) => {
+                note_gpu_fallback();
+                filmcraft_render::render_sequence(&self.project, self.seq, t, self.opts, sources)
+            }
+            Some(ExportFrame::Linear(img)) => {
                 note_gpu_frame();
                 img
             }

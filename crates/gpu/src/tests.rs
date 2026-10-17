@@ -123,7 +123,15 @@ fn gpu_matches_cpu_plan() {
         width: w,
         height: h,
         layers: vec![
-            PlanLayer { frame: yuv_frame(640, 360), matrix: Affine::scale(0.5, 0.5), opacity: 1.0, blend: Blend::Normal, fx: None, input: None },
+            PlanLayer {
+                frame: yuv_frame(640, 360),
+                matrix: Affine::scale(0.5, 0.5),
+                opacity: 1.0,
+                blend: Blend::Normal,
+                fx: None,
+                input: None,
+                opacity_masks: None,
+            },
             PlanLayer {
                 frame: rgba,
                 matrix: Affine::motion(Vec2::new(200.0, 100.0), Vec2::new(0.4, 0.4), 12.0, Vec2::new(160.0, 90.0)),
@@ -131,6 +139,7 @@ fn gpu_matches_cpu_plan() {
                 blend: Blend::Normal,
                 fx: None,
                 input: None,
+                opacity_masks: None,
             },
         ],
     };
@@ -289,8 +298,8 @@ fn prepared_upload_matches_inline_conversion() {
         width: w as usize,
         height: h as usize,
         layers: vec![
-            PlanLayer { frame: yuv16, matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None },
-            PlanLayer { frame: rgbaf, matrix: Affine::scale(0.5, 0.5), opacity: 0.8, blend: Blend::Normal, fx: None, input: None },
+            PlanLayer { frame: yuv16, matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None, opacity_masks: None },
+            PlanLayer { frame: rgbaf, matrix: Affine::scale(0.5, 0.5), opacity: 0.8, blend: Blend::Normal, fx: None, input: None, opacity_masks: None },
         ],
     };
     let image = FramePlan::Image(filmcraft_render::Image { w: w as usize, h: h as usize, px: f32_layer });
@@ -322,7 +331,7 @@ fn upload_cache_keeps_buffers_alive() {
     let plan = FramePlan::Layers {
         width: 16,
         height: 8,
-        layers: vec![PlanLayer { frame, matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None }],
+        layers: vec![PlanLayer { frame, matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None, opacity_masks: None }],
     };
     c.composite(&plan);
     drop(plan);
@@ -425,6 +434,46 @@ fn gpu_masked_mix_matches_cpu() {
     assert!(worst < 2e-4, "{worst}");
 }
 
+#[test]
+fn gpu_compositor_applies_opacity_masks_before_motion() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let (w, h) = (320usize, 180usize);
+    let masks: Arc<[filmcraft_render::mask::FlatMask]> = Arc::from(test_masks(1.0));
+    let pixels = (0..h).flat_map(|y| (0..w).flat_map(move |x| [x as f32 / w as f32, y as f32 / h as f32, (x + y) as f32 / (w + h) as f32, 1.0])).collect();
+    let plan = FramePlan::Layers {
+        width: w,
+        height: h,
+        layers: vec![PlanLayer {
+            frame: Arc::new(VideoFrame::rgba_f32(w as u32, h as u32, pixels)),
+            matrix: Affine::motion(Vec2::new(170.0, 95.0), Vec2::new(0.9, 0.9), 7.0, Vec2::new(160.0, 90.0)),
+            opacity: 0.8,
+            blend: Blend::Normal,
+            fx: None,
+            input: None,
+            opacity_masks: Some(masks),
+        }],
+    };
+    let cpu = execute_cpu(&plan).over_black_rgba8();
+    let mut compositor = GpuCompositor::new(&dev, &q);
+    compositor.composite(&plan);
+    let (_, _, gpu) = compositor.read_output().expect("readback");
+    let mut differences: Vec<u32> = cpu
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(gpu.as_chunks::<4>().0)
+        .map(|(a, b)| (0..3).map(|c| u32::from(a[c]).abs_diff(u32::from(b[c]))).max().unwrap_or(0))
+        .collect();
+    differences.sort_unstable();
+    let p99 = differences[differences.len() * 99 / 100];
+    let mean = differences.iter().sum::<u32>() as f64 / differences.len() as f64;
+    eprintln!("opacity masks: GPU vs CPU p99 {p99}, mean {mean:.3}");
+    assert!(p99 <= 10 && mean < 1.5, "opacity mask GPU parity p99 {p99}, mean {mean:.3}");
+}
+
 /// A 4:4:4 grey picture with an alpha plane that ramps from transparent (left) to opaque (right).
 fn yuv_alpha_frame(w: u32, h: u32, bits: u32) -> Arc<VideoFrame> {
     let n = (w * h) as usize;
@@ -472,8 +521,24 @@ fn gpu_draws_yuv_alpha_plane_like_the_cpu() {
             width: w,
             height: h,
             layers: vec![
-                PlanLayer { frame: background.clone(), matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None },
-                PlanLayer { frame: yuv_alpha_frame(320, 180, bits), matrix: Affine::IDENTITY, opacity: 0.9, blend: Blend::Normal, fx: None, input: None },
+                PlanLayer {
+                    frame: background.clone(),
+                    matrix: Affine::IDENTITY,
+                    opacity: 1.0,
+                    blend: Blend::Normal,
+                    fx: None,
+                    input: None,
+                    opacity_masks: None,
+                },
+                PlanLayer {
+                    frame: yuv_alpha_frame(320, 180, bits),
+                    matrix: Affine::IDENTITY,
+                    opacity: 0.9,
+                    blend: Blend::Normal,
+                    fx: None,
+                    input: None,
+                    opacity_masks: None,
+                },
             ],
         };
         let cpu = execute_cpu(&plan).over_black_rgba8();
@@ -489,7 +554,15 @@ fn gpu_draws_yuv_alpha_plane_like_the_cpu() {
         let bg = execute_cpu(&FramePlan::Layers {
             width: w,
             height: h,
-            layers: vec![PlanLayer { frame: background.clone(), matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None }],
+            layers: vec![PlanLayer {
+                frame: background.clone(),
+                matrix: Affine::IDENTITY,
+                opacity: 1.0,
+                blend: Blend::Normal,
+                fx: None,
+                input: None,
+                opacity_masks: None,
+            }],
         })
         .over_black_rgba8();
         let (l, r, b0) = (at(&gpu, 1), at(&gpu, w - 2), at(&bg, 1));

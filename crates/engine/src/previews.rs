@@ -12,8 +12,8 @@
 //! The folder:
 //!
 //! * saved project `/path/Film.fcproj` → `/path/FilmCraft Previews/Film/`;
-//! * unsaved project → a per-process folder in the system temp dir; its files move into the
-//!   project's folder on the first save.
+//! * unsaved project → a stable folder in the user's Media Cache (or system temp when no user
+//!   cache is configured); its files move into the project's folder on the first save.
 //!
 //! Because files are named by content, an edit simply changes the hash of the segments it touches
 //! (their bar turns yellow/red again) while every other preview stays valid; undo brings the old
@@ -169,14 +169,14 @@ fn audio_name(hash: &str) -> String {
 }
 
 impl PreviewStore {
-    /// A store using a fresh per-process temp folder (unsaved projects).
+    /// A store using the stable unsaved-project cache folder.
     pub fn temp() -> Self {
         let s = Self::default();
         s.set_dir(default_temp_dir());
         s
     }
 
-    /// Switch to a fresh temp folder (new unsaved project).
+    /// Switch to the stable temp folder (unsaved projects can reuse content-addressed previews).
     pub fn reset_temp(&self) {
         let root = self.temp_root();
         self.set_dir(match root {
@@ -565,10 +565,10 @@ fn default_temp_dir() -> Option<PathBuf> {
     Some(untitled_dir(&crate::temp_dir().join("FilmCraft Previews")))
 }
 
-/// A fresh per-process folder for an unsaved project's previews under `root`.
+/// A stable folder for unsaved-project previews under `root`. Preview filenames are content hashes,
+/// so reusing this folder across launches cannot show a preview for different sequence content.
 fn untitled_dir(root: &Path) -> PathBuf {
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    root.join(format!("untitled-{}-{nanos:x}", std::process::id()))
+    root.join("Unsaved")
 }
 
 /// The preview folder of a project saved at `project_path`.

@@ -3577,3 +3577,13 @@
 	Export the labels to a preset file…	Exporter les étiquettes dans un fichier de paramètre prédéfini…
 	Show the presets folder	Afficher le dossier des paramètres prédéfinis
 	Delete this preset	Supprimer ce paramètre prédéfini
+	Audio Peak Generation	Génération des crêtes audio
+	Audio Peak Generation · {count} pending	Génération des crêtes audio · {count} en attente
+	Estimated time remaining: {time}	Temps restant estimé : {time}
+	{count} audio streams pending	{count} flux audio en attente
+	{count} audio streams complete	{count} flux audio terminés
+	{count} audio peak jobs failed	Échec de {count} tâches de crêtes audio
+	No audio peak jobs.	Aucune tâche de crêtes audio.
+	Queued	En attente
+	Failed: {error}	Échec : {error}
+	And {count} more	Et {count} autres

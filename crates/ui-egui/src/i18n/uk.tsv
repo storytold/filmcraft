@@ -360,3 +360,13 @@
 	Zoom to Sequence	Умістити секвенцію
 	Project Notes	Нотатки проєкту
 
+	Audio Peak Generation	Створення піків аудіо
+	Audio Peak Generation · {count} pending	Створення піків аудіо · у черзі: {count}
+	Estimated time remaining: {time}	Орієнтовний час до завершення: {time}
+	{count} audio streams pending	Очікують обробки аудіопотоків: {count}
+	{count} audio streams complete	Оброблено аудіопотоків: {count}
+	{count} audio peak jobs failed	Не вдалося створити піки аудіо для потоків: {count}
+	No audio peak jobs.	Немає завдань зі створення піків аудіо.
+	Queued	У черзі
+	Failed: {error}	Помилка: {error}
+	And {count} more	І ще {count}

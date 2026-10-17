@@ -29,6 +29,21 @@ fn gpu_export_frame_renderer_factory() -> Option<Box<dyn filmcraft_export::Frame
         ) -> Option<filmcraft_render::Image> {
             self.0.render(project, seq, t, opts, sources)
         }
+
+        fn render_for_export(
+            &mut self,
+            project: &filmcraft_project::Project,
+            seq: ItemId,
+            t: Tick,
+            opts: filmcraft_render::RenderOptions,
+            sources: &dyn filmcraft_render::SourceProvider,
+            prefer_rgba8: bool,
+        ) -> Option<filmcraft_export::ExportFrame> {
+            self.0.render_for_export(project, seq, t, opts, sources, prefer_rgba8).map(|frame| match frame {
+                filmcraft_gpu::export_renderer::ExportRender::Linear(image) => filmcraft_export::ExportFrame::Linear(image),
+                filmcraft_gpu::export_renderer::ExportRender::Rgba8 { width, height, pixels } => filmcraft_export::ExportFrame::Rgba8 { width, height, pixels },
+            })
+        }
     }
     filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(R(r)) as Box<dyn filmcraft_export::FrameRenderer>)
 }

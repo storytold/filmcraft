@@ -360,3 +360,13 @@
 	Next Appearance Mode	Следующий режим оформления
 	Project Notes	Заметки проекта
 
+	Audio Peak Generation	Создание пиков аудио
+	Audio Peak Generation · {count} pending	Создание пиков аудио · в очереди: {count}
+	Estimated time remaining: {time}	Примерное оставшееся время: {time}
+	{count} audio streams pending	Ожидают обработки аудиопотоков: {count}
+	{count} audio streams complete	Обработано аудиопотоков: {count}
+	{count} audio peak jobs failed	Не удалось создать пики аудио для потоков: {count}
+	No audio peak jobs.	Нет задач создания пиков аудио.
+	Queued	В очереди
+	Failed: {error}	Ошибка: {error}
+	And {count} more	И ещё {count}

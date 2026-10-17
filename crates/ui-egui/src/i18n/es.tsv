@@ -3610,3 +3610,13 @@
 	Shows the version, community links and credits in a FilmCraft window.	Muestra la versión, los enlaces de la comunidad y los créditos en una ventana de FilmCraft.
 	Couldn't open your web browser	No se pudo abrir el navegador web
 	Open this address in your browser yourself:	Abre esta dirección tú mismo en el navegador:
+	Audio Peak Generation	Generación de picos de audio
+	Audio Peak Generation · {count} pending	Generación de picos de audio · {count} pendientes
+	Estimated time remaining: {time}	Tiempo estimado restante: {time}
+	{count} audio streams pending	{count} flujos de audio pendientes
+	{count} audio streams complete	{count} flujos de audio completados
+	{count} audio peak jobs failed	Fallaron {count} tareas de picos de audio
+	No audio peak jobs.	No hay tareas de picos de audio.
+	Queued	En cola
+	Failed: {error}	Error: {error}
+	And {count} more	Y {count} más

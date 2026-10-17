@@ -3578,3 +3578,13 @@
 
 # The native macOS application menu (Settings…).
 	Settings	Preferências
+	Audio Peak Generation	Geração de picos de áudio
+	Audio Peak Generation · {count} pending	Geração de picos de áudio · {count} pendentes
+	Estimated time remaining: {time}	Tempo restante estimado: {time}
+	{count} audio streams pending	{count} fluxos de áudio pendentes
+	{count} audio streams complete	{count} fluxos de áudio concluídos
+	{count} audio peak jobs failed	Falha em {count} tarefas de picos de áudio
+	No audio peak jobs.	Nenhuma tarefa de picos de áudio.
+	Queued	Na fila
+	Failed: {error}	Falha: {error}
+	And {count} more	E mais {count}

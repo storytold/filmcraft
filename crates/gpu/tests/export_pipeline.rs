@@ -3,7 +3,9 @@
 //! `GpuRendering::Off` (CPU reference) frames within the GPU-vs-CPU parity tolerance — p99 of the
 //! per-pixel max RGB difference over black ≤ 6 and mean < 1.5 (the golden-test criterion).
 
-use filmcraft_export::{ExportSettings, Format, FrameRenderer, GpuRenderStats, GpuRendering, Progress, export, register_frame_renderer};
+use filmcraft_export::{
+    ExportFrame, ExportSettings, Format, FrameRenderer, GpuRenderStats, GpuRendering, HardwareEncoding, Progress, export, register_frame_renderer,
+};
 use filmcraft_media::generators::GeneratorSource;
 use filmcraft_media::{Generator, MediaSource};
 use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef, SequenceSettings, TrackKind};
@@ -25,6 +27,21 @@ impl FrameRenderer for GpuFrameRenderer {
         sources: &dyn filmcraft_render::SourceProvider,
     ) -> Option<filmcraft_render::Image> {
         self.0.render(project, seq, t, opts, sources)
+    }
+
+    fn render_for_export(
+        &mut self,
+        project: &filmcraft_project::Project,
+        seq: filmcraft_project::ItemId,
+        t: filmcraft_time::Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn filmcraft_render::SourceProvider,
+        prefer_rgba8: bool,
+    ) -> Option<ExportFrame> {
+        self.0.render_for_export(project, seq, t, opts, sources, prefer_rgba8).map(|frame| match frame {
+            filmcraft_gpu::export_renderer::ExportRender::Linear(image) => ExportFrame::Linear(image),
+            filmcraft_gpu::export_renderer::ExportRender::Rgba8 { width, height, pixels } => ExportFrame::Rgba8 { width, height, pixels },
+        })
     }
 }
 
@@ -131,4 +148,29 @@ fn gpu_export_matches_cpu_and_counts() {
     }
     let GpuRenderStats { frames, .. } = filmcraft_export::gpu_render_stats();
     assert!(frames >= 8, "gpu frames counted across the parity exports: {frames}");
+}
+
+#[test]
+fn opaque_sdr_video_export_uses_direct_rgba8_frames() {
+    let Some(_) = filmcraft_gpu::ExportRenderer::new() else {
+        eprintln!("SKIPPED (gpu direct export): no adapter");
+        return;
+    };
+    register_frame_renderer(|| Some(Box::new(GpuFrameRenderer(filmcraft_gpu::ExportRenderer::new().expect("adapter present")))));
+    let (p, seq, m) = project(320, 180);
+    let path = std::env::temp_dir().join("fc-gpu-export-direct-rgba8.mov");
+    let mut s = ExportSettings {
+        format: Format::Mjpeg,
+        path: path.to_string_lossy().into_owned(),
+        include_audio: false,
+        hardware_encoding: HardwareEncoding::Off,
+        gpu_rendering: GpuRendering::Auto,
+        ..Default::default()
+    };
+    s.range = Some(TimeRange::new(filmcraft_time::Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(2)));
+    let before = filmcraft_gpu::export_renderer::timing::rgba8_frames();
+    export(&p, seq, &s, &m, &Progress::default()).unwrap();
+    let after = filmcraft_gpu::export_renderer::timing::rgba8_frames();
+    assert!(after >= before + 2, "both opaque SDR frames should use direct RGBA8: {before} → {after}");
+    assert!(std::fs::metadata(&path).is_ok_and(|m| m.len() > 0), "M-JPEG export file should be written");
 }

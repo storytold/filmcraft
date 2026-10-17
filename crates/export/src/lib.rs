@@ -921,6 +921,27 @@ pub trait FrameRenderer: Send {
         opts: filmcraft_render::RenderOptions,
         sources: &dyn SourceProvider,
     ) -> Option<filmcraft_render::Image>;
+
+    /// Render an export frame, optionally using an opaque sRGB RGBA8 result that can go directly
+    /// to an SDR encoder. The default preserves the linear-light renderer contract.
+    fn render_for_export(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn SourceProvider,
+        prefer_rgba8: bool,
+    ) -> Option<ExportFrame> {
+        let _ = prefer_rgba8;
+        self.render(project, seq, t, opts, sources).map(ExportFrame::Linear)
+    }
+}
+
+/// A rendered export frame. `Rgba8` is opaque, gamma-encoded sRGB and valid only for SDR output.
+pub enum ExportFrame {
+    Linear(filmcraft_render::Image),
+    Rgba8 { width: u32, height: u32, pixels: Vec<u8> },
 }
 
 /// Builds the frame renderer for one export, or `None` when this host cannot (no adapter).

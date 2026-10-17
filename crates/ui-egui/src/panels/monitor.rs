@@ -13,7 +13,7 @@ use filmcraft_time::{Tick, TimeDisplay, format_time};
 use serde_json::json;
 
 use crate::FilmcraftApp;
-use crate::frames::{FrameKey, Target};
+use crate::frames::{FrameKey, PlaybackHealth, Target};
 use crate::icons::{self, Icon};
 use crate::panels::monitor_view;
 use crate::state::{DisplayMode, PlaybackRes};
@@ -279,7 +279,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     }
     // Dropped-frame indicator (Program only)
     if which == Which::Program && app.playback.playing {
-        let c = if app.playback.meter.counts().1 > 0 { t.render_yellow } else { t.render_green };
+        let c = match app.playback.meter.health() {
+            PlaybackHealth::Smooth => t.render_green,
+            PlaybackHealth::SomeDrops => t.render_yellow,
+            PlaybackHealth::FrequentDrops => t.render_red,
+        };
         ui.painter().circle_filled(pos2(video_area.min.x + 10.0, video_area.min.y + 10.0), 4.0, c);
     }
     // A click on the Program monitor around the picture lets go of what is selected on it (#683;
@@ -536,7 +540,7 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
         ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
     }
     if resp.clicked()
-        && let (Some(pos), Target::Sequence(seq)) = (resp.interact_pointer_pos(), target)
+        && let (Some(pos), Some(seq)) = (resp.interact_pointer_pos(), eyedropper_sequence(target))
         && pic.width() > 0.0
         && pic.height() > 0.0
     {
@@ -573,6 +577,15 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
     }
     if let Err(e) = app.session.execute("effects.setParam", params) {
         app.ui.status = e.to_string();
+    }
+}
+
+/// The Program monitor can display a GPU sequence plan, but the eyedropper needs CPU pixels to
+/// sample. Keep the sequence identity while routing either monitor target through the CPU renderer.
+fn eyedropper_sequence(target: Target) -> Option<filmcraft_project::ItemId> {
+    match target {
+        Target::Sequence(seq) | Target::SequencePlan(seq) => Some(seq),
+        _ => None,
     }
 }
 
@@ -1169,5 +1182,13 @@ mod tests {
     fn eyedropper_rejects_empty_and_truncated_frames() {
         assert_eq!(sample_rgb(&Rgba { w: 0, h: 0, px: vec![] }, (0.5, 0.5)), None);
         assert_eq!(sample_rgb(&Rgba { w: 4, h: 4, px: vec![0; 10] }, (0.5, 0.5)), None);
+    }
+
+    #[test]
+    fn eyedropper_accepts_the_gpu_program_target_for_cpu_sampling() {
+        let sequence = filmcraft_project::ItemId(42);
+        assert_eq!(eyedropper_sequence(Target::Sequence(sequence)), Some(sequence));
+        assert_eq!(eyedropper_sequence(Target::SequencePlan(sequence)), Some(sequence));
+        assert_eq!(eyedropper_sequence(Target::Item(sequence)), None);
     }
 }

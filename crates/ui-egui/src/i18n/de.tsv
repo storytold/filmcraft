@@ -391,3 +391,13 @@
 	Zoom to Sequence	Auf Sequenz zoomen
 	Project Notes	Projektnotizen
 
+	Audio Peak Generation	Generierung von Audio-Peaks
+	Audio Peak Generation · {count} pending	Generierung von Audio-Peaks · {count} ausstehend
+	Estimated time remaining: {time}	Geschätzte verbleibende Zeit: {time}
+	{count} audio streams pending	{count} Audiostreams ausstehend
+	{count} audio streams complete	{count} Audiostreams abgeschlossen
+	{count} audio peak jobs failed	{count} Audio-Peak-Aufgaben fehlgeschlagen
+	No audio peak jobs.	Keine Audio-Peak-Aufgaben.
+	Queued	In Warteschlange
+	Failed: {error}	Fehlgeschlagen: {error}
+	And {count} more	Und {count} weitere

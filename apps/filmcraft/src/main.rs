@@ -402,6 +402,21 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
     ) -> Option<filmcraft_render::Image> {
         self.0.render(project, seq, t, opts, sources)
     }
+
+    fn render_for_export(
+        &mut self,
+        project: &filmcraft_project::Project,
+        seq: filmcraft_project::ItemId,
+        t: filmcraft_time::Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn filmcraft_render::SourceProvider,
+        prefer_rgba8: bool,
+    ) -> Option<filmcraft_export::ExportFrame> {
+        self.0.render_for_export(project, seq, t, opts, sources, prefer_rgba8).map(|frame| match frame {
+            filmcraft_gpu::export_renderer::ExportRender::Linear(image) => filmcraft_export::ExportFrame::Linear(image),
+            filmcraft_gpu::export_renderer::ExportRender::Rgba8 { width, height, pixels } => filmcraft_export::ExportFrame::Rgba8 { width, height, pixels },
+        })
+    }
 }
 
 fn register_gpu_frame_renderer() {

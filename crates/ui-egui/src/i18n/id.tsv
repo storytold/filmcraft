@@ -3575,3 +3575,13 @@
 	Appearance Settings…	Pengaturan Tampilan…
 	Add to favorites	Tambahkan ke favorit
 	Remove from favorites	Hapus dari favorit
+	Audio Peak Generation	Pembuatan puncak audio
+	Audio Peak Generation · {count} pending	Pembuatan puncak audio · {count} menunggu
+	Estimated time remaining: {time}	Perkiraan waktu tersisa: {time}
+	{count} audio streams pending	{count} aliran audio menunggu
+	{count} audio streams complete	{count} aliran audio selesai
+	{count} audio peak jobs failed	{count} tugas puncak audio gagal
+	No audio peak jobs.	Tidak ada tugas puncak audio.
+	Queued	Dalam antrean
+	Failed: {error}	Gagal: {error}
+	And {count} more	Dan {count} lainnya

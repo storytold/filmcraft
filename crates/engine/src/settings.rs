@@ -1716,18 +1716,26 @@ impl Session {
     }
 
     /// Point unsaved projects' render previews into the media cache and apply the automatic
-    /// deletion policy (on startup and when the Media Cache settings change).
+    /// deletion policy (on startup and when the Media Cache settings change). At startup the
+    /// preview store still points at the process temp folder, so expired files from earlier runs
+    /// are eligible for cleanup before the stable unsaved-project folder becomes active. Saved
+    /// projects may keep previews in their configured Scratch Disk, so apply the same policy there.
     pub fn apply_media_cache(&mut self) {
         let Some(dir) = self.media_cache_dir() else { return };
         let root = previews_root(&dir);
-        if self.previews.temp_root() != Some(root.clone()) {
-            self.previews.set_temp_root(Some(root));
-            if self.path.is_none() && self.previews.count() == 0 {
-                self.previews.reset_temp();
-            }
+        let now = std::time::SystemTime::now();
+        let keep = self.previews.dir().filter(|current| current.starts_with(&dir));
+        enforce_policy(&dir, &self.prefs.media_cache, keep.as_deref(), now);
+        if let Some(project_previews) = crate::project_tools::previews_dir(self).filter(|current| !current.starts_with(&dir)) {
+            enforce_policy(&project_previews, &self.prefs.media_cache, None, now);
         }
-        let keep = self.previews.dir();
-        enforce_policy(&dir, &self.prefs.media_cache, keep.as_deref(), std::time::SystemTime::now());
+        if self.previews.temp_root() != Some(root.clone()) {
+            if self.path.is_none() {
+                // move_to also migrates the previews that were generated before preferences loaded.
+                self.previews.move_to(root.join("Unsaved"));
+            }
+            self.previews.set_temp_root(Some(root));
+        }
     }
 
     /// Note a project file as the most recent one (General ▸ At Startup ▸ Open Most Recent).

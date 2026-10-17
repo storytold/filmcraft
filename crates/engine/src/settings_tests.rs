@@ -478,6 +478,35 @@ fn media_cache_location_policy_and_clean() {
 }
 
 #[test]
+fn startup_applies_retention_to_saved_generated_cache_files() {
+    let dir = tmp_dir("prefs-cache-startup-retention");
+    let cache = dir.join("Media Cache");
+    let old_waveform = cache.join("Waveforms").join("old.pek");
+    let old_preview = cache.join("Previews").join("Unsaved").join("0123456789abcdef0123456789abcdef.mov");
+    let fresh_waveform = cache.join("Waveforms").join("fresh.pek");
+    std::fs::create_dir_all(old_waveform.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(old_preview.parent().unwrap()).unwrap();
+    std::fs::write(&old_waveform, b"old waveform").unwrap();
+    std::fs::write(&old_preview, b"old preview").unwrap();
+    std::fs::write(&fresh_waveform, b"fresh waveform").unwrap();
+    let two_days_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 86_400);
+    std::fs::File::options().write(true).open(&old_waveform).unwrap().set_modified(two_days_ago).unwrap();
+    std::fs::File::options().write(true).open(&old_preview).unwrap().set_modified(two_days_ago).unwrap();
+
+    let mut s = Session::default();
+    s.prefs_path = Some(dir.join("preferences.json"));
+    s.prefs.media_cache.management = "olderThan".into();
+    s.prefs.media_cache.older_than_days = 1;
+    s.apply_media_cache();
+
+    assert!(!old_waveform.exists());
+    assert!(!old_preview.exists());
+    assert!(fresh_waveform.exists());
+    assert_eq!(s.previews.dir(), Some(cache.join("Previews").join("Unsaved")));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn output_mapping_and_smart_quotes() {
     let (l, r) = ([0.5f32, 0.25], [-0.5f32, 1.5]);
     let mut out = [9.0f32; 8];

@@ -9,12 +9,17 @@
 //! damped exponential easing, anchored under the cursor) so navigation feels fluid; all geometry is
 //! drawn as GPU meshes by egui's wgpu backend and culled to the visible range.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::io::{Read, Write};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use egui::{Align2, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
-use filmcraft_project::{ClipId, ItemId, MarkerId, Sequence, TrackId, TrackItem, TrackKind};
+use filmcraft_project::{ClipId, ItemId, MarkerId, MediaIdentity, MediaRef, Sequence, TrackId, TrackItem, TrackKind};
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeDisplay, format_time};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
@@ -37,6 +42,114 @@ const SNAP_PX: f32 = 9.0;
 /// Waveform peaks are kept per audio stream: (item, index into the media's `audio_streams`).
 pub type PeakKey = (ItemId, usize);
 
+/// Bound cached waveform memory. Longer media use wider sample buckets so their full duration is
+/// represented without allocating one point for every 256 samples forever.
+const MAX_PEAK_POINTS_PER_STREAM: u64 = 4_000_000;
+const MAX_PEAK_TASKS: usize = 10_000;
+const MAX_PEAK_CACHE_BYTES: usize = 256 * 1024 * 1024;
+const WAVEFORM_CACHE_MAGIC: &[u8; 8] = b"FCPK0001";
+const MAX_WAVEFORM_CACHE_KEY_BYTES: usize = 64 * 1024;
+const MAX_WAVEFORM_CACHE_FILE_BYTES: usize = 8 + 4 + MAX_WAVEFORM_CACHE_KEY_BYTES + 4 + 8 + 8 + MAX_PEAK_POINTS_PER_STREAM as usize * 8;
+
+#[derive(Clone)]
+pub struct WaveformPeaks {
+    pub sample_rate: u32,
+    pub samples_per_peak: u64,
+    pub values: Vec<(f32, f32)>,
+}
+
+impl WaveformPeaks {
+    pub(crate) fn peak_index_at(&self, time: Tick) -> usize {
+        if time.0 <= 0 || self.sample_rate == 0 || self.samples_per_peak == 0 {
+            return 0;
+        }
+        let Some(numerator) = i128::from(time.0).checked_mul(i128::from(self.sample_rate)) else {
+            return usize::MAX;
+        };
+        let Some(denominator) = i128::from(TICKS_PER_SECOND).checked_mul(i128::from(self.samples_per_peak)) else {
+            return usize::MAX;
+        };
+        if denominator <= 0 {
+            return usize::MAX;
+        }
+        usize::try_from(numerator / denominator).unwrap_or(usize::MAX)
+    }
+}
+
+struct PeakWork {
+    key: PeakKey,
+    source: Option<filmcraft_media::SharedSource>,
+    provider: Option<Arc<dyn filmcraft_render::SourceProvider + Send + Sync>>,
+    duration: Tick,
+    disk_cache: Option<PersistentPeakCache>,
+}
+
+/// A stable description of a source file used to validate its persisted waveform cache.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistentPeakKey {
+    format: u32,
+    path: String,
+    identity: Option<MediaIdentity>,
+    size: Option<u64>,
+    modified_seconds: Option<u64>,
+    modified_nanos: Option<u32>,
+    stream: usize,
+    duration_ticks: i64,
+}
+
+struct PersistentPeakCache {
+    path: PathBuf,
+    key: Vec<u8>,
+}
+
+#[derive(Clone)]
+enum PeakTaskState {
+    Queued,
+    Processing { started: Instant },
+    Complete,
+    Failed(String),
+}
+
+#[derive(Clone)]
+struct PeakTaskProgress {
+    name: String,
+    done_samples: u64,
+    total_samples: u64,
+    state: PeakTaskState,
+}
+
+#[derive(Clone)]
+pub enum PeakTaskStatus {
+    Queued,
+    Processing,
+    Complete,
+    Failed(String),
+}
+
+#[derive(Clone)]
+pub struct PeakTaskSnapshot {
+    pub item: ItemId,
+    pub stream: usize,
+    pub name: String,
+    pub done_samples: u64,
+    pub total_samples: u64,
+    pub status: PeakTaskStatus,
+    pub elapsed_seconds: u64,
+    pub estimated_seconds: Option<u64>,
+}
+
+pub struct PeakProgressSnapshot {
+    pub tasks: Vec<PeakTaskSnapshot>,
+    pub active: usize,
+    pub queued: usize,
+    pub complete: usize,
+    pub failed: usize,
+    pub done_samples: u64,
+    pub total_samples: u64,
+    pub remaining_seconds: Option<u64>,
+}
+
 /// Transient interaction state.
 #[derive(Default)]
 pub struct TlState {
@@ -49,8 +162,13 @@ pub struct TlState {
     pub layout: Option<Layout>,
     /// Snap indicator x (screen) this frame.
     snap_x: Option<f32>,
-    pub peaks: Arc<Mutex<HashMap<PeakKey, Arc<Vec<(f32, f32)>>>>>,
+    pub peaks: Arc<Mutex<HashMap<PeakKey, Arc<WaveformPeaks>>>>,
     peaks_pending: Arc<Mutex<Vec<PeakKey>>>,
+    peak_cache_bytes: Arc<AtomicUsize>,
+    peak_progress: Arc<Mutex<HashMap<PeakKey, PeakTaskProgress>>>,
+    peak_queue: VecDeque<PeakWork>,
+    peak_worker_active: Arc<AtomicBool>,
+    peak_scan_revision: Option<u64>,
     /// Nested sequences have waveforms too, of their mix. Unlike media a sequence changes: this is
     /// the content key (see [`sequence_audio_key`]) the cached peaks of each sequence were made
     /// from, and the key worked out for the session revision last seen.
@@ -71,6 +189,11 @@ impl TlState {
     pub fn reset_media_caches(&mut self) {
         self.peaks = Default::default();
         self.peaks_pending = Default::default();
+        self.peak_cache_bytes = Default::default();
+        self.peak_progress = Default::default();
+        self.peak_queue.clear();
+        self.peak_worker_active = Default::default();
+        self.peak_scan_revision = None;
         self.seq_peak_keys = Default::default();
         self.seq_keys_seen.clear();
         self.peak_max.clear();
@@ -982,8 +1105,6 @@ fn draw_clip(
 fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &TrackItem, col: Color32) {
     let Some(peaks) = request_peaks(app, it.item, it.audio_stream) else { return };
     let pkey = (it.item, it.audio_stream);
-    let spp = 256.0;
-    let sr = 48_000.0;
     let zone_h = (body.height() * 0.42).max(8.0);
     let area = Rect::from_min_max(pos2(body.min.x + 1.0, body.max.y - zone_h - 1.0), pos2(body.max.x - 1.0, body.max.y - 1.0));
     let clip = p.clip_rect().intersect(area);
@@ -994,7 +1115,7 @@ fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &Tra
     let peak = match app.tl.peak_max.get(&pkey) {
         Some(&(k, v)) if k == key => v,
         _ => {
-            let v = peaks.iter().fold(0f32, |m, (a, b)| m.max(a.abs()).max(b.abs()));
+            let v = peaks.values.iter().fold(0f32, |m, (a, b)| m.max(a.abs()).max(b.abs()));
             app.tl.peak_max.insert(pkey, (key, v));
             v
         }
@@ -1008,10 +1129,10 @@ fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &Tra
         let f1 = (x as f32 + 1.0 - body.min.x) / dur_px;
         let t0 = it.start + Tick((it.duration.0 as f64 * f0 as f64) as i64);
         let t1 = it.start + Tick((it.duration.0 as f64 * f1 as f64) as i64);
-        let s0 = (it.source_time_at(t0).seconds() * sr / spp) as usize;
-        let s1 = ((it.source_time_at(t1).seconds() * sr / spp) as usize).max(s0 + 1);
+        let s0 = peaks.peak_index_at(it.source_time_at(t0)).min(peaks.values.len());
+        let s1 = peaks.peak_index_at(it.source_time_at(t1)).max(s0.saturating_add(1)).min(peaks.values.len());
         let mut m = 0f32;
-        for (a, b) in peaks.iter().skip(s0).take(s1 - s0) {
+        for (a, b) in peaks.values.iter().skip(s0).take(s1.saturating_sub(s0)) {
             m = m.max(a.abs()).max(b.abs());
         }
         // as in Premiere, the waveform shows the clip's Volume
@@ -1058,10 +1179,9 @@ fn sequence_audio_key(project: &filmcraft_project::Project, item: ItemId) -> u64
     h.finish()
 }
 
-/// Waveform peaks of a nested sequence's mix, in the same form as a media item's (min, max per
-/// 256 samples at 48 kHz). They are mixed in the background, and again whenever the sequence's
-/// sound changes; until the new ones are ready the old ones stay on show.
-fn request_sequence_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Vec<(f32, f32)>>> {
+/// Waveform peaks of a nested sequence's mix. They are mixed in the background, and again whenever
+/// the sequence's sound changes; until the new ones are ready the old ones stay on show.
+fn request_sequence_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<WaveformPeaks>> {
     let revision = app.session.revision;
     let key = match app.tl.seq_keys_seen.get(&item) {
         Some(&(rev, key)) if rev == revision => key,
@@ -1084,7 +1204,8 @@ fn request_sequence_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Ve
         }
         pend.push(pkey);
     }
-    let (peaks, keys, pending) = (app.tl.peaks.clone(), app.tl.seq_peak_keys.clone(), app.tl.peaks_pending.clone());
+    let (peaks, peak_bytes, keys, pending) =
+        (app.tl.peaks.clone(), app.tl.peak_cache_bytes.clone(), app.tl.seq_peak_keys.clone(), app.tl.peaks_pending.clone());
     let project = app.session.project.clone();
     let provider = app.session.media.provider(project.clone(), app.session.services.clone());
     let run = move || {
@@ -1092,26 +1213,31 @@ fn request_sequence_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Ve
         let mixed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let seq = project.sequence(item)?;
             let sr = seq.settings.sample_rate.max(1);
-            let total = seq.duration().to_units_floor(sr as i64).max(0) as usize;
-            // one peak per 256 samples at 48 kHz, whatever the sequence's own rate
-            let bucket = ((256u64 * sr as u64) / 48_000).max(1) as usize;
-            let chunk = (bucket * 750).max(1);
-            let mut out = Vec::with_capacity(total / bucket + 1);
-            let mut s = 0usize;
-            while s < total {
-                let n = chunk.min(total - s);
-                let buf = filmcraft_render::audio::mix_sequence(&project, seq, s as i64, n, &provider);
-                let ch = buf.channels.first()?;
-                for c in ch.chunks(bucket) {
-                    let (lo, hi) = c.iter().fold((0f32, 0f32), |(l, h), v| (l.min(*v), h.max(*v)));
-                    out.push((lo, hi));
-                }
-                s += n;
+            let total = u64::try_from(seq.duration().to_units_floor(sr as i64).max(0)).ok()?;
+            let bucket = waveform_bucket_samples(total, sr, MAX_PEAK_POINTS_PER_STREAM);
+            let point_count = waveform_point_count(total, bucket);
+            let capacity = usize::try_from(point_count).ok()?;
+            let mut out = Vec::new();
+            out.try_reserve_exact(capacity).ok()?;
+            let mut accumulator = PeakAccumulator::new(bucket);
+            let mut start = 0u64;
+            const CHUNK_SAMPLES: u64 = 192_000;
+            while start < total {
+                let count = CHUNK_SAMPLES.min(total - start);
+                let start_i64 = i64::try_from(start).ok()?;
+                let count_usize = usize::try_from(count).ok()?;
+                let buf = filmcraft_render::audio::mix_sequence(&project, seq, start_i64, count_usize, &provider);
+                let channel = buf.channels.first().map(Vec::as_slice).unwrap_or(&[]);
+                let available = channel.len().min(count_usize);
+                accumulator.push_samples(&channel[..available], &mut out, capacity).ok()?;
+                accumulator.push_silence(count - available as u64, &mut out, capacity).ok()?;
+                start = start.checked_add(count)?;
             }
-            Some(out)
+            accumulator.finish(&mut out, capacity).ok()?;
+            Some(WaveformPeaks { sample_rate: sr, samples_per_peak: bucket, values: out })
         }));
         if let Ok(Some(out)) = mixed {
-            peaks.lock().unwrap_or_else(|e| e.into_inner()).insert(pkey, Arc::new(out));
+            cache_peak_list(&peaks, &peak_bytes, pkey, out);
             keys.lock().unwrap_or_else(|e| e.into_inner()).insert(item, key);
         }
         pending.lock().unwrap_or_else(|e| e.into_inner()).retain(|i| *i != pkey);
@@ -1123,32 +1249,582 @@ fn request_sequence_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Ve
     have
 }
 
-/// Min/max peaks (one per 256 samples at 48 kHz) of audio stream `stream` of `src`, `dur` long.
-fn source_peaks(src: &dyn filmcraft_media::MediaSource, stream: usize, dur: Tick) -> Vec<(f32, f32)> {
-    let sr = 48_000u32;
-    let total = dur.to_units_floor(sr as i64).max(0) as usize;
-    let mut out = Vec::with_capacity(total / 256 + 1);
-    let chunk = 48_000 * 4;
-    let mut s = 0usize;
-    while s < total {
-        let n = chunk.min(total - s);
-        match src.audio_stream(stream, s as i64, n, sr) {
-            Ok(buf) => {
-                let ch = buf.channels.first().cloned().unwrap_or_default();
-                for c in ch.chunks(256) {
-                    let (lo, hi) = c.iter().fold((0f32, 0f32), |(l, h), v| (l.min(*v), h.max(*v)));
-                    out.push((lo, hi));
-                }
-            }
-            Err(_) => break,
+/// Min/max peaks of audio stream `stream`; longer recordings use wider sample buckets to bound memory.
+fn source_peaks_with_progress(
+    src: &dyn filmcraft_media::MediaSource,
+    stream: usize,
+    dur: Tick,
+    progress: impl FnMut(u64, u64),
+) -> Result<WaveformPeaks, String> {
+    source_peaks_with_progress_limit(src, stream, dur, MAX_PEAK_POINTS_PER_STREAM, progress)
+}
+
+fn waveform_bucket_samples(total_samples: u64, sample_rate: u32, point_limit: u64) -> u64 {
+    let baseline = (256u64.saturating_mul(u64::from(sample_rate)) / 48_000).max(1);
+    let point_limit = point_limit.max(1);
+    let needed = total_samples / point_limit + u64::from(!total_samples.is_multiple_of(point_limit));
+    baseline.max(needed)
+}
+
+fn waveform_point_count(total_samples: u64, samples_per_peak: u64) -> u64 {
+    let samples_per_peak = samples_per_peak.max(1);
+    total_samples / samples_per_peak + u64::from(!total_samples.is_multiple_of(samples_per_peak))
+}
+
+/// Resolve the persisted cache path for an imported file. Generators and media without a usable
+/// file identity stay in the in-memory cache only.
+fn persistent_peak_cache(session: &filmcraft_engine::Session, item: ItemId, stream: usize) -> Option<PersistentPeakCache> {
+    let (_, media, _) = session.project.resolve_media(item)?;
+    let media_path = match &media.media {
+        MediaRef::File { path } => path,
+        MediaRef::Generator(_) => return None,
+    };
+    let source_path = if session.media.use_proxies() && !media.offline {
+        match &media.proxy {
+            Some(MediaRef::File { path }) => path,
+            _ => media_path,
         }
-        s += n;
+    } else {
+        media_path
+    };
+    let metadata = std::fs::metadata(source_path).ok();
+    let modified = metadata.as_ref().and_then(|md| md.modified().ok()).and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok());
+    let identity = if source_path == media_path { media.identity } else { None };
+    let key = PersistentPeakKey {
+        format: 1,
+        path: source_path.clone(),
+        identity,
+        size: metadata.as_ref().map(std::fs::Metadata::len),
+        modified_seconds: modified.as_ref().map(|time| time.as_secs()),
+        modified_nanos: modified.as_ref().map(|time| time.subsec_nanos()),
+        stream,
+        duration_ticks: media.info.duration.0,
+    };
+    if key.identity.is_none() && key.modified_seconds.is_none() {
+        return None;
     }
-    out
+    let bytes = serde_json::to_vec(&key).ok()?;
+    if bytes.len() > MAX_WAVEFORM_CACHE_KEY_BYTES {
+        return None;
+    }
+    let dir = session.media_cache_dir()?.join("Waveforms");
+    let name = format!("{:016x}.wfp", stable_cache_hash(&bytes));
+    let path = dir.join(name);
+    Some(PersistentPeakCache { path, key: bytes })
+}
+
+fn stable_cache_hash(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf29ce484222325u64, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3))
+}
+
+fn cache_read_u32(bytes: &[u8], cursor: &mut usize) -> Option<u32> {
+    let end = cursor.checked_add(4)?;
+    let raw = bytes.get(*cursor..end)?;
+    *cursor = end;
+    Some(u32::from_le_bytes(raw.try_into().ok()?))
+}
+
+fn cache_read_u64(bytes: &[u8], cursor: &mut usize) -> Option<u64> {
+    let end = cursor.checked_add(8)?;
+    let raw = bytes.get(*cursor..end)?;
+    *cursor = end;
+    Some(u64::from_le_bytes(raw.try_into().ok()?))
+}
+
+fn valid_waveform_cache_values(peaks: &WaveformPeaks, duration: Tick) -> bool {
+    let Some(total_samples) = u64::try_from(duration.to_units_floor(48_000).max(0)).ok() else { return false };
+    let expected_bucket = waveform_bucket_samples(total_samples, 48_000, MAX_PEAK_POINTS_PER_STREAM);
+    peaks.sample_rate == 48_000
+        && peaks.samples_per_peak == expected_bucket
+        && u64::try_from(peaks.values.len()).ok() == Some(waveform_point_count(total_samples, expected_bucket))
+        && peaks.values.iter().all(|(low, high)| low.is_finite() && high.is_finite() && low <= high)
+}
+
+fn encode_waveform_cache(key: &[u8], peaks: &WaveformPeaks, duration: Tick) -> Option<Vec<u8>> {
+    if key.len() > MAX_WAVEFORM_CACHE_KEY_BYTES
+        || u64::try_from(peaks.values.len()).ok().is_none_or(|count| count > MAX_PEAK_POINTS_PER_STREAM)
+        || !valid_waveform_cache_values(peaks, duration)
+    {
+        return None;
+    }
+    let point_bytes = peaks.values.len().checked_mul(8)?;
+    let size = WAVEFORM_CACHE_MAGIC.len().checked_add(4)?.checked_add(key.len())?.checked_add(4)?.checked_add(8)?.checked_add(8)?.checked_add(point_bytes)?;
+    if size > MAX_WAVEFORM_CACHE_FILE_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(size).ok()?;
+    bytes.extend_from_slice(WAVEFORM_CACHE_MAGIC);
+    bytes.extend_from_slice(&u32::try_from(key.len()).ok()?.to_le_bytes());
+    bytes.extend_from_slice(key);
+    bytes.extend_from_slice(&peaks.sample_rate.to_le_bytes());
+    bytes.extend_from_slice(&peaks.samples_per_peak.to_le_bytes());
+    bytes.extend_from_slice(&u64::try_from(peaks.values.len()).ok()?.to_le_bytes());
+    for (low, high) in &peaks.values {
+        bytes.extend_from_slice(&low.to_le_bytes());
+        bytes.extend_from_slice(&high.to_le_bytes());
+    }
+    Some(bytes)
+}
+
+fn decode_waveform_cache(bytes: &[u8], key: &[u8], duration: Tick) -> Option<WaveformPeaks> {
+    if bytes.len() > MAX_WAVEFORM_CACHE_FILE_BYTES || bytes.get(..WAVEFORM_CACHE_MAGIC.len())? != WAVEFORM_CACHE_MAGIC {
+        return None;
+    }
+    let mut cursor = WAVEFORM_CACHE_MAGIC.len();
+    let key_len = usize::try_from(cache_read_u32(bytes, &mut cursor)?).ok()?;
+    if key_len > MAX_WAVEFORM_CACHE_KEY_BYTES || bytes.get(cursor..cursor.checked_add(key_len)?)? != key {
+        return None;
+    }
+    cursor = cursor.checked_add(key_len)?;
+    let sample_rate = cache_read_u32(bytes, &mut cursor)?;
+    let samples_per_peak = cache_read_u64(bytes, &mut cursor)?;
+    let count = cache_read_u64(bytes, &mut cursor)?;
+    if count > MAX_PEAK_POINTS_PER_STREAM || count > usize::MAX as u64 || samples_per_peak == 0 {
+        return None;
+    }
+    let points_size = usize::try_from(count).ok()?.checked_mul(8)?;
+    if bytes.len().checked_sub(cursor)? != points_size {
+        return None;
+    }
+    let mut values = Vec::new();
+    values.try_reserve_exact(usize::try_from(count).ok()?).ok()?;
+    let (chunks, remainder) = bytes.get(cursor..)?.as_chunks::<8>();
+    if !remainder.is_empty() {
+        return None;
+    }
+    for &[a, b, c, d, e, f, g, h] in chunks {
+        let low = f32::from_le_bytes([a, b, c, d]);
+        let high = f32::from_le_bytes([e, f, g, h]);
+        if !low.is_finite() || !high.is_finite() || low > high {
+            return None;
+        }
+        values.push((low, high));
+    }
+    let peaks = WaveformPeaks { sample_rate, samples_per_peak, values };
+    valid_waveform_cache_values(&peaks, duration).then_some(peaks)
+}
+
+fn read_waveform_cache(cache: &PersistentPeakCache, duration: Tick) -> Option<WaveformPeaks> {
+    let file = std::fs::File::open(&cache.path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(u64::try_from(MAX_WAVEFORM_CACHE_FILE_BYTES).ok()?.saturating_add(1)).read_to_end(&mut bytes).ok()?;
+    if bytes.len() > MAX_WAVEFORM_CACHE_FILE_BYTES {
+        return None;
+    }
+    decode_waveform_cache(&bytes, &cache.key, duration)
+}
+
+fn write_waveform_cache(cache: &PersistentPeakCache, peaks: &WaveformPeaks, duration: Tick) -> std::io::Result<()> {
+    let bytes = encode_waveform_cache(&cache.key, peaks, duration)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "waveform cache data is invalid or too large"))?;
+    let parent = cache.path.parent().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "waveform cache path has no folder"))?;
+    std::fs::create_dir_all(parent)?;
+    let name = cache
+        .path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "waveform cache path has no file name"))?;
+    let part = parent.join(format!("{name}.part-{}", std::process::id()));
+    let mut file = std::fs::OpenOptions::new().create(true).truncate(true).write(true).open(&part)?;
+    file.write_all(&bytes)?;
+    file.flush()?;
+    drop(file);
+    if let Err(error) = std::fs::rename(&part, &cache.path) {
+        let _ = std::fs::remove_file(&part);
+        // Another FilmCraft process may have completed this same content-addressed cache first.
+        if cache.path.exists() {
+            return Ok(());
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod waveform_cache_tests {
+    use super::*;
+
+    fn sample() -> (Vec<u8>, WaveformPeaks, Tick, Vec<u8>) {
+        let duration = Tick(TICKS_PER_SECOND);
+        let peaks = WaveformPeaks { sample_rate: 48_000, samples_per_peak: 256, values: vec![(-0.5, 0.5); 188] };
+        let key = b"stable-media-key".to_vec();
+        let bytes = encode_waveform_cache(&key, &peaks, duration).expect("generated cache is valid");
+        (key, peaks, duration, bytes)
+    }
+
+    #[test]
+    fn waveform_cache_round_trips_and_rejects_mismatched_keys() {
+        let (key, expected, duration, bytes) = sample();
+        let decoded = decode_waveform_cache(&bytes, &key, duration).expect("valid cache");
+        assert_eq!(decoded.sample_rate, expected.sample_rate);
+        assert_eq!(decoded.samples_per_peak, expected.samples_per_peak);
+        assert_eq!(decoded.values, expected.values);
+        assert!(decode_waveform_cache(&bytes, b"different source", duration).is_none());
+    }
+
+    #[test]
+    fn waveform_cache_rejects_truncation_and_hostile_lengths_without_panicking() {
+        let (key, _, duration, valid) = sample();
+        for end in 0..valid.len() {
+            let result = std::panic::catch_unwind(|| decode_waveform_cache(&valid[..end], &key, duration));
+            assert!(result.is_ok(), "truncated cache panicked at byte {end}");
+            assert!(result.ok().flatten().is_none(), "truncated cache unexpectedly decoded at byte {end}");
+        }
+        let mut hostile = valid.clone();
+        let key_len = key.len();
+        let count_at = WAVEFORM_CACHE_MAGIC.len() + 4 + key_len + 4 + 8;
+        hostile[count_at..count_at + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(decode_waveform_cache(&hostile, &key, duration).is_none());
+    }
+}
+
+struct PeakAccumulator {
+    samples_per_peak: u64,
+    samples_in_peak: u64,
+    low: f32,
+    high: f32,
+}
+
+impl PeakAccumulator {
+    fn new(samples_per_peak: u64) -> Self {
+        Self { samples_per_peak: samples_per_peak.max(1), samples_in_peak: 0, low: 0.0, high: 0.0 }
+    }
+
+    fn push_samples(&mut self, samples: &[f32], out: &mut Vec<(f32, f32)>, max_points: usize) -> Result<(), String> {
+        for &sample in samples {
+            let sample = if sample.is_finite() { sample } else { 0.0 };
+            self.low = self.low.min(sample);
+            self.high = self.high.max(sample);
+            self.samples_in_peak += 1;
+            if self.samples_in_peak == self.samples_per_peak {
+                self.push_peak(out, max_points)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn push_silence(&mut self, mut samples: u64, out: &mut Vec<(f32, f32)>, max_points: usize) -> Result<(), String> {
+        while samples > 0 {
+            let count = samples.min(self.samples_per_peak - self.samples_in_peak);
+            self.samples_in_peak += count;
+            samples -= count;
+            if self.samples_in_peak == self.samples_per_peak {
+                self.push_peak(out, max_points)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn push_peak(&mut self, out: &mut Vec<(f32, f32)>, max_points: usize) -> Result<(), String> {
+        if out.len() >= max_points {
+            return Err("Audio waveform exceeded its safe peak count.".into());
+        }
+        out.push((self.low, self.high));
+        self.samples_in_peak = 0;
+        self.low = 0.0;
+        self.high = 0.0;
+        Ok(())
+    }
+
+    fn finish(&mut self, out: &mut Vec<(f32, f32)>, max_points: usize) -> Result<(), String> {
+        if self.samples_in_peak > 0 {
+            self.push_peak(out, max_points)?;
+        }
+        Ok(())
+    }
+}
+
+fn source_peaks_with_progress_limit(
+    src: &dyn filmcraft_media::MediaSource,
+    stream: usize,
+    dur: Tick,
+    point_limit: u64,
+    mut progress: impl FnMut(u64, u64),
+) -> Result<WaveformPeaks, String> {
+    const SAMPLE_RATE: u32 = 48_000;
+    const CHUNK_SAMPLES: u64 = (SAMPLE_RATE * 4) as u64;
+    let total = u64::try_from(dur.to_units_floor(SAMPLE_RATE as i64).max(0)).map_err(|_| "Audio duration is too large to generate peaks.".to_string())?;
+    let samples_per_peak = waveform_bucket_samples(total, SAMPLE_RATE, point_limit);
+    let points = waveform_point_count(total, samples_per_peak);
+    let capacity = usize::try_from(points).map_err(|_| "Audio waveform is too large for this system.".to_string())?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(capacity).map_err(|_| "Not enough memory to generate this audio waveform.".to_string())?;
+    let mut accumulator = PeakAccumulator::new(samples_per_peak);
+    let mut start = 0u64;
+    while start < total {
+        let count = CHUNK_SAMPLES.min(total - start);
+        let start_i64 = i64::try_from(start).map_err(|_| "Audio sample position is too large.".to_string())?;
+        let count_usize = usize::try_from(count).map_err(|_| "Audio chunk is too large for this system.".to_string())?;
+        let buf = src.audio_stream(stream, start_i64, count_usize, SAMPLE_RATE).map_err(|e| e.to_string())?;
+        let channel = buf.channels.first().map(Vec::as_slice).unwrap_or(&[]);
+        let available = channel.len().min(count_usize);
+        accumulator.push_samples(&channel[..available], &mut out, capacity)?;
+        accumulator.push_silence(count - available as u64, &mut out, capacity)?;
+        start = start.saturating_add(count);
+        progress(start, total);
+    }
+    accumulator.finish(&mut out, capacity)?;
+    Ok(WaveformPeaks { sample_rate: SAMPLE_RATE, samples_per_peak, values: out })
+}
+
+/// Compatibility helper for focused waveform tests; an unavailable stream has no peaks.
+#[cfg(test)]
+fn source_peaks(src: &dyn filmcraft_media::MediaSource, stream: usize, dur: Tick) -> WaveformPeaks {
+    source_peaks_with_progress(src, stream, dur, |_, _| {}).unwrap_or_else(|_| WaveformPeaks { sample_rate: 48_000, samples_per_peak: 256, values: Vec::new() })
+}
+
+fn set_peak_task_state(progress: &Arc<Mutex<HashMap<PeakKey, PeakTaskProgress>>>, key: PeakKey, state: PeakTaskState, done_samples: Option<u64>) {
+    if let Some(task) = progress.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&key) {
+        if let Some(done) = done_samples {
+            task.done_samples = done.min(task.total_samples);
+        }
+        task.state = state;
+    }
+}
+
+fn cache_peak_list(cache: &Arc<Mutex<HashMap<PeakKey, Arc<WaveformPeaks>>>>, bytes: &Arc<AtomicUsize>, key: PeakKey, values: WaveformPeaks) {
+    let added_bytes = values.values.len().saturating_mul(std::mem::size_of::<(f32, f32)>());
+    if added_bytes > MAX_PEAK_CACHE_BYTES {
+        return;
+    }
+    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+    let mut current = bytes.load(Ordering::Relaxed);
+    if let Some(previous) = cache.remove(&key) {
+        current = current.saturating_sub(previous.values.len().saturating_mul(std::mem::size_of::<(f32, f32)>()));
+    }
+    while current.saturating_add(added_bytes) > MAX_PEAK_CACHE_BYTES {
+        let Some(old_key) = cache.keys().next().copied() else { break };
+        if let Some(old) = cache.remove(&old_key) {
+            current = current.saturating_sub(old.values.len().saturating_mul(std::mem::size_of::<(f32, f32)>()));
+        }
+    }
+    cache.insert(key, Arc::new(values));
+    bytes.store(current.saturating_add(added_bytes), Ordering::Relaxed);
+}
+
+fn enqueue_peak_work(
+    app: &mut FilmcraftApp,
+    item: ItemId,
+    stream: usize,
+    name: String,
+    duration: Tick,
+    source: Option<filmcraft_media::SharedSource>,
+    provider: Option<Arc<dyn filmcraft_render::SourceProvider + Send + Sync>>,
+    retry_finished: bool,
+) {
+    let key = (item, stream);
+    if app.tl.peaks.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&key) {
+        return;
+    }
+    if app.tl.peaks_pending.lock().unwrap_or_else(|e| e.into_inner()).contains(&key) {
+        return;
+    }
+    {
+        let mut progress = app.tl.peak_progress.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(previous) = progress.get(&key) {
+            let finished = matches!(&previous.state, PeakTaskState::Complete | PeakTaskState::Failed(_));
+            if !finished || !retry_finished {
+                return;
+            }
+            progress.remove(&key);
+        }
+        if progress.len() >= MAX_PEAK_TASKS {
+            return;
+        }
+    }
+    let total_samples = u64::try_from(duration.to_units_floor(48_000).max(0)).unwrap_or(u64::MAX);
+    let task_name = if stream == 0 { name } else { format!("{name} · {}", stream.saturating_add(1)) };
+    let state = PeakTaskState::Queued;
+    app.tl
+        .peak_progress
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, PeakTaskProgress { name: task_name, done_samples: 0, total_samples, state: state.clone() });
+    app.tl.peaks_pending.lock().unwrap_or_else(|e| e.into_inner()).push(key);
+    let disk_cache = persistent_peak_cache(&app.session, item, stream);
+    app.tl.peak_queue.push_back(PeakWork { key, source, provider, duration, disk_cache });
+}
+
+/// Queue waveform peaks for the media items in the project, once per stream. The preference is
+/// deliberately separate from lazy timeline rendering: disabling import generation still lets a
+/// visible timeline waveform request its own peaks.
+pub fn queue_imported_audio_peaks(app: &mut FilmcraftApp) {
+    if !app.session.prefs.audio.generate_waveforms_on_import {
+        return;
+    }
+    if app.tl.peak_scan_revision == Some(app.session.revision) {
+        return;
+    }
+    app.tl.peak_scan_revision = Some(app.session.revision);
+    if app.tl.peak_progress.lock().unwrap_or_else(|e| e.into_inner()).len() >= MAX_PEAK_TASKS {
+        return;
+    }
+    let media: Vec<(ItemId, String, usize, Tick)> = app
+        .session
+        .project
+        .items
+        .values()
+        .filter_map(|item| item.as_media().map(|m| (item.id, item.name.clone(), m.info.audio_streams.len(), m.info.duration)))
+        .filter(|(_, _, streams, _)| *streams > 0)
+        .take(MAX_PEAK_TASKS)
+        .collect();
+    if media.is_empty() {
+        return;
+    }
+    let project = app.session.project.clone();
+    let provider: Arc<dyn filmcraft_render::SourceProvider + Send + Sync> = Arc::new(app.session.media.provider(project, app.session.services.clone()));
+    for (item, name, streams, duration) in media {
+        if app.tl.peak_progress.lock().unwrap_or_else(|e| e.into_inner()).len() >= MAX_PEAK_TASKS {
+            break;
+        }
+        for stream in 0..streams.min(MAX_PEAK_TASKS) {
+            enqueue_peak_work(app, item, stream, name.clone(), duration, None, Some(provider.clone()), false);
+        }
+    }
+}
+
+/// Start the next queued media stream. Only one peak decoder runs at a time so importing many files
+/// does not create a burst of competing workers beside real-time playback.
+pub fn start_next_audio_peak(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    if app.tl.peak_worker_active.load(Ordering::Acquire) {
+        return;
+    }
+    if app.playback.playing || app.session.jobs.iter().any(|job| !job.progress.finished.load(Ordering::Relaxed)) {
+        return;
+    }
+    let Some(work) = app.tl.peak_queue.pop_front() else { return };
+    app.tl.peak_worker_active.store(true, Ordering::Release);
+    let key = work.key;
+    let started = Instant::now();
+    set_peak_task_state(&app.tl.peak_progress, key, PeakTaskState::Processing { started }, None);
+    let (cache, cache_bytes, pending, progress, active, ctx) = (
+        app.tl.peaks.clone(),
+        app.tl.peak_cache_bytes.clone(),
+        app.tl.peaks_pending.clone(),
+        app.tl.peak_progress.clone(),
+        app.tl.peak_worker_active.clone(),
+        ctx.clone(),
+    );
+    let run = move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+            if let Some(cache_file) = &work.disk_cache {
+                if let Some(peaks) = read_waveform_cache(cache_file, work.duration) {
+                    cache_peak_list(&cache, &cache_bytes, key, peaks);
+                    set_peak_task_state(&progress, key, PeakTaskState::Complete, None);
+                    return Ok(());
+                }
+                let _ = std::fs::remove_file(&cache_file.path);
+            }
+            let source = work
+                .source
+                .or_else(|| work.provider.as_ref().and_then(|provider| provider.source(key.0)))
+                .ok_or_else(|| "Media source is unavailable for audio peak generation.".to_string())?;
+            let peaks = source_peaks_with_progress(&*source, key.1, work.duration, |done, _total| {
+                set_peak_task_state(&progress, key, PeakTaskState::Processing { started }, Some(done));
+                ctx.request_repaint();
+            })?;
+            if let Some(cache_file) = &work.disk_cache
+                && let Err(error) = write_waveform_cache(cache_file, &peaks, work.duration)
+            {
+                log::debug!("could not persist waveform peaks: {error}");
+            }
+            cache_peak_list(&cache, &cache_bytes, key, peaks);
+            set_peak_task_state(&progress, key, PeakTaskState::Complete, None);
+            Ok(())
+        }));
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => set_peak_task_state(&progress, key, PeakTaskState::Failed(error), None),
+            Err(_) => set_peak_task_state(&progress, key, PeakTaskState::Failed("Audio peak generation failed unexpectedly.".into()), None),
+        }
+        pending.lock().unwrap_or_else(|e| e.into_inner()).retain(|pending_key| *pending_key != key);
+        active.store(false, Ordering::Release);
+        ctx.request_repaint();
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Err(error) = std::thread::Builder::new().name("audio-waveform-peaks".into()).spawn(run) {
+        set_peak_task_state(&app.tl.peak_progress, key, PeakTaskState::Failed(format!("Could not start audio peak worker: {error}")), None);
+        app.tl.peaks_pending.lock().unwrap_or_else(|e| e.into_inner()).retain(|pending_key| *pending_key != key);
+        app.tl.peak_worker_active.store(false, Ordering::Release);
+    }
+    #[cfg(target_arch = "wasm32")]
+    run();
+}
+
+/// A compact UI snapshot for the header's audio peak progress popover.
+pub fn audio_peak_progress(app: &FilmcraftApp) -> PeakProgressSnapshot {
+    let progress = app.tl.peak_progress.lock().unwrap_or_else(|e| e.into_inner());
+    let mut tasks: Vec<(u8, PeakTaskSnapshot)> = Vec::with_capacity(progress.len().min(20));
+    let (mut active, mut queued, mut complete, mut failed, mut done_samples, mut total_samples) = (0usize, 0usize, 0usize, 0usize, 0u64, 0u64);
+    let mut active_rate: Option<(u64, u64)> = None;
+    for (&(item, stream), task) in progress.iter() {
+        let (status, elapsed_seconds, sort) = match &task.state {
+            PeakTaskState::Queued => {
+                queued = queued.saturating_add(1);
+                (PeakTaskStatus::Queued, 0, 1u8)
+            }
+            PeakTaskState::Processing { started } => {
+                active = active.saturating_add(1);
+                let elapsed = started.elapsed().as_secs();
+                active_rate = Some((task.done_samples, elapsed));
+                done_samples = done_samples.saturating_add(task.done_samples);
+                total_samples = total_samples.saturating_add(task.total_samples);
+                (PeakTaskStatus::Processing, elapsed, 0u8)
+            }
+            PeakTaskState::Complete => {
+                complete = complete.saturating_add(1);
+                done_samples = done_samples.saturating_add(task.total_samples);
+                total_samples = total_samples.saturating_add(task.total_samples);
+                (PeakTaskStatus::Complete, 0, 3u8)
+            }
+            PeakTaskState::Failed(error) => {
+                failed = failed.saturating_add(1);
+                (PeakTaskStatus::Failed(error.clone()), 0, 2u8)
+            }
+        };
+        let estimated_seconds = match &task.state {
+            PeakTaskState::Processing { .. } if task.done_samples > 0 && elapsed_seconds > 0 => {
+                let remaining = task.total_samples.saturating_sub(task.done_samples);
+                let estimate = u128::from(elapsed_seconds).saturating_mul(u128::from(remaining)) / u128::from(task.done_samples);
+                u64::try_from(estimate.min(30 * 24 * 60 * 60)).ok()
+            }
+            _ => None,
+        };
+        if matches!(&task.state, PeakTaskState::Queued | PeakTaskState::Processing { .. }) {
+            total_samples = total_samples.saturating_add(if matches!(&task.state, PeakTaskState::Queued) { task.total_samples } else { 0 });
+        }
+        tasks.push((
+            sort,
+            PeakTaskSnapshot {
+                item,
+                stream,
+                name: task.name.clone(),
+                done_samples: task.done_samples,
+                total_samples: task.total_samples,
+                status,
+                elapsed_seconds,
+                estimated_seconds,
+            },
+        ));
+    }
+    tasks.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.item.cmp(&b.1.item)).then_with(|| a.1.stream.cmp(&b.1.stream)));
+    tasks.truncate(20);
+    let tasks = tasks.into_iter().map(|(_, task)| task).collect();
+    let remaining_samples = total_samples.saturating_sub(done_samples);
+    let remaining_seconds = active_rate.and_then(|(processed, elapsed)| {
+        if processed == 0 || elapsed == 0 {
+            None
+        } else {
+            let seconds = (u128::from(elapsed).saturating_mul(u128::from(remaining_samples)) / u128::from(processed)).min(30 * 24 * 60 * 60);
+            u64::try_from(seconds).ok()
+        }
+    });
+    PeakProgressSnapshot { tasks, active, queued, complete, failed, done_samples, total_samples, remaining_seconds }
 }
 
 /// Waveform peaks of audio stream `stream` of `item` (a clip's `audio_stream`).
-pub(crate) fn request_peaks(app: &mut FilmcraftApp, item: ItemId, stream: usize) -> Option<Arc<Vec<(f32, f32)>>> {
+pub(crate) fn request_peaks(app: &mut FilmcraftApp, item: ItemId, stream: usize) -> Option<Arc<WaveformPeaks>> {
     if app.session.project.sequence(item).is_some() {
         return request_sequence_peaks(app, item);
     }
@@ -1158,25 +1834,9 @@ pub(crate) fn request_peaks(app: &mut FilmcraftApp, item: ItemId, stream: usize)
     }
     // No source: try again on a later frame instead of leaving the item pending forever.
     let src = app.session.source(item)?;
-    {
-        let mut pend = app.tl.peaks_pending.lock().unwrap_or_else(|e| e.into_inner());
-        if pend.contains(&pkey) {
-            return None;
-        }
-        pend.push(pkey);
-    }
-    let peaks = app.tl.peaks.clone();
-    let pending = app.tl.peaks_pending.clone();
-    let dur = src.info().duration;
-    let run = move || {
-        let out = source_peaks(&*src, stream, dur);
-        peaks.lock().unwrap_or_else(|e| e.into_inner()).insert(pkey, Arc::new(out));
-        pending.lock().unwrap_or_else(|e| e.into_inner()).retain(|i| *i != pkey);
-    };
-    #[cfg(not(target_arch = "wasm32"))]
-    std::thread::spawn(run);
-    #[cfg(target_arch = "wasm32")]
-    run();
+    let name = app.session.project.item(item).map(|i| i.name.clone()).unwrap_or_else(|| "Audio".into());
+    let duration = src.info().duration;
+    enqueue_peak_work(app, item, stream, name, duration, Some(src), None, true);
     None
 }
 
@@ -3143,10 +3803,44 @@ mod trim_preview_tests {
         let src = TwoStreams(info);
         let first = source_peaks(&src, 0, Tick(TICKS_PER_SECOND));
         let second = source_peaks(&src, 1, Tick(TICKS_PER_SECOND));
-        assert!(!first.is_empty() && first.len() == second.len());
-        assert!(first.iter().all(|&(_, hi)| (hi - 0.1).abs() < 1e-6), "stream 0 is the quiet one");
-        assert!(second.iter().all(|&(_, hi)| (hi - 0.5).abs() < 1e-6), "stream 1 is its own audio, not stream 0 again");
-        assert!(source_peaks(&src, 2, Tick(TICKS_PER_SECOND)).is_empty(), "a missing stream has no peaks");
+        assert!(!first.values.is_empty() && first.values.len() == second.values.len());
+        assert!(first.values.iter().all(|&(_, hi)| (hi - 0.1).abs() < 1e-6), "stream 0 is the quiet one");
+        assert!(second.values.iter().all(|&(_, hi)| (hi - 0.5).abs() < 1e-6), "stream 1 is its own audio, not stream 0 again");
+        assert!(source_peaks(&src, 2, Tick(TICKS_PER_SECOND)).values.is_empty(), "a missing stream has no peaks");
+    }
+
+    #[test]
+    fn long_audio_uses_wider_peak_buckets_and_keeps_chunk_boundaries() {
+        let info = filmcraft_media::MediaInfo {
+            name: "long.mkv".into(),
+            kind: filmcraft_media::MediaKind::Movie,
+            duration: Tick(5 * TICKS_PER_SECOND),
+            video: None,
+            audio_streams: Vec::new(),
+            container: "mkv".into(),
+            start_timecode: None,
+            file_size: None,
+        };
+        let src = TwoStreams(info);
+        let mut last_progress = (0, 0);
+        let peaks = source_peaks_with_progress_limit(&src, 0, Tick(5 * TICKS_PER_SECOND), 4, |done, total| {
+            last_progress = (done, total);
+        })
+        .expect("long audio is represented with wider buckets");
+
+        assert_eq!(peaks.values.len(), 4);
+        assert!(peaks.samples_per_peak > 256);
+        assert!(peaks.values.iter().all(|&(_, hi)| (hi - 0.1).abs() < 1e-6));
+        assert_eq!(last_progress, (240_000, 240_000));
+    }
+
+    #[test]
+    fn waveform_peak_count_stays_bounded_for_arbitrarily_long_durations() {
+        let total_samples = u64::MAX;
+        let limit = 4_000_000;
+        let bucket = waveform_bucket_samples(total_samples, 48_000, limit);
+        assert!(bucket > 256);
+        assert!(waveform_point_count(total_samples, bucket) <= limit);
     }
 
     #[test]
