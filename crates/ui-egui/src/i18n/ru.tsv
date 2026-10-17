@@ -291,6 +291,9 @@
 	Search Bin	Поисковая подборка
 	Select	Выделение
 	Select All	Выделить все
+	Apply Corrected Mapping	Применить исправленное сопоставление
+	Use Default Channels	Использовать каналы по умолчанию
+	Selected clips use different mappings. Changes apply to all selected clips.	Выбранные клипы используют разные сопоставления каналов. Изменения применяются ко всем выбранным клипам.
 	Select All Matching	Выделить все совпадающие
 	Select Label Group	Выделить группу по метке
 	Select Next Graphic	Выбрать следующий графический элемент

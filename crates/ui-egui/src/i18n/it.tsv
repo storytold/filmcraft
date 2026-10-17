@@ -1,4 +1,7 @@
 # Italian (it) catalog. Columns, separated by a TAB:  context <TAB> source <TAB> translation
+	Selected clips use different mappings. Changes apply to all selected clips.	Le clip selezionate usano mappature diverse. Le modifiche si applicano a tutte le clip selezionate.
+	Apply Corrected Mapping	Applica mappatura corretta
+	Use Default Channels	Usa canali predefiniti
 #
 #   context  empty          a plain UI string; `source` is the English text in the code (`tl!("…")`,
 #                           a menu label, or a name the UI translates with `i18n::t`)

@@ -142,7 +142,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             "Audio Channels…",
             &["Clip", "Modify"],
             Some("Shift+G"),
-            r#"{"items":[id]?,"format":"mono|stereo|5.1|adaptive","clips":[[channel]]?,"channels":[channel]?}"#,
+            r#"{"items":[id]?,"item":id?,"format":"mono|stereo|5.1|adaptive"?,"clips":[[source ch,...]]?}; timeline: {"clips":[id]?,"channels":[source ch,...]}"#,
             has_audio_target,
             audio_channels,
         ),
@@ -1231,19 +1231,228 @@ fn parse_format(f: &str) -> Option<AudioChannels> {
     }
 }
 
-fn audio_channels(s: &mut Session, p: &Value) -> Result<Value> {
-    let items: Vec<ItemId> =
-        items_p(s, p).into_iter().filter(|i| s.project.item(*i).and_then(|it| it.as_media()).is_some_and(|m| m.info.has_audio())).collect();
-    if items.is_empty() || p.get("channels").is_some() {
-        // timeline audio clips: which source channels each plays
-        let clips = match p.get("clips").and_then(Value::as_array) {
-            Some(a) if a.iter().all(Value::is_u64) => a.iter().filter_map(|v| v.as_u64().map(ClipId)).collect(),
-            _ => selected_audio_clips(s),
+/// Source-stream width used by Audio Channels validation and its dialog. Subclips resolve through
+/// the bounded media resolver; nested clips use the renderer's actual master layout.
+pub fn audio_source_channel_count(project: &Project, it: &TrackItem) -> Option<u32> {
+    media_root(project, it.item).and_then(|(_, m, _)| m.info.audio_streams.get(it.audio_stream)).map(|stream| stream.channels).or_else(|| {
+        project
+            .sequence(it.item)
+            .filter(|_| it.audio_stream == 0)
+            .and_then(|nested| u32::try_from(filmcraft_render::audio::master_layout(nested).channels()).ok())
+    })
+}
+
+fn timeline_audio_target(s: &Session, clip: ClipId) -> Result<&TrackItem> {
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let (track, it) = q.find_item(clip).ok_or_else(|| bad("clip.audioChannels", "no such timeline clip"))?;
+    let track = q.track(track).ok_or_else(|| bad("clip.audioChannels", "no such audio track"))?;
+    if track.kind != TrackKind::Audio {
+        return Err(bad("clip.audioChannels", "timeline targets must be audio clips"));
+    }
+    if track.locked {
+        return Err(filmcraft_edit::EditError::Locked.into());
+    }
+    Ok(it)
+}
+
+fn validate_source_channels(available: Option<u32>, channels: &[u16]) -> Result<()> {
+    if channels.iter().any(|channel| available.is_none_or(|n| u32::from(*channel) >= n)) {
+        return Err(bad("clip.audioChannels", "a selected source audio stream does not have the requested channel"));
+    }
+    Ok(())
+}
+
+fn project_audio_targets(s: &Session, p: &Value, command: &str) -> Result<Vec<ItemId>> {
+    if !p.is_object() {
+        return Err(bad(command, "parameters must be an object"));
+    }
+    let items = match (p.get("items"), p.get("item")) {
+        (Some(_), Some(_)) => return Err(bad(command, "supply either items or item, not both")),
+        (Some(value), None) => value
+            .as_array()
+            .ok_or_else(|| bad(command, "items must be a nonempty array of audio source IDs"))?
+            .iter()
+            .map(|value| value.as_u64().map(ItemId).ok_or_else(|| bad(command, "items must contain only nonnegative integer IDs")))
+            .collect::<Result<Vec<_>>>()?,
+        (None, Some(value)) => vec![value.as_u64().map(ItemId).ok_or_else(|| bad(command, "item must be a nonnegative integer ID"))?],
+        (None, None) => return Ok(audio_items(s)),
+    };
+    if items.is_empty() || items.iter().any(|id| !s.project.item(*id).and_then(|item| item.as_media()).is_some_and(|media| media.info.has_audio())) {
+        return Err(bad(command, "every target must be an existing audio source in the Project panel"));
+    }
+    Ok(items)
+}
+
+fn project_audio_channel_count(media: &MediaClip, command: &str) -> Result<u16> {
+    media.info.audio().and_then(|audio| u16::try_from(audio.channels).ok()).filter(|n| *n > 0).ok_or_else(|| bad(command, "invalid source audio channel count"))
+}
+
+fn validate_project_channel_map(channels: u16, clips: &[Vec<u16>]) -> Result<()> {
+    if clips.is_empty() || clips.iter().any(|clip| clip.is_empty() || clip.iter().any(|channel| *channel >= channels)) {
+        return Err(bad("clip.audioChannels", format!("each clip needs source channels between 0 and {}", channels.saturating_sub(1))));
+    }
+    Ok(())
+}
+
+/// Audio Channels dialog context. Project audio media takes precedence, as the command does;
+/// otherwise only selected timeline audio clips participate. Target/count/lock inspection is separate
+/// from stored-map validation so legacy maps can be corrected. Initial parameters are display/edit
+/// defaults, not a replacement for differing maps.
+pub fn audio_channel_defaults(s: &Session) -> Result<Value> {
+    audio_channel_context(s).map(|(context, _)| context)
+}
+
+pub const MAX_AUDIO_CHANNEL_DIALOG_CHANNELS: u32 = 64;
+pub const MAX_AUDIO_CHANNEL_DIALOG_CELLS: usize = 4096;
+
+/// Bound dialog work separately from map validity; commands can edit wider maps without building
+/// an input-sized widget matrix.
+pub fn validate_audio_channel_dialog_size(channels: u32, rows: usize, entries: usize) -> Result<()> {
+    if channels > MAX_AUDIO_CHANNEL_DIALOG_CHANNELS {
+        return Err(bad("clip.audioChannels", "Audio Channels dialog supports at most 64 source channels"));
+    }
+    let cells = usize::try_from(channels).ok().and_then(|channels| channels.checked_mul(rows));
+    if cells.is_none_or(|cells| cells > MAX_AUDIO_CHANNEL_DIALOG_CELLS) || entries > MAX_AUDIO_CHANNEL_DIALOG_CELLS {
+        return Err(bad("clip.audioChannels", "audio channel mapping is too large to edit in this dialog"));
+    }
+    Ok(())
+}
+
+fn audio_channel_context(s: &Session) -> Result<(Value, Option<EngineError>)> {
+    has_audio_target(s).map_err(|why| EngineError::Disabled("clip.audioChannels".into(), why))?;
+    let mut retained_error = None;
+    let items = audio_items(s);
+    if !items.is_empty() {
+        let mut common = u16::MAX;
+        let mut first: Option<AudioChannelMap> = None;
+        let mut mixed = false;
+        for item in &items {
+            let media = s.project.item(*item).and_then(|item| item.as_media()).ok_or_else(|| bad("clip.audioChannels", "no such audio source"))?;
+            let count = project_audio_channel_count(media, "clip.audioChannels")?;
+            let (rows, entries) = media.interpret.audio_channels.as_ref().map_or((usize::from(count), usize::from(count)), |map| {
+                (map.clips.len(), map.clips.iter().fold(0usize, |sum, row| sum.saturating_add(row.len())))
+            });
+            validate_audio_channel_dialog_size(u32::from(count), rows, entries)?;
+            let map = media.interpret.audio_channels.clone().unwrap_or_else(|| AudioChannelMap::for_format(AudioChannels::Stereo, count));
+            let error = validate_project_channel_map(count, &map.clips).err();
+            if retained_error.is_none() {
+                retained_error = error;
+            }
+            common = common.min(count);
+            if let Some(first) = &first {
+                mixed |= *first != map;
+            } else {
+                first = Some(map);
+            }
+        }
+        let first = first.ok_or_else(|| bad("clip.audioChannels", "select a clip with audio"))?;
+        let map = if mixed || retained_error.is_some() {
+            let clips: Vec<Vec<u16>> = first
+                .clips
+                .into_iter()
+                .map(|row| row.into_iter().filter(|channel| *channel < common).collect())
+                .filter(|row: &Vec<u16>| !row.is_empty())
+                .collect();
+            if clips.is_empty() { AudioChannelMap::for_format(first.format, common) } else { AudioChannelMap { format: first.format, clips } }
+        } else {
+            first
         };
-        let chans: Vec<u16> =
-            p.get("channels").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_u64().map(|c| c as u16)).collect()).unwrap_or_default();
+        let format = match map.format {
+            AudioChannels::Mono => "mono",
+            AudioChannels::Stereo => "stereo",
+            AudioChannels::Surround51 => "5.1",
+            AudioChannels::Adaptive => "adaptive",
+        };
+        let params = json!({"format": format, "clips": map.clips});
+        let error = retained_error.as_ref().map(ToString::to_string);
+        return Ok((
+            json!({"params": params, "info": {"channels": common, "items": true, "mixed": mixed, "initial": params, "targets": items, "invalidMapping": retained_error.is_some(), "error": error}}),
+            retained_error,
+        ));
+    }
+    let clips = selected_audio_clips(s);
+    let mut common = u32::MAX;
+    let mut first: Option<Vec<u16>> = None;
+    let mut mixed = false;
+    for clip in &clips {
+        let it = timeline_audio_target(s, *clip)?;
+        let count = audio_source_channel_count(&s.project, it)
+            .filter(|n| *n > 0)
+            .ok_or_else(|| bad("clip.audioChannels", "invalid or unavailable source audio stream"))?;
+        validate_audio_channel_dialog_size(count, 1, it.source_channels.len())?;
+        let error = validate_source_channels(Some(count), &it.source_channels).err();
+        if retained_error.is_none() {
+            retained_error = error;
+        }
+        common = common.min(count);
+        if let Some(first) = &first {
+            mixed |= *first != it.source_channels;
+        } else {
+            first = Some(it.source_channels.clone());
+        }
+    }
+    let channels: Vec<u16> =
+        first.ok_or_else(|| bad("clip.audioChannels", "select a clip with audio"))?.into_iter().filter(|channel| u32::from(*channel) < common).collect();
+    let params = json!({"channels": channels});
+    let error = retained_error.as_ref().map(ToString::to_string);
+    Ok((
+        json!({"params": params, "info": {"channels": common, "items": false, "mixed": mixed, "initial": params, "targets": clips, "invalidMapping": retained_error.is_some(), "error": error}}),
+        retained_error,
+    ))
+}
+
+/// Revalidate eligibility, targets, stream metadata and locks. Untouched OK also validates each
+/// retained map; an explicit correction validates its replacement through the existing command.
+pub fn validate_audio_channel_dialog(s: &Session, info: &Value, retain_mappings: bool) -> Result<()> {
+    let (current, retained_error) = audio_channel_context(s)?;
+    if current["info"]["items"] != info["items"] || current["info"]["targets"] != info["targets"] {
+        return Err(bad("clip.audioChannels", "audio targets changed; reopen Audio Channels for the current selection"));
+    }
+    if retain_mappings && let Some(error) = retained_error {
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn channel_list(value: &Value) -> Result<Vec<u16>> {
+    let values = value.as_array().ok_or_else(|| bad("clip.audioChannels", "source channels must be an array of nonnegative integer indices"))?;
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|n| u16::try_from(n).ok())
+                .ok_or_else(|| bad("clip.audioChannels", "source channels must be integer indices between 0 and 65535"))
+        })
+        .collect()
+}
+
+fn audio_channels(s: &mut Session, p: &Value) -> Result<Value> {
+    if p.get("channels").is_some() && (p.get("items").is_some() || p.get("item").is_some()) {
+        return Err(bad("clip.audioChannels", "use Project items with format/clips, or timeline clips with channels"));
+    }
+    let items = project_audio_targets(s, p, "clip.audioChannels")?;
+    if items.is_empty() || p.get("channels").is_some() {
+        if p.get("format").is_some() {
+            return Err(bad("clip.audioChannels", "format applies only to Project audio sources"));
+        }
+        // timeline audio clips: which source channels each plays
+        let clips = match p.get("clips") {
+            Some(value) => value
+                .as_array()
+                .ok_or_else(|| bad("clip.audioChannels", "timeline clips must be an array of nonnegative integer IDs"))?
+                .iter()
+                .map(|value| value.as_u64().map(ClipId).ok_or_else(|| bad("clip.audioChannels", "timeline clips must contain only nonnegative integer IDs")))
+                .collect::<Result<Vec<_>>>()?,
+            None => selected_audio_clips(s),
+        };
+        let chans = p.get("channels").map(channel_list).transpose()?.unwrap_or_default();
         if clips.is_empty() {
             return Err(bad("clip.audioChannels", "select a clip with audio"));
+        }
+        for c in &clips {
+            let it = timeline_audio_target(s, *c)?;
+            validate_source_channels(audio_source_channel_count(&s.project, it), &chans)?;
         }
         s.edit_sequence("Modify Audio Channels", |q, _, _| {
             for c in &clips {
@@ -1255,25 +1464,30 @@ fn audio_channels(s: &mut Session, p: &Value) -> Result<Value> {
         })?;
         return Ok(json!({"clips": clips.iter().map(|c| c.0).collect::<Vec<_>>(), "channels": chans}));
     }
-    let format = match str_p(p, "format") {
-        Some(f) => Some(parse_format(f).ok_or_else(|| bad("clip.audioChannels", "format is mono, stereo, 5.1 or adaptive"))?),
-        None => None,
-    };
+    let format = p
+        .get("format")
+        .map(|value| value.as_str().and_then(parse_format).ok_or_else(|| bad("clip.audioChannels", "format is mono, stereo, 5.1 or adaptive")))
+        .transpose()?;
     let custom: Option<Vec<Vec<u16>>> = p
         .get("clips")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().map(|c| c.as_array().map(|x| x.iter().filter_map(|v| v.as_u64().map(|n| n as u16)).collect()).unwrap_or_default()).collect());
+        .map(|value| {
+            value
+                .as_array()
+                .ok_or_else(|| bad("clip.audioChannels", "clips must be an array of source-channel arrays"))?
+                .iter()
+                .map(channel_list)
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?;
     let mut out = Vec::new();
     let mut maps = Vec::new();
     for i in &items {
         let Some(m) = s.project.item(*i).and_then(|it| it.as_media()) else { continue };
-        let n = m.info.audio().map_or(2, |a| a.channels) as u16;
+        let n = project_audio_channel_count(m, "clip.audioChannels")?;
         let fmt = format.unwrap_or_else(|| m.interpret.audio_channels.as_ref().map_or(AudioChannels::Stereo, |a| a.format));
         let map = match &custom {
             Some(c) => {
-                if c.is_empty() || c.iter().any(|x| x.is_empty() || x.iter().any(|ch| *ch >= n)) {
-                    return Err(bad("clip.audioChannels", format!("each clip needs source channels between 0 and {}", n - 1)));
-                }
+                validate_project_channel_map(n, c)?;
                 AudioChannelMap { format: fmt, clips: c.clone() }
             }
             None => AudioChannelMap::for_format(fmt, n),
@@ -1569,18 +1783,23 @@ fn fit_fill(s: &mut Session, p: &Value, fill: bool) -> Result<Value> {
 // ---------------------------------------------------------------------------------------------
 
 fn breakout_to_mono(s: &mut Session, p: &Value) -> Result<Value> {
-    let items: Vec<ItemId> =
-        items_p(s, p).into_iter().filter(|i| s.project.item(*i).and_then(|it| it.as_media()).is_some_and(|m| m.info.has_audio())).collect();
+    let items = project_audio_targets(s, p, "clip.breakoutToMono")?;
     if items.is_empty() {
         return Err(bad("clip.breakoutToMono", "select a clip with audio in the Project panel"));
     }
+    let sources = items
+        .iter()
+        .map(|i| {
+            let media = s.project.item(*i).and_then(|item| item.as_media()).ok_or_else(|| bad("clip.breakoutToMono", "no such audio source"))?;
+            Ok((*i, project_audio_channel_count(media, "clip.breakoutToMono")?))
+        })
+        .collect::<Result<Vec<_>>>()?;
     let made = s.edit("Breakout to Mono", |pr, st| {
         let mut made = Vec::new();
-        for i in &items {
-            let Some(it) = pr.item(*i).cloned() else { continue };
+        for (i, n) in sources {
+            let Some(it) = pr.item(i).cloned() else { continue };
             let Some(m) = it.as_media() else { continue };
-            let n = m.info.audio().map_or(1, |a| a.channels).max(1) as u16;
-            let bin = pr.root.parent_of(*i).filter(|b| *b != pr.root.id);
+            let bin = pr.root.parent_of(i).filter(|b| *b != pr.root.id);
             for c in 0..n {
                 let suffix = match (n, c) {
                     (2, 0) => "Left".to_string(),

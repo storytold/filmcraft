@@ -222,7 +222,8 @@ fn mix_item(
         };
         // The nested sequence is the clip's source: speed, reverse and clip effects apply to its
         // mix exactly as they do to a media clip's sound.
-        let read = |m0: i64, len: usize| Some(nested_mix(project, &q, m0, len, sr, sources, w, live.depth));
+        let source_width = master_layout(&q).channels();
+        let read = |m0: i64, len: usize| Some(nested_mix(project, &q, m0, len, sr, sources, source_width, live.depth));
         effected(item, &read, a0, n, sr, w)
     } else {
         let Some(src) = sources.source(item.item) else { return };

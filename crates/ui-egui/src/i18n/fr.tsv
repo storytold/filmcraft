@@ -782,6 +782,9 @@
 	Ch. {n}	Can. {n}
 	Clip {n}	Clip {n}
 	Source channels the selected audio clips play:	Canaux source lus par les clips audio sélectionnés :
+	Apply Corrected Mapping	Appliquer l’affectation corrigée
+	Use Default Channels	Utiliser les canaux par défaut
+	Selected clips use different mappings. Changes apply to all selected clips.	Les clips sélectionnés utilisent des affectations de canaux différentes. Les modifications s’appliquent à tous les clips sélectionnés.
 	Set Timecode:	Définir le timecode :
 	Use the file's timecode	Utiliser le timecode du fichier
 	Hold On	Figer sur

@@ -777,6 +777,9 @@
 	Ch. {n}	Ch {n}
 	Clip {n}	クリップ {n}
 	Source channels the selected audio clips play:	選択したオーディオクリップで再生するソースチャンネル:
+	Apply Corrected Mapping	修正した割り当てを適用
+	Use Default Channels	既定のチャンネルを使用
+	Selected clips use different mappings. Changes apply to all selected clips.	選択したクリップは異なるチャンネル割り当てを使用しています。変更は選択したすべてのクリップに適用されます。
 	Set Timecode:	タイムコードを設定:
 	Use the file's timecode	ファイルのタイムコードを使用する
 	Hold On	ホールド位置

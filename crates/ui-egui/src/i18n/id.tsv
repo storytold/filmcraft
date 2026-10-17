@@ -787,6 +787,9 @@
 	Ch. {n}	Kan. {n}
 	Clip {n}	Klip {n}
 	Source channels the selected audio clips play:	Kanal sumber yang diputar klip audio terpilih:
+	Apply Corrected Mapping	Terapkan Pemetaan yang Dikoreksi
+	Use Default Channels	Gunakan Kanal Default
+	Selected clips use different mappings. Changes apply to all selected clips.	Klip terpilih menggunakan pemetaan yang berbeda. Perubahan berlaku untuk semua klip terpilih.
 	Set Timecode:	Atur Kode Waktu:
 	Use the file's timecode	Gunakan kode waktu berkas
 	Hold On	Tahan Pada

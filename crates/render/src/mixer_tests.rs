@@ -457,6 +457,38 @@ fn chan_dc(_: i64, c: usize) -> f32 {
     (c + 1) as f32 * 0.1
 }
 
+#[test]
+fn nested_source_channel_picks_precede_destination_layout_conversion() {
+    for (source_width, parent, picks, expected) in [
+        (6, AudioChannels::Stereo, vec![4], vec![0.5, 0.5]),
+        (6, AudioChannels::Stereo, vec![4, 1], vec![0.5, 0.2]),
+        (2, AudioChannels::Mono, vec![1], vec![0.2 * std::f32::consts::FRAC_1_SQRT_2; 2]),
+    ] {
+        let mut r = Rig::with_channels(&[chan_dc], source_width);
+        let inner = r.seq;
+        let layout = if source_width == 6 { AudioChannels::Surround51 } else { AudioChannels::Stereo };
+        r.track(0).channels = layout;
+        r.p.sequence_mut(inner).unwrap().settings.audio_master = layout;
+        let outer = r.p.new_sequence("selected nest", SequenceSettings::default(), 0, 1, None);
+        let range = TimeRange::new(Tick::ZERO, Tick(10 * TICKS_PER_SECOND));
+        let mut clip = r.p.make_track_item(inner, TrackKind::Audio, Tick::ZERO, range, FrameRate::FPS_24).unwrap();
+        clip.source_channels = picks.clone();
+        let track = &mut r.p.sequence_mut(outer).unwrap().audio_tracks[0];
+        track.channels = parent;
+        track.items.push(clip);
+        let audio = mix_graph(&r.p, r.p.sequence(outer).unwrap(), SR, 256, &r.map, None);
+        assert_eq!(audio.channels.len(), expected.len());
+        for (channel, expected) in audio.channels.iter().zip(expected) {
+            assert_eq!(channel.len(), 256);
+            assert!(
+                channel.iter().all(|sample| close(*sample, expected, 1e-6)),
+                "source {source_width}, parent {parent:?}, picks {picks:?}, first sample {}",
+                channel[0]
+            );
+        }
+    }
+}
+
 fn set_master_51(r: &mut Rig) {
     r.p.sequence_mut(r.seq).unwrap().settings.audio_master = AudioChannels::Surround51;
 }

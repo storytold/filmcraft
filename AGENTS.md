@@ -124,6 +124,14 @@ See [§0](#0-never-crash). It outranks every other engineering rule.
 
 ### 3.2 The rest
 
+**Invariant — source-channel validation:** Audio Channels parses every supplied source index and
+Project/timeline target ID fallibly before editing. Reject malformed lists, wrong-domain targets and
+channels absent from the selected source stream. Audio Channels and Breakout to Mono validate every
+Project source count as positive and representable before editing any target. Dialogs retain valid
+maps on untouched OK and require an explicit action to replace invalid or differing maps. Nested
+source picks precede destination layout conversion. Dialogs bound source width to 64 and their
+matrix/entries to 4096, returning a recoverable error for larger contexts; commands can edit wider maps.
+
 See `CLAUDE.md`: pure Rust, dependency layering (`cargo xtask layers`), exact `Tick` time, everything is
 a command, everything is agent-drivable, and the quality gates (`cargo xtask ci`) before every commit.
 

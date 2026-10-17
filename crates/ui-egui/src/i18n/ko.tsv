@@ -1,4 +1,7 @@
 # Korean (ko) catalog. Columns, separated by a TAB:  context <TAB> source <TAB> translation
+	Selected clips use different mappings. Changes apply to all selected clips.	선택한 클립의 채널 매핑이 서로 다릅니다. 변경 사항은 선택한 모든 클립에 적용됩니다.
+	Apply Corrected Mapping	수정된 매핑 적용
+	Use Default Channels	기본 채널 사용
 # (format documented in the header of es.tsv).
 #
 # Clean-room: every entry was written from the plain meaning of the English text using ordinary

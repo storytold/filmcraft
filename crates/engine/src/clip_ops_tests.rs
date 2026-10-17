@@ -330,6 +330,302 @@ fn make_and_edit_subclips() {
 }
 
 #[test]
+fn audio_channel_explicit_targets_work_without_unrelated_selections() {
+    let mut s = demo();
+    let audio = s.active_sequence().unwrap().audio_tracks[0].items[0].id;
+    let item = item_named(&s, "Ocean_Sunset.mp4");
+    s.state.selection.clear();
+    s.state.project_selection.clear();
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    let result = s.execute("clip.audioChannels", json!({"clips": [audio.0], "channels": [1, 0]}));
+    assert!(result.is_ok(), "explicit audio targets must enable the command: {result:?}");
+    assert!(s.state.selection.is_empty() && s.state.project_selection.is_empty());
+    assert_eq!(clip(&s, audio.0).source_channels, vec![1, 0]);
+    assert_eq!(s.history.undo.len(), undo + 1);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project, before);
+    s.execute("clip.audioChannels", json!({"items": [item.0], "format": "mono", "clips": [[0], [1], [0]]})).unwrap();
+    assert!(s.state.selection.is_empty() && s.state.project_selection.is_empty());
+    assert_eq!(s.project.item(item).unwrap().as_media().unwrap().interpret.audio_channels.as_ref().unwrap().clips.len(), 3);
+}
+
+#[test]
+fn audio_channel_parameter_objects_and_formats_are_checked() {
+    let mut s = demo();
+    let item = item_named(&s, "Ocean_Sunset.mp4");
+    s.state.project_selection = vec![item];
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    for command in ["clip.audioChannels", "clip.breakoutToMono"] {
+        for params in [json!(null), json!([]), json!(1), json!("bad")] {
+            assert!(s.execute(command, params.clone()).is_err(), "{command} accepted {params}");
+            assert_eq!(s.project, before);
+            assert_eq!(s.history.undo.len(), undo);
+        }
+    }
+    for format in [json!(null), json!(1), json!([]), json!({}), json!(false)] {
+        assert!(s.execute("clip.audioChannels", json!({"format": format})).is_err(), "invalid format accepted: {format}");
+        assert_eq!(s.project, before);
+        assert_eq!(s.history.undo.len(), undo);
+    }
+}
+
+#[test]
+fn timeline_audio_channel_formats_cannot_reset_or_mix_target_modes() {
+    let mut s = demo();
+    let audio = s.active_sequence().unwrap().audio_tracks[0].items[0].id;
+    s.state.project_selection.clear();
+    s.state.selection = vec![audio];
+    s.execute("clip.audioChannels", json!({"channels": [1]})).unwrap();
+    s.execute("clip.audioChannels", json!({"channels": [0]})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    let before = s.project.clone();
+    let selection = s.state.selection.clone();
+    let undo = s.history.undo.len();
+    let redo = s.history.redo.len();
+    assert!(redo > 0);
+    for format in [json!(null), json!(1), json!([]), json!({}), json!(false), json!("bogus"), json!("mono")] {
+        for params in [json!({"format": format}), json!({"clips": [audio.0], "channels": [0], "format": format})] {
+            let result = s.execute("clip.audioChannels", params.clone());
+            assert!(result.is_err(), "timeline format request accepted: {params}, {result:?}");
+            assert_eq!(s.project, before);
+            assert_eq!(s.state.selection, selection);
+            assert!(s.state.project_selection.is_empty());
+            assert_eq!(s.history.undo.len(), undo);
+            assert_eq!(s.history.redo.len(), redo);
+        }
+    }
+}
+
+#[test]
+fn project_audio_channel_targets_reject_malformed_and_wrong_domain_ids() {
+    let mut s = demo();
+    let item = item_named(&s, "Ocean_Sunset.mp4");
+    let timeline = s.active_sequence().unwrap().audio_tracks[0].items[0].id;
+    s.state.project_selection.clear();
+    s.state.selection = vec![timeline];
+    s.execute("clip.audioChannels", json!({"channels": [1]})).unwrap();
+    s.state.project_selection = vec![item];
+    s.execute("clip.audioChannels", json!({"format": "mono"})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    let before = s.project.clone();
+    let selection = s.state.selection.clone();
+    let project_selection = s.state.project_selection.clone();
+    let undo = s.history.undo.len();
+    let redo = s.history.redo.len();
+    let sequence = s.state.active_sequence.unwrap();
+    assert!(redo > 0);
+    for items in [
+        json!([item.0, "bad"]),
+        json!([item.0, -1]),
+        json!([item.0, 1.5]),
+        json!([item.0, u64::MAX]),
+        json!([u64::MAX]),
+        json!([sequence.0]),
+        json!([]),
+        json!(null),
+        json!({}),
+        json!("bad"),
+    ] {
+        let result = s.execute("clip.audioChannels", json!({"items": items, "format": "mono"}));
+        assert!(result.is_err(), "invalid project targets accepted: {items}, {result:?}");
+        assert_eq!(s.project, before);
+        assert_eq!(s.state.selection, selection);
+        assert_eq!(s.state.project_selection, project_selection);
+        assert_eq!(s.history.undo.len(), undo);
+        assert_eq!(s.history.redo.len(), redo);
+    }
+    assert!(
+        s.execute("clip.audioChannels", json!({"items": [item.0], "channels": [0]})).is_err(),
+        "Project and timeline target modes must not silently discard one another"
+    );
+    assert_eq!(s.project, before);
+    assert_eq!(s.history.undo.len(), undo);
+    assert_eq!(s.history.redo.len(), redo);
+    s.execute("clip.audioChannels", json!({"items": [item.0], "format": "mono"})).unwrap();
+    assert_eq!(clip(&s, timeline.0).source_channels, vec![1], "explicit Project targets leave the timeline mapping alone");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project, before);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(s.project.item(item).unwrap().as_media().unwrap().interpret.audio_channels.as_ref().unwrap().clips, vec![vec![0], vec![1]]);
+}
+
+#[test]
+fn timeline_audio_channel_targets_reject_video_and_missing_clips_atomically() {
+    let mut s = demo();
+    let q = s.active_sequence().unwrap();
+    let audio = q.audio_tracks[0].items[0].id;
+    let video = q.video_tracks[0].items[0].id;
+    s.state.project_selection.clear();
+    s.state.selection = vec![audio];
+    s.execute("clip.audioChannels", json!({"channels": [1, 0]})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    let redo = s.history.redo.len();
+    for clips in [json!([video.0]), json!([audio.0, video.0]), json!([audio.0, u64::MAX]), json!([])] {
+        let result = s.execute("clip.audioChannels", json!({"channels": [1], "clips": clips}));
+        assert!(result.is_err(), "wrong-domain target accepted: {clips}, {result:?}");
+        assert_eq!(s.project, before);
+        assert_eq!(s.history.undo.len(), undo);
+        assert_eq!(s.history.redo.len(), redo);
+    }
+}
+
+#[test]
+fn audio_channel_source_counts_do_not_wrap_or_partially_break_out() {
+    let mut s = demo();
+    let valid = item_named(&s, "Ocean_Sunset.mp4");
+    let invalid = item_named(&s, "Aurora_Timelapse.mp4");
+    for width in [0, 65_536, 65_537, u32::MAX] {
+        std::sync::Arc::make_mut(&mut s.project).item_mut(invalid).unwrap().as_media_mut().unwrap().info.audio_streams[0].channels = width;
+        s.state.project_selection = vec![valid, invalid];
+        let before = s.project.clone();
+        let selection = s.state.project_selection.clone();
+        let undo = s.history.undo.len();
+        let redo = s.history.redo.len();
+        for command in ["clip.audioChannels", "clip.breakoutToMono"] {
+            let result = s.execute(command, json!({}));
+            assert!(result.is_err(), "{command} accepted invalid source width {width}: {result:?}");
+            assert_eq!(s.project, before, "the valid first source must not be edited before rejecting the second");
+            assert_eq!(s.state.project_selection, selection);
+            assert_eq!(s.history.undo.len(), undo);
+            assert_eq!(s.history.redo.len(), redo);
+        }
+    }
+}
+
+#[test]
+fn timeline_audio_channel_lists_reject_invalid_indices_without_mutation() {
+    let mut s = demo();
+    let c = s.active_sequence().unwrap().audio_tracks[0].items[0].id;
+    s.state.selection = vec![c];
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    for channels in [json!([65536]), json!([2]), json!([0, -1]), json!([0, 1.5]), json!([0, "1"]), json!(null), json!({})] {
+        let result = s.execute("clip.audioChannels", json!({"channels": channels}));
+        assert!(result.is_err(), "invalid channel list was accepted: {channels}, result: {result:?}");
+        assert_eq!(s.project, before, "a rejected channel list leaves the project unchanged");
+        assert_eq!(s.history.undo.len(), undo);
+    }
+    s.execute("clip.audioChannels", json!({"channels": [1, 0]})).unwrap();
+    assert_eq!(clip(&s, c.0).source_channels, vec![1, 0]);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project, before);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(clip(&s, c.0).source_channels, vec![1, 0]);
+    s.execute("clip.audioChannels", json!({"channels": []})).unwrap();
+    assert!(clip(&s, c.0).source_channels.is_empty(), "an empty list restores the default mapping");
+}
+
+#[test]
+fn project_audio_channel_lists_reject_wrapped_or_discarded_indices() {
+    let mut s = demo();
+    let item = item_named(&s, "Ocean_Sunset.mp4");
+    s.state.project_selection = vec![item];
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    for clips in [json!([[65536]]), json!([[0, -1]]), json!([[0, 1.5]]), json!([[0, "1"]]), json!(null), json!({})] {
+        let result = s.execute("clip.audioChannels", json!({"clips": clips}));
+        assert!(result.is_err(), "invalid channel map was accepted: {clips}, result: {result:?}");
+        assert_eq!(s.project, before);
+        assert_eq!(s.history.undo.len(), undo);
+    }
+    s.execute("clip.audioChannels", json!({"format": "stereo", "clips": [[1, 0]]})).unwrap();
+    assert_eq!(s.project.item(item).unwrap().as_media().unwrap().interpret.audio_channels.as_ref().unwrap().clips, vec![vec![1, 0]]);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project, before);
+}
+
+#[test]
+fn timeline_audio_channel_targets_reject_malformed_lists_without_mutation() {
+    let mut s = demo();
+    let audio = s.active_sequence().unwrap().audio_tracks[0].items.clone();
+    let (first, second) = (audio[0].id, audio[1].id);
+    s.state.selection = vec![first];
+    s.execute("clip.audioChannels", json!({"channels": [1, 0]})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    let redo = s.history.redo.len();
+    assert!(redo > 0, "rejection must preserve a populated redo stack");
+    for params in [
+        json!({"clips": [[0, 5]]}),
+        json!({"clips": [[65536]]}),
+        json!({"channels": [1, 0], "clips": [second.0, -1]}),
+        json!({"channels": [1, 0], "clips": [second.0, "bad"]}),
+        json!({"channels": [1, 0], "clips": null}),
+        json!({"channels": [1, 0], "clips": {}}),
+        json!({"channels": [65536]}),
+    ] {
+        let result = s.execute("clip.audioChannels", params.clone());
+        assert!(result.is_err(), "malformed target or channel list was accepted: {params}, result: {result:?}");
+        assert_eq!(s.project, before, "a rejected mapping leaves every target unchanged");
+        assert_eq!(s.history.undo.len(), undo);
+        assert_eq!(s.history.redo.len(), redo);
+    }
+    s.execute("clip.audioChannels", json!({"channels": [1], "clips": [second.0]})).unwrap();
+    assert_eq!(clip(&s, second.0).source_channels, vec![1]);
+    assert!(clip(&s, first.0).source_channels.is_empty(), "an explicit target leaves the selection unchanged");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project, before);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(clip(&s, second.0).source_channels, vec![1]);
+
+    s.state.selection.clear();
+    let item = item_named(&s, "Ocean_Sunset.mp4");
+    s.state.project_selection = vec![item];
+    s.execute("clip.audioChannels", json!({"format": "stereo", "clips": [[1, 0]]})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    let redo = s.history.redo.len();
+    assert!(redo > 0, "project-map rejection must preserve a populated redo stack");
+    for maps in [json!([[65537]]), json!([[0, -1]]), json!([[0, 1.5]]), json!([[0, "bad"]])] {
+        assert!(s.execute("clip.audioChannels", json!({"clips": maps})).is_err());
+        assert_eq!(s.project, before);
+        assert_eq!(s.history.undo.len(), undo);
+        assert_eq!(s.history.redo.len(), redo);
+    }
+}
+
+#[test]
+fn nested_audio_channel_bounds_match_the_rendered_master_layout() {
+    let mut s = demo();
+    let parent = s.state.active_sequence.unwrap();
+    for master in [AudioChannels::Mono, AudioChannels::Stereo, AudioChannels::Surround51, AudioChannels::Adaptive] {
+        let mut p = (*s.project).clone();
+        let nested = p.new_sequence("nested", filmcraft_project::SequenceSettings { audio_master: master, ..Default::default() }, 0, 1, None);
+        let available = filmcraft_render::audio::master_layout(p.sequence(nested).unwrap()).channels();
+        assert_eq!(available, if master == AudioChannels::Surround51 { 6 } else { 2 });
+        let it = p
+            .make_track_item(
+                nested,
+                filmcraft_project::TrackKind::Audio,
+                Tick::ZERO,
+                filmcraft_time::TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)),
+                s.sequence_rate(),
+            )
+            .unwrap();
+        let c = it.id;
+        p.sequence_mut(parent).unwrap().audio_tracks[0].items.clear();
+        p.sequence_mut(parent).unwrap().audio_tracks[0].items.push(it);
+        s.project = std::sync::Arc::new(p);
+        s.state.selection = vec![c];
+        let before = s.project.clone();
+        let undo = s.history.undo.len();
+        let redo = s.history.redo.len();
+        assert!(s.execute("clip.audioChannels", json!({"channels": [available]})).is_err());
+        assert_eq!(s.project, before);
+        assert_eq!(s.history.undo.len(), undo);
+        assert_eq!(s.history.redo.len(), redo);
+        s.execute("clip.audioChannels", json!({"channels": [available - 1]})).unwrap();
+        assert_eq!(clip(&s, c.0).source_channels, vec![(available - 1) as u16]);
+    }
+}
+
+#[test]
 fn modify_audio_channels_and_breakout_to_mono() {
     let mut s = demo();
     let ocean = item_named(&s, "Ocean_Sunset.mp4");

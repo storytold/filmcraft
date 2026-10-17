@@ -102,7 +102,8 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
         return Some(Err(e));
     }
     let (params, info) = defaults(app, id);
-    app.ui.clip_dialog = Some(ClipDialogDraft { command: id.into(), params, info, error: String::new() });
+    let error = info["error"].as_str().unwrap_or_default().to_string();
+    app.ui.clip_dialog = Some(ClipDialogDraft { command: id.into(), params, info, error });
     Some(Ok(json!({"dialog": meta(id).map(|m| m.1)})))
 }
 
@@ -181,17 +182,10 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
                 json!({"name": it.name, "fps": rate.as_f64()}),
             )
         }
-        "clip.audioChannels" => {
-            let item = s.state.project_selection.iter().find_map(|i| s.project.item(*i).and_then(|it| it.as_media()).filter(|m| m.info.has_audio()));
-            match item {
-                Some(m) => {
-                    let n = m.info.audio().map_or(2, |a| a.channels) as u16;
-                    let map = m.interpret.audio_channels.clone().unwrap_or_else(|| AudioChannelMap::for_format(AudioChannels::Stereo, n));
-                    (json!({"format": format_name(map.format), "clips": map.clips}), json!({"channels": n, "items": true}))
-                }
-                None => (json!({"channels": [0, 1]}), json!({"channels": 2, "items": false})),
-            }
-        }
+        "clip.audioChannels" => match filmcraft_engine::clip_ops::audio_channel_defaults(s) {
+            Ok(context) => (context["params"].clone(), context["info"].clone()),
+            Err(error) => (json!({"channels": []}), json!({"channels": 0, "error": error.to_string()})),
+        },
         "clip.modifyTimecode" => {
             let it = s.state.project_selection.iter().find_map(|i| s.project.item(*i).and_then(|it| Some((it, it.as_media()?))));
             let (tc, tape) = it
@@ -229,15 +223,6 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
             )
         }
         _ => (json!({}), Value::Null),
-    }
-}
-
-fn format_name(f: AudioChannels) -> &'static str {
-    match f {
-        AudioChannels::Mono => "mono",
-        AudioChannels::Stereo => "stereo",
-        AudioChannels::Surround51 => "5.1",
-        AudioChannels::Adaptive => "adaptive",
     }
 }
 
@@ -406,8 +391,28 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
             }
             "clip.audioChannels" => {
-                let n = d.info["channels"].as_u64().unwrap_or(2).max(1) as u16;
-                if d.info["items"].as_bool().unwrap_or(false) {
+                use filmcraft_engine::clip_ops::{MAX_AUDIO_CHANNEL_DIALOG_CELLS, validate_audio_channel_dialog_size};
+                let items = d.info["items"].as_bool().unwrap_or(false);
+                let mut n = d.info["channels"].as_u64().and_then(|n| u32::try_from(n).ok()).unwrap_or(0);
+                let rows = p["clips"].as_array().map_or(0, Vec::len);
+                let entries = if items {
+                    p["clips"].as_array().map_or(0, |rows| rows.iter().fold(0usize, |sum, row| sum.saturating_add(row.as_array().map_or(0, Vec::len))))
+                } else {
+                    p["channels"].as_array().map_or(0, Vec::len)
+                };
+                let size = if p.is_object() {
+                    validate_audio_channel_dialog_size(n, if items { rows } else { 1 }, entries)
+                } else {
+                    Err(filmcraft_engine::EngineError::BadParams { cmd: d.command.clone(), msg: "parameters must be an object".into() })
+                };
+                if let Err(error) = size {
+                    d.error = error.to_string();
+                    n = 0;
+                }
+                if d.info["mixed"].as_bool().unwrap_or(false) {
+                    ui.label(tl!("Selected clips use different mappings. Changes apply to all selected clips."));
+                }
+                if let Some(n) = u16::try_from(n).ok().filter(|n| items && *n > 0) {
                     ui.horizontal(|ui| {
                         ui.label(tl!("Clip Channel Format:"));
                         for (k, l) in formats() {
@@ -416,38 +421,96 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                             if r.clicked() {
                                 p["format"] = json!(k);
                                 p["clips"] = json!(AudioChannelMap::for_format(format_of(k), n).clips);
+                                d.info["edited"] = json!(true);
                             }
                         }
                     });
                     let mut clips: Vec<Vec<u16>> = serde_json::from_value(p["clips"].clone()).unwrap_or_default();
+                    let mut edited = false;
                     ui.horizontal(|ui| {
                         ui.label(tl!("Number of Audio Clips:"));
-                        let mut count = clips.len() as u32;
-                        let r = ui.add(crate::widgets::number_drag(&mut count).range(1..=n as u32));
+                        let mut count = u32::try_from(clips.len()).unwrap_or(u32::from(n));
+                        let r = ui.add(crate::widgets::number_drag(&mut count).range(1..=n as u32).clamp_existing_to_range(false));
                         push(&mut elems, format!("{pre}.count"), &r, "Number of Audio Clips");
                         if r.changed() {
-                            let count = count.max(1) as usize;
+                            edited = true;
+                            d.info["edited"] = json!(true);
+                            let count = usize::try_from(count.max(1)).unwrap_or(clips.len());
                             while clips.len() < count {
-                                let c = (clips.len() as u16).min(n - 1);
+                                let c = u16::try_from(clips.len()).unwrap_or(n - 1).min(n - 1);
                                 clips.push(vec![c]);
                             }
                             clips.truncate(count);
                         }
                     });
                     ui.label(RichText::new(tl!("Media Source Channels")).strong());
-                    egui::Grid::new("audio-channel-matrix").striped(true).show(ui, |ui| {
-                        ui.label("");
-                        for c in 0..n {
-                            ui.label(tlf!("Ch. {n}", n = c + 1));
+                    egui::ScrollArea::both()
+                        .id_salt("audio-channel-scroll")
+                        .max_width(ui.ctx().content_rect().width() * 0.8)
+                        .max_height(ui.ctx().content_rect().height() * 0.4)
+                        .show(ui, |ui| {
+                            egui::Grid::new("audio-channel-matrix").striped(true).show(ui, |ui| {
+                                ui.label("");
+                                for c in 0..n {
+                                    ui.label(tlf!("Ch. {n}", n = c + 1));
+                                }
+                                ui.end_row();
+                                for (ci, chans) in clips.iter_mut().enumerate() {
+                                    ui.label(tlf!("Clip {n}", n = ci + 1));
+                                    for c in 0..n {
+                                        let mut on = chans.contains(&c);
+                                        let r = ui.checkbox(&mut on, "");
+                                        push(&mut elems, format!("{pre}.clip.{ci}.ch.{c}"), &r, format!("Clip {} Ch. {}", ci + 1, c + 1));
+                                        if r.changed() {
+                                            edited = true;
+                                            d.info["edited"] = json!(true);
+                                            if on {
+                                                chans.push(c);
+                                                chans.sort_unstable();
+                                            } else {
+                                                chans.retain(|x| *x != c);
+                                            }
+                                        }
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+                        });
+                    if edited {
+                        p["clips"] = json!(clips);
+                    }
+                } else if !items {
+                    ui.label(tl!("Source channels the selected audio clips play:"));
+                    let mut chans: Vec<u16> = p
+                        .get("channels")
+                        .filter(|value| value.as_array().is_none_or(|channels| channels.len() <= MAX_AUDIO_CHANNEL_DIALOG_CELLS))
+                        .cloned()
+                        .and_then(|value| serde_json::from_value(value).ok())
+                        .unwrap_or_default();
+                    let mut edited = false;
+                    if chans.is_empty() && n > 0 {
+                        ui.label(tl!("Default"));
+                    }
+                    if n > 0 {
+                        let label = tl!("Use Default Channels");
+                        let r = ui.button(label);
+                        push(&mut elems, format!("{pre}.default"), &r, label);
+                        if r.clicked() {
+                            edited = true;
+                            chans.clear();
+                            d.info["edited"] = json!(true);
                         }
-                        ui.end_row();
-                        for (ci, chans) in clips.iter_mut().enumerate() {
-                            ui.label(tlf!("Clip {n}", n = ci + 1));
-                            for c in 0..n {
+                    }
+                    egui::ScrollArea::vertical().id_salt("audio-channel-timeline-scroll").max_height(ui.ctx().content_rect().height() * 0.4).show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            for index in 0..n {
+                                let Ok(c) = u16::try_from(index) else { break };
                                 let mut on = chans.contains(&c);
-                                let r = ui.checkbox(&mut on, "");
-                                push(&mut elems, format!("{pre}.clip.{ci}.ch.{c}"), &r, format!("Clip {} Ch. {}", ci + 1, c + 1));
+                                let r = ui.checkbox(&mut on, tlf!("Ch. {n}", n = index + 1));
+                                push(&mut elems, format!("{pre}.clip.0.ch.{c}"), &r, format!("Ch. {}", index + 1));
                                 if r.changed() {
+                                    edited = true;
+                                    d.info["edited"] = json!(true);
                                     if on {
                                         chans.push(c);
                                         chans.sort_unstable();
@@ -456,29 +519,20 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                                     }
                                 }
                             }
-                            ui.end_row();
-                        }
+                        });
                     });
-                    p["clips"] = json!(clips);
-                } else {
-                    ui.label(tl!("Source channels the selected audio clips play:"));
-                    let mut chans: Vec<u16> = serde_json::from_value(p["channels"].clone()).unwrap_or_default();
-                    ui.horizontal(|ui| {
-                        for c in 0..n.max(2) {
-                            let mut on = chans.contains(&c);
-                            let r = ui.checkbox(&mut on, tlf!("Ch. {n}", n = c + 1));
-                            push(&mut elems, format!("{pre}.clip.0.ch.{c}"), &r, format!("Ch. {}", c + 1));
-                            if r.changed() {
-                                if on {
-                                    chans.push(c);
-                                    chans.sort_unstable();
-                                } else {
-                                    chans.retain(|x| *x != c);
-                                }
-                            }
-                        }
-                    });
-                    p["channels"] = json!(chans);
+                    if edited {
+                        p["channels"] = json!(chans);
+                    }
+                }
+                if n > 0 && d.info["invalidMapping"].as_bool().unwrap_or(false) {
+                    let label = tl!("Apply Corrected Mapping");
+                    let r = ui.button(label);
+                    push(&mut elems, format!("{pre}.repair"), &r, label);
+                    if r.clicked() {
+                        d.info["edited"] = json!(true);
+                        action = Some("ok");
+                    }
                 }
             }
             "clip.modifyTimecode" => {
@@ -596,7 +650,17 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         }
         Some("ok") => {
             let params = finish(&d);
-            match app.session.execute(&d.command, params) {
+            let result = if d.command == "clip.audioChannels" {
+                let retain_mappings = params == d.info["initial"] && !d.info["edited"].as_bool().unwrap_or(false);
+                filmcraft_engine::clip_ops::validate_audio_channel_dialog(&app.session, &d.info, retain_mappings).and_then(|()| {
+                    // Untouched OK retains each target's map. Explicit controls also allow a legacy
+                    // map to be corrected when its sanitized display value matches the initial one.
+                    if retain_mappings { Ok(Value::Null) } else { app.session.execute(&d.command, params) }
+                })
+            } else {
+                app.session.execute(&d.command, params)
+            };
+            match result {
                 Ok(_) => {
                     app.ui.clip_dialog = None;
                     return;

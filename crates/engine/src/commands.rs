@@ -123,10 +123,17 @@ fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
     if s.state.clipboard.is_empty() { Err("clipboard is empty".into()) } else { Ok(()) }
 }
 
+fn list_key_is_ids(spec: &CommandSpec, p: &Value, key: &str) -> bool {
+    if spec.id == "clip.audioChannels" && key == "clips" && p.get("channels").is_none() {
+        return false;
+    }
+    spec.params.contains(&format!("\"{key}\":[id]"))
+}
+
 /// The ids a caller named under `many` (a list) or `one` (a single id), when the command documents
 /// that key as ids (`"clips":[id]`, `"item":id`); `None` when it named none.
 fn named_ids(spec: &CommandSpec, p: &Value, many: &str, one: &str) -> Option<Vec<u64>> {
-    let ids: Vec<u64> = if spec.params.contains(&format!("\"{many}\":[id]"))
+    let ids: Vec<u64> = if list_key_is_ids(spec, p, many)
         && let Some(a) = p.get(many).and_then(Value::as_array)
     {
         a.iter().filter_map(Value::as_u64).collect()
@@ -149,7 +156,7 @@ pub(crate) fn named_clips(s: &Session, spec: &CommandSpec, p: &Value) -> Option<
 /// `None` when the caller named nothing or no sequence is open, so the selection's reason stands.
 pub(crate) fn named_clips_missing(s: &Session, spec: &CommandSpec, p: &Value) -> Option<String> {
     s.active_sequence()?;
-    let first = if spec.params.contains("\"clips\":[id]")
+    let first = if list_key_is_ids(spec, p, "clips")
         && let Some(a) = p.get("clips").and_then(Value::as_array)
     {
         a.first()?

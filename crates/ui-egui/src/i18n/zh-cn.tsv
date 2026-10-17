@@ -771,6 +771,9 @@
 	Ch. {n}	声道 {n}
 	Clip {n}	剪辑 {n}
 	Source channels the selected audio clips play:	所选音频剪辑播放的源声道：
+	Apply Corrected Mapping	应用修正后的映射
+	Use Default Channels	使用默认声道
+	Selected clips use different mappings. Changes apply to all selected clips.	所选剪辑使用不同的声道映射。更改将应用于全部所选剪辑。
 	Set Timecode:	设置时间码：
 	Use the file's timecode	使用文件的时间码
 	Hold On	定格开启

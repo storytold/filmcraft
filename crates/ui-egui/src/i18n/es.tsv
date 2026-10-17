@@ -781,6 +781,9 @@
 	Ch. {n}	Can. {n}
 	Clip {n}	Clip {n}
 	Source channels the selected audio clips play:	Canales de origen que reproducen los clips de audio seleccionados:
+	Apply Corrected Mapping	Aplicar asignación corregida
+	Use Default Channels	Usar canales predeterminados
+	Selected clips use different mappings. Changes apply to all selected clips.	Los clips seleccionados usan asignaciones diferentes. Los cambios se aplican a todos los clips seleccionados.
 	Set Timecode:	Establecer código de tiempo:
 	Use the file's timecode	Usar el código de tiempo del archivo
 	Hold On	Congelar en

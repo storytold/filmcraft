@@ -340,6 +340,37 @@ pub fn korean_font_available() -> bool {
 mod tests {
     use super::*;
 
+    const AUDIO_CHANNELS_DIALOG_LABELS: [&str; 3] =
+        ["Selected clips use different mappings. Changes apply to all selected clips.", "Apply Corrected Mapping", "Use Default Channels"];
+
+    // These dialog labels have separate live-source coverage. All other rows remain in menu coverage.
+    fn menu_catalog_entries(text: &str) -> Vec<(String, String, String)> {
+        let (entries, _) = catalog::parse_entries(text);
+        entries.into_iter().filter(|(_, en, _)| !AUDIO_CHANNELS_DIALOG_LABELS.contains(&en.as_str())).collect()
+    }
+
+    #[test]
+    fn audio_channels_dialog_labels_are_live_and_translated_in_every_catalog() {
+        let literals = tl_literals(include_str!("../panels/clip_dialogs.rs"));
+        for label in AUDIO_CHANNELS_DIALOG_LABELS {
+            assert!(literals.contains(&label.to_string()), "dialog label is a live tl! literal: {label}");
+            for language in Language::ALL.into_iter().filter(|language| *language != Language::En) {
+                assert!(language.has(label), "missing {language:?} dialog label: {label}");
+                assert_ne!(language.tr(label), label, "untranslated {language:?} dialog label: {label}");
+            }
+        }
+        for text in [include_str!("de.tsv"), include_str!("ru.tsv"), include_str!("uk.tsv")] {
+            let (entries, _) = catalog::parse_entries(text);
+            let menus = menu_catalog_entries(text);
+            let excluded: Vec<_> = entries.iter().filter(|(_, en, _)| AUDIO_CHANNELS_DIALOG_LABELS.contains(&en.as_str())).collect();
+            assert_eq!(excluded.len(), AUDIO_CHANNELS_DIALOG_LABELS.len(), "only the separately checked dialog rows are excluded");
+            assert_eq!(menus.len().checked_add(AUDIO_CHANNELS_DIALOG_LABELS.len()), Some(entries.len()), "every other row remains in menu coverage");
+            for entry in entries.into_iter().filter(|(_, en, _)| !AUDIO_CHANNELS_DIALOG_LABELS.contains(&en.as_str())) {
+                assert!(menus.contains(&entry), "every pre-existing menu row is still checked");
+            }
+        }
+    }
+
     #[test]
     fn catalogs_are_well_formed() {
         for (code, text) in [
@@ -474,13 +505,11 @@ mod tests {
         assert!(missing.is_empty(), "untranslated menu labels: {missing:#?}");
     }
 
-    /// The core menus every other catalog must cover: the entries of the menus-only Ukrainian
-    /// catalog, which `ukrainian_entries_cover_the_original_menu_catalog` keeps to menu labels (and
-    /// the native macOS Settings menu). Brazilian Portuguese played this role while it was
-    /// menus-only.
+    /// The core menus every other catalog must cover: the Ukrainian catalog's menu subset, which
+    /// `ukrainian_entries_cover_the_original_menu_catalog` keeps to menu labels (and the native macOS
+    /// Settings menu). The Audio Channels dialog labels have separate source/catalog coverage.
     fn core_menu_labels() -> Vec<String> {
-        let (entries, _) = catalog::parse_entries(include_str!("uk.tsv"));
-        entries.into_iter().map(|(_, en, _)| en).collect()
+        menu_catalog_entries(include_str!("uk.tsv")).into_iter().map(|(_, en, _)| en).collect()
     }
 
     /// Brazilian Portuguese covers the whole interface (the Spanish catalog's entries and the native
@@ -1094,7 +1123,7 @@ mod tests {
         let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
         let items = crate::menus::menu_items(&app);
         let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
-        let (entries, _) = catalog::parse_entries(include_str!("uk.tsv"));
+        let entries = menu_catalog_entries(include_str!("uk.tsv"));
         for (_, en, _) in entries {
             assert!(known(&en) || en == "Settings", "not a menu label: {en}");
         }
@@ -1104,13 +1133,13 @@ mod tests {
     }
 
     /// German covers at least the core menus (`core_menu_labels`, the top-level menus and the native
-    /// macOS app menu); every entry must still be a menu label.
+    /// macOS app menu); every entry except the separately checked dialog warning is a menu label.
     #[test]
     fn german_entries_cover_the_original_menu_catalog() {
         let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
         let items = crate::menus::menu_items(&app);
         let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
-        let (entries, _) = catalog::parse_entries(include_str!("de.tsv"));
+        let entries = menu_catalog_entries(include_str!("de.tsv"));
         for (_, en, _) in entries {
             assert!(known(&en) || crate::menus::NATIVE_APP_MENU.contains(&en.as_str()), "not a menu label: {en}");
         }
@@ -1185,7 +1214,7 @@ mod tests {
         let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
         let items = crate::menus::menu_items(&app);
         let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
-        let (entries, _) = catalog::parse_entries(include_str!("ru.tsv"));
+        let entries = menu_catalog_entries(include_str!("ru.tsv"));
         for (_, en, _) in entries {
             assert!(known(&en) || en == "Settings", "not a menu label: {en}");
         }
