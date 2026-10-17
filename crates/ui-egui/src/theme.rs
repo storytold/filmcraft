@@ -672,8 +672,8 @@ mod tests {
         ctx.fonts_mut(|fonts| {
             let defs = fonts.definitions().clone();
             for (family, stack) in &defs.families {
-                // installed right-to-left faces (Hebrew is not in craft-fonts) come after the craft run
-                let stack: Vec<&String> = stack.iter().filter(|n| !crate::rtl::is_system_face(n)).collect();
+                // Optional installed CJK and RTL faces do not change the Japanese craft-font order.
+                let stack: Vec<&String> = stack.iter().filter(|n| !crate::rtl::is_system_face(n) && !crate::cjk::is_system_face(n)).collect();
                 let first = stack.iter().position(|n| n.starts_with("craft:")).unwrap_or(stack.len());
                 assert!(first > 0 && stack[first..].iter().all(|n| n.starts_with("craft:")), "{family:?}: {stack:?}");
                 let first_japanese = stack.iter().find(|n| n.starts_with("craft:BIZ") || n.starts_with("craft:Shippori"));
