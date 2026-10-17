@@ -1149,7 +1149,8 @@ fn build() -> Vec<CommandSpec> {
             s.revision += 1;
             s.saved_revision = s.revision;
             s.events.push(crate::Event::ProjectChanged { revision: s.revision });
-            Ok(Value::Null)
+            // the project as `project_inspect` names it (#1545: an agent needs no extra round trip)
+            Ok(json!({"name": name, "revision": s.revision}))
         }),
         cmd!("file.openDemoProject", "Demo Project", ["File", "New"], None, "{}", always, |s, _| {
             let (p, seq) = crate::demo::demo_project(&s.media);
@@ -2945,8 +2946,11 @@ fn build() -> Vec<CommandSpec> {
             }
             let (fw, fh) = s.active_sequence().map(|q| (q.settings.width, q.settings.height)).unwrap_or((1920, 1080));
             let label = format!("Apply {}", def.name);
-            s.edit_sequence(&label, |q, _, _| {
-                let mut n = 0;
+            // Answer `{"applied":[{"clip","index","effect"}]}`: where each instance landed, so an
+            // agent can address it (`effects.setParam`, `effects.remove`) without a `sequence_inspect`
+            // round trip, as `timeline.place` answers with its clips (#1545).
+            let applied = s.edit_sequence(&label, |q, _, _| {
+                let mut applied = Vec::new();
                 for t in q.all_tracks_mut() {
                     if (t.kind == TrackKind::Audio) != is_audio {
                         continue;
@@ -2958,12 +2962,12 @@ fn build() -> Vec<CommandSpec> {
                         let pos = i.effects.iter().position(|e| e.def().is_some_and(|d| d.intrinsic)).unwrap_or(i.effects.len());
                         let pos = if is_audio { i.effects.len() } else { pos };
                         i.effects.insert(pos, inst);
-                        n += 1;
+                        applied.push(json!({"clip": i.id.0, "index": pos, "effect": def.id}));
                     }
                 }
-                Ok(n)
+                Ok(applied)
             })?;
-            Ok(Value::Null)
+            Ok(json!({"applied": applied}))
         }),
         cmd!("effects.remove", "Remove Effect", [], None, r#"{"clip":id,"index":n}"#, has_seq, |s, p| {
             let c = clip_p(p, "clip").ok_or_else(|| bad("effects.remove", "need `clip`"))?;
