@@ -28,6 +28,8 @@ egui = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
 serde_json = { workspace = true }
 log = { workspace = true }
+craft-cloud-client = { workspace = true }
+collabcraft-share = { workspace = true }
 wasm-bindgen = "=0.2.129"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"

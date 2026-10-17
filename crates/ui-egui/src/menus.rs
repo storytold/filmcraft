@@ -136,6 +136,11 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("mode.import", "Import", [], None),
     uic!("mode.edit", "Edit", [], None),
     uic!("mode.export", "Export", ["File", "Export"], Some("Cmd+M")),
+    // CollabCraft cloud storage. Commands exist for invoke/control; File menu placement is
+    // injected by `cloud_menu` only when a service is connected.
+    uic!("file.cloudOpen", "Open from cloud…", [], None),
+    uic!("file.cloudImport", "Import from cloud…", [], None),
+    uic!("file.cloudSaveAs", "Save as to cloud…", [], None),
     uic!("help.discord", "Join the ArtCraft Discord…", ["Help"], None),
     uic!("help.website", "ArtCraft Website", ["Help"], None),
     uic!("help.appPage", "FilmCraft on getartcraft.com", ["Help"], None),
@@ -571,6 +576,31 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         app.session.set_prefs(next).map_err(|e| e.to_string())?;
         return Ok(Value::Null);
     }
+    // Cloud: Save routes back to the cloud when the project came from there.
+    if id == "file.save" && params.get("path").is_none() && crate::cloud::has_target(app) {
+        return crate::cloud::save(app);
+    }
+    if id == "file.cloudOpen" {
+        if !crate::cloud::available(app) {
+            return Err(crate::cloud::UNAVAILABLE.into());
+        }
+        app.cloud_page = Some(crate::cloud::CloudPage::Open);
+        return Ok(json!({"page": "open"}));
+    }
+    if id == "file.cloudImport" {
+        if !crate::cloud::available(app) {
+            return Err(crate::cloud::UNAVAILABLE.into());
+        }
+        app.cloud_page = Some(crate::cloud::CloudPage::Import);
+        return Ok(json!({"page": "import"}));
+    }
+    if id == "file.cloudSaveAs" {
+        if !crate::cloud::available(app) {
+            return Err(crate::cloud::UNAVAILABLE.into());
+        }
+        app.cloud_page = Some(crate::cloud::CloudPage::SaveAs);
+        return Ok(json!({"page": "saveAs"}));
+    }
     // File dialogs for commands that need a path.
     if (id == "file.import" && params.get("paths").is_none() && params.get("path").is_none())
         || (id == "file.importImageSequence" && params.get("path").is_none())
@@ -706,7 +736,54 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
     }
     crate::panels::workspaces::menu(app, &mut v);
     open_recent(&mut v, &app.session, |n| app.ui.language.tr(n).to_string());
+    cloud_menu(&mut v, app);
     v
+}
+
+/// File ▸ Open from cloud… / Save as to cloud… after Open Recent when CollabCraft is connected.
+/// Absent (not dimmed) when no service is configured, matching the other Craft apps.
+fn cloud_menu(items: &mut Vec<MenuItem>, app: &FilmcraftApp) {
+    if !crate::cloud::available(app) {
+        return;
+    }
+    let Some(open_at) = items.iter().position(|it| it.id == "file.open") else { return };
+    let mut insert_at = open_at + 1;
+    while insert_at < items.len() && items[insert_at].id.starts_with("file.openRecent.") {
+        insert_at += 1;
+    }
+    if insert_at < items.len() && items[insert_at].id == "file.clearRecent" {
+        insert_at += 1;
+    }
+    let path = vec!["File".into()];
+    items.splice(
+        insert_at..insert_at,
+        [
+            MenuItem {
+                id: "file.cloudOpen".into(),
+                label: app.ui.language.tr("Open from cloud…").to_string(),
+                path: path.clone(),
+                shortcut: None,
+                enabled: true,
+                checked: None,
+            },
+            MenuItem {
+                id: "file.cloudImport".into(),
+                label: app.ui.language.tr("Import from cloud…").to_string(),
+                path: path.clone(),
+                shortcut: None,
+                enabled: true,
+                checked: None,
+            },
+            MenuItem {
+                id: "file.cloudSaveAs".into(),
+                label: app.ui.language.tr("Save as to cloud…").to_string(),
+                path,
+                shortcut: None,
+                enabled: true,
+                checked: None,
+            },
+        ],
+    );
 }
 
 /// File ▸ Open Recent, after Open Project…: the recent projects (General ▸ `recentProjects`),
@@ -1081,6 +1158,48 @@ mod tests {
         let reset = ws.iter().position(|it| it.id == "window.workspace.reset");
         assert!(matches!((editing, reset), (Some(e), Some(r)) if e < r), "workspaces come before the layout commands");
         assert!(items.iter().any(|it| it.id == "file.save" && it.path == ["File"]));
+    }
+
+    #[test]
+    fn cloud_menu_entries_require_a_connected_backend() {
+        struct Noop;
+        impl crate::cloud::CloudBackend for Noop {
+            fn submit(&self, _job: crate::cloud::Job, _post: crate::cloud::Post) {}
+        }
+
+        let no_cloud = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let items = menu_items(&no_cloud);
+        assert!(
+            items.iter().all(|it| !matches!(it.id.as_str(), "file.cloudOpen" | "file.cloudImport" | "file.cloudSaveAs")),
+            "cloud entries must be absent without a backend"
+        );
+
+        let mut with_cloud = FilmcraftApp::new(filmcraft_engine::Session::default());
+        with_cloud.cloud.connect(Noop);
+        let items = menu_items(&with_cloud);
+        let open_at = items.iter().position(|it| it.id == "file.open").expect("Open Project");
+        let cloud_open = items.iter().position(|it| it.id == "file.cloudOpen").expect("Open from cloud");
+        let cloud_import = items.iter().position(|it| it.id == "file.cloudImport").expect("Import from cloud");
+        let cloud_save = items.iter().position(|it| it.id == "file.cloudSaveAs").expect("Save as to cloud");
+        assert!(cloud_open > open_at && cloud_import > cloud_open && cloud_save > cloud_import);
+    }
+
+    #[test]
+    fn file_cloud_commands_set_cloud_page() {
+        struct Noop;
+        impl crate::cloud::CloudBackend for Noop {
+            fn submit(&self, _job: crate::cloud::Job, _post: crate::cloud::Post) {}
+        }
+        let ctx = egui::Context::default();
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        assert!(invoke(&mut app, &ctx, "file.cloudOpen", json!({})).is_err());
+        assert!(app.cloud_page.is_none());
+
+        app.cloud.connect(Noop);
+        invoke(&mut app, &ctx, "file.cloudOpen", json!({})).unwrap();
+        assert_eq!(app.cloud_page, Some(crate::cloud::CloudPage::Open));
+        invoke(&mut app, &ctx, "file.cloudSaveAs", json!({})).unwrap();
+        assert_eq!(app.cloud_page, Some(crate::cloud::CloudPage::SaveAs));
     }
 
     /// #1500: like a native menu bar, while one menu is open hovering another title opens it.

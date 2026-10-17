@@ -33,6 +33,7 @@ pub mod automation;
 pub mod brand;
 pub mod calc;
 mod cjk;
+pub mod cloud;
 pub mod control;
 pub mod crash;
 pub mod credits;
@@ -386,6 +387,48 @@ pub struct FilmcraftApp {
     pub workspaces: dock::WorkspacePrefs,
     /// Workspace names and the current one, as last handed to the native menu.
     menu_workspaces: (Vec<String>, String),
+    /// The egui context for the current frame, kept so cloud callbacks can open browser URLs.
+    /// Set on every `logic()` call; default until the first frame.
+    pub(crate) ui_ctx: egui::Context,
+    /// Open and Save against cloud storage. Inert until the host connects a backend (cloud.rs).
+    ///
+    /// # Large-media constraint
+    ///
+    /// FilmCraft projects (`.fcproj`) are whole-file archives. They carry metadata and settings
+    /// but NOT the raw media (video, audio, image sequences). Raw media stays on local or shared
+    /// storage and is referenced by path. Uploading a project file to cloud storage transfers
+    /// the metadata only; the host is still responsible for keeping media accessible. The cloud
+    /// Open/Save pages preserve this constraint: they transfer the `.fcproj` bytes and nothing
+    /// else. Do NOT attempt to proxy, stream or inline media through these pages.
+    pub cloud: cloud::CloudFiles,
+    /// The share dialog. Inert until the host connects a backend (apps/filmcraft/src/cloud.rs).
+    pub share: craft_ui::share::ShareDialog,
+    /// Collaborator presence bar, drawn beside the account badge in the header.
+    pub presence: craft_ui::presence::PresenceBar,
+    /// Timeline region locks received from the live collab session.
+    ///
+    /// Populated by the collabcraft-share WebSocket when another user holds a lock (adapted
+    /// from storytold/filmcraft#1982 §6.7). Empty without a live session. The timeline renderer
+    /// should draw a lock overlay for ranges where `holder != our_identity`. Enforcement
+    /// (refusing clip edits that intersect a foreign lock) requires the live collab session.
+    pub cloud_locks: Vec<cloud::LockRange>,
+    /// Cloud Open / Save As page from the File menu, if any.
+    pub cloud_page: Option<cloud::CloudPage>,
+    /// Encoded Export / Quick Export bytes waiting for [`cloud::upload_export`] / `encode`.
+    pub pending_cloud_upload: Option<Vec<u8>>,
+    /// Etag of the cloud origin before a Share-dialog save, used to detect success.
+    pub share_save_prior_etag: Option<Option<String>>,
+    /// Local encode in flight whose bytes should upload to CollabCraft when the job finishes.
+    pub pending_cloud_export: Option<PendingCloudExport>,
+}
+
+/// Export → Cloud storage: wait for `job` to finish writing `path`, then upload.
+#[derive(Clone, Debug)]
+pub struct PendingCloudExport {
+    pub job: u64,
+    pub path: String,
+    pub folder: String,
+    pub name: String,
 }
 
 pub struct GpuState {
@@ -604,6 +647,15 @@ impl FilmcraftApp {
             workspace_restored: false,
             workspaces,
             menu_workspaces: Default::default(),
+            ui_ctx: egui::Context::default(),
+            cloud: cloud::CloudFiles::new(),
+            share: craft_ui::share::ShareDialog::new(),
+            presence: craft_ui::presence::PresenceBar::new().badges_only(),
+            cloud_locks: Vec::new(),
+            cloud_page: None,
+            pending_cloud_upload: None,
+            share_save_prior_etag: None,
+            pending_cloud_export: None,
         }
     }
 
@@ -2039,6 +2091,7 @@ impl eframe::App for FilmcraftApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.ui_ctx = ctx.clone();
         // a native file dialog's answer first, so the panels draw what it chose (#260)
         self.poll_native_dialog(ctx);
         if !self.styled {
@@ -2090,6 +2143,9 @@ impl eframe::App for FilmcraftApp {
         let settled = !std::mem::take(&mut self.monitor_inexact) && self.timeline_still > 0;
         self.issue_screenshots(ctx, settled);
         self.collect_screenshots(ctx);
+        // Drain answers from the cloud worker and advance link/transfer state.
+        cloud::pump(self, ctx);
+        panels::export_mode::poll_cloud_export(self);
     }
 
     fn on_exit(&mut self) {
@@ -2113,6 +2169,10 @@ impl eframe::App for FilmcraftApp {
             self.playback.playing = false;
         }
         self.error_window(ui.ctx());
+        cloud::conflict_modal(self, ui.ctx());
+        cloud::modal(self, ui.ctx());
+        // Also pump share here so the modal paints in the same pass as other cloud UI.
+        cloud::pump_share(self, ui.ctx());
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| graphics_notice::show(self, ui.ctx()))).is_err() {
             // a broken notice must not take the session down: drop it
             self.graphics_notice = None;

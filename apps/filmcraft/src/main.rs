@@ -27,6 +27,7 @@ mod appearance;
 mod args;
 mod audio;
 mod audio_in;
+mod cloud;
 mod control_server;
 #[cfg(target_os = "linux")]
 mod dev_icon;
@@ -316,6 +317,16 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         // Settings ▸ Appearance ▸ Appearance Mode ▸ Sync with system on Linux desktops whose
         // compositor reports no theme to winit (no polling: see appearance.rs).
         app.hooks.system_theme = appearance::service();
+        // Open and Save against cloud storage, when a CollabCraft service is configured.
+        // Without FILMCRAFT_CLOUD_URL / CRAFT_CLOUD_URL / COLLABCRAFT_URL set, `service` returns
+        // None and the interface offers nothing cloud-shaped (no badge, no Share button, no Open
+        // or Save As against cloud storage).
+        if let Some(backend) = cloud::service(cc.egui_ctx.clone()) {
+            app.cloud.connect(backend);
+        }
+        // The share dialog's backend. Separate from the Open/Save worker so a save does not
+        // hold up an autocomplete or a share notification. They share the saved session.
+        app.share.connect(collabcraft_share::CollabCraft::from_fn(cloud::client).for_app("filmcraft"));
         app.hooks.raise_without_focus = Some(Box::new(|| {
             window_raise::raise_without_focus();
         }));
