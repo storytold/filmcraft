@@ -465,8 +465,8 @@ async fn cli() {
                 usage("render is headless; with --bridge use the MCP `render_frame` tool or `exec` ui commands");
             }
             let Backend::Local(mut s) = Backend::open(&a) else { usage("render is headless") };
-            let secs: f64 = a.opt("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0);
-            let scale: f32 = a.opt("--scale").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+            let secs: f64 = finite_opt(&a, "--seconds").unwrap_or(0.0);
+            let scale: f32 = finite_opt(&a, "--scale").unwrap_or(1.0);
             let out = a.opt("--out").unwrap_or("frame.png");
             s.set_playhead(filmcraft_time::Tick::from_seconds_f64(secs));
             let t0 = std::time::Instant::now();
@@ -548,6 +548,16 @@ fn check_offline(a: &Args, offline: &[Value], what: &str) {
     diag(format_args!("{}", offline_warning(offline)));
     if !a.flag("--allow-offline") {
         fail(format!("{what} has placeholder frames for offline media; relink it (exec media.relink …) or pass --allow-offline"));
+    }
+}
+
+/// A numeric option, or a usage error when it is not a finite number (so a typo never silently
+/// falls back to a default).
+fn finite_opt<T: std::str::FromStr + Copy + Into<f64>>(a: &Args, name: &str) -> Option<T> {
+    let v = a.opt(name)?;
+    match v.parse::<T>() {
+        Ok(n) if n.into().is_finite() => Some(n),
+        _ => usage(format!("{name}: expected a finite number, got `{v}`")),
     }
 }
 
