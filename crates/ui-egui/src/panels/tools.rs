@@ -1,4 +1,5 @@
-//! The vertical Tools panel. Grouped tools show a small flyout triangle; right-click, a long
+//! The Tools panel. The buttons run along the panel's longer side and wrap onto further lines when
+//! it is too short to hold them. Grouped tools show a small flyout triangle; right-click, a long
 //! press or pressing and dragging opens the group to pick another tool.
 
 use egui::{Rect, Sense, pos2, vec2};
@@ -7,17 +8,42 @@ use crate::FilmcraftApp;
 use crate::icons;
 use crate::state::Tool;
 
+const SIZE: f32 = 32.0;
+const GAP: f32 = 4.0;
+
+/// Where the `i`th of `n` buttons goes: in a line along the longer side of `rect`, wrapping onto
+/// further lines as the panel's length needs, the lines centred across it. `None` when the panel
+/// has no room for it.
+fn button_pos(rect: Rect, i: usize, n: usize) -> Option<egui::Pos2> {
+    let step = SIZE + GAP;
+    let horizontal = rect.width() > rect.height();
+    let (along, across) = if horizontal { (rect.width(), rect.height()) } else { (rect.height(), rect.width()) };
+    let per_line = ((along / step).floor() as usize).max(1);
+    let room = ((across / step).floor() as usize).max(1);
+    let line = i / per_line;
+    if line >= room {
+        return None;
+    }
+    let lines = n.div_ceil(per_line).min(room);
+    // in a row the lines are centred on the whole strip, the grip above the panel included
+    let grip = if horizontal { crate::dock::COMPACT_GRIP_H } else { 0.0 };
+    let start = (across - grip - (lines as f32 * step - GAP)) / 2.0;
+    let (a, c) = (GAP + (i % per_line) as f32 * step, start + line as f32 * step);
+    Some(if horizontal { pos2(rect.min.x + a, rect.min.y + c) } else { pos2(rect.min.x + c, rect.min.y + a) })
+}
+
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
-    let mut y = rect.min.y + 4.0;
-    let size = 32.0;
     let held_id = egui::Id::new("tools-held");
     if ui.input(|i| i.pointer.any_pressed()) {
         ui.data_mut(|d| d.remove::<egui::Id>(held_id));
     }
-    for group in Tool::groups() {
+    let groups = Tool::groups();
+    let count = groups.len();
+    for (i, group) in groups.into_iter().enumerate() {
+        let Some(at) = button_pos(rect, i, count) else { break };
         let current = if group.contains(&app.ui.tool) { app.ui.tool } else { group[0] };
-        let r = Rect::from_min_size(pos2(rect.center().x - size / 2.0, y), vec2(size, size));
+        let r = Rect::from_min_size(at, vec2(SIZE, SIZE));
         let tip = if current.shortcut().is_empty() {
             app.ui.language.tr(current.label()).to_owned()
         } else {
@@ -85,10 +111,6 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
             });
         }
-        y += size + 4.0;
-        if y > rect.max.y - size {
-            break;
-        }
     }
 }
 
@@ -127,6 +149,42 @@ mod tests {
         frame(&mut app, &ctx, 1.05, vec![egui::Event::PointerMoved(at + by)]);
         frame(&mut app, &ctx, 1.1, vec![]);
         (app, ctx)
+    }
+
+    fn positions(width: f32, height: f32) -> Vec<Option<egui::Pos2>> {
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, vec2(width, height));
+        (0..8).map(|i| button_pos(rect, i, 8)).collect()
+    }
+
+    #[test]
+    fn a_tall_panel_is_one_column_and_a_wide_one_is_one_row() {
+        let column = positions(42.0, 700.0);
+        assert!(column.iter().all(|p| p.is_some_and(|p| p.x == 5.0)), "centred across a 42 wide panel: {column:?}");
+        assert_eq!(column[1].map(|p| p.y), Some(40.0));
+        let row = positions(700.0, 42.0);
+        // the 42 point strip sits under an 8 point grip: centred on the 50 points of both
+        assert!(row.iter().all(|p| p.is_some_and(|p| p.y == 1.0)), "{row:?}");
+        assert_eq!(row[1].map(|p| p.x), Some(40.0));
+    }
+
+    #[test]
+    fn a_short_panel_wraps_onto_further_lines_and_every_button_is_reachable() {
+        // 150 wide by 80 tall: four to a line, and room for two lines
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, vec2(150.0, 80.0));
+        let all: Vec<_> = (0..8).filter_map(|i| button_pos(rect, i, 8)).collect();
+        assert_eq!(all.len(), 8);
+        for p in &all {
+            assert!(rect.contains_rect(Rect::from_min_size(*p, vec2(SIZE, SIZE))), "{p:?} is outside {rect:?}");
+        }
+        let distinct: std::collections::HashSet<_> = all.iter().map(|p| (p.x as i32, p.y as i32)).collect();
+        assert_eq!(distinct.len(), 8, "no two buttons overlap");
+    }
+
+    #[test]
+    fn a_panel_with_no_room_for_a_button_gives_none_and_never_panics() {
+        assert!(button_pos(Rect::from_min_size(egui::Pos2::ZERO, vec2(0.0, 0.0)), 0, 8).is_some());
+        assert!(button_pos(Rect::from_min_size(egui::Pos2::ZERO, vec2(30.0, 30.0)), 5, 8).is_none());
+        let _ = button_pos(Rect::from_min_size(egui::Pos2::ZERO, vec2(f32::NAN, 50.0)), 1, 8);
     }
 
     #[test]

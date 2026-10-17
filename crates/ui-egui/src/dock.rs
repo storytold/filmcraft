@@ -133,6 +133,9 @@ impl PanelKind {
     }
 }
 
+/// The height of the slim grip above a compact panel's content (no tab strip).
+pub const COMPACT_GRIP_H: f32 = 8.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum SplitSize {
     Ratio(f32),
@@ -538,7 +541,7 @@ fn layout_inner(
 ) {
     match node {
         DockNode::Tabs { panels, active } => {
-            let tab_h = if panels.len() == 1 && panels[0].compact() { 8.0 } else { t.tab_h };
+            let tab_h = if panels.len() == 1 && panels[0].compact() { COMPACT_GRIP_H } else { t.tab_h };
             let content = Rect::from_min_max(pos2(rect.min.x, rect.min.y + tab_h), rect.max);
             out.push(Group { path: path.to_string(), rect, content, panels: panels.clone(), active: *active });
         }
@@ -602,7 +605,7 @@ pub fn draw_group_chrome_details(ui: &mut egui::Ui, g: &Group, seqs: &SeqTabs, t
     // A narrow header grip moves the entire panel, including Timeline panels whose tabs
     // separately reorder open sequences.
     if let Some(panel) = active_panel {
-        let grip = Rect::from_min_size(g.rect.min, vec2(if compact { g.rect.width() } else { 10.0 }, if compact { 8.0 } else { t.tab_h }));
+        let grip = Rect::from_min_size(g.rect.min, vec2(if compact { g.rect.width() } else { 10.0 }, if compact { COMPACT_GRIP_H } else { t.tab_h }));
         let response = ui.interact(grip, egui::Id::new(("panel-drag", g.path.clone())), Sense::drag());
         reg.add_response(&format!("panel.drag.{}", panel.id()), &response, "Move panel");
         if response.drag_started() {
