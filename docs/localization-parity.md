@@ -10,21 +10,23 @@ Portuguese (Brazil), Russian, Simplified Chinese.
 
 Edit ▸ Language (also Settings ▸ General, `general.interfaceLanguage`) switches the interface and
 persists across restarts; System Language (the default) follows the OS's or browser's preferred
-languages and falls back to English. Commands `app.language.<english|japanese|spanish|portuguese|ukrainian|chinese|german|russian|french|indonesian|italian>`
+languages and falls back to English. Commands `app.language.<english|japanese|spanish|portuguese|ukrainian|chinese|german|russian|french|indonesian|italian|georgian>`
 are reachable over the control channel. One catalog per language,
 `crates/ui-egui/src/i18n/<code>.tsv` (format in the header of `es.tsv`); UI code wraps strings in
 `tl!("…")` / `tlf!("…{name}", name)`, and registry names (effects and their parameters, settings,
 commands, panels, workspaces, presets) are translated where they are drawn. Searches match the
 displayed labels as well as English sources. Tests fail when a `tl!` literal, a menu label or a
 registry name has no Spanish entry; `zh-cn.tsv` must also cover every `tl!` literal and menu
-label; `ja.tsv`, `fr.tsv` and `pt-br.tsv` have the same entries but are not yet required by tests
+label, and `ka.tsv` every Spanish entry, `tl!` literal and menu label; `ja.tsv`, `fr.tsv` and `pt-br.tsv` have the same entries but are not yet required by tests
 (French must cover the core menus, Brazilian Portuguese every menu label, and neither may keep an
 entry without a Spanish one). Engine error messages, the
 control channel, the CLI and MCP stay English.
 
 Fonts come from [craft-fonts](https://github.com/storytold/craft-fonts) (`CRAFT_FONTS_DIR`, all
 official releases) or an installed system face; without one, switching to Japanese or Chinese is
-refused with a message. Simplified Chinese is picked for `zh`, `zh-CN`, `zh-SG`, `zh-Hans`, not
+refused with a message. Georgian uses the craft-fonts Noto Sans Georgian face, on the web too
+(native builds without craft-fonts use an installed Georgian face, like Arabic and Hebrew), and
+the header's capitalised workspace name leaves Georgian lowercase (no Mtavruli). Simplified Chinese is picked for `zh`, `zh-CN`, `zh-SG`, `zh-Hans`, not
 Traditional locales. Ukrainian uses the bundled Cyrillic interface fonts. Vertical text in titles
 is supported. The interface (egui) shapes each font run with harfrust and has Arabic and Hebrew
 fallback fonts (`crates/ui-egui/src/rtl.rs`), but it has no bidi pass: only captions (timeline
@@ -55,6 +57,7 @@ whole interface, one PR) at ~4–8 h per language for the catalog plus tests.
 | Vietnamese | vi | 0 (0%) | — | Latin with stacked diacritics (font coverage to check) | — | none | 6–12 h + review |
 | *Other shipped:* Italian | it | 3,573 (same entries as Spanish, plus the macOS Settings item); must cover the core menus, no entry without a Spanish one | as Spanish | Latin (bundled fonts) | not recorded; welcome | partial | review |
 | *Other shipped:* Ukrainian | uk | 351 (10.0%) | menus only | Cyrillic (bundled) | not recorded | menus only | 5–9 h |
+| *Other shipped:* Georgian | ka | 3,591 (every Spanish entry, plus the macOS Settings item) | as Spanish | Georgian (craft-fonts Noto Sans Georgian) | native speaker | partial | review |
 
 Premiere also ships Italian, which we now cover like Spanish, and Russian (6–10 h).
 

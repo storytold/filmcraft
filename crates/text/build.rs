@@ -47,7 +47,8 @@ fn craft_fonts(dir: &std::path::Path) -> Result<String, String> {
         let [family, style, file, scripts, ..] = f.as_slice() else {
             return Err(format!("malformed manifest line: {line}"));
         };
-        if wasm && !(*family == "BIZ UDPGothic" && *style == "Regular") {
+        // the web build embeds one Japanese face and the Georgian one (the interface has no other)
+        if wasm && !(*family == "BIZ UDPGothic" && *style == "Regular") && !scripts.split(',').any(|s| s.trim() == "Geor") {
             continue;
         }
         let path = dir.join(file).canonicalize().map_err(|e| format!("{file}: {e}"))?;

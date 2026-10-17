@@ -114,7 +114,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     let ws_resp = btn(ui, Icon::Workspaces, "workspaces", tl!("Workspaces"), app);
     // workspace name (caps)
-    let ws = crate::i18n::t(&app.ui.workspace).to_uppercase();
+    let ws = crate::i18n::ui_caps(crate::i18n::t(&app.ui.workspace));
     let wg = p.layout_no_wrap(ws.clone(), Tokens::ui(11.0), t.text_dim);
     let wr = Rect::from_min_size(pos2(rx - wg.size().x + 10.0, rect.center().y - 10.0), vec2(wg.size().x + 8.0, 20.0));
     let wresp = ui.interact(wr, egui::Id::new("hdr-ws-name"), Sense::click());
