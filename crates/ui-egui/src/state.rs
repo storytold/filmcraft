@@ -208,6 +208,18 @@ pub struct TimelineView {
     /// (`volume`, `pan`, `mute`, `send.<i>.level`, `fx.<slot>.<param>`).
     #[serde(default)]
     pub track_lanes: std::collections::BTreeMap<u64, String>,
+    /// Inline rename of a track name in its header (double-click the name, or Rename in the
+    /// header's context menu).
+    #[serde(default)]
+    pub rename_track: Option<TrackRename>,
+}
+
+/// A track name being edited in the Timeline header: the track and the text typed so far.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TrackRename {
+    pub track: u64,
+    pub text: String,
 }
 
 impl TimelineView {
@@ -238,6 +250,7 @@ impl Default for TimelineView {
             seen_playhead: None,
             fit_empty: None,
             track_lanes: Default::default(),
+            rename_track: None,
         }
     }
 }

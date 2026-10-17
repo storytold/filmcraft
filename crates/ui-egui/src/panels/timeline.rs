@@ -1360,9 +1360,17 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
             let kr = small(x + 64.0, upper_y);
             super::timeline_automation::header_button(app, ui, seq, r, kr, visible, &label, t);
         }
-        // 5. name on the lower line (or inline when short)
+        // 5. name on the lower line (or inline when short); double-click it to rename the track
+        let mut name_hit = None;
         if hrect.height() >= 40.0 {
-            p.text(pos2(hrect.min.x + 94.0, hrect.min.y + 34.0), Align2::LEFT_CENTER, &tr.name, Tokens::ui(11.0), t.text_dim);
+            let field = Rect::from_min_max(pos2(hrect.min.x + 90.0, hrect.min.y + 26.0), pos2(hrect.max.x - 8.0, hrect.min.y + 42.0));
+            if !track_rename_field(app, ui, field.intersect(visible), r.track, &label, &mut actions) {
+                let text = p.text(pos2(hrect.min.x + 94.0, hrect.min.y + 34.0), Align2::LEFT_CENTER, &tr.name, Tokens::ui(11.0), t.text_dim);
+                // at least a comfortable target when the name is short or empty
+                let hit = Rect::from_min_size(text.min - vec2(4.0, 3.0), vec2(text.width().max(40.0) + 8.0, text.height() + 6.0)).intersect(field);
+                app.auto.add(&format!("timeline.track.{label}.name"), hit.intersect(visible), &tr.name);
+                name_hit = Some(hit);
+            }
         }
         // resize track height by dragging the header's bottom edge, or the outer edge of the top video
         // track or the last audio track, which also reaches into the empty space past it
@@ -1391,10 +1399,19 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
             egui::Id::new(("hdr", r.track.0)),
             Sense::click(),
         );
-        if resp.double_clicked() {
+        let on_name = resp.interact_pointer_pos().is_some_and(|pt| name_hit.is_some_and(|n| n.contains(pt)));
+        if resp.double_clicked() && on_name {
+            start_track_rename(app, r.track.0, &tr.name);
+        } else if resp.double_clicked() {
             let h = if r.kind == TrackKind::Video { &mut app.ui.timeline.video_track_h } else { &mut app.ui.timeline.audio_track_h };
             *h = if *h < 50.0 { 64.0 } else { 30.0 };
         }
+        resp.context_menu(|ui| {
+            if ui.button(tl!("Rename")).clicked() {
+                start_track_rename(app, r.track.0, &tr.name);
+                ui.close();
+            }
+        });
     }
     // column separator
     ui.painter().line_segment([pos2(rect.min.x + hw - 0.5, vclip.min.y), pos2(rect.min.x + hw - 0.5, aclip.max.y + MASTER_H)], Stroke::new(1.0, t.separator));
@@ -1406,6 +1423,50 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
     if let Some(a) = vo_action {
         super::voiceover::run(app, &ui.ctx().clone(), a);
     }
+}
+
+/// Start editing a track's name in its header, with the current name as the text.
+fn start_track_rename(app: &mut FilmcraftApp, track: u64, name: &str) {
+    app.ui.timeline.rename_track = Some(crate::state::TrackRename { track, text: name.to_string() });
+}
+
+/// The inline rename field of `track` at `r`; true while it is shown. Enter or a click elsewhere
+/// renames the track (`timeline.setTrack`, one undo step); Escape cancels; an empty or unchanged
+/// name changes nothing.
+fn track_rename_field(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track: TrackId, label: &str, actions: &mut Vec<(String, Value)>) -> bool {
+    let Some(rn) = app.ui.timeline.rename_track.clone() else { return false };
+    if rn.track != track.0 || r.width() <= 0.0 || r.height() <= 0.0 {
+        return false;
+    }
+    let mut text = rn.text;
+    let id = egui::Id::new(("track-rename-field", track.0));
+    let resp = ui.put(r, egui::TextEdit::singleline(&mut text).id(id).font(egui::FontId::proportional(11.0)).margin(vec2(3.0, 1.0)));
+    app.auto.add(&format!("timeline.track.{label}.rename"), r, "Rename");
+    // take keyboard focus the first frame the field is shown
+    let shown = egui::Id::new("track-rename-shown");
+    if ui.ctx().data(|d| d.get_temp::<egui::Id>(shown)) != Some(id) {
+        ui.ctx().data_mut(|d| d.insert_temp(shown, id));
+        resp.request_focus();
+    }
+    let done = if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        true
+    } else if resp.lost_focus() {
+        let name = text.trim();
+        let current = app.session.active_sequence().and_then(|q| q.track(track)).map(|t| t.name.as_str());
+        if !name.is_empty() && current.is_some_and(|c| c != name) {
+            actions.push(("timeline.setTrack".into(), json!({"track": track.0, "name": name})));
+        }
+        true
+    } else {
+        false
+    };
+    if done {
+        app.ui.timeline.rename_track = None;
+        ui.ctx().data_mut(|d| d.remove::<egui::Id>(shown));
+    } else if let Some(rn) = app.ui.timeline.rename_track.as_mut() {
+        rn.text = text;
+    }
+    true
 }
 
 /// The Ruler's two strides, in frames: `(tick, label)`.

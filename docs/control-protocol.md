@@ -74,6 +74,13 @@ OS window or prove physical-keyboard delivery.
 Element ids are stable, e.g. `timeline.clip.<id>`, `timeline.track.V1.lock`, `tools.Razor`,
 `project.item.<id>`, `effects.item.gaussian_blur`, `panel.tab.Timeline`, `program.transport.playback.toggle`.
 
+**Renaming a track.** A track header shows its name as `timeline.track.<V1|A1…>.name` when the track is
+tall enough to show it; double-clicking the name (or Rename in the header's context menu) opens the
+inline field `timeline.track.<V1|A1…>.rename`. Enter or a click elsewhere commits it as one
+`timeline.setTrack {track, name}` undo step; Escape cancels; an empty or unchanged name changes
+nothing. A double-click elsewhere on the header still toggles the track height. The edit in progress
+is `ui.inspect` → `ui.timeline.rename_track` (`{track, text}`).
+
 Audio mixing: `mixer.*` commands (strips `"A1"`, `"S1"`, `"Mix"` or ids; lanes `volume`, `pan`,
 `mute`, `send.<i>.level`, `fx.<slot>.<param>`): `mixer.inspect`, `mixer.setStrip` (volume, pan, mute,
 solo, record arm, solo safe, mode Off/Read/Latch/Touch/Write, output, input map, channels),
