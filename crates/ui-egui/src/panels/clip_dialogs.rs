@@ -24,7 +24,7 @@
 //! - Frame Hold Options `frameHold.*`: `enabled`, `holdOn.<in|out|playhead|sourceTimecode|sequenceTime>`,
 //!   `timecode`, `holdFilters`;
 //! - Field Options `fieldOptions.*`: `reverseFieldDominance`, `processing.<none|alwaysDeinterlace|flickerRemoval>`;
-//! - Clip Speed / Duration `speedDuration.*`: `speed`, `reverse`, `ripple`,
+//! - Clip Speed / Duration `speedDuration.*`: `speed`, `duration`, `reverse`, `ripple`,
 //!   `interpolation.<frameSampling|frameBlending|opticalFlow>`;
 //! - Close Project `closeProject.save`, `closeProject.dontSave`, `closeProject.cancel`;
 //! - Quit (asked when the window is closed with unsaved changes, see [`intercept_quit`])
@@ -314,6 +314,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let id = egui::Id::new(("clip-dialog", pre));
     egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(360.0).centered(ctx).show(ctx, |ui| {
         let p = &mut d.params;
+        let mut valid = true;
         match d.command.as_str() {
             "edit.pasteAttributes" | "edit.removeAttributes" => {
                 let (v, a) = (d.info["video"].as_bool().unwrap_or(true), d.info["audio"].as_bool().unwrap_or(true));
@@ -516,17 +517,31 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             "clip.speedDuration" => {
                 number(ui, &mut elems, pre, p, "speed", tl!("Speed:"), 0.01..=100_000.0, " %");
-                // Duration follows the speed: the media shown stays the same
+                // Both fields describe the same source span. Keep typed text until the speed
+                // changes, so incomplete input survives frames and cannot accidentally apply.
                 let (dur, was, fps) =
                     (d.info["duration"].as_i64().unwrap_or(0), d.info["speed"].as_f64().unwrap_or(1.0), d.info["fps"].as_f64().unwrap_or(24.0));
+                let rate = filmcraft_time::FrameRate::from_f64(if fps.is_finite() && fps > 0.0 { fps } else { 24.0 });
                 let now = p["speed"].as_f64().unwrap_or(100.0) / 100.0;
-                if dur > 0 && now > 0.0 {
-                    let rate = filmcraft_time::FrameRate::from_f64(if fps > 0.0 { fps } else { 24.0 });
-                    let ticks = filmcraft_time::Tick((dur as f64 * was / now).round() as i64);
-                    ui.horizontal(|ui| {
-                        ui.label(tl!("Duration:"));
-                        ui.label(RichText::new(filmcraft_time::format_timecode_frames(rate.frame_at(ticks), rate, false)).monospace());
-                    });
+                let refresh_duration = p["duration"].is_null() || d.info["durationSpeed"] != p["speed"];
+                if refresh_duration {
+                    let ticks =
+                        if now.is_finite() && now > 0.0 { filmcraft_time::Tick((dur as f64 * was / now).round() as i64) } else { filmcraft_time::Tick::ZERO };
+                    p["duration"] = json!(filmcraft_time::format_timecode_frames(rate.frame_at(ticks), rate, false));
+                }
+                let before = if refresh_duration { p["duration"].clone() } else { d.info["durationText"].clone() };
+                text(ui, &mut elems, pre, p, "duration", tl!("Duration:"), 120.0);
+                let frames = filmcraft_time::parse_timecode(p["duration"].as_str().unwrap_or_default(), rate, false, 0);
+                let speed =
+                    frames.ok().filter(|f| *f > 0).map(|f| rate.tick_of(f)).filter(|ticks| ticks.0 > 0).map(|ticks| dur as f64 * was * 100.0 / ticks.0 as f64);
+                valid = speed.is_some_and(|speed| speed.is_finite() && (0.01..=100_000.0).contains(&speed));
+                if valid && before != p["duration"] {
+                    p["speed"] = json!(speed);
+                }
+                d.info["durationSpeed"] = p["speed"].clone();
+                d.info["durationText"] = p["duration"].clone();
+                if !valid {
+                    ui.colored_label(egui::Color32::from_rgb(0xe0, 0x60, 0x60), tl!("Enter a positive duration within the supported speed range."));
                 }
                 check(ui, &mut elems, pre, p, "reverse", tl!("Reverse Speed"), true);
                 check(ui, &mut elems, pre, p, "ripple", tl!("Ripple Edit, Shifting Trailing Clips"), true);
@@ -573,7 +588,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             if r.clicked() {
                 action = Some("cancel");
             }
-            let r = ui.button(tl!("OK"));
+            let r = ui.add_enabled(valid, egui::Button::new(tl!("OK")));
             push(&mut elems, format!("{pre}.ok"), &r, "OK");
             if r.clicked() {
                 action = Some("ok");
@@ -644,6 +659,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
 fn finish(d: &ClipDialogDraft) -> Value {
     let mut p = d.params.clone();
     match d.command.as_str() {
+        "clip.speedDuration" => {
+            p.as_object_mut().map(|m| m.remove("duration"));
+        }
         "file.newOfflineFile" if p["name"].as_str().is_some_and(str::is_empty) => {
             p.as_object_mut().map(|m| m.remove("name"));
         }

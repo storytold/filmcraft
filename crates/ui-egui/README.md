@@ -84,3 +84,16 @@ buttons use `craft-ui::layout::fit_toolbar`; commands beyond the available width
 through More, including their selected state and Source/Program routing. A scrolling fallback
 retains all commands if even More cannot fit. `monitor_geometry` checks the painted readouts,
 control bounds, overflow actions and Source drag payloads across monitor widths and themes.
+
+### Editable clip duration
+
+The Clip Speed / Duration dialog lets you type a duration as timecode. Duration and
+Speed describe the same source span: editing either updates the other. Duration uses
+the sequence frame rate; invalid, zero, or out-of-range durations cannot be applied.
+The field is available to automation as `speedDuration.duration`. OK uses the existing
+speed command, including its linked-clip, ripple, neighbour, and Undo behaviour;
+Cancel discards the draft. The selected clip's duration is the reference when more
+than one clip is selected, matching the existing Speed control.
+
+`clip_dialogs_ui::duration_text_edits_speed_and_rejects_invalid_input` exercises real
+text input, validation, application, Cancel, and Undo/Redo.
