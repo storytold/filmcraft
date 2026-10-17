@@ -48,6 +48,7 @@ pub(crate) fn mapping(id: &str) -> Option<Mapping> {
             apply: |d, e, t| {
                 d.set_param("ceiling", f(e, "max", t));
                 d.set_param("input_gain", f(e, "boost", t).max(0.0));
+                d.set_param("lookahead", f(e, "lookahead", t));
                 d.set_param("release", f(e, "release", t));
             },
         },

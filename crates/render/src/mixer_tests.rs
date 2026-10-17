@@ -320,6 +320,42 @@ fn latency_compensation_aligns_paths() {
     assert!(close(l[1000], 0.5, 2e-3), "A1 silenced exactly at its content sample: {}", l[1000]);
 }
 
+fn pulse_in_sine(i: i64, _: usize) -> f32 {
+    let s = (i as f64 * 440.0 * std::f64::consts::TAU / 48_000.0).sin() as f32 * 0.2;
+    if i == 20_000 { 1.5 } else { s }
+}
+
+fn limiter_with(lookahead_ms: f64) -> filmcraft_project::EffectInstance {
+    let mut e = filmcraft_project::find_effect("hard_limiter").unwrap().instance();
+    e.param_mut("max").unwrap().value = ParamValue::Float(-6.0);
+    e.param_mut("lookahead").unwrap().value = ParamValue::Float(lookahead_ms);
+    e
+}
+
+#[test]
+fn hard_limiter_lookahead_changes_anticipation() {
+    let mut r0 = Rig::new(&[pulse_in_sine]);
+    r0.track(0).effects.push(limiter_with(0.0));
+    let mut r30 = Rig::new(&[pulse_in_sine]);
+    r30.track(0).effects.push(limiter_with(30.0));
+    let [a, _] = r0.mix(19_000, 3_000);
+    let [b, _] = r30.mix(19_000, 3_000);
+    let diff = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).fold(0f32, f32::max);
+    assert!(diff > 1e-3, "0 ms vs 30 ms look-ahead should differ, max Δ {diff}");
+    let ceiling = 10f32.powf(-6.0 / 20.0);
+    assert!(a.iter().chain(&b).all(|v| v.abs() <= ceiling * 1.02), "Maximum Amplitude still holds");
+    let mut r_off = Rig::new(&[pulse_in_sine]);
+    let mut bypassed = limiter_with(30.0);
+    bypassed.enabled = false;
+    r_off.track(0).effects.push(bypassed);
+    let dry = Rig::new(&[pulse_in_sine]);
+    let [c, _] = r_off.mix(19_000, 3_000);
+    let [d, _] = dry.mix(19_000, 3_000);
+    let bd = c.iter().zip(&d).map(|(x, y)| (x - y).abs()).fold(0f32, f32::max);
+    assert!(bd < 1e-5, "disabled limiter must skip, Δ {bd}");
+}
+
+
 #[test]
 fn render_and_playback_paths_are_identical() {
     // export renders in large batches; playback pulls small device blocks with live meters

@@ -261,8 +261,9 @@ pub struct Limiter {
     ceiling: f32,
     rel: f32,
     true_peak: bool,
-    /// Look-ahead (samples) and detector alignment delay.
+    /// Look-ahead (samples) and detector alignment delay. Delay/box rings are sized for `max_look`.
     look: usize,
+    max_look: usize,
     det_delay: usize,
     bank: PolyphaseBank,
     interp: Vec<Interpolator>,
@@ -285,17 +286,21 @@ impl Limiter {
         ParamSpec::new("input_gain", "Input Boost", 0.0, 24.0, 0.0, Unit::Decibels),
         ParamSpec::new("ceiling", "Ceiling", -24.0, 0.0, -1.0, Unit::Decibels),
         ParamSpec::log("release", "Release", 1.0, 1000.0, 60.0, Unit::Milliseconds),
+        ParamSpec::new("lookahead", "Look-Ahead Time", 0.0, 30.0, 7.0, Unit::Milliseconds),
         ParamSpec::toggle("true_peak", "True Peak", true),
     ];
-    /// Fixed look-ahead time.
-    pub const LOOKAHEAD_MS: f32 = 5.0;
+    /// Default look-ahead (matches the Hard Limiter project parameter).
+    pub const LOOKAHEAD_MS: f32 = 7.0;
+    /// Maximum look-ahead; delay lines are allocated for this at construction.
+    pub const LOOKAHEAD_MS_MAX: f32 = 30.0;
 
     pub fn new(sample_rate: f32, channels: usize) -> Self {
         let channels = channels.max(1);
         let bank = PolyphaseBank::new(true_peak_factor(sample_rate as f64).max(2));
-        let look = ((Self::LOOKAHEAD_MS * 0.001 * sample_rate).round() as usize).max(1);
+        let max_look = ((Self::LOOKAHEAD_MS_MAX * 0.001 * sample_rate).round() as usize).max(1);
+        let look = ((Self::LOOKAHEAD_MS * 0.001 * sample_rate).round() as usize).min(max_look);
         let det_delay = bank.delay();
-        let dlen = look + det_delay + 1;
+        let dlen = max_look + det_delay + 1;
         let mut s = Limiter {
             pv: ParamValues::new(Self::PARAMS),
             sr: sample_rate,
@@ -304,13 +309,14 @@ impl Limiter {
             rel: 0.0,
             true_peak: true,
             look,
+            max_look,
             det_delay,
             bank,
             interp: vec![Interpolator::default(); channels],
             delay: vec![vec![0.0; dlen]; channels],
             wpos: 0,
-            minq: VecDeque::with_capacity(look + 2),
-            box_ring: vec![1.0; look + 1],
+            minq: VecDeque::with_capacity(max_look + 2),
+            box_ring: vec![1.0; max_look + 1],
             box_pos: 0,
             box_sum: (look + 1) as f64,
             rel_state: 1.0,
@@ -326,6 +332,11 @@ impl Limiter {
         self.ceiling = db_to_gain(self.pv.v("ceiling"));
         self.rel = coef(self.pv.v("release"), self.sr);
         self.true_peak = self.pv.on("true_peak");
+        let look = ((self.pv.v("lookahead") * 0.001 * self.sr).round() as usize).min(self.max_look);
+        if look != self.look {
+            self.look = look;
+            self.reset();
+        }
         if snap {
             self.in_gain.snap();
         }
@@ -350,7 +361,7 @@ impl AudioEffect for Limiter {
         self.minq.clear();
         self.box_ring.iter_mut().for_each(|v| *v = 1.0);
         self.box_pos = 0;
-        self.box_sum = self.box_ring.len() as f64;
+        self.box_sum = (self.look + 1) as f64;
         self.rel_state = 1.0;
         self.t = 0;
         self.gr_meter = 0.0;
@@ -359,11 +370,12 @@ impl AudioEffect for Limiter {
         let n = block_len(channels);
         let nch = channels.len().min(self.delay.len());
         let dlen = self.delay[0].len();
-        let window = (self.look + 1) as u64;
+        let box_len = self.look + 1;
+        let window = box_len as u64;
         for i in 0..n {
             let g_in = self.in_gain.tick();
             let det_pos = (self.wpos + dlen - self.det_delay) % dlen;
-            let out_pos = (self.wpos + 1) % dlen; // oldest = look + det_delay samples ago
+            let out_pos = (self.wpos + dlen - self.look - self.det_delay) % dlen;
             let mut det = 0.0f32;
             for ch in 0..nch {
                 let x = channels[ch][i] * g_in;
@@ -395,8 +407,8 @@ impl AudioEffect for Limiter {
             // Moving average over look+1 samples.
             self.box_sum += self.rel_state as f64 - self.box_ring[self.box_pos] as f64;
             self.box_ring[self.box_pos] = self.rel_state;
-            self.box_pos = (self.box_pos + 1) % self.box_ring.len();
-            let g = (self.box_sum / self.box_ring.len() as f64) as f32;
+            self.box_pos = (self.box_pos + 1) % box_len;
+            let g = (self.box_sum / box_len as f64) as f32;
             for ch in 0..nch {
                 let y = self.delay[ch][out_pos] * g;
                 channels[ch][i] = y.clamp(-self.ceiling, self.ceiling);
@@ -405,7 +417,7 @@ impl AudioEffect for Limiter {
             self.t += 1;
             // Periodically re-sum to cancel floating-point drift.
             if self.t.is_multiple_of(65536) {
-                self.box_sum = self.box_ring.iter().map(|&v| v as f64).sum();
+                self.box_sum = self.box_ring[..box_len].iter().map(|&v| v as f64).sum();
             }
             self.gr_meter = lin_to_db(g);
         }
@@ -554,5 +566,17 @@ mod tests {
         let tail = &x[24000..];
         let peak = tail.iter().fold(0.0f32, |a, v| a.max(v.abs()));
         assert!((lin_to_db(peak) + 6.0).abs() < 0.3, "{}", lin_to_db(peak));
+    }
+
+    #[test]
+    fn limiter_lookahead_param_sets_window() {
+        let mut lim = Limiter::new(SR, 1);
+        lim.set_param("lookahead", 0.0);
+        let l0 = lim.latency();
+        lim.set_param("lookahead", 30.0);
+        let l30 = lim.latency();
+        assert_eq!(l30 - l0, (30.0 * 0.001 * SR).round() as usize);
+        lim.set_param("lookahead", 7.0);
+        assert_eq!(lim.latency() - l0, (7.0 * 0.001 * SR).round() as usize);
     }
 }
