@@ -143,10 +143,9 @@ fn cropped_pictures_match_ffmpeg() {
         let (cw, ch) = (w.div_ceil(2) as usize, h.div_ceil(2) as usize);
         // `-flags unaligned`: ffmpeg otherwise skips a left crop that would misalign its frame
         // pointers (on AVX-512 machines it needs 64-byte alignment) and returns wider frames
-        let raw = ffmpeg_out(
-            &ff,
-            &["-flags", "unaligned", "-i", path.to_str().unwrap(), "-map", "0:v:0", "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-"],
-        );
+        let [fm, pt] = filmcraft_testkit::fps_passthrough_args(&ff);
+        let raw =
+            ffmpeg_out(&ff, &["-flags", "unaligned", "-i", path.to_str().unwrap(), "-map", "0:v:0", fm, pt, "-f", "rawvideo", "-pix_fmt", "yuv420p", "-"]);
         let frame_bytes = (w * h) as usize + 2 * cw * ch;
         if name.contains("clap") && !raw.len().is_multiple_of(frame_bytes) {
             // ffmpeg before 7.1 ignores `clap` and decodes the whole picture
@@ -162,6 +161,70 @@ fn cropped_pictures_match_ffmpeg() {
             assert!(planes(&f) == raw_planes(want, w as usize, h as usize, cw, ch, 1), "{name}: frame {i} differs from ffmpeg's");
         }
     }
+}
+
+/// HEVC 4:2:2 10-bit in QuickTime (Fujifilm X / Sony XAVC HS style camera media: `hvc1`, the
+/// Main 4:2:2 10 / RExt profile, 24-bit PCM audio): the stream is reported and decoded as 4:2:2
+/// 10-bit, every frame equals ffmpeg's, and the 24-bit audio decodes.
+#[test]
+fn hevc_422_10bit_mov_matches_ffmpeg() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let args = [
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=320x240:rate=24000/1001:duration=1,noise=alls=10:allf=t,format=yuv422p10le",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:sample_rate=48000:d=1",
+        "-c:v",
+        "libx265",
+        "-x265-params",
+        "log-level=error:bframes=3",
+        "-tag:v",
+        "hvc1",
+        "-pix_fmt",
+        "yuv422p10le",
+        "-c:a",
+        "pcm_s24le",
+        "-shortest",
+    ];
+    let Some(path) = fixture(&ff, "hevc_422_10.mov", &args) else {
+        eprintln!("SKIPPED: ffmpeg without libx265 4:2:2 10-bit");
+        return;
+    };
+    let src = filmcraft_codecs::open_bytes("hevc_422_10.mov", bytes(&path)).unwrap();
+    let v = src.info().video.clone().unwrap();
+    let (w, h) = (320usize, 240usize);
+    assert_eq!((v.width as usize, v.height as usize), (w, h));
+    let raw = ffmpeg_frames(&ff, &path, "yuv422p10le");
+    let (cw, ch) = (w / 2, h);
+    let frame_bytes = (w * h + 2 * cw * ch) * 2;
+    assert_eq!(raw.len() % frame_bytes, 0);
+    let n = raw.len() / frame_bytes;
+    assert_eq!(n, 24, "frames");
+    for (i, want) in raw.chunks(frame_bytes).enumerate() {
+        let f = src.video_frame(filmcraft_media::FrameRequest::full(v.frame_rate.tick_of(i as i64))).unwrap();
+        assert_eq!((f.width as usize, f.height as usize), (w, h), "frame {i} size");
+        match &f.data {
+            filmcraft_frame::PixelData::Yuv16 { chroma, bits, planes, .. } => {
+                assert_eq!((*chroma, *bits), (filmcraft_frame::Chroma::C422, 10), "frame {i} format");
+                assert_eq!(planes[1].len(), cw * ch, "frame {i} chroma plane size");
+            }
+            other => panic!("frame {i}: expected 10-bit YUV, got {other:?}"),
+        }
+        assert!(planes(&f) == raw_planes(want, w, h, cw, ch, 2), "frame {i} differs from ffmpeg's");
+    }
+    // the 24-bit PCM track: the same samples as ffmpeg's decode (within float rounding)
+    let want = ffmpeg_audio_f32(&ff, &path, &[]);
+    let a = src.info().audio().unwrap();
+    assert_eq!((a.sample_rate, a.channels), (48_000, 1));
+    let got = src.audio(0, 48_000, 48_000).unwrap();
+    let ours = &got.channels[0];
+    assert!(ours.len() >= 47_000 && want.len() >= 47_000, "audio length {} / {}", ours.len(), want.len());
+    let worst = ours.iter().zip(&want).take(47_000).map(|(x, y)| (x - y).abs()).fold(0f32, f32::max);
+    assert!(worst < 1e-6, "24-bit PCM differs from ffmpeg by {worst}");
 }
 
 /// An open GOP (x265 `open-gop`, like iPhone HEVC): each CRA after the first is followed in the

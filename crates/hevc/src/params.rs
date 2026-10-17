@@ -634,8 +634,14 @@ impl Sps {
 
     /// Features this decoder does not handle yet.
     pub fn check_supported(&self) -> Result<()> {
-        if self.chroma_format_idc != 1 {
-            return unsupported(format!("chroma_format_idc {} (only 4:2:0)", self.chroma_format_idc));
+        if self.chroma_array_type() != 1 && self.chroma_array_type() != 2 {
+            let what = match self.chroma_format_idc {
+                0 => "monochrome".to_string(),
+                3 if self.separate_colour_plane => "4:4:4 with separate colour planes".to_string(),
+                3 => "4:4:4".to_string(),
+                idc => format!("chroma_format_idc {idc}"),
+            };
+            return unsupported(format!("{what} (only 4:2:0 and 4:2:2)"));
         }
         if self.bit_depth_luma > 12 || self.bit_depth_chroma > 12 {
             return unsupported(format!("bit depth {}/{}", self.bit_depth_luma, self.bit_depth_chroma));
@@ -643,7 +649,8 @@ impl Sps {
         if self.range_extension {
             return unsupported("SPS range extension tools");
         }
-        if self.extension_flags & 0x7f != 0 {
+        // (the low 4 bits are sps_extension_4bits: extension data a decoder ignores)
+        if self.extension_flags & 0x70 != 0 {
             return unsupported("SPS multilayer / 3D / SCC extensions");
         }
         Ok(())
@@ -824,7 +831,8 @@ impl Pps {
         if self.range_extension {
             return unsupported("PPS range extension tools");
         }
-        if self.extension_flags & 0x7f != 0 {
+        // (the low 4 bits are pps_extension_4bits: extension data a decoder ignores)
+        if self.extension_flags & 0x70 != 0 {
             return unsupported("PPS multilayer / 3D / SCC extensions");
         }
         Ok(())

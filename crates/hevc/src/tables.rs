@@ -68,6 +68,18 @@ pub fn qpc_420(qpi: i32) -> i32 {
     }
 }
 
+/// Table 8-3: IntraPredModeC for modeIdx (Table 8-2) when ChromaArrayType is 2 (the 4:2:2
+/// chroma intra prediction mode: the luma direction with its horizontal component halved).
+pub static INTRA_CHROMA_MODE_422: [u8; 35] =
+    [0, 1, 2, 2, 2, 2, 3, 5, 7, 8, 10, 12, 13, 15, 17, 18, 19, 20, 21, 22, 23, 23, 24, 24, 25, 25, 26, 27, 27, 28, 28, 29, 29, 30, 31];
+
+/// QpC for the index qPi (8.6.1, 8.7.2.5.5): Table 8-10 when ChromaArrayType is 1, otherwise
+/// Min(qPi, 51).
+#[inline]
+pub fn qpc(qpi: i32, chroma_array_type_1: bool) -> i32 {
+    if chroma_array_type_1 { qpc_420(qpi) } else { qpi.min(51) }
+}
+
 /// Table 9-50 ctxIdxMap for 4x4 sig_coeff_flag contexts.
 pub static CTX_IDX_MAP: [u8; 16] = [0, 1, 4, 5, 2, 3, 4, 5, 6, 6, 8, 8, 7, 7, 8, 8];
 
@@ -119,5 +131,8 @@ mod tests {
         assert_eq!(qpc_420(30), 29);
         assert_eq!(qpc_420(43), 37);
         assert_eq!(qpc_420(51), 45);
+        assert_eq!(qpc(43, true), 37);
+        assert_eq!(qpc(43, false), 43);
+        assert_eq!(qpc(57, false), 51);
     }
 }

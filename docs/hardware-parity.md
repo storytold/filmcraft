@@ -19,7 +19,7 @@ release notes (Premiere does not run on Linux).
 | H.264 8-bit 4:2:0 | yes | **yes** | Intel, NVIDIA, AMD | **yes** (Baseline / Main / High) | **yes** (NVDEC; VA-API Intel / AMD / Mesa) |
 | H.264 10-bit / 4:2:2 | Apple silicon | **yes** where the chip decodes it | Intel; NVIDIA Blackwell (MXF too) | no (declined; no software fallback, [G3](gaps.md#g3-10-bit-and-422-camera-media-needs-hardware)) | no |
 | HEVC Main / Main 10 4:2:0 | yes | **yes** | yes | **yes** | **yes** (NVDEC 8/10; VA-API Main / Main 10) |
-| HEVC 4:2:2 10-bit | Apple silicon | **yes** where supported | Intel; NVIDIA Blackwell | no | no |
+| HEVC 4:2:2 10-bit | Apple silicon | **yes** where supported | Intel; NVIDIA Blackwell | software (own decoder, bit-exact) | software (own decoder, bit-exact) |
 | VP9 profile 0 / 2 | — | software | — | **yes** | software (VA-API VP9 not yet) |
 | AV1 main 8 / 10 | — | software | yes | **yes** | software |
 | ProRes | Apple silicon (M1 Pro / Max and later) | software (fast: 318 fps) | software | software | software |

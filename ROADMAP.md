@@ -98,7 +98,7 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 
 1. **No launch crashes, and CI on pull requests** (macOS 12, Intel UHD, Windows 11 reports; no workflow runs the tests today). 40–80 h.
 2. **Open Premiere's `.prproj`**, the beta blocker. 60–120 h.
-3. **10-bit / 4:2:2 camera media without hardware** (H.264 High 10 / 4:2:2, HEVC 4:2:2; #626). 30–50 h.
+3. **10-bit / 4:2:2 camera media without hardware** (H.264 High 10 / 4:2:2; #626). HEVC 4:2:2 8/10-bit (Fujifilm, Sony XAVC HS) now decodes in software on every platform. 15–25 h.
 4. **Measure fidelity against Premiere** and add `cargo xtask parity`. 50–90 h.
 5. **Real-world media corpus and workflow acceptance tests.** 40–70 h.
 6. **Hardware acceleration, continued** (#30): zero-copy upload, more effects on the GPU, Quick Sync / AMD encoders, VideoToolbox Main 10. 120–200 h.

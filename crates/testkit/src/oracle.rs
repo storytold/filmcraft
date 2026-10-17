@@ -160,6 +160,24 @@ pub fn ffmpeg_version(ff: &Path) -> Option<String> {
     ffmpeg_version_in(&String::from_utf8_lossy(&out.stdout))
 }
 
+/// The major version in an ffmpeg version string (`4.4.2-0ubuntu0.22.04.1` -> 4, `n7.1` -> 7);
+/// `None` for a git snapshot (`N-113000-g1234abcd`) or anything else without a leading number.
+fn ffmpeg_major_version(version: &str) -> Option<u32> {
+    let v = version.strip_prefix(['n', 'N']).filter(|r| r.starts_with(|c: char| c.is_ascii_digit())).unwrap_or(version);
+    let digits: String = v.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
+/// The ffmpeg arguments that pass every decoded frame through unchanged (no frame
+/// duplication or dropping to a constant rate): `-fps_mode passthrough` since ffmpeg 5.1, the
+/// older `-vsync passthrough` before (Ubuntu 22.04 ships 4.4).
+pub fn fps_passthrough_args(ff: &Path) -> [&'static str; 2] {
+    match ffmpeg_version(ff).as_deref().and_then(ffmpeg_major_version) {
+        Some(major) if major < 5 => ["-vsync", "passthrough"],
+        _ => ["-fps_mode", "passthrough"],
+    }
+}
+
 /// ffmpeg that can read `format_name`, or `None` after reporting a skip (see
 /// [`skip`]). An ffmpeg predating the format (APV needs 8.0+) skips with its
 /// detected version named, exactly like a missing tool — and fails under
@@ -178,6 +196,16 @@ pub fn ffmpeg_with_format_or_skip(context: &str, format_name: &str, min_version:
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    #[test]
+    fn major_version_is_the_leading_number() {
+        assert_eq!(ffmpeg_major_version("4.4.2-0ubuntu0.22.04.1"), Some(4));
+        assert_eq!(ffmpeg_major_version("6.1.1-3ubuntu5"), Some(6));
+        assert_eq!(ffmpeg_major_version("n7.1"), Some(7));
+        assert_eq!(ffmpeg_major_version("8.0.1"), Some(8));
+        assert_eq!(ffmpeg_major_version("N-113000-g1234abcd"), None);
+        assert_eq!(ffmpeg_major_version(""), None);
+    }
 
     fn tmpdir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("filmcraft-testkit-{tag}-{}", std::process::id()));

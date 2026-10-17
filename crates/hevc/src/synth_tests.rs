@@ -551,10 +551,11 @@ fn check_ffmpeg(name: &str, stream: &[u8], pics: &[crate::Picture]) {
     let src = filmcraft_testkit::temp_path(&dir.join(format!("synth_{name}.hevc")));
     let yuv = filmcraft_testkit::temp_path(&dir.join(format!("synth_{name}.yuv")));
     std::fs::write(&src, stream).unwrap();
-    let st = std::process::Command::new(ff)
+    let st = std::process::Command::new(&ff)
         .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
         .arg(&src)
-        .args(["-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "yuv420p"])
+        .args(filmcraft_testkit::fps_passthrough_args(&ff))
+        .args(["-f", "rawvideo", "-pix_fmt", "yuv420p"])
         .arg(&yuv)
         .status()
         .unwrap();

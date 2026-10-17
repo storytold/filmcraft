@@ -7,7 +7,7 @@
 use crate::picture::{ColMv, FrameRow, Sample};
 use crate::slicedec::{E_PU_H, E_PU_V, E_TU_H, E_TU_V, F_CBF, F_CODED, F_INTRA, F_NOFILTER, MvField, PicState};
 use crate::spec_tables::{BETA_TABLE, TC_TABLE};
-use crate::tables::qpc_420;
+use crate::tables::qpc;
 
 /// Called after each decoded CTB of CTB row `ry`.
 pub fn ctb_decoded<S: Sample>(pic: &mut PicState<S>, ry: usize) {
@@ -141,6 +141,10 @@ fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
     let (w, w4) = (pic.width, pic.w4);
     let (bd, bdc) = (pic.bd_y, pic.bd_c);
     let (cb_off, cr_off) = (pic.pps.cb_qp_offset, pic.pps.cr_qp_offset);
+    // chroma geometry: edges on the 8x8 chroma sample grid (8.7.2, edgeSpacing), each segment
+    // 4 chroma samples long, with bS taken from the luma segment at its first sample
+    let (sx, sy) = pic.chroma.shifts();
+    let is420 = sy == 1;
     // vertical edges
     let mut bs_v = vec![0i8; w4 * ((y1 - y0) / 4)];
     for by in y0 / 4..y1 / 4 {
@@ -164,10 +168,11 @@ fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
             filter_luma(&mut pic.planes[0], y * w + x, 1, w, tc, beta, nfp, nfq, bd);
         }
     }
-    // chroma vertical edges (8x8 chroma grid = 16 luma samples), bS == 2 only
+    // chroma vertical edges (8 chroma samples = 16 luma samples apart; a 4-line chroma segment
+    // spans 4 << sy luma lines), bS == 2 only
     let cw = pic.cwidth;
-    for by in (y0 / 4..y1 / 4).step_by(2) {
-        for bx in (4..w4).step_by(4) {
+    for by in (y0 / 4..y1 / 4).step_by(1 << sy) {
+        for bx in (2 << sx..w4).step_by(2 << sx) {
             if bs_v[(by - y0 / 4) * w4 + bx] != 2 {
                 continue;
             }
@@ -178,9 +183,9 @@ fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
             let (nfp, nfq) = (p.flags & F_NOFILTER != 0, q.flags & F_NOFILTER != 0);
             for (c, off) in [(1, cb_off), (2, cr_off)] {
                 let qpi = ((p.qp as i32 + q.qp as i32 + 1) >> 1) + off;
-                let qt = (qpc_420(qpi) + 2 + tc_off).clamp(0, 53);
+                let qt = (qpc(qpi, is420) + 2 + tc_off).clamp(0, 53);
                 let tc = (TC_TABLE[qt as usize] as i32) << (bdc - 8);
-                filter_chroma(&mut pic.planes[c], (y / 2) * cw + x / 2, 1, cw, tc, nfp, nfq, bdc);
+                filter_chroma(&mut pic.planes[c], (y >> sy) * cw + (x >> sx), 1, cw, tc, nfp, nfq, bdc);
             }
         }
     }
@@ -208,8 +213,10 @@ fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
             filter_luma(&mut pic.planes[0], y * w + x, w, 1, tc, beta, nfp, nfq, bd);
         }
     }
-    for by in (y0 / 4..y1 / 4).filter(|b| b % 4 == 0 && *b > 0) {
-        for bx in (0..w4).step_by(2) {
+    // chroma horizontal edges (8 chroma lines = 8 << sy luma lines apart; a 4-sample chroma
+    // segment spans 4 << sx luma samples), bS == 2 only
+    for by in (y0 / 4..y1 / 4).filter(|b| b % (2 << sy) == 0 && *b > 0) {
+        for bx in (0..w4).step_by(1 << sx) {
             if bs_h[(by - y0 / 4) * w4 + bx] != 2 {
                 continue;
             }
@@ -220,9 +227,9 @@ fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
             let (nfp, nfq) = (p.flags & F_NOFILTER != 0, q.flags & F_NOFILTER != 0);
             for (c, off) in [(1, cb_off), (2, cr_off)] {
                 let qpi = ((p.qp as i32 + q.qp as i32 + 1) >> 1) + off;
-                let qt = (qpc_420(qpi) + 2 + tc_off).clamp(0, 53);
+                let qt = (qpc(qpi, is420) + 2 + tc_off).clamp(0, 53);
                 let tc = (TC_TABLE[qt as usize] as i32) << (bdc - 8);
-                filter_chroma(&mut pic.planes[c], (y / 2) * cw + x / 2, cw, 1, tc, nfp, nfq, bdc);
+                filter_chroma(&mut pic.planes[c], (y >> sy) * cw + (x >> sx), cw, 1, tc, nfp, nfq, bdc);
             }
         }
     }
@@ -359,11 +366,13 @@ fn filter_chroma<S: Sample>(s: &mut [S], o: usize, step: usize, along: usize, tc
 /// SAO of CTB row `r` from the deblocked planes into new row buffers (luma, Cb, Cr).
 fn sao_row<S: Sample>(pic: &PicState<S>, r: usize) -> [Vec<S>; 3] {
     let ctb = 1usize << pic.log2_ctb;
+    let (sx, sy) = pic.chroma.shifts();
     let mut out: [Vec<S>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     for c in 0..3 {
-        let (w, h, cs) = if c == 0 { (pic.width, pic.height, ctb) } else { (pic.cwidth, pic.cheight, ctb / 2) };
-        let y0 = r * cs;
-        let y1 = (y0 + cs).min(h);
+        // CTB size in this component's samples, horizontally and vertically
+        let (w, h, csx, csy) = if c == 0 { (pic.width, pic.height, ctb, ctb) } else { (pic.cwidth, pic.cheight, ctb >> sx, ctb >> sy) };
+        let y0 = r * csy;
+        let y1 = (y0 + csy).min(h);
         out[c] = pic.planes[c][y0 * w..y1 * w].to_vec();
         for rx in (0..pic.wctb).filter(|_| !pic.draft) {
             let rs = r * pic.wctb + rx;
@@ -379,8 +388,8 @@ fn sao_row<S: Sample>(pic: &PicState<S>, r: usize) -> [Vec<S>; 3] {
             if p.type_idx[c] == 0 {
                 continue;
             }
-            let x0 = rx * cs;
-            let x1 = (x0 + cs).min(w);
+            let x0 = rx * csx;
+            let x1 = (x0 + csx).min(w);
             sao_ctb(pic, c, rs, x0, x1, y0, y1, w, h, &p, &mut out[c]);
         }
     }
@@ -403,14 +412,15 @@ fn sao_ctb<S: Sample>(
 ) {
     let bd = if c == 0 { pic.bd_y } else { pic.bd_c };
     let max = (1i32 << bd) - 1;
-    let sc = if c == 0 { 0 } else { 1 };
+    // shifts from this component's sample positions to luma positions
+    let (scx, scy) = if c == 0 { (0, 0) } else { pic.chroma.shifts() };
     let offs = p.offsets[c].map(|v| v as i32);
     // samples of CUs that must not be modified
-    let nofilter = |pic: &PicState<S>, x: usize, y: usize| pic.blk[((y << sc) >> 2) * pic.w4 + ((x << sc) >> 2)].flags & F_NOFILTER != 0;
+    let nofilter = |pic: &PicState<S>, x: usize, y: usize| pic.blk[((y << scy) >> 2) * pic.w4 + ((x << scx) >> 2)].flags & F_NOFILTER != 0;
     let any_nofilter = {
         let mut a = false;
-        for by in ((y0 << sc) >> 2)..(((y1 << sc) + 3) >> 2).min(pic.h4) {
-            for bx in ((x0 << sc) >> 2)..(((x1 << sc) + 3) >> 2).min(pic.w4) {
+        for by in ((y0 << scy) >> 2)..(((y1 << scy) + 3) >> 2).min(pic.h4) {
+            for bx in ((x0 << scx) >> 2)..(((x1 << scx) + 3) >> 2).min(pic.w4) {
                 a |= pic.blk[by * pic.w4 + bx].flags & F_NOFILTER != 0;
             }
         }
@@ -446,12 +456,12 @@ fn sao_ctb<S: Sample>(
     };
     // Neighbouring CTBs whose samples may not be used (other slice / tile without cross-boundary
     // filtering), checked per sample only near CTB borders.
-    let s = pic.log2_ctb as usize - sc;
+    let (lsx, lsy) = (pic.log2_ctb - scx, pic.log2_ctb - scy);
     let cur_slice = pic.ctb_slice[rs];
     let lf_cur = pic.slices[cur_slice as usize].lf_across;
     let cur_ts = pic.layout.rs_to_ts[rs];
     let cross_ok = |pic: &PicState<S>, xn: usize, yn: usize| -> bool {
-        let nrs = (yn >> s) * pic.wctb + (xn >> s);
+        let nrs = (yn >> lsy) * pic.wctb + (xn >> lsx);
         if nrs == rs {
             return true;
         }
@@ -601,8 +611,6 @@ fn sao_band_run<S: Sample>(src: &[S], out: &mut [S], shift: u32, (band_pos, offs
 fn publish_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
     let ctb = 1usize << pic.log2_ctb;
     let (y0, y1) = (r * ctb, ((r + 1) * ctb).min(pic.height));
-    let (c0, c1) = (y0 / 2, y1.div_ceil(2));
-    let (w, cw) = (pic.width, pic.cwidth);
     let w16 = pic.width.div_ceil(16);
     let rows16 = (y1 - y0).div_ceil(16);
     let mut col = vec![ColMv::default(); w16 * rows16];
@@ -638,7 +646,6 @@ fn publish_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
         }
     }
     let [oy, ocb, ocr] = sao_row(pic, r);
-    let _ = (w, cw, c0, c1);
     let row = FrameRow { y: oy.into(), cb: ocb.into(), cr: ocr.into(), col: col.into() };
     pic.frame.publish(r, row);
 }

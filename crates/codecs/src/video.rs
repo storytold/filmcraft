@@ -387,7 +387,7 @@ pub fn h264_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
     }
 }
 
-/// Our pure-Rust HEVC decoder (Main / Main 10, frame-threaded).
+/// Our pure-Rust HEVC decoder (Main / Main 10 / Main 4:2:2 10, frame-threaded).
 pub struct HevcDecoder {
     hvcc: Vec<u8>,
     dec: filmcraft_hevc::Decoder,
@@ -417,15 +417,19 @@ impl HevcDecoder {
                 Plane::U8(v) => v.into_iter().map(u16::from).collect(),
             }
         };
+        let chroma = match p.chroma {
+            filmcraft_hevc::ChromaFormat::C420 => filmcraft_frame::Chroma::C420,
+            filmcraft_hevc::ChromaFormat::C422 => filmcraft_frame::Chroma::C422,
+        };
         let data = match (p.y, p.u, p.v) {
             (Plane::U8(y), Plane::U8(u), Plane::U8(v)) => filmcraft_frame::PixelData::Yuv8 {
                 planes: [Arc::new(tight_plane(y, ys, w, h)), Arc::new(tight_plane(u, uvs, cw, ch)), Arc::new(tight_plane(v, uvs, cw, ch))],
-                chroma: filmcraft_frame::Chroma::C420,
+                chroma,
                 alpha: None,
             },
             (y, u, v) => filmcraft_frame::PixelData::Yuv16 {
                 planes: [Arc::new(tight_plane(wide(y), ys, w, h)), Arc::new(tight_plane(wide(u), uvs, cw, ch)), Arc::new(tight_plane(wide(v), uvs, cw, ch))],
-                chroma: filmcraft_frame::Chroma::C420,
+                chroma,
                 bits: p.bit_depth,
                 alpha: None,
             },

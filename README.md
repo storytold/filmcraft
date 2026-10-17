@@ -172,7 +172,7 @@ No FFmpeg inside. The video codecs, AAC, Opus and the containers are our own Rus
 | | Decode | Encode | Notes |
 |---|:---:|:---:|---|
 | **H.264 / AVC** | ✓ | ✓ | Decoder bit-exact on 37+ streams, 500–600 fps at 1080p. Encoder: High, Main and Baseline profiles, CABAC, B-frames, CRF/CBR/VBR/2-pass |
-| **HEVC / H.265** | ✓ | | Main and Main 10, bit-exact on 41 streams (tiles, WPP, PCM, long-term references), about 225 fps at 1080p |
+| **HEVC / H.265** | ✓ | | Main, Main 10 and Main 4:2:2 10 (4:2:0 and 4:2:2 camera media such as Fujifilm X and Sony XAVC HS), bit-exact on 63 streams (tiles, WPP, PCM, long-term references), about 225 fps at 1080p |
 | **Apple ProRes** | ✓ | ✓ | Decodes 422 Proxy to 4444 XQ; export writes 422 HQ |
 | **AAC-LC** | ✓ | ✓ | |
 | **VP8** | ✓ | | Every coding tool, bitstream versions 0–3, hidden altref frames, alpha layer of transparent WebM; bit-exact with libvpx on its published VP8 test vectors; in WebM/Matroska and MP4 |

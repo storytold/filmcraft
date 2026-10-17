@@ -31,18 +31,19 @@ and fixture generators.
 | Frame-level multithreading (CTB-row granularity dependencies) | done |
 | Draft mode (non-reference pictures skip deblocking / SAO; reduced-resolution playback only) | done |
 | Tiles / WPP | parsed and decoded sequentially within a picture (parallelism is across pictures) |
-| 4:2:2 / 4:4:4 / monochrome, range-extension tools (RExt), 12-bit+ with extended precision | not yet (`Error::Unsupported`) |
+| 4:2:2 (Main 4:2:2 10 / RExt profile): chroma geometry, Table 8-3 intra mode mapping, stacked chroma transform blocks with their second cbf flags, chroma QP = Min(qPi, 51), chroma motion vectors, deblocking / SAO geometry; 8–12-bit | done, bit-exact on libx265 fixtures and a Fujifilm X-S20 clip |
+| 4:4:4 / monochrome, range-extension coding tools (RDPCM, cross-component prediction, extended precision, persistent Rice adaptation, bypass alignment, chroma QP offset lists) | not yet (`Error::Unsupported`) |
 | SCC, multilayer (SHVC / MV-HEVC), 3D extensions | not supported (layers > 0 are ignored) |
 
 ## API
 
 ```rust
-use filmcraft_hevc::{Decoder, Plane};
+use filmcraft_hevc::{ChromaFormat, Decoder, Plane};
 
 let mut dec = Decoder::new(); // or Decoder::with_threads(n), Decoder::from_hvcc(&hvcc)?
 for (pts, access_unit) in access_units {
     for pic in dec.decode(access_unit, pts)? {
-        // pic.width / pic.height (cropped), pic.bit_depth,
+        // pic.width / pic.height (cropped), pic.bit_depth, pic.chroma (ChromaFormat::C420 / C422),
         // pic.y / pic.u / pic.v: Plane::U8(Vec<u8>) for 8-bit, Plane::U16(Vec<u16>) above,
         // pic.y_stride / pic.uv_stride, pic.pts, pic.poc, pic.key (IRAP), pic.color (VUI), pic.sar
     }
@@ -97,7 +98,8 @@ with ffmpeg; tests print a message and skip when ffmpeg is absent).
 - Robustness: hvcC input with pts round trip; randomly corrupted, truncated and garbage input never
   panics or deadlocks (single- and multi-threaded).
 - Conformance (`tests/conformance.rs`): every fixture is decoded with 1 thread, 3 threads and every
-  core and compared sample-exactly with `ffmpeg -f rawvideo -pix_fmt yuv420p / yuv420p10le`; on mismatch
+  core and compared sample-exactly with `ffmpeg -f rawvideo -pix_fmt yuv420p / yuv420p10le /
+  yuv422p / yuv422p10le`; on mismatch
   the first differing frame, plane, sample, CTB and 8x8 block are reported. Output pts/POC order is
   checked too, and that no picture is flagged draft without draft mode. `compare_detects_mismatch`
   guards the harness itself. Draft mode (`draft_mode_changes_only_flagged_non_reference_pictures`):
@@ -133,6 +135,12 @@ libx265 unless noted (x265 enables WPP by default, so most streams carry entry p
 | hd_1080p | 1920x1080 | preset fast |
 | uhd_4k_main10 | 3840x2160 | Main 10 ultrafast |
 | vt_main / vt_main10 | 640x360 | Apple VideoToolbox (hevc_videotoolbox), macOS only |
+| intra_422 / intra_422_10 / intra_422_10_nosao_nodbk | 352x288 | 4:2:2 8 / 10-bit intra, with and without the in-loop filters |
+| medium_422_10 / slow_422 / p_only_422_10 / bframes_422_10 | 352x288 | 4:2:2 presets, P only, B pyramid |
+| no_sao_422_10 / deblock_m3_3_422_10 / rect_amp_422_10 / tskip_422_10 / weightp_422_10 | 352x288 | 4:2:2 tool toggles |
+| qp_422_10 / crf51_422_10 / lossless_422_10 | 352x288 / 176x144 | 4:2:2 adaptive QP (cu_qp_delta), quantizer extremes, lossless |
+| ctu32_tu4_422_10 / ctu16_422_10 / scaling_list_422_10 / constrained_intra_422_10 / slices4_422_10 | 352x288 | 4:2:2 block structure, scaling lists, constrained intra, slices |
+| odd_1918x1078_422_10 / uhd_4k_422_10 | 1918x1078 / 3840x2160 | 4:2:2 cropping and 4K |
 | synthetic (7 streams) | 96x64 | tiles, PCM, slices, dependent segments, LTR, list modification |
 
 `cargo test -p filmcraft-hevc --test conformance coverage_report -- --ignored --nocapture` prints the
@@ -185,12 +193,10 @@ context-coded bins are branch-free. Single-threaded 4K now splits into CABAC res
 
 ## Known gaps
 
-- 4:2:2 (Main 4:2:2 10, RExt) is the next step: chroma geometry is 4:2:0-specific in `slicedec`
-  (chroma TU placement, second chroma cbf flags, Table 8-3 intra mode mapping), `inter` (vertical
-  chroma MV scaling), `filter` (chroma edge spacing, QpC = Min(qPi, 51)) and `picture`. Range
-  extension tools (implicit / explicit RDPCM, cross-component prediction, extended precision,
-  persistent Rice adaptation, bypass alignment, chroma QP offset lists) are rejected with
-  `Error::Unsupported`.
+- 4:4:4 and monochrome streams, and the range extension coding tools (implicit / explicit RDPCM,
+  cross-component prediction, extended precision, persistent Rice adaptation, bypass alignment,
+  chroma QP offset lists) are rejected with `Error::Unsupported`. 4:2:2 streams that use none of
+  those tools (what cameras and libx265 write) decode.
 - Tiles and WPP substreams are decoded sequentially (entry points are parsed but the decoder finds
   substream starts itself); parallelism is at the picture level.
 - Error concealment is minimal: missing references are replaced by grey pictures, undecodable
