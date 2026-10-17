@@ -436,6 +436,30 @@ fn queue_orders_cancels_and_retries() {
 }
 
 #[test]
+fn project_changes_isolate_media_pools() {
+    let mut s = demo();
+    for (command, params) in [("file.newProject", json!({"name": "Fresh"})), ("file.closeAllProjects", json!({})), ("file.openDemoProject", json!({}))] {
+        let previous = s.media.clone();
+        s.execute(command, params).unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&previous, &s.media), "{command} must isolate the new project's media");
+    }
+}
+
+#[test]
+fn queued_export_keeps_its_media_pool_after_a_project_switch() {
+    let mut s = demo();
+    let original_media = s.media.clone();
+    s.execute("export.queue.add", json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": "queued-output/old.wav"})).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&s.export_queue.items[0].media, &original_media));
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&s.media, &original_media));
+    assert!(
+        std::sync::Arc::ptr_eq(&s.export_queue.items[0].media, &original_media),
+        "the queued project must not resolve media through the new project's pool"
+    );
+}
+
+#[test]
 fn queue_move_by_extreme_offsets_clamps_instead_of_overflowing() {
     let mut s = demo();
     let ids: Vec<u64> = (0..3)

@@ -64,7 +64,7 @@ fn moved_media_opens_offline_and_relinks_others_by_folder() {
     assert_eq!(r["missingMedia"], json!(2), "{r}");
     assert!(s.offline.prompt, "the Link Media dialog is requested");
     let (w, h, px) = frame_rgba(&mut s, 3, 1.0);
-    let slate = slate_rgba8(w, h, "a.mov", OfflineReason::Missing);
+    let slate = slate_rgba8(w, h, "a.mov", OfflineReason::Missing).unwrap();
     assert!(psnr(&px, &slate) > 40.0, "offline clip renders the offline slate");
     let m = s.execute("media.findMissing", json!({})).unwrap();
     assert_eq!(m["missing"].as_array().unwrap().len(), 2);
@@ -153,7 +153,7 @@ fn make_offline_shows_the_slate_until_relinked() {
     s.execute("project.select", json!({"items": [items[0].0]})).unwrap();
     s.execute("media.makeOffline", json!({})).unwrap();
     let (w, h, px) = frame_rgba(&mut s, 3, 1.0);
-    assert!(psnr(&px, &slate_rgba8(w, h, "a.mov", OfflineReason::MadeOffline)) > 40.0);
+    assert!(psnr(&px, &slate_rgba8(w, h, "a.mov", OfflineReason::MadeOffline).unwrap()) > 40.0);
     let st = s.execute("media.status", json!({"item": items[0].0})).unwrap();
     assert_eq!(st[0]["status"], json!("offline"));
     assert!(root.join("Media/a.mov").exists(), "media stays on disk by default");

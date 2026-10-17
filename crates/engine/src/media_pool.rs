@@ -14,13 +14,13 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_media::generators::GeneratorSource;
 use filmcraft_media::{FrameRequest, MediaError, MediaInfo, MediaSource, Opener, SharedSource};
 use filmcraft_project::{ItemId, MediaClip, MediaRef, Project};
-use filmcraft_render::offline::OfflineReason;
+use filmcraft_render::offline::{MAX_OFFLINE_SLATE_PIXELS, MAX_OFFLINE_SLATE_SIDE, OfflineReason};
 
 use crate::Services;
 
@@ -48,6 +48,7 @@ pub struct MediaPool {
     sources: RwLock<HashMap<ItemId, (String, SharedSource)>>,
     proxies: RwLock<HashMap<ItemId, (String, SharedSource)>>,
     offline: Arc<RwLock<HashMap<ItemId, OfflineStatus>>>,
+    slate_cache: RwLock<Arc<SharedSlateCache>>,
     use_proxies: AtomicBool,
     /// Per item: video frames that failed in a row in the monitors (see [`Self::monitor_source`]).
     failures: Arc<Mutex<HashMap<ItemId, u32>>>,
@@ -62,6 +63,7 @@ impl Default for MediaPool {
             sources: RwLock::new(HashMap::new()),
             proxies: RwLock::new(HashMap::new()),
             offline: Arc::new(RwLock::new(HashMap::new())),
+            slate_cache: RwLock::new(Arc::default()),
             use_proxies: AtomicBool::new(false),
             failures: Arc::default(),
             openers: RwLock::new(filmcraft_codecs::openers()),
@@ -160,10 +162,15 @@ impl MediaPool {
         self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (format!("file:{path}"), src));
     }
 
+    fn slate_source(&self, info: MediaInfo, name: &str, reason: OfflineReason) -> SlateSource {
+        let cache = self.slate_cache.read().unwrap_or_else(|e| e.into_inner()).clone();
+        SlateSource::with_cache(info, name, reason, cache)
+    }
+
     /// `src` (opened from `path` for `item`) showing the unreadable slate for the frames it
     /// cannot decode.
     fn unsupported_as_slate(&self, item: ItemId, path: &str, src: SharedSource) -> SharedSource {
-        let slate = SlateSource::new(src.info().clone(), &file_name(path), OfflineReason::Unreadable);
+        let slate = self.slate_source(src.info().clone(), &file_name(path), OfflineReason::Unreadable);
         Arc::new(UnsupportedAsSlate { inner: src, slate, item, path: path.to_string(), offline: self.offline.clone() })
     }
 
@@ -173,11 +180,22 @@ impl MediaPool {
         self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
     }
 
+    /// Start another project without sharing source or slate caches with in-flight readers.
+    /// Keep host-registered openers and the editor's proxy preference.
+    pub(crate) fn fresh_for_project(&self) -> Self {
+        let next = Self::default();
+        next.set_use_proxies(self.use_proxies());
+        let openers = self.openers.read().unwrap_or_else(|e| e.into_inner()).clone();
+        *next.openers.write().unwrap_or_else(|e| e.into_inner()) = openers;
+        next
+    }
+
     /// Forget every opened source (files are re-read on next use).
     pub fn clear(&self) {
         self.sources.write().unwrap_or_else(|e| e.into_inner()).clear();
         self.proxies.write().unwrap_or_else(|e| e.into_inner()).clear();
         self.offline.write().unwrap_or_else(|e| e.into_inner()).clear();
+        *self.slate_cache.write().unwrap_or_else(|e| e.into_inner()) = Arc::default();
     }
 
     pub fn cached(&self, item: ItemId) -> Option<SharedSource> {
@@ -203,7 +221,7 @@ impl MediaPool {
     /// exports and other renders use the pool's sources directly, so they never contain the slate.
     pub fn monitor_source(&self, item: ItemId, src: SharedSource) -> SharedSource {
         Arc::new(DamagedAsSlate {
-            slate: SlateSource::new(src.info().clone(), &src.info().name, OfflineReason::Unreadable),
+            slate: self.slate_source(src.info().clone(), &src.info().name, OfflineReason::Unreadable),
             inner: src,
             item,
             failures: self.failures.clone(),
@@ -277,7 +295,7 @@ impl MediaPool {
             }
             MediaRef::File { path } if m.offline => {
                 self.set_offline(item, OfflineReason::MadeOffline, path, "made offline");
-                Arc::new(SlateSource::new(m.info.clone(), &file_name(path), OfflineReason::MadeOffline))
+                Arc::new(self.slate_source(m.info.clone(), &file_name(path), OfflineReason::MadeOffline))
             }
             MediaRef::File { path } => match if m.info.kind == filmcraft_media::MediaKind::ImageSequence {
                 open_image_sequence(path, services, m.info.frame_rate(), &it.name)
@@ -290,13 +308,13 @@ impl MediaPool {
                 }
                 Err(_) if filmcraft_media::pending::is_set() => {
                     // the host is still fetching the file's bytes: show the slate for now, retry later
-                    return Some(Arc::new(SlateSource::new(m.info.clone(), &file_name(path), OfflineReason::Missing)));
+                    return Some(Arc::new(self.slate_source(m.info.clone(), &file_name(path), OfflineReason::Missing)));
                 }
                 Err(e) => {
                     log::warn!("media offline: {path}: {e}");
                     let reason = if matches!(e, MediaError::Offline(_)) { OfflineReason::Missing } else { OfflineReason::Unreadable };
                     self.set_offline(item, reason, path, &e.to_string());
-                    Arc::new(SlateSource::new(m.info.clone(), &file_name(path), reason))
+                    Arc::new(self.slate_source(m.info.clone(), &file_name(path), reason))
                 }
             },
         };
@@ -402,22 +420,170 @@ impl filmcraft_render::SourceProvider for PoolProvider {
     }
 }
 
-/// The offline slate as a media source: video frames are the slate at the requested scale of the
-/// item's frame size; audio is silence.
+/// The offline slate as a media source: video frames have bounded preview dimensions; audio is
+/// silence. Source metadata retains its original dimensions.
 pub struct SlateSource {
     info: MediaInfo,
-    name: String,
+    name: Arc<str>,
     reason: OfflineReason,
-    last: Mutex<Option<Arc<VideoFrame>>>,
+    cache: Arc<SharedSlateCache>,
 }
 
 impl SlateSource {
     pub fn new(info: MediaInfo, name: &str, reason: OfflineReason) -> Self {
-        Self { info, name: name.to_string(), reason, last: Mutex::new(None) }
+        Self::with_cache(info, name, reason, Arc::default())
+    }
+
+    fn with_cache(info: MediaInfo, name: &str, reason: OfflineReason, cache: Arc<SharedSlateCache>) -> Self {
+        Self { info, name: filmcraft_render::offline::slate_display_name(name).into(), reason, cache }
     }
     pub fn reason(&self) -> OfflineReason {
         self.reason
     }
+}
+
+/// A 720p slate needs at most about 18.4 MB for the renderer's float RGBA image and
+/// its RGBA8 copy; valid 16K source metadata must not force a larger placeholder.
+const MAX_OFFLINE_SLATE_CACHE_BYTES: usize = 64 << 20;
+const MAX_OFFLINE_SLATE_CACHE_ENTRIES: usize = 16;
+// Cold admission uses three cache accesses per key; leave room for a full hot-set sweep.
+const MAX_OFFLINE_SLATE_CACHE_IDLE_ACCESSES: u64 = (MAX_OFFLINE_SLATE_CACHE_ENTRIES as u64) * 8;
+type SlateKey = (Arc<str>, u32, u32, &'static str);
+
+#[derive(Default)]
+struct SlateFrameCache {
+    entries: HashMap<SlateKey, (u64, VideoFrame)>,
+    bytes: usize,
+    clock: u64,
+}
+
+impl SlateFrameCache {
+    fn frame_bytes(frame: &VideoFrame) -> usize {
+        frame.byte_size()
+    }
+
+    fn next_tick(&mut self) -> u64 {
+        self.clock = self.clock.wrapping_add(1);
+        self.clock
+    }
+
+    fn get(&mut self, key: &SlateKey) -> Option<VideoFrame> {
+        let tick = self.next_tick();
+        self.entries.get_mut(key).map(|(last, frame)| {
+            *last = tick;
+            frame.clone()
+        })
+    }
+
+    fn insert(&mut self, key: SlateKey, frame: VideoFrame) {
+        let cost = Self::frame_bytes(&frame);
+        if cost > MAX_OFFLINE_SLATE_CACHE_BYTES || key.0.len() > 4096 {
+            return;
+        }
+        if let Some((_, old)) = self.entries.remove(&key) {
+            self.bytes = self.bytes.saturating_sub(Self::frame_bytes(&old));
+        }
+        let tick = self.next_tick();
+        if self.entries.len() >= MAX_OFFLINE_SLATE_CACHE_ENTRIES || self.bytes.saturating_add(cost) > MAX_OFFLINE_SLATE_CACHE_BYTES {
+            // Keep recently used slates so a one-entry overflow cannot evict the whole hot set.
+            let stale_before = tick.saturating_sub(MAX_OFFLINE_SLATE_CACHE_IDLE_ACCESSES);
+            let mut released = 0usize;
+            self.entries.retain(|_, (last, old)| {
+                if *last > stale_before {
+                    true
+                } else {
+                    released = released.saturating_add(Self::frame_bytes(old));
+                    false
+                }
+            });
+            self.bytes = self.bytes.saturating_sub(released);
+        }
+        if self.entries.len() >= MAX_OFFLINE_SLATE_CACHE_ENTRIES || self.bytes.saturating_add(cost) > MAX_OFFLINE_SLATE_CACHE_BYTES {
+            return;
+        }
+        self.entries.insert(key, (tick, frame));
+        self.bytes = self.bytes.saturating_add(cost);
+    }
+}
+
+type SlateFlight = OnceLock<filmcraft_media::Result<VideoFrame>>;
+
+#[derive(Default)]
+struct SharedSlateCache {
+    frames: Mutex<SlateFrameCache>,
+    render: Mutex<()>,
+    flights: Mutex<HashMap<SlateKey, Weak<SlateFlight>>>,
+}
+
+fn cached_slate_frame(
+    cache: &SharedSlateCache,
+    key: SlateKey,
+    make: impl FnOnce() -> filmcraft_media::Result<VideoFrame>,
+) -> filmcraft_media::Result<VideoFrame> {
+    cached_slate_frame_with_admission_hook(cache, key, make, || {})
+}
+
+fn cached_slate_frame_with_admission_hook(
+    cache: &SharedSlateCache,
+    key: SlateKey,
+    make: impl FnOnce() -> filmcraft_media::Result<VideoFrame>,
+    after_miss: impl FnOnce(),
+) -> filmcraft_media::Result<VideoFrame> {
+    // Keep cache lookup and flight enrollment under one lock. Otherwise a caller can miss
+    // the cache, pause, and start a second render after the first uncached flight ends.
+    let flight = {
+        let mut flights = cache.flights.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(frame) = cache.frames.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+            return Ok(frame);
+        }
+        after_miss();
+        if let Some(existing) = flights.get(&key).and_then(Weak::upgrade) {
+            existing
+        } else {
+            flights.retain(|_, weak| weak.strong_count() > 0);
+            let fresh = Arc::new(SlateFlight::new());
+            flights.insert(key.clone(), Arc::downgrade(&fresh));
+            fresh
+        }
+    };
+    flight
+        .get_or_init(|| {
+            // Generate one slate at a time without holding the cache lock needed by hot frames.
+            let _render = cache.render.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(frame) = cache.frames.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+                return Ok(frame);
+            }
+            let frame = std::panic::catch_unwind(std::panic::AssertUnwindSafe(make))
+                .map_err(|_| MediaError::Decode("offline slate render failed; see the crash log".into()))??;
+            cache.frames.lock().unwrap_or_else(|e| e.into_inner()).insert(key, frame.clone());
+            Ok(frame)
+        })
+        .clone()
+}
+
+fn slate_dimensions(width: u32, height: u32, scale: f32) -> (u32, u32) {
+    if width == 0 || height == 0 {
+        return (2, 2);
+    }
+    // A placeholder can remain visible even while corrupt source metadata awaits repair.
+    let scale = if scale.is_finite() { scale.clamp(1.0 / 64.0, 1.0) } else { 1.0 };
+    let (mut w, mut h) = (((width as f64 * f64::from(scale)).round() as u32).max(2), ((height as f64 * f64::from(scale)).round() as u32).max(2));
+    let side = w.max(h);
+    if side > MAX_OFFLINE_SLATE_SIDE {
+        w = (u64::from(w) * u64::from(MAX_OFFLINE_SLATE_SIDE) / u64::from(side)) as u32;
+        h = (u64::from(h) * u64::from(MAX_OFFLINE_SLATE_SIDE) / u64::from(side)) as u32;
+        w = w.max(2);
+        h = h.max(2);
+    }
+    let pixels = u64::from(w) * u64::from(h);
+    if pixels > MAX_OFFLINE_SLATE_PIXELS {
+        let shrink = (MAX_OFFLINE_SLATE_PIXELS as f64 / pixels as f64).sqrt();
+        w = ((f64::from(w) * shrink).floor() as u32).max(2);
+        h = ((f64::from(h) * shrink).floor() as u32).max(2);
+        // A final integer bound also handles any floating-point rounding at the budget edge.
+        w = w.min((MAX_OFFLINE_SLATE_PIXELS / u64::from(h)) as u32);
+    }
+    (w, h)
 }
 
 impl MediaSource for SlateSource {
@@ -426,19 +592,14 @@ impl MediaSource for SlateSource {
     }
     fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
         let v = self.info.video.as_ref().ok_or(MediaError::NoStream("video"))?;
-        let s = req.scale.clamp(1.0 / 64.0, 1.0);
-        let (w, h) = (((v.width as f32 * s).round() as u32).max(2), ((v.height as f32 * s).round() as u32).max(2));
-        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(f) = last.as_ref()
-            && f.width == w
-            && f.height == h
-        {
-            return Ok(Arc::new((**f).clone().with_pts(req.time)));
-        }
-        let px = filmcraft_render::offline::slate_rgba8(w as usize, h as usize, &self.name, self.reason);
-        let f = Arc::new(VideoFrame::rgba8(w, h, px));
-        *last = Some(f.clone());
-        Ok(Arc::new((*f).clone().with_pts(req.time)))
+        let (w, h) = slate_dimensions(v.width, v.height, req.scale);
+        let key = (self.name.clone(), w, h, self.reason.headline());
+        let frame = cached_slate_frame(&self.cache, key, || {
+            let pixels =
+                filmcraft_render::offline::slate_rgba8(w as usize, h as usize, &self.name, self.reason).map_err(|e| MediaError::Unsupported(e.to_string()))?;
+            Ok(VideoFrame::rgba8(w, h, pixels))
+        })?;
+        Ok(Arc::new(frame.with_pts(req.time)))
     }
     fn audio(&self, _start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
         Ok(AudioBuffer::silence(sample_rate, self.info.audio().map_or(2, |a| a.channels as usize), frames))
@@ -575,7 +736,421 @@ impl MediaSource for ProxySource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use filmcraft_frame::PixelData;
     use filmcraft_project::ItemKind;
+
+    #[test]
+    fn offline_slate_bounds_hostile_and_large_valid_dimensions() {
+        let mut info = filmcraft_media::generators::GeneratorSource::new(
+            filmcraft_media::Generator::BlackVideo,
+            16,
+            16,
+            filmcraft_time::FrameRate::FPS_24,
+            filmcraft_time::Tick(1),
+        )
+        .info()
+        .clone();
+        let video = info.video.as_mut().unwrap();
+        video.width = 1_000_000;
+        video.height = 1_000_000;
+        let source = SlateSource::new(info, "offline.mov", OfflineReason::MadeOffline);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| source.video_frame(FrameRequest::full(filmcraft_time::Tick::ZERO))));
+        assert!(matches!(result, Ok(Ok(frame)) if (frame.width, frame.height) == (960, 960)), "corrupt source metadata must still display a bounded warning");
+
+        for (width, height) in [(15_360, 8_640), (32_768, 8_192), (8_192, 32_768)] {
+            let (w, h) = slate_dimensions(width, height, 1.0);
+            assert!(u64::from(w) * u64::from(h) <= MAX_OFFLINE_SLATE_PIXELS);
+            assert!((f64::from(w) / f64::from(h) - f64::from(width) / f64::from(height)).abs() < 0.01);
+        }
+        assert_eq!(slate_dimensions(1920, 1080, 1.0), (1280, 720));
+        assert_eq!(slate_dimensions(1280, 1280, 1.0), (960, 960));
+        assert_eq!(slate_dimensions(1440, 1080, 1.0), (1108, 831));
+        assert_eq!(slate_dimensions(32_768, 1, 1.0), (1280, 2));
+        assert_eq!(slate_dimensions(32, 32, 1.0 / 64.0), (2, 2));
+        assert_eq!(slate_dimensions(0, 0, 1.0), (2, 2));
+        assert_eq!(slate_dimensions(0, 0, f32::NAN), (2, 2));
+        assert_eq!(slate_dimensions(1920, 1080, f32::NAN), (1280, 720));
+
+        let mut info = source.info().clone();
+        let video = info.video.as_mut().unwrap();
+        video.width = 15_360;
+        video.height = 8_640;
+        let source = SlateSource::new(info, "valid-16k.mov", OfflineReason::MadeOffline);
+        assert_eq!(source.video_frame(FrameRequest { time: filmcraft_time::Tick::ZERO, scale: f32::NAN }).unwrap().width, 1280);
+        assert_eq!(source.video_frame(FrameRequest { time: filmcraft_time::Tick::ZERO, scale: f32::INFINITY }).unwrap().width, 1280);
+        let frame = source.video_frame(FrameRequest::full(filmcraft_time::Tick::ZERO)).unwrap();
+        assert_eq!((frame.width, frame.height), (1280, 720));
+        assert_eq!(u64::from(frame.width) * u64::from(frame.height), MAX_OFFLINE_SLATE_PIXELS);
+        assert_eq!(source.info().video.as_ref().map(|v| (v.width, v.height)), Some((15_360, 8_640)));
+
+        for (width, height) in [(32_768, 1), (1, 32_768)] {
+            let mut info = source.info().clone();
+            let video = info.video.as_mut().unwrap();
+            video.width = width;
+            video.height = height;
+            let slate = SlateSource::new(info, "extreme.mov", OfflineReason::MadeOffline);
+            let frame = slate.video_frame(FrameRequest::full(filmcraft_time::Tick::ZERO)).unwrap();
+            assert!(frame.width <= MAX_OFFLINE_SLATE_SIDE && frame.height <= MAX_OFFLINE_SLATE_SIDE);
+            assert_eq!(frame.to_rgba8().len(), frame.width as usize * frame.height as usize * 4);
+        }
+    }
+
+    #[test]
+    fn hostile_slate_names_share_the_bounded_notice_and_cached_frame() {
+        let info = filmcraft_media::generators::GeneratorSource::new(
+            filmcraft_media::Generator::BlackVideo,
+            64,
+            36,
+            filmcraft_time::FrameRate::FPS_24,
+            filmcraft_time::Tick(1),
+        )
+        .info()
+        .clone();
+        let cache = Arc::<SharedSlateCache>::default();
+        let first = SlateSource::with_cache(info.clone(), &"x".repeat(10_000), OfflineReason::Missing, cache.clone());
+        let second = SlateSource::with_cache(info, "multi\nline.mov", OfflineReason::Missing, cache);
+        assert_eq!(first.name, second.name);
+        assert!(first.name.len() < 512);
+        let a = first.video_frame(FrameRequest::full(filmcraft_time::Tick::ZERO)).unwrap();
+        let b = second.video_frame(FrameRequest::full(filmcraft_time::Tick(1))).unwrap();
+        assert!(matches!((&a.data, &b.data), (PixelData::Rgba8(x), PixelData::Rgba8(y)) if Arc::ptr_eq(x, y)), "equal notices should reuse the cached pixels");
+    }
+
+    #[test]
+    fn clearing_a_project_starts_a_fresh_slate_cache() {
+        let pool = MediaPool::default();
+        let info = filmcraft_media::generators::GeneratorSource::new(
+            filmcraft_media::Generator::BlackVideo,
+            16,
+            8,
+            filmcraft_time::FrameRate::FPS_24,
+            filmcraft_time::Tick(1),
+        )
+        .info()
+        .clone();
+        let previous = pool.slate_cache.read().unwrap_or_else(|e| e.into_inner()).clone();
+        for i in 0..MAX_OFFLINE_SLATE_CACHE_ENTRIES {
+            pool.slate_source(info.clone(), &format!("old-{i}.mov"), OfflineReason::Missing)
+                .video_frame(FrameRequest::full(filmcraft_time::Tick::ZERO))
+                .unwrap();
+        }
+        assert_eq!(previous.frames.lock().unwrap_or_else(|e| e.into_inner()).entries.len(), MAX_OFFLINE_SLATE_CACHE_ENTRIES);
+
+        pool.clear();
+        let next = pool.slate_cache.read().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(!Arc::ptr_eq(&previous, &next), "the next project must not inherit a full cache");
+        assert!(next.frames.lock().unwrap_or_else(|e| e.into_inner()).entries.is_empty());
+        let source = pool.slate_source(info, "new-project.mov", OfflineReason::Missing);
+        assert!(Arc::ptr_eq(&source.cache, &next));
+        let a = source.video_frame(FrameRequest::full(filmcraft_time::Tick::ZERO)).unwrap();
+        let b = source.video_frame(FrameRequest::full(filmcraft_time::Tick(1))).unwrap();
+        assert!(
+            matches!((&a.data, &b.data), (PixelData::Rgba8(x), PixelData::Rgba8(y)) if Arc::ptr_eq(x, y)),
+            "the new project's first slate should be cached"
+        );
+        assert_eq!(next.frames.lock().unwrap_or_else(|e| e.into_inner()).entries.len(), 1);
+    }
+
+    #[test]
+    fn offline_slate_scales_and_uses_a_bounded_shared_cache() {
+        let info = filmcraft_media::generators::GeneratorSource::new(
+            filmcraft_media::Generator::BlackVideo,
+            15_360,
+            8_640,
+            filmcraft_time::FrameRate::FPS_24,
+            filmcraft_time::Tick(1),
+        )
+        .info()
+        .clone();
+        let source = SlateSource::new(info, "missing.mov", OfflineReason::Missing);
+        let frame = source.video_frame(FrameRequest { time: filmcraft_time::Tick::ZERO, scale: 0.075 }).unwrap();
+        assert_eq!((frame.width, frame.height), (1152, 648), "valid source metadata must scale the bounded slate");
+        let second = source.video_frame(FrameRequest { time: filmcraft_time::Tick(1), scale: 0.075 }).unwrap();
+        assert_eq!(second.pts, filmcraft_time::Tick(1));
+        assert_eq!((second.width, second.height), (frame.width, frame.height));
+        let cache = source.cache.frames.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(cache.bytes <= MAX_OFFLINE_SLATE_CACHE_BYTES);
+        assert!(cache.entries.len() <= MAX_OFFLINE_SLATE_CACHE_ENTRIES);
+    }
+
+    #[test]
+    fn slate_cache_evicts_old_frames_by_bytes_and_entry_count() {
+        let mut cache = SlateFrameCache::default();
+        let make = || VideoFrame::rgba8(1280, 720, vec![7; 1280 * 720 * 4]);
+        let first = (Arc::<str>::from("first.mov"), 1280, 720, OfflineReason::Missing.headline());
+        let frame = make();
+        cache.insert(first.clone(), frame.clone());
+        let cached = cache.get(&first).unwrap();
+        assert!(matches!((&frame.data, &cached.data), (PixelData::Rgba8(a), PixelData::Rgba8(b)) if Arc::ptr_eq(a, b)));
+        for i in 0..15 {
+            cache.insert((Arc::<str>::from(format!("{i}.mov")), 1280, 720, OfflineReason::Missing.headline()), make());
+        }
+        cache.insert((Arc::<str>::from("overflow.mov"), 1280, 720, OfflineReason::Missing.headline()), make());
+        assert!(cache.bytes <= MAX_OFFLINE_SLATE_CACHE_BYTES);
+        assert!(cache.entries.len() <= MAX_OFFLINE_SLATE_CACHE_ENTRIES);
+        assert!(cache.get(&first).is_some(), "a one-entry overflow must not evict the hot set");
+        let absent = (Arc::<str>::from("absent.mov"), 1280, 720, OfflineReason::Missing.headline());
+        for _ in 0..(MAX_OFFLINE_SLATE_CACHE_IDLE_ACCESSES * 2) {
+            assert!(cache.get(&absent).is_none());
+        }
+        cache.insert((Arc::<str>::from("replacement.mov"), 1280, 720, OfflineReason::Missing.headline()), make());
+        assert!(cache.get(&first).is_none(), "inactive slates must eventually be evicted");
+    }
+
+    #[test]
+    fn slate_cache_counts_float_frames_toward_its_byte_budget() {
+        let mut cache = SlateFrameCache::default();
+        cache.insert((Arc::<str>::from("float.mov"), 2, 2, OfflineReason::Missing.headline()), VideoFrame::rgba_f32(2, 2, vec![0.0; 16]));
+        assert_eq!(cache.bytes, 16 * std::mem::size_of::<f32>());
+        cache.insert((Arc::<str>::from("rgba.mov"), 2, 2, OfflineReason::Missing.headline()), VideoFrame::rgba8(2, 2, vec![0; 16]));
+        assert_eq!(cache.bytes, 16 * std::mem::size_of::<f32>() + 16, "RGBA8 cache cost is bytes, not pixels");
+    }
+
+    #[test]
+    fn nine_full_sized_slates_remain_hot_within_the_bounded_cache() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let cache = SharedSlateCache::default();
+        let builds = AtomicUsize::new(0);
+        for _ in 0..3 {
+            for i in 0..9 {
+                let key = (Arc::<str>::from(format!("{i}.mov")), 1280, 720, OfflineReason::Missing.headline());
+                cached_slate_frame(&cache, key, || {
+                    builds.fetch_add(1, Ordering::SeqCst);
+                    Ok(VideoFrame::rgba8(1280, 720, vec![7; 1280 * 720 * 4]))
+                })
+                .unwrap();
+            }
+        }
+        assert_eq!(builds.load(Ordering::SeqCst), 9, "nine active 720p slates should render once each");
+        let cache = cache.frames.lock().unwrap();
+        assert!(cache.bytes <= MAX_OFFLINE_SLATE_CACHE_BYTES);
+        assert_eq!(cache.entries.len(), 9);
+    }
+
+    #[test]
+    fn slate_cache_does_not_thrash_when_one_more_slate_than_fits_is_rendered_per_frame() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let cache = SharedSlateCache::default();
+        let builds = AtomicUsize::new(0);
+        for _ in 0..3 {
+            for i in 0..17 {
+                let key = (Arc::<str>::from(format!("{i}.mov")), 2, 2, OfflineReason::Missing.headline());
+                cached_slate_frame(&cache, key, || {
+                    builds.fetch_add(1, Ordering::SeqCst);
+                    Ok(VideoFrame::rgba8(2, 2, vec![7; 16]))
+                })
+                .unwrap();
+            }
+        }
+        assert_eq!(builds.load(Ordering::SeqCst), 19, "sixteen hot slates are reused across frames");
+        let cache = cache.frames.lock().unwrap();
+        assert!(cache.bytes <= MAX_OFFLINE_SLATE_CACHE_BYTES);
+        assert!(cache.entries.len() <= MAX_OFFLINE_SLATE_CACHE_ENTRIES);
+    }
+
+    #[test]
+    fn a_cold_slate_does_not_block_an_unrelated_cached_frame() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        let cache = Arc::new(SharedSlateCache::default());
+        let hot = (Arc::<str>::from("hot.mov"), 2, 2, OfflineReason::Missing.headline());
+        cached_slate_frame(&cache, hot.clone(), || Ok(VideoFrame::rgba8(2, 2, vec![7; 16]))).unwrap();
+        let (started_tx, started_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let cold_cache = cache.clone();
+        let cold = std::thread::spawn(move || {
+            let key = (Arc::<str>::from("cold.mov"), 2, 2, OfflineReason::Missing.headline());
+            cached_slate_frame(&cold_cache, key, || {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(VideoFrame::rgba8(2, 2, vec![8; 16]))
+            })
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let (hit_tx, hit_rx) = channel();
+        let hot_cache = cache.clone();
+        let hit = std::thread::spawn(move || {
+            hit_tx.send(cached_slate_frame(&hot_cache, hot, || panic!("cached slate was regenerated")).is_ok()).unwrap();
+        });
+        let arrived = hit_rx.recv_timeout(Duration::from_secs(2));
+        release_tx.send(()).unwrap();
+        cold.join().unwrap().unwrap();
+        hit.join().unwrap();
+        assert!(arrived.unwrap(), "a cache hit waited for an unrelated slate render");
+    }
+
+    #[test]
+    fn cache_miss_and_flight_enrollment_are_atomic() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        let cache = Arc::new(SharedSlateCache::default());
+        let (entered_tx, entered_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let worker_cache = cache.clone();
+        let worker = std::thread::spawn(move || {
+            let key = (Arc::<str>::from("uncached.mov"), 2, 2, OfflineReason::Missing.headline());
+            cached_slate_frame_with_admission_hook(
+                &worker_cache,
+                key,
+                || Ok(VideoFrame::rgba8(2, 2, vec![7; 16])),
+                || {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                },
+            )
+        });
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let admission_is_locked = cache.flights.try_lock().is_err();
+        release_tx.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+        assert!(admission_is_locked, "no caller may observe a cache miss before joining a flight");
+    }
+
+    #[test]
+    fn concurrent_callers_share_an_overflow_slate_render() {
+        use std::sync::Barrier;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::time::Duration;
+        use web_time::Instant;
+
+        let cache = Arc::new(SharedSlateCache::default());
+        for i in 0..MAX_OFFLINE_SLATE_CACHE_ENTRIES {
+            let key = (Arc::<str>::from(format!("hot-{i}.mov")), 2, 2, OfflineReason::Missing.headline());
+            cached_slate_frame(&cache, key, || Ok(VideoFrame::rgba8(2, 2, vec![7; 16]))).unwrap();
+        }
+        let builds = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(AtomicBool::new(false));
+        let barrier = Arc::new(Barrier::new(4));
+        let key = (Arc::<str>::from("overflow.mov"), 2, 2, OfflineReason::Missing.headline());
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                let (cache, builds, release, barrier, key) = (cache.clone(), builds.clone(), release.clone(), barrier.clone(), key.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    cached_slate_frame(&cache, key, || {
+                        builds.fetch_add(1, Ordering::SeqCst);
+                        while !release.load(Ordering::Acquire) {
+                            std::thread::yield_now();
+                        }
+                        Ok(VideoFrame::rgba8(2, 2, vec![8; 16]))
+                    })
+                })
+            })
+            .collect();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let all_waiting = loop {
+            let count = cache.flights.lock().unwrap().get(&key).map_or(0, Weak::strong_count);
+            if count == 4 {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::yield_now();
+        };
+        release.store(true, Ordering::Release);
+        let frames: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap().unwrap()).collect();
+        assert!(all_waiting, "all four callers must overlap on the uncached slate");
+        assert_eq!(builds.load(Ordering::SeqCst), 1, "overlapping callers must share one rejected render");
+        assert!(frames.iter().skip(1).all(|frame| matches!((&frames[0].data, &frame.data), (PixelData::Rgba8(a), PixelData::Rgba8(b)) if Arc::ptr_eq(a, b))));
+        assert_eq!(cache.frames.lock().unwrap().entries.len(), MAX_OFFLINE_SLATE_CACHE_ENTRIES);
+    }
+
+    #[test]
+    fn failed_slate_flight_returns_an_error_and_can_retry() {
+        let cache = SharedSlateCache::default();
+        let key = (Arc::<str>::from("retry.mov"), 2, 2, OfflineReason::Missing.headline());
+        let failed =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cached_slate_frame(&cache, key.clone(), || panic!("synthetic slate generation failure"))));
+        assert!(matches!(failed, Ok(Err(MediaError::Decode(message))) if message.contains("offline slate render failed")));
+        let recovered = cached_slate_frame(&cache, key, || Ok(VideoFrame::rgba8(2, 2, vec![7; 16]))).unwrap();
+        assert_eq!(recovered.to_rgba8(), vec![7; 16]);
+    }
+
+    #[test]
+    fn offline_slate_serializes_concurrent_misses() {
+        use std::sync::Barrier;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let info = filmcraft_media::generators::GeneratorSource::new(
+            filmcraft_media::Generator::BlackVideo,
+            1920,
+            1080,
+            filmcraft_time::FrameRate::FPS_24,
+            filmcraft_time::Tick(1),
+        )
+        .info()
+        .clone();
+        let source = SlateSource::new(info, "distinct.mov", OfflineReason::Missing);
+        let cache = Arc::new(SharedSlateCache::default());
+        let builds = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(4));
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                let (cache, builds, barrier) = (cache.clone(), builds.clone(), barrier.clone());
+                let key = (source.name.clone(), 2, 2, OfflineReason::Missing.headline());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    cached_slate_frame(&cache, key, || {
+                        builds.fetch_add(1, Ordering::SeqCst);
+                        Ok(VideoFrame::rgba8(2, 2, vec![7; 16]))
+                    })
+                })
+            })
+            .collect();
+        let mut frames = Vec::new();
+        for worker in workers {
+            frames.push(worker.join().unwrap().unwrap());
+        }
+        assert_eq!(builds.load(Ordering::SeqCst), 1, "only one worker generates the slate");
+        let first = &frames[0].data;
+        assert!(frames.iter().skip(1).all(|frame| matches!((first, &frame.data), (PixelData::Rgba8(a), PixelData::Rgba8(b)) if Arc::ptr_eq(a, b))));
+    }
+
+    #[test]
+    fn render_item_decodes_an_unknown_size_slate() {
+        use filmcraft_project::{Label, MediaClip, MediaRef};
+
+        let mut info = filmcraft_media::generators::GeneratorSource::new(
+            filmcraft_media::Generator::BlackVideo,
+            2,
+            2,
+            filmcraft_time::FrameRate::FPS_24,
+            filmcraft_time::Tick(1),
+        )
+        .info()
+        .clone();
+        let video = info.video.as_mut().unwrap();
+        video.width = 0;
+        video.height = 0;
+        let mut project = Project::new("Unknown size");
+        let item = project.add_item(
+            "missing.mov",
+            Label::Iris,
+            ItemKind::Media(MediaClip {
+                media: MediaRef::File { path: "missing.mov".into() },
+                info: info.clone(),
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: true,
+                proxy: None,
+                identity: None,
+            }),
+            None,
+        );
+        let mut sources = filmcraft_render::SourceMap::default();
+        sources.0.insert(item, Arc::new(SlateSource::new(info, "missing.mov", OfflineReason::Missing)));
+        let frame = filmcraft_render::render_item(&project, item, filmcraft_time::Tick::ZERO, 1.0, &sources).unwrap();
+        assert_eq!(project.source_size(item), Some((0, 0)));
+        assert_eq!((frame.w, frame.h), (1, 1));
+        assert!(frame.get(0, 0)[3] > 0.9, "the renderer retains a visible offline pixel");
+    }
 
     /// A host whose whole-file read fails: opening must go through the reader.
     struct ReaderOnly(Arc<[u8]>);
@@ -693,7 +1268,7 @@ mod tests {
         assert!(pool.offline_status(item).is_none(), "nothing unsupported yet");
         let f = at(2).unwrap();
         assert_eq!((f.width, f.height), (16, 8));
-        assert_eq!(f.to_rgba8(), filmcraft_render::offline::slate_rgba8(16, 8, "a.mov", OfflineReason::Unreadable));
+        assert_eq!(f.to_rgba8(), filmcraft_render::offline::slate_rgba8(16, 8, "a.mov", OfflineReason::Unreadable).unwrap());
         let st = pool.offline_status(item).unwrap();
         assert_eq!((st.reason, st.path.as_str(), st.error.as_str()), (OfflineReason::Unreadable, "/media/cam/a.mov", "H.264: field pictures"));
         assert_eq!(src.audio(0, 4, 48_000).unwrap().channels.len(), 3);
@@ -750,7 +1325,7 @@ mod tests {
     }
 
     fn is_slate(r: &filmcraft_media::Result<Arc<VideoFrame>>, name: &str) -> bool {
-        r.as_ref().is_ok_and(|f| f.to_rgba8() == filmcraft_render::offline::slate_rgba8(16, 8, name, OfflineReason::Unreadable))
+        r.as_ref().is_ok_and(|f| f.to_rgba8() == filmcraft_render::offline::slate_rgba8(16, 8, name, OfflineReason::Unreadable).unwrap())
     }
 
     /// #626 follow-up to #762: a damaged file (frames failing again and again) shows the
@@ -840,7 +1415,7 @@ mod tests {
         let item = ItemId(r["items"][0].as_u64().unwrap());
         let src = s.media.source_for(&s.project, item, &*s.services).unwrap();
         let f = src.video_frame(FrameRequest { time: filmcraft_time::Tick::ZERO, scale: 1.0 }).unwrap();
-        assert_eq!(f.to_rgba8(), filmcraft_render::offline::slate_rgba8(64, 32, "h264_444_64x32.mp4", OfflineReason::Unreadable));
+        assert_eq!(f.to_rgba8(), filmcraft_render::offline::slate_rgba8(64, 32, "h264_444_64x32.mp4", OfflineReason::Unreadable).unwrap());
         let st = s.media.offline_status(item).unwrap();
         assert_eq!(st.reason, OfflineReason::Unreadable);
         assert!(st.error.contains("H.264") && st.error.contains("chroma_format_idc 3"), "{}", st.error);

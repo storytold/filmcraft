@@ -677,6 +677,7 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_p(p, "name").unwrap_or("Untitled").to_string();
     proj.name = name.clone();
     proj.root.name = name;
+    s.media = std::sync::Arc::new(s.media.fresh_for_project());
     s.project = std::sync::Arc::new(proj);
     s.history = Default::default();
     s.history.limit = 200;
@@ -686,7 +687,6 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     if s.path.take().is_some() {
         s.previews.reset_temp();
     }
-    s.media.clear();
     s.revision += 1;
     s.saved_revision = s.revision;
     s.events.push(crate::Event::ProjectChanged { revision: s.revision });

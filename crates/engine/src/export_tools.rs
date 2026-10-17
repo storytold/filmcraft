@@ -463,7 +463,20 @@ fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportS
 }
 
 /// Run an export of `seq` in `project` as a background job (or now, with `wait`); returns the job id.
-pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut settings: ExportSettings, label: String, wait: bool) -> Result<u64> {
+pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, settings: ExportSettings, label: String, wait: bool) -> Result<u64> {
+    let media = s.media.clone();
+    spawn_export_with_media(s, media, project, seq, settings, label, wait)
+}
+
+fn spawn_export_with_media(
+    s: &mut Session,
+    media: Arc<crate::MediaPool>,
+    project: Arc<Project>,
+    seq: ItemId,
+    mut settings: ExportSettings,
+    label: String,
+    wait: bool,
+) -> Result<u64> {
     let format = settings.format;
     if !filmcraft_export::available(format) {
         return Err(EngineError::Other(format!("{} export is not available (no encoder registered)", format.label())));
@@ -479,7 +492,7 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
     let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
     let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
     // Export always renders full-resolution media, whatever the proxy toggle says.
-    let provider = s.media.full_res_provider(project.clone(), s.services.clone()).recording();
+    let provider = media.full_res_provider(project.clone(), s.services.clone()).recording();
     let (prog, res) = (job.progress.clone(), job.result.clone());
     let offline = s.export_offline.entry(id).or_default().clone();
     if cfg!(target_arch = "wasm32") && !wait && filmcraft_export::stepped(format) {
@@ -588,9 +601,11 @@ pub struct QueueItem {
     /// The background job while encoding / after it ran.
     pub job: Option<u64>,
     pub error: Option<String>,
-    /// The project as it was when the item was queued.
+    /// The project and media pool as they were when the item was queued.
     #[serde(skip)]
     pub project: Arc<Project>,
+    #[serde(skip)]
+    pub media: Arc<crate::MediaPool>,
 }
 
 /// The export queue (session state).
@@ -689,7 +704,7 @@ pub fn pump_queue(s: &mut Session, wait: bool) {
         };
         let it = s.export_queue.items[i].clone();
         let label = format!("Queue: {} → {}", it.sequence_name, file_name(&it.settings.path));
-        match spawn_export(s, it.project.clone(), it.sequence, it.settings.clone(), label, wait) {
+        match spawn_export_with_media(s, it.media.clone(), it.project.clone(), it.sequence, it.settings.clone(), label, wait) {
             Ok(job) => {
                 let x = &mut s.export_queue.items[i];
                 x.status = QueueStatus::Encoding;
@@ -766,6 +781,7 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
             job: None,
             error: None,
             project: project.clone(),
+            media: s.media.clone(),
         });
         ids.push(id);
     }

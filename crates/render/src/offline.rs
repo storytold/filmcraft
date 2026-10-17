@@ -2,8 +2,8 @@
 //! its pictures. Our own design, drawn in code: a dark red field with diagonal hazard stripes, a
 //! dark panel with a warning triangle, "MEDIA NOT FOUND", the file name and how to fix it.
 //!
-//! The slate is drawn at the size the caller asks for, so a 4K clip's slate scales with playback
-//! resolution like any other frame, and it is deterministic (tests compare renders against it).
+//! The drawing function uses the caller's dimensions. Media sources may request a smaller slate
+//! for bounded previews. The result is deterministic (tests compare renders against it).
 
 use filmcraft_geom::Vec2;
 use filmcraft_text::{Align, ParagraphStyle, TextStyle, layout, render};
@@ -42,9 +42,47 @@ fn srgb(c: [u8; 3]) -> [f32; 4] {
     premul_linear([c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0])
 }
 
+/// Maximum generated offline placeholder size, independent of source metadata.
+pub const MAX_OFFLINE_SLATE_SIDE: u32 = 1280;
+pub const MAX_OFFLINE_SLATE_PIXELS: u64 = 921_600;
+
+/// Keep untrusted media names from driving an unbounded text layout or raster.
+const MAX_SLATE_NAME_BYTES: usize = 512;
+const NAME_NOT_SHOWN_ON_SLATE: &str = "File name not shown on slate";
+
+/// Name used only on the raster slate; the project retains the original path.
+pub fn slate_display_name(name: &str) -> &str {
+    if name.len() > MAX_SLATE_NAME_BYTES || name.chars().any(char::is_control) { NAME_NOT_SHOWN_ON_SLATE } else { name }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InvalidSlateSize {
+    pub width: usize,
+    pub height: usize,
+}
+
+impl std::fmt::Display for InvalidSlateSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "offline slate dimensions {}x{} require nonzero sides at most {} pixels and area at most {} pixels",
+            self.width, self.height, MAX_OFFLINE_SLATE_SIDE, MAX_OFFLINE_SLATE_PIXELS
+        )
+    }
+}
+
+impl std::error::Error for InvalidSlateSize {}
+
 /// Draw the slate at `w`×`h` (premultiplied linear-light, opaque).
-pub fn slate(w: usize, h: usize, file_name: &str, reason: OfflineReason) -> Image {
-    let (w, h) = (w.max(1), h.max(1));
+pub fn slate(w: usize, h: usize, file_name: &str, reason: OfflineReason) -> Result<Image, InvalidSlateSize> {
+    let valid = w > 0
+        && h > 0
+        && w <= MAX_OFFLINE_SLATE_SIDE as usize
+        && h <= MAX_OFFLINE_SLATE_SIDE as usize
+        && w.checked_mul(h).is_some_and(|pixels| pixels <= MAX_OFFLINE_SLATE_PIXELS as usize);
+    if !valid {
+        return Err(InvalidSlateSize { width: w, height: h });
+    }
     let field = srgb(FIELD);
     let stripe = srgb(STRIPE);
     let period = (h as f32 / 9.0).max(4.0);
@@ -79,23 +117,23 @@ pub fn slate(w: usize, h: usize, file_name: &str, reason: OfflineReason) -> Imag
     let bar_w = (tri_h * 0.09).max(1.0);
     fill_path(&mut img, &filmcraft_text::Path::rect(tcx - bar_w / 2.0, ty0 + tri_h * 0.36, tcx + bar_w / 2.0, ty0 + tri_h * 0.70), AMBER);
     fill_path(&mut img, &filmcraft_text::Path::rect(tcx - bar_w / 2.0, ty0 + tri_h * 0.76, tcx + bar_w / 2.0, ty0 + tri_h * 0.76 + bar_w), AMBER);
-    // text
     let cx = w as f32 / 2.0;
     text(&mut img, reason.headline(), "Bold", Vec2::new(cx as f64, (ty0 + tri_h + s * 0.085) as f64), s * 0.062, [1.0, 1.0, 1.0, 1.0], pw * 0.94);
-    if !file_name.is_empty() {
-        text(&mut img, file_name, "Regular", Vec2::new(cx as f64, (ty0 + tri_h + s * 0.15) as f64), s * 0.036, [1.0, 0.80, 0.80, 1.0], pw * 0.94);
+    let display_name = slate_display_name(file_name);
+    if !display_name.is_empty() {
+        text(&mut img, display_name, "Regular", Vec2::new(cx as f64, (ty0 + tri_h + s * 0.15) as f64), s * 0.036, [1.0, 0.80, 0.80, 1.0], pw * 0.94);
     }
     let hint = match reason {
         OfflineReason::MadeOffline => "Link Media… brings it back",
         _ => "File ▸ Link Media… reconnects it",
     };
     text(&mut img, hint, "Regular", Vec2::new(cx as f64, (ty0 + tri_h + s * 0.205) as f64), s * 0.028, [0.85, 0.72, 0.72, 1.0], pw * 0.94);
-    img
+    Ok(img)
 }
 
 /// The slate as straight sRGB RGBA8 (what offline sources hand to the compositor).
-pub fn slate_rgba8(w: usize, h: usize, file_name: &str, reason: OfflineReason) -> Vec<u8> {
-    slate(w, h, file_name, reason).to_rgba8()
+pub fn slate_rgba8(w: usize, h: usize, file_name: &str, reason: OfflineReason) -> Result<Vec<u8>, InvalidSlateSize> {
+    Ok(slate(w, h, file_name, reason)?.to_rgba8())
 }
 
 fn fill_path(img: &mut Image, p: &filmcraft_text::Path, color: [f32; 4]) {
@@ -120,4 +158,19 @@ fn text(img: &mut Image, s: &str, style: &str, pos: Vec2, px: f32, color: [f32; 
     }
     let (m, x0, y0) = render::rasterize(&l, &render::at(pos.x as f32, pos.y as f32));
     paint_mask(img, &m, x0, y0, premul_linear(color), 1.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hostile_name_uses_a_bounded_notice_on_the_slate() {
+        assert_eq!(slate_display_name("clip.mov"), "clip.mov");
+        assert_eq!(slate_display_name(&"x".repeat(MAX_SLATE_NAME_BYTES + 1)), NAME_NOT_SHOWN_ON_SLATE);
+        assert_eq!(slate_display_name("many\nlines.mov"), NAME_NOT_SHOWN_ON_SLATE);
+        assert_eq!(slate_display_name("control\u{0000}name.mov"), NAME_NOT_SHOWN_ON_SLATE);
+        let pixels = slate_rgba8(32, 18, &"\n".repeat(10_000), OfflineReason::Missing).unwrap();
+        assert_eq!(pixels.len(), 32 * 18 * 4);
+    }
 }
