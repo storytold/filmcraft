@@ -44,6 +44,7 @@ pub mod graphics_notice;
 pub mod header;
 pub mod i18n;
 pub mod icons;
+pub mod icons_svg;
 pub mod links;
 pub mod menus;
 pub mod native_dialogs;
