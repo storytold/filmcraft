@@ -69,7 +69,7 @@ and `filmcraft-cli`.
 | `tts` | L2 | text to speech: `Voice` trait, voice catalogue, pause markers, built-in formant voices; Kokoro-82M natural voices on candle and their pinned package catalogue (feature `kokoro`). Same-layer edge to `tts-text` |
 | `tts-text` | L2 | text front end for narration: normalizer (numbers, money, dates, acronyms, pauses) and English pronunciation (CMUdict + letter-to-sound) to Kokoro phonemes |
 | `codecs` | L2 | container + codec hub: MP4/MOV, MKV, MXF, Ogg and MPEG TS / PS / video elementary stream sources, GOP-aware seeking, decoder registry, audio decoding |
-| `interchange` | L2 | EDL, FCP7 XML, FCPXML, OTIO, AAF (on `cfb`) and OMF 2.0 import/export (no file I/O; the engine supplies rendered audio essence) ([README](../crates/interchange/README.md)) |
+| `interchange` | L2 | EDL, FCP7 XML, FCPXML, OTIO, AAF (on `cfb`) and OMF 2.0 import/export, Kdenlive project (MLT XML) import (no file I/O; the engine supplies rendered audio essence) ([README](../crates/interchange/README.md)) |
 | `render` | L3 | sequence evaluation, CPU compositor, video effects (`effects`, `vfx`; effects needing other frames or tracks read them through `vfx::FxEnv`), transitions, audio mix |
 | `gpu` | L3 | wgpu compositor (WGSL) |
 | `golden` | L3 | test-only: golden-image tests of the CPU renderer and GPU-vs-CPU parity; empty library, dev-dependencies only |
@@ -701,14 +701,14 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 Video encoders implement `export::VideoEncoder`. Codec crates plug in with `register_encoder` and
 `register_audio_encoder`.
 
-Timelines can be exchanged as EDL, FCP7 XML, FCPXML, OTIO, AAF or OMF. `file.import` detects these
-formats and merges the result into the project as one undoable step (AAF / OMF embedded audio is
-written next to the document first). `file.import {replace: true}` starts from an empty project
+Timelines can be exchanged as EDL, FCP7 XML, FCPXML, OTIO, AAF or OMF, and read from Kdenlive
+projects (`.kdenlive`, MLT XML). `file.import` detects these formats and merges the result into the
+project as one undoable step (AAF / OMF embedded audio is written next to the document first). `file.import {replace: true}` starts from an empty project
 with the same name (`file.newProject`) so a headless import→export round-trip contains only the
 imported timeline. `file.exportInterchange`, `file.exportEdl`,
 `file.exportFcpxml`, `file.exportOtio`, `file.exportAaf` and `file.exportOmf` write them.
 `file.exportInterchange {format}` takes `edl`, `xml` (the default), `fcpxml`, `otio`, `aaf` or `omf`;
-any other value is a parameter error and nothing is written. For AAF and
+any other value (`kdenlive` included: it is import only) is a parameter error and nothing is written. For AAF and
 OMF the engine (`engine::aaf_omf`) first prepares the audio the document references: it lists the
 used ranges (`interchange::essence::audio_needs`), decodes or renders them (clip effects through the
 export audio pipeline), embeds them or writes WAV / AIFF files, and optionally renders a video

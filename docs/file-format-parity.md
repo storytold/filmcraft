@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** major (new file: every file type Premiere Pro 26.5.2 reads or writes, against ours) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** minor (Kdenlive projects import, #1089) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
 
 Containers, stills, audio files, project and interchange files, captions and presets. Codecs inside
 the containers are in [codec-parity.md](codec-parity.md). Our import list is
@@ -22,6 +22,7 @@ only). "Tested" names the evidence.
 | EDL (CMX 3600) | read + write | yes | yes | tests | 85% |
 | OpenTimelineIO | read + write (26.0) | yes | yes | tests | 80% |
 | Avid Log Exchange (ALE) | write | no | yes | — | 70% |
+| Kdenlive project `.kdenlive` (MLT XML) | no | yes: tracks, clips, gaps, colour clips, linked audio / video; transitions, effects, titles, guides reported (#1089) | no | synthetic projects | ahead |
 | Marker CSV / text | write | — | yes (#454) | — | 80% |
 | Selection as project | Premiere project | — | `.fcproj` only | — | 50% |
 | Templates (`.prproj` templates) | yes | — | our templates | — | 70% |
@@ -93,3 +94,4 @@ validation in Avid and Pro Tools, DVD / Blu-ray / DCP / broadcast MXF delivery.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-10 | major | Created: format-by-format comparison with Premiere 26.5.2 from the import / export registries, crate READMEs, the installed bundle's exporter listings and open issues |
+| 2026-10-14 | minor | Kdenlive projects (`.kdenlive`) import (#1089) |

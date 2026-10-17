@@ -346,3 +346,49 @@ fn export_with_missing_media_fails_unless_allowed() {
     assert!(String::from_utf8_lossy(&render.stderr).contains("still.png"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// #1089: `import` opens a Kdenlive project's timeline; a media file missing from disk is listed
+/// offline and what FilmCraft does not import is reported. The saved project has the timeline.
+#[test]
+fn import_kdenlive_project() {
+    let dir = std::env::temp_dir().join(format!("fc-cli-kdenlive-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = dir.join("edit.kdenlive");
+    std::fs::write(
+        &doc,
+        r#"<?xml version='1.0' encoding='utf-8'?>
+<mlt LC_NUMERIC="C" producer="main_bin" version="7.37.0">
+ <profile description="HD 720p 25 fps" frame_rate_num="25" frame_rate_den="1" width="1280" height="720"/>
+ <chain id="chain0"><property name="length">250</property><property name="resource">media/interview.mp4</property><property name="kdenlive:clipname">Interview</property></chain>
+ <playlist id="main_bin"><entry producer="chain0" in="0" out="249"/></playlist>
+ <playlist id="playlist0"><blank length="00:00:01.000"/><entry producer="chain0" in="00:00:02.000" out="00:00:05.960"/></playlist>
+ <playlist id="playlist1"><property name="kdenlive:audio_track">1</property><blank length="25"/><entry producer="chain0" in="50" out="149"/></playlist>
+ <tractor id="tractor0">
+  <property name="kdenlive:clipname">Interview Cut</property>
+  <track producer="playlist1" hide="video"/>
+  <track producer="playlist0"/>
+  <filter id="filter0"><property name="mlt_service">volume</property><property name="kdenlive_id">volume</property></filter>
+ </tractor>
+</mlt>
+"#,
+    )
+    .unwrap();
+    let proj = dir.join("p.fcproj");
+    let r = json_out(&cli(&["import", doc.to_str().unwrap(), "--save-as", proj.to_str().unwrap()]));
+    let d = &r["documents"][0];
+    assert_eq!(d["format"], "Kdenlive (MLT XML)", "{r}");
+    assert!(d["offlineMedia"][0].as_str().unwrap().ends_with("interview.mp4"), "{r}");
+    assert!(d["report"].as_array().unwrap().iter().any(|m| m == "effect (filter) \"volume\" was not imported"), "{r}");
+    let seq = d["sequences"][0].as_u64().unwrap();
+    let s = json_out(&cli(&["--project", proj.to_str().unwrap(), "exec", "sequence.inspect", &format!("item={seq}")]));
+    assert_eq!(s["name"], "Interview Cut", "{s}");
+    let frames = |t: &Value| -> Vec<(i64, i64)> {
+        t["items"].as_array().unwrap().iter().map(|c| (c["startFrame"].as_i64().unwrap(), c["durationFrames"].as_i64().unwrap())).collect()
+    };
+    // 2.000 s to 5.960 s (inclusive) at 25 fps: frames 50–149, after a one-second blank
+    assert_eq!(frames(&s["video"][0]), [(25, 100)], "{s}");
+    assert_eq!(frames(&s["audio"][0]), [(25, 100)], "{s}");
+    assert_eq!(s["video"][0]["items"][0]["link"], s["audio"][0]["items"][0]["link"], "{s}");
+    assert!(s["video"][0]["items"][0]["link"].is_u64(), "{s}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

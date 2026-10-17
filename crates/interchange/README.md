@@ -1,8 +1,9 @@
 # filmcraft-interchange
 
 Timeline interchange for FilmCraft: CMX 3600 EDL, Final Cut Pro 7 XML (xmeml), FCPXML,
-OpenTimelineIO, AAF and OMF import and export, plus Avid ALE. Layer L2: no file I/O; media
-references are strings and audio essence is supplied by the caller (the engine).
+OpenTimelineIO, AAF and OMF import and export, plus Avid ALE (export) and Kdenlive projects
+(MLT XML, import). Layer L2: no file I/O; media references are strings and audio essence is
+supplied by the caller (the engine).
 
 ## Specifications
 
@@ -21,8 +22,25 @@ read off files it exports, never from the application itself.
 | OMF | Avid *OMF Interchange Specification* | Version 2.0 (1997) | classes (`HEAD`, `CMOB`, `MMOB`, `SMOB`, `MSLT`, `TRKD`, `SEQU`, `SCLP`, `FILL`, `TRAN`, `EFFE`, `ESLT`, `CVAL`, `VVAL`, `TCCP`, `WAVD`, `AIFD`, `WAVE`, `AIFC`, locators), property and type names |
 | OMF | Apple *Bento Specification* | revision 1.0d5 | container label, TOC encoding, objects / properties / types, references |
 | WAVE / AIFF | Microsoft RIFF WAVE; Apple AIFF 1.3 | — | embedded and separate audio files |
+| MLT XML | mltframework.org *MLT XML*, *Framework Design*, *Profiles* | as published in 2026 | document structure (producers, playlists with entries and blanks, tractors and tracks), inclusive out points, the profile and its default |
 
 The other formats' editions are listed in the module docs (`edl`, `fcp7`, `fcpxml`, `otio`, `ale`).
+What MLT's documentation leaves to the application (how Kdenlive lays out its tracks, flags audio
+tracks, names clips, keeps guides and bin folders) was read off synthetic projects shaped like the
+files Kdenlive writes, never from MLT or Kdenlive source (both GPL).
+
+## Kdenlive projects
+
+Import only (`Format::Mlt`, `.kdenlive`). The timeline is the tractor `<mlt producer>` names, else
+the document's last tractor, looked through when it only wraps another one (a project tractor
+around a Kdenlive sequence). Each track (a playlist, or a tractor of playlists) becomes a FilmCraft track: entries
+are clips (`out` inclusive), blanks gaps; times are frame counts, clock values or SMPTE timecode.
+The profile gives the sequence settings; file producers and chains become media (relative paths
+resolve against `<mlt root>`), colour producers colour mattes, and the bin's clips are imported
+even when unused. A video clip and an audio clip with the same media over the same time are
+linked. Transitions, effects, title clips, speed changes, nested timelines, guides, clip markers
+and bin folders are not imported: the report names each one, and a skipped clip leaves a gap so
+the rest of the track keeps its timing. Details in the `mlt` module docs.
 
 **Invariant — Unicode media URLs:** file URL prefix probes must not panic when their byte boundary
 falls inside a UTF-8 character. Timeline importers use the shared converter; `tests/file_urls.rs`
@@ -93,6 +111,13 @@ OMF carries no video at all.
   random corruption never panic. Nested sequences: AAF round trips as compositions (nests in
   nests, a nest used twice, another frame and sample rate, breakout to mono), OMF with the
   rendered sound, the audio needs of nests, a sequence inside itself.
+- `tests/mlt.rs`: a synthetic Kdenlive project shaped like the files Kdenlive writes (black
+  background, a tractor of two playlists per track, `kdenlive:audio_track`, internal track
+  filters, the project tractor wrapping the sequence): two video tracks and one audio track with
+  blanks and in/out trims in clock, frame and SMPTE forms, track names, lock and mute, linked
+  audio and video, colour and title clips, the bin; a plain MLT document without a profile;
+  missing and unusable media leaving gaps with report entries; malformed XML; hostile numbers,
+  cyclic and deeply nested tractors; truncation and byte corruption under `catch_unwind`.
 - `tests/uncarried_clips.rs`: every format's export report names each graphic clip and adjustment
   layer once, as a warning; a sequence without them reports nothing; what a re-import gives back
   matches the report; the FCP7 XML import names a clip item whose file is not defined.

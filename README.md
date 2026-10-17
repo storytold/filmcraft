@@ -216,6 +216,7 @@ Move timelines between FilmCraft and every other editor:
 - **CMX 3600 EDL:** the oldest format still in use, with drop-frame timecode, dissolves, wipes, speed changes (`M2`) and one EDL per track.
 - **AAF (Edit Protocol):** for Avid Media Composer and Pro Tools. Video and audio tracks, dissolves and dips, clip volume with keyframes, markers and source timecode; audio embedded or as separate WAV / AIFF files, trimmed with handles, with clip effects rendered in and broken out to mono, plus an optional video mixdown. Import reads AAF back, extracting embedded audio.
 - **OMF 2.0:** the audio-post handoff: the audio tracks with crossfades and gain, sample-accurate, with the audio encapsulated or alongside.
+- **Kdenlive projects (import):** a `.kdenlive` project's timeline, with its video and audio tracks, clips, gaps and colour clips at the project's frame size and rate. Transitions, effects, titles and guides are not brought over; the import report names each one.
 
 Import merges the document's bins, media and sequences into your project as one undoable step, and links each media file it finds on disk.
 

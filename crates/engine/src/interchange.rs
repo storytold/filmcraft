@@ -1,4 +1,5 @@
-//! Interchange documents (CMX 3600 EDL, FCP7 XML, FCPXML, OTIO, AAF, OMF) ↔ the session's project.
+//! Interchange documents (CMX 3600 EDL, FCP7 XML, FCPXML, OTIO, AAF, OMF; Kdenlive projects, read
+//! only) ↔ the session's project.
 
 use serde_json::{Value, json};
 
@@ -10,7 +11,7 @@ use crate::{EngineError, Result, Session};
 /// The interchange format of a file, if it is one (by content, with the extension as a hint).
 pub fn detect(path: &str, bytes: &[u8]) -> Option<Format> {
     let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-    if !matches!(ext.as_deref(), Some("edl" | "xml" | "fcpxml" | "otio" | "aaf" | "omf" | "omfi")) {
+    if !matches!(ext.as_deref(), Some("edl" | "xml" | "fcpxml" | "otio" | "aaf" | "omf" | "omfi" | "kdenlive")) {
         return None;
     }
     filmcraft_interchange::detect(bytes, ext.as_deref())
@@ -133,11 +134,13 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
 pub fn export(s: &mut Session, p: &Value) -> Result<Value> {
     // FCP7 XML only when no format is asked for: a format we don't know is an error, not XML.
     // The names are the documented ones (each format's extension, in either case) and nothing
-    // else, so the error can list exactly what is accepted.
+    // else, so the error can list exactly what is accepted. Kdenlive projects are only read, so
+    // `kdenlive` is not one of them.
+    let exportable = Format::ALL.into_iter().filter(|f| f.can_export());
     let format = match p.get("format") {
         None | Some(Value::Null) => Format::Fcp7Xml,
-        Some(v) => v.as_str().and_then(|name| Format::ALL.into_iter().find(|f| f.extension().eq_ignore_ascii_case(name))).ok_or_else(|| {
-            let names: Vec<&str> = Format::ALL.iter().map(|f| f.extension()).collect();
+        Some(v) => v.as_str().and_then(|name| exportable.clone().find(|f| f.extension().eq_ignore_ascii_case(name))).ok_or_else(|| {
+            let names: Vec<&str> = exportable.clone().map(|f| f.extension()).collect();
             crate::commands::bad("file.exportInterchange", format!("unknown format {v}: use one of {}", names.join(", ")))
         })?,
     };
