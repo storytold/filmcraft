@@ -14,7 +14,7 @@ impl Fixture {
         image::RgbaImage::from_pixel(16, 16, image::Rgba([30, 120, 220, 255])).save(path.join("source.png")).unwrap();
         let source = path.join("source.png");
         let xml = format!(
-            r#"<PremiereData><Sequence ObjectUID="s"><Name>Sequence 01</Name><TrackGroups><TrackGroup><Second ObjectRef="1"/></TrackGroup></TrackGroups></Sequence><VideoTrackGroup ObjectID="1"><TrackGroup><Tracks><Track ObjectURef="t"/></Tracks></TrackGroup></VideoTrackGroup><VideoClipTrack ObjectUID="t"><ClipTrack><Track><Index>0</Index></Track><ClipItems><TrackItems><TrackItem ObjectRef="2"/></TrackItems></ClipItems></ClipTrack></VideoClipTrack><VideoClipTrackItem ObjectID="2"><ClipTrackItem><TrackItem><Start>0</Start><End>254016000000</End></TrackItem><SubClip ObjectRef="3"/></ClipTrackItem></VideoClipTrackItem><SubClip ObjectID="3"><Name>source.png</Name></SubClip><Media><Title>source.png</Title><FilePath>{}</FilePath></Media></PremiereData>"#,
+            r#"<PremiereData><Sequence ObjectUID="s"><Name>Sequence 01</Name><TrackGroups><TrackGroup><Second ObjectRef="1"/></TrackGroup></TrackGroups></Sequence><VideoTrackGroup ObjectID="1"><TrackGroup><FrameRate>8467191533</FrameRate><Tracks><Track ObjectURef="t"/></Tracks></TrackGroup></VideoTrackGroup><VideoClipTrack ObjectUID="t"><ClipTrack><Track><Index>0</Index></Track><ClipItems><TrackItems><TrackItem ObjectRef="2"/></TrackItems></ClipItems></ClipTrack></VideoClipTrack><VideoClipTrackItem ObjectID="2"><ClipTrackItem><TrackItem><Start>0</Start><End>254016000000</End></TrackItem><SubClip ObjectRef="3"/></ClipTrackItem></VideoClipTrackItem><SubClip ObjectID="3"><Name>source.png</Name></SubClip><Media><Title>source.png</Title><FilePath>{}</FilePath></Media></PremiereData>"#,
             source.display()
         );
         std::fs::write(path.join("source.prproj"), xml).unwrap();
@@ -74,6 +74,47 @@ fn premiere_missing_media_and_standard_import_route() {
     assert_eq!(r["sequences"].as_array().unwrap().len(), 1);
     assert!(s.project.workflow.is_some());
     assert!(s.project.items.values().any(|i| matches!(&i.kind,filmcraft_project::ItemKind::Media(m) if m.offline)));
+}
+#[cfg(unix)]
+#[test]
+fn premiere_unreadable_media_stays_offline_in_link_and_copy_modes() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::new();
+    let source = fixture.0.join("source.png");
+    let doc = fixture.0.join("source.prproj");
+    let source_hash = hash_file(&source).unwrap();
+    let doc_hash = hash_file(&doc).unwrap();
+    // Change permissions only on this test's generated image, never on reference footage.
+    std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::File::open(&source).is_ok() {
+        eprintln!("permission regression requires an unprivileged user; root bypasses mode bits");
+        return;
+    }
+    let read_error = hash_file(&source).unwrap_err().to_string();
+    for mode in ["link", "copy"] {
+        let mut s = Session::default();
+        let dest = fixture.0.join(mode);
+        let r = s.execute("premiere.import", json!({"path":doc,"destination":dest,"mediaMode":mode})).unwrap();
+        assert_eq!(r["offlineMedia"], json!(["source.png"]));
+        assert!(r["report"].as_array().unwrap().iter().any(|w| {
+            let w = w.as_str().unwrap();
+            w.contains(source.to_str().unwrap()) && w.contains(&read_error) && w.contains("offline placeholder")
+        }));
+        let workflow = s.project.workflow.as_ref().unwrap();
+        let media = &workflow.imports[0].media[0];
+        assert_eq!(media.original_path, source.to_str().unwrap());
+        assert!(media.sha256.is_none() && media.bytes.is_none());
+        assert_eq!(hash_file(&dest.join("source.prproj")).unwrap(), doc_hash);
+        if mode == "copy" {
+            assert_eq!(std::fs::read_dir(dest.join("media")).unwrap().count(), 0);
+        }
+        let report = s.execute("checks.run", json!({"rendered":false})).unwrap();
+        assert_eq!(report["valid"], false);
+        assert!(report["issues"].as_array().unwrap().iter().any(|i| i["code"] == "source-missing"));
+    }
+    std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(hash_file(&source).unwrap(), source_hash);
+    assert_eq!(hash_file(&doc).unwrap(), doc_hash);
 }
 #[test]
 fn premiere_invalid_commands_do_not_mutate_project_or_existing_destination() {
