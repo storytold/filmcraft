@@ -196,8 +196,9 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
         "timeline.increaseVideoHeight" | "timeline.decreaseVideoHeight" | "timeline.increaseAudioHeight" | "timeline.decreaseAudioHeight" => {
             let d = if id.contains("increase") { HEIGHT_STEP } else { -HEIGHT_STEP };
             let tv = &mut app.ui.timeline;
-            let h = if id.contains("Video") { &mut tv.video_track_h } else { &mut tv.audio_track_h };
-            *h = (*h + d).clamp(MIN_TRACK_H, MAX_TRACK_H);
+            let kind = if id.contains("Video") { filmcraft_project::TrackKind::Video } else { filmcraft_project::TrackKind::Audio };
+            let h = if id.contains("Video") { tv.video_track_h } else { tv.audio_track_h };
+            tv.set_kind_h(kind, (h + d).clamp(MIN_TRACK_H, MAX_TRACK_H));
             Ok(json!({"videoTrackHeight": tv.video_track_h, "audioTrackHeight": tv.audio_track_h}))
         }
         "timeline.nextScreen" | "timeline.prevScreen" => {
@@ -322,18 +323,18 @@ fn play_range(app: &mut FilmcraftApp, preroll: bool) -> Result<Value, String> {
 fn all_heights(app: &mut FilmcraftApp, expand: bool) -> Value {
     let tv = &mut app.ui.timeline;
     let target = if expand { 120.0 } else { MIN_TRACK_H };
-    let at_target = tv.video_track_h == target && tv.audio_track_h == target;
+    let at_target = tv.video_track_h == target && tv.audio_track_h == target && tv.video_heights.is_empty() && tv.audio_heights.is_empty();
     match (at_target, app.ui.keys.saved_heights) {
         // pressing again restores the heights from before
         (true, Some([v, a])) => {
-            tv.video_track_h = v;
-            tv.audio_track_h = a;
+            tv.set_kind_h(filmcraft_project::TrackKind::Video, v);
+            tv.set_kind_h(filmcraft_project::TrackKind::Audio, a);
             app.ui.keys.saved_heights = None;
         }
         _ => {
             app.ui.keys.saved_heights = Some([tv.video_track_h, tv.audio_track_h]);
-            tv.video_track_h = target;
-            tv.audio_track_h = target;
+            tv.set_kind_h(filmcraft_project::TrackKind::Video, target);
+            tv.set_kind_h(filmcraft_project::TrackKind::Audio, target);
         }
     }
     json!({"videoTrackHeight": tv.video_track_h, "audioTrackHeight": tv.audio_track_h})

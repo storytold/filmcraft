@@ -184,10 +184,10 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                     app.ui.timeline.fit_pending = true;
                 }
                 if let Some(v) = tl.get("videoTrackHeight").and_then(Value::as_f64) {
-                    app.ui.timeline.video_track_h = v as f32;
+                    app.ui.timeline.set_kind_h(filmcraft_project::TrackKind::Video, v as f32);
                 }
                 if let Some(v) = tl.get("audioTrackHeight").and_then(Value::as_f64) {
-                    app.ui.timeline.audio_track_h = v as f32;
+                    app.ui.timeline.set_kind_h(filmcraft_project::TrackKind::Audio, v as f32);
                 }
                 // Show Video Thumbnails: "off" or a mode ("head", "headAndTail", "continuous")
                 if let Some(m) = tl.get("thumbnails").and_then(Value::as_str) {

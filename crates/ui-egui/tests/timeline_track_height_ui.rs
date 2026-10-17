@@ -6,6 +6,7 @@ use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
+use filmcraft_project::TrackKind;
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
@@ -57,11 +58,6 @@ impl Driver {
         self.harness.state()
     }
 
-    fn heights(&self) -> (f32, f32) {
-        let v = &self.app().ui.timeline;
-        (v.video_track_h, v.audio_track_h)
-    }
-
     /// Drag from the middle of the element `id` by `dy` points.
     fn drag(&mut self, id: &str, fy: f32, dy: f32) {
         let v = self.ok("ui.elements", json!({"prefix": id}));
@@ -72,6 +68,14 @@ impl Driver {
         self.frames(3);
     }
 
+    /// The height of each row of `kind`, in track order (V1 or A1 first).
+    fn row_heights(&self, kind: TrackKind) -> Vec<f32> {
+        let layout = self.app().tl.layout.as_ref().expect("timeline layout");
+        let mut rows: Vec<_> = layout.rows.iter().filter(|r| r.kind == kind).collect();
+        rows.sort_by_key(|r| r.index);
+        rows.iter().map(|r| r.rect.height()).collect()
+    }
+
     fn labels(&self) -> (String, String) {
         let seq = self.app().session.active_sequence().unwrap();
         (format!("V{}", seq.video_tracks.len()), format!("A{}", seq.audio_tracks.len()))
@@ -79,36 +83,64 @@ impl Driver {
 }
 
 #[test]
-fn the_top_edge_of_the_highest_video_track_resizes_the_video_tracks() {
+fn the_top_edge_of_the_highest_video_track_resizes_that_track() {
     let mut d = Driver::demo();
     let (top, _) = d.labels();
-    let (v0, a0) = d.heights();
-    // dragging the outer edge up makes the video tracks taller, as the line below it does
+    let (v0, a0) = (d.row_heights(TrackKind::Video), d.row_heights(TrackKind::Audio));
+    let n = v0.len() - 1;
+    // dragging the outer edge up makes the track taller, as the line below it does
     d.drag(&format!("timeline.track.{top}.resizeTop"), 0.5, -15.0);
-    let (v1, a1) = d.heights();
-    assert!(v1 > v0 + 5.0, "video tracks grow: {v0} -> {v1}");
-    assert_eq!(a1, a0, "audio tracks are left alone");
-    // and down makes them shorter again
+    let v1 = d.row_heights(TrackKind::Video);
+    assert!(v1[n] > v0[n] + 5.0, "{top} grows: {v0:?} -> {v1:?}");
+    assert_eq!(v1[..n], v0[..n], "the video tracks below it are left alone");
+    assert_eq!(d.row_heights(TrackKind::Audio), a0, "audio tracks are left alone");
+    // and down makes it shorter again
     d.drag(&format!("timeline.track.{top}.resizeTop"), 0.5, 15.0);
-    assert!(d.heights().0 < v1 - 5.0);
+    assert!(d.row_heights(TrackKind::Video)[n] < v1[n] - 5.0);
     // the line below it still works the same way
-    let v2 = d.heights().0;
+    let v2 = d.row_heights(TrackKind::Video)[n];
     d.drag(&format!("timeline.track.{top}.resize"), 0.5, -15.0);
-    assert!(d.heights().0 > v2 + 5.0);
+    assert!(d.row_heights(TrackKind::Video)[n] > v2 + 5.0);
 }
 
 #[test]
-fn the_bottom_edge_of_the_last_audio_track_resizes_the_audio_tracks_from_either_side_of_the_line() {
+fn the_bottom_edge_of_the_last_audio_track_resizes_that_track_from_either_side_of_the_line() {
     let mut d = Driver::demo();
     let (_, last) = d.labels();
     let id = format!("timeline.track.{last}.resize");
-    let (v0, a0) = d.heights();
+    let (v0, a0) = (d.row_heights(TrackKind::Video), d.row_heights(TrackKind::Audio));
+    let n = a0.len() - 1;
     // from just past the line, in the empty space below the last track
     d.drag(&id, 0.9, 15.0);
-    let (v1, a1) = d.heights();
-    assert!(a1 > a0 + 5.0, "audio tracks grow: {a0} -> {a1}");
-    assert_eq!(v1, v0, "video tracks are left alone");
+    let a1 = d.row_heights(TrackKind::Audio);
+    assert!(a1[n] > a0[n] + 5.0, "{last} grows: {a0:?} -> {a1:?}");
+    assert_eq!(a1[..n], a0[..n], "the audio tracks above it are left alone");
+    assert_eq!(d.row_heights(TrackKind::Video), v0, "video tracks are left alone");
     // and from just inside it
     d.drag(&id, 0.1, -15.0);
-    assert!(d.heights().1 < a1 - 5.0);
+    assert!(d.row_heights(TrackKind::Audio)[n] < a1[n] - 5.0);
+}
+
+#[test]
+fn dragging_a_line_resizes_only_the_track_it_belongs_to() {
+    let mut d = Driver::demo();
+    let (v0, a0) = (d.row_heights(TrackKind::Video), d.row_heights(TrackKind::Audio));
+    assert!(v0.len() >= 2 && a0.len() >= 2, "the demo has several tracks of each kind: {v0:?} {a0:?}");
+    // V1's line is below it: up makes V1 taller
+    d.drag("timeline.track.V1.resize", 0.5, -15.0);
+    let v1 = d.row_heights(TrackKind::Video);
+    assert!(v1[0] > v0[0] + 5.0, "V1 grows: {v0:?} -> {v1:?}");
+    assert_eq!(v1[1..], v0[1..], "the other video tracks keep their height");
+    assert_eq!(d.row_heights(TrackKind::Audio), a0, "audio tracks are left alone");
+    // A1's line is below it: down makes A1 taller
+    d.drag("timeline.track.A1.resize", 0.5, 15.0);
+    let a1 = d.row_heights(TrackKind::Audio);
+    assert!(a1[0] > a0[0] + 5.0, "A1 grows: {a0:?} -> {a1:?}");
+    assert_eq!(a1[1..], a0[1..], "the other audio tracks keep their height");
+    assert_eq!(d.row_heights(TrackKind::Video), v1, "video tracks are left alone");
+    // setting the height of all the video tracks includes the one resized on its own
+    d.ok("ui.set", json!({"timeline": {"videoTrackHeight": 30.0}}));
+    d.frames(2);
+    assert!(d.row_heights(TrackKind::Video).iter().all(|h| *h == 30.0), "{:?}", d.row_heights(TrackKind::Video));
+    assert_eq!(d.row_heights(TrackKind::Audio), a1, "audio tracks are left alone");
 }
