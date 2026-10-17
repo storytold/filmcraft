@@ -1,8 +1,12 @@
 //! Keyframed parameters.
 //!
-//! A parameter is a static value or a list of keyframes (clip-relative ticks). Interpolation per
-//! keyframe governs the segment leaving it: Linear, Hold, Bezier (with influence/speed handles),
-//! Auto Bezier, Continuous Bezier, Ease In/Out (Bezier presets) — Premiere's temporal set.
+//! a parameter is either just a static value or a list of keyframes in ticks
+//! for effects on a clip the keyframe times are in the source media's time not the clips time
+//! so a keyframe stays on the same frame of the media even if the clip gets trimmed or moved
+//! and for track mixer automation the times are just the sequence's time
+//!
+//! each keyframe's interpolation is for the part leaving it: Linear, Hold, Bezier (with influence/speed handles),
+//! Auto Bezier, Continuous Bezier and Ease In/Out (Bezier presets), the same set Premiere has
 
 use filmcraft_geom::Vec2;
 use filmcraft_time::Tick;
@@ -142,7 +146,7 @@ impl Interpolation {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Keyframe {
-    /// Time relative to the start of the track item (clip time).
+    /// for clip effects this is the source media's time and for track automation its the sequence's time
     pub time: Tick,
     pub value: ParamValue,
     /// Interpolation of the segment leaving this keyframe.

@@ -15,6 +15,7 @@ pub mod cancel;
 pub mod digits;
 pub mod dpx;
 pub mod generators;
+pub mod inflate;
 pub mod pending;
 pub mod reader;
 pub mod sequence;

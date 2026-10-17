@@ -1,4 +1,5 @@
 use super::*;
+use filmcraft_time::TICKS_PER_SECOND;
 
 #[test]
 fn invalid_preview_scales_are_rejected_without_allocating() {
@@ -33,6 +34,23 @@ fn demo_project_is_valid_and_renders() {
     let img = s.render_program(0.125).unwrap();
     assert_eq!((img.w, img.h), (240, 135));
     assert!(img.px.chunks(4).any(|p| p[3] > 0.9));
+}
+
+#[test]
+fn time_remap_speed_from_effect_controls_changes_playback() {
+    let mut session = demo();
+    let clip = session.active_sequence().unwrap().video_tracks[0].items[0].clone();
+    let second = Tick(TICKS_PER_SECOND);
+    let index = clip.effects.iter().position(|e| e.effect == "time_remap").unwrap();
+    for (time, value) in [(clip.start, 100.0), (clip.start + Tick(second.0 * 2), 200.0)] {
+        session
+            .execute("effects.setParam", json!({"clip": clip.id.0, "effect": index, "param": "speed", "value": value, "keyframe": true, "time": time.0}))
+            .unwrap();
+    }
+    let updated = session.active_sequence().unwrap().find_item(clip.id).unwrap().1;
+    let at = clip.start + second;
+    assert_eq!(updated.effect("time_remap").unwrap().param("speed").unwrap().keyframes.len(), 2);
+    assert!(updated.source_time_at(at) > clip.source_time_at(at));
 }
 
 /// Ordinary and configured multi-frame offsets remain valid.

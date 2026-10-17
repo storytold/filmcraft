@@ -631,7 +631,7 @@ impl TrackItem {
     pub fn range(&self) -> TimeRange {
         TimeRange::new(self.start, self.duration)
     }
-    /// Media time displayed at timeline time `t` (ignores time remapping keyframes).
+    /// Media time displayed at timeline time `t`.
     pub fn source_time_at(&self, t: Tick) -> Tick {
         if let Some(h) = self.frame_hold {
             return h;
@@ -649,17 +649,48 @@ impl TrackItem {
     }
     /// Media time at timeline time `t` ignoring any frame hold.
     pub fn moving_source_time_at(&self, t: Tick) -> Tick {
+        let base = self.unremapped_source_time_at(t);
+        let scaled = self.remapped_offset(base);
+        if self.reverse { self.source_out() - scaled - Tick(1) } else { self.source_in + scaled }
+    }
+    /// Source coordinate used by Speed keyframes. It stays fixed when their values change.
+    pub fn unremapped_source_time_at(&self, t: Tick) -> Tick {
         let rel = t - self.start;
-        let scaled = Tick((rel.0 as f64 * self.speed.abs()).round() as i64);
-        if self.reverse {
-            self.source_in + Tick((self.duration.0 as f64 * self.speed.abs()).round() as i64) - scaled - Tick(1)
-        } else {
-            self.source_in + scaled
+        self.source_in + Tick((rel.0 as f64 * self.speed.abs()).round() as i64)
+    }
+
+    fn remapped_offset(&self, base: Tick) -> Tick {
+        let Some(speed) = self.effect("time_remap").filter(|e| e.enabled).and_then(|e| e.param("speed")) else {
+            return base - self.source_in;
+        };
+        let (lo, hi, sign) = if base >= self.source_in { (self.source_in, base, 1.0) } else { (base, self.source_in, -1.0) };
+        if lo == hi {
+            return Tick::ZERO;
         }
+        if speed.keyframes.is_empty() {
+            let v = speed.scalar_at(lo);
+            return Tick(((hi - lo).0 as f64 * safe_remap_speed(v) * sign).round() as i64);
+        }
+        let mut from = lo;
+        let mut total = 0.0;
+        // Split at every keyframe so short ramps cannot disappear between render samples.
+        for key in speed.keyframes.iter().filter(|k| k.time > lo && k.time < hi).map(|k| k.time).chain(std::iter::once(hi)) {
+            let width = (key - from).0 as f64;
+            // Use the left limit at a boundary: Hold changes speed exactly at that keyframe.
+            let mut samples = safe_remap_speed(speed.scalar_at(from)) + safe_remap_speed(speed.scalar_at(Tick(key.0.saturating_sub(1))));
+            for n in 1..8 {
+                let at = from + Tick((width * n as f64 / 8.0).round() as i64);
+                samples += safe_remap_speed(speed.scalar_at(at)) * if n % 2 == 0 { 2.0 } else { 4.0 };
+            }
+            total += width * samples / 24.0;
+            from = key;
+        }
+        Tick((total * sign).round() as i64)
     }
     /// Media time consumed by the item (the source out point).
     pub fn source_out(&self) -> Tick {
-        self.source_in + Tick((self.duration.0 as f64 * self.speed.abs()).round() as i64)
+        let base_end = self.source_in + Tick((self.duration.0 as f64 * self.speed.abs()).round() as i64);
+        self.source_in + self.remapped_offset(base_end)
     }
     pub fn effect(&self, id: &str) -> Option<&EffectInstance> {
         self.effects.iter().find(|e| e.effect == id)
@@ -687,6 +718,10 @@ impl TrackItem {
                     || e.def().is_some_and(|d| d.params.iter().any(|p| e.params.get(p.id).is_some_and(|v| !param_eq_default(&v.value, &p.default)))))
         })
     }
+}
+
+fn safe_remap_speed(percent: f64) -> f64 {
+    if percent.is_finite() { percent.clamp(-10_000.0, 10_000.0) / 100.0 } else { 1.0 }
 }
 
 fn param_eq_default(v: &ParamValue, d: &ParamValue) -> bool {
@@ -823,6 +858,14 @@ impl Track {
         for item in &self.items {
             if !bounded_time_range(item.start, item.duration) {
                 return Err(format!("{}: item {:?} is outside supported time bounds", self.name, item.id));
+            }
+            if let Some(speed) = item.effect("time_remap").and_then(|e| e.param("speed"))
+                && (speed.keyframes.len() > 10_000
+                    || speed.keyframes.windows(2).any(|pair| pair[0].time >= pair[1].time)
+                    || speed.keyframes.iter().any(|key| key.time < Tick::MIN || key.time > Tick::MAX || key.value.as_f64().is_none_or(|v| !v.is_finite()))
+                    || speed.value.as_f64().is_none_or(|v| !v.is_finite()))
+            {
+                return Err(format!("{}: item {:?} has invalid Time Remapping keyframes", self.name, item.id));
             }
         }
         for transition in &self.transitions {
@@ -1805,6 +1848,29 @@ fn has_auto_point(e: &EffectInstance) -> bool {
 mod tests {
     use super::*;
     use filmcraft_media::{DemoScene, MediaSource};
+
+    #[test]
+    fn time_remap_speed_keyframes_change_source_time() {
+        let (mut project, source, sequence) = demo_project();
+        let rate = project.sequence(sequence).unwrap().settings.frame_rate;
+        let second = Tick(TICKS_PER_SECOND);
+        let mut clip = project.make_track_item(source, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick(second.0 * 4)), rate).unwrap();
+        let speed = clip.effect_mut("time_remap").unwrap().param_mut("speed").unwrap();
+        speed.put_keyframe(Tick::ZERO, ParamValue::Float(100.0));
+        speed.put_keyframe(Tick(second.0 * 2), ParamValue::Float(200.0));
+        speed.put_keyframe(Tick(second.0 * 4), ParamValue::Float(200.0));
+        let at_one = clip.source_time_at(second);
+        let at_three = clip.source_time_at(Tick(second.0 * 3));
+        assert!((at_one - Tick((1.25 * TICKS_PER_SECOND as f64) as i64)).abs() <= Tick(4));
+        assert!((at_three - Tick((5.0 * TICKS_PER_SECOND as f64) as i64)).abs() <= Tick(4));
+        let extra = clip.duration - Tick(second.0 * 4);
+        assert!((clip.source_out() - (Tick(second.0 * 7) + Tick(extra.0 * 2))).abs() <= Tick(4));
+        clip.effect_mut("time_remap").unwrap().enabled = false;
+        assert_eq!(clip.source_time_at(Tick(second.0 * 3)), Tick(second.0 * 3));
+        clip.effect_mut("time_remap").unwrap().param_mut("speed").unwrap().keyframes.swap(0, 1);
+        project.sequence_mut(sequence).unwrap().video_tracks[0].items.push(clip);
+        assert!(project.sequence(sequence).unwrap().check_bounds().unwrap_err().contains("invalid Time Remapping keyframes"));
+    }
 
     fn demo_project() -> (Project, ItemId, ItemId) {
         let mut p = Project::new("Test");
