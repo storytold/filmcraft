@@ -448,5 +448,5 @@ pub fn import_document(s: &mut Session, p: &Value, cmd: &str) -> Result<Value> {
     let bytes = s.services.read_file(&path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let format = crate::interchange::detect(&path, &bytes).filter(|f| matches!(f, filmcraft_interchange::Format::Aaf | filmcraft_interchange::Format::Omf));
     let format = format.ok_or_else(|| bad(cmd, format!("{path} is not an AAF or OMF file")))?;
-    crate::interchange::import(s, &path, &bytes, format)
+    crate::interchange::import(s, &path, &bytes, format, None)
 }
