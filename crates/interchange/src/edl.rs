@@ -209,7 +209,14 @@ fn parse(text: &str, report: &mut Report) -> Parsed {
             continue;
         }
         if upper.starts_with("AUD") {
-            let extra: Vec<Ch> = l.split_whitespace().skip(1).filter_map(|t| t.parse::<usize>().ok()).map(Ch::A).collect();
+            let mut extra: Vec<Ch> = Vec::new();
+            for n in l.split_whitespace().skip(1).filter_map(|t| t.parse::<usize>().ok()) {
+                if (1..=99).contains(&n) {
+                    extra.push(Ch::A(n));
+                } else {
+                    report.warn(format!("EDL AUD channel {n} is outside 1..99; ignored"));
+                }
+            }
             if let Some(line) = p.events.last_mut().and_then(|e| e.lines.last_mut()) {
                 line.chans.extend(extra);
             }
@@ -1023,6 +1030,17 @@ mod tests {
         assert_eq!(parse_channels("AA/V"), Some(vec![Ch::A(1), Ch::A(2), Ch::V]));
         assert_eq!(parse_channels("A4"), Some(vec![Ch::A(4)]));
         assert_eq!(parse_channels("X"), None);
+    }
+
+    #[test]
+    fn aud_line_out_of_range_channel_is_ignored() {
+        for n in ["0", "100", "3000000"] {
+            let edl = format!("TITLE: t\n001  AX       V     C        00:00:00:00 00:00:01:00 01:00:00:00 01:00:01:00\nAUD {n}\n");
+            let (imp, report) = crate::import_with(edl.as_bytes(), crate::Format::Edl, &ImportOptions::default()).unwrap();
+            let seq = imp.sequences.first().and_then(|id| imp.project.sequence(*id)).unwrap();
+            assert!(seq.audio_tracks.len() <= 99, "AUD {n}: {} audio tracks", seq.audio_tracks.len());
+            assert!(report.mentions("AUD"), "AUD {n} should be reported");
+        }
     }
 
     #[test]
