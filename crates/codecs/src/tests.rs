@@ -30,6 +30,54 @@ fn fixture(name: &str, args: &[&str]) -> Option<Arc<[u8]>> {
 }
 
 #[test]
+fn native_dv_mov_with_big_endian_pcm_and_random_seeking() {
+    if ffmpeg().is_none() {
+        eprintln!("SKIPPED: ffmpeg test oracle unavailable");
+        return;
+    }
+    let bytes = fixture(
+        "native_dv_ntsc_pcm.mov",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=720x480:rate=30000/1001:duration=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=1",
+            "-c:v",
+            "dvvideo",
+            "-pix_fmt",
+            "yuv411p",
+            "-threads",
+            "1",
+            "-c:a",
+            "pcm_s16be",
+            "-ac",
+            "2",
+            "-shortest",
+        ],
+    )
+    .unwrap();
+    let src = crate::open_bytes("native_dv_ntsc_pcm.mov", bytes).unwrap();
+    let video = src.info().video.as_ref().unwrap();
+    assert_eq!(video.codec, "DV / DVCPRO NTSC");
+    assert_eq!(video.pixel_format, "YUV 4:1:1 8-bit");
+    assert_eq!(video.frame_rate, filmcraft_time::FrameRate::FPS_29_97);
+    let first = src.video_frame(FrameRequest::full(Tick::ZERO)).unwrap().to_rgba8();
+    for frame in [29, 1, 18, 0, 15] {
+        let f = src.video_frame(FrameRequest::full(video.frame_rate.tick_of(frame))).unwrap();
+        assert_eq!((f.width, f.height), (720, 480));
+        if frame == 0 {
+            assert_eq!(f.to_rgba8(), first);
+        }
+    }
+    let audio = src.audio(0, 4800, 48000).unwrap();
+    assert!(audio.peaks().iter().all(|p| *p > 0.05 && *p < 0.2));
+}
+
+#[test]
 fn mjpeg_mov_with_pcm() {
     let Some(b) = fixture(
         "red_mjpeg.mov",

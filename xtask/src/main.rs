@@ -50,6 +50,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("vp8", 0),
     ("vp9", 0),
     ("prores", 0),
+    ("dv", 0),
     ("mjpeg", 0),
     ("dnx", 0),
     ("apv", 0),

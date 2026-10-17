@@ -162,6 +162,8 @@ pub struct AudioParams {
 /// Codec configuration decoded from the sample entry.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CodecConfig {
+    /// DV25 / DVCPRO25 525/60 (`dvc `), SMPTE 314M-2005.
+    Dv,
     Avc(AvcConfig),
     Hevc(HevcConfig),
     Av1(Av1Config),
@@ -211,6 +213,7 @@ impl CodecConfig {
     /// A short human-readable codec name.
     pub fn name(&self) -> &'static str {
         match self {
+            CodecConfig::Dv => "dvvideo",
             CodecConfig::Avc(_) => "h264",
             CodecConfig::Hevc(_) => "hevc",
             CodecConfig::Av1(_) => "av1",
@@ -843,6 +846,7 @@ fn is_video_fourcc(f: &[u8; 4]) -> bool {
     matches!(
         f,
         b"avc1"
+            | b"dvc "
             | b"avc3"
             | b"hvc1"
             | b"hev1"
@@ -979,6 +983,7 @@ pub(crate) fn parse_sample_entry(format: FourCc, payload: &[u8], handler: FourCc
         let codec = match codec {
             Some(c) => c,
             None => match f {
+                b"dvc " => CodecConfig::Dv,
                 b"apch" | b"apcn" | b"apcs" | b"apco" | b"ap4h" | b"ap4x" => CodecConfig::ProRes { fourcc: format },
                 b"jpeg" | b"mjpa" | b"mjpb" => CodecConfig::Jpeg { fourcc: format },
                 b"AVdn" | b"AVdh" => CodecConfig::Dnx { fourcc: format },

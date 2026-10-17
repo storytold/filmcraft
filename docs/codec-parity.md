@@ -27,7 +27,7 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 | Motion JPEG | decode + encode | yes | yes (MOV) | — | 90% | — |
 | JPEG 2000 (MXF, DCP) | decode + encode (Kakadu) | none | none | — | 0% | 40–70 h |
 | JPEG XS | decode (`libjpegxs`) | none | none | — | 0% | 20–40 h |
-| DV / DVCPRO / DV100 | decode + encode | none | none | — | 0% | 15–25 h |
+| DV / DVCPRO / DV100 | decode + encode | native DV25/DVCPRO25 525/60 4:1:1 MOV; PAL, 50/100 Mb/s and AVI remain unsupported | none | generated progressive/interlaced oracle + mutation tests | partial | remaining profiles/encode not estimated |
 | MPEG-4 Part 2 | decode | none | none | — | 0% | 10–20 h |
 | WMV / VC-1 | decode, encode on Windows | none | none | — | 0% | 20–35 h |
 | CinemaDNG / DNG | decode | own decoder (#1065): uncompressed and lossless JPEG raw, Bayer and LinearRaw, DNG colour model to linear Rec. 709 floats; folders of `.dng` frames as one clip with the CinemaDNG frame rate and time code; **no** lossy / JPEG XL DNG, MXF-wrapped CinemaDNG, opcode lists or Raw settings UI | — | raw samples bit-exact (and identical to LibRaw's on our synthetic files), processing against hand-computed values | 60% | 10–20 h |

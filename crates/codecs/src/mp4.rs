@@ -585,6 +585,7 @@ fn codec_label(c: &CodecConfig) -> String {
             Some(p) => p.name().into(),
             None => "APV".into(),
         },
+        CodecConfig::Dv => "DV / DVCPRO NTSC".into(),
         CodecConfig::ProRes { fourcc } => match &fourcc.0 {
             b"apco" => "Apple ProRes 422 Proxy".into(),
             b"apcs" => "Apple ProRes 422 LT".into(),
@@ -638,6 +639,7 @@ fn avc_format(a: &filmcraft_isobmff::AvcConfig) -> Option<(u32, u32)> {
 
 fn pixfmt_label(c: &CodecConfig) -> String {
     match c {
+        CodecConfig::Dv => "YUV 4:1:1 8-bit".into(),
         CodecConfig::Avc(a) => avc_format(a).map(|(chroma, bits)| yuv_label(chroma, bits)).unwrap_or_default(),
         CodecConfig::Hevc(h) => yuv_label(h.chroma_format_idc as u32, h.bit_depth_luma as u32),
         CodecConfig::Vp9(c) => {
