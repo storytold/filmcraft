@@ -1,4 +1,4 @@
-//! Premiere project reader, based only on llm-video-editor's `premiere.py` and synthetic XML.
+//! Premiere project reader, based on llm-video-editor's `premiere.py` and user-owned XML structure.
 //! No Adobe code or assets. MIT OR Apache-2.0. Unsupported features remain in the source snapshot
 //! and are reported; this is not a promise of pixel-identical Premiere rendering.
 
@@ -33,6 +33,8 @@ pub struct Sequence {
     pub name: String,
     pub width: u32,
     pub height: u32,
+    #[serde(default)]
+    pub frame_rate: Option<FrameRate>,
     pub work_out: Tick,
     pub tracks: Vec<Track>,
 }
@@ -121,6 +123,21 @@ fn dimension(s: Option<&str>, default: u32) -> Result<u32> {
 }
 fn referred<'a, 'i>(n: Option<Node<'a, 'i>>, map: &BTreeMap<&str, Node<'a, 'i>>, attr: &str) -> Option<Node<'a, 'i>> {
     map.get(n?.attribute(attr)?).copied()
+}
+
+/// Premiere stores ticks per frame, not frames per second. Compare rational fps distances
+/// exactly; common-rate numerators/denominators keep these i128 products within bounds even
+/// for an i64::MAX input. This also snaps slightly rounded phone rates to the intended rate.
+fn sequence_rate(value: &str) -> Result<FrameRate> {
+    let ticks: i64 = value.trim().parse().map_err(|_| error("invalid sequence FrameRate ticks per frame"))?;
+    if ticks <= 0 {
+        return Err(error("sequence FrameRate ticks per frame must be positive"));
+    }
+    let distance = |rate: &FrameRate| (i128::from(filmcraft_time::TICKS_PER_SECOND) * i128::from(rate.den) - i128::from(ticks) * i128::from(rate.num)).abs();
+    FrameRate::COMMON
+        .into_iter()
+        .min_by(|a, b| (distance(a) * i128::from(b.den)).cmp(&(distance(b) * i128::from(a.den))))
+        .ok_or_else(|| error("no supported sequence frame rates"))
 }
 
 /// The Python reader's bounded, length-prefixed UTF-8 caption envelope heuristic.
@@ -219,8 +236,13 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
         let width = dimension(value(n, "MZ.Sequence.PreviewFrameSizeWidth"), 1920)?;
         let height = dimension(value(n, "MZ.Sequence.PreviewFrameSizeHeight"), 1080)?;
         filmcraft_project::validate_frame_size(width, height).map_err(error)?;
+        let mut frame_rate = None;
         let mut tracks = Vec::new();
-        let pointers = n.descendants().filter(|n| n.has_tag_name("Second") && n.parent().is_some_and(|p| p.has_tag_name("TrackGroup")));
+        let pointers = child(n, "TrackGroups")
+            .into_iter()
+            .flat_map(|groups| groups.children())
+            .filter(|group| group.has_tag_name("TrackGroup"))
+            .filter_map(|group| child(group, "Second"));
         for pointer in pointers {
             let Some(group) = referred(Some(pointer), &ids, "ObjectRef") else {
                 warning(report, format!("{name}: unresolved track group"));
@@ -234,6 +256,15 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
             } else {
                 "caption"
             };
+            if group.has_tag_name("VideoTrackGroup")
+                && let Some(rate) = child(group, "TrackGroup").and_then(|group| child(group, "FrameRate"))
+            {
+                let rate = sequence_rate(rate.text().unwrap_or(""))?;
+                if frame_rate.is_some_and(|previous| previous != rate) {
+                    return Err(error(format!("{name}: conflicting video track group frame rates")));
+                }
+                frame_rate = Some(rate);
+            }
             for (fallback, pointer) in group.descendants().filter(|n| n.has_tag_name("Track") && n.attribute("ObjectURef").is_some()).enumerate() {
                 let Some(track) = referred(Some(pointer), &uids, "ObjectURef") else {
                     warning(report, format!("{name}: unresolved {kind} track"));
@@ -358,7 +389,7 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                 tracks.push(Track { kind: kind.into(), index, muted, items });
             }
         }
-        sequences.push(Sequence { name, width, height, work_out: ticks(value(n, "MZ.WorkOutPoint"), Tick::ZERO)?, tracks });
+        sequences.push(Sequence { name, width, height, frame_rate, work_out: ticks(value(n, "MZ.WorkOutPoint"), Tick::ZERO)?, tracks });
     }
     if sequences.is_empty() {
         return Err(Error::Empty);
@@ -396,18 +427,18 @@ fn validate_nesting(sequences: &[Sequence]) -> Result<()> {
     Ok(())
 }
 
-/// Build native sequences, preserving their nesting and exact ticks. The Python reference has
-/// no frame-rate field; use an explicitly supplied rate or report the 24 fps fallback.
+/// Build native sequences, preserving nesting and exact ticks. An explicit frame-rate override
+/// wins over each sequence's video track group rate; only absent rates use a warned 24 fps fallback.
 pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Result<(Imported, Document, Report)> {
     let mut report = Report::default();
     let doc = read(bytes, opts.base_dir.as_deref(), &mut report)?;
-    let fps = rate.unwrap_or(FrameRate::FPS_24);
-    if rate.is_none() {
-        warning(&mut report, "frame rate not represented by the reference parser; using 24 fps (pass frameRate to override)");
-    }
     let mut b = Builder::new(opts.name.as_deref().unwrap_or("Premiere import"));
     let mut sequences = BTreeMap::new();
     for seq in &doc.sequences {
+        let fps = rate.or(seq.frame_rate).unwrap_or_else(|| {
+            warning(&mut report, format!("{}: no video track group frame rate; using 24 fps (pass frameRate to override)", seq.name));
+            FrameRate::FPS_24
+        });
         let settings = settings_for(fps, seq.width, seq.height, false);
         settings.validate().map_err(error)?;
         let id = b.reserve_sequence(&seq.name, settings, None);
@@ -415,6 +446,7 @@ pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Re
         b.top.push(id);
     }
     for src in &doc.sequences {
+        let fps = rate.or(src.frame_rate).unwrap_or(FrameRate::FPS_24);
         let mut seq = empty_sequence(settings_for(fps, src.width, src.height, false));
         if src.work_out > Tick::ZERO {
             seq.work_area = Some(filmcraft_time::TimeRange::new(Tick::ZERO, src.work_out));
@@ -557,6 +589,63 @@ mod tests {
             10 * TPS
         )
     }
+    // Hand-written from the reference chain observed in user-owned project XML; no project
+    // names, IDs, media paths or payloads are copied. Audio and media rates are distractors.
+    fn real_shaped_rates(first: &str, second: &str) -> String {
+        format!(
+            r#"<PremiereData Version="3">
+<Sequence ObjectUID="episode"><Name>Episode</Name><TrackGroups>
+<TrackGroup Index="0"><First>1</First><Second ObjectRef="audio"/></TrackGroup>
+<TrackGroup Index="1"><First>0</First><Second ObjectRef="video"/></TrackGroup>
+</TrackGroups></Sequence>
+<Sequence ObjectUID="nest"><Name>Nest</Name><TrackGroups>
+<TrackGroup Index="0"><First>0</First><Second ObjectRef="nested-video"/></TrackGroup>
+</TrackGroups></Sequence>
+<AudioTrackGroup ObjectID="audio"><TrackGroup><FrameRate>5292000</FrameRate><Tracks/></TrackGroup></AudioTrackGroup>
+<VideoTrackGroup ObjectID="video"><TrackGroup><Node><Properties><FrameRate>10584000000</FrameRate></Properties></Node>{first}<Tracks/></TrackGroup></VideoTrackGroup>
+<VideoTrackGroup ObjectID="nested-video"><TrackGroup>{second}<Tracks/></TrackGroup></VideoTrackGroup>
+<VideoMediaSource ObjectID="unused"><FrameRate>4233600000</FrameRate></VideoMediaSource>
+</PremiereData>"#
+        )
+    }
+    #[test]
+    fn real_shaped_sequence_rates_use_video_group_and_exact_ntsc_rationals() {
+        for (ticks, expected) in [
+            (8467191533i64, FrameRate::FPS_30),
+            (8468512416, FrameRate::FPS_30),
+            (10594584000, FrameRate::FPS_23_976),
+            (8475667200, FrameRate::FPS_29_97),
+            (4237833600, FrameRate::FPS_59_94),
+        ] {
+            let xml = real_shaped_rates(&format!("<FrameRate>{ticks}</FrameRate>"), "<FrameRate>10160640000</FrameRate>");
+            for override_rate in [None, Some(FrameRate::FPS_60)] {
+                let (fragment, _, report) = import(xml.as_bytes(), &ImportOptions::default(), override_rate).unwrap();
+                let rates: Vec<_> = fragment.sequences.iter().map(|id| fragment.project.sequence(*id).unwrap().settings.frame_rate).collect();
+                assert_eq!(rates, vec![override_rate.unwrap_or(expected), override_rate.unwrap_or(FrameRate::FPS_25)]);
+                assert!(!report.has_warnings(), "{report:?}");
+            }
+        }
+    }
+    #[test]
+    fn only_sequences_without_video_rate_warn_about_fallback() {
+        let xml = real_shaped_rates("", "<FrameRate>8475667200</FrameRate>");
+        let (fragment, _, report) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+        assert_eq!(fragment.project.sequence(fragment.sequences[0]).unwrap().settings.frame_rate, FrameRate::FPS_24);
+        assert_eq!(fragment.project.sequence(fragment.sequences[1]).unwrap().settings.frame_rate, FrameRate::FPS_29_97);
+        assert_eq!(report.entries.len(), 1);
+        assert!(report.mentions("Episode") && report.mentions("24 fps"));
+        let (_, _, report) = import(xml.as_bytes(), &ImportOptions::default(), Some(FrameRate::FPS_30)).unwrap();
+        assert!(!report.has_warnings());
+    }
+    #[test]
+    fn malformed_sequence_frame_ticks_fail_without_panicking() {
+        for ticks in ["0", "-1", "NaN", "", "1.5", "9223372036854775808"] {
+            let xml = real_shaped_rates(&format!("<FrameRate>{ticks}</FrameRate>"), "");
+            let result = std::panic::catch_unwind(|| import(xml.as_bytes(), &ImportOptions::default(), None));
+            assert!(result.is_ok());
+            assert!(result.unwrap().is_err(), "{ticks}");
+        }
+    }
     #[test]
     fn gzip_plain_and_exact_times_match_python_reference() {
         let xml = fixture();
@@ -664,6 +753,7 @@ mod tests {
                 name: i.to_string(),
                 width: 16,
                 height: 16,
+                frame_rate: None,
                 work_out: Tick::ZERO,
                 tracks: vec![Track { kind: "video".into(), index: 0, muted: false, items }],
             });
