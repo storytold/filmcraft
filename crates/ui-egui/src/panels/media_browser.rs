@@ -144,22 +144,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let pw = (bar.max.x - x - 290.0).max(80.0);
     let pr = Rect::from_min_size(pos2(x + 4.0, bar.min.y + 1.0), vec2(pw, 22.0));
     let shown = if cloud {
-        if cloud_path.is_empty() {
-            format!("{} / {}", tl!("CollabCraft"), tl!("Cloud storage"))
-        } else {
-            format!("{} / {cloud_path}", tl!("CollabCraft"))
-        }
+        if cloud_path.is_empty() { format!("{} / {}", tl!("CollabCraft"), tl!("Cloud storage")) } else { format!("{} / {cloud_path}", tl!("CollabCraft")) }
     } else {
         app.ui.media_browser.path_edit.clone().unwrap_or_else(|| dir.clone())
     };
     let mut path = shown;
-    let resp = ui.put(
-        pr,
-        egui::TextEdit::singleline(&mut path)
-            .id(egui::Id::new("mb-path"))
-            .font(egui::FontId::proportional(11.5))
-            .interactive(!cloud),
-    );
+    let resp = ui.put(pr, egui::TextEdit::singleline(&mut path).id(egui::Id::new("mb-path")).font(egui::FontId::proportional(11.5)).interactive(!cloud));
     app.auto.add("mediaBrowser.path", pr, if cloud { "Cloud path" } else { "Path" });
     if !cloud {
         if resp.changed() {

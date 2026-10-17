@@ -407,8 +407,8 @@ pub fn pump_share(app: &mut FilmcraftApp, ctx: &egui::Context) {
         let prior = app.share_save_prior_etag.take();
         let now = origin(app).map(|o| o.entry.etag.clone());
         let changed = match (&prior, &now) {
-            (Some(None), Some(_)) => true,                  // first cloud save
-            (Some(Some(a)), Some(b)) if a != b => true,     // new version
+            (Some(None), Some(_)) => true,              // first cloud save
+            (Some(Some(a)), Some(b)) if a != b => true, // new version
             _ => false,
         };
         if changed {
@@ -472,11 +472,7 @@ fn pick_export_folder(app: &mut FilmcraftApp, ui: &mut Ui) {
         }
         let label = entry.name.clone();
         if ui.selectable_label(false, &label).clicked() {
-            let next = if folder.path.is_empty() {
-                entry.name.clone()
-            } else {
-                format!("{}/{}", folder.path.trim_end_matches('/'), entry.name)
-            };
+            let next = if folder.path.is_empty() { entry.name.clone() } else { format!("{}/{}", folder.path.trim_end_matches('/'), entry.name) };
             go = Some(next);
         }
     }
