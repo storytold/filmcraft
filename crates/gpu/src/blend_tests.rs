@@ -10,10 +10,21 @@ use super::*;
 use filmcraft_geom::{Affine, Vec2};
 use filmcraft_render::plan::execute_cpu;
 
+/// One device for every test of this crate. Tests run on parallel threads; creating and dropping a
+/// device on each made the Vulkan loader crash under the validation layer (debug builds enable it
+/// where it is installed): `SetDebugUtilsObjectNameEXT` looked up a device another thread was
+/// creating or destroying (SIGSEGV in `loader_get_icd_and_device`, vulkan-loader 1.4.341).
 pub(crate) fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::default();
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    static SHARED: std::sync::OnceLock<Option<(wgpu::Instance, wgpu::Device, wgpu::Queue)>> = std::sync::OnceLock::new();
+    let (_, device, queue) = SHARED
+        .get_or_init(|| {
+            let instance = wgpu::Instance::default();
+            let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+            let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+            Some((instance, device, queue))
+        })
+        .as_ref()?;
+    Some((device.clone(), queue.clone()))
 }
 
 pub(crate) fn yuv_frame(w: u32, h: u32) -> Arc<VideoFrame> {

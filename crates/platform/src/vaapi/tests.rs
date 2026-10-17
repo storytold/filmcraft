@@ -23,15 +23,30 @@ use crate::biplanar::{self, Biplanar, Geometry};
 struct Recorder {
     ids: Vec<ffi::VASurfaceID>,
     decoded: Vec<bool>,
+    /// Surfaces written by `fill` only, never decoded into: drivers mishandle them as references
+    /// (radeonsi fails `vaEndPicture` or predicts wrongly).
+    filled: Vec<bool>,
     pictures: usize,
     frame: VideoFrame,
+    /// Surfaces holding a decoded picture not read back yet, and whether decoding into one is a
+    /// failure (every picture is output in the streams used; a reset drops held pictures).
+    unread: Vec<bool>,
+    strict: bool,
 }
 
 impl Recorder {
     fn new(count: usize) -> Self {
         let g = Geometry { crop: (0, 0, 2, 2), bits: 8, color: Default::default(), par: (1, 1) };
         let frame = biplanar::to_frame(&Biplanar { luma: &[128; 4], chroma: &[128; 2], stride: 2, rows: 2 }, &g).unwrap();
-        Self { ids: (0..count as u32).map(|i| 0x100 + i).collect(), decoded: vec![false; count], pictures: 0, frame }
+        Self {
+            ids: (0..count as u32).map(|i| 0x100 + i).collect(),
+            decoded: vec![false; count],
+            filled: vec![false; count],
+            pictures: 0,
+            frame,
+            unread: vec![false; count],
+            strict: false,
+        }
     }
 }
 
@@ -84,6 +99,9 @@ impl Accel for Recorder {
                 assert!(s.RefPicList[l][len..].iter().all(|&i| i == 0xFF), "nothing past the active entries");
             }
         }
+        assert!(!(self.strict && self.unread[target]), "decoding into surface {target} before its picture was read back");
+        self.unread[target] = true;
+        self.filled[target] = false;
         self.decoded[target] = true;
         self.pictures += 1;
         Ok(())
@@ -104,6 +122,7 @@ impl Accel for Recorder {
         for r in &refs {
             let i = self.ids.iter().position(|&id| id == r.picture_id).expect("reference is a decoder surface");
             assert!(self.decoded[i], "reference surface {i} holds a picture");
+            assert!(!self.filled[i], "reference surface {i} was decoded into, not only filled");
             assert!(r.flags & (ffi::VA_PICTURE_H264_SHORT_TERM_REFERENCE | ffi::VA_PICTURE_H264_LONG_TERM_REFERENCE) != 0, "reference flags");
         }
         assert!(!slices.is_empty());
@@ -123,6 +142,9 @@ impl Accel for Recorder {
                 assert!(list[..n].iter().all(|p| ref_ids.contains(&p.picture_id)), "list entries are reference frames");
             }
         }
+        assert!(!(self.strict && self.unread[target]), "decoding into surface {target} before its picture was read back");
+        self.unread[target] = true;
+        self.filled[target] = false;
         self.decoded[target] = true;
         self.pictures += 1;
         Ok(())
@@ -130,12 +152,15 @@ impl Accel for Recorder {
 
     fn read(&mut self, index: usize) -> Result<VideoFrame, String> {
         assert!(self.decoded[index], "read back a decoded surface");
+        self.unread[index] = false;
         Ok(self.frame.clone())
     }
 
     fn fill(&mut self, index: usize, from: Option<usize>) -> Result<(), String> {
         assert!(from.is_none_or(|f| self.decoded[f]));
+        assert!(!(self.strict && self.unread[index]), "filling surface {index} before its picture was read back");
         self.decoded[index] = true;
+        self.filled[index] = true;
         Ok(())
     }
 }
@@ -377,5 +402,53 @@ fn hevc_damaged_samples_are_errors() {
             }
         }
         let _ = f.flush();
+    }
+}
+
+/// Output pictures are read back one picture late (while the hardware decodes the next one), and
+/// a surface is never decoded into before its picture was read: with plenty of surfaces, and with
+/// the fewest each stream decodes with at all, where the held pictures must be read back early.
+#[test]
+fn held_pictures_are_read_before_their_surfaces_are_reused() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let strict = |count| {
+        let mut r = Recorder::new(count);
+        r.strict = true;
+        r
+    };
+    for (name, profile, params) in STREAMS {
+        let Some(path) = fixture(&ff, name, profile, params) else { continue };
+        let s = read_stream(&path);
+        let info = NalStreamInfo::from_entry(&s.entry).unwrap().unwrap();
+        let mbs = (info.coded.0 / 16, info.coded.1 / 16);
+        let want = run_software(filmcraft_codecs::software_video_decoder(&s.entry).unwrap().as_mut(), &s.samples);
+        let mut tight = false;
+        for count in (2..=18).rev() {
+            let mut f = Front::new(strict(count), info.length_size, mbs, &info.parameter_sets).unwrap();
+            let mut out = Vec::new();
+            let ok = s.samples.iter().all(|(smp, p)| f.decode(smp, *p).map(|fr| out.extend(pts(&fr))).is_ok());
+            if !ok {
+                tight = true;
+                break;
+            }
+            out.extend(pts(&f.flush().unwrap()));
+            assert_eq!(out, want, "{name} with {count} surfaces");
+        }
+        assert!(tight, "{name}: some surface count is too few");
+    }
+    for (name, pix_fmt, params) in HEVC_STREAMS {
+        let Some(path) = hevc_fixture(&ff, name, pix_fmt, params) else { continue };
+        let s = read_stream(&path);
+        let info = NalStreamInfo::from_entry(&s.entry).unwrap().unwrap();
+        let want = run_software(filmcraft_codecs::software_video_decoder(&s.entry).unwrap().as_mut(), &s.samples);
+        for count in (2..=18).rev() {
+            let mut f = super::hevc::Front::new(strict(count), info.length_size, info.coded, info.bit_depth_luma, &info.parameter_sets).unwrap();
+            let mut out = Vec::new();
+            if !s.samples.iter().all(|(smp, p)| f.decode(smp, *p).map(|fr| out.extend(pts(&fr))).is_ok()) {
+                break;
+            }
+            out.extend(pts(&f.flush().unwrap()));
+            assert_eq!(out, want, "{name} with {count} surfaces");
+        }
     }
 }
