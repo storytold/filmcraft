@@ -255,6 +255,31 @@ fn sequence_settings_timecode_render_quality_and_colour() {
     assert!(empty.execute("sequence.settings", json!({"width":1280})).is_err());
 }
 
+/// With no parameters `sequence.settings` reports the current settings, under the keys it takes,
+/// and changes nothing (#1540).
+#[test]
+fn sequence_settings_without_params_reports_the_settings() {
+    let mut s = demo();
+    s.execute(
+        "sequence.settings",
+        json!({"fps":29.97,"dropFrame":true,"width":1280,"height":720,"mix":"Mono","sampleRate":44100,"workingSpace":"rec2100-hlg"}),
+    )
+    .unwrap();
+    let before = (*s.project).clone();
+    let history = s.history.undo.len();
+    let r = s.execute("sequence.settings", json!({})).unwrap();
+    assert_eq!(*s.project, before);
+    assert_eq!(s.history.undo.len(), history, "no undo step");
+    assert_eq!(r["name"], "Main Edit", "{r}");
+    assert_eq!((r["width"].clone(), r["height"].clone()), (json!(1280), json!(720)), "{r}");
+    assert_eq!(r["fps"].as_f64(), Some(FrameRate::FPS_29_97.as_f64()), "{r}");
+    assert_eq!((r["dropFrame"].clone(), r["mix"].clone(), r["sampleRate"].clone()), (json!(true), json!("Mono"), json!(44100)), "{r}");
+    assert_eq!(r["workingSpace"], "rec2100-hlg", "{r}");
+    // what it reports is accepted back as is, and changes nothing
+    s.execute("sequence.settings", r).unwrap();
+    assert_eq!(s.active_sequence().unwrap().settings, before.sequence(s.state.active_sequence.unwrap()).unwrap().settings);
+}
+
 #[test]
 fn zero_fps_is_refused() {
     let mut s = demo();

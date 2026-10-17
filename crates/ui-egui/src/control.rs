@@ -103,6 +103,14 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
         "engine.execute" | "ui.menu.invoke" => {
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
             let params = p.get("params").cloned().unwrap_or(json!({}));
+            // Only the menu opens Sequence Settings…: a modal an agent can't see or close would stall
+            // it, so `engine.execute` without params gets the current settings instead (#1540).
+            if req.method == "engine.execute" && id == "sequence.settings" && params.as_object().is_none_or(|m| m.is_empty()) {
+                return match app.session.execute(id, params) {
+                    Ok(v) => ok(v),
+                    Err(e) => err(e),
+                };
+            }
             match crate::menus::invoke(app, ctx, id, params) {
                 Ok(v) => ok(v),
                 Err(e) => err(e),

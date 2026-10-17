@@ -560,6 +560,22 @@ fn sequence_settings_dialog_shows_the_sequence() {
     assert_eq!(d.app().session.history.undo.len(), history);
 }
 
+/// An agent running `sequence.settings` with no params gets the current settings back instead of
+/// a modal dialog it can't see or close; the menu still opens the dialog (#1540).
+#[test]
+fn sequence_settings_without_params_over_engine_execute_opens_no_dialog() {
+    let mut d = Driver::demo();
+    let history = d.app().session.history.undo.len();
+    let r = d.exec("sequence.settings", json!({}));
+    d.frames(3);
+    assert!(d.app().dialog.is_none(), "no dialog: {r}");
+    assert!(d.ids("sequenceSettings.").is_empty());
+    assert_eq!((r["name"].clone(), r["width"].clone(), r["height"].clone()), (json!("Main Edit"), json!(1920), json!(1080)), "{r}");
+    assert_eq!(d.app().session.history.undo.len(), history, "no undo step");
+    let r = d.ok("ui.menu.invoke", json!({"id": "sequence.settings"}));
+    assert_eq!(r["dialog"], "sequenceSettings", "{r}");
+}
+
 /// OK applies the dialog in one undo step: a new timebase (29.97 starts on drop-frame timecode), a
 /// smaller frame with the clips' Motion scaled to match, and Maximum Render Quality.
 #[test]

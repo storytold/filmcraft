@@ -2189,6 +2189,23 @@ fn build() -> Vec<CommandSpec> {
             |s, p| {
                 const CMD: &str = "sequence.settings";
                 let id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+                // nothing to change: report the settings, under the keys this command takes (#1540)
+                if p.as_object().is_none_or(|m| m.is_empty()) {
+                    let st = &s.project.sequence(id).ok_or(EngineError::NoSequence)?.settings;
+                    return Ok(json!({
+                        "name": s.project.item(id).map(|i| i.name.as_str()),
+                        "width": st.width,
+                        "height": st.height,
+                        "fps": st.frame_rate.as_f64(),
+                        "sampleRate": st.sample_rate,
+                        "mix": crate::mixer::channels_name(st.audio_master),
+                        "dropFrame": st.drop_frame,
+                        "maxRenderQuality": st.max_render_quality,
+                        "workingSpace": st.color.working.id(),
+                        "wideGamut": st.color.wide_gamut,
+                        "autoToneMap": st.color.auto_tone_map,
+                    }));
+                }
                 let fps = fps_p(p, CMD)?;
                 let mix = match str_p(p, "mix") {
                     Some(m) => Some(crate::mixer::channels_from(m).ok_or_else(|| bad(CMD, format!("unknown mix `{m}` (Stereo, Mono, 5.1, Adaptive)")))?),
