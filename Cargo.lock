@@ -2483,7 +2483,7 @@ dependencies = [
  "roxmltree",
  "serde",
  "serde_json",
- "tempfile",
+ "sha2",
  "thiserror 2.0.21",
  "web-time",
 ]
@@ -2594,15 +2594,14 @@ dependencies = [
 name = "filmcraft-interchange"
 version = "0.20.1"
 dependencies = [
- "craft-aaf",
- "craft-audio 0.1.0 (git+https://github.com/storytold/craft-libs?rev=82062077bba679ba5236e2d1a391f02d1533cbab)",
- "craft-timeline 0.1.0 (git+https://github.com/storytold/craft-libs?rev=57288edafdc45552e30481cc649021de446abfa0)",
+ "base64 0.22.1",
  "filmcraft-cfb",
  "filmcraft-color",
  "filmcraft-geom",
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-time",
+ "flate2",
  "proptest",
  "roxmltree",
  "serde",

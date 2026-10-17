@@ -53,7 +53,10 @@ use serde_json::Value;
 
 pub use atomic::{atomic_write, atomic_write_new};
 
-pub use craft_fcproj_format::{FORMAT_ID, FormatError, MIGRATIONS, Migration, OLDEST_SCHEMA, SCHEMA_VERSION, detect_version, migrate_with};
+/// The `format` tag written in every envelope.
+pub const FORMAT_ID: &str = "filmcraft.project";
+/// Old upstream readers must refuse provenance-bearing projects instead of dropping records.
+pub const WORKFLOW_FORMAT_ID: &str = "filmcraft.project.workflow";
 
 /// Largest project file this build will read (256 MiB). Project JSON is read whole, so
 /// larger files would commit several times their size in memory before validation.
@@ -99,7 +102,39 @@ pub fn encode(project: &Project, pretty: bool) -> Vec<u8> {
 /// outside the schema's promises: builds that do not know it ignore it, and it is dropped rather
 /// than migrated when it cannot be read.
 pub fn encode_with_view(project: &Project, view: Option<&ProjectView>, pretty: bool) -> Vec<u8> {
-    craft_fcproj_format::encode(project, view, generator(), pretty)
+    let format = if project.workflow.is_some() { WORKFLOW_FORMAT_ID } else { FORMAT_ID };
+    let env = EnvelopeOut { format, schema_version: SCHEMA_VERSION, generator: generator(), project, view };
+    let r = if pretty { serde_json::to_vec_pretty(&env) } else { serde_json::to_vec(&env) };
+    // Serializing plain data (string keys, finite numbers or null) cannot fail.
+    r.unwrap_or_default()
+}
+
+/// Detect the schema version of a parsed document.
+pub fn detect_version(doc: &Value) -> Result<u32, FormatError> {
+    let probe: Probe = serde_json::from_value(doc.clone()).map_err(|e| FormatError::NotAProject(e.to_string()))?;
+    probe_version(&probe)
+}
+
+fn probe_version(p: &Probe) -> Result<u32, FormatError> {
+    if let Some(v) = p.schema_version {
+        if let Some(f) = &p.format
+            && f != FORMAT_ID
+            && f != WORKFLOW_FORMAT_ID
+        {
+            return Err(FormatError::NotAProject(format!("format is `{f}`, expected `{FORMAT_ID}`")));
+        }
+        return Ok(v);
+    }
+    // Before the envelope (v1) a file was the bare Project object with `version`.
+    // Its `version` was 1, or 2 on builds that briefly bumped it when caption tracks were added
+    // (same shape; the new field loads with its default). Anything higher is from the future.
+    if p.items.is_some() && p.root.is_some() {
+        return Ok(match p.version.unwrap_or(1) {
+            0..=2 => 1,
+            v => v,
+        });
+    }
+    Err(FormatError::NotAProject("no `schema_version` and not a legacy project".into()))
 }
 
 /// Read a project file (any supported schema).
@@ -114,20 +149,11 @@ pub fn decode(bytes: &[u8]) -> Result<Loaded, FormatError> {
 /// Refuse only values that would overflow or exhaust memory later (`Sequence::check_bounds`);
 /// structural rules such as overlaps are left to the editor, so projects that open today still open.
 fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
-    // Graphic layers written before they carried a uid get a stable identity now, before any
-    // undo history exists. The field is optional in the schema, so this is not a schema upgrade.
-    loaded.project.ensure_graphic_layer_uids();
-    // Embedded LUT text is rendered on the hot path. Drop oversize entries at load time so a
-    // hostile project cannot retain an unrenderable multi-megabyte source or repeatedly offer it
-    // to renderers. Clips that refer to one simply have no LUT, like a deleted library entry.
-    let max_lut = filmcraft_project::MAX_LUT_TEXT_BYTES;
-    loaded.project.luts.retain(|lut| {
-        let keep = lut.text.len() <= max_lut;
-        if !keep {
-            log::warn!("LUT `{}`: {} bytes, dropping entry above {max_lut} byte limit", lut.name, lut.text.len());
-        }
-        keep
-    });
+    if let Some(workflow) = &loaded.project.workflow
+        && workflow.version != 1
+    {
+        return Err(FormatError::Corrupt(format!("unsupported workflow record version {} (supported: 1)", workflow.version)));
+    }
     // Out-of-range audio stream data is repaired, not refused: failing the load would lose the
     // whole project over one bad index. A media item keeps its first `MAX_AUDIO_STREAMS` streams; a
     // clip pointing past that plays stream 0.
