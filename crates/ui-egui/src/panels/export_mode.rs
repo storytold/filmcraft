@@ -299,10 +299,15 @@ fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 
 const LABEL_W: f32 = 132.0;
 
-/// A labelled settings row.
+/// A labelled settings row. A label longer than the column (French, Russian…) wraps inside it
+/// instead of being cut at the column's edge.
 fn row<R>(ui: &mut egui::Ui, t: &Tokens, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    ui.horizontal(|ui| {
-        ui.add_sized(vec2(LABEL_W, 20.0), egui::Label::new(egui::RichText::new(label).color(t.text_dim).size(12.0)).truncate());
+    ui.horizontal_top(|ui| {
+        ui.allocate_ui_with_layout(vec2(LABEL_W, 20.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if !label.is_empty() {
+                ui.add(egui::Label::new(egui::RichText::new(label).color(t.text_dim).size(12.0)).wrap());
+            }
+        });
         add(ui)
     })
     .inner
@@ -782,9 +787,9 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             // every machine without one keeps the built-in encoder.
             // H.265 and AV1 have only hardware encoders: choosing the format is the opt-in.
             if !hevc {
-                row(ui, t, "Hardware Encoding", |ui| {
+                row(ui, t, tl!("Hardware Encoding"), |ui| {
                     let mut on = s.hardware_encoding == HardwareEncoding::Auto;
-                    if check(ui, reg, "export.video.hardwareEncoding", &mut on, "Use the hardware encoder when available") {
+                    if check(ui, reg, "export.video.hardwareEncoding", &mut on, tl!("Use the hardware encoder when available")) {
                         s.hardware_encoding = if on { HardwareEncoding::Auto } else { HardwareEncoding::Off };
                     }
                 });

@@ -33,6 +33,7 @@
 	Align to Video Frame	Alinear con el fotograma de video
 	Align to Video Frame as Group	Alinear con el fotograma de video como grupo
 	All Panels	Todos los paneles
+	All Supported Files	Todos los archivos
 	Alpha	Alfa
 	Appearance	Apariencia
 	Appearance…	Apariencia…
@@ -251,6 +252,7 @@
 	Project	Proyecto
 	Project Manager…	Administrador de proyectos…
 	Project Settings	Ajustes del proyecto
+	Projects and Interchange	Proyectos e intercambio
 	Project…	Proyecto…
 	Properties	Propiedades
 	Purple	Púrpura
@@ -1318,6 +1320,7 @@
 	Audio Codec	Códec de audio
 	Audio Duration	Duración del audio
 	Audio Effects	Efectos de audio
+	Audio Files	Archivos de audio
 	Audio Hardware	Hardware de audio
 	Audio In Point	Punto de entrada de audio
 	Audio Info	Información de audio
@@ -1831,6 +1834,7 @@
 	Hard Mix	Mezcla definida
 	Hardware decoding	Descodificación por hardware
 	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Descodificación por hardware: Automático usa el descodificador de video del sistema (VideoToolbox en macOS, Media Foundation en Windows, VA-API o NVDEC para H.264 y HEVC en Linux) para los flujos que admite, y el descodificador propio de FilmCraft para todo lo demás o si falla el hardware. Los medios ya abiertos mantienen su descodificador hasta que se vuelven a abrir.
+	Hardware Encoding	Codificación por hardware
 	Head Size	Tamaño de la cabeza
 	Heart	Corazón
 	Height	Altura
@@ -2479,6 +2483,7 @@
 	Stereoscopic - Side by Side	Estereoscópico - lado a lado
 	Still	Imagen fija
 	Still Image Default Duration	Duración predeterminada de imágenes fijas
+	Still Images	Imágenes fijas
 	Stone Church	Iglesia de piedra
 	Stopband Attenuation	Atenuación de la banda de rechazo
 	Straight Color	Color directo
@@ -2602,6 +2607,7 @@
 	Use Glow Color	Usar color de resplandor
 	Use Media Source	Usar el origen del medio
 	Use Tint Color	Usar color de matiz
+	Use the hardware encoder when available	Usar el codificador por hardware cuando esté disponible
 	Utility	Utilidad
 	VHS Damage	Daño de VHS
 	VR Blur	Desenfoque VR
@@ -2649,6 +2655,7 @@
 	Video Codec	Códec de video
 	Video Duration	Duración del video
 	Video Effects	Efectos de video
+	Video Files	Archivos de vídeo
 	Video In Point	Punto de entrada de video
 	Video Info	Información de video
 	Video Limiter	Limitador de video

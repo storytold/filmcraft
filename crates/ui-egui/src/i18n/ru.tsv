@@ -1,12 +1,11 @@
 # Russian (ru) catalog. Columns separated by TAB: context <TAB> source <TAB> translation
 # Empty context is a plain UI string. Escapes: \n, \t, \\; preserve placeholders and trailing …
-# Original clean-room translations from the meaning of FilmCraft's English menu labels,
-# using Russian video-editing vocabulary (Premiere-style). No proprietary localization resources were used.
-# Core menu coverage; other interface strings fall back to English.
-
+# Full interface coverage: every string of the reference catalog is translated into Russian with
+# ordinary video-editing vocabulary. Clean-room: written from the plain meaning of the English
+# text; no proprietary localization resource, string table or product interface was consulted.
 	About FilmCraft	О FilmCraft
-	Add Audio Submix Track	Добавить дорожку подмикширования звука
-	Add Caption at Playhead	Добавить субтитр в позиции курсора воспроизведения
+	Add Audio Submix Track	Добавить дорожку подмикширования аудио
+	Add Caption at Playhead	Добавить субтитр в позиции курсора
 	Add Chapter Marker…	Добавить маркер главы…
 	Add Edit	Добавить склейку
 	Add Edit to All Tracks	Добавить склейку на все дорожки
@@ -16,13 +15,14 @@
 	Add Marker	Добавить маркер
 	Add New Caption Track…	Добавить новую дорожку субтитров…
 	Add Range Marker	Добавить маркер диапазона
-	Add Range Marker to In and Out	Добавить маркер диапазона между точками входа и выхода
+	Add Range Marker to In and Out	Добавить маркер диапазона от входа до выхода
 	Add Tracks…	Добавить дорожки…
 	Adjustment Layer…	Корректирующий слой…
 	Align to Selection	Выровнять по выделению
 	Align to Video Frame	Выровнять по видеокадру
 	Align to Video Frame as Group	Выровнять как группу по видеокадру
 	All Panels	Все панели
+	All Supported Files	Все файлы
 	Alpha	Альфа
 	Appearance	Оформление
 	Appearance…	Оформление…
@@ -33,27 +33,26 @@
 	ArtCraft Website	Веб-сайт ArtCraft
 	Assembly	Сборка
 	Attach Proxies…	Прикрепить прокси…
-	Audio	Аудио
 	Audio Channels…	Аудиоканалы…
 	Audio Clip Mixer	Микшер аудиоклипов
 	Audio Gain…	Усиление звука…
 	Audio Hardware…	Аудиооборудование…
 	Audio In	Вход аудио
 	Audio Meters	Индикаторы звука
-	Audio Options	Параметры аудио
+	Audio Options	Параметры звука
 	Audio Out	Выход аудио
 	Audio Track Mixer	Микшер аудиодорожек
-	Audio Waveform	Форма звуковой волны
+	Audio Waveform	Форма сигнала
 	Auto Save…	Автосохранение…
-	Automate to Sequence…	Автоматизировать в эпизод…
-	Bars and Tone…	Цветные полосы и тон…
-	Bin	Подборка
-	Bin From Selection	Подборка из выделения
-	Black Video…	Черное видео…
+	Automate to Sequence…	Автоматизировать в последовательность…
+	Bars and Tone…	Полосы и тон…
+	Bin	Корзина
+	Bin From Selection	Корзина из выделения
+	Black Video…	Чёрное видео…
 	Blue	Синий
 	Bottom	По нижнему краю
 	Breakout to Mono	Разбить на моно
-	Bring Forward	Переместить вперед
+	Bring Forward	Переместить вперёд
 	Bring to Front	Переместить на передний план
 	Brown	Коричневый
 	Captions	Субтитры
@@ -67,33 +66,31 @@
 	Clear Guides	Очистить направляющие
 	Clear In	Снять точку входа
 	Clear In and Out	Снять точки входа и выхода
-	Clear Markers	Удалить маркеры
+	Clear Markers	Очистить маркеры
 	Clear Out	Снять точку выхода
 	Clear Selected Marker	Удалить выбранный маркер
-	Clip	Клип
 	Close	Закрыть
 	Close All Other Projects	Закрыть все остальные проекты
 	Close All Projects	Закрыть все проекты
-	Close Gap	Удалить пробел
+	Close Gap	Закрыть промежуток
 	Close Project	Закрыть проект
 	Color Management…	Управление цветом…
 	Color Matte…	Цветная подложка…
 	Comparison View	Режим сравнения
-	Composite Video	Составное видео
+	Composite Video	Композитное видео
 	Consolidate Duplicates	Объединить дубликаты
 	Copy	Копировать
-	Copy Paste Includes Sequence Markers	Копирование и вставка включают маркеры эпизода
-	Create Captions from Transcript…	Создать субтитры из расшифровки…
-	Create Multi-Camera Source Sequence…	Создать многокамерный исходный эпизод…
+	Copy Paste Includes Sequence Markers	Копирование и вставка включают маркеры последовательности
+	Create Captions from Transcript…	Создать субтитры из транскрипта…
+	Create Multi-Camera Source Sequence…	Создать мультикамерную исходную последовательность…
 	Create Proxies…	Создать прокси…
 	Cut	Вырезать
-	Dark	Темный
-	Darkest	Самый темный
-	Delete Render Files	Удалить файлы рендеринга
-	Delete Render Files In to Out	Удалить файлы рендеринга между точками входа и выхода
+	Darkest	Самый тёмный
+	Delete Render Files	Удалить файлы визуализации
+	Delete Render Files In to Out	Удалить файлы визуализации от входа до выхода
 	Delete Tracks…	Удалить дорожки…
-	Delete Transcript	Удалить расшифровку
-	Demo Footage	Демонстрационные материалы
+	Delete Transcript	Удалить транскрипт
+	Demo Footage	Демонстрационный материал
 	Demo Project	Демо-проект
 	Deselect All	Отменить выделение
 	Detach Proxies	Отсоединить прокси
@@ -104,9 +101,9 @@
 	Distribute Space Vertically	Распределить интервалы по вертикали
 	Distribute Vertically	Распределить по вертикали
 	Duplicate	Дублировать
-	Dynamic Audio Waveforms	Динамические формы звуковой волны
+	Dynamic Audio Waveforms	Динамические формы сигнала
 	Edit	Правка
-	Edit Offline…	Редактировать автономный клип…
+	Edit Offline…	Редактировать офлайн-клип…
 	Edit Original	Редактировать оригинал
 	Edit Subclip…	Редактировать субклип…
 	Editing	Монтаж
@@ -131,19 +128,19 @@
 	FilmCraft on getartcraft.com	FilmCraft на getartcraft.com
 	Find Next	Найти далее
 	Find…	Найти…
-	Fit	По размеру
+	Fit	Вписать
 	Fit to frame	Вписать в кадр
 	Flatten	Свести
 	Forest	Лесной
-	Frame Blending	Смешение кадров
+	Frame Blending	Смешивание кадров
 	Frame Hold Options…	Параметры стоп-кадра…
 	Frame Sampling	Выборка кадров
-	From Bin	Из подборки
+	From Bin	Из корзины
 	From Source Monitor	Из монитора источника
-	From Source Monitor, Match Frame	Из монитора источника, сопоставление кадров
+	From Source Monitor, Match Frame	Из монитора источника, сопоставление кадра
 	From file…	Из файла…
 	Full	Полное
-	Generate Audio Waveform	Сгенерировать форму звуковой волны
+	Generate Audio Waveform	Создать форму сигнала
 	Get Media File Properties for	Свойства медиафайла для
 	Go to Gap	Перейти к промежутку
 	Go to In	Перейти к точке входа
@@ -152,27 +149,27 @@
 	Go to Out	Перейти к точке выхода
 	Go to Previous Caption Segment	Перейти к предыдущему сегменту субтитров
 	Go to Previous Marker	Перейти к предыдущему маркеру
-	Go to Split	Перейти к раздельной точке
+	Go to Split	Перейти к точке разделения
 	Graphics and Titles	Графика и титры
 	Graphics…	Графика…
-	Green	Зеленый
+	Green	Зелёный
 	Group	Сгруппировать
 	Guide Templates	Шаблоны направляющих
 	Help	Справка
 	Hide All Caption Tracks	Скрыть все дорожки субтитров
-	High Quality Playback	Высокое качество воспроизведения
+	High Quality Playback	Воспроизведение высокого качества
 	History	История
 	Import From	Импортировать из
 	Import Image Sequence…	Импортировать последовательность изображений…
 	Import from Media Browser	Импортировать из медиабраузера
 	Import…	Импорт…
 	Info	Инфо
-	Ingest Settings…	Параметры инжеста…
+	Ingest Settings…	Настройки инжеста…
 	Insert	Вставить
 	Insert Frame Hold Segment	Вставить сегмент стоп-кадра
 	Install Motion Graphics Template…	Установить шаблон анимированной графики…
 	Interpret Footage…	Интерпретировать материал…
-	Join the ArtCraft Discord…	Присоединиться к ArtCraft Discord…
+	Join the ArtCraft Discord…	Присоединиться к Discord ArtCraft…
 	Keyboard Shortcuts…	Сочетания клавиш…
 	Label	Метка
 	Labels…	Метки…
@@ -184,27 +181,29 @@
 	Lift	Поднять
 	Light	Светлый
 	Link	Связать
-	Link Media…	Привязать медиаданные…
+	Link Media…	Связать медиа…
+	Refresh Changed Media	Обновить изменённые медиа
 	Linked Selection	Связанное выделение
-	Lock Guides	Закрепить направляющие
+	Lock Guides	Заблокировать направляющие
 	Lumetri Color	Цвет Lumetri
-	Lumetri Scopes	Видеографика Lumetri
-	Magnification	Масштаб
-	Make Offline…	Сделать автономным…
+	Lumetri Scopes	Осциллограммы Lumetri
+	Magnification	Увеличение
+	Make Offline…	Сделать офлайн…
 	Make Subclip…	Создать субклип…
-	Make Subsequence	Создать вложенный эпизод
+	Make Subsequence	Создать подпоследовательность
 	Manage Guides…	Управление направляющими…
 	Mark Clip	Пометить клип
 	Mark In	Отметить точку входа
 	Mark Out	Отметить точку выхода
 	Mark Selection	Пометить выделение
-	Mark Split	Отметить раздельную точку
+	Mark Split	Отметить точку разделения
 	Markers	Маркеры
 	Match Frame	Сопоставить кадр
 	Media Analysis & Transcription…	Анализ медиа и расшифровка…
 	Media Browser	Медиабраузер
-	Media Cache…	Кэш медиаданных…
+	Media Cache…	Кэш медиа…
 	Media…	Медиа…
+	Medium	Средний
 	Memory…	Память…
 	Merge Clips…	Объединить клипы…
 	Metadata	Метаданные
@@ -216,13 +215,14 @@
 	New	Создать
 	New Layer	Новый слой
 	New Project Panel	Новая панель проекта
-	Next in Sequence	Следующий в эпизоде
+	Next in Sequence	Следующий в последовательности
 	Next in Track	Следующий на дорожке
-	Normalize Mix Track…	Нормализовать мастер-дорожку…
-	Offline File…	Автономный файл…
+	Normalize Mix Track…	Нормализовать дорожку микса…
+	Offline File…	Офлайн-файл…
 	Open Project…	Открыть проект…
 	Open Recent	Открыть недавние
 	Clear Recent Files	Очистить список недавних файлов
+	Recent	Недавние
 	Optical Flow	Оптический поток
 	Overwrite	Перезаписать
 	Paste	Вставить
@@ -234,18 +234,19 @@
 	Plugins…	Плагины…
 	Polygon	Многоугольник
 	Preferences	Настройки
-	Previous in Sequence	Предыдущий в эпизоде
+	Previous in Sequence	Предыдущий в последовательности
 	Previous in Track	Предыдущий на дорожке
 	Program	Программа
 	Progress	Прогресс
 	Project	Проект
-	Project Manager…	Диспетчер проектов…
+	Project Manager…	Менеджер проекта…
 	Project Settings	Настройки проекта
+	Projects and Interchange	Проекты и обмен
 	Project…	Проект…
 	Properties	Свойства
 	Purple	Пурпурный
-	Reconnect Full Resolution Media…	Переподключить медиаданные полного разрешения…
-	Recover Unsaved Changes…	Восстановить несохраненные изменения…
+	Reconnect Full Resolution Media…	Переподключить медиа полного разрешения…
+	Recover Unsaved Changes…	Восстановить несохранённые изменения…
 	Rectangle	Прямоугольник
 	Red	Красный
 	Redo	Повторить
@@ -257,26 +258,26 @@
 	Remove Pauses	Удалить паузы
 	Remove Unused	Удалить неиспользуемые
 	Rename…	Переименовать…
-	Render Audio	Рендеринг аудио
-	Render Effects In to Out	Рендеринг эффектов от точки входа до точки выхода
-	Render In to Out	Рендеринг от точки входа до точки выхода
-	Render Selection	Рендеринг выделения
+	Render Audio	Визуализировать звук
+	Render Effects In to Out	Визуализировать эффекты от входа до выхода
+	Render In to Out	Визуализировать от входа до выхода
+	Render Selection	Визуализировать выделение
 	Replace Fonts in Projects…	Заменить шрифты в проектах…
 	Replace With Clip	Заменить клипом
 	Report an Issue…	Сообщить о проблеме…
 	Reset All Parameters	Сбросить все параметры
 	Reset Duration	Сбросить длительность
-	Reset to Saved Layout	Сбросить к сохраненному макету
+	Reset to Saved Layout	Сбросить к сохранённому макету
 	Restore Captions from Source Clip	Восстановить субтитры из исходного клипа
 	Reveal Log Files…	Показать файлы журнала…
 	Reverse Match Frame	Обратное сопоставление кадра
-	Revert	Вернуть к сохраненному
+	Revert	Вернуть
 	Revert Remix	Отменить ремикс
 	Review	Рецензирование
 	Right	По правому краю
-	Ripple Delete	Удаление со сдвигом
-	Ripple Delete Head Frame	Удалить начало со сдвигом
-	Ripple Sequence Markers	Сдвигать маркеры эпизода
+	Ripple Delete	Удалить со сдвигом
+	Ripple Delete Head Frame	Удалить начальный кадр со сдвигом
+	Ripple Sequence Markers	Сдвигать маркеры последовательности
 	Rose	Розовый
 	Safe Margins	Безопасные поля
 	Save	Сохранить
@@ -288,7 +289,7 @@
 	Scale to Frame Size	Масштабировать по размеру кадра
 	Scene Edit Detection…	Обнаружение склеек сцен…
 	Scratch Disks…	Рабочие диски…
-	Search Bin	Поисковая подборка
+	Search Bin	Поиск в корзине
 	Select	Выделение
 	Select All	Выделить все
 	Select All Matching	Выделить все совпадающие
@@ -302,26 +303,25 @@
 	Selection…	Выделение…
 	Send Backward	Переместить назад
 	Send to Back	Переместить на задний план
-	Sequence	Эпизод
-	Sequence From Clip	Эпизод из клипа
-	Sequence Settings…	Настройки эпизода…
-	Sequence…	Эпизод…
-	Settings	Параметры
+	Sequence	Последовательность
+	Sequence From Clip	Последовательность из клипа
+	Sequence Settings…	Настройки последовательности…
+	Sequence…	Последовательность…
 	Show Active Caption Tracks Only	Показать только активные дорожки субтитров
 	Show All Caption Tracks	Показать все дорожки субтитров
 	Show All Marker Colors	Показать все цвета маркеров
 	Show Guides	Показать направляющие
 	Show Rulers	Показать линейки
 	Show Through Edits	Показать сквозные склейки
-	Simplify Sequence…	Упростить эпизод…
-	Snap in Program Monitor	Привязка в программном мониторе
+	Simplify Sequence…	Упростить последовательность…
+	Snap in Program Monitor	Привязка в мониторе программы
 	Snap in Timeline	Привязка на таймлайне
 	Source	Источник
 	Source Settings…	Настройки источника…
 	Speed/Duration…	Скорость/Длительность…
 	Synchronize…	Синхронизировать…
-	System Compatibility Report…	Отчет о совместимости системы…
-	Tan	Рыжевато-коричневый
+	System Compatibility Report…	Отчёт о совместимости системы…
+	Tan	Бежевый
 	Teal	Бирюзовый
 	Text	Текст
 	Time Interpolation	Интерполяция времени
@@ -332,15 +332,15 @@
 	Toggle Proxies	Переключить прокси
 	Tools	Инструменты
 	Top	По верхнему краю
-	Transcribe Sequence…	Транскрибировать эпизод…
-	Transcribe…	Транскрибировать…
-	Transcript	Расшифровка
+	Transcribe Sequence…	Расшифровать последовательность…
+	Transcribe…	Расшифровать…
+	Transcript	Транскрипт
 	Transparent Video…	Прозрачное видео…
-	Trim Edit	Режим подрезки
+	Trim Edit	Подрезка
 	Trim…	Подрезка…
 	Undo	Отменить
 	Ungroup	Разгруппировать
-	Universal Counting Leader…	Универсальный ракорд…
+	Universal Counting Leader…	Универсальный ракорд обратного отсчёта…
 	Update Metadata…	Обновить метаданные…
 	Upgrade Caption to Graphic	Преобразовать субтитр в графику
 	Upgrade to Source Graphic	Преобразовать в исходную графику
@@ -348,15 +348,3255 @@
 	Video In	Вход видео
 	Video Options	Параметры видео
 	Video Out	Выход видео
-	Video and Audio Waveform Split	Раздельное отображение видео и аудиоволны
+	Video and Audio Waveform Split	Раздельное отображение видео и формы сигнала
 	View	Просмотр
 	Violet	Фиолетовый
 	Window	Окно
 	Workspaces	Рабочие среды
-	Yellow	Желтый
+	Yellow	Жёлтый
 	Zoom In	Увеличить
 	Zoom Out	Уменьшить
-	Zoom to Sequence	Масштабировать по размеру эпизода
+	Zoom to Sequence	Масштабировать по последовательности
+	Home	Главная
+	Import	Импорт
+	{name} - Edited	{name} — изменён
+	Full screen	Полный экран
+	Volume	Громкость
+	Master volume: use the Audio Track Mixer	Громкость мастера задаётся в микшере аудиодорожек
+	Search	Поиск
+	Quick Export	Быстрый экспорт
+	Join the ArtCraft Discord (discord.gg/artcraft)	Присоединиться к Discord ArtCraft (discord.gg/artcraft)
+	Cancel	Отмена
+	OK	ОК
+	Interpret Footage	Интерпретировать материал
+	Color Management · {n} item	Управление цветом · элементов: {n}
+	Color Management · {n} items	Управление цветом · элементов: {n}
+	Media colour space (from file metadata): {detected}	Цветовое пространство медиа (из метаданных файла): {detected}
+	Override media colour space:	Переопределить цветовое пространство медиа:
+	Use file metadata	Использовать метаданные файла
+	Sequence Color Management	Управление цветом последовательности
+	Working Color Space	Рабочее цветовое пространство
+	Wide gamut color (composite in BT.2020)	Широкий цветовой охват (компоновка в BT.2020)
+	Auto tone map media (HDR and log into SDR)	Автоматическое тональное отображение медиа (HDR и лог в SDR)
+	Audio Gain	Усиление звука
+	Set Gain to:	Задать усиление:
+	Adjust Gain by:	Изменить усиление на:
+	Normalize Max Peak to:	Нормализовать максимальный пик до:
+	Normalize All Peaks to:	Нормализовать все пики до:
+	Peak Amplitude: {peak}	Амплитуда пика: {peak}
+	Standard	Стандартный
+	Adaptive	Адаптивный
+	Mono	Моно
+	Stereo	Стерео
+	Add Tracks	Добавить дорожки
+	Amount	Количество
+	Placement	Размещение
+	Track type	Тип дорожки
+	Add video tracks	Добавить видеодорожки
+	Add audio tracks	Добавить аудиодорожки
+	Add audio submix tracks	Добавить дорожки подмикширования аудио
+	After {name}	После {name}
+	Before First Track	Перед первой дорожкой
+	Delete Tracks	Удалить дорожки
+	Video Tracks	Видеодорожки
+	Audio Tracks	Аудиодорожки
+	Delete Video Tracks	Удалить видеодорожки
+	Delete Audio Tracks	Удалить аудиодорожки
+	All Empty Tracks	Все пустые дорожки
+	Caption Tracks	Дорожки субтитров
+	Delete Caption Tracks	Удалить дорожки субтитров
+	Delete Caption Track	Удалить дорожку субтитров
+	Delete Empty Caption Tracks	Удалить пустые дорожки субтитров
+	Version {version}	Версия {version}
+	A clean-room, pure-Rust non-linear video editor. Part of the ArtCraft family.	Нелинейный видеоредактор на чистом Rust, созданный по принципу чистой комнаты. Часть семейства ArtCraft.
+	Join the ArtCraft Discord	Присоединиться к Discord ArtCraft
+	Source code on GitHub	Исходный код на GitHub
+	Report an issue	Сообщить о проблеме
+	MIT OR Apache-2.0. Fonts: Inter, Noto Serif and JetBrains Mono (SIL OFL 1.1).	MIT OR Apache-2.0. Шрифты: Inter, Noto Serif и JetBrains Mono (SIL OFL 1.1).
+	just now	только что
+	{n} s ago	{n} с назад
+	{n} min ago	{n} мин назад
+	{n} h ago	{n} ч назад
+	All Events	Все события
+	Warnings and Errors	Предупреждения и ошибки
+	Errors Only	Только ошибки
+	Clear All	Очистить все
+	No events.	Событий нет.
+	Show finished jobs	Показывать завершённые задания
+	Cancelled	Отменено
+	Failed: {e}	Ошибка: {e}
+	Done	Готово
+	No background jobs.	Фоновых заданий нет.
+	Recover Unsaved Changes	Восстановить несохранённые изменения
+	Untitled	Без названия
+	FilmCraft was closed while “{name}” had unsaved changes.	FilmCraft был закрыт, а в проекте «{name}» оставались несохранённые изменения.
+	FilmCraft quit unexpectedly while “{name}” had unsaved changes.	FilmCraft неожиданно завершился, а в проекте «{name}» оставались несохранённые изменения.
+	Recover unsaved changes from {when}?	Восстановить несохранённые изменения от {when}?
+	The project had not been saved yet.	Проект ещё не был сохранён.
+	{n} sessions have unsaved changes:	Сеансов с несохранёнными изменениями: {n}
+	Discard	Отклонить
+	Recover	Восстановить
+	Not Now	Не сейчас
+	Are you sure you want to discard your changes to '{file}'?	Отклонить изменения в «{file}»?
+	Yes	Да
+	No	Нет
+	Add media to your project. Drop files anywhere in the window, or choose a source below.	Добавить медиа в проект. Файлы можно перетащить в любое место окна или выбрать источник ниже.
+	Browse files…	Выбрать файлы…
+	Movies, audio and stills from disk	Видео, аудио и изображения с диска
+	Demo footage	Демонстрационный материал
+	Six procedural 1080p clips with sound	Шесть процедурных клипов 1080p со звуком
+	Demo project	Демо-проект
+	A cut sequence with transitions, effects and music	Смонтированная последовательность с переходами, эффектами и музыкой
+	Bars and Tone	Полосы и тон
+	SMPTE HD bars with 1 kHz reference tone	Полосы SMPTE HD с опорным тоном 1 кГц
+	Community	Сообщество
+	Join us on Discord	Присоединиться к нам в Discord
+	OMF Export Settings	Настройки экспорта OMF
+	AAF Export Settings	Настройки экспорта AAF
+	OMF Title:	Название OMF:
+	Mixdown video	Свести видео
+	Audio:	Аудио:
+	Encapsulate	Инкапсулировать
+	Separate Audio	Отдельное аудио
+	Embed	Встроить
+	Separate Files	Отдельные файлы
+	Link to Media	Связать с медиа
+	Audio File Format:	Формат аудиофайла:
+	Sample Rate:	Частота дискретизации:
+	Bits per Sample:	Разрядность:
+	Rendering:	Визуализация:
+	Trim audio files	Подрезать аудиофайлы
+	Handle Frames:	Кадры запаса:
+	Render audio clip effects	Визуализировать эффекты аудиоклипов
+	Breakout to mono	Разбить на моно
+	Exported {path}	Экспортировано: {path}
+	Select a clip to view its metadata.	Выбор клипа показывает его метаданные.
+	Clip: {name}	Клип: {name}
+	Open	Открыть
+	(no sequence)	(нет последовательности)
+	Show or hide {color} markers	Показать или скрыть маркеры «{color}»
+	Marker	Маркер
+	{tc}  Chapter	{tc}  Глава
+	No markers. Press M to add one.	Маркеров нет. Добавить можно клавишей M.
+	All markers are hidden by the colour filter.	Фильтр по цвету скрывает все маркеры.
+	Type:	Тип:
+	Video:	Видео:
+	Codec:	Кодек:
+	Duration:	Длительность:
+	Settings:	Настройки:
+	Playhead:	Курсор:
+	Video {n}:	Видео {n}:
+	Audio {n}:	Аудио {n}:
+	UI:	Интерфейс:
+	{fps} fps · {n} frames queued	{fps} кадр/с · кадров в очереди: {n}
+	{panel} — coming in a later milestone	{panel} — появится в следующем обновлении
+	Close Panel	Закрыть панель
+	Close Other Timeline Panels	Закрыть другие панели таймлайна
+	Close All	Закрыть все
+	Maximize Frame	Развернуть панель
+	Restore Frame	Восстановить панель
+	Restore Workspace	Восстановить рабочую среду
+	Reveal Sequence in Project	Показать последовательность в проекте
+	Video Thumbnails	Видеоминиатюры
+	Audio Waveforms	Формы сигнала
+	Delete Preset	Удалить пресет
+	Export Preset…	Экспортировать пресет…
+	Import Presets…	Импортировать пресеты…
+	Effect presets	Пресеты эффектов
+	Save Preset	Сохранить пресет
+	Name:	Название:
+	Type	Тип
+	Scale	Масштаб
+	Anchor to In Point	Привязать к точке входа
+	Anchor to Out Point	Привязать к точке выхода
+	Without keyframes	Без ключевых кадров
+	Description:	Описание:
+	Saved preset “{name}”	Пресет «{name}» сохранён
+	Current duration {seconds} s	Текущая длительность: {seconds} с
+	Remix Properties	Свойства ремикса
+	Target Duration:	Целевая длительность:
+	Segments:	Сегменты:
+	Fewer · More	Меньше · Больше
+	Variations:	Варианты:
+	Remixed to {seconds} s	Ремикс до {seconds} с
+	{mode} · no clip	{mode} · без клипа
+	{mode} · no sequence	{mode} · без последовательности
+	Remove Row	Удалить строку
+	Add a timecode row	Добавить строку тайм-кода
+	Panner	Панорамирование
+	Mute	Без звука
+	Send {n} Level	Уровень посыла {n}
+	Show Keyframes	Показать ключевые кадры
+	Clip Keyframes	Ключевые кадры клипа
+	Track Keyframes	Ключевые кадры дорожки
+	Delete	Удалить
+	Untitled Workspace	Рабочая среда без названия
+	New Workspace	Новая рабочая среда
+	Edit Workspaces	Изменить рабочие среды
+	Rename	Переименовать
+	Restore Original	Восстановить исходное
+	Search effects	Поиск эффектов
+	Apply to Selected Clips	Применить к выделенным клипам
+	Metadata Display	Отображение метаданных
+	Save As New View Preset	Сохранить как новый пресет вида
+	Manage Saved View Presets	Управление сохранёнными пресетами вида
+	Freeform View Options	Параметры свободного вида
+	Save Arrangement	Сохранить расположение
+	Saves the view, columns, sort, thumbnail and font size.	Сохраняет вид, столбцы, сортировку, миниатюры и размер шрифта.
+	Grid spacing:	Интервал сетки:
+	Default clip size:	Размер клипа по умолчанию:
+	Snap to grid	Привязка к сетке
+	Show clip names	Показывать имена клипов
+	Show durations	Показывать длительности
+	Show:	Показывать:
+	Search fields	Поля поиска
+	Project Metadata	Метаданные проекта
+	Add Property…	Добавить свойство…
+	Column order	Порядок столбцов
+	{n}. (empty)	{n}. (пусто)
+	Restore	Восстановить
+	Overwrite with Current View	Перезаписать текущим видом
+	Graphics text search arrives with M10.1–M10.2	Поиск текста в графике появится в M10.1–M10.2
+	Open a sequence to work with captions	Открыть последовательность для работы с субтитрами
+	Add captions	Добавить субтитры
+	Create a caption track or import a caption file.	Создание дорожки субтитров или импорт файла субтитров.
+	Create new caption track	Создать новую дорожку субтитров
+	Import captions file…	Импортировать файл субтитров…
+	New {format} track	Новая дорожка {format}
+	Add caption at playhead	Добавить субтитр в позиции курсора
+	Split caption at playhead	Разделить субтитр в позиции курсора
+	Merge selected captions	Объединить выделенные субтитры
+	Delete selected captions	Удалить выделенные субтитры
+	No captions on this track. Press + to add one at the playhead.	На этой дорожке нет субтитров. Клавиша + добавляет субтитр в позиции курсора.
+	No matching captions.	Подходящих субтитров нет.
+	Open a sequence to see its transcript	Открыть последовательность, чтобы увидеть её транскрипт
+	Transcribe sequence	Расшифровать последовательность
+	Speech-to-text turns the dialogue into editable text.	Распознавание речи превращает диалог в редактируемый текст.
+	This build has no speech-to-text; import a transcript with transcript.set.	В этой сборке нет распознавания речи; транскрипт можно импортировать через transcript.set.
+	Transcribe	Расшифровать
+	Extract selected text	Извлечь выделенный текст
+	Lift selected text	Поднять выделенный текст
+	Remove filler words	Удалить слова-паразиты
+	Create captions	Создать субтитры
+	Speaker	Говорящий
+	Box	Рамка
+	Align	Выровнять
+	Align left	По левому краю
+	Align center	По центру
+	Align right	По правому краю
+	Position	Положение
+	Position: top	Положение: сверху
+	Position: middle	Положение: по центру
+	Position: bottom	Положение: снизу
+	(gap)	(промежуток)
+	Out: {name}	Выход: {name}
+	In: {name}	Вход: {name}
+	Play Around Edit (Space loops, Shift+K once)	Воспроизвести вокруг склейки (пробел — цикл, Shift+K — один раз)
+	Trim Backward Many	Подрезать назад на несколько кадров
+	Trim Backward	Подрезать назад
+	Apply Default Transitions	Применить переходы по умолчанию
+	Apply Default Transitions to Selection (Shift+D)	Применить переходы по умолчанию к выделению (Shift+D)
+	Trim Forward	Подрезать вперёд
+	Trim Forward Many	Подрезать вперёд на несколько кадров
+	Exit Trim Mode	Выйти из режима подрезки
+	Voice-over record (right-click: Voice-Over Record Settings…)	Запись закадрового голоса (щелчок правой кнопкой: настройки записи закадрового голоса…)
+	Voice-Over Record Settings…	Настройки записи закадрового голоса…
+	Recording voice-over…	Идёт запись закадрового голоса…
+	Voice-over recorded: {p}	Закадровый голос записан: {p}
+	Voice-over recording stopped (nothing recorded)	Запись закадрового голоса остановлена (ничего не записано)
+	Post-roll	Постролл
+	● Recording	● Запись
+	Voice-Over Record Settings	Настройки записи закадрового голоса
+	Source:	Источник:
+	Default Input	Вход по умолчанию
+	Input:	Вход:
+	Channel {n}	Канал {n}
+	Countdown Sound Cues	Звуковые сигналы отсчёта
+	Pre-roll:	Преролл:
+	 seconds	 с
+	Post-roll:	Постролл:
+	Playback starts the pre-roll before the playhead (or the In point); with In/Out marked, recording punches in and out there.	Воспроизведение начинается с преролла до курсора воспроизведения (или точки входа); если вход и выход отмечены, запись включается и выключается в этих точках.
+	Effect	Эффект
+	Clip Fx Editor	Редактор эффектов клипа
+	Track Fx Editor	Редактор эффектов дорожки
+	Master Gain	Усиление мастера
+	Reset	Сброс
+	Band {n}	Полоса {n}
+	Solo	Соло
+	Bypass	Обход
+	Thr	Порог
+	Ratio	Соотношение
+	Att	Атака
+	Rel	Восст.
+	Gain	Усиление
+	Output Gain	Выходное усиление
+	Limiter	Ограничитель
+	Link Channels	Связать каналы
+	Limiter Threshold	Порог ограничителя
+	Limiter Release	Восстановление ограничителя
+	Auto Gate	Автогейт
+	Threshold	Порог
+	Attack	Атака
+	Release	Восстановление
+	Hold	Удержание
+	Compressor	Компрессор
+	Auto Makeup	Автокомпенсация
+	Makeup	Компенсация
+	Expander	Экспандер
+	Soft Clip	Мягкое ограничение
+	(no sequences)	(нет последовательностей)
+	(no clips)	(нет клипов)
+	Show Transport Controls	Показать элементы управления воспроизведением
+	Loop	Цикл
+	Multi-Camera Audio Follows Video	Аудио мультикамеры следует за видео
+	Multi-Camera Record	Запись мультикамеры
+	Multi-Camera Selection Top Down	Выбор мультикамеры сверху вниз
+	Show Multi-Camera Preview Monitor	Показать монитор предпросмотра мультикамеры
+	Auto-Adjust Multi-Camera Playback Quality	Автоподстройка качества воспроизведения мультикамеры
+	Transmit Multi-Camera View	Передача вида мультикамеры
+	Multi-Camera Layout	Раскладка мультикамеры
+	Automatic	Автоматически
+	Edit Cameras…	Изменить камеры…
+	Add Marker (M)	Добавить маркер (M)
+	Mark In (I)	Отметить вход (I)
+	Mark Out (O)	Отметить выход (O)
+	Go to In (Shift+I)	Перейти к входу (Shift+I)
+	Step Back 1 Frame (Left)	Шаг назад на 1 кадр (Влево)
+	Play-Stop Toggle (Space)	Воспроизвести/остановить (Пробел)
+	Step Forward 1 Frame (Right)	Шаг вперёд на 1 кадр (Вправо)
+	Go to Out (Shift+O)	Перейти к выходу (Shift+O)
+	Insert (,)	Вставка (,)
+	Overwrite (.)	Замена (.)
+	Export Frame (Shift+E)	Экспорт кадра (Shift+E)
+	Lift (;)	Изъять (;)
+	Extract (')	Изъять со сдвигом (')
+	Export Frame: use Export mode (M6)	Экспорт кадра: используйте режим экспорта (M6)
+	Button Editor	Редактор кнопок
+	More transport controls	Дополнительные элементы управления
+	Multi-Camera Record on	Запись мультикамеры включена
+	Multi-Camera Record off	Запись мультикамеры выключена
+	{first} - Merged	{first} — объединённый
+	{first} Multicam	{first} мультикамера
+	In Points	Точки входа
+	Out Points	Точки выхода
+	Clip Marker	Маркер клипа
+	Audio	Аудио
+	Merge Clips	Объединить клипы
+	Create Multi-Camera Source Sequence	Создать мультикамерную последовательность источника
+	Synchronize Clips	Синхронизировать клипы
+	Clip Name:	Имя клипа:
+	Sequence Name:	Имя последовательности:
+	{n} clip(s): {names}	Клипов: {n} — {names}
+	{n} clip(s) selected; the clip on the reference track stays put.	Выбрано клипов: {n}; клип на опорной дорожке остаётся на месте.
+	Synchronize Point	Точка синхронизации
+	Ignore Hours	Игнорировать часы
+	first marker	первый маркер
+	Offset Audio by:	Сдвиг аудио на:
+	Offset:	Смещение:
+	 frames	 кадров
+	Reference track:	Опорная дорожка:
+	lowest (V1…)	самая нижняя (V1…)
+	Remove Audio from AV Clip	Удалить аудио из AV-клипа
+	Camera 1	Камера 1
+	All Cameras	Все камеры
+	Switch Audio	Переключить аудио
+	Camera Names	Имена камер
+	Clip Names	Имена клипов
+	Enumerate Cameras	Пронумеровать камеры
+	Camera Angle Metadata	Метаданные угла камеры
+	Move source clips to Processed Clips bin	Перемещать исходные клипы в корзину Processed Clips
+	Synchronized {n} clip group(s)	Синхронизировано групп клипов: {n}
+	Merged clip created	Объединённый клип создан
+	Multi-camera source sequence with {n} camera(s)	Мультикамерная последовательность источника, камер: {n}
+	No multi-camera clip at the playhead	В позиции курсора воспроизведения нет мультикамерного клипа
+	Camera {n} — {name}	Камера {n} — {name}
+	Page {page} of {pages}	Страница {page} из {pages}
+	Previous page	Предыдущая страница
+	Next page	Следующая страница
+	Multi-Camera Record On/Off (0)	Запись мультикамеры вкл./выкл. (0)
+	Record	Записать
+	Edit Cameras	Изменить камеры
+	Cameras shown in the Multi-Camera view (uncheck to hide).	Камеры, отображаемые в мультикамерном виде (снимите флажок, чтобы скрыть).
+	Recorded {n} multi-camera cut(s)	Записано мультикамерных склеек: {n}
+	Clamp Signal	Ограничить сигнал
+	Presets	Пресеты
+	Parade ({kind})	Парад ({kind})
+	Waveform ({kind})	Форма сигнала ({kind})
+	Parade Type	Тип парада
+	Waveform Type	Тип формы сигнала
+	Vectorscope Targets	Мишени вектороскопа
+	Colour Space	Цветовое пространство
+	Brightness	Яркость
+	Signal Scale	Масштаб сигнала
+	Histogram	Гистограмма
+	Paste Attributes	Вставить атрибуты
+	Remove Attributes	Удалить атрибуты
+	New Offline File	Новый офлайн-файл
+	Nested Sequence Name	Имя вложенной последовательности
+	Make Subclip	Создать субклип
+	Edit Subclip	Изменить субклип
+	Modify Clip: Audio Channels	Изменить клип: аудиоканалы
+	Modify Clip: Timecode	Изменить клип: тайм-код
+	Frame Hold Options	Параметры стоп-кадра
+	Field Options	Параметры полей
+	Save Project	Сохранить проект
+	Motion	Движение
+	Opacity	Непрозрачность
+	Time Remapping	Ремикс времени
+	Channel Volume	Громкость канала
+	In Point	Точка входа
+	Out Point	Точка выхода
+	Playhead	Курсор воспроизведения
+	Source Timecode	Тайм-код источника
+	Sequence Time	Время последовательности
+	Video Attributes	Атрибуты видео
+	Audio Attributes	Атрибуты аудио
+	No effects	Нет эффектов
+	Scale Attribute Times	Масштабировать время атрибутов
+	File Name:	Имя файла:
+	Tape Name:	Имя ленты:
+	Contains:	Содержит:
+	Video	Видео
+	Width:	Ширина:
+	Height:	Высота:
+	Frame Rate:	Частота кадров:
+	Media Start:	Начало медиа:
+	Subclip: {name}	Субклип: {name}
+	Start:	Начало:
+	End:	Конец:
+	Restrict Trims To Subclip Boundaries	Ограничить подрезку границами субклипа
+	Convert to Master Clip	Преобразовать в мастер-клип
+	Clip Channel Format:	Формат каналов клипа:
+	Number of Audio Clips:	Число аудиоклипов:
+	Media Source Channels	Каналы источника медиа
+	Ch. {n}	Кан. {n}
+	Clip {n}	Клип {n}
+	Source channels the selected audio clips play:	Каналы источника, которые воспроизводят выбранные аудиоклипы:
+	Set Timecode:	Задать тайм-код:
+	Use the file's timecode	Использовать тайм-код файла
+	Hold On	Стоп-кадр на
+	Timecode:	Тайм-код:
+	Hold Filters	Удерживать фильтры
+	Reverse Field Dominance	Обратное доминирование полей
+	Processing Options	Параметры обработки
+	None	Нет
+	Always Deinterlace	Всегда убирать чересстрочность
+	Flicker Removal	Устранение мерцания
+	Save changes to “{project_name}” before closing?	Сохранить изменения в «{project_name}» до закрытия?
+	Don't Save	Не сохранять
+	All media is online.	Все медиафайлы доступны.
+	{name} (copy)	{name} (копия)
+	Offline	Офлайн
+	Missing	Отсутствует
+	Link Media	Связать медиа
+	{n} clip(s) can't find their media. Locate them, search a folder, or leave them offline.	Не удаётся найти медиафайлы для клипов: {n}. Укажите их расположение, выполните поиск в папке или оставьте клипы офлайн.
+	Clip Name	Имя клипа
+	File Name	Имя файла
+	File Path	Путь к файлу
+	Status	Состояние
+	Match file properties:	Сопоставлять свойства файла:
+	File Extension	Расширение файла
+	Clip ID (fingerprint)	ID клипа (отпечаток)
+	Duration	Длительность
+	Media Start	Начало медиа
+	Frame Size / Rate	Размер кадра / частота кадров
+	Align Timecode	Выровнять по тайм-коду
+	Relink others automatically	Пересвязать остальные автоматически
+	Search in:	Поиск в:
+	Browse…	Обзор…
+	A file dialog is already open	Диалог выбора файла уже открыт
+	Exact name matches only	Только точное совпадение имени
+	No candidates yet — Search a folder or Locate the file.	Кандидатов пока нет — выполните поиск в папке или укажите файл.
+	✔ same file	✔ тот же файл
+	✔ matches	✔ совпадает
+	✖ different file	✖ другой файл
+	Preview	Просмотр
+	Offline All	Всё в офлайн
+	Locate…	Указать…
+	Linked {n} clip(s)	Связано клипов: {n}
+	Nothing found with that name.	Ничего не найдено с таким именем.
+	Make Offline	Перевести в офлайн
+	Make {n} selected clip(s) offline. Their clips show the offline slate until you link them again.	Перевести выбранные клипы в офлайн (клипов: {n}). Вместо них будет показана заглушка офлайн, пока клипы снова не будут связаны.
+	Media files remain on disk	Медиафайлы остаются на диске
+	Media files are deleted	Медиафайлы удаляются
+	Create Proxies	Создать прокси
+	{n} clip(s) selected.	Выбрано клипов: {n}.
+	Format and size	Формат и размер
+	Destination	Назначение
+	Next to the original media, in a Proxies folder	Рядом с исходными медиафайлами, в папке Proxies
+	Proxies are made in the background and attached when done. Export always uses full-resolution media.	Прокси создаются в фоне и подключаются по завершении. При экспорте всегда используются медиафайлы полного разрешения.
+	Creating {n} proxy file(s)…	Создание прокси-файлов: {n}…
+	Project Manager	Менеджер проекта
+	Sequences	Последовательности
+	Resulting Project	Итоговый проект
+	Collect Files and Copy to New Location	Собрать файлы и скопировать в новое место
+	Consolidate and Transcode	Консолидировать и перекодировать
+	Options	Параметры
+	Exclude Unused Clips	Исключить неиспользуемые клипы
+	Include Handles:	Включить припуски:
+	Include Proxies	Включить прокси
+	Include Preview Files	Включить файлы предпросмотра
+	Destination Path	Путь назначения
+	Disk space: original {original} · resulting {result} ({n} files)	Место на диске: исходное {original} · итоговое {result} (файлов: {n})
+	Disk space: —	Место на диске: —
+	Calculate	Рассчитать
+	Project Manager: writing {path}	Менеджер проекта: запись {path}
+	Timeline: (no sequences)	Таймлайн: (нет последовательностей)
+	Browse	Обзор
+	Select audio clips, then click a preset to apply it.	Выберите аудиоклипы и щёлкните пресет, чтобы применить его.
+	{name} (user)	{name} (пользовательский)
+	Select audio clips to edit them here	Выберите аудиоклипы, чтобы редактировать их здесь
+	Multiple Clips Selected	Выбрано несколько клипов
+	The selected clips have different audio types. Assign one type to edit them together.	У выбранных клипов разные типы аудио. Назначьте один тип, чтобы редактировать их вместе.
+	Assign an audio type to the selection:	Назначить тип аудио для выделения:
+	Clear Audio Type	Очистить тип аудио
+	Preset:	Пресет:
+	(Custom)	(Пользовательский)
+	Preset name	Имя пресета
+	Reduce Noise	Уменьшить шум
+	Reduce Rumble	Уменьшить рокот
+	DeHum	Удалить сетевой гул
+	DeEss	Убрать шипящие
+	Reduce Reverb	Уменьшить реверберацию
+	Dynamics	Динамика
+	EQ	Эквалайзер
+	Enhance Speech	Улучшить речь
+	Low Tone	Низкий тон
+	High Tone	Высокий тон
+	Mix	Микс
+	Reverb	Реверберация
+	Stereo Width	Ширина стерео
+	Remixing music to a target duration is not available yet. Trim the clip and add a crossfade instead.	Ремикс музыки до заданной длительности пока недоступен. Подрежьте клип и добавьте перекрёстное затухание.
+	Pan	Панорамирование
+	Auto-Match	Автосопоставление
+	Not matched yet	Ещё не сопоставлено
+	Matches each of the {n} clips on its own.	Сопоставляет каждый клип по отдельности (клипов: {n}).
+	Duck against:	Приглушать относительно:
+	Untagged	Без метки
+	Sensitivity	Чувствительность
+	Reduce By	Уменьшить на
+	Fades	Нарастание/затухание
+	Generate Keyframes	Создать ключевые кадры
+	Clip Volume	Громкость клипа
+	(no clip selected)	(клип не выбран)
+	Master · {name}	Мастер · {name}
+	Add Lumetri Color to clip	Добавить «Цвет Lumetri» к клипу
+	Input LUT	Входной LUT
+	Color	Цвет
+	Temperature	Температура
+	Tint	Оттенок
+	Saturation	Насыщенность
+	Exposure	Экспозиция
+	Contrast	Контраст
+	Highlights	Света
+	Shadows	Тени
+	Whites	Белые
+	Blacks	Чёрные
+	HDR	HDR
+	HDR White	Белый HDR
+	HDR Specular	Блики HDR
+	Look	Художественный стиль
+	Look LUT	LUT стиля
+	Intensity	Интенсивность
+	Adjustments	Коррекции
+	Faded Film	Выцветшая плёнка
+	Sharpen	Резкость
+	Vibrance	Сочность
+	RGB Curves	Кривые RGB
+	HDR Range	Диапазон HDR
+	Hue Saturation Curves	Кривые тон/насыщенность
+	Hue vs Sat	Тон / насыщенность
+	Hue vs Hue	Тон / тон
+	Hue vs Luma	Тон / яркость
+	Luma vs Sat	Яркость / насыщенность
+	Sat vs Sat	Насыщенность / насыщенность
+	Midtones	Средние тона
+	Key	Ключ
+	Hue	Тон
+	Hue Range	Диапазон тона
+	Saturation Min	Мин. насыщенность
+	Luma Min	Мин. яркость
+	Luma Max	Макс. яркость
+	Soften	Смягчение
+	Show Mask	Показать маску
+	Off	Выкл.
+	Color/Gray	Цвет/серый
+	Color/Black	Цвет/чёрный
+	White/Black	Белый/чёрный
+	Refine	Уточнение
+	Denoise	Шумоподавление
+	Blur	Размытие
+	Correction	Коррекция
+	Hue Shift	Сдвиг тона
+	Midpoint	Средняя точка
+	Roundness	Округлость
+	Feather	Растушёвка
+	LUT	LUT
+	Color Match	Сопоставление цвета
+	Reference	Эталон
+	Face Detection (protect skin tones)	Определение лиц (защита тона кожи)
+	Apply Match	Применить сопоставление
+	Create ellipse mask	Создать эллиптическую маску
+	Create 4-point polygon mask	Создать многоугольную маску из 4 точек
+	Free draw bezier	Рисование кривой Безье от руки
+	Click in the Program monitor to place mask points (drag for curves); click the first point or press Enter to close	Щёлкайте в мониторе программы, чтобы ставить точки маски (перетаскивайте для кривых); щёлкните первую точку или нажмите Enter, чтобы замкнуть
+	Delete Mask	Удалить маску
+	Inverted	Инвертировать
+	Drag: move · Alt-click: smooth/corner · Cmd-click: delete	Перетаскивание: перемещение · Alt+щелчок: сглаживание/угол · Cmd+щелчок: удаление
+	Track selected mask backward	Отслеживать выбранную маску назад
+	Track selected mask backward 1 frame	Отслеживать выбранную маску назад на 1 кадр
+	Track selected mask forward 1 frame	Отслеживать выбранную маску вперёд на 1 кадр
+	Track selected mask forward	Отслеживать выбранную маску вперёд
+	Stop tracking	Остановить отслеживание
+	Tracking method: {method}	Метод отслеживания: {method}
+	Composite	Композиция
+	Comparison	Сравнение
+	Video and Waveform	Видео и форма сигнала
+	System Default	Системный
+	Default location	Расположение по умолчанию
+	Font family	Семейство шрифтов
+	Label Colors	Цвета меток
+	Decoded frames held for the monitors and thumbnails: {used} of {budget}.	Декодированных кадров в памяти для мониторов и миниатюр: {used} из {budget}.
+	FilmCraft keeps the rest of the RAM free for other applications.	FilmCraft оставляет остальную оперативную память свободной для других приложений.
+	not available in this session	недоступно в этом сеансе
+	Currently: {loc} — {files} file(s), {size}	Сейчас: {loc} — файлов: {files}, {size}
+	 ({ch} output channels)	 (каналов выхода: {ch})
+	Programme left → device output {l}, right → device output {r}{dev}. Outputs beyond the device's channels fall back to 1 and 2.	Левый канал программы → выход устройства {l}, правый → выход устройства {r}{dev}. Выходы за пределами каналов устройства заменяются на 1 и 2.
+	Auto-saves go to: {dir}	Автосохранение выполняется в: {dir}
+	Recovery copy: {dir}	Копия восстановления: {dir}
+	Last auto-save {a} · last recovery copy {j}	Последнее автосохранение {a} · последняя копия восстановления {j}
+	Last auto-save {a}	Последнее автосохранение {a}
+	Last recovery copy {j}	Последняя копия восстановления {j}
+	Remove Media Cache Files	Удалить файлы кеша медиафайлов
+	Deleted {n} file(s), {size}.	Удалено файлов: {n}, {size}.
+	Reset…	Сбросить…
+	Source · {name}	Источник · {name}
+	Reset Effect	Сбросить эффект
+	Reset Parameter	Сбросить параметр
+	Save Preset…	Сохранить пресет…
+	Custom Setup	Пользовательская настройка
+	Edit…	Изменить…
+	Show graphs	Показать графики
+	Toggle animation	Включить/отключить анимацию
+	Eyedropper (pick a color from the Program monitor)	Пипетка (взять цвет с монитора программы)
+	Eyedropper: no picture to sample	Пипетка: нет изображения для выбора цвета
+	Add/Remove Keyframe	Добавить/удалить ключевой кадр
+	Temporal Interpolation	Временная интерполяция
+	Linear	Линейная
+	Bezier	Безье
+	Auto Bezier	Авто Безье
+	Continuous Bezier	Непрерывное Безье
+	Ease In	Плавное начало
+	Ease Out	Плавное окончание
+	Select a clip to grade	Выберите клип для цветокоррекции
+	Select a clip to see its properties	Выберите клип, чтобы увидеть его свойства
+	Anchor point	Опорная точка
+	Rotation	Поворот
+	Level	Уровень
+	Speed {n}%	Скорость {n}%
+	Value	Значение
+	Velocity	Скорость
+	Default	По умолчанию
+	Custom ({n} points)	Пользовательская (точек: {n})
+	Select a graphic clip, or use the Type tool (T) on the Program monitor	Выберите графический клип или инструмент «Текст» (T) в мониторе программы
+	Create new graphic	Создать графический элемент
+	New Text Layer	Новый текстовый слой
+	New Text	Новый текст
+	New Rectangle	Новый прямоугольник
+	New Ellipse	Новый эллипс
+	Delete Layer	Удалить слой
+	Select a layer to edit its properties.	Выберите слой, чтобы редактировать его свойства.
+	Align Left	Выровнять по левому краю
+	Align Center Horizontally	Выровнять по центру по горизонтали
+	Align Right	Выровнять по правому краю
+	Align Top	Выровнять по верху
+	Align Center Vertically	Выровнять по центру по вертикали
+	Align Bottom	Выровнять по низу
+	Font	Шрифт
+	Font Style	Начертание
+	Font Size	Размер шрифта
+	Alignment	Выравнивание
+	Left Align Text	Выровнять текст по левому краю
+	Center Align Text	Выровнять текст по центру
+	Right Align Text	Выровнять текст по правому краю
+	Justify	По ширине
+	Tracking	Трекинг
+	Leading	Интерлиньяж
+	Baseline Shift	Сдвиг базовой линии
+	Text Box Width	Ширина текстового блока
+	Style	Стиль
+	Faux Bold	Псевдополужирный
+	Faux Italic	Псевдокурсив
+	All Caps	Все прописные
+	Small Caps	Капитель
+	Underline	Подчёркивание
+	OpenType	Возможности OpenType
+	Kerning	Кернинг
+	Ligatures	Лигатуры
+	Shape	Фигура
+	Size	Размер
+	Corner Radius	Радиус скругления
+	Polygon Sides	Стороны многоугольника
+	Fill	Заливка
+	Stroke	Обводка
+	Stroke 2	Обводка 2
+	Background	Фон
+	   Opacity	   Непрозрачность
+	   Size	   Размер
+	   Corner Radius	   Радиус скругления
+	Shadow	Тень
+	   Angle	   Угол
+	   Distance	   Расстояние
+	   Blur	   Размытие
+	Search templates	Поиск шаблонов
+	All Categories	Все категории
+	Install…	Установить…
+	Install Motion Graphics Template (.fcgt)	Установить шаблон анимационной графики (.fcgt)
+	No templates match.	Нет подходящих шаблонов.
+	{category} · My Template	{category} · Мой шаблон
+	Apply	Применить
+	Remove	Удалить
+	{n} editable properties	Редактируемые свойства: {n}
+	   Template: {name}	   Шаблон: {name}
+	Intro Duration	Длительность вступления
+	Outro Duration	Длительность завершения
+	Roll	Прокрутка
+	Start Off Screen	Начало за экраном
+	End Off Screen	Конец за экраном
+	Preroll	Преролл
+	Postroll	Постролл
+	Video Frame	Кадр видео
+	Pin To	Прикрепить к
+	Pinned Edges	Закреплённые края
+	FilmCraft Graphics Template	Шаблон графики FilmCraft
+	{n} Font	Шрифт {n}
+	{n} Size	Размер {n}
+	{n} Color	Цвет {n}
+	{n} Position	Положение {n}
+	Show {n}	Показать {n}
+	My Templates	Мои шаблоны
+	Export As Motion Graphics Template	Экспортировать как шаблон анимированной графики
+	Category:	Категория:
+	Editable properties:	Редактируемые свойства:
+	Saved as a FilmCraft graphics template (.fcgt) in your templates folder.	Сохранено как шаблон графики FilmCraft (.fcgt) в папке шаблонов.
+	Exported graphics template to {path}	Шаблон графики экспортирован в {path}
+	Replace Fonts in Projects	Заменить шрифты в проектах
+	Fonts used in the project:	Шрифты, используемые в проекте:
+	{f} (missing)	{f} (отсутствует)
+	Replace:	Заменить на:
+	Replaced {n} font uses	Заменено применений шрифтов: {n}
+	Show/Hide Effects and Sends	Показать/скрыть эффекты и посылы
+	Audio Track Mixer menu	Меню «Микшер аудиодорожек»
+	Show/Hide Tracks…	Показать/скрыть дорожки…
+	Meter Input(s) Only	Индикация только входов
+	Show/Hide Tracks	Показать/скрыть дорожки
+	Show All	Показать всё
+	Post-Fader	После фейдера
+	Remove Effect	Удалить эффект
+	Fill the slots above first	Сначала заполните ячейки выше
+	pre 	до 
+	Pre-Fader	До фейдера
+	Mute Send	Заглушить посыл
+	Remove Send	Удалить посыл
+	New Submix	Новый сабмикс
+	Pan / balance (drag; double-click: centre)	Панорамирование / баланс (перетащите; двойной щелчок: центр)
+	Solo safe	Защита соло
+	Enable track for recording	Включить дорожку для записи
+	Volume (drag; double-click: 0 dB)	Громкость (перетащите; двойной щелчок: 0 дБ)
+	5.1 panner (drag the puck; double-click: front centre)	Панорамирование 5.1 (перетащите маркер; двойной щелчок: центр спереди)
+	Center	Центр
+	Go to In Point	Перейти к точке входа
+	Go to Out Point	Перейти к точке выхода
+	Play In to Out	Воспроизвести от входа до выхода
+	Record (voice-over on the record-enabled track)	Запись (закадровый голос на дорожке, включённой для записи)
+	Write keyframes	Записать ключевые кадры
+	Something went wrong while drawing the window. Your project is still open; save it to be safe.	При отрисовке окна произошла ошибка. Проект остаётся открытым; на всякий случай сохраните его.
+	Continue	Продолжить
+	Go Back	Назад
+	Go Forward	Вперёд
+	Up One Level	На уровень выше
+	File Types Displayed	Отображаемые типы файлов
+	List View	Список
+	Thumbnail View	Миниатюры
+	Ingest	Инжест
+	Open Ingest Settings	Открыть настройки инжеста
+	Import as Image Sequence	Импорт последовательности изображений
+	{sel} of {total} items selected	Выбрано элементов: {sel} из {total}
+	{total} items	Элементов: {total}
+	Cannot open {dir}: {e}	Не удаётся открыть {dir}: {e}
+	Favorites	Избранное
+	Local Drives	Локальные диски
+	Network	Сеть
+	Recent Directories	Недавние папки
+	  (none)	  (нет)
+	Remove from Favorites	Удалить из избранного
+	Add to Favorites	Добавить в избранное
+	Clear Recent Directories	Очистить недавние папки
+	Open In Source Monitor	Открыть в мониторе источника
+	Reveal in Finder	Показать в проводнике
+	Edit Columns…	Изменить столбцы…
+	Hover Scrub	Прокрутка при наведении
+	New Media Browser Panel	Новая панель медиабраузера
+	Create Folder For Imported Projects	Создавать папку для импортированных проектов
+	Allow Duplicate Media During Project Import	Разрешать дублирование медиа при импорте проекта
+	Refresh	Обновить
+	Edit Columns	Изменить столбцы
+	Guides	Направляющие
+	(no audio)	(нет аудио)
+	Generating waveform…	Формирование формы сигнала…
+	Reference  {tc}	Опорный тайм-код  {tc}
+	Set	Задать
+	Set the reference to the playhead	Задать опорное значение по курсору воспроизведения
+	Reference: next frame	Опорное значение: следующий кадр
+	Reference: previous frame	Опорное значение: предыдущий кадр
+	RGBA Channels	Каналы RGBA
+	Add Guide	Добавить направляющую
+	Save Guides as Template	Сохранить направляющие как шаблон
+	Manage Guides	Управление направляющими
+	Orientation:	Ориентация:
+	Vertical	Вертикальная
+	Horizontal	Горизонтальная
+	Position:	Положение:
+	No saved guide templates.	Сохранённых шаблонов направляющих нет.
+	Project: {name}	Проект: {name}
+	Bin: {name}	Корзина: {name}
+	Up one level	На уровень выше
+	Video Usage: {vu}  Audio Usage: {au}	Использование видео: {vu}  Использование аудио: {au}
+	Icon View	Значки
+	Freeform View	Свободный вид
+	Sort Icons	Сортировка значков
+	Clear (Delete)	Очистить (Del)
+	New Item	Новый элемент
+	New Bin	Новая корзина
+	Find	Найти
+	Automate to Sequence	Автоматизировать в последовательность
+	Select items to clear	Выберите элементы для очистки
+	User Order	Порядок пользователя
+	Descending	По убыванию
+	Refresh Project	Обновить проект
+	Reveal Project in Finder…	Показать проект в проводнике…
+	New Bin From Selection	Новая корзина из выделенного
+	New Search Bin	Новая корзина поиска
+	New Project Shortcut	Новый ярлык проекта
+	List	Список
+	Icon	Значок
+	Freeform	Свободный
+	Preview Area	Область просмотра
+	Thumbnails	Миниатюры
+	Thumbnails show effects applied	Миниатюры показывают применённые эффекты
+	Thumbnail controls for all pointing devices	Управление миниатюрами для всех указывающих устройств
+	Refresh Sort Order	Обновить порядок сортировки
+	Metadata Display…	Отображение метаданных…
+	Save Current View Preset	Сохранить пресет текущего вида
+	Restore View Preset	Восстановить пресет вида
+	Project View Preset {n}	Пресет вида проекта {n}
+	Freeform View Options…	Параметры свободного вида…
+	Media missing	Медиафайл отсутствует
+	Unreadable	Не читается
+	Open in Source Monitor	Открыть в мониторе источника
+	Open in Timeline	Открыть на таймлайне
+	New Sequence From Clip	Новая последовательность из клипа
+	Set Poster Frame	Задать постерный кадр
+	Proxy	Прокси
+	Open in Place	Открыть на месте
+	Open in New Tab	Открыть в новой вкладке
+	Open in New Window	Открыть в новом окне
+	{n} items	Элементов: {n}
+	Stack	Стопка
+	Unstack	Разложить
+	Clip Size	Размер клипа
+	Larger	Крупнее
+	Smaller	Мельче
+	Align to Grid	Выровнять по сетке
+	Reset to Grid	Сбросить на сетку
+	Save Arrangement…	Сохранить раскладку…
+	Restore Arrangement	Восстановить раскладку
+	Delete Arrangement	Удалить раскладку
+	Drop media here to create sequence.	Перетащить медиа сюда, чтобы создать последовательность.
+	Double-click a sequence in the Project panel to open it here.	Дважды щёлкнуть последовательность в панели проекта, чтобы открыть её здесь.
+	Open Demo Project	Открыть демо-проект
+	Insert and overwrite sequences as nests or individual clips	Вставлять и перезаписывать последовательности как вложенные или как отдельные клипы
+	Snap in Timeline (S)	Привязка на таймлайне (S)
+	Caption track options	Параметры дорожки субтитров
+	Timeline Display Settings	Настройки отображения таймлайна
+	Show Video Thumbnails	Показывать миниатюры видео
+	Head	Начало
+	Head and Tail	Начало и конец
+	Continuous	Непрерывно
+	Show Audio Waveform	Показывать форму сигнала
+	Expand All Tracks	Развернуть все дорожки
+	Minimize All Tracks	Свернуть все дорожки
+	Unrendered: should play back in real time	Без визуализации: должно воспроизводиться в реальном времени
+	Unrendered: render to play back in real time	Без визуализации: для воспроизведения в реальном времени нужна визуализация
+	Rendered preview	Визуализированный предпросмотр
+	✓ Enable	✓ Включить
+	Unlink	Отменить связь
+	(Default)	(По умолчанию)
+	(RGB) Gamma	(RGB) Гамма
+	(RGB) Input Black Level	(RGB) Входной уровень чёрного
+	(RGB) Input White Level	(RGB) Входной уровень белого
+	(RGB) Output Black Level	(RGB) Выходной уровень чёрного
+	(RGB) Output White Level	(RGB) Выходной уровень белого
+	+ Cmd	+ Cmd
+	+ Opt	+ Opt
+	10 Bit Black Point	Точка чёрного 10 бит
+	10 Bit White Point	Точка белого 10 бит
+	105mm Prime	Объектив 105 мм
+	29.97 fps Drop-Frame	29,97 кадр/с с пропуском кадров
+	29.97 fps Non Drop-Frame	29,97 кадр/с без пропуска кадров
+	35mm Prime	Объектив 35 мм
+	3D Roll	3D-прокрутка
+	3D Rotate	3D-поворот
+	3D Spin	3D-вращение
+	3D Spinback	3D-обратное вращение
+	4-Color Gradient	Четырёхцветный градиент
+	5.1 Media	Медиа 5.1
+	5.1 Mixdown Type	Тип сведения 5.1
+	50-300mm Zoom	Зум 50–300 мм
+	59.94 fps Drop-Frame	59,94 кадр/с с пропуском кадров
+	59.94 fps Non Drop-Frame	59,94 кадр/с без пропуска кадров
+	ASC CDL	ASC CDL
+	Accessible color contrast	Доступный цветовой контраст
+	Action-Safe Margin	Безопасное поле действия
+	Active Monitor	Активный монитор
+	Add	Добавить
+	Add tracks automatically when editing source clips onto the Timeline	Автоматически добавлять дорожки при вставке клипов источника на таймлайн
+	Place files dropped onto the Timeline directly on the Timeline	Помещать перетащенные файлы сразу на таймлайн
+	1 file	1 файл
+	{n} files	файлов: {n}
+	Additional Scale	Дополнительное масштабирование
+	Additive Dissolve	Аддитивное растворение
+	Additive Dissolve (Legacy)	Аддитивное растворение (устаревшее)
+	Adjust	Регулировка
+	Advanced	Дополнительно
+	Aggressive	Агрессивный
+	Align and Transform	Выравнивание и преобразование
+	All lines	Все строки
+	Allow Selection tool to choose Roll and Ripple trims without modifier key	Разрешить инструменту «Выделение» выбирать подрезку прокруткой и сдвигом без клавиши-модификатора
+	Allow current tool to change trim type of previously selected edit point	Разрешить текущему инструменту менять тип подрезки ранее выбранной точки монтажа
+	Allow duplicate media during project import	Разрешать дублировать медиа при импорте проекта
+	Alpha Adjust	Настройка альфа-канала
+	Alpha Blurriness	Размытость альфа-канала
+	Alpha Channel	Альфа-канал
+	Alpha Glow	Свечение альфа-канала
+	Always import embedded CEA-708 closed captions with wide aspect.	Всегда импортировать встроенные скрытые субтитры CEA-708 с широким соотношением сторон.
+	Always override audio tags	Всегда переопределять аудиотеги
+	Ambience	Атмосфера
+	Ambience Intensity	Интенсивность атмосферы
+	Ambience Light Color	Цвет окружающего света
+	Amount of Noise	Количество шума
+	Amount to Decolor	Степень обесцвечивания
+	Amount to Tint	Степень тонирования
+	Amplifier	Усилитель
+	Amplify	Усиление
+	Amplitude	Амплитуда
+	Amplitude and Compression	Амплитуда и компрессия
+	Analog	Аналоговый
+	Analog Delay	Аналоговая задержка
+	Analyze all imported media to search for visuals or audio	Анализировать все импортированные медиа для поиска изображений и звука
+	Anamorphic	Анаморфный
+	Anchor	Точка привязки
+	Anchor Point	Точка привязки
+	Angle	Угол
+	Animation	Анимация
+	Anti-aliasing Quality	Качество сглаживания
+	Anti-flicker Filter	Фильтр подавления мерцания
+	Antialiasing for Best Quality	Сглаживание для наилучшего качества
+	Asymmetry	Асимметрия
+	At Startup	При запуске
+	At playback end, return to beginning when restarting playback	По окончании воспроизведения возвращаться в начало при повторном запуске
+	Attempt to force hardware to document sample rate	Пытаться привести аудиооборудование к частоте дискретизации документа
+	Audio Codec	Аудиокодек
+	Audio Duration	Длительность аудио
+	Audio Effects	Аудиоэффекты
+	Audio Files	Аудиофайлы
+	Audio Hardware	Аудиооборудование
+	Audio In Point	Точка входа аудио
+	Audio Info	Информация об аудио
+	Audio Out Point	Точка выхода аудио
+	Audio Samples	Отсчёты аудио
+	Audio Time Units	Единицы времени аудио
+	Audio Transition Default Duration	Длительность аудиопереходов по умолчанию
+	Audio Transitions	Аудиопереходы
+	Audio Usage	Использование аудио
+	Auto	Авто
+	Auto Align	Автовыравнивание
+	Auto Reframe	Автокадрирование
+	Auto Save	Автосохранение
+	Auto Save also saves the current project(s)	Автосохранение также сохраняет текущие проекты
+	Auto-tag audio types in the timeline	Автоматически помечать типы аудио на таймлайне
+	Auto-transcribe all imported clips	Автоматически расшифровывать все импортированные клипы
+	Auto-transcribe only clips in sequences	Автоматически расшифровывать только клипы в последовательностях
+	Automatch Time	Время автовозврата
+	Automatic Click Remover	Автоматическое удаление щелчков
+	Automatically Hide Dependent Clips	Автоматически скрывать зависимые клипы
+	Automatically Save Every	Автоматически сохранять каждые
+	Automatically delete cache files older than	Автоматически удалять файлы кэша старше
+	Automatically delete oldest cache files when cache exceeds	Автоматически удалять самые старые файлы кэша, когда кэш превышает
+	Automatically refresh growing files	Автоматически обновлять растущие файлы
+	Automatically resume playback for growing files in Source Monitor	Автоматически возобновлять воспроизведение растущих файлов в мониторе источника
+	Automatically save projects	Автоматически сохранять проекты
+	Automatically transcribe clips	Автоматически расшифровывать клипы
+	Automation Keyframe Optimization	Оптимизация ключевых кадров автоматизации
+	Background Color	Цвет фона
+	Background Corner Radius	Радиус углов фона
+	Background Opacity	Непрозрачность фона
+	Background Size	Размер фона
+	Background fill	Заливка фона
+	Balance	Баланс
+	Balanced Voice	Сбалансированный голос
+	Band 1	Полоса 1
+	Band 2	Полоса 2
+	Band 3	Полоса 3
+	Band 4	Полоса 4
+	Band 5	Полоса 5
+	Band Pass	Полосовой пропуск
+	Band Slide	Смещение полос
+	Band Stop	Полосовое подавление
+	Bandpass	Полосовой пропуск
+	Barn Doors	Створки
+	Basic	Базовый
+	Basic 3D	Базовый 3D
+	Basic Correction	Базовая коррекция
+	Bass	Басы
+	Behind	Позади
+	Bessel	Бесселя
+	Bevel Alpha	Фаска альфа-канала
+	Bevel join	Фасковое соединение
+	Binauralizer - Ambisonics	Бинаурализатор — Ambisonics
+	Bins	Корзины
+	Black	Чёрный
+	Black & White	Чёрно-белый
+	Black Input Level	Входной уровень чёрного
+	Black and white	Чёрно-белый
+	Black and white with crushed blacks and strong contrast	Чёрно-белое с проваленными чёрными и сильным контрастом
+	Bleach Bypass	Пропуск отбеливания
+	Bleach-bypass style: desaturated with hard contrast	Стиль с пропуском отбеливания: обесцвеченное изображение с жёстким контрастом
+	Blend	Смешивание
+	Blend Mode	Режим наложения
+	Blend With Original	Смешивание с оригиналом
+	Blending Mode	Режим наложения
+	Block Dissolve	Блочное растворение
+	Block Height	Высота блока
+	Block Motion	Движение блоков
+	Block Size	Размер блока
+	Block Width	Ширина блока
+	Blocks	Блоки
+	Blue Blurriness	Размытость синего
+	Blue Curve	Кривая синего
+	Blue Offset	Смещение синего
+	Blue Power	Степень синего
+	Blue Slope	Наклон синего
+	Blue-Blue	Синий-синий
+	Blue-Const	Синий-константа
+	Blue-Green	Синий-зелёный
+	Blue-Red	Синий-красный
+	Blur & Sharpen	Размытие и резкость
+	Blur Amount	Величина размытия
+	Blur Angle	Угол размытия
+	Blur Dimensions	Направление размытия
+	Blur Dissolve	Растворение с размытием
+	Blur Layer	Слой размытия
+	Blur Length	Длина размытия
+	Blurriness	Размытость
+	Bokeh Blur	Размытие боке
+	Boost	Усиление
+	Border	Граница
+	Border Color	Цвет границы
+	Border Width	Ширина границы
+	Borders	Границы
+	Bottom Center	Внизу по центру
+	Bottom Left	Внизу слева
+	Bottom Right	Внизу справа
+	Bounce	Отскок
+	Branching	Ветвление
+	Bright	Яркий
+	Bright Air	Яркий воздух
+	Bright Studio	Яркая студия
+	Brightness & Contrast	Яркость и контраст
+	British Stack	Британский стек
+	Brush Hardness	Жёсткость кисти
+	Brush Opacity	Непрозрачность кисти
+	Brush Position	Положение кисти
+	Brush Size	Размер кисти
+	Brush Spacing (secs)	Интервал кисти (с)
+	Brush Strokes	Мазки кисти
+	Bubbles	Пузыри
+	Bulge	Выпуклость
+	Bulge Smoother	Сглаживание выпуклости
+	Bump Height	Высота рельефа
+	Burn Alpha	Выжигание альфа-канала
+	Burn Chroma	Выжигание цветности
+	Burn Color	Цвет выжигания
+	Butt cap	Прямое окончание
+	Butterworth	Баттерворта
+	CEA-608	CEA-608
+	CEA-708	CEA-708
+	Cache analysis results for re-use	Кэшировать результаты анализа для повторного использования
+	Camera Angle	Угол камеры
+	Camera Blur	Размытие камеры
+	Camera Shake	Тряска камеры
+	Capitalisation	Заглавные буквы
+	Cathedral	Собор
+	Cell Pattern	Сотовый узор
+	Center Channel Pan	Панорамирование центрального канала
+	Center Gradient	Центральный градиент
+	Center Input	Вход центрального канала
+	Center Out	Из центра
+	Center Point (Latitude)	Центральная точка (широта)
+	Center Point (Longitude)	Центральная точка (долгота)
+	Center Split	Разделение по центру
+	Center of Sphere	Центр сферы
+	Cents	Центы
+	Change to Color	Изменить на цвет
+	Changes are copied in the background a moment after each edit. If FilmCraft quits unexpectedly, they are offered the next time it starts.	Изменения копируются в фоне через мгновение после каждой правки. Если FilmCraft неожиданно закроется, их предложат при следующем запуске.
+	Channel	Канал
+	Channel Blur	Размытие канала
+	Channel Mix	Микширование каналов
+	Channel Mixer	Микшер каналов
+	Chaos	Хаос
+	Chebyshev	Чебышёва
+	Checker Wipe	Шахматное вытеснение
+	Checkerboard	Шахматная доска
+	Chinese	Китайский
+	Choke	Сужение
+	Chorus	Хорус
+	Chorus/Flanger	Хорус/Фленджер
+	Chroma	Цветность
+	Chroma Leak	Утечка цветности
+	Chromatic Aberration (Blue)	Хроматическая аберрация (синий)
+	Chromatic Aberration (Green)	Хроматическая аберрация (зелёный)
+	Chromatic Aberration (Red)	Хроматическая аберрация (красный)
+	Cineon Converter	Конвертер Cineon
+	Circle	Круг
+	Clarity	Чёткость
+	Clean Combo	Чистый комбо
+	Clean Up Noisy Dialogue	Очистить шумный диалог
+	Clear Muddiness	Очистить мутность
+	Client	Клиент
+	Clip	Клип
+	Clip Level	Уровень клипа
+	Clipping	Клиппинг
+	Clock Wipe	Часовое вытеснение
+	Clock Wipe (Legacy)	Часовое вытеснение (устаревшее)
+	Clockwise	По часовой стрелке
+	Clone	Клонирование
+	Closed Captions	Скрытые субтитры
+	Color & Alpha	Цвет и альфа
+	Color 1	Цвет 1
+	Color 2	Цвет 2
+	Color 3	Цвет 3
+	Color 4	Цвет 4
+	Color Balance	Цветовой баланс
+	Color Burn	Затемнение основы
+	Color Channel	Цветовой канал
+	Color Correction	Цветокоррекция
+	Color Distortion	Искажение цвета
+	Color Dodge	Осветление основы
+	Color Emboss	Цветной рельеф
+	Color Key	Цветовой ключ
+	Color Pass	Цветовой проход
+	Color Replace	Замена цвета
+	Color Space	Цветовое пространство
+	Color Theme	Цветовая тема
+	Color To Leave	Сохраняемый цвет
+	Color Tolerance	Допуск по цвету
+	Color Wheels & Match	Цветовые круги и сопоставление
+	Colorize	Раскрашивание
+	Columns	Столбцы
+	Comment	Комментарий
+	Complexity	Сложность
+	Composite In Back	Наложение сзади
+	Composite In Front	Наложение спереди
+	Composite Using	Наложение с использованием
+	Composite on Original	Наложение на оригинал
+	Compound Blur	Составное размытие
+	Compression Before Clipping	Компрессия перед клиппингом
+	Constant Gain	Постоянное усиление
+	Constant Power	Постоянная мощность
+	Conversion Type	Тип преобразования
+	Convolution Reverb	Свёрточная реверберация
+	Cool Blue	Холодный синий
+	Cool, desaturated and punchy	Холодное, обесцвеченное и контрастное
+	Core Width	Ширина ядра
+	Corner	Угол
+	Corner Pin	Закрепление по углам
+	Count	Количество
+	Counter-clockwise	Против часовой стрелки
+	Crash Recovery	Восстановление после сбоя
+	Crawl Left	Прокрутка влево
+	Crawl Right	Прокрутка вправо
+	Create folder for imported projects	Создавать папку для импортированных проектов
+	Creative	Творчество
+	Crop	Обрезка
+	Crop Less <-> Smooth More	Обрезать меньше ↔ сглаживать больше
+	Cross Displacement	Перекрёстное смещение
+	Cross Dissolve	Перекрёстное растворение
+	Cross Dissolve (Legacy)	Перекрёстное растворение (устаревшее)
+	Cross Zoom	Перекрёстное масштабирование
+	Cross Zoom (Legacy)	Перекрёстное масштабирование (устаревшее)
+	Crossfade	Перекрёстное затухание
+	Crossovers	Частоты разделения
+	Crystallize	Кристаллизация
+	Crystals	Кристаллы
+	Cube Spin	Вращение куба
+	Curl Radius	Радиус завихрения
+	Current Time	Текущее время
+	Cursor	Курсор
+	Curvature	Кривизна
+	Curve	Кривая
+	Curves	Кривые
+	Custom	Пользовательский
+	Custom Color	Пользовательский цвет
+	Cutoff	Срез
+	Cyan-teal shadows and warm highlights with a little more contrast	Бирюзовые тени и тёплые света с чуть большим контрастом
+	Cycle (in Revolutions)	Циклы (в оборотах)
+	Cycle Evolution	Эволюция цикла
+	Damping	Демпфирование
+	Damping HF	Демпфирование высоких частот
+	Damping LF	Демпфирование низких частот
+	Dark	Тёмная
+	Darken	Затемнение
+	Darker Color	Более тёмный цвет
+	Date Created	Дата создания
+	Date Modified	Дата изменения
+	Day for night: darker, cooler and less saturated	День за ночь: темнее, холоднее и менее насыщенно
+	DeEsser	Деэссер
+	DeHummer	Подавление фона
+	DeNoise	Шумоподавление
+	DeReverb	Подавление реверберации
+	Decay	Затухание
+	Decay Time (RT60)	Время затухания (RT60)
+	Default Audio Tracks	Аудиодорожки по умолчанию
+	Default Emoji font	Шрифт эмодзи по умолчанию
+	Default Media Scaling	Масштабирование медиа по умолчанию
+	Default Output	Выход по умолчанию
+	Default closed caption font	Шрифт скрытых субтитров по умолчанию
+	Default language	Язык по умолчанию
+	Default paragraph direction	Направление абзаца по умолчанию
+	Default subtitle and text font	Шрифт субтитров и текста по умолчанию
+	Delay	Задержка
+	Delay 1	Задержка 1
+	Delay 2	Задержка 2
+	Delay 3	Задержка 3
+	Delay 4	Задержка 4
+	Delay and Echo	Задержка и эхо
+	Delete files older than	Удалять файлы старше
+	Delete oldest files when the cache exceeds	Удалять самые старые файлы, когда кэш превышает
+	Delete…	Удалить…
+	Depth	Глубина
+	Desaturate	Обесцвечивание
+	Description	Описание
+	Detail Amplitude	Амплитуда деталей
+	Detail Level	Уровень детализации
+	Detailed Analysis	Детальный анализ
+	Device Class	Класс устройства
+	Dialogue	Диалог
+	Diamond	Ромб
+	Difference	Разница
+	Dimensions	Размеры
+	Dimmed	Приглушённый
+	Dip to Black	Затемнение до чёрного
+	Dip to Black (Legacy)	Затемнение до чёрного (устаревшее)
+	Dip to Color	Затемнение до цвета
+	Dip to White	Затемнение до белого
+	Dip to White (Legacy)	Затемнение до белого (устаревшее)
+	Direction	Направление
+	Directional	Направленный
+	Directional Blur	Направленное размытие
+	Directional Blur (Legacy)	Направленное размытие (устаревшее)
+	Disable video output when in the background	Отключать вывод видео в фоновом режиме
+	Disperse	Рассеивание
+	Displacement	Смещение
+	Display Color Management	Управление цветом дисплея
+	Display Color Settings	Настройки цвета дисплея
+	Display out of sync indicators for unlinked clips	Показывать индикаторы рассинхронизации для несвязанных клипов
+	Dissolve	Растворение
+	Dissolve Blocks	Растворение блоков
+	Distance	Расстояние
+	Distance to Image	Расстояние до изображения
+	Distort	Искажение
+	Distortion	Искажение
+	Distortion Complexity	Сложность искажения
+	Distortion Rate	Скорость искажения
+	Distortion Type	Тип искажения
+	Divide	Разделение
+	Do not delete cache files automatically	Не удалять файлы кэша автоматически
+	Don't label speakers	Не помечать говорящих
+	Double-click	Двойной щелчок
+	Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)	Черновое декодирование при пониженном разрешении воспроизведения (H.264: быстрее, часть кадров фильтруется меньше)
+	Drive	Драйв
+	Drop Shadow	Тень
+	Dry	Сухой
+	Dry Out	Выход сухого сигнала
+	Dry Up a Roomy Voice	Убрать гулкость голоса
+	Duck Deep Under Dialogue	Сильно приглушать под диалогом
+	Duck Under Dialogue	Приглушать под диалогом
+	Duck Under Voice and Effects	Приглушать под голосом и эффектами
+	Ducking	Приглушение
+	Dutch	Голландский
+	Dynamic Link	Динамическая связь
+	Dynamics Processing	Динамическая обработка
+	Early Reflections	Ранние отражения
+	Earthquake	Землетрясение
+	Ease In and Out	Плавное начало и конец
+	Easing	Сглаживание
+	Echo	Эхо
+	Echo Glow	Свечение эха
+	Echo Operator	Оператор эха
+	Echo Time (seconds)	Время эха (с)
+	Echoes	Повторы
+	Edge Color	Цвет края
+	Edge Feather	Растушёвка края
+	Edge Glow	Свечение края
+	Edge Sharpness	Резкость края
+	Edge Softness	Мягкость края
+	Edge Thickness	Толщина края
+	Edge Thin	Утончение края
+	Edge Threshold	Порог края
+	Edge Type	Тип края
+	Edge Width	Ширина края
+	Elliptical	Эллиптический
+	Emboss	Рельеф
+	Enable HSL Secondary	Включить вторичную коррекцию HSL
+	Enable Mercury Transmit	Включить Mercury Transmit
+	Enable ProRes hardware accelerated encoding, if available	Включить аппаратное ускорение кодирования ProRes, если доступно
+	Enable clip and XMP metadata linking	Включить связывание метаданных клипов и XMP
+	Enable developer mode	Включить режим разработчика
+	Enable hardware accelerated decoding (requires restart)	Включить аппаратное декодирование (требуется перезапуск)
+	Enable language auto-detection	Включить автоопределение языка
+	Enable proxies	Включить прокси
+	End Color	Конечный цвет
+	End Point	Конечная точка
+	End of Ramp	Конец градиента
+	Error	Ошибка
+	Evolution	Эволюция
+	Evolution Options	Параметры эволюции
+	Exciter Amount	Величина эксайтера
+	Exciter Mode	Режим эксайтера
+	Exclusion	Исключение
+	Exponential Fade	Экспоненциальное затухание
+	Extended Dynamic Range Monitoring	Мониторинг расширенного динамического диапазона
+	FFT Filter	Фильтр FFT
+	Fade	Затухание
+	Fade Out	Плавное исчезновение
+	Faded Matte	Выцветшая матовость
+	Falloff	Спад
+	Far Away	Вдали
+	Fast	Быстро
+	Faster Motion	Ускоренное движение
+	Feedback	Обратная связь
+	Feedback 1	Обратная связь 1
+	Feedback 2	Обратная связь 2
+	Feedback 3	Обратная связь 3
+	Feedback 4	Обратная связь 4
+	Feet + Frames 16mm	Футы + кадры 16 мм
+	Feet + Frames 35mm	Футы + кадры 35 мм
+	Female	Женский
+	File Size	Размер файла
+	Fill Background	Заполнять фон
+	Fill Color	Цвет заливки
+	Fill Left with Right	Заполнить левый канал правым
+	Fill Point	Точка заливки
+	Fill Right with Left	Заполнить правый канал левым
+	Fill Selector	Селектор заливки
+	Film Dissolve	Плёночное растворение
+	Film Dissolve (Legacy)	Плёночное растворение (устаревшее)
+	Film Roll	Прокрутка плёнки
+	Filter	Фильтр
+	Filter Frequency	Частота фильтра
+	Filter Resonance	Резонанс фильтра
+	Filter and EQ	Фильтр и эквалайзер
+	Final Delay	Итоговая задержка
+	Find Edges	Поиск краёв
+	Flanger	Фленджер
+	Flare	Блик
+	Flare Brightness	Яркость блика
+	Flare Center	Центр блика
+	Flare Color	Цвет блика
+	Flash	Вспышка
+	Flicker	Мерцание
+	Flickers	Мерцания
+	Flip Motion	Перелистывание
+	Flip Over	Переворот
+	Float	С плавающей запятой
+	Focus	Фокус
+	Focus Blur	Размытие фокуса
+	Focus Point	Точка фокуса
+	Focus Shape	Форма фокуса
+	Focus Size	Размер фокуса
+	Fold Motion	Складывание
+	Foldback	Фолдбэк
+	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Параметры управления цветом находятся на вкладке «Настройки» панели «Цвет Lumetri».
+	Format	Формат
+	Four Scopes (RGB, 8 bit)	Четыре осциллограммы (RGB, 8 бит)
+	Four Scopes (YUV, float, no clamp)	Четыре осциллограммы (YUV, с плавающей запятой, без отсечения)
+	Fractal Influence	Влияние фрактала
+	Fractal Type	Тип фрактала
+	Frame	Кадр
+	Frame Color	Цвет рамки кадра
+	Frame Count	Отсчёт кадров
+	Frame Layout	Раскладка кадра
+	Frame Rate	Частота кадров
+	Frame Width	Ширина рамки кадра
+	Frame cache for monitors and thumbnails	Кэш кадров для мониторов и миниатюр
+	Frames	Кадры
+	Framing	Кадрирование
+	French	Французский
+	Frequency	Частота
+	From	От
+	From East	С востока
+	From North	С севера
+	From South	С юга
+	From West	С запада
+	From the Left	Слева
+	From the Right	Справа
+	Front + LFE	Фронтальные + LFE
+	Front + Rear	Фронтальные + тыловые
+	Front + Rear + LFE	Фронтальные + тыловые + LFE
+	Front Only	Только фронтальные
+	Fuzz	Фузз
+	GB	ГБ
+	Gamma	Гамма
+	Gamma Correction	Коррекция гаммы
+	Gamut Warning	Предупреждение о цветовом охвате
+	Gamut Warning Color	Цвет предупреждения о цветовом охвате
+	Gap	Зазор
+	Gap Color	Цвет зазора
+	Gaussian Blur	Размытие по Гауссу
+	Gaussian Blur (Legacy)	Размытие по Гауссу (устаревшее)
+	General	Общие
+	Generate	Сгенерировать
+	Generate Timecode	Сгенерировать тайм-код
+	Generate waveforms and conform audio using multithreading	Генерировать формы сигналов и согласовывать аудио с помощью многопоточности
+	Generate waveforms automatically during import	Генерировать формы сигналов автоматически при импорте
+	German	Немецкий
+	Ghosts	Призраки
+	Glass	Стекло
+	Glint	Отблеск
+	Glitch	Глитч
+	Glow	Свечение
+	Glow Brightness	Яркость свечения
+	Glow Color	Цвет свечения
+	Glow Only	Только свечение
+	Glow Radius	Радиус свечения
+	Glow Saturation	Насыщенность свечения
+	Glow Width	Ширина свечения
+	Golden Hour	Золотой час
+	Good	Удачный
+	Gradient	Градиент
+	Gradient End	Конец градиента
+	Gradient Layer	Слой градиента
+	Gradient Placement	Размещение градиента
+	Gradient Scatter	Разброс градиента
+	Gradient Shape	Форма градиента
+	Gradient Start	Начало градиента
+	Gradient Wipe	Градиентное вытеснение
+	Gradient Wipe (Legacy)	Градиентное вытеснение (устаревшее)
+	Grain Size	Размер зерна
+	Graphic Equalizer (10 Bands)	Графический эквалайзер (10 полос)
+	Graphic Equalizer (20 Bands)	Графический эквалайзер (20 полос)
+	Graphic Equalizer (30 Bands)	Графический эквалайзер (30 полос)
+	Graphics	Графика
+	Green Blurriness	Размытость зелёного
+	Green Curve	Кривая зелёного
+	Green Offset	Смещение зелёного
+	Green Power	Степень зелёного
+	Green Slope	Наклон зелёного
+	Green-Blue	Зелёный — синий
+	Green-Const	Зелёный — константа
+	Green-Green	Зелёный — зелёный
+	Green-Red	Зелёный — красный
+	Grid	Сетка
+	Grow	Рост
+	Growing Files	Растущие файлы
+	Grunge	Гранж
+	Grunge & Distort	Гранж и искажение
+	GuitarSuite	GuitarSuite (плагин)
+	HDR Graphics White (Nits)	Белый графики HDR (ниты)
+	HLS Vectorscope + Histogram	Вектороскоп HLS + гистограмма
+	HSL Secondary	Вторичная HSL
+	Hard	Жёсткий
+	Hard Clip	Жёсткое ограничение
+	Hard Light	Жёсткий свет
+	Hard Limiter	Жёсткий ограничитель
+	Hard Mix	Жёсткое смешивание
+	Hardware decoding	Аппаратное декодирование
+	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Аппаратное декодирование: в режиме «Авто» используется системный видеодекодер (VideoToolbox в macOS, Media Foundation в Windows, VA-API или NVDEC для H.264 и HEVC в Linux) для поддерживаемых им потоков, а для всего остального или при сбое оборудования — собственный декодер FilmCraft. Уже открытые медиа сохраняют свой декодер до повторного открытия.
+	Hardware Encoding	Аппаратное кодирование
+	Head Size	Размер головы
+	Heart	Сердце
+	Height	Высота
+	Hexagon	Шестиугольник
+	Hide Back Face	Скрыть обратную сторону
+	Hide FilmCraft	Скрыть FilmCraft
+	Hide Others	Скрыть остальные
+	High	Высокий
+	High Cutoff	Срез ВЧ
+	High Frequency Cut	Срез высоких частот
+	High Frequency Damping	Затухание высоких частот
+	High Pass	Фильтр ВЧ
+	High Shelf	Полка ВЧ
+	High Shelf Gain	Усиление полки ВЧ
+	High contrast with held highlights and deep shadows	Высокий контраст с удержанными светами и глубокими тенями
+	Highlight	Светлые участки
+	Highlight Blue Balance	Баланс синего в светлых участках
+	Highlight Brightness	Яркость светлых участков
+	Highlight Color	Цвет светлых участков
+	Highlight Green Balance	Баланс зелёного в светлых участках
+	Highlight Red Balance	Баланс красного в светлых участках
+	Highlight Rolloff	Плавность светлых участков
+	Highlight Threshold	Порог светлых участков
+	Highlight Tint	Оттенок светлых участков
+	Highlights Lightness	Светлота светлых участков
+	Highpass	Фильтр ВЧ
+	Hindi	Хинди
+	Hindi digits	Цифры хинди
+	Horizontal 16:9	Горизонтально 16:9
+	Horizontal Alignment	Выравнивание по горизонтали
+	Horizontal Blocks	Горизонтальные блоки
+	Horizontal Decentering	Горизонтальный сдвиг центра
+	Horizontal Displacement	Горизонтальное смещение
+	Horizontal Flip	Отражение по горизонтали
+	Horizontal Margin	Горизонтальный отступ
+	Horizontal and Vertical	По горизонтали и вертикали
+	Hue Center	Центр цветового тона
+	Hue Tolerance	Допуск цветового тона
+	I/O Buffer Size	Размер буфера ввода-вывода
+	Ignore Alpha	Игнорировать альфа-канал
+	Image Control	Управление изображением
+	Immersive Video	Иммерсивное видео
+	Import numbered stills as image sequences	Импортировать нумерованные кадры как последовательности изображений
+	Impulse	Импульс
+	In a Room	В комнате
+	In the Media Cache	В кэше медиа
+	In the project	В проекте
+	In/Out Duration	Длительность от входа до выхода
+	Include captions on import	Включать субтитры при импорте
+	Incoming	Входящий
+	Indeterminate Media Timebase	Неопределённая база времени медиа
+	Initial Delay	Начальная задержка
+	Inner	Внутренний
+	Inner Radius	Внутренний радиус
+	Input Boost	Усиление входа
+	Inset	Вставка
+	Inside	Внутри
+	Inside Color	Внутренний цвет
+	Inter	Inter (шрифт)
+	Interior Room Tone	Тон внутреннего помещения
+	Internal Black Point	Внутренняя точка чёрного
+	Internal White Point	Внутренняя точка белого
+	Interpolation	Интерполяция
+	Intersect	Пересечение
+	Inverse Falloff	Обратное затухание
+	Invert	Инвертировать
+	Invert Alpha	Инвертировать альфа-канал
+	Invert Blur	Инвертировать размытие
+	Invert Fill	Инвертировать заливку
+	Invert Gradient	Инвертировать градиент
+	Invert Left	Инвертировать слева
+	Invert Right	Инвертировать справа
+	Iris	Диафрагма
+	Iris Box	Прямоугольная диафрагма
+	Iris Cross	Крестовая диафрагма
+	Iris Diamond	Ромбовидная диафрагма
+	Iris Radius	Радиус диафрагмы
+	Iris Rotation	Поворот диафрагмы
+	Iris Round	Круглая диафрагма
+	Iris Shape	Форма диафрагмы
+	Italian	Итальянский
+	Japanese	Японский
+	JetBrains Mono	JetBrains Mono (моноширинный)
+	Join Through Edits	Объединить сквозные склейки
+	Ripple Trim In	Подрезка со сдвигом входа
+	Ripple Trim Out	Подрезка со сдвигом выхода
+	Roll Edit	Прокрутка
+	Trim In	Подрезка входа
+	Trim Out	Подрезка выхода
+	Kaleidoscope	Калейдоскоп
+	Keep a recovery copy of unsaved changes	Хранить копию для восстановления несохранённых изменений
+	Key Color	Цвет ключа
+	Keying	Кеинг
+	Korean	Корейский
+	Label Defaults	Метки по умолчанию
+	Label speakers	Обозначить говорящих
+	Labels	Метки
+	Large Hall	Большой зал
+	Large Trim Offset	Большое смещение подрезки
+	Large Volume Adjustment	Большое изменение громкости
+	Latch	Фиксация
+	Layer Name	Имя слоя
+	Layers	Слои
+	Leave Color	Оставить цвет
+	Left - Left	Левый — левый
+	Left - Right	Левый — правый
+	Left channel to device output	Левый канал на выход устройства
+	Left to Right	Слева направо
+	Left to right	Слева направо
+	Legacy	Устаревшие
+	Length	Длина
+	Lens Blur	Размытие объектива
+	Lens Distortion	Дисторсия объектива
+	Lens Flare	Блик объектива
+	Lens Type	Тип объектива
+	Level 1	Уровень 1
+	Level 2	Уровень 2
+	Level 3	Уровень 3
+	Level 4	Уровень 4
+	Levels	Уровни
+	Lifted blacks, softer contrast, muted colour	Приподнятые чёрные, смягчённый контраст, приглушённые цвета
+	Light 1	Свет 1
+	Light 2	Свет 2
+	Light 3	Свет 3
+	Light 4	Свет 4
+	Light 5	Свет 5
+	Light Angle	Угол света
+	Light Color	Цвет света
+	Light Intensity	Интенсивность света
+	Light Leak	Засветка
+	Light Leaks	Засветки
+	Light Sweep	Световая полоса
+	Light Type	Тип света
+	Lighten	Светлее
+	Lighter Color	Более светлый цвет
+	Lighting Effects	Эффекты освещения
+	Lightning	Молния
+	Lights & Blurs	Свет и размытие
+	Lights & Glows	Свет и свечение
+	Line Thickness	Толщина линии
+	Linear Burn	Линейный затемнитель
+	Linear Dodge (Add)	Линейный осветлитель (добавить)
+	Linear Light	Линейный свет
+	Linear Ramp	Линейная рампа
+	Linear Wipe	Линейное вытеснение
+	Linear Wipe (Legacy)	Линейное вытеснение (устаревшее)
+	Linear keyframe thinning	Линейное прореживание ключевых кадров
+	Linear to Log	Из линейного в лог
+	Liquid Distortion	Жидкая дисторсия
+	Local Projects	Локальные проекты
+	Location	Расположение
+	Log Note	Заметка журнала
+	Log to Linear	Из лога в линейный
+	Log to Log	Из лога в лог
+	Logo Cutout	Вырезание логотипа
+	Long Shadow	Длинная тень
+	Look-Ahead Time	Время упреждения
+	Loudness	Громкость
+	Loudness Maximizer	Максимизатор громкости
+	Loudness Meter	Измеритель громкости
+	Louver	Жалюзи
+	Low	Низкий
+	Low Frequency Cut	Срез низких частот
+	Low Pass	Фильтр НЧ
+	Low Shelf	Полка НЧ
+	Low Shelf Gain	Усиление полки НЧ
+	Lower Left	Слева внизу
+	Lower Right	Справа внизу
+	Lowpass	Фильтр НЧ
+	Luma	Яркость
+	Luma Curve	Кривая яркости
+	Luma Fade	Затухание по яркости
+	Luma Key	Кеинг по яркости
+	Luma Source	Источник яркости
+	Luma and Chroma	Яркость и цветность
+	Lumetri Presets	Пресеты Lumetri
+	Luminance	Яркость
+	Luminance Threshold	Порог яркости
+	Luminosity	Светлота
+	MB	МБ
+	Magenta	Пурпурный
+	Magnify	Лупа
+	Magnify (Legacy)	Лупа (устаревшая)
+	Maintain pitch while shuttling	Сохранять высоту тона при перемотке
+	Major Radius	Большой радиус
+	Male	Мужской
+	Mango	Манго
+	Map Black To	Сопоставить чёрный с
+	Map White To	Сопоставить белый с
+	Maps full-range levels into 16–235 (video range) with a luma curve	Преобразует уровни полного диапазона в 16–235 (видеодиапазон) с помощью кривой яркости
+	Mask Only	Только маска
+	Master Amplitude	Общая амплитуда
+	Mastering	Мастеринг
+	Match frame sets in point	Совпадение кадра устанавливает точку входа
+	Matte	Маска
+	Matte Alpha	Альфа-маска
+	Matte Cleanup	Очистка маски
+	Matte Generation	Формирование маски
+	Matte Luma	Яркостная маска
+	Maximum	Максимум
+	Maximum Amplitude	Максимальная амплитуда
+	Maximum Block Size	Максимальный размер блока
+	Maximum Blur	Максимальное размытие
+	Maximum Project Versions	Максимальное число версий проекта
+	Maximum Reduction	Максимальное уменьшение
+	Maximum Scale	Максимальный масштаб
+	Media	Медиа
+	Media Analysis	Анализ медиа
+	Media Analysis & Transcription	Анализ и расшифровка медиа
+	Media Cache	Кэш медиа
+	Media Cache Database	База данных кэша медиа
+	Media Cache Files	Файлы кэша медиа
+	Media Cache Management	Управление кэшем медиа
+	Media Duration	Длительность медиа
+	Media End	Конец медиа
+	Media Time	Время медиа
+	Media Timecode	Тайм-код медиа
+	Media Type	Тип медиа
+	Media analysis and transcriptions will be cached in the Media Cache folder. Reanalysis won't be required if the media is imported into another project on this computer.	Результаты анализа и расшифровки медиа будут кэшироваться в папке кэша медиа. Повторный анализ не потребуется, если медиа импортируется в другой проект на этом компьютере.
+	Median	Медиана
+	Medium Room	Средняя комната
+	Memory	Память
+	Metadata & Timecode Burn-in	Впечатывание метаданных и тайм-кода
+	Method	Метод
+	Metrics Kerning	Метрический кернинг
+	Mid	Средние
+	Mid Point	Средняя точка
+	Midtone Blue Balance	Баланс синего в средних тонах
+	Midtone Green Balance	Баланс зелёного в средних тонах
+	Midtone Red Balance	Баланс красного в средних тонах
+	Midtones Lightness	Светлота средних тонов
+	Minimum	Минимум
+	Minimum time	Минимальное время
+	Minimum time interval thinning	Прореживание по минимальному интервалу времени
+	Minor Radius	Малый радиус
+	Mirror	Зеркало
+	Mirror Alternate	Чередующееся зеркало
+	Missing font replacement	Замена отсутствующих шрифтов
+	Miter join	Соединение под углом
+	Miter limit	Ограничение острых углов
+	Mixed Crystals	Смешанные кристаллы
+	Mode	Режим
+	Modern High Gain	Современное высокое усиление
+	Modulation	Модуляция
+	Modulation Rate	Частота модуляции
+	Mono Media	Моно-медиа
+	Monochrome	Монохромный
+	Monochrome toned cyan-blue	Монохромный с сине-голубым тонированием
+	Monochrome toned warm brown	Монохромный с тёплым коричневым тонированием
+	Monoscopic	Моноскопический
+	Monospace only	Только моноширинные
+	More colour in the less saturated areas	Больше цвета в менее насыщенных областях
+	Morph Cut	Morph Cut
+	Mosaic	Мозаика
+	Mosaic (Legacy)	Мозаика (устаревшая)
+	Motion Blur	Размытие в движении
+	Motion Camera	Движущаяся камера
+	Motion Preset	Пресет движения
+	Motion Tween	Анимация движения
+	Move	Переместить
+	Movie	Фильм
+	Movie (audio and video)	Фильм (аудио и видео)
+	Multiband Compressor	Многополосный компрессор
+	Multichannel Mono Media	Многоканальные моно-медиа
+	Multiply	Умножение
+	Multitap Delay	Многоотводная задержка
+	Music	Музыка
+	Mute input during timeline recording	Заглушать вход при записи на таймлайн
+	Name	Имя
+	Narrow	Узкий
+	Neon Color	Неоновый цвет
+	Neon Wipe	Неоновое вытеснение
+	Next to original media files	Рядом с исходными медиафайлами
+	Night	Ночь
+	No Motion	Без движения
+	No Scroll	Без прокрутки
+	No plugins are installed. Changes will take effect the next time you start FilmCraft.	Плагины не установлены. Изменения вступят в силу при следующем запуске FilmCraft.
+	Noise	Шум
+	Noise & Grain	Шум и зерно
+	Noise (Legacy)	Шум (устаревший)
+	Noise Level	Уровень шума
+	Noise Reduction/Restoration	Шумоподавление/восстановление
+	Noise Type	Тип шума
+	Non-Additive Dissolve	Неаддитивное растворение
+	Normal	Обычный
+	Notch 1	Режекция 1
+	Notch 2	Режекция 2
+	Notch 3	Режекция 3
+	Notch 4	Режекция 4
+	Notch 5	Режекция 5
+	Notch 6	Режекция 6
+	Notch Filter	Режекторный фильтр
+	Notch Width	Ширина режекции
+	Number Of Echoes	Число эхо
+	Number of Harmonics	Число гармоник
+	Obsolete	Устаревшие
+	Octagon	Восьмиугольник
+	Offset	Смещение
+	Offset (Turbulence)	Смещение (турбулентность)
+	Offset From	Сместить от
+	Offset To	Сместить до
+	Omni	Всенаправленный
+	On	Включено
+	On Original Image	На исходном изображении
+	On Transparent	На прозрачном фоне
+	Open Air	Открытый воздух
+	Open Most Recent	Открыть последний
+	Open in new window	Открыть в новом окне
+	Open in place	Открыть на месте
+	Open new tab	Открыть новую вкладку
+	Opens up the shadows	Раскрывает тени
+	Order	Порядок
+	Orientation	Ориентация
+	Outer	Внешний
+	Outgoing	Исходящий
+	Output	Выход
+	Output Mapping	Сопоставление выходов
+	Outside	Снаружи
+	Outside Color	Внешний цвет
+	Overflow	Переполнение
+	Overlay	Перекрытие
+	Overshoot	Выброс
+	Page Peel	Отгибание страницы
+	Page Scroll	Прокрутка страницы
+	Page Turn	Перелистывание страницы
+	Paint Bucket	Заливка
+	Paint On Black	Рисовать на чёрном
+	Paint On Original Image	Рисовать на исходном изображении
+	Paint On Transparent	Рисовать на прозрачном фоне
+	Paint On White	Рисовать на белом
+	Paint Style	Стиль рисования
+	Paint Surface	Поверхность для рисования
+	Pan (Y Axis)	Панорамирование (ось Y)
+	Panel Wipe	Вытеснение панелью
+	Panels	Панели
+	Panner - Ambisonics	Панорамирование — Ambisonics
+	Parade	Парад
+	Parade (RGB)	Парад (RGB)
+	Parametric Equalizer	Параметрический эквалайзер
+	Passband Ripple	Пульсация в полосе пропускания
+	Path	Контур
+	Path Points	Точки контура
+	Pause Media Encoder queue during playback	Приостанавливать очередь Media Encoder при воспроизведении
+	Peak Frequency	Частота пика
+	Peak Gain	Усиление пика
+	Pedestal	Пьедестал
+	Pentagon	Пятиугольник
+	Per line	На строку
+	Percent Blur	Процент размытия
+	Perspective	Перспектива
+	Phase Difference	Разность фаз
+	Phaser	Фейзер
+	Phone Call	Телефонный звонок
+	Phosphor	Люминофор
+	Phosphor Color	Цвет люминофора
+	Photocopy	Ксерокопия
+	Photocopy Color	Цвет ксерокопии
+	Pillow	Подушка
+	Pin All	Закрепить все
+	Pin Horizontal	Закрепить по горизонтали
+	Pin Light	Точечный свет
+	Pin Vertical	Закрепить по вертикали
+	Pinning	Закрепление
+	Pitch Shifter	Сдвиг тона
+	Plate	Пластина
+	Plateau Wipe	Вытеснение плато
+	Plateaus	Плато
+	Plates	Пластины
+	Play after rendering previews	Воспроизводить после визуализации предпросмотров
+	Play audio while scrubbing in Source and Program Monitors	Воспроизводить звук при прокрутке в мониторах источника и программы
+	Playback	Воспроизведение
+	Playhead position determines trim monitor loop playback	Положение курсора воспроизведения определяет циклическое воспроизведение в мониторе подрезки
+	Plugins	Плагины
+	Podcast Voice	Голос для подкаста
+	Point 1	Точка 1
+	Point 1 Color	Цвет точки 1
+	Point 1 Latitude	Широта точки 1
+	Point 1 Longitude	Долгота точки 1
+	Point 2	Точка 2
+	Point 2 Color	Цвет точки 2
+	Point 2 Latitude	Широта точки 2
+	Point 2 Longitude	Долгота точки 2
+	Point 3	Точка 3
+	Point 3 Color	Цвет точки 3
+	Point 3 Latitude	Широта точки 3
+	Point 3 Longitude	Долгота точки 3
+	Point 4	Точка 4
+	Point 5	Точка 5
+	Point 6	Точка 6
+	Point 7	Точка 7
+	Point 8	Точка 8
+	Points	Точки
+	Policy	Политика
+	Pop Motion	Всплывающее движение
+	Portuguese	Португальский
+	Position & Rotation	Положение и поворот
+	Position Amount	Смещение положения
+	Position, Scale & Rotation	Положение, масштаб и поворот
+	Position, Scale, Rotation	Положение, масштаб, поворот
+	Posterize	Постеризация
+	Posterize Time	Постеризация времени
+	Pre-Delay	Предзадержка
+	Prefix	Префикс
+	Presence Lift	Подъём присутствия
+	Preserve Luminosity	Сохранять светлоту
+	Preserve Scale	Сохранять масштаб
+	ProcAmp	Процессорный усилитель
+	Projecting cap	Выступающий конец
+	Projects	Проекты
+	Pull Motion	Втягивающее движение
+	Pulls highlights and whites down	Опускает светлые участки и белые
+	Push	Выталкивание
+	Push (Legacy)	Выталкивание (устаревшее)
+	Q	Q
+	RAM reserved for other applications	ОЗУ, зарезервированное для других приложений
+	RGB	RGB
+	RGB Split	Разделение RGB
+	RGB-White	Белый RGB
+	Radial	Радиальный
+	Radial Blur	Радиальное размытие
+	Radial Ramp	Радиальная рампа
+	Radial Wipe	Радиальное вытеснение
+	Radial Wipe (Legacy)	Радиальное вытеснение (устаревшее)
+	Radio Announcer	Радиодиктор
+	Radio Voice	Голос для радио
+	Radius	Радиус
+	Ramp	Рампа
+	Ramp Shape	Форма рампы
+	Random	Случайный
+	Random Seed	Случайное зерно
+	Range	Диапазон
+	Ray	Луч
+	Ray Color	Цвет луча
+	Ray Length	Длина луча
+	Rays	Лучи
+	Rays Only	Только лучи
+	Read	Чтение
+	Rec. 2100	Rec. 2100
+	Rec. 601	Rec. 601
+	Rec. 709	Rec. 709
+	Red Blurriness	Размытость красного
+	Red Curve	Кривая красного
+	Red Offset	Смещение красного
+	Red Power	Мощность красного
+	Red Slope	Наклон красного
+	Red-Blue	Красный — синий
+	Red-Const	Красный — константа
+	Red-Green	Красный — зелёный
+	Red-Red	Красный — красный
+	Reduce Axis	Ось уменьшения
+	Reduce Interlace Flicker	Уменьшить мерцание чересстрочности
+	Reflected	Отражённый
+	Reflection Angle	Угол отражения
+	Reflection Center	Центр отражения
+	Refraction	Преломление
+	Reframe Offset	Смещение перекадрирования
+	Reframe Zoom	Масштаб перекадрирования
+	Refresh growing Files Every	Обновлять растущие файлы каждые
+	Relaxed	Спокойный
+	Release Time	Время отпускания
+	Relief	Рельеф
+	Remaining	Оставшееся
+	Remove Fringe	Удалить кайму
+	Render Edit in Audition files to:	Визуализировать правки в файлах Audition в:
+	Render audio when rendering video	Визуализировать звук при визуализации видео
+	Repair	Исправить
+	Repeat Edge Pixels	Повторять краевые пиксели
+	Replace Color	Заменить цвет
+	Replace With Clip From Source Monitor	Заменить клипом из монитора источника
+	Replicate	Репликация
+	Responsive Design - Position	Адаптивный дизайн — положение
+	Responsive Design - Time	Адаптивный дизайн — время
+	Restore open sequences when opening projects	Восстанавливать открытые последовательности при открытии проектов
+	Result	Результат
+	Retro	Ретро
+	Reveal Nested Sequence	Показать вложенную последовательность
+	Reveal Original Image	Показать исходное изображение
+	Reveal in Project	Показать в проекте
+	Reverb Amount	Величина реверберации
+	Reverse	В обратном направлении
+	Right - Left	Правый — левый
+	Right - Right	Правый — правый
+	Right channel to device output	Правый канал на выход устройства
+	Right to left	Справа налево
+	Ripple trim adds edits to keep both sides of trim in sync	Подрезка со сдвигом добавляет правки, чтобы обе стороны подрезки оставались синхронными
+	Roll (Z Axis)	Крен (ось Z)
+	Room Size	Размер комнаты
+	Rotation Amount	Величина поворота
+	Roughen	Огрубление
+	Roughen Color	Цвет огрубления
+	Roughen Edges	Огрубление краёв
+	Round cap	Круглый конец
+	Round join	Круглое соединение
+	Rounded Crop	Скруглённая обрезка
+	Rows	Строки
+	Russian	Русский
+	Rusty	Ржавый
+	Rusty Color	Цвет ржавчины
+	SFX	Звуковые эффекты
+	Sample Rate	Частота дискретизации
+	Saturation at 50 %	Насыщенность 50 %
+	Save .cfa and .pek media cache files next to original media files when possible	Сохранять файлы кэша медиа .cfa и .pek рядом с исходными медиафайлами, когда это возможно
+	Scale (Degrees)	Масштаб (градусы)
+	Scale Amount	Величина масштаба
+	Scale From	Масштабировать от
+	Scale Height	Масштабировать по высоте
+	Scale Match	Согласование масштаба
+	Scale To	Масштабировать до
+	Scale Width	Масштабировать по ширине
+	Scale to frame size	Масштабировать до размера кадра
+	Scan Lines	Строки развёртки
+	Scene	Сцена
+	Scientific Filter	Научный фильтр
+	Scratch disk location for Captured Audio	Расположение рабочего диска для записанного звука
+	Screen	Экран
+	Seconds	Секунды
+	Segments	Сегменты
+	Semi-tones	Полутоны
+	Sequence Name	Имя последовательности
+	Sequence Timecode	Тайм-код последовательности
+	Set focus on the Timeline when performing Insert/Overwrite edits	Ставить фокус на таймлайн при монтаже вставкой и наложением
+	Set to frame size	Подогнать под размер кадра
+	Setting	Настройка
+	Settings	Настройки
+	Shadow Angle	Угол тени
+	Shadow Blue Balance	Баланс синего в тенях
+	Shadow Blur	Размытие тени
+	Shadow Color	Цвет тени
+	Shadow Distance	Расстояние тени
+	Shadow Green Balance	Баланс зелёного в тенях
+	Shadow Only	Только тень
+	Shadow Opacity	Непрозрачность тени
+	Shadow Red Balance	Баланс красного в тенях
+	Shadow Size	Размер тени
+	Shadow Tint	Оттенок тени
+	Shadows Lightness	Светлота теней
+	Shake	Дрожание
+	Shape Dissolve	Растворение формы
+	Shape Flow	Поток форм
+	Shape Size	Размер формы
+	Shapes	Формы
+	Shard Size	Размер осколков
+	Sharp Colors	Резкие цвета
+	Sharpen Amount	Степень повышения резкости
+	Shift Center To	Сместить центр в
+	Shift clips that overlap trim point during ripple trimming	Сдвигать клипы, перекрывающие точку подрезки, при подрезке со сдвигом
+	Shot	План
+	Show "Project:" and "Bin:" in Project panel tab	Показывать «Проект:» и «Корзина:» на вкладке панели проекта
+	Show Clip Mismatch Warning dialog	Показывать предупреждение о несоответствии клипа
+	Show Event Indicator	Показывать индикатор событий
+	Show Focus Area	Показывать зону фокуса
+	Show Home	Показывать «Главную»
+	Show Mask Tracker Preview	Показывать предпросмотр отслеживания маски
+	Show Only Noise	Показывать только шум
+	Show Open Dialog	Показывать диалог открытия
+	Show Project Load Error Dialog	Показывать диалог ошибки загрузки проекта
+	Show Rich Tool Tips	Показывать подробные подсказки
+	Show Tool Tips	Показывать подсказки
+	Show Workspace Reset Warning dialog on double click	Показывать предупреждение о сбросе рабочей среды при двойном щелчке
+	Show system compatibility issues at startup	Показывать проблемы совместимости системы при запуске
+	Shrink	Сжатие
+	Shutter Angle	Угол затвора
+	Similarity	Сходство
+	Simple Notch Filter	Простой режекторный фильтр
+	Simple Parametric EQ	Простой параметрический эквалайзер
+	Simple Text	Простой текст
+	Single-band Compressor	Однополосный компрессор
+	Sinusoidal	Синусоидальный
+	Skew	Наклон
+	Skew Axis	Ось наклона
+	Slats	Ламели
+	Slice	Разрез
+	Slices	Разрезы
+	Slide	Смещение
+	Slide (Legacy)	Смещение (устаревший)
+	Slope	Наклон
+	Slow	Медленный
+	Slower Motion	Замедленное движение
+	Small Room	Малая комната
+	Smart Limit	Умное ограничение
+	Smart Tools	Умные инструменты
+	Smart quotes	Типографские кавычки
+	Smooth	Плавный
+	Smooth Motion	Плавное движение
+	Smooth Scroll	Плавная прокрутка
+	Smoothness	Плавность
+	Snap playhead in Timeline when Snap is enabled	Привязывать курсор воспроизведения к таймлайну, когда включена привязка
+	Soft	Мягкий
+	Soft Clamp	Мягкое ограничение
+	Soft Edges (Best Quality)	Мягкие края (лучшее качество)
+	Soft Light	Мягкий свет
+	Soft Wipe	Мягкое вытеснение
+	Soften Harshness	Смягчить резкость
+	Softness	Мягкость
+	Solarize	Соляризация
+	Solid Colors	Сплошные цвета
+	Source Point	Точка источника
+	Source Text	Текст источника
+	Spacer	Отступы
+	Spanish	Испанский
+	Speaker Angle	Угол говорящего
+	Speaker Labeling	Маркировка говорящих
+	Special	Особые
+	Special Effects	Спецэффекты
+	Speech model	Речевая модель
+	Speed	Скорость
+	Spherize	Сферизация
+	Spiky	Зубчатый
+	Spill	Засветка
+	Spill Suppression	Подавление засветки
+	Spin	Вращение
+	Spin Direction	Направление вращения
+	Spin Motion	Вращательное движение
+	Split	Разделение
+	Split (Legacy)	Разделение (устаревшее)
+	Spotlight	Прожектор
+	Spread	Разброс
+	Spring Motion	Пружинное движение
+	Square	Квадрат
+	Square (Width Only)	Квадрат (только по ширине)
+	Square 1:1	Квадрат 1:1
+	Stabilization	Стабилизация
+	Stabilize Only	Только стабилизация
+	Stabilize, Crop	Стабилизация, обрезка
+	Stabilize, Crop, Auto-scale	Стабилизация, обрезка, автомасштабирование
+	Stabilize, Synthesize Edges	Стабилизация, синтез краёв
+	Stages	Каскады
+	Star	Звезда
+	Star Wipe	Звёздчатое вытеснение
+	Start Angle	Начальный угол
+	Start Color	Начальный цвет
+	Start Point	Начальная точка
+	Start at 0	Начать с 0
+	Start at 1	Начать с 1
+	Start of Ramp	Начало градиента
+	Start with an Empty Project	Начать с пустого проекта
+	Starting Intensity	Начальная интенсивность
+	Static Plates	Статичные пластины
+	Step forward/back many	Шаг вперёд/назад на много кадров
+	Stereo Expand	Расширение стерео
+	Stereo Expander	Расширитель стерео
+	Stereo Imagery	Стереоизображение
+	Stereo Media	Стереомедиа
+	Stereo Phasing	Стереофазирование
+	Stereoscopic - Over/Under	Стереоскопический — сверху/снизу
+	Stereoscopic - Side by Side	Стереоскопический — бок о бок
+	Still	Изображение
+	Still Image Default Duration	Длительность изображений по умолчанию
+	Still Images	Изображения
+	Stone Church	Каменная церковь
+	Stopband Attenuation	Ослабление в полосе задерживания
+	Straight Color	Прямой цвет
+	Strength	Сила
+	Stretch	Растянуть
+	Stretch Gradient to Fit	Растянуть градиент по размеру
+	Stretch Map to Fit	Растянуть карту по размеру
+	Stretch Width or Height	Растянуть ширину или высоту
+	Stretch Wipe	Растянутое вытеснение
+	Stretch to Fit Frame	Растянуть до размера кадра
+	Stripe	Полоса
+	Stripes	Полосы
+	Strobe Color	Цвет стробоскопа
+	Strobe Duration (secs)	Длительность стробоскопа (с)
+	Strobe Light	Стробоскопический свет
+	Strobe Period (secs)	Период стробоскопа (с)
+	Stroke 2 Color	Цвет обводки 2
+	Stroke 2 Type	Тип обводки 2
+	Stroke 2 Width	Ширина обводки 2
+	Stroke Angle	Угол обводки
+	Stroke Color	Цвет обводки
+	Stroke Density	Плотность обводки
+	Stroke Length	Длина обводки
+	Stroke Length (secs)	Длина обводки (с)
+	Stroke Only	Только обводка
+	Stroke Randomness	Случайность обводки
+	Stroke Type	Тип обводки
+	Stroke Width	Ширина обводки
+	Stroke line cap	Концы линии обводки
+	Stroke line join	Соединения линии обводки
+	Studio Reverb	Студийная реверберация
+	Stylize	Стилизация
+	Subclip End	Конец подклипа
+	Subclip Start	Начало подклипа
+	Subspace Warp	Деформация подпространства
+	Subtitle	Субтитр
+	Subtract	Вычитание
+	Sum multichannel outputs to mono in Source Monitor	Суммировать многоканальные выходы в моно в мониторе источника
+	Super Narrow	Сверхузкий
+	Surface Gloss	Глянец поверхности
+	Surface Material	Материал поверхности
+	Surround Reverb	Реверберация объёмного звука
+	Swap	Поменять местами
+	Swap Channels	Поменять местами каналы
+	Swivel	Поворот
+	Synthetic	Синтетический
+	TV Power	Включение телевизора
+	Tape	Лента
+	Tape Name	Имя ленты
+	Tape/Tube	Лента/лампа
+	Target Aspect	Целевое соотношение сторон
+	Target Color	Целевой цвет
+	Target Field of View	Целевое поле зрения
+	Target Loudness	Целевая громкость
+	Teal & Orange	Бирюзовый и оранжевый
+	Telephone	Телефон
+	Teletext	Телетекст
+	Template Properties	Свойства шаблона
+	Text Animator	Аниматор текста
+	Text Color	Цвет текста
+	The media cache holds render previews of unsaved projects and other files FilmCraft can recreate. Deleting them is always safe; FilmCraft rebuilds them as needed.	Кэш медиа хранит превью визуализации несохранённых проектов и других файлов, которые FilmCraft может воссоздать. Удалять их всегда безопасно: FilmCraft пересоздаёт их по мере необходимости.
+	Thickness	Толщина
+	Tile Gradient	Плиточный градиент
+	Tilt	Наклон
+	Tilt (X Axis)	Наклон (ось X)
+	Time	Время
+	Time and Pitch	Время и тон
+	Timecode Conversion	Преобразование тайм-кода
+	Timeline Mouse Scrolling	Прокрутка таймлайна мышью
+	Timeline Playback Auto-Scrolling	Автопрокрутка таймлайна при воспроизведении
+	Tint Color	Цвет оттенка
+	To	До
+	Tolerance	Допуск
+	Tone	Тон
+	Top Center	Сверху по центру
+	Top Left	Сверху слева
+	Top Right	Сверху справа
+	Touch	Касание
+	Track Matte Key	Кеинг по маске дорожки
+	Transcription	Расшифровка
+	Transcription preferences	Настройки расшифровки
+	Transform	Трансформация
+	Transformers	Трансформаторы
+	Transience	Переходные процессы
+	Transition Completion	Завершённость перехода
+	Transition Softness	Мягкость перехода
+	Transparency	Прозрачность
+	Trash	Перегруз
+	Travel Motion	Движение с отдалением
+	Treble	Высокие частоты
+	Triangle	Треугольник
+	Trim	Подрезка
+	Tube	Лампа
+	Tube-modeled Compressor	Ламповый компрессор
+	Tubular	Трубчатый
+	Turbulent	Турбулентный
+	Turbulent Displace	Турбулентное смещение
+	Turbulent Sharp	Турбулентный резкий
+	Turbulent Smooth	Турбулентный плавный
+	Turbulent Smoother	Турбулентный сглаженный
+	Tweed	Твид
+	Twirl	Закручивание
+	Twirl (Legacy)	Закручивание (устаревшее)
+	Twirl Center	Центр закручивания
+	Twirl Radius	Радиус закручивания
+	Twist	Кручение
+	Twist Smoother	Кручение сглаженное
+	Typewriter	Печатная машинка
+	Ultra Key	Ultra Key
+	Uniform Scale	Равномерный масштаб
+	Uniform Spacing	Равномерные отступы
+	Unsharp Mask	Контурная резкость
+	Update it at least every	Обновлять не реже чем каждые
+	Update timeline dynamically during ripple edits.	Обновлять таймлайн динамически при правках со сдвигом.
+	Upper Frequency	Верхняя частота
+	Upper Left	Верхний левый угол
+	Upper Right	Верхний правый угол
+	Use Color Noise	Использовать цветной шум
+	Use End Color	Использовать конечный цвет
+	Use File	Использовать файл
+	Use Glow Color	Использовать цвет свечения
+	Use Media Source	Использовать источник медиа
+	Use Tint Color	Использовать цвет оттенка
+	Use the hardware encoder when available	Использовать аппаратный кодировщик, если он доступен
+	Utility	Утилиты
+	VHS Damage	Повреждения VHS
+	VR Blur	Размытие VR
+	VR Chroma Leaks	Утечки цветности VR
+	VR Chromatic Aberrations	Хроматические аберрации VR
+	VR Color Gradients	Цветовые градиенты VR
+	VR De-Noise	Шумоподавление VR
+	VR Digital Glitch	Цифровой глитч VR
+	VR Fractal Noise	Фрактальный шум VR
+	VR Glow	Свечение VR
+	VR Gradient Wipe	Градиентное вытеснение VR
+	VR Iris Wipe	Диафрагменное вытеснение VR
+	VR Light Leaks	Утечки света VR
+	VR Light Rays	Световые лучи VR
+	VR Mobius Zoom	Масштаб Мёбиуса VR
+	VR Plane to Sphere	Плоскость в сферу VR
+	VR Projection	Проекция VR
+	VR Random Blocks	Случайные блоки VR
+	VR Rotate Sphere	Вращение сферы VR
+	VR Sharpen	Повышение резкости VR
+	VR Spherical Blur	Сферическое размытие VR
+	Validate Content Credentials on import	Проверять Content Credentials при импорте
+	Vectorscope (YUV)	Вектороскоп (YUV)
+	Vectorscope + Waveform YC	Вектороскоп + форма сигнала YC
+	Vectorscope HLS	Вектороскоп HLS
+	Vectorscope YUV	Вектороскоп YUV
+	Venetian Blinds	Венецианские жалюзи
+	Vertical 4:5	Вертикальный 4:5
+	Vertical 9:16	Вертикальный 9:16
+	Vertical Alignment	Выравнивание по вертикали
+	Vertical Blocks	Вертикальные блоки
+	Vertical Decentering	Вертикальное смещение центра
+	Vertical Displacement	Вертикальное смещение
+	Vertical Flip	Отразить по вертикали
+	Vertical Margin	Вертикальный отступ
+	Very Narrow	Очень узкий
+	Video 1	Видео 1
+	Video 2	Видео 2
+	Video 3	Видео 3
+	Video 4	Видео 4
+	Video 5	Видео 5
+	Video 6	Видео 6
+	Video 7	Видео 7
+	Video 8	Видео 8
+	Video Codec	Видеокодек
+	Video Duration	Длительность видео
+	Video Effects	Видеоэффекты
+	Video Files	Видеофайлы
+	Video In Point	Точка входа видео
+	Video Info	Инфо о видео
+	Video Limiter	Ограничитель видео
+	Video Out Point	Точка выхода видео
+	Video Transition Default Duration	Длительность видеопереходов по умолчанию
+	Video Transitions	Видеопереходы
+	Video Usage	Использование видео
+	Vignette	Виньетка
+	Vivid Light	Яркий свет
+	Vocal Booth	Вокальная кабина
+	Vocal Enhancer	Улучшение вокала
+	Voice	Голос
+	Voice in a Hall	Голос в зале
+	Volumetric Rays	Объёмные лучи
+	Warm Film	Тёплая плёнка
+	Warm Room	Тёплая комната
+	Warm Voice	Тёплый голос
+	Warm print stock with gentle roll-off	Тёплая плёночная копия с мягким спадом
+	Warm, soft late-afternoon light	Тёплый мягкий предвечерний свет
+	Warning	Предупреждение
+	Warp Stabilizer	Warp Stabilizer
+	Wave	Волна
+	Wave Height	Высота волны
+	Wave Speed	Скорость волны
+	Wave Warp	Волновая деформация
+	Wave Width	Ширина волны
+	Waveform	Форма сигнала
+	Waveform (Luma)	Форма сигнала (яркость)
+	Waveform (RGB)	Форма сигнала (RGB)
+	Wavelength	Длина волны
+	Wet	Обработка
+	Wet Out	Выход обработки
+	When Opening a Project	При открытии проекта
+	Whip	Рывок
+	Whip (Legacy)	Рывок (устаревшее)
+	Whisper base (balanced)	Whisper base (сбалансированный)
+	Whisper small (most accurate)	Whisper small (самый точный)
+	Whisper tiny (fastest)	Whisper tiny (самый быстрый)
+	White	Белый
+	White Input Level	Уровень белого на входе
+	White Is High	Белый — высокий уровень
+	Wide Outdoor	Открытое пространство
+	Widener	Расширитель
+	Width	Ширина
+	Wiggle	Колебание
+	Wipe	Вытеснение
+	Wipe Angle	Угол вытеснения
+	Wonder Glow	Чудесное свечение
+	Wrap Back	Обратная обёртка
+	Write	Запись
+	Write XMP ID to files on import	Записывать ID XMP в файлы при импорте
+	Write clip markers to XMP	Записывать маркеры клипов в XMP
+	Write-on	Написание
+	X Rotation	Поворот X
+	Y Rotation	Поворот Y
+	YC	YC
+	YC no Chroma	YC без цветности
+	YUV	YUV
+	Yellow-green highlights and blue-lifted shadows from crossed channel curves	Жёлто-зелёные светлые участки и тени, поднятые в синеву, от перекрёстных кривых по каналам
+	Z Position	Позиция Z
+	Z Rotation	Поворот Z
+	Zoom	Масштаб
+	Zoom Amount	Величина масштаба
+	Zoom Blur	Размытие масштаба
+	Zoom Strength	Сила масштаба
+	days	дни
+	frames	кадры
+	milliseconds	миллисекунды
+	minute(s)	минуты
+	second(s)	секунды
+	seconds	секунды
+	AAF…	AAF…
+	Audio…	Аудио…
+	Avid Log Exchange…	Avid Log Exchange (ALE)…
+	Color…	Цвет…
+	EDL…	EDL…
+	Edit Workspaces…	Изменить рабочие среды…
+	FCPXML…	FCPXML…
+	Final Cut Pro XML…	XML Final Cut Pro…
+	General…	Общие…
+	OMF…	OMF…
+	OpenTimelineIO…	OpenTimelineIO (OTIO)…
+	Save Changes to this Workspace	Сохранить изменения в этой рабочей среде
+	Save as New Workspace…	Сохранить как новую рабочую среду…
+	Create Search Bin	Создать корзину поиска
+	Edit Offline File	Изменить офлайн-файл
+	Source Settings	Настройки источника
+	Update Metadata	Обновить метаданные
+	Automate To Sequence	Автоматизировать в последовательность
+	Scene Edit Detection	Обнаружение смены сцен
+	Analyze	Анализировать
+	Normalize Mix Track	Нормализовать дорожку микса
+	Simplify Sequence	Упростить последовательность
+	Simplify	Упростить
+	Transcribe Sequence	Расшифровать последовательность
+	Save as Template	Сохранить как шаблон
+	Flash Cue Marker	Маркер Flash-метки
+	System Compatibility Report	Отчёт о совместимости системы
+	no GPU adapter: the CPU compositor is used	Нет адаптера GPU: используется композитор на CPU
+	Avid Log Exchange	Avid Log Exchange (ALE)
+	FilmCraft Project	Проект FilmCraft
+	{name} Selection.fcproj	{name} Выделение.fcproj
+	{name} (Simplified)	{name} (упрощённая)
+	Find in:	Найти в:
+	Find:	Найти:
+	Search:	Поиск:
+	Clip Names and Markers	Имена клипов и маркеры
+	Match:	Совпадение:
+	All	Все
+	Any	Любое
+	Case Sensitive	С учётом регистра
+	Scratch Disks	Рабочие диски
+	Ingest Settings	Настройки инжеста
+	Captured and Generated:	Захваченные и созданные:
+	Video Previews:	Видеопревью:
+	Audio Previews:	Аудиопревью:
+	Project Auto Save:	Автосохранение проекта:
+	Same as Project	Как в проекте
+	Path: {path}	Путь: {path}
+	Transcode	Транскодировать
+	Copy and Create Proxies	Копировать и создавать прокси
+	Action:	Действие:
+	Destination:	Назначение:
+	Next to the media	Рядом с медиа
+	Video Rendering and Playback	Визуализация и воспроизведение видео
+	Renderer:	Модуль визуализации:
+	Display Format:	Формат отображения:
+	Milliseconds	Миллисекунды
+	Capture	Захват
+	Capture Format:	Формат захвата:
+	Action and Title Safe Areas	Безопасные зоны действия и титров
+	Title Safe Area	Безопасная зона титров
+	Action Safe Area	Безопасная зона действия
+	Total Duration	Общая длительность
+	Average Data Rate	Средняя скорость потока данных
+	Colour	Цвет
+	{codec} · {rate} Hz · {n} channel(s)	{codec} · {rate} Гц · каналов: {n}
+	Media Name:	Имя медиафайла:
+	Scene:	Сцена:
+	Shot/Take:	План/дубль:
+	Log Note:	Заметка журнала:
+	Codec: {codec}	Кодек: {codec}
+	Write the metadata of the selected clip(s) ({n}) to XMP files next to their media?	Записать метаданные выбранных клипов ({n}) в XMP-файлы рядом с медиа?
+	Existing XMP files written by other applications are left unchanged.	Существующие XMP-файлы, созданные другими приложениями, не изменяются.
+	To {name}	В {name}
+	Ordering:	Порядок:
+	Sort Order	Порядок сортировки
+	Selection Order	Порядок выделения
+	Placement:	Размещение:
+	Sequentially	Последовательно
+	At Unnumbered Markers	У маркеров без номеров
+	Method:	Метод:
+	Insert Edit	Монтаж вставкой
+	Overwrite Edit	Монтаж наложением
+	Clip Overlap:	Перекрытие клипов:
+	Frames per Still:	Кадров на изображение:
+	Transitions	Переходы
+	Apply Default Audio Transition	Применить аудиопереход по умолчанию
+	Apply Default Video Transition	Применить видеопереход по умолчанию
+	Ignore Options	Параметры игнорирования
+	Ignore Audio	Игнорировать звук
+	Ignore Video	Игнорировать видео
+	Apply a cut at each detected cut point	Сделать разрез в каждой найденной точке склейки
+	Create a bin of subclips from each detected cut point	Создать корзину подклипов из каждой найденной точки склейки
+	Create a clip marker at each detected cut point	Создать маркер клипа в каждой найденной точке склейки
+	Sensitivity:	Чувствительность:
+	Normalize Mix Track to:	Нормализовать дорожку микса до:
+	Disabled clips	Отключённые клипы
+	Empty tracks	Пустые дорожки
+	Gaps	Промежутки
+	Video effects	Видеоэффекты
+	Audio effects	Аудиоэффекты
+	Text (graphics and captions)	Текст (графика и субтитры)
+	Clips	Клипы
+	Move clips to the lowest track possible	Перемещать клипы на самую низкую дорожку
+	Keep:	Оставить:
+	Video and Audio	Видео и звук
+	Video Only	Только видео
+	Audio Only	Только звук
+	Language:	Язык:
+	Audio on track {t}	Аудиодорожка {t}
+	Audio analysis:	Анализ звука:
+	Recognize when different speakers are talking	Распознавать, когда говорят разные люди
+	Template Name:	Имя шаблона:
+	Comments:	Комментарии:
+	 (unavailable)	 (недоступно)
+	Decoders	Декодеры
+	Containers	Контейнеры
+	Export formats	Форматы экспорта
+	Match {n} of {total}	Совпадений: {n} из {total}
+	Saved template {path}	Сохранён шаблон {path}
+	Scene Edit Detection: analysing in the background (see Progress)	Обнаружение смены сцен: анализ в фоне (см. «Прогресс»)
+	Delete Search Bin	Удалить корзину поиска
+	 (removed from {list})	 (удалено из {list})
+	{key} can't be used as a shortcut	{key} нельзя использовать как сочетание клавиш
+	Keyboard Shortcuts	Сочетания клавиш
+	{active} (modified)	{active} (изменено)
+	Loaded “{name}”	Загружено «{name}»
+	My Shortcuts	Мои сочетания клавиш
+	Deleted preset “{active}”	Пресет «{active}» удалён
+	Export…	Экспорт…
+	Exported to {path}	Экспортировано в {path}
+	Export: no file chosen (agents: shortcuts.export {path})	Экспорт: файл не выбран (агенты: shortcuts.export {path})
+	Imported “{name}”	Импортировано «{name}»
+	Import: no file chosen (agents: shortcuts.import {path})	Импорт: файл не выбран (агенты: shortcuts.import {path})
+	Keyboard: US (macOS)	Клавиатура: US (macOS)
+	Keyboard: US	Клавиатура: US
+	Save preset as:	Сохранить пресет как:
+	Commands:	Команды:
+	{panel} Panel	Панель {panel}
+	Application shortcuts work whatever panel has focus	Сочетания клавиш приложения работают независимо от того, какая панель в фокусе
+	Panel shortcuts override application shortcuts while that panel has focus	Сочетания клавиш панели заменяют сочетания приложения, пока панель в фокусе
+	Modifier held / selected	Модификатор нажат / выбран
+	Search commands or keys	Поиск команд или клавиш
+	Selected: {command}	Выбрано: {command}
+	Command	Команда
+	Shortcut	Сочетание
+	Type a shortcut… (Esc cancels)	Нажмите сочетание… (Esc отменяет)
+	Add another shortcut	Добавить ещё одно сочетание
+	No matching commands	Нет подходящих команд
+	Key:	Клавиша:
+	Modifiers	Модификаторы
+	Nothing is assigned to this key	К этой клавише ничего не привязано
+	Click a key on the keyboard to see its shortcuts	Щёлкните клавишу на клавиатуре, чтобы увидеть её сочетания
+	Assign {key} to {command}	Назначить {key} для {command}
+	Conflict: {key} is assigned to {commands} ({ctx})	Конфликт: {key} назначена {commands} ({ctx})
+	 and 	 и 
+	Click a command's Shortcut cell and press keys to assign it; + adds another shortcut.	Щёлкните ячейку «Сочетание» у команды и нажмите клавиши, чтобы назначить сочетание; «+» добавляет ещё одно.
+	Cleared {n} shortcut(s) of {command}	Сброшено сочетаний: {n} у команды {command}
+	No export preset named `{name}`	Нет пресета экспорта с именем `{name}`
+	Open a sequence to export	Откройте последовательность для экспорта
+	Destinations	Назначения
+	Media File	Медиафайл
+	Queue ({n})	Очередь ({n})
+	Send exports here with Send to Queue, then start the queue.	Отправляйте экспорт сюда через «Отправить в очередь», затем запустите очередь.
+	Ready	Готово
+	Encoding {n}%	Кодирование {n}%
+	Start Queue	Запустить очередь
+	Stop	Остановить
+	Clear Finished	Очистить завершённые
+	Not supported by FilmCraft's encoders yet	Кодировщики FilmCraft пока это не поддерживают
+	Sequence name	Имя последовательности
+	Folder	Папка
+	Preset	Пресет
+	More presets…	Ещё пресеты…
+	Multiplexer	Мультиплексор
+	The sequence has no caption track.	В последовательности нет дорожки субтитров.
+	Export Options	Параметры экспорта
+	Burn Captions Into Video	Впечатать субтитры в видео
+	Create Sidecar File	Создать сопутствующий файл
+	File Format	Формат файла
+	SubRip Subtitle (.srt)	Субтитры SubRip (.srt)
+	WebVTT (.vtt)	Субтитры WebVTT (.vtt)
+	Title	Название
+	Creator	Автор
+	Copyright	Авторские права
+	Image	Изображение
+	Frame Size	Размер кадра
+	Match Source	Соответствие источнику
+	Field Order	Порядок полей
+	Aspect	Соотношение сторон
+	Profile	Профиль
+	Bitrate Encoding	Кодирование битрейта
+	Target Bitrate	Целевой битрейт
+	Adaptive ({bpp} bits per pixel)	Адаптивный ({bpp} бит на пиксель)
+	Maximum Bitrate	Максимальный битрейт
+	Quality (CRF)	Качество (CRF)
+	Key Frame Distance	Расстояние между ключевыми кадрами
+	Quality	Качество
+	Render at Maximum Depth	Визуализировать на максимальной глубине
+	Use Maximum Render Quality	Использовать максимальное качество визуализации
+	Export Audio	Экспортировать звук
+	Audio Format	Формат аудио
+	Uncompressed (PCM)	Без сжатия (PCM)
+	Match Source ({seq_sr} Hz)	Соответствие источнику ({seq_sr} Гц)
+	Channels	Каналы
+	Audio Bitrate	Битрейт аудио
+	Sample Size	Разрядность
+	16 bit	16 бит
+	24 bit	24 бит
+	32 bit	32 бит
+	32 bit float	32 бит с плавающей точкой
+	FLAC stores whole-number samples only	FLAC хранит только целочисленные отсчёты
+	MXF export writes integer PCM only	Экспорт MXF записывает только целочисленный PCM
+	Size / Opacity	Размер / непрозрачность
+	Image Overlay	Наложение изображения
+	PNG or JPEG file	Файл PNG или JPEG
+	Name Overlay	Наложение имени
+	Timecode Overlay	Наложение тайм-кода
+	Luma Min / Max	Мин. / макс. яркости
+	Loudness Normalization	Нормализация громкости
+	True Peak Limit	Ограничение истинного пика
+	Audio only	Только звук
+	Scaling	Масштабирование
+	Scale To Fit	Вписать в размер
+	Scale To Fill	Масштабировать до заполнения
+	Stretch To Fill	Растянуть до заполнения
+	Summary	Сводка
+	Sequence, {w}x{h}, {fps} fps, {rate} Hz	Последовательность, {w}x{h}, {fps} кадр/с, {rate} Гц
+	Estimated file size: {size}	Оценка размера файла: {size}
+	Send to Queue	Отправить в очередь
+	Exporting {path}	Идёт экспорт: {path}
+	Added to the export queue	Добавлено в очередь экспорта
+	Preset Manager	Диспетчер пресетов
+	Search presets	Поиск пресетов
+	Favorites only	Только избранное
+	Show in the Preset menu	Показывать в меню пресетов
+	User	Пользователь
+	Save current settings as:	Сохранить текущие настройки как:
+	Export presets	Пресеты экспорта
+	Import: no file chosen (agents: export.presets.import {path})	Импорт пресетов экспорта: файл не выбран (агенты: export.presets.import {path})
+	Export: no file chosen (agents: export.presets.export {path, names})	Экспорт: файл не выбран (агенты: export.presets.export {path, names})
+	Quick Export: open a sequence first	Быстрый экспорт: сначала откройте последовательность
+	File Name & Location	Имя файла и расположение
+	Quick Export: {path}	Быстрый экспорт: {path}
+	Graphics problem: switched to software compositing	Проблема с графикой: выполнен переход на программную композицию
+	GPU acceleration is unavailable; preview renders on the CPU	Ускорение GPU недоступно; предпросмотр рассчитывается на CPU
+	Exporting	Идёт экспорт
+	Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.	Щёлкните для выбора или щёлкните по пустому месту и растяните рамку для выделения. Shift, Opt и Cmd — дополнительные параметры.
+	Click to select all clips to the right in all tracks. Shift-click for a single track.	Щёлкните, чтобы выделить все клипы справа на всех дорожках. Shift+щелчок — только для одной дорожки.
+	Click to select all clips to the left in all tracks. Shift-click for a single track.	Щёлкните, чтобы выделить все клипы слева на всех дорожках. Shift+щелчок — только для одной дорожки.
+	Drag an edit point to ripple trim; later clips move to keep the gap closed.	Перетащите точку монтажа для подрезки со сдвигом; последующие клипы сдвигаются, закрывая промежуток.
+	Drag an edit point to roll it: the out of one clip and the in of the next move together.	Перетащите точку монтажа для прокрутки: выход одного клипа и вход следующего смещаются вместе.
+	Drag an edge to change the clip's speed so it fills the new duration.	Перетащите край, чтобы клип изменил скорость и заполнил новую длительность.
+	Drag the edge of a music clip to remix it to the new duration at musically matching beats.	Перетащите край музыкального клипа, чтобы ремиксовать его под новую длительность по музыкальным долям.
+	Click to split a clip. Shift-click to split all tracks.	Щёлкните, чтобы разделить клип. Shift+щелчок разделяет все дорожки.
+	Drag a clip to slip its source in/out without moving it.	Скольжение: перетащите клип — точки входа и выхода в источнике смещаются, клип остаётся на месте.
+	Drag a clip to slide it between its neighbours.	Перетащите клип для смещения между соседними клипами.
+	Drag to scroll the timeline.	Перетащите, чтобы прокрутить таймлайн.
+	Click to zoom in; Opt-click to zoom out.	Щёлкните для увеличения масштаба; Opt+щелчок — для уменьшения.
+	FilmCraft hit an error	В FilmCraft произошла ошибка
+	Details: {path}	Подробности: {path}
+	Opened {url}	Открыто {url}
+	(empty)	(пусто)
+	Step Back 1 Frame	Назад на 1 кадр
+	Step Forward 1 Frame	Вперёд на 1 кадр
+	Match Playhead	Совместить с курсором
+	Gang to Program	Связать с программой
+	AAC Audio	Аудио AAC
+	AAC Audio 48 kHz 320 kbps	Аудио AAC 48 кГц 320 кбит/с
+	MPEG-4 audio (.m4a), stereo 48 kHz AAC-LC at 320 kbps	Аудио MPEG-4 (.m4a), стерео 48 кГц AAC-LC, 320 кбит/с
+	AIFF	AIFF
+	AIFF 48 kHz 16-bit	AIFF 48 кГц 16 бит
+	AIFF, stereo 48 kHz 16-bit PCM	AIFF, стерео 48 кГц, 16-бит PCM
+	FLAC	FLAC
+	FLAC 48 kHz 24-bit	FLAC 48 кГц 24 бит
+	FLAC, stereo 48 kHz 24-bit, lossless	FLAC, стерео 48 кГц 24 бит, без потерь
+	FLAC (lossless)	FLAC (без потерь)
+	Compression Level	Уровень сжатия
+	0 fastest, 8 smallest	0 — быстрее всего, 8 — самый маленький
+	APV	APV
+	APV 422-10	APV 422, 10 бит
+	APV 422-12	APV 422, 12 бит
+	Anamorphic 2:1 (2.0)	Анаморфный 2:1 (2.0)
+	Animated GIF	Анимированный GIF
+	Animated GIF 640×360	Анимированный GIF 640×360
+	Apple ProRes	ProRes от Apple
+	Apple ProRes 422	ProRes 422 от Apple
+	Apple ProRes 422 HQ	ProRes 422 HQ от Apple
+	Apple ProRes 422 LT	ProRes 422 LT от Apple
+	Apple ProRes 422 Proxy	ProRes 422 Proxy от Apple
+	Apple ProRes 4444	ProRes 4444 от Apple
+	Apple ProRes 4444 with Alpha	Apple ProRes 4444 с альфа-каналом
+	Apple ProRes 4444 XQ	ProRes 4444 XQ от Apple
+	Application	Приложение
+	Apply Guide Template	Применить шаблон направляющих
+	Auto Save Now	Автосохранение сейчас
+	Auto-Match Loudness	Автосогласование громкости
+	Avid DNxHR	DNxHR от Avid
+	Avid DNxHR HQ	DNxHR HQ от Avid
+	Avid DNxHR LB	DNxHR LB от Avid
+	Avid DNxHR SQ	DNxHR SQ от Avid
+	Avid-style OP-Atom: DNxHR HQ picture file plus one 24-bit 48 kHz PCM file per channel (_A1, _A2…)	OP-Atom в стиле Avid: файл изображения DNxHR HQ и по одному файлу PCM 24 бит, 48 кГц на канал (_A1, _A2…)
+	BMP	BMP
+	BMP Sequence	Последовательность BMP
+	Baseline	Базовый
+	Begin Text Editing for a Graphic Layer	Начать редактирование текста графического слоя
+	Begins With	Начинается с
+	Blur In	Появление с размытием
+	Blur Out	Исчезновение с размытием
+	Brightens inside a feathered circular mask	Осветляет внутри круглой маски с растушёвкой
+	Broadcast	Вещание
+	CBR	CBR
+	Cancel Dynamic Trim	Отменить динамическую подрезку
+	Cancel Queued Export	Отменить экспорт из очереди
+	Center Left	По центру слева
+	Center Right	По центру справа
+	Center align text	Выровнять текст по центру
+	Change Mask	Сменить маску
+	Clear All Events	Очистить все события
+	Clear Edit Point Selection	Очистить выделение точек монтажа
+	Clear Finished Exports	Очистить завершённые экспорты
+	Clear Poster Frame	Очистить постер-кадр
+	Close Bin	Закрыть корзину
+	Close Sequence	Закрыть последовательность
+	Contains	Содержит
+	Cut to Camera 1	Переключиться на камеру 1
+	Cut to Camera 2	Переключиться на камеру 2
+	Cut to Camera 3	Переключиться на камеру 3
+	Cut to Camera 4	Переключиться на камеру 4
+	Cut to Camera 5	Переключиться на камеру 5
+	Cut to Camera 6	Переключиться на камеру 6
+	Cut to Camera 7	Переключиться на камеру 7
+	Cut to Camera 8	Переключиться на камеру 8
+	Cut to Camera 9	Переключиться на камеру 9
+	D1/DV NTSC (0.9091)	D1/DV NTSC (0,9091)
+	D1/DV PAL (1.0940)	D1/DV PAL (1,0940)
+	DVCPRO HD (1.5)	DVCPRO HD (1,5)
+	Darkens outside a feathered oval mask	Затемняет снаружи овальной маски с растушёвкой
+	Decrease Audio Tracks Height	Уменьшить высоту аудиодорожек
+	Decrease Clip Volume	Уменьшить громкость клипа
+	Decrease Clip Volume Many	Сильно уменьшить громкость клипа
+	Decrease Font Size by Five Units	Уменьшить размер шрифта на пять единиц
+	Decrease Font Size by One Unit	Уменьшить размер шрифта на одну единицу
+	Decrease Leading by Five Units	Уменьшить межстрочный интервал на пять единиц
+	Decrease Leading by One Unit	Уменьшить межстрочный интервал на одну единицу
+	Decrease Video Tracks Height	Уменьшить высоту видеодорожек
+	Delete Captions	Удалить субтитры
+	Delete Graphic Layer	Удалить графический слой
+	Delete Guide Template	Удалить шаблон направляющих
+	Delete Media Cache Files	Удалить файлы кэша медиа
+	Discard Unsaved Changes	Отклонить несохранённые изменения
+	Does Not Contain	Не содержит
+	Download Speech Model	Скачать модель распознавания речи
+	Dynamic Trim Stop	Остановить динамическую подрезку
+	Edit Caption Text	Редактировать текст субтитра
+	Ellipse Tool	Эллипс
+	Ends With	Заканчивается на
+	Entire Source	Весь источник
+	EssentialSound	Основной звук
+	Export Frame	Экспортировать кадр
+	Extend Next Edit To Playhead	Расширить следующую точку монтажа до курсора воспроизведения
+	Extend Previous Edit To Playhead	Расширить предыдущую точку монтажа до курсора воспроизведения
+	Extend Selected Edit to Playhead	Расширить выбранную точку монтажа до курсора воспроизведения
+	Extend Selection Down	Расширить выделение вниз
+	Extend Selection Left	Расширить выделение влево
+	Extend Selection Right	Расширить выделение вправо
+	Extend Selection Up	Расширить выделение вверх
+	Fade In	Плавное появление
+	Gaussian Blur from 0 to 60 over the last second	Размытие по Гауссу от 0 до 60 за последнюю секунду
+	Gaussian Blur from 60 to 0 over the first second	Размытие по Гауссу от 60 до 0 за первую секунду
+	Generate Ducking Keyframes	Создать ключевые кадры приглушения
+	Go to Next Edit Point	Перейти к следующей точке монтажа
+	Go to Next Edit Point on Any Track	Перейти к следующей точке монтажа на любой дорожке
+	Go to Previous Edit Point	Перейти к предыдущей точке монтажа
+	Go to Previous Edit Point on Any Track	Перейти к предыдущей точке монтажа на любой дорожке
+	Go to Selected Clip End	Перейти к концу выбранного клипа
+	Go to Selected Clip Start	Перейти к началу выбранного клипа
+	Go to Sequence End	Перейти к концу последовательности
+	Go to Sequence Start	Перейти к началу последовательности
+	H.264	H.264
+	AV1	AV1
+	H.264 1920×1080 for video sharing sites, VBR 1 pass, 16 Mbps	H.264 1920×1080 для видеосайтов, VBR, 1 проход, 16 Мбит/с
+	H.264 1920×1080, VBR 1 pass, 20 Mbps target, AAC 320 kbps	H.264 1920×1080, VBR, 1 проход, целевые 20 Мбит/с, AAC 320 кбит/с
+	H.264 1920×1080, VBR 2 pass, 18 Mbps	H.264 1920×1080, VBR, 2 прохода, 18 Мбит/с
+	H.264 3840×2160 for video sharing sites, VBR 1 pass, 45 Mbps	H.264 3840×2160 для видеосайтов, VBR, 1 проход, 45 Мбит/с
+	H.264 3840×2160, VBR 1 pass, 60 Mbps target, AAC 320 kbps	H.264 3840×2160, VBR, 1 проход, целевые 60 Мбит/с, AAC 320 кбит/с
+	H.264 3840×2160, VBR 2 pass, 50 Mbps	H.264 3840×2160, VBR, 2 прохода, 50 Мбит/с
+	H.264 9:16 portrait for short-form social video, scaled to fill, 12 Mbps	H.264 9:16, вертикальное видео для соцсетей, с заполнением кадра, 12 Мбит/с
+	H.264 at the sequence's frame size and rate; 0.05 bits per pixel	H.264 в размере и с частотой кадров последовательности; 0,05 бит на пиксель
+	H.264 at the sequence's frame size and rate; 0.1 bits per pixel	H.264 в размере и с частотой кадров последовательности; 0,1 бит на пиксель
+	H.264 at the sequence's frame size and rate; bitrate adapts to the frame size (0.2 bits per pixel)	H.264 в размере и с частотой кадров последовательности; битрейт подстраивается под размер кадра (0,2 бит на пиксель)
+	HD Anamorphic 1080 (1.333)	HD-анаморфный 1080 (1,333)
+	Hand Tool	Рука
+	High Quality 1080p HD	Высокое качество 1080p HD
+	High Quality 2160p 4K	Высокое качество 2160p 4K
+	Image Sequence	Последовательность изображений
+	Increase Audio Tracks Height	Увеличить высоту аудиодорожек
+	Increase Clip Volume	Увеличить громкость клипа
+	Increase Clip Volume Many	Сильно увеличить громкость клипа
+	Increase Font Size by Five Units	Увеличить размер шрифта на пять единиц
+	Increase Font Size by One Unit	Увеличить размер шрифта на одну единицу
+	Increase Leading by Five Units	Увеличить межстрочный интервал на пять единиц
+	Increase Leading by One Unit	Увеличить межстрочный интервал на одну единицу
+	Increase Video Tracks Height	Увеличить высоту видеодорожек
+	Large blocks resolving to the picture over the first second	Крупные блоки, складывающиеся в изображение за первую секунду
+	Left align text	Выровнять текст по левому краю
+	Looping GIF, 640×360 at 15 fps	GIF-цикл, 640×360, 15 кадр/с
+	Lower First	Нижний первым
+	Lumetri	Lumetri
+	MXF OP-Atom	MXF OP-Atom (контейнер Avid)
+	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR от Avid
+	MXF OP1a	MXF OP1a (один файл)
+	MXF OP1a DNxHR HQ	MXF OP1a DNxHR HQ (Avid)
+	MXF OP1a H.264	MXF OP1a H.264 (один файл)
+	MXF OP1a ProRes 422 HQ	MXF OP1a ProRes 422 HQ (Apple)
+	MXF OP1a, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM, start timecode	MXF OP1a, DNxHR HQ (8 бит, 4:2:2), PCM 24 бит, 48 кГц, начальный тайм-код
+	MXF OP1a, H.264 High long GOP (0.3 bits per pixel), 24-bit 48 kHz PCM	MXF OP1a, H.264 High, длинный GOP (0,3 бит на пиксель), PCM 24 бит, 48 кГц
+	MXF OP1a, ProRes 422 HQ, 24-bit 48 kHz PCM, start timecode	MXF OP1a, ProRes 422 HQ, PCM 24 бит, 48 кГц, начальный тайм-код
+	Main	Основной
+	Mark In (Hover Scrub)	Отметить вход (протяжка при наведении)
+	Mark Out (Hover Scrub)	Отметить выход (протяжка при наведении)
+	Masks	Маски
+	Match Source – Adaptive High Bitrate	Соответствие источнику — адаптивный высокий битрейт
+	Match Source – Adaptive Low Bitrate	Соответствие источнику — адаптивный низкий битрейт
+	Match Source – Adaptive Medium Bitrate	Соответствие источнику — адаптивный средний битрейт
+	Matches	Совпадает
+	Maximize or Restore Active Frame	Развернуть или восстановить активную панель
+	Maximize or Restore Frame Under Cursor	Развернуть или восстановить панель под курсором
+	Media Browser Settings	Настройки медиабраузера
+	MediaBrowser	Медиабраузер
+	MediaCache	Кэш медиа
+	Merge Captions	Объединить субтитры
+	Mixer	Микшер
+	Mosaic In	Появление мозаикой
+	Move All Audio Targets Down	Переместить все целевые аудиодорожки вниз
+	Move All Audio Targets Up	Переместить все целевые аудиодорожки вверх
+	Move All Video Targets Down	Переместить все целевые видеодорожки вниз
+	Move All Video Targets Up	Переместить все целевые видеодорожки вверх
+	Move Selection Down	Переместить выделение вниз
+	Move Selection End	Переместить выделение в конец
+	Move Selection Home	Переместить выделение в начало
+	Move Selection Left	Переместить выделение влево
+	Move Selection Page Down	Переместить выделение на страницу вниз
+	Move Selection Page Up	Переместить выделение на страницу вверх
+	Move Selection Right	Переместить выделение вправо
+	Move Selection Up	Переместить выделение вверх
+	Multi-Camera Record On/Off Toggle	Включить/выключить запись мультикамеры
+	Multicam	Мультикамера
+	Navigate to End of Segment	Перейти к концу сегмента
+	Navigate to Next Line	Перейти к следующей строке
+	Navigate to Next Word	Перейти к следующему слову
+	Navigate to Previous Line	Перейти к предыдущей строке
+	Navigate to Previous Word	Перейти к предыдущему слову
+	Navigate to Start of Segment	Перейти к началу сегмента
+	Navigation	Навигация
+	Next Multi-Camera Page	Следующая страница мультикамеры
+	Nudge Clip Selection Down	Сдвинуть выделение клипов вниз
+	Nudge Clip Selection Left Five Frames	Сдвинуть выделение клипов на пять кадров влево
+	Nudge Clip Selection Left One Frame	Сдвинуть выделение клипов на один кадр влево
+	Nudge Clip Selection Right Five Frames	Сдвинуть выделение клипов на пять кадров вправо
+	Nudge Clip Selection Right One Frame	Сдвинуть выделение клипов на один кадр вправо
+	Nudge Clip Selection Up	Сдвинуть выделение клипов вверх
+	Nudge Selected Object down by five	Сдвинуть выбранный объект на пять пикселей вниз
+	Nudge Selected Object down by one	Сдвинуть выбранный объект на один пиксель вниз
+	Nudge Selected Object to left by five	Сдвинуть выбранный объект на пять пикселей влево
+	Nudge Selected Object to left by one	Сдвинуть выбранный объект на один пиксель влево
+	Nudge Selected Object to right by five	Сдвинуть выбранный объект на пять пикселей вправо
+	Nudge Selected Object to right by one	Сдвинуть выбранный объект на один пиксель вправо
+	Nudge Selected Object up by five	Сдвинуть выбранный объект на пять пикселей вверх
+	Nudge Selected Object up by one	Сдвинуть выбранный объект на один пиксель вверх
+	Nudge Volume +1dB	Изменить громкость на +1 дБ
+	Nudge Volume +3dB	Изменить громкость на +3 дБ
+	Nudge Volume -1dB	Изменить громкость на -1 дБ
+	Nudge Volume -3dB	Изменить громкость на -3 дБ
+	Numbered BMP stills (24-bit)	Нумерованные BMP-кадры (24 бит)
+	JPEG	JPEG
+	Targa	Targa (TGA)
+	DPX	DPX
+	JPEG Sequence	Последовательность JPEG
+	Targa Sequence	Последовательность Targa
+	DPX Sequence	Последовательность DPX
+	Numbered JPEG stills (quality 90)	Нумерованные JPEG-кадры (качество 90)
+	Numbered Targa stills (24-bit, uncompressed)	Нумерованные Targa-кадры (24 бит, без сжатия)
+	Numbered DPX stills (10-bit RGB)	Нумерованные DPX-кадры (10 бит, RGB)
+	OpenEXR	OpenEXR (EXR)
+	OpenEXR Sequence	Последовательность OpenEXR
+	Numbered OpenEXR stills (half float, linear, uncompressed)	Нумерованные OpenEXR-кадры (16 бит с плавающей точкой, линейные, без сжатия)
+	Numbered PNG stills at the sequence's frame size	Нумерованные PNG-кадры размером с кадр последовательности
+	Numbered TIFF stills (RGB, 8-bit)	Нумерованные TIFF-кадры (RGB, 8 бит)
+	Opacity 0 → 100 % over the first second	Непрозрачность 0 → 100 % за первую секунду
+	Opacity 100 → 0 % over the last second	Непрозрачность 100 → 0 % за последнюю секунду
+	Open Bin	Открыть корзину
+	Open Search	Открыть поиск
+	PNG	PNG
+	PNG Sequence	Последовательность PNG
+	Panel	Панель
+	Pen Tool	Перо
+	PiP 35% Upper Right	Картинка в картинке 35 %, справа вверху
+	Picture-in-picture: 35 % scale in the upper right	Картинка в картинке: масштаб 35 % справа вверху
+	Play Around	Воспроизвести вокруг курсора
+	Play In to Out with Preroll/Postroll	Воспроизвести от входа до выхода с прероллом и построллом
+	Play from Playhead to Out Point	Воспроизвести от курсора воспроизведения до точки выхода
+	Play/Stop	Воспроизвести/остановить
+	Previous Multi-Camera Page	Предыдущая страница мультикамеры
+	Progressive	Прогрессивный
+	ProjectPanel	Панель проекта
+	QuickTime (Motion JPEG)	QuickTime (покадровый JPEG)
+	QuickTime, APV 422-10 (10-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, APV 422-10 (10 бит, 4:2:2), PCM 24 бит, 48 кГц
+	QuickTime, APV 422-12 (12-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, APV 422-12 (12 бит, 4:2:2), PCM 24 бит, 48 кГц
+	QuickTime, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, DNxHR HQ (8 бит, 4:2:2), PCM 24 бит, 48 кГц
+	QuickTime, DNxHR LB (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, DNxHR LB (8 бит, 4:2:2), PCM 24 бит, 48 кГц
+	QuickTime, DNxHR SQ (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, DNxHR SQ (8 бит, 4:2:2), PCM 24 бит, 48 кГц
+	QuickTime, ProRes 422 HQ, 24-bit 48 kHz PCM	QuickTime, ProRes 422 HQ, PCM 24 бит, 48 кГц
+	QuickTime, ProRes 422 LT, 24-bit 48 kHz PCM	QuickTime, ProRes 422 LT, PCM 24 бит, 48 кГц
+	QuickTime, ProRes 422 Proxy, 24-bit 48 kHz PCM	QuickTime, ProRes 422 Proxy, PCM 24 бит, 48 кГц
+	QuickTime, ProRes 4444 (4:4:4), 24-bit 48 kHz PCM	QuickTime, ProRes 4444 (4:4:4), PCM 24 бит, 48 кГц
+	QuickTime, ProRes 4444 (4:4:4) with alpha channel, 24-bit 48 kHz PCM	QuickTime, ProRes 4444 (4:4:4) с альфа-каналом, PCM 24 бит, 48 кГц
+	QuickTime, ProRes 4444 XQ (4:4:4), 24-bit 48 kHz PCM	QuickTime, ProRes 4444 XQ (4:4:4), PCM 24 бит, 48 кГц
+	QuickTime, ProRes 422, 24-bit 48 kHz PCM	QuickTime, ProRes 422, PCM 24 бит, 48 кГц
+	Quit FilmCraft	Выйти из FilmCraft
+	Rate Stretch Tool	Растяжение скорости
+	Razor Tool	Лезвие
+	Rectangle Tool	Прямоугольник
+	Remix Tool	Ремикс
+	Right align text	Выровнять текст по правому краю
+	Ripple Edit Tool	Сдвиг
+	Ripple Trim Next Edit to Playhead	Подрезка со сдвигом следующей точки монтажа до курсора воспроизведения
+	Ripple Trim Previous Edit to Playhead	Подрезка со сдвигом предыдущей точки монтажа до курсора воспроизведения
+	Rolling Edit Tool	Прокрутка
+	Select Camera 1	Выбрать камеру 1
+	Select Camera 2	Выбрать камеру 2
+	Select Camera 3	Выбрать камеру 3
+	Select Camera 4	Выбрать камеру 4
+	Select Camera 5	Выбрать камеру 5
+	Select Camera 6	Выбрать камеру 6
+	Select Camera 7	Выбрать камеру 7
+	Select Camera 8	Выбрать камеру 8
+	Select Camera 9	Выбрать камеру 9
+	Select Clip at Playhead	Выбрать клип в позиции курсора воспроизведения
+	Select Find Box	Выбрать поле поиска
+	Select Next Clip	Выбрать следующий клип
+	Select Next Panel	Выбрать следующую панель
+	Select Previous Clip	Выбрать предыдущий клип
+	Select Previous Panel	Выбрать предыдущую панель
+	Select to Next Line	Выделить до следующей строки
+	Select to Next Word	Выделить до следующего слова
+	Select to Previous Line	Выделить до предыдущей строки
+	Select to Previous Word	Выделить до предыдущего слова
+	Select to Segment End	Выделить до конца сегмента
+	Select to Segment Start	Выделить до начала сегмента
+	Selection Tool	Выделение
+	Set Comparison Reference	Задать эталон для сравнения
+	Set Creative Look	Задать творческий образ
+	Set Input LUT	Задать входную LUT
+	Set Project Panel View	Задать вид панели проекта
+	Show Next Screen	Показать следующий экран
+	Show Previous Screen	Показать предыдущий экран
+	Show Program Transcript	Показать транскрипт программы
+	Shuttle Left	Перемотка влево
+	Shuttle Right	Перемотка вправо
+	Shuttle Slow Left	Медленная перемотка влево
+	Shuttle Slow Right	Медленная перемотка вправо
+	Shuttle Stop	Остановить перемотку
+	Slide Clip Selection Left Five Frames	Смещение выделения клипов на пять кадров влево
+	Slide Clip Selection Left One Frame	Смещение выделения клипов на один кадр влево
+	Slide Clip Selection Right Five Frames	Смещение выделения клипов на пять кадров вправо
+	Slide Clip Selection Right One Frame	Смещение выделения клипов на один кадр вправо
+	Slide Tool	Смещение
+	Slip Clip Selection Left Five Frames	Скольжение выделения клипов на пять кадров влево
+	Slip Clip Selection Left One Frame	Скольжение выделения клипов на один кадр влево
+	Slip Clip Selection Right Five Frames	Скольжение выделения клипов на пять кадров вправо
+	Slip Clip Selection Right One Frame	Скольжение выделения клипов на один кадр вправо
+	Slip Tool	Скольжение
+	Social Vertical 1080×1920	Вертикальное для соцсетей 1080×1920
+	Soft Vignette	Мягкая виньетка
+	Source In/Out	Вход/выход источника
+	Split Caption	Разделить субтитр
+	Square Pixels (1.0)	Квадратные пиксели (1,0)
+	Stack Clips	Сложить клипы в стопку
+	Start Export Queue	Запустить очередь экспорта
+	Start Voice-over Recording	Начать запись закадрового голоса
+	Step Back Five Frames	Шаг назад на пять кадров
+	Step Back One Frame	Шаг назад на один кадр
+	Step Forward Five Frames	Шаг вперёд на пять кадров
+	Step Forward One Frame	Шаг вперёд на один кадр
+	Stop Export Queue	Остановить очередь экспорта
+	Stop Multi-Camera Recording	Остановить запись мультикамеры
+	Stop Voice-over Recording	Остановить запись закадрового голоса
+	Sync Voice-over Capture	Синхронизировать запись закадрового голоса
+	TIFF	TIFF
+	TIFF Sequence	Последовательность TIFF
+	TextPanel	Панель текста
+	Thumbnail Size Next	Следующий размер миниатюр
+	Thumbnail Size Previous	Предыдущий размер миниатюр
+	Toggle All Audio Targets	Переключить все целевые аудиодорожки
+	Toggle All Source Audio	Переключить весь звук источника
+	Toggle All Source Video	Переключить всё видео источника
+	Toggle All Video Targets	Переключить все целевые видеодорожки
+	Toggle Audio During Scrubbing	Переключить звук при прокрутке
+	Toggle Full Screen	Переключить полноэкранный режим
+	Toggle Mute for All Targeted Audio Tracks	Переключить без звука для всех целевых аудиодорожек
+	Toggle Solo for All Targeted Audio Tracks	Переключить соло для всех целевых аудиодорожек
+	Toggle Source/Program Monitor Focus	Переключить фокус между мониторами источника и программы
+	Toggle Target Audio 1	Переключить целевую аудиодорожку 1
+	Toggle Target Audio 2	Переключить целевую аудиодорожку 2
+	Toggle Target Audio 3	Переключить целевую аудиодорожку 3
+	Toggle Target Audio 4	Переключить целевую аудиодорожку 4
+	Toggle Target Audio 5	Переключить целевую аудиодорожку 5
+	Toggle Target Audio 6	Переключить целевую аудиодорожку 6
+	Toggle Target Audio 7	Переключить целевую аудиодорожку 7
+	Toggle Target Audio 8	Переключить целевую аудиодорожку 8
+	Toggle Target Video 1	Переключить целевую видеодорожку 1
+	Toggle Target Video 2	Переключить целевую видеодорожку 2
+	Toggle Target Video 3	Переключить целевую видеодорожку 3
+	Toggle Target Video 4	Переключить целевую видеодорожку 4
+	Toggle Target Video 5	Переключить целевую видеодорожку 5
+	Toggle Target Video 6	Переключить целевую видеодорожку 6
+	Toggle Target Video 7	Переключить целевую видеодорожку 7
+	Toggle Target Video 8	Переключить целевую видеодорожку 8
+	Toggle Track Output for All Targeted Video Tracks	Переключить вывод всех целевых видеодорожек
+	Toggle Trim Type	Переключить тип подрезки
+	Toggle View	Переключить вид
+	Track Select Backward Tool	Выбор дорожки назад
+	Track Select Forward Tool	Выбор дорожки вперёд
+	Track Selected Mask	Отслеживать выбранную маску
+	Trim Next Edit to Playhead	Подрезать следующую точку монтажа до курсора воспроизведения
+	Trim Previous Edit to Playhead	Подрезать предыдущую точку монтажа до курсора воспроизведения
+	Trimming	Подрезка
+	Type Tool	Текст
+	Unstack Clips	Разложить клипы из стопки
+	Upper First	Верхний первым
+	VBR, 1 pass	VBR, 1 проход
+	VBR, 2 pass	VBR, 2 прохода
+	CRF (constant quality)	CRF (постоянное качество)
+	Vimeo 1080p Full HD	Vimeo 1080p, Full HD
+	Vimeo 2160p 4K Ultra HD	Vimeo 2160p, 4K Ultra HD
+	Voice-over Record	Запись закадрового голоса
+	Voiceover	Закадровый голос
+	WAV, stereo 48 kHz 16-bit PCM	WAV, стерео, PCM 48 кГц, 16 бит
+	WAV, stereo 48 kHz 24-bit PCM	WAV, стерео, PCM 48 кГц, 24 бита
+	Warm Tint	Тёплый оттенок
+	Warm highlights, brown shadows	Тёплые света, коричневые тени
+	Waveform Audio	Waveform Audio (WAV)
+	Waveform Audio 48 kHz 16-bit	Waveform Audio, 48 кГц, 16 бит
+	Waveform Audio 48 kHz 24-bit	Waveform Audio, 48 кГц, 24 бита
+	Web & Social	Интернет и соцсети
+	Work Area	Рабочая область
+	Write Automation	Записать автоматизацию
+	YouTube 1080p Full HD	YouTube 1080p, Full HD
+	YouTube 2160p 4K Ultra HD	YouTube 2160p, 4K Ultra HD
+	Zoom Program Monitor to 100%	Масштабировать монитор программы до 100 %
+	Zoom Program Monitor to Fit	Вписать монитор программы в окно
+	Zoom Source Monitor to 100%	Масштабировать монитор источника до 100 %
+	Zoom Source Monitor to Fit	Вписать монитор источника в окно
+	Zoom Tool	Масштаб
+	with:	с:
+	Interface Language	Язык интерфейса
+	System Language	Системный язык
+	Cinematic	Кинематографический
+	Film Emulation	Имитация плёнки
+	Technical	Технический
+	Teal Shadows, Warm Skin	Бирюзовые тени, тёплая кожа
+	Night Exterior	Ночная натура
+	Golden Dusk	Золотые сумерки
+	Steel Blue	Стальной синий
+	Hard Sun	Жёсткое солнце
+	Faded Print	Выцветшая плёнка
+	Silver Retention	Сохранение серебра
+	Cross Processed	Кросс-процесс
+	Warm Negative	Тёплый негатив
+	Neutral Mono	Нейтральный монохром
+	Hard Mono	Жёсткий монохром
+	Sepia Tone	Тон сепии
+	Cold Mono	Холодный монохром
+	Lift Shadows	Подъём теней
+	Protect Highlights	Защита светов
+	Half Saturation	Насыщенность 50 %
+	Boost Vibrance	Повышение сочности
+	Legal Range Squeeze	Сжатие в допустимый диапазон
+	A boxed label with a round pointer; move the label and the pointer follows.	Подпись в рамке с круглым указателем; при перемещении подписи указатель следует за ней.
+	A rounded tag that fits its text, with a status dot.	Скруглённая метка по размеру текста с точкой состояния.
+	A title on a rounded card with a soft shadow.	Титр на скруглённой карточке с мягкой тенью.
+	Accent Color	Цвет акцента
+	Bar Color	Цвет полосы
+	Box Color	Цвет рамки
+	Box Opacity	Непрозрачность рамки
+	Callout – Pointer	Выноска — указатель
+	Callout – Tag	Выноска — метка
+	Callouts	Выноски
+	Credits	Финальные титры
+	Dot Color	Цвет точки
+	Heading	Заголовок
+	Large centred title, accent rule and subtitle.	Крупный титр по центру, акцентная линия и субтитр.
+	Lower Third – Rule	Нижняя плашка — линия
+	Lower Third – Slab	Нижняя плашка — блок
+	Lower Thirds	Нижние плашки
+	Name Color	Цвет имени
+	Name Size	Размер имени
+	Name and role on a coloured slab that widens with the name.	Имя и должность на цветном блоке, который расширяется вместе с именем.
+	Name over a thin rule that always matches the name's width.	Имя над тонкой линией, которая всегда совпадает по ширине с именем.
+	Pointer Color	Цвет указателя
+	Role	Должность
+	Rule Color	Цвет линии
+	Show Dot	Показать точку
+	Show Role	Показать должность
+	Slab Color	Цвет блока
+	Tag Color	Цвет метки
+	Title Color	Цвет титра
+	Title Size	Размер титра
+	Title – Boxed	Титр — в рамке
+	Title – Centered	Титр — по центру
+	Titles	Титры
+	Select an item to preview it	Выбрать элемент для предпросмотра
+	End Credits	Финальные титры
+	End Credits – Roll	Финальные титры — прокрутка
+	Ticker – Crawl	Бегущая строка — прокрутка
+	Centred credits that roll up from below the frame and leave at the top.	Титры по центру, которые поднимаются снизу кадра и уходят вверх.
+	A news-style line that crawls in from the right and leaves at the left.	Строка в новостном стиле, которая вползает справа и уходит влево.
+	out	выход
+	in	вход
+	The language changed but could not be saved: {e}	Язык изменён, но сохранить его не удалось: {e}
+	no Chinese font is installed on this system; the interface stays in English	в системе не установлен китайский шрифт; интерфейс остаётся на английском
+	no Korean font is installed on this system; the interface stays in English	в системе не установлен корейский шрифт; интерфейс остаётся на английском
+	no Japanese font is installed on this system; the interface stays in English	в системе не установлен японский шрифт; интерфейс остаётся на английском
+	Show	Показать
+	Sort	Сортировка
+	Reverse the order	Обратный порядок
+	Grab bag	Разное
+	Table	Таблица
+	No contributor data was built into this copy.	В эту копию не встроены данные об участниках.
+	No model credits were built into this copy.	В эту копию не встроены упоминания моделей.
+	Company	Компания
+	Model	Модель
+	Version	Версия
+	Commits	Коммиты
+	% of all commits	% от всех коммитов
+	Lines +/−	Строки +/−
+	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	Сбой вывода звука: воспроизведение без звука (см. Настройки ▸ Аудиооборудование)
+	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	Вывод звука не отвечает: воспроизведение без звука (см. Настройки ▸ Аудиооборудование)
+	Clip Speed / Duration	Скорость и длительность клипа
+	Speed:	Скорость:
+	Reverse Speed	Обратная скорость
+	Ripple Edit, Shifting Trailing Clips	Сдвиг с перемещением последующих клипов
+	About	О программе
+	Contributors	Участники
+	Models	Модели
+	Main (8-bit)	Основной (8 бит)
+	Main 10 (10-bit, HDR)	Основной 10 (10 бит, HDR)
+	Main (8-bit; Main 10 for HDR sequences)	Основной (8 бит; Основной 10 для HDR-последовательностей)
+	Encoder	Кодировщик
+	Hardware (H.265 has no software encoder)	Аппаратный (у H.265 нет программного кодировщика)
+	Hardware (AV1 has no software encoder)	Аппаратный (у AV1 нет программного кодировщика)
+	Text Properties	Свойства текста
+	Text Box Height	Высота текстового поля
+	Paragraph Text	Текст абзаца
+	Point Text	Точечный текст
+	Text Layer Type	Тип текстового слоя
+	Text Styling	Стиль текста
+	New Color Matte	Новая цветная подложка
+	Color Matte Color	Цвет подложки
+	Color:	Цвет:
+	 · {time} left	 · осталось {time}
+	Discard take	Отклонить дубль
+	Voice-over take discarded	Дубль закадрового голоса отклонён
+	Binary assets added	Двоичные ресурсы добавлены
+	Binary assets removed	Двоичные ресурсы удалены
+	Deselect All Project Items	Отменить выделение всех элементов проекта
+	Display name	Отображаемое имя
+	First commit	Первый коммит
+	H.265 (HEVC)	H.265, HEVC
+	Last commit	Последний коммит
+	Line delta	Изменение числа строк
+	Lines added	Строк добавлено
+	Lines deleted	Строк удалено
+	Merged PRs	Объединённые PR
+	Name (A–Z)	Имя (А–Я)
+	Real name	Настоящее имя
+	Select All Project Items	Выделить все элементы проекта
+	Username	Имя пользователя
+	Vertical Type Tool	Вертикальный текст
+	Go to previous keyframe	Перейти к предыдущему ключевому кадру
+	Go to next keyframe	Перейти к следующему ключевому кадру
+	Add keyframe	Добавить ключевой кадр
+	Remove keyframe	Удалить ключевой кадр
+	Turn on animation and add keyframe	Включить анимацию и добавить ключевой кадр
+	Click to select, or click in empty space and drag to marquee select. Use Shift, Alt, and Ctrl for other options.	Щёлкнуть для выбора или щёлкнуть в пустом месте и протянуть рамку выделения. Shift, Alt и Ctrl дают другие возможности.
+	Click to zoom in; Alt-click to zoom out.	Щёлкнуть для увеличения; Alt+щелчок — для уменьшения.
+	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	Перетаскивание: перемещение · Alt+щелчок: сглаживание/угол · Ctrl+щелчок: удаление
+	Drag inward to round the corners	Протянуть внутрь, чтобы скруглить углы
+	Include Alpha Channel	Включить альфа-канал
+	Sequence Settings	Настройки последовательности
+	Color Management	Управление цветом
+	VR Properties	Свойства VR
+	Editing Mode:	Режим монтажа:
+	Timebase:	База времени:
+	Frame Size:	Размер кадра:
+	Pixel Aspect Ratio:	Соотношение сторон пикселя:
+	Fields:	Поля:
+	Channel Format:	Формат каналов:
+	Number of Channels:	Число каналов:
+	Preview File Format:	Формат файла предпросмотра:
+	Working Color Space:	Рабочее цветовое пространство:
+	Projection:	Проекция:
+	Layout:	Макет:
+	Captured View:	Зафиксированный вид:
+	Video Previews	Видеопредпросмотры
+	No Fields (Progressive Scan)	Без полей (прогрессивная развёртка)
+	Custom ({ratio})	Пользовательский ({ratio})
+	{rate} frames/second	{rate} кадр/с
+	{rate} fps Drop-Frame Timecode	{rate} кадр/с, тайм-код с пропуском кадров
+	{rate} fps Non Drop-Frame Timecode	{rate} кадр/с, тайм-код без пропуска кадров
+	{rate} fps Timecode	{rate} кадр/с, тайм-код
+	horizontal	горизонтальный
+	vertical	вертикальный
+	Scale motion effects proportionally when changing frame size	Масштабировать эффекты движения пропорционально при изменении размера кадра
+	Maximum Bit Depth	Максимальная глубина цвета
+	Maximum Render Quality	Максимальное качество визуализации
+	Composite in Linear Color	Компоновка в линейном цвете
+	Auto Tone Map Media (HDR and log into SDR)	Автоматическое отображение тонов медиа (HDR и лог в SDR)
+	Configure…	Настроить…
+	Not supported in FilmCraft yet	Пока не поддерживается в FilmCraft
+	FilmCraft always composites in linear light	FilmCraft всегда компонует в линейном свете
+	Loop marked range	Цикл по помеченному диапазону
+	Play Source	Воспроизвести источник
+	Source Play/Stop	Воспроизвести/остановить источник
+	Stop Source	Остановить источник
+	New Sequence	Новая последовательность
+	Tracks	Дорожки
+	tracks	дорожек
+	Clear Transition	Очистить переход
+	Set Transition Duration	Задать длительность перехода
+	Active	Активный
+	Appearance Mode	Режим оформления
+	Dark Theme	Тёмная тема
+	Light Theme	Светлая тема
 	Next Appearance Mode	Следующий режим оформления
+	Sync with system	Синхронизировать с системой
+	UI Scale	Масштаб интерфейса
+	Auto (system)	Авто (по системе)
+	In	Вход
+	Out	Выход
+	Export Markers as CSV…	Экспортировать маркеры в CSV…
+	Fill Type	Тип заливки
+	Gradient Angle	Угол градиента
+	Linear Gradient	Линейный градиент
+	Solid	Сплошной
+	GPU Rendering	Визуализация на GPU
+	Composite on the GPU when available	Компоновать на GPU, когда это возможно
+	Text to Speech	Синтез речи
+	Edit Narration	Редактировать озвучивание
+	Dock Panel	Пристыковать панель
+	Undock Panel	Отстыковать панель
+	Docking Action	Действие пристыковки
+	Resize floating panel	Изменить размер плавающей панели
 	Project Notes	Заметки проекта
-
+	Get Project Notes	Получить заметки проекта
+	Edit Project Notes	Редактировать заметки проекта
+	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	Заметки для этого проекта: задачи, инструкции, номера кадров… Сохраняются вместе с проектом.
+	Use Effect Shutter Angle	Использовать угол затвора эффекта
+	Appearance Settings…	Настройки оформления…
+	Add to favorites	Добавить в избранное
+	Remove from favorites	Удалить из избранного
+	Compression	Сжатие
+	ZIP (1 scan line)	ZIP (1 строка сканирования)
+	ZIP (16 scan lines)	ZIP (16 строк сканирования)
+	Safe graphics mode: {mode}	Безопасный графический режим: {mode}
+	An earlier start failed with the default graphics. Updating the graphics driver usually fixes this.	Предыдущий запуск с графикой по умолчанию завершился сбоем. Обновление драйвера графики обычно решает проблему.
+	Use Default Graphics	Использовать графику по умолчанию
+	The default graphics are used from the next start.	Графика по умолчанию будет использоваться при следующем запуске.
+	DirectX 12 only	Только DirectX 12
+	software rendering	программная визуализация
+	Label Color Presets	Пресеты цвета меток
+	{name} (Modified)	{name} (изменён)
+	Revert to the preset's colors and names	Вернуть цвета и имена пресета
+	Import a preset file…	Импортировать файл пресета…
+	Export the labels to a preset file…	Экспортировать метки в файл пресета…
+	Show the presets folder	Показать папку пресетов
+	Delete this preset	Удалить этот пресет
+	Opens in your web browser: {url}	Откроется в браузере: {url}
+	Saves this session's log and shows it in your file manager.	Сохраняет журнал этого сеанса и показывает его в файловом менеджере.
+	Shows a report on this computer.	Показывает отчёт о компьютере.
+	Shows the version, community links and credits in a FilmCraft window.	Показывает версию, ссылки сообщества и список участников в окне FilmCraft.
+	Couldn't open your web browser	Не удалось открыть браузер
+	Open this address in your browser yourself:	Этот адрес нужно открыть в браузере вручную:

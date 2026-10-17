@@ -1,4 +1,4 @@
-# FilmCraft Roadmap
+﻿# FilmCraft Roadmap
 
 - UI.6: Compact Source and Program monitors separate timecodes from view settings and retain Source drag choices. Transport controls use the shared toolbar sizing helper, with overflow actions in an operable More menu and a scrolling fallback at tiny widths.
 - UI.3: Panel tabs, edge splits, tab reordering and floating groups use the shared docking model and drop resolver. Floating geometry is saved with named workspaces while legacy layout JSON remains readable. Dock dividers use bounded shared geometry and keyboard-accessible resize handles. Tools and dock tabs expose actual widget focus, paint focus outlines, and support keyboard traversal/activation. Control input reaches focused widgets in background windows; optional input isolation supports unattended validation. Existing workspace trees and saved layout formats are retained.
@@ -72,7 +72,7 @@ Evidence for every row: [docs/target-app-parity.md](docs/target-app-parity.md#by
 
 ## Languages
 
-Premiere ships 10 interface languages. Measured from our catalogs (3,498 strings):
+Premiere ships 10 interface languages. Measured from our catalogs (3,597 strings, last measured 2026-10-17):
 
 | Language | Status | Strings |
 |---|---|---|
@@ -86,6 +86,7 @@ Premiere ships 10 interface languages. Measured from our catalogs (3,498 strings
 | Indonesian | partial (whole interface; native review welcome) | ~100% |
 | Italian | partial (whole interface; native review welcome) | ~100% |
 | Korean | partial (whole interface; needs an installed Hangul font; native review welcome) | ~100% |
+| Russian | partial (whole interface; native review welcome) | ~100% |
 | Japanese | partial (whole interface) | 99.7% |
 | German | menus only (native-reviewed) | 10.6% |
 | Vietnamese | none | 0% |

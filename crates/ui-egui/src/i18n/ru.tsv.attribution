@@ -5,4 +5,9 @@ source:       original work
 license:      MIT OR Apache-2.0
 license-file: LICENSE-MIT and LICENSE-APACHE
 added:        2026-10-10 by grib_job
-notes:        Original English-to-Russian menu translations using clean-room NLE vocabulary.
+notes:        Original clean-room English-to-Russian translation of the full 3,590-string
+              reference catalog, using ordinary Russian video-editing vocabulary (Premiere-style
+              terms: последовательность, корзина, дорожка, визуализация). No proprietary
+              localisation resource, string table or product interface was consulted. Drafted
+              with the project's agents and reviewed against the tests; native-speaker review
+              still welcome.

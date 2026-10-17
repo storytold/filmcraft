@@ -233,13 +233,19 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G14. Localization: 8 of the 12 key languages missing
 
-- **Have:** Spanish, Japanese, Simplified Chinese, French (#498) and Portuguese (Brazil) (#859)
-  catalogs cover ~99.6–100% of the ~3,500 cataloged strings; Ukrainian ~10% (menus).
+- **Have:** Spanish, Japanese, Simplified Chinese, French (#498), Portuguese (Brazil) (#859),
+  Indonesian, Italian, Korean (#508) and Russian catalogs cover every entry of the reference
+  catalog (~3,590 strings); Ukrainian and German ~10% (menus).
+- **Done:** Russian: `ru.tsv` has every entry of the Spanish catalog (100% of the reference
+  catalog), translated from the English sources with Premiere-style Russian vocabulary
+  (последовательность, корзина, дорожка, визуализация); Edit ▸ Language, Settings ▸ General and
+  System Language (`ru-*`) reach it, the i18n test requires full coverage and a font test covers
+  the Russian alphabet including «ё». Native-speaker review welcome.
 - **Missing:** Hindi, Arabic (no RTL interface layout or catalog; the interface has Arabic and Hebrew
   fallback fonts and shows captions in reading order, but other names and fields keep egui's
   left-to-right run order; Arabic titles reported broken, #395),
-  German beyond menus (#490), Korean (#508; needs Hangul fonts in craft-fonts),
-  Vietnamese; Premiere also ships Russian. Engine errors,
+  German beyond menus (#490), Ukrainian beyond the core menus,
+  Vietnamese. Engine errors,
   CLI and MCP stay English. No language has a recorded native-speaker review.
 - **Done:** Indonesian (#867): `id.tsv` has every entry of the Spanish catalog (~100%), in Edit ▸
   Language, Settings ▸ General and the native macOS menu; System Language picks it for `id-*` (and
