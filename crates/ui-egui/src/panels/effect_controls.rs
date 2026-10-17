@@ -1115,6 +1115,19 @@ pub(crate) fn graph_rows(
     let area = Rect::from_min_max(pos2(lane.min.x, vr.min.y + 4.0), pos2(lane.max.x, vr.max.y - 4.0));
     let y_of = |v: f64| area.max.y - ((v - lo) / (hi - lo)) as f32 * area.height();
     let v_of = |y: f32| lo + ((area.max.y - y) / area.height()) as f64 * (hi - lo);
+    // The plot used to be hover-only, so a double-click never reached the lane (#1277).
+    let plot = ui.interact(area, egui::Id::new(("kfg-plot", clip.0, idx, mask, pd.id)), Sense::click());
+    if plot.double_clicked()
+        && let Some(pos) = plot.interact_pointer_pos()
+    {
+        let f = ((pos.x - lane.min.x) / lane.width().max(1.0)).clamp(0.0, 1.0) as f64;
+        let mt = to_media(f);
+        let timeline = it.start.0.saturating_add(((mt - it.source_in).0 as f64 / speed) as i64);
+        actions.push((
+            "effects.addKeyframe".into(),
+            with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "time": timeline, "value": v_of(pos.y)})),
+        ));
+    }
     let p = ui.painter();
     p.rect_filled(area, 0.0, t.keyframe_plot_bg);
     for g in 1..4 {
