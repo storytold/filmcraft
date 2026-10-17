@@ -226,13 +226,9 @@ impl Pipeline {
 
     /// Output frame `f` as straight sRGB RGBA8 at the output size, or for HDR exports the encoded
     /// R'G'B' floats (3 per pixel).
-    pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> (Vec<u8>, Vec<f32>) {
+    pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> Result<(Vec<u8>, Vec<f32>)> {
         let t = self.rate.tick_of(f);
-        // The registered GPU renderer goes first; `None` (no adapter, a plan the GPU cannot
-        // draw, any internal error) falls back to the CPU reference renderer below. A frame the
-        // planner hands back as one CPU image anyway (an adjustment layer, a complex transition,
-        // HDR) does not take a pooled renderer: it would render on the CPU inside the pool, as
-        // many frames at a time as there are renderers instead of one per export thread.
+        // CPU whole-frame plans bypass the GPU pool; unsupported GPU work falls back, terminal errors propagate.
         let pool = self.renderer.as_ref().filter(|_| !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t));
         let gpu = match pool {
             Some(pool) => {
@@ -241,6 +237,8 @@ impl Pipeline {
                     crate::note_lock_wait(asked.elapsed());
                     r.render(&self.project, self.seq, t, self.opts, sources)
                 })
+                .transpose()
+                .map_err(ExportError::Encode)?
                 .flatten()
             }
             None => None,
@@ -254,7 +252,7 @@ impl Pipeline {
                 if self.renderer.is_some() {
                     note_gpu_fallback();
                 }
-                filmcraft_render::render_sequence(&self.project, self.seq, t, self.opts, sources)
+                filmcraft_render::render_sequence(&self.project, self.seq, t, self.opts, sources).map_err(ExportError::Encode)?
             }
         };
         let mut img = self.place(img);
@@ -272,7 +270,7 @@ impl Pipeline {
             }
             // the float image is not needed any more: its buffer serves the next frame's layers
             filmcraft_frame::pool::recycle_f32(img.px);
-            return (Vec::new(), out);
+            return Ok((Vec::new(), out));
         }
         let mut rgba = if self.alpha { img.to_rgba8() } else { img.over_black_rgba8() };
         // the float image is not needed any more: its buffer serves the next frame's layers
@@ -280,7 +278,7 @@ impl Pipeline {
         if lim.enabled {
             limit_rgba8(&mut rgba, lim.min_percent, lim.max_percent);
         }
-        (rgba, Vec::new())
+        Ok((rgba, Vec::new()))
     }
 
     /// Fit the rendered picture into the output frame.
@@ -497,4 +495,60 @@ fn limit_px(c: &mut [f32; 3], lo: f32, hi: f32) {
         c.iter_mut().for_each(|v| *v += d);
     }
     c.iter_mut().for_each(|v| *v = v.clamp(0.0, hi.max(lo)));
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+    use filmcraft_media::{FrameRequest, MediaError, MediaInfo, MediaSource};
+    struct RendererResult(bool, Arc<std::sync::atomic::AtomicUsize>);
+    impl FrameRenderer for RendererResult {
+        fn render(
+            &mut self,
+            _: &Project,
+            _: ItemId,
+            _: filmcraft_time::Tick,
+            _: RenderOptions,
+            _: &dyn SourceProvider,
+        ) -> std::result::Result<Option<Image>, String> {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if self.0 { Err("injected renderer failure".into()) } else { Ok(None) }
+        }
+    }
+
+    #[test]
+    fn renderer_terminal_error_is_not_cpu_fallback() {
+        let (project, seq, sources) = crate::tests::project();
+        assert!(!filmcraft_render::plan::is_cpu_frame(&project, seq, filmcraft_time::Tick::ZERO));
+        let mut pipeline = Pipeline::new(project, seq, &ExportSettings { gpu_rendering: GpuRendering::Off, ..Default::default() }, false).unwrap();
+        let reference = pipeline.frame(0, &sources).unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        pipeline.renderer = RendererPool::new(vec![Box::new(RendererResult(false, calls.clone()))]);
+        assert_eq!(pipeline.frame(0, &sources).unwrap(), reference);
+        pipeline.renderer = RendererPool::new(vec![Box::new(RendererResult(true, calls.clone()))]);
+        assert!(pipeline.frame(0, &sources).unwrap_err().to_string().contains("injected renderer failure"));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    struct FailedSource(MediaInfo);
+    impl MediaSource for FailedSource {
+        fn info(&self) -> &MediaInfo {
+            &self.0
+        }
+        fn video_frame(&self, _: FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+            Err(MediaError::Decode("injected export frame failure".into()))
+        }
+        fn audio(&self, _: i64, _: usize, _: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+            Err(MediaError::NoStream("audio"))
+        }
+    }
+    #[test]
+    fn failed_render_cannot_become_encoder_pixels() {
+        let (project, seq, mut sources) = crate::tests::project();
+        let video = project.sequence(seq).unwrap().video_tracks[0].items[0].item;
+        let info = sources.0[&video].info().clone();
+        sources.0.insert(video, Arc::new(FailedSource(info)));
+        let pipeline = Pipeline::new(project, seq, &ExportSettings::default(), false).unwrap();
+        assert!(pipeline.frame(0, &sources).unwrap_err().to_string().contains("injected export frame failure"));
+    }
 }

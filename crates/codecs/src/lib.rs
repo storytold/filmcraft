@@ -57,6 +57,9 @@ pub enum CodecError {
     Unsupported(String),
     #[error("decode error: {0}")]
     Decode(String),
+    /// Decoded pixels unavailable; preserve classification through media wrappers.
+    #[error("frame access error: {0}")]
+    FrameAccess(String),
     #[error("container: {0}")]
     Container(String),
     /// The frame is no longer wanted (`filmcraft_media::cancel`).
@@ -71,6 +74,7 @@ impl From<CodecError> for filmcraft_media::MediaError {
         match e {
             CodecError::Unsupported(s) => filmcraft_media::MediaError::Unsupported(s),
             CodecError::Cancelled => filmcraft_media::MediaError::Cancelled,
+            CodecError::FrameAccess(s) => filmcraft_media::MediaError::FrameAccess(s),
             other => filmcraft_media::MediaError::Decode(other.to_string()),
         }
     }

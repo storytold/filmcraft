@@ -1,11 +1,7 @@
 //! The wgpu compositor.
 //!
-//! Executes a [`FramePlan`](filmcraft_render::plan::FramePlan) on the GPU: every layer's source is
-//! uploaded as textures (Y/Cb/Cr planes stay YUV — conversion to linear RGB happens per pixel in
-//! the shader), drawn as a transformed quad with premultiplied "over" blending into a Rgba16Float
-//! accumulator, then resolved over black into an sRGB `Rgba8UnormSrgb` texture that the UI
-//! registers as a native texture. Uploads are cached by pixel-buffer identity, so a paused frame or
-//! a still costs nothing.
+//! Executes [`FramePlan`](filmcraft_render::plan::FramePlan): cached native source textures -> linear working image when needed -> effects -> transformed quad -> Rgba16Float accumulator -> RGBA8 output.
+//! YUV reconstructs at source pixel centers before spatial sampling. RGB already samples in linear light; bare RGB skips the working-image pass. Devices without working-image support retain direct source sampling.
 //!
 //! Every blend mode of [`filmcraft_render::Blend`] runs here. Normal and Dissolve (whose per-pixel
 //! pattern is the CPU's 64-bit hash, reproduced in WGSL) use fixed-function "over" blending. The
@@ -14,17 +10,13 @@
 //! with the CPU reference's math (`filmcraft_render::blend::composite`: sRGB-encoded straight
 //! colour, W3C formulas, back to linear) and writes the result. Only those layers pay the copy.
 //!
-//! A layer carrying standard effects ([`filmcraft_render::plan::LayerFx`]) goes through the
-//! effect stage ([`fx`]) first: its source is drawn into an `Rgba32Float` working image, the
-//! effects run as compute passes in WGSL with the CPU reference's math
-//! (`filmcraft_render::gpufx::FxOp::apply`), and the result is drawn like any RGBA layer. Layers
-//! without effects take the single draw above.
+//! Standard effects consume the same Rgba32Float source working image; compute passes use pooled scratch and the CPU reference's math. Source reconstruction does not require compute.
 //!
 //! Layers that need converting before upload (linear f32 RGBA from CPU-rendered layers, 16-bit
 //! YUV such as ProRes) are converted to half floats by [`prepare`], which frame workers run off the
 //! UI thread; [`GpuCompositor::composite_prepared`] then only copies bytes into textures.
 //!
-//! The CPU plan executor (`filmcraft_render::plan::execute_cpu`) is the oracle; tests compare.
+//! Tests compare CPU effect/blend math; GPU spatial sampling retains clamp-to-edge + footprint supersampling, distinct from the CPU renderer's border/minification policy.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
@@ -43,6 +35,7 @@ pub mod export_renderer;
 pub mod fx;
 pub mod lut;
 pub mod mask;
+mod source;
 mod transition;
 pub use export_renderer::ExportRenderer;
 pub use lut::GpuLut;
@@ -52,6 +45,32 @@ pub use mask::GpuMask;
 /// shader applies the sRGB encoding.
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// Source cache budget: stacked layers + playback lookahead, shared by uploads and imports.
+const SOURCE_CACHE_CAPACITY: usize = 24;
+
+/// Imported resources follow wgpu's thread ownership: native owners may cross threads; browser owners stay local.
+#[cfg(not(target_arch = "wasm32"))]
+pub type SurfaceKeepalive = Box<dyn std::any::Any + Send + Sync>;
+#[cfg(target_arch = "wasm32")]
+pub type SurfaceKeepalive = Box<dyn std::any::Any>;
+
+/// Source textures on the compositor's device; owners remain alive until cache eviction.
+pub enum ImportedSurface {
+    /// NV12/P010 planes; reconstruction uses the frame's color metadata.
+    Yuv { luma: wgpu::Texture, chroma: wgpu::Texture, keepalive: SurfaceKeepalive },
+    /// Straight-alpha sRGB in Rgba8UnormSrgb; sampling decodes to linear RGB.
+    Rgba { texture: wgpu::Texture, keepalive: SurfaceKeepalive },
+}
+
+/// Makes a GPU source available on the compositor's device; platform adapters own interop/copy policy.
+pub type SurfaceImporter = fn(&dyn filmcraft_frame::GpuSurface, &wgpu::Device, &wgpu::Queue) -> Result<ImportedSurface, String>;
+
+static IMPORTER: std::sync::OnceLock<SurfaceImporter> = std::sync::OnceLock::new();
+
+/// Register the platform adapter for GPU pictures. Without one, pictures are read back and uploaded.
+pub fn set_surface_importer(f: SurfaceImporter) {
+    let _ = IMPORTER.set(f);
+}
 
 struct Uploaded {
     /// Y, Cb, Cr (or the RGBA texture) and the alpha plane (the dummy texture when there is none).
@@ -64,7 +83,20 @@ struct Uploaded {
     last_used: u64,
     /// The uploaded pixel buffers, kept alive while cached: the cache key is the buffer address,
     /// and a freed buffer's address can be reused by a different frame (stale texture).
-    _pixels: PixelData,
+    pixels: PixelData,
+    /// Keeps imported source textures and their platform owner alive.
+    _keep: Option<SurfaceKeepalive>,
+}
+
+struct LayerJob {
+    source: source::SourceJob,
+    effects: Option<fx::FxJob>,
+}
+
+impl LayerJob {
+    fn view(&self) -> wgpu::TextureView {
+        self.effects.as_ref().map_or_else(|| self.source.view.clone(), |fx| fx.result.clone())
+    }
 }
 
 pub struct GpuCompositor {
@@ -88,6 +120,10 @@ pub struct GpuCompositor {
     /// The effect stage (None on devices without compute shaders or storage textures: layers
     /// with effects are then rendered on the CPU here).
     fx: Option<fx::FxStage>,
+    source: Option<source::SourceStage>,
+    /// Source reconstruction draws and capability fallbacks; neither counter includes CPU output readback.
+    pub source_draws: u64,
+    pub source_fallbacks: u64,
     transition: transition::PushStage,
     transition_inputs: [Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>; 2],
     pub gpu_transitions: u64,
@@ -249,7 +285,7 @@ pub fn prepare_frame(f: &VideoFrame) -> Option<Prepared> {
         PixelData::Yuv16 { planes, bits, alpha, .. } => {
             Some(Prepared { planes: planes.iter().chain(alpha.as_ref()).map(|p| codes_to_f16_bytes(p, *bits)).collect() })
         }
-        PixelData::Rgba8(_) | PixelData::Yuv8 { .. } => None,
+        PixelData::Rgba8(_) | PixelData::Yuv8 { .. } | PixelData::Gpu(_) => None,
     }
 }
 
@@ -388,23 +424,11 @@ impl GpuCompositor {
             view_formats: &[],
         });
         let dummy = dummy_tex.create_view(&Default::default());
-        // The effect stage's pipelines can still be invalid on a device that passes the limits
-        // check (Rgba32Float is not renderable everywhere, e.g. software Vulkan/GL). Validation
-        // errors would panic, so they are captured: without the stage, effects render on the CPU.
-        let fx = fx::FxStage::supported(device)
-            .then(|| {
-                let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-                let stage = fx::FxStage::new(device, &shader, &layer_bgl);
-                match poll_now(scope.pop()) {
-                    Some(None) => Some(stage),
-                    Some(Some(e)) => {
-                        log::warn!("GPU effects unavailable on this device, rendering them on the CPU: {e}");
-                        None
-                    }
-                    None => None,
-                }
-            })
+        let compute = fx::FxStage::supported(device);
+        let source = source::SourceStage::supported(device)
+            .then(|| validated_stage(device, "source reconstruction", || source::SourceStage::new(device, &shader, &layer_bgl, compute)))
             .flatten();
+        let fx = (source.is_some() && compute).then(|| validated_stage(device, "effects", || fx::FxStage::new(device))).flatten();
         Self {
             device: device.clone(),
             queue: queue.clone(),
@@ -422,6 +446,9 @@ impl GpuCompositor {
             clock: 0,
             dummy,
             fx,
+            source,
+            source_draws: 0,
+            source_fallbacks: 0,
             transition: transition::PushStage::new(device),
             transition_inputs: [None, None],
             gpu_transitions: 0,
@@ -478,20 +505,35 @@ impl GpuCompositor {
     }
 
     /// Upload (or reuse) the textures of a frame, using `prep` when it was converted beforehand.
-    fn upload(&mut self, f: &VideoFrame, prep: Option<&Prepared>) -> (usize, u32, u32) {
+    fn upload(&mut self, f: &VideoFrame, prep: Option<&Prepared>) -> Result<(usize, u32, u32), String> {
         let id = match &f.data {
             PixelData::Rgba8(d) => Arc::as_ptr(d) as *const u8 as usize,
             PixelData::RgbaF32(d) => Arc::as_ptr(d) as *const u8 as usize,
             PixelData::Yuv8 { planes, .. } => Arc::as_ptr(&planes[0]) as *const u8 as usize,
             PixelData::Yuv16 { planes, .. } => Arc::as_ptr(&planes[0]) as *const u8 as usize,
+            PixelData::Gpu(g) => g.surface().id() as usize,
         };
         let key = (id, f.width, f.height);
         self.clock += 1;
         if let Some(u) = self.uploads.get_mut(&key) {
             u.last_used = self.clock;
-            return key;
+            return Ok(key);
         }
         let (w, h) = (f.width, f.height);
+        if let PixelData::Gpu(g) = &f.data {
+            match self.import(g, f) {
+                Ok(up) => {
+                    self.cache_source(key, up);
+                    return Ok(key);
+                }
+                Err(e) => {
+                    // Adapter mismatch or unsupported representation: materialize through the frame contract.
+                    log::warn!("GPU source import failed ({e}); uploading CPU pixels instead");
+                    let cpu = f.cpu()?.into_owned();
+                    return self.upload(&cpu, None);
+                }
+            }
+        }
         let d0 = self.dummy.clone();
         let dummy = || d0.clone();
         let up = match &f.data {
@@ -504,7 +546,8 @@ impl GpuCompositor {
                     alpha_scale: 0.0,
                     chroma: (w, h),
                     last_used: self.clock,
-                    _pixels: f.data.clone(),
+                    pixels: f.data.clone(),
+                    _keep: None,
                 }
             }
             PixelData::RgbaF32(d) => {
@@ -524,7 +567,8 @@ impl GpuCompositor {
                     alpha_scale: 0.0,
                     chroma: (w, h),
                     last_used: self.clock,
-                    _pixels: f.data.clone(),
+                    pixels: f.data.clone(),
+                    _keep: None,
                 }
             }
             PixelData::Yuv8 { planes, chroma, alpha } => {
@@ -542,7 +586,8 @@ impl GpuCompositor {
                     alpha_scale,
                     chroma: (cw, ch),
                     last_used: self.clock,
-                    _pixels: f.data.clone(),
+                    pixels: f.data.clone(),
+                    _keep: None,
                 }
             }
             PixelData::Yuv16 { planes, chroma, bits, alpha } => {
@@ -571,28 +616,74 @@ impl GpuCompositor {
                     alpha_scale,
                     chroma: (cw, ch),
                     last_used: self.clock,
-                    _pixels: f.data.clone(),
+                    pixels: f.data.clone(),
+                    _keep: None,
                 }
             }
+            // handled above
+            PixelData::Gpu(_) => return Err("GPU surface was not imported".into()),
         };
+        self.cache_source(key, up);
+        Ok(key)
+    }
+
+    fn cache_source(&mut self, key: (usize, u32, u32), up: Uploaded) {
         self.uploads.insert(key, up);
-        // keep the most recent uploads (enough for several stacked layers + playback lookahead)
-        if self.uploads.len() > 24 {
+        if self.uploads.len() > SOURCE_CACHE_CAPACITY {
             let mut v: Vec<(u64, (usize, u32, u32))> = self.uploads.iter().map(|(k, u)| (u.last_used, *k)).collect();
             v.sort_unstable();
-            for (_, k) in v.into_iter().take(self.uploads.len() - 24) {
+            for (_, k) in v.into_iter().take(self.uploads.len() - SOURCE_CACHE_CAPACITY) {
                 self.uploads.remove(&k);
             }
         }
-        key
+    }
+
+    /// Import through the platform adapter, then reuse the normal source shader and cache.
+    fn import(&mut self, g: &filmcraft_frame::GpuPixels, f: &VideoFrame) -> Result<Uploaded, String> {
+        let importer = IMPORTER.get().ok_or("no surface importer registered")?;
+        let surface = importer(g.surface().as_ref(), &self.device, &self.queue)?;
+        let (w, h) = (f.width, f.height);
+        let d0 = self.dummy.clone();
+        let (views, kind, scale, chroma, keepalive): (_, _, _, _, SurfaceKeepalive) = match surface {
+            ImportedSurface::Yuv { luma, chroma, keepalive } => {
+                let filmcraft_frame::GpuFormat::Yuv { chroma: Chroma::C420, bits } = g.format else {
+                    return Err("interleaved GPU planes require a YUV 4:2:0 source".into());
+                };
+                let scale = match bits {
+                    8 => u8::MAX as f32,
+                    // P010 stores ten significant bits in the high bits of R16Unorm.
+                    10 => u16::MAX as f32 / (1u32 << (u16::BITS - 10)) as f32,
+                    _ => return Err(format!("unsupported GPU surface bit depth: {bits}")),
+                };
+                let views = [luma.create_view(&Default::default()), chroma.create_view(&Default::default()), d0.clone(), d0];
+                (views, 3, scale, (w.div_ceil(2), h.div_ceil(2)), Box::new((luma, chroma, keepalive)))
+            }
+            ImportedSurface::Rgba { texture, keepalive } => {
+                if g.format != filmcraft_frame::GpuFormat::Rgba8
+                    || texture.format() != wgpu::TextureFormat::Rgba8UnormSrgb
+                    || texture.width() != w
+                    || texture.height() != h
+                {
+                    return Err("imported RGBA source must match frame size and use Rgba8UnormSrgb".into());
+                }
+                let views = [texture.create_view(&Default::default()), d0.clone(), d0.clone(), d0];
+                (views, 0, 1.0, (w, h), Box::new((texture, keepalive)))
+            }
+        };
+        Ok(Uploaded { views, kind, code_scale: scale, alpha_scale: 0.0, chroma, last_used: self.clock, pixels: f.data.clone(), _keep: Some(keepalive) })
     }
 
     /// The source description of an uploaded frame.
     fn src_info(&self, f: &VideoFrame, key: (usize, u32, u32)) -> Option<SrcInfo> {
         let up = self.uploads.get(&key)?;
-        let code_levels = match &f.data {
+        // Failed RGB imports can upload original YUV; quantization follows the cached representation.
+        let code_levels = match &up.pixels {
             PixelData::Yuv8 { .. } => 256.0,
             PixelData::Yuv16 { bits, .. } => (*bits as f32).exp2(),
+            PixelData::Gpu(g) => match g.format {
+                filmcraft_frame::GpuFormat::Yuv { bits, .. } => (bits as f32).exp2(),
+                filmcraft_frame::GpuFormat::Rgba8 => 1.0,
+            },
             _ => 1.0,
         };
         Some(SrcInfo {
@@ -611,8 +702,8 @@ impl GpuCompositor {
         let (kr, kb) = src.color.matrix.kr_kb();
         let bits_scale = src.code_levels / 256.0; // 2^(bits - 8), independent of texture encoding
         let (yo, ys, co, cs) = match (src.color.range, src.kind) {
-            (Range::Limited, 2) => (16.0 * bits_scale, 219.0 * bits_scale, 128.0 * bits_scale, 224.0 * bits_scale),
-            (Range::Full, 2) => (0.0, src.code_levels - 1.0, src.code_levels / 2.0, src.code_levels - 1.0),
+            (Range::Limited, 2 | 3) => (16.0 * bits_scale, 219.0 * bits_scale, 128.0 * bits_scale, 224.0 * bits_scale),
+            (Range::Full, 2 | 3) => (0.0, src.code_levels - 1.0, src.code_levels / 2.0, src.code_levels - 1.0),
             _ => (0.0, 1.0, 0.0, 1.0),
         };
         let transfer = match src.color.transfer {
@@ -699,18 +790,60 @@ impl GpuCompositor {
         buf
     }
 
+    fn source_job(&mut self, src: &SrcInfo, views: &[wgpu::TextureView; 4], size: (u32, u32), decimation: u32) -> Result<source::SourceJob, String> {
+        let n = decimation.max(1) as f64;
+        let mut u = Self::uniforms(src, &filmcraft_geom::Affine::scale(1.0 / n, 1.0 / n), 1.0, Blend::Normal, size);
+        u[26] = n as f32;
+        let buffer = self.uniform_buffer(&u);
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("source"),
+            layout: &self.layer_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&views[0]) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&views[1]) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&views[2]) },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&views[3]) },
+            ],
+        });
+        self.source.as_mut().ok_or("GPU working-image source stage unavailable")?.job(&self.device, size, bg)
+    }
+
     /// Composite a plan; returns the output view (sRGB, over black) and its size.
-    pub fn composite(&mut self, plan: &FramePlan) -> (wgpu::TextureView, (u32, u32)) {
+    pub fn composite(&mut self, plan: &FramePlan) -> Result<(wgpu::TextureView, (u32, u32)), String> {
         self.composite_prepared(plan, None)
+    }
+
+    /// Retained source working images + effect scratch, excluding decoded sources, accumulators and driver overhead.
+    pub fn working_bytes(&self) -> u64 {
+        self.source.as_ref().map_or(0, source::SourceStage::retained_bytes).saturating_add(self.fx.as_ref().map_or(0, fx::FxStage::retained_bytes))
     }
 
     /// [`composite`](Self::composite) with texel conversions already done by [`prepare`] (the
     /// result is identical; only the upload work on this thread differs).
-    pub fn composite_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> (wgpu::TextureView, (u32, u32)) {
-        self.render_plan(plan, prep, true, true)
+    pub fn composite_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> Result<(wgpu::TextureView, (u32, u32)), String> {
+        self.with_working_images(|this| this.render_plan(plan, prep, true, true))
     }
 
-    fn render_plan(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>, clear: bool, resolve: bool) -> (wgpu::TextureView, (u32, u32)) {
+    // One pool lifetime per complete consumer operation, including transition substeps and errors.
+    fn with_working_images<T>(&mut self, render: impl FnOnce(&mut Self) -> T) -> T {
+        if let Some(source) = self.source.as_mut() {
+            source.begin_frame();
+        }
+        if let Some(fx) = self.fx.as_mut() {
+            fx.begin_frame();
+        }
+        let result = render(self);
+        if let Some(source) = self.source.as_mut() {
+            source.end_frame();
+        }
+        if let Some(fx) = self.fx.as_mut() {
+            fx.end_frame();
+        }
+        result
+    }
+
+    fn render_plan(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>, clear: bool, resolve: bool) -> Result<(wgpu::TextureView, (u32, u32)), String> {
         let owned;
         let (w, h, layers): (u32, u32, &[PlanLayer]) = match plan {
             FramePlan::Layers { width, height, layers } => (*width as u32, *height as u32, layers.as_slice()),
@@ -745,14 +878,14 @@ impl GpuCompositor {
         let cpu_fx: Vec<Option<PlanLayer>> = layers
             .iter()
             .map(|l| {
-                let lfx = l.fx.as_ref()?;
-                if self.fx.is_some() && lfx.size.0.max(lfx.size.1) <= max_side {
-                    return None;
+                let Some(lfx) = l.fx.as_ref() else { return Ok(None) };
+                if self.source.is_some() && self.fx.is_some() && lfx.size.0.max(lfx.size.1) <= max_side {
+                    return Ok(None);
                 }
-                let img = filmcraft_render::plan::effect_image(&l.frame, lfx);
-                Some(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px)), l.matrix, l.opacity, l.blend))
+                let img = filmcraft_render::plan::effect_image(&l.frame, lfx)?;
+                Ok(Some(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px)), l.matrix, l.opacity, l.blend)))
             })
-            .collect();
+            .collect::<Result<Vec<_>, String>>()?;
         let resolved: Vec<&PlanLayer> = layers.iter().zip(&cpu_fx).map(|(l, c)| c.as_ref().unwrap_or(l)).collect();
         let layers = resolved;
         let keys: Vec<(usize, u32, u32)> = layers
@@ -764,77 +897,48 @@ impl GpuCompositor {
                 let p = if cpu_fx.get(i).is_some_and(Option::is_some) { None } else { p };
                 self.upload(&l.frame, p)
             })
-            .collect();
+            .collect::<Result<Vec<_>, String>>()?;
         // (bind group, None for a fixed-function layer or Some(region of the accumulator to copy
         // into the backdrop) for a layer that reads the destination; Some(None): off the output)
         let mut bind_groups = Vec::with_capacity(layers.len());
-        // the effect stage of each layer with effects (recorded right before its draw)
-        let mut jobs: Vec<Option<fx::FxJob>> = Vec::with_capacity(layers.len());
-        if let Some(f) = self.fx.as_mut() {
-            f.begin_frame();
-        }
+        // Source reconstruction/effects record immediately before the consuming layer's draw.
+        let mut jobs: Vec<Option<LayerJob>> = Vec::with_capacity(layers.len());
         for (l, k) in layers.iter().zip(&keys) {
-            // (every frame was just uploaded; a missing upload draws transparent texels)
-            let src = self.src_info(&l.frame, *k).unwrap_or(SrcInfo {
-                kind: 1,
-                code_scale: 1.0,
-                code_levels: 1.0,
-                alpha: 0.0,
-                chroma: (1, 1),
-                size: (l.frame.width, l.frame.height),
-                color: l.frame.color,
-                input: None,
-            });
+            let src = self.src_info(&l.frame, *k).ok_or("GPU source upload missing during composition")?;
             // HDR / wide-gamut Y'CbCr: the planner's input transform, in the shader (#965)
-            let src = SrcInfo { input: l.input.as_ref().filter(|_| src.kind == 2).and_then(|t| t.gpu_params()), ..src };
-            let views = self.uploads.get(k).map_or_else(|| std::array::from_fn(|_| self.dummy.clone()), |up| up.views.clone());
-            let job = match &l.fx {
-                Some(lfx) => {
-                    // the source drawn onto the working image (box-decimated by n, as the CPU decodes)
-                    let n = lfx.decimation.max(1) as f64;
-                    let mut su =
-                        Self::uniforms(&src, &filmcraft_geom::Affine::scale(1.0 / n, 1.0 / n), 1.0, Blend::Normal, (lfx.size.0.max(1), lfx.size.1.max(1)));
-                    // Effect sources use the working pixel center, avoiding interpolated vertex coordinates.
-                    su[26] = n as f32;
-                    let sbuf = self.uniform_buffer(&su);
-                    let sbg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("fx-source"),
-                        layout: &self.layer_bgl,
-                        entries: &[
-                            wgpu::BindGroupEntry { binding: 0, resource: sbuf.as_entire_binding() },
-                            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&views[0]) },
-                            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&views[1]) },
-                            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&views[2]) },
-                            wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&views[3]) },
-                        ],
-                    });
-                    match self.fx.as_mut() {
-                        Some(f) => f.job(&self.device, &self.queue, lfx, sbg, &self.dummy),
-                        None => None,
-                    }
+            let src = SrcInfo { input: l.input.as_ref().filter(|_| matches!(src.kind, 2 | 3)).and_then(|t| t.gpu_params()), ..src };
+            let views = self.uploads.get(k).ok_or("GPU source textures missing during composition")?.views.clone();
+            let needs_source = l.fx.is_some() || matches!(src.kind, 2 | 3);
+            let job = if needs_source && self.source.is_some() {
+                let size = l.size();
+                let decimation = l.fx.as_ref().map_or(1, |f| f.decimation);
+                let source = self.source_job(&src, &views, size, decimation)?;
+                let effects = match &l.fx {
+                    Some(lfx) => Some(
+                        self.fx
+                            .as_mut()
+                            .ok_or("GPU effect stage unavailable after CPU fallback")?
+                            .job(&self.device, &self.queue, lfx, &source, &self.dummy)
+                            .ok_or("GPU effect texture routing failed")?,
+                    ),
+                    None => None,
+                };
+                self.source_draws += 1;
+                Some(LayerJob { source, effects })
+            } else {
+                if needs_source {
+                    self.source_fallbacks += 1;
                 }
-                None => None,
+                None
             };
             // what the layer draws: the effect result (linear premultiplied RGBA) or the frame
             let (u, tex) = match &job {
                 Some(j) => {
                     let s =
                         SrcInfo { kind: 1, code_scale: 1.0, code_levels: 1.0, alpha: 0.0, chroma: l.size(), size: l.size(), color: l.frame.color, input: None };
-                    (Self::uniforms(&s, &l.matrix, l.opacity, l.blend, (w, h)), [j.result.clone(), self.dummy.clone(), self.dummy.clone(), self.dummy.clone()])
+                    (Self::uniforms(&s, &l.matrix, l.opacity, l.blend, (w, h)), [j.view(), self.dummy.clone(), self.dummy.clone(), self.dummy.clone()])
                 }
-                None => {
-                    // (a layer with effects only gets here if its job failed, which the CPU
-                    // fallback above rules out; it is then drawn without them, where the working
-                    // image would be)
-                    let m = match &l.fx {
-                        Some(lfx) => {
-                            let n = 1.0 / lfx.decimation.max(1) as f64;
-                            l.matrix.then_apply(&filmcraft_geom::Affine::scale(n, n))
-                        }
-                        None => l.matrix,
-                    };
-                    (Self::uniforms(&src, &m, l.opacity, l.blend, (w, h)), views)
-                }
+                None => (Self::uniforms(&src, &l.matrix, l.opacity, l.blend, (w, h)), views),
             };
             jobs.push(job);
             let buf = self.uniform_buffer(&u);
@@ -855,9 +959,6 @@ impl GpuCompositor {
             let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("layer"), layout, entries: &entries });
             bind_groups.push((bg, region));
         }
-        if let Some(f) = self.fx.as_mut() {
-            f.end_frame();
-        }
         let final_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("final"),
             layout: &self.final_bgl,
@@ -871,10 +972,11 @@ impl GpuCompositor {
         let mut cleared = !clear;
         let mut i = 0;
         while i < bind_groups.len() || !cleared {
-            // a layer's effects run right before it is drawn (pooled working textures are reused
-            // by the next layer with effects)
-            if let (Some(Some(job)), Some(f)) = (jobs.get(i), self.fx.as_ref()) {
-                f.record(&mut enc, job);
+            if let (Some(Some(job)), Some(source)) = (jobs.get(i), self.source.as_ref()) {
+                source.record(&mut enc, &job.source, None);
+                if let (Some(effects), Some(fx)) = (&job.effects, &self.fx) {
+                    fx.record(&mut enc, effects);
+                }
             }
             if let Some((bg, Some(region))) = bind_groups.get(i) {
                 i += 1;
@@ -928,23 +1030,29 @@ impl GpuCompositor {
             pass.draw(0..3, 0..1);
         }
         self.queue.submit([enc.finish()]);
-        (if resolve { out_view } else { accum_view }, (w, h))
+        Ok((if resolve { out_view } else { accum_view }, (w, h)))
     }
 
-    fn composite_steps(&mut self, width: usize, height: usize, steps: &[PlanStep], prep: Option<&PreparedPlan>) -> (wgpu::TextureView, (u32, u32)) {
+    fn composite_steps(
+        &mut self,
+        width: usize,
+        height: usize,
+        steps: &[PlanStep],
+        prep: Option<&PreparedPlan>,
+    ) -> Result<(wgpu::TextureView, (u32, u32)), String> {
         if steps.iter().any(|s| matches!(s, PlanStep::Transition { effect, .. } if effect.effect != "push")) {
             self.cpu_transitions += 1;
             let plan = FramePlan::Composite { width, height, steps: steps.to_vec() };
-            return self.composite_prepared(&FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan)), None);
+            return self.render_plan(&FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan)?), None, true, true);
         }
         let empty = FramePlan::Layers { width, height, layers: Vec::new() };
-        let (canvas, dims) = self.render_plan(&empty, None, true, false);
+        let (canvas, dims) = self.render_plan(&empty, None, true, false)?;
         let mut children = prep.map(|p| p.children.iter());
         for step in steps {
             match step {
                 PlanStep::Layers(layers) => {
                     let p = children.as_mut().and_then(Iterator::next);
-                    self.render_plan(&FramePlan::Layers { width, height, layers: layers.clone() }, p, false, false);
+                    self.render_plan(&FramePlan::Layers { width, height, layers: layers.clone() }, p, false, false)?;
                 }
                 PlanStep::Transition { inputs, effect, progress, .. } => {
                     let mut views = [self.dummy.clone(), self.dummy.clone()];
@@ -952,8 +1060,9 @@ impl GpuCompositor {
                         let p = children.as_mut().and_then(Iterator::next);
                         // Isolate each clip; queued draws keep the parent accumulator and blend order.
                         std::mem::swap(&mut self.accum, &mut self.transition_inputs[index]);
-                        let (view, _) = self.render_plan(&FramePlan::Layers { width, height, layers: layers.clone() }, p, true, false);
+                        let rendered = self.render_plan(&FramePlan::Layers { width, height, layers: layers.clone() }, p, true, false);
                         std::mem::swap(&mut self.accum, &mut self.transition_inputs[index]);
+                        let (view, _) = rendered?;
                         views[index] = view;
                     }
                     self.transition.draw(&self.device, &self.queue, &canvas, [&views[0], &views[1]], dims, effect, *progress);
@@ -964,49 +1073,41 @@ impl GpuCompositor {
         self.render_plan(&empty, None, false, true)
     }
 
-    /// Export rendering: `plan` composited into the linear float accumulator and read back as
-    /// premultiplied RGBA f32 (the sRGB resolve is skipped). None for a plan the export path does
-    /// not run on the GPU (transitions: the caller renders those on the CPU) or a failed read-back.
-    pub fn render_export_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> Option<(u32, u32, Vec<f32>)> {
+    /// Export -> linear premultiplied RGBA f32, without sRGB resolve. Unsupported plans/readback failure -> None; source/render errors propagate.
+    pub fn render_export_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> Result<Option<(u32, u32, Vec<f32>)>, String> {
         if matches!(plan, FramePlan::Composite { .. }) {
-            return None;
+            return Ok(None);
         }
         let t = std::time::Instant::now();
-        self.render_plan(plan, prep, true, false);
+        self.with_working_images(|this| this.render_plan(plan, prep, true, false))?;
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite-export") });
-        let size = self.copy_accumulator(&mut enc)?;
+        let Some(size) = self.copy_accumulator(&mut enc) else { return Ok(None) };
         self.queue.submit([enc.finish()]);
         export_renderer::timing::add_submit(t.elapsed());
-        self.map_accumulator(size)
+        Ok(self.map_accumulator(size))
     }
 
     /// Run the effect stage of a layer alone: `frame` decoded into its working image and `fx`
     /// applied, read back as linear premultiplied RGBA f32 (what `LayerFx` ops produce on the
     /// CPU from the same frame). None when the working image does not fit in a texture.
-    pub fn effect_image(&mut self, frame: &VideoFrame, fx: &filmcraft_render::plan::LayerFx) -> Option<(u32, u32, Vec<f32>)> {
-        let key = self.upload(frame, None);
-        let src = self.src_info(frame, key)?;
-        let views = self.uploads.get(&key)?.views.clone();
-        let n = fx.decimation.max(1) as f64;
+    pub fn effect_image(&mut self, frame: &VideoFrame, fx: &filmcraft_render::plan::LayerFx) -> Result<Option<(u32, u32, Vec<f32>)>, String> {
+        self.with_working_images(|this| this.effect_image_inner(frame, fx))
+    }
+
+    fn effect_image_inner(&mut self, frame: &VideoFrame, fx: &filmcraft_render::plan::LayerFx) -> Result<Option<(u32, u32, Vec<f32>)>, String> {
+        if self.source.is_none() || self.fx.is_none() {
+            return Ok(None);
+        }
+        let key = self.upload(frame, None)?;
+        let src = self.src_info(frame, key).ok_or("GPU source upload missing")?;
+        let views = self.uploads.get(&key).ok_or("GPU source textures missing")?.views.clone();
         let (w, h) = (fx.size.0.max(1), fx.size.1.max(1));
-        let mut su = Self::uniforms(&src, &filmcraft_geom::Affine::scale(1.0 / n, 1.0 / n), 1.0, Blend::Normal, (w, h));
-        // Same integer source-grid mapping as the composited effect path.
-        su[26] = n as f32;
-        let sbuf = self.uniform_buffer(&su);
-        let sbg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("fx-source"),
-            layout: &self.layer_bgl,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: sbuf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&views[0]) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&views[1]) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&views[2]) },
-                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&views[3]) },
-            ],
-        });
-        let stage = self.fx.as_mut()?;
-        stage.begin_frame();
-        let job = stage.job(&self.device, &self.queue, fx, sbg, &self.dummy)?;
+        if w.max(h) > self.device.limits().max_texture_dimension_2d {
+            return Ok(None);
+        }
+        let source = self.source_job(&src, &views, (w, h), fx.decimation)?;
+        let Some(stage) = self.fx.as_mut() else { return Ok(None) };
+        let job = stage.job(&self.device, &self.queue, fx, &source, &self.dummy).ok_or("GPU effect texture routing failed")?;
         let row = (w * 16).div_ceil(256) * 256;
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("fx-readback"),
@@ -1015,6 +1116,9 @@ impl GpuCompositor {
             mapped_at_creation: false,
         });
         let mut enc = self.device.create_command_encoder(&Default::default());
+        if let Some(s) = self.source.as_ref() {
+            s.record(&mut enc, &source, None);
+        }
         stage.record(&mut enc, &job);
         enc.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo { texture: &job.result_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
@@ -1022,23 +1126,25 @@ impl GpuCompositor {
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
         self.queue.submit([enc.finish()]);
-        stage.end_frame();
+        self.source_draws += 1;
         let slice = buf.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        wait_mapped(&self.device)?;
-        rx.recv().ok()?.ok()?;
-        let data = slice.get_mapped_range().ok()?;
+        if wait_mapped(&self.device).is_err() {
+            return Ok(None);
+        }
+        rx.recv().map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+        let data = slice.get_mapped_range().map_err(|e| e.to_string())?;
         let mut out = Vec::with_capacity((w * h * 4) as usize);
         for y in 0..h {
-            let r = data.get((y * row) as usize..(y * row + w * 16) as usize)?;
+            let r = data.get((y * row) as usize..(y * row + w * 16) as usize).ok_or("GPU readback row missing")?;
             out.extend(r.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)));
         }
         drop(data);
         buf.unmap();
-        Some((w, h, out))
+        Ok(Some((w, h, out)))
     }
 
     /// Read the **linear float accumulator** back as premultiplied RGBA f32 (export rendering):
@@ -1091,7 +1197,7 @@ impl GpuCompositor {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        wait_mapped(&self.device)?;
+        wait_mapped(&self.device).ok()?;
         rx.recv().ok()?.ok()?;
         export_renderer::timing::add_map_wait(t.elapsed());
         let t = std::time::Instant::now();
@@ -1134,7 +1240,7 @@ impl GpuCompositor {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        wait_mapped(&self.device)?;
+        wait_mapped(&self.device).ok()?;
         rx.recv().ok()?.ok()?;
         let data = slice.get_mapped_range().ok()?;
         let mut out = Vec::with_capacity((w * h * 4) as usize);
@@ -1147,21 +1253,19 @@ impl GpuCompositor {
     }
 }
 
-/// Wait for the last submission and its `map_async` callbacks.
-///
-/// Export readback used `PollType::wait_indefinitely`. On radv that can never return after a
-/// failed hardware-encode attempt (#1058), so the export never finishes. Eight seconds is longer
-/// than a healthy map; a timeout returns `None` and the CPU renderer takes the frame.
-fn wait_mapped(device: &wgpu::Device) -> Option<()> {
-    device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_secs(8)) }).ok().map(|_| ())
+/// Bound readback after failed hardware encode; radv may never finish an indefinite wait (#1058).
+fn wait_mapped(device: &wgpu::Device) -> Result<(), String> {
+    // Eight seconds exceeds a healthy map; timeout lets the existing CPU fallback take the frame.
+    const MAP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+    device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(MAP_TIMEOUT) }).map(|_| ()).map_err(|e| e.to_string())
 }
 
-/// Shader source: kind (0 RGBA8 sRGB, 1 linear premultiplied RGBA, 2 YUV), sampling scales, dimensions, color.
+/// Shader source: kind (0 RGBA8 sRGB, 1 linear premultiplied RGBA, 2 planar YUV, 3 biplanar YUV), scales, dimensions, color.
 struct SrcInfo {
     kind: u32,
-    /// Texture sample -> code units: 255 for R8Unorm, 2^bits for R16Float.
+    /// Texture sample -> code units; independent of YUV quantization levels.
     code_scale: f32,
-    /// YUV quantization levels: 2^bits; R8Unorm's decoding scale is one less.
+    /// YUV quantization levels: 2^bits.
     code_levels: f32,
     /// Alpha texture sample → alpha (0: the frame has no alpha plane).
     alpha: f32,
@@ -1175,8 +1279,32 @@ struct SrcInfo {
 /// Floats in a layer's uniform block (`U` in `composite.wgsl`: 13 vec4).
 const UNIFORM_FLOATS: usize = 52;
 
-/// Poll a future once: wgpu's native error scopes resolve immediately. `None` if it is still
-/// pending (then the caller assumes the worst).
+// Native validation can reject a format despite advertised limits; preserve CPU fallback.
+#[cfg(not(target_arch = "wasm32"))]
+fn validated_stage<T>(device: &wgpu::Device, name: &str, create: impl FnOnce() -> T) -> Option<T> {
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let stage = create();
+    match poll_now(scope.pop()) {
+        Some(None) => Some(stage),
+        Some(Some(error)) => {
+            log::warn!("GPU {name} unavailable, using CPU fallback: {error}");
+            None
+        }
+        None => {
+            log::warn!("GPU {name} validation pending, using CPU fallback");
+            None
+        }
+    }
+}
+
+// Browser scopes resolve asynchronously; Pending cannot classify stage support. Callers gate formats/limits before creation.
+#[cfg(target_arch = "wasm32")]
+fn validated_stage<T>(_: &wgpu::Device, _: &str, create: impl FnOnce() -> T) -> Option<T> {
+    Some(create())
+}
+
+/// Poll native validation once; unresolved scopes select CPU fallback.
+#[cfg(not(target_arch = "wasm32"))]
 fn poll_now<F: std::future::Future>(f: F) -> Option<F::Output> {
     let mut f = std::pin::pin!(f);
     match f.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())) {

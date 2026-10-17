@@ -253,6 +253,7 @@ pub fn section_markdown(v: &Value) -> String {
                 ("hw_frames", "hw frames"),
                 ("hw_sessions", "hw sessions"),
                 ("hw_fallbacks", "hw fallbacks"),
+                ("hw_zero_copy", "zero-copy frames"),
                 ("load", "load"),
             ],
             1,
