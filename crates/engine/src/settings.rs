@@ -622,6 +622,8 @@ impl Session {
     }
 }
 
+pub use filmcraft_speech::llm::DEFAULT_AI_RULES;
+
 /// Settings ▸ Media Analysis & Transcription.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -640,6 +642,16 @@ pub struct MediaAnalysisPrefs {
     pub default_language: String,
     /// Speech model (`transcript.models`).
     pub whisper_model: String,
+    /// Whether to run AI (LLM) text refinement & semantic caption segmentation at the end of transcription.
+    pub ai_refine: bool,
+    /// AI provider (`auto`, `gemini`, `openai`, `anthropic`, `openrouter`).
+    pub ai_provider: String,
+    /// API token / key for the AI provider.
+    pub ai_api_key: String,
+    /// Custom subtitling & glossary prompt sent to the AI.
+    pub ai_prompt: String,
+    /// Automatically create the caption track on the timeline once transcription + AI finishes.
+    pub ai_auto_captions: bool,
 }
 
 impl Default for MediaAnalysisPrefs {
@@ -653,6 +665,11 @@ impl Default for MediaAnalysisPrefs {
             language_auto_detect: false,
             default_language: "en".into(),
             whisper_model: filmcraft_speech::models::DEFAULT_MODEL.into(),
+            ai_refine: true,
+            ai_provider: "auto".into(),
+            ai_api_key: String::new(),
+            ai_prompt: filmcraft_speech::llm::DEFAULT_AI_RULES.into(),
+            ai_auto_captions: true,
         }
     }
 }
@@ -1255,6 +1272,27 @@ static CATEGORIES: &[Category] = &[
                     b("mediaAnalysis.languageAutoDetect", "Enable language auto-detection", true),
                     f("mediaAnalysis.defaultLanguage", "Default language", Kind::Choice(LANGUAGES), true),
                     f("mediaAnalysis.whisperModel", "Speech model", Kind::Choice(MODELS), true),
+                ],
+            ),
+            Row::Group(
+                "AI Caption Refinement (LLM)",
+                &[
+                    b("mediaAnalysis.aiRefine", "Refine transcript and segment captions with AI at the end", true),
+                    f(
+                        "mediaAnalysis.aiProvider",
+                        "AI Provider",
+                        Kind::Choice(&[
+                            ("auto", "Auto-detect from API Token"),
+                            ("gemini", "Google Gemini (gemini-2.5-flash)"),
+                            ("openai", "OpenAI (gpt-4o-mini)"),
+                            ("anthropic", "Anthropic Claude (claude-sonnet-4-6)"),
+                            ("openrouter", "OpenRouter"),
+                        ]),
+                        true,
+                    ),
+                    f("mediaAnalysis.aiApiKey", "API Token / Key", Kind::Text, true),
+                    f("mediaAnalysis.aiPrompt", "Subtitling Rules / Prompt", Kind::Text, true),
+                    b("mediaAnalysis.aiAutoCaptions", "Automatically create caption track when done", true),
                 ],
             ),
         ],

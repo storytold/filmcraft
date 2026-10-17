@@ -19,6 +19,7 @@ download = ["dep:ureq", "dep:rustls", "dep:rustls-rustcrypto", "dep:sha2"]
 [dependencies]
 filmcraft-time = { workspace = true }
 filmcraft-project = { workspace = true }
+log = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

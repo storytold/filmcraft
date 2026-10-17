@@ -164,7 +164,15 @@ impl Whisper {
 
     /// Greedy decode of one window. Returns sampled tokens (no prompt, no end-of-text), the mean
     /// log-probability and the no-speech probability.
-    fn decode_window(&self, m: &mut Model, xa: &Tensor, prompt: &[u32]) -> Result<(Vec<u32>, f32, f32), SpeechError> {
+    fn decode_window(
+        &self,
+        m: &mut Model,
+        xa: &Tensor,
+        prompt: &[u32],
+        win_start: f32,
+        win_span: f32,
+        progress: ProgressFn,
+    ) -> Result<(Vec<u32>, f32, f32), SpeechError> {
         m.decoder.reset();
         let mut seq: Vec<u32> = Vec::new();
         let (logits, _) = m.decoder.forward(prompt, xa, true, None).map_err(merr)?;
@@ -173,7 +181,15 @@ impl Whisper {
         let no_speech = self.tok.no_speech.map(|ns| softmax_at(&first, ns as usize)).unwrap_or(0.0);
         let mut cur = Model::last_logits(&logits).map_err(merr)?;
         let mut sum_lp = 0f32;
-        for _ in 0..MAX_TOKENS.min(m.cfg.max_target_positions / 2) {
+        let max_steps = MAX_TOKENS.min(m.cfg.max_target_positions / 2).max(1);
+        for step in 0..max_steps {
+            if step % 4 == 0 {
+                let step_frac = (step as f32 / max_steps as f32).clamp(0.0, 1.0);
+                let f = win_start + win_span * (0.30 + step_frac * 0.50);
+                if !progress(f, &format!("Decoding speech ({:.0}%)", f * 100.0)) {
+                    return Err(SpeechError::Cancelled);
+                }
+            }
             let lp = log_softmax(&cur);
             self.constrain(&mut cur, &seq, Some(50));
             let next = argmax(&cur);
@@ -242,7 +258,7 @@ impl Transcriber for Whisper {
         let content_frames = audio.len() / SAMPLES_PER_FRAME;
         let mut padded = audio.to_vec();
         padded.extend(std::iter::repeat_n(0.0, N_FRAMES * SAMPLES_PER_FRAME));
-        if !progress(0.0, "Analysing audio") {
+        if !progress(0.02, "Analysing audio") {
             return Err(SpeechError::Cancelled);
         }
         let trace = std::env::var_os("FILMCRAFT_SPEECH_TRACE").is_some();
@@ -258,16 +274,20 @@ impl Transcriber for Whisper {
         let mut words: Vec<Word> = Vec::new();
         let mut seek = 0usize;
         while seek < content_frames {
-            let frac = seek as f32 / content_frames.max(1) as f32;
-            if !progress(frac * 0.95, &format!("Transcribing {:.0}%", frac * 100.0)) {
+            let seg_frames = N_FRAMES.min(content_frames - seek);
+            let win_start = 0.05 + (seek as f32 / content_frames.max(1) as f32) * 0.90;
+            let win_span = (seg_frames as f32 / content_frames.max(1) as f32) * 0.90;
+            if !progress(win_start, &format!("Encoding audio ({:.0}%)", win_start * 100.0)) {
                 return Err(SpeechError::Cancelled);
             }
-            let seg_frames = N_FRAMES.min(content_frames - seek);
             let win = Self::window(&mel, n_mels, frames, seek);
             let x = Tensor::from_vec(win, (1, n_mels, N_FRAMES), &m.device).map_err(merr)?;
             let xa = m.encoder.forward(&x).map_err(merr)?;
             if trace {
                 eprintln!("encode {:.3}s", clock.elapsed().as_secs_f64());
+            }
+            if !progress(win_start + win_span * 0.25, "Detecting language & decoding") {
+                return Err(SpeechError::Cancelled);
             }
             let mut prompt = vec![self.tok.sot];
             if self.tok.multilingual() {
@@ -278,7 +298,7 @@ impl Transcriber for Whisper {
                 prompt.push(self.tok.language_token(lang).unwrap_or(self.tok.sot + 1));
                 prompt.push(self.tok.transcribe);
             }
-            let (toks, avg_lp, no_speech) = self.decode_window(&mut m, &xa, &prompt)?;
+            let (toks, avg_lp, no_speech) = self.decode_window(&mut m, &xa, &prompt, win_start, win_span, progress)?;
             if trace {
                 eprintln!("decode {} tokens {:.3}s", toks.len(), clock.elapsed().as_secs_f64());
             }
@@ -293,6 +313,9 @@ impl Transcriber for Whisper {
             };
             let text: Vec<u32> = toks.iter().copied().filter(|&t| t < self.tok.eot).collect();
             if !skip && !text.is_empty() {
+                if !progress(win_start + win_span * 0.85, "Aligning word timestamps") {
+                    return Err(SpeechError::Cancelled);
+                }
                 // the text up to the last complete segment (what `advance` covers)
                 let upto = match last_pair {
                     Some(i) if !single_ending => i,

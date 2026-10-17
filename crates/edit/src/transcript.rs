@@ -286,6 +286,9 @@ pub struct CaptionRules {
     pub gap_frames: i64,
     /// A pause at least this long starts a new caption.
     pub break_pause: Tick,
+    /// Balance lines semantically, prevent single-word widow lines, and avoid ending lines or
+    /// blocks on prepositions, articles or conjunctions.
+    pub smart_balance: bool,
 }
 
 impl Default for CaptionRules {
@@ -297,8 +300,373 @@ impl Default for CaptionRules {
             max_duration: Tick(7 * TICKS_PER_SECOND),
             gap_frames: 0,
             break_pause: Tick(TICKS_PER_SECOND),
+            smart_balance: false,
         }
     }
+}
+
+/// Apply domain glossary and terminology rules to a transcript (e.g. Abravidro / glass industry
+/// terms, phonetic corrections, proper casing and hyphenated titles).
+pub fn apply_glossary(t: &mut Transcript) {
+    let split_punct = |s: &str| -> (String, String, String) {
+        let lead: String = s.chars().take_while(|c| !c.is_alphanumeric()).collect();
+        let trail: String = s.chars().rev().take_while(|c| !c.is_alphanumeric()).collect::<Vec<_>>().into_iter().rev().collect();
+        let core_end = s.len().saturating_sub(trail.len());
+        let core = if lead.len() <= core_end { &s[lead.len()..core_end] } else { "" };
+        (lead, core.to_string(), trail)
+    };
+
+    // 1. Multi-word phrase standardization and hyphenation merges
+    let mut i = 0;
+    while i < t.words.len() {
+        let rem = t.words.len() - i;
+        let norm_at = |offset: usize| -> String {
+            let (_, core, _) = split_punct(&t.words[i + offset].text);
+            core.to_lowercase()
+        };
+        let no_mid_punct = |count: usize| -> bool {
+            (0..count.saturating_sub(1)).all(|k| {
+                let (_, _, tr) = split_punct(&t.words[i + k].text);
+                tr.is_empty()
+            })
+        };
+
+        // "Diretor da Unidade de Negócios de Vidros Arquitetônicos" (8 words)
+        if rem >= 8
+            && no_mid_punct(8)
+            && norm_at(0) == "diretor"
+            && norm_at(1) == "da"
+            && norm_at(2) == "unidade"
+            && norm_at(3) == "de"
+            && (norm_at(4) == "negócios" || norm_at(4) == "negocios")
+            && norm_at(5) == "de"
+            && norm_at(6) == "vidros"
+            && (norm_at(7) == "arquitetônicos" || norm_at(7) == "arquitetonicos")
+        {
+            let replacements = ["Diretor", "da", "Unidade", "de", "Negócios", "de", "Vidros", "Arquitetônicos"];
+            for (k, rep) in replacements.iter().enumerate() {
+                let (l, _, tr) = split_punct(&t.words[i + k].text);
+                t.words[i + k].text = format!("{l}{rep}{tr}");
+            }
+            i += 8;
+            continue;
+        }
+
+        // "Vice-presidente-executivo" from 3 words ("vice" "presidente" "executivo")
+        if rem >= 3 && no_mid_punct(3) && norm_at(0) == "vice" && norm_at(1) == "presidente" && norm_at(2) == "executivo" {
+            let (l, _, _) = split_punct(&t.words[i].text);
+            let (_, _, tr) = split_punct(&t.words[i + 2].text);
+            t.words[i].text = format!("{l}Vice-presidente-executivo{tr}");
+            t.words[i].end = t.words[i + 2].end;
+            t.words.drain(i + 1..=i + 2);
+            i += 1;
+            continue;
+        }
+
+        // "Vice-presidente-executivo" from 2 words ("vice-presidente" "executivo")
+        if rem >= 2 && no_mid_punct(2) && norm_at(0) == "vice-presidente" && norm_at(1) == "executivo" {
+            let (l, _, _) = split_punct(&t.words[i].text);
+            let (_, _, tr) = split_punct(&t.words[i + 1].text);
+            t.words[i].text = format!("{l}Vice-presidente-executivo{tr}");
+            t.words[i].end = t.words[i + 1].end;
+            t.words.remove(i + 1);
+            i += 1;
+            continue;
+        }
+
+        // "Panorama Abravidro" (2 words)
+        if rem >= 2 && no_mid_punct(2) && norm_at(0) == "panorama" && norm_at(1) == "abravidro" {
+            let (l0, _, tr0) = split_punct(&t.words[i].text);
+            let (l1, _, tr1) = split_punct(&t.words[i + 1].text);
+            t.words[i].text = format!("{l0}Panorama{tr0}");
+            t.words[i + 1].text = format!("{l1}Abravidro{tr1}");
+            i += 2;
+            continue;
+        }
+
+        // "ABNT Coleção" (2 words)
+        if rem >= 2 && no_mid_punct(2) && norm_at(0) == "abnt" && (norm_at(1) == "coleção" || norm_at(1) == "colecao") {
+            let (l0, _, tr0) = split_punct(&t.words[i].text);
+            let (l1, _, tr1) = split_punct(&t.words[i + 1].text);
+            t.words[i].text = format!("{l0}ABNT{tr0}");
+            t.words[i + 1].text = format!("{l1}Coleção{tr1}");
+            i += 2;
+            continue;
+        }
+
+        // "setor vidreiro" phonetic fix ("setor vibreiro" / "setor livreiro")
+        if rem >= 2 && no_mid_punct(2) && norm_at(0) == "setor" && (norm_at(1) == "vibreiro" || norm_at(1) == "livreiro") {
+            let (l1, _, tr1) = split_punct(&t.words[i + 1].text);
+            t.words[i + 1].text = format!("{l1}vidreiro{tr1}");
+            i += 2;
+            continue;
+        }
+
+        // Single-word fixes
+        let (l, core, tr) = split_punct(&t.words[i].text);
+        let lower = core.to_lowercase();
+        let fixed = match lower.as_str() {
+            "abravidro" => Some("Abravidro"),
+            "abnt" => Some("ABNT"),
+            "vibreiro" => Some("vidreiro"),
+            "vibreiros" => Some("vidreiros"),
+            "vice-presidente-executivo" => Some("Vice-presidente-executivo"),
+            _ => None,
+        };
+        if let Some(rep) = fixed {
+            t.words[i].text = format!("{l}{rep}{tr}");
+        }
+        i += 1;
+    }
+}
+
+fn is_connector_word(word: &str) -> bool {
+    if word.ends_with(['.', '!', '?', ',', ';', ':', '—']) {
+        return false;
+    }
+    let norm = filmcraft_project::transcript::normalize_word(word);
+    matches!(
+        norm.as_str(),
+        "o" | "a"
+            | "os"
+            | "as"
+            | "um"
+            | "uma"
+            | "uns"
+            | "umas"
+            | "de"
+            | "da"
+            | "do"
+            | "das"
+            | "dos"
+            | "dum"
+            | "duma"
+            | "em"
+            | "na"
+            | "no"
+            | "nas"
+            | "nos"
+            | "num"
+            | "numa"
+            | "por"
+            | "pelo"
+            | "pela"
+            | "pelos"
+            | "pelas"
+            | "para"
+            | "pra"
+            | "pro"
+            | "pras"
+            | "pros"
+            | "ao"
+            | "aos"
+            | "à"
+            | "às"
+            | "com"
+            | "sem"
+            | "sob"
+            | "sobre"
+            | "entre"
+            | "até"
+            | "após"
+            | "contra"
+            | "desde"
+            | "e"
+            | "ou"
+            | "mas"
+            | "nem"
+            | "que"
+            | "se"
+            | "meu"
+            | "minha"
+            | "meus"
+            | "minhas"
+            | "seu"
+            | "sua"
+            | "seus"
+            | "suas"
+            | "nosso"
+            | "nossa"
+            | "este"
+            | "esta"
+            | "esse"
+            | "essa"
+            | "aquele"
+            | "aquela"
+            | "the"
+            | "an"
+            | "of"
+            | "in"
+            | "on"
+            | "at"
+            | "to"
+            | "for"
+            | "with"
+            | "by"
+            | "from"
+            | "and"
+            | "or"
+            | "but"
+    )
+}
+
+fn is_genitive_word(word: &str) -> bool {
+    let norm = filmcraft_project::transcript::normalize_word(word);
+    matches!(norm.as_str(), "de" | "da" | "do" | "das" | "dos" | "of")
+}
+
+fn slice_char_len(slice: &[SeqWord]) -> usize {
+    if slice.is_empty() { 0 } else { slice.iter().map(|w| w.text.chars().count()).sum::<usize>() + slice.len() - 1 }
+}
+
+fn join_slice(slice: &[SeqWord]) -> String {
+    slice.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ")
+}
+
+/// Find the best 1- or 2-line layout for `slice` obeying `max_chars` and `max_lines`, avoiding
+/// single-word widow lines and hanging connector words at the end of Line 1.
+fn best_balanced_lines(slice: &[SeqWord], max_chars: usize, max_lines: usize) -> Option<(Vec<String>, i32)> {
+    if slice.is_empty() {
+        return None;
+    }
+    if slice.len() == 1 {
+        return Some((vec![slice[0].text.clone()], 250));
+    }
+    let total_len = slice_char_len(slice);
+    if max_lines == 1 {
+        return (total_len <= max_chars).then(|| {
+            let pen = (max_chars as i32 - total_len as i32) + if is_connector_word(&slice[slice.len() - 1].text) { 400 } else { 0 };
+            (vec![join_slice(slice)], pen)
+        });
+    }
+
+    let mut best: Option<(Vec<String>, i32)> = None;
+    // Option A: fit on a single line if compact enough
+    if total_len <= max_chars {
+        let mut pen = (max_chars as i32 - total_len as i32) * 2;
+        if total_len > 24 && slice.len() >= 4 {
+            pen += 60;
+        }
+        best = Some((vec![join_slice(slice)], pen));
+    }
+
+    // Option B: split into 2 balanced lines at `k`
+    for k in 1..slice.len() {
+        let l1 = slice_char_len(&slice[..k]);
+        let l2 = slice_char_len(&slice[k..]);
+        if l1 > max_chars || l2 > max_chars {
+            continue;
+        }
+        let mut pen = (l1 as i32 - l2 as i32).abs() * 2;
+        // Widow / orphan single-word line prevention
+        if k == 1 {
+            pen += 350;
+        }
+        if slice.len() - k == 1 {
+            pen += 350;
+        }
+        // Never leave a preposition/article/conjunction hanging at the end of Line 1
+        if is_connector_word(&slice[k - 1].text) {
+            pen += 450;
+        }
+        // Slight penalty for splitting `Noun | de/da/do Noun` across lines
+        if is_genitive_word(&slice[k].text) && !slice[k - 1].text.ends_with([',', ';', ':', '.', '!', '?']) {
+            pen += 30;
+        }
+        // Bonus for splitting at natural punctuation
+        if slice[k - 1].text.ends_with([',', ';', ':', '.', '!', '?', '—']) {
+            pen -= 35;
+        }
+        if best.as_ref().is_none_or(|(_, bp)| pen < *bp) {
+            best = Some((vec![join_slice(&slice[..k]), join_slice(&slice[k..])], pen));
+        }
+    }
+    best
+}
+
+fn smart_caption_groups(words: &[SeqWord], rules: &CaptionRules) -> Vec<(std::ops::Range<usize>, Vec<String>)> {
+    let max_chars = rules.max_chars.max(1);
+    let max_lines = rules.lines.max(1);
+    let mut out = Vec::new();
+    let mut a = 0;
+    while a < words.len() {
+        // Find the furthest word index before a hard break or capacity limit
+        let mut limit = a + 1;
+        for i in (a + 1)..words.len() {
+            let w = &words[i];
+            let prev = &words[i - 1];
+            let hard_break = w.speaker != prev.speaker || w.start - prev.end >= rules.break_pause || w.end - words[a].start > rules.max_duration;
+            if hard_break {
+                break;
+            }
+            if best_balanced_lines(&words[a..=i], max_chars, max_lines).is_none() {
+                break;
+            }
+            limit = i + 1;
+            // Stop at sentence-ending punctuation once the block has reasonable content
+            if words[i].text.ends_with(['.', '?', '!']) && slice_char_len(&words[a..=i]) >= max_chars / 2 {
+                break;
+            }
+        }
+
+        if limit == a + 1 {
+            out.push((a..a + 1, vec![words[a].text.clone()]));
+            a += 1;
+            continue;
+        }
+
+        // Find how far until the next hard break (to avoid leaving a 1-word orphan in the next block)
+        let mut next_hard = limit;
+        while next_hard < words.len() {
+            let w = &words[next_hard];
+            let prev = &words[next_hard - 1];
+            if w.speaker != prev.speaker || w.start - prev.end >= rules.break_pause || prev.text.ends_with(['.', '?', '!']) {
+                break;
+            }
+            next_hard += 1;
+        }
+
+        let mut best_b = limit;
+        let mut best_lines = best_balanced_lines(&words[a..limit], max_chars, max_lines).map(|(l, _)| l).unwrap_or_else(|| vec![join_slice(&words[a..limit])]);
+        let mut best_score = i32::MAX;
+
+        for b in (a + 1)..=limit {
+            let Some((lines, line_pen)) = best_balanced_lines(&words[a..b], max_chars, max_lines) else {
+                continue;
+            };
+            let mut score = line_pen + ((limit - b) as i32) * 28;
+            let last_w = &words[b - 1];
+            if b < words.len() {
+                let next_w = &words[b];
+                let continues = next_w.speaker == last_w.speaker && next_w.start - last_w.end < rules.break_pause;
+                if continues {
+                    if is_connector_word(&last_w.text) {
+                        score += 600;
+                    }
+                    if is_genitive_word(&next_w.text) && !last_w.text.ends_with([',', ';', ':', '.', '!', '?']) {
+                        score += 120;
+                    }
+                    if next_hard > b && next_hard - b == 1 {
+                        score += 400;
+                    }
+                }
+            }
+            if last_w.text.ends_with(['.', '!', '?']) {
+                score -= 80;
+            } else if last_w.text.ends_with([',', ';', ':']) {
+                score -= 45;
+            }
+            if score < best_score {
+                best_score = score;
+                best_b = b;
+                best_lines = lines;
+            }
+        }
+
+        out.push((a..best_b, best_lines));
+        a = best_b;
+    }
+    out
 }
 
 /// A caption block made from words.
@@ -322,57 +690,109 @@ pub fn caption_blocks(words: &[SeqWord], rules: &CaptionRules, rate: FrameRate) 
     let max_chars = rules.max_chars.max(1);
     let max_lines = rules.lines.max(1);
     let cap_chars = max_chars * max_lines;
-    let mut groups: Vec<std::ops::Range<usize>> = Vec::new();
-    let mut a = 0;
-    let mut lines: Vec<usize> = vec![0];
-    for i in 0..words.len() {
-        let w = &words[i];
-        let len = w.text.chars().count();
-        if i > a {
-            let prev = &words[i - 1];
-            let cur = *lines.last().unwrap_or(&0);
-            let fits_line = cur + 1 + len <= max_chars;
-            let fits = fits_line || lines.len() < max_lines;
-            let used: usize = lines.iter().sum::<usize>() + lines.len() - 1;
-            let sentence_end = prev.text.ends_with(['.', '?', '!']) && used * 2 >= cap_chars;
-            let brk =
-                !fits || w.speaker != prev.speaker || w.start - prev.end >= rules.break_pause || w.end - words[a].start > rules.max_duration || sentence_end;
-            if brk {
-                groups.push(a..i);
-                a = i;
-                lines = vec![len];
-                continue;
-            }
-            if fits_line {
-                if let Some(l) = lines.last_mut() {
-                    *l += 1 + len;
+    let formatted_groups: Vec<(std::ops::Range<usize>, Vec<String>)> = if rules.smart_balance {
+        smart_caption_groups(words, rules)
+    } else {
+        let mut groups: Vec<std::ops::Range<usize>> = Vec::new();
+        let mut a = 0;
+        let mut lines: Vec<usize> = vec![0];
+        for i in 0..words.len() {
+            let w = &words[i];
+            let len = w.text.chars().count();
+            if i > a {
+                let prev = &words[i - 1];
+                let cur = *lines.last().unwrap_or(&0);
+                let fits_line = cur + 1 + len <= max_chars;
+                let fits = fits_line || lines.len() < max_lines;
+                let used: usize = lines.iter().sum::<usize>() + lines.len() - 1;
+                let sentence_end = prev.text.ends_with(['.', '?', '!']) && used * 2 >= cap_chars;
+                let brk = !fits
+                    || w.speaker != prev.speaker
+                    || w.start - prev.end >= rules.break_pause
+                    || w.end - words[a].start > rules.max_duration
+                    || sentence_end;
+                if brk {
+                    groups.push(a..i);
+                    a = i;
+                    lines = vec![len];
+                    continue;
+                }
+                if fits_line {
+                    if let Some(l) = lines.last_mut() {
+                        *l += 1 + len;
+                    }
+                } else {
+                    lines.push(len);
                 }
             } else {
-                lines.push(len);
+                lines = vec![len];
             }
+        }
+        if a < words.len() {
+            groups.push(a..words.len());
+        }
+        groups
+            .into_iter()
+            .map(|g| {
+                let mut text_lines: Vec<String> = vec![String::new()];
+                for w in &words[g.clone()] {
+                    let Some(l) = text_lines.last_mut() else { break };
+                    if l.is_empty() {
+                        l.push_str(&w.text);
+                    } else if l.chars().count() + 1 + w.text.chars().count() <= max_chars {
+                        l.push(' ');
+                        l.push_str(&w.text);
+                    } else {
+                        text_lines.push(w.text.clone());
+                    }
+                }
+                (g, text_lines)
+            })
+            .collect()
+    };
+    finalize_caption_blocks(words, formatted_groups, rules, rate)
+}
+
+/// Build [`CaptionBlock`]s from AI-segmented `(start_word, end_word_inclusive, lines)` groups,
+/// enforcing `rules.max_chars` and `rules.lines` if any AI-returned group slightly exceeds the
+/// character limit.
+pub fn caption_blocks_from_ai_groups(words: &[SeqWord], ai_groups: &[(usize, usize, Vec<String>)], rules: &CaptionRules, rate: FrameRate) -> Vec<CaptionBlock> {
+    if words.is_empty() || ai_groups.is_empty() {
+        return caption_blocks(words, rules, rate);
+    }
+    let max_chars = rules.max_chars.max(1);
+    let max_lines = rules.lines.max(1);
+    let mut formatted_groups: Vec<(std::ops::Range<usize>, Vec<String>)> = Vec::new();
+    for (start_w, end_w, lines) in ai_groups {
+        let a = (*start_w).min(words.len().saturating_sub(1));
+        let b = (*end_w + 1).clamp(a + 1, words.len());
+        let valid_lines = !lines.is_empty() && lines.len() <= max_lines && lines.iter().all(|l| l.chars().count() <= max_chars);
+        if valid_lines {
+            formatted_groups.push((a..b, lines.clone()));
+        } else if let Some((rebalanced, _)) = best_balanced_lines(&words[a..b], max_chars, max_lines) {
+            formatted_groups.push((a..b, rebalanced));
         } else {
-            lines = vec![len];
+            for (sub_r, sub_lines) in smart_caption_groups(&words[a..b], rules) {
+                formatted_groups.push(((a + sub_r.start)..(a + sub_r.end), sub_lines));
+            }
         }
     }
-    if a < words.len() {
-        groups.push(a..words.len());
-    }
+    finalize_caption_blocks(words, formatted_groups, rules, rate)
+}
+
+fn finalize_caption_blocks(
+    words: &[SeqWord],
+    formatted_groups: Vec<(std::ops::Range<usize>, Vec<String>)>,
+    rules: &CaptionRules,
+    rate: FrameRate,
+) -> Vec<CaptionBlock> {
     // text, frame-snapped times
     let fd = rate.frame_duration();
     let gap = Tick(fd.0 * rules.gap_frames.max(0));
     let mut out: Vec<CaptionBlock> = Vec::new();
-    for g in groups {
-        let mut text_lines: Vec<String> = vec![String::new()];
-        for w in &words[g.clone()] {
-            let Some(l) = text_lines.last_mut() else { break };
-            if l.is_empty() {
-                l.push_str(&w.text);
-            } else if l.chars().count() + 1 + w.text.chars().count() <= max_chars {
-                l.push(' ');
-                l.push_str(&w.text);
-            } else {
-                text_lines.push(w.text.clone());
-            }
+    for (g, text_lines) in formatted_groups {
+        if g.is_empty() || g.end > words.len() {
+            continue;
         }
         let start = rate.snap(words[g.start].start);
         let mut end = rate.snap(words[g.end - 1].end);

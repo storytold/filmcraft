@@ -278,7 +278,7 @@ pub fn download_files(dir: &Path, files: &[ModelFile], progress: DownloadProgres
 }
 
 #[cfg(feature = "download")]
-fn agent() -> ureq::Agent {
+pub(crate) fn agent() -> ureq::Agent {
     let provider = std::sync::Arc::new(rustls_rustcrypto::provider());
     ureq::Agent::config_builder()
         .tls_config(
@@ -289,6 +289,24 @@ fn agent() -> ureq::Agent {
                 .build(),
         )
         .timeout_connect(Some(std::time::Duration::from_secs(30)))
+        .build()
+        .into()
+}
+
+#[cfg(feature = "download")]
+pub(crate) fn llm_agent() -> ureq::Agent {
+    let provider = std::sync::Arc::new(rustls_rustcrypto::provider());
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .provider(ureq::tls::TlsProvider::Rustls)
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .unversioned_rustls_crypto_provider(provider)
+                .build(),
+        )
+        .timeout_connect(Some(std::time::Duration::from_secs(30)))
+        .timeout_global(Some(std::time::Duration::from_secs(90)))
         .build()
         .into()
 }

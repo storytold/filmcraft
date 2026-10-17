@@ -524,6 +524,36 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         return;
     }
     let mut actions: Vec<(String, Value)> = Vec::new();
+    if let Some(pending) = app.session.transcript_jobs.last()
+        && let Some(job) = app.session.jobs.iter().find(|j| j.id == pending.job).cloned()
+    {
+        use std::sync::atomic::Ordering;
+        let f = job.progress.fraction().clamp(0.0, 1.0);
+        let pct = (f * 100.0).round() as u32;
+        let step = job.progress.status.lock().ok().map(|s| s.clone()).unwrap_or_default();
+        let left = job.progress.eta().map(crate::panels::left_text).unwrap_or_default();
+        let c = rect.center();
+        icons::paint(ui.painter(), Rect::from_center_size(c - vec2(0.0, 78.0), vec2(40.0, 40.0)), Icon::Captions, t.accent);
+        ui.painter().text(c - vec2(0.0, 38.0), Align2::CENTER_CENTER, "Transcribing sequence… Please wait", Tokens::semibold(15.0), t.text);
+        let status_line = if step.is_empty() { format!("{pct}%{left}") } else { format!("{pct}% — {step}{left}") };
+        ui.painter().text(c - vec2(0.0, 16.0), Align2::CENTER_CENTER, status_line, Tokens::ui(12.0), t.text_dim);
+        let bar_w = (rect.width() - 48.0).clamp(140.0, 280.0);
+        let bar = Rect::from_center_size(c + vec2(0.0, 8.0), vec2(bar_w, 8.0));
+        ui.painter().rect_filled(bar, 4.0, t.separator);
+        let fill_w = (bar.width() * f).max(if f > 0.0 { 6.0 } else { 0.0 });
+        ui.painter().rect_filled(Rect::from_min_size(bar.min, vec2(fill_w, bar.height())), 4.0, t.accent);
+        app.auto.add("text.transcript.progress", bar, &format!("{pct}%"));
+        let cancel_r = Rect::from_center_size(c + vec2(0.0, 40.0), vec2(110.0, 24.0));
+        let resp = ui.interact(cancel_r, egui::Id::new(("text.transcript.cancel", job.id)), Sense::click());
+        ui.painter().rect_filled(cancel_r, 12.0, if resp.hovered() { t.hover } else { t.separator });
+        ui.painter().text(cancel_r.center(), Align2::CENTER_CENTER, tl!("Cancel"), Tokens::semibold(11.5), t.text);
+        app.auto.add("text.transcript.cancel", cancel_r, "Cancel transcription");
+        if resp.clicked() {
+            job.progress.cancel.store(true, Ordering::Relaxed);
+        }
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        return;
+    }
     let content = app.transcript_cache.content(&app.session);
     let words = &content.words;
     if words.is_empty() {
@@ -542,7 +572,7 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.painter().text(r.center(), Align2::CENTER_CENTER, tl!("Transcribe"), Tokens::semibold(12.0), Color32::WHITE);
         app.auto.add("text.transcript.generate", r, "Transcribe");
         if resp.clicked() {
-            actions.push(("transcript.generate".into(), json!({})));
+            actions.push(("sequence.transcribe".into(), json!({})));
         }
         run(app, ui, actions);
         return;
@@ -563,7 +593,14 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         (Icon::Razor, "text.transcript.extract", tl!("Extract selected text"), sel.is_some(), "transcript.extract", range.clone().unwrap_or_default()),
         (Icon::Trash, "text.transcript.lift", tl!("Lift selected text"), sel.is_some(), "transcript.lift", range.unwrap_or_default()),
         (Icon::Link, "text.transcript.removeFillers", tl!("Remove filler words"), true, "transcript.removeFillers", json!({})),
-        (Icon::Captions, "text.transcript.createCaptions", tl!("Create captions"), true, "transcript.createCaptions", json!({})),
+        (
+            Icon::Captions,
+            "text.transcript.createCaptions",
+            tl!("Create captions"),
+            true,
+            "transcript.createCaptions",
+            json!({"maxChars": 30, "lines": 2, "smartBalance": true}),
+        ),
     ];
     for (icon, id, label, enabled, cmd, params) in tools {
         let r = Rect::from_min_size(pos2(x, bar.min.y), vec2(24.0, 24.0));

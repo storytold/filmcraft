@@ -1924,7 +1924,11 @@ impl FilmcraftApp {
         let p = ui.painter();
         p.rect_filled(bar, 3.0, t.separator);
         p.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * f, bar.height())), 3.0, t.accent);
-        let verb = if job.label.starts_with("Rendering") { crate::i18n::t(&job.label).to_string() } else { tl!("Exporting").to_string() };
+        let verb = if job.label.starts_with("Rendering") || job.label.starts_with("Transcribing") || job.label.starts_with("Analysing") {
+            crate::i18n::t(&job.label).to_string()
+        } else {
+            tl!("Exporting").to_string()
+        };
         p.text(
             egui::pos2(bar.min.x - 8.0, sb.center().y),
             egui::Align2::RIGHT_CENTER,
