@@ -479,6 +479,7 @@
 	Render audio clip effects	Procesar efectos de clips de audio
 	Breakout to mono	Separar en mono
 	Exported {path}	Exportado: {path}
+	Exported with conversion notes; see Events: {path}	Exportado con notas de conversión; consulta Eventos: {path}
 	Select a clip to view its metadata.	Selecciona un clip para ver sus metadatos.
 	Clip: {name}	Clip: {name}
 	Open	Abrir

@@ -20,6 +20,20 @@ fn report_json(r: &filmcraft_interchange::Report) -> Vec<String> {
     r.entries.iter().map(|e| if e.count > 1 { format!("{} (×{})", e.message, e.count) } else { e.message.clone() }).collect()
 }
 
+/// Publish conversion notes after a successful export and preserve the rendered JSON report.
+pub(crate) fn log_export_report(s: &mut Session, source: &str, report: &filmcraft_interchange::Report) -> Vec<String> {
+    let messages = report_json(report);
+    for (entry, message) in report.entries.iter().zip(&messages) {
+        let level = match entry.level {
+            filmcraft_interchange::Level::Info => crate::panels::Level::Info,
+            filmcraft_interchange::Level::Warning => crate::panels::Level::Warning,
+        };
+        // The rendered count describes affected items; Events counts deliveries of this note.
+        s.log.push(level, source, message.clone());
+    }
+    messages
+}
+
 fn is_file_media(item: &filmcraft_project::ProjectItem) -> bool {
     matches!(&item.kind, ItemKind::Media(m) if matches!(m.media, MediaRef::File { .. }))
 }
@@ -150,5 +164,6 @@ pub fn export(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let (bytes, report) = filmcraft_interchange::export(&s.project, seq, format, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
     s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(e.to_string()))?;
-    Ok(json!({"path": path, "bytes": bytes.len(), "report": report_json(&report)}))
+    let report = log_export_report(s, "file.exportInterchange", &report);
+    Ok(json!({"path": path, "bytes": bytes.len(), "report": report}))
 }
