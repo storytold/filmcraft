@@ -264,6 +264,22 @@ fn the_scroll_bar_thumb_follows_the_pointer_and_reaches_both_ends() {
     assert!(pps < 50.0 && (scroll - at).abs() < 1e-6, "{pps} {scroll}");
 }
 
+#[test]
+fn zoom_scrollbar_has_a_wider_thumb_and_grabbable_handles() {
+    let mut d = Driver::tall();
+    let thumb = d.rect("timeline.zoomBar");
+    assert!(thumb[2] >= 48.0, "minimum thumb width should be easy to grab: {thumb:?}");
+
+    let track = d.rect("timeline.zoomBar.track");
+    let y = track[1] + track[3] / 2.0;
+    let x = thumb[0] + 10.0;
+    d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + 20.0, "y": y}, "steps": 8}));
+    d.frames(3);
+
+    let (_, pps, ..) = d.view();
+    assert!(pps > 50.0, "the enlarged left handle should zoom when dragged: {pps}");
+}
+
 /// Show Video Thumbnails ▸ Continuous asks for frames across each video clip, not only its head;
 /// `ui.set` switches the mode (and Off) and refuses an unknown one.
 #[test]

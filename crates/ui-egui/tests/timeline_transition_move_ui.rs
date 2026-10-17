@@ -96,7 +96,7 @@ fn dragging_a_clip_carries_its_fade_in_the_preview_and_on_the_drop() {
     let gap_before = tr_rect.min.x - a_rect.min.x;
     let y = a_rect.center().y;
     // press clear of the fade band (it covers the left 75 px of the clip) and of the edge zones
-    let x0 = a_rect.left() + 110.0;
+    let x0 = a_rect.left() + 100.0;
     pointer(&mut h, pos2(x0, y), Some(true));
     for i in 1..=6 {
         pointer(&mut h, pos2(x0 + 20.0 * i as f32, y), None);
@@ -188,7 +188,7 @@ fn option_drag_copies_show_a_ghost_transition_with_the_copy() {
     let y = a_rect.center().y;
     // hold Option for the whole drag, as the real drag does
     h.input_mut().events.push(egui::Event::ModifiersChanged(Modifiers { alt: true, ..Default::default() }));
-    let x0 = a_rect.left() + 110.0; // clear of the fade band and the edge zones
+    let x0 = a_rect.left() + 100.0; // clear of the fade band and the edge zones
     pointer(&mut h, pos2(x0, y), Some(true));
     for i in 1..=6 {
         pointer(&mut h, pos2(x0 + 20.0 * i as f32, y), None);

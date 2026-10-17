@@ -18,7 +18,7 @@ use crate::state::Tool;
 pub const ROLL_PX: f32 = 2.5;
 
 /// Widest an edge zone gets (px), on each side of a clip edge.
-pub const EDGE_PX: f32 = 7.0;
+pub const EDGE_PX: f32 = 11.0;
 
 /// The trim the Selection tool starts at an edit point: Cmd+Shift = roll, Cmd = ripple. With the
 /// Trim setting on (`no_modifier`), no modifier is needed: right on the cut (when a clip is on the
@@ -389,8 +389,15 @@ mod tests {
         let (seq, l, tr) = fixture(clips());
         assert_eq!(hit(&seq, &l, at(95.0)), edge_hit(tr, 1, Edge::In));
         assert_eq!(hit(&seq, &l, at(705.0)), edge_hit(tr, 3, Edge::Out));
-        assert_eq!(hit(&seq, &l, at(92.0)), Hit::Empty { track: tr });
+        assert_eq!(hit(&seq, &l, at(88.0)), Hit::Empty { track: tr });
         assert_eq!(hit(&seq, &l, at(200.0)), Hit::Clip { track: tr, clip: ClipId(1), edge: None });
+    }
+
+    #[test]
+    fn clip_edge_grab_targets_reach_eleven_points() {
+        let (seq, l, tr) = fixture(clips());
+        assert_eq!(hit(&seq, &l, at(89.0)), edge_hit(tr, 1, Edge::In));
+        assert_eq!(hit(&seq, &l, at(88.0)), Hit::Empty { track: tr });
     }
 
     #[test]

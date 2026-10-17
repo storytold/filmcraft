@@ -1606,7 +1606,7 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
 
 /// The narrowest the zoom scroll bar's thumb gets: room for its two handles and a part between
 /// them to grab.
-const MIN_THUMB_W: f32 = 34.0;
+const MIN_THUMB_W: f32 = 48.0;
 
 /// Where the zoom scroll bar's thumb is: (left edge, width, seconds of scroll per point of thumb
 /// travel). The thumb is as wide as the share of the Timeline in view (never narrower than
@@ -1658,12 +1658,12 @@ fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, seq_seco
     if resp.drag_started()
         && let Some(pos) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
     {
-        let mode = if !thumb.expand2(vec2(0.0, 4.0)).contains(pos) {
+        let mode = if !thumb.expand2(vec2(0.0, 10.0)).contains(pos) {
             jump(&mut app.ui.timeline, pos.x);
             0
-        } else if (pos.x - thumb.min.x).abs() < 9.0 {
+        } else if (pos.x - thumb.min.x).abs() < 12.0 {
             1
-        } else if (pos.x - thumb.max.x).abs() < 9.0 {
+        } else if (pos.x - thumb.max.x).abs() < 12.0 {
             2
         } else {
             0
