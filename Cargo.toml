@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
+exclude = ["patches/winit"]
 default-members = ["crates/*", "apps/*", "xtask"]
 
 [workspace.package]
@@ -146,3 +147,9 @@ opt-level = 3
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# winit 0.30.13 with Wayland file drag and drop (patches/winit/src/platform_impl/linux/wayland/
+# seat/dnd.rs). eframe 0.36 pins winit 0.30, which has none; drop this once eframe moves to
+# winit 0.31, which has it upstream.
+[patch.crates-io]
+winit = { path = "patches/winit" }

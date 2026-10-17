@@ -374,6 +374,12 @@ duplicate. With one driver per GPU the adapter is the one wgpu picks, as before.
 RISC-V (riscv64): `filmcraft-<ver>-linux-riscv64.tar.gz` (tarball only; needs glibc 2.39+, e.g. Ubuntu 24.04
 or Debian 13).
 
+**Wayland:** files dragged from a file manager onto the window open natively. eframe 0.36 builds on
+winit 0.30, which has no Wayland drag and drop, so `patches/winit` carries winit with `wl_data_device`
+support (`seat/dnd.rs`) until eframe moves to winit 0.31, which has it upstream. Only local files are
+accepted, and the drop always copies. Inside the Flatpak sandbox a dropped file is only readable if the
+sandbox can see its folder.
+
 The tarball installer places FilmCraft, its command-line tool and desktop integration in
 `~/.local`, without administrator permissions. For all users, run
 `sudo ./install.sh --prefix /usr/local` instead. Running the installer again updates the installation.
