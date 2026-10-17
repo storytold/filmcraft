@@ -162,13 +162,18 @@ impl MediaSource for GeneratorSource {
         let mut out = AudioBuffer::silence(sample_rate, 2, frames);
         let sr = sample_rate as f32;
         let total = self.info.duration.to_units_floor(sample_rate as i64);
+        // one picture frame of this source in samples (the counting leader's beep length), gated
+        // on sample counts: `t.fract()` in f32 is off by a sample at the second marks
+        let frame_s = self.info.video.as_ref().filter(|v| v.frame_rate.num > 0).map_or(1.0 / 24.0, |v| v.frame_rate.den as f64 / v.frame_rate.num as f64);
+        let beep_len = ((frame_s * f64::from(sample_rate)).round() as i64).max(1);
         for i in 0..frames {
             let n = start + i as i64;
             if n < 0 || n >= total {
                 continue;
             }
             let t = n as f32 / sr;
-            let (l, r) = audio_sample(&self.generator, t, n);
+            let in_beep = n.rem_euclid(i64::from(sample_rate.max(1))) < beep_len;
+            let (l, r) = audio_sample(&self.generator, t, n, in_beep);
             out.channels[0][i] = l;
             out.channels[1][i] = r;
         }
@@ -188,7 +193,9 @@ fn hash(n: i64) -> f32 {
     (x >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
 }
 
-fn audio_sample(g: &Generator, t: f32, n: i64) -> (f32, f32) {
+/// `in_beep`: the sample lies within the first picture frame of a second, at the source's own
+/// rate (the counting leader's beep, #1947).
+fn audio_sample(g: &Generator, t: f32, n: i64, in_beep: bool) -> (f32, f32) {
     match g {
         Generator::BarsAndTone => {
             let s = (TAU * 1000.0 * t).sin() * db(-20.0);
@@ -200,8 +207,7 @@ fn audio_sample(g: &Generator, t: f32, n: i64) -> (f32, f32) {
         }
         Generator::CountingLeader => {
             // 1 kHz beep for one frame at each second mark (the "2-pop" style beep).
-            let frac = t.fract();
-            let s = if frac < 1.0 / 24.0 { (TAU * 1000.0 * t).sin() * db(-20.0) } else { 0.0 };
+            let s = if in_beep { (TAU * 1000.0 * t).sin() * db(-20.0) } else { 0.0 };
             (s, s)
         }
         Generator::Demo(scene) => demo_audio(*scene, t, n),
@@ -577,5 +583,27 @@ mod tests {
         }
         let px = render(&Generator::CountingLeader, 64, 36, 1.5, 36, FrameRate::FPS_24);
         assert_eq!(px.len(), 64 * 36 * 4);
+    }
+
+    /// #1947: the counting leader's beep at each second mark lasts one frame of its own rate,
+    /// not a fixed 1/24 s: 800 samples at 60 fps and 48 kHz, 2000 at 24 fps, 1920 at 25 fps.
+    #[test]
+    fn counting_leader_beep_lasts_one_frame_of_its_rate() {
+        for (rate, beep) in [(FrameRate::FPS_60, 800usize), (FrameRate::FPS_24, 2000), (FrameRate::FPS_25, 1920), (FrameRate::FPS_29_97, 1602)] {
+            let g = GeneratorSource::new(Generator::CountingLeader, 64, 36, rate, Tick(3 * TICKS_PER_SECOND));
+            let a = g.audio(0, 96_000, 48_000).unwrap();
+            let l = &a.channels[0];
+            let last_nonzero = |from: usize, to: usize| (from..to).rev().find(|&i| l[i] != 0.0);
+            // the first beep: sound up to its last sample, silence from there to the next second
+            assert!(
+                last_nonzero(0, 48_000).is_some_and(|i| i + 1 >= beep - 1 && i < beep),
+                "{rate}: first beep ends at {:?}, expected {beep}",
+                last_nonzero(0, 48_000)
+            );
+            assert!(l[beep..48_000].iter().all(|&v| v == 0.0), "{rate}: silence after the beep");
+            // the second beep too
+            assert!(l[48_000..48_000 + beep - 2].iter().any(|&v| v != 0.0), "{rate}: a beep at the second mark");
+            assert!(l[48_000 + beep..96_000].iter().all(|&v| v == 0.0), "{rate}: silence after it");
+        }
     }
 }
