@@ -210,6 +210,30 @@ fn the_view_stops_ten_minutes_past_the_end_of_the_sequence() {
     assert_eq!(d.view().0, 0.0);
 }
 
+/// Zooming out stops where the whole extent (the sequence and ten minutes) is in the view, however
+/// far the wheel or a script asks.
+#[test]
+fn zooming_out_stops_where_the_whole_timeline_is_in_view() {
+    let mut d = Driver::tall();
+    let seconds = d.seconds();
+    let width = d.rect("timeline.tracks")[2] as f64;
+    let floor = width / timeline_extent(seconds);
+    for _ in 0..20 {
+        d.wheel(0.2, 0.0, -200.0, json!({"alt": true}));
+    }
+    let (scroll, pps, ..) = d.view();
+    assert!((pps - floor).abs() < floor * 0.01, "the wheel zoomed to {pps}, the whole extent is {floor}");
+    assert_eq!(scroll, 0.0);
+    // a script's zoom is held to the same limit
+    d.ok("ui.set", json!({"timeline": {"pps": 0.05, "scroll": 0.0}}));
+    d.frames(6);
+    let (_, pps, ..) = d.view();
+    assert!((pps - floor).abs() < floor * 0.01, "a script zoomed to {pps}");
+    // and zooming back in works from there
+    d.wheel(0.2, 0.0, 20.0, json!({"alt": true}));
+    assert!(d.view().1 > pps * 1.1);
+}
+
 #[test]
 fn the_scroll_bar_thumb_follows_the_pointer_and_reaches_both_ends() {
     let mut d = Driver::tall();
