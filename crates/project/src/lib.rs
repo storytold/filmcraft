@@ -1035,6 +1035,12 @@ impl Sequence {
         let media = self.video_tracks.iter().chain(&self.audio_tracks).map(Track::end).max().unwrap_or(Tick::ZERO);
         media.max(self.caption_tracks.iter().map(CaptionTrack::end).max().unwrap_or(Tick::ZERO))
     }
+    /// Where an export without In/Out ends: the last video or audio item, so captions running past
+    /// the media don't add black frames (#1543). A sequence holding only captions ends with them.
+    pub fn export_end(&self) -> Tick {
+        let media = self.video_tracks.iter().chain(&self.audio_tracks).map(Track::end).max().unwrap_or(Tick::ZERO);
+        if media > Tick::ZERO { media } else { self.duration() }
+    }
     pub fn caption_track(&self, id: TrackId) -> Option<&CaptionTrack> {
         self.caption_tracks.iter().find(|t| t.id == id)
     }

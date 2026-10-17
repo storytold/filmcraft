@@ -80,3 +80,5 @@ Captions are set in Inter SemiBold (OFL, bundled) by the text engine (`crates/te
 kerning, bidi); italics/bold markup is not yet drawn differently. The captions of a nested sequence
 are part of the nest's picture: they are drawn wherever the nest is shown, in the Program monitor
 and in every export, whether or not the outer sequence shows or burns in its own.
+Without In/Out, an export ends with the last video or audio clip: captions that run past it
+are cut there instead of adding black frames (a sequence with only captions ends with them).

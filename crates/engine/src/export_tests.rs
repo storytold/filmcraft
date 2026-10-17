@@ -679,6 +679,22 @@ fn ranges_resolve_and_sidecar_captions_are_written() {
     assert!(s.execute("file.exportMedia", json!({"preset": "Nope", "path": out})).is_err());
 }
 
+/// #1543: a caption that runs past the last clip used to stretch the export range, so the export
+/// ended on black frames showing only that caption.
+#[test]
+fn captions_past_the_media_do_not_extend_the_export_range() {
+    let mut s = demo();
+    let frames = |s: &mut Session, p: Value| s.execute("export.resolve", p).unwrap()["frames"].as_i64().unwrap();
+    let media_frames = frames(&mut s, json!({"preset": "PNG Sequence", "range": "entire"}));
+    let media_end = s.active_sequence().unwrap().duration();
+    s.execute("captions.add", json!({"seconds": media_end.seconds() - 0.5, "durationSeconds": 2.0, "text": "Past the end"})).unwrap();
+    assert!(s.active_sequence().unwrap().duration() > media_end, "the caption runs past the last clip");
+    assert_eq!(frames(&mut s, json!({"preset": "PNG Sequence"})), media_frames, "default range");
+    assert_eq!(frames(&mut s, json!({"preset": "PNG Sequence", "range": "entire"})), media_frames, "Entire Sequence");
+    let inspect = s.execute("sequence.inspect", json!({})).unwrap();
+    assert_eq!(inspect["durationFrames"], media_frames, "durationFrames is the frames export renders");
+}
+
 /// Export mode asks for a default folder as soon as it opens. With no saved project and no
 /// HOME (the web build) this used to reach `std::env::temp_dir()`, which panics on wasm32 and
 /// killed the web app whenever the Export tab was clicked.

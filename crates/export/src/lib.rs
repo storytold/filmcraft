@@ -1733,7 +1733,7 @@ pub fn export_range(project: &Project, seq: ItemId, settings: &ExportSettings) -
     let minimum_end = a.0.checked_add(fd.0).ok_or_else(|| ExportError::Unsupported("export In point overflows the time range".into()))?;
     let b = match q.mark_out {
         Some(out) => out.0.checked_add(fd.0).ok_or_else(|| ExportError::Unsupported("export Out point overflows the time range".into()))?,
-        None => q.duration().0,
+        None => q.export_end().0,
     };
     let duration = b.max(minimum_end).checked_sub(a.0).ok_or_else(|| ExportError::Unsupported("export range duration overflows".into()))?;
     let range = TimeRange::new(a, Tick(duration));

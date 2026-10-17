@@ -4269,7 +4269,7 @@ pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence
         })
     };
     // the frames export renders, a partial last frame included
-    let (f0, f1) = filmcraft_export::frame_span(rate, TimeRange::new(Tick::ZERO, q.duration()));
+    let (f0, f1) = filmcraft_export::frame_span(rate, TimeRange::new(Tick::ZERO, q.export_end()));
     json!({
         "id": id.0,
         "name": s.project.item(id).map(|i| i.name.clone()),
