@@ -14,6 +14,11 @@
 //! features is used, i.e. the newer version. Without such a duplicate the choice is wgpu's own.
 //! Entries of one GPU from different drivers (RADV and AMDVLK, a vendor's driver and Dozen) are
 //! left alone: those are installed side by side on purpose, and wgpu's order between them stays.
+//!
+//! One more exception: an Intel Gen 9 to Gen 11 integrated GPU draws through its DirectX 12 entry
+//! rather than Vulkan ([`intel_gen9_to_gen11`]). Intel's Vulkan driver for them (`igvk64.dll`)
+//! dies with 0xc0000005 when the device is created (#512, #1425), after the adapters are listed, so
+//! choosing the other entry here avoids it.
 
 use std::cmp::Reverse;
 use std::fmt;
@@ -125,12 +130,45 @@ pub fn choose(candidates: &[Candidate], power: PowerPreference) -> Option<usize>
     let Some(preferred) = candidates.get(first) else {
         return Some(first);
     };
+    if let Some(dx12) = dx12_instead(candidates, preferred) {
+        return Some(dx12);
+    }
     let versions = candidates.iter().enumerate().filter(|(_, c)| c.usable && same_gpu_and_driver(preferred, c));
     versions.max_by_key(|(index, c)| (c.features, Reverse(*index))).map(|(index, _)| index).or(Some(first))
 }
 
+/// PCI vendor id of Intel.
+const INTEL: u32 = 0x8086;
+
+/// Whether `device` is an Intel Gen 9 to Gen 11 integrated GPU: 6th to 10th generation Core, and
+/// the Atom, Pentium and Celeron graphics of those years (Skylake, Broxton, Gemini Lake, Kaby
+/// Lake, Coffee Lake, Whiskey Lake, Comet Lake, Cannon Lake, Ice Lake, Elkhart Lake, Jasper Lake),
+/// by the PCI device ids of Linux's `include/drm/intel/pciids.h`: these prefixes hold those
+/// families and no others, except `0x0a84` (Broxton), whose prefix Haswell shares.
+///
+/// Their Windows Vulkan driver dies with 0xc0000005 in `igvk64.dll` when a device is created, on
+/// every version reported, from 25.20.100.6576 (2019) to 31.0.101.2145, the legacy branch that is
+/// the last driver Intel ships for them (#512, #1425). DirectX 12 works on the same GPUs.
+pub fn intel_gen9_to_gen11(device: u32) -> bool {
+    matches!(device >> 8, 0x19 | 0x1a | 0x31 | 0x3e | 0x45 | 0x4e | 0x59 | 0x5a | 0x87 | 0x8a | 0x9b) || device == 0x0a84
+}
+
+/// For an Intel Gen 9 to Gen 11 integrated GPU wgpu would draw with through Vulkan, the index of
+/// the same GPU's usable DirectX 12 entry, if there is one.
+fn dx12_instead(candidates: &[Candidate], preferred: &Candidate) -> Option<usize> {
+    let crashes = preferred.backend == Backend::Vulkan
+        && preferred.device_type == DeviceType::IntegratedGpu
+        && preferred.vendor == INTEL
+        && intel_gen9_to_gen11(preferred.device);
+    if !crashes {
+        return None;
+    }
+    candidates.iter().position(|c| c.usable && c.backend == Backend::Dx12 && c.vendor == INTEL && c.device == preferred.device)
+}
+
 /// [`choose`] over enumerated adapters, as egui-wgpu's `native_adapter_selector` for the window
-/// (`surface`). The adapters and the choice go to the log.
+/// (`surface`), and for the off-screen export device (no surface). The adapters and the choice go
+/// to the log.
 pub fn pick(adapters: &[Adapter], surface: Option<&Surface<'_>>, power: PowerPreference) -> Result<Adapter, String> {
     let candidates: Vec<Candidate> = adapters.iter().map(|a| Candidate::of(a, surface)).collect();
     for candidate in &candidates {
@@ -149,6 +187,12 @@ pub fn pick(adapters: &[Adapter], surface: Option<&Surface<'_>>, power: PowerPre
             chosen.name,
             others.saturating_add(1)
         );
+    }
+    if let Some(wgpu_own) = wgpu_choice(&candidates, power).and_then(|i| candidates.get(i))
+        && wgpu_own.backend == Backend::Vulkan
+        && chosen.backend == Backend::Dx12
+    {
+        log::warn!("Intel's Vulkan driver for \"{}\" crashes when the device is created (#512): drawing through DirectX 12", wgpu_own.name);
     }
     log::info!("graphics adapter chosen: {chosen}");
     Ok(adapter.clone())
@@ -284,6 +328,80 @@ mod tests {
         assert_eq!(choose(&[], HighPerformance), None);
     }
 
+    /// An Intel UHD Graphics 630 (Coffee Lake) on driver 25.20.100.6576 as wgpu 30 lists it. A
+    /// Vulkan device on it died inside `igvk64.dll` (0xc0000005) as it was created.
+    fn uhd_630() -> Vec<Candidate> {
+        vec![
+            gpu("Intel(R) UHD Graphics 630", Vulkan, IntegratedGpu, INTEL, 0x3e91, "", "Intel Corporation", "Intel driver", 44),
+            gpu("Intel(R) UHD Graphics 630", Dx12, IntegratedGpu, INTEL, 0x3e91, "0000:00:02.0", "25.20.100.6576", "", 36),
+            gpu("Microsoft Basic Render Driver", Dx12, Cpu, 0x1414, 0x8c, "", "10.0.26100.9711", "", 36),
+        ]
+    }
+
+    /// [`uhd_630`] with another Intel GPU in its place.
+    fn uhd_630_as(name: &str, device: u32) -> Vec<Candidate> {
+        uhd_630().into_iter().map(|c| if c.vendor == INTEL { Candidate { name: name.into(), device, ..c } } else { c }).collect()
+    }
+
+    #[test]
+    fn an_intel_gen9_to_gen11_gpu_draws_through_directx_12() {
+        for power in POWERS {
+            assert_eq!(wgpu_choice(&uhd_630(), power), Some(0), "wgpu takes Vulkan, which crashed");
+            assert_eq!(choose(&uhd_630(), power), Some(1), "{power:?}");
+        }
+        // other generations of the family: Skylake (#512), Ice Lake (#1425)
+        for (name, device) in [("Intel(R) HD Graphics 520", 0x1916), ("Intel(R) Iris(R) Plus Graphics", 0x8a5a)] {
+            let adapters = uhd_630_as(name, device);
+            assert_eq!(choose(&adapters, HighPerformance), Some(1), "{name}");
+        }
+        // whatever the order of the entries
+        let mut dx12_first = uhd_630();
+        dx12_first.swap(0, 1);
+        assert_eq!(choose(&dx12_first, HighPerformance), Some(0));
+        // without a usable DirectX 12 entry (`WGPU_BACKEND=vulkan`, or one that cannot draw to the
+        // window), Vulkan is all there is
+        let vulkan_only: Vec<Candidate> = uhd_630().into_iter().take(1).collect();
+        assert_eq!(choose(&vulkan_only, HighPerformance), Some(0));
+        let mut dx12_unusable = uhd_630();
+        if let Some(c) = dx12_unusable.get_mut(1) {
+            c.usable = false;
+        }
+        assert_eq!(choose(&dx12_unusable, HighPerformance), Some(0));
+        // beside a discrete GPU: high performance keeps it; low power takes the Intel GPU's DirectX 12 entry
+        let mut laptop = uhd_630();
+        laptop.insert(1, gpu("NVIDIA GeForce MX250", Vulkan, DiscreteGpu, 0x10de, 0x1d13, "0000:01:00.0", "NVIDIA", "", 70));
+        assert_eq!(choose(&laptop, HighPerformance), Some(1));
+        assert_eq!(choose(&laptop, LowPower), Some(2));
+    }
+
+    #[test]
+    fn later_intel_gpus_keep_wgpus_choice() {
+        for (name, device) in [("Intel(R) Iris(R) Xe Graphics", 0x9a49), ("Intel(R) UHD Graphics 770", 0x4680), ("Intel(R) Arc(TM) Graphics", 0x7d55)] {
+            let adapters = uhd_630_as(name, device);
+            for power in POWERS {
+                assert_eq!(choose(&adapters, power), Some(0), "{name} {power:?}");
+            }
+        }
+        // a discrete Intel GPU of an affected id would not be an integrated one
+        let discrete: Vec<Candidate> = uhd_630().into_iter().map(|c| if c.vendor == INTEL { Candidate { device_type: DiscreteGpu, ..c } } else { c }).collect();
+        assert_eq!(choose(&discrete, HighPerformance), Some(0));
+    }
+
+    #[test]
+    fn gen9_to_gen11_ids() {
+        // one id of each family: Skylake, Broxton (twice: one shares Haswell's prefix), Gemini Lake,
+        // Kaby Lake, Amber Lake, Coffee Lake, Whiskey Lake, Comet Lake, Cannon Lake, Ice Lake,
+        // Elkhart Lake, Jasper Lake
+        for id in [0x1916, 0x0a84, 0x5a85, 0x3184, 0x5917, 0x87c0, 0x3e91, 0x3ea0, 0x9b41, 0x5a52, 0x8a5a, 0x4571, 0x4e61] {
+            assert!(intel_gen9_to_gen11(id), "{id:#06x}");
+        }
+        // Haswell, Broadwell, Tiger Lake, Rocket Lake, Alder Lake, Raptor Lake, DG1, Arc (DG2),
+        // Meteor Lake, Lunar Lake, Battlemage, Panther Lake
+        for id in [0x0a16, 0x0a1e, 0x1616, 0x9a49, 0x4c8a, 0x4680, 0x46a6, 0xa780, 0x4905, 0x56a0, 0x7d55, 0x64a0, 0xe20b, 0xb080] {
+            assert!(!intel_gen9_to_gen11(id), "{id:#06x}");
+        }
+    }
+
     #[test]
     fn two_entries_are_one_gpu_only_with_the_same_ids_type_driver_and_bus() {
         let stale = g513qy().swap_remove(0);
@@ -337,8 +455,8 @@ mod tests {
     }
 
     /// Against the adapters of the machine running the tests: [`wgpu_choice`] is what wgpu's
-    /// `request_adapter` returns, and [`pick`] returns that adapter too, or a version of it
-    /// exposing more features.
+    /// `request_adapter` returns, and [`pick`] returns that adapter too, a version of it exposing
+    /// more features, or for an Intel Gen 9 to Gen 11 GPU its DirectX 12 entry.
     #[test]
     fn on_this_host_the_choice_is_wgpus_unless_its_driver_is_listed_twice() {
         if wgpu::Instance::enabled_backend_features().is_empty() {
@@ -356,7 +474,10 @@ mod tests {
             let picked = pick(&adapters, None, power).ok().map(|a| Candidate::of(&a, None));
             match (&wgpu_own, &picked) {
                 (Some(wgpu_own), Some(picked)) if wgpu_own != picked => {
-                    assert!(same_gpu_and_driver(wgpu_own, picked) && picked.features > wgpu_own.features, "{power:?}: {picked} instead of {wgpu_own}");
+                    let newer_version = same_gpu_and_driver(wgpu_own, picked) && picked.features > wgpu_own.features;
+                    let intel_dx12 =
+                        wgpu_own.vendor == INTEL && intel_gen9_to_gen11(wgpu_own.device) && picked.backend == Backend::Dx12 && picked.device == wgpu_own.device;
+                    assert!(newer_version || intel_dx12, "{power:?}: {picked} instead of {wgpu_own}");
                 }
                 _ => assert_eq!(picked, wgpu_own, "{power:?}"),
             }
