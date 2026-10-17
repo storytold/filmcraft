@@ -58,7 +58,7 @@ claude mcp add filmcraft -- filmcraft-cli mcp
 
 | Tool | Modes | Purpose |
 |---|---|---|
-| `command_list` | both | every command: id, label, menu, shortcut, params, enabled now (`filter`, `enabled_only`) |
+| `command_list` | both | every command: id, label, menu, shortcut, params, enabled now (`filter`, `enabled_only`); `compact: true` returns only id and label |
 | `command_run` | both | run a command `{id, params}`; edits are undoable |
 | `command_batch` | both | run several commands in order `{steps: [{id, params}], stop_on_error}` → `{completed, failed, results}` |
 | `doc_inspect` | both | the project tree and the active sequence in one call (`project_inspect` + `sequence_inspect`) |
@@ -92,7 +92,7 @@ driven one app can drive the others.
   (lists, inspects, renders, screenshots) run without asking and ask before edits. When you add a
   tool, set them in its `#[tool(...)]` attribute; a test checks every listed tool.
 - **Strict arguments.** An unknown tool argument is a JSON-RPC `-32602` error that names it and the
-  accepted ones (`unknown argument "filtr" for command_list; expected: enabled_only, filter`), not a
+  accepted ones (`unknown argument "filtr" for command_list; expected: compact, enabled_only, filter`), not a
   silently ignored key. `command_run.params` goes to the command unchanged.
 - **Errors.** A failing command is an `isError` result with the engine's message. A line that is not
   JSON gets a `-32700` parse error (id `null`) and the server keeps serving. A command that panics is

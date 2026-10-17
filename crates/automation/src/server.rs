@@ -46,6 +46,9 @@ pub struct ListParams {
     /// Only commands that can run right now.
     #[serde(default)]
     pub enabled_only: Option<bool>,
+    /// Return only command ids and labels.
+    #[serde(default)]
+    pub compact: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -305,13 +308,14 @@ impl FilmcraftMcp {
 impl FilmcraftMcp {
     #[tool(
         title = "List commands",
-        description = "List every command (id, label, menu path, shortcut, parameter doc, enabled now). Menus, shortcuts, panels and timeline gestures all map to these ids.",
+        description = "List every command (id, label, menu path, shortcut, parameter doc, enabled now); set compact: true for only ids and labels. Supports filter and enabled_only.",
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
     )]
     async fn command_list(&self, Parameters(p): Parameters<ListParams>) -> Result<CallToolResult, McpError> {
         let r = self.run("command.list", json!({})).await.map(|v| {
             let f = p.filter.unwrap_or_default().to_ascii_lowercase();
             let only = p.enabled_only.unwrap_or(false);
+            let compact = p.compact.unwrap_or(false);
             Value::Array(
                 v.as_array()
                     .cloned()
@@ -322,6 +326,7 @@ impl FilmcraftMcp {
                         let label = c["label"].as_str().unwrap_or("").to_ascii_lowercase();
                         (f.is_empty() || id.contains(&f) || label.contains(&f)) && (!only || c["enabled"].as_bool() == Some(true))
                     })
+                    .map(|c| if compact { json!({"id": c["id"], "label": c["label"]}) } else { c })
                     .collect(),
             )
         });
@@ -812,7 +817,7 @@ mod tests {
         let r = c.call(2, "command_list", json!({"filtr": "x"})).await;
         assert_eq!(r["error"]["code"], -32602, "{r}");
         let m = r["error"]["message"].as_str().unwrap();
-        assert!(m.contains("\"filtr\"") && m.contains("filter") && m.contains("enabled_only"), "{m}");
+        assert!(m.contains("\"filtr\"") && m.contains("filter") && m.contains("enabled_only") && m.contains("compact"), "{m}");
         let r = c.call(3, "doc_inspect", json!({"verbose": true})).await;
         assert_eq!(r["error"]["code"], -32602, "{r}");
         // command params stay free-form
@@ -835,6 +840,35 @@ mod tests {
         assert!(v["project"].is_object() && v["sequence"].is_object(), "{v}");
         let r = c.call(9, "render_preview", json!({"max_side": 64})).await;
         assert_eq!(r["result"]["content"][0]["type"], "image", "{r}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn command_list_compact_preserves_filtering_and_default_output() {
+        let mut c = Client::start(demo());
+        c.init().await;
+        let list = |r: &Value| serde_json::from_str::<Value>(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+
+        let full = list(&c.call(1, "command_list", json!({})).await);
+        assert_eq!(list(&c.call(2, "command_list", json!({"compact": false})).await), full);
+        let compact = list(&c.call(3, "command_list", json!({"compact": true})).await);
+        assert_eq!(compact.as_array().map(Vec::len), full.as_array().map(Vec::len));
+        for (summary, command) in compact.as_array().unwrap().iter().zip(full.as_array().unwrap()) {
+            assert_eq!(summary, &json!({"id": command["id"], "label": command["label"]}));
+            assert!(summary.get("menu").is_none() && summary.get("shortcut").is_none() && summary.get("params").is_none() && summary.get("enabled").is_none());
+        }
+
+        let full_filtered = list(&c.call(4, "command_list", json!({"filter": "razor", "enabled_only": true})).await);
+        let compact_filtered = list(&c.call(5, "command_list", json!({"filter": "razor", "enabled_only": true, "compact": true})).await);
+        assert_eq!(compact_filtered, json!([{"id": full_filtered[0]["id"], "label": full_filtered[0]["label"]}]));
+        assert_eq!(compact_filtered[0]["id"], "timeline.razor");
+
+        let full_enabled = list(&c.call(6, "command_list", json!({"enabled_only": true})).await);
+        let compact_enabled = list(&c.call(7, "command_list", json!({"enabled_only": true, "compact": true})).await);
+        assert_eq!(
+            compact_enabled,
+            Value::Array(full_enabled.as_array().unwrap().iter().map(|command| json!({"id": command["id"], "label": command["label"]})).collect())
+        );
+        assert_eq!(list(&c.call(8, "command_list", json!({"filter": "not-a-command", "compact": true})).await), json!([]));
     }
 
     /// `filmcraft://document` and `filmcraft://commands` are listed and readable as JSON.
