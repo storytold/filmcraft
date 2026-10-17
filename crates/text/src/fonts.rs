@@ -6,8 +6,9 @@
 //! [`resolve`] maps a family + style name (as stored in projects) to a face and the synthetic
 //! bold/italic needed when the family lacks that style. Unknown families fall back to Inter.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 
 use skrifa::instance::{LocationRef, Size};
 use skrifa::{FontRef, MetadataProvider};
@@ -188,7 +189,7 @@ impl Face {
             .get_or_init(|| match &self.info.data {
                 FaceData::Static(b) => Some(FaceBytes::Static(b)),
                 FaceData::Shared(b) => Some(FaceBytes::Shared(b.clone())),
-                FaceData::File(p) => std::fs::read(p).ok().map(|v| FaceBytes::Shared(Arc::new(v))),
+                FaceData::File(p) => read_font_file(p).ok().map(|v| FaceBytes::Shared(Arc::new(v))),
             })
             .as_ref()
             .map(FaceBytes::get)
@@ -216,14 +217,18 @@ impl Face {
         self.glyph(c).is_some()
     }
     /// Whether the face covers every character of `text`. Unlike [`Face::has_char`], a face whose
-    /// file is not loaded yet is read into a temporary buffer that is dropped afterwards, so
-    /// probing many system faces does not keep every font file in memory.
+    /// file is not loaded yet is answered from [`file_coverage`]: the file is read once per process
+    /// and only its character ranges are kept, so probing many system faces for many characters
+    /// neither keeps every font file in memory nor reads it again for each character.
     pub fn covers_text(&self, text: &str) -> bool {
         if let (FaceData::File(p), None) = (&self.info.data, self.bytes.get()) {
-            let Ok(data) = std::fs::read(p) else { return false };
-            let Ok(font) = FontRef::from_index(&data, self.info.index) else { return false };
-            let charmap = font.charmap();
-            return text.chars().all(|c| charmap.map(c).is_some_and(|g| g.to_u32() != 0));
+            let files = file_coverage(p);
+            let Some(ranges) = usize::try_from(self.info.index).ok().and_then(|i| files.get(i)) else { return false };
+            return text.chars().all(|c| {
+                let c = u32::from(c);
+                let i = ranges.partition_point(|r| r.1 < c);
+                ranges.get(i).is_some_and(|r| r.0 <= c)
+            });
         }
         text.chars().all(|c| self.has_char(c))
     }
@@ -275,6 +280,41 @@ impl Face {
         let Ok(list) = gsub.feature_list() else { return false };
         list.feature_records().iter().any(|r| r.feature_tag().to_be_bytes() == *tag)
     }
+}
+
+/// Inclusive ranges of the code points a face maps to a glyph, sorted.
+type Coverage = Vec<(u32, u32)>;
+
+/// The coverage of every face in a font file (indexed like [`FaceInfo::index`]), read once per
+/// process; a file that cannot be read or parsed covers nothing and is not read again.
+fn file_coverage(p: &std::path::Path) -> Arc<Vec<Coverage>> {
+    static FILES: Mutex<BTreeMap<PathBuf, Arc<Vec<Coverage>>>> = Mutex::new(BTreeMap::new());
+    if let Some(c) = FILES.lock().unwrap_or_else(PoisonError::into_inner).get(p) {
+        return c.clone();
+    }
+    // read outside the lock: other threads keep probing files already known
+    let data = read_font_file(p).unwrap_or_default();
+    let faces = skrifa::raw::FileRef::new(&data).map(|file| file.fonts().map(|f| f.map(|f| coverage(&f)).unwrap_or_default()).collect()).unwrap_or_default();
+    FILES.lock().unwrap_or_else(PoisonError::into_inner).entry(p.to_path_buf()).or_insert_with(|| Arc::new(faces)).clone()
+}
+
+fn coverage(font: &FontRef<'_>) -> Coverage {
+    let mut cps: Vec<u32> = font.charmap().mappings().map(|(c, _)| c).collect();
+    cps.sort_unstable();
+    let mut ranges: Coverage = Vec::new();
+    for c in cps {
+        match ranges.last_mut() {
+            Some(r) if c <= r.1.saturating_add(1) => r.1 = r.1.max(c),
+            _ => ranges.push((c, c)),
+        }
+    }
+    ranges
+}
+
+fn read_font_file(p: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    #[cfg(test)]
+    tests::count_read(p);
+    std::fs::read(p)
 }
 
 struct Db {
@@ -487,7 +527,31 @@ pub fn fallback_for(c: char, prefer: FaceId) -> FaceId {
             return f.id;
         }
     }
-    prefer
+    system_fallback(c).unwrap_or(prefer)
+}
+
+/// An installed face for a character no loaded face covers (Arabic in Inter text on Windows,
+/// #1475). The system folders are scanned on first need and probed with [`Face::covers_text`],
+/// upright regular faces first; the answer, found or not, is kept per character so each one costs
+/// the probe once per process.
+fn system_fallback(c: char) -> Option<FaceId> {
+    static FOUND: Mutex<BTreeMap<char, Option<FaceId>>> = Mutex::new(BTreeMap::new());
+    if let Some(found) = FOUND.lock().unwrap_or_else(PoisonError::into_inner).get(&c) {
+        return *found;
+    }
+    scan_system();
+    let faces = all_faces();
+    let mut unloaded: Vec<&Arc<Face>> = faces.iter().filter(|f| f.info.origin == "system" && f.bytes.get().is_none()).collect();
+    unloaded.sort_by_key(|f| (f.info.italic, f.info.weight.abs_diff(400)));
+    let found = first_covering(&unloaded, c);
+    FOUND.lock().unwrap_or_else(PoisonError::into_inner).insert(c, found);
+    found
+}
+
+fn first_covering(faces: &[&Arc<Face>], c: char) -> Option<FaceId> {
+    let mut buf = [0u8; 4];
+    let s = c.encode_utf8(&mut buf);
+    faces.iter().find(|f| f.covers_text(s)).map(|f| f.id)
 }
 
 #[cfg(test)]
@@ -570,6 +634,21 @@ mod tests {
         assert!(l.glyphs.iter().all(|g| g.id != 0), "{:?}", l.glyphs);
     }
 
+    /// Without craft-fonts, Arabic in Inter text is drawn with an installed face that covers it
+    /// (Arial / Tahoma / Segoe UI on Windows, Geeza Pro on macOS), even one never loaded before (#1475).
+    #[test]
+    fn arabic_falls_back_to_an_installed_font() {
+        let text = "مرحبا بالعالم";
+        let l = crate::layout(text, &crate::TextStyle { size: 40.0, ..Default::default() }, &Default::default());
+        scan_system();
+        if !all_faces().iter().any(|f| f.info.origin != "bundled" && f.covers_text("مرحبابالعلم")) {
+            eprintln!("SKIPPED: no installed or craft-fonts face covers Arabic");
+            return;
+        }
+        assert!(!l.glyphs.is_empty());
+        assert!(l.glyphs.iter().all(|g| g.id != 0), "{:?}", l.glyphs);
+    }
+
     #[test]
     fn metrics_and_coverage() {
         let f = face(resolve("Inter", "Regular").face);
@@ -580,6 +659,55 @@ mod tests {
         assert!(f.has_char('A') && f.has_char('Ж'));
         assert!(!f.has_char('\u{5d0}'), "Inter has no Hebrew");
         assert!(f.has_feature(b"liga") || f.has_feature(b"calt"));
+    }
+
+    static READS: Mutex<BTreeMap<PathBuf, usize>> = Mutex::new(BTreeMap::new());
+
+    pub(super) fn count_read(p: &std::path::Path) {
+        *READS.lock().unwrap_or_else(PoisonError::into_inner).entry(p.to_path_buf()).or_default() += 1;
+    }
+
+    fn reads(p: &std::path::Path) -> usize {
+        READS.lock().unwrap_or_else(PoisonError::into_inner).get(p).copied().unwrap_or(0)
+    }
+
+    /// Probing installed faces for characters none of them covers reads each font file once per
+    /// process, not once per character (a long run of rare characters stalled layout, #1478).
+    #[test]
+    fn system_probe_reads_each_file_once() {
+        let file = |name: &str, bytes: &[u8]| {
+            let path = std::env::temp_dir().join(format!("filmcraft-probe-{name}-{}.ttf", std::process::id()));
+            std::fs::write(&path, bytes).expect("write temp font");
+            path
+        };
+        let paths = [file("inter", INTER_REGULAR), file("mono", JETBRAINS_MONO_REGULAR)];
+        let faces: Vec<Arc<Face>> = paths
+            .iter()
+            .enumerate()
+            .map(|(id, p)| {
+                let info = FaceInfo {
+                    family: "Probe".into(),
+                    style: "Regular".into(),
+                    weight: 400,
+                    italic: false,
+                    index: 0,
+                    data: FaceData::File(p.clone()),
+                    origin: "system",
+                };
+                Arc::new(Face { id, info, bytes: OnceLock::new(), shaper: OnceLock::new() })
+            })
+            .collect();
+        let faces: Vec<&Arc<Face>> = faces.iter().collect();
+        // Hebrew: in neither face; then the same character again; then one both cover
+        for c in "\u{5d0}\u{5d1}\u{5d2}\u{5d3}\u{5d4}\u{5d0}\u{5d0}".chars() {
+            assert_eq!(first_covering(&faces, c), None, "{c}");
+        }
+        assert_eq!(first_covering(&faces, 'A'), Some(0));
+        for p in &paths {
+            assert_eq!(reads(p), 1, "{}", p.display());
+            let _ = std::fs::remove_file(p);
+        }
+        assert!(faces.iter().all(|f| f.bytes.get().is_none()), "probing must not keep the file bytes");
     }
 
     #[test]
