@@ -271,6 +271,24 @@ pub(crate) const EXPORT_SAVE_DIALOGS: [(&str, &str, &str); 7] = [
     ("file.exportSelectionProject", "FilmCraft Project", "fcproj"),
 ];
 
+/// Interchange exports that share conversion-report completion feedback.
+pub(crate) fn is_interchange_export(id: &str) -> bool {
+    matches!(
+        id,
+        "file.exportInterchange" | "file.exportEdl" | "file.exportFcp7Xml" | "file.exportFcpxml" | "file.exportOtio" | "file.exportAaf" | "file.exportOmf"
+    )
+}
+
+/// Completion text after the engine has written the interchange file successfully.
+pub(crate) fn interchange_export_status(result: &Value) -> String {
+    let path = result["path"].as_str().unwrap_or_default();
+    if result["report"].as_array().is_some_and(|report| !report.is_empty()) {
+        tlf!("Exported with conversion notes; see Events: {path}", path)
+    } else {
+        tlf!("Exported {path}", path)
+    }
+}
+
 pub struct FilmcraftApp {
     pub session: Session,
     pub ui: UiState,
@@ -1370,6 +1388,7 @@ impl FilmcraftApp {
             p.insert("path".into(), json!(path));
             let r = app.session.execute(&id, Value::Object(p)).map_err(|e| e.to_string());
             app.ui.status = match &r {
+                Ok(result) if is_interchange_export(&id) => interchange_export_status(result),
                 Ok(_) => tlf!("Exported {path}", path),
                 Err(e) => e.clone(),
             };

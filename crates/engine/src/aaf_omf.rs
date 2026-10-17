@@ -370,10 +370,6 @@ fn mixdown(s: &Session, seq: ItemId, path: &str) -> Result<MixdownVideo> {
     Ok(MixdownVideo { path: path.to_string(), start: Tick::ZERO, duration: dur, width: q.settings.width, height: q.settings.height })
 }
 
-fn report_json(r: &filmcraft_interchange::Report) -> Vec<String> {
-    r.entries.iter().map(|e| if e.count > 1 { format!("{} (×{})", e.message, e.count) } else { e.message.clone() }).collect()
-}
-
 fn split(path: &str) -> (String, String) {
     let p = std::path::Path::new(path);
     let dir = p.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
@@ -415,7 +411,8 @@ pub fn export_aaf(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let (bytes, report) = filmcraft_interchange::aaf::export(&s.project, seq, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
     s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-    Ok(json!({"path": path, "bytes": bytes.len(), "mediaFiles": files, "report": report_json(&report)}))
+    let report = crate::interchange::log_export_report(s, cmd, &report);
+    Ok(json!({"path": path, "bytes": bytes.len(), "mediaFiles": files, "report": report}))
 }
 
 /// `file.exportOmf`
@@ -439,7 +436,8 @@ pub fn export_omf(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Other("the OMF file would exceed 2 GB; use separate audio files or trim the audio".into()));
     }
     s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-    Ok(json!({"path": path, "bytes": bytes.len(), "mediaFiles": files, "report": report_json(&report)}))
+    let report = crate::interchange::log_export_report(s, cmd, &report);
+    Ok(json!({"path": path, "bytes": bytes.len(), "mediaFiles": files, "report": report}))
 }
 
 /// `file.importAaf` (and OMF): import a document as sequences.

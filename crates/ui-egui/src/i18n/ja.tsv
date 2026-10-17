@@ -476,6 +476,7 @@
 	Render audio clip effects	オーディオクリップのエフェクトをレンダリングする
 	Breakout to mono	モノラルに分割する
 	Exported {path}	{path} を書き出しました
+	Exported with conversion notes; see Events: {path}	{path} を書き出しました。変換に関する注記はイベントで確認できます。
 	Select a clip to view its metadata.	クリップを選択すると、メタデータを表示します。
 	Clip: {name}	クリップ: {name}
 	Open	開く
