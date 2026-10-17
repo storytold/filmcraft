@@ -23,6 +23,17 @@ All cue times are exact `Tick`s. Milliseconds convert exactly (1 ms = 254 016 00
 frames map through `FrameRate::FPS_29_97`. `Document::snap_to_frames` snaps cues to a sequence's
 frame grid (the engine does this on import) and removes overlaps.
 
+### TTML cue identifiers
+
+TTML and DFXP writers keep valid explicit cue IDs verbatim unless a style, region or earlier cue
+already uses them. Missing, invalid or repeated IDs receive deterministic replacements that also
+avoid valid IDs on later cues. Emitted cue, style, region and speaker IDs are unique across the
+document. Unicode spelling is preserved without normalization.
+
+Identifier validation follows the `NCName` production in [Namespaces in XML 1.0, third edition
+(2009), §3](https://www.w3.org/TR/2009/REC-xml-names-20091208/#NT-NCName), using the character
+ranges in [XML 1.0, fifth edition (2008), §2.3](https://www.w3.org/TR/2008/REC-xml-20081126/#NT-NameStartChar).
+
 ### TTML speaker metadata
 
 TTML and DFXP exports define each distinct speaker label once in the document head and refer to

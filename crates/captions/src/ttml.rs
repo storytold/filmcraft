@@ -123,12 +123,53 @@ fn inline(text: &str) -> String {
 }
 
 fn is_ncname(s: &str) -> bool {
+    // XML 1.0 Fifth Edition [4]/[4a], excluding ':' for NCName (Namespaces in XML [4]).
+    let start = |c| {
+        matches!(
+            c,
+            'A'..='Z'
+                | '_'
+                | 'a'..='z'
+                | '\u{c0}'..='\u{d6}'
+                | '\u{d8}'..='\u{f6}'
+                | '\u{f8}'..='\u{2ff}'
+                | '\u{370}'..='\u{37d}'
+                | '\u{37f}'..='\u{1fff}'
+                | '\u{200c}'..='\u{200d}'
+                | '\u{2070}'..='\u{218f}'
+                | '\u{2c00}'..='\u{2fef}'
+                | '\u{3001}'..='\u{d7ff}'
+                | '\u{f900}'..='\u{fdcf}'
+                | '\u{fdf0}'..='\u{fffd}'
+                | '\u{10000}'..='\u{effff}'
+        )
+    };
     let mut c = s.chars();
-    c.next().is_some_and(|f| f.is_alphabetic() || f == '_') && c.all(|x| x.is_alphanumeric() || matches!(x, '_' | '-' | '.'))
+    c.next().is_some_and(start) && c.all(|x| start(x) || matches!(x, '-' | '.' | '0'..='9' | '\u{b7}' | '\u{300}'..='\u{36f}' | '\u{203f}'..='\u{2040}'))
 }
 
-fn cue_id(cue: &Cue, index: usize) -> String {
-    cue.id.as_deref().filter(|x| is_ncname(x)).map(str::to_string).unwrap_or_else(|| format!("c{}", index + 1))
+fn cue_ids(doc: &Document) -> Vec<String> {
+    // Reserve every valid explicit ID before allocating fallbacks, including IDs on later cues.
+    let reserved: HashSet<&str> = ["s1", "r1"].into_iter().chain(doc.cues.iter().filter_map(|cue| cue.id.as_deref()).filter(|id| is_ncname(id))).collect();
+    let mut used: HashSet<String> = ["s1".into(), "r1".into()].into_iter().collect();
+    doc.cues
+        .iter()
+        .enumerate()
+        .map(|(index, cue)| {
+            if let Some(id) = cue.id.as_deref().filter(|id| is_ncname(id))
+                && used.insert(id.to_string())
+            {
+                return id.to_string();
+            }
+            let mut id = format!("c{}", index.saturating_add(1));
+            // Each collision consumes a distinct reserved or used ID, so this loop is bounded by their combined size.
+            while reserved.contains(id.as_str()) || used.contains(&id) {
+                id.push('_');
+            }
+            used.insert(id.clone());
+            id
+        })
+        .collect()
 }
 
 /// Write `doc` as TTML. `rate` (IMSC1 only) makes times exact frame offsets; `lang` is the
@@ -150,8 +191,9 @@ pub fn write(doc: &Document, flavor: Flavor, rate: Option<FrameRate>, lang: &str
     }
     o.push_str(&format!(" xml:lang=\"{}\">\n", esc(if lang.is_empty() { "en" } else { lang })));
     // Keep agent identifiers distinct from the IDs already emitted for cues, style and region.
+    let cue_ids = cue_ids(doc);
     let mut ids: HashSet<String> = ["s1".into(), "r1".into()].into_iter().collect();
-    ids.extend(doc.cues.iter().enumerate().map(|(i, c)| cue_id(c, i)));
+    ids.extend(cue_ids.iter().cloned());
     let mut speakers = Vec::new();
     let mut speaker_ids = HashMap::new();
     for speaker in doc.cues.iter().filter_map(|c| c.speaker.as_deref()) {
@@ -178,8 +220,7 @@ pub fn write(doc: &Document, flavor: Flavor, rate: Option<FrameRate>, lang: &str
     o.push_str("    <styling>\n      <style xml:id=\"s1\" tts:color=\"white\" tts:fontFamily=\"proportionalSansSerif\" tts:fontSize=\"100%\" tts:textAlign=\"center\"/>\n    </styling>\n");
     o.push_str("    <layout>\n      <region xml:id=\"r1\" tts:origin=\"10% 10%\" tts:extent=\"80% 80%\" tts:displayAlign=\"after\"/>\n    </layout>\n");
     o.push_str("  </head>\n  <body region=\"r1\" style=\"s1\">\n    <div>\n");
-    for (i, c) in doc.cues.iter().enumerate() {
-        let id = cue_id(c, i);
+    for (c, id) in doc.cues.iter().zip(cue_ids) {
         let agent = c.speaker.as_deref().and_then(|s| speaker_ids.get(s)).map(|id| format!(" ttm:role=\"x-speaker\" ttm:agent=\"{id}\"")).unwrap_or_default();
         o.push_str(&format!(
             "      <p xml:id=\"{}\" begin=\"{}\" end=\"{}\"{agent}>{}</p>\n",
