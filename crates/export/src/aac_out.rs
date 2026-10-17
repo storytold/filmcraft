@@ -13,7 +13,7 @@ use filmcraft_render::SourceProvider;
 use filmcraft_time::TimeRange;
 
 use crate::audio_out::AudioOut;
-use crate::{AudioEncoder, ExportError, ExportSettings, Format, Out, Progress, Result, audio_factories};
+use crate::{AudioEncoder, ExportError, ExportSettings, Format, Out, Progress, Result, Stage, audio_factories};
 
 /// Whether `path` asks for a raw ADTS stream rather than an MPEG-4 file.
 pub(crate) fn is_adts_path(path: &str) -> bool {
@@ -124,7 +124,12 @@ pub(crate) fn export(
         progress.total.store(frames.div_ceil(chunk as u64).max(1), Ordering::Relaxed);
         progress.set_status(format!("Exporting audio ({})", settings.format.label()));
     }
-    a.measure(settings, sources, &cancelled)?;
+    progress.enter_stage(Stage::Loudness);
+    a.measure(settings, sources, &cancelled, &|| progress.made_progress(Stage::Loudness))?;
+    if cancelled() {
+        return Err(ExportError::Cancelled);
+    }
+    progress.enter_stage(Stage::Audio);
     *progress.loudness.lock().unwrap_or_else(|e| e.into_inner()) = a.loudness;
     let mut sink = if is_adts_path(&settings.path) {
         let CodecConfig::Aac(cfg) = &entry.codec else {
@@ -145,10 +150,15 @@ pub(crate) fn export(
             return Err(ExportError::Cancelled);
         }
         sink.write(enc.encode(&planar)?)?;
+        progress.made_progress(Stage::Audio);
         if !settings.part_of_batch {
             progress.done.fetch_add(1, Ordering::Relaxed);
         }
     }
+    if cancelled() {
+        return Err(ExportError::Cancelled);
+    }
+    progress.enter_stage(Stage::Finish);
     sink.write(enc.flush()?)?;
     let n = sink.finish(settings)?;
     if settings.part_of_batch {

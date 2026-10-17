@@ -1098,10 +1098,15 @@ fn loudness_normalization_corrects_limiter_loss_and_bounds_impossible_targets() 
         let mut audio = audio_out::AudioOut::new(p.clone(), seq, &settings, range).unwrap();
         let chunks = Cell::new(0);
         audio
-            .measure(&settings, &sources, &|| {
-                chunks.set(chunks.get() + 1);
-                false
-            })
+            .measure(
+                &settings,
+                &sources,
+                &|| {
+                    chunks.set(chunks.get() + 1);
+                    false
+                },
+                &|| {},
+            )
             .unwrap();
         let report = audio.loudness.unwrap();
         let result = audio.rest(&sources).unwrap();
@@ -1131,7 +1136,7 @@ fn loudness_normalization_corrects_limiter_loss_and_bounds_impossible_targets() 
             false
         }
     };
-    assert!(matches!(audio.measure(&settings, &sources, &cancel), Err(ExportError::Cancelled)));
+    assert!(matches!(audio.measure(&settings, &sources, &cancel, &|| {}), Err(ExportError::Cancelled)));
     assert_eq!(chunks.get(), 3);
     assert_eq!(reads_at_cancel.get(), Some(reads.load(Ordering::Relaxed)));
 }

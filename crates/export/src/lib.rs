@@ -673,9 +673,46 @@ pub struct Progress {
     pub loudness: Mutex<Option<LoudnessReport>>,
     /// Readings of `done` over time, for [`Progress::eta`].
     pace: Mutex<pace::Pace>,
+    activity: AtomicU64,
+    stage: AtomicU64,
+    aborted: AtomicBool,
 }
 
 impl Progress {
+    /// Describe the current blocking operation without claiming that work completed.
+    pub fn enter_stage(&self, stage: Stage) {
+        self.stage.store(stage as u64, Ordering::Relaxed);
+    }
+
+    /// Record real completed work, including loudness chunks before the first video frame.
+    pub fn made_progress(&self, stage: Stage) {
+        self.enter_stage(stage);
+        self.activity.fetch_add(1, Ordering::Release);
+    }
+
+    pub fn activity_count(&self) -> u64 {
+        self.activity.load(Ordering::Acquire)
+    }
+
+    pub fn active_stage(&self) -> Stage {
+        Stage::ALL.get(self.stage.load(Ordering::Relaxed) as usize).copied().unwrap_or(Stage::Setup)
+    }
+
+    /// Freeze a failed job's status and request cancellation. Never wait for a status mutex:
+    /// the worker being diagnosed may be wedged while holding one. The host's terminal result
+    /// remains authoritative even when these best-effort display fields cannot be updated.
+    pub fn abort(&self, message: &str) {
+        self.aborted.store(true, Ordering::Release);
+        self.cancel.store(true, Ordering::Release);
+        if let Ok(mut error) = self.error.try_lock() {
+            *error = Some(message.to_owned());
+        }
+        if let Ok(mut status) = self.status.try_lock() {
+            *status = message.to_owned();
+        }
+        self.finished.store(true, Ordering::Release);
+    }
+
     pub fn fraction(&self) -> f32 {
         let t = self.total.load(Ordering::Relaxed).max(1);
         self.done.load(Ordering::Relaxed) as f32 / t as f32
@@ -686,6 +723,17 @@ impl Progress {
     /// `None` until a second of readings shows progress, and once the job is done or finished.
     pub fn eta(&self) -> Option<std::time::Duration> {
         self.eta_at(web_time::Instant::now())
+    }
+
+    /// Best-effort ETA for host diagnostics: an unresponsive worker must not block a job list.
+    pub fn try_eta(&self) -> Option<std::time::Duration> {
+        let (done, total) = (self.done.load(Ordering::Relaxed), self.total.load(Ordering::Relaxed));
+        if self.finished.load(Ordering::Acquire) || done >= total {
+            return None;
+        }
+        let mut pace = self.pace.try_lock().ok()?;
+        pace.observe(web_time::Instant::now(), done);
+        pace.eta(total - done)
     }
 
     /// [`Progress::eta`] at a given time (tests, and hosts with a clock of their own).
@@ -699,7 +747,13 @@ impl Progress {
         pace.eta(total - done)
     }
     fn set_status(&self, s: impl Into<String>) {
-        *self.status.lock().unwrap_or_else(|e| e.into_inner()) = s.into();
+        if self.aborted.load(Ordering::Acquire) {
+            return;
+        }
+        let mut status = self.status.lock().unwrap_or_else(|e| e.into_inner());
+        if !self.aborted.load(Ordering::Acquire) {
+            *status = s.into();
+        }
     }
 }
 
@@ -1839,7 +1893,9 @@ pub fn encode_still_with(format: Format, rgba: Vec<u8>, w: u32, h: u32, alpha: b
 
 /// Run an export (blocking; call from a worker thread).
 pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, sources: &dyn SourceProvider, progress: &Progress) -> Result<Report> {
+    progress.enter_stage(Stage::Setup);
     settings.validate()?;
+    progress.made_progress(Stage::Setup);
     if stepped(settings.format) {
         let mut ex = Exporter::new(project.clone(), seq, settings, progress)?;
         loop {
@@ -1881,7 +1937,12 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
                 progress.total.store(frames.div_ceil(chunk as u64).max(1), Ordering::Relaxed);
                 progress.set_status(format!("Exporting audio ({})", settings.format.label()));
             }
-            a.measure(settings, sources, &cancelled)?;
+            progress.enter_stage(Stage::Loudness);
+            a.measure(settings, sources, &cancelled, &|| progress.made_progress(Stage::Loudness))?;
+            if cancelled() {
+                return Err(ExportError::Cancelled);
+            }
+            progress.enter_stage(Stage::Audio);
             *progress.loudness.lock().unwrap_or_else(|e| e.into_inner()) = a.loudness;
             let mut out = Out::create(settings)?;
             let io = |e: std::io::Error| ExportError::Io(e.to_string());
@@ -1901,10 +1962,15 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
                     }
                 }
                 out.write_all(&buf).map_err(io)?;
+                progress.made_progress(Stage::Audio);
                 if !settings.part_of_batch {
                     progress.done.fetch_add(1, Ordering::Relaxed);
                 }
             }
+            if cancelled() {
+                return Err(ExportError::Cancelled);
+            }
+            progress.enter_stage(Stage::Finish);
             match &mut writer {
                 AudioWriter::Pcm(_) => out.write_all(pcm::pad(frames, ch, fmt)).map_err(io)?,
                 AudioWriter::Flac(enc) => {
@@ -1947,12 +2013,25 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
                     return Err(ExportError::Cancelled);
                 }
                 let end = (f + batch).min(f1);
+                progress.enter_stage(Stage::Render);
                 if let Some(enc) = gif.as_mut() {
-                    let frames: Vec<Vec<u8>> = (f..end).into_par_iter().map(|fi| pipe.frame(fi, sources).0).collect();
+                    let frames: Vec<Vec<u8>> = (f..end)
+                        .into_par_iter()
+                        .map(|fi| {
+                            let frame = pipe.frame(fi, sources).0;
+                            progress.made_progress(Stage::Render);
+                            frame
+                        })
+                        .collect();
                     for (fi, rgba) in (f..end).zip(frames) {
+                        if cancelled() {
+                            return Err(ExportError::Cancelled);
+                        }
+                        progress.enter_stage(Stage::Encode);
                         let img = image::RgbaImage::from_raw(w, h, rgba).ok_or_else(|| ExportError::Encode("frame".into()))?;
                         let delay = image::Delay::from_numer_denom_ms(u32::from(gif_delay_cs(pipe.rate, fi - f0)) * 10, 1);
                         enc.encode_frame(image::Frame::from_parts(img, 0, 0, delay)).map_err(|e| ExportError::Encode(e.to_string()))?;
+                        progress.made_progress(Stage::Encode);
                     }
                 } else {
                     let written: Vec<Result<u64>> = (f..end)
@@ -1967,7 +2046,12 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
                                 settings.quality,
                                 settings.exr_compression,
                             )?;
-                            write_output(settings, &pcm::image_sequence_path(&settings.path, (fi - f0) as u64, count), data)
+                            if cancelled() {
+                                return Err(ExportError::Cancelled);
+                            }
+                            let written = write_output(settings, &pcm::image_sequence_path(&settings.path, (fi - f0) as u64, count), data)?;
+                            progress.made_progress(Stage::Mux);
+                            Ok(written)
                         })
                         .collect();
                     for r in written {
@@ -1978,6 +2062,10 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
                 f = end;
             }
             if let Some(enc) = gif {
+                if cancelled() {
+                    return Err(ExportError::Cancelled);
+                }
+                progress.enter_stage(Stage::Finish);
                 let buf = gif_buf.clone();
                 drop(enc);
                 let data = std::mem::take(&mut *buf.0.lock().unwrap_or_else(|e| e.into_inner()));
@@ -1990,6 +2078,9 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
             return Err(ExportError::Unsupported(format!("{:?} must run as a stepped export", settings.format)));
         }
     };
+    if cancelled() {
+        return Err(ExportError::Cancelled);
+    }
     let secs = t0.elapsed().as_secs_f64();
     if !settings.part_of_batch {
         progress.finished.store(true, Ordering::Relaxed);

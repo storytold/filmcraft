@@ -196,6 +196,8 @@ pub fn parse_rate(v: &Value) -> Option<FrameRate> {
 }
 
 /// The preset named in `p` (or None), and the settings: preset ⊕ `settings` ⊕ flat overrides.
+/// `settings.loudnessLufs` enables normalization and overrides the canonical nested loudness
+/// settings; a flat `loudnessLufs` wins over both. Both shorthands must be valid when supplied.
 pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option<ExportPreset>, ExportSettings)> {
     let preset = match str_p(p, "preset") {
         Some(name) => Some(s.export_presets.find(name).ok_or_else(|| bad(cmd, format!("no export preset named `{name}` (see export.presets.list)")))?),
@@ -315,9 +317,12 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
     if let Some(v) = str_p(p, "captionSidecar") {
         settings.caption_sidecar = (!v.is_empty() && v != "none").then(|| v.to_ascii_lowercase());
     }
-    if let Some(v) = f64_p(p, "loudnessLufs") {
-        settings.effects.loudness.enabled = true;
-        settings.effects.loudness.target_lufs = v;
+    for (params, name) in [(p.get("settings"), "settings.loudnessLufs"), (Some(p), "loudnessLufs")] {
+        if let Some(value) = params.and_then(|params| params.get("loudnessLufs")) {
+            let target = value.as_f64().filter(|target| target.is_finite()).ok_or_else(|| bad(cmd, format!("{name}: expected a finite LUFS number")))?;
+            settings.effects.loudness.enabled = true;
+            settings.effects.loudness.target_lufs = target;
+        }
     }
     settings.validate().map_err(|e| bad(cmd, e.to_string()))?;
     Ok((preset, settings))
@@ -443,7 +448,7 @@ fn output_path(s: &Session, p: &Value, seq: ItemId, settings: &ExportSettings, s
 }
 
 /// Write the caption sidecar (`settings.caption_sidecar`) next to `path` for `range` of `seq`.
-fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportSettings) -> Result<Option<String>> {
+fn write_sidecar(services: &dyn crate::Services, project: &Project, seq: ItemId, settings: &ExportSettings) -> Result<Option<String>> {
     let Some(kind) = settings.caption_sidecar.as_deref() else { return Ok(None) };
     let q = project.sequence(seq).ok_or(EngineError::NoSequence)?;
     let Some(track) = q.caption_tracks.first() else { return Ok(None) };
@@ -458,24 +463,34 @@ fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportS
         filmcraft_captions::write(&doc, format, filmcraft_captions::WriteOptions { drop_frame: q.settings.drop_frame, rate: Some(q.settings.frame_rate) });
     let ext = if format == filmcraft_captions::Format::WebVtt { "vtt" } else { kind };
     let path = format!("{}.{ext}", settings.path.rsplit_once('.').map_or(settings.path.as_str(), |x| x.0));
-    s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    services.write_file(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     Ok(Some(path))
 }
 
-/// Run an export of `seq` in `project` as a background job (or now, with `wait`); returns the job id.
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "export_watchdog.rs"]
+mod watchdog;
+
+/// Run an export of `seq` in `project` as a supervised background job; `wait` waits for its
+/// terminal result, never directly runs or joins a worker that may be stalled.
 pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut settings: ExportSettings, label: String, wait: bool) -> Result<u64> {
     let format = settings.format;
     if !filmcraft_export::available(format) {
         return Err(EngineError::Other(format!("{} export is not available (no encoder registered)", format.label())));
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    let policy = watchdog::Policy::configured().map_err(EngineError::Other)?;
     if s.services.export_in_memory() {
         let services = s.services.clone();
         settings.sink = Some(filmcraft_export::OutputSink(Arc::new(move |path: &str, data: Vec<u8>| services.write_file(path, &data))));
     }
-    if let Some(dir) = Path::new(&settings.path).parent().filter(|d| !d.as_os_str().is_empty() && !s.services.export_in_memory()) {
-        let _ = std::fs::create_dir_all(dir);
+    #[cfg(target_arch = "wasm32")]
+    {
+        if let Some(dir) = Path::new(&settings.path).parent().filter(|d| !d.as_os_str().is_empty() && !s.services.export_in_memory()) {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        write_sidecar(s.services.as_ref(), &project, seq, &settings)?;
     }
-    write_sidecar(s, &project, seq, &settings)?;
     let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
     let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
     // Export always renders full-resolution media, whatever the proxy toggle says.
@@ -490,23 +505,64 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
         s.stepped.push(crate::SteppedJob { job: id, exporter, provider, progress: prog, result: res });
         return Ok(id);
     }
-    let run = move || {
-        let r = filmcraft_export::export(&project, seq, &settings, &provider, &prog).map_err(|e| e.to_string());
-        *offline.lock().unwrap_or_else(|x| x.into_inner()) = provider.offline_used();
-        if let Err(e) = &r {
-            *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
-            prog.finished.store(true, Ordering::Relaxed);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let worker_progress = prog.clone();
+        let services = s.services.clone();
+        let offline = offline.clone();
+        let run = move || {
+            worker_progress.enter_stage(filmcraft_export::Stage::Setup);
+            // Canonicalization and setup I/O can also stall. Keep them inside the supervised
+            // worker; an abandoned worker checks cancellation before any subsequent writes.
+            // Virtual service namespaces do not share physical output ownership.
+            let _lease = if services.export_in_memory() { None } else { Some(watchdog::OutputLease::acquire(&settings.path)?) };
+            let cancelled = || worker_progress.cancel.load(Ordering::Acquire);
+            if cancelled() {
+                return Err("cancelled".into());
+            }
+            if let Some(dir) = Path::new(&settings.path).parent().filter(|d| !d.as_os_str().is_empty() && !services.export_in_memory()) {
+                std::fs::create_dir_all(dir).map_err(|e| format!("I/O error creating {}: {e}", dir.display()))?;
+            }
+            worker_progress.made_progress(filmcraft_export::Stage::Setup);
+            if cancelled() {
+                return Err("cancelled".into());
+            }
+            write_sidecar(services.as_ref(), &project, seq, &settings).map_err(|e| e.to_string())?;
+            worker_progress.made_progress(filmcraft_export::Stage::Setup);
+            if cancelled() {
+                return Err("cancelled".into());
+            }
+            let result = filmcraft_export::export(&project, seq, &settings, &provider, &worker_progress).map_err(|e| e.to_string());
+            *offline.lock().unwrap_or_else(|x| x.into_inner()) = provider.offline_used();
+            result
+        };
+        s.jobs.push(job);
+        if let Err(error) = watchdog::start(prog.clone(), res.clone(), wait, run, policy) {
+            prog.abort(&error);
+            *res.lock().unwrap_or_else(|x| x.into_inner()) = Some(Err(error.clone()));
+            return Err(EngineError::Other(error));
         }
-        *res.lock().unwrap_or_else(|x| x.into_inner()) = Some(r);
-    };
-    let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
-    s.jobs.push(job);
-    if wait || cfg!(target_arch = "wasm32") {
-        run();
-    } else {
-        std::thread::Builder::new().name("filmcraft-export".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
+        Ok(id)
     }
-    Ok(id)
+    #[cfg(target_arch = "wasm32")]
+    {
+        let run = move || {
+            let r = filmcraft_export::export(&project, seq, &settings, &provider, &prog).map_err(|e| e.to_string());
+            if let Err(e) = &r {
+                *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
+                prog.finished.store(true, Ordering::Relaxed);
+            }
+            *res.lock().unwrap_or_else(|x| x.into_inner()) = Some(r);
+        };
+        let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
+        s.jobs.push(job);
+        if wait || cfg!(target_arch = "wasm32") {
+            run();
+        } else {
+            std::thread::Builder::new().name("filmcraft-export".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
+        }
+        Ok(id)
+    }
 }
 
 /// Last-resort guard for a background job body (export, previews, proxies, …): a panic marks the
@@ -628,8 +684,9 @@ fn offline_media_json(s: &Session, job: u64) -> Value {
 
 fn item_json(s: &Session, it: &QueueItem) -> Value {
     let job = it.job.and_then(|id| s.jobs.iter().find(|j| j.id == id));
-    let (progress, status_text) = match job {
-        Some(j) => (j.progress.fraction() as f64, j.progress.status.lock().unwrap_or_else(|e| e.into_inner()).clone()),
+    let snapshot = job.map(crate::Job::to_json);
+    let (progress, status_text) = match &snapshot {
+        Some(j) => (j["progress"].as_f64().unwrap_or(0.0), j["status"].as_str().unwrap_or_default().to_owned()),
         None => (if it.status == QueueStatus::Done { 1.0 } else { 0.0 }, String::new()),
     };
     json!({
@@ -642,7 +699,7 @@ fn item_json(s: &Session, it: &QueueItem) -> Value {
         "range": it.settings.range,
         "status": it.status,
         "progress": progress,
-        "etaSeconds": job.filter(|_| it.status == QueueStatus::Encoding).and_then(|j| j.progress.eta()).map(|d| d.as_secs_f64()),
+        "etaSeconds": snapshot.as_ref().filter(|_| it.status == QueueStatus::Encoding).and_then(|j| j["etaSeconds"].as_f64()),
         "statusText": status_text,
         "job": it.job,
         "error": it.error,
@@ -667,7 +724,10 @@ pub fn pump_queue(s: &mut Session, wait: bool) {
             let it = &mut s.export_queue.items[i];
             match r {
                 Ok(_) => it.status = QueueStatus::Done,
-                Err(e) if e == "cancelled" => it.status = QueueStatus::Cancelled,
+                Err(e) if e == "cancelled" || e.starts_with("cancelled;") => {
+                    it.status = QueueStatus::Cancelled;
+                    it.error = Some(e);
+                }
                 Err(e) => {
                     it.status = QueueStatus::Failed;
                     it.error = Some(e);

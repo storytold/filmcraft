@@ -418,6 +418,24 @@ impl SlateSource {
     pub fn reason(&self) -> OfflineReason {
         self.reason
     }
+
+    fn cached_frame(&self, w: u32, h: u32, render: impl FnOnce() -> Vec<u8>) -> Arc<VideoFrame> {
+        {
+            let last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(f) = last.as_ref()
+                && f.width == w
+                && f.height == h
+            {
+                return f.clone();
+            }
+        }
+        // Rendering/conversion uses Rayon, which may run another request for this slate while
+        // waiting for child work. Never hold the cache lock across it. Concurrent cache misses
+        // may render twice; every caller still receives its requested dimensions and pixels.
+        let f = Arc::new(VideoFrame::rgba8(w, h, render()));
+        *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some(f.clone());
+        f
+    }
 }
 
 impl MediaSource for SlateSource {
@@ -428,16 +446,7 @@ impl MediaSource for SlateSource {
         let v = self.info.video.as_ref().ok_or(MediaError::NoStream("video"))?;
         let s = req.scale.clamp(1.0 / 64.0, 1.0);
         let (w, h) = (((v.width as f32 * s).round() as u32).max(2), ((v.height as f32 * s).round() as u32).max(2));
-        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(f) = last.as_ref()
-            && f.width == w
-            && f.height == h
-        {
-            return Ok(Arc::new((**f).clone().with_pts(req.time)));
-        }
-        let px = filmcraft_render::offline::slate_rgba8(w as usize, h as usize, &self.name, self.reason);
-        let f = Arc::new(VideoFrame::rgba8(w, h, px));
-        *last = Some(f.clone());
+        let f = self.cached_frame(w, h, || filmcraft_render::offline::slate_rgba8(w as usize, h as usize, &self.name, self.reason));
         Ok(Arc::new((*f).clone().with_pts(req.time)))
     }
     fn audio(&self, _start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
@@ -571,6 +580,10 @@ impl MediaSource for ProxySource {
         self.audio_from.as_ref().unwrap_or(&self.proxy).audio_stream(stream, start, frames, sample_rate)
     }
 }
+
+#[cfg(test)]
+#[path = "media_pool_concurrency_tests.rs"]
+mod concurrency_tests;
 
 #[cfg(test)]
 mod tests {

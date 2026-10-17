@@ -82,7 +82,8 @@ SUBCOMMANDS
                                 a format (h264|hevc|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff|aac, guessed
                                 from the extension); --range entire|inOut|workArea, or a custom
                                 range in seconds; --settings is ExportSettings JSON merged over the
-                                preset; --scale renders at a fraction of the frame size (0.5 =
+                                preset; settings.loudnessLufs enables normalization to that LUFS
+                                target (overriding settings.effects.loudness); --scale renders at a fraction of the frame size (0.5 =
                                 half); --quality 0-100 for the formats that take one; --no-audio
                                 leaves the sound out; --queue adds to the export queue and runs it
                                 instead. Offline media (missing, made offline, unreadable) renders

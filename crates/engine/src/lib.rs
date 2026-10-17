@@ -471,15 +471,23 @@ impl Job {
     pub fn to_json(&self) -> Value {
         use std::sync::atomic::Ordering;
         let res = self.result.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        // A failed worker may still hold its display/status lock. Terminal results are the
+        // authoritative diagnostic; neither synchronous export nor jobs/queue polling may
+        // re-enter a blocking status or ETA lock after the watchdog returned.
+        let status = match &res {
+            Some(Err(error)) => error.clone(),
+            _ => self.progress.status.try_lock().map(|s| s.clone()).unwrap_or_else(|_| self.progress.active_stage().name().to_owned()),
+        };
+        let eta = if res.is_some() { None } else { self.progress.try_eta() };
         serde_json::json!({
             "id": self.id,
             "label": self.label,
             "progress": self.progress.fraction(),
             // seconds left at the job's recent speed; null until it can tell
-            "etaSeconds": self.progress.eta().map(|d| d.as_secs_f64()),
+            "etaSeconds": eta.map(|d| d.as_secs_f64()),
             "done": self.progress.done.load(Ordering::Relaxed),
             "total": self.progress.total.load(Ordering::Relaxed),
-            "status": self.progress.status.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            "status": status,
             "finished": res.is_some(),
             "result": match res { Some(Ok(r)) => serde_json::to_value(r).unwrap_or_default(), Some(Err(e)) => serde_json::json!({"error": e}), None => Value::Null },
         })
