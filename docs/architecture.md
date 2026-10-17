@@ -316,9 +316,11 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   placed like any layer. Other standard effects, effect and opacity masks, adjustment layers,
   nested sequences (except a plain one, whose own layers go into the plan: same frame size and
   colour settings as its parent, nothing on the clip that changes the picture, every layer inside
-  blended normally) and non-dissolve transitions are rendered on the CPU for that layer or frame
-  and handed to the GPU as an image (a layer image keeps its clip's blend mode), so both paths
-  give the same picture. Setting `FILMCRAFT_CPU_COMPOSITE=1`
+  blended normally) and transitions outside Cross Dissolve, Dip to Black/White, Push, Linear/Soft/
+  Clock/Radial Wipe, Iris Round/Box/Diamond/Cross, Barn Doors, Inset and Wipe are rendered on the
+  CPU for that layer or frame and handed to the GPU as an image (a layer image keeps its clip's
+  blend mode), so both paths give the same picture. Setting
+  `FILMCRAFT_CPU_COMPOSITE=1`
   forces the CPU path in the desktop app.
 - **CPU compositor shortcuts.** The CPU compositor, which is what export runs, works on
   premultiplied linear `f32` images, 33 MB at 1080p, so what it does not allocate, convert or mix

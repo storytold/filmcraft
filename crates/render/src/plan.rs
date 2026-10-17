@@ -7,14 +7,14 @@
 //! them as a [`LayerFx`]: their parameters evaluated at the frame's time, run by the GPU on the
 //! clip's working image before Motion places it, in the CPU's order (effects → Motion → Opacity /
 //! blend). Anything the shaders don't cover yet — other standard effects, masks, adjustment
-//! layers, nested sequences, transitions other than dissolves, dips and Push — is rendered on the CPU
-//! for that layer (or the whole frame) and handed over as a pre-composited image, so the GPU path
-//! is always exact with respect to the CPU reference.
+//! layers, nested sequences, and transitions outside the dissolve, dip, Push and field-wipe set are
+//! rendered on the CPU for that layer (or the whole frame) and handed over as a pre-composited
+//! image. The GPU path is always exact with respect to the CPU reference.
 //!
-//! A Push transition is planned as ordered [`PlanStep`] operations on isolated clip inputs: each
-//! side is drawn into its own image, the two are pushed together, and the result is composited (Normal) over
-//! the canvas of the lower tracks, which is preserved for the blends above it. [`execute_cpu`]
-//! runs the same steps on the CPU and is the reference.
+//! Push and field-wipe transitions are planned as ordered [`PlanStep`] operations on isolated clip
+//! inputs: each side is drawn into its own image, the transition combines them, and the result is
+//! composited (Normal) over the lower tracks. [`execute_cpu`] runs the same steps on the CPU and is
+//! the reference.
 
 use std::sync::Arc;
 
@@ -166,6 +166,31 @@ fn simple_transition(id: &str) -> bool {
     matches!(id, "cross_dissolve" | "dip_to_black" | "dip_to_white")
 }
 
+/// Transitions that can be planned as GPU operations instead of rendering a full CPU frame.
+pub fn gpu_transition_supported(id: &str) -> bool {
+    matches!(
+        id,
+        "push"
+            | "linear_wipe"
+            | "soft_wipe"
+            | "clock_wipe"
+            | "radial_wipe"
+            | "iris_round"
+            | "iris_box"
+            | "iris_diamond"
+            | "iris_cross"
+            | "barn_doors"
+            | "inset"
+            | "wipe"
+    )
+}
+
+/// Whether a transition remains on the GPU playback path (including transitions expressed as
+/// ordinary compositing layers).
+pub fn transition_uses_gpu(id: &str) -> bool {
+    simple_transition(id) || gpu_transition_supported(id)
+}
+
 /// The standard effects of a media clip if the GPU can draw it (any blend mode, no opacity masks,
 /// every enabled standard effect unmasked and with a GPU implementation; empty without effects or
 /// with effects off). None: the clip is rendered on the CPU.
@@ -213,11 +238,15 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
     layers.finish(w, h)
 }
 
-/// Whether [`plan_frame`] hands the frame at `t` back as one CPU image ([`FramePlan::Image`]). A
-/// GPU renderer gains nothing on such a frame, so a caller with only a few of them (the export's
-/// pool) can render it on the CPU without taking one.
+/// Whether export should render frame `t` on the CPU instead of taking a pooled GPU renderer.
+/// Export's GPU renderer accepts layer plans, while transition composites use the CPU reference.
 pub fn is_cpu_frame(project: &Project, seq_id: ItemId, t: Tick) -> bool {
-    project.sequence(seq_id).is_none_or(|seq| whole_frame_on_cpu(project, seq, t))
+    project.sequence(seq_id).is_none_or(|seq| {
+        whole_frame_on_cpu(project, seq, t)
+            // Export's pooled GPU renderer handles layer plans only. A transition is either a
+            // CPU reference frame or a composite plan, so don't take a renderer for it.
+            || seq.video_tracks.iter().filter(|tr| tr.enabled).any(|tr| tr.transitions.iter().any(|x| x.range().contains(t) && !simple_transition(&x.effect.effect)))
+    })
 }
 
 /// The frames [`plan_frame`] does not plan: an HDR / wide-gamut sequence composites and converts
@@ -237,7 +266,7 @@ pub(crate) fn layered_at(project: &Project, seq: &Sequence, t: Tick) -> bool {
             continue;
         }
         if let Some(trn) = tr.transitions.iter().find(|x| x.range().contains(t)) {
-            if !simple_transition(&trn.effect.effect) && trn.effect.effect != "push" {
+            if !transition_uses_gpu(&trn.effect.effect) {
                 return false;
             }
             if [trn.from, trn.to].into_iter().flatten().filter_map(|c| tr.item(c)).any(adjustment) {
@@ -267,7 +296,7 @@ fn push_tracks(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, 
             let a = trn.from.and_then(|id| tr.item(id)).filter(|i| i.enabled);
             let b = trn.to.and_then(|id| tr.item(id)).filter(|i| i.enabled);
             match trn.effect.effect.as_str() {
-                "push" => {
+                id if gpu_transition_supported(id) => {
                     let mut inputs = [Vec::new(), Vec::new()];
                     for (slot, item) in inputs.iter_mut().zip([a, b]) {
                         if let Some(item) = item {
@@ -321,7 +350,7 @@ fn nest_is_plain(project: &Project, seq: &Sequence, nested: &Sequence, ft: Tick)
     nested.settings.color == seq.settings.color
         && (nested.settings.width, nested.settings.height) == (seq.settings.width, seq.settings.height)
         && layered_at(project, nested, ft)
-        && !nested.video_tracks.iter().any(|tr| tr.enabled && tr.transitions.iter().any(|t| t.range().contains(ft) && !simple_transition(&t.effect.effect)))
+        && !nested.video_tracks.iter().any(|tr| tr.enabled && tr.transitions.iter().any(|t| t.range().contains(ft) && !transition_uses_gpu(&t.effect.effect)))
         && nested.video_tracks.iter().filter(|tr| tr.enabled).all(|tr| {
             tr.transitions.iter().any(|x| x.range().contains(ft))
                 || tr.item_at(ft).filter(|i| i.enabled).is_none_or(|i| crate::opacity_blend(i, i.effect_time_at(ft)).1 == Blend::Normal)
