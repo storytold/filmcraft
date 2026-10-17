@@ -660,7 +660,7 @@
 	(no sequences)	(nenhuma sequência)
 	(no clips)	(nenhum clipe)
 	Show Transport Controls	Mostrar controles de transporte
-	Loop	Loop
+	Loop	Repetir
 	Multi-Camera Audio Follows Video	Áudio multicâmera segue o vídeo
 	Multi-Camera Record	Gravação multicâmera
 	Multi-Camera Selection Top Down	Seleção multicâmera de cima para baixo
@@ -805,7 +805,7 @@
 	Clip Name	Nome do clipe
 	File Name	Nome do arquivo
 	File Path	Caminho do arquivo
-	Status	Status
+	Status	Estado
 	Match file properties:	Propriedades de arquivo que devem corresponder:
 	File Extension	Extensão do arquivo
 	Clip ID (fingerprint)	ID do clipe (impressão digital)
@@ -878,7 +878,7 @@
 	Reverb	Reverberação
 	Stereo Width	Largura estéreo
 	Remixing music to a target duration is not available yet. Trim the clip and add a crossfade instead.	Ainda não é possível remixar a música para uma duração desejada. Apare o clipe e adicione uma transição cruzada.
-	Pan	Pan
+	Pan	Panorâmica
 	Auto-Match	Correspondência automática
 	Not matched yet	Ainda sem correspondência
 	Matches each of the {n} clips on its own.	Faz a correspondência de cada um dos {n} clipes separadamente.
@@ -886,7 +886,7 @@
 	Untagged	Sem marcação
 	Sensitivity	Sensibilidade
 	Reduce By	Reduzir em
-	Fades	Fades
+	Fades	Transições graduais
 	Generate Keyframes	Gerar quadros-chave
 	Clip Volume	Volume do clipe
 	(no clip selected)	(nenhum clipe selecionado)
@@ -1042,7 +1042,7 @@
 	Small Caps	Versaletes
 	Underline	Sublinhado
 	OpenType	OpenType
-	Kerning	Kerning
+	Kerning	Ajuste entre letras
 	Ligatures	Ligaduras
 	Shape	Forma
 	Size	Tamanho
@@ -1457,7 +1457,7 @@
 	Center Point (Longitude)	Ponto central (longitude)
 	Center Split	Divisão central
 	Center of Sphere	Centro da esfera
-	Cents	Cents
+	Cents	Centésimos de semitom
 	Change to Color	Alterar para cor
 	Changes are copied in the background a moment after each edit. If FilmCraft quits unexpectedly, they are offered the next time it starts.	As alterações são copiadas em segundo plano logo após cada edição. Se o FilmCraft fechar inesperadamente, elas serão oferecidas na próxima vez que ele for iniciado.
 	Channel	Canal
@@ -1585,12 +1585,12 @@
 	Default language	Idioma padrão
 	Default paragraph direction	Direção de parágrafo padrão
 	Default subtitle and text font	Fonte padrão de legendas e texto
-	Delay	Delay
-	Delay 1	Delay 1
-	Delay 2	Delay 2
-	Delay 3	Delay 3
-	Delay 4	Delay 4
-	Delay and Echo	Delay e eco
+	Delay	Atraso
+	Delay 1	Atraso 1
+	Delay 2	Atraso 2
+	Delay 3	Atraso 3
+	Delay 4	Atraso 4
+	Delay and Echo	Atraso e eco
 	Delete files older than	Excluir arquivos com mais de
 	Delete oldest files when the cache exceeds	Excluir os arquivos mais antigos quando o cache ultrapassar
 	Delete…	Excluir…
@@ -1688,7 +1688,7 @@
 	Exponential Fade	Fade exponencial
 	Extended Dynamic Range Monitoring	Monitoramento de faixa dinâmica estendida
 	FFT Filter	Filtro FFT
-	Fade	Fade
+	Fade	Desvanecimento
 	Fade Out	Fade de saída
 	Faded Matte	Matte desbotado
 	Falloff	Atenuação
@@ -1724,7 +1724,7 @@
 	Flare Brightness	Brilho do reflexo
 	Flare Center	Centro do reflexo
 	Flare Color	Cor do reflexo
-	Flash	Flash
+	Flash	Clarão
 	Flicker	Cintilação
 	Flickers	Cintilações
 	Flip Motion	Movimento de virada
@@ -1857,7 +1857,7 @@
 	Highlight Tint	Tonalidade dos realces
 	Highlights Lightness	Luminosidade dos realces
 	Highpass	Passa-altas
-	Hindi	Hindi
+	Hindi	Híndi
 	Hindi digits	Dígitos hindi
 	Horizontal 16:9	Horizontal 16:9
 	Horizontal Alignment	Alinhamento horizontal
@@ -1931,7 +1931,7 @@
 	Large Hall	Salão grande
 	Large Trim Offset	Deslocamento de aparagem grande
 	Large Volume Adjustment	Ajuste de volume grande
-	Latch	Latch
+	Latch	Trava
 	Layer Name	Nome da camada
 	Layers	Camadas
 	Leave Color	Manter cor
@@ -1988,9 +1988,9 @@
 	Logo Cutout	Recorte de logotipo
 	Long Shadow	Sombra longa
 	Look-Ahead Time	Tempo de antecipação
-	Loudness	Loudness
-	Loudness Maximizer	Maximizador de loudness
-	Loudness Meter	Medidor de loudness
+	Loudness	Sonoridade
+	Loudness Maximizer	Maximizador de sonoridade
+	Loudness Meter	Medidor de sonoridade
 	Louver	Persiana
 	Low	Baixa
 	Low Frequency Cut	Corte de baixas frequências
@@ -2055,7 +2055,7 @@
 	Memory	Memória
 	Metadata & Timecode Burn-in	Gravação de metadados e timecode na imagem
 	Method	Método
-	Metrics Kerning	Kerning métrico
+	Metrics Kerning	Ajuste métrico entre letras
 	Mid	Médios
 	Mid Point	Ponto médio
 	Midtone Blue Balance	Balanço de azul nos meios-tons
@@ -2132,7 +2132,7 @@
 	Offset (Turbulence)	Deslocamento (turbulência)
 	Offset From	Deslocar de
 	Offset To	Deslocar até
-	Omni	Omni
+	Omni	Omnidirecional
 	On	Ativado
 	On Original Image	Sobre a imagem original
 	On Transparent	Sobre transparente
@@ -2163,7 +2163,7 @@
 	Paint On White	Pintar sobre branco
 	Paint Style	Estilo de pintura
 	Paint Surface	Superfície de pintura
-	Pan (Y Axis)	Pan (eixo Y)
+	Pan (Y Axis)	Panorâmica (eixo Y)
 	Panel Wipe	Cortina de painéis
 	Panels	Painéis
 	Panner - Ambisonics	Panorâmico - Ambisonics
@@ -2555,7 +2555,7 @@
 	Top Center	Superior central
 	Top Left	Superior esquerdo
 	Top Right	Superior direito
-	Touch	Touch
+	Touch	Toque
 	Track Matte Key	Chave de matte de faixa
 	Transcription	Transcrição
 	Transcription preferences	Preferências de transcrição
@@ -2903,7 +2903,7 @@
 	WebVTT (.vtt)	WebVTT (.vtt)
 	Title	Título
 	Creator	Autor
-	Copyright	Copyright
+	Copyright	Direitos autorais
 	Image	Imagem
 	Frame Size	Tamanho do quadro
 	Match Source	Igual à origem
@@ -3515,7 +3515,7 @@
 	Preview File Format:	Formato de arquivo de pré-visualização:
 	Working Color Space:	Espaço de cores de trabalho:
 	Projection:	Projeção:
-	Layout:	Layout:
+	Layout:	Disposição:
 	Captured View:	Visualização capturada:
 	Video Previews	Pré-visualizações de vídeo
 	No Fields (Progressive Scan)	Sem campos (varredura progressiva)
@@ -3534,7 +3534,7 @@
 	Configure…	Configurar…
 	Not supported in FilmCraft yet	Ainda não suportado no FilmCraft
 	FilmCraft always composites in linear light	O FilmCraft sempre compõe em luz linear
-	Loop marked range	Loop do intervalo marcado
+	Loop marked range	Repetir o intervalo marcado
 	Play Source	Reproduzir origem
 	Source Play/Stop	Reproduzir/parar origem
 	Stop Source	Parar origem
