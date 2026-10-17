@@ -36,6 +36,9 @@ const PROPS_VALUE_R: f32 = PROPS_NAV_X + NAV_STEP + 12.0;
 
 /// Timeline time at which the clip shows media time `m` (where a keyframe sits in the sequence).
 fn timeline_time_of(it: &TrackItem, m: Tick) -> Tick {
+    if it.is_remapped() {
+        return it.timeline_time_of(m);
+    }
     let offset = if it.reverse { it.source_out() - m - Tick(1) } else { m - it.source_in };
     it.start + Tick((offset.0 as f64 / it.speed.abs().max(1e-6)).round() as i64)
 }
@@ -200,6 +203,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             for idx in order {
                 let e = &it.effects[idx];
                 let Some(def) = e.def() else { continue };
+                // a sound's copy of its picture's Time Remapping follows the picture's and is edited there
+                if *kind == TrackKind::Audio && def.kind == filmcraft_project::EffectKind::Video {
+                    continue;
+                }
                 let key = format!("{}:{}", clip.0, idx);
                 let open = !app.ui.collapsed_fx.contains(&key);
                 let selected = app.session.state.selected_effect.as_ref().is_some_and(|s| s.clip == clip && s.index(&it.effects) == Some(idx));
@@ -442,10 +449,15 @@ fn keyframe_nav(
     actions: &mut Vec<(String, Value)>,
 ) -> bool {
     let t = app.tokens;
+    // (a remapped clip's playhead can sit a hair off the keyframe it is on)
+    let frame = app.session.active_sequence().map_or(Tick(1), |q| q.settings.frame_rate.frame_duration());
+    let on_key = param.and_then(|p| it.keyframe_near(p, mt, frame));
+    let from = on_key.unwrap_or(mt);
     if let Some(param) = param.filter(|p| p.is_animated()) {
-        for (d, target, name, tip) in
-            [(-1.0, param.prev_keyframe(mt), "prevKeyframe", "Go to previous keyframe"), (1.0, param.next_keyframe(mt), "nextKeyframe", "Go to next keyframe")]
-        {
+        for (d, target, name, tip) in [
+            (-1.0, param.prev_keyframe(from), "prevKeyframe", "Go to previous keyframe"),
+            (1.0, param.next_keyframe(from), "nextKeyframe", "Go to next keyframe"),
+        ] {
             // the arrows almost the row's height to click, as Premiere's
             let r = Rect::from_center_size(at + vec2(d * NAV_STEP, 0.0), vec2(14.0, 20.0));
             let resp = ui.interact(r, id.with(name), Sense::click()).on_hover_text(crate::i18n::t(tip));
@@ -456,13 +468,22 @@ fn keyframe_nav(
             if resp.clicked()
                 && let Some(k) = target
             {
-                actions.push(("playhead.set".into(), json!({"time": timeline_time_of(it, k).0})));
+                // a remapped clip's keyframes sit between frames: the playhead (which snaps to frames)
+                // goes to the nearest one, within half a frame of the keyframe, so it is on it
+                let mut at = timeline_time_of(it, k);
+                if it.is_remapped()
+                    && let Some(rate) = app.session.active_sequence().map(|q| q.settings.frame_rate)
+                    && it.range().contains(rate.snap_nearest(at))
+                {
+                    at = rate.snap_nearest(at);
+                }
+                actions.push(("playhead.set".into(), json!({"time": at.0})));
             }
         }
     }
     let r = Rect::from_center_size(at, vec2(15.0, 15.0));
     let resp = ui.interact(r.expand(1.5), id.with("key"), Sense::click()).on_hover_text(crate::i18n::t(tip));
-    if param.is_some_and(|p| p.keyframes.iter().any(|k| k.time == mt)) {
+    if on_key.is_some() {
         icons::paint(ui.painter(), r, Icon::Keyframe, t.hot_text);
     } else {
         let s = 4.7;
@@ -576,7 +597,9 @@ pub(crate) fn param_row(
     x += 14.0;
     let vx = r.min.x + (r.width() * 0.5).max(150.0);
     row_label(ui, pos2(x, r.center().y), crate::i18n::t(pd.label), vx - 6.0 - x, Tokens::ui(12.0), t.text);
-    let value = param.value_at(mt);
+    // on a keyframe (on a remapped clip, a hair off it), its value: a drag carries on from it
+    let frame = app.session.active_sequence().map_or(Tick(1), |q| q.settings.frame_rate.frame_duration());
+    let value = param.value_at(it.keyframe_near(param, mt, frame).unwrap_or(mt));
     let mut vui = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(Rect::from_min_max(pos2(vx, r.min.y + 1.0), pos2(r.max.x - 26.0, r.max.y - 1.0)))
@@ -587,7 +610,8 @@ pub(crate) fn param_row(
     match (&pd.kind, &value) {
         (ParamKind::Float { min, max, soft_min, soft_max, unit, decimals }, ParamValue::Float(v)) => {
             let speed = ((soft_max - soft_min) / 400.0).max(0.01);
-            let (_, nv) = crate::widgets::hot_number(&mut vui, id, *v, speed, (*min, *max), *decimals as usize, unit, &t);
+            let (resp, nv) = crate::widgets::hot_number(&mut vui, id, *v, speed, (*min, *max), *decimals as usize, unit, &t);
+            app.auto.add(&format!("effectControls.{}.{}.value", e.effect, pkey), resp.rect, pd.label);
             if let Some(nv) = nv {
                 set = Some(json!(nv));
             }
@@ -1090,8 +1114,16 @@ pub(crate) fn graph_rows(
     row_line(ui, velr, lane, &t);
     let speed = it.speed.abs().max(1e-6);
     let dur = it.duration.0.max(1) as f64;
-    let to_media = |f: f64| it.source_in + Tick((f * dur * speed) as i64);
-    let to_f = |m: Tick| ((m - it.source_in).0 as f64 / speed / dur) as f32;
+    // a remapped clip's media runs along its speed curve (built once for the whole graph)
+    let map = it.time_map();
+    let to_media = |f: f64| match &map {
+        Some(m) => m.advance(it.source_in, Tick((f * dur) as i64)),
+        None => it.source_in + Tick((f * dur * speed) as i64),
+    };
+    let to_f = |m: Tick| match &map {
+        Some(map) => (map.span(it.source_in, m) / dur) as f32,
+        None => ((m - it.source_in).0 as f64 / speed / dur) as f32,
+    };
     let x_of = |f: f32| lane.min.x + f * lane.width();
     // samples: one row of curve values per sample (a point's NaN "auto" coordinate is skipped)
     let n = (lane.width() / 2.0).max(8.0) as usize;

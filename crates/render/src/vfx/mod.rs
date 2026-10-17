@@ -172,6 +172,14 @@ impl FxEnv for ItemEnv<'_> {
         ] {
             h = (h ^ v).wrapping_mul(0x0100_0000_01b3);
         }
+        // a remapped clip's frames follow its speed keyframes too
+        if let Some(p) = self.item.effect("time_remap").filter(|_| self.item.is_remapped()).and_then(|e| e.param("speed")) {
+            for k in &p.keyframes {
+                for v in [k.time.0 as u64, k.value.as_f64().unwrap_or(0.0).to_bits(), k.interp as u64, k.in_influence.to_bits(), k.out_influence.to_bits()] {
+                    h = (h ^ v).wrapping_mul(0x0100_0000_01b3);
+                }
+            }
+        }
         h
     }
 }

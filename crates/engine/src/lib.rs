@@ -208,6 +208,10 @@ pub struct History {
     /// Key of the last [`Session::edit_merged`] step: a continuous gesture (a fader drag) with the
     /// same key folds into that one undo step.
     pub merge_key: Option<String>,
+    /// The media time a Time Remapping speed drag writes its keyframe at, with the drag's merge key:
+    /// every step of the drag retimes the clip, so the media under the playhead moves and would
+    /// take a new keyframe each step.
+    pub remap_anchor: Option<(String, Tick)>,
 }
 
 impl History {
@@ -837,6 +841,7 @@ impl Session {
         let mut p = (*self.project).clone();
         let mut st = self.state.clone();
         let r = f(&mut p, &mut st)?;
+        follow_time_remapping(Some(&*self.project), &mut p);
         self.refuse_self_nesting(&p)?;
         let old = std::mem::replace(&mut self.project, Arc::new(p));
         self.history.undo.push((label.to_string(), old));
@@ -863,6 +868,7 @@ impl Session {
         let mut p = (*self.project).clone();
         let mut st = self.state.clone();
         let r = f(&mut p, &mut st)?;
+        follow_time_remapping(Some(&*self.project), &mut p);
         self.refuse_self_nesting(&p)?;
         self.project = Arc::new(p);
         self.state = st;
@@ -1171,6 +1177,23 @@ impl Session {
     }
 }
 
+/// Time Remapping follows every edit ([`filmcraft_edit::remap`]): in each sequence that `before`
+/// (the project as it was) doesn't share with `p`, a static Time Remapping speed shows its clip's
+/// speed and a changed one retimes the clip. With no `before` (a project just opened), every
+/// sequence is brought in line.
+pub(crate) fn follow_time_remapping(before: Option<&Project>, p: &mut Project) {
+    for (id, pi) in p.items.iter_mut() {
+        let filmcraft_project::ItemKind::Sequence(seq) = &mut pi.kind else { continue };
+        let old = match before.and_then(|b| b.items.get(id)).map(|o| &o.kind) {
+            Some(filmcraft_project::ItemKind::Sequence(o)) if Arc::ptr_eq(o, seq) => continue,
+            Some(filmcraft_project::ItemKind::Sequence(o)) => Some(o.clone()),
+            _ => None,
+        };
+        let min = seq.settings.frame_rate.frame_duration().max(Tick(1));
+        filmcraft_edit::remap::follow_time_remapping(old.as_deref(), Arc::make_mut(seq), min);
+    }
+}
+
 /// The earliest media time clips of an item may show: a subclip that restricts trims starts at its
 /// In point, everything else at 0.
 pub fn media_start(p: &Project, id: ItemId) -> Tick {
@@ -1312,6 +1335,8 @@ mod split_edit_ripple_trim_tests;
 mod stored_paths_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod time_remap_tests;
 #[cfg(test)]
 mod timeline_move_tests;
 #[cfg(test)]

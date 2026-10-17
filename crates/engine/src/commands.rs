@@ -1835,7 +1835,14 @@ fn build() -> Vec<CommandSpec> {
                         if unlocked.is_empty() {
                             return Err(edit::EditError::Locked.into());
                         }
-                        edit::set_speed_group(q, &unlocked, speed, reverse, ripple, ctx)?;
+                        // a Time Remapped clip's dialog shows its average speed (to two decimals): OK
+                        // without changing it (to pick a Time Interpolation) leaves the ramp alone
+                        let unchanged = unlocked
+                            .iter()
+                            .all(|c| q.find_item(*c).is_some_and(|(_, it)| it.is_remapped() && (it.speed.abs() - speed).abs() < 5e-5 && it.reverse == reverse));
+                        if !unchanged {
+                            edit::set_speed_group(q, &unlocked, speed, reverse, ripple, ctx)?;
+                        }
                     }
                     for c in &sel {
                         if let (Some(m), Some((_, it))) = (interp, q.find_item_mut(*c)) {
@@ -3030,9 +3037,29 @@ fn build() -> Vec<CommandSpec> {
                 if bool_p(p, "begin").unwrap_or(false) {
                     s.history.merge_key = None;
                 }
-                let keyframes = s.edit_sequence_as("Change Effect Parameter", merge.as_deref(), |q, _, _| {
+                // a Time Remapping speed drag keeps writing the keyframe its first step wrote (each
+                // step retimes the clip, which moves the media under the playhead)
+                let is_remap = s
+                    .active_sequence()
+                    .and_then(|q| q.find_item(c))
+                    .and_then(|(_, it)| match &eff {
+                        Value::Number(n) => it.effects.get(n.as_u64().unwrap_or(0) as usize),
+                        Value::String(sid) => it.effects.iter().find(|e| &e.effect == sid),
+                        _ => None,
+                    })
+                    .is_some_and(|e| e.effect == "time_remap");
+                let anchor = match (&s.history.remap_anchor, &merge) {
+                    (Some((k, t)), Some(m)) if at.is_none() && is_remap && k == m && s.history.merge_key.as_ref() == Some(m) => Some(*t),
+                    _ => None,
+                };
+                // the playhead was on the clip: a speed keyframe written there takes it along (below)
+                let on_clip = s.active_sequence().and_then(|q| q.find_item(c)).is_some_and(|(_, it)| it.range().contains(ph));
+                let (keyframes, written_at) = s.edit_sequence_as("Change Effect Parameter", merge.as_deref(), |q, _, _| {
+                    let frame = q.settings.frame_rate.frame_duration();
                     let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
-                    let mt = it.source_time_at(at.unwrap_or_else(|| ph.clamp(it.start, (it.end() - Tick(1)).max(it.start))));
+                    let mt = anchor.unwrap_or_else(|| it.source_time_at(at.unwrap_or_else(|| ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)))));
+                    // on a remapped clip the playhead may sit a hair off the keyframe it is on
+                    let probe = (at.is_none() && anchor.is_none() && it.is_remapped()).then(|| it.clone());
                     let e = match &eff {
                         Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
                         Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
@@ -3064,8 +3091,9 @@ fn build() -> Vec<CommandSpec> {
                     {
                         e.params.insert(pid.clone(), filmcraft_project::Param::new(d.default.clone()));
                     }
-                    let (keyframes, v) = {
+                    let (keyframes, v, mt) = {
                         let prm = crate::masks::target_param(e, &pq, &pid).ok_or_else(|| bad("effects.setParam", format!("no param `{pid}`")))?;
+                        let mt = probe.as_ref().and_then(|it| it.keyframe_near(prm, mt, frame)).unwrap_or(mt);
                         let v = json_to_param(&prm.value, &val).ok_or_else(|| bad("effects.setParam", "value has the wrong type"))?;
                         let keyframes = if keyframe {
                             // the stopwatch and the value in one step
@@ -3075,7 +3103,7 @@ fn build() -> Vec<CommandSpec> {
                             prm.set_at(mt, v.clone());
                             prm.keyframes.len()
                         };
-                        (keyframes, v)
+                        (keyframes, v, mt)
                     };
                     if e.effect == "ultra_key"
                         && pid == "setting"
@@ -3091,8 +3119,28 @@ fn build() -> Vec<CommandSpec> {
                             }
                         }
                     }
-                    Ok(keyframes)
+                    Ok((keyframes, mt))
                 })?;
+                s.history.remap_anchor = merge.filter(|_| is_remap).map(|m| (m, written_at));
+                // A speed keyframe retimes the clip, moving the frame it sits on along the timeline:
+                // the playhead goes with it, so the Program monitor keeps the frame being changed,
+                // Effect Controls keeps showing the keyframe's speed (a drag carries on from it) and
+                // the next change at the playhead edits the same keyframe. The playhead snaps to
+                // frames: the nearest one keeps it within half a frame of the keyframe, which is
+                // what counts as on it (`TrackItem::keyframe_near`).
+                let rate = s.sequence_rate();
+                if is_remap
+                    && at.is_none()
+                    && on_clip
+                    && keyframes > 0
+                    && let Some(t) = s.active_sequence().and_then(|q| q.find_item(c)).map(|(_, it)| {
+                        let t = it.timeline_time_of(written_at).clamp(it.start, (it.end() - Tick(1)).max(it.start));
+                        let near = rate.snap_nearest(t);
+                        if it.range().contains(near) { near } else { t }
+                    })
+                {
+                    s.set_playhead(t);
+                }
                 // 0 keyframes: the value is static (`time` was not used)
                 Ok(json!({"keyframes": keyframes}))
             }
@@ -3479,8 +3527,11 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
         s.history.merge_key = None;
     }
     s.edit_sequence_as(label, merge.as_deref(), |q, _, _| {
+        let frame = q.settings.frame_rate.frame_duration();
         let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
         let mt_now = it.source_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
+        // on a remapped clip the playhead may sit a hair off the keyframe it is on
+        let probe = it.is_remapped().then(|| it.clone());
         let e = match &eff {
             Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
             Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
@@ -3491,7 +3542,8 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
         match op {
             "add" => {
                 // toggle: remove if a keyframe sits at the playhead, else add
-                if !prm.remove_keyframe_at(mt_now) {
+                let on = probe.as_ref().and_then(|it| it.keyframe_near(prm, mt_now, frame)).unwrap_or(mt_now);
+                if !prm.remove_keyframe_at(on) {
                     prm.add_keyframe(mt_now);
                 }
             }
@@ -4351,7 +4403,8 @@ fn schema_backup_path(path: &str, schema: u32) -> String {
 }
 
 /// Make `proj` the session's project (fresh history, media pool and editor state).
-fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
+fn install_project(s: &mut Session, mut proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
+    crate::follow_time_remapping(None, &mut proj);
     let proxies = s.media.use_proxies();
     s.media = std::sync::Arc::new(crate::MediaPool::default());
     s.media.set_use_proxies(proxies);

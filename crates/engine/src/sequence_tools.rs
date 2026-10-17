@@ -282,7 +282,11 @@ pub fn timeline_time_of(it: &TrackItem, src: Tick) -> Option<Tick> {
     if rel_src < Tick::ZERO || rel_src >= total {
         return None;
     }
-    let t = it.start + Tick((rel_src.0 as f64 / speed).floor() as i64);
+    let t = if it.is_remapped() {
+        it.start + Tick(if it.reverse { it.timeline_span(src + Tick(1), it.source_out()) } else { it.timeline_span(it.source_in, src) }.floor() as i64)
+    } else {
+        it.start + Tick((rel_src.0 as f64 / speed).floor() as i64)
+    };
     (t < it.end()).then_some(t)
 }
 
