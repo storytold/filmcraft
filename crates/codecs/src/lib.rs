@@ -167,6 +167,25 @@ pub fn register_reader_opener(f: filmcraft_media::ReaderOpener) {
     }
 }
 
+fn path_registry() -> &'static RwLock<Vec<filmcraft_media::PathOpener>> {
+    static R: std::sync::OnceLock<RwLock<Vec<filmcraft_media::PathOpener>>> = std::sync::OnceLock::new();
+    R.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Openers that take a native file by its path, tried before any reader or byte opener. None are
+/// built in: platform media SDKs that read files themselves register them (Blackmagic RAW).
+pub fn path_openers() -> Vec<filmcraft_media::PathOpener> {
+    path_registry().read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Register a path opener (tried before previously registered ones).
+pub fn register_path_opener(f: filmcraft_media::PathOpener) {
+    let mut g = path_registry().write().unwrap_or_else(|e| e.into_inner());
+    if !g.iter().any(|x| std::ptr::fn_addr_eq(*x, f)) {
+        g.insert(0, f);
+    }
+}
+
 /// A media reader as the demuxers' byte source.
 #[derive(Clone)]
 pub(crate) struct Src(pub filmcraft_media::SharedReader);

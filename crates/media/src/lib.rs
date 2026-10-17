@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 
 pub use cache::FrameCache;
 pub use generators::{DemoScene, Generator};
-pub use reader::{ByteReader, ReaderOpener, SharedReader};
+pub use reader::{ByteReader, PathOpener, ReaderOpener, SharedReader};
 
 #[derive(Debug, thiserror::Error)]
 pub enum MediaError {
@@ -176,6 +176,8 @@ pub const STILL_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "ti
 pub const AUDIO_EXTENSIONS: &[&str] = &["wav", "wave", "bwf", "aif", "aiff", "mp3", "mp2", "m4a", "aac", "flac", "ogg", "opus"];
 pub const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "m4v", "mov", "mkv", "webm", "avi", "mxf", "mts", "m2ts", "m2t", "ts", "mpg", "mpeg", "vob", "mod", "tod", "m2v", "m1v", "mpv", "3gp", "y4m", "apv",
+    // Blackmagic RAW: opened by a platform path opener when Blackmagic's runtime is installed
+    "braw",
 ];
 
 pub fn is_importable(path: &Path) -> bool {
