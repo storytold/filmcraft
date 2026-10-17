@@ -315,8 +315,9 @@ pub struct FilmcraftApp {
     pub(crate) loudness: Option<(filmcraft_audio_dsp::LoudnessMeter, i64)>,
     /// Status message last shown and when it first appeared (messages expire after a few seconds).
     status_seen: (String, f64),
-    /// Screenshots waiting for their frame: (token, path, crop, reply, give-up time).
-    pending_screenshots: Vec<(u64, Option<String>, Option<[f32; 4]>, Sender<Value>, f64)>,
+    /// Screenshots waiting for their frame: (token, path, crop, reply, give-up time, whether the UI
+    /// had settled when it was taken).
+    pending_screenshots: Vec<(u64, Option<String>, Option<[f32; 4]>, Sender<Value>, f64, bool)>,
     queued_screenshots: Vec<(u64, f64, u32)>,
     /// A paused monitor drew a stand-in (nearest cached) picture last frame: its exact frame is
     /// still decoding.
@@ -1610,7 +1611,7 @@ impl FilmcraftApp {
                     self.next_token += 1;
                     let settle = ctx.input(|i| i.time) + 0.25;
                     self.queued_screenshots.push((token, settle, 0));
-                    self.pending_screenshots.push((token, path, crop, reply, settle + SCREENSHOT_TIMEOUT_S));
+                    self.pending_screenshots.push((token, path, crop, reply, settle + SCREENSHOT_TIMEOUT_S, true));
                 }
             }
         }
@@ -1623,19 +1624,26 @@ impl FilmcraftApp {
     fn issue_screenshots(&mut self, ctx: &egui::Context, settled: bool) {
         let now = ctx.input(|i| i.time);
         let mut any = false;
+        let mut issued = Vec::new();
         self.queued_screenshots.retain_mut(|(token, at, frames)| {
             *frames += 1;
             any = true;
             if now >= *at && *frames >= 3 && (settled || now >= *at + SCREENSHOT_SETTLE_MAX_S) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(*token)));
+                issued.push(*token);
                 false
             } else {
                 true
             }
         });
+        // Taken after waiting the most allowed: say so, so a caller can tell a stand-in picture
+        // from the exact frame (#1541).
+        for p in self.pending_screenshots.iter_mut().filter(|p| issued.contains(&p.0)) {
+            p.5 = settled;
+        }
         // A hidden window (or a sleeping display) never presents, so its screenshot never
         // arrives: give up instead of waiting (and repainting) forever.
-        self.pending_screenshots.retain(|(.., reply, deadline)| {
+        self.pending_screenshots.retain(|(.., reply, deadline, _)| {
             if now > *deadline {
                 let _ = reply.send(json!({"ok": false, "error": "no frame was presented (window hidden or display asleep)"}));
                 false
@@ -1669,8 +1677,11 @@ impl FilmcraftApp {
         });
         for (token, image) in events {
             if let Some(i) = self.pending_screenshots.iter().position(|(t, ..)| *t == token) {
-                let (_, path, crop, reply, _) = self.pending_screenshots.remove(i);
-                let r = control::save_screenshot(ctx, &image, path.as_deref(), crop);
+                let (_, path, crop, reply, _, settled) = self.pending_screenshots.remove(i);
+                let mut r = control::save_screenshot(ctx, &image, path.as_deref(), crop);
+                if let Some(result) = r.get_mut("result").and_then(Value::as_object_mut) {
+                    result.insert("settled".into(), settled.into());
+                }
                 let _ = reply.send(r);
             }
         }

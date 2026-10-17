@@ -438,7 +438,7 @@ impl FilmcraftMcp {
             }
             Backend::Bridge(b) => {
                 let Some(sec) = p.seconds else {
-                    return self.screenshot(&b.clone(), Some("Program".into()), max).await;
+                    return self.program_frame(&b.clone(), max).await;
                 };
                 // The Program monitor shows the playhead's frame, so the live playhead has to move
                 // for the screenshot; put it (and the selection, which may follow it) back after,
@@ -450,7 +450,7 @@ impl FilmcraftMcp {
                 if let Err(e) = self.run("playhead.set", json!({"seconds": sec})).await {
                     return Ok(fail(e));
                 }
-                let shot = self.screenshot(&b.clone(), Some("Program".into()), max).await;
+                let shot = self.program_frame(&b.clone(), max).await;
                 if let Some(t) = before.get("playhead").and_then(Value::as_i64) {
                     let _ = self.run("playhead.set", json!({"time": t})).await;
                 }
@@ -551,14 +551,33 @@ impl FilmcraftMcp {
 
 impl FilmcraftMcp {
     async fn screenshot(&self, b: &BridgeClient, panel: Option<String>, max: u32) -> Result<CallToolResult, McpError> {
-        let path = std::env::temp_dir().join(format!("filmcraft-mcp-{}.png", std::process::id()));
-        if let Err(e) = b.call("ui.screenshot", json!({"path": path.to_string_lossy(), "panel": panel})).await {
-            return Ok(fail(e));
+        Ok(match self.capture(b, panel, max).await {
+            Ok((_, shot)) => shot,
+            Err(e) => fail(e),
+        })
+    }
+
+    /// The Program monitor as `render_frame`'s frame. Until the frame due is decoded the monitor
+    /// shows a stand-in (the nearest picture it has, or black), and `ui.screenshot` gives up
+    /// waiting after a few seconds (`settled: false`): slow media used to hand that stand-in back
+    /// as the frame (#1541). Try again a few times, then say the frame is not ready.
+    async fn program_frame(&self, b: &BridgeClient, max: u32) -> Result<CallToolResult, McpError> {
+        for _ in 0..PROGRAM_FRAME_ATTEMPTS {
+            match self.capture(b, Some("Program".into()), max).await {
+                Err(e) => return Ok(fail(e)),
+                // an app that doesn't say has settled (it waited for the frame without telling)
+                Ok((reply, shot)) if reply.get("settled").and_then(Value::as_bool) != Some(false) => return Ok(shot),
+                Ok(_) => {}
+            }
         }
-        let bytes = match std::fs::read(&path) {
-            Ok(b) => b,
-            Err(e) => return Ok(fail(format!("screenshot: {e}"))),
-        };
+        Ok(fail("the Program monitor is still decoding this frame (slow or long-GOP media); call again in a moment"))
+    }
+
+    /// `ui.screenshot` of `panel` as a PNG result, with the app's reply.
+    async fn capture(&self, b: &BridgeClient, panel: Option<String>, max: u32) -> Result<(Value, CallToolResult), AutomationError> {
+        let path = std::env::temp_dir().join(format!("filmcraft-mcp-{}.png", std::process::id()));
+        let reply = b.call("ui.screenshot", json!({"path": path.to_string_lossy(), "panel": panel})).await?;
+        let bytes = std::fs::read(&path).map_err(|e| AutomationError::Other(format!("screenshot: {e}")))?;
         let _ = std::fs::remove_file(&path);
         let bytes = match image::load_from_memory(&bytes) {
             Ok(img) => {
@@ -568,7 +587,7 @@ impl FilmcraftMcp {
             }
             Err(_) => bytes,
         };
-        Ok(png_result(&bytes, "screenshot of the live FilmCraft window"))
+        Ok((reply, png_result(&bytes, "screenshot of the live FilmCraft window")))
     }
 }
 
@@ -583,6 +602,10 @@ impl FilmcraftMcp {
         Some(format!("unknown argument \"{bad}\" for {tool}; expected: {accepted}"))
     }
 }
+
+/// Screenshots `render_frame` takes in bridge mode before giving up on a frame that is still
+/// decoding; the app waits up to 5 s for each.
+const PROGRAM_FRAME_ATTEMPTS: usize = 3;
 
 const INSTRUCTIONS: &str = "FilmCraft video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`) returns ids you can pass to commands; `render_preview` shows the result. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`).";
 
@@ -997,5 +1020,57 @@ mod tests {
         assert!(v.is_object(), "{v}");
         let r = m.render_frame(Parameters(RenderParams { seconds: Some(0.5), max_side: Some(64) })).await.unwrap();
         assert_ne!(r.is_error, Some(true));
+    }
+
+    /// A stand-in for the app in bridge mode whose Program monitor shows its exact frame only from
+    /// the `settles_at`-th `ui.screenshot` on: before, the reply says `settled: false`, as the app
+    /// does when it gave up waiting for the frame to be decoded. Returns the address and the
+    /// number of screenshots taken.
+    async fn slow_monitor_app(settles_at: usize) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let shots = Arc::new(AtomicUsize::new(0));
+        let n = shots.clone();
+        tokio::spawn(async move {
+            let (s, _) = listener.accept().await.unwrap();
+            let (r, mut w) = s.into_split();
+            let mut lines = BufReader::new(r).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let result = match req["method"].as_str() {
+                    Some("ui.screenshot") => {
+                        let k = n.fetch_add(1, Ordering::SeqCst) + 1;
+                        std::fs::write(req["params"]["path"].as_str().unwrap(), png_rgba(2, 2, vec![255; 16], 0).unwrap()).unwrap();
+                        json!({"width": 2, "height": 2, "settled": k >= settles_at})
+                    }
+                    _ => json!({"playhead": 0, "selection": []}),
+                };
+                let reply = format!("{}\n", json!({"id": req["id"], "ok": true, "result": result}));
+                w.write_all(reply.as_bytes()).await.unwrap();
+            }
+        });
+        (addr, shots)
+    }
+
+    /// Bridge mode screenshots the Program monitor, which shows a stand-in (the nearest picture it
+    /// has, or black) until the frame at `seconds` is decoded; slow media took longer than the
+    /// app waits, and the stand-in came back as the frame (#1541). The screenshot is taken again
+    /// while the app says the monitor has not settled, and an error is returned if it never does.
+    #[tokio::test]
+    async fn bridge_render_does_not_return_a_monitor_stand_in() {
+        use std::sync::atomic::Ordering;
+        let (addr, shots) = slow_monitor_app(2).await;
+        let m = FilmcraftMcp::bridge(&addr).unwrap();
+        let r = m.render_frame(Parameters(RenderParams { seconds: Some(8.0), max_side: Some(64) })).await.unwrap();
+        assert_ne!(r.is_error, Some(true), "{r:?}");
+        assert_eq!(shots.load(Ordering::SeqCst), 2, "taken again once the monitor showed the frame");
+
+        let (addr, shots) = slow_monitor_app(usize::MAX).await;
+        let m = FilmcraftMcp::bridge(&addr).unwrap();
+        let r = m.render_preview(Parameters(RenderParams { seconds: Some(8.0), max_side: Some(64) })).await.unwrap();
+        assert_eq!(r.is_error, Some(true), "a stand-in is not the frame: {r:?}");
+        assert!(shots.load(Ordering::SeqCst) > 1);
     }
 }
