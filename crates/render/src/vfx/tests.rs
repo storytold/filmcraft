@@ -1048,6 +1048,87 @@ fn warp_stabilizer_removes_camera_jitter() {
     assert!(stabilizer_path(&env, 0.0, filmcraft_project::TrackMethod::Position, false).is_some());
 }
 
+/// A [`ClipEnv`] that counts the source frames it decodes.
+struct CountingEnv {
+    inner: ClipEnv,
+    decoded: std::sync::atomic::AtomicUsize,
+}
+impl FxEnv for CountingEnv {
+    fn frame(&self, dt: f64, upto: &EffectInstance) -> Option<Image> {
+        self.inner.frame(dt, upto)
+    }
+    fn source_frame(&self, dt: f64, scale: f32) -> Option<Image> {
+        self.decoded.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.source_frame(dt, scale)
+    }
+    fn track(&self, index: usize) -> Option<Image> {
+        self.inner.track(index)
+    }
+    fn layer_to_output(&self) -> Affine {
+        self.inner.layer_to_output()
+    }
+    fn clip_seconds(&self) -> f64 {
+        self.inner.clip_seconds()
+    }
+    fn clip_offset(&self) -> f64 {
+        self.inner.clip_offset()
+    }
+    fn frame_rate(&self) -> f64 {
+        self.inner.frame_rate()
+    }
+    fn media_timecode(&self) -> String {
+        self.inner.media_timecode()
+    }
+    fn file_name(&self) -> String {
+        self.inner.file_name()
+    }
+    fn sequence_name(&self) -> String {
+        self.inner.sequence_name()
+    }
+    fn sequence_size(&self) -> (u32, u32) {
+        self.inner.sequence_size()
+    }
+    fn source_size(&self) -> (u32, u32) {
+        self.inner.source_size()
+    }
+    fn clip_key(&self) -> u64 {
+        self.inner.clip_key()
+    }
+}
+
+#[test]
+fn warp_stabilizer_analyses_a_clip_once_for_concurrent_frames() {
+    // 3 s at 24 fps: longer than one analysis chunk
+    let (w, h) = (96, 64);
+    let env = CountingEnv {
+        inner: ClipEnv { w, h, fps: 24.0, secs: 3.0, now: 1.0, key: 0x5AB1_0001, seq: (w as u32, h as u32), pic: shaky },
+        decoded: Default::default(),
+    };
+    // six frame workers reach the clip at once
+    let paths: Vec<_> = std::thread::scope(|s| {
+        let hs: Vec<_> = (0..6).map(|_| s.spawn(|| stabilizer_path(&env, 1.0, filmcraft_project::TrackMethod::Position, false))).collect();
+        hs.into_iter().map(|h| h.join().ok().flatten()).collect()
+    });
+    assert!(paths.iter().all(|p| p.as_ref().is_some_and(|p| p.steps.len() == 71)));
+    assert_eq!(env.decoded.load(std::sync::atomic::Ordering::Relaxed), 72, "each frame decoded once, not once per worker");
+}
+
+#[test]
+fn warp_stabilizer_analysis_tracks_across_chunks() {
+    let (w, h) = (192, 128);
+    let env = ClipEnv { w, h, fps: 24.0, secs: 3.0, now: 0.0, key: 0x5AB1_0002, seq: (w as u32, h as u32), pic: shaky };
+    let Some(path) = stabilizer_path(&env, 0.0, filmcraft_project::TrackMethod::Position, false) else {
+        panic!("no analysis");
+    };
+    assert_eq!(path.steps.len(), 71);
+    // frame k shows the texture shifted by -jitter(k): a point moves by jitter(k) - jitter(k+1)
+    for (k, st) in path.steps.iter().enumerate() {
+        let (a, b) = (jitter(k as f64 / 24.0), jitter((k + 1) as f64 / 24.0));
+        let (ex, ey) = (a.0 - b.0, a.1 - b.1);
+        assert!((st.e - ex).abs() < 0.5 && (st.f - ey).abs() < 0.5, "step {k}: ({}, {}) vs ({ex}, {ey})", st.e, st.f);
+    }
+}
+
 #[test]
 fn auto_reframe_follows_the_subject() {
     fn subject(x: f64, y: f64, _t: f64) -> [f32; 3] {
