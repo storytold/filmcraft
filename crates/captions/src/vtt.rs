@@ -102,6 +102,9 @@ pub fn parse(text: &str) -> Result<Document> {
             continue;
         }
         let raw = b[timing_idx + 1..].iter().map(|l| l.trim_end()).collect::<Vec<_>>().join("\n");
+        // The writer escapes a cue-text `-->` as `--&gt;` (a bare arrow would parse as a timing
+        // line elsewhere); decode it back so an export/import round trip restores the text exactly.
+        let raw = raw.replace("--&gt;", "-->");
         let (speaker, text) = split_voice(&raw);
         doc.cues.push(Cue { start, end, text, speaker, id, settings: settings.to_string() });
     }
@@ -195,5 +198,46 @@ mod tests {
         let d = parse("00:00:01.000 --> 00:00:02.000\nx\n").unwrap();
         assert_eq!(d.cues.len(), 1);
         assert!(parse("just text").is_err());
+    }
+
+    #[test]
+    fn arrow_text_survives_a_write_parse_round_trip() {
+        let source = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nA --> B\n";
+        let doc = parse(source).unwrap();
+        assert_eq!(doc.cues[0].text, "A --> B");
+        // the writer must escape the arrow (a bare `-->` would read as a timing line elsewhere)
+        let w = write(&doc);
+        assert!(w.contains("A --&gt; B"), "{w}");
+        // ...and the parser must decode it back: the text used to come back as `A --&gt; B`
+        assert_eq!(parse(&w).unwrap().cues, doc.cues);
+    }
+
+    // Cue text is stored as rendered text: a bare `-->` cannot appear in cue text, so the
+    // writer escapes it as `--&gt;` and the parser decodes it back (which also normalizes an
+    // externally stored `--&gt;` to the bare arrow; both render the same). Any other entity
+    // (e.g. `&amp;`) is author markup and is preserved byte-for-byte.
+    #[test]
+    fn stored_arrow_entity_decodes_to_bare_arrow() {
+        let d = parse("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nA --&gt; B\n").unwrap();
+        assert_eq!(d.cues[0].text, "A --> B");
+    }
+
+    #[test]
+    fn other_entities_are_preserved_verbatim() {
+        let d = parse("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nTom &amp; Jerry &gt; all\n").unwrap();
+        assert_eq!(d.cues[0].text, "Tom &amp; Jerry &gt; all");
+    }
+
+    #[test]
+    fn arrow_spellings_converge_on_write_parse_loop() {
+        for (source, first) in
+            [("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nA --> B\n", "A --> B"), ("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nA --&gt; B\n", "A --> B")]
+        {
+            let once = parse(source).unwrap();
+            assert_eq!(once.cues[0].text, first);
+            let twice = parse(&write(&once)).unwrap();
+            assert_eq!(twice.cues, once.cues);
+            assert_eq!(parse(&write(&twice)).unwrap().cues, once.cues);
+        }
     }
 }
