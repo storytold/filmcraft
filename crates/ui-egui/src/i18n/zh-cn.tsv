@@ -3420,6 +3420,7 @@
 	out	出
 	in	入
 	The language changed but could not be saved: {e}	语言已更改但无法保存：{e}
+	no Arabic font is installed on this system; the interface stays in English	此系统未安装阿拉伯语字体；界面保持英文
 	no Chinese font is installed on this system; the interface stays in English	此系统未安装中文字体；界面保持英文
 	no Korean font is installed on this system; the interface stays in English	此系统未安装韩文字体；界面保持英文
 	no Japanese font is installed on this system; the interface stays in English	此系统未安装日语字体；界面保持英文
