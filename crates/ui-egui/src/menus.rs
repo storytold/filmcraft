@@ -22,6 +22,13 @@ macro_rules! uic {
 }
 
 pub const UI_COMMANDS: &[UiCommand] = &[
+    uic!("extensions.manage", "Extensions…", ["Window"], None),
+    uic!("extensions.inspect", "Inspect Extensions", [], None),
+    uic!("extensions.install", "Choose Extension Package", [], None),
+    uic!("extensions.open", "Open Extension", [], None),
+    uic!("extensions.close", "Close Extension", [], None),
+    uic!("extensions.enable", "Enable Extension", [], None),
+    uic!("extensions.remove", "Remove Extension", [], None),
     uic!("window.dockAction", "Docking Action", [], None),
     uic!("window.dockPanel", "Dock Panel", [], None),
     uic!("window.floatPanel", "Undock Panel", [], None),
@@ -178,6 +185,9 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
 
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    if id.starts_with("extensions.") {
+        return app.extension_command(ctx, id, params);
+    }
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
     }
@@ -682,6 +692,7 @@ pub const NATIVE_APP_MENU: [&str; 4] = ["Settings", "Hide FilmCraft", "Hide Othe
 
 pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
     let mut v = menu_items_for(&app.session);
+    v.retain(|item| !item.id.starts_with("extensions.") || app.hooks.extensions.is_some());
     for it in &mut v {
         it.label = app.ui.language.tr(&it.label).to_string();
         match it.id.as_str() {
@@ -736,6 +747,7 @@ pub fn recent_name(path: &str) -> String {
 pub fn default_menu_items() -> Vec<MenuItem> {
     let session = filmcraft_engine::Session::default();
     let mut v = menu_items_for(&session);
+    v.retain(|item| !item.id.starts_with("extensions."));
     crate::panels::workspaces::default_menu(&mut v, &session);
     open_recent(&mut v, &session, str::to_string);
     v

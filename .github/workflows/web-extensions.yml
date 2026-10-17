@@ -1,0 +1,54 @@
+# The normal gates build the default-off feature without its native runtime. Exercise the
+# optional runtime on both supported desktop targets; these are unit checks, not GUI smoke tests.
+name: Web extensions
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "apps/filmcraft/**"
+      - "crates/engine/**"
+      - "crates/ui-egui/**"
+      - "examples/extensions/**"
+      - "tests/extensions/**"
+      - "docs/extensions.md"
+      - "docs/adr/0002-web-extensions.md"
+      - ".github/workflows/web-extensions.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-extensions-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      # Same checkout revision used by nix.yml. No publishing or signing credentials are needed.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust 1.95
+        run: rustup toolchain install 1.95.0 --profile minimal --component clippy --component rustfmt
+      - name: Require Node 20 or newer from the hosted runner
+        run: node -e "if (Number(process.versions.node.split('.')[0]) < 20) process.exit(1)"
+      - name: Check SDK lifecycle and protocol
+        run: node --test tests/extensions/sdk.test.cjs
+      - name: Check Rust formatting
+        run: cargo +1.95.0 fmt --all --check
+      - name: Test the enabled runtime
+        run: >-
+          cargo +1.95.0 test --locked --release -p filmcraft --features web-extensions extensions::
+      - name: Lint the enabled runtime
+        run: cargo +1.95.0 clippy --locked --release -p filmcraft --all-targets --features web-extensions -- -D warnings

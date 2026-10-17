@@ -170,7 +170,13 @@ pub struct HostHooks {
     /// Files or an image on the system clipboard, for Paste in the Timeline and the Project panel
     /// (#611). Without it Paste only pastes clips copied in FilmCraft.
     pub clipboard_media: Option<Box<dyn FnMut() -> Option<ClipboardMedia>>>,
+    /// Optional desktop extension service. `extensions.frame` draws its manager and drains
+    /// bounded IPC; other `extensions.*` commands are routed through the normal command path.
+    /// No native runtime dependency enters the portable UI or engine.
+    pub extensions: Option<ExtensionHostFn>,
 }
+
+pub type ExtensionHostFn = Box<dyn FnMut(&mut FilmcraftApp, &egui::Context, &str, serde_json::Value) -> Result<serde_json::Value, String>>;
 
 /// What [`HostHooks::clipboard_media`] found on the system clipboard.
 pub enum ClipboardMedia {
@@ -1792,6 +1798,11 @@ impl FilmcraftApp {
         // the Timeline has had its chance to place a file drop this frame; anything left stays a bin import
         self.pending_timeline_drop = None;
         panels::dialogs::show(self, &ctx);
+        if self.hooks.extensions.is_some()
+            && let Err(error) = self.extension_command(&ctx, "extensions.frame", serde_json::Value::Null)
+        {
+            self.ui.status = error;
+        }
         if !self.ui.show_status_bar {
             // no bar to draw the job in, but a finished preview render still plays
             self.watch_jobs(ui.ctx());
@@ -1928,6 +1939,16 @@ impl FilmcraftApp {
 }
 
 impl FilmcraftApp {
+    /// Invoke the host service without borrowing the app and its hook at the same time.
+    pub fn extension_command(&mut self, ctx: &egui::Context, command: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+        let mut host = self.hooks.extensions.take().ok_or("Web extensions are not available in this build")?;
+        // Restore the service even if it fails: the outer UI panic guard cannot
+        // recover a hook dropped while temporarily taken out of the app.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| host(self, ctx, command, params)));
+        self.hooks.extensions = Some(host);
+        result.unwrap_or_else(|_| Err("The extension host failed unexpectedly; the editor is still running".into()))
+    }
+
     /// The "FilmCraft hit an error" window after a caught UI panic. Automation ids:
     /// `error.dismiss`, `error.save`.
     fn error_window(&mut self, ctx: &egui::Context) {
@@ -2810,5 +2831,32 @@ mod native_menu_tests {
         app.sync_native_menu();
         assert_eq!(last(&sent, "edit.undo"), Some(false));
         assert_eq!(last(&sent, "edit.redo"), Some(true), "the undone edit can be redone");
+    }
+}
+
+#[cfg(test)]
+mod extension_recovery_tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_extension_host_is_restored_and_can_be_called_again() {
+        let _guard = crash::HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut app = FilmcraftApp::new(Session::default());
+        let mut first_call = true;
+        app.hooks.extensions = Some(Box::new(move |_, _, _, _| {
+            if first_call {
+                first_call = false;
+                panic!("synthetic extension host failure");
+            }
+            Ok(json!({"recovered": true}))
+        }));
+        let ctx = egui::Context::default();
+        let revision = app.session.revision;
+
+        let error = app.extension_command(&ctx, "extensions.inspect", json!({})).unwrap_err();
+        assert!(error.contains("extension host failed"));
+        assert!(app.hooks.extensions.is_some(), "a caught host failure must not disable extensions");
+        assert_eq!(app.session.revision, revision, "the editor session remains available");
+        assert_eq!(app.extension_command(&ctx, "extensions.inspect", json!({})).unwrap(), json!({"recovered": true}));
     }
 }

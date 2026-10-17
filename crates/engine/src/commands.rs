@@ -1139,6 +1139,7 @@ fn build() -> Vec<CommandSpec> {
         cmd!("file.newProject", "Project…", ["File", "New"], Some("Cmd+Alt+N"), r#"{"name":str}"#, always, |s, p| {
             let name = str_p(p, "name").unwrap_or("Untitled").to_string();
             s.project = std::sync::Arc::new(filmcraft_project::Project::new(&name));
+            s.document_generation = s.document_generation.saturating_add(1);
             s.history = Default::default();
             s.history.limit = 200;
             s.state = crate::Session::default().state;
@@ -1153,6 +1154,7 @@ fn build() -> Vec<CommandSpec> {
         cmd!("file.openDemoProject", "Demo Project", ["File", "New"], None, "{}", always, |s, _| {
             let (p, seq) = crate::demo::demo_project(&s.media);
             s.project = std::sync::Arc::new(p);
+            s.document_generation = s.document_generation.saturating_add(1);
             s.history = Default::default();
             s.history.limit = 200;
             s.state = crate::Session::default().state;
@@ -4357,6 +4359,7 @@ fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Opti
     s.offline = Default::default();
     let first = proj.sequences().next().map(|i| i.id);
     s.project = std::sync::Arc::new(proj);
+    s.document_generation = s.document_generation.saturating_add(1);
     s.history = Default::default();
     s.history.limit = 200;
     s.state = crate::Session::default().state;

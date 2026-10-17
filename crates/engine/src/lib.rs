@@ -378,6 +378,9 @@ pub enum Event {
 
 pub struct Session {
     pub project: Arc<Project>,
+    /// Changes when another document is installed, including reopening the same file. An edit,
+    /// undo or Save As preserves it. Asynchronous clients use it to reject stale requests.
+    pub document_generation: u64,
     pub history: History,
     pub revision: u64,
     pub saved_revision: u64,
@@ -498,6 +501,7 @@ impl Session {
             project: Arc::new(Project::new("Untitled")),
             history: History { limit: 200, ..Default::default() },
             revision: 1,
+            document_generation: 1,
             saved_revision: 1,
             path: None,
             state: EditorState {

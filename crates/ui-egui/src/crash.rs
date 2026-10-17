@@ -10,6 +10,10 @@ static LAST: Mutex<Option<String>> = Mutex::new(None);
 /// Where crash logs go (desktop); `None` = stderr only (web, tests).
 static LOG_DIR: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
 
+/// Intentional-panic tests share the process-wide hook and last-panic slot.
+#[cfg(test)]
+pub(crate) static HOOK_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 /// Install the panic hook (idempotent). Panics are also passed to the previous hook, so they
 /// still reach stderr / the browser console.
 pub fn install(log_dir: Option<std::path::PathBuf>) {
@@ -79,6 +83,7 @@ fn write_log(_summary: &str) {}
 mod tests {
     #[test]
     fn hook_records_and_logs_worker_panics() {
+        let _guard = super::HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("fc-crash-{}", std::process::id()));
         super::install(Some(dir.clone()));
         let _ = super::take_last();

@@ -189,9 +189,13 @@ const FH: usize = 60;
 /// Every video frame of `input`, scaled to 80×60 in `pix_fmt` (`gray` or `rgb24`). `vf` goes
 /// first in the filter chain (e.g. `fps=30` to see a VFR file as an editor shows it).
 fn frames(ffmpeg: &Path, input: &str, vf: Option<&str>, pix_fmt: &str) -> Vec<Vec<u8>> {
+    // Decode colour before measuring gray: source and export can use different YCbCr matrices
+    // (an untagged SD source defaults to BT.601; the H.264 export is tagged BT.709). Comparing
+    // their Y planes directly would report different pixels even when their RGB colours agree.
+    let normalize = if pix_fmt == "gray" { "format=rgb24," } else { "" };
     let chain = match vf {
-        Some(f) => format!("{f},scale={FW}:{FH}:flags=area,format={pix_fmt}"),
-        None => format!("scale={FW}:{FH}:flags=area,format={pix_fmt}"),
+        Some(f) => format!("{f},{normalize}scale={FW}:{FH}:flags=area,format={pix_fmt}"),
+        None => format!("{normalize}scale={FW}:{FH}:flags=area,format={pix_fmt}"),
     };
     let bpp = if pix_fmt == "gray" { 1 } else { 3 };
     let raw = ffmpeg_raw(ffmpeg, &[], input, &["-map", "0:v:0", "-vf", &chain, "-fps_mode", "passthrough", "-f", "rawvideo"]);

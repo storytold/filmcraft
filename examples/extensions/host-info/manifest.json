@@ -1,0 +1,9 @@
+{
+  "id": "org.filmcraft.examples.host-info",
+  "name": "Host Info",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "entry": "index.html",
+  "permissions": [],
+  "networkOrigins": []
+}

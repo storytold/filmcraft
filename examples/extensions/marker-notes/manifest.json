@@ -1,0 +1,9 @@
+{
+  "id": "org.filmcraft.examples.marker-notes",
+  "name": "Marker Notes",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "entry": "index.html",
+  "permissions": ["project.read", "playhead.write", "markers.write"],
+  "networkOrigins": []
+}

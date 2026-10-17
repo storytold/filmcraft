@@ -562,3 +562,30 @@ fn deleting_media_used_on_the_timeline_makes_it_offline() {
     assert_eq!(r["offline"], 0);
     assert!(s.project.item(ItemId(unused)).is_none());
 }
+
+#[test]
+fn document_generation_changes_on_replacement_not_edits_or_save_as() {
+    let mut s = demo();
+    let generation = s.document_generation;
+    s.execute("markers.add", json!({"target":"program","name":"Note"})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.document_generation, generation);
+    let dir = tmp_dir("document-generation");
+    let file = dir.join("document.fcproj");
+    s.execute("file.saveAs", json!({"path":file})).unwrap();
+    assert_eq!(s.document_generation, generation);
+    s.execute("file.open", json!({"path":file})).unwrap();
+    assert!(s.document_generation > generation);
+    let generation = s.document_generation;
+    s.execute("file.newProjectFromTemplate", json!({"template":file,"name":"Template copy"})).unwrap();
+    assert!(s.document_generation > generation);
+    let generation = s.document_generation;
+    s.execute("file.closeProject", json!({"force":true})).unwrap();
+    assert!(s.document_generation > generation);
+    let generation = s.document_generation;
+    s.execute("file.newProject", json!({"name":"New"})).unwrap();
+    assert!(s.document_generation > generation);
+    let generation = s.document_generation;
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    assert!(s.document_generation > generation);
+}

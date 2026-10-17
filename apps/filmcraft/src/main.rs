@@ -30,6 +30,8 @@ mod audio_in;
 mod control_server;
 #[cfg(target_os = "linux")]
 mod dev_icon;
+#[cfg(all(feature = "web-extensions", any(target_os = "macos", target_os = "windows")))]
+mod extensions;
 mod file_filters;
 mod graphics;
 mod logging;
@@ -77,6 +79,16 @@ fn tell(text: &str, error: bool) {
 }
 
 fn main() -> eframe::Result {
+    #[cfg(all(feature = "web-extensions", any(target_os = "macos", target_os = "windows")))]
+    if std::env::args_os().nth(1).is_some_and(|s| s == "--extension-window") {
+        // A host-owned WebView process has no editor session, logs, recovery or control server.
+        // stdout belongs exclusively to its bounded IPC channel.
+        if let Err(error) = extensions::helper(&std::env::args_os().skip(1).collect::<Vec<_>>()) {
+            eprintln!("FilmCraft extension: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     // First, so the panic hook and every start-up record are logged (`logging`).
     let logger = logging::install();
     // lossy, so a value that is not Unicode is reported like any other bad port instead of ignored
@@ -310,6 +322,11 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         // that waits for the browser never freezes the UI.
         app.hooks.open_url = Some(Box::new(|url: &str| open::that_detached(url).map_err(|e| e.to_string())));
         app.hooks.clipboard_media = Some(Box::new(clipboard_media));
+        #[cfg(all(feature = "web-extensions", any(target_os = "macos", target_os = "windows")))]
+        if let Some(root) = data_dir.clone().or_else(default_data_dir) {
+            let mut manager = extensions::Manager::new(root);
+            app.hooks.extensions = Some(Box::new(move |app, ctx, command, params| manager.invoke(app, ctx, command, params)));
+        }
         // Settings ▸ General ▸ Interface Language ▸ System Language (#218).
         app.hooks.cursor_screen_position = Some(Box::new(filmcraft_platform::cursor::cursor_screen_position));
         app.hooks.system_languages = Some(Box::new(|| sys_locale::get_locales().collect()));

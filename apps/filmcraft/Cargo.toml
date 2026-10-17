@@ -12,6 +12,8 @@ workspace = true
 
 [features]
 default = []
+# Experimental workflow extensions. Native WebView runtime stays at the desktop boundary.
+web-extensions = ["dep:wry", "dep:tao", "dep:zip", "dep:serde", "dep:sha2"]
 # Speech-to-text (Text panel ▸ Transcribe) with Whisper on the CPU, and model downloads.
 whisper = ["filmcraft-engine/whisper", "filmcraft-engine/speech-download"]
 # Natural Text to Speech voices (Kokoro-82M on the CPU, downloaded on first use).
@@ -29,6 +31,9 @@ filmcraft-platform = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11"] }
 serde_json = { workspace = true }
+serde = { workspace = true, optional = true }
+zip = { version = "9.0.4", default-features = false, features = ["deflate"], optional = true }
+sha2 = { version = "0.10", optional = true }
 log = { workspace = true }
 rfd = { workspace = true }
 cpal = "0.16"
@@ -56,6 +61,10 @@ winit = { version = "0.30", default-features = false }
 # Settings ▸ Appearance ▸ Sync with system: the XDG desktop portal's colour scheme. The zbus the
 # portal file dialogs (rfd) and accesskit already use.
 zbus = "5.19"
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+wry = { version = "0.57", default-features = false, features = ["os-webview"], optional = true }
+tao = { version = "0.37.1", default-features = false, features = ["rwh_06"], optional = true }
 
 # Icon + VERSIONINFO for filmcraft.exe (build.rs); only needed when building on Windows.
 [target.'cfg(windows)'.build-dependencies]

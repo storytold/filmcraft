@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Host Info</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <span class="eyebrow">FILMCRAFT EXTENSION EXAMPLE</span>
+      <h1>Your editor, in context.</h1>
+      <p>This extension draws its own HTML interface and reads the host's version and theme.</p>
+    </header>
+    <section class="cards" aria-label="Host information">
+      <article><h2>FilmCraft</h2><strong id="app-version">Connecting…</strong></article>
+      <article><h2>Extension API</h2><strong id="api-version">—</strong></article>
+      <article><h2>Window size</h2><strong id="window-size">—</strong></article>
+    </section>
+    <section class="details">
+      <h2>Available methods</h2>
+      <ul id="capabilities"></ul>
+      <p class="muted">This package requests no project or editing permissions.</p>
+    </section>
+    <section class="details">
+      <h2>Theme from FilmCraft</h2>
+      <div class="swatches">
+        <span class="swatch background">Background</span>
+        <span class="swatch text">Text</span>
+        <span class="swatch muted-color">Muted</span>
+        <span class="swatch accent">Accent</span>
+        <span class="swatch border">Border</span>
+      </div>
+    </section>
+    <footer><button id="refresh" type="button">Refresh host info</button><span id="status" role="status"></span></footer>
+  </main>
+</body>
+</html>

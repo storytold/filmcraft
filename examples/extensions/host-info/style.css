@@ -1,0 +1,31 @@
+/* Original example UI. MIT OR Apache-2.0. */
+:root { color-scheme: dark; --filmcraft-bg: #202124; --filmcraft-text: #f3f4f6; --filmcraft-muted: #a5a9b1; --filmcraft-accent: #6c9dff; --filmcraft-border: #454951; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--filmcraft-bg); color: var(--filmcraft-text); font: 14px/1.5 system-ui, sans-serif; }
+main { max-width: 900px; margin: auto; padding: 32px; }
+.eyebrow { color: var(--filmcraft-accent); font-size: 10px; letter-spacing: .16em; font-weight: 700; }
+h1 { margin: 12px 0; font-size: clamp(24px, 5vw, 40px); line-height: 1.15; }
+header p { max-width: 580px; color: var(--filmcraft-muted); }
+h2 { margin: 0 0 12px; font-size: 12px; font-weight: 600; color: var(--filmcraft-muted); }
+.cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 28px 0 16px; }
+article, .details { border: 1px solid var(--filmcraft-border); border-radius: 12px; padding: 20px; }
+article strong { font-size: 22px; overflow-wrap: anywhere; }
+.details { margin: 16px 0; }
+ul { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+li { padding: 4px 9px; border: 1px solid var(--filmcraft-border); border-radius: 5px; font: 12px ui-monospace, monospace; }
+.muted { color: var(--filmcraft-muted); font-size: 12px; }
+.swatches { display: flex; flex-wrap: wrap; gap: 12px; }
+.swatch { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.swatch::before { content: ""; width: 18px; height: 18px; border: 1px solid var(--filmcraft-border); border-radius: 50%; }
+.background::before { background: var(--filmcraft-bg); }
+.text::before { background: var(--filmcraft-text); }
+.muted-color::before { background: var(--filmcraft-muted); }
+.accent::before { background: var(--filmcraft-accent); }
+.border::before { background: var(--filmcraft-border); }
+footer { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
+button { background: transparent; color: var(--filmcraft-text); border: 1px solid var(--filmcraft-border); border-radius: 7px; padding: 9px 14px; cursor: pointer; font: inherit; }
+button:hover { border-color: var(--filmcraft-accent); }
+button:focus-visible { outline: 2px solid var(--filmcraft-accent); outline-offset: 3px; }
+button:disabled { opacity: .5; cursor: wait; }
+#status { color: var(--filmcraft-muted); font-size: 12px; }
+@media (max-width: 520px) { main { padding: 20px; } .cards { grid-template-columns: 1fr; } article { padding: 14px; } }

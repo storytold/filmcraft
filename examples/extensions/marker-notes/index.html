@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Marker Notes</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header>
+    <div><span class="eyebrow">MARKER NOTES</span><h1 id="sequence-name">Open a sequence in FilmCraft</h1></div>
+    <button id="refresh" type="button">Refresh</button>
+  </header>
+  <main>
+    <section class="composer" aria-labelledby="composer-title">
+      <h2 id="composer-title">Note at playhead</h2>
+      <p id="playhead">No active sequence</p>
+      <form id="note-form">
+        <label for="name">Marker name</label>
+        <input id="name" name="name" maxlength="128" placeholder="Review this moment" required>
+        <label for="comment">Comment</label>
+        <textarea id="comment" name="comment" maxlength="256" rows="5" placeholder="What should change here?"></textarea>
+        <button id="add" type="submit" disabled>Add marker</button>
+      </form>
+      <p class="hint">Adds an ordinary sequence marker. Use FilmCraft's Undo to remove it.</p>
+    </section>
+    <section class="notes" aria-labelledby="notes-title">
+      <div class="list-heading"><h2 id="notes-title">Sequence markers</h2><span id="count">0</span></div>
+      <p id="empty">No markers to show.</p>
+      <ol id="markers"></ol>
+    </section>
+  </main>
+  <footer id="status" role="status">Connecting to FilmCraft…</footer>
+</body>
+</html>
