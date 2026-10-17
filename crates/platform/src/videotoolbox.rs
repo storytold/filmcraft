@@ -1,4 +1,4 @@
-//! VideoToolbox (macOS) hardware H.264 / HEVC decoding.
+//! VideoToolbox (macOS) hardware H.264 / HEVC / VP9 decoding.
 //!
 //! The only module of the workspace with `unsafe` code besides the other FFI modules of this crate
 //! (docs/adr/0001-platform-ffi.md). Rules: every `unsafe` block has a `// SAFETY:` comment; no
@@ -6,27 +6,31 @@
 //! failure is a `Result` the caller ([`crate::hybrid::HybridDecoder`]) answers by switching to the
 //! software decoder.
 //!
-//! A session is created from the parameter sets of the sample entry (`avcC` / `hvcC`) with
-//! hardware decoding required, so streams the hardware cannot take are declined up front. Samples
+//! A session is created from the parameter sets of the sample entry (`avcC` / `hvcC`; for VP9 the
+//! `vpcC` box, with Apple's supplemental VP9 decoder registered first) with hardware decoding
+//! required, so streams the hardware cannot take are declined up front. Samples
 //! are fed as `CMSampleBuffer`s with asynchronous decompression (a couple in flight); the output
 //! callback (on a VideoToolbox thread) copies each decoded
 //! `CVPixelBuffer` (NV12 / P010-style biplanar) into planar [`PixelData::Yuv8`] /
 //! [`PixelData::Yuv16`]. VideoToolbox emits pictures in decoding order, so a reorder buffer of the
 //! stream's own depth (`max_num_reorder_frames` / `sps_max_num_reorder_pics`) puts them in
-//! presentation order, as the software decoders do.
+//! presentation order, as the software decoders do. VP9 has no reordering: WebM / MP4 pack hidden
+//! alt-ref frames into superframes, so every sample is one shown picture.
 
 use std::ffi::c_void;
 use std::panic::AssertUnwindSafe;
 use std::ptr::NonNull;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use filmcraft_codecs::hw::{NalCodec, NalStreamInfo};
+use filmcraft_codecs::hw::{FrameCodec, FrameStreamInfo, NalCodec, NalStreamInfo};
 use filmcraft_codecs::{CodecError, DecodedFrame, Result, VideoDecoder};
 use filmcraft_frame::{Chroma, PixelData, VideoFrame, pool};
-use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
+use filmcraft_isobmff::VpcConfig;
+use objc2_core_foundation::{CFBoolean, CFData, CFDictionary, CFNumber, CFRetained, CFString, CFType};
 use objc2_core_media::{
-    CMBlockBuffer, CMFormatDescription, CMSampleBuffer, CMSampleTimingInfo, CMTime, CMTimeFlags, CMVideoFormatDescriptionCreateFromH264ParameterSets,
-    CMVideoFormatDescriptionCreateFromHEVCParameterSets, kCMBlockBufferAssureMemoryNowFlag,
+    CMBlockBuffer, CMFormatDescription, CMSampleBuffer, CMSampleTimingInfo, CMTime, CMTimeFlags, CMVideoFormatDescriptionCreate,
+    CMVideoFormatDescriptionCreateFromH264ParameterSets, CMVideoFormatDescriptionCreateFromHEVCParameterSets, kCMBlockBufferAssureMemoryNowFlag,
+    kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms,
 };
 use objc2_core_video::{
     CVImageBuffer, CVPixelBufferGetBaseAddressOfPlane, CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeight, CVPixelBufferGetHeightOfPlane,
@@ -48,6 +52,8 @@ const NV16_VIDEO: u32 = u32::from_be_bytes(*b"422v");
 const NV16_FULL: u32 = u32::from_be_bytes(*b"422f");
 const P210_VIDEO: u32 = u32::from_be_bytes(*b"x422");
 const P210_FULL: u32 = u32::from_be_bytes(*b"xf22");
+/// `kCMVideoCodecType_VP9`.
+const VP9: u32 = u32::from_be_bytes(*b"vp09");
 
 /// How decoded buffers are laid out and what each output picture carries.
 #[derive(Clone, Debug)]
@@ -72,7 +78,8 @@ enum Output {
 /// State shared with the output callback (its `decompressionOutputRefCon`). Boxed by the decoder
 /// and kept alive until the session is invalidated.
 struct Shared {
-    layout: Layout,
+    /// Behind a lock: a VP9 key frame sets the colour of the pictures after it.
+    layout: Mutex<Layout>,
     out: Mutex<Vec<Output>>,
 }
 
@@ -134,7 +141,8 @@ unsafe extern "C-unwind" fn output_callback(
         // SAFETY: VideoToolbox passes a valid image buffer that stays alive for the duration of
         // the callback; we only borrow it here.
         let pb = unsafe { image.as_ref() };
-        match copy_out(pb, &shared.layout) {
+        let layout = shared.layout.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        match copy_out(pb, &layout) {
             Ok(frame) => Output::Frame(DecodedFrame { pts, frame, draft: false }),
             Err(e) => Output::Failed(e),
         }
@@ -247,6 +255,46 @@ fn copy_out(pb: &CVImageBuffer, l: &Layout) -> std::result::Result<VideoFrame, S
     Ok(VideoFrame { width: w as u32, height: h as u32, data, color: l.color, par: l.par, pts: filmcraft_time::Tick::ZERO })
 }
 
+/// The layout for a VP9 stream (profile 0 8-bit, profile 2 10-bit, 4:2:0), or why VideoToolbox is
+/// not used for it. The colour is the key frame's ([`VtDecoder::decode`]).
+fn vp9_layout(info: &FrameStreamInfo, c: &VpcConfig) -> std::result::Result<Layout, String> {
+    if info.codec != FrameCodec::Vp9 {
+        return Err("AV1 is not decoded through VideoToolbox".into());
+    }
+    if info.subsampling != (1, 1) || info.mono {
+        return Err(format!("VP9 profile {} chroma {:?}", info.profile, info.subsampling));
+    }
+    if !matches!((info.profile, info.bit_depth), (0, 8) | (2, 10)) {
+        return Err(format!("VP9 profile {} at {} bits", info.profile, info.bit_depth));
+    }
+    let pixel_format = vp9_pixel_format(info.bit_depth, c.full_range);
+    let (w, h) = info.size;
+    if w == 0 || h == 0 || w > 8192 || h > 8192 {
+        return Err(format!("picture size {w}x{h}"));
+    }
+    let mut color = filmcraft_color::ColorInfo::REC709;
+    if c.full_range {
+        color.range = filmcraft_color::Range::Full;
+    }
+    Ok(Layout { pixel_format, coded: info.size, crop: (0, 0, w, h), chroma: Chroma::C420, bits: info.bit_depth, color, par: (1, 1) })
+}
+
+/// The buffer format for 8- / 10-bit VP9 pictures of a range.
+fn vp9_pixel_format(bits: u32, full: bool) -> u32 {
+    match (bits > 8, full) {
+        (false, false) => NV12_VIDEO,
+        (false, true) => NV12_FULL,
+        (true, false) => P010_VIDEO,
+        (true, true) => P010_FULL,
+    }
+}
+
+/// The `vpcC` box payload (version 1) VideoToolbox reads the VP9 configuration from.
+fn vpcc_atom(c: &VpcConfig) -> Vec<u8> {
+    let packed = (c.bit_depth << 4) | ((c.chroma_subsampling & 7) << 1) | u8::from(c.full_range);
+    vec![1, 0, 0, 0, c.profile, c.level, packed, c.colour_primaries, c.transfer_characteristics, c.matrix_coefficients, 0, 0]
+}
+
 /// The layout for a stream, or why VideoToolbox is not used for it.
 fn layout(info: &NalStreamInfo) -> std::result::Result<Layout, String> {
     if info.interlaced {
@@ -275,9 +323,25 @@ fn layout(info: &NalStreamInfo) -> std::result::Result<Layout, String> {
     Ok(Layout { pixel_format, coded: info.coded, crop: info.crop, chroma, bits: info.bit_depth_luma, color: info.color, par: info.par })
 }
 
+/// What a session decodes: an `avcC` / `hvcC` stream, or a VP9 stream with its `vpcC` box.
+#[derive(Clone)]
+enum Stream {
+    Nal(NalStreamInfo),
+    Vp9(FrameStreamInfo, Vec<u8>),
+}
+
+impl Stream {
+    fn format_description(&self) -> std::result::Result<CFRetained<CMFormatDescription>, String> {
+        match self {
+            Self::Nal(info) => format_description(info),
+            Self::Vp9(info, vpcc) => vp9_format_description(info, vpcc),
+        }
+    }
+}
+
 impl Session {
-    fn new(info: &NalStreamInfo, layout: Layout) -> std::result::Result<Session, String> {
-        let format = format_description(info)?;
+    fn new(stream: &Stream, layout: Layout) -> std::result::Result<Session, String> {
+        let format = stream.format_description()?;
         // SAFETY: reading an immutable framework constant.
         let key: &CFString = unsafe { kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder };
         let spec = CFDictionary::<CFString, CFType>::from_slices(&[key], &[CFBoolean::new(true).as_ref()]);
@@ -285,7 +349,7 @@ impl Session {
         // SAFETY: reading an immutable framework constant.
         let pf_key: &CFString = unsafe { kCVPixelBufferPixelFormatTypeKey };
         let attrs = CFDictionary::<CFString, CFType>::from_slices(&[pf_key], &[pf.as_ref()]);
-        let shared = Box::new(Shared { layout, out: Mutex::new(Vec::new()) });
+        let shared = Box::new(Shared { layout: Mutex::new(layout), out: Mutex::new(Vec::new()) });
         let record = VTDecompressionOutputCallbackRecord {
             decompressionOutputCallback: Some(output_callback),
             decompressionOutputRefCon: &*shared as *const Shared as *mut c_void,
@@ -322,6 +386,11 @@ impl Session {
         unsafe { self.session.wait_for_asynchronous_frames() };
     }
 
+    /// The layout of pictures decoded from now on.
+    fn set_layout(&self, layout: Layout) {
+        *self.shared.layout.lock().unwrap_or_else(PoisonError::into_inner) = layout;
+    }
+
     /// What the callback produced so far.
     fn take(&self) -> Vec<Output> {
         std::mem::take(&mut *self.shared.out.lock().unwrap_or_else(PoisonError::into_inner))
@@ -353,6 +422,25 @@ fn format_description(info: &NalStreamInfo) -> std::result::Result<CFRetained<CM
         }
     };
     let fd = NonNull::new(out as *mut CMFormatDescription).filter(|_| status == 0).ok_or_else(|| format!("bad parameter sets for VideoToolbox ({status})"))?;
+    // SAFETY: a "Create" function returns the description retained (+1); `CFRetained` takes it over.
+    Ok(unsafe { CFRetained::from_raw(fd) })
+}
+
+/// A VP9 `CMVideoFormatDescription`: the picture size and the `vpcC` box as a sample description
+/// extension atom.
+fn vp9_format_description(info: &FrameStreamInfo, vpcc: &[u8]) -> std::result::Result<CFRetained<CMFormatDescription>, String> {
+    let (w, h) = info.size;
+    let atom_key = CFString::from_static_str("vpcC");
+    let data = CFData::from_bytes(vpcc);
+    let atoms = CFDictionary::<CFString, CFType>::from_slices(&[&*atom_key], &[data.as_ref()]);
+    // SAFETY: reading an immutable framework constant.
+    let key: &CFString = unsafe { kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms };
+    let ext = CFDictionary::<CFString, CFType>::from_slices(&[key], &[atoms.as_ref()]);
+    let mut out: *const CMFormatDescription = std::ptr::null();
+    // SAFETY: the extensions dictionary is valid for the call (CoreMedia deep-copies it) and `out`
+    // is a valid pointer for the result.
+    let status = unsafe { CMVideoFormatDescriptionCreate(None, VP9, w as i32, h as i32, Some(ext.as_opaque()), NonNull::from(&mut out)) };
+    let fd = NonNull::new(out as *mut CMFormatDescription).filter(|_| status == 0).ok_or_else(|| format!("bad vpcC for VideoToolbox ({status})"))?;
     // SAFETY: a "Create" function returns the description retained (+1); `CFRetained` takes it over.
     Ok(unsafe { CFRetained::from_raw(fd) })
 }
@@ -413,9 +501,21 @@ pub fn hardware_available(codec: NalCodec) -> bool {
     unsafe { objc2_video_toolbox::VTIsHardwareDecodeSupported(t) }
 }
 
-/// The VideoToolbox decoder for one `avcC` / `hvcC` stream.
+/// Whether this Mac has a hardware VP9 decoder (Apple silicon). VP9 is a supplemental decoder:
+/// it must be registered before VideoToolbox offers it.
+pub fn vp9_hardware_available() -> bool {
+    static REGISTER: std::sync::Once = std::sync::Once::new();
+    // SAFETY: pure calls with no pointer arguments; registering twice is harmless, done once anyway.
+    REGISTER.call_once(|| unsafe { objc2_video_toolbox::VTRegisterSupplementalVideoDecoderIfAvailable(VP9) });
+    // SAFETY: as above.
+    unsafe { objc2_video_toolbox::VTIsHardwareDecodeSupported(VP9) }
+}
+
+/// The VideoToolbox decoder for one `avcC` / `hvcC` / `vpcC` stream.
 pub struct VtDecoder {
-    info: NalStreamInfo,
+    stream: Stream,
+    /// The stream's reorder depth (0 for VP9).
+    reorder: usize,
     layout: Layout,
     /// `None` after a reset until the next sample (a fresh session per decoding run).
     session: Option<Session>,
@@ -441,14 +541,30 @@ impl VtDecoder {
         if !hardware_available(info.codec) {
             return Err("no hardware decoder".into());
         }
-        // Create the session now so unsupported streams are declined up front.
-        let session = Session::new(&info, layout.clone())?;
         let name = match info.codec {
             NalCodec::H264 => "VideoToolbox H.264",
             NalCodec::Hevc => "VideoToolbox HEVC",
         };
+        let reorder = info.reorder;
+        Self::with(Stream::Nal(info), reorder, layout, name)
+    }
+
+    /// A decoder for a VP9 stream with its `vpcC` configuration, or why VideoToolbox does not take
+    /// it (profile 1 / 3, 12-bit, no hardware VP9 decoder, session creation failed).
+    pub fn new_vp9(info: FrameStreamInfo, config: &VpcConfig) -> std::result::Result<Self, String> {
+        let layout = vp9_layout(&info, config)?;
+        if !vp9_hardware_available() {
+            return Err("no hardware VP9 decoder".into());
+        }
+        Self::with(Stream::Vp9(info, vpcc_atom(config)), 0, layout, "VideoToolbox VP9")
+    }
+
+    fn with(stream: Stream, reorder: usize, layout: Layout, name: &'static str) -> std::result::Result<Self, String> {
+        // Create the session now so unsupported streams are declined up front.
+        let session = Session::new(&stream, layout.clone())?;
         Ok(Self {
-            info,
+            stream,
+            reorder,
             layout,
             session: Some(session),
             pending: Vec::new(),
@@ -475,7 +591,7 @@ impl VtDecoder {
     fn bump(&mut self) -> Vec<DecodedFrame> {
         let mut out = Vec::new();
         // A picture still decoding counts towards the depth and may come before the waiting ones.
-        while self.pending.len() + self.in_flight.len() > self.info.reorder {
+        while self.pending.len() + self.in_flight.len() > self.reorder {
             let first = self.pending.first().map(|f| f.pts);
             match (first, self.in_flight.iter().min()) {
                 (Some(p), Some(&q)) if q < p => break,
@@ -510,8 +626,10 @@ impl VideoDecoder for VtDecoder {
         if self.fail_after.is_some_and(|n| self.fed > n) {
             return Err(CodecError::Decode("VideoToolbox session failed (test hook)".into()));
         }
-        if self.info.codec == NalCodec::Hevc {
-            let types = self.info.nal_types(sample);
+        if let Stream::Nal(info) = &self.stream
+            && info.codec == NalCodec::Hevc
+        {
+            let types = info.nal_types(sample);
             let irap = types.iter().any(|t| (16..=23).contains(t));
             if irap {
                 // CRA / BLA starting a run: its RASL pictures reference pictures we never decoded.
@@ -522,8 +640,20 @@ impl VideoDecoder for VtDecoder {
             }
         }
         self.first = false;
+        if let Stream::Vp9(info, _) = &self.stream
+            && let Some(p) = info.picture_params(sample)
+        {
+            // a key frame: its colour is what the software decoder reports from here on. The buffer
+            // format stays the one of `vpcC`'s range, which is the range VideoToolbox assumes: asking
+            // for the other one makes it convert the samples (PS5 recordings say limited in the
+            // container and full in the bitstream).
+            self.layout.color = p.color;
+            if let Some(s) = self.session.as_ref() {
+                s.set_layout(self.layout.clone());
+            }
+        }
         if self.session.is_none() {
-            self.session = Some(Session::new(&self.info, self.layout.clone()).map_err(CodecError::Decode)?);
+            self.session = Some(Session::new(&self.stream, self.layout.clone()).map_err(CodecError::Decode)?);
         }
         let Some(session) = self.session.as_ref() else {
             return Err(CodecError::Decode("no VideoToolbox session".into()));
@@ -562,10 +692,17 @@ impl VideoDecoder for VtDecoder {
     }
 
     fn is_random_access(&self, sample: &[u8]) -> Option<bool> {
-        self.info.is_random_access(sample)
+        match &self.stream {
+            Stream::Nal(info) => info.is_random_access(sample),
+            Stream::Vp9(info, _) => Some(info.is_random_access(sample)),
+        }
     }
 
     fn is_disposable(&self, sample: &[u8]) -> bool {
-        self.info.is_disposable(sample)
+        match &self.stream {
+            Stream::Nal(info) => info.is_disposable(sample),
+            // as the software VP9 decoder: no sample is marked disposable
+            Stream::Vp9(..) => false,
+        }
     }
 }
