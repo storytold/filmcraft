@@ -1,8 +1,8 @@
-//! NVENC H.265 (HEVC Main) encoding (Windows, NVIDIA GPU with an HEVC encoder): the stream decodes
+//! NVENC H.265 (HEVC Main) encoding (Windows / Linux, NVIDIA GPU with an HEVC encoder): the stream decodes
 //! with our own HEVC decoder to pictures close to the source, keyframes and timestamps are right, the
 //! samples carry no parameter sets and the `hvcC` describes the SPS it was built from. Skips
 //! without an NVIDIA GPU / driver with HEVC encoding.
-#![cfg(target_os = "windows")]
+#![cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 
 use filmcraft_bitstream::unescape_rbsp;
 use filmcraft_hevc::params::Sps;
