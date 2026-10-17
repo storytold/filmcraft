@@ -427,6 +427,7 @@ fn category_of(id: &str, menu: &[&str]) -> String {
         "app" | "help" | "mode" => "Application".into(),
         "captions" => "Captions".into(),
         "tts" => "Text to Speech".into(),
+        "comfyui" => "ComfyUI".into(),
         _ => menu.first().map(|s| s.to_string()).unwrap_or_else(|| {
             let mut c = prefix.chars();
             c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
