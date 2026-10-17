@@ -522,21 +522,39 @@ mod tests {
         assert!(r.missing);
     }
 
-    /// Native: the system scan reads name tables only and resolves families installed there.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn directory_source_discovers_and_lazily_loads_inter_bold() {
+        let source = DirectorySource { dirs: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/fonts")] };
+        let info = source.faces().into_iter().find(|face| face.family == "Inter" && face.style == "Bold").expect("discovered Inter Bold");
+        assert_eq!(info.origin, "system");
+        assert!(matches!(&info.data, FaceData::File(_)));
+        let face = Face { id: 0, info, bytes: OnceLock::new(), shaper: OnceLock::new() };
+        assert!(face.bytes.get().is_none(), "discovery does not load the face");
+        assert_eq!(face.bytes().unwrap(), INTER_BOLD);
+        assert!(face.font().is_some());
+        assert!(face.glyph('H').is_some());
+    }
+
+    /// Scanning is cached even on hosts with no visible system font folders.
     #[test]
     fn system_scan_finds_fonts() {
-        let t = std::time::Instant::now();
         scan_system(); // (another test may have triggered the scan already)
-        let n = all_faces().iter().filter(|f| f.info.origin == "system").count();
-        eprintln!("system fonts: {n} faces in {:?}", t.elapsed());
         assert_eq!(scan_system(), 0, "scans once");
-        if cfg!(target_os = "macos") {
-            assert!(n > 20, "{n}");
-            let r = resolve("Helvetica", "Bold");
-            assert_eq!(face(r.face).info.family, "Helvetica");
-            let l = crate::layout("Helvetica", &crate::TextStyle { family: "Helvetica".into(), size: 30.0, ..Default::default() }, &Default::default());
-            assert!(!l.missing_font && l.glyphs.iter().all(|g| g.id != 0));
-        }
+    }
+
+    /// Native macOS discovery remains part of `cargo xtask ci` on that host.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires native macOS system fonts; run cargo xtask native-fonts"]
+    fn macos_system_fonts_resolve_and_layout() {
+        scan_system();
+        let n = all_faces().iter().filter(|face| face.info.origin == "system").count();
+        assert!(n > 20, "{n}");
+        let r = resolve("Helvetica", "Bold");
+        assert_eq!(face(r.face).info.family, "Helvetica");
+        let l = crate::layout("Helvetica", &crate::TextStyle { family: "Helvetica".into(), size: 30.0, ..Default::default() }, &Default::default());
+        assert!(!l.missing_font && l.glyphs.iter().all(|g| g.id != 0));
     }
 
     /// craft-fonts faces are registered after the bundled ones and serve Japanese characters the
