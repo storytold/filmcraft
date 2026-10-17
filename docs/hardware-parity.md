@@ -34,7 +34,7 @@ and re-uploaded to wgpu (**no zero-copy** yet), which Premiere avoids.
 
 | Codec | Premiere macOS | **Ours macOS** | Premiere Windows | **Ours Windows** | **Ours Linux** |
 |---|---|---|---|---|---|
-| H.264 8-bit | yes | **yes** (VideoToolbox, opt-in, no B-frames) | Intel QSV, NVENC, AMD | **NVENC only** (opt-in) | **NVENC only** |
+| H.264 8-bit | yes | **yes** (VideoToolbox, opt-in, no B-frames) | Intel QSV, NVENC, AMD | **NVENC only** (opt-in) | **NVENC, VA-API** (AMD / Intel / Mesa; opt-in, no B-frames) |
 | H.264 10-bit / 4:2:2 | yes (Apple silicon) | no | Intel | no | no |
 | HEVC Main 8-bit | yes | **yes** (hardware-only format) | QSV, NVENC, AMD | **NVENC only** | no |
 | HEVC Main 10 / HDR (PQ, HLG) | yes | **no** (tone-mapped to 8-bit SDR) | yes | **NVENC yes** (HDR10 SEI, `mdcv` / `clli`) | no |
@@ -84,4 +84,5 @@ one encoder ~4–8 h ([target-app-parity.md](target-app-parity.md#calibration)).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-12 | minor | Linux H.264 export encoding through VA-API (AMD / Intel; #30) |
 | 2026-10-10 | major | Created from ROADMAP.md's performance-and-hardware row and `crates/platform/README.md`; added Linux NVDEC (#549), GPU export and Lumetri on the GPU (#421), Premiere's per-platform hardware list, devices and I/O |
