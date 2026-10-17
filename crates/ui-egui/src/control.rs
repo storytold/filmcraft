@@ -103,7 +103,11 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
         "engine.execute" | "ui.menu.invoke" => {
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
             let params = p.get("params").cloned().unwrap_or(json!({}));
-            match crate::menus::invoke(app, ctx, id, params) {
+            // `engine.execute` never opens a parameter dialog (#1540); `ui.menu.invoke` is the menu
+            app.engine_call = req.method == "engine.execute";
+            let r = crate::menus::invoke(app, ctx, id, params);
+            app.engine_call = false;
+            match r {
                 Ok(v) => ok(v),
                 Err(e) => err(e),
             }

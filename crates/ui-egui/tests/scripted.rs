@@ -605,3 +605,28 @@ fn eyedropper_picks_a_key_color_on_a_selected_clip() {
     }
     assert_ne!(color(&mut d), before, "the eyedropper filled Key Color from the Program picture");
 }
+
+/// #1540: over the control channel, `engine.execute` of a command whose menu form asks for its
+/// parameters in a dialog never opens one (an agent cannot see or close it). Sequence Settings…
+/// answers the settings instead; the other commands run the engine command with what was given.
+/// `ui.menu.invoke` keeps opening the dialog, as the menu does.
+#[test]
+fn engine_execute_never_opens_a_parameter_dialog() {
+    let mut d = Driver::demo();
+    let r = d.exec("sequence.settings", json!({}));
+    assert!(r["settings"]["width"].is_u64() && r["settings"]["frame_rate"].is_object(), "the settings, not a dialog: {r}");
+    assert!(d.inspect()["dialog"].is_null(), "no dialog opened");
+    // a command that needs a parameter fails as the engine command, instead of asking in a dialog
+    let v = d.call("engine.execute", json!({"command": "clip.audioGain", "params": {}}));
+    assert_eq!(v["ok"], json!(false), "{v}");
+    assert!(d.inspect()["dialog"].is_null(), "no dialog opened: {v}");
+    // with parameters it applies, as before
+    let r = d.exec("sequence.settings", json!({"maxRenderQuality": true}));
+    assert!(r["scaledClips"].is_u64(), "{r}");
+    assert_eq!(d.sequence()["settings"]["max_render_quality"], json!(true));
+    // the menu form still opens the dialog
+    let r = d.ok("ui.menu.invoke", json!({"id": "sequence.settings"}));
+    assert_eq!(r["dialog"], json!("sequenceSettings"), "{r}");
+    d.frames(2);
+    assert_eq!(d.inspect()["dialog"], json!("SequenceSettings"));
+}

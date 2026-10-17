@@ -294,6 +294,10 @@ pub struct FilmcraftApp {
     pub(crate) pending_panel_raise: Option<PanelKind>,
     /// Explicit automation mode: native widget input and native menu commands are excluded.
     pub(crate) control_input_only: bool,
+    /// Set while a control-channel `engine.execute` runs: a command whose menu form opens a
+    /// dialog to ask for parameters runs the engine command instead (an agent cannot see or
+    /// close a dialog; `ui.menu.invoke` keeps the menu behaviour, #1540).
+    pub(crate) engine_call: bool,
     /// Backend focus before synthetic input changes egui's effective focus for this frame.
     pub(crate) native_window_focused: Option<bool>,
     /// Modifiers owned by an in-flight control gesture, carried between its input frames.
@@ -556,6 +560,7 @@ impl FilmcraftApp {
             control_rx: None,
             pending_panel_raise: None,
             control_input_only: false,
+            engine_call: false,
             native_window_focused: None,
             synthetic_modifiers: egui::Modifiers::NONE,
             deferred: Vec::new(),
