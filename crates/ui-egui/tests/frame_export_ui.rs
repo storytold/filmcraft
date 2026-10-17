@@ -60,6 +60,13 @@ fn click(h: &mut Harness<'static, FilmcraftApp>, id: &str) {
     }
     step(h);
 }
+/// The save dialog answers with the suggested file name in `folder`.
+fn save_into(h: &mut Harness<'static, FilmcraftApp>, folder: std::path::PathBuf) {
+    h.state_mut().hooks.pick_save_as = Some(Box::new(move |_, _, suggested| {
+        let name = std::path::Path::new(suggested).file_name().unwrap().to_owned();
+        Some(folder.join(name).to_string_lossy().into_owned())
+    }));
+}
 fn has(h: &Harness<'static, FilmcraftApp>, id: &str) -> bool {
     h.state().auto.elements.iter().any(|e| e.id == id)
 }
@@ -94,7 +101,7 @@ fn program_export_ignores_source_focus_and_imports_the_saved_still() {
     std::fs::create_dir_all(&folder).unwrap();
     let path = folder.join("Program clip.bmp");
     let out = folder.clone();
-    h.state_mut().hooks.pick_folder = Some(Box::new(move || Some(out.to_string_lossy().into_owned())));
+    save_into(&mut h, out);
     let ctx = h.ctx.clone();
     menus::invoke(h.state_mut(), &ctx, "file.exportFrame", json!({"monitor":"program"})).unwrap();
     step(&mut h);
@@ -128,14 +135,14 @@ fn focused_source_command_captures_the_frame_and_save_cancel_keeps_the_dialog() 
     menus::invoke(h.state_mut(), &ctx, "file.exportFrame", json!({})).unwrap();
     step(&mut h);
     h.state_mut().session.state.source_playhead = Tick::ZERO;
-    h.state_mut().hooks.pick_folder = Some(Box::new(|| None));
+    h.state_mut().hooks.pick_save_as = Some(Box::new(|_, _, _| None));
     click(&mut h, "exportFrame.browse");
     assert!(has(&h, "exportFrame.name"));
     let folder = std::env::temp_dir().join(format!("fc-source-frame-ui-{}", std::process::id()));
     std::fs::create_dir_all(&folder).unwrap();
     let path = folder.join("Source clip.png");
     let out = folder.clone();
-    h.state_mut().hooks.pick_folder = Some(Box::new(move || Some(out.to_string_lossy().into_owned())));
+    save_into(&mut h, out);
     click(&mut h, "exportFrame.browse");
     click(&mut h, "exportFrame.export");
     assert!(path.exists(), "{}", h.state().ui.status);
@@ -159,7 +166,7 @@ fn depth_dropdown_is_format_aware_and_existing_files_require_confirmation() {
     let path = folder.join("Source clip.png");
     std::fs::write(&path, b"keep me").unwrap();
     let out = folder.clone();
-    h.state_mut().hooks.pick_folder = Some(Box::new(move || Some(out.to_string_lossy().into_owned())));
+    save_into(&mut h, out);
     click(&mut h, "exportFrame.browse");
     click(&mut h, "exportFrame.export");
     assert!(has(&h, "exportFrame.replace"));
@@ -292,4 +299,37 @@ fn clicking_outside_dismisses_without_export_and_dropdowns_stay_open() {
     }
     step(&mut h);
     assert!(!has(&h, "exportFrame.name"), "clicking the background monitor must cancel the draft");
+}
+
+#[test]
+fn the_folder_link_opens_the_save_dialog_and_the_choice_sets_folder_and_name() {
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    menus::invoke(h.state_mut(), &ctx, "file.exportFrame", json!({"monitor":"program"})).unwrap();
+    step(&mut h);
+    // the folder is a link; Browse is the same link
+    let rect = |h: &Harness<'static, FilmcraftApp>, id: &str| h.state().auto.elements.iter().find(|e| e.id == id).map(|e| e.rect);
+    assert!(rect(&h, "exportFrame.path").is_some());
+    assert_eq!(rect(&h, "exportFrame.path"), rect(&h, "exportFrame.browse"));
+    let folder = std::env::temp_dir().join(format!("fc-frame-link-ui-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).unwrap();
+    let asked = Arc::new(Mutex::new(Vec::<(Vec<String>, String)>::new()));
+    let log = asked.clone();
+    let chosen = folder.join("Picked still.png");
+    let answer = chosen.to_string_lossy().into_owned();
+    h.state_mut().hooks.pick_save_as = Some(Box::new(move |_, exts, suggested| {
+        log.lock().unwrap().push((exts.iter().map(|e| e.to_string()).collect(), suggested.to_string()));
+        Some(answer.clone())
+    }));
+    click(&mut h, "exportFrame.path");
+    let asked = asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].0, ["png"]);
+    assert!(asked[0].1.ends_with("Program clip.png"), "seeded with the folder and the name: {}", asked[0].1);
+    assert!(has(&h, "exportFrame.name"), "the dialog stays open");
+    click(&mut h, "exportFrame.export");
+    assert!(chosen.exists(), "{}", h.state().ui.status);
+    drop(h);
+    std::fs::remove_file(chosen).unwrap();
+    std::fs::remove_dir(folder).unwrap();
 }
