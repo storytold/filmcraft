@@ -701,6 +701,14 @@ impl Session {
             }
             return Err(e);
         }
+        // Only an editing command can introduce clips for the sequence-only scope. Loading a
+        // document or restoring an undo snapshot must not run recognition or change that snapshot.
+        let transcription_before = (self.exec_depth == 0
+            && spec.journal
+            && self.prefs.media_analysis.auto_transcribe
+            && self.prefs.media_analysis.auto_transcribe_scope == "sequenceClips"
+            && !matches!(id, "edit.undo" | "edit.redo" | "file.newProject" | "file.openDemoProject" | "file.open" | "file.revert" | "file.recover"))
+        .then(|| self.project.clone());
         self.exec_depth += 1;
         // Last-resort guard: a panic in a command (a bug that escaped the never-crash rules)
         // becomes an error for the caller (UI, CLI, control channel, MCP) instead of taking the
@@ -714,6 +722,15 @@ impl Session {
         // source graphics: an edited instance updates the shared layers and the other instances
         if r.is_ok() && spec.journal && id.starts_with("graphics.") && !self.project.source_graphics.is_empty() {
             graphic_templates::sync_source_graphics(self);
+        }
+        if r.is_ok()
+            && let Some(before) = transcription_before
+            && !Arc::ptr_eq(&before, &self.project)
+            && let Err(e) = transcript::auto_transcribe_sequence_clips(self, &before)
+        {
+            let message = format!("Automatic transcription: {e}");
+            self.log.push(panels::Level::Warning, id, message.clone());
+            self.events.push(Event::Toast { message, error: true });
         }
         if self.exec_depth == 0
             && let Err(e) = &r

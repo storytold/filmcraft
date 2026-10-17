@@ -543,6 +543,226 @@ fn auto_transcribe_on_import_and_transcription_defaults() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn auto_transcribe_sequence_clips_after_insertion() {
+    use filmcraft_project::{Transcript, Word};
+    let dir = tmp_dir("prefs-sequence-transcribe");
+    let mov = dir.join("talk.mov");
+    crate::media_test_util::make_movie(&mov, filmcraft_media::DemoScene::OceanSunset, 64, 36, 24);
+    let mut missing = Vec::new();
+    for (command, audio) in [("source.insert", true), ("source.overwrite", true), ("timeline.place", true), ("timeline.place", false)] {
+        let mut s = Session::default();
+        let mut t = Transcript { language: "en".into(), ..Default::default() };
+        t.words.push(Word::new("hello", Tick::ZERO, Tick::from_seconds_f64(0.4)));
+        s.transcriber = Some(std::sync::Arc::new(filmcraft_speech::FixedTranscriber { transcript: t, id: "fixed".into() }));
+        set(&mut s, "mediaAnalysis.autoTranscribe", json!(true));
+        assert_eq!(s.prefs.media_analysis.auto_transcribe_scope, "sequenceClips");
+        let r = s.execute("file.import", json!({"paths": [mov.to_string_lossy()]})).unwrap();
+        assert_eq!(r["errors"], json!([]));
+        let item = ItemId(r["items"][0].as_u64().unwrap());
+        assert!(!s.project.transcripts.contains_key(&item));
+        s.execute("file.newSequence", json!({"video": 1, "audio": 1})).unwrap();
+        s.execute("source.open", json!({"item": item.0})).unwrap();
+        let params = if command == "timeline.place" { json!({"item": item.0, "track": "V1", "audioTrack": "A1", "audio": audio}) } else { json!({}) };
+        s.execute(command, params).unwrap();
+        assert_eq!(s.active_sequence().unwrap().audio_tracks.iter().flat_map(|t| &t.items).any(|c| c.item == item), audio);
+        let automatic = s.project.transcripts.contains_key(&item);
+        if automatic {
+            assert_eq!(s.project.transcripts[&item].words[0].text, "hello");
+        }
+        s.execute("transcript.generate", json!({"items": [item.0]})).unwrap();
+        assert_eq!(s.project.transcripts[&item].words[0].text, "hello");
+        if automatic != audio {
+            missing.push(command);
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+    assert!(missing.is_empty(), "sequence-scoped transcription did not run: {missing:?}");
+}
+
+struct SequenceRecognizer {
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    outcome: &'static str,
+}
+
+impl filmcraft_speech::Transcriber for SequenceRecognizer {
+    fn id(&self) -> String {
+        "sequence-test".into()
+    }
+    fn transcribe(
+        &self,
+        audio: &[f32],
+        _: &filmcraft_speech::Options,
+        _: filmcraft_speech::ProgressFn,
+    ) -> Result<filmcraft_project::Transcript, filmcraft_speech::SpeechError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        assert!(!audio.is_empty(), "the synthetic audio must decode");
+        match self.outcome {
+            "error" => Err(filmcraft_speech::SpeechError::Io("test recognizer failed".into())),
+            "panic" => panic!("test recognizer panicked"),
+            _ => Ok(filmcraft_project::Transcript {
+                words: vec![filmcraft_project::Word::new("hello", Tick::ZERO, Tick::from_seconds_f64(0.4))],
+                source: self.id(),
+                ..Default::default()
+            }),
+        }
+    }
+}
+
+fn sequence_transcription_session(dir: &Path, outcome: &'static str, limit: usize) -> (Session, ItemId, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let wav = dir.join("talk.wav");
+    std::fs::write(&wav, crate::voiceover::write_wav_f32(&vec![0.125; 16_000], 16_000)).unwrap();
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut s = Session::default();
+    s.history.limit = limit;
+    s.transcriber = Some(std::sync::Arc::new(SequenceRecognizer { calls: calls.clone(), outcome }));
+    let r = s.execute("file.import", json!({"paths": [wav.to_string_lossy()]})).unwrap();
+    assert_eq!(r["errors"], json!([]));
+    let item = ItemId(r["items"][0].as_u64().unwrap());
+    s.execute("file.newSequence", json!({"video": 1, "audio": 1})).unwrap();
+    s.execute("source.open", json!({"item": item.0})).unwrap();
+    (s, item, calls)
+}
+
+#[test]
+fn auto_transcribe_sequence_clips_from_clipboard_and_sequence_expansion() {
+    let dir = tmp_dir("prefs-sequence-transcribe-routes");
+    for route in ["file.newSequence", "edit.paste", "edit.pasteInsert", "expand"] {
+        let (mut s, item, calls) = sequence_transcription_session(&dir, "ok", 200);
+        if route != "file.newSequence" {
+            // Set up an untranscribed source clip with the preference off.
+            s.execute("source.insert", json!({})).unwrap();
+            assert!(s.project.transcripts.is_empty());
+            if route == "expand" {
+                let source = s.state.active_sequence.unwrap();
+                s.execute("file.newSequence", json!({"video": 1, "audio": 1})).unwrap();
+                s.execute("sequence.nestSequences", json!({"on": false})).unwrap();
+                s.execute("source.open", json!({"item": source.0})).unwrap();
+            } else {
+                s.execute("edit.copy", json!({})).unwrap();
+            }
+        }
+        set(&mut s, "mediaAnalysis.autoTranscribe", json!(true));
+        let (command, params) = match route {
+            "file.newSequence" => (route, json!({"fromItem": item.0, "video": 1, "audio": 1})),
+            "expand" => ("source.insert", json!({})),
+            _ => (route, json!({})),
+        };
+        s.execute(command, params).unwrap();
+        assert_eq!(s.project.transcripts[&item].words[0].text, "hello", "{route}");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "{route}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn auto_transcribe_sequence_clips_share_undo_and_preserve_existing_transcripts() {
+    let dir = tmp_dir("prefs-sequence-transcribe-history");
+    for limit in [0, 1, 200] {
+        let (mut s, item, calls) = sequence_transcription_session(&dir, "ok", limit);
+        set(&mut s, "mediaAnalysis.autoTranscribe", json!(true));
+        let before = s.project.to_json();
+        let undo = s.history.undo.clone();
+        s.execute("source.insert", json!({})).unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let after = s.project.to_json();
+        assert_eq!(filmcraft_project::Project::from_json(&after).unwrap().to_json(), after);
+        assert_eq!(s.history.undo.len(), (undo.len() + 1).min(limit));
+        if limit > 0 {
+            if limit > 1 {
+                for (old, kept) in undo.iter().zip(&s.history.undo) {
+                    assert_eq!(old.0, kept.0);
+                    assert!(std::sync::Arc::ptr_eq(&old.1, &kept.1), "older undo steps must be retained");
+                }
+            }
+            s.execute("edit.undo", json!({})).unwrap();
+            assert_eq!(s.project.to_json(), before);
+            s.execute("edit.redo", json!({})).unwrap();
+            assert_eq!(s.project.to_json(), after);
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "redo must restore the saved transcript");
+        }
+        let transcript = s.project.transcripts[&item].clone();
+        s.execute("source.insert", json!({})).unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "reuse the media's existing transcript");
+        assert!(std::sync::Arc::ptr_eq(&s.project.transcripts[&item], &transcript));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn auto_transcribe_sequence_clips_failures_warn_and_keep_the_placement() {
+    let dir = tmp_dir("prefs-sequence-transcribe-failure");
+    for outcome in ["error", "panic", "unavailable"] {
+        if outcome == "unavailable" && crate::transcript::speech_available() {
+            continue;
+        }
+        let (mut s, item, calls) = sequence_transcription_session(&dir, outcome, 200);
+        if outcome == "unavailable" {
+            s.transcriber = None;
+        }
+        set(&mut s, "mediaAnalysis.autoTranscribe", json!(true));
+        let before = s.project.to_json();
+        let undo = s.history.undo.len();
+        s.execute("source.insert", json!({})).unwrap();
+        assert!(s.active_sequence().unwrap().audio_tracks[0].items.iter().any(|c| c.item == item));
+        assert!(!s.project.transcripts.contains_key(&item));
+        assert_eq!(s.history.undo.len(), undo + 1);
+        let reason = match outcome {
+            "error" => "test recognizer failed",
+            "panic" => "internal error during automatic transcription",
+            _ => "not available in this build",
+        };
+        assert!(s.log.entries.iter().any(|e| e.level == crate::panels::Level::Warning && e.source == "source.insert" && e.message.contains(reason)));
+        assert!(s.events.iter().any(|e| matches!(e, crate::Event::Toast { message, error: true } if message.contains(reason))));
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(s.project.to_json(), before);
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), usize::from(outcome != "unavailable"));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn auto_transcribe_sequence_clips_ignore_disabled_scope_and_failed_placement() {
+    let dir = tmp_dir("prefs-sequence-transcribe-controls");
+    for scope in ["off", "allImported", "locked"] {
+        let (mut s, item, calls) = sequence_transcription_session(&dir, "ok", 200);
+        if scope != "off" {
+            set(&mut s, "mediaAnalysis.autoTranscribe", json!(true));
+        }
+        if scope == "allImported" {
+            set(&mut s, "mediaAnalysis.autoTranscribeScope", json!("allImported"));
+        }
+        if scope == "locked" {
+            s.execute("timeline.setTrack", json!({"track": "A1", "locked": true})).unwrap();
+        }
+        let r = s.execute("timeline.place", json!({"item": item.0, "track": "A1"}));
+        assert_eq!(r.is_ok(), scope != "locked", "{scope}: {r:?}");
+        assert!(s.project.transcripts.is_empty(), "{scope}");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0, "{scope}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn auto_transcribe_sequence_clips_do_not_change_opened_documents() {
+    let dir = tmp_dir("prefs-sequence-transcribe-open");
+    let (mut s, _, calls) = sequence_transcription_session(&dir, "ok", 200);
+    s.execute("source.insert", json!({})).unwrap();
+    let saved = s.project.to_json();
+    let path = dir.join("project.fcproj");
+    std::fs::write(&path, &saved).unwrap();
+    s.execute("file.newProject", json!({})).unwrap();
+    set(&mut s, "mediaAnalysis.autoTranscribe", json!(true));
+    s.execute("file.open", json!({"path": path.to_string_lossy()})).unwrap();
+    assert_eq!(s.project.to_json(), saved);
+    assert!(!s.is_dirty());
+    s.execute("file.revert", json!({})).unwrap();
+    assert_eq!(s.project.to_json(), saved);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// In a build without speech-to-text (the release builds), the transcript commands that can't
 /// run say so through `enabled` (#97, #98), and an import with auto-transcribe on reports why it
 /// made no transcript instead of saying nothing (#89).

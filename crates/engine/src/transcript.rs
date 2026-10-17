@@ -9,13 +9,14 @@
 //! engine feature `whisper`; without it `transcript.generate` fails with a clear error, and agents
 //! can still bring their own transcript with `transcript.set`).
 
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
 
 use filmcraft_edit as edit;
 use filmcraft_edit::transcript::{self as tx, CaptionRules, SeqWord};
-use filmcraft_project::{CaptionFormat, CaptionTrack, ItemId, ItemKind, TrackId, Transcript};
+use filmcraft_project::{CaptionFormat, CaptionTrack, ClipId, ItemId, ItemKind, Project, TrackId, Transcript};
 use filmcraft_speech::{Options, SpeechError, Transcriber};
 use filmcraft_time::{TICKS_PER_SECOND, Tick, TimeRange};
 
@@ -186,6 +187,35 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(())
     })?;
     Ok(json!({"items": report, "skipped": skipped}))
+}
+
+/// Enabled audio placements, including media inside nested sequences, without recursive walks.
+fn audio_placements(project: &Project) -> impl Iterator<Item = (ItemId, ClipId, ItemId)> + '_ {
+    project.sequences().filter_map(|item| item.as_sequence().map(|q| (item.id, q))).flat_map(|(sequence, q)| {
+        q.audio_tracks.iter().flat_map(|track| &track.items).filter(|clip| clip.enabled).map(move |clip| (sequence, clip.id, clip.item))
+    })
+}
+
+/// Transcribe newly placed audio once per underlying media item. This runs after the outermost
+/// editing command so every placement route shares the same scope, including paste and expansion.
+pub(crate) fn auto_transcribe_sequence_clips(s: &mut Session, before: &Project) -> Result<()> {
+    let old: HashSet<_> = audio_placements(before).collect();
+    let items: BTreeSet<_> = audio_placements(&s.project)
+        .filter(|placement| !old.contains(placement))
+        .filter_map(|(_, _, item)| s.project.resolve_media(item))
+        .filter(|(root, media, _)| media.info.has_audio() && !s.project.transcripts.contains_key(root))
+        .map(|(root, _, _)| root.0)
+        .collect();
+    if items.is_empty() {
+        return Ok(());
+    }
+    // Fold the transcript into the placement's undo step. Preserve the whole history, including
+    // its bounded oldest entry and merge key; generate's own edit must not consume another slot.
+    let history = s.history.clone();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| generate(s, &json!({"items": items}))))
+        .unwrap_or_else(|_| Err(EngineError::Other("internal error during automatic transcription (see the crash log); the clips were placed".into())));
+    s.history = history;
+    result.map(|_| ())
 }
 
 fn set(s: &mut Session, p: &Value) -> Result<Value> {
