@@ -46,6 +46,10 @@ pub trait FxEnv: Sync {
     fn track(&self, index: usize) -> Option<Image>;
     /// Maps working-layer pixels to output pixels (Motion included).
     fn layer_to_output(&self) -> Affine;
+    /// Position of the original source origin in an expanded working image.
+    fn layer_origin(&self) -> Vec2 {
+        Vec2::new(0.0, 0.0)
+    }
     /// Clip duration on the timeline, in seconds.
     fn clip_seconds(&self) -> f64;
     /// Seconds from the clip's start to now.
@@ -63,6 +67,7 @@ pub trait FxEnv: Sync {
 }
 
 /// The environment of a track item being rendered by [`crate::item_layer`].
+#[derive(Clone)]
 pub(crate) struct ItemEnv<'a> {
     pub project: &'a Project,
     pub seq: &'a Sequence,
@@ -73,6 +78,7 @@ pub(crate) struct ItemEnv<'a> {
     pub want: f32,
     pub layer_size: (usize, usize),
     pub layer_to_output: Affine,
+    pub origin: Vec2,
     pub tc: &'a str,
 }
 
@@ -93,7 +99,12 @@ impl FxEnv for ItemEnv<'_> {
     fn frame(&self, dt: f64, upto: &EffectInstance) -> Option<Image> {
         let t2 = self.t + Tick::from_seconds_f64(dt);
         let base = crate::base_layer(self.project, self.seq, self.item, t2, self.opts, self.sources, self.want)?;
-        let mut img = resize(base, self.layer_size.0, self.layer_size.1);
+        let source_w = self.layer_size.0.saturating_sub((2.0 * self.origin.x) as usize).max(1);
+        let source_h = self.layer_size.1.saturating_sub((2.0 * self.origin.y) as usize).max(1);
+        let mut img = resize(base, source_w, source_h);
+        let mut origin = Vec2::new(0.0, 0.0);
+        let mut env = self.clone();
+        env.t = t2;
         let src = crate::source_size(self.project, self.item.item).unwrap_or((1, 1));
         let cx = FxCtx {
             t: self.item.effect_time_at(t2),
@@ -111,10 +122,19 @@ impl FxEnv for ItemEnv<'_> {
                 break;
             }
             if e.def().is_some_and(|d| !d.intrinsic) && !filmcraft_project::graphic::is_layer(e) && !is_temporal(&e.effect) {
-                crate::mask::apply_effect(&mut img, e, &cx);
+                crate::effect_bounds::expand(&mut img, &mut origin, e, &cx);
+                env.origin = origin;
+                env.layer_size = (img.w, img.h);
+                env.layer_to_output = self.layer_to_output.then_apply(&Affine::translate(self.origin.x - origin.x, self.origin.y - origin.y));
+                let cx = FxCtx { env: Some(&env), ..cx };
+                crate::mask::apply_effect_at(&mut img, e, &cx, origin);
             }
         }
-        Some(img)
+        if origin == self.origin && (img.w, img.h) == self.layer_size {
+            Some(img)
+        } else {
+            Some(img.transformed(self.layer_size.0, self.layer_size.1, &Affine::translate(self.origin.x - origin.x, self.origin.y - origin.y)))
+        }
     }
     fn source_frame(&self, dt: f64, scale: f32) -> Option<Image> {
         let t2 = self.t + Tick::from_seconds_f64(dt);
@@ -129,6 +149,9 @@ impl FxEnv for ItemEnv<'_> {
     }
     fn layer_to_output(&self) -> Affine {
         self.layer_to_output
+    }
+    fn layer_origin(&self) -> Vec2 {
+        self.origin
     }
     fn clip_seconds(&self) -> f64 {
         self.item.duration.seconds()
@@ -207,7 +230,11 @@ pub(crate) fn tv(e: &EffectInstance, id: &str) -> String {
 pub(crate) fn pv(e: &EffectInstance, id: &str, cx: &FxCtx, img: &Image) -> Vec2 {
     let v = e.param(id).map(|p| p.vec2_at(cx.t)).or_else(|| def_value(e, id).and_then(|v| v.as_vec2())).unwrap_or(Vec2::new(f64::NAN, f64::NAN));
     let (fx, fy) = filmcraft_project::effect::auto_point(&e.effect, id).unwrap_or((0.5, 0.5));
-    Vec2::new(if v.x.is_nan() { img.w as f64 * fx } else { v.x * cx.px_scale as f64 }, if v.y.is_nan() { img.h as f64 * fy } else { v.y * cx.px_scale as f64 })
+    let origin = cx.env.map_or(Vec2::new(0.0, 0.0), |env| env.layer_origin());
+    Vec2::new(
+        origin.x + if v.x.is_nan() { (img.w as f64 - 2.0 * origin.x) * fx } else { v.x * cx.px_scale as f64 },
+        origin.y + if v.y.is_nan() { (img.h as f64 - 2.0 * origin.y) * fy } else { v.y * cx.px_scale as f64 },
+    )
 }
 /// A point offset parameter (no auto position) in working pixels.
 pub(crate) fn offv(e: &EffectInstance, id: &str, cx: &FxCtx) -> Vec2 {

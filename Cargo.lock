@@ -2238,6 +2238,7 @@ dependencies = [
  "filmcraft-text",
  "filmcraft-time",
  "image",
+ "log",
  "rayon",
  "rustix 1.1.5",
  "serde",
