@@ -368,9 +368,14 @@ pub fn range_param(s: &Session, project: &Project, seq: ItemId, v: Option<&Value
     Ok(Some(range))
 }
 
-/// Where exports go when no path is given: next to the saved project, else ~/Movies, else the
-/// home directory, else the temporary directory.
+/// Where exports go when no path is given: the host's storage folder when it named one (the
+/// app-private `Exports` folder on Android, where nothing below resolves somewhere writable),
+/// else next to the saved project, else ~/Movies, else the home directory, else the temporary
+/// directory.
 pub fn default_export_dir(s: &Session) -> PathBuf {
+    if let Some(d) = s.export_dir.as_ref().filter(|d| !d.as_os_str().is_empty()) {
+        return d.clone();
+    }
     if let Some(d) = s.path.as_deref().and_then(|p| Path::new(p).parent()).filter(|d| !d.as_os_str().is_empty()) {
         return d.to_path_buf();
     }

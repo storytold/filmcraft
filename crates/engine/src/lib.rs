@@ -397,6 +397,11 @@ pub struct Session {
     /// User preferences (`prefs.*` commands) and where they persist (None = not persisted).
     pub prefs: autosave::Preferences,
     pub prefs_path: Option<std::path::PathBuf>,
+    /// The folder [`crate::export_tools::default_export_dir`] answers with before anything else:
+    /// the app-private `Exports` folder on Android, where none of its other fallbacks (the saved
+    /// project, `HOME`, the temp dir) resolves to somewhere a phone can write. None: the usual
+    /// chain, unchanged on the desktop and the web.
+    pub export_dir: Option<std::path::PathBuf>,
     /// Auto-save ring + crash-recovery journal (native frontends start it; None = off).
     pub persistence: Option<autosave::Persistence>,
     /// Schema version of the file at `path` as found on disk (older = upgraded on load; the first
@@ -516,6 +521,7 @@ impl Session {
             export_offline: Default::default(),
             prefs: Default::default(),
             prefs_path: None,
+            export_dir: None,
             persistence: None,
             loaded_schema: filmcraft_format::SCHEMA_VERSION,
             previews: Arc::new(previews::PreviewStore::temp()),

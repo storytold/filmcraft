@@ -22,7 +22,7 @@ Design principles:
 ## 1. Layers
 
 ```text
- L6  apps/filmcraft · apps/filmcraft-cli · apps/filmcraft-web
+ L6  apps/filmcraft · apps/filmcraft-cli · apps/filmcraft-web · apps/filmcraft-android
  L5  ui-egui · automation · platform
  L4  engine
  L3  render · gpu · export · golden (test-only)
@@ -79,9 +79,10 @@ and `filmcraft-cli`.
 | `ui-egui` | L5 | the egui frontend: docking, panels, timeline, monitors, playback, control-channel handlers |
 | `automation` | L5 | MCP server (`rmcp`, stdio), headless or bridged to the running app |
 | `platform` | L5 | OS media FFI only: hardware video decoding (VideoToolbox H.264 / HEVC on macOS; Media Foundation / Direct3D 11 H.264 / HEVC / VP9 / AV1 on Windows; VA-API H.264 / HEVC on Linux, with our own parsers and DPBs driving the stateless hardware; a no-op elsewhere) behind `codecs::VideoDecoder`, with transparent fallback to our decoders, and hardware H.264 encoding (VideoToolbox, opt-in) and H.265 encoding (VideoToolbox, the only H.265 encoder; the format exists only where a hardware encoder does) and NVIDIA NVENC H.264 (Windows and 64-bit Linux, opt-in) and H.265 (Windows, FilmCraft's only H.265 encoder there) encoding behind `export::VideoEncoder`; H.264 declines to the built-in encoder for what the hardware does not take. The one crate allowed `unsafe` ([ADR 0001](adr/0001-platform-ffi.md), [README](../crates/platform/README.md)) |
-| `filmcraft` | L6 | desktop binary: eframe/wgpu window, cpal audio output, file dialogs, native macOS menu, TCP control server |
+| `filmcraft` | L6 | desktop app (library + binary): eframe/wgpu window, cpal audio output, file dialogs (the system picker; FilmCraft's own browser where a host offers storage instead — see below), native macOS menu, TCP control server; Android's NativeActivity entry opens the same library |
 | `filmcraft-cli` | L6 | headless CLI: `exec`, `run`, `inspect`, `describe`, `commands`, `import`, `export`, `render`, `probe`, `mcp`; `--bridge` targets the running app |
 | `filmcraft-web` | L6 | the browser app (wasm32): eframe web runner on WebGPU/WebGL2, Blob-backed services, OPFS recovery, WebAudio, WebCodecs, `window.filmcraft` API ([web.md](web.md)) |
+| `filmcraft-android` | L6 | Android's NativeActivity entry trampoline (arm64 APK, `cargo apk`): the unmangled `android_main` that hands the activity handle to `filmcraft::run_android`, plus the `res/` tree with the launcher icon |
 
 ### What `cargo xtask layers` enforces
 
@@ -93,14 +94,72 @@ are exempt):
 |---|---|
 | Every crate has a layer | A new crate fails the check until it is added to `LAYERS`. |
 | Only downward edges | A crate may not depend on a crate in a higher layer. |
-| Same-layer edges are listed | From L1 up, a same-layer edge must be in `SAME_LAYER`: `media→frame`, `project→media`, `project→frame`, `gpu→render`, `export→render`, `cli→filmcraft`, plus a few reserved for planned crates. |
+| Same-layer edges are listed | From L1 up, a same-layer edge must be in `SAME_LAYER`: `media→frame`, `project→media`, `project→frame`, `gpu→render`, `export→render`, `cli→filmcraft`, `android→filmcraft`, plus a few reserved for planned crates. |
 | L0 codecs stay standalone | L0 crates other than `time`, `geom`, `color`, `bitstream`, `testkit` may depend on no workspace crate except `filmcraft-bitstream`. External crates such as `thiserror` and `rayon` are allowed. |
 | No UI/OS crates below L5 | `egui`, `eframe`, `egui-wgpu`, `winit`, `rfd`, `cpal`, `muda` are allowed only in L5 and L6. |
 
 `cargo xtask wasm` runs `cargo check --target wasm32-unknown-unknown` on every L0–L4 crate, the
 egui UI and the web app, so everything up to the engine stays web-portable and the web app builds
 ([web.md](web.md)). `unsafe_code = "forbid"` applies workspace-wide, except in `platform`
-(`deny`, allowed only on its FFI modules; [ADR 0001](adr/0001-platform-ffi.md)).
+(`deny`, allowed only on its FFI modules; [ADR 0001](adr/0001-platform-ffi.md)). One crate does
+not inherit the workspace lints at all: `filmcraft-android` sets the workspace's clippy denials
+itself and leaves `unsafe_code` alone, because Android's NativeActivity ABI requires an unmangled
+`android_main` and edition 2024 spells that `#[unsafe(no_mangle)]` — there is no safe spelling of a
+required export symbol. One file inside it, `android_access.rs`, now holds the workspace's only
+other `unsafe`: the JNI to the activity's JVM that checks and opens Android's "All files access"
+grant, named as the second exception by AGENTS.md §0.3 — on the same terms as `platform` (a safe
+API out, pointers never leaving the file, every failure degrading to "not granted").
+
+### What the Android build changes
+
+`filmcraft-android` is only the entry point; every other difference is the host telling the shared
+app what it has, not a `cfg` inside the panels:
+
+| Host | Behaviour |
+|---|---|
+| `HostHooks::app_files_dir` set (Android) | rfd has no backend there, so *every* file dialog — Save, Save As, Open Project, imports, exports, folder picks, relink — is served by [android_file.rs](../crates/ui-egui/src/panels/android_file.rs), FilmCraft's own browser. It opens on the frame the command asks, answers over the same channel a non-blocking host dialog uses (so the command continues on a later frame), and never leaves the root it is showing. |
+| `HostHooks::shared_storage_root` set (Android) | the same browser gets a **second root**: a switcher row between `App storage` (the private directory above) and `Shared storage`, which it enters only while `HostHooks::shared_storage_granted` reports that "All files access" is held — re-read every frame, since the settings page that grants it backgrounds the app. Without the grant the switcher (or the `Grant access` button inside the unreadable root) calls `HostHooks::shared_storage_grant` instead of navigating. |
+| both unset (desktop, web) | the system picker as before (`rfd`, or the File System Access API in the browser), unchanged. |
+
+The directory is Android's app-private `internal_data_path`, split once by
+`apps/filmcraft/src/android_storage.rs`:
+
+```text
+<files>/Projects/   saves and projects (Save / Save As, the Open Project list)
+<files>/Exports/    renders and stills: `Session.export_dir`, which `default_export_dir` consults
+                    first — `/` is the working directory on a phone, `HOME` and the temp dir are
+                    unset, so no other fallback lands somewhere writable
+<files>/config/     the data root: settings, auto-save, recovery, logs
+```
+
+Beside it the browser offers Android's shared internal storage (`/storage/emulated/0`) as a second
+root, once the user holds "All files access" (`MANAGE_EXTERNAL_STORAGE`, declared in the manifest).
+Android never grants that silently: the entry crate *checks* it and *opens the screen* that grants
+it — the system settings page on Android 11+, the ordinary permission dialog before — through
+`apps/filmcraft-android/src/android_access.rs`, the JNI that AGENTS.md §0.3 names as the
+workspace's second `unsafe` exception (a safe `SharedStorageAccess` of plain closures goes on into
+the shared app). Until the grant exists nothing outside `<files>` is reachable and the dialog is
+exactly the app-private one above; after it, a save, export, project or media import can be placed
+anywhere the user can browse — which is what keeps an ungranted build from holding a permission the
+user never gave.
+
+Two layers make a physical keyboard and mouse usable there. winit 0.30.13 (the last 0.30 release,
+pinned by eframe 0.36) reports no modifier state on Android — it ignores the meta state the OS
+carries on every key event and never emits the `ModifiersChanged` egui-winit learns `Ctrl`/`Shift`/
+`Alt` from — and drops every motion action that is not a touch, so a mouse has no hover, no wheel
+and no right or middle button. The workspace therefore vends winit with that mouse path filled in
+([third_party/winit](../third_party/winit/README.md): one Android-only file, pinned by
+`[patch.crates-io]`; every other target compiles the published crate byte-for-byte) and stamps the
+modifier keys onto each frame's key events itself (`stamp_android_modifiers` in `ui-egui`, driven
+from `raw_input_hook` before egui builds its input state). The stamping also keeps a chord from
+degrading into its plain-key binding: without it a chord's letter arrives unmodified and fires
+whatever that plain key is bound to — Markers' Mark Clip for `X`, the Zoom tool for `Z` — so the
+chord itself never runs. Touch and touch-dragged stylus input is untouched in both layers.
+
+The launcher icon comes from `apps/filmcraft-android/res/mipmap-<density>/ic_launcher.png`
+(`@mipmap/ic_launcher`), regenerated from `filmcraft.svg` by `packaging/icons.sh`; because `aapt -S`
+rejects a second resource name in a directory, those five PNGs are the only assets in the repository
+whose attribution sidecar is dot-prefixed (`xtask::ANDROID_RES`).
 
 ## 2. Time base
 
@@ -770,4 +829,5 @@ native menus) in `apps/filmcraft`. [roadmap.md](roadmap.md) has the milestone st
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-15 | minor | Android input: vendored winit (`third_party/winit`) with the mouse/trackpad path filled in — wheel, right/middle button, hover — and in-app keyboard-modifier stamping (`stamp_android_modifiers`), since winit's Android backend emits neither `ModifiersChanged` nor any mouse event |
 | 2026-10-10 | trivial | Status line and revision history added (craftrules progress-docs standard); milestone link points at docs/roadmap.md |

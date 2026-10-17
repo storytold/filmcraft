@@ -10,10 +10,14 @@ use serde_json::json;
 use crate::theme::Tokens;
 use crate::{Dialog, FilmcraftApp};
 
+use super::android_file::AndroidFileDraft;
+
 /// Dialog-local state.
 #[derive(Default)]
 pub struct FileDialogState {
     pub recovery_choice: usize,
+    /// The in-app browser's draft (a host with storage but no system picker: `app_files_dir`).
+    pub android_file: AndroidFileDraft,
 }
 
 fn modal_frame(t: &Tokens) -> Frame {

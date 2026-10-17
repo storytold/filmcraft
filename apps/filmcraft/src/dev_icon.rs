@@ -215,6 +215,10 @@ fn desktop_file_content(app_id: &str, name: &str, exe: &str) -> String {
     out.push_str("StartupNotify=true\n");
     out.push_str(&format!("StartupWMClass={app_id}\n"));
     out.push_str("Categories=AudioVideo;Video;AudioVideoEditing;\n");
+    // The same list packaging/linux/ai.storyteller.filmcraft.desktop declares (see the shared
+    // mime.xml): the project type and the video containers FilmCraft imports. Without it a dev
+    // build's entry offers FilmCraft for no file at all, which is what the packaged one fixed.
+    out.push_str("MimeType=application/x-filmcraft;video/mp4;video/x-m4v;video/quicktime;video/x-matroska;video/webm;video/vnd.avi;video/x-msvideo;application/mxf;video/mp2t;video/mpeg;video/3gpp;\n");
     out.push_str("Keywords=video;editor;film;timeline;color;grading;nle;\n");
     out
 }

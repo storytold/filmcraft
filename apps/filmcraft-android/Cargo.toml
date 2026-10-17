@@ -1,0 +1,74 @@
+[package]
+name = "filmcraft-android"
+description = "FilmCraft's Android entry point: the NativeActivity android_main trampoline that opens the shared app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+# NativeActivity loads this library and calls its android_main.
+crate-type = ["cdylib"]
+
+# This crate deliberately does not inherit the workspace lints. Android's NativeActivity ABI
+# requires an unmangled android_main export, and on edition 2024 that spelling
+# (`#[unsafe(no_mangle)]`) trips rust's `unsafe_code` lint, which the workspace forbids — there is
+# no safe spelling of a required export symbol. It therefore sets the workspace's *clippy* denials
+# itself (every one of them) and leaves `unsafe_code` alone. The one other reason it does not
+# inherit them is `android_access.rs`: JNI to the activity's raw JVM, which has no safe form and
+# checks / opens the grant for Android's "All files access" — the exception AGENTS.md §0.3 names
+# (purpose-limited, pointers never leaving the crate, failures degrading to "not granted"). The
+# shared app it opens keeps the workspace lints unchanged.
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unimplemented = "deny"
+todo = "deny"
+unreachable = "deny"
+
+[dependencies]
+filmcraft = { path = "../filmcraft" }
+log = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+# The NativeActivity handle the app's event loop needs; the same 0.6 instance eframe and winit
+# use, so the handle passes across crates as one type.
+android-activity = { version = "0.6", default-features = false, features = ["native-activity"] }
+# The "All files access" grant (`android_access.rs`): the same 0.21 instance cpal already pulls
+# in on this target, so the lockfile gains no new crate.
+jni = "0.21"
+
+[package.metadata.android]
+package = "ai.storyteller.filmcraft"
+apk_name = "filmcraft"
+build_targets = ["aarch64-linux-android"]
+# The launcher icon: `res/mipmap-<density>/ic_launcher.png`, regenerated from the app's own
+# filmcraft.svg by packaging/icons.sh (each PNG carries a dot-prefixed attribution sidecar, the
+# one spelling `aapt -S` accepts). cargo-apk runs `aapt package -S res`, which is what turns these
+# into the APK's @mipmap/ic_launcher.
+resources = "res"
+
+# "All files access" (`MANAGE_EXTERNAL_STORAGE`): lets the in-app file browser reach shared
+# storage (`/storage/emulated/0`) so a save, export or import can land outside the app-private
+# directory. It is a special permission an app can never hold silently — Android only opens the
+# system settings page where the user toggles it, which `src/android_access.rs` does over JNI —
+# so the manifest entry alone changes nothing until they do, and until then the browser keeps
+# its app-private root.
+uses_permission = [{ name = "android.permission.MANAGE_EXTERNAL_STORAGE" }]
+
+[package.metadata.android.sdk]
+min_sdk_version = 28
+target_sdk_version = 35
+
+[package.metadata.android.application]
+label = "FilmCraft"
+theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
+icon = "@mipmap/ic_launcher"
+
+[package.metadata.android.application.activity]
+config_changes = "orientation|keyboardHidden|screenSize|screenLayout|smallestScreenSize|density|layoutDirection"
+label = "FilmCraft"
+launch_mode = "singleTask"
+orientation = "landscape"
+exported = true

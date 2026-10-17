@@ -3585,3 +3585,19 @@
 	Shows the version, community links and credits in a FilmCraft window.	在 FilmCraft 窗口中显示版本、社区链接和致谢。
 	Couldn't open your web browser	无法打开网页浏览器
 	Open this address in your browser yourself:	请自行在浏览器中打开此地址：
+	A file with this name already exists: {name}	已存在同名文件：{name}
+	Choose	选择
+	Choose Folder	选择文件夹
+	Could not create the folder: {error}	无法创建文件夹：{error}
+	Create	创建
+	New Folder	新建文件夹
+	No saved projects yet.	还没有已保存的项目。
+	Nothing here.	这里没有内容。
+	Select at least one file.	请至少选择一个文件。
+	This folder can't be read.	无法读取此文件夹。
+	App storage	应用存储
+	Shared storage	共享存储
+	Shared storage (grant access)	共享存储（授予权限）
+	Grant access	授予权限
+	Allow "All files access" for FilmCraft on the settings page, then tap Shared storage.	在设置页面为 FilmCraft 允许“所有文件访问”，然后点按“共享存储”。
+	This build can't request shared-storage access.	此版本无法请求共享存储访问权限。

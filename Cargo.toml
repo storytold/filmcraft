@@ -146,3 +146,10 @@ opt-level = 3
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# Vendored winit 0.30.13 with the Android mouse input filled in (wheel, right and
+# middle buttons, hover); eframe 0.36 pins winit 0.30 and upstream has only a
+# `// TODO mouse events` there. The delta is one Android-only file, so every
+# other target compiles the published crate unchanged — see the README inside.
+[patch.crates-io]
+winit = { path = "third_party/winit" }

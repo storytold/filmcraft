@@ -7,6 +7,10 @@ license.workspace = true
 default-run = "filmcraft"
 build = "build.rs"
 
+[lib]
+# The desktop binary and Android's entry shim (apps/filmcraft-android) share this library.
+crate-type = ["rlib"]
+
 [lints]
 workspace = true
 
@@ -27,17 +31,33 @@ filmcraft-gpu = { workspace = true }
 filmcraft-ui-egui = { workspace = true }
 filmcraft-platform = { workspace = true }
 egui = { workspace = true }
-eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11"] }
+eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
 serde_json = { workspace = true }
 log = { workspace = true }
-rfd = { workspace = true }
 cpal = "0.16"
-# Files and images on the system clipboard for Paste (#611); egui already uses it for text.
-arboard = "3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 sys-locale = "0.3"
+
+# Not on Android: rfd has no backend for the target (it does not compile there), arboard has none
+# either (egui-winit drops it for the same reason), `open` would spawn `xdg-open`, and eframe 0.36
+# only offers `accesskit` with `android-game-activity` while Wayland and X11 don't exist on a phone.
+# A phone's file dialogs are FilmCraft's own in-app browser, and its links report why they can't
+# open (see `lib.rs`).
+[target.'cfg(not(target_os = "android"))'.dependencies]
+rfd = { workspace = true }
+# Files and images on the system clipboard for Paste (#611); egui already uses it for text.
+arboard = "3"
 # Help menu / About / Discord links in the system browser (MIT; as PhotoCraft).
 open = "5"
+eframe = { workspace = true, features = ["accesskit", "wayland", "x11"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+# The NativeActivity handle eframe's event loop needs (`NativeOptions.android_app`); the same 0.6
+# instance winit and eframe use, so the handle passes across crates as one type.
+android-activity = { version = "0.6", default-features = false, features = ["native-activity"] }
+# eframe's Android backend (NativeActivity via winit). Without it android-activity builds with no
+# backend and fails to compile.
+eframe = { workspace = true, features = ["android-native-activity"] }
 
 [dev-dependencies]
 glob = "0.3"

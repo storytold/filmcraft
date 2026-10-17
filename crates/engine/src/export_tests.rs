@@ -694,6 +694,21 @@ fn default_export_dir_never_needs_a_real_filesystem() {
     assert_eq!(crate::export_tools::default_export_dir(&s), std::path::PathBuf::from("/projects/show"));
 }
 
+/// The host's own storage folder wins over every fallback: on Android the working directory is
+/// `/`, `HOME` is unset and the temp dir does not exist, so a render with no saved project would
+/// land nowhere writable — the app names the app-private `Exports` folder instead. An empty one
+/// is not a folder: the chain stays as it was.
+#[test]
+fn the_hosts_export_dir_wins_over_every_fallback() {
+    let exports = std::path::PathBuf::from("/data/data/ai.storyteller.filmcraft/files/Exports");
+    let s = Session { export_dir: Some(exports.clone()), ..Default::default() };
+    assert_eq!(crate::export_tools::default_export_dir(&s), exports);
+    let s = Session { export_dir: Some(exports.clone()), path: Some("/projects/show/edit.fcproj".into()), ..Default::default() };
+    assert_eq!(crate::export_tools::default_export_dir(&s), exports);
+    let s = Session { export_dir: Some(std::path::PathBuf::new()), ..Default::default() };
+    assert!(!crate::export_tools::default_export_dir(&s).as_os_str().is_empty());
+}
+
 #[test]
 fn unknown_settings_keys_are_errors_not_ignored() {
     // A flat parameter put inside `settings` used to be dropped without a word: the export ran
