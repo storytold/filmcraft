@@ -36,9 +36,8 @@ mod fcp7;
 #[allow(dead_code, reason = "Legacy parser fixtures retained for their regression tests")]
 mod fcpxml;
 pub mod omf;
-#[cfg(test)]
-#[allow(dead_code, reason = "Legacy parser fixtures retained for their regression tests")]
-mod otio;
+pub mod otio;
+pub mod premiere;
 
 mod common;
 mod comp;

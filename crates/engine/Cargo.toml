@@ -46,7 +46,7 @@ roxmltree = { workspace = true }
 chrono = { workspace = true }
 craft-docpath = { workspace = true }
 web-time = "1"
-image = { version = "0.25", default-features = false, features = ["png", "gif"] }
+sha2 = "0.10"
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
