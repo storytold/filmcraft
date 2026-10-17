@@ -444,16 +444,25 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
     let have = s.voiceover.captured.len();
     s.voiceover.captured.try_reserve(want.saturating_sub(have)).map_err(|e| bad("audio.voiceover.stop", format!("unable to allocate the recording: {e}")))?;
     s.voiceover.pending_stop = Some(t_stop);
-    let input = s.voiceover.input();
-    input.stop();
-    let got = input.read(want.saturating_sub(have));
-    let input_error = input.error();
+    let (got, input_error) = {
+        let input = s.voiceover.input();
+        input.stop();
+        let got = input.read(want.saturating_sub(have));
+        let input_error = input.error();
+        if input_error.is_some() {
+            input.discard();
+        }
+        (got, input_error)
+    };
     let ch = rec.channel as usize;
     if let Some(c) = got.get(ch).or(got.first()) {
         s.voiceover.captured.extend_from_slice(c);
     }
     if let Some(error) = input_error {
-        return Err(bad("audio.voiceover.stop", format!("input failed: {error}")));
+        s.voiceover.rec = None;
+        s.voiceover.pending_stop = None;
+        s.voiceover.captured.clear();
+        return Err(bad("audio.voiceover.stop", format!("input failed: {error}; check Settings > Audio Hardware and select a working input, then retry")));
     }
     s.voiceover.captured.resize(want, 0.0);
     let skip = r0.saturating_sub(c0).clamp(0, want as i64) as usize;

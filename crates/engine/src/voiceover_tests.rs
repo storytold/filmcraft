@@ -1,7 +1,7 @@
 //! Tests of [`crate::voiceover`]: recording with the synthetic input lands sample-accurately.
 
 use super::*;
-use crate::voiceover::{Synthetic, SyntheticInput, cue_times};
+use crate::voiceover::{AudioInput, InputFormat, Synthetic, SyntheticInput, cue_times};
 use filmcraft_time::TICKS_PER_SECOND;
 use serde_json::json;
 
@@ -37,6 +37,34 @@ fn track_clips(s: &Session, i: usize) -> Vec<filmcraft_project::TrackItem> {
     s.active_sequence().unwrap().audio_tracks[i].items.clone()
 }
 
+struct FailedInput;
+
+impl AudioInput for FailedInput {
+    fn devices(&self) -> Vec<String> {
+        vec!["Failed Input".into()]
+    }
+
+    fn channels(&self, _device: &str) -> u16 {
+        1
+    }
+
+    fn start(&mut self, _device: &str, sample_rate: u32) -> std::result::Result<InputFormat, String> {
+        Ok(InputFormat { sample_rate, channels: 1 })
+    }
+
+    fn read(&mut self, frames: usize) -> Vec<Vec<f32>> {
+        vec![vec![0.5; frames]]
+    }
+
+    fn error(&self) -> Option<String> {
+        Some("ALSA poll returned POLLERR".into())
+    }
+
+    fn discard(&mut self) {}
+
+    fn stop(&mut self) {}
+}
+
 #[test]
 fn a_failed_recording_save_keeps_the_take_for_retry() {
     let (mut s, track, index) = demo();
@@ -56,6 +84,20 @@ fn a_failed_recording_save_keeps_the_take_for_retry() {
     let audio = mix(&s, 0, 48000);
     assert!(audio[0][0] > 0.49, "retry retained the first captured sample");
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn an_audio_input_error_stops_and_discards_the_failed_take() {
+    let (mut s, track, index) = demo();
+    s.voiceover.input = Some(Box::new(FailedInput));
+    s.execute("audio.voiceover.start", json!({"track":track,"time":0,"preroll":0})).unwrap();
+
+    let error = s.execute("audio.voiceover.stop", json!({"time":sec(1.0)})).unwrap_err().to_string();
+
+    assert!(error.contains("ALSA poll returned POLLERR"), "{error}");
+    assert!(error.contains("Settings > Audio Hardware"), "{error}");
+    assert!(!s.voiceover.recording(), "a failed device must not leave a false Recording state");
+    assert!(track_clips(&s, index).is_empty(), "a failed input must not place a clip");
 }
 
 #[test]
