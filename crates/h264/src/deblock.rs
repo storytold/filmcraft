@@ -1,6 +1,6 @@
-//! Deblocking filter (8.7) for progressive frames, 4:2:0, 8-bit.
+//! Deblocking filter (8.7) for progressive frames: 4:2:0 and 4:2:2, 8 to 10 bits per sample.
 
-use crate::picture::{MbKind, MbState};
+use crate::picture::{MbKind, MbState, Sample};
 use crate::slicedec::{PicState, SliceInfo};
 use crate::tables::{ALPHA, BETA, TC0};
 
@@ -80,7 +80,7 @@ fn clip3(lo: i32, hi: i32, v: i32) -> i32 {
 /// Filter one set of eight samples p3 p2 p1 p0 | q0 q1 q2 q3 across an edge (8.7.2.3 / 8.7.2.4):
 /// the per-line reference for [`filter_lanes`].
 #[cfg(test)]
-fn filter8(v: &mut [u8; 8], bs: u8, alpha: i32, beta: i32, tc0: i32, chroma: bool) {
+fn filter8(v: &mut [u16; 8], bs: u8, alpha: i32, beta: i32, tc0: i32, chroma: bool, max: i32) {
     let p0 = v[3] as i32;
     let q0 = v[4] as i32;
     let p1 = v[2] as i32;
@@ -92,11 +92,11 @@ fn filter8(v: &mut [u8; 8], bs: u8, alpha: i32, beta: i32, tc0: i32, chroma: boo
         if bs < 4 {
             let tc = tc0 + 1;
             let delta = clip3(-tc, tc, (((q0 - p0) << 2) + (p1 - q1) + 4) >> 3);
-            v[3] = (p0 + delta).clamp(0, 255) as u8;
-            v[4] = (q0 - delta).clamp(0, 255) as u8;
+            v[3] = (p0 + delta).clamp(0, max) as u16;
+            v[4] = (q0 - delta).clamp(0, max) as u16;
         } else {
-            v[3] = ((2 * p1 + p0 + q1 + 2) >> 2) as u8;
-            v[4] = ((2 * q1 + q0 + p1 + 2) >> 2) as u8;
+            v[3] = ((2 * p1 + p0 + q1 + 2) >> 2) as u16;
+            v[4] = ((2 * q1 + q0 + p1 + 2) >> 2) as u16;
         }
         return;
     }
@@ -107,48 +107,49 @@ fn filter8(v: &mut [u8; 8], bs: u8, alpha: i32, beta: i32, tc0: i32, chroma: boo
     if bs < 4 {
         let tc = tc0 + (ap < beta) as i32 + (aq < beta) as i32;
         let delta = clip3(-tc, tc, (((q0 - p0) << 2) + (p1 - q1) + 4) >> 3);
-        v[3] = (p0 + delta).clamp(0, 255) as u8;
-        v[4] = (q0 - delta).clamp(0, 255) as u8;
+        v[3] = (p0 + delta).clamp(0, max) as u16;
+        v[4] = (q0 - delta).clamp(0, max) as u16;
         if ap < beta {
-            v[2] = (p1 + clip3(-tc0, tc0, (p2 + ((p0 + q0 + 1) >> 1) - (p1 << 1)) >> 1)) as u8;
+            v[2] = (p1 + clip3(-tc0, tc0, (p2 + ((p0 + q0 + 1) >> 1) - (p1 << 1)) >> 1)) as u16;
         }
         if aq < beta {
-            v[5] = (q1 + clip3(-tc0, tc0, (q2 + ((p0 + q0 + 1) >> 1) - (q1 << 1)) >> 1)) as u8;
+            v[5] = (q1 + clip3(-tc0, tc0, (q2 + ((p0 + q0 + 1) >> 1) - (q1 << 1)) >> 1)) as u16;
         }
     } else {
         let strong = (p0 - q0).abs() < ((alpha >> 2) + 2);
         if ap < beta && strong {
             let p3 = v[0] as i32;
-            v[3] = ((p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3) as u8;
-            v[2] = ((p2 + p1 + p0 + q0 + 2) >> 2) as u8;
-            v[1] = ((2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3) as u8;
+            v[3] = ((p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3) as u16;
+            v[2] = ((p2 + p1 + p0 + q0 + 2) >> 2) as u16;
+            v[1] = ((2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3) as u16;
         } else {
-            v[3] = ((2 * p1 + p0 + q1 + 2) >> 2) as u8;
+            v[3] = ((2 * p1 + p0 + q1 + 2) >> 2) as u16;
         }
         if aq < beta && strong {
             let q3 = v[7] as i32;
-            v[4] = ((p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3) as u8;
-            v[5] = ((p0 + q0 + q1 + q2 + 2) >> 2) as u8;
-            v[6] = ((2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3) as u8;
+            v[4] = ((p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3) as u16;
+            v[5] = ((p0 + q0 + q1 + q2 + 2) >> 2) as u16;
+            v[6] = ((2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3) as u16;
         } else {
-            v[4] = ((2 * q1 + q0 + p1 + 2) >> 2) as u8;
+            v[4] = ((2 * q1 + q0 + p1 + 2) >> 2) as u16;
         }
     }
 }
 
 /// Edge filter parameters for `n` lines; `bs[i]` / `tc0[i]` apply to lines `i * n / 4 .. (i + 1) * n / 4`.
-struct EdgeParams {
-    bs: [u8; 4],
-    tc0: [i32; 4],
-    alpha: i32,
-    beta: i32,
+/// `alpha`, `beta` and `tc0` are already scaled to the bit depth (8.7.2.2: `* (1 << (BitDepth - 8))`).
+pub(crate) struct EdgeParams {
+    pub(crate) bs: [u8; 4],
+    pub(crate) tc0: [i32; 4],
+    pub(crate) alpha: i32,
+    pub(crate) beta: i32,
 }
 
 /// Filter one edge for `N` lines at once (lane `i` = line `i` across the edge). `s[k][i]` holds
 /// sample p3 p2 p1 p0 q0 q1 q2 q3 (k = 0..8) of line `i`. Branch-free per lane, so the loops
 /// vectorise; bit-exact with [`filter8`] applied to every line (8.7.2.3 / 8.7.2.4).
 #[inline(always)]
-fn filter_lanes<const N: usize>(s: &mut [[i16; N]; 8], ep: &EdgeParams, chroma: bool) {
+fn filter_lanes<const N: usize>(s: &mut [[i16; N]; 8], ep: &EdgeParams, chroma: bool, max: i16) {
     let per = N / 4;
     let (alpha, beta) = (ep.alpha as i16, ep.beta as i16);
     let mut bs_on = [false; N];
@@ -182,7 +183,7 @@ fn filter_lanes<const N: usize>(s: &mut [[i16; N]; 8], ep: &EdgeParams, chroma: 
             } else {
                 let tc = tc0[i] + 1;
                 let delta = ((((q0[i] - p0[i]) << 2) + (p1[i] - q1[i]) + 4) >> 3).max(-tc).min(tc);
-                ((p0[i] + delta).clamp(0, 255), (q0[i] - delta).clamp(0, 255))
+                ((p0[i] + delta).max(0).min(max), (q0[i] - delta).max(0).min(max))
             };
             s[3][i] = sel(on[i], np0, p0[i]);
             s[4][i] = sel(on[i], nq0, q0[i]);
@@ -217,17 +218,18 @@ fn filter_lanes<const N: usize>(s: &mut [[i16; N]; 8], ep: &EdgeParams, chroma: 
             let avg = (p0[i] + q0[i] + 1) >> 1;
             let np1 = p1[i] + ((p2[i] + avg - (p1[i] << 1)) >> 1).max(-t0).min(t0);
             let nq1 = q1[i] + ((q2[i] + avg - (q1[i] << 1)) >> 1).max(-t0).min(t0);
-            s[3][i] = sel(on[i], (p0[i] + delta).clamp(0, 255), p0[i]);
-            s[4][i] = sel(on[i], (q0[i] - delta).clamp(0, 255), q0[i]);
+            s[3][i] = sel(on[i], (p0[i] + delta).max(0).min(max), p0[i]);
+            s[4][i] = sel(on[i], (q0[i] - delta).max(0).min(max), q0[i]);
             s[2][i] = sel(on[i] & ap, np1, p1[i]);
             s[5][i] = sel(on[i] & aq, nq1, q1[i]);
         }
     }
 }
 
-/// Filter a vertical edge whose q0 column is at `x`, for `N` lines starting at row `y`.
+/// Filter a vertical edge whose q0 column is at `x`, for `N` lines starting at row `y` (8-bit
+/// samples: each line's eight samples are moved as one word).
 #[inline(always)]
-fn filter_vertical<const N: usize>(pix: &mut [u8], stride: usize, x: usize, y: usize, ep: &EdgeParams, chroma: bool) {
+pub(crate) fn filter_vertical_u8<const N: usize>(pix: &mut [u8], stride: usize, x: usize, y: usize, ep: &EdgeParams, chroma: bool, max: i16) {
     // Each line's eight samples as one little-endian word: byte k = sample k (p3 .. q3).
     let mut w = [0u64; N];
     for (i, w) in w.iter_mut().enumerate() {
@@ -243,7 +245,7 @@ fn filter_vertical<const N: usize>(pix: &mut [u8], stride: usize, x: usize, y: u
             row[i] = ((w[i] >> (8 * k)) & 0xff) as i16;
         }
     }
-    filter_lanes(&mut s, ep, chroma);
+    filter_lanes(&mut s, ep, chroma, max);
     for (i, w) in w.iter_mut().enumerate() {
         *w = (0..8).fold(0u64, |acc, k| acc | ((s[k][i] as u8 as u64) << (8 * k)));
     }
@@ -253,34 +255,57 @@ fn filter_vertical<const N: usize>(pix: &mut [u8], stride: usize, x: usize, y: u
     }
 }
 
+/// [`filter_vertical_u8`] for any sample type.
+#[inline(always)]
+pub(crate) fn filter_vertical_generic<S: Sample, const N: usize>(pix: &mut [S], stride: usize, x: usize, y: usize, ep: &EdgeParams, chroma: bool, max: i16) {
+    let mut s = [[0i16; N]; 8];
+    for i in 0..N {
+        let o = (y + i) * stride + x - 4;
+        let Some(line) = pix.get(o..o + 8) else {
+            return;
+        };
+        for (k, row) in s.iter_mut().enumerate() {
+            row[i] = line[k].to_i32() as i16;
+        }
+    }
+    filter_lanes(&mut s, ep, chroma, max);
+    let (k0, k1) = if chroma { (3, 5) } else { (1, 7) };
+    for i in 0..N {
+        let o = (y + i) * stride + x - 4;
+        for k in k0..k1 {
+            pix[o + k] = S::from_i32(s[k][i] as i32);
+        }
+    }
+}
+
 /// Filter a horizontal edge whose q0 row is `y`, for `N` columns starting at `x`.
 #[inline(always)]
-fn filter_horizontal<const N: usize>(pix: &mut [u8], stride: usize, x: usize, y: usize, ep: &EdgeParams, chroma: bool) {
+pub(crate) fn filter_horizontal_generic<S: Sample, const N: usize>(pix: &mut [S], stride: usize, x: usize, y: usize, ep: &EdgeParams, chroma: bool, max: i16) {
     let base = (y - 4) * stride + x;
     let mut s = [[0i16; N]; 8];
     for (k, row) in s.iter_mut().enumerate() {
-        let Some(src) = pix.get(base + k * stride..).and_then(|p| p.first_chunk::<N>()) else {
+        let Some(src) = pix.get(base + k * stride..base + k * stride + N) else {
             return;
         };
         for i in 0..N {
-            row[i] = src[i] as i16;
+            row[i] = src[i].to_i32() as i16;
         }
     }
-    filter_lanes(&mut s, ep, chroma);
+    filter_lanes(&mut s, ep, chroma, max);
     let (k0, k1) = if chroma { (3, 5) } else { (1, 7) };
     for (k, row) in s.iter().enumerate().take(k1).skip(k0) {
-        let Some(dst) = pix.get_mut(base + k * stride..).and_then(|p| p.first_chunk_mut::<N>()) else {
+        let Some(dst) = pix.get_mut(base + k * stride..base + k * stride + N) else {
             return;
         };
         for i in 0..N {
-            dst[i] = row[i] as u8;
+            dst[i] = S::from_i32(row[i] as i32);
         }
     }
 }
 
 /// Deblock one macroblock (macroblocks must be processed in raster order).
 #[allow(clippy::needless_range_loop)]
-pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
+pub fn deblock_mb<S: Sample>(pic: &mut PicState<S>, addr: usize, mb_w: usize) {
     let q = &pic.mbs[addr];
     if q.slice_num == u32::MAX {
         return;
@@ -290,6 +315,7 @@ pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
         return;
     }
     let (mx, my) = (addr % mb_w, addr / mb_w);
+    let c422 = pic.planes.mb_hc() == 16;
     let usable = |n: Option<usize>| -> Option<usize> {
         let n = n?;
         let st = &pic.mbs[n];
@@ -310,10 +336,9 @@ pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
             if (if dir == 0 { left } else { top }).is_some() {
                 bs[dir][0] = [4; 4];
             }
+            // luma skips the odd edges under the 8x8 transform (below), 4:2:2 chroma does not
             for e in 1..4 {
-                if !(t8 && e % 2 == 1) {
-                    bs[dir][e] = [3; 4];
-                }
+                bs[dir][e] = [3; 4];
             }
         }
     } else {
@@ -343,7 +368,8 @@ pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
                 continue;
             }
             for e in 1..4 {
-                if t8 && e % 2 == 1 {
+                // luma skips the odd edges under the 8x8 transform; 4:2:2 chroma still filters them
+                if t8 && e % 2 == 1 && (dir == 0 || !c422) {
                     continue;
                 }
                 for k in 0..4 {
@@ -357,19 +383,27 @@ pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
     let q_qp = qp_of(q);
     let q_qpc = q.qpc;
     let p_qp = [left.map(|n| (qp_of(&pic.mbs[n]), pic.mbs[n].qpc)), top.map(|n| (qp_of(&pic.mbs[n]), pic.mbs[n].qpc))];
+    // alpha', beta' and tC0' are the 8-bit tables scaled by 1 << (BitDepth - 8)
+    let bd_shift = pic.bit_depth.saturating_sub(8);
+    let max = ((1i32 << pic.bit_depth) - 1) as i16;
     let params = |qpp: i32, qpq: i32, b: [u8; 4]| {
         let qpav = (qpp + qpq + 1) >> 1;
         let index_a = (qpav + alpha_off).clamp(0, 51) as usize;
         let index_b = (qpav + beta_off).clamp(0, 51) as usize;
-        let tc = |b: u8| if (1..4).contains(&b) { TC0[index_a][b as usize - 1] as i32 } else { 0 };
-        EdgeParams { bs: b, tc0: [tc(b[0]), tc(b[1]), tc(b[2]), tc(b[3])], alpha: ALPHA[index_a] as i32, beta: BETA[index_b] as i32 }
+        let tc = |b: u8| if (1..4).contains(&b) { (TC0[index_a][b as usize - 1] as i32) << bd_shift } else { 0 };
+        EdgeParams {
+            bs: b,
+            tc0: [tc(b[0]), tc(b[1]), tc(b[2]), tc(b[3])],
+            alpha: (ALPHA[index_a] as i32) << bd_shift,
+            beta: (BETA[index_b] as i32) << bd_shift,
+        }
     };
     let width = pic.planes.width;
     let cwidth = pic.planes.cwidth;
     // luma
     for dir in 0..2 {
         for e in 0..4 {
-            if bs[dir][e] == [0; 4] {
+            if bs[dir][e] == [0; 4] || (t8 && e % 2 == 1) {
                 continue;
             }
             let qpp = if e == 0 { p_qp[dir].map(|p| p.0).unwrap_or(q_qp) } else { q_qp };
@@ -380,30 +414,35 @@ pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
                 continue;
             }
             if dir == 0 {
-                filter_vertical::<16>(&mut pic.planes.y, width, mx * 16 + e * 4, my * 16, &ep, false);
+                S::filter_vertical::<16>(&mut pic.planes.y, width, mx * 16 + e * 4, my * 16, &ep, false, max);
             } else {
-                filter_horizontal::<16>(&mut pic.planes.y, width, mx * 16, my * 16 + e * 4, &ep, false);
+                S::filter_horizontal::<16>(&mut pic.planes.y, width, mx * 16, my * 16 + e * 4, &ep, false, max);
             }
         }
     }
-    // chroma (4:2:0): edges at chroma samples 0 and 4 use the bS of luma edges 0 and 2
+    // chroma. Vertical edges: chroma samples 0 and 4 use the bS of luma edges 0 and 2 (the chroma
+    // width is half the luma width). Horizontal edges: 4:2:0 filters chroma rows 0 and 4 with the
+    // bS of luma edges 0 and 2; 4:2:2 (full chroma height) filters rows 0, 4, 8 and 12 with the bS
+    // of luma edges 0 to 3.
+    let mb_hc = pic.planes.mb_hc();
     for c in 0..2 {
         for dir in 0..2 {
-            for ce in 0..2 {
-                let e = ce * 2;
+            let edges = if dir == 1 && c422 { 4 } else { 2 };
+            for ce in 0..edges {
+                let e = if dir == 1 && c422 { ce } else { ce * 2 };
                 if bs[dir][e] == [0; 4] {
                     continue;
                 }
-                let qpp = if e == 0 { p_qp[dir].map(|p| p.1[c]).unwrap_or(q_qpc[c]) } else { q_qpc[c] } as i32;
+                let qpp = if ce == 0 { p_qp[dir].map(|p| p.1[c] as i32).unwrap_or(q_qpc[c] as i32) } else { q_qpc[c] as i32 };
                 let ep = params(qpp, q_qpc[c] as i32, bs[dir][e]);
                 if ep.alpha == 0 || ep.beta == 0 {
                     continue;
                 }
                 let plane = if c == 0 { &mut pic.planes.cb } else { &mut pic.planes.cr };
-                if dir == 0 {
-                    filter_vertical::<8>(plane, cwidth, mx * 8 + ce * 4, my * 8, &ep, true);
-                } else {
-                    filter_horizontal::<8>(plane, cwidth, mx * 8, my * 8 + ce * 4, &ep, true);
+                match (dir, c422) {
+                    (0, false) => S::filter_vertical::<8>(plane, cwidth, mx * 8 + ce * 4, my * 8, &ep, true, max),
+                    (0, true) => S::filter_vertical::<16>(plane, cwidth, mx * 8 + ce * 4, my * 16, &ep, true, max),
+                    _ => S::filter_horizontal::<8>(plane, cwidth, mx * 8, my * mb_hc + ce * 4, &ep, true, max),
                 }
             }
         }
@@ -414,8 +453,8 @@ pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
 mod tests {
     use super::*;
 
-    /// The vectorised edge filter equals the per-line reference [`filter8`] on random edges
-    /// (small differences across the edge so that every filter branch is taken).
+    /// The vectorised edge filter equals the per-line reference [`filter8`] on random edges at 8 and
+    /// 10 bits (small differences across the edge so that every filter branch is taken).
     #[test]
     fn lane_filter_matches_per_line_reference() {
         let mut rng = 0x9e37_79b9_7f4a_7c15u64;
@@ -425,20 +464,22 @@ mod tests {
             rng ^= rng << 17;
             rng
         };
-        for iter in 0..20_000 {
+        for iter in 0..30_000 {
+            let bd = if iter % 2 == 0 { 8u32 } else { 10 };
+            let (shift, max) = (bd - 8, (1i32 << bd) - 1);
             let chroma = iter % 3 == 0;
             let strong = iter % 4 == 1;
             let bs: [u8; 4] = if strong { [4; 4] } else { std::array::from_fn(|_| (next() % 4) as u8) };
             let index_a = (next() % 52) as usize;
             let index_b = (next() % 52) as usize;
-            let tc = |b: u8| if (1..4).contains(&b) { TC0[index_a][b as usize - 1] as i32 } else { 0 };
-            let ep = EdgeParams { bs, tc0: bs.map(tc), alpha: ALPHA[index_a] as i32, beta: BETA[index_b] as i32 };
-            let base = (next() % 256) as i32;
-            let spread = 1 + (next() % 24) as i32;
-            let mut lines = [[0u8; 8]; 16];
+            let tc = |b: u8| if (1..4).contains(&b) { (TC0[index_a][b as usize - 1] as i32) << shift } else { 0 };
+            let ep = EdgeParams { bs, tc0: bs.map(tc), alpha: (ALPHA[index_a] as i32) << shift, beta: (BETA[index_b] as i32) << shift };
+            let base = (next() % (max as u64 + 1)) as i32;
+            let spread = (1 + (next() % 24) as i32) << shift;
+            let mut lines = [[0u16; 8]; 16];
             for l in lines.iter_mut() {
                 for v in l.iter_mut() {
-                    *v = (base + (next() % (2 * spread as u64 + 1)) as i32 - spread).clamp(0, 255) as u8;
+                    *v = (base + (next() % (2 * spread as u64 + 1)) as i32 - spread).clamp(0, max) as u16;
                 }
             }
             let n = if chroma { 8 } else { 16 };
@@ -446,18 +487,18 @@ mod tests {
             for (i, l) in want.iter_mut().enumerate().take(n) {
                 let k = i / (n / 4);
                 if bs[k] != 0 {
-                    filter8(l, bs[k], ep.alpha, ep.beta, ep.tc0[k], chroma);
+                    filter8(l, bs[k], ep.alpha, ep.beta, ep.tc0[k], chroma, max);
                 }
             }
-            let got: Vec<[u8; 8]> = if chroma {
+            let got: Vec<[u16; 8]> = if chroma {
                 let mut s = [[0i16; 8]; 8];
                 for i in 0..8 {
                     for k in 0..8 {
                         s[k][i] = lines[i][k] as i16;
                     }
                 }
-                filter_lanes(&mut s, &ep, true);
-                (0..8).map(|i| std::array::from_fn(|k| s[k][i] as u8)).collect()
+                filter_lanes(&mut s, &ep, true, max as i16);
+                (0..8).map(|i| std::array::from_fn(|k| s[k][i] as u16)).collect()
             } else {
                 let mut s = [[0i16; 16]; 8];
                 for i in 0..16 {
@@ -465,10 +506,10 @@ mod tests {
                         s[k][i] = lines[i][k] as i16;
                     }
                 }
-                filter_lanes(&mut s, &ep, false);
-                (0..16).map(|i| std::array::from_fn(|k| s[k][i] as u8)).collect()
+                filter_lanes(&mut s, &ep, false, max as i16);
+                (0..16).map(|i| std::array::from_fn(|k| s[k][i] as u16)).collect()
             };
-            assert_eq!(&got[..], &want[..n], "iteration {iter}: bs {bs:?} indexA {index_a} indexB {index_b}");
+            assert_eq!(&got[..], &want[..n], "iteration {iter}: {bd}-bit bs {bs:?} indexA {index_a} indexB {index_b}");
         }
     }
 }
@@ -494,7 +535,7 @@ mod speed {
             for my in 1..h / 16 {
                 for mx in 1..w / 16 {
                     for (j, ep) in eps.iter().enumerate() {
-                        filter_horizontal::<16>(&mut pix, w, mx * 16, my * 16 + j * 4, ep, false);
+                        filter_horizontal_generic::<u8, 16>(&mut pix, w, mx * 16, my * 16 + j * 4, ep, false, 255);
                         n += 1;
                     }
                 }
@@ -506,7 +547,7 @@ mod speed {
             for my in 1..h / 16 {
                 for mx in 1..w / 16 {
                     for (j, ep) in eps.iter().enumerate() {
-                        filter_vertical::<16>(&mut pix, w, mx * 16 + j * 4, my * 16, ep, false);
+                        filter_vertical_u8::<16>(&mut pix, w, mx * 16 + j * 4, my * 16, ep, false, 255);
                     }
                 }
             }
@@ -523,16 +564,16 @@ mod speed {
                                 if b == 0 {
                                     continue;
                                 }
-                                let mut v = [0u8; 8];
+                                let mut v = [0u16; 8];
                                 for k in 0..8 {
-                                    v[k] = if vert { pix[(y + i) * w + x - 4 + k] } else { pix[(y - 4 + k) * w + x + i] };
+                                    v[k] = (if vert { pix[(y + i) * w + x - 4 + k] } else { pix[(y - 4 + k) * w + x + i] }) as u16;
                                 }
-                                filter8(&mut v, b, ep.alpha, ep.beta, ep.tc0[i / 4], false);
+                                filter8(&mut v, b, ep.alpha, ep.beta, ep.tc0[i / 4], false, 255);
                                 for k in 1..7 {
                                     if vert {
-                                        pix[(y + i) * w + x - 4 + k] = v[k];
+                                        pix[(y + i) * w + x - 4 + k] = v[k] as u8;
                                     } else {
-                                        pix[(y - 4 + k) * w + x + i] = v[k];
+                                        pix[(y - 4 + k) * w + x + i] = v[k] as u8;
                                     }
                                 }
                             }

@@ -306,19 +306,17 @@ impl H264Decoder {
         let draft = p.draft;
         let (w, h) = (p.width as usize, p.height as usize);
         let (cw, ch) = (p.chroma_width as usize, p.chroma_height as usize);
-        let y = tight_plane(p.y, p.y_stride, w, h);
-        let u = tight_plane(p.u, p.uv_stride, cw, ch);
-        let v = tight_plane(p.v, p.uv_stride, cw, ch);
+        let chroma = if p.chroma_422 { filmcraft_frame::Chroma::C422 } else { filmcraft_frame::Chroma::C420 };
+        let data = if p.bit_depth > 8 {
+            let (y, u, v) = (tight_plane(p.y_wide, p.y_stride, w, h), tight_plane(p.u_wide, p.uv_stride, cw, ch), tight_plane(p.v_wide, p.uv_stride, cw, ch));
+            filmcraft_frame::PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(u), Arc::new(v)], chroma, bits: p.bit_depth, alpha: None }
+        } else {
+            let (y, u, v) = (tight_plane(p.y, p.y_stride, w, h), tight_plane(p.u, p.uv_stride, cw, ch), tight_plane(p.v, p.uv_stride, cw, ch));
+            filmcraft_frame::PixelData::Yuv8 { planes: [Arc::new(y), Arc::new(u), Arc::new(v)], chroma, alpha: None }
+        };
         let color = vui_color(p.width, p.height, p.color.primaries, p.color.matrix, p.color.transfer, p.color.full_range);
         let par = sar_par(p.sar);
-        let frame = VideoFrame {
-            width: p.width,
-            height: p.height,
-            data: filmcraft_frame::PixelData::Yuv8 { planes: [Arc::new(y), Arc::new(u), Arc::new(v)], chroma: filmcraft_frame::Chroma::C420, alpha: None },
-            color,
-            par,
-            pts: filmcraft_time::Tick::ZERO,
-        };
+        let frame = VideoFrame { width: p.width, height: p.height, data, color, par, pts: filmcraft_time::Tick::ZERO };
         DecodedFrame { pts: p.pts, frame, draft }
     }
 }

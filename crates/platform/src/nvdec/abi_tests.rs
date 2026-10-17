@@ -4,6 +4,7 @@
 //! below, constant values, and the video-signal byte with each bit-field set alone.
 use super::ffi::*;
 use std::mem::{align_of, offset_of, size_of};
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 #[test]
 fn layouts_match_the_header() {
     assert_eq!(offset_of!(CUVIDPICPARAMS, nBitstreamDataLen), 24, "CUVIDPICPARAMS.nBitstreamDataLen");
