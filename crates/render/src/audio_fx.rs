@@ -49,6 +49,7 @@ pub(crate) fn mapping(id: &str) -> Option<Mapping> {
                 d.set_param("ceiling", f(e, "max", t));
                 d.set_param("input_gain", f(e, "boost", t).max(0.0));
                 d.set_param("release", f(e, "release", t));
+                set_if_changed(d, "lookahead", f(e, "lookahead", t)); // #905
             },
         },
         "delay" => Mapping {
