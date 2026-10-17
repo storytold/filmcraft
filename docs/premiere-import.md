@@ -1,7 +1,8 @@
 # Premiere import
 
 `premiere.import` reads gzip or plain XML using the object graph documented by the local
-LLM Video Editor Python parser. No Adobe code or assets are used. New code is MIT OR Apache-2.0.
+LLM Video Editor Python parser and structural observations from user-owned project XML.
+No Adobe application code or assets are used. New code is MIT OR Apache-2.0.
 
 ```sh
 # Substitute your project and NEW destination. A rendered preview is not required.
@@ -30,15 +31,27 @@ Supported: video/audio tracks, mute state, exact tick ranges, constant positive 
 sequences, still media, caption text, plain text graphics, static Motion scale/position/rotation,
 and clip-edge fades following the Python importer's transition mapping. Unknown effects remain
 in the original snapshot and are reported, rather than silently recreated with guessed parameters.
-Fonts/styles and transition appearance are not guaranteed to match Premiere. Missing or ambiguous
-media remains visible as offline placeholders.
+Fonts/styles and transition appearance are not guaranteed to match Premiere. Missing, ambiguous
+or unreadable media remains visible as offline placeholders. A failure to open/read a media
+file for hashing reports its path and the OS error, leaves its hash/size unknown, and continues
+the import in both link and copy modes. It does not attempt to change permissions or copy an
+unreadable source. Destination write failures and failed copy-integrity checks still abort.
 
-The Python reference does not extract frame rate. This importer uses a warned 24 fps fallback
-unless `frameRate` is supplied; integer timeline ticks are preserved either way. Media lookup
+Each sequence reads `Sequence/TrackGroups/TrackGroup/Second@ObjectRef` →
+`VideoTrackGroup/TrackGroup/FrameRate` as ticks per frame (254,016,000,000 ticks/second).
+The nearest rate from FilmCraft's common sequence rates is selected using integer rational
+comparisons, including exact 24000/1001, 30000/1001 and 60000/1001. Audio sample rates and
+source-media rates do not set the sequence rate. `frameRate` explicitly overrides every sequence;
+only a sequence without its own rate uses the warned 24 fps fallback. Invalid/nonpositive tick
+values are rejected. Integer timeline ticks are preserved in every case. Media lookup
 follows the reference's clip-title matching; duplicate titles with different paths are refused
-as ambiguous. Reverse/time-remapped clips, native effect parameters and unsupported caption
+as ambiguous. Only timeline-referenced media is imported; unused bin media and bin organization
+are not reconstructed. Reverse/time-remapped clips, native effect parameters and unsupported caption
 encodings need additional fixtures before claiming fidelity. No rendered-preview substitution
 is performed.
+
+Projects containing only settings and no `Sequence` objects currently report an empty-document
+error. They do not create an imported project or destination; settings-only import is unsupported.
 
 Input is bounded to 64 MiB compressed/expanded XML, 500,000 XML nodes, 256 sequences, 256 tracks
 per kind and 100,000 timeline items. A traversal budget also accounts for repeated references and text size; diagnostics are capped at 1,024 entries plus a truncation notice. DTD/entity expansion, duplicate IDs, invalid times/speeds,
