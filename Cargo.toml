@@ -73,13 +73,12 @@ roxmltree = "0.21"
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "82a24b006eefa036b43c09a67fb9a3fbd17ffe63" }
 
 # ui
-# Shared frontend components. Bumped to 289d562 (same rev wordcraft/deckcraft use) to gain the
-# craft-ui `cloud` feature (Open/Save pages, share dialog, account/presence controls).
-# One revision of craft-ui in the whole dependency graph: two would produce two backend traits.
-craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "289d562cc6e8b567819aee51f759a78f41a65454", features = ["serde"] }
+# One craft-libs rev for craft-ui and craft-cloud, matching collab-craft 3c77c3e's pin.
+# Two revisions produce two Capability/Entry/ShareBackend types and the build fails.
+craft-ui = { git = "https://github.com/wdunn001/craft-libs", rev = "6f0a6d2", features = ["serde"] }
 # Vendor-neutral cloud contracts (Entry, Capability, Files/Sharing traits). No IO, no provider
 # names: buildable for the web and testable with no service.
-craft-cloud = { git = "https://github.com/storytold/craft-libs", rev = "289d562cc6e8b567819aee51f759a78f41a65454" }
+craft-cloud = { git = "https://github.com/wdunn001/craft-libs", rev = "6f0a6d2" }
 # HTTP transport to CollabCraft. No provider credential or URL compiled in.
 craft-cloud-client = { git = "https://github.com/wdunn001/collab-craft", rev = "3c77c3e" }
 # The share dialog's backend: the half that opens a socket to CollabCraft. craft-ui states the
