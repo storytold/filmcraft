@@ -24,6 +24,8 @@
 
 mod app_nap;
 mod appearance;
+#[cfg(target_os = "macos")]
+mod apple_events;
 mod args;
 mod audio;
 mod audio_in;
@@ -130,12 +132,27 @@ fn main() -> eframe::Result {
     if graphics.mode() == graphics::Mode::Default {
         register_gpu_frame_renderer();
     }
+    // Registered once, before the first event loop starts, so it catches the Finder event that
+    // launched us as well as later ones. Lives until the last event loop returns; each start
+    // attempt's app creator only borrows it.
+    #[cfg(target_os = "macos")]
+    let apple_events = apple_events::AppleEvents::install();
     let started = loop {
         let mut options = native_options(launch.control_port.is_some());
         // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
         graphics::apply(&mut options, graphics.mode(), backend_override);
         let app_created = Arc::new(AtomicBool::new(false));
-        let result = eframe::run_native("FilmCraft", options, app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created)));
+        let result = eframe::run_native(
+            "FilmCraft",
+            options,
+            app_creator(
+                launch.clone(),
+                graphics.clone(),
+                Arc::clone(&app_created),
+                #[cfg(target_os = "macos")]
+                &apple_events,
+            ),
+        );
         let app_created = app_created.load(Ordering::Relaxed);
         match &result {
             // wgpu reported the failure (no adapter, device creation failed) before the app
@@ -186,7 +203,12 @@ fn native_options(agent: bool) -> eframe::NativeOptions {
 
 /// Creates the app once eframe has its window and graphics device; sets `created` when it runs,
 /// and confirms the graphics mode once two frames have painted.
-fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<AtomicBool>) -> eframe::AppCreator<'static> {
+fn app_creator<'a>(
+    launch: Launch,
+    graphics: graphics::GraphicsStart,
+    created: Arc<AtomicBool>,
+    #[cfg(target_os = "macos")] apple_events: &'a apple_events::AppleEvents,
+) -> eframe::AppCreator<'a> {
     let Launch { control_port, control_input_only, files, demo, startup_flag, recover, data_dir, graphics: _ } = launch;
     Box::new(move |cc| {
         created.store(true, Ordering::Relaxed);
@@ -342,6 +364,8 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             let rx = control_server::start(port, cc.egui_ctx.clone());
             app = if control_input_only { app.with_control_input_only(rx) } else { app.with_control(rx) };
         }
+        #[cfg(target_os = "macos")]
+        let app = apple_events::Desktop::new(app, apple_events.connect(&cc.egui_ctx));
         Ok(Box::new(app))
     })
 }
