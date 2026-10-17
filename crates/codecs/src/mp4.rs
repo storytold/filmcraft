@@ -133,35 +133,7 @@ fn clean_aperture(c: CleanAperture, (w, h): (u32, u32)) -> Option<Region> {
 /// comes from the stream's own description: `vpcC` / `apvC`, or the SPS VUI in `avcC` / `hvcC`
 /// and the sequence header in `av1C`. The rest defaults by frame size.
 fn color_from(entry: &filmcraft_isobmff::SampleEntry, w: u32, h: u32) -> ColorInfo {
-    use crate::stream_color::ColorCodes;
-    use filmcraft_isobmff::ColorInfo as Colr;
-    let colr = match entry.video.as_ref().and_then(|v| v.color.as_ref()) {
-        Some(Colr::Nclx { primaries, transfer, matrix, full_range }) => {
-            Some(ColorCodes::from_wide((*primaries).into(), (*transfer).into(), (*matrix).into(), Some(*full_range)))
-        }
-        // QuickTime `nclc` has no range flag
-        Some(Colr::Nclc { primaries, transfer, matrix }) => Some(ColorCodes::from_wide((*primaries).into(), (*transfer).into(), (*matrix).into(), None)),
-        // an ICC profile, or no `colr`: no code points
-        _ => None,
-    };
-    let stream = match &entry.codec {
-        CodecConfig::Vp9(v) => Some(ColorCodes {
-            primaries: v.colour_primaries,
-            transfer: v.transfer_characteristics,
-            matrix: v.matrix_coefficients,
-            full_range: Some(v.full_range),
-        }),
-        CodecConfig::Apv(a) if a.color_description_present => Some(ColorCodes {
-            primaries: a.color_primaries,
-            transfer: a.transfer_characteristics,
-            matrix: a.matrix_coefficients,
-            full_range: Some(a.full_range),
-        }),
-        CodecConfig::Apv(_) => None,
-        codec => crate::stream_color::from_codec_config(codec),
-    };
-    let sources: Vec<ColorCodes> = [colr, stream].into_iter().flatten().collect();
-    crate::stream_color::resolve(w, h, &sources)
+    crate::stream_color::sample_entry_color(entry, w, h)
 }
 
 /// First bytes of a Sony `rtmd` sample needed for the start-timecode block (`frames` is last).
@@ -251,14 +223,8 @@ impl Mp4Source {
             let rate = FrameRate::from_f64(t.timescale as f64 / d as f64);
             // A rate that rounds to zero (one sample per huge duration) can't be divided by.
             let rate = if rate.num > 0 && rate.den > 0 { rate } else { FrameRate::default() };
-            color = color_from(entry, w, h);
-            if entry
-                .video
-                .as_ref()
-                .is_some_and(|v| matches!(v.color, Some(filmcraft_isobmff::ColorInfo::Nclx { .. } | filmcraft_isobmff::ColorInfo::Nclc { .. })))
-            {
-                explicit_color = Some(color);
-            }
+            explicit_color = crate::stream_color::sample_entry_output_color_override(entry, w, h);
+            color = explicit_color.unwrap_or_else(|| color_from(entry, w, h));
             let bitrate = (t.samples.iter().map(|s| s.size as u64).sum::<u64>() * 8 * t.timescale as u64).checked_div(t.duration);
             let mut info = VideoStreamInfo {
                 width: w,

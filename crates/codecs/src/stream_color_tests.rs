@@ -14,6 +14,32 @@ use filmcraft_media::MediaSource;
 
 use crate::stream_color::{ColorCodes, from_codec_config, resolve};
 
+#[test]
+fn sample_entry_output_override_preserves_mp4_color_resolution_and_presence() {
+    use filmcraft_isobmff::ColorInfo as Colr;
+    let codec = av1(av1_sequence_header(1920, 1080, Some((9, 16, 9)), false));
+    let mut entry = SampleEntry::video(filmcraft_isobmff::FourCc(*b"av01"), codec.clone(), 1920, 1080);
+    let pq = ColorInfo { primaries: Primaries::Bt2020, transfer: Transfer::Pq, matrix: Matrix::Bt2020Ncl, range: Range::Limited };
+    assert_eq!(crate::hw::sample_entry_output_color_override(&entry, 1920, 1080), None);
+    for colr in [
+        Colr::Nclx { primaries: 9, transfer: 16, matrix: 9, full_range: false },
+        Colr::Nclc { primaries: 9, transfer: 16, matrix: 9 },
+        Colr::Nclx { primaries: 2, transfer: 2, matrix: 2, full_range: false },
+        Colr::Nclx { primaries: 257, transfer: 257, matrix: 257, full_range: false },
+        Colr::Nclx { primaries: 2, transfer: 16, matrix: 9, full_range: false },
+    ] {
+        entry.video.as_mut().unwrap().color = Some(colr.clone());
+        assert_eq!(crate::hw::sample_entry_output_color_override(&entry, 1920, 1080), Some(pq));
+        assert_eq!(mp4_color(codec.clone(), 1920, 1080, Some(colr)), pq, "native context and source share resolved override");
+    }
+    entry.video.as_mut().unwrap().color = Some(Colr::Icc { kind: filmcraft_isobmff::FourCc(*b"prof"), profile: vec![0; 8] });
+    assert_eq!(crate::hw::sample_entry_output_color_override(&entry, 1920, 1080), None);
+    let full_codec = av1(av1_sequence_header(640, 360, Some((9, 16, 9)), true));
+    let mut full = SampleEntry::video(filmcraft_isobmff::FourCc(*b"av01"), full_codec, 640, 360);
+    full.video.as_mut().unwrap().color = Some(Colr::Nclc { primaries: 9, transfer: 16, matrix: 9 });
+    assert_eq!(crate::hw::sample_entry_output_color_override(&full, 640, 360).unwrap().range, Range::Full, "nclc inherits original range");
+}
+
 /// The video signal description of a VUI: (colour_primaries, transfer_characteristics,
 /// matrix_coefficients) when `colour_description_present_flag` is set, and the range flag.
 #[derive(Clone, Copy)]

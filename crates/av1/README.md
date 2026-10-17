@@ -127,6 +127,25 @@ SVT-AV1's hierarchical GOPs that is the top layer, half of the frames.
 
 ## API
 
+`SequenceHeader::parse_checked` validates a sequence OBU's trailing bits and limits its payload
+to 64 KiB. `independent_frame_header_info` parses the complete uncompressed header with fresh
+reference state, without decoding tiles or starting workers. It proves a shown base-layer key
+frame's declared size; compressed tile validity remains the decoder's responsibility. It supports
+ordinary and reduced still headers, declines scalable, timing/decoder-model and frame-ID forms,
+and declines super-resolution or distinct render sizes. Its tighter inspection bound is 16384
+samples per dimension, 128 Mi pixels and 14 width/height syntax bits, with a 64 KiB header prefix.
+Unsupported forms return `None`; malformed supported headers return errors. Existing general
+decoder parsing and keyframe detection retain their behavior.
+
+The codecs hub's `FrameStreamInfo::av1_parameter_difference` distinguishes structural changes,
+primaries/transfer/matrix changes and invalid present headers. `initial_av1_color_candidate`
+prepares immutable effective metadata only after a checked restart header. Its OBU walker checks
+the complete sample, caps inspection at 4096 OBUs and configuration copies at 64 KiB, and declines
+metadata OBUs, conflicting headers and multiple-frame temporal units. Unknown specified colour
+codes decline; unspecified (2) uses the existing software colour defaults. This evidence API does
+not change hardware acceptance policy. Container handling follows the public [AV1 ISOBMFF binding
+v1.3.0](https://aomediacodec.github.io/av1-isobmff/v1.3.0.html), sections 2.3.4 and 2.4.
+
 ```rust
 let mut dec = filmcraft_av1::Decoder::new();
 for sample in samples {                  // one temporal unit (MP4 / Matroska sample) each
