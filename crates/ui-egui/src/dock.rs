@@ -492,6 +492,7 @@ pub struct Group {
 pub enum DockAction {
     Activate(PanelKind),
     BeginDrag(PanelKind),
+    BeginSequenceDrag,
     Focus(PanelKind),
     Close(PanelKind),
     PanelMenu(PanelKind, egui::Pos2),
@@ -605,6 +606,9 @@ pub fn draw_group_chrome_details(ui: &mut egui::Ui, g: &Group, seqs: &SeqTabs, t
         let grip = Rect::from_min_size(g.rect.min, vec2(if compact { g.rect.width() } else { 10.0 }, if compact { 8.0 } else { t.tab_h }));
         let response = ui.interact(grip, egui::Id::new(("panel-drag", g.path.clone())), Sense::drag());
         reg.add_response(&format!("panel.drag.{}", panel.id()), &response, "Move panel");
+        if compact {
+            reg.add_response(&format!("panel.tab.{}", panel.id()), &response, panel.title());
+        }
         if response.drag_started() {
             actions.push(DockAction::BeginDrag(panel));
         }
@@ -712,10 +716,10 @@ pub fn draw_group_chrome_details(ui: &mut egui::Ui, g: &Group, seqs: &SeqTabs, t
             // a sequence tab keeps its identity when the tabs are reordered under the pointer
             let resp = match tab.seq {
                 Some(id) => ui.interact(tab_rect, egui::Id::new(("tab-seq", g.path.clone(), id)), Sense::click_and_drag()),
-                None => ui.interact(tab_rect, egui::Id::new(("tab", g.path.clone(), i)), Sense::click_and_drag()),
+                None => ui.interact(tab_rect, egui::Id::new(("tab", g.path.clone(), *p)), Sense::click_and_drag()),
             };
-            if tab.seq.is_none() && resp.drag_started() {
-                actions.push(DockAction::BeginDrag(*p));
+            if resp.drag_started() {
+                actions.push(if tab.seq.is_some() { DockAction::BeginSequenceDrag } else { DockAction::BeginDrag(*p) });
             }
             if let Some((_, rect)) = tab_rects.iter_mut().find(|(panel, _)| panel == p) {
                 *rect = rect.union(tab_rect);
@@ -811,6 +815,7 @@ pub fn draw_group_chrome_details(ui: &mut egui::Ui, g: &Group, seqs: &SeqTabs, t
         // Dragging a sequence tab sideways: it changes places with a neighbour when the pointer
         // passes that neighbour's middle.
         if let Some(id) = dragged
+            && ui.input(|i| i.pointer.latest_pos()).is_some_and(|p| strip.expand2(vec2(0.0, 12.0)).contains(p))
             && let Some(px) = ui.input(|i| i.pointer.latest_pos()).map(|p| p.x)
             && let Some(at) = seq_rects.iter().position(|(s, _)| *s == id)
             && let Some(index) = seqs.open.iter().position(|(s, _)| *s == id)
