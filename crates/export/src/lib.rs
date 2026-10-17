@@ -1549,13 +1549,37 @@ impl VideoEncoder for H264Encoder {
     }
 }
 
+/// Walk 4:2:0 chroma rows. A nested `par_iter` on the global pool deadlocks export: the
+/// overlap scope is already a worker, and its join never runs the render job (#1329, #1283).
+fn for_yuv_rows(y: &mut [u8], u: &mut [u8], v: &mut [u8], w: usize, cw: usize, f: &(impl Fn(usize, &mut [u8], &mut [u8], &mut [u8]) + Sync)) {
+    if rayon::current_thread_index().is_some() {
+        let (mut y, mut u, mut v) = (y, u, v);
+        let mut cy = 0usize;
+        while !u.is_empty() && !y.is_empty() {
+            let take_u = cw.min(u.len());
+            let take_v = cw.min(v.len());
+            let rows = if y.len() >= w.saturating_mul(2) { 2 } else { (y.len() / w.max(1)).max(1) };
+            let (yr, yrest) = y.split_at_mut(rows.saturating_mul(w).min(y.len()));
+            let (ur, urest) = u.split_at_mut(take_u);
+            let (vr, vrest) = v.split_at_mut(take_v);
+            f(cy, yr, ur, vr);
+            y = yrest;
+            u = urest;
+            v = vrest;
+            cy += 1;
+        }
+    } else {
+        y.par_chunks_mut(w * 2).zip(u.par_chunks_mut(cw).zip(v.par_chunks_mut(cw))).enumerate().for_each(|(cy, (yr, (ur, vr)))| f(cy, yr, ur, vr));
+    }
+}
+
 /// BT.709 limited-range 8-bit 4:2:0 from straight RGBA8 (2×2 chroma average).
 pub fn rgba_to_yuv420_8(rgba: &[u8], w: usize, h: usize, y: &mut Vec<u8>, u: &mut Vec<u8>, v: &mut Vec<u8>) {
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
     y.resize(w * h, 0);
     u.resize(cw * ch, 0);
     v.resize(cw * ch, 0);
-    y.par_chunks_mut(w * 2).zip(u.par_chunks_mut(cw).zip(v.par_chunks_mut(cw))).enumerate().for_each(|(cy, (yr, (ur, vr)))| {
+    for_yuv_rows(y, u, v, w, cw, &|cy, yr, ur, vr| {
         let rows = yr.len() / w;
         let mut us = vec![0f32; cw];
         let mut vs = vec![0f32; cw];
@@ -1588,7 +1612,7 @@ pub fn rgbf_to_yuv420_8(rgb: &[f32], w: usize, h: usize, kr: f32, kb: f32, y: &m
     y.resize(w * h, 0);
     u.resize(cw * ch, 0);
     v.resize(cw * ch, 0);
-    y.par_chunks_mut(w * 2).zip(u.par_chunks_mut(cw).zip(v.par_chunks_mut(cw))).enumerate().for_each(|(cy, (yr, (ur, vr)))| {
+    for_yuv_rows(y, u, v, w, cw, &|cy, yr, ur, vr| {
         let rows = yr.len() / w;
         let mut us = vec![0f32; cw];
         let mut vs = vec![0f32; cw];
@@ -2015,3 +2039,27 @@ mod determinism_tests;
 
 #[cfg(test)]
 mod hdr_tests;
+
+#[cfg(test)]
+mod yuv_pool_tests {
+    use super::rgba_to_yuv420_8;
+    use rayon::iter::{IntoParallelIterator, ParallelIterator};
+
+    /// The overlap scope is already a Rayon worker. Conversion must finish there instead of
+    /// joining the same pool (#1329).
+    #[test]
+    fn conversion_inside_the_export_scope_finishes() {
+        let (w, h) = (48usize, 20usize);
+        let rgba = vec![40u8; w * h * 4];
+        let (mut y, mut u, mut v) = (Vec::new(), Vec::new(), Vec::new());
+        rayon::in_place_scope(|s| {
+            s.spawn(|_| {
+                (0..4).into_par_iter().for_each(|_| std::thread::sleep(std::time::Duration::from_millis(30)));
+            });
+            rgba_to_yuv420_8(&rgba, w, h, &mut y, &mut u, &mut v);
+        });
+        assert_eq!(y.len(), w * h);
+        assert_eq!(u.len(), 24 * 10);
+        assert!(y.iter().any(|&p| p > 16));
+    }
+}
