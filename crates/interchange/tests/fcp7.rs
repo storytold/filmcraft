@@ -3,6 +3,7 @@
 
 mod support;
 
+use filmcraft_geom::Vec2;
 use filmcraft_interchange::{ExportOptions, Format, Imported, detect, export, import};
 use filmcraft_media::Generator;
 use filmcraft_project::{ItemKind, Keyframe, Label, Marker, MarkerId, MarkerKind, MediaRef, Param, ParamValue, Project, TrackKind, TransitionAlign};
@@ -662,4 +663,67 @@ fn centred_mono_breakout_round_trips_centred() {
     }
     let (imp, xml, _) = roundtrip(&p, s, Format::Fcp7Xml, &ExportOptions::default());
     assert_eq!(balances(&imp), vec![0.0, 0.0], "{xml}");
+}
+
+/// A Basic Motion filter as Premiere writes it (`authoringApp` on each parameter, only when `premiere`),
+/// with `center` holding `keys` (frame, horiz, vert): one key is a static value.
+fn motion_filter(premiere: bool, keys: &[(i64, f64, f64)]) -> String {
+    let app = if premiere { r#" authoringApp="PremierePro""# } else { "" };
+    let center = match keys {
+        [(_, x, y)] => format!("<value><horiz>{x}</horiz><vert>{y}</vert></value>"),
+        _ => keys.iter().map(|(t, x, y)| format!("<keyframe><when>{t}</when><value><horiz>{x}</horiz><vert>{y}</vert></value></keyframe>")).collect(),
+    };
+    format!(
+        r#"<filter><effect><name>Basic Motion</name><effectid>basic</effectid><effectcategory>motion</effectcategory><effecttype>motion</effecttype><mediatype>video</mediatype>
+        <parameter{app}><parameterid>scale</parameterid><name>Scale</name><value>200</value></parameter>
+        <parameter{app}><parameterid>center</parameterid><name>Center</name>{center}</parameter>
+        <parameter{app}><parameterid>centerOffset</parameterid><name>Anchor Point</name><value><horiz>0</horiz><vert>0</vert></value></parameter>
+        </effect></filter>"#
+    )
+}
+
+/// #1562: Premiere writes a nested sequence's clip item with `center` -0.5 -0.5 (and `centerOffset` 0 0) where a
+/// media clip item at the same place has 0 0, and reads it back centred. The nests landed in the top-left corner.
+#[test]
+fn premiere_nested_sequence_centre_is_offset_by_half_a_frame() {
+    let fmt = format!("<format><samplecharacteristics>{RATE}<width>2160</width><height>3840</height></samplecharacteristics></format>");
+    let nest_def = format!(
+        r#"<sequence id="sequence-2"><name>Nest</name><duration>24</duration>{RATE}<media><video>{fmt}<track>
+        <clipitem id="clipitem-n"><name>inner</name>{RATE}<start>0</start><end>24</end><in>0</in><out>24</out><file id="file-1"/></clipitem>
+        </track></video></media></sequence>"#
+    );
+    let item = |id: &str, source: &str, filter: String| {
+        format!(r#"<track><clipitem id="{id}"><name>{id}</name>{RATE}<start>0</start><end>24</end><in>0</in><out>24</out>{source}{filter}</clipitem></track>"#)
+    };
+    let nest = r#"<sequence id="sequence-2"/>"#;
+    let tracks = [
+        item("nest", &nest_def, motion_filter(true, &[(0, -0.5, -0.5)])),
+        item(
+            "media",
+            r#"<file id="file-1"><name>shot.mov</name><pathurl>media/shot.mov</pathurl><duration>24</duration><media><video><samplecharacteristics><width>2160</width><height>3840</height></samplecharacteristics></video></media></file>"#,
+            motion_filter(true, &[(0, 0.0, 0.0)]),
+        ),
+        item("moved", nest, motion_filter(true, &[(0, -0.5, -0.5), (12, -0.25, -0.75)])),
+        item("not-premiere", nest, motion_filter(false, &[(0, -0.5, -0.5)])),
+    ]
+    .concat();
+    let doc = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<xmeml version="4"><sequence id="sequence-1"><name>Outer</name><duration>24</duration>{RATE}<media><video>{fmt}{tracks}</video></media></sequence></xmeml>"#
+    );
+    let (imp, _) = import(doc.as_bytes(), Format::Fcp7Xml, Some("/proj")).unwrap();
+    let p = &imp.project;
+    let outer = imp.sequences.iter().copied().find(|s| p.item(*s).unwrap().name == "Outer").unwrap();
+    let s = p.sequence(outer).unwrap();
+    let position = |t: usize| s.video_tracks[t].items[0].effect("motion").and_then(|m| m.param("position")).cloned();
+    // "auto" (NaN): the frame centre, as for a clip placed by hand
+    let centred = |t: usize| position(t).is_none_or(|p| p.value.as_vec2().is_some_and(|v| v.x.is_nan() && v.y.is_nan()));
+    assert!(centred(1), "the media clip is centred: {:?}", position(1));
+    assert!(centred(0), "the nest is centred like the media clip: {:?}", position(0));
+    let moved = position(2).unwrap();
+    let keys: Vec<ParamValue> = moved.keyframes.iter().map(|k| k.value.clone()).collect();
+    assert_eq!(keys, [ParamValue::Vec2(Vec2::new(1080.0, 1920.0)), ParamValue::Vec2(Vec2::new(1080.0 + 540.0, 1920.0 - 960.0))]);
+    // only Premiere's nests: the spec's reading of -0.5 -0.5 is the top-left corner
+    assert_eq!(position(3).unwrap().value, ParamValue::Vec2(Vec2::new(0.0, 0.0)));
 }
