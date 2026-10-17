@@ -232,6 +232,33 @@ impl CaptionTrack {
     }
 }
 
+/// Recognize a caption tag body without angle brackets. Literal comparisons are text;
+/// ASCII tag names, legacy style controls, declarations and WebVTT inline timestamps are markup.
+pub fn is_markup_tag(tag: &str) -> bool {
+    // Legacy style controls permit padding around their names.
+    let trimmed = tag.trim();
+    let control = trimmed.strip_prefix('/').unwrap_or(trimmed).split_whitespace().next().unwrap_or("");
+    if control.eq_ignore_ascii_case("i") || control.eq_ignore_ascii_case("b") || control.eq_ignore_ascii_case("u") {
+        return true;
+    }
+    let name = tag.strip_prefix('/').unwrap_or(tag);
+    if name.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) || tag.starts_with('!') || tag.starts_with('?') {
+        return true;
+    }
+    let Some((clock, fraction)) = tag.split_once('.') else { return false };
+    if fraction.len() != 3 || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let mut parts = clock.split(':');
+    let (Some(a), Some(b)) = (parts.next(), parts.next()) else { return false };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let minute_second = |s: &str| s.len() == 2 && digits(s) && s.parse::<u8>().is_ok_and(|v| v < 60);
+    match parts.next() {
+        Some(c) => a.len() >= 2 && digits(a) && minute_second(b) && minute_second(c) && parts.next().is_none(),
+        None => minute_second(a) && minute_second(b),
+    }
+}
+
 /// Strip `<…>` tags and decode the common HTML/WebVTT entities.
 pub fn plain_text(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -241,7 +268,9 @@ pub fn plain_text(s: &str) -> String {
             '<' => {
                 // a tag runs to the next '>' (if none, keep the '<' literally)
                 let rest: String = chars.clone().collect();
-                if let Some(end) = rest.find('>') {
+                if let Some(end) = rest.find('>')
+                    && is_markup_tag(&rest[..end])
+                {
                     for _ in 0..rest[..=end].chars().count() {
                         chars.next();
                     }
@@ -298,6 +327,11 @@ mod tests {
         assert_eq!(plain_text("{\\an8}Top"), "Top");
         assert_eq!(plain_text("a < b"), "a < b");
         assert_eq!(plain_text("<v Bob>Hi</v>"), "Hi");
+        assert_eq!(plain_text("< i >Hello< / i > < B title='legacy'>bold</ B> < u>under</ u>"), "Hello bold under");
+        assert_eq!(plain_text("<i>1 < 2</i>"), "1 < 2");
+        assert_eq!(plain_text("2 < 3 > 1, x < y > z, and 5 <7> 6"), "2 < 3 > 1, x < y > z, and 5 <7> 6");
+        assert_eq!(plain_text("<00:01.234>Hi<00:00:05.678> there"), "Hi there");
+        assert_eq!(plain_text("A<!--note-->B<?xml?>C<!DOCTYPE x>D"), "ABCD");
     }
 
     #[test]

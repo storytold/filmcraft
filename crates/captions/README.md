@@ -44,6 +44,32 @@ This mapping follows [W3C TTML1, third edition (2018), §§12.1.5–12.2.1](http
 The [April 2006 TTaf1 draft, §§7.2.1 and 12.1.5–12.2.1](https://www.w3.org/TR/2006/WD-ttaf1-dfxp-20060427/)
 defines its earlier metadata namespace and agent ID form.
 
+**Invariant — TTML root text styles:** cue text preserves resolved italic/bold/underline styles
+from the body and from paragraphs or timed spans emitted as cues, with balanced tags at descendant
+overrides. Referenced styles retain explicit normal/noUnderline resets and leave unspecified
+properties inherited; named-style chaining is not resolved. Collapsed runs keep the first surviving
+space's source style. Spaces adjacent to line breaks and leading/trailing line breaks are discarded;
+interior line breaks are preserved. Styling alone must not create an empty cue.
+Styling attributes use the modern or 2006 draft styling namespaces, with unqualified attributes
+as a compatibility fallback. Precedence is modern, October `#style`, October `#styling`, April
+`#style`, April `#styling`, then unqualified, independent of XML attribute order. Styling
+attributes in foreign namespaces and foreign style definitions cannot override these styles. Genuine XML style IDs take
+precedence over unqualified IDs. This filtering covers styling; content traversal, cue IDs and
+timing retain the reader's permissive local-name matching.
+
+**Invariant — literal comparisons versus caption markup:** display text extraction and TTML
+export share `filmcraft_project::caption::is_markup_tag`. ASCII tag names, declarations and WebVTT inline
+timestamps are markup. Legacy padding around `i`/`b`/`u` style controls remains accepted;
+non-tag-shaped comparisons such as `1 < 2` and `2 < 3 > 1` remain text,
+including inside generated style tags. STL retains its existing tag recognition and literal
+declaration/timestamp spelling. Caption spelling and raw-ampersand roundtrip property coverage
+remain unchanged. Alphabetic tag-like, padded style-control and entity-looking literal text
+retain their existing markup ambiguity; this is not a general escape/serialization migration.
+TTML collapses only XML whitespace (space, tab, CR, LF), preserving nonbreaking and other Unicode
+spacing characters. SSA override blocks and unsupported `xml:space="preserve"` handling remain
+outside this guarantee. Inline timestamp syntax follows
+[WebVTT, 20 May 2026 CR Draft](https://www.w3.org/TR/2026/CRD-webvtt1-20260520/#webvtt-timestamp).
+
 ### SCC writer
 
 Each caption is sent as a pop-on load (RCL, ENM, then per row a preamble address code and tab
