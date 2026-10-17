@@ -131,7 +131,7 @@ fn main() -> eframe::Result {
         register_gpu_frame_renderer();
     }
     let started = loop {
-        let mut options = native_options(launch.control_port.is_some());
+        let mut options = native_options(launch.control_port.is_some(), data_root.as_deref());
         // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
         graphics::apply(&mut options, graphics.mode(), backend_override);
         let app_created = Arc::new(AtomicBool::new(false));
@@ -164,8 +164,10 @@ fn main() -> eframe::Result {
 }
 
 /// The main window's options; built for each start attempt (they hold a one-shot hook).
-fn native_options(agent: bool) -> eframe::NativeOptions {
+fn native_options(agent: bool, data_dir: Option<&std::path::Path>) -> eframe::NativeOptions {
     eframe::NativeOptions {
+        persist_window: true,
+        persistence_path: data_dir.map(|dir| dir.join("ui-state.ron")),
         viewport: egui::ViewportBuilder::default()
             .with_title("FilmCraft")
             .with_inner_size([1600.0, 980.0])
@@ -181,6 +183,22 @@ fn native_options(agent: bool) -> eframe::NativeOptions {
             .with_app_id(APP_ID),
         event_loop_builder: agent_event_loop(agent),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod window_persistence_tests {
+    use super::native_options;
+    use std::path::Path;
+
+    #[test]
+    fn native_window_geometry_uses_the_app_data_directory() {
+        let data_dir = Path::new("filmcraft-test-data");
+        let options = native_options(false, Some(data_dir));
+        let expected = data_dir.join("ui-state.ron");
+
+        assert!(options.persist_window);
+        assert_eq!(options.persistence_path.as_deref(), Some(expected.as_path()));
     }
 }
 
