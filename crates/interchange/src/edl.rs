@@ -459,9 +459,29 @@ fn source_tc_warning(p: &Parsed) -> bool {
     p.events.iter().flat_map(|e| &e.lines).any(|l| l.reel != "BL" && l.tcs[0].h > 0)
 }
 
+/// Slowest and fastest clip speed an `M2` line may give (as a multiple of normal speed). The slowest
+/// is the smallest value that still survives the 4-decimal rounding of the imported speed.
+const MIN_M2_SPEED: f64 = 0.0001;
+const MAX_M2_SPEED: f64 = 1000.0;
+
 fn import_event(ctx: &mut Ctx, ev: &Event, report: &mut Report) {
     let df = ev.df;
-    let m2_for = |reel: &str| ev.m2.iter().find(|(r, _)| r == reel).map(|(_, f)| *f);
+    // An `M2` speed that is not finite, rounds to zero or is absurdly large would freeze the clip or
+    // blow up its source range: warn and keep the clip at normal speed.
+    let base = ctx.rate.timecode_base() as f64;
+    let m2: Vec<(&String, f64)> = ev
+        .m2
+        .iter()
+        .filter(|(reel, fps)| {
+            let ok = *fps == 0.0 || (fps.is_finite() && (MIN_M2_SPEED..=MAX_M2_SPEED).contains(&(fps.abs() / base)));
+            if !ok {
+                report.warn(format!("EDL motion line for reel {reel} has an unusable speed ({fps}); the clip keeps normal speed"));
+            }
+            ok
+        })
+        .map(|(r, f)| (r, *f))
+        .collect();
+    let m2_for = |reel: &str| m2.iter().find(|(r, _)| r.as_str() == reel).map(|(_, f)| *f);
     match ev.lines.as_slice() {
         [l1, l2] if matches!(l2.trans, Trans::Dissolve | Trans::Wipe(_)) => {
             let t0 = ctx.rec(l2.tcs[2], df);
@@ -1023,6 +1043,18 @@ mod tests {
         assert_eq!(parse_channels("AA/V"), Some(vec![Ch::A(1), Ch::A(2), Ch::V]));
         assert_eq!(parse_channels("A4"), Some(vec![Ch::A(4)]));
         assert_eq!(parse_channels("X"), None);
+    }
+
+    #[test]
+    fn hostile_m2_speeds_keep_normal_speed() {
+        for v in ["nan", "inf", "-inf", "0.00001", "1e300"] {
+            let edl = format!("TITLE: t\nFCM: NON-DROP FRAME\n001  AX  V  C  01:00:00:00 01:00:02:00 01:00:00:00 01:00:02:00\nM2   AX   {v}   01:00:00:00\n");
+            let (imp, report) = crate::import(edl.as_bytes(), Format::Edl, None).unwrap();
+            let dbg = format!("{imp:?}");
+            assert!(dbg.contains("speed: 1.0,"), "{v}: {dbg}");
+            assert!(dbg.contains("reverse: false"), "{v}: {dbg}");
+            assert!(report.warnings().count() > 0, "{v}: expected a warning");
+        }
     }
 
     #[test]
