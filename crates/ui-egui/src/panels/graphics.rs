@@ -1513,7 +1513,8 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
                 let on = sel == Some(li);
                 if on {
-                    ui.painter().rect_filled(r, 2.0, Color32::from_rgb(0x2e, 0x3d, 0x55));
+                    ui.painter().rect_filled(r, 2.0, t.row_selected);
+                    ui.painter().rect_stroke(r, 2.0, Stroke::new(1.5, t.accent), StrokeKind::Inside);
                 } else if resp.hovered() {
                     ui.painter().rect_filled(r, 2.0, t.hover);
                 }
