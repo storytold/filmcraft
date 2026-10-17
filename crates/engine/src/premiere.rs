@@ -151,7 +151,18 @@ pub fn import(s: &mut Session, p: &Value) -> Result<Value> {
             let mut record = SourceMedia { original_path: original.clone(), imported_path: original.clone(), sha256: None, bytes: None };
             match canonical {
                 Ok(src) if src.is_file() => {
-                    let (hash, size) = hash_file(&src)?;
+                    let (hash, size) = match hash_file(&src) {
+                        Ok(identity) => identity,
+                        Err(error) => {
+                            filmcraft_interchange::premiere::warning(
+                                &mut report,
+                                format!("unreadable media: {}; {error}; offline placeholder retained", src.display()),
+                            );
+                            records.insert(original, record);
+                            m.offline = true;
+                            continue;
+                        }
+                    };
                     record.original_path = src.to_string_lossy().into_owned();
                     record.sha256 = Some(hash.clone());
                     record.bytes = Some(size);
@@ -173,12 +184,20 @@ pub fn import(s: &mut Session, p: &Value) -> Result<Value> {
                         record.imported_path = src.to_string_lossy().into_owned();
                     }
                 }
-                _ => filmcraft_interchange::premiere::warning(&mut report, format!("missing media: {original}; offline placeholder retained")),
+                Ok(_) => filmcraft_interchange::premiere::warning(&mut report, format!("not a regular media file: {original}; offline placeholder retained")),
+                Err(error) => filmcraft_interchange::premiere::warning(
+                    &mut report,
+                    format!("missing or inaccessible media: {original}; {error}; offline placeholder retained"),
+                ),
             }
             records.insert(original.clone(), record);
         }
         if let Some(record) = records.get(&original) {
             *path = record.imported_path.clone();
+            if record.sha256.is_none() {
+                m.offline = true;
+                continue;
+            }
         }
         if let Ok(src) = s.media.open_file(path, &*s.services) {
             m.info = src.info().clone();
