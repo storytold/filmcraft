@@ -1970,6 +1970,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-fidelity"
+version = "0.8.0"
+dependencies = [
+ "filmcraft-codecs",
+ "filmcraft-color",
+ "filmcraft-export",
+ "filmcraft-format",
+ "filmcraft-frame",
+ "filmcraft-geom",
+ "filmcraft-interchange",
+ "filmcraft-media",
+ "filmcraft-project",
+ "filmcraft-render",
+ "filmcraft-time",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "filmcraft-flac"
 version = "0.8.0"
 dependencies = [

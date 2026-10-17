@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The FilmCraft fidelity bridge: a Premiere Pro extension panel that runs the ExtendScript that
+     render.py drops into ~/.filmcraft/fidelity-bridge/. Unsigned, so Premiere loads it only with
+     CEP's PlayerDebugMode on (install.sh / install.ps1 set it). -->
+<ExtensionManifest Version="10.0" ExtensionBundleId="org.filmcraft.fidelity.bridge" ExtensionBundleVersion="1.0.0" ExtensionBundleName="FilmCraft Fidelity Bridge">
+  <ExtensionList>
+    <Extension Id="org.filmcraft.fidelity.bridge.panel" Version="1.0.0"/>
+  </ExtensionList>
+  <ExecutionEnvironment>
+    <HostList>
+      <Host Name="PPRO" Version="[14.0,99.9]"/>
+    </HostList>
+    <LocaleList>
+      <Locale Code="All"/>
+    </LocaleList>
+    <RequiredRuntimeList>
+      <RequiredRuntime Name="CSXS" Version="10.0"/>
+    </RequiredRuntimeList>
+  </ExecutionEnvironment>
+  <DispatchInfoList>
+    <Extension Id="org.filmcraft.fidelity.bridge.panel">
+      <DispatchInfo>
+        <Resources>
+          <MainPath>./index.html</MainPath>
+          <CEFCommandLine>
+            <Parameter>--enable-nodejs</Parameter>
+            <Parameter>--mixed-context</Parameter>
+          </CEFCommandLine>
+        </Resources>
+        <Lifecycle>
+          <AutoVisible>true</AutoVisible>
+        </Lifecycle>
+        <UI>
+          <Type>Panel</Type>
+          <Menu>FilmCraft Fidelity</Menu>
+          <Geometry>
+            <Size>
+              <Height>240</Height>
+              <Width>320</Width>
+            </Size>
+            <MinSize>
+              <Height>120</Height>
+              <Width>200</Width>
+            </MinSize>
+            <MaxSize>
+              <Height>2000</Height>
+              <Width>2000</Width>
+            </MaxSize>
+          </Geometry>
+          <Icons/>
+        </UI>
+      </DispatchInfo>
+    </Extension>
+  </DispatchInfoList>
+</ExtensionManifest>

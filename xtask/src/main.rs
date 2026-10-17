@@ -15,6 +15,10 @@
 //!   measured parity of our shipped menu bar, or of the effects / transitions the Effects panel
 //!   lists, against a reference list (default: the local `plan/premiere/<area>.json`), presence and
 //!   placement reported separately (`parity.rs`, docs/gaps.md G7).
+//! - `fidelity [--case ID]… [--reference DIR] [--out DIR] [--min PERCENT] [--list]`: the fidelity
+//!   harness (`crates/fidelity`, docs/gaps.md G1): renders the authored corpus, exports it as FCP7
+//!   XML / OTIO for Premiere Pro, and scores Premiere's renders (the local
+//!   `plan/premiere/fidelity/`) against ours; output and `PREMIERE.md` in `<target>/fidelity/`.
 //! - `ico <out.ico> <in.png>…`: pack PNGs into a Windows `.ico` (used by `packaging/icons.sh`).
 //! - `ci`: fmt check, clippy -D warnings, tests, layers, assets, wasm.
 
@@ -76,6 +80,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("render", 3),
     ("gpu", 3),
     ("golden", 3),
+    ("fidelity", 3),
     ("scopes", 3),
     ("playback", 3),
     ("export", 3),
@@ -102,6 +107,9 @@ const SAME_LAYER: &[(&str, &str)] = &[
     ("playback", "render"),
     ("playback", "gpu"),
     ("export", "render"),
+    ("fidelity", "render"),
+    ("fidelity", "export"),
+    ("fidelity", "format"),
     ("scopes", "gpu"),
     ("gpu", "render"),
     ("cli", "filmcraft"),
@@ -478,6 +486,28 @@ fn bench() -> Result<(), String> {
     run(Command::new(env!("CARGO")).args(["run", "--release", "-p", "filmcraft-ui-egui", "--example", "bench", "--"]).args(&extra))
 }
 
+/// The fidelity harness (`crates/fidelity`, docs/gaps.md G1), in release mode: `<target>/fidelity/`
+/// gets the corpus media, the per-case FCP7 XML / OTIO / `.fcproj`, our renders, `manifest.json`,
+/// `PREMIERE.md` and the report; the reference renders are read from the maintainers' local
+/// `plan/premiere/fidelity/` (none there: every case reports *no reference*). Extra arguments go to the harness (`--case ID`,
+/// `--reference DIR`, `--out DIR`, `--min PERCENT`, `--seconds N`, `--size WxH`, `--list`).
+fn fidelity(root: &std::path::Path, args: &[String]) -> Result<(), String> {
+    let mut cmd = Command::new(env!("CARGO"));
+    cmd.args(["run", "--release", "-q", "-p", "filmcraft-fidelity", "--bin", "fidelity", "--"]);
+    if !args.iter().any(|a| a == "--out") {
+        // absolute: the XML the maintainer imports into Premiere must name the media by full path
+        let target = target_dir();
+        let target = if target.is_absolute() { target } else { std::env::current_dir().map_err(|e| e.to_string())?.join(target) };
+        cmd.arg("--out").arg(target.join("fidelity"));
+    }
+    if !args.iter().any(|a| a == "--reference") {
+        // always absolute, so PREMIERE.md names the export directory in full even before it exists
+        cmd.arg("--reference").arg(root.join("plan/premiere/fidelity"));
+    }
+    cmd.args(args);
+    run(&mut cmd)
+}
+
 /// The workspace root (the parent of `xtask/`).
 fn root() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask lives in the workspace").to_path_buf()
@@ -502,12 +532,13 @@ fn main() -> ExitCode {
             let rest: Vec<String> = std::env::args().skip(2).collect();
             parity::run(&root(), &rest.iter().map(String::as_str).collect::<Vec<_>>())
         }
+        "fidelity" => fidelity(&root(), &std::env::args().skip(2).collect::<Vec<_>>()),
         "ico" => {
             let rest: Vec<String> = std::env::args().skip(2).collect();
             ico::run(&rest.iter().map(String::as_str).collect::<Vec<_>>())
         }
         _ => Err(
-            "usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|parity [--area menus|effects|transitions] [--reference FILE] [--out FILE] [--min PERCENT]|ico OUT IN…|version [set X.Y.Z]|ci|bench [args]|bench-playback [args]>"
+            "usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|parity [--area menus|effects|transitions] [--reference FILE] [--out FILE] [--min PERCENT]|fidelity [--case ID…] [--reference DIR] [--out DIR] [--min PERCENT] [--list]|ico OUT IN…|version [set X.Y.Z]|ci|bench [args]|bench-playback [args]>"
                 .into(),
         ),
     };

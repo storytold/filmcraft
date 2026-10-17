@@ -22,6 +22,7 @@ FILMCRAFT_REQUIRE_ORACLES=1 cargo test --workspace   # CI: missing ffmpeg fails 
 | Scopes and panels (M8.9 / M12.6) | `crates/scopes/src/tests.rs`, `crates/engine/src/{scopes,panels}_tests.rs`, `crates/ui-egui/tests/panels_ui.rs` | scope maths on generated frames (flat colours → exact histogram bins, ramps → waveform row = code value, 75 % bars → parade levels and vectorscope target cells for BT.601/709/2020, HLS hue angles, YC chroma, Clamp Signal, decimation, NaN); `scopes.read` on a colour matte (exact bins, 78.43 %) and on Bars and Tone (the six targets); metadata edits (one undo step, read-only fields refused, saved in the project), the event log (failed / disabled commands, repeats, jobs started / finished / failed / cancelled); every panel from Window ▸, the scopes' wrench menu, presets, five-scope grid, typing into a Metadata field, Timecode rows and modes, Events filter / Clear All, Progress cancel, Reference Monitor park / gang / scopes (`FILMCRAFT_UI_SNAPSHOT_DIR=<dir>` writes `panels-*.png`); `perf_scopes_at_1080p` (ignored) times each scope |
 | Keyframe navigator and Effect Controls ruler | `crates/engine/src/tests.rs` (`add_keyframe_toggles_the_keyframe_at_the_playhead`), `crates/ui-egui/tests/keyframes_ui.rs`, `lane_tests` in `crates/ui-egui/src/panels/effect_controls.rs` | `effects.addKeyframe` adds a keyframe at the playhead or removes the one there (the value falls back to the remaining keyframes; undo, redo, parameters that name nothing); headless: the Properties diamond turns animation on, adds and removes the keyframe at the playhead (Scale 50 % → 100 % again), its ◀ ▶ arrows and Effect Controls' step between keyframes, Crop is applied before its first keyframe; a click on the Effect Controls time ruler and a drag of the playhead's handle move the playhead, and no playhead is drawn off the clip; ruler labels are sequence timecode, and clip times, frame rates and panel widths at their limits don't panic (`FILMCRAFT_UI_SHOTS=<dir>` writes `keyframes-*.png`) |
 | Golden images | `crates/golden/tests/golden.rs` | CPU renders vs committed PNGs; GPU vs CPU on the same scenes (§3) |
+| Fidelity against Premiere Pro | `crates/fidelity` (`cargo xtask fidelity`) | an original media corpus and 20 authored cases rendered by us and, locally, by Premiere; PSNR / CIEDE2000 per case for pictures, aligned sample-level SNR for sound (§6) |
 | Engine / command | `crates/engine/src/tests.rs` | run commands on the demo project, assert the sequence, undo/redo, disabled cases |
 | Render | `crates/render/src/tests.rs` | compositing, opacity, Motion, cross dissolve midpoint, ½-res vs full, GPU plan vs reference, audio mix, audio-effect continuity |
 | Multi-camera / sync | `crates/audio-dsp/src/sync.rs`, `crates/engine/src/multicam_tests.rs`, `crates/ui-egui/tests/multicam_ui.rs` | audio offsets within one sample: Rust-generated multi-mic speech (gains −20…+10 dB, SNR 40/25/10/3 dB, zero-phase colouring, fractional delays, a 0 dB-SNR room with a −4 dB echo) and ffmpeg-made camera/recorder files (pink-noise bursts, independent noise; exact lags recovered); timecode (± hours) and marker sync within a frame; Merge Clips; timeline Synchronize keeps frame-aligned starts; multicam structure, angle render (PSNR vs the camera), Switch Audio mix = the angle's track, live switching from a simulated playback clock (cuts, healing, one undo step), Ctrl+N cuts, flatten (frames identical), save/load; 20 angles: paging (auto / 2×2 / 3×3), page-relative keys, absolute cameras beyond 16, a page decoding only its angles at the cell scale (recording source), Auto-Adjust scale, Selection Top Down; headless: page arrows, angle 17–20 cells, grid-only view, Edit Cameras thumbnails; `perf_grid_of_four_1080p_angles` (ignored) prints the grid cost |
@@ -356,3 +357,38 @@ thread's CPU time, so it runs with the rest of the suite. Hosts without a per-th
 explicitly with
 `cargo test --release -p filmcraft-render --lib perf_24_tracks_3_effects_realtime_factor -- --ignored --nocapture`
 and record the machine with the result.
+
+## 6. Fidelity against Premiere Pro
+
+`cargo xtask fidelity` (the `fidelity` binary of `crates/fidelity`, [README](../crates/fidelity/README.md);
+[gaps.md G1](gaps.md#g1-nothing-compares-our-output-with-premieres)) measures what the golden images cannot:
+whether our render of a project is Premiere's render of the same project.
+
+- **Corpus.** The media is ours: two demo footages and Bars and Tone rendered by FilmCraft to ProRes 422 HQ
+  QuickTime (24-bit PCM) and a tone to WAV, 640×360, 24 fps, 48 kHz, deterministic, into `<target>/fidelity/media/`.
+  Twenty cases (`corpus::CASES`), each a 3 s sequence that isolates one thing: a hard cut (the baseline), Motion
+  scale / position / rotation and a scale ramp, opacity and an opacity ramp, Cross Dissolve and Dip to Black,
+  Gaussian Blur, Brightness & Contrast, Crop, Black & White, Invert, speed 50 % and 200 %, and five audio cases
+  (cut, −6 dB, balance, Constant Power, a volume ramp). Each is written as FCP7 XML, OTIO and `.fcproj` into
+  `<target>/fidelity/cases/<id>/`, and rendered through the export pipeline (PNG stills, or a float WAV) into
+  `<target>/fidelity/ours/<id>/`.
+- **The Premiere side is local.** The run writes `<target>/fidelity/PREMIERE.md`: import each case's XML,
+  apply the listed steps for the five effect cases FCP7 XML cannot carry, export PNG stills (or a 24-bit WAV)
+  into `plan/premiere/fidelity/<id>/`. `crates/fidelity/premiere/render.py` does the same by script on any machine with Premiere Pro, through the
+  bridge panel in `crates/fidelity/premiere/bridge/` (the effect steps are `PremiereEffect`s in the case definitions).
+  That directory is maintainer-local and gitignored ([AGENTS.md §1](../AGENTS.md)); nothing Premiere
+  produces is ever committed. Without it every case reports
+  *no reference* and the command still succeeds (`--min` then fails, like `cargo xtask parity`).
+- **Scores.** Both renders are read back through the same decoders (stills, or a movie we decode, plus a
+  WAV). Pictures: PSNR over R, G, B of 8-bit sRGB frames over black (pooled; the worst frame named), CIEDE2000
+  per pixel (mean, p95, max; checked against the published test pairs) and the largest channel difference.
+  Sound: the alignment found by FFT cross-correlation within ±1 frame (a late render is a lag, not noise), then
+  SNR, largest sample error and RMS error over the overlap, overall and per channel.
+- **Pass / fail.** Provisional tolerances per case (`corpus::Tolerance`: picture PSNR ≥ 35 dB, mean ΔE₀₀ ≤ 2,
+  p95 ≤ 6, baseline ≥ 40 dB / ≤ 1 / ≤ 3; sound SNR ≥ 40 dB, |lag| ≤ 2 samples), a differing frame count counted
+  as a failure reason. A case with a filed, understood failure carries `known_failure: Some(reason)` and is
+  reported as *known*, outside the pass rate, until its fix takes the mark off. Report: `<target>/fidelity/fidelity-report.md` (one row per case, failing reasons, the
+  cases still without a render, the exporter's warnings) and `fidelity-results.json`.
+- **Tests.** `cargo test -p filmcraft-fidelity`: analytic scores, the reference reader, the protocol text, the
+  verdict rules, and the whole pipeline on two cases at 160×90 against no reference, our own render as a perfect
+  reference, and a perturbed one (one frame reddened, the sound halved).
