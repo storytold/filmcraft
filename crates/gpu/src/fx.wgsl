@@ -588,17 +588,16 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             return acc / f32(steps);
         }
         case OP_UNSHARP: {
-            // src: the blurred image, aux: the original
-            var o = textureLoad(aux, p, 0);
+            // src: the blurred image, aux: the original. Each colour channel on its own, as
+            // `effects::unsharp_boxes`, written as vector math: FXC (DX12 without dxcompiler.dll)
+            // aborts on a write to `o[k]` inside a loop ("internal error: compilation aborted
+            // unexpectedly"), which took the whole `fx` pipeline down with it.
+            let o = textureLoad(aux, p, 0);
             let bq = ld(p);
             let amount = u.p0.x; let th = u.p0.y;
-            for (var k = 0; k < 3; k++) {
-                let d = o[k] - bq[k];
-                if abs(d) >= th * o.a {
-                    o[k] = max(o[k] + d * amount, 0.0);
-                }
-            }
-            return o;
+            let d = o.rgb - bq.rgb;
+            let sharpened = max(o.rgb + d * amount, vec3(0.0));
+            return vec4(select(o.rgb, sharpened, abs(d) >= vec3(th * o.a)), o.a);
         }
         case OP_CROP: {
             let x0 = u.p0.x; let x1 = u.p0.y; let y0 = u.p0.z; let y1 = u.p0.w; let fe = u.p1.x;
