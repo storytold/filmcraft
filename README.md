@@ -389,6 +389,33 @@ echo 'media-video/filmcraft-bin ~amd64' >> /etc/portage/package.accept_keywords/
 emerge --ask media-video/filmcraft-bin
 ```
 
+**Nix / NixOS (community-maintained):** the [filmcraft-nixflake](https://github.com/Yuna404/filmcraft-nixflake)
+flake builds FilmCraft from source (x86_64-linux), with the desktop entry, MIME types and icons. It is
+maintained by the community, not by the FilmCraft team, so report packaging problems to the flake.
+
+Try it without installing:
+
+```sh
+nix run github:Yuna404/filmcraft-nixflake
+```
+
+Install it on NixOS by adding the flake as an input:
+
+```nix
+# flake.nix
+inputs.filmcraft = {
+  url = "github:Yuna404/filmcraft-nixflake";
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+```
+
+```nix
+# configuration.nix
+environment.systemPackages = [
+  inputs.filmcraft.packages.${pkgs.stdenv.hostPlatform.system}.default
+];
+```
+
 ### FreeBSD
 
 | Build | File |
