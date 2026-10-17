@@ -1,6 +1,6 @@
 //! The native extension window, run in a second instance of the FilmCraft executable.
 //!
-//! A separate process gives WebKit/WebView2 its own main-thread event loop without changing
+//! A separate process gives WebKit its own main-thread event loop without changing
 //! eframe's event loop. It is a failure boundary, not an OS security sandbox. The only editor
 //! connection is bounded JSON lines over the parent's private pipes. Browser file pickers still
 //! require a user gesture and explicit selection; no filesystem or shell API is exposed here.
@@ -61,7 +61,6 @@ fn run_inner(package: Package, data_dir: PathBuf) -> Result<(), String> {
     let entry_url = format!("{SCHEME}://localhost/{}", package.manifest.entry);
     let navigation_entry = package.manifest.entry.clone();
     let mut event_loop = EventLoopBuilder::<WindowMessage>::with_user_event().build();
-    #[cfg(target_os = "macos")]
     {
         use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
         event_loop.set_activation_policy(ActivationPolicy::Accessory);
@@ -82,9 +81,7 @@ fn run_inner(package: Package, data_dir: PathBuf) -> Result<(), String> {
     let ipc_output = outgoing.clone();
     let ipc_failure = failure.clone();
     let ready_failure = failure.clone();
-    // WebView2 still needs a writable environment folder in private mode. Its default is
-    // beside the executable, which is unwritable for an installation in Program Files.
-    // The parent supplies and owns a separate runtime directory for this extension.
+    // The parent supplies and owns a separate runtime data directory for each extension.
     let mut web_context = WebContext::new(Some(data_dir));
     let webview = WebViewBuilder::new_with_web_context(&mut web_context)
         .with_custom_protocol(SCHEME.into(), move |_, request| asset_response(&package, &csp, request))
@@ -255,10 +252,7 @@ fn delivery_script(frame: &str) -> Result<String, String> {
 }
 
 fn is_package_uri(uri: &Uri) -> bool {
-    matches!(
-        (uri.scheme_str(), uri.authority().map(|authority| authority.as_str())),
-        (Some(SCHEME), Some("localhost")) | (Some("http"), Some("filmcraft-extension.localhost"))
-    )
+    matches!((uri.scheme_str(), uri.authority().map(|authority| authority.as_str())), (Some(SCHEME), Some("localhost")))
 }
 
 fn package_navigation(url: &str, entry: &str) -> bool {
@@ -314,14 +308,11 @@ mod tests {
 
     #[test]
     fn only_package_navigation_is_allowed() {
-        for url in [
-            "filmcraft-extension://localhost/index.html",
-            "filmcraft-extension://localhost/index.html#marker",
-            "http://filmcraft-extension.localhost/index.html",
-        ] {
+        for url in ["filmcraft-extension://localhost/index.html", "filmcraft-extension://localhost/index.html#marker"] {
             assert!(package_navigation(url, "index.html"), "{url}");
         }
         for url in [
+            "http://filmcraft-extension.localhost/index.html",
             "https://example.com/index.html",
             "file:///etc/passwd",
             "javascript:alert(1)",
@@ -375,16 +366,15 @@ mod tests {
             files: [("data.json".into(), br#"{"value":42}"#.to_vec())].into(),
         };
         let csp = content_security_policy(&[]).unwrap();
-        for uri in ["filmcraft-extension://localhost/data.json", "http://filmcraft-extension.localhost/data.json"] {
-            let request = Request::builder().uri(uri).body(Vec::new()).unwrap();
-            let response = asset_response(&package, &csp, request);
-            assert_eq!(response.status(), StatusCode::OK);
-            assert_eq!(response.body().as_ref(), br#"{"value":42}"#);
-            assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json; charset=utf-8");
-            assert_eq!(response.headers()[header::CONTENT_SECURITY_POLICY], csp);
-            assert_eq!(response.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
-        }
+        let request = Request::builder().uri("filmcraft-extension://localhost/data.json").body(Vec::new()).unwrap();
+        let response = asset_response(&package, &csp, request);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.body().as_ref(), br#"{"value":42}"#);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json; charset=utf-8");
+        assert_eq!(response.headers()[header::CONTENT_SECURITY_POLICY], csp);
+        assert_eq!(response.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
         for uri in [
+            "http://filmcraft-extension.localhost/data.json",
             "https://example.com/data.json",
             "http://filmcraft-extension.localhost.evil/data.json",
             "filmcraft-extension://localhost/%2e%2e/data.json",

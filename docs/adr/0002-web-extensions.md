@@ -2,8 +2,7 @@
 
 - **Status:** proposed; runtime and API acceptance require maintainer review
 - **Scope:** optional workflow UI extensions, separate from video/audio effect processing
-- **Related:** [G11](../gaps.md), [PR #1572](https://github.com/storytold/filmcraft/pull/1572),
-  [ADR 0001](0001-platform-ffi.md)
+- **Related:** [G11](../gaps.md), [ADR 0001](0001-platform-ffi.md)
 
 ## Context
 
@@ -13,16 +12,10 @@ progress display, lists and interactions rather than a host-generated parameter 
 Embedding a particular service's panel into the main application does not provide that extension
 model.
 
-PR #1572 proposes a WASM effect runtime. Its review identifies unresolved ABI/runtime decisions,
-build and layer failures, unbounded guest resource use and unsafe automatic loading from the working
-directory. This proposal does not adopt that PR's implementation or claim to resolve its effect
-processing requirements. It provides a narrower workflow UI experiment whose runtime remains a
-maintainer decision.
-
 ## Proposed design
 
 1. The desktop application has an optional, default-off `web-extensions` feature. The first runtime
-   targets macOS and Windows. Engine, renderer and project persistence do not depend on a webview.
+   targets macOS only. Engine, renderer and project persistence do not depend on a webview.
    Native runtime dependencies stay in the desktop application, above the headless engine boundary.
 2. The user installs a `.fcplugin` archive through an Extensions manager, reviews its declared
    permissions, and explicitly opens it. Packages are stored in a dedicated application data area.
@@ -60,14 +53,13 @@ on platform runtimes; that dependency is an architectural choice to review, not 
 existing media exception covers it.
 
 The proposed Rust wrappers must carry licences allowed by AGENTS.md, and the dependency/lockfile
-change must include their transitive dependencies. macOS uses the system WebKit runtime and Windows
-uses WebView2; the target machine's runtime availability and redistribution terms must be documented
-before release. A WebView2 redistributable is not bundled by this proposal.
+change must include their transitive dependencies. This runtime uses the macOS system WebKit
+framework and does not redistribute it.
 
-Linux is left unsupported in this first experiment. A WebKitGTK backend introduces system runtime
-and licence questions under the repository's dependency policy; making a Rust feature compile is
-not enough to settle those questions. A Linux backend requires an explicit decision and validation.
-The browser/WASM editor continues to build without the desktop runtime.
+Windows and Linux are unsupported in this first experiment. Their extension backends require
+separate implementation, dependency-policy review and validation. Native extension dependencies
+are enabled only for the macOS desktop application. The browser/WASM editor continues to build
+without the desktop runtime.
 
 ## Boundaries and limitations
 

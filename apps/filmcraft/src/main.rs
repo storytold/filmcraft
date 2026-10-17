@@ -30,7 +30,7 @@ mod audio_in;
 mod control_server;
 #[cfg(target_os = "linux")]
 mod dev_icon;
-#[cfg(all(feature = "web-extensions", any(target_os = "macos", target_os = "windows")))]
+#[cfg(all(feature = "web-extensions", target_os = "macos"))]
 mod extensions;
 mod file_filters;
 mod graphics;
@@ -79,7 +79,7 @@ fn tell(text: &str, error: bool) {
 }
 
 fn main() -> eframe::Result {
-    #[cfg(all(feature = "web-extensions", any(target_os = "macos", target_os = "windows")))]
+    #[cfg(all(feature = "web-extensions", target_os = "macos"))]
     if std::env::args_os().nth(1).is_some_and(|s| s == "--extension-window") {
         // A host-owned WebView process has no editor session, logs, recovery or control server.
         // stdout belongs exclusively to its bounded IPC channel.
@@ -322,7 +322,7 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         // that waits for the browser never freezes the UI.
         app.hooks.open_url = Some(Box::new(|url: &str| open::that_detached(url).map_err(|e| e.to_string())));
         app.hooks.clipboard_media = Some(Box::new(clipboard_media));
-        #[cfg(all(feature = "web-extensions", any(target_os = "macos", target_os = "windows")))]
+        #[cfg(all(feature = "web-extensions", target_os = "macos"))]
         if let Some(root) = data_dir.clone().or_else(default_data_dir) {
             let mut manager = extensions::Manager::new(root);
             app.hooks.extensions = Some(Box::new(move |app, ctx, command, params| manager.invoke(app, ctx, command, params)));

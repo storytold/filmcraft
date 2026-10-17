@@ -1,5 +1,5 @@
 # The normal gates build the default-off feature without its native runtime. Exercise the
-# optional runtime on both supported desktop targets; these are unit checks, not GUI smoke tests.
+# optional macOS runtime; these are unit checks, not GUI smoke tests.
 name: Web extensions
 
 on:
@@ -26,11 +26,7 @@ concurrency:
 
 jobs:
   native:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
     timeout-minutes: 60
     env:
       CARGO_TERM_COLOR: always

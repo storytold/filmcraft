@@ -4,11 +4,11 @@ Web extensions are optional desktop integrations with their own HTML, CSS and Ja
 FilmCraft installs the package and opens its interface in a FilmCraft-managed window. An extension
 can choose its layout and workflow; FilmCraft supplies a small, permission-checked editor API.
 
-This is an experimental API, not a stable plugin ABI. The initial feature targets macOS and Windows
+This is an experimental API, not a stable plugin ABI. The initial feature targets macOS only
 and is disabled in default builds. It does not load Adobe UXP packages or native effect plugins.
 Runtime and distribution decisions are proposed in [ADR 0002](adr/0002-web-extensions.md).
-macOS uses its system WebKit runtime. Windows requires an available WebView2 runtime; this feature
-does not bundle a WebView2 installer.
+The runtime uses the macOS system WebKit framework. Windows and Linux do not include the
+extension host in this version; a future backend requires its own implementation and validation.
 
 ## Use an extension
 
@@ -36,6 +36,28 @@ Packages can be distributed directly as files. There is no marketplace, package 
 automatic updater, or public registry in this version. An installed package is executable third-party
 JavaScript: install only packages you trust. Permissions describe the editor bridge and allowed web
 origins, not an operating-system sandbox or a certification of the publisher.
+
+## Host automation commands
+
+In the enabled macOS desktop editor, the existing control channel dispatches these commands via
+`engine.execute` with `command` and `params`:
+
+| Command | Parameters | Result or behavior |
+|---|---|---|
+| `extensions.manage` | `{}` | Opens the Extensions manager. |
+| `extensions.inspect` | `{}` | Returns manager state, pending manifest, installed/rejected entries and error. |
+| `extensions.install` | `{ "path": "package.fcplugin" }`, or `{}` for a file picker | Starts package validation and permission review; does not install immediately. |
+| `extensions.open` | `{ "id": "org.example.notes" }` | Opens an enabled installed package. |
+| `extensions.close` | `{ "id": "org.example.notes" }` | Closes its running window. |
+| `extensions.enable` | `{ "id": "org.example.notes", "enabled": false }` | Persists the enabled state; disabling also closes the window. |
+| `extensions.remove` | `{ "id": "org.example.notes" }` | Removes an installed package or a removable rejected entry. |
+
+Poll `extensions.inspect` until the asynchronous install request has a pending manifest or error.
+Review the pending permissions, then use `ui.click` with `extensions.confirmInstall` or
+`extensions.cancelInstall`. There is no command to bypass the permission-review confirmation.
+The manager also registers `extensions.choose` and `extensions.<id>.enabled`, `.open`, `.remove`.
+These IDs cover the host manager only. HTML controls inside a native extension window are not
+exposed through `ui.elements` or `ui.click`; extension-content automation requires further design.
 
 ## Package format
 
@@ -208,7 +230,7 @@ This is an excerpt to add to a complete manifest, not a complete manifest itself
 are explicit origins, not wildcards. The window's Content Security Policy limits connections to the
 declared origins and the extension's own packaged resources. Local `fetch("data.json")`
 works without a network permission. Browser CORS rules still apply: the service must accept the extension's origin
-(`filmcraft-extension://localhost` on macOS and `http://filmcraft-extension.localhost` on Windows).
+(`filmcraft-extension://localhost`).
 Redirects and other requested origins must also satisfy the policy. Do not embed service secrets in
 a package. There is no credential-vault API in this first version.
 
@@ -239,4 +261,4 @@ gates, exercise package rejection, permission denial, stale document/revision re
 undo/redo, window close/reopen and a helper failure. Run the actual enabled editor, install each
 example through the manager, inspect the rendered windows and resize them. The headless egui
 harness alone does not validate a native webview window. Record the platforms actually tested;
-an experimental macOS/Windows target is not evidence that both were tested.
+macOS is the only platform supported by this experiment.

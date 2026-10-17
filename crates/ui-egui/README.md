@@ -3,6 +3,22 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## Experimental extension host hook
+
+The desktop host can supply `HostHooks::extensions` to register **Window > Extensions** and the
+`extensions.*` UI commands. Without that hook, the menu and commands remain unavailable. The
+optional `web-extensions` build currently provides this host on macOS only; package parsing and
+native webview dependencies stay in the desktop application, outside this crate.
+
+The manager exposes stable automation IDs and `extensions.inspect`. A caught host callback panic
+restores the hook and reports an error while preserving the editor session; a regression test
+verifies the next command still works. Native package/runtime tests live in `apps/filmcraft` and
+SDK protocol tests in `tests/extensions/sdk.test.cjs`. Actual webview rendering and resize require
+a native run. HTML controls inside extension windows are not registered with `ui.elements` or
+`ui.click`; that integration remains unresolved under the widget-automation requirement.
+See the [extension guide](../../docs/extensions.md) and
+[proposed ADR](../../docs/adr/0002-web-extensions.md) for behavior and acceptance limitations.
+
 ## Transition drop previews
 
 Dragging a video or audio transition over a compatible clip shows its actual time span, the
