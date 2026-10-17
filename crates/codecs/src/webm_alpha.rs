@@ -207,6 +207,13 @@ pub(crate) fn set_alpha(frame: &mut VideoFrame, a: &VideoFrame) {
     if (frame.width, frame.height) != (a.width, a.height) {
         return;
     }
+    let materialized;
+    let a = if matches!(a.data, PixelData::Native(_)) {
+        materialized = a.materialized();
+        &materialized
+    } else {
+        a
+    };
     let n = frame.width as usize * frame.height as usize;
     // alpha codes as 16-bit with their depth, so every pairing converts through one path
     let (codes, abits): (Vec<u16>, u32) = match &a.data {
@@ -222,6 +229,12 @@ pub(crate) fn set_alpha(frame: &mut VideoFrame, a: &VideoFrame) {
         (v as u32 * to_max + from_max / 2) / from_max
     };
     match &mut frame.data {
+        PixelData::Native(_) => {
+            // Native surfaces are immutable and cannot carry the separate WebM alpha plane.
+            // materialized() always returns planar storage, so this delegation is bounded.
+            *frame = frame.materialized();
+            set_alpha(frame, a);
+        }
         PixelData::Yuv8 { alpha, .. } => *alpha = Some(Arc::new(codes.iter().map(|&v| rescale(v, 8) as u8).collect())),
         PixelData::Yuv16 { alpha, bits, .. } => {
             let to = *bits;
@@ -254,6 +267,40 @@ mod tests {
         let data =
             PixelData::Yuv16 { planes: [Arc::new(vec![0; n]), Arc::new(vec![0; n / 4]), Arc::new(vec![0; n / 4])], chroma: Chroma::C420, bits, alpha: None };
         VideoFrame { width: w, height: h, data, color: Default::default(), par: (1, 1), pts: filmcraft_time::Tick::ZERO }
+    }
+
+    #[test]
+    fn native_colour_and_alpha_preserve_webm_transparency() {
+        #[derive(Debug)]
+        struct Native([Arc<Vec<u8>>; 3]);
+        impl filmcraft_frame::NativeYuv for Native {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn chroma(&self) -> Chroma {
+                Chroma::C420
+            }
+            fn bits(&self) -> u32 {
+                8
+            }
+            fn byte_size(&self) -> usize {
+                self.0.iter().map(|p| p.len()).sum()
+            }
+            fn planes(&self) -> filmcraft_frame::NativePlanes {
+                filmcraft_frame::NativePlanes::U8(self.0.clone())
+            }
+        }
+        let native = |mut f: VideoFrame| {
+            let PixelData::Yuv8 { planes, .. } = &f.data else { panic!("YUV fixture") };
+            f.data = PixelData::Native(Arc::new(Native(planes.clone())));
+            f
+        };
+        let mut colour = native(yuv8(2, 2, vec![9; 4]));
+        let alpha = native(yuv8(2, 2, vec![0, 128, 255, 64]));
+        set_alpha(&mut colour, &alpha);
+        let PixelData::Yuv8 { planes, alpha, .. } = &colour.data else { panic!("materialized with alpha") };
+        assert_eq!(planes[0].as_slice(), &[9; 4]);
+        assert_eq!(alpha.as_deref(), Some(&vec![0, 128, 255, 64]));
     }
 
     #[test]

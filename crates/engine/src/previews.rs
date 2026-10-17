@@ -696,6 +696,7 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
             seconds: secs,
             bytes,
             render_fps: done_frames as f64 / secs.max(1e-6),
+            gpu_render: filmcraft_export::GpuExportStats::default(),
             extra_files: Vec::new(),
         });
         if let Err(e) = &r {
@@ -783,6 +784,7 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
             seconds: secs,
             bytes,
             render_fps: 0.0,
+            gpu_render: filmcraft_export::GpuExportStats::default(),
             extra_files: Vec::new(),
         });
         if let Err(e) = &r {

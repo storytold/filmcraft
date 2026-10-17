@@ -51,6 +51,30 @@ code 2 instead of a window.
 Dev builds compile dependencies at `opt-level = 2` and workspace crates at `opt-level = 1`. For
 playback and codec speed, use `--release`.
 
+### Local Apple Silicon builds (including MacBook Neo / A18 Pro)
+
+For a binary used only on the Mac building it, let the compiler tune CPU code for that host:
+
+```sh
+CARGO_BUILD_JOBS=2 RUSTFLAGS="-C target-cpu=native" cargo build --release -p filmcraft
+```
+
+Two concurrent build jobs reduce peak compilation memory on an 8 GB MacBook Neo. This controls
+compilation only; playback and decoding keep their runtime worker settings. `target-cpu=native`
+applies to CPU code; the existing Metal compositor and VideoToolbox codecs select their hardware
+at runtime. Keep the regular release flags for distributed builds: native tuning can enable
+instructions unavailable on earlier Apple Silicon Macs.
+
+To compare the old and new VideoToolbox chroma copies on the current Mac:
+
+```sh
+cargo test --release -p filmcraft-platform --lib chroma::tests -- --include-ignored --nocapture
+cargo test -p filmcraft-platform --test videotoolbox -- --nocapture
+```
+
+The first command checks exact sample equality and prints median times for synthetic 1080p/4K
+chroma copies; the second checks hardware-decoded frames against the software decoder and ffmpeg.
+
 ### Logs
 
 The desktop app writes its `log` records to standard error and to `Logs/filmcraft.log` in the data

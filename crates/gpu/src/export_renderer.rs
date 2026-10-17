@@ -90,7 +90,6 @@ fn device_failed() -> bool {
 
 pub struct ExportRenderer {
     _instance: wgpu::Instance,
-    #[expect(dead_code, reason = "kept for future frame-accuracy flows (readback fences)")]
     device: wgpu::Device,
     #[expect(dead_code, reason = "kept for future frame-accuracy flows (readback fences)")]
     queue: wgpu::Queue,
@@ -113,7 +112,11 @@ impl ExportRenderer {
                 }
                 let instance = wgpu::Instance::default();
                 let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-                let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+                let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                    required_features: adapter.features() & wgpu::Features::TEXTURE_FORMAT_16BIT_NORM,
+                    ..Default::default()
+                }))
+                .ok()?;
                 // wgpu's default handler panics on a validation or out-of-memory error; log it and
                 // send the remaining frames to the CPU instead.
                 device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| mark_device_failed(&format!("GPU error: {e}"))));
@@ -127,6 +130,33 @@ impl ExportRenderer {
         }
         let compositor = GpuCompositor::new(&device, &queue);
         Some(Self { _instance: instance, device, queue, compositor })
+    }
+
+    /// Completed linear accumulator for an OS encoder bridge. No pixel readback or display
+    /// resolve. The bridge uses this device's backend and retains the returned texture.
+    pub fn render_texture(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: RenderOptions,
+        sources: &dyn SourceProvider,
+    ) -> Option<(wgpu::Device, wgpu::Texture, (u32, u32))> {
+        if device_failed() {
+            return None;
+        }
+        let plan = plan_frame(project, seq, t, opts, sources);
+        if !matches!(plan, FramePlan::Layers { .. }) {
+            return None;
+        }
+        let prep = prepare(&plan);
+        let surface = self.compositor.export_texture(&plan, &prep)?;
+        // Backend access must never race wgpu writes. A CPU fence waits, but no pixels cross it.
+        self.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
+        if device_failed() {
+            return None;
+        }
+        Some((self.device.clone(), surface.0, surface.1))
     }
 
     /// One frame as `render_sequence` would return it (premultiplied linear-light RGBA at the
@@ -252,6 +282,63 @@ mod tests {
         let mean = d.iter().sum::<u32>() as f64 / d.len() as f64;
         eprintln!("{what}: GPU vs CPU over-black p99 {p99}, mean {mean:.3}");
         assert!(p99 <= 6 && mean < 1.5, "{what}: GPU parity p99 {p99}, mean {mean:.3}");
+    }
+
+    #[test]
+    fn library_lumetri_luts_survive_export_planning_and_match_cpu() {
+        use filmcraft_project::{ParamValue, ProjectLut, find_effect};
+        use filmcraft_render::gpufx::FxOp;
+        let (mut p, seq, sources) = project(false);
+        let p = Arc::make_mut(&mut p);
+        // Original synthetic .cube: a non-identity channel scale, parsed through the project library.
+        let mut text = String::from("LUT_3D_SIZE 2\n");
+        for b in 0..2 {
+            for g in 0..2 {
+                for r in 0..2 {
+                    text.push_str(&format!("{} {} {}\n", r as f32 * 0.8, g as f32 * 0.9, b));
+                }
+            }
+        }
+        p.luts.push(ProjectLut { id: "merge-test".into(), name: "Synthetic scale".into(), source_path: None, format: "cube".into(), text: text.into() });
+        let media = *sources.0.iter().find(|(_, s)| s.info().video.is_some()).unwrap().0;
+        let rate = filmcraft_time::FrameRate::FPS_24;
+        let mut clip = p.make_track_item(media, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+        let mut effect = find_effect("lumetri").unwrap().instance();
+        for (key, value) in [
+            ("input_lut", ParamValue::Text("lib:merge-test".into())),
+            ("look_lut", ParamValue::Text("lib:merge-test".into())),
+            ("curve_red", ParamValue::Curve(vec![[0.0, 0.0], [0.5, 0.4], [1.0, 1.0]])),
+            ("wheel_midtones_l", ParamValue::Float(5.0)),
+            ("hsl_on", ParamValue::Bool(true)),
+            ("hsl_temp", ParamValue::Float(10.0)),
+        ] {
+            effect.param_mut(key).unwrap().value = value;
+        }
+        clip.effects.push(effect);
+        p.sequence_mut(seq).unwrap().video_tracks[0].items.push(clip);
+        let opts = RenderOptions::default();
+        let plan = plan_frame(p, seq, Tick::ZERO, opts, &sources);
+        let FramePlan::Layers { layers, .. } = &plan else { panic!("SDR LUT export must remain layered") };
+        let fx = layers.first().unwrap().fx.as_ref().expect("Lumetri remains on the GPU");
+        assert!(fx.ops.iter().all(FxOp::gpu_ok));
+        let FxOp::Chain(chain) = &fx.ops[0] else { panic!("expanded SDR Lumetri") };
+        assert!(matches!(chain.first(), Some(FxOp::Lut { .. })), "library input LUT must not be dropped");
+        assert!(chain.iter().any(|op| matches!(op, FxOp::Grade(_))), "curves, wheels and look LUT");
+        assert!(chain.iter().any(|op| matches!(op, FxOp::Hsl { .. })), "HSL secondary");
+        if let Some(mut renderer) = ExportRenderer::new() {
+            let gpu = renderer.render(p, seq, Tick::ZERO, opts, &sources).expect("GPU LUT export");
+            let cpu = filmcraft_render::render_sequence(p, seq, Tick::ZERO, opts, &sources);
+            assert_parity(&cpu, &gpu, "library Lumetri LUT export");
+            assert!(renderer.render_texture(p, seq, Tick::ZERO, opts, &sources).is_some(), "native export accumulator");
+        } else {
+            eprintln!("SKIPPED (library Lumetri GPU pixels): no adapter; planner assertions passed");
+        }
+        // Interpretation is a separate source transform: log remains a CPU clip fallback.
+        let ItemKind::Media(media) = &mut p.item_mut(media).unwrap().kind else { panic!("media") };
+        media.interpret.color_space = Some(filmcraft_color::ColorSpace::SLog3SGamut3Cine);
+        let plan = plan_frame(p, seq, Tick::ZERO, opts, &sources);
+        let FramePlan::Layers { layers, .. } = plan else { panic!("clip fallback remains layered") };
+        assert!(layers.iter().all(|layer| layer.fx.is_none()));
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //! clip whose enabled standard effects all have a GPU implementation ([`crate::gpufx`]) carries
 //! them as a [`LayerFx`]: their parameters evaluated at the frame's time, run by the GPU on the
 //! clip's working image before Motion places it, in the CPU's order (effects → Motion → Opacity /
-//! blend). Anything the shaders don't cover yet — other standard effects, masks, adjustment
+//! blend). Anything the shaders don't cover yet — other standard effects, unsupported mask geometry, adjustment
 //! layers, nested sequences, transitions other than dissolves, dips and Push — is rendered on the CPU
 //! for that layer (or the whole frame) and handed over as a pre-composited image, so the GPU path
 //! is always exact with respect to the CPU reference.
@@ -166,12 +166,12 @@ fn simple_transition(id: &str) -> bool {
     matches!(id, "cross_dissolve" | "dip_to_black" | "dip_to_white")
 }
 
-/// The standard effects of a media clip if the GPU can draw it (any blend mode, no opacity masks,
-/// every enabled standard effect unmasked and with a GPU implementation; empty without effects or
+/// The standard effects of a media clip if the GPU can draw it (any blend mode,
+/// every enabled standard effect with a GPU implementation; empty without effects or
 /// with effects off). None: the clip is rendered on the CPU.
 fn gpu_chain<'a>(project: &Project, item: &'a TrackItem, opts: RenderOptions) -> Option<Vec<&'a filmcraft_project::EffectInstance>> {
     let is_media = project.item(item.item).is_some_and(|p| matches!(p.kind, ItemKind::Media(_) | ItemKind::Subclip { .. }));
-    if !is_media || item.has_opacity_masks() {
+    if !is_media {
         return None;
     }
     if !opts.effects {
@@ -182,8 +182,7 @@ fn gpu_chain<'a>(project: &Project, item: &'a TrackItem, opts: RenderOptions) ->
         if !e.enabled {
             continue;
         }
-        let masked = e.masks.iter().any(|m| m.mode != filmcraft_project::MaskMode::None);
-        if masked || !crate::gpufx::GPU_EFFECTS.contains(&e.effect.as_str()) {
+        if !crate::gpufx::GPU_EFFECTS.contains(&e.effect.as_str()) {
             return None;
         }
         chain.push(e);
@@ -423,7 +422,7 @@ fn push_item(
         let input = if crate::colorman::needs_management(pipe, cs, &frame) { crate::colorman::gpu_input(project, item.item, pipe, cs, &frame) } else { None };
         let plain =
             (input.is_some() || !crate::colorman::needs_management(pipe, cs, &frame)) && crate::interpolation_blend(item, t, src.info().frame_rate()).is_none();
-        if plain && !chain.is_empty() {
+        if plain && (!chain.is_empty() || item.has_opacity_masks()) {
             // GPU effect stage: the working image the CPU would decode (`base_layer`), the
             // effects evaluated for it, placed as `item_layer` places it
             let n = crate::decimation(frame.width as f32, size.0 as f32 * want);
@@ -441,8 +440,30 @@ fn push_item(
                 frame_rate: seq.settings.frame_rate.as_f64(),
                 working: seq.settings.color.working,
             };
-            let ops: Option<Vec<FxOp>> = chain.iter().map(|e| FxOp::eval(e, &cx, lw, lh).filter(FxOp::gpu_ok)).collect();
-            if let Some(ops) = ops {
+            let ops: Option<Vec<FxOp>> = chain
+                .iter()
+                .map(|e| {
+                    let op = FxOp::eval(e, &cx, lw, lh)?;
+                    let masks = crate::mask::prepare(&e.masks, mt, px_scale);
+                    let op = if masks.is_empty() { op } else { FxOp::Masked { op: Box::new(op), masks } };
+                    op.gpu_ok().then_some(op)
+                })
+                .collect();
+            if let Some(mut ops) = ops {
+                if let Some(e) = item.effect("opacity").filter(|e| e.enabled) {
+                    let masks = crate::mask::prepare(&e.masks, mt, px_scale);
+                    if !masks.is_empty() {
+                        ops.push(FxOp::OpacityMask { masks });
+                    }
+                }
+                if !ops.iter().all(FxOp::gpu_ok) {
+                    // Hostile or excessively complex geometry retains the exact CPU fallback.
+                    let tc = filmcraft_time::format_time(t, seq.settings.frame_rate, seq.settings.drop_frame, filmcraft_time::TimeDisplay::Timecode, 48_000);
+                    if let Some((img, op2, _)) = crate::item_layer(project, seq, item, t, opts, sources, &tc) {
+                        out.push(PlanLayer::new(cpu_frame(img), Affine::IDENTITY, op2 * extra_opacity, bl));
+                    }
+                    return;
+                }
                 let m = Affine::scale(opts.scale as f64, opts.scale as f64)
                     .then_apply(&motion)
                     .then_apply(&Affine::scale(1.0 / px_scale as f64, 1.0 / px_scale as f64));

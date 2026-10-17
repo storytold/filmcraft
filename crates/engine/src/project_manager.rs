@@ -226,6 +226,7 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
             seconds: secs,
             bytes,
             render_fps: 0.0,
+            gpu_render: filmcraft_export::GpuExportStats::default(),
             extra_files: Vec::new(),
         });
         if let Err(e) = &r {
