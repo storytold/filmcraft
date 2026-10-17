@@ -21,6 +21,8 @@
 //! - `ui.screenshot {path?, panel?}`: PNG of the window (or one panel)
 //! - `ui.resize {width, height}` / `ui.focus` / `app.quit`
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::Sender;
 
 use serde_json::{Value, json};
@@ -31,17 +33,143 @@ use crate::state::{Mode, PlaybackRes, ThumbnailMode, Tool};
 
 /// Prefix marking errors that may resolve after another frame.
 pub const RETRY: &str = "\u{1}";
+const MAX_CONTROL_CLICK_COUNT: u64 = 32;
+const MAX_CONTROL_DRAG_STEPS: u64 = 128;
+const MAX_CONTROL_TEXT_BYTES: usize = 16 * 1024;
 
 pub struct ControlRequest {
     pub method: String,
     pub params: Value,
     pub reply: Sender<Value>,
+    ticket: ControlTicket,
+}
+
+/// Shared lifecycle state for a request whose transport may time out before the UI responds.
+#[derive(Clone)]
+pub struct ControlTicket(Arc<AtomicU8>);
+
+/// Result of timing out while waiting for the UI thread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimeoutResult {
+    /// The request was still queued and has been cancelled before execution.
+    Cancelled,
+    /// The request has started, so it may have changed the project or UI.
+    OutcomeUnknown,
+    /// The reply completed concurrently with the timeout.
+    Completed,
+}
+
+const QUEUED: u8 = 0;
+const EXECUTING: u8 = 1;
+const CANCELLED: u8 = 2;
+const ABANDONED: u8 = 3;
+const COMPLETED: u8 = 4;
+
+impl ControlTicket {
+    pub fn begin(&self) -> bool {
+        self.0.compare_exchange(QUEUED, EXECUTING, Ordering::AcqRel, Ordering::Acquire).is_ok()
+    }
+
+    /// Return a retryable UI request to the queue unless its client timed out in the meantime.
+    pub fn requeue(&self) -> bool {
+        self.0.compare_exchange(EXECUTING, QUEUED, Ordering::AcqRel, Ordering::Acquire).is_ok()
+    }
+
+    pub fn complete(&self) {
+        let _ = self.0.compare_exchange(EXECUTING, COMPLETED, Ordering::AcqRel, Ordering::Acquire);
+    }
+
+    pub fn timeout(&self) -> TimeoutResult {
+        loop {
+            let state = self.0.load(Ordering::Acquire);
+            let (next, result) = match state {
+                QUEUED => (CANCELLED, TimeoutResult::Cancelled),
+                EXECUTING => (ABANDONED, TimeoutResult::OutcomeUnknown),
+                COMPLETED => return TimeoutResult::Completed,
+                CANCELLED => return TimeoutResult::Cancelled,
+                _ => return TimeoutResult::OutcomeUnknown,
+            };
+            if self.0.compare_exchange(state, next, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                return result;
+            }
+        }
+    }
 }
 
 impl ControlRequest {
     pub fn new(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<Value>) {
         let (tx, rx) = std::sync::mpsc::channel();
-        (Self { method: method.into(), params, reply: tx }, rx)
+        (Self { method: method.into(), params, reply: tx, ticket: ControlTicket(Arc::new(AtomicU8::new(QUEUED))) }, rx)
+    }
+
+    pub fn ticket(&self) -> ControlTicket {
+        self.ticket.clone()
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::{ControlRequest, TimeoutResult};
+    use serde_json::json;
+
+    #[test]
+    fn queued_timeout_cancels_before_the_ui_can_claim_request() {
+        let (request, _reply) = ControlRequest::new("engine.commands", json!({}));
+        let ticket = request.ticket();
+        assert_eq!(ticket.timeout(), TimeoutResult::Cancelled);
+        assert!(!ticket.begin());
+    }
+
+    #[test]
+    fn executing_timeout_is_unknown_and_cannot_be_retried() {
+        let (request, _reply) = ControlRequest::new("engine.execute", json!({}));
+        let ticket = request.ticket();
+        assert!(ticket.begin());
+        assert_eq!(ticket.timeout(), TimeoutResult::OutcomeUnknown);
+        assert!(!ticket.requeue());
+        assert_eq!(ticket.timeout(), TimeoutResult::OutcomeUnknown);
+    }
+
+    #[test]
+    fn completed_request_reports_race_to_transport_timeout() {
+        let (request, _reply) = ControlRequest::new("engine.commands", json!({}));
+        let ticket = request.ticket();
+        assert!(ticket.begin());
+        ticket.complete();
+        assert_eq!(ticket.timeout(), TimeoutResult::Completed);
+    }
+
+    #[test]
+    fn timeout_and_ui_claim_have_a_single_atomic_winner() {
+        use std::sync::{Arc, Barrier, mpsc};
+
+        let (request, _reply) = ControlRequest::new("engine.commands", json!({}));
+        let ticket = request.ticket();
+        let barrier = Arc::new(Barrier::new(3));
+        let (timeout_tx, timeout_rx) = mpsc::channel();
+        let (begin_tx, begin_rx) = mpsc::channel();
+
+        let timeout_ticket = ticket.clone();
+        let timeout_barrier = Arc::clone(&barrier);
+        let timeout_thread = std::thread::spawn(move || {
+            timeout_barrier.wait();
+            timeout_tx.send(timeout_ticket.timeout()).ok();
+        });
+
+        let begin_ticket = ticket;
+        let begin_barrier = Arc::clone(&barrier);
+        let begin_thread = std::thread::spawn(move || {
+            begin_barrier.wait();
+            begin_tx.send(begin_ticket.begin()).ok();
+        });
+
+        barrier.wait();
+        let timeout_result = timeout_rx.recv().ok();
+        let begin_result = begin_rx.recv().ok();
+        let _ = timeout_thread.join();
+        let _ = begin_thread.join();
+
+        assert!(matches!((timeout_result, begin_result), (Some(TimeoutResult::Cancelled), Some(false)) | (Some(TimeoutResult::OutcomeUnknown), Some(true))));
     }
 }
 
@@ -321,6 +449,14 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                 Err(e) => return err(e),
             };
             let m = modifiers(p);
+            let count = if req.method == "ui.click" {
+                match bounded_input_count(p.get("count").and_then(Value::as_u64).unwrap_or(1), MAX_CONTROL_CLICK_COUNT) {
+                    Ok(count) => count,
+                    Err(()) => return err("`count` must be 32 or less"),
+                }
+            } else {
+                0
+            };
             app.synthetic.push(egui::Event::ModifiersChanged(m));
             app.synthetic.push(egui::Event::PointerMoved(pos));
             if req.method == "ui.click" {
@@ -329,7 +465,6 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                     Some("middle") => egui::PointerButton::Middle,
                     _ => egui::PointerButton::Primary,
                 };
-                let count = p.get("count").and_then(Value::as_u64).unwrap_or(1);
                 for _ in 0..count {
                     app.synthetic.push(egui::Event::PointerButton { pos, button, pressed: true, modifiers: m });
                     app.synthetic.push(egui::Event::PointerButton { pos, button, pressed: false, modifiers: m });
@@ -346,6 +481,10 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                 (Err(e), _) | (_, Err(e)) => return err(e),
             };
             let steps = p.get("steps").and_then(Value::as_u64).unwrap_or(12).max(2);
+            let steps = match bounded_input_count(steps, MAX_CONTROL_DRAG_STEPS) {
+                Ok(steps) => steps,
+                Err(()) => return err("`steps` must be 128 or less"),
+            };
             let m = modifiers(p);
             app.synthetic.push(egui::Event::ModifiersChanged(m));
             app.synthetic.push(egui::Event::PointerMoved(a));
@@ -394,6 +533,9 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
         }
         "ui.type" => {
             let Some(text) = s("text") else { return err("missing `text`") };
+            if !control_text_within_limit(text) {
+                return err("`text` must be 16384 bytes or less");
+            }
             app.synthetic.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
             app.synthetic.push(egui::Event::Text(text.to_string()));
             app.synthetic.push(egui::Event::Key { key: egui::Key::F35, physical_key: None, pressed: false, repeat: false, modifiers: Default::default() });
@@ -468,6 +610,14 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
         }
         m => err(format!("unknown method `{m}`")),
     }
+}
+
+fn bounded_input_count(value: u64, max: u64) -> Result<u64, ()> {
+    if value <= max { Ok(value) } else { Err(()) }
+}
+
+fn control_text_within_limit(text: &str) -> bool {
+    text.len() <= MAX_CONTROL_TEXT_BYTES
 }
 
 /// Merge `patch` into `v` (objects recursively; other values replace).
@@ -627,5 +777,26 @@ mod base64_tests {
         for (i, o) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg=="), ("fooba", "Zm9vYmE="), ("foobar", "Zm9vYmFy")] {
             assert_eq!(super::base64(i.as_bytes()), o);
         }
+    }
+}
+
+#[cfg(test)]
+mod input_bound_tests {
+    use super::{MAX_CONTROL_CLICK_COUNT, MAX_CONTROL_DRAG_STEPS, MAX_CONTROL_TEXT_BYTES, bounded_input_count, control_text_within_limit};
+
+    #[test]
+    fn click_and_drag_event_counts_are_bounded() {
+        assert!(bounded_input_count(MAX_CONTROL_CLICK_COUNT, MAX_CONTROL_CLICK_COUNT).is_ok());
+        assert!(bounded_input_count(MAX_CONTROL_CLICK_COUNT + 1, MAX_CONTROL_CLICK_COUNT).is_err());
+        assert!(bounded_input_count(MAX_CONTROL_DRAG_STEPS, MAX_CONTROL_DRAG_STEPS).is_ok());
+        assert!(bounded_input_count(MAX_CONTROL_DRAG_STEPS + 1, MAX_CONTROL_DRAG_STEPS).is_err());
+    }
+
+    #[test]
+    fn typed_text_is_bounded_by_utf8_bytes() {
+        let within = "a".repeat(MAX_CONTROL_TEXT_BYTES);
+        let beyond = "a".repeat(MAX_CONTROL_TEXT_BYTES + 1);
+        assert!(control_text_within_limit(&within));
+        assert!(!control_text_within_limit(&beyond));
     }
 }

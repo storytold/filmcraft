@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
-use filmcraft_ui_egui::ControlRequest;
+use filmcraft_ui_egui::{ControlRequest, TimeoutResult};
 use serde_json::{Value, json};
 
 /// Longest accepted request line (bytes, without the newline). Requests are small JSON objects;
@@ -22,7 +22,7 @@ pub const MAX_LINE: usize = 4 * 1024 * 1024;
 /// Connections served at once; further ones get an error line and are closed.
 pub const MAX_CONNECTIONS: usize = 16;
 
-pub fn start(port: u16, ctx: egui::Context) -> Receiver<ControlRequest> {
+pub fn start(port: u16, wake: Arc<dyn Fn() -> Result<(), String> + Send + Sync>) -> Receiver<ControlRequest> {
     let (tx, rx) = channel::<ControlRequest>();
     let listener = match TcpListener::bind(("127.0.0.1", port)) {
         Ok(l) => l,
@@ -32,11 +32,11 @@ pub fn start(port: u16, ctx: egui::Context) -> Receiver<ControlRequest> {
         }
     };
     eprintln!("filmcraft: control server listening on 127.0.0.1:{port}");
-    std::thread::spawn(move || accept_loop(listener, tx, ctx));
+    std::thread::spawn(move || accept_loop(listener, tx, wake));
     rx
 }
 
-fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Context) {
+fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, wake: Arc<dyn Fn() -> Result<(), String> + Send + Sync>) {
     let open = Arc::new(AtomicUsize::new(0));
     for mut stream in listener.incoming().flatten() {
         if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
@@ -45,13 +45,13 @@ fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Con
             continue;
         }
         let tx = tx.clone();
-        let ctx = ctx.clone();
+        let wake = Arc::clone(&wake);
         // The slot is given back when the guard drops: after `serve` returns, if it panics, or if
         // the thread can't be started (the closure, and with it the guard, is dropped).
         let slot = Slot(Arc::clone(&open));
         let spawned = std::thread::Builder::new().name("control-conn".into()).spawn(move || {
             let _slot = slot;
-            serve(stream, &tx, &ctx);
+            serve(stream, &tx, &wake);
         });
         if let Err(e) = spawned {
             eprintln!("filmcraft: control server could not start a connection thread: {e}");
@@ -68,14 +68,52 @@ impl Drop for Slot {
     }
 }
 
-fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, ctx: &egui::Context) {
+fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, wake: &(dyn Fn() -> Result<(), String> + Send + Sync)) {
     let Ok(read) = stream.try_clone() else { return };
     serve_lines(read, stream, |method, params| {
         let (req, rrx) = ControlRequest::new(method, params);
+        let ticket = req.ticket();
         tx.send(req).ok()?;
-        ctx.request_repaint();
-        Some(rrx.recv_timeout(Duration::from_secs(60)).unwrap_or_else(|_| json!({"ok": false, "error": "timeout"})))
+        if let Err(e) = wake() {
+            let status = ticket.timeout();
+            return Some(match status {
+                TimeoutResult::Cancelled => json!({"ok": false, "error": format!("control wake failed; request was cancelled before execution: {e}")}),
+                TimeoutResult::OutcomeUnknown => rrx.try_recv().unwrap_or_else(|_| {
+                    json!({
+                        "ok": false,
+                        "error": "control wake failed while request was executing; outcome unknown, check project/UI state before retrying"
+                    })
+                }),
+                TimeoutResult::Completed => rrx.try_recv().unwrap_or_else(|_| json!({"ok": false, "error": "request completed but its reply was unavailable"})),
+            });
+        }
+        Some(match rrx.recv_timeout(Duration::from_secs(60)) {
+            Ok(reply) => reply,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => stopped_response(ticket.timeout(), &rrx),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => timeout_response(ticket.timeout(), &rrx),
+        })
     });
+}
+
+fn timeout_response(status: TimeoutResult, reply: &std::sync::mpsc::Receiver<Value>) -> Value {
+    match status {
+        TimeoutResult::Cancelled => json!({"ok": false, "error": "request timed out before execution and was cancelled"}),
+        TimeoutResult::OutcomeUnknown => reply.try_recv().unwrap_or_else(|_| {
+            json!({
+                "ok": false,
+                "error": "request timed out while executing; outcome unknown, check project/UI state before retrying"
+            })
+        }),
+        TimeoutResult::Completed => reply.try_recv().unwrap_or_else(|_| json!({"ok": false, "error": "request completed but its reply was unavailable"})),
+    }
+}
+
+fn stopped_response(status: TimeoutResult, reply: &std::sync::mpsc::Receiver<Value>) -> Value {
+    match status {
+        TimeoutResult::Cancelled => json!({"ok": false, "error": "application stopped before request execution"}),
+        TimeoutResult::OutcomeUnknown => json!({"ok": false, "error": "application stopped while request was executing; outcome unknown"}),
+        TimeoutResult::Completed => reply.try_recv().unwrap_or_else(|_| json!({"ok": false, "error": "application stopped before the reply was delivered"})),
+    }
 }
 
 /// One parsed line.
@@ -275,7 +313,7 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
         let (tx, _rx) = channel::<ControlRequest>();
-        std::thread::spawn(move || accept_loop(listener, tx, egui::Context::default()));
+        std::thread::spawn(move || accept_loop(listener, tx, Arc::new(|| Ok(()))));
         // Idle connections are accepted in order and held open.
         let held: Vec<TcpStream> = (0..16).map(|_| TcpStream::connect(addr).unwrap()).collect();
         let mut extra = TcpStream::connect(addr).unwrap();
