@@ -773,3 +773,17 @@ pub fn std_home_dir() -> Option<String> {
     let vars = if cfg!(windows) { ["USERPROFILE", "HOME"] } else { ["HOME", "USERPROFILE"] };
     vars.iter().find_map(|v| std::env::var(v).ok().filter(|h| !h.is_empty()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::kind_of;
+
+    #[test]
+    fn y4m_and_ale_are_not_offered_as_importable() {
+        assert_eq!(kind_of("clip.y4m"), None);
+        assert_eq!(kind_of("cut.ale"), None);
+        assert_eq!(kind_of("clip.mp4"), Some("video"));
+        assert_eq!(kind_of("cut.edl"), Some("project"));
+        assert_eq!(kind_of("tone.aac"), Some("audio"));
+    }
+}
