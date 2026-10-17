@@ -1752,6 +1752,10 @@ fn snap_to(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exc
     }
     let mut cands: Vec<Tick> = Vec::with_capacity(64);
     for tr in seq.all_tracks() {
+        // A video layer hidden with its eye is out of the way: its clips are not snap targets (#2243).
+        if tr.kind == TrackKind::Video && !tr.enabled {
+            continue;
+        }
         for it in &tr.items {
             if exclude.contains(&it.id) {
                 continue;
@@ -3126,6 +3130,39 @@ mod trim_preview_tests {
                 _ => Err(filmcraft_media::MediaError::NoStream("audio")),
             }
         }
+    }
+
+    /// #2243: the clips of a layer hidden with its eye are not snap targets, so they can be placed freely.
+    #[test]
+    fn clips_on_a_hidden_video_layer_are_not_snap_targets() {
+        let (mut app, mut seq) = demo();
+        app.session.state.snapping = true;
+        let layout = Layout {
+            content: Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 500.0)),
+            ruler: Rect::from_min_max(pos2(0.0, -20.0), pos2(800.0, 0.0)),
+            rows: Vec::new(),
+            pps: 100.0,
+            scroll: 0.0,
+            split_y: 150.0,
+        };
+        let Some(ti) = seq.video_tracks.iter().position(|t| t.items.iter().any(|i| i.start > Tick::ZERO)) else { panic!("demo has a video clip not at zero") };
+        let edge = seq.video_tracks[ti].items.iter().map(|i| i.start).filter(|s| *s > Tick::ZERO).min().expect("a clip start");
+        let near = edge + Tick(TICKS_PER_SECOND / 100);
+        // other tracks may have an edge here too: take the video clips of this track only
+        for (i, tr) in seq.video_tracks.iter_mut().enumerate() {
+            if i != ti {
+                tr.items.clear();
+            }
+        }
+        seq.audio_tracks.iter_mut().for_each(|t| t.items.clear());
+        seq.markers.clear();
+        seq.mark_in = None;
+        seq.mark_out = None;
+        // with the layer shown, the dragged time snaps to the clip's edge
+        assert_eq!(snap_to(&mut app, &seq, &layout, near, &[], false), edge);
+        // hidden: nothing to snap to, the time stays where it is
+        seq.video_tracks[ti].enabled = false;
+        assert_eq!(snap_to(&mut app, &seq, &layout, near, &[], false), near);
     }
 
     #[test]
