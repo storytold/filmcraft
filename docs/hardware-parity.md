@@ -1,6 +1,6 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: hardware decode / encode per platform and codec, GPU effects, devices; re-measured after NVDEC #549 and GPU export #421) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-17 · **Last updated:** 2026-10-17 · **Change:** major (Windows H.264 / HEVC hardware export through Media Foundation: vendor-neutral, so Intel / AMD / Qualcomm GPUs encode instead of falling back to the CPU; H.265 offered on Linux through NVENC) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Each hardware feature Premiere uses, per platform, against ours. Implementation detail lives in
 [`crates/platform/README.md`](../crates/platform/README.md) (decode / encode backends, the one
@@ -34,16 +34,20 @@ and re-uploaded to wgpu (**no zero-copy** yet), which Premiere avoids.
 
 | Codec | Premiere macOS | **Ours macOS** | Premiere Windows | **Ours Windows** | **Ours Linux** |
 |---|---|---|---|---|---|
-| H.264 8-bit | yes | **yes** (VideoToolbox, opt-in, no B-frames) | Intel QSV, NVENC, AMD | **NVENC only** (opt-in) | **NVENC only** |
+| H.264 8-bit | yes | **yes** (VideoToolbox, opt-in, no B-frames) | Intel QSV, NVENC, AMD | **NVENC, Media Foundation** (opt-in) | **NVENC only** |
 | H.264 10-bit / 4:2:2 | yes (Apple silicon) | no | Intel | no | no |
-| HEVC Main 8-bit | yes | **yes** (hardware-only format) | QSV, NVENC, AMD | **NVENC only** | no |
-| HEVC Main 10 / HDR (PQ, HLG) | yes | **no** (tone-mapped to 8-bit SDR) | yes | **NVENC yes** (HDR10 SEI, `mdcv` / `clli`) | no |
+| HEVC Main 8-bit | yes | **yes** (hardware-only format) | QSV, NVENC, AMD | **NVENC, Media Foundation** | **NVENC** |
+| HEVC Main 10 / HDR (PQ, HLG) | yes | **no** (tone-mapped to 8-bit SDR) | yes | **NVENC yes** (HDR10 SEI, `mdcv` / `clli`); Media Foundation 8-bit only | no |
 | ProRes | Apple silicon | software only | software | software | software |
-| AV1 | — | no | via plug-ins / newer GPUs | no | no |
+| AV1 | — | no | via plug-ins / newer GPUs | no (encoder MFTs exist; no plumbing) | no |
 
 Measured: VideoToolbox H.264 1080p25 encode 200 fps on M1; a 9:29 timeline exported in 311 s
 against 793 s with our software encoder (SSIM 0.990). NVENC HEVC round trip 48.9 dB luma PSNR
-(8-bit), 71.1 dB (10-bit) on an RTX 5060.
+(8-bit), 71.1 dB (10-bit) on an RTX 5060. Media Foundation H.264 / HEVC encode verified on a
+Snapdragon X (Adreno X1-85, Windows 11 ARM64) and on an AMD Radeon RX 6900 XT: H.264 profile
+selection (Baseline / Main / High) is honoured on both, and an export comes out *smaller* than the
+software encoder at the same target bit rate. Intel QSV and AMD AMF are reached through the same
+Media Foundation path rather than a backend of their own.
 
 ## GPU rendering
 
