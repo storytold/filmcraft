@@ -383,7 +383,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     let wresp = ui.interact(wr, egui::Id::new((prefix, "wrench")), Sense::click());
     icons::paint(ui.painter(), wr.shrink(4.0), Icon::Wrench, if wresp.hovered() { t.tab_text_active } else { t.icon });
     app.auto.add(&format!("{prefix}.settings"), wr, "Settings");
-    egui::Popup::menu(&wresp).show(|ui| {
+    // stays open while options are toggled; a choice (a display mode, a resolution, an action) or a
+    // click outside closes it
+    egui::Popup::menu(&wresp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         ui.set_min_width(240.0);
         monitor_view::wrench_items(app, ui, which);
         let mv = monitor_view::view_mut(app, which);
@@ -425,6 +427,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
                 for (k, label) in [("auto", tl!("Automatic")), ("2x2", "2 × 2"), ("3x3", "3 × 3"), ("4x4", "4 × 4")] {
                     if ui.selectable_label(v.layout_name() == k, label).clicked() {
                         let _ = app.session.execute("multicam.gridLayout", json!({"layout": k}));
+                        ui.close();
                     }
                 }
             });

@@ -760,6 +760,11 @@ pub fn wrench_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which) {
         if clicked && let Some(Err(e)) = route(app, &format!("view.{key}"), &json!({"monitor": pfx})) {
             app.ui.status = e;
         }
+        // the menu stays open for the toggles; a display mode, a resolution and Clear Guides are
+        // choices that close it
+        if clicked && (key.starts_with("display.") || key.contains("Res.") || key == "clearGuides") {
+            ui.close();
+        }
     }
 }
 

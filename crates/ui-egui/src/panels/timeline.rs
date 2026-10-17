@@ -1476,7 +1476,8 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
             };
         }
         if key == "settings" {
-            egui::Popup::menu(&resp).show(|ui| {
+            // stays open while options are toggled: only a click outside it (or an action) closes it
+            egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
                 let c = ui.checkbox(&mut app.ui.timeline.show_thumbnails, tl!("Show Video Thumbnails"));
                 app.auto.add("timeline.settings.showThumbnails", c.rect, "Show Video Thumbnails");
                 let on = app.ui.timeline.show_thumbnails;
@@ -1503,10 +1504,12 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
                 if ui.button(tl!("Expand All Tracks")).clicked() {
                     app.ui.timeline.video_track_h = 64.0;
                     app.ui.timeline.audio_track_h = 64.0;
+                    ui.close();
                 }
                 if ui.button(tl!("Minimize All Tracks")).clicked() {
                     app.ui.timeline.video_track_h = 26.0;
                     app.ui.timeline.audio_track_h = 26.0;
+                    ui.close();
                 }
             });
         }
