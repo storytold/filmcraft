@@ -14,6 +14,9 @@
 //! | frame worker threads | cooperative frame queue pumped between UI frames (`FrameServer::pump`) |
 //! | TCP control channel / MCP | `window.filmcraft` JavaScript API ([`api`]) |
 //!
+//! With `?host=parent` inside an `<iframe>`, a same-origin parent page (such as a Nextcloud app)
+//! sends the files to open and stores what FilmCraft saves ([`host`]).
+//!
 //! Everything here is `wasm32`-only; on other targets the crate is empty.
 #![cfg(target_arch = "wasm32")]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
@@ -22,6 +25,7 @@ pub mod api;
 pub mod audio;
 pub mod download_pacing;
 pub mod fs;
+pub mod host;
 pub mod import;
 pub mod opfs;
 pub mod recovery;
@@ -113,6 +117,7 @@ impl eframe::App for WebApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.app.ui(ui, frame);
+        host::report_dirty(self.app.session.is_dirty());
     }
 }
 
@@ -136,15 +141,17 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
     set_info("frameWorkers", json!("cooperative"));
     set_info("opfs", json!(opfs::available()));
 
+    // Embedded (`host`), the page opens what the parent sends: no demo, no recovery snapshot.
+    let embedded = host::embedded();
     // Media kept in OPFS by earlier sessions come back under their paths (recovery).
-    let restored = if opfs::available() && !query_flag("fresh") { recovery::restore_media().await } else { 0 };
-    let recovered = if query_flag("fresh") || query_flag("norecover") { None } else { recovery::load_snapshot().await };
+    let restored = if opfs::available() && !query_flag("fresh") && !embedded { recovery::restore_media().await } else { 0 };
+    let recovered = if query_flag("fresh") || query_flag("norecover") || embedded { None } else { recovery::load_snapshot().await };
     webcodecs::probe().await;
 
     api::install()?;
     import::install_drop_handlers()?;
 
-    let demo = !query_flag("empty");
+    let demo = !query_flag("empty") && !embedded;
     let mut web_options = eframe::WebOptions::default();
     // `?webgl`: WebGL2 only. The page reloads with it when starting on WebGPU fails (an adapter
     // whose device can't be created, a driver the browser rejects…); see `index.html`.
@@ -154,7 +161,7 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
         c.instance_descriptor.backends = eframe::wgpu::Backends::GL;
     }
     let runner = eframe::WebRunner::new();
-    runner
+    let started = runner
         .start(
             canvas,
             web_options,
@@ -214,10 +221,15 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 }
                 set_info("audio", json!(audio.is_some()));
                 set_info("restoredMedia", json!(restored));
+                set_info("embedded", json!(embedded && host::start()));
                 Ok(Box::new(WebApp { app, audio, autosave: recovery::Autosave::default() }))
             }),
         )
-        .await?;
+        .await;
+    if let Err(e) = started {
+        host::failed(&format!("{e:?}"));
+        return Err(e);
+    }
     set_info("startupMs", json!(t0.elapsed().as_secs_f64() * 1000.0));
     // keep the runner alive for the page's lifetime
     std::mem::forget(runner);
