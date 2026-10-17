@@ -255,6 +255,8 @@ cargo run --release -p filmcraft-cli -- commands           # list every engine c
 cargo run --release -p filmcraft-cli -- mcp                # MCP server (headless)
 ```
 
+Native builds also offer **繁體中文（台灣） (Traditional Chinese, Taiwan)** under **Edit > Language** or **Settings > General > Interface Language**. The choice is saved for the next launch and can follow your system locale. A supporting bundled or installed font is required.
+
 Japanese text in the interface and in titles comes from [craft-fonts](https://github.com/storytold/craft-fonts), an optional build input (release builds always include it; without it FilmCraft uses its own and the system's fonts):
 
 ```sh
