@@ -317,7 +317,7 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             if c.clicked() {
                 close = true;
             }
-            let o = ui.add(egui::Button::new(RichText::new(tl!("OK")).color(Color32::WHITE)).fill(accent));
+            let o = ui.add(egui::Button::new(RichText::new(tl!("OK")).color(app.tokens.on_accent())).fill(accent));
             elems.push(("voiceover.ok".into(), o.rect, "OK".into()));
             if o.clicked() {
                 apply = true;

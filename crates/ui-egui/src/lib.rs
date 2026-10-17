@@ -537,10 +537,11 @@ impl FilmcraftApp {
         let workspaces =
             session.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| dock::WorkspacePrefs::load(&d.join(dock::WORKSPACES_FILE))).unwrap_or_default();
         let language = i18n::Language::parse(&session.prefs.general.interface_language).unwrap_or_default();
+        let initial_theme = ThemeKind::from_pref(session.prefs.appearance.shown_theme(None));
         Self {
             session,
             ui: UiState { language, ..UiState::default() },
-            tokens: Tokens::for_kind(ThemeKind::Dark),
+            tokens: Tokens::for_kind(initial_theme),
             frames,
             playback: Playback { speed: 1.0, ..Default::default() },
             source_playback: Default::default(),

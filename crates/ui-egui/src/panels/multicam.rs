@@ -205,7 +205,7 @@ pub fn show_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 if r.clicked() {
                     action = Some("cancel");
                 }
-                let r = ui.add(egui::Button::new(RichText::new(tl!("OK")).color(Color32::WHITE)).fill(accent));
+                let r = ui.add(egui::Button::new(RichText::new(tl!("OK")).color(app.tokens.on_accent())).fill(accent));
                 push(&mut elems, format!("{pre}.ok"), &r, "OK");
                 if r.clicked() {
                     action = Some("ok");
@@ -491,7 +491,7 @@ pub fn show_edit_cameras(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 if r.clicked() {
                     action = Some("cancel");
                 }
-                let r = ui.add(egui::Button::new(RichText::new(tl!("OK")).color(Color32::WHITE)).fill(tokens.accent));
+                let r = ui.add(egui::Button::new(RichText::new(tl!("OK")).color(tokens.on_accent())).fill(tokens.accent));
                 push(&mut elems, "editCameras.ok", &r, "OK");
                 if r.clicked() {
                     action = Some("ok");

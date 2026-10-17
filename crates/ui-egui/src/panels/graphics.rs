@@ -521,7 +521,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     let t = app.tokens;
     let views = visible_layers(app, pic, frame);
     let tool = app.ui.tool;
-    let accent = t.accent;
+    let accent = t.editing_accent();
     let painter = ui.painter().with_clip_rect(pic.expand(12.0));
     for v in &views {
         let q = v.quad();

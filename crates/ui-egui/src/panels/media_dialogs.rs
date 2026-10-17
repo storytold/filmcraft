@@ -286,7 +286,7 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         action = Some(id);
                     }
                 }
-                let r = ui.add_enabled(d.candidate.is_some(), egui::Button::new(RichText::new(tl!("Link")).color(Color32::WHITE)).fill(accent));
+                let r = ui.add_enabled(d.candidate.is_some(), egui::Button::new(RichText::new(tl!("Link")).color(app.tokens.on_accent())).fill(accent));
                 push(&mut elems, "linkMedia.link", &r, "Link");
                 if r.clicked() {
                     action = Some("link");
@@ -447,7 +447,7 @@ fn create_proxies(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 let r = ui.button(tl!("Cancel"));
                 push(&mut elems, "proxies.cancel", &r, "Cancel");
                 keep &= !r.clicked();
-                let r = ui.add(egui::Button::new(RichText::new(tl!("OK")).color(Color32::WHITE)).fill(app.tokens.accent));
+                let r = ui.add(egui::Button::new(RichText::new(tl!("OK")).color(app.tokens.on_accent())).fill(app.tokens.accent));
                 push(&mut elems, "proxies.ok", &r, "OK");
                 ok = r.clicked();
             });
@@ -581,7 +581,7 @@ fn project_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 keep &= !r.clicked();
                 let r = ui.add_enabled(
                     !d.destination.is_empty() && !d.sequences.is_empty(),
-                    egui::Button::new(RichText::new(tl!("OK")).color(Color32::WHITE)).fill(app.tokens.accent),
+                    egui::Button::new(RichText::new(tl!("OK")).color(app.tokens.on_accent())).fill(app.tokens.accent),
                 );
                 push(&mut elems, "pm.ok", &r, "OK");
                 ok = r.clicked();

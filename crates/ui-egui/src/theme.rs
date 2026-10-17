@@ -1,19 +1,22 @@
 //! Design tokens. Every widget reads colours/sizes from [`Tokens`] so themes apply everywhere.
 //!
-//! The default theme follows the look of Premiere Pro's current dark UI (values measured from
-//! black-box screenshots, see `plan/premiere/02-ui-ux.md`); fonts are Inter + JetBrains Mono (OFL).
+//! Darkest retains the Premiere-style palette measured from black-box screenshots; standard
+//! Dark uses the ArtCraft suite chrome palette. Fonts are Inter + JetBrains Mono (OFL).
 
 use std::sync::Arc;
 
+use craft_ui::theme::SuitePalette;
 use egui::{Color32, FontData, FontDefinitions, FontFamily, FontId, Stroke, TextStyle, Visuals};
 use serde::{Deserialize, Serialize};
 
+const SUITE_DARK: SuitePalette = SuitePalette::ARTCRAFT_DARK;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThemeKind {
-    /// Premiere-style darkest (default).
-    #[default]
+    /// Premiere-style Darkest, retained as a separate preset.
     Dark,
-    /// Slightly lighter grey panels (Premiere's brightness slider mid position).
+    /// The standard Dark setting shown in Settings ▸ Appearance.
+    #[default]
     Medium,
     Light,
 }
@@ -36,8 +39,8 @@ impl ThemeKind {
     }
     pub fn from_name(s: &str) -> Option<ThemeKind> {
         match s.to_ascii_lowercase().as_str() {
-            "dark" | "darkest" => Some(ThemeKind::Dark),
-            "medium" | "grey" | "gray" => Some(ThemeKind::Medium),
+            "darkest" => Some(ThemeKind::Dark),
+            "dark" | "medium" | "grey" | "gray" => Some(ThemeKind::Medium),
             "light" => Some(ThemeKind::Light),
             _ => None,
         }
@@ -150,6 +153,25 @@ pub struct Tokens {
 }
 
 impl Tokens {
+    /// Accent for canvas and timeline editing marks, kept separate from suite UI chrome.
+    pub fn editing_accent(&self) -> Color32 {
+        if self.kind == ThemeKind::Medium && self.accent == SUITE_DARK.accent { Color32::from_rgb(0x2f, 0x6b, 0xdf) } else { self.accent }
+    }
+
+    /// Existing keyframe and curve highlight, separate from shared UI hot text.
+    pub fn editing_hot_text(&self) -> Color32 {
+        if self.kind == ThemeKind::Medium && self.accent == SUITE_DARK.accent && self.hot_text == SUITE_DARK.accent_hover {
+            Color32::from_rgb(0x40, 0x96, 0xf3)
+        } else {
+            self.hot_text
+        }
+    }
+
+    /// Foreground for a filled accent control in the standard dark palette.
+    pub fn on_accent(&self) -> Color32 {
+        if self.kind == ThemeKind::Medium && self.accent == SUITE_DARK.accent { SUITE_DARK.on_accent } else { Color32::WHITE }
+    }
+
     pub fn for_kind(kind: ThemeKind) -> Self {
         // Measured from Premiere 26 "Darkest" (plan/premiere/02-ui-ux.md §1).
         let dark = Tokens {
@@ -244,19 +266,41 @@ impl Tokens {
         match kind {
             ThemeKind::Dark => dark,
             ThemeKind::Medium => Tokens {
-                app_bg: Color32::from_rgb(20, 20, 20),
-                header_bg: Color32::from_rgb(0x32, 0x32, 0x32),
-                panel_bg: Color32::from_rgb(0x32, 0x32, 0x32),
-                tab_bg: Color32::from_rgb(0x32, 0x32, 0x32),
-                field_bg: Color32::from_rgb(0x22, 0x22, 0x22),
-                tl_bg: Color32::from_rgb(0x32, 0x32, 0x32),
-                tl_track_bg: Color32::from_rgb(0x32, 0x32, 0x32),
-                tl_track_bg_alt: Color32::from_rgb(0x32, 0x32, 0x32),
-                tl_header_bg: Color32::from_rgb(0x32, 0x32, 0x32),
-                tl_ruler_bg: Color32::from_rgb(0x32, 0x32, 0x32),
-                monitor_bg: Color32::from_rgb(0x32, 0x32, 0x32),
-                row_alt: Color32::from_rgb(50, 50, 50),
-                hover: Color32::from_rgb(64, 64, 64),
+                // The visible "Dark" choice uses ArtCraft chrome; Darkest keeps its own palette.
+                // Media, meters and plot roles remain local.
+                app_bg: SUITE_DARK.window,
+                header_bg: SUITE_DARK.chrome,
+                panel_bg: SUITE_DARK.panel,
+                tab_bg: SUITE_DARK.panel,
+                tab_text: SUITE_DARK.text_secondary,
+                tab_text_active: SUITE_DARK.text_strong,
+                focus: SUITE_DARK.focus,
+                accent: SUITE_DARK.accent,
+                accent_hover: SUITE_DARK.accent_hover,
+                text: SUITE_DARK.text,
+                text_dim: SUITE_DARK.text_secondary,
+                text_faint: SUITE_DARK.text_disabled,
+                icon: SUITE_DARK.text_secondary,
+                icon_active: SUITE_DARK.text_strong,
+                hover: SUITE_DARK.hover,
+                pressed: SUITE_DARK.pressed,
+                field_bg: SUITE_DARK.input,
+                field_border: SUITE_DARK.border,
+                separator: SUITE_DARK.border,
+                row_alt: SUITE_DARK.raised,
+                row_selected: SUITE_DARK.selection,
+                hot_text: SUITE_DARK.accent_hover,
+                pill_active_bg: SUITE_DARK.selection,
+                control_surface: SUITE_DARK.raised,
+                control_well: SUITE_DARK.input,
+                control_border: SUITE_DARK.border,
+                button_hover: SUITE_DARK.hover,
+                button_border: SUITE_DARK.border,
+                tl_bg: SUITE_DARK.panel,
+                tl_track_bg: SUITE_DARK.raised,
+                tl_track_bg_alt: SUITE_DARK.panel,
+                tl_header_bg: SUITE_DARK.panel,
+                tl_ruler_bg: SUITE_DARK.panel,
                 ..dark
             },
             ThemeKind::Light => Tokens {
@@ -339,10 +383,14 @@ impl Tokens {
     pub fn with_appearance(mut self, highlight: Option<[u8; 3]>, accessible_contrast: bool) -> Self {
         if let Some([r, g, b]) = highlight {
             let c = Color32::from_rgb(r, g, b);
-            // A highlight of the user's own also colours the theme's other blues: the same hue, as
-            // much more or less saturated and bright as each of them is than the theme's highlight.
-            // The theme's own highlight leaves them exactly as designed.
-            if c != self.accent {
+            // The saved legacy default follows each preset. In standard Dark, it maps to the
+            // suite accent; in Darkest and Light it already matches those presets' own accent.
+            // A user-selected color, including the suite blue on an alternate preset, overrides.
+            let legacy_default = Color32::from_rgb(0x2f, 0x6b, 0xdf);
+            let theme_default = c == self.accent || (self.kind == ThemeKind::Medium && c == legacy_default);
+            if !theme_default {
+                // A highlight of the user's own also colours the theme's other blues: the same hue,
+                // as much more or less saturated and bright as each is than the theme's highlight.
                 let tint = |s: f32, v: f32| {
                     let mut h = egui::ecolor::HsvaGamma::from(c);
                     h.s = (h.s * s).clamp(0.0, 1.0);
@@ -354,10 +402,10 @@ impl Tokens {
                 self.timecode = tint(0.98, 1.09);
                 self.hot_text = self.timecode;
                 self.track_target = tint(1.0, 0.865);
+                let lift = |v: u8| v.saturating_add(16);
+                self.accent = c;
+                self.accent_hover = Color32::from_rgb(lift(r), lift(g), lift(b));
             }
-            let lift = |v: u8| v.saturating_add(16);
-            self.accent = c;
-            self.accent_hover = Color32::from_rgb(lift(r), lift(g), lift(b));
         }
         if accessible_contrast {
             if self.kind == ThemeKind::Light {
@@ -468,8 +516,11 @@ pub fn apply_visuals(ctx: &egui::Context, t: &Tokens) {
     v.extreme_bg_color = t.field_bg;
     v.faint_bg_color = t.row_alt;
     v.override_text_color = Some(t.text);
-    v.selection.bg_fill = t.accent;
-    v.selection.stroke = Stroke::new(1.0, Color32::WHITE);
+    // The standard Dark preset uses a subdued selection row; an explicitly chosen highlight
+    // keeps its established selection behavior.
+    let standard_dark_accent = t.kind == ThemeKind::Medium && t.accent == SUITE_DARK.accent;
+    v.selection.bg_fill = if standard_dark_accent { t.row_selected } else { t.accent };
+    v.selection.stroke = Stroke::new(1.0, if standard_dark_accent { t.text } else { Color32::WHITE });
     v.hyperlink_color = t.accent;
     v.window_stroke = Stroke::new(1.0, t.field_border);
     v.window_corner_radius = egui::CornerRadius::same(6);
@@ -515,6 +566,74 @@ pub fn apply_visuals(ctx: &egui::Context, t: &Tokens) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn standard_dark_adapts_shared_suite_roles() {
+        let suite = SuitePalette::ARTCRAFT_DARK;
+        let t = Tokens::for_kind(ThemeKind::Medium);
+        for (role, actual, expected) in [
+            ("window", t.app_bg, suite.window),
+            ("chrome", t.header_bg, suite.chrome),
+            ("panel", t.panel_bg, suite.panel),
+            ("tabs", t.tab_bg, suite.panel),
+            ("secondary tab text", t.tab_text, suite.text_secondary),
+            ("active tab text", t.tab_text_active, suite.text_strong),
+            ("focus", t.focus, suite.focus),
+            ("accent", t.accent, suite.accent),
+            ("accent hover", t.accent_hover, suite.accent_hover),
+            ("accent foreground", t.on_accent(), suite.on_accent),
+            ("text", t.text, suite.text),
+            ("secondary text", t.text_dim, suite.text_secondary),
+            ("disabled text", t.text_faint, suite.text_disabled),
+            ("hover", t.hover, suite.hover),
+            ("pressed", t.pressed, suite.pressed),
+            ("input", t.field_bg, suite.input),
+            ("border", t.field_border, suite.border),
+            ("separator", t.separator, suite.border),
+            ("raised", t.row_alt, suite.raised),
+            ("selection", t.row_selected, suite.selection),
+            ("selected toggle", t.pill_active_bg, suite.selection),
+            ("raised audio control", t.control_surface, suite.raised),
+            ("recessed audio control", t.control_well, suite.input),
+            ("timeline panel", t.tl_bg, suite.panel),
+            ("timeline track", t.tl_track_bg, suite.raised),
+        ] {
+            assert_eq!(actual, expected, "{role}");
+        }
+        let ctx = egui::Context::default();
+        apply_visuals(&ctx, &t);
+        assert_eq!(ctx.global_style().visuals.selection.bg_fill, suite.selection);
+        assert_eq!(ctx.global_style().visuals.selection.stroke.color, suite.selection_text);
+    }
+
+    #[test]
+    fn shared_palette_keeps_alternatives_and_accessibility_overrides_local() {
+        let darkest = Tokens::for_kind(ThemeKind::Dark);
+        let light = Tokens::for_kind(ThemeKind::Light);
+        assert_eq!(darkest.app_bg, Color32::BLACK);
+        assert_eq!(darkest.accent, Color32::from_rgb(0x2f, 0x6b, 0xdf));
+        assert_eq!(light.panel_bg, Color32::from_rgb(232, 232, 232));
+        assert_eq!(light.field_border, Color32::from_rgb(170, 170, 170));
+        assert_eq!(light.on_accent(), Color32::WHITE);
+        let standard = Tokens::for_kind(ThemeKind::Medium);
+        let accessible = standard.with_appearance(None, true);
+        assert_eq!(accessible.text_dim, standard.text);
+        assert_eq!(accessible.field_border, Color32::from_rgb(0x6a, 0x6a, 0x6a));
+        assert_eq!(accessible.separator, Color32::from_rgb(0x50, 0x50, 0x50));
+        assert_eq!(accessible.focus, standard.focus);
+        let light_accessible = light.with_appearance(None, true);
+        assert_eq!(light_accessible.field_border, Color32::from_rgb(110, 110, 110));
+        assert_eq!(light_accessible.text_dim, Color32::from_rgb(40, 40, 40));
+        let custom = standard.with_appearance(Some([0xe0, 0x45, 0x7b]), true);
+        assert_eq!(custom.accent, Color32::from_rgb(0xe0, 0x45, 0x7b));
+        assert_eq!(custom.on_accent(), Color32::WHITE);
+        assert_ne!(custom.focus, standard.focus);
+        assert_eq!(custom.field_border, accessible.field_border);
+        assert_eq!(custom.monitor_bg, standard.monitor_bg);
+        assert_eq!(custom.render_red, standard.render_red);
+        assert_eq!(custom.render_yellow, standard.render_yellow);
+        assert_eq!(custom.render_green, standard.render_green);
+    }
+
     const JAPANESE: &str = "日本語の文字";
 
     fn installed() -> egui::Context {
@@ -553,23 +672,37 @@ mod tests {
     }
 
     #[test]
-    fn dark_and_medium_keep_existing_audio_and_effect_palettes() {
-        for kind in [ThemeKind::Dark, ThemeKind::Medium] {
-            let t = Tokens::for_kind(kind);
-            // Existing painted colors, recorded independently of the Light palette.
-            assert_eq!(t.pill_active_bg, Color32::from_gray(0x3a));
-            assert_eq!(t.clip_bar_bg, Color32::from_rgb(58, 58, 70));
-            assert_eq!(t.control_surface, Color32::from_gray(0x24));
-            assert_eq!(t.control_well, Color32::from_gray(0x10));
-            assert_eq!(t.control_handle, Color32::from_gray(0xe0));
-            assert_eq!(t.meter_bg, Color32::BLACK);
-            assert_eq!(t.plot_bg, Color32::from_gray(0x18));
-            assert_eq!(t.plot_grid, Color32::from_gray(0x2c));
-            assert_eq!(t.keyframe_plot_bg, Color32::from_gray(0x19));
-            assert_eq!(t.keyframe_plot_grid, Color32::from_gray(0x2a));
-            assert_eq!(t.keyframe_plot_axis, Color32::from_gray(0x33));
-            assert_eq!(t.keyframe_handle, Color32::from_gray(0xd0));
-        }
+    fn standard_dark_changes_chrome_but_preserves_audio_and_effect_semantics() {
+        let darkest = Tokens::for_kind(ThemeKind::Dark);
+        assert_eq!(darkest.panel_bg, Color32::from_rgb(0x1d, 0x1d, 0x1d));
+        assert_eq!(darkest.pill_active_bg, Color32::from_gray(0x3a));
+        assert_eq!(darkest.control_surface, Color32::from_gray(0x24));
+        assert_eq!(darkest.on_accent(), Color32::WHITE);
+        let t = Tokens::for_kind(ThemeKind::Medium);
+        assert_eq!(t.panel_bg, Color32::from_rgb(0x10, 0x10, 0x14));
+        assert_eq!(t.accent, Color32::from_rgb(0x2d, 0x81, 0xff));
+        assert_eq!(t.row_selected, Color32::from_rgb(0x20, 0x3b, 0x65));
+        assert_eq!(t.on_accent(), Color32::from_rgb(0x06, 0x06, 0x07));
+        assert_eq!(t.editing_accent(), Color32::from_rgb(0x2f, 0x6b, 0xdf));
+        assert_eq!(t.editing_hot_text(), Color32::from_rgb(0x40, 0x96, 0xf3));
+        assert_eq!(
+            t.with_appearance(Some([0x2f, 0x6b, 0xdf]), false).accent,
+            t.accent,
+            "an existing implicit highlight default must not override standard Dark"
+        );
+        assert_eq!(t.tl_header_bg, t.panel_bg);
+        assert_eq!(ThemeKind::from_name("dark"), Some(ThemeKind::Medium));
+        assert_eq!(ThemeKind::from_name("darkest"), Some(ThemeKind::Dark));
+        // The painted media/effect colors retain their meaning.
+        assert_eq!(t.clip_bar_bg, Color32::from_rgb(58, 58, 70));
+        assert_eq!(t.control_handle, Color32::from_gray(0xe0));
+        assert_eq!(t.meter_bg, Color32::BLACK);
+        assert_eq!(t.plot_bg, Color32::from_gray(0x18));
+        assert_eq!(t.plot_grid, Color32::from_gray(0x2c));
+        assert_eq!(t.keyframe_plot_bg, Color32::from_gray(0x19));
+        assert_eq!(t.keyframe_plot_grid, Color32::from_gray(0x2a));
+        assert_eq!(t.keyframe_plot_axis, Color32::from_gray(0x33));
+        assert_eq!(t.keyframe_handle, Color32::from_gray(0xd0));
     }
 
     /// The colours the highlight drives besides the accent (#707).
@@ -586,16 +719,45 @@ mod tests {
     }
 
     #[test]
+    fn explicitly_selected_suite_blue_still_overrides_alternate_presets() {
+        let blue = Some([0x2d, 0x81, 0xff]);
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            let original = Tokens::for_kind(kind);
+            let chosen = original.with_appearance(blue, false);
+            assert_ne!(chosen.accent, original.accent, "{kind:?}");
+            assert_eq!(chosen.accent, SUITE_DARK.accent, "{kind:?}");
+            assert_eq!(chosen.editing_accent(), SUITE_DARK.accent, "{kind:?}");
+        }
+    }
+
+    #[test]
     fn a_highlight_of_ones_own_colours_the_playhead_timecodes_focus_and_targeting() {
         let pink = Color32::from_rgb(0xe0, 0x45, 0x7b);
-        let t = Tokens::for_kind(ThemeKind::Dark).with_appearance(Some([0xe0, 0x45, 0x7b]), false);
+        let t = Tokens::for_kind(ThemeKind::Medium).with_appearance(Some([0xe0, 0x45, 0x7b]), false);
+        assert_eq!(t.on_accent(), Color32::WHITE, "a custom highlight retains its existing button foreground");
+        assert_eq!(t.editing_accent(), Color32::from_rgb(0xe0, 0x45, 0x7b));
+        assert_eq!(t.editing_hot_text(), t.hot_text);
         let hue = |c: Color32| egui::ecolor::HsvaGamma::from(c).h;
-        for (c, was) in highlight_blues(&t).into_iter().zip(highlight_blues(&Tokens::for_kind(ThemeKind::Dark))) {
+        for (c, was) in highlight_blues(&t).into_iter().zip(highlight_blues(&Tokens::for_kind(ThemeKind::Medium))) {
             assert_ne!(c, was);
             assert!((hue(c) - hue(pink)).abs() < 0.01, "{c:?} has the highlight's hue");
         }
         let v = |c: Color32| egui::ecolor::HsvaGamma::from(c).v;
         assert!(v(t.playhead) > v(pink) && v(t.timecode) > v(pink) && v(t.track_target) < v(pink), "lighter and darker as the default blues are");
+    }
+
+    #[test]
+    fn selection_uses_standard_row_or_saved_custom_highlight() {
+        let ctx = egui::Context::default();
+        let standard = Tokens::for_kind(ThemeKind::Medium);
+        apply_visuals(&ctx, &standard);
+        assert_eq!(ctx.global_style().visuals.selection.bg_fill, standard.row_selected);
+        assert_eq!(ctx.global_style().visuals.selection.stroke.color, standard.text);
+
+        let custom = standard.with_appearance(Some([0xe0, 0x45, 0x7b]), false);
+        apply_visuals(&ctx, &custom);
+        assert_eq!(ctx.global_style().visuals.selection.bg_fill, custom.accent);
+        assert_eq!(ctx.global_style().visuals.selection.stroke.color, Color32::WHITE);
     }
 
     /// Chinese media and track names must render even when the interface stays in English.

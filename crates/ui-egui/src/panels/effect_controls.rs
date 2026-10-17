@@ -702,7 +702,7 @@ pub(crate) fn param_row(
             let kr = keys.key(app, ui, reference.clone(), it, *lane, original, &resp, k.interp);
             app.auto.add(&format!("effectControls.{}.{}.keyframe.{}", e.effect, pkey, k.time.0), kr, "keyframe");
             let selected = app.ui.keyframe_selection.contains(&reference);
-            let col = if selected { t.hot_text } else { Color32::from_rgb(0xb0, 0xb0, 0xb0) };
+            let col = if selected { t.editing_hot_text() } else { Color32::from_rgb(0xb0, 0xb0, 0xb0) };
             selection::paint(ui.painter(), kr, k.interp, col);
             if resp.clicked_by(egui::PointerButton::Primary) {
                 actions.push(("playhead.set".into(), json!({"time": tl.0})));
@@ -1126,7 +1126,7 @@ pub(crate) fn graph_rows(
     p.text(pos2(vr.max.x - 30.0, area.min.y + 6.0), Align2::RIGHT_CENTER, format!("{hi:.dec$}"), Tokens::ui(10.0), t.text_dim);
     p.text(pos2(vr.max.x - 30.0, area.max.y - 6.0), Align2::RIGHT_CENTER, format!("{lo:.dec$}"), Tokens::ui(10.0), t.text_dim);
     p.text(pos2(vr.min.x + 44.0, area.center().y), Align2::LEFT_CENTER, tl!("Value"), Tokens::ui(11.0), t.text_dim);
-    let curve_color = |c: usize| if c == 0 { t.accent } else { Y_CURVE };
+    let curve_color = |c: usize| if c == 0 { t.editing_accent() } else { Y_CURVE };
     if curves > 1 {
         p.text(pos2(vr.min.x + 44.0, area.center().y + 14.0), Align2::LEFT_CENTER, "X", Tokens::ui(10.5), curve_color(0));
         p.text(pos2(vr.min.x + 58.0, area.center().y + 14.0), Align2::LEFT_CENTER, "Y", Tokens::ui(10.5), curve_color(1));
@@ -1220,11 +1220,11 @@ pub(crate) fn graph_rows(
                     ));
                 }
             }
-            p.circle_filled(c, 4.5, if resp.dragged_by(egui::PointerButton::Primary) { t.hot_text } else { t.plot_handle });
+            p.circle_filled(c, 4.5, if resp.dragged_by(egui::PointerButton::Primary) { t.editing_hot_text() } else { t.plot_handle });
             if resp.dragged_by(egui::PointerButton::Primary) {
                 let ny = graph_drag_offset(ui, &resp, vec2(0.0, dy)).y;
                 ui.data_mut(|d| d.insert_temp(id, ny));
-                p.text(c + vec2(8.0, -10.0), Align2::LEFT_BOTTOM, format!("{:.dec$}", v_of(c.y)), Tokens::ui(10.5), t.hot_text);
+                p.text(c + vec2(8.0, -10.0), Align2::LEFT_BOTTOM, format!("{:.dec$}", v_of(c.y)), Tokens::ui(10.5), t.editing_hot_text());
             }
             // egui ends a drag on Escape: that stop abandons it (#580)
             if resp.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {

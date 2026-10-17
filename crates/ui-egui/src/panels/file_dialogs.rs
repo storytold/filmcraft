@@ -22,7 +22,7 @@ fn modal_frame(t: &Tokens) -> Frame {
 
 fn button(app: &mut FilmcraftApp, ui: &mut Ui, id: &str, label: &str, primary: bool) -> bool {
     let t = app.tokens;
-    let text = RichText::new(label).size(13.0).color(if primary { Color32::WHITE } else { t.text });
+    let text = RichText::new(label).size(13.0).color(if primary { t.on_accent() } else { t.text });
     let b = egui::Button::new(text)
         .min_size(vec2(88.0, 30.0))
         .corner_radius(CornerRadius::same(15))

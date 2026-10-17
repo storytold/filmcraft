@@ -96,7 +96,7 @@ pub struct AppearancePrefs {
     pub color_theme: String,
     /// "Appearance Mode": `auto` (follow the operating system) | `dark` (default) | `light`.
     pub appearance_mode: String,
-    /// The theme shown in dark mode: `darkest` (default) | `dark`.
+    /// The theme shown in dark mode: `dark` (default) | `darkest`.
     pub dark_theme: String,
     /// The theme shown in light mode: `light`.
     pub light_theme: String,
@@ -114,9 +114,9 @@ pub struct AppearancePrefs {
 impl Default for AppearancePrefs {
     fn default() -> Self {
         Self {
-            color_theme: "darkest".into(),
+            color_theme: "dark".into(),
             appearance_mode: "dark".into(),
-            dark_theme: "darkest".into(),
+            dark_theme: "dark".into(),
             light_theme: "light".into(),
             favorite_themes: Vec::new(),
             accessible_contrast: false,

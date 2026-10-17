@@ -95,7 +95,7 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let r = Rect::from_center_size(c + vec2(0.0, 26.0 + i as f32 * 34.0), vec2(200.0, 26.0));
             let resp = ui.interact(r, egui::Id::new(id), Sense::click());
             ui.painter().rect_filled(r, 13.0, if i == 0 { if resp.hovered() { t.accent_hover } else { t.accent } } else { t.field_bg });
-            ui.painter().text(r.center(), Align2::CENTER_CENTER, label, Tokens::semibold(12.0), if i == 0 { Color32::WHITE } else { t.text });
+            ui.painter().text(r.center(), Align2::CENTER_CENTER, label, Tokens::semibold(12.0), if i == 0 { t.on_accent() } else { t.text });
             app.auto.add(id, r, label);
             if resp.clicked() {
                 actions.push((cmd.into(), json!({})));
@@ -320,7 +320,7 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let r = Rect::from_center_size(c + vec2(0.0, 26.0), vec2(200.0, 26.0));
         let resp = ui.interact(r, egui::Id::new("text.transcript.generate"), Sense::click());
         ui.painter().rect_filled(r, 13.0, if resp.hovered() { t.accent_hover } else { t.accent });
-        ui.painter().text(r.center(), Align2::CENTER_CENTER, tl!("Transcribe"), Tokens::semibold(12.0), Color32::WHITE);
+        ui.painter().text(r.center(), Align2::CENTER_CENTER, tl!("Transcribe"), Tokens::semibold(12.0), t.on_accent());
         app.auto.add("text.transcript.generate", r, "Transcribe");
         if resp.clicked() {
             actions.push(("transcript.generate".into(), json!({})));

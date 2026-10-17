@@ -556,7 +556,13 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         return Ok(json!({"appearanceMode": app.session.prefs.appearance.appearance_mode}));
     }
     if let Some(th) = id.strip_prefix("view.theme.") {
-        let k = crate::theme::ThemeKind::from_name(th).ok_or("unknown theme")?;
+        // Menu IDs predate the visible labels: `dark` is Darkest, `medium` is Dark.
+        let k = match th {
+            "dark" => crate::theme::ThemeKind::Dark,
+            "medium" => crate::theme::ThemeKind::Medium,
+            "light" => crate::theme::ThemeKind::Light,
+            _ => return Err("unknown theme".into()),
+        };
         crate::panels::settings::set_theme(app, ctx, k);
         return Ok(Value::Null);
     }

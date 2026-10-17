@@ -1145,7 +1145,7 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
     reg.add("export.sendToQueue", queue, "Send to Queue");
     let resp = ui.interact(go, egui::Id::new("export-go"), Sense::click());
     ui.painter().rect_filled(go, 15.0, if resp.hovered() { t.accent_hover } else { t.accent });
-    ui.painter().text(go.center(), Align2::CENTER_CENTER, tl!("Export"), Tokens::semibold(13.0), Color32::WHITE);
+    ui.painter().text(go.center(), Align2::CENTER_CENTER, tl!("Export"), Tokens::semibold(13.0), t.on_accent());
     reg.add("export.button", go, "Export");
     reg.flush(app);
     if resp.clicked() {
@@ -1459,7 +1459,7 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
             ui.label(egui::RichText::new(tlf!("Estimated file size: {size}", size = est.as_deref().unwrap_or("–"))).color(t.text_dim).size(11.5));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let r = ui.add(
-                    egui::Button::new(egui::RichText::new(tl!("Export")).color(Color32::WHITE)).fill(t.accent).corner_radius(12.0).min_size(vec2(90.0, 26.0)),
+                    egui::Button::new(egui::RichText::new(tl!("Export")).color(t.on_accent())).fill(t.accent).corner_radius(12.0).min_size(vec2(90.0, 26.0)),
                 );
                 reg.add("quickExport.go", r.rect, "Export");
                 go = r.clicked();

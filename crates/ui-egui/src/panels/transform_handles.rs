@@ -302,7 +302,7 @@ fn angle_deg(v: egui::Vec2) -> f64 {
 /// Draws the box over the whole monitor (the ui's clip), not just the picture, so its handles show
 /// beside the frame as well as on it.
 fn draw(app: &mut FilmcraftApp, ui: &egui::Ui, pl: &Placement, name: &str) {
-    let accent = app.tokens.accent;
+    let accent = app.tokens.editing_accent();
     let painter = ui.painter();
     painter.add(egui::Shape::closed_line(pl.quad.to_vec(), Stroke::new(1.0, accent)));
     app.auto.add("program.transform.box", Rect::from_points(&pl.quad), name);

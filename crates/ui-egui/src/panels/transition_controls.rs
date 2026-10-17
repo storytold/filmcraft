@@ -279,7 +279,7 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
     let (x0, x1) = (x_of(lane, v, x.start), x_of(lane, v, x.end()));
     let span = Rect::from_min_max(pos2(x0, row_x.min.y), pos2(x1.max(x0 + 1.0), row_x.max.y));
     painter.rect_filled(span, 0.0, egui::Color32::from_black_alpha(90));
-    painter.rect_stroke(span, 0.0, Stroke::new(2.0, t.accent), egui::StrokeKind::Inside);
+    painter.rect_stroke(span, 0.0, Stroke::new(2.0, t.editing_accent()), egui::StrokeKind::Inside);
     let name = x.effect.def().map_or(x.effect.effect.as_str(), |d| d.name);
     if span.width() > 30.0 {
         painter.with_clip_rect(span.shrink(2.0).intersect(lane)).text(
@@ -519,7 +519,7 @@ pub fn duration_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             // one row high: a right-to-left layout would otherwise take the window's whole height
             let row = egui::vec2(ui.available_width().max(220.0), ui.spacing().interact_size.y);
             ui.allocate_ui_with_layout(row, egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let o = ui.add(egui::Button::new(RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(accent));
+                let o = ui.add(egui::Button::new(RichText::new(tl!("OK")).color(app.tokens.on_accent())).fill(accent));
                 elems.push(("transitionDuration.ok".into(), o.rect, "OK".into()));
                 apply |= o.clicked();
                 let c = ui.button(tl!("Cancel"));

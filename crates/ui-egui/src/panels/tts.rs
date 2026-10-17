@@ -448,7 +448,7 @@ fn button(ui: &mut egui::Ui, t: &Tokens, r: Rect, icon: Icon, text: &str, primar
     let resp = ui.interact(r, egui::Id::new(id), Sense::click());
     let p = ui.painter();
     let (bg, fg) = match (primary, active) {
-        (true, true) => (if resp.hovered() { t.accent_hover } else { t.accent }, egui::Color32::WHITE),
+        (true, true) => (if resp.hovered() { t.accent_hover } else { t.accent }, t.on_accent()),
         (_, false) => (t.field_bg, t.text_faint),
         (false, true) => (if resp.hovered() { t.hover } else { t.field_bg }, t.text),
     };

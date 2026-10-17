@@ -620,8 +620,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             {
                 let start = (it.start + offset).max(Tick::ZERO);
                 let body = Rect::from_min_max(pos2(layout.x_of(start), band.min.y + 1.0), pos2(layout.x_of(start + it.duration), band.max.y - 1.0));
-                preview.rect_filled(body, 3.0, t.accent.gamma_multiply(0.4));
-                preview.rect_stroke(body, 3.0, Stroke::new(1.5, t.accent), StrokeKind::Inside);
+                preview.rect_filled(body, 3.0, t.editing_accent().gamma_multiply(0.4));
+                preview.rect_stroke(body, 3.0, Stroke::new(1.5, t.editing_accent()), StrokeKind::Inside);
                 if body.height() >= 20.0 {
                     preview.text(body.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, &it.name, Tokens::ui(11.0), t.text);
                 }
@@ -732,7 +732,7 @@ fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let resp = ui.interact(b, egui::Id::new("tl-open-demo"), Sense::click());
     app.auto.add("timeline.openDemo", b, "Open Demo Project");
     ui.painter().rect_filled(b, 13.0, if resp.hovered() { t.accent_hover } else { t.accent });
-    ui.painter().text(b.center(), Align2::CENTER_CENTER, tl!("Open Demo Project"), Tokens::semibold(12.0), Color32::WHITE);
+    ui.painter().text(b.center(), Align2::CENTER_CENTER, tl!("Open Demo Project"), Tokens::semibold(12.0), t.on_accent());
     if resp.clicked() {
         let _ = app.session.execute("file.openDemoProject", json!({}));
     }
@@ -1214,7 +1214,7 @@ fn draw_transition(p: &egui::Painter, r: Rect, trn: &filmcraft_project::Transiti
     }
     cp.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_rgb(0xeb, 0xeb, 0xeb)), StrokeKind::Inside);
     if selected {
-        cp.rect_stroke(r, 0.0, Stroke::new(2.0, t.accent), StrokeKind::Inside);
+        cp.rect_stroke(r, 0.0, Stroke::new(2.0, t.editing_accent()), StrokeKind::Inside);
     }
     if r.width() > 34.0 && !audio {
         let name = trn.effect.def().map(|d| d.name).unwrap_or(&trn.effect.effect);
@@ -3006,23 +3006,23 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 if let Ok((_, tr)) = filmcraft_engine::commands::preview_transition(&app.session, &params, kind) {
                     let r = Rect::from_min_max(pos2(layout.x_of(tr.start), row.rect.min.y + 1.0), pos2(layout.x_of(tr.end()), row.rect.max.y - 1.0));
                     let painter = ui.painter().with_clip_rect(layout.content);
-                    painter.rect_filled(r, 2.0, app.tokens.accent.gamma_multiply(0.35));
+                    painter.rect_filled(r, 2.0, app.tokens.editing_accent().gamma_multiply(0.35));
                     paint_hatch(&painter, r.intersect(layout.content));
-                    painter.rect_stroke(r, 2.0, Stroke::new(2.0, app.tokens.accent), StrokeKind::Inside);
+                    painter.rect_stroke(r, 2.0, Stroke::new(2.0, app.tokens.editing_accent()), StrokeKind::Inside);
                     let cut = if edge == "in" { it.start } else { it.end() };
                     let x = layout.x_of(cut);
-                    painter.line_segment([pos2(x, r.top()), pos2(x, r.bottom())], Stroke::new(3.0, app.tokens.accent));
+                    painter.line_segment([pos2(x, r.top()), pos2(x, r.bottom())], Stroke::new(3.0, app.tokens.editing_accent()));
                     // Keep the edge label readable even when the clip/transition is only a few pixels wide.
                     let label = if edge == "in" { tl!("In") } else { tl!("Out") };
-                    let label_width = painter.layout_no_wrap(label.to_string(), Tokens::ui(11.0), app.tokens.accent).size().x + 8.0;
+                    let label_width = painter.layout_no_wrap(label.to_string(), Tokens::ui(11.0), app.tokens.editing_accent()).size().x + 8.0;
                     let label_rect = Rect::from_center_size(pos2(p.x, row.rect.top() + 10.0), vec2(label_width, 15.0));
                     painter.rect_filled(label_rect, 2.0, app.tokens.panel_bg);
-                    painter.text(label_rect.center(), Align2::CENTER_CENTER, label, Tokens::ui(11.0), app.tokens.accent);
+                    painter.text(label_rect.center(), Align2::CENTER_CENTER, label, Tokens::ui(11.0), app.tokens.editing_accent());
                     app.auto.add("timeline.transitionDropPreview", r.intersect(layout.content), edge);
                 }
             } else {
                 let r = Rect::from_min_max(pos2(layout.x_of(it.start), row.rect.min.y), pos2(layout.x_of(it.end()), row.rect.max.y));
-                ui.painter().rect_stroke(r, 3.0, Stroke::new(2.0, app.tokens.accent), StrokeKind::Inside);
+                ui.painter().rect_stroke(r, 3.0, Stroke::new(2.0, app.tokens.editing_accent()), StrokeKind::Inside);
             }
             if ctx.input(|i| i.pointer.any_released()) {
                 let r = if let Some(name) = effect.strip_prefix("preset:") {
