@@ -85,6 +85,10 @@ OMF carries no video at all.
 
 ## Tests
 
+- `src/otio.rs` (unit tests): OTIO repeats a nested sequence for every use, so compound clips that each hold
+  several uses of the next are exponential (a 3 KB FCPXML nested 12 deep made the export run for minutes and grow to
+  gigabytes). After 25 000 clips written inside nested sequences the rest are gaps, with one warning; an ordinary
+  project is far below that and unchanged.
 - `tests/aaf_omf.rs`: AAF round trips at 25, 29.97 DF, 23.976 and 59.94 DF (clips, gaps,
   two-sided and one-sided transitions, links, markers, start timecodes, constant and keyframed
   gain, media markers and timecode); 512-byte sectors; breakout to mono; embedded trimmed audio
