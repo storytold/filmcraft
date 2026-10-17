@@ -34,7 +34,7 @@ pub enum FxTarget {
 
 /// Effects that have a graphical editor.
 pub fn has_editor(effect: &str) -> bool {
-    matches!(effect, "parametric_eq" | "graphic_eq" | "graphic_eq_20" | "graphic_eq_30" | "multiband_compressor" | "dynamics_rack")
+    matches!(effect, "parametric_eq" | "graphic_eq" | "graphic_eq_20" | "graphic_eq_30" | "multiband_compressor" | "dynamics_rack" | "studio_reverb")
 }
 
 /// Open (or raise) the editor for a target.
@@ -202,6 +202,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 "parametric_eq" => parametric(ui, &mut ed),
                 "graphic_eq" | "graphic_eq_20" | "graphic_eq_30" => graphic(ui, &mut ed),
                 "multiband_compressor" => multiband(ui, &mut ed),
+                "studio_reverb" => reverb(ui, &mut ed),
                 _ => dynamics(ui, &mut ed),
             }
             ui.separator();
@@ -242,6 +243,16 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         }
     }
     app.ui.audio_fx_editors.retain(|t| !close.contains(t));
+}
+
+/// Studio Reverb's five independent controls, shared by clip and track inserts.
+fn reverb(ui: &mut egui::Ui, ed: &mut Ed) {
+    ui.set_min_width(360.0);
+    ed.slider(ui, "room", tl!("Room Size"), false);
+    ed.slider(ui, "decay", tl!("Decay"), false);
+    ed.slider(ui, "damping", tl!("High Frequency Damping"), false);
+    ed.slider(ui, "dry", tl!("Dry"), false);
+    ed.slider(ui, "wet", tl!("Wet"), false);
 }
 
 // ------------------------------------------------------------------------------- plotting

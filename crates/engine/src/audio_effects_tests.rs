@@ -97,6 +97,19 @@ fn parameters_are_set_by_id_and_change_the_sound() {
 }
 
 #[test]
+fn studio_reverb_track_insert_changes_the_rendered_audio() {
+    let mut s = demo();
+    let before = render(&s, 4800);
+    s.execute("mixer.addInsert", json!({"strip": "A1", "effect": "studio_reverb"})).unwrap();
+    s.execute("mixer.setInsert", json!({"strip": "A1", "slot": 0, "params": {"dry": 0.0, "wet": 100.0}})).unwrap();
+    let after = render(&s, 4800);
+
+    let difference =
+        before.channels.iter().flatten().zip(after.channels.iter().flatten()).map(|(before, after)| f64::from((*before - *after).abs())).sum::<f64>();
+    assert!(difference > 1.0, "the track reverb should change the audible mix, difference={difference}");
+}
+
+#[test]
 fn shared_names_resolve_by_track_kind() {
     let mut s = demo();
     let clip = a1_clip(&s);
