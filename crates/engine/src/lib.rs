@@ -11,6 +11,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod aaf_omf;
+pub mod ai_masks;
 pub mod autosave;
 pub mod captions;
 pub mod clip_ops;
@@ -198,11 +199,30 @@ impl Services for FsServices {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UndoMark(Option<usize>);
 
-/// Undo history of whole-project snapshots.
+/// A history step can also restore an unsaved AI selection without dirtying the document.
+#[derive(Clone)]
+pub struct HistorySnapshot {
+    project: Arc<Project>,
+    ai_draft: Option<ai_masks::Draft>,
+    document: bool,
+    identity: Arc<()>,
+}
+
+impl HistorySnapshot {
+    fn new(project: Arc<Project>, ai_draft: Option<ai_masks::Draft>, document: bool) -> Self {
+        Self { project, ai_draft, document, identity: Arc::new(()) }
+    }
+
+    fn mark(&self) -> usize {
+        Arc::as_ptr(&self.identity) as usize
+    }
+}
+
+/// Chronological document and transient-selection history.
 #[derive(Clone, Default)]
 pub struct History {
-    pub undo: Vec<(String, Arc<Project>)>,
-    pub redo: Vec<(String, Arc<Project>)>,
+    pub undo: Vec<(String, HistorySnapshot)>,
+    pub redo: Vec<(String, HistorySnapshot)>,
     /// Labels of all applied states, oldest first (History panel).
     pub limit: usize,
     /// Key of the last [`Session::edit_merged`] step: a continuous gesture (a fader drag) with the
@@ -262,6 +282,8 @@ impl EffectSel {
 /// Editing state that commands depend on (not project data, but headless-relevant).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct EditorState {
+    #[serde(default)]
+    pub ai_mask: Option<ai_masks::Draft>,
     pub active_sequence: Option<ItemId>,
     /// Playhead per sequence.
     pub playheads: std::collections::BTreeMap<ItemId, Tick>,
@@ -424,6 +446,9 @@ pub struct Session {
     pub media_jobs: Vec<proxies::PendingJob>,
     /// Mask tracking jobs whose keyframes are still being written.
     pub mask_jobs: Vec<masks::PendingTrack>,
+    pub ai_mask_backend: Option<Arc<dyn ai_masks::Backend>>,
+    pub ai_mask_jobs: Vec<ai_masks::Pending>,
+    pub ai_mask_preview: Option<ai_masks::Preview>,
     /// Scene Edit Detection jobs whose results are applied when they finish.
     pub scene_jobs: Vec<scene_detect::PendingScene>,
     /// Effect presets (built-in + the user's, persisted in the data directory).
@@ -529,6 +554,9 @@ impl Session {
             offline: Default::default(),
             media_jobs: Vec::new(),
             mask_jobs: Vec::new(),
+            ai_mask_backend: ai_masks::default_backend(),
+            ai_mask_jobs: Vec::new(),
+            ai_mask_preview: None,
             scene_jobs: Vec::new(),
             presets: Default::default(),
             export_presets: Default::default(),
@@ -624,6 +652,7 @@ impl Session {
     pub fn poll_persistence(&mut self) {
         proxies::poll(self);
         masks::poll(self);
+        ai_masks::poll(self);
         scene_detect::poll(self);
         export_tools::pump_queue(self, false);
         panels::log_jobs(self);
@@ -839,7 +868,7 @@ impl Session {
         let r = f(&mut p, &mut st)?;
         self.refuse_self_nesting(&p)?;
         let old = std::mem::replace(&mut self.project, Arc::new(p));
-        self.history.undo.push((label.to_string(), old));
+        self.history.undo.push((label.to_string(), HistorySnapshot::new(old, self.state.ai_mask.clone(), true)));
         if self.history.undo.len() > self.history.limit {
             self.history.undo.remove(0);
         }
@@ -871,6 +900,25 @@ impl Session {
         Ok(r)
     }
 
+    /// Selection edits participate in Cmd/Ctrl-Z alongside timeline edits, but never alter
+    /// the project, its dirty flag or rendering revision. A brush gesture shares one step.
+    pub(crate) fn edit_ai_draft(&mut self, label: &str, key: Option<&str>, draft: ai_masks::Draft) {
+        if self.state.ai_mask.as_ref() == Some(&draft) {
+            return;
+        }
+        let merge =
+            key.is_some() && self.history.merge_key.as_deref() == key && self.history.undo.last().is_some_and(|step| step.0 == label && !step.1.document);
+        if !merge {
+            self.history.undo.push((label.to_string(), HistorySnapshot::new(self.project.clone(), self.state.ai_mask.clone(), false)));
+            if self.history.undo.len() > self.history.limit {
+                self.history.undo.remove(0);
+            }
+        }
+        self.history.redo.clear();
+        self.history.merge_key = key.map(str::to_string);
+        self.state.ai_mask = Some(draft);
+    }
+
     /// Run several undoable edits as one undo step labelled `label`. If `f` fails, every edit it made
     /// is rolled back and the history is as before.
     pub fn edit_group<R>(&mut self, label: &str, f: impl FnOnce(&mut Session) -> Result<R>) -> Result<R> {
@@ -881,7 +929,10 @@ impl Session {
         // a panic inside the group must not leave the history unlimited: restore, then let it go on
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
         self.history.limit = limit;
-        let first = self.history.undo.get(undo).map(|e| e.1.clone());
+        let first = self.history.undo.get(undo).map(|_| {
+            let document = self.history.undo.iter().skip(undo).any(|step| step.1.document);
+            HistorySnapshot::new(project.clone(), state.ai_mask.clone(), document)
+        });
         let rolled_back = |s: &mut Session| {
             s.history.undo.truncate(undo);
             s.history.redo = redo.clone();
@@ -914,7 +965,7 @@ impl Session {
 
     /// Where the undo history stands now, for [`Session::revert_to`].
     pub fn undo_mark(&self) -> UndoMark {
-        UndoMark(self.history.undo.last().map(|u| Arc::as_ptr(&u.1) as usize))
+        UndoMark(self.history.undo.last().map(|u| u.1.mark()))
     }
 
     /// Take back every edit made since `mark` (a gesture cancelled with Escape, #580), merged or
@@ -922,22 +973,28 @@ impl Session {
     /// Nothing happens when `mark` has left the history. Returns how many steps were taken back.
     pub fn revert_to(&mut self, mark: UndoMark) -> usize {
         if let UndoMark(Some(p)) = mark
-            && !self.history.undo.iter().any(|u| Arc::as_ptr(&u.1) as usize == p)
+            && !self.history.undo.iter().any(|u| u.1.mark() == p)
         {
             return 0;
         }
         let mut earliest = None;
+        let mut document = false;
         let mut n = 0;
         while self.undo_mark() != mark {
             let Some((_, prev)) = self.history.undo.pop() else { break };
+            document |= prev.document;
             earliest = Some(prev);
             n += 1;
         }
         if let Some(prev) = earliest {
-            self.project = prev;
+            self.project = prev.project;
+            self.state.ai_mask = prev.ai_draft;
             self.history.merge_key = None;
             self.fix_state();
-            self.bump();
+            if document {
+                self.bump();
+            }
+            ai_masks::history_restored(self);
         }
         n
     }
@@ -984,20 +1041,30 @@ impl Session {
     pub fn undo(&mut self) -> Option<String> {
         let (label, prev) = self.history.undo.pop()?;
         self.history.merge_key = None;
-        let cur = std::mem::replace(&mut self.project, prev);
+        let cur = HistorySnapshot::new(self.project.clone(), self.state.ai_mask.clone(), prev.document);
+        self.project = prev.project;
+        self.state.ai_mask = prev.ai_draft;
         self.history.redo.push((label.clone(), cur));
         self.fix_state();
-        self.bump();
+        if prev.document {
+            self.bump();
+        }
+        ai_masks::history_restored(self);
         Some(label)
     }
 
     pub fn redo(&mut self) -> Option<String> {
         let (label, next) = self.history.redo.pop()?;
         self.history.merge_key = None;
-        let cur = std::mem::replace(&mut self.project, next);
+        let cur = HistorySnapshot::new(self.project.clone(), self.state.ai_mask.clone(), next.document);
+        self.project = next.project;
+        self.state.ai_mask = next.ai_draft;
         self.history.undo.push((label.clone(), cur));
         self.fix_state();
-        self.bump();
+        if next.document {
+            self.bump();
+        }
+        ai_masks::history_restored(self);
         Some(label)
     }
 
@@ -1210,6 +1277,8 @@ const MAX_SUBCLIP_CHAIN: usize = 16;
 
 #[cfg(test)]
 mod aaf_omf_tests;
+#[cfg(test)]
+mod ai_masks_tests;
 #[cfg(test)]
 mod animated_image_tests;
 #[cfg(test)]

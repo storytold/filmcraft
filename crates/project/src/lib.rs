@@ -21,6 +21,7 @@ pub mod mask;
 pub mod mixer;
 pub mod multicam;
 pub mod narration;
+pub mod raster_mask;
 pub mod transcript;
 pub mod vtransition;
 

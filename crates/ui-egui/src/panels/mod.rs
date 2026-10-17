@@ -1,6 +1,7 @@
 //! Panel bodies. `show` dispatches on [`PanelKind`]; drag-and-drop between panels (project items,
 //! effects) is carried in egui temp data so the timeline/monitors can accept drops.
 
+pub mod ai_masks;
 pub mod audio_fx_editor;
 pub mod clip_dialogs;
 pub mod color_dialogs;

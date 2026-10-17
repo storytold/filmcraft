@@ -3578,3 +3578,10 @@
 
 # The native macOS application menu (Settings…).
 	Settings	Preferências
+
+	AI Rotoscope…	Rotoscopia com IA…
+	AI Rotoscope Settings	Configurações de rotoscopia com IA
+	AI Mask Point	Ponto de máscara de IA
+	Remove AI Mask Point	Remover ponto de máscara de IA
+	Generate AI Mask	Gerar máscara de IA
+	Preview AI Mask	Prévia da máscara de IA

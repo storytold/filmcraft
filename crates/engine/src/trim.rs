@@ -564,7 +564,7 @@ pub fn commit(s: &mut Session) -> Value {
         Some(TrimKind::Ripple) => "Dynamic Ripple Trim",
         _ => "Dynamic Trim",
     };
-    s.history.undo.push((label.to_string(), d.before));
+    s.history.undo.push((label.to_string(), crate::HistorySnapshot::new(d.before, s.state.ai_mask.clone(), true)));
     if s.history.undo.len() > s.history.limit {
         s.history.undo.remove(0);
     }
