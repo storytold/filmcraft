@@ -82,3 +82,49 @@ fn locked_track_refuses_roll_slip_slide_speed() {
         assert_eq!(*s.project, *snap, "{} must leave the sequence unchanged", cmd["id"]);
     }
 }
+
+/// #1903: a move that lists one clip twice is refused before anything changes; it used to leave
+/// the same clip id on both destination tracks. A copy may repeat a source.
+#[test]
+fn move_refuses_a_clip_listed_twice() {
+    let mut s = Session::default();
+    s.execute("file.newProject", json!({"name": "Twice"})).unwrap();
+    s.execute("file.newSequence", json!({"name": "Sequence", "fps": 25, "video": 2, "audio": 2, "width": 16, "height": 16})).unwrap();
+    s.execute("file.newOfflineFile", json!({"name": "Media", "seconds": 4, "fps": 25, "video": true, "audio": true, "width": 16, "height": 16})).unwrap();
+    let item = s.project.items.values().find(|i| i.as_media().is_some()).map(|i| i.id.0).unwrap();
+    let placed = s.execute("timeline.place", json!({"item": item, "track": "V1", "audioTrack": "A1", "time": 0})).unwrap();
+    let clip = placed["clips"][0].as_u64().unwrap();
+    let before = s.project.to_json();
+    let undo_len = s.history.undo.len();
+    let t = 2_032_128_000_000i64;
+    let err = s
+        .execute("timeline.move", json!({"moves": [{"clip": clip, "track": "V1", "time": t}, {"clip": clip, "track": "V2", "time": t}], "linked": false}))
+        .unwrap_err();
+    assert!(err.to_string().contains("more than once"), "{err}");
+    assert_eq!(s.project.to_json(), before, "nothing moved");
+    assert_eq!(s.history.undo.len(), undo_len, "no undo step");
+    let ids: Vec<u64> = s.active_sequence().unwrap().all_tracks().flat_map(|t| t.items.iter().map(|i| i.id.0)).collect();
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), ids.len(), "every clip id is on one track: {ids:?}");
+    // the same with insert
+    let err = s
+        .execute(
+            "timeline.move",
+            json!({"moves": [{"clip": clip, "track": "V1", "time": t}, {"clip": clip, "track": "V2", "time": t}], "linked": false, "insert": true}),
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("more than once"), "{err}");
+    // copies may repeat a source: each copy is a new clip
+    let r = s
+        .execute(
+            "timeline.move",
+            json!({"moves": [{"clip": clip, "track": "V2", "time": 0}, {"clip": clip, "track": "V2", "time": t}], "linked": false, "copy": true}),
+        )
+        .unwrap();
+    let copied: Vec<u64> = r["copied"].as_array().unwrap().iter().filter_map(|v| v.as_u64()).collect();
+    assert_eq!(copied.len(), 2, "{r}");
+    assert_ne!(copied[0], copied[1]);
+    assert!(!copied.contains(&clip));
+}
