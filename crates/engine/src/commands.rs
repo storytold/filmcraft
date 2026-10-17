@@ -1352,6 +1352,10 @@ fn build() -> Vec<CommandSpec> {
             let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
             let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
             for path in paths {
+                if let Some(hint) = foreign_project(&path) {
+                    errors.push(format!("{path}: {hint}"));
+                    continue;
+                }
                 if as_sequence || (detect && detect_image_sequence(s, &path)) {
                     match import_image_sequence(s, &path, bin) {
                         Ok((id, frames, missing)) => {
@@ -4378,7 +4382,23 @@ fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Opti
     crate::project_tools::warn_untrusted_scratch(s);
 }
 
+/// Another editor's project file that FilmCraft can't open yet, with how to bring it over.
+/// Premiere Pro's `.prproj` is gzip-compressed XML, so decoding it as a FilmCraft project only
+/// reported "project file is damaged", and importing it "unrecognised format" (#978).
+fn foreign_project(path: &str) -> Option<&'static str> {
+    let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str())?.to_ascii_lowercase();
+    match ext.as_str() {
+        "prproj" => Some(
+            "Premiere Pro projects (.prproj) can't be opened yet. In Premiere Pro, choose File ▸ Export ▸ Final Cut Pro XML… (or AAF) and open that file in FilmCraft.",
+        ),
+        _ => None,
+    }
+}
+
 fn open_project(s: &mut Session, path: &str) -> Result<Value> {
+    if let Some(hint) = foreign_project(path) {
+        return Err(EngineError::Other(format!("{path}: {hint}")));
+    }
     let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
