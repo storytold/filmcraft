@@ -52,6 +52,8 @@ struct Cache {
 const PREVIEW_BASE: u64 = 1 << 44;
 const CACHE_SECS: f64 = 3.0;
 const ROW_H: f32 = 22.0;
+/// How often to look for background probe results.
+const PROBE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
 fn cache_id() -> egui::Id {
     egui::Id::new("media-browser-cache")
@@ -515,7 +517,6 @@ fn list(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Entry], c
     child.set_clip_rect(body.intersect(ui.clip_rect()));
     let needs_probe =
         columns.iter().any(|c| matches!(c.as_str(), "Frame Rate" | "Media Duration" | "Video Info" | "Audio Info" | "Video Codec" | "Audio Codec"));
-    let mut probes_left = 2;
     let out = egui::ScrollArea::both().id_salt("mb-list-scroll").auto_shrink([false, false]).show(&mut child, |ui| {
         ui.set_min_width(total.max(body.width()));
         for (i, e) in entries.iter().enumerate() {
@@ -527,16 +528,10 @@ fn list(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Entry], c
                 ui.painter().rect_filled(rr, 0.0, t.row_alt);
             }
             let info = if needs_probe && !e.is_dir {
-                let cached = app.session.browser.probes.contains_key(&e.path);
-                if cached || probes_left > 0 {
-                    if !cached {
-                        probes_left -= 1;
-                        ctx.request_repaint();
-                    }
-                    mb::probe(&mut app.session, &e.path)
-                } else {
+                mb::probe_background(&mut app.session, &e.path).unwrap_or_else(|| {
+                    ctx.request_repaint_after(PROBE_POLL);
                     None
-                }
+                })
             } else {
                 None
             };
@@ -649,7 +644,6 @@ fn thumbnails(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Ent
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r).id_salt("mb-thumbs"));
     child.set_clip_rect(r.intersect(ui.clip_rect()));
     let per_row = ((r.width() - 8.0) / cell.x).floor().max(1.0) as usize;
-    let mut probes_left = 2;
     app.ui.media_browser.hover = None;
     egui::ScrollArea::vertical().id_salt("mb-thumb-scroll").auto_shrink([false, false]).show(&mut child, |ui| {
         for chunk in entries.chunks(per_row) {
@@ -671,10 +665,8 @@ fn thumbnails(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Ent
                     );
                 } else {
                     let visible = ui.is_rect_visible(tr);
-                    if visible && matches!(e.kind, "video" | "image") && !app.session.browser.probes.contains_key(&e.path) && probes_left > 0 {
-                        probes_left -= 1;
-                        mb::probe(&mut app.session, &e.path);
-                        ctx.request_repaint();
+                    if visible && matches!(e.kind, "video" | "image") && mb::probe_background(&mut app.session, &e.path).is_none() {
+                        ctx.request_repaint_after(PROBE_POLL);
                     }
                     let frac = if hover_scrub && resp.hovered() {
                         ctx.pointer_hover_pos().map(|p| ((p.x - tr.min.x) / tr.width()).clamp(0.0, 1.0)).unwrap_or(0.3)

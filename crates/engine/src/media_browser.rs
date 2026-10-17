@@ -19,7 +19,8 @@
 //! Navigation history and the selection are session state ([`BrowserState`]); Favorites, recent
 //! directories and the view settings are preferences ([`MediaBrowserPrefs`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use filmcraft_media::MediaInfo;
 use filmcraft_project::ItemId;
@@ -126,6 +127,11 @@ pub struct BrowserState {
     /// Probed media properties by path (None = not a readable media file).
     #[serde(skip)]
     pub probes: BTreeMap<String, Option<MediaInfo>>,
+    /// Paths [`probe_background`] is probing, and the results its threads hand back.
+    #[serde(skip)]
+    pub probing: BTreeSet<String>,
+    #[serde(skip)]
+    pub probe_results: Arc<Mutex<Vec<(String, Option<MediaInfo>)>>>,
 }
 
 /// A listed entry with what the browser shows about it.
@@ -596,6 +602,40 @@ pub fn probe(s: &mut Session, path: &str) -> Option<MediaInfo> {
     };
     s.browser.probes.insert(path.to_string(), info.clone());
     info
+}
+
+/// At most this many [`probe_background`] threads at once.
+const PROBE_THREADS: usize = 4;
+
+/// [`probe`] without blocking: an unknown file is probed on a background thread and `None` is
+/// returned until its result is in (big files take seconds to open).
+pub fn probe_background(s: &mut Session, path: &str) -> Option<Option<MediaInfo>> {
+    let done = std::mem::take(&mut *s.browser.probe_results.lock().unwrap_or_else(PoisonError::into_inner));
+    for (p, info) in done {
+        s.browser.probing.remove(&p);
+        s.browser.probes.insert(p, info);
+    }
+    if let Some(v) = s.browser.probes.get(path) {
+        return Some(v.clone());
+    }
+    if cfg!(target_arch = "wasm32") || !kind_of(path).is_some_and(|k| matches!(k, "video" | "audio" | "image")) {
+        return Some(probe(s, path));
+    }
+    if s.browser.probing.contains(path) || s.browser.probing.len() >= PROBE_THREADS {
+        return None;
+    }
+    let (media, services, results, key) = (s.media.clone(), s.services.clone(), s.browser.probe_results.clone(), path.to_string());
+    let run = move || {
+        let info =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| media.probe_file(&key, &*services).ok().map(|src| src.info().clone()))).ok().flatten();
+        results.lock().unwrap_or_else(PoisonError::into_inner).push((key, info));
+    };
+    if std::thread::Builder::new().name("filmcraft-browser-probe".into()).spawn(run).is_ok() {
+        s.browser.probing.insert(path.to_string());
+        None
+    } else {
+        Some(probe(s, path))
+    }
 }
 
 /// The text of a list column for an entry (`probe`: its media properties, when known).
