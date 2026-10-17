@@ -402,7 +402,10 @@ impl Mp4Source {
                 st.last_decoded = Some(i);
                 match r {
                     Ok(v) => v,
-                    Err(_) => vec![vec![0.0; sample.duration as usize]; ainfo.channels.max(1) as usize],
+                    // a packet that will not decode is concealed as silence, bounded: its `stts`
+                    // duration is untrusted (#1984: a corrupt packet declaring 1,000,000 samples
+                    // allocated that much per channel for a 128-frame request)
+                    Err(_) => vec![vec![0.0; concealment_len(u64::from(sample.duration), ainfo.sample_rate)]; ainfo.channels.max(1) as usize],
                 }
             }
         };
@@ -1220,5 +1223,29 @@ mod he_aac_tests {
             let buf = src.audio(0, 4800, 48_000).unwrap();
             assert!(buf.channels.iter().flatten().all(|v| v.is_finite() && v.abs() <= 1.0), "media_time {media_time}");
         }
+    }
+}
+
+/// Samples of silence standing in for an audio packet that will not decode: its declared
+/// duration, but never more than one second at the stream's rate (#1984: no audio codec's packet
+/// is longer, and the duration comes from the file, so a corrupt `stts` must not size an
+/// allocation).
+fn concealment_len(declared: u64, sample_rate: u32) -> usize {
+    let cap = u64::from(sample_rate.clamp(8_000, 384_000));
+    declared.min(cap) as usize
+}
+
+#[cfg(test)]
+mod concealment_tests {
+    use super::concealment_len;
+
+    #[test]
+    fn concealed_silence_is_bounded_by_a_second() {
+        assert_eq!(concealment_len(1024, 48_000), 1024, "a normal AAC frame");
+        assert_eq!(concealment_len(5760, 48_000), 5760, "the longest Opus packet");
+        assert_eq!(concealment_len(1_000_000, 48_000), 48_000, "the report's corrupt duration");
+        assert_eq!(concealment_len(u64::MAX, 44_100), 44_100);
+        assert_eq!(concealment_len(u64::MAX, 0), 8_000, "a hostile sample rate still bounds it");
+        assert_eq!(concealment_len(u64::MAX, u32::MAX), 384_000);
     }
 }
