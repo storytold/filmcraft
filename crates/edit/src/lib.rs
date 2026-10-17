@@ -877,6 +877,18 @@ pub fn ripple_trim_group(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta
             return Err(EditError::SyncLockConflict(track_label(seq, tr.id)));
         }
     }
+    // Sync-locked caption tracks ripple with the picture, as they do on insert and extract: a shorter
+    // clip closes the same stretch on them (a caption across it is cut, the later ones move up), a
+    // longer one opens a gap at the cut. The cut is where the media tracks' shift starts.
+    let cut = if edge == Edge::In { main_from - Tick(1) } else { main_from };
+    for ct in work.caption_tracks.iter_mut().filter(|c| !c.locked && c.sync_lock) {
+        if shift < Tick::ZERO {
+            let closing = if edge == Edge::In { TimeRange::new(cut, -shift) } else { TimeRange::new(cut + shift, -shift) };
+            captions::extract_range(ct, closing);
+        } else {
+            captions::insert_gap(ct, cut, shift, ctx);
+        }
+    }
     transitions_follow_cuts(seq, &mut work);
     work.check().map_err(EditError::Other)?;
     *seq = work;

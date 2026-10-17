@@ -319,6 +319,45 @@ fn ripple_trim_shifts_following() {
 }
 
 #[test]
+fn ripple_trim_moves_sync_locked_captions() {
+    // V1: a [0,10) then b [10,20); a caption over each, and one past the end, on a sync-locked track.
+    use filmcraft_project::{Caption, CaptionFormat, CaptionTrack};
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let a = fx.put(v1, 0, 10, 0);
+    fx.put(v1, 10, 10, 0);
+    let tid = TrackId(900);
+    let mut ct = CaptionTrack::new(tid, "Subtitle".into(), CaptionFormat::Subtitle);
+    ct.sync_lock = true;
+    for (i, (s, d)) in [(0, 9), (11, 8), (25, 3)].iter().enumerate() {
+        ct.captions.push(Caption {
+            id: ClipId(5000 + i as u64),
+            start: f(*s),
+            duration: f(*d),
+            text: format!("c{i}"),
+            speaker: None,
+            cue_id: None,
+            settings: String::new(),
+        });
+    }
+    fx.seq.caption_tracks.push(ct);
+    let caps = |seq: &Sequence| seq.caption_track(tid).unwrap().captions.iter().map(|c| (c.start, c.end())).collect::<Vec<_>>();
+    let mut n = fx.next;
+    // shorter by 4: the captions after the cut move up with the picture
+    ripple_trim_group(&mut fx.seq, &[a], Edge::Out, -f(4), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(fx.spans(v1), vec![(0, 6), (6, 10)]);
+    assert_eq!(caps(&fx.seq), vec![(f(0), f(6)), (f(7), f(15)), (f(21), f(24))], "the first caption is cut at the new end, the others follow");
+    // longer by 2: they move back out
+    ripple_trim_group(&mut fx.seq, &[a], Edge::Out, f(2), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(caps(&fx.seq)[1..], [(f(9), f(17)), (f(23), f(26))]);
+    // a track that is not sync-locked stays where it was
+    fx.seq.caption_tracks[0].sync_lock = false;
+    ripple_trim_group(&mut fx.seq, &[a], Edge::Out, -f(2), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(caps(&fx.seq)[1..], [(f(9), f(17)), (f(23), f(26))]);
+    fx.seq.check().unwrap();
+}
+
+#[test]
 fn ripple_trim_group_takes_a_split_edit_along() {
     // V1: a [0,10) then b [10,20). b's linked sound leads it by 4 on sync-locked A1: [6,20).
     let mut fx = Fx::new();
