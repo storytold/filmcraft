@@ -153,6 +153,24 @@ impl ExportRenderer {
             FramePlan::Composite { .. } => None,
         }
     }
+
+    /// Render an opaque SDR frame directly to RGBA8 when the plan is GPU-compatible.
+    pub fn render_rgba8(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<(u32, u32, Vec<u8>)> {
+        if device_failed() {
+            return None;
+        }
+        let plan = plan_frame(project, seq, t, opts, sources);
+        if !matches!(plan, FramePlan::Layers { .. }) {
+            return None;
+        }
+        let prep = prepare(&plan);
+        let result = self.compositor.render_export_rgba8_prepared(&plan, Some(&prep))?;
+        if device_failed() {
+            return None;
+        }
+        timing::add_frame();
+        Some(result)
+    }
 }
 
 #[cfg(test)]
@@ -302,6 +320,80 @@ mod tests {
         let gpu = R(r).render(&p, seq, Tick::ZERO, RenderOptions::default(), &m).expect("rendered");
         let cpu = filmcraft_render::render_sequence(&p, seq, Tick::ZERO, RenderOptions::default(), &m);
         assert_parity(&cpu, &gpu, "frame renderer");
+    }
+
+    #[test]
+    fn experimental_sdr_rgba8_difference() {
+        let Some(mut renderer) = ExportRenderer::new() else {
+            eprintln!("SKIPPED: no GPU adapter");
+            return;
+        };
+
+        for transformed in [false, true] {
+            let (project, seq, sources) = project(transformed);
+            let t = Tick::ZERO;
+            let plan = plan_frame(&project, seq, t, RenderOptions::default(), &sources);
+            assert!(matches!(plan, FramePlan::Layers { .. }));
+
+            let prep = prepare(&plan);
+
+            // Benchmark both GPU export readback paths after one warm-up.
+            let _ = renderer.compositor.render_export_prepared(&plan, Some(&prep)).expect("linear warm-up");
+            let _ = renderer.compositor.render_export_rgba8_prepared(&plan, Some(&prep)).expect("RGBA8 warm-up");
+
+            let mut linear_times = Vec::new();
+            let mut rgba8_times = Vec::new();
+
+            for iteration in 0..5 {
+                if iteration % 2 == 0 {
+                    let start = std::time::Instant::now();
+                    let result = renderer.compositor.render_export_prepared(&plan, Some(&prep)).expect("linear benchmark");
+                    linear_times.push(start.elapsed());
+                    std::hint::black_box(result);
+
+                    let start = std::time::Instant::now();
+                    let result = renderer.compositor.render_export_rgba8_prepared(&plan, Some(&prep)).expect("RGBA8 benchmark");
+                    rgba8_times.push(start.elapsed());
+                    std::hint::black_box(result);
+                } else {
+                    let start = std::time::Instant::now();
+                    let result = renderer.compositor.render_export_rgba8_prepared(&plan, Some(&prep)).expect("RGBA8 benchmark");
+                    rgba8_times.push(start.elapsed());
+                    std::hint::black_box(result);
+
+                    let start = std::time::Instant::now();
+                    let result = renderer.compositor.render_export_prepared(&plan, Some(&prep)).expect("linear benchmark");
+                    linear_times.push(start.elapsed());
+                    std::hint::black_box(result);
+                }
+            }
+
+            let mean_ms = |times: &[std::time::Duration]| times.iter().map(|d| d.as_secs_f64() * 1000.0).sum::<f64>() / times.len() as f64;
+            eprintln!("SDR BENCH transformed={transformed}: linear_mean_ms={:.3}, rgba8_mean_ms={:.3}", mean_ms(&linear_times), mean_ms(&rgba8_times),);
+
+            let (w, h, linear) = renderer.compositor.render_export_prepared(&plan, Some(&prep)).expect("linear GPU export");
+
+            let old = Image { w: w as usize, h: h as usize, px: linear }.over_black_rgba8();
+
+            let (nw, nh, new) = renderer.compositor.render_export_rgba8_prepared(&plan, Some(&prep)).expect("RGBA8 GPU export");
+
+            assert_eq!((w, h), (nw, nh));
+            assert_eq!(old.len(), new.len());
+            assert_eq!(new.len(), (nw * nh * 4) as usize);
+
+            // The opaque SDR path must resolve every output pixel over black.
+            for (i, pixel) in new.chunks_exact(4).enumerate() {
+                assert_eq!(pixel[3], 255, "RGBA8 output alpha is not opaque at pixel {i}: {}", pixel[3]);
+            }
+
+            let differences: Vec<u32> = old.iter().zip(&new).map(|(a, b)| (*a as u32).abs_diff(*b as u32)).collect();
+
+            let max = differences.iter().copied().max().unwrap_or(0);
+            let mean = differences.iter().map(|&d| d as f64).sum::<f64>() / differences.len() as f64;
+            let differing = differences.iter().filter(|&&d| d != 0).count();
+
+            eprintln!("SDR RGBA8 transformed={transformed}: max={max}, mean={mean:.6}, differing={differing}/{}", differences.len());
+        }
     }
 
     #[test]

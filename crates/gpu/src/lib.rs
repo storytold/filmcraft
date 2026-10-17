@@ -980,6 +980,15 @@ impl GpuCompositor {
         self.map_accumulator(size)
     }
 
+    /// Experimental SDR RGBA8 export readback. Not used by the export pipeline yet.
+    pub fn render_export_rgba8_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> Option<(u32, u32, Vec<u8>)> {
+        if matches!(plan, FramePlan::Composite { .. }) {
+            return None;
+        }
+        self.render_plan(plan, prep, true, true);
+        self.read_output()
+    }
+
     /// Run the effect stage of a layer alone: `frame` decoded into its working image and `fx`
     /// applied, read back as linear premultiplied RGBA f32 (what `LayerFx` ops produce on the
     /// CPU from the same frame). None when the working image does not fit in a texture.

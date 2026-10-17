@@ -228,12 +228,37 @@ impl Pipeline {
     /// R'G'B' floats (3 per pixel).
     pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> (Vec<u8>, Vec<f32>) {
         let t = self.rate.tick_of(f);
+        let rgba8_fast_eligible = !self.hdr_out
+            && !self.alpha
+            && self.geom.content.is_none()
+            && self.geom.offset == (0, 0)
+            && self.overlay.is_none()
+            && !self.effects.image_overlay.enabled
+            && !self.effects.name_overlay.enabled
+            && !self.effects.timecode_overlay.enabled
+            && !self.effects.video_limiter.enabled;
+
+        let pool = self.renderer.as_ref().filter(|_| !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t));
+
+        if rgba8_fast_eligible && std::env::var_os("FILMCRAFT_DISABLE_RGBA8_FASTPATH").is_none() {
+            if let Some(pool) = pool {
+                let fast = pool.with(|r| r.render_rgba8(&self.project, self.seq, t, self.opts, sources)).flatten();
+
+                if let Some((w, h, rgba)) = fast.filter(|(w, h, rgba)| {
+                    *w == self.w && *h == self.h && rgba.len() == (*w as usize) * (*h as usize) * 4 && rgba.chunks_exact(4).all(|px| px[3] == 255)
+                }) {
+                    note_gpu_frame();
+                    crate::note_rgba8_fast_frame();
+                    return (rgba, Vec::new());
+                }
+            }
+        }
+
         // The registered GPU renderer goes first; `None` (no adapter, a plan the GPU cannot
         // draw, any internal error) falls back to the CPU reference renderer below. A frame the
         // planner hands back as one CPU image anyway (an adjustment layer, a complex transition,
         // HDR) does not take a pooled renderer: it would render on the CPU inside the pool, as
         // many frames at a time as there are renderers instead of one per export thread.
-        let pool = self.renderer.as_ref().filter(|_| !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t));
         let gpu = match pool {
             Some(pool) => {
                 let asked = web_time::Instant::now();

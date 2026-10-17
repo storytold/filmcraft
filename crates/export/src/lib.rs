@@ -921,6 +921,18 @@ pub trait FrameRenderer: Send {
         opts: filmcraft_render::RenderOptions,
         sources: &dyn SourceProvider,
     ) -> Option<filmcraft_render::Image>;
+
+    /// Optional opaque SDR RGBA8 fast path.
+    fn render_rgba8(
+        &mut self,
+        _project: &Project,
+        _seq: ItemId,
+        _t: Tick,
+        _opts: filmcraft_render::RenderOptions,
+        _sources: &dyn SourceProvider,
+    ) -> Option<(u32, u32, Vec<u8>)> {
+        None
+    }
 }
 
 /// Builds the frame renderer for one export, or `None` when this host cannot (no adapter).
@@ -961,12 +973,23 @@ pub(crate) fn build_frame_renderer() -> Option<Box<dyn FrameRenderer>> {
 }
 
 static GPU_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static RGBA8_FAST_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static GPU_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static LOCK_WAIT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// A frame was composited by the registered GPU renderer.
 pub fn note_gpu_frame() {
     GPU_FRAMES.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Count successful RGBA8 GPU fast-path frames.
+pub fn note_rgba8_fast_frame() {
+    RGBA8_FAST_FRAMES.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Number of successful RGBA8 fast-path frames since process start.
+pub fn rgba8_fast_frames() -> u64 {
+    RGBA8_FAST_FRAMES.load(Ordering::Relaxed)
 }
 
 /// The GPU renderer declined a frame (the CPU reference renderer took it).
