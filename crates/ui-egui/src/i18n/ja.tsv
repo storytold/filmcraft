@@ -3595,6 +3595,7 @@
 	Use Default Graphics	デフォルトのグラフィックを使用
 	The default graphics are used from the next start.	次回の起動からデフォルトのグラフィックが使用されます。
 	DirectX 12 only	DirectX 12 のみ
+	OpenGL only	OpenGL のみ
 	software rendering	ソフトウェアレンダリング
 	Label Color Presets	ラベルカラープリセット
 	{name} (Modified)	{name} (変更あり)

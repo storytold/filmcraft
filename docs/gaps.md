@@ -84,8 +84,9 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   crashes and concurrent instances don't count), the next launch moves on to DirectX 12 only
   (Windows), then a software adapter (WARP, lavapipe, llvmpipe) with CPU compositing, and keeps
   the mode that works; a start-up error wgpu reports moves on in the same process. A fallback mode
-  shows a notice with Use Default Graphics; `--graphics default|dx12|software` picks a mode by
-  hand. An explicit `WGPU_BACKEND` stays in charge. On Windows, a GPU that Vulkan lists through two
+  shows a notice with Use Default Graphics; `--graphics default|dx12|gl|software` picks a mode by
+  hand (`gl`, on Windows, only that way: the GPU compositor's path on Intel Gen 9 graphics, #1458).
+  An explicit `WGPU_BACKEND` stays in charge. On Windows, a GPU that Vulkan lists through two
   installed versions of one driver (GPUs on different driver packages) draws with the newer one
   instead of dying inside the stale one (`filmcraft_gpu::adapter`).
 - **Missing:** a launch that never fails, and CI that runs the gates.

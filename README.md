@@ -354,6 +354,10 @@ version of the Vulkan driver, and a window drawn through the stale one crashes i
 `%APPDATA%\FilmCraft\Logs\filmcraft.log`; installing one driver package for every GPU removes the
 duplicate. With one driver per GPU the adapter is the one wgpu picks, as before.
 
+On Intel UHD 6xx graphics (Gen 9), where Vulkan crashes in `igvk64.dll` and DirectX 12 composites
+on the CPU, `.\filmcraft.exe --graphics gl` starts with OpenGL and keeps it for later launches;
+`--graphics default` goes back.
+
 ### macOS
 
 | Build | File | Notes |

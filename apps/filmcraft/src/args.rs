@@ -19,7 +19,7 @@ Options:
   --data-dir <dir>   folder for auto-save, crash recovery and logs
                      (also: FILMCRAFT_DATA_DIR)
   --graphics <mode>  start with this graphics mode and keep it: default,
-                     dx12 (Windows), software (Windows, Linux);
+                     dx12 (Windows), gl (Windows), software (Windows, Linux);
                      `--graphics default` undoes an automatic fallback
   --version          print the version and exit
   -h, --help         print this help and exit
@@ -90,7 +90,7 @@ pub fn parse(env_control_port: Option<String>, args: impl IntoIterator<Item = Os
             "--no-recover" => l.recover = Some(false),
             "--data-dir" => l.data_dir = Some(args.next().map(PathBuf::from).ok_or("--data-dir needs a folder")?),
             "--graphics" => {
-                let name = args.next().ok_or("--graphics needs a mode: default, dx12 or software")?;
+                let name = args.next().ok_or("--graphics needs a mode: default, dx12, gl or software")?;
                 l.graphics = Some(graphics_mode(&name.to_string_lossy())?);
             }
             // everything after `--` is a file, whatever it looks like
@@ -142,10 +142,10 @@ pub fn project_and_media(files: &[String]) -> (Option<String>, Vec<String>) {
 
 /// A `--graphics` value: one of this platform's modes.
 fn graphics_mode(name: &str) -> Result<crate::graphics::Mode, String> {
-    use crate::graphics::{LADDER, Mode};
-    let here = || LADDER.iter().map(|m| m.name()).collect::<Vec<_>>().join(", ");
+    use crate::graphics::{CHOICES, Mode};
+    let here = || CHOICES.iter().map(|m| m.name()).collect::<Vec<_>>().join(", ");
     let mode = Mode::parse(name).ok_or_else(|| format!("--graphics needs one of {}, got `{name}`", here()))?;
-    if !LADDER.contains(&mode) {
+    if !CHOICES.contains(&mode) {
         return Err(format!("--graphics {name} is not available on this platform (use one of {})", here()));
     }
     Ok(mode)
@@ -306,20 +306,20 @@ mod tests {
 
     #[test]
     fn graphics_picks_one_of_this_platforms_modes() {
-        use crate::graphics::{LADDER, Mode};
+        use crate::graphics::{CHOICES, Mode};
         assert_eq!(launch(&[]).graphics, None);
         assert_eq!(launch(&["--graphics", "default"]).graphics, Some(Mode::Default));
-        for mode in LADDER {
+        for mode in CHOICES {
             assert_eq!(launch(&["--graphics", mode.name()]).graphics, Some(*mode));
         }
         // a mode this platform has not is refused, not ignored
-        for mode in [Mode::Dx12, Mode::Software].into_iter().filter(|m| !LADDER.contains(m)) {
+        for mode in [Mode::Dx12, Mode::Gl, Mode::Software].into_iter().filter(|m| !CHOICES.contains(m)) {
             assert!(parse_args(&["--graphics", mode.name()]).unwrap_err().contains("not available"));
         }
         assert!(parse_args(&["--graphics"]).is_err(), "missing mode");
         assert!(parse_args(&["--graphics", "vulkan"]).unwrap_err().contains("vulkan"));
         assert!(parse_args(&["--graphics", "DEFAULT"]).is_err());
         assert!(parse_args(&["--graphics", &"x".repeat(1 << 16)]).is_err());
-        assert!(USAGE.contains("--graphics"));
+        assert!(USAGE.contains("--graphics") && USAGE.contains("gl (Windows)"));
     }
 }

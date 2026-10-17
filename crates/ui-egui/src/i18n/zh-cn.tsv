@@ -3571,6 +3571,7 @@
 	Use Default Graphics	使用默认图形
 	The default graphics are used from the next start.	下次启动时将使用默认图形。
 	DirectX 12 only	仅 DirectX 12
+	OpenGL only	仅 OpenGL
 	software rendering	软件渲染
 	Label Color Presets	标签颜色预设
 	{name} (Modified)	{name}（已修改）

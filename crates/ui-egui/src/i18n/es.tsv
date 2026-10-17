@@ -3596,6 +3596,7 @@
 	Use Default Graphics	Usar gráficos predeterminados
 	The default graphics are used from the next start.	Los gráficos predeterminados se usarán a partir del próximo inicio.
 	DirectX 12 only	Solo DirectX 12
+	OpenGL only	Solo OpenGL
 	software rendering	procesamiento por software
 	Label Color Presets	Ajustes preestablecidos de color de etiqueta
 	{name} (Modified)	{name} (modificado)

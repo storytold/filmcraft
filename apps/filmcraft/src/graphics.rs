@@ -29,8 +29,8 @@
 //! # Getting back
 //! A fallback mode shows a notice with a reset button in the window (`graphics.notice.reset`,
 //! [`GraphicsStart::reset_to_default`]); `--graphics default` does the same from the command
-//! line, and `--graphics dx12|software` picks a mode by hand. An explicit `WGPU_BACKEND` leaves
-//! the saved state alone: the user is in charge.
+//! line, and `--graphics dx12|gl|software` picks a mode by hand (`gl` only that way, see
+//! [`CHOICES`]). An explicit `WGPU_BACKEND` leaves the saved state alone: the user is in charge.
 //!
 //! All files are written beside and renamed into place, so a reader never sees half a file; two
 //! instances updating [`STATE_FILE`] at the same moment can lose one update (a failure counted
@@ -70,6 +70,11 @@ pub enum Mode {
     Default,
     /// DirectX 12 only (Windows), for Vulkan drivers that crash at start-up.
     Dx12,
+    /// OpenGL only (Windows), chosen with `--graphics gl` and never by the fallback (#1458). On
+    /// Intel Gen 9 graphics (UHD 6xx) Vulkan crashes in `igvk64.dll` and FXC rejects `fx.wgsl`
+    /// under DirectX 12, so OpenGL is where the GPU compositor runs; creating it can crash other
+    /// drivers (AMD's `atio6axx.dll`, #477), so only the user picks it.
+    Gl,
     /// A software adapter (WARP on Windows, lavapipe / llvmpipe elsewhere); the preview then
     /// composites on the CPU (`FilmcraftApp::set_wgpu`).
     Software,
@@ -81,6 +86,7 @@ impl Mode {
         match self {
             Mode::Default => "default",
             Mode::Dx12 => "dx12",
+            Mode::Gl => "gl",
             Mode::Software => "software",
         }
     }
@@ -90,12 +96,13 @@ impl Mode {
         match self {
             Mode::Default => "default graphics",
             Mode::Dx12 => "DirectX 12 only",
+            Mode::Gl => "OpenGL only",
             Mode::Software => "software rendering",
         }
     }
 
     pub fn parse(name: &str) -> Option<Mode> {
-        [Mode::Default, Mode::Dx12, Mode::Software].into_iter().find(|m| m.name() == name)
+        [Mode::Default, Mode::Dx12, Mode::Gl, Mode::Software].into_iter().find(|m| m.name() == name)
     }
 }
 
@@ -108,10 +115,17 @@ pub const LADDER: &[Mode] = if cfg!(target_os = "windows") {
     &[Mode::Default, Mode::Software]
 };
 
-/// The mode after `mode` in `ladder`, if any.
+/// The modes `--graphics` accepts on this platform: the [`LADDER`] and, on Windows, [`Mode::Gl`],
+/// which only the user picks.
+pub const CHOICES: &[Mode] = if cfg!(target_os = "windows") { &[Mode::Default, Mode::Dx12, Mode::Gl, Mode::Software] } else { LADDER };
+
+/// The mode after `mode` in `ladder`, if any. A mode the ladder does not hold (one picked with
+/// `--graphics`, like [`Mode::Gl`]) hands over to the start of the ladder.
 fn next_in(ladder: &[Mode], mode: Mode) -> Option<Mode> {
-    let i = ladder.iter().position(|m| *m == mode)?;
-    ladder.get(i.checked_add(1)?).copied()
+    match ladder.iter().position(|m| *m == mode) {
+        Some(i) => ladder.get(i.checked_add(1)?).copied(),
+        None => ladder.first().copied(),
+    }
 }
 
 /// [`STATE_FILE`]: the mode to start with and the failed starts in a row in it.
@@ -143,11 +157,12 @@ struct Decision {
 
 /// This launch's mode from the saved state and the attempts other starts left. `now` is in Unix
 /// seconds, `pid` is this process (an attempt with our process id is a dead process whose id was
-/// reused), `window` is [`DEATH_WINDOW`] in seconds.
-fn decide(saved: Option<Saved>, attempts: &[Attempt], now: u64, pid: u32, window: u64, ladder: &[Mode]) -> Decision {
+/// reused), `window` is [`DEATH_WINDOW`] in seconds. `choices` are the modes the user may have
+/// picked ([`CHOICES`]); a failing one hands over to the start of `ladder`.
+fn decide(saved: Option<Saved>, attempts: &[Attempt], now: u64, pid: u32, window: u64, ladder: &[Mode], choices: &[Mode]) -> Decision {
     let first = ladder.first().copied().unwrap_or(Mode::Default);
     // Nothing saved, or a mode this platform does not use (a data folder copied from another OS).
-    let saved = saved.filter(|s| ladder.contains(&s.mode)).unwrap_or(Saved { mode: first, failures: 0 });
+    let saved = saved.filter(|s| choices.contains(&s.mode)).unwrap_or(Saved { mode: first, failures: 0 });
     let mut failures = saved.failures;
     let mut delete = Vec::with_capacity(attempts.len());
     for a in attempts {
@@ -279,7 +294,7 @@ impl GraphicsStart {
     /// [`Self::begin`] at `now` (Unix seconds) as process `pid`, without the expiry timer.
     fn begin_at(data_dir: Option<&Path>, explicit_backend: bool, forced: Option<Mode>, now: u64, pid: u32) -> Self {
         let first = LADDER.first().copied().unwrap_or(Mode::Default);
-        let forced = forced.map(|m| if LADDER.contains(&m) { m } else { first });
+        let forced = forced.map(|m| if CHOICES.contains(&m) { m } else { first });
         let reset = Arc::new(AtomicBool::new(false));
         let Some(dir) = data_dir.filter(|_| !explicit_backend) else {
             return Self { state: None, attempt: None, mode: forced.unwrap_or(Mode::Default), reset };
@@ -289,7 +304,7 @@ impl GraphicsStart {
         let saved = read_small(&state).and_then(|t| parse_state(&t));
         let found = list_attempts(&attempts_dir);
         let known: Vec<Attempt> = found.iter().filter_map(|(_, a)| *a).collect();
-        let decision = decide(saved, &known, now, pid, DEATH_WINDOW.as_secs(), LADDER);
+        let decision = decide(saved, &known, now, pid, DEATH_WINDOW.as_secs(), LADDER, CHOICES);
         let mut to_delete = decision.delete.iter();
         for (path, attempt) in &found {
             // unreadable files in our folder are debris (a different version, a damaged disk)
@@ -460,6 +475,8 @@ fn apply_for(options: &mut NativeOptions, mode: Mode, backend_override: Option<B
         Mode::Default => {}
         // Without Vulkan, whose driver is what crashes; GPU effects may fall back to the CPU.
         Mode::Dx12 => create.instance_descriptor.backends = Backends::DX12,
+        // Picked by the user only (`--graphics gl`), for the reason in `Mode::Gl`.
+        Mode::Gl => create.instance_descriptor.backends = Backends::GL,
         Mode::Software => {
             create.instance_descriptor.backends = software_backends(windows);
             create.native_adapter_selector = Some(Arc::new(pick_software));
@@ -493,8 +510,14 @@ mod tests {
     use super::*;
 
     const WINDOWS: &[Mode] = &[Mode::Default, Mode::Dx12, Mode::Software];
+    const WINDOWS_CHOICES: &[Mode] = &[Mode::Default, Mode::Dx12, Mode::Gl, Mode::Software];
     const LINUX: &[Mode] = &[Mode::Default, Mode::Software];
     const MACOS: &[Mode] = &[Mode::Default];
+
+    /// The choices that go with a ladder above: Windows adds `gl`, elsewhere they are the ladder.
+    fn choices(ladder: &[Mode]) -> &[Mode] {
+        if ladder == WINDOWS { WINDOWS_CHOICES } else { ladder }
+    }
 
     fn configured(mode: Mode, backend_override: Option<Backends>, windows: bool) -> (Backends, bool) {
         let mut options = NativeOptions::default();
@@ -510,7 +533,7 @@ mod tests {
         if std::env::var_os("WGPU_VALIDATION_INDIRECT_CALL").is_some() {
             return;
         }
-        for mode in [Mode::Default, Mode::Dx12, Mode::Software] {
+        for mode in [Mode::Default, Mode::Dx12, Mode::Gl, Mode::Software] {
             let mut options = NativeOptions::default();
             apply_for(&mut options, mode, None, false);
             let WgpuSetup::CreateNew(create) = options.wgpu_options.wgpu_setup else {
@@ -540,9 +563,10 @@ mod tests {
     fn only_the_windows_default_and_software_modes_choose_the_adapter() {
         for backend_override in [None, Some(Backends::VULKAN), Some(Backends::DX12)] {
             assert!(configured(Mode::Default, backend_override, true).1);
-            // elsewhere, and in DirectX 12 only mode, the adapter is wgpu's own choice
+            // elsewhere, and in DirectX 12 only and OpenGL only modes, the adapter is wgpu's own choice
             assert!(!configured(Mode::Default, backend_override, false).1);
             assert!(!configured(Mode::Dx12, backend_override, true).1);
+            assert!(!configured(Mode::Gl, backend_override, true).1);
         }
         assert!(configured(Mode::Software, None, true).1 && configured(Mode::Software, None, false).1);
     }
@@ -568,6 +592,26 @@ mod tests {
         assert_eq!(configured(Mode::Default, None, false), (eframe_default.instance_descriptor.backends, false));
     }
 
+    #[test]
+    fn gl_is_picked_by_hand_only_and_hands_back_to_the_ladder() {
+        // a choice on Windows, never a step of the automatic fallback (#1458, #477)
+        assert!(!WINDOWS.contains(&Mode::Gl) && WINDOWS_CHOICES.contains(&Mode::Gl));
+        assert!(!LADDER.contains(&Mode::Gl));
+        assert!(LADDER.iter().all(|m| CHOICES.contains(m)));
+        assert_eq!(CHOICES.contains(&Mode::Gl), cfg!(target_os = "windows"));
+        assert_eq!(Mode::parse("gl"), Some(Mode::Gl));
+        // OpenGL alone, with the adapter wgpu picks
+        assert_eq!(configured(Mode::Gl, None, true), (Backends::GL, false));
+        // a saved choice is kept, and one start that died tries it again
+        assert_eq!(mode_after(saved(Mode::Gl, 0), &[], WINDOWS), (Mode::Gl, 0, false));
+        assert_eq!(mode_after(saved(Mode::Gl, 0), &[dead(Mode::Gl)], WINDOWS), (Mode::Gl, 1, false));
+        // two in a row hand over to the start of the ladder, which falls back as usual from there
+        assert_eq!(mode_after(saved(Mode::Gl, 1), &[dead(Mode::Gl)], WINDOWS), (Mode::Default, 0, true));
+        // where it is no choice, it is dropped like any mode the platform has not
+        assert_eq!(mode_after(saved(Mode::Gl, 0), &[], LINUX), (Mode::Default, 0, false));
+        assert_eq!(mode_after(saved(Mode::Gl, 1), &[dead(Mode::Gl)], MACOS), (Mode::Default, 0, false));
+    }
+
     const W: u64 = 15;
     const NOW: u64 = 1_000_000;
     const ME: u32 = 7;
@@ -581,7 +625,7 @@ mod tests {
     }
 
     fn mode_after(s: Option<Saved>, attempts: &[Attempt], ladder: &[Mode]) -> (Mode, u32, bool) {
-        let d = decide(s, attempts, NOW, ME, W, ladder);
+        let d = decide(s, attempts, NOW, ME, W, ladder, choices(ladder));
         (d.saved.mode, d.saved.failures, d.moved_on)
     }
 
@@ -618,19 +662,19 @@ mod tests {
         let future = Attempt { pid: 4, mode: Mode::Default, started: NOW + 3600 };
         let older_mode = dead(Mode::Dx12);
         let mine = Attempt { pid: ME, mode: Mode::Default, started: NOW - 1 };
-        let d = decide(saved(Mode::Default, 0), &[starting, just_now, future, older_mode, mine], NOW, ME, W, WINDOWS);
+        let d = decide(saved(Mode::Default, 0), &[starting, just_now, future, older_mode, mine], NOW, ME, W, WINDOWS, WINDOWS_CHOICES);
         // another instance still starting is left alone; one from the future is dropped; a
         // failure in another mode is history; our own process id can only be a dead process
         assert_eq!(d.delete, [false, false, true, true, true]);
         assert_eq!((d.saved, d.moved_on), (Saved { mode: Mode::Default, failures: 1 }, false));
         // the clock a little behind another instance's: still starting
         let ahead = Attempt { pid: 5, mode: Mode::Default, started: NOW + 2 };
-        assert_eq!(decide(None, &[ahead], NOW, ME, W, WINDOWS).delete, [false]);
+        assert_eq!(decide(None, &[ahead], NOW, ME, W, WINDOWS, WINDOWS_CHOICES).delete, [false]);
     }
 
     #[test]
     fn the_files_round_trip_and_reject_anything_else() {
-        for mode in WINDOWS {
+        for mode in WINDOWS_CHOICES {
             for failures in [0, 1, 2, u32::MAX] {
                 assert_eq!(parse_state(&state_json(Saved { mode: *mode, failures })), saved(*mode, failures));
             }
@@ -813,6 +857,16 @@ mod tests {
         if !LADDER.contains(&Mode::Dx12) {
             assert_eq!(GraphicsStart::begin_at(Some(&dir), false, Some(Mode::Dx12), NOW + 300, 75).mode(), Mode::Default);
         }
+        // `--graphics gl` is kept the same way where it is a choice, and refused elsewhere
+        let gl = GraphicsStart::begin_at(Some(&dir), false, Some(Mode::Gl), NOW + 360, 76);
+        if CHOICES.contains(&Mode::Gl) {
+            assert_eq!(gl.mode(), Mode::Gl);
+            assert!(gl.degraded());
+            gl.confirm();
+            assert_eq!(launch(&dir, 77, NOW + 420).mode(), Mode::Gl);
+        } else {
+            assert_eq!(gl.mode(), Mode::Default);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -863,6 +917,23 @@ mod tests {
             assert_eq!(attempt_files(&dir), 1, "one attempt file per process");
         }
         assert!(!start.step_down(), "nothing after the last mode");
+        start.finish();
+        assert_eq!(attempt_files(&dir), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn step_down_from_a_picked_mode_starts_the_ladder() {
+        if !CHOICES.contains(&Mode::Gl) {
+            return;
+        }
+        let dir = temp_dir("step-gl");
+        let mut start = GraphicsStart::begin_at(Some(&dir), false, Some(Mode::Gl), NOW, ME);
+        assert_eq!(start.mode(), Mode::Gl);
+        let first = LADDER.first().copied().unwrap_or(Mode::Default);
+        assert!(start.step_down());
+        assert_eq!(start.mode(), first);
+        assert_eq!(state_of(&dir), saved(first, 0));
         start.finish();
         assert_eq!(attempt_files(&dir), 0);
         let _ = std::fs::remove_dir_all(&dir);

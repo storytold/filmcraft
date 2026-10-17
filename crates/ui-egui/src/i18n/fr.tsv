@@ -3569,6 +3569,7 @@
 	Use Default Graphics	Utiliser les graphismes par défaut
 	The default graphics are used from the next start.	Les graphismes par défaut seront utilisés au prochain démarrage.
 	DirectX 12 only	DirectX 12 uniquement
+	OpenGL only	OpenGL uniquement
 	software rendering	rendu logiciel
 	Label Color Presets	Paramètres prédéfinis de couleur d'étiquette
 	{name} (Modified)	{name} (modifié)
