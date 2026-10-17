@@ -7,7 +7,8 @@
 //! - **FCPXML** 1.9–1.11 ([`fcpxml`]);
 //! - **OpenTimelineIO** JSON (`.otio`) ([`otio`]);
 //! - **AAF** (`.aaf`, Edit Protocol, structured storage) ([`aaf`]);
-//! - **OMF Interchange 2.0** (`.omf`, Bento) for audio post ([`omf`]).
+//! - **OMF Interchange 2.0** (`.omf`, Bento) for audio post ([`omf`]);
+//! - **DaVinci Resolve projects** (`.drp`, import only) ([`drp`]).
 //!
 //! AAF and OMF can embed or consolidate audio: [`essence::audio_needs`] lists what the caller
 //! (the engine) has to render, and [`essence::MediaOptions`] passes the result back in.
@@ -27,6 +28,7 @@
 
 pub mod aaf;
 pub mod ale;
+pub mod drp;
 pub mod edl;
 pub mod essence;
 pub mod fcp7;
@@ -63,10 +65,20 @@ pub enum Format {
     Aaf,
     /// OMF Interchange 2.0 (Bento container).
     Omf,
+    /// DaVinci Resolve project archive (`.drp`). Import only.
+    Drp,
 }
 
 impl Format {
+    /// The formats FilmCraft exports (every format imports).
     pub const ALL: [Format; 6] = [Format::Edl, Format::Fcp7Xml, Format::Fcpxml, Format::Otio, Format::Aaf, Format::Omf];
+    /// The formats FilmCraft imports.
+    pub const IMPORTABLE: [Format; 7] = [Format::Edl, Format::Fcp7Xml, Format::Fcpxml, Format::Otio, Format::Aaf, Format::Omf, Format::Drp];
+
+    /// Whether FilmCraft can write this format.
+    pub fn can_export(self) -> bool {
+        self != Format::Drp
+    }
 
     pub fn name(self) -> &'static str {
         match self {
@@ -76,6 +88,7 @@ impl Format {
             Format::Otio => "OpenTimelineIO",
             Format::Aaf => "AAF",
             Format::Omf => "OMF",
+            Format::Drp => "DaVinci Resolve Project",
         }
     }
 
@@ -88,6 +101,7 @@ impl Format {
             Format::Otio => "otio",
             Format::Aaf => "aaf",
             Format::Omf => "omf",
+            Format::Drp => "drp",
         }
     }
 
@@ -101,6 +115,7 @@ impl Format {
             "otio" => Some(Format::Otio),
             "aaf" => Some(Format::Aaf),
             "omf" | "omfi" => Some(Format::Omf),
+            "drp" => Some(Format::Drp),
             _ => None,
         }
     }
@@ -110,6 +125,9 @@ impl Format {
 pub fn detect(bytes: &[u8], extension: Option<&str>) -> Option<Format> {
     if aaf::sniff(bytes) {
         return Some(Format::Aaf);
+    }
+    if drp::sniff(bytes) {
+        return Some(Format::Drp);
     }
     if omf::sniff(bytes) && extension.is_none_or(|e| matches!(Format::from_extension(e), None | Some(Format::Omf))) {
         return Some(Format::Omf);
@@ -259,6 +277,9 @@ pub fn import(bytes: &[u8], format: Format, base_dir: Option<&str>) -> Result<(I
 ///
 /// AAF and OMF documents may embed audio: [`aaf::import`] / [`omf::import`] also return it.
 pub fn import_with(bytes: &[u8], format: Format, opts: &ImportOptions) -> Result<(Imported, Report)> {
+    if format == Format::Drp {
+        return drp::import(bytes, opts);
+    }
     if matches!(format, Format::Aaf | Format::Omf) {
         let (imported, extracted, mut report) = if format == Format::Aaf { aaf::import(bytes, opts)? } else { omf::import(bytes, opts)? };
         if !extracted.is_empty() {
@@ -273,7 +294,7 @@ pub fn import_with(bytes: &[u8], format: Format, opts: &ImportOptions) -> Result
         Format::Fcp7Xml => fcp7::import(&text, opts, &mut report)?,
         Format::Fcpxml => fcpxml::import(&text, opts, &mut report)?,
         Format::Otio => otio::import(&text, opts, &mut report)?,
-        Format::Aaf | Format::Omf => return Err(Error::Other("AAF / OMF are binary documents".into())),
+        Format::Aaf | Format::Omf | Format::Drp => return Err(Error::Other("AAF / OMF / DRP are binary documents".into())),
     };
     Ok((imported, report))
 }
@@ -378,6 +399,9 @@ pub fn export(project: &Project, sequence: ItemId, format: Format, opts: &Export
     if project.sequence(sequence).is_none() {
         return Err(Error::NoSequence(sequence));
     }
+    if !format.can_export() {
+        return Err(Error::Other(format!("{} documents can be imported but not exported", format.name())));
+    }
     if format == Format::Aaf {
         return aaf::export(project, sequence, &aaf::AafOptions { name: opts.name.clone(), ..Default::default() });
     }
@@ -390,7 +414,7 @@ pub fn export(project: &Project, sequence: ItemId, format: Format, opts: &Export
         Format::Fcp7Xml => fcp7::export(project, sequence, opts, &mut report)?,
         Format::Fcpxml => fcpxml::export(project, sequence, opts, &mut report)?,
         Format::Otio => otio::export(project, sequence, opts, &mut report)?,
-        Format::Aaf | Format::Omf => return Err(Error::Other("AAF / OMF are binary documents".into())),
+        Format::Aaf | Format::Omf | Format::Drp => return Err(Error::Other("AAF / OMF / DRP are binary documents".into())),
     };
     Ok((text.into_bytes(), report))
 }
