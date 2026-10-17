@@ -254,6 +254,17 @@ pub fn timeline_extent(sequence_seconds: f64) -> f64 {
     sequence_seconds.max(0.0) + 600.0
 }
 
+/// The farthest zoom-out, in points a second: the whole Timeline extent fills a view `width`
+/// points wide and no more (#1593: a fixed floor showed hours of empty space past a short
+/// sequence, its clips a few points wide).
+pub fn min_pps(sequence_seconds: f64, width: f32) -> f64 {
+    let width = if width.is_finite() && width > 0.0 { width as f64 } else { 1.0 };
+    (width / timeline_extent(sequence_seconds)).clamp(1e-6, MAX_PPS)
+}
+
+/// The closest zoom-in, in points a second.
+pub const MAX_PPS: f64 = 24_000.0;
+
 /// The latest time the left edge of a view `width` points wide can show at `pps` points a second.
 pub fn max_scroll(sequence_seconds: f64, width: f32, pps: f64) -> f64 {
     if pps <= 0.0 || !pps.is_finite() {
@@ -284,10 +295,11 @@ pub(crate) fn reveal_playhead(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
 }
 
-/// Zoom about a time (keeps it under the same screen x).
-pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32) {
+/// Zoom about a time (keeps it under the same screen x), between the whole extent of a
+/// `sequence_seconds` sequence filling the view and [`MAX_PPS`].
+pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32, sequence_seconds: f64) {
     let old = v.target_pps;
-    let new = (old * factor).clamp(0.05, 24_000.0);
+    let new = (old * factor).clamp(min_pps(sequence_seconds, width), MAX_PPS);
     let x = ((anchor_secs - v.target_scroll) * old) as f32;
     let x = if (0.0..=width).contains(&x) { x } else { width / 2.0 };
     v.target_pps = new;
@@ -334,12 +346,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             v.fit_pending |= v.target_pps == p;
             v.fit_empty = None;
         }
+        let floor = min_pps(seq.duration().seconds(), content.width());
         if v.fit_pending && content.width() > 50.0 {
-            v.target_pps = (content.width() as f64 * 0.94 / dur_s).clamp(0.05, 24_000.0);
+            v.target_pps = (content.width() as f64 * 0.94 / dur_s).clamp(floor, MAX_PPS);
             v.target_scroll = 0.0;
             v.fit_pending = false;
             v.fit_empty = empty.then_some(v.target_pps);
         }
+        // Whatever zoomed out (wheel, keys, the Zoom tool, the control channel): no farther than
+        // the whole extent in view (#1593).
+        v.target_pps = v.target_pps.max(floor);
+        v.pps = v.pps.max(floor);
         let k = 1.0 - (-dt * 20.0).exp();
         let zooming = (v.pps - v.target_pps).abs() / v.target_pps > 0.001;
         // video thumbnails keep the layout of the zoom a gesture or animation started at (#1094)
@@ -1695,15 +1712,16 @@ fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, seq_seco
             // a handle: zoom, the other end of the view staying where it is
             _ => {
                 let dx = resp.drag_delta().x as f64 / bar.width().max(1.0) as f64 * total;
+                let floor = min_pps(seq_seconds, bar.width());
                 if mode == 1 {
                     let end = v.scroll + vis;
                     let ns = (v.scroll + dx).clamp(0.0, (end - 0.05).max(0.0));
-                    v.pps = (bar.width() as f64 / (end - ns).max(0.05)).clamp(0.05, 24_000.0);
+                    v.pps = (bar.width() as f64 / (end - ns).max(0.05)).clamp(floor, MAX_PPS);
                     v.scroll = ns;
                     v.target_scroll = ns;
                 } else {
                     let ne = (v.scroll + vis + dx).max(v.scroll + 0.05);
-                    v.pps = (bar.width() as f64 / (ne - v.scroll)).clamp(0.05, 24_000.0);
+                    v.pps = (bar.width() as f64 / (ne - v.scroll)).clamp(floor, MAX_PPS);
                 }
                 v.target_pps = v.pps;
             }
@@ -2256,7 +2274,8 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             let f = if (w.pinch - 1.0).abs() > 1e-4 { w.pinch as f64 } else { (1.0_f64 + w.delta.y as f64 * 0.01).clamp(0.5, 2.0) };
             let anchor_t = layout.tick_at(p.x).seconds();
             let v = &mut app.ui.timeline;
-            v.target_pps = (v.target_pps * f).clamp(0.05, 24_000.0);
+            // the floor (the whole extent in view) is applied with the frame's animation step
+            v.target_pps = (v.target_pps * f).clamp(1e-6, MAX_PPS);
             app.tl.zoom_anchor = Some((anchor_t, p.x));
         } else if w.delta != egui::Vec2::ZERO {
             let wheel_sideways = (app.session.prefs.timeline.mouse_scrolling == "horizontal") != w.command;
@@ -2364,7 +2383,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             (Tool::Zoom, _) => {
                 if resp.clicked() {
                     let f = if mods.alt { 1.0 / 2.0 } else { 2.0 };
-                    app.ui.timeline.target_pps = (app.ui.timeline.target_pps * f).clamp(0.05, 24_000.0);
+                    app.ui.timeline.target_pps = (app.ui.timeline.target_pps * f).clamp(1e-6, MAX_PPS);
                     app.tl.zoom_anchor = Some((t.seconds(), p.x));
                 }
                 None
@@ -3087,6 +3106,47 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
 /// #374: trimming an audio clip must cut its waveform off at the moving edge, not squeeze the whole
 /// waveform into the shorter clip: the preview draws from the item the trim will leave, which shows
 /// the same media at every timeline time it still covers.
+#[cfg(test)]
+mod zoom_floor_tests {
+    use super::*;
+
+    /// #1593: the farthest zoom-out shows the whole Timeline extent (the sequence plus ten
+    /// minutes) and no more, whatever the sequence length; a fixed floor showed hours.
+    #[test]
+    fn farthest_zoom_out_fills_the_view_with_the_extent() {
+        let width = 1000.0f32;
+        for seconds in [0.0, 38.0, 600.0, 8.0 * 3600.0] {
+            let floor = min_pps(seconds, width);
+            let shown = width as f64 / floor;
+            assert!((shown - timeline_extent(seconds)).abs() < 1e-6, "{seconds} s: {shown} s in view");
+        }
+        // a 38 s sequence: its clips across the first sixteenth of the view, not a few points
+        assert!((38.0 * min_pps(38.0, width) - width as f64 * 38.0 / 638.0).abs() < 1e-6);
+        // an eight-hour sequence may zoom out further than the old 0.05 floor allowed
+        assert!(min_pps(8.0 * 3600.0, width) < 0.05);
+        // degenerate widths never make a zero or infinite zoom
+        for w in [0.0, -5.0, f32::NAN, f32::INFINITY] {
+            let f = min_pps(38.0, w);
+            assert!(f.is_finite() && f > 0.0, "{w}: {f}");
+        }
+    }
+
+    #[test]
+    fn zoom_out_stops_at_the_floor_and_zoom_in_at_the_ceiling() {
+        let mut v = crate::state::TimelineView::default();
+        v.target_pps = 10.0;
+        for _ in 0..40 {
+            zoom_about(&mut v, 1.0 / 1.6, 0.0, 1000.0, 38.0);
+        }
+        assert!((v.target_pps - min_pps(38.0, 1000.0)).abs() < 1e-9, "{}", v.target_pps);
+        assert_eq!(v.target_scroll, 0.0);
+        for _ in 0..40 {
+            zoom_about(&mut v, 1.6, 0.0, 1000.0, 38.0);
+        }
+        assert_eq!(v.target_pps, MAX_PPS);
+    }
+}
+
 #[cfg(test)]
 mod trim_preview_tests {
     use super::*;
