@@ -144,7 +144,10 @@ pub fn transcode(
     };
     let project = Arc::new(p);
     let provider = move |id: ItemId| (id == item).then(|| src.clone());
-    filmcraft_export::export(&project, seq, &settings, &provider, progress).map_err(|e| e.to_string())
+    filmcraft_export::export(&project, seq, &settings, &provider, progress).map_err(|e| {
+        progress.cancelled.store(matches!(&e, filmcraft_export::ExportError::Cancelled), std::sync::atomic::Ordering::Relaxed);
+        e.to_string()
+    })
 }
 
 /// Frames a transcode of `clip` will write (for progress totals).
@@ -208,6 +211,7 @@ pub fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, String, &'st
         let n = tasks.len();
         for (k, (item, clip, name, src, out, pr)) in tasks.into_iter().enumerate() {
             if prog.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                prog.cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
                 err = Some("cancelled".to_string());
                 break;
             }

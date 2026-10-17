@@ -157,6 +157,135 @@ fn events_report_background_jobs() {
     assert_eq!(s.log.entries.len(), 6);
 }
 
+#[cfg(target_os = "linux")]
+mod late_request_job_events {
+    use super::*;
+    use std::sync::TryLockError;
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    struct ExportCleanup {
+        dir: std::path::PathBuf,
+        started: bool,
+        job: Option<crate::Job>,
+    }
+
+    impl Drop for ExportCleanup {
+        fn drop(&mut self) {
+            let Some(job) = &self.job else {
+                if !self.started {
+                    let _ = std::fs::remove_dir_all(&self.dir);
+                }
+                return; // An unknown producer may still own the directory.
+            };
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                let terminal = match job.result.try_lock() {
+                    Ok(result) => result.is_some(),
+                    Err(TryLockError::Poisoned(error)) => error.into_inner().is_some(),
+                    Err(TryLockError::WouldBlock) => false,
+                };
+                if terminal {
+                    let _ = std::fs::remove_dir_all(&self.dir);
+                    return;
+                }
+                job.progress.cancel.store(true, Ordering::Relaxed);
+                if Instant::now() >= deadline {
+                    return; // Preserve the directory if terminal ownership is uncertain.
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
+    fn snapshot(s: &mut Session) -> Value {
+        let history = s.execute("history.list", json!({})).unwrap();
+        json!({"project": s.project.as_ref(), "editor": s.state, "history": history,
+            "revision": s.revision, "savedRevision": s.saved_revision, "path": s.path})
+    }
+
+    fn assert_real_io_error_event(deliver_before_request: bool) {
+        let mut s = demo();
+        s.execute("events.clear", json!({})).unwrap();
+        assert!(s.jobs.is_empty());
+        let before = snapshot(&mut s);
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("fc-job-event-write-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let mut cleanup = ExportCleanup { dir, started: false, job: None };
+        let parent = cleanup.dir.join("blocked");
+        let original = b"ordinary file, not an output directory";
+        std::fs::write(&parent, original).unwrap();
+        let output = parent.join("clip.wav");
+        let path = output.to_str().unwrap().to_string();
+        let previous_jobs = s.jobs.len();
+        cleanup.started = true;
+        let started = s.execute(
+            "file.exportMedia",
+            json!({"path": path, "format": "wav", "range": "custom",
+            "startSeconds": 0, "endSeconds": 0.02, "captionSidecar": "none", "wait": false}),
+        );
+        cleanup.job = s.jobs.get(previous_jobs).cloned(); // Capture ownership before any result assertion.
+        let started = started.unwrap();
+        assert_eq!(s.jobs.len(), previous_jobs + 1);
+        let id = started["job"].as_u64().unwrap();
+        let job = cleanup.job.as_ref().unwrap().clone();
+        assert_eq!(job.id, id);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let terminal = loop {
+            let listed = s.execute("jobs.list", json!({})).unwrap();
+            let current = listed.as_array().unwrap().iter().find(|entry| entry["id"] == id).unwrap().clone();
+            if current["finished"] == true {
+                break current;
+            }
+            assert!(Instant::now() < deadline, "the real export did not publish a terminal result");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let error = terminal["result"]["error"].as_str().expect("real output failure").to_string();
+        assert!(error.starts_with("I/O: ") && error.contains(&path), "{error}");
+        assert_ne!(error, "cancelled");
+        assert!(!job.progress.cancel.load(Ordering::Relaxed));
+        assert!(!job.progress.cancelled.load(Ordering::Relaxed));
+        assert_eq!(std::fs::read(&parent).unwrap(), original);
+        assert!(!output.exists());
+        assert!(s.log.entries.is_empty(), "jobs.list must not deliver the first job Events");
+        let first = deliver_before_request.then(|| s.execute("events.list", json!({})).unwrap());
+        s.execute("jobs.cancel", json!({"job": id})).unwrap();
+        assert!(job.progress.cancel.load(Ordering::Relaxed));
+        assert!(!job.progress.cancelled.load(Ordering::Relaxed));
+        assert_eq!(job.to_json()["result"], terminal["result"]);
+        assert_eq!(snapshot(&mut s), before);
+        assert_eq!(std::fs::read(&parent).unwrap(), original);
+        assert!(!output.exists());
+        let delivered = s.execute("events.list", json!({})).unwrap();
+        if let Some(first) = first {
+            assert_eq!(delivered, first, "an already delivered failure must not change after a late request");
+        }
+        let entries = delivered["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2, "one Started and one terminal Event");
+        assert_eq!(entries[0]["source"], "job");
+        assert_eq!(entries[0]["message"], format!("Started: {}", job.label));
+        assert_eq!(entries[1]["source"], "job");
+        assert_eq!(entries[1]["level"], "error", "a late request must not relabel the real I/O failure");
+        assert_eq!(entries[1]["message"], format!("Failed: {}: {error}", job.label));
+        assert_eq!(entries[0]["count"], 1);
+        assert_eq!(entries[1]["count"], 1);
+        s.poll_persistence();
+        assert_eq!(s.execute("events.list", json!({})).unwrap(), delivered, "terminal delivery remains once-only");
+        assert_eq!(snapshot(&mut s), before);
+    }
+
+    #[test]
+    fn real_io_failure_before_first_event_keeps_failed_after_late_request() {
+        assert_real_io_error_event(false);
+    }
+
+    #[test]
+    fn real_io_failure_logged_before_late_request_stays_unchanged() {
+        assert_real_io_error_event(true);
+    }
+}
+
 /// #620: project notes are saved in the project file; typing (one `merge` key) is one undo step.
 #[test]
 fn project_notes_are_saved_and_typing_is_one_undo_step() {
