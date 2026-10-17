@@ -30,6 +30,8 @@
 
 // Used by the Windows (and, for `biplanar`, Linux) decoders; compiled everywhere so their tests run
 // on every system.
+#[cfg(target_os = "windows")]
+pub mod amf;
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod annexb;
 #[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
@@ -69,7 +71,16 @@ pub enum Availability {
 /// using FilmCraft's own decoders.
 pub fn register() -> Availability {
     #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
-    filmcraft_export::register_encoder(nvenc::export::factory);
+    {
+        filmcraft_export::register_encoder(nvenc::export::factory);
+        filmcraft_export::register_encoder(amf::export::factory);
+        filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, amf::hevc_available);
+        filmcraft_export::register_format_probe(filmcraft_export::Format::Av1, amf::av1_available);
+        filmcraft_export::register_hdr_probe(filmcraft_export::Format::Hevc, amf::hevc_hdr_available);
+        filmcraft_export::register_hdr_probe(filmcraft_export::Format::Av1, amf::av1_hdr_available);
+        amf::warm_hevc_probe();
+        amf::warm_av1_probe();
+    }
     #[cfg(target_os = "macos")]
     {
         filmcraft_codecs::register_video_decoder(videotoolbox_factory);
@@ -81,23 +92,28 @@ pub fn register() -> Availability {
         filmcraft_codecs::hw::set_hw_backend("VideoToolbox");
         Availability::Available("VideoToolbox")
     }
-    // Export ▸ H.265: NVENC is FilmCraft's only HEVC encoder on Windows, so the format is available
-    // when a small HEVC session opens. That takes about half a second, so it is asked on a thread of
-    // its own now rather than by the first draw of the format list.
+    // Export ▸ H.265 / AV1: NVENC and AMD AMF are FilmCraft's hardware encoders on Windows.
     #[cfg(target_os = "windows")]
     {
         filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, nvenc::hevc_available);
-        // HDR sequences export as HEVC Main 10 (PQ / HLG) only where NVENC has a 10-bit encoder; elsewhere
-        // (and on macOS, whose VideoToolbox path is 8-bit) they are tone-mapped to SDR, as before
+        filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, amf::hevc_available);
+        filmcraft_export::register_format_probe(filmcraft_export::Format::Av1, amf::av1_available);
+        // HDR sequences export as HEVC Main 10 (PQ / HLG) only where an encoder has a 10-bit encoder
         filmcraft_export::register_hdr_probe(filmcraft_export::Format::Hevc, nvenc::hevc_hdr_available);
+        filmcraft_export::register_hdr_probe(filmcraft_export::Format::Hevc, amf::hevc_hdr_available);
+        filmcraft_export::register_hdr_probe(filmcraft_export::Format::Av1, amf::av1_hdr_available);
         nvenc::warm_hevc_probe();
+        amf::warm_hevc_probe();
+        amf::warm_av1_probe();
     }
     #[cfg(target_os = "windows")]
     {
         static ENCODERS: std::sync::Once = std::sync::Once::new();
-        // Export ▸ Hardware encoding (NVENC H.264): in front of the software encoder, taking an
-        // export only when asked for and when NVENC can do it
-        ENCODERS.call_once(|| filmcraft_export::register_encoder(nvenc::export::factory));
+        // Hardware encoders (NVENC and AMD AMF) in front of the software encoder
+        ENCODERS.call_once(|| {
+            filmcraft_export::register_encoder(nvenc::export::factory);
+            filmcraft_export::register_encoder(amf::export::factory);
+        });
         filmcraft_codecs::register_video_decoder(media_foundation_factory);
         filmcraft_codecs::hw::set_hw_backend("Media Foundation");
         Availability::Available("Media Foundation")
