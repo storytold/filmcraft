@@ -57,7 +57,12 @@ pub fn export_json() -> Value {
     let hw = filmcraft_export::hw_encode_stats();
     let stages: serde_json::Map<String, Value> =
         filmcraft_export::stage_times().into_iter().map(|(s, ns)| (format!("{}Ms", s.name()), json!(ns as f64 / 1e6))).collect();
-    json!({"hardware": {"frames": hw.frames, "sessions": hw.sessions, "declined": hw.declined}, "stages": stages})
+    let g = filmcraft_export::gpu_render_stats();
+    json!({
+        "hardware": {"frames": hw.frames, "sessions": hw.sessions, "declined": hw.declined},
+        "gpu": {"frames": g.frames, "fallbacks": g.fallbacks, "yuvFrames": g.yuv_frames},
+        "stages": stages
+    })
 }
 
 /// The engine's `perf.stats`.
@@ -110,6 +115,9 @@ mod tests {
         assert!(v["decode"]["hardware"]["backend"].is_null() || v["decode"]["hardware"]["backend"].is_string());
         for k in ["frames", "sessions", "declined"] {
             assert!(v["export"]["hardware"][k].is_number(), "export.hardware.{k} in {v}");
+        }
+        for k in ["frames", "fallbacks", "yuvFrames"] {
+            assert!(v["export"]["gpu"][k].is_number(), "export.gpu.{k} in {v}");
         }
         for k in ["setupMs", "loudnessMs", "renderMs", "encodeMs", "convertMs", "audioMs", "muxMs", "finishMs", "waitMs"] {
             assert!(v["export"]["stages"][k].is_number(), "export.stages.{k} in {v}");

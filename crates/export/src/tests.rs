@@ -492,3 +492,41 @@ impl FrameRenderer for FakeRenderer {
         Some(filmcraft_render::Image::new(320, 180))
     }
 }
+
+/// The software H.264 encoder fed the planes `rgba_to_yuv420_8` makes writes the same stream as
+/// when fed the RGBA itself: the YUV input path changes nothing but who converts.
+#[test]
+fn h264_yuv_input_matches_rgba_input() {
+    let (w, h) = (64u32, 48u32);
+    let s = ExportSettings { format: Format::H264, bitrate_kbps: 2000, ..Default::default() };
+    let mk = || crate::h264_factory(Format::H264, w, h, FrameRate::FPS_24, &s).expect("software H.264").expect("encoder");
+    let (mut a, mut b) = (mk(), mk());
+    assert!(b.takes_yuv420(), "software H.264 takes 4:2:0 planes");
+    let (mut pa, mut pb) = (Vec::new(), Vec::new());
+    for i in 0..30u64 {
+        let rgba: Vec<u8> = (0..w * h).flat_map(|p| [((p * 3 + i as u32) % 256) as u8, ((p / w * 5) % 256) as u8, ((i * 9) % 256) as u8, 255]).collect();
+        pa.extend(a.encode(&EncoderFrame { width: w, height: h, rgba: &rgba, hdr: None, index: i }).unwrap());
+        let (mut y, mut u, mut v) = (Vec::new(), Vec::new(), Vec::new());
+        crate::rgba_to_yuv420_8(&rgba, w as usize, h as usize, &mut y, &mut u, &mut v);
+        let f = filmcraft_frame::VideoFrame {
+            width: w,
+            height: h,
+            data: filmcraft_frame::PixelData::Yuv8 {
+                planes: [std::sync::Arc::new(y), std::sync::Arc::new(u), std::sync::Arc::new(v)],
+                chroma: filmcraft_frame::Chroma::C420,
+                alpha: None,
+            },
+            color: Default::default(),
+            par: (1, 1),
+            pts: Tick::ZERO,
+        };
+        pb.extend(b.encode_yuv420(&f, i).unwrap());
+    }
+    pa.extend(a.flush().unwrap());
+    pb.extend(b.flush().unwrap());
+    let bytes = |ps: &[EncodedPacket]| ps.iter().flat_map(|p| p.data.clone()).collect::<Vec<u8>>();
+    assert_eq!(bytes(&pa), bytes(&pb), "byte-identical streams");
+    // a frame that is not 4:2:0 of the encoder's size is an error, not a panic
+    let bad = filmcraft_frame::VideoFrame::rgba8(w, h, vec![0; (w * h * 4) as usize]);
+    assert!(b.encode_yuv420(&bad, 30).is_err());
+}

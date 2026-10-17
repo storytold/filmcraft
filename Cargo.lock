@@ -1688,6 +1688,7 @@ dependencies = [
  "egui",
  "filmcraft-engine",
  "filmcraft-export",
+ "filmcraft-frame",
  "filmcraft-gpu",
  "filmcraft-platform",
  "filmcraft-project",
@@ -1811,6 +1812,7 @@ dependencies = [
  "filmcraft-codecs",
  "filmcraft-engine",
  "filmcraft-export",
+ "filmcraft-frame",
  "filmcraft-gpu",
  "filmcraft-media",
  "filmcraft-mpegts",
@@ -2030,6 +2032,7 @@ dependencies = [
 name = "filmcraft-gpu"
 version = "0.8.0"
 dependencies = [
+ "filmcraft-codecs",
  "filmcraft-color",
  "filmcraft-export",
  "filmcraft-frame",

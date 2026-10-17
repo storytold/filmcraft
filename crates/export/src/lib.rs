@@ -749,6 +749,18 @@ pub trait VideoEncoder: Send {
     fn pass_stats(&self) -> Option<filmcraft_h264enc::PassStats> {
         None
     }
+    /// Whether this stream takes 8-bit BT.709 limited 4:2:0 pictures through
+    /// [`encode_yuv420`](Self::encode_yuv420) (the GPU export renderer's YUV output), skipping
+    /// the RGBA → 4:2:0 conversion. Off by default.
+    fn takes_yuv420(&self) -> bool {
+        false
+    }
+    /// Encode an 8-bit BT.709 limited 4:2:0 picture (`PixelData::Yuv8`, `Chroma::C420`, the
+    /// encoder's size) as picture `index`.
+    fn encode_yuv420(&mut self, frame: &filmcraft_frame::VideoFrame, index: u64) -> Result<Vec<EncodedPacket>> {
+        let _ = (frame, index);
+        Err(ExportError::Unsupported("this encoder takes RGBA pictures".into()))
+    }
 }
 
 /// Audio encoder (AAC) plugged in by codec crates; PCM is built in.
@@ -921,6 +933,20 @@ pub trait FrameRenderer: Send {
         opts: filmcraft_render::RenderOptions,
         sources: &dyn SourceProvider,
     ) -> Option<filmcraft_render::Image>;
+    /// The frame as 8-bit BT.709 limited 4:2:0 for encoders that take it (see
+    /// [`VideoEncoder::takes_yuv420`]): what `render` + `Image::over_black_rgba8` +
+    /// [`rgba_to_yuv420_8`] would give, within ±1 per byte. None (the default) → `render`.
+    fn render_yuv420(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn SourceProvider,
+    ) -> Option<filmcraft_frame::VideoFrame> {
+        let _ = (project, seq, t, opts, sources);
+        None
+    }
 }
 
 /// Builds the frame renderer for one export, or `None` when this host cannot (no adapter).
@@ -952,6 +978,7 @@ pub(crate) fn reset_frame_renderers_for_tests() {
     frame_renderer_factories().write().unwrap_or_else(|e| e.into_inner()).clear();
     GPU_FRAMES.store(0, Ordering::Relaxed);
     GPU_FALLBACKS.store(0, Ordering::Relaxed);
+    GPU_YUV_FRAMES.store(0, Ordering::Relaxed);
 }
 
 /// Pick the first registered factory that can build a renderer for this host.
@@ -962,6 +989,7 @@ pub(crate) fn build_frame_renderer() -> Option<Box<dyn FrameRenderer>> {
 
 static GPU_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static GPU_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static GPU_YUV_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static LOCK_WAIT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// A frame was composited by the registered GPU renderer.
@@ -972,6 +1000,12 @@ pub fn note_gpu_frame() {
 /// The GPU renderer declined a frame (the CPU reference renderer took it).
 pub fn note_gpu_fallback() {
     GPU_FALLBACKS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// A frame reached the encoder as 4:2:0 straight from the GPU renderer
+/// ([`FrameRenderer::render_yuv420`]).
+pub fn note_gpu_yuv_frame() {
+    GPU_YUV_FRAMES.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Time an export worker waited for a free GPU renderer (process-wide, for the bench).
@@ -994,10 +1028,16 @@ pub fn reset_export_lock_wait() {
 pub struct GpuRenderStats {
     pub frames: u64,
     pub fallbacks: u64,
+    /// Of [`frames`](Self::frames), those handed to the encoder as 4:2:0 from the GPU.
+    pub yuv_frames: u64,
 }
 
 pub fn gpu_render_stats() -> GpuRenderStats {
-    GpuRenderStats { frames: GPU_FRAMES.load(Ordering::Relaxed), fallbacks: GPU_FALLBACKS.load(Ordering::Relaxed) }
+    GpuRenderStats {
+        frames: GPU_FRAMES.load(Ordering::Relaxed),
+        fallbacks: GPU_FALLBACKS.load(Ordering::Relaxed),
+        yuv_frames: GPU_YUV_FRAMES.load(Ordering::Relaxed),
+    }
 }
 pub fn register_audio_encoder(f: AudioEncoderFactory) {
     audio_factories().write().unwrap_or_else(|e| e.into_inner()).insert(0, f);
@@ -1510,6 +1550,23 @@ impl H264Encoder {
     }
 }
 
+/// The Y, U and V planes of an 8-bit 4:2:0 picture of `w` × `h`, or why it is not one.
+pub(crate) fn yuv420_planes(f: &filmcraft_frame::VideoFrame, w: u32, h: u32) -> Result<(&[u8], &[u8], &[u8])> {
+    let filmcraft_frame::PixelData::Yuv8 { planes, chroma: filmcraft_frame::Chroma::C420, .. } = &f.data else {
+        return Err(ExportError::Encode("not an 8-bit 4:2:0 picture".into()));
+    };
+    if (f.width, f.height) != (w, h) {
+        return Err(ExportError::Encode(format!("a {}x{} picture for a {w}x{h} encoder", f.width, f.height)));
+    }
+    let (w, h) = (w as usize, h as usize);
+    let c = w.div_ceil(2).saturating_mul(h.div_ceil(2));
+    let [y, u, v] = planes;
+    if y.len() < w.saturating_mul(h) || u.len() < c || v.len() < c {
+        return Err(ExportError::Encode("4:2:0 planes shorter than the picture".into()));
+    }
+    Ok((y.as_slice(), u.as_slice(), v.as_slice()))
+}
+
 impl VideoEncoder for H264Encoder {
     fn sample_entry(&self) -> SampleEntry {
         let cfg = filmcraft_isobmff::AvcConfig::parse(&self.enc.avcc()).unwrap_or_else(|_| {
@@ -1522,6 +1579,15 @@ impl VideoEncoder for H264Encoder {
     }
     fn timescale(&self) -> u32 {
         self.rate.num as u32
+    }
+    fn takes_yuv420(&self) -> bool {
+        !self.signal.is_hdr()
+    }
+    fn encode_yuv420(&mut self, f: &filmcraft_frame::VideoFrame, index: u64) -> Result<Vec<EncodedPacket>> {
+        let (y, u, v) = yuv420_planes(f, self.w, self.h)?;
+        let frame = filmcraft_h264enc::YuvFrame { y, u, v, y_stride: self.w as usize, uv_stride: (self.w as usize).div_ceil(2) };
+        let ps = self.enc.try_encode(&frame, index as i64 * self.rate.den).map_err(|e| ExportError::Encode(e.to_string()))?;
+        Ok(self.packets(ps))
     }
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
         timed(Stage::Convert, || match f.hdr {

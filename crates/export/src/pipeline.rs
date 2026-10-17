@@ -124,6 +124,8 @@ pub(crate) struct Pipeline {
     pub w: u32,
     pub h: u32,
     geom: Geometry,
+    /// Size of the picture the sequence renders at (before [`place`](Self::place)).
+    render_size: (u32, u32),
     opts: RenderOptions,
     pub hdr_out: bool,
     /// Keep straight alpha in the RGBA8 output instead of flattening over black.
@@ -178,6 +180,7 @@ impl Pipeline {
         let w = u32::try_from(w).map_err(|_| ExportError::Unsupported("rendered picture width is too large".into()))?;
         let h = u32::try_from(h).map_err(|_| ExportError::Unsupported("rendered picture height is too large".into()))?;
         filmcraft_project::validate_frame_size(w, h).map_err(ExportError::Unsupported)?;
+        let render_size = (w, h);
         let pipe = q.settings.color;
         let out_tf = hdr_out.then(|| filmcraft_color::OutputTransform::new(&pipe, pipe.working.output_space()));
         let opts = RenderOptions { scale: geom.render_scale, captions: settings.burn_captions, working_output: hdr_out, ..Default::default() };
@@ -215,6 +218,7 @@ impl Pipeline {
             w: r.width,
             h: r.height,
             geom,
+            render_size,
             opts,
             hdr_out,
             alpha: settings.keeps_alpha(),
@@ -281,6 +285,43 @@ impl Pipeline {
             limit_rgba8(&mut rgba, lim.min_percent, lim.max_percent);
         }
         (rgba, Vec::new())
+    }
+
+    /// Whether frames may come from the renderer as 8-bit BT.709 4:2:0 ([`frame_yuv`](Self::frame_yuv)):
+    /// a renderer is attached and nothing after compositing would change the picture (no
+    /// placement into another frame size, overlays, limiter, HDR or alpha).
+    pub fn yuv_eligible(&self) -> bool {
+        self.renderer.is_some()
+            && !self.hdr_out
+            && !self.alpha
+            && self.overlay.is_none()
+            && !self.effects.any_video()
+            && self.render_size == (self.w, self.h)
+            && self.geom.offset == (0, 0)
+            && self.geom.content.is_none_or(|(cw, ch)| (cw as u64, ch as u64) == (u64::from(self.w), u64::from(self.h)))
+    }
+
+    /// Frame `f` as 8-bit BT.709 limited 4:2:0 from the renderer, or None (CPU-planned frame, the
+    /// renderer declined, a picture of the wrong size): the caller takes [`frame`](Self::frame).
+    pub fn frame_yuv(&self, f: i64, sources: &dyn SourceProvider) -> Option<filmcraft_frame::VideoFrame> {
+        let t = self.rate.tick_of(f);
+        if filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t) {
+            return None;
+        }
+        let pool = self.renderer.as_ref()?;
+        let asked = web_time::Instant::now();
+        let v = pool
+            .with(|r| {
+                crate::note_lock_wait(asked.elapsed());
+                r.render_yuv420(&self.project, self.seq, t, self.opts, sources)
+            })
+            .flatten()?;
+        if (v.width, v.height) != (self.w, self.h) {
+            return None;
+        }
+        crate::note_gpu_frame();
+        crate::note_gpu_yuv_frame();
+        Some(v)
     }
 
     /// Fit the rendered picture into the output frame.

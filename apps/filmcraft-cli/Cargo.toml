@@ -20,6 +20,7 @@ whisper = ["filmcraft-engine/whisper", "filmcraft-engine/speech-download"]
 [dependencies]
 filmcraft-engine = { workspace = true }
 filmcraft-export = { workspace = true }
+filmcraft-frame = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-render = { workspace = true }
 filmcraft-time = { workspace = true }

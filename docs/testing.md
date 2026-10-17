@@ -131,6 +131,17 @@ Each codec README has the full fixture matrix and the measured results.
   difference of ≤ 6 and a mean of < 1.5 (8-bit levels). It skips when no GPU adapter is available.
 - Effects implemented only on the CPU need no GPU test: the plan pre-renders those layers on the
   CPU.
+- `crates/gpu/src/yuv.rs` runs the export 4:2:0 pass on hand-built Rgba16Float accumulators
+  (solid colours with and without alpha, a ramp over every `linear_to_srgb_u8` table entry from
+  −0.1 to 1.2, sizes 1×1 to 1918×1080) against `over_black_rgba8` + `rgba_to_yuv420_8`: every byte
+  within ±1, the exact share printed; `export_renderer.rs` checks the same through the real
+  renderer, and `tests/export_yuv_pipeline.rs` a whole H.264 export (every frame through the pass,
+  decoding like the CPU export). `crates/export/tests/gpu_yuv_path.rs` drives the export pipeline
+  with a CPU-exact fake renderer that counts how often it is asked for 4:2:0: eligible exports
+  (full and half size, two-pass) take every frame and give the same file as GPU Rendering Off, a
+  renderer declining every other frame too, and letterbox, pillarbox, image / name / timecode
+  overlays, the limiter, ProRes and Off are never asked. The GPU tests skip without an adapter;
+  `gpu_yuv_path.rs` needs none.
 - **Golden images** (`crates/golden`, a test-only crate): `tests/golden.rs` builds small procedural
   projects (demo-generator footage, bars, no media files) at 320×180 and renders one frame of each
   through the CPU compositor: Motion transform + opacity, four blend modes (Multiply, Screen,
