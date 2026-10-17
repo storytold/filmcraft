@@ -77,7 +77,7 @@ fn fx(s: &mut Scene, c: ClipId, id: &str) {
 }
 
 fn render(s: &Scene) -> Image {
-    render_sequence(&s.p, s.seq, R.tick_of(12), RenderOptions::default(), &s.map)
+    render_sequence(&s.p, s.seq, R.tick_of(12), RenderOptions::default(), &s.map).unwrap()
 }
 
 fn near(a: [f32; 4], b: [f32; 3], tol: f32) -> bool {
@@ -143,7 +143,7 @@ fn motion_and_masks_restrict_the_region() {
     assert!(near(img.get(40, 90), [0.0, 1.0, 1.0], 1e-4));
     assert!(near(img.get(280, 90), [1.0, 0.0, 0.0], 1e-4));
     // the same at half resolution (mask in sequence pixels scales with the output)
-    let half = render_sequence(&s.p, s.seq, R.tick_of(12), RenderOptions { scale: 0.5, ..Default::default() }, &s.map);
+    let half = render_sequence(&s.p, s.seq, R.tick_of(12), RenderOptions { scale: 0.5, ..Default::default() }, &s.map).unwrap();
     assert!(near(half.get(20, 45), [0.0, 1.0, 1.0], 1e-4));
     assert!(near(half.get(140, 45), [1.0, 0.0, 0.0], 1e-4));
     // an opacity mask on the adjustment layer: right half only (with the effect mask → nothing)
@@ -200,7 +200,7 @@ fn nested_adjustment_layers_stay_in_their_sequence() {
     let plain = {
         let mut p2 = s.p.clone();
         p2.sequence_mut(s.seq).unwrap().video_tracks[1].items.clear();
-        render_sequence(&p2, s.seq, R.tick_of(12), RenderOptions::default(), &s.map)
+        render_sequence(&p2, s.seq, R.tick_of(12), RenderOptions::default(), &s.map).unwrap()
     };
     assert_eq!(img.get(5, 5), plain.get(5, 5));
 }
@@ -229,7 +229,7 @@ fn transform_shutter_on_an_adjustment_layer_spans_one_sequence_frame() {
     let mut diff = |frame: i64| {
         let mut at = |shutter: bool| {
             clip(&mut s, adj).effect_mut("transform").unwrap().params.get_mut("shutter_override").unwrap().value = ParamValue::Bool(shutter);
-            render_sequence(&s.p, s.seq, r60.tick_of(frame), RenderOptions::default(), &s.map)
+            render_sequence(&s.p, s.seq, r60.tick_of(frame), RenderOptions::default(), &s.map).unwrap()
         };
         let (sharp, blurred) = (at(false), at(true));
         sharp.px.iter().zip(&blurred.px).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max)
@@ -254,7 +254,7 @@ fn dissolve(s: &mut Scene, track: usize, from: Option<ClipId>, to: Option<ClipId
 }
 
 fn at(s: &Scene, frame: i64) -> [f32; 4] {
-    render_sequence(&s.p, s.seq, R.tick_of(frame), RenderOptions::default(), &s.map).get(160, 90)
+    render_sequence(&s.p, s.seq, R.tick_of(frame), RenderOptions::default(), &s.map).unwrap().get(160, 90)
 }
 
 /// A dissolve at the start of an adjustment layer (Cmd+D) fades its effects in, and one at its

@@ -181,17 +181,10 @@ mod linux {
             }
         }
 
-        fn flush(&mut self) -> Vec<DecodedFrame> {
-            let flushed = match &mut self.front {
+        fn flush(&mut self) -> filmcraft_codecs::Result<Vec<DecodedFrame>> {
+            match &mut self.front {
                 Front::H264(f) => f.flush(),
                 Front::Hevc(f) => f.flush(),
-            };
-            match flushed {
-                Ok(out) => out,
-                Err(e) => {
-                    log::warn!("{}: {e} while flushing", self.name);
-                    Vec::new()
-                }
             }
         }
 

@@ -92,7 +92,7 @@ fn the_stream_decodes_to_the_source() {
     for p in &packets {
         out.extend(dec.decode(&p.data, p.pts).unwrap());
     }
-    out.extend(dec.flush());
+    out.extend(dec.flush().unwrap());
     assert_eq!(out.len(), 72);
     let mut worst = 99.0f64;
     for f in &out {

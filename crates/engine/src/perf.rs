@@ -44,6 +44,8 @@ pub fn decode_json() -> Value {
             "sessions": hw.sessions,
             "declined": hw.declined,
             "fallbacks": hw.fallbacks,
+            // of `frames`: pictures the compositor samples straight from the decoder's GPU memory
+            "zeroCopyFrames": hw.zero_copy_frames,
         },
     })
 }
@@ -103,7 +105,7 @@ mod tests {
         ] {
             assert!(v["decode"][k].is_number(), "decode.{k} in {v}");
         }
-        for k in ["frames", "softwareFrames", "sessions", "declined", "fallbacks"] {
+        for k in ["frames", "softwareFrames", "sessions", "declined", "fallbacks", "zeroCopyFrames"] {
             assert!(v["decode"]["hardware"][k].is_number(), "decode.hardware.{k} in {v}");
         }
         assert!(v["decode"]["hardware"]["enabled"].is_boolean());

@@ -88,9 +88,10 @@ fn render_turns_green_edit_invalidates_and_undo_restores() {
         FrameRate::FPS_24.tick_of(5),
         Default::default(),
         &s.media.provider(s.project.clone(), s.services.clone()),
-    );
+    )
+    .unwrap();
     let live = live.over_black_rgba8();
-    let prev = f.to_rgba8();
+    let prev = f.to_rgba8().unwrap();
     let diff = live.iter().zip(&prev).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap();
     assert!(diff <= 4, "preview differs from live render by {diff}");
     // edit the effect → stale
@@ -180,9 +181,10 @@ fn render_in_to_out_renders_only_the_marked_frames() {
             Default::default(),
             &s.media.provider(s.project.clone(), s.services.clone()),
         )
+        .unwrap()
         .over_black_rgba8()
     };
-    let prev = s.previews.frame(&s.media, &s.project, seq, 9, 1.0).expect("frame 9 has a preview").to_rgba8();
+    let prev = s.previews.frame(&s.media, &s.project, seq, 9, 1.0).expect("frame 9 has a preview").to_rgba8().unwrap();
     assert!(max_diff(&live(&s, 9), &live(&s, 3)) > 16, "the test needs frames that differ");
     let d = max_diff(&live(&s, 9), &prev);
     assert!(d <= 4, "preview of frame 9 differs from the live frame 9 by {d}");
@@ -196,7 +198,7 @@ fn render_in_to_out_renders_only_the_marked_frames() {
     assert_eq!((v["segments"].as_i64(), v["frames"].as_i64()), (Some(2), Some(18)), "{v}");
     assert_eq!(states(&s), vec!["green", "none"]);
     assert_eq!(s.previews.count(), 3);
-    let prev = s.previews.frame(&s.media, &s.project, seq, 20, 1.0).expect("frame 20 has a preview").to_rgba8();
+    let prev = s.previews.frame(&s.media, &s.project, seq, 20, 1.0).expect("frame 20 has a preview").to_rgba8().unwrap();
     assert!(max_diff(&live(&s, 20), &prev) <= 4);
     // Delete Render Files In to Out keeps the parts outside In/Out
     set_marks(&mut s, Some((7, 8)));

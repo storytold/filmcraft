@@ -868,7 +868,7 @@ mod tests {
         assert_eq!(src.info().duration, Tick::from_rational(4, 1, 25));
         let luma = |k: i64| {
             let f = src.video_frame(FrameRequest::full(Tick::from_rational(k, 1, 25))).expect("frame");
-            let l = f.luma8();
+            let l = f.luma8().unwrap();
             l.iter().map(|&v| u32::from(v)).sum::<u32>() / l.len().max(1) as u32
         };
         let seen: Vec<u32> = (0..4).map(luma).collect();
@@ -905,7 +905,7 @@ mod tests {
     /// Mean luma of the top and bottom halves of the decoded frame, and its size.
     fn halves(src: &Mp4Source) -> (u32, u32, u8, u8) {
         let f = src.video_frame(FrameRequest::full(Tick::ZERO)).expect("frame");
-        let l = f.luma8();
+        let l = f.luma8().unwrap();
         let half = l.len() / 2;
         let mean = |s: &[u8]| (s.iter().map(|&v| v as u32).sum::<u32>() / s.len() as u32) as u8;
         (f.width, f.height, mean(&l[..half]), mean(&l[half..]))
@@ -967,7 +967,7 @@ mod tests {
         assert_eq!(s.info().video.as_ref().map(|v| (v.width, v.height)), Some((32, 16)));
         let f = s.video_frame(FrameRequest::full(Tick::ZERO)).expect("frame");
         assert_eq!((f.width, f.height), (32, 16));
-        let l = f.luma8();
+        let l = f.luma8().unwrap();
         let col = |x: usize| (0..16).map(|y| u32::from(l[y * 32 + x])).sum::<u32>() / 16;
         assert!(col(0) > col(31) + 100 && col(23) > col(24) + 100, "bright up to column 23: {} {} {} {}", col(0), col(23), col(24), col(31));
 

@@ -30,6 +30,8 @@ mod audio_in;
 mod control_server;
 #[cfg(target_os = "linux")]
 mod dev_icon;
+#[cfg(windows)]
+mod dx12;
 mod file_filters;
 mod graphics;
 mod logging;
@@ -134,6 +136,14 @@ fn main() -> eframe::Result {
         let mut options = native_options(launch.control_port.is_some());
         // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
         graphics::apply(&mut options, graphics.mode(), backend_override);
+        // Preserve recovery modes; only the default startup may probe the zero-copy device.
+        #[cfg(windows)]
+        if graphics.mode() == graphics::Mode::Default
+            && backend_override.is_none_or(|backends| backends.contains(eframe::wgpu::Backends::DX12))
+            && let Some(existing) = dx12::setup()
+        {
+            options.wgpu_options.wgpu_setup = eframe::egui_wgpu::WgpuSetup::Existing(existing);
+        }
         let app_created = Arc::new(AtomicBool::new(false));
         let result = eframe::run_native("FilmCraft", options, app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created)));
         let app_created = app_created.load(Ordering::Relaxed);
@@ -255,7 +265,14 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         if let Some(rs) = cc.wgpu_render_state.clone()
             && std::env::var_os("FILMCRAFT_CPU_COMPOSITE").is_none()
         {
+            #[cfg(windows)]
+            let device = rs.device.clone();
             app.set_wgpu(rs);
+            #[cfg(windows)]
+            if app.gpu_compositor_active() {
+                let on = filmcraft_platform::media_foundation::enable_zero_copy(&device);
+                log::info!("zero-copy hardware decoding: {on}");
+            }
         }
         // Keep device selection available even when the default device is unavailable.
         // Settings ▸ Audio Hardware is applied on the first frame (`apply_prefs`).
@@ -399,7 +416,7 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
         t: filmcraft_time::Tick,
         opts: filmcraft_render::RenderOptions,
         sources: &dyn filmcraft_render::SourceProvider,
-    ) -> Option<filmcraft_render::Image> {
+    ) -> Result<Option<filmcraft_render::Image>, String> {
         self.0.render(project, seq, t, opts, sources)
     }
 }
