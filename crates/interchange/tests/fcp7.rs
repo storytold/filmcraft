@@ -290,6 +290,8 @@ fn rich_project() -> (Project, filmcraft_project::ItemId) {
         it.effect_mut("opacity").unwrap().params.insert("opacity".into(), Param::new(ParamValue::Float(75.0)));
         it.effects.push(filmcraft_project::find_effect("gaussian_blur").unwrap().instance());
         it.markers.push(Marker {
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(900),
             start: r.tick_of(310),
             duration: r.tick_of(5),
@@ -304,6 +306,8 @@ fn rich_project() -> (Project, filmcraft_project::ItemId) {
         let (_, ai) = q.find_item_mut(a1).unwrap();
         ai.effect_mut("volume").unwrap().params.insert("level".into(), Param::new(ParamValue::Float(-6.0)));
         q.markers.push(Marker {
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(901),
             start: r.tick_of(12),
             duration: Tick::ZERO,

@@ -48,6 +48,44 @@ use serde::{Deserialize, Serialize};
 pub use common::{file_url_to_path, path_to_file_url, resolve_path};
 pub use comp::ExtractedMedia;
 
+/// Warn once when an export cannot carry exact marker metadata, including nested/source markers.
+fn warn_marker_metadata_loss(project: &Project, sequence: ItemId, report: &mut Report) {
+    let mut pending = std::collections::BTreeSet::from([sequence]);
+    let mut seen = std::collections::BTreeSet::new();
+    let extra = |m: &filmcraft_project::Marker| m.custom_color.is_some() || !m.author.is_empty();
+    while let Some(id) = pending.pop_first() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let Some(item) = project.item(id) else { continue };
+        let has_extra = item.custom_label_color.is_some()
+            || match &item.kind {
+                ItemKind::Sequence(seq) => {
+                    let mut found = seq.markers.iter().any(extra);
+                    for clip in seq.all_tracks().flat_map(|track| &track.items) {
+                        found |= clip.markers.iter().any(extra) || clip.custom_label_color.is_some();
+                        if !seen.contains(&clip.item) {
+                            pending.insert(clip.item);
+                        }
+                    }
+                    found
+                }
+                ItemKind::Media(media) => media.markers.iter().any(extra),
+                ItemKind::Subclip { parent, .. } => {
+                    if !seen.contains(parent) {
+                        pending.insert(*parent);
+                    }
+                    false
+                }
+                _ => false,
+            };
+        if has_extra {
+            report.warn("This format does not preserve marker authors or exact custom colors (including clip labels). Use a FilmCraft project or OTIO for those properties.");
+            return;
+        }
+    }
+}
+
 /// An interchange format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Format {
@@ -425,6 +463,17 @@ pub fn export_edl_per_track(project: &Project, sequence: ItemId, opts: &ExportOp
 /// top-level sequences.
 pub fn merge_into(target: &mut Project, fragment: Imported, bin: Option<BinId>) -> Vec<ItemId> {
     let Imported { project: frag, sequences } = fragment;
+    for color in &frag.custom_colors {
+        if target.custom_colors.len() >= 64 {
+            break;
+        }
+        if !target.custom_colors.contains(color) {
+            target.custom_colors.push(*color);
+            if let Some(name) = frag.custom_color_names.get(color) {
+                target.custom_color_names.insert(*color, name.clone());
+            }
+        }
+    }
     let mut items: HashMap<ItemId, ItemId> = HashMap::new();
     for id in frag.items.keys() {
         items.insert(*id, ItemId(target.alloc_id()));

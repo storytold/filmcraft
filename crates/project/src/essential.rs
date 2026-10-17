@@ -760,6 +760,7 @@ mod tests {
 
     fn clip() -> TrackItem {
         TrackItem {
+            custom_label_color: None,
             id: crate::ClipId(1),
             item: crate::ItemId(2),
             name: "d".into(),

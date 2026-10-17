@@ -161,6 +161,7 @@ mod tests {
 
     fn item(id: u64, start: i64, dur: i64, src: i64) -> TrackItem {
         TrackItem {
+            custom_label_color: None,
             id: ClipId(id),
             item: ItemId(1),
             name: "c".into(),

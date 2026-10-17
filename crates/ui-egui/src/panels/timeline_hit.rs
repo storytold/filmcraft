@@ -305,6 +305,7 @@ mod tests {
     /// A clip on screen from `x0` to `x1` px (the layout is 100 px per second).
     fn clip(id: u64, x0: f64, x1: f64) -> TrackItem {
         TrackItem {
+            custom_label_color: None,
             id: ClipId(id),
             item: ItemId(1),
             name: format!("c{id}"),
@@ -437,6 +438,8 @@ mod tests {
         let (mut seq, l, _) = fixture(clips());
         let off = Tick::from_seconds_f64(3.017);
         seq.markers.push(filmcraft_project::Marker {
+            author: String::new(),
+            custom_color: None,
             id: filmcraft_project::MarkerId(9),
             start: off,
             duration: Tick::ZERO,
@@ -457,6 +460,8 @@ mod tests {
         let (mut seq, layout, _) = fixture(clips());
         for id in [9, 10] {
             seq.markers.push(filmcraft_project::Marker {
+                author: String::new(),
+                custom_color: None,
                 id: filmcraft_project::MarkerId(id),
                 start: Tick::from_seconds_f64(3.0),
                 duration: Tick::from_seconds_f64(2.0),

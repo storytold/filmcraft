@@ -66,6 +66,28 @@ fn merge_reallocates_ids_and_keeps_links() {
 }
 
 #[test]
+fn otio_import_merges_saved_palette_without_duplicates_or_overflow() {
+    use filmcraft_project::HexColor;
+    let mut src = Project::new("source");
+    src.custom_colors = vec![HexColor([1, 2, 3]), HexColor([4, 5, 6]), HexColor([4, 5, 6])];
+    src.custom_color_names.insert(HexColor([4, 5, 6]), "Review".into());
+    let seq = sequence(&mut src, "Sequence", FrameRate::FPS_25, false);
+    let (bytes, _) = export(&src, seq, Format::Otio, &ExportOptions::default()).unwrap();
+    let mut target = Project::new("target");
+    target.custom_colors = vec![HexColor([1, 2, 3])];
+    let (fragment, _) = import(&bytes, Format::Otio, None).unwrap();
+    merge_into(&mut target, fragment, None);
+    assert_eq!(target.custom_colors, vec![HexColor([1, 2, 3]), HexColor([4, 5, 6])]);
+    assert_eq!(target.custom_color_names[&HexColor([4, 5, 6])], "Review");
+
+    target.custom_colors = (0..63).map(|v| HexColor([v, 0, 0])).collect();
+    let (fragment, _) = import(&bytes, Format::Otio, None).unwrap();
+    merge_into(&mut target, fragment, None);
+    assert_eq!(target.custom_colors.len(), 64);
+    assert_eq!(target.custom_colors.last(), Some(&HexColor([1, 2, 3])));
+}
+
+#[test]
 fn rebase_shifts_source_times() {
     let edl = "TITLE: T\nFCM: NON-DROP FRAME\n\n001  CAM      V     C        01:00:10:00 01:00:12:00 01:00:00:00 01:00:02:00\n* FROM CLIP NAME: cam.mov\n* SOURCE FILE: /m/cam.mov\n";
     let (imp, _) = import(edl.as_bytes(), Format::Edl, None).unwrap();

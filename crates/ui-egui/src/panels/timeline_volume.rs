@@ -326,6 +326,7 @@ mod tests {
 
     fn clip(speed: f64, reverse: bool) -> TrackItem {
         TrackItem {
+            custom_label_color: None,
             id: ClipId(1),
             item: ItemId(1),
             name: String::new(),

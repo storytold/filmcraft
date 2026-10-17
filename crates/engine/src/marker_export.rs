@@ -33,9 +33,10 @@ pub(crate) fn export(s: &mut Session, p: &Value) -> Result<Value> {
     for m in &seq.markers {
         let row = name
             .len()
-            .checked_add(m.name.len())
+            .checked_add(m.author.len())
+            .and_then(|n| n.checked_add(m.name.len()))
             .and_then(|n| n.checked_add(m.comment.len()))
-            .and_then(|n| n.checked_add(label_name(s, m.color).len()))
+            .and_then(|n| n.checked_add(marker_color_name(s, m).len()))
             .and_then(|n| n.checked_mul(2))
             .and_then(|n| n.checked_add(1024));
         bound = row.and_then(|n| bound.checked_add(n)).filter(|n| *n <= MAX_BYTES).ok_or_else(|| bad(CMD, "marker report exceeds the 16 MiB limit"))?;
@@ -44,7 +45,7 @@ pub(crate) fn export(s: &mut Session, p: &Value) -> Result<Value> {
     let mut markers: Vec<_> = seq.markers.iter().collect();
     markers.sort_by_key(|m| (m.start, m.id));
     let mut csv =
-        String::from("Sequence,Marker ID,Name,Comment,Kind,Color,Start Timecode,End Timecode,Duration Frames,Start Ticks,Duration Ticks,Frame Rate\r\n");
+        String::from("Sequence,Marker ID,Name,Comment,Kind,Color,Start Timecode,End Timecode,Duration Frames,Start Ticks,Duration Ticks,Frame Rate,Author\r\n");
     for m in markers {
         if m.start.0 < 0 || m.duration.0 < 0 {
             return Err(bad(CMD, format!("marker {} has a negative start or duration", m.id.0)));
@@ -60,13 +61,14 @@ pub(crate) fn export(s: &mut Session, p: &Value) -> Result<Value> {
             m.name.clone(),
             m.comment.clone(),
             format!("{:?}", m.kind),
-            label_name(s, m.color).to_string(),
+            marker_color_name(s, m),
             tc(m.start)?,
             tc(Tick(end))?,
             rate.frame_at(m.duration).to_string(),
             m.start.0.to_string(),
             m.duration.0.to_string(),
             format!("{}/{}", rate.num, rate.den),
+            m.author.clone(),
         ];
         for (i, field) in fields.iter().enumerate() {
             if i > 0 {
@@ -75,7 +77,7 @@ pub(crate) fn export(s: &mut Session, p: &Value) -> Result<Value> {
             csv.push('"');
             // Quoting alone does not stop spreadsheet formulas. Escape only arbitrary text,
             // including formulas preceded by whitespace; numeric/timecode fields stay numeric.
-            if matches!(i, 0 | 2 | 3 | 5) && field.trim_start().starts_with(['=', '+', '-', '@']) {
+            if matches!(i, 0 | 2 | 3 | 5 | 12) && field.trim_start().starts_with(['=', '+', '-', '@']) {
                 csv.push('\'');
             }
             for ch in field.chars() {
@@ -90,6 +92,10 @@ pub(crate) fn export(s: &mut Session, p: &Value) -> Result<Value> {
     }
     s.services.write_file(path, csv.as_bytes()).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     Ok(json!({"path": path, "markers": seq.markers.len(), "bytes": csv.len()}))
+}
+
+fn marker_color_name(s: &Session, marker: &filmcraft_project::Marker) -> String {
+    marker.custom_color.map_or_else(|| label_name(s, marker.color).to_string(), filmcraft_project::HexColor::hex)
 }
 
 #[cfg(test)]
@@ -124,6 +130,8 @@ mod tests {
     }
     fn marker(id: u64, start: Tick, duration: Tick, name: &str) -> Marker {
         Marker {
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(id),
             start,
             duration,
@@ -145,6 +153,21 @@ mod tests {
     }
 
     #[test]
+    fn csv_preserves_exact_custom_color_and_author() {
+        let files = Arc::new(Files::default());
+        let mut s = session(files.clone());
+        let mut m = marker(100, Tick::ZERO, Tick::ZERO, "Note");
+        m.custom_color = filmcraft_project::HexColor::parse("#ffffff");
+        m.author = "Editor 日本語".into();
+        set_markers(&mut s, vec![m]);
+        s.execute(CMD, json!({"path":"custom.csv"})).unwrap();
+        let csv = written(&files);
+        assert!(csv.contains("Frame Rate,Author\r\n"));
+        assert!(csv.contains("\"Chapter\",\"#FFFFFF\""));
+        assert!(csv.contains("\"Editor 日本語\"\r\n"));
+    }
+
+    #[test]
     fn command_exports_sorted_unicode_review_notes_without_changing_the_edit() {
         let files = Arc::new(Files::default());
         let mut s = session(files.clone());
@@ -161,7 +184,7 @@ mod tests {
         assert_eq!(result["bytes"], csv.len());
         assert!(csv.contains("\"Review, 日本語\",\"101\",\"早い\",\"First line\r\nSecond, \"\"quoted\"\"\""));
         assert!(csv.find("\"101\"").unwrap() < csv.find("\"100\"").unwrap());
-        assert!(csv.contains("\"00:00:02:00\",\"00:00:03:00\",\"24\",\"508032000000\",\"254016000000\",\"24/1\"\r\n"));
+        assert!(csv.contains("\"00:00:02:00\",\"00:00:03:00\",\"24\",\"508032000000\",\"254016000000\",\"24/1\",\"\"\r\n"));
         assert_eq!(*s.project, *before);
         assert_eq!(serde_json::to_value(&s.state).unwrap(), state);
         assert_eq!(s.history.undo.len(), undo);
@@ -195,6 +218,7 @@ mod tests {
         for text in ["=1+1", "+1+1", "-1+1", "@SUM(1)", "\t =1+1"] {
             let mut m = marker(100, Tick::ZERO, Tick::ZERO, text);
             m.comment = text.into();
+            m.author = text.into();
             set_markers(&mut s, vec![m]);
             let id = s.state.active_sequence.unwrap();
             s.edit("Name", |p, _| {
@@ -203,7 +227,7 @@ mod tests {
             })
             .unwrap();
             s.execute(CMD, json!({"path":"safe.csv"})).unwrap();
-            assert_eq!(written(&files).matches(&format!("\"'{text}\"")).count(), 3);
+            assert_eq!(written(&files).matches(&format!("\"'{text}\"")).count(), 4);
             s.prefs.labels.colors.get_mut("iris").unwrap().name = text.into();
             s.execute(CMD, json!({"path":"safe-label.csv"})).unwrap();
             assert!(written(&files).contains(&format!("\"Chapter\",\"'{}\"", text.trim())));

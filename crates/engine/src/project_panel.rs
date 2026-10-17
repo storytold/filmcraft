@@ -358,7 +358,7 @@ pub fn cell(p: &Project, it: &ProjectItem, column: &str) -> (String, SortKey) {
     };
     match column {
         "Name" => text(it.name.clone()),
-        "Label" => text(it.label.name().to_string()),
+        "Label" => text(it.label_value()),
         "Media Type" => text(it.type_label().to_string()),
         "Frame Rate" if has_v => (format!("{} fps", rate.label()), SortKey::Num(rate.num as f64 / rate.den.max(1) as f64)),
         "Frame Rate" => (String::new(), SortKey::Num(0.0)),
@@ -1047,7 +1047,7 @@ fn items(s: &mut Session, p: &Value) -> Result<Value> {
         for id in items {
             let Some(it) = pr.item(id) else { continue };
             let cells: serde_json::Map<String, Value> = view.columns.iter().map(|c| (c.name.clone(), json!(cell(pr, it, &c.name).0))).collect();
-            rows.push(json!({"item": id.0, "name": it.name, "label": it.label.name(), "depth": depth, "cells": cells}));
+            rows.push(json!({"item": id.0, "name": it.name, "label": it.label_value(), "depth": depth, "cells": cells}));
         }
     }
     walk(pr, bin, view, 0, recursive, &mut rows);

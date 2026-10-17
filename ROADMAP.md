@@ -1,5 +1,7 @@
 # FilmCraft Roadmap
 
+- M3: Markers and clips share the existing sixteen clip presets plus a project-local custom hex palette. A reusable wheel/hex editor defines colors separately from marker editing; timeline markers expose Edit Marker with Name, Author and Notes. Marker/clip colors, palette edits and authors persist with undo and project saves. AVB marker import remains separate.
+
 - UI.6: Compact Source and Program monitors separate timecodes from view settings and retain Source drag choices. Transport controls use the shared toolbar sizing helper, with overflow actions in an operable More menu and a scrolling fallback at tiny widths.
 - UI.3: Panel tabs, edge splits, tab reordering and floating groups use the shared docking model and drop resolver. Floating geometry is saved with named workspaces while legacy layout JSON remains readable. Dock dividers use bounded shared geometry and keyboard-accessible resize handles. Tools and dock tabs expose actual widget focus, paint focus outlines, and support keyboard traversal/activation. Control input reaches focused widgets in background windows; optional input isolation supports unattended validation. Existing workspace trees and saved layout formats are retained.
 

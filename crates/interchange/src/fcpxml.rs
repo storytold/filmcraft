@@ -484,6 +484,8 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             let start = if src_in == Tick::ZERO && speed == 1.0 { rel } else { src_in + scaled(rel, speed) };
             let d = attr_time(m, "duration").unwrap_or(Tick::ZERO);
             out.push(Marker {
+                author: String::new(),
+                custom_color: None,
                 id: MarkerId(self.b.alloc()),
                 start,
                 duration: if d <= frame { Tick::ZERO } else { d },
@@ -652,6 +654,7 @@ struct Exp<'a, 'r> {
 }
 
 pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: &mut Report) -> Result<String> {
+    crate::warn_marker_metadata_loss(p, seq_id, report);
     let seq = p.sequence(seq_id).ok_or(Error::NoSequence(seq_id))?;
     let mut x = Exp {
         p,

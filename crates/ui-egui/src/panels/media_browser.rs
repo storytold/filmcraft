@@ -613,6 +613,7 @@ fn preview_item(
             p.items.insert(
                 ItemId(id),
                 ProjectItem {
+                    custom_label_color: None,
                     id: ItemId(id),
                     name: e.name.clone(),
                     label: Label::Iris,

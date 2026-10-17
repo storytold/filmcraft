@@ -58,6 +58,8 @@ fn point_roundtrips_through_the_one_frame_convention() {
     {
         let q = p.sequence_mut(s).unwrap();
         q.markers.push(Marker {
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(1),
             start: r.tick_of(24),
             duration: Tick::ZERO,
@@ -67,6 +69,8 @@ fn point_roundtrips_through_the_one_frame_convention() {
             color: Label::Blue,
         });
         q.markers.push(Marker {
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(2),
             start: r.tick_of(48),
             duration: r.tick_of(5),

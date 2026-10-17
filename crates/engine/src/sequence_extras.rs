@@ -83,7 +83,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             "Add Flash Cue Marker…",
             &["Markers"],
             None,
-            r#"{"time":ticks?,"name":str?,"comment":str?,"color":label?}"#,
+            r#"{"time":ticks?,"name":str?,"comment":str?,"color":label_or_hex?,"author":str?}"#,
             has_seq,
             add_flash_cue,
         ),
@@ -526,11 +526,12 @@ fn add_flash_cue(s: &mut Session, p: &Value) -> Result<Value> {
     let n = s.active_sequence().map(|q| q.markers.iter().filter(|m| m.kind == MarkerKind::FlashCue).count()).unwrap_or(0) + 1;
     let name = str_p(p, "name").map(str::to_string).unwrap_or_else(|| format!("Cue Point {n}"));
     let comment = str_p(p, "comment").unwrap_or("").to_string();
-    let color = marker_color_p(p, "markers.addFlashCue")?.unwrap_or(Label::Green);
+    let (color, custom_color) = marker_color_p(p, "markers.addFlashCue")?.unwrap_or((Label::Green, None));
+    let author = crate::commands::marker_author_p(p, "markers.addFlashCue")?.unwrap_or_default();
     let dur = u64_p(p, "durationFrames").map(|f| s.sequence_rate().tick_of(f as i64)).unwrap_or(Tick::ZERO);
     let id = s.edit_sequence("Add Flash Cue Marker", |q, ctx, _| {
         let id = MarkerId(ctx.alloc());
-        q.markers.push(Marker { id, start: t, duration: dur, name, comment, kind: MarkerKind::FlashCue, color });
+        q.markers.push(Marker { author, custom_color, id, start: t, duration: dur, name, comment, kind: MarkerKind::FlashCue, color });
         q.markers.sort_by_key(|m| m.start);
         Ok(id)
     })?;

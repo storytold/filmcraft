@@ -84,3 +84,68 @@ buttons use `craft-ui::layout::fit_toolbar`; commands beyond the available width
 through More, including their selected state and Source/Program routing. A scrolling fallback
 retains all commands if even More cannot fit. `monitor_geometry` checks the painted readouts,
 control bounds, overflow actions and Source drag payloads across monitor widths and themes.
+
+## Marker properties
+
+Right-click a timeline or Markers-panel marker and choose **Edit Marker…**. The window
+shows time/duration and edits the name, notes, author, and color. Existing presets are
+shown as swatches; project custom swatches are below them. Done makes one undoable marker
+edit; Cancel discards the marker draft.
+
+The **+** square below the presets opens a separate wheel/hex editor. It includes saturation and
+brightness sliders, keyboard-accessible hue, and exact six-digit sRGB hex entry. Add color
+saves a reusable swatch to this project's palette through `colors.addCustom` (a separate
+undoable operation) and selects it in the marker draft. Canceling the marker edit afterward
+does not remove a deliberately saved palette color. The project stores at most 64 custom
+swatches shared by markers and clips; duplicate additions are no-ops. Used custom colors also appear for reuse.
+Marker/color dialogs belong to the opened project instance, close when that project is replaced,
+and are not restored from saved UI preferences. Edits and undo within the same project keep them open.
+
+Markers and clips now share the existing 16 clip preset colors; clip RGB values and preset
+names are unchanged. Markers no longer collapse those names onto seven display colors.
+Red/Rose, Orange/Mango, Cyan/Teal and Pink/Magenta resolve to the same presets. Exact custom colors
+(including white, black, pink, and gray) override a marker's preset. Preset color filters
+leave custom markers visible. Selecting a preset clears the override, preserving the author. The preset colors also follow Settings → Labels in both views.
+
+The opaque sRGB editor lives in `widgets::color_picker`, independently of marker models,
+dialogs and project commands. Callers provide a `ColorDraft`, automation registry and id
+prefix. Its HSV conversion operates on sRGB channels; using linear-light saturation would
+make the center too white. Lumetri's grading wheels remain separate: they edit grading
+offsets. Existing effect/graphics pickers retain their alpha/float/color-space semantics.
+
+The same author and hex values are available to Source marker commands. Existing markers
+have an empty author; FilmCraft never infers authorship from the operating-system account.
+Projects (schema 16) retain marker properties and the project palette. Marker CSV reports
+and FilmCraft OTIO metadata retain individual marker authors and colors. OTIO also
+retains custom clip label colors and the palette in FilmCraft metadata. Other interchange exports warn when they cannot preserve those marker properties.
+Importing an OTIO document merges its saved swatches after the current project's swatches, omitting duplicates and respecting the 64-swatch limit.
+This does not add AVB marker import or Avid track-bound markers.
+
+Regression coverage includes project palette persistence/isolation/bounds/undo, marker
+commands and reopen, separate picker and marker drafts, preset/custom swatch reuse,
+sRGB wheel conversion, CSV escaping, and OTIO round trips.
+
+Clip and Project-panel Label menus expose the same project custom palette below the presets.
+Add custom color opens the shared picker; Add and apply saves the swatch and applies it to
+the captured selection in one undoable operation. `edit.label` accepts a preset/alias or hex,
+explicit `clips`/`items` targets, and optional `saveColor:true`. Choosing a named preset clears
+that item's custom override. Duplicated items and newly inserted source clips retain the exact
+custom label color. Bright custom timeline fills use dark text for readability.
+
+The marker editor also edits exact frame time and duration, switches between point and range
+markers, and deletes by marker ID. Double-click a timeline, monitor, or panel marker to edit it;
+right-click exposes Edit Marker and Delete Marker. Source and sequence ownership is shown and
+captured at opening, so changing the open clip or sequence does not redirect edits. Unchanged
+time fields preserve imported subframe ticks. A source range cannot extend beyond its source.
+
+The Markers panel switches between Sequence and Source, searches name/notes/author, filters
+preset and custom colors, and supports Command/Ctrl-click, Shift-click, and Select all for the
+visible rows. Bulk color changes and deletion are each one undo step. Hidden rows leave the
+selection. `markers.edit` and `markers.delete` take an explicit `sequence` (program) or `item`
+(source) and either `marker` or `markers`; invalid IDs reject the entire operation.
+
+Manage Colors is available from the Markers panel and clip Label menus. The separate project
+palette manager adds, names, edits, and removes swatches using the shared color picker. Editing
+or removing a saved swatch preserves already assigned hex values; used colors remain available
+for reuse. `colors.addCustom`, `colors.updateCustom`, and `colors.removeCustom` are undoable.
+Names persist in the project and FilmCraft OTIO metadata; existing sixteen presets are unchanged.

@@ -286,6 +286,8 @@ fn apply_results(s: &mut Session, seq_id: ItemId, apply: SceneApply, results: Ve
                             continue;
                         }
                         m.markers.push(Marker {
+                            author: String::new(),
+                            custom_color: None,
                             id: MarkerId(id),
                             start: *mt,
                             duration: Tick::ZERO,
