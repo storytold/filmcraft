@@ -2024,6 +2024,7 @@ dependencies = [
 name = "filmcraft-gpu"
 version = "0.8.0"
 dependencies = [
+ "bytemuck",
  "filmcraft-color",
  "filmcraft-export",
  "filmcraft-frame",
@@ -2032,6 +2033,7 @@ dependencies = [
  "filmcraft-project",
  "filmcraft-render",
  "filmcraft-time",
+ "half",
  "image",
  "log",
  "pollster 0.4.0",

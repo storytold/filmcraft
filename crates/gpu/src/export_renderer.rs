@@ -153,6 +153,38 @@ impl ExportRenderer {
             FramePlan::Composite { .. } => None,
         }
     }
+
+    /// One frame as `render(..)` followed by `Image::over_black_rgba8` would make it (opaque
+    /// 8-bit sRGB RGBA at the render size), for an export that needs nothing else done to the
+    /// picture: composited and encoded on the GPU, without the float frame. `None` when this
+    /// frame must go to the CPU renderer.
+    pub fn render_rgba8(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: RenderOptions,
+        sources: &dyn SourceProvider,
+    ) -> Option<(usize, usize, Vec<u8>)> {
+        let plan = plan_frame(project, seq, t, opts, sources);
+        match &plan {
+            // Already the CPU image: encode it here.
+            FramePlan::Image(img) => Some((img.w, img.h, img.over_black_rgba8())),
+            FramePlan::Layers { .. } => {
+                if device_failed() {
+                    return None;
+                }
+                let prep = prepare(&plan);
+                let (w, h, px) = self.compositor.render_export_rgba8_prepared(&plan, Some(&prep))?;
+                if device_failed() {
+                    return None;
+                }
+                timing::add_frame();
+                Some((w as usize, h as usize, px))
+            }
+            FramePlan::Composite { .. } => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -283,6 +315,173 @@ mod tests {
         let cpu = filmcraft_render::render_sequence(&p, seq, t, RenderOptions::default(), &m);
         let gpu = r.render(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
         assert_parity(&cpu, &gpu, "transformed");
+    }
+
+    /// The 8-bit frame encoded by the resolve shader is the float frame encoded by the export on
+    /// the CPU (`over_black_rgba8`) to within one code, and within the CPU parity bound.
+    #[test]
+    fn rgba8_frame_matches_float_frame_over_black() {
+        let Some(mut r) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (gpu export parity): no adapter");
+            return;
+        };
+        for transform in [false, true] {
+            let (p, seq, m) = project(transform);
+            let t = filmcraft_time::FrameRate::FPS_24.tick_of(10);
+            let (w, h, gpu8) = r.render_rgba8(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+            let float = r.render(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+            assert_eq!((w, h), (float.w, float.h));
+            assert_eq!(gpu8.len(), w * h * 4);
+            let encoded = float.over_black_rgba8();
+            let max = gpu8.iter().zip(&encoded).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+            assert!(max <= 1, "transform {transform}: 8-bit frame differs from the encoded float frame by {max}");
+            let cpu = filmcraft_render::render_sequence(&p, seq, t, RenderOptions::default(), &m);
+            assert_parity(&cpu, &Image { w, h, px: gpu8.iter().map(|&c| filmcraft_color::srgb_u8_to_linear_table()[c as usize]).collect() }, "rgba8");
+        }
+    }
+
+    /// The direct 8-bit frame loses nothing against the float frame the export used to encode:
+    /// over the demo scenes (gradients, deep shadows) every code is the exact sRGB encoding of
+    /// the float frame to within one, and it misses the exact code no more often than the CPU's
+    /// 12-bit-table encode does.
+    #[test]
+    fn rgba8_frame_is_no_less_exact_than_the_cpu_encode() {
+        let Some(mut r) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (gpu export parity): no adapter");
+            return;
+        };
+        let exact = |v: f32| -> u8 {
+            let v = f64::from(v).clamp(0.0, 1.0);
+            let e = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+            (e * 255.0).round() as u8
+        };
+        for scene in filmcraft_media::generators::DemoScene::ALL {
+            let mut p = Project::new("x");
+            let g = GeneratorSource::new(Generator::Demo(scene), 320, 180, filmcraft_time::FrameRate::FPS_24, Tick(2 * TICKS_PER_SECOND));
+            let info = g.info().clone();
+            let id = p.add_item(
+                &info.name.clone(),
+                Label::Iris,
+                ItemKind::Media(MediaClip {
+                    media: MediaRef::Generator(g.generator.clone()),
+                    info,
+                    interpret: Default::default(),
+                    mark_in: None,
+                    mark_out: None,
+                    markers: vec![],
+                    offline: false,
+                    proxy: None,
+                    identity: None,
+                }),
+                None,
+            );
+            let rate = filmcraft_time::FrameRate::FPS_24;
+            let seq = p.new_sequence("s", SequenceSettings { width: 320, height: 180, frame_rate: rate, ..Default::default() }, 1, 1, None);
+            let v = p.make_track_item(id, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+            p.sequence_mut(seq).unwrap().video_tracks[0].items.push(v);
+            let mut m = SourceMap::default();
+            m.0.insert(id, Arc::new(g));
+            let t = rate.tick_of(10);
+            let (_, _, gpu8) = r.render_rgba8(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+            let float = r.render(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+            let cpu8 = float.over_black_rgba8();
+            let (mut gpu_miss, mut cpu_miss, mut worst) = (0usize, 0usize, 0u8);
+            for (i, &v) in float.px.iter().enumerate().filter(|(i, _)| i % 4 != 3) {
+                let want = exact(v);
+                worst = worst.max(gpu8[i].abs_diff(want));
+                gpu_miss += usize::from(gpu8[i] != want);
+                cpu_miss += usize::from(cpu8[i] != want);
+            }
+            eprintln!("{scene:?}: codes off the exact encoding: GPU 8-bit {gpu_miss}, CPU 12-bit table {cpu_miss}, of {}", float.px.len() / 4 * 3);
+            assert!(worst <= 1, "{scene:?}: GPU code off the exact encoding by {worst}");
+            assert!(gpu_miss <= cpu_miss, "{scene:?}: GPU misses the exact code {gpu_miss} times, the CPU encode {cpu_miss}");
+        }
+    }
+
+    /// The same check where the float frame is full of in-between values: the bench's effects
+    /// scene (three scaled layers, one at 70 % opacity, with proc amp, Gaussian blur, vignette,
+    /// brightness/contrast and sharpen) over gradient footage. Wherever the 8-bit frame differs
+    /// from the CPU's 12-bit-table encode, the 8-bit frame holds the exact code.
+    #[test]
+    fn rgba8_frame_with_effects_differs_only_where_the_cpu_encode_is_off() {
+        use filmcraft_project::{ParamValue, find_effect};
+        let Some(mut r) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (gpu export parity): no adapter");
+            return;
+        };
+        let exact = |v: f32| -> u8 {
+            let v = f64::from(v).clamp(0.0, 1.0);
+            let e = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+            (e * 255.0).round() as u8
+        };
+        let (w, h) = (640u32, 360u32);
+        let rate = filmcraft_time::FrameRate::FPS_24;
+        for scene in filmcraft_media::generators::DemoScene::ALL {
+            let mut p = Project::new("x");
+            let g = GeneratorSource::new(Generator::Demo(scene), w, h, rate, Tick(2 * TICKS_PER_SECOND));
+            let info = g.info().clone();
+            let id = p.add_item(
+                &info.name.clone(),
+                Label::Iris,
+                ItemKind::Media(MediaClip {
+                    media: MediaRef::Generator(g.generator.clone()),
+                    info,
+                    interpret: Default::default(),
+                    mark_in: None,
+                    mark_out: None,
+                    markers: vec![],
+                    offline: false,
+                    proxy: None,
+                    identity: None,
+                }),
+                None,
+            );
+            let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: rate, ..Default::default() }, 3, 1, None);
+            // (scale %, position, opacity %, effects with their settings), as the export bench's fx scene
+            let layers: [(f64, (f64, f64), f64, &[(&str, &[(&str, f64)])]); 3] = [
+                (100.0, (0.0, 0.0), 100.0, &[("proc_amp", &[("contrast", 110.0)]), ("gaussian_blur", &[("blurriness", 8.0)]), ("vignette", &[])]),
+                (50.0, (160.0, -90.0), 100.0, &[("brightness_contrast", &[("brightness", 10.0), ("contrast", 15.0)])]),
+                (33.0, (-186.0, 100.0), 70.0, &[("sharpen", &[("amount", 40.0)])]),
+            ];
+            for (i, (scale, (px, py), opacity, fx)) in layers.into_iter().enumerate() {
+                let mut v = p.make_track_item(id, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+                let m = v.effect_mut("motion").unwrap();
+                m.params.get_mut("scale").unwrap().value = ParamValue::Float(scale);
+                m.params.get_mut("position").unwrap().value = ParamValue::Vec2(filmcraft_geom::Vec2::new(px, py));
+                v.effect_mut("opacity").unwrap().params.get_mut("opacity").unwrap().value = ParamValue::Float(opacity);
+                for (k, (fx_id, set)) in fx.iter().enumerate() {
+                    let mut e = find_effect(fx_id).unwrap().instance();
+                    for (name, val) in *set {
+                        e.params.get_mut(*name).unwrap().value = ParamValue::Float(*val);
+                    }
+                    v.effects.insert(k, e);
+                }
+                p.sequence_mut(seq).unwrap().video_tracks[i].items.push(v);
+            }
+            let mut m = SourceMap::default();
+            m.0.insert(id, Arc::new(g));
+            for frame in [3, 17] {
+                let t = rate.tick_of(frame);
+                let (_, _, gpu8) = r.render_rgba8(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+                let float = r.render(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+                let cpu8 = float.over_black_rgba8();
+                let (mut differ, mut gpu_miss, mut cpu_miss, mut worse, mut worst) = (0usize, 0usize, 0usize, 0usize, 0u8);
+                for (i, &v) in float.px.iter().enumerate().filter(|(i, _)| i % 4 != 3) {
+                    let want = exact(v);
+                    worst = worst.max(gpu8[i].abs_diff(want));
+                    differ += usize::from(gpu8[i] != cpu8[i]);
+                    gpu_miss += usize::from(gpu8[i] != want);
+                    cpu_miss += usize::from(cpu8[i] != want);
+                    worse += usize::from(gpu8[i] != cpu8[i] && gpu8[i] != want);
+                }
+                eprintln!(
+                    "{scene:?} frame {frame}: {} channels; 8-bit differs from the CPU encode in {differ} (GPU off the exact code there: {worse}); off the exact code: GPU {gpu_miss}, CPU {cpu_miss}",
+                    float.px.len() / 4 * 3
+                );
+                assert!(worst <= 1, "{scene:?} frame {frame}: GPU code off the exact encoding by {worst}");
+                assert_eq!(worse, 0, "{scene:?} frame {frame}: the 8-bit frame is off the exact code where the CPU encode is not");
+            }
+        }
     }
 
     #[test]

@@ -136,6 +136,10 @@ pub(crate) struct Pipeline {
     /// Free the pool's float images when the export ends: a standalone export, not one part of a
     /// batch (`ExportSettings::part_of_batch`).
     trim_pool: bool,
+    /// Nothing is done to the picture after rendering (SDR, no alpha, rendered at the output size
+    /// with nothing to fit, no overlay): the renderers hand over the final 8-bit frame
+    /// ([`FrameRenderer::render_rgba8`]).
+    rgba8_direct: bool,
 }
 
 impl Drop for Pipeline {
@@ -203,6 +207,16 @@ impl Pipeline {
             }
             RendererPool::new(list)
         };
+        // what `finish` would do to a rendered frame besides encoding it to 8-bit over black: nothing
+        let name_overlay = effects.name_overlay.enabled && !effects.name_overlay.text.trim().is_empty();
+        let rgba8_direct = !hdr_out
+            && !settings.keeps_alpha()
+            && overlay.is_none()
+            && !name_overlay
+            && !effects.timecode_overlay.enabled
+            && geom.offset == (0, 0)
+            && (w, h) == (r.width, r.height)
+            && geom.content.is_none_or(|c| c == (w as usize, h as usize));
         Ok(Pipeline {
             renderer,
             seq_rate: q.settings.frame_rate,
@@ -221,6 +235,7 @@ impl Pipeline {
             out_tf,
             effects,
             overlay,
+            rgba8_direct,
         })
     }
 
@@ -234,6 +249,31 @@ impl Pipeline {
         // HDR) does not take a pooled renderer: it would render on the CPU inside the pool, as
         // many frames at a time as there are renderers instead of one per export thread.
         let pool = self.renderer.as_ref().filter(|_| !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t));
+        if self.rgba8_direct
+            && let Some(pool) = pool
+        {
+            // Nothing is done to this export's picture after rendering: the renderer hands over
+            // the final 8-bit frame instead of a float one for the CPU to convert.
+            let asked = web_time::Instant::now();
+            let got = pool
+                .with(|r| {
+                    crate::note_lock_wait(asked.elapsed());
+                    r.render_rgba8(&self.project, self.seq, t, self.opts, sources)
+                })
+                .flatten();
+            let (w, h) = (self.w as usize, self.h as usize);
+            if let Some((_, _, mut rgba)) = got.filter(|(gw, gh, px)| (*gw, *gh) == (w, h) && px.len() == w.saturating_mul(h).saturating_mul(4)) {
+                note_gpu_frame();
+                let lim = &self.effects.video_limiter;
+                if lim.enabled {
+                    limit_rgba8(&mut rgba, lim.min_percent, lim.max_percent);
+                }
+                return (rgba, Vec::new());
+            }
+            // a frame the renderer did not draw (a transition, an error): the CPU reference renders it
+            note_gpu_fallback();
+            return self.finish(filmcraft_render::render_sequence(&self.project, self.seq, t, self.opts, sources), t);
+        }
         let gpu = match pool {
             Some(pool) => {
                 let asked = web_time::Instant::now();
@@ -257,6 +297,12 @@ impl Pipeline {
                 filmcraft_render::render_sequence(&self.project, self.seq, t, self.opts, sources)
             }
         };
+        self.finish(img, t)
+    }
+
+    /// The rest of [`frame`](Self::frame) for a rendered picture: fitted into the output frame,
+    /// overlaid and encoded.
+    fn finish(&self, img: Image, t: filmcraft_time::Tick) -> (Vec<u8>, Vec<f32>) {
         let mut img = self.place(img);
         self.overlays(&mut img, t);
         let lim = &self.effects.video_limiter;
