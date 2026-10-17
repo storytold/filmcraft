@@ -93,6 +93,9 @@ OMF carries no video at all.
   random corruption never panic. Nested sequences: AAF round trips as compositions (nests in
   nests, a nest used twice, another frame and sample rate, breakout to mono), OMF with the
   rendered sound, the audio needs of nests, a sequence inside itself.
+- `src/fcpxml.rs` (unit tests): a `<format>` whose `frameDuration` has a zero or negative part (`100/0s`,
+  `0/100s`, `-100/2500s`) gets the default frame rate and an `invalid frameDuration` warning in the report
+  instead of a zero rate, which made the export divide by zero once the sequence had a start timecode or a marker.
 - `tests/uncarried_clips.rs`: every format's export report names each graphic clip and adjustment
   layer once, as a warning; a sequence without them reports nothing; what a re-import gives back
   matches the report; the FCP7 XML import names a clip item whose file is not defined.
