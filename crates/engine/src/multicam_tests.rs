@@ -375,6 +375,207 @@ fn camera_frame(s: &Session, item: ItemId, f: i64) -> Vec<u8> {
 }
 
 #[test]
+fn multicam_recording_keeps_changed_audio_channel_selection() {
+    let (mut s, _, source, edit) = mc_session("switch");
+    s.execute("sequence.open", json!({"item": source.0})).unwrap();
+    s.execute("mixer.setStrip", json!({"strip": "A1", "pan": -100.0})).unwrap();
+    s.execute("sequence.open", json!({"item": edit.0})).unwrap();
+    s.execute("playhead.set", json!({"frame": 48})).unwrap();
+    s.execute("sequence.addEditAllTracks", json!({})).unwrap();
+    let audio = s.active_sequence().unwrap().audio_tracks[0].clone();
+    assert_eq!(audio.items.len(), 2);
+    let (left, right) = (audio.items[0].id, audio.items[1].id);
+    s.execute("timeline.select", json!({"clips": [left.0]})).unwrap();
+    s.execute("clip.audioChannels", json!({"channels": [0]})).unwrap();
+    s.execute("timeline.select", json!({"clips": [right.0]})).unwrap();
+    s.execute("clip.audioChannels", json!({"channels": [1]})).unwrap();
+    s.execute("multicam.audioFollowsVideo", json!({"enabled": true})).unwrap();
+    let signal = |s: &Session| {
+        let q = s.active_sequence().unwrap();
+        let provider = s.media.provider(s.project.clone(), s.services.clone());
+        filmcraft_render::audio::track_input(&s.project, &q.audio_tracks[0], 144_000, 32, 48_000, &provider)
+    };
+    let before = s.project.clone();
+    let signal_before = signal(&s);
+    assert!(signal_before.channels.iter().flatten().all(|sample| sample.abs() < 1e-7), "the right-hand mapping selects silence");
+    s.execute("multicam.recordStart", json!({"frame": 0})).unwrap();
+    s.execute("multicam.cut", json!({"camera": 1, "frame": 0})).unwrap();
+    s.execute("multicam.recordStop", json!({"frame": 96})).unwrap();
+    assert_eq!(signal(&s), signal_before, "healing same-angle cuts must retain the selected right-hand sound");
+    let after = s.project.clone();
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.audio_tracks[0].items.iter().map(|clip| clip.source_channels.clone()).collect::<Vec<_>>(), vec![vec![0], vec![1]]);
+    assert_eq!(q.video_tracks[0].items.len(), 1, "redundant same-angle video cuts still heal");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project, before);
+    assert_eq!(signal(&s), signal_before);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(s.project, after);
+    assert_eq!(signal(&s), signal_before);
+    let q = s.active_sequence().unwrap();
+    let video = q.video_tracks[0].items[0].id;
+    let audio = q.audio_tracks[0].items.clone();
+    let offset = s.sequence_rate().tick_of(96);
+    s.execute("timeline.move", json!({"moves": [{"clip": video.0, "track": "V1", "time": offset.0}], "linked": true})).unwrap();
+    for original in &audio {
+        let moved = s.active_sequence().unwrap().find_item(original.id).unwrap().1;
+        assert_eq!(moved.start, original.start + offset);
+        assert_eq!(moved.source_channels, original.source_channels);
+    }
+    let after_move = s.project.clone();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project, after);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(s.project, after_move);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project, after);
+    s.execute("multicam.recordStart", json!({"frame": 48})).unwrap();
+    s.execute("multicam.cut", json!({"camera": 2, "frame": 48})).unwrap();
+    s.execute("multicam.recordStop", json!({"frame": 96})).unwrap();
+    let after_recording = s.project.clone();
+    let q = s.active_sequence().unwrap();
+    let right_video = q.video_tracks[0].items[1].id;
+    assert_eq!(q.audio_tracks[0].items[1].id, right);
+    assert_eq!(q.find_item(right).unwrap().1.source_channels, vec![1]);
+    s.execute("timeline.move", json!({"moves": [{"clip": right_video.0, "track": "V1", "time": offset.0}], "linked": true})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().find_item(right).unwrap().1.start, offset, "re-recorded right audio follows the new angle's video");
+    assert_eq!(s.active_sequence().unwrap().find_item(left).unwrap().1.start, Tick::ZERO);
+    let after_recorded_move = s.project.clone();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project, after_recording);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project, after);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(s.project, after_recording);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(s.project, after_recorded_move);
+}
+
+#[test]
+fn multicam_recording_retains_existing_non_multicam_audio_links() {
+    check_existing_non_multicam_audio_links("record");
+}
+
+#[test]
+fn multicam_cut_to_camera_retains_existing_non_multicam_audio_links() {
+    check_existing_non_multicam_audio_links("cut");
+}
+
+#[test]
+fn multicam_cut_keeps_existing_linked_video_layer() {
+    check_existing_non_multicam_audio_links("cut-layer");
+}
+
+#[test]
+fn multicam_video_only_cut_keeps_existing_audio_links() {
+    check_existing_non_multicam_audio_links("cut-video-only");
+}
+
+#[test]
+fn multicam_fixed_audio_cut_keeps_existing_audio_links() {
+    check_existing_non_multicam_audio_links("cut-fixed-audio");
+}
+
+#[test]
+fn multicam_video_only_recording_keeps_existing_audio_links() {
+    check_existing_non_multicam_audio_links("record-video-only");
+}
+
+#[test]
+fn multicam_fixed_audio_recording_keeps_existing_audio_links() {
+    check_existing_non_multicam_audio_links("record-fixed-audio");
+}
+
+fn check_existing_non_multicam_audio_links(mode: &str) {
+    let (mut s, cameras, _, _) = mc_session("switch");
+    s.execute("playhead.set", json!({"frame": 24})).unwrap();
+    s.execute("sequence.addEditAllTracks", json!({})).unwrap();
+    s.execute("playhead.set", json!({"frame": 48})).unwrap();
+    s.execute("sequence.addEditAllTracks", json!({})).unwrap();
+    let sequence = s.state.active_sequence.unwrap();
+    let mut project = (*s.project).clone();
+    for (index, audio) in project.sequence_mut(sequence).unwrap().audio_tracks[0].items.iter_mut().enumerate() {
+        audio.item = cameras[0];
+        audio.multicam = None;
+        audio.source_channels = if index == 0 { vec![] } else { vec![(index - 1) as u16] };
+    }
+    s.project = std::sync::Arc::new(project);
+    s.execute("sequence.joinThroughEdits", json!({"all": true})).unwrap();
+    let mut layers = Vec::new();
+    if mode == "cut-layer" {
+        let matte = s.execute("file.newColorMatte", json!({"seconds": 4.0, "width": W, "height": H})).unwrap()["item"].as_u64().unwrap();
+        s.execute("timeline.place", json!({"item": matte, "track": "V2", "time": 0, "audio": false})).unwrap();
+        s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+        for frame in [24, 48] {
+            let time = s.sequence_rate().tick_of(frame);
+            let layer = s.active_sequence().unwrap().video_tracks[1].item_at(time).unwrap().id;
+            s.execute("timeline.select", json!({"clips": [layer.0]})).unwrap();
+            s.execute("sequence.addEdit", json!({"time": time.0})).unwrap();
+        }
+        let link = s.active_sequence().unwrap().video_tracks[0].items[0].link;
+        let mut project = (*s.project).clone();
+        for layer in &mut project.sequence_mut(sequence).unwrap().video_tracks[1].items {
+            layer.link = link;
+        }
+        let encoded = filmcraft_format::encode(&project, false);
+        let decoded = filmcraft_format::decode(&encoded).unwrap().project;
+        decoded.sequence(sequence).unwrap().check().unwrap();
+        s.project = std::sync::Arc::new(decoded);
+        layers = s.active_sequence().unwrap().video_tracks[1].items.clone();
+        let video = s.active_sequence().unwrap().video_tracks[0].items[0].id;
+        s.execute("timeline.select", json!({"clips": [video.0]})).unwrap();
+    }
+    let original_audio = s.active_sequence().unwrap().audio_tracks[0].items.clone();
+    assert_eq!(original_audio.len(), 3);
+    let link = s.active_sequence().unwrap().video_tracks[0].items[0].link;
+    assert!(link.is_some());
+    assert!(original_audio.iter().all(|item| item.link == link));
+    assert!(layers.iter().all(|item| item.link == link), "the layer fixture must already belong to the camera's link group");
+    s.execute("multicam.audioFollowsVideo", json!({"enabled": !mode.ends_with("fixed-audio")})).unwrap();
+    let before = s.project.clone();
+    if mode.starts_with("record") {
+        s.execute("multicam.recordStart", json!({"frame": 24})).unwrap();
+        s.execute("multicam.cut", json!({"camera": 2, "frame": 24, "videoOnly": mode.ends_with("video-only")})).unwrap();
+        s.execute("multicam.recordStop", json!({"frame": 48})).unwrap();
+    } else {
+        s.execute("multicam.cutToCamera", json!({"camera": 2, "frame": 24, "videoOnly": mode.ends_with("video-only")})).unwrap();
+    }
+    let after_recording = s.project.clone();
+    let q = s.active_sequence().unwrap();
+    for original in &original_audio {
+        let mut actual = q.find_item(original.id).unwrap().1.clone();
+        actual.link = original.link;
+        assert_eq!(&actual, original, "recording only rebinds the existing external audio relationship");
+    }
+    for original in &layers {
+        let mut actual = q.find_item(original.id).unwrap().1.clone();
+        actual.link = original.link;
+        assert_eq!(&actual, original, "camera edits only maintain the existing video-layer relationship");
+    }
+    let video = q.video_tracks[0].items[1].id;
+    let right = original_audio[1].id;
+    let destination = s.sequence_rate().tick_of(240);
+    s.execute("timeline.move", json!({"moves": [{"clip": video.0, "track": "V1", "time": destination.0}], "linked": true})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().find_item(right).unwrap().1.start, destination);
+    assert_eq!(s.active_sequence().unwrap().find_item(original_audio[0].id).unwrap().1.start, Tick::ZERO);
+    let last_start = s.sequence_rate().tick_of(if mode.starts_with("record") { 48 } else { 264 });
+    assert_eq!(s.active_sequence().unwrap().find_item(original_audio[2].id).unwrap().1.start, last_start);
+    for (index, original) in layers.iter().enumerate() {
+        let expected = s.sequence_rate().tick_of([0, 240, 264][index]);
+        assert_eq!(s.active_sequence().unwrap().find_item(original.id).unwrap().1.start, expected, "right video layers follow the right camera clip");
+    }
+    let after_move = s.project.clone();
+    for expected in [&after_recording, &before] {
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(&s.project, expected);
+    }
+    for expected in [&after_recording, &after_move] {
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(&s.project, expected);
+    }
+}
+
+#[test]
 fn multicam_clip_structure_and_render() {
     let (mut s, items, src, _) = mc_session("camera1");
     let q = s.project.sequence(src).unwrap();
