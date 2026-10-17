@@ -4,19 +4,17 @@
 # out for now: PdfCraft saw an intermittent access violation in egui UI tests there.)
 name: Windows ARM64
 
+# Nightly on main and on pushes to `release` (dependency and runner-image drift shows up within a
+# day, and always before a release ships), and on PRs that change the Windows packaging itself.
 on:
+  schedule:
+    - cron: "23 5 * * *"
   push:
-    branches: [main]
+    branches: [release]
   pull_request:
     paths:
-      - Cargo.toml
-      - Cargo.lock
-      - "**/Cargo.toml"
-      - "**/build.rs"
       - .github/workflows/windows-arm64.yml
       - packaging/windows/**
-  schedule:
-    - cron: "41 4 * * 1" # weekly, so drift in the runner images shows up
   workflow_dispatch:
 
 concurrency:

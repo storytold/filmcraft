@@ -5,12 +5,14 @@
 # golden-image tests need tools and a GPU the VM doesn't have.)
 name: FreeBSD
 
-# The VM build takes an hour or more, so it runs nightly on main rather than on every push or
-# dependency change: a drifted dependency still shows up within a day. PRs that change the
-# FreeBSD packaging itself still run it.
+# The VM build is slow, so it runs nightly on main and on pushes to `release`, not on every push
+# or dependency change: a drifted dependency still shows up within a day, and always before a
+# release ships. PRs that change the FreeBSD packaging itself still run it.
 on:
   schedule:
     - cron: "37 2 * * *"
+  push:
+    branches: [release]
   pull_request:
     paths:
       - .github/workflows/freebsd.yml
