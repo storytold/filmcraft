@@ -56,6 +56,8 @@ struct RendererPool {
     capacity: usize,
     renderers: std::sync::Mutex<Vec<Box<dyn FrameRenderer>>>,
     available: std::sync::Condvar,
+    /// All renderers can draw a plan prepared before acquiring the pool.
+    supports_prepared_plan: bool,
     /// A renderer panicked: the pool is retired and the rest of the export renders on the CPU.
     failed: std::sync::atomic::AtomicBool,
 }
@@ -63,10 +65,12 @@ struct RendererPool {
 impl RendererPool {
     /// `None` for an empty list (a pool nobody could take from).
     fn new(renderers: Vec<Box<dyn FrameRenderer>>) -> Option<Self> {
+        let supports_prepared_plan = !renderers.is_empty() && renderers.iter().all(|r| r.supports_prepared_plan());
         (!renderers.is_empty()).then(|| Self {
             capacity: renderers.len(),
             renderers: std::sync::Mutex::new(renderers),
             available: std::sync::Condvar::new(),
+            supports_prepared_plan,
             failed: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -236,12 +240,29 @@ impl Pipeline {
         let pool = self.renderer.as_ref().filter(|_| !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t));
         let gpu = match pool {
             Some(pool) => {
-                let asked = web_time::Instant::now();
-                pool.with(|r| {
-                    crate::note_lock_wait(asked.elapsed());
-                    r.render(&self.project, self.seq, t, self.opts, sources)
-                })
-                .flatten()
+                // Capability was checked for every renderer when the pool was created.
+                if pool.supports_prepared_plan {
+                    let plan = filmcraft_render::plan::plan_frame(&self.project, self.seq, t, self.opts, sources);
+                    match &plan {
+                        filmcraft_render::plan::FramePlan::Image(img) => Some(img.clone()),
+                        filmcraft_render::plan::FramePlan::Composite { .. } => None,
+                        filmcraft_render::plan::FramePlan::Layers { .. } => {
+                            let asked = web_time::Instant::now();
+                            pool.with(|r| {
+                                crate::note_lock_wait(asked.elapsed());
+                                r.render_prepared(&plan)
+                            })
+                            .flatten()
+                        }
+                    }
+                } else {
+                    let asked = web_time::Instant::now();
+                    pool.with(|r| {
+                        crate::note_lock_wait(asked.elapsed());
+                        r.render(&self.project, self.seq, t, self.opts, sources)
+                    })
+                    .flatten()
+                }
             }
             None => None,
         };
@@ -497,4 +518,41 @@ fn limit_px(c: &mut [f32; 3], lo: f32, hi: f32) {
         c.iter_mut().for_each(|v| *v += d);
     }
     c.iter_mut().for_each(|v| *v = v.clamp(0.0, hi.max(lo)));
+}
+
+#[cfg(test)]
+mod renderer_pool_capability_tests {
+    use super::*;
+
+    struct TestRenderer {
+        prepared: bool,
+    }
+
+    impl FrameRenderer for TestRenderer {
+        fn supports_prepared_plan(&self) -> bool {
+            self.prepared
+        }
+
+        fn render(&mut self, _project: &Project, _seq: ItemId, _t: filmcraft_time::Tick, _opts: RenderOptions, _sources: &dyn SourceProvider) -> Option<Image> {
+            None
+        }
+    }
+
+    fn renderer(prepared: bool) -> Box<dyn FrameRenderer> {
+        Box::new(TestRenderer { prepared })
+    }
+
+    #[test]
+    fn prepared_plan_requires_every_renderer_to_support_it() {
+        let supported = RendererPool::new(vec![renderer(true), renderer(true)]).unwrap();
+        assert!(supported.supports_prepared_plan);
+
+        let mixed = RendererPool::new(vec![renderer(true), renderer(false)]).unwrap();
+        assert!(!mixed.supports_prepared_plan);
+
+        let unsupported = RendererPool::new(vec![renderer(false)]).unwrap();
+        assert!(!unsupported.supports_prepared_plan);
+
+        assert!(RendererPool::new(Vec::new()).is_none());
+    }
 }

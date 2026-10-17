@@ -392,6 +392,14 @@ fn open_path(path: &str, reveal: bool) -> Result<(), String> {
 struct GpuFrameRenderer(filmcraft_gpu::ExportRenderer);
 
 impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
+    fn supports_prepared_plan(&self) -> bool {
+        true
+    }
+
+    fn render_prepared(&mut self, plan: &filmcraft_render::plan::FramePlan) -> Option<filmcraft_render::Image> {
+        self.0.render_prepared(plan)
+    }
+
     fn render(
         &mut self,
         project: &filmcraft_project::Project,

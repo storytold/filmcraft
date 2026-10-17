@@ -133,7 +133,12 @@ impl ExportRenderer {
     /// render size), or `None` when this frame must go to the CPU renderer.
     pub fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Image> {
         let plan = plan_frame(project, seq, t, opts, sources);
-        match &plan {
+        self.render_prepared(&plan)
+    }
+
+    /// Render a previously prepared frame plan without invoking the planner.
+    pub fn render_prepared(&mut self, plan: &FramePlan) -> Option<Image> {
+        match plan {
             // Already the CPU image: return it unchanged instead of rendering it twice.
             FramePlan::Image(img) => Some(img.clone()),
             FramePlan::Layers { .. } => {
