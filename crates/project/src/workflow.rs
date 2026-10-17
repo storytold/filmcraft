@@ -1,7 +1,7 @@
 //! Persistent workflow records. MIT OR Apache-2.0.
 //!
-//! Import records describe the immutable input, not the current edit. Relinking must update the
-//! asset registry, never rewrite these records. Their presence requires the workflow file tag.
+//! Import records describe the immutable input, not the current edit. Relinking updates current
+//! media references without rewriting these records. Their presence requires the workflow file tag.
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
