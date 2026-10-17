@@ -18,6 +18,34 @@ Headless mode also takes `--data-dir DIR` (user presets). Any other option is re
 there are no folder-confinement flags such as `--automation-read-root`, so the server can read
 and write wherever the user can.
 
+**Codex.** Build `filmcraft-cli` and `filmcraft` with `cargo build --release -p filmcraft-cli -p filmcraft`,
+or use the binaries from an installed FilmCraft release. Register the CLI's absolute path in Codex:
+
+```sh
+codex mcp add filmcraft-headless -- /absolute/path/to/filmcraft-cli mcp
+codex mcp add filmcraft -- /absolute/path/to/filmcraft-cli mcp --bridge 127.0.0.1:9876
+codex mcp list
+```
+
+On Windows the executable is `filmcraft-cli.exe`. The headless server starts with an empty project;
+add `--demo` after `mcp` if you want FilmCraft's built-in demo project. For the bridge server, start
+the desktop app with `filmcraft --control 9876` before asking Codex to edit its open project. The
+control channel listens only on localhost. After registration, start a new Codex session to load the
+servers, then ask it to call `command_list` or `doc_inspect`. The same stdio MCP server works with
+other MCP clients using the command and arguments in the table above.
+
+[`examples/mcp_10_second_clip.py`](../examples/mcp_10_second_clip.py) is a small, self-contained
+MCP client that creates a 24 fps sequence with two five-second color mattes and titles, then exports
+a ten-second H.264 MP4. It requires only Python's standard library and the FilmCraft CLI:
+
+```sh
+python examples/mcp_10_second_clip.py /absolute/path/to/filmcraft-cli target/filmcraft-mcp-demo.mp4
+```
+
+The example also saves the editable `.fcproj` beside the MP4. Its output goes under `target/` by
+default, which is ignored by Git. This exercises the server's initialize, `command_run`,
+`sequence_inspect`, save and export paths end to end.
+
 **Claude Code.** The repository's `.mcp.json` registers both servers (`filmcraft` = bridge,
 `filmcraft-headless` = demo). Both point at `target/release/filmcraft-cli`, so build it first:
 
