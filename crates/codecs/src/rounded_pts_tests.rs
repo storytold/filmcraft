@@ -87,7 +87,10 @@ fn mp4_1ms(rate: FrameRate, stamp: Stamp) -> Arc<[u8]> {
 /// Plays the stream back at its own rate (every frame's start), and asks for every frame's
 /// midpoint too. Returns what went wrong: frames never shown, frames shown twice, wrong midpoints.
 fn problems(src: &dyn MediaSource, rate: FrameRate) -> Vec<String> {
-    let n = frame_count(rate);
+    problems_for_count(src, rate, frame_count(rate))
+}
+
+fn problems_for_count(src: &dyn MediaSource, rate: FrameRate, n: usize) -> Vec<String> {
     let at = |t: Tick| index_of(&src.video_frame(FrameRequest::full(t)).unwrap());
     let mut shown = vec![0usize; n];
     for k in 0..n {
@@ -180,6 +183,30 @@ fn mp4_90k(durations: &[u32]) -> Arc<[u8]> {
         w.write_sample(t, WriteSample { data: &picture(k), duration, composition_offset: 0, is_sync: true }).unwrap();
     }
     w.finish().unwrap().into_inner().into()
+}
+
+/// An MP4 whose 90 kHz presentation timestamps have been rounded to whole milliseconds, as in
+/// phone footage (#1700).
+fn mp4_90k_ms_rounded(rate: FrameRate, frames: usize) -> Arc<[u8]> {
+    let durations: Vec<u32> = (0..frames).map(|k| ((stamp_ms(rate, k + 1, Stamp::Nearest) - stamp_ms(rate, k, Stamp::Nearest)) * 90) as u32).collect();
+    mp4_90k(&durations)
+}
+
+#[test]
+fn phone_mp4_with_millisecond_rounded_timestamps_keeps_rate_and_every_frame() {
+    for (rate, frames) in [(FrameRate::FPS_30, 120), (FrameRate::FPS_60, 240)] {
+        let src = crate::open_bytes("phone.mov", mp4_90k_ms_rounded(rate, frames)).unwrap();
+        assert_eq!(src.info().video.as_ref().map(|v| v.frame_rate), Some(rate), "{rate}");
+        let failures = problems_for_count(src.as_ref(), rate, frames);
+        assert!(failures.is_empty(), "{rate}: {}", failures.join("\n"));
+    }
+}
+
+#[test]
+fn phone_vfr_with_dropped_frames_keeps_its_base_rate() {
+    let durations: Vec<u32> = (0..120).map(|k| if k % 7 == 6 { 6000 } else { 3000 }).collect();
+    let src = crate::open_bytes("phone-vfr.mov", mp4_90k(&durations)).unwrap();
+    assert_eq!(src.info().video.as_ref().map(|v| v.frame_rate), Some(FrameRate::FPS_30));
 }
 
 /// Files that are not a constant rate gone slightly off its grid keep their own times: whatever is

@@ -244,13 +244,9 @@ impl Mp4Source {
             };
             aperture = vp.clean_aperture.and_then(|c| clean_aperture(c, (w, h)));
             let (w, h) = aperture.map_or((w, h), |r| (r.w as u32, r.h as u32));
-            // frame rate from the median sample duration
-            let mut durs: Vec<u32> = t.samples.iter().take(240).map(|s| s.duration).collect();
-            durs.sort_unstable();
-            let d = durs.get(durs.len() / 2).copied().unwrap_or(1).max(1);
-            let rate = FrameRate::from_f64(t.timescale as f64 / d as f64);
-            // A rate that rounds to zero (one sample per huge duration) can't be divided by.
-            let rate = if rate.num > 0 && rate.den > 0 { rate } else { FrameRate::default() };
+            // Rounded presentation timestamps alternate between short and long durations, so the
+            // median is not the clip's rate. Estimate it from a bounded mean instead.
+            let rate = frame_rate_from_durations(t.timescale, t.samples.iter().map(|s| s.duration)).unwrap_or_default();
             color = color_from(entry, w, h);
             if entry
                 .video
@@ -673,28 +669,66 @@ pub fn opener(name: &str, bytes: Arc<[u8]>) -> Option<Result<SharedSource, Media
 /// or before it: a sequence frame asked at the exact grid time got the picture before.
 ///
 /// The grid starts at the first picture and steps by the nominal frame duration. A file is snapped
-/// only when every picture is less than a quarter of a frame from its own grid point and no two land
+/// only when every picture is less than an eighth of a frame from its own grid point and no two land
 /// on the same one: a frame that far off was placed there (variable frame rate), so a file with one
 /// such picture keeps all its times. A picture at most one unit off is left where it is: that can't
 /// be told from the timescale's rounding. Snapping keeps the samples' presentation order. Only the video samples move: the first picture, which the audio and
 /// `rebase_unedited_video` go by, is the grid's origin, and the clip's duration comes from the
 /// track header.
+fn frame_rate_from_durations(timescale: u32, durations: impl Iterator<Item = u32>) -> Option<FrameRate> {
+    // Sample durations come from media files, so cap the work and keep the bounded sum in u64.
+    const SAMPLE_LIMIT: usize = 240;
+    let mut durations: Vec<u32> = durations.take(SAMPLE_LIMIT).filter(|&d| d > 0).collect();
+    if timescale == 0 || durations.is_empty() {
+        return None;
+    }
+    let total: u64 = durations.iter().map(|&d| u64::from(d)).sum();
+    if total == 0 {
+        return None;
+    }
+    let fps = f64::from(timescale) * durations.len() as f64 / total as f64;
+    let closest_common = |estimate: f64, tolerance: f64| {
+        FrameRate::COMMON
+            .into_iter()
+            .filter(|r| (r.as_f64() - estimate).abs() / r.as_f64() < tolerance)
+            .min_by(|a, b| (a.as_f64() - estimate).abs().total_cmp(&(b.as_f64() - estimate).abs()))
+    };
+    // Averaging recovers rates from millisecond-quantized phone timestamps (e.g. 1440/1530
+    // units at 60 fps), while the slightly wider tolerance covers the rounding error.
+    if let Some(rate) = closest_common(fps, 0.015) {
+        return Some(rate);
+    }
+
+    // Dropped frames in VFR footage lengthen individual durations. The most frequent duration is
+    // still the base cadence; ties keep the shorter duration, which is the higher frame rate.
+    durations.sort_unstable();
+    let &first = durations.first()?;
+    let (mut mode, mut mode_count) = (first, 0usize);
+    let (mut run, mut run_count) = (first, 1usize);
+    for d in durations.iter().copied().skip(1) {
+        if d == run {
+            run_count += 1;
+        } else {
+            if run_count > mode_count {
+                (mode, mode_count) = (run, run_count);
+            }
+            (run, run_count) = (d, 1);
+        }
+    }
+    if run_count > mode_count {
+        mode = run;
+    }
+    let modal_fps = f64::from(timescale) / f64::from(mode);
+    if let Some(rate) = closest_common(modal_fps, 0.015) {
+        return Some(rate);
+    }
+    Some(FrameRate::from_f64(fps).sane())
+}
+
 fn snap_to_frame_grid(file: &mut Mp4File, vtrack: Option<usize>) {
     let Some(t) = vtrack.and_then(|i| file.tracks.get_mut(i)) else { return };
     let Some(first) = t.samples.iter().map(|s| s.pts).min() else { return };
-    // The nominal duration: the median sample duration, averaged with the durations one unit from
-    // it. Those are the same duration rounded to the timescale (1501 and 1502 at 59.94 fps over
-    // 90 kHz): the median alone drifts half a unit a frame, enough to snap a short clip onto the
-    // wrong points.
-    let mut durs: Vec<u32> = t.samples.iter().map(|s| s.duration).collect();
-    durs.sort_unstable();
-    let Some(&median) = durs.get(durs.len() / 2) else { return };
-    let near: Vec<f64> = durs.iter().filter(|&&d| d.abs_diff(median) <= 1).map(|&d| f64::from(d)).collect();
-    let mean = near.iter().sum::<f64>() / near.len().max(1) as f64;
-    if mean <= 0.0 {
-        return;
-    }
-    let rate = FrameRate::from_f64(f64::from(t.timescale) / mean);
+    let Some(rate) = frame_rate_from_durations(t.timescale, t.samples.iter().map(|s| s.duration)) else { return };
     // one frame lasts `step_num / step_den` track units
     let (step_num, step_den) = (i128::from(t.timescale) * i128::from(rate.den), i128::from(rate.num));
     if step_num <= 0 || step_den <= 0 {
@@ -707,7 +741,7 @@ fn snap_to_frame_grid(file: &mut Mp4File, vtrack: Option<usize>) {
         let n = (2 * off * step_den + step_num).div_euclid(2 * step_num);
         let at = i128::from(first) + (2 * n * step_num + step_den).div_euclid(2 * step_den);
         let off_grid = (i128::from(pts) - at).abs();
-        if off_grid * 4 * step_den >= step_num {
+        if off_grid * 8 * step_den >= step_num {
             return None;
         }
         Some((n, if off_grid <= 1 { pts } else { i64::try_from(at).ok()? }))
