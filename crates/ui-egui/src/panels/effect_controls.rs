@@ -715,11 +715,18 @@ pub(crate) fn param_row(
 }
 
 /// Shared by the lane diamonds and graph points: commands use media time and preserve the mask.
+/// A keyframe in a selection of several stands for the whole selection, as in Premiere (#1916).
 fn keyframe_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, target: KeyframeRef, actions: &mut Vec<(String, Value)>) {
-    let mut params = json!({"clip": target.clip, "effect": target.effect, "param": target.param, "mediaTime": target.time.0});
-    if let Some(mask) = target.mask {
-        params["mask"] = json!(mask);
-    }
+    let selection = &app.ui.keyframe_selection;
+    let params = if selection.len() > 1 && selection.contains(&target) {
+        json!({"keyframes": selection})
+    } else {
+        let mut p = json!({"clip": target.clip, "effect": target.effect, "param": target.param, "mediaTime": target.time.0});
+        if let Some(mask) = target.mask {
+            p["mask"] = json!(mask);
+        }
+        p
+    };
     ui.label(egui::RichText::new(tl!("Temporal Interpolation")).color(app.tokens.text_dim));
     for (label, key) in [
         (tl!("Linear"), "linear"),

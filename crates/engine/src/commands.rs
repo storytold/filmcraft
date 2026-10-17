@@ -3174,9 +3174,15 @@ fn build() -> Vec<CommandSpec> {
             has_seq,
             |s, p| { keyframe_op(s, p, "add") }
         ),
-        cmd!("effects.deleteKeyframe", "Delete Keyframe", [], None, r#"{"clip":id,"effect":str|index,"param":str,"mediaTime":ticks}"#, has_seq, |s, p| {
-            keyframe_op(s, p, "delete")
-        }),
+        cmd!(
+            "effects.deleteKeyframe",
+            "Delete Keyframe",
+            [],
+            None,
+            r#"{"clip":id,"effect":str|index,"param":str,"mediaTime":ticks}|{"keyframes":[{"clip":id,"effect":index,"param":str,"mask":n?,"time":mediaTicks}] (one undo step)"#,
+            has_seq,
+            |s, p| { keyframe_op(s, p, "delete") }
+        ),
         cmd!(
             "effects.moveKeyframe",
             "Move Keyframe",
@@ -3200,7 +3206,7 @@ fn build() -> Vec<CommandSpec> {
             "Keyframe Interpolation",
             [],
             None,
-            r#"{"clip":id,"effect":str|index,"param":str,"mediaTime":ticks,"interpolation":"linear|bezier|autoBezier|continuousBezier|hold|easeIn|easeOut"}"#,
+            r#"{"clip":id,"effect":str|index,"param":str,"mediaTime":ticks,"interpolation":"linear|bezier|autoBezier|continuousBezier|hold|easeIn|easeOut"}|{"keyframes":[{"clip":id,"effect":index,"param":str,"mask":n?,"time":mediaTicks}],"interpolation":str} (one undo step)"#,
             has_seq,
             |s, p| keyframe_op(s, p, "interp")
         ),
@@ -3458,7 +3464,29 @@ fn reset_params(e: &mut filmcraft_project::EffectInstance, only: Option<&str>, f
     any
 }
 
+fn interpolation_of(name: &str) -> filmcraft_project::Interpolation {
+    match name.to_ascii_lowercase().as_str() {
+        "bezier" => filmcraft_project::Interpolation::Bezier,
+        "autobezier" => filmcraft_project::Interpolation::AutoBezier,
+        "continuousbezier" => filmcraft_project::Interpolation::ContinuousBezier,
+        "hold" => filmcraft_project::Interpolation::Hold,
+        "easein" => filmcraft_project::Interpolation::EaseIn,
+        "easeout" => filmcraft_project::Interpolation::EaseOut,
+        _ => filmcraft_project::Interpolation::Linear,
+    }
+}
+
 fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
+    // a selection of keyframes, as one undo step (#1916)
+    if p.get("keyframes").is_some() {
+        return match op {
+            "interp" => {
+                crate::keyframe_move::edit_many(s, p, "effects.setInterpolation", Some(interpolation_of(str_p(p, "interpolation").unwrap_or("linear"))))
+            }
+            "delete" => crate::keyframe_move::edit_many(s, p, "effects.deleteKeyframe", None),
+            _ => Err(bad("keyframe", "`keyframes` applies to effects.setInterpolation and effects.deleteKeyframe")),
+        };
+    }
     let c = clip_p(p, "clip").ok_or_else(|| bad("keyframe", "need `clip`"))?;
     let pid = str_p(p, "param").ok_or_else(|| bad("keyframe", "need `param`"))?.to_string();
     let eff = p.get("effect").cloned().unwrap_or(json!("motion"));
@@ -3527,15 +3555,7 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
             }
             _ => {
                 let at = mtime.unwrap_or(mt_now);
-                let kind = match interp.as_deref().unwrap_or("linear").to_ascii_lowercase().as_str() {
-                    "bezier" => filmcraft_project::Interpolation::Bezier,
-                    "autobezier" => filmcraft_project::Interpolation::AutoBezier,
-                    "continuousbezier" => filmcraft_project::Interpolation::ContinuousBezier,
-                    "hold" => filmcraft_project::Interpolation::Hold,
-                    "easein" => filmcraft_project::Interpolation::EaseIn,
-                    "easeout" => filmcraft_project::Interpolation::EaseOut,
-                    _ => filmcraft_project::Interpolation::Linear,
-                };
+                let kind = interpolation_of(interp.as_deref().unwrap_or("linear"));
                 let k = prm.keyframes.iter_mut().find(|k| k.time == at).ok_or_else(|| bad("keyframe", "no keyframe at that time"))?;
                 k.interp = kind;
             }
