@@ -124,6 +124,11 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             ok(serde_json::to_value(app.auto.query(prefix)).unwrap_or_default())
         }
         "ui.set" => {
+            if let Some(patch) = p.get("effectControls")
+                && let Err(e) = crate::menus::invoke(app, ctx, "effectControls.setView", patch.clone())
+            {
+                return err(e);
+            }
             // Text to Speech panel draft (voice, pitch, pace, text…), merged into the current one
             if let Some(patch) = p.get("tts") {
                 let mut cur = serde_json::to_value(&app.ui.tts).unwrap_or_default();

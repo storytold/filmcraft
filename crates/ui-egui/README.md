@@ -3,6 +3,22 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## Effect Controls keyframe viewport
+
+Alt/Option + wheel and pinch zoom about the pointer in the keyframe lane. Horizontal wheel,
+Shift + wheel, or the footer overview pan the visible interval; the overview's end handles resize
+it. The − / + / Fit buttons and the focused panel's Zoom In / Zoom Out / Zoom to Sequence shortcuts
+provide the same controls. Unmodified vertical scrolling still scrolls the parameter list.
+
+The ruler, playhead, effect and mask keyframes, value curves and velocity graphs share this interval.
+Keyframe dragging snaps to sequence frames and commits one undoable edit on release. The viewport
+itself is UI state: it neither edits the project nor changes the main Timeline view. Selecting another
+clip fits its duration; moving or trimming the current clip preserves the view within its new bounds.
+
+`keyframes_ui` covers zoom anchoring, pan/fit, overview handles, focused command routing, hostile
+parameters, zoomed dragging/undo, and trimmed/reversed clips with masks. Set `FILMCRAFT_UI_SHOTS`
+to render test screenshots with wgpu.
+
 ## Transition drop previews
 
 Dragging a video or audio transition over a compatible clip shows its actual time span, the
