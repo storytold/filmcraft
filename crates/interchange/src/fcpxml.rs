@@ -69,6 +69,11 @@ pub(crate) fn parse_time(s: &str) -> Option<Tick> {
     s.parse::<f64>().ok().map(Tick::from_seconds_f64)
 }
 
+/// Most connected-clip lanes (video above the spine, audio below it) the importer will create tracks
+/// for. A lane is a track index, so one huge `lane` attribute would otherwise allocate that many tracks;
+/// this matches the 999 tracks a sequence can have (`engine::sequence_tools::MAX_TRACKS`).
+const MAX_LANE: u32 = 999;
+
 /// Format ticks as an FCPXML rational time, frame-based at `rate` when the value is on a frame.
 pub(crate) fn fmt_time(t: Tick, rate: FrameRate) -> String {
     if t == Tick::ZERO {
@@ -462,7 +467,12 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             let Some(l) = c.attribute("lane").and_then(|l| l.parse::<i32>().ok()) else { continue };
             let off = attr_time(c, "offset").unwrap_or(Tick::ZERO);
             let ct0 = t0 + (off - local_start);
-            let clane = if lane > 0 && l > 0 { lane + l } else { l };
+            let clane = if lane > 0 && l > 0 { lane.saturating_add(l) } else { l };
+            // Every lane up to this one becomes a track, so a hostile `lane` is an allocation of that size.
+            if clane.unsigned_abs() > MAX_LANE {
+                self.report.warn(format!("<{}> on lane {clane} is beyond the {MAX_LANE} lanes a sequence can have; skipped", c.tag_name().name()));
+                continue;
+            }
             if c.has_tag_name("spine") {
                 // Secondary storyline: children offsets are in the storyline's local time.
                 let first = elements(c).filter(|x| !x.has_tag_name("transition")).find_map(|x| attr_time(x, "offset")).unwrap_or(Tick::ZERO);
@@ -1196,5 +1206,34 @@ mod tests {
         assert_eq!(parse_time(&fmt_time(odd, r)), Some(odd));
         assert_eq!(rate_from_frame_duration("1001/30000s"), Some(FrameRate::FPS_29_97));
         assert_eq!(rate_from_frame_duration("100/2500s"), Some(FrameRate::FPS_25));
+    }
+
+    /// A connected clip's `lane` became that many tracks (lane 100000 made 200 002 of them, and a lane in
+    /// the billions allocated until the machine ran out of memory). Lanes beyond the track limit are
+    /// skipped with a warning, nested lanes included (they add up). The values stay moderate so that
+    /// reverting the fix fails this test instead of exhausting memory.
+    #[test]
+    fn huge_lanes_are_skipped_not_turned_into_tracks() {
+        let doc = |inner: &str| {
+            format!(
+                r#"<?xml version="1.0"?><fcpxml version="1.10"><resources><format id="f1" frameDuration="100/2500s" width="1920" height="1080"/>
+<asset id="a1" name="c" start="0s" duration="10s" hasVideo="1" hasAudio="1" format="f1"><media-rep kind="original-media" src="file:///tmp/c.mov"/></asset></resources>
+<library><event name="E"><project name="P"><sequence format="f1" tcStart="0s"><spine>
+<asset-clip ref="a1" offset="0s" duration="5s">{inner}</asset-clip></spine></sequence></project></event></library></fcpxml>"#
+            )
+        };
+        let clip = |lane: i64| format!(r#"<asset-clip ref="a1" lane="{lane}" offset="0s" duration="1s"/>"#);
+        for inner in [clip(100_000), clip(-100_000), format!(r#"<asset-clip ref="a1" lane="600" offset="0s" duration="1s">{}</asset-clip>"#, clip(600))] {
+            let (imported, report) = crate::import(doc(&inner).as_bytes(), crate::Format::Fcpxml, None).expect("import succeeds");
+            assert!(report.mentions("lanes a sequence can have"), "{inner}: {report}");
+            for seq in imported.sequences.iter().filter_map(|s| imported.project.sequence(*s)) {
+                let tracks = seq.tracks(TrackKind::Video).len() + seq.tracks(TrackKind::Audio).len();
+                assert!(tracks <= 2 * MAX_LANE as usize + 2, "{inner}: {tracks} tracks");
+            }
+        }
+        // the largest lane that fits is still imported
+        let (imported, report) = crate::import(doc(&clip(MAX_LANE as i64)).as_bytes(), crate::Format::Fcpxml, None).expect("import succeeds");
+        assert!(!report.mentions("lanes a sequence can have"), "{report}");
+        assert!(imported.sequences.iter().filter_map(|s| imported.project.sequence(*s)).any(|q| q.tracks(TrackKind::Video).len() > MAX_LANE as usize));
     }
 }

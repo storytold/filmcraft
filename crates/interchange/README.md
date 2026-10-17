@@ -104,3 +104,6 @@ OMF carries no video at all.
   nested compositions tagged top-level) reads back as the same edit.
 - `src/omf/tests.rs`: the Bento label and TOC, the required properties of every OMF class
   written, reference resolution, embedded WAVE data, sequence lengths in samples.
+- `src/fcpxml.rs` (unit tests): a connected clip's `lane` is a track index, so lanes beyond 999 (nested lanes
+  add up) are skipped with a warning instead of creating that many tracks; a lane of 100000 made 200 002 tracks
+  and a lane in the billions exhausted memory. The largest lane that fits is still imported.
