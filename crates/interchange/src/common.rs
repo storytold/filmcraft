@@ -692,6 +692,14 @@ mod tests {
         }
     }
 
+    /// A `file://` URL whose ninth byte is inside a multi-byte character (a hostile import): the
+    /// `localhost` prefix check must not slice the character in half.
+    #[test]
+    fn file_url_with_a_multibyte_character_at_the_localhost_offset_does_not_panic() {
+        assert_eq!(file_url_to_path("file://12345678é"), "//12345678é");
+        assert_eq!(file_url_to_path("file://LOCALHOST/Users/me/a.mov"), "/Users/me/a.mov");
+    }
+
     #[test]
     fn paths() {
         assert_eq!(resolve_path("media/a.mov", Some("/proj")), "/proj/media/a.mov");
