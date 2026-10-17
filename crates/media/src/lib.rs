@@ -53,6 +53,21 @@ pub enum MediaError {
 
 pub type Result<T> = std::result::Result<T, MediaError>;
 
+/// Accepted frame-dimension limits, shared with stored project metadata.
+pub const MAX_FRAME_SIDE: u32 = 32_768;
+pub const MAX_FRAME_PIXELS: u64 = 268_435_456;
+
+/// Reject zero sides, sides above 32,768, and areas above 268,435,456 pixels.
+/// Image-sequence frames are checked after still-image decoding and before cache insertion or
+/// composition. This does not bound decoder-internal or later rendering allocations.
+/// Project loaders handle the exact `(0, 0)` unknown-media marker before calling this validator.
+pub fn validate_frame_size(width: u32, height: u32) -> std::result::Result<(), String> {
+    if width == 0 || height == 0 || width > MAX_FRAME_SIDE || height > MAX_FRAME_SIDE || u64::from(width) * u64::from(height) > MAX_FRAME_PIXELS {
+        return Err(format!("frame size must be positive, at most {MAX_FRAME_SIDE} pixels per side and {MAX_FRAME_PIXELS} pixels total"));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MediaKind {
     /// Video, possibly with audio.

@@ -881,18 +881,8 @@ impl Default for SequenceSettings {
     }
 }
 
-/// Largest frame side, in pixels.
-pub const MAX_FRAME_SIDE: u32 = 32_768;
-/// Largest frame area, in pixels (16384 x 16384: 16K and 16384 x 8192 panoramas fit).
-pub const MAX_FRAME_PIXELS: u64 = 268_435_456;
-
-/// Bound working-frame allocations while retaining 16K and wide panoramic frames.
-pub fn validate_frame_size(width: u32, height: u32) -> Result<(), String> {
-    if width == 0 || height == 0 || width > MAX_FRAME_SIDE || height > MAX_FRAME_SIDE || u64::from(width) * u64::from(height) > MAX_FRAME_PIXELS {
-        return Err(format!("frame size must be positive, at most {MAX_FRAME_SIDE} pixels per side and {MAX_FRAME_PIXELS} pixels total"));
-    }
-    Ok(())
-}
+/// Shared working-frame limits for media decoding and stored project metadata.
+pub use filmcraft_media::{MAX_FRAME_PIXELS, MAX_FRAME_SIDE, validate_frame_size};
 
 /// The most a pixel aspect ratio may stretch a picture either way (8:1 or 1:8). Real footage stays
 /// well inside (2:1 for 2x anamorphic lenses, 4:3 for HDV, 0.9 for NTSC DV); a ratio beyond it is

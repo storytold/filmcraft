@@ -137,6 +137,7 @@ impl ImageSequenceSource {
             if e.kind() == std::io::ErrorKind::NotFound { MediaError::Offline(format!("{first}: {e}")) } else { MediaError::Io(format!("{first}: {e}")) }
         })?;
         let (frame, has_alpha, pixel_format, timing) = decode_frame(&first, &bytes)?;
+        validate_sequence_frame(&first, &frame)?;
         let (w, h) = (frame.width, frame.height);
         let (rate, start_timecode) = match timing {
             Some(info) => crate::still::dng::sequence_timing(&info, rate),
@@ -190,7 +191,9 @@ impl ImageSequenceSource {
         }
         let path = self.frames.get(i).and_then(|f| f.as_deref()).ok_or(MediaError::NoStream("video"))?;
         let bytes = (self.loader)(path).map_err(|e| MediaError::Io(format!("{path}: {e}")))?;
-        let f = Arc::new(decode_frame(path, &bytes)?.0);
+        let frame = decode_frame(path, &bytes)?.0;
+        validate_sequence_frame(path, &frame)?;
+        let f = Arc::new(frame);
         self.cache.insert(i, f.clone());
         Ok(f)
     }
@@ -219,6 +222,11 @@ impl MediaSource for ImageSequenceSource {
     fn audio(&self, _start: i64, _frames: usize, _sample_rate: u32) -> Result<AudioBuffer> {
         Err(MediaError::NoStream("audio"))
     }
+}
+
+fn validate_sequence_frame(path: &str, frame: &VideoFrame) -> Result<()> {
+    crate::validate_frame_size(frame.width, frame.height)
+        .map_err(|detail| MediaError::Decode(format!("{path}: invalid frame size {}x{}: {detail}", frame.width, frame.height)))
 }
 
 /// Decode one frame file: OpenEXR, Radiance HDR and DNG camera raw as linear floats (DNG with its metadata, for
@@ -357,5 +365,37 @@ mod tests {
             px(i);
         }
         assert_eq!(*reads.lock().unwrap(), n, "frames come from the cache");
+    }
+
+    #[test]
+    fn oversized_first_frame_is_rejected_before_it_becomes_sequence_metadata() {
+        let files: HashMap<String, Vec<u8>> = [("f0.png".to_string(), png(32_769, 1, 1))].into();
+        let loader: FrameLoader = Arc::new(move |p| files.get(p).cloned().ok_or_else(|| std::io::Error::other("missing")));
+        let result = ImageSequenceSource::new("f0.png", vec![Some("f0.png".into())], FrameRate::FPS_24, loader);
+        assert!(matches!(result, Err(MediaError::Decode(message)) if message.contains("invalid frame size")));
+    }
+
+    #[test]
+    fn a_repaired_oversized_frame_is_read_again() {
+        let files = Arc::new(Mutex::new(HashMap::from([("f0.png".to_string(), png(16, 8, 1)), ("f1.png".to_string(), png(32_769, 1, 2))])));
+        let for_loader = files.clone();
+        let loader: FrameLoader = Arc::new(move |path| for_loader.lock().unwrap().get(path).cloned().ok_or_else(|| std::io::Error::other("missing")));
+        let source = ImageSequenceSource::new("f0.png", vec![Some("f0.png".into()), Some("f1.png".into())], FrameRate::FPS_24, loader).unwrap();
+        let request = || FrameRequest::full(FrameRate::FPS_24.tick_of(1));
+        assert_eq!(source.video_frame(request()).unwrap().width, 16, "unsupported frame holds the previous valid frame");
+        files.lock().unwrap().insert("f1.png".into(), png(20, 8, 3));
+        assert_eq!(source.video_frame(request()).unwrap().width, 20, "repaired frame becomes visible without reopening the sequence");
+    }
+
+    #[test]
+    fn oversized_later_frame_holds_the_last_valid_frame() {
+        let files: HashMap<String, Vec<u8>> =
+            [("f0.png".to_string(), png(16, 8, 1)), ("f1.png".to_string(), png(32_768, 1, 2)), ("f2.png".to_string(), png(32_769, 1, 3))].into();
+        let loader: FrameLoader = Arc::new(move |p| files.get(p).cloned().ok_or_else(|| std::io::Error::other("missing")));
+        let frames = (0..3).map(|i| Some(format!("f{i}.png"))).collect();
+        let source = ImageSequenceSource::new("f0.png", frames, FrameRate::FPS_24, loader).unwrap();
+        let at = |i| source.video_frame(FrameRequest::full(FrameRate::FPS_24.tick_of(i))).unwrap();
+        assert_eq!(at(1).width, 32_768, "the valid side limit stays usable");
+        assert_eq!(at(2).width, 32_768, "the oversized frame must hold the previous valid frame");
     }
 }
