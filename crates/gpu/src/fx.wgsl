@@ -466,10 +466,13 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
     let whl_val = clamp(l, 0.0, 1.0);
     let whl = whl_val * whl_val * whl_val;
     let nl = max(l + sh_k * ws + hl_k * whl, 0.0);
+    // the lift scales a pixel by at most 2 (LIFT_SCALE_MAX in effects.rs); the rest is added equally
+    var k = 1.0;
     if l > 1e-5 {
-        let k = nl / l;
-        v = v * k;
+        k = min(nl / l, 2.0);
     }
+    let add = nl - max(l, 0.0) * k;
+    v = v * k + vec3(add);
 
     // contrast: smooth S-curve around mid grey
     let contrast = u.p1.w;

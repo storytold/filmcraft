@@ -620,6 +620,10 @@ fn within_unit(v: [f32; 3], hdr: bool, f: impl Fn([f32; 3]) -> [f32; 3]) -> [f32
     o.map(|q| q * m)
 }
 
+/// How much the Lumetri highlight / shadow lift may scale a pixel to preserve its hue; the rest of
+/// the lift is added equally to the channels (#2094). Mirrored in `fx.wgsl` (`lumetri_op`).
+pub(crate) const LIFT_SCALE_MAX: f32 = 2.0;
+
 fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let (basic_on, creative_on, vignette_on) = (on(e, "basic_on"), on(e, "creative_on"), on(e, "vignette_on"));
     let input_lut = if basic_on { crate::luts::resolve(cx.project, text(e, "input_lut")) } else { None };
@@ -666,10 +670,12 @@ fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         let ws = (1.0 - l).clamp(0.0, 1.0).powi(3);
         let whl = l.clamp(0.0, 1.0).powi(3);
         let nl = (l + sh * 0.35 * ws + hl * 0.35 * whl).max(0.0);
-        if l > 1e-5 {
-            let k = nl / l;
-            v = v.map(|q| q * k);
-        }
+        // #2094: scaling by nl / l alone multiplies a near-black pixel's chroma by the whole lift
+        // (tens of times), so a trace of blue bleed beside a bright colour came out as a saturated
+        // speck; the scale is capped and the rest of the lift is added equally to the channels
+        let k = if l > 1e-5 { (nl / l).min(LIFT_SCALE_MAX) } else { 1.0 };
+        let add = nl - l.max(0.0) * k;
+        v = v.map(|q| q * k + add);
         // contrast: smooth S-curve around mid grey (HDR: over 0 … HDR White; speculars above it
         // keep their distance from white)
         if contrast.abs() > 1e-4 {
@@ -998,6 +1004,27 @@ mod tests {
         for (a, b) in img.px.iter().zip(&before.px) {
             assert!((a - b).abs() < 2e-3, "{a} {b}");
         }
+    }
+
+    /// #2094: a Shadows lift on a near-black pixel carrying a trace of blue (4:2:0 chroma bleed
+    /// beside a bright orange) lifts it towards grey instead of scaling the trace into a saturated
+    /// blue speck, and black lifts by the same amount as near-black (no step between them).
+    #[test]
+    fn lumetri_shadow_lift_does_not_amplify_near_black_chroma() {
+        let mut e = find_effect("lumetri").unwrap().instance();
+        e.params.get_mut("shadows").unwrap().value = ParamValue::Float(8.0);
+        // linear light: about (0, 2, 6) of 255 in sRGB with the red driven slightly negative by a
+        // 4:2:0 chroma sample shared with the bright neighbour
+        let mut img = Image::new(3, 1);
+        img.px[0..4].copy_from_slice(&[-0.001, 0.0006, 0.0018, 1.0]);
+        img.px[4..8].copy_from_slice(&[0.0, 0.0, 0.0, 1.0]);
+        img.px[8..12].copy_from_slice(&[0.001, 0.001, 0.001, 1.0]);
+        apply(&mut img, &e, &cx());
+        let (bleed, black, near) = (img.get(0, 0), img.get(1, 0), img.get(2, 0));
+        // it used to come out at about (0, 5, 44) of 255; now (0, 10, 18): a lifted near-black
+        assert!(bleed[2] - bleed[0].max(bleed[1]) < 0.01, "blue speck: {bleed:?}");
+        assert!(black[0] > 0.001 && (black[0] - black[1]).abs() < 1e-5, "black not lifted neutrally: {black:?}");
+        assert!((near[0] - black[0]).abs() < 0.002, "step between black {black:?} and near-black {near:?}");
     }
 }
 

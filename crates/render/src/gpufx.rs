@@ -14,7 +14,7 @@ use filmcraft_geom::Affine;
 use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
 
-use crate::effects::{FxCtx, b, choice, color, dec, enc, f, gaussian_boxes, grade_space, on, point, text};
+use crate::effects::{FxCtx, LIFT_SCALE_MAX, b, choice, color, dec, enc, f, gaussian_boxes, grade_space, on, point, text};
 use crate::image::Image;
 
 /// A bilinear resample of the working image through an affine map (`Image::transformed` at a
@@ -962,10 +962,10 @@ impl FxOp {
                     let ws = (1.0 - l).clamp(0.0, 1.0).powi(3);
                     let whl = l.clamp(0.0, 1.0).powi(3);
                     let nl = (l + sh * 0.35 * ws + hl * 0.35 * whl).max(0.0);
-                    if l > 1e-5 {
-                        let k = nl / l;
-                        v = v.map(|q| q * k);
-                    }
+                    // #2094: cap the hue-preserving scale and add the rest of the lift equally (see fn lumetri)
+                    let k = if l > 1e-5 { (nl / l).min(LIFT_SCALE_MAX) } else { 1.0 };
+                    let add = nl - l.max(0.0) * k;
+                    v = v.map(|q| q * k + add);
                     // contrast: smooth S-curve around mid grey
                     if contrast.abs() > 1e-4 {
                         let k = 1.0 + contrast;
