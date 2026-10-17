@@ -87,6 +87,45 @@ fn aaf_embedded_trimmed_audio_round_trips_sample_exact() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// #2020: extracting embedded audio never replaces a file already at its path. A re-import finds
+/// the same bytes and reuses the file; a different file there is kept, and the audio goes
+/// beside it as `name (2).wav` with the item pointing there.
+#[test]
+fn aaf_import_never_overwrites_an_existing_file() {
+    let (mut s, _items, seq, dir) = setup("aaf-no-overwrite");
+    let path = dir.join("cut.aaf").to_string_lossy().into_owned();
+    s.execute("file.exportAaf", json!({"path": path, "audio": "embedded", "trimAudio": true, "handles": 6, "sequence": seq.0})).unwrap();
+    // first import: the WAVs are written next to the document
+    let r = s.execute("file.import", json!({"paths": [path]})).unwrap();
+    let first = s.project.sequence(imported_seq(&r)).unwrap().clone();
+    let wavs: Vec<String> = first.audio_tracks[0].items.iter().map(|c| path_of(&s, c.item)).collect();
+    assert!(!wavs.is_empty() && wavs.iter().all(|p| std::path::Path::new(p).exists()), "{wavs:?}");
+    let bytes: Vec<Vec<u8>> = wavs.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    // a re-import: the same bytes are already there, so the files are reused, not rewritten
+    let before: Vec<_> = wavs.iter().map(|p| std::fs::metadata(p).unwrap().modified().unwrap()).collect();
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    let r = s.execute("file.import", json!({"paths": [path]})).unwrap();
+    let second = s.project.sequence(imported_seq(&r)).unwrap().clone();
+    let again: Vec<String> = second.audio_tracks[0].items.iter().map(|c| path_of(&s, c.item)).collect();
+    assert_eq!(again, wavs, "a re-import points at the same files");
+    for (p, b) in wavs.iter().zip(&before) {
+        assert_eq!(&std::fs::metadata(p).unwrap().modified().unwrap(), b, "{p} was not rewritten");
+    }
+    // something else at that path: it survives, and the audio is written beside it
+    let marker = b"not a wav: the user's own file".to_vec();
+    std::fs::write(&wavs[0], &marker).unwrap();
+    let r = s.execute("file.import", json!({"paths": [path]})).unwrap();
+    let third = s.project.sequence(imported_seq(&r)).unwrap().clone();
+    let moved = path_of(&s, third.audio_tracks[0].items[0].item);
+    assert_eq!(std::fs::read(&wavs[0]).unwrap(), marker, "the existing file is untouched");
+    assert_ne!(moved, wavs[0]);
+    assert!(moved.ends_with(" (2).wav"), "{moved}");
+    assert_eq!(std::fs::read(&moved).unwrap(), bytes[0], "the audio went beside it");
+    assert!(!s.project.item(third.audio_tracks[0].items[0].item).unwrap().as_media().unwrap().offline);
+    assert!(r.to_string().contains("exists and differs"), "the report says so: {r}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn aaf_separate_aiff_breakout_and_linked() {
     let (mut s, items, seq, dir) = setup("aaf-separate");
