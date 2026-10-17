@@ -111,6 +111,10 @@ printf 'APPL????' >"$APP/Contents/PkgInfo"
 # licences of the embedded craft-fonts fonts (builds with CRAFT_FONTS_DIR)
 copy_font_licences "$APP/Contents/Resources"
 
+# Remove inherited build-time extended attributes BEFORE code signing.
+# Never repair, re-sign or strip metadata from the published release after signing.
+xattr -cr "$APP"
+
 # Sign inside-out: nested code first, then the bundle itself (no --deep on the final signature).
 # Today the only nested code is the main executable; frameworks/helpers would be signed here too.
 sign --options runtime --entitlements "$HERE/entitlements.plist" "$APP/Contents/MacOS/FilmCraft"
@@ -135,15 +139,63 @@ ln -s /Applications "$STAGE/Applications"
 mkdir -p "$STAGE/.background"
 cp "$HERE/dmg/background.tiff" "$STAGE/.background/background.tiff"
 cp "$HERE/dmg/dmg-layout.DS_Store" "$STAGE/.DS_Store"
-rm -f "$DMG" "$WORK/raw.dmg"
-# makehybrid + convert builds the image without attaching a device, unlike `create -srcfolder`,
-# which is flaky on CI runners ("Resource busy") and hangs in sandboxed sessions.
-# The volume name has no version: .DS_Store finds the background through an alias that includes it.
-hdiutil makehybrid -hfs -hfs-volume-name "FilmCraft" -hfs-openfolder "$STAGE" -o "$WORK/raw.dmg" "$STAGE"
-hdiutil convert "$WORK/raw.dmg" -format UDZO -imagekey zlib-level=9 -o "$DMG"
-rm -f "$WORK/raw.dmg"
+rm -f "$DMG"
+# hdiutil makehybrid -hfs injects FinderInfo metadata into the signed app.
+# create -srcfolder preserves the signed app and the existing .DS_Store layout.
+# hdiutil may transiently return "Resource busy" on CI; retry boundedly.
+hdiutil_retry() {
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    if hdiutil "$@"; then
+      return 0
+    fi
+    if [ "$attempt" = 5 ]; then
+      echo "error: hdiutil $1 failed after five attempts" >&2
+      return 1
+    fi
+    warn "hdiutil $1 attempt $attempt failed; retrying"
+    sleep $((attempt * 10))
+  done
+}
+hdiutil_retry create -srcfolder "$STAGE" -volname "FilmCraft" -fs HFS+ -format UDZO \
+  -imagekey zlib-level=9 -ov "$DMG"
 sign "$DMG"
 codesign --verify --strict --verbose=2 "$DMG"
+
+# Verification must use the FINISHED image (and a normal ditto-installed copy).
+# Signatures of the DMG container alone do not validate the bundle in the image.
+verify_dmg_app() {
+  local mount="$WORK/dmg-verify-mount" copy="$WORK/dmg-verify-copy" rc=0
+  mkdir -p "$mount" "$copy"
+  if ! hdiutil_retry attach -readonly -nobrowse -noautoopen -mountpoint "$mount" "$DMG" >/dev/null; then
+    echo "error: unable to mount finished $DMG" >&2
+    hdiutil detach "$mount" >/dev/null 2>&1 || true
+    return 1
+  fi
+  echo "==> strict codesign of FilmCraft.app in finished DMG"
+  codesign --verify --deep --strict --verbose=2 "$mount/FilmCraft.app" || rc=1
+  if [ "$rc" = 0 ]; then
+    ditto "$mount/FilmCraft.app" "$copy/FilmCraft.app" || rc=1
+  fi
+  if [ "$rc" = 0 ]; then
+    echo "==> strict codesign of FilmCraft.app after ditto install-copy"
+    codesign --verify --deep --strict --verbose=2 "$copy/FilmCraft.app" || rc=1
+  fi
+  if [ "$rc" = 0 ] && [ "$NOTARIZE" = 1 ]; then
+    spctl --assess --type execute -vvv "$copy/FilmCraft.app" || rc=1
+  fi
+  if [ "$rc" != 0 ]; then
+    echo "error: published-image app verification failed; reject $DMG" >&2
+    xattr -lr "$mount/FilmCraft.app" >&2 || true
+  fi
+  if ! hdiutil_retry detach "$mount" >/dev/null; then
+    echo "error: could not detach verification mount" >&2
+    rc=1
+  fi
+  rm -rf "$copy"
+  return "$rc"
+}
+verify_dmg_app
 if [ "$NOTARIZE" = 1 ]; then
   notarize "$DMG"
   xcrun stapler staple "$DMG"
