@@ -3578,3 +3578,7 @@
 
 # The native macOS application menu (Settings…).
 	Settings	Preferências
+	Stop Returns to Start	Parar volta ao início
+	Play/Stop, Other Way	Reproduzir/Parar, do outro jeito
+	Stop returns the playhead to where playback started	Parar volta o indicador ao ponto onde a reprodução começou
+	Toggle Stop Returns to Start	Alternar: parar volta ao início

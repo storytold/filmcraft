@@ -389,6 +389,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         let mv = monitor_view::view_mut(app, which);
         ui.checkbox(&mut mv.safe_margins, tl!("Safe Margins"));
         ui.checkbox(&mut mv.show_transport, tl!("Show Transport Controls"));
+        stop_returns_checkbox(app, ui, &format!("{prefix}.settings.stopReturnsToStart"));
         if which == Which::Source {
             let mut looping = app.source_playback.clock.looping;
             let response = ui.checkbox(&mut looping, tl!("Loop marked range"));
@@ -502,6 +503,19 @@ fn cpu_texture(
             (Some(tex), Some(k))
         }
         None => (app.texture_existing(name).map(|(id, _)| id), app.texture_key(name)),
+    }
+}
+
+/// Settings ▸ Playback ▸ "Stop returns the playhead to where playback started", also in the
+/// monitors' and the Timeline's settings menus so it can be switched while working.
+pub(crate) fn stop_returns_checkbox(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: &str) {
+    let mut on = app.session.prefs.playback.stop_returns_to_start;
+    let response = ui.checkbox(&mut on, tl!("Stop Returns to Start"));
+    app.auto.add(id, response.rect, "Stop Returns to Start");
+    if response.changed()
+        && let Err(e) = app.session.execute("prefs.set", json!({"key": "playback.stopReturnsToStart", "value": on}))
+    {
+        app.ui.status = e.to_string();
     }
 }
 

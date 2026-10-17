@@ -42,6 +42,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("source.playback.play", "Play Source", [], None),
     uic!("source.playback.stop", "Stop Source", [], None),
     uic!("playback.toggle", "Play/Stop", [], Some("Space")),
+    uic!("playback.toggleOther", "Play/Stop, Other Way", [], Some("Ctrl+Shift+Space")),
+    uic!("playback.toggleStopReturn", "Toggle Stop Returns to Start", [], None),
     uic!("playback.forward", "Shuttle Right", [], Some("L")),
     uic!("playback.stop", "Shuttle Stop", [], Some("K")),
     uic!("playback.reverse", "Shuttle Left", [], Some("J")),
@@ -331,7 +333,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             return Ok(json!({"playing": app.source_playback.clock.playing}));
         }
         "source.playback.stop" => {
-            app.stop_source();
+            app.stop_source_to(app.session.prefs.playback.stop_returns_to_start);
             return Ok(Value::Null);
         }
         "playback.toggle"
@@ -343,6 +345,20 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         "playback.toggle" => {
             app.toggle_play(1.0);
             return Ok(json!({"playing": app.playback.playing}));
+        }
+        // the other way: the stop goes where the setting does not
+        "playback.toggleOther" if targets_source(app, &params) => {
+            app.toggle_source_play_to(!app.session.prefs.playback.stop_returns_to_start)?;
+            return Ok(json!({"playing": app.source_playback.clock.playing}));
+        }
+        "playback.toggleOther" => {
+            app.toggle_play_to(!app.session.prefs.playback.stop_returns_to_start, 1.0);
+            return Ok(json!({"playing": app.playback.playing}));
+        }
+        "playback.toggleStopReturn" => {
+            let on = !app.session.prefs.playback.stop_returns_to_start;
+            app.session.execute("prefs.set", json!({"key": "playback.stopReturnsToStart", "value": on})).map_err(|e| e.to_string())?;
+            return Ok(json!({"stopReturnsToStart": on}));
         }
         // L / J: pressing again in the same direction doubles the speed, up to 8×
         "playback.forward" | "playback.reverse" if targets_source(app, &params) => {
@@ -376,10 +392,11 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             return Ok(json!({"speed": app.playback.speed}));
         }
         "playback.stop" => {
+            let back = app.session.prefs.playback.stop_returns_to_start;
             if targets_source(app, &params) {
-                app.stop_source();
+                app.stop_source_to(back);
             } else {
-                app.stop();
+                app.stop_playback(back);
             }
             return Ok(Value::Null);
         }

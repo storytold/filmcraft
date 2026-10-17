@@ -416,7 +416,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
         "ui.playback" => {
             match s("action").unwrap_or("toggle") {
                 "play" => app.play(p.get("speed").and_then(Value::as_f64).unwrap_or(1.0)),
-                "stop" => app.stop(),
+                "stop" => app.stop_playback(app.session.prefs.playback.stop_returns_to_start),
                 _ => app.toggle_play(1.0),
             }
             ok(json!({"playing": app.playback.playing, "playhead": app.session.playhead().0}))

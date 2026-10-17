@@ -3585,3 +3585,7 @@
 	Shows the version, community links and credits in a FilmCraft window.	在 FilmCraft 窗口中显示版本、社区链接和致谢。
 	Couldn't open your web browser	无法打开网页浏览器
 	Open this address in your browser yourself:	请自行在浏览器中打开此地址：
+	Stop Returns to Start	停止时返回起点
+	Play/Stop, Other Way	播放/停止（相反方式）
+	Stop returns the playhead to where playback started	停止时将播放头移回开始播放的位置
+	Toggle Stop Returns to Start	切换停止时返回起点

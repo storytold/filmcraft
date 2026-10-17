@@ -1297,6 +1297,7 @@ static CATEGORIES: &[Category] = &[
             f("playback.prerollSeconds", "Preroll", float(0.0, 60.0, 0, "seconds"), true),
             f("playback.postrollSeconds", "Postroll", float(0.0, 60.0, 0, "seconds"), true),
             f("playback.stepManyFrames", "Step forward/back many", int(1.0, 1000.0, "frames"), true),
+            b("playback.stopReturnsToStart", "Stop returns the playhead to where playback started", true),
             b("playback.pauseEncoderQueue", "Pause Media Encoder queue during playback", false),
             b("playback.enableTransmit", "Enable Mercury Transmit", false),
             b("playback.disableVideoInBackground", "Disable video output when in the background", false),

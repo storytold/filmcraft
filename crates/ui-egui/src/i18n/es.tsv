@@ -3610,3 +3610,7 @@
 	Shows the version, community links and credits in a FilmCraft window.	Muestra la versión, los enlaces de la comunidad y los créditos en una ventana de FilmCraft.
 	Couldn't open your web browser	No se pudo abrir el navegador web
 	Open this address in your browser yourself:	Abre esta dirección tú mismo en el navegador:
+	Stop Returns to Start	Detener vuelve al inicio
+	Play/Stop, Other Way	Reproducir/Detener, al otro modo
+	Stop returns the playhead to where playback started	La parada vuelve al punto donde empezó la reproducción
+	Toggle Stop Returns to Start	Alternar: la parada vuelve al inicio

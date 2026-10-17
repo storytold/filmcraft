@@ -235,7 +235,7 @@ opens the dialog on a page.
 | Media Analysis & Transcription | auto-transcribe imported clips (scope "all imported"), speech model, default language / auto-detect, speaker labelling (defaults of `transcript.generate`) |
 | Media Cache | location (`<data dir>/Media Cache` by default; unsaved projects' render previews live there), automatic deletion (older than N days / beyond N GB), Delete… (`mediaCache.clean {all?}`, `mediaCache.info`) |
 | Memory | frame cache budget of the monitors and thumbnails |
-| Playback | preroll / postroll (Play Around, trim loop), Step forward/back many |
+| Playback | preroll / postroll (Play Around, trim loop), Step forward/back many, Stop returns the playhead to where playback started |
 | Plugins | stub (no plugins) |
 | Timeline | video / audio transition and still image default durations (frames or seconds), playback auto-scrolling (none / page / smooth), snap playhead, return to beginning at playback end, play after rendering previews |
 | Trim | Large Trim Offset, Selection tool picks roll (on the cut) / ripple (on the edge) without a modifier, playhead determines trim loop |

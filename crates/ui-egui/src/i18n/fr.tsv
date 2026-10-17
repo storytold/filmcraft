@@ -3577,3 +3577,7 @@
 	Export the labels to a preset file…	Exporter les étiquettes dans un fichier de paramètre prédéfini…
 	Show the presets folder	Afficher le dossier des paramètres prédéfinis
 	Delete this preset	Supprimer ce paramètre prédéfini
+	Stop Returns to Start	L'arrêt revient au début
+	Play/Stop, Other Way	Lecture/Arrêt, dans l'autre sens
+	Stop returns the playhead to where playback started	L'arrêt remet la tête de lecture là où la lecture a commencé
+	Toggle Stop Returns to Start	Basculer : l'arrêt revient au début
