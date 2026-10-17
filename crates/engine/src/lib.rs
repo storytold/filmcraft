@@ -36,6 +36,7 @@ pub mod narration;
 pub mod panels;
 pub mod paste_media;
 pub mod perf;
+mod premiere;
 pub mod presets;
 pub mod previews;
 pub mod project_manager;
@@ -1332,3 +1333,6 @@ mod source_placement_tests;
 mod frame_export_tests;
 #[cfg(test)]
 mod wasm_clock_tests;
+
+#[cfg(test)]
+mod premiere_tests;

@@ -1934,6 +1934,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.21",
  "web-time",
 ]
@@ -2079,12 +2080,14 @@ dependencies = [
 name = "filmcraft-interchange"
 version = "0.8.0"
 dependencies = [
+ "base64 0.22.1",
  "filmcraft-cfb",
  "filmcraft-color",
  "filmcraft-geom",
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-time",
+ "flate2",
  "proptest",
  "roxmltree",
  "serde",

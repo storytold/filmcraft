@@ -53,6 +53,8 @@ pub use atomic::atomic_write;
 
 /// The `format` tag written in every envelope.
 pub const FORMAT_ID: &str = "filmcraft.project";
+/// Old upstream readers must refuse provenance-bearing projects instead of dropping records.
+pub const WORKFLOW_FORMAT_ID: &str = "filmcraft.project.workflow";
 
 /// A migration upgrades a whole document from schema `n` to `n + 1`.
 pub type Migration = fn(Value) -> Result<Value, String>;
@@ -163,7 +165,8 @@ pub fn encode(project: &Project, pretty: bool) -> Vec<u8> {
 /// outside the schema's promises: builds that do not know it ignore it, and it is dropped rather
 /// than migrated when it cannot be read.
 pub fn encode_with_view(project: &Project, view: Option<&ProjectView>, pretty: bool) -> Vec<u8> {
-    let env = EnvelopeOut { format: FORMAT_ID, schema_version: SCHEMA_VERSION, generator: generator(), project, view };
+    let format = if project.workflow.is_some() { WORKFLOW_FORMAT_ID } else { FORMAT_ID };
+    let env = EnvelopeOut { format, schema_version: SCHEMA_VERSION, generator: generator(), project, view };
     let r = if pretty { serde_json::to_vec_pretty(&env) } else { serde_json::to_vec(&env) };
     // Serializing plain data (string keys, finite numbers or null) cannot fail.
     r.unwrap_or_default()
@@ -179,6 +182,7 @@ fn probe_version(p: &Probe) -> Result<u32, FormatError> {
     if let Some(v) = p.schema_version {
         if let Some(f) = &p.format
             && f != FORMAT_ID
+            && f != WORKFLOW_FORMAT_ID
         {
             return Err(FormatError::NotAProject(format!("format is `{f}`, expected `{FORMAT_ID}`")));
         }
@@ -216,6 +220,11 @@ pub fn decode(bytes: &[u8]) -> Result<Loaded, FormatError> {
 /// Refuse only values that would overflow or exhaust memory later (`Sequence::check_bounds`);
 /// structural rules such as overlaps are left to the editor, so projects that open today still open.
 fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
+    if let Some(workflow) = &loaded.project.workflow
+        && workflow.version != 1
+    {
+        return Err(FormatError::Corrupt(format!("unsupported workflow record version {} (supported: 1)", workflow.version)));
+    }
     // Out-of-range audio stream data is repaired, not refused: failing the load would lose the
     // whole project over one bad index. A media item keeps its first `MAX_AUDIO_STREAMS` streams; a
     // clip pointing past that plays stream 0.
