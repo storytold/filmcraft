@@ -120,6 +120,11 @@ fn main() -> eframe::Result {
     // OS hardware video decoders (VideoToolbox on macOS) in front of our own; Settings ▸ Playback ▸
     // Hardware decoding switches them off. Unsupported streams and failures use our decoders.
     register_hardware_decoders();
+    // The documents Finder or `open` hands the app: macOS delivers them as Apple Events, and the
+    // event that *launched* the app is dispatched before the event loop is up, so the handler is
+    // registered here (see `filmcraft_platform::open_documents`). The claim that gets the event
+    // here at all is `CFBundleDocumentTypes` in `packaging/macos/Info.plist.in`.
+    let open_events = filmcraft_platform::open_documents::install();
     // Which graphics backends and adapter the window starts with: `--graphics`, else the saved
     // mode, which moves on after starts that died before their window painted (a driver crash),
     // see graphics.rs.
@@ -135,7 +140,7 @@ fn main() -> eframe::Result {
         // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
         graphics::apply(&mut options, graphics.mode(), backend_override);
         let app_created = Arc::new(AtomicBool::new(false));
-        let result = eframe::run_native("FilmCraft", options, app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created)));
+        let result = eframe::run_native("FilmCraft", options, app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created), open_events));
         let app_created = app_created.load(Ordering::Relaxed);
         match &result {
             // wgpu reported the failure (no adapter, device creation failed) before the app
@@ -185,8 +190,9 @@ fn native_options(agent: bool) -> eframe::NativeOptions {
 }
 
 /// Creates the app once eframe has its window and graphics device; sets `created` when it runs,
-/// and confirms the graphics mode once two frames have painted.
-fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<AtomicBool>) -> eframe::AppCreator<'static> {
+/// and confirms the graphics mode once two frames have painted. `open_events` says whether the
+/// platform hands documents to a running app (`filmcraft_platform::open_documents::install`).
+fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<AtomicBool>, open_events: bool) -> eframe::AppCreator<'static> {
     let Launch { control_port, control_input_only, files, demo, startup_flag, recover, data_dir, graphics: _ } = launch;
     Box::new(move |cc| {
         created.store(true, Ordering::Relaxed);
@@ -331,6 +337,14 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
                 .pick_file()
                 .map(|p| p.to_string_lossy().to_string())
         }));
+        // Documents the running app is asked to open come in as Apple Events (macOS), never as
+        // arguments, and they are opened through this hook (#1229); `open_documents::install`
+        // (before the event loop, in `main`) registered the handler that catches them.
+        if open_events {
+            let ctx = cc.egui_ctx.clone();
+            filmcraft_platform::open_documents::set_wake(move || ctx.request_repaint());
+            app.hooks.os_open_files = Some(Box::new(filmcraft_platform::open_documents::take));
+        }
         #[cfg(target_os = "macos")]
         {
             let (rx, update) = native_menu::install(&app, cc.egui_ctx.clone());

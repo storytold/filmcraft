@@ -170,6 +170,12 @@ pub struct HostHooks {
     /// Files or an image on the system clipboard, for Paste in the Timeline and the Project panel
     /// (#611). Without it Paste only pastes clips copied in FilmCraft.
     pub clipboard_media: Option<Box<dyn FnMut() -> Option<ClipboardMedia>>>,
+    /// The files the operating system asked the app to open while it is running, drained once a
+    /// frame (macOS: a `.fcproj` double-clicked in Finder, `open`, dropped on the Dock icon — the
+    /// open event AppKit sends once `CFBundleDocumentTypes` claims the format, #1229). Windows and
+    /// Linux start the app with those paths as arguments instead, so they have no events to drain.
+    /// Without it, or when it returns nothing, such a file is not opened.
+    pub os_open_files: Option<Box<dyn FnMut() -> Vec<String>>>,
 }
 
 /// What [`HostHooks::clipboard_media`] found on the system clipboard.
@@ -1412,6 +1418,32 @@ impl FilmcraftApp {
         }
     }
 
+    /// Files the operating system asked this running app to open (`HostHooks::os_open_files`,
+    /// #1229): a project opens the way File ▸ Open opens one, anything else imports the way the
+    /// same file on the command line does (`args::project_and_media`, #850). The paths are applied
+    /// through the menu commands, so an open event behaves exactly like the menu item — including
+    /// the error in the status bar when the file cannot be read.
+    fn open_os_files(&mut self, ctx: &egui::Context) {
+        // the hook is taken out and put back, so the paths can be applied with `&mut self`
+        let Some(mut take) = self.hooks.os_open_files.take() else { return };
+        let paths = take();
+        self.hooks.os_open_files = Some(take);
+        if paths.is_empty() {
+            return;
+        }
+        let (projects, media): (Vec<&String>, Vec<&String>) = paths.iter().partition(|p| is_project_path(p));
+        for path in projects {
+            if let Err(e) = menus::invoke(self, ctx, "file.open", json!({"path": path})) {
+                self.ui.status = e;
+            }
+        }
+        if !media.is_empty()
+            && let Err(e) = menus::invoke(self, ctx, "file.import", json!({"paths": media}))
+        {
+            self.ui.status = e;
+        }
+    }
+
     /// Where files dragged in from the OS are over the window. The OS reports no cursor motion during such a drag
     /// (winit, Windows), so ask it through the host hook, else use the last pointer position egui saw.
     fn drop_pointer(&self, ctx: &egui::Context) -> Option<egui::Pos2> {
@@ -1763,6 +1795,7 @@ impl FilmcraftApp {
             }
             self.command_inbox = Some(rx);
         }
+        self.open_os_files(&ctx);
         self.begin_press(&ctx);
         self.handle_shortcuts(&ctx);
         self.sync_native_menu();
@@ -2752,6 +2785,30 @@ mod voiceover_playback_tests {
 fn screen_px_to_ui(px: (i32, i32), pixels_per_point: f32, content_min: egui::Pos2) -> egui::Pos2 {
     let ppp = if pixels_per_point.is_finite() && pixels_per_point > 0.0 { pixels_per_point } else { 1.0 };
     egui::pos2(px.0 as f32 / ppp - content_min.x, px.1 as f32 / ppp - content_min.y)
+}
+
+/// Is `path` a FilmCraft project rather than media to import? The extension's case does not
+/// matter: Windows file associations and the Linux MIME glob start the app for `CUT.FCPROJ` too
+/// (#850). One rule for every way a file reaches the app — the launch arguments
+/// (`apps/filmcraft/src/args.rs`) and macOS open events (`Self::open_os_files`, #1229) both ask
+/// this.
+pub fn is_project_path(path: &str) -> bool {
+    std::path::Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("fcproj"))
+}
+
+#[cfg(test)]
+mod project_path_tests {
+    use super::is_project_path;
+
+    #[test]
+    fn a_project_is_recognised_whatever_the_extension_s_case() {
+        for p in ["/a/b/cut.fcproj", "cut.fcproj", "CUT.FCPROJ", "/a/Film v2.FcProj"] {
+            assert!(is_project_path(p), "{p} is a project");
+        }
+        for p in ["/a/b/cut.mp4", "cut.fcproj.bak", "fcproj", "/a/b/fcproj/", ""] {
+            assert!(!is_project_path(p), "{p} is not a project");
+        }
+    }
 }
 
 #[cfg(test)]
