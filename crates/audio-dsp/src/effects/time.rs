@@ -141,7 +141,7 @@ fn size_scale(size_pct: f32) -> f32 {
 pub struct Reverb {
     pv: ParamValues,
     sr: f32,
-    lines: Vec<Vec<f32>>,
+    lines: [Vec<f32>; FDN],
     w: usize,
     len: [Smoothed; FDN],
     lp: [f32; FDN],
@@ -172,7 +172,7 @@ impl Reverb {
         let mut s = Reverb {
             pv: ParamValues::new(Self::PARAMS),
             sr: sample_rate,
-            lines: vec![vec![0.0; max_line]; FDN],
+            lines: std::array::from_fn(|_| vec![0.0; max_line]),
             w: 0,
             len: [sm(1.0); FDN],
             lp: [0.0; FDN],
@@ -223,18 +223,11 @@ impl Reverb {
     }
 }
 
-impl AudioEffect for Reverb {
-    param_plumbing!("reverb");
-    fn reset(&mut self) {
-        self.lines.iter_mut().for_each(|l| l.iter_mut().for_each(|v| *v = 0.0));
-        self.pre.iter_mut().for_each(|v| *v = 0.0);
-        self.lp = [0.0; FDN];
-        self.w = 0;
-        self.pre_w = 0;
-        self.counter = 0;
-        self.apply_params(true);
-    }
-    fn process(&mut self, channels: &mut [&mut [f32]]) {
+impl Reverb {
+    // Keep the three hot-loop variants separate under LTO, rather than
+    // merging their control flow into the trait-dispatch entry point.
+    #[inline(never)]
+    fn process_block<const FIXED: bool, const SETTLED: bool>(&mut self, channels: &mut [&mut [f32]]) {
         let n = block_len(channels);
         let nch = channels.len();
         if nch == 0 {
@@ -245,23 +238,30 @@ impl AudioEffect for Reverb {
         let hh = 2.0 / FDN as f32;
         // During a settled block these positions cannot change. Preserve the original path
         // while smoothing, and preserve the 32-sample gain update grid in both cases.
-        let fixed = self.len.iter().all(|l| !l.is_smoothing());
         let delays = self.len.map(|l| prepare_delay(line_len, l.value()));
         let predelay = (!self.pre_len.is_smoothing()).then(|| prepare_delay(pre_len, self.pre_len.value()));
+        let stable = (self.damp.value(), self.mix.value(), self.pre_len.value());
+        let gain_key = (self.len.map(|l| l.value()), self.rt60.value().max(0.01));
+        let mut gains_current = SETTLED && self.gain_key == gain_key;
         for i in 0..n {
-            if self.counter == 0 {
+            if self.counter == 0 && (!SETTLED || !gains_current) {
                 self.update_gains();
+                // Keep the first pending update on its original sample grid.
+                // Non-finite keys keep the original update cadence too.
+                gains_current = SETTLED && self.gain_key == gain_key;
             }
             self.counter = (self.counter + 1) % 32;
-            if !fixed {
+            if !FIXED {
                 for l in &mut self.len {
                     l.tick();
                 }
             }
-            self.rt60.tick();
-            let damp = self.damp.tick();
-            let mix = self.mix.tick();
-            let pd = self.pre_len.tick();
+            let (damp, mix, pd) = if SETTLED {
+                stable
+            } else {
+                self.rt60.tick();
+                (self.damp.tick(), self.mix.tick(), self.pre_len.tick())
+            };
 
             let mut mono = 0.0;
             for ch in channels.iter() {
@@ -278,7 +278,7 @@ impl AudioEffect for Reverb {
             let mut v = [0.0f32; FDN];
             let mut sum = 0.0;
             for k in 0..FDN {
-                let d = if fixed { read_prepared(&self.lines[k], self.w, delays[k]) } else { read_frac(&self.lines[k], self.w, self.len[k].value()) };
+                let d = if FIXED { read_prepared(&self.lines[k], self.w, delays[k]) } else { read_frac(&self.lines[k], self.w, self.len[k].value()) };
                 self.lp[k] = flush32(d + (self.lp[k] - d) * damp);
                 v[k] = self.lp[k] * self.gains[k];
                 sum += v[k];
@@ -303,6 +303,33 @@ impl AudioEffect for Reverb {
                 };
                 ch[i] = x + mix * (wet - x);
             }
+        }
+    }
+}
+
+impl AudioEffect for Reverb {
+    param_plumbing!("reverb");
+    fn reset(&mut self) {
+        self.lines.iter_mut().for_each(|l| l.iter_mut().for_each(|v| *v = 0.0));
+        self.pre.iter_mut().for_each(|v| *v = 0.0);
+        self.lp = [0.0; FDN];
+        self.w = 0;
+        self.pre_w = 0;
+        self.counter = 0;
+        self.apply_params(true);
+    }
+    fn process(&mut self, channels: &mut [&mut [f32]]) {
+        // Dispatch once per block: the settled delay path has no parameter
+        // branches inside the eight-line feedback loop. Recursive arithmetic
+        // and the gain-update grid stay identical to the automated path.
+        if self.len.iter().all(|l| !l.is_smoothing()) {
+            if !self.rt60.is_smoothing() && !self.damp.is_smoothing() && !self.mix.is_smoothing() && !self.pre_len.is_smoothing() {
+                self.process_block::<true, true>(channels);
+            } else {
+                self.process_block::<true, false>(channels);
+            }
+        } else {
+            self.process_block::<false, false>(channels);
         }
     }
 }
@@ -509,6 +536,16 @@ mod throughput_tests {
                     fx.set_param("predelay", (block % 200) as f32);
                 }
             }
+            // Exercise parameter ramps after the delay lengths have settled,
+            // including a pending gain update when the final ramp sample lands
+            // between 32-sample update boundaries.
+            if matches!(block, 132 | 272) {
+                for fx in [&mut fast, &mut reference] {
+                    fx.set_param("decay", 0.4 + (block % 13) as f32);
+                    fx.set_param("damping", (block % 101) as f32);
+                    fx.set_param("mix", (block % 83) as f32);
+                }
+            }
             if block == 600 {
                 fast.reset();
                 reference.reset();
@@ -523,6 +560,30 @@ mod throughput_tests {
             reference.process_reference(&mut [bl, br]);
             for (a, b) in a.iter().flatten().zip(b.iter().flatten()) {
                 assert_eq!(a.to_bits(), b.to_bits(), "block {block}");
+            }
+        }
+    }
+    #[test]
+    fn reverb_channel_widths_match_original_arithmetic() {
+        for nch in [1, 2, 3, 6] {
+            let mut fast = Reverb::new(48000.0, nch);
+            let mut reference = Reverb::new(48000.0, nch);
+            for block in 0..80 {
+                if block == 20 {
+                    for fx in [&mut fast, &mut reference] {
+                        fx.set_param("mix", 47.0);
+                        fx.set_param("damping", 61.0);
+                    }
+                }
+                let n = [0, 1, 17, 64, 513][block % 5];
+                let mut a: Vec<Vec<f32>> =
+                    (0..nch).map(|c| (0..n).map(|i| if block > 60 { -0.0 } else { ((i + c * 7 + block * 13) as f32 * 0.17).sin() * 0.3 }).collect()).collect();
+                let mut b = a.clone();
+                fast.process(&mut a.iter_mut().map(Vec::as_mut_slice).collect::<Vec<_>>());
+                reference.process_reference(&mut b.iter_mut().map(Vec::as_mut_slice).collect::<Vec<_>>());
+                for (a, b) in a.iter().flatten().zip(b.iter().flatten()) {
+                    assert_eq!(a.to_bits(), b.to_bits(), "{nch} channels, block {block}");
+                }
             }
         }
     }
