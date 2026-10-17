@@ -61,8 +61,8 @@ mod theme_favorites;
 pub mod widgets;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
 
 use egui::{TextureHandle, TextureOptions};
 use filmcraft_engine::{Services, Session};
@@ -170,6 +170,36 @@ pub struct HostHooks {
     /// Files or an image on the system clipboard, for Paste in the Timeline and the Project panel
     /// (#611). Without it Paste only pastes clips copied in FilmCraft.
     pub clipboard_media: Option<Box<dyn FnMut() -> Option<ClipboardMedia>>>,
+    /// Files a drag only *promised*, which the host writes out after the drop (macOS: Photos.app
+    /// offers a dragged video as a file promise, and its only plain path is a JPEG poster frame,
+    /// so without this a dragged-in video was imported as a still). Shared with the host: this
+    /// says where to write them while files hover, and takes the ones that have arrived.
+    pub promised_drops: Option<PromisedDrops>,
+}
+
+/// The two halves of a promised-file drop shared with the host ([`HostHooks::promised_drops`]).
+/// Both are locked only to swap a string or drain a list, never across a frame.
+#[derive(Clone, Default)]
+pub struct PromisedDrops {
+    /// Where the host writes files it receives, kept up to date while a drag hovers so it follows
+    /// the open project (Project Settings ▸ Scratch Disks ▸ Captured).
+    pub destination: Arc<Mutex<String>>,
+    /// Files that have finished arriving, imported on the next frame as a drop of their own.
+    pub arrived: Arc<Mutex<Vec<String>>>,
+}
+
+impl PromisedDrops {
+    /// Hands over the files received so far, leaving the list empty.
+    fn take(&self) -> Vec<String> {
+        let mut arrived = self.arrived.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::take(&mut arrived)
+    }
+
+    /// Points the host at `dir` for the files of the drag now hovering.
+    fn point_at(&self, dir: String) {
+        let mut destination = self.destination.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *destination = dir;
+    }
 }
 
 /// What [`HostHooks::clipboard_media`] found on the system clipboard.
@@ -1382,6 +1412,13 @@ impl FilmcraftApp {
     fn handle_drops(&mut self, ctx: &egui::Context) {
         // While files hover, the OS sends no cursor events: poll the cursor each frame to draw the Timeline preview.
         let hovering = ctx.input(|i| i.raw.hovered_files.len());
+        // A promise is fulfilled into a directory the host must know before the drop: while files
+        // are over the window, point it at this project's (Scratch Disks ▸ Captured).
+        if hovering > 0
+            && let Some(promised) = self.hooks.promised_drops.as_ref()
+        {
+            promised.point_at(filmcraft_engine::voiceover::captured_media_dir(&self.session, "Dropped Media"));
+        }
         self.file_drag_hover = if hovering > 0 && self.session.prefs.timeline.drop_import_to_timeline {
             ctx.request_repaint();
             self.drop_pointer(ctx).map(|p| (hovering, p))
@@ -1389,7 +1426,9 @@ impl FilmcraftApp {
             None
         };
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
-        let mut paths = Vec::new();
+        // Files the host received for a drag that only promised them land after their drop, so
+        // they arrive as their own import (at the pointer, which has not moved on since).
+        let mut paths: Vec<String> = self.hooks.promised_drops.as_ref().map(PromisedDrops::take).unwrap_or_default();
         for f in dropped {
             let p = f.path();
             if p.exists() {

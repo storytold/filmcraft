@@ -33,6 +33,30 @@ filmcraft-time = { workspace = true }
 log = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+# Promised-file drops (Photos.app drags a video as a promise, not a path): AppKit's dragging
+# destination, pasteboard and NSFilePromiseReceiver, with its reader block.
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "NSApplication",
+    "NSDragging",
+    "NSFilePromiseReceiver",
+    "NSPasteboard",
+    "NSResponder",
+    "NSWindow",
+] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "NSArray",
+    "NSDictionary",
+    "NSError",
+    "NSOperation",
+    "NSString",
+    "NSURL",
+] }
+block2 = "0.6"
 objc2-core-foundation = "0.3.2"
 objc2-core-media = "0.3.2"
 objc2-core-video = "0.3.2"
