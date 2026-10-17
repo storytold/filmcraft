@@ -177,8 +177,9 @@ fn click_selects_a_transition_and_delete_removes_it() {
     assert_eq!(d.exec("sequence.inspect", json!({}))["transitionSelection"], json!([]));
 }
 
-/// Dragging a transition's end trims that end only (#224); dragging its middle slides it over the
-/// cut (Custom Start). Each drag is one undo step.
+/// Dragging a transition's end changes its duration without breaking its alignment: a Center at
+/// Cut one stays centred, the other end moving out with it (#224); dragging its middle slides it
+/// over the cut (Custom Start). Each drag is one undo step.
 #[test]
 fn dragging_a_transition_end_or_middle() {
     let mut d = Driver::demo();
@@ -192,9 +193,10 @@ fn dragging_a_transition_end_or_middle() {
     let x1 = d.transition(c.id).unwrap();
     let (s1, d1) = (x1["start"].as_i64().unwrap(), x1["duration"].as_i64().unwrap());
     assert!(d1 > c.duration, "dragging the end out lengthens it: {} -> {d1}", c.duration);
-    assert_eq!(s1, c.start, "the start stays where it was");
-    assert_eq!((d1 - c.duration) % frame, 0, "by whole frames");
-    assert_eq!(x1["align"], json!("custom"), "no longer centred: Custom Start");
+    assert!(s1 < c.start, "still centred, so the start moves out with it: {} -> {s1}", c.start);
+    assert_eq!(c.start - s1, (d1 - c.duration) / 2, "the other end moves the same way");
+    assert_eq!((d1 - c.duration) % (2 * frame), 0, "both ends by whole frames");
+    assert_eq!(x1["align"], json!("center"), "stays Center at Cut");
     // the middle: slide it right of centre
     let (x, y, w, h, _) = d.find(&format!("timeline.transition.{}", c.id)).unwrap();
     let (mx, my) = (x + w / 2.0, y + h / 2.0);
@@ -276,8 +278,9 @@ fn transition_settings_in_effect_controls() {
 }
 
 /// Effect Controls' own timeline for a selected transition (#577): clip A, clip B and the
-/// transition over their cut. Dragging its end changes its duration from that end, dragging its
-/// middle slides it over the cut, each drag one undo step; the ruler moves the playhead.
+/// transition over their cut. Dragging its end changes its duration, keeping the alignment
+/// (centred: both ends move out), dragging its middle slides it over the cut, each drag one undo
+/// step; the ruler moves the playhead.
 #[test]
 fn transition_timeline_in_effect_controls() {
     let mut d = Driver::demo();
@@ -297,7 +300,7 @@ fn transition_timeline_in_effect_controls() {
     let (a, b) = (d.label("effectControls.transition.timeline.a"), d.label("effectControls.transition.timeline.b"));
     assert!(names.contains(&a) && names.contains(&b), "A {a:?} and B {b:?} are the clips at the cut: {names:?}");
     d.snapshot("transition-effect-controls-timeline");
-    // its end: drag it right
+    // its end: drag it right; it stays centred, so the start moves out with it
     let (x, y, w, h, _) = d.find("effectControls.transition.timeline.span.out").expect("the transition's end in Effect Controls");
     let (fx, fy) = (x + w / 2.0, y + h / 2.0);
     d.ok("ui.drag", json!({"from": {"x": fx, "y": fy}, "to": {"x": fx + 30.0, "y": fy}, "steps": 8}));
@@ -305,8 +308,9 @@ fn transition_timeline_in_effect_controls() {
     let x1 = d.transition(c.id).unwrap();
     let (s1, d1) = (x1["start"].as_i64().unwrap(), x1["duration"].as_i64().unwrap());
     assert!(d1 > c.duration, "dragging the end out lengthens it: {} -> {d1}", c.duration);
-    assert_eq!(s1, c.start, "the start stays where it was");
-    assert_eq!((d1 - c.duration) % frame, 0, "by whole frames");
+    assert!(s1 < c.start, "still centred, so the start moves out too: {} -> {s1}", c.start);
+    assert_eq!(c.start - s1, (d1 - c.duration) / 2, "and the same way");
+    assert_eq!((d1 - c.duration) % (2 * frame), 0, "both ends by whole frames");
     let (num, den) = d.rate();
     let rate = filmcraft_engine::time::FrameRate { num, den };
     assert_eq!(
