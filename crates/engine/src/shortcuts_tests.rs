@@ -291,6 +291,55 @@ fn list_searches_labels_and_keys() {
     assert_eq!(v.as_array().unwrap().len(), 2, "{v}");
 }
 
+/// A command run without parameters whose parameters are all optional or defaulted opens its
+/// dialog instead of running (ui-egui routes them through clip_dialogs / menu_dialogs /
+/// media_dialogs), so it belongs in the shortcut editor. A parameter left marked required takes it
+/// out of the list even though the engine defaults it (#2024).
+#[test]
+fn commands_that_open_dialogs_can_be_bound() {
+    let r = Session::default().shortcuts.commands();
+    for id in [
+        // clip_dialogs::meta
+        "edit.pasteAttributes",
+        "edit.removeAttributes",
+        "file.newOfflineFile",
+        "clip.nest",
+        "clip.makeSubclip",
+        "clip.editSubclip",
+        "clip.audioChannels",
+        "clip.modifyTimecode",
+        "clip.frameHoldOptions",
+        "clip.fieldOptions",
+        "clip.speedDuration",
+        "file.closeProject",
+        // menu_dialogs::meta, minus file.mediaProperties and clip.sourceSettings (views, not
+        // undoable actions: they stay out of the editor on purpose even though a default key
+        // names mediaProperties)
+        "edit.find",
+        "file.newSearchBin",
+        "clip.editOffline",
+        "clip.updateMetadata",
+        "clip.automateToSequence",
+        "clip.sceneEditDetection",
+        "sequence.normalizeMixTrack",
+        "sequence.simplify",
+        "sequence.transcribe",
+        "file.saveAsTemplate",
+        "markers.addFlashCue",
+        // media_dialogs::route, minus the ones that relink a file picked in a native dialog
+        // (media.attachProxies, media.reconnectFullRes) and media.linkMedia (a dialog the app
+        // opens but does not edit the project, so it is not a bindable action)
+        "media.makeOffline",
+        "media.createProxies",
+    ] {
+        assert!(r.iter().any(|c| c.id == id), "{id} opens its dialog when run without parameters, so it can be bound");
+    }
+    // and the assignment goes through, so the key can be recorded and shown in the editor
+    let mut s = Session::default();
+    s.execute("shortcuts.set", json!({"command": "clip.nest", "keys": "Cmd+Alt+N"})).unwrap();
+    assert_eq!(s.shortcuts.primary("clip.nest").as_deref(), Some("Cmd+Alt+N"));
+}
+
 #[test]
 fn default_keymaps_have_no_conflicts_on_any_platform() {
     // The Premiere audit used to check keys on macOS only, so off macOS `⌃9`/`⌘9`, `⌃⇧M`/`⌘⇧M` and
