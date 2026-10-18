@@ -3585,3 +3585,9 @@
 	Shows the version, community links and credits in a FilmCraft window.	在 FilmCraft 窗口中显示版本、社区链接和致谢。
 	Couldn't open your web browser	无法打开网页浏览器
 	Open this address in your browser yourself:	请自行在浏览器中打开此地址：
+	Could not import the dropped files	无法导入拖放的文件
+	Imported 1 file	已导入 1 个文件
+	Imported {n} files	已导入 {n} 个文件
+	Drop to import	释放以导入
+	Drop on the Timeline to place the clips	释放到时间轴以放置剪辑
+	Add media to your project. Drag-and-drop needs X11 (run with WAYLAND_DISPLAY unset), or choose a source below.	将媒体添加到项目。拖放需要 X11（取消设置 WAYLAND_DISPLAY 后运行），或从下方选择来源。

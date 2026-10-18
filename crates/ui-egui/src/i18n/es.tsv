@@ -3610,3 +3610,9 @@
 	Shows the version, community links and credits in a FilmCraft window.	Muestra la versión, los enlaces de la comunidad y los créditos en una ventana de FilmCraft.
 	Couldn't open your web browser	No se pudo abrir el navegador web
 	Open this address in your browser yourself:	Abre esta dirección tú mismo en el navegador:
+	Could not import the dropped files	No se pudieron importar los archivos soltados
+	Imported 1 file	1 archivo importado
+	Imported {n} files	Importados {n} archivos
+	Drop to import	Suelta para importar
+	Drop on the Timeline to place the clips	Suelta en la línea de tiempo para colocar los clips
+	Add media to your project. Drag-and-drop needs X11 (run with WAYLAND_DISPLAY unset), or choose a source below.	Añade medios a tu proyecto. Arrastrar y soltar necesita X11 (ejecuta sin WAYLAND_DISPLAY), o elige una fuente abajo.
