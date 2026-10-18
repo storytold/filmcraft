@@ -67,6 +67,24 @@ Weights are **never** bundled or committed. They are downloaded on request into
 `<data dir>/models/<id>/` (see `filmcraft_engine::autosave::default_data_dir`), each file pinned to a
 revision of OpenAI's Hugging Face repositories and checked against its SHA-256:
 
+Use the companion CLI to check or download a model:
+
+```sh
+filmcraft-cli exec transcript.models
+filmcraft-cli exec transcript.downloadModel model=whisper-base
+```
+
+The default `whisper-base` download is about 280 MiB. On Windows, the MSI installs the CLI beside
+the desktop app (by default `C:\Program Files\FilmCraft\filmcraft-cli.exe`); in PowerShell, run:
+
+```powershell
+& "$env:ProgramFiles\FilmCraft\filmcraft-cli.exe" exec transcript.downloadModel model=whisper-base
+```
+
+The CLI creates the model folder and downloads the pinned files, verifying each file's size and
+SHA-256. No manual file placement is needed. On Windows, the default data directory is
+`%APPDATA%\FilmCraft\models\whisper-base`.
+
 | Id | Languages | Licence |
 |---|---|---|
 | `whisper-tiny` | multilingual | MIT (OpenAI); HF conversion Apache-2.0 |

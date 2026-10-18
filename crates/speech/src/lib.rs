@@ -46,7 +46,7 @@ pub fn seconds_tick(s: f64) -> Tick {
 pub enum SpeechError {
     #[error("stopped")]
     Cancelled,
-    #[error("the speech model `{0}` is not downloaded")]
+    #[error("the speech model `{0}` is not downloaded; run `filmcraft-cli exec transcript.downloadModel model={0}` to download it")]
     NotInstalled(String),
     #[error("unknown speech model `{0}`")]
     UnknownModel(String),

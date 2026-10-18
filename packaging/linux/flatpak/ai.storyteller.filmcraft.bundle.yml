@@ -39,7 +39,8 @@ finish-args:
   - --filesystem=/run/media
   - --filesystem=/mnt
   # Whisper models are downloaded only on user request; recognition then runs locally. The
-  # optional --control server listens on 127.0.0.1; host agents need a network override to reach it.
+  # optional --control server listens on 127.0.0.1; host-side agents can reach it without an override.
+  # Agents in a separate sandbox need their own --share=network permission to reach it.
   - --share=network
   # Deliberately not granted: host-wide filesystem access.
 modules:
