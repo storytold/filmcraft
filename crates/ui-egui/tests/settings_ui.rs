@@ -206,7 +206,7 @@ fn checkbox_edits_apply_on_ok_and_not_on_cancel() {
     d.click("settings.ok");
     assert!(d.draft().is_null(), "OK closes");
     assert_eq!(d.pref("trim.selectionToolRollRipple"), true, "edits on several pages apply together");
-    assert_eq!(d.pref("timeline.snapPlayhead"), false, "on by default (as in Premiere), the click turns it off");
+    assert_eq!(d.pref("timeline.snapPlayhead"), true, "off by default; the click opts into playhead snapping");
 }
 
 /// #580: Escape while dragging a number in Settings puts it back and keeps the dialog open (the
@@ -537,6 +537,7 @@ fn snap_playhead_and_return_to_beginning() {
 #[test]
 fn playhead_drag_snaps_to_cuts() {
     let mut d = Driver::demo();
+    d.exec("prefs.set", json!({"key": "timeline.snapPlayhead", "value": true}));
     d.frames(2);
     let seq = d.harness.state().session.active_sequence().unwrap().clone();
     let v1 = &seq.video_tracks[0];
@@ -560,6 +561,22 @@ fn playhead_drag_snaps_to_cuts() {
     d.frames(2);
     let ph = d.harness.state().session.playhead();
     assert!(ph > cut, "moves off the cut freely: {ph:?} vs {cut:?}");
+
+    // Shift temporarily snaps the playhead even when the clip-snap magnet is off. Without
+    // Shift, only an explicit playhead preference together with the magnet enables snapping.
+    for preference in [false, true] {
+        d.exec("prefs.set", json!({"key": "timeline.snapPlayhead", "value": preference}));
+        for magnet in [false, true] {
+            d.exec("sequence.snap", json!({"on": magnet}));
+            for shift in [false, true] {
+                let expected = shift || (preference && magnet);
+                d.ok("ui.click", json!({"x": near, "y": y, "modifiers": {"shift": shift}}));
+                assert_eq!(d.harness.state().session.playhead() == cut, expected, "press: preference={preference}, magnet={magnet}, shift={shift}");
+                d.ok("ui.drag", json!({"from": {"x": from, "y": y}, "to": {"x": near, "y": y}, "steps": 8, "modifiers": {"shift": shift}}));
+                assert_eq!(d.harness.state().session.playhead() == cut, expected, "drag: preference={preference}, magnet={magnet}, shift={shift}");
+            }
+        }
+    }
 }
 
 /// #1090: a press on the ruler moves the playhead there at once, before the pointer moves or the

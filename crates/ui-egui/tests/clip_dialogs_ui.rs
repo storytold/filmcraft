@@ -446,3 +446,31 @@ fn clip_context_menu_adds_a_marker_at_the_playhead_with_one_undo() {
         assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), serde_json::to_value(&*after).unwrap());
     }
 }
+
+#[test]
+fn speed_duration_remembers_only_successfully_applied_ripple_choice() {
+    let mut d = Driver::new();
+    let clip = d.v1(0);
+    d.exec("timeline.select", json!({"clips": [clip.id.0]}));
+    d.menu("clip.speedDuration");
+    assert_eq!(d.app().ui.clip_dialog.as_ref().unwrap().params["ripple"], false);
+    d.click("speedDuration.ripple");
+    d.click("speedDuration.ok");
+    assert!(d.app().ui.clip_dialog.is_none());
+    d.menu("clip.speedDuration");
+    assert_eq!(d.app().ui.clip_dialog.as_ref().unwrap().params["ripple"], true);
+    d.click("speedDuration.ripple");
+    d.click("speedDuration.cancel");
+    d.menu("clip.speedDuration");
+    assert_eq!(d.app().ui.clip_dialog.as_ref().unwrap().params["ripple"], true);
+    // Failed edits also leave the last successful preference intact.
+    let draft = d.app().ui.clip_dialog.as_mut().unwrap();
+    draft.params["ripple"] = json!(false);
+    draft.params["interpolation"] = json!("unsupported");
+    d.click("speedDuration.ok");
+    assert!(!d.app().ui.clip_dialog.as_ref().unwrap().error.is_empty());
+    assert!(d.app().ui.speed_duration_ripple);
+    let state = serde_json::to_value(&d.app().ui).unwrap();
+    let restored: filmcraft_ui_egui::state::UiState = serde_json::from_value(state).unwrap();
+    assert!(restored.speed_duration_ripple);
+}

@@ -1737,6 +1737,9 @@ fn vertical_scrollbar(ui: &mut egui::Ui, bar: Rect, value: &mut f32, max: f32, i
 
 /// Snap `t` to nearby candidates (edits, playhead, markers, in/out). Returns snapped tick.
 fn snap(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId]) -> Tick {
+    if !app.session.state.snapping {
+        return t;
+    }
     snap_to(app, seq, layout, t, exclude, true)
 }
 
@@ -1747,9 +1750,6 @@ fn snap_playhead(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tic
 }
 
 fn snap_to(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId], to_playhead: bool) -> Tick {
-    if !app.session.state.snapping {
-        return t;
-    }
     let mut cands: Vec<Tick> = Vec::with_capacity(64);
     for tr in seq.all_tracks() {
         for it in &tr.items {
@@ -2204,7 +2204,7 @@ pub(crate) fn wheel_input(ctx: &egui::Context) -> WheelInput {
 fn scrub_playhead(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, p: Pos2, shift: bool) {
     app.stop();
     let mut tt = seq.settings.frame_rate.snap_nearest(layout.tick_at(p.x).max(Tick::ZERO));
-    if shift || app.session.prefs.timeline.snap_playhead {
+    if shift || (app.session.prefs.timeline.snap_playhead && app.session.state.snapping) {
         tt = snap_playhead(app, seq, layout, tt);
     }
     // a press on a marker selects it: the playhead goes exactly onto it (#695)
@@ -2556,7 +2556,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             Drag::Scrub { initial } => {
                 let mut tt = rate.snap_nearest(t_here.max(Tick::ZERO));
                 // Shift snaps; Settings ▸ Timeline ▸ "Snap playhead in Timeline when Snap is enabled"
-                if mods.shift || app.session.prefs.timeline.snap_playhead {
+                if mods.shift || (app.session.prefs.timeline.snap_playhead && app.session.state.snapping) {
                     tt = snap_playhead(app, seq, layout, tt);
                 }
                 app.session.set_playhead(tt);

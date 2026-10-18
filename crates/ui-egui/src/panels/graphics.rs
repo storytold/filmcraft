@@ -1649,16 +1649,26 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             };
             let fams = filmcraft_text::families();
             let (_, mut vui) = cx.row(ui, tl!("Font"));
-            let r = egui::ComboBox::from_id_salt(("gfx-font", clip.0, l)).selected_text(&family).width(170.0).height(400.0).show_ui(&mut vui, |ui| {
-                if !filmcraft_text::fonts::system_scanned() {
-                    filmcraft_text::fonts::scan_system();
-                }
-                for (f, _) in &fams {
-                    if ui.selectable_label(*f == family, f).clicked() {
-                        cx.set("font", json!(f));
+            let r = egui::ComboBox::from_id_salt(("gfx-font", clip.0, l))
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .selected_text(&family)
+                .width(170.0)
+                .height(400.0)
+                .show_ui(&mut vui, |ui| {
+                    let (names, search) = crate::font_search::options(ui, app.ui.font_search.entry("graphics".into()).or_default());
+                    cx.auto("font.search", search.rect, "Font search");
+                    for f in &names {
+                        let option = ui.selectable_label(*f == family, f);
+                        let visible = option.rect.intersect(ui.clip_rect());
+                        if visible.is_positive() {
+                            cx.auto(&format!("font.option.{f}"), visible, f);
+                        }
+                        if option.clicked() {
+                            cx.set("font", json!(f));
+                            ui.close();
+                        }
                     }
-                }
-            });
+                });
             cx.auto("font", r.response.rect, "Font");
             let styles: Vec<String> = fams.iter().find(|(f, _)| f.eq_ignore_ascii_case(&family)).map(|(_, s)| s.clone()).unwrap_or_default();
             let (_, mut vui) = cx.row(ui, tl!("Font Style"));

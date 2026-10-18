@@ -333,7 +333,7 @@ fn row_label(ui: &mut egui::Ui, label: &str, t: &Tokens) -> egui::Ui {
 /// The template's editable properties (Essential Graphics ▸ Edit for a graphic made from a
 /// template). Returns false when the graphic has no template.
 pub fn template_controls(
-    app: &FilmcraftApp,
+    app: &mut FilmcraftApp,
     ui: &mut egui::Ui,
     clip: ClipId,
     it: &TrackItem,
@@ -426,16 +426,26 @@ pub fn template_controls(
                     Some(ParamValue::Text(s)) => s,
                     _ => String::new(),
                 };
-                let r = egui::ComboBox::from_id_salt(("gfx-tpl-font", clip.0, c.id.as_str())).selected_text(&fam).width(170.0).height(360.0).show_ui(
-                    &mut vui,
-                    |ui| {
-                        for (f, _) in filmcraft_text::families() {
-                            if ui.selectable_label(f == fam, &f).clicked() {
+                let r = egui::ComboBox::from_id_salt(("gfx-tpl-font", clip.0, c.id.as_str()))
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .selected_text(&fam)
+                    .width(170.0)
+                    .height(360.0)
+                    .show_ui(&mut vui, |ui| {
+                        let (names, search) = crate::font_search::options(ui, app.ui.font_search.entry("template".into()).or_default());
+                        autos.push((format!("{id}.search"), search.rect, "Font search".into()));
+                        for f in names {
+                            let option = ui.selectable_label(f == fam, &f);
+                            let visible = option.rect.intersect(ui.clip_rect());
+                            if visible.is_positive() {
+                                autos.push((format!("{id}.option.{f}"), visible, f.clone()));
+                            }
+                            if option.clicked() {
                                 set(json!(f), actions);
+                                ui.close();
                             }
                         }
-                    },
-                );
+                    });
                 autos.push((id, r.response.rect, c.name.clone()));
             }
             ControlKind::Position => {
@@ -758,11 +768,25 @@ fn replace_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 });
                 elems.push(("replaceFonts.from".into(), r.response.rect, "Replace".into()));
                 ui.label(tl!("with:"));
-                let r = egui::ComboBox::from_id_salt("gfx-rf-to").selected_text(&d.to).width(160.0).height(360.0).show_ui(ui, |ui| {
-                    for (f, _) in filmcraft_text::families() {
-                        ui.selectable_value(&mut d.to, f.clone(), &f);
-                    }
-                });
+                let r = egui::ComboBox::from_id_salt("gfx-rf-to")
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .selected_text(&d.to)
+                    .width(160.0)
+                    .height(360.0)
+                    .show_ui(ui, |ui| {
+                        let (names, search) = crate::font_search::options(ui, app.ui.font_search.entry("replace".into()).or_default());
+                        elems.push(("replaceFonts.to.search".into(), search.rect, "Font search".into()));
+                        for f in names {
+                            let option = ui.selectable_value(&mut d.to, f.clone(), &f);
+                            let visible = option.rect.intersect(ui.clip_rect());
+                            if visible.is_positive() {
+                                elems.push((format!("replaceFonts.to.option.{f}"), visible, f));
+                            }
+                            if option.clicked() {
+                                ui.close();
+                            }
+                        }
+                    });
                 elems.push(("replaceFonts.to".into(), r.response.rect, "With".into()));
             });
             if !d.error.is_empty() {

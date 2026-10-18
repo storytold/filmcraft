@@ -583,6 +583,12 @@ pub struct UiState {
     /// open when Some). See `panels::clip_dialogs`.
     #[serde(default)]
     pub clip_dialog: Option<ClipDialogDraft>,
+    /// Last successfully applied Speed/Duration ripple choice (a dialog preference, not clip data).
+    #[serde(default)]
+    pub speed_duration_ripple: bool,
+    /// Search text for each font picker, exposed through ui.inspect/ui.set.
+    #[serde(default)]
+    pub font_search: std::collections::BTreeMap<String, String>,
     /// M3.11 menu items: their dialog, Dynamic Audio Waveforms, the Media Browser selection. See
     /// `panels::menu_dialogs`.
     #[serde(default)]
@@ -1015,6 +1021,8 @@ impl Default for UiState {
             text_props_dialog: None,
             workspace_dialog: None,
             clip_dialog: None,
+            speed_duration_ripple: false,
+            font_search: Default::default(),
             extras: Default::default(),
             gfx_templates: Default::default(),
             panels: Default::default(),
