@@ -170,6 +170,10 @@ pub struct HostHooks {
     /// Files or an image on the system clipboard, for Paste in the Timeline and the Project panel
     /// (#611). Without it Paste only pastes clips copied in FilmCraft.
     pub clipboard_media: Option<Box<dyn FnMut() -> Option<ClipboardMedia>>>,
+    /// Text on the system clipboard, for Edit ▸ Paste from the macOS menu bar while text is being
+    /// edited (#1953): the menu bar takes ⌘V before the window sees it, so egui never gets its own
+    /// Paste event. Without it that Paste does nothing.
+    pub clipboard_text: Option<Box<dyn FnMut() -> Option<String>>>,
 }
 
 /// What [`HostHooks::clipboard_media`] found on the system clipboard.
@@ -302,6 +306,9 @@ pub struct FilmcraftApp {
     deferred: Vec<(ControlRequest, f64)>,
     last_ui_time: f64,
     pub(crate) synthetic: Vec<egui::Event>,
+    /// Edit-menu commands from the native menu bar turned into the text events they stand for,
+    /// for the next frame while text is being edited (#1953).
+    menu_text_events: Vec<egui::Event>,
     /// macOS: a Control+Click already translated to a secondary (context) click, so its release is
     /// translated too even if Control is let go mid-click. AppKit delivers Control+Click to the
     /// view as a *primary* press with the Control modifier (`rightMouseDown:` only fires for a
@@ -561,6 +568,7 @@ impl FilmcraftApp {
             deferred: Vec::new(),
             last_ui_time: 0.0,
             synthetic: Vec::new(),
+            menu_text_events: Vec::new(),
             mac_ctrl_click_armed: false,
             value_press: None,
             loudness: None,
@@ -1429,6 +1437,57 @@ impl FilmcraftApp {
     /// Sends the menu tree to the native menu bar when it changed, so its items show the same
     /// labels, shortcuts and enablement as the in-window menus (Undo with nothing to undo is
     /// disabled). Without a native menu bar this does nothing.
+    /// The native menu bar (macOS) takes the key equivalents of its items before the window sees
+    /// them, so with the Keyboard Shortcuts dialog open a chord such as ⌘B arrives as its menu
+    /// command (New Bin) instead of a key press: it ran the command and the recorder never saw the
+    /// chord (#1333). While a shortcut is being recorded, the command becomes the key press of its
+    /// shortcut for the recorder; otherwise the dialog keeps it from running, as it does for the
+    /// in-app shortcuts. Returns whether `id` was taken.
+    fn menu_command_in_shortcut_editor(&mut self, ctx: &egui::Context, id: &str) -> bool {
+        if self.dialog != Some(Dialog::Shortcuts) {
+            return false;
+        }
+        let chord = self.session.shortcuts.primary(id).as_deref().and_then(menus::parse_shortcut);
+        if self.shortcut_editor.recording.is_some()
+            && let Some((modifiers, key)) = chord
+        {
+            self.menu_text_events.push(egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers });
+            ctx.request_repaint();
+        }
+        true
+    }
+
+    /// The native menu bar (macOS) takes the Edit menu's ⌘C, ⌘X, ⌘V, ⌘A, ⌘Z and ⇧⌘Z before the
+    /// window sees them, so they arrive as menu commands. While a text field or a graphic's text
+    /// is being edited they belong to the text, as they do on Windows and Linux: this queues the
+    /// events egui would have made for the next frame instead of copying or pasting clips (#1953).
+    /// Returns whether `id` was taken.
+    fn edit_menu_to_text(&mut self, ctx: &egui::Context, id: &str) -> bool {
+        let graphic_text = self.ui.gfx_edit.is_some();
+        let text_field = ctx.text_edit_focused();
+        if !graphic_text && !text_field {
+            return false;
+        }
+        let key = |key, modifiers| egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers };
+        let event = match id {
+            "edit.copy" => egui::Event::Copy,
+            "edit.cut" => egui::Event::Cut,
+            // nothing to paste as text: the clips on FilmCraft's own clipboard don't go into text
+            "edit.paste" => match self.hooks.clipboard_text.as_mut().and_then(|read| read()) {
+                Some(text) => egui::Event::Paste(text),
+                None => return true,
+            },
+            // a graphic's text: Select All and the undo history already handle it (menus::invoke)
+            "edit.selectAll" if text_field => key(egui::Key::A, egui::Modifiers::COMMAND),
+            "edit.undo" if text_field => key(egui::Key::Z, egui::Modifiers::COMMAND),
+            "edit.redo" if text_field => key(egui::Key::Z, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT),
+            _ => return false,
+        };
+        self.menu_text_events.push(event);
+        ctx.request_repaint();
+        true
+    }
+
     fn sync_native_menu(&mut self) {
         if self.hooks.menu_changed.is_none() {
             return;
@@ -1754,7 +1813,7 @@ impl FilmcraftApp {
         self.handle_drops(&ctx);
         if let Some(rx) = self.command_inbox.take() {
             while let Ok(id) = rx.try_recv() {
-                if self.control_input_only {
+                if self.control_input_only || self.menu_command_in_shortcut_editor(&ctx, &id) || self.edit_menu_to_text(&ctx, &id) {
                     continue;
                 }
                 if let Err(e) = menus::invoke(self, &ctx, &id, json!({})) {
@@ -2003,6 +2062,7 @@ impl eframe::App for FilmcraftApp {
         if !self.control_input_only {
             synthesize_mac_ctrl_click(&mut self.mac_ctrl_click_armed, raw_input);
         }
+        raw_input.events.append(&mut self.menu_text_events);
         if self.control_input_only {
             // Preserve screenshot responses and all viewport lifecycle/geometry metadata.
             raw_input.events.retain(|event| matches!(event, egui::Event::Screenshot { .. }));
