@@ -41,9 +41,10 @@ finish-args:
   - --filesystem=/media
   - --filesystem=/run/media
   - --filesystem=/mnt
-  # Deliberately not granted: network (the optional --control server listens on 127.0.0.1 in
-  # the sandbox; `flatpak override --user --share=network ai.storyteller.filmcraft` exposes it
-  # to host agents) and host-wide filesystem access.
+  # Whisper models are downloaded only on user request; recognition then runs locally. The
+  # optional --control server listens on 127.0.0.1; host agents need a network override to reach it.
+  - --share=network
+  # Deliberately not granted: host-wide filesystem access.
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
 modules:

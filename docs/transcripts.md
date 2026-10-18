@@ -43,10 +43,13 @@ with timestamp decoding, language detection and word times from cross-attention 
 `filmcraft_speech::whisper` module docs). Speakers are labelled by clustering per-chunk MFCC
 statistics (`filmcraft_speech::diarize`); no model is involved.
 
-Both are **optional features**, off by default and never built for the web:
+Both are feature-gated and never built for the web. The native `filmcraft` and `filmcraft-cli`
+applications enable Whisper by default; the engine and speech crates keep it opt-in for minimal
+and web builds:
 
 - `whisper` (on `filmcraft-speech`, `filmcraft-engine`, and the `filmcraft` / `filmcraft-cli`
-  apps, where it also enables downloads): candle inference.
+  apps, where it also enables downloads): candle inference. Pass `--no-default-features` to either
+  app crate to omit it from a native build.
 - `download` (`speech-download` on the engine): HTTPS downloads with rustls + RustCrypto and the
   operating system's certificate verifier.
 

@@ -299,9 +299,10 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G19. Speech to text off in release builds
 
-- **Missing:** the `whisper` feature is off by default and in releases, so Transcribe Sequence,
-  text-based editing and auto captions need a source build.
-- **Estimate:** 5–10 h (model download UX, licence check).
+- **Fixed (release-build portion of #982):** native desktop and CLI builds enable the `whisper`
+  feature by default, including verified model downloads, so release builds support Transcribe
+  Sequence, text-based editing and auto captions without a source build. Flatpak grants network
+  access for user-requested model downloads; audio transcription remains local.
 
 ## G20. The web app shell
 
