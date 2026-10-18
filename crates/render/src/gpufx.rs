@@ -786,8 +786,7 @@ impl FxOp {
                     (Some(inv), _) => resample_cpu(img, inv, r.rect),
                     (None, _) => Image::new(img.w, img.h),
                 };
-                let old = std::mem::replace(img, out);
-                filmcraft_frame::pool::recycle_f32(old.px);
+                *img = out;
                 img.scale_alpha(r.opacity);
             }
             FxOp::HFlip => {
@@ -1078,29 +1077,20 @@ pub(crate) fn limit(v: [f32; 3], max: f32, comp: f32, axis: u32) -> [f32; 3] {
 }
 
 /// The body of `Image::transformed` (no mip path) for a precomputed inverse and rectangle.
-/// The destination comes from the frame pool; the rectangle the source does not cover is cleared
-/// (a pooled buffer arrives with unspecified contents).
 fn resample_cpu(src: &Image, inv: &Affine, rect: [u32; 4]) -> Image {
     let (w, h) = (src.w, src.h);
-    let mut out = Image { w, h, px: filmcraft_frame::pool::take_f32_overwritten(w * h * 4) };
+    let mut out = Image::new(w, h);
     let [x0, x1, y0, y1] = rect.map(|v| v as usize);
     let (x1, y1) = (x1.min(w), y1.min(h));
     let (x0, y0) = (x0.min(x1), y0.min(y1));
     let axis_aligned = inv.b == 0.0 && inv.c == 0.0;
-    out.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
-        if y < y0 || y >= y1 {
-            row.fill(0.0);
-            return;
-        }
-        row[..x0 * 4].fill(0.0);
-        row[x1 * 4..].fill(0.0);
+    out.px.par_chunks_mut(w * 4).enumerate().skip(y0).take(y1 - y0).for_each(|(y, row)| {
         let py = y as f64 + 0.5;
         for x in x0..x1 {
             let px = x as f64 + 0.5;
             let (u, v) =
                 if axis_aligned { (inv.a * px + inv.e, inv.d * py + inv.f) } else { (inv.a * px + inv.c * py + inv.e, inv.b * px + inv.d * py + inv.f) };
             if u < -1.0 || v < -1.0 || u > w as f64 + 1.0 || v > h as f64 + 1.0 {
-                row[x * 4..x * 4 + 4].fill(0.0);
                 continue;
             }
             row[x * 4..x * 4 + 4].copy_from_slice(&src.sample_bilinear(u as f32, v as f32));

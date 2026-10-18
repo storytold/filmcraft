@@ -682,11 +682,7 @@ fn detect_image_sequence(s: &Session, path: &str) -> bool {
     filmcraft_media::sequence::Numbered::parse(path).is_some() && crate::media_pool::image_sequence_frames(path, &*s.services).is_ok_and(|f| f.len() > 1)
 }
 
-/// Import a media file whose source was already opened: label, one undoable project edit, and the
-/// pool entry. The cheap tail of [`import_streamed`] — the expensive part of importing (opening
-/// the source: the container index scan of a large recording) can run on a background worker, as
-/// `ui_egui::importing` does, and hand the opened source to this.
-pub fn import_source(
+fn import_source(
     s: &mut Session,
     path: &str,
     name: String,
@@ -3209,6 +3205,15 @@ fn build() -> Vec<CommandSpec> {
             |s, p| keyframe_op(s, p, "interp")
         ),
         cmd!(
+            "effects.setInterpolationMany",
+            "Set Keyframe Interpolation",
+            [],
+            None,
+            r#"{"keyframes":[{"clip":id,"effect":index,"param":str,"mask":n?,"time":mediaTicks}],"interpolation":"linear|bezier|autoBezier|continuousBezier|hold|easeIn|easeOut"}"#,
+            has_seq,
+            set_interpolation_many
+        ),
+        cmd!(
             "effects.setKeyframe",
             "Edit Keyframe",
             [],
@@ -3541,14 +3546,86 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
                     _ => filmcraft_project::Interpolation::Linear,
                 };
                 let k = prm.keyframes.iter_mut().find(|k| k.time == at).ok_or_else(|| bad("keyframe", "no keyframe at that time"))?;
+                // Reset the temporal ease handles to the default for the new type, so a
+                // keyframe dragged into a custom Bezier and then switched back to Linear/Ease
+                // actually returns to that curve instead of keeping the dragged-in handles
+                // (#keyframe-ease-reset). Linear/Hold ignore the influence at evaluation time,
+                // but resetting it here means switching back to Bezier/Ease gives the standard
+                // handle length rather than the stale custom one.
                 k.interp = kind;
-                // Every mode but Bezier owns its handles: Linear/Hold drop the ease outright and
-                // the auto/ease presets use their standard influence, so handles dragged in under
-                // Bezier do not silently pin the curve after the user switched away (Premiere
-                // resets the handles with the mode; switching back to Bezier starts from default).
+                let default_infl = 1.0 / 3.0;
+                match kind {
+                    filmcraft_project::Interpolation::Linear | filmcraft_project::Interpolation::Hold => {
+                        k.out_influence = default_infl;
+                        k.in_influence = default_infl;
+                    }
+                    filmcraft_project::Interpolation::EaseIn
+                    | filmcraft_project::Interpolation::EaseOut
+                    | filmcraft_project::Interpolation::AutoBezier
+                    | filmcraft_project::Interpolation::ContinuousBezier => {
+                        k.out_influence = default_infl;
+                        k.in_influence = default_infl;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    })?;
+    Ok(Value::Null)
+}
+
+/// `effects.setInterpolationMany`: apply a temporal interpolation to several keyframes at once
+/// (the marquee/shift-selected set). Each entry is a `KeyframeRef` (clip, effect, param, mask,
+/// time). The whole call is one undo step. Returns `Null`; the UI keeps its selection.
+fn set_interpolation_many(s: &mut Session, p: &Value) -> Result<Value> {
+    let interp = str_p(p, "interpolation").ok_or_else(|| bad("setInterpolationMany", "need `interpolation`"))?.to_string();
+    let kind = match interp.as_str() {
+        "bezier" => filmcraft_project::Interpolation::Bezier,
+        "autobezier" => filmcraft_project::Interpolation::AutoBezier,
+        "continuousbezier" => filmcraft_project::Interpolation::ContinuousBezier,
+        "hold" => filmcraft_project::Interpolation::Hold,
+        "easein" => filmcraft_project::Interpolation::EaseIn,
+        "easeout" => filmcraft_project::Interpolation::EaseOut,
+        _ => filmcraft_project::Interpolation::Linear,
+    };
+    let keys: Vec<Value> = p
+        .get("keyframes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| bad("setInterpolationMany", "need `keyframes`"))?
+        .iter()
+        .cloned()
+        .collect();
+    if keys.is_empty() {
+        return Err(bad("setInterpolationMany", "need `keyframes`"));
+    }
+    s.edit_sequence_as("Set Keyframe Interpolation", None, |q, _, _| {
+        for k in &keys {
+            // `clip` is a u64 (KeyframeRef.clip), `effect` a usize, `time` the media tick (i64).
+            let Some(c) = k.get("clip").and_then(Value::as_u64).map(filmcraft_project::ClipId) else { continue };
+            let Some((_, it)) = q.find_item_mut(c) else { continue };
+            let eff_idx = k.get("effect").and_then(Value::as_u64).map(|n| n as usize);
+            let e = match eff_idx {
+                Some(n) => it.effects.get_mut(n),
+                None => {
+                    let sid = k.get("effect").and_then(Value::as_str);
+                    it.effects.iter_mut().find(|e| Some(e.effect.as_str()) == sid)
+                }
+            };
+            let Some(e) = e else { continue };
+            let Some(pid) = k.get("param").and_then(Value::as_str) else { continue };
+            let Some(prm) = crate::masks::target_param(e, k, pid) else { continue };
+            // `time` is the KeyframeRef.time (media ticks); older callers may send `mediaTime`.
+            let at = k.get("time").and_then(Value::as_i64).or_else(|| k.get("mediaTime").and_then(Value::as_i64)).map(Tick);
+            let Some(at) = at else { continue };
+            let default_infl = 1.0 / 3.0;
+            if let Some(kf) = prm.keyframes.iter_mut().find(|kf| kf.time == at) {
+                kf.interp = kind;
+                // reset the ease handles to the standard length so the new curve shows,
+                // rather than the stale custom-dragged influence (#keyframe-ease-reset)
                 if !matches!(kind, filmcraft_project::Interpolation::Bezier) {
-                    k.out_influence = 1.0 / 3.0;
-                    k.in_influence = 1.0 / 3.0;
+                    kf.out_influence = default_infl;
+                    kf.in_influence = default_infl;
                 }
             }
         }

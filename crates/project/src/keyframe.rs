@@ -314,7 +314,44 @@ impl Param {
     }
 
     pub fn vec2_at(&self, t: Tick) -> Vec2 {
-        self.value_at(t).as_vec2().unwrap_or_default()
+        // Allocation-free fast path for the common animated Vec2 parameters (Motion Scale,
+        // Position, Anchor). The general `value_at` builds a Vec<f64> via `components()` on
+        // every call, which during playback is called per frame per animated parameter and was a
+        // noticeable source of jank on clips with several animated transforms (#keyframe-lag).
+        let k = &self.keyframes;
+        if k.is_empty() {
+            return self.value.as_vec2().unwrap_or_default();
+        }
+        let fetch = |v: &ParamValue| match v {
+            ParamValue::Vec2(v) => *v,
+            _ => Vec2::default(),
+        };
+        if t <= k[0].time {
+            return fetch(&k[0].value);
+        }
+        let last = &k[k.len() - 1];
+        if t >= last.time {
+            return fetch(&last.value);
+        }
+        let i = match k.binary_search_by_key(&t, |kf| kf.time) {
+            Ok(i) => return fetch(&k[i].value),
+            Err(i) => i - 1,
+        };
+        let (a, b) = (&k[i], &k[i + 1]);
+        if a.interp == Interpolation::Hold {
+            return fetch(&a.value);
+        }
+        let (va, vb) = match (&a.value, &b.value) {
+            (ParamValue::Vec2(va), ParamValue::Vec2(vb)) => (*va, *vb),
+            _ => return self.value_at(t).as_vec2().unwrap_or_default(),
+        };
+        let span = (b.time - a.time).0 as f64;
+        if span <= 0.0 {
+            return va;
+        }
+        let u = (t - a.time).0 as f64 / span;
+        let e = ease(a, b, u);
+        Vec2::new(va.x + (vb.x - va.x) * e, va.y + (vb.y - va.y) * e)
     }
 
     /// Previous/next keyframe times for navigation.

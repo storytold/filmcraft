@@ -44,7 +44,6 @@ pub mod graphics_notice;
 pub mod header;
 pub mod i18n;
 pub mod icons;
-mod importing;
 pub mod links;
 pub mod menus;
 pub mod native_dialogs;
@@ -313,14 +312,7 @@ pub struct FilmcraftApp {
     /// to take back what the press changed (#580).
     value_press: Option<(f64, filmcraft_engine::UndoMark)>,
     /// BS.1770 loudness of the programme as it plays, and the next sample position to feed.
-    /// Only used when there is no audio device, in which case [`panels::meters::feed_loudness`]'s
-    /// fallback is what mixes the programme; otherwise the mixing thread measures it (see
-    /// [`playback_mix`]) and only the readout below is kept.
     pub(crate) loudness: Option<(filmcraft_audio_dsp::LoudnessMeter, i64)>,
-    /// The loudness readout the Audio Meters panel shows: momentary, short-term, integrated LUFS
-    /// and true peak dBTP. Fed by the audio mixing thread while it runs, else by the fallback in
-    /// [`panels::meters::feed_loudness`].
-    pub(crate) loudness_values: [f64; 4],
     /// Status message last shown and when it first appeared (messages expire after a few seconds).
     status_seen: (String, f64),
     /// Screenshots waiting for their frame: (token, path, crop, reply, give-up time).
@@ -358,10 +350,7 @@ pub struct FilmcraftApp {
     /// `session.state.timeline_views` (see `sync_timeline_view`).
     timeline_view_of: Option<filmcraft_engine::project::ItemId>,
     /// Items imported by an OS file drop, to place on the Timeline at the drop point this frame.
-    pub(crate) pending_timeline_drop: Option<(Vec<filmcraft_engine::project::ItemId>, egui::Pos2)>,
-    /// Media imports whose sources are still being opened in the background (`importing`): large
-    /// recordings are indexed off the UI thread, as Premiere does, so importing never freezes the app.
-    pub(crate) imports: Vec<importing::Batch>,
+    pending_timeline_drop: Option<(Vec<filmcraft_engine::project::ItemId>, egui::Pos2)>,
     /// Files being dragged over the window from the OS (count, pointer): the Timeline previews where they would land.
     file_drag_hover: Option<(usize, egui::Pos2)>,
     timeline_view_last: Option<filmcraft_engine::project::SequenceView>,
@@ -575,7 +564,6 @@ impl FilmcraftApp {
             mac_ctrl_click_armed: false,
             value_press: None,
             loudness: None,
-            loudness_values: [f64::NEG_INFINITY; 4],
             status_seen: (String::new(), 0.0),
             pending_screenshots: Vec::new(),
             queued_screenshots: Vec::new(),
@@ -594,7 +582,6 @@ impl FilmcraftApp {
             last_timeline_width: 1000.0,
             timeline_view_of: None,
             pending_timeline_drop: None,
-            imports: Vec::new(),
             file_drag_hover: None,
             timeline_view_last: None,
             fps: 60.0,
@@ -1294,8 +1281,15 @@ impl FilmcraftApp {
                     if paths.is_empty() {
                         return Ok(Value::Null);
                     }
-                    let bin = bin.and_then(|b| b.as_u64()).map(filmcraft_project::BinId).unwrap_or_else(|| app.import_bin());
-                    importing::start(app, paths, bin, None)
+                    let bin = bin.unwrap_or_else(|| json!(app.import_bin().0));
+                    let r = app.session.execute("file.import", json!({"paths": paths, "bin": bin})).map_err(|e| e.to_string());
+                    if let Ok(v) = &r
+                        && let Some(errs) = v.get("errors").and_then(Value::as_array)
+                        && !errs.is_empty()
+                    {
+                        app.ui.status = errs.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
+                    }
+                    r
                 })
             }
             // File ▸ Import with Image Sequence: choose the first numbered still
@@ -1404,12 +1398,16 @@ impl FilmcraftApp {
         }
         if !paths.is_empty() {
             let pointer = self.drop_pointer(ctx);
-            // Timeline ▸ drop imports to the timeline: the clips are placed at the drop point
-            // once the import has landed (background imports finish on a later frame)
-            let drop_at = pointer.filter(|_| self.session.prefs.timeline.drop_import_to_timeline);
-            let bin = self.import_bin();
-            if let Err(e) = importing::start(self, paths, bin, drop_at) {
-                self.ui.status = format!("Import failed: {e}");
+            let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
+            if let Ok(v) = imported
+                && let Some(pos) = pointer
+                && self.session.prefs.timeline.drop_import_to_timeline
+            {
+                let items: Vec<filmcraft_engine::project::ItemId> =
+                    v["items"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect()).unwrap_or_default();
+                if !items.is_empty() {
+                    self.pending_timeline_drop = Some((items, pos));
+                }
             }
         }
     }
@@ -1754,9 +1752,6 @@ impl FilmcraftApp {
         }
         self.sync_timeline_view();
         self.handle_drops(&ctx);
-        // apply background imports that finished opening (before the Timeline draws, so a drop's
-        // clips are placed on the frame they land)
-        importing::pump(self, &ctx);
         if let Some(rx) = self.command_inbox.take() {
             while let Ok(id) = rx.try_recv() {
                 if self.control_input_only {
@@ -2154,10 +2149,7 @@ fn shuttle_mix_rate(device_rate: u32, speed: f64) -> Option<u32> {
 
 /// The program mix that playback plays: `mix(device_frame, interleaved, channels)` renders the
 /// active sequence at device rate `sr` from `device_frame`, with the live project snapshot (edits
-/// made while playing are heard), Output Mapping, the 5.1 mixdown and voice-over cues. The BS.1770
-/// loudness of the programme is measured here, where the samples already flow — measuring it on
-/// the UI thread instead would re-mix the span every frame, fighting this closure for the sources
-/// and the mixer-graph cache, which showed up as lagging meters and a stuttering picture.
+/// made while playing are heard), Output Mapping, the 5.1 mixdown and voice-over cues.
 pub fn playback_mix(session: &Session, seq_id: filmcraft_project::ItemId, sr: u32) -> impl FnMut(i64, &mut [f32], usize) + Send + 'static {
     let project = session.project.clone();
     let provider = session.media.provider(project.clone(), session.services.clone());
@@ -2169,10 +2161,6 @@ pub fn playback_mix(session: &Session, seq_id: filmcraft_project::ItemId, sr: u3
     let cues = panels::voiceover::cues(session, sr);
     previews.live.publish_project(project.clone());
     let mut resampler = None;
-    // (channel count, meter): rebuilt when the layout changes or a seek breaks the stream
-    let mut loud = None::<(usize, filmcraft_audio_dsp::LoudnessMeter)>;
-    // the cursor the next call is expected to continue from (a jump resets the measurement)
-    let mut next = i64::MIN;
     move |cursor: i64, buf: &mut [f32], ch: usize| {
         // the newest project snapshot: mixer moves and other edits are heard while playing
         let project = previews.live.project().filter(|p| p.sequence(seq_id).is_some()).unwrap_or_else(|| project.clone());
@@ -2201,20 +2189,6 @@ pub fn playback_mix(session: &Session, seq_id: filmcraft_project::ItemId, sr: u3
             let channels = r.process(cursor, n, |s0, m| previews.mix_layout(&project, seq_id, s0, m, &provider, layout, mixdown).channels);
             filmcraft_frame::AudioBuffer { sample_rate: sr, channels }
         };
-        // programme loudness, measured on the samples this closure was going to hand the device
-        // anyway (a 5.1 Mix with its proper BS.1770 channel weights, LFE excluded)
-        let nch = mix.channels.len();
-        if nch > 0 {
-            if loud.as_ref().is_none_or(|(k, _)| *k != nch) || cursor < next || cursor.saturating_sub(next) > i64::from(sr) {
-                loud = Some((nch, filmcraft_audio_dsp::LoudnessMeter::new(f64::from(sr), nch)));
-            }
-            next = cursor + n as i64;
-            if let Some((_, m)) = loud.as_mut() {
-                let chans: Vec<&[f32]> = mix.channels.iter().map(Vec::as_slice).collect();
-                m.process(&chans);
-                previews.live.post_loudness([m.momentary(), m.short_term(), m.integrated(), m.true_peak_dbtp()]);
-            }
-        }
         if layout == Layout::Surround51 {
             buf.fill(0.0);
             for (i, frame) in buf.chunks_mut(ch).enumerate() {

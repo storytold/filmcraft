@@ -190,18 +190,16 @@ pub(crate) fn render_seq_tracks(project: &Project, seq: &Sequence, t: Tick, opts
             let a = tr.from.and_then(|id| track.item(id)).filter(|i| i.enabled);
             let b = tr.to.and_then(|id| track.item(id)).filter(|i| i.enabled);
             // An adjustment layer has no picture of its own: in a transition it is the frame below
-            // with its effects, so a dissolve fades the effects in or out. Only that case needs a
-            // copy of the frame below; two ordinary clips composite straight onto the canvas, which
-            // saves a full-frame copy (33 MB at 1080p) on every frame of the transition.
-            let below = [a, b].into_iter().flatten().any(|i| is_adjustment(project, i)).then(|| canvas.snapshot());
-            let layer = |i: &TrackItem| -> Option<(Image, Blend)> {
+            // with its effects, so a dissolve fades the effects in or out.
+            let layer = |i: &TrackItem, below: &Image| -> Option<(Image, Blend)> {
                 if is_adjustment(project, i) {
-                    return below.as_ref().and_then(|below| opts.effects.then(|| adjustment_layer(project, seq, i, t, opts, &tc, below)));
+                    return opts.effects.then(|| adjustment_layer(project, seq, i, t, opts, &tc, below));
                 }
                 item_layer(project, seq, i, t, opts, sources, &tc).map(|(img, op, bl)| (with_opacity(img, op), bl))
             };
-            let la = a.and_then(layer);
-            let lb = b.and_then(layer);
+            let below = canvas.snapshot();
+            let la = a.and_then(|i| layer(i, &below));
+            let lb = b.and_then(|i| layer(i, &below));
             // a fade from or to nothing keeps the one layer's blend mode (an adjustment layer in
             // Multiply ends the fade as it carries on); between two layers they mix normally
             let bl = match (&la, &lb) {
@@ -219,12 +217,6 @@ pub(crate) fn render_seq_tracks(project: &Project, seq: &Sequence, t: Tick, opts
                 transitions::apply_scaled(&tr.effect, &la, &lb, p, opts.scale)
             };
             blend::composite(canvas.get(), &mixed, 1.0, bl);
-            // the transition span used to drop three full-frame buffers per frame on the floor of
-            // the system allocator; the plain-item path already hands its layers back to the pool,
-            // and the next layer's frame conversion takes these instead of allocating
-            pool::recycle_f32(mixed.px);
-            pool::recycle_f32(la.px);
-            pool::recycle_f32(lb.px);
             continue;
         }
         let Some(item) = track.item_at(t) else { continue };
@@ -537,14 +529,7 @@ pub(crate) fn item_layer_ex(
         }
     }
     mask::apply_opacity_masks(&mut layer, item, mt, px_scale);
-    let placed = if layer.w == w && layer.h == h && identity_placement(&m) {
-        layer
-    } else {
-        let out = layer.transformed(w, h, &m);
-        // the unplaced layer is finished with: its buffer feeds the next transformed()
-        filmcraft_frame::pool::recycle_f32(std::mem::take(&mut layer.px));
-        out
-    };
+    let placed = if layer.w == w && layer.h == h && identity_placement(&m) { layer } else { layer.transformed(w, h, &m) };
     let (op, bl) = opacity_blend(item, mt);
     Some(Layer::Full { image: placed, opacity: op, blend: bl, opaque: false })
 }

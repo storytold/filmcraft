@@ -136,6 +136,15 @@ impl Driver {
         self.frames(4);
     }
 
+    fn hover(&mut self, at: (f64, f64)) {
+        self.harness.input_mut().events.push(egui::Event::PointerMoved(egui::pos2(at.0 as f32, at.1 as f32)));
+        self.frames(2);
+    }
+
+    fn cursor(&self) -> egui::CursorIcon {
+        self.harness.output().platform_output.cursor_icon
+    }
+
     /// Press or let go of Shift as a keyboard reports it. The drag fixture then explicitly
     /// forwards the held modifiers to the control gesture.
     fn hold_shift(&mut self, on: bool) {
@@ -199,25 +208,21 @@ fn point_text_handles_scale_it_about_its_anchor() {
     d.drag_handle(&pre, 2, 80.0, 0.0);
     assert!((num(&d.layer(clip)["scale"]) / 100.0 - f).abs() < 0.01);
 
-    // an edge handle stretches its own axis only: the right edge follows the pointer, the left
-    // edge and the height stay put, and the width scale comes apart from the height's
-    let (right, top, left) = (d.handle(&pre, 5), d.handle(&pre, 4), d.handle(&pre, 7));
-    let (s0, w0) = (num(&d.layer(clip)["scale"]), num(&d.layer(clip)["scaleWidth"]));
+    // an edge handle scales the whole text too: the right edge follows the pointer, since it is
+    // further than 60 points from the anchor
+    let (right, top) = (d.handle(&pre, 5), d.handle(&pre, 4));
     d.drag_handle(&pre, 5, 50.0, 0.0);
     let l = d.layer(clip);
-    assert!(num(&l["scaleWidth"]) > w0 + 5.0, "wider: {w0} -> {}", l["scaleWidth"]);
-    assert!((num(&l["scale"]) - s0).abs() < 0.01, "the height scale is untouched: {s0} -> {}", l["scale"]);
+    assert_eq!(l["scale"], l["scaleWidth"], "still uniform");
     let (right2, top2) = (d.handle(&pre, 5), d.handle(&pre, 4));
     assert!((right2.0 - right.0 - 50.0).abs() < 2.0, "right edge follows the pointer: {right:?} -> {right2:?}");
-    assert!((top2.1 - top.1).abs() < 2.0, "the text is no taller: {top:?} -> {top2:?}");
-    assert!(near(d.handle(&pre, 7), left), "the opposite edge stays put");
+    assert!(top2.1 < top.1 - 2.0, "and the text got taller with it: {top:?} -> {top2:?}");
+    assert!(near(d.at(&pre, "anchor"), anchor));
 
-    // the top edge towards the bottom shrinks the height only; one undo step per drag
-    let (s, w) = (num(&l["scale"]), num(&l["scaleWidth"]));
+    // towards the anchor shrinks; one undo step per drag
+    let s = num(&l["scale"]);
     d.drag_handle(&pre, 4, 0.0, 30.0);
-    let shrunk = d.layer(clip);
-    assert!(num(&shrunk["scale"]) < s - 5.0);
-    assert!((num(&shrunk["scaleWidth"]) - w).abs() < 0.01, "the width scale is untouched");
+    assert!(num(&d.layer(clip)["scale"]) < s - 5.0);
     d.exec("edit.undo", json!({}));
     assert_eq!(num(&d.layer(clip)["scale"]), s);
 }
@@ -406,6 +411,39 @@ fn shape_corner_handles_scale_away_from_the_opposite_corner() {
     let (tr2, bl2) = (d.handle(&pre, 1), d.handle(&pre, 3));
     assert!(near(tr, tr2), "top-right stays put: {tr:?} -> {tr2:?}");
     assert!(bl2.0 < bl.0 - 20.0 && bl2.1 > bl.1 + 5.0, "bottom-left follows the pointer: {bl:?} -> {bl2:?}");
+}
+
+#[test]
+fn graphic_resize_handles_show_their_screen_space_direction() {
+    let mut d = Driver::new();
+    let r = d.exec("graphics.newShape", json!({"shape": "rectangle", "position": [800, 500], "size": [500, 300]}));
+    let clip = r["clip"].as_u64().unwrap();
+    let pre = d.select(clip);
+
+    for (handle, expected) in [
+        (0, egui::CursorIcon::ResizeNwSe),
+        (1, egui::CursorIcon::ResizeNeSw),
+        (2, egui::CursorIcon::ResizeNwSe),
+        (3, egui::CursorIcon::ResizeNeSw),
+        (4, egui::CursorIcon::ResizeVertical),
+        (5, egui::CursorIcon::ResizeHorizontal),
+        (6, egui::CursorIcon::ResizeVertical),
+        (7, egui::CursorIcon::ResizeHorizontal),
+    ] {
+        let at = d.handle(&pre, handle);
+        d.hover(at);
+        assert_eq!(d.cursor(), expected, "handle {handle}");
+    }
+
+    d.exec("graphics.set", json!({"clip": clip, "props": {"rotation": 45}}));
+    d.frames(4);
+    let at = d.handle(&pre, 4);
+    d.hover(at);
+    assert!(
+        matches!(d.cursor(), egui::CursorIcon::ResizeNeSw | egui::CursorIcon::ResizeNwSe),
+        "rotated edge handle should use a diagonal cursor, got {:?}",
+        d.cursor()
+    );
 }
 
 /// Width and height of a layer's box in its own pixels.

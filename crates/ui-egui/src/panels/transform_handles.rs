@@ -183,28 +183,11 @@ fn placement(app: &FilmcraftApp, it: &TrackItem, e: &EffectInstance, mt: Tick, p
     })
 }
 
-/// A graphic clip with one of its layers selected: the layer's box and handles (the graphics
-/// overlay) own the monitor's drags and double-clicks until the layer is deselected, as in
-/// Premiere.
-fn layer_gizmo_active(app: &FilmcraftApp, clip: ClipId) -> bool {
-    !app.session.state.graphic_layers.is_empty()
-        && app.session.active_sequence().is_some_and(|q| {
-            q.find_item(clip)
-                .is_some_and(|(_, it)| app.session.project.item(it.item).is_some_and(|p| matches!(p.kind, filmcraft_project::ItemKind::Graphic { .. })))
-        })
-}
-
 /// The selected effect (its clip and index) and its box, while it is Motion or Transform of a
 /// selected clip under the playhead.
 fn selected_placement(app: &FilmcraftApp, pic: Rect, reach: Rect, frame: (u32, u32)) -> Option<(Target, &'static EffectDef, Placement)> {
     let sel = app.session.state.selected_effect.as_ref()?;
     if !app.session.state.selection.contains(&sel.clip) {
-        return None;
-    }
-    // A selected graphic layer owns the picture: its box and handles (the graphics overlay) take
-    // the pointer until the layer is deselected, as in Premiere, so the clip's Motion box does
-    // not sit on top of the layer being moved.
-    if layer_gizmo_active(app, sel.clip) {
         return None;
     }
     let seq = app.session.active_sequence()?;
@@ -294,7 +277,7 @@ fn changes(d: &Drag, effect: &str, cur: Pos2) -> Vec<(&'static str, Value)> {
 }
 
 /// The resize cursor for a handle in direction `v` from the box's centre.
-fn resize_cursor(v: egui::Vec2) -> CursorIcon {
+pub(crate) fn resize_cursor(v: egui::Vec2) -> CursorIcon {
     let deg = v.y.atan2(v.x).to_degrees().rem_euclid(180.0);
     if !(22.5..157.5).contains(&deg) {
         CursorIcon::ResizeHorizontal
@@ -474,7 +457,6 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         && app.ui.gfx_edit.is_none()
         && let Some(p) = ui.input(|i| i.pointer.interact_pos()).filter(|p| pic.contains(*p) && ui.rect_contains_pointer(pic))
         && let Some(clip) = clip_under(app, pic, frame, p)
-        && !layer_gizmo_active(app, clip)
     {
         if !app.session.state.selection.contains(&clip) {
             actions.push(("timeline.select".into(), json!({"clips": [clip.0]})));

@@ -1,8 +1,8 @@
 //! Dragging clips previews the transitions the drop will carry, exactly as the drop re-adds them
-//! (`edit::move_items`): a fade follows its clip, a cut transition travels with its clips when
-//! every one of them moves, and when a partner stays behind the transition follows the moving
-//! clip as a fade at its edge instead of being dropped — an Option-drag adds a traveling copy
-//! while the original stays.
+//! (`edit::move_items`): a fade follows its clip, a cut transition travels with its clips only
+//! when every one of them moves — dragging a clip out from under one side of a cut leaves the
+//! transition where it was until the release deletes it (Premiere) — an Option-drag adds a
+//! traveling copy while the original stays.
 
 use egui::{Event, Modifiers, PointerButton, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
@@ -137,11 +137,11 @@ fn dragging_both_clips_of_a_cut_carries_the_transition() {
     assert_eq!(b1.start.0 - b0.start.0, tr1.start.0 - tr0.start.0, "the transition moved with both clips");
 }
 
-/// XYZ with cut transitions on both cuts: dragging YZ carries the X↔Y transition along as a fade
-/// on Y's leading edge (a partner staying behind no longer drops it) while the Y↔Z one travels
-/// with the pair.
+/// XYZ with cut transitions on both cuts: dragging YZ leaves the X↔Y transition where it is
+/// while dragging (a preview of the drop that deletes it, as in Premiere) and the Y↔Z one
+/// travels with the pair.
 #[test]
-fn dragging_two_clips_carries_the_boundary_transition_as_a_fade() {
+fn dragging_two_clips_drops_the_transition_on_the_cut_that_stayed() {
     let mut h = harness_xyz();
     let q0 = h.state().session.active_sequence().unwrap().clone();
     let (x0, y0, z0) = (q0.video_tracks[0].items[0].clone(), q0.video_tracks[0].items[1].clone(), q0.video_tracks[0].items[2].clone());
@@ -149,6 +149,7 @@ fn dragging_two_clips_carries_the_boundary_transition_as_a_fade() {
     h.state_mut().session.execute("timeline.select", json!({"clips": [y0.id.0, z0.id.0]})).unwrap();
     step(&mut h);
     let y_rect = rect(&h, &format!("timeline.clip.{}", y0.id.0));
+    let xy_rect = rect(&h, &format!("timeline.transition.{}", xy0.id.0));
     let yz_rect = rect(&h, &format!("timeline.transition.{}", yz0.id.0));
     let gap_before = yz_rect.min.x - y_rect.min.x;
     let y_center = y_rect.center().y;
@@ -158,23 +159,19 @@ fn dragging_two_clips_carries_the_boundary_transition_as_a_fade() {
     for i in 1..=6 {
         pointer(&mut h, pos2(x0p + 20.0 * i as f32, y_center), None);
     }
-    // mid-drag: the X↔Y transition follows the dragged Y as a fade at its leading edge (the drop
-    // re-anchors it there), the Y↔Z one travels with the pair
-    let xy_mid = rect(&h, &format!("timeline.transition.{}", xy0.id.0));
-    let y_mid = rect(&h, &format!("timeline.clip.{}", y0.id.0));
-    assert!((xy_mid.min.x - y_mid.min.x).abs() < 1.0, "the X↔Y transition did not follow the dragged clip");
-    let gap_mid = rect(&h, &format!("timeline.transition.{}", yz0.id.0)).min.x - y_mid.min.x;
+    // mid-drag: the X↔Y transition stays on its cut (the drop will remove it), the Y↔Z one
+    // follows the pair
+    assert_eq!(rect(&h, &format!("timeline.transition.{}", xy0.id.0)), xy_rect, "the X↔Y transition stays on its cut while dragging");
+    let gap_mid = rect(&h, &format!("timeline.transition.{}", yz0.id.0)).min.x - rect(&h, &format!("timeline.clip.{}", y0.id.0)).min.x;
     assert!((gap_mid - gap_before).abs() < 1.0, "Y↔Z transition lagged: gap {gap_before} -> {gap_mid}");
     pointer(&mut h, pos2(x0p + 140.0, y_center), Some(false));
     let q1 = h.state().session.active_sequence().unwrap().clone();
     let (x1, y1, z1) = (q1.video_tracks[0].items[0].clone(), q1.video_tracks[0].items[1].clone(), q1.video_tracks[0].items[2].clone());
     assert_eq!(x1.start, x0.start, "X is not part of the drag");
     assert_eq!(y1.start.0 - y0.start.0, z1.start.0 - z0.start.0, "Y and Z moved together");
-    assert_eq!(q1.video_tracks[0].transitions.len(), 2, "the boundary transition followed the drag");
-    let xy1 = q1.video_tracks[0].transitions.iter().find(|t| t.id == xy0.id).expect("the X↔Y transition survived the drag");
-    assert_eq!((xy1.from, xy1.to), (None, Some(y1.id)), "it became a fade in on the dragged clip");
-    assert_eq!(xy1.start, y1.start, "anchored at the dragged clip's new start");
-    let yz1 = q1.video_tracks[0].transitions.iter().find(|t| t.id == yz0.id).unwrap();
+    assert_eq!(q1.video_tracks[0].transitions.len(), 1, "the X↔Y transition was dropped with the move");
+    assert!(!q1.video_tracks[0].transitions.iter().any(|t| t.id == xy0.id), "its id is gone");
+    let yz1 = &q1.video_tracks[0].transitions[0];
     assert_eq!(yz1.start.0 - yz0.start.0, y1.start.0 - y0.start.0, "the Y↔Z transition traveled with the pair");
 }
 
@@ -212,11 +209,10 @@ fn option_drag_copies_show_a_ghost_transition_with_the_copy() {
     assert_eq!(copy_tr.to, Some(copy.id), "the copy's fade sits on the copy");
 }
 
-/// Dragging one side of a cut transition to another track carries it: the preview rides the
-/// dragged clip onto the destination row as a fade at its edge, and the drop re-anchors it
-/// there as the same transition.
+/// Dragging one side of a cut transition to another track drops it (Premiere); the preview leaves
+/// it where it is, and the drop removes it.
 #[test]
-fn dragging_one_side_to_another_track_carries_the_transition() {
+fn dragging_one_side_to_another_track_drops_the_transition() {
     let mut h = harness(false);
     // a clip far to the right on V2 marks that track's row
     let q = h.state().session.active_sequence().unwrap().clone();
@@ -227,23 +223,16 @@ fn dragging_one_side_to_another_track_carries_the_transition() {
     let (a0, tr0) = (q0.video_tracks[0].items[0].clone(), q0.video_tracks[0].transitions[0].clone());
     let a_rect = rect(&h, &format!("timeline.clip.{}", a0.id.0));
     let v2_rect = rect(&h, &format!("timeline.clip.{}", q0.video_tracks[1].items[0].id.0));
+    let tr_rect = rect(&h, &format!("timeline.transition.{}", tr0.id.0));
     pointer(&mut h, a_rect.center(), Some(true));
     for i in 1..=6 {
         let p = pos2(a_rect.center().x + 20.0 * i as f32, a_rect.center().y + (v2_rect.center().y - a_rect.center().y) * i as f32 / 6.0);
         // move into the V2 row first (track crossing), so the pointer ends up there
         pointer(&mut h, p, None);
     }
-    // mid-drag: the transition rides the dragged clip onto the V2 row, a fade out at its end
-    let tr_mid = rect(&h, &format!("timeline.transition.{}", tr0.id.0));
-    let a_mid = rect(&h, &format!("timeline.clip.{}", a0.id.0));
-    assert!((tr_mid.max.x - a_mid.max.x).abs() < 1.5, "the transition did not follow the dragged clip");
-    assert!(tr_mid.min.y > v2_rect.min.y && tr_mid.max.y <= v2_rect.max.y, "the transition did not move to the V2 row");
+    assert_eq!(rect(&h, &format!("timeline.transition.{}", tr0.id.0)), tr_rect, "the doomed transition stays at home while dragging");
     pointer(&mut h, pos2(a_rect.center().x + 140.0, v2_rect.center().y), Some(false));
     let q1 = h.state().session.active_sequence().unwrap().clone();
-    assert!(q1.video_tracks[0].transitions.is_empty(), "the transition left V1 with the clip");
-    let v2t = q1.video_tracks.iter().find(|t| t.id == v2).unwrap();
-    let a1 = v2t.items.iter().find(|i| i.id == a0.id).expect("the clip landed on V2");
-    let tr1 = v2t.transitions.iter().find(|t| t.id == tr0.id).expect("the transition followed the clip to V2");
-    assert_eq!((tr1.from, tr1.to), (Some(a0.id), None), "it is the same transition, re-anchored as a fade out on the clip");
-    assert_eq!(tr1.start + tr1.duration, a1.end(), "the fade ends with the clip");
+    assert!(q1.video_tracks[0].transitions.is_empty(), "the clip moved to V2 and its transition was dropped");
+    assert!(q1.video_tracks.iter().any(|t| t.items.iter().any(|i| i.id == a0.id && t.id == v2)), "the clip landed on V2");
 }

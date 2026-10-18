@@ -9,9 +9,8 @@
 //! interchange documents, image sequences) and files small enough to open faster than a thread
 //! hop stay on the synchronous path, exactly as before.
 //!
-//! While a batch is in flight the app repaints continuously ([`pump`] asks for it), so a finished
-//! source is applied the frame it arrives and the status line can say what is going on. When the
-//! last file of a batch lands, the same after-work `file.import` does runs for the batch:
+//! Each worker result requests a repaint, so a finished source is applied the frame it arrives.
+//! When the last file of a batch lands, after-work runs only for worker-imported items:
 //! automatic transcription, ingest copies, and relinking (a newly imported file may bring offline
 //! items back). An OS file drop that imports onto the timeline places its clips then, at the
 //! position the drop was made.
@@ -40,8 +39,10 @@ enum Msg {
 /// An import in flight.
 pub(crate) struct Batch {
     rx: Receiver<Msg>,
-    /// Items imported so far.
+    /// Items imported by the background workers so far.
     ids: Vec<ItemId>,
+    /// Items already imported synchronously; their command already ran the after-work.
+    sync_ids: Vec<ItemId>,
     /// Files the worker has not answered yet.
     remaining: usize,
     bin: Option<BinId>,
@@ -58,7 +59,7 @@ pub(crate) struct Batch {
 ///
 /// Returns what the synchronous import returned — the command's result when nothing went to the
 /// background, else `{"importing": <count>}`.
-pub(crate) fn start(app: &mut FilmcraftApp, paths: Vec<String>, bin: BinId, drop_at: Option<Pos2>) -> Result<Value, String> {
+pub(crate) fn start(app: &mut FilmcraftApp, ctx: &egui::Context, paths: Vec<String>, bin: BinId, drop_at: Option<Pos2>) -> Result<Value, String> {
     // no worker threads on the web: everything imports synchronously
     #[cfg(target_arch = "wasm32")]
     let (streamed, rest): (Vec<String>, Vec<String>) = (Vec::new(), paths);
@@ -77,48 +78,57 @@ pub(crate) fn start(app: &mut FilmcraftApp, paths: Vec<String>, bin: BinId, drop
     };
     if streamed.is_empty() {
         // nothing worth a worker: the command does it all, including its after-work
-        let (r, ids) = sync_import(app, rest, bin);
+        if rest.is_empty() {
+            place_drop(app, Vec::new(), drop_at);
+            return Ok(json!({"items": []}));
+        }
+        let (r, ids, errors) = sync_import(app, rest, bin);
+        if !errors.is_empty() {
+            app.ui.status = errors.join("; ");
+        }
         place_drop(app, ids, drop_at);
         return r;
     }
-    // captions, interchange documents, image sequences and small files: their own paths, run as
-    // before (their errors already went to the status line)
-    let (_, ids) = sync_import(app, rest, bin);
+    // Captions, interchange documents, image sequences and small files use their synchronous paths.
+    let (sync_result, sync_ids, errors) = if rest.is_empty() { (Ok(Value::Null), Vec::new(), Vec::new()) } else { sync_import(app, rest, bin) };
+    let errors = if sync_result.is_err() {
+        let mut errors = errors;
+        if let Err(error) = sync_result {
+            errors.push(error);
+        }
+        errors
+    } else {
+        errors
+    };
     let count = streamed.len();
     let (tx, rx) = channel();
     // the worker owns the paths through the Arc so the fallback below can run the very same job
     // inline when no thread could be started for it
     let payload = Arc::new((app.session.media.clone(), app.session.services.clone(), streamed));
+    let worker_ctx = ctx.clone();
     let run = {
         let payload = payload.clone();
-        move || open_files(&payload, &tx)
+        move || open_files(&payload, &tx, &worker_ctx)
     };
     if std::thread::Builder::new().name("filmcraft-import".into()).spawn(run.clone()).is_err() {
         // resource exhaustion, not a media problem: open them here and now
         run();
     }
     app.ui.status = tlf!("Importing {n} media…", n = count);
-    app.imports.push(Batch { rx, ids, remaining: count, bin: Some(bin), drop_at, errors: Vec::new() });
+    app.imports.push(Batch { rx, ids: Vec::new(), sync_ids, remaining: count, bin: Some(bin), drop_at, errors });
     Ok(json!({"importing": count}))
 }
 
-/// Import `paths` synchronously through `file.import`, reporting its errors to the status line;
-/// returns the command's result and the items it created.
-fn sync_import(app: &mut FilmcraftApp, paths: Vec<String>, bin: BinId) -> (Result<Value, String>, Vec<ItemId>) {
+/// Import synchronously through `file.import`; returns its result, item ids and reported errors.
+fn sync_import(app: &mut FilmcraftApp, paths: Vec<String>, bin: BinId) -> (Result<Value, String>, Vec<ItemId>, Vec<String>) {
     let r = app.session.execute("file.import", json!({"paths": paths, "bin": bin.0})).map_err(|e| e.to_string());
-    let ids = match &r {
-        Ok(v) => {
-            if let Some(errs) = v["errors"].as_array().filter(|e| !e.is_empty()) {
-                app.ui.status = errs.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
-            }
-            items_of(v)
-        }
-        Err(e) => {
-            app.ui.status = e.clone();
-            Vec::new()
-        }
-    };
-    (r, ids)
+    let ids = r.as_ref().ok().map(items_of).unwrap_or_default();
+    let mut errors: Vec<String> =
+        r.as_ref().ok().and_then(|v| v["errors"].as_array()).map(|errs| errs.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
+    if let Err(e) = &r {
+        errors.push(e.clone());
+    }
+    (r, ids, errors)
 }
 
 /// The items an import result created.
@@ -150,7 +160,7 @@ fn backgroundable(app: &FilmcraftApp, path: &str) -> bool {
 }
 
 /// Open every file of the batch on the calling thread, sending each result as it is ready.
-fn open_files(payload: &Arc<(Arc<MediaPool>, Arc<dyn Services>, Vec<String>)>, tx: &Sender<Msg>) {
+fn open_files(payload: &Arc<(Arc<MediaPool>, Arc<dyn Services>, Vec<String>)>, tx: &Sender<Msg>, ctx: &egui::Context) {
     let (pool, services, files) = (&payload.0, &payload.1, &payload.2);
     for path in files {
         // one unreadable file must not stop the ones behind it, nor a panic take the thread
@@ -165,15 +175,16 @@ fn open_files(payload: &Arc<(Arc<MediaPool>, Arc<dyn Services>, Vec<String>)>, t
             Err(_) => Msg::Failed { path: path.clone(), error: "the import panicked".into() },
         };
         if tx.send(msg).is_err() {
-            break; // the app is gone
+            break;
         }
+        ctx.request_repaint();
     }
 }
 
 /// Apply what the background import workers have finished: import each opened source (a cheap
 /// edit), and when a batch is complete run the import's after-work and place a file drop's clips
-/// on the timeline. Repaints while anything is in flight, so results land the frame they arrive.
-pub(crate) fn pump(app: &mut FilmcraftApp, ctx: &egui::Context) {
+/// on the timeline. Worker messages request repaints as they arrive.
+pub(crate) fn pump(app: &mut FilmcraftApp) {
     let mut msgs: Vec<(usize, Msg)> = Vec::new();
     for (i, b) in app.imports.iter_mut().enumerate() {
         while let Ok(m) = b.rx.try_recv() {
@@ -184,9 +195,8 @@ pub(crate) fn pump(app: &mut FilmcraftApp, ctx: &egui::Context) {
     for (i, msg) in msgs {
         match msg {
             Msg::Opened { path, src, identity } => {
-                let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.clone());
                 let b = &mut app.imports[i];
-                match filmcraft_engine::commands::import_source(&mut app.session, &path, name, src, identity, b.bin) {
+                match app.session.import_opened_source(&path, src, identity, b.bin) {
                     Ok(id) => b.ids.push(id),
                     Err(e) => b.errors.push(format!("{path}: {e}")),
                 }
@@ -198,13 +208,12 @@ pub(crate) fn pump(app: &mut FilmcraftApp, ctx: &egui::Context) {
     for i in ready.into_iter().rev() {
         let b = app.imports.remove(i);
         after_import(app, &b.ids);
-        place_drop(app, b.ids, b.drop_at);
+        let mut ids = b.sync_ids;
+        ids.extend(b.ids);
+        place_drop(app, ids, b.drop_at);
         if !b.errors.is_empty() {
             app.ui.status = b.errors.join("; ");
         }
-    }
-    if !app.imports.is_empty() {
-        ctx.request_repaint();
     }
 }
 

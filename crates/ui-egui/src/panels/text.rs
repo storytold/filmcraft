@@ -282,6 +282,66 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     run(app, ui, actions);
 }
 
+/// Whether a caption is selected, so the Properties panel shows [`caption_properties`].
+pub fn caption_selected(app: &FilmcraftApp) -> bool {
+    app.session.active_sequence().is_some_and(|q| app.session.state.caption_selection.iter().any(|c| q.find_caption(*c).is_some()))
+}
+
+/// The Properties panel for the first selected caption (#1846): its text and in/out timecodes,
+/// edited with the same `captions.*` commands as the Captions tab. The style belongs to the caption
+/// track and stays in the Captions tab.
+pub fn caption_properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
+    let t = app.tokens;
+    let project = app.session.project.clone();
+    let Some(seq) = app.session.state.active_sequence.and_then(|id| project.sequence(id)) else { return };
+    let Some((track_id, c)) = app.session.state.caption_selection.iter().find_map(|id| seq.find_caption(*id)) else { return };
+    let track_idx = seq.caption_tracks.iter().position(|tr| tr.id == track_id).unwrap_or(0);
+    let track_name = seq.caption_tracks.get(track_idx).map(|tr| tr.name.as_str()).unwrap_or_default();
+    let (rate, df) = (seq.settings.frame_rate, seq.settings.drop_frame);
+    let tc = |x: filmcraft_time::Tick| format_time(x, rate, df, TimeDisplay::Timecode, 48_000);
+    let mut actions: Vec<(String, Value)> = Vec::new();
+    let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(14.0, 8.0))).id_salt("props-caption"));
+    let (hr, _) = bui.allocate_exact_size(vec2(bui.available_width(), 30.0), Sense::hover());
+    bui.painter().text(pos2(hr.min.x, hr.center().y), Align2::LEFT_CENTER, format!("C{} · {}", track_idx + 1, track_name), Tokens::semibold(12.5), t.text);
+    bui.label(egui::RichText::new(tl!("Text")).size(12.0).color(t.text_dim));
+    let key = egui::Id::new(("props-cap-text", c.id.0));
+    let mut buf = bui.data(|d| d.get_temp::<String>(key)).unwrap_or_else(|| c.text.clone());
+    let resp = bui.add(egui::TextEdit::multiline(&mut buf).id(key.with("te")).desired_rows(3).desired_width(bui.available_width()).font(Tokens::ui(12.5)));
+    app.auto.add("properties.caption.text", resp.rect, &c.text);
+    if resp.has_focus() {
+        bui.data_mut(|d| d.insert_temp(key, buf.clone()));
+    } else {
+        bui.data_mut(|d| d.remove::<String>(key));
+    }
+    if resp.lost_focus() && buf != c.text {
+        actions.push(("captions.setText".into(), json!({"caption": c.id.0, "text": buf})));
+    }
+    bui.add_space(8.0);
+    for (edge, label, val) in [("in", tl!("In"), c.start), ("out", tl!("Out"), c.end())] {
+        bui.horizontal(|ui| {
+            ui.add_sized(vec2(70.0, 22.0), egui::Label::new(egui::RichText::new(label).size(12.0).color(t.text_dim)));
+            let key = egui::Id::new(("props-cap-tc", c.id.0, edge));
+            let mut buf = ui.data(|d| d.get_temp::<String>(key)).unwrap_or_else(|| tc(val));
+            let resp = ui.add(egui::TextEdit::singleline(&mut buf).id(key.with("te")).desired_width(100.0).font(Tokens::mono(11.5)));
+            app.auto.add(&format!("properties.caption.{edge}"), resp.rect, &tc(val));
+            if resp.has_focus() {
+                ui.data_mut(|d| d.insert_temp(key, buf.clone()));
+            } else {
+                ui.data_mut(|d| d.remove::<String>(key));
+            }
+            if resp.lost_focus() && buf.trim() != tc(val) {
+                let k = if edge == "in" { "startTimecode" } else { "endTimecode" };
+                actions.push(("captions.setTimes".into(), json!({"caption": c.id.0, k: buf.trim()})));
+            }
+        });
+    }
+    bui.horizontal(|ui| {
+        ui.add_sized(vec2(70.0, 22.0), egui::Label::new(egui::RichText::new(tl!("Duration")).size(12.0).color(t.text_dim)));
+        ui.label(egui::RichText::new(tc(c.duration)).font(Tokens::mono(11.5)).color(t.text));
+    });
+    run(app, ui, actions);
+}
+
 /// A caption's text in reading order ([`crate::rtl::Lines`]) in place of its `TextEdit`, which
 /// shows right-to-left words in logical order. A click hands focus to the `TextEdit` (`id`), so the
 /// text is edited in logical order and shown in reading order again when the field loses focus.

@@ -135,24 +135,22 @@ impl Interaction {
         Self { state, points: Vec::new(), area, background, cancelled }
     }
 
-    /// Click / shift-click selection and marquee registration, shared by the lane diamonds and
-    /// the value-graph points.
     #[allow(clippy::too_many_arguments)]
-    fn register(
+    pub(crate) fn key(
         &mut self,
         app: &mut FilmcraftApp,
         ui: &egui::Ui,
-        key: &KeyframeRef,
+        key: KeyframeRef,
         it: &TrackItem,
         lane: Rect,
         rect: Rect,
         response: &Response,
         interp: Interpolation,
-    ) {
+    ) -> Rect {
         let shift = ui.input(|i| i.modifiers.shift);
         if response.clicked_by(egui::PointerButton::Primary) {
             if shift {
-                if let Some(index) = app.ui.keyframe_selection.iter().position(|k| *k == *key) {
+                if let Some(index) = app.ui.keyframe_selection.iter().position(|k| *k == key) {
                     app.ui.keyframe_selection.remove(index);
                 } else {
                     app.ui.keyframe_selection.push(key.clone());
@@ -166,42 +164,6 @@ impl Interaction {
         if self.area.contains(rect.center()) && ui.clip_rect().contains(rect.center()) {
             self.points.push(Point { key: key.clone(), rect, time, pixels_per_tick, interp });
         }
-    }
-
-    /// A keyframe shown outside the lane (a value-graph point): selectable by click and by
-    /// marquee like a lane diamond, but its drag stays the graph's own value drag, so it never
-    /// arms the group time-move.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn graph_point(
-        &mut self,
-        app: &mut FilmcraftApp,
-        ui: &egui::Ui,
-        key: KeyframeRef,
-        it: &TrackItem,
-        lane: Rect,
-        rect: Rect,
-        response: &Response,
-        interp: Interpolation,
-    ) {
-        self.register(app, ui, &key, it, lane, rect, response, interp);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn key(
-        &mut self,
-        app: &mut FilmcraftApp,
-        ui: &egui::Ui,
-        key: KeyframeRef,
-        it: &TrackItem,
-        lane: Rect,
-        rect: Rect,
-        response: &Response,
-        interp: Interpolation,
-    ) -> Rect {
-        self.register(app, ui, &key, it, lane, rect, response, interp);
-        let shift = ui.input(|i| i.modifiers.shift);
-        let time = super::timeline_time_of(it, key.time);
-        let pixels_per_tick = f64::from(lane.width().max(1.0)) / it.duration.0.max(1) as f64;
         if !self.cancelled && response.drag_started_by(egui::PointerButton::Primary) {
             if !app.ui.keyframe_selection.contains(&key) {
                 if !shift {

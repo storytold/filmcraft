@@ -9,8 +9,8 @@
 //! damped exponential easing, anchored under the cursor) so navigation feels fluid; all geometry is
 //! drawn as GPU meshes by egui's wgpu backend and culled to the visible range.
 
-use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use egui::{Align2, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_project::{ClipId, ItemId, MarkerId, Sequence, TrackId, TrackItem, TrackKind};
@@ -484,6 +484,27 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if copying {
         ctx.set_cursor_icon(CursorIcon::Copy);
     }
+    // Carried transitions grouped by their destination track. A clip move may carry a transition
+    // to a different track (a drag down onto a new track); the per-row loop only walks each
+    // track's own `tr.transitions`, so without this the carried transition is drawn nowhere
+    // during the drag — its home track skips it (`dest != r.track`) and the destination track
+    // does not yet hold it. That made transitions "completely disappear" while dragging across
+    // tracks (#transition-drag-disappear). We collect them once here and draw them on `dest`.
+    // Only cross-track carries are collected: same-track carries are already drawn by the
+    // `for trn in &tr.transitions` loop (dest == r.track branch), so adding them here would
+    // double-draw them.
+    let mut carried_by_track: HashMap<TrackId, Vec<(Tick, Tick, &filmcraft_project::Transition, bool)>> = HashMap::new();
+    if matches!(app.tl.drag, Some(Drag::Move { .. })) {
+        for tr in seq.all_tracks() {
+            for trn in &tr.transitions {
+                if let Some((s, e, dest)) = move_transition_preview(app, seq, trn) {
+                    if dest != tr.id {
+                        carried_by_track.entry(dest).or_default().push((s, e, trn, copying));
+                    }
+                }
+            }
+        }
+    }
     for r in &rows {
         let Some(tr) = seq.track(r.track) else { continue };
         let clip_rect = if r.kind == TrackKind::Video { vclip } else { aclip };
@@ -568,9 +589,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         // selected edit points (trim mode): red brackets for ripple, yellow for roll / regular trim
         super::trim_monitor::paint_edit_points(app, &p, seq, tr, r, &layout);
         // transitions (one being dragged where the drag puts it; the selected ones outlined). A
-        // clip drag also shows where the drop will carry its transitions: all of their clips move
-        // to one track by one offset, or a partner stays behind and the transition follows the
-        // moving clip as a fade at its edge. A plain move draws them on their destination track
+        // clip drag also shows where the drop will carry its transitions (those whose clips all
+        // move to one track by one offset): a plain move draws them on their destination track
         // right away, a copy adds a ghost beside the copies while the originals stay at home.
         for trn in &tr.transitions {
             let carried = move_transition_preview(app, seq, trn);
@@ -602,22 +622,19 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
             }
         }
-        // transitions whose clips' drag carries them onto this track from another: the home row
-        // skips them (they leave with the clips), so without this they would be invisible until
-        // the drop re-added them on the destination track
-        for other in seq.all_tracks().filter(|t| t.id != r.track) {
-            for trn in &other.transitions {
-                let Some((s, e, dest)) = move_transition_preview(app, seq, trn) else { continue };
-                if dest != r.track {
-                    continue;
-                }
-                let x0 = layout.x_of(s);
-                let x1 = layout.x_of(e);
+        // Transitions carried onto this track by a clip move whose destination is this row.
+        // The track's own `tr.transitions` does not include them yet (they belong to the source
+        // track until the drop commits), so they are drawn here from the precomputed map. This
+        // keeps a cross-track drag from showing the transition "disappear" mid-drag.
+        if let Some(carried) = carried_by_track.get(&r.track) {
+            for &(start, end, trn, ghost) in carried {
+                let x0 = layout.x_of(start);
+                let x1 = layout.x_of(end);
                 let tr_rect = Rect::from_min_max(pos2(x0, r.rect.min.y + 17.0), pos2(x1, r.rect.max.y - 1.0));
                 let selected = app.session.state.transition_selection.contains(&trn.id);
-                draw_transition(&p, tr_rect, trn, copying || selected, &t);
-                let suffix = if copying { ".copy" } else { "" };
-                app.auto.add(&format!("timeline.transition.{}{}", trn.id.0, suffix), tr_rect.intersect(content), &trn.effect.effect);
+                draw_transition(&p, tr_rect, trn, ghost || selected, &t);
+                let suffix = if ghost { ".copy" } else { ".carried" };
+                app.auto.add(&format!("timeline.transition.{}{}", trn.id.0, suffix), tr_rect, &trn.effect.effect);
             }
         }
         if tr.locked {
@@ -680,6 +697,28 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         super::timeline_captions::paint(app, ui, seq, caption_area, &layout, &t);
     }
 
+    // ---- top block: timecode + toggles, ruler
+    draw_top(app, ui, rect, seq, &layout, &t, seq_id);
+
+    // ---- playhead
+    let ph = app.session.playhead();
+    let px = layout.x_of(ph);
+    if px >= content.min.x - 1.0 && px <= content.max.x + 1.0 {
+        // a short head on the tick row, as in Effect Controls, so it leaves the markers and timecodes clear
+        let (top, tip) = (ruler.max.y - 13.0, ruler.max.y);
+        let head = [pos2(px - 5.0, top), pos2(px + 5.0, top), pos2(px + 5.0, tip - 5.0), pos2(px, tip), pos2(px - 5.0, tip - 5.0)];
+        painter.add(egui::Shape::convex_polygon(head.to_vec(), t.playhead, Stroke::NONE));
+        painter.line_segment([pos2(px, tip), pos2(px, content.max.y)], Stroke::new(1.0, t.playhead));
+    }
+    // snap indicator
+    if let Some(sx) = app.tl.snap_x.take() {
+        painter.line_segment([pos2(sx, ruler.max.y), pos2(sx, content.max.y)], Stroke::new(1.0, Color32::from_rgb(250, 250, 250)));
+        for y in [ruler.max.y, content.max.y] {
+            let d = if y == ruler.max.y { 1.0 } else { -1.0 };
+            painter.add(egui::Shape::convex_polygon(vec![pos2(sx - 4.0, y), pos2(sx + 4.0, y), pos2(sx, y + 5.0 * d)], Color32::WHITE, Stroke::NONE));
+        }
+    }
+
     // ---- scroll bars
     zoom_scrollbar(
         app,
@@ -708,33 +747,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     );
 
     // ---- interaction
-    // This runs before the top block and the playhead are drawn, not after them: where a drag
-    // puts the playhead this frame has to show this frame, or the line (and the big timecode
-    // readout, and the snap indicator this sets) trail the pointer by one repaint for the whole
-    // drag. A press already jumped at once (#1090); now every move does too.
     interact(app, ui, seq, &layout, rect);
-
-    // ---- top block: timecode + toggles, ruler
-    draw_top(app, ui, rect, seq, &layout, &t, seq_id);
-
-    // ---- playhead
-    let ph = app.session.playhead();
-    let px = layout.x_of(ph);
-    if px >= content.min.x - 1.0 && px <= content.max.x + 1.0 {
-        // a short head on the tick row, as in Effect Controls, so it leaves the markers and timecodes clear
-        let (top, tip) = (ruler.max.y - 13.0, ruler.max.y);
-        let head = [pos2(px - 5.0, top), pos2(px + 5.0, top), pos2(px + 5.0, tip - 5.0), pos2(px, tip), pos2(px - 5.0, tip - 5.0)];
-        painter.add(egui::Shape::convex_polygon(head.to_vec(), t.playhead, Stroke::NONE));
-        painter.line_segment([pos2(px, tip), pos2(px, content.max.y)], Stroke::new(1.0, t.playhead));
-    }
-    // snap indicator
-    if let Some(sx) = app.tl.snap_x.take() {
-        painter.line_segment([pos2(sx, ruler.max.y), pos2(sx, content.max.y)], Stroke::new(1.0, Color32::from_rgb(250, 250, 250)));
-        for y in [ruler.max.y, content.max.y] {
-            let d = if y == ruler.max.y { 1.0 } else { -1.0 };
-            painter.add(egui::Shape::convex_polygon(vec![pos2(sx - 4.0, y), pos2(sx + 4.0, y), pos2(sx, y + 5.0 * d)], Color32::WHITE, Stroke::NONE));
-        }
-    }
     super::timeline_volume::interact(app, ui, seq, &layout, aclip);
     // track keyframes (drawn and edited on top of the clips)
     super::timeline_automation::show(app, ui, seq, &layout, aclip);
@@ -1033,11 +1046,8 @@ fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &Tra
         let t1 = it.start + Tick((it.duration.0 as f64 * f1 as f64) as i64);
         let s0 = (it.source_time_at(t0).seconds() * sr / spp) as usize;
         let s1 = ((it.source_time_at(t1).seconds() * sr / spp) as usize).max(s0 + 1);
-        let s1 = s1.min(peaks.len());
         let mut m = 0f32;
-        // a slice, not `iter().skip(s0)`: skipping walks the iterator to s0 for *every* column,
-        // which made drawing a clip that starts late in its source quadratic in the zoom level
-        for (a, b) in peaks.get(s0..s1).unwrap_or(&[]) {
+        for (a, b) in peaks.iter().skip(s0).take(s1 - s0) {
             m = m.max(a.abs()).max(b.abs());
         }
         // as in Premiere, the waveform shows the clip's Volume
@@ -1084,64 +1094,6 @@ fn sequence_audio_key(project: &filmcraft_project::Project, item: ItemId) -> u64
     h.finish()
 }
 
-/// Waveform-peak generation pool: one or two background workers and a queue.
-///
-/// Peaks used to spawn one OS thread per clip: dropping a handful of clips onto the timeline
-/// (or pasting, or opening a project with audio) started that many full-speed source decoders at
-/// once, and they competed with the frame server's workers for cores — every monitor seek and
-/// filmstrip tile queued behind them, and the timeline read as frozen after a drop. One worker
-/// on small machines (a single full-speed decoder already competes with playback there), two on
-/// larger ones, keep the waveforms arriving while leaving the machine to the UI, playback and
-/// the frame server. Jobs are deduplicated by `peaks_pending` before they ever get here, and a
-/// panicking job is caught so its worker keeps serving.
-struct PeakQueue {
-    jobs: Mutex<VecDeque<Box<dyn FnOnce() + Send + 'static>>>,
-    wake: Condvar,
-}
-
-static PEAKS: OnceLock<Arc<PeakQueue>> = OnceLock::new();
-
-fn peaks() -> &'static Arc<PeakQueue> {
-    PEAKS.get_or_init(|| {
-        let q = Arc::new(PeakQueue { jobs: Mutex::new(VecDeque::new()), wake: Condvar::new() });
-        let n = usize::from(std::thread::available_parallelism().is_ok_and(|c| c.get() > 4)) + 1;
-        for i in 0..n {
-            let w = q.clone();
-            std::thread::Builder::new().name(format!("filmcraft-peaks-{i}")).spawn(move || peak_worker(&w)).ok();
-        }
-        q
-    })
-}
-
-fn peak_worker(q: &PeakQueue) {
-    loop {
-        let job = {
-            let mut jobs = q.jobs.lock().unwrap_or_else(|e| e.into_inner());
-            loop {
-                if let Some(job) = jobs.pop_front() {
-                    break job;
-                }
-                jobs = q.wake.wait(jobs).unwrap_or_else(|e| e.into_inner());
-            }
-        };
-        // a panicking job must not take the worker down with it: the job itself keeps the pending
-        // set clean (catch_unwind inside it)
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
-    }
-}
-
-/// Queue a peak-generation job on the pool (run inline where there are no threads).
-fn spawn_peaks(job: impl FnOnce() + Send + 'static) {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let q = peaks();
-        q.jobs.lock().unwrap_or_else(|e| e.into_inner()).push_back(Box::new(job));
-        q.wake.notify_one();
-    }
-    #[cfg(target_arch = "wasm32")]
-    job();
-}
-
 /// Waveform peaks of a nested sequence's mix, in the same form as a media item's (min, max per
 /// 256 samples at 48 kHz). They are mixed in the background, and again whenever the sequence's
 /// sound changes; until the new ones are ready the old ones stay on show.
@@ -1179,10 +1131,7 @@ fn request_sequence_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Ve
             let total = seq.duration().to_units_floor(sr as i64).max(0) as usize;
             // one peak per 256 samples at 48 kHz, whatever the sequence's own rate
             let bucket = ((256u64 * sr as u64) / 48_000).max(1) as usize;
-            // one-second windows: short enough that the sources' decoder locks (held per mix
-            // window) never starve live playback mixing through the same sources, and a whole
-            // multiple of `bucket` so the peak grid lines up across windows
-            let chunk = bucket * 188;
+            let chunk = (bucket * 750).max(1);
             let mut out = Vec::with_capacity(total / bucket + 1);
             let mut s = 0usize;
             while s < total {
@@ -1203,22 +1152,19 @@ fn request_sequence_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Ve
         }
         pending.lock().unwrap_or_else(|e| e.into_inner()).retain(|i| *i != pkey);
     };
-    spawn_peaks(run);
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::spawn(run);
+    #[cfg(target_arch = "wasm32")]
+    run();
     have
 }
 
 /// Min/max peaks (one per 256 samples at 48 kHz) of audio stream `stream` of `src`, `dur` long.
-///
-/// Decoded in windows of a quarter second: `audio_stream` holds the source's decoder-state lock
-/// for a whole window, and the playback mixing thread needs that same lock every ~21 ms, so a
-/// four-second window (the old size) starved it whenever a clip's peaks were being generated —
-/// heard as underruns and seen as meters freezing. A window must stay a multiple of 256 samples or
-/// the peak grid would not line up across window boundaries.
 fn source_peaks(src: &dyn filmcraft_media::MediaSource, stream: usize, dur: Tick) -> Vec<(f32, f32)> {
     let sr = 48_000u32;
     let total = dur.to_units_floor(sr as i64).max(0) as usize;
     let mut out = Vec::with_capacity(total / 256 + 1);
-    let chunk = 256 * 47;
+    let chunk = 48_000 * 4;
     let mut s = 0usize;
     while s < total {
         let n = chunk.min(total - s);
@@ -1259,14 +1205,14 @@ pub(crate) fn request_peaks(app: &mut FilmcraftApp, item: ItemId, stream: usize)
     let pending = app.tl.peaks_pending.clone();
     let dur = src.info().duration;
     let run = move || {
-        // a panic in the decoder must not leave the item pending forever, nor take the worker
-        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| source_peaks(&*src, stream, dur)));
-        if let Ok(out) = out {
-            peaks.lock().unwrap_or_else(|e| e.into_inner()).insert(pkey, Arc::new(out));
-        }
+        let out = source_peaks(&*src, stream, dur);
+        peaks.lock().unwrap_or_else(|e| e.into_inner()).insert(pkey, Arc::new(out));
         pending.lock().unwrap_or_else(|e| e.into_inner()).retain(|i| *i != pkey);
     };
-    spawn_peaks(run);
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::spawn(run);
+    #[cfg(target_arch = "wasm32")]
+    run();
     None
 }
 
@@ -1840,29 +1786,40 @@ fn snap_to(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exc
     if !app.session.state.snapping {
         return t;
     }
-    let mut cands: Vec<Tick> = Vec::with_capacity(64);
+    // Walk every candidate edge once, keeping the nearest within SNAP_PX. The previous version
+    // collected all candidates into a Vec<Tick> on every drag frame (scrubbing / clip move),
+    // which allocated and re-allocated as the pointer moved — a steady source of jank that made
+    // the playhead feel "laggy to follow the cursor" (#playhead-drag-lag). The inline scan is
+    // allocation-free and short-circuits on distance, so a timeline with hundreds of clips snaps
+    // without the per-frame heap churn.
+    let x = layout.x_of(t);
+    let mut best: Option<(f32, Tick)> = None;
+    let mut consider = |c: Tick| {
+        let d = (layout.x_of(c) - x).abs();
+        if d < SNAP_PX && best.is_none_or(|b| d < b.0) {
+            best = Some((d, c));
+        }
+    };
     for tr in seq.all_tracks() {
         for it in &tr.items {
             if exclude.contains(&it.id) {
                 continue;
             }
-            cands.push(it.start);
-            cands.push(it.end());
+            consider(it.start);
+            consider(it.end());
         }
     }
     if to_playhead {
-        cands.push(app.session.playhead());
+        consider(app.session.playhead());
     }
-    cands.extend(seq.markers.iter().map(|m| m.start));
-    cands.extend(seq.mark_in);
-    cands.extend(seq.mark_out);
-    let x = layout.x_of(t);
-    let mut best: Option<(f32, Tick)> = None;
-    for c in cands {
-        let d = (layout.x_of(c) - x).abs();
-        if d < SNAP_PX && best.is_none_or(|b| d < b.0) {
-            best = Some((d, c));
-        }
+    for m in &seq.markers {
+        consider(m.start);
+    }
+    if let Some(i) = seq.mark_in {
+        consider(i);
+    }
+    if let Some(o) = seq.mark_out {
+        consider(o);
     }
     match best {
         Some((_, c)) => {
@@ -1976,11 +1933,11 @@ fn preview_drag(app: &FilmcraftApp, seq: &Sequence, out: &mut HashMap<ClipId, (T
 
 /// The transition a clip drag will leave behind, by the same rule `edit::move_items` applies:
 /// the transition travels when every clip it sits on moves — to one track, by the same (clamped)
-/// offset — shifted by that offset, and when only some of its clips move it follows the moving
-/// side as a one-sided fade at that clip's new edge (the incoming side a fade in at its start,
-/// the outgoing side a fade out at its end), no longer than the clip. The preview draws carried
-/// ones where they land, so a dragged clip's transitions follow it instead of vanishing on the
-/// release. Returns the transition's `(start, end, destination track)` when the drag carries it.
+/// offset — and is dropped when only some of its clips move (a partner that stays behind ends the
+/// move, as in Premiere), shifted by that offset. The preview draws carried ones where they land,
+/// so a dragged clip's transition follows it instead of lagging behind until the drop, and a cut
+/// transition does not ride along on a clip whose partner stays. Returns the transition's
+/// `(start, end, destination track)` when the drag carries it.
 fn move_transition_preview(app: &FilmcraftApp, seq: &Sequence, trn: &filmcraft_project::Transition) -> Option<(Tick, Tick, TrackId)> {
     let Some(Drag::Move { clips, offset, track_delta, .. }) = &app.tl.drag else { return None };
     let endpoints: Vec<ClipId> = [trn.from, trn.to].into_iter().flatten().collect();
@@ -1997,26 +1954,13 @@ fn move_transition_preview(app: &FilmcraftApp, seq: &Sequence, trn: &filmcraft_p
             Some((dest, (it.start + *offset).max(Tick::ZERO) - it.start))
         })
         .collect();
-    if lands.len() == endpoints.len()
-        && let Some(&(dest, delta)) = lands.first()
-        && lands.iter().skip(1).all(|l| *l == (dest, delta))
-    {
-        // every clip it sits on moves to one track by one offset
-        return Some((trn.start + delta, trn.end() + delta, dest));
+    // every clip it sits on must move to one track by one offset; one staying behind keeps the
+    // transition where it is (and the drop does not carry it either)
+    if lands.len() != endpoints.len() {
+        return None;
     }
-    // a partner that stayed behind: the fade follows the moving side, as the drop re-anchors it
-    for side in [trn.to, trn.from] {
-        let Some(c) = side else { continue };
-        if !clips.contains(&c) {
-            continue;
-        }
-        let (tid, it) = seq.find_item(c)?;
-        let dest = shift_track(seq, tid, *track_delta)?;
-        let start = (it.start + *offset).max(Tick::ZERO);
-        let dur = trn.duration.min(it.duration);
-        return Some(if side == trn.to { (start, start + dur, dest) } else { (start + it.duration - dur, start + it.duration, dest) });
-    }
-    None
+    let &(dest, delta) = lands.first()?;
+    lands.iter().skip(1).all(|l| *l == (dest, delta)).then(|| (trn.start + delta, trn.end() + delta, dest))
 }
 
 /// The clips a marquee rectangle touches, on the tracks it crosses.
@@ -2663,6 +2607,12 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     tt = snap_playhead(app, seq, layout, tt);
                 }
                 app.session.set_playhead(tt);
+                // Keep the playhead glued to the cursor: ask for the next frame right away so the
+                // ruler redraw is not gated on the (slower) program-monitor frame render that the
+                // playhead move also kicks off. Without this, scrubbing feels "laggy to follow the
+                // cursor" because egui only repaints on input, which can arrive after the monitor's
+                // async frame request has already stalled the pipeline (#playhead-drag-lag).
+                ctx.request_repaint();
                 Some(Drag::Scrub { initial })
             }
             Drag::Pan { last, start_scroll, start_v } => {

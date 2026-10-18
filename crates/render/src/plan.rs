@@ -509,9 +509,6 @@ pub fn execute_cpu(plan: &FramePlan) -> crate::Image {
                         });
                         let mixed = crate::transitions::apply_scaled(effect, &a, &b, *progress, *scale);
                         crate::blend::composite(&mut canvas, &mixed, 1.0, Blend::Normal);
-                        // as in `render_seq_tracks`: the transition's output goes back to the pool
-                        // for the next frame's `paint` instead of the system allocator
-                        filmcraft_frame::pool::recycle_f32(mixed.px);
                     }
                 }
             }
@@ -538,24 +535,17 @@ fn linear_image(frame: &VideoFrame, n: usize, input: Option<&filmcraft_color::In
 
 fn execute_layers(canvas: &mut crate::Image, layers: &[PlanLayer]) {
     let (width, height) = (canvas.w, canvas.h);
-
     for l in layers {
-        let mut src = match &l.fx {
+        let src = match &l.fx {
             Some(fx) => effect_image_with(&l.frame, fx, l.input.as_deref()),
             None => linear_image(&l.frame, 1, l.input.as_deref()),
         };
-
-        let mut placed = if l.matrix == Affine::scale(width as f64, height as f64) && src.w == 1 && src.h == 1 {
+        let placed = if l.matrix == Affine::scale(width as f64, height as f64) && src.w == 1 && src.h == 1 {
             crate::Image::filled(width, height, src.get(0, 0))
         } else {
             src.transformed(width, height, &l.matrix)
         };
-
         crate::blend::composite(canvas, &placed, l.opacity, l.blend);
-
-        // The layer and its placement are finished with: their buffers feed the next resample.
-        filmcraft_frame::pool::recycle_f32(std::mem::take(&mut src.px));
-        filmcraft_frame::pool::recycle_f32(std::mem::take(&mut placed.px));
     }
 }
 

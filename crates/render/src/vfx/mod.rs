@@ -81,9 +81,7 @@ fn resize(img: Image, w: usize, h: usize) -> Image {
         return img;
     }
     let m = Affine::scale(w as f64 / img.w.max(1) as f64, h as f64 / img.h.max(1) as f64);
-    let out = img.transformed(w, h, &m);
-    filmcraft_frame::pool::recycle_f32(img.px);
-    out
+    img.transformed(w, h, &m)
 }
 
 /// Effects that read other frames (skipped when rendering another frame for one of them).
@@ -411,16 +409,12 @@ pub(crate) fn generate(img: &mut Image, f: impl Fn(f32, f32, [f32; 4]) -> [f32; 
     });
 }
 
-/// Inverse-map warp with an affine (destination → source sampling). The warped result takes its
-/// buffer from the frame pool and the pre-warp buffer goes back there, so a per-frame warp
-/// (camera shake, wiggle…) allocates nothing in steady state.
+/// Inverse-map warp with an affine (destination → source sampling).
 pub(crate) fn affine_warp(img: &mut Image, m: &Affine) {
     if m.is_identity() {
         return;
     }
-    let out = img.transformed(img.w, img.h, m);
-    let old = std::mem::replace(&mut img.px, out.px);
-    filmcraft_frame::pool::recycle_f32(old);
+    *img = img.transformed(img.w, img.h, m);
 }
 
 /// Shift/rotate/scale a layer about `c`: the transform shared by the animated Transform presets.

@@ -130,7 +130,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         (video_area, None)
     };
     if let (Some(wa), Some(item)) = (wave_area, source_item) {
-        monitor_view::waveform(app, ui, wa, item, time, duration, mark_in, mark_out);
+        let shown = ruler_shown(mv.time_zoom, origin, duration);
+        monitor_view::waveform(app, ui, wa, item, time, shown, mark_in, mark_out);
     }
     let show_picture = has_video && !wave_only && !grid_only;
     // Rulers along the top and left of the picture area.
@@ -842,9 +843,23 @@ fn mini_timeline(
             ));
         }
     }
-    // The scrub is applied before the head is drawn, not after it: this frame's drag position
-    // has to show this frame, or the triangle trails the pointer by one repaint for the whole
-    // drag (the Timeline's ruler draws after its interaction for the same reason).
+    if shows(time) {
+        let x = xof(time);
+        // playhead: blue triangle over a line
+        let hy = bar.max.y - 11.0;
+        p.add(egui::Shape::convex_polygon(
+            vec![pos2(x - 5.5, hy), pos2(x + 5.5, hy), pos2(x + 5.5, hy + 5.0), pos2(x, hy + 9.0), pos2(x - 5.5, hy + 5.0)],
+            t.playhead,
+            Stroke::NONE,
+        ));
+        p.line_segment([pos2(x, hy + 8.0), pos2(x, bar.max.y)], Stroke::new(1.0, t.playhead));
+    }
+    if interaction.in_hot {
+        crate::panels::source_range::trim_cue(p, a, bar, 4.0);
+    }
+    if interaction.out_hot {
+        crate::panels::source_range::trim_cue(p, b, bar, -4.0);
+    }
     let scrub = interaction.scrub.or_else(|| {
         if !interaction.handled && (resp.dragged() || resp.clicked()) {
             resp.interact_pointer_pos().map(|pos| {
@@ -865,25 +880,6 @@ fn mini_timeline(
                 let _ = app.session.execute("source.setPlayhead", json!({"time": tk.0}));
             }
         }
-    }
-    // where the scrub just put it, not where this frame began
-    let time = scrub.unwrap_or(time);
-    if shows(time) {
-        let x = xof(time);
-        // playhead: blue triangle over a line
-        let hy = bar.max.y - 11.0;
-        p.add(egui::Shape::convex_polygon(
-            vec![pos2(x - 5.5, hy), pos2(x + 5.5, hy), pos2(x + 5.5, hy + 5.0), pos2(x, hy + 9.0), pos2(x - 5.5, hy + 5.0)],
-            t.playhead,
-            Stroke::NONE,
-        ));
-        p.line_segment([pos2(x, hy + 8.0), pos2(x, bar.max.y)], Stroke::new(1.0, t.playhead));
-    }
-    if interaction.in_hot {
-        crate::panels::source_range::trim_cue(p, a, bar, 4.0);
-    }
-    if interaction.out_hot {
-        crate::panels::source_range::trim_cue(p, b, bar, -4.0);
     }
 }
 

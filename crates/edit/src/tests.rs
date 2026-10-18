@@ -554,12 +554,9 @@ fn transitions_travel_with_moved_clips() {
     // a cut whose two clips move together keeps its transition, in an insert move as well
     move_items(&mut fx.seq, &[(b, v1, f(60)), (c, v1, f(70))], true, &mut Fx::ctx(&mut n)).unwrap();
     assert_eq!(at(&fx, v1), vec![(2, 68), (3, 76)]);
-    // a crossfade whose partner stays behind follows the moving clip as a fade in at its new
-    // start; the moving clip's own fade stays with it
+    // a crossfade whose partner stays behind is dropped; the moving clip's own fade stays with it
     move_items(&mut fx.seq, &[(c, v1, f(90))], false, &mut Fx::ctx(&mut n)).unwrap();
-    assert_eq!(at(&fx, v1), vec![(2, 90), (3, 96)]);
-    let carried = &fx.seq.track(v1).unwrap().transitions[0];
-    assert_eq!((carried.from, carried.to), (None, Some(c)), "the crossfade became a fade in on the moving clip");
+    assert_eq!(at(&fx, v1), vec![(3, 96)]);
     fx.seq.check().unwrap();
 }
 
