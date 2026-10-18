@@ -84,6 +84,33 @@ impl Driver {
     fn masks(&mut self) -> Vec<Value> {
         self.exec("masks.list", json!({}))["masks"].as_array().unwrap().clone()
     }
+    /// Wheel `id` clear of `panel_id`'s edges before pressing it: a press on a half-clipped
+    /// row hits the scrollbar instead and never reaches the widget. Negative wheel reveals
+    /// content below, positive content above; then wait for motion to stop.
+    fn reveal(&mut self, id: &str, panel_id: &str) {
+        let panel = self.rect(panel_id);
+        let (wx, wy) = (panel[0] + panel[2] / 2.0, panel[1] + panel[3] / 2.0);
+        let lo = panel[1] + 40.0;
+        let hi = panel[1] + panel[3] - 60.0;
+        for _ in 0..6 {
+            let r = self.rect(id);
+            let c = r[1] + r[3] / 2.0;
+            if r[3] >= 18.0 && c > lo && c < hi {
+                break;
+            }
+            let dy = if c >= hi { -150.0 } else { 150.0 };
+            self.ok("ui.scroll", json!({"x": wx, "y": wy, "dy": dy}));
+            self.frames(2);
+        }
+        for _ in 0..10 {
+            let a = self.rect(id);
+            self.frames(4);
+            let b = self.rect(id);
+            if a == b {
+                break;
+            }
+        }
+    }
     fn shot(&mut self, name: &str) {
         let Some(dir) = self.shots.clone() else { return };
         // let the background frame workers finish the (blurred) frame
@@ -169,17 +196,21 @@ fn create_and_edit_masks_on_the_monitor() {
     assert!(c1.0 > c0.0 + 20.0, "{c0:?} → {c1:?}");
     d.shot("mask-edited");
 
-    // Inverted checkbox (fold Opacity so the row is on screen)
-    d.ok("ui.click", json!({"id": "effectControls.effect.opacity.twirl"}));
+    // Inverted checkbox (fold Opacity so the row is on screen; wheel it clear of the panel
+    // edge when the panel is still too short to show it fully)
+    d.ok("ui.click", json!({"id": "effectControls.effect.opacity"}));
     d.frames(2);
+    d.reveal("effectControls.gaussian_blur.mask0.inverted", "panel.EffectControls");
     d.ok("ui.click", json!({"id": "effectControls.gaussian_blur.mask0.inverted"}));
     d.frames(2);
     assert_eq!(d.masks()[0]["inverted"], true);
     d.shot("mask-inverted");
-    d.ok("ui.click", json!({"id": "effectControls.effect.opacity.twirl"}));
+    d.reveal("effectControls.effect.opacity", "panel.EffectControls");
+    d.ok("ui.click", json!({"id": "effectControls.effect.opacity"}));
     d.frames(2);
 
     // pen mask on Opacity: four clicks, then click the first point to close
+    d.reveal("effectControls.opacity.mask.pen", "panel.EffectControls");
     d.ok("ui.click", json!({"id": "effectControls.opacity.mask.pen"}));
     d.frames(2);
     let pic = d.rect("program.picture");

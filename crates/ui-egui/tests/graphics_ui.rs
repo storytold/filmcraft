@@ -206,13 +206,50 @@ fn shadow_color_drag_is_one_undo_step() {
     // scroll the properties panel so the shadow row is visible, then open the picker
     d.ok("ui.scroll", json!({"x": 1400.0, "y": 500.0, "dx": 0.0, "dy": -400.0}));
     d.frames(3);
+    // the row can still sit half-clipped at the panel edge (a press there hits the
+    // scrollbar, not the swatch): wheel it clear, then wait for motion to stop
+    let panel = d.rect("panel.EssentialGraphics");
+    let (wx, wy) = (panel[0] + panel[2] / 2.0, panel[1] + panel[3] / 2.0);
+    let lo = panel[1] + 40.0;
+    let hi = panel[1] + panel[3] - 60.0;
+    for _ in 0..6 {
+        let r = d.rect("graphics.prop.shadow_color");
+        let c = r[1] + r[3] / 2.0;
+        if r[3] >= 18.0 && c > lo && c < hi {
+            break;
+        }
+        let dy = if c >= hi { -150.0 } else { 150.0 };
+        d.ok("ui.scroll", json!({"x": wx, "y": wy, "dy": dy}));
+        d.frames(2);
+    }
+    for _ in 0..10 {
+        let a = d.rect("graphics.prop.shadow_color");
+        d.frames(4);
+        let b = d.rect("graphics.prop.shadow_color");
+        if a == b {
+            break;
+        }
+    }
     let sw = d.rect("graphics.prop.shadow_color");
     d.ok("ui.click", json!({"x": sw[0] + sw[2] / 2.0, "y": sw[1] + sw[3] / 2.0}));
     d.frames(3);
     // the popup flips above the swatch (it does not fit below); find a point in its 2D picker
     let undo0 = d.exec("history.list", json!({}))["undo"].as_array().unwrap().len();
     let mut hit = None;
-    for (dx, dy) in [(30.0, 30.0), (150.0, 30.0), (30.0, 150.0), (150.0, 150.0)] {
+    for (dx, dy) in [
+        (-90.0, 90.0),
+        (-150.0, 90.0),
+        (-30.0, 90.0),
+        (-90.0, 150.0),
+        (-150.0, 150.0),
+        (-30.0, 150.0),
+        (-90.0, 30.0),
+        (-150.0, 30.0),
+        (-30.0, 30.0),
+        (30.0, 30.0),
+        (30.0, 90.0),
+        (30.0, 150.0),
+    ] {
         let (px, py) = (sw[0] + dx, sw[1] - dy);
         let before = color(&mut d);
         d.ok("ui.drag", json!({"from": {"x": px, "y": py}, "to": {"x": px + 60.0, "y": py + 40.0}, "steps": 4}));

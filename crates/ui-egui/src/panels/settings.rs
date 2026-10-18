@@ -819,6 +819,10 @@ fn rows(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, list: &[Row]
         }
         match r {
             Row::Field(f) if APPEARANCE_KEYS.contains(&f.key) => continue,
+            // The OS draws its own title bar on macOS (traffic lights over the integrated
+            // strip) and the browser tab has none on web: no switch there, as in PhotoCraft.
+            Row::Field(f) if f.key == "appearance.systemTitleBar" && (cfg!(target_os = "macos") || cfg!(target_arch = "wasm32")) => continue,
+            Row::Note(text) if *text == "Applies at next launch." && (cfg!(target_os = "macos") || cfg!(target_arch = "wasm32")) => continue,
             Row::Field(f) => draw_field(app, ui, d, f),
             Row::Group(title, inner) => group(ui, &t, title, |ui| rows(app, ui, d, inner)),
             Row::Note(text) => note(ui, &t, text),

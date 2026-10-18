@@ -3579,6 +3579,8 @@
 	Export the labels to a preset file…	将标签导出为预设文件…
 	Show the presets folder	显示预设文件夹
 	Delete this preset	删除此预设
+	Maximize	最大化
+	Minimize	最小化
 	Opens in your web browser: {url}	在网页浏览器中打开：{url}
 	Saves this session's log and shows it in your file manager.	保存本次会话的日志并在文件管理器中显示。
 	Shows a report on this computer.	显示本机的报告。
