@@ -268,21 +268,16 @@ impl CloudApp for FilmcraftApp {
         if fmt == "fcproj" {
             return Ok(filmcraft_engine::commands::project_bytes(&self.session));
         }
-        // Interchange exports still go through a host-writable path (desktop temp / web OPFS).
-        let tmp = std::env::temp_dir().join(format!(
-            "filmcraft-cloud-save-{}.{fmt}",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
-        ));
-        let path = tmp.to_string_lossy().to_string();
+        // FCPXML / AAF: export through the host VFS (desktop disk or wasm in-memory), never std::fs.
+        let stamp = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+        let path = filmcraft_engine::temp_dir().join(format!("filmcraft-cloud-save-{stamp}.{fmt}")).to_string_lossy().to_string();
         let cmd = match fmt {
             "fcpxml" => "file.exportFcpxml",
             "aaf" => "file.exportAaf",
             _ => "file.saveCopy",
         };
         self.session.execute(cmd, json!({"path": path})).map_err(|e| e.to_string())?;
-        let bytes = std::fs::read(&tmp).map_err(|e| format!("could not read the encoded project: {e}"))?;
-        let _ = std::fs::remove_file(&tmp);
-        Ok(bytes)
+        self.session.services.read_file(&path).map_err(|e| format!("could not read the encoded project: {e}"))
     }
 
     fn close(&mut self, _uid: u64) {
