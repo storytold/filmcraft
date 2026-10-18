@@ -12,6 +12,7 @@
 
 pub mod aaf_omf;
 pub mod autosave;
+pub mod beat_markers;
 pub mod captions;
 pub mod clip_ops;
 pub mod color;

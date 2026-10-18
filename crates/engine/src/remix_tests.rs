@@ -160,3 +160,152 @@ fn overlaps_are_refused_and_noise_cannot_be_remixed() {
     let err = s.execute("clip.remix.enable", json!({})).unwrap_err().to_string();
     assert!(err.contains("beat") || err.contains("short"), "{err}");
 }
+
+#[test]
+fn remix_analysis_never_reuses_another_sessions_item_id() {
+    let (music, _) = music();
+    let (mut first, c1) = session(&music, None);
+    first.execute("clip.remix.enable", json!({"clip": c1.0})).unwrap();
+    // Same item id, path, duration and sample rate; entirely different source bytes.
+    let silence = vec![vec![0.0; music[0].len()]; 2];
+    let (mut second, c2) = session(&silence, None);
+    assert_eq!(c1, c2);
+    let before = second.project.to_json();
+    let error = second.execute("clip.remix.enable", json!({"clip": c2.0})).unwrap_err();
+    assert!(error.to_string().contains("no beat"), "{error}");
+    assert_eq!(second.project.to_json(), before);
+    // The first session still has its own valid source and can re-plan.
+    first.execute("clip.remix", json!({"clip": c1.0, "seconds": 20})).unwrap();
+}
+
+#[test]
+fn detected_beats_are_editable_sequence_markers_with_one_undo_step() {
+    let (music, _) = music();
+    for reverse in [false, true] {
+        let (mut s, c) = session(&music, None);
+        s.edit_sequence("Prepare trimmed music", |q, _, _| {
+            let it = q.find_item_mut(c).unwrap().1;
+            it.start = Tick::from_units(5, 1);
+            it.source_in = Tick::from_units(1, 1);
+            it.duration = Tick::from_units(10, 1);
+            it.speed = 2.0;
+            it.reverse = reverse;
+            Ok(())
+        })
+        .unwrap();
+        let before = s.project.to_json();
+        let clip_before = item(&s, c);
+        let undo = s.history.undo.len();
+        let r = s.execute("markers.detectBeats", json!({})).unwrap();
+        let markers = s.active_sequence().unwrap().markers.clone();
+        assert!(markers.len() >= 30, "a beat grid across the selected music: {r}");
+        assert_eq!(markers.len(), r["count"].as_u64().unwrap() as usize);
+        assert_eq!(item(&s, c), clip_before, "source range, effects and media remain untouched");
+        assert_eq!(s.history.undo.len(), undo + 1);
+        for marker in &markers {
+            assert!(marker.start >= clip_before.start && marker.start < clip_before.end());
+            assert_eq!(marker.duration, Tick::ZERO);
+            // 120 BPM music at 200% speed: an attack every quarter second.
+            let residual = (marker.start - clip_before.start).0.rem_euclid(Tick::from_units(1, 4).0);
+            assert!(residual.min(Tick::from_units(1, 4).0 - residual) < Tick::from_units(40, 1000).0, "beat time {:?}", marker.start);
+        }
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(s.project.to_json(), before);
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(s.active_sequence().unwrap().markers, markers);
+        let r = s.execute("markers.detectBeats", json!({"clip": c.0})).unwrap();
+        assert_eq!(r["count"], 0, "repeat detection does not duplicate markers");
+        assert_eq!(s.history.undo.len(), undo + 1);
+        s.execute("markers.edit", json!({"marker": markers[0].id.0, "name": "Chorus", "comment": "Cut here"})).unwrap();
+        let edited = s.active_sequence().unwrap().markers.iter().find(|m| m.id == markers[0].id).unwrap();
+        assert_eq!((edited.name.as_str(), edited.comment.as_str()), ("Chorus", "Cut here"));
+    }
+}
+
+#[test]
+fn beat_detection_uses_the_clips_selected_audio_stream() {
+    struct Streams {
+        info: filmcraft_media::MediaInfo,
+        music: Arc<dyn filmcraft_media::MediaSource>,
+    }
+    impl filmcraft_media::MediaSource for Streams {
+        fn info(&self) -> &filmcraft_media::MediaInfo {
+            &self.info
+        }
+        fn video_frame(&self, _: filmcraft_media::FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+            Err(filmcraft_media::MediaError::NoStream("video"))
+        }
+        fn audio(&self, start: i64, frames: usize, rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+            self.audio_stream(0, start, frames, rate)
+        }
+        fn audio_stream(&self, stream: usize, start: i64, frames: usize, rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+            match stream {
+                0 => Ok(filmcraft_frame::AudioBuffer { sample_rate: rate, channels: vec![vec![0.0; frames]; 2] }),
+                1 => self.music.audio(start, frames, rate),
+                _ => Err(filmcraft_media::MediaError::NoStream("audio")),
+            }
+        }
+    }
+    let (music, _) = music();
+    let (mut s, c) = session(&music, None);
+    let media = item(&s, c).item;
+    let source = s.media.full_res_source(&s.project, media, &*s.services).unwrap();
+    let mut info = source.info().clone();
+    info.audio_streams.push(info.audio_streams[0].clone());
+    Arc::make_mut(&mut s.project).item_mut(media).unwrap().as_media_mut().unwrap().info = info.clone();
+    s.media.insert(media, Arc::new(Streams { info, music: source }));
+    s.edit_sequence("Select music stream", |q, _, _| {
+        q.find_item_mut(c).unwrap().1.audio_stream = 1;
+        Ok(())
+    })
+    .unwrap();
+    assert!(s.execute("markers.detectBeats", json!({})).unwrap()["count"].as_u64().unwrap() > 30);
+    for stream in [0, usize::MAX] {
+        s.edit_sequence("Select silent or invalid stream", |q, _, _| {
+            q.find_item_mut(c).unwrap().1.audio_stream = stream;
+            Ok(())
+        })
+        .unwrap();
+        let before = s.project.to_json();
+        assert!(s.execute("markers.detectBeats", json!({})).is_err());
+        assert_eq!(s.project.to_json(), before);
+    }
+}
+
+#[test]
+fn beat_detection_rejects_bad_input_silence_and_unbounded_ranges_without_edits() {
+    let silence = vec![vec![0.0; SR as usize * 10]; 2];
+    let (mut s, c) = session(&silence, None);
+    let before = s.project.to_json();
+    for params in [
+        json!(null),
+        json!([]),
+        json!({"clip": "wrong"}),
+        json!({"clip": -1}),
+        json!({"clip": 0}),
+        json!({"clip": u64::MAX}),
+        json!({"unknown": true}),
+        json!({}),
+    ] {
+        assert!(s.execute("markers.detectBeats", params).is_err());
+        assert_eq!(s.project.to_json(), before);
+    }
+    let media = item(&s, c).item;
+    for channels in [0, u32::MAX] {
+        Arc::make_mut(&mut s.project).item_mut(media).unwrap().as_media_mut().unwrap().info.audio_streams.first_mut().unwrap().channels = channels;
+        let before = s.project.to_json();
+        let undo = s.history.undo.len();
+        let error = s.execute("markers.detectBeats", json!({})).unwrap_err();
+        assert!(error.to_string().contains("memory budget"), "{error}");
+        assert_eq!(s.project.to_json(), before);
+        assert_eq!(s.history.undo.len(), undo);
+    }
+    Arc::make_mut(&mut s.project).item_mut(media).unwrap().as_media_mut().unwrap().info.audio_streams.first_mut().unwrap().channels = 2;
+    // Bypass normal edit validation to exercise an already-corrupt project range.
+    let seq = s.state.active_sequence.unwrap();
+    Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().find_item_mut(c).unwrap().1.duration = Tick(i64::MAX);
+    let before = s.project.to_json();
+    let error = s.execute("markers.detectBeats", json!({"clip": c.0})).unwrap_err();
+    assert!(error.to_string().contains("ten source minutes"), "{error}");
+    assert_eq!(s.project.to_json(), before);
+}

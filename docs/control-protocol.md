@@ -192,3 +192,13 @@ resizes the root split; path entries use `false` for the first child and `true` 
 the second. `{"action":{"MoveFloating":{"panel":"Info","rect":[45,65,420,320]}}}`
 repositions and resizes the floating group containing Info. Invalid actions leave the
 layout unchanged. Pointer gestures dispatch through this same catalog command.
+
+### Monitor guide gestures
+
+Drag a guide or pull one from a monitor ruler. Hold Shift for 20× finer motion; releasing Shift preserves the current position. Press Alt during the drag to switch orientation (one toggle per press). The X/Y readout shows the resulting frame-pixel position. Escape restores an existing guide, including its orientation, or cancels a new one. Locked guides stay fixed. These gestures are view state; `ui.inspect` and `ui.set` expose the resulting monitor guides.
+
+### Audio beat markers
+
+Select a music clip on an audio track and choose **Markers → Detect Audio Beats**, or run `markers.detectBeats {"clip": id}`. Detection adds editable sequence markers in one undo step, respecting the clip's source In, timeline position, constant speed and reverse playback. It reads full-resolution audio and leaves media, effects and clip timing unchanged. Repeating detection skips existing markers at the same positions. Silence or insufficient rhythmic content produces a useful error.
+
+Analysis is limited to ten source minutes and 16 million decoded channel samples per invocation; trim longer or multichannel music into smaller ranges first. Remixed clips, frame holds and animated time remapping must be rendered or reverted first. This uses FilmCraft's heuristic Remix detector, so users should review the detected markers before cutting.
