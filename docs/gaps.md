@@ -186,14 +186,17 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   and run-length scan lines, any axis order. OpenEXR stills and image
   sequences (#828): scan-line, uncompressed / RLE / ZIPS / ZIP, half / float / uint, RGB(A) or
   luminance, decoded to linear float frames and bit-exact against ffmpeg; PXR24 (lossy 24-bit
-  float, 16 lines per chunk) decodes too, bit-exact against OpenEXR (via OpenImageIO, #828).
+  float, 16 lines per chunk) decodes too, bit-exact against OpenEXR (via OpenImageIO, #828). PSD stills and
+  image sequences as their flattened composite (Premiere's Merge All Layers): Grayscale and RGB,
+  8 or 16 bits (kept at 8), uncompressed or PackBits, with the merged transparency unblended
+  from white.
 - **Missing:** free-format MPEG audio, E-AC-3 adaptive hybrid
   transform, enhanced coupling and the extra channels of 7.1 dependent substreams (played as the
   5.1 core), AVI (#598; listed as an extension but no
   demuxer), WMV / ASF, DV / DVCPRO / DV100, MPEG-4 Part 2, FLAC in MP4 (#603), camera RAW (R3D
   incl. R3D NE, ARRIRAW, Sony RAW / X-OCN, Canon RAW, BRAW, ProRes RAW; #345, #383), JPEG 2000 /
   JPEG XS MXF, the rest of CinemaDNG (lossy / JPEG XL DNG, MXF-wrapped, opcode lists, Raw
-  settings; DNG frames and folders import since #1065); stills: PSD, EXR beyond scan-line RLE / ZIP / PXR24 (PIZ, B44, DWA,
+  settings; DNG frames and folders import since #1065); stills: PSD layers (Merged Layers, Individual Layers, layers as a sequence) and PSB / CMYK / Lab / indexed / 32-bit / ZIP-compressed documents, EXR beyond scan-line RLE / ZIP / PXR24 (PIZ, B44, DWA,
   tiled, multi-part, deep), HEIF / HEIC,
   AI / EPS, and the rarer DPX layout, run-length encoding (Targa and DPX stills and sequences import
   since #821, packed 10/12-bit and Y'CbCr DPX since #841, deeper than 8 bits kept at 8); transparent
