@@ -68,6 +68,7 @@ mod sequence_ui;
 mod settings_menus_ui;
 mod settings_ui;
 mod shared_docking_ui;
+mod slip_monitor_ui;
 mod source_drag_ui;
 mod source_playback_ui;
 mod status_bar_ui;

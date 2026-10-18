@@ -121,18 +121,20 @@ const VIEW_OUTGOING: u32 = 1;
 const VIEW_INCOMING: u32 = 2;
 
 /// Fit a w×h picture into `area`.
-fn fit(area: Rect, w: f32, h: f32) -> Rect {
+pub(crate) fn fit(area: Rect, w: f32, h: f32) -> Rect {
     let s = (area.width() / w.max(1.0)).min(area.height() / h.max(1.0));
     Rect::from_center_size(area.center(), vec2(w * s, h * s))
 }
 
-/// Draw one side's frame (the clip's media at `media_time`). `view` is the picture's frame server
-/// view: the newest frame asked for in it replaces the older ones still waiting, so a trim decodes
-/// where the edit point is now without cancelling the other side's frame.
-fn picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, side: &Value, tex_name: &str, view: u32) -> Rect {
+/// Draw one side's frame (the clip's media at `mediaTime`; a sound clip shows its name), shared
+/// with the Slip Monitor. `view` is the picture's frame server view: the newest frame asked for
+/// in it replaces the older ones still waiting, so a drag decodes where the pointer is now.
+/// Until that frame is ready the nearest decoded one before it (or the last one shown) stands in.
+/// Returns the picture's rect and whether it shows the exact frame.
+pub(crate) fn picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, side: &Value, tex_name: &str, view: u32) -> (Rect, bool) {
     let t = app.tokens;
     let item = filmcraft_project::ItemId(side["item"].as_u64().unwrap_or(0));
-    let Some(pi) = app.session.project.item(item) else { return area };
+    let Some(pi) = app.session.project.item(item) else { return (area, false) };
     let size = match &pi.kind {
         ItemKind::Media(m) => m.info.video.as_ref().map(|v| (v.width, v.height)).unwrap_or((0, 0)),
         ItemKind::Sequence(s) => (s.settings.width, s.settings.height),
@@ -143,7 +145,7 @@ fn picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, side: &Value, 
     ui.painter().rect_filled(pic, 0.0, t.monitor_bg);
     if size.0 == 0 || !side["video"].as_bool().unwrap_or(false) {
         ui.painter().text(pic.center(), Align2::CENTER_CENTER, format!("♪  {}", side["name"].as_str().unwrap_or("")), Tokens::ui(13.0), t.text_dim);
-        return pic;
+        return (pic, true);
     }
     let img_rect = fit(pic, size.0 as f32, size.1 as f32);
     let rate = pi.frame_rate();
@@ -160,7 +162,9 @@ fn picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, side: &Value, 
     let project = app.session.project.clone();
     app.frames.request_in_view(key, rate.tick_of(frame), scale, &project, view);
     let ctx = ui.ctx().clone();
-    let tex = if let Some(img) = app.frames.get(&key) {
+    let exact = app.frames.get(&key);
+    let shown = exact.is_some();
+    let tex = if let Some(img) = exact {
         Some(app.texture_for(&ctx, tex_name, key, &img))
     } else {
         match app.frames.nearest(Target::Item(item), frame, size_key, rev, 48) {
@@ -171,10 +175,10 @@ fn picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, side: &Value, 
     if let Some(tex) = tex {
         ui.painter().image(tex, img_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }
-    pic
+    (pic, shown)
 }
 
-fn shift_text(frames: i64) -> String {
+pub(crate) fn shift_text(frames: i64) -> String {
     if frames > 0 { format!("+{frames}") } else { frames.to_string() }
 }
 
@@ -216,7 +220,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             pics[i] = p;
         } else {
             let (tex, view) = if i == 0 { ("trim-outgoing", VIEW_OUTGOING) } else { ("trim-incoming", VIEW_INCOMING) };
-            pics[i] = picture(app, ui, r, side, tex, view);
+            pics[i] = picture(app, ui, r, side, tex, view).0;
         }
     }
     let [lp, rp] = pics;

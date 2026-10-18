@@ -644,9 +644,9 @@ impl FrameServer {
     /// [`FrameServer::request`] at `prio` 0 for one of several pictures of the same target and
     /// size shown at once: `view` names the picture (0 is [`FrameServer::request`]'s). A frame
     /// on screen replaces only the one asked for before in its own view, so the Trim Monitor's
-    /// outgoing and incoming pictures at a cut inside one take (one item, one size) don't cancel
-    /// each other's decode on every refresh while each still drops the positions a trim has left
-    /// behind.
+    /// outgoing and incoming pictures at a cut inside one take, and the Slip Monitor's In and Out
+    /// frames (one item, one size), don't cancel each other's decode on every refresh while each
+    /// still drops the positions a trim or a slip drag has left behind.
     pub fn request_in_view(&self, key: FrameKey, time: Tick, scale: f32, project: &Arc<Project>, view: u32) {
         let view = view.min(SHARED_VIEW - 1);
         let catch_up = Some(Tick::from_seconds_f64(SCRUB_KEEP_S));
