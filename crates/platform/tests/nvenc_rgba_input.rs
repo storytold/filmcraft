@@ -80,7 +80,7 @@ fn round_trip(profile: Profile, w: usize, h: usize, frames: &[Vec<u8>]) -> Vec<[
     for p in &packets {
         out.extend(dec.decode(&p.data, p.pts).unwrap());
     }
-    out.extend(dec.flush());
+    out.extend(dec.flush().unwrap());
     out.sort_by_key(|f| f.pts);
     assert_eq!(out.len(), frames.len());
     out.into_iter()

@@ -23,14 +23,14 @@ static RENDERED: AtomicUsize = AtomicUsize::new(0);
 struct YieldingRenderer;
 
 impl FrameRenderer for YieldingRenderer {
-    fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Image> {
+    fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Result<Option<Image>, String> {
         // Deterministically offer this thread to the queued sibling frame before returning the
         // renderer. With one Rayon worker and one renderer, an uncapped batch deadlocks here.
         rayon::yield_now();
         let checksum: usize = (0..4096usize).into_par_iter().map(|x| x ^ 37).sum();
         assert!(checksum > 0);
         RENDERED.fetch_add(1, Ordering::Relaxed);
-        Some(filmcraft_render::render_sequence(project, seq, t, opts, sources))
+        filmcraft_render::render_sequence(project, seq, t, opts, sources).map(Some)
     }
 }
 

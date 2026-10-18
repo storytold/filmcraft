@@ -538,20 +538,21 @@ impl GopCache {
 
     /// Colour signalled by the container wins over the bitstream's (YUV frames only); the
     /// container's clean aperture and then its display rotation are applied.
-    fn finish(&self, mut f: VideoFrame) -> VideoFrame {
+    fn finish(&self, mut f: VideoFrame) -> crate::Result<VideoFrame> {
         if let Some(c) = self.explicit_color
             && !matches!(f.data, filmcraft_frame::PixelData::Rgba8(_) | filmcraft_frame::PixelData::RgbaF32(_))
         {
             f.color = c;
         }
         if let Some(r) = self.crop {
-            f = f.cropped(r);
+            f = f.cropped(r).map_err(crate::CodecError::FrameAccess)?;
         }
-        if self.rotation != 0 { f.rotated(self.rotation) } else { f }
+        if self.rotation != 0 { f.rotated(self.rotation).map_err(crate::CodecError::FrameAccess) } else { Ok(f) }
     }
 
-    fn store(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) {
-        self.store_finished(st, pts, self.finish(f), draft);
+    fn store(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) -> crate::Result<()> {
+        self.store_finished(st, pts, self.finish(f)?, draft);
+        Ok(())
     }
 
     /// Cache a frame [`Self::finish`] has been applied to.
@@ -601,12 +602,17 @@ impl GopCache {
     }
 
     /// Store decoder output (in presentation order) and advance `out_max`.
-    fn store_output(&self, st: &mut State, out: Vec<crate::video::DecodedFrame>) {
+    fn store_output(&self, st: &mut State, out: Vec<crate::video::DecodedFrame>) -> crate::Result<()> {
         count_frames(&out);
         for d in out {
+            if let Err(error) = self.store(st, d.pts, d.frame, d.draft) {
+                // Output was consumed; retry must replay from a sync sample, not skip the failed picture.
+                st.next = usize::MAX;
+                return Err(error);
+            }
             st.out_max = st.out_max.max(d.pts);
-            self.store(st, d.pts, d.frame, d.draft);
         }
+        Ok(())
     }
 
     /// The frame presented at `target` (track units, clamped to the stream).
@@ -756,15 +762,15 @@ impl GopCache {
             let out = timed(|| decoder.decode(&data, s.pts(k)))?;
             st.next += 1;
             DECODED.fetch_add(1, Ordering::Relaxed);
-            self.store_output(st, out);
+            self.store_output(st, out)?;
             if st.cached(want_pts, draft).is_some() {
                 break;
             }
         }
         if st.cached(want_pts, draft).is_none() {
-            let out = st.decoder.as_mut().map(|d| timed(|| d.flush())).unwrap_or_default();
-            self.store_output(st, out);
+            let out = st.decoder.as_mut().map(|d| timed(|| d.flush())).transpose();
             st.next = usize::MAX;
+            self.store_output(st, out?.unwrap_or_default())?;
         }
         // nearest decoded frame at or before the wanted pts (robust to decoder pts quirks)
         st.at_or_before(want_pts, draft).ok_or_else(|| CodecError::Decode("frame not produced".into()))
@@ -782,7 +788,7 @@ impl GopCache {
             .max_by_key(|p| p.pts)
             .map(|p| p.frame)
             .ok_or_else(|| CodecError::Decode("frame not produced".into()))?;
-        Ok(Arc::new(self.finish(f)))
+        Ok(Arc::new(self.finish(f)?))
     }
 
     /// Decode with `d` (positioned at `next`) until the picture with `want_pts` (sample `i`) comes out.
@@ -827,9 +833,10 @@ impl GopCache {
         }
         if !found {
             let pics = timed(|| d.flush());
+            *next = usize::MAX;
+            let pics = pics?;
             count_frames(&pics);
             out.extend(pics);
-            *next = usize::MAX;
         }
         Ok(out)
     }
@@ -849,9 +856,9 @@ impl GopCache {
             timed(|| dec.decode(&data, want_pts))
         });
         // crop and rotate before taking the lock: that work runs on rayon (see `isolated`)
-        let res = res.map(|out| {
+        let res = res.and_then(|out| {
             count_frames(&out);
-            out.into_iter().map(|d| (d.pts, self.finish(d.frame), d.draft)).collect::<Vec<_>>()
+            out.into_iter().map(|d| self.finish(d.frame).map(|frame| (d.pts, frame, d.draft))).collect::<crate::Result<Vec<_>>>()
         });
         let mut st = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         if st.spare.len() < 16 {
@@ -869,6 +876,202 @@ mod tests {
     use super::*;
     use crate::video::DecodedFrame;
     use std::collections::VecDeque;
+
+    #[derive(Debug)]
+    struct UnreadableSurface;
+
+    impl filmcraft_frame::GpuSurface for UnreadableSurface {
+        fn size(&self) -> (u32, u32) {
+            (2, 2)
+        }
+        fn byte_len(&self) -> usize {
+            0
+        }
+        fn download(&self) -> Result<filmcraft_frame::PixelData, String> {
+            Err("GPU readback failed".into())
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn id(&self) -> u64 {
+            0
+        }
+    }
+
+    #[test]
+    fn failed_frame_access_is_typed_and_never_cached() {
+        use filmcraft_frame::{Chroma, GpuPixels, PixelData};
+        let surface = Arc::new(UnreadableSurface);
+        let (width, height) = filmcraft_frame::GpuSurface::size(&*surface);
+        let frame = VideoFrame {
+            width,
+            height,
+            data: PixelData::Gpu(GpuPixels::new(surface, Chroma::C420, u8::BITS)),
+            color: filmcraft_color::ColorInfo::REC709,
+            par: (1, 1),
+            pts: filmcraft_time::Tick::ZERO,
+        };
+        let crop = Region { x: 0, y: 0, w: usize::try_from(width / 2).unwrap(), h: usize::try_from(height).unwrap() };
+        // Partial crop and quarter-turn each require unavailable CPU pixels.
+        for cache in [GopCache::new(None).with_crop(Some(crop)), GopCache::new(None).with_rotation(1)] {
+            let mut state = cache.shared.state.lock().unwrap();
+            let previous_max = state.out_max;
+            let output = vec![DecodedFrame { pts: 0, frame: frame.clone(), draft: false }];
+            let error = cache.store_output(&mut state, output).unwrap_err();
+            assert!(matches!(filmcraft_media::MediaError::from(error), filmcraft_media::MediaError::FrameAccess(why) if why == "GPU readback failed"));
+            assert!(state.frames.is_empty());
+            assert_eq!(state.bytes, 0);
+            assert_eq!(state.out_max, previous_max);
+        }
+    }
+
+    struct FailingOutputSamples {
+        samples: Samples,
+        failing_pts: i64,
+        unreadable: Arc<std::sync::atomic::AtomicBool>,
+        at_flush: bool,
+        fail_drain: bool,
+    }
+
+    struct FailingOutputDecoder {
+        inner: Box<dyn VideoDecoder>,
+        failing_pts: i64,
+        unreadable: Arc<std::sync::atomic::AtomicBool>,
+        at_flush: bool,
+        fail_drain: bool,
+        held: Vec<DecodedFrame>,
+    }
+
+    impl FailingOutputDecoder {
+        fn picture(&self, mut d: DecodedFrame) -> DecodedFrame {
+            use filmcraft_frame::{Chroma, GpuPixels, GpuSurface, PixelData};
+            let surface = Arc::new(UnreadableSurface);
+            let (w, h) = surface.size();
+            let index = (d.pts / 1000) as u8;
+            d.frame = VideoFrame::rgba8(w, h, [index, 0, 0, 255].repeat((w * h) as usize));
+            d.frame.pts = filmcraft_time::Tick(d.pts);
+            if d.pts == self.failing_pts && self.unreadable.load(Ordering::Relaxed) {
+                d.frame.data = PixelData::Gpu(GpuPixels::new(surface, Chroma::C420, u8::BITS));
+            }
+            d
+        }
+    }
+
+    impl VideoDecoder for FailingOutputDecoder {
+        fn decode(&mut self, data: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
+            let decoded = self.inner.decode(data, pts)?;
+            let mut out = Vec::new();
+            for d in decoded {
+                if self.at_flush && d.pts == self.failing_pts {
+                    self.held.push(d);
+                } else {
+                    out.push(self.picture(d));
+                }
+            }
+            Ok(out)
+        }
+        fn flush(&mut self) -> crate::Result<Vec<DecodedFrame>> {
+            let mut out = self.inner.flush()?;
+            out.append(&mut self.held);
+            if self.fail_drain && self.unreadable.load(Ordering::Relaxed) {
+                return Err(CodecError::Decode("injected drain failure".into()));
+            }
+            Ok(out.into_iter().map(|d| self.picture(d)).collect())
+        }
+        fn reset(&mut self) {
+            self.inner.reset();
+            self.held.clear();
+        }
+        fn name(&self) -> &str {
+            "frame-access failure"
+        }
+    }
+
+    impl VideoSamples for FailingOutputSamples {
+        fn count(&self) -> usize {
+            self.samples.count()
+        }
+        fn pts(&self, i: usize) -> i64 {
+            self.samples.pts(i)
+        }
+        fn sync_before(&self, i: usize) -> usize {
+            self.samples.sync_before(i)
+        }
+        fn sample_at(&self, t: i64) -> Option<usize> {
+            self.samples.sample_at(t)
+        }
+        fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+            self.samples.read(i)
+        }
+        fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+            Ok(Box::new(FailingOutputDecoder {
+                inner: self.samples.make_decoder()?,
+                failing_pts: self.failing_pts,
+                unreadable: self.unreadable.clone(),
+                at_flush: self.at_flush,
+                fail_drain: self.fail_drain,
+                held: Vec::new(),
+            }))
+        }
+    }
+
+    #[test]
+    fn a_repeated_frame_access_failure_never_returns_an_older_picture() {
+        // Predecessor, middle picture and end picture: fail during decode or the final drain.
+        const SAMPLE_COUNT: usize = 3;
+        for at_flush in [false, true] {
+            for rotate in [false, true] {
+                let samples = samples(SAMPLE_COUNT, SAMPLE_COUNT, 0, false);
+                let failing_index = if at_flush { SAMPLE_COUNT - 1 } else { SAMPLE_COUNT / 2 };
+                let failing_pts = samples.pts(failing_index);
+                let s =
+                    FailingOutputSamples { samples, failing_pts, unreadable: Arc::new(std::sync::atomic::AtomicBool::new(true)), at_flush, fail_drain: false };
+                let cache = if rotate {
+                    GopCache::new(None).with_rotation(1)
+                } else {
+                    let (w, h) = filmcraft_frame::GpuSurface::size(&UnreadableSurface);
+                    GopCache::new(None).with_crop(Some(Region { x: 0, y: 0, w: (w / 2) as usize, h: h as usize }))
+                };
+                assert_eq!(index_of(&cache.frame(&s, s.pts(0)).unwrap()), 0);
+                let resets = s.samples.resets.load(Ordering::Relaxed);
+                for attempt in 0..2 {
+                    let result = cache.frame(&s, failing_pts);
+                    assert!(
+                        matches!(&result, Err(CodecError::FrameAccess(why)) if why == "GPU readback failed"),
+                        "flush={at_flush}, rotate={rotate}, attempt={attempt}: {result:?}"
+                    );
+                }
+                assert!(s.samples.resets.load(Ordering::Relaxed) > resets, "retry must replay the consumed picture");
+                s.unreadable.store(false, Ordering::Relaxed);
+                let recovered = cache.frame(&s, failing_pts).unwrap();
+                assert_eq!(index_of(&recovered), failing_index);
+                assert_eq!(recovered.pts, filmcraft_time::Tick(failing_pts));
+                assert_eq!(index_of(&cache.frame(&s, s.pts(SAMPLE_COUNT - 1)).unwrap()), SAMPLE_COUNT - 1);
+                assert_eq!(index_of(&cache.frame(&s, s.pts(0)).unwrap()), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn a_repeated_flush_failure_never_returns_an_older_picture() {
+        // Cached predecessor + middle picture + final picture held until drain.
+        const SAMPLE_COUNT: usize = 3;
+        let samples = samples(SAMPLE_COUNT, SAMPLE_COUNT, 0, false);
+        let failing_pts = samples.pts(SAMPLE_COUNT - 1);
+        let s = FailingOutputSamples { samples, failing_pts, unreadable: Arc::new(std::sync::atomic::AtomicBool::new(true)), at_flush: true, fail_drain: true };
+        let cache = GopCache::new(None);
+        assert_eq!(index_of(&cache.frame(&s, s.pts(0)).unwrap()), 0);
+        for _ in 0..2 {
+            assert!(matches!(cache.frame(&s, failing_pts), Err(CodecError::Decode(why)) if why == "injected drain failure"));
+        }
+        {
+            let _nested = DecodingGuard::enter(&cache as *const GopCache as usize);
+            assert!(matches!(cache.frame(&s, failing_pts), Err(CodecError::Decode(why)) if why == "injected drain failure"));
+        }
+        s.unreadable.store(false, Ordering::Relaxed);
+        assert_eq!(index_of(&cache.frame(&s, failing_pts).unwrap()), SAMPLE_COUNT - 1);
+        assert_eq!(index_of(&cache.frame(&s, s.pts(0)).unwrap()), 0);
+    }
 
     /// `n` samples, a sync sample every `gop`, pts = 1000 · index (no reordering).
     struct Samples {
@@ -910,8 +1113,8 @@ mod tests {
             }
             Ok(out)
         }
-        fn flush(&mut self) -> Vec<DecodedFrame> {
-            self.held.drain(..).map(picture).collect()
+        fn flush(&mut self) -> crate::Result<Vec<DecodedFrame>> {
+            Ok(self.held.drain(..).map(picture).collect())
         }
         fn reset(&mut self) {
             self.resets.fetch_add(1, Ordering::Relaxed);
@@ -1004,7 +1207,7 @@ mod tests {
             std::hint::black_box(rows);
             self.0.decode(sample, pts)
         }
-        fn flush(&mut self) -> Vec<DecodedFrame> {
+        fn flush(&mut self) -> crate::Result<Vec<DecodedFrame>> {
             self.0.flush()
         }
         fn reset(&mut self) {
@@ -1391,8 +1594,8 @@ mod tests {
             px.resize((BIG.0 * BIG.1 * 4) as usize, (pts / 1000) as u8);
             Ok(vec![DecodedFrame { pts, frame: VideoFrame::rgba8(BIG.0, BIG.1, px), draft: false }])
         }
-        fn flush(&mut self) -> Vec<DecodedFrame> {
-            Vec::new()
+        fn flush(&mut self) -> crate::Result<Vec<DecodedFrame>> {
+            Ok(Vec::new())
         }
         fn reset(&mut self) {}
         fn name(&self) -> &str {
@@ -1476,8 +1679,8 @@ mod tests {
             let start = *self.run_start.get_or_insert(pts);
             Ok(if pts < start { Vec::new() } else { vec![picture((pts, false))] })
         }
-        fn flush(&mut self) -> Vec<DecodedFrame> {
-            Vec::new()
+        fn flush(&mut self) -> crate::Result<Vec<DecodedFrame>> {
+            Ok(Vec::new())
         }
         fn reset(&mut self) {
             self.resets.fetch_add(1, Ordering::Relaxed);
@@ -1554,8 +1757,8 @@ mod tests {
             }
             Ok(self.held.drain(..).map(|p| picture((p, false))).collect())
         }
-        fn flush(&mut self) -> Vec<DecodedFrame> {
-            self.held.drain(..).map(|p| picture((p, false))).collect()
+        fn flush(&mut self) -> crate::Result<Vec<DecodedFrame>> {
+            Ok(self.held.drain(..).map(|p| picture((p, false))).collect())
         }
         fn reset(&mut self) {
             self.resets.fetch_add(1, Ordering::Relaxed);

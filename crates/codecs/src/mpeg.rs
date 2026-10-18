@@ -433,7 +433,11 @@ impl MpegSource {
                         break;
                     }
                 }
-                let frame = frame.or_else(|| dec.flush().into_iter().next().map(|f| f.frame)).ok_or_else(|| CodecError::Decode("no picture decoded".into()))?;
+                let frame = match frame {
+                    Some(frame) => Some(frame),
+                    None => dec.flush()?.into_iter().next().map(|f| f.frame),
+                }
+                .ok_or_else(|| CodecError::Decode("no picture decoded".into()))?;
                 width = frame.width;
                 height = frame.height;
                 par = frame.par;

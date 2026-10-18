@@ -60,7 +60,7 @@ fn decode(path: &str) -> Vec<Arc<filmcraft_frame::VideoFrame>> {
 }
 
 fn luma_psnr(a: &filmcraft_frame::VideoFrame, b: &filmcraft_frame::VideoFrame) -> f64 {
-    let (x, y) = (a.luma8(), b.luma8());
+    let (x, y) = (a.luma8().unwrap(), b.luma8().unwrap());
     let mse = x.iter().zip(&y).map(|(p, q)| (f64::from(*p) - f64::from(*q)).powi(2)).sum::<f64>() / x.len() as f64;
     if mse == 0.0 { 99.0 } else { 10.0 * (255.0f64 * 255.0 / mse).log10() }
 }

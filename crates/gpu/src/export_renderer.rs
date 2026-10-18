@@ -90,7 +90,7 @@ fn device_failed() -> bool {
 
 pub struct ExportRenderer {
     _instance: wgpu::Instance,
-    #[expect(dead_code, reason = "kept for future frame-accuracy flows (readback fences)")]
+    #[cfg_attr(not(test), expect(dead_code, reason = "kept for future frame-accuracy flows (readback fences)"))]
     device: wgpu::Device,
     #[expect(dead_code, reason = "kept for future frame-accuracy flows (readback fences)")]
     queue: wgpu::Queue,
@@ -131,27 +131,27 @@ impl ExportRenderer {
 
     /// One frame as `render_sequence` would return it (premultiplied linear-light RGBA at the
     /// render size), or `None` when this frame must go to the CPU renderer.
-    pub fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Image> {
-        let plan = plan_frame(project, seq, t, opts, sources);
-        match &plan {
+    pub fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Result<Option<Image>, String> {
+        let plan = plan_frame(project, seq, t, opts, sources)?;
+        Ok(match &plan {
             // Already the CPU image: return it unchanged instead of rendering it twice.
             FramePlan::Image(img) => Some(img.clone()),
             FramePlan::Layers { .. } => {
                 if device_failed() {
-                    return None;
+                    return Ok(None);
                 }
                 let prep = prepare(&plan);
-                let (w, h, px) = self.compositor.render_export_prepared(&plan, Some(&prep))?;
+                let Some((w, h, px)) = self.compositor.render_export_prepared(&plan, Some(&prep))? else { return Ok(None) };
                 // an error reported while this frame was drawn leaves its pixels untrusted
                 if device_failed() {
-                    return None;
+                    return Ok(None);
                 }
                 timing::add_frame();
                 Some(Image { w: w as usize, h: h as usize, px })
             }
             // Transitions: the export path leaves them to the CPU reference renderer.
             FramePlan::Composite { .. } => None,
-        }
+        })
     }
 }
 
@@ -205,7 +205,8 @@ mod tests {
         let seq =
             p.new_sequence("s", SequenceSettings { width: 320, height: 180, frame_rate: filmcraft_time::FrameRate::FPS_24, ..Default::default() }, 1, 1, None);
         let r = filmcraft_time::FrameRate::FPS_24;
-        let _v = p.make_track_item(red, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).unwrap();
+        let v = p.make_track_item(red, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).unwrap();
+        p.sequence_mut(seq).unwrap().video_tracks[0].items.push(v);
         let a = p.make_track_item(t, TrackKind::Audio, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).unwrap();
         if transform {
             // Motion + opacity as fixed effects (the way the golden transform scene does it).
@@ -238,6 +239,7 @@ mod tests {
     /// — the same criterion the golden GPU-vs-CPU parity tests use.
     fn assert_parity(cpu: &Image, gpu: &Image, what: &str) {
         assert_eq!((cpu.w, cpu.h), (gpu.w, gpu.h), "{what}: size mismatch");
+        assert!(cpu.over_black_rgba8().chunks_exact(4).any(|px| px[..3].iter().any(|&v| v != 0)), "{what}: empty reference picture");
         let to8 = |img: &Image| -> Vec<u8> { img.over_black_rgba8() };
         let (a, b) = (to8(cpu), to8(gpu));
         let mut d: Vec<u32> = a
@@ -262,8 +264,8 @@ mod tests {
         };
         let (p, seq, m) = project(false);
         let t = Tick::ZERO;
-        let cpu = filmcraft_render::render_sequence(&p, seq, t, RenderOptions::default(), &m);
-        let gpu = r.render(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+        let cpu = filmcraft_render::render_sequence(&p, seq, t, RenderOptions::default(), &m).unwrap();
+        let gpu = r.render(&p, seq, t, RenderOptions::default(), &m).unwrap().expect("GPU rendered the frame");
         // The linear premultiplied accumulator should be very close to the CPU float image.
         assert_eq!((cpu.w, cpu.h), (gpu.w, gpu.h));
         let max: f32 = cpu.px.iter().zip(&gpu.px).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
@@ -280,8 +282,8 @@ mod tests {
         };
         let (p, seq, m) = project(true);
         let t = filmcraft_time::FrameRate::FPS_24.tick_of(10);
-        let cpu = filmcraft_render::render_sequence(&p, seq, t, RenderOptions::default(), &m);
-        let gpu = r.render(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+        let cpu = filmcraft_render::render_sequence(&p, seq, t, RenderOptions::default(), &m).unwrap();
+        let gpu = r.render(&p, seq, t, RenderOptions::default(), &m).unwrap().expect("GPU rendered the frame");
         assert_parity(&cpu, &gpu, "transformed");
     }
 
@@ -290,7 +292,7 @@ mod tests {
         // dev-dependency: the same wrapper the app and CLI register.
         struct R(ExportRenderer);
         impl FrameRenderer for R {
-            fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Image> {
+            fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Result<Option<Image>, String> {
                 self.0.render(project, seq, t, opts, sources)
             }
         }
@@ -299,8 +301,8 @@ mod tests {
             return;
         };
         let (p, seq, m) = project(false);
-        let gpu = R(r).render(&p, seq, Tick::ZERO, RenderOptions::default(), &m).expect("rendered");
-        let cpu = filmcraft_render::render_sequence(&p, seq, Tick::ZERO, RenderOptions::default(), &m);
+        let gpu = R(r).render(&p, seq, Tick::ZERO, RenderOptions::default(), &m).unwrap().expect("rendered");
+        let cpu = filmcraft_render::render_sequence(&p, seq, Tick::ZERO, RenderOptions::default(), &m).unwrap();
         assert_parity(&cpu, &gpu, "frame renderer");
     }
 
@@ -309,5 +311,123 @@ mod tests {
         for v in [0.0f32, 1.0, 0.5, 2.0, 1e-3, 65504.0, -1.0, -0.25] {
             assert!((f16_to_f32(f32_to_f16(v)) - v).abs() <= EPS * v.abs().max(1.0), "f16 {v}");
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn destroyed_device_exports_changed_frames_on_cpu() {
+        use filmcraft_export::{ExportSettings, Format, GpuRendering, Progress, export, gpu_render_stats, image_sequence_path, register_frame_renderer};
+        use std::sync::atomic::Ordering;
+        use std::time::{Duration, Instant};
+
+        const CHILD_ENV: &str = "FILMCRAFT_EXPORT_DEVICE_LOSS_CHILD";
+        const TEST: &str = "export_renderer::tests::destroyed_device_exports_changed_frames_on_cpu";
+        // One minute bounds driver/readback hangs; not a performance threshold.
+        const DEADLINE: Duration = Duration::from_secs(60);
+        // Poll only process completion; no GPU scheduling or timing claims.
+        const POLL_INTERVAL: Duration = Duration::from_millis(10);
+        if std::env::var_os(CHILD_ENV).is_none() {
+            // Shared OnceLock + failure flag must not poison other GPU tests.
+            let mut child =
+                std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact", TEST, "--nocapture"]).env(CHILD_ENV, "1").spawn().unwrap();
+            let start = Instant::now();
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(status.success(), "device-loss child: {status}");
+                    return;
+                }
+                if start.elapsed() >= DEADLINE {
+                    let kill = child.kill();
+                    let wait = child.wait();
+                    panic!("device-loss child exceeded {DEADLINE:?}; kill={kill:?}, wait={wait:?}");
+                }
+                std::thread::sleep(POLL_INTERVAL);
+            }
+        }
+
+        struct Renderer(ExportRenderer);
+        impl FrameRenderer for Renderer {
+            fn render(&mut self, p: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Result<Option<Image>, String> {
+                self.0.render(p, seq, t, opts, sources)
+            }
+        }
+        fn factory() -> Option<Box<dyn FrameRenderer>> {
+            ExportRenderer::new().map(|r| Box::new(Renderer(r)) as Box<dyn FrameRenderer>)
+        }
+
+        let Some(mut renderer) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (device-loss output): no adapter");
+            return;
+        };
+        let (p, seq, sources) = project(false);
+        let mut p = Arc::try_unwrap(p).unwrap();
+        let rate = filmcraft_time::FrameRate::FPS_24;
+        let item = p.sequence(seq).unwrap().video_tracks[0].items[0].item;
+        p.sequence_mut(seq).unwrap().video_tracks[0].items[0].duration = rate.tick_of(1);
+        let mut second = p.make_track_item(item, TrackKind::Video, rate.tick_of(1), TimeRange::new(Tick::ZERO, rate.tick_of(1)), rate).unwrap();
+        // Half opacity makes the second frame distinct without another decoder or format.
+        second.effect_mut("opacity").unwrap().param_mut("opacity").unwrap().value = filmcraft_project::ParamValue::Float(50.0);
+        p.sequence_mut(seq).unwrap().video_tracks[0].items.push(second);
+        let p = Arc::new(p);
+        for frame in 0..2 {
+            assert!(
+                matches!(plan_frame(&p, seq, rate.tick_of(frame), RenderOptions::default(), &sources).unwrap(), FramePlan::Layers { layers, .. } if !layers.is_empty())
+            );
+        }
+
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("filmcraft-device-loss-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        register_frame_renderer(factory);
+        let run = |name: &str, mode| {
+            let settings = ExportSettings {
+                format: Format::PngSequence,
+                path: dir.join(format!("{name}.png")).to_str().unwrap().to_owned(),
+                range: Some(TimeRange::new(Tick::ZERO, rate.tick_of(2))),
+                gpu_rendering: mode,
+                ..Default::default()
+            };
+            let progress = Progress::default();
+            let report = export(&p, seq, &settings, &sources, &progress).unwrap();
+            assert_eq!(report.frames, 2);
+            assert!(progress.total.load(Ordering::Relaxed) > 0, "export must report work");
+            assert_eq!(progress.done.load(Ordering::Relaxed), progress.total.load(Ordering::Relaxed));
+            (0..report.frames).map(|i| std::fs::read(image_sequence_path(&settings.path, i, report.frames)).unwrap()).collect::<Vec<_>>()
+        };
+        let reference = run("cpu", GpuRendering::Off);
+        assert_ne!(reference[0], reference[1], "reference must change between frames");
+        for bytes in &reference {
+            let image = image::load_from_memory(bytes).unwrap().to_rgba8();
+            assert!(image.pixels().any(|px| px.0[..3].iter().any(|&v| v != 0)), "reference must contain visible content");
+        }
+        let healthy = run("healthy", GpuRendering::Auto);
+        assert_eq!(gpu_render_stats().frames, reference.len() as u64, "healthy control must use the registered GPU renderer");
+        assert_eq!(gpu_render_stats().fallbacks, 0);
+        assert_eq!(timing::get().frames, reference.len() as u64, "healthy control must composite on the GPU");
+        for (frame, bytes) in healthy.iter().enumerate() {
+            let gpu = image::load_from_memory(bytes).unwrap().to_rgba8();
+            let cpu = image::load_from_memory(&reference[frame]).unwrap().to_rgba8();
+            assert_eq!(gpu.dimensions(), cpu.dimensions());
+            // Flat mattes have no edge outliers; use the existing parity limit for every channel.
+            assert!(gpu.as_raw().iter().zip(cpu.as_raw()).all(|(a, b)| a.abs_diff(*b) <= 6), "healthy PNG differs from CPU reference");
+        }
+        let before = gpu_render_stats().frames;
+        renderer.device.destroy();
+        let _ = renderer.device.poll(wgpu::PollType::wait_indefinitely());
+        assert!(device_failed(), "actual device destruction must reach the failure callback");
+        assert!(
+            renderer.render(&p, seq, Tick::ZERO, RenderOptions::default(), &sources).unwrap().is_none(),
+            "existing renderer must decline lost-device frames"
+        );
+        assert!(factory().is_none(), "new exports must decline the lost shared device");
+        let recovered = run("recovered", GpuRendering::Auto);
+        assert_eq!(recovered, reference, "post-loss persisted PNGs must match GPU-Off bytes");
+        assert_eq!(gpu_render_stats().frames, before, "post-loss export must not count GPU frames");
+        assert_eq!(gpu_render_stats().fallbacks, 0, "factory decline bypasses the renderer pool");
+        eprintln!("device-loss output: healthy GPU -> destroyed device -> CPU export; two changed PNGs match GPU-Off bytes");
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            std::fs::remove_file(entry.unwrap().path()).unwrap();
+        }
+        std::fs::remove_dir(dir).unwrap();
     }
 }

@@ -26,7 +26,7 @@ fn gpu_export_frame_renderer_factory() -> Option<Box<dyn filmcraft_export::Frame
             t: Tick,
             opts: filmcraft_render::RenderOptions,
             sources: &dyn filmcraft_render::SourceProvider,
-        ) -> Option<filmcraft_render::Image> {
+        ) -> Result<Option<filmcraft_render::Image>, String> {
             self.0.render(project, seq, t, opts, sources)
         }
     }
@@ -232,6 +232,7 @@ pub fn playback(o: &Opts) -> Vec<Value> {
             v["hw_frames"] = json!(hw.frames - hw0.frames);
             v["hw_sessions"] = json!(hw.sessions - hw0.sessions);
             v["hw_fallbacks"] = json!(hw.fallbacks - hw0.fallbacks);
+            v["hw_zero_copy"] = json!(hw.zero_copy_frames - hw0.zero_copy_frames);
             v["load"] = json!(r.load);
             v["cores_needed"] = json!(r.process_cpu / frames * fps / 1000.0);
             eprintln!("playback {scenario} {res}: {}/{} shown/dropped (load {})", r.shown, r.dropped, r.load);

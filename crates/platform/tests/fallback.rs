@@ -28,7 +28,7 @@ impl VideoDecoder for Failing {
         }
         self.inner.decode(sample, pts)
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
+    fn flush(&mut self) -> filmcraft_codecs::Result<Vec<DecodedFrame>> {
         self.inner.flush()
     }
     fn reset(&mut self) {
@@ -43,6 +43,69 @@ fn hybrid(s: &Stream, fail_after: usize) -> HybridDecoder {
     let info = NalStreamInfo::from_entry(&s.entry).unwrap().unwrap();
     let inner = filmcraft_codecs::software_video_decoder(&s.entry).unwrap();
     HybridDecoder::new(Box::new(Failing { inner, fail_after, fed: 0 }), s.entry.clone(), info)
+}
+
+struct DrainFailure {
+    inner: Box<dyn VideoDecoder>,
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl VideoDecoder for DrainFailure {
+    fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
+        self.inner.decode(sample, pts)
+    }
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let _consumed = self.inner.flush()?;
+        Err(filmcraft_codecs::CodecError::Decode("injected hardware drain failure".into()))
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn name(&self) -> &str {
+        "failing hardware drain"
+    }
+}
+
+#[test]
+fn failed_hardware_drain_replays_once_without_losing_or_repeating_pictures() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    for (name, _) in FIXTURES {
+        let path = named(&ff, name).expect("fixture");
+        let s = read_stream(&path);
+        let reference = decode_all(filmcraft_codecs::software_video_decoder(&s.entry).unwrap().as_mut(), &s.samples);
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hw = DrainFailure { inner: filmcraft_codecs::software_video_decoder(&s.entry).unwrap(), calls: calls.clone() };
+        let info = NalStreamInfo::from_entry(&s.entry).unwrap().unwrap();
+        let mut hybrid = HybridDecoder::new(Box::new(hw), s.entry.clone(), info);
+        let mut out = Vec::new();
+        for (data, pts) in &s.samples {
+            out.extend(hybrid.decode(data, *pts).unwrap());
+        }
+        assert!(hybrid.is_hardware(), "{name}: failure starts at drain");
+        out.extend(hybrid.flush().unwrap());
+        assert!(!hybrid.is_hardware(), "{name}: replay used software");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1, "{name}: failed drain must not be called twice");
+        assert_eq!(out.iter().map(|f| f.pts).collect::<Vec<_>>(), reference.iter().map(|f| f.pts).collect::<Vec<_>>(), "{name}: every picture once in order");
+        assert_same(name, &out, &reference);
+    }
+}
+
+#[test]
+fn failed_hardware_drain_reports_unavailable_software_replay() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let path = named(&ff, FIXTURES[0].0).expect("fixture");
+    let s = read_stream(&path);
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hw = DrainFailure { inner: filmcraft_codecs::software_video_decoder(&s.entry).unwrap(), calls: calls.clone() };
+    let info = NalStreamInfo::from_entry(&s.entry).unwrap().unwrap();
+    let mut unsupported = s.entry.clone();
+    unsupported.codec = filmcraft_isobmff::CodecConfig::Unknown { fourcc: filmcraft_isobmff::FourCc(*b"none"), raw: Vec::new() };
+    let mut hybrid = HybridDecoder::new(Box::new(hw), unsupported, info);
+    let error = hybrid.flush().err().expect("hardware drain failure has no software decoder").to_string();
+    assert!(error.contains("injected hardware drain failure") && error.contains("no software decoder"), "{error}");
+    assert!(hybrid.flush().is_err(), "missing decoder cannot become successful empty output");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1, "hardware drain is not retried");
 }
 
 #[test]
@@ -128,7 +191,7 @@ impl VideoDecoder for Tolerant {
         }
         self.inner.decode(if i == self.damaged_at { &self.intact } else { sample }, pts)
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
+    fn flush(&mut self) -> filmcraft_codecs::Result<Vec<DecodedFrame>> {
         self.inner.flush()
     }
     fn reset(&mut self) {
@@ -149,7 +212,7 @@ fn decode_lenient(d: &mut dyn VideoDecoder, samples: &[(Vec<u8>, i64)]) -> (Vec<
             Err(_) => rejected.push(i),
         }
     }
-    out.extend(d.flush());
+    out.extend(d.flush().unwrap());
     (out, rejected)
 }
 

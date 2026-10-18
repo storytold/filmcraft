@@ -162,7 +162,7 @@ fn the_stream_decodes_to_the_source() {
     for p in &packets {
         out.extend(dec.decode(&p.data, p.pts).unwrap());
     }
-    out.extend(dec.flush());
+    out.extend(dec.flush().unwrap());
     assert_eq!(out.len(), 72);
     let mut worst = 99.0f64;
     let mut worst_chroma = 99.0f64;
@@ -318,7 +318,7 @@ fn a_keyframe_every_one_or_two_pictures_is_written_without_b_frames() {
         for p in &packets {
             n += dec.decode(&p.data, p.pts).unwrap().len();
         }
-        assert_eq!(n + dec.flush().len(), 12, "keyint {keyint}");
+        assert_eq!(n + dec.flush().unwrap().len(), 12, "keyint {keyint}");
     }
 }
 
