@@ -35,8 +35,14 @@ const PROPS_NAV_X: f32 = 26.0;
 const PROPS_VALUE_R: f32 = PROPS_NAV_X + NAV_STEP + 12.0;
 
 /// Timeline time at which the clip shows media time `m` (where a keyframe sits in the sequence).
-fn timeline_time_of(it: &TrackItem, m: Tick) -> Tick {
-    let offset = if it.reverse { it.source_out() - m - Tick(1) } else { m - it.source_in };
+fn timeline_time_of(it: &TrackItem, m: Tick, speed_key: bool) -> Tick {
+    let offset = if speed_key {
+        m - it.source_in
+    } else if it.reverse {
+        it.source_out() - m - Tick(1)
+    } else {
+        m - it.source_in
+    };
     it.start + Tick((offset.0 as f64 / it.speed.abs().max(1e-6)).round() as i64)
 }
 
@@ -439,6 +445,7 @@ fn keyframe_nav(
     id: egui::Id,
     auto: &str,
     tip: &str,
+    speed_key: bool,
     actions: &mut Vec<(String, Value)>,
 ) -> bool {
     let t = app.tokens;
@@ -456,7 +463,7 @@ fn keyframe_nav(
             if resp.clicked()
                 && let Some(k) = target
             {
-                actions.push(("playhead.set".into(), json!({"time": timeline_time_of(it, k).0})));
+                actions.push(("playhead.set".into(), json!({"time": timeline_time_of(it, k, speed_key).0})));
             }
         }
     }
@@ -497,7 +504,7 @@ fn properties_nav(
     };
     let at = pos2(row.max.x - PROPS_NAV_X, row.center().y);
     let id = egui::Id::new(("props-nav", effect, param, clip.0));
-    if keyframe_nav(app, ui, at, prm, mt, it, id, &format!("properties.{effect}.{param}"), tip, actions) {
+    if keyframe_nav(app, ui, at, prm, mt, it, id, &format!("properties.{effect}.{param}"), tip, effect == "time_remap" && param == "speed", actions) {
         if it.effect(effect).is_none() {
             actions.push(("effects.apply".into(), json!({"clips": [clip.0], "effect": effect})));
         }
@@ -576,6 +583,8 @@ pub(crate) fn param_row(
     x += 14.0;
     let vx = r.min.x + (r.width() * 0.5).max(150.0);
     row_label(ui, pos2(x, r.center().y), crate::i18n::t(pd.label), vx - 6.0 - x, Tokens::ui(12.0), t.text);
+    let speed_key = e.effect == "time_remap" && pd.id == "speed";
+    let mt = if speed_key { it.unremapped_source_time_at(app.session.playhead().clamp(it.start, (it.end() - Tick(1)).max(it.start))) } else { mt };
     let value = param.value_at(mt);
     let mut vui = ui.new_child(
         egui::UiBuilder::new()
@@ -670,7 +679,7 @@ pub(crate) fn param_row(
     if pd.animatable && param.is_animated() {
         let at = pos2(r.max.x - 42.0, r.center().y);
         let auto = format!("effectControls.{}.{}", e.effect, pkey);
-        if keyframe_nav(app, ui, at, Some(param), mt, it, egui::Id::new(("knav", clip.0, idx, pkey)), &auto, "Add/Remove Keyframe", actions) {
+        if keyframe_nav(app, ui, at, Some(param), mt, it, egui::Id::new(("knav", clip.0, idx, pkey)), &auto, "Add/Remove Keyframe", speed_key, actions) {
             actions.push(("effects.addKeyframe".into(), with_mask(json!({"clip": clip.0, "effect": eff_json, "param": pd.id}))));
         }
     }
@@ -690,7 +699,7 @@ pub(crate) fn param_row(
         let y = r.center().y;
         let dur = it.duration.0.max(1) as f64;
         for k in &param.keyframes {
-            let tl = timeline_time_of(it, k.time);
+            let tl = timeline_time_of(it, k.time, speed_key);
             let f = ((tl - it.start).0 as f64 / dur) as f32;
             if !(-0.01..=1.01).contains(&f) {
                 continue;

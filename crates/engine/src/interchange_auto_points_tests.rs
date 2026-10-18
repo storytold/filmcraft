@@ -256,3 +256,36 @@ fn an_interchange_import_links_media_without_reading_the_files_whole() {
     assert_eq!(s.project.source_size(clip.item), Some((320, 180)), "the file's real size, from its index");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn malformed_prproj_open_keeps_current_project_and_history() {
+    let path = tmp_dir("malformed-prproj").join("broken.prproj");
+    std::fs::write(&path, [0x1f, 0x8b, 8, 0]).unwrap();
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let original = filmcraft_format::encode(&s.project, false);
+    s.execute("file.newBin", json!({"name": "Keep this"})).unwrap();
+    let before = filmcraft_format::encode(&s.project, false);
+    let state = s.state.clone();
+    let revision = s.revision;
+    let dirty = s.is_dirty();
+    assert!(s.execute("file.open", json!({"path": path})).is_err());
+    assert_eq!(filmcraft_format::encode(&s.project, false), before);
+    assert_eq!(s.state.active_sequence, state.active_sequence);
+    assert_eq!(s.revision, revision);
+    assert_eq!(s.is_dirty(), dirty);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(filmcraft_format::encode(&s.project, false), original);
+}
+
+#[test]
+fn saving_cannot_overwrite_a_premiere_project() {
+    let path = tmp_dir("preserve-prproj").join("original.PRPROJ");
+    let original = b"original Premiere data";
+    std::fs::write(&path, original).unwrap();
+    let mut s = Session::default();
+    for command in ["file.save", "file.saveAs", "file.saveCopy"] {
+        assert!(s.execute(command, json!({"path": path})).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+}

@@ -63,12 +63,13 @@ pub(crate) fn move_many(s: &mut Session, p: &Value) -> Result<Value> {
         }
         .ok_or_else(|| bad(COMMAND, "parameter does not exist"))?;
         let k = param.keyframes.iter().find(|k| k.time == key.time).ok_or_else(|| bad(COMMAND, "keyframe does not exist"))?;
-        let speed = direction(it);
+        let speed_key = key.mask.is_none() && key.param == "speed" && effect.effect == "time_remap";
+        let speed = if speed_key { it.speed.abs() } else { direction(it) };
         if !speed.is_finite() || speed == 0.0 || it.duration < frame {
             return Err(bad(COMMAND, "clip has no movable keyframe range"));
         }
-        let a = it.moving_source_time_at(it.start);
-        let b = it.moving_source_time_at(it.end() - frame);
+        let a = if speed_key { it.unremapped_source_time_at(it.start) } else { it.moving_source_time_at(it.start) };
+        let b = if speed_key { it.unremapped_source_time_at(it.end() - frame) } else { it.moving_source_time_at(it.end() - frame) };
         if key.time < a.min(b) || key.time > a.max(b) {
             return Err(bad(COMMAND, "keyframe is outside the visible clip range"));
         }
@@ -126,6 +127,23 @@ mod tests {
             keys.push(json!({"clip":clip.0,"effect":effect,"param":param,"time":it.source_time_at(s.playhead()).0}));
         }
         (s, keys)
+    }
+
+    #[test]
+    fn speed_keyframe_drag_uses_unremapped_clip_time() {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let clip = session.active_sequence().unwrap().video_tracks[0].items[0].clone();
+        let frame = session.sequence_rate().frame_duration();
+        let at = clip.start + Tick(frame.0 * 10);
+        session.execute("effects.setParam", json!({"clip":clip.id.0,"effect":"time_remap","param":"speed","value":200.0,"keyframe":true,"time":at.0})).unwrap();
+        let it = session.active_sequence().unwrap().find_item(clip.id).unwrap().1;
+        let effect = it.effects.iter().position(|e| e.effect == "time_remap").unwrap();
+        let time = it.unremapped_source_time_at(at);
+        let moved = session.execute(COMMAND, json!({"keyframes":[{"clip":clip.id.0,"effect":effect,"param":"speed","time":time.0}],"delta":frame.0})).unwrap();
+        assert_eq!(moved["delta"], frame.0);
+        let it = session.active_sequence().unwrap().find_item(clip.id).unwrap().1;
+        assert_eq!(it.effect("time_remap").unwrap().param("speed").unwrap().keyframes[0].time, time + frame);
     }
 
     fn values(s: &Session, key: &Value) -> Vec<Keyframe> {

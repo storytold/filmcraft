@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: ROADMAP's "Where we are lacking" re-measured against Premiere Pro 26.5.2 and the open issue list) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** major (new file: ROADMAP's "Where we are lacking" re-measured against Premiere Pro 26.5.2 and the open issue list) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -15,7 +15,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | # | Gap | Kind | Blocks beta | Estimate |
 |---|---|---|---|---|
 | G1 | Nothing compares our output with Premiere's | measurement | no, but every ready number depends on it | 40–70 h |
-| G2 | Premiere's `.prproj` cannot be opened | file format | **yes** | 60–120 h |
+| G2 | Premiere `.prproj` import: partial, real-project validation pending | file format | **yes** | 60–120 h |
 | G3 | 10-bit and 4:2:2 camera media needs hardware | codec | yes | 30–50 h |
 | G4 | Crashes at start-up, and no test CI on pull requests | stability | yes | 40–80 h |
 | G5 | Hardware acceleration is partial | hardware | partly | 120–200 h |
@@ -52,16 +52,16 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G2. Premiere's `.prproj` cannot be opened
 
-- **Missing:** import of Premiere project files. `grep -ri prproj crates apps` finds nothing.
-  Today an editor must export FCP7 XML, AAF or OTIO from Premiere first, losing bins, effects and
-  most metadata; there is no "Selection as Premiere Project" export either.
-- **Impact:** the beta bar requires opening the target's main format; every switching editor's
-  existing work is behind this.
-- **Approach:** `.prproj` is gzip-compressed XML. Clean-room from projects we author ourselves in
-  Premiere (the owner has `plan/premiere/fixtures/filmcraft_ref.prproj`): sequences, tracks, clips,
-  in/out, speed, transitions, markers, bins, labels, then the common effect parameters (Motion,
-  Opacity, Lumetri basic, Volume). Report what was not imported. Export later. **60–120 h.**
-  Doc: [file-format-parity.md](file-format-parity.md).
+- **Landed in this fork (2026-10-15, upstream PR #1694):** direct gzip/UTF-8 `.prproj`
+  import through Open Project, Import, the media browser and CLI. Reads bins, media, sequences,
+  tracks, cuts, fixed speed/reverse, linked clips, nests and mapped effects/keyframes/transitions.
+  Imported projects save as `.fcproj`; Premiere files are never overwritten by Save.
+- **Still missing:** real-project fidelity validation, titles/shapes/masks, exact Time Remapping
+  temporal easing (source-position keyframes import as piecewise speed segments), unsupported plug-ins,
+  complete metadata and native `.prproj` export. Unsupported content is reported where detected;
+  name-based effect mapping does not prove visual equivalence. The beta blocker remains open.
+- **Validation:** synthetic timeline/retime and malformed-input regression tests; failed Open
+  leaves the current document intact. No user project tested yet.
 
 ## G3. 10-bit and 4:2:2 camera media needs hardware
 
@@ -316,3 +316,5 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
+
+- 2026-10-15 (fork): integrate PR #1694 Premiere project importer with synthetic regression coverage; real-project fidelity remains unverified.

@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use filmcraft_media::MediaInfo;
 use filmcraft_project::{ItemId, ItemKind, MediaIdentity, MediaRef, Project};
-use filmcraft_time::Tick;
+use filmcraft_time::{FrameRate, Tick};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -250,7 +250,8 @@ pub fn check_candidate(s: &Session, item: ItemId, path: &str, o: &MatchOptions) 
                 }
                 if o.metadata {
                     if let (Some(a), Some(b)) = (&info.video, &m.info.video)
-                        && ((a.width, a.height) != (b.width, b.height) || a.frame_rate != b.frame_rate)
+                        && ((a.width, a.height) != (b.width, b.height)
+                            || (a.frame_rate != b.frame_rate && [a.frame_rate, b.frame_rate].iter().all(|r| FrameRate::COMMON.contains(r))))
                     {
                         c.problems.push(format!(
                             "video differs ({}×{} {} vs {}×{} {})",

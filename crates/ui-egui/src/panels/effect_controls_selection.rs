@@ -159,7 +159,8 @@ impl Interaction {
                 app.ui.keyframe_selection = vec![key.clone()];
             }
         }
-        let time = super::timeline_time_of(it, key.time);
+        let speed_key = key.param == "speed" && it.effects.get(key.effect).is_some_and(|e| e.effect == "time_remap");
+        let time = super::timeline_time_of(it, key.time, speed_key);
         let pixels_per_tick = f64::from(lane.width().max(1.0)) / it.duration.0.max(1) as f64;
         if self.area.contains(rect.center()) && ui.clip_rect().contains(rect.center()) {
             self.points.push(Point { key: key.clone(), rect, time, pixels_per_tick, interp });
@@ -278,7 +279,7 @@ mod tests {
                 it.reverse = reverse;
                 for time in [it.start, it.start + Tick(it.duration.0 / 4), it.end() - session.sequence_rate().frame_duration()] {
                     let media = it.moving_source_time_at(time);
-                    assert!((super::super::timeline_time_of(&it, media) - time).abs() <= Tick(2), "speed={speed}, reverse={reverse}");
+                    assert!((super::super::timeline_time_of(&it, media, false) - time).abs() <= Tick(2), "speed={speed}, reverse={reverse}");
                 }
             }
         }

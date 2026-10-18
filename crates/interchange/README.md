@@ -104,3 +104,12 @@ OMF carries no video at all.
   nested compositions tagged top-level) reads back as the same edit.
 - `src/omf/tests.rs`: the Bento label and TOC, the required properties of every OMF class
   written, reference resolution, embedded WAVE data, sequence lengths in samples.
+
+## Premiere project import (fork, PR #1694)
+
+Gzip-compressed UTF-8 `.prproj` data imports through `Format::Prproj` (read only).
+Reads bins, media, sequences/tracks, clip timing and fixed retiming, nested sequences,
+links and supported effect/transition mappings. Titles, shapes, masks and unknown effects
+are incomplete; inspect the import report. This is best-effort translation, not a claim
+of render equivalence. `tests/prproj.rs` uses synthetic object graphs for timing, retiming,
+cyclic bins, truncation and invalid documents. Real user-project validation is pending.
