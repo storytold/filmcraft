@@ -160,7 +160,8 @@ impl Interaction {
             }
         }
         let time = super::timeline_time_of(it, key.time);
-        let pixels_per_tick = f64::from(lane.width().max(1.0)) / it.duration.0.max(1) as f64;
+        let view = app.ui.effect_controls.range(it.range());
+        let pixels_per_tick = f64::from(lane.width().max(1.0)) / view.duration.0.max(1) as f64;
         if self.area.contains(rect.center()) && ui.clip_rect().contains(rect.center()) {
             self.points.push(Point { key: key.clone(), rect, time, pixels_per_tick, interp });
         }
