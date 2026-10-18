@@ -3585,3 +3585,9 @@
 	Shows the version, community links and credits in a FilmCraft window.	在 FilmCraft 窗口中显示版本、社区链接和致谢。
 	Couldn't open your web browser	无法打开网页浏览器
 	Open this address in your browser yourself:	请自行在浏览器中打开此地址：
+	Open Transcript Search Result	打开转录搜索结果
+	Search all source transcripts	搜索所有源转录
+	Searching…	正在搜索…
+	Find spoken words in any transcribed source, including unused clips.	查找任何已转录源中的话语，包括未使用的剪辑。
+	{count} results · {sources} transcribed · {missing} not transcribed	{count} 个结果 · {sources} 个已转录 · {missing} 个未转录
+	Search limit reached. Refine your query.	已达到搜索上限。请缩小查询范围。

@@ -260,6 +260,12 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn search(s: &mut Session, p: &Value) -> Result<Value> {
+    match p.get("scope") {
+        Some(Value::String(scope)) if scope == "project" => return crate::transcript_search::run(s, p),
+        None => {}
+        Some(Value::String(scope)) if scope == "sequence" => {}
+        _ => return Err(bad("transcript.search", "`scope` must be sequence or project")),
+    }
     let q = str_p(p, "query").ok_or_else(|| bad("transcript.search", "`query` is required"))?;
     let words = sequence_words(s);
     let hits: Vec<Value> = tx::search(&words, q)
@@ -455,7 +461,16 @@ pub fn commands() -> Vec<CommandSpec> {
         ),
         spec("transcript.delete", "Delete Transcript", &["Sequence", "Transcript"], r#"{"items":[id]?}"#, has_transcripts, delete, true),
         spec("transcript.inspect", "Inspect Transcript", &[], r#"{"paragraphGapSeconds":f?}"#, always, inspect, false),
-        spec("transcript.search", "Search Transcript", &[], r#"{"query":str}"#, always, search, false),
+        spec("transcript.search", "Search Transcript", &[], r#"{"query":str,"scope":"sequence|project"?,"limit":1..500?}"#, always, search, false),
+        spec(
+            "transcript.openSearchResult",
+            "Open Transcript Search Result",
+            &[],
+            r#"{"item":id,"from":word,"to":word}"#,
+            always,
+            crate::transcript_search::open,
+            false,
+        ),
         spec("transcript.models", "List Speech Models", &[], "{}", always, models, false),
         spec("transcript.downloadModel", "Download Speech Model", &[], r#"{"model":"whisper-base"?}"#, can_download, download_model, true),
         spec("transcript.select", "Mark Selected Text", &[], r#"{"from":word,"to":word?}"#, has_transcript, select, true),

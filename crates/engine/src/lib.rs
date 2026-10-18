@@ -54,6 +54,7 @@ pub mod shortcuts;
 pub mod source_monitor;
 pub mod sync;
 pub mod transcript;
+pub mod transcript_search;
 pub mod trim;
 pub mod voiceover;
 

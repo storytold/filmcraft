@@ -14,7 +14,7 @@ use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 
-const TABS: [&str; 3] = ["Transcript", "Captions", "Graphics"];
+const TABS: [&str; 4] = ["Transcript", "Captions", "Graphics", "Search"];
 
 /// The width a tab label needs: 7 px per character, which the strip was laid out with for Latin
 /// text, or the label as drawn if that is wider (Japanese glyphs are about twice as wide, and a
@@ -57,6 +57,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     match app.ui.text_tab.as_str() {
         "Captions" => captions(app, ui, body),
         "Transcript" => transcript(app, ui, body),
+        "Search" => crate::panels::media_search::show(app, ui, body),
         _ => crate::dock::placeholder(ui, body, &t, tl!("Graphics text search arrives with M10.1–M10.2")),
     }
 }
