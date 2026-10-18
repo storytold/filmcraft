@@ -57,9 +57,13 @@ pub fn parse_entries(text: &str) -> (Vec<Entry>, Vec<String>) {
 }
 
 impl Catalog {
-    pub fn parse(text: &str) -> Catalog {
+    /// Parse a catalog; a right-to-left language's translations are stored in visual order
+    /// (`crate::rtl::visual_line`), the order egui draws a label's runs in, so its lookups read
+    /// right to left.
+    pub fn parse(text: &str, rtl: bool) -> Catalog {
         let mut c = Catalog::default();
         for (ctx, src, tr) in parse_entries(text).0 {
+            let tr = if rtl { crate::rtl::visual_line(&tr) } else { tr };
             if ctx.is_empty() {
                 c.plain.insert(src, tr);
             } else {

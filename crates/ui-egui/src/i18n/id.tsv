@@ -3437,6 +3437,7 @@
 	out	keluar
 	in	masuk
 	The language changed but could not be saved: {e}	Bahasa telah diubah tetapi tidak dapat disimpan: {e}
+	no Arabic font is installed on this system; the interface stays in English	tidak ada font Arab yang terpasang di sistem ini; antarmuka tetap dalam bahasa Inggris
 	no Chinese font is installed on this system; the interface stays in English	tidak ada font Tionghoa yang terpasang di sistem ini; antarmuka tetap dalam bahasa Inggris
 	no Korean font is installed on this system; the interface stays in English	tidak ada font Korea yang terpasang di sistem ini; antarmuka tetap dalam bahasa Inggris
 	no Japanese font is installed on this system; the interface stays in English	tidak ada font Jepang yang terpasang di sistem ini; antarmuka tetap dalam bahasa Inggris
@@ -3575,3 +3576,50 @@
 	Appearance Settings…	Pengaturan Tampilan…
 	Add to favorites	Tambahkan ke favorit
 	Remove from favorites	Hapus dari favorit
+
+# Craft AI: the built-in local assistant panel, its models and tasks.
+	A local model is not a frontier cloud model: it can be wrong, and a long answer takes its time on CPU. Check anything critical, and mind a model's size against this machine before downloading it.	Model lokal bukan model awan kelas atas: bisa salah, dan jawaban panjang butuh waktu di CPU. Periksa hal penting, dan perhatikan ukuran model terhadap mesin ini sebelum mengunduhnya.
+	Ask	Tanya
+	Ask anything	Tanya apa saja
+	Ask in any language	Tanya dalam bahasa apa pun
+	Assistant	Asisten
+	Best for: a step up in quality, still light	Terbaik untuk: kualitas satu tingkat lebih tinggi, tetap ringan
+	Best for: balanced everyday and technical work	Terbaik untuk: kerja harian dan teknis yang seimbang
+	Best for: everyday help on the lightest machines	Terbaik untuk: bantuan harian di mesin paling ringan
+	Best for: near-flagship answers at MoE speed	Terbaik untuk: jawaban nyaris kelas atas dengan kecepatan MoE
+	Best for: the deepest reasoning this family has	Terbaik untuk: penalaran terdalam di keluarga ini
+	Caption and transcript cleanup	Pembersihan takarir dan transkrip
+	Craft AI runs a local Gemma model on this machine. Nothing you write here leaves it: no account, no cloud service, no telemetry — the panel talks to a model runtime on 127.0.0.1.	Craft AI menjalankan model Gemma lokal di mesin ini. Apa pun yang Anda tulis di sini tidak meninggalkan mesin: tanpa akun, tanpa layanan awan, tanpa telemetri — panel berbicara dengan runtime model di 127.0.0.1.
+	Craft AI runs in the native app — it needs a local model runtime.	Craft AI berjalan di aplikasi native — ia butuh runtime model lokal.
+	Craft AI talks to a model runtime on this machine — Ollama, LM Studio or llama.cpp's server — and never to a cloud service. Start one, then Refresh.	Craft AI berbicara dengan runtime model di mesin ini — Ollama, LM Studio, atau server llama.cpp — dan tidak pernah ke layanan awan. Jalankan salah satunya lalu Segarkan.
+	Cut plan feedback	Umpan balik rencana potongan
+	Delete file	Hapus berkas
+	Disk {size}	Diska {size}
+	Download with Ollama	Unduh dengan Ollama
+	Downloading… {pct}% — {note}	Mengunduh… {pct}% — {note}
+	Effect or transition choice	Pilihan efek atau transisi
+	Fits this machine	Cukup untuk mesin ini
+	Limits	Batasan
+	Local and private	Lokal dan privat
+	Looking for a local model runtime…	Mencari runtime model lokal…
+	Name this sequence	Menamai sekuens ini
+	Needs {disk} GB of disk	Butuh {disk} GB diska
+	Needs {ram} GB of RAM	Butuh {ram} GB RAM
+	No local model runtime found.	Runtime model lokal tidak ditemukan.
+	No model installed yet — see the Models tab.	Belum ada model terpasang — lihat tab Model.
+	One download serves every ArtCraft app: the model lands in a shared folder all of them read.	Satu unduhan melayani semua aplikasi ArtCraft: modelnya jatuh ke folder bersama yang dibaca semuanya.
+	Pacing and montage advice	Saran tempo dan montase
+	Paste the transcript or captions	Tempel transkrip atau takarir
+	RAM {gb} GB	RAM {gb} GB
+	Runtime	Runtime
+	Save model file	Simpan berkas model
+	Saved in the shared folder	Tersimpan di folder bersama
+	Saving… {pct}%	Menyimpan… {pct}%
+	Task	Tugas
+	The moment and the feel you want	Momen dan rasa yang diinginkan
+	The sequence and what it is for	Sekuens dan untuk apa
+	The shared folder:	Folder bersama:
+	The shots, in order, and the mood	Shot berurutan dan suasananya
+	Thinking… {s}s	Berpikir… {s}dtk
+	This machine: {ram} GB RAM, {disk} GB free	Mesin ini: RAM {ram} GB, {disk} GB bebas
+	What is in it, for names	Isinya, untuk penamaan

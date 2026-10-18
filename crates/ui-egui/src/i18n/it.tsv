@@ -3601,3 +3601,50 @@
 	Shows the version, community links and credits in a FilmCraft window.	Mostra la versione, i link della community e i riconoscimenti in una finestra di FilmCraft.
 	Couldn't open your web browser	Impossibile aprire il browser web
 	Open this address in your browser yourself:	Apri tu questo indirizzo nel browser:
+
+# Craft AI: the built-in local assistant panel, its models and tasks.
+	A local model is not a frontier cloud model: it can be wrong, and a long answer takes its time on CPU. Check anything critical, and mind a model's size against this machine before downloading it.	Un modello locale non è un modello cloud d'avanguardia: può sbagliare, e una risposta lunga richiede il suo tempo sulla CPU. Verifica tutto ciò che è critico e valuta la dimensione del modello rispetto a questa macchina prima di scaricarlo.
+	Ask	Chiedi
+	Ask anything	Chiedi qualsiasi cosa
+	Ask in any language	Chiedi in qualsiasi lingua
+	Assistant	Assistente
+	Best for: a step up in quality, still light	Ideale per: un gradino di qualità in più, ancora leggero
+	Best for: balanced everyday and technical work	Ideale per: equilibrare il quotidiano e il tecnico
+	Best for: everyday help on the lightest machines	Ideale per: l'aiuto quotidiano sulle macchine più leggere
+	Best for: near-flagship answers at MoE speed	Ideale per: risposte quasi di punta alla velocità MoE
+	Best for: the deepest reasoning this family has	Ideale per: il ragionamento più profondo di questa famiglia
+	Caption and transcript cleanup	Pulizia di sottotitoli e trascrizioni
+	Craft AI runs a local Gemma model on this machine. Nothing you write here leaves it: no account, no cloud service, no telemetry — the panel talks to a model runtime on 127.0.0.1.	Craft AI esegue un modello Gemma locale su questa macchina. Nulla di ciò che scrivi qui la lascia: nessun account, nessun servizio cloud, nessuna telemetria — il pannello parla con un ambiente di modelli su 127.0.0.1.
+	Craft AI runs in the native app — it needs a local model runtime.	Craft AI funziona nell'app nativa — gli serve un ambiente di modelli locale.
+	Craft AI talks to a model runtime on this machine — Ollama, LM Studio or llama.cpp's server — and never to a cloud service. Start one, then Refresh.	Craft AI parla con un ambiente di modelli su questa macchina — Ollama, LM Studio o il server di llama.cpp — e mai con un servizio cloud. Avviamene uno e poi Aggiorna.
+	Cut plan feedback	Pareri sul piano di montaggio
+	Delete file	Elimina file
+	Disk {size}	Disco {size}
+	Download with Ollama	Scarica con Ollama
+	Downloading… {pct}% — {note}	Scaricamento… {pct}% — {note}
+	Effect or transition choice	Scelta di effetto o transizione
+	Fits this machine	Adatto a questa macchina
+	Limits	Limiti
+	Local and private	Locale e privato
+	Looking for a local model runtime…	Ricerca di un ambiente di modelli locale…
+	Name this sequence	Dare un nome a questa sequenza
+	Needs {disk} GB of disk	Serve {disk} GB di disco
+	Needs {ram} GB of RAM	Serve {ram} GB di RAM
+	No local model runtime found.	Nessun ambiente di modelli locale trovato.
+	No model installed yet — see the Models tab.	Ancora nessun modello installato — vedi la scheda Modelli.
+	One download serves every ArtCraft app: the model lands in a shared folder all of them read.	Un solo download serve tutte le app ArtCraft: il modello finisce in una cartella condivisa che tutte leggono.
+	Pacing and montage advice	Consigli su ritmo e montaggio
+	Paste the transcript or captions	Incolla la trascrizione o i sottotitoli
+	RAM {gb} GB	RAM {gb} GB
+	Runtime	Ambiente
+	Save model file	Salva il file del modello
+	Saved in the shared folder	Salvato nella cartella condivisa
+	Saving… {pct}%	Salvataggio… {pct}%
+	Task	Attività
+	The moment and the feel you want	Il momento e la sensazione voluta
+	The sequence and what it is for	La sequenza e il suo scopo
+	The shared folder:	La cartella condivisa:
+	The shots, in order, and the mood	Le inquestrature, in ordine, e l’atmosfera
+	Thinking… {s}s	Sta pensando… {s} s
+	This machine: {ram} GB RAM, {disk} GB free	Questa macchina: {ram} GB di RAM, {disk} GB liberi
+	What is in it, for names	Cosa contiene, per i nomi

@@ -360,3 +360,53 @@
 	Zoom to Sequence	Умістити секвенцію
 	Project Notes	Нотатки проєкту
 
+# Craft AI: the built-in local assistant panel, its models and tasks.
+	A local model is not a frontier cloud model: it can be wrong, and a long answer takes its time on CPU. Check anything critical, and mind a model's size against this machine before downloading it.	Локальна модель — не передова хмарна: вона може помилятися, і довга відповідь на процесорі займає час. Перевіряйте все важливе й співвідносьте розмір моделі з цією машиною до завантаження.
+	About	Про програму
+	Ask	Запитати
+	Ask anything	Питайте про що завгодно
+	Ask in any language	Питайте будь-якою мовою
+	Assistant	Асистент
+	Best for: a step up in quality, still light	Найкращий для: якість на сходинку вище, досі легкий
+	Best for: balanced everyday and technical work	Найкращий для: балансу повсякденного й технічного
+	Best for: everyday help on the lightest machines	Найкращий для: повсякменної допомоги на найлегших машинах
+	Best for: near-flagship answers at MoE speed	Найкращий для: відповідей майже флагманського рівня зі швидкістю MoE
+	Best for: the deepest reasoning this family has	Найкращий для: найглибшого міркування в цьому сімействі
+	Caption and transcript cleanup	Чищення субтитрів і розшифровок
+	Craft AI runs a local Gemma model on this machine. Nothing you write here leaves it: no account, no cloud service, no telemetry — the panel talks to a model runtime on 127.0.0.1.	Craft AI запускає локальну модель Gemma просто на цій машині. Написане тут нікуди не виходить: ні акаунта, ні хмарного сервісу, ні телеметрії — панель говорить із середовищем запуску моделей на 127.0.0.1.
+	Craft AI runs in the native app — it needs a local model runtime.	Craft AI працює в нативній програмі — їй потрібне локальне середовище запуску моделей.
+	Craft AI talks to a model runtime on this machine — Ollama, LM Studio or llama.cpp's server — and never to a cloud service. Start one, then Refresh.	Craft AI говорить із середовищем запуску моделей на цій машині — Ollama, LM Studio чи сервером llama.cpp — і ніколи з хмарним сервісом. Запустіть одне з них і натисніть «Оновити».
+	Cut plan feedback	Зауваження до плану монтажу
+	Delete file	Видалити файл
+	Disk {size}	Диск {size}
+	Download with Ollama	Завантажити через Ollama
+	Downloading… {pct}% — {note}	Завантаження… {pct}% — {note}
+	Effect or transition choice	Вибір ефекту або переходу
+	Fits this machine	Підходить цій машині
+	Limits	Обмеження
+	Local and private	Локально й приватно
+	Looking for a local model runtime…	Триває пошук локального середовища запуску моделей…
+	Model	Модель
+	Models	Моделі
+	Name this sequence	Назвати цю послідовність
+	Needs {disk} GB of disk	Потрібно {disk} ГБ на диску
+	Needs {ram} GB of RAM	Потрібно {ram} ГБ пам'яті
+	No local model runtime found.	Локального середовища запуску моделей не знайдено.
+	No model installed yet — see the Models tab.	Ще не встановлено жодної моделі — див. вкладку «Моделі».
+	One download serves every ArtCraft app: the model lands in a shared folder all of them read.	Одне завантаження слугує всім застосункам ArtCraft: модель потрапляє до спільної теки, яку читають усі.
+	Pacing and montage advice	Порада щодо темпу й монтажу
+	Paste the transcript or captions	Вставте розшифровку або субтитри
+	RAM {gb} GB	Пам'ять {gb} ГБ
+	Refresh	Оновити
+	Runtime	Середовище
+	Save model file	Зберегти файл моделі
+	Saved in the shared folder	Збережено в спільній теці
+	Saving… {pct}%	Збереження… {pct}%
+	Task	Завдання
+	The moment and the feel you want	Момент і потрібне відчуття
+	The sequence and what it is for	Послідовність і її призначення
+	The shared folder:	Спільна тека:
+	The shots, in order, and the mood	Кадри по порядку та настрій
+	Thinking… {s}s	Думає… {s} с
+	This machine: {ram} GB RAM, {disk} GB free	Ця машина: пам'яті {ram} ГБ, вільно {disk} ГБ
+	What is in it, for names	Що в ній, для назв
