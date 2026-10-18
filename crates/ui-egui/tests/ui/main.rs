@@ -7,6 +7,7 @@
 
 mod audio51_ui;
 mod audio_fx_editor_ui;
+mod caption_properties_ui;
 mod captions_font_ui;
 mod chrome_ui;
 mod clip_audio_ui;
@@ -15,6 +16,7 @@ mod clipboard_paste_ui;
 mod color_ui;
 mod delete_caption_tracks_ui;
 mod deselect_ui;
+mod dialog_buttons_ui;
 mod edit_point_menu_ui;
 mod escape_drag_ui;
 mod essential_sound_ui;
