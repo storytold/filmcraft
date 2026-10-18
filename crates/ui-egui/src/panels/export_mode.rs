@@ -228,7 +228,10 @@ fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         "encoding" => {
                             (tlf!("Encoding {n}%", n = format!("{:.0}", it["progress"].as_f64().unwrap_or(0.0) * 100.0)) + &super::eta_suffix(it), t.accent)
                         }
-                        "done" => (tl!("Done").to_string(), t.render_green),
+                        "done" => match it["renderSeconds"].as_f64().and_then(|s| std::time::Duration::try_from_secs_f64(s).ok()) {
+                            Some(d) => (tlf!("Done in {time}", time = filmcraft_engine::export::format_eta(d)), t.render_green),
+                            None => (tl!("Done").to_string(), t.render_green),
+                        },
                         "failed" => (tlf!("Failed: {e}", e = it["error"].as_str().unwrap_or("")), t.danger),
                         _ => (tl!("Cancelled").to_string(), t.text_faint),
                     };

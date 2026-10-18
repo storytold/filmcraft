@@ -117,6 +117,9 @@ progress and stop it:
   time left at the job's speed over the last 15 seconds, `null` until a second of progress has been
   measured (a loudness pass, a seek) and once it is done. The app shows it as `37% · 2:05 left` in the
   status bar, the Export queue and the Progress panel.
+- Every finished (`done`) item of `export.queue.list` carries `renderSeconds`: how long its encode took,
+  as the exporter measured it (`null` for any other status). The Export queue shows it as
+  `Done in 1:23`, like Media Encoder's encoding time, to compare presets.
 - With `"_meta": {"progressToken": T}` on the `tools/call`, the server sends
   `notifications/progress` `{progressToken: T, progress: <frames done>, total: <frames>, message:
   <job status>}` at most every 100 ms while frames advance. Without a token it sends none.

@@ -23,6 +23,7 @@
 	 frames	 프레임
 	 seconds	 초
 	 · {time} left	 · {time} 남음
+	Done in {time}	{time} 만에 완료
 	% of all commits	전체 커밋 중 %
 	(Custom)	(사용자 정의)
 	(Default)	(기본값)

@@ -643,6 +643,11 @@ fn item_json(s: &Session, it: &QueueItem) -> Value {
         "status": it.status,
         "progress": progress,
         "etaSeconds": job.filter(|_| it.status == QueueStatus::Encoding).and_then(|j| j.progress.eta()).map(|d| d.as_secs_f64()),
+        // how long the encode took, as the exporter measured it (Media Encoder's "Encoding Time")
+        "renderSeconds": job.filter(|_| it.status == QueueStatus::Done).and_then(|j| match &*j.result.lock().unwrap_or_else(|e| e.into_inner()) {
+            Some(Ok(r)) => Some(r.seconds),
+            _ => None,
+        }),
         "statusText": status_text,
         "job": it.job,
         "error": it.error,

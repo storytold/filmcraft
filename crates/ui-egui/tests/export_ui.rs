@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
@@ -217,6 +218,34 @@ fn the_status_bar_and_the_queue_show_the_time_left() {
     assert!((item["etaSeconds"].as_f64().unwrap() - 15.0).abs() < 0.5, "{item}");
     assert_eq!(item["status"], "encoding");
     d.snapshot("export-eta");
+}
+
+#[test]
+fn the_queue_shows_how_long_a_finished_export_took() {
+    use filmcraft_engine::Job;
+    use filmcraft_engine::export_tools::QueueStatus;
+    let mut d = Driver::new("render-time");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(3);
+    d.exec(
+        "export.queue.add",
+        json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": d.path("took.wav"), "range": "custom", "startSeconds": 0.0, "endSeconds": 0.25}),
+    );
+    // a finished job whose exporter measured 83 s
+    let job = Job { id: 901, label: "Exporting".into(), progress: Default::default(), result: Default::default() };
+    let report = filmcraft_engine::export::Report { path: d.path("took.wav"), frames: 1, seconds: 83.0, bytes: 1, render_fps: 1.0, extra_files: Vec::new() };
+    *job.result.lock().unwrap() = Some(Ok(report));
+    job.progress.finished.store(true, std::sync::atomic::Ordering::Relaxed);
+    d.app().session.jobs.push(job);
+    {
+        let item = &mut d.app().session.export_queue.items[0];
+        item.status = QueueStatus::Done;
+        item.job = Some(901);
+    }
+    d.frames(4);
+    assert!(d.harness.query_by_label("Waveform Audio 48 kHz 16-bit · Done in 1:23").is_some(), "the done item shows its render time");
+    assert_eq!(d.queue()[0]["renderSeconds"], json!(83.0));
+    d.snapshot("export-render-time");
 }
 
 #[test]
