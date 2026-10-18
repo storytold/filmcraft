@@ -3577,3 +3577,6 @@
 	Export the labels to a preset file…	Exporter les étiquettes dans un fichier de paramètre prédéfini…
 	Show the presets folder	Afficher le dossier des paramètres prédéfinis
 	Delete this preset	Supprimer ce paramètre prédéfini
+	Set Preview Playback Speed	Définir la vitesse de lecture de l’aperçu
+	Preview playback speed	Vitesse de lecture de l’aperçu
+	Preview playback speed (timeline and export stay unchanged)	Vitesse de lecture de l’aperçu (le montage et l’export restent inchangés)
