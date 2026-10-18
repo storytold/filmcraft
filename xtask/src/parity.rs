@@ -391,7 +391,7 @@ fn out_of_scope(area: Area, path: &[String]) -> Option<&'static str> {
         Area::Menus => menu_out_of_scope(path),
         Area::Effects | Area::Transitions => {
             let top = norm(path.first()?);
-            if path.len() >= 2 && (top == "presets" || top == "lumetri presets") {
+            if path.len() >= 2 && (top == "presets" || top == "lumetri presets" || top == "color grade presets") {
                 return Some("presets");
             }
             let folders = path.get(..path.len().saturating_sub(1)).unwrap_or_default();

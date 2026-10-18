@@ -4,7 +4,7 @@
 # Clean-room: every entry was written from the plain meaning of the English text using ordinary
 # Korean video-editing vocabulary (시퀀스, 타임라인, 트랙, 클립, 재생 헤드, 빈, 렌더, 내보내기…). No
 # proprietary localisation resource, string table or product UI was consulted or copied; add entries
-# the same way. Product and technology names (FilmCraft, ArtCraft, Lumetri, ProRes, LUFS…) keep their
+# the same way. Product and technology names (FilmCraft, ArtCraft, ProRes, LUFS…) keep their
 # spelling. Hangul is drawn with an installed system font (Malgun Gothic, Apple SD Gothic Neo, Noto
 # Sans CJK KR…, see cjk.rs); native-speaker review welcome.
 
@@ -101,7 +101,7 @@
 	Add Guide	안내선 추가
 	Add Guide…	안내선 추가…
 	Add keyframe	키프레임 추가
-	Add Lumetri Color to clip	클립에 Lumetri Color 추가
+	Add Color Grade to clip	클립에 색상 등급 추가
 	Add Marker	마커 추가
 	Add Marker (M)	마커 추가(M)
 	Add media to your project. Drop files anywhere in the window, or choose a source below.	프로젝트에 미디어를 추가합니다. 창 아무 곳에나 파일을 놓거나 아래에서 소스를 선택하세요.
@@ -1214,7 +1214,7 @@
 	Font Size	글꼴 크기
 	Font Style	글꼴 스타일
 	Fonts used in the project:	프로젝트에 사용된 글꼴:
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	색상 관리 매개변수는 Lumetri 색상 패널의 설정 탭에서 지정합니다.
+	For color management parameters, go to the Settings tab in the Color Grade panel.	색상 관리 매개변수는 색상 등급 패널의 설정 탭에서 지정합니다.
 	Forest	포레스트
 	Format	형식
 	Format and size	형식 및 크기
@@ -1746,10 +1746,9 @@
 	Luma Min / Max	루마 최소/최대
 	Luma Source	루마 소스
 	Luma vs Sat	휘도 대 채도
-	Lumetri	Lumetri
-	Lumetri Color	Lumetri 색상
-	Lumetri Presets	Lumetri 사전 설정
-	Lumetri Scopes	Lumetri 스코프
+	Color Grade	색상 등급
+	Color Grade Presets	색상 등급 사전 설정
+	Video Scopes	비디오 스코프
 	Luminance	휘도
 	Luminance Threshold	휘도 임계값
 	Luminosity	광도

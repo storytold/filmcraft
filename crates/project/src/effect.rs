@@ -397,7 +397,7 @@ fn build_effects() -> Vec<EffectDef> {
         ),
         video(
             "lumetri",
-            "Lumetri Color",
+            "Color Grade",
             COLOR_CORR,
             vec![
                 grp(b("basic_on", "Basic Correction", true), "Basic Correction"),
@@ -864,7 +864,7 @@ pub fn find_effect(id: &str) -> Option<&'static EffectDef> {
 /// Case-insensitive lookup by id or display name.
 pub fn find_effect_by_name(name: &str) -> Option<&'static EffectDef> {
     let n = name.to_ascii_lowercase();
-    effect_defs().iter().find(|e| e.id == n || e.name.to_ascii_lowercase() == n)
+    effect_defs().iter().find(|e| e.id == n || e.name.to_ascii_lowercase() == n || (e.id == "lumetri" && n == "lumetri color"))
 }
 
 /// Intrinsic video effects every video track item carries (Motion, Opacity, Time Remapping).

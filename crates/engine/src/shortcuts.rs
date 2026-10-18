@@ -53,7 +53,7 @@ pub const PANELS: &[&str] = &[
     "Essential Graphics",
     "Text",
     "Properties",
-    "Lumetri Color",
+    "Color Grade",
 ];
 
 pub const DEFAULT_PRESET: &str = "FilmCraft Default";
@@ -1046,6 +1046,7 @@ fn check_panel(panel: Option<&str>) -> std::result::Result<Option<&'static str>,
                 "sourcemonitor" => "source",
                 "projects" => "project",
                 "timelines" => "timeline",
+                "lumetricolor" => "colorgrade",
                 _ => n.as_str(),
             };
             PANELS

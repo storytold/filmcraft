@@ -8,7 +8,7 @@
 #
 # 净室实现：每条译文均由英文含义直接译出，使用通用的中文视频剪辑术语（剪辑、时间轴、序列、
 #   轨道、关键帧……）。未参考或复制任何专有本地化资源、字符串表或产品界面。产品与技术名称
-#   （FilmCraft、ArtCraft、Lumetri、ProRes、LUFS……）保留原文拼写。
+#   （FilmCraft、ArtCraft、ProRes、LUFS……）保留原文拼写。
 	About FilmCraft	关于 FilmCraft
 	Add Audio Submix Track	添加音频子混音轨道
 	Add Caption at Playhead	在播放头处添加字幕
@@ -190,8 +190,8 @@
 	Refresh Changed Media	刷新已更改的媒体
 	Linked Selection	关联选择
 	Lock Guides	锁定参考线
-	Lumetri Color	Lumetri 颜色
-	Lumetri Scopes	Lumetri 示波器
+	Color Grade	色彩分级
+	Video Scopes	视频示波器
 	Magnification	放大
 	Make Offline…	设为脱机…
 	Make Subclip…	创建子剪辑…
@@ -879,7 +879,7 @@
 	Clip Volume	剪辑音量
 	(no clip selected)	（未选择剪辑）
 	Master · {name}	主 · {name}
-	Add Lumetri Color to clip	向剪辑添加 Lumetri 颜色
+	Add Color Grade to clip	向剪辑添加色彩分级
 	Input LUT	输入 LUT
 	Color	颜色
 	Temperature	色温
@@ -1723,7 +1723,7 @@
 	Focus Size	焦点大小
 	Fold Motion	折叠运动
 	Foldback	折叠
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	有关色彩管理参数，请前往 Lumetri 颜色面板中的“设置”选项卡。
+	For color management parameters, go to the Settings tab in the Color Grade panel.	有关色彩管理参数，请前往色彩分级面板中的“设置”选项卡。
 	Format	格式
 	Four Scopes (RGB, 8 bit)	四视图示波器（RGB，8 位）
 	Four Scopes (YUV, float, no clamp)	四视图示波器（YUV，浮点，无钳制）
@@ -1987,7 +1987,7 @@
 	Luma Key	亮度键
 	Luma Source	亮度源
 	Luma and Chroma	亮度与色度
-	Lumetri Presets	Lumetri 预设
+	Color Grade Presets	色彩分级预设
 	Luminance	亮度
 	Luminance Threshold	亮度阈值
 	Luminosity	光度
@@ -3107,7 +3107,6 @@
 	Left align text	文本左对齐
 	Looping GIF, 640×360 at 15 fps	循环 GIF，640×360，15 fps
 	Lower First	下方优先
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR（Avid）
 	MXF OP1a	MXF OP1a

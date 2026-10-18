@@ -91,8 +91,8 @@ impl PanelKind {
             PanelKind::Tools => "Tools",
             PanelKind::AudioMeters => "Audio Meters",
             PanelKind::AudioTrackMixer => "Audio Track Mixer",
-            PanelKind::LumetriColor => "Lumetri Color",
-            PanelKind::LumetriScopes => "Lumetri Scopes",
+            PanelKind::LumetriColor => "Color Grade",
+            PanelKind::LumetriScopes => "Video Scopes",
             PanelKind::EssentialGraphics => "Essential Graphics",
             PanelKind::EssentialSound => "Essential Sound",
             PanelKind::TextToSpeech => "Text to Speech",
@@ -110,6 +110,12 @@ impl PanelKind {
     }
     pub fn from_name(s: &str) -> Option<PanelKind> {
         let n = s.to_ascii_lowercase().replace([' ', '_', '-'], "");
+        if n == "colorgrade" || n == "lumetricolor" {
+            return Some(PanelKind::LumetriColor);
+        }
+        if n == "videoscopes" || n == "lumetriscopes" {
+            return Some(PanelKind::LumetriScopes);
+        }
         Self::ALL.iter().copied().find(|p| format!("{p:?}").to_ascii_lowercase() == n || p.title().to_ascii_lowercase().replace(' ', "") == n)
     }
     /// Window-menu shortcut (Premiere: Shift+1..9).

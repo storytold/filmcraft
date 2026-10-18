@@ -4,7 +4,7 @@
 # Brazilian Portuguese video-editing vocabulary. No proprietary localisation resource, string table
 # or product UI was consulted or copied; add entries the same way. Commands use the infinitive
 # ("Salvar como…"), instructions use the polite imperative ("Selecione um clipe…"), and labels use
-# sentence case. Product, format and technology names (FilmCraft, ArtCraft, Lumetri, ProRes, LUFS,
+# sentence case. Product, format and technology names (FilmCraft, ArtCraft, ProRes, LUFS,
 # EDL, AAF…) keep their spelling; decimals in prose use a comma ("29,97 fps"). This catalog has the
 # same entries as `es.tsv` plus the native macOS Settings menu; strings added later show in English
 # until they are translated. A native-speaker review is welcome.
@@ -199,8 +199,8 @@
 	Refresh Changed Media	Atualizar mídia alterada
 	Linked Selection	Seleção vinculada
 	Lock Guides	Bloquear guias
-	Lumetri Color	Cor Lumetri
-	Lumetri Scopes	Escopos Lumetri
+	Color Grade	Gradação de cor
+	Video Scopes	Escopos de vídeo
 	Magnification	Ampliação
 	Make Offline…	Tornar offline…
 	Make Subclip…	Criar subclipe…
@@ -891,7 +891,7 @@
 	Clip Volume	Volume do clipe
 	(no clip selected)	(nenhum clipe selecionado)
 	Master · {name}	Mestre · {name}
-	Add Lumetri Color to clip	Adicionar Cor Lumetri ao clipe
+	Add Color Grade to clip	Adicionar Gradação de cor ao clipe
 	Input LUT	LUT de entrada
 	Color	Cor
 	Temperature	Temperatura
@@ -1737,7 +1737,7 @@
 	Focus Size	Tamanho do foco
 	Fold Motion	Movimento de dobra
 	Foldback	Retorno
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Para os parâmetros de gerenciamento de cores, vá até a guia Configurações do painel Cor Lumetri.
+	For color management parameters, go to the Settings tab in the Color Grade panel.	Para os parâmetros de gerenciamento de cores, vá até a guia Configurações do painel Gradação de cor.
 	Format	Formato
 	Four Scopes (RGB, 8 bit)	Quatro escopos (RGB, 8 bits)
 	Four Scopes (YUV, float, no clamp)	Quatro escopos (YUV, ponto flutuante, sem limitar)
@@ -2006,7 +2006,7 @@
 	Luma Key	Chave de luma
 	Luma Source	Origem de luma
 	Luma and Chroma	Luma e croma
-	Lumetri Presets	Predefinições Lumetri
+	Color Grade Presets	Predefinições de gradação de cor
 	Luminance	Luminância
 	Luminance Threshold	Limiar de luminância
 	Luminosity	Luminosidade
@@ -3121,7 +3121,6 @@
 	Left align text	Alinhar texto à esquerda
 	Looping GIF, 640×360 at 15 fps	GIF em loop, 640×360 a 15 fps
 	Lower First	Inferior primeiro
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
 	MXF OP1a	MXF OP1a

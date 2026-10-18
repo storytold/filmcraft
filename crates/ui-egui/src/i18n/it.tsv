@@ -10,7 +10,7 @@
 # Italian video-editing vocabulary (traccia, indicatore di riproduzione, sequenza, raccoglitore,
 # attacco/stacco, fotogramma chiave, rendering…). No proprietary localisation resource, string
 # table or product UI was consulted or copied, and no other FilmCraft catalog was translated from;
-# add entries the same way. Product, technology and format names (FilmCraft, ArtCraft, Lumetri,
+# add entries the same way. Product, technology and format names (FilmCraft, ArtCraft,
 # ProRes, LUFS, H.264…) keep their spelling, as do key-cap names (Shift, Alt, Ctrl, Cmd, Opt, Esc).
 # Commands are imperatives addressed with "tu"; decimals use a comma (29,97 fps).
 
@@ -195,8 +195,8 @@
 	Refresh Changed Media	Aggiorna media modificati
 	Linked Selection	Selezione collegata
 	Lock Guides	Blocca guide
-	Lumetri Color	Colore Lumetri
-	Lumetri Scopes	Ambiti Lumetri
+	Color Grade	Gradazione colore
+	Video Scopes	Ambiti video
 	Magnification	Ingrandimento
 	Make Offline…	Rendi offline…
 	Make Subclip…	Crea sottoclip…
@@ -886,7 +886,7 @@
 	Clip Volume	Volume clip
 	(no clip selected)	(nessuna clip selezionata)
 	Master · {name}	Master · {name}
-	Add Lumetri Color to clip	Aggiungi Colore Lumetri alla clip
+	Add Color Grade to clip	Aggiungi Gradazione colore alla clip
 	Input LUT	LUT di ingresso
 	Color	Colore
 	Temperature	Temperatura
@@ -1732,7 +1732,7 @@
 	Focus Size	Dimensione messa a fuoco
 	Fold Motion	Movimento di piegatura
 	Foldback	Ripiegamento
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Per i parametri di gestione del colore, vai alla scheda Impostazioni del pannello Colore Lumetri.
+	For color management parameters, go to the Settings tab in the Color Grade panel.	Per i parametri di gestione del colore, vai alla scheda Impostazioni del pannello Gradazione colore.
 	Format	Formato
 	Four Scopes (RGB, 8 bit)	Quattro ambiti (RGB, 8 bit)
 	Four Scopes (YUV, float, no clamp)	Quattro ambiti (YUV, virgola mobile, senza limitazione)
@@ -2001,7 +2001,7 @@
 	Luma Key	Chiave luma
 	Luma Source	Sorgente luma
 	Luma and Chroma	Luma e croma
-	Lumetri Presets	Predefiniti Lumetri
+	Color Grade Presets	Predefiniti gradazione colore
 	Luminance	Luminanza
 	Luminance Threshold	Soglia luminanza
 	Luminosity	Luminosità
@@ -3118,7 +3118,6 @@
 	Left align text	Allinea il testo a sinistra
 	Looping GIF, 640×360 at 15 fps	GIF in loop, 640×360 a 15 fps
 	Lower First	Prima il campo inferiore
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
 	MXF OP1a	MXF OP1a

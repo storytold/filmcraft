@@ -4,14 +4,14 @@
 # Clean-room: every entry was written from the plain meaning of the English text using ordinary
 # Japanese computing and video-editing vocabulary (クリップ, シーケンス, トラック, 再生ヘッド, ぼかし ...). No
 # proprietary localisation resource, string table or product UI was consulted or copied; add entries
-# the same way. Product and technology names (FilmCraft, ArtCraft, Lumetri, ProRes, LUFS ...) keep
+# the same way. Product and technology names (FilmCraft, ArtCraft, ProRes, LUFS ...) keep
 # their spelling.
 #
 # House style, so new entries read like the rest:
 #   - Menu commands and buttons are short noun phrases or "〜を + verb" with no する/します ending
 #     (別名で保存…, 編集点を追加). Tooltips and messages are です・ます sentences ending in 。
 #   - One half-width space between Japanese text and an adjacent Latin word, number or {placeholder}
-#     (Lumetri カラー, {n} 個). Half-width ":" and "( )", full-width "？". Always "…", never "...".
+#     ({n} 個). Half-width ":" and "( )", full-width "？". Always "…", never "...".
 #   - The long vowel mark is kept (フォルダー, モニター). Terms: 既定 (not デフォルト), リセット, エフェクト
 #     (not 効果), ぼかし, 音量, ビデオ, 再生ヘッド, イン点/アウト点.
 #   - "Horizontal"/"Vertical" are 水平/垂直 (guides, blur, axes); vertical text is "Vertical Text".
@@ -196,8 +196,8 @@
 	Link Media…	メディアをリンク…
 	Linked Selection	リンクされた選択
 	Lock Guides	ガイドをロック
-	Lumetri Color	Lumetri カラー
-	Lumetri Scopes	Lumetri スコープ
+	Color Grade	カラーグレード
+	Video Scopes	ビデオスコープ
 	Magnification	倍率
 	Make Offline…	オフラインに設定…
 	Make Subclip…	サブクリップを作成…
@@ -885,7 +885,7 @@
 	Clip Volume	クリップの音量
 	(no clip selected)	(クリップが選択されていません)
 	Master · {name}	マスター · {name}
-	Add Lumetri Color to clip	クリップに Lumetri カラーを追加
+	Add Color Grade to clip	クリップにカラーグレードを追加
 	Input LUT	入力 LUT
 	Color	カラー
 	Temperature	色温度
@@ -1729,7 +1729,7 @@
 	Focus Size	フォーカスのサイズ
 	Fold Motion	フォールドモーション
 	Foldback	フォールドバック
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	カラーマネジメントのパラメーターは、Lumetri カラーパネルの「設定」タブにあります。
+	For color management parameters, go to the Settings tab in the Color Grade panel.	カラーマネジメントのパラメーターは、カラーグレードパネルの「設定」タブにあります。
 	Format	形式
 	Four Scopes (RGB, 8 bit)	4 つのスコープ (RGB、8 bit)
 	Four Scopes (YUV, float, no clamp)	4 つのスコープ (YUV、浮動小数点、クランプなし)
@@ -1993,7 +1993,7 @@
 	Luma Key	輝度キー
 	Luma Source	輝度のソース
 	Luma and Chroma	輝度とクロマ
-	Lumetri Presets	Lumetri プリセット
+	Color Grade Presets	カラーグレードプリセット
 	Luminance	輝度
 	Luminance Threshold	輝度のしきい値
 	Luminosity	輝度
@@ -3113,7 +3113,6 @@
 	Left align text	テキストを左揃え
 	Looping GIF, 640×360 at 15 fps	ループする GIF、640×360、15 fps
 	Lower First	下位フィールド優先
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
 	MXF OP1a	MXF OP1a

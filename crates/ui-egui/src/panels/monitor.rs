@@ -402,7 +402,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         }
         if which == Which::Program {
             ui.separator();
-            ui.checkbox(&mut app.ui.show_scopes, tl!("Lumetri Scopes"));
+            ui.checkbox(&mut app.ui.show_scopes, tl!("Video Scopes"));
             ui.checkbox(&mut app.playback.looping, tl!("Loop"));
             ui.separator();
             let mut follows = app.session.state.multicam_audio_follows_video;
