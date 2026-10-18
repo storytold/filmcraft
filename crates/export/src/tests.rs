@@ -126,31 +126,6 @@ fn prores_export_roundtrip() {
     assert!(f[0] > 240 && f[1] < 15 && f[2] < 15, "{:?}", &f[..4]);
 }
 
-/// #2142: SDR ProRes, DNxHR and APV (MOV) and H.264 (MP4) exports carry a `colr` box with the
-/// export's BT.709 colour: Apple's media stack reads the colour of the MOV codecs only from there.
-#[test]
-fn sdr_exports_carry_a_colr_box() {
-    use filmcraft_isobmff::ColorInfo;
-    let (p, seq, m) = project();
-    let nclc = ColorInfo::Nclc { primaries: 1, transfer: 1, matrix: 1 };
-    let nclx = ColorInfo::Nclx { primaries: 1, transfer: 1, matrix: 1, full_range: false };
-    for (format, name, want) in [
-        (Format::ProRes, "colr-prores.mov", nclc.clone()),
-        (Format::DnxHr, "colr-dnxhr.mov", nclc.clone()),
-        (Format::Apv, "colr-apv.mov", nclc.clone()),
-        (Format::H264, "colr-h264.mp4", nclx),
-    ] {
-        let path = tmp(name);
-        export(&p, seq, &ExportSettings { format, path: path.clone(), include_audio: false, ..Default::default() }, &m, &Progress::default()).unwrap();
-        let bytes = std::fs::read(&path).unwrap();
-        let file = filmcraft_isobmff::open(bytes).unwrap();
-        let t = file.track_of_kind(filmcraft_isobmff::TrackKind::Video).unwrap();
-        let v = file.tracks[t].entries[0].video.as_ref().unwrap();
-        assert_eq!(v.color.as_ref(), Some(&want), "{name}");
-        assert!(v.mastering_display.is_none() && v.content_light.is_none(), "{name}: no HDR metadata on SDR");
-    }
-}
-
 /// ProRes 4444 / 4444 XQ export (#342): 4:4:4 frames under the `ap4h` / `ap4x` codes, and with
 /// Include Alpha Channel the picture's alpha survives instead of being flattened over black.
 #[test]

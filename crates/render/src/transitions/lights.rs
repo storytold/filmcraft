@@ -5,10 +5,7 @@ use std::f32::consts::PI;
 
 use super::dissolve::perceptual_luma;
 use super::wipe::angle_dir;
-use super::{
-    Tx, add_light, bell, blurred, disc_blur_with, disc_offsets, ease_in, ease_out, hash, line_blur, luma, mid_mix, mix, paint, smoothstep, spin_blur, taps,
-    zoom_blur,
-};
+use super::{Tx, add_light, bell, blurred, disc_blur, ease_in, ease_out, hash, line_blur, luma, mid_mix, mix, paint, smoothstep, spin_blur, taps, zoom_blur};
 use crate::image::Image;
 
 /// Soft round light blob.
@@ -145,11 +142,9 @@ pub(super) fn apply(id: &str, t: &Tx) -> Option<Image> {
             let ra = r * smoothstep(0.0, 0.55, p);
             let rb = r * (1.0 - smoothstep(0.45, 1.0, p));
             let n = ((r * 0.8) as usize).clamp(8, 48);
-            // the disc's sample offsets once per frame, not per pixel (#1871)
-            let (oa, ob) = (disc_offsets(ra, n), disc_offsets(rb, n));
             paint(t.w, t.h, |x, y| {
-                let a = if k < 1.0 { disc_blur_with(t.a, x, y, &oa) } else { [0.0; 4] };
-                let b = if k > 0.0 { disc_blur_with(t.b, x, y, &ob) } else { [0.0; 4] };
+                let a = if k < 1.0 { disc_blur(t.a, x, y, ra, n) } else { [0.0; 4] };
+                let b = if k > 0.0 { disc_blur(t.b, x, y, rb, n) } else { [0.0; 4] };
                 mix(a, b, k)
             })
         }

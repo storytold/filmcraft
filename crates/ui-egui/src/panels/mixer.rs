@@ -10,8 +10,7 @@
 //! Automation ids: `mixer.<A1|S1|Mix>.<fader|value|pan|panValue|mode|mute|solo|record|output|input|
 //! fx.<slot>|send.<slot>|meter|name>`, popup entries below them (`mixer.A1.mode.Touch`…), the
 //! effects disclosure `mixer.showEffects`, and the footer transport `mixer.transport.<command>`.
-//! The Clip Mixer uses `clipMixer.A1.<fader|value|pan|mute|solo|keyframe|mode>`, and `clipMixer.scroll`
-//! when its strips, narrowed to fit the panel, still do not fit.
+//! The Clip Mixer uses `clipMixer.A1.<fader|value|pan|mute|solo|keyframe|mode>`.
 //!
 //! Strips feeding a 5.1 submix or Mix show the 5.1 panner instead of the pan knob: a puck in the
 //! listening square (`mixer.A1.pan51`, drag; double-click: front centre) with Center % and LFE
@@ -42,8 +41,6 @@ const TAPER: [(f64, f32); 10] =
 /// Labels on the fader scale.
 const SCALE: [f64; 10] = [15.0, 6.0, 0.0, -6.0, -12.0, -20.0, -30.0, -40.0, -60.0, -96.0];
 const STRIP_W: f32 = 98.0;
-/// Narrowest Clip Mixer strip: the M / S / keyframe buttons side by side.
-const CLIP_STRIP_MIN_W: f32 = 66.0;
 const SLOT_H: f32 = 15.0;
 const RED: Color32 = Color32::from_rgb(0xd8, 0x50, 0x3f);
 const MUTE_ON: Color32 = Color32::from_rgb(0x2d, 0x9d, 0x78);
@@ -290,7 +287,15 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let x0 = body.min.x + 18.0;
     let total = strips.len() as f32 * (STRIP_W + 2.0);
     let avail = body.max.x - x0 - 2.0;
-    let (off, sb_h) = strip_scroll(app, ui, body, x0, total, avail, "mixer");
+    let max_off = (total - avail).max(0.0);
+    let off_id = egui::Id::new("mixer-hscroll");
+    let mut off: f32 = ui.data(|d| d.get_temp(off_id)).unwrap_or(0.0);
+    if ui.rect_contains_pointer(body) {
+        let sd = ui.input(|i| i.smooth_scroll_delta);
+        off -= sd.x + if ui.input(|i| i.modifiers.shift) { sd.y } else { 0.0 };
+    }
+    off = off.clamp(0.0, max_off);
+    let sb_h = if max_off > 0.0 { 12.0 } else { 0.0 };
     // strips never get shorter than their controls plus a usable fader: scroll vertically instead
     let need = 4.0 + if app.ui.mixer_fx_open { 10.0 * SLOT_H + 10.0 } else { 0.0 } + 112.0 + 26.0 + 24.0 + 6.0 + 170.0 + 42.0;
     let clip = Rect::from_min_max(pos2(x0, body.min.y), pos2(body.max.x - 8.0, body.max.y - sb_h));
@@ -315,6 +320,20 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         app.auto.add("mixer.vscroll", knob, "Scroll strips vertically");
     }
     ui.data_mut(|d| d.insert_temp(voff_id, voff));
+    if max_off > 0.0 {
+        let bar = Rect::from_min_max(pos2(x0, body.max.y - 10.0), pos2(body.max.x - 4.0, body.max.y - 2.0));
+        ui.painter().rect_filled(bar, 4.0, t.field_bg);
+        let kw = (bar.width() * avail / total).max(20.0);
+        let kx = bar.min.x + (bar.width() - kw) * off / max_off;
+        let knob = Rect::from_min_size(pos2(kx, bar.min.y), vec2(kw, bar.height()));
+        let kr = ui.interact(knob, egui::Id::new("mixer-hscroll-knob"), Sense::drag());
+        ui.painter().rect_filled(knob, 4.0, if kr.dragged() { t.accent } else { t.fader_knob });
+        if kr.dragged() {
+            off = (off + kr.drag_delta().x * total / bar.width()).clamp(0.0, max_off);
+        }
+        app.auto.add("mixer.scroll", knob, "Scroll strips");
+    }
+    ui.data_mut(|d| d.insert_temp(off_id, off));
     let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(clip));
     cui.set_clip_rect(clip.intersect(ui.clip_rect()));
     for (i, id) in strips.iter().enumerate() {
@@ -335,36 +354,6 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     transport(app, ui, footer, &mut cx);
     let acts = std::mem::take(&mut cx.acts);
     run_actions(app, &ui.ctx().clone(), acts);
-}
-
-/// Horizontal scrolling of a row of strips `total` wide shown in `avail` from `x0`: the wheel (and
-/// Shift + wheel) over `body`, and a knob along its bottom edge (`<key>.scroll`). Returns the offset
-/// and the height the scrollbar takes (0 when everything fits).
-fn strip_scroll(app: &mut FilmcraftApp, ui: &egui::Ui, body: Rect, x0: f32, total: f32, avail: f32, key: &str) -> (f32, f32) {
-    let t = app.tokens;
-    let max_off = (total - avail).max(0.0);
-    let off_id = egui::Id::new(format!("{key}-hscroll"));
-    let mut off: f32 = ui.data(|d| d.get_temp(off_id)).unwrap_or(0.0);
-    if ui.rect_contains_pointer(body) {
-        let sd = ui.input(|i| i.smooth_scroll_delta);
-        off -= sd.x + if ui.input(|i| i.modifiers.shift) { sd.y } else { 0.0 };
-    }
-    off = off.clamp(0.0, max_off);
-    if max_off > 0.0 {
-        let bar = Rect::from_min_max(pos2(x0, body.max.y - 10.0), pos2(body.max.x - 4.0, body.max.y - 2.0));
-        ui.painter().rect_filled(bar, 4.0, t.field_bg);
-        let kw = (bar.width() * avail / total).max(20.0);
-        let kx = bar.min.x + (bar.width() - kw) * off / max_off;
-        let knob = Rect::from_min_size(pos2(kx, bar.min.y), vec2(kw, bar.height()));
-        let kr = ui.interact(knob, egui::Id::new(format!("{key}-hscroll-knob")), Sense::drag());
-        ui.painter().rect_filled(knob, 4.0, if kr.dragged() { t.accent } else { t.fader_knob });
-        if kr.dragged() {
-            off = (off + kr.drag_delta().x * total / bar.width()).clamp(0.0, max_off);
-        }
-        app.auto.add(&format!("{key}.scroll"), knob, "Scroll strips");
-    }
-    ui.data_mut(|d| d.insert_temp(off_id, off));
-    (off, if max_off > 0.0 { 12.0 } else { 0.0 })
 }
 
 fn run_actions(app: &mut FilmcraftApp, ctx: &egui::Context, acts: Vec<(String, Value)>) {
@@ -914,23 +903,12 @@ pub fn clip_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut acts: Vec<(String, Value)> = Vec::new();
     let kf_id = egui::Id::new("clip-mixer-keyframes");
     let mut write_kf: HashMap<u64, bool> = ui.data(|d| d.get_temp(kf_id)).unwrap_or_default();
-    // Like Premiere, the strips narrow so that every track fits the panel; below the narrowest
-    // usable strip the row scrolls instead, so no track is out of reach (#1922).
-    let x0 = rect.min.x + 6.0;
-    let avail = rect.max.x - x0 - 2.0;
-    let n = seq.audio_tracks.len();
-    let sw = (avail / n.max(1) as f32 - 2.0).clamp(CLIP_STRIP_MIN_W, STRIP_W);
-    let (off, sb_h) = strip_scroll(app, ui, rect, x0, n as f32 * (sw + 2.0), avail, "clipMixer");
-    let view = Rect::from_min_max(pos2(x0, rect.min.y), pos2(rect.max.x - 2.0, rect.max.y - sb_h));
-    let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(view));
-    cui.set_clip_rect(view.intersect(ui.clip_rect()));
-    let ui = &mut cui;
     for (i, tr) in seq.audio_tracks.iter().enumerate() {
-        let x = x0 + i as f32 * (sw + 2.0) - off;
-        if x + sw < view.min.x || x > view.max.x {
-            continue;
+        let x = rect.min.x + 6.0 + i as f32 * (STRIP_W + 2.0);
+        if x + STRIP_W > rect.max.x {
+            break;
         }
-        let sr = Rect::from_min_max(pos2(x, rect.min.y + 4.0), pos2(x + sw, view.max.y - 4.0));
+        let sr = Rect::from_min_max(pos2(x, rect.min.y + 4.0), pos2(x + STRIP_W, rect.max.y - 4.0));
         let label = format!("A{}", i + 1);
         let ap = format!("clipMixer.{label}");
         ui.painter().rect_filled(sr, 3.0, t.control_surface);
@@ -996,8 +974,7 @@ pub fn clip_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         });
         // M S ◇
         let y = sr.min.y + 72.0;
-        let step = ((sr.width() - 6.0 - 18.0) / 2.0).min(24.0);
-        let b = |k: f32| Rect::from_min_size(pos2(sr.center().x - step - 9.0 + k * step, y), vec2(18.0, 16.0));
+        let b = |k: f32| Rect::from_min_size(pos2(sr.center().x - 33.0 + k * 24.0, y), vec2(18.0, 16.0));
         let mr = crate::widgets::letter_toggle(ui, b(0.0), "M", tr.muted, MUTE_ON, &t, egui::Id::new((&ap, "M")));
         app.auto.add(&format!("{ap}.mute"), b(0.0), "Mute Track");
         if mr.clicked() {
@@ -1061,9 +1038,8 @@ pub fn clip_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if vresp.drag_stopped() {
             release(&mut acts, "volume");
         }
-        let name = ui.painter().with_clip_rect(sr.intersect(ui.clip_rect()));
-        name.text(pos2(sr.min.x + 6.0, sr.max.y - 10.0), Align2::LEFT_CENTER, &label, Tokens::ui(12.0), t.text);
-        name.text(pos2(sr.min.x + 30.0, sr.max.y - 10.0), Align2::LEFT_CENTER, &tr.name, Tokens::ui(12.0), t.text);
+        small_text(ui, pos2(sr.min.x + 6.0, sr.max.y - 10.0), Align2::LEFT_CENTER, &label, 12.0, t.text);
+        small_text(ui, pos2(sr.min.x + 30.0, sr.max.y - 10.0), Align2::LEFT_CENTER, &tr.name, 12.0, t.text);
     }
     ui.data_mut(|d| d.insert_temp(kf_id, write_kf));
     run_actions(app, &ui.ctx().clone(), acts);

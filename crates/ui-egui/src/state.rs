@@ -335,7 +335,10 @@ pub struct MonitorView {
 impl Default for MonitorView {
     fn default() -> Self {
         Self {
-            res: PlaybackRes::Half,
+            // Premiere's default playback resolution is Full; the user can still pick 1/2…1/16 from
+            // the monitor's resolution menu when a machine cannot keep up (and "High Quality
+            // Playback" stays as the always-paused-resolution override).
+            res: PlaybackRes::Full,
             paused_res: PlaybackRes::Full,
             high_quality: false,
             zoom: None,

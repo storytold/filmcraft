@@ -6,10 +6,21 @@ use egui::{Align2, Rect, pos2, vec2};
 use crate::FilmcraftApp;
 use crate::theme::Tokens;
 
-/// Feed the loudness meter with exactly the programme audio played since the last frame
-/// (consecutive, non-overlapping blocks, so gating and integration are correct). Seeks reset it.
+/// Feed the loudness readout the panel shows. With a live audio device the mixing thread already
+/// measured the programme as it mixed it ([`crate::playback_mix`] posts the readout), so this only
+/// reads it back: re-mixing the span here — the old way — duplicated that work on the UI thread at
+/// frame rate and fought the mixing thread for the sources and the mixer-graph cache, which showed
+/// up as meters lagging behind the sound and a generally sluggish UI.
+///
+/// Without an audio device nothing else mixes the programme (the meters also stand still), so the
+/// old per-frame re-mix stays as the fallback: consecutive, non-overlapping blocks, so gating and
+/// integration are correct. Seeks reset it.
 pub(crate) fn feed_loudness(app: &mut FilmcraftApp) {
     if !app.playback.playing {
+        return;
+    }
+    if app.playback.audio_clock {
+        app.loudness_values = app.session.previews.live.loudness_readout();
         return;
     }
     let Some(seq) = app.session.active_sequence() else { return };
@@ -37,6 +48,7 @@ pub(crate) fn feed_loudness(app: &mut FilmcraftApp) {
         } else if let Some(c) = chans.first() {
             m.process(&[c, c]);
         }
+        app.loudness_values = [m.momentary(), m.short_term(), m.integrated(), m.true_peak_dbtp()];
         *n = now;
     }
 }
@@ -147,9 +159,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let parts = parts(rect, names, |text, font| ui.painter().layout_no_wrap(text.to_string(), font, t.text).size());
     let area = parts.area;
     if let Some((lr, units)) = parts.readout {
-        let (m, s, i, tp) = app.loudness.as_ref().map_or((f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY), |(l, _)| {
-            (l.momentary(), l.short_term(), l.integrated(), l.true_peak_dbtp())
-        });
+        let [m, s, i, tp] = app.loudness_values.map(|v| if v.is_finite() { v } else { f64::NEG_INFINITY });
         ui.painter().rect_filled(lr, 2.0, t.meter_readout_bg);
         let rows = [("M", lufs_text(m)), ("S", lufs_text(s)), ("I", lufs_text(i)), ("TP", lufs_text(tp))];
         for (k, (label, val)) in rows.iter().enumerate() {

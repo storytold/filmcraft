@@ -682,7 +682,11 @@ fn detect_image_sequence(s: &Session, path: &str) -> bool {
     filmcraft_media::sequence::Numbered::parse(path).is_some() && crate::media_pool::image_sequence_frames(path, &*s.services).is_ok_and(|f| f.len() > 1)
 }
 
-fn import_source(
+/// Import a media file whose source was already opened: label, one undoable project edit, and the
+/// pool entry. The cheap tail of [`import_streamed`] — the expensive part of importing (opening
+/// the source: the container index scan of a large recording) can run on a background worker, as
+/// `ui_egui::importing` does, and hand the opened source to this.
+pub fn import_source(
     s: &mut Session,
     path: &str,
     name: String,
@@ -3538,6 +3542,14 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
                 };
                 let k = prm.keyframes.iter_mut().find(|k| k.time == at).ok_or_else(|| bad("keyframe", "no keyframe at that time"))?;
                 k.interp = kind;
+                // Every mode but Bezier owns its handles: Linear/Hold drop the ease outright and
+                // the auto/ease presets use their standard influence, so handles dragged in under
+                // Bezier do not silently pin the curve after the user switched away (Premiere
+                // resets the handles with the mode; switching back to Bezier starts from default).
+                if !matches!(kind, filmcraft_project::Interpolation::Bezier) {
+                    k.out_influence = 1.0 / 3.0;
+                    k.in_influence = 1.0 / 3.0;
+                }
             }
         }
         Ok(())

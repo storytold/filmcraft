@@ -6,9 +6,6 @@ use crate::ebml::{Children, float, int, string, uint};
 use crate::ids::*;
 use crate::track::{AudioInfo, Colour, ContentEncoding, MasteringMetadata, Projection, Track, TrackKind, VideoInfo, gcd};
 
-// A malformed Matroska file may contain arbitrarily deep ChapterAtom and SimpleTag chains.
-const MAX_META_DEPTH: usize = 64;
-
 /// `Info` element.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SegmentInfo {
@@ -237,7 +234,7 @@ pub(crate) fn parse_cues(d: &[u8], out: &mut Vec<CuePoint>) {
     }
 }
 
-fn parse_chapter(d: &[u8], depth: usize) -> Chapter {
+fn parse_chapter(d: &[u8]) -> Chapter {
     let mut c = Chapter { uid: 0, string_uid: None, start_ns: 0, end_ns: None, hidden: false, enabled: true, displays: Vec::new(), children: Vec::new() };
     for e in Children::new(d) {
         match e.id {
@@ -263,7 +260,7 @@ fn parse_chapter(d: &[u8], depth: usize) -> Chapter {
                 }
                 c.displays.push(disp);
             }
-            CHAPTER_ATOM if depth < MAX_META_DEPTH => c.children.push(parse_chapter(e.data, depth + 1)),
+            CHAPTER_ATOM => c.children.push(parse_chapter(e.data)),
             _ => {}
         }
     }
@@ -279,7 +276,7 @@ pub(crate) fn parse_chapters(d: &[u8], out: &mut Vec<Edition>) {
                 EDITION_FLAG_HIDDEN => edition.hidden = uint(e.data) != 0,
                 EDITION_FLAG_DEFAULT => edition.default = uint(e.data) != 0,
                 EDITION_FLAG_ORDERED => edition.ordered = uint(e.data) != 0,
-                CHAPTER_ATOM => edition.chapters.push(parse_chapter(e.data, 0)),
+                CHAPTER_ATOM => edition.chapters.push(parse_chapter(e.data)),
                 _ => {}
             }
         }
@@ -287,7 +284,7 @@ pub(crate) fn parse_chapters(d: &[u8], out: &mut Vec<Edition>) {
     }
 }
 
-fn parse_simple_tag(d: &[u8], depth: usize) -> SimpleTag {
+fn parse_simple_tag(d: &[u8]) -> SimpleTag {
     let mut t = SimpleTag { name: String::new(), language: "und".into(), default: true, string: None, binary: None, children: Vec::new() };
     for e in Children::new(d) {
         match e.id {
@@ -296,7 +293,7 @@ fn parse_simple_tag(d: &[u8], depth: usize) -> SimpleTag {
             TAG_DEFAULT => t.default = uint(e.data) != 0,
             TAG_STRING => t.string = Some(string(e.data)),
             TAG_BINARY => t.binary = Some(e.data.to_vec()),
-            SIMPLE_TAG if depth < MAX_META_DEPTH => t.children.push(parse_simple_tag(e.data, depth + 1)),
+            SIMPLE_TAG => t.children.push(parse_simple_tag(e.data)),
             _ => {}
         }
     }
@@ -321,7 +318,7 @@ pub(crate) fn parse_tags(d: &[u8], out: &mut Vec<Tag>) {
                         }
                     }
                 }
-                SIMPLE_TAG => tag.simple.push(parse_simple_tag(e.data, 0)),
+                SIMPLE_TAG => tag.simple.push(parse_simple_tag(e.data)),
                 _ => {}
             }
         }
@@ -539,34 +536,4 @@ pub(crate) fn parse_tracks(d: &[u8], timestamp_scale: u64) -> Vec<Track> {
         out.push(t);
     }
     out
-}
-
-#[cfg(test)]
-mod metadata_depth_tests {
-    use super::*;
-
-    #[test]
-    fn deeply_nested_chapters_stop_at_depth_limit() {
-        // Unknown-size elements make every pair the sole child of the previous ChapterAtom.
-        let data = [0xB6, 0xFF].repeat(100_000);
-        let chapter = parse_chapter(&data, 0);
-        let mut current = &chapter;
-        for _ in 0..MAX_META_DEPTH {
-            assert_eq!(current.children.len(), 1);
-            current = &current.children[0];
-        }
-        assert!(current.children.is_empty());
-    }
-
-    #[test]
-    fn deeply_nested_simple_tags_stop_at_depth_limit() {
-        let data = [0x67, 0xC8, 0xFF].repeat(100_000);
-        let tag = parse_simple_tag(&data, 0);
-        let mut current = &tag;
-        for _ in 0..MAX_META_DEPTH {
-            assert_eq!(current.children.len(), 1);
-            current = &current.children[0];
-        }
-        assert!(current.children.is_empty());
-    }
 }

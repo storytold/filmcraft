@@ -24,7 +24,7 @@
 //! - Frame Hold Options `frameHold.*`: `enabled`, `holdOn.<in|out|playhead|sourceTimecode|sequenceTime>`,
 //!   `timecode`, `holdFilters`;
 //! - Field Options `fieldOptions.*`: `reverseFieldDominance`, `processing.<none|alwaysDeinterlace|flickerRemoval>`;
-//! - Clip Speed / Duration `speedDuration.*`: `speed`, `reverse`, `ripple`,
+//! - Clip Speed / Duration `speedDuration.*`: `speed`, `duration`, `reverse`, `ripple`,
 //!   `interpolation.<frameSampling|frameBlending|opticalFlow>`;
 //! - Close Project `closeProject.save`, `closeProject.dontSave`, `closeProject.cancel`;
 //! - Quit (asked when the window is closed with unsaved changes, see [`intercept_quit`])
@@ -217,15 +217,29 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
         }
         "clip.fieldOptions" => (json!({"reverseFieldDominance": false, "processing": "none"}), Value::Null),
         "clip.speedDuration" => {
-            // the first selected clip's current speed; its duration at that speed for the readout
+            // the first selected clip's current speed; its duration at that speed for the field
             let q = s.active_sequence();
-            let it = q.and_then(|q| s.state.selection.iter().find_map(|c| q.find_item(*c).map(|x| x.1.clone())));
+            let found = q.and_then(|q| s.state.selection.iter().find_map(|c| q.find_item(*c).map(|(t, x)| (t, x.clone()))));
             let fps = q.map(|q| q.settings.frame_rate.as_f64()).unwrap_or(24.0);
-            let speed = it.as_ref().map_or(1.0, |i| i.speed);
-            let interp = it.as_ref().map_or(filmcraft_project::TimeInterpolation::default(), |i| i.time_interpolation);
+            let speed = found.as_ref().map_or(1.0, |(_, i)| i.speed);
+            let interp = found.as_ref().map_or(filmcraft_project::TimeInterpolation::default(), |(_, i)| i.time_interpolation);
+            let dur = found.as_ref().map_or(0, |(_, i)| i.duration.0);
+            // how much room the clip has before the next one on its track: the un-rippled edit
+            // clamps the new duration to it (the dialog warns when it will)
+            let room = found
+                .map(|(tid, it)| {
+                    q.and_then(|q| q.track(tid))
+                        .and_then(|tr| tr.items.iter().filter(|x| x.start > it.start).map(|x| x.start).min())
+                        .map_or(i64::MAX, |next| next.0.saturating_sub(it.start.0))
+                })
+                .unwrap_or(i64::MAX);
+            let rate = filmcraft_time::FrameRate::from_f64(if fps > 0.0 { fps } else { 24.0 });
+            // the percent field's value as a fraction (what the duration is computed from)
+            let shown_speed = (speed.abs() * 100.0 * 100.0).round() / 100.0 / 100.0;
             (
-                json!({"speed": (speed.abs() * 100.0 * 100.0).round() / 100.0, "reverse": speed < 0.0, "ripple": false, "interpolation": interp.name()}),
-                json!({"duration": it.as_ref().map_or(0, |i| i.duration.0), "speed": speed.abs(), "fps": fps}),
+                json!({"speed": shown_speed * 100.0, "reverse": speed < 0.0, "ripple": false, "interpolation": interp.name(),
+                    "duration": filmcraft_time::format_timecode_frames(rate.frame_at(filmcraft_time::Tick(dur)), rate, false)}),
+                json!({"duration": dur, "speed": speed.abs(), "fps": fps, "room": room, "duration_at": shown_speed}),
             )
         }
         _ => (json!({}), Value::Null),
@@ -516,17 +530,59 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             "clip.speedDuration" => {
                 number(ui, &mut elems, pre, p, "speed", tl!("Speed:"), 0.01..=100_000.0, " %");
-                // Duration follows the speed: the media shown stays the same
+                // Speed and Duration are two views of one change, as in Premiere: editing either
+                // recomputes the other, because the media shown stays the same (duration x speed
+                // is constant). `duration_at` remembers which speed the shown text belongs to, so
+                // the field is only rewritten when the speed moves it — never while it is typed in.
                 let (dur, was, fps) =
                     (d.info["duration"].as_i64().unwrap_or(0), d.info["speed"].as_f64().unwrap_or(1.0), d.info["fps"].as_f64().unwrap_or(24.0));
+                let rate = filmcraft_time::FrameRate::from_f64(if fps > 0.0 { fps } else { 24.0 });
+                let src = dur as f64 * was; // the source material the clip shows, in ticks
                 let now = p["speed"].as_f64().unwrap_or(100.0) / 100.0;
-                if dur > 0 && now > 0.0 {
-                    let rate = filmcraft_time::FrameRate::from_f64(if fps > 0.0 { fps } else { 24.0 });
-                    let ticks = filmcraft_time::Tick((dur as f64 * was / now).round() as i64);
-                    ui.horizontal(|ui| {
-                        ui.label(tl!("Duration:"));
-                        ui.label(RichText::new(filmcraft_time::format_timecode_frames(rate.frame_at(ticks), rate, false)).monospace());
-                    });
+                let shown = (dur > 0 && now > 0.0)
+                    .then(|| filmcraft_time::format_timecode_frames(rate.frame_at(filmcraft_time::Tick((src / now).round() as i64)), rate, false));
+                if (d.info["duration_at"].as_f64().unwrap_or(now) - now).abs() > 1e-9
+                    && let Some(shown) = &shown
+                {
+                    p["duration"] = json!(shown);
+                    d.info["duration_at"] = json!(now);
+                }
+                // relative timecodes (+30, -1:00) apply to the duration the field shows
+                let current = (dur > 0 && now > 0.0).then(|| rate.frame_at(filmcraft_time::Tick((src / now).round() as i64))).unwrap_or(0);
+                ui.horizontal(|ui| {
+                    ui.label(tl!("Duration:"));
+                    let mut v = p["duration"].as_str().unwrap_or_default().to_string();
+                    if v.is_empty() {
+                        v = shown.clone().unwrap_or_default();
+                    }
+                    let r = ui.add(egui::TextEdit::singleline(&mut v).desired_width(120.0));
+                    push(&mut elems, format!("{pre}.duration"), &r, "Duration:");
+                    if r.changed() {
+                        // typing a duration sets the speed that shows the same media in that time
+                        if let Ok(frame) = filmcraft_time::parse_timecode(&v, rate, false, current)
+                            && src > 0.0
+                        {
+                            let ticks = rate.tick_of(frame).0 as f64;
+                            if ticks > 0.0 {
+                                p["speed"] = json!(((src / ticks) * 100.0 * 100.0).round() / 100.0);
+                            }
+                        }
+                        p["duration"] = json!(v);
+                        d.info["duration_at"] = json!(p["speed"].as_f64().unwrap_or(100.0) / 100.0);
+                    }
+                });
+                // a slower clip without Ripple Edit cannot grow past the next one: say so instead
+                // of the edit silently clamping its duration (the timeline looks unchanged)
+                if !p["ripple"].as_bool().unwrap_or(false)
+                    && let Some(new_dur) = (dur > 0 && now > 0.0).then(|| (src / now).round() as i64)
+                    && new_dur > d.info["room"].as_i64().unwrap_or(i64::MAX)
+                {
+                    let tc =
+                        filmcraft_time::format_timecode_frames(rate.frame_at(filmcraft_time::Tick(d.info["room"].as_i64().unwrap_or(i64::MAX))), rate, false);
+                    ui.colored_label(
+                        egui::Color32::from_rgb(0xe0, 0x60, 0x60),
+                        tlf!("Without Ripple Edit the clip will be trimmed to {tc} by the next clip", tc),
+                    );
                 }
                 check(ui, &mut elems, pre, p, "reverse", tl!("Reverse Speed"), true);
                 check(ui, &mut elems, pre, p, "ripple", tl!("Ripple Edit, Shifting Trailing Clips"), true);
@@ -653,6 +709,10 @@ fn finish(d: &ClipDialogDraft) -> Value {
         // the timecode field only applies to Source Timecode / Sequence Time
         "clip.frameHoldOptions" if !matches!(p["holdOn"].as_str(), Some("sourceTimecode" | "sequenceTime")) => {
             p.as_object_mut().map(|m| m.remove("timecode"));
+        }
+        // the duration field is how the speed is edited, not a parameter of its own
+        "clip.speedDuration" => {
+            p.as_object_mut().map(|m| m.remove("duration"));
         }
         _ => {}
     }

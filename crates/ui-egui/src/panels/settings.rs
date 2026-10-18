@@ -376,7 +376,7 @@ fn button(app: &mut FilmcraftApp, ui: &mut Ui, id: &str, label: &str, primary: b
         .corner_radius(CornerRadius::same(15))
         .fill(if primary { t.accent } else { Color32::TRANSPARENT })
         .stroke(if primary { Stroke::NONE } else { Stroke::new(1.5, t.text_faint) });
-    let r = ui.add(b).on_hover_cursor(egui::CursorIcon::PointingHand);
+    let r = ui.add(b);
     app.auto.add(id, r.rect, label);
     r.clicked()
 }

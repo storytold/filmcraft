@@ -957,8 +957,12 @@ impl Session {
     ) -> Result<R> {
         let seq_id = self.state.active_sequence.ok_or(EngineError::NoSequence)?;
         let media = self.media.clone();
+        // The pre-edit project the media-duration/start helpers read. `edit`/`edit_merged`
+        // deep-clone this very Arc into `p` right before the closure below runs, so sharing the
+        // Arc here is the same snapshot without a second full copy of the project on every
+        // scrub frame of a dragged value or keyframe.
+        let project_snapshot = self.project.clone();
         let body = move |p: &mut Project, st: &mut EditorState| {
-            let project_snapshot = std::sync::Arc::new(p.clone());
             let snap = project_snapshot.clone();
             let durations = move |id: ItemId| -> Option<Tick> { media_duration(&project_snapshot, &media, id) };
             let starts = move |id: ItemId| media_start(&snap, id);

@@ -163,8 +163,8 @@ fn base_commands() -> Vec<CommandSpec> {
             create_multicam,
             true,
         ),
-        spec("clip.multicamEnable", "Enable", &["Clip", "Multi-Camera"], r#"{"clips":[id]?,"enabled":bool?}"#, has_nested_selection, enable, true),
-        spec("clip.multicamFlatten", "Flatten", &["Clip", "Multi-Camera"], r#"{"clips":[id]?}"#, has_multicam_selection, flatten, true),
+        spec("clip.multicamEnable", "Enable", &["Clip", "Multi-Camera"], r#"{"clips":[id]?,"enabled":bool?}"#, has_selection, enable, true),
+        spec("clip.multicamFlatten", "Flatten", &["Clip", "Multi-Camera"], r#"{"clips":[id]?}"#, has_selection, flatten, true),
         spec(
             "multicam.switchAngle",
             "Switch Multi-Camera Angle",
@@ -743,24 +743,6 @@ fn switch_angle(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let n = s.edit_sequence("Switch Multi-Camera Angle", |seq, _, _| Ok(edit::multicam::set_angle(seq, &targets, angle)))?;
     Ok(json!({"angle": angle, "changed": n}))
-}
-
-/// Clip ▸ Multi-Camera ▸ Enable: the selection (with its linked clips) holds a nested sequence
-/// clip, as [`enable`] needs; the menu item is greyed out otherwise instead of failing when chosen.
-fn has_nested_selection(s: &Session) -> std::result::Result<(), String> {
-    has_selection(s)?;
-    let q = s.active_sequence().ok_or("no sequence")?;
-    let nested = with_links(s, &s.state.selection).iter().any(|c| q.find_item(*c).is_some_and(|(_, i)| s.project.sequence(i.item).is_some()));
-    if nested { Ok(()) } else { Err("select nested sequence or multi-camera clips".into()) }
-}
-
-/// Clip ▸ Multi-Camera ▸ Flatten: the selection (with its linked clips) holds an enabled
-/// multi-camera clip, as [`flatten`] needs.
-fn has_multicam_selection(s: &Session) -> std::result::Result<(), String> {
-    has_selection(s)?;
-    let q = s.active_sequence().ok_or("no sequence")?;
-    let multicam = with_links(s, &s.state.selection).iter().any(|c| q.find_item(*c).is_some_and(|(_, i)| i.multicam.is_some_and(|m| m.enabled)));
-    if multicam { Ok(()) } else { Err("select multi-camera clips to flatten".into()) }
 }
 
 fn enable(s: &mut Session, p: &Value) -> Result<Value> {

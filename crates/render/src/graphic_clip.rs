@@ -364,17 +364,7 @@ pub fn raster_layer(spec: &LayerSpec, m: &Xform, cw: usize, ch: usize) -> Option
     if let Some(p) = &shape {
         fill_into(p, &mut cover, -x0 as f32, -y0 as f32);
     }
-    let mut strokes: Vec<(Mask, [f32; 4])> = ap.strokes.iter().map(|(c, sw, k)| (mask::stroke(&cover, sw * s, stroke_kind(*k)), *c)).collect();
-    let outer = |k: u32| k != 1 && k != 2;
-    // an outer stroke mask includes the shape so the fill sits on it without a seam; with the
-    // fill off only the ring outside the edge shows (as in Premiere)
-    if ap.fill.is_none() {
-        for ((sm, _), (_, _, k)) in strokes.iter_mut().zip(&ap.strokes) {
-            if outer(*k) {
-                sm.a.iter_mut().zip(&cover.a).for_each(|(v, c)| *v = v.min(1.0 - c));
-            }
-        }
-    }
+    let strokes: Vec<(Mask, [f32; 4])> = ap.strokes.iter().map(|(c, sw, k)| (mask::stroke(&cover, sw * s, stroke_kind(*k)), *c)).collect();
     let bg = ap.background.map(|(c, pad, r)| {
         let p = filmcraft_text::Path::round_rect(lb[0] - pad, lb[1] - pad, lb[2] + pad, lb[3] + pad, r).transformed(m);
         let mut bm = Mask::new(w, h);
@@ -401,6 +391,7 @@ pub fn raster_layer(spec: &LayerSpec, m: &Xform, cw: usize, ch: usize) -> Option
         over_mask(&mut px, bm, premul_linear(*c));
     }
     // outer strokes sit under the fill; centre and inner strokes are drawn over it
+    let outer = |k: u32| k != 1 && k != 2;
     for ((sm, c), (_, _, k)) in strokes.iter().zip(&ap.strokes).rev() {
         if outer(*k) {
             over_mask(&mut px, sm, premul_linear(*c));
@@ -920,24 +911,6 @@ mod tests {
             assert_eq!(green(157), inside, "kind {kind} inside");
             assert_eq!(green(161), outside, "kind {kind} outside");
             assert!(!green(120), "fill in the middle");
-        }
-    }
-
-    #[test]
-    fn outer_stroke_without_fill_leaves_the_inside_empty() {
-        let mut e = new_shape_layer(0, Vec2::new(100.0, 100.0), Vec2::new(100.0, 100.0), vec![]);
-        set(&mut e, "fill", ParamValue::Bool(false));
-        set(&mut e, "stroke", ParamValue::Bool(true));
-        set(&mut e, "stroke_width", ParamValue::Float(6.0));
-        set(&mut e, "stroke_type", ParamValue::Choice(0));
-        set(&mut e, "stroke_color", ParamValue::Color([0.0, 1.0, 0.0, 1.0]));
-        let mut img = Image::new(200, 200);
-        render_graphic_layers(&[e], Tick::ZERO, (200, 200), &Affine::IDENTITY, &mut img);
-        // rectangle spans 50..150: the ring is 150..156, everything left of the edge stays clear
-        let p = img.get(153, 100);
-        assert!(p[1] > 0.9 && p[0] < 0.1 && p[3] > 0.9, "ring is stroke-coloured: {p:?}");
-        for x in [100, 140, 148] {
-            assert_eq!(img.get(x, 100)[3], 0.0, "inside at x = {x}");
         }
     }
 

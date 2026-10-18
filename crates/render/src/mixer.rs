@@ -74,14 +74,31 @@ pub struct Override {
 }
 
 /// What the live mixer UI feeds into playback (and reads back from it).
-#[derive(Default)]
 pub struct LiveMix {
     overrides: Mutex<HashMap<(TrackId, String), Override>>,
     active: AtomicBool,
     meters: Mutex<HashMap<TrackId, Vec<f32>>>,
     /// Peak levels of the recording input (voice-over), per input channel.
     input_meter: Mutex<Vec<f32>>,
+    /// BS.1770 readout of the programme as it plays — momentary, short-term and integrated LUFS
+    /// and true peak dBTP — posted by the audio mixing thread where the samples already flow (the
+    /// meter itself lives in the app's mixing closure; this crate only carries the values).
+    /// `−∞` until something plays.
+    loudness: Mutex<[f64; 4]>,
     project: Mutex<Option<Arc<Project>>>,
+}
+
+impl Default for LiveMix {
+    fn default() -> Self {
+        Self {
+            overrides: Mutex::new(HashMap::new()),
+            active: AtomicBool::new(false),
+            meters: Mutex::new(HashMap::new()),
+            input_meter: Mutex::new(Vec::new()),
+            loudness: Mutex::new([f64::NEG_INFINITY; 4]),
+            project: Mutex::new(None),
+        }
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -157,6 +174,16 @@ impl LiveMix {
     /// Input peak levels since the last call (Audio Track Mixer ▸ Meter Input(s) Only).
     pub fn take_input_meter(&self) -> Vec<f32> {
         std::mem::take(&mut *lock(&self.input_meter))
+    }
+    /// Post the programme's BS.1770 readout (momentary, short-term, integrated LUFS, true-peak
+    /// dBTP), measured by the mixing thread as it mixes. Called ~47×/s, lock held for one write.
+    pub fn post_loudness(&self, v: [f64; 4]) {
+        *lock(&self.loudness) = v;
+    }
+    /// The posted readout. Unlike [`LiveMix::take_meters`] the values are absolute, not deltas, so
+    /// they stand until the next post and a panel can poll every frame without draining them.
+    pub fn loudness_readout(&self) -> [f64; 4] {
+        *lock(&self.loudness)
     }
     /// Publish the newest project snapshot (playback picks up edits made while it runs).
     pub fn publish_project(&self, p: Arc<Project>) {

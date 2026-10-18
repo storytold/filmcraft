@@ -199,17 +199,3 @@ fn the_software_h264_sei_is_the_static_metadata_laid_out_as_messages() {
     want.push(0x80);
     assert_eq!(sei, want);
 }
-
-/// #2142: SDR gets its `colr` box as well (nclc in MOV, nclx in MP4), and no HDR metadata.
-#[test]
-fn sdr_gets_a_colr_box_and_no_hdr_metadata() {
-    let mut e = filmcraft_isobmff::SampleEntry::prores(filmcraft_isobmff::FourCc(*b"apch"), 64, 64);
-    ColorSignal::default().apply_to(&mut e, true);
-    let v = e.video.as_ref().unwrap();
-    assert_eq!(v.color, Some(filmcraft_isobmff::ColorInfo::Nclc { primaries: 1, transfer: 1, matrix: 1 }));
-    assert!(v.mastering_display.is_none() && v.content_light.is_none());
-    let mut e = filmcraft_isobmff::SampleEntry::hevc(Default::default(), 64, 64);
-    ColorSignal::default().apply_to(&mut e, false);
-    let v = e.video.as_ref().unwrap();
-    assert_eq!(v.color, Some(filmcraft_isobmff::ColorInfo::Nclx { primaries: 1, transfer: 1, matrix: 1, full_range: false }));
-}

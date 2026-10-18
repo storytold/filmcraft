@@ -404,27 +404,6 @@ fn zoomed_monitor_ruler_follows_the_playhead_while_playing() {
     assert!(num(&z[0]) > 0.5 && (num(&z[1]) - num(&z[0]) - 0.25).abs() < 1e-9, "{z}");
 }
 
-/// The Source monitor's waveform shows the part of the clip its zoomed time ruler shows, so
-/// zooming in spreads the waveform out (#1782): a click halfway across it is halfway through
-/// that part, not halfway through the clip.
-#[test]
-fn source_waveform_follows_the_time_zoom() {
-    let mut d = Driver::demo();
-    let project = d.exec("project.inspect", json!({}));
-    let item = first_media_item(&project).expect("media item");
-    let duration = item_duration(&project, item).expect("media duration");
-    d.exec("source.open", json!({"item": item}));
-    d.menu("view.display.audioWaveform");
-    d.ok("ui.set", json!({"source": {"time_zoom": [0.5, 0.75]}}));
-    d.frames(3);
-    let w = d.rect("source.waveform");
-    d.ok("ui.click", json!({"x": w[0] + w[2] / 2.0, "y": w[1] + w[3] / 2.0}));
-    d.frames(2);
-    let playhead = d.harness.state().session.state.source_playhead.0 as f64;
-    let want = duration * 0.625;
-    assert!((playhead - want).abs() < duration * 0.01, "source playhead {playhead}, want {want} of {duration}");
-}
-
 #[test]
 fn magnification_pans_and_guides_from_rulers() {
     let mut d = Driver::demo();

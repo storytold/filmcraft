@@ -190,13 +190,6 @@ pub(crate) fn handle_points(quad: &[Pos2; 4]) -> [Pos2; 8] {
     [quad[0], quad[1], quad[2], quad[3], mid(0), mid(1), mid(2), mid(3)]
 }
 
-/// Resize cursor for a selected graphics-box handle, following the handle's screen-space axis.
-fn resize_handle_cursor(v: &LayerView, at: Pos2) -> Option<egui::CursorIcon> {
-    let quad = v.quad();
-    let centre = quad[0] + (quad[2] - quad[0]) * 0.5;
-    handle_points(&quad).into_iter().find(|point| (*point - at).length() <= 7.0).map(|point| super::transform_handles::resize_cursor(point - centre))
-}
-
 /// Dragging handle `n` of `quad` from `start` to `cur`: the box grows towards the pointer while
 /// the opposite corner / edge stays put. A corner scales each axis by the pointer's travel along
 /// it (both alike with `keep_ratio`, Shift); an edge scales only its own.
@@ -267,9 +260,9 @@ fn drag_sides(from: [f32; 4], n: usize, dx: f32, dy: f32, min: f32) -> [f32; 4] 
 }
 
 /// What dragging handle `n` of a layer from `start` to `cur` does, as Premiere Pro does it: point
-/// text scales about its anchor point, a paragraph-text box is resized (its text re-wraps at the
-/// same size), a shape's Size follows the handle (Scale untouched), and a path stretches away from
-/// its opposite side.
+/// text scales about its anchor point from its corners and stretches one axis from its edge
+/// handles, a paragraph-text box is resized (its text re-wraps at the same size), a shape's Size
+/// follows the handle (Scale untouched), and a path stretches away from its opposite side.
 enum HandleDrag {
     Stretch(HandleScale),
     /// Scale both axes by `f` about the anchor point, which is at `anchor` on screen.
@@ -333,10 +326,14 @@ impl HandleDrag {
             let rect = drag_sides(from, n, dx, dy, (t.size * 0.5).max(1.0));
             return Self::Resize { rect, from, tall: t.box_height > 0.0 || !matches!(n, 5 | 7) };
         }
-        // Every handle scales both axes alike. Only the pointer's travel along one side of the box
-        // counts: along its width for the two side handles, along its height for all the others.
+        // The edge handles stretch their own axis only, like every other layer's edges (the
+        // opposite edge stays put); the corners scale both axes alike about the anchor point,
+        // with only the pointer's travel along the box's height counting.
+        if n >= 4 {
+            return Self::Stretch(HandleScale::new(&quad, n, start, cur, keep_ratio));
+        }
         let anchor = anchor_screen(v);
-        let axis = if matches!(n, 5 | 7) { (quad[1] - quad[0]).normalized() } else { (quad[3] - quad[0]).normalized() };
+        let axis = (quad[3] - quad[0]).normalized();
         let handle = handle_points(&quad)[n];
         let from = (handle - anchor).dot(axis);
         // Away from the anchor grows. A handle sitting on the anchor counts as just inside the box
@@ -525,6 +522,18 @@ pub(crate) fn deselect_on_monitor(app: &mut FilmcraftApp, ui: &egui::Ui) {
 
 /// Draw the overlay and handle graphics tools on the Program monitor picture `pic`.
 pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, frame: (u32, u32)) {
+    // A tool change commits the text edit, as Premiere does when the edit context changes: a
+    // session left over from the Type tool otherwise keeps the pointer for caret drags and hides
+    // the handles, so the Selection tool can no longer move the layer. Switching between the
+    // text tools keeps the session.
+    {
+        let last_tool_id = egui::Id::new("gfx-last-tool");
+        let last = ui.data(|d| d.get_temp::<Tool>(last_tool_id)).unwrap_or(app.ui.tool);
+        ui.data_mut(|d| d.insert_temp(last_tool_id, app.ui.tool));
+        if app.ui.gfx_edit.is_some() && app.ui.tool != last && !matches!(app.ui.tool, Tool::Type | Tool::VerticalType) {
+            end_edit(app, ui);
+        }
+    }
     let t = app.tokens;
     let views = visible_layers(app, pic, frame);
     let tool = app.ui.tool;
@@ -601,18 +610,15 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             Tool::Type | Tool::VerticalType => ui.ctx().set_cursor_icon(egui::CursorIcon::Text),
             Tool::Rectangle | Tool::Ellipse | Tool::Pen => ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair),
             Tool::Selection => {
-                let selected = || views.iter().filter(|v| Some(v.clip) == sel_clip && sel_layers.contains(&v.layer));
-                let handle = selected().find_map(|v| resize_handle_cursor(v, p));
-                let radius_handle = selected().find_map(|v| {
-                    let centre = v.quad()[0] + (v.quad()[2] - v.quad()[0]) * 0.5;
-                    corner_handles(v)?.1.iter().find(|c| (**c - p).length() <= 6.0).map(|c| super::transform_handles::resize_cursor(*c - centre))
-                });
+                let corner = views
+                    .iter()
+                    .filter(|v| Some(v.clip) == sel_clip && sel_layers.contains(&v.layer))
+                    .find_map(|v| corner_handles(v).and_then(|(_, pts)| pts.iter().position(|c| (*c - p).length() <= 6.0)));
                 if editing.as_ref().is_some_and(|e| views.iter().any(|v| v.clip.0 == e.clip && v.layer == e.layer && v.hit(p))) {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
-                } else if let Some(icon) = handle {
-                    ui.ctx().set_cursor_icon(icon);
-                } else if let Some(icon) = radius_handle {
-                    ui.ctx().set_cursor_icon(icon);
+                } else if let Some(n) = corner {
+                    // along the corner's diagonal, the way the drag works
+                    ui.ctx().set_cursor_icon(if n % 2 == 0 { egui::CursorIcon::ResizeNwSe } else { egui::CursorIcon::ResizeNeSw });
                 } else if views.iter().any(|v| v.hit(p)) {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
                 }
@@ -1599,6 +1605,13 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             cx.point(ui, tl!("Position"), "position");
             cx.point(ui, tl!("Anchor point"), "anchor");
             cx.number(ui, tl!("Scale"), "scale", 0.5, (0.0, 100_000.0), 0, " %");
+            // the width scale of its own, as the Transform effect's and the edge handles' (a
+            // stretched point text has Uniform Scale off, so the row shows what it does)
+            cx.number(ui, tl!("Scale Width"), "scale_width", 0.5, (0.0, 100_000.0), 0, " %");
+            {
+                let (_, mut vui) = cx.row(ui, tl!("Uniform Scale"));
+                cx.check(&mut vui, "uniform_scale", "");
+            }
             cx.number(ui, tl!("Rotation"), "rotation", 0.5, (-36_000.0, 36_000.0), 1, " °");
             cx.number(ui, tl!("Opacity"), "opacity", 0.5, (0.0, 100.0), 0, " %");
         }

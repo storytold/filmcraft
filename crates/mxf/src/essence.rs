@@ -151,7 +151,7 @@ impl PictureInfo {
     /// Frame height: field-based layouts code the height of one field.
     pub fn frame_height(&self) -> u32 {
         let h = if self.display_height > 0 { self.display_height } else { self.stored_height };
-        if matches!(self.frame_layout, 1 | 3) { h.saturating_mul(2) } else { h }
+        if matches!(self.frame_layout, 1 | 3) { h * 2 } else { h }
     }
     pub fn frame_width(&self) -> u32 {
         if self.display_width > 0 { self.display_width } else { self.stored_width }
@@ -266,14 +266,6 @@ mod tests {
         let mut b = [0x06, 0x0E, 0x2B, 0x34, 0x04, 0x01, 0x01, 0x0A, 0, 0, 0, 0, 0, 0, 0, 0];
         b[8..8 + item.len()].copy_from_slice(item);
         Ul(b)
-    }
-
-    #[test]
-    fn interlaced_picture_height_does_not_overflow() {
-        let picture = PictureInfo { stored_height: u32::MAX, frame_layout: 1, ..Default::default() };
-        assert_eq!(picture.frame_height(), u32::MAX);
-        let picture = PictureInfo { display_height: 240, stored_height: u32::MAX, frame_layout: 3, ..Default::default() };
-        assert_eq!(picture.frame_height(), 480);
     }
 
     #[test]

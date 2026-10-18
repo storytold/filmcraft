@@ -285,7 +285,8 @@ pub fn grow(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     place(img, c, Vec2::ZERO, s.max(1e-4), 0.0);
 }
 
-/// Accumulate `n` renders of `f(img, k)` for k in −0.5..0.5 (simple motion blur).
+/// Accumulate `n` renders of `f(img, k)` for k in −0.5..0.5 (simple motion blur). The partial
+/// images and the source snapshot hand their buffers back to the frame pool afterwards.
 fn motion_blurred(img: &mut Image, n: usize, f: impl Fn(&mut Image, f64) + Sync) {
     if n <= 1 {
         f(img, 0.0);
@@ -302,6 +303,10 @@ fn motion_blurred(img: &mut Image, n: usize, f: impl Fn(&mut Image, f64) + Sync)
         .collect();
     let inv = 1.0 / n as f32;
     img.px.par_iter_mut().enumerate().for_each(|(i, v)| *v = parts.iter().map(|p| p.px[i]).sum::<f32>() * inv);
+    for p in parts {
+        filmcraft_frame::pool::recycle_f32(p.px);
+    }
+    filmcraft_frame::pool::recycle_f32(src.px);
 }
 
 /// Move: the layer slides from Offset From to Offset To across the clip.
@@ -401,7 +406,8 @@ pub fn spacer(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             p[3] = 1.0;
         });
     }
-    *img = out;
+    let old = std::mem::replace(&mut img.px, out.px);
+    filmcraft_frame::pool::recycle_f32(old);
 }
 
 /// Signed distance from (px, py) to a rounded rectangle (negative inside).

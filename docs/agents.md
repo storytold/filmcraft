@@ -123,9 +123,8 @@ progress and stop it:
 - `notifications/cancelled` for the request stops the encode at the next batch (`jobs.cancel`),
   deletes the partial output (the movie, or the frames and caption sidecar written so far) and sends
   no response, as the MCP cancellation utility asks.
-- Without `wait` the command returns `{job, path, poll: "jobs.list", cancel: "jobs.cancel"}` at
-  once: poll `jobs.list` for the job's `progress`, `etaSeconds`, `finished` and `result`, and stop it
-  with `jobs.cancel` (`export.queue.list` lists the Export Queue only, not direct exports, #1544). Other exports (`file.exportFrame`, interchange formats, …) finish quickly and
+- Without `wait` the command returns `{job, path}` at once, as before: poll `jobs.list` and stop it
+  with `jobs.cancel`. Other exports (`file.exportFrame`, interchange formats, …) finish quickly and
   ignore the token.
 - Bridge mode works the same way: the export runs as an app job (the app stays responsive and shows
   "Exporting… NN%" in its status bar) and the call returns when it is written, however long it

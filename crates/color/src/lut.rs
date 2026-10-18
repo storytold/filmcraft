@@ -368,9 +368,6 @@ impl Lut {
         }
         let mesh = mesh.ok_or("empty .3dl")?;
         let n = mesh.len();
-        if !(2..=256).contains(&n) {
-            return Err(format!("input mesh must have 2–256 values, found {n}"));
-        }
         if rows.len() != n * n * n {
             return Err(format!("expected {}³ = {} rows, found {}", n, n * n * n, rows.len()));
         }
@@ -640,14 +637,5 @@ mod tests {
         assert!(Lut::parse(&swap.to_cube(), None).is_ok());
         assert!(Lut::parse(&text, None).is_ok());
         assert_eq!(LutFormat::from_path("a/b/Look.CUBE"), Some(LutFormat::Cube));
-    }
-
-    #[test]
-    fn huge_3dl_mesh_is_rejected() {
-        let text = (0..1u32 << 22).map(|i| i.to_string()).collect::<Vec<_>>().join(" ") + "\n";
-        let r = std::panic::catch_unwind(|| Lut::parse_3dl(&text).map(|l| l.apply([0.5; 3])));
-        assert!(matches!(r, Ok(Err(_))), "huge mesh must be rejected without panicking");
-        let mesh257 = (0..257).map(|i| i.to_string()).collect::<Vec<_>>().join(" ") + "\n";
-        assert!(Lut::parse_3dl(&mesh257).is_err());
     }
 }

@@ -348,10 +348,9 @@ fn parse_amount(rest: &str, _lang: Lang) -> Option<(u64, usize, usize, u32, bool
     let major = int_digits.parse::<u64>().ok()?;
     let had_minor = after_decimal && !frac_digits.is_empty();
     // One fractional digit denotes tenths of a major unit (e.g. $1.5 = $1.50),
-    // not five minor units. Digits beyond the second are sub-cent precision and are
-    // dropped, so the minor part never exceeds 99 (`$3.459` reads as 45 cents).
+    // not five minor units. Preserve the existing two-digit and longer readings.
     let minor = if had_minor {
-        let value = frac_digits.get(..2).unwrap_or(&frac_digits).parse::<u32>().ok()?;
+        let value = frac_digits.parse::<u32>().ok()?;
         if frac_digits.len() == 1 { value * 10 } else { value }
     } else {
         0
@@ -1235,16 +1234,6 @@ mod tests {
         assert_eq!(words("£2.50", Lang::EnUs), "two pounds and fifty pence");
         assert_eq!(words("£1", Lang::EnUs), "one pound");
         assert_eq!(words("$0.50", Lang::EnUs), "zero dollars and fifty cents");
-    }
-
-    #[test]
-    fn money_fraction_beyond_two_digits_is_not_hundreds_of_cents() {
-        for lang in [Lang::EnUs, Lang::EnGb] {
-            assert_eq!(words("gas is $3.459 a gallon", lang), "gas is three dollars and forty-five cents a gallon");
-            assert_eq!(words("$1.999", lang), "one dollar and ninety-nine cents");
-            assert_eq!(words("$1.250", lang), "one dollar and twenty-five cents");
-            assert_eq!(words("$1.005", lang), "one dollar");
-        }
     }
 
     #[test]

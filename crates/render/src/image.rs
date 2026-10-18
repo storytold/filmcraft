@@ -82,6 +82,8 @@ impl Image {
 
     /// Resample `self` into a `w`×`h` image through `m` (maps source pixels → destination pixels).
     /// Uses bilinear filtering, with a box pre-filter (mip level) when minifying by more than 2×.
+    /// The destination comes from the frame pool, so a steady stream of playback frames reuses
+    /// the same pages instead of zero-filling tens of megabytes per layer per frame.
     pub fn transformed(&self, w: usize, h: usize, m: &Affine) -> Image {
         let Some(inv) = m.inverse() else { return Image::new(w, h) };
         // minification factor
@@ -91,9 +93,11 @@ impl Image {
         if minify >= 2.0 && self.w >= 4 && self.h >= 4 {
             let half = self.downsample2();
             let m2 = m.then_apply(&Affine::scale(2.0, 2.0));
-            return half.transformed(w, h, &m2);
+            let out = half.transformed(w, h, &m2);
+            filmcraft_frame::pool::recycle_f32(half.px);
+            return out;
         }
-        let mut out = Image::new(w, h);
+        let mut out = Image { w, h, px: filmcraft_frame::pool::take_f32_overwritten(w * h * 4) };
         // Destination bounds of the source rect, to skip empty rows/cols.
         let b = m.bounds(&filmcraft_geom::Rect::new(0.0, 0.0, self.w as f64, self.h as f64));
         let y0 = (b.y.floor().max(0.0) as usize).min(h);
@@ -101,13 +105,22 @@ impl Image {
         let x0 = (b.x.floor().max(0.0) as usize).min(w);
         let x1 = (b.right().ceil().max(0.0) as usize).min(w);
         let axis_aligned = m.b == 0.0 && m.c == 0.0;
-        out.px.par_chunks_mut(w * 4).enumerate().skip(y0).take(y1.saturating_sub(y0)).for_each(|(y, row)| {
+        out.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
+            // A pooled buffer arrives with unspecified contents, so the rows and columns the
+            // source does not cover are cleared here (a fresh buffer already is).
+            if y < y0 || y >= y1 {
+                row.fill(0.0);
+                return;
+            }
+            row[..x0 * 4].fill(0.0);
+            row[x1 * 4..].fill(0.0);
             let py = y as f64 + 0.5;
             for x in x0..x1 {
                 let px = x as f64 + 0.5;
                 let (u, v) =
                     if axis_aligned { (inv.a * px + inv.e, inv.d * py + inv.f) } else { (inv.a * px + inv.c * py + inv.e, inv.b * px + inv.d * py + inv.f) };
                 if u < -1.0 || v < -1.0 || u > self.w as f64 + 1.0 || v > self.h as f64 + 1.0 {
+                    row[x * 4..x * 4 + 4].fill(0.0);
                     continue;
                 }
                 let s = self.sample_bilinear(u as f32, v as f32);
@@ -117,10 +130,10 @@ impl Image {
         out
     }
 
-    /// Half-size box downsample.
+    /// Half-size box downsample. Every pixel is written, so the buffer comes from the frame pool.
     pub fn downsample2(&self) -> Image {
         let (w, h) = ((self.w / 2).max(1), (self.h / 2).max(1));
-        let mut out = Image::new(w, h);
+        let mut out = Image { w, h, px: filmcraft_frame::pool::take_f32_overwritten(w * h * 4) };
         out.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
             for x in 0..w {
                 let a = self.get_clamped(2 * x as isize, 2 * y as isize);

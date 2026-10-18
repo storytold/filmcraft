@@ -524,7 +524,7 @@ pub fn move_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
         placed.push((*dest, it));
     }
     let carried = carried_transitions(&work, &placed);
-    // a transition whose partner stays behind is dropped, as in Premiere
+    // a transition whose partner stays behind follows the moving clip as a fade at its edge
     delete_items(&mut work, &moves.iter().map(|m| m.0).collect::<Vec<_>>());
     if insert_mode {
         insert(&mut work, placed, ctx)?;
@@ -559,8 +559,9 @@ pub fn copy_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
         it.start = (*start).max(Tick::ZERO);
         placed.push((*dest, it));
     }
-    // worked out on the original ids, then moved over to the copies (only transitions whose every
-    // clip is copied travel; one whose partner stays with the originals is not duplicated)
+    // worked out on the original ids, then moved over to the copies: transitions whose every
+    // clip is copied travel whole, and one whose partner stays with the originals is copied as a
+    // fade on the moving side's copy
     let carried = carried_transitions(&work, &placed);
     let mut ids = HashMap::new();
     let mut links = HashMap::new();
@@ -597,27 +598,45 @@ pub fn copy_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
     Ok(out)
 }
 
-/// The transitions that travel with a move (#227, #374): only those whose every clip moves, onto
-/// one track and by one offset (a fade at a moved clip's edge, or the cut between two clips that
-/// move together), shifted to where those clips land. A transition whose partner stays behind is
-/// dropped, as in Premiere (the drag preview leaves it where it is until the release).
+/// The transitions that travel with a move (#227, #374): those whose every clip moves, onto one
+/// track and by one offset (a fade at a moved clip's edge, or the cut between two clips that move
+/// together), shifted to where those clips land. A transition whose partner stays behind follows
+/// the moving side instead: it is re-anchored as a one-sided fade at that clip's new edge — a fade
+/// in at the incoming side's start, a fade out at the outgoing side's end, no longer than the clip
+/// (the same shape `fades_follow_edges` keeps) — so a dragged clip keeps its transitions instead
+/// of losing them. The drag preview paints the same rule
+/// (`ui_egui::panels::timeline::move_transition_preview`).
 fn carried_transitions(seq: &Sequence, placed: &[(TrackId, TrackItem)]) -> Vec<(TrackId, Transition)> {
     let landing = |c: ClipId| {
         let (dest, it) = placed.iter().find(|(_, it)| it.id == c)?;
         let (_, old) = seq.find_item(c)?;
         Some((*dest, it.start - old.start))
     };
+    let moving = |c: ClipId| placed.iter().find(|(_, it)| it.id == c);
     let mut carried = Vec::new();
     for tr in seq.all_tracks().filter(|t| !t.locked).flat_map(|t| t.transitions.iter()) {
         let endpoints: Vec<ClipId> = [tr.from, tr.to].into_iter().flatten().collect();
         let lands: Vec<(TrackId, Tick)> = endpoints.iter().filter_map(|c| landing(*c)).collect();
-        // every clip it sits on must move, onto one track by one offset, or the transition is
-        // dropped with the delete below (a partner that stayed behind ends the move)
         if lands.len() == endpoints.len()
             && let Some(&(dest, delta)) = lands.first()
             && lands.iter().skip(1).all(|l| *l == (dest, delta))
         {
             carried.push((dest, Transition { start: tr.start + delta, ..tr.clone() }));
+            continue;
+        }
+        // A partner that stayed behind ends the cut, not the transition: it goes with the moving
+        // side (the incoming side if it moves, else the outgoing one) as a fade on its edge.
+        for side in [tr.to, tr.from] {
+            let Some(c) = side else { continue };
+            let Some((dest, it)) = moving(c) else { continue };
+            let dur = tr.duration.min(it.duration);
+            let fade = if side == tr.to {
+                Transition { from: None, to: Some(it.id), start: it.start, duration: dur, ..tr.clone() }
+            } else {
+                Transition { from: Some(it.id), to: None, start: it.end() - dur, duration: dur, ..tr.clone() }
+            };
+            carried.push((*dest, fade));
+            break;
         }
     }
     carried

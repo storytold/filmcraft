@@ -16,9 +16,12 @@ fn dir(e: &EffectInstance) -> u32 {
 }
 
 /// Mask-based mix: out = A·(1-m) + B·m with m = f(x, y) ∈ [0,1].
+///
+/// As with [`super::paint`], the buffer comes from the frame pool: every element is written below,
+/// so a fresh zero-filled image is wasted work once per legacy transition frame.
 fn masked(a: &Image, b: &Image, m: impl Fn(f32, f32) -> f32 + Sync) -> Image {
     let (w, h) = (a.w, a.h);
-    let mut out = Image::new(w, h);
+    let mut out = Image { w, h, px: filmcraft_frame::pool::take_f32_overwritten(w * h * 4) };
     out.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
         let v = (y as f32 + 0.5) / h as f32;
         for x in 0..w {

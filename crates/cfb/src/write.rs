@@ -5,8 +5,6 @@
 //! when the FAT needs more than the 109 header slots. Every chain is contiguous. Sibling trees are
 //! balanced binary search trees coloured as valid red-black trees (§2.6.4).
 
-use std::collections::HashSet;
-
 use crate::{DIFSECT, ENDOFCHAIN, FATSECT, FREESECT, MINI_SECTOR_SIZE, MINI_STREAM_CUTOFF, NOSTREAM, Result, SIGNATURE, compare_names, validate_name};
 
 /// File format version.
@@ -46,15 +44,6 @@ struct Node {
     clsid: [u8; 16],
     data: Vec<u8>,
     children: Vec<usize>,
-    /// The children's names, upper-cased as sibling order compares them: an O(1) duplicate check.
-    /// (Scanning every sibling with `compare_names`, which allocates, made adding n children O(n^2):
-    /// 20 000 AAF markers took a minute.)
-    child_keys: HashSet<Vec<u16>>,
-}
-
-/// A name as sibling comparison sees it: its UTF-16 code units, upper-cased.
-fn name_key(name: &str) -> Vec<u16> {
-    name.encode_utf16().map(crate::upper).collect()
 }
 
 /// Builds a compound file in memory.
@@ -75,17 +64,7 @@ impl Writer {
     pub const ROOT: NodeId = NodeId(0);
 
     pub fn new(version: Version) -> Self {
-        Writer {
-            version,
-            nodes: vec![Node {
-                name: "Root Entry".into(),
-                kind: Kind::Root,
-                clsid: [0; 16],
-                data: Vec::new(),
-                children: Vec::new(),
-                child_keys: HashSet::new(),
-            }],
-        }
+        Writer { version, nodes: vec![Node { name: "Root Entry".into(), kind: Kind::Root, clsid: [0; 16], data: Vec::new(), children: Vec::new() }] }
     }
 
     fn add(&mut self, parent: NodeId, name: &str, kind: Kind, clsid: [u8; 16], data: Vec<u8>) -> Result<NodeId> {
@@ -94,15 +73,12 @@ impl Writer {
         if p.kind == Kind::Stream {
             return Err(crate::Error::Invalid(format!("{:?} is a stream, not a storage", p.name)));
         }
-        let key = name_key(name);
-        if p.child_keys.contains(&key) {
+        if p.children.iter().any(|&c| compare_names(&self.nodes[c].name, name).is_eq()) {
             return Err(crate::Error::BadName(format!("duplicate name {name}")));
         }
         let id = self.nodes.len();
-        self.nodes.push(Node { name: name.to_string(), kind, clsid, data, children: Vec::new(), child_keys: HashSet::new() });
-        let p = &mut self.nodes[parent.0];
-        p.children.push(id);
-        p.child_keys.insert(key);
+        self.nodes.push(Node { name: name.to_string(), kind, clsid, data, children: Vec::new() });
+        self.nodes[parent.0].children.push(id);
         Ok(NodeId(id))
     }
 

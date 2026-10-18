@@ -841,30 +841,3 @@ fn perf_grid_of_four_1080p_angles() {
         "Multi-Camera grid (4 × 1080p H.264, ¼-scale cells): {grid_ms:.1} ms/frame wall, {grid_cpu:.1} ms/frame CPU; one angle at ½ scale: {one_ms:.1} ms/frame wall (24 fps budget 41.7 ms)"
     );
 }
-
-/// Clip ▸ Multi-Camera ▸ Enable / Flatten were enabled for any selection and then failed when
-/// chosen with plain clips selected. They are enabled when the selection holds what they work on:
-/// a nested sequence clip (Enable), an enabled multi-camera clip (Flatten). Naming the clips still
-/// works with nothing selected.
-#[test]
-fn multicam_menu_items_are_enabled_only_for_clips_they_work_on() {
-    let mut s = Session::default();
-    s.execute("file.openDemoProject", json!({})).unwrap();
-    let first = s.active_sequence().unwrap().video_tracks[0].items[0].id;
-    s.execute("timeline.select", json!({"clips": [first.0]})).unwrap();
-    assert!(!s.is_enabled("clip.multicamEnable"), "a plain clip is not a nest");
-    assert!(!s.is_enabled("clip.multicamFlatten"));
-    s.execute("clip.nest", json!({"name": "Nest"})).unwrap();
-    let nest = s.active_sequence().unwrap().all_tracks().flat_map(|t| &t.items).find(|i| s.project.sequence(i.item).is_some()).map(|i| i.id).unwrap();
-    s.execute("timeline.select", json!({"clips": [nest.0]})).unwrap();
-    assert!(s.is_enabled("clip.multicamEnable"), "a nested sequence clip can become multi-camera");
-    assert!(!s.is_enabled("clip.multicamFlatten"), "not multi-camera yet");
-    s.execute("clip.multicamEnable", json!({})).unwrap();
-    assert!(s.is_enabled("clip.multicamFlatten"));
-    // agents naming the clips do not depend on the selection
-    s.execute("edit.deselectAll", json!({})).unwrap();
-    assert!(!s.is_enabled("clip.multicamFlatten"));
-    s.execute("clip.multicamFlatten", json!({"clips": [nest.0]})).unwrap();
-    let q = s.active_sequence().unwrap();
-    assert!(q.find_item(nest).is_none(), "flattened into the camera clips");
-}

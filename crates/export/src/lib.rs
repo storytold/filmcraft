@@ -520,10 +520,11 @@ impl ColorSignal {
         if self.matrix == 9 { (0.2627, 0.0593) } else { (0.2126, 0.0722) }
     }
     /// Sample-entry boxes: `colr` (nclx for MP4, nclc for MOV) plus `mdcv`/`clli` for PQ
-    /// (mastering display BT.2020/D65, 1000/0.0001 cd/m²; MaxCLL/MaxFALL 0 = unknown). SDR gets
-    /// its `colr` too: Apple's media stack (QuickTime Player, Final Cut Pro) reads the colour of
-    /// ProRes, DNxHR and APV only from this box, not from their frame headers (#2142).
+    /// (mastering display BT.2020/D65, 1000/0.0001 cd/m²; MaxCLL/MaxFALL 0 = unknown).
     pub fn apply_to(&self, e: &mut SampleEntry, mov: bool) {
+        if !self.is_hdr() {
+            return;
+        }
         if let Some(v) = e.video.as_mut() {
             let (p, t, m) = (self.primaries as u16, self.transfer as u16, self.matrix as u16);
             v.color = Some(if mov {

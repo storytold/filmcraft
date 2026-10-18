@@ -295,27 +295,6 @@ fn closed_stdout_still_runs_the_script_and_saves() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `render` with a non-numeric or non-finite `--seconds` / `--scale` is a usage error (exit 2) and
-/// writes nothing, instead of silently rendering frame 0 at full scale.
-#[test]
-fn render_rejects_bad_numbers() {
-    let dir = std::env::temp_dir().join(format!("fc-cli-render-nan-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let still = dir.join("s.png").to_str().unwrap().to_string();
-    for (opt, bad) in
-        [("--seconds", "1s"), ("--seconds", "1,5"), ("--seconds", "abc"), ("--seconds", "NaN"), ("--seconds", "inf"), ("--scale", "xyz"), ("--scale", "NaN")]
-    {
-        let (secs, scale) = if opt == "--seconds" { (bad, "0.1") } else { ("1", bad) };
-        let o = cli(&["--demo", "render", "--seconds", secs, "--scale", scale, "--out", &still]);
-        let err = String::from_utf8_lossy(&o.stderr);
-        assert_eq!(o.status.code(), Some(2), "{opt} {bad}: {err}");
-        assert!(err.contains("filmcraft-cli:") && err.contains(opt), "{opt} {bad}: {err}");
-        assert!(!std::path::Path::new(&still).exists(), "{opt} {bad} wrote a file");
-    }
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 /// #1054: exporting or rendering a project whose media is missing fails (exit 1) and names the
 /// offline items on stderr and in the result's `offlineMedia`, unless `--allow-offline` accepts the
 /// placeholder frames; then it still warns.

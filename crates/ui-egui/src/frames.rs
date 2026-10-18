@@ -100,8 +100,8 @@ struct Shared {
     cv: Condvar,
     done: Mutex<Cache>,
     plans: Mutex<PlanCache>,
-    /// Running jobs: key, cancel flag, prefetch.
-    in_flight: Mutex<Vec<(FrameKey, Arc<std::sync::atomic::AtomicBool>, bool)>>,
+    /// Running jobs: key, cancel flag, prefetch, priority.
+    in_flight: Mutex<Vec<(FrameKey, Arc<std::sync::atomic::AtomicBool>, bool, u32)>>,
     /// Per-job timings, collected while profiling is on (benchmarks, `ui.inspect`).
     profiling: AtomicBool,
     records: Mutex<Vec<JobRecord>>,
@@ -529,7 +529,7 @@ impl FrameServer {
             hit();
             return;
         }
-        if self.shared.in_flight.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|(k, c, _)| *k == key && !c.load(Ordering::Relaxed)) {
+        if self.shared.in_flight.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|(k, c, _, _)| *k == key && !c.load(Ordering::Relaxed)) {
             hit();
             return;
         }
@@ -558,8 +558,21 @@ impl FrameServer {
             // refresh, cancelling each one for the next would show nothing until the mouse rests.
             let same_view = |k: &FrameKey| k.target == key.target && k.size == key.size;
             q.retain(|j| !(j.prio == 0 && !j.prefetch && same_view(&j.key)));
-            for (k, c, prefetch) in self.shared.in_flight.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            let flight = self.shared.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+            for (k, c, prefetch, _) in flight.iter() {
                 if !prefetch && same_view(k) && k.frame != key.frame {
+                    c.store(true, Ordering::Relaxed);
+                }
+            }
+            // Background work — filmstrip tiles, project-panel and Media Browser thumbnails —
+            // holds its source's decoder lock for a whole GOP walk, so a frame on screen for
+            // that source (or for the sequence compositing it) would wait behind up to `workers`
+            // of those. Cancel the running ones: their decode unwinds at the next sample and the
+            // result is not cached, and the timeline re-requests its tiles once the pointer
+            // rests — so a seek or a click shows its frame within one sample's decode instead of
+            // a GOP walk (or several).
+            for (k, c, _, p) in flight.iter() {
+                if background_work(*p, k.target) {
                     c.store(true, Ordering::Relaxed);
                 }
             }
@@ -618,7 +631,7 @@ impl FrameServer {
     /// would otherwise go on to decode a frame playback has passed, possibly from its keyframe.
     pub fn retain_queue(&self, keep: impl Fn(&FrameKey) -> bool) {
         self.shared.queue.lock().unwrap_or_else(|e| e.into_inner()).retain(|j| keep(&j.key));
-        for (k, c, _) in self.shared.in_flight.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+        for (k, c, _, _) in self.shared.in_flight.lock().unwrap_or_else(|e| e.into_inner()).iter() {
             if !keep(k) {
                 c.store(true, Ordering::Relaxed);
             }
@@ -629,7 +642,7 @@ impl FrameServer {
     /// they would keep the workers busy, e.g. rendering effects for frames nobody will see).
     pub fn stop_prefetch(&self) {
         self.shared.queue.lock().unwrap_or_else(|e| e.into_inner()).retain(|j| !j.prefetch);
-        for (_, c, prefetch) in self.shared.in_flight.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+        for (_, c, prefetch, _) in self.shared.in_flight.lock().unwrap_or_else(|e| e.into_inner()).iter() {
             if *prefetch {
                 c.store(true, Ordering::Relaxed);
             }
@@ -790,7 +803,7 @@ fn worker(
         // monitors blank. Log it, forget the job and keep serving.
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_job(&sh, &job, &pool, &services, &previews)));
         if ran.is_err() {
-            sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).retain(|(k, c, _)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
+            sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).retain(|(k, c, _, _)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
             sh.stats.lock().unwrap_or_else(|e| e.into_inner()).failed += 1;
             log::error!("frame job {:?} panicked; the worker continues", job.key);
         }
@@ -811,7 +824,7 @@ pub fn inject_job_panics(n: u32) {
 static INJECT_PANICS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, previews: &PreviewStore) -> bool {
-    sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).push((job.key, job.cancel.clone(), job.prefetch));
+    sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).push((job.key, job.cancel.clone(), job.prefetch, job.prio));
     if INJECT_PANICS.load(Ordering::Relaxed) > 0 && INJECT_PANICS.fetch_sub(1, Ordering::Relaxed) > 0 {
         crate::crash::injected_fault("injected frame-job fault");
     }
@@ -850,7 +863,7 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
         })
     });
     let cancelled = job.cancel.load(Ordering::Relaxed);
-    sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).retain(|(k, c, _)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
+    sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).retain(|(k, c, _, _)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
     if job.prefetch {
         // Work beyond fetching source frames (decoding is sequential per source and is
         // not saved by skipping frames, so it is left out of the estimate). A cancelled job
