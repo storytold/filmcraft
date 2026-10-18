@@ -557,6 +557,7 @@ impl Session {
                     self.stepped.remove(0);
                 }
                 Err(e) => {
+                    j.progress.cancelled.store(matches!(&e, filmcraft_export::ExportError::Cancelled), std::sync::atomic::Ordering::Relaxed);
                     let e = e.to_string();
                     *j.progress.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
                     j.progress.finished.store(true, std::sync::atomic::Ordering::Relaxed);

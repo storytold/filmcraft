@@ -647,6 +647,7 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
         let mut outcome: std::result::Result<(), String> = Ok(());
         for (k, t) in todo.iter().enumerate() {
             if prog.cancel.load(Ordering::Relaxed) {
+                prog.cancelled.store(true, Ordering::Relaxed);
                 outcome = Err("cancelled".into());
                 break;
             }
@@ -683,6 +684,7 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
                     let _ = store.open(&pool, &name);
                 }
                 Err(e) => {
+                    prog.cancelled.store(matches!(&e, filmcraft_export::ExportError::Cancelled), Ordering::Relaxed);
                     let _ = std::fs::remove_file(&part);
                     outcome = Err(e.to_string());
                     break;
@@ -753,6 +755,7 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
             let mut pos = g.first_sample;
             while pos < g.first_sample + g.samples {
                 if prog.cancel.load(Ordering::Relaxed) {
+                    prog.cancelled.store(true, Ordering::Relaxed);
                     outcome = Err("cancelled".into());
                     break 'segs;
                 }
