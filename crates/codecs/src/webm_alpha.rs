@@ -165,12 +165,14 @@ impl VideoDecoder for AlphaDecoder {
         self.feed_alpha(pts);
         Ok(self.release(false))
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        let out = self.color.flush();
+    fn flush(&mut self) -> crate::Result<Vec<DecodedFrame>> {
+        let out = self.color.flush()?;
         self.held.extend(out);
-        let rest = self.alpha.flush();
-        self.keep(rest);
-        self.release(true)
+        match self.alpha.flush() {
+            Ok(rest) => self.keep(rest),
+            Err(error) => log::warn!("WebM alpha drain failed ({error}); retaining colour pictures"),
+        }
+        Ok(self.release(true))
     }
     fn reset(&mut self) {
         self.color.reset();
@@ -222,6 +224,14 @@ pub(crate) fn set_alpha(frame: &mut VideoFrame, a: &VideoFrame) {
         (v as u32 * to_max + from_max / 2) / from_max
     };
     match &mut frame.data {
+        PixelData::Gpu(_) => match frame.cpu() {
+            Ok(cpu) => {
+                let mut cpu = cpu.into_owned();
+                set_alpha(&mut cpu, a);
+                *frame = cpu;
+            }
+            Err(error) => log::warn!("WebM alpha unavailable: {error}"),
+        },
         PixelData::Yuv8 { alpha, .. } => *alpha = Some(Arc::new(codes.iter().map(|&v| rescale(v, 8) as u8).collect())),
         PixelData::Yuv16 { alpha, bits, .. } => {
             let to = *bits;
@@ -287,5 +297,47 @@ mod tests {
         set_alpha(&mut f, &yuv8(2, 2, vec![0; 3]));
         let PixelData::Yuv8 { alpha, .. } = &f.data else { panic!() };
         assert!(alpha.is_none());
+    }
+
+    #[derive(Debug)]
+    struct AlphaSurface(Result<PixelData, String>);
+
+    impl filmcraft_frame::GpuSurface for AlphaSurface {
+        fn size(&self) -> (u32, u32) {
+            (2, 2)
+        }
+        fn byte_len(&self) -> usize {
+            2 * 2 + 2
+        }
+        fn download(&self) -> Result<PixelData, String> {
+            self.0.clone()
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn id(&self) -> u64 {
+            1
+        }
+    }
+
+    #[test]
+    fn gpu_colour_materializes_for_alpha_but_download_failure_keeps_the_picture() {
+        let colour = yuv8(2, 2, vec![9; 4]);
+        let alpha = yuv8(2, 2, vec![0, 128, 255, 64]);
+        let mut frame = colour.clone();
+        frame.data = PixelData::Gpu(filmcraft_frame::GpuPixels::new(Arc::new(AlphaSurface(Ok(colour.data.clone()))), Chroma::C420, 8));
+        set_alpha(&mut frame, &alpha);
+        let PixelData::Yuv8 { planes, alpha: actual, .. } = &frame.data else { panic!() };
+        let PixelData::Yuv8 { planes: original, .. } = &colour.data else { panic!() };
+        assert_eq!(planes, original);
+        let PixelData::Yuv8 { planes: alpha_planes, .. } = &alpha.data else { panic!() };
+        assert_eq!(actual.as_ref(), Some(&alpha_planes[0]));
+
+        let surface = Arc::new(AlphaSurface(Err("injected download failure".into())));
+        frame.data = PixelData::Gpu(filmcraft_frame::GpuPixels::new(surface.clone(), Chroma::C420, 8));
+        set_alpha(&mut frame, &alpha);
+        let PixelData::Gpu(pixels) = &frame.data else { panic!() };
+        assert!(Arc::ptr_eq(pixels.surface(), &(surface as Arc<dyn filmcraft_frame::GpuSurface>)));
+        assert_eq!(frame.cpu().unwrap_err(), "injected download failure");
     }
 }

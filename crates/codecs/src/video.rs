@@ -18,8 +18,8 @@ pub struct DecodedFrame {
 /// presentation order (a decoder with reordering may return zero or several per call).
 pub trait VideoDecoder: Send {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>>;
-    /// Drain pictures held for reordering (end of stream / before a seek).
-    fn flush(&mut self) -> Vec<DecodedFrame>;
+    /// Drain reordered pictures; failures must not publish unready or substitute earlier output.
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>>;
     /// Forget all state (called after seeking to a sync sample).
     fn reset(&mut self);
     fn name(&self) -> &str;
@@ -248,8 +248,8 @@ impl VideoDecoder for MjpegDecoder {
         let (w, h) = rgba.dimensions();
         Ok(vec![DecodedFrame { pts, frame: VideoFrame::rgba8(w, h, rgba.into_raw()), draft: false }])
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        Vec::new()
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        Ok(Vec::new())
     }
     fn reset(&mut self) {}
     fn name(&self) -> &str {
@@ -338,8 +338,8 @@ impl VideoDecoder for H264Decoder {
         let pics = self.dec.decode(sample, pts).map_err(h264_error)?;
         Ok(pics.into_iter().map(Self::convert).collect())
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        self.dec.flush().into_iter().map(Self::convert).collect()
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        Ok(self.dec.flush().into_iter().map(Self::convert).collect())
     }
     fn reset(&mut self) {
         if let Ok(d) = Self::make_inner(&self.avcc, self.threads) {
@@ -450,8 +450,8 @@ impl VideoDecoder for HevcDecoder {
         let pics = self.dec.decode(sample, pts).map_err(hevc_error)?;
         Ok(pics.into_iter().map(Self::convert).collect())
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        self.dec.flush().into_iter().map(Self::convert).collect()
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        Ok(self.dec.flush().into_iter().map(Self::convert).collect())
     }
     fn reset(&mut self) {
         if self.hvcc.is_empty() {
@@ -582,8 +582,8 @@ impl VideoDecoder for Vp9Decoder {
         let pics = self.dec.decode(sample, pts).map_err(|e| CodecError::Decode(e.to_string()))?;
         Ok(pics.into_iter().filter_map(|p| self.convert(p)).collect())
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        self.dec.flush().into_iter().filter_map(|p| self.convert(p)).collect()
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        Ok(self.dec.flush().into_iter().filter_map(|p| self.convert(p)).collect())
     }
     fn reset(&mut self) {
         self.dec.reset();
@@ -638,9 +638,9 @@ impl VideoDecoder for Vp8Decoder {
         let pic = self.dec.decode(sample, pts).map_err(|e| CodecError::Decode(e.to_string()))?;
         Ok(pic.into_iter().map(Self::convert).collect())
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
         // no reordering: every picture comes out with its frame
-        Vec::new()
+        Ok(Vec::new())
     }
     fn reset(&mut self) {
         self.dec.reset();
@@ -720,15 +720,16 @@ impl VideoDecoder for Av1Decoder {
             })
             .collect())
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        self.dec
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        Ok(self
+            .dec
             .flush()
             .into_iter()
             .map(|p| {
                 let pts = p.pts;
                 Self::convert(p, pts)
             })
-            .collect()
+            .collect())
     }
     fn reset(&mut self) {
         self.dec = filmcraft_av1::Decoder::new();
@@ -785,8 +786,8 @@ impl VideoDecoder for ProResDecoder {
         };
         Ok(vec![DecodedFrame { pts, frame, draft: false }])
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        Vec::new()
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        Ok(Vec::new())
     }
     fn reset(&mut self) {}
     fn name(&self) -> &str {
@@ -851,8 +852,8 @@ impl VideoDecoder for ApvDecoder {
         let f = filmcraft_apv::decode_frame(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
         Ok(vec![DecodedFrame { pts, frame: apv_to_video_frame(f), draft: false }])
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        Vec::new()
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        Ok(Vec::new())
     }
     fn reset(&mut self) {}
     fn name(&self) -> &str {
@@ -923,8 +924,8 @@ impl VideoDecoder for DnxDecoder {
         let f = filmcraft_dnx::decode_frame(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
         Ok(vec![DecodedFrame { pts, frame: dnx_to_video_frame(f), draft: false }])
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        Vec::new()
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        Ok(Vec::new())
     }
     fn reset(&mut self) {}
     fn name(&self) -> &str {
@@ -1025,8 +1026,8 @@ impl VideoDecoder for Mpeg2Decoder {
         let pics = self.dec.decode(sample, pts).map_err(|e| CodecError::Decode(e.to_string()))?;
         Ok(pics.into_iter().map(|p| DecodedFrame { pts: p.pts, frame: mpeg2_to_video_frame(p), draft: false }).collect())
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        self.dec.flush().into_iter().map(|p| DecodedFrame { pts: p.pts, frame: mpeg2_to_video_frame(p), draft: false }).collect()
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        Ok(self.dec.flush().into_iter().map(|p| DecodedFrame { pts: p.pts, frame: mpeg2_to_video_frame(p), draft: false }).collect())
     }
     fn reset(&mut self) {
         self.dec.reset();
@@ -1299,8 +1300,8 @@ impl VideoDecoder for RawVideoDecoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
         Ok(vec![DecodedFrame { pts, frame: self.picture(sample)?, draft: false }])
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        Vec::new()
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        Ok(Vec::new())
     }
     fn reset(&mut self) {}
     fn name(&self) -> &str {

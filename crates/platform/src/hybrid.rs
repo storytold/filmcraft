@@ -128,16 +128,24 @@ impl HybridDecoder {
         out
     }
 
-    /// Switch to the software decoder after `err`, replaying the log (which ends with the sample
-    /// that failed). The replay goes on past samples the software decoder rejects, as decoding in
-    /// software from the restart point would: one that the hardware had already decoded is logged
-    /// (its call returned long ago), and if the failed sample itself is rejected its error is this
-    /// call's, while the pictures replayed before it are kept for the next output.
+    /// Salvage ready hardware pictures after a decode error, then replay in software.
     fn fall_back(&mut self, err: CodecError) -> Result<Vec<DecodedFrame>> {
         let Some(mut hw) = self.hw.take() else { return Err(err) };
+        let drained = match hw.flush() {
+            Ok(out) => out,
+            Err(error) => {
+                log::warn!("{} drain failed ({error}); replaying in software", hw.name());
+                Vec::new()
+            }
+        };
+        self.replay(hw, err, drained)
+    }
+
+    /// Replay buffered samples; retained hardware pictures cover damaged samples already decoded.
+    fn replay(&mut self, hw: Box<dyn VideoDecoder>, err: CodecError, drained: Vec<DecodedFrame>) -> Result<Vec<DecodedFrame>> {
         log::warn!("{} failed ({err}); continuing with the software decoder", hw.name());
         filmcraft_codecs::hw::note_hw_fallback();
-        for f in hw.flush() {
+        for f in drained {
             if !self.emitted.contains(&f.pts) {
                 self.carry.insert(f.pts, f);
             }
@@ -200,17 +208,26 @@ impl VideoDecoder for HybridDecoder {
         }
     }
 
-    fn flush(&mut self) -> Vec<DecodedFrame> {
+    fn flush(&mut self) -> filmcraft_codecs::Result<Vec<DecodedFrame>> {
+        let mut out = Vec::new();
         if let Some(hw) = self.hw.as_mut() {
-            let out = hw.flush();
-            filmcraft_codecs::hw::note_hw_frames(out.len());
-            self.note_emitted(&out);
-            return out;
+            match hw.flush() {
+                Ok(frames) => {
+                    filmcraft_codecs::hw::note_hw_frames(frames.len());
+                    self.note_emitted(&frames);
+                    return Ok(frames);
+                }
+                Err(error) => {
+                    let Some(hw) = self.hw.take() else { return Err(error) };
+                    // The failed drain published nothing; replay without draining hardware twice.
+                    out = self.replay(hw, error, Vec::new())?;
+                }
+            }
         }
-        let frames = self.sw.as_mut().map(|d| d.flush()).unwrap_or_default();
-        let mut out = self.merge(frames);
+        let frames = self.sw.as_mut().ok_or_else(|| CodecError::Decode("no decoder".into()))?.flush()?;
+        out.extend(self.merge(frames));
         out.extend(std::mem::take(&mut self.carry).into_values());
-        out
+        Ok(out)
     }
 
     fn reset(&mut self) {

@@ -93,7 +93,7 @@ fn mjpeg_and_pcm() {
     let frame = reference.len() / 50;
     let rate = src.info().frame_rate();
     for k in [10, 0, 49] {
-        let f = src.video_frame(FrameRequest::full(rate.tick_of(k as i64))).unwrap().to_rgba8();
+        let f = src.video_frame(FrameRequest::full(rate.tick_of(k as i64))).unwrap().to_rgba8().unwrap();
         let r = &reference[k * frame..(k + 1) * frame];
         let mean = f.iter().zip(r).map(|(a, b)| (*a as i32 - *b as i32).unsigned_abs()).sum::<u32>() as f64 / f.len() as f64;
         // another JPEG decoder and chroma upsampling than ffmpeg's: close, not identical
@@ -119,7 +119,7 @@ fn uncompressed_video_is_bit_exact() {
         let rate = src.info().frame_rate();
         for k in [7, 0, 49] {
             let f = src.video_frame(FrameRequest::full(rate.tick_of(k as i64))).unwrap();
-            let got = if reference_fmt == "rgba" { f.to_rgba8() } else { yuv_bytes(&f) };
+            let got = if reference_fmt == "rgba" { f.to_rgba8().unwrap() } else { yuv_bytes(&f) };
             assert!(got == reference[k * frame..(k + 1) * frame], "{name}: frame {k} differs from ffmpeg");
         }
     }
@@ -157,7 +157,7 @@ fn drop_frames_hold_the_previous_picture() {
     let Some(path) = fixture_path("avi_drop.avi", &args) else { return };
     let src = crate::open_bytes("avi_drop.avi", std::fs::read(&path).unwrap().into()).unwrap();
     let rate = src.info().frame_rate();
-    let at = |k: i64| src.video_frame(FrameRequest::full(rate.tick_of(k))).unwrap().to_rgba8();
+    let at = |k: i64| src.video_frame(FrameRequest::full(rate.tick_of(k))).unwrap().to_rgba8().unwrap();
     assert!(at(10) == at(9), "the dropped slot holds frame 9");
     assert!(at(11) != at(9));
 }
@@ -198,8 +198,8 @@ fn jpeg_without_huffman_tables_uses_the_standard_ones() {
     assert!(stripped.len() < jpeg.len() && !stripped.windows(2).any(|w| w == [0xFF, 0xC4]));
     use crate::video::VideoDecoder;
     let mut d = crate::video::MjpegDecoder;
-    let a = d.decode(&jpeg, 0).unwrap().remove(0).frame.to_rgba8();
-    let b = d.decode(&stripped, 0).unwrap().remove(0).frame.to_rgba8();
+    let a = d.decode(&jpeg, 0).unwrap().remove(0).frame.to_rgba8().unwrap();
+    let b = d.decode(&stripped, 0).unwrap().remove(0).frame.to_rgba8().unwrap();
     assert!(a == b);
     // the inserted segment is 418 bytes and well-formed: 4 tables of 12, 12, 162, 162 codes
     let with = crate::video::with_default_huffman(&stripped);

@@ -537,15 +537,15 @@ impl VideoDecoder for VtDecoder {
         Ok(self.bump())
     }
 
-    fn flush(&mut self) -> Vec<DecodedFrame> {
+    fn flush(&mut self) -> filmcraft_codecs::Result<Vec<DecodedFrame>> {
         if let Some(s) = self.session.as_ref() {
             s.wait();
         }
-        if let Err(e) = self.collect() {
-            log::warn!("{}: {e} while flushing", self.name);
-        }
+        let collected = self.collect().map_err(CodecError::Decode);
         self.in_flight.clear();
-        std::mem::take(&mut self.pending)
+        let out = std::mem::take(&mut self.pending);
+        collected?;
+        Ok(out)
     }
 
     fn reset(&mut self) {

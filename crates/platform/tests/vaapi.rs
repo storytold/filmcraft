@@ -145,7 +145,7 @@ fn parity(name: &str, s: &Stream) {
             for (smp, pts) in &s.samples[..mid] {
                 out.extend(d.decode(smp, *pts).unwrap());
             }
-            out.extend(d.flush());
+            out.extend(d.flush().unwrap());
             out.extend(decode_all(d.as_mut(), &s.samples[mid..]));
         }
         assert_same(&format!("{name} with a flush at {mid}"), &a, &b);
@@ -187,8 +187,8 @@ fn parity_streaming(name: &str, s: &Stream) {
             b.extend(sw.decode(smp, *pts).unwrap());
             compare(&mut a, &mut b);
         }
-        a.extend(hw.flush());
-        b.extend(sw.flush());
+        a.extend(hw.flush().unwrap());
+        b.extend(sw.flush().unwrap());
         compare(&mut a, &mut b);
         assert!(a.is_empty() && b.is_empty(), "{name} from sample {start}: picture counts differ");
         assert!(compared >= s.samples.len().saturating_sub(start) / 2, "{name} from sample {start}: {compared} pictures");

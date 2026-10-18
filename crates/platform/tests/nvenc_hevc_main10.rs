@@ -185,7 +185,7 @@ fn round_trip(name: &str, signal: ColorSignal, want_sei: bool) {
     for p in &packets {
         out.extend(dec.decode(&p.data, p.pts).unwrap());
     }
-    out.extend(dec.flush());
+    out.extend(dec.flush().unwrap());
     assert_eq!(out.len(), FRAMES, "{name}");
     let (mut worst_y, mut worst_c) = (99.0f64, 99.0f64);
     let (mut max_code, mut max_ramp_code) = (0u16, 0u16);

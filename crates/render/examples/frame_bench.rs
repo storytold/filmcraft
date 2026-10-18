@@ -135,15 +135,26 @@ fn checksum(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x100000001b3))
 }
 
+fn frame_failed<T>(error: String) -> T {
+    eprintln!("Frame benchmark failed: {error}");
+    std::process::exit(1)
+}
+
 fn main() {
     println!("rayon threads: {}", rayon::current_num_threads());
     let (cam, ban) = (camera(), banner(100));
     println!("\n-- stages (ms per frame, 1920x1080) --");
-    println!("camera frame -> linear f32 image : {:6.2}", median_ms(|| drop(std::hint::black_box(cam.to_linear_f32_decimated(1)))));
-    println!("banner frame -> linear f32 image : {:6.2}", median_ms(|| drop(std::hint::black_box(ban.to_linear_f32_decimated(1)))));
+    println!(
+        "camera frame -> linear f32 image : {:6.2}",
+        median_ms(|| drop(std::hint::black_box(cam.to_linear_f32_decimated(1).unwrap_or_else(frame_failed))))
+    );
+    println!(
+        "banner frame -> linear f32 image : {:6.2}",
+        median_ms(|| drop(std::hint::black_box(ban.to_linear_f32_decimated(1).unwrap_or_else(frame_failed))))
+    );
     println!("Image::new (zeroed 33 MB canvas) : {:6.2}", median_ms(|| drop(std::hint::black_box(Image::new(W, H)))));
-    let (_, _, cpx) = cam.to_linear_f32_decimated(1);
-    let (_, _, bpx) = ban.to_linear_f32_decimated(1);
+    let (_, _, cpx) = cam.to_linear_f32_decimated(1).unwrap_or_else(frame_failed);
+    let (_, _, bpx) = ban.to_linear_f32_decimated(1).unwrap_or_else(frame_failed);
     let (cam_img, ban_img) = (Image { w: W, h: H, px: cpx }, Image { w: W, h: H, px: bpx });
     let mut canvas = Image::new(W, H);
     println!("composite camera over empty      : {:6.2}", median_ms(|| blend::composite(&mut canvas, &cam_img, 1.0, Blend::Normal)));
@@ -158,14 +169,14 @@ fn main() {
         let opts = RenderOptions::default();
         let mut last = Vec::new();
         let ms = median_ms(|| {
-            let img = render_sequence(&p, seq, FPS.tick_of(10), opts, &map);
+            let img = render_sequence(&p, seq, FPS.tick_of(10), opts, &map).unwrap_or_else(frame_failed);
             last = img.over_black_rgba8();
             if recycle {
                 filmcraft_frame::pool::recycle_f32(img.px);
             }
         });
         let render_only = median_ms(|| {
-            let img = std::hint::black_box(render_sequence(&p, seq, FPS.tick_of(10), opts, &map));
+            let img = std::hint::black_box(render_sequence(&p, seq, FPS.tick_of(10), opts, &map).unwrap_or_else(frame_failed));
             if recycle {
                 filmcraft_frame::pool::recycle_f32(img.px);
             }

@@ -87,7 +87,7 @@ fn drained_decoder_restarts_only_at_idr(name: &str, s: &Stream) {
     let Some(idr) = (mid..s.samples.len()).find(|&i| s.sync[i] && is_idr(i)) else { return };
     let mut sw = software(s);
     let before: Vec<_> = s.samples[..mid].iter().flat_map(|(d, p)| mf.decode(d, *p).unwrap()).collect();
-    let drained = mf.flush();
+    let drained = mf.flush().unwrap();
     assert!(before.len() + drained.len() >= mid.saturating_sub(1), "{name}: flush returns the held pictures");
     if mid > 0 && !s.sync[mid] {
         assert!(mf.decode(&s.samples[mid].0, s.samples[mid].1).is_err(), "{name}: continuing mid-GOP after a flush is an error");
