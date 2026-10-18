@@ -1040,6 +1040,10 @@ impl FilmcraftApp {
         if self.playback.playing || self.playback.preroll.is_some() {
             self.stop();
         }
+        // Source monitor playback keeps the device too; left running it would mute the scrub grain.
+        if self.source_playback.clock.playing {
+            self.stop_source();
+        }
     }
 
     fn start_audio(&mut self) {

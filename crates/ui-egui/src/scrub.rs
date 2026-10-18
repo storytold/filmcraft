@@ -266,4 +266,20 @@ mod tests {
         assert!(fill.lock().unwrap().is_some(), "the Source playback stream is still playing");
         assert!(!app.scrub.is_open());
     }
+
+    /// A press or drag that scrubs ends Source monitor playback, or its clock would keep the device
+    /// and silence the scrub grains; with nothing playing the open scrub stream is left alone.
+    #[test]
+    fn scrubbing_stops_source_playback() {
+        let (mut app, _) = app(true);
+        app.source_playback.clock.playing = true;
+        app.stop_for_scrub();
+        assert!(!app.source_playback.clock.playing, "Source playback stopped");
+        let rate = app.session.sequence_rate();
+        app.scrub_tick(0.0, true);
+        app.session.set_playhead(rate.tick_of(60));
+        assert!(app.scrub_tick(0.02, true), "the scrub grain sounds");
+        app.stop_for_scrub();
+        assert!(app.scrub.is_open(), "an idle scrub keeps its stream open");
+    }
 }
