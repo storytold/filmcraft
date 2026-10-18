@@ -1789,6 +1789,7 @@ impl FilmcraftApp {
             state::Mode::Import => panels::import_mode::show(self, ui, body),
             state::Mode::Export => panels::export_mode::show(self, ui, body),
         }
+        self.native_floating_viewports(&ctx);
         // the Timeline has had its chance to place a file drop this frame; anything left stays a bin import
         self.pending_timeline_drop = None;
         panels::dialogs::show(self, &ctx);
