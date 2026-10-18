@@ -84,3 +84,17 @@ buttons use `craft-ui::layout::fit_toolbar`; commands beyond the available width
 through More, including their selected state and Source/Program routing. A scrolling fallback
 retains all commands if even More cannot fit. `monitor_geometry` checks the painted readouts,
 control bounds, overflow actions and Source drag payloads across monitor widths and themes.
+
+## Effect order
+
+Effect Controls headers drag nonintrinsic effects within the same clip. The
+insertion line previews the final position; only a primary-button drop dispatches
+`effects.reorder`. Intrinsic effects, cancelled drags, stale payloads, and drops
+outside a valid header leave the project unchanged. Headers and their controls
+have `effectControls.clip.<clip>.effect.<index>` automation ids, including duplicate
+effects. Existing effect-name ids remain available.
+
+Row expansion follows reorder permutations. Index-based keyframe selection and
+its gesture clear when order changes, including undo/redo and control commands.
+The `keyframes_ui` tests exercise real pointer drags; use an isolated native app's
+control server and `ui.screenshot` to inspect the insertion marker and final order.

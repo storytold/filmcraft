@@ -15,6 +15,10 @@ fn state_id() -> Id {
     Id::new("effect-controls-keyframe-selection")
 }
 
+pub(crate) fn cancel_for_reorder(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.remove::<State>(state_id()));
+}
+
 #[derive(Clone)]
 struct Point {
     key: KeyframeRef,

@@ -708,3 +708,124 @@ fn mask_keyframe_menus_preserve_the_effect_and_other_masks() {
         assert_eq!(effect(&d), before);
     }
 }
+
+fn reorder_demo() -> (Driver, Clip) {
+    let (mut d, clip) = Driver::demo();
+    d.exec("timeline.select", json!({"clips":[clip.id],"linked":false}));
+    for effect in ["rounded_crop", "drop_shadow"] {
+        d.exec("effects.apply", json!({"clips":[clip.id],"effect":effect}));
+    }
+    let ids: Vec<String> =
+        d.harness.state().session.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1.effects.iter().map(|e| e.effect.clone()).collect();
+    for id in ids {
+        d.click(&format!("effectControls.effect.{id}.twirl"));
+    }
+    (d, clip)
+}
+
+#[test]
+fn effect_header_drag_reorders_only_on_drop_and_is_one_undo_step() {
+    let (mut d, clip) = reorder_demo();
+    d.exec("effects.setParam", json!({"clip":clip.id,"effect":0,"param":"left","value":10,"time":0,"keyframe":true}));
+    let key_time = d.harness.state().session.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1.effects[0].params["left"].keyframes[0].time.0;
+    d.ok("ui.set", json!({"keyframeSelection":[{"clip":clip.id,"effect":0,"param":"left","time":key_time}]}));
+    assert_eq!(d.harness.state().ui.keyframe_selection.len(), 1);
+    let before = d.harness.state().session.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1.effects.clone();
+    let mark = d.harness.state().session.history.undo.len();
+    let a = d.rect("effectControls.effect.drop_shadow");
+    let b = d.rect("effectControls.effect.rounded_crop");
+    let from = egui::pos2(a[0] as f32 + 100.0, (a[1] + a[3] / 2.0) as f32);
+    let to = egui::pos2(b[0] as f32 + 100.0, b[1] as f32 + 2.0);
+    d.press_drag(from, to, egui::Modifiers::NONE);
+    assert_eq!(d.harness.state().session.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1.effects, before);
+    assert_eq!(d.harness.state().session.history.undo.len(), mark);
+    d.shot("effect-order-insertion");
+    d.release(to, egui::Modifiers::NONE);
+    let after = d.harness.state().session.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1.effects.clone();
+    assert_eq!(after[0], before[1]);
+    assert_eq!(after[1], before[0]);
+    assert_eq!(after[2..], before[2..]);
+    assert_eq!(d.harness.state().session.history.undo.len(), mark + 1);
+    assert!(d.harness.state().ui.keyframe_selection.is_empty(), "stale indices must not select the wrong effect's keys");
+    d.shot("effect-order-after");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.harness.state().session.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1.effects, before);
+    d.exec("edit.redo", json!({}));
+    assert_eq!(d.harness.state().session.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1.effects, after);
+}
+
+#[test]
+fn cancelled_same_position_and_intrinsic_header_drags_leave_the_stack_alone() {
+    let (mut d, clip) = reorder_demo();
+    let before = d.harness.state().session.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1.effects.clone();
+    let mark = d.harness.state().session.history.undo.len();
+    let a = d.rect("effectControls.effect.rounded_crop");
+    let b = d.rect("effectControls.effect.drop_shadow");
+    let from = egui::pos2(a[0] as f32 + 100.0, (a[1] + a[3] / 2.0) as f32);
+    let to = egui::pos2(b[0] as f32 + 100.0, (b[1] + b[3] - 2.0) as f32);
+    d.press_drag(from, to, egui::Modifiers::NONE);
+    d.harness.input_mut().events.push(egui::Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    d.frames(2);
+    d.release(to, egui::Modifiers::NONE);
+    d.harness.input_mut().events.push(egui::Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: false,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    d.frames(2);
+    let a = d.rect("effectControls.effect.rounded_crop");
+    let from = egui::pos2(a[0] as f32 + 100.0, (a[1] + a[3] / 2.0) as f32);
+    d.gesture(from, from + egui::vec2(60.0, 0.0), egui::Modifiers::NONE, None);
+    d.gesture(from, egui::pos2(-20.0, -20.0), egui::Modifiers::NONE, None);
+    let a = d.rect("effectControls.effect.motion");
+    let from = egui::pos2(a[0] as f32 + 100.0, (a[1] + a[3] / 2.0) as f32);
+    d.gesture(from, to, egui::Modifiers::NONE, None);
+    assert_eq!(d.harness.state().session.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1.effects, before);
+    assert_eq!(d.harness.state().session.history.undo.len(), mark);
+}
+
+#[test]
+fn duplicate_effect_headers_have_distinct_drag_targets() {
+    let (mut d, clip) = reorder_demo();
+    d.exec("effects.apply", json!({"clips":[clip.id],"effect":"rounded_crop"}));
+    d.exec("effects.setParam", json!({"clip":clip.id,"effect":2,"param":"left","value":17}));
+    let before = d.harness.state().session.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1.effects.clone();
+    for idx in 0..before.len() {
+        if !d.harness.state().ui.collapsed_fx.contains(&format!("{}:{idx}", clip.id)) {
+            d.click(&format!("effectControls.clip.{}.effect.{idx}.twirl", clip.id));
+        }
+    }
+    let a = d.rect(&format!("effectControls.clip.{}.effect.2", clip.id));
+    let b = d.rect(&format!("effectControls.clip.{}.effect.0", clip.id));
+    d.gesture(egui::pos2(a[0] as f32 + 100.0, (a[1] + a[3] / 2.0) as f32), egui::pos2(b[0] as f32 + 100.0, b[1] as f32 + 2.0), egui::Modifiers::NONE, None);
+    let after = d.harness.state().session.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1.effects.clone();
+    assert_eq!(after[..3], [before[2].clone(), before[0].clone(), before[1].clone()]);
+    assert_eq!(d.harness.state().session.state.selected_effect.as_ref().unwrap().index(&after), Some(0));
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.harness.state().session.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1.effects, before);
+    assert_eq!(d.harness.state().session.state.selected_effect.as_ref().unwrap().index(&before), Some(2));
+}
+
+#[test]
+fn an_effect_drag_with_a_stale_snapshot_does_not_commit() {
+    let (mut d, clip) = reorder_demo();
+    let a = d.rect("effectControls.effect.drop_shadow");
+    let b = d.rect("effectControls.effect.rounded_crop");
+    let from = egui::pos2(a[0] as f32 + 100.0, (a[1] + a[3] / 2.0) as f32);
+    let to = egui::pos2(b[0] as f32 + 100.0, b[1] as f32 + 2.0);
+    d.press_drag(from, to, egui::Modifiers::NONE);
+    d.exec("effects.setParam", json!({"clip":clip.id,"effect":0,"param":"left","value":17}));
+    let expected = d.harness.state().session.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1.effects.clone();
+    let mark = d.harness.state().session.history.undo.len();
+    d.release(to, egui::Modifiers::NONE);
+    assert_eq!(d.harness.state().session.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1.effects, expected);
+    assert_eq!(d.harness.state().session.history.undo.len(), mark);
+}

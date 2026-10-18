@@ -125,9 +125,64 @@ fn selected_clips(app: &FilmcraftApp) -> Vec<(ClipId, TrackItem, TrackKind)> {
     out
 }
 
+#[derive(Clone)]
+struct EffectDrag {
+    clip: ClipId,
+    from: usize,
+    effects: Vec<EffectInstance>,
+}
+
+// Index-based keyframe references must never attach to a different effect after
+// a reorder (including undo/redo or a control-channel command). Preserve row
+// expansion through the permutation and clear the keyframe gesture/selection.
+fn sync_effect_order(app: &mut FilmcraftApp, ui: &egui::Ui, clips: &[(ClipId, TrackItem, TrackKind)]) {
+    let id = egui::Id::new("effect-controls-order-cache");
+    let old = ui.data(|d| d.get_temp::<Vec<(ClipId, Vec<EffectInstance>)>>(id)).unwrap_or_default();
+    for (clip, item, _) in clips {
+        let Some((_, previous)) = old.iter().find(|(c, _)| c == clip) else { continue };
+        if previous == &item.effects || previous.len() != item.effects.len() {
+            continue;
+        }
+        let mut used = vec![false; item.effects.len()];
+        let permutation: Option<Vec<usize>> = previous
+            .iter()
+            .map(|effect| {
+                let i = item.effects.iter().enumerate().position(|(i, e)| !used[i] && e == effect)?;
+                used[i] = true;
+                Some(i)
+            })
+            .collect();
+        let Some(permutation) = permutation else { continue };
+        app.ui.keyframe_selection.retain(|k| k.clip != clip.0);
+        selection::cancel_for_reorder(ui.ctx());
+        ui.ctx().stop_dragging();
+        remap_effect_row_keys(&mut app.ui.collapsed_fx, &format!("{}:", clip.0), &permutation);
+        remap_effect_row_keys(&mut app.ui.collapsed_fx, &format!("mask:{}:", clip.0), &permutation);
+        remap_effect_row_keys(&mut app.ui.expanded_fx, &format!("graph:{}:", clip.0), &permutation);
+    }
+    ui.data_mut(|d| d.insert_temp(id, clips.iter().map(|(c, it, _)| (*c, it.effects.clone())).collect::<Vec<_>>()));
+}
+
+fn remap_effect_row_keys(keys: &mut [String], prefix: &str, permutation: &[usize]) {
+    for key in keys {
+        let Some(rest) = key.strip_prefix(prefix) else { continue };
+        let (index, suffix) = rest.split_once(':').map_or((rest, None), |(i, s)| (i, Some(s)));
+        let Some(to) = index.parse::<usize>().ok().and_then(|i| permutation.get(i)) else { continue };
+        let next = match suffix {
+            Some(s) => format!("{prefix}{to}:{s}"),
+            None => format!("{prefix}{to}"),
+        };
+        *key = next;
+    }
+}
+
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let clips = selected_clips(app);
+    sync_effect_order(app, ui, &clips);
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) && egui::DragAndDrop::has_payload_of_type::<EffectDrag>(ui.ctx()) {
+        egui::DragAndDrop::clear_payload(ui.ctx());
+    }
     // keep only selected keyframes that still exist on a clip shown here
     app.ui.keyframe_selection.retain(|k| clips.iter().any(|(c, it, _)| c.0 == k.clip && keyframe_exists(it, k)));
     let Some((clip, it, _)) = clips.first().cloned() else {
@@ -203,21 +258,57 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let key = format!("{}:{}", clip.0, idx);
                 let open = !app.ui.collapsed_fx.contains(&key);
                 let selected = app.session.state.selected_effect.as_ref().is_some_and(|s| s.clip == clip && s.index(&it.effects) == Some(idx));
-                let (r, resp) = bui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::click());
-                if selected {
+                let (r, resp) = bui.allocate_exact_size(vec2(body.width(), ROW_H), if def.intrinsic { Sense::click() } else { Sense::click_and_drag() });
+                let mut insertion_y = None;
+                if !def.intrinsic
+                    && resp.drag_started_by(egui::PointerButton::Primary)
+                    && bui.input(|i| i.pointer.press_origin()).is_some_and(|p| p.x >= r.min.x + 42.0 && p.x < r.max.x - 26.0)
+                {
+                    egui::DragAndDrop::set_payload(bui.ctx(), EffectDrag { clip, from: idx, effects: it.effects.clone() });
+                    actions.push(("effects.select".into(), json!({"clip": clip.0, "effect": idx})));
+                }
+                if !def.intrinsic && (resp.hovered() || resp.dragged()) {
+                    bui.ctx().set_cursor_icon(if resp.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
+                }
+                if !def.intrinsic
+                    && let Some(drag) = resp.dnd_hover_payload::<EffectDrag>()
+                    && drag.clip == clip
+                    && drag.effects == it.effects
+                {
+                    let below = bui.input(|i| i.pointer.interact_pos()).is_some_and(|p| p.y >= r.center().y);
+                    // `to` is the final vector index, after removing the source.
+                    let to = if below { idx + usize::from(drag.from > idx) } else { idx.saturating_sub(usize::from(drag.from < idx)) };
+                    if to != drag.from {
+                        let y = if below { r.max.y } else { r.min.y };
+                        insertion_y = Some(y);
+                    }
+                    if bui.input(|i| i.pointer.button_released(egui::PointerButton::Primary))
+                        && let Some(drag) = resp.dnd_release_payload::<EffectDrag>()
+                        && to != drag.from
+                    {
+                        actions.push(("effects.reorder".into(), json!({"clip": clip.0, "from": drag.from, "to": to})));
+                    }
+                }
+                app.auto.add(&format!("effectControls.clip.{}.effect.{idx}", clip.0), r, def.name);
+                if selected || resp.dragged() {
                     bui.painter().rect_filled(crate::panels::effect_controls::row_fill(r), 0.0, t.row_selected);
                 } else if resp.hovered() {
                     bui.painter().rect_filled(crate::panels::effect_controls::row_fill(r), 0.0, t.hover);
                 }
                 row_line(bui, r, &lane, &t);
+                if let Some(y) = insertion_y {
+                    bui.painter().hline(r.min.x..=r.max.x, y, Stroke::new(2.0, t.accent));
+                }
                 // only the arrow twirls the effect open or shut; the rest of the header selects it
                 let tw = Rect::from_center_size(pos2(r.min.x + 10.0, r.center().y), vec2(10.0, 10.0));
                 icons::paint(bui.painter(), tw, if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_dim);
                 let twresp = bui.interact(tw.expand(3.0), egui::Id::new(("fx-twirl", clip.0, idx)), Sense::click());
                 app.auto.add(&format!("effectControls.effect.{}.twirl", e.effect), tw, "twirl");
+                app.auto.add(&format!("effectControls.clip.{}.effect.{idx}.twirl", clip.0), tw, "twirl");
                 // fx enable toggle
                 let fxr = Rect::from_center_size(pos2(r.min.x + 28.0, r.center().y), vec2(18.0, 14.0));
                 let fxresp = bui.interact(fxr, egui::Id::new(("fxen", clip.0, idx)), Sense::click());
+                app.auto.add(&format!("effectControls.clip.{}.effect.{idx}.enabled", clip.0), fxr, "Enable Effect");
                 bui.painter().text(fxr.center(), Align2::CENTER_CENTER, "fx", Tokens::semibold(10.5), if e.enabled { t.text } else { t.text_faint });
                 if !e.enabled {
                     bui.painter().line_segment([fxr.left_bottom(), fxr.right_top()], Stroke::new(1.0, t.text_faint));
@@ -230,6 +321,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 // reset button
                 let rr = Rect::from_center_size(pos2(r.max.x - 14.0, r.center().y), vec2(16.0, 16.0));
                 let rresp = bui.interact(rr, egui::Id::new(("fxreset", clip.0, idx)), Sense::click()).on_hover_text(tl!("Reset Effect"));
+                app.auto.add(&format!("effectControls.clip.{}.effect.{idx}.reset", clip.0), rr, "Reset Effect");
                 icons::paint(bui.painter(), rr.shrink(2.0), Icon::Reset, if rresp.hovered() { t.text } else { t.text_dim });
                 if rresp.clicked() {
                     actions.push(("effects.reset".into(), json!({"clip": clip.0, "index": idx})));
