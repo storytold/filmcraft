@@ -717,7 +717,7 @@ impl FilmcraftApp {
             if language == i18n::Language::Ja && !i18n::install_japanese_font(ctx) {
                 self.ui.language = i18n::Language::En;
                 self.ui.status = tl!("no Japanese font is installed on this system; the interface stays in English").into();
-            } else if language == i18n::Language::ZhCn && !i18n::chinese_font_available() {
+            } else if matches!(language, i18n::Language::ZhCn | i18n::Language::ZhTw) && !i18n::chinese_font_available() {
                 self.ui.language = i18n::Language::En;
                 self.ui.status = tl!("no Chinese font is installed on this system; the interface stays in English").into();
             } else if language == i18n::Language::Ko && !i18n::korean_font_available() {
@@ -2048,7 +2048,7 @@ impl eframe::App for FilmcraftApp {
             // (likewise Chinese without a Chinese face, Korean without a Hangul one)
             let japanese_missing = self.ui.language == i18n::Language::Ja && !i18n::install_japanese_font(ctx);
             if japanese_missing
-                || (self.ui.language == i18n::Language::ZhCn && !i18n::chinese_font_available())
+                || (matches!(self.ui.language, i18n::Language::ZhCn | i18n::Language::ZhTw) && !i18n::chinese_font_available())
                 || (self.ui.language == i18n::Language::Ko && !i18n::korean_font_available())
             {
                 self.ui.language = i18n::Language::En;

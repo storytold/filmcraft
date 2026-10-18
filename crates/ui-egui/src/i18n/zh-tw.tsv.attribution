@@ -1,0 +1,8 @@
+asset:        zh-tw.tsv
+title:        Traditional Chinese (Taiwan) interface translation catalog
+author:       FilmCraft contributors
+source:       original work
+license:      MIT OR Apache-2.0
+license-file: LICENSE-MIT and LICENSE-APACHE
+added:        2026-10-14 by FilmCraft contributors
+notes:        Clean-room Taiwan Traditional Chinese localization of FilmCraft's original English interface strings; uses Taiwan terminology and no third-party product translation resources.

@@ -1,0 +1,3578 @@
+# Traditional Chinese (Taiwan) catalog. Columns are separated by TAB: context <TAB> source <TAB> translation.
+# Empty context is for ordinary UI strings; non-empty context disambiguates a source string.
+# Within a column, \n, \t and \\ are escapes. Keep every {name} placeholder from the English source.
+# Clean-room localization adapted from FilmCraft contributors' original English-to-Simplified Chinese catalog,
+# with Taiwan Traditional Chinese forms and video-editing terminology. Product names remain unchanged.
+	About FilmCraft	關於 FilmCraft
+	Add Audio Submix Track	新增音訊子混音軌道
+	Add Caption at Playhead	在播放頭處新增字幕
+	Add Chapter Marker…	新增章節標記…
+	Add Edit	新增編輯
+	Add Edit to All Tracks	在所有軌道新增編輯點
+	Add Flash Cue Marker…	新增閃現提示標記…
+	Add Frame Hold	新增幀定格
+	Add Guide…	新增參考線…
+	Add Marker	新增標記
+	Add New Caption Track…	新增新字幕軌道…
+	Add Range Marker	新增範圍標記
+	Add Range Marker to In and Out	在入點和出點間新增範圍標記
+	Add Tracks…	新增軌道…
+	Adjustment Layer…	調整圖層…
+	Align to Selection	與所選物件對齊
+	Align to Video Frame	與影片幀對齊
+	Align to Video Frame as Group	作為組與影片幀對齊
+	All Panels	所有面板
+	Alpha	Alpha
+	Appearance	外觀
+	Appearance…	外觀…
+	Apply Audio Transition	應用音訊過渡
+	Apply Default Transitions to Selection	對所選物件應用預設過渡
+	Apply Video Transition	應用影片過渡
+	Arrange	排列
+	ArtCraft Website	ArtCraft 官網
+	Assembly	組裝
+	Attach Proxies…	附加代理檔案…
+	Audio Channels…	音訊聲道…
+	Audio Clip Mixer	音訊剪輯混音器
+	Audio Gain…	音訊增益…
+	Audio Hardware…	音訊硬體…
+	Audio In	音訊入
+	Audio Meters	音訊電平表
+	Audio Options	音訊選項
+	Audio Out	音訊出
+	Audio Track Mixer	音訊軌道混音器
+	Audio Waveform	音訊波形
+	Auto Save…	自動儲存…
+	Automate to Sequence…	自動適配到序列…
+	Bars and Tone…	彩條與音調…
+	Bin	素材箱
+	Bin From Selection	從所選物件建立素材箱
+	Black Video…	黑場影片…
+	Blue	藍
+	Bottom	底部
+	Breakout to Mono	拆分為單聲道
+	Bring Forward	上移一層
+	Bring to Front	置於頂層
+	Brown	棕
+	Captions	字幕
+	Captions and Graphics	字幕與圖形
+	Captions…	字幕…
+	Caribbean	加勒比
+	Center Horizontally	水平居中
+	Center Vertically	垂直居中
+	Cerulean	蔚藍
+	Clear	清除
+	Clear Guides	清除參考線
+	Clear In	清除入點
+	Clear In and Out	清除入點和出點
+	Clear Markers	清除標記
+	Clear Out	清除出點
+	Clear Selected Marker	清除所選標記
+	Close	關閉
+	Close All Other Projects	關閉其他所有專案
+	Close All Projects	關閉所有專案
+	Close Gap	閉合間隙
+	Close Project	關閉專案
+	Color Management…	色彩管理…
+	Color Matte…	顏色遮罩…
+	Comparison View	比較檢視
+	Composite Video	合成影片
+	Consolidate Duplicates	合併重複項
+	Copy	複製
+	Copy Paste Includes Sequence Markers	複製貼上包含序列標記
+	Create Captions from Transcript…	根據轉錄文稿建立字幕…
+	Create Multi-Camera Source Sequence…	建立多機位源序列…
+	Create Proxies…	建立代理檔案…
+	Cut	剪下
+	Darkest	最暗
+	Delete Render Files	刪除渲染檔案
+	Delete Render Files In to Out	刪除入點到出點間的渲染檔案
+	Delete Tracks…	刪除軌道…
+	Delete Transcript	刪除轉錄文稿
+	Demo Footage	演示素材
+	Demo Project	演示專案
+	Deselect All	取消全選
+	Detach Proxies	分離代理檔案
+	Display Mode	顯示模式
+	Distribute	分佈
+	Distribute Horizontally	水平分佈
+	Distribute Space Horizontally	水平均勻分佈間距
+	Distribute Space Vertically	垂直均勻分佈間距
+	Distribute Vertically	垂直分佈
+	Duplicate	複製
+	Dynamic Audio Waveforms	動態音訊波形
+	Edit	編輯
+	Edit Offline…	離線編輯…
+	Edit Original	編輯原始素材
+	Edit Subclip…	編輯子剪輯…
+	Editing	編輯
+	Effect Controls	效果控制元件
+	Effects	效果
+	Ellipse	橢圓
+	Enable	啟用
+	Enable Remix	啟用重新混音
+	Essential Graphics	基本圖形
+	Essential Sound	基本聲音
+	Events	事件
+	Export	匯出
+	Export As Motion Graphics Template…	匯出為動態圖形模板…
+	Extract	提取
+	Extract Audio	提取音訊
+	Field Options…	場選項…
+	File	檔案
+	File…	檔案…
+	Fill frame	填滿幀
+	FilmCraft Help…	FilmCraft 幫助…
+	FilmCraft on GitHub	GitHub 上的 FilmCraft
+	FilmCraft on getartcraft.com	getartcraft.com 上的 FilmCraft
+	Find Next	查詢下一個
+	Find…	查詢…
+	Fit	適配
+	Fit to frame	適配到幀
+	Flatten	拼合
+	Forest	森林綠
+	Frame Blending	幀混合
+	Frame Hold Options…	幀定格選項…
+	Frame Sampling	幀取樣
+	From Bin	從素材箱
+	From Source Monitor	從源監視器
+	From Source Monitor, Match Frame	從源監視器，匹配幀
+	From file…	從檔案…
+	Full	完整
+	Generate Audio Waveform	生成音訊波形
+	Get Media File Properties for	獲取媒體檔案屬性：
+	Go to Gap	轉到間隙
+	Go to In	轉到入點
+	Go to Next Caption Segment	轉到下一段字幕
+	Go to Next Marker	轉到下一個標記
+	Go to Out	轉到出點
+	Go to Previous Caption Segment	轉到上一段字幕
+	Go to Previous Marker	轉到上一個標記
+	Go to Split	轉到拆分點
+	Graphics and Titles	圖形與字幕
+	Graphics…	圖形…
+	Green	綠
+	Group	編組
+	Guide Templates	參考線模板
+	Help	幫助
+	Hide All Caption Tracks	隱藏所有字幕軌道
+	High Quality Playback	高質量播放
+	History	歷史記錄
+	Import From	匯入來源
+	Import Image Sequence…	匯入影象序列…
+	Import from Media Browser	從媒體瀏覽器匯入
+	Import…	匯入…
+	Info	資訊
+	Ingest Settings…	攝取設定…
+	Insert	插入
+	Insert Frame Hold Segment	插入幀定格片段
+	Install Motion Graphics Template…	安裝動態圖形模板…
+	Interpret Footage…	解釋素材…
+	Join the ArtCraft Discord…	加入 ArtCraft Discord…
+	Keyboard Shortcuts…	鍵盤快捷鍵…
+	Label	標籤
+	Labels…	標籤…
+	Language	語言
+	Lavender	薰衣草
+	Learning	學習
+	Left	左
+	Libraries	庫
+	Lift	提升
+	Light	淺
+	Link	連結
+	Link Media…	連結媒體…
+	Refresh Changed Media	重新整理已更改的媒體
+	Linked Selection	關聯選擇
+	Lock Guides	鎖定參考線
+	Lumetri Color	Lumetri 顏色
+	Lumetri Scopes	Lumetri 示波器
+	Magnification	放大
+	Make Offline…	設為離線…
+	Make Subclip…	建立子剪輯…
+	Make Subsequence	建立子序列
+	Manage Guides…	管理參考線…
+	Mark Clip	標記剪輯
+	Mark In	標記入點
+	Mark Out	標記出點
+	Mark Selection	標記所選物件
+	Mark Split	標記拆分點
+	Markers	標記
+	Match Frame	匹配幀
+	Media Analysis & Transcription…	媒體分析與轉錄…
+	Media Browser	媒體瀏覽器
+	Media Cache…	媒體快取…
+	Media…	媒體…
+	Medium	中
+	Memory…	記憶體…
+	Merge Clips…	合併剪輯…
+	Metadata	後設資料
+	Modify	修改
+	Motion Graphics Template…	動態圖形模板…
+	Multi-Camera	多機位
+	Multi-Camera View	多機位檢視
+	Nest…	巢狀…
+	New	新建
+	New Layer	新建圖層
+	New Project Panel	新建專案面板
+	Next in Sequence	序列中的下一個
+	Next in Track	軌道中的下一個
+	Normalize Mix Track…	標準化混音軌道…
+	Offline File…	離線檔案…
+	Open Project…	開啟專案…
+	Open Recent	開啟最近檔案
+	Clear Recent Files	清除最近檔案
+	Recent	最近使用
+	Optical Flow	光流
+	Overwrite	覆蓋
+	Paste	貼上
+	Paste Attributes…	貼上屬性…
+	Paste Insert	貼上插入
+	Paused Resolution	暫停時解析度
+	Playback Resolution	播放解析度
+	Playback…	播放…
+	Plugins…	外掛…
+	Polygon	多邊形
+	Preferences	首選項
+	Previous in Sequence	序列中的上一個
+	Previous in Track	軌道中的上一個
+	Program	節目
+	Progress	進度
+	Project	專案
+	Project Manager…	專案管理器…
+	Project Settings	專案設定
+	Project…	專案…
+	Properties	屬性
+	Purple	紫
+	Reconnect Full Resolution Media…	重新連線完整解析度媒體…
+	Recover Unsaved Changes…	恢復未儲存的更改…
+	Rectangle	矩形
+	Red	紅
+	Redo	重做
+	Reference Monitor	參考監視器
+	Remix	重新混音
+	Remix Properties…	重新混音屬性…
+	Remove Attributes…	移除屬性…
+	Remove Filler Words	移除填充詞
+	Remove Pauses	移除停頓
+	Remove Unused	移除未使用項
+	Rename…	重新命名…
+	Render Audio	渲染音訊
+	Render Effects In to Out	渲染入點到出點間的效果
+	Render In to Out	渲染入點到出點
+	Render Selection	渲染所選物件
+	Replace Fonts in Projects…	替換專案中的字型…
+	Replace With Clip	替換為剪輯
+	Report an Issue…	報告問題…
+	Reset All Parameters	重置所有引數
+	Reset Duration	重置持續時間
+	Reset to Saved Layout	重置為已儲存的佈局
+	Restore Captions from Source Clip	從源剪輯恢復字幕
+	Reveal Log Files…	顯示日誌檔案…
+	Reverse Match Frame	反向匹配幀
+	Revert	還原
+	Revert Remix	還原重新混音
+	Review	審閱
+	Right	右
+	Ripple Delete	波紋刪除
+	Ripple Delete Head Frame	波紋刪除頭部幀
+	Ripple Sequence Markers	波紋序列標記
+	Rose	玫瑰紅
+	Safe Margins	安全邊距
+	Save	儲存
+	Save All	全部儲存
+	Save As…	另存為…
+	Save Guides as Template…	將參考線另存為模板…
+	Save a Copy…	儲存副本…
+	Save as Template…	另存為模板…
+	Scale to Frame Size	縮放為幀大小
+	Scene Edit Detection…	場景編輯檢測…
+	Scratch Disks…	暫存檔…
+	Search Bin	搜尋素材箱
+	Select	選擇
+	Select All	全選
+	Select All Matching	選擇所有匹配項
+	Select Label Group	選擇標籤組
+	Select Next Graphic	選擇下一個圖形
+	Select Next Layer	選擇下一個圖層
+	Select Previous Graphic	選擇上一個圖形
+	Select Previous Layer	選擇上一個圖層
+	Selection Follows Playhead	選擇跟隨播放頭
+	Selection as FilmCraft Project…	將所選物件另存為 FilmCraft 專案…
+	Selection…	所選物件…
+	Send Backward	下移一層
+	Send to Back	置於底層
+	Sequence	序列
+	Sequence From Clip	從剪輯建立序列
+	Sequence Settings…	序列設定…
+	Sequence…	序列…
+	Show Active Caption Tracks Only	僅顯示活動字幕軌道
+	Show All Caption Tracks	顯示所有字幕軌道
+	Show All Marker Colors	顯示所有標記顏色
+	Show Guides	顯示參考線
+	Show Rulers	顯示標尺
+	Show Through Edits	顯示貫通編輯
+	Simplify Sequence…	簡化序列…
+	Snap in Program Monitor	在節目監視器中吸附
+	Snap in Timeline	在時間軸中吸附
+	Source	源
+	Source Settings…	源設定…
+	Speed/Duration…	速度/持續時間…
+	Synchronize…	同步…
+	System Compatibility Report…	系統相容性報告…
+	Tan	棕褐
+	Teal	藍綠
+	Text	文字
+	Time Interpolation	時間插值
+	Timecode	時間碼
+	Timecode…	時間碼…
+	Timeline	時間軸
+	Timeline…	時間軸…
+	Toggle Proxies	切換代理檔案
+	Tools	工具
+	Top	頂部
+	Transcribe Sequence…	轉錄序列…
+	Transcribe…	轉錄…
+	Transcript	轉錄文稿
+	Transparent Video…	透明影片…
+	Trim Edit	修剪編輯
+	Trim…	修剪…
+	Undo	撤銷
+	Ungroup	取消編組
+	Universal Counting Leader…	通用計數片頭…
+	Update Metadata…	更新後設資料…
+	Upgrade Caption to Graphic	將字幕升級為圖形
+	Upgrade to Source Graphic	升級為源圖形
+	Vertical Text	豎排文字
+	Video In	影片入
+	Video Options	影片選項
+	Video Out	影片出
+	Video and Audio Waveform Split	影片與音訊波形拆分
+	View	檢視
+	Violet	紫羅蘭
+	Window	視窗
+	Workspaces	工作區
+	Yellow	黃
+	Zoom In	放大
+	Zoom Out	縮小
+	Zoom to Sequence	縮放到序列
+	Home	主頁
+	Import	匯入
+	{name} - Edited	{name} - 已編輯
+	Full screen	全屏
+	Volume	音量
+	Master volume: use the Audio Track Mixer	主音量：請使用音訊軌道混音器調整
+	Search	搜尋
+	Quick Export	快速匯出
+	Join the ArtCraft Discord (discord.gg/artcraft)	加入 ArtCraft Discord（discord.gg/artcraft）
+	Cancel	取消
+	OK	確定
+	Interpret Footage	解釋素材
+	Color Management · {n} item	色彩管理 · {n} 項
+	Color Management · {n} items	色彩管理 · {n} 項
+	Media colour space (from file metadata): {detected}	媒體色彩空間（來自檔案後設資料）：{detected}
+	Override media colour space:	覆蓋媒體色彩空間：
+	Use file metadata	使用檔案後設資料
+	Sequence Color Management	序列色彩管理
+	Working Color Space	工作色彩空間
+	Wide gamut color (composite in BT.2020)	廣色域顏色（在 BT.2020 中合成）
+	Auto tone map media (HDR and log into SDR)	自動色調對映媒體（將 HDR 和 log 對映為 SDR）
+	Audio Gain	音訊增益
+	Set Gain to:	將增益設定為：
+	Adjust Gain by:	按以下值調整增益：
+	Normalize Max Peak to:	將最大峰值標準化為：
+	Normalize All Peaks to:	將所有峰值標準化為：
+	Peak Amplitude: {peak}	峰值振幅：{peak}
+	Standard	標準
+	Adaptive	自適應
+	Mono	單聲道
+	Stereo	立體聲
+	Add Tracks	新增軌道
+	Amount	數量
+	Placement	放置位置
+	Track type	軌道型別
+	Add video tracks	新增影片軌道
+	Add audio tracks	新增音訊軌道
+	Add audio submix tracks	新增音訊子混音軌道
+	After {name}	在 {name} 之後
+	Before First Track	在首個軌道之前
+	Delete Tracks	刪除軌道
+	Video Tracks	影片軌道
+	Audio Tracks	音訊軌道
+	Delete Video Tracks	刪除影片軌道
+	Delete Audio Tracks	刪除音訊軌道
+	All Empty Tracks	所有空軌道
+	Version {version}	版本 {version}
+	A clean-room, pure-Rust non-linear video editor. Part of the ArtCraft family.	一款淨室實現的純 Rust 非線性影片編輯器，屬於 ArtCraft 家族。
+	Join the ArtCraft Discord	加入 ArtCraft Discord
+	Source code on GitHub	GitHub 上的原始碼
+	Report an issue	報告問題
+	MIT OR Apache-2.0. Fonts: Inter, Noto Serif and JetBrains Mono (SIL OFL 1.1).	MIT 或 Apache-2.0。字型：Inter、Noto Serif 與 JetBrains Mono（SIL OFL 1.1）。
+	just now	剛剛
+	{n} s ago	{n} 秒前
+	{n} min ago	{n} 分鐘前
+	{n} h ago	{n} 小時前
+	All Events	所有事件
+	Warnings and Errors	警告與錯誤
+	Errors Only	僅錯誤
+	Clear All	清除全部
+	No events.	無事件。
+	Show finished jobs	顯示已完成的任務
+	Cancelled	已取消
+	Failed: {e}	失敗：{e}
+	Done	已完成
+	No background jobs.	無後臺任務。
+	Recover Unsaved Changes	恢復未儲存的更改
+	Untitled	未命名
+	FilmCraft was closed while “{name}” had unsaved changes.	FilmCraft 在“{name}”存在未儲存的更改時被關閉。
+	FilmCraft quit unexpectedly while “{name}” had unsaved changes.	FilmCraft 在“{name}”存在未儲存的更改時意外退出。
+	Recover unsaved changes from {when}?	恢復 {when} 的未儲存更改嗎？
+	The project had not been saved yet.	該專案尚未儲存。
+	{n} sessions have unsaved changes:	{n} 個會話存在未儲存的更改：
+	Discard	放棄
+	Recover	恢復
+	Not Now	暫不
+	Are you sure you want to discard your changes to '{file}'?	確定要放棄對“{file}”的更改嗎？
+	Yes	是
+	No	否
+	Add media to your project. Drop files anywhere in the window, or choose a source below.	將媒體新增到你的專案。將檔案拖到視窗任意位置，或在下方選擇來源。
+	Browse files…	瀏覽檔案…
+	Movies, audio and stills from disk	來自磁碟的電影、音訊與靜幀
+	Demo footage	演示素材
+	Six procedural 1080p clips with sound	六段程式生成的 1080p 帶聲片段
+	Demo project	演示專案
+	A cut sequence with transitions, effects and music	一段包含過渡、效果與音樂的剪輯序列
+	Bars and Tone	彩條與音調
+	SMPTE HD bars with 1 kHz reference tone	帶 1 kHz 參考音調的 SMPTE HD 彩條
+	Community	社群
+	Join us on Discord	在 Discord 上加入我們
+	OMF Export Settings	OMF 匯出設定
+	AAF Export Settings	AAF 匯出設定
+	OMF Title:	OMF 標題：
+	Mixdown video	影片混音
+	Audio:	音訊：
+	Encapsulate	封裝
+	Separate Audio	獨立音訊
+	Embed	嵌入
+	Separate Files	獨立檔案
+	Link to Media	連結到媒體
+	Audio File Format:	音訊檔案格式：
+	Sample Rate:	取樣率：
+	Bits per Sample:	取樣精度：
+	Rendering:	渲染：
+	Trim audio files	修剪音訊檔案
+	Handle Frames:	餘量幀數：
+	Render audio clip effects	渲染音訊剪輯效果
+	Breakout to mono	拆分為單聲道
+	Exported {path}	已匯出 {path}
+	Select a clip to view its metadata.	選擇一個剪輯以檢視其後設資料。
+	Clip: {name}	剪輯：{name}
+	Open	開啟
+	(no sequence)	（無序列）
+	Show or hide {color} markers	顯示或隱藏{color}標記
+	Marker	標記
+	{tc}  Chapter	{tc}  章節
+	No markers. Press M to add one.	無標記。按 M 鍵新增一個。
+	All markers are hidden by the colour filter.	所有標記均已按顏色篩選隱藏。
+	Type:	型別：
+	Video:	影片：
+	Codec:	編解碼器：
+	Duration:	持續時間：
+	Settings:	設定：
+	Playhead:	播放頭：
+	Video {n}:	影片 {n}：
+	Audio {n}:	音訊 {n}：
+	UI:	介面：
+	{fps} fps · {n} frames queued	{fps} fps · 已排隊 {n} 幀
+	{panel} — coming in a later milestone	{panel} — 將在後續里程碑中推出
+	Close Panel	關閉面板
+	Close Other Timeline Panels	關閉其他時間軸面板
+	Close All	全部關閉
+	Maximize Frame	最大化幀
+	Restore Frame	還原幀
+	Restore Workspace	恢復工作區
+	Reveal Sequence in Project	在專案面板中顯示序列
+	Video Thumbnails	影片縮圖
+	Audio Waveforms	音訊波形
+	Delete Preset	刪除預設
+	Export Preset…	匯出預設…
+	Import Presets…	匯入預設…
+	Effect presets	效果預設
+	Save Preset	儲存預設
+	Name:	名稱：
+	Type	型別
+	Scale	比例
+	Anchor to In Point	錨定到入點
+	Anchor to Out Point	錨定到出點
+	Without keyframes	不含關鍵幀
+	Description:	描述：
+	Saved preset “{name}”	已儲存預設“{name}”
+	Current duration {seconds} s	當前持續時間 {seconds} 秒
+	Remix Properties	重新混音屬性
+	Target Duration:	目標持續時間：
+	Segments:	片段數：
+	Fewer · More	更少 · 更多
+	Variations:	變體：
+	Remixed to {seconds} s	已重新混音為 {seconds} 秒
+	{mode} · no clip	{mode} · 無剪輯
+	{mode} · no sequence	{mode} · 無序列
+	Remove Row	刪除行
+	Add a timecode row	新增時間碼行
+	Panner	聲像器
+	Mute	靜音
+	Send {n} Level	傳送 {n} 電平
+	Show Keyframes	顯示關鍵幀
+	Clip Keyframes	剪輯關鍵幀
+	Track Keyframes	軌道關鍵幀
+	Delete	刪除
+	Untitled Workspace	未命名工作區
+	New Workspace	新建工作區
+	Edit Workspaces	編輯工作區
+	Rename	重新命名
+	Restore Original	恢復原始
+	Search effects	搜尋效果
+	Apply to Selected Clips	應用到所選剪輯
+	Metadata Display	後設資料顯示
+	Save As New View Preset	另存為新檢視預設
+	Manage Saved View Presets	管理已儲存的檢視預設
+	Freeform View Options	自由形式檢視選項
+	Save Arrangement	儲存排列
+	Saves the view, columns, sort, thumbnail and font size.	儲存檢視、列、排序、縮圖與字型大小。
+	Grid spacing:	網格間距：
+	Default clip size:	預設剪輯大小：
+	Snap to grid	對齊網格
+	Show clip names	顯示剪輯名稱
+	Show durations	顯示持續時間
+	Show:	顯示：
+	Search fields	搜尋欄位
+	Project Metadata	專案後設資料
+	Add Property…	新增屬性…
+	Column order	列順序
+	{n}. (empty)	{n}.（空）
+	Restore	恢復
+	Overwrite with Current View	用當前檢視覆蓋
+	Graphics text search arrives with M10.1–M10.2	圖形文字搜尋將在 M10.1–M10.2 中推出
+	Open a sequence to work with captions	開啟一個序列以編輯字幕
+	Add captions	新增字幕
+	Create a caption track or import a caption file.	建立字幕軌道或匯入字幕檔案。
+	Create new caption track	建立新字幕軌道
+	Import captions file…	匯入字幕檔案…
+	New {format} track	新建 {format} 軌道
+	Add caption at playhead	在播放頭處新增字幕
+	Split caption at playhead	在播放頭處拆分字幕
+	Merge selected captions	合併所選字幕
+	Delete selected captions	刪除所選字幕
+	No captions on this track. Press + to add one at the playhead.	此軌道暫無字幕。按 + 鍵在播放頭處新增。
+	No matching captions.	無匹配字幕。
+	Open a sequence to see its transcript	開啟一個序列以檢視其轉錄文稿
+	Transcribe sequence	轉錄序列
+	Speech-to-text turns the dialogue into editable text.	語音轉文字可將對白轉換為可編輯文字。
+	This build has no speech-to-text; import a transcript with transcript.set.	此版本不含語音轉文字；請使用 transcript.set 匯入轉錄文稿。
+	Transcribe	轉錄
+	Extract selected text	提取所選文字
+	Lift selected text	提升所選文字
+	Remove filler words	移除填充詞
+	Create captions	建立字幕
+	Speaker	說話人
+	Box	文字框
+	Align	對齊
+	Align left	左對齊
+	Align center	居中對齊
+	Align right	右對齊
+	Position	位置
+	Position: top	位置：頂部
+	Position: middle	位置：中部
+	Position: bottom	位置：底部
+	(gap)	（間隙）
+	Out: {name}	出點：{name}
+	In: {name}	入點：{name}
+	Play Around Edit (Space loops, Shift+K once)	圍繞編輯點播放（空格迴圈，Shift+K 觸發一次）
+	Trim Backward Many	大幅向後修剪
+	Trim Backward	向後修剪
+	Apply Default Transitions	應用預設過渡
+	Apply Default Transitions to Selection (Shift+D)	對所選物件應用預設過渡（Shift+D）
+	Trim Forward	向前修剪
+	Trim Forward Many	大幅向前修剪
+	Exit Trim Mode	退出修剪模式
+	Voice-over record (right-click: Voice-Over Record Settings…)	畫外音錄製（右鍵：畫外音錄製設定…）
+	Voice-Over Record Settings…	畫外音錄製設定…
+	Recording voice-over…	正在錄製畫外音…
+	Voice-over recorded: {p}	畫外音已錄製：{p}
+	Voice-over recording stopped (nothing recorded)	畫外音錄製已停止（未錄製任何內容）
+	Post-roll	後滾
+	● Recording	● 錄製中
+	Voice-Over Record Settings	畫外音錄製設定
+	Source:	源：
+	Default Input	預設輸入
+	Input:	輸入：
+	Channel {n}	通道 {n}
+	Countdown Sound Cues	倒計時提示音
+	Pre-roll:	前滾：
+	 seconds	 秒
+	Post-roll:	後滾：
+	Playback starts the pre-roll before the playhead (or the In point); with In/Out marked, recording punches in and out there.	播放從前滾開始，位於播放頭（或入點）之前；若已標記入點和出點，錄製將在該範圍內自動打點和結束。
+	Effect	效果
+	Clip Fx Editor	剪輯效果編輯器
+	Track Fx Editor	軌道效果編輯器
+	Master Gain	主增益
+	Reset	重置
+	Band {n}	頻段 {n}
+	Solo	獨奏
+	Bypass	旁路
+	Thr	閾值
+	Ratio	比率
+	Att	啟動
+	Rel	釋放
+	Gain	增益
+	Output Gain	輸出增益
+	Limiter	限制器
+	Link Channels	連結通道
+	Limiter Threshold	限制器閾值
+	Limiter Release	限制器釋放
+	Auto Gate	自動門
+	Threshold	閾值
+	Attack	啟動
+	Release	釋放
+	Hold	保持
+	Compressor	壓縮器
+	Auto Makeup	自動補償
+	Makeup	補償
+	Expander	擴充套件器
+	Soft Clip	軟削波
+	(no sequences)	（無序列）
+	(no clips)	（無剪輯）
+	Show Transport Controls	顯示播放控制
+	Loop	迴圈
+	Multi-Camera Audio Follows Video	多機位音訊跟隨影片
+	Multi-Camera Record	多機位錄製
+	Multi-Camera Selection Top Down	多機位自上而下選擇
+	Show Multi-Camera Preview Monitor	顯示多機位預覽監視器
+	Auto-Adjust Multi-Camera Playback Quality	自動調整多機位播放質量
+	Transmit Multi-Camera View	傳輸多機位檢視
+	Multi-Camera Layout	多機位佈局
+	Automatic	自動
+	Edit Cameras…	編輯攝像機…
+	Add Marker (M)	新增標記（M）
+	Mark In (I)	標記入點（I）
+	Mark Out (O)	標記出點（O）
+	Go to In (Shift+I)	轉到入點（Shift+I）
+	Step Back 1 Frame (Left)	後退 1 幀（左方向鍵）
+	Play-Stop Toggle (Space)	播放/停止切換（空格）
+	Step Forward 1 Frame (Right)	前進 1 幀（右方向鍵）
+	Go to Out (Shift+O)	轉到出點（Shift+O）
+	Insert (,)	插入（，）
+	Overwrite (.)	覆蓋（.）
+	Export Frame (Shift+E)	匯出靜幀（Shift+E）
+	Lift (;)	提升（；）
+	Extract (')	提取（'）
+	Export Frame: use Export mode (M6)	匯出靜幀：請使用匯出模式（M6）
+	Button Editor	按鈕編輯器
+	Multi-Camera Record on	多機位錄製：開
+	Multi-Camera Record off	多機位錄製：關
+	{first} - Merged	{first} - 已合併
+	{first} Multicam	{first} 多機位
+	In Points	入點
+	Out Points	出點
+	Clip Marker	剪輯標記
+	Audio	音訊
+	Merge Clips	合併剪輯
+	Create Multi-Camera Source Sequence	建立多機位源序列
+	Synchronize Clips	同步剪輯
+	Clip Name:	剪輯名稱：
+	Sequence Name:	序列名稱：
+	{n} clip(s): {names}	{n} 個剪輯：{names}
+	{n} clip(s) selected; the clip on the reference track stays put.	已選擇 {n} 個剪輯；參考軌道上的剪輯保持不動。
+	Synchronize Point	同步點
+	Ignore Hours	忽略小時
+	first marker	首個標記
+	Offset Audio by:	音訊偏移量：
+	Offset:	偏移：
+	 frames	 幀
+	Reference track:	參考軌道：
+	lowest (V1…)	最低（V1…）
+	Remove Audio from AV Clip	從音影片剪輯中移除音訊
+	Camera 1	攝像機 1
+	All Cameras	所有攝像機
+	Switch Audio	切換音訊
+	Camera Names	攝像機名稱
+	Clip Names	剪輯名稱
+	Enumerate Cameras	列舉攝像機
+	Camera Angle Metadata	攝像機角度後設資料
+	Move source clips to Processed Clips bin	將源剪輯移到“已處理剪輯”素材箱
+	Synchronized {n} clip group(s)	已同步 {n} 個剪輯組
+	Merged clip created	已建立合併剪輯
+	Multi-camera source sequence with {n} camera(s)	包含 {n} 個攝像機的多機位源序列
+	No multi-camera clip at the playhead	播放頭處無多機位剪輯
+	Camera {n} — {name}	攝像機 {n} — {name}
+	Page {page} of {pages}	第 {page} 頁，共 {pages} 頁
+	Previous page	上一頁
+	Next page	下一頁
+	Multi-Camera Record On/Off (0)	多機位錄製 開/關（0）
+	Record	錄製
+	Edit Cameras	編輯攝像機
+	Cameras shown in the Multi-Camera view (uncheck to hide).	多機位檢視中顯示的攝像機（取消勾選可隱藏）。
+	Recorded {n} multi-camera cut(s)	已錄製 {n} 個多機位切換
+	Clamp Signal	鉗制訊號
+	Presets	預設
+	Parade ({kind})	Parade（{kind}）
+	Waveform ({kind})	波形（{kind}）
+	Parade Type	Parade 型別
+	Waveform Type	波形型別
+	Vectorscope Targets	向量示波器目標
+	Colour Space	色彩空間
+	Brightness	亮度
+	Signal Scale	訊號刻度
+	Histogram	直方圖
+	Paste Attributes	貼上屬性
+	Remove Attributes	移除屬性
+	New Offline File	新建離線檔案
+	Nested Sequence Name	巢狀序列名稱
+	Make Subclip	建立子剪輯
+	Edit Subclip	編輯子剪輯
+	Modify Clip: Audio Channels	修改剪輯：音訊聲道
+	Modify Clip: Timecode	修改剪輯：時間碼
+	Frame Hold Options	幀定格選項
+	Field Options	場選項
+	Save Project	儲存專案
+	Motion	運動
+	Opacity	不透明度
+	Time Remapping	時間重對映
+	Channel Volume	聲道音量
+	In Point	入點
+	Out Point	出點
+	Playhead	播放頭
+	Source Timecode	源時間碼
+	Sequence Time	序列時間
+	Video Attributes	影片屬性
+	Audio Attributes	音訊屬性
+	No effects	無效果
+	Scale Attribute Times	縮放屬性時間
+	File Name:	檔名：
+	Tape Name:	磁帶名稱：
+	Contains:	包含：
+	Video	影片
+	Width:	寬度：
+	Height:	高度：
+	Frame Rate:	幀速率：
+	Media Start:	媒體起點：
+	Subclip: {name}	子剪輯：{name}
+	Start:	開始：
+	End:	結束：
+	Restrict Trims To Subclip Boundaries	將修剪限制在子剪輯邊界內
+	Convert to Master Clip	轉換為主剪輯
+	Clip Channel Format:	剪輯聲道格式：
+	Number of Audio Clips:	音訊剪輯數量：
+	Media Source Channels	媒體源聲道
+	Ch. {n}	聲道 {n}
+	Clip {n}	剪輯 {n}
+	Source channels the selected audio clips play:	所選音訊剪輯播放的源聲道：
+	Set Timecode:	設定時間碼：
+	Use the file's timecode	使用檔案的時間碼
+	Hold On	定格開啟
+	Timecode:	時間碼：
+	Hold Filters	定格濾鏡
+	Reverse Field Dominance	反轉場優先順序
+	Processing Options	處理選項
+	None	無
+	Always Deinterlace	始終去隔行
+	Flicker Removal	閃爍消除
+	Save changes to “{project_name}” before closing?	關閉前是否儲存對“{project_name}”的更改？
+	Don't Save	不儲存
+	All media is online.	所有媒體均已聯機。
+	{name} (copy)	{name}（副本）
+	Offline	離線
+	Missing	缺失
+	Link Media	連結媒體
+	{n} clip(s) can't find their media. Locate them, search a folder, or leave them offline.	有 {n} 個剪輯找不到其媒體。請定位它們、搜尋資料夾，或保持離線狀態。
+	Clip Name	剪輯名稱
+	File Name	檔名
+	File Path	檔案路徑
+	Status	狀態
+	Match file properties:	匹配檔案屬性：
+	File Extension	副檔名
+	Clip ID (fingerprint)	剪輯 ID（指紋）
+	Duration	持續時間
+	Media Start	媒體起點
+	Frame Size / Rate	幀大小 / 速率
+	Align Timecode	對齊時間碼
+	Relink others automatically	自動重新連結其他項
+	Search in:	搜尋位置：
+	Browse…	瀏覽…
+	A file dialog is already open	已有一個檔案對話方塊處於開啟狀態
+	Exact name matches only	僅精確名稱匹配
+	No candidates yet — Search a folder or Locate the file.	暫無候選項 — 請搜尋資料夾或定位檔案。
+	✔ same file	✔ 同一檔案
+	✔ matches	✔ 匹配
+	✖ different file	✖ 不同檔案
+	Preview	預覽
+	Offline All	全部離線
+	Locate…	定位…
+	Linked {n} clip(s)	已連結 {n} 個剪輯
+	Nothing found with that name.	未找到使用該名稱的檔案。
+	Make Offline	設為離線
+	Make {n} selected clip(s) offline. Their clips show the offline slate until you link them again.	將 {n} 個所選剪輯設為離線。在重新連結之前，這些剪輯將顯示離線畫面。
+	Media files remain on disk	媒體檔案保留在磁碟上
+	Media files are deleted	媒體檔案將被刪除
+	Create Proxies	建立代理檔案
+	{n} clip(s) selected.	已選擇 {n} 個剪輯。
+	Format and size	格式與大小
+	Destination	目標位置
+	Next to the original media, in a Proxies folder	位於原始媒體旁，存入 Proxies 資料夾
+	Proxies are made in the background and attached when done. Export always uses full-resolution media.	代理檔案在後臺生成，完成後自動附加。匯出始終使用完整解析度媒體。
+	Creating {n} proxy file(s)…	正在建立 {n} 個代理檔案…
+	Project Manager	專案管理器
+	Sequences	序列
+	Resulting Project	結果專案
+	Collect Files and Copy to New Location	收集檔案並複製到新位置
+	Consolidate and Transcode	整合與轉碼
+	Options	選項
+	Exclude Unused Clips	排除未使用的剪輯
+	Include Handles:	包含餘量：
+	Include Proxies	包含代理檔案
+	Include Preview Files	包含預覽檔案
+	Destination Path	目標路徑
+	Disk space: original {original} · resulting {result} ({n} files)	磁碟空間：原始 {original} · 結果 {result}（{n} 個檔案）
+	Disk space: —	磁碟空間：—
+	Calculate	計算
+	Project Manager: writing {path}	專案管理器：正在寫入 {path}
+	Timeline: (no sequences)	時間軸：（無序列）
+	Browse	瀏覽
+	Select audio clips, then click a preset to apply it.	選擇音訊剪輯，然後點選預設以應用。
+	{name} (user)	{name}（使用者）
+	Select audio clips to edit them here	選擇音訊剪輯以在此處編輯
+	Multiple Clips Selected	已選擇多個剪輯
+	The selected clips have different audio types. Assign one type to edit them together.	所選剪輯的音訊型別不同。請指定一種型別以便一起編輯。
+	Assign an audio type to the selection:	為所選物件指定音訊型別：
+	Clear Audio Type	清除音訊型別
+	Preset:	預設：
+	(Custom)	（自定義）
+	Preset name	預設名稱
+	Reduce Noise	降低噪聲
+	Reduce Rumble	降低隆隆聲
+	DeHum	去嗡聲
+	DeEss	去齒音
+	Reduce Reverb	降低混響
+	Dynamics	動態
+	EQ	均衡器
+	Enhance Speech	增強人聲
+	Low Tone	低頻
+	High Tone	高頻
+	Mix	混音
+	Reverb	混響
+	Stereo Width	立體聲寬度
+	Remixing music to a target duration is not available yet. Trim the clip and add a crossfade instead.	將音樂重新混音至目標時長功能尚不可用。請改為修剪剪輯並新增交叉淡化。
+	Pan	聲像
+	Auto-Match	自動匹配
+	Not matched yet	尚未匹配
+	Matches each of the {n} clips on its own.	分別對 {n} 個剪輯各自進行匹配。
+	Duck against:	避讓物件：
+	Untagged	未標記
+	Sensitivity	靈敏度
+	Reduce By	降低幅度
+	Fades	淡化
+	Generate Keyframes	生成關鍵幀
+	Clip Volume	剪輯音量
+	(no clip selected)	（未選擇剪輯）
+	Master · {name}	主 · {name}
+	Add Lumetri Color to clip	向剪輯新增 Lumetri 顏色
+	Input LUT	輸入 LUT
+	Color	顏色
+	Temperature	色溫
+	Tint	色調
+	Saturation	飽和度
+	Exposure	曝光
+	Contrast	對比度
+	Highlights	高光
+	Shadows	陰影
+	Whites	白色
+	Blacks	黑色
+	HDR	HDR
+	HDR White	HDR 白色
+	HDR Specular	HDR 高光
+	Look	風格
+	Look LUT	風格 LUT
+	Intensity	強度
+	Adjustments	調整
+	Faded Film	褪色膠片
+	Sharpen	銳化
+	Vibrance	自然飽和度
+	RGB Curves	RGB 曲線
+	HDR Range	HDR 範圍
+	Hue Saturation Curves	色相飽和度曲線
+	Hue vs Sat	色相 vs 飽和度
+	Hue vs Hue	色相 vs 色相
+	Hue vs Luma	色相 vs 亮度
+	Luma vs Sat	亮度 vs 飽和度
+	Sat vs Sat	飽和度 vs 飽和度
+	Midtones	中間調
+	Key	鍵
+	Hue	色相
+	Hue Range	色相範圍
+	Saturation Min	飽和度下限
+	Luma Min	亮度下限
+	Luma Max	亮度上限
+	Soften	柔化
+	Show Mask	顯示蒙版
+	Off	關
+	Color/Gray	彩色/灰度
+	Color/Black	彩色/黑色
+	White/Black	白色/黑色
+	Refine	最佳化
+	Denoise	降噪
+	Blur	模糊
+	Correction	校正
+	Hue Shift	色相偏移
+	Midpoint	中點
+	Roundness	圓度
+	Feather	羽化
+	LUT	LUT
+	Color Match	色彩匹配
+	Reference	參考
+	Face Detection (protect skin tones)	人臉檢測（保護膚色）
+	Apply Match	應用匹配
+	Create ellipse mask	建立橢圓蒙版
+	Create 4-point polygon mask	建立 4 點多邊形蒙版
+	Free draw bezier	自由繪製貝塞爾
+	Click in the Program monitor to place mask points (drag for curves); click the first point or press Enter to close	在節目監視器中點選以放置蒙版點（拖動可繪製曲線）；點選第一個點或按 Enter 鍵閉合
+	Delete Mask	刪除蒙版
+	Inverted	反相
+	Drag: move · Alt-click: smooth/corner · Cmd-click: delete	拖動：移動 · Alt+點選：平滑/拐角 · Cmd+點選：刪除
+	Track selected mask backward	向後跟蹤所選蒙版
+	Track selected mask backward 1 frame	向後跟蹤所選蒙版 1 幀
+	Track selected mask forward 1 frame	向前跟蹤所選蒙版 1 幀
+	Track selected mask forward	向前跟蹤所選蒙版
+	Stop tracking	停止跟蹤
+	Tracking method: {method}	跟蹤方法：{method}
+	Composite	合成
+	Comparison	比較
+	Video and Waveform	影片與波形
+	System Default	系統預設
+	Default location	預設位置
+	Font family	字型族
+	Label Colors	標籤顏色
+	Decoded frames held for the monitors and thumbnails: {used} of {budget}.	為監視器和縮圖保留的解碼幀：{used} / {budget}。
+	FilmCraft keeps the rest of the RAM free for other applications.	FilmCraft 將剩餘記憶體留給其他應用程式。
+	not available in this session	在當前會話中不可用
+	Currently: {loc} — {files} file(s), {size}	當前：{loc} — {files} 個檔案，{size}
+	 ({ch} output channels)	 （{ch} 個輸出通道）
+	Programme left → device output {l}, right → device output {r}{dev}. Outputs beyond the device's channels fall back to 1 and 2.	節目左聲道 → 裝置輸出 {l}，右聲道 → 裝置輸出 {r}{dev}。超出裝置通道的輸出將回退到 1 和 2。
+	Auto-saves go to: {dir}	自動儲存位置：{dir}
+	Recovery copy: {dir}	恢復副本：{dir}
+	Last auto-save {a} · last recovery copy {j}	上次自動儲存 {a} · 上次恢復副本 {j}
+	Last auto-save {a}	上次自動儲存 {a}
+	Last recovery copy {j}	上次恢復副本 {j}
+	Remove Media Cache Files	刪除媒體快取檔案
+	Deleted {n} file(s), {size}.	已刪除 {n} 個檔案，{size}。
+	Reset…	重置…
+	Source · {name}	源 · {name}
+	Reset Effect	重置效果
+	Reset Parameter	重置引數
+	Save Preset…	儲存預設…
+	Custom Setup	自定義設定
+	Edit…	編輯…
+	Show graphs	顯示圖表
+	Toggle animation	切換動畫
+	Add/Remove Keyframe	新增/移除關鍵幀
+	Temporal Interpolation	時間插值
+	Linear	線性
+	Bezier	貝塞爾
+	Auto Bezier	自動貝塞爾
+	Continuous Bezier	連續貝塞爾
+	Ease In	緩入
+	Ease Out	緩出
+	Select a clip to grade	選擇一個剪輯以進行調色
+	Select a clip to see its properties	選擇一個剪輯以檢視其屬性
+	Anchor point	錨點
+	Rotation	旋轉
+	Level	級別
+	Speed {n}%	速度 {n}%
+	Value	值
+	Velocity	速率
+	Default	預設
+	Custom ({n} points)	自定義（{n} 個點）
+	Select a graphic clip, or use the Type tool (T) on the Program monitor	選擇一個圖形剪輯，或在節目監視器上使用文字工具（T）
+	Create new graphic	建立新圖形
+	New Text Layer	新建文字圖層
+	New Text	新建文字
+	New Rectangle	新建矩形
+	New Ellipse	新建橢圓
+	Delete Layer	刪除圖層
+	Select a layer to edit its properties.	選擇一個圖層以編輯其屬性。
+	Align Left	左對齊
+	Align Center Horizontally	水平居中對齊
+	Align Right	右對齊
+	Align Top	頂對齊
+	Align Center Vertically	垂直居中對齊
+	Align Bottom	底對齊
+	Font	字型
+	Font Style	字型樣式
+	Font Size	字號
+	Alignment	對齊方式
+	Left Align Text	文字左對齊
+	Center Align Text	文字居中對齊
+	Right Align Text	文字右對齊
+	Justify	兩端對齊
+	Tracking	字距
+	Leading	行距
+	Baseline Shift	基線偏移
+	Text Box Width	文字框寬度
+	Style	樣式
+	Faux Bold	偽粗體
+	Faux Italic	偽斜體
+	All Caps	全大寫
+	Small Caps	小型大寫
+	Underline	下劃線
+	OpenType	OpenType
+	Kerning	字距調整
+	Ligatures	連字
+	Shape	形狀
+	Size	大小
+	Corner Radius	圓角半徑
+	Polygon Sides	多邊形邊數
+	Fill	填充
+	Stroke	描邊
+	Stroke 2	描邊 2
+	Background	背景
+	   Opacity	不透明度
+	   Size	大小
+	   Corner Radius	圓角半徑
+	Shadow	陰影
+	   Angle	角度
+	   Distance	距離
+	   Blur	模糊
+	Search templates	搜尋模板
+	All Categories	全部分類
+	Install…	安裝…
+	Install Motion Graphics Template (.fcgt)	安裝動態圖形模板（.fcgt）
+	No templates match.	無匹配的模板。
+	{category} · My Template	{category} · 我的模板
+	Apply	應用
+	Remove	移除
+	{n} editable properties	{n} 個可編輯屬性
+	   Template: {name}	模板：{name}
+	Intro Duration	片頭時長
+	Outro Duration	片尾時長
+	Roll	滾動
+	Start Off Screen	起始離屏
+	End Off Screen	結束離屏
+	Preroll	前滾
+	Postroll	後滾
+	Video Frame	影片幀
+	Pin To	固定到
+	Pinned Edges	固定邊
+	FilmCraft Graphics Template	FilmCraft 圖形模板
+	{n} Font	{n} 字型
+	{n} Size	{n} 大小
+	{n} Color	{n} 顏色
+	{n} Position	{n} 位置
+	Show {n}	顯示 {n}
+	My Templates	我的模板
+	Export As Motion Graphics Template	匯出為動態圖形模板
+	Category:	分類：
+	Editable properties:	可編輯屬性：
+	Saved as a FilmCraft graphics template (.fcgt) in your templates folder.	已作為 FilmCraft 圖形模板（.fcgt）儲存到你的模板資料夾。
+	Exported graphics template to {path}	已將圖形模板匯出到 {path}
+	Replace Fonts in Projects	替換專案中的字型
+	Fonts used in the project:	專案中使用的字型：
+	{f} (missing)	{f}（缺失）
+	Replace:	替換：
+	Replaced {n} font uses	已替換 {n} 處字型使用
+	Show/Hide Effects and Sends	顯示/隱藏效果與傳送
+	Audio Track Mixer menu	音訊軌道混音器選單
+	Show/Hide Tracks…	顯示/隱藏軌道…
+	Meter Input(s) Only	僅電平表輸入
+	Show/Hide Tracks	顯示/隱藏軌道
+	Show All	全部顯示
+	Post-Fader	後推子
+	Remove Effect	移除效果
+	Fill the slots above first	請先填滿上方的插槽
+	pre 	前
+	Pre-Fader	前推子
+	Mute Send	靜音傳送
+	Remove Send	移除傳送
+	New Submix	新建子混音
+	Pan / balance (drag; double-click: centre)	聲像 / 平衡（拖動；雙擊：居中）
+	Solo safe	獨奏保護
+	Enable track for recording	啟用軌道錄音
+	Volume (drag; double-click: 0 dB)	音量（拖動；雙擊：0 dB）
+	5.1 panner (drag the puck; double-click: front centre)	5.1 聲像器（拖動推子；雙擊：前中置）
+	Center	中置
+	Go to In Point	轉到入點
+	Go to Out Point	轉到出點
+	Play In to Out	播放入點到出點
+	Record (voice-over on the record-enabled track)	錄音（在已啟用錄音的軌道上錄製畫外音）
+	Write keyframes	寫入關鍵幀
+	Something went wrong while drawing the window. Your project is still open; save it to be safe.	繪製視窗時出現問題。你的專案仍處於開啟狀態；為安全起見請儲存。
+	Continue	繼續
+	Go Back	後退
+	Go Forward	前進
+	Up One Level	上移一級
+	File Types Displayed	顯示的檔案型別
+	List View	列表檢視
+	Thumbnail View	縮圖檢視
+	Ingest	攝取
+	Open Ingest Settings	開啟攝取設定
+	Import as Image Sequence	作為影象序列匯入
+	{sel} of {total} items selected	已選擇 {sel} / {total} 項
+	{total} items	{total} 項
+	Cannot open {dir}: {e}	無法開啟 {dir}：{e}
+	Favorites	收藏夾
+	Local Drives	本地驅動器
+	Network	網路
+	Recent Directories	最近使用的目錄
+	  (none)	（無）
+	Remove from Favorites	從收藏夾移除
+	Add to Favorites	新增到收藏夾
+	Clear Recent Directories	清除最近使用的目錄
+	Open In Source Monitor	在源監視器中開啟
+	Reveal in Finder	在資源管理器中顯示
+	Edit Columns…	編輯列…
+	Hover Scrub	懸停擦洗
+	New Media Browser Panel	新建媒體瀏覽器面板
+	Create Folder For Imported Projects	為匯入的專案建立資料夾
+	Allow Duplicate Media During Project Import	允許在專案匯入期間出現重複媒體
+	Refresh	重新整理
+	Edit Columns	編輯列
+	Guides	參考線
+	(no audio)	（無音訊）
+	Generating waveform…	正在生成波形…
+	Reference  {tc}	參考 {tc}
+	Set	設定
+	Set the reference to the playhead	將參考設定為播放頭
+	Reference: next frame	參考：下一幀
+	Reference: previous frame	參考：上一幀
+	RGBA Channels	RGBA 通道
+	Add Guide	新增參考線
+	Save Guides as Template	將參考線另存為模板
+	Manage Guides	管理參考線
+	Orientation:	方向：
+	Vertical	垂直
+	Horizontal	水平
+	Position:	位置：
+	No saved guide templates.	無已儲存的參考線模板。
+	Project: {name}	專案：{name}
+	Bin: {name}	素材箱：{name}
+	Up one level	上移一級
+	Video Usage: {vu}  Audio Usage: {au}	影片用量：{vu}  音訊用量：{au}
+	Icon View	圖示檢視
+	Freeform View	自由形式檢視
+	Sort Icons	排序圖示
+	Clear (Delete)	清除（刪除）
+	New Item	新建專案
+	New Bin	新建素材箱
+	Find	查詢
+	Automate to Sequence	自動適配到序列
+	Select items to clear	選擇要清除的專案
+	User Order	使用者順序
+	Descending	降序
+	Refresh Project	重新整理專案
+	Reveal Project in Finder…	在資源管理器中顯示專案…
+	New Bin From Selection	從所選物件新建素材箱
+	New Search Bin	新建搜尋素材箱
+	New Project Shortcut	新建專案快捷方式
+	List	列表
+	Icon	圖示
+	Freeform	自由形式
+	Preview Area	預覽區域
+	Thumbnails	縮圖
+	Thumbnails show effects applied	縮圖顯示已應用的效果
+	Thumbnail controls for all pointing devices	適用於所有指標裝置的縮圖控制元件
+	Refresh Sort Order	重新整理排序順序
+	Metadata Display…	後設資料顯示…
+	Save Current View Preset	儲存當前檢視預設
+	Restore View Preset	恢復檢視預設
+	Project View Preset {n}	專案檢視預設 {n}
+	Freeform View Options…	自由形式檢視選項…
+	Media missing	媒體缺失
+	Unreadable	不可讀
+	Open in Source Monitor	在源監視器中開啟
+	Open in Timeline	在時間軸中開啟
+	New Sequence From Clip	從剪輯新建序列
+	Set Poster Frame	設定海報幀
+	Proxy	代理
+	Open in Place	就地開啟
+	Open in New Tab	在新標籤頁開啟
+	Open in New Window	在新視窗開啟
+	{n} items	{n} 項
+	Stack	堆疊
+	Unstack	取消堆疊
+	Clip Size	剪輯大小
+	Larger	更大
+	Smaller	更小
+	Align to Grid	對齊網格
+	Reset to Grid	重置到網格
+	Save Arrangement…	儲存排列…
+	Restore Arrangement	恢復排列
+	Delete Arrangement	刪除排列
+	Drop media here to create sequence.	將媒體拖到此處以建立序列。
+	Double-click a sequence in the Project panel to open it here.	在專案面板中雙擊序列以在此處開啟。
+	Open Demo Project	開啟演示專案
+	Insert and overwrite sequences as nests or individual clips	以巢狀或單個剪輯方式插入和覆蓋序列
+	Snap in Timeline (S)	在時間軸中吸附（S）
+	Caption track options	字幕軌道選項
+	Timeline Display Settings	時間軸顯示設定
+	Show Video Thumbnails	顯示影片縮圖
+	Head	首幀
+	Head and Tail	首尾幀
+	Continuous	連續
+	Show Audio Waveform	顯示音訊波形
+	Expand All Tracks	展開所有軌道
+	Minimize All Tracks	最小化所有軌道
+	Unrendered: should play back in real time	未渲染：應能實時播放
+	Unrendered: render to play back in real time	未渲染：需渲染才能實時播放
+	Rendered preview	已渲染預覽
+	✓ Enable	✓ 啟用
+	Unlink	取消連結
+	(Default)	（預設）
+	(RGB) Gamma	（RGB）伽馬
+	(RGB) Input Black Level	（RGB）輸入黑電平
+	(RGB) Input White Level	（RGB）輸入白電平
+	(RGB) Output Black Level	（RGB）輸出黑電平
+	(RGB) Output White Level	（RGB）輸出白電平
+	+ Cmd	+ Cmd
+	+ Opt	+ Opt
+	10 Bit Black Point	10 位黑點
+	10 Bit White Point	10 位白點
+	105mm Prime	105mm 定焦
+	29.97 fps Drop-Frame	29.97 fps 掉幀
+	29.97 fps Non Drop-Frame	29.97 fps 非掉幀
+	35mm Prime	35mm 定焦
+	3D Roll	3D 滾動
+	3D Rotate	3D 旋轉
+	3D Spin	3D 自旋
+	3D Spinback	3D 反向自旋
+	4-Color Gradient	四色漸變
+	5.1 Media	5.1 媒體
+	5.1 Mixdown Type	5.1 混音下混型別
+	50-300mm Zoom	50-300mm 變焦
+	59.94 fps Drop-Frame	59.94 fps 掉幀
+	59.94 fps Non Drop-Frame	59.94 fps 非掉幀
+	ASC CDL	ASC CDL
+	Accessible color contrast	無障礙顏色對比度
+	Action-Safe Margin	動作安全邊距
+	Active Monitor	活動監視器
+	Add	新增
+	Add tracks automatically when editing source clips onto the Timeline	將源剪輯編輯到時間軸時自動新增軌道
+	Place files dropped onto the Timeline directly on the Timeline	將拖放到時間軸上的檔案直接放置在時間軸上
+	1 file	1 個檔案
+	{n} files	{n} 個檔案
+	Additional Scale	附加縮放
+	Additive Dissolve	新增式溶解
+	Additive Dissolve (Legacy)	新增式溶解（舊版）
+	Adjust	調整
+	Advanced	高階
+	Aggressive	激進
+	Align and Transform	對齊與變換
+	All lines	所有行
+	Allow Selection tool to choose Roll and Ripple trims without modifier key	允許選擇工具在無修飾鍵時選擇滾動和波紋修剪
+	Allow current tool to change trim type of previously selected edit point	允許當前工具更改先前所選編輯點的修剪型別
+	Allow duplicate media during project import	允許專案匯入期間出現重複媒體
+	Alpha Adjust	Alpha 調整
+	Alpha Blurriness	Alpha 模糊度
+	Alpha Channel	Alpha 通道
+	Alpha Glow	Alpha 輝光
+	Always import embedded CEA-708 closed captions with wide aspect.	始終以寬幅寬高比匯入內嵌的 CEA-708 隱藏字幕。
+	Always override audio tags	始終覆蓋音訊標籤
+	Ambience	環境氛圍
+	Ambience Intensity	環境強度
+	Ambience Light Color	環境光顏色
+	Amount of Noise	噪點數量
+	Amount to Decolor	去色程度
+	Amount to Tint	著色程度
+	Amplifier	放大器
+	Amplify	放大
+	Amplitude	振幅
+	Amplitude and Compression	振幅與壓縮
+	Analog	模擬
+	Analog Delay	模擬延遲
+	Analyze all imported media to search for visuals or audio	分析所有匯入的媒體以搜尋畫面或音訊
+	Anamorphic	變形寬銀幕
+	Anchor	錨點
+	Anchor Point	錨點
+	Angle	角度
+	Animation	動畫
+	Anti-aliasing Quality	抗鋸齒質量
+	Anti-flicker Filter	抗閃爍濾鏡
+	Antialiasing for Best Quality	最佳質量抗鋸齒
+	Asymmetry	不對稱
+	At Startup	啟動時
+	At playback end, return to beginning when restarting playback	播放結束時，重新播放返回到開頭
+	Attempt to force hardware to document sample rate	嘗試強制硬體使用文件取樣率
+	Audio Codec	音訊編解碼器
+	Audio Duration	音訊持續時間
+	Audio Effects	音訊效果
+	Audio Hardware	音訊硬體
+	Audio In Point	音訊入點
+	Audio Info	音訊資訊
+	Audio Out Point	音訊出點
+	Audio Samples	音訊取樣
+	Audio Time Units	音訊時間單位
+	Audio Transition Default Duration	音訊過渡預設時長
+	Audio Transitions	音訊過渡
+	Audio Usage	音訊用量
+	Auto	自動
+	Auto Align	自動對齊
+	Auto Reframe	自動重構圖
+	Auto Save	自動儲存
+	Auto Save also saves the current project(s)	自動儲存同時儲存當前專案
+	Auto-tag audio types in the timeline	在時間軸中自動標記音訊型別
+	Auto-transcribe all imported clips	自動轉錄所有匯入的剪輯
+	Auto-transcribe only clips in sequences	僅自動轉錄序列中的剪輯
+	Automatch Time	自動匹配時間
+	Automatic Click Remover	自動咔嗒聲消除
+	Automatically Hide Dependent Clips	自動隱藏依賴剪輯
+	Automatically Save Every	自動儲存間隔
+	Automatically delete cache files older than	自動刪除早於以下時間的快取檔案
+	Automatically delete oldest cache files when cache exceeds	當快取超過以下大小時自動刪除最舊的快取檔案
+	Automatically refresh growing files	自動重新整理增長中的檔案
+	Automatically resume playback for growing files in Source Monitor	自動恢復源監視器中增長檔案的播放
+	Automatically save projects	自動儲存專案
+	Automatically transcribe clips	自動轉錄剪輯
+	Automation Keyframe Optimization	自動化關鍵幀最佳化
+	Background Color	背景顏色
+	Background Corner Radius	背景圓角半徑
+	Background Opacity	背景不透明度
+	Background Size	背景大小
+	Background fill	背景填充
+	Balance	平衡
+	Balanced Voice	均衡人聲
+	Band 1	頻段 1
+	Band 2	頻段 2
+	Band 3	頻段 3
+	Band 4	頻段 4
+	Band 5	頻段 5
+	Band Pass	帶通
+	Band Slide	頻段滑移
+	Band Stop	帶阻
+	Bandpass	帶通
+	Barn Doors	束光門
+	Basic	基本
+	Basic 3D	基本 3D
+	Basic Correction	基本校正
+	Bass	低音
+	Behind	後方
+	Bessel	貝塞爾
+	Bevel Alpha	斜角 Alpha
+	Bevel join	斜角連線
+	Binauralizer - Ambisonics	雙耳化 - 全景聲
+	Bins	素材箱
+	Black	黑
+	Black & White	黑白
+	Black Input Level	黑色輸入電平
+	Black and white	黑白
+	Black and white with crushed blacks and strong contrast	壓黑並高對比的黑白
+	Bleach Bypass	跳過漂白
+	Bleach-bypass style: desaturated with hard contrast	跳過漂白風格：低飽和、硬對比
+	Blend	混合
+	Blend Mode	混合模式
+	Blend With Original	與原始混合
+	Blending Mode	混合模式
+	Block Dissolve	塊狀溶解
+	Block Height	塊高度
+	Block Motion	塊運動
+	Block Size	塊大小
+	Block Width	塊寬度
+	Blocks	塊
+	Blue Blurriness	藍色模糊度
+	Blue Curve	藍色曲線
+	Blue Offset	藍色偏移
+	Blue Power	藍色強力
+	Blue Slope	藍色斜率
+	Blue-Blue	藍-藍
+	Blue-Const	藍-常數
+	Blue-Green	藍-綠
+	Blue-Red	藍-紅
+	Blur & Sharpen	模糊與銳化
+	Blur Amount	模糊量
+	Blur Angle	模糊角度
+	Blur Dimensions	模糊維度
+	Blur Dissolve	模糊溶解
+	Blur Layer	模糊圖層
+	Blur Length	模糊長度
+	Blurriness	模糊度
+	Bokeh Blur	散景模糊
+	Boost	提升
+	Border	邊框
+	Border Color	邊框顏色
+	Border Width	邊框寬度
+	Borders	邊框
+	Bottom Center	底部居中
+	Bottom Left	左下
+	Bottom Right	右下
+	Bounce	彈跳
+	Branching	分支
+	Bright	明亮
+	Bright Air	明亮空氣
+	Bright Studio	明亮影棚
+	Brightness & Contrast	亮度與對比度
+	British Stack	英式堆疊
+	Brush Hardness	筆刷硬度
+	Brush Opacity	筆刷不透明度
+	Brush Position	筆刷位置
+	Brush Size	筆刷大小
+	Brush Spacing (secs)	筆刷間距（秒）
+	Brush Strokes	筆刷筆觸
+	Bubbles	氣泡
+	Bulge	凸出
+	Bulge Smoother	凸出平滑
+	Bump Height	凹凸高度
+	Burn Alpha	燒錄 Alpha
+	Burn Chroma	燒錄色度
+	Burn Color	燒錄顏色
+	Butt cap	平頭端
+	Butterworth	巴特沃斯
+	CEA-608	CEA-608
+	CEA-708	CEA-708
+	Cache analysis results for re-use	快取分析結果以供複用
+	Camera Angle	攝像機角度
+	Camera Blur	攝像機模糊
+	Camera Shake	攝像機抖動
+	Capitalisation	大小寫
+	Cathedral	大教堂
+	Cell Pattern	單元圖案
+	Center Channel Pan	中置聲道聲像
+	Center Gradient	中心漸變
+	Center Input	中心輸入
+	Center Out	中心輸出
+	Center Point (Latitude)	中心點（緯度）
+	Center Point (Longitude)	中心點（經度）
+	Center Split	中心分割
+	Center of Sphere	球體中心
+	Cents	音分
+	Change to Color	更改為顏色
+	Changes are copied in the background a moment after each edit. If FilmCraft quits unexpectedly, they are offered the next time it starts.	每次編輯後，更改會在後臺稍後複製。如果 FilmCraft 意外退出，下次啟動時會提示恢復。
+	Channel	通道
+	Channel Blur	通道模糊
+	Channel Mix	通道混合
+	Channel Mixer	通道混合器
+	Chaos	混沌
+	Chebyshev	切比雪夫
+	Checker Wipe	棋盤擦除
+	Checkerboard	棋盤
+	Chinese	中文
+	Choke	阻塞
+	Chorus	合唱
+	Chorus/Flanger	合唱/鑲邊
+	Chroma	色度
+	Chroma Leak	色度洩漏
+	Chromatic Aberration (Blue)	色差（藍）
+	Chromatic Aberration (Green)	色差（綠）
+	Chromatic Aberration (Red)	色差（紅）
+	Cineon Converter	Cineon 轉換器
+	Circle	圓形
+	Clarity	清晰度
+	Clean Combo	乾淨組合
+	Clean Up Noisy Dialogue	清理嘈雜對白
+	Clear Muddiness	清除渾濁
+	Client	客戶端
+	Clip	剪輯
+	Clip Level	剪輯電平
+	Clipping	削波
+	Clock Wipe	時鐘擦除
+	Clock Wipe (Legacy)	時鐘擦除（舊版）
+	Clockwise	順時針
+	Clone	克隆
+	Closed Captions	隱藏字幕
+	Color & Alpha	顏色與 Alpha
+	Color 1	顏色 1
+	Color 2	顏色 2
+	Color 3	顏色 3
+	Color 4	顏色 4
+	Color Balance	色彩平衡
+	Color Burn	顏色加深
+	Color Channel	顏色通道
+	Color Correction	色彩校正
+	Color Distortion	色彩失真
+	Color Dodge	顏色減淡
+	Color Emboss	彩色浮雕
+	Color Key	顏色鍵
+	Color Pass	色彩保留
+	Color Replace	顏色替換
+	Color Space	色彩空間
+	Color Theme	配色主題
+	Color To Leave	保留顏色
+	Color Tolerance	顏色容差
+	Color Wheels & Match	色輪與匹配
+	Colorize	著色
+	Columns	列
+	Comment	註釋
+	Complexity	複雜度
+	Composite In Back	在後方合成
+	Composite In Front	在前方合成
+	Composite Using	使用以下方式合成
+	Composite on Original	在原始上合成
+	Compound Blur	複合模糊
+	Compression Before Clipping	削波前壓縮
+	Constant Gain	恆定增益
+	Constant Power	恆定功率
+	Conversion Type	轉換型別
+	Convolution Reverb	卷積混響
+	Cool Blue	冷藍
+	Cool, desaturated and punchy	冷調、低飽和、鮮明
+	Core Width	核心寬度
+	Corner	拐角
+	Corner Pin	四角定位
+	Count	計數
+	Counter-clockwise	逆時針
+	Crash Recovery	崩潰恢復
+	Crawl Left	向左滾動
+	Crawl Right	向右滾動
+	Create folder for imported projects	為匯入的專案建立資料夾
+	Creative	創意
+	Crop	裁剪
+	Crop Less <-> Smooth More	少裁剪 <-> 多平滑
+	Cross Displacement	交叉置換
+	Cross Dissolve	交叉溶解
+	Cross Dissolve (Legacy)	交叉溶解（舊版）
+	Cross Zoom	交叉縮放
+	Cross Zoom (Legacy)	交叉縮放（舊版）
+	Crossfade	交叉淡化
+	Crossovers	交叉
+	Crystallize	晶格化
+	Crystals	晶體
+	Cube Spin	立方體自旋
+	Curl Radius	捲曲半徑
+	Current Time	當前時間
+	Cursor	游標
+	Curvature	曲率
+	Curve	曲線
+	Curves	曲線
+	Custom	自定義
+	Custom Color	自定義顏色
+	Cutoff	截止頻率
+	Cyan-teal shadows and warm highlights with a little more contrast	青藍色陰影與暖色高光，略增對比
+	Cycle (in Revolutions)	迴圈（以轉數計）
+	Cycle Evolution	迴圈演化
+	Damping	阻尼
+	Damping HF	高頻阻尼
+	Damping LF	低頻阻尼
+	Dark	暗
+	Darken	變暗
+	Darker Color	深色
+	Date Created	建立日期
+	Date Modified	修改日期
+	Day for night: darker, cooler and less saturated	夜景效果：更暗、更冷、更低飽和
+	DeEsser	去齒音器
+	DeHummer	去嗡聲器
+	DeNoise	降噪
+	DeReverb	去混響
+	Decay	衰減
+	Decay Time (RT60)	衰減時間（RT60）
+	Default Audio Tracks	預設音訊軌道
+	Default Emoji font	預設表情符號字型
+	Default Media Scaling	預設媒體縮放
+	Default Output	預設輸出
+	Default closed caption font	預設隱藏字幕字型
+	Default language	預設語言
+	Default paragraph direction	預設段落方向
+	Default subtitle and text font	預設字幕與文字字型
+	Delay	延遲
+	Delay 1	延遲 1
+	Delay 2	延遲 2
+	Delay 3	延遲 3
+	Delay 4	延遲 4
+	Delay and Echo	延遲與回聲
+	Delete files older than	刪除早於以下時間的檔案
+	Delete oldest files when the cache exceeds	當快取超過以下大小時刪除最舊的檔案
+	Delete…	刪除…
+	Depth	深度
+	Desaturate	去飽和
+	Description	描述
+	Detail Amplitude	細節振幅
+	Detail Level	細節級別
+	Detailed Analysis	詳細分析
+	Device Class	裝置類別
+	Dialogue	對白
+	Diamond	菱形
+	Difference	差值
+	Dimensions	尺寸
+	Dimmed	暗淡
+	Dip to Black	疊化到黑場
+	Dip to Black (Legacy)	疊化到黑場（舊版）
+	Dip to Color	疊化到顏色
+	Dip to White	疊化到白場
+	Dip to White (Legacy)	疊化到白場（舊版）
+	Direction	方向
+	Directional	方向性
+	Directional Blur	方向模糊
+	Directional Blur (Legacy)	方向模糊（舊版）
+	Disable video output when in the background	後臺執行時禁用影片輸出
+	Disperse	分散
+	Displacement	置換
+	Display Color Management	顯示色彩管理
+	Display Color Settings	顯示顏色設定
+	Display out of sync indicators for unlinked clips	為未連結剪輯顯示失步指示器
+	Dissolve	溶解
+	Dissolve Blocks	溶解塊
+	Distance	距離
+	Distance to Image	到影象的距離
+	Distort	扭曲
+	Distortion	畸變
+	Distortion Complexity	畸變複雜度
+	Distortion Rate	畸變速率
+	Distortion Type	畸變型別
+	Divide	分割
+	Do not delete cache files automatically	不自動刪除快取檔案
+	Don't label speakers	不標記說話人
+	Double-click	雙擊
+	Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)	以降低的播放解析度進行草稿解碼（H.264：更快，部分幀濾波較少）
+	Drive	驅動器
+	Drop Shadow	投影
+	Dry	幹聲
+	Dry Out	幹聲輸出
+	Dry Up a Roomy Voice	收緊鬆散人聲
+	Duck Deep Under Dialogue	深度壓低至對白之下
+	Duck Under Dialogue	壓低至對白之下
+	Duck Under Voice and Effects	壓低至人聲與效果之下
+	Ducking	自動避讓
+	Dutch	荷蘭語
+	Dynamic Link	動態連結
+	Dynamics Processing	動態處理
+	Early Reflections	早期反射
+	Earthquake	地震
+	Ease In and Out	緩入緩出
+	Easing	緩動
+	Echo	回聲
+	Echo Glow	回聲輝光
+	Echo Operator	回聲運算
+	Echo Time (seconds)	回聲時間（秒）
+	Echoes	回聲
+	Edge Color	邊緣顏色
+	Edge Feather	邊緣羽化
+	Edge Glow	邊緣輝光
+	Edge Sharpness	邊緣銳度
+	Edge Softness	邊緣柔和度
+	Edge Thickness	邊緣厚度
+	Edge Thin	邊緣變細
+	Edge Threshold	邊緣閾值
+	Edge Type	邊緣型別
+	Edge Width	邊緣寬度
+	Elliptical	橢圓
+	Emboss	浮雕
+	Enable HSL Secondary	啟用 HSL 輔助
+	Enable Mercury Transmit	啟用 Mercury 傳輸
+	Enable ProRes hardware accelerated encoding, if available	如可用，啟用 ProRes 硬體加速編碼
+	Enable clip and XMP metadata linking	啟用剪輯與 XMP 後設資料連結
+	Enable developer mode	啟用開發者模式
+	Enable hardware accelerated decoding (requires restart)	啟用硬體加速解碼（需要重啟）
+	Enable language auto-detection	啟用語言自動檢測
+	Enable proxies	啟用代理
+	End Color	結束顏色
+	End Point	結束點
+	End of Ramp	漸變結束
+	Error	錯誤
+	Evolution	演化
+	Evolution Options	演化選項
+	Exciter Amount	激勵器量
+	Exciter Mode	激勵器模式
+	Exclusion	排除
+	Exponential Fade	指數淡化
+	Extended Dynamic Range Monitoring	擴充套件動態範圍監視
+	FFT Filter	FFT 濾波器
+	Fade	淡化
+	Fade Out	淡出
+	Faded Matte	褪色遮罩
+	Falloff	衰減
+	Far Away	遙遠
+	Fast	快
+	Faster Motion	更快速運動
+	Feedback	反饋
+	Feedback 1	反饋 1
+	Feedback 2	反饋 2
+	Feedback 3	反饋 3
+	Feedback 4	反饋 4
+	Feet + Frames 16mm	英尺 + 幀 16mm
+	Feet + Frames 35mm	英尺 + 幀 35mm
+	Female	女聲
+	File Size	檔案大小
+	Fill Background	填充背景
+	Fill Color	填充顏色
+	Fill Left with Right	用右聲道填充左聲道
+	Fill Point	填充點
+	Fill Right with Left	用左聲道填充右聲道
+	Fill Selector	填充選擇器
+	Film Dissolve	膠片溶解
+	Film Dissolve (Legacy)	膠片溶解（舊版）
+	Film Roll	膠片滾動
+	Filter	濾鏡
+	Filter Frequency	濾鏡頻率
+	Filter Resonance	濾鏡共振
+	Filter and EQ	濾鏡與均衡
+	Final Delay	最終延遲
+	Find Edges	查詢邊緣
+	Flanger	鑲邊
+	Flare	光暈
+	Flare Brightness	光暈亮度
+	Flare Center	光暈中心
+	Flare Color	光暈顏色
+	Flash	閃光
+	Flicker	閃爍
+	Flickers	閃爍
+	Flip Motion	翻轉運動
+	Flip Over	翻轉
+	Float	浮動
+	Focus	焦點
+	Focus Blur	焦點模糊
+	Focus Point	焦點
+	Focus Shape	焦點形狀
+	Focus Size	焦點大小
+	Fold Motion	摺疊運動
+	Foldback	摺疊
+	For color management parameters, go to the Settings tab in the Lumetri Color panel.	有關色彩管理引數，請前往 Lumetri 顏色面板中的“設定”選項卡。
+	Format	格式
+	Four Scopes (RGB, 8 bit)	四檢視示波器（RGB，8 位）
+	Four Scopes (YUV, float, no clamp)	四檢視示波器（YUV，浮點，無鉗制）
+	Fractal Influence	分形影響
+	Fractal Type	分形型別
+	Frame	幀
+	Frame Color	幀顏色
+	Frame Count	幀數
+	Frame Layout	幀佈局
+	Frame Rate	幀速率
+	Frame Width	幀寬度
+	Frame cache for monitors and thumbnails	監視器與縮圖幀快取
+	Frames	幀
+	Framing	取景
+	French	法語
+	Frequency	頻率
+	From	從
+	From East	從東
+	From North	北向
+	From South	南向
+	From West	西向
+	From the Left	從左
+	From the Right	從右
+	Front + LFE	前置 + LFE
+	Front + Rear	前置 + 後置
+	Front + Rear + LFE	前置 + 後置 + LFE
+	Front Only	僅前置
+	Fuzz	毛糙
+	GB	GB
+	Gamma	伽馬
+	Gamma Correction	伽馬校正
+	Gamut Warning	色域警告
+	Gamut Warning Color	色域警告顏色
+	Gap	間隙
+	Gap Color	間隙顏色
+	Gaussian Blur	高斯模糊
+	Gaussian Blur (Legacy)	高斯模糊（舊版）
+	General	常規
+	Generate	生成
+	Generate Timecode	生成時間碼
+	Generate waveforms and conform audio using multithreading	使用多執行緒生成波形並校準音訊
+	Generate waveforms automatically during import	匯入時自動生成波形
+	German	德語
+	Ghosts	殘影
+	Glass	玻璃
+	Glint	閃爍光斑
+	Glitch	故障
+	Glow	輝光
+	Glow Brightness	輝光亮度
+	Glow Color	輝光顏色
+	Glow Only	僅輝光
+	Glow Radius	輝光半徑
+	Glow Saturation	輝光飽和度
+	Glow Width	輝光寬度
+	Golden Hour	黃金時刻
+	Good	好
+	Gradient	漸變
+	Gradient End	漸變結束
+	Gradient Layer	漸變圖層
+	Gradient Placement	漸變放置
+	Gradient Scatter	漸變散佈
+	Gradient Shape	漸變形狀
+	Gradient Start	漸變開始
+	Gradient Wipe	漸變擦除
+	Gradient Wipe (Legacy)	漸變擦除（舊版）
+	Grain Size	顆粒大小
+	Graphic Equalizer (10 Bands)	圖形均衡器（10 段）
+	Graphic Equalizer (20 Bands)	圖形均衡器（20 段）
+	Graphic Equalizer (30 Bands)	圖形均衡器（30 段）
+	Graphics	圖形
+	Green Blurriness	綠色模糊度
+	Green Curve	綠色曲線
+	Green Offset	綠色偏移
+	Green Power	綠色強力
+	Green Slope	綠色斜率
+	Green-Blue	綠-藍
+	Green-Const	綠-常數
+	Green-Green	綠-綠
+	Green-Red	綠-紅
+	Grid	網格
+	Grow	增長
+	Growing Files	增長中的檔案
+	Grunge	做舊
+	Grunge & Distort	做舊與畸變
+	GuitarSuite	吉他套件
+	HDR Graphics White (Nits)	HDR 圖形白色（尼特）
+	HLS Vectorscope + Histogram	HLS 向量示波器 + 直方圖
+	HSL Secondary	HSL 輔助
+	Hard	硬
+	Hard Clip	硬削波
+	Hard Light	硬光
+	Hard Limiter	硬限制器
+	Hard Mix	硬混合
+	Hardware decoding	硬體解碼
+	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	硬體解碼：自動模式對支援的流使用系統影片解碼器（macOS 上為 VideoToolbox，Windows 上為 Media Foundation，Linux 上對 H.264 和 HEVC 使用 VA-API），其餘情況或硬體失敗時回退到 FilmCraft 自帶的解碼器。已開啟的媒體會保留其解碼器，直到重新開啟。
+	Head Size	頭部大小
+	Heart	心形
+	Height	高度
+	Hexagon	六邊形
+	Hide Back Face	隱藏背面
+	High	高
+	High Cutoff	高截止
+	High Frequency Cut	高頻切除
+	High Frequency Damping	高頻阻尼
+	High Pass	高通
+	High Shelf	高頻擱架
+	High Shelf Gain	高頻擱架增益
+	High contrast with held highlights and deep shadows	高對比，保留高光與深邃陰影
+	Highlight	高光
+	Highlight Blue Balance	高光藍平衡
+	Highlight Brightness	高光亮度
+	Highlight Color	高光顏色
+	Highlight Green Balance	高光綠平衡
+	Highlight Red Balance	高光紅平衡
+	Highlight Rolloff	高光衰減
+	Highlight Threshold	高光閾值
+	Highlight Tint	高光色調
+	Highlights Lightness	高光亮度
+	Highpass	高通
+	Hindi	印地語
+	Hindi digits	印地數字
+	Horizontal 16:9	水平 16:9
+	Horizontal Alignment	水平對齊
+	Horizontal Blocks	水平塊
+	Horizontal Decentering	水平偏移居中
+	Horizontal Displacement	水平置換
+	Horizontal Flip	水平翻轉
+	Horizontal Margin	水平邊距
+	Horizontal and Vertical	水平與垂直
+	Hue Center	色相中心
+	Hue Tolerance	色相容差
+	I/O Buffer Size	I/O 緩衝區大小
+	Ignore Alpha	忽略 Alpha
+	Image Control	影象控制
+	Immersive Video	沉浸式影片
+	Import numbered stills as image sequences	將帶序號的靜幀作為影象序列匯入
+	Impulse	脈衝
+	In a Room	在室內
+	In the Media Cache	在媒體快取中
+	In the project	在專案中
+	In/Out Duration	入點/出點時長
+	Include captions on import	匯入時包含字幕
+	Incoming	入向
+	Indeterminate Media Timebase	不確定的媒體時基
+	Initial Delay	初始延遲
+	Inner	內部
+	Inner Radius	內半徑
+	Input Boost	輸入提升
+	Inset	內縮
+	Inside	內部
+	Inside Color	內部顏色
+	Inter	中間
+	Interior Room Tone	室內環境音
+	Internal Black Point	內部黑點
+	Internal White Point	內部白點
+	Interpolation	插值
+	Intersect	相交
+	Inverse Falloff	反向衰減
+	Invert	反相
+	Invert Alpha	反相 Alpha
+	Invert Blur	反相模糊
+	Invert Fill	反相填充
+	Invert Gradient	反相漸變
+	Invert Left	反相左
+	Invert Right	反相右
+	Iris	光圈
+	Iris Box	光圈方盒
+	Iris Cross	光圈交叉
+	Iris Diamond	光圈菱形
+	Iris Radius	光圈半徑
+	Iris Rotation	光圈旋轉
+	Iris Round	光圈圓
+	Iris Shape	光圈形狀
+	Italian	義大利語
+	Japanese	日語
+	JetBrains Mono	JetBrains Mono
+	Join Through Edits	連線貫通編輯
+	Kaleidoscope	萬花筒
+	Keep a recovery copy of unsaved changes	保留未儲存更改的恢復副本
+	Key Color	鍵顏色
+	Keying	鍵控
+	Korean	韓語
+	Label Defaults	標籤預設值
+	Label speakers	標記說話人
+	Labels	標籤
+	Large Hall	大廳
+	Large Trim Offset	大修剪偏移
+	Large Volume Adjustment	大音量調整
+	Latch	閂鎖
+	Layer Name	圖層名稱
+	Layers	圖層
+	Leave Color	保留顏色
+	Left - Left	左 - 左
+	Left - Right	左 - 右
+	Left channel to device output	左聲道到裝置輸出
+	Left to Right	從左到右
+	Left to right	從左到右
+	Legacy	舊版
+	Length	長度
+	Lens Blur	鏡頭模糊
+	Lens Distortion	鏡頭畸變
+	Lens Flare	鏡頭光暈
+	Lens Type	鏡頭型別
+	Level 1	級別 1
+	Level 2	級別 2
+	Level 3	級別 3
+	Level 4	級別 4
+	Levels	色階
+	Lifted blacks, softer contrast, muted colour	提升黑位、柔和對比、低飽和
+	Light 1	光 1
+	Light 2	光 2
+	Light 3	光 3
+	Light 4	光 4
+	Light 5	光 5
+	Light Angle	光角度
+	Light Color	光顏色
+	Light Intensity	光強度
+	Light Leak	漏光
+	Light Leaks	漏光
+	Light Sweep	光束掃描
+	Light Type	光型別
+	Lighten	變亮
+	Lighter Color	淺色
+	Lighting Effects	光照效果
+	Lightning	閃電
+	Lights & Blurs	燈光與模糊
+	Lights & Glows	燈光與輝光
+	Line Thickness	線條粗細
+	Linear Burn	線性加深
+	Linear Dodge (Add)	線性減淡（新增）
+	Linear Light	線性光
+	Linear Ramp	線性漸變
+	Linear Wipe	線性擦除
+	Linear Wipe (Legacy)	線性擦除（舊版）
+	Linear keyframe thinning	線性關鍵幀抽稀
+	Linear to Log	線性轉 Log
+	Liquid Distortion	液體畸變
+	Local Projects	本地專案
+	Location	位置
+	Log Note	日誌備註
+	Log to Linear	Log 轉線性
+	Log to Log	Log 轉 Log
+	Logo Cutout	標誌摳圖
+	Long Shadow	長陰影
+	Look-Ahead Time	預讀時間
+	Loudness	響度
+	Loudness Maximizer	響度最大化
+	Loudness Meter	響度表
+	Louver	百葉
+	Low	低
+	Low Frequency Cut	低頻切除
+	Low Pass	低通
+	Low Shelf	低頻擱架
+	Low Shelf Gain	低頻擱架增益
+	Lower Left	左下
+	Lower Right	右下
+	Lowpass	低通
+	Luma	亮度
+	Luma Curve	亮度曲線
+	Luma Fade	亮度淡化
+	Luma Key	亮度鍵
+	Luma Source	亮度源
+	Luma and Chroma	亮度與色度
+	Lumetri Presets	Lumetri 預設
+	Luminance	亮度
+	Luminance Threshold	亮度閾值
+	Luminosity	光度
+	MB	MB
+	Magenta	品紅
+	Magnify	放大
+	Magnify (Legacy)	放大（舊版）
+	Maintain pitch while shuttling	拖動播放時保持音高
+	Major Radius	主半徑
+	Male	男聲
+	Mango	芒果色
+	Map Black To	黑場對映至
+	Map White To	白場對映至
+	Maps full-range levels into 16–235 (video range) with a luma curve	使用亮度曲線將全範圍電平對映到 16–235（影片範圍）
+	Mask Only	僅蒙版
+	Master Amplitude	主振幅
+	Mastering	母帶處理
+	Match frame sets in point	匹配幀設定入點
+	Matte	遮罩
+	Matte Alpha	遮罩 Alpha
+	Matte Cleanup	遮罩清理
+	Matte Generation	遮罩生成
+	Matte Luma	遮罩亮度
+	Maximum	最大
+	Maximum Amplitude	最大振幅
+	Maximum Block Size	最大塊大小
+	Maximum Blur	最大模糊
+	Maximum Project Versions	最大專案版本數
+	Maximum Reduction	最大縮減
+	Maximum Scale	最大縮放
+	Media	媒體
+	Media Analysis	媒體分析
+	Media Analysis & Transcription	媒體分析與轉錄
+	Media Cache	媒體快取
+	Media Cache Database	媒體快取資料庫
+	Media Cache Files	媒體快取檔案
+	Media Cache Management	媒體快取管理
+	Media Duration	媒體時長
+	Media End	媒體結束
+	Media Time	媒體時間
+	Media Timecode	媒體時間碼
+	Media Type	媒體型別
+	Media analysis and transcriptions will be cached in the Media Cache folder. Reanalysis won't be required if the media is imported into another project on this computer.	媒體分析與轉錄將快取在媒體快取資料夾中。若媒體在本機其他專案中再次匯入，無需重新分析。
+	Median	中位數
+	Medium Room	中等房間
+	Memory	記憶體
+	Metadata & Timecode Burn-in	後設資料與時間碼疊加
+	Method	方法
+	Metrics Kerning	度量字距
+	Mid	中間
+	Mid Point	中點
+	Midtone Blue Balance	中間調藍平衡
+	Midtone Green Balance	中間調綠平衡
+	Midtone Red Balance	中間調紅平衡
+	Midtones Lightness	中間調亮度
+	Minimum	最小值
+	Minimum time	最短時間
+	Minimum time interval thinning	最小時間間隔抽稀
+	Minor Radius	次半徑
+	Mirror	映象
+	Mirror Alternate	交替映象
+	Missing font replacement	缺失字型替換
+	Miter join	斜接連線
+	Miter limit	斜接限制
+	Mixed Crystals	混合晶體
+	Mode	模式
+	Modern High Gain	現代高增益
+	Modulation	調製
+	Modulation Rate	調製速率
+	Mono Media	單聲道媒體
+	Monochrome	單色
+	Monochrome toned cyan-blue	青藍色單色調
+	Monochrome toned warm brown	暖棕色單色調
+	Monoscopic	單視
+	Monospace only	僅等寬
+	More colour in the less saturated areas	在飽和度較低區域增加色彩
+	Morph Cut	變形剪下
+	Mosaic	馬賽克
+	Mosaic (Legacy)	馬賽克（舊版）
+	Motion Blur	運動模糊
+	Motion Camera	運動相機
+	Motion Preset	運動預設
+	Motion Tween	運動補間
+	Move	移動
+	Movie	影片
+	Movie (audio and video)	影片（音訊與影片）
+	Multiband Compressor	多頻段壓縮器
+	Multichannel Mono Media	多聲道單聲道媒體
+	Multiply	正片疊底
+	Multitap Delay	多抽頭延遲
+	Music	音樂
+	Mute input during timeline recording	時間軸錄製時靜音輸入
+	Name	名稱
+	Narrow	窄
+	Neon Color	霓虹色
+	Neon Wipe	霓虹擦除
+	Next to original media files	位於原始媒體檔案旁
+	Night	夜景
+	No Motion	無運動
+	No Scroll	不滾動
+	No plugins are installed. Changes will take effect the next time you start FilmCraft.	未安裝任何外掛。更改將在下次啟動 FilmCraft 時生效。
+	Noise	噪點
+	Noise & Grain	噪點與顆粒
+	Noise (Legacy)	噪點（舊版）
+	Noise Level	噪點級別
+	Noise Reduction/Restoration	降噪/修復
+	Noise Type	噪點型別
+	Non-Additive Dissolve	非疊加溶解
+	Normal	正常
+	Notch 1	陷波 1
+	Notch 2	陷波 2
+	Notch 3	陷波 3
+	Notch 4	陷波 4
+	Notch 5	陷波 5
+	Notch 6	陷波 6
+	Notch Filter	陷波濾波器
+	Notch Width	陷波寬度
+	Number Of Echoes	回聲次數
+	Number of Harmonics	諧波數量
+	Obsolete	已廢棄
+	Octagon	八邊形
+	Offset	偏移
+	Offset (Turbulence)	偏移（湍流）
+	Offset From	偏移起點
+	Offset To	偏移終點
+	Omni	全向
+	On	開
+	On Original Image	在原始影象上
+	On Transparent	在透明背景上
+	Open Air	露天
+	Open Most Recent	開啟最近的檔案
+	Open in new window	在新視窗中開啟
+	Open in place	就地開啟
+	Open new tab	開啟新標籤頁
+	Opens up the shadows	提亮陰影
+	Order	順序
+	Orientation	方向
+	Outer	外側
+	Outgoing	出向
+	Output	輸出
+	Output Mapping	輸出對映
+	Outside	外部
+	Outside Color	外部顏色
+	Overflow	溢位
+	Overlay	疊加
+	Overshoot	過沖
+	Page Peel	卷頁
+	Page Scroll	頁面滾動
+	Page Turn	翻頁
+	Paint Bucket	油漆桶
+	Paint On Black	在黑色上繪製
+	Paint On Original Image	在原始影象上繪製
+	Paint On Transparent	在透明背景上繪製
+	Paint On White	在白色上繪製
+	Paint Style	繪製樣式
+	Paint Surface	繪製表面
+	Pan (Y Axis)	平移（Y 軸）
+	Panel Wipe	面板擦除
+	Panels	面板
+	Panner - Ambisonics	聲像器 - 全景聲
+	Parade	並列
+	Parade (RGB)	並列（RGB）
+	Parametric Equalizer	引數均衡器
+	Passband Ripple	通帶紋波
+	Path	路徑
+	Path Points	路徑點
+	Pause Media Encoder queue during playback	播放時暫停 Media Encoder 佇列
+	Peak Frequency	峰值頻率
+	Peak Gain	峰值增益
+	Pedestal	基準電平
+	Pentagon	五邊形
+	Per line	每行
+	Percent Blur	模糊百分比
+	Perspective	透視
+	Phase Difference	相位差
+	Phaser	移相器
+	Phone Call	電話通話
+	Phosphor	熒光
+	Phosphor Color	熒光顏色
+	Photocopy	影印
+	Photocopy Color	影印顏色
+	Pillow	枕形
+	Pin All	全部固定
+	Pin Horizontal	水平固定
+	Pin Light	點光
+	Pin Vertical	垂直固定
+	Pinning	固定
+	Pitch Shifter	變調器
+	Plate	底板
+	Plateau Wipe	臺地擦除
+	Plateaus	臺地
+	Plates	底板
+	Play after rendering previews	渲染預覽後播放
+	Play audio while scrubbing in Source and Program Monitors	在源監視器與節目監視器中拖動時播放音訊
+	Playback	播放
+	Playhead position determines trim monitor loop playback	播放頭位置決定修剪監視器迴圈播放
+	Plugins	外掛
+	Podcast Voice	播客人聲
+	Point 1	點 1
+	Point 1 Color	點 1 顏色
+	Point 1 Latitude	點 1 緯度
+	Point 1 Longitude	點 1 經度
+	Point 2	點 2
+	Point 2 Color	點 2 顏色
+	Point 2 Latitude	點 2 緯度
+	Point 2 Longitude	點 2 經度
+	Point 3	點 3
+	Point 3 Color	點 3 顏色
+	Point 3 Latitude	點 3 緯度
+	Point 3 Longitude	點 3 經度
+	Point 4	點 4
+	Point 5	點 5
+	Point 6	點 6
+	Point 7	點 7
+	Point 8	點 8
+	Points	點
+	Policy	策略
+	Pop Motion	彈出運動
+	Portuguese	葡萄牙語
+	Position & Rotation	位置與旋轉
+	Position Amount	位置量
+	Position, Scale & Rotation	位置、縮放與旋轉
+	Position, Scale, Rotation	位置、縮放、旋轉
+	Posterize	色調分離
+	Posterize Time	時間色調分離
+	Pre-Delay	預延遲
+	Prefix	字首
+	Presence Lift	臨場感提升
+	Preserve Luminosity	保留亮度
+	Preserve Scale	保留縮放
+	ProcAmp	處理放大器
+	Projecting cap	凸出端帽
+	Projects	專案
+	Pull Motion	拉出運動
+	Pulls highlights and whites down	壓低高光與白色
+	Push	推
+	Push (Legacy)	推（舊版）
+	Q	Q 值
+	RAM reserved for other applications	為其他應用程式預留的記憶體
+	RGB	RGB
+	RGB Split	RGB 分離
+	RGB-White	RGB-白
+	Radial	徑向
+	Radial Blur	徑向模糊
+	Radial Ramp	徑向漸變
+	Radial Wipe	徑向擦除
+	Radial Wipe (Legacy)	徑向擦除（舊版）
+	Radio Announcer	電臺播音員
+	Radio Voice	廣播人聲
+	Radius	半徑
+	Ramp	漸變
+	Ramp Shape	漸變形狀
+	Random	隨機
+	Random Seed	隨機種子
+	Range	範圍
+	Ray	光線
+	Ray Color	光線顏色
+	Ray Length	光線長度
+	Rays	光線
+	Rays Only	僅光線
+	Read	讀取
+	Rec. 2100	Rec. 2100
+	Rec. 601	Rec. 601
+	Rec. 709	Rec. 709
+	Red Blurriness	紅色模糊度
+	Red Curve	紅色曲線
+	Red Offset	紅色偏移
+	Red Power	紅色強力
+	Red Slope	紅色斜率
+	Red-Blue	紅-藍
+	Red-Const	紅-常數
+	Red-Green	紅-綠
+	Red-Red	紅-紅
+	Reduce Axis	減少軸
+	Reduce Interlace Flicker	減少隔行閃爍
+	Reflected	反射的
+	Reflection Angle	反射角度
+	Reflection Center	反射中心
+	Refraction	折射
+	Reframe Offset	重構畫面偏移
+	Reframe Zoom	重構畫面縮放
+	Refresh growing Files Every	每隔以下時間重新整理增長中的檔案
+	Relaxed	放鬆
+	Release Time	釋放時間
+	Relief	浮雕
+	Remaining	剩餘
+	Remove Fringe	去除邊緣色
+	Render Edit in Audition files to:	將 Audition 檔案中的編輯渲染至：
+	Render audio when rendering video	渲染影片時同時渲染音訊
+	Repair	修復
+	Repeat Edge Pixels	重複邊緣畫素
+	Replace Color	替換顏色
+	Replace With Clip From Source Monitor	用源監視器中的剪輯替換
+	Replicate	複製
+	Responsive Design - Position	響應式設計 - 位置
+	Responsive Design - Time	響應式設計 - 時間
+	Restore open sequences when opening projects	開啟專案時恢復已開啟的序列
+	Result	結果
+	Retro	復古
+	Reveal Nested Sequence	顯示巢狀序列
+	Reveal Original Image	顯示原始影象
+	Reveal in Project	在專案面板中顯示
+	Reverb Amount	混響量
+	Reverse	反轉
+	Right - Left	右 - 左
+	Right - Right	右 - 右
+	Right channel to device output	右聲道到裝置輸出
+	Right to left	從右到左
+	Ripple trim adds edits to keep both sides of trim in sync	波紋修剪新增編輯以保持修剪兩側同步
+	Roll (Z Axis)	滾動（Z 軸）
+	Room Size	房間大小
+	Rotation Amount	旋轉量
+	Roughen	粗糙化
+	Roughen Color	粗糙化顏色
+	Roughen Edges	粗糙化邊緣
+	Round cap	圓端帽
+	Round join	圓角連線
+	Rounded Crop	圓角裁剪
+	Rows	行
+	Russian	俄語
+	Rusty	鏽跡
+	Rusty Color	鏽跡顏色
+	SFX	音效
+	Sample Rate	取樣率
+	Saturation at 50 %	50% 飽和度
+	Save .cfa and .pek media cache files next to original media files when possible	儘可能將 .cfa 與 .pek 媒體快取檔案儲存在原始媒體檔案旁
+	Scale (Degrees)	縮放（度數）
+	Scale Amount	縮放量
+	Scale From	縮放起點
+	Scale Height	縮放高度
+	Scale Match	縮放匹配
+	Scale To	縮放終點
+	Scale Width	縮放寬度
+	Scale to frame size	縮放以適配幀大小
+	Scan Lines	掃描線
+	Scene	場景
+	Scientific Filter	科學濾波器
+	Scratch disk location for Captured Audio	採集音訊的暫存檔位置
+	Screen	濾色
+	Seconds	秒
+	Segments	段
+	Semi-tones	半音
+	Sequence Name	序列名稱
+	Sequence Timecode	序列時間碼
+	Set focus on the Timeline when performing Insert/Overwrite edits	執行插入/覆蓋編輯時將焦點設在時間軸上
+	Set to frame size	設為幀大小
+	Setting	設定
+	Shadow Angle	陰影角度
+	Shadow Blue Balance	陰影藍平衡
+	Shadow Blur	陰影模糊
+	Shadow Color	陰影顏色
+	Shadow Distance	陰影距離
+	Shadow Green Balance	陰影綠平衡
+	Shadow Only	僅陰影
+	Shadow Opacity	陰影不透明度
+	Shadow Red Balance	陰影紅平衡
+	Shadow Size	陰影大小
+	Shadow Tint	陰影色調
+	Shadows Lightness	陰影亮度
+	Shake	抖動
+	Shape Dissolve	形狀溶解
+	Shape Flow	形狀流動
+	Shape Size	形狀大小
+	Shapes	形狀
+	Shard Size	碎片大小
+	Sharp Colors	銳利色彩
+	Sharpen Amount	銳化量
+	Shift Center To	將中心偏移至
+	Shift clips that overlap trim point during ripple trimming	波紋修剪時移動與修剪點重疊的剪輯
+	Shot	鏡頭
+	Show "Project:" and "Bin:" in Project panel tab	在專案面板標籤中顯示“專案：”和“素材箱：”
+	Show Clip Mismatch Warning dialog	顯示剪輯不匹配警告對話方塊
+	Show Event Indicator	顯示事件指示器
+	Show Focus Area	顯示焦點區域
+	Show Home	顯示主頁
+	Show Mask Tracker Preview	顯示遮罩跟蹤器預覽
+	Show Only Noise	僅顯示噪點
+	Show Open Dialog	顯示開啟對話方塊
+	Show Project Load Error Dialog	顯示專案載入錯誤對話方塊
+	Show Rich Tool Tips	顯示豐富工具提示
+	Show Tool Tips	顯示工具提示
+	Show Workspace Reset Warning dialog on double click	雙擊時顯示工作區重置警告對話方塊
+	Show system compatibility issues at startup	啟動時顯示系統相容性問題
+	Shrink	收縮
+	Shutter Angle	快門角度
+	Similarity	相似度
+	Simple Notch Filter	簡單陷波濾波器
+	Simple Parametric EQ	簡單引數均衡器
+	Simple Text	簡單文字
+	Single-band Compressor	單頻段壓縮器
+	Sinusoidal	正弦
+	Skew	傾斜
+	Skew Axis	傾斜軸
+	Slats	百葉
+	Slice	切片
+	Slices	切片
+	Slide	滑動
+	Slide (Legacy)	滑動（舊版）
+	Slope	斜率
+	Slow	慢
+	Slower Motion	更慢運動
+	Small Room	小房間
+	Smart Limit	智慧限制
+	Smart Tools	智慧工具
+	Smart quotes	智慧引號
+	Smooth	平滑
+	Smooth Motion	平滑運動
+	Smooth Scroll	平滑滾動
+	Smoothness	平滑度
+	Snap playhead in Timeline when Snap is enabled	啟用吸附時時間軸中吸附播放頭
+	Soft	柔和
+	Soft Clamp	柔和鉗制
+	Soft Edges (Best Quality)	柔和邊緣（最佳質量）
+	Soft Light	柔光
+	Soft Wipe	柔和擦除
+	Soften Harshness	柔化硬邊
+	Softness	柔和度
+	Solarize	日曬
+	Solid Colors	純色
+	Source Point	源點
+	Source Text	源文字
+	Spacer	間隔
+	Spanish	西班牙語
+	Speaker Angle	揚聲器角度
+	Speaker Labeling	揚聲器標籤
+	Special	特殊
+	Special Effects	特殊效果
+	Speech model	語音模型
+	Speed	速度
+	Spherize	球面化
+	Spiky	尖銳
+	Spill	溢色
+	Spill Suppression	溢色抑制
+	Spin	自旋
+	Spin Direction	自旋方向
+	Spin Motion	自旋運動
+	Split	分割
+	Split (Legacy)	分割（舊版）
+	Spotlight	聚光
+	Spread	擴散
+	Spring Motion	彈簧運動
+	Square	方形
+	Square (Width Only)	方形（僅寬度）
+	Square 1:1	方形 1:1
+	Stabilization	穩定
+	Stabilize Only	僅穩定
+	Stabilize, Crop	穩定、裁剪
+	Stabilize, Crop, Auto-scale	穩定、裁剪、自動縮放
+	Stabilize, Synthesize Edges	穩定、合成邊緣
+	Stages	階段
+	Star	星形
+	Star Wipe	星形擦除
+	Start Angle	起始角度
+	Start Color	起始顏色
+	Start Point	起始點
+	Start at 0	從 0 開始
+	Start at 1	從 1 開始
+	Start of Ramp	漸變起點
+	Start with an Empty Project	以空專案開始
+	Starting Intensity	起始強度
+	Static Plates	靜態底板
+	Step forward/back many	前進/後退多步
+	Stereo Expand	立體聲擴充套件
+	Stereo Expander	立體聲擴充套件器
+	Stereo Imagery	立體聲像
+	Stereo Media	立體聲媒體
+	Stereo Phasing	立體聲相位
+	Stereoscopic - Over/Under	立體 - 上下
+	Stereoscopic - Side by Side	立體 - 左右
+	Still	靜止
+	Still Image Default Duration	靜幀預設時長
+	Stone Church	石質教堂
+	Stopband Attenuation	阻帶衰減
+	Straight Color	直色
+	Strength	強度
+	Stretch	拉伸
+	Stretch Gradient to Fit	拉伸漸變以適配
+	Stretch Map to Fit	拉伸對映以適配
+	Stretch Width or Height	拉伸寬度或高度
+	Stretch Wipe	拉伸擦除
+	Stretch to Fit Frame	拉伸以適配幀
+	Stripe	條紋
+	Stripes	條紋
+	Strobe Color	頻閃顏色
+	Strobe Duration (secs)	頻閃時長（秒）
+	Strobe Light	頻閃燈
+	Strobe Period (secs)	頻閃週期（秒）
+	Stroke 2 Color	描邊 2 顏色
+	Stroke 2 Type	描邊 2 型別
+	Stroke 2 Width	描邊 2 寬度
+	Stroke Angle	描邊角度
+	Stroke Color	描邊顏色
+	Stroke Density	描邊密度
+	Stroke Length	描邊長度
+	Stroke Length (secs)	描邊長度（秒）
+	Stroke Only	僅描邊
+	Stroke Randomness	描邊隨機性
+	Stroke Type	描邊型別
+	Stroke Width	描邊寬度
+	Stroke line cap	描邊端帽
+	Stroke line join	描邊連線
+	Studio Reverb	錄音室混響
+	Stylize	風格化
+	Subclip End	子剪輯結束
+	Subclip Start	子剪輯開始
+	Subspace Warp	子空間扭曲
+	Subtitle	字幕
+	Subtract	減去
+	Sum multichannel outputs to mono in Source Monitor	在源監視器中將多聲道輸出合併為單聲道
+	Super Narrow	超窄
+	Surface Gloss	表面光澤
+	Surface Material	表面材質
+	Surround Reverb	環繞混響
+	Swap	交換
+	Swap Channels	交換聲道
+	Swivel	轉動
+	Synthetic	合成
+	TV Power	電視電源
+	Tape	磁帶
+	Tape Name	磁帶名稱
+	Tape/Tube	磁帶/管道
+	Target Aspect	目標寬高比
+	Target Color	目標顏色
+	Target Field of View	目標視場角
+	Target Loudness	目標響度
+	Teal & Orange	青色與橙色
+	Telephone	電話
+	Teletext	圖文電視
+	Template Properties	模板屬性
+	Text Animator	文字動畫器
+	Text Color	文字顏色
+	The media cache holds render previews of unsaved projects and other files FilmCraft can recreate. Deleting them is always safe; FilmCraft rebuilds them as needed.	媒體快取儲存未儲存專案的渲染預覽，以及其他 FilmCraft 可重建的檔案。刪除它們始終安全；FilmCraft 會在需要時重新構建。
+	Thickness	厚度
+	Tile Gradient	平鋪漸變
+	Tilt	傾斜
+	Tilt (X Axis)	傾斜（X 軸）
+	Time	時間
+	Time and Pitch	時間與音高
+	Timecode Conversion	時間碼轉換
+	Timeline Mouse Scrolling	時間軸滑鼠滾動
+	Timeline Playback Auto-Scrolling	時間軸播放自動滾動
+	Tint Color	色調顏色
+	To	到
+	Tolerance	容差
+	Tone	音調
+	Top Center	頂部居中
+	Top Left	左上
+	Top Right	右上
+	Touch	觸控
+	Track Matte Key	軌道遮罩鍵
+	Transcription	轉錄
+	Transcription preferences	轉錄偏好設定
+	Transform	變換
+	Transformers	變換器
+	Transience	瞬態
+	Transition Completion	過渡完成度
+	Transition Softness	過渡柔化
+	Transparency	透明度
+	Trash	廢紙簍
+	Travel Motion	行進運動
+	Treble	高音
+	Triangle	三角形
+	Trim	修剪
+	Tube	管道
+	Tube-modeled Compressor	管道模型壓縮器
+	Tubular	管狀
+	Turbulent	湍流
+	Turbulent Displace	湍流置換
+	Turbulent Sharp	湍流銳化
+	Turbulent Smooth	湍流平滑
+	Turbulent Smoother	湍流平滑器
+	Tweed	花呢
+	Twirl	旋轉扭曲
+	Twirl (Legacy)	旋轉扭曲（舊版）
+	Twirl Center	旋轉扭曲中心
+	Twirl Radius	旋轉扭曲半徑
+	Twist	扭轉
+	Twist Smoother	扭轉平滑器
+	Typewriter	打字機
+	Ultra Key	超級鍵
+	Uniform Scale	等比縮放
+	Uniform Spacing	均勻間距
+	Unsharp Mask	銳化遮罩
+	Update it at least every	至少每隔以下時間更新
+	Update timeline dynamically during ripple edits.	波紋編輯時動態更新時間軸。
+	Upper Frequency	上限頻率
+	Upper Left	上左
+	Upper Right	上右
+	Use Color Noise	使用彩色噪點
+	Use End Color	使用結束顏色
+	Use File	使用檔案
+	Use Glow Color	使用輝光顏色
+	Use Media Source	使用媒體源
+	Use Tint Color	使用色調顏色
+	Utility	實用工具
+	VHS Damage	VHS 損壞
+	VR Blur	VR 模糊
+	VR Chroma Leaks	VR 色度洩漏
+	VR Chromatic Aberrations	VR 色差
+	VR Color Gradients	VR 色彩漸變
+	VR De-Noise	VR 降噪
+	VR Digital Glitch	VR 數字故障
+	VR Fractal Noise	VR 分形噪點
+	VR Glow	VR 輝光
+	VR Gradient Wipe	VR 漸變擦除
+	VR Iris Wipe	VR 虹膜擦除
+	VR Light Leaks	VR 光線洩漏
+	VR Light Rays	VR 光線
+	VR Mobius Zoom	VR 莫比烏斯縮放
+	VR Plane to Sphere	VR 平面到球面
+	VR Projection	VR 投影
+	VR Random Blocks	VR 隨機塊
+	VR Rotate Sphere	VR 旋轉球面
+	VR Sharpen	VR 銳化
+	VR Spherical Blur	VR 球面模糊
+	Validate Content Credentials on import	匯入時驗證內容憑證
+	Vectorscope (YUV)	向量示波器（YUV）
+	Vectorscope + Waveform YC	向量示波器 + 波形 YC
+	Vectorscope HLS	向量示波器 HLS
+	Vectorscope YUV	向量示波器 YUV
+	Venetian Blinds	百葉窗
+	Vertical 4:5	豎版 4:5
+	Vertical 9:16	豎版 9:16
+	Vertical Alignment	垂直對齊
+	Vertical Blocks	垂直塊
+	Vertical Decentering	垂直偏離中心
+	Vertical Displacement	垂直位移
+	Vertical Flip	垂直翻轉
+	Vertical Margin	垂直邊距
+	Very Narrow	極窄
+	Video 1	影片 1
+	Video 2	影片 2
+	Video 3	影片 3
+	Video 4	影片 4
+	Video 5	影片 5
+	Video 6	影片 6
+	Video 7	影片 7
+	Video 8	影片 8
+	Video Codec	影片編解碼器
+	Video Duration	影片時長
+	Video Effects	影片效果
+	Video In Point	影片入點
+	Video Info	影片資訊
+	Video Limiter	影片限制器
+	Video Out Point	影片出點
+	Video Transition Default Duration	影片過渡預設時長
+	Video Transitions	影片過渡
+	Video Usage	影片使用量
+	Vignette	暗角
+	Vivid Light	亮光
+	Vocal Booth	人聲錄音棚
+	Vocal Enhancer	人聲增強器
+	Voice	人聲
+	Voice in a Hall	大廳人聲
+	Volumetric Rays	體積光線
+	Warm Film	暖色膠片
+	Warm Room	暖色房間
+	Warm Voice	暖色人聲
+	Warm print stock with gentle roll-off	帶柔和滾降的暖色正片
+	Warm, soft late-afternoon light	溫暖柔和的午後光線
+	Warning	警告
+	Warp Stabilizer	變形穩定器
+	Wave	波浪
+	Wave Height	波浪高度
+	Wave Speed	波浪速度
+	Wave Warp	波浪扭曲
+	Wave Width	波浪寬度
+	Waveform	波形
+	Waveform (Luma)	波形（亮度）
+	Waveform (RGB)	波形（RGB）
+	Wavelength	波長
+	Wet	溼潤
+	Wet Out	輸出溼潤
+	When Opening a Project	開啟專案時
+	Whip	抽鞭
+	Whip (Legacy)	抽鞭（舊版）
+	Whisper base (balanced)	Whisper base（均衡）
+	Whisper small (most accurate)	Whisper small（最準確）
+	Whisper tiny (fastest)	Whisper tiny（最快）
+	White	白色
+	White Input Level	白色輸入電平
+	White Is High	白色為高
+	Wide Outdoor	寬闊戶外
+	Widener	擴充套件器
+	Width	寬度
+	Wiggle	擺動
+	Wipe	擦除
+	Wipe Angle	擦除角度
+	Wonder Glow	奇幻輝光
+	Wrap Back	迴繞
+	Write	寫入
+	Write XMP ID to files on import	匯入時將 XMP ID 寫入檔案
+	Write clip markers to XMP	將剪輯標記寫入 XMP
+	Write-on	書寫
+	X Rotation	X 軸旋轉
+	Y Rotation	Y 軸旋轉
+	YC	YC
+	YC no Chroma	YC 無色度
+	YUV	YUV
+	Yellow-green highlights and blue-lifted shadows from crossed channel curves	交叉通道曲線產生的黃綠高光與藍調提升陰影
+	Z Position	Z 軸位置
+	Z Rotation	Z 軸旋轉
+	Zoom	縮放
+	Zoom Amount	縮放量
+	Zoom Blur	縮放模糊
+	Zoom Strength	縮放強度
+	days	天
+	frames	幀
+	milliseconds	毫秒
+	minute(s)	分鐘
+	second(s)	秒
+	seconds	秒
+	AAF…	AAF…
+	Audio…	音訊…
+	Avid Log Exchange…	Avid Log Exchange…
+	Color…	顏色…
+	EDL…	EDL…
+	Edit Workspaces…	編輯工作區…
+	FCPXML…	FCPXML…
+	Final Cut Pro XML…	Final Cut Pro XML…
+	General…	常規…
+	OMF…	OMF…
+	OpenTimelineIO…	OpenTimelineIO…
+	Save Changes to this Workspace	儲存對此工作區的更改
+	Save as New Workspace…	另存為新工作區…
+	Create Search Bin	建立搜尋素材箱
+	Edit Offline File	編輯離線檔案
+	Source Settings	源設定
+	Update Metadata	更新後設資料
+	Automate To Sequence	自動匹配到序列
+	Scene Edit Detection	場景編輯檢測
+	Analyze	分析
+	Normalize Mix Track	標準化混音軌道
+	Simplify Sequence	簡化序列
+	Simplify	簡化
+	Transcribe Sequence	轉錄序列
+	Save as Template	另存為模板
+	Flash Cue Marker	快閃記憶體提示標記
+	System Compatibility Report	系統相容性報告
+	no GPU adapter: the CPU compositor is used	無 GPU 介面卡：使用 CPU 合成器
+	Avid Log Exchange	Avid Log Exchange
+	FilmCraft Project	FilmCraft 專案
+	{name} Selection.fcproj	{name} Selection.fcproj
+	{name} (Simplified)	{name}（簡化）
+	Find in:	查詢位置：
+	Find:	查詢：
+	Search:	搜尋：
+	Clip Names and Markers	剪輯名稱與標記
+	Match:	匹配：
+	All	全部
+	Any	任意
+	Case Sensitive	區分大小寫
+	Scratch Disks	暫存檔
+	Ingest Settings	收錄設定
+	Captured and Generated:	採集與生成：
+	Video Previews:	影片預覽：
+	Audio Previews:	音訊預覽：
+	Project Auto Save:	專案自動儲存：
+	Same as Project	與專案相同
+	Path: {path}	路徑：{path}
+	Transcode	轉碼
+	Copy and Create Proxies	複製並建立代理
+	Action:	操作：
+	Destination:	目標：
+	Next to the media	位於媒體旁
+	Video Rendering and Playback	影片渲染與回放
+	Renderer:	渲染器：
+	Display Format:	顯示格式：
+	Milliseconds	毫秒
+	Capture	採集
+	Capture Format:	採集格式：
+	Action and Title Safe Areas	動作與安全標題區域
+	Title Safe Area	標題安全區域
+	Action Safe Area	動作安全區域
+	Total Duration	總時長
+	Average Data Rate	平均資料速率
+	Colour	顏色
+	{codec} · {rate} Hz · {n} channel(s)	{codec} · {rate} Hz · {n} 聲道
+	Media Name:	媒體名稱：
+	Scene:	場景：
+	Shot/Take:	鏡頭/條：
+	Log Note:	日誌記錄：
+	Codec: {codec}	編解碼器：{codec}
+	Write the metadata of the selected clip(s) ({n}) to XMP files next to their media?	將所選剪輯（{n}）的後設資料寫入其媒體旁的 XMP 檔案？
+	Existing XMP files written by other applications are left unchanged.	其他應用程式寫入的現有 XMP 檔案保持不變。
+	To {name}	至 {name}
+	Ordering:	排序：
+	Sort Order	排序順序
+	Selection Order	選擇順序
+	Placement:	放置：
+	Sequentially	順序
+	At Unnumbered Markers	在未編號標記處
+	Method:	方法：
+	Insert Edit	插入編輯
+	Overwrite Edit	覆蓋編輯
+	Clip Overlap:	剪輯重疊：
+	Frames per Still:	每靜幀幀數：
+	Transitions	過渡
+	Apply Default Audio Transition	應用預設音訊過渡
+	Apply Default Video Transition	應用預設影片過渡
+	Ignore Options	忽略選項
+	Ignore Audio	忽略音訊
+	Ignore Video	忽略影片
+	Apply a cut at each detected cut point	在每個檢測到的切點應用剪下
+	Create a bin of subclips from each detected cut point	從每個檢測到的切點建立子剪輯素材箱
+	Create a clip marker at each detected cut point	在每個檢測到的切點建立剪輯標記
+	Sensitivity:	靈敏度：
+	Normalize Mix Track to:	將混音軌道標準化至：
+	Disabled clips	已禁用的剪輯
+	Empty tracks	空軌道
+	Gaps	間隙
+	Video effects	影片效果
+	Audio effects	音訊效果
+	Text (graphics and captions)	文字（圖形與字幕）
+	Clips	剪輯
+	Move clips to the lowest track possible	將剪輯移至儘可能低的軌道
+	Keep:	保留：
+	Video and Audio	影片與音訊
+	Video Only	僅影片
+	Audio Only	僅音訊
+	Language:	語言：
+	Audio on track {t}	軌道 {t} 上的音訊
+	Audio analysis:	音訊分析：
+	Recognize when different speakers are talking	識別不同說話人講話時
+	Template Name:	模板名稱：
+	Comments:	註釋：
+	 (unavailable)	（不可用）
+	Decoders	解碼器
+	Containers	容器
+	Export formats	匯出格式
+	Match {n} of {total}	匹配 {total} 中的 {n}
+	Saved template {path}	已儲存模板 {path}
+	Scene Edit Detection: analysing in the background (see Progress)	場景編輯檢測：正在後臺分析（參見進度）
+	Delete Search Bin	刪除搜尋素材箱
+	 (removed from {list})	（已從 {list} 移除）
+	{key} can't be used as a shortcut	{key} 不能用作快捷鍵
+	Keyboard Shortcuts	鍵盤快捷鍵
+	{active} (modified)	{active}（已修改）
+	Loaded “{name}”	已載入“{name}”
+	My Shortcuts	我的快捷鍵
+	Deleted preset “{active}”	已刪除預設“{active}”
+	Export…	匯出…
+	Exported to {path}	已匯出至 {path}
+	Export: no file chosen (agents: shortcuts.export {path})	匯出：未選擇檔案（agents：shortcuts.export {path}）
+	Imported “{name}”	已匯入“{name}”
+	Import: no file chosen (agents: shortcuts.import {path})	匯入：未選擇檔案（agents：shortcuts.import {path}）
+	Keyboard: US (macOS)	鍵盤：美式（macOS）
+	Keyboard: US	鍵盤：美式
+	Save preset as:	另存為預設：
+	Commands:	命令：
+	{panel} Panel	{panel} 面板
+	Application shortcuts work whatever panel has focus	無論哪個面板獲得焦點，應用程式快捷鍵均生效
+	Panel shortcuts override application shortcuts while that panel has focus	當該面板獲得焦點時，面板快捷鍵會覆蓋應用程式快捷鍵
+	Modifier held / selected	按住/選擇的修飾鍵
+	Search commands or keys	搜尋命令或按鍵
+	Selected: {command}	已選擇：{command}
+	Command	命令
+	Shortcut	快捷鍵
+	Type a shortcut… (Esc cancels)	鍵入快捷鍵…（Esc 取消）
+	Add another shortcut	新增另一個快捷鍵
+	No matching commands	無匹配命令
+	Key:	按鍵：
+	Modifiers	修飾鍵
+	Nothing is assigned to this key	此按鍵未分配任何內容
+	Click a key on the keyboard to see its shortcuts	單擊鍵盤上的按鍵以檢視其快捷鍵
+	Assign {key} to {command}	將 {key} 分配給 {command}
+	Conflict: {key} is assigned to {commands} ({ctx})	衝突：{key} 已分配給 {commands}（{ctx}）
+	 and 	和
+	Click a command's Shortcut cell and press keys to assign it; + adds another shortcut.	單擊命令的快捷鍵單元格並按鍵進行分配；+ 可新增另一個快捷鍵。
+	Cleared {n} shortcut(s) of {command}	已清除 {command} 的 {n} 個快捷鍵
+	No export preset named `{name}`	沒有名為`{name}`的匯出預設
+	Open a sequence to export	開啟一個序列以匯出
+	Destinations	目標
+	Media File	媒體檔案
+	Queue ({n})	佇列（{n}）
+	Send exports here with Send to Queue, then start the queue.	透過“傳送到佇列”將匯出傳送到此，然後啟動佇列。
+	Ready	就緒
+	Encoding {n}%	編碼 {n}%
+	Start Queue	啟動佇列
+	Stop	停止
+	Clear Finished	清除已完成
+	Not supported by FilmCraft's encoders yet	FilmCraft 的編碼器尚不支援
+	Sequence name	序列名稱
+	Folder	資料夾
+	Preset	預設
+	More presets…	更多預設…
+	Multiplexer	複用器
+	The sequence has no caption track.	該序列沒有字幕軌道。
+	Export Options	匯出選項
+	Burn Captions Into Video	將字幕燒錄到影片
+	Create Sidecar File	建立附帶檔案
+	File Format	檔案格式
+	SubRip Subtitle (.srt)	SubRip 字幕（.srt）
+	WebVTT (.vtt)	WebVTT（.vtt）
+	Title	標題
+	Creator	建立者
+	Copyright	版權
+	Image	影象
+	Frame Size	幀大小
+	Match Source	匹配源
+	Field Order	場序
+	Aspect	寬高比
+	Profile	配置檔案
+	Bitrate Encoding	位元速率編碼
+	Target Bitrate	目標位元速率
+	Adaptive ({bpp} bits per pixel)	自適應（每畫素 {bpp} 位）
+	Maximum Bitrate	最大位元速率
+	Quality (CRF)	質量 (CRF)
+	Key Frame Distance	關鍵幀間隔
+	Quality	質量
+	Render at Maximum Depth	以最大深度渲染
+	Use Maximum Render Quality	使用最大渲染質量
+	Export Audio	匯出音訊
+	Audio Format	音訊格式
+	Uncompressed (PCM)	未壓縮（PCM）
+	Match Source ({seq_sr} Hz)	匹配源（{seq_sr} Hz）
+	Channels	聲道
+	Audio Bitrate	音訊位元速率
+	Sample Size	取樣大小
+	16 bit	16 位
+	24 bit	24 位
+	32 bit	32 位
+	32 bit float	32 位浮點
+	FLAC stores whole-number samples only	FLAC 只能儲存整數取樣
+	MXF export writes integer PCM only	MXF 匯出僅寫入整數 PCM
+	Size / Opacity	大小 / 不透明度
+	Image Overlay	影象疊加
+	PNG or JPEG file	PNG 或 JPEG 檔案
+	Name Overlay	名稱疊加
+	Timecode Overlay	時間碼疊加
+	Luma Min / Max	亮度最小 / 最大
+	Loudness Normalization	響度標準化
+	True Peak Limit	真實峰值限制
+	Audio only	僅音訊
+	Scaling	縮放
+	Scale To Fit	縮放以適配
+	Scale To Fill	縮放以填充
+	Stretch To Fill	拉伸以填充
+	Summary	摘要
+	Sequence, {w}x{h}, {fps} fps, {rate} Hz	序列，{w}x{h}，{fps} fps，{rate} Hz
+	Estimated file size: {size}	估計檔案大小：{size}
+	Send to Queue	傳送到佇列
+	Exporting {path}	正在匯出 {path}
+	Added to the export queue	已新增到匯出佇列
+	Preset Manager	預設管理器
+	Search presets	搜尋預設
+	Favorites only	僅收藏
+	Show in the Preset menu	在預設選單中顯示
+	User	使用者
+	Save current settings as:	將當前設定另存為：
+	Export presets	匯出預設
+	Import: no file chosen (agents: export.presets.import {path})	匯入：未選擇檔案（agents：export.presets.import {path}）
+	Export: no file chosen (agents: export.presets.export {path, names})	匯出：未選擇檔案（agents：export.presets.export {path, names}）
+	Quick Export: open a sequence first	快速匯出：請先開啟一個序列
+	File Name & Location	檔名與位置
+	Quick Export: {path}	快速匯出：{path}
+	Graphics problem: switched to software compositing	圖形問題：已切換至軟體合成
+	Exporting	正在匯出
+	Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.	單擊以選擇，或在空白處單擊並拖動以框選。使用 Shift、Opt 和 Cmd 進行其他操作。
+	Click to select all clips to the right in all tracks. Shift-click for a single track.	單擊以選擇所有軌道中右側的剪輯。Shift-單擊選擇單個軌道。
+	Click to select all clips to the left in all tracks. Shift-click for a single track.	單擊以選擇所有軌道中左側的剪輯。Shift-單擊選擇單個軌道。
+	Drag an edit point to ripple trim; later clips move to keep the gap closed.	拖動編輯點進行波紋修剪；後續剪輯移動以保持間隙閉合。
+	Drag an edit point to roll it: the out of one clip and the in of the next move together.	拖動編輯點進行滾動修剪：一個剪輯的出點和下一個剪輯的入點一起移動。
+	Drag an edge to change the clip's speed so it fills the new duration.	拖動邊緣以更改剪輯速度，使其填滿新時長。
+	Drag the edge of a music clip to remix it to the new duration at musically matching beats.	拖動音樂剪輯的邊緣，以音樂匹配的節拍將其重新混音至新時長。
+	Click to split a clip. Shift-click to split all tracks.	單擊以分割剪輯。Shift-單擊以分割所有軌道。
+	Drag a clip to slip its source in/out without moving it.	拖動剪輯以滑動其源入/出點而不移動它。
+	Drag a clip to slide it between its neighbours.	拖動剪輯以在其相鄰剪輯之間滑動。
+	Drag to scroll the timeline.	拖動以滾動時間軸。
+	Click to zoom in; Opt-click to zoom out.	單擊以放大；Opt-單擊以縮小。
+	FilmCraft hit an error	FilmCraft 遇到錯誤
+	Details: {path}	詳細資訊：{path}
+	Opened {url}	已開啟 {url}
+	(empty)	（空）
+	Step Back 1 Frame	後退 1 幀
+	Step Forward 1 Frame	前進 1 幀
+	Match Playhead	匹配播放頭
+	Gang to Program	聯動到節目
+	AAC Audio	AAC 音訊
+	AAC Audio 48 kHz 320 kbps	AAC 音訊 48 kHz 320 kbps
+	MPEG-4 audio (.m4a), stereo 48 kHz AAC-LC at 320 kbps	MPEG-4 音訊 (.m4a)，立體聲 48 kHz AAC-LC，320 kbps
+	AIFF	AIFF
+	AIFF 48 kHz 16-bit	AIFF 48 kHz 16 位
+	AIFF, stereo 48 kHz 16-bit PCM	AIFF，立體聲 48 kHz 16 位 PCM
+	FLAC	FLAC
+	FLAC 48 kHz 24-bit	FLAC 48 kHz 24 位
+	FLAC, stereo 48 kHz 24-bit, lossless	FLAC，立體聲 48 kHz 24 位，無損
+	FLAC (lossless)	FLAC（無損）
+	Compression Level	壓縮級別
+	0 fastest, 8 smallest	0 最快，8 最小
+	APV	APV
+	APV 422-10	APV 422-10
+	APV 422-12	APV 422-12
+	Anamorphic 2:1 (2.0)	變形寬銀幕 2:1（2.0）
+	Animated GIF	動態 GIF
+	Animated GIF 640×360	動態 GIF 640×360
+	Apple ProRes	Apple ProRes
+	Apple ProRes 422	Apple ProRes 422
+	Apple ProRes 422 HQ	Apple ProRes 422 HQ
+	Apple ProRes 422 LT	Apple ProRes 422 LT
+	Apple ProRes 422 Proxy	Apple ProRes 422 Proxy
+	Apple ProRes 4444	Apple ProRes 4444
+	Apple ProRes 4444 with Alpha	Apple ProRes 4444（帶 Alpha）
+	Apple ProRes 4444 XQ	Apple ProRes 4444 XQ
+	Application	應用程式
+	Apply Guide Template	應用參考線模板
+	Auto Save Now	立即自動儲存
+	Auto-Match Loudness	自動匹配響度
+	Avid DNxHR	Avid DNxHR
+	Avid DNxHR HQ	Avid DNxHR HQ
+	Avid DNxHR LB	Avid DNxHR LB
+	Avid DNxHR SQ	Avid DNxHR SQ
+	Avid-style OP-Atom: DNxHR HQ picture file plus one 24-bit 48 kHz PCM file per channel (_A1, _A2…)	Avid 風格 OP-Atom：DNxHR HQ 影象檔案，外加每個聲道一個 24 位 48 kHz PCM 檔案（_A1、_A2…）
+	BMP	BMP
+	BMP Sequence	BMP 序列
+	Baseline	基線
+	Begin Text Editing for a Graphic Layer	開始圖形圖層文字編輯
+	Begins With	開頭為
+	Blur In	入點模糊
+	Blur Out	出點模糊
+	Brightens inside a feathered circular mask	提亮羽化圓形遮罩內部
+	Broadcast	廣播電視
+	CBR	CBR
+	Cancel Dynamic Trim	取消動態修剪
+	Cancel Queued Export	取消排隊的匯出
+	Center Left	中心左側
+	Center Right	中心右側
+	Center align text	居中對齊文字
+	Change Mask	更改遮罩
+	Clear All Events	清除所有事件
+	Clear Edit Point Selection	清除編輯點選擇
+	Clear Finished Exports	清除已完成的匯出
+	Clear Poster Frame	清除靜幀
+	Close Bin	關閉素材箱
+	Close Sequence	關閉序列
+	Contains	包含
+	Cut to Camera 1	切換到攝像機 1
+	Cut to Camera 2	切換到攝像機 2
+	Cut to Camera 3	切換到攝像機 3
+	Cut to Camera 4	切換到攝像機 4
+	Cut to Camera 5	切換到攝像機 5
+	Cut to Camera 6	切換到攝像機 6
+	Cut to Camera 7	切換到攝像機 7
+	Cut to Camera 8	切換到攝像機 8
+	Cut to Camera 9	切換到攝像機 9
+	D1/DV NTSC (0.9091)	D1/DV NTSC（0.9091）
+	D1/DV PAL (1.0940)	D1/DV PAL（1.0940）
+	DVCPRO HD (1.5)	DVCPRO HD（1.5）
+	Darkens outside a feathered oval mask	壓暗羽化橢圓遮罩外部
+	Decrease Audio Tracks Height	降低音訊軌道高度
+	Decrease Clip Volume	降低剪輯音量
+	Decrease Clip Volume Many	大幅降低剪輯音量
+	Decrease Font Size by Five Units	將字號減小五個單位
+	Decrease Font Size by One Unit	將字號減小一個單位
+	Decrease Leading by Five Units	將行距減小五個單位
+	Decrease Leading by One Unit	將行距減小一個單位
+	Decrease Video Tracks Height	降低影片軌道高度
+	Delete Captions	刪除字幕
+	Delete Graphic Layer	刪除圖形圖層
+	Delete Guide Template	刪除參考線模板
+	Delete Media Cache Files	刪除媒體快取檔案
+	Discard Unsaved Changes	放棄未儲存的更改
+	Does Not Contain	不包含
+	Download Speech Model	下載語音模型
+	Dynamic Trim Stop	動態修剪停止
+	Edit Caption Text	編輯字幕文字
+	Ellipse Tool	橢圓工具
+	Ends With	結尾為
+	Entire Source	整個源
+	EssentialSound	EssentialSound
+	Export Frame	匯出靜幀
+	Extend Next Edit To Playhead	將下一個編輯點延伸至播放頭
+	Extend Previous Edit To Playhead	將上一個編輯點延伸至播放頭
+	Extend Selected Edit to Playhead	將所選編輯點延伸至播放頭
+	Extend Selection Down	向下擴充套件選區
+	Extend Selection Left	向左擴充套件選區
+	Extend Selection Right	向右擴充套件選區
+	Extend Selection Up	向上擴充套件選區
+	Fade In	淡入
+	Gaussian Blur from 0 to 60 over the last second	在最後一秒內高斯模糊從 0 到 60
+	Gaussian Blur from 60 to 0 over the first second	在最初一秒內高斯模糊從 60 到 0
+	Generate Ducking Keyframes	生成閃避關鍵幀
+	Go to Next Edit Point	轉到下一個編輯點
+	Go to Next Edit Point on Any Track	轉到任意軌道上的下一個編輯點
+	Go to Previous Edit Point	轉到上一個編輯點
+	Go to Previous Edit Point on Any Track	轉到任意軌道上的上一個編輯點
+	Go to Selected Clip End	轉到所選剪輯末尾
+	Go to Selected Clip Start	轉到所選剪輯開頭
+	Go to Sequence End	轉到序列末尾
+	Go to Sequence Start	轉到序列開頭
+	H.264	H.264
+	AV1	AV1
+	H.264 1920×1080 for video sharing sites, VBR 1 pass, 16 Mbps	H.264 1920×1080（影片分享網站），VBR 1 遍，16 Mbps
+	H.264 1920×1080, VBR 1 pass, 20 Mbps target, AAC 320 kbps	H.264 1920×1080，VBR 1 遍，目標 20 Mbps，AAC 320 kbps
+	H.264 1920×1080, VBR 2 pass, 18 Mbps	H.264 1920×1080，VBR 2 遍，18 Mbps
+	H.264 3840×2160 for video sharing sites, VBR 1 pass, 45 Mbps	H.264 3840×2160（影片分享網站），VBR 1 遍，45 Mbps
+	H.264 3840×2160, VBR 1 pass, 60 Mbps target, AAC 320 kbps	H.264 3840×2160，VBR 1 遍，目標 60 Mbps，AAC 320 kbps
+	H.264 3840×2160, VBR 2 pass, 50 Mbps	H.264 3840×2160，VBR 2 遍，50 Mbps
+	H.264 9:16 portrait for short-form social video, scaled to fill, 12 Mbps	H.264 9:16 豎版（短影片社交平臺），縮放填充，12 Mbps
+	H.264 at the sequence's frame size and rate; 0.05 bits per pixel	H.264（採用序列的幀大小與幀速率）；每畫素 0.05 位
+	H.264 at the sequence's frame size and rate; 0.1 bits per pixel	H.264（採用序列的幀大小與幀速率）；每畫素 0.1 位
+	H.264 at the sequence's frame size and rate; bitrate adapts to the frame size (0.2 bits per pixel)	H.264（採用序列的幀大小與幀速率）；位元速率隨幀大小自適應（每畫素 0.2 位）
+	HD Anamorphic 1080 (1.333)	HD 變形寬銀幕 1080（1.333）
+	Hand Tool	抓手工具
+	High Quality 1080p HD	高質量 1080p HD
+	High Quality 2160p 4K	高質量 2160p 4K
+	Image Sequence	影象序列
+	Increase Audio Tracks Height	增加音訊軌道高度
+	Increase Clip Volume	增加剪輯音量
+	Increase Clip Volume Many	大幅增加剪輯音量
+	Increase Font Size by Five Units	將字號增加五個單位
+	Increase Font Size by One Unit	將字號增加一個單位
+	Increase Leading by Five Units	將行距增加五個單位
+	Increase Leading by One Unit	將行距增加一個單位
+	Increase Video Tracks Height	增加影片軌道高度
+	Large blocks resolving to the picture over the first second	在最初一秒內由大塊逐漸顯現為畫面
+	Left align text	文字左對齊
+	Looping GIF, 640×360 at 15 fps	迴圈 GIF，640×360，15 fps
+	Lower First	下方優先
+	Lumetri	Lumetri
+	MXF OP-Atom	MXF OP-Atom
+	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR（Avid）
+	MXF OP1a	MXF OP1a
+	MXF OP1a DNxHR HQ	MXF OP1a DNxHR HQ
+	MXF OP1a H.264	MXF OP1a H.264
+	MXF OP1a ProRes 422 HQ	MXF OP1a ProRes 422 HQ
+	MXF OP1a, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM, start timecode	MXF OP1a，DNxHR HQ（8 位 4:2:2），24 位 48 kHz PCM，起始時間碼
+	MXF OP1a, H.264 High long GOP (0.3 bits per pixel), 24-bit 48 kHz PCM	MXF OP1a，H.264 High long GOP（每畫素 0.3 位），24 位 48 kHz PCM
+	MXF OP1a, ProRes 422 HQ, 24-bit 48 kHz PCM, start timecode	MXF OP1a，ProRes 422 HQ，24 位 48 kHz PCM，起始時間碼
+	Main	主要
+	Mark In (Hover Scrub)	標記入點（懸停擦除）
+	Mark Out (Hover Scrub)	標記出點（懸停擦除）
+	Masks	遮罩
+	Match Source – Adaptive High Bitrate	匹配源 – 自適應高位元速率
+	Match Source – Adaptive Low Bitrate	匹配源 – 自適應低位元速率
+	Match Source – Adaptive Medium Bitrate	匹配源 – 自適應中位元速率
+	Matches	匹配項
+	Maximize or Restore Active Frame	最大化或還原活動幀
+	Maximize or Restore Frame Under Cursor	最大化或還原游標下的幀
+	Media Browser Settings	媒體瀏覽器設定
+	MediaBrowser	MediaBrowser
+	MediaCache	MediaCache
+	Merge Captions	合併字幕
+	Mixer	混音器
+	Mosaic In	馬賽克入
+	Move All Audio Targets Down	將所有音訊目標下移
+	Move All Audio Targets Up	將所有音訊目標上移
+	Move All Video Targets Down	將所有影片目標下移
+	Move All Video Targets Up	將所有影片目標上移
+	Move Selection Down	將選區下移
+	Move Selection End	將選區移動到末尾
+	Move Selection Home	將選區移動到開頭
+	Move Selection Left	將選區左移
+	Move Selection Page Down	將選區下翻一頁
+	Move Selection Page Up	將選區上翻一頁
+	Move Selection Right	將選區右移
+	Move Selection Up	將選區上移
+	Multi-Camera Record On/Off Toggle	多機位錄製開/關切換
+	Multicam	多機位
+	Navigate to End of Segment	導航至片段末尾
+	Navigate to Next Line	導航至下一行
+	Navigate to Next Word	導航至下一個詞
+	Navigate to Previous Line	導航至上一行
+	Navigate to Previous Word	導航至上一個詞
+	Navigate to Start of Segment	導航至片段開頭
+	Navigation	導航
+	Next Multi-Camera Page	下一個多機位頁面
+	Nudge Clip Selection Down	將剪輯選區下移一點
+	Nudge Clip Selection Left Five Frames	將剪輯選區左移五幀
+	Nudge Clip Selection Left One Frame	將剪輯選區左移一幀
+	Nudge Clip Selection Right Five Frames	將剪輯選區右移五幀
+	Nudge Clip Selection Right One Frame	將剪輯選區右移一幀
+	Nudge Clip Selection Up	將剪輯選區上移一點
+	Nudge Selected Object down by five	將所選物件下移五個單位
+	Nudge Selected Object down by one	將所選物件下移一個單位
+	Nudge Selected Object to left by five	將所選物件左移五個單位
+	Nudge Selected Object to left by one	將所選物件左移一個單位
+	Nudge Selected Object to right by five	將所選物件右移五個單位
+	Nudge Selected Object to right by one	將所選物件右移一個單位
+	Nudge Selected Object up by five	將所選物件上移五個單位
+	Nudge Selected Object up by one	將所選物件上移一個單位
+	Nudge Volume +1dB	微調音量 +1dB
+	Nudge Volume +3dB	微調音量 +3dB
+	Nudge Volume -1dB	微調音量 -1dB
+	Nudge Volume -3dB	微調音量 -3dB
+	Numbered BMP stills (24-bit)	帶編號的 BMP 靜幀（24 位）
+	JPEG	JPEG
+	Targa	Targa
+	DPX	DPX
+	JPEG Sequence	JPEG 序列
+	Targa Sequence	Targa 序列
+	DPX Sequence	DPX 序列
+	Numbered JPEG stills (quality 90)	帶編號的 JPEG 靜幀（質量 90）
+	Numbered Targa stills (24-bit, uncompressed)	帶編號的 Targa 靜幀（24 位，未壓縮）
+	Numbered DPX stills (10-bit RGB)	帶編號的 DPX 靜幀（10 位 RGB）
+	OpenEXR	OpenEXR
+	OpenEXR Sequence	OpenEXR 序列
+	Numbered OpenEXR stills (half float, linear, uncompressed)	帶編號的 OpenEXR 靜幀（16 位半精度浮點，線性，未壓縮）
+	Numbered PNG stills at the sequence's frame size	帶編號的 PNG 靜幀（採用序列幀大小）
+	Numbered TIFF stills (RGB, 8-bit)	帶編號的 TIFF 靜幀（RGB，8 位）
+	Opacity 0 → 100 % over the first second	在最初一秒內不透明度從 0 → 100%
+	Opacity 100 → 0 % over the last second	在最後一秒內不透明度從 100% → 0
+	Open Bin	開啟素材箱
+	Open Search	開啟搜尋
+	PNG	PNG
+	PNG Sequence	PNG 序列
+	Panel	面板
+	Pen Tool	鋼筆工具
+	PiP 35% Upper Right	畫中畫 35% 右上
+	Picture-in-picture: 35 % scale in the upper right	畫中畫：右上角 35% 縮放
+	Play Around	圍繞播放
+	Play In to Out with Preroll/Postroll	帶預卷/後卷從入點到出點播放
+	Play from Playhead to Out Point	從播放頭播放到出點
+	Play/Stop	播放/停止
+	Previous Multi-Camera Page	上一個多機位頁面
+	Progressive	逐行掃描
+	ProjectPanel	ProjectPanel
+	QuickTime (Motion JPEG)	QuickTime（Motion JPEG）
+	QuickTime, APV 422-10 (10-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime，APV 422-10（10 位 4:2:2），24 位 48 kHz PCM
+	QuickTime, APV 422-12 (12-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime，APV 422-12（12 位 4:2:2），24 位 48 kHz PCM
+	QuickTime, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime，DNxHR HQ（8 位 4:2:2），24 位 48 kHz PCM
+	QuickTime, DNxHR LB (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime，DNxHR LB（8 位 4:2:2），24 位 48 kHz PCM
+	QuickTime, DNxHR SQ (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime，DNxHR SQ（8 位 4:2:2），24 位 48 kHz PCM
+	QuickTime, ProRes 422 HQ, 24-bit 48 kHz PCM	QuickTime，ProRes 422 HQ，24 位 48 kHz PCM
+	QuickTime, ProRes 422 LT, 24-bit 48 kHz PCM	QuickTime，ProRes 422 LT，24 位 48 kHz PCM
+	QuickTime, ProRes 422 Proxy, 24-bit 48 kHz PCM	QuickTime，ProRes 422 Proxy，24 位 48 kHz PCM
+	QuickTime, ProRes 4444 (4:4:4), 24-bit 48 kHz PCM	QuickTime，ProRes 4444 (4:4:4)，24 位 48 kHz PCM
+	QuickTime, ProRes 4444 (4:4:4) with alpha channel, 24-bit 48 kHz PCM	QuickTime，ProRes 4444 (4:4:4)，帶 Alpha 通道，24 位 48 kHz PCM
+	QuickTime, ProRes 4444 XQ (4:4:4), 24-bit 48 kHz PCM	QuickTime，ProRes 4444 XQ (4:4:4)，24 位 48 kHz PCM
+	QuickTime, ProRes 422, 24-bit 48 kHz PCM	QuickTime，ProRes 422，24 位 48 kHz PCM
+	Quit FilmCraft	退出 FilmCraft
+	Rate Stretch Tool	速率伸縮工具
+	Razor Tool	剃刀工具
+	Rectangle Tool	矩形工具
+	Remix Tool	重新混音工具
+	Right align text	文字右對齊
+	Ripple Edit Tool	波紋編輯工具
+	Ripple Trim Next Edit to Playhead	波紋修剪：將下一個編輯點修剪至播放頭
+	Ripple Trim Previous Edit to Playhead	波紋修剪：將上一個編輯點修剪至播放頭
+	Rolling Edit Tool	滾動編輯工具
+	Select Camera 1	選擇攝像機 1
+	Select Camera 2	選擇攝像機 2
+	Select Camera 3	選擇攝像機 3
+	Select Camera 4	選擇攝像機 4
+	Select Camera 5	選擇攝像機 5
+	Select Camera 6	選擇攝像機 6
+	Select Camera 7	選擇攝像機 7
+	Select Camera 8	選擇攝像機 8
+	Select Camera 9	選擇攝像機 9
+	Select Clip at Playhead	選擇播放頭處的剪輯
+	Select Find Box	選擇查詢框
+	Select Next Clip	選擇下一個剪輯
+	Select Next Panel	選擇下一個面板
+	Select Previous Clip	選擇上一個剪輯
+	Select Previous Panel	選擇上一個面板
+	Select to Next Line	選擇至下一行
+	Select to Next Word	選擇至下一個詞
+	Select to Previous Line	選擇至上一行
+	Select to Previous Word	選擇至上一個詞
+	Select to Segment End	選擇至片段末尾
+	Select to Segment Start	選擇至片段開頭
+	Selection Tool	選擇工具
+	Set Comparison Reference	設定比較參考
+	Set Creative Look	設定創意風格
+	Set Input LUT	設定輸入 LUT
+	Set Project Panel View	設定專案面板檢視
+	Show Next Screen	顯示下一個螢幕
+	Show Previous Screen	顯示上一個螢幕
+	Show Program Transcript	顯示節目轉錄
+	Shuttle Left	向左穿梭
+	Shuttle Right	向右穿梭
+	Shuttle Slow Left	向左慢速穿梭
+	Shuttle Slow Right	向右慢速穿梭
+	Shuttle Stop	停止穿梭
+	Slide Clip Selection Left Five Frames	將剪輯選區左移五幀
+	Slide Clip Selection Left One Frame	將剪輯選區左移一幀
+	Slide Clip Selection Right Five Frames	將剪輯選區右移五幀
+	Slide Clip Selection Right One Frame	將剪輯選區右移一幀
+	Slide Tool	滑動工具
+	Slip Clip Selection Left Five Frames	將剪輯選區左滑五幀
+	Slip Clip Selection Left One Frame	將剪輯選區左滑一幀
+	Slip Clip Selection Right Five Frames	將剪輯選區右滑五幀
+	Slip Clip Selection Right One Frame	將剪輯選區右滑一幀
+	Slip Tool	錯動工具
+	Social Vertical 1080×1920	社交豎版 1080×1920
+	Soft Vignette	柔和暗角
+	Source In/Out	源入/出點
+	Split Caption	拆分字幕
+	Square Pixels (1.0)	方形畫素（1.0）
+	Stack Clips	堆疊剪輯
+	Start Export Queue	啟動匯出佇列
+	Start Voice-over Recording	開始畫外音錄製
+	Step Back Five Frames	後退五幀
+	Step Back One Frame	後退一幀
+	Step Forward Five Frames	前進五幀
+	Step Forward One Frame	前進一幀
+	Stop Export Queue	停止匯出佇列
+	Stop Multi-Camera Recording	停止多機位錄製
+	Stop Voice-over Recording	停止畫外音錄製
+	Sync Voice-over Capture	同步畫外音採集
+	TIFF	TIFF
+	TIFF Sequence	TIFF 序列
+	TextPanel	TextPanel
+	Thumbnail Size Next	縮圖大小：下一個
+	Thumbnail Size Previous	縮圖大小：上一個
+	Toggle All Audio Targets	切換所有音訊目標
+	Toggle All Source Audio	切換所有源音訊
+	Toggle All Source Video	切換所有源影片
+	Toggle All Video Targets	切換所有影片目標
+	Toggle Audio During Scrubbing	切換拖動時的音訊
+	Toggle Full Screen	切換全屏
+	Toggle Mute for All Targeted Audio Tracks	切換所有目標音訊軌道的靜音
+	Toggle Solo for All Targeted Audio Tracks	切換所有目標音訊軌道的獨奏
+	Toggle Source/Program Monitor Focus	切換源/節目監視器焦點
+	Toggle Target Audio 1	切換目標音訊 1
+	Toggle Target Audio 2	切換目標音訊 2
+	Toggle Target Audio 3	切換目標音訊 3
+	Toggle Target Audio 4	切換目標音訊 4
+	Toggle Target Audio 5	切換目標音訊 5
+	Toggle Target Audio 6	切換目標音訊 6
+	Toggle Target Audio 7	切換目標音訊 7
+	Toggle Target Audio 8	切換目標音訊 8
+	Toggle Target Video 1	切換目標影片 1
+	Toggle Target Video 2	切換目標影片 2
+	Toggle Target Video 3	切換目標影片 3
+	Toggle Target Video 4	切換目標影片 4
+	Toggle Target Video 5	切換目標影片 5
+	Toggle Target Video 6	切換目標影片 6
+	Toggle Target Video 7	切換目標影片 7
+	Toggle Target Video 8	切換目標影片 8
+	Toggle Track Output for All Targeted Video Tracks	切換所有目標影片軌道的軌道輸出
+	Toggle Trim Type	切換修剪型別
+	Toggle View	切換檢視
+	Track Select Backward Tool	軌道選擇向後工具
+	Track Select Forward Tool	軌道選擇向前工具
+	Track Selected Mask	跟蹤所選遮罩
+	Trim Next Edit to Playhead	將下一個編輯點修剪至播放頭
+	Trim Previous Edit to Playhead	將上一個編輯點修剪至播放頭
+	Trimming	修剪中
+	Type Tool	文字工具
+	Unstack Clips	取消堆疊剪輯
+	Upper First	上方優先
+	VBR, 1 pass	VBR，1 遍
+	VBR, 2 pass	VBR，2 遍
+	CRF (constant quality)	CRF（恆定質量）
+	Vimeo 1080p Full HD	Vimeo 1080p 全高畫質
+	Vimeo 2160p 4K Ultra HD	Vimeo 2160p 4K 超高畫質
+	Voice-over Record	畫外音錄製
+	Voiceover	畫外音
+	WAV, stereo 48 kHz 16-bit PCM	WAV，立體聲 48 kHz 16 位 PCM
+	WAV, stereo 48 kHz 24-bit PCM	WAV，立體聲 48 kHz 24 位 PCM
+	Warm Tint	暖色色調
+	Warm highlights, brown shadows	暖色高光，棕色陰影
+	Waveform Audio	波形音訊
+	Waveform Audio 48 kHz 16-bit	波形音訊 48 kHz 16 位
+	Waveform Audio 48 kHz 24-bit	波形音訊 48 kHz 24 位
+	Web & Social	網路與社交
+	Work Area	工作區域
+	Write Automation	寫入自動化
+	YouTube 1080p Full HD	YouTube 1080p 全高畫質
+	YouTube 2160p 4K Ultra HD	YouTube 2160p 4K 超高畫質
+	Zoom Program Monitor to 100%	將節目監視器縮放至 100%
+	Zoom Program Monitor to Fit	將節目監視器縮放至適配
+	Zoom Source Monitor to 100%	將源監視器縮放至 100%
+	Zoom Source Monitor to Fit	將源監視器縮放至適配
+	Zoom Tool	縮放工具
+	with:	與：
+	Interface Language	介面語言
+	System Language	系統語言
+	Cinematic	電影感
+	Film Emulation	膠片模擬
+	Technical	技術
+	Teal Shadows, Warm Skin	青色陰影，暖色皮膚
+	Night Exterior	夜景外景
+	Golden Dusk	金色黃昏
+	Steel Blue	鋼藍
+	Hard Sun	強烈陽光
+	Faded Print	褪色正片
+	Silver Retention	銀色保留
+	Cross Processed	交叉沖印
+	Warm Negative	暖色負片
+	Neutral Mono	中性單色
+	Hard Mono	硬單色
+	Sepia Tone	棕褐色調
+	Cold Mono	冷色單色
+	Lift Shadows	提升陰影
+	Protect Highlights	保護高光
+	Half Saturation	半飽和度
+	Boost Vibrance	提升自然飽和度
+	Legal Range Squeeze	合法範圍壓縮
+	A boxed label with a round pointer; move the label and the pointer follows.	帶圓點指示器的框形標籤；移動標籤，指示器隨之移動。
+	A rounded tag that fits its text, with a status dot.	貼合文字的圓角標籤，帶狀態圓點。
+	A title on a rounded card with a soft shadow.	圓角卡片上的標題，帶柔和陰影。
+	Accent Color	強調色
+	Bar Color	條顏色
+	Box Color	框顏色
+	Box Opacity	框不透明度
+	Callout – Pointer	標註 – 指示
+	Callout – Tag	標註 – 標籤
+	Callouts	標註
+	Credits	演職員表
+	Dot Color	圓點顏色
+	Heading	標題
+	Large centred title, accent rule and subtitle.	居中的大標題、強調線和副標題。
+	Lower Third – Rule	下三分之一 – 線條
+	Lower Third – Slab	下三分之一 – 色塊
+	Lower Thirds	下三分之一
+	Name Color	名稱顏色
+	Name Size	名稱大小
+	Name and role on a coloured slab that widens with the name.	名稱與角色顯示在隨名稱變寬的色塊上。
+	Name over a thin rule that always matches the name's width.	名稱顯示在始終匹配名稱寬度的細線之上。
+	Pointer Color	指示器顏色
+	Role	角色
+	Rule Color	線條顏色
+	Show Dot	顯示圓點
+	Show Role	顯示角色
+	Slab Color	色塊顏色
+	Tag Color	標籤顏色
+	Title Color	標題顏色
+	Title Size	標題大小
+	Title – Boxed	標題 – 框形
+	Title – Centered	標題 – 居中
+	Titles	標題
+	Select an item to preview it	選擇一個專案以預覽
+	End Credits	片尾字幕
+	End Credits – Roll	片尾字幕 – 滾動
+	Ticker – Crawl	滾動字幕 – 爬行
+	Centred credits that roll up from below the frame and leave at the top.	居中演職員表從畫面下方滾入，從頂部離開。
+	A news-style line that crawls in from the right and leaves at the left.	新聞風格的一行文字從右側爬入，從左側離開。
+	out	出
+	in	入
+	The language changed but could not be saved: {e}	語言已更改但無法儲存：{e}
+	no Chinese font is installed on this system; the interface stays in English	此係統未安裝中文字型；介面保持英文
+	no Korean font is installed on this system; the interface stays in English	此係統未安裝韓文字型；介面保持英文
+	no Japanese font is installed on this system; the interface stays in English	此係統未安裝日語字型；介面保持英文
+	Show	顯示
+	Sort	排序
+	Reverse the order	反轉順序
+	Grab bag	雜項
+	Table	表格
+	No contributor data was built into this copy.	此版本未內建貢獻者資料。
+	No model credits were built into this copy.	此版本未內建模型署名。
+	Company	公司
+	Model	模型
+	Version	版本
+	Commits	提交
+	% of all commits	佔全部提交的比例
+	Lines +/−	程式碼行 +/−
+	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	音訊輸出失敗：無聲播放（請檢查設定 ▸ 音訊硬體）
+	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	音訊輸出無響應：無聲播放（請檢查設定 ▸ 音訊硬體）
+	Clip Speed / Duration	剪輯速度 / 時長
+	Speed:	速度：
+	Reverse Speed	反轉速度
+	Ripple Edit, Shifting Trailing Clips	波紋編輯，移動後續剪輯
+	About	關於
+	Contributors	貢獻者
+	Models	模型
+	Main (8-bit)	主要（8 位）
+	Main 10 (10-bit, HDR)	主要 10（10 位，HDR）
+	Main (8-bit; Main 10 for HDR sequences)	主要（8 位；HDR 序列使用主要 10）
+	Encoder	編碼器
+	Hardware (H.265 has no software encoder)	硬體（H.265 無軟體編碼器）
+	Hardware (AV1 has no software encoder)	硬體（AV1 無軟體編碼器）
+	Text Properties	文字屬性
+	Text Box Height	文字框高度
+	Paragraph Text	段落文字
+	Point Text	點文字
+	Text Layer Type	文字圖層型別
+	Text Styling	文字樣式
+	New Color Matte	新建顏色遮罩
+	Color Matte Color	顏色遮罩顏色
+	Color:	顏色：
+	 · {time} left	· 剩餘 {time}
+	Discard take	放棄片段
+	Voice-over take discarded	畫外音片段已放棄
+	Binary assets added	已新增二進位制資源
+	Binary assets removed	已移除二進位制資源
+	Deselect All Project Items	取消選擇所有專案項
+	Display name	顯示名稱
+	First commit	首次提交
+	H.265 (HEVC)	H.265（HEVC）
+	Last commit	最近提交
+	Line delta	程式碼行增減
+	Lines added	新增行
+	Lines deleted	刪除行
+	Merged PRs	已合併的 PR
+	Name (A–Z)	名稱（A–Z）
+	Real name	真實姓名
+	Select All Project Items	選擇所有專案項
+	Username	使用者名稱
+	Vertical Type Tool	直排文字工具
+	Go to previous keyframe	轉到上一個關鍵幀
+	Go to next keyframe	轉到下一個關鍵幀
+	Add keyframe	新增關鍵幀
+	Remove keyframe	刪除關鍵幀
+	Turn on animation and add keyframe	開啟動畫並新增關鍵幀
+	Click to select, or click in empty space and drag to marquee select. Use Shift, Alt, and Ctrl for other options.	單擊以選擇，或在空白處單擊並拖動以框選。使用 Shift、Alt 和 Ctrl 進行其他操作。
+	Click to zoom in; Alt-click to zoom out.	單擊以放大；Alt-單擊以縮小。
+	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	拖動：移動 · Alt-單擊：平滑/拐角 · Ctrl-單擊：刪除
+	Drag inward to round the corners	向內拖動以使拐角變圓
+	Include Alpha Channel	包含 Alpha 通道
+	Sequence Settings	序列設定
+	Color Management	色彩管理
+	VR Properties	VR 屬性
+	Editing Mode:	編輯模式：
+	Timebase:	時基：
+	Frame Size:	幀大小：
+	Pixel Aspect Ratio:	畫素寬高比：
+	Fields:	場：
+	Channel Format:	聲道格式：
+	Number of Channels:	聲道數：
+	Preview File Format:	預覽檔案格式：
+	Working Color Space:	工作色彩空間：
+	Projection:	投影：
+	Layout:	佈局：
+	Captured View:	捕獲檢視：
+	Video Previews	影片預覽
+	No Fields (Progressive Scan)	無場（逐行掃描）
+	Custom ({ratio})	自定義（{ratio}）
+	{rate} frames/second	{rate} 幀/秒
+	{rate} fps Drop-Frame Timecode	{rate} fps 掉幀時間碼
+	{rate} fps Non Drop-Frame Timecode	{rate} fps 非掉幀時間碼
+	{rate} fps Timecode	{rate} fps 時間碼
+	horizontal	水平
+	vertical	垂直
+	Scale motion effects proportionally when changing frame size	更改幀大小時按比例縮放運動效果
+	Maximum Bit Depth	最大位深度
+	Maximum Render Quality	最大渲染質量
+	Composite in Linear Color	線上性色彩中合成
+	Auto Tone Map Media (HDR and log into SDR)	自動色調對映媒體（HDR 與 log 對映至 SDR）
+	Configure…	配置…
+	Not supported in FilmCraft yet	FilmCraft 尚不支援
+	FilmCraft always composites in linear light	FilmCraft 始終線上性光中合成
+	Loop marked range	迴圈標記範圍
+	Play Source	播放源
+	Source Play/Stop	源播放/停止
+	Stop Source	停止源
+	New Sequence	新建序列
+	Tracks	軌道
+	tracks	軌道
+	Eyedropper (pick a color from the Program monitor)	吸管（從節目監視器中拾取顏色）
+	Eyedropper: no picture to sample	吸管：沒有可取樣的畫面
+	In	入點
+	Out	出點
+	Export Markers as CSV…	將標記匯出為 CSV…
+	Active	當前
+	Appearance Mode	外觀模式
+	Next Appearance Mode	下一個外觀模式
+	Sync with system	跟隨系統
+	UI Scale	介面縮放
+	Auto (system)	自動（系統）
+	GPU Rendering	GPU 渲染
+	Composite on the GPU when available	可用時在 GPU 上合成
+	Text to Speech	文字轉語音
+	Edit Narration	編輯旁白
+	Clear Transition	清除過渡
+	Set Transition Duration	設定過渡持續時間
+	Resize floating panel	調整浮動面板大小
+	More transport controls	更多播放控制
+	Undock Panel	取消面板停靠
+	Project Notes	專案備註
+	Get Project Notes	獲取專案備註
+	Edit Project Notes	編輯專案備註
+	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	此專案的備註：待辦事項、說明、幀號等… 隨專案一起儲存。
+	GPU acceleration is unavailable; preview renders on the CPU	GPU 加速不可用；預覽在 CPU 上渲染
+	Caption Tracks	字幕軌道
+	Delete Caption Track	刪除字幕軌道
+	Delete Caption Tracks	刪除多個字幕軌道
+	Delete Empty Caption Tracks	刪除空字幕軌道
+	Appearance Settings…	外觀設定…
+	Add to favorites	新增到收藏
+	Remove from favorites	從收藏中移除
+	Compression	壓縮
+	ZIP (1 scan line)	ZIP（1 條掃描線）
+	ZIP (16 scan lines)	ZIP（16 條掃描線）
+	Safe graphics mode: {mode}	安全圖形模式：{mode}
+	An earlier start failed with the default graphics. Updating the graphics driver usually fixes this.	上次啟動時預設圖形模式失敗。更新顯示卡驅動程式通常可以解決此問題。
+	Use Default Graphics	使用預設圖形
+	The default graphics are used from the next start.	下次啟動時將使用預設圖形。
+	DirectX 12 only	僅 DirectX 12
+	software rendering	軟體渲染
+	Label Color Presets	標籤顏色預設
+	{name} (Modified)	{name}（已修改）
+	Revert to the preset's colors and names	恢復為預設的顏色和名稱
+	Import a preset file…	匯入預設檔案…
+	Export the labels to a preset file…	將標籤匯出為預設檔案…
+	Show the presets folder	顯示預設資料夾
+	Delete this preset	刪除此預設
+	Opens in your web browser: {url}	在網頁瀏覽器中開啟：{url}
+	Saves this session's log and shows it in your file manager.	儲存本次會話的日誌並在檔案管理器中顯示。
+	Shows a report on this computer.	顯示本機的報告。
+	Shows the version, community links and credits in a FilmCraft window.	在 FilmCraft 視窗中顯示版本、社群連結和致謝。
+	Couldn't open your web browser	無法開啟網頁瀏覽器
+	Open this address in your browser yourself:	請自行在瀏覽器中開啟此地址：
