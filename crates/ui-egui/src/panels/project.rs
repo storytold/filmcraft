@@ -615,6 +615,9 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
         egui::Popup::menu(&resp).show(|ui| sort_icons_menu(app, ui, pre, actions));
     }
     let mut rx = bar.max.x - 6.0;
+    // Clear and Automate to Sequence need a selection, as in the ≡ menu (#2106)
+    let clear = crate::panels::project_views::clear_params(&app.session.state.project_selection, app.ui.project_panel.selected_bin);
+    let has_items = !app.session.state.project_selection.is_empty();
     for (icon, id, tip) in [
         (Icon::Trash, "project.delete", tl!("Clear (Delete)")),
         (Icon::NewItem, "new-item", tl!("New Item")),
@@ -623,28 +626,32 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
         (Icon::Automate, "clip.automateToSequence", tl!("Automate to Sequence")),
     ] {
         let r = Rect::from_min_size(pos2(rx - 24.0, bar.min.y + 5.0), vec2(24.0, 22.0));
+        let enabled = match id {
+            "project.delete" => clear.is_some(),
+            "clip.automateToSequence" => has_items,
+            _ => true,
+        };
         let resp = ui.interact(r, egui::Id::new((pre, "pb", id)), Sense::click()).on_hover_text(tip);
         app.auto.add(&format!("{pre}.button.{id}"), r, tip);
-        if resp.hovered() {
+        if resp.hovered() && enabled {
             ui.painter().rect_filled(r, 3.0, t.hover);
         }
-        icons::paint(ui.painter(), r.shrink(5.0), icon, t.icon);
+        icons::paint(ui.painter(), r.shrink(5.0), icon, if enabled { t.icon } else { t.text_faint });
         if id == "new-item" {
             egui::Popup::menu(&resp).show(|ui| new_item_menu(app, ui, pre, actions));
-        } else if resp.clicked() {
+        } else if resp.clicked() && enabled {
             match id {
                 "find" => actions.push(("edit.find".into(), json!({}))),
                 "file.newBin" => {
                     let parent = (v.bin != app.session.project.root.id).then_some(v.bin.0);
                     actions.push(("file.newBin".into(), json!({"parent": parent, "panel": pre})));
                 }
-                "project.delete" => match crate::panels::project_views::clear_params(&app.session.state.project_selection, app.ui.project_panel.selected_bin) {
-                    Some(p) => {
+                "project.delete" => {
+                    if let Some(p) = clear.clone() {
                         app.ui.project_panel.rename = None;
                         actions.push((id.into(), p));
                     }
-                    None => app.ui.status = tl!("Select items to clear").into(),
-                },
+                }
                 _ => actions.push((id.into(), json!({}))),
             }
         }
