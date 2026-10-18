@@ -3437,6 +3437,7 @@
 	out	keluar
 	in	masuk
 	The language changed but could not be saved: {e}	Bahasa telah diubah tetapi tidak dapat disimpan: {e}
+	no Arabic font is installed on this system; the interface stays in English	tidak ada font Arab yang terpasang di sistem ini; antarmuka tetap dalam bahasa Inggris
 	no Chinese font is installed on this system; the interface stays in English	tidak ada font Tionghoa yang terpasang di sistem ini; antarmuka tetap dalam bahasa Inggris
 	no Korean font is installed on this system; the interface stays in English	tidak ada font Korea yang terpasang di sistem ini; antarmuka tetap dalam bahasa Inggris
 	no Japanese font is installed on this system; the interface stays in English	tidak ada font Jepang yang terpasang di sistem ini; antarmuka tetap dalam bahasa Inggris

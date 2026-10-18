@@ -723,6 +723,9 @@ impl FilmcraftApp {
             } else if language == i18n::Language::Ko && !i18n::korean_font_available() {
                 self.ui.language = i18n::Language::En;
                 self.ui.status = tl!("no Korean font is installed on this system; the interface stays in English").into();
+            } else if language == i18n::Language::Ar && !i18n::arabic_font_available() {
+                self.ui.language = i18n::Language::En;
+                self.ui.status = tl!("no Arabic font is installed on this system; the interface stays in English").into();
             } else {
                 self.ui.language = language;
             }
