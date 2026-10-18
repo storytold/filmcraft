@@ -32,7 +32,7 @@ use filmcraft_time::{Tick, TimeRange};
 use serde_json::{Value, json};
 
 use crate::commands::{
-    CommandSpec, always, bad, bool_p, clips_p, has_seq, marker_color_p, sequence_time_p, source_mark_time, str_p, time_p, track_p, with_links,
+    CommandSpec, always, bad, bool_p, clips_p, f64_p, has_seq, marker_color_p, sequence_time_p, source_mark_time, str_p, time_p, track_p, u64_p, with_links,
 };
 use crate::{EngineError, Result, Session};
 
@@ -77,6 +77,15 @@ fn groups() -> Vec<(&'static str, Vec<CommandSpec>)> {
         (
             "sequence.closeGap",
             vec![
+                spec(
+                    "sequence.removeSilence",
+                    "Remove Silence…",
+                    &["Sequence"],
+                    None,
+                    r#"{"threshold":f?,"preHead":n?,"postTail":n?,"minStrip":n?,"crossfade":bool?}"#,
+                    has_seq,
+                    remove_silence,
+                ),
                 spec("sequence.goToNextGap", "Next in Sequence", &["Sequence", "Go to Gap"], Some("Shift+;"), "{}", has_seq, |s, p| {
                     go_to_gap(s, p, true, false)
                 }),
@@ -1025,4 +1034,182 @@ fn filter_colors(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("markers.filterColors", "need `hidden` or `color`"));
     }
     Ok(json!({"hidden": s.state.hidden_marker_colors.iter().map(|c| c.name()).collect::<Vec<_>>()}))
+}
+
+/// Detect silence ranges across the sequence or a bounded sub-range / subset of clips.
+pub fn detect_silence_ranges(
+    s: &Session,
+    id: ItemId,
+    bounds: Option<TimeRange>,
+    clips: Option<&[ClipId]>,
+    threshold_db: f32,
+    pre_head: usize,
+    post_tail: usize,
+    min_strip: usize,
+) -> Result<Vec<TimeRange>> {
+    let q = s.project.sequence(id).ok_or(EngineError::NoSequence)?;
+    let fd = q.settings.frame_rate.frame_duration();
+    let seq_a = q.mark_in.unwrap_or(Tick::ZERO);
+    let seq_b = q.mark_out.map(|o| o + fd).unwrap_or_else(|| q.duration());
+
+    let clip_spans: Vec<TimeRange> = if let Some(clips) = clips {
+        if clips.is_empty() {
+            Vec::new()
+        } else {
+            q.all_tracks()
+                .flat_map(|t| t.items.iter())
+                .filter(|it| clips.contains(&it.id))
+                .map(|it| TimeRange::from_bounds(it.start, it.start + it.duration))
+                .collect()
+        }
+    } else {
+        Vec::new()
+    };
+
+    let (mut a, mut b) = if !clip_spans.is_empty() {
+        let min_t = clip_spans.iter().map(|r| r.start).min().unwrap_or(seq_a);
+        let max_t = clip_spans.iter().map(|r| r.end()).max().unwrap_or(seq_b);
+        (min_t, max_t)
+    } else {
+        (seq_a, seq_b)
+    };
+
+    if let Some(bounds) = bounds {
+        a = a.max(bounds.start);
+        b = b.min(bounds.end());
+    }
+
+    if b <= a {
+        return Ok(Vec::new());
+    }
+
+    let fps = q.settings.frame_rate;
+    let sr = q.settings.sample_rate;
+    let f_start = fps.frame_at(a);
+    let f_end = fps.frame_at(b);
+    let total_frames = (f_end - f_start).max(0) as usize;
+    if total_frames == 0 {
+        return Ok(Vec::new());
+    }
+
+    let provider = s.media.provider(s.project.clone(), s.services.clone());
+    let mut silent = vec![true; total_frames];
+
+    const CHUNK_FRAMES: usize = 120;
+    for chunk_idx in (0..total_frames).step_by(CHUNK_FRAMES) {
+        let n_frames = CHUNK_FRAMES.min(total_frames - chunk_idx);
+        let cf_start = f_start + chunk_idx as i64;
+        let cf_end = cf_start + n_frames as i64;
+        let t0 = fps.tick_of(cf_start);
+        let t1 = fps.tick_of(cf_end);
+        let s0 = t0.to_units_floor(i64::from(sr));
+        let s1 = t1.to_units_floor(i64::from(sr));
+        let chunk_samples = (s1 - s0).max(0) as usize;
+        if chunk_samples == 0 {
+            continue;
+        }
+        let buf = s.previews.mix(&s.project, id, s0, chunk_samples, &provider);
+        let ch = buf.channels.len().max(1);
+        for f in 0..n_frames {
+            let cur_frame = cf_start + f as i64;
+            let ft0 = fps.tick_of(cur_frame);
+            let ft1 = fps.tick_of(cur_frame + 1);
+            let frame_s0 = (ft0.to_units_floor(i64::from(sr)) - s0).max(0) as usize;
+            let frame_s1 = (ft1.to_units_floor(i64::from(sr)) - s0).min(chunk_samples as i64) as usize;
+            if frame_s1 <= frame_s0 {
+                continue;
+            }
+            let m = frame_s1 - frame_s0;
+            let mut sum_sq = 0.0f32;
+            for chan in &buf.channels {
+                if let Some(slice) = chan.get(frame_s0..frame_s1) {
+                    for &x in slice {
+                        sum_sq += x * x;
+                    }
+                }
+            }
+            let mean_sq = sum_sq / (m * ch) as f32;
+            let db = 10.0 * (mean_sq + 1e-12).log10();
+            silent[chunk_idx + f] = db < threshold_db;
+        }
+    }
+
+    let mut keep = vec![false; total_frames];
+    for i in 0..total_frames {
+        let frame_t = fps.tick_of(f_start + i as i64);
+        if !clip_spans.is_empty() && !clip_spans.iter().any(|r| r.contains(frame_t)) {
+            keep[i] = true;
+            continue;
+        }
+        if !silent[i] {
+            keep[i] = true;
+            let pre_start = i.saturating_sub(pre_head);
+            for j in pre_start..i {
+                keep[j] = true;
+            }
+            let post_end = (i + post_tail).min(total_frames.saturating_sub(1));
+            for j in i + 1..=post_end {
+                keep[j] = true;
+            }
+        }
+    }
+
+    let mut ranges: Vec<TimeRange> = Vec::new();
+    let mut run_start: Option<usize> = None;
+    for i in 0..total_frames {
+        if !keep[i] {
+            if run_start.is_none() {
+                run_start = Some(i);
+            }
+        } else if let Some(start) = run_start.take() {
+            let run_len = i - start;
+            if run_len >= min_strip {
+                let t_start = fps.tick_of(f_start + start as i64);
+                let t_end = fps.tick_of(f_start + i as i64);
+                ranges.push(TimeRange::from_bounds(t_start, t_end));
+            }
+        }
+    }
+    if let Some(start) = run_start {
+        let run_len = total_frames - start;
+        if run_len >= min_strip {
+            let t_start = fps.tick_of(f_start + start as i64);
+            let t_end = fps.tick_of(f_start + total_frames as i64);
+            ranges.push(TimeRange::from_bounds(t_start, t_end));
+        }
+    }
+
+    Ok(ranges)
+}
+
+/// Remove Silence: detect audio below a threshold (dBFS) and ripple delete silence across the sequence.
+pub fn remove_silence(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+    let clips: Vec<ClipId> = p.get("clips").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_u64().map(ClipId)).collect()).unwrap_or_default();
+    let threshold_db = f64_p(p, "threshold").unwrap_or(-30.6) as f32;
+    let pre_head = u64_p(p, "preHead").unwrap_or(10) as usize;
+    let post_tail = u64_p(p, "postTail").unwrap_or(12) as usize;
+    let min_strip = u64_p(p, "minStrip").unwrap_or(23) as usize;
+    let crossfade = bool_p(p, "crossfade").unwrap_or(true);
+
+    let ranges = detect_silence_ranges(s, id, None, if clips.is_empty() { None } else { Some(&clips) }, threshold_db, pre_head, post_tail, min_strip)?;
+
+    if ranges.is_empty() {
+        s.toast("No silence found matching the criteria");
+        return Ok(json!({"removed": 0, "ticks": 0, "seconds": 0.0}));
+    }
+
+    let n = ranges.len();
+    let total = s.edit_sequence("Remove Silence", |seq, ctx, _| Ok(filmcraft_edit::transcript::ripple_delete_ranges(seq, ranges, ctx)))?;
+
+    if crossfade {
+        let _ = crate::trim::apply_default_transitions(s);
+    }
+
+    s.toast(format!("Removed {n} silences ({:.1}s)", total.0 as f64 / filmcraft_time::TICKS_PER_SECOND as f64));
+    Ok(json!({
+        "removed": n,
+        "ticks": total.0,
+        "seconds": total.0 as f64 / filmcraft_time::TICKS_PER_SECOND as f64
+    }))
 }

@@ -3585,3 +3585,16 @@
 	Shows the version, community links and credits in a FilmCraft window.	在 FilmCraft 窗口中显示版本、社区链接和致谢。
 	Couldn't open your web browser	无法打开网页浏览器
 	Open this address in your browser yourself:	请自行在浏览器中打开此地址：
+	Remove Silence…	消除静音…
+	Remove Silence	消除静音
+	Threshold:	阈值：
+	Pre head:	前置缓冲：
+	Post tail:	后置缓冲：
+	Minimum to strip:	最小消除长度：
+	Cross fade audio	音频交叉淡化
+	Preview:	预览：
+	Visible area	可见区域
+	Entire clip	整个剪辑
+	Entire sequence	整个序列
+	{count} silences detected ({sec}s)	检测到 {count} 处静音 ({sec}秒)
+	Detecting silences…	正在检测静音…

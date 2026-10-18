@@ -58,6 +58,7 @@ fn meta(command: &str) -> Option<(&'static str, &'static str)> {
         "clip.frameHoldOptions" => (tl!("Frame Hold Options"), "frameHold"),
         "clip.fieldOptions" => (tl!("Field Options"), "fieldOptions"),
         "clip.speedDuration" => (tl!("Clip Speed / Duration"), "speedDuration"),
+        "sequence.removeSilence" | "clip.removeSilence" => (tl!("Remove Silence"), "removeSilence"),
         "file.closeProject" => (tl!("Save Project"), "closeProject"),
         "app.quit" => (tl!("Save Project"), "quit"),
         _ => return None,
@@ -226,6 +227,32 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
             (
                 json!({"speed": (speed.abs() * 100.0 * 100.0).round() / 100.0, "reverse": speed < 0.0, "ripple": false, "interpolation": interp.name()}),
                 json!({"duration": it.as_ref().map_or(0, |i| i.duration.0), "speed": speed.abs(), "fps": fps}),
+            )
+        }
+        "sequence.removeSilence" => (
+            json!({
+                "threshold": -30.6,
+                "preHead": 10,
+                "postTail": 12,
+                "minStrip": 23,
+                "crossfade": true,
+                "previewScope": "visible"
+            }),
+            Value::Null,
+        ),
+        "clip.removeSilence" => {
+            let c: Vec<u64> = s.state.selection.iter().map(|id| id.0).collect();
+            (
+                json!({
+                    "threshold": -30.6,
+                    "preHead": 10,
+                    "postTail": 12,
+                    "minStrip": 23,
+                    "crossfade": true,
+                    "clips": c,
+                    "previewScope": "all"
+                }),
+                Value::Null,
             )
         }
         _ => (json!({}), Value::Null),
@@ -539,6 +566,79 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     }
                 }
             }
+            "sequence.removeSilence" | "clip.removeSilence" => {
+                egui::Grid::new("remove-silence-grid").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
+                    ui.spacing_mut().slider_width = 170.0;
+
+                    ui.label(tl!("Threshold:"));
+                    let mut v = p.get("threshold").and_then(Value::as_f64).unwrap_or(-30.6);
+                    let r = ui.add(egui::Slider::new(&mut v, -80.0..=0.0).suffix(" dB"));
+                    push(&mut elems, format!("{pre}.threshold"), &r, "Threshold");
+                    if r.changed() {
+                        p["threshold"] = json!(v);
+                    }
+                    ui.end_row();
+
+                    ui.label(tl!("Pre head:"));
+                    let mut v = p.get("preHead").and_then(Value::as_i64).unwrap_or(10);
+                    let r = ui.add(egui::Slider::new(&mut v, 0..=120).suffix(" frames"));
+                    push(&mut elems, format!("{pre}.preHead"), &r, "Pre head");
+                    if r.changed() {
+                        p["preHead"] = json!(v);
+                    }
+                    ui.end_row();
+
+                    ui.label(tl!("Post tail:"));
+                    let mut v = p.get("postTail").and_then(Value::as_i64).unwrap_or(12);
+                    let r = ui.add(egui::Slider::new(&mut v, 0..=120).suffix(" frames"));
+                    push(&mut elems, format!("{pre}.postTail"), &r, "Post tail");
+                    if r.changed() {
+                        p["postTail"] = json!(v);
+                    }
+                    ui.end_row();
+
+                    ui.label(tl!("Minimum to strip:"));
+                    let mut v = p.get("minStrip").and_then(Value::as_i64).unwrap_or(23);
+                    let r = ui.add(egui::Slider::new(&mut v, 1..=300).suffix(" frames"));
+                    push(&mut elems, format!("{pre}.minStrip"), &r, "Minimum to strip");
+                    if r.changed() {
+                        p["minStrip"] = json!(v);
+                    }
+                    ui.end_row();
+
+                    ui.label(tl!("Preview:"));
+                    let is_clip = d.command.starts_with("clip.");
+                    let mut scope = p.get("previewScope").and_then(Value::as_str).unwrap_or(if is_clip { "all" } else { "visible" }).to_string();
+                    ui.horizontal(|ui| {
+                        let r1 = ui.selectable_label(scope == "visible", tl!("Visible area"));
+                        push(&mut elems, format!("{pre}.previewVisible"), &r1, "Visible area");
+                        if r1.clicked() {
+                            scope = "visible".to_string();
+                        }
+                        let all_label = if is_clip { tl!("Entire clip") } else { tl!("Entire sequence") };
+                        let r2 = ui.selectable_label(scope == "all", all_label);
+                        push(&mut elems, format!("{pre}.previewAll"), &r2, "Entire");
+                        if r2.clicked() {
+                            scope = "all".to_string();
+                        }
+                    });
+                    if p.get("previewScope").and_then(Value::as_str) != Some(&scope) {
+                        p["previewScope"] = json!(scope);
+                    }
+                    ui.end_row();
+                });
+                ui.add_space(4.0);
+                check(ui, &mut elems, pre, p, "crossfade", tl!("Cross fade audio"), true);
+                if let Some(prev) = &app.tl.silence_preview {
+                    ui.add_space(4.0);
+                    let count = prev.ranges.len();
+                    let sec = format!("{:.1}", prev.total_seconds);
+                    ui.label(RichText::new(tlf!("{count} silences detected ({sec}s)", count = count, sec = sec)).color(app.tokens.hot_text));
+                } else if app.tl.silence_change_time.is_some() {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(tl!("Detecting silences…")).color(app.tokens.text_faint));
+                }
+            }
             "file.closeProject" | "app.quit" => {
                 ui.label(tlf!("Save changes to “{project_name}” before closing?", project_name));
                 ui.add_space(8.0);
@@ -573,7 +673,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             if r.clicked() {
                 action = Some("cancel");
             }
-            let r = ui.button(tl!("OK"));
+            let ok_label = if d.command.ends_with(".removeSilence") { tl!("Remove") } else { tl!("OK") };
+            let r = ui.button(ok_label);
             push(&mut elems, format!("{pre}.ok"), &r, "OK");
             if r.clicked() {
                 action = Some("ok");
@@ -653,6 +754,9 @@ fn finish(d: &ClipDialogDraft) -> Value {
         // the timecode field only applies to Source Timecode / Sequence Time
         "clip.frameHoldOptions" if !matches!(p["holdOn"].as_str(), Some("sourceTimecode" | "sequenceTime")) => {
             p.as_object_mut().map(|m| m.remove("timecode"));
+        }
+        "sequence.removeSilence" | "clip.removeSilence" => {
+            p.as_object_mut().map(|m| m.remove("previewScope"));
         }
         _ => {}
     }

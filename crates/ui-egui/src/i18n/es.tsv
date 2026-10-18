@@ -3610,3 +3610,16 @@
 	Shows the version, community links and credits in a FilmCraft window.	Muestra la versión, los enlaces de la comunidad y los créditos en una ventana de FilmCraft.
 	Couldn't open your web browser	No se pudo abrir el navegador web
 	Open this address in your browser yourself:	Abre esta dirección tú mismo en el navegador:
+	Remove Silence…	Eliminar silencio…
+	Remove Silence	Eliminar silencio
+	Threshold:	Umbral:
+	Pre head:	Margen inicial:
+	Post tail:	Margen final:
+	Minimum to strip:	Silencio mínimo a eliminar:
+	Cross fade audio	Fundido encadenado de audio
+	Preview:	Vista previa:
+	Visible area	Área visible
+	Entire clip	Todo el clip
+	Entire sequence	Toda la secuencia
+	{count} silences detected ({sec}s)	{count} silencios detectados ({sec}s)
+	Detecting silences…	Detectando silencios…

@@ -671,3 +671,13 @@ fn move_to_new_track_adds_it_in_one_undo_step() {
     assert_eq!(*s.active_sequence().unwrap(), before);
     assert_eq!(s.history.undo.len(), undo);
 }
+
+#[test]
+fn remove_silence_runs_and_is_undoable() {
+    let mut s = demo();
+    let before = s.active_sequence().unwrap().clone();
+    let r = s.execute("sequence.removeSilence", json!({"threshold": -10.0, "minStrip": 5, "preHead": 0, "postTail": 0})).unwrap();
+    assert!(r.get("removed").is_some());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.active_sequence().unwrap(), before);
+}
