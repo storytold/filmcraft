@@ -25,6 +25,40 @@ fn layout() -> Layout {
 }
 
 #[test]
+fn reactor_opens_from_window_and_its_real_tab_can_be_dragged_and_restored() {
+    let mut app = FilmcraftApp::new(Session::default());
+    app.ui.dock = layout().root;
+    app.ui.reactor.prompt = "Keep this generation draft while docking".into();
+    let ctx = egui::Context::default();
+    let items = menus::menu_items(&app);
+    assert!(items.iter().any(|item| item.id == "window.panel.Reactor" && item.path == ["Window"] && item.label == "Reactor"));
+    assert!(!items.iter().any(|item| item.id == "reactor.generate" && item.path == ["File"]));
+    menus::invoke(&mut app, &ctx, "window.panel.Reactor", json!({})).unwrap();
+    let mut h = Harness::builder().with_size(vec2(1200.0, 900.0)).build_eframe(move |_| app);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(h.state().auto.find("reactor.prompt").is_some());
+    let before = h.state().session.project.clone();
+    let from = rect(&h, "panel.tab.Reactor").center();
+    let to = rect(&h, "panel.Info").center();
+    drag(&mut h, from, to, Modifiers::NONE);
+    assert!(same_group(&h.state().ui.dock, PanelKind::Reactor, PanelKind::Info));
+    assert!(h.state().auto.find("reactor.prompt").is_some());
+    assert_eq!(h.state().ui.reactor.prompt, "Keep this generation draft while docking");
+    assert_eq!(*h.state().session.project, *before);
+    let saved = serde_json::to_value(dock::Layout { root: h.state().ui.dock.clone(), floating: h.state().ui.floating.clone() }).unwrap();
+    let restored: dock::Layout = serde_json::from_value(saved).unwrap();
+    restored.validate().unwrap();
+    assert!(restored.root.contains(PanelKind::Reactor));
+    let app = h.state_mut();
+    app.apply_dock(Action::Close { panel: PanelKind::Reactor }).unwrap();
+    menus::invoke(app, &ctx, "reactor.generate", json!({})).unwrap();
+    assert!(app.ui.dock.is_visible(PanelKind::Reactor));
+    assert_eq!(app.ui.reactor.prompt, "Keep this generation draft while docking");
+}
+
+#[test]
 fn shared_transactions_keep_selection_and_reject_invalid_moves_atomically() {
     let mut layout = layout();
     layout.apply(Action::Close { panel: PanelKind::Project }).unwrap();

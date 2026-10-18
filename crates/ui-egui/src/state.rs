@@ -507,6 +507,9 @@ pub struct UiState {
     /// Settings dialog (open when Some): page and the values being edited.
     #[serde(default)]
     pub settings: Option<crate::panels::settings::SettingsDraft>,
+    /// FastH3 Omni generation form and visible status (never the API key).
+    #[serde(default)]
+    pub reactor: crate::panels::reactor::Draft,
     /// Audio Track Mixer: effects and sends section expanded.
     #[serde(default)]
     pub mixer_fx_open: bool,
@@ -993,6 +996,7 @@ impl Default for UiState {
             mixer_hidden: Vec::new(),
             mixer_meter_input_only: false,
             settings: None,
+            reactor: Default::default(),
             audio_gain: AudioGainDraft::default(),
             add_tracks: AddTracksDraft::default(),
             delete_tracks: DeleteTracksDraft::default(),

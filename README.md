@@ -221,6 +221,24 @@ Import merges the document's bins, media and sequences into your project as one 
 
 <br>
 
+## Generate with Reactor (desktop, optional)
+
+Open **Settings → Reactor** to save your own Reactor API key in your computer's credential store.
+Settings also links to API keys and account billing. Generation uses Reactor's hosted service and
+your account's credits; FilmCraft does not provide a shared key or run the model locally.
+
+Open **Window → Reactor** to dock the FastH3 Omni panel beside your editing tools. Describe a shot,
+add image or audio references (or capture the current Program frame), and choose an aspect ratio
+and duration. Completed clips are saved beside the project in `<project file stem> Media/Reactor/`
+and imported into its bin automatically. Queue several shots, switch between grid and list views,
+or reuse a previous shot's prompt, settings and references.
+
+The gallery and queue last for the current app session; downloaded clips remain on disk. Browser
+generation and recovery of in-flight generations after quitting are not included. See the
+[Reactor panel documentation](crates/ui-egui/README.md#reactor-generation) for details.
+
+<br>
+
 ## Built for agents
 
 Every menu item, button, slider and drag in FilmCraft is a **command** with an id, typed parameters and an enabled state. There are more than 650 engine commands (`filmcraft-cli commands` lists them), with the rest of Premiere's catalogue on the way. The UI, the CLI, a JSON control channel and an **MCP server** all dispatch the same commands, so Claude or any agent can cut, trim, grade, mix and export exactly the way a person does. The UI can also be driven at the level of mouse and keyboard: every widget has an automation id, and agents can click, drag, type and take screenshots.

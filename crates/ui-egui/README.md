@@ -3,6 +3,63 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## Reactor generation
+
+Window > Reactor opens a dockable Reactor panel for FastH3 Omni generation.
+Its tab can be moved, split, floated, closed and reopened like other panels; workspaces retain
+its placement. Closing it preserves the current form and does not stop a running generation.
+Completed clips are
+saved beside the active project in `<project file stem> Media/Reactor/` under unique MP4 names,
+then automatically imported into the Project panel's current bin. An unsaved project must be
+saved once before generation; the form offers the standard project Save action. Each generation
+uses the project path and bin captured when it was queued. If another project is opened meanwhile,
+the clip stays in its original media folder and its saved path is reported instead of importing
+into the other project. Save As does not move already generated media.
+
+The panel uses a FastH3 Omni heading, a bottom composer, square center-cropped image references,
+and local generation cards. Grid view shows two columns; List view gives each card the panel's
+width. Completed-card thumbnails come from the downloaded local file. This pass has no embedded
+video player or cloud library. Reuse restores the prompt, aspect, duration, and original reference
+paths without resubmitting a request. Missing or moved reference files report preview/upload errors.
+
+Up to eight requests can be queued (including the active request); the desktop submits them one at
+a time. Queued cards can be cancelled before submission. Progress uses the reported upload, queue,
+generation and download stages, without invented completion percentages. Switching projects leaves
+queued requests paused until their original project is active again. Closing the panel keeps the
+queue running. Cards and queued requests are session-only, bounded to 64 recent jobs; they are not
+saved in the project. Quitting the app does not recover an in-flight server generation on restart.
+
+Image and audio decoding runs on bounded background workers with a 24-entry preview cache. Audio
+references are square tiles beside image references, with inline playback and seeking over a decoded
+waveform using the existing audio output. The prompt uses its placeholder without a repeated visible
+heading, and the composer is measured and anchored close to the panel bottom. Timeline
+or Source playback takes the output back. Current frame captures the Program monitor at its exact
+playhead into a unique PNG in the project's Reactor media folder, without importing it as a clip or
+asking for a filename. A project switch during capture never attaches it to the other project's
+composer. API key and billing controls remain in Settings.
+
+The `reactor.generate` UI command accepts `prompt`, `seconds`, `aspect`, optional
+`reference_images` / `reference_audios` paths, and an optional `output_path`. Omitting `output_path`
+uses the same project media folder as the form. The desktop worker creates and reserves a writable
+local output before uploading references or submitting a billable request. The API key stays in
+the OS credential store. The desktop host shares a zeroizing key cache for one app session:
+saving a key populates it, an authorized store read is reused by subsequent generations, and
+replacement/removal clears the previous cached key. Store failures do not cache a failed read.
+macOS may still request authorization when a new build first reads a key saved by an earlier app
+identity. Rebuilt ad-hoc debug binaries do not have the stable signing identity of a distributed
+app; the packaging script supports Developer ID signing. The app leaves OS access controls in
+place. No network calls or real credential-store access are needed by the panel, cache, and
+output storage tests.
+
+Additional UI commands: `reactor.view {view:"grid"|"list"}`, `reactor.references
+{kind:"image"|"audio",paths:[absolute paths]}` (or `{kind,remove:index}`), `reactor.reuse {id}`,
+`reactor.cancelQueued {id}`, `reactor.captureFrame {}`, `reactor.audio
+{path,action:"play"|"pause"|"seek",seconds?}`, and read-only `reactor.jobs {}`.
+The `reactor.*` automation IDs expose each control. Unit and GUI tests cover queue snapshots,
+project switching, import, full reference reuse, bounded previews, audio seeking/output ownership,
+keyboard focus while references change, and both gallery layouts. Optional
+`FILMCRAFT_REACTOR_SNAPSHOT_DIR` saves gallery screenshots from the GUI test.
+
 ## Transition drop previews
 
 Dragging a video or audio transition over a compatible clip shows its actual time span, the
