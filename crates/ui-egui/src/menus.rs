@@ -1017,6 +1017,20 @@ fn menu_entry(ui: &mut egui::Ui, it: &MenuItem, auto: &mut crate::automation::Re
     r.clicked()
 }
 
+/// A row of a right-click menu with a checkmark gutter, drawn as the menu bar draws its checked
+/// items; the checkmark shows when `checked`, which is also what accessibility reports.
+pub fn checked_entry(ui: &mut egui::Ui, label: &str, enabled: bool, checked: bool) -> egui::Response {
+    let r = ui.add_enabled(enabled, egui::Button::new(format!("      {label}")));
+    r.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, checked, label));
+    if checked {
+        let c = r.rect.left_center() + egui::vec2(10.0, 0.0);
+        let st = egui::Stroke::new(1.5, ui.visuals().text_color());
+        ui.painter().line_segment([c + egui::vec2(-4.0, 0.0), c + egui::vec2(-1.0, 3.0)], st);
+        ui.painter().line_segment([c + egui::vec2(-1.0, 3.0), c + egui::vec2(4.5, -3.5)], st);
+    }
+    r
+}
+
 #[cfg(test)]
 mod parse_shortcut_tests {
     use super::{label_menu_swatch, parse_shortcut};
