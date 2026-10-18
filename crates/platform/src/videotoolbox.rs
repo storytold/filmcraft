@@ -7,7 +7,10 @@
 //! software decoder.
 //!
 //! A session is created from the parameter sets of the sample entry (`avcC` / `hvcC`) with
-//! hardware decoding required, so streams the hardware cannot take are declined up front. Samples
+//! hardware decoding required, so streams the hardware cannot take are declined up front. The
+//! exception is interlaced H.264 (field pictures, MBAFF): the Apple-silicon media engine does not
+//! decode it and neither does our software decoder, so its session lets VideoToolbox use Apple's
+//! software decoder, which outputs the woven frames (#1750). Samples
 //! are fed as `CMSampleBuffer`s with asynchronous decompression (a couple in flight); the output
 //! callback (on a VideoToolbox thread) copies each decoded
 //! `CVPixelBuffer` (NV12 / P010-style biplanar) into planar [`PixelData::Yuv8`] /
@@ -249,9 +252,6 @@ fn copy_out(pb: &CVImageBuffer, l: &Layout) -> std::result::Result<VideoFrame, S
 
 /// The layout for a stream, or why VideoToolbox is not used for it.
 fn layout(info: &NalStreamInfo) -> std::result::Result<Layout, String> {
-    if info.interlaced {
-        return Err("field-coded H.264".into());
-    }
     if info.bit_depth_luma != info.bit_depth_chroma || !matches!(info.bit_depth_luma, 8 | 10) {
         return Err(format!("{}-bit luma / {}-bit chroma", info.bit_depth_luma, info.bit_depth_chroma));
     }
@@ -280,7 +280,9 @@ impl Session {
         let format = format_description(info)?;
         // SAFETY: reading an immutable framework constant.
         let key: &CFString = unsafe { kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder };
-        let spec = CFDictionary::<CFString, CFType>::from_slices(&[key], &[CFBoolean::new(true).as_ref()]);
+        // interlaced H.264 may use Apple's software decoder (see the module docs); everything else
+        // must decode in hardware or be declined, so it goes to our own decoder
+        let spec = CFDictionary::<CFString, CFType>::from_slices(&[key], &[CFBoolean::new(!info.interlaced).as_ref()]);
         let pf = CFNumber::new_i32(layout.pixel_format as i32);
         // SAFETY: reading an immutable framework constant.
         let pf_key: &CFString = unsafe { kCVPixelBufferPixelFormatTypeKey };
