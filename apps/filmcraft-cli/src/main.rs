@@ -95,7 +95,8 @@ SUBCOMMANDS
                                 media info as JSON, with MXF / Ogg / BWF details; with
                                 --image-sequence <media> is the first numbered still of a sequence
   bench-decode <media> [--frames N]
-  mcp                           MCP server on stdio (headless, or --bridge to the live app)
+  mcp                           MCP server on stdio (headless, or --bridge to the live app; confine
+                                its files with --automation-read-root/--automation-write-root)
   help                          this text
   --version                     print the version
 
@@ -107,6 +108,10 @@ OPTIONS
   --bridge <127.0.0.1:PORT>     send commands to the running app (`filmcraft --control PORT`)
   --data-dir <dir>              FilmCraft data directory for user export presets (headless;
                                 default: the app's data directory)
+  --automation-read-root <dir>  `mcp`: only files under this folder may be read (it must exist)
+  --automation-write-root <dir> `mcp`: only files under this folder may be written. A root left out
+                                grants no access of its kind; without both nothing is confined.
+                                With --bridge they are enforced before each command reaches the app
   --keep-going                  `run`: report failing lines and continue
   --compact                     one-line JSON output
 
@@ -246,6 +251,23 @@ fn register_gpu_frame_renderer() {
 
 fn register_hardware_decoders() -> filmcraft_platform::Availability {
     filmcraft_platform::register()
+}
+
+/// The automation roots `mcp` was given (`--automation-read-root/--automation-write-root`),
+/// opened and checked. `Err` is a usage error; `None`: nothing is confined (#985).
+fn mcp_roots(a: &Args) -> Result<Option<std::sync::Arc<filmcraft_automation::AutomationRoots>>, String> {
+    for flag in ["--automation-read-root", "--automation-write-root"] {
+        match a.occurrences(flag) {
+            0 => {}
+            // A flag with no value (`mcp --automation-read-root` at the end) must not silently
+            // leave the server unconfined.
+            1 if a.opt(flag).is_some() => {}
+            1 => return Err(format!("{flag} needs a folder")),
+            _ => return Err(format!("{flag} is given twice: it takes one folder")),
+        }
+    }
+    let roots = filmcraft_automation::AutomationRoots::new(a.opt("--automation-read-root"), a.opt("--automation-write-root"))?;
+    Ok(roots.map(std::sync::Arc::new))
 }
 
 /// `path` made absolute against the working directory, as the project stores it. Unlike
@@ -479,16 +501,20 @@ async fn cli() {
             diag(format_args!("rendered {}x{} in {:.1} ms → {out}", img.w, img.h, dt.as_secs_f64() * 1000.0));
         }
         "mcp" => {
-            if let Some(opt) = a.unknown_opt(&["--bridge", "--project", "--demo", "--data-dir"]) {
+            if let Some(opt) = a.unknown_opt(&["--bridge", "--project", "--demo", "--data-dir", "--automation-read-root", "--automation-write-root"]) {
                 usage(format!("unknown mcp option `{opt}`"));
             }
+            let roots = mcp_roots(&a).unwrap_or_else(|e| usage(e));
             let server = match a.opt("--bridge") {
-                Some(addr) => filmcraft_automation::FilmcraftMcp::bridge(addr).unwrap_or_else(|e| usage(e)),
+                Some(addr) => filmcraft_automation::FilmcraftMcp::bridge(addr).unwrap_or_else(|e| usage(e)).with_roots(roots.clone()),
                 None => match Backend::open(&a) {
-                    Backend::Local(s) => filmcraft_automation::FilmcraftMcp::headless(*s),
+                    Backend::Local(s) => filmcraft_automation::FilmcraftMcp::headless(*s).with_roots(roots.clone()),
                     Backend::Bridge(_) => usage("mcp: use --bridge ADDR to drive a running app"),
                 },
             };
+            if let Some(r) = &roots {
+                diag(format_args!("filmcraft-cli: files confined: {}", r.describe()));
+            }
             if let Err(e) = server.serve_stdio().await {
                 fail(format!("mcp: {e}"));
             }
@@ -594,6 +620,23 @@ mod format_tests {
             assert!(e.contains("finite and positive"), "{e}");
         }
         assert_eq!(super::render_at_playhead(&s, 0.5).unwrap().0.w, 8);
+    }
+
+    /// #985: the automation roots' flag shapes are usage errors; neither flag given confines nothing.
+    /// A word following the flag is its value whatever it is (as for `--project`), so a root given a
+    /// flag's name instead of a folder fails loudly when the root is opened.
+    #[test]
+    fn mcp_roots_reject_a_missing_or_repeated_flag() {
+        use crate::args::Args;
+        let a = Args::parse(["mcp".into(), "--automation-read-root".into()]);
+        assert_eq!(super::mcp_roots(&a).unwrap_err(), "--automation-read-root needs a folder");
+        let a = Args::parse(["mcp".into(), "--automation-write-root".into(), "--bridge".into(), "127.0.0.1:1".into()]);
+        let e = super::mcp_roots(&a).unwrap_err();
+        assert!(e.starts_with("cannot open the automation write root `--bridge`"), "{e}");
+        let a = Args::parse(["mcp".into(), "--automation-read-root=x".into(), "--automation-read-root=y".into()]);
+        assert_eq!(super::mcp_roots(&a).unwrap_err(), "--automation-read-root is given twice: it takes one folder");
+        let a = Args::parse(["mcp".into(), "--demo".into()]);
+        assert!(super::mcp_roots(&a).unwrap().is_none(), "no roots, no confinement");
     }
 
     /// The CLI (and MCP / headless runs, which share its entry point) registers the hardware
