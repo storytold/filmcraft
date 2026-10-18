@@ -455,6 +455,7 @@ fn events_and_progress_panels() {
     d.snapshot("panels-progress", Some("progress."));
     d.click("progress.cancel.4242");
     assert!(job.progress.cancel.load(std::sync::atomic::Ordering::Relaxed));
+    job.progress.cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
     *job.result.lock().unwrap() = Some(Err("cancelled".into()));
     d.frames(3);
     assert!(!d.has("progress.cancel.4242"));
@@ -743,4 +744,277 @@ fn middle_closing_an_inactive_project_tab_keeps_the_inspector_target() {
     let focused = d.app().ui.focused;
     let source = d.app().ui.panels.inspector_source;
     assert_eq!(d.label("info.item"), name, "closing a tab must not select its stale item; focused={focused:?}, source={source:?}");
+}
+
+#[cfg(target_os = "linux")]
+mod progress_export_io_errors {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Mutex, mpsc};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    struct ExportDir(std::path::PathBuf);
+
+    impl Drop for ExportDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn assert_async_write_failure(parent_name: &str, contains_cancel: bool) {
+        // A relative destination keeps checkout and TMPDIR names out of the error-string control.
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let dir = ExportDir(std::path::Path::new("target").join(format!("progress-write-error-{}-{stamp}-{parent_name}", std::process::id())));
+        std::fs::create_dir_all(&dir.0).unwrap();
+        let parent = dir.0.join(parent_name);
+        let original = b"ordinary file, not an output directory";
+        std::fs::write(&parent, original).unwrap();
+        let output = parent.join("clip.wav");
+        let path = output.to_str().unwrap().to_string();
+        assert_eq!(path.to_ascii_lowercase().contains("cancel"), contains_cancel);
+
+        let mut d = Driver::demo();
+        let before_jobs: Vec<u64> = d.app().session.jobs.iter().map(|job| job.id).collect();
+        let started = d.exec(
+            "file.exportMedia",
+            json!({
+                "path": path,
+                "preset": "Waveform Audio 48 kHz 16-bit",
+                "range": "custom",
+                "startSeconds": 0.0,
+                "endSeconds": 0.02,
+                "captionSidecar": "none",
+                "wait": false
+            }),
+        );
+        let id = started["job"].as_u64().expect("the async request must return a job, not a synchronous path error");
+        assert!(!before_jobs.contains(&id));
+        assert_eq!(d.app().session.jobs.len(), before_jobs.len() + 1);
+        assert_eq!(started["path"], json!(path));
+        let job = d.app().session.jobs.iter().find(|job| job.id == id).unwrap().clone();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let error = loop {
+            let result = job.result.lock().unwrap().clone();
+            if let Some(result) = result {
+                break result.expect_err("the regular-file parent must make the actual WAV export fail");
+            }
+            assert!(Instant::now() < deadline, "async export job {id} did not finish");
+            d.frames(1);
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(job.progress.finished.load(Ordering::Relaxed));
+        assert!(!job.progress.cancel.load(Ordering::Relaxed), "no cancellation was requested");
+        assert!(error.starts_with("I/O: "), "must reach the actual output write failure: {error}");
+        assert!(error.contains(&path), "the failure must name the requested destination: {error}");
+        assert_eq!(error.to_ascii_lowercase().contains("cancel"), contains_cancel, "{error}");
+        assert_ne!(error, "cancelled");
+        assert_eq!(std::fs::read(&parent).unwrap(), original);
+        assert!(!output.exists(), "no WAV can be created through a regular-file parent");
+
+        let events = d.exec("events.list", json!({}));
+        let failed = format!("Failed: {}: {error}", job.label);
+        assert!(
+            events["entries"].as_array().unwrap().iter().any(|entry| { entry["source"] == "job" && entry["level"] == "error" && entry["message"] == failed }),
+            "the real terminal failure must be logged: {events}"
+        );
+        d.ok("ui.menu.invoke", json!({"id": "window.panel.Progress"}));
+        if !d.app().ui.panels.progress.show_finished {
+            d.click("progress.showFinished");
+        }
+        let element = format!("progress.job.{id}");
+        d.wait_for(&element);
+        assert_eq!(d.label(&element), format!("{}: Failed: {error}", job.label), "an I/O failure must keep its diagnostic");
+        assert!(!job.progress.cancel.load(Ordering::Relaxed));
+        assert!(!job.progress.cancelled.load(Ordering::Relaxed));
+
+        let result = job.to_json()["result"].clone();
+        d.exec("jobs.cancel", json!({"job": id}));
+        d.frames(2);
+        assert!(job.progress.cancel.load(Ordering::Relaxed), "the late request reached the completed job");
+        assert!(!job.progress.cancelled.load(Ordering::Relaxed), "a request cannot change the observed terminal cause");
+        assert_eq!(job.to_json()["result"], result);
+        assert_eq!(d.label(&element), format!("{}: Failed: {error}", job.label));
+    }
+
+    #[test]
+    fn async_export_io_error_with_cancel_in_path_stays_failed() {
+        assert_async_write_failure("cancel-output", true);
+    }
+
+    #[test]
+    fn async_export_io_error_with_neutral_path_stays_failed() {
+        assert_async_write_failure("ordinary-output", false);
+    }
+
+    fn export_dir(name: &str) -> ExportDir {
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let dir = ExportDir(std::path::Path::new("target").join(format!("progress-terminal-{}-{stamp}-{name}", std::process::id())));
+        std::fs::create_dir_all(&dir.0).unwrap();
+        dir
+    }
+
+    fn progress_row(d: &mut Driver, id: u64) -> String {
+        d.ok("ui.menu.invoke", json!({"id": "window.panel.Progress"}));
+        if !d.app().ui.panels.progress.show_finished {
+            d.click("progress.showFinished");
+        }
+        let element = format!("progress.job.{id}");
+        d.wait_for(&element);
+        element
+    }
+
+    struct PausedAudio {
+        inner: filmcraft_media::SharedSource,
+        first: AtomicBool,
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl filmcraft_media::MediaSource for PausedAudio {
+        fn info(&self) -> &filmcraft_media::MediaInfo {
+            self.inner.info()
+        }
+        fn video_frame(&self, req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+            self.inner.video_frame(req)
+        }
+        fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+            if self.first.swap(false, Ordering::Relaxed) {
+                self.entered.send(()).map_err(|e| filmcraft_media::MediaError::Io(e.to_string()))?;
+                // A failed test drops the sender; a timeout also releases the producer.
+                self.release.lock().unwrap().recv_timeout(Duration::from_secs(30)).map_err(|e| filmcraft_media::MediaError::Io(e.to_string()))?;
+            }
+            self.inner.audio(start, frames, sample_rate)
+        }
+    }
+
+    // Own the output until the asynchronous producer has published its terminal result.
+    // Session/Job drops do not join the export thread.
+    struct PausedExportCleanup {
+        dir: Option<ExportDir>,
+        release: Option<mpsc::Sender<()>>,
+        job: Option<filmcraft_engine::Job>,
+    }
+
+    impl Drop for PausedExportCleanup {
+        fn drop(&mut self) {
+            if let Some(job) = &self.job {
+                job.progress.cancel.store(true, Ordering::Relaxed);
+            }
+            // Disconnect the gate even when a test assertion failed before releasing it.
+            drop(self.release.take());
+            let started = Instant::now();
+            let terminal = match &self.job {
+                Some(job) => loop {
+                    let done = match job.result.try_lock() {
+                        Ok(result) => result.is_some(),
+                        Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner().is_some(),
+                        Err(std::sync::TryLockError::WouldBlock) => false,
+                    };
+                    if done {
+                        break true;
+                    }
+                    if started.elapsed() >= Duration::from_secs(30) {
+                        break false;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                },
+                None => false,
+            };
+            if !terminal && let Some(dir) = self.dir.take() {
+                // A failed/unknown producer may still use the output. Preserve its fixture.
+                std::mem::forget(dir);
+            }
+        }
+    }
+
+    #[test]
+    fn actual_export_cancellation_is_reported_by_the_progress_panel() {
+        let dir = export_dir("stopped");
+        let path = dir.0.join("stopped.wav").to_str().unwrap().to_string();
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        // Finish UI initialization and open Progress before the producer's finite gate starts.
+        let mut d = Driver::with(session);
+        d.ok("ui.menu.invoke", json!({"id": "window.panel.Progress"}));
+        d.frames(3);
+        if !d.app().ui.panels.progress.show_finished {
+            d.click("progress.showFinished");
+        }
+        let session = &mut d.app().session;
+        let item = session.active_sequence().unwrap().audio_tracks[0].items[0].item;
+        let inner = session.source(item).unwrap();
+        assert_eq!(inner.info().audio_streams.len(), 1);
+        let (entered, ready) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        session.media.insert(item, Arc::new(PausedAudio { inner, first: AtomicBool::new(true), entered, release: Mutex::new(resume) }));
+        let previous_jobs = session.jobs.len();
+        let mut cleanup = PausedExportCleanup { dir: Some(dir), release: Some(release), job: None };
+        let started = session.execute(
+            "file.exportMedia",
+            json!({"path": path, "format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 2,
+                "captionSidecar": "none", "wait": false}),
+        );
+        // Capture the appended job before checking the command result or any returned field.
+        cleanup.job = session.jobs.get(previous_jobs).cloned();
+        let started = started.unwrap();
+        let id = started["job"].as_u64().unwrap();
+        let job = session.jobs.iter().find(|job| job.id == id).unwrap().clone();
+        // No UI frames run after replacing the source until the export owns its first read.
+        ready.recv_timeout(Duration::from_secs(30)).expect("the real export must read the gated source");
+        assert!(job.result.lock().unwrap().is_none());
+        assert!(!job.progress.cancelled.load(Ordering::Relaxed));
+        let element = format!("progress.job.{id}");
+        d.wait_for(&element);
+        let cancel = format!("progress.cancel.{id}");
+        d.wait_for(&cancel);
+        assert!(job.result.lock().unwrap().is_none(), "the producer must still be paused before Cancel");
+        d.click(&cancel);
+        assert!(job.progress.cancel.load(Ordering::Relaxed));
+        assert!(job.result.lock().unwrap().is_none(), "the producer is still paused");
+        cleanup.release.as_ref().unwrap().send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let result = loop {
+            if let Some(result) = job.result.lock().unwrap().clone() {
+                break result;
+            }
+            assert!(Instant::now() < deadline, "the actual cancelled producer did not finish");
+            d.frames(1);
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(result.unwrap_err(), "cancelled");
+        assert!(job.progress.cancelled.load(Ordering::Relaxed), "the producer must publish its observed cancellation");
+        assert!(job.progress.finished.load(Ordering::Relaxed));
+        d.frames(2);
+        assert_eq!(d.label(&element), format!("{}: Cancelled", job.label));
+        assert!(!d.has(&format!("progress.cancel.{id}")));
+    }
+
+    #[test]
+    fn completed_export_stays_done_after_a_late_cancel_request() {
+        let dir = export_dir("completed");
+        let path = dir.0.join("completed.wav").to_str().unwrap().to_string();
+        let mut d = Driver::demo();
+        let completed = d.exec(
+            "file.exportMedia",
+            json!({"path": path, "format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 0.02,
+                "captionSidecar": "none", "wait": true}),
+        );
+        let id = completed["job"].as_u64().unwrap();
+        let job = d.app().session.jobs.iter().find(|job| job.id == id).unwrap().clone();
+        assert!(job.result.lock().unwrap().as_ref().unwrap().is_ok());
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.starts_with(b"RIFF"));
+        assert_eq!(completed["result"]["bytes"], json!(bytes.len()));
+        assert!(bytes.len() > 44);
+        let element = progress_row(&mut d, id);
+        assert_eq!(d.label(&element), format!("{}: Done", job.label));
+        let result = job.to_json()["result"].clone();
+        d.exec("jobs.cancel", json!({"job": id}));
+        d.frames(2);
+        assert!(job.progress.cancel.load(Ordering::Relaxed));
+        assert!(!job.progress.cancelled.load(Ordering::Relaxed));
+        assert_eq!(job.to_json()["result"], result);
+        assert_eq!(d.label(&element), format!("{}: Done", job.label));
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
 }

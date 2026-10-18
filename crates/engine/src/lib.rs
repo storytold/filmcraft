@@ -553,10 +553,12 @@ impl Session {
                 Ok(filmcraft_export::Step::Progress) => {}
                 Ok(filmcraft_export::Step::Pending) => return true,
                 Ok(filmcraft_export::Step::Done(r)) => {
+                    j.progress.record_terminal_cancellation(false);
                     *j.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(Ok(r));
                     self.stepped.remove(0);
                 }
                 Err(e) => {
+                    j.progress.record_terminal_cancellation(matches!(&e, filmcraft_export::ExportError::Cancelled));
                     let e = e.to_string();
                     *j.progress.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
                     j.progress.finished.store(true, std::sync::atomic::Ordering::Relaxed);
