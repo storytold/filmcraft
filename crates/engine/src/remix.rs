@@ -19,7 +19,7 @@
 //! changing the target or the sliders re-plans instantly. Everything is deterministic.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use filmcraft_audio_dsp::remix::{self as dsp, Analysis, Params};
 use filmcraft_project::{ClipId, ItemId, TrackKind};
@@ -32,8 +32,10 @@ use crate::{EngineError, Result, Session};
 
 type Key = (u64, i64, i64, u32);
 
-fn cache() -> &'static Mutex<Vec<(Key, Arc<Analysis>)>> {
-    static C: OnceLock<Mutex<Vec<(Key, Arc<Analysis>)>>> = OnceLock::new();
+type CachedAnalysis = (Key, Weak<dyn filmcraft_media::MediaSource>, Arc<Analysis>);
+
+fn cache() -> &'static Mutex<Vec<CachedAnalysis>> {
+    static C: OnceLock<Mutex<Vec<CachedAnalysis>>> = OnceLock::new();
     C.get_or_init(Default::default)
 }
 
@@ -103,16 +105,20 @@ fn analysis(s: &Session, item: ItemId, source_in: Tick, dur: Tick) -> Result<Arc
     let m0 = source_in.to_units_floor(sr as i64);
     let len = (source_in + dur).to_units_floor(sr as i64) - m0;
     let key = (item.0, m0, len, sr);
-    if let Some((_, a)) = cache().lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(k, _)| *k == key) {
-        return Ok(a.clone());
-    }
     let provider = s.media.provider(s.project.clone(), s.services.clone());
     let src = filmcraft_render::SourceProvider::source(&provider, item).ok_or_else(|| EngineError::Other("the clip's media is offline".into()))?;
+    let source = Arc::downgrade(&src);
+    // Item ids are local to a project. Retain source identity weakly so another project,
+    // relink, media refresh, or proxy change cannot reuse this audio's beat grid.
+    if let Some((_, _, a)) = cache().lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(k, old, _)| *k == key && old.ptr_eq(&source)) {
+        return Ok(a.clone());
+    }
     let buf = src.audio(m0, len.max(0) as usize, sr).map_err(|e| EngineError::Other(format!("reading the clip's audio: {e}")))?;
     let refs: Vec<&[f32]> = buf.channels.iter().map(Vec::as_slice).collect();
     let a = Arc::new(dsp::analyze(&refs, sr).map_err(|e| EngineError::Other(format!("cannot remix: {e}")))?);
     let mut c = cache().lock().unwrap_or_else(|e| e.into_inner());
-    c.push((key, a.clone()));
+    c.retain(|(_, src, _)| src.strong_count() != 0);
+    c.push((key, source, a.clone()));
     if c.len() > 8 {
         c.remove(0);
     }

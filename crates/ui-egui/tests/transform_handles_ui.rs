@@ -478,3 +478,56 @@ fn rotating_from_beside_an_edge() {
     let r = d.num(clip, "motion", "rotation");
     assert!(r > 5.0, "up from beside the left edge turns clockwise: {r}");
 }
+
+/// #1766: precise guide drags accumulate subpixel motion, toggle orientation on Alt, and
+/// Escape restores both the original position and orientation.
+#[test]
+fn monitor_guides_support_precision_orientation_and_position_feedback() {
+    use egui::{Event, Modifiers, PointerButton, pos2, vec2};
+    let mut d = Driver::demo();
+    d.ok("ui.menu.invoke", json!({"id": "view.addGuide", "params": {"orientation": "vertical", "position": 700}}));
+    d.frames(2);
+    let r = d.rect("program.guide.0");
+    let pic = d.rect("program.picture");
+    let start = pos2((r[0] + r[2] / 2.0) as f32, (r[1] + r[3] * 0.25) as f32);
+    let before = d.harness.state().ui.program.guides[0];
+    let project = d.harness.state().session.project.to_json();
+    let event = |d: &mut Driver, event| {
+        d.harness.input_mut().events.push(event);
+        d.frames(1);
+    };
+    event(&mut d, Event::PointerMoved(start));
+    event(&mut d, Event::ModifiersChanged(Modifiers::SHIFT));
+    event(&mut d, Event::PointerButton { pos: start, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::SHIFT });
+    let mut at = start;
+    for _ in 0..10 {
+        at += vec2(2.0, 0.0);
+        event(&mut d, Event::PointerMoved(at));
+    }
+    let delta = d.harness.state().ui.program.guides[0].position - before.position;
+    let expected = 20.0 / (pic[2] / 1920.0) / 20.0;
+    assert!((delta - expected).abs() <= 1.0, "20x precision: {delta} versus {expected}");
+    assert!(d.find("program.guidePosition").is_some());
+    d.shot("monitor-guide-precision");
+    event(&mut d, Event::ModifiersChanged(Modifiers::NONE));
+    let position = d.harness.state().ui.program.guides[0].position;
+    event(&mut d, Event::PointerMoved(at));
+    assert_eq!(d.harness.state().ui.program.guides[0].position, position, "releasing Shift cannot jump");
+    event(&mut d, Event::ModifiersChanged(Modifiers::ALT));
+    event(&mut d, Event::PointerMoved(at));
+    assert!(!d.harness.state().ui.program.guides[0].vertical);
+    for _ in 0..3 {
+        at += vec2(0.0, 2.0);
+        event(&mut d, Event::PointerMoved(at));
+    }
+    assert!(!d.harness.state().ui.program.guides[0].vertical, "held Alt toggles only once");
+    event(&mut d, Event::ModifiersChanged(Modifiers::NONE));
+    event(&mut d, Event::ModifiersChanged(Modifiers::ALT));
+    event(&mut d, Event::PointerMoved(at));
+    assert!(d.harness.state().ui.program.guides[0].vertical, "another Alt press toggles back");
+    d.harness.key_press(egui::Key::Escape);
+    d.frames(2);
+    event(&mut d, Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    assert_eq!(d.harness.state().ui.program.guides[0], before);
+    assert_eq!(d.harness.state().session.project.to_json(), project, "guide edits are view state");
+}

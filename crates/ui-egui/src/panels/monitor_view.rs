@@ -467,14 +467,48 @@ fn nice_step(px_per_unit: f32) -> f32 {
 }
 
 #[derive(Clone, Copy)]
-struct NewGuide {
-    vertical: bool,
+struct GuideDrag {
+    before: Guide,
+    guide: Guide,
+    last: egui::Pos2,
+    alt: bool,
+}
+
+impl GuideDrag {
+    fn update(&mut self, pos: egui::Pos2, mods: egui::Modifiers, pic: Rect, scale: Vec2) {
+        if mods.alt && !self.alt {
+            self.guide.vertical = !self.guide.vertical;
+            self.guide.position = if self.guide.vertical { f64::from((pos.x - pic.left()) / scale.x) } else { f64::from((pos.y - pic.top()) / scale.y) };
+            self.last = pos;
+        }
+        self.alt = mods.alt;
+        let delta = if self.guide.vertical { (pos.x - self.last.x) / scale.x } else { (pos.y - self.last.y) / scale.y };
+        self.guide.position += f64::from(delta) / if mods.shift { 20.0 } else { 1.0 };
+        self.last = pos;
+    }
+
+    fn rounded(self) -> Guide {
+        Guide { position: self.guide.position.round(), ..self.guide }
+    }
+}
+
+fn guide_readout(app: &mut FilmcraftApp, ui: &egui::Ui, w: Which, at: egui::Pos2, guide: Guide) {
+    let text = format!("{}: {:.0} px", if guide.vertical { "X" } else { "Y" }, guide.position);
+    let response = egui::Area::new(egui::Id::new((prefix(w), "guide-position")))
+        .order(egui::Order::Tooltip)
+        .interactable(false)
+        .fixed_pos(at + vec2(14.0, 14.0))
+        .show(ui.ctx(), |ui| egui::Frame::popup(ui.style()).show(ui, |ui| ui.label(&text)));
+    app.auto.add(&format!("{}.guidePosition", prefix(w)), response.response.rect, &text);
 }
 
 /// Rulers (frame pixels) along the top and left of the picture area; drag out of a ruler to add a
 /// guide (top ruler → horizontal guide, left ruler → vertical guide).
 #[allow(clippy::too_many_arguments)]
 pub fn rulers(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, top: Rect, left: Rect, area: Rect, pic: Rect, frame: (u32, u32)) {
+    if !pic.is_finite() || pic.width() <= 0.0 || pic.height() <= 0.0 {
+        return;
+    }
     let t = app.tokens;
     let pfx = prefix(w);
     let p = ui.painter().clone();
@@ -515,21 +549,31 @@ pub fn rulers(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, top: Rect, le
         }
         // the left button only, as for the other things dragged on the monitor
         if resp.drag_started_by(egui::PointerButton::Primary) {
-            ui.data_mut(|d| d.insert_temp(drag_id, NewGuide { vertical }));
+            let start = ui.input(|i| i.pointer.press_origin()).unwrap_or(r.center());
+            let position = if vertical { (start.x - pic.left()) / kx } else { (start.y - pic.top()) / ky };
+            let guide = Guide { vertical, position: f64::from(position) };
+            ui.data_mut(|d| d.insert_temp(drag_id, (name, GuideDrag { before: guide, guide, last: start, alt: false })));
         }
-        let Some(ng) = ui.data(|d| d.get_temp::<NewGuide>(drag_id)).filter(|g| g.vertical == vertical) else { continue };
+        let Some((source, mut drag)) = ui.data(|d| d.get_temp::<(&'static str, GuideDrag)>(drag_id)).filter(|(source, _)| *source == name) else { continue };
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            ui.data_mut(|d| d.remove::<(&'static str, GuideDrag)>(drag_id));
+            continue;
+        }
         let Some(pos) = resp.interact_pointer_pos().or(ui.ctx().pointer_latest_pos()) else { continue };
+        drag.update(pos, ui.input(|i| i.modifiers), pic, vec2(kx, ky));
+        ui.data_mut(|d| d.insert_temp(drag_id, (source, drag)));
+        let guide = drag.rounded();
         if area.contains(pos) {
-            let seg = if ng.vertical { [pos2(pos.x, area.min.y), pos2(pos.x, area.max.y)] } else { [pos2(area.min.x, pos.y), pos2(area.max.x, pos.y)] };
+            let c = if guide.vertical { pic.left() + guide.position as f32 * kx } else { pic.top() + guide.position as f32 * ky };
+            let seg = if guide.vertical { [pos2(c, area.min.y), pos2(c, area.max.y)] } else { [pos2(area.min.x, c), pos2(area.max.x, c)] };
             ui.painter().with_clip_rect(area).line_segment(seg, Stroke::new(1.0, GUIDE_COLOR));
+            guide_readout(app, ui, w, pos, guide);
         }
         if resp.drag_stopped() {
-            ui.data_mut(|d| d.remove::<NewGuide>(drag_id));
-            // egui ends a drag on Escape: that stop adds no guide (#580)
+            ui.data_mut(|d| d.remove::<(&'static str, GuideDrag)>(drag_id));
             if area.contains(pos) && !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                let position = if ng.vertical { ((pos.x - pic.min.x) / kx).round() } else { ((pos.y - pic.min.y) / ky).round() } as f64;
                 let v = view_mut(app, w);
-                v.guides.push(Guide { vertical: ng.vertical, position });
+                v.guides.push(guide);
                 v.show_guides = true;
             }
         }
@@ -540,7 +584,7 @@ pub fn rulers(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, top: Rect, le
 /// area) to remove it.
 pub fn guides(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area: Rect, pic: Rect, frame: (u32, u32)) {
     let v = view(app, w).clone();
-    if !v.show_guides || v.guides.is_empty() {
+    if !v.show_guides || v.guides.is_empty() || !pic.is_finite() || pic.width() <= 0.0 || pic.height() <= 0.0 {
         return;
     }
     let pfx = prefix(w);
@@ -568,29 +612,34 @@ pub fn guides(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area: Rect, p
         // egui ends a drag on Escape: that stop puts the guide back where it was (#580)
         let before_id = egui::Id::new((pfx, "guide-before-drag", i));
         if resp.drag_started_by(left) {
-            ui.data_mut(|d| d.insert_temp(before_id, g.position));
+            let start = ui.input(|i| i.pointer.press_origin()).unwrap_or(hit.center());
+            ui.data_mut(|d| d.insert_temp(before_id, GuideDrag { before: *g, guide: *g, last: start, alt: false }));
         }
-        if resp.drag_stopped_by(left) {
-            let before = ui.data_mut(|d| d.remove_temp::<f64>(before_id));
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                if let (Some(p0), Some(guide)) = (before, view_mut(app, w).guides.get_mut(i)) {
-                    guide.position = p0;
-                }
-                continue;
+        let Some(mut drag) = ui.data(|d| d.get_temp::<GuideDrag>(before_id)) else { continue };
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if let Some(guide) = view_mut(app, w).guides.get_mut(i) {
+                *guide = drag.before;
             }
+            ui.data_mut(|d| d.remove::<GuideDrag>(before_id));
+            continue;
         }
         if let Some(pos) = resp.interact_pointer_pos()
             && (resp.dragged_by(left) || resp.drag_stopped_by(left))
         {
-            if !area.contains(pos) {
-                // outside the picture area: dropping here removes the guide
-                if resp.drag_stopped() {
-                    remove = Some(i);
+            drag.update(pos, ui.input(|i| i.modifiers), pic, vec2(kx, ky));
+            ui.data_mut(|d| d.insert_temp(before_id, drag));
+            if area.contains(pos) {
+                let guide = drag.rounded();
+                if let Some(current) = view_mut(app, w).guides.get_mut(i) {
+                    *current = guide;
                 }
-            } else {
-                let position = if g.vertical { ((pos.x - pic.min.x) / kx).round() } else { ((pos.y - pic.min.y) / ky).round() } as f64;
-                view_mut(app, w).guides[i].position = position;
+                guide_readout(app, ui, w, pos, guide);
+            } else if resp.drag_stopped_by(left) {
+                remove = Some(i);
             }
+        }
+        if resp.drag_stopped_by(left) {
+            ui.data_mut(|d| d.remove::<GuideDrag>(before_id));
         }
     }
     if let Some(i) = remove {
