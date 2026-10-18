@@ -38,6 +38,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("app.language.indonesian", "Bahasa Indonesia", ["Edit", "Language"], None),
     uic!("app.language.italian", "Italiano", ["Edit", "Language"], None),
     uic!("app.language.korean", "한국어", ["Edit", "Language"], None),
+    uic!("app.language.polish", "Polski", ["Edit", "Language"], None),
     uic!("source.playback.toggle", "Source Play/Stop", [], None),
     uic!("source.playback.play", "Play Source", [], None),
     uic!("source.playback.stop", "Stop Source", [], None),
@@ -199,6 +200,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             | "app.language.indonesian"
             | "app.language.italian"
             | "app.language.korean"
+            | "app.language.polish"
     ) {
         // Japanese needs the craft-fonts (built with CRAFT_FONTS_DIR) or a font installed on the system
         if id == "app.language.japanese" && !crate::i18n::install_japanese_font(ctx) {
@@ -224,6 +226,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             "app.language.indonesian" => crate::i18n::Language::Id,
             "app.language.italian" => crate::i18n::Language::It,
             "app.language.korean" => crate::i18n::Language::Ko,
+            "app.language.polish" => crate::i18n::Language::Pl,
             _ => crate::i18n::Language::En,
         };
         // The preference is updated in memory before it is written, so a failed write (read-only
@@ -697,6 +700,7 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             "app.language.indonesian" => it.checked = Some(app.ui.language == crate::i18n::Language::Id),
             "app.language.italian" => it.checked = Some(app.ui.language == crate::i18n::Language::It),
             "app.language.korean" => it.checked = Some(app.ui.language == crate::i18n::Language::Ko),
+            "app.language.polish" => it.checked = Some(app.ui.language == crate::i18n::Language::Pl),
             _ => {}
         }
         if it.id.starts_with("view.") {
