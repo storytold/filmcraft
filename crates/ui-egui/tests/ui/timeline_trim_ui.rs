@@ -256,8 +256,8 @@ fn cursor_hit_test_and_press_agree_at_a_cut() {
 }
 
 /// Renders the hover bracket at the City_Night_Drive / Desert_Dunes cut to PNGs for visual
-/// review (needs a GPU): `cargo test -p filmcraft-ui-egui --test timeline_trim_ui -- --ignored
-/// hover_bracket_screenshots`. Yellow on City_Night_Drive's Out edge just left of the cut and on
+/// review (needs a GPU): `cargo test -p filmcraft-ui-egui --test ui -- --ignored
+/// timeline_trim_ui::hover_bracket_screenshots`. Yellow on City_Night_Drive's Out edge just left of the cut and on
 /// Desert_Dunes' In edge just right of it, red for the Ripple tool, both sides for the Rolling tool.
 #[test]
 #[ignore]
@@ -301,7 +301,7 @@ fn dragging_a_caption_edge_inward_trims_it() {
 
 /// #374: renders the Ambient_Score music clip mid-way through a trim of its In edge, with the
 /// mouse button still down, for visual review (needs a GPU): `cargo test -p filmcraft-ui-egui
-/// --test timeline_trim_ui -- --ignored trim_waveform_screenshots`. The waveform stays where it was
+/// --test ui -- --ignored timeline_trim_ui::trim_waveform_screenshots`. The waveform stays where it was
 /// and is cut off at the moving edge; it used to squeeze the whole clip's waveform into the shorter
 /// clip, so the sound under the pointer moved while dragging.
 #[test]

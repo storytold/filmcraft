@@ -11,7 +11,8 @@ use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
 
 /// The tests run one at a time: fault injection (`inject_job_panics`) is process-wide, so frame
-/// workers of a parallel test would consume the injected panics.
+/// workers of a parallel test would consume the injected panics. For the same reason this file is a
+/// test program of its own, not a module of `tests/ui` (`OWN_PROGRAM` in `tests/ui/main.rs`).
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn serial() -> std::sync::MutexGuard<'static, ()> {

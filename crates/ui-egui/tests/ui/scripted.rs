@@ -401,7 +401,7 @@ impl Driver {
 }
 
 /// Renders the Trim Monitor and the Keyboard Shortcuts dialog to PNGs for visual review (needs a
-/// GPU): `cargo test -p filmcraft-ui-egui --test scripted -- --ignored screenshots`.
+/// GPU): `cargo test -p filmcraft-ui-egui --test ui -- --ignored scripted::screenshots`.
 #[test]
 #[ignore]
 fn screenshots() {
