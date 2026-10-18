@@ -11,6 +11,20 @@ use crate::tables::{DST_MATRIX, TRANS_MATRIX};
 /// contiguous basis rows vectorise. Integer sums are exact (|sum| < 2^27), so the result equals the
 /// direct matrix product of 8.6.4.2 in any summation order.
 pub fn inverse_transform(c: &mut [i32], n: usize, dst: bool, max_x: usize, max_y: usize, bd_shift: u32) {
+    // Cache detection once per process; only this kernel gets a modern CPU variant.
+    // Pulp's safe token checks CPU/OS support before crossing the target-feature boundary.
+    #[cfg(target_arch = "x86_64")]
+    {
+        static SIMD: std::sync::OnceLock<Option<pulp::x86::V3>> = std::sync::OnceLock::new();
+        if let Some(simd) = SIMD.get_or_init(pulp::x86::V3::try_new) {
+            return simd.vectorize(|| inverse_transform_impl(c, n, dst, max_x, max_y, bd_shift));
+        }
+    }
+    inverse_transform_impl(c, n, dst, max_x, max_y, bd_shift);
+}
+
+#[inline(always)]
+fn inverse_transform_impl(c: &mut [i32], n: usize, dst: bool, max_x: usize, max_y: usize, bd_shift: u32) {
     match n {
         4 => inverse::<4>(c, dst, max_x, max_y, bd_shift),
         8 => inverse::<8>(c, false, max_x, max_y, bd_shift),
@@ -107,7 +121,7 @@ mod tests {
 
     #[test]
     fn matches_the_direct_matrix_product() {
-        // sparse and dense blocks, extreme coefficients, every size, DST, 8- and 10-bit shifts
+        // Sparse/dense blocks, extreme coefficients, every size, DST and 8/10/12-bit shifts.
         let mut rng = 0x2545_f491_4f6c_dd1du64;
         let mut next = move || {
             rng ^= rng << 13;
@@ -131,11 +145,14 @@ mod tests {
                         }
                     }
                 }
-                for bd_shift in [12u32, 10] {
+                for bd_shift in [12u32, 10, 8] {
                     let (mut a, mut b) = (c.clone(), c.clone());
                     inverse_transform(&mut a, n, dst, max_x, max_y, bd_shift);
                     reference(&mut b, n, dst, max_x, max_y, bd_shift);
                     assert_eq!(a, b, "n {n} dst {dst} max ({max_x}, {max_y}) shift {bd_shift}");
+                    let mut baseline = c.clone();
+                    inverse_transform_impl(&mut baseline, n, dst, max_x, max_y, bd_shift);
+                    assert_eq!(a, baseline, "runtime CPU path vs baseline, n {n} dst {dst}");
                 }
             }
         }

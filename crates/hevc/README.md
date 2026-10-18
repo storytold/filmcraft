@@ -140,6 +140,10 @@ decoder statistics per fixture.
 
 ## Performance
 
+The inverse transform chooses a CPU backend once per process using Pulp's safe runtime
+feature token. Both CPU paths use the same integer implementation; older CPUs keep the
+baseline path. See [measurements, old-CPU compatibility and limits](../../docs/performance.md#hevc-runtime-cpu-selection-1039).
+
 `cargo test --release -p filmcraft-hevc --test perf -- --ignored --nocapture` (bit-exactness is
 verified first). Apple M4 Pro (14 cores), measured while the machine was heavily shared (load
 average 50-100), so these are lower bounds:

@@ -4,6 +4,55 @@
 and `.md` (options and sections: [testing.md](testing.md) §5). Agents read live counters with
 `perf.stats` ([control-protocol.md](control-protocol.md)).
 
+## HEVC runtime CPU selection (#1039)
+
+Only `inverse_transform` selects a CPU backend. One `OnceLock` caches Pulp's safe
+`V3::try_new()` token on first use; compatible x64 CPUs run the same integer kernel
+through `vectorize`, while other CPUs/architectures retain the baseline kernel.
+No global target-CPU flag, second app executable or extra video buffer is needed.
+`pulp` 0.22.3 (MIT) already appears transitively in the workspace lockfile; this
+adds a direct x64-only dependency, with stable `std`/`x86-v3` features.
+
+Windows x64, i5-10400F, Rust 1.95.0 GNU, release/thin LTO, one decoder thread,
+2026-10-13, base `71438c627b5cbcfb550526c3971f4d0037733c5c`. Four paired rounds
+alternate execution order; medians of 12 decodes per cell. No other optimization
+is applied to the automatic variant. Hashing/oracle validation are outside the
+clock, and no builds run concurrently.
+
+| existing fixture | original baseline | automatic transform | less decode time |
+|---|---:|---:|---:|
+| 1080p Main, 60 frames | 0.9818 s | 0.9700 s | 1.2% |
+| 4K Main 10, 20 frames | 1.5714 s | 1.5430 s | 1.8% |
+
+The perf-test executable grows by 35,332 bytes (2,218,051 to 2,253,383); this
+is not a full-app size measurement. The new `OnceLock<Option<V3>>` is 8 bytes on
+this target; frame/scratch allocations are unchanged. Both compiled kernels stay
+in the file, with code-page residency managed by the OS; there is no manual unload.
+The existing matrix test checks runtime and forced baseline paths against the
+spec formula across sparse/dense blocks, extremes, DST, and 8/10/12-bit shifts.
+
+The same CPU patch was also tested on a physical Sandy Bridge i5-2400S (4 cores,
+4 GiB RAM), Linux Mint 22.3, on the pinned base above. Pulp V3 was unavailable and
+the automatic path correctly selected the baseline kernel. All 34 required
+compatibility steps passed, including 29 HEVC unit tests, 24 exact pixel-hash
+comparisons (12 fixtures at 1 and 4 threads), GUI import/playback, render,
+H.264 export/redecode and project save/reopen. The returned package's 529 files
+passed integrity checks. [Physical-machine report and raw diagnostic records](
+https://github.com/storytold/filmcraft/issues/1039#issuecomment-6154315865).
+
+This was a short compatibility run, with no original-build comparison. Sampled
+CPU package temperature was 42-54 degrees C; peak RSS of the 4K four-thread
+decode process was 987.7 MiB including retained output and pixel verification.
+These are whole-process diagnostics, not the patch's added RAM. Playback still
+dropped frames (about 42% at full resolution), and the full-resolution demo
+recorded audio underruns; the run does not attribute those limitations to this
+patch. Whole-app speedups, long-duration stability and other CPU families remain
+unmeasured.
+
+```sh
+cargo test --release -p filmcraft-hevc --test perf decode_cpu_benchmark -- --ignored --nocapture
+```
+
 ## Interactive builds and redraw work
 
 For interactive editing, build with `cargo build --release -p filmcraft --features whisper` and
