@@ -1786,6 +1786,17 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 cx.number(ui, tl!("   Size"), "background_size", 0.5, (0.0, 1000.0), 0, "");
                 cx.number(ui, tl!("   Corner Radius"), "background_radius", 0.5, (0.0, 1000.0), 0, "");
             }
+            if e.effect == graphic::TEXT_LAYER {
+                let (_, mut vui) = cx.row(ui, tl!("Glow"));
+                let glow = cx.check(&mut vui, "glow", "");
+                cx.color(&mut vui, "glow_color");
+                if glow {
+                    cx.number(ui, tl!("   Intensity"), "glow_intensity", 0.5, (0.0, 100.0), 0, " %");
+                    cx.number(ui, tl!("   Range"), "glow_range", 0.5, (0.0, 100.0), 0, " px");
+                    cx.number(ui, tl!("   X-offset"), "glow_offset_x", 0.5, (-500.0, 500.0), 0, " px");
+                    cx.number(ui, tl!("   Y-offset"), "glow_offset_y", 0.5, (-500.0, 500.0), 0, " px");
+                }
+            }
             let (_, mut vui) = cx.row(ui, tl!("Shadow"));
             let sh = cx.check(&mut vui, "shadow", "");
             cx.color(&mut vui, "shadow_color");

@@ -1,5 +1,5 @@
 //! Graphic clips: text and shape layers drawn as vectors straight into the output (no resampling),
-//! with fill, up to two strokes (outer / centre / inner), a background box and a drop shadow.
+//! with fill, up to two strokes (outer / centre / inner), a background box, glow and drop shadow.
 //! Each layer is rasterised into a tight premultiplied linear-light image that is cached while
 //! the layer and its transform stay the same.
 //!
@@ -337,15 +337,42 @@ pub fn raster_layer(spec: &LayerSpec, m: &Xform, cw: usize, ch: usize) -> Option
     if let Some((_, pad, _)) = ap.background {
         bb = union(bb, bbox_of(m, lb, pad + 1.0 / s));
     }
+    let content_bb = bb;
+    let glow = ap.glow.as_ref().filter(|g| g.intensity > 0.0 && g.range > 0.0 && g.color[3] > 0.0);
+    // Keep device-space blur work bounded even for extreme layer transforms.
+    let glow_range = glow.map_or(0.0, |g| (g.range * s).min(4096.0));
+    let glow_limit = cw.max(ch) as f32 + 4096.0;
+    let glow_dev = glow.map_or((0.0, 0.0), |g| {
+        ((m[0] * g.offset.0 + m[2] * g.offset.1).clamp(-glow_limit, glow_limit), (m[1] * g.offset.0 + m[3] * g.offset.1).clamp(-glow_limit, glow_limit))
+    });
+    if glow.is_some() {
+        let grow = glow_range + 3.0;
+        bb = union(
+            bb,
+            [content_bb[0] + glow_dev.0 - grow, content_bb[1] + glow_dev.1 - grow, content_bb[2] + glow_dev.0 + grow, content_bb[3] + glow_dev.1 + grow],
+        );
+    }
     let mut shadow_dev = (0.0f32, 0.0f32);
     if let Some(sh) = &ap.shadow {
         // the offset is in layer space, so it turns and scales with the layer
         shadow_dev = (m[0] * sh.offset.0 + m[2] * sh.offset.1, m[1] * sh.offset.0 + m[3] * sh.offset.1);
         let grow = (sh.size + sh.blur) * s + 2.0;
-        bb = union(bb, [bb[0] + shadow_dev.0 - grow, bb[1] + shadow_dev.1 - grow, bb[2] + shadow_dev.0 + grow, bb[3] + shadow_dev.1 + grow]);
+        bb = union(
+            bb,
+            [
+                content_bb[0] + shadow_dev.0 - grow,
+                content_bb[1] + shadow_dev.1 - grow,
+                content_bb[2] + shadow_dev.0 + grow,
+                content_bb[3] + shadow_dev.1 + grow,
+            ],
+        );
     }
     // clip to the canvas, keeping enough margin for blur to read content just outside it
-    let margin = ap.shadow.as_ref().map_or(2.0, |sh| (sh.blur + sh.size) * s + shadow_dev.0.abs().max(shadow_dev.1.abs()) + 2.0);
+    let margin = ap.shadow.as_ref().map_or(2.0, |sh| (sh.blur + sh.size) * s + shadow_dev.0.abs().max(shadow_dev.1.abs()) + 2.0).max(if glow.is_some() {
+        glow_range + glow_dev.0.abs().max(glow_dev.1.abs()) + 3.0
+    } else {
+        0.0
+    });
     let x0 = bb[0].floor().max(-margin) as i32;
     let y0 = bb[1].floor().max(-margin) as i32;
     let x1 = bb[2].ceil().min(cw as f32 + margin) as i32;
@@ -396,6 +423,21 @@ pub fn raster_layer(spec: &LayerSpec, m: &Xform, cw: usize, ch: usize) -> Option
         let u = mask::offset(&u, shadow_dev.0.round() as i32, shadow_dev.1.round() as i32);
         let u = mask::blur(&u, sh.blur * s / 3.0);
         over_mask(&mut px, &u, premul_linear(sh.color));
+    }
+    if let Some(g) = glow {
+        // Glow follows glyphs/strokes, never the paragraph/background rectangle. Two blur
+        // widths give a luminous inner halo with a gradual outer falloff, behind sharp text.
+        let mut seed = if ap.fill.is_some() { cover.clone() } else { Mask::new(w, h) };
+        for (sm, _) in &strokes {
+            seed.max_with(sm);
+        }
+        let seed = mask::offset(&seed, glow_dev.0.round() as i32, glow_dev.1.round() as i32);
+        let mut halo = mask::blur(&seed, glow_range / 3.0);
+        let core = mask::blur(&seed, glow_range / 9.0);
+        for (outer, inner) in halo.a.iter_mut().zip(&core.a) {
+            *outer = ((*outer * 0.75 + *inner * 0.25) * g.intensity * 3.0).clamp(0.0, 1.0);
+        }
+        over_mask(&mut px, &halo, premul_linear(g.color));
     }
     if let Some((bm, c)) = &bg {
         over_mask(&mut px, bm, premul_linear(*c));
@@ -652,6 +694,67 @@ mod tests {
 
     fn set(e: &mut EffectInstance, k: &str, v: ParamValue) {
         e.params.get_mut(k).unwrap_or_else(|| panic!("{k}")).value = v;
+    }
+
+    #[test]
+    fn glow_halo_is_coloured_offset_and_independent_of_shadow() {
+        let mut e = new_shape_layer(0, Vec2::new(100.0, 100.0), Vec2::new(40.0, 40.0), vec![]);
+        set(&mut e, "fill_color", ParamValue::Color([1.0; 4]));
+        set(&mut e, "shadow", ParamValue::Bool(true));
+        set(&mut e, "shadow_color", ParamValue::Color([0.0, 0.0, 1.0, 1.0]));
+        set(&mut e, "shadow_distance", ParamValue::Float(28.0));
+        set(&mut e, "shadow_blur", ParamValue::Float(0.0));
+        let draw = |e: &EffectInstance| {
+            let mut img = Image::new(200, 200);
+            render_graphic_layers(std::slice::from_ref(e), Tick::ZERO, (200, 200), &Affine::IDENTITY, &mut img);
+            img
+        };
+        let original = draw(&e);
+        set(&mut e, "glow", ParamValue::Bool(true));
+        set(&mut e, "glow_color", ParamValue::Color([1.0, 0.0, 0.0, 1.0]));
+        set(&mut e, "glow_intensity", ParamValue::Float(100.0));
+        set(&mut e, "glow_range", ParamValue::Float(18.0));
+        set(&mut e, "glow_offset_x", ParamValue::Float(12.0));
+        set(&mut e, "glow_offset_y", ParamValue::Float(-8.0));
+        let glowing = draw(&e);
+        let halo = glowing.get(136, 90);
+        assert!(halo[0] > 0.02 && halo[1] < 1e-6 && halo[2] < 1e-6, "red glow beyond the shape: {halo:?}");
+        assert_eq!(glowing.get(100, 100), original.get(100, 100), "sharp white fill stays intact");
+        assert_eq!(glowing.get(125, 135), original.get(125, 135), "the distant blue shadow remains independent");
+        assert_eq!(glowing.get(20, 20)[3], 0.0);
+        assert!(glowing.px.iter().all(|p| p.is_finite() && *p >= 0.0 && *p <= 1.0));
+        set(&mut e, "glow_intensity", ParamValue::Float(0.0));
+        assert_eq!(draw(&e).px, original.px, "zero intensity is neutral");
+    }
+
+    #[test]
+    fn glow_follows_glyphs_and_renders_in_the_tight_export_path() {
+        let mut e = new_text_layer("GLOW", Vec2::new(50.0, 110.0), 44.0);
+        set(&mut e, "box_width", ParamValue::Float(300.0));
+        set(&mut e, "box_height", ParamValue::Float(170.0));
+        let mut plain = Image::new(400, 300);
+        render_graphic_layers(std::slice::from_ref(&e), Tick::ZERO, (400, 300), &Affine::IDENTITY, &mut plain);
+        set(&mut e, "glow", ParamValue::Bool(true));
+        set(&mut e, "glow_color", ParamValue::Color([1.0, 0.75, 0.0, 1.0]));
+        set(&mut e, "glow_intensity", ParamValue::Float(80.0));
+        set(&mut e, "glow_range", ParamValue::Float(24.0));
+        let mut img = Image::new(400, 300);
+        render_graphic_layers(std::slice::from_ref(&e), Tick::ZERO, (400, 300), &Affine::IDENTITY, &mut img);
+        let halo = (0..img.h)
+            .flat_map(|y| (0..img.w).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let c = img.get(x, y);
+                plain.get(x, y)[3] == 0.0 && c[0] > 0.005 && c[1] > 0.0 && c[2] < 1e-6
+            })
+            .count();
+        assert!(halo > 100, "visible yellow halo outside the original glyphs: {halo}");
+        assert!(img.get(330, 260)[3] < 1e-6, "the empty paragraph box does not glow");
+        let (tight, x, y) = render_graphic_tight(&graphic_item(vec![e]), Tick::ZERO, (400, 300), &Affine::IDENTITY, 400, 300).unwrap();
+        for ty in 0..tight.h {
+            for tx in 0..tight.w {
+                assert_eq!(tight.get(tx, ty), img.get(tx + x as usize, ty + y as usize));
+            }
+        }
     }
 
     /// A 5 s graphic clip holding `layers` (canvas 400×300 at 25 fps).

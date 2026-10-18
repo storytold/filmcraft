@@ -3610,3 +3610,13 @@
 	Shows the version, community links and credits in a FilmCraft window.	Muestra la versión, los enlaces de la comunidad y los créditos en una ventana de FilmCraft.
 	Couldn't open your web browser	No se pudo abrir el navegador web
 	Open this address in your browser yourself:	Abre esta dirección tú mismo en el navegador:
+
+# Text layer glow controls
+	   Intensity	   Intensidad
+	Glow Intensity	Resplandor — Intensidad
+	   Range	   Rango
+	Glow Range	Resplandor — Rango
+	   X-offset	   Desplazamiento X
+	Glow X-offset	Resplandor — Desplazamiento X
+	   Y-offset	   Desplazamiento Y
+	Glow Y-offset	Resplandor — Desplazamiento Y
