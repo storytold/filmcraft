@@ -545,8 +545,9 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 };
                 if let Some(v) = draft_text(ui, &mut reg, "export.location", &shown, tl!("Cloud folder")) {
                     // typed path under CollabCraft root
-                    let trimmed = v.trim().trim_start_matches("CollabCraft").trim_start_matches('/').trim().to_string();
-                    ex.cloud_folder = trimmed;
+                    let rest = v.trim();
+                    let rest = rest.strip_prefix(tl!("CollabCraft")).or_else(|| rest.strip_prefix("CollabCraft")).unwrap_or(rest);
+                    ex.cloud_folder = rest.trim().trim_matches('/').trim().to_string();
                 }
             } else if let Some(v) = draft_text(ui, &mut reg, "export.location", &ex.location, tl!("Folder")) {
                 ex.location = v;
@@ -1247,11 +1248,22 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
     }
 }
 
+fn cloud_stage_dir() -> String {
+    #[cfg(target_arch = "wasm32")]
+    {
+        "/opfs/cloud-export".into()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        filmcraft_engine::temp_dir().join("filmcraft-cloud-export").to_string_lossy().into_owned()
+    }
+}
+
 /// Stage path for cloud uploads: under `/opfs/` on the web so write_file does not trigger a download.
 fn cloud_export_stage_path(ex: &ExportUi) -> String {
     let name = if ex.file_name.trim().is_empty() { "Export" } else { ex.file_name.trim() };
     let file = format!("{name}.{}", ex.settings.extension());
-    format!("/opfs/cloud-export/{file}")
+    format!("{}/{file}", cloud_stage_dir())
 }
 
 /// Start Export (or Quick Export). When destination is cloud, encode to a staging path and upload
@@ -1269,7 +1281,7 @@ fn start_export(app: &mut FilmcraftApp, quick: bool) {
         let path = if quick {
             let name =
                 std::path::Path::new(&app.ui.export.quick_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Export.mp4".into());
-            format!("/opfs/cloud-export/{name}")
+            format!("{}/{name}", cloud_stage_dir())
         } else {
             cloud_export_stage_path(&app.ui.export)
         };

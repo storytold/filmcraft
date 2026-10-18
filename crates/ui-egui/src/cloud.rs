@@ -148,7 +148,7 @@ const COPIES: [(&str, &str); 2] = [("fcpxml", "Save a Copy as Final Cut Pro XML 
 
 /// What each save in flight encoded: keyed by document uid so a concurrent save and export
 /// do not confuse each other's dirty-flag updates.
-pub type Sent = HashMap<u64, ()>;
+pub type Sent = HashMap<u64, u64>;
 
 /// Whether FilmCraft can open this cloud entry as a project or importable media.
 pub fn opens(entry: &Entry) -> bool {
@@ -216,13 +216,14 @@ impl CloudApp for FilmcraftApp {
             return PROJECT;
         }
         // Media Browser cloud browse, Import modal, export upload, and folder pick all list media.
-        if self.ui.media_browser.cloud
-            || self.pending_cloud_upload.is_some()
-            || matches!(self.cloud_page, Some(CloudPage::Import | CloudPage::PickExportFolder))
-        {
-            MEDIA
-        } else {
-            PROJECT
+        if self.pending_cloud_upload.is_some() {
+            return MEDIA;
+        }
+        match self.cloud_page {
+            Some(CloudPage::Open | CloudPage::SaveAs) => PROJECT,
+            Some(CloudPage::Import | CloudPage::PickExportFolder) => MEDIA,
+            None if self.ui.media_browser.cloud => MEDIA,
+            None => PROJECT,
         }
     }
 
@@ -240,9 +241,12 @@ impl CloudApp for FilmcraftApp {
     fn open_bytes(&mut self, name: &str, bytes: Vec<u8>) -> Result<Option<u64>, String> {
         let ext = std::path::Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
         // Media Browser cloud browse, Import modal, or a media file from a mixed list: into the project.
-        let as_media = self.ui.media_browser.cloud
-            || self.cloud_page == Some(CloudPage::Import)
-            || (ext != "fcproj" && !ext.is_empty() && filmcraft_media::is_importable(std::path::Path::new(name)));
+        let as_media = match self.cloud_page {
+            Some(CloudPage::Open | CloudPage::SaveAs) => false,
+            Some(CloudPage::Import) => true,
+            _ => self.ui.media_browser.cloud
+                || (ext != "fcproj" && !ext.is_empty() && filmcraft_media::is_importable(std::path::Path::new(name))),
+        };
         if as_media {
             let arc: std::sync::Arc<[u8]> = bytes.into();
             filmcraft_engine::commands::import_bytes(&mut self.session, name, arc, None).map_err(|e| e.to_string())?;
@@ -252,9 +256,15 @@ impl CloudApp for FilmcraftApp {
             }
             return Ok(None);
         }
-        // Project archive: decode in memory so wasm and desktop share one path (no std::fs).
-        filmcraft_engine::commands::open_project_bytes(&mut self.session, None, &bytes).map_err(|e| e.to_string())?;
-        self.session.path = None;
+        let stamp = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+        let leaf = std::path::Path::new(name).file_name().and_then(|n| n.to_str()).filter(|n| !n.is_empty()).unwrap_or("cloud.fcproj");
+        let stage = if cfg!(target_arch = "wasm32") {
+            format!("/opfs/cloud-open/{leaf}")
+        } else {
+            filmcraft_engine::temp_dir().join(format!("filmcraft-cloud-open-{stamp}-{leaf}")).to_string_lossy().into_owned()
+        };
+        self.session.services.write_file(&stage, &bytes).map_err(|e| format!("could not stage the project: {e}"))?;
+        self.session.execute("file.openCloud", json!({"path": stage})).map_err(|e| e.to_string())?;
         self.cloud_page = None;
         Ok(Some(1u64))
     }
@@ -266,6 +276,8 @@ impl CloudApp for FilmcraftApp {
         }
         let fmt = format_for(into)?;
         if fmt == "fcproj" {
+            let revision = self.session.revision;
+            self.cloud_sent.insert(_uid, revision);
             return Ok(filmcraft_engine::commands::project_bytes(&self.session));
         }
         // FCPXML / AAF: export through the host VFS (desktop disk or wasm in-memory), never std::fs.
@@ -285,10 +297,15 @@ impl CloudApp for FilmcraftApp {
         // replaced means the window already shows the new one; nothing to do here.
     }
 
-    fn mark_saved(&mut self, _uid: u64) {
-        // The engine does not have a "saved to cloud" concept, but we can clear the dirty flag
-        // if the project has not changed since we encoded it.
-        // Nothing to do: FilmCraft's dirty flag is managed by the autosave worker.
+    fn mark_saved(&mut self, uid: u64) {
+        let Some(revision) = self.cloud_sent.remove(&uid) else { return };
+        if self.session.revision == revision {
+            self.session.saved_revision = revision;
+        }
+    }
+
+    fn drop_pending(&mut self, uid: u64) {
+        self.cloud_sent.remove(&uid);
     }
 
     fn sharing(&mut self) -> &mut craft_ui::share::ShareDialog {
@@ -379,7 +396,13 @@ pub fn upload_export(app: &mut FilmcraftApp, folder: &str, name: &str, bytes: Ve
         return Err(UNAVAILABLE.to_owned());
     }
     app.pending_cloud_upload = Some(bytes);
-    save_as(app, folder, name).map(|_| ())
+    match save_as(app, folder, name) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            app.pending_cloud_upload = None;
+            Err(e)
+        }
+    }
 }
 
 /// Drive the Share dialog every frame (capability poll + modal) and finish saves it asked for.

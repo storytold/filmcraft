@@ -426,6 +426,8 @@ pub struct FilmcraftApp {
     pub share_save_prior_etag: Option<Option<String>>,
     /// Local encode in flight whose bytes should upload to CollabCraft when the job finishes.
     pub pending_cloud_export: Option<PendingCloudExport>,
+    /// Revision encoded for each in-flight cloud save (`CloudApp::encode` → `mark_saved`).
+    pub(crate) cloud_sent: cloud::Sent,
 }
 
 /// Export → Cloud storage: wait for `job` to finish writing `path`, then upload.
@@ -663,6 +665,7 @@ impl FilmcraftApp {
             pending_cloud_upload: None,
             share_save_prior_etag: None,
             pending_cloud_export: None,
+            cloud_sent: cloud::Sent::new(),
         }
     }
 

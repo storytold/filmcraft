@@ -261,7 +261,7 @@ fn open_invite(app: &mut FilmcraftApp, invitation: craft_cloud_client::invite::I
                 log::warn!("invite relay join failed: {e}");
             }
         }
-        Ok(None) => app.status(format!("Shared \"{name}\" needs a choice before it opens")),
+        Ok(None) => app.status(format!("Imported shared media \"{name}\"")),
         Err(e) => {
             log::error!("invite open failed: {e}");
             craft_cloud_client::invite::refuse(&format!("The shared project could not be opened. {e}"));

@@ -47,7 +47,26 @@ pub fn base_url() -> Option<String> {
         .into_iter()
         .filter_map(|key| std::env::var(key).ok())
         .map(|value| value.trim().trim_end_matches('/').to_owned())
-        .find(|value| !value.is_empty())
+        .find(|value| !value.is_empty() && allows_service_url(value))
+}
+
+/// HTTPS everywhere, or plain HTTP only to the exact loopback hosts.
+///
+/// Prefix checks must not accept `localhost.evil.com`. Bearer tokens are attached
+/// after this gate, so a mis-set `http://` service URL cannot leak the session.
+fn allows_service_url(url: &str) -> bool {
+    if url.starts_with("https://") {
+        return true;
+    }
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let host = rest.split(['/', ':', '?', '#']).next().unwrap_or("");
+    host == "localhost" || host == "127.0.0.1" || host == "[::1]"
+}
+
+fn allows_browser_url(url: &str) -> bool {
+    allows_service_url(url)
 }
 
 /// A handle to the worker, as the pages see it.
@@ -356,6 +375,12 @@ fn forget_token() {
 // ---------------------------------------------------------------- browser
 
 fn open_browser(url: &str) -> std::io::Result<()> {
+    if !allows_browser_url(url) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "only https URLs (or http://localhost) are opened",
+        ));
+    }
     #[cfg(target_os = "windows")]
     {
         // `cmd` splits on `&` before anything else; percent-encode `"` for safety.
@@ -382,6 +407,17 @@ mod token_tests {
 
     fn tmp_path(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("fc-cloud-test-{label}-{}.json", std::process::id()))
+    }
+
+    #[test]
+    fn service_url_requires_https_or_loopback() {
+        assert!(allows_service_url("https://craft.example.com"));
+        assert!(allows_service_url("http://localhost"));
+        assert!(allows_service_url("http://127.0.0.1:8080/api"));
+        assert!(!allows_service_url("http://craft.example.com"));
+        assert!(!allows_service_url("http://localhost.evil.com"));
+        assert!(!allows_service_url("file:///etc/passwd"));
+        assert!(!allows_browser_url("file:///tmp/x"));
     }
 
     #[test]

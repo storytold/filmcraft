@@ -1516,6 +1516,10 @@ fn build() -> Vec<CommandSpec> {
             let path = str_p(p, "path").ok_or_else(|| bad("file.open", "need `path`"))?.to_string();
             open_project(s, &path)
         }),
+        cmd!("file.openCloud", "Open Cloud Project", [], None, r#"{"path":str}"#, always, |s, p| {
+            let path = str_p(p, "path").ok_or_else(|| bad("file.openCloud", "need `path`"))?;
+            open_project_cloud(s, path)
+        }),
         cmd!("file.recover", "Recover Unsaved Changes…", ["File"], None, r#"{"id":str?}"#, has_recovery, |s, p| recover(s, str_p(p, "id"))),
         cmd!("file.discardRecovery", "Discard Unsaved Changes", [], None, r#"{"id":str?,"all":bool?}"#, has_recovery, |s, p| {
             let all = bool_p(p, "all").unwrap_or(false);
@@ -4400,6 +4404,12 @@ fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Opti
 fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     open_project_bytes(s, Some(path), &bytes)
+}
+
+/// Open a project staged on the host VFS (cloud download). Does not add a disk path or recents entry.
+fn open_project_cloud(s: &mut Session, path: &str) -> Result<Value> {
+    let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    open_project_bytes(s, None, &bytes)
 }
 
 /// Open a project from bytes already in memory (CollabCraft / wasm: no temp file).
