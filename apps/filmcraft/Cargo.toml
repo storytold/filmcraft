@@ -56,6 +56,10 @@ winit = { version = "0.30", default-features = false }
 # Settings ▸ Appearance ▸ Sync with system: the XDG desktop portal's colour scheme. The zbus the
 # portal file dialogs (rfd) and accesskit already use.
 zbus = "5.19"
+# winit 0.30 has file drops on X11, but not Wayland. Prefer a usable X11/XWayland server.
+winit = { version = "0.30", default-features = false, features = ["x11", "wayland", "rwh_06"] }
+# Safe Rust X11 connection: probe availability and query the pointer during a file drag.
+x11rb = "0.13"
 
 # Icon + VERSIONINFO for filmcraft.exe (build.rs); only needed when building on Windows.
 [target.'cfg(windows)'.build-dependencies]

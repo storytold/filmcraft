@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: ROADMAP's "Where we are lacking" re-measured against Premiere Pro 26.5.2 and the open issue list) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** minor (G5: VA-API open-GOP seek fix; G9: Linux file-manager drops) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -106,7 +106,8 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   D3D11: H.264, HEVC, VP9, AV1) and Linux (VA-API and NVDEC: H.264, HEVC); hardware encode
   VideoToolbox H.264 / HEVC 8-bit, NVENC H.264 (Windows, Linux) and HEVC incl. Main 10 HDR
   (Windows); GPU compositing, blend modes, 34 effect ids incl. Lumetri basic / creative / vignette,
-  GPU export rendering (#421).
+  GPU export rendering (#421). VA-API H.264 open-GOP seeks retain hardware decoding on AMD/Mesa
+  using decoded references for concealment, with bit-exact output from the seek point onward.
 - **Missing:** zero-copy decoded frames into wgpu (every frame is read back to the CPU and
   re-uploaded); VideoToolbox Main 10 / HDR HEVC encode and B-frames; ProRes hardware decode /
   encode on Apple silicon; Intel Quick Sync and AMD AMF encoders (and their 4:2:2 decode);
@@ -170,10 +171,14 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 - **Have:** files given at launch (terminal, Open With, file associations) open whatever the case
   of `.fcproj` and are made absolute, and arguments that are not Unicode no longer stop the start;
-  `filmcraft-cli import` stores no Windows `\\?\` paths (#850).
+  `filmcraft-cli import` stores no Windows `\\?\` paths (#850). File-manager drops into Source and
+  Timeline were checked with native XDND events in an isolated X11 window, including spaces and
+  Unicode in filenames, linked sound and undo/redo. The desktop selects a usable X11/XWayland
+  connection and queries the cursor during file drags.
 - **Missing:** routine runtime testing off macOS. Linux playback stutter (#617), Wayland title
   bar (#433), case-sensitive extensions (#593), "Report an issue" link (#642), Windows bins cannot
   be left (#587), Sequence Settings won't open on Windows (#586, #351), old hardware (#491).
+  Native Wayland file drops remain unsupported by winit 0.30; without XWayland use Import….
 - **Estimate:** 50–90 h (overlaps G4's CI work).
 
 ## G10. Container and codec gaps on import
@@ -313,6 +318,8 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-14 | minor | G5: fixed AMD/Mesa VA-API open-GOP seek fallback; reference-metadata regression and stricter bit-exact hardware checks |
+| 2026-10-14 | minor | G9: native X11 file drops into Source and Timeline verified; Linux XWayland fallback and native Wayland limitation recorded |
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |

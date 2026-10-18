@@ -749,11 +749,13 @@ fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     }
     // OS files dropped on an empty Timeline: import already happened; create a sequence from the first item
-    if let Some((items, p)) = app.pending_timeline_drop.clone()
+    if app.session.prefs.timeline.drop_import_to_timeline
+        && let Some((items, p)) = app.pending_file_drop.clone()
         && rect.contains(p)
+        && app.timeline_drop_target(ui.ctx(), p)
         && let Some((first, rest)) = items.split_first()
     {
-        app.pending_timeline_drop = None;
+        app.pending_file_drop = None;
         if let Err(e) = app.session.execute("file.newSequence", json!({"fromItem": first.0})) {
             app.ui.status = e.to_string();
         } else {
@@ -2713,7 +2715,8 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     match resp.interact_pointer_pos() {
                         Some(end) if !ctx.input(|i| i.key_pressed(egui::Key::Escape)) => {
                             let ids: Vec<u64> = marquee_clips(seq, layout, Rect::from_two_pos(start, end)).iter().map(|c| c.0).collect();
-                            Some(app.session.execute("timeline.select", json!({"clips": ids, "add": add, "linked": !individual})))
+                            let linked = !individual && app.session.state.linked_selection;
+                            Some(app.session.execute("timeline.select", json!({"clips": ids, "add": add, "linked": linked})))
                         }
                         _ => None,
                     }
@@ -3044,11 +3047,12 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         }
     }
     // ---- OS file drops imported with "drop imports to the timeline": placed at the drop point, one after another
-    if let Some((items, p)) = app.pending_timeline_drop.clone()
+    if app.session.prefs.timeline.drop_import_to_timeline
+        && let Some((items, p)) = app.pending_file_drop.clone()
         && layout.content.contains(p)
         && app.timeline_drop_target(ui.ctx(), p)
     {
-        app.pending_timeline_drop = None;
+        app.pending_file_drop = None;
         let row = layout.row_at(p.y).cloned().or_else(|| layout.rows.iter().find(|r| r.kind == TrackKind::Video).cloned());
         if let Some(row) = row {
             let (vt, at) = match row.kind {
@@ -3065,7 +3069,8 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         }
     }
     // preview of OS files being dragged over the Timeline: a placeholder where the drop would start
-    if let Some((count, p)) = app.file_drag_hover
+    if app.session.prefs.timeline.drop_import_to_timeline
+        && let Some((count, p)) = app.file_drag_hover
         && layout.content.contains(p)
         && app.timeline_drop_target(ui.ctx(), p)
     {

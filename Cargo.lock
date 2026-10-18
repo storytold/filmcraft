@@ -1707,6 +1707,7 @@ dependencies = [
  "sys-locale",
  "winit",
  "winresource",
+ "x11rb",
  "zbus",
 ]
 

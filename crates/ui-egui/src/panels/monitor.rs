@@ -28,6 +28,27 @@ pub enum Which {
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
+    if which == Which::Source {
+        if let Some((items, pos)) = app.pending_file_drop.as_ref()
+            && rect.contains(*pos)
+            && app.panel_drop_target(&ctx, *pos, crate::dock::PanelKind::Source)
+            && let Some(item) = items.first().copied()
+        {
+            app.pending_file_drop = None;
+            app.stop_source();
+            if let Err(e) = app.session.execute("source.open", json!({"item": item.0})) {
+                app.ui.status = e.to_string();
+            }
+        }
+        if let Some((_, pos)) = app.file_drag_hover
+            && rect.contains(pos)
+            && app.panel_drop_target(&ctx, pos, crate::dock::PanelKind::Source)
+        {
+            let preview = rect.shrink(2.0);
+            ui.painter().rect_stroke(preview, 3.0, Stroke::new(2.0, t.accent), StrokeKind::Inside);
+            app.auto.add("source.fileDropPreview", preview, "Open in Source Monitor");
+        }
+    }
     let stacked_controls = rect.width() < 540.0;
     let separate_source_drag = which == Which::Source && stacked_controls && rect.width() < 310.0;
     let source_drag_h = if separate_source_drag { 26.0 } else { 0.0 };

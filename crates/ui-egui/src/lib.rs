@@ -123,7 +123,7 @@ pub struct AudioDevices {
 #[derive(Default)]
 pub struct HostHooks {
     pub pick_files: Option<Box<dyn FnMut(&[&str]) -> Vec<String>>>,
-    /// The cursor in physical screen pixels. Where the windowing layer reports no pointer while files are dragged in from the OS (Windows), a drop is placed where this says it landed.
+    /// The cursor in physical screen pixels. Where the windowing layer reports no pointer while files are dragged in from the OS (Windows and X11), a drop is placed where this says it landed.
     pub cursor_screen_position: Option<Box<dyn Fn() -> Option<(i32, i32)>>>,
     pub pick_save: Option<Box<dyn FnMut(&str) -> Option<String>>>,
     pub pick_open_project: Option<Box<dyn FnMut() -> Option<String>>>,
@@ -349,9 +349,9 @@ pub struct FilmcraftApp {
     /// The sequence whose view `ui.timeline` holds, and that view as it was last exchanged with
     /// `session.state.timeline_views` (see `sync_timeline_view`).
     timeline_view_of: Option<filmcraft_engine::project::ItemId>,
-    /// Items imported by an OS file drop, to place on the Timeline at the drop point this frame.
-    pending_timeline_drop: Option<(Vec<filmcraft_engine::project::ItemId>, egui::Pos2)>,
-    /// Files being dragged over the window from the OS (count, pointer): the Timeline previews where they would land.
+    /// Items imported by an OS file drop, to open in Source or place on Timeline this frame.
+    pending_file_drop: Option<(Vec<filmcraft_engine::project::ItemId>, egui::Pos2)>,
+    /// Files dragged from the OS (count, pointer): Source and Timeline draw destination previews.
     file_drag_hover: Option<(usize, egui::Pos2)>,
     timeline_view_last: Option<filmcraft_engine::project::SequenceView>,
     pub fps: f32,
@@ -581,7 +581,7 @@ impl FilmcraftApp {
             integrated_titlebar: false,
             last_timeline_width: 1000.0,
             timeline_view_of: None,
-            pending_timeline_drop: None,
+            pending_file_drop: None,
             file_drag_hover: None,
             timeline_view_last: None,
             fps: 60.0,
@@ -1377,43 +1377,58 @@ impl FilmcraftApp {
         })
     }
 
-    /// Import dropped files. With Timeline ▸ drop imports to the timeline, the new items are also
-    /// queued to be placed at the pointer (see `timeline::interact`).
+    /// Import dropped files, then let the panel under the pointer open or place the imported items.
     fn handle_drops(&mut self, ctx: &egui::Context) {
-        // While files hover, the OS sends no cursor events: poll the cursor each frame to draw the Timeline preview.
+        // While files hover, the OS may send no cursor events: poll the cursor for drop previews.
         let hovering = ctx.input(|i| i.raw.hovered_files.len());
-        self.file_drag_hover = if hovering > 0 && self.session.prefs.timeline.drop_import_to_timeline {
+        self.file_drag_hover = if hovering > 0 {
             ctx.request_repaint();
             self.drop_pointer(ctx).map(|p| (hovering, p))
         } else {
             None
         };
-        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        let Some(dropped) = ctx.input(|i| (i.raw.dropped_files.len() <= 1024).then(|| i.raw.dropped_files.clone())) else {
+            self.ui.status = "Drop at most 1024 files at a time.".into();
+            return;
+        };
+        if dropped.is_empty() {
+            return;
+        }
         let mut paths = Vec::new();
+        let mut errors = Vec::new();
         for f in dropped {
             let p = f.path();
-            if p.exists() {
-                paths.push(p.to_string_lossy().to_string());
+            match p.to_str().filter(|s| !s.is_empty()) {
+                Some(path) => paths.push(path.to_string()),
+                None => errors.push(format!("Cannot import dropped path {p:?}: the path must be nonempty UTF-8.")),
             }
         }
         if !paths.is_empty() {
             let pointer = self.drop_pointer(ctx);
-            let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
-            if let Ok(v) = imported
-                && let Some(pos) = pointer
-                && self.session.prefs.timeline.drop_import_to_timeline
-            {
-                let items: Vec<filmcraft_engine::project::ItemId> =
-                    v["items"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect()).unwrap_or_default();
-                if !items.is_empty() {
-                    self.pending_timeline_drop = Some((items, pos));
+            match self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0})) {
+                Ok(v) => {
+                    if let Some(errs) = v.get("errors").and_then(Value::as_array) {
+                        errors.extend(errs.iter().filter_map(Value::as_str).map(str::to_string));
+                    }
+                    let items: Vec<filmcraft_engine::project::ItemId> = v
+                        .get("items")
+                        .and_then(Value::as_array)
+                        .map(|a| a.iter().filter_map(Value::as_u64).map(filmcraft_engine::project::ItemId).collect())
+                        .unwrap_or_default();
+                    if !items.is_empty()
+                        && let Some(pos) = pointer
+                    {
+                        self.pending_file_drop = Some((items, pos));
+                    }
                 }
+                Err(e) => errors.push(e.to_string()),
             }
         }
+        self.ui.status = errors.join("; ");
     }
 
     /// Where files dragged in from the OS are over the window. The OS reports no cursor motion during such a drag
-    /// (winit, Windows), so ask it through the host hook, else use the last pointer position egui saw.
+    /// (winit on Windows and X11), so ask it through the host hook, else use egui's last pointer position.
     fn drop_pointer(&self, ctx: &egui::Context) -> Option<egui::Pos2> {
         let os_pointer = self
             .hooks
@@ -1789,8 +1804,8 @@ impl FilmcraftApp {
             state::Mode::Import => panels::import_mode::show(self, ui, body),
             state::Mode::Export => panels::export_mode::show(self, ui, body),
         }
-        // the Timeline has had its chance to place a file drop this frame; anything left stays a bin import
-        self.pending_timeline_drop = None;
+        // Visible panels have handled the drop; anything left stays a bin import.
+        self.pending_file_drop = None;
         panels::dialogs::show(self, &ctx);
         if !self.ui.show_status_bar {
             // no bar to draw the job in, but a finished preview render still plays
