@@ -78,6 +78,39 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   ends it with an error, since a hardware stream cannot be finished in software. The same session,
   ring and input path encode H.265, see [Hardware H.265 (HEVC) encoding (Windows,
   NVENC)](#hardware-h265-hevc-encoding-windows-nvenc).
+- **Windows: Media Foundation hardware H.264 and H.265 (HEVC) encoding** (`media_foundation/encode.rs`),
+  8-bit SDR 4:2:0 for Export, registered *behind* NVENC so an NVIDIA machine keeps NVENC. This is
+  the vendor-neutral Windows encoder: Intel, AMD and Qualcomm all go through it. Two things make a
+  vendor's encoder MFT unusual, and both are handled in `media_foundation/mft.rs`:
+  - they are **asynchronous** MFTs, and an asynchronous MFT answers `MF_E_TRANSFORM_ASYNC_LOCKED`
+    (`0xC00D6D77`) to *every* call until the caller sets `MF_TRANSFORM_ASYNC_UNLOCK`, so activation
+    unlocks it before anything else. The HRESULT's message text does not mention the cause;
+  - they do **not** declare their media types up front, so `MFTEnumEx` filtered on the input subtype
+    returns none of them. Candidates come from an unfiltered hardware enumeration and each is asked
+    for the output type it actually takes (an encoder refuses an input type before it has an output
+    one, so the output type is set first).
+  A transform with `MFT_OUTPUT_STREAM_PROVIDES_SAMPLES` set must be given an output descriptor with
+  no sample attached (`cbSize` is then 0); attaching one, as is natural, makes `ProcessOutput` fail
+  forever while the MFT encodes correctly. **`IMFMediaBuffer::Lock` reports the buffer's size, not the
+  sample's**: an encoder MFT recycles one buffer across every picture it writes, and only
+  `GetCurrentLength` bytes of it are this picture. Reading what `Lock` returns puts the driver's
+  leftovers in the file — measured on a Snapdragon X, the first keyframe of a session carried 9 kB of
+  stale bytes out to offset 262 kB, which showed up as a hardware export coming out *larger* than the
+  software one at the same bitrate. Compare the two sizes when something looks wrong here.
+  An asynchronous MFT also answers "not yet" for a few
+  milliseconds after a picture goes in, so `MfEncoder::wait` asks again until it has been quiet for a
+  moment — bounded by a budget *and* by the quiet period. `mfcaps` lists the machine's encoder MFTs,
+  which is the first thing to ask on a machine that should have an encoder and does not.
+  H.264 is opt-in (Export ▸ Hardware encoding) exactly as with NVENC; H.265, which has no software
+  encoder, fails with the reason and its availability probe makes the format offered wherever either
+  encoder opens a session. It declines CRF, two-pass, HDR, MXF, interlaced output, non-square pixels
+  in H.265 and odd picture sizes. **An encoder that runs a fixed number of pictures behind is taken**:
+  the delay is measured in pictures and written as an edit list (`VideoEncoder::media_start`, the
+  same field NVENC uses for its B-frame delay), because the pictures are in order and complete and
+  the file just wants the video to start that far in. A delay that *changes* is reordering, and that
+  is an error naming the encoder rather than a file with wrong timestamps. Verified on a Snapdragon X
+  (Adreno X1-85, Windows 11 ARM64, driver `31.0.137.0`) with `QCOM Hardware Encoder - H264` and
+  `- HEVC`.
 - **Linux: NVDEC, H.264 (`avcC`) and HEVC (`hvcC`)** on NVIDIA's proprietary driver (`nvdec/`): H.264
   8-bit and HEVC 8- / 10-bit, 4:2:0 progressive. `libnvcuvid.so.1` and `libcuda.so.1` are loaded at
   run time; without them (or without a device) nothing is registered. NVIDIA's own parser takes the
@@ -344,8 +377,9 @@ Zero-copy upload of decoded pictures into wgpu textures (`CVPixelBuffer`s on mac
 textures on Windows); B-frames in the VideoToolbox encoders and 10-bit / HDR HEVC (Main 10) in
 VideoToolbox; VP9 and AV1 through VA-API (Linux), and VA-API encoding; field-coded H.264; 4:4:4 and 4:2:2 encoding with NVENC, HDR
 H.264 with NVENC (HDR H.264 stays with the software encoder), HDR10 MaxCLL / MaxFALL measured from
-the pictures (they are written as 0, unknown), AV1 with NVENC, H.265 with the other Windows vendors and on Linux, and encoders
-from other vendors on Windows (through Media Foundation); VP9 / AV1 4:4:4 and 12-bit on Windows.
+the pictures (they are written as 0, unknown), AV1 with NVENC, H.265 on Linux, 10-bit / HDR through
+Media Foundation and B-frames in it, and AV1 through Media Foundation (FilmCraft has no AV1 encoder
+plumbing at all, though the MFTs exist); VP9 / AV1 4:4:4 and 12-bit on Windows.
 
 ### Linux NVENC sources and limits
 

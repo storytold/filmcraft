@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: ROADMAP's "Where we are lacking" re-measured against Premiere Pro 26.5.2 and the open issue list) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-17 · **Last updated:** 2026-10-17 · **Change:** major (Windows H.264 / HEVC hardware export through Media Foundation: vendor-neutral, so Intel / AMD / Qualcomm GPUs encode instead of falling back to the CPU; H.265 offered on Linux through NVENC) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -105,12 +105,21 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Have:** hardware decode on macOS (VideoToolbox H.264 / HEVC), Windows (Media Foundation /
   D3D11: H.264, HEVC, VP9, AV1) and Linux (VA-API and NVDEC: H.264, HEVC); hardware encode
   VideoToolbox H.264 / HEVC 8-bit, NVENC H.264 (Windows, Linux) and HEVC incl. Main 10 HDR
-  (Windows); GPU compositing, blend modes, 34 effect ids incl. Lumetri basic / creative / vignette,
-  GPU export rendering (#421).
+  (Windows); Media Foundation H.264 / HEVC 8-bit on Windows behind NVENC (#1575), which is the
+  vendor-neutral path for Intel, AMD and Qualcomm (verified on a Snapdragon X / Adreno X1-85);
+  GPU compositing, blend modes, 34 effect ids incl. Lumetri basic / creative / vignette,
+  GPU export rendering (#421). GPU export read-back is bounded, so an export with
+  `gpuRendering: auto` finishes even where the GPU does not answer a map in time (#1575).
 - **Missing:** zero-copy decoded frames into wgpu (every frame is read back to the CPU and
   re-uploaded); VideoToolbox Main 10 / HDR HEVC encode and B-frames; ProRes hardware decode /
-  encode on Apple silicon; Intel Quick Sync and AMD AMF encoders (and their 4:2:2 decode);
-  VA-API VP9 / AV1 and VA-API encode; HEVC encode on Linux; AV1 hardware encode; ~48 of Premiere's
+  encode on Apple silicon; 10-bit / HDR in the Media Foundation encoder (a fixed picture delay is taken and written as an
+  edit list; only a delay that changes, which is reordering, is declined);
+  VA-API VP9 / AV1 and VA-API encode; HEVC encode on Linux; AV1 hardware encode — there is no AV1
+  encoder plumbing at all. The MFTs do exist and open (`QCOM Hardware Encoder - AV1` on a Snapdragon
+  X, Adreno X1-85, driver `31.0.137.0`, takes NV12 and writes pictures), and an earlier note here
+  blamed the `av01` / `av1C` writer on its output "not being a whole number of low-overhead OBUs".
+  That was wrong: the MFT was fine and the reader was wrong, see the sample-length note in
+  `crates/platform/README.md`; ~48 of Premiere's
   ~82 accelerated effects (keys, masks, Lumetri curves / wheels / HSL, distortions, transitions);
   external video I/O (DeckLink / AJA, Mercury Transmit), control surfaces (EUCON / Mackie);
   a CPU fallback adapter renders everything on the CPU (#632).

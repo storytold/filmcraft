@@ -472,7 +472,15 @@ impl FilmcraftApp {
                 let max_texture = rs.device.limits().max_texture_dimension_2d;
                 self.gpu = Some(GpuState { render_state: rs, compositor, texture: None, last_key: None, size: (0, 0), last_ms: 0.0, broken, max_texture });
             }
-            _ => log::error!("GPU compositor failed to initialise; compositing on the CPU"),
+            _ => {
+                // A driver that cannot compile the compositor's shaders (the DX12 path on some
+                // Adreno drivers) is not "no GPU": the window is drawn by one. Say so in the UI as
+                // well as the log, or the preview simply renders on the CPU and looks like the app
+                // never saw the graphics card.
+                let info = rs.adapter.get_info();
+                log::error!("GPU compositor failed to initialise on {:?} ({:?}, {:?}); compositing on the CPU", info.name, info.backend, info.driver);
+                self.ui.status = tl!("GPU acceleration is unavailable; preview renders on the CPU").to_string();
+            }
         }
     }
 

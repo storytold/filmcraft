@@ -1028,8 +1028,7 @@ impl GpuCompositor {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        wait_mapped(&self.device)?;
-        rx.recv().ok()?.ok()?;
+        wait_mapped(&self.device, &rx)?;
         let data = slice.get_mapped_range().ok()?;
         let mut out = Vec::with_capacity((w * h * 4) as usize);
         for y in 0..h {
@@ -1091,8 +1090,7 @@ impl GpuCompositor {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        wait_mapped(&self.device)?;
-        rx.recv().ok()?.ok()?;
+        wait_mapped(&self.device, &rx)?;
         export_renderer::timing::add_map_wait(t.elapsed());
         let t = std::time::Instant::now();
         let (width, row) = (w as usize, row as usize);
@@ -1134,8 +1132,7 @@ impl GpuCompositor {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        wait_mapped(&self.device)?;
-        rx.recv().ok()?.ok()?;
+        wait_mapped(&self.device, &rx)?;
         let data = slice.get_mapped_range().ok()?;
         let mut out = Vec::with_capacity((w * h * 4) as usize);
         for y in 0..*h {
@@ -1147,13 +1144,26 @@ impl GpuCompositor {
     }
 }
 
-/// Wait for the last submission and its `map_async` callbacks.
+/// How long a GPU read-back waits, for the poll and then for the callback. Eight seconds is far
+/// longer than a healthy map.
+const MAP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// Wait for the last submission and take its `map_async` callback, within a bound.
 ///
-/// Export readback used `PollType::wait_indefinitely`. On radv that can never return after a
-/// failed hardware-encode attempt (#1058), so the export never finishes. Eight seconds is longer
-/// than a healthy map; a timeout returns `None` and the CPU renderer takes the frame.
-fn wait_mapped(device: &wgpu::Device) -> Option<()> {
-    device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_secs(8)) }).ok().map(|_| ())
+/// Export readback used `PollType::wait_indefinitely`. On radv that can never return after a failed
+/// hardware-encode attempt (#1058), so the export never finishes. Giving the poll an eight second
+/// timeout is not a bound on its own, though, and that is why an export could still stop for good: a
+/// fence that has not signalled inside the timeout is reported to wgpu as `Ok(false)`, and wgpu
+/// deliberately ignores it (`Device::maintain`: "we do not care if the wait succeeded or not, and
+/// the `Ok(bool)` variant is ignored"), so `poll` returns `Ok(…)` and a GPU that has not finished
+/// looks exactly like one that has. The callback then never arrives, and the blocking `recv` that
+/// follows parks the export thread forever — no progress, no CPU, no error.
+///
+/// So the callback is taken with a timeout of our own. Anything late is `None`: the CPU renderer
+/// takes the frame, which is what the poll's timeout was always meant to arrange.
+fn wait_mapped<T>(device: &wgpu::Device, rx: &std::sync::mpsc::Receiver<Result<(), T>>) -> Option<()> {
+    device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(MAP_TIMEOUT) }).ok()?;
+    rx.recv_timeout(MAP_TIMEOUT).ok()?.ok()
 }
 
 /// Shader source: kind (0 RGBA8 sRGB, 1 linear premultiplied RGBA, 2 YUV), sampling scales, dimensions, color.

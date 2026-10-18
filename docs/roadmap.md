@@ -1,6 +1,6 @@
 # Roadmap detail
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: milestones moved from ROADMAP.md, Current focus rewritten from the 2026-10-10 re-measure, beta milestones added) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-17 · **Last updated:** 2026-10-17 · **Change:** major (Windows H.264 / HEVC hardware export through Media Foundation: vendor-neutral, so Intel / AMD / Qualcomm GPUs encode instead of falling back to the CPU; H.265 offered on Linux through NVENC) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Forward-looking plan: milestones with status, the current focus and what's next, with estimates in
 Opus 5.5 agent-hours (calibration in [target-app-parity.md](target-app-parity.md#calibration)).

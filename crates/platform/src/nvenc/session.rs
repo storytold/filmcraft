@@ -100,6 +100,14 @@ impl Codec {
             Codec::Hevc => NV_ENC_CODEC_HEVC_GUID,
         }
     }
+
+    /// The same codec in the NAL-unit terms the Annex B helpers use.
+    pub fn nal(self) -> filmcraft_codecs::hw::NalCodec {
+        match self {
+            Codec::H264 => filmcraft_codecs::hw::NalCodec::H264,
+            Codec::Hevc => filmcraft_codecs::hw::NalCodec::Hevc,
+        }
+    }
 }
 
 /// One SEI message the encoder writes in front of every IDR picture (HEVC): its payload type and bytes.
