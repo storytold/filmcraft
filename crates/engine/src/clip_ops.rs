@@ -161,7 +161,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             &["Clip", "Video Options"],
             None,
             r#"{"clips":[id]?,"enabled":bool=true,"holdOn":"sourceTimecode|sequenceTime|in|out|playhead","time":ticks?,"timecode":str?,"holdFilters":bool=false}"#,
-            has_selection,
+            has_video_clip_selection,
             frame_hold_options,
         ),
         spec(
@@ -179,7 +179,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             &["Clip", "Video Options"],
             None,
             r#"{"clips":[id]?,"reverseFieldDominance":bool=false,"processing":"none|alwaysDeinterlace|flickerRemoval"}"#,
-            has_selection,
+            has_video_clip_selection,
             field_options,
         ),
         spec(
@@ -188,7 +188,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             &["Clip", "Video Options", "Time Interpolation"],
             None,
             r#"{"clips":[id]?}"#,
-            has_selection,
+            has_video_clip_selection,
             |s, p| set_interpolation(s, p, TimeInterpolation::FrameSampling),
         ),
         spec(
@@ -197,7 +197,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             &["Clip", "Video Options", "Time Interpolation"],
             None,
             r#"{"clips":[id]?}"#,
-            has_selection,
+            has_video_clip_selection,
             |s, p| set_interpolation(s, p, TimeInterpolation::FrameBlending),
         ),
         spec(
@@ -206,7 +206,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             &["Clip", "Video Options", "Time Interpolation"],
             None,
             r#"{"clips":[id]?}"#,
-            has_selection,
+            has_video_clip_selection,
             |s, p| set_interpolation(s, p, TimeInterpolation::OpticalFlow),
         ),
         spec(
@@ -215,14 +215,14 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             &[],
             None,
             r#"{"clips":[id]?,"mode":"frameSampling|frameBlending|opticalFlow"}"#,
-            has_selection,
+            has_video_clip_selection,
             |s, p| {
                 let m = str_p(p, "mode").and_then(TimeInterpolation::from_name).ok_or_else(|| bad("clip.setTimeInterpolation", "need `mode`"))?;
                 set_interpolation(s, p, m)
             },
         ),
-        spec("clip.fitToFrame", "Fit to frame", &["Clip", "Video Options"], None, r#"{"clips":[id]?}"#, has_selection, |s, p| fit_fill(s, p, false)),
-        spec("clip.fillFrame", "Fill frame", &["Clip", "Video Options"], None, r#"{"clips":[id]?}"#, has_selection, |s, p| fit_fill(s, p, true)),
+        spec("clip.fitToFrame", "Fit to frame", &["Clip", "Video Options"], None, r#"{"clips":[id]?}"#, has_video_clip_selection, |s, p| fit_fill(s, p, false)),
+        spec("clip.fillFrame", "Fill frame", &["Clip", "Video Options"], None, r#"{"clips":[id]?}"#, has_video_clip_selection, |s, p| fit_fill(s, p, true)),
         spec("clip.breakoutToMono", "Breakout to Mono", &["Clip", "Audio Options"], None, r#"{"items":[id]?}"#, has_audio_items, breakout_to_mono),
         spec("clip.extractAudio", "Extract Audio", &["Clip", "Audio Options"], None, r#"{"items":[id]?,"dir":str?}"#, has_extractable, extract_audio),
         spec("clip.replaceFromSource", "From Source Monitor", &["Clip", "Replace With Clip"], None, r#"{"clips":[id]?}"#, can_replace_from_source, |s, p| {
@@ -1344,6 +1344,13 @@ fn modify_timecode(s: &mut Session, p: &Value) -> Result<Value> {
 // ---------------------------------------------------------------------------------------------
 // Clip: Video Options
 // ---------------------------------------------------------------------------------------------
+
+/// Clip ▸ Video Options items act on the selected clips of video tracks ([`video_clips`]): with
+/// only audio clips selected they are greyed out instead of failing with "select a video clip".
+fn has_video_clip_selection(s: &Session) -> std::result::Result<(), String> {
+    has_selection(s)?;
+    if video_clips(s, &Value::Null).is_empty() { Err("select a video clip".into()) } else { Ok(()) }
+}
 
 fn video_clips(s: &Session, p: &Value) -> Vec<ClipId> {
     let Some(q) = s.active_sequence() else { return Vec::new() };
