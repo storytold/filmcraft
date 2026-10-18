@@ -252,23 +252,11 @@ impl CloudApp for FilmcraftApp {
             }
             return Ok(None);
         }
-        // Project archive: stage to a temp path the engine can open.
-        let tmp = std::env::temp_dir().join(format!(
-            "filmcraft-cloud-open-{}.fcproj",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
-        ));
-        std::fs::write(&tmp, &bytes).map_err(|e| format!("could not stage the downloaded project: {e}"))?;
-        let path = tmp.to_string_lossy().to_string();
-        let result = self.session.execute("file.open", json!({"path": path}));
-        let _ = std::fs::remove_file(&tmp);
-        match result {
-            Ok(_) => {
-                self.session.path = None;
-                self.cloud_page = None;
-                Ok(Some(1u64))
-            }
-            Err(e) => Err(e.to_string()),
-        }
+        // Project archive: decode in memory so wasm and desktop share one path (no std::fs).
+        filmcraft_engine::commands::open_project_bytes(&mut self.session, None, &bytes).map_err(|e| e.to_string())?;
+        self.session.path = None;
+        self.cloud_page = None;
+        Ok(Some(1u64))
     }
 
     fn encode(&mut self, _uid: u64, into: Destination<'_>) -> Result<Vec<u8>, String> {
@@ -276,9 +264,11 @@ impl CloudApp for FilmcraftApp {
         if let Some(bytes) = self.pending_cloud_upload.take() {
             return Ok(bytes);
         }
-        // Determine what the destination wants.
         let fmt = format_for(into)?;
-        // The project must be saved to disk before we can encode it. Use a temp file.
+        if fmt == "fcproj" {
+            return Ok(filmcraft_engine::commands::project_bytes(&self.session));
+        }
+        // Interchange exports still go through a host-writable path (desktop temp / web OPFS).
         let tmp = std::env::temp_dir().join(format!(
             "filmcraft-cloud-save-{}.{fmt}",
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)

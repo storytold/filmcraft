@@ -4399,23 +4399,36 @@ fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Opti
 
 fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-    let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    open_project_bytes(s, Some(path), &bytes)
+}
+
+/// Open a project from bytes already in memory (CollabCraft / wasm: no temp file).
+pub fn open_project_bytes(s: &mut Session, path: Option<&str>, bytes: &[u8]) -> Result<Value> {
+    let label = path.unwrap_or("cloud.fcproj");
+    let loaded = filmcraft_format::decode(bytes).map_err(|e| EngineError::Other(format!("{label}: {e}")))?;
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
-    install_project(s, loaded.project, Some(path.to_string()), true);
+    install_project(s, loaded.project, path.map(str::to_string), true);
     if let Some(view) = loaded.view.filter(|_| s.prefs.timeline.restore_open_sequences) {
         s.restore_project_view(view);
     }
-    // the frontend shows the project's active sequence (with its own view, when one was restored)
     if let Some(seq) = s.state.active_sequence {
         s.events.push(crate::Event::OpenSequence(seq));
     }
-    s.note_recent_project();
+    if path.is_some() {
+        s.note_recent_project();
+    }
     s.loaded_schema = from;
     if migrated {
         s.toast(format!("Upgraded project from schema v{from} to v{}; the original is kept as a backup when you save", filmcraft_format::SCHEMA_VERSION));
     }
     let missing = crate::relink::on_open(s);
     Ok(json!({"path": path, "schemaVersion": from, "migrated": migrated, "missingMedia": missing}))
+}
+
+/// Encode the open project (with view) to `.fcproj` bytes without touching the filesystem.
+pub fn project_bytes(s: &Session) -> Vec<u8> {
+    let view = s.project_view();
+    filmcraft_format::encode_with_view(&s.project, Some(&view), false)
 }
 
 /// Load a recovery candidate (newest when `id` is None) as the current, unsaved project.
