@@ -49,6 +49,8 @@ pub enum Language {
     It,
     /// Korean; Hangul needs an installed system font ([`korean_font_available`]).
     Ko,
+    /// Thai; Thai needs an installed system font ([`thai_font_available`]).
+    Th,
 }
 
 static JAPANESE: OnceLock<Catalog> = OnceLock::new();
@@ -62,9 +64,11 @@ static FRENCH: OnceLock<Catalog> = OnceLock::new();
 static KOREAN: OnceLock<Catalog> = OnceLock::new();
 static INDONESIAN: OnceLock<Catalog> = OnceLock::new();
 static ITALIAN: OnceLock<Catalog> = OnceLock::new();
+static THAI: OnceLock<Catalog> = OnceLock::new();
 
 impl Language {
-    pub const ALL: [Self; 12] = [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru, Self::Fr, Self::Id, Self::Ko, Self::It];
+    pub const ALL: [Self; 13] =
+        [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru, Self::Fr, Self::Id, Self::Ko, Self::It, Self::Th];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -80,6 +84,7 @@ impl Language {
             Self::Id => "Bahasa Indonesia",
             Self::It => "Italiano",
             Self::Ko => "한국어",
+            Self::Th => "ไทย",
         }
     }
 
@@ -97,6 +102,7 @@ impl Language {
             "id" => Some(Self::Id),
             "it" => Some(Self::It),
             "ko" => Some(Self::Ko),
+            "th" => Some(Self::Th),
             _ => None,
         }
     }
@@ -111,7 +117,7 @@ impl Language {
     /// only for Simplified locales (`zh`, `zh-CN`, `zh-SG`, `zh-Hans…`); Traditional ones (`zh-TW`,
     /// `zh-HK`, `zh-MO`, `zh-Hant…`) are skipped.
     pub fn from_locales(tags: &[String]) -> Self {
-        const PRIMARY: [(&str, Language); 12] = [
+        const PRIMARY: [(&str, Language); 13] = [
             ("en", Language::En),
             ("ja", Language::Ja),
             ("es", Language::Es),
@@ -124,6 +130,7 @@ impl Language {
             ("in", Language::Id),
             ("it", Language::It),
             ("ko", Language::Ko),
+            ("th", Language::Th),
         ];
         tags.iter()
             .find_map(|tag| {
@@ -156,6 +163,7 @@ impl Language {
             Self::Id => "id",
             Self::It => "it",
             Self::Ko => "ko",
+            Self::Th => "th",
         }
     }
 
@@ -174,6 +182,7 @@ impl Language {
             Self::Id => Some(INDONESIAN.get_or_init(|| Catalog::parse(include_str!("id.tsv")))),
             Self::It => Some(ITALIAN.get_or_init(|| Catalog::parse(include_str!("it.tsv")))),
             Self::Ko => Some(KOREAN.get_or_init(|| Catalog::parse(include_str!("ko.tsv")))),
+            Self::Th => Some(THAI.get_or_init(|| Catalog::parse(include_str!("th.tsv")))),
         }
     }
 
@@ -336,6 +345,13 @@ pub fn korean_font_available() -> bool {
     crate::cjk::korean_available()
 }
 
+/// Whether the interface can show Thai: `theme::install` adds an installed system Thai face
+/// (Leelawadee UI, Noto Sans Thai, Sarabun, Thonburi…, see `cjk.rs`) when there is one; none
+/// is bundled. False on systems (and the web) without one.
+pub fn thai_font_available() -> bool {
+    crate::cjk::thai_available()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,6 +370,7 @@ mod tests {
             ("id", include_str!("id.tsv")),
             ("it", include_str!("it.tsv")),
             ("ko", include_str!("ko.tsv")),
+            ("th", include_str!("th.tsv")),
         ] {
             let (entries, errors) = catalog::parse_entries(text);
             assert!(errors.is_empty(), "{code}: {errors:?}");
@@ -415,6 +432,12 @@ mod tests {
         assert_eq!(Language::It.tr("An untranslated label"), "An untranslated label");
         assert_eq!(Language::parse("it"), Some(Language::It));
         assert_eq!(Language::parse("it-IT"), None, "the preference stores the bare code");
+        assert_eq!(Language::Th.name(), "ไทย");
+        assert_eq!(Language::Th.tr("File"), "ไฟล์");
+        assert_eq!(Language::Th.tr("Save As…"), "บันทึกเป็น…");
+        assert_eq!(Language::Th.tr("An untranslated label"), "An untranslated label");
+        assert_eq!(Language::parse("th"), Some(Language::Th));
+        assert_eq!(Language::parse("th-TH"), None, "the preference stores the bare code");
         for l in Language::ALL {
             assert_eq!(Language::parse(l.code()), Some(l));
             let json = serde_json::to_string(&l).unwrap();
@@ -997,6 +1020,25 @@ mod tests {
         let mut restarted = filmcraft_engine::Session::default();
         restarted.prefs = serde_json::from_str(&prefs).unwrap();
         assert_eq!(crate::FilmcraftApp::new(restarted).ui.language, Language::It);
+        if crate::i18n::thai_font_available() {
+            let result = crate::menus::invoke(&mut app, &ctx, "app.language.thai", serde_json::json!({})).unwrap();
+            assert_eq!(result, serde_json::json!("th"));
+            assert_eq!((app.ui.language, current()), (Language::Th, Language::Th));
+            assert_eq!(app.session.prefs.general.interface_language, "th");
+            for it in crate::menus::menu_items(&app).iter().filter(|it| it.id.starts_with("app.language.")) {
+                assert_eq!(it.checked, Some(it.id == "app.language.thai"), "{}", it.id);
+            }
+            let items = crate::menus::menu_items(&app);
+            let label = |id: &str| items.iter().find(|it| it.id == id).map(|it| it.label.as_str());
+            assert_eq!(label("file.saveAs"), Some("บันทึกเป็น…"));
+            assert_eq!(label("app.language.thai"), Some("ไทย"));
+            let saved = serde_json::to_string(&app.ui).unwrap();
+            assert!(saved.contains("\"language\":\"th\""), "{saved}");
+            let prefs = serde_json::to_string(&app.session.prefs).unwrap();
+            let mut restarted = filmcraft_engine::Session::default();
+            restarted.prefs = serde_json::from_str(&prefs).unwrap();
+            assert_eq!(crate::FilmcraftApp::new(restarted).ui.language, Language::Th);
+        }
         crate::menus::invoke(&mut app, &ctx, "app.language.english", serde_json::json!({})).unwrap();
         assert_eq!(app.ui.language, Language::En);
         set_current(Language::En);
@@ -1040,6 +1082,12 @@ mod tests {
         }
         assert_eq!(l(&["it-CH", "de-CH", "fr-CH", "en"]), Language::It);
         for none in [&["ita"][..], &["i"], &["-it"]] {
+            assert_eq!(l(none), Language::En, "{none:?}");
+        }
+        for tag in ["th", "TH", "th-TH", "th_TH.UTF-8", "th_TH"] {
+            assert_eq!(l(&[tag]), Language::Th, "{tag}");
+        }
+        for none in [&["tha"][..], &["t"], &["-th"]] {
             assert_eq!(l(none), Language::En, "{none:?}");
         }
         assert_eq!(l(&["sv-SE", "nl", "es-MX", "ja"]), Language::Es, "the first one the interface has");
@@ -1177,6 +1225,33 @@ mod tests {
         assert_eq!(Language::parse("ko"), Some(Language::Ko));
         for tag in ["ko", "ko-KR", "ko_KR.UTF-8"] {
             assert_eq!(Language::from_locales(&[tag.to_string()]), Language::Ko, "{tag}");
+        }
+    }
+
+    /// Thai covers the whole interface (the Spanish catalog's entries and the native macOS
+    /// Settings menu); like French and Korean, the tests require the core menus, and every entry must still
+    /// have a Spanish counterpart so a renamed or removed source can't leave a dead Thai entry.
+    #[test]
+    fn thai_covers_the_menus_and_has_no_dead_entries() {
+        let (entries, errors) = catalog::parse_entries(include_str!("th.tsv"));
+        assert!(errors.is_empty(), "{errors:?}");
+        for (ctx, en, _) in &entries {
+            assert!(ctx.is_empty() && (Language::Es.has(en) || en == "Settings"), "Thai entry without a Spanish one: {ctx:?} {en:?}");
+        }
+        for en in core_menu_labels() {
+            assert!(Language::Th.has(&en), "missing Thai menu label: {en}");
+        }
+        for en in crate::menus::MENUS.into_iter().chain(["Audio", "Settings"]) {
+            assert!(Language::Th.has(en), "untranslated Thai menu: {en}");
+        }
+        for (en, th) in [("File", "ไฟล์"), ("Edit", "แก้ไข"), ("Sequence", "ซีเควนซ์"), ("Settings", "การตั้งค่า")]
+        {
+            assert_eq!(Language::Th.tr(en), th);
+        }
+        assert_eq!(Language::Th.name(), "ไทย");
+        assert_eq!(Language::parse("th"), Some(Language::Th));
+        for tag in ["th", "th-TH", "th_TH.UTF-8"] {
+            assert_eq!(Language::from_locales(&[tag.to_string()]), Language::Th, "{tag}");
         }
     }
 

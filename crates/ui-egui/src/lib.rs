@@ -353,6 +353,10 @@ pub struct FilmcraftApp {
     pending_timeline_drop: Option<(Vec<filmcraft_engine::project::ItemId>, egui::Pos2)>,
     /// Files being dragged over the window from the OS (count, pointer): the Timeline previews where they would land.
     file_drag_hover: Option<(usize, egui::Pos2)>,
+    /// The windowing backend cannot deliver OS file drops (winit has no drag-and-drop
+    /// on Wayland): the UI says so instead of promising drops that never arrive.
+    /// Set once at startup by the host; tests leave it off.
+    pub os_file_drop_unsupported: bool,
     timeline_view_last: Option<filmcraft_engine::project::SequenceView>,
     pub fps: f32,
     last_time: f64,
@@ -583,6 +587,7 @@ impl FilmcraftApp {
             timeline_view_of: None,
             pending_timeline_drop: None,
             file_drag_hover: None,
+            os_file_drop_unsupported: false,
             timeline_view_last: None,
             fps: 60.0,
             last_time: 0.0,
@@ -723,6 +728,9 @@ impl FilmcraftApp {
             } else if language == i18n::Language::Ko && !i18n::korean_font_available() {
                 self.ui.language = i18n::Language::En;
                 self.ui.status = tl!("no Korean font is installed on this system; the interface stays in English").into();
+            } else if language == i18n::Language::Th && !i18n::thai_font_available() {
+                self.ui.language = i18n::Language::En;
+                self.ui.status = tl!("no Thai font is installed on this system; the interface stays in English").into();
             } else {
                 self.ui.language = language;
             }
@@ -1377,8 +1385,11 @@ impl FilmcraftApp {
         })
     }
 
-    /// Import dropped files. With Timeline ▸ drop imports to the timeline, the new items are also
-    /// queued to be placed at the pointer (see `timeline::interact`).
+    /// Import files dropped in from the OS file manager: drag a video, audio or still
+    /// straight onto the window and it lands in the Project bin. With Timeline ▸ drop
+    /// imports to the timeline, a drop over the Timeline is also placed at the pointer
+    /// (see `timeline::interact`); a drop over the Source monitor opens the first new
+    /// item there, ready to cut.
     fn handle_drops(&mut self, ctx: &egui::Context) {
         // While files hover, the OS sends no cursor events: poll the cursor each frame to draw the Timeline preview.
         let hovering = ctx.input(|i| i.raw.hovered_files.len());
@@ -1389,27 +1400,97 @@ impl FilmcraftApp {
             None
         };
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        if dropped.is_empty() {
+            return;
+        }
         let mut paths = Vec::new();
-        for f in dropped {
+        for f in &dropped {
             let p = f.path();
             if p.exists() {
                 paths.push(p.to_string_lossy().to_string());
             }
         }
-        if !paths.is_empty() {
-            let pointer = self.drop_pointer(ctx);
-            let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
-            if let Ok(v) = imported
-                && let Some(pos) = pointer
-                && self.session.prefs.timeline.drop_import_to_timeline
+        if paths.is_empty() {
+            // The web handles drops itself (browser files → take_files): their names
+            // are not filesystem paths, so there is nothing to import here and no
+            // error to report.
+            #[cfg(not(target_arch = "wasm32"))]
             {
+                self.ui.status = tl!("Could not import the dropped files").to_string();
+            }
+            return;
+        }
+        let pointer = self.drop_pointer(ctx);
+        let bin = self.import_bin().0;
+        let cmd = if filmcraft_engine::commands::find("file.importFolder").is_some() { "file.importFolder" } else { "file.import" };
+        match self.session.execute(cmd, json!({"paths": paths, "bin": bin})) {
+            Ok(v) => {
                 let items: Vec<filmcraft_engine::project::ItemId> =
                     v["items"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect()).unwrap_or_default();
-                if !items.is_empty() {
-                    self.pending_timeline_drop = Some((items, pos));
+                let bins_count = v["bins"].as_array().map(|a| a.len()).unwrap_or(0);
+                let errors: Vec<String> = v["errors"].as_array().map(|a| a.iter().filter_map(|e| e.as_str().map(str::to_string)).collect()).unwrap_or_default();
+                self.ui.status = if items.is_empty() && bins_count == 0 {
+                    errors.join("; ")
+                } else {
+                    let mut s = if items.len() == 1 { tl!("Imported 1 file").to_string() } else { tlf!("Imported {n} files", n = items.len()) };
+                    if !errors.is_empty() {
+                        s.push_str("; ");
+                        s.push_str(&errors.join("; "));
+                    }
+                    s
+                };
+                if items.is_empty() {
+                    return;
+                }
+                let Some(pos) = pointer else { return };
+                if self.session.prefs.timeline.drop_import_to_timeline {
+                    self.pending_timeline_drop = Some((items.clone(), pos));
+                }
+                if self.over_panel(pos, "panel.Source")
+                    && let Some(first) = items.first()
+                    && self.session.execute("source.open", json!({"item": first.0})).is_err()
+                {
+                    // the import already landed in the bin; a Source that cannot open
+                    // this item (a caption sidecar, say) is not an error worth surfacing
                 }
             }
+            Err(e) => {
+                self.ui.status = e.to_string();
+            }
         }
+    }
+
+    /// Whether `pos` falls on last frame's rect of the automation element `id`
+    /// (a `panel.<Name>` body, a Timeline row target…).
+    fn over_panel(&self, pos: egui::Pos2, id: &str) -> bool {
+        self.auto.find(id).is_some_and(|e| {
+            let [x, y, w, h] = e.rect;
+            egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h)).contains(pos)
+        })
+    }
+
+    /// While files from the OS file manager hover over the window, say where they
+    /// will land: the Timeline previews its own placeholder, this banner covers
+    /// everywhere else (Project bin, Source monitor…).
+    fn drop_hint(&self, ctx: &egui::Context) {
+        if !matches!(self.ui.mode, state::Mode::Edit) {
+            return;
+        }
+        let hovering = ctx.input(|i| i.raw.hovered_files.len());
+        if hovering == 0 {
+            return;
+        }
+        let files = if hovering == 1 { tl!("1 file").to_string() } else { tlf!("{n} files", n = hovering) };
+        egui::Area::new(egui::Id::new("os_file_drop_hint"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_TOP, [0.0, 60.0])
+            .interactable(false)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.label(egui::RichText::new(format!("{} {files}", tl!("Drop to import"))).strong());
+                    ui.label(egui::RichText::new(tl!("Drop on the Timeline to place the clips")).small());
+                });
+            });
     }
 
     /// Where files dragged in from the OS are over the window. The OS reports no cursor motion during such a drag
@@ -1791,6 +1872,7 @@ impl FilmcraftApp {
         }
         // the Timeline has had its chance to place a file drop this frame; anything left stays a bin import
         self.pending_timeline_drop = None;
+        self.drop_hint(&ctx);
         panels::dialogs::show(self, &ctx);
         if !self.ui.show_status_bar {
             // no bar to draw the job in, but a finished preview render still plays
@@ -1965,6 +2047,22 @@ impl FilmcraftApp {
     }
 }
 
+/// Whether files dragged in from the OS file manager can never arrive: winit
+/// implements file drag-and-drop on X11, Windows and macOS, but not on Wayland,
+/// so on a Wayland session drops are silently lost and the UI must say so
+/// (Import mode points at Browse files… instead). The host sets
+/// [`FilmcraftApp::os_file_drop_unsupported`] from this once at startup.
+pub fn os_file_drop_unsupported() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var_os("WAYLAND_DISPLAY").is_some()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
 /// On macOS a Control+Click means "right click": AppKit delivers it to the view as a *primary*
 /// press carrying the Control modifier (`rightMouseDown:` only fires for a real right button or
 /// two-finger click), so the app translates it to a secondary click before egui computes pointer
@@ -2050,6 +2148,7 @@ impl eframe::App for FilmcraftApp {
             if japanese_missing
                 || (self.ui.language == i18n::Language::ZhCn && !i18n::chinese_font_available())
                 || (self.ui.language == i18n::Language::Ko && !i18n::korean_font_available())
+                || (self.ui.language == i18n::Language::Th && !i18n::thai_font_available())
             {
                 self.ui.language = i18n::Language::En;
             }
