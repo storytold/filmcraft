@@ -1,19 +1,21 @@
 //! Distortion metrics: SAD, SATD (4x4 Hadamard), SSD.
 
+use crate::pixel::Pixel;
+
 #[inline]
-pub fn sad(a: &[u8], sa: usize, b: &[u8], sb: usize, w: usize, h: usize) -> u32 {
+pub fn sad<P: Pixel>(a: &[P], sa: usize, b: &[P], sb: usize, w: usize, h: usize) -> u32 {
     let mut s = 0u32;
     for r in 0..h {
         let ra = &a[r * sa..r * sa + w];
         let rb = &b[r * sb..r * sb + w];
-        s += ra.iter().zip(rb).map(|(&x, &y)| x.abs_diff(y) as u32).sum::<u32>();
+        s += ra.iter().zip(rb).map(|(&x, &y)| x.ad(y) as u32).sum::<u32>();
     }
     s
 }
 
 /// SAD of a 16-wide block (fast path).
 #[inline]
-pub fn sad16(a: &[u8], sa: usize, b: &[u8], sb: usize, h: usize) -> u32 {
+pub fn sad16<P: Pixel>(a: &[P], sa: usize, b: &[P], sb: usize, h: usize) -> u32 {
     let mut s = 0u32;
     for r in 0..h {
         let (Some(ra), Some(rb)) = (a.get(r * sa..).and_then(|x| x.first_chunk::<16>()), b.get(r * sb..).and_then(|x| x.first_chunk::<16>())) else {
@@ -21,7 +23,7 @@ pub fn sad16(a: &[u8], sa: usize, b: &[u8], sb: usize, h: usize) -> u32 {
         };
         let mut acc = 0u16;
         for i in 0..16 {
-            acc += ra[i].abs_diff(rb[i]) as u16;
+            acc += ra[i].ad(rb[i]);
         }
         s += acc as u32;
     }
@@ -55,13 +57,13 @@ fn hadamard4x4_sum(d: &[i32; 16]) -> u32 {
 /// SATD of a strip of `N` columns (N/4 side-by-side 4x4 blocks) and 4 rows, computed lane-wise so the compiler
 /// can vectorise it. Uses |p+q| + |p-q| = 2 max(|p|, |q|) for the last butterfly, which also absorbs the /2.
 #[inline(always)]
-fn satd_strip<const N: usize, const H: usize>(a: &[u8], sa: usize, b: &[u8], sb: usize) -> u32 {
+fn satd_strip<P: Pixel, const N: usize, const H: usize>(a: &[P], sa: usize, b: &[P], sb: usize) -> u32 {
     let mut d = [[0i16; N]; 4];
     for r in 0..4 {
         let ra = &a[r * sa..r * sa + N];
         let rb = &b[r * sb..r * sb + N];
         for i in 0..N {
-            d[r][i] = ra[i] as i16 - rb[i] as i16;
+            d[r][i] = ra[i].diff(rb[i]);
         }
     }
     let mut v = [[0i16; N]; 4];
@@ -92,17 +94,17 @@ fn satd_strip<const N: usize, const H: usize>(a: &[u8], sa: usize, b: &[u8], sb:
 }
 
 /// Sum of absolute 4x4 Hadamard-transformed differences (halved), for w, h multiples of 4.
-pub fn satd(a: &[u8], sa: usize, b: &[u8], sb: usize, w: usize, h: usize) -> u32 {
+pub fn satd<P: Pixel>(a: &[P], sa: usize, b: &[P], sb: usize, w: usize, h: usize) -> u32 {
     let mut total = 0;
     for by in (0..h).step_by(4) {
         let (ao, bo) = (by * sa, by * sb);
         match w {
-            16 => total += satd_strip::<16, 8>(&a[ao..], sa, &b[bo..], sb),
-            8 => total += satd_strip::<8, 4>(&a[ao..], sa, &b[bo..], sb),
-            4 => total += satd_strip::<4, 2>(&a[ao..], sa, &b[bo..], sb),
+            16 => total += satd_strip::<P, 16, 8>(&a[ao..], sa, &b[bo..], sb),
+            8 => total += satd_strip::<P, 8, 4>(&a[ao..], sa, &b[bo..], sb),
+            4 => total += satd_strip::<P, 4, 2>(&a[ao..], sa, &b[bo..], sb),
             _ => {
                 for bx in (0..w).step_by(4) {
-                    total += satd_strip::<4, 2>(&a[ao + bx..], sa, &b[bo + bx..], sb);
+                    total += satd_strip::<P, 4, 2>(&a[ao + bx..], sa, &b[bo + bx..], sb);
                 }
             }
         }
@@ -110,24 +112,25 @@ pub fn satd(a: &[u8], sa: usize, b: &[u8], sb: usize, w: usize, h: usize) -> u32
     total
 }
 
-pub fn ssd(a: &[u8], sa: usize, b: &[u8], sb: usize, w: usize, h: usize) -> u64 {
+pub fn ssd<P: Pixel>(a: &[P], sa: usize, b: &[P], sb: usize, w: usize, h: usize) -> u64 {
     let mut s = 0u64;
     for r in 0..h {
         let ra = &a[r * sa..r * sa + w];
         let rb = &b[r * sb..r * sb + w];
-        s += ra.iter().zip(rb).map(|(&x, &y)| (x as i32 - y as i32).pow(2) as u32).sum::<u32>() as u64;
+        s += ra.iter().zip(rb).map(|(&x, &y)| (x.get() - y.get()).pow(2) as u32).sum::<u32>() as u64;
     }
     s
 }
 
 /// Variance*N (sum of squares minus square of sum / N) of a block.
-pub fn block_var(a: &[u8], sa: usize, w: usize, h: usize) -> u32 {
+pub fn block_var<P: Pixel>(a: &[P], sa: usize, w: usize, h: usize) -> u32 {
     let mut s = 0u32;
     let mut ss = 0u32;
     for r in 0..h {
         for &v in &a[r * sa..r * sa + w] {
-            s += v as u32;
-            ss += (v as u32) * (v as u32);
+            let v = v.get() as u32;
+            s += v;
+            ss += v * v;
         }
     }
     ss - ((s as u64 * s as u64) / (w * h) as u64) as u32

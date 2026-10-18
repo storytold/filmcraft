@@ -106,6 +106,8 @@ pub struct RateControl {
     /// Sum and count of the rate-model terms (`coef · cplx^QCOMP / type_factor`) of the coded P and B frames.
     inter_s: f64,
     inter_n: u64,
+    /// Lowest QPY constant quality may reach: 0, or -QpBdOffset above 8 bits.
+    pub qp_min: f64,
 }
 
 impl RateControl {
@@ -130,6 +132,7 @@ impl RateControl {
             prior: None,
             inter_s: 0.0,
             inter_n: 0,
+            qp_min: 0.0,
         }
     }
 
@@ -173,7 +176,7 @@ impl RateControl {
                     SliceType::P => 0.0,
                     SliceType::B => 1.5,
                 })
-                .clamp(0.0, 51.0);
+                .clamp(self.qp_min, 51.0);
             }
             RcKind::Abr { kbps } => {
                 let bpf = *kbps as f64 * 1000.0 / self.fps;

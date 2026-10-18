@@ -8,8 +8,9 @@ use crate::intra::{Edge4, Edge8, filter8, mode_available, pred_chroma, pred4x4, 
 use crate::mbinfo::{MbInfo, MbKind, Mv, Part};
 use crate::nal::{SliceHeader, SliceType, nal};
 use crate::picture::{CHROMA_PAD, Frame, LUMA_PAD, RefPic, avg_into};
+use crate::pixel::{Depth, Pixel, QP_PRIME_MAX};
 use crate::syntax::{MbCode, NbCtx};
-use crate::tables::{BLK4_XY, NUM_CTX, RASTER_TO_BLK4, ZIGZAG4, ZIGZAG8, chroma_qp};
+use crate::tables::{BLK4_XY, NUM_CTX, RASTER_TO_BLK4, ZIGZAG4, ZIGZAG8, chroma_qp_prime};
 use crate::transform::{
     Deadzone, QuantTables, dequant_chroma_dc, dequant_luma_dc, dequant4, dequant8, fdct4, fdct8, idct4, idct8, quant_chroma_dc, quant_luma_dc, quant4, quant8,
 };
@@ -39,17 +40,19 @@ pub struct EncParams {
     pub always_intra: bool,
     /// Maximum CAVLC level magnitude (Baseline).
     pub cavlc_clamp: bool,
+    pub depth: Depth,
 }
 
 /// Per-frame shared encoding state.
-pub struct FrameEnc<'a> {
+pub struct FrameEnc<'a, P> {
     pub p: &'a EncParams,
     pub qt: &'a QuantTables,
     pub cost_tab: &'a CostTable,
     pub st: SliceType,
-    pub src: &'a Frame,
-    pub l0: Option<&'a RefPic>,
-    pub l1: Option<&'a RefPic>,
+    pub src: &'a Frame<P>,
+    pub l0: Option<&'a RefPic<P>>,
+    pub l1: Option<&'a RefPic<P>>,
+    /// Slice QP'Y (QPY + QpBdOffsetY); every `qp` in this module is a QP'.
     pub qp: u8,
     pub aq: &'a [i8],
     pub hdr: SliceHeader,
@@ -59,19 +62,20 @@ pub struct FrameEnc<'a> {
     pub lam: &'a Lambdas,
 }
 
-/// Lambda tables indexed by QP.
+/// Lambda tables indexed by QP'. At higher bit depths QP' = QP + 6 * (BitDepth - 8), so the same QP gets
+/// a lambda 4^(BitDepth - 8) times larger, matching the larger SSD (and 2^(BitDepth - 8) for SATD).
 pub struct Lambdas {
     /// SATD/SAD-domain lambda, Q8.
-    pub sad: [u32; 52],
+    pub sad: [u32; QP_PRIME_MAX + 1],
     /// SSD-domain lambda (for RD), Q8 per 1/256 bit.
-    pub ssd: [f64; 52],
+    pub ssd: [f64; QP_PRIME_MAX + 1],
 }
 
 impl Lambdas {
     pub fn new() -> Self {
-        let mut sad = [0u32; 52];
-        let mut ssd_ = [0f64; 52];
-        for qp in 0..52 {
+        let mut sad = [0u32; QP_PRIME_MAX + 1];
+        let mut ssd_ = [0f64; QP_PRIME_MAX + 1];
+        for qp in 0..=QP_PRIME_MAX {
             let l = 0.85 * 2f64.powf((qp as f64 - 12.0) / 3.0);
             ssd_[qp] = l;
             sad[qp] = ((l.sqrt()) * 256.0).round().max(16.0) as u32;
@@ -87,10 +91,10 @@ impl Default for Lambdas {
 }
 
 /// Mutable band of reconstructed rows belonging to one slice.
-pub struct Band<'b> {
-    pub y: &'b mut [u8],
-    pub u: &'b mut [u8],
-    pub v: &'b mut [u8],
+pub struct Band<'b, P> {
+    pub y: &'b mut [P],
+    pub u: &'b mut [P],
+    pub v: &'b mut [P],
     pub ys: usize,
     pub cs: usize,
 }
@@ -119,28 +123,35 @@ struct Avail {
     tl: bool,
 }
 
-struct MbEdges {
-    top: [u8; 24],
-    left: [u8; 16],
-    tl: u8,
-    ctop: [[u8; 8]; 2],
-    cleft: [[u8; 8]; 2],
-    ctl: [u8; 2],
+struct MbEdges<P> {
+    top: [P; 24],
+    left: [P; 16],
+    tl: P,
+    ctop: [[P; 8]; 2],
+    cleft: [[P; 8]; 2],
+    ctl: [P; 2],
 }
 
 #[derive(Clone)]
-struct Cand {
+struct Cand<P> {
     code: MbCode,
     info: MbInfo,
-    ry: [u8; 256],
-    ru: [u8; 64],
-    rv: [u8; 64],
+    ry: [P; 256],
+    ru: [P; 64],
+    rv: [P; 64],
     cost: u64,
 }
 
-impl Cand {
-    fn new() -> Box<Cand> {
-        Box::new(Cand { code: MbCode::default(), info: MbInfo::default(), ry: [0; 256], ru: [0; 64], rv: [0; 64], cost: u64::MAX })
+impl<P: Pixel> Cand<P> {
+    fn new() -> Box<Cand<P>> {
+        Box::new(Cand {
+            code: MbCode::default(),
+            info: MbInfo::default(),
+            ry: [P::default(); 256],
+            ru: [P::default(); 64],
+            rv: [P::default(); 64],
+            cost: u64::MAX,
+        })
     }
 }
 
@@ -186,9 +197,9 @@ enum Shape {
     Right8x16,
 }
 
-pub struct SliceEnc<'a, 'b> {
-    f: &'a FrameEnc<'a>,
-    band: Band<'b>,
+pub struct SliceEnc<'a, 'b, P> {
+    f: &'a FrameEnc<'a, P>,
+    band: Band<'b, P>,
     mbs: &'b mut [MbInfo],
     y0: usize,
     y1: usize,
@@ -201,8 +212,8 @@ pub struct SliceEnc<'a, 'b> {
     stats: SliceStats,
 }
 
-impl<'a, 'b> SliceEnc<'a, 'b> {
-    pub fn new(f: &'a FrameEnc<'a>, band: Band<'b>, mbs: &'b mut [MbInfo], y0: usize, y1: usize, slice_no: u16) -> Self {
+impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
+    pub fn new(f: &'a FrameEnc<'a, P>, band: Band<'b, P>, mbs: &'b mut [MbInfo], y0: usize, y1: usize, slice_no: u16) -> Self {
         SliceEnc { f, band, mbs, y0, y1, slice_no, last_qp: f.qp, prev_dqp_nz: false, cabac: None, cavlc: None, skip_run: 0, stats: SliceStats::default() }
     }
 
@@ -217,7 +228,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             while !bw.is_byte_aligned() {
                 bw.write_bit(true);
             }
-            let ctx = Contexts::init(f.cabac_table, f.qp as i32);
+            let ctx = Contexts::init(f.cabac_table, f.qp as i32 - f.p.depth.qp_offset);
             self.cabac = Some(CabacEncoder::new(ctx, bw.finish()));
         } else {
             self.cavlc = Some(bw);
@@ -268,9 +279,10 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         (y - self.y0 * 8) * self.band.cs + CHROMA_PAD + x
     }
 
-    fn edges(&self, mx: usize, my: usize, av: Avail) -> MbEdges {
+    fn edges(&self, mx: usize, my: usize, av: Avail) -> MbEdges<P> {
         let (px, py) = (mx * 16, my * 16);
-        let mut e = MbEdges { top: [128; 24], left: [128; 16], tl: 128, ctop: [[128; 8]; 2], cleft: [[128; 8]; 2], ctl: [128; 2] };
+        let m = P::of(self.f.p.depth.mid);
+        let mut e = MbEdges { top: [m; 24], left: [m; 16], tl: m, ctop: [[m; 8]; 2], cleft: [[m; 8]; 2], ctl: [m; 2] };
         if av.top {
             let i = self.ry(px, py - 1);
             e.top[..16].copy_from_slice(&self.band.y[i..i + 16]);
@@ -402,12 +414,12 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         let f = self.f;
         let mbw = f.p.mbw;
         let aq = if f.aq.is_empty() { 0 } else { f.aq[my * mbw + mx] as i32 };
-        let qp = (f.qp as i32 + aq).clamp(0, 51) as u8;
+        let qp = (f.qp as i32 + aq).clamp(0, 51 + f.p.depth.qp_offset) as u8;
         let av = self.avail(mx, my);
         let (px, py) = (mx * 16, my * 16);
-        let mut src_y = [0u8; 256];
-        let mut src_u = [0u8; 64];
-        let mut src_v = [0u8; 64];
+        let mut src_y = [P::default(); 256];
+        let mut src_u = [P::default(); 64];
+        let mut src_v = [P::default(); 64];
         {
             let s = &f.src.y;
             for r in 0..16 {
@@ -431,7 +443,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         self.commit(mx, my, qp, *best);
     }
 
-    fn commit(&mut self, mx: usize, my: usize, qp: u8, mut c: Cand) {
+    fn commit(&mut self, mx: usize, my: usize, qp: u8, mut c: Cand<P>) {
         let (px, py) = (mx * 16, my * 16);
         // reconstruction
         for r in 0..16 {
@@ -447,11 +459,13 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         let has_dqp = !kind.is_skip() && (c.code.cbp != 0 || kind == MbKind::I16x16);
         let prev_dqp_nz = self.prev_dqp_nz;
         if has_dqp {
+            // mb_qp_delta lies in -(26 + QpBdOffset/2)..=25 + QpBdOffset/2 and wraps modulo 52 + QpBdOffset (7.4.5).
+            let off = self.f.p.depth.qp_offset;
             let mut d = qp as i32 - self.last_qp as i32;
-            if d < -26 {
-                d += 52;
-            } else if d > 25 {
-                d -= 52;
+            if d < -(26 + off / 2) {
+                d += 52 + off;
+            } else if d > 25 + off / 2 {
+                d -= 52 + off;
             }
             c.code.qp_delta = d;
             self.prev_dqp_nz = d != 0;
@@ -501,7 +515,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     }
 
     /// Estimated bits (1/256 units) of coding candidate `c` at the current entropy state.
-    fn est_bits(&self, mx: usize, my: usize, c: &Cand, qp: u8) -> u64 {
+    fn est_bits(&self, mx: usize, my: usize, c: &Cand<P>, qp: u8) -> u64 {
         let av = self.avail(mx, my);
         let idx = (my - self.y0) * self.f.p.mbw + mx;
         let left = if av.left { Some(&self.mbs[idx - 1]) } else { None };
@@ -534,7 +548,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         }
     }
 
-    fn rd_cost(&self, mx: usize, my: usize, c: &Cand, src: &Src, qp: u8) -> u64 {
+    fn rd_cost(&self, mx: usize, my: usize, c: &Cand<P>, src: &Src<P>, qp: u8) -> u64 {
         let d = ssd(&src.y, 16, &c.ry, 16, 16, 16) + ssd(&src.u, 8, &c.ru, 8, 8, 8) + ssd(&src.v, 8, &c.rv, 8, 8, 8);
         let bits = self.est_bits(mx, my, c, qp);
         let lam = self.f.lam.ssd[qp as usize];
@@ -544,9 +558,10 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     // ------------------------------------------------------------------ residual coding helpers
 
     /// Code chroma residual for prediction `pu`, `pv`; fills code/info and reconstruction. Returns chroma cbp.
-    fn code_chroma(&self, src: &Src, pu: &[u8; 64], pv: &[u8; 64], qp: u8, intra: bool, c: &mut Cand) -> u8 {
+    fn code_chroma(&self, src: &Src<P>, pu: &[P; 64], pv: &[P; 64], qp: u8, intra: bool, c: &mut Cand<P>) -> u8 {
         let qt = self.f.qt;
-        let qpc = chroma_qp(qp as i32 + self.f.p.chroma_qp_offset);
+        let dp = self.f.p.depth;
+        let qpc = chroma_qp_prime(qp as i32, self.f.p.chroma_qp_offset, dp.qp_offset);
         let dz = if intra { Deadzone::INTRA } else { Deadzone::INTER };
         let mut dc_any = false;
         let mut ac_any = false;
@@ -561,7 +576,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                 let mut d = [0i32; 16];
                 for y in 0..4 {
                     for x in 0..4 {
-                        d[y * 4 + x] = s[(by + y) * 8 + bx + x] as i32 - p[(by + y) * 8 + bx + x] as i32;
+                        d[y * 4 + x] = s[(by + y) * 8 + bx + x].get() - p[(by + y) * 8 + bx + x].get();
                     }
                 }
                 let mut t = fdct4(&d);
@@ -632,7 +647,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                     for y in 0..4 {
                         for x in 0..4 {
                             let i = (by + y) * 8 + bx + x;
-                            rec[i] = (p[i] as i32 + dcv).clamp(0, 255) as u8;
+                            rec[i] = P::clip(p[i].get() + dcv, dp);
                         }
                     }
                 } else {
@@ -640,7 +655,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                     for y in 0..4 {
                         for x in 0..4 {
                             let i = (by + y) * 8 + bx + x;
-                            rec[i] = (p[i] as i32 + r[y * 4 + x]).clamp(0, 255) as u8;
+                            rec[i] = P::clip(p[i].get() + r[y * 4 + x], dp);
                         }
                     }
                 }
@@ -656,8 +671,9 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     }
 
     /// Inter luma residual with the 4x4 transform. Returns luma cbp.
-    fn code_luma4(&self, src: &[u8; 256], pred: &[u8; 256], qp: u8, dz: Deadzone, decimate: bool, c: &mut Cand) -> u8 {
+    fn code_luma4(&self, src: &[P; 256], pred: &[P; 256], qp: u8, dz: Deadzone, decimate: bool, c: &mut Cand<P>) -> u8 {
         let qt = self.f.qt;
+        let dp = self.f.p.depth;
         let mut coefs = [[0i32; 16]; 16];
         let mut score8 = [0u32; 4];
         for blk in 0..16 {
@@ -666,7 +682,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             for y in 0..4 {
                 for x in 0..4 {
                     let i = (by * 4 + y) * 16 + bx * 4 + x;
-                    d[y * 4 + x] = src[i] as i32 - pred[i] as i32;
+                    d[y * 4 + x] = src[i].get() - pred[i].get();
                 }
             }
             let mut t = fdct4(&d);
@@ -715,7 +731,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                 for y in 0..4 {
                     for x in 0..4 {
                         let i = off + y * 16 + x;
-                        c.ry[i] = (pred[i] as i32 + r[y * 4 + x]).clamp(0, 255) as u8;
+                        c.ry[i] = P::clip(pred[i].get() + r[y * 4 + x], dp);
                     }
                 }
             }
@@ -724,8 +740,9 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     }
 
     /// Inter luma residual with the 8x8 transform. Returns luma cbp.
-    fn code_luma8(&self, src: &[u8; 256], pred: &[u8; 256], qp: u8, dz: Deadzone, decimate: bool, c: &mut Cand) -> u8 {
+    fn code_luma8(&self, src: &[P; 256], pred: &[P; 256], qp: u8, dz: Deadzone, decimate: bool, c: &mut Cand<P>) -> u8 {
         let qt = self.f.qt;
+        let dp = self.f.p.depth;
         let mut coefs = [[0i32; 64]; 4];
         let mut score = [0u32; 4];
         for b8 in 0..4 {
@@ -734,7 +751,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             for y in 0..8 {
                 for x in 0..8 {
                     let i = (oy + y) * 16 + ox + x;
-                    d[y * 8 + x] = src[i] as i32 - pred[i] as i32;
+                    d[y * 8 + x] = src[i].get() - pred[i].get();
                 }
             }
             let mut t = fdct8(&d);
@@ -774,7 +791,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             for y in 0..8 {
                 for x in 0..8 {
                     let i = (oy + y) * 16 + ox + x;
-                    c.ry[i] = (pred[i] as i32 + r[y * 8 + x]).clamp(0, 255) as u8;
+                    c.ry[i] = P::clip(pred[i].get() + r[y * 8 + x], dp);
                 }
             }
         }
@@ -782,7 +799,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     }
 
     /// Code an inter candidate's residual given its luma/chroma prediction.
-    fn code_inter(&self, src: &Src, py: &[u8; 256], pu: &[u8; 64], pv: &[u8; 64], qp: u8, c: &mut Cand) {
+    fn code_inter(&self, src: &Src<P>, py: &[P; 256], pu: &[P; 64], pv: &[P; 64], qp: u8, c: &mut Cand<P>) {
         let t8_allowed = self.f.p.t8x8;
         let use8 = if t8_allowed {
             if self.f.p.adaptive_t8 {
@@ -792,7 +809,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                 let mut c8 = c.clone();
                 let cbp8 = self.code_luma8(&src.y, py, qp, Deadzone::INTER, self.f.p.decimate, &mut c8);
                 let lam = self.f.lam.ssd[qp as usize];
-                let cost = |cc: &Cand, cbp: u8, eight: bool| {
+                let cost = |cc: &Cand<P>, cbp: u8, eight: bool| {
                     let d = ssd(&src.y, 16, &cc.ry, 16, 16, 16) as f64;
                     let mut bits = 0f64;
                     if eight {
@@ -858,8 +875,9 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     }
 
     /// Luma I16x16 coding. Returns luma cbp (0 or 15).
-    fn code_i16(&self, src: &[u8; 256], pred: &[u8; 256], qp: u8, c: &mut Cand) -> u8 {
+    fn code_i16(&self, src: &[P; 256], pred: &[P; 256], qp: u8, c: &mut Cand<P>) -> u8 {
         let qt = self.f.qt;
+        let dp = self.f.p.depth;
         let mut coefs = [[0i32; 16]; 16];
         let mut dc = [0i32; 16];
         for blk in 0..16 {
@@ -868,7 +886,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             for y in 0..4 {
                 for x in 0..4 {
                     let i = (by * 4 + y) * 16 + bx * 4 + x;
-                    d[y * 4 + x] = src[i] as i32 - pred[i] as i32;
+                    d[y * 4 + x] = src[i].get() - pred[i].get();
                 }
             }
             let mut t = fdct4(&d);
@@ -909,7 +927,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                 for y in 0..4 {
                     for x in 0..4 {
                         let i = off + y * 16 + x;
-                        c.ry[i] = (pred[i] as i32 + dcv).clamp(0, 255) as u8;
+                        c.ry[i] = P::clip(pred[i].get() + dcv, dp);
                     }
                 }
             } else {
@@ -919,7 +937,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                 for y in 0..4 {
                     for x in 0..4 {
                         let i = off + y * 16 + x;
-                        c.ry[i] = (pred[i] as i32 + r[y * 4 + x]).clamp(0, 255) as u8;
+                        c.ry[i] = P::clip(pred[i].get() + r[y * 4 + x], dp);
                     }
                 }
             }
@@ -927,8 +945,9 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         if ac_any { 15 } else { 0 }
     }
 
-    fn best_chroma_mode(&self, e: &MbEdges, av: Avail, src: &Src, lam: u32) -> (u8, [u8; 64], [u8; 64]) {
-        let mut best = (u32::MAX, 0u8, [0u8; 64], [0u8; 64]);
+    fn best_chroma_mode(&self, e: &MbEdges<P>, av: Avail, src: &Src<P>, lam: u32) -> (u8, [P; 64], [P; 64]) {
+        let d = self.f.p.depth;
+        let mut best = (u32::MAX, 0u8, [P::default(); 64], [P::default(); 64]);
         for mode in 0..4u8 {
             let ok = match mode {
                 0 => true,
@@ -939,10 +958,10 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             if !ok {
                 continue;
             }
-            let mut pu = [0u8; 64];
-            let mut pv = [0u8; 64];
-            pred_chroma(mode, &e.ctop[0], &e.cleft[0], e.ctl[0], av.top, av.left, &mut pu);
-            pred_chroma(mode, &e.ctop[1], &e.cleft[1], e.ctl[1], av.top, av.left, &mut pv);
+            let mut pu = [P::default(); 64];
+            let mut pv = [P::default(); 64];
+            pred_chroma(mode, &e.ctop[0], &e.cleft[0], e.ctl[0], av.top, av.left, d, &mut pu);
+            pred_chroma(mode, &e.ctop[1], &e.cleft[1], e.ctl[1], av.top, av.left, d, &mut pv);
             let cost = satd(&src.u, 8, &pu, 8, 8, 8) + satd(&src.v, 8, &pv, 8, 8, 8) + ((lam * (1 + 2 * mode as u32)) >> 8);
             if cost < best.0 {
                 best = (cost, mode, pu, pv);
@@ -951,9 +970,9 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         (best.1, best.2, best.3)
     }
 
-    fn edge4(&self, e: &MbEdges, av: Avail, rec: &[u8; 256], bx: usize, by: usize) -> Edge4 {
-        let mut top = [0u8; 8];
-        let mut left = [0u8; 4];
+    fn edge4(&self, e: &MbEdges<P>, av: Avail, rec: &[P; 256], bx: usize, by: usize) -> Edge4<P> {
+        let mut top = [P::default(); 8];
+        let mut left = [P::default(); 4];
         let has_top = by > 0 || av.top;
         let has_left = bx > 0 || av.left;
         let has_tl = if bx > 0 && by > 0 {
@@ -981,7 +1000,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             }
         }
         let tl = if !has_tl {
-            0
+            P::default()
         } else if bx > 0 && by > 0 {
             rec[(by * 4 - 1) * 16 + bx * 4 - 1]
         } else if by == 0 && bx > 0 {
@@ -994,10 +1013,10 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         Edge4 { top, left, tl, has_top, has_left, has_tl }
     }
 
-    fn edge8(&self, e: &MbEdges, av: Avail, rec: &[u8; 256], b8: usize) -> Edge8 {
+    fn edge8(&self, e: &MbEdges<P>, av: Avail, rec: &[P; 256], b8: usize) -> Edge8<P> {
         let (x8, y8) = (b8 & 1, b8 >> 1);
-        let mut top = [0u8; 16];
-        let mut left = [0u8; 8];
+        let mut top = [P::default(); 16];
+        let mut left = [P::default(); 8];
         let has_top = y8 > 0 || av.top;
         let has_left = x8 > 0 || av.left;
         let has_tl = match b8 {
@@ -1026,7 +1045,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             }
         }
         let tl = if !has_tl {
-            0
+            P::default()
         } else {
             match b8 {
                 0 => e.tl,
@@ -1039,8 +1058,10 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     }
 
     /// Intra 4x4 analysis + coding. Returns cost (SATD domain) or None if it exceeded `limit`.
-    fn intra4x4(&self, mx: usize, my: usize, qp: u8, av: Avail, e: &MbEdges, src: &Src, c: &mut Cand, limit: u64) -> Option<u64> {
+    #[allow(clippy::too_many_arguments)]
+    fn intra4x4(&self, mx: usize, my: usize, qp: u8, av: Avail, e: &MbEdges<P>, src: &Src<P>, c: &mut Cand<P>, limit: u64) -> Option<u64> {
         let qt = self.f.qt;
+        let dp = self.f.p.depth;
         let lam = self.f.lam.sad[qp as usize];
         let mut modes = [-1i8; 16];
         let mut total = ((lam * 24) >> 8) as u64;
@@ -1048,17 +1069,17 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             let (bx, by) = BLK4_XY[blk];
             let ed = self.edge4(e, av, &c.ry, bx, by);
             let pm = self.pred_intra_mode(mx, my, av, &modes, bx, by);
-            let mut srcb = [0u8; 16];
+            let mut srcb = [P::default(); 16];
             for y in 0..4 {
                 srcb[y * 4..y * 4 + 4].copy_from_slice(&src.y[(by * 4 + y) * 16 + bx * 4..(by * 4 + y) * 16 + bx * 4 + 4]);
             }
-            let mut best = (u32::MAX, 2u8, [0u8; 16]);
+            let mut best = (u32::MAX, 2u8, [P::default(); 16]);
             for mode in 0..9u8 {
                 if !mode_available(mode, ed.has_top, ed.has_left, ed.has_tl) {
                     continue;
                 }
-                let mut p = [0u8; 16];
-                pred4x4(mode, &ed, &mut p);
+                let mut p = [P::default(); 16];
+                pred4x4(mode, &ed, dp, &mut p);
                 let bits = if mode == pm { 1 } else { 4 };
                 let cost = satd(&srcb, 4, &p, 4, 4, 4) + ((lam * bits) >> 8);
                 if cost < best.0 {
@@ -1081,7 +1102,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             // code block
             let mut d = [0i32; 16];
             for i in 0..16 {
-                d[i] = srcb[i] as i32 - p[i] as i32;
+                d[i] = srcb[i].get() - p[i].get();
             }
             let mut t = fdct4(&d);
             let nz = quant4(&mut t, qt, qp, Deadzone::INTRA, false);
@@ -1106,7 +1127,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                 let r = idct4(&t);
                 for y in 0..4 {
                     for x in 0..4 {
-                        c.ry[off + y * 16 + x] = (p[y * 4 + x] as i32 + r[y * 4 + x]).clamp(0, 255) as u8;
+                        c.ry[off + y * 16 + x] = P::clip(p[y * 4 + x].get() + r[y * 4 + x], dp);
                     }
                 }
             }
@@ -1126,8 +1147,10 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     }
 
     /// Intra 8x8 analysis + coding.
-    fn intra8x8(&self, mx: usize, my: usize, qp: u8, av: Avail, e: &MbEdges, src: &Src, c: &mut Cand, limit: u64) -> Option<u64> {
+    #[allow(clippy::too_many_arguments)]
+    fn intra8x8(&self, mx: usize, my: usize, qp: u8, av: Avail, e: &MbEdges<P>, src: &Src<P>, c: &mut Cand<P>, limit: u64) -> Option<u64> {
         let qt = self.f.qt;
+        let dp = self.f.p.depth;
         let lam = self.f.lam.sad[qp as usize];
         let mut modes = [-1i8; 16];
         let mut total = ((lam * 12) >> 8) as u64;
@@ -1136,17 +1159,17 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             let ed = self.edge8(e, av, &c.ry, b8);
             let fe = filter8(&ed);
             let pm = self.pred_intra_mode(mx, my, av, &modes, x8 * 2, y8 * 2);
-            let mut srcb = [0u8; 64];
+            let mut srcb = [P::default(); 64];
             for y in 0..8 {
                 srcb[y * 8..y * 8 + 8].copy_from_slice(&src.y[(y8 * 8 + y) * 16 + x8 * 8..(y8 * 8 + y) * 16 + x8 * 8 + 8]);
             }
-            let mut best = (u32::MAX, 2u8, [0u8; 64]);
+            let mut best = (u32::MAX, 2u8, [P::default(); 64]);
             for mode in 0..9u8 {
                 if !mode_available(mode, ed.has_top, ed.has_left, ed.has_tl) {
                     continue;
                 }
-                let mut p = [0u8; 64];
-                pred8x8(mode, &fe, &mut p);
+                let mut p = [P::default(); 64];
+                pred8x8(mode, &fe, dp, &mut p);
                 let bits = if mode == pm { 1 } else { 4 };
                 let cost = satd(&srcb, 8, &p, 8, 8, 8) + ((lam * bits) >> 8);
                 if cost < best.0 {
@@ -1170,7 +1193,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             };
             let mut d = [0i32; 64];
             for i in 0..64 {
-                d[i] = srcb[i] as i32 - p[i] as i32;
+                d[i] = srcb[i].get() - p[i].get();
             }
             let mut t = fdct8(&d);
             let nz = quant8(&mut t, qt, qp, Deadzone::INTRA);
@@ -1192,7 +1215,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                 let r = idct8(&t);
                 for y in 0..8 {
                     for x in 0..8 {
-                        c.ry[off + y * 16 + x] = (p[y * 8 + x] as i32 + r[y * 8 + x]).clamp(0, 255) as u8;
+                        c.ry[off + y * 16 + x] = P::clip(p[y * 8 + x].get() + r[y * 8 + x], dp);
                     }
                 }
             }
@@ -1212,13 +1235,14 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     }
 
     /// Full intra analysis; returns the best coded intra candidate. `inter_cost` lets P/B skip expensive modes.
-    fn analyse_intra(&self, mx: usize, my: usize, qp: u8, av: Avail, e: &MbEdges, src: &Src, inter_cost: u64) -> Box<Cand> {
+    #[allow(clippy::too_many_arguments)]
+    fn analyse_intra(&self, mx: usize, my: usize, qp: u8, av: Avail, e: &MbEdges<P>, src: &Src<P>, inter_cost: u64) -> Box<Cand<P>> {
         let lam = self.f.lam.sad[qp as usize];
         let p = self.f.p;
         // I16x16 mode
-        let mut top16 = [0u8; 16];
+        let mut top16 = [P::default(); 16];
         top16.copy_from_slice(&e.top[..16]);
-        let mut b16 = (u32::MAX, 2u8, [0u8; 256]);
+        let mut b16 = (u32::MAX, 2u8, [P::default(); 256]);
         for mode in 0..4u8 {
             let ok = match mode {
                 0 => av.top,
@@ -1229,8 +1253,8 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             if !ok {
                 continue;
             }
-            let mut pr = [0u8; 256];
-            pred16x16(mode, &top16, &e.left, e.tl, av.top, av.left, &mut pr);
+            let mut pr = [P::default(); 256];
+            pred16x16(mode, &top16, &e.left, e.tl, av.top, av.left, p.depth, &mut pr);
             let cost = satd(&src.y, 16, &pr, 16, 16, 16);
             if cost < b16.0 {
                 b16 = (cost, mode, pr);
@@ -1251,7 +1275,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             c.cost = cost16;
             c
         };
-        let mut best: Option<Box<Cand>> = None;
+        let mut best: Option<Box<Cand<P>>> = None;
         let try_nxn = p.i4x4 && (inter_cost == u64::MAX || cost16 < inter_cost + inter_cost / 4 || p.always_intra);
         if !try_nxn {
             return mk16();
@@ -1275,7 +1299,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                 }
             }
         }
-        let finish = |mut c: Box<Cand>| {
+        let finish = |mut c: Box<Cand<P>>| {
             c.code.chroma_mode = cmode;
             c.info.chroma_mode = cmode;
             let cbpc = self.code_chroma(src, &pu, &pv, qp, true, &mut c);
@@ -1304,7 +1328,8 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     // ------------------------------------------------------------------ motion estimation
 
     /// Integer + sub-pel search for a w x h block at picture (bx, by). Returns (mv, cost, satd).
-    fn search(&self, r: &RefPic, bx: usize, by: usize, w: usize, h: usize, src: &[u8], sstride: usize, mvp: Mv, cands: &[Mv], lam: u32) -> (Mv, u32) {
+    #[allow(clippy::too_many_arguments)]
+    fn search(&self, r: &RefPic<P>, bx: usize, by: usize, w: usize, h: usize, src: &[P], sstride: usize, mvp: Mv, cands: &[Mv], lam: u32) -> (Mv, u32) {
         let pl = &r.frame.y;
         let p = self.f.p;
         let fcost = |mv: Mv| -> u32 {
@@ -1370,8 +1395,8 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             }
         }
         // sub-pel refinement with SATD
-        let mut buf = [0u8; 256];
-        let scost = |mv: Mv, buf: &mut [u8; 256]| -> u32 {
+        let mut buf = [P::default(); 256];
+        let scost = |mv: Mv, buf: &mut [P; 256]| -> u32 {
             r.mc_luma(bx, by, mv, w, h, buf, 16);
             satd(src, sstride, buf, 16, w, h) + ((lam * mv_bits(mv, mvp)) >> 8)
         };
@@ -1404,14 +1429,15 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         (best, bs)
     }
 
-    fn pred_block(&self, r: &RefPic, px: usize, py: usize, rect: (usize, usize, usize, usize), mv: Mv, y: &mut [u8; 256], u: &mut [u8; 64], v: &mut [u8; 64]) {
+    #[allow(clippy::too_many_arguments)]
+    fn pred_block(&self, r: &RefPic<P>, px: usize, py: usize, rect: (usize, usize, usize, usize), mv: Mv, y: &mut [P; 256], u: &mut [P; 64], v: &mut [P; 64]) {
         let (x, yy, w, h) = rect;
         r.mc_luma(px + x, py + yy, mv, w, h, &mut y[yy * 16 + x..], 16);
         let co = (yy / 2) * 8 + x / 2;
         r.mc_chroma((px + x) / 2, (py + yy) / 2, mv, w / 2, h / 2, &mut u[co..], &mut v[co..], 8);
     }
 
-    fn cand_inter_info(c: &mut Cand, part: Part, refs: [[i8; 4]; 2], mvs: [[Mv; 4]; 2], mvds: [[Mv; 4]; 2]) {
+    fn cand_inter_info(c: &mut Cand<P>, part: Part, refs: [[i8; 4]; 2], mvs: [[Mv; 4]; 2], mvds: [[Mv; 4]; 2]) {
         for p in 0..part.count() {
             let (x, y, w, h) = part.rect(p);
             for by in y / 4..(y + h) / 4 {
@@ -1458,7 +1484,8 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     }
 
     /// Search each partition of `part` for list `list` sequentially (mvp depends on earlier partitions).
-    fn search_part(&self, mx: usize, my: usize, r: &RefPic, part: Part, list: usize, src: &Src, lam: u32, seed: Mv) -> ([Mv; 4], [Mv; 4], u32) {
+    #[allow(clippy::too_many_arguments)]
+    fn search_part(&self, mx: usize, my: usize, r: &RefPic<P>, part: Part, list: usize, src: &Src<P>, lam: u32, seed: Mv) -> ([Mv; 4], [Mv; 4], u32) {
         let (px, py) = (mx * 16, my * 16);
         let mut info = MbInfo::default();
         let mut mvs = [Mv::ZERO; 4];
@@ -1487,7 +1514,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         (mvs, mvps, total)
     }
 
-    fn analyse_p(&self, mx: usize, my: usize, qp: u8, av: Avail, e: &MbEdges, src: &Src) -> Box<Cand> {
+    fn analyse_p(&self, mx: usize, my: usize, qp: u8, av: Avail, e: &MbEdges<P>, src: &Src<P>) -> Box<Cand<P>> {
         let f = self.f;
         // P slices always have a reference; without one the macroblock is coded intra.
         let Some(r) = f.l0 else { return self.analyse_intra(mx, my, qp, av, e, src, u64::MAX) };
@@ -1498,9 +1525,9 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         // --- try P_Skip early
         let mut skip_pred = None;
         if skip_ok {
-            let mut y = [0u8; 256];
-            let mut u = [0u8; 64];
-            let mut v = [0u8; 64];
+            let mut y = [P::default(); 256];
+            let mut u = [P::default(); 64];
+            let mut v = [P::default(); 64];
             self.pred_block(r, px, py, (0, 0, 16, 16), skip_mv, &mut y, &mut u, &mut v);
             let s = sad16(&src.y, 16, &y, 16, 16);
             let qstep_thresh = (f.qt.v4[(qp % 6) as usize][0] << (qp / 6)) as u32 * 16;
@@ -1540,7 +1567,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         let mut best_mvps = mvp16;
         let mut best_cost = cost16 as u64 + (lam >> 8) as u64;
         if f.p.partitions {
-            let big = cost16 as u64 > (256 * 4) as u64;
+            let big = cost16 as u64 > (256 * 4) << f.p.depth.shift;
             if big {
                 for part in [Part::P16x8, Part::P8x16, Part::P8x8] {
                     let (m, p, c) = self.search_part(mx, my, r, part, 0, src, lam, mv16[0]);
@@ -1562,9 +1589,9 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         let mut ci = Cand::new();
         ci.code.kind = MbKind::PInter;
         ci.code.part = best_part;
-        let mut py_ = [0u8; 256];
-        let mut pu = [0u8; 64];
-        let mut pv = [0u8; 64];
+        let mut py_ = [P::default(); 256];
+        let mut pu = [P::default(); 64];
+        let mut pv = [P::default(); 64];
         if let (Part::P16x16, true, Some((a, b, c))) = (best_part, best_mvs[0] == skip_mv, skip_pred) {
             py_ = a;
             pu = b;
@@ -1589,7 +1616,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             return ci;
         }
         // --- intra
-        let need_intra = f.p.always_intra || best_cost > (256 * 3 + 16 * lam as u64 / 256) * 2;
+        let need_intra = f.p.always_intra || best_cost > (((256 * 3) << f.p.depth.shift) + 16 * lam as u64 / 256) * 2;
         if need_intra {
             let ic = self.analyse_intra(mx, my, qp, av, e, src, best_cost);
             if f.p.rd {
@@ -1665,7 +1692,8 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
 
     /// B 16x8 / 8x16 candidate: search each partition in both lists, choose L0/L1/Bi per partition, then derive
     /// the motion vector predictors in decoding order from the chosen directions.
-    fn b_partition(&self, mx: usize, my: usize, part: Part, src: &Src, qp: u8, lam: u32, seeds: [Mv; 2]) -> Option<Box<Cand>> {
+    #[allow(clippy::too_many_arguments)]
+    fn b_partition(&self, mx: usize, my: usize, part: Part, src: &Src<P>, qp: u8, lam: u32, seeds: [Mv; 2]) -> Option<Box<Cand<P>>> {
         let f = self.f;
         let rp = [f.l0?, f.l1?];
         let (px, py) = (mx * 16, my * 16);
@@ -1673,7 +1701,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         for l in 0..2 {
             mvs[l] = self.search_part(mx, my, rp[l], part, l, src, lam, seeds[l]).0;
         }
-        let mut preds = [([0u8; 256], [0u8; 64], [0u8; 64]), ([0u8; 256], [0u8; 64], [0u8; 64])];
+        let mut preds = [([P::default(); 256], [P::default(); 64], [P::default(); 64]), ([P::default(); 256], [P::default(); 64], [P::default(); 64])];
         for l in 0..2 {
             let (a, b, c) = &mut preds[l];
             for pi in 0..2 {
@@ -1685,7 +1713,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         avg_into(&mut bi.1, &preds[1].1);
         avg_into(&mut bi.2, &preds[1].2);
         let srcs = [&preds[0], &preds[1], &bi];
-        let (mut py_, mut pu, mut pv) = ([0u8; 256], [0u8; 64], [0u8; 64]);
+        let (mut py_, mut pu, mut pv) = ([P::default(); 256], [P::default(); 64], [P::default(); 64]);
         let mut dirs = [0u8; 4];
         let mut cost = ((lam * 8) >> 8) as u64;
         for pi in 0..2 {
@@ -1751,7 +1779,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         Some(c)
     }
 
-    fn analyse_b(&self, mx: usize, my: usize, qp: u8, av: Avail, e: &MbEdges, src: &Src) -> Box<Cand> {
+    fn analyse_b(&self, mx: usize, my: usize, qp: u8, av: Avail, e: &MbEdges<P>, src: &Src<P>) -> Box<Cand<P>> {
         let f = self.f;
         // B slices always have both references; without them the macroblock is coded intra.
         let (Some(r0), Some(r1)) = (f.l0, f.l1) else { return self.analyse_intra(mx, my, qp, av, e, src, u64::MAX) };
@@ -1768,14 +1796,14 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                 }
             }
         }
-        let mut best: Option<Box<Cand>> = None;
+        let mut best: Option<Box<Cand<P>>> = None;
         if direct_ok {
-            let mut y = [0u8; 256];
-            let mut u = [0u8; 64];
-            let mut v = [0u8; 64];
-            let mut ty = [0u8; 256];
-            let mut tu = [0u8; 64];
-            let mut tv = [0u8; 64];
+            let mut y = [P::default(); 256];
+            let mut u = [P::default(); 64];
+            let mut v = [P::default(); 64];
+            let mut ty = [P::default(); 256];
+            let mut tu = [P::default(); 64];
+            let mut tv = [P::default(); 64];
             for q in 0..4 {
                 let rect = Part::P8x8.rect(q);
                 let (u0, u1) = (dref[0][q] >= 0, dref[1][q] >= 0);
@@ -1825,7 +1853,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             let (m, p, c) = self.search_part(mx, my, rp, Part::P16x16, l, src, lam, if l == 0 { dmv[0][0] } else { dmv[1][0] });
             res[l] = (m[0], p[0], c);
         }
-        let mut preds = [([0u8; 256], [0u8; 64], [0u8; 64]), ([0u8; 256], [0u8; 64], [0u8; 64])];
+        let mut preds = [([P::default(); 256], [P::default(); 64], [P::default(); 64]), ([P::default(); 256], [P::default(); 64], [P::default(); 64])];
         for (l, rp) in [(0usize, r0), (1usize, r1)] {
             let (a, b, c) = &mut preds[l];
             self.pred_block(rp, px, py, (0, 0, 16, 16), res[l].0, a, b, c);
@@ -1875,7 +1903,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         }
         let mut best = best.unwrap_or_else(|| self.analyse_intra(mx, my, qp, av, e, src, u64::MAX));
         // --- 16x8 / 8x16 partitions with a per-partition prediction direction
-        if f.p.partitions && best.cost > 256 * 4 {
+        if f.p.partitions && best.cost > (256 * 4) << f.p.depth.shift {
             for part in [Part::P16x8, Part::P8x16] {
                 if let Some(c) = self.b_partition(mx, my, part, src, qp, lam, [res[0].0, res[1].0]) {
                     let better = if f.p.rd { self.rd_cost(mx, my, &c, src, qp) < self.rd_cost(mx, my, &best, src, qp) } else { c.cost < best.cost };
@@ -1885,7 +1913,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                 }
             }
         }
-        let need_intra = f.p.always_intra || best.cost > (256 * 3 + 16 * lam as u64 / 256) * 3;
+        let need_intra = f.p.always_intra || best.cost > (((256 * 3) << f.p.depth.shift) + 16 * lam as u64 / 256) * 3;
         if need_intra {
             let ic = self.analyse_intra(mx, my, qp, av, e, src, best.cost);
             if f.p.rd {
@@ -1900,8 +1928,8 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     }
 }
 
-struct Src {
-    y: [u8; 256],
-    u: [u8; 64],
-    v: [u8; 64],
+struct Src<P> {
+    y: [P; 256],
+    u: [P; 64],
+    v: [P; 64],
 }

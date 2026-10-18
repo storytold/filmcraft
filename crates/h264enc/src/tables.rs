@@ -944,11 +944,13 @@ pub fn pos_class8(i: usize) -> usize {
     }
 }
 
-/// QPc as a function of qPI (Table 8-15).
-pub fn chroma_qp(qpi: i32) -> u8 {
+/// QP'C for luma QP'Y `qp_prime_y`, chroma_qp_index_offset `offset` and QpBdOffset `bd_offset`
+/// (§8.5.8 and Table 8-15): qPI = Clip3(-QpBdOffsetC, 51, QPY + offset), QP'C = QPC + QpBdOffsetC.
+pub fn chroma_qp_prime(qp_prime_y: i32, offset: i32, bd_offset: i32) -> u8 {
     const T: [u8; 22] = [29, 30, 31, 32, 32, 33, 34, 34, 35, 35, 36, 36, 37, 37, 37, 38, 38, 38, 39, 39, 39, 39];
-    let q = qpi.clamp(0, 51);
-    if q < 30 { q as u8 } else { T[(q - 30) as usize] }
+    let qpi = (qp_prime_y - bd_offset + offset).clamp(-bd_offset, 51);
+    let qpc = if qpi < 30 { qpi } else { T[(qpi - 30) as usize] as i32 };
+    (qpc + bd_offset).clamp(0, 255) as u8
 }
 
 // ---------------------------------------------------------------- deblocking
@@ -1091,5 +1093,22 @@ mod tests {
             let v: Vec<_> = row.iter().take(n).map(|&(l, c)| (l, c as u32)).collect();
             check(&v);
         }
+    }
+
+    #[test]
+    fn chroma_qp_prime_matches_table_8_15() {
+        // 8 bits: QPC straight from Table 8-15 (qPI clipped to 0..=51)
+        let t: Vec<u8> = (0..52).map(|q| chroma_qp_prime(q, 0, 0)).collect();
+        assert_eq!(&t[..30], &(0..30).collect::<Vec<u8>>()[..]);
+        assert_eq!(&t[30..], &[29, 30, 31, 32, 32, 33, 34, 34, 35, 35, 36, 36, 37, 37, 37, 38, 38, 38, 39, 39, 39, 39]);
+        assert_eq!(chroma_qp_prime(40, 12, 0), 39);
+        assert_eq!(chroma_qp_prime(5, -12, 0), 0);
+        // 10 bits: QP'Y 0 is QPY -12, qPI -12 maps to itself, QP'C 0; QP'Y 63 is QPY 51 -> QPC 39 -> QP'C 51
+        assert_eq!(chroma_qp_prime(0, 0, 12), 0);
+        assert_eq!(chroma_qp_prime(12 + 29, 0, 12), 12 + 29);
+        assert_eq!(chroma_qp_prime(12 + 30, 0, 12), 12 + 29);
+        assert_eq!(chroma_qp_prime(63, 0, 12), 51);
+        // the offset can't push qPI below -QpBdOffsetC
+        assert_eq!(chroma_qp_prime(0, -12, 12), 0);
     }
 }

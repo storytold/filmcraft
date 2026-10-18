@@ -42,6 +42,8 @@ pub struct Sps {
     pub log2_max_frame_num: u32,
     pub log2_max_poc_lsb: u32,
     pub max_num_ref_frames: u32,
+    /// BitDepthY = BitDepthC (8 to 10).
+    pub bit_depth: u8,
     pub vui: Vui,
 }
 
@@ -54,8 +56,8 @@ impl Sps {
         w.write_ue(0); // seq_parameter_set_id
         if matches!(self.profile_idc, 100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135) {
             w.write_ue(1); // chroma_format_idc 4:2:0
-            w.write_ue(0); // bit_depth_luma_minus8
-            w.write_ue(0); // bit_depth_chroma_minus8
+            w.write_ue(self.bit_depth.saturating_sub(8) as u32); // bit_depth_luma_minus8
+            w.write_ue(self.bit_depth.saturating_sub(8) as u32); // bit_depth_chroma_minus8
             w.write_bit(false); // qpprime_y_zero_transform_bypass_flag
             w.write_bit(false); // seq_scaling_matrix_present_flag
         }
@@ -279,17 +281,19 @@ impl SliceHeader {
 }
 
 /// AVCDecoderConfigurationRecord (ISO/IEC 14496-15 §5.3.3.1) with 4-byte NAL lengths.
-pub fn avcc(sps_nal: &[u8], pps_nal: &[u8], profile_idc: u8, constraint: u8, level: u8) -> Vec<u8> {
-    let mut v = vec![1, profile_idc, constraint, level, 0xFF, 0xE1];
+pub fn avcc(sps_nal: &[u8], pps_nal: &[u8], sps: &Sps) -> Vec<u8> {
+    let profile_idc = sps.profile_idc;
+    let mut v = vec![1, profile_idc, sps.constraint_flags, sps.level_idc, 0xFF, 0xE1];
     v.extend_from_slice(&(sps_nal.len() as u16).to_be_bytes());
     v.extend_from_slice(sps_nal);
     v.push(1);
     v.extend_from_slice(&(pps_nal.len() as u16).to_be_bytes());
     v.extend_from_slice(pps_nal);
     if matches!(profile_idc, 100 | 110 | 122 | 144) {
+        let bd = sps.bit_depth.saturating_sub(8) & 7;
         v.push(0xFC | 1); // chroma_format 4:2:0
-        v.push(0xF8); // bit_depth_luma_minus8
-        v.push(0xF8); // bit_depth_chroma_minus8
+        v.push(0xF8 | bd); // bit_depth_luma_minus8
+        v.push(0xF8 | bd); // bit_depth_chroma_minus8
         v.push(0); // numOfSequenceParameterSetExt
     }
     v
@@ -303,7 +307,9 @@ pub fn level_at_least(requested: u8, needed: u8) -> u8 {
 }
 
 /// Pick the lowest level satisfying frame size, macroblock rate, DPB size and (optionally) bitrate.
-pub fn pick_level(width_mbs: u32, height_mbs: u32, fps: f64, dpb_frames: u32, kbps: Option<u32>, high: bool) -> u8 {
+/// `br_factor` is the profile's cpbBrVclFactor / 1000 in thousandths (1000 Baseline/Main, 1250 High,
+/// 3000 High 10).
+pub fn pick_level(width_mbs: u32, height_mbs: u32, fps: f64, dpb_frames: u32, kbps: Option<u32>, br_factor: u64) -> u8 {
     // (level_idc, MaxMBPS, MaxFS, MaxDpbMbs, MaxBR kbit/s)
     const LEVELS: [(u8, u64, u64, u64, u64); 17] = [
         (10, 1485, 99, 396, 64),
@@ -327,7 +333,7 @@ pub fn pick_level(width_mbs: u32, height_mbs: u32, fps: f64, dpb_frames: u32, kb
     let fs = (width_mbs * height_mbs) as u64;
     let mbps = (fs as f64 * fps).ceil() as u64;
     for &(l, max_mbps, max_fs, max_dpb, max_br) in &LEVELS {
-        let br_ok = kbps.is_none_or(|k| (k as u64) * 1000 <= max_br * if high { 1250 } else { 1000 });
+        let br_ok = kbps.is_none_or(|k| (k as u64) * 1000 <= max_br * br_factor);
         let dim_ok = (width_mbs as u64).pow(2) <= 8 * max_fs && (height_mbs as u64).pow(2) <= 8 * max_fs;
         if fs <= max_fs && mbps <= max_mbps && fs * dpb_frames as u64 <= max_dpb && br_ok && dim_ok {
             return l;
