@@ -1059,3 +1059,18 @@ fn linked_rate_stretch_keeps_one_speed_when_a_neighbour_blocks_the_sound() {
     assert!((pic.speed - sound.speed).abs() < 1e-12);
     assert!((r["speed"].as_f64().unwrap() - 60.0 / 70.0).abs() < 1e-9);
 }
+
+/// `clip.rename` with `clips` renames every one of them (a linked picture and sound) in one step.
+#[test]
+fn rename_takes_several_clips() {
+    let mut s = demo();
+    let ids: Vec<u64> = v1(&s).iter().take(2).map(|c| c.id.0).collect();
+    let undo = s.history.undo.len();
+    s.execute("clip.rename", json!({"clips": ids, "name": "Both"})).unwrap();
+    for id in &ids {
+        assert_eq!(clip(&s, *id).name, "Both");
+    }
+    assert_eq!(s.history.undo.len(), undo + 1);
+    assert!(s.execute("clip.rename", json!({"clips": [ids[0], 999_999], "name": "x"})).is_err(), "an unknown clip renames nothing");
+    assert_eq!(clip(&s, ids[0]).name, "Both");
+}

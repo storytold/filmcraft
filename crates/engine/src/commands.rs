@@ -1781,16 +1781,22 @@ fn build() -> Vec<CommandSpec> {
             Ok(Value::Null)
         }),
         // ================= Clip =================
-        cmd!("clip.rename", "Rename…", ["Clip"], None, r#"{"clip":id?,"item":id?,"name":str}"#, always, |s, p| {
+        cmd!("clip.rename", "Rename…", ["Clip"], None, r#"{"clip":id?,"clips":[id]?,"item":id?,"name":str}"#, always, |s, p| {
             let name = str_p(p, "name").ok_or_else(|| bad("clip.rename", "need `name`"))?.to_string();
             let item = item_p(p, "item");
-            let clip = clip_p(p, "clip").or_else(|| s.state.selection.first().copied());
+            // `clips` renames them all (a linked picture and sound, as Clip ▸ Rename… does)
+            let clips: Vec<ClipId> = match p.get("clips").and_then(Value::as_array) {
+                Some(a) => a.iter().filter_map(|v| v.as_u64().map(ClipId)).collect(),
+                None => clip_p(p, "clip").or_else(|| s.state.selection.first().copied()).into_iter().collect(),
+            };
             let seq = s.state.active_sequence;
             s.edit("Rename", |pr, _| {
                 if let Some(i) = item {
                     pr.item_mut(i).ok_or_else(|| bad("clip.rename", "no such item"))?.name = name;
-                } else if let (Some(c), Some(q)) = (clip, seq) {
-                    pr.sequence_mut(q).and_then(|q| q.find_item_mut(c)).ok_or_else(|| bad("clip.rename", "no such clip"))?.1.name = name;
+                } else if let Some(q) = seq.and_then(|q| pr.sequence_mut(q)) {
+                    for c in &clips {
+                        q.find_item_mut(*c).ok_or_else(|| bad("clip.rename", "no such clip"))?.1.name = name.clone();
+                    }
                 }
                 Ok(())
             })?;
