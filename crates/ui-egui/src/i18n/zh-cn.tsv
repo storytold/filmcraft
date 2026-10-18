@@ -3585,3 +3585,6 @@
 	Shows the version, community links and credits in a FilmCraft window.	在 FilmCraft 窗口中显示版本、社区链接和致谢。
 	Couldn't open your web browser	无法打开网页浏览器
 	Open this address in your browser yourself:	请自行在浏览器中打开此地址：
+	A file with this name already exists at {path}.	此名称的文件已存在于 {path}。
+	Replace	替换
+	Replace existing file?	替换现有文件？

@@ -471,8 +471,8 @@ fn queue_orders_cancels_and_retries() {
 fn queue_move_by_extreme_offsets_clamps_instead_of_overflowing() {
     let mut s = demo();
     let ids: Vec<u64> = (0..3)
-        .map(|_| {
-            let r = s.execute("export.queue.add", json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": "queued-output/"})).unwrap();
+        .map(|i| {
+            let r = s.execute("export.queue.add", json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": format!("queued-output/{i}.wav")})).unwrap();
             r["added"][0].as_u64().unwrap()
         })
         .collect();
@@ -673,6 +673,62 @@ fn quick_export_uses_and_remembers_a_preset() {
 }
 
 #[test]
+fn sidecar_write_failure_restores_previous_media_and_sidecar() {
+    use crate::{Services, export_tools::ReplacementRollback};
+
+    let dir = Scratch::new("sidecar-rollback");
+    let media = dir.path("final.wav");
+    let sidecar = dir.path("final.srt");
+    std::fs::write(&media, b"previous media").unwrap();
+    std::fs::write(&sidecar, b"previous captions").unwrap();
+    let settings = filmcraft_export::ExportSettings { format: filmcraft_export::Format::Wav, path: media.clone(), overwrite: true, ..Default::default() };
+    let sidecar_data = (sidecar.clone(), b"new captions".to_vec());
+    let mut rollback = ReplacementRollback::capture(&settings, Some(&sidecar_data), false).unwrap().unwrap();
+
+    // Simulate the media having been published before the sidecar filesystem write fails.
+    std::fs::write(&media, b"replacement media").unwrap();
+    std::fs::remove_file(&sidecar).unwrap();
+    std::fs::create_dir(&sidecar).unwrap();
+    assert!(crate::FsServices.write_file(&sidecar, b"new captions").is_err());
+    std::fs::remove_dir(&sidecar).unwrap();
+
+    assert_eq!(rollback.restore(), None);
+    assert_eq!(std::fs::read(media).unwrap(), b"previous media");
+    assert_eq!(std::fs::read(sidecar).unwrap(), b"previous captions");
+}
+
+#[test]
+fn quick_export_requires_explicit_replacement_of_an_existing_file() {
+    let mut s = demo();
+    let dir = Scratch::new("quick-collision");
+    let path = dir.path("keep.mp4");
+    std::fs::write(&path, b"previous export").unwrap();
+    let params = json!({"path":path,"range":"custom","startSeconds":0,"endSeconds":0.1,"wait":true});
+    let error = s.execute("export.quick", params.clone()).unwrap_err().to_string();
+    assert!(error.contains("destination already exists"), "{error}");
+    assert_eq!(std::fs::read(&path).unwrap(), b"previous export");
+    let mut replace = params;
+    replace["overwrite"] = json!(true);
+    s.execute("export.quick", replace).unwrap();
+    assert_ne!(std::fs::read(path).unwrap(), b"previous export");
+}
+
+#[test]
+fn image_sequence_detects_existing_numbered_frames_before_starting() {
+    let mut s = demo();
+    let dir = Scratch::new("sequence-collision");
+    let pattern = dir.path("frames.png");
+    let existing = dir.path("frames000.png");
+    std::fs::write(&existing, b"previous frame").unwrap();
+    let error = s
+        .execute("file.exportMedia", json!({"preset":"PNG Sequence","path":pattern,"range":"custom","startSeconds":0,"endSeconds":0.1,"wait":true}))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("image-sequence output already exists"), "{error}");
+    assert_eq!(std::fs::read(existing).unwrap(), b"previous frame");
+}
+
+#[test]
 fn ranges_resolve_and_sidecar_captions_are_written() {
     let mut s = demo();
     let dir = Scratch::new("ranges");
@@ -705,7 +761,8 @@ fn ranges_resolve_and_sidecar_captions_are_written() {
     let duration = filmcraft_time::Tick(resolved["range"]["duration"].as_i64().unwrap());
     let timing = format!("00:00:00,460 --> {}", filmcraft_captions::format_clock(duration, ','));
     assert!(srt.contains("Hello sidecar") && srt.contains(&timing), "{srt}");
-    s.execute("file.exportMedia", json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": out, "captionSidecar": "vtt", "wait": true})).unwrap();
+    s.execute("file.exportMedia", json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": out, "captionSidecar": "vtt", "overwrite": true, "wait": true}))
+        .unwrap();
     assert!(std::fs::read_to_string(dir.path("cap.vtt")).unwrap().starts_with("WEBVTT"));
     // a bad preset name is a clean error
     assert!(s.execute("file.exportMedia", json!({"preset": "Nope", "path": out})).is_err());
@@ -787,7 +844,7 @@ fn caption_sidecars_keep_only_the_exported_interval() {
 
     fn sidecar(s: &mut Session, files: &MemoryFiles, format: Format, range: Value, duration: Tick) -> Document {
         let ext = format.extension();
-        let mut params = json!({"format":"wav", "path":"output.wav", "captionSidecar":ext, "wait":true});
+        let mut params = json!({"format":"wav", "path":"output.wav", "captionSidecar":ext, "overwrite":true, "wait":true});
         params.as_object_mut().unwrap().extend(range.as_object().unwrap().clone());
         let result = s.execute("file.exportMedia", params).unwrap();
         assert_eq!(result["result"]["path"], "output.wav");

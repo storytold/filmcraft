@@ -249,8 +249,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             d.replace = Some(path.clone());
         }
         if allowed {
-            let mut params =
-                json!({"path":path,"format":ext,"depth":d.depth,"import":d.import,"target":if d.target.source{"source"}else{"program"},"time":d.target.time.0});
+            let mut params = json!({"path":path,"format":ext,"depth":d.depth,"import":d.import,"overwrite":replace,"target":if d.target.source{"source"}else{"program"},"time":d.target.time.0});
             params[if d.target.source { "item" } else { "sequence" }] = json!(d.target.item.0);
             match app.session.execute("file.exportFrame", params) {
                 Ok(result) => {

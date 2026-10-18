@@ -1492,15 +1492,15 @@ fn build() -> Vec<CommandSpec> {
         cmd!("file.importAaf", "Import AAF…", [], None, r#"{"path":str}"#, always, |s, p| crate::aaf_omf::import_document(s, p, "file.importAaf")),
         cmd!("file.save", "Save", ["File"], Some("Cmd+S"), r#"{"path":str?}"#, always, |s, p| {
             let path = str_p(p, "path").map(str::to_string).or_else(|| s.path.clone()).ok_or_else(|| bad("file.save", "no path (use Save As)"))?;
-            write_project(s, &path, true)
+            write_project(s, &path, true, bool_p(p, "overwrite").unwrap_or(false))
         }),
-        cmd!("file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), r#"{"path":str}"#, always, |s, p| {
+        cmd!("file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), r#"{"path":str,"overwrite":bool=false}"#, always, |s, p| {
             let path = str_p(p, "path").ok_or_else(|| bad("file.saveAs", "need `path`"))?.to_string();
-            write_project(s, &path, true)
+            write_project(s, &path, true, bool_p(p, "overwrite").unwrap_or(false))
         }),
-        cmd!("file.saveCopy", "Save a Copy…", ["File"], Some("Cmd+Alt+S"), r#"{"path":str}"#, always, |s, p| {
+        cmd!("file.saveCopy", "Save a Copy…", ["File"], Some("Cmd+Alt+S"), r#"{"path":str,"overwrite":bool=false}"#, always, |s, p| {
             let path = str_p(p, "path").ok_or_else(|| bad("file.saveCopy", "need `path`"))?.to_string();
-            write_project(s, &path, false)
+            write_project(s, &path, false, bool_p(p, "overwrite").unwrap_or(false))
         }),
         cmd!("file.revert", "Revert", ["File"], None, "{}", has_saved_path, |s, _| {
             let path = s.path.clone().ok_or_else(|| bad("file.revert", "project was never saved"))?;
@@ -1600,7 +1600,7 @@ fn build() -> Vec<CommandSpec> {
             "Media…",
             ["File", "Export"],
             None,
-            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"format":"h264|hevc|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|jpg|tga|dpx|exr|gif|wav|aiff|aac|flac"?,"audioCodec":"auto|aac|pcm|flac"?,"flacLevel":0..8=5,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass|crf"?,"crf":0..51=23,"hardwareEncoding":"off|auto"?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"alpha":bool=false,"exrCompression":"none|rle|zips|zip"?,"captionSidecar":"srt|vtt"?,"loudnessLufs":f64?,"proresProfile":"proxy|lt|standard|hq|4444|4444xq"?,"dnxProfile":"lb|sq|hq|hqx"?,"apvProfile":"422-10|422-12|444-10|444-12"?,"mxfVideoCodec":"dnxhr|proRes|h264"?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false}"#,
+            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"overwrite":bool=false,"format":"h264|hevc|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|jpg|tga|dpx|exr|gif|wav|aiff|aac|flac"?,"audioCodec":"auto|aac|pcm|flac"?,"flacLevel":0..8=5,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass|crf"?,"crf":0..51=23,"hardwareEncoding":"off|auto"?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"alpha":bool=false,"exrCompression":"none|rle|zips|zip"?,"captionSidecar":"srt|vtt"?,"loudnessLufs":f64?,"proresProfile":"proxy|lt|standard|hq|4444|4444xq"?,"dnxProfile":"lb|sq|hq|hqx"?,"apvProfile":"422-10|422-12|444-10|444-12"?,"mxfVideoCodec":"dnxhr|proRes|h264"?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false}"#,
             has_seq,
             crate::export_tools::export_media
         ),
@@ -4312,18 +4312,35 @@ fn name_project(p: &mut filmcraft_project::Project, name: String) {
     p.name = name;
 }
 
-fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
+fn write_project(s: &mut Session, path: &str, adopt: bool, overwrite: bool) -> Result<Value> {
     let t0 = web_time::Instant::now();
-    // Save As renames the project after its new file (not an edit: no undo step, not dirty).
+    let same_file = s.path.as_deref() == Some(path);
+    if !same_file && !overwrite {
+        match s.services.file_size(path) {
+            Ok(_) => {
+                return Err(bad(
+                    if adopt { "file.saveAs" } else { "file.saveCopy" },
+                    format!("destination already exists: {path}; confirm replacement with `overwrite: true`"),
+                ));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(EngineError::Other(format!("cannot inspect destination {path}: {e}"))),
+        }
+    }
+    // Stage Save As naming so a failed destination write cannot change the open project.
+    let mut renamed = None;
     if adopt
         && let Some(name) = project_name_for(path)
         && s.project.name != name
     {
-        name_project(std::sync::Arc::make_mut(&mut s.project), name);
+        let mut project = (*s.project).clone();
+        name_project(&mut project, name);
+        renamed = Some(std::sync::Arc::new(project));
     }
     // what is open (sequence tabs, how each is shown) goes into the file beside the project
     let view = s.project_view();
-    let bytes = filmcraft_format::encode_with_view(&s.project, Some(&view), false);
+    let project = renamed.as_deref().unwrap_or(&s.project);
+    let bytes = filmcraft_format::encode_with_view(project, Some(&view), false);
     let mut backup = None;
     if adopt && s.path.as_deref() == Some(path) && s.loaded_schema < filmcraft_format::SCHEMA_VERSION {
         let b = schema_backup_path(path, s.loaded_schema);
@@ -4334,8 +4351,12 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
             backup = Some(b);
         }
     }
-    s.services.write_file(path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let write = if !same_file && !overwrite { s.services.write_file_new(path, &bytes) } else { s.services.write_file(path, &bytes) };
+    write.map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     if adopt {
+        if let Some(project) = renamed {
+            s.project = project;
+        }
         s.path = Some(path.to_string());
         s.previews_follow_path();
         s.note_recent_project();

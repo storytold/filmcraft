@@ -50,7 +50,8 @@ pub fn make_movie(path: &Path, scene: DemoScene, w: u32, h: u32, frames: i64) {
     q.video_tracks[0].items.push(v);
     q.audio_tracks[0].items.push(a);
     let fmt = if path.extension().is_some_and(|e| e == "mp4") { filmcraft_export::Format::H264 } else { filmcraft_export::Format::ProRes };
-    let settings = filmcraft_export::ExportSettings { format: fmt, path: path.to_string_lossy().into_owned(), bitrate_kbps: 4000, ..Default::default() };
+    let settings =
+        filmcraft_export::ExportSettings { format: fmt, path: path.to_string_lossy().into_owned(), bitrate_kbps: 4000, overwrite: true, ..Default::default() };
     let shared: filmcraft_media::SharedSource = Arc::new(src);
     let provider = move |id: ItemId| (id == item).then(|| shared.clone());
     filmcraft_export::export(&Arc::new(p), seq, &settings, &provider, &Default::default()).unwrap();

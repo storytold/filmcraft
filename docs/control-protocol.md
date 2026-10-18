@@ -168,6 +168,28 @@ or `--bridge 127.0.0.1:9876` to drive the running app. Tools: `command_list`, `c
 Annotations, argument checking, errors and export progress / cancellation:
 [agents.md § Conventions](agents.md#conventions).
 
+File-writing commands (`file.saveAs`, `file.saveCopy`, `file.exportMedia`, `export.quick`, and
+`file.exportFrame`) refuse an existing destination by default. Pass `overwrite: true` only after
+confirming replacement; desktop UI flows show a Replace / Cancel dialog, and Cancel starts no
+write. Ordinary `file.save` to the project's current path remains an intentional update. Native single-file exports are encoded to a unique sibling temporary file and published only after
+encoding succeeds; new-file publication reserves the final path with create-new semantics before
+copying the staged bytes. A filesystem error during final create-new writing can leave an empty reserved destination, but
+cannot replace a pre-existing file.
+Explicit replacement preserves the previous regular file until publication. For native single-file
+exports with captions, FilmCraft snapshots existing media and sidecar files and restores them if the
+sidecar write fails. This rollback is not available for image-sequence exports, MXF OP-Atom, or
+virtual filesystem hosts; a sidecar failure in those cases can leave media published while the job
+reports failure. Native rollback snapshots can also race with an external process that changes the
+same destination while an export is running; FilmCraft does not lock files against other programs. Image-sequence exports stage all encoded frames first
+and roll back earlier frame publications if a later filesystem operation fails. A process crash or
+power loss during that final multi-file publish can still leave a partially replaced sequence.
+Virtual filesystem hosts get best-effort no-replace checks unless they implement
+`Services::write_file_new`; replacement atomicity depends on the host's `write_file` implementation.
+A UI queue-add request with multiple generated outputs does not offer one blanket Replace prompt;
+any pre-existing generated destination remains protected by engine preflight when that queue item
+starts, and that item fails with an actionable error instead of replacing it.
+Do not retry an operation after an uncertain failure without checking the destination first.
+
 Time is in ticks (254 016 000 000 per second); commands also accept `seconds`, `frame` or `timecode`.
 
 ## Panel docking commands

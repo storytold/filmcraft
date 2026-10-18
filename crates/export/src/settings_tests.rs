@@ -13,6 +13,35 @@ use filmcraft_time::TICKS_PER_SECOND;
 
 use super::*;
 
+#[test]
+fn no_replace_publication_preserves_a_destination_created_after_staging() {
+    let dir = Scratch::new("create-new-race");
+    let path = dir.path("output.wav");
+    let settings = ExportSettings { path: path.clone(), overwrite: false, ..Default::default() };
+    let mut staged = Out::create_path(&settings, &path).unwrap();
+    std::io::Write::write_all(&mut staged, b"staged output").unwrap();
+    std::fs::write(&path, b"concurrent writer").unwrap();
+    assert!(staged.finish_path(&settings, &path).is_err());
+    assert_eq!(std::fs::read(path).unwrap(), b"concurrent writer");
+}
+
+#[test]
+fn replacement_output_is_not_published_until_finish() {
+    let dir = Scratch::new("replace-stage");
+    let path = dir.path("output.wav");
+    std::fs::write(&path, b"previous good export").unwrap();
+    let settings = ExportSettings { path: path.clone(), overwrite: true, ..Default::default() };
+    let mut failed = Out::create_path(&settings, &path).unwrap();
+    std::io::Write::write_all(&mut failed, b"partial replacement").unwrap();
+    drop(failed);
+    assert_eq!(std::fs::read(&path).unwrap(), b"previous good export");
+
+    let mut finished = Out::create_path(&settings, &path).unwrap();
+    std::io::Write::write_all(&mut finished, b"complete replacement").unwrap();
+    finished.finish_path(&settings, &path).unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), b"complete replacement");
+}
+
 /// A scratch directory under the workspace `target/`, removed when dropped.
 struct Scratch(PathBuf);
 
@@ -107,6 +136,29 @@ fn image_sequences_are_numbered_like_premiere() {
         let px = img.get_pixel(80, 45).0;
         assert!(px[0] > 240 && px[1] < 15, "{fmt:?} {px:?}");
     }
+}
+
+#[test]
+fn cancelled_sequence_replacement_preserves_existing_frames() {
+    let (p, seq, m) = matte([0.2, 0.4, 0.8, 1.0], 64, 36, None);
+    let dir = Scratch::new("seq-cancel-replace");
+    let path = dir.path("Shot.png");
+    let first = dir.path("Shot000.png");
+    let second = dir.path("Shot001.png");
+    std::fs::write(&first, b"old frame zero").unwrap();
+    std::fs::write(&second, b"old frame one").unwrap();
+    let settings = ExportSettings {
+        format: Format::PngSequence,
+        path,
+        overwrite: true,
+        range: Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(12))),
+        ..Default::default()
+    };
+    let progress = Progress::default();
+    progress.cancel.store(true, Ordering::Relaxed);
+    assert!(matches!(export(&p, seq, &settings, &m, &progress), Err(ExportError::Cancelled)));
+    assert_eq!(std::fs::read(first).unwrap(), b"old frame zero");
+    assert_eq!(std::fs::read(second).unwrap(), b"old frame one");
 }
 
 /// JPEG, Targa and DPX sequences (#779): numbered like the others, JPEG at the export quality,

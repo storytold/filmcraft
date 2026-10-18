@@ -204,6 +204,8 @@ pub enum Dialog {
     Recovery,
     /// "Are you sure you want to discard your changes?" (File ▸ Revert).
     RevertConfirm,
+    /// Confirm replacing an existing destination selected by the user.
+    OverwriteConfirm,
     /// Clip ▸ Audio Gain… (G).
     AudioGain,
     /// Sequence ▸ Delete Tracks….
@@ -271,6 +273,91 @@ pub(crate) const EXPORT_SAVE_DIALOGS: [(&str, &str, &str); 7] = [
     ("file.exportSelectionProject", "FilmCraft Project", "fcproj"),
 ];
 
+pub(crate) fn execute_with_overwrite_confirmation(
+    app: &mut FilmcraftApp,
+    command: &str,
+    params: serde_json::Value,
+    path: &str,
+) -> Result<serde_json::Value, String> {
+    if command == "file.save" && app.session.path.as_deref() == Some(path) {
+        return app.session.execute(command, params).map_err(|e| e.to_string());
+    }
+    let mut existing = match app.session.services.file_size(path) {
+        Ok(_) => Some(path.to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let sequence = matches!(command, "file.exportMedia" | "export.quick" | "export.queue.add")
+                && app
+                    .session
+                    .execute("export.resolve", params.clone())
+                    .ok()
+                    .is_some_and(|v| matches!(v["settings"]["format"].as_str(), Some("png" | "tiff" | "bmp" | "jpg" | "tga" | "dpx" | "exr")));
+            if sequence { sequence_collision(app, path)? } else { None }
+        }
+        Err(e) => return Err(format!("cannot inspect destination {path}: {e}")),
+    };
+    let has_caption_track = if command == "export.queue.add" {
+        if let Some(sequences) = params.get("sequences").and_then(serde_json::Value::as_array) {
+            sequences
+                .iter()
+                .filter_map(serde_json::Value::as_u64)
+                .any(|id| app.session.project.sequence(filmcraft_engine::project::ItemId(id)).is_some_and(|q| !q.caption_tracks.is_empty()))
+        } else if let Some(id) = params.get("sequence").and_then(serde_json::Value::as_u64) {
+            app.session.project.sequence(filmcraft_engine::project::ItemId(id)).is_some_and(|q| !q.caption_tracks.is_empty())
+        } else {
+            app.session.active_sequence().is_some_and(|q| !q.caption_tracks.is_empty())
+        }
+    } else {
+        app.session.active_sequence().is_some_and(|q| !q.caption_tracks.is_empty())
+    };
+    if let Some(kind) = params.get("captionSidecar").and_then(serde_json::Value::as_str)
+        && has_caption_track
+    {
+        let extension = if kind.eq_ignore_ascii_case("webvtt") { "vtt" } else { kind };
+        let sidecar = format!("{}.{}", path.rsplit_once('.').map_or(path, |(base, _)| base), extension);
+        match app.session.services.file_size(&sidecar) {
+            Ok(_) => {
+                existing.get_or_insert(sidecar);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("cannot inspect caption sidecar {sidecar}: {e}")),
+        }
+    }
+    if let Some(existing) = existing {
+        if command == "export.queue.add" {
+            let sequence_count = params.get("sequences").and_then(serde_json::Value::as_array).map_or(1, Vec::len);
+            let range_count = params.get("ranges").and_then(serde_json::Value::as_array).filter(|r| !r.is_empty()).map_or(1, Vec::len);
+            if sequence_count.saturating_mul(range_count) > 1 {
+                return Err(format!(
+                    "an output already exists for this multi-item export ({existing}); confirm replacements per output before adding it to the queue"
+                ));
+            }
+        }
+        app.pending_overwrite = Some((command.to_string(), params, existing.clone()));
+        app.dialog = Some(Dialog::OverwriteConfirm);
+        Ok(serde_json::json!({"dialog":"overwrite","path":existing}))
+    } else {
+        app.session.execute(command, params).map_err(|e| e.to_string())
+    }
+}
+
+fn sequence_collision(app: &FilmcraftApp, path: &str) -> Result<Option<String>, String> {
+    let output = std::path::Path::new(path);
+    let stem = output.file_stem().and_then(|v| v.to_str()).unwrap_or_default();
+    let ext = output.extension().and_then(|v| v.to_str()).unwrap_or_default();
+    let dir = output.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or_else(|| std::path::Path::new("."));
+    let dir_str = dir.to_string_lossy();
+    let Some(entries) = app.session.services.list_dir(&dir_str) else { return Ok(None) };
+    let entries = entries.map_err(|e| format!("cannot inspect image-sequence directory {dir_str}: {e}"))?;
+    Ok(entries
+        .into_iter()
+        .find(|name| {
+            name.strip_prefix(stem)
+                .and_then(|tail| tail.strip_suffix(&format!(".{ext}")))
+                .is_some_and(|digits| digits.len() >= 3 && digits.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .map(|name| dir.join(name).to_string_lossy().into_owned()))
+}
+
 pub struct FilmcraftApp {
     pub session: Session,
     pub ui: UiState,
@@ -283,6 +370,7 @@ pub struct FilmcraftApp {
     pub scrub: scrub::ScrubAudio,
     pub hooks: HostHooks,
     pub dialog: Option<Dialog>,
+    pub(crate) pending_overwrite: Option<(String, serde_json::Value, String)>,
     pub file_dialogs: panels::file_dialogs::FileDialogState,
     /// The native file dialog the host is showing ([`Self::pick`]).
     native_dialog: Option<native_dialogs::PendingDialog>,
@@ -549,6 +637,7 @@ impl FilmcraftApp {
             hooks: HostHooks::default(),
             // Unsaved changes left by a session that died are offered first thing.
             dialog: recovery.then_some(Dialog::Recovery),
+            pending_overwrite: None,
             file_dialogs: Default::default(),
             native_dialog: None,
             auto: Default::default(),
@@ -1307,7 +1396,7 @@ impl FilmcraftApp {
                 let cmd = if id == "file.saveCopy" { "file.saveCopy" } else { "file.saveAs" };
                 self.pick(FileDialog::SaveProject { name: suggested }, move |app, paths| {
                     let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
-                    app.session.execute(cmd, json!({"path": path})).map_err(|e| e.to_string())
+                    execute_with_overwrite_confirmation(app, cmd, json!({"path": path}), &path)
                 })
             }
             "file.open" => self.pick(FileDialog::OpenProject, |app, paths| {
@@ -1368,7 +1457,7 @@ impl FilmcraftApp {
         self.pick(FileDialog::save_as(filter, &[ext], &format!("{stem}.{ext}")), move |app, paths| {
             let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
             p.insert("path".into(), json!(path));
-            let r = app.session.execute(&id, Value::Object(p)).map_err(|e| e.to_string());
+            let r = execute_with_overwrite_confirmation(app, &id, Value::Object(p), &path);
             app.ui.status = match &r {
                 Ok(_) => tlf!("Exported {path}", path),
                 Err(e) => e.clone(),
