@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (Korean covers the whole interface, #508) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** minor (Swedish covers the whole interface) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Per-language status of FilmCraft's interface. Premiere 26.5.2 ships 10 interface languages (the
 installed bundle's `.lproj` folders): German, English, Spanish, French, Italian, Japanese, Korean,
@@ -10,7 +10,7 @@ Portuguese (Brazil), Russian, Simplified Chinese.
 
 Edit ▸ Language (also Settings ▸ General, `general.interfaceLanguage`) switches the interface and
 persists across restarts; System Language (the default) follows the OS's or browser's preferred
-languages and falls back to English. Commands `app.language.<english|japanese|spanish|portuguese|ukrainian|chinese|german|russian|french|indonesian|italian>`
+languages and falls back to English. Commands `app.language.<english|japanese|spanish|portuguese|ukrainian|chinese|german|russian|french|indonesian|italian|korean|swedish>`
 are reachable over the control channel. One catalog per language,
 `crates/ui-egui/src/i18n/<code>.tsv` (format in the header of `es.tsv`); UI code wraps strings in
 `tl!("…")` / `tlf!("…{name}", name)`, and registry names (effects and their parameters, settings,
@@ -54,6 +54,7 @@ whole interface, one PR) at ~4–8 h per language for the catalog plus tests.
 | Korean | ko | 3,573 (same entries as Spanish, plus the macOS Settings item) | as Spanish | installed system Hangul font (Malgun Gothic, Apple SD Gothic Neo, Noto Sans CJK KR…); refused without one | not recorded; welcome | partial (#508) | review; Hangul in craft-fonts for the web |
 | Vietnamese | vi | 0 (0%) | — | Latin with stacked diacritics (font coverage to check) | — | none | 6–12 h + review |
 | *Other shipped:* Italian | it | 3,573 (same entries as Spanish, plus the macOS Settings item); must cover the core menus, no entry without a Spanish one | as Spanish | Latin (bundled fonts) | not recorded; welcome | partial | review |
+| *Other shipped:* Swedish | sv | 3,590 (same entries as Spanish, plus the macOS Settings item); must cover the core menus, no entry without a Spanish one | as Spanish | Latin (bundled fonts, å ä ö) | not recorded; welcome | partial | review |
 | *Other shipped:* Ukrainian | uk | 351 (10.0%) | menus only | Cyrillic (bundled) | not recorded | menus only | 5–9 h |
 
 Premiere also ships Italian, which we now cover like Spanish, and Russian (6–10 h).
@@ -68,5 +69,6 @@ Every language needs native-speaker review (human).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-14 | minor | Swedish (sv) covers the whole interface: every entry of the Spanish catalog plus the macOS Settings item; System Language picks it for `sv-*` locales |
 | 2026-10-11 | minor | German (de) ships the menus (#630): 371 of 3,498 strings (10.6%), native-reviewed; dimension now 2 menus-only, 5 none |
 | 2026-10-10 | major | Created from ROADMAP.md's "Interface localization" section; catalog coverage measured (es 3,496, ja 3,487, zh-cn 3,485, pt-br 348, uk 351 of 3,498); the 12-language table and script-support gaps added |
