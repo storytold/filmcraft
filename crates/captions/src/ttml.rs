@@ -209,7 +209,8 @@ struct Timing {
     /// Nominal frames per second for `HH:MM:SS:FF`.
     base: i64,
     sub_frame_rate: i64,
-    tick_rate: i64,
+    /// Ticks per second, rational when derived from the effective frame rate.
+    tick_rate: FrameRate,
 }
 
 fn positive_integer(s: &str) -> Option<i64> {
@@ -296,9 +297,10 @@ fn timing(root: roxmltree::Node) -> Result<Timing> {
     let rate = FrameRate::new(base.checked_mul(mn).ok_or_else(|| invalid("frameRateMultiplier"))?, md);
     let sub = integer("subFrameRate", 1)?;
     let tick_rate = match attr(root, "tickRate") {
-        Some(v) => positive_integer(v).ok_or_else(|| invalid("tickRate"))?,
-        None if attr(root, "frameRate").is_some() => base.checked_mul(sub).ok_or_else(|| invalid("subFrameRate"))?,
-        None => 1,
+        Some(v) => FrameRate::new(positive_integer(v).ok_or_else(|| invalid("tickRate"))?, 1),
+        // TTML1 §6.2.10: absent tickRate uses the effective frame rate times subFrameRate.
+        None if attr(root, "frameRate").is_some() => FrameRate::new(rate.num.checked_mul(sub).ok_or_else(|| invalid("subFrameRate"))?, rate.den),
+        None => FrameRate::new(1, 1),
     };
     Ok(Timing { rate, base, sub_frame_rate: sub, tick_rate })
 }
@@ -306,13 +308,13 @@ fn timing(root: roxmltree::Node) -> Result<Timing> {
 /// Seconds as an exact decimal string → ticks.
 fn decimal_ticks(int: &str, frac: &str, unit_ticks: i128) -> Option<i128> {
     let i: i128 = if int.is_empty() { 0 } else { int.parse().ok()? };
-    let mut t = i * unit_ticks;
+    let mut t = i.checked_mul(unit_ticks)?;
     if !frac.is_empty() {
         if frac.len() > 12 || !frac.bytes().all(|b| b.is_ascii_digit()) {
             return None;
         }
         let f: i128 = frac.parse().ok()?;
-        t += f * unit_ticks / 10i128.pow(frac.len() as u32);
+        t = t.checked_add(f.checked_mul(unit_ticks)? / 10i128.pow(frac.len() as u32))?;
     }
     Some(t)
 }
@@ -372,7 +374,7 @@ fn parse_time(s: &str, tm: Timing) -> Option<Tick> {
             }
             whole.0 as i128 + decimal_ticks("0", vf, fd)?
         }
-        "t" => decimal_ticks(vi, vf, tps)? / tm.tick_rate.max(1) as i128,
+        "t" => decimal_ticks(vi, vf, tps * i128::from(tm.tick_rate.den))? / i128::from(tm.tick_rate.num),
         _ => return None,
     };
     i64::try_from(t).ok().map(Tick)
@@ -625,7 +627,7 @@ mod tests {
     use super::*;
 
     fn tm(rate: FrameRate) -> Timing {
-        Timing { rate, base: rate.timecode_base(), sub_frame_rate: 1, tick_rate: 1 }
+        Timing { rate, base: rate.timecode_base(), sub_frame_rate: 1, tick_rate: FrameRate::new(1, 1) }
     }
 
     #[test]
@@ -651,6 +653,8 @@ mod tests {
     fn missing_timing_parameters_keep_defaults() {
         for (params, begin, end) in [
             ("", "1s", "2s"),
+            (r#"ttp:frameRate="25" ttp:frameRateMultiplier="2 1""#, "50t", "100t"),
+            (r#"ttp:frameRate="30" ttp:frameRateMultiplier="1000 1001" ttp:subFrameRate="1001""#, "30000t", "60000t"),
             (r#"ttp:frameRate="25""#, "25f", "50f"),
             (r#"ttp:frameRate="30" ttp:subFrameRate="2""#, "60t", "120t"),
             (r#"ttp:frameRate="30" ttp:subFrameRate="2" ttp:tickRate="10""#, "10t", "20t"),
@@ -667,6 +671,30 @@ mod tests {
     }
 
     #[test]
+    fn default_tick_rate_preserves_fractional_frame_rate() {
+        for format in [crate::Format::Ttml, crate::Format::Dfxp] {
+            for (params, begin, end, start, finish) in [
+                (r#"ttp:frameRate="30" ttp:frameRateMultiplier="1000 1001""#, "30t", "60t", 1001000, 2002000),
+                (r#"ttp:frameRate="30" ttp:frameRateMultiplier="1000 1001""#, "1.5t", "3t", 50050, 100100),
+                (r#"ttp:frameRate="30" ttp:frameRateMultiplier="1000 1001" ttp:subFrameRate="2""#, "30t", "60t", 500500, 1001000),
+                (r#"ttp:frameRate="30" ttp:frameRateMultiplier="1000 1001" ttp:tickRate="10""#, "10t", "20t", 1000000, 2000000),
+                (r#"ttp:frameRateMultiplier="2 1" ttp:subFrameRate="2""#, "1t", "2t", 1000000, 2000000),
+            ] {
+                let xml = format!(
+                    r#"<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttp="http://www.w3.org/ns/ttml#parameter" {params}><body><div><p begin="{begin}" end="{end}">Hello</p></div></body></tt>"#
+                );
+                let doc = crate::parse(xml.as_bytes(), format).unwrap();
+                assert_eq!(doc.cues.len(), 1, "{params}");
+                assert_eq!(doc.cues[0].start, Tick(start * (TICKS_PER_SECOND / 1_000_000)), "{params}");
+                assert_eq!(doc.cues[0].end, Tick(finish * (TICKS_PER_SECOND / 1_000_000)), "{params}");
+            }
+        }
+        let timing = Timing { tick_rate: FrameRate::new(1, i64::MAX), ..tm(FrameRate::FPS_25) };
+        assert_eq!(parse_time("999999999999999t", timing), None);
+        assert_eq!(parse_time("0.999999999999t", timing), None);
+    }
+
+    #[test]
     fn time_expressions() {
         let t = tm(FrameRate::FPS_25);
         let s = |v: f64| Tick((v * TICKS_PER_SECOND as f64).round() as i64);
@@ -679,7 +707,7 @@ mod tests {
         assert_eq!(parse_time("50f", t), Some(s(2.0)));
         let ntsc = tm(FrameRate::FPS_29_97);
         assert_eq!(parse_time("30f", ntsc), Some(FrameRate::FPS_29_97.tick_of(30)));
-        let ticks = Timing { tick_rate: 10_000_000, ..t };
+        let ticks = Timing { tick_rate: FrameRate::new(10_000_000, 1), ..t };
         assert_eq!(parse_time("15000000t", ticks), Some(s(1.5)));
         assert_eq!(parse_time("bogus", t), None);
         assert_eq!(parse_time("1:2", t), None);
@@ -723,7 +751,7 @@ mod tests {
             assert_eq!(doc.cues[0].end, Tick(TICKS_PER_SECOND * 5 / 4));
             assert!(doc.warnings.is_empty());
         }
-        let timing = Timing { tick_rate: 3, ..tm(FrameRate::FPS_25) };
+        let timing = Timing { tick_rate: FrameRate::new(3, 1), ..tm(FrameRate::FPS_25) };
         assert_eq!(parse_time("0.5t", timing), Some(Tick(TICKS_PER_SECOND / 6)));
         for expr in ["1.xt", "1.1234567890123t", "999999999999999.5t"] {
             assert_eq!(parse_time(expr, timing), None, "{expr}");
