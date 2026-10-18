@@ -723,3 +723,24 @@ fn label_color_presets() {
     d.click("settings.cancel");
     let _ = std::fs::remove_dir_all(&dir);
 }
+#[test]
+fn timeline_wheel_and_waveform_controls_apply_and_cancel() {
+    let mut d = Driver::demo();
+    d.menu("app.settings.timeline");
+    d.click("settings.timeline.zoomWithScrollWheel");
+    d.click("settings.timeline.customWaveformColor");
+    d.ok("ui.click", json!({"id": "settings.timeline.waveformColor.hex"}));
+    d.ok("ui.key", json!({"key": "A", "modifiers": {"command": true}}));
+    d.ok("ui.type", json!({"text": "#f08040"}));
+    d.frames(3);
+    assert_eq!(d.draft()["values"]["timeline"]["waveformColor"], "#f08040");
+    d.shot("timeline-waveform-color");
+    d.click("settings.ok");
+    assert!(d.harness.state().session.prefs.timeline.zoom_with_scroll_wheel);
+    assert!(d.harness.state().session.prefs.timeline.custom_waveform_color);
+    assert_eq!(d.harness.state().session.prefs.timeline.waveform_color, "#f08040");
+    d.menu("app.settings.timeline");
+    d.click("settings.timeline.customWaveformColor");
+    d.click("settings.cancel");
+    assert!(d.harness.state().session.prefs.timeline.custom_waveform_color);
+}

@@ -712,6 +712,10 @@ pub struct TimelinePrefs {
     pub auto_scroll: String,
     /// "Timeline Mouse Scrolling": `vertical` | `horizontal`.
     pub mouse_scrolling: String,
+    /// Plain vertical wheel zooms about the pointer instead of scrolling tracks.
+    pub zoom_with_scroll_wheel: bool,
+    pub custom_waveform_color: bool,
+    pub waveform_color: String,
     /// Default Audio Tracks per media type: `useFile` | `mono` | `stereo` | `5.1` | `adaptive`.
     pub mono_media_tracks: String,
     pub stereo_media_tracks: String,
@@ -741,6 +745,9 @@ impl Default for TimelinePrefs {
             still_image_unit: "seconds".into(),
             auto_scroll: "pageScroll".into(),
             mouse_scrolling: "vertical".into(),
+            zoom_with_scroll_wheel: false,
+            custom_waveform_color: false,
+            waveform_color: "#203c30".into(),
             mono_media_tracks: "useFile".into(),
             stereo_media_tracks: "useFile".into(),
             surround_media_tracks: "useFile".into(),
@@ -1324,6 +1331,9 @@ static CATEGORIES: &[Category] = &[
             f("timeline.stillImageDuration", "Still Image Default Duration", Kind::Duration { unit_key: "timeline.stillImageUnit" }, true),
             f("timeline.autoScroll", "Timeline Playback Auto-Scrolling", Kind::Choice(AUTO_SCROLL), true),
             f("timeline.mouseScrolling", "Timeline Mouse Scrolling", Kind::Choice(MOUSE_SCROLL), true),
+            b("timeline.zoomWithScrollWheel", "Zoom Timeline with the scroll wheel", true),
+            b("timeline.customWaveformColor", "Use a custom audio waveform color", true),
+            sub("timeline.waveformColor", "Audio Waveform Color", Kind::Color, "timeline.customWaveformColor", true),
             Row::Group(
                 "Default Audio Tracks",
                 &[
