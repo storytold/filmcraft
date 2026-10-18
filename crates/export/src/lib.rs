@@ -34,7 +34,7 @@ pub use pcm::{image_sequence_path, write_aiff, write_wav};
 pub use pipeline::limit_rgba8;
 pub use presets::{ExportPreset, builtin_presets};
 pub use settings::*;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use filmcraft_isobmff::SampleEntry;
@@ -666,6 +666,11 @@ pub struct Progress {
     pub done: AtomicU64,
     pub total: AtomicU64,
     pub cancel: AtomicBool,
+    /// Terminal cancellation reported to the job UI, distinct from a cancellation request.
+    /// Producers set this before publishing their result.
+    pub cancelled: AtomicBool,
+    // 0: unstamped, 1: known non-cancellation, 2: known cancellation.
+    terminal_cause: AtomicU8,
     pub finished: AtomicBool,
     pub status: Mutex<String>,
     pub error: Mutex<Option<String>>,
@@ -676,6 +681,23 @@ pub struct Progress {
 }
 
 impl Progress {
+    /// Record the producer's terminal cause before publishing its result; also update the UI mirror.
+    pub fn record_terminal_cancellation(&self, cancelled: bool) {
+        self.cancelled.store(cancelled, Ordering::Relaxed);
+        self.terminal_cause.store(if cancelled { 2 } else { 1 }, Ordering::Release);
+    }
+
+    /// The recorded cancellation outcome, or `None` for an unstamped producer.
+    /// Read the published result first when classifying a terminal job. Concurrent recording may
+    /// return an earlier complete state; direct writes to the public mirror do not stamp a cause.
+    pub fn terminal_cancellation(&self) -> Option<bool> {
+        match self.terminal_cause.load(Ordering::Acquire) {
+            1 => Some(false),
+            2 => Some(true),
+            _ => None,
+        }
+    }
+
     pub fn fraction(&self) -> f32 {
         let t = self.total.load(Ordering::Relaxed).max(1);
         self.done.load(Ordering::Relaxed) as f32 / t as f32

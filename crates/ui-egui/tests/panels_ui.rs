@@ -455,6 +455,7 @@ fn events_and_progress_panels() {
     d.snapshot("panels-progress", Some("progress."));
     d.click("progress.cancel.4242");
     assert!(job.progress.cancel.load(std::sync::atomic::Ordering::Relaxed));
+    job.progress.cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
     *job.result.lock().unwrap() = Some(Err("cancelled".into()));
     d.frames(3);
     assert!(!d.has("progress.cancel.4242"));
@@ -743,4 +744,663 @@ fn middle_closing_an_inactive_project_tab_keeps_the_inspector_target() {
     let focused = d.app().ui.focused;
     let source = d.app().ui.panels.inspector_source;
     assert_eq!(d.label("info.item"), name, "closing a tab must not select its stale item; focused={focused:?}, source={source:?}");
+}
+
+#[cfg(target_os = "linux")]
+mod progress_export_io_errors {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Mutex, mpsc};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    struct ExportDir(std::path::PathBuf);
+
+    impl Drop for ExportDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn assert_async_write_failure(parent_name: &str, contains_cancel: bool) {
+        // A relative destination keeps checkout and TMPDIR names out of the error-string control.
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let dir = ExportDir(std::path::Path::new("target").join(format!("progress-write-error-{}-{stamp}-{parent_name}", std::process::id())));
+        std::fs::create_dir_all(&dir.0).unwrap();
+        let parent = dir.0.join(parent_name);
+        let original = b"ordinary file, not an output directory";
+        std::fs::write(&parent, original).unwrap();
+        let output = parent.join("clip.wav");
+        let path = output.to_str().unwrap().to_string();
+        assert_eq!(path.to_ascii_lowercase().contains("cancel"), contains_cancel);
+
+        let mut d = Driver::demo();
+        let before_jobs: Vec<u64> = d.app().session.jobs.iter().map(|job| job.id).collect();
+        let started = d.exec(
+            "file.exportMedia",
+            json!({
+                "path": path,
+                "preset": "Waveform Audio 48 kHz 16-bit",
+                "range": "custom",
+                "startSeconds": 0.0,
+                "endSeconds": 0.02,
+                "captionSidecar": "none",
+                "wait": false
+            }),
+        );
+        let id = started["job"].as_u64().expect("the async request must return a job, not a synchronous path error");
+        assert!(!before_jobs.contains(&id));
+        assert_eq!(d.app().session.jobs.len(), before_jobs.len() + 1);
+        assert_eq!(started["path"], json!(path));
+        let job = d.app().session.jobs.iter().find(|job| job.id == id).unwrap().clone();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let error = loop {
+            let result = job.result.lock().unwrap().clone();
+            if let Some(result) = result {
+                break result.expect_err("the regular-file parent must make the actual WAV export fail");
+            }
+            assert!(Instant::now() < deadline, "async export job {id} did not finish");
+            d.frames(1);
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(job.progress.finished.load(Ordering::Relaxed));
+        assert!(!job.progress.cancel.load(Ordering::Relaxed), "no cancellation was requested");
+        assert!(error.starts_with("I/O: "), "must reach the actual output write failure: {error}");
+        assert!(error.contains(&path), "the failure must name the requested destination: {error}");
+        assert_eq!(error.to_ascii_lowercase().contains("cancel"), contains_cancel, "{error}");
+        assert_ne!(error, "cancelled");
+        assert_eq!(std::fs::read(&parent).unwrap(), original);
+        assert!(!output.exists(), "no WAV can be created through a regular-file parent");
+
+        let events = d.exec("events.list", json!({}));
+        let failed = format!("Failed: {}: {error}", job.label);
+        assert!(
+            events["entries"].as_array().unwrap().iter().any(|entry| { entry["source"] == "job" && entry["level"] == "error" && entry["message"] == failed }),
+            "the real terminal failure must be logged: {events}"
+        );
+        d.ok("ui.menu.invoke", json!({"id": "window.panel.Progress"}));
+        if !d.app().ui.panels.progress.show_finished {
+            d.click("progress.showFinished");
+        }
+        let element = format!("progress.job.{id}");
+        d.wait_for(&element);
+        assert_eq!(d.label(&element), format!("{}: Failed: {error}", job.label), "an I/O failure must keep its diagnostic");
+        assert!(!job.progress.cancel.load(Ordering::Relaxed));
+        assert!(!job.progress.cancelled.load(Ordering::Relaxed));
+
+        let result = job.to_json()["result"].clone();
+        d.exec("jobs.cancel", json!({"job": id}));
+        d.frames(2);
+        assert!(job.progress.cancel.load(Ordering::Relaxed), "the late request reached the completed job");
+        assert!(!job.progress.cancelled.load(Ordering::Relaxed), "a request cannot change the observed terminal cause");
+        assert_eq!(job.to_json()["result"], result);
+        assert_eq!(d.label(&element), format!("{}: Failed: {error}", job.label));
+    }
+
+    #[test]
+    fn async_export_io_error_with_cancel_in_path_stays_failed() {
+        assert_async_write_failure("cancel-output", true);
+    }
+
+    #[test]
+    fn async_export_io_error_with_neutral_path_stays_failed() {
+        assert_async_write_failure("ordinary-output", false);
+    }
+
+    fn export_dir(name: &str) -> ExportDir {
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let dir = ExportDir(std::path::Path::new("target").join(format!("progress-terminal-{}-{stamp}-{name}", std::process::id())));
+        std::fs::create_dir_all(&dir.0).unwrap();
+        dir
+    }
+
+    fn progress_row(d: &mut Driver, id: u64) -> String {
+        d.ok("ui.menu.invoke", json!({"id": "window.panel.Progress"}));
+        if !d.app().ui.panels.progress.show_finished {
+            d.click("progress.showFinished");
+        }
+        let element = format!("progress.job.{id}");
+        d.wait_for(&element);
+        element
+    }
+
+    struct PausedAudio {
+        inner: filmcraft_media::SharedSource,
+        first: AtomicBool,
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl filmcraft_media::MediaSource for PausedAudio {
+        fn info(&self) -> &filmcraft_media::MediaInfo {
+            self.inner.info()
+        }
+        fn video_frame(&self, req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+            self.inner.video_frame(req)
+        }
+        fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+            if self.first.swap(false, Ordering::Relaxed) {
+                self.entered.send(()).map_err(|e| filmcraft_media::MediaError::Io(e.to_string()))?;
+                // A failed test drops the sender; a timeout also releases the producer.
+                self.release.lock().unwrap().recv_timeout(Duration::from_secs(30)).map_err(|e| filmcraft_media::MediaError::Io(e.to_string()))?;
+            }
+            self.inner.audio(start, frames, sample_rate)
+        }
+    }
+
+    // Own the output until the asynchronous producer has published its terminal result.
+    // Session/Job drops do not join the export thread.
+    struct PausedExportCleanup {
+        dir: Option<ExportDir>,
+        release: Option<mpsc::Sender<()>>,
+        job: Option<filmcraft_engine::Job>,
+    }
+
+    impl Drop for PausedExportCleanup {
+        fn drop(&mut self) {
+            if let Some(job) = &self.job {
+                job.progress.cancel.store(true, Ordering::Relaxed);
+            }
+            // Disconnect the gate even when a test assertion failed before releasing it.
+            drop(self.release.take());
+            let started = Instant::now();
+            let terminal = match &self.job {
+                Some(job) => loop {
+                    let done = match job.result.try_lock() {
+                        Ok(result) => result.is_some(),
+                        Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner().is_some(),
+                        Err(std::sync::TryLockError::WouldBlock) => false,
+                    };
+                    if done {
+                        break true;
+                    }
+                    if started.elapsed() >= Duration::from_secs(30) {
+                        break false;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                },
+                None => false,
+            };
+            if !terminal && let Some(dir) = self.dir.take() {
+                // A failed/unknown producer may still use the output. Preserve its fixture.
+                std::mem::forget(dir);
+            }
+        }
+    }
+
+    #[test]
+    fn actual_export_cancellation_is_reported_by_the_progress_panel() {
+        let dir = export_dir("stopped");
+        let path = dir.0.join("stopped.wav").to_str().unwrap().to_string();
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        // Finish UI initialization and open Progress before the producer's finite gate starts.
+        let mut d = Driver::with(session);
+        d.ok("ui.menu.invoke", json!({"id": "window.panel.Progress"}));
+        d.frames(3);
+        if !d.app().ui.panels.progress.show_finished {
+            d.click("progress.showFinished");
+        }
+        let session = &mut d.app().session;
+        let item = session.active_sequence().unwrap().audio_tracks[0].items[0].item;
+        let inner = session.source(item).unwrap();
+        assert_eq!(inner.info().audio_streams.len(), 1);
+        let (entered, ready) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        session.media.insert(item, Arc::new(PausedAudio { inner, first: AtomicBool::new(true), entered, release: Mutex::new(resume) }));
+        let previous_jobs = session.jobs.len();
+        let mut cleanup = PausedExportCleanup { dir: Some(dir), release: Some(release), job: None };
+        let started = session.execute(
+            "file.exportMedia",
+            json!({"path": path, "format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 2,
+                "captionSidecar": "none", "wait": false}),
+        );
+        // Capture the appended job before checking the command result or any returned field.
+        cleanup.job = session.jobs.get(previous_jobs).cloned();
+        let started = started.unwrap();
+        let id = started["job"].as_u64().unwrap();
+        let job = session.jobs.iter().find(|job| job.id == id).unwrap().clone();
+        // No UI frames run after replacing the source until the export owns its first read.
+        ready.recv_timeout(Duration::from_secs(30)).expect("the real export must read the gated source");
+        assert!(job.result.lock().unwrap().is_none());
+        assert!(!job.progress.cancelled.load(Ordering::Relaxed));
+        let element = format!("progress.job.{id}");
+        d.wait_for(&element);
+        let cancel = format!("progress.cancel.{id}");
+        d.wait_for(&cancel);
+        assert!(job.result.lock().unwrap().is_none(), "the producer must still be paused before Cancel");
+        d.click(&cancel);
+        assert!(job.progress.cancel.load(Ordering::Relaxed));
+        assert!(job.result.lock().unwrap().is_none(), "the producer is still paused");
+        cleanup.release.as_ref().unwrap().send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let result = loop {
+            if let Some(result) = job.result.lock().unwrap().clone() {
+                break result;
+            }
+            assert!(Instant::now() < deadline, "the actual cancelled producer did not finish");
+            d.frames(1);
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(result.unwrap_err(), "cancelled");
+        assert!(job.progress.cancelled.load(Ordering::Relaxed), "the producer must publish its observed cancellation");
+        assert!(job.progress.finished.load(Ordering::Relaxed));
+        d.frames(2);
+        assert_eq!(d.label(&element), format!("{}: Cancelled", job.label));
+        assert!(!d.has(&format!("progress.cancel.{id}")));
+    }
+
+    #[test]
+    fn completed_export_stays_done_after_a_late_cancel_request() {
+        let dir = export_dir("completed");
+        let path = dir.0.join("completed.wav").to_str().unwrap().to_string();
+        let mut d = Driver::demo();
+        let completed = d.exec(
+            "file.exportMedia",
+            json!({"path": path, "format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 0.02,
+                "captionSidecar": "none", "wait": true}),
+        );
+        let id = completed["job"].as_u64().unwrap();
+        let job = d.app().session.jobs.iter().find(|job| job.id == id).unwrap().clone();
+        assert!(job.result.lock().unwrap().as_ref().unwrap().is_ok());
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.starts_with(b"RIFF"));
+        assert_eq!(completed["result"]["bytes"], json!(bytes.len()));
+        assert!(bytes.len() > 44);
+        let element = progress_row(&mut d, id);
+        assert_eq!(d.label(&element), format!("{}: Done", job.label));
+        let result = job.to_json()["result"].clone();
+        d.exec("jobs.cancel", json!({"job": id}));
+        d.frames(2);
+        assert!(job.progress.cancel.load(Ordering::Relaxed));
+        assert!(!job.progress.cancelled.load(Ordering::Relaxed));
+        assert_eq!(job.to_json()["result"], result);
+        assert_eq!(d.label(&element), format!("{}: Done", job.label));
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+}
+
+mod progress_keyboard_diagnostics {
+    use super::*;
+    use egui::{Event, Id, Key, Modifiers, Shape};
+    use filmcraft_engine::Job;
+    use filmcraft_ui_egui::dock::{DockNode, PanelKind};
+    use std::sync::atomic::Ordering;
+
+    fn job(id: u64, label: &str, error: Option<&str>) -> Job {
+        let job = Job {
+            id,
+            label: label.into(),
+            progress: Arc::new(Default::default()),
+            result: Arc::new(std::sync::Mutex::new(error.map(|error| Err(error.to_owned())))),
+        };
+        job.progress.total.store(10, Ordering::Relaxed);
+        job.progress.done.store(if error.is_some() { 10 } else { 4 }, Ordering::Relaxed);
+        job.progress.finished.store(error.is_some(), Ordering::Relaxed);
+        *job.progress.error.lock().unwrap() = error.map(str::to_owned);
+        job
+    }
+
+    fn tab(d: &mut Driver, modifiers: Modifiers) {
+        for pressed in [true, false] {
+            d.harness.event(Event::PointerGone);
+            d.harness.event(Event::Key { key: Key::Tab, physical_key: None, pressed, repeat: false, modifiers });
+            d.frames(1);
+        }
+        d.frames(2);
+        assert!(d.harness.state().ui_error.is_none());
+        assert!(d.harness.ctx.input(|input| input.pointer.hover_pos().is_none()));
+    }
+
+    fn painted(d: &Driver, predicate: impl Fn(&Shape) -> bool) -> bool {
+        fn any(shape: &Shape, predicate: &dyn Fn(&Shape) -> bool) -> bool {
+            predicate(shape)
+                || match shape {
+                    Shape::Vec(shapes) => shapes.iter().any(|shape| any(shape, predicate)),
+                    _ => false,
+                }
+        }
+        d.harness.output().shapes.iter().any(|shape| any(&shape.shape, &predicate))
+    }
+
+    fn full_detail(d: &Driver, text: &str) -> bool {
+        painted(d, |shape| matches!(shape, Shape::Text(shape) if shape.galley.text() == text))
+    }
+
+    fn assert_focused_detail(d: &Driver, id: Id, text: &str) {
+        assert_eq!(d.harness.ctx.memory(|memory| memory.focused()), Some(id));
+        let response = d.harness.ctx.read_response(id).unwrap();
+        assert!(response.has_focus());
+        assert!(!response.hovered());
+        assert!(full_detail(d, text), "keyboard focus must paint the complete diagnostic");
+        assert!(
+            painted(d, |shape| matches!(shape, Shape::Rect(rect)
+                if rect.rect == response.rect.shrink(2.0)
+                    && rect.stroke.color == d.harness.state().tokens.focus
+                    && rect.stroke.width == 1.5)),
+            "the completed row needs a visible focus outline"
+        );
+    }
+
+    fn document_state(d: &mut Driver) -> Value {
+        let app = d.app();
+        let history = app.session.execute("history.list", json!({})).unwrap();
+        json!({
+            "project": app.session.project.as_ref(),
+            "editor": app.session.state,
+            "history": history,
+            "revision": app.session.revision,
+            "savedRevision": app.session.saved_revision,
+            "path": app.session.path,
+            "playing": app.playback.playing,
+        })
+    }
+
+    fn job_state(jobs: &[Job]) -> Value {
+        json!(
+            jobs.iter()
+                .map(|job| {
+                    let mut public = job.to_json();
+                    // ETA is a time-dependent observation, not a job mutation.
+                    public.as_object_mut().unwrap().remove("etaSeconds");
+                    json!({
+                        "public": public,
+                        "cancel": job.progress.cancel.load(Ordering::Relaxed),
+                        "cancelled": job.progress.cancelled.load(Ordering::Relaxed),
+                        "producerFinished": job.progress.finished.load(Ordering::Relaxed),
+                        "error": job.progress.error.lock().unwrap().clone(),
+                    })
+                })
+                .collect::<Vec<_>>()
+        )
+    }
+
+    #[test]
+    fn completed_progress_diagnostics_support_keyboard_focus_without_hover() {
+        for screen_reader in [false, true] {
+            let error = format!("I/O: /exports/{}final.wav: permission denied\nComplete diagnostic tail: Ω", "long-component/".repeat(18),);
+            let jobs = vec![
+                job(8801, "Older completed control", Some("older diagnostic")),
+                job(8802, "Running control", None),
+                job(8803, "Export final.wav", Some(&error)),
+            ];
+            let older = Id::new(("progress-job", 8801_u64));
+            let running_row = Id::new(("progress-job", 8802_u64));
+            let cancel = Id::new(("progress-cancel", 8802_u64));
+            let failed = Id::new(("progress-job", 8803_u64));
+            let inserted = Id::new(("progress-job", 8804_u64));
+            let text = format!("Export final.wav: Failed: {error}");
+
+            let mut d = Driver::demo();
+            {
+                let app = d.app();
+                app.ui.show_header = false;
+                app.ui.show_status_bar = false;
+                app.ui.dock = DockNode::Tabs { panels: vec![PanelKind::Progress], active: 0 };
+                app.ui.focused = PanelKind::Progress;
+                app.ui.panels.progress.show_finished = true;
+                app.session.prefs.general.show_tool_tips = false;
+                app.session.jobs = jobs.clone();
+            }
+            d.harness.ctx.memory_mut(|memory| memory.options.screen_reader = screen_reader);
+            d.harness.event(Event::PointerGone);
+            d.frames(4);
+
+            // Preconditions already supported by the old hover-only row.
+            assert_eq!(d.label("progress.job.8803"), text);
+            assert!(d.has("progress.cancel.8802"));
+            assert!(!d.has("progress.cancel.8803"));
+            let before_document = document_state(&mut d);
+            let before_jobs = job_state(&jobs);
+
+            for _ in 0..128 {
+                tab(&mut d, Modifiers::NONE);
+                if d.harness.ctx.memory(|memory| memory.focused()) == Some(failed) {
+                    break;
+                }
+            }
+            assert_eq!(
+                d.harness.ctx.memory(|memory| memory.focused()),
+                Some(failed),
+                "Tab must reach the completed diagnostic row; screen_reader={screen_reader}",
+            );
+            assert_focused_detail(&d, failed, &text);
+
+            // Inserting at the front of the reversed display must preserve identity.
+            d.app().session.jobs.push(job(8804, "Inserted completed control", Some("inserted diagnostic")));
+            d.frames(3);
+            assert_focused_detail(&d, failed, &text);
+            d.app().session.jobs.retain(|job| job.id != 8804);
+            d.frames(3);
+            assert_focused_detail(&d, failed, &text);
+
+            // No tooltip child or running-row focus stop may intervene.
+            tab(&mut d, Modifiers::NONE);
+            assert_eq!(d.harness.ctx.memory(|memory| memory.focused()), Some(cancel));
+            assert!(!full_detail(&d, &text));
+            // With the tooltip gone, this name must belong to the row's semantics.
+            assert!(d.harness.query_by_label(&text).is_some());
+
+            tab(&mut d, Modifiers::NONE);
+            assert_eq!(d.harness.ctx.memory(|memory| memory.focused()), Some(older));
+            tab(&mut d, Modifiers::SHIFT);
+            assert_eq!(d.harness.ctx.memory(|memory| memory.focused()), Some(cancel));
+            tab(&mut d, Modifiers::SHIFT);
+            assert_focused_detail(&d, failed, &text);
+            assert_eq!(document_state(&mut d), before_document);
+            assert_eq!(job_state(&jobs), before_jobs);
+
+            // Do not click the checkbox: that would move focus before hiding the row.
+            d.app().ui.panels.progress.show_finished = false;
+            d.frames(3);
+            let focus = d.harness.ctx.memory(|memory| memory.focused());
+            assert!(![failed, older, inserted, running_row].into_iter().any(|id| focus == Some(id)));
+            assert!(!d.has("progress.job.8803"));
+            assert!(!d.has("progress.job.8801"));
+            assert!(d.harness.query_by_label(&text).is_none());
+            assert!(!full_detail(&d, &text));
+
+            for _ in 0..128 {
+                tab(&mut d, Modifiers::NONE);
+                let focus = d.harness.ctx.memory(|memory| memory.focused());
+                assert!(![failed, older, inserted, running_row].into_iter().any(|id| focus == Some(id)));
+                if focus == Some(cancel) {
+                    break;
+                }
+            }
+            assert_eq!(d.harness.ctx.memory(|memory| memory.focused()), Some(cancel));
+            assert_eq!(job_state(&d.app().session.jobs), before_jobs);
+
+            // Removing the final running row must also release its existing control.
+            d.app().session.jobs.clear();
+            d.frames(3);
+            let focus = d.harness.ctx.memory(|memory| memory.focused());
+            assert!(![failed, older, inserted, running_row, cancel].into_iter().any(|id| focus == Some(id)));
+            assert!(d.ids("progress.job.").is_empty());
+            assert!(d.ids("progress.cancel.").is_empty());
+            assert!(d.harness.query_by_label("No background jobs.").is_some());
+            assert!(d.harness.query_by_label(&text).is_none());
+            assert!(!full_detail(&d, &text));
+            assert_eq!(document_state(&mut d), before_document);
+            assert_eq!(job_state(&jobs), before_jobs);
+        }
+    }
+
+    #[test]
+    fn completed_progress_tooltip_respects_disabled_hover_after_keyboard_focus() {
+        // The enabled case controls for real hover; the disabled case is the regression.
+        for show_tool_tips in [true, false] {
+            let error = "I/O: /exports/hover-control.wav: permission denied\nFull hover diagnostic tail: Ω";
+            let jobs = vec![job(8811, "Running hover control", None), job(8812, "Export hover control", Some(error))];
+            let failed = Id::new(("progress-job", 8812_u64));
+            let cancel = Id::new(("progress-cancel", 8811_u64));
+            let text = format!("Export hover control: Failed: {error}");
+
+            let mut d = Driver::demo();
+            {
+                let app = d.app();
+                app.ui.show_header = false;
+                app.ui.show_status_bar = false;
+                app.ui.dock = DockNode::Tabs { panels: vec![PanelKind::Progress], active: 0 };
+                app.ui.focused = PanelKind::Progress;
+                app.ui.panels.progress.show_finished = true;
+                app.session.prefs.general.show_tool_tips = show_tool_tips;
+                app.session.jobs = jobs.clone();
+            }
+            d.harness.ctx.memory_mut(|memory| memory.options.screen_reader = false);
+            d.harness.event(Event::PointerGone);
+            d.frames(4);
+            assert_eq!(d.label("progress.job.8812"), text);
+            assert!(d.has("progress.cancel.8811"));
+            assert!(!d.has("progress.cancel.8812"));
+            let before_document = document_state(&mut d);
+            let before_jobs = job_state(&jobs);
+
+            for _ in 0..128 {
+                tab(&mut d, Modifiers::NONE);
+                if d.harness.ctx.memory(|memory| memory.focused()) == Some(failed) {
+                    break;
+                }
+            }
+            assert_focused_detail(&d, failed, &text);
+
+            // Keep a real pointer over the registered row as keyboard focus leaves.
+            let row = d.harness.ctx.read_response(failed).unwrap();
+            assert!(row.rect.width() > 0.0 && row.rect.height() > 0.0);
+            let pointer = row.rect.center();
+            d.harness.event(Event::PointerMoved(pointer));
+            d.frames(3);
+            let row = d.harness.ctx.read_response(failed).unwrap();
+            assert!(row.has_focus());
+            assert!(row.hovered());
+            assert!(full_detail(&d, &text));
+
+            // Do not use tab(): its PointerGone would hide the defect.
+            for pressed in [true, false] {
+                d.harness.event(Event::Key { key: Key::Tab, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+                d.frames(1);
+            }
+            d.frames(2);
+            assert!(d.harness.state().ui_error.is_none());
+            assert_eq!(d.harness.ctx.memory(|memory| memory.focused()), Some(cancel));
+            let row = d.harness.ctx.read_response(failed).unwrap();
+            assert!(!row.has_focus());
+            assert!(row.hovered(), "the completed row must still be hovered after Tab");
+            assert_eq!(d.harness.ctx.input(|input| input.pointer.hover_pos()), Some(pointer));
+            assert_eq!(d.app().session.prefs.general.show_tool_tips, show_tool_tips);
+            assert_eq!(document_state(&mut d), before_document);
+            assert_eq!(job_state(&d.app().session.jobs), before_jobs);
+            assert_eq!(job_state(&jobs), before_jobs);
+
+            if show_tool_tips {
+                assert!(full_detail(&d, &text), "enabled hover must preserve the diagnostic after keyboard focus leaves");
+            } else {
+                assert!(!full_detail(&d, &text), "disabled automatic detail must disappear after keyboard focus leaves the hovered completed row");
+            }
+
+            // Cleanup is reached only if the preference-specific assertion passed.
+            d.harness.event(Event::PointerGone);
+            d.frames(3);
+            assert!(d.harness.state().ui_error.is_none());
+            assert_eq!(d.harness.ctx.memory(|memory| memory.focused()), Some(cancel));
+            assert!(!d.harness.ctx.read_response(failed).unwrap().hovered());
+            assert!(!full_detail(&d, &text));
+            assert!(d.harness.query_by_label(&text).is_some());
+            assert_eq!(document_state(&mut d), before_document);
+            assert_eq!(job_state(&jobs), before_jobs);
+        }
+    }
+
+    #[test]
+    fn completed_progress_tooltip_respects_disabled_hover_on_cancel_after_keyboard_focus() {
+        for show_tool_tips in [true, false] {
+            let error = "I/O: /exports/grace-control.wav: permission denied\nFocused diagnostic before Cancel hover: Ω";
+            let jobs = vec![job(8821, "Running grace control", None), job(8822, "Export grace control", Some(error))];
+            let failed = Id::new(("progress-job", 8822_u64));
+            let cancel = Id::new(("progress-cancel", 8821_u64));
+            let text = format!("Export grace control: Failed: {error}");
+
+            // The ordinary Driver advances 0.25 s per frame, beyond egui's 0.2 s grace.
+            let mut session = Session::default();
+            session.execute("file.openDemoProject", json!({})).expect("demo project");
+            let (tx, rx) = channel();
+            let app = FilmcraftApp::new(session).with_control(rx);
+            let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).with_step_dt(1.0 / 60.0).build_eframe(move |_cc| app);
+            let mut d = Driver { harness, tx, snapshots: None };
+            d.frames(4);
+            {
+                let app = d.app();
+                app.ui.show_header = false;
+                app.ui.show_status_bar = false;
+                app.ui.dock = DockNode::Tabs { panels: vec![PanelKind::Progress], active: 0 };
+                app.ui.focused = PanelKind::Progress;
+                app.ui.panels.progress.show_finished = true;
+                app.session.prefs.general.show_tool_tips = show_tool_tips;
+                app.session.jobs = jobs.clone();
+            }
+            d.harness.ctx.memory_mut(|memory| memory.options.screen_reader = false);
+            d.harness.event(Event::PointerGone);
+            d.frames(4);
+            assert_eq!(d.label("progress.job.8822"), text);
+            assert!(d.has("progress.cancel.8821"));
+            assert!(!d.has("progress.cancel.8822"));
+            let before_document = document_state(&mut d);
+            let before_jobs = job_state(&jobs);
+
+            for _ in 0..128 {
+                tab(&mut d, Modifiers::NONE);
+                if d.harness.ctx.memory(|memory| memory.focused()) == Some(failed) {
+                    break;
+                }
+            }
+            assert_focused_detail(&d, failed, &text);
+
+            let control = d.harness.ctx.read_response(cancel).unwrap();
+            assert!(control.rect.width() > 0.0 && control.rect.height() > 0.0);
+            let pointer = control.rect.center();
+            d.harness.event(Event::PointerMoved(pointer));
+            d.frames(1);
+            assert!(d.harness.ctx.read_response(cancel).unwrap().hovered());
+            assert!(d.harness.ctx.read_response(failed).unwrap().has_focus());
+            assert!(full_detail(&d, &text));
+            let last_focused_detail_time = d.harness.ctx.input(|input| input.time);
+
+            // Keep the pointer over Cancel while real Tab changes keyboard focus.
+            for pressed in [true, false] {
+                d.harness.event(Event::Key { key: Key::Tab, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+                d.frames(1);
+            }
+            d.frames(2);
+            let elapsed = d.harness.ctx.input(|input| input.time) - last_focused_detail_time;
+            assert!(elapsed > 0.0 && elapsed < 0.2, "the observed transition must stay within the default tooltip grace: {elapsed}");
+            assert!(d.harness.state().ui_error.is_none());
+            assert_eq!(d.harness.ctx.memory(|memory| memory.focused()), Some(cancel));
+            let control = d.harness.ctx.read_response(cancel).unwrap();
+            assert!(control.has_focus());
+            assert!(control.hovered());
+            assert!(!d.harness.ctx.read_response(failed).unwrap().has_focus());
+            assert_eq!(d.harness.ctx.input(|input| input.pointer.hover_pos()), Some(pointer));
+            assert!(!full_detail(&d, &text), "the previous completed-row tooltip must be gone");
+            assert_eq!(d.app().session.prefs.general.show_tool_tips, show_tool_tips);
+            assert_eq!(document_state(&mut d), before_document);
+            assert_eq!(job_state(&d.app().session.jobs), before_jobs);
+            assert_eq!(job_state(&jobs), before_jobs);
+
+            if show_tool_tips {
+                assert!(full_detail(&d, "Cancel"), "enabled hover must show the Cancel tooltip after the focused diagnostic");
+            } else {
+                assert!(!full_detail(&d, "Cancel"), "disabled automatic Cancel detail must not inherit grace from the focused diagnostic");
+            }
+
+            // No baseline credit for cleanup if the disabled assertion above fails.
+            d.harness.event(Event::PointerGone);
+            d.frames(3);
+            assert!(d.harness.state().ui_error.is_none());
+            assert_eq!(d.harness.ctx.memory(|memory| memory.focused()), Some(cancel));
+            assert!(!d.harness.ctx.read_response(cancel).unwrap().hovered());
+            assert!(!full_detail(&d, "Cancel"));
+            assert!(!full_detail(&d, &text));
+            assert_eq!(document_state(&mut d), before_document);
+            assert_eq!(job_state(&jobs), before_jobs);
+        }
+    }
 }

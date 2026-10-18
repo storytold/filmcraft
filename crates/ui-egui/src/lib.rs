@@ -663,8 +663,11 @@ impl FilmcraftApp {
 
     fn apply_tooltips(&self, ctx: &egui::Context) {
         // Settings ▸ General ▸ Show Tool Tips
-        let delay = if self.session.prefs.general.show_tool_tips { 0.5 } else { 1.0e9 };
-        ctx.global_style_mut(|s| s.interaction.tooltip_delay = delay);
+        let (delay, grace) = if self.session.prefs.general.show_tool_tips { (0.5, 0.2) } else { (1.0e9, 0.0) };
+        ctx.global_style_mut(|s| {
+            s.interaction.tooltip_delay = delay;
+            s.interaction.tooltip_grace_time = grace;
+        });
     }
 
     /// Settings ▸ Appearance ▸ UI Scale: a fixed scale makes a point that many physical pixels,

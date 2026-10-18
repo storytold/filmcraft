@@ -147,7 +147,8 @@ pub fn events(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 pub fn progress(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let show_finished = app.ui.panels.progress.show_finished;
-    let jobs: Vec<serde_json::Value> = app.session.jobs.iter().rev().map(|j| j.to_json()).collect();
+    let jobs: Vec<(serde_json::Value, bool)> =
+        app.session.jobs.iter().rev().map(|j| (j.to_json(), j.progress.cancelled.load(std::sync::atomic::Ordering::Relaxed))).collect();
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(8.0, 6.0))));
     let ui = &mut child;
     let mut elems: Vec<(String, Rect, String)> = Vec::new();
@@ -156,10 +157,10 @@ pub fn progress(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let r = ui.checkbox(&mut finished, tl!("Show finished jobs"));
     elems.push(("progress.showFinished".into(), r.rect, "Show finished jobs".into()));
     ui.add_space(4.0);
-    let active = jobs.iter().filter(|j| j["finished"] != json!(true)).count();
+    let active = jobs.iter().filter(|(j, _)| j["finished"] != json!(true)).count();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         let mut shown = 0;
-        for j in &jobs {
+        for (j, cancelled) in &jobs {
             let done = j["finished"] == json!(true);
             if done && !show_finished {
                 continue;
@@ -168,12 +169,14 @@ pub fn progress(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let id = j["id"].as_u64().unwrap_or(0);
             let label = crate::i18n::t(j["label"].as_str().unwrap_or("Job"));
             let frac = j["progress"].as_f64().unwrap_or(0.0).clamp(0.0, 1.0) as f32;
-            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::hover());
+            let (_, r) = ui.allocate_space(vec2(ui.available_width(), 46.0));
+            let sense = if done { Sense::focusable_noninteractive() } else { Sense::hover() };
+            let row_response = ui.interact(r, egui::Id::new(("progress-job", id)), sense);
             ui.painter().rect_filled(r.shrink(1.0), 3.0, t.row_alt);
             ui.painter().text(r.min + vec2(8.0, 6.0), Align2::LEFT_TOP, label, Tokens::semibold(12.0), t.text);
             let err = j["result"]["error"].as_str();
             let status = match (done, err) {
-                (true, Some(e)) if e.to_ascii_lowercase().contains("cancel") => tl!("Cancelled").to_string(),
+                (true, Some(_)) if *cancelled => tl!("Cancelled").to_string(),
                 (true, Some(e)) => tlf!("Failed: {e}", e),
                 (true, None) => tl!("Done").to_string(),
                 (false, _) => {
@@ -195,7 +198,22 @@ pub fn progress(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 Tokens::ui(10.5),
                 if err.is_some() { t.danger } else { t.text_dim },
             );
-            elems.push((format!("progress.job.{id}"), r, format!("{label}: {status}")));
+            let row_text = format!("{label}: {status}");
+            if done {
+                row_response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, row_response.enabled(), &row_text));
+                app.auto.add_response(&format!("progress.job.{id}"), &row_response, &row_text);
+                if row_response.has_focus() {
+                    ui.painter().rect_stroke(r.shrink(2.0), 2.0, Stroke::new(1.5, t.focus), egui::StrokeKind::Inside);
+                    // Keyboard focus reveals the diagnostic even when automatic hover tips are off.
+                    egui::Tooltip::for_widget(&row_response).show(|ui| {
+                        ui.add(egui::Label::new(row_text.as_str()).sense(Sense::hover()));
+                    });
+                } else if app.session.prefs.general.show_tool_tips {
+                    row_response.on_hover_text(row_text.as_str());
+                }
+            } else {
+                elems.push((format!("progress.job.{id}"), r, row_text));
+            }
             if !done {
                 let cr = Rect::from_center_size(pos2(r.max.x - 18.0, bar.center().y), vec2(20.0, 20.0));
                 let resp = ui.interact(cr, egui::Id::new(("progress-cancel", id)), Sense::click());

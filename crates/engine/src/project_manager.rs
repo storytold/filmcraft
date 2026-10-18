@@ -265,6 +265,7 @@ fn execute(
     let openers = filmcraft_codecs::openers();
     for w in &work {
         if prog.cancel.load(Ordering::Relaxed) {
+            prog.cancelled.store(true, Ordering::Relaxed);
             return Err("cancelled".into());
         }
         *prog.status.lock().unwrap_or_else(|e| e.into_inner()) = format!("{}", Path::new(&w.out).file_name().map(|n| n.to_string_lossy()).unwrap_or_default());

@@ -117,7 +117,7 @@ pub fn log_jobs(s: &mut Session) {
         if known != Some(true)
             && let Some(r) = finished
         {
-            let cancelled = j.progress.cancel.load(std::sync::atomic::Ordering::Relaxed);
+            let cancelled = j.progress.terminal_cancellation().unwrap_or_else(|| j.progress.cancel.load(std::sync::atomic::Ordering::Relaxed));
             out.push(match r {
                 Ok(_) => (Level::Info, format!("Finished: {}", j.label)),
                 Err(_) if cancelled => (Level::Warning, format!("Cancelled: {}", j.label)),
