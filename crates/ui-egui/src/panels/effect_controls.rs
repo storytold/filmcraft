@@ -125,9 +125,39 @@ fn selected_clips(app: &FilmcraftApp) -> Vec<(ClipId, TrackItem, TrackKind)> {
     out
 }
 
+/// Drop onto the clip displayed by this panel, routing audio to its visible linked audio.
+fn effect_drop(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, clips: &[(ClipId, TrackItem, TrackKind)]) {
+    app.auto.add("effectControls.effectDropTarget", rect, "Effect Controls");
+    let Some(effect) = crate::panels::dragged_effect(ui) else { return };
+    if !ui.rect_contains_pointer(rect) || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        return;
+    }
+    let kind = filmcraft_project::find_effect(&effect).and_then(|def| match def.kind {
+        filmcraft_project::EffectKind::Audio => Some(TrackKind::Audio),
+        filmcraft_project::EffectKind::Video => Some(TrackKind::Video),
+        _ => None,
+    });
+    let target = clips.iter().find(|(_, _, track)| Some(*track) == kind).map(|(id, _, _)| *id);
+    ui.ctx().set_cursor_icon(if target.is_some() { egui::CursorIcon::Copy } else { egui::CursorIcon::NotAllowed });
+    if target.is_some() {
+        ui.painter().rect_stroke(rect.shrink(2.0), 0.0, Stroke::new(2.0, app.tokens.accent), egui::StrokeKind::Inside);
+    }
+    if ui.input(|i| i.pointer.button_released(egui::PointerButton::Primary)) {
+        if let Some(clip) = target {
+            if let Err(error) = app.session.execute("effects.apply", json!({"effect": effect, "clips": [clip.0]})) {
+                app.ui.status = error.to_string();
+            }
+        } else {
+            app.ui.status = tl!("Drop a compatible audio or video effect on a selected clip.").to_owned();
+        }
+        crate::panels::clear_drag(ui);
+    }
+}
+
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let clips = selected_clips(app);
+    effect_drop(app, ui, rect, &clips);
     // keep only selected keyframes that still exist on a clip shown here
     app.ui.keyframe_selection.retain(|k| clips.iter().any(|(c, it, _)| c.0 == k.clip && keyframe_exists(it, k)));
     let Some((clip, it, _)) = clips.first().cloned() else {
