@@ -54,7 +54,10 @@ pub mod shortcuts;
 pub mod source_monitor;
 pub mod sync;
 pub mod transcript;
+pub mod transcript_search;
 pub mod trim;
+mod visual_model;
+pub mod visual_search;
 pub mod voiceover;
 
 use std::sync::Arc;
@@ -391,6 +394,7 @@ pub struct Session {
     pub journal: Vec<(String, Value)>,
     /// Background jobs (exports, render previews…).
     pub jobs: Vec<Job>,
+    pub visual_search: visual_search::Service,
     /// Export job → the offline items it drew the slate for, filled when the export finishes
     /// (#1054; `offlineMedia` in `file.exportMedia` and queue results).
     pub export_offline: std::collections::HashMap<u64, Arc<std::sync::Mutex<Vec<media_pool::OfflineMedia>>>>,
@@ -513,6 +517,7 @@ impl Session {
             events: Vec::new(),
             journal: Vec::new(),
             jobs: Vec::new(),
+            visual_search: Default::default(),
             export_offline: Default::default(),
             prefs: Default::default(),
             prefs_path: None,
@@ -864,6 +869,7 @@ impl Session {
         let mut st = self.state.clone();
         let r = f(&mut p, &mut st)?;
         self.refuse_self_nesting(&p)?;
+        self.visual_search.reset();
         self.project = Arc::new(p);
         self.state = st;
         self.drop_stale_gap();

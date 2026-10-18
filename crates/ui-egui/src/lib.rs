@@ -365,6 +365,8 @@ pub struct FilmcraftApp {
     pub shortcut_editor: panels::shortcuts_dialog::EditorState,
     pub toast: Option<(String, f64)>,
     pub tl: panels::timeline::TlState,
+    pub(crate) visual_search_ui: panels::visual_search::VisualUi,
+    pub(crate) media_search: panels::media_search::Search,
     pub(crate) transcript_cache: panels::transcript_cache::TranscriptCache,
     /// Commands from outside the UI (native menu bar), invoked on the UI thread.
     pub command_inbox: Option<Receiver<String>>,
@@ -594,6 +596,8 @@ impl FilmcraftApp {
             graphics_notice: None,
             tl: Default::default(),
             transcript_cache: Default::default(),
+            media_search: Default::default(),
+            visual_search_ui: Default::default(),
             command_inbox: None,
             v_down: false,
             stale_clipboard_media: None,
@@ -2105,6 +2109,7 @@ impl eframe::App for FilmcraftApp {
         }
         // No frame worker threads on the web: render queued frames here, within a time budget
         // that leaves room for the UI pass (a no-op where workers run).
+        self.session.visual_search.set_playback_busy(self.playback.playing);
         self.frames.pump(std::time::Duration::from_millis(if self.playback.playing { 24 } else { 40 }));
         // A panic in one panel must not close the app (losing unsaved work) or leave a blank
         // window: catch it, keep the session, and say what happened.

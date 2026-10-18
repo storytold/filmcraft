@@ -3609,3 +3609,31 @@
 	Shows the version, community links and credits in a FilmCraft window.	バージョン、コミュニティへのリンク、クレジットを FilmCraft のウィンドウに表示します。
 	Couldn't open your web browser	ウェブブラウザーを開けませんでした
 	Open this address in your browser yourself:	このアドレスをご自身でブラウザーで開いてください：
+	Open Transcript Search Result	文字起こし検索結果を開く
+	Search all source transcripts	すべてのソースの文字起こしを検索
+	Searching…	検索中…
+	Find spoken words in any transcribed source, including unused clips.	未使用のクリップを含む、文字起こし済みのソースの発話を検索します。
+	{count} results · {sources} transcribed · {missing} not transcribed	{count} 件の結果 · 文字起こし済み {sources} · 未処理 {missing}
+	Search limit reached. Refine your query.	検索上限に達しました。検索条件を絞ってください。
+	Transcripts	文字起こし
+	Visuals	映像
+	Local visual search is not included in this build.	このビルドにはローカル映像検索が含まれていません。
+	Find shots by describing what is visible. Searches stay on this computer.	映っている内容の説明でショットを検索します。検索はこのコンピューター内で行われます。
+	Download visual search model…	映像検索モデルをダウンロード…
+	Index project visuals	プロジェクトの映像を索引化
+	Sample interval (seconds)	サンプリング間隔（秒）
+	{sources} indexed sources · {samples} samples	索引化済み {sources} ソース · {samples} サンプル
+	Describe a shot in English…	ショットを英語で説明…
+	Search visuals	映像を検索
+	Sampled visual similarity, not exact detection. Short events may be missed.	サンプル画像の類似度による検索です。短い出来事は見逃すことがあります。
+	Some sources are incomplete or changed. Reindex to refresh results.	一部のソースが未完了または変更されています。再索引化して結果を更新してください。
+	Download visual search model	映像検索モデルをダウンロード
+	OpenCLIP ViT-B/32 (LAION-2B) · approximately 608 MB · MIT license	OpenCLIP ViT-B/32 (LAION-2B) · 約608 MB · MITライセンス
+	The model downloads from Hugging Face. Your footage and searches are not uploaded.	モデルはHugging Faceからダウンロードします。映像や検索内容はアップロードしません。
+	Inspect Visual Search	映像検索を調べる
+	Index Project Visuals	プロジェクトの映像を索引化
+	Search Project Visuals	プロジェクトの映像を検索
+	Open Visual Search Result	映像検索結果を開く
+	Download Visual Search Model	映像検索モデルをダウンロード
+	Similarity {score}	類似度 {score}
+	Download	ダウンロード

@@ -3585,3 +3585,31 @@
 	Shows the version, community links and credits in a FilmCraft window.	在 FilmCraft 窗口中显示版本、社区链接和致谢。
 	Couldn't open your web browser	无法打开网页浏览器
 	Open this address in your browser yourself:	请自行在浏览器中打开此地址：
+	Open Transcript Search Result	打开转录搜索结果
+	Search all source transcripts	搜索所有源转录
+	Searching…	正在搜索…
+	Find spoken words in any transcribed source, including unused clips.	查找任何已转录源中的话语，包括未使用的剪辑。
+	{count} results · {sources} transcribed · {missing} not transcribed	{count} 个结果 · {sources} 个已转录 · {missing} 个未转录
+	Search limit reached. Refine your query.	已达到搜索上限。请缩小查询范围。
+	Transcripts	转录
+	Visuals	视觉
+	Local visual search is not included in this build.	此版本不包含本地视觉搜索。
+	Find shots by describing what is visible. Searches stay on this computer.	描述画面内容来查找镜头。搜索仅在此计算机上进行。
+	Download visual search model…	下载视觉搜索模型…
+	Index project visuals	索引项目画面
+	Sample interval (seconds)	采样间隔（秒）
+	{sources} indexed sources · {samples} samples	{sources} 个已索引源 · {samples} 个样本
+	Describe a shot in English…	用英语描述镜头…
+	Search visuals	搜索画面
+	Sampled visual similarity, not exact detection. Short events may be missed.	基于采样画面的相似度，并非精确检测。可能遗漏短暂事件。
+	Some sources are incomplete or changed. Reindex to refresh results.	某些源未完成索引或已更改。请重新索引以更新结果。
+	Download visual search model	下载视觉搜索模型
+	OpenCLIP ViT-B/32 (LAION-2B) · approximately 608 MB · MIT license	OpenCLIP ViT-B/32 (LAION-2B) · 约608 MB · MIT许可证
+	The model downloads from Hugging Face. Your footage and searches are not uploaded.	模型从Hugging Face下载。您的素材和搜索内容不会上传。
+	Inspect Visual Search	检查视觉搜索
+	Index Project Visuals	索引项目画面
+	Search Project Visuals	搜索项目画面
+	Open Visual Search Result	打开视觉搜索结果
+	Download Visual Search Model	下载视觉搜索模型
+	Similarity {score}	相似度 {score}
+	Download	下载

@@ -158,6 +158,8 @@ the original copyright and permission notice in its header.
 |---|---|---|---|
 | `crates/platform/src/nvenc/ffi.rs` | NVIDIA Corporation (`nvEncodeAPI.h`); FilmCraft contributors (Rust transcription) | Structures (including `NV_ENC_CONFIG_HEVC` and its bit-field masks, `NV_ENC_PIC_PARAMS_HEVC`, `NV_ENC_SEI_PAYLOAD`, `NV_ENC_TIME_CODE`), function table, codec / profile GUIDs (H.264, HEVC Main, HEVC Main 10) and constants (`NV_ENC_LEVEL_HEVC_*`, tier, CU size, `NV_ENC_BUFFER_FORMAT_YUV420_10BIT`, `NV_ENC_CAPS_SUPPORT_10BIT_ENCODE`, BT.2020 / PQ / HLG VUI codes) transcribed from `nvEncodeAPI.h`, NVIDIA Video Codec SDK, API 12.1 (https://developer.nvidia.com/video-codec-sdk) | MIT (Copyright (c) 2010-2023 NVIDIA Corporation; notice kept in the file header) |
 
+| `crates/vision/src/encoder/*.rs` | Hugging Face Candle contributors | Candle 0.9.2 CLIP implementation, commit `3b39794c14b1de8ba4c2d10d49354d557a415547`; adapted for standard GELU and trimmed unused APIs | Apache-2.0; source headers and `encoder/LICENSE-APACHE` |
+
 ## Downloaded at runtime
 
 These files are never in the repository or the app bundle. FilmCraft downloads them into the
@@ -168,3 +170,7 @@ SHA-256 (`crates/speech/src/models.rs`, `docs/transcripts.md`).
 | Asset | Author | Source | Licence |
 |---|---|---|---|
 | Whisper tiny / base / small speech-recognition weights (`model.safetensors`, `config.json`, `generation_config.json`, `tokenizer.json`) | OpenAI | `https://huggingface.co/openai/whisper-{tiny,base,small}` (revisions `169d4a43…`, `e37978b9…`, `973afd24…`); weights released with `https://github.com/openai/whisper` | MIT (weights and code, github.com/openai/whisper); the Hugging Face conversion is labelled Apache-2.0 |
+
+## Optional local visual-search model
+
+LAION/OpenCLIP ViT-B/32 weights, configuration, preprocessing and tokenizer are optional verified downloads, never bundled. Source: https://huggingface.co/laion/CLIP-ViT-B-32-laion2B-s34B-b79K, pinned revision `1a25a446712ba5ee05982a381eed697ef9b435cf`. Author: LAION / OpenCLIP contributors. Licence: MIT, https://huggingface.co/laion/CLIP-ViT-B-32-laion2B-s34B-b79K/blob/1a25a446712ba5ee05982a381eed697ef9b435cf/README.md. The confirmation links to the source/licence; file sizes and SHA-256 values are in `crates/engine/src/visual_model.rs`. Candle libraries are MIT OR Apache-2.0; adapted encoder sources use Apache-2.0; Hugging Face tokenizers is Apache-2.0; image is MIT OR Apache-2.0. No training dataset or sample media is shipped.

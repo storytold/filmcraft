@@ -3610,3 +3610,31 @@
 	Shows the version, community links and credits in a FilmCraft window.	Muestra la versión, los enlaces de la comunidad y los créditos en una ventana de FilmCraft.
 	Couldn't open your web browser	No se pudo abrir el navegador web
 	Open this address in your browser yourself:	Abre esta dirección tú mismo en el navegador:
+	Open Transcript Search Result	Abrir resultado de búsqueda de transcripción
+	Search all source transcripts	Buscar en todas las transcripciones de origen
+	Searching…	Buscando…
+	Find spoken words in any transcribed source, including unused clips.	Busca palabras en cualquier origen transcrito, incluidos los clips sin usar.
+	{count} results · {sources} transcribed · {missing} not transcribed	{count} resultados · {sources} transcritos · {missing} sin transcribir
+	Search limit reached. Refine your query.	Se alcanzó el límite de búsqueda. Precisa la consulta.
+	Transcripts	Transcripciones
+	Visuals	Imágenes
+	Local visual search is not included in this build.	Esta compilación no incluye búsqueda visual local.
+	Find shots by describing what is visible. Searches stay on this computer.	Encuentra planos describiendo su contenido. Las búsquedas se quedan en este equipo.
+	Download visual search model…	Descargar modelo de búsqueda visual…
+	Index project visuals	Indexar imágenes del proyecto
+	Sample interval (seconds)	Intervalo de muestreo (segundos)
+	{sources} indexed sources · {samples} samples	{sources} orígenes indexados · {samples} muestras
+	Describe a shot in English…	Describe un plano en inglés…
+	Search visuals	Buscar imágenes
+	Sampled visual similarity, not exact detection. Short events may be missed.	Similitud visual por muestreo, no detección exacta. Puede omitir eventos breves.
+	Some sources are incomplete or changed. Reindex to refresh results.	Algunos orígenes están incompletos o han cambiado. Vuelve a indexar para actualizar los resultados.
+	Download visual search model	Descargar modelo de búsqueda visual
+	OpenCLIP ViT-B/32 (LAION-2B) · approximately 608 MB · MIT license	OpenCLIP ViT-B/32 (LAION-2B) · aproximadamente 608 MB · licencia MIT
+	The model downloads from Hugging Face. Your footage and searches are not uploaded.	El modelo se descarga de Hugging Face. No se suben tus archivos ni búsquedas.
+	Inspect Visual Search	Inspeccionar búsqueda visual
+	Index Project Visuals	Indexar imágenes del proyecto
+	Search Project Visuals	Buscar imágenes del proyecto
+	Open Visual Search Result	Abrir resultado de búsqueda visual
+	Download Visual Search Model	Descargar modelo de búsqueda visual
+	Similarity {score}	Similitud {score}
+	Download	Descargar

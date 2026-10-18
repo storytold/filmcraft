@@ -18,6 +18,8 @@ speech-download = ["filmcraft-speech/download"]
 # Natural voices for Text to Speech: Kokoro-82M on candle (CPU) and their download.
 neural-voices = ["filmcraft-tts/kokoro", "speech-download"]
 
+visual-search = ["filmcraft-vision/clip", "speech-download"]
+
 [dependencies]
 filmcraft-time = { workspace = true }
 filmcraft-geom = { workspace = true }
@@ -37,6 +39,8 @@ filmcraft-format = { workspace = true }
 filmcraft-interchange = { workspace = true }
 filmcraft-captions = { workspace = true }
 filmcraft-speech = { workspace = true }
+filmcraft-vision = { workspace = true }
+sha2 = "0.10"
 filmcraft-tts = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
