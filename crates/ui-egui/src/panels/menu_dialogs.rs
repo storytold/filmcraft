@@ -748,7 +748,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 );
             }
             "sequence.transcribe" => {
-                let langs = pairs(&["auto", "en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh", "nl", "ru"]);
+                let mut langs = vec![("auto".into(), tl!("Auto").into())];
+                langs.extend(filmcraft_engine::settings::TRANSCRIPTION_LANGUAGES.iter().map(|(id, name)| ((*id).into(), (*name).into())));
                 combo(ui, &mut elems, "transcribe.language", tl!("Language:"), &mut p["language"], &langs);
                 let mut tracks: Vec<(String, String)> = vec![("mix".into(), tl!("Mix").into())];
                 tracks.extend(

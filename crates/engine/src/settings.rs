@@ -950,7 +950,8 @@ const ANALYSIS_CACHE: &[(&str, &str)] = &[("mediaCache", "In the Media Cache"), 
 const TRANSCRIBE_SCOPE: &[(&str, &str)] =
     &[("sequenceClips", "Auto-transcribe only clips in sequences"), ("allImported", "Auto-transcribe all imported clips")];
 const SPEAKERS: &[(&str, &str)] = &[("on", "Label speakers"), ("off", "Don't label speakers")];
-const LANGUAGES: &[(&str, &str)] = &[
+/// Languages offered by transcription settings and the sequence transcription dialog.
+pub const TRANSCRIPTION_LANGUAGES: &[(&str, &str)] = &[
     ("en", "English"),
     ("es", "Spanish"),
     ("fr", "French"),
@@ -1248,7 +1249,7 @@ static CATEGORIES: &[Category] = &[
                     sub("mediaAnalysis.autoTranscribeScope", "Transcription preferences", Kind::Choice(TRANSCRIBE_SCOPE), "mediaAnalysis.autoTranscribe", true),
                     f("mediaAnalysis.speakerLabeling", "Speaker Labeling", Kind::Choice(SPEAKERS), true),
                     b("mediaAnalysis.languageAutoDetect", "Enable language auto-detection", true),
-                    f("mediaAnalysis.defaultLanguage", "Default language", Kind::Choice(LANGUAGES), true),
+                    f("mediaAnalysis.defaultLanguage", "Default language", Kind::Choice(TRANSCRIPTION_LANGUAGES), true),
                     f("mediaAnalysis.whisperModel", "Speech model", Kind::Choice(MODELS), true),
                 ],
             ),

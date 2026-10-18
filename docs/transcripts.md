@@ -22,7 +22,8 @@ the control channel and MCP agents can do the same.
 
 | Command | What it does |
 |---|---|
-| `transcript.generate` | Transcribe media items (`items`, else the Project selection, else the media of the sequence's audio clips). Params: `model` (default `whisper-base`), `language` (`auto` = detect), `diarize`, `maxSpeakers`. One undo step. |
+| `transcript.generate` | Transcribe media items (`items`, else the Project selection, else the media of the sequence's audio clips). Params: `model` (default `whisper-base`), `language` (ISO 639-1 code to select the spoken language; `auto` or omitted follows transcription settings), `diarize`, `maxSpeakers`. One undo step. |
+| `sequence.transcribe` | Transcribe the active sequence's audio. The dialog lets you choose the spoken language, audio track or mix, and speaker labeling. |
 | `transcript.set` | Store a transcript you bring (JSON: `language`, `speakers`, `words` with `text`/`start`/`end`/`speaker`); it is sorted and made well formed. |
 | `transcript.delete` | Remove transcripts. |
 | `transcript.inspect` | The sequence transcript: words (index, text, sequence times, speaker, clip), paragraphs, speakers, the word at the playhead. |
@@ -42,6 +43,12 @@ OpenAI's Whisper, run in pure Rust on [candle](https://github.com/huggingface/ca
 with timestamp decoding, language detection and word times from cross-attention alignment (see the
 `filmcraft_speech::whisper` module docs). Speakers are labelled by clustering per-chunk MFCC
 statistics (`filmcraft_speech::diarize`); no model is involved.
+
+The Transcript tab's **Transcribe** button opens the same language and audio-track choices as Sequence ▸
+Transcribe Sequence. Choose the language spoken in the audio (for example, German); Whisper uses that
+language during recognition and the transcript stays in that language. This performs transcription,
+not translation. The language list matches Settings ▸ Media Analysis & Transcription, including English,
+Spanish, French, German, Italian, Portuguese, Dutch, Japanese, Korean, Chinese, Russian, and Hindi.
 
 Both are feature-gated and never built for the web. The native `filmcraft` and `filmcraft-cli`
 applications enable Whisper by default; the engine and speech crates keep it opt-in for minimal

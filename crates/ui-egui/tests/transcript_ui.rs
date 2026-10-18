@@ -8,9 +8,12 @@ use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
+use filmcraft_project::Transcript;
+use filmcraft_speech::{Options, ProgressFn, SpeechError, Transcriber};
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
+use std::sync::{Arc, Mutex};
 
 /// Reproducible redraw cost for a long sequence transcript, with and without many search hits.
 /// Run alone with `--ignored --nocapture`; timings are observations, not CI thresholds.
@@ -58,6 +61,19 @@ struct Driver {
     harness: Harness<'static, FilmcraftApp>,
     tx: Sender<ControlRequest>,
     snapshots: Option<std::path::PathBuf>,
+}
+
+struct LanguageRecordingTranscriber(Arc<Mutex<Option<Option<String>>>>);
+
+impl Transcriber for LanguageRecordingTranscriber {
+    fn id(&self) -> String {
+        "language-test".into()
+    }
+
+    fn transcribe(&self, _audio: &[f32], opts: &Options, _progress: ProgressFn<'_>) -> Result<Transcript, SpeechError> {
+        *self.0.lock().unwrap() = Some(opts.language.clone());
+        Ok(Transcript { language: opts.language.clone().unwrap_or_else(|| "en".into()), ..Default::default() })
+    }
 }
 
 impl Driver {
@@ -151,4 +167,24 @@ fn transcript_tab_selects_and_extracts_words() {
     let left: Vec<&str> = r["words"].as_array().unwrap().iter().filter_map(|w| w["text"].as_str()).collect();
     assert_eq!(left, ["Hello", "there", "friend."]);
     assert_eq!(d.ids("text.transcript.word.").len(), 3);
+}
+
+#[test]
+fn transcript_button_opens_language_selector_and_uses_selected_language() {
+    let mut d = Driver::demo();
+    let captured_language = Arc::new(Mutex::new(None));
+    d.harness.state_mut().session.transcriber = Some(Arc::new(LanguageRecordingTranscriber(captured_language.clone())));
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "text.tab.Transcript"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "text.transcript.generate"}));
+    d.frames(3);
+    assert_eq!(d.ids("transcribe.language"), vec!["transcribe.language".to_string()], "Transcribe opens the language selector");
+
+    d.ok("ui.set", json!({"menuDialog": {"language": "de", "track": "A1"}}));
+    d.frames(1);
+    d.ok("ui.click", json!({"id": "transcribe.ok"}));
+    d.frames(3);
+    assert_eq!(*captured_language.lock().unwrap(), Some(Some("de".into())));
 }
