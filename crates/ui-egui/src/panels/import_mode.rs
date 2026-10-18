@@ -99,9 +99,10 @@ fn recent(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, y: f32) -> f32 
         }
         let p = ui.painter().with_clip_rect(row);
         crate::icons::paint(&p, Rect::from_center_size(pos2(row.min.x + 16.0, row.center().y), vec2(14.0, 14.0)), crate::icons::Icon::Sequence, t.text_dim);
-        let name_r = p.text(pos2(row.min.x + 32.0, row.center().y), Align2::LEFT_CENTER, &name, Tokens::ui(13.0), t.text);
+        // The name and folder are user text: reordered for display (`rtl::visual`).
+        let name_r = p.text(pos2(row.min.x + 32.0, row.center().y), Align2::LEFT_CENTER, crate::rtl::visual(&name), Tokens::ui(13.0), t.text);
         if let Some(folder) = std::path::Path::new(path).parent() {
-            p.text(pos2(name_r.max.x + 12.0, row.center().y), Align2::LEFT_CENTER, folder.to_string_lossy(), Tokens::ui(11.5), t.text_dim);
+            p.text(pos2(name_r.max.x + 12.0, row.center().y), Align2::LEFT_CENTER, crate::rtl::visual(&folder.to_string_lossy()), Tokens::ui(11.5), t.text_dim);
         }
         if resp.clicked() {
             open = Some(path.clone());
