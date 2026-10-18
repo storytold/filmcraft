@@ -700,6 +700,7 @@ fn import_source(
         v.frame_rate = crate::settings::timebase_rate(&s.prefs.media.indeterminate_timebase);
     }
     let path_s = path.to_string();
+    s.media.allow(path);
     let id = s.edit(&format!("Import {name}"), |p, _| {
         Ok(p.add_item(
             &name,
@@ -1646,7 +1647,8 @@ fn build() -> Vec<CommandSpec> {
                 let caps = s.state.caption_selection.clone();
                 return crate::captions::delete(s, &caps, false);
             }
-            let sel = with_links(s, &clips_p(s, p));
+            // An Alt selection is already exact; explicit targets keep the command's linked behavior.
+            let sel = if p.get("clips").is_some() || p.get("clip").is_some() { with_links(s, &clips_p(s, p)) } else { s.state.selection.clone() };
             s.edit_sequence("Clear", |q, _, st| {
                 edit::delete_items(q, &sel);
                 st.selection.clear();
@@ -1664,7 +1666,7 @@ fn build() -> Vec<CommandSpec> {
                 let caps = s.state.caption_selection.clone();
                 return crate::captions::delete(s, &caps, true);
             }
-            let sel = with_links(s, &clips_p(s, p));
+            let sel = if p.get("clips").is_some() || p.get("clip").is_some() { with_links(s, &clips_p(s, p)) } else { s.state.selection.clone() };
             s.edit_sequence("Ripple Delete", |q, _, st| {
                 let spans = edit::ripple_delete_items(q, &sel)?;
                 if st.ripple_sequence_markers {
@@ -2586,13 +2588,13 @@ fn build() -> Vec<CommandSpec> {
                 None => place_one(s, p),
             }
         ),
-        cmd!("timeline.select", "Select Clips", [], None, r#"{"clips":[id],"transitions":[id]?,"add":bool,"toggle":bool}"#, has_seq, |s, p| {
+        cmd!("timeline.select", "Select Clips", [], None, r#"{"clips":[id],"transitions":[id]?,"add":bool,"toggle":bool,"linked":bool?}"#, has_seq, |s, p| {
             if let Some(ids) = p.get("transitions") {
                 return select_transitions(s, ids, bool_p(p, "add").unwrap_or(false), bool_p(p, "toggle").unwrap_or(false));
             }
             let clips: Vec<ClipId> =
                 p.get("clips").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_u64().map(ClipId)).collect()).unwrap_or_default();
-            let clips = with_links(s, &clips);
+            let clips = if bool_p(p, "linked").unwrap_or(true) { with_links(s, &clips) } else { clips };
             // selecting clips leaves trim mode (Premiere: clip and edit point selections are exclusive)
             s.state.edit_points.clear();
             s.state.trim_shift = Default::default();
@@ -4355,6 +4357,7 @@ fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Opti
     s.media.set_use_proxies(proxies);
     s.offline = Default::default();
     let first = proj.sequences().next().map(|i| i.id);
+    s.media.add_stored(&proj, path.as_deref());
     s.project = std::sync::Arc::new(proj);
     s.history = Default::default();
     s.history.limit = 200;
@@ -4364,7 +4367,7 @@ fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Opti
     if let Some(p) = &path
         && !cfg!(target_arch = "wasm32")
     {
-        s.previews.set_dir(Some(crate::project_tools::previews_dir_for(&s.project, p)));
+        s.previews.set_dir(Some(crate::project_tools::previews_dir_for(&s.project, p, &s.prefs.auto_save.scratch_folders)));
     }
     s.path = path;
     s.revision += 1;
@@ -4372,6 +4375,7 @@ fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Opti
     s.saved_revision = if clean { s.revision } else { 0 };
     s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
     s.events.push(crate::Event::ProjectChanged { revision: s.revision });
+    crate::project_tools::warn_untrusted_scratch(s);
 }
 
 fn open_project(s: &mut Session, path: &str) -> Result<Value> {
@@ -4423,8 +4427,11 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
 
 /// Where auto-saves of the current project go.
 fn auto_save_dir(s: &Session) -> std::path::PathBuf {
-    if let Some(d) = s.project.settings.scratch.auto_save.as_deref().filter(|d| !d.is_empty() && s.path.is_some()) {
-        return std::path::PathBuf::from(d);
+    if s.path.is_some()
+        && let Some(d) =
+            crate::project_tools::trusted_scratch(s.project.settings.scratch.auto_save.as_deref(), s.path.as_deref(), &s.prefs.auto_save.scratch_folders)
+    {
+        return d;
     }
     match (&s.path, &s.persistence) {
         (Some(p), _) => filmcraft_format::autosave::auto_save_dir(std::path::Path::new(p)),

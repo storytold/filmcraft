@@ -1710,7 +1710,7 @@ impl FilmcraftApp {
         let focused = ctx.input(|i| i.focused);
         let was_focused: bool = ctx.data(|d| d.get_temp(focus_key)).unwrap_or(focused);
         ctx.data_mut(|d| d.insert_temp(focus_key, focused));
-        if !on || filmcraft_engine::media_watch::media_files(&self.session.project).is_empty() {
+        if !on || filmcraft_engine::media_watch::media_files(&self.session.project, &self.session.media).is_empty() {
             return;
         }
         let last: f64 = ctx.data(|d| d.get_temp(last_key)).unwrap_or(f64::NEG_INFINITY);

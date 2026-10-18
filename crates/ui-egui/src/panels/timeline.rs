@@ -2448,14 +2448,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 // select (shift toggles; alt selects one side of a link)
                 let sel = &app.session.state.selection;
                 if mods.shift {
-                    let _ = app.session.execute("timeline.select", json!({"clips": [clip.0], "toggle": true}));
-                } else if !sel.contains(&clip) {
-                    if mods.alt {
-                        app.session.state.selection = vec![clip];
-                        app.session.state.transition_selection.clear();
-                    } else {
-                        let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
-                    }
+                    let _ = app.session.execute("timeline.select", json!({"clips": [clip.0], "toggle": true, "linked": !mods.alt}));
+                } else if !sel.contains(&clip) || (mods.alt && resp.clicked()) {
+                    // Alt-click isolates one side; Alt-drag keeps the selected group to copy.
+                    let _ = app.session.execute("timeline.select", json!({"clips": [clip.0], "linked": !mods.alt}));
                 }
                 if resp.drag_started() {
                     let clips = app.session.state.selection.clone();
