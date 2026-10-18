@@ -13,6 +13,7 @@
 pub mod bridge;
 pub mod long_job;
 pub mod server;
+pub mod ui_map;
 
 pub use bridge::BridgeClient;
 pub use server::FilmcraftMcp;
