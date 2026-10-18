@@ -244,8 +244,9 @@ impl CloudApp for FilmcraftApp {
         let as_media = match self.cloud_page {
             Some(CloudPage::Open | CloudPage::SaveAs) => false,
             Some(CloudPage::Import) => true,
-            _ => self.ui.media_browser.cloud
-                || (ext != "fcproj" && !ext.is_empty() && filmcraft_media::is_importable(std::path::Path::new(name))),
+            _ => ext != "fcproj"
+                && (self.ui.media_browser.cloud
+                    || (!ext.is_empty() && filmcraft_media::is_importable(std::path::Path::new(name)))),
         };
         if as_media {
             let arc: std::sync::Arc<[u8]> = bytes.into();

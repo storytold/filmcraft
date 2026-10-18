@@ -61,6 +61,9 @@ fn allows_service_url(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("http://") else {
         return false;
     };
+    if rest.contains('@') {
+        return false;
+    }
     let host = rest.split(['/', ':', '?', '#']).next().unwrap_or("");
     host == "localhost" || host == "127.0.0.1" || host == "[::1]"
 }
@@ -416,6 +419,7 @@ mod token_tests {
         assert!(allows_service_url("http://127.0.0.1:8080/api"));
         assert!(!allows_service_url("http://craft.example.com"));
         assert!(!allows_service_url("http://localhost.evil.com"));
+        assert!(!allows_service_url("http://localhost:pass@remote.example/"));
         assert!(!allows_service_url("file:///etc/passwd"));
         assert!(!allows_browser_url("file:///tmp/x"));
     }
