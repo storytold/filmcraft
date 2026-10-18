@@ -40,7 +40,7 @@ fn sharpened(px_scale: f32) -> Image {
     let mut img = edge();
     let mut e = find_effect("sharpen").expect("sharpen effect").instance();
     e.params.get_mut("amount").expect("amount").value = ParamValue::Float(100.0);
-    apply(&mut img, &e, &cx(px_scale));
+    apply(&mut img, &e, &cx(px_scale)).unwrap();
     img
 }
 

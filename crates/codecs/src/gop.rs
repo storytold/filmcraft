@@ -538,20 +538,21 @@ impl GopCache {
 
     /// Colour signalled by the container wins over the bitstream's (YUV frames only); the
     /// container's clean aperture and then its display rotation are applied.
-    fn finish(&self, mut f: VideoFrame) -> VideoFrame {
+    fn finish(&self, mut f: VideoFrame) -> crate::Result<VideoFrame> {
         if let Some(c) = self.explicit_color
             && !matches!(f.data, filmcraft_frame::PixelData::Rgba8(_) | filmcraft_frame::PixelData::RgbaF32(_))
         {
             f.color = c;
         }
         if let Some(r) = self.crop {
-            f = f.cropped(r);
+            f = f.cropped(r).map_err(crate::CodecError::FrameAccess)?;
         }
-        if self.rotation != 0 { f.rotated(self.rotation) } else { f }
+        if self.rotation != 0 { f.rotated(self.rotation).map_err(crate::CodecError::FrameAccess) } else { Ok(f) }
     }
 
-    fn store(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) {
-        self.store_finished(st, pts, self.finish(f), draft);
+    fn store(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) -> crate::Result<()> {
+        self.store_finished(st, pts, self.finish(f)?, draft);
+        Ok(())
     }
 
     /// Cache a frame [`Self::finish`] has been applied to.
@@ -601,12 +602,13 @@ impl GopCache {
     }
 
     /// Store decoder output (in presentation order) and advance `out_max`.
-    fn store_output(&self, st: &mut State, out: Vec<crate::video::DecodedFrame>) {
+    fn store_output(&self, st: &mut State, out: Vec<crate::video::DecodedFrame>) -> crate::Result<()> {
         count_frames(&out);
         for d in out {
+            self.store(st, d.pts, d.frame, d.draft)?;
             st.out_max = st.out_max.max(d.pts);
-            self.store(st, d.pts, d.frame, d.draft);
         }
+        Ok(())
     }
 
     /// The frame presented at `target` (track units, clamped to the stream).
@@ -756,14 +758,14 @@ impl GopCache {
             let out = timed(|| decoder.decode(&data, s.pts(k)))?;
             st.next += 1;
             DECODED.fetch_add(1, Ordering::Relaxed);
-            self.store_output(st, out);
+            self.store_output(st, out)?;
             if st.cached(want_pts, draft).is_some() {
                 break;
             }
         }
         if st.cached(want_pts, draft).is_none() {
             let out = st.decoder.as_mut().map(|d| timed(|| d.flush())).unwrap_or_default();
-            self.store_output(st, out);
+            self.store_output(st, out)?;
             st.next = usize::MAX;
         }
         // nearest decoded frame at or before the wanted pts (robust to decoder pts quirks)
@@ -782,7 +784,7 @@ impl GopCache {
             .max_by_key(|p| p.pts)
             .map(|p| p.frame)
             .ok_or_else(|| CodecError::Decode("frame not produced".into()))?;
-        Ok(Arc::new(self.finish(f)))
+        Ok(Arc::new(self.finish(f)?))
     }
 
     /// Decode with `d` (positioned at `next`) until the picture with `want_pts` (sample `i`) comes out.
@@ -849,9 +851,9 @@ impl GopCache {
             timed(|| dec.decode(&data, want_pts))
         });
         // crop and rotate before taking the lock: that work runs on rayon (see `isolated`)
-        let res = res.map(|out| {
+        let res = res.and_then(|out| {
             count_frames(&out);
-            out.into_iter().map(|d| (d.pts, self.finish(d.frame), d.draft)).collect::<Vec<_>>()
+            out.into_iter().map(|d| self.finish(d.frame).map(|frame| (d.pts, frame, d.draft))).collect::<crate::Result<Vec<_>>>()
         });
         let mut st = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         if st.spare.len() < 16 {
@@ -869,6 +871,50 @@ mod tests {
     use super::*;
     use crate::video::DecodedFrame;
     use std::collections::VecDeque;
+
+    #[derive(Debug)]
+    struct UnreadableSurface;
+
+    impl filmcraft_frame::GpuSurface for UnreadableSurface {
+        fn size(&self) -> (u32, u32) {
+            (2, 2)
+        }
+        fn byte_len(&self) -> usize {
+            0
+        }
+        fn prepare_cpu(&self, transfer: filmcraft_frame::CpuTransfer) {
+            transfer.complete(Err("GPU readback failed".into()));
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn id(&self) -> u64 {
+            0
+        }
+    }
+
+    #[test]
+    fn failed_frame_access_is_typed_and_never_cached() {
+        use filmcraft_frame::{Chroma, GpuPixels, PixelData};
+        let surface = Arc::new(UnreadableSurface);
+        let (width, height) = filmcraft_frame::GpuSurface::size(&*surface);
+        let frame = VideoFrame {
+            data: PixelData::Gpu(GpuPixels::new(surface, filmcraft_frame::GpuFormat::Yuv { chroma: Chroma::C420, bits: u8::BITS })),
+            ..VideoFrame::rgba8(width, height, Vec::new())
+        };
+        let crop = Region { x: 0, y: 0, w: usize::try_from(width / 2).unwrap(), h: usize::try_from(height).unwrap() };
+        // Partial crop and quarter-turn each require unavailable CPU pixels.
+        for cache in [GopCache::new(None).with_crop(Some(crop)), GopCache::new(None).with_rotation(1)] {
+            let mut state = cache.shared.state.lock().unwrap();
+            let previous_max = state.out_max;
+            let output = vec![DecodedFrame { pts: 0, frame: frame.clone(), draft: false }];
+            let error = cache.store_output(&mut state, output).unwrap_err();
+            assert!(matches!(filmcraft_media::MediaError::from(error), filmcraft_media::MediaError::FrameAccess(why) if why == "GPU readback failed"));
+            assert!(state.frames.is_empty());
+            assert_eq!(state.bytes, 0);
+            assert_eq!(state.out_max, previous_max);
+        }
+    }
 
     /// `n` samples, a sync sample every `gop`, pts = 1000 · index (no reordering).
     struct Samples {

@@ -396,8 +396,7 @@ pub struct GpuState {
     pub size: (u32, u32),
     /// Composite time of the last frame (ms).
     pub last_ms: f32,
-    /// Set by the device's uncaptured-error handler: the GPU path failed (validation, lost
-    /// device, out of memory). The app then drops it and composites on the CPU.
+    /// Set by device error/loss callbacks; preview drops the compositor and uses CPU rendering.
     pub broken: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Largest texture side the device accepts.
     pub max_texture: u32,
@@ -457,15 +456,18 @@ impl FilmcraftApp {
             self.ui.status = format!("{} ({why})", tl!("GPU acceleration is unavailable; preview renders on the CPU"));
             return;
         }
-        // wgpu's default reaction to a validation error or lost device is to panic, which closed
-        // the app (or left the monitors blank) on GPUs the compositor doesn't suit. Log instead and
-        // fall back to the CPU compositor.
+        // Error and loss callbacks feed one CPU-fallback flag.
         let broken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = broken.clone();
         rs.device.on_uncaptured_error(std::sync::Arc::new(move |e: eframe::wgpu::Error| {
             log::error!("GPU error, switching to the CPU compositor: {e}");
             flag.store(true, std::sync::atomic::Ordering::Relaxed);
         }));
+        let flag = broken.clone();
+        rs.device.set_device_lost_callback(move |reason, message| {
+            log::error!("GPU device lost ({reason:?}), switching to the CPU compositor: {message}");
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
         let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| filmcraft_gpu::GpuCompositor::new(&rs.device, &rs.queue)));
         match made {
             Ok(compositor) if !broken.load(std::sync::atomic::Ordering::Relaxed) => {
@@ -476,8 +478,15 @@ impl FilmcraftApp {
         }
     }
 
+    /// Whether the GPU compositor is running (not disabled by a GPU error or the CPU override).
+    pub fn gpu_compositor_active(&self) -> bool {
+        self.gpu.is_some()
+    }
+
     /// Drop the GPU compositor after a GPU error; the monitors composite on the CPU from then on.
     fn disable_gpu(&mut self, why: &str) {
+        // decoders stop handing out GPU pictures nobody samples any more
+        filmcraft_codecs::hw::set_gpu_frames(false);
         log::error!("GPU compositor disabled: {why}");
         if let Some(g) = self.gpu.take()
             && let Some(id) = g.texture
@@ -504,13 +513,20 @@ impl FilmcraftApp {
             return None;
         }
         let t0 = web_time::Instant::now();
-        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (view, size) = g.compositor.composite_prepared(&plan.plan, Some(&plan.prepared));
-            (view.clone(), size)
-        }));
-        let Ok((view, size)) = ran else {
-            self.disable_gpu("compositor panicked");
-            return None;
+        filmcraft_frame::pending::take();
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| g.compositor.composite_prepared(&plan.plan, Some(&plan.prepared))));
+        let pending = filmcraft_frame::pending::take();
+        let (view, size) = match ran {
+            Ok(Ok(output)) => output,
+            Ok(Err(_)) if pending => return None,
+            Ok(Err(error)) => {
+                self.frames.reject_plan(key, error);
+                return None;
+            }
+            Err(_) => {
+                self.disable_gpu("compositor panicked");
+                return None;
+            }
         };
         let g = self.gpu.as_mut()?;
         g.last_ms = t0.elapsed().as_secs_f32() * 1000.0;
@@ -2106,6 +2122,10 @@ impl eframe::App for FilmcraftApp {
         // No frame worker threads on the web: render queued frames here, within a time budget
         // that leaves room for the UI pass (a no-op where workers run).
         self.frames.pump(std::time::Duration::from_millis(if self.playback.playing { 24 } else { 40 }));
+        if let Some(error) = self.frames.take_error() {
+            log::error!("{error}");
+            self.ui.status = error;
+        }
         // A panic in one panel must not close the app (losing unsaved work) or leave a blank
         // window: catch it, keep the session, and say what happened.
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.frame(ui))).is_err() {
@@ -2369,6 +2389,157 @@ mod mac_ctrl_click_tests {
 #[cfg(test)]
 mod gpu_fallback_tests {
     use filmcraft_render::plan::{FramePlan, PlanLayer};
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn destroyed_device_program_monitor_outputs_changed_cpu_frames() {
+        use eframe::{egui_wgpu, wgpu};
+        use filmcraft_media::{Generator, generators::GeneratorSource};
+        use filmcraft_project::{Label, Project, SequenceSettings, TrackKind};
+        use filmcraft_time::{FrameRate, Tick, TimeRange};
+        use std::sync::{Arc, atomic::Ordering};
+        use std::time::{Duration, Instant};
+
+        const TEST: &str = "gpu_fallback_tests::destroyed_device_program_monitor_outputs_changed_cpu_frames";
+        const CHILD_ENV: &str = "FILMCRAFT_PREVIEW_DEVICE_LOSS_CHILD";
+        // Bound driver/readback hangs separately from the monitor's normal settle deadline.
+        const CHILD_DEADLINE: Duration = Duration::from_secs(60);
+        const CHILD_POLL: Duration = Duration::from_millis(10);
+        if std::env::var_os(CHILD_ENV).is_none() {
+            // Device destruction + decoder policy changes stay out of parallel UI tests.
+            let mut child =
+                std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact", TEST, "--nocapture"]).env(CHILD_ENV, "1").spawn().unwrap();
+            let start = Instant::now();
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(status.success(), "preview device-loss child: {status}");
+                    return;
+                }
+                if start.elapsed() >= CHILD_DEADLINE {
+                    let kill = child.kill();
+                    let wait = child.wait();
+                    panic!("preview device-loss child exceeded {CHILD_DEADLINE:?}; kill={kill:?}, wait={wait:?}");
+                }
+                std::thread::sleep(CHILD_POLL);
+            }
+        }
+
+        fn picture(app: &mut super::FilmcraftApp, ctx: &egui::Context, target: super::frames::Target, frame: i64) -> (super::FrameKey, egui::FullOutput) {
+            let start = Instant::now();
+            loop {
+                let output = ctx.run_ui(
+                    egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 480.0))), ..Default::default() },
+                    |ui| {
+                        let rect = ui.max_rect();
+                        super::panels::monitor::show(app, ui, rect, super::panels::monitor::Which::Program);
+                    },
+                );
+                if let Some(key) = app.program_picture()
+                    && key.target == target
+                    && key.frame == frame
+                {
+                    let texture = match target {
+                        super::frames::Target::SequencePlan(_) => app.gpu.as_ref().and_then(|g| g.texture),
+                        _ => app.texture_existing("monitor-program").map(|(id, _)| id),
+                    };
+                    if let Some(id) = texture {
+                        let drawn = ctx
+                            .tessellate(output.shapes.clone(), output.pixels_per_point)
+                            .iter()
+                            .any(|p| matches!(&p.primitive, egui::epaint::Primitive::Mesh(mesh) if mesh.texture_id == id && !mesh.indices.is_empty()));
+                        assert!(drawn, "exact frame must reach the monitor's draw commands");
+                        return (key, output);
+                    }
+                }
+                assert!(start.elapsed().as_secs_f64() < super::SCREENSHOT_SETTLE_MAX_S, "Program monitor did not settle: {:?}", app.program_picture());
+                std::thread::yield_now();
+            }
+        }
+
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor { backends: wgpu::Backends::VULKAN, ..wgpu::InstanceDescriptor::new_without_display_handle() });
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            eprintln!("SKIPPED: no Vulkan adapter");
+            return;
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let renderer = egui_wgpu::Renderer::new(&device, format, Default::default());
+        let render_state = egui_wgpu::RenderState {
+            adapter,
+            available_adapters: vec![],
+            instance,
+            device: device.clone(),
+            queue,
+            target_format: format,
+            renderer: Arc::new(egui::mutex::RwLock::new(renderer)),
+            surface_config: egui_wgpu::SurfaceConfig::LOW_LATENCY,
+        };
+        let mut session = filmcraft_engine::Session::default();
+        let mut project = Project::new("Preview device loss");
+        let rate = FrameRate::FPS_24;
+        let seq = project.new_sequence("Three pictures", SequenceSettings { width: 64, height: 36, frame_rate: rate, ..Default::default() }, 1, 0, None);
+        let mut sources = filmcraft_render::SourceMap::default();
+        // Three primary mattes: independent expected pixels catch blank/stale/wrong-source output.
+        let colors = [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]];
+        let expected = [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255]];
+        for (frame, color) in colors.into_iter().enumerate() {
+            let source = GeneratorSource::new(Generator::ColorMatte { color }, 64, 36, rate, rate.tick_of(1));
+            let reference = GeneratorSource::new(Generator::ColorMatte { color }, 64, 36, rate, rate.tick_of(1));
+            let item = filmcraft_engine::demo::add_generator(&mut project, &session.media, source, &format!("Matte {frame}"), Label::Iris, None);
+            sources.0.insert(item, Arc::new(reference));
+            let clip = project.make_track_item(item, TrackKind::Video, rate.tick_of(frame as i64), TimeRange::new(Tick::ZERO, rate.tick_of(1)), rate).unwrap();
+            project.sequence_mut(seq).unwrap().video_tracks[0].items.push(clip);
+        }
+        session.project = Arc::new(project);
+        session.state.active_sequence = Some(seq);
+        session.set_playhead(Tick::ZERO);
+        let mut app = super::FilmcraftApp::new(session);
+        app.set_wgpu(render_state);
+        let broken = app.gpu.as_ref().expect("GPU compositor must be active").broken.clone();
+        assert!(!broken.load(Ordering::Relaxed), "healthy-device control");
+        assert!(!super::panels::menu_dialogs::software_renderer(&app), "healthy control must select the GPU");
+        let ctx = egui::Context::default();
+        let (healthy_key, _) = picture(&mut app, &ctx, super::frames::Target::SequencePlan(seq), 0);
+        let gpu = app.gpu.as_ref().unwrap();
+        assert_eq!(gpu.last_key, Some(healthy_key));
+        assert!(!app.textures.contains_key("monitor-program"), "healthy control must not use CPU textures");
+        let (w, h, pixels) = gpu.compositor.read_output().expect("healthy monitor GPU pixels");
+        assert_eq!((w, h), gpu.size);
+        assert!(!pixels.is_empty());
+        assert!(pixels.chunks_exact(4).all(|p| p == expected[0]), "healthy GPU must show the red matte");
+        device.destroy();
+        let _ = device.poll(wgpu::PollType::Poll);
+        assert!(broken.load(Ordering::Relaxed), "device-lost notification must reach preview policy");
+        for (frame, color) in expected.iter().enumerate().skip(1) {
+            app.session.set_playhead(rate.tick_of(frame as i64));
+            let (key, output) = picture(&mut app, &ctx, super::frames::Target::Sequence(seq), frame as i64);
+            assert!(!app.gpu_compositor_active(), "monitor must retire the lost compositor");
+            assert_eq!(app.texture_key("monitor-program"), Some(key));
+            let id = app.texture_existing("monitor-program").unwrap().0;
+            let deltas = output.textures_delta.set.get(&id).expect("changed frame must upload a CPU texture");
+            let [delta] = deltas.as_slice() else { panic!("monitor must upload one complete picture") };
+            assert_eq!(delta.pos, None, "monitor uploads a complete picture");
+            let egui::ImageData::Color(image) = &delta.image;
+            let img = app.frames.get(&key).expect("CPU frame cache must contain the exact shown frame");
+            assert_eq!(image.size, [img.w, img.h]);
+            assert!(!image.pixels.is_empty());
+            let uploaded: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
+            let cpu = filmcraft_render::render_sequence(
+                &app.session.project,
+                seq,
+                rate.tick_of(frame as i64),
+                filmcraft_render::RenderOptions { scale: key.size as f32 / 1000.0, captions: true, ..Default::default() },
+                &sources,
+            )
+            .unwrap();
+            assert_eq!((img.w, img.h), (cpu.w, cpu.h));
+            assert_eq!(img.px, cpu.over_black_rgba8(), "normal worker must match the independent source-map reference");
+            assert_eq!(uploaded, img.px, "egui upload must contain the rendered CPU pixels");
+            assert!(uploaded.chunks_exact(4).all(|p| p == color), "post-loss monitor must show the next primary matte");
+        }
+        eprintln!("Preview output: healthy GPU red -> destroyed device -> CPU green/blue; reference/cache/egui upload/draw commands match");
+    }
 
     /// Software rasterizers must not be treated as a GPU compositor: the preview crawled while
     /// "GPU" usage read 0 % because wgpu had silently fallen back to llvmpipe.

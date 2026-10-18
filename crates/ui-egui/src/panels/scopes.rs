@@ -66,7 +66,13 @@ pub fn frame_signal(app: &mut FilmcraftApp, ctx: &egui::Context, slot: &str, fra
         return Some(ScopeFrame { signal: s.clone(), key, pq: *p, space });
     }
     let fresh = if pq {
-        filmcraft_engine::scopes::scope_signal(&app.session, rate.tick_of(frame), 0.125, true)
+        match filmcraft_engine::scopes::scope_signal(&app.session, rate.tick_of(frame), 0.125, true) {
+            Ok(signal) => signal,
+            Err(error) => {
+                app.ui.status = error.to_string();
+                return None;
+            }
+        }
     } else {
         let fkey = FrameKey { target: Target::Sequence(seq_id), frame, size: 250, revision: rev, draft: false };
         let project = app.session.project.clone();

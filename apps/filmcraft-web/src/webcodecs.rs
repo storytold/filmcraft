@@ -34,12 +34,18 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
 mod pixels;
+mod resident;
+
+pub(crate) fn enable_resident() {
+    resident::enable();
+}
 
 #[derive(Default)]
 struct Transfers {
     native: u64,
     canvas: u64,
     closed: u64,
+    preroll: u64,
     stale: u64,
     bytes: u64,
     native_ms: f64,
@@ -173,16 +179,16 @@ pub fn stats() -> serde_json::Value {
         ss.borrow()
             .iter()
             .map(|(id, s)| {
-                json!({"id": id, "start": s.start, "next": s.next, "target": s.target, "needsKey": s.needs_key, "flushing": s.flushing.get(),
+                json!({"id": id, "start": s.start, "next": s.next, "target": s.target.get(), "needsKey": s.needs_key, "flushing": s.flushing.get(),
                     "errored": s.errored.get(), "queue": s.queue(), "copies": s.copying.get(), "idleMs": now_ms() - s.last_output.get()})
             })
             .collect()
     });
     let transfers = TRANSFERS.with(|s| {
         let s = s.borrow();
-        json!({"nativeFrames":s.native,"canvasFrames":s.canvas,"closedFrames":s.closed,"staleFrames":s.stale,"nativeBytes":s.bytes,"nativeMs":s.native_ms,"canvasMs":s.canvas_ms,"canvasReasons":s.reasons})
+        json!({"nativeFrames":s.native,"canvasFrames":s.canvas,"closedFrames":s.closed,"prerollFrames":s.preroll,"staleFrames":s.stale,"nativeBytes":s.bytes,"nativeMs":s.native_ms,"canvasMs":s.canvas_ms,"canvasReasons":s.reasons})
     });
-    json!({"sources": SOURCES.with(Cell::get), "framesDecoded": DECODED.with(Cell::get), "fallbacks": FALLBACKS.with(Cell::get), "sessions": sessions,"transfers":transfers})
+    json!({"sources": SOURCES.with(Cell::get), "framesDecoded": DECODED.with(Cell::get), "fallbacks": FALLBACKS.with(Cell::get), "sessions": sessions,"transfers":transfers,"resident":resident::stats()})
 }
 
 /// A [`SharedReader`] as the demuxer's byte source.
@@ -271,7 +277,7 @@ struct Session {
     flushing: Rc<Cell<bool>>,
     errored: Rc<Cell<bool>>,
     /// The frame (pts) this session was started for, and when it last delivered anything.
-    target: i64,
+    target: Rc<Cell<i64>>,
     last_output: Rc<Cell<f64>>,
     /// Highest presentation time output since the session (re)started.
     out_max: Rc<Cell<i64>>,
@@ -312,13 +318,36 @@ impl Session {
         let errored = Rc::new(Cell::new(false));
         let last_output = Rc::new(Cell::new(now_ms()));
         let out_max = Rc::new(Cell::new(i64::MIN));
+        let target = Rc::new(Cell::new(i64::MIN));
         let copying = Rc::new(Cell::new(0u32));
         let generation = Rc::new(Cell::new(0u64));
         let alive = Rc::new(Cell::new(true));
         let (o, lo, om) = (out.clone(), last_output.clone(), out_max.clone());
+        let requested = target.clone();
         let (copies, epoch, active, config, errors) = (copying.clone(), generation.clone(), alive.clone(), cfg.clone(), errored.clone());
         let on_output = Closure::<dyn FnMut(JsValue)>::new(move |frame: JsValue| {
             let ts = get(&frame, "timestamp").as_f64().unwrap_or(0.0) as i64;
+            // Preroll feeds codec references, not the requested picture or lookahead cache.
+            if ts < requested.get() {
+                let _ = call(&frame, "close", &[]);
+                TRANSFERS.with(|s| {
+                    let mut s = s.borrow_mut();
+                    s.closed = s.closed.saturating_add(1);
+                    s.preroll = s.preroll.saturating_add(1);
+                });
+                om.set(om.get().max(ts));
+                lo.set(now_ms());
+                crate::repaint();
+                return;
+            }
+            if let Some(f) = resident::retain(&frame, &config) {
+                o.borrow_mut().push((ts, f));
+                om.set(om.get().max(ts));
+                lo.set(now_ms());
+                DECODED.with(|c| c.set(c.get().saturating_add(1)));
+                crate::repaint();
+                return;
+            }
             let expected = epoch.get();
             let (o, lo, om, copies, epoch, active, config, errors) =
                 (o.clone(), lo.clone(), om.clone(), copies.clone(), epoch.clone(), active.clone(), config.clone(), errors.clone());
@@ -387,7 +416,7 @@ impl Session {
             needs_key: true,
             flushing: Rc::new(Cell::new(false)),
             errored,
-            target: i64::MIN,
+            target,
             last_output,
             out_max,
             out,
@@ -476,7 +505,7 @@ impl WcSource {
                 // Don't interrupt a session that is still working towards its own frame, unless it
                 // has gone quiet for STALE_MS (a copyTo that never settles must not wedge it).
                 let fresh = now_ms() - s.last_output.get() < STALE_MS;
-                let busy = fresh && (s.copying.get() > 0 || (!s.needs_key && s.target != i64::MIN && s.out_max.get() < s.target));
+                let busy = fresh && (s.copying.get() > 0 || (!s.needs_key && s.target.get() != i64::MIN && s.out_max.get() < s.target.get()));
                 if busy {
                     return Drive::Waiting;
                 }
@@ -491,11 +520,11 @@ impl WcSource {
                 s.start = key;
                 s.next = key;
                 s.needs_key = false;
-                s.target = want;
+                s.target.set(want);
                 s.out_max.set(i64::MIN);
                 s.last_output.set(now_ms());
-            } else if s.target == i64::MIN {
-                s.target = want;
+            } else if s.target.get() == i64::MIN {
+                s.target.set(want);
             }
             let upto = (i + LOOKAHEAD).min(n - 1);
             while s.next <= upto && s.queue().saturating_add(s.copying.get()) < MAX_QUEUE {
@@ -540,14 +569,14 @@ impl WcSource {
     }
 
     /// Move decoded pictures into the cache.
-    fn collect(&self, c: &mut Cache, want: i64) {
+    fn collect(&self, c: &mut Cache, want: i64) -> Result<(), MediaError> {
         let out = SESSIONS.with(|ss| {
             let ss = ss.borrow();
             let Some(s) = ss.get(&self.id) else { return Vec::new() };
             std::mem::take(&mut *s.out.borrow_mut())
         });
         for (pts, f) in out {
-            let f = if self.config.rotation != 0 { f.rotated(self.config.rotation) } else { f };
+            let f = if self.config.rotation != 0 { f.rotated(self.config.rotation).map_err(MediaError::FrameAccess)? } else { f };
             c.frames.insert(pts, Arc::new(f));
         }
         while c.frames.len() > CACHE_FRAMES {
@@ -557,11 +586,12 @@ impl WcSource {
         // the session's own frame came out: other requests may restart it now
         SESSIONS.with(|ss| {
             if let Some(s) = ss.borrow_mut().get_mut(&self.id)
-                && s.out_max.get() >= s.target
+                && s.out_max.get() >= s.target.get()
             {
-                s.target = i64::MIN;
+                s.target.set(i64::MIN);
             }
         });
+        Ok(())
     }
 }
 
@@ -592,13 +622,13 @@ impl MediaSource for WcSource {
         let target = req.time.max(Tick::ZERO).to_rational_round(1, t.timescale.max(1) as i64);
         let i = t.sample_at_presentation_time(target).unwrap_or(n - 1).min(n - 1);
         let want = t.samples[i].pts;
-        self.collect(&mut c, want);
+        self.collect(&mut c, want)?;
         if let Some(f) = c.frames.get(&want) {
             return Ok(f.clone());
         }
         match self.drive(i, want) {
             Drive::Waiting => {
-                self.collect(&mut c, want);
+                self.collect(&mut c, want)?;
                 if let Some(f) = c.frames.get(&want) {
                     return Ok(f.clone());
                 }

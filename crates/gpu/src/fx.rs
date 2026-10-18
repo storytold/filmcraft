@@ -1,12 +1,6 @@
 //! The GPU effect stage: standard effects of a plan layer ([`LayerFx`]) run in WGSL (`fx.wgsl`).
 //!
-//! A layer with effects is first drawn from its source (YUV planes or RGBA, through the
-//! compositor's own `fs` shader, so decoding is the same as for a plain layer) into a working
-//! texture of the size the CPU decodes it at; each [`FxOp`] then runs as compute passes that
-//! ping-pong between two working textures (three for Unsharp Mask, which keeps the original);
-//! the last one is drawn into the accumulator with the layer's matrix, opacity and blend mode
-//! like any RGBA layer. Working textures are `Rgba32Float` (the CPU reference's precision) and
-//! pooled per size; layers without effects never touch any of this.
+//! Consumes the source stage's linear working image. Compute passes ping-pong with pooled scratch textures; Unsharp keeps one extra original. Empty ops allocate no scratch.
 //!
 //! Box blurs (Gaussian Blur, Camera Blur, the blur inside Unsharp / Sharpen) run per pixel for
 //! radii up to [`BOX_PER_PIXEL_MAX`] and as a running sum per row / column above, so a huge
@@ -14,11 +8,10 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::source::{self, WORKING_FORMAT};
 use filmcraft_render::gpufx::FxOp;
 use filmcraft_render::plan::LayerFx;
 
-/// Working texture format.
-pub(crate) const FX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 /// Box radii up to this many pixels are summed per output pixel; larger ones as a running sum.
 pub const BOX_PER_PIXEL_MAX: u32 = 32;
 
@@ -59,8 +52,6 @@ pub(crate) struct FxStage {
     px: wgpu::ComputePipeline,
     run: wgpu::ComputePipeline,
     bgl: wgpu::BindGroupLayout,
-    /// Draws a layer's source into a working texture (`composite.wgsl` `fs`, no blending).
-    source: wgpu::RenderPipeline,
     pool: HashMap<(u32, u32), Vec<Target>>,
     used: HashSet<(u32, u32)>,
 }
@@ -75,8 +66,6 @@ struct Dispatch {
 /// The recorded work of one layer's effects (bind groups made; recorded into the frame's encoder
 /// right before the layer is drawn, so layers can share pooled textures).
 pub(crate) struct FxJob {
-    source_bg: wgpu::BindGroup,
-    source_target: wgpu::TextureView,
     dispatches: Vec<Dispatch>,
     /// The texture holding the result.
     pub(crate) result: wgpu::TextureView,
@@ -261,7 +250,7 @@ impl FxStage {
             && l.max_compute_workgroups_per_dimension >= 1
     }
 
-    pub(crate) fn new(device: &wgpu::Device, composite: &wgpu::ShaderModule, layer_bgl: &wgpu::BindGroupLayout) -> Self {
+    pub(crate) fn new(device: &wgpu::Device) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("filmcraft-fx"),
             source: wgpu::ShaderSource::Wgsl(include_str!("fx.wgsl").into()),
@@ -291,7 +280,7 @@ impl FxStage {
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::StorageTexture {
                         access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: FX_FORMAT,
+                        format: WORKING_FORMAT,
                         view_dimension: wgpu::TextureViewDimension::D2,
                     },
                     count: None,
@@ -310,28 +299,7 @@ impl FxStage {
                 cache: None,
             })
         };
-        let spl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("fx-source"),
-            bind_group_layouts: &[Some(layer_bgl)],
-            immediate_size: 0,
-        });
-        let source = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("fx-source"),
-            layout: Some(&spl),
-            vertex: wgpu::VertexState { module: composite, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: composite,
-                entry_point: Some("fs_fx_source"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: FX_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
-        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, source, pool: HashMap::new(), used: HashSet::new() }
+        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, pool: HashMap::new(), used: HashSet::new() }
     }
 
     /// Start a frame: pooled textures of sizes no layer uses by [`end_frame`](Self::end_frame)
@@ -345,6 +313,13 @@ impl FxStage {
         self.pool.retain(|k, _| used.contains(k));
     }
 
+    pub(crate) fn retained_bytes(&self) -> u64 {
+        self.pool
+            .values()
+            .flatten()
+            .fold(0u64, |sum, (t, _)| sum.saturating_add(u64::from(t.width()) * u64::from(t.height()) * std::mem::size_of::<[f32; 4]>() as u64))
+    }
+
     /// No working textures held.
     #[cfg(test)]
     pub(crate) fn is_idle(&self) -> bool {
@@ -352,6 +327,9 @@ impl FxStage {
     }
 
     fn targets(&mut self, device: &wgpu::Device, size: (u32, u32), n: usize) -> Vec<Target> {
+        if n == 0 {
+            return Vec::new();
+        }
         self.used.insert(size);
         let v = self.pool.entry(size).or_default();
         while v.len() < n {
@@ -361,7 +339,7 @@ impl FxStage {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: FX_FORMAT,
+                format: WORKING_FORMAT,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                     | wgpu::TextureUsages::TEXTURE_BINDING
                     | wgpu::TextureUsages::STORAGE_BINDING
@@ -374,16 +352,13 @@ impl FxStage {
         v.iter().take(n).cloned().collect()
     }
 
-    /// Prepare the passes of `fx`, whose source draw uses `source_bg` (a layer bind group whose
-    /// uniforms map the frame onto the working image). None when the working image does not fit
-    /// in a texture (the layer is then drawn without its effects — never larger than the source
-    /// frame, which would not have uploaded either).
+    /// Prepare compute passes on an already reconstructed source; None if routing or dimensions are invalid.
     pub(crate) fn job(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         fx: &LayerFx,
-        source_bg: wgpu::BindGroup,
+        source: &source::SourceJob,
         dummy: &wgpu::TextureView,
     ) -> Option<FxJob> {
         let (w, h) = (fx.size.0.max(1), fx.size.1.max(1));
@@ -392,8 +367,15 @@ impl FxStage {
             return None;
         }
         let all: Vec<Step> = fx.ops.iter().flat_map(steps).collect();
-        let n = if all.iter().any(|s| s.combine) { 3 } else { 2 };
-        let targets = self.targets(device, (w, h), n);
+        let n = if all.is_empty() {
+            1
+        } else if all.iter().any(|s| s.combine) {
+            3
+        } else {
+            2
+        };
+        let mut targets = vec![(source.texture.clone(), source.view.clone())];
+        targets.extend(self.targets(device, (w, h), n - 1));
         let views: Vec<wgpu::TextureView> = targets.iter().map(|t| t.1.clone()).collect();
         let mut dispatches = Vec::with_capacity(all.len());
         let mut cur = 0usize;
@@ -446,35 +428,11 @@ impl FxStage {
                 orig = None;
             }
         }
-        Some(FxJob {
-            source_bg,
-            source_target: views.first()?.clone(),
-            dispatches,
-            result: views.get(cur)?.clone(),
-            result_texture: targets.get(cur)?.0.clone(),
-        })
+        Some(FxJob { dispatches, result: views.get(cur)?.clone(), result_texture: targets.get(cur)?.0.clone() })
     }
 
-    /// Record a job (source draw, then its compute passes) into `enc`.
+    /// Record compute passes after the source stage's draw.
     pub(crate) fn record(&self, enc: &mut wgpu::CommandEncoder, job: &FxJob) {
-        {
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("fx-source"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &job.source_target,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&self.source);
-            pass.set_bind_group(0, &job.source_bg, &[]);
-            pass.draw(0..6, 0..1);
-        }
         if job.dispatches.is_empty() {
             return;
         }

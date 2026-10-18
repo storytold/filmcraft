@@ -646,12 +646,12 @@ fn export_frame(s: &mut Session, p: &Value) -> Result<Value> {
         filmcraft_render::render_item(&s.project, target.item, target.time, 1.0, &provider)
     } else {
         let opts = filmcraft_render::RenderOptions { scale: 1.0, captions: true, ..Default::default() };
-        Some(filmcraft_render::render_sequence(&s.project, target.item, target.time, opts, &provider))
+        filmcraft_render::render_sequence(&s.project, target.item, target.time, opts, &provider).map(Some)
     };
     if filmcraft_media::pending::take() {
         return Err(EngineError::Other("the frame is still loading; export it again in a moment".into()));
     }
-    let img = img.ok_or_else(|| bad("file.exportFrame", "cannot decode the Source video frame"))?;
+    let img = img.map_err(EngineError::Other)?.ok_or_else(|| bad("file.exportFrame", "cannot decode the Source video frame"))?;
     let (w, h) = (
         u32::try_from(img.w).map_err(|_| bad("file.exportFrame", "image width exceeds limits"))?,
         u32::try_from(img.h).map_err(|_| bad("file.exportFrame", "image height exceeds limits"))?,
