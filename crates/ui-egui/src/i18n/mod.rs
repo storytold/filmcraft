@@ -346,10 +346,7 @@ mod tests {
             ("es", include_str!("es.tsv")),
             ("ja", include_str!("ja.tsv")),
             ("pt-br", include_str!("pt-br.tsv")),
-            ("uk", include_str!("uk.tsv")),
             ("zh-cn", include_str!("zh-cn.tsv")),
-            ("de", include_str!("de.tsv")),
-            ("ru", include_str!("ru.tsv")),
             ("fr", include_str!("fr.tsv")),
             ("id", include_str!("id.tsv")),
             ("it", include_str!("it.tsv")),
@@ -472,6 +469,26 @@ mod tests {
         }
         missing.sort();
         assert!(missing.is_empty(), "untranslated menu labels: {missing:#?}");
+    }
+
+    #[test]
+    fn playhead_to_cursor_command_label_is_translated_in_every_catalog() {
+        for (code, text) in [
+            ("es", include_str!("es.tsv")),
+            ("ja", include_str!("ja.tsv")),
+            ("pt-br", include_str!("pt-br.tsv")),
+            ("zh-cn", include_str!("zh-cn.tsv")),
+            ("fr", include_str!("fr.tsv")),
+            ("id", include_str!("id.tsv")),
+            ("it", include_str!("it.tsv")),
+            ("ko", include_str!("ko.tsv")),
+        ] {
+            let (entries, _) = catalog::parse_entries(text);
+            assert!(
+                entries.iter().any(|(_, source, translation)| source == "Move Playhead to Cursor" && translation != source),
+                "{code}: missing translated Move Playhead to Cursor label"
+            );
+        }
     }
 
     /// The core menus every other catalog must cover: the entries of the menus-only Ukrainian

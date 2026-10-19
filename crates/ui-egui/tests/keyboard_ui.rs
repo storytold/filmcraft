@@ -312,3 +312,32 @@ fn shift_alt_click_toggles_only_the_clicked_linked_side() {
         assert_eq!(*d.app().session.project, *before, "selection does not edit the document");
     }
 }
+
+#[test]
+fn move_playhead_to_cursor_is_assignable_and_uses_the_timeline_pointer() {
+    let mut d = Driver::new();
+    d.exec("prefs.set", json!({"key": "timeline.snapPlayhead", "value": false}));
+    d.exec("shortcuts.set", json!({"command": "timeline.movePlayheadToCursor", "keys": "Ctrl+Alt+Shift+P", "panel": "Timeline"}));
+    d.focus("Timeline");
+    d.frames(30);
+
+    let panels = d.ok("ui.elements", json!({"prefix": "panel.Timeline"}));
+    let panel = panels.as_array().and_then(|items| items.iter().find(|item| item["id"] == "panel.Timeline")).expect("Timeline panel geometry");
+    let rect = panel["rect"].as_array().expect("panel rectangle");
+    let left = rect[0].as_f64().expect("panel x") as f32;
+    let top = rect[1].as_f64().expect("panel y") as f32;
+    let width = rect[2].as_f64().expect("panel width") as f32;
+    let timeline = &d.app().ui.timeline;
+    let content_width = width - timeline.header_w - 17.0;
+    assert!(content_width > 0.0 && timeline.pps.is_finite() && timeline.pps > 0.0);
+    let x = left + timeline.header_w + content_width * 0.6;
+    let y = top + 58.0 + 30.0;
+    let target_seconds = timeline.scroll + f64::from(x - left - timeline.header_w) / timeline.pps;
+    let expected = d.app().session.sequence_rate().snap_nearest(filmcraft_time::Tick::from_seconds_f64(target_seconds));
+    assert_ne!(expected, filmcraft_time::Tick::ZERO);
+
+    d.ok("ui.move", json!({"x": x, "y": y}));
+    d.frames(2);
+    d.key("Ctrl+Alt+Shift+P");
+    assert_eq!(d.app().session.playhead(), expected, "the assigned Timeline shortcut moves to the cursor time");
+}

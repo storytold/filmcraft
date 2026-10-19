@@ -2214,6 +2214,49 @@ fn scrub_playhead(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, p: Po
     app.session.set_playhead(tt);
 }
 
+/// Time under a cursor in the Timeline's ruler or tracks. Headers, the toolbar, and both
+/// scrollbars are deliberately outside this target area.
+fn cursor_time(layout: &Layout, pos: Pos2) -> Option<Tick> {
+    let coordinates = [pos.x, pos.y, layout.content.min.x, layout.content.min.y, layout.content.max.x, layout.content.max.y, layout.ruler.min.y];
+    if !coordinates.iter().all(|value| value.is_finite())
+        || layout.content.min.x >= layout.content.max.x
+        || layout.ruler.min.y >= layout.content.max.y
+        || !(layout.pps > 0.0 && layout.pps.is_finite())
+        || !(layout.scroll >= 0.0 && layout.scroll.is_finite())
+    {
+        return None;
+    }
+    if pos.x < layout.content.min.x || pos.x >= layout.content.max.x || pos.y < layout.ruler.min.y || pos.y >= layout.content.max.y {
+        return None;
+    }
+    let seconds = layout.scroll + f64::from(pos.x - layout.content.min.x) / layout.pps;
+    (seconds.is_finite() && seconds >= 0.0).then(|| Tick::from_seconds_f64(seconds))
+}
+
+/// Implements the assignable Move Playhead to Cursor command.
+pub(crate) fn move_playhead_to_cursor(app: &mut FilmcraftApp, ctx: &egui::Context) -> Result<Value, String> {
+    let pos = ctx.input(|input| input.pointer.latest_pos()).ok_or_else(|| "Move the pointer over the Timeline ruler or tracks first".to_string())?;
+    let hovered_panel = app.auto.query("panel.").into_iter().rev().find(|element| {
+        let [x, y, width, height] = element.rect;
+        [x, y, width, height].iter().all(|value| value.is_finite()) && Rect::from_min_size(pos2(x, y), egui::vec2(width, height)).contains(pos)
+    });
+    if !hovered_panel.is_some_and(|element| element.id == "panel.Timeline") {
+        return Err("Move the pointer over the Timeline ruler or tracks first".into());
+    }
+    let layout = app.tl.layout.clone().ok_or_else(|| "The Timeline layout is not available yet".to_string())?;
+    let mut time = cursor_time(&layout, pos).ok_or_else(|| "Move the pointer over the Timeline ruler or tracks first".to_string())?;
+    let sequence_id = app.session.state.active_sequence.ok_or_else(|| "There is no active sequence".to_string())?;
+    let project = app.session.project.clone();
+    let sequence = project.sequence(sequence_id).ok_or_else(|| "The active sequence is missing from the project".to_string())?;
+    time = sequence.settings.frame_rate.snap_nearest(time.max(Tick::ZERO));
+    if app.session.prefs.timeline.snap_playhead {
+        time = snap_playhead(app, sequence, &layout, time);
+    }
+    app.stop();
+    app.session.set_playhead(time);
+    Ok(json!({"time": time.0}))
+}
+
 fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &Layout, rect: Rect) {
     let ctx = ui.ctx().clone();
     let area = Rect::from_min_max(pos2(layout.content.min.x, layout.ruler.min.y), layout.content.max);
@@ -3416,5 +3459,35 @@ mod ruler_tests {
         }
         let (minor, label) = ruler_steps(1.0, i64::MAX);
         assert!(minor >= 1 && label >= 1 && label % minor == 0, "an unrepresentable rate: tick {minor}, label {label}");
+    }
+}
+
+#[cfg(test)]
+mod cursor_time_tests {
+    use super::{Layout, cursor_time};
+    use egui::{Rect, pos2};
+
+    fn layout(pps: f64, scroll: f64) -> Layout {
+        Layout {
+            content: Rect::from_min_max(pos2(100.0, 100.0), pos2(500.0, 400.0)),
+            ruler: Rect::from_min_max(pos2(100.0, 56.0), pos2(500.0, 100.0)),
+            rows: Vec::new(),
+            pps,
+            scroll,
+            split_y: 250.0,
+        }
+    }
+
+    #[test]
+    fn cursor_maps_ruler_and_track_times_and_rejects_chrome_and_invalid_geometry() {
+        let valid_layout = layout(40.0, 2.0);
+        assert_eq!(cursor_time(&valid_layout, pos2(220.0, 80.0)).map(|time| time.seconds()), Some(5.0));
+        assert_eq!(cursor_time(&valid_layout, pos2(220.0, 120.0)).map(|time| time.seconds()), Some(5.0));
+        for pos in [pos2(99.0, 120.0), pos2(120.0, 55.0), pos2(500.0, 120.0), pos2(120.0, 400.0), pos2(f32::NAN, 120.0)] {
+            assert_eq!(cursor_time(&valid_layout, pos), None, "reject pointer {pos:?}");
+        }
+        assert_eq!(cursor_time(&layout(0.0, 2.0), pos2(220.0, 120.0)), None, "reject zero zoom");
+        assert_eq!(cursor_time(&layout(f64::INFINITY, 2.0), pos2(220.0, 120.0)), None, "reject infinite zoom");
+        assert_eq!(cursor_time(&layout(40.0, f64::NAN), pos2(220.0, 120.0)), None, "reject invalid scroll");
     }
 }

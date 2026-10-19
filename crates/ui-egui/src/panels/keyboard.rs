@@ -16,6 +16,7 @@
 //! | `timeline.expandAllTracks` / `timeline.minimizeAllTracks` | Expand / Minimize All Tracks | Shift+= / Shift+- |
 //! | `timeline.increaseVideoHeight` … `timeline.decreaseAudioHeight` | Increase / Decrease Video / Audio Tracks Height | Cmd+= / Cmd+- / Alt+= / Alt+- (Timeline) |
 //! | `timeline.nextScreen` / `timeline.prevScreen` | Show Next / Previous Screen | PageDown / PageUp (Timeline) |
+//! | `timeline.movePlayheadToCursor` | Move Playhead to Cursor | (Timeline; assign in Keyboard Shortcuts) |
 //! | `projectPanel.*` | Project panel: List / Icon / Toggle View, Hover Scrub, thumbnail size, Move / Extend Selection | (Project) |
 //! | `textPanel.*` | Text panel transcript: word / line / segment navigation and selection, Delete, Ripple Delete, Show Program Transcript | (Text) |
 //! | `graphics.beginTextEditing` | Begin Text Editing for a Graphic Layer | Cmd+Alt+' |
@@ -81,6 +82,7 @@ pub const COMMANDS: &[UiCommand] = &[
     uic!("timeline.decreaseAudioHeight", "Decrease Audio Tracks Height", [], None),
     uic!("timeline.nextScreen", "Show Next Screen", [], None),
     uic!("timeline.prevScreen", "Show Previous Screen", [], None),
+    uic!("timeline.movePlayheadToCursor", "Move Playhead to Cursor", [], None),
     uic!("projectPanel.viewList", "List", [], None),
     uic!("projectPanel.viewIcon", "Icon", [], None),
     uic!("projectPanel.toggleView", "Toggle View", [], None),
@@ -208,6 +210,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             tv.target_scroll = (tv.target_scroll + d).max(0.0);
             Ok(json!({"scroll": tv.target_scroll}))
         }
+        "timeline.movePlayheadToCursor" => crate::panels::timeline::move_playhead_to_cursor(app, ctx),
         "graphics.beginTextEditing" => begin_text_editing(app),
         "help.filmcraftHelp" => {
             crate::links::open(app, ctx, HELP_URL);
