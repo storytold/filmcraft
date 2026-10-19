@@ -59,7 +59,7 @@ fn max_diff(a: &Image, b: &Image) -> f32 {
     a.px.iter().zip(&b.px).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
 }
 
-/// The ids this milestone added or rebuilt.
+/// The ids this milestone added or rebuilt, and FilmCraft's own effects (not in Premiere) since.
 const NEW_IDS: &[&str] = &[
     "lighting_effects",
     "bokeh_blur",
@@ -142,6 +142,8 @@ const NEW_IDS: &[&str] = &[
     "simple_text",
     "noise",
     "mosaic",
+    // FilmCraft's own (not in Premiere)
+    "halation",
 ];
 
 #[test]
@@ -258,6 +260,8 @@ fn neutral_parameters_are_identity() {
         ("video_limiter", vec![("compression", ParamValue::Choice(0))]),
         ("cineon_converter", vec![("conversion", ParamValue::Choice(2)), ("black10", ParamValue::Float(95.0)), ("white10", ParamValue::Float(685.0))]),
         ("light_leaks", vec![("intensity", ParamValue::Float(0.0))]),
+        ("halation", vec![("intensity", ParamValue::Float(0.0))]),
+        ("halation", vec![("radius", ParamValue::Float(0.0))]),
         ("lens_flare", vec![("brightness", ParamValue::Float(0.0))]),
         ("simple_text", vec![("text", ParamValue::Text(String::new()))]),
     ];
@@ -576,6 +580,109 @@ fn lights_add_light_around_highlights() {
     setf(&mut e, "amount", 2.0);
     let o = run("rgb_split", &e, &s, &cx());
     assert!(close(o.get(6, 0)[0], 1.0, 1e-4) && close(o.get(2, 0)[2], 1.0, 1e-4) && close(o.get(4, 0)[1], 1.0, 1e-4));
+}
+
+/// A white square on near black. Halation adds a halo around it, redder than blue, leaves the far
+/// corner dark, keeps light off the square itself under Core Suppression, and adds the same light
+/// at half resolution.
+#[test]
+fn halation_glows_red_around_highlights() {
+    // an n×n frame with a white square in the middle (4×4 at n = 48)
+    let square = |n: usize| {
+        let mut img = solid(n, n, [0.05, 0.05, 0.05]);
+        for y in n * 22 / 48..n * 26 / 48 {
+            for x in n * 22 / 48..n * 26 / 48 {
+                img.px[(y * n + x) * 4..(y * n + x) * 4 + 4].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
+            }
+        }
+        img
+    };
+    let img = square(48);
+    // a small radius, so the wide tail can't reach the corner of a 48 px frame
+    let mut e = inst("halation");
+    setf(&mut e, "radius", 4.0);
+    let o = run("halation", &e, &img, &cx());
+    // 1. light around the square, much more red than blue
+    let (near, base) = (o.get(30, 24), img.get(30, 24));
+    let (dr, db) = (near[0] - base[0], near[2] - base[2]);
+    assert!(dr > 1e-3 && dr > 3.0 * db, "halo {near:?} over {base:?}");
+    // 2. the far corner stays as it was
+    assert!(close(o.get(2, 2)[0], img.get(2, 2)[0], 1e-4), "lit the far corner {:?}", o.get(2, 2));
+    // 3. Core Suppression 100 % adds much less light on the square than 0 %
+    let on_square = |s: f64| {
+        let mut e = e.clone();
+        setf(&mut e, "core_suppression", s);
+        run("halation", &e, &img, &cx()).get(24, 24)[0] - img.get(24, 24)[0]
+    };
+    let (full, none) = (on_square(100.0), on_square(0.0));
+    assert!(none > 1e-3 && full < none * 0.5, "suppressed {full}, not suppressed {none}");
+    // 4. at half resolution (px_scale 0.5) the halo reaches half as far: the light-weighted mean
+    //    distance of the added red from the centre (4.9 px here; ignoring px_scale gives 8.2)
+    let spread = |o: &Image, i: &Image| {
+        let c = o.w as f64 / 2.0;
+        let (mut sum, mut light) = (0.0, 0.0);
+        for y in 0..o.h {
+            for x in 0..o.w {
+                let a = f64::from(o.get(x, y)[0] - i.get(x, y)[0]);
+                sum += a * (x as f64 + 0.5 - c).hypot(y as f64 + 0.5 - c);
+                light += a;
+            }
+        }
+        sum / light
+    };
+    let small = square(24);
+    let half = run("halation", &e, &small, &FxCtx { px_scale: 0.5, ..cx() });
+    let (at_full, at_half) = (spread(&o, &img), spread(&half, &small) * 2.0);
+    assert!(close(at_half as f32, at_full as f32, at_full as f32 * 0.15), "full {at_full} px, half ×2 {at_half} px");
+}
+
+/// A corrupt project can hold any number: Halation never panics, keeps every value finite, keeps
+/// the frame size and only ever adds light.
+#[test]
+fn halation_survives_hostile_parameters() {
+    let img = picture(16, 12);
+    let check = |o: &Image, what: &str| {
+        assert_eq!((o.w, o.h, o.px.len()), (img.w, img.h, img.px.len()), "{what}: size");
+        assert!(o.px.iter().all(|v| v.is_finite()), "{what}: not finite");
+        assert!(o.px.iter().zip(&img.px).all(|(a, b)| *a >= *b - 1e-6), "{what}: darkened the frame");
+    };
+    // numbers from a corrupt project
+    for (id, v) in [
+        ("radius", f64::NAN),
+        ("radius", f64::INFINITY),
+        ("radius", 1e30),
+        ("radius", -5.0),
+        ("intensity", f64::NAN),
+        ("intensity", f64::INFINITY),
+        ("intensity", 1e30),
+        ("intensity", -100.0),
+        ("threshold", f64::NAN),
+        ("threshold", -50.0),
+        ("threshold", 1e9),
+        ("core_suppression", f64::NAN),
+        ("core_suppression", -1e9),
+        ("core_suppression", 1e9),
+    ] {
+        let mut e = inst("halation");
+        setf(&mut e, id, v);
+        check(&run("halation", &e, &img, &cx()), &format!("{id}={v}"));
+    }
+    // a NaN, infinite or negative colour
+    for c in [[f32::NAN; 4], [f32::INFINITY, 0.0, 0.0, 1.0], [-1.0, -1.0, -1.0, 1.0]] {
+        let mut e = inst("halation");
+        set(&mut e, "color", ParamValue::Color(c));
+        check(&run("halation", &e, &img, &cx()), &format!("color={c:?}"));
+    }
+    // a broken render scale
+    for s in [f32::NAN, f32::INFINITY, -1.0, 0.0] {
+        check(&run("halation", &inst("halation"), &img, &FxCtx { px_scale: s, ..cx() }), &format!("px_scale={s}"));
+    }
+    // empty and one-pixel-wide frames, called directly so the size guard in `apply` can't hide them
+    for (w, h) in [(0, 0), (1, 1), (1, 7), (7, 1)] {
+        let mut t = Image::filled(w, h, [1.0, 1.0, 1.0, 1.0]);
+        lights::halation(&mut t, &inst("halation"), &cx());
+        assert!(t.px.len() == w * h * 4 && t.px.iter().all(|v| v.is_finite()), "{w}x{h}");
+    }
 }
 
 #[test]

@@ -427,7 +427,9 @@ pub fn effect_cost_ms(id: &str) -> f64 {
         | "vr_blur"
         | "vr_glow"
         | "vr_denoise"
-        | "vr_sharpen" => 50.0,
+        | "vr_sharpen"
+        // FilmCraft's own effects (measured: halation ≈ 95–125 ms at 1080p, 12 threads)
+        | "halation" => 50.0,
         "vertical_flip" | "horizontal_flip" | "crop" | "timecode" | "black_white" | "extract" | "clip_name" | "strobe" | "mosaic" | "mirror"
         | "simple_text" | "track_matte" => 6.0,
         _ => 20.0,

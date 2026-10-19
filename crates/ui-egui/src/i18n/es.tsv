@@ -1527,6 +1527,7 @@
 	Convolution Reverb	Reverberación por convolución
 	Cool Blue	Azul frío
 	Cool, desaturated and punchy	Frío, desaturado y contundente
+	Core Suppression	Supresión del núcleo
 	Core Width	Anchura del núcleo
 	Corner	Esquina
 	Corner Pin	Anclaje de esquinas
@@ -1712,6 +1713,7 @@
 	Film Dissolve	Disolución de película
 	Film Dissolve (Legacy)	Disolución de película (heredada)
 	Film Roll	Rollo de película
+	FilmCraft Effects	Efectos de FilmCraft
 	Filter	Filtro
 	Filter Frequency	Frecuencia del filtro
 	Filter Resonance	Resonancia del filtro
@@ -1825,6 +1827,7 @@
 	HDR Graphics White (Nits)	Blanco de gráficos HDR (nits)
 	HLS Vectorscope + Histogram	Vectorscopio HLS + histograma
 	HSL Secondary	HSL secundaria
+	Halation	Halación
 	Hard	Duro
 	Hard Clip	Recorte duro
 	Hard Light	Luz fuerte

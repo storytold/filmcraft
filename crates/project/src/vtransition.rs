@@ -9,8 +9,9 @@
 
 use crate::effect::{EffectDef, EffectKind, ParamDef, ang, b, ch, col, fs, pt};
 
-/// Top-level Effects panel folders, in Premiere's order.
-pub const EFFECT_TOP_FOLDERS: &[&str] = &["Presets", "Lumetri Presets", "Audio Effects", "Audio Transitions", "Video Effects", "Video Transitions", "Legacy"];
+/// Top-level Effects panel folders, in Premiere's order, with FilmCraft's own effects before Legacy.
+pub const EFFECT_TOP_FOLDERS: &[&str] =
+    &["Presets", "Lumetri Presets", "Audio Effects", "Audio Transitions", "Video Effects", "Video Transitions", "FilmCraft Effects", "Legacy"];
 
 /// The ten `Video Transitions` sub-folders, in panel order.
 pub const VIDEO_TRANSITION_FOLDERS: &[&str] =

@@ -1,6 +1,7 @@
 //! The Premiere 26 video-effect catalogue beyond the original core set (M5.11): definitions for
 //! every current folder (Adjust … Video), the Immersive Video (VR) set, the Legacy bin and the
-//! obsolete effects old projects still reference, plus the Effects-panel badge table.
+//! obsolete effects old projects still reference, plus the Effects-panel badge table. FilmCraft's
+//! own effects (not in Premiere) live in a separate top-level FilmCraft Effects folder.
 //!
 //! Names, folders and parameter names follow the public effect list; parameter ranges/defaults are
 //! our own where the reference does not pin them. Pixel implementations live in
@@ -16,6 +17,9 @@ pub(super) const UTILITY: &[&str] = &["Video Effects", "Utility"];
 pub(super) const OBSOLETE: &[&str] = &["Video Effects", "Obsolete"];
 /// The Effects panel's Legacy bin.
 pub(super) const LEGACY: &[&str] = &["Legacy", "Video Effects"];
+/// FilmCraft's own effects, beyond Premiere's catalogue: a top-level folder of their own, so the
+/// Video Effects tree stays Premiere's. Sub-folders reuse Premiere's folder names.
+const FILMCRAFT_LIGHTS: &[&str] = &["FilmCraft Effects", "Lights & Glows"];
 
 /// Track choices for effects that read another video track (Track Matte Key, Compound Blur…).
 pub const TRACK_CHOICES: &[&str] = &["None", "Video 1", "Video 2", "Video 3", "Video 4", "Video 5", "Video 6", "Video 7", "Video 8"];
@@ -93,6 +97,22 @@ fn lighting_effects() -> EffectDef {
     ps.push(fs("bump_height", "Bump Height", 0.0, (-100.0, 100.0), (-100.0, 100.0), "", 1));
     ps.push(b("white_high", "White Is High", true));
     video("lighting_effects", "Lighting Effects", ADJUST, ps)
+}
+
+/// FilmCraft's own effects (not in Premiere).
+fn filmcraft_effects() -> Vec<EffectDef> {
+    vec![video(
+        "halation",
+        "Halation",
+        FILMCRAFT_LIGHTS,
+        vec![
+            pct("threshold", "Threshold", 80.0),
+            px("radius", "Radius", 20.0, 1000.0, 200.0),
+            fs("intensity", "Intensity", 100.0, (0.0, 1000.0), (0.0, 400.0), "%", 0),
+            col("color", "Color", [1.0, 0.4, 0.15, 1.0]),
+            pct("core_suppression", "Core Suppression", 50.0),
+        ],
+    )]
 }
 
 fn immersive() -> Vec<EffectDef> {
@@ -1011,6 +1031,7 @@ pub(super) fn defs() -> Vec<EffectDef> {
         ),
     ];
     v.extend(immersive());
+    v.extend(filmcraft_effects());
     v
 }
 
@@ -1151,6 +1172,8 @@ pub(super) fn apply_badges(v: &mut [EffectDef]) {
         let yuv = matches!(id, "proc_amp" | "lumetri" | "video_limiter" | "black_white" | "alpha_adjust" | "luma_key" | "track_matte");
         let accel = match e.category.first().copied() {
             Some("Legacy") => !matches!(id, "camera_blur"),
+            // our own effects: no Premiere badge to copy, and they run on the CPU so far
+            Some("FilmCraft Effects") => false,
             _ if folder == "Obsolete" => false,
             _ => !matches!(id, "clone" | "stroke"),
         };
@@ -1291,5 +1314,17 @@ mod tests {
         assert_eq!((v("upper_left").x, v("upper_left").y), (0.0, 0.0));
         assert_eq!((v("lower_right").x, v("lower_right").y), (1920.0, 1080.0));
         assert_eq!((v("upper_right").x, v("upper_right").y), (1920.0, 0.0));
+    }
+
+    #[test]
+    fn filmcraft_effects_have_their_own_visible_folder() {
+        // the Effects panel only lists effects under EFFECT_TOP_FOLDERS (no folder = hidden on purpose)
+        for d in effect_defs().iter().filter(|d| d.kind == EffectKind::Video && !d.intrinsic) {
+            let Some(&top) = d.category.first() else { continue };
+            assert!(crate::vtransition::EFFECT_TOP_FOLDERS.contains(&top), "{} in {:?} is not in the Effects panel", d.id, d.category);
+        }
+        let d = find_effect("halation").unwrap();
+        assert_eq!(d.category, FILMCRAFT_LIGHTS);
+        assert_eq!((d.accelerated, d.float32, d.yuv), (false, true, false), "CPU only, no Premiere badge to copy");
     }
 }

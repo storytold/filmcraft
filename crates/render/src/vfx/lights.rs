@@ -289,6 +289,46 @@ pub fn wonder_glow(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     add_image(img, &acc, [inten * 1.5; 3], chv(e, "mode") == 1);
 }
 
+/// Halation: film's red-orange glow *around* strong highlights (light scattered back from the
+/// film base re-exposes the red layer). A single-plane mask of the light above Threshold
+/// (k × luminance) is blurred at a tight and a wide scale, lifted off the source by Core
+/// Suppression, tinted by Color and added.
+pub fn halation(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+    let (w, h) = (img.w, img.h);
+    if w == 0 || h == 0 {
+        return;
+    }
+    // a corrupt project can hold NaN or infinite values: then leave the frame untouched
+    let num = |id: &str| Some(fv(e, id, cx)).filter(|v| v.is_finite());
+    let (Some(threshold), Some(radius), Some(intensity), Some(suppress)) = (num("threshold"), num("radius"), num("intensity"), num("core_suppression")) else {
+        return;
+    };
+    // Intensity stays within its parameter range (0–1000 %) whatever a project file says
+    let (threshold, inten, suppress) = (threshold / 100.0, (intensity / 100.0).clamp(0.0, 10.0), (suppress / 100.0).clamp(0.0, 1.0));
+    let col = lin(cv(e, "color", cx)).map(|v| if v.is_finite() { v.max(0.0) } else { 0.0 });
+    // radius = 2σ (the project-wide convention); past a few frame sizes every σ looks the same
+    let cap = (w.max(h).max(8) * 2) as f32;
+    let sigma = (radius * cx.px_scale * 0.5).clamp(0.0, cap);
+    if inten <= 0.0 || !sigma.is_finite() || sigma < 0.3 {
+        return;
+    }
+    // 1. mask: the light above the threshold, k × linear luminance (premultiplied)
+    let hi = highlights(img, threshold, 0.15);
+    let mask: Vec<f32> = hi.px.par_chunks(4).map(|p| luma([p[0], p[1], p[2]]).max(0.0)).collect();
+    // 2. blur it at a tight and a wide scale: a bright ring near the source and a long faint tail
+    let blur = |s: f32| {
+        let mut m = mask.clone();
+        crate::effects::blur_plane(&mut m, w, h, s.min(cap));
+        m
+    };
+    let (tight, wide) = rayon::join(|| blur(sigma), || blur(sigma * 3.0));
+    // 3. lift the halo off the source, 4. tint and add
+    img.px.par_chunks_mut(4).zip(tight.par_iter().zip(&wide).zip(&mask)).for_each(|(p, ((&t, &wd), &m))| {
+        let v = (t * 0.65 + wd * 0.35) * (1.0 - suppress * m.min(1.0)) * inten;
+        add_light(p, [col[0] * v, col[1] * v, col[2] * v]);
+    });
+}
+
 /// Lens Flare (26.5 rebuild): core glow, halo, ghosts along the line through the frame centre and
 /// a lens-type-dependent streak; tinted by Flare Color, scaled by Size.
 pub fn lens_flare(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
