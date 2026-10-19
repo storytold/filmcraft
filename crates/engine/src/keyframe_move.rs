@@ -57,6 +57,7 @@ pub(crate) fn move_many(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let (_, it) = q.find_item(ClipId(key.clip)).ok_or_else(|| bad(COMMAND, "clip does not exist"))?;
         let effect = it.effects.get(key.effect).ok_or_else(|| bad(COMMAND, "effect does not exist"))?;
+        crate::commands::ensure_supported_time_remap_edit(&effect.effect, &key.param)?;
         let param = match key.mask {
             Some(mask) => effect.masks.get(mask).and_then(|m| m.param(&key.param)),
             None => effect.params.get(&key.param),

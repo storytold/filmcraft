@@ -3039,6 +3039,7 @@ fn build() -> Vec<CommandSpec> {
                         _ => None,
                     }
                     .ok_or_else(|| bad("effects.setParam", "no such effect on clip"))?;
+                    ensure_supported_time_remap_edit(&e.effect, &pid)?;
                     // the parameter's definition (a mask's own parameters have none)
                     let def = if pq.get("mask").is_none_or(Value::is_null) { e.def().and_then(|d| d.param(&pid)) } else { None };
                     // a choice takes its option name as well as its index, as transition parameters do
@@ -3111,6 +3112,7 @@ fn build() -> Vec<CommandSpec> {
                     _ => None,
                 }
                 .ok_or_else(|| bad("effects.toggleAnimation", "no such effect"))?;
+                ensure_supported_time_remap_edit(&e.effect, &pid)?;
                 crate::masks::target_param(e, p, &pid).ok_or_else(|| bad("effects.toggleAnimation", "no such param"))?.toggle_animation(mt);
                 Ok(())
             })?;
@@ -3487,6 +3489,10 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
             _ => None,
         }
         .ok_or_else(|| bad("keyframe", "no such effect"))?;
+        // Deletion and Reset remain available to clean up inert keys in older projects.
+        if op != "delete" {
+            ensure_supported_time_remap_edit(&e.effect, &pid)?;
+        }
         let prm = crate::masks::target_param(e, p, &pid).ok_or_else(|| bad("keyframe", "no such param"))?;
         match op {
             "add" => {
@@ -4440,6 +4446,22 @@ fn auto_save_dir(s: &Session) -> std::path::PathBuf {
     }
 }
 
+/// The intrinsic parameter is persisted for compatibility, but the render clock does not
+/// consume it yet. Do not report a successful edit to a control that cannot affect output.
+pub(crate) fn ensure_supported_time_remap_edit(effect: &str, param: &str) -> Result<()> {
+    if effect == "time_remap" && param == "speed" {
+        return Err(EngineError::Other(
+            "Time Remapping speed is not supported yet; use clip.speedDuration (Clip > Speed/Duration) for constant speed. Delete legacy ramp keys to remove them."
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 fn auto_save_name(s: &Session) -> String {
     s.path.as_deref().and_then(|p| std::path::Path::new(p).file_stem()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| s.project.name.clone())
 }
+
+#[cfg(test)]
+#[path = "time_remap_guard_tests.rs"]
+mod time_remap_guard_tests;
