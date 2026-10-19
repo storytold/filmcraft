@@ -191,3 +191,31 @@ fn the_tool_pointer_stays_on_during_a_drag() {
         d.frames(2);
     }
 }
+
+/// An Option-drag copies, and its Copy pointer is what shows, whatever the tool.
+#[test]
+fn an_option_drag_keeps_the_copy_pointer() {
+    let mut d = Driver::demo();
+    let city = d.v1_clip(CITY);
+    let at = clip_center(&mut d, city);
+    d.ok("ui.set", json!({"tool": "TrackSelectForward"}));
+    d.frames(2);
+    d.hover(at);
+    let alt = egui::Modifiers::ALT;
+    d.harness.input_mut().events.push(egui::Event::ModifiersChanged(alt));
+    d.harness.input_mut().events.push(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: alt });
+    d.frames(1);
+    for dx in [4.0, 10.0, 18.0, 26.0] {
+        d.harness.input_mut().events.push(egui::Event::PointerMoved(at + egui::vec2(dx, 0.0)));
+        d.frames(1);
+    }
+    assert_eq!(d.cursor(), CursorIcon::Copy, "the drag copies, so the pointer says so");
+    d.harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: at + egui::vec2(26.0, 0.0),
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: alt,
+    });
+    d.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    d.frames(2);
+}
