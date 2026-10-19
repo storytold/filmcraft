@@ -448,6 +448,16 @@ fn a_late_pre_wrap_timestamp_first_after_the_wrap_goes_below_zero() {
 }
 
 #[test]
+fn a_forward_jump_from_a_small_first_timestamp_is_followed() {
+    // spliced capture: new time base far above the first value, no wrap involved
+    let mut u = Unwrap::default();
+    let a = u.unwrap(90_000);
+    let b = u.unwrap(0x1_8000_0000);
+    let c = u.unwrap(0x1_8000_0000 + 3_000);
+    assert_eq!((a, b, c), (90_000, 0x1_8000_0000, 0x1_8000_0000 + 3_000));
+}
+
+#[test]
 fn program_stream_scr_is_unwrapped_and_ordered() {
     // two packs, the SCR wraps between them: the range is first..last, not a 2^33 jump backwards
     fn scr_pack(base: i64) -> Vec<u8> {
