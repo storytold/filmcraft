@@ -214,6 +214,7 @@ impl FilmcraftApp {
             if japanese_missing
                 || (self.ui.language == i18n::Language::ZhCn && !i18n::chinese_font_available())
                 || (self.ui.language == i18n::Language::Ko && !i18n::korean_font_available())
+                || (self.ui.language == i18n::Language::Lo && !i18n::lao_font_available())
             {
                 self.ui.language = i18n::Language::En;
             }

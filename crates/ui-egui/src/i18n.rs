@@ -51,6 +51,7 @@ pub enum Language {
     Bs,
     /// Korean; Hangul needs an installed system font ([`korean_font_available`]).
     Ko,
+    Lo,
     /// Czech; Latin with háčky and čárky, covered by the bundled fonts.
     Cs,
     /// Polish.
@@ -69,6 +70,7 @@ static GERMAN: OnceLock<Catalog> = OnceLock::new();
 static RUSSIAN: OnceLock<Catalog> = OnceLock::new();
 static FRENCH: OnceLock<Catalog> = OnceLock::new();
 static KOREAN: OnceLock<Catalog> = OnceLock::new();
+static LAO: OnceLock<Catalog> = OnceLock::new();
 static POLISH: OnceLock<Catalog> = OnceLock::new();
 static INDONESIAN: OnceLock<Catalog> = OnceLock::new();
 static ITALIAN: OnceLock<Catalog> = OnceLock::new();
@@ -78,7 +80,7 @@ static SWEDISH: OnceLock<Catalog> = OnceLock::new();
 static TURKISH: OnceLock<Catalog> = OnceLock::new();
 
 impl Language {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::En,
         Self::Ja,
         Self::Es,
@@ -90,6 +92,7 @@ impl Language {
         Self::Fr,
         Self::Id,
         Self::Ko,
+        Self::Lo,
         Self::It,
         Self::Cs,
         Self::Pl,
@@ -115,6 +118,7 @@ impl Language {
             Self::It => "it",
             Self::Bs => "bs",
             Self::Ko => "ko",
+            Self::Lo => "lo",
             Self::Cs => "cs",
             Self::Pl => "pl",
             Self::Sv => "sv",
@@ -137,6 +141,7 @@ impl Language {
             Self::It => "Italiano",
             Self::Bs => "Bosanski",
             Self::Ko => "한국어",
+            Self::Lo => "ພາສາລາວ",
             Self::Cs => "Čeština",
             Self::Pl => "Polski",
             Self::Sv => "Svenska",
@@ -159,6 +164,7 @@ impl Language {
             "it" => Some(Self::It),
             "bs" => Some(Self::Bs),
             "ko" => Some(Self::Ko),
+            "lo" => Some(Self::Lo),
             "cs" => Some(Self::Cs),
             "pl" => Some(Self::Pl),
             "sv" => Some(Self::Sv),
@@ -177,7 +183,7 @@ impl Language {
     /// only for Simplified locales (`zh`, `zh-CN`, `zh-SG`, `zh-Hans…`); Traditional ones (`zh-TW`,
     /// `zh-HK`, `zh-MO`, `zh-Hant…`) are skipped.
     pub fn from_locales(tags: &[String]) -> Self {
-        const PRIMARY: [(&str, Language); 17] = [
+        const PRIMARY: [(&str, Language); 18] = [
             ("en", Language::En),
             ("ja", Language::Ja),
             ("es", Language::Es),
@@ -191,6 +197,7 @@ impl Language {
             ("it", Language::It),
             ("bs", Language::Bs),
             ("ko", Language::Ko),
+            ("lo", Language::Lo),
             ("cs", Language::Cs),
             ("pl", Language::Pl),
             ("sv", Language::Sv),
@@ -228,6 +235,7 @@ impl Language {
             Self::It => "it",
             Self::Bs => "bs",
             Self::Ko => "ko",
+            Self::Lo => "lo",
             Self::Cs => "cs",
             Self::Pl => "pl",
             Self::Sv => "sv",
@@ -251,6 +259,7 @@ impl Language {
             Self::It => Some(ITALIAN.get_or_init(|| Catalog::parse(include_str!("i18n/it.tsv")))),
             Self::Bs => Some(BOSNIAN.get_or_init(|| Catalog::parse(include_str!("i18n/bs.tsv")))),
             Self::Ko => Some(KOREAN.get_or_init(|| Catalog::parse(include_str!("i18n/ko.tsv")))),
+            Self::Lo => Some(LAO.get_or_init(|| Catalog::parse(include_str!("i18n/lo.tsv")))),
             Self::Cs => Some(CZECH.get_or_init(|| Catalog::parse(include_str!("i18n/cs.tsv")))),
             Self::Pl => Some(POLISH.get_or_init(|| Catalog::parse(include_str!("i18n/pl.tsv")))),
             Self::Sv => Some(SWEDISH.get_or_init(|| Catalog::parse(include_str!("i18n/sv.tsv")))),
@@ -488,6 +497,10 @@ pub fn korean_font_available() -> bool {
     crate::cjk::korean_available()
 }
 
+pub fn lao_font_available() -> bool {
+    crate::cjk::lao_font_available()
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -522,6 +535,7 @@ mod feature_name_tests {
             ("it", include_str!("i18n/it.tsv")),
             ("ja", include_str!("i18n/ja.tsv")),
             ("ko", include_str!("i18n/ko.tsv")),
+            ("lo", include_str!("i18n/lo.tsv")),
             ("pl", include_str!("i18n/pl.tsv")),
             ("pt-br", include_str!("i18n/pt-br.tsv")),
             ("ru", include_str!("i18n/ru.tsv")),

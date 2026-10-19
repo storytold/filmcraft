@@ -45,6 +45,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("app.language.japanese", "日本語", ["Edit", "Language"], None),
     uic!("app.language.chinese", "简体中文", ["Edit", "Language"], None),
     uic!("app.language.korean", "한국어", ["Edit", "Language"], None),
+    uic!("app.language.lao", "ພາສາລາວ", ["Edit", "Language"], None),
     uic!("source.playback.toggle", "Source Play/Stop", [], None),
     uic!("source.playback.play", "Play Source", [], None),
     uic!("source.playback.stop", "Stop Source", [], None),
@@ -265,10 +266,11 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             | "app.language.italian"
             | "app.language.bosnian"
             | "app.language.korean"
+            | "app.language.lao"
             | "app.language.czech"
             | "app.language.polish"
             | "app.language.swedish"
-            | "app.language.turkish"
+            | "app.language.turkish"            
     ) {
         // Japanese needs the craft-fonts (built with CRAFT_FONTS_DIR) or a font installed on the system
         if id == "app.language.japanese" && !crate::i18n::install_japanese_font(ctx) {
@@ -281,6 +283,10 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         // Korean needs an installed Hangul font (none is bundled; see cjk.rs)
         if id == "app.language.korean" && !crate::i18n::korean_font_available() {
             return Err("no Korean font is installed on this system (for example Malgun Gothic or Noto Sans CJK KR); the interface stays in English".into());
+        }
+        // Lao needs a craft-fonts or installed Lao font (see cjk.rs)
+        if id == "app.language.lao" && !crate::i18n::lao_font_available() {
+            return Err("no Lao font is installed on this system (for example Noto Sans Lao or Leelawadee UI); the interface stays in English".into());
         }
         let language = match id {
             "app.language.japanese" => crate::i18n::Language::Ja,
@@ -295,10 +301,11 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             "app.language.italian" => crate::i18n::Language::It,
             "app.language.bosnian" => crate::i18n::Language::Bs,
             "app.language.korean" => crate::i18n::Language::Ko,
+            "app.language.lao" => crate::i18n::Language::Lo,
             "app.language.czech" => crate::i18n::Language::Cs,
             "app.language.polish" => crate::i18n::Language::Pl,
             "app.language.swedish" => crate::i18n::Language::Sv,
-            "app.language.turkish" => crate::i18n::Language::Tr,
+            "app.language.turkish" => crate::i18n::Language::Tr,            
             _ => crate::i18n::Language::En,
         };
         // The preference is updated in memory before it is written, so a failed write (read-only
@@ -968,10 +975,11 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             "app.language.italian" => it.checked = Some(app.ui.language == crate::i18n::Language::It),
             "app.language.bosnian" => it.checked = Some(app.ui.language == crate::i18n::Language::Bs),
             "app.language.korean" => it.checked = Some(app.ui.language == crate::i18n::Language::Ko),
+            "app.language.lao" => it.checked = Some(app.ui.language == crate::i18n::Language::Lo),
             "app.language.czech" => it.checked = Some(app.ui.language == crate::i18n::Language::Cs),
             "app.language.polish" => it.checked = Some(app.ui.language == crate::i18n::Language::Pl),
             "app.language.swedish" => it.checked = Some(app.ui.language == crate::i18n::Language::Sv),
-            "app.language.turkish" => it.checked = Some(app.ui.language == crate::i18n::Language::Tr),
+            "app.language.turkish" => it.checked = Some(app.ui.language == crate::i18n::Language::Tr),            
             _ => {}
         }
         if let Some(on) = engine_toggle(&app.session, &it.id) {

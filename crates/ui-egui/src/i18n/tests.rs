@@ -16,6 +16,7 @@ fn catalog_text(l: Language) -> Option<&'static str> {
         Language::It => Some(include_str!("it.tsv")),
         Language::Bs => Some(include_str!("bs.tsv")),
         Language::Ko => Some(include_str!("ko.tsv")),
+        Language::Lo => Some(include_str!("lo.tsv")),
         Language::Cs => Some(include_str!("cs.tsv")),
         Language::Pl => Some(include_str!("pl.tsv")),
         Language::Sv => Some(include_str!("sv.tsv")),
@@ -92,6 +93,7 @@ fn unknown_strings_pass_through_and_languages_round_trip() {
         (Language::It, "Italiano"),
         (Language::Bs, "Bosanski"),
         (Language::Ko, "한국어"),
+        (Language::Lo, "ພາສາລາວ"),
         (Language::Cs, "Čeština"),
         (Language::Pl, "Polski"),
         (Language::Sv, "Svenska"),
@@ -532,6 +534,12 @@ fn language_commands_switch_and_persist_without_a_document() {
         assert_eq!(app.ui.language, Language::Ja);
         assert_ui_persists(&app, Language::Ja, "ja");
     }
+    // Lao needs a craft-fonts or installed Lao font; skip that step without one
+    if lao_font_available() {
+        switch(&mut app, &ctx, "app.language.lao");
+        assert_eq!(app.ui.language, Language::Lo);
+        assert_ui_persists(&app, Language::Lo, "lo");
+    }
     switch(&mut app, &ctx, "app.language.spanish");
     assert_eq!(app.ui.language, Language::Es);
     assert_restart_keeps(&app, Language::Es);
@@ -789,7 +797,7 @@ fn japanese_needs_an_installed_font() {
         for family in crate::theme::font_families() {
             let mut stack = fonts.definitions().families.get(&family).cloned().unwrap_or_default();
             stack.retain(|n| !crate::rtl::is_system_face(n));
-            stack.retain(|n| n != crate::cjk::KOREAN_FACE && n != "system-chinese");
+           stack.retain(|n| n != crate::cjk::KOREAN_FACE && n != crate::cjk::THAI_FACE && n != crate::cjk::LAO_FACE && n != "system-chinese");
             if craft {
                 assert!(stack.last().is_some_and(|n| n.starts_with("craft:")), "{family:?}: {stack:?}");
                 assert!(!stack.iter().any(|n| n == JAPANESE_FONT), "{family:?}: {stack:?}");
@@ -804,6 +812,41 @@ fn japanese_needs_an_installed_font() {
         for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
             let font = egui::FontId::new(13.0, family);
             for ch in JAPANESE_SAMPLE.chars() {
+                assert!(fonts.has_glyph(&font, ch), "missing {ch} in {font:?}");
+            }
+        }
+    });
+}
+
+#[test]
+fn lao_needs_an_installed_font() {
+    let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+    let ctx = egui::Context::default();
+    crate::theme::install(&ctx, &crate::theme::Tokens::for_kind(crate::theme::ThemeKind::default()));
+    let r = crate::menus::invoke(&mut app, &ctx, "app.language.lao", serde_json::json!({}));
+    let craft = crate::cjk::lao_craft_fonts().next().is_some();
+    if !lao_font_available() {
+        // no craft-fonts and no system font: refused, and the interface stays English
+        assert!(r.is_err(), "{r:?}");
+        assert_eq!(app.ui.language, Language::En);
+        return;
+    }
+    assert!(r.is_ok(), "{r:?}");
+    let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+    output.textures_delta.clear();
+    ctx.fonts_mut(|fonts| {
+        for family in crate::theme::font_families() {
+            let mut stack = fonts.definitions().families.get(&family).cloned().unwrap_or_default();
+            stack.retain(|n| !crate::rtl::is_system_face(n));
+            if craft {
+                assert!(stack.iter().any(|n| n.starts_with("craft:")), "{family:?}: {stack:?}");
+            } else {
+                assert!(stack.iter().any(|n| n == crate::cjk::LAO_FACE), "{family:?}: {stack:?}");
+            }
+        }
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            let font = egui::FontId::new(13.0, family);
+            for ch in "ພາສາລາວ".chars() {
                 assert!(fonts.has_glyph(&font, ch), "missing {ch} in {font:?}");
             }
         }

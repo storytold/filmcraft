@@ -8,10 +8,10 @@
 # spelling. Lao script is drawn with an installed system font (Saysettha OT, Phetsarath OT, Noto Sans Lao…); native-speaker review welcome.
 
 	   Angle	   ມຸມ
-	   Blur	   ຄວາມມົວ (Blur)
+	   Blur	   ຄວາມມົວ
 	   Corner Radius	   ລັດສະໝີມຸມ
 	   Distance	   ໄລຍະຫ່າງ
-	   Opacity	   ຄວາມໂປ່ງໃສ (Opacity)
+	   Opacity	   ຄວາມໂປ່ງໃສ
 	   Size	   ຂະໜາດ
 	   Template: {name}	   ແມ່ແບບ: {name}
 	  (none)	  (ບໍ່ມີ)
