@@ -217,7 +217,8 @@ pub fn import(s: &mut Session, p: &Value) -> Result<Value> {
             filmcraft_interchange::premiere::warning(&mut report, format!("media could not be decoded: {path}"));
         }
     }
-    fragment.project.resolve_placed_auto_points(|_| true, |_| true);
+    // Offline placeholder dimensions are provisional; leave their source anchors automatic.
+    fragment.project.resolve_placed_auto_points(|_| true, |it| it.as_media().is_none_or(|m| !m.offline));
     // Refuse a changed project input rather than attaching the wrong source hash to its snapshot.
     if hash_file(&source)?.0 != source_hash {
         return Err(bad(COMMAND, "project changed during import; try again"));
@@ -281,4 +282,69 @@ pub fn commands() -> Vec<CommandSpec> {
         run: import,
         journal: true,
     }]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn snapshot_bytes_survive_link_copy_undo_and_save() {
+        let dir = filmcraft_testkit::workspace_root().join("target/premiere-snapshot").join(std::process::id().to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.prproj");
+        let xml = b"<PremiereData><Sequence ObjectUID=\"s\"><Name>Sequence</Name></Sequence></PremiereData>";
+        std::fs::write(&source, xml).unwrap();
+        let expected = hash_file(&source).unwrap();
+        for mode in ["link", "copy"] {
+            let dest = dir.join(mode);
+            let mut session = Session::default();
+            let result = import(&mut session, &json!({"path":source,"destination":dest,"mediaMode":mode})).unwrap();
+            let snapshot = dest.join("source.prproj");
+            assert_eq!(std::fs::read(&snapshot).unwrap(), xml);
+            assert_eq!(hash_file(&snapshot).unwrap(), expected);
+            assert_eq!(hash_file(&source).unwrap(), expected);
+            assert_eq!(result["sourceSha256"], expected.0);
+            let provenance = session.project.workflow.clone();
+            let encoded = filmcraft_format::encode(&session.project, false);
+            assert_eq!(filmcraft_format::decode(&encoded).unwrap().project.workflow, provenance);
+            session.execute("edit.undo", json!({})).unwrap();
+            assert!(session.project.workflow.is_none());
+            assert_eq!(hash_file(&snapshot).unwrap(), expected);
+            session.execute("edit.redo", json!({})).unwrap();
+            assert_eq!(session.project.workflow, provenance);
+            assert_eq!(hash_file(&snapshot).unwrap(), expected);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
+    fn offline_anchor_stays_auto_until_source_size_is_known() {
+        let dir = filmcraft_testkit::workspace_root().join("target/premiere-anchor").join(std::process::id().to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.prproj");
+        // Deliberately missing source, sequence size is not the source size.
+        let xml = r#"<PremiereData><Sequence ObjectUID="s"><Name>S</Name><TrackGroups><TrackGroup><Second ObjectRef="v"/></TrackGroup></TrackGroups></Sequence><VideoTrackGroup ObjectID="v"><TrackGroup><Tracks><Track ObjectURef="t"/></Tracks></TrackGroup></VideoTrackGroup><VideoClipTrack ObjectUID="t"><ClipTrack><Track><Index>0</Index></Track><ClipItems><TrackItems><TrackItem ObjectRef="i"/></TrackItems></ClipItems></ClipTrack></VideoClipTrack><VideoClipTrackItem ObjectID="i"><ClipTrackItem><TrackItem><Start>0</Start><End>254016000000</End></TrackItem><SubClip ObjectRef="sub"/></ClipTrackItem></VideoClipTrackItem><SubClip ObjectID="sub"><Name>missing.mov</Name></SubClip></PremiereData>"#;
+        std::fs::write(&source, xml).unwrap();
+        let destination = dir.join("import");
+        let _ = std::fs::remove_dir_all(&destination);
+        let mut session = Session::default();
+        import(&mut session, &json!({"path":source,"destination":destination})).unwrap();
+        let seq = session.project.sequence(session.state.active_sequence.unwrap()).unwrap();
+        let clip = &seq.video_tracks[0].items[0];
+        let anchor = clip.effects.iter().find_map(|e| e.params.get("anchor")).unwrap();
+        assert!(matches!(&anchor.value, filmcraft_project::ParamValue::Vec2(v) if v.x.is_nan() && v.y.is_nan()));
+        // Relink-equivalent size discovery must be able to resolve the anchor to the actual media centre.
+        let media = clip.item;
+        let mut project = (*session.project).clone();
+        if let ItemKind::Media(m) = &mut project.item_mut(media).unwrap().kind {
+            let v = m.info.video.as_mut().unwrap();
+            v.width = 3840;
+            v.height = 2160;
+            m.offline = false;
+        }
+        project.resolve_placed_auto_points(|_| true, |it| it.as_media().is_none_or(|m| !m.offline));
+        let seq = project.sequence(session.state.active_sequence.unwrap()).unwrap();
+        let anchor = seq.video_tracks[0].items[0].effects.iter().find_map(|e| e.params.get("anchor")).unwrap();
+        assert!(matches!(&anchor.value, filmcraft_project::ParamValue::Vec2(v) if v.x == 1920.0 && v.y == 1080.0));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

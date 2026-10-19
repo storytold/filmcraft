@@ -379,7 +379,8 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                             spend(&mut work_left, c)?;
                             let effect = value(c, "DisplayName").or_else(|| child_text(c, "FilterMatchName")).unwrap_or("Unknown").to_string();
                             let match_name = child_text(c, "MatchName").or_else(|| child_text(c, "FilterMatchName"));
-                            if effect == "Text" {
+                            let is_text = matches!(match_name, Some("AE.ADBE Text" | "ADBE Text"));
+                            if is_text {
                                 text = value(c, "InstanceName").map(|s| s.replace('\r', "\n"));
                             }
                             if matches!(match_name, Some("AE.ADBE Motion" | "ADBE Motion")) {
@@ -395,7 +396,7 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                                         }
                                     }
                                 }
-                            } else if effect != "Text" {
+                            } else if !is_text {
                                 warning(report, format!("{label}: effect {effect} retained in provenance, not rendered"));
                             }
                             effects.push(effect);
@@ -425,7 +426,7 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                     let target = source_target(clip, &ids, &uids, &mut work_left)?;
                     let mut media_path = target.filter(|n| n.has_tag_name("Media")).and_then(|n| media_path(n, base_dir));
                     let mut nested_sequence = target.filter(|n| n.has_tag_name("Sequence")).and_then(|n| n.attribute("ObjectUID")).map(str::to_string);
-                    if media_path.is_none() && nested_sequence.is_none() && kind != "caption" && !(label == "Graphic" && text.is_some()) {
+                    if media_path.is_none() && nested_sequence.is_none() && kind != "caption" && text.is_none() {
                         let named_sequence = names.get(label.as_str()).copied().flatten();
                         let named_media = media.get(&label);
                         if ambiguous.contains(&label) || names.get(label.as_str()) == Some(&None) || (named_sequence.is_some() && named_media.is_some()) {
@@ -551,7 +552,7 @@ pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Re
                 let nested = item.nested_sequence.as_ref().and_then(|n| sequences.get(n)).copied();
                 let source = if let Some(id) = nested {
                     id
-                } else if item.label == "Graphic" && item.text.is_some() {
+                } else if item.text.is_some() {
                     warning(&mut report, "text graphic imported with default font/style; source styling retained in original snapshot");
                     b.p.add_item(&item.label, Label::Lavender, ItemKind::Graphic { width: src.width, height: src.height, rate: fps }, None)
                 } else {
@@ -575,9 +576,7 @@ pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Re
                 };
                 let mut clip = b.clip(source, kind, &item.label, item.start, item.end - item.start, item.source_in);
                 clip.speed = item.speed;
-                if item.label == "Graphic"
-                    && let Some(text) = &item.text
-                {
+                if let Some(text) = &item.text {
                     clip.effects.push(filmcraft_project::graphic::new_text_layer(text, Vec2::new(src.width as f64 / 2.0, src.height as f64 / 2.0), 54.0));
                 }
                 for (key, raw) in &item.motion {
@@ -848,5 +847,38 @@ mod tests {
         for data in [&[0x1f, 0x8b][..], &[0x1f, 0x8b, 0x08, 0xff][..], b"<PremiereData/>".as_slice()] {
             assert!(import(data, &ImportOptions::default(), None).is_err());
         }
+    }
+
+    #[test]
+    fn text_uses_match_name_and_not_timeline_label() {
+        let xml = fixture().replace("camera.mov", "Título renombrado").replace(
+            "<SubClip ObjectRef=\"21\"/>",
+            "<SubClip ObjectRef=\"21\"/><ComponentOwner><Components ObjectRef=\"text-chain\"/></ComponentOwner>",
+        ).replace("</PremiereData>", r#"<VideoComponentChain ObjectID="text-chain"><Components><Component ObjectRef="text-component"/></Components></VideoComponentChain>
+<VideoFilterComponent ObjectID="text-component"><Component><DisplayName>Texto</DisplayName><InstanceName>Hola mundo</InstanceName></Component><MatchName>AE.ADBE Text</MatchName></VideoFilterComponent></PremiereData>"#);
+        let (fragment, tree, _) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+        assert_eq!(tree.sequences[0].tracks[0].items[0].text.as_deref(), Some("Hola mundo"));
+        assert!(fragment.project.items.values().any(|i| matches!(i.kind, ItemKind::Graphic { .. })));
+        let seq = fragment.project.sequence(fragment.sequences[0]).unwrap();
+        assert!(
+            seq.video_tracks[0].items[0]
+                .effects
+                .iter()
+                .any(|e| e.params.get("text").is_some_and(|p| matches!(&p.value, ParamValue::Text(t) if t == "Hola mundo")))
+        );
+        let unknown = xml.replace("AE.ADBE Text", "custom.not-text").replace("Texto", "Text");
+        let (_, tree, _) = import(unknown.as_bytes(), &ImportOptions::default(), None).unwrap();
+        assert!(tree.sequences[0].tracks[0].items[0].text.is_none());
+    }
+    #[test]
+    fn speed_reads_stored_ratio_not_frame_grid_durations() {
+        let xml = fixture().replace("<PlaybackSpeed>2</PlaybackSpeed>", "<PlaybackSpeed>1</PlaybackSpeed>");
+        let (fragment, tree, _) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+        assert_eq!(tree.sequences[0].tracks[0].items[0].speed, 1.0);
+        assert_eq!(fragment.project.sequence(fragment.sequences[0]).unwrap().video_tracks[0].items[0].speed, 1.0);
+        assert_eq!(tree.sequences[0].tracks[0].items[0].start, Tick(0));
+        assert_eq!(tree.sequences[0].tracks[0].items[0].end, Tick(3 * TPS));
+        assert_eq!(tree.sequences[0].tracks[0].items[0].source_in, Tick(4 * TPS));
+        assert_eq!(tree.sequences[0].tracks[0].items[0].source_out, Tick(10 * TPS));
     }
 }
