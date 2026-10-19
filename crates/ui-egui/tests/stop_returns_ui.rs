@@ -137,6 +137,46 @@ fn the_end_of_the_sequence_stops_where_the_setting_says() {
     }
 }
 
+/// Play In to Out started during playback is a new start: a stop goes back to the In point, not to
+/// where the earlier run began.
+#[test]
+fn play_in_to_out_during_playback_returns_to_the_in_point() {
+    let mut h = harness(false);
+    h.state_mut().session.set_playhead(Tick::from_seconds_f64(2.0));
+    h.state_mut().session.execute("markers.markIn", json!({"frame": 120, "target": "program"})).unwrap();
+    let mark_in = h.state().session.active_sequence().unwrap().mark_in.unwrap();
+    invoke(&mut h, "playback.toggle", json!({"monitor": "program"}));
+    for _ in 0..8 {
+        h.step();
+    }
+    invoke(&mut h, "playback.inToOut", json!({"monitor": "program"}));
+    for _ in 0..8 {
+        h.step();
+    }
+    assert!(h.state().playback.playing && h.state().session.playhead() > mark_in);
+    invoke(&mut h, "playback.toggleOther", json!({"monitor": "program"}));
+    h.step();
+    assert_eq!(h.state().session.playhead(), mark_in);
+}
+
+/// Play from the Source's last frame starts over from its first: that is where a stop goes back to.
+#[test]
+fn source_play_from_the_end_returns_to_where_it_started_over() {
+    let mut h = harness(false);
+    h.state_mut().session.execute("source.setPlayhead", json!({"seconds": 100000})).unwrap();
+    let end = h.state().session.state.source_playhead;
+    invoke(&mut h, "playback.toggle", json!({"monitor": "source"}));
+    let first = h.state().session.state.source_playhead;
+    assert!(first < end, "it started over: {first:?} from {end:?}");
+    for _ in 0..8 {
+        h.step();
+    }
+    assert!(h.state().source_playback.clock.playing && h.state().session.state.source_playhead > first);
+    invoke(&mut h, "playback.toggleOther", json!({"monitor": "source"}));
+    h.step();
+    assert_eq!(h.state().session.state.source_playhead, first);
+}
+
 #[test]
 fn the_toggle_command_switches_the_setting() {
     let mut h = harness(false);
