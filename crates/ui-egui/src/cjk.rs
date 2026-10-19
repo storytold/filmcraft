@@ -1,5 +1,6 @@
 //! Chinese fallback fonts for document text in the interface, independent of UI language.
-//! Optional craft-fonts are preferred; native builds without them reuse one installed face.
+//! Optional craft-fonts are preferred by default. Native builds without them reuse an installed face.
+//! Windows Simplified Chinese UI overrides the CJK order through [`prefer_system`].
 
 use std::sync::{Arc, OnceLock};
 
@@ -59,7 +60,9 @@ pub(crate) fn available() -> bool {
     craft_fonts().next().is_some() || system_font().is_some()
 }
 
-/// Windows Chinese UI: prefer the installed face (YaHei UI first), keeping Latin faces first.
+/// Windows Simplified Chinese UI: prefer the installed Chinese face (YaHei UI first) after Latin faces,
+/// ahead of embedded Japanese and Chinese faces, including Hans/Hant faces when supplied.
+/// Called before RTL font installation, so the `craft:` entries searched here are CJK faces.
 /// Existing CJK faces remain available for glyphs missing from the system face.
 pub(crate) fn prefer_system(fonts: &mut FontDefinitions) {
     let Some(font) = system_font() else { return };
@@ -72,9 +75,9 @@ pub(crate) fn prefer_system(fonts: &mut FontDefinitions) {
     }
 }
 
-/// Append Chinese faces after the Latin UI fonts and the Japanese fallbacks. This keeps the
-/// interface's Latin typography and Japanese glyph forms, and covers the simplified and
-/// traditional hanzi in media and track names that Japanese fonts lack.
+/// Append Chinese faces after Latin UI fonts and embedded Japanese faces, covering hanzi the
+/// Japanese faces lack. [`prefer_system`] later overrides this order for Windows Simplified Chinese UI.
+/// Without craft-fonts, the system Japanese face is installed separately by i18n.
 pub(crate) fn install(fonts: &mut FontDefinitions) {
     install_chinese(fonts);
     if let Some(font) = korean_font() {

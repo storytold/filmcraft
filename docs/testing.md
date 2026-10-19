@@ -238,6 +238,36 @@ project's sequences through a simulated 48 kHz device and counts dropouts, mixin
 (`direct`, as before) against mixing ahead (`ahead`). Use `Driver` for new UI regressions: `d.exec(command, params)`,
 `d.ok(method, params)`, `d.frames(n)`.
 
+### Font fallback and language changes
+
+With `CRAFT_FONTS_DIR` unset, run the first command. The second enables the optional fonts:
+
+```sh
+cargo test -p filmcraft-ui-egui --lib theme::tests:: -- --nocapture
+CRAFT_FONTS_DIR=/absolute/path/to/craft-fonts cargo test -p filmcraft-ui-egui --lib theme::tests:: -- --nocapture
+```
+
+`language_changes_restore_font_families_in_every_theme` runs on every platform and needs no
+particular installed font. It exercises en→es→en and en→ja→en through the app in all three themes,
+checks that the selected theme survives and compares the restored English font-family definitions.
+When Japanese fonts are absent, the Japanese switch checks the English fallback instead.
+
+Changing the interface language reinstalls font definitions and reapplies the theme. Windows
+Simplified Chinese UI prefers an installed Chinese face (Microsoft YaHei UI first) ahead of embedded
+Japanese and Chinese faces, including Hans/Hant faces when supplied. Latin UI faces stay first.
+Switching away restores the default order. Without craft-fonts, the system Japanese face is appended
+separately, so the default stack can still place the system Chinese face before it for shared Han.
+
+The Windows-only `chinese_ui_prefers_yahei_and_language_changes_restore_fallbacks` test checks the
+YaHei UI font data and TTC face index and skips when that font is absent. To render its three
+Simplified Chinese theme previews, opt into the wgpu harness with a working graphics adapter:
+
+```sh
+FILMCRAFT_UI_SHOTS=/absolute/path/to/screenshots cargo test -p filmcraft-ui-egui --lib chinese_ui_prefers_yahei_and_language_changes_restore_fallbacks -- --nocapture
+```
+
+This creates `font-zh-cn-Dark.png`, `font-zh-cn-Medium.png` and `font-zh-cn-Light.png` in that directory.
+
 ### Interactive checks
 
 For visual work, drive the real app:

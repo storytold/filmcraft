@@ -427,8 +427,8 @@ pub fn install(ctx: &egui::Context, t: &Tokens) {
     fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "jbmono".into());
     fonts.families.insert(FontFamily::Name("semibold".into()), vec!["inter-semibold".into(), "inter".into()]);
     fonts.families.insert(FontFamily::Name("medium".into()), vec!["inter-medium".into(), "inter".into()]);
-    // Japanese before Chinese: the two share code points, and Japanese text must keep Japanese
-    // glyph forms; Chinese faces still cover the hanzi Japanese fonts lack
+    // Default CJK order: embedded Japanese faces before Chinese fallbacks for shared Han characters.
+    // Windows Simplified Chinese UI promotes the installed Chinese face below, keeping Latin first.
     add_craft_fonts(&mut fonts);
     crate::cjk::install(&mut fonts);
     if cfg!(target_os = "windows") && crate::i18n::current() == crate::i18n::Language::ZhCn {
@@ -517,6 +517,36 @@ pub fn apply_visuals(ctx: &egui::Context, t: &Tokens) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn language_changes_restore_font_families_in_every_theme() {
+        use crate::i18n::{self, Language};
+        let japanese_available = i18n::craft_japanese_font() || i18n::system_japanese_font().is_some();
+        for kind in [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Light] {
+            let mut session = filmcraft_engine::Session::default();
+            session.prefs.general.interface_language = "en".into();
+            session.prefs.appearance.select_theme(kind.pref_name());
+            let app = crate::FilmcraftApp::new(session);
+            let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1000.0, 700.0)).build_eframe(move |_| app);
+            h.run_steps(4);
+            let original = h.ctx.fonts_mut(|f| f.definitions().families.clone());
+            let ctx = h.ctx.clone();
+            for (language, command) in [(Language::Es, "app.language.spanish"), (Language::Ja, "app.language.japanese")] {
+                let changed = crate::menus::invoke(h.state_mut(), &ctx, command, serde_json::json!({}));
+                let expected = if language == Language::Ja && !japanese_available { Language::En } else { language };
+                assert_eq!(changed.is_ok(), expected == language, "{language:?} in {kind:?}: {changed:?}");
+                h.run_steps(4);
+                assert_eq!(h.state().ui.language, expected, "{language:?} in {kind:?}");
+                assert_eq!(h.state().tokens.kind, kind);
+                crate::menus::invoke(h.state_mut(), &ctx, "app.language.english", serde_json::json!({})).unwrap();
+                h.run_steps(4);
+                assert_eq!(h.state().ui.language, Language::En);
+                assert_eq!(h.state().tokens.kind, kind);
+                h.ctx.fonts_mut(|f| assert_eq!(f.definitions().families, original, "restore En after {language:?} in {kind:?}"));
+            }
+        }
+        i18n::set_current(Language::En);
+    }
 
     #[test]
     #[cfg(target_os = "windows")]
