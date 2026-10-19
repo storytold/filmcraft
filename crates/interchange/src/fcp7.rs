@@ -28,7 +28,7 @@ use roxmltree::Node;
 
 use crate::common::{
     Builder, MediaSpec, base_item, db_to_gain, empty_sequence, file_name, frames_round, gain_to_db, item_media, item_path, kind_from_ext, label_from, on_frame,
-    param, param_modified, path_to_file_url, rate_from_timebase, resolve_path, set_param, settings_for, standard_effects, timebase, transition_effect,
+    param, param_modified, path_to_file_url, rate_from_timebase, resolve_path, scaled, set_param, settings_for, standard_effects, timebase, transition_effect,
     transition_name, unscaled,
 };
 use crate::xml::{XmlWriter, bool_str, child, child_bool, child_f64, child_i64, child_text, children, elements, num, path_text};
@@ -441,8 +441,10 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         let end = child_i64(c, "end").unwrap_or(-1);
         let in_f = child_i64(c, "in").unwrap_or(0);
         let out_f = child_i64(c, "out").unwrap_or(in_f);
-        let src_in = child_i64(c, "pproTicksIn").map(Tick).unwrap_or_else(|| rate.tick_of(in_f));
-        let src_out = child_i64(c, "pproTicksOut").map(Tick).unwrap_or_else(|| rate.tick_of(out_f));
+        let ppro_in = child_i64(c, "pproTicksIn").map(Tick);
+        let ppro_out = child_i64(c, "pproTicksOut").map(Tick);
+        let mut src_in = ppro_in.unwrap_or_else(|| rate.tick_of(in_f));
+        let mut src_out = ppro_out.unwrap_or_else(|| rate.tick_of(out_f));
 
         // Speed from the Time Remap filter (or the in/out vs start/end ratio).
         let mut speed = 1.0;
@@ -471,6 +473,18 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                         _ => {}
                     }
                 }
+            }
+        }
+        // A retimed clip's <in>/<out> are in the scaled domain (source time ÷ speed, so out − in equals
+        // end − start): Premiere plays a 50% clip with <in> at 17 s from 8.5 s of the source. Measured
+        // against 52 retimed clips of a finished Premiere project. Only forward constant speeds read
+        // from <in>/<out>: pproTicks*, reverse clips and freeze frames were not measured and keep their reading.
+        if !hold && !reverse && speed != 1.0 {
+            if ppro_in.is_none() {
+                src_in = scaled(src_in, speed);
+            }
+            if ppro_out.is_none() {
+                src_out = scaled(src_out, speed);
             }
         }
         let src_len = (src_out - src_in).abs();
@@ -1028,10 +1042,15 @@ impl Exp<'_, '_> {
         let hold = c.frame_hold;
         let src_in = hold.unwrap_or(c.source_in);
         let src_out = if hold.is_some() { src_in + c.duration } else { c.source_out() };
-        let (start_f, end_f, in_f) = (frames_round(rate, c.start), frames_round(rate, c.end()), frames_round(rate, src_in));
+        // A forward retimed clip writes <in>/<out> in the scaled domain (source time ÷ speed), the reading
+        // Premiere and the importer above give them, so out − in equals end − start like any other clip.
+        let retimed = hold.is_none() && !c.reverse && c.speed.abs() != 1.0;
+        let in_t = if retimed { unscaled(src_in, c.speed) } else { src_in };
+        let (start_f, end_f, in_f) = (frames_round(rate, c.start), frames_round(rate, c.end()), frames_round(rate, in_t));
         // At normal speed (and on a freeze frame) the source span is the record span. Rounded on its own
         // it can come out a frame shorter or longer than `end - start` (#340), so derive it from them.
-        let out_f = if hold.is_some() || c.speed.abs() == 1.0 { in_f.saturating_add(end_f.saturating_sub(start_f)) } else { frames_round(rate, src_out) };
+        let out_f =
+            if hold.is_some() || c.speed.abs() == 1.0 || retimed { in_f.saturating_add(end_f.saturating_sub(start_f)) } else { frames_round(rate, src_out) };
         self.w.open(tag, &[("id", xid)]);
         if generator.is_none() && !is_seq {
             let mid = self.master_id(base);
