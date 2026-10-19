@@ -11,9 +11,16 @@ use filmcraft_geom::{Affine, Vec2};
 use filmcraft_render::plan::execute_cpu;
 
 pub(crate) fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::default();
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    static SHARED: std::sync::OnceLock<Option<(wgpu::Instance, wgpu::Device, wgpu::Queue)>> = std::sync::OnceLock::new();
+    let (_, dev, q) = SHARED
+        .get_or_init(|| {
+            let (instance, backends) = crate::adapter::offscreen_instance()?;
+            let adapter = crate::adapter::offscreen_adapter(&instance, backends)?;
+            let (dev, q) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+            Some((instance, dev, q))
+        })
+        .as_ref()?;
+    Some((dev.clone(), q.clone()))
 }
 
 pub(crate) fn yuv_frame(w: u32, h: u32) -> Arc<VideoFrame> {
@@ -59,10 +66,13 @@ pub(crate) fn read_accum(c: &GpuCompositor) -> Vec<f32> {
         wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(*h) } },
         wgpu::Extent3d { width: *w, height: *h, depth_or_array_layers: 1 },
     );
-    c.queue.submit([enc.finish()]);
+    let sub = c.queue.submit([enc.finish()]);
     let slice = buf.slice(..);
-    slice.map_async(wgpu::MapMode::Read, |_| {});
-    let _ = c.device.poll(wgpu::PollType::wait_indefinitely());
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    crate::wait_mapped(&c.device, sub, &rx).expect("mapped");
     let data = slice.get_mapped_range().expect("mapped");
     let mut out = Vec::with_capacity((w * h * 4) as usize);
     for y in 0..*h {

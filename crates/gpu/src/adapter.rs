@@ -154,6 +154,30 @@ pub fn pick(adapters: &[Adapter], surface: Option<&Surface<'_>>, power: PowerPre
     Ok(adapter.clone())
 }
 
+/// An off-screen [`wgpu::Instance`] and its active [`wgpu::Backends`], leaving OpenGL out on
+/// Windows (unless `WGPU_BACKEND` asks for it) for the same reason the window does. `None` when
+/// this build has no wgpu backend enabled.
+pub fn offscreen_instance() -> Option<(wgpu::Instance, wgpu::Backends)> {
+    if wgpu::Instance::enabled_backend_features().is_empty() {
+        return None;
+    }
+    let default_backends = if cfg!(target_os = "windows") { wgpu::Backends::PRIMARY } else { wgpu::Backends::default() };
+    let backends = wgpu::Backends::from_env().unwrap_or(default_backends);
+    let flags = wgpu::InstanceFlags::default().difference(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL).with_env();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor { backends, flags, ..wgpu::InstanceDescriptor::new_without_display_handle() });
+    Some((instance, backends))
+}
+
+/// Pick the best off-screen [`wgpu::Adapter`] from `instance` using [`pick`].
+pub fn offscreen_adapter(instance: &wgpu::Instance, backends: wgpu::Backends) -> Option<Adapter> {
+    let power = PowerPreference::from_env().unwrap_or_default();
+    let adapters = pollster::block_on(instance.enumerate_adapters(backends));
+    if let Ok(adapter) = pick(&adapters, None, power) {
+        return Some(adapter);
+    }
+    pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: power, ..Default::default() })).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
