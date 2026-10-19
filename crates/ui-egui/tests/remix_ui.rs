@@ -21,7 +21,11 @@ impl Driver {
     fn new(session: Session) -> Self {
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
+        let mut builder = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
+        if std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").is_some() {
+            builder = builder.wgpu();
+        }
+        let harness = builder.build_eframe(move |_cc| app);
         let mut d = Driver { harness, tx };
         d.frames(4);
         d
@@ -91,7 +95,7 @@ impl Driver {
 fn session() -> (Session, u64) {
     let (m, _) = filmcraft_audio_dsp::remix::test_music(SR, 120.0, 16, 5);
     let mut s = Session::default();
-    s.execute("file.newSequence", json!({"name": "remix", "audio": 2, "video": 1})).unwrap();
+    s.execute("file.newSequence", json!({"name": "remix", "audio": 2, "video": 1, "fps":24})).unwrap();
     let inter: Vec<f32> = (0..m[0].len()).flat_map(|i| [m[0][i], m[1][i]]).collect();
     let bytes: Arc<[u8]> = filmcraft_engine::previews::write_wav_f32(&inter, SR).into();
     let item = filmcraft_engine::commands::import_bytes(&mut s, "/music.wav", bytes, None).unwrap();
@@ -177,4 +181,165 @@ fn remix_tool_drag_sets_the_duration() {
     assert_eq!(p["remixed"], true);
     assert!((p["seconds"].as_f64().unwrap() - p["targetSeconds"].as_f64().unwrap()).abs() <= 0.5);
     assert!(!p["cuts"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn essential_sound_duration_applies_and_reverts_music() {
+    let (s, clip) = session();
+    let mut d = Driver::new(s);
+    d.ok("ui.set", json!({"workspace": "Audio"}));
+    d.exec("essentialSound.setType", json!({"clips": [clip], "type": "music"}));
+    d.frames(4);
+    d.ok("ui.click", json!({"id": "essentialSound.section.Duration"}));
+    d.frames(3);
+    for suffix in ["seconds", "apply"] {
+        assert!(d.ids("essentialSound.duration.").contains(&format!("essentialSound.duration.{suffix}")));
+    }
+    assert!(d.ids("essentialSound.duration.segments").is_empty());
+    assert!(d.ids("essentialSound.duration.variations").is_empty());
+    assert!(d.ids("essentialSound.duration.matchMelody").is_empty());
+    let original = d.duration(clip);
+    let undo = d.harness.state().session.history.undo.len();
+    d.ok("ui.click", json!({"id": "essentialSound.duration.seconds", "count": 2}));
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.ok("ui.type", json!({"text": "00:00:20:00"}));
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(3);
+
+    assert!((d.duration(clip) - 20.0).abs() <= 0.5);
+    assert_eq!(d.harness.state().session.history.undo.len(), undo + 1);
+    let state = d.exec("clip.remix.properties", json!({"clip": clip}));
+    assert!(!state["cuts"].as_array().unwrap().is_empty());
+    d.ok("ui.click", json!({"id": "essentialSound.duration.revert"}));
+    d.frames(3);
+    assert_eq!(d.duration(clip), original);
+    // The button also commits the currently edited value without Enter.
+    d.ok("ui.click", json!({"id":"essentialSound.duration.seconds","count":2}));
+    d.ok("ui.key", json!({"key":"Cmd+A"}));
+    d.ok("ui.type", json!({"text":"00:00:24:00"}));
+    let undo = d.harness.state().session.history.undo.len();
+    d.ok("ui.click", json!({"id":"essentialSound.duration.apply"}));
+    d.frames(3);
+    assert!((d.duration(clip) - 24.0).abs() <= 0.5);
+    assert_eq!(d.harness.state().session.history.undo.len(), undo + 1);
+    if let Some(dir) = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR") {
+        std::fs::create_dir_all(&dir).unwrap();
+        d.harness.render().unwrap().save(std::path::PathBuf::from(dir).join("duration-enter-apply.png")).unwrap();
+    }
+}
+
+#[test]
+fn essential_sound_revert_then_shorter_target_uses_original_music() {
+    let (s, clip) = session();
+    let mut d = Driver::new(s);
+    d.ok("ui.set", json!({"workspace":"Audio"}));
+    d.exec("essentialSound.setType", json!({"clips":[clip],"type":"music"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id":"essentialSound.section.Duration"}));
+    d.frames(3);
+    for seconds in [24, 20] {
+        d.ok("ui.click", json!({"id":"essentialSound.duration.seconds","count":2}));
+        d.ok("ui.key", json!({"key":"Cmd+A"}));
+        d.ok("ui.type", json!({"text":format!("00:00:{seconds:02}:00")}));
+        d.ok("ui.key", json!({"key":"Enter"}));
+        d.frames(3);
+
+        let state = d.exec("clip.remix.properties", json!({"clip":clip}));
+        assert_eq!(state["targetSeconds"].as_f64().unwrap(), f64::from(seconds));
+        assert!((state["originalSeconds"].as_f64().unwrap() - 32.0).abs() < 0.01);
+        assert!((d.duration(clip) - f64::from(seconds)).abs() <= 0.5);
+        if seconds == 24 {
+            d.ok("ui.click", json!({"id":"essentialSound.duration.revert"}));
+            d.frames(3);
+            assert!((d.duration(clip) - 32.0).abs() < 0.01);
+        }
+    }
+}
+
+#[test]
+fn duration_timecode_uses_sequence_frames_without_moving_the_playhead() {
+    for (fps, drop_frame) in [(23.976_f64, false), (24., false), (25., false), (29.97, false), (30., false), (29.97, true)] {
+        let (mut s, clip) = session();
+        s.execute("sequence.settings", json!({"fps":fps,"dropFrame":drop_frame})).unwrap();
+        let rate = s.sequence_rate();
+        let (typed, expected_frames) = if drop_frame { ("00:01:00;02", 1800) } else { ("00:00:14:13", 14 * fps.round() as i64 + 13) };
+        let playhead = s.playhead();
+        let mut d = Driver::new(s);
+        d.ok("ui.set", json!({"workspace":"Audio"}));
+        d.exec("essentialSound.setType", json!({"clips":[clip],"type":"music"}));
+        d.frames(3);
+        d.ok("ui.click", json!({"id":"essentialSound.section.Duration"}));
+        d.frames(3);
+        d.ok("ui.click", json!({"id":"essentialSound.duration.advanced"}));
+        d.frames(2);
+        d.ok("ui.click", json!({"id":"essentialSound.duration.matchMelody"}));
+        d.frames(2);
+        let n = d.harness.state().session.history.undo.len();
+        d.ok("ui.click", json!({"id":"essentialSound.duration.timecode"}));
+        d.frames(2);
+        d.ok("ui.key", json!({"key":"Cmd+A"}));
+        d.ok("ui.type", json!({"text":typed}));
+        d.ok("ui.key", json!({"key":"Enter"}));
+        d.frames(3);
+        let r = d.exec("clip.remix.properties", json!({"clip":clip}));
+        assert_eq!(r["targetSeconds"].as_f64().unwrap(), rate.tick_of(expected_frames).seconds());
+        assert_eq!(d.harness.state().session.playhead(), playhead);
+        assert_eq!(d.harness.state().session.history.undo.len(), n + 1);
+    }
+}
+
+#[test]
+fn invalid_duration_does_not_apply_and_advanced_controls_remain_available() {
+    let (s, clip) = session();
+    let mut d = Driver::new(s);
+    d.ok("ui.set", json!({"workspace":"Audio"}));
+    d.exec("essentialSound.setType", json!({"clips":[clip],"type":"music"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id":"essentialSound.section.Duration"}));
+    d.frames(3);
+    let before = d.harness.state().session.project.to_json();
+    for text in ["not a time", "00:00:00:00", "02:00:00:00"] {
+        d.ok("ui.click", json!({"id":"essentialSound.duration.timecode"}));
+        d.frames(2);
+        d.ok("ui.key", json!({"key":"Cmd+A"}));
+        d.ok("ui.type", json!({"text":text}));
+        d.ok("ui.key", json!({"key":"Enter"}));
+        d.frames(3);
+        assert_eq!(d.harness.state().session.project.to_json(), before);
+    }
+    d.ok("ui.click", json!({"id":"essentialSound.duration.advanced"}));
+    d.frames(3);
+    for id in ["matchMelody", "segments", "variations"] {
+        assert!(d.ids("essentialSound.duration.").contains(&format!("essentialSound.duration.{id}")));
+    }
+}
+
+#[test]
+fn duration_advanced_parameters_are_sent_to_the_remix_command() {
+    let (s, clip) = session();
+    let mut d = Driver::new(s);
+    d.ok("ui.set", json!({"workspace":"Audio"}));
+    d.exec("essentialSound.setType", json!({"clips":[clip],"type":"music"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id":"essentialSound.section.Duration"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id":"essentialSound.duration.advanced"}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id":"essentialSound.duration.matchMelody"}));
+    for (key, value) in [("segments", "20"), ("variations", "80")] {
+        d.ok("ui.click", json!({"id":format!("essentialSound.duration.{key}"),"count":2}));
+        d.ok("ui.key", json!({"key":"Cmd+A"}));
+        d.ok("ui.type", json!({"text":value}));
+        d.ok("ui.key", json!({"key":"Enter"}));
+        d.frames(2);
+    }
+    d.ok("ui.click", json!({"id":"essentialSound.duration.timecode"}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key":"Cmd+A"}));
+    d.ok("ui.type", json!({"text":"00:00:20:00"}));
+    d.ok("ui.key", json!({"key":"Enter"}));
+    d.frames(3);
+    let r = d.exec("clip.remix.properties", json!({"clip":clip}));
+    assert_eq!(r["segments"], 20.0);
+    assert_eq!(r["variations"], 80.0);
 }
