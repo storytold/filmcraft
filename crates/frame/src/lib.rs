@@ -7,10 +7,12 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod coded;
 pub mod pool;
 
 use std::sync::Arc;
 
+pub use coded::{CodedFormat, CodedImage};
 use filmcraft_color::{ColorInfo, DecodeTable, Matrix, Range, linear_to_srgb_u8, normalize_c, normalize_y, srgb_u8_to_linear_table, to_linear, ycbcr_to_rgb};
 use filmcraft_time::Tick;
 use rayon::prelude::*;
@@ -56,6 +58,9 @@ pub enum PixelData {
     Yuv8 { planes: [Arc<Vec<u8>>; 3], chroma: Chroma, alpha: Option<Arc<Vec<u8>>> },
     /// 9–16-bit planar Y'CbCr stored in u16 (`bits` significant bits).
     Yuv16 { planes: [Arc<Vec<u16>>; 3], chroma: Chroma, bits: u32, alpha: Option<Arc<Vec<u16>>> },
+    /// Planar Y'CbCr still in its compressed form, for the GPU compositor to decode (see
+    /// [`coded`]). CPU code reads it through [`VideoFrame::cpu_frame`].
+    Coded(Arc<CodedImage>),
 }
 
 #[derive(Clone, Debug)]
@@ -125,6 +130,7 @@ impl VideoFrame {
             PixelData::RgbaF32(_) => "RGBA 32-bit float".into(),
             PixelData::Yuv8 { chroma, .. } => format!("YUV {} 8-bit", chroma.label()),
             PixelData::Yuv16 { chroma, bits, .. } => format!("YUV {} {bits}-bit", chroma.label()),
+            PixelData::Coded(c) => format!("YUV {} {}-bit ({:?})", c.chroma().label(), c.bits(), c.format()),
         }
     }
 
@@ -135,6 +141,16 @@ impl VideoFrame {
             PixelData::RgbaF32(d) => d.len() * 4,
             PixelData::Yuv8 { planes, alpha, .. } => planes.iter().map(|p| p.len()).sum::<usize>() + alpha.as_ref().map_or(0, |a| a.len()),
             PixelData::Yuv16 { planes, alpha, .. } => (planes.iter().map(|p| p.len()).sum::<usize>() + alpha.as_ref().map_or(0, |a| a.len())) * 2,
+            PixelData::Coded(c) => c.byte_size(),
+        }
+    }
+
+    /// The frame with its pixels in host memory: a [`PixelData::Coded`] picture decoded
+    /// on the CPU (once, then shared), any other frame as it is.
+    pub fn cpu_frame(&self) -> std::borrow::Cow<'_, VideoFrame> {
+        match &self.data {
+            PixelData::Coded(c) => std::borrow::Cow::Owned(VideoFrame { data: c.cpu(self.width, self.height), ..self.clone() }),
+            _ => std::borrow::Cow::Borrowed(self),
         }
     }
 
@@ -179,7 +195,9 @@ impl VideoFrame {
                     alpha: alpha.as_ref().map(|a| Arc::new(box_plane(a, w, h, ow, oh, n))),
                 }
             }
-            PixelData::Rgba8(_) | PixelData::RgbaF32(_) => return None,
+            // (a coded picture goes to the GPU whole: decoding it there costs less than the CPU
+            // decode a reduction would need)
+            PixelData::Rgba8(_) | PixelData::RgbaF32(_) | PixelData::Coded(_) => return None,
         };
         Some(VideoFrame { width: ow as u32, height: oh as u32, data, color: self.color, par: self.par, pts: self.pts })
     }
@@ -193,6 +211,7 @@ impl VideoFrame {
         let (sx, sy) = match &self.data {
             PixelData::Yuv8 { chroma, .. } | PixelData::Yuv16 { chroma, .. } => chroma.shifts(),
             PixelData::Rgba8(_) | PixelData::RgbaF32(_) => (0, 0),
+            PixelData::Coded(_) => return self.cpu_frame().cropped(region),
         };
         let (mx, my) = ((1usize << sx) - 1, (1usize << sy) - 1);
         let (x, y) = (region.x.min(w) & !mx, region.y.min(h) & !my);
@@ -235,6 +254,7 @@ impl VideoFrame {
                     alpha: alpha.as_ref().map(|a| Arc::new(crop_plane(a, w, h, 1, r))),
                 }
             }
+            PixelData::Coded(_) => return self.cpu_frame().cropped(region),
         };
         VideoFrame { width: r.w as u32, height: r.h as u32, data, color: self.color, par: self.par, pts: self.pts }
     }
@@ -269,6 +289,7 @@ impl VideoFrame {
                     alpha: alpha.as_ref().map(|a| Arc::new(rotate_plane(a, w, h, 1, q))),
                 }
             }
+            PixelData::Coded(_) => return self.cpu_frame().rotated(quarter_turns),
         };
         let (width, height, par) = if q % 2 == 1 { (self.height, self.width, (self.par.1, self.par.0)) } else { (self.width, self.height, self.par) };
         VideoFrame { width, height, data, color: self.color, par, pts: self.pts }
@@ -395,6 +416,9 @@ impl VideoFrame {
         if w == 0 || h == 0 {
             out.fill(0.0);
             return;
+        }
+        if let PixelData::Coded(_) = &self.data {
+            return self.cpu_frame().convert_region(n, decode, r, out);
         }
         let n = n.min(w.max(h)).max(1);
         if let PixelData::RgbaF32(d) = &self.data
@@ -620,6 +644,8 @@ impl VideoFrame {
                     }
                 });
             }
+            // resolved to host pixels above
+            PixelData::Coded(_) => out.fill(0.0),
         }
     }
 
@@ -665,6 +691,7 @@ impl VideoFrame {
         let (w, h) = (self.width as usize, self.height as usize);
         match &self.data {
             PixelData::Rgba8(d) => d.as_ref().clone(),
+            PixelData::Coded(_) => self.cpu_frame().to_rgba8(),
             PixelData::Yuv8 { planes, chroma, alpha: None }
                 if matches!(self.color.transfer, filmcraft_color::Transfer::Bt709 | filmcraft_color::Transfer::Srgb) =>
             {

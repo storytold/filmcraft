@@ -712,6 +712,21 @@ decode, and the UI-thread present (upload and draw, including the backdrop copie
 blended layers) stays at 9–10 ms p50, as for `stack3`. Before, every frame was composited on the
 CPU (≈ 2 cores more at 23.976 fps) and Full resolution could not keep up at this load.
 
+## Results (ADR 0002: ProRes decoded on the GPU, before → after)
+
+A ProRes frame through the GPU compositor, until the GPU is done (`cargo test --release -p
+filmcraft-gpu --lib prores_gpu_vs_cpu_bench -- --ignored --nocapture`): before, the CPU decodes
+(all cores), converts the planes to half floats and uploads them; after, the bitstream is
+uploaded and decoded in compute shaders. Frames are our encoder's at Apple's nominal rate over
+busy content (gradients, checkerboard, noise). Linux, AMD Ryzen 7 7800X3D (16 threads), RTX 4090,
+2026-10-19, 30 frames each:
+
+| frame | bytes | CPU decode + upload | GPU decode | speed-up |
+|---|---|---|---|---|
+| ProRes 422 HQ 3840×2160 | 3.6 MB | 14.65 ms | **2.83 ms** | 5.2× |
+| ProRes 4444 3840×2160 | 5.5 MB | 19.37 ms | **3.76 ms** | 5.2× |
+| ProRes 422 HQ 1920×1080 | 0.9 MB | 3.55 ms | **1.28 ms** | 2.8× |
+
 ## Results (#847: AV1 in-loop filters in parallel row bands, before → after)
 
 The AV1 decoder ran deblocking, CDEF and loop restoration on one thread per frame. A single-tile

@@ -2210,6 +2210,7 @@ version = "0.17.0"
 dependencies = [
  "filmcraft-color",
  "filmcraft-time",
+ "log",
  "rayon",
  "serde",
 ]
@@ -2249,7 +2250,9 @@ dependencies = [
  "filmcraft-geom",
  "filmcraft-media",
  "filmcraft-project",
+ "filmcraft-prores",
  "filmcraft-render",
+ "filmcraft-testkit",
  "filmcraft-time",
  "image",
  "log",

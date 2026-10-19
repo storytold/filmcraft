@@ -760,37 +760,73 @@ pub fn av1_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
     }
 }
 
+/// The colour a ProRes frame header describes (Rec. 709 where it says nothing we know).
+fn prores_color(c: &filmcraft_prores::ColorInfo) -> filmcraft_color::ColorInfo {
+    let mut color = filmcraft_color::ColorInfo::REC709;
+    if let Some(m) = filmcraft_color::Matrix::from_code(c.matrix) {
+        color.matrix = m;
+    }
+    if let Some(t) = filmcraft_color::Transfer::from_code(c.transfer) {
+        color.transfer = t;
+    }
+    color
+}
+
+/// A decoded ProRes frame's planes.
+fn prores_planes(f: filmcraft_prores::Frame) -> filmcraft_frame::PixelData {
+    use std::sync::Arc;
+    let chroma = match f.chroma {
+        filmcraft_prores::ChromaFormat::Yuv422 => filmcraft_frame::Chroma::C422,
+        filmcraft_prores::ChromaFormat::Yuv444 => filmcraft_frame::Chroma::C444,
+    };
+    filmcraft_frame::PixelData::Yuv16 {
+        planes: [Arc::new(f.y), Arc::new(f.cb), Arc::new(f.cr)],
+        chroma,
+        bits: f.bit_depth as u32,
+        alpha: f.alpha.map(Arc::new),
+    }
+}
+
 /// Our ProRes decoder (every frame is intra; slices decode in parallel).
 pub struct ProResDecoder;
 
 impl VideoDecoder for ProResDecoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
-        use std::sync::Arc;
-        let f = filmcraft_prores::decode_frame(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
-        let chroma = match f.chroma {
-            filmcraft_prores::ChromaFormat::Yuv422 => filmcraft_frame::Chroma::C422,
-            filmcraft_prores::ChromaFormat::Yuv444 => filmcraft_frame::Chroma::C444,
-        };
-        let mut color = filmcraft_color::ColorInfo::REC709;
-        if let Some(m) = filmcraft_color::Matrix::from_code(f.color.matrix) {
-            color.matrix = m;
-        }
-        if let Some(t) = filmcraft_color::Transfer::from_code(f.color.transfer) {
-            color.transfer = t;
-        }
-        let frame = VideoFrame {
-            width: f.width,
-            height: f.height,
-            data: filmcraft_frame::PixelData::Yuv16 {
-                planes: [Arc::new(f.y), Arc::new(f.cb), Arc::new(f.cr)],
+        // A GPU compositor decodes ProRes itself: it gets the bitstream (megabytes) instead of the
+        // planes (tens of megabytes), and every CPU consumer decodes it here through the fallback.
+        if filmcraft_media::cancel::gpu_frames() {
+            // the structure checked as the CPU decoder checks it (headers, slice tables, slice
+            // headers): a frame that does not parse fails here, and the picture's size is bound to
+            // the data it really has
+            let h = filmcraft_prores::frame_layout(sample).map_err(|e| CodecError::Decode(e.to_string()))?.header;
+            let (chroma, bits) = match h.chroma {
+                filmcraft_prores::ChromaFormat::Yuv422 => (filmcraft_frame::Chroma::C422, 10),
+                filmcraft_prores::ChromaFormat::Yuv444 => (filmcraft_frame::Chroma::C444, 12),
+            };
+            let alpha = h.alpha != filmcraft_prores::AlphaType::None;
+            let img = filmcraft_frame::CodedImage::new(
+                filmcraft_frame::CodedFormat::ProRes,
+                std::sync::Arc::from(sample),
                 chroma,
-                bits: f.bit_depth as u32,
-                alpha: f.alpha.map(Arc::new),
-            },
-            color,
-            par: (1, 1),
-            pts: filmcraft_time::Tick::ZERO,
-        };
+                bits,
+                alpha,
+                Box::new(|data: &[u8]| filmcraft_prores::decode_frame(data).ok().map(prores_planes)),
+            );
+            let frame = VideoFrame {
+                width: u32::from(h.width),
+                height: u32::from(h.height),
+                data: filmcraft_frame::PixelData::Coded(std::sync::Arc::new(img)),
+                color: prores_color(&h.color),
+                par: (1, 1),
+                pts: filmcraft_time::Tick::ZERO,
+            };
+            return Ok(vec![DecodedFrame { pts, frame, draft: false }]);
+        }
+        let f = filmcraft_prores::decode_frame(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
+        let color = prores_color(&f.color);
+        let (width, height) = (f.width, f.height);
+        let data = prores_planes(f);
+        let frame = VideoFrame { width, height, data, color, par: (1, 1), pts: filmcraft_time::Tick::ZERO };
         Ok(vec![DecodedFrame { pts, frame, draft: false }])
     }
     fn flush(&mut self) -> Vec<DecodedFrame> {
@@ -1375,5 +1411,37 @@ impl VideoDecoder for RawVideoDecoder {
     }
     fn intra_only(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod prores_gpu_frame_tests {
+    use super::*;
+
+    fn sample() -> Vec<u8> {
+        let f = filmcraft_prores::Frame::new(64, 32, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
+        filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, 64, 32).encode(&f).unwrap()
+    }
+
+    #[test]
+    fn gpu_monitors_get_the_bitstream_and_cpu_code_the_planes() {
+        let s = sample();
+        let coded = filmcraft_media::cancel::with_gpu_frames(true, || ProResDecoder.decode(&s, 0)).unwrap();
+        let filmcraft_frame::PixelData::Coded(img) = &coded[0].frame.data else { panic!("coded frame") };
+        assert_eq!(img.data(), &s[..]);
+        let planes = ProResDecoder.decode(&s, 0).unwrap();
+        assert!(matches!(planes[0].frame.data, filmcraft_frame::PixelData::Yuv16 { .. }));
+        assert_eq!(coded[0].frame.cpu_frame().to_rgba8(), planes[0].frame.to_rgba8());
+    }
+
+    /// Regression: the coded path used to check only the frame header, so a header claiming
+    /// 65535×65535 over a few bytes became a coded frame whose failed CPU decode allocated a
+    /// full-size placeholder (8.6 GB).
+    #[test]
+    fn a_header_bigger_than_its_data_is_a_decode_error() {
+        let mut s = sample();
+        s[16..20].copy_from_slice(&[0xff, 0xff, 0xff, 0xff]);
+        assert!(filmcraft_media::cancel::with_gpu_frames(true, || ProResDecoder.decode(&s, 0)).is_err());
+        assert!(ProResDecoder.decode(&s, 0).is_err());
     }
 }

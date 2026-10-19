@@ -993,7 +993,9 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
             filmcraft_media::cancel::with_draft(job.key.draft, || {
                 filmcraft_media::cancel::with_background(is_background(job), || {
                     if let Target::SequencePlan(seq, caps) = job.key.target {
-                        let (plan, pv) = plan_job(job, seq, caps, pool, services, previews);
+                        // the GPU compositor runs this plan: decoders may hand it pictures it decodes
+                        // itself (ProRes, DNx: ADR 0002)
+                        let (plan, pv) = filmcraft_media::cancel::with_gpu_frames(true, || plan_job(job, seq, caps, pool, services, previews));
                         loading = filmcraft_media::pending::take();
                         if !job.cancel.load(Ordering::Relaxed) && !loading {
                             // Convert texels for upload here, not on the UI thread when the frame is shown.
