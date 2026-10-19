@@ -19,7 +19,7 @@ const MEDIA_SLACK: i64 = 2;
 /// Whether the cut between adjacent items `a` (left) and `b` (right) is a through edit: same
 /// source, same speed and direction, and `b` continues `a` in media time.
 pub fn is_through_edit(a: &TrackItem, b: &TrackItem) -> bool {
-    if a.end() != b.start || a.item != b.item || a.speed != b.speed || a.reverse != b.reverse || a.multicam != b.multicam {
+    if a.end() != b.start || a.item != b.item || !same_speed(a, b) || a.reverse != b.reverse || a.multicam != b.multicam {
         return false;
     }
     match (a.frame_hold, b.frame_hold) {
@@ -29,6 +29,16 @@ pub fn is_through_edit(a: &TrackItem, b: &TrackItem) -> bool {
     }
     let diff = if a.reverse { b.source_out() - a.source_in } else { b.source_in - a.source_out() };
     diff.0.abs() <= MEDIA_SLACK
+}
+
+/// Same speed: the same constant one, or the same Time Remapping curve (the pieces of a remapped
+/// clip each keep the average speed of their own part).
+fn same_speed(a: &TrackItem, b: &TrackItem) -> bool {
+    match (a.is_remapped(), b.is_remapped()) {
+        (false, false) => a.speed == b.speed,
+        (true, true) => a.effect("time_remap") == b.effect("time_remap"),
+        _ => false,
+    }
 }
 
 /// One through edit on a track.
@@ -139,14 +149,8 @@ pub fn clip_item_to(it: &TrackItem, range: TimeRange) -> Option<TrackItem> {
     let mut c = it.clone();
     let head = a - it.start;
     let tail = it.end() - b;
-    let speed = it.speed.abs();
-    let src = |d: Tick| Tick((d.0 as f64 * speed).round() as i64);
     if it.frame_hold.is_none() {
-        if it.reverse {
-            c.source_in += src(tail);
-        } else {
-            c.source_in += src(head);
-        }
+        c.source_in = it.media_after(it.source_in, if it.reverse { tail } else { head });
     }
     c.start = a;
     c.duration = b - a;

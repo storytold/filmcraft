@@ -1003,13 +1003,18 @@ fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &Tra
     let dynamic = app.ui.extras.dynamic_waveforms;
     let mut mesh = egui::Mesh::default();
     let dur_px = body.width().max(1.0);
+    // (a Time Remapped clip's curve is built once for the whole waveform)
+    let clock = it.source_clock();
     for x in (clip.min.x.floor() as i32)..(clip.max.x.ceil() as i32) {
         let f0 = (x as f32 - body.min.x) / dur_px;
         let f1 = (x as f32 + 1.0 - body.min.x) / dur_px;
         let t0 = it.start + Tick((it.duration.0 as f64 * f0 as f64) as i64);
         let t1 = it.start + Tick((it.duration.0 as f64 * f1 as f64) as i64);
-        let s0 = (it.source_time_at(t0).seconds() * sr / spp) as usize;
-        let s1 = ((it.source_time_at(t1).seconds() * sr / spp) as usize).max(s0 + 1);
+        let (m0, m1) = (clock.at(t0), clock.at(t1));
+        // a reversed clip reads its media backwards: the peaks between the two ends
+        let (m0, m1) = (m0.min(m1), m0.max(m1));
+        let s0 = (m0.seconds() * sr / spp) as usize;
+        let s1 = ((m1.seconds() * sr / spp) as usize).max(s0 + 1);
         let mut m = 0f32;
         for (a, b) in peaks.iter().skip(s0).take(s1 - s0) {
             m = m.max(a.abs()).max(b.abs());

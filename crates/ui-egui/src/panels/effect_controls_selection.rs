@@ -69,8 +69,13 @@ fn limits(app: &FilmcraftApp, keys: &[KeyframeRef]) -> Option<(i64, i64)> {
         if !speed.is_finite() || speed == 0.0 || it.duration < frame {
             return None;
         }
-        let da = (it.moving_source_time_at(it.start) - key.time).0 as f64 / speed;
-        let db = (it.moving_source_time_at(it.end() - frame) - key.time).0 as f64 / speed;
+        // a remapped clip's keyframes move along its speed curve (as `keyframe_move` moves them)
+        let (da, db) = if it.is_remapped() {
+            let at = it.timeline_time_of(key.time);
+            ((it.start - at).0 as f64, (it.end() - frame - at).0 as f64)
+        } else {
+            ((it.moving_source_time_at(it.start) - key.time).0 as f64 / speed, (it.moving_source_time_at(it.end() - frame) - key.time).0 as f64 / speed)
+        };
         low = low.max(da.min(db).ceil() as i64);
         high = high.min(da.max(db).floor() as i64);
     }

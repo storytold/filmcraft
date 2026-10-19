@@ -72,8 +72,13 @@ pub(crate) fn move_many(s: &mut Session, p: &Value) -> Result<Value> {
         if key.time < a.min(b) || key.time > a.max(b) {
             return Err(bad(COMMAND, "keyframe is outside the visible clip range"));
         }
-        let da = (a - key.time).0 as f64 / speed;
-        let db = (b - key.time).0 as f64 / speed;
+        // a remapped clip's keyframes move along its speed curve
+        let (da, db) = if it.is_remapped() {
+            let at = it.timeline_time_of(key.time);
+            ((it.start - at).0 as f64, (it.end() - frame - at).0 as f64)
+        } else {
+            ((a - key.time).0 as f64 / speed, (b - key.time).0 as f64 / speed)
+        };
         low = low.max(da.min(db).ceil() as i64);
         high = high.min(da.max(db).floor() as i64);
         saved.push((k.clone(), speed));
@@ -88,7 +93,10 @@ pub(crate) fn move_many(s: &mut Session, p: &Value) -> Result<Value> {
     let mut lanes: BTreeMap<Lane, Vec<(Tick, Keyframe)>> = BTreeMap::new();
     for (key, (mut k, speed)) in keys.iter_mut().zip(saved) {
         let from = key.time;
-        k.time += Tick((delta as f64 * speed).round() as i64);
+        k.time = match q.find_item(ClipId(key.clip)).map(|(_, it)| it).filter(|it| it.is_remapped()) {
+            Some(it) => it.moving_source_time_at(it.timeline_time_of(from) + Tick(delta)),
+            None => k.time + Tick((delta as f64 * speed).round() as i64),
+        };
         key.time = k.time;
         lanes.entry((key.clip, key.effect, key.mask, key.param.clone())).or_default().push((from, k));
     }

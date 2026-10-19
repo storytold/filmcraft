@@ -20,6 +20,7 @@
 pub mod captions;
 pub mod frame_size;
 pub mod multicam;
+pub mod remap;
 pub mod through;
 pub mod transcript;
 pub mod transitions;
@@ -103,14 +104,13 @@ pub fn split_track_at(track: &mut Track, t: Tick, ctx: &mut EditCtx, links: &mut
     right.start = t;
     right.duration -= cut;
     if !right.reverse && right.frame_hold.is_none() {
-        right.source_in += Tick((cut.0 as f64 * right.speed.abs()).round() as i64);
+        right.source_in = right.media_after(right.source_in, cut);
     } else if right.reverse {
         // reversed: the left piece now shows the later media; keep content continuous
         let left_ref = &mut track.items[idx];
-        let consumed = Tick((cut.0 as f64 * left_ref.speed.abs()).round() as i64);
-        let total_src = Tick(((cut + right.duration).0 as f64 * left_ref.speed.abs()).round() as i64);
+        let out = right.media_after(right.source_in, cut + right.duration);
         right.source_in = left_ref.source_in;
-        left_ref.source_in += total_src - consumed;
+        left_ref.source_in = right.media_after(out, -cut);
     }
     if let Some(l) = right.link {
         let nl = *links.entry(l).or_insert_with(|| ctx.alloc());
@@ -638,8 +638,14 @@ fn head(ctx: &EditCtx, item: &TrackItem) -> Tick {
     (item.source_in - (ctx.media_start)(item.item)).max(Tick::ZERO)
 }
 
-fn src_of(dur: Tick, speed: f64) -> Tick {
-    Tick((dur.0 as f64 * speed.abs()).round() as i64)
+/// Timeline time (rounded down) `it` takes to play its media from `a` to `b`.
+fn span_floor(it: &TrackItem, a: Tick, b: Tick) -> Tick {
+    Tick(it.timeline_span(a, b).floor() as i64)
+}
+
+/// Timeline time (rounded down) `it` takes to play its head handle ([`head`]).
+fn head_span(ctx: &EditCtx, it: &TrackItem) -> Tick {
+    span_floor(it, it.source_in - head(ctx, it), it.source_in)
 }
 
 /// Neighbours on the same track: (previous end, next start).
@@ -657,18 +663,16 @@ pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delt
     let tr = seq.track(tid).ok_or(EditError::NoTrack(tid))?;
     let (prev_end, next_start) = neighbours(tr, clip);
     let media = media_len(ctx, it);
-    let speed = it.speed.abs().max(1e-9);
     let mut d = delta;
     match edge {
         Edge::In => {
             // extending left (d<0) needs media before source_in; shortening needs min duration
             // a reversed clip plays source_out down to source_in, so its In edge consumes media after source_out
-            let handle = match (it.reverse, media) {
-                (true, Some(m)) => (m - it.source_out()).max(Tick::ZERO),
+            let max_ext = match (it.reverse, media) {
+                (true, Some(m)) => span_floor(it, it.source_out(), m.max(it.source_out())),
                 (true, None) => Tick::MAX,
-                (false, _) => head(ctx, it),
+                (false, _) => head_span(ctx, it),
             };
-            let max_ext = if handle == Tick::MAX { Tick::MAX } else { Tick((handle.0 as f64 / speed).floor() as i64) };
             let lo = if mode == TrimMode::Regular { (-(it.start - prev_end)).max(-max_ext) } else { -max_ext };
             let hi = it.duration - ctx.min_duration;
             // a frame hold needs no source head, but a Regular trim still stops at the previous clip
@@ -684,10 +688,9 @@ pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delt
             let mut hi = if mode == TrimMode::Regular { next_start - it.end() } else { Tick::MAX };
             if it.reverse && it.frame_hold.is_none() {
                 // a reversed clip's Out edge consumes media before source_in
-                hi = hi.min(Tick((head(ctx, it).0 as f64 / speed).floor() as i64));
+                hi = hi.min(head_span(ctx, it));
             } else if let Some(m) = media {
-                let remain = Tick(((m - it.source_out()).0 as f64 / speed).floor() as i64);
-                hi = hi.min(remain);
+                hi = hi.min(span_floor(it, it.source_out(), m));
             }
             d = d.clamp(lo, hi.max(lo));
         }
@@ -700,11 +703,10 @@ pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delt
 /// move), and, for the In edge with `move_start`, where it starts. The trims and the timeline's
 /// live trim preview share it, so the preview shows the media the edit will keep (#374).
 pub fn move_edge(it: &mut TrackItem, edge: Edge, d: Tick, move_start: bool) {
-    let speed = it.speed.abs();
     match edge {
         Edge::In => {
             if !it.reverse && it.frame_hold.is_none() {
-                it.source_in += src_of(d, speed);
+                it.source_in = it.media_after(it.source_in, d);
             }
             it.duration -= d;
             if move_start {
@@ -713,7 +715,7 @@ pub fn move_edge(it: &mut TrackItem, edge: Edge, d: Tick, move_start: bool) {
         }
         Edge::Out => {
             if it.reverse {
-                it.source_in -= src_of(d, speed);
+                it.source_in = it.media_after(it.source_in, -d);
             }
             it.duration += d;
         }
@@ -897,26 +899,27 @@ pub fn roll(seq: &mut Sequence, left: ClipId, right: ClipId, delta: Tick, ctx: &
     d = d.max(-(l.duration - ctx.min_duration)).min(r.duration - ctx.min_duration);
     // a reversed clip consumes media from the opposite end, so its media limit is the other one
     if l.reverse {
-        d = d.min(Tick((head(ctx, l).0 as f64 / l.speed.abs()).floor() as i64));
+        d = d.min(head_span(ctx, l));
     } else if let Some(m) = media_len(ctx, l) {
-        d = d.min(Tick(((m - l.source_out()).0 as f64 / l.speed.abs()).floor() as i64));
+        d = d.min(span_floor(l, l.source_out(), m));
     }
     if r.reverse {
         if let Some(m) = media_len(ctx, r) {
-            d = d.max(-Tick(((m - r.source_out()).0 as f64 / r.speed.abs()).floor() as i64));
+            d = d.max(-span_floor(r, r.source_out(), m));
         }
     } else {
-        d = d.max(-Tick((head(ctx, r).0 as f64 / r.speed.abs()).floor() as i64));
+        d = d.max(-head_span(ctx, r));
     }
     if d == Tick::ZERO {
         return Ok(d);
     }
-    let (ls, rs) = (l.speed.abs(), r.speed.abs());
+    let l_in = l.media_after(l.source_in, -d);
+    let r_in = r.media_after(r.source_in, d);
     let before = seq.clone();
     {
         let (_, l) = seq.find_item_mut(left).ok_or(EditError::NoItem(left))?;
         if l.reverse {
-            l.source_in -= src_of(d, ls);
+            l.source_in = l_in;
         }
         l.duration += d;
     }
@@ -925,7 +928,7 @@ pub fn roll(seq: &mut Sequence, left: ClipId, right: ClipId, delta: Tick, ctx: &
         r.start += d;
         r.duration -= d;
         if !r.reverse {
-            r.source_in += src_of(d, rs);
+            r.source_in = r_in;
         }
     }
     transitions_follow_cuts(&before, seq);
@@ -936,8 +939,8 @@ pub fn roll(seq: &mut Sequence, left: ClipId, right: ClipId, delta: Tick, ctx: &
 pub fn slip(seq: &mut Sequence, clip: ClipId, delta_media: Tick, ctx: &mut EditCtx) -> Result<Tick> {
     unlocked_track(seq, clip)?;
     let (_, it) = seq.find_item(clip).ok_or(EditError::NoItem(clip))?;
-    let used = src_of(it.duration, it.speed);
-    let max_in = media_len(ctx, it).map(|m| m - used).unwrap_or(Tick::MAX);
+    // the latest In whose clip still ends by the end of the media
+    let max_in = media_len(ctx, it).map(|m| it.media_after(m, -it.duration)).unwrap_or(Tick::MAX);
     let lo = if it.frame_hold.is_some() { Tick::ZERO } else { (ctx.media_start)(it.item) };
     let new_in = (it.source_in + delta_media).clamp(lo, max_in.max(lo));
     let d = new_in - it.source_in;
@@ -960,9 +963,9 @@ pub fn slide(seq: &mut Sequence, clip: ClipId, delta: Tick, ctx: &mut EditCtx) -
         d = d.max(-(p.duration - ctx.min_duration));
         if p.reverse {
             // a reversed neighbour grows by pulling earlier media in front of its source In
-            d = d.min(Tick((head(ctx, p).0 as f64 / p.speed.abs()).floor() as i64));
+            d = d.min(head_span(ctx, p));
         } else if let Some(m) = media_len(ctx, p) {
-            d = d.min(Tick(((m - p.source_out()).0 as f64 / p.speed.abs()).floor() as i64));
+            d = d.min(span_floor(p, p.source_out(), m));
         }
     } else {
         d = d.max(-(it.start - neighbours(tr, clip).0));
@@ -972,10 +975,10 @@ pub fn slide(seq: &mut Sequence, clip: ClipId, delta: Tick, ctx: &mut EditCtx) -
         if n.reverse {
             // a reversed neighbour grows leftwards by pulling later media behind its source Out
             if let Some(m) = media_len(ctx, n) {
-                d = d.max(-Tick(((m - n.source_out()).0 as f64 / n.speed.abs()).floor() as i64));
+                d = d.max(-span_floor(n, n.source_out(), m));
             }
         } else {
-            d = d.max(-Tick((head(ctx, n).0 as f64 / n.speed.abs()).floor() as i64));
+            d = d.max(-head_span(ctx, n));
         }
     } else {
         d = d.min(neighbours(tr, clip).1 - it.end());
@@ -989,7 +992,7 @@ pub fn slide(seq: &mut Sequence, clip: ClipId, delta: Tick, ctx: &mut EditCtx) -
         let pi = t.item_mut(p.id).ok_or(EditError::NoItem(p.id))?;
         pi.duration += d;
         if p.reverse {
-            pi.source_in -= src_of(d, p.speed);
+            pi.source_in = p.media_after(p.source_in, -d);
         }
     }
     if let Some(n) = next {
@@ -997,7 +1000,7 @@ pub fn slide(seq: &mut Sequence, clip: ClipId, delta: Tick, ctx: &mut EditCtx) -
         ni.start += d;
         ni.duration -= d;
         if !n.reverse {
-            ni.source_in += src_of(d, n.speed);
+            ni.source_in = n.media_after(n.source_in, d);
         }
     }
     let me = t.item_mut(clip).ok_or(EditError::NoItem(clip))?;
@@ -1061,6 +1064,9 @@ pub fn rate_stretch_items(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delt
         return Err(EditError::Locked);
     }
     let clips = open.as_slice();
+    for c in clips {
+        refuse_remapped(seq, *c)?;
+    }
     let mut d = delta;
     for c in clips {
         let x = clamp_rate_stretch(seq, *c, edge, d, ctx)?;
@@ -1089,6 +1095,17 @@ pub fn rate_stretch_items(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delt
     Ok(speed)
 }
 
+/// A clip whose Time Remapping speed is keyframed takes its speed from the keyframes alone: a
+/// constant speed (Speed/Duration, Rate Stretch) would fight them, so it is refused, as Premiere
+/// disables those for a remapped clip.
+fn refuse_remapped(seq: &Sequence, clip: ClipId) -> Result<()> {
+    let (_, it) = seq.find_item(clip).ok_or(EditError::NoItem(clip))?;
+    if it.is_remapped() {
+        return Err(EditError::Other(format!("\u{201c}{}\u{201d} has Time Remapping speed keyframes: remove them to set a constant speed", it.name)));
+    }
+    Ok(())
+}
+
 /// Set speed/duration (Clip ▸ Speed/Duration…). `ripple` shifts following material.
 pub fn set_speed(seq: &mut Sequence, clip: ClipId, speed: f64, reverse: bool, ripple: bool, ctx: &mut EditCtx) -> Result<()> {
     set_speed_group(seq, &[clip], speed, reverse, ripple, ctx)
@@ -1106,6 +1123,7 @@ pub fn set_speed_group(seq: &mut Sequence, clips: &[ClipId], speed: f64, reverse
     }
     for clip in clips {
         unlocked_track(seq, *clip)?;
+        refuse_remapped(seq, *clip)?;
     }
     let mut work = seq.clone();
     // per member track: where its later material starts, and by how much the member's length changed

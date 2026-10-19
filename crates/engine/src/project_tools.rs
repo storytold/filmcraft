@@ -677,6 +677,7 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_p(p, "name").unwrap_or("Untitled").to_string();
     proj.name = name.clone();
     proj.root.name = name;
+    crate::follow_time_remapping(None, &mut proj);
     s.project = std::sync::Arc::new(proj);
     s.history = Default::default();
     s.history.limit = 200;

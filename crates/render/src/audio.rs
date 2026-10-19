@@ -160,7 +160,7 @@ fn with_handles(item: &TrackItem, t0: Tick, t1: Tick) -> TrackItem {
     // forward media time is source_in + (t - start)·speed; reversed it counts down from the out
     // point, so the extra head (forward) or tail (reverse) moves source_in back
     let shift = if item.reverse { tail } else { head };
-    ext.source_in = item.source_in - Tick((shift.0 as f64 * item.speed.abs()).round() as i64);
+    ext.source_in = item.media_after(item.source_in, -shift);
     ext
 }
 
@@ -390,6 +390,8 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
     let remixed = crate::remix::read(item, &|m0, len| src(m0, len), a0 - item_s0, n, sr);
     let buf = if remixed.is_some() {
         remixed
+    } else if item.frame_hold.is_none() && item.is_remapped() {
+        remapped(item, src, a0, n, sr)
     } else if (speed - 1.0).abs() < 1e-9 && !item.reverse {
         src(src_start_ticks.to_units_floor(sr as i64), n)
     } else {
@@ -445,6 +447,39 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
         dst[off..off + m].copy_from_slice(&ch[..m]);
     }
     out
+}
+
+/// A Time Remapped clip's sound for timeline samples `[a0, a0 + n)`: each sample reads the source
+/// where the speed curve puts it (between source samples, linearly), so the sound speeds up and
+/// slows down with the picture, its pitch with it.
+fn remapped(item: &TrackItem, src: SourceAudio, a0: i64, n: usize, sr: u32) -> Option<AudioBuffer> {
+    let clock = item.source_clock();
+    let per_tick = sr as f64 / filmcraft_time::TICKS_PER_SECOND as f64;
+    // where each output sample sits in the source, in source samples
+    let pos: Vec<f64> = (0..n).map(|i| clock.at(Tick::from_units(a0 + i as i64, sr as i64)).0 as f64 * per_tick).collect();
+    let (lo, hi) = pos.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+    if !(lo.is_finite() && hi.is_finite()) {
+        return None;
+    }
+    let s0 = lo.floor() as i64;
+    // at most the fastest speed's worth of source per output sample (and a damaged curve can't ask
+    // for more)
+    let span = ((hi.ceil() as i64).saturating_sub(s0).saturating_add(2)).clamp(2, (n as i64).saturating_mul(101).saturating_add(2)) as usize;
+    let raw = src(s0, span)?;
+    let mut b = AudioBuffer::silence(sr, raw.channel_count(), n);
+    for (c, ch) in raw.channels.iter().enumerate() {
+        for (i, p) in pos.iter().enumerate() {
+            let x = (p - s0 as f64).max(0.0);
+            let i0 = x.floor() as usize;
+            let fr = (x - i0 as f64) as f32;
+            let a = ch.get(i0).copied().unwrap_or(0.0);
+            let bb = ch.get(i0 + 1).copied().unwrap_or(a);
+            if let Some(d) = b.channels.get_mut(c).and_then(|d| d.get_mut(i)) {
+                *d = a + (bb - a) * fr;
+            }
+        }
+    }
+    Some(b)
 }
 
 /// The source channels a clip on a 5.1 track plays: six picked channels (Modify ▸ Audio Channels),

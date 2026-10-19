@@ -21,6 +21,7 @@ pub mod mask;
 pub mod mixer;
 pub mod multicam;
 pub mod narration;
+pub mod time_remap;
 pub mod transcript;
 pub mod vtransition;
 
@@ -41,6 +42,7 @@ pub use mask::{Mask, MaskMode, MaskPath, MaskVertex, TrackMethod};
 pub use mixer::{AutomationMode, InputMap, MixerStrip, TrackSend};
 pub use multicam::{Camera, MergedClip, MulticamAudio, MulticamSel, MulticamSource};
 pub use narration::{Narration, VocalPitch};
+pub use time_remap::TimeMap;
 pub use transcript::{Speaker, Transcript, Word};
 
 macro_rules! id_type {
@@ -631,7 +633,7 @@ impl TrackItem {
     pub fn range(&self) -> TimeRange {
         TimeRange::new(self.start, self.duration)
     }
-    /// Media time displayed at timeline time `t` (ignores time remapping keyframes).
+    /// Media time displayed at timeline time `t`.
     pub fn source_time_at(&self, t: Tick) -> Tick {
         if let Some(h) = self.frame_hold {
             return h;
@@ -649,17 +651,69 @@ impl TrackItem {
     }
     /// Media time at timeline time `t` ignoring any frame hold.
     pub fn moving_source_time_at(&self, t: Tick) -> Tick {
-        let rel = t - self.start;
-        let scaled = Tick((rel.0 as f64 * self.speed.abs()).round() as i64);
-        if self.reverse {
-            self.source_in + Tick((self.duration.0 as f64 * self.speed.abs()).round() as i64) - scaled - Tick(1)
-        } else {
-            self.source_in + scaled
-        }
+        self.source_clock().moving_at(t)
+    }
+    /// [`TrackItem::source_time_at`] for many timeline times (every sample of a sound, every pixel
+    /// of a waveform): a remapped clip's speed curve is built once.
+    pub fn source_clock(&self) -> SourceClock<'_> {
+        let map = self.time_map();
+        let out = map.as_ref().map(|m| m.advance(self.source_in, self.duration));
+        SourceClock { item: self, map, out }
     }
     /// Media time consumed by the item (the source out point).
     pub fn source_out(&self) -> Tick {
-        self.source_in + Tick((self.duration.0 as f64 * self.speed.abs()).round() as i64)
+        self.media_after(self.source_in, self.duration)
+    }
+    /// The Time Remapping speed curve, when the clip's Time Remapping speed is keyframed (and the
+    /// effect is on): the clip's timing then follows it and `speed` holds the average speed.
+    pub fn time_map(&self) -> Option<TimeMap> {
+        if !self.is_remapped() {
+            return None;
+        }
+        TimeMap::from_param(self.effect("time_remap")?.param("speed")?)
+    }
+    /// Whether the clip plays at the speeds of keyframed Time Remapping (see [`TrackItem::time_map`]).
+    pub fn is_remapped(&self) -> bool {
+        self.effect("time_remap").is_some_and(|e| e.enabled && e.param("speed").is_some_and(Param::is_animated))
+    }
+    /// Whether the clip's Time Remapping also changes the speed of its linked sound (Remap Audio,
+    /// on unless turned off).
+    pub fn remaps_audio(&self) -> bool {
+        self.effect("time_remap").and_then(|e| e.param("audio")).and_then(|p| p.value.as_bool()).unwrap_or(true)
+    }
+    /// The media time reached by playing `d` of this clip's timeline (backwards when negative) from
+    /// media time `m`, at the clip's speed or along its Time Remapping curve.
+    pub fn media_after(&self, m: Tick, d: Tick) -> Tick {
+        match self.time_map() {
+            Some(map) => map.advance(m, d),
+            None => m + Tick((d.0 as f64 * self.speed.abs()).round() as i64),
+        }
+    }
+    /// Timeline time the clip takes to play the media from `a` to `b` (negative when `b` comes
+    /// first), unrounded: callers round or floor it as their limit needs.
+    pub fn timeline_span(&self, a: Tick, b: Tick) -> f64 {
+        match self.time_map() {
+            Some(map) => map.span(a, b),
+            None => (b - a).0 as f64 / self.speed.abs().max(1e-9),
+        }
+    }
+    /// The keyframe of `param` (one of this clip's parameters) that a playhead showing media time
+    /// `mt` is on: one at `mt`, or, on a remapped clip, the nearest within half a `frame` of it on
+    /// the timeline. A ramp's change moves the clip's keyframes off the sequence's frames, where a
+    /// playhead (which snaps to frames) can no longer land on them exactly.
+    pub fn keyframe_near(&self, param: &Param, mt: Tick, frame: Tick) -> Option<Tick> {
+        if param.keyframes.iter().any(|k| k.time == mt) {
+            return Some(mt);
+        }
+        let map = self.time_map()?;
+        let half = (frame.0.max(1) / 2) as f64;
+        param.keyframes.iter().map(|k| (k.time, map.span(mt, k.time).abs())).filter(|(_, d)| *d <= half).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(k, _)| k)
+    }
+    /// Timeline time at which the clip shows media time `m` (the inverse of
+    /// [`TrackItem::moving_source_time_at`]; outside the clip for media it doesn't show).
+    pub fn timeline_time_of(&self, m: Tick) -> Tick {
+        let rel = if self.reverse { self.timeline_span(m + Tick(1), self.source_out()) } else { self.timeline_span(self.source_in, m) };
+        Tick(self.start.0.saturating_add(rel.round() as i64))
     }
     pub fn effect(&self, id: &str) -> Option<&EffectInstance> {
         self.effects.iter().find(|e| e.effect == id)
@@ -682,10 +736,44 @@ impl TrackItem {
     pub fn has_modified_intrinsics(&self) -> bool {
         self.effects.iter().any(|e| {
             e.def().is_some_and(|d| d.intrinsic)
+                // a static Time Remapping speed is the clip's speed, shown by the speed badge
+                && (e.effect != "time_remap" || e.is_animated())
                 && (e.is_animated()
                     || !e.masks.is_empty()
                     || e.def().is_some_and(|d| d.params.iter().any(|p| e.params.get(p.id).is_some_and(|v| !param_eq_default(&v.value, &p.default)))))
         })
+    }
+}
+
+/// A clip's media times at timeline times ([`TrackItem::source_clock`]).
+pub struct SourceClock<'a> {
+    item: &'a TrackItem,
+    map: Option<TimeMap>,
+    /// The source out point along the curve (where a reversed remapped clip starts).
+    out: Option<Tick>,
+}
+
+impl SourceClock<'_> {
+    /// [`TrackItem::source_time_at`].
+    pub fn at(&self, t: Tick) -> Tick {
+        match self.item.frame_hold {
+            Some(h) => h,
+            None => self.moving_at(t),
+        }
+    }
+    /// [`TrackItem::moving_source_time_at`].
+    pub fn moving_at(&self, t: Tick) -> Tick {
+        let it = self.item;
+        let rel = t - it.start;
+        if let (Some(m), Some(out)) = (&self.map, self.out) {
+            return if it.reverse { m.advance(out, -rel) - Tick(1) } else { m.advance(it.source_in, rel) };
+        }
+        let scaled = Tick((rel.0 as f64 * it.speed.abs()).round() as i64);
+        if it.reverse { it.source_in + Tick((it.duration.0 as f64 * it.speed.abs()).round() as i64) - scaled - Tick(1) } else { it.source_in + scaled }
+    }
+    /// Whether the clock follows a Time Remapping curve.
+    pub fn is_remapped(&self) -> bool {
+        self.map.is_some()
     }
 }
 
