@@ -11,11 +11,13 @@ build = "build.rs"
 workspace = true
 
 [features]
-default = []
+default = ["comfyui"]
 # Speech-to-text (Text panel ▸ Transcribe) with Whisper on the CPU, and model downloads.
 whisper = ["filmcraft-engine/whisper", "filmcraft-engine/speech-download"]
 # Natural Text to Speech voices (Kokoro-82M on the CPU, downloaded on first use).
 neural-voices = ["filmcraft-engine/neural-voices"]
+# ComfyUI clips (Window ▸ ComfyUI…) talking to a ComfyUI server over HTTP(S).
+comfyui = ["filmcraft-engine/comfyui"]
 
 [dependencies]
 filmcraft-engine = { workspace = true }

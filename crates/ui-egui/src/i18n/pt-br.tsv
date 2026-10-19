@@ -3551,6 +3551,10 @@
 	Dark Theme	Tema escuro
 	Light Theme	Tema claro
 	Next Appearance Mode	Próximo modo de aparência
+
+# ComfyUI clips (Window ▸ ComfyUI…)
+	ComfyUI…	ComfyUI…
+	Generate ComfyUI Clip	Gerar clipe do ComfyUI
 	Sync with system	Sincronizar com o sistema
 	UI Scale	Escala da interface
 	Auto (system)	Automática (sistema)
