@@ -84,3 +84,12 @@ buttons use `craft-ui::layout::fit_toolbar`; commands beyond the available width
 through More, including their selected state and Source/Program routing. A scrolling fallback
 retains all commands if even More cannot fit. `monitor_geometry` checks the painted readouts,
 control bounds, overflow actions and Source drag payloads across monitor widths and themes.
+
+## Essential Sound duration timecode
+
+Music Duration accepts HH:MM:SS:FF using the active sequence frame rate and drop-frame setting.
+Click to type (compact right-aligned digits also work) or drag to change by frames. Enter applies
+once; clicking Apply commits the typed field before applying. Editing does not move the playhead.
+Invalid or over-one-hour input never applies. Suggested durations use the same display format.
+Matching defaults on; Advanced retains its checkbox plus Segments and Variations. These controls
+are not removed. Strict phrase matching and alternative durations require the search change.
