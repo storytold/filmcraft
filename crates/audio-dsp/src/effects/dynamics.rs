@@ -323,10 +323,11 @@ impl Limiter {
         s
     }
 
-    /// The gain ramp before a peak, in samples: `lookahead` ms, at least one sample, never more
+    /// The gain ramp before a peak, in samples: `lookahead` ms plus the peak's own sample (the
+    /// window the fixed 5 ms limiter always had was `look + 1`), at least one sample, never more
     /// than the delay line looks ahead.
     fn ramp(&self) -> usize {
-        ((self.pv.v("lookahead") * 0.001 * self.sr).round() as usize).clamp(1, self.look + 1)
+        ((self.pv.v("lookahead") * 0.001 * self.sr).round() as usize + 1).clamp(1, self.look + 1)
     }
 
     fn apply_params(&mut self, snap: bool) {
@@ -624,5 +625,144 @@ mod tests {
         // 7 ms (the effect's default) sits between the two
         let (_, before7, _) = run(7.0);
         assert!(before7 < before0 && before7 > before30, "{before0} {before7} {before30}");
+    }
+
+    /// The limiter as it was before #905 (main at 6c3948a3): a fixed 5 ms look-ahead, the delay
+    /// line, the sliding minimum and the moving average all that long. Kept here, in full, so the
+    /// new limiter can be checked against it sample for sample.
+    mod before_905 {
+        use super::*;
+
+        pub struct OldLimiter {
+            ceiling: f32,
+            rel: f32,
+            true_peak: bool,
+            look: usize,
+            det_delay: usize,
+            bank: PolyphaseBank,
+            interp: Vec<Interpolator>,
+            delay: Vec<Vec<f32>>,
+            wpos: usize,
+            minq: VecDeque<(u64, f32)>,
+            box_ring: Vec<f32>,
+            box_pos: usize,
+            box_sum: f64,
+            rel_state: f32,
+            t: u64,
+        }
+
+        impl OldLimiter {
+            pub fn new(sample_rate: f32, channels: usize, ceiling_db: f32, release_ms: f32, true_peak: bool) -> Self {
+                let bank = PolyphaseBank::new(true_peak_factor(sample_rate as f64).max(2));
+                let look = ((5.0 * 0.001 * sample_rate).round() as usize).max(1);
+                let det_delay = bank.delay();
+                let dlen = look + det_delay + 1;
+                OldLimiter {
+                    ceiling: db_to_gain(ceiling_db),
+                    rel: coef(release_ms, sample_rate),
+                    true_peak,
+                    look,
+                    det_delay,
+                    bank,
+                    interp: vec![Interpolator::default(); channels],
+                    delay: vec![vec![0.0; dlen]; channels],
+                    wpos: 0,
+                    minq: VecDeque::with_capacity(look + 2),
+                    box_ring: vec![1.0; look + 1],
+                    box_pos: 0,
+                    box_sum: (look + 1) as f64,
+                    rel_state: 1.0,
+                    t: 0,
+                }
+            }
+
+            pub fn latency(&self) -> usize {
+                self.look + self.det_delay
+            }
+
+            pub fn process(&mut self, channels: &mut [&mut [f32]]) {
+                let n = block_len(channels);
+                let nch = channels.len().min(self.delay.len());
+                let dlen = self.delay[0].len();
+                let window = (self.look + 1) as u64;
+                for i in 0..n {
+                    let det_pos = (self.wpos + dlen - self.det_delay) % dlen;
+                    let out_pos = (self.wpos + 1) % dlen;
+                    let mut det = 0.0f32;
+                    for ch in 0..nch {
+                        let x = channels[ch][i];
+                        self.delay[ch][self.wpos] = x;
+                        let aligned = self.delay[ch][det_pos].abs();
+                        let tp = if self.true_peak { self.interp[ch].push_peak(&self.bank, x) } else { 0.0 };
+                        det = det.max(aligned.max(tp));
+                    }
+                    let greq = if det > self.ceiling { self.ceiling / det } else { 1.0 };
+                    while let Some(&(_, v)) = self.minq.back() {
+                        if v >= greq {
+                            self.minq.pop_back();
+                        } else {
+                            break;
+                        }
+                    }
+                    self.minq.push_back((self.t, greq));
+                    while let Some(&(idx, _)) = self.minq.front() {
+                        if idx + window <= self.t {
+                            self.minq.pop_front();
+                        } else {
+                            break;
+                        }
+                    }
+                    let m = self.minq.front().map_or(1.0, |&(_, v)| v);
+                    self.rel_state = if m < self.rel_state { m } else { self.rel_state + (m - self.rel_state) * (1.0 - self.rel) };
+                    self.box_sum += self.rel_state as f64 - self.box_ring[self.box_pos] as f64;
+                    self.box_ring[self.box_pos] = self.rel_state;
+                    self.box_pos = (self.box_pos + 1) % self.box_ring.len();
+                    let g = (self.box_sum / self.box_ring.len() as f64) as f32;
+                    for ch in 0..nch {
+                        let y = self.delay[ch][out_pos] * g;
+                        channels[ch][i] = y.clamp(-self.ceiling, self.ceiling);
+                    }
+                    self.wpos = (self.wpos + 1) % dlen;
+                    self.t += 1;
+                    if self.t.is_multiple_of(65536) {
+                        self.box_sum = self.box_ring.iter().map(|&v| v as f64).sum();
+                    }
+                }
+            }
+        }
+    }
+
+    /// #905: at the default look-ahead (5 ms, the value the old fixed window had, and what the
+    /// export loudness pass uses through `Limiter::new`) the new limiter's output is the old
+    /// limiter's output shifted by the 25 ms the longer delay line adds, sample for sample, over a
+    /// signal with a sine bed, two pulses over the ceiling and a burst: nothing but the delay
+    /// changed for the default, and the delay is compensated through `latency()`.
+    #[test]
+    fn limiter_at_the_default_lookahead_is_the_old_limiter_delayed() {
+        let input: Vec<f32> = (0..96000)
+            .map(|n| {
+                let t = n as f32 / SR;
+                let bed = 0.3 * (2.0 * std::f32::consts::PI * 311.0 * t).sin();
+                let pulse = if (20000..20080).contains(&n) || (50000..50010).contains(&n) { 1.4 } else { 0.0 };
+                let burst = if (70000..74000).contains(&n) { 0.9 * (2.0 * std::f32::consts::PI * 2203.0 * t).sin() } else { 0.0 };
+                bed + pulse + burst
+            })
+            .collect();
+        for (ceiling_db, release_ms, true_peak) in [(-1.0f32, 60.0f32, true), (-6.0, 200.0, false), (-3.0, 10.0, true)] {
+            let mut old = before_905::OldLimiter::new(SR, 1, ceiling_db, release_ms, true_peak);
+            let mut old_out = input.clone();
+            old.process(&mut [&mut old_out]);
+            let mut new = Limiter::new(SR, 1);
+            new.set_param("ceiling", ceiling_db);
+            new.set_param("release", release_ms);
+            new.set_param("true_peak", if true_peak { 1.0 } else { 0.0 });
+            assert!((new.pv.v("lookahead") - 5.0).abs() < 1e-6, "the default look-ahead is the old fixed 5 ms");
+            let mut new_out = input.clone();
+            new.process(&mut [&mut new_out]);
+            let shift = new.latency() - old.latency();
+            assert_eq!(shift, (25.0 * 0.001 * SR).round() as usize, "the delay line grew by 25 ms");
+            let worst = (0..input.len() - shift).map(|n| (new_out[n + shift] - old_out[n]).abs()).fold(0.0f32, f32::max);
+            assert!(worst < 1e-6, "ceiling {ceiling_db} dB release {release_ms} ms true peak {true_peak}: worst difference {worst}");
+        }
     }
 }
