@@ -407,6 +407,8 @@ pub fn icon_toggle(ui: &mut Ui, rect: Rect, icon: Icon, on: bool, t: &Tokens, id
 struct CheckboxSweep {
     state: bool,
     origin: egui::Id,
+    /// When the press began, so a sweep left over from an earlier press is never picked up.
+    press: Option<f64>,
     /// The pointer has left the checkbox it began on, so the press is a drag, not a click.
     left: bool,
 }
@@ -431,17 +433,18 @@ impl DragCheckbox for Ui {
             return resp;
         }
         let key = egui::Id::unique("checkbox-sweep");
-        let (down, pressed, released) = self.input(|i| (i.pointer.primary_down(), i.pointer.primary_pressed(), i.pointer.primary_released()));
+        let (down, pressed, released, press) =
+            self.input(|i| (i.pointer.primary_down(), i.pointer.primary_pressed(), i.pointer.primary_released(), i.pointer.press_start_time()));
         // over this checkbox and not under a menu, popup or window drawn above it
         let inside = resp.contains_pointer();
         let mut sweep = self.ctx().data(|d| d.get_temp::<CheckboxSweep>(key));
-        if !down && !released {
+        if (!down && !released) || sweep.is_some_and(|sw| sw.press != press) {
             self.ctx().data_mut(|d| d.remove::<CheckboxSweep>(key));
             sweep = None;
         }
         // a press on this checkbox begins one: the state a click would give it
         if pressed && inside && sweep.is_none() {
-            sweep = Some(CheckboxSweep { state: !was, origin: resp.id, left: false });
+            sweep = Some(CheckboxSweep { state: !was, origin: resp.id, press, left: false });
         }
         if let Some(mut sw) = sweep {
             let set = if resp.id == sw.origin {
@@ -784,6 +787,33 @@ mod tests {
         checkboxes_under_popup(&ctx, &mut state, vec![primary(rects[3].center(), false)], covered);
         checkboxes_under_popup(&ctx, &mut state, vec![], covered);
         assert_eq!(state, [false; 4], "the press went to the popup, not to the checkbox under it");
+    }
+
+    /// A sweep whose checkboxes went away before the release (the dialog closed) is not picked up
+    /// by the next press.
+    #[test]
+    fn a_sweep_left_by_a_closed_dialog_does_not_carry_into_the_next_press() {
+        let ctx = egui::Context::default();
+        let mut state = [false; 4];
+        four_checkboxes(&ctx, &mut state, vec![]);
+        let rects = four_checkboxes(&ctx, &mut state, vec![]);
+        let at = |i: usize| rects[i].center();
+        four_checkboxes(&ctx, &mut state, vec![egui::Event::PointerMoved(at(0))]);
+        four_checkboxes(&ctx, &mut state, vec![primary(at(0), true)]);
+        four_checkboxes(&ctx, &mut state, vec![egui::Event::PointerMoved(at(1))]);
+        assert_eq!(state, [true, true, false, false]);
+        // the dialog closes with the button still down, then the button comes up with no checkbox drawn
+        let blank = |events| ctx.run_ui(egui::RawInput { events, ..Default::default() }, |_| {}).textures_delta.clear();
+        blank(vec![]);
+        blank(vec![primary(at(1), false)]);
+        blank(vec![]);
+        // reopened, and the first frame that draws the checkboxes again carries the next press
+        state[2] = true;
+        four_checkboxes(&ctx, &mut state, vec![egui::Event::PointerMoved(at(2)), primary(at(2), true)]);
+        four_checkboxes(&ctx, &mut state, vec![egui::Event::PointerMoved(at(3))]);
+        four_checkboxes(&ctx, &mut state, vec![primary(at(3), false)]);
+        four_checkboxes(&ctx, &mut state, vec![]);
+        assert_eq!(state, [true, true, true, false], "the old sweep's state did not reach option 3");
     }
 
     #[test]
