@@ -1266,6 +1266,7 @@
 	59.94 fps Non Drop-Frame	59,94 fps non-drop frame
 	ASC CDL	ASC CDL
 	Accessible color contrast	Contraste des couleurs accessible
+	Animate zoom, scrolling and menus	Animer le zoom, le défilement et les menus
 	Action-Safe Margin	Marge de sécurité de l'action
 	Active Monitor	Moniteur actif
 	Add	Ajouter
@@ -3593,3 +3594,9 @@
 	Export the labels to a preset file…	Exporter les étiquettes dans un fichier de paramètre prédéfini…
 	Show the presets folder	Afficher le dossier des paramètres prédéfinis
 	Delete this preset	Supprimer ce paramètre prédéfini
+# View ▸ Reset Interface Zoom (#2253).
+	Reset Interface Zoom	Réinitialiser le zoom de l'interface
+	Track Color	Couleur de la piste
+	Open a sequence to search its graphics	Ouvrez une séquence pour rechercher dans ses graphiques
+	No text graphics in this sequence. Add text with the Type tool.	Aucun graphique avec du texte dans cette séquence. Ajoutez du texte avec l'outil Texte.
+	No matching text.	Aucun texte ne correspond.

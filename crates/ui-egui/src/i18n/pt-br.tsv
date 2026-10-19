@@ -1268,6 +1268,7 @@
 	59.94 fps Non Drop-Frame	59,94 fps sem drop-frame
 	ASC CDL	ASC CDL
 	Accessible color contrast	Contraste de cores acessível
+	Animate zoom, scrolling and menus	Animar zoom, rolagem e menus
 	Action-Safe Margin	Margem de segurança de ação
 	Active Monitor	Monitor ativo
 	Add	Adicionar
@@ -3595,3 +3596,9 @@
 
 # The native macOS application menu (Settings…).
 	Settings	Preferências
+# View ▸ Reset Interface Zoom (#2253).
+	Reset Interface Zoom	Redefinir zoom da interface
+	Track Color	Cor da trilha
+	Open a sequence to search its graphics	Abra uma sequência para pesquisar nos gráficos dela
+	No text graphics in this sequence. Add text with the Type tool.	Esta sequência não tem gráficos com texto. Adicione texto com a ferramenta Texto.
+	No matching text.	Nenhum texto corresponde.

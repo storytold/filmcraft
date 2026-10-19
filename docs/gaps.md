@@ -27,7 +27,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | G11 | No plugin hosting | ecosystem | no | 200–400 h |
 | G12 | AI features | AI | no | 150–300 h |
 | G13 | Delivery formats | file format | no | 60–110 h |
-| G14 | Localization: 8 of the 12 key languages missing | localization | no | 150–230 h |
+| G14 | Localization: 3 of the 12 key languages missing | localization | no | 150–230 h |
 | G15 | Interchange never validated in Avid / Pro Tools; slow XML import | file format | partly | 20–40 h |
 | G16 | Performance reports on 0.5.0 | performance | partly | 30–60 h |
 | G17 | Audio device and playback reliability | stability | partly | 20–40 h |
@@ -232,22 +232,26 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   (audio-only `.m4a`, or ADTS `.aac`; #814); ProRes 4444 / 4444 XQ in the export UI (#342).
 - **Estimate:** 60–110 h. Doc: [file-format-parity.md](file-format-parity.md).
 
-## G14. Localization: 8 of the 12 key languages missing
+## G14. Localization: 3 of the 12 key languages missing (Hindi, Arabic, Vietnamese)
 
 - **Have:** Spanish, Japanese, Simplified Chinese, French (#498) and Portuguese (Brazil) (#859)
   catalogs cover ~99.6–100% of the ~3,500 cataloged strings; Ukrainian ~10% (menus).
 - **Missing:** Hindi, Arabic (no RTL interface layout or catalog; the interface has Arabic and Hebrew
   fallback fonts and shows captions in reading order, but other names and fields keep egui's
   left-to-right run order; Arabic titles reported broken, #395),
-  German beyond menus (#490), Korean (#508; needs Hangul fonts in craft-fonts),
+  Korean (#508; needs Hangul fonts in craft-fonts),
   Vietnamese; Premiere also ships Russian. Engine errors,
-  CLI and MCP stay English. No language has a recorded native-speaker review.
+  CLI and MCP stay English. Apart from the German menus (#630), no language has a recorded
+  native-speaker review.
 - **Done:** Indonesian (#867): `id.tsv` has every entry of the Spanish catalog (~100%), in Edit ▸
   Language, Settings ▸ General and the native macOS menu; System Language picks it for `id-*` (and
   legacy `in-*`) locales. Native-speaker review welcome.
 - **Done:** Italian: `it.tsv` has every entry of the Spanish catalog (~100%), in Edit ▸ Language,
   Settings ▸ General and the native macOS menu; System Language picks it for `it-*` locales.
   Native-speaker review welcome.
+- **Done:** German: `de.tsv` has every entry of the Spanish catalog (~100%), beyond the menus of
+  #630 (panels, dialogs, effects and their parameters, settings, status messages). The menus are
+  native-reviewed; review of the rest welcome.
 - **Estimate:** 150–230 h. Doc: [localization-parity.md](localization-parity.md).
 
 ## G15. Interchange never validated in Avid / Pro Tools; slow XML import

@@ -17,6 +17,7 @@ pub mod clip_ops;
 pub mod color;
 pub mod commands;
 pub mod demo;
+pub mod doc_path;
 pub mod essential_sound;
 pub mod export_tools;
 pub mod graphic_templates;
@@ -1237,6 +1238,8 @@ mod gap_selection_tests;
 #[cfg(test)]
 mod image_sequence_tests;
 #[cfg(test)]
+mod individual_selection_tests;
+#[cfg(test)]
 mod interchange_auto_points_tests;
 #[cfg(test)]
 mod keyboard_tests;
@@ -1308,6 +1311,8 @@ mod settings_tests;
 mod shortcuts_tests;
 #[cfg(test)]
 mod split_edit_ripple_trim_tests;
+#[cfg(test)]
+mod stored_paths_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

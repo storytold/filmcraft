@@ -70,8 +70,10 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     if let Err(e) = filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session)) {
         return Some(Err(e));
     }
-    let items: Vec<u64> = app.session.state.project_selection.iter().map(|i| i.0).collect();
-    let first = app.session.state.project_selection.first().and_then(|i| app.session.project.item(*i)).map(|i| i.name.clone()).unwrap_or_default();
+    // the Project panel's selection, or the media of the clips selected in the Timeline (#1362)
+    let selected = filmcraft_engine::multicam::selected_items(&app.session);
+    let items: Vec<u64> = selected.iter().map(|i| i.0).collect();
+    let first = selected.first().and_then(|i| app.session.project.item(*i)).map(|i| i.name.clone()).unwrap_or_default();
     let name = match kind {
         "merge" => tlf!("{first} - Merged", first),
         "multicam" => tlf!("{first} Multicam", first),

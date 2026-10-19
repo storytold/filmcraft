@@ -76,6 +76,7 @@
 	About FilmCraft	FilmCraft 정보
 	Accent Color	강조 색상
 	Accessible color contrast	접근성 색상 대비
+	Animate zoom, scrolling and menus	확대/축소, 스크롤 및 메뉴 애니메이션
 	Action and Title Safe Areas	액션 및 제목 안전 영역
 	Action Safe Area	액션 안전 영역
 	Action-Safe Margin	액션 세이프 여백
@@ -3612,3 +3613,9 @@
 	Fast (bilinear)	빠름 (이중선형)
 	Output color space: scene-linear Rec. 709	출력 색 공간: 장면 선형 Rec. 709
 	Reset to As Shot	촬영 시 설정으로 재설정
+# View ▸ Reset Interface Zoom (#2253).
+	Reset Interface Zoom	인터페이스 확대/축소 재설정
+	Track Color	트랙 색상
+	Open a sequence to search its graphics	그래픽을 검색하려면 시퀀스를 여세요
+	No text graphics in this sequence. Add text with the Type tool.	이 시퀀스에는 텍스트 그래픽이 없습니다. 문자 도구로 텍스트를 추가하세요.
+	No matching text.	일치하는 텍스트가 없습니다.

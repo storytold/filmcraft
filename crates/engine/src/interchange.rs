@@ -74,13 +74,23 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
             _ => None,
         })
         .collect();
+    // The document's media paths are opened as stored paths of the document.
+    s.media.add_stored_paths(new_media.iter().map(|(_, p)| p.clone()), Some(path));
     let mut linked = 0;
     let mut offline = Vec::new();
     for (id, mpath) in new_media {
-        match s.media.open_file(&mpath, &*s.services).ok() {
+        let file = match s.media.follow(&mpath) {
+            Ok(file) => file,
+            Err(why) => {
+                log::warn!("{mpath} is not opened: {why}");
+                offline.push(mpath);
+                continue;
+            }
+        };
+        match s.media.open_file(&file, &*s.services).ok() {
             Some(src) => {
                 let info = src.info().clone();
-                let identity = crate::relink::identity_of(&*s.services, &mpath).ok();
+                let identity = crate::relink::identity_of(&*s.services, &file).ok();
                 let rebase = (format == Format::Edl).then_some(info.start_timecode).flatten();
                 s.edit("Link Media", |proj, _| {
                     if let Some(item) = proj.items.get_mut(&id)

@@ -23,6 +23,38 @@ fn hostile_export_ranges_are_rejected_without_panicking() {
     }
 }
 
+/// #1544: an export started without `wait` says where it can be followed: `jobs.list` (not
+/// `export.queue.list`, which lists the Export Queue only) and `jobs.cancel` to stop it.
+#[test]
+fn export_without_wait_says_where_to_poll() {
+    let mut s = demo();
+    let dir = Scratch::new("poll");
+    let r = s
+        .execute("file.exportMedia", json!({"path": dir.path("Demo.wav"), "format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 0.25}))
+        .unwrap();
+    assert_eq!((r["poll"].as_str(), r["cancel"].as_str()), (Some("jobs.list"), Some("jobs.cancel")), "{r}");
+    let job = r["job"].as_u64().unwrap();
+    // the job is there to poll, and the Export Queue is not where it is
+    let listed = |s: &mut Session| s.execute("jobs.list", json!({})).unwrap().as_array().unwrap().iter().find(|j| j["id"] == job).cloned();
+    assert!(listed(&mut s).is_some(), "the job is in jobs.list");
+    assert_eq!(s.execute("export.queue.list", json!({})).unwrap()["items"], json!([]));
+    for _ in 0..1200 {
+        if listed(&mut s).is_some_and(|j| j["finished"] == true) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert_eq!(listed(&mut s).map(|j| j["finished"].clone()), Some(json!(true)), "the export finished");
+    // a waited export answers its result instead
+    let r = s
+        .execute(
+            "file.exportMedia",
+            json!({"path": dir.path("Demo2.wav"), "format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 0.25, "wait": true}),
+        )
+        .unwrap();
+    assert!(r.get("poll").is_none() && r["result"].is_object(), "{r}");
+}
+
 /// A scratch directory under the workspace `target/`, removed when dropped.
 struct Scratch(PathBuf);
 

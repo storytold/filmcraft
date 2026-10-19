@@ -190,3 +190,32 @@ fn a_newer_revision_keeps_the_frame_being_rendered() {
     d.ready(key(9002));
     d.ready(key(9001));
 }
+
+/// #1682: thumbnail textures (timeline tiles, hover scrubs) are capped instead of one being kept
+/// for every frame ever shown.
+#[test]
+fn thumbnail_textures_are_capped() {
+    let mut d = Driver::demo();
+    let ctx = d.harness.ctx.clone();
+    let item = {
+        let p = &d.harness.state().session.project;
+        p.items.values().find(|i| i.as_media().is_some_and(|m| m.info.video.is_some())).expect("a video item").id
+    };
+    let rate = d.harness.state().session.project.item(item).unwrap().frame_rate();
+    // 800 distinct frames, 100 per UI pass: request, wait until rendered, then make the textures
+    for chunk in 0..8 {
+        let frames: Vec<i64> = (chunk * 100..chunk * 100 + 100).collect();
+        for &f in &frames {
+            d.harness.state_mut().thumbnail(&ctx, item, rate.tick_of(f), 32);
+        }
+        for _ in 0..2000 {
+            if frames.iter().all(|&f| d.harness.state_mut().thumbnail(&ctx, item, rate.tick_of(f), 32).is_some()) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        d.frames(1);
+    }
+    let n = d.harness.state().thumbnail_textures();
+    assert!((100..=512).contains(&n), "{n} thumbnail textures");
+}
