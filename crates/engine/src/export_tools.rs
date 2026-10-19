@@ -689,7 +689,7 @@ pub fn pump_queue(s: &mut Session, wait: bool) {
             if finished_any || !wait {
                 let failed = s.export_queue.items.iter().filter(|i| i.status == QueueStatus::Failed).count();
                 let message = if failed > 0 { format!("Export queue finished ({failed} failed)") } else { "Export queue finished".into() };
-                s.events.push(Event::Toast { message, error: failed > 0 });
+                s.events.push(Event::Toast { message, error: failed > 0, reveal: None });
             }
             return;
         };

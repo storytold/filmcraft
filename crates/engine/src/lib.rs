@@ -370,6 +370,9 @@ pub enum Event {
     Toast {
         message: String,
         error: bool,
+        /// A file the message is about (an exported frame): the toast offers to show it in the file manager.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reveal: Option<String>,
     },
     OpenSequence(ItemId),
     OpenSource(ItemId),
@@ -637,7 +640,7 @@ impl Session {
                 }
                 autosave::WorkerEvent::Error(m) => {
                     self.log.push(panels::Level::Error, "autosave", m.clone());
-                    self.events.push(Event::Toast { message: m, error: true });
+                    self.events.push(Event::Toast { message: m, error: true, reveal: None });
                 }
                 _ => {}
             }
@@ -1058,14 +1061,22 @@ impl Session {
     pub fn toast(&mut self, msg: impl Into<String>) {
         let message = msg.into();
         self.log.push(panels::Level::Info, "app", message.clone());
-        self.events.push(Event::Toast { message, error: false });
+        self.events.push(Event::Toast { message, error: false, reveal: None });
+    }
+
+    /// A message about a file the user just made (an exported frame): the toast offers to show it in
+    /// the file manager.
+    pub fn toast_file(&mut self, msg: impl Into<String>, path: impl Into<String>) {
+        let message = msg.into();
+        self.log.push(panels::Level::Info, "app", message.clone());
+        self.events.push(Event::Toast { message, error: false, reveal: Some(path.into()) });
     }
 
     /// An error message for the user (a toast, and an Events panel entry from `source`).
     pub fn error_toast(&mut self, source: &str, msg: impl Into<String>) {
         let message = msg.into();
         self.log.push(panels::Level::Error, source, message.clone());
-        self.events.push(Event::Toast { message, error: true });
+        self.events.push(Event::Toast { message, error: true, reveal: None });
     }
 
     pub fn drain_events(&mut self) -> Vec<Event> {

@@ -58,6 +58,7 @@ pub mod source_playback;
 pub mod state;
 pub mod theme;
 mod theme_favorites;
+pub mod toasts;
 pub mod widgets;
 
 use std::collections::HashMap;
@@ -363,7 +364,8 @@ pub struct FilmcraftApp {
     menu_sent: Vec<menus::MenuItem>,
     /// Keyboard Shortcuts dialog state.
     pub shortcut_editor: panels::shortcuts_dialog::EditorState,
-    pub toast: Option<(String, f64)>,
+    /// Notices in the lower right corner ([`toasts`]).
+    pub toasts: toasts::Toasts,
     pub tl: panels::timeline::TlState,
     pub(crate) transcript_cache: panels::transcript_cache::TranscriptCache,
     /// Commands from outside the UI (native menu bar), invoked on the UI thread.
@@ -590,7 +592,7 @@ impl FilmcraftApp {
             bindings_rev: 0,
             menu_sent: Vec::new(),
             shortcut_editor: Default::default(),
-            toast: None,
+            toasts: toasts::Toasts::default(),
             graphics_notice: None,
             tl: Default::default(),
             transcript_cache: Default::default(),
@@ -1688,10 +1690,10 @@ impl FilmcraftApp {
             match r {
                 Ok(r) => {
                     if let Some(n) = r["refreshed"].as_array().map(Vec::len).filter(|n| *n > 0) {
-                        self.toast = Some((format!("Refreshed {n} media item(s) changed on disk"), ctx.input(|i| i.time)));
+                        self.toasts.push(format!("Refreshed {n} media item(s) changed on disk"), false, None, ctx.input(|i| i.time));
                     }
                 }
-                Err(e) => self.toast = Some((e.to_string(), ctx.input(|i| i.time))),
+                Err(e) => self.toasts.push(e.to_string(), true, None, ctx.input(|i| i.time)),
             }
         }
         let media = &self.session.prefs.media;
@@ -1746,7 +1748,7 @@ impl FilmcraftApp {
                     let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Source });
                 }
                 filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
-                filmcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, ctx.input(|i| i.time))),
+                filmcraft_engine::Event::Toast { message, error, reveal } => self.toasts.push(message, error, reveal, ctx.input(|i| i.time)),
                 filmcraft_engine::Event::ProjectChanged { .. } => {}
             }
         }
@@ -1792,6 +1794,7 @@ impl FilmcraftApp {
         // the Timeline has had its chance to place a file drop this frame; anything left stays a bin import
         self.pending_timeline_drop = None;
         panels::dialogs::show(self, &ctx);
+        toasts::show(self, &ctx, status_h);
         if !self.ui.show_status_bar {
             // no bar to draw the job in, but a finished preview render still plays
             self.watch_jobs(ui.ctx());
