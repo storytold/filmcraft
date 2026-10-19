@@ -32,6 +32,7 @@ class RealRotaryAttention(RoPEAttentionv2):
     """Equivalent real-valued rotation; ONNX does not represent complex tensors."""
 
     def __init__(self, original, spatial=False):
+        """Reuse trained projections and register real-valued rotary frequency buffers."""
         nn.Module.__init__(self)
         self.q_proj, self.k_proj = original.q_proj, original.k_proj
         self.v_proj, self.out_proj = original.v_proj, original.out_proj
@@ -45,13 +46,17 @@ class RealRotaryAttention(RoPEAttentionv2):
 
     @staticmethod
     def rotate(value, cosine, sine):
+        """Apply real sine/cosine rotation to interleaved feature pairs."""
         even, odd = value[..., 0::2], value[..., 1::2]
         return torch.stack(
             [even * cosine - odd * sine, even * sine + odd * cosine], dim=-1
         ).flatten(-2)
 
     def forward(self, q, k, v, num_k_exclude_rope=0, rope_k_repeat=-1):
+        """Evaluate attention with exportable real rotations and dynamic temporal-memory length."""
+
         def heads(projection, value):
+            """Project and split token embeddings into attention heads."""
             value = projection(value)
             return value.reshape(
                 value.shape[0], -1, self.heads, value.shape[-1] // self.heads
@@ -84,21 +89,25 @@ class RealRotaryAttention(RoPEAttentionv2):
 
 class ImageEncoder(nn.Module):
     def __init__(self, model):
+        """Wrap the pinned image encoder without changing its weights."""
         super().__init__()
         self.model = model
 
     def forward(self, image):
+        """Expose the three backbone feature pyramid tensors."""
         return tuple(self.model.forward_image(image)["backbone_fpn"])
 
 
 class Decoder(nn.Module):
     def __init__(self, model, position, tracking=False, multiple=False):
+        """Bind prompt/tracking mode and register the fixed query positional grid."""
         super().__init__()
         self.model = model
         self.tracking, self.multiple = tracking, multiple
         self.register_buffer("position", position)
 
     def forward(self, high0, high1, image, a, b, pointers=None):
+        """Decode point prompts or temporal memory into mask logits, object score and pointer."""
         if self.tracking:
             memories, positions = a, b
             n = memories.shape[0]
@@ -149,10 +158,12 @@ class Decoder(nn.Module):
 
 class MemoryEncoder(nn.Module):
     def __init__(self, model):
+        """Wrap the checkpoint memory encoder for export."""
         super().__init__()
         self.model = model
 
     def forward(self, image, mask):
+        """Encode mask memory, spatial positions and temporal offsets for native tracking."""
         mask = F.interpolate(
             mask, size=(1024, 1024), mode="bilinear", align_corners=False
         )
@@ -168,10 +179,12 @@ class MemoryEncoder(nn.Module):
 
 class Matte(nn.Module):
     def __init__(self, model):
+        """Wrap ViTMatte while exposing absolute positions as an explicit graph input."""
         super().__init__()
         self.model = model
 
     def forward(self, pixels, position):
+        """Infer alpha using supplied absolute positions and return the checkpoint base embedding."""
         embedding = self.model.backbone.embeddings
         original = embedding.get_absolute_positions
         embedding.get_absolute_positions = lambda _base, _cls, _h, _w: position
@@ -183,6 +196,7 @@ class Matte(nn.Module):
 
 
 def dynamic_relative_position(q_size, k_size, relative_position):
+    """Resize relative-position embeddings while keeping self-attention dimensions dynamic."""
     # All ViTMatte backbone attention is self-attention: q_size == k_size.
     # Always resizing preserves a dynamic shape even at the checkpoint's native size.
     position = (
@@ -202,6 +216,7 @@ def dynamic_relative_position(q_size, k_size, relative_position):
 
 
 def export_point_embedding(self, points, labels, pad):
+    """Export SAM point embeddings with dynamic point count and the original padding semantics."""
     points = points + 0.5
     if pad:
         points = torch.cat([points, torch.zeros(points.shape[0], 1, 2)], dim=1)
@@ -223,6 +238,7 @@ def export_point_embedding(self, points, labels, pad):
 
 
 def export(destination):
+    """Load verified checkpoints and export all six native graphs with pinned configuration."""
     destination.mkdir(parents=True, exist_ok=True)
     # Keep the original CPU model-loading contract without the prototype UI/worker.
     from sam2.build_sam import build_sam2_video_predictor
@@ -414,6 +430,7 @@ def export(destination):
 
 
 def verify_export(destination):
+    """Reject manifest or graph bytes that differ from the independently pinned native package."""
     expected = json.loads(Path(__file__).with_name("native-models.json").read_text())
     path = destination / "manifest.json"
     if path.stat().st_size > 16 * 1024 or json.loads(path.read_text()) != expected:

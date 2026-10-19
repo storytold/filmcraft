@@ -280,6 +280,50 @@ fn clear_and_remove_points_undo_redo_without_dirtying_the_project() {
 }
 
 #[test]
+fn transient_history_preserves_out_of_history_project_renames() {
+    let (mut s, _) = setup();
+    s.ai_mask_backend = None;
+    let mark = s.undo_mark();
+    s.execute("masks.ai.point", json!({"x":400,"y":300})).unwrap();
+    s.saved_revision = s.revision;
+    let revision = s.revision;
+    // Save As updates the project name this way without creating a history step.
+    Arc::make_mut(&mut s.project).name = "Saved As".into();
+    s.undo().unwrap();
+    assert_eq!(s.project.name, "Saved As");
+    assert!(s.state.ai_mask.as_ref().unwrap().points.is_empty());
+    assert_eq!(s.revision, revision);
+    assert!(!s.is_dirty());
+    Arc::make_mut(&mut s.project).name = "Renamed again".into();
+    s.redo().unwrap();
+    assert_eq!(s.project.name, "Renamed again");
+    assert_eq!(s.state.ai_mask.as_ref().unwrap().points.len(), 1);
+    assert_eq!(s.revert_to(mark), 1);
+    assert_eq!(s.project.name, "Renamed again");
+    assert!(s.state.ai_mask.as_ref().unwrap().points.is_empty());
+    assert_eq!(s.revision, revision);
+    assert!(!s.is_dirty());
+}
+
+#[test]
+fn reverting_mixed_history_uses_the_oldest_document_snapshot() {
+    let (mut s, _) = setup();
+    s.ai_mask_backend = None;
+    let mark = s.undo_mark();
+    s.execute("masks.ai.point", json!({"x":400,"y":300})).unwrap();
+    Arc::make_mut(&mut s.project).name = "Saved As".into();
+    s.edit("Document edit", |project, _| {
+        project.name = "Edited".into();
+        Ok(())
+    })
+    .unwrap();
+    s.execute("masks.ai.point", json!({"x":500,"y":300})).unwrap();
+    assert_eq!(s.revert_to(mark), 3);
+    assert_eq!(s.project.name, "Saved As", "the oldest transient step must not replace the document snapshot");
+    assert!(s.state.ai_mask.as_ref().unwrap().points.is_empty());
+}
+
+#[test]
 fn point_edits_share_chronological_history_with_document_edits_and_brush_gestures() {
     let (mut s, _) = setup();
     s.ai_mask_backend = None;

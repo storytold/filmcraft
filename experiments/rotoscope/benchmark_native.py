@@ -15,6 +15,7 @@ import time
 
 
 def main():
+    """Alternate fresh native runs across thread budgets and record timings plus cached-output identity."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--oracle", type=Path, required=True)
     parser.add_argument("--models", type=Path, required=True)

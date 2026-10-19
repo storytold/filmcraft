@@ -74,9 +74,11 @@ pub struct Input {
 }
 
 pub trait Backend: Send + Sync {
+    /// Infer a complete raster mask or return an error; progress carries cooperative cancellation.
     fn infer(&self, input: &Input, progress: &filmcraft_export::Progress) -> std::result::Result<RasterMask, String>;
 }
 
+/// Construct the native backend only when the experimental inference feature is enabled.
 pub fn default_backend() -> Option<Arc<dyn Backend>> {
     #[cfg(all(feature = "experimental-ai-rotoscope", not(target_arch = "wasm32")))]
     {
@@ -112,6 +114,7 @@ pub struct Preview {
     mask: Arc<RasterMask>,
 }
 
+/// Return an eligible display-only project and cache key for the active clip and source frame.
 pub fn monitor_preview(s: &Session, seq: ItemId, time: Tick) -> Option<(Arc<filmcraft_project::Project>, u64)> {
     let preview = s.ai_mask_preview.as_ref()?;
     if preview.seq != seq || preview.base_revision != s.revision || !s.state.selection.contains(&preview.clip) {
@@ -137,17 +140,20 @@ pub fn monitor_preview(s: &Session, seq: ItemId, time: Tick) -> Option<(Arc<film
     Some((project.clone(), s.revision ^ 0xa17a_0000_0000_0000 ^ preview.job.rotate_left(17) ^ variant))
 }
 
+/// Check for an uncancelled full-generation job for this clip.
 fn has_full_job(s: &Session, clip: ClipId) -> bool {
     s.ai_mask_jobs
         .iter()
         .any(|j| j.clip == clip && !j.preview && s.jobs.iter().find(|job| job.id == j.job).is_some_and(|job| !job.progress.cancel.load(Ordering::Relaxed)))
 }
 
+/// Cancel preview work and remove the currently displayed transient result.
 fn cancel_previews(s: &mut Session) {
     cancel_preview_jobs(s);
     s.ai_mask_preview = None;
 }
 
+/// Signal cancellation for preview jobs without touching full-generation jobs.
 fn cancel_preview_jobs(s: &mut Session) {
     for pending in s.ai_mask_jobs.iter().filter(|j| j.preview) {
         if let Some(job) = s.jobs.iter().find(|j| j.id == pending.job) {
@@ -172,6 +178,7 @@ pub(crate) fn history_restored(s: &mut Session) {
     }
 }
 
+/// Require usable prompts or cached Quality alpha for the current source frame.
 fn can_preview_current(s: &Session) -> bool {
     let Some(draft) = s.state.ai_mask.as_ref() else { return false };
     let ph = s.playhead();
@@ -193,15 +200,18 @@ fn can_preview_current(s: &Session) -> bool {
     })
 }
 
+/// Find the latest pending AI job associated with a clip.
 pub fn active_job(s: &Session, clip: ClipId) -> Option<&crate::Job> {
     let pending = s.ai_mask_jobs.iter().rev().find(|j| j.clip == clip)?;
     s.jobs.iter().find(|j| j.id == pending.job)
 }
 
+/// Recover poisoned job locks so worker failures can be reported rather than cascade.
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Register the AI selection, settings, point, preview and generation command contracts.
 pub(crate) fn commands() -> Vec<CommandSpec> {
     [
         (
@@ -230,6 +240,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
     .collect()
 }
 
+/// Resolve an explicit or selected clip and reject non-video or missing items.
 fn selected_clip(s: &Session, p: &Value) -> Result<ClipId> {
     let clip = clip_p(p, "clip").or_else(|| s.state.selection.first().copied()).ok_or_else(|| bad("masks.ai.select", "select a video clip"))?;
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
@@ -240,6 +251,7 @@ fn selected_clip(s: &Session, p: &Value) -> Result<ClipId> {
     Ok(clip)
 }
 
+/// Parse a tool name, rejecting unknown values instead of silently changing the selection.
 fn pick(value: &str) -> Result<Pick> {
     match value {
         "off" => Ok(Pick::Off),
@@ -250,6 +262,7 @@ fn pick(value: &str) -> Result<Pick> {
     }
 }
 
+/// Activate or clear a clip draft and record transient changes in chronological history.
 fn select(s: &mut Session, p: &Value) -> Result<Value> {
     let clip = selected_clip(s, p)?;
     if has_full_job(s, clip) {
@@ -293,6 +306,7 @@ fn select(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!(draft))
 }
 
+/// Validate requested mode, frame budget, edge band and view before updating the draft.
 fn settings(s: &mut Session, p: &Value) -> Result<Value> {
     let mut draft = s.state.ai_mask.clone().ok_or_else(|| bad("masks.ai.settings", "select an object first"))?;
     if has_full_job(s, draft.clip) {
@@ -332,6 +346,7 @@ fn settings(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!(draft))
 }
 
+/// Validate a source-space point and append it as one edit or part of a brush gesture.
 fn point(s: &mut Session, p: &Value) -> Result<Value> {
     let draft = s.state.ai_mask.as_ref().ok_or_else(|| bad("masks.ai.point", "select an object first"))?;
     let clip = draft.clip;
@@ -385,10 +400,12 @@ fn point(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"points": points, "time": time.0}))
 }
 
+/// Start a single-frame inference job without committing its alpha to the project.
 fn preview(s: &mut Session, p: &Value) -> Result<Value> {
     generate(s, &json!({"preview":true, "wait":bool_p(p, "wait").unwrap_or(false)}))
 }
 
+/// Remove a validated point index and invalidate or regenerate the transient preview.
 fn remove_point(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "masks.ai.removePoint";
     let draft = s.state.ai_mask.as_ref().ok_or_else(|| bad(CMD, "select an object first"))?;
@@ -420,6 +437,7 @@ fn remove_point(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"removed":index,"points":count}))
 }
 
+/// Decode bounded source frames and start cancellable inference from an immutable clip snapshot.
 fn generate(s: &mut Session, p: &Value) -> Result<Value> {
     let mut draft = s.state.ai_mask.clone().ok_or_else(|| bad("masks.ai.generate", "select an object first"))?;
     let request_draft = draft.clone();
@@ -643,6 +661,7 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"job": id, "frames": count, "preview":preview, "sourceStart": rate.tick_of(first).0, "sourceEnd": end.0}))
 }
 
+/// Publish only complete, valid, uncancelled results whose source clip still matches the job.
 pub fn poll(s: &mut Session) {
     let mut i = 0;
     while i < s.ai_mask_jobs.len() {

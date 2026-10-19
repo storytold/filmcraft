@@ -15,6 +15,11 @@ Python 3.12 and `uv`, then run:
 ./experiments/rotoscope/run-editor.sh /absolute/path/to/test-copy.fcproj
 ```
 
+Command access is disabled by default. For explicit local automation, pass
+`--control 9876` to the launcher. This opens the editor's existing unauthenticated
+loopback control endpoint, which accepts project commands from other local processes;
+enable it only when needed for automation.
+
 The first run downloads the Apache-2.0 checkpoints into ignored `target/rotoscope`,
 verifies hashes, exports six ONNX graphs, and builds the feature-enabled editor.
 Later runs verify and reuse that package. The initial export has a known platform
@@ -61,7 +66,7 @@ the new fields. A capability-based writer or explicit loss-aware conversion woul
 need a separate design and tests before changing this policy.
 
 Maintainers also need to approve the optional RTen runtime/dependency arrangement.
-The PR remains a draft pending these decisions. It does not claim production-ready
+These design decisions remain pending review. This prototype does not claim production-ready
 hair/occlusion quality, GPU inference, temporal alpha smoothing or 4K support.
 
 ## Evidence

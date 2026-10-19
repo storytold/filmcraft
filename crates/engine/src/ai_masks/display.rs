@@ -14,6 +14,7 @@ pub(super) struct Views {
     pub composite: Project,
 }
 
+/// Build display-only edge-region, alpha and composite projects from validated inferred alpha.
 pub(super) fn refine_views(project: &Project, seq: ItemId, clip: ClipId, mask: &Arc<RasterMask>, draft: &Draft) -> Result<Views, String> {
     mask.validate()?;
     let width = mask.width as usize;
@@ -79,6 +80,7 @@ pub(super) fn refine_views(project: &Project, seq: ItemId, clip: ClipId, mask: &
     Ok(Views { region, alpha, composite })
 }
 
+/// Append a tint effect, optionally limited by raster alpha, to a preview project copy.
 fn tint(project: &mut Project, seq: ItemId, clip: ClipId, raster: Option<Arc<RasterMask>>, color: [f32; 4], name: &str) -> Result<(), String> {
     let (_, item) = project.sequence_mut(seq).and_then(|sequence| sequence.find_item_mut(clip)).ok_or("Preview clip is gone")?;
     let mut tint = filmcraft_project::find_effect("tint").ok_or("Tint effect unavailable")?.instance();
@@ -99,6 +101,7 @@ fn tint(project: &mut Project, seq: ItemId, clip: ClipId, raster: Option<Arc<Ras
     Ok(())
 }
 
+/// Encode display alpha as consecutive equal-value runs.
 fn runs(alpha: &[u16]) -> Vec<(u32, u16)> {
     let mut runs = Vec::new();
     let mut start = 0;

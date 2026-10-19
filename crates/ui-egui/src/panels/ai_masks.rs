@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 use crate::{FilmcraftApp, theme::Tokens};
 
+/// Allocate one clipped, compact row within the existing Opacity mask controls.
 fn row(ui: &mut egui::Ui, body: Rect) -> egui::Ui {
     let (r, _) = ui.allocate_exact_size(vec2(body.width(), 23.0), Sense::hover());
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r.shrink2(vec2(4.0, 2.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
@@ -17,6 +18,7 @@ fn row(ui: &mut egui::Ui, body: Rect) -> egui::Ui {
     child
 }
 
+/// Queue AI-mask commands from the selected clip controls and expose stable automation IDs.
 pub fn effect_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui, body: Rect, clip: ClipId, actions: &mut Vec<(String, Value)>) {
     let draft = app.session.state.ai_mask.clone().filter(|d| d.clip == clip);
     let mut line = row(ui, body);
@@ -241,14 +243,22 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             }
         } else {
             let p = to_clip.apply(Vec2::new(x as f64, y as f64));
-            let mut params = json!({"x":p.x,"y":p.y});
-            if painting {
-                params["preview"] = json!(false);
+            let near_last = painting
+                && draft.points.last().is_some_and(|point| {
+                    point.kind == Pick::Refine && rate.frame_at(point.time) == frame_time && (point.x - p.x).hypot(point.y - p.y) < radius * 0.5
+                });
+            if near_last {
+                None
+            } else {
+                let mut params = json!({"x":p.x,"y":p.y});
+                if painting {
+                    params["preview"] = json!(false);
+                }
+                if let Some(stroke) = gesture {
+                    params["stroke"] = json!(stroke);
+                }
+                Some(("masks.ai.point", params))
             }
-            if let Some(stroke) = gesture {
-                params["stroke"] = json!(stroke);
-            }
-            Some(("masks.ai.point", params))
         };
         if let Some((command, params)) = action
             && let Err(error) = app.session.execute(command, params)

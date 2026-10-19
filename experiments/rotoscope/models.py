@@ -18,11 +18,13 @@ VENDOR = DATA / "vendor" / "EdgeTAM"
 
 
 def digest(path):
+    """Hash a cached file incrementally with SHA-256."""
     with Path(path).open("rb") as file:
         return hashlib.file_digest(file, "sha256").hexdigest()
 
 
 def verify(path, expected):
+    """Require an existing cached file to match the pinned checksum."""
     path = Path(path)
     if not path.is_file():
         raise ValueError(
@@ -36,6 +38,7 @@ def verify(path, expected):
 
 
 def attribution(path, title, author, source, license_name, notes="Unmodified download"):
+    """Write the license and provenance sidecar for a downloaded model asset."""
     Path(f"{path}.attribution").write_text(
         f"asset: {Path(path).name}\ntitle: {title}\nauthor: {author}\nsource: {source}\n"
         f"license: {license_name}\nadded: 2026-10-13 by @yeahboi233\nnotes: {notes}\n",
@@ -44,6 +47,7 @@ def attribution(path, title, author, source, license_name, notes="Unmodified dow
 
 
 def model_paths(download=False, quality=False):
+    """Resolve hash-verified EdgeTAM and optional ViTMatte files; download only when requested."""
     from huggingface_hub import hf_hub_download, snapshot_download
 
     cache = DATA / "models" / "hub"
@@ -82,6 +86,7 @@ def model_paths(download=False, quality=False):
 
 
 def setup():
+    """Fetch pinned source/checkpoints and record their licenses in the ignored model cache."""
     DATA.mkdir(parents=True, exist_ok=True)
     if not VENDOR.exists():
         VENDOR.parent.mkdir(parents=True, exist_ok=True)

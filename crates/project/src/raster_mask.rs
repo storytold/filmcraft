@@ -21,6 +21,7 @@ pub struct RasterFrame {
     pub runs: Arc<Vec<AlphaRun>>,
 }
 
+/// Deserialize alpha runs with a hard count limit before allocating the complete vector.
 fn read_runs<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Arc<Vec<AlphaRun>>, D::Error> {
     struct Runs;
     impl<'de> serde::de::Visitor<'de> for Runs {
@@ -69,6 +70,7 @@ impl<'de> Deserialize<'de> for RasterMask {
     }
 }
 
+/// Deserialize source frames while bounding frame count and aggregate encoded runs.
 fn read_frames<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<RasterFrame>, D::Error> {
     struct Frames;
     impl<'de> serde::de::Visitor<'de> for Frames {
@@ -93,6 +95,7 @@ fn read_frames<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<RasterFrame
 }
 
 impl RasterMask {
+    /// Check ordered source times, dimensions, exact run coverage and aggregate storage budgets.
     pub fn validate(&self) -> Result<(), String> {
         let n = (self.width as usize).checked_mul(self.height as usize).ok_or("invalid alpha dimensions")?;
         if self.width == 0 || self.height == 0 || n > MAX_PIXELS || self.frames.is_empty() || self.frames.len() > MAX_FRAMES {

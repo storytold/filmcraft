@@ -23,6 +23,7 @@ const PINS: [(u64, &str); 6] = [
     (104_286_749, "8efc28a9a5dcca47c6f7b8bf1c4330889f19893aa589645823cabd776dca9eb5"),
 ];
 
+/// Read at most the allowed model bytes plus one sentinel byte; reject oversized files.
 fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     let file = std::fs::File::open(path).map_err(|error| format!("{}: {error}", path.display()))?;
     let mut data = Vec::new();
@@ -57,10 +58,12 @@ pub struct Floats {
 }
 
 impl Floats {
+    /// Borrow a tensor view, rejecting a shape that does not fit the stored values.
     pub fn view(&self) -> Result<ValueView<'_>, String> {
         ValueView::from_shape(&self.shape, &self.data).map_err(|e| e.to_string())
     }
 
+    /// Require the exact expected shape, element count and finite model outputs.
     pub fn checked(self, shape: &[usize]) -> Result<Self, String> {
         let length = shape.iter().try_fold(1usize, |n, dimension| n.checked_mul(*dimension));
         if self.shape != shape || length != Some(self.data.len()) || !self.data.iter().all(|x| x.is_finite()) {
@@ -76,6 +79,7 @@ pub struct Graph {
 }
 
 impl Graph {
+    /// Resolve named graph inputs/outputs and execute on the selected bounded thread pool.
     pub fn run(&self, inputs: Vec<(&str, ValueView<'_>)>, outputs: &[&str]) -> Result<Vec<Floats>, String> {
         let inputs = inputs
             .into_iter()
@@ -109,6 +113,7 @@ pub struct Models {
     sequence_workers: usize,
 }
 
+/// Derive capped preview and sequence thread budgets, validating any explicit override.
 fn thread_budgets(available: usize, requested: Option<&str>) -> Result<(usize, usize), String> {
     let available = available.clamp(1, 64);
     match requested {
@@ -122,6 +127,7 @@ fn thread_budgets(available: usize, requested: Option<&str>) -> Result<(usize, u
     }
 }
 
+/// Bound parallel matte tiles by both the sequence thread budget and the four-tile limit.
 fn tile_worker_budget(threads: usize, requested: Option<&str>) -> Result<usize, String> {
     let limit = threads.clamp(1, 4);
     match requested {
@@ -133,6 +139,7 @@ fn tile_worker_budget(threads: usize, requested: Option<&str>) -> Result<usize, 
 }
 
 impl Models {
+    /// Select the preview or sequence pool for all graphs and return the tile-worker budget.
     pub(crate) fn sequence_mode(&mut self, sequence: bool) -> usize {
         let pool = if sequence { &self.sequence_pool } else { &self.preview_pool };
         for graph in [&mut self.image, &mut self.prompt_one, &mut self.prompt_many, &mut self.track, &mut self.memory, &mut self.matte] {
@@ -141,6 +148,7 @@ impl Models {
         if sequence { self.sequence_workers } else { 1 }
     }
 
+    /// Verify the manifest and independent graph pins before loading the six neural graphs.
     pub fn load(directory: &Path) -> Result<Self, String> {
         let manifest_path = directory.join("manifest.json");
         if std::fs::metadata(&manifest_path).map_err(|_| "Prepare native models with experiments/rotoscope/run-editor.sh")?.len() > 16 * 1024 {

@@ -29,6 +29,7 @@ pub fn bilinear(data: &[f32], width: usize, height: usize, out_width: usize, out
     Ok(result)
 }
 
+/// Validate RGBA size and produce normalized channel-first RGB for EdgeTAM.
 pub fn normalized_image(rgba: &[u8], width: usize, height: usize) -> Result<Vec<f32>, String> {
     let pixels = width.checked_mul(height).ok_or("image dimensions overflow")?;
     if width == 0 || height == 0 || pixels.checked_mul(4) != Some(rgba.len()) || pixels > 4_194_304 {
@@ -42,6 +43,7 @@ pub fn normalized_image(rgba: &[u8], width: usize, height: usize) -> Result<Vec<
     Ok(output)
 }
 
+/// Build definite background, unknown edge and definite foreground bands from a binary mask.
 pub fn trimap(mask: &[bool], width: usize, height: usize, radius: usize) -> Result<Vec<u8>, String> {
     if width == 0 || height == 0 || width.checked_mul(height) != Some(mask.len()) || mask.len() > 4_194_304 || !(1..=32).contains(&radius) {
         return Err("Invalid trimap dimensions/band".into());
@@ -82,6 +84,7 @@ pub fn absolute_position(base: &[f32], height: usize, width: usize) -> Result<Ve
     if base.len() != 197 * 384 || height == 0 || width == 0 || height > 32 || width > 32 {
         return Err("Invalid matte position dimensions".into());
     }
+    /// Evaluate the cubic interpolation weight used by the model positional-grid resize.
     fn coefficient(distance: f32) -> f32 {
         let x = distance.abs();
         if x <= 1.0 {

@@ -41,6 +41,7 @@ pub struct Input<'a> {
 }
 
 impl Input<'_> {
+    /// Validate frame buffers, source times, prompts and allocation budgets; return pixels per frame.
     pub fn validate(&self) -> Result<usize, String> {
         let pixels = self.width.checked_mul(self.height).ok_or("frame dimensions overflow")?;
         if self.width == 0

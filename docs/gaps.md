@@ -293,6 +293,9 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   and Refine Edge runs ViTMatte after strokes with edge-region/alpha/composite views. It remains experimental and opt-in.
   Native limits are 720 pixels / 120 frames, with CPU masked-layer preparation. Temporal
   refinement, optical-flow corrections and a dedicated GPU alpha path remain missing.
+  Every save from the proposed build writes schema 16, including projects without AI masks;
+  schema-15 builds reject these files and no downgrade converter exists. Keep an untouched
+  schema-15 copy for rollback; the format change requires maintainer approval.
   See [the experiment](../experiments/rotoscope/README.md).
 
 - **Missing:** Warp Stabilizer is 2-D (Premiere's is 3-D subspace), Morph Cut has no face tracking

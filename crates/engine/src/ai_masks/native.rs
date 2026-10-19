@@ -12,12 +12,14 @@ struct Native {
     runtime: Mutex<Option<Runtime>>,
 }
 
+/// Create a lazily loaded native backend using the configured local model directory.
 pub(super) fn from_env() -> Arc<dyn Backend> {
     let directory = std::env::var_os("FILMCRAFT_AI_ROTO_MODELS").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("target/rotoscope/models/native"));
     Arc::new(Native { directory, runtime: Mutex::new(None) })
 }
 
 impl Backend for Native {
+    /// Translate engine prompts to bounded native inputs and reuse the locked inference runtime.
     fn infer(&self, input: &Input, progress: &filmcraft_export::Progress) -> Result<RasterMask, String> {
         if input.frames.is_empty() || input.frames.len() > 120 {
             return Err("AI inference requires 1..120 source frames".into());

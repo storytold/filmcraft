@@ -24,9 +24,11 @@ struct Cache<T> {
 }
 
 impl<T> Cache<T> {
+    /// Create an LRU cache bounded by both entry count and retained bytes.
     fn new(max_entries: usize, max_bytes: usize) -> Self {
         Self { entries: VecDeque::new(), max_entries, max_bytes, bytes: 0 }
     }
+    /// Return a cached value and move its entry to the most-recently-used end.
     fn get(&mut self, key: &[u8; 32]) -> Option<Arc<T>> {
         let index = self.entries.iter().position(|e| &e.0 == key)?;
         let entry = self.entries.remove(index)?;
@@ -34,6 +36,7 @@ impl<T> Cache<T> {
         self.entries.push_back(entry);
         Some(value)
     }
+    /// Replace an entry and evict oldest values until both cache budgets are satisfied.
     fn put(&mut self, key: [u8; 32], value: Arc<T>, bytes: usize) {
         if bytes > self.max_bytes {
             return;
@@ -112,10 +115,12 @@ fn tile_map<T: Sync, R: Send>(items: &[T], workers: usize, operation: impl Fn(&T
 }
 
 impl MattePositions {
+    /// Validate the checkpoint positional tensor and initialize the bounded tile-shape cache.
     fn new(base: Floats) -> Result<Self, String> {
         Ok(Self { base: base.checked(&[1, 197, 384])?, cache: Cache::new(4, 6 * 1024 * 1024) })
     }
 
+    /// Return or compute positional embeddings for a validated matte tile grid.
     fn get(&mut self, height: usize, width: usize) -> Result<Arc<Floats>, String> {
         if !(1..=32).contains(&height) || !(1..=32).contains(&width) {
             return Err("Invalid matte position dimensions".into());
@@ -142,11 +147,13 @@ pub struct Runtime {
     positions: MattePositions,
 }
 
+/// Convert cooperative cancellation into an actionable error before more model work begins.
 fn cancelled(cancel: &AtomicBool) -> Result<(), String> {
     if cancel.load(Ordering::Relaxed) { Err("Cancelled: nothing was changed".into()) } else { Ok(()) }
 }
 
 impl Runtime {
+    /// Load pinned graphs and initialize bounded caches, converting loader panics into errors.
     pub fn load(path: &Path) -> Result<Self, String> {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let models = Models::load(path)?;
@@ -162,6 +169,7 @@ impl Runtime {
         .map_err(|_| "Native model loading failed safely".to_string())?
     }
 
+    /// Reuse or compute encoded image features keyed by dimensions and exact RGBA bytes.
     fn features(&mut self, input: &Input<'_>, index: usize) -> Result<Arc<Features>, String> {
         let frame = input.frames.get(index).ok_or("invalid source frame")?;
         let key = image_key(input.width, input.height, frame.rgba);
@@ -181,6 +189,7 @@ impl Runtime {
         Ok(features)
     }
 
+    /// Run a prompt or temporal decoder and validate the required mask/pointer outputs.
     fn decode<'a>(graph: &Graph, features: &'a Features, mut extra: Vec<(&str, ValueView<'a>)>) -> Result<Prediction, String> {
         let mut inputs = vec![("high0", features.high0.view()?), ("high1", features.high1.view()?), ("image_features", features.image.view()?)];
         inputs.append(&mut extra);
@@ -193,6 +202,7 @@ impl Runtime {
         Ok(prediction)
     }
 
+    /// Encode a predicted mask into the bounded temporal-memory representation.
     fn memory(&self, features: &Features, prediction: Prediction) -> Result<(Memory, Vec<f32>), String> {
         let output =
             self.models.memory.run(vec![("image_features", features.image.view()?), ("mask", prediction.mask.view()?)], &["memory", "position", "temporal"])?;
@@ -203,6 +213,7 @@ impl Runtime {
         ))
     }
 
+    /// Track from prompted frames in both directions while reusing cached frame encodings.
     fn track(&mut self, input: &Input<'_>, cancel: &AtomicBool, progress: &mut impl FnMut(usize, &str)) -> Result<Vec<Vec<bool>>, String> {
         let mut groups: BTreeMap<usize, Vec<&crate::Point>> = BTreeMap::new();
         for point in input.points.iter().filter(|p| p.kind != Kind::Refine) {
@@ -257,11 +268,13 @@ impl Runtime {
         masks.into_iter().map(|m| m.ok_or_else(|| "Tracking did not produce every requested frame".into())).collect()
     }
 
+    /// Run validated inference under a panic guard so failed model work cannot crash the editor.
     pub fn infer(&mut self, input: &Input<'_>, cancel: &AtomicBool, mut progress: impl FnMut(usize, &str)) -> Result<RasterMask, String> {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.infer_inner(input, cancel, &mut progress)))
             .map_err(|_| "Native model inference failed safely".to_string())?
     }
 
+    /// Combine tracking, brush trimaps and optional matting into a validated source-timed raster mask.
     fn infer_inner(&mut self, input: &Input<'_>, cancel: &AtomicBool, progress: &mut impl FnMut(usize, &str)) -> Result<RasterMask, String> {
         let pixels = input.validate()?;
         cancelled(cancel)?;
@@ -354,6 +367,7 @@ impl Runtime {
         Ok(result)
     }
 
+    /// Run bounded overlapping ViTMatte tiles and preserve definite foreground/background pixels.
     fn refine(&mut self, rgba: &[u8], width: usize, height: usize, trimap: &[u8], cancel: &AtomicBool, workers: usize) -> Result<Vec<u16>, String> {
         let mut alpha: Vec<_> = trimap.iter().map(|p| if *p == 255 { 65535u16 } else { 0 }).collect();
         let mut tiles = Vec::with_capacity(4);
@@ -416,6 +430,7 @@ impl Runtime {
     }
 }
 
+/// Hash image dimensions and exact RGBA contents for inference-cache identity.
 fn image_key(width: usize, height: usize, rgba: &[u8]) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(width.to_le_bytes());
@@ -424,6 +439,7 @@ fn image_key(width: usize, height: usize, rgba: &[u8]) -> [u8; 32] {
     digest.finalize().into()
 }
 
+/// Assemble a bounded temporal bank and positional offsets for one tracking step.
 fn memory_bank(
     index: usize,
     reverse: bool,
@@ -475,6 +491,7 @@ fn memory_bank(
     ))
 }
 
+/// Encode 16-bit alpha with positive, bounded runs or report an exceeded output budget.
 fn runs(values: &[u16]) -> Result<Vec<(u32, u16)>, String> {
     let mut runs: Vec<(u32, u16)> = Vec::new();
     for value in values {

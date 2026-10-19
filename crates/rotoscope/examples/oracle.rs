@@ -25,6 +25,7 @@ struct FixturePoint {
     kind: String,
 }
 
+/// Load one pinned runtime and process bounded fixture/result pairs, reusing caches between pairs.
 fn main() -> Result<(), String> {
     let args: Vec<_> = std::env::args().collect();
     let path = args.get(1).ok_or("Provide the native model directory")?;
@@ -98,6 +99,7 @@ fn main() -> Result<(), String> {
     Ok(())
 }
 
+/// Read fixture bytes with a hard size cap and reject oversized or unreadable inputs.
 fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
     let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
     let mut bytes = Vec::new();

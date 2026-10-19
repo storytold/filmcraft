@@ -369,44 +369,72 @@ fn gpu_lut_matches_cpu_tetrahedral() {
     }
 }
 
+/// Raster masks currently bake into a CPU layer before upload; this checks that real plan.
 #[test]
-fn cached_raster_alpha_upload_composites_like_cpu() {
+fn raster_opacity_plan_uploads_cpu_baked_alpha_and_matches_render_sequence() {
+    use filmcraft_media::{Generator, MediaSource, generators::GeneratorSource};
     use filmcraft_project::{
-        Mask, MaskPath,
+        ItemKind, Label, Mask, MaskPath, MediaClip, MediaRef, Project, SequenceSettings, TrackKind,
         raster_mask::{RasterFrame, RasterMask},
     };
-    use filmcraft_time::Tick;
-    let Some((dev, q)) = device() else {
-        eprintln!("no GPU adapter; skipping");
-        return;
-    };
-    let (w, h) = (64usize, 36usize);
+    use filmcraft_render::{RenderOptions, SourceMap, plan::plan_frame, render_sequence};
+    use filmcraft_time::{FrameRate, Tick, TimeRange};
+    let (w, h) = (64u32, 36u32);
+    let rate = FrameRate::FPS_24;
+    let end = rate.tick_of(1);
+    let source = GeneratorSource::new(Generator::ColorMatte { color: [0.8, 0.2, 0.1, 1.0] }, w, h, rate, end);
+    let info = source.info().clone();
+    let generator = source.generator.clone();
+    let mut project = Project::new("raster GPU upload");
+    let media = project.add_item(
+        "matte",
+        Label::Iris,
+        ItemKind::Media(MediaClip {
+            media: MediaRef::Generator(generator),
+            info,
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        }),
+        None,
+    );
+    let seq = project.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: rate, ..Default::default() }, 1, 0, None);
+    let mut clip = project.make_track_item(media, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, end), rate).unwrap();
     let mut mask = Mask::new("raster", MaskPath::default());
     mask.raster = Some(Arc::new(RasterMask {
-        width: 64,
-        height: 1,
-        end: Tick(1),
-        quality: true,
-        frames: vec![RasterFrame { time: Tick(0), runs: Arc::new((0..64).map(|x| (1, (x * 65535 / 63) as u16)).collect()) }],
-    }));
-    let coverage = filmcraft_render::mask::effect_coverage(&[mask], Tick(0), 1.0, w, h).unwrap();
-    let mut image = filmcraft_render::Image::filled(w, h, [0.8, 0.2, 0.1, 1.0]);
-    filmcraft_render::mask::scale_by(&mut image, &coverage);
-    let background = filmcraft_render::Image::filled(w, h, [0.1, 0.2, 0.3, 1.0]);
-    let plan = FramePlan::Layers {
         width: w,
-        height: h,
-        layers: vec![
-            PlanLayer::new(Arc::new(VideoFrame::rgba_f32(w as u32, h as u32, background.px)), Affine::IDENTITY, 1.0, Blend::Normal),
-            PlanLayer::new(Arc::new(VideoFrame::rgba_f32(w as u32, h as u32, image.px)), Affine::IDENTITY, 1.0, Blend::Normal),
-        ],
+        height: 1,
+        end,
+        quality: true,
+        frames: vec![RasterFrame { time: Tick::ZERO, runs: Arc::new((0..w).map(|x| (1, (x * 65535 / (w - 1)) as u16)).collect()) }],
+    }));
+    clip.effect_mut("opacity").unwrap().masks.push(mask);
+    project.sequence_mut(seq).unwrap().video_tracks[0].items.push(clip);
+    let mut sources = SourceMap::default();
+    sources.0.insert(media, Arc::new(source));
+    let plan = plan_frame(&project, seq, Tick::ZERO, RenderOptions::default(), &sources);
+    // There is no dedicated GPU raster-mask operation: the planner must bake alpha on CPU.
+    let FramePlan::Layers { layers, .. } = &plan else { panic!("expected a CPU-baked layer upload") };
+    assert_eq!(layers.len(), 1);
+    assert!(layers[0].fx.is_none(), "raster alpha must already be baked before GPU execution");
+    let baked = layers[0].frame.to_rgba8();
+    assert_eq!(baked[3], 0, "the transparent edge proves the planner applied the raster mask");
+    assert_eq!(baked[(w as usize - 1) * 4 + 3], 255);
+    let expected = render_sequence(&project, seq, Tick::ZERO, RenderOptions::default(), &sources).over_black_rgba8();
+    assert_eq!(execute_cpu(&plan).over_black_rgba8(), expected);
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; CPU-baked plan assertions passed, skipping GPU readback");
+        return;
     };
-    let expected = execute_cpu(&plan).over_black_rgba8();
     let mut gpu = GpuCompositor::new(&dev, &q);
     gpu.composite(&plan);
     let (_, _, actual) = gpu.read_output().unwrap();
     let worst = expected.iter().zip(actual).map(|(a, b)| (*a as i16 - b as i16).unsigned_abs()).max().unwrap();
-    assert!(worst <= 1, "cached alpha CPU/GPU difference: {worst}");
+    assert!(worst <= 1, "CPU-baked raster layer upload difference: {worst}");
 }
 
 fn test_masks(scale: f32) -> Vec<filmcraft_render::mask::FlatMask> {

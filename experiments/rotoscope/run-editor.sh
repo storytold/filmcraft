@@ -19,4 +19,4 @@ cargo +1.95 build -p filmcraft --features experimental-ai-rotoscope
 if [ "$#" -eq 0 ] && [ -f "$ROTO_DATA/FilmCraft-AI-Test.fcproj" ]; then
     set -- "$ROTO_DATA/FilmCraft-AI-Test.fcproj"
 fi
-FILMCRAFT_AI_ROTO_MODELS="$ROTO_DATA/models/native" "$ROOT/target/debug/filmcraft" --control 9876 --data-dir "$ROTO_DATA/editor-data" --no-recover --empty "$@"
+FILMCRAFT_AI_ROTO_MODELS="$ROTO_DATA/models/native" "$ROOT/target/debug/filmcraft" --data-dir "$ROTO_DATA/editor-data" --no-recover --empty "$@"

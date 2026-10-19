@@ -83,3 +83,13 @@ fails the unchanged desktop MIME test and audio throughput floor. Main also
 fails that performance floor on this Colab host. The audio changes are reviewed
 separately; unrelated lint/MIME fixes, threshold changes and new ignores are not
 part of this draft. Source hashes are checked against the tested Colab trees.
+
+## CodeRabbit follow-up validation status
+
+The Colab receipts above cover cleanup commit `d15bb3bc`. Subsequent review fixes
+preserve project metadata through transient history, filter stationary Refine
+brush samples, make launcher control access opt-in, and replace the hand-built
+GPU fixture with a real masked clip plan. Regression cases and function
+documentation were added. These follow-up changes were formatted and inspected
+without rebuilding or running tests, as requested; the earlier receipts must not
+be treated as validation of this newer source.

@@ -102,6 +102,51 @@ fn v0(m: &Value, i: usize) -> (f64, f64) {
     (p[0].as_f64().unwrap(), p[1].as_f64().unwrap())
 }
 
+/// A stationary drag must leave room for future edits and remain one undoable brush gesture.
+#[test]
+fn stationary_refine_brush_does_not_exhaust_the_point_budget() {
+    let mut d = Driver::demo();
+    d.harness.state_mut().session.ai_mask_backend = None;
+    let seq = d.exec("sequence.inspect", json!({}));
+    let clip = &seq["video"][0]["items"][0];
+    let id = clip["clip"].as_u64().unwrap();
+    let start = clip["start"].as_i64().unwrap();
+    d.exec("playhead.set", json!({"time":start}));
+    d.exec("timeline.select", json!({"clips":[id]}));
+    d.exec("masks.ai.select", json!({"clip":id,"kind":"refine"}));
+    d.frames(4);
+    let (x, y) = d.center("program.aiMask");
+    let from = egui::pos2(x as f32, y as f32);
+    d.harness.input_mut().events.push(egui::Event::PointerMoved(from));
+    d.frames(1);
+    d.harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: from,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Default::default(),
+    });
+    d.frames(1);
+    let to = from + egui::vec2(20.0, 0.0);
+    d.harness.input_mut().events.push(egui::Event::PointerMoved(to));
+    d.frames(2);
+    assert_eq!(d.harness.state().session.state.ai_mask.as_ref().unwrap().points.len(), 1);
+    d.frames(600);
+    assert_eq!(d.harness.state().session.state.ai_mask.as_ref().unwrap().points.len(), 1, "holding still must not append points");
+    let further = to + egui::vec2(40.0, 0.0);
+    d.harness.input_mut().events.push(egui::Event::PointerMoved(further));
+    d.frames(2);
+    assert_eq!(d.harness.state().session.state.ai_mask.as_ref().unwrap().points.len(), 2, "movement beyond the spacing threshold must still paint");
+    d.harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: further,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Default::default(),
+    });
+    d.frames(2);
+    d.exec("edit.undo", json!({}));
+    assert!(d.harness.state().session.state.ai_mask.as_ref().unwrap().points.is_empty(), "the entire stroke is one undo step");
+}
+
 #[test]
 fn create_and_edit_masks_on_the_monitor() {
     let mut d = Driver::demo();

@@ -970,6 +970,7 @@ impl Session {
 
     /// Take back every edit made since `mark` (a gesture cancelled with Escape, #580), merged or
     /// not: the project returns to how it was at `mark`, and neither undo nor redo keeps them.
+    /// Only document steps restore project snapshots; transient steps preserve unrelated metadata.
     /// Nothing happens when `mark` has left the history. Returns how many steps were taken back.
     pub fn revert_to(&mut self, mark: UndoMark) -> usize {
         if let UndoMark(Some(p)) = mark
@@ -978,16 +979,22 @@ impl Session {
             return 0;
         }
         let mut earliest = None;
+        let mut project = None;
         let mut document = false;
         let mut n = 0;
         while self.undo_mark() != mark {
             let Some((_, prev)) = self.history.undo.pop() else { break };
             document |= prev.document;
+            if prev.document {
+                project = Some(prev.project.clone());
+            }
             earliest = Some(prev);
             n += 1;
         }
         if let Some(prev) = earliest {
-            self.project = prev.project;
+            if let Some(project) = project {
+                self.project = project;
+            }
             self.state.ai_mask = prev.ai_draft;
             self.history.merge_key = None;
             self.fix_state();
@@ -1038,11 +1045,14 @@ impl Session {
         }
     }
 
+    /// Restore the previous document or AI draft without applying a transient step's project copy.
     pub fn undo(&mut self) -> Option<String> {
         let (label, prev) = self.history.undo.pop()?;
         self.history.merge_key = None;
         let cur = HistorySnapshot::new(self.project.clone(), self.state.ai_mask.clone(), prev.document);
-        self.project = prev.project;
+        if prev.document {
+            self.project = prev.project;
+        }
         self.state.ai_mask = prev.ai_draft;
         self.history.redo.push((label.clone(), cur));
         self.fix_state();
@@ -1053,11 +1063,14 @@ impl Session {
         Some(label)
     }
 
+    /// Reapply the next chronological history step, restoring project data only for document edits.
     pub fn redo(&mut self) -> Option<String> {
         let (label, next) = self.history.redo.pop()?;
         self.history.merge_key = None;
         let cur = HistorySnapshot::new(self.project.clone(), self.state.ai_mask.clone(), next.document);
-        self.project = next.project;
+        if next.document {
+            self.project = next.project;
+        }
         self.state.ai_mask = next.ai_draft;
         self.history.undo.push((label.clone(), cur));
         self.fix_state();
