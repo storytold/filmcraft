@@ -72,6 +72,20 @@ fn renamed_identity_matches_batch_undo_and_save_preserve_channel_slots() {
     assert_eq!(std::fs::read(c[1].path.as_ref().unwrap()).unwrap(), originals[1]);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn explicitly_chosen_component_path_can_override_a_refused_stored_spelling() {
+    let (mut s, id, channels, dir) = fixture("relink-stored-spelling");
+    let path = format!("/{}", channels[0].path.as_ref().unwrap());
+    s.media.add_stored_paths([path.clone()], Some("/tmp/project.fcproj"));
+    assert!(s.media.follow(&path).is_err(), "a // path from a document is refused");
+    s.execute("media.relinkComponents", json!({"bindings":[binding(id, 0, &path)]})).unwrap();
+    assert_eq!(s.media.follow(&path).unwrap(), path);
+    let source = s.media.full_res_source(&s.project, id, &*s.services).unwrap();
+    assert_eq!(source.audio(0, 8, 48000).unwrap().channels[0], vec![4000.0 / 32768.0; 8]);
+    std::fs::remove_dir_all(dir).unwrap();
+}
 #[test]
 fn duplicates_require_choice_and_wrong_identity_never_substitutes_missing_a1() {
     let (mut s, id, c, dir) = fixture("relink-duplicate");

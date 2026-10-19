@@ -1,8 +1,9 @@
-//! Development bridge for Avid cuts, filler, channel combiners and automatic rate adapters.
+//! Development bridge for Avid cuts, filler, channel combiners, rate adapters and bounded effects.
 //! Reads only the catalog contract and native project model; no binary decoding or I/O.
 use std::collections::{BTreeMap, BTreeSet};
 
-use filmcraft_project::{AudioChannels, BinId, ItemId, MediaRef, Project, SequenceSettings, TrackKind};
+use filmcraft_geom::Vec2;
+use filmcraft_project::{AudioChannels, BinId, ItemId, MediaRef, Project, SequenceSettings, TrackKind, effect::EffectInstance, keyframe::ParamValue};
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -48,6 +49,7 @@ struct ClipPlan {
     duration: Tick,
     channels: Vec<u16>,
     scale_to_frame: bool,
+    effects: Vec<EffectInstance>,
 }
 fn bad(s: impl Into<String>) -> Error {
     Error::Other(format!("Avid sequence: {}", s.into()))
@@ -92,6 +94,92 @@ fn flag(v: &Value, key: &str) -> Result<bool> {
         Some(Value::Number(n)) if n.as_u64() == Some(1) => Ok(true),
         _ => Err(bad(format!("unsupported {key}"))),
     }
+}
+
+/// The numeric controls verified against a user-saved 2025.12.1 calibration bin and its
+/// Avid-rendered frames. Other controls (including 3D rotation, axis, crop, keyframes and
+/// foreground compositing) need their own translation path; never flatten them to 2D.
+fn warp_transform(c: &Value, width: u32, height: u32) -> Result<EffectInstance> {
+    if !c["properties"]["numeric_parameters"].is_array() {
+        return Err(bad("3D Warp has animated or unsupported parameter storage"));
+    }
+    let params = list(&c["properties"], "numeric_parameters", 128)?;
+    if params.is_empty() {
+        return Err(bad("3D Warp has no verified numeric controls"));
+    }
+    let mut values = BTreeMap::<u16, f64>::new();
+    const FAMILY: [u8; 14] = [0x56, 0x8d, 0x7e, 0x84, 0xd5, 0x11, 0x93, 0x5a, 0x50, 0xf8, 0x57, 0xc1, 0, 0];
+    const KNOWN: &[u16] = &[
+        0x812b, 0x81a1, 0x81a2, 0x81a4, 0x81a9, 0x81aa, 0x81ab, 0x81ac, 0x81b2, 0x81b3, 0x81b4, 0x81b7, 0x81b8, 0x81b9, 0x81ba, 0x81bc, 0x81bd, 0x81be, 0x81bf,
+        0x81d0, 0x81ed, 0x81fc, 0x821c, 0x828e,
+    ];
+    for p in params {
+        let id = list(p, "id", 16)?;
+        if id.len() != 16 || id[2..].iter().zip(FAMILY).any(|(x, y)| x.as_u64() != Some(u64::from(y))) {
+            return Err(bad("unsupported 3D Warp parameter family"));
+        }
+        let key = u16::from_le_bytes([
+            u8::try_from(id[0].as_u64().ok_or_else(|| bad("invalid Warp parameter id"))?).map_err(|_| bad("invalid Warp parameter id"))?,
+            u8::try_from(id[1].as_u64().ok_or_else(|| bad("invalid Warp parameter id"))?).map_err(|_| bad("invalid Warp parameter id"))?,
+        ]);
+        if !KNOWN.contains(&key) {
+            return Err(bad(format!("3D Warp control {key:04x} is not translated")));
+        }
+        let value = p["value"].as_f64().filter(|v| v.is_finite()).ok_or_else(|| bad("invalid Warp value"))?;
+        if values.insert(key, value).is_some() {
+            return Err(bad("duplicate 3D Warp control"));
+        }
+    }
+    let v = |id, default| values.get(&id).copied().unwrap_or(default);
+    let check = |id, default| -> Result<()> {
+        if (v(id, default) - default).abs() > 1e-6 {
+            return Err(bad(format!("3D Warp control {id:04x} is not translated")));
+        }
+        Ok(())
+    };
+    for (id, default) in [(0x81a1, 0.59), (0x81a2, 0.0), (0x81a4, 0.0), (0x81d0, 0.0), (0x81ed, 1.0), (0x81fc, 255.0), (0x821c, 0.0), (0x828e, 0.0)] {
+        check(id, default)?;
+    }
+    for id in [0x812b, 0x81a9, 0x81b2, 0x81b7, 0x81bc] {
+        if !matches!(v(id, 0.0), 0.0 | 1.0) {
+            return Err(bad("unsupported 3D Warp enable state"));
+        }
+    }
+    if v(0x81a9, 0.0) == 1.0 {
+        check(0x81ac, 0.0)?; // Z position changes perspective/size, not 2D translation.
+    }
+    if v(0x81b7, 0.0) == 1.0 {
+        check(0x81b8, 0.0)?;
+        check(0x81b9, 0.0)?;
+    }
+    if v(0x81bc, 0.0) == 1.0 {
+        for id in [0x81bd, 0x81be, 0x81bf] {
+            check(id, 0.0)?;
+        }
+    }
+    let x = if v(0x81a9, 0.0) == 1.0 { v(0x81aa, 0.0) } else { 0.0 };
+    let y = if v(0x81a9, 0.0) == 1.0 { v(0x81ab, 0.0) } else { 0.0 };
+    let sx = if v(0x81b2, 0.0) == 1.0 { v(0x81b3, 100.0) } else { 100.0 };
+    let sy = if v(0x81b2, 0.0) == 1.0 { v(0x81b4, 100.0) } else { 100.0 };
+    let rotation = if v(0x81b7, 0.0) == 1.0 { v(0x81ba, 0.0) } else { 0.0 };
+    if !(-1000.0..=1000.0).contains(&x)
+        || !(-1000.0..=1000.0).contains(&y)
+        || !(0.0..=10000.0).contains(&sx)
+        || !(0.0..=10000.0).contains(&sy)
+        || !(-3600.0..=3600.0).contains(&rotation)
+    {
+        return Err(bad("3D Warp value outside supported 2D range"));
+    }
+    let mut effect = filmcraft_project::find_effect("transform").ok_or_else(|| bad("FilmCraft Transform is unavailable"))?.instance();
+    effect.params.get_mut("position").ok_or_else(|| bad("Transform position missing"))?.value =
+        // In the 1920x1080 Avid render, +100 X moves the picture +192 px and
+        // -100 Y moves it +108 px: the UI unit is one tenth of one percent.
+        ParamValue::Vec2(Vec2::new(f64::from(width) * (0.5 + x / 1000.0), f64::from(height) * (0.5 - y / 1000.0)));
+    effect.params.get_mut("uniform_scale").ok_or_else(|| bad("Transform scale mode missing"))?.value = ParamValue::Bool(false);
+    effect.params.get_mut("scale_width").ok_or_else(|| bad("Transform width missing"))?.value = ParamValue::Float(sx);
+    effect.params.get_mut("scale_height").ok_or_else(|| bad("Transform height missing"))?.value = ParamValue::Float(sy);
+    effect.params.get_mut("rotation").ok_or_else(|| bad("Transform rotation missing"))?.value = ParamValue::Float(rotation);
+    Ok(effect)
 }
 
 /// Resolve only masters imported for the explicitly selected bin: its own members and the
@@ -144,6 +232,8 @@ struct Walk<'a> {
     warnings: &'a mut Vec<String>,
     best_effort: bool,
     audio_channels: usize,
+    frame_width: u32,
+    frame_height: u32,
 }
 impl Walk<'_> {
     fn phase_warning(&mut self, c: &Value, start: Tick) {
@@ -187,6 +277,7 @@ impl Walk<'_> {
             duration: length,
             channels: vec![u16::try_from(index).map_err(|_| bad("source channel overflow"))?],
             scale_to_frame: false,
+            effects: Vec::new(),
             placeholder: None,
         }])
     }
@@ -224,7 +315,7 @@ impl Walk<'_> {
         }
         self.phase_warning(c, start);
         self.warnings.push(format!("Frame {}: {}/{} fps source adapted to {}/{} fps with FilmCraft Frame Sampling at 100% playback speed; Avid interpolation/frame selection may differ.",self.rate.frame_at(start),src_rate.num,src_rate.den,self.rate.num,self.rate.den));
-        Ok(vec![ClipPlan { item, start, source_in, duration: length, channels: Vec::new(), scale_to_frame: false, placeholder: None }])
+        Ok(vec![ClipPlan { item, start, source_in, duration: length, channels: Vec::new(), scale_to_frame: false, effects: Vec::new(), placeholder: None }])
     }
 
     fn checked_node(&mut self, c: &Value, start: Tick, depth: usize) -> Result<Vec<ClipPlan>> {
@@ -247,9 +338,16 @@ impl Walk<'_> {
         let class = text(c, "class")?;
         let combiner = class == "TKFX" && c.pointer("/properties/effect_id").and_then(Value::as_str) == Some("EFF2_AUDIO_CHANNEL_COMBINER");
         let spatial = class == "TKFX" && c.pointer("/properties/effect_id").and_then(Value::as_str) == Some("INT_EFF_SPATIAL_ADAPTER");
+        let flip = class == "TKFX"
+            && self.kind == TrackKind::Video
+            && matches!(c.pointer("/properties/effect_id").and_then(Value::as_str), Some("EFF2_BLEND_FLIP_VERT" | "EFF2_BLEND_FLIP_BOTH"));
+        let warp = class == "TKFX"
+            && self.kind == TrackKind::Video
+            && c.pointer("/properties/effect_id").and_then(Value::as_str) == Some("EFF2_SBLEND")
+            && c.pointer("/properties/attributes/_EFFECT_PLUGIN_NAME").and_then(Value::as_str) == Some("3DWarp");
         let motion = class == "SPED" && c.pointer("/properties/effect_id").and_then(Value::as_str) == Some("EFF_TIMEWARP.MOTION_CTL");
         let audio_adapter = class == "SPED" && c.pointer("/properties/effect_id").and_then(Value::as_str) == Some("EFF_TIMEWARP.AUDIO_TIME_WARP");
-        if c.get("unsupported").is_some() && !((combiner || spatial || motion || audio_adapter) && c["unsupported"] == "component_semantics") {
+        if c.get("unsupported").is_some() && !((combiner || spatial || flip || warp || motion || audio_adapter) && c["unsupported"] == "component_semantics") {
             return Err(bad(format!(
                 "unsupported {class} at frame {} ({})",
                 self.rate.frame_at(start),
@@ -333,7 +431,56 @@ impl Walk<'_> {
                     }
                     Vec::new()
                 };
-                Ok(vec![ClipPlan { item, start, source_in, duration: length, channels: mapping, scale_to_frame: false, placeholder: None }])
+                Ok(vec![ClipPlan {
+                    item,
+                    start,
+                    source_in,
+                    duration: length,
+                    channels: mapping,
+                    scale_to_frame: false,
+                    effects: Vec::new(),
+                    placeholder: None,
+                }])
+            }
+            "TKFX" if flip => {
+                let inputs = list(c, "input_tracks", 1)?;
+                let input = inputs.first().ok_or_else(|| bad("flip needs one input"))?;
+                if input["index"] != 1 || self.clock.ticks(&input["component"], "length")? != length || c["properties"]["mc_mode"] != 0 {
+                    return Err(bad("flip input duration/index/mode mismatch"));
+                }
+                let mut clips = self.node(&input["component"], start, depth + 1)?;
+                if clips.len() != 1 || clips[0].placeholder.is_some() || clips[0].start != start || clips[0].duration != length {
+                    return Err(bad("flip input must be one supported clip"));
+                }
+                let clip = &mut clips[0];
+                clip.effects.push(filmcraft_project::find_effect("vertical_flip").ok_or_else(|| bad("vertical flip unavailable"))?.instance());
+                if c["properties"]["effect_id"] == "EFF2_BLEND_FLIP_BOTH" {
+                    clip.effects.push(filmcraft_project::find_effect("horizontal_flip").ok_or_else(|| bad("horizontal flip unavailable"))?.instance());
+                }
+                Ok(clips)
+            }
+            "TKFX" if warp => {
+                let inputs = list(c, "input_tracks", 2)?;
+                if inputs.len() != 2 || inputs[0]["index"] != 1 || inputs[1]["index"] != 2 || c["properties"]["mc_mode"] != 0 {
+                    return Err(bad("unsupported 3D Warp input routing"));
+                }
+                if self.clock.ticks(&inputs[0]["component"], "length")? != length
+                    || self.clock.ticks(&inputs[1]["component"], "length")? != length
+                    || !self.node(&inputs[0]["component"], start, depth + 1)?.is_empty()
+                {
+                    return Err(bad("3D Warp background must be filler"));
+                }
+                let effect = warp_transform(c, self.frame_width, self.frame_height)?;
+                let mut clips = self.node(&inputs[1]["component"], start, depth + 1)?;
+                if clips.len() != 1 || clips[0].placeholder.is_some() || clips[0].start != start || clips[0].duration != length {
+                    return Err(bad("3D Warp foreground must be one supported clip"));
+                }
+                clips[0].effects.push(effect);
+                self.warnings.push(format!(
+                    "Frame {}: static Avid 3D Warp Position, Scaling and Z Rotation mapped to FilmCraft Transform; Avid sampling/edge treatment may differ.",
+                    self.rate.frame_at(start)
+                ));
+                Ok(clips)
             }
             "TKFX" if spatial && self.kind == TrackKind::Video => {
                 let inputs = list(c, "input_tracks", 1)?;
@@ -489,9 +636,20 @@ fn sequence(p: &Project, ids: &BTreeMap<[u8; 32], ItemId>, m: &Value, nodes: &mu
             Some(v) if *v == 2 && kind == TrackKind::Audio => true,
             _ => return Err(bad("unsupported audio track format")),
         };
-        let clips =
-            Walk { project: p, sources: ids, rate: r, clock, kind, nodes, warnings: &mut warnings, best_effort, audio_channels: if stereo { 2 } else { 1 } }
-                .node(c, Tick::ZERO, 0)?;
+        let clips = Walk {
+            project: p,
+            sources: ids,
+            rate: r,
+            clock,
+            kind,
+            nodes,
+            warnings: &mut warnings,
+            best_effort,
+            audio_channels: if stereo { 2 } else { 1 },
+            frame_width: settings.width,
+            frame_height: settings.height,
+        }
+        .node(c, Tick::ZERO, 0)?;
         if kind == TrackKind::Audio && clips.iter().any(|c| c.channels.len() != if stereo { 2 } else { 1 }) {
             return Err(bad("source channel mapping disagrees with timeline format"));
         }
@@ -519,6 +677,7 @@ fn sequence(p: &Project, ids: &BTreeMap<[u8; 32], ItemId>, m: &Value, nodes: &mu
             duration: Tick(duration.0 - end.0),
             channels: Vec::new(),
             scale_to_frame: false,
+            effects: Vec::new(),
         };
         if let Some(track) = tracks.iter_mut().find(|t| t.kind == TrackKind::Video) {
             track.clips.push(placeholder);
@@ -562,7 +721,7 @@ pub fn plan_document(p: &Project, doc: &avid_catalog::Document, bin: BinId, best
     if matching.len() != 1 {
         return Err(bad("report must identify exactly one matching source bin"));
     }
-    let mut result = Plan { bin, sequences:Vec::new(), rejected:Vec::new(), warnings:vec!["Sequence audio output uses FilmCraft defaults: 48000 Hz stereo. Raw Avid attributes and auxiliary tracks are retained; color, mixer automation, markers and other effects are not translated.".into()] };
+    let mut result = Plan { bin, sequences:Vec::new(), rejected:Vec::new(), warnings:vec!["Sequence audio output uses FilmCraft defaults: 48000 Hz stereo. Raw Avid attributes and auxiliary tracks are retained; color, mixer automation, markers and most effects are not translated.".into()] };
     // Not every placed composition is a timeline. A bin also holds subclips, saved effect
     // templates, group clips and motion effects, each a composition mob with its own usage code.
     // Converting one produces a sequence item that is not a sequence, so name what was skipped
@@ -682,6 +841,7 @@ pub fn apply(p: &mut Project, plan: Plan) -> Result<Vec<ItemId>> {
                 }
                 clip.source_channels = c.channels;
                 clip.scale_to_frame = c.scale_to_frame;
+                clip.effects.extend(c.effects);
                 clip.time_interpolation = filmcraft_project::TimeInterpolation::FrameSampling;
                 placed.push(clip);
             }
@@ -706,4 +866,49 @@ pub fn apply(p: &mut Project, plan: Plan) -> Result<Vec<ItemId>> {
     // resolved now instead of retaining NaN "auto" coordinates in imported video clips.
     p.resolve_placed_auto_points(|id| out.contains(&id), |_| true);
     Ok(out)
+}
+
+#[cfg(test)]
+mod warp_tests {
+    use super::*;
+
+    fn evidence(changes: &[(u16, f64)]) -> Value {
+        let mut controls = BTreeMap::from([
+            (0x81a1, 0.59),
+            (0x81a9, 1.0),
+            (0x81aa, 100.0),
+            (0x81ab, -100.0),
+            (0x81b2, 1.0),
+            (0x81b3, 50.0),
+            (0x81b4, 75.0),
+            (0x81b7, 1.0),
+            (0x81ba, 30.0),
+            (0x81bc, 1.0),
+            (0x81ed, 1.0),
+            (0x81fc, 255.0),
+        ]);
+        controls.extend(changes.iter().copied());
+        let family = [0x56, 0x8d, 0x7e, 0x84, 0xd5, 0x11, 0x93, 0x5a, 0x50, 0xf8, 0x57, 0xc1, 0, 0];
+        json!({"properties":{"numeric_parameters":controls.into_iter().map(|(id,value)| {
+            let mut guid = Vec::from(id.to_le_bytes());
+            guid.extend(family);
+            json!({"id":guid,"value":value})
+        }).collect::<Vec<_>>()}})
+    }
+
+    #[test]
+    fn calibrated_static_2d_controls_convert_and_3d_controls_stop() {
+        let fx = warp_transform(&evidence(&[]), 1920, 1080).unwrap();
+        assert_eq!(fx.effect, "transform");
+        assert_eq!(fx.param("position").unwrap().value, ParamValue::Vec2(Vec2::new(1152.0, 648.0)));
+        assert_eq!(fx.param("scale_width").unwrap().value, ParamValue::Float(50.0));
+        assert_eq!(fx.param("scale_height").unwrap().value, ParamValue::Float(75.0));
+        assert_eq!(fx.param("rotation").unwrap().value, ParamValue::Float(30.0));
+        assert!(warp_transform(&evidence(&[(0x81b8, 30.0)]), 1920, 1080).is_err());
+        assert!(warp_transform(&evidence(&[(0x81bd, 100.0)]), 1920, 1080).is_err());
+        assert!(warp_transform(&evidence(&[(0x81cc, 50.0)]), 1920, 1080).is_err());
+        let mut missing = evidence(&[]);
+        missing["properties"]["numeric_parameters"] = Value::Null;
+        assert!(warp_transform(&missing, 1920, 1080).is_err());
+    }
 }

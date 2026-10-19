@@ -1,4 +1,4 @@
-# Avid group-clip import: next fixture
+# Avid Group and MultiGroup import: implementation boundary
 
 ## What is established
 
@@ -8,16 +8,23 @@ Each group output track has its own SLCT selector. Its alternatives reference tr
 internal composition (usage 5). A video selector's second alternative belongs to B, while an
 audio selector's second alternative belongs to C. Alternative position is not a global angle ID.
 
-The native normalized graph now preserves those alternatives, their source offsets and raw
-selection fields. Selection and audio-follow behavior are not established. Group items remain
-explicitly reported as unsupported; timeline selectors remain diagnosed placeholders.
+The native normalized graph preserves those alternatives, their source offsets and raw
+selection fields. Later controlled Group-clip comparisons associate one trailing selector field
+with the chosen alternative within each picture or audio selector, and a disabled wrapper with
+filler. Those observations need independent playback validation before they become a general
+selection rule. Group items remain reported as unsupported; timeline selectors retain their
+original evidence instead of silently choosing an angle.
 
 FilmCraft already has editable multicam source sequences, but its existing audio modes always
 mix audio-only cameras alongside camera audio. Mapping this group directly to that default could
-play A and C together when Avid selected only one. Establish the actual saved choices before
-choosing or extending FilmCraft's routing model.
+play A and C together when Avid selected only one. The timeline-selection improvement in #2478
+changes how users create a native multicam; it does not change this source or audio model.
 
-## Phase 19 — Isolate saved picture and audio selections
+## Controlled selection comparison (historical recipe)
+
+The original Phase 19 recipe below is retained to explain the required independent picture and
+audio comparisons. Later Group fixtures supplied angle switches and disabled segments; do not
+ask users to repeat these saves merely because this historical recipe remains in the document.
 
 Use a disposable test project and a copy of the existing Phase 15 or 16 bin. Reuse its group and
 media. No media imports, database rebuilds, or full project copies are needed.
@@ -44,17 +51,20 @@ workaround. That behavior is useful evidence.
 
 1. Decode and preserve selector alternatives with bounded expansion, cycle detection and
    cancellation. Never infer active selection from the raw field's value alone.
-2. Compare the controlled snapshots to establish saved choices. Resolve alternatives through
+2. Independently check the controlled Group comparisons and establish saved choices. Resolve alternatives through
    unique live internal-composition identities and media-kind/track pairs, including offsets,
    fillers and supported wrappers. Reject ambiguous joins and retain unsupported evidence.
-3. Build FilmCraft multicam sources with explicit camera-to-track mappings. Establish audio
-   routing independently of picture selection; retain raw sync evidence without inventing a
-   grouping method. Expand the native model only where its current modes cannot represent it.
+3. Build FilmCraft multicam sources with explicit camera-to-track mappings and per-edit picture
+   and audio choices. Audio-only sources must be selectable without always playing underneath.
+   Retain raw sync evidence without inventing a grouping method. Expand the native model where
+   its current three audio modes cannot represent the saved Avid choices.
 4. Convert timeline uses, preserving per-edit selected sources, source starts, durations and
    channel pairing. Verify offline/relinked states, project roundtrip, undo/redo and playback.
 5. Test Avid MultiGroup clips separately: disjoint spans, changing angle availability, duplicate
-   source identities and timecode synchronization. The current group fixture does not prove
-   these cases. Keep complex Phase 13 sequences as robustness evidence rather than a visual
-   equivalence oracle.
+   source identities and timecode synchronization. A Group clip is not evidence of MultiGroup's
+   span layout or selection behavior. Keep complex Phase 13 sequences as robustness evidence
+   rather than a visual equivalence oracle. Linear subclips already retain their own item
+   identity, bounded master range and timeline track routing; nested and AutoSync subclips need
+   separate source-model decisions before flattening.
 
 All development remains local. Source AVBs and media are read-only; fixtures stay outside Git.

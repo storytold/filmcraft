@@ -126,6 +126,14 @@ impl Graph<'_, '_> {
             }
             Decoded::Group(g) => {
                 let mut properties = self.properties(&g.common)?;
+                if g.common.effect.as_ref().is_some_and(|id| id.value.as_ref() == "EFF2_SBLEND")
+                    && properties["attributes"]["_EFFECT_PLUGIN_NAME"] == "3DWarp"
+                    && let Some(reference) = g.common.parameters
+                    && let Some(params) = self.evidence.bin.numeric_parameters(reference)?
+                {
+                    self.charge(params.len().checked_mul(128).ok_or_else(|| bad("parameter expansion overflow"))?)?;
+                    properties["numeric_parameters"] = json!(params);
+                }
                 properties["mc_mode"] = json!(g.mode);
                 for (key, f) in &g.fields {
                     properties[*key] = self.field(f)?;

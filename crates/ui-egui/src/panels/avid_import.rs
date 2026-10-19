@@ -3,6 +3,9 @@ use crate::{FilmcraftApp, native_dialogs::FileDialog, state::AvidImportDraft};
 use egui::{Color32, RichText};
 use serde_json::{Value, json};
 
+// Both path rows use the same field width so their Browse buttons line up.
+const PATH_FIELD_WIDTH: f32 = 510.0;
+
 pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
     if id != "file.importAvidBin" || params.get("job").is_some() {
         return None;
@@ -28,7 +31,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
     let mut read = false;
     let mut apply = false;
-    if let Some(job) = draft.job {
+    if let Some(job) = draft.job.filter(|_| draft.report.is_none()) {
         match app.session.execute("file.avidBinPreparation", json!({"job":job})) {
             Ok(v) => {
                 if v["finished"] == true {
@@ -50,10 +53,11 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         ui.label(tl!("Transfer the bin contents into a new FilmCraft bin."));
         let mut changed = false;
         ui.add_space(8.0);
+        ui.label(tl!("Avid bin"));
         ui.horizontal(|ui| {
             let r = ui.add_enabled(
                 !running && !draft.completed,
-                egui::TextEdit::singleline(&mut draft.path).desired_width(500.0).hint_text(tl!("Choose an .avb file")),
+                egui::TextEdit::singleline(&mut draft.path).desired_width(PATH_FIELD_WIDTH).hint_text(tl!("Choose an .avb file")),
             );
             app.auto.add("avidImport.path", r.rect, &draft.path);
             if r.changed() {
@@ -72,7 +76,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 ui.horizontal(|ui| {
                     let r = ui.add_enabled(
                         !running && !draft.completed,
-                        egui::TextEdit::singleline(folder).desired_width(450.0).hint_text(tl!("Choose a folder, or leave empty for offline import")),
+                        egui::TextEdit::singleline(folder).desired_width(PATH_FIELD_WIDTH).hint_text(tl!("Choose a folder, or leave empty for offline import")),
                     );
                     app.auto.add(&format!("avidImport.mediaFolder.{index}"), r.rect, folder);
                     if index == 0 {
@@ -88,7 +92,10 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         browse_media = Some(index);
                     }
                     if index > 0 {
-                        let r = ui.add_enabled(!running && !draft.completed, egui::Button::new(tl!("Remove")));
+                        let r = ui
+                            .add_enabled_ui(!running && !draft.completed, |ui| ui.add_sized([24.0, 24.0], egui::Button::new("×")))
+                            .inner
+                            .on_hover_text(tl!("Remove"));
                         app.auto.add(&format!("avidImport.removeFolder.{index}"), r.rect, tl!("Remove"));
                         if r.clicked() {
                             remove_folder = Some(index);

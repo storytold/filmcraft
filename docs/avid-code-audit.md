@@ -359,9 +359,10 @@ with selected PCM checked against external FFmpeg. The comparison and feature-fi
 1,928 source SHA-256 hashes remained unchanged. These integration checks supplement the prior
 full 1,903-bin structural replay; that replay was not repeated for the UI merge.
 
-The final merged snapshot passed `cargo xtask ci`: **3,382 tests passed, zero failed and
+The earlier merged snapshot passed `cargo xtask ci`: **3,382 tests passed, zero failed and
 70 explicitly ignored**, plus formatting, release workspace Clippy, dependency layers,
 69 attributed assets and WASM checks for 49 crates. All 25 localization unit tests also
 passed in a focused run. The release rebuild shared the machine with an unrelated build
 for part of validation, so its elapsed time is not a reader-performance measurement.
-This is the submission checkpoint; subsequent feature work waits for review of the existing PR.
+Those counts describe that earlier checkpoint. Later changes, including path handling and
+simple Flip/Flip-Flop translation, require their own validation before submission.

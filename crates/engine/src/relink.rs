@@ -120,7 +120,7 @@ pub fn scan(p: &Project, pool: &MediaPool, services: &dyn Services) -> Vec<Missi
                 .chain(picture.iter().map(|c| (format!("V{}", c.track), &c.path, crate::component_relink::ComponentKey::Picture)));
             for (label, component_path, component) in paths {
                 let pending = component == crate::component_relink::ComponentKey::Picture && picture.as_ref().is_some_and(|c| c.format_pending);
-                if !m.offline && !pending && component_path.as_ref().is_some_and(|p| services.file_size(p).is_ok()) {
+                if !m.offline && !pending && component_path.as_ref().is_some_and(|p| exists(p)) {
                     continue;
                 }
                 let path = component_path.clone().unwrap_or_default();
@@ -617,12 +617,12 @@ fn status_json(s: &Session, id: ItemId) -> Option<Value> {
         let mut components: Vec<Value> = channels
             .iter()
             .map(|c| {
-                let result = crate::component_audio::open_component(c, &*s.services);
+                let result = s.media.followed_audio(c).and_then(|c| crate::component_audio::open_component(&c, &*s.services));
                 json!({"track":c.track,"path":c.path,"present":result.is_ok(),"error":result.err().map(|e|e.to_string())})
             })
             .collect();
         if let Some(c) = picture {
-            let result = crate::component_media::open_bound_picture(c, &m.info, &*s.services);
+            let result = s.media.followed_picture(c).and_then(|c| crate::component_media::open_bound_picture(&c, &m.info, &*s.services));
             components.push(json!({"kind":"picture","track":c.track,"path":c.path,"present":result.is_ok(),"formatPending":c.format_pending,"error":result.err().map(|e|e.to_string())}));
         }
         let present = components.iter().filter(|c| c["present"] == true).count();
@@ -637,14 +637,14 @@ fn status_json(s: &Session, id: ItemId) -> Option<Value> {
     let status = match &path {
         None => "generated",
         Some(_) if m.offline => "offline",
-        Some(p) if s.services.file_size(p).is_err() => "missing",
+        Some(p) if !s.media.follow(p).is_ok_and(|path| s.services.file_size(&path).is_ok()) => "missing",
         Some(_) => match s.media.offline_status(id) {
             Some(o) if o.reason == filmcraft_render::offline::OfflineReason::Unreadable => "unreadable",
             _ => "online",
         },
     };
     let proxy = match &m.proxy {
-        Some(MediaRef::File { path }) => json!({"path": path, "online": s.services.file_size(path).is_ok()}),
+        Some(MediaRef::File { path }) => json!({"path": path, "online": s.media.follow(path).is_ok_and(|file| s.services.file_size(&file).is_ok())}),
         _ => Value::Null,
     };
     Some(json!({

@@ -3619,6 +3619,7 @@
 	Copy selected	コピーを選択済み
 	Identity found, but the file cannot satisfy this component. Hover over the candidate for details.	識別情報は一致しましたが、このコンポーネントに使用できないファイルです。候補にポインターを合わせると詳細が表示されます。
 	Import Avid Bin	Avid ビンを読み込み
+	Avid bin	Avid ビン
 	Import Avid Bin…	Avid ビンを読み込み…
 	Import completed with {n} conversion problems. Review the messages above.	読み込みが完了しましたが、変換に {n} 件の問題がありました。上のメッセージを確認してください。
 	Imported {clips} Avid clips and {sequences} sequences.	Avid のクリップ {clips} 個とシーケンス {sequences} 個を読み込みました。

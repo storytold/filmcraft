@@ -5,8 +5,21 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 pub fn inspect(s: &Session, p: &Value) -> Result<Value> {
-    // Same capped snapshot read and size-change checks as the catalog commands.
-    let bytes = crate::avid_catalog::read_report(s, p)?;
+    // Inspection uses the native bin limit, with the same stable snapshot check as import.
+    let path = p
+        .get("path")
+        .and_then(Value::as_str)
+        .filter(|v| !v.is_empty() && v.len() <= 4096 && !v.contains('\0'))
+        .ok_or_else(|| EngineError::Other("need a nonempty AVB `path`".into()))?;
+    let size = s.services.file_size(path).map_err(|e| EngineError::Other(e.to_string()))?;
+    if size > avid_bin::MAX_BYTES as u64 {
+        return Err(EngineError::Other("Avid bin exceeds 512 MiB".into()));
+    }
+    let limit = usize::try_from(size).ok().and_then(|n| n.checked_add(1)).ok_or_else(|| EngineError::Other("file size overflow".into()))?;
+    let bytes = s.services.read_range(path, 0, limit).map_err(|e| EngineError::Other(e.to_string()))?;
+    if bytes.len() as u64 != size || s.services.file_size(path).map_err(|e| EngineError::Other(e.to_string()))? != size {
+        return Err(EngineError::Other("bin size changed while reading".into()));
+    }
     let index = avid_bin::index(&bytes).map_err(|e| EngineError::Other(e.to_string()))?;
     let mut classes = BTreeMap::<[u8; 4], usize>::new();
     for object in &index.objects {
@@ -44,6 +57,34 @@ mod tests {
         }
         fn write_file(&self, _: &str, _: &[u8]) -> std::io::Result<()> {
             panic!("inspection must not write");
+        }
+    }
+    struct Oversize;
+    impl Services for Oversize {
+        fn read_file(&self, _: &str) -> std::io::Result<Vec<u8>> {
+            panic!("oversize inspection must not read")
+        }
+        fn file_size(&self, _: &str) -> std::io::Result<u64> {
+            Ok(avid_bin::MAX_BYTES as u64 + 1)
+        }
+        fn write_file(&self, _: &str, _: &[u8]) -> std::io::Result<()> {
+            panic!("inspection must not write")
+        }
+    }
+    struct BetweenLimits;
+    impl Services for BetweenLimits {
+        fn read_file(&self, _: &str) -> std::io::Result<Vec<u8>> {
+            panic!("inspection uses a bounded range read")
+        }
+        fn read_range(&self, _: &str, _: u64, limit: usize) -> std::io::Result<Vec<u8>> {
+            assert_eq!(limit, 256 * 1024 * 1024 + 2);
+            Ok(fixture()) // virtual file changed size; no large allocation needed
+        }
+        fn file_size(&self, _: &str) -> std::io::Result<u64> {
+            Ok(256 * 1024 * 1024 + 1)
+        }
+        fn write_file(&self, _: &str, _: &[u8]) -> std::io::Result<()> {
+            panic!("inspection must not write")
         }
     }
     fn fixture() -> Vec<u8> {
@@ -88,5 +129,12 @@ mod tests {
         assert_eq!(output["coverage"], "container");
         assert!(output["membership"].is_null());
         assert_eq!(output["diagnostics"].as_array().unwrap().len(), 2);
+
+        let mut oversized = Session::new(Arc::new(Oversize));
+        let error = oversized.execute("file.inspectAvidBin", json!({"path":"large.avb"})).unwrap_err().to_string();
+        assert!(error.contains("512 MiB"), "{error}");
+        let mut between = Session::new(Arc::new(BetweenLimits));
+        let error = between.execute("file.inspectAvidBin", json!({"path":"changing.avb"})).unwrap_err().to_string();
+        assert!(error.contains("size changed"), "{error}");
     }
 }

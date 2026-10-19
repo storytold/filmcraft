@@ -51,6 +51,7 @@ fn file_edit_clip_menu_order_and_shortcuts_match_premiere() {
             "media.makeOffline",
             "file.importFromMediaBrowser",
             "file.import",
+            "file.importAvidBin",
             "file.projectManager",
         ],
     );

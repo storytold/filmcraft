@@ -1,6 +1,6 @@
 //! Synthetic regressions for subclip dependency, routing and structural validation.
 use filmcraft_interchange::{avid_catalog as cat, avid_sequence as seq};
-use filmcraft_project::{AudioComponent, ItemKind, MediaRef, Project};
+use filmcraft_project::{AudioComponent, ItemKind, MediaRef, PictureComponent, Project};
 use filmcraft_time::{FrameRate, Tick};
 use serde_json::{Value, json};
 
@@ -45,6 +45,129 @@ fn imported(v: &Value) -> (Project, filmcraft_project::BinId, Vec<String>) {
         }
     }
     (p, bins[0].bin, warnings)
+}
+#[test]
+fn simple_avid_flip_wrappers_map_to_native_video_effects() {
+    for (avid, expected) in [("EFF2_BLEND_FLIP_VERT", vec!["vertical_flip"]), ("EFF2_BLEND_FLIP_BOTH", vec!["vertical_flip", "horizontal_flip"])] {
+        let mut v = fixture();
+        let sub = &mut v["bins"][0]["mobs"][1];
+        sub["tracks"][0]["component"]["media_kind"] = json!(1);
+        let timeline = &mut v["bins"][0]["mobs"][2];
+        let leaf = json!({"class":"SCLP","media_kind":1,"length":12,"rate":rate(),"source_id":id(2),"source_track":1,"start":6});
+        timeline["tracks"][1]["component"] = json!({"class":"TKFX","media_kind":1,"length":12,"rate":rate(),"unsupported":"component_semantics",
+            "properties":{"effect_id":avid,"mc_mode":0},"input_tracks":[{"index":1,"component":leaf}]});
+        let (mut p, bin, _) = imported(&v);
+        for item in p.items.values_mut() {
+            if let Some(m) = item.as_media_mut() {
+                m.info.kind = filmcraft_media::MediaKind::Movie;
+                m.info.video = Some(filmcraft_media::VideoStreamInfo {
+                    width: 1920,
+                    height: 1080,
+                    frame_rate: FrameRate::FPS_24,
+                    par: (1, 1),
+                    codec: "test".into(),
+                    pixel_format: "test".into(),
+                    color: filmcraft_color::ColorInfo::REC709,
+                    has_alpha: false,
+                    bitrate: None,
+                    hdr: None,
+                });
+                m.info.audio_streams.clear();
+                m.media = MediaRef::Components {
+                    channels: Vec::new(),
+                    picture: Some(PictureComponent {
+                        format_pending: false,
+                        track: 1,
+                        file_package: [1; 32],
+                        path: None,
+                        source_start: Tick::ZERO,
+                        length: m.info.duration,
+                    }),
+                };
+            }
+        }
+        let plan = seq::plan(&p, &serde_json::to_vec(&v).unwrap(), bin).unwrap();
+        let ids = seq::apply(&mut p, plan).unwrap();
+        let clip = &p.sequence(ids[0]).unwrap().video_tracks[0].items[0];
+        assert_eq!(clip.effects.iter().skip(3).map(|e| e.effect.as_str()).collect::<Vec<_>>(), expected);
+        assert_eq!(clip.source_in, FrameRate::FPS_24.tick_of(30));
+    }
+}
+#[test]
+fn a_static_avid_warp_maps_2d_controls_without_flattening_unknown_3d_controls() {
+    let mut v = fixture();
+    let timeline = &mut v["bins"][0]["mobs"][2];
+    let guid = |key: u16, value: f64| {
+        let mut id = Vec::from(key.to_le_bytes());
+        id.extend([0x56, 0x8d, 0x7e, 0x84, 0xd5, 0x11, 0x93, 0x5a, 0x50, 0xf8, 0x57, 0xc1, 0, 0]);
+        json!({"id":id,"value":value})
+    };
+    let params = vec![
+        guid(0x81a1, 0.59),
+        guid(0x81a9, 1.0),
+        guid(0x81aa, 100.0),
+        guid(0x81ab, -100.0),
+        guid(0x81b2, 1.0),
+        guid(0x81b3, 50.0),
+        guid(0x81b4, 75.0),
+        guid(0x81b7, 1.0),
+        guid(0x81ba, 30.0),
+        guid(0x81bc, 1.0),
+        guid(0x81ed, 1.0),
+        guid(0x81fc, 255.0),
+    ];
+    let leaf = json!({"class":"SCLP","media_kind":1,"length":12,"rate":rate(),"source_id":id(1),"source_track":1,"start":0});
+    timeline["tracks"][1]["component"] = json!({"class":"TKFX","media_kind":1,"length":12,"rate":rate(),"unsupported":"component_semantics",
+    "properties":{"effect_id":"EFF2_SBLEND","mc_mode":0,"numeric_parameters":params,"attributes":{"_EFFECT_PLUGIN_NAME":"3DWarp"}},
+    "input_tracks":[
+        {"index":1,"component":{"class":"SEQU","media_kind":1,"length":12,"rate":rate(),"components":[{"class":"FILL","media_kind":1,"length":12,"rate":rate()}]}},
+        {"index":2,"component":{"class":"SEQU","media_kind":1,"length":12,"rate":rate(),"components":[{"class":"FILL","media_kind":1,"length":0,"rate":rate()},leaf,{"class":"FILL","media_kind":1,"length":0,"rate":rate()}]}}
+    ]});
+    let (mut p, bin, _) = imported(&v);
+    for item in p.items.values_mut() {
+        if let Some(m) = item.as_media_mut() {
+            m.info.kind = filmcraft_media::MediaKind::Movie;
+            m.info.video = Some(filmcraft_media::VideoStreamInfo {
+                width: 1920,
+                height: 1080,
+                frame_rate: FrameRate::FPS_24,
+                par: (1, 1),
+                codec: "test".into(),
+                pixel_format: "test".into(),
+                color: filmcraft_color::ColorInfo::REC709,
+                has_alpha: false,
+                bitrate: None,
+                hdr: None,
+            });
+            m.info.audio_streams.clear();
+            m.media = MediaRef::Components {
+                channels: Vec::new(),
+                picture: Some(PictureComponent {
+                    format_pending: false,
+                    track: 1,
+                    file_package: [1; 32],
+                    path: None,
+                    source_start: Tick::ZERO,
+                    length: m.info.duration,
+                }),
+            };
+        }
+    }
+    let bytes = serde_json::to_vec(&v).unwrap();
+    let plan = seq::plan(&p, &bytes, bin).unwrap();
+    let ids = seq::apply(&mut p, plan).unwrap();
+    let clip = &p.sequence(ids[0]).unwrap().video_tracks[0].items[0];
+    let transform = clip.effects.iter().find(|e| e.effect == "transform").unwrap();
+    assert_eq!(transform.vec2_at("position", Tick::ZERO), filmcraft_geom::Vec2::new(1152.0, 648.0));
+    assert_eq!(transform.f64_at("scale_width", Tick::ZERO), 50.0);
+    assert_eq!(transform.f64_at("scale_height", Tick::ZERO), 75.0);
+    assert_eq!(transform.f64_at("rotation", Tick::ZERO), 30.0);
+
+    // The same wrapper with X rotation is no longer a 2D effect. It must stay explicit.
+    v["bins"][0]["mobs"][2]["tracks"][1]["component"]["properties"]["numeric_parameters"].as_array_mut().unwrap().push(guid(0x81b8, 30.0));
+    let rejected = seq::plan(&p, &serde_json::to_vec(&v).unwrap(), bin).unwrap();
+    let error = seq::apply(&mut p, rejected).unwrap_err().to_string();
+    assert!(error.contains("not translated"), "{error}");
 }
 #[test]
 fn unplaced_subclip_still_resolves_for_timeline() {

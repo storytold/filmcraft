@@ -35,6 +35,7 @@ impl Walk<'_> {
                     duration: length,
                     channels: if self.kind == TrackKind::Audio { (0..self.audio_channels as u16).collect() } else { Vec::new() },
                     scale_to_frame: false,
+                    effects: Vec::new(),
                 }])
             }
             Err(e) => Err(e),
@@ -113,6 +114,7 @@ pub(super) fn sequence_placeholder(m: &Value, error: &Error) -> Result<SequenceP
                 duration,
                 channels: Vec::new(),
                 scale_to_frame: false,
+                effects: Vec::new(),
             }],
         }],
         evidence: m.clone(),

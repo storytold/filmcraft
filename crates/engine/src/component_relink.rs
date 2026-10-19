@@ -131,6 +131,11 @@ fn apply(s: &mut Session, bindings: Vec<Binding>) -> Result<Value> {
         }
         Ok(())
     })?;
+    // These exact files were explicitly chosen (or accepted from verified search results).
+    // A saved path with the same spelling may previously have been refused by doc_path.
+    for binding in &bindings {
+        s.media.allow(&binding.path);
+    }
     for id in ids {
         s.media.remove(id);
     }

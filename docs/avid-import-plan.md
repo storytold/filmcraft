@@ -10,6 +10,14 @@ in [the issue/PR breakdown](avid-issue-breakdown.md).
 
 ## Desktop workflow
 
+An `.avb` holds editorial records, not a playable media file. It can contain many clips,
+subclips and sequences whose media is stored elsewhere or offline. Avid-managed picture and
+audio tracks are commonly separate OP-Atom MXF files. Transferring the bin requires matching
+those components by package identity and source track, then reviewing missing or ambiguous
+matches. FilmCraft's regular **File > Import…** creates media items from selected files; the
+separate **Import Avid Bin…** action provides a bin-wide preview, media search roots, conversion
+diagnostics and one undoable transfer.
+
 1. Choose **File > Import Avid Bin…** and select one `.avb`.
 2. Optionally choose managed MXF folders. **+ Add folder** adds another location, including
    another drive. Selecting a parent includes its numbered subfolders. Leave the list empty
@@ -103,6 +111,25 @@ observed channel-combiner wrappers. The importer attempts every composition:
 The tested automatic mixed-rate adapter maps to FilmCraft Frame Sampling at 100% playback
 speed. The tested spatial adapter maps to Scale to Frame Size. Avid's cadence, interpolation,
 crop/reformat treatment and effect rendering may differ. This is not a fidelity claim.
+
+Avid Flip and Flip-Flop wrappers with one supported picture input map to FilmCraft Vertical Flip
+and Vertical + Horizontal Flip respectively. The effect identity supplies orientation; the
+observed default parameters have not been assigned additional behavior. An unsupported effect
+inside either wrapper is still reported or bypassed under the normal best-effort rules, so this
+does not establish full visual equivalence for a stacked Avid effect.
+
+For the observed Avid 2025.12.1 `EFF2_SBLEND` wrapper identified as `3DWarp` in its effect
+attributes, a static, single-picture foreground over filler maps Position X/Y, Scaling X/Y
+and Z Rotation to FilmCraft Transform.
+The numeric parameter list is decoded within declared AVB object boundaries; a parameter
+linked to a `PRCL` curve is not treated as static. Position uses
+the sequence raster: in a 1920×1080 Avid render, +100 X moves the image +192 pixels and
+-100 Y moves it +108 pixels. The original first-party bin and Avid-rendered TIFFs establish
+that calibration; a synthetic FilmCraft import regression checks effect placement and values.
+Animated controls, Z Position, X/Y Rotation, nonzero Axis, Crop, other controls and a real
+background input remain unsupported. They are reported rather than represented as an
+equivalent 2D Transform. Edge sampling and compositing equivalence still need Avid/FilmCraft
+side-by-side validation.
 
 Original color attributes and auxiliary tracks are retained as evidence, but visual color
 mapping, markers, mixer automation, creative retimes, transitions, nesting and complex effects

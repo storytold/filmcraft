@@ -185,9 +185,12 @@ impl MediaPool {
     /// without a file), as stored paths: they are opened only as [`crate::doc_path::resolve`]
     /// allows. A path already recorded keeps the document it came from first.
     pub fn add_stored(&self, p: &Project, document: Option<&str>) {
-        let paths = p.items.values().filter_map(|i| i.as_media()).flat_map(|m| [Some(&m.media), m.proxy.as_ref()]).filter_map(|r| match r {
-            Some(MediaRef::File { path }) => Some(path.clone()),
-            _ => None,
+        let paths = p.items.values().filter_map(|i| i.as_media()).flat_map(|m| [Some(&m.media), m.proxy.as_ref()]).flat_map(|r| match r {
+            Some(MediaRef::File { path }) => vec![path.clone()],
+            Some(MediaRef::Components { channels, picture }) => {
+                channels.iter().filter_map(|c| c.path.clone()).chain(picture.iter().filter_map(|c| c.path.clone())).collect()
+            }
+            _ => Vec::new(),
         });
         self.add_stored_paths(paths, document);
     }
@@ -227,6 +230,22 @@ impl MediaPool {
     /// [`Self::follow`] as a media error (a refused path is a missing file).
     fn follow_media(&self, path: &str) -> Result<String, MediaError> {
         self.follow(path).map_err(|why| MediaError::Offline(format!("{path} is not opened: {why}")))
+    }
+
+    pub(crate) fn followed_audio(&self, component: &filmcraft_project::AudioComponent) -> Result<filmcraft_project::AudioComponent, MediaError> {
+        let mut followed = component.clone();
+        if let Some(path) = &component.path {
+            followed.path = Some(self.follow_media(path)?);
+        }
+        Ok(followed)
+    }
+
+    pub(crate) fn followed_picture(&self, component: &filmcraft_project::PictureComponent) -> Result<filmcraft_project::PictureComponent, MediaError> {
+        let mut followed = component.clone();
+        if let Some(path) = &component.path {
+            followed.path = Some(self.follow_media(path)?);
+        }
+        Ok(followed)
     }
 
     /// Forget every opened source (files are re-read on next use).
@@ -332,7 +351,24 @@ impl MediaPool {
                     self.set_offline(item, OfflineReason::MadeOffline, "", "made offline");
                     Arc::new(SlateSource::new(m.info.clone(), &it.name, OfflineReason::MadeOffline))
                 } else {
-                    match crate::component_media::open(m.info.clone(), channels, picture.as_ref(), services) {
+                    let channels: Vec<_> = channels
+                        .iter()
+                        .map(|c| {
+                            self.followed_audio(c).unwrap_or_else(|_| {
+                                let mut missing = c.clone();
+                                missing.path = None;
+                                missing
+                            })
+                        })
+                        .collect();
+                    let picture = picture.as_ref().map(|c| {
+                        self.followed_picture(c).unwrap_or_else(|_| {
+                            let mut missing = c.clone();
+                            missing.path = None;
+                            missing
+                        })
+                    });
+                    match crate::component_media::open(m.info.clone(), &channels, picture.as_ref(), services) {
                         Ok((source, failures)) => {
                             if failures.is_empty() {
                                 self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
