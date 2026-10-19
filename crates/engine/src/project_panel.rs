@@ -967,10 +967,10 @@ fn view_set(s: &mut Session, p: &Value) -> Result<Value> {
     }
     if let Some(v) = p.get("iconSort") {
         match v {
-            Value::String(c) => pp.view.icon_sort.column = canonical_column(&s.project, c).unwrap_or_default(),
+            Value::String(c) => pp.view.icon_sort.column = canonical_column(&s.project, &pp.view.columns, c).unwrap_or_default(),
             Value::Object(_) => {
                 if let Some(c) = str_p(v, "column") {
-                    pp.view.icon_sort.column = canonical_column(&s.project, c).unwrap_or_default();
+                    pp.view.icon_sort.column = canonical_column(&s.project, &pp.view.columns, c).unwrap_or_default();
                 }
                 if let Some(d) = bool_p(v, "descending") {
                     pp.view.icon_sort.descending = d;
@@ -984,7 +984,10 @@ fn view_set(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// The column's canonical spelling, or None for an unknown column ("" / "User Order" = None).
-fn canonical_column(p: &Project, c: &str) -> Option<String> {
+fn canonical_column(p: &Project, shown: &[Column], c: &str) -> Option<String> {
+    if shown.iter().any(|x| x.name == c) {
+        return Some(c.to_string());
+    }
     let columns = all_columns(p);
     if columns.iter().any(|x| x == c) {
         return Some(c.to_string());
@@ -1007,7 +1010,7 @@ fn columns_set(s: &mut Session, p: &Value) -> Result<Value> {
             _ => return Err(bad("project.columns.set", "columns are names or {name, width}")),
         };
         // custom fields may be added before any item has them
-        let name = canonical_column(&s.project, &name)
+        let name = canonical_column(&s.project, &s.prefs.project_panel.view.columns, &name)
             .unwrap_or_else(|| if filmcraft_project::find::metadata_key(&name).is_some() { name.clone() } else { name.trim().to_string() });
         if name.is_empty() || filmcraft_project::find::metadata_key(&name).is_some_and(|k| k.trim().is_empty() || is_internal_key(k)) {
             return Err(bad("project.columns.set", "empty or internal column name"));
@@ -1043,7 +1046,7 @@ fn columns_resize(s: &mut Session, p: &Value) -> Result<Value> {
     let name = if prefs.project_panel.view.columns.iter().any(|x| x.name == c) {
         c.to_string()
     } else {
-        canonical_column(&s.project, c).unwrap_or_else(|| c.to_string())
+        canonical_column(&s.project, &prefs.project_panel.view.columns, c).unwrap_or_else(|| c.to_string())
     };
     let col =
         prefs.project_panel.view.columns.iter_mut().find(|x| x.name == name).ok_or_else(|| bad("project.columns.resize", format!("`{c}` is not shown")))?;
@@ -1054,7 +1057,7 @@ fn columns_resize(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn sort(s: &mut Session, p: &Value) -> Result<Value> {
     let c = str_p(p, "column").ok_or_else(|| bad("project.sort", "need `column`"))?;
-    let c = canonical_column(&s.project, c).ok_or_else(|| bad("project.sort", format!("unknown column `{c}`")))?;
+    let c = canonical_column(&s.project, &s.prefs.project_panel.view.columns, c).ok_or_else(|| bad("project.sort", format!("unknown column `{c}`")))?;
     let mut prefs = s.prefs.clone();
     let cur = &mut prefs.project_panel.view.sort;
     let desc = bool_p(p, "descending").unwrap_or(cur.column == c && !cur.descending);

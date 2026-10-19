@@ -109,6 +109,20 @@ fn sorting_by_a_column_and_reversing() {
 }
 
 #[test]
+fn configured_metadata_column_can_sort_before_any_item_has_the_key() {
+    let mut s = demo();
+    assert!(s.project.items.values().all(|it| !it.metadata.contains_key("Mood")));
+    s.execute("project.columns.set", json!({"columns": ["Name", "metadata:Mood", "Unused"]})).unwrap();
+    s.execute("project.sort", json!({"column": "metadata:Mood"})).unwrap();
+    assert_eq!(s.prefs.project_panel.view.sort.column, "metadata:Mood");
+    s.execute("project.view.set", json!({"iconSort": "metadata:Mood"})).unwrap();
+    assert_eq!(s.prefs.project_panel.view.icon_sort.column, "metadata:Mood");
+    s.execute("project.sort", json!({"column": "Unused"})).unwrap();
+    assert!(s.execute("project.sort", json!({"column": "metadata:Unknown"})).is_err());
+    assert!(s.execute("project.sort", json!({"column": "Unknown"})).is_err());
+}
+
+#[test]
 fn view_presets_save_restore_and_manage() {
     let mut s = demo();
     assert!(s.execute("project.viewPreset.save", json!({})).is_err(), "no current preset yet");
