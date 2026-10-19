@@ -290,13 +290,19 @@ pub(crate) fn paint_tool_pointer(ctx: &egui::Context, tool: Tool, at: Pos2) {
 }
 
 /// The tracks the Razor's preview line crosses at the pointer over `clip`: the clip's own and its
-/// linked clips' tracks, or every track with Shift (what `timeline.razor` cuts).
+/// linked clips' tracks, or every track with Shift, leaving out locked ones (what `timeline.razor`
+/// cuts).
 pub fn razor_line_tracks(app: &FilmcraftApp, clip: ClipId, shift: bool) -> Vec<TrackId> {
     let (Some(layout), Some(seq)) = (app.tl.layout.as_ref(), app.session.active_sequence()) else { return Vec::new() };
+    let unlocked = |t: &TrackId| seq.track(*t).is_some_and(|t| !t.locked);
     if shift {
-        return layout.rows.iter().map(|r| r.track).collect();
+        return layout.rows.iter().map(|r| r.track).filter(unlocked).collect();
     }
-    filmcraft_engine::commands::with_links(&app.session, &[clip]).into_iter().filter_map(|c| seq.find_item(c).map(|(track, _)| track)).collect()
+    filmcraft_engine::commands::with_links(&app.session, &[clip])
+        .into_iter()
+        .filter_map(|c| seq.find_item(c).map(|(track, _)| track))
+        .filter(unlocked)
+        .collect()
 }
 
 fn label_color(app: &FilmcraftApp, l: filmcraft_project::Label) -> Color32 {

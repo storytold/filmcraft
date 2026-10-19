@@ -134,7 +134,7 @@ fn the_editing_tools_draw_their_own_pointer_over_the_tracks() {
 
 #[test]
 fn the_razor_line_crosses_the_linked_clips_or_every_track_with_shift() {
-    let d = Driver::demo();
+    let mut d = Driver::demo();
     let city = d.v1_clip(CITY);
     let (video, link) = {
         let seq = d.app().session.active_sequence().unwrap();
@@ -154,4 +154,12 @@ fn the_razor_line_crosses_the_linked_clips_or_every_track_with_shift() {
     let seq = d.app().session.active_sequence().unwrap();
     assert_eq!(every.len(), seq.video_tracks.len() + seq.audio_tracks.len(), "Shift: every track");
     assert!(every.len() > linked.len());
+    // a locked track is not cut, so the line leaves it out, with or without Shift
+    let locked = partner.unwrap_or(video);
+    d.ok("engine.execute", json!({"command": "timeline.setTrack", "params": {"track": locked.0, "locked": true}}));
+    d.frames(2);
+    let linked = filmcraft_ui_egui::panels::timeline::razor_line_tracks(d.app(), ClipId(city), false);
+    assert!(!linked.contains(&locked), "a locked partner track gets no line: {linked:?}");
+    let shifted = filmcraft_ui_egui::panels::timeline::razor_line_tracks(d.app(), ClipId(city), true);
+    assert!(!shifted.contains(&locked) && shifted.len() + 1 == every.len(), "Shift: every track but the locked one: {shifted:?}");
 }
