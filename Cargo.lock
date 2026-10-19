@@ -1837,6 +1837,7 @@ dependencies = [
  "filmcraft-bitstream",
  "filmcraft-color",
  "filmcraft-dnx",
+ "filmcraft-dv",
  "filmcraft-frame",
  "filmcraft-h264",
  "filmcraft-hevc",
@@ -1888,6 +1889,13 @@ dependencies = [
  "filmcraft-testkit",
  "rayon",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "filmcraft-dv"
+version = "0.8.0"
+dependencies = [
+ "filmcraft-testkit",
 ]
 
 [[package]]

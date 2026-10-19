@@ -1,6 +1,6 @@
 # Codec parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: every codec Premiere Pro 26.5.2 decodes or encodes, against ours) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-19 · **Change:** minor (DV25 / DVCPRO25 NTSC decode in MOV, #2092) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
 
 Video and audio codecs, decode and encode, with fidelity and how each is tested. Containers,
 project and interchange files are in [file-format-parity.md](file-format-parity.md); hardware
@@ -27,7 +27,7 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 | Motion JPEG | decode + encode | yes | yes (MOV) | — | 90% | — |
 | JPEG 2000 (MXF, DCP) | decode + encode (Kakadu) | none | none | — | 0% | 40–70 h |
 | JPEG XS | decode (`libjpegxs`) | none | none | — | 0% | 20–40 h |
-| DV / DVCPRO / DV100 | decode + encode | none | none | — | 0% | 15–25 h |
+| DV / DVCPRO / DV100 | decode + encode | native DV25/DVCPRO25 525/60 4:1:1 MOV; PAL, 50/100 Mb/s and AVI remain unsupported | none | generated progressive/interlaced oracle (8×8 and 2-4-8 DCT, rightmost chroma) + MOV seek / PCM oracle + mutation tests | partial | remaining profiles/encode not estimated |
 | MPEG-4 Part 2 | decode | none | none | — | 0% | 10–20 h |
 | WMV / VC-1 | decode, encode on Windows | none | none | — | 0% | 20–35 h |
 | CinemaDNG / DNG | decode | own decoder (#1065): uncompressed and lossless JPEG raw, Bayer and LinearRaw, DNG colour model to linear Rec. 709 floats; folders of `.dng` frames as one clip with the CinemaDNG frame rate and time code; **no** lossy / JPEG XL DNG, MXF-wrapped CinemaDNG, opcode lists or Raw settings UI | — | raw samples bit-exact (and identical to LibRaw's on our synthetic files), processing against hand-computed values | 60% | 10–20 h |
@@ -61,5 +61,6 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-19 | minor | DV25 / DVCPRO25 NTSC decode in MOV (#2092) |
 | 2026-10-11 | minor | CinemaDNG / DNG decode (#1065) |
 | 2026-10-10 | major | Created: codec-by-codec comparison with Premiere 26.5.2 from the codec crates' READMEs, the export format registry and the installed bundle's listings |

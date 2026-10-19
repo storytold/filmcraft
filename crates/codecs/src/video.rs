@@ -755,6 +755,55 @@ pub fn av1_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
 /// Our ProRes decoder (every frame is intra; slices decode in parallel).
 pub struct ProResDecoder;
 
+/// Native DV25/DVCPRO25 decoder. Original files are decoded directly on demand.
+pub struct DvDecoder;
+impl VideoDecoder for DvDecoder {
+    fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
+        use std::sync::Arc;
+        let f = filmcraft_dv::decode_frame(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
+        // The compositor supports 4:2:2 but not 4:1:1. Replication retains every original
+        // chroma sample without changing the source file or the frame/field timing.
+        let expand = |plane: Vec<u8>| plane.into_iter().flat_map(|v| [v, v]).collect();
+        let frame = VideoFrame {
+            width: 720,
+            height: 480,
+            data: filmcraft_frame::PixelData::Yuv8 {
+                planes: [Arc::new(f.y), Arc::new(expand(f.cb)), Arc::new(expand(f.cr))],
+                chroma: filmcraft_frame::Chroma::C422,
+                alpha: None,
+            },
+            color: filmcraft_color::ColorInfo {
+                matrix: filmcraft_color::Matrix::Bt601,
+                primaries: filmcraft_color::Primaries::Bt601_525,
+                ..filmcraft_color::ColorInfo::REC709
+            },
+            par: (10, 11),
+            pts: filmcraft_time::Tick::ZERO,
+        };
+        Ok(vec![DecodedFrame { pts, frame, draft: false }])
+    }
+    fn flush(&mut self) -> Vec<DecodedFrame> {
+        Vec::new()
+    }
+    fn reset(&mut self) {}
+    fn name(&self) -> &str {
+        "FilmCraft DV25"
+    }
+    fn intra_only(&self) -> bool {
+        true
+    }
+    fn is_random_access(&self, _sample: &[u8]) -> Option<bool> {
+        Some(true)
+    }
+    fn is_disposable(&self, _sample: &[u8]) -> bool {
+        true
+    }
+}
+
+pub fn dv_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
+    matches!(e.codec, CodecConfig::Dv).then(|| Ok(Box::new(DvDecoder) as Box<dyn VideoDecoder>))
+}
+
 impl VideoDecoder for ProResDecoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
         use std::sync::Arc;
