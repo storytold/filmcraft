@@ -35,13 +35,10 @@ use crate::fft::Fft;
 
 #[path = "remix_arrange.rs"]
 mod arrange;
-#[path = "remix_levels.rs"]
-mod levels;
 #[path = "remix_melody.rs"]
 mod melody;
 #[path = "remix_options.rs"]
 mod options;
-pub use levels::{JoinLevel, LevelMatch, match_levels};
 
 /// Beats of context on each side of a joint that the similarity looks at.
 pub const CONTEXT: usize = 4;
@@ -581,18 +578,6 @@ pub fn plan(a: &Analysis, target: i64, params: Params) -> Result<Plan, RemixErro
 /// joint at output position `J` crossfades over `[J − xfade/2, J + xfade/2)` with equal-power
 /// gains; the result does not depend on how the output is cut into requests.
 pub fn render(plan: &Plan, out0: i64, n: usize, channels: usize, read: &mut dyn FnMut(i64, usize) -> Vec<Vec<f32>>) -> Vec<Vec<f32>> {
-    render_with_levels(plan, None, out0, n, channels, read)
-}
-
-/// Same block-independent renderer, with persisted optional local seam gains.
-pub fn render_with_levels(
-    plan: &Plan,
-    levels: Option<&LevelMatch>,
-    out0: i64,
-    n: usize,
-    channels: usize,
-    read: &mut dyn FnMut(i64, usize) -> Vec<Vec<f32>>,
-) -> Vec<Vec<f32>> {
     let mut out = vec![vec![0f32; n]; channels];
     let x = plan.xfade.max(0);
     let h0 = x / 2;
@@ -611,32 +596,18 @@ pub fn render_with_levels(
         if z <= a {
             continue;
         }
-        let previous = pi.checked_sub(1).and_then(|j| levels.and_then(|m| m.joins.get(j)));
-        let next = levels.and_then(|m| m.joins.get(pi));
-        let radius = levels.map_or(1, |m| m.span.min(p.len / 2).max(1));
-        let valid_gain = |g: f32| if g.is_finite() { f64::from(g.clamp(0.25, 1.0)).ln() } else { 0.0 };
-        let entering = previous.map_or(0.0, |j| valid_gain(j.after));
-        let leaving = next.map_or(0.0, |j| valid_gain(j.before));
         let len = (z - a) as usize;
         let buf = read(p.src + (a - ds), len);
         for i in 0..len {
             let o = a + i as i64;
-            let mut g = levels::envelope(entering, o - ds, radius) * levels::envelope(leaving, de - o, radius);
+            let mut g = 1.0f64;
             if fade_in && o < ds + h1 {
                 let u = (o - (ds - h0)) as f64 + 0.5;
-                let theta = u / x as f64 * std::f64::consts::FRAC_PI_2;
-                g *= theta.sin();
-                if let Some(j) = previous {
-                    g /= (1.0 + f64::from(j.correlation.clamp(0.0, 1.0)) * (2.0 * theta).sin()).sqrt();
-                }
+                g *= (u / x as f64 * std::f64::consts::FRAC_PI_2).sin();
             }
             if fade_out && o >= de - h0 {
                 let u = (o - (de - h0)) as f64 + 0.5;
-                let theta = u / x as f64 * std::f64::consts::FRAC_PI_2;
-                g *= theta.cos();
-                if let Some(j) = next {
-                    g /= (1.0 + f64::from(j.correlation.clamp(0.0, 1.0)) * (2.0 * theta).sin()).sqrt();
-                }
+                g *= (u / x as f64 * std::f64::consts::FRAC_PI_2).cos();
             }
             let g = g as f32;
             let k = (o - out0) as usize;

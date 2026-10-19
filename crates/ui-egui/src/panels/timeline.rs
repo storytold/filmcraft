@@ -25,9 +25,6 @@ use crate::theme::Tokens;
 use super::timeline_hit::{EdgeKind, Grab, edge_geometry, grab_at, marker_at, marker_range_rect, marker_rect, marker_under_pointer};
 pub use super::timeline_hit::{Hit, ROLL_PX, hit, selection_trim_kind};
 
-#[path = "timeline_remix_waveform.rs"]
-mod remix_waveform;
-
 const TOP_H: f32 = 58.0; // timecode + toolbar (left) / ruler (right)
 const RULER_H: f32 = 44.0;
 const SCROLLBAR_H: f32 = 17.0;
@@ -54,8 +51,6 @@ pub struct TlState {
     snap_x: Option<f32>,
     pub peaks: Arc<Mutex<HashMap<PeakKey, Arc<Vec<(f32, f32)>>>>>,
     peaks_pending: Arc<Mutex<Vec<PeakKey>>>,
-    /// Rendered peaks are specific to a Remix plan, not shared with source media.
-    remix_waveforms: remix_waveform::Cache,
     /// Nested sequences have waveforms too, of their mix. Unlike media a sequence changes: this is
     /// the content key (see [`sequence_audio_key`]) the cached peaks of each sequence were made
     /// from, and the key worked out for the session revision last seen.
@@ -76,7 +71,6 @@ impl TlState {
     pub fn reset_media_caches(&mut self) {
         self.peaks = Default::default();
         self.peaks_pending = Default::default();
-        self.remix_waveforms = Default::default();
         self.seq_peak_keys = Default::default();
         self.seq_keys_seen.clear();
         self.peak_max.clear();
@@ -931,9 +925,6 @@ fn draw_clip(
     if kind == TrackKind::Audio && app.ui.timeline.show_waveforms && w > 3.0 {
         draw_waveform(app, p, body, it, Color32::from_rgb(fill.r() / 2, fill.g() / 2, fill.b() / 2));
     }
-    if kind == TrackKind::Audio {
-        draw_remix_splices(app, p, body, it);
-    }
     let clip_p = p.with_clip_rect(body.shrink2(vec2(1.0, 0.0)).intersect(p.clip_rect()));
     // name band
     if w > 24.0 {
@@ -988,70 +979,8 @@ fn draw_clip(
     }
 }
 
-/// Original procedural markers, drawn from the persisted output plan rather than
-/// source timestamps. They are visual only and do not intercept timeline gestures.
-fn draw_remix_splices(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, item: &TrackItem) {
-    if item.duration.0 <= 0 || body.width() < 4.0 || body.height() < 10.0 || !filmcraft_render::remix::is_remixed(item) {
-        return;
-    }
-    let Some(remix) = filmcraft_render::remix::Remix::of(item) else { return };
-    if remix.pieces.len() > 33 {
-        return;
-    }
-    let area = Rect::from_min_max(pos2(body.min.x + 1.0, body.min.y + 16.0f32.min(body.height() * 0.35)), pos2(body.max.x - 1.0, body.max.y - 2.0))
-        .intersect(p.clip_rect());
-    if !area.is_positive() {
-        return;
-    }
-    let painter = p.with_clip_rect(area);
-    let mut position = 0i64;
-    for (index, piece) in remix.pieces.iter().take(remix.pieces.len().saturating_sub(1)).enumerate() {
-        if piece.len.0 <= 0 {
-            return;
-        }
-        let Some(next) = position.checked_add(piece.len.0) else { return };
-        position = next;
-        if position <= 0 || position >= item.duration.0 {
-            continue;
-        }
-        let x = body.min.x + (position as f64 / item.duration.0 as f64 * f64::from(body.width())) as f32;
-        if !x.is_finite() || x < area.min.x || x > area.max.x {
-            continue;
-        }
-        let top = (body.min.y + 16.0f32.min(body.height() * 0.35)).max(area.min.y);
-        let bottom = area.max.y;
-        let shadow = Color32::from_black_alpha(190);
-        let ink = Color32::from_rgb(255, 236, 173);
-        let mut y = top + 5.0;
-        // Bound work independently of malformed or extremely tall track geometry.
-        for _ in 0..512 {
-            if y >= bottom {
-                break;
-            }
-            let end = (y + 3.0).min(bottom);
-            painter.line_segment([pos2(x, y), pos2(x, end)], Stroke::new(3.0, shadow));
-            painter.line_segment([pos2(x, y), pos2(x, end)], Stroke::new(1.2, ink));
-            y += 5.0;
-        }
-        painter.circle_filled(pos2(x, top + 2.5), 3.2, shadow);
-        painter.circle_filled(pos2(x, top + 2.5), 2.0, ink);
-        app.auto.add(
-            &format!("timeline.remixJoint.{}.{index}", item.id.0),
-            Rect::from_min_max(pos2(x - 3.0, top), pos2(x + 3.0, bottom)).intersect(area),
-            &format!("Remix splice {}: {:.3} s", index + 1, Tick(position).seconds()),
-        );
-    }
-}
-
 fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &TrackItem, col: Color32) {
-    let remixed = filmcraft_render::remix::is_remixed(it);
-    let (peaks, remix_maximum) = if remixed {
-        let Some(rendered) = remix_waveform::request(app, p.ctx(), it) else { return };
-        (rendered.values, Some(rendered.maximum))
-    } else {
-        let Some(source) = request_peaks(app, it.item, it.audio_stream) else { return };
-        (source, None)
-    };
+    let Some(peaks) = request_peaks(app, it.item, it.audio_stream) else { return };
     let pkey = (it.item, it.audio_stream);
     let spp = 256.0;
     let sr = 48_000.0;
@@ -1062,14 +991,14 @@ fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &Tra
         return;
     }
     let key = Arc::as_ptr(&peaks) as usize;
-    let peak = remix_maximum.unwrap_or_else(|| match app.tl.peak_max.get(&pkey) {
+    let peak = match app.tl.peak_max.get(&pkey) {
         Some(&(k, v)) if k == key => v,
         _ => {
             let v = peaks.iter().fold(0f32, |m, (a, b)| m.max(a.abs()).max(b.abs()));
             app.tl.peak_max.insert(pkey, (key, v));
             v
         }
-    });
+    };
     let gain = waveform_display_gain(peak, it.gain_db);
     let dynamic = app.ui.extras.dynamic_waveforms;
     let mut mesh = egui::Mesh::default();
@@ -1079,10 +1008,8 @@ fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &Tra
         let f1 = (x as f32 + 1.0 - body.min.x) / dur_px;
         let t0 = it.start + Tick((it.duration.0 as f64 * f0 as f64) as i64);
         let t1 = it.start + Tick((it.duration.0 as f64 * f1 as f64) as i64);
-        // Remix peaks already represent clip-relative output, including repeats and fades.
-        let wave_time = |t| if remixed { t - it.start } else { it.source_time_at(t) };
-        let s0 = (wave_time(t0).seconds() * sr / spp) as usize;
-        let s1 = ((wave_time(t1).seconds() * sr / spp) as usize).max(s0 + 1);
+        let s0 = (it.source_time_at(t0).seconds() * sr / spp) as usize;
+        let s1 = ((it.source_time_at(t1).seconds() * sr / spp) as usize).max(s0 + 1);
         let mut m = 0f32;
         for (a, b) in peaks.iter().skip(s0).take(s1 - s0) {
             m = m.max(a.abs()).max(b.abs());

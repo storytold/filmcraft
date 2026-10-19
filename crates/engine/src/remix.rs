@@ -138,23 +138,8 @@ fn make_plan(s: &Session, c: ClipId, target: Tick, segments: f64, variations: f6
         Some(plan) => plan,
         None => dsp::plan(&a, target.to_units_floor(sr), params).map_err(|e| EngineError::Other(format!("cannot remix: {e}")))?,
     };
-    let source = s.source(it.item).ok_or_else(|| EngineError::Other("the clip's media is offline".into()))?;
-    let base = it.source_in.to_units_floor(sr);
-    let mut levels = dsp::match_levels(&plan, sr as u32, a.period, &mut |start, count| {
-        source.audio_stream(it.audio_stream, base.checked_add(start)?, count, sr as u32).ok().map(|b| b.channels)
-    })
-    .ok_or_else(|| EngineError::Other("cannot read audio for remix level matching".into()))?;
-    levels.span = Tick::from_units(levels.span, sr).0;
     let pieces = plan.pieces.iter().map(|p| TickPiece { src: it.source_in + Tick::from_units(p.src, sr), len: Tick::from_units(p.len, sr) }).collect();
-    let rm = Remix {
-        target,
-        segments: params.segments,
-        variations: params.variations,
-        original,
-        xfade: Tick::from_units(plan.xfade, sr),
-        pieces,
-        levels: Some(levels),
-    };
+    let rm = Remix { target, segments: params.segments, variations: params.variations, original, xfade: Tick::from_units(plan.xfade, sr), pieces };
     Ok((Tick::from_units(plan.len(), sr), rm, a))
 }
 

@@ -98,22 +98,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
             continue;
         }
-        let clip = p.get("clip").and_then(Value::as_u64);
-        match app.session.execute(&cmd, p) {
-            Err(error) => app.ui.status = error.to_string(),
-            Ok(result) if cmd == "clip.remix" => {
-                if let Some(clip) = clip {
-                    let id = egui::Id::new(("es-melody-options", clip));
-                    if result.get("applied").and_then(Value::as_bool) == Some(false) {
-                        let choices: Vec<f64> = result["alternatives"].as_array().into_iter().flatten().filter_map(|x| x["seconds"].as_f64()).collect();
-                        ui.ctx().data_mut(|data| data.insert_temp(id, choices));
-                        app.ui.status = tl!("No matching phrase at this duration. Choose another length below.").into();
-                    } else {
-                        ui.ctx().data_mut(|data| data.remove::<Vec<f64>>(id));
-                    }
-                }
-            }
-            _ => {}
+        if let Err(e) = app.session.execute(&cmd, p) {
+            app.ui.status = e.to_string();
         }
     }
 }
@@ -328,7 +314,13 @@ fn typed_body(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, items: &[Tra
                     }
                 }
                 Section::Ducking => ducking(ui, cx, st, on),
-                Section::Duration => duration(ui, cx, items),
+                Section::Duration => {
+                    ui.label(
+                        egui::RichText::new(tl!("Remixing music to a target duration is not available yet. Trim the clip and add a crossfade instead."))
+                            .color(t.text_faint)
+                            .size(11.5),
+                    );
+                }
                 Section::Pan => slider(ui, cx, tl!("Pan"), "pan.value", st.pan.value, (-100.0, 100.0), 1, "", on),
             }
             ui.add_space(8.0);
@@ -336,67 +328,6 @@ fn typed_body(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, items: &[Tra
     }
     let r = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover()).0;
     ui.painter().line_segment([r.left_top(), r.right_top()], Stroke::new(1.0, t.separator));
-}
-
-/// One selected Music clip; Enter in the duration field and Apply use the same command.
-fn duration(ui: &mut egui::Ui, cx: &mut Ctx, items: &[TrackItem]) {
-    let [item] = items else {
-        ui.label(tl!("Select one music clip to remix its duration."));
-        return;
-    };
-    let remix = filmcraft_render::remix::Remix::of(item);
-    let id = egui::Id::new(("es-duration-draft", item.id.0));
-    let mut draft: f64 = ui.data(|d| d.get_temp(id)).unwrap_or_else(|| remix.as_ref().map(|r| r.target.seconds()).unwrap_or(item.duration.seconds()));
-    let options_id = egui::Id::new(("es-melody-options", item.id.0));
-    let enter_pressed = ui.input(|input| input.key_pressed(egui::Key::Enter));
-    let mut apply_requested = false;
-    ui.horizontal(|ui| {
-        ui.label(tl!("Target duration"));
-        let response = ui.add(egui::DragValue::new(&mut draft).range(1.0..=3600.0).speed(0.1).suffix(" s"));
-        cx.auto.add("essentialSound.duration.seconds", response.rect, "Target duration");
-        apply_requested = enter_pressed && response.lost_focus();
-        if response.changed() {
-            ui.data_mut(|data| data.remove::<Vec<f64>>(options_id));
-        }
-    });
-    let mut reverted = false;
-    ui.horizontal(|ui| {
-        let apply = ui.button(tl!("Apply Remix"));
-        cx.auto.add("essentialSound.duration.apply", apply.rect, "Apply Remix");
-        if apply.clicked() || apply_requested {
-            cx.actions.push(("clip.remix".into(), json!({"clip": item.id.0, "seconds": draft,"matchMelody":true})));
-        }
-        if remix.is_some() {
-            let revert = ui.button(tl!("Revert Remix"));
-            cx.auto.add("essentialSound.duration.revert", revert.rect, "Revert Remix");
-            if revert.clicked() {
-                cx.actions.push(("clip.remix.revert".into(), json!({"clip": item.id.0})));
-                reverted = true;
-            }
-        }
-    });
-    if let Some(choices) = ui.data(|data| data.get_temp::<Vec<f64>>(options_id)) {
-        ui.label(tl!("No matching phrase at this duration. Choose another length below."));
-        for (index, seconds) in choices.iter().enumerate() {
-            let choice = ui.button(format!("{seconds:.3} s"));
-            cx.auto.add(&format!("essentialSound.duration.alternative.{index}"), choice.rect, "Use suggested duration");
-            if choice.clicked() {
-                draft = *seconds;
-                cx.actions.push(("clip.remix".into(), json!({"clip":item.id.0,"seconds":seconds,"matchMelody":true})));
-            }
-        }
-    }
-    ui.label(format!("{}: {:.3} s", tl!("Duration"), item.duration.seconds()));
-    ui.label(tl!("Original tempo is preserved. Other lengths are suggested when phrases do not match."));
-    ui.label(tl!("Cuts follow musical beats. Actual duration may differ by up to one beat."));
-    ui.data_mut(|d| {
-        if reverted {
-            d.remove::<f64>(id);
-            d.remove::<Vec<f64>>(options_id);
-        } else {
-            d.insert_temp(id, draft);
-        }
-    });
 }
 
 fn loudness(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, items: &[TrackItem]) {

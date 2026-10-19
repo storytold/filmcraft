@@ -30,7 +30,6 @@ jobs:
     # Intentionally tracked at @main (not SHA-pinned) so org-wide CI improvements, security fixes, and build optimizations propagate without PR churn across all craftapp repos.
     uses: storytold/craft-common-actions/.github/workflows/freebsd.yml@main
     with:
-      freebsd-release: "14.3"
       craft-fonts-ref: abb83316d96aa59c1cf64784289e378fe9fa5695
       skip-tests: true
       run-package-check: true
