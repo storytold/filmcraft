@@ -686,3 +686,21 @@ fn the_export_window_and_the_status_bar_offer_the_progress_window() {
     d.frames(2);
     assert!(d.has("progress.window"), "one click opens it");
 }
+
+/// The progress window does not depend on the status bar: with the bar hidden the preference
+/// still shows it (#1192).
+#[test]
+fn the_progress_window_also_shows_when_the_status_bar_is_hidden() {
+    use std::sync::atomic::Ordering;
+
+    use filmcraft_engine::Job;
+    let mut d = Driver::new("progress-window-no-status-bar");
+    d.app().ui.show_status_bar = false;
+    d.app().session.prefs.general.show_progress_window = true;
+    let job = Job { id: 903, label: "Exporting".into(), progress: Default::default(), result: Default::default() };
+    job.progress.total.store(1000, Ordering::Relaxed);
+    job.progress.done.store(250, Ordering::Relaxed);
+    d.app().session.jobs.push(job);
+    d.frames(4);
+    assert!(d.has("progress.window"), "the window shows the running job without a status bar");
+}
