@@ -1022,7 +1022,8 @@ fn graph_components(v: &ParamValue) -> Vec<f64> {
 
 /// Value and velocity graphs of an animated scalar or point parameter, drawn across the keyframe
 /// lane. A point draws an X and a Y curve, and its velocity graph is the speed along its path.
-/// Keyframes drag vertically (value); Bezier influence handles drag horizontally.
+/// Keyframes drag vertically (value); Bezier influence handles drag horizontally. A double-click
+/// on the value graph adds a keyframe at the pointer. The velocity graph stays hover-only.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn graph_rows(
     app: &mut FilmcraftApp,
@@ -1080,12 +1081,29 @@ pub(crate) fn graph_rows(
         && let Some(pos) = plot.interact_pointer_pos()
     {
         let f = ((pos.x - lane.min.x) / lane.width().max(1.0)).clamp(0.0, 1.0) as f64;
-        let mt = to_media(f);
-        let timeline = it.start.0.saturating_add(((mt - it.source_in).0 as f64 / speed) as i64);
-        actions.push((
-            "effects.addKeyframe".into(),
-            with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "time": timeline, "value": v_of(pos.y)})),
-        ));
+        // `to_media` already applied speed, so the timeline time is the clip fraction of `dur`.
+        let timeline = it.start.0.saturating_add((f * dur) as i64);
+        let sampled = graph_components(&param.value_at(to_media(f)));
+        let mut body = json!({"clip": clip.0, "effect": idx, "param": pd.id, "time": timeline});
+        if sampled.len() <= 1 {
+            body["value"] = json!(v_of(pos.y));
+        } else if sampled.iter().all(|v| v.is_finite()) {
+            // A point is one keyframe. The curve nearer the pointer takes the pointer's value;
+            // the other coordinate keeps the value sampled at that time.
+            let mut moved = sampled;
+            let nearest = moved
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| (y_of(**a) - pos.y).abs().partial_cmp(&(y_of(**b) - pos.y).abs()).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(i, _)| i);
+            if let Some(ci) = nearest
+                && let Some(slot) = moved.get_mut(ci)
+            {
+                *slot = v_of(pos.y);
+            }
+            body["value"] = json!(moved);
+        }
+        actions.push(("effects.addKeyframe".into(), with_mask(body)));
     }
     let p = ui.painter();
     p.rect_filled(area, 0.0, t.keyframe_plot_bg);
