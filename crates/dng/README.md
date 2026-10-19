@@ -67,7 +67,8 @@ the raw image in a SubIFD, and arbitrary extra tags.
   (Malvar–He–Cutler for 2 × 2 Bayer patterns of any phase, bilinear for other patterns up to
   8 × 8), DefaultCrop, the DNG colour model to XYZ D50 and Bradford to linear Rec. 709, and
   BaselineExposure. LinearRaw (3 samples) skips the demosaic; monochrome LinearRaw is grey.
-- **Opcode lists (DNG chapter 7):** OpcodeList1 on the stored samples (0–65535), OpcodeList2 on
+- **Opcode lists (DNG chapter 7), opt-in (`ProcessOptions::apply_opcodes`, off by default
+  until the interpretations below are compared with real camera files):** OpcodeList1 on the stored samples (0–65535), OpcodeList2 on
   the linear reference values before white balance, OpcodeList3 on the demosaiced camera values
   (white balance taken out, 0–1), values clipped after every opcode. WarpRectilinear,
   WarpFisheye, WarpRectilinear2 (with the skip rule for a following warp), FixVignetteRadial,

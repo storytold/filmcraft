@@ -6,7 +6,12 @@
 use filmcraft_dng::opcode::encode;
 use filmcraft_dng::tiff::tags;
 use filmcraft_dng::writer::{Compression, Options, Value, write};
-use filmcraft_dng::{Dng, Error, ProcessOptions, decode, decode_with};
+use filmcraft_dng::{Dng, Error, ProcessOptions, decode_with};
+
+/// Develop with the opcode lists applied (they are off by default).
+fn decode(bytes: &[u8]) -> Result<filmcraft_dng::Image, Error> {
+    decode_with(bytes, &ProcessOptions { apply_opcodes: true, ..Default::default() })
+}
 
 fn u(v: &[u32]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_be_bytes()).collect()
@@ -141,15 +146,15 @@ fn unknown_opcodes_and_the_preview_path() {
     // a preview-only vignette in OpcodeList3 is skipped at half size and applied at full size
     let vig = |flags| encode(&[(3, flags, d(&[0.5, 0.0, 0.0, 0.0, 0.0, 0.5, 0.5]))]);
     let f = bayer(&px, w, h, &[(tags::OPCODE_LIST_3, vig(2))]);
-    let half = decode_with(&f, &ProcessOptions { target_size: Some((16, 12)), ..Default::default() }).unwrap();
+    let half = decode_with(&f, &ProcessOptions { target_size: Some((16, 12)), apply_opcodes: true, ..Default::default() }).unwrap();
     assert_eq!((half.width, half.height), (16, 12));
-    let half_plain = decode_with(&bayer(&px, w, h, &[]), &ProcessOptions { target_size: Some((16, 12)), ..Default::default() }).unwrap();
+    let half_plain = decode_with(&bayer(&px, w, h, &[]), &ProcessOptions { target_size: Some((16, 12)), apply_opcodes: true, ..Default::default() }).unwrap();
     assert!(same_bits(&half.rgba, &half_plain.rgba));
     let full = decode(&f).unwrap();
     assert!(full.rgba[0] > plain.rgba[0], "the corner brightened");
     // a mandatory OpcodeList3 opcode keeps full resolution
     let f = bayer(&px, w, h, &[(tags::OPCODE_LIST_3, vig(0))]);
-    let img = decode_with(&f, &ProcessOptions { target_size: Some((16, 12)), ..Default::default() }).unwrap();
+    let img = decode_with(&f, &ProcessOptions { target_size: Some((16, 12)), apply_opcodes: true, ..Default::default() }).unwrap();
     assert_eq!((img.width, img.height), (w, h));
 }
 
@@ -178,4 +183,16 @@ fn hostile_opcode_lists_are_errors_not_panics() {
         }
         assert!(std::panic::catch_unwind(|| decode(&g).map(|_| ())).is_ok(), "mutation {i}");
     }
+}
+
+#[test]
+fn opcode_lists_are_ignored_unless_asked_for() {
+    let (w, h) = (16, 12);
+    let px = picture(w, h, 7);
+    let table: Vec<u8> = (0..4096u32).flat_map(|v| ((v / 2) as u16).to_be_bytes()).collect();
+    let list = encode(&[(7, 0, [u(&[0, 0, h as u32, w as u32, 0, 1, 1, 1, 4096]), table].concat())]);
+    let f = bayer(&px, w, h, &[(tags::OPCODE_LIST_1, list)]);
+    let plain = filmcraft_dng::decode(&bayer(&px, w, h, &[])).unwrap();
+    assert!(same_bits(&filmcraft_dng::decode(&f).unwrap().rgba, &plain.rgba), "default ignores the lists");
+    assert!(!same_bits(&decode(&f).unwrap().rgba, &plain.rgba), "apply_opcodes uses them");
 }
