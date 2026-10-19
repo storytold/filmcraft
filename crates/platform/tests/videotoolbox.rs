@@ -224,9 +224,58 @@ fn hevc_422_10bit_matches_ffmpeg_when_the_hardware_takes_it() {
     assert_eq!(out.len(), o.stdout.len() / fsize, "frame count");
     for (i, f) in out.iter().enumerate() {
         let raw: Vec<u16> = o.stdout[i * fsize..(i + 1) * fsize].as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
-        let filmcraft_frame::PixelData::Yuv16 { planes, chroma, bits, .. } = &f.frame.data else { panic!("16-bit planes") };
+        let frame = f.frame.materialized();
+        let filmcraft_frame::PixelData::Yuv16 { planes, chroma, bits, .. } = &frame.data else { panic!("16-bit planes") };
         assert_eq!((*chroma, *bits), (filmcraft_frame::Chroma::C422, 10));
         let (y, c) = (w * h, (w / 2) * h);
         assert!(planes[0][..] == raw[..y] && planes[1][..] == raw[y..y + c] && planes[2][..] == raw[y + c..], "frame {i} differs from ffmpeg");
+    }
+}
+
+#[test]
+fn decoded_surfaces_import_without_upload_and_match_planar_gpu() {
+    use filmcraft_frame::PixelData;
+    use filmcraft_render::{
+        Blend,
+        gpufx::FxOp,
+        plan::{FramePlan, LayerFx, PlanLayer},
+    };
+    use std::sync::Arc;
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    filmcraft_platform::register();
+    let instance = wgpu::Instance::default();
+    let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else { return };
+    let desc = wgpu::DeviceDescriptor { required_features: adapter.features() & wgpu::Features::TEXTURE_FORMAT_16BIT_NORM, ..Default::default() };
+    let (device, queue) = pollster::block_on(adapter.request_device(&desc)).unwrap();
+    for name in ["h264_high.mp4", "hevc_main.mp4", "hevc_main10.mp4"] {
+        let Some(path) = named(&ff, name) else { continue };
+        let stream = read_stream(&path);
+        let Some(mut decoder) = hardware(&stream) else { continue };
+        let frames = decode_all(decoder.as_mut(), &stream.samples[..stream.samples.len().min(24)]);
+        let frame = frames.iter().find(|f| matches!(f.frame.data, PixelData::Native(_))).expect("retained decoder surface").frame.clone();
+        let (w, h) = (frame.width as usize, frame.height as usize);
+        for scale in [1, 2, 4] {
+            let (ow, oh) = (w / scale, h / scale);
+            let mut layer = PlanLayer::new(Arc::new(frame.clone()), filmcraft_geom::Affine::scale(1.0 / scale as f64, 1.0 / scale as f64), 1.0, Blend::Normal);
+            layer.fx = Some(Arc::new(LayerFx {
+                size: (ow as u32, oh as u32),
+                decimation: scale as u32,
+                ops: vec![FxOp::BrightnessContrast { br: 0.05, co: 1.1 }, FxOp::Gamma { g: 0.95 }],
+            }));
+            // Effects operate in output working pixels; their result is drawn at 1:1.
+            layer.matrix = filmcraft_geom::Affine::IDENTITY;
+            let plan = FramePlan::Layers { width: ow, height: oh, layers: vec![layer.clone()] };
+            let mut native = filmcraft_gpu::GpuCompositor::new(&device, &queue);
+            native.composite(&plan);
+            assert_eq!(native.uploaded_bytes, 0, "{name}: native picture must not upload CPU planes");
+            let (_, _, got) = native.read_output().unwrap();
+            layer.frame = Arc::new(frame.materialized());
+            let mut planar = filmcraft_gpu::GpuCompositor::new(&device, &queue);
+            planar.composite(&FramePlan::Layers { width: ow, height: oh, layers: vec![layer] });
+            assert!(planar.uploaded_bytes > 0);
+            let (_, _, expected) = planar.read_output().unwrap();
+            let error = got.iter().zip(&expected).map(|(&a, &b)| a.abs_diff(b)).max().unwrap();
+            assert!(error <= 1, "{name} scale{scale}: max channel difference {error}");
+        }
     }
 }

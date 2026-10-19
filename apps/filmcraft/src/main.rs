@@ -132,6 +132,15 @@ fn main() -> eframe::Result {
     }
     let started = loop {
         let mut options = native_options(launch.control_port.is_some());
+        #[cfg(target_os = "macos")]
+        if let eframe::egui_wgpu::WgpuSetup::CreateNew(create) = &mut options.wgpu_options.wgpu_setup {
+            let descriptor = create.device_descriptor.clone();
+            create.device_descriptor = Arc::new(move |adapter| {
+                let mut desc = descriptor(adapter);
+                desc.required_features |= adapter.features() & eframe::wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
+                desc
+            });
+        }
         // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
         graphics::apply(&mut options, graphics.mode(), backend_override);
         let app_created = Arc::new(AtomicBool::new(false));
@@ -406,6 +415,10 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
 
 fn register_gpu_frame_renderer() {
     filmcraft_export::register_frame_renderer(|| {
+        #[cfg(target_os = "macos")]
+        if let Some(r) = filmcraft_platform::gpu_export::Renderer::new() {
+            return Some(Box::new(r) as Box<dyn filmcraft_export::FrameRenderer>);
+        }
         filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(GpuFrameRenderer(r)) as Box<dyn filmcraft_export::FrameRenderer>)
     });
 }

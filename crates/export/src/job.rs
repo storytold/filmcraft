@@ -87,8 +87,11 @@ pub const INTERLEAVE: i64 = 16;
 /// the one being rendered), see [`overlap_batch`].
 pub const IN_FLIGHT_BUDGET: u64 = 1 << 29;
 
-/// One rendered picture: straight RGBA8, or for HDR exports the encoded R'G'B' floats.
-type Frame = (Vec<u8>, Vec<f32>);
+/// One rendered picture: portable CPU pixels or a native hardware encoder surface.
+pub(crate) enum Frame {
+    Cpu(Vec<u8>, Vec<f32>),
+    Native(crate::NativeFrame),
+}
 
 /// Bytes of one [`Frame`] of a `w` x `h` export (RGBA8, or three f32 per pixel for HDR).
 pub(crate) fn frame_bytes(w: u32, h: u32, hdr: bool) -> u64 {
@@ -118,7 +121,7 @@ fn render_batch(pipe: &Pipeline, f: i64, end: i64, sources: &dyn SourceProvider)
     let frames: Vec<Frame> = (f..end)
         .into_par_iter()
         .map(|fi| {
-            let frame = pipe.frame(fi, sources);
+            let frame = pipe.encoder_frame(fi, sources);
             if filmcraft_media::pending::take() {
                 pending.store(true, Ordering::Relaxed);
             }
@@ -244,7 +247,7 @@ impl Exporter {
         let two_pass = settings.video_format() == Format::H264 && settings.bitrate_mode == BitrateMode::Vbr2Pass;
         settings.h264_pass = if two_pass { H264Pass::First } else { H264Pass::Single };
         let range = export_range(&project, seq, &settings)?;
-        let pipe = Arc::new(Pipeline::new(project.clone(), seq, &settings, hdr_out)?);
+        let mut pipe = Pipeline::new(project.clone(), seq, &settings, hdr_out)?;
         let (f0, f1) = frame_span(pipe.rate, range);
         let nframes = (f1 - f0) as u64;
         if !settings.part_of_batch {
@@ -252,6 +255,8 @@ impl Exporter {
             progress.set_status(format!("Exporting {} frames ({})", nframes, settings.format.label()));
         }
         let venc = make_venc(&settings, pipe.w, pipe.h, pipe.rate)?;
+        pipe.native_format = venc.native_format();
+        let pipe = Arc::new(pipe);
         let brand = if settings.format.is_mp4_with(settings.multiplexer) { Brand::Mp4 } else { Brand::Mov };
         let audio = if settings.has_audio() { Some(AudioOut::new(project.clone(), seq, &settings, range)?) } else { None };
         let aenc: Option<Box<dyn AudioEncoder>> = match (&audio, settings.audio_codec()) {
@@ -337,7 +342,15 @@ impl Exporter {
     /// Frames in the next batch, bounded before Rayon can steal nested frame tasks.
     fn batch_len(&self) -> i64 {
         let batch = self.pipe.render_batch_limit(self.batch);
-        if self.overlapping() { overlap_batch(batch, frame_bytes(self.pipe.w, self.pipe.h, self.pipe.hdr_out), self.budget) } else { batch }
+        if self.overlapping() {
+            overlap_batch(
+                batch,
+                frame_bytes(self.pipe.w, self.pipe.h, self.pipe.hdr_out),
+                self.budget.min(filmcraft_frame::memory::budgets().export_overlap as u64),
+            )
+        } else {
+            batch
+        }
     }
 
     fn sample_at_frame(&self, f: i64, sr: u32) -> i64 {
@@ -521,6 +534,7 @@ impl Exporter {
             seconds: secs,
             bytes,
             render_fps: nframes as f64 / secs.max(1e-6),
+            gpu_render: self.pipe.gpu_stats(),
             extra_files,
         }))
     }
@@ -634,16 +648,18 @@ impl Exporter {
         Ok(Encoded::Done)
     }
 
-    fn encode(&mut self, frames: &[(Vec<u8>, Vec<f32>)], f: i64) -> Result<Vec<EncodedPacket>> {
+    fn encode(&mut self, frames: &[Frame], f: i64) -> Result<Vec<EncodedPacket>> {
         let mut packets = Vec::new();
-        for (k, (rgba, hdr)) in frames.iter().enumerate() {
-            let fr = EncoderFrame {
-                width: self.pipe.w,
-                height: self.pipe.h,
-                rgba,
-                hdr: self.pipe.hdr_out.then_some(hdr.as_slice()),
-                index: (f - self.f0) as u64 + k as u64,
+        for (k, frame) in frames.iter().enumerate() {
+            let index = (f - self.f0) as u64 + k as u64;
+            let (rgba, hdr) = match frame {
+                Frame::Native(frame) => {
+                    packets.extend(self.venc.encode_native(frame, index)?);
+                    continue;
+                }
+                Frame::Cpu(rgba, hdr) => (rgba, hdr),
             };
+            let fr = EncoderFrame { width: self.pipe.w, height: self.pipe.h, rgba, hdr: self.pipe.hdr_out.then_some(hdr.as_slice()), index };
             packets.extend(self.venc.encode(&fr)?);
         }
         Ok(packets)

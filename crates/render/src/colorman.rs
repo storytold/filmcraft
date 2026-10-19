@@ -59,7 +59,9 @@ pub fn input_transform(cs: ColorSpace, range: Range, pipe: &ColorPipeline, peak_
 /// whose working → monitor transform is the identity. None for log media (camera-gamut
 /// compression), RGB frames and other pipelines, which [`decode`] converts on the CPU.
 pub fn gpu_input(project: &Project, item: ItemId, pipe: &ColorPipeline, cs: ColorSpace, frame: &VideoFrame) -> Option<Arc<InputTransform>> {
-    if !pipe.is_plain() || !matches!(frame.data, filmcraft_frame::PixelData::Yuv8 { .. } | filmcraft_frame::PixelData::Yuv16 { .. }) {
+    if !pipe.is_plain()
+        || !matches!(frame.data, filmcraft_frame::PixelData::Native(_) | filmcraft_frame::PixelData::Yuv8 { .. } | filmcraft_frame::PixelData::Yuv16 { .. })
+    {
         return None;
     }
     let t = input_transform(cs, frame.color.range, pipe, source_peak_nits(project, item));

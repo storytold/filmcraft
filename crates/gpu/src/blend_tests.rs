@@ -345,3 +345,44 @@ fn quad_bounds_clamps_and_handles_non_finite() {
     assert_eq!(quad_bounds(&l(Affine::scale(f64::INFINITY, 1.0)), 100, 100), Some((0, 0, 100, 100)));
     assert_eq!(quad_bounds(&l(Affine::translate(-50.0, 0.0)), 100, 100), None);
 }
+
+/// A plan with more layers than the upload cache keeps (24) still draws every layer: uploads of
+/// the frame being drawn are never evicted by a later layer's upload. (A re-rasterised 4K title
+/// over budget once evicted its own frame's video, which exported as a black frame.)
+#[test]
+fn every_layer_of_a_frame_survives_cache_trimming() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let n = 30usize;
+    let (cell, h) = (4usize, 4usize);
+    let layers: Vec<PlanLayer> = (0..n)
+        .map(|i| {
+            let v = 0.2 + 0.8 * (i as f32 + 1.0) / n as f32;
+            PlanLayer {
+                frame: Arc::new(VideoFrame::rgba_f32(1, 1, vec![v, 1.0 - v, 0.5, 1.0])),
+                matrix: Affine::translate((i * cell) as f64, 0.0).then_apply(&Affine::scale(cell as f64, h as f64)),
+                opacity: 1.0,
+                blend: Blend::Normal,
+                fx: None,
+                input: None,
+            }
+        })
+        .collect();
+    let plan = FramePlan::Layers { width: n * cell, height: h, layers };
+    let mut c = GpuCompositor::new(&dev, &q);
+    c.composite(&plan);
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let w = n * cell;
+    // (the display output is encoded, so compare layers with each other rather than with the
+    // linear CPU reference: each column is opaque and red rises with the layer index)
+    let mut last_red = 0;
+    for i in 0..n {
+        let px = (h / 2 * w + i * cell + cell / 2) * 4;
+        assert!(gpu[px..px + 3].iter().any(|&b| b > 20), "layer {i} drew transparent (evicted): {:?}", &gpu[px..px + 4]);
+        assert!(gpu[px] >= last_red, "layer {i} out of order: red {} after {last_red}", gpu[px]);
+        last_red = gpu[px];
+    }
+    assert!(c.uploads.len() >= n, "the frame's uploads were all retained until drawn");
+}

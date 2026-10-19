@@ -536,6 +536,11 @@ pub fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.exportMedia";
     let seq = sequence_param(s, p, cmd)?;
     let (preset, mut settings) = settings_from_params(s, p, cmd)?;
+    // Interactive media exports use the available GPU by default. Presets and explicit settings
+    // retain their chosen rendering mode, including the reproducible CPU option.
+    if preset.is_none() && p.get("gpuRendering").is_none() && p.get("settings").and_then(|v| v.get("gpuRendering")).is_none() {
+        settings.gpu_rendering = GpuRendering::Auto;
+    }
     if str_p(p, "path").is_none() {
         return Err(bad(cmd, "need `path`"));
     }

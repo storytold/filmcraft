@@ -401,7 +401,15 @@ fn finish(prog: &filmcraft_export::Progress, res: &JobResult, r: std::result::Re
     let r = match r {
         Ok(status) => {
             *prog.status.lock().unwrap_or_else(PoisonError::into_inner) = status;
-            Ok(filmcraft_export::Report { path: String::new(), frames: 0, seconds: secs, bytes: 0, render_fps: 0.0, extra_files: Vec::new() })
+            Ok(filmcraft_export::Report {
+                path: String::new(),
+                frames: 0,
+                seconds: secs,
+                bytes: 0,
+                render_fps: 0.0,
+                gpu_render: filmcraft_export::GpuExportStats::default(),
+                extra_files: Vec::new(),
+            })
         }
         Err(e) => {
             *prog.status.lock().unwrap_or_else(PoisonError::into_inner) = e.clone();

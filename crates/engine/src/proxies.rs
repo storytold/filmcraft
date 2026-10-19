@@ -234,7 +234,15 @@ pub fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, String, &'st
                 *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
                 Err(e)
             }
-            None => Ok(Report { path: String::new(), frames, seconds: secs, bytes, render_fps: frames as f64 / secs.max(1e-6), extra_files: Vec::new() }),
+            None => Ok(Report {
+                path: String::new(),
+                frames,
+                seconds: secs,
+                bytes,
+                render_fps: frames as f64 / secs.max(1e-6),
+                gpu_render: filmcraft_export::GpuExportStats::default(),
+                extra_files: Vec::new(),
+            }),
         };
         *prog.status.lock().unwrap_or_else(|e| e.into_inner()) = match &r {
             Ok(_) => format!("Done in {secs:.1}s"),

@@ -197,6 +197,7 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
                     seconds: secs,
                     bytes: 0,
                     render_fps: done as f64 / secs.max(1e-6),
+                    gpu_render: filmcraft_export::GpuExportStats::default(),
                     extra_files: Vec::new(),
                 })
             }

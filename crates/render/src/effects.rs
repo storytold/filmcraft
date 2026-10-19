@@ -116,6 +116,15 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     if !e.enabled || img.w == 0 || img.h == 0 {
         return;
     }
+    // The non-spatial Ultra Key op fuses matte generation, cleanup, spill and correction into
+    // one traversal, without a temporary full-frame alpha plane. Spatial cleanup keeps the
+    // complete VFX implementation below.
+    if e.effect == "ultra_key"
+        && let Some(op) = crate::gpufx::FxOp::eval(e, cx, img.w, img.h).filter(crate::gpufx::FxOp::gpu_ok)
+    {
+        op.apply(img);
+        return;
+    }
     if crate::vfx::apply(img, e, cx) {
         return;
     }
@@ -352,26 +361,7 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             });
         }
         "ultra_key" | "color_key" => key(img, e, cx),
-        "luma_key" => {
-            let th = f(e, "threshold", cx) / 100.0;
-            let cut = f(e, "cutoff", cx) / 100.0;
-            img.px.par_chunks_mut(4).for_each(|p| {
-                if p[3] <= 0.0 {
-                    return;
-                }
-                let l = linear_to_srgb(luma709(p[0] / p[3], p[1] / p[3], p[2] / p[3]).max(0.0));
-                let a = if l <= cut {
-                    0.0
-                } else if l >= th.max(cut + 1e-3) {
-                    1.0
-                } else {
-                    (l - cut) / (th - cut).max(1e-3)
-                };
-                for v in p.iter_mut() {
-                    *v *= a;
-                }
-            });
-        }
+        "luma_key" => luma_key(img, e, cx),
         "four_color_gradient" => {
             let cs = [color(e, "c1", cx), color(e, "c2", cx), color(e, "c3", cx), color(e, "c4", cx)];
             let op = f(e, "opacity", cx) / 100.0;
@@ -550,6 +540,27 @@ pub(crate) fn crop_px(img: &mut Image, x0: f32, x1: f32, y0: f32, y1: f32, fe: f
                     *v *= a;
                 }
             }
+        }
+    });
+}
+
+pub(crate) fn luma_key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+    let th = f(e, "threshold", cx) / 100.0;
+    let cut = f(e, "cutoff", cx) / 100.0;
+    img.px.par_chunks_mut(4).for_each(|p| {
+        if p[3] <= 0.0 {
+            return;
+        }
+        let l = linear_to_srgb(luma709(p[0] / p[3], p[1] / p[3], p[2] / p[3]).max(0.0));
+        let a = if l <= cut {
+            0.0
+        } else if l >= th.max(cut + 1e-3) {
+            1.0
+        } else {
+            (l - cut) / (th - cut).max(1e-3)
+        };
+        for v in p.iter_mut() {
+            *v *= a;
         }
     });
 }
@@ -1054,7 +1065,7 @@ pub fn curve_lut(points: &[[f32; 2]], n: usize) -> Vec<f32> {
 }
 
 /// Periodic (hue) curve: points around the colour wheel, neutral 0.5 where there are none.
-fn hue_lut(points: &[[f32; 2]], n: usize) -> Option<Vec<f32>> {
+pub(crate) fn hue_lut(points: &[[f32; 2]], n: usize) -> Option<Vec<f32>> {
     if points.is_empty() {
         return None;
     }
@@ -1312,7 +1323,7 @@ fn hsl_secondary(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
 
 /// Median of the `(2r+1)²` neighbourhood of every sample of a single-channel plane (edges
 /// clamped).
-fn median_filter(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+pub(crate) fn median_filter(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
     let mut out = vec![0f32; src.len()];
     out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
         let mut win: Vec<f32> = Vec::with_capacity((2 * r + 1) * (2 * r + 1));
@@ -1330,7 +1341,7 @@ fn median_filter(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
 }
 
 /// Gaussian blur of a single-channel plane (three box passes per axis, edges clamped).
-fn blur_plane(p: &mut [f32], w: usize, h: usize, sigma: f32) {
+pub(crate) fn blur_plane(p: &mut [f32], w: usize, h: usize, sigma: f32) {
     let radii = boxes_for_gauss(sigma, 3);
     let pass = |p: &mut [f32], w: usize, h: usize, r: usize| {
         if r == 0 {
@@ -1612,5 +1623,76 @@ mod lumetri_cpu_parity_tests {
 
         let oval = render(-100.0);
         assert!(red(&oval, 79, 20) > red(&ellipse, 79, 20), "negative values widen the oval");
+    }
+}
+
+#[cfg(test)]
+mod advanced_gpu_reference_tests {
+    use super::*;
+    use filmcraft_project::{ParamValue, find_effect};
+    #[test]
+    fn evaluated_advanced_sdr_grade_matches_original_lumetri() {
+        let cx = FxCtx {
+            t: Tick::ZERO,
+            px_scale: 0.5,
+            seconds: 0.0,
+            timecode: "",
+            clip_name: "test",
+            project: None,
+            env: None,
+            frame_rate: 24.0,
+            working: filmcraft_color::WorkingSpace::Rec709,
+        };
+        let mut effects = Vec::new();
+        for look in 0..=8 {
+            let mut e = find_effect("lumetri").unwrap().instance();
+            for (id, value) in [
+                ("look", ParamValue::Choice(look)),
+                ("wheel_midtones_l", ParamValue::Float(17.0)),
+                ("wheel_shadows", ParamValue::Vec2(Vec2::new(0.4, -0.2))),
+                ("curve_red", ParamValue::Curve(vec![[0.0, 0.1], [0.4, 0.2], [1.0, 0.8]])),
+                ("hue_vs_sat", ParamValue::Curve(vec![[0.1, 0.2], [0.6, 0.7]])),
+                ("sharpen", ParamValue::Float(25.0)),
+            ] {
+                e.params.get_mut(id).unwrap().value = value;
+            }
+            effects.push(e);
+        }
+        for output in 0..=3 {
+            let mut e = find_effect("lumetri").unwrap().instance();
+            for (id, value) in [
+                ("hsl_on", ParamValue::Bool(true)),
+                ("hsl_denoise", ParamValue::Float(60.0)),
+                ("hsl_blur", ParamValue::Float(45.0)),
+                ("hsl_show_mask", ParamValue::Choice(output)),
+                ("hsl_temp", ParamValue::Float(60.0)),
+                ("hsl_tint", ParamValue::Float(-20.0)),
+                ("hsl_hue_shift", ParamValue::Float(40.0)),
+            ] {
+                e.params.get_mut(id).unwrap().value = value;
+            }
+            effects.push(e);
+        }
+        for e in effects {
+            let mut old = Image::new(37, 23);
+            for (i, p) in old.px.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                let a = if i % 7 == 0 {
+                    0.0
+                } else if i % 5 == 0 {
+                    0.5
+                } else {
+                    1.0
+                };
+                let v = [(i % 37) as f32 / 37.0, (i % 23) as f32 / 23.0, (i % 17) as f32 / 17.0];
+                *p = [v[0] * a, v[1] * a, v[2] * a, a];
+            }
+            let mut new = old.clone();
+            lumetri(&mut old, &e, &cx);
+            let op = crate::gpufx::FxOp::eval(&e, &cx, new.w, new.h).unwrap();
+            assert!(op.gpu_ok());
+            op.apply(&mut new);
+            let difference = old.px.iter().zip(&new.px).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(difference < 1e-5, "difference {difference} for {e:?}");
+        }
     }
 }
