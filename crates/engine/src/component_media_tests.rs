@@ -53,7 +53,7 @@ fn component_media_missing_picture_retains_sound_and_legacy_references_load() {
         assert!(s.execute("media.relinkPictureComponent", p).is_err());
         assert_eq!(s.project, before);
     }
-    assert_eq!(crate::relink::scan(&s.project, &*s.services).len(), 1);
+    assert_eq!(crate::relink::scan(&s.project, &s.media, &*s.services).len(), 1);
     // Pending format is a distinct reason for staying offline, even if a path exists.
     let m = Arc::make_mut(&mut s.project).item_mut(id).unwrap().as_media_mut().unwrap();
     let MediaRef::Components { picture: Some(picture), .. } = &mut m.media else { panic!("picture component") };

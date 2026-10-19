@@ -190,6 +190,13 @@ pub(crate) fn handle_points(quad: &[Pos2; 4]) -> [Pos2; 8] {
     [quad[0], quad[1], quad[2], quad[3], mid(0), mid(1), mid(2), mid(3)]
 }
 
+/// Resize cursor for a selected graphics-box handle, following the handle's screen-space axis.
+fn resize_handle_cursor(v: &LayerView, at: Pos2) -> Option<egui::CursorIcon> {
+    let quad = v.quad();
+    let centre = quad[0] + (quad[2] - quad[0]) * 0.5;
+    handle_points(&quad).into_iter().find(|point| (*point - at).length() <= 7.0).map(|point| super::transform_handles::resize_cursor(point - centre))
+}
+
 /// Dragging handle `n` of `quad` from `start` to `cur`: the box grows towards the pointer while
 /// the opposite corner / edge stays put. A corner scales each axis by the pointer's travel along
 /// it (both alike with `keep_ratio`, Shift); an edge scales only its own.
@@ -594,15 +601,18 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             Tool::Type | Tool::VerticalType => ui.ctx().set_cursor_icon(egui::CursorIcon::Text),
             Tool::Rectangle | Tool::Ellipse | Tool::Pen => ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair),
             Tool::Selection => {
-                let corner = views
-                    .iter()
-                    .filter(|v| Some(v.clip) == sel_clip && sel_layers.contains(&v.layer))
-                    .find_map(|v| corner_handles(v).and_then(|(_, pts)| pts.iter().position(|c| (*c - p).length() <= 6.0)));
+                let selected = || views.iter().filter(|v| Some(v.clip) == sel_clip && sel_layers.contains(&v.layer));
+                let handle = selected().find_map(|v| resize_handle_cursor(v, p));
+                let radius_handle = selected().find_map(|v| {
+                    let centre = v.quad()[0] + (v.quad()[2] - v.quad()[0]) * 0.5;
+                    corner_handles(v)?.1.iter().find(|c| (**c - p).length() <= 6.0).map(|c| super::transform_handles::resize_cursor(*c - centre))
+                });
                 if editing.as_ref().is_some_and(|e| views.iter().any(|v| v.clip.0 == e.clip && v.layer == e.layer && v.hit(p))) {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
-                } else if let Some(n) = corner {
-                    // along the corner's diagonal, the way the drag works
-                    ui.ctx().set_cursor_icon(if n % 2 == 0 { egui::CursorIcon::ResizeNwSe } else { egui::CursorIcon::ResizeNeSw });
+                } else if let Some(icon) = handle {
+                    ui.ctx().set_cursor_icon(icon);
+                } else if let Some(icon) = radius_handle {
+                    ui.ctx().set_cursor_icon(icon);
                 } else if views.iter().any(|v| v.hit(p)) {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
                 }
@@ -821,7 +831,20 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         let p = resp.interact_pointer_pos().unwrap_or(pic.center());
         let in_edit = edit_view.is_some_and(|v| v.hit(p));
         match tool {
-            _ if in_edit => {}
+            // a click in the text being edited puts the caret there (Shift extends the selection),
+            // as a press that becomes a drag already does (#2430)
+            _ if in_edit => {
+                if let (Some(v), Some(mut ed)) = (edit_view, editing.clone())
+                    && let Some(tp) = text_of(&v.spec)
+                    && let Some((x, y)) = v.to_local(p)
+                {
+                    ed.caret = text_layout(tp).hit(x, y);
+                    if !ui.input(|i| i.modifiers.shift) {
+                        ed.anchor = ed.caret;
+                    }
+                    app.ui.gfx_edit = Some(ed);
+                }
+            }
             Tool::Type | Tool::VerticalType => {
                 if let Some(v) = views.iter().find(|v| v.is_text() && v.hit(p)) {
                     start_edit_at(app, ui, v, p, &mut actions);
@@ -900,8 +923,8 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             painter.add(egui::Shape::convex_polygon(q.to_vec(), Color32::from_rgba_unmultiplied(80, 140, 255, 90), Stroke::NONE));
         }
         let (x, base, li) = l.caret(caret);
-        let line = &l.lines[li.min(l.lines.len() - 1)];
-        let (a, b) = (sp(&v.to_screen, x, base - line.ascent), sp(&v.to_screen, x, base + line.descent));
+        let (ascent, descent) = l.lines.get(li.min(l.lines.len().saturating_sub(1))).map_or((0.0, 0.0), |line| (line.ascent, line.descent));
+        let (a, b) = (sp(&v.to_screen, x, base - ascent), sp(&v.to_screen, x, base + descent));
         painter.line_segment([a, b], Stroke::new(1.5, Color32::WHITE));
         painter.line_segment([a + vec2(1.0, 0.0), b + vec2(1.0, 0.0)], Stroke::new(0.5, Color32::BLACK));
         let er = Rect::from_points(&v.quad()).union(Rect::from_two_pos(a, b));
@@ -1188,6 +1211,8 @@ fn color32(c: [f32; 4]) -> Color32 {
 struct Ctx<'a> {
     clip: ClipId,
     layer: usize,
+    /// The layer's index in the clip's effect list (what `effects.toggleAnimation` addresses).
+    eidx: usize,
     e: &'a EffectInstance,
     mt: Tick,
     t: Tokens,
@@ -1235,12 +1260,37 @@ impl Ctx<'_> {
         );
         (r, v)
     }
+    /// The stopwatch in front of an animatable property's label (#2358): turns keyframing on or
+    /// off at the playhead, like the one in Effect Controls. While a property animates, changing
+    /// it here adds or updates a keyframe at the playhead instead of changing it everywhere. A
+    /// Type-tool selection edits the selected characters, which have no keyframes: no stopwatch.
+    fn stopwatch(&mut self, ui: &egui::Ui, row: Rect, id: &str) {
+        let animatable = self.e.def().and_then(|d| d.param(id)).is_some_and(|d| d.animatable);
+        if !animatable || (self.range.is_some() && char_style_key(id).is_some()) {
+            return;
+        }
+        let animated = self.e.params.get(id).is_some_and(|p| p.is_animated());
+        let sw = Rect::from_center_size(pos2(row.min.x + 8.0, row.center().y), vec2(12.0, 12.0));
+        let resp = ui.interact(sw.expand(2.0), egui::Id::new(("gfxsw", self.clip.0, self.layer, id)), Sense::click()).on_hover_text(tl!("Toggle animation"));
+        let tint = if animated {
+            self.t.accent
+        } else if resp.hovered() {
+            self.t.text
+        } else {
+            self.t.text_faint
+        };
+        icons::paint(ui.painter(), sw, Icon::Stopwatch, tint);
+        self.autos.push((format!("graphics.prop.{id}.stopwatch"), sw, "Toggle animation".to_string()));
+        if resp.clicked() {
+            self.actions.push(("effects.toggleAnimation".into(), json!({"clip": self.clip.0, "effect": self.eidx, "param": id})));
+        }
+    }
     fn number(&mut self, ui: &mut egui::Ui, label: &str, id: &str, speed: f64, range: (f64, f64), dec: usize, unit: &str) {
         let v = pv(self.e, id, self.mt).as_f64().unwrap_or(0.0);
         let (r, mut vui) = self.row(ui, label);
         let (resp, nv) = crate::widgets::hot_number(&mut vui, egui::Id::new(("gfxp", self.clip.0, self.layer, id)), v, speed, range, dec, unit, &self.t);
         self.auto(id, resp.rect, label);
-        let _ = r;
+        self.stopwatch(ui, r, id);
         if let Some(nv) = nv {
             self.set(id, json!(nv));
         }
@@ -1255,7 +1305,8 @@ impl Ctx<'_> {
     }
     fn point(&mut self, ui: &mut egui::Ui, label: &str, id: &str) {
         let v = pv(self.e, id, self.mt).as_vec2().unwrap_or_default();
-        let (_, mut vui) = self.row(ui, label);
+        let (r, mut vui) = self.row(ui, label);
+        self.stopwatch(ui, r, id);
         let (rx, nx) = crate::widgets::hot_number(
             &mut vui,
             egui::Id::new(("gfxp", self.clip.0, self.layer, id, "x")),
@@ -1555,7 +1606,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let ch = |b: usize| text.get(..b.min(text.len())).map_or(0, |s| s.chars().count());
             Some((ch(ed.caret.min(ed.anchor)), ch(ed.caret.max(ed.anchor))))
         });
-        let mut cx = Ctx { clip, layer: l, e, mt, t, actions: Vec::new(), autos: Vec::new(), range };
+        let mut cx = Ctx { clip, layer: l, eidx: idx[l], e, mt, t, actions: Vec::new(), autos: Vec::new(), range };
         if section(ui, app, "Responsive Design - Position", &t) {
             crate::panels::graphics_templates::responsive_position(app, ui, clip, &it, l, &mut cx.autos, &mut cx.actions);
         }
@@ -1800,7 +1851,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     for (cmd, mut p) in actions {
         // a drag of a property is one undo step: the first change of each press begins a new one,
         // the rest fold into it (like Effect Controls, #201 / #887)
-        if cmd == "graphics.set" && down {
+        if matches!(cmd.as_str(), "graphics.set" | "graphics.setCharStyle") && down {
             p["merge"] = json!(true);
             p["begin"] = json!(begun != press);
             wrote = true;

@@ -79,6 +79,16 @@ fn clip_evidence(m: &Mob<'_>, index: u32, bin: &Bin<'_>, attributes: Value) -> R
     for t in &m.tracks {
         let index = t.index.filter(|i| *i > 0).ok_or_else(|| bad("invalid master track number"))?;
         let r = t.component.filter(|i| *i > 0).ok_or_else(|| bad("missing master track component"))?;
+        // PVOL is observed as a master track wrapper in Avid-saved audio bins. Metadata-only
+        // transfer does not interpret it, but must not discard the clip's independent _USER data.
+        // Keep its object identity visible and leave the track unresolved.
+        let object = bin.object(r)?.ok_or_else(|| bad("null master track component"))?;
+        if object.class == *b"PVOL" {
+            tracks.push(json!({"index":index,"status":"unresolved","references":[],
+                "component":{"object_index":r,"class_raw":object.class,"unsupported":"native_metadata_track"},
+                "native_track":t}));
+            continue;
+        }
         let component = bin.decode(r)?;
         let common = match &component {
             Decoded::Sequence { common, .. } | Decoded::SourceClip { common, .. } | Decoded::Filler { common, .. } | Decoded::Timecode { common, .. } => common,
@@ -122,6 +132,7 @@ pub fn plan_native(bytes: &[u8], path: &str) -> Result<Plan> {
     let mut references = BTreeSet::new();
     let mut identities = BTreeSet::new();
     let mut quantized = 0;
+    let mut opaque_pvol_tracks = 0usize;
     for member in membership.members {
         if !references.insert(member.object_index) {
             return Err(bad("duplicate bin membership reference"));
@@ -146,12 +157,18 @@ pub fn plan_native(bytes: &[u8], path: &str) -> Result<Plan> {
         }
         let attributes = evidence.attributes(mob.common.attributes, 0)?;
         let value = clip_evidence(&mob, member.object_index, &bin, attributes)?;
+        opaque_pvol_tracks += value["tracks"].as_array().into_iter().flatten().filter(|t| t["component"]["unsupported"] == "native_metadata_track").count();
         let (duration, q) = duration(&value)?;
         quantized += usize::from(q);
         out.clips.push(ClipPlan { name: label.into(), duration, evidence: value, source_descriptors: Vec::new(), picture_rate_evidence: None });
     }
     if quantized > 0 {
         warnings.push(format!("{quantized} durations were floored by less than one tick; raw rates and lengths are preserved."));
+    }
+    if opaque_pvol_tracks > 0 {
+        warnings.push(format!(
+            "{opaque_pvol_tracks} PVOL track wrappers were retained as opaque references; their payloads and linked sources were not interpreted."
+        ));
     }
     Ok(Plan { bins: vec![out], warnings })
 }

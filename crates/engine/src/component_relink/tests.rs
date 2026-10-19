@@ -190,7 +190,7 @@ fn phase12_picture_and_audio_relink_preserve_native_sequence() {
         assert_eq!(crate::relink::identity_of(&*s.services, p).unwrap(), expected);
     }
     // Search outcome is independent of the picture and audio appearing in the same logical clip.
-    assert!(crate::relink::scan(&s.project, &*s.services).is_empty());
+    assert!(crate::relink::scan(&s.project, &s.media, &*s.services).is_empty());
 }
 
 #[test]

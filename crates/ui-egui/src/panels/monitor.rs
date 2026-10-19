@@ -130,7 +130,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         (video_area, None)
     };
     if let (Some(wa), Some(item)) = (wave_area, source_item) {
-        monitor_view::waveform(app, ui, wa, item, time, duration, mark_in, mark_out);
+        let shown = ruler_shown(mv.time_zoom, origin, duration);
+        monitor_view::waveform(app, ui, wa, item, time, shown, mark_in, mark_out);
     }
     let show_picture = has_video && !wave_only && !grid_only;
     // Rulers along the top and left of the picture area.

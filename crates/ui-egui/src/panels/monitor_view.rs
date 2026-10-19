@@ -599,7 +599,8 @@ pub fn guides(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area: Rect, p
 }
 
 /// The Source Monitor's audio waveform (Audio Waveform display mode, audio-only clips and the
-/// split view): click to move the source playhead.
+/// split view) over `shown`, the part of the clip the time ruler shows: click to move the source
+/// playhead.
 #[allow(clippy::too_many_arguments)]
 pub fn waveform(
     app: &mut FilmcraftApp,
@@ -607,17 +608,17 @@ pub fn waveform(
     area: Rect,
     item: ItemId,
     time: Tick,
-    duration: Tick,
+    shown: (Tick, Tick),
     mark_in: Option<Tick>,
     mark_out: Option<Tick>,
 ) {
     let t = app.tokens;
     let p = ui.painter().with_clip_rect(area);
     p.rect_filled(area, 0.0, t.monitor_bg);
-    let dur = duration.0.max(1) as f64;
-    let xof = |tk: Tick| area.min.x + ((tk.0 as f64 / dur) as f32).clamp(0.0, 1.0) * area.width();
+    let dur = (shown.1 - shown.0).0.max(1) as f64;
+    let xof = |tk: Tick| area.min.x + (((tk - shown.0).0 as f64 / dur) as f32).clamp(0.0, 1.0) * area.width();
     if mark_in.is_some() || mark_out.is_some() {
-        let (a, b) = (xof(mark_in.unwrap_or(Tick::ZERO)), xof(mark_out.unwrap_or(duration)));
+        let (a, b) = (xof(mark_in.unwrap_or(shown.0)), xof(mark_out.unwrap_or(shown.1)));
         p.rect_filled(Rect::from_min_max(pos2(a, area.min.y), pos2(b, area.max.y)), 0.0, Color32::from_white_alpha(14));
     }
     let mid = area.center().y;
@@ -625,15 +626,12 @@ pub fn waveform(
     match crate::panels::timeline::request_peaks(app, item, 0) {
         Some(peaks) if !peaks.is_empty() => {
             let half = area.height() * 0.45;
-            let spp = 256.0 * TICKS_PER_SAMPLE_48K;
             let mut mesh = egui::Mesh::default();
             let col = Color32::from_rgb(0x4f, 0xc3, 0x7a);
             for x in (area.min.x.floor() as i32)..(area.max.x.ceil() as i32) {
                 let f0 = (x as f32 - area.min.x) / area.width();
                 let f1 = (x as f32 + 1.0 - area.min.x) / area.width();
-                let s0 = (dur * f0 as f64 / spp) as usize;
-                let s1 = ((dur * f1 as f64 / spp) as usize).max(s0 + 1);
-                let (lo, hi) = peaks.iter().skip(s0).take(s1 - s0).fold((0f32, 0f32), |(l, h), (a, b)| (l.min(*a), h.max(*b)));
+                let (lo, hi) = column_peak(&peaks, shown, f0 as f64, f1 as f64);
                 if hi - lo > 0.002 {
                     mesh.add_colored_rect(
                         Rect::from_min_max(pos2(x as f32, mid - hi.min(1.0) * half), pos2(x as f32 + 1.0, mid - lo.max(-1.0) * half + 1.0)),
@@ -665,8 +663,18 @@ pub fn waveform(
         && let Some(pos) = resp.interact_pointer_pos()
     {
         let f = ((pos.x - area.min.x) / area.width()).clamp(0.0, 1.0) as f64;
-        let _ = app.session.execute("source.setPlayhead", json!({"time": (f * dur) as i64}));
+        let _ = app.session.execute("source.setPlayhead", json!({"time": shown.0.0.saturating_add((f * dur) as i64)}));
     }
+}
+
+/// The lowest and highest sample of `peaks` under the waveform column from `f0` to `f1` (fractions
+/// of the shown range `shown`): the narrower the range, the fewer peak buckets a column covers.
+fn column_peak(peaks: &[(f32, f32)], shown: (Tick, Tick), f0: f64, f1: f64) -> (f32, f32) {
+    let spp = 256.0 * TICKS_PER_SAMPLE_48K;
+    let (start, len) = (shown.0.0.max(0) as f64, (shown.1 - shown.0).0.max(1) as f64);
+    let s0 = ((start + len * f0) / spp) as usize;
+    let s1 = (((start + len * f1) / spp) as usize).max(s0 + 1);
+    peaks.iter().skip(s0).take(s1 - s0).fold((0f32, 0f32), |(l, h), (a, b)| (l.min(*a), h.max(*b)))
 }
 
 /// Ticks per 48 kHz sample (the waveform peaks are 256-sample min/max pairs at 48 kHz).
@@ -959,5 +967,22 @@ mod tests {
         v.paused_res = PlaybackRes::Quarter;
         assert_eq!(v.effective_res(true), PlaybackRes::Half);
         assert_eq!(v.effective_res(false), PlaybackRes::Quarter);
+    }
+
+    #[test]
+    fn zooming_in_resolves_the_waveform_in_finer_columns() {
+        // a square wave: four loud peak buckets, then four silent ones, 800 buckets in all
+        let peaks: Vec<(f32, f32)> = (0..800).map(|i| if (i / 4) % 2 == 0 { (-1.0, 1.0) } else { (0.0, 0.0) }).collect();
+        let bucket = 256.0 * TICKS_PER_SAMPLE_48K;
+        let at = |b: f64| Tick((b * bucket) as i64);
+        let silent = |shown: (Tick, Tick)| (0..100).filter(|x| column_peak(&peaks, shown, *x as f64 / 100.0, (*x + 1) as f64 / 100.0).1 == 0.0).count();
+        // the whole clip in 100 columns: 8 buckets each, every one with a loud part
+        assert_eq!(silent((at(0.0), at(800.0))), 0);
+        // an eighth of it: about one bucket a column (a column edge rounding down takes in its
+        // neighbour), and the silent half shows
+        let zoomed = silent((at(0.0), at(100.0)));
+        assert!((45..=50).contains(&zoomed), "{zoomed} silent columns");
+        // the zoomed part starts where the ruler does: a silent stretch is silent throughout
+        assert_eq!(silent((at(4.0), at(8.0))), 100);
     }
 }

@@ -436,6 +436,10 @@ pub struct UiState {
     pub dock: DockNode,
     #[serde(default)]
     pub floating: Vec<crate::dock::Floating>,
+    /// Where each panel closed while floating was ([x, y, width, height]): opening it again
+    /// brings it back there, floating, instead of docked (#1985).
+    #[serde(default)]
+    pub closed_floating: Vec<(PanelKind, [f32; 4])>,
     /// Focused panel (blue outline, receives shortcuts).
     pub focused: PanelKind,
     pub timeline: TimelineView,
@@ -973,6 +977,7 @@ impl Default for UiState {
             mode: Mode::Edit,
             workspace: "Editing".into(),
             floating: vec![],
+            closed_floating: vec![],
             dock: crate::dock::workspace("Editing"),
             focused: PanelKind::Timeline,
             timeline: TimelineView::default(),

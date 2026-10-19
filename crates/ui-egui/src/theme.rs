@@ -507,9 +507,13 @@ pub fn apply_visuals(ctx: &egui::Context, t: &Tokens) {
         s.text_styles.insert(TextStyle::Small, FontId::new(11.0, FontFamily::Proportional));
         s.text_styles.insert(TextStyle::Heading, FontId::new(15.0, FontFamily::Name("semibold".into())));
         s.text_styles.insert(TextStyle::Monospace, FontId::new(12.0, FontFamily::Monospace));
-        s.animation_time = 0.12;
+        s.animation_time = ANIMATION_TIME;
     });
 }
+
+/// How long egui's fades and slides take (menus, collapsing sections, tooltips); 0 when
+/// Settings ▸ Appearance ▸ "Animate zoom, scrolling and menus" is off (#2325).
+pub const ANIMATION_TIME: f32 = 0.12;
 
 #[cfg(test)]
 mod tests {

@@ -152,6 +152,22 @@ fn native_preview_commit_suffix_undo_and_saved_metadata() {
     assert_eq!(out["bins"][0]["name"], "Sound Effects_2");
 }
 #[test]
+fn metadata_import_keeps_user_fields_when_track_wrapper_is_opaque_pvol() {
+    let mut bytes = fixture();
+    let at = bytes.windows(4).position(|b| b == b"PLCS").unwrap();
+    bytes[at..at + 4].copy_from_slice(b"LOVP");
+    let mut s = Session::new(Arc::new(Input { bytes, reads: AtomicUsize::new(0), changing: false }));
+    let job = prepare(&mut s);
+    let preview = s.execute("file.avidBinPreparation", job.clone()).unwrap();
+    assert_eq!(preview["report"]["bins"][0]["clips"], 1);
+    assert!(preview["report"]["warnings"].as_array().unwrap().iter().any(|v| v.as_str().unwrap_or("").contains("PVOL")));
+    s.execute("file.importAvidBin", job).unwrap();
+    let item = s.project.items.values().next().unwrap();
+    assert_eq!(item.metadata["Scene"], "Native test");
+    let source: Value = serde_json::from_str(&item.metadata[filmcraft_interchange::avid_catalog::SOURCE_KEY]).unwrap();
+    assert_eq!(source["clip"]["tracks"][0]["component"]["unsupported"], "native_metadata_track");
+}
+#[test]
 fn cancellation_stale_projects_and_same_size_source_changes_cannot_commit() {
     let mut s = session(false);
     let job = prepare(&mut s);
@@ -331,7 +347,7 @@ fn native_phase12_matches_catalog_and_links_in_one_transaction() {
         let expected = reference.project.items.values().find(|i| i.name == item.name).unwrap();
         assert_eq!(item.kind, expected.kind, "{}", item.name);
     }
-    assert!(crate::relink::scan(&native.project, &*native.services).is_empty());
+    assert!(crate::relink::scan(&native.project, &native.media, &*native.services).is_empty());
     assert_eq!(native.history.undo.len(), 1);
     let after = native.project.clone();
     assert_eq!(filmcraft_format::decode(&filmcraft_format::encode(&after, false)).unwrap().project, *after);

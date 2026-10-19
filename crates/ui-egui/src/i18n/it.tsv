@@ -1263,6 +1263,7 @@
 	59.94 fps Non Drop-Frame	59,94 fps non drop-frame
 	ASC CDL	ASC CDL
 	Accessible color contrast	Contrasto dei colori accessibile
+	Animate zoom, scrolling and menus	Anima zoom, scorrimento e menu
 	Action-Safe Margin	Margine di sicurezza azione
 	Active Monitor	Monitor attivo
 	Add	Aggiungi
@@ -3601,3 +3602,9 @@
 	Shows the version, community links and credits in a FilmCraft window.	Mostra la versione, i link della community e i riconoscimenti in una finestra di FilmCraft.
 	Couldn't open your web browser	Impossibile aprire il browser web
 	Open this address in your browser yourself:	Apri tu questo indirizzo nel browser:
+# View ▸ Reset Interface Zoom (#2253).
+	Reset Interface Zoom	Reimposta zoom dell'interfaccia
+	Track Color	Colore traccia
+	Open a sequence to search its graphics	Apri una sequenza per cercare nelle sue grafiche
+	No text graphics in this sequence. Add text with the Type tool.	Nessuna grafica con testo in questa sequenza. Aggiungi testo con lo strumento Testo.
+	No matching text.	Nessun testo corrispondente.

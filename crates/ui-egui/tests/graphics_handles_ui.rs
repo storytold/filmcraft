@@ -136,6 +136,15 @@ impl Driver {
         self.frames(4);
     }
 
+    fn hover(&mut self, at: (f64, f64)) {
+        self.harness.input_mut().events.push(egui::Event::PointerMoved(egui::pos2(at.0 as f32, at.1 as f32)));
+        self.frames(2);
+    }
+
+    fn cursor(&self) -> egui::CursorIcon {
+        self.harness.output().platform_output.cursor_icon
+    }
+
     /// Press or let go of Shift as a keyboard reports it. The drag fixture then explicitly
     /// forwards the held modifiers to the control gesture.
     fn hold_shift(&mut self, on: bool) {
@@ -348,6 +357,26 @@ fn text_committed_by_an_input_method_is_typed_on_the_monitor() {
     assert_eq!(list["layers"][0]["text"], "A你好");
 }
 
+/// #2430: a click (no drag) in the text being edited on the monitor puts the caret there; before,
+/// only a press that moved a little did, and typing went on at the end.
+#[test]
+fn a_click_in_the_edited_text_moves_the_caret() {
+    let mut d = Driver::new();
+    d.ok("ui.set", json!({"tool": "Type"}));
+    d.frames(3);
+    let pic = d.rect("program.picture");
+    d.ok("ui.click", json!({"x": pic[0] + pic[2] * 0.3, "y": pic[1] + pic[3] * 0.2}));
+    d.ok("ui.type", json!({"text": "Title"}));
+    d.frames(2);
+    let text = d.rect("program.textEdit");
+    // just inside the first letter: the caret goes before it
+    d.ok("ui.click", json!({"x": text[0] + 1.0, "y": text[1] + text[3] / 2.0}));
+    d.frames(2);
+    d.ok("ui.type", json!({"text": "X"}));
+    d.frames(2);
+    assert_eq!(d.exec("graphics.list", json!({}))["layers"][0]["text"], "XTitle");
+}
+
 #[test]
 fn text_properties_switches_between_point_and_paragraph_text() {
     let mut d = Driver::new();
@@ -402,6 +431,39 @@ fn shape_corner_handles_scale_away_from_the_opposite_corner() {
     let (tr2, bl2) = (d.handle(&pre, 1), d.handle(&pre, 3));
     assert!(near(tr, tr2), "top-right stays put: {tr:?} -> {tr2:?}");
     assert!(bl2.0 < bl.0 - 20.0 && bl2.1 > bl.1 + 5.0, "bottom-left follows the pointer: {bl:?} -> {bl2:?}");
+}
+
+#[test]
+fn graphic_resize_handles_show_their_screen_space_direction() {
+    let mut d = Driver::new();
+    let r = d.exec("graphics.newShape", json!({"shape": "rectangle", "position": [800, 500], "size": [500, 300]}));
+    let clip = r["clip"].as_u64().unwrap();
+    let pre = d.select(clip);
+
+    for (handle, expected) in [
+        (0, egui::CursorIcon::ResizeNwSe),
+        (1, egui::CursorIcon::ResizeNeSw),
+        (2, egui::CursorIcon::ResizeNwSe),
+        (3, egui::CursorIcon::ResizeNeSw),
+        (4, egui::CursorIcon::ResizeVertical),
+        (5, egui::CursorIcon::ResizeHorizontal),
+        (6, egui::CursorIcon::ResizeVertical),
+        (7, egui::CursorIcon::ResizeHorizontal),
+    ] {
+        let at = d.handle(&pre, handle);
+        d.hover(at);
+        assert_eq!(d.cursor(), expected, "handle {handle}");
+    }
+
+    d.exec("graphics.set", json!({"clip": clip, "props": {"rotation": 45}}));
+    d.frames(4);
+    let at = d.handle(&pre, 4);
+    d.hover(at);
+    assert!(
+        matches!(d.cursor(), egui::CursorIcon::ResizeNeSw | egui::CursorIcon::ResizeNwSe),
+        "rotated edge handle should use a diagonal cursor, got {:?}",
+        d.cursor()
+    );
 }
 
 /// Width and height of a layer's box in its own pixels.

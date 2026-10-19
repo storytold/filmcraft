@@ -11,8 +11,11 @@
 //!   from it. Proxy frames are smaller; the source still reports the full-resolution size, and the
 //!   compositor derives its pixel scale from the frame it gets, so effects and Motion render the
 //!   same picture at lower resolution. Export asks for [`MediaPool::full_res_provider`].
+//! - Paths that came from a document (the project file, a template, an interchange file) are
+//!   opened through [`crate::doc_path`] ([`MediaPool::follow`]); a refused one renders as missing.
 
 use std::collections::{BTreeSet, HashMap};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -53,6 +56,9 @@ pub struct MediaPool {
     failures: Arc<Mutex<HashMap<ItemId, u32>>>,
     /// Openers tried before the built-in ones (MP4/MOV + codecs register here).
     pub openers: RwLock<Vec<Opener>>,
+    /// Media and proxy paths that came from a document, with that document's path (see
+    /// [`Self::follow`]).
+    stored: RwLock<HashMap<String, Option<PathBuf>>>,
 }
 
 impl Default for MediaPool {
@@ -65,6 +71,7 @@ impl Default for MediaPool {
             use_proxies: AtomicBool::new(false),
             failures: Arc::default(),
             openers: RwLock::new(filmcraft_codecs::openers()),
+            stored: RwLock::default(),
         }
     }
 }
@@ -172,6 +179,54 @@ impl MediaPool {
         self.sources.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
         self.proxies.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
         self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
+    }
+
+    /// Record the media and proxy paths of `p`, loaded from the document at `document` (None: one
+    /// without a file), as stored paths: they are opened only as [`crate::doc_path::resolve`]
+    /// allows. A path already recorded keeps the document it came from first.
+    pub fn add_stored(&self, p: &Project, document: Option<&str>) {
+        let paths = p.items.values().filter_map(|i| i.as_media()).flat_map(|m| [Some(&m.media), m.proxy.as_ref()]).filter_map(|r| match r {
+            Some(MediaRef::File { path }) => Some(path.clone()),
+            _ => None,
+        });
+        self.add_stored_paths(paths, document);
+    }
+
+    /// [`Self::add_stored`] for single paths.
+    pub fn add_stored_paths(&self, paths: impl IntoIterator<Item = String>, document: Option<&str>) {
+        let document = document.filter(|d| !d.is_empty()).map(PathBuf::from);
+        let mut stored = self.stored.write().unwrap_or_else(|e| e.into_inner());
+        for p in paths {
+            stored.entry(p).or_insert_with(|| document.clone());
+        }
+    }
+
+    /// Forget the stored paths (a new project).
+    pub fn clear_stored(&self) {
+        self.stored.write().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
+    /// The user picked `path` in this session (import, Link Media): open it as given.
+    pub fn allow(&self, path: &str) {
+        self.stored.write().unwrap_or_else(|e| e.into_inner()).remove(path);
+    }
+
+    /// The file to open for `path`, a media or proxy path of the project: a stored path as
+    /// [`crate::doc_path::resolve`] resolves it, any other path as given.
+    pub fn follow(&self, path: &str) -> Result<String, crate::doc_path::NotFollowed> {
+        // The web host reads only the files the user gave it, under its own virtual paths.
+        if cfg!(target_arch = "wasm32") {
+            return Ok(path.to_string());
+        }
+        match self.stored.read().unwrap_or_else(|e| e.into_inner()).get(path) {
+            Some(document) => crate::doc_path::resolve(path, document.as_deref()),
+            None => Ok(path.to_string()),
+        }
+    }
+
+    /// [`Self::follow`] as a media error (a refused path is a missing file).
+    fn follow_media(&self, path: &str) -> Result<String, MediaError> {
+        self.follow(path).map_err(|why| MediaError::Offline(format!("{path} is not opened: {why}")))
     }
 
     /// Forget every opened source (files are re-read on next use).
@@ -302,11 +357,13 @@ impl MediaPool {
                 self.set_offline(item, OfflineReason::MadeOffline, path, "made offline");
                 Arc::new(SlateSource::new(m.info.clone(), &file_name(path), OfflineReason::MadeOffline))
             }
-            MediaRef::File { path } => match if m.info.kind == filmcraft_media::MediaKind::ImageSequence {
-                open_image_sequence(path, services, m.info.frame_rate(), &it.name)
-            } else {
-                self.open_file(path, services)
-            } {
+            MediaRef::File { path } => match self.follow_media(path).and_then(|file| {
+                if m.info.kind == filmcraft_media::MediaKind::ImageSequence {
+                    open_image_sequence(&file, services, m.info.frame_rate(), &it.name)
+                } else {
+                    self.open_file(&file, services)
+                }
+            }) {
                 Ok(s) => {
                     self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
                     self.unsupported_as_slate(item, path, s)
@@ -338,7 +395,7 @@ impl MediaPool {
         {
             return Some(s.clone());
         }
-        match self.open_file(path, services) {
+        match self.follow_media(path).and_then(|file| self.open_file(&file, services)) {
             Ok(s) => {
                 // a proxy with fewer audio streams than the original (say one track of an OBS
                 // recording's seven) still stands in for the picture; the audio comes from the
@@ -346,7 +403,7 @@ impl MediaPool {
                 let audio_from = if s.info().audio_streams.len() < m.info.audio_streams.len() {
                     log::warn!("proxy has fewer audio streams than the original: {path}; audio from full-resolution media");
                     match &m.media {
-                        MediaRef::File { path: original } if !m.offline => self.open_file(original, services).ok(),
+                        MediaRef::File { path: original } if !m.offline => self.follow_media(original).and_then(|file| self.open_file(&file, services)).ok(),
                         _ => None,
                     }
                 } else {

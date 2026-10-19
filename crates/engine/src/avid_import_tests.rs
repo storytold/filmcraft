@@ -426,7 +426,7 @@ fn offline_audio_import_retains_slots_timing_and_relinks_atomically() {
     assert_eq!(imported, preview);
     let offline = s.project.clone();
     let item = ItemId(imported["bound"][0]["item"].as_u64().unwrap());
-    assert_eq!(crate::relink::scan(&s.project, &*s.services).len(), 2);
+    assert_eq!(crate::relink::scan(&s.project, &s.media, &*s.services).len(), 2);
     assert_eq!(filmcraft_format::decode(&filmcraft_format::encode(&offline, false)).unwrap().project, *offline);
     let sequence = ItemId(imported["sequences"][0]["item"].as_u64().unwrap());
     let timeline = s.project.sequence(sequence).unwrap().clone();
@@ -440,7 +440,7 @@ fn offline_audio_import_retains_slots_timing_and_relinks_atomically() {
     )
     .unwrap();
     assert_eq!(s.project.sequence(sequence).unwrap(), &timeline);
-    assert!(crate::relink::scan(&s.project, &*s.services).is_empty());
+    assert!(crate::relink::scan(&s.project, &s.media, &*s.services).is_empty());
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(s.project, offline);
     s.execute("edit.undo", json!({})).unwrap();
@@ -522,7 +522,7 @@ fn offline_phase12_import_and_relink_preserve_exact_timeline() {
     let mut s = Session::new(Arc::new(Offline));
     let out = s.execute("file.importAvidCatalog", p).unwrap();
     assert_eq!(out["mediaBinding"], "offline_components");
-    assert_eq!(crate::relink::scan(&s.project, &*s.services).len(), 6);
+    assert_eq!(crate::relink::scan(&s.project, &s.media, &*s.services).len(), 6);
     let sequence = ItemId(out["sequences"][0]["item"].as_u64().unwrap());
     let online_sequence = ItemId(online_out["sequences"][0]["item"].as_u64().unwrap());
     assert_eq!(s.project.sequence(sequence), online.project.sequence(online_sequence));
@@ -563,7 +563,7 @@ fn offline_phase12_import_and_relink_preserve_exact_timeline() {
     }
     s.services = Arc::new(FsServices);
     // Existing paths must not bypass pending picture format verification.
-    assert_eq!(crate::relink::scan(&s.project, &*s.services).len(), 2);
+    assert_eq!(crate::relink::scan(&s.project, &s.media, &*s.services).len(), 2);
     let picture_ids: Vec<_> = bindings.iter().filter(|b| b["component"]["kind"] == "picture").map(|b| b["item"].clone()).collect();
     for id in &picture_ids {
         let status = s.execute("media.status", json!({"item":id})).unwrap();
@@ -594,13 +594,13 @@ fn offline_phase12_import_and_relink_preserve_exact_timeline() {
     for (id, item) in &s.project.items {
         assert_eq!(item.kind, online.project.item(*id).unwrap().kind, "relinked contents differ for {}", item.name);
     }
-    assert!(crate::relink::scan(&s.project, &*s.services).is_empty());
+    assert!(crate::relink::scan(&s.project, &s.media, &*s.services).is_empty());
     assert_eq!(s.project.sequence(sequence), offline.sequence(sequence));
     assert_eq!(filmcraft_format::decode(&filmcraft_format::encode(&s.project, false)).unwrap().project, *s.project);
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(s.project, offline);
     s.execute("edit.redo", json!({})).unwrap();
-    assert!(crate::relink::scan(&s.project, &*s.services).is_empty());
+    assert!(crate::relink::scan(&s.project, &s.media, &*s.services).is_empty());
     eprintln!("Phase 12: six offline components, identical 152-frame timeline, hydrated media identical to online import, undo/redo/save/reopen pass");
 }
 

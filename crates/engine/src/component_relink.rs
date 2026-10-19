@@ -546,7 +546,7 @@ pub(crate) fn search(s: &mut Session, p: &Value) -> Result<Value> {
             let a = v.as_array().filter(|a| !a.is_empty() && a.len() <= MAX_TARGETS).ok_or_else(|| bad("provide 1–4096 component targets"))?;
             serde_json::from_value(Value::Array(a.clone())).map_err(|e| bad(e.to_string()))?
         }
-        None => crate::relink::scan(&s.project, &*s.services)
+        None => crate::relink::scan(&s.project, &s.media, &*s.services)
             .into_iter()
             .filter_map(|m| m.component.map(|component| Target { item: ItemId(m.item), component }))
             .collect(),
