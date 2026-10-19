@@ -3568,6 +3568,23 @@
 	Edit Project Notes	Modifica note di progetto
 	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	Note per questo progetto: cose da fare, istruzioni, numeri di fotogramma… Salvate con il progetto.
 	Use Effect Shutter Angle	Usa l'angolo otturatore dell'effetto
+# Clip ▸ Source Settings… for camera raw footage (#1065)
+	White Balance	Bilanciamento del bianco
+	White balance:	Bilanciamento del bianco:
+	As Shot	Come ripreso
+	Temperature:	Temperatura:
+	Tint:	Tinta:
+	As shot: {temperature} K, tint {tint}	Come ripreso: {temperature} K, tinta {tint}
+	Exposure:	Esposizione:
+	 stops	 stop
+	Highlights: clipped (highlight recovery is not available yet)	Luci: tagliate (il recupero delle luci non è ancora disponibile)
+	Decode Quality	Qualità di decodifica
+	Demosaic:	Demosaicizzazione:
+	High (gradient-corrected)	Alta (correzione del gradiente)
+	Fast (bilinear)	Veloce (bilineare)
+	Output color space: scene-linear Rec. 709	Spazio colore di uscita: Rec. 709 lineare della scena
+	Reset to As Shot	Ripristina Come ripreso
+
 	Appearance Settings…	Impostazioni di aspetto…
 	Add to favorites	Aggiungi ai preferiti
 	Remove from favorites	Rimuovi dai preferiti

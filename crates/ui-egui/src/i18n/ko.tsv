@@ -3596,3 +3596,19 @@
 	Shows the version, community links and credits in a FilmCraft window.	FilmCraft 창에 버전, 커뮤니티 링크, 제작진을 보여 줍니다.
 	Couldn't open your web browser	웹 브라우저를 열 수 없습니다
 	Open this address in your browser yourself:	이 주소를 브라우저에서 직접 여세요:
+# Clip ▸ Source Settings… for camera raw footage (#1065)
+	White Balance	화이트 밸런스
+	White balance:	화이트 밸런스:
+	As Shot	촬영 시 설정
+	Temperature:	색온도:
+	Tint:	색조:
+	As shot: {temperature} K, tint {tint}	촬영 시 설정: {temperature} K, 색조 {tint}
+	Exposure:	노출:
+	 stops	 스톱
+	Highlights: clipped (highlight recovery is not available yet)	밝은 영역: 클리핑됨 (밝은 영역 복구는 아직 지원되지 않습니다)
+	Decode Quality	디코드 품질
+	Demosaic:	디모자이크:
+	High (gradient-corrected)	높음 (그레이디언트 보정)
+	Fast (bilinear)	빠름 (이중선형)
+	Output color space: scene-linear Rec. 709	출력 색 공간: 장면 선형 Rec. 709
+	Reset to As Shot	촬영 시 설정으로 재설정

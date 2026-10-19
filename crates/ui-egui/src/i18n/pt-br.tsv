@@ -3566,6 +3566,23 @@
 	Edit Narration	Editar narração
 	Project Notes	Notas do projeto
 
+# Clip ▸ Source Settings… for camera raw footage (#1065)
+	White Balance	Balanço de branco
+	White balance:	Balanço de branco:
+	As Shot	Como capturado
+	Temperature:	Temperatura:
+	Tint:	Tonalidade:
+	As shot: {temperature} K, tint {tint}	Como capturado: {temperature} K, tonalidade {tint}
+	Exposure:	Exposição:
+	 stops	 stops
+	Highlights: clipped (highlight recovery is not available yet)	Realces: cortados (a recuperação de realces ainda não está disponível)
+	Decode Quality	Qualidade de decodificação
+	Demosaic:	Demosaico:
+	High (gradient-corrected)	Alta (corrigida por gradiente)
+	Fast (bilinear)	Rápida (bilinear)
+	Output color space: scene-linear Rec. 709	Espaço de cor de saída: Rec. 709 linear da cena
+	Reset to As Shot	Redefinir para Como capturado
+
 	Appearance Settings…	Configurações de aparência…
 
 	Add to favorites	Adicionar aos favoritos

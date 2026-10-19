@@ -3572,6 +3572,23 @@
 	Use Effect Shutter Angle	Gunakan Sudut Rana Efek
 	Settings	Preferensi
 
+# Clip ▸ Source Settings… for camera raw footage (#1065)
+	White Balance	Keseimbangan Putih
+	White balance:	Keseimbangan putih:
+	As Shot	Sesuai Pengambilan
+	Temperature:	Suhu:
+	Tint:	Rona:
+	As shot: {temperature} K, tint {tint}	Sesuai pengambilan: {temperature} K, rona {tint}
+	Exposure:	Eksposur:
+	 stops	 stop
+	Highlights: clipped (highlight recovery is not available yet)	Sorotan: terpotong (pemulihan sorotan belum tersedia)
+	Decode Quality	Kualitas Dekode
+	Demosaic:	Demosaik:
+	High (gradient-corrected)	Tinggi (dikoreksi gradien)
+	Fast (bilinear)	Cepat (bilinear)
+	Output color space: scene-linear Rec. 709	Ruang warna output: Rec. 709 linear adegan
+	Reset to As Shot	Atur Ulang ke Sesuai Pengambilan
+
 	Appearance Settings…	Pengaturan Tampilan…
 	Add to favorites	Tambahkan ke favorit
 	Remove from favorites	Hapus dari favorit
