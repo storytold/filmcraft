@@ -669,6 +669,19 @@ fn the_export_window_and_the_status_bar_offer_the_progress_window() {
     d.ok("ui.set", json!({"mode": "export"}));
     d.frames(4);
     assert!(d.has("export.progressWindow"), "the Export window has the switch");
+    let rect = |d: &mut Driver, id: &str| {
+        let v = d.ok("ui.elements", json!({"prefix": id}));
+        let r = v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).unwrap()["rect"].clone();
+        let n = |i: usize| r[i].as_f64().unwrap() as f32;
+        egui::Rect::from_min_size(egui::pos2(n(0), n(1)), egui::vec2(n(2), n(3)))
+    };
+    // in English and in French, one of the longest translations of its label
+    for language in ["french", "english"] {
+        let (switch, queue, export) = (rect(&mut d, "export.progressWindow"), rect(&mut d, "export.sendToQueue"), rect(&mut d, "export.button"));
+        assert!(!switch.intersects(queue) && !switch.intersects(export), "the switch {switch:?} clears the buttons {queue:?} {export:?}");
+        d.ok("ui.menu.invoke", json!({"id": format!("app.language.{language}")}));
+        d.frames(4);
+    }
     assert!(!d.app().session.prefs.general.show_progress_window);
     d.click("export.progressWindow");
     assert!(d.app().session.prefs.general.show_progress_window, "it turns the preference on");

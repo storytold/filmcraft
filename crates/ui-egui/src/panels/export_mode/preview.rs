@@ -48,7 +48,7 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     // range + scaling
     let mut child = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(Rect::from_min_max(pos2(rect.min.x + 14.0, pv_area.max.y + 8.0), pos2(rect.max.x - 14.0, rect.max.y - 50.0)))
+            .max_rect(Rect::from_min_max(pos2(rect.min.x + 14.0, pv_area.max.y + 8.0), pos2(rect.max.x - 14.0, rect.max.y - 84.0)))
             .id_salt("export-right"),
     );
     let ex = &mut app.ui.export;
@@ -165,8 +165,10 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     // the progress window is a preference, and the status bar's bar is what it does without it: say
     // so here, where the export starts, with the switch (#1192)
     let mut windowed = app.session.prefs.general.show_progress_window;
-    let check = Rect::from_min_size(pos2(rect.min.x + 16.0, go.min.y), vec2((queue.min.x - rect.min.x - 32.0).max(80.0), 30.0));
-    let mut check_ui = ui.new_child(egui::UiBuilder::new().max_rect(check).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    // on its own row above the buttons, wrapping in a narrow column or a long language
+    let check = Rect::from_min_max(pos2(rect.min.x + 16.0, rect.max.y - 82.0), pos2(rect.max.x - 16.0, go.min.y - 4.0));
+    let mut check_ui = ui.new_child(egui::UiBuilder::new().max_rect(check).layout(egui::Layout::top_down(egui::Align::Min)));
+    check_ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
     let cresp = check_ui.checkbox(&mut windowed, tl!("Show a progress window while exporting or rendering"));
     reg.add("export.progressWindow", cresp.rect, "Show a progress window");
 
