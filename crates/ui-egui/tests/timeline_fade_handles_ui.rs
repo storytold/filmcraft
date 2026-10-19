@@ -95,6 +95,20 @@ impl Driver {
         self.frames(2);
     }
 
+    /// Click at `at` with `modifiers` held, then let go of them.
+    fn click_with(&mut self, at: Pos2, modifiers: egui::Modifiers) {
+        let push = |d: &mut Self, e: egui::Event| d.harness.input_mut().events.push(e);
+        push(self, egui::Event::ModifiersChanged(modifiers));
+        push(self, egui::Event::PointerMoved(at));
+        self.frames(2);
+        push(self, egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers });
+        self.frames(1);
+        push(self, egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers });
+        self.frames(2);
+        push(self, egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        self.frames(1);
+    }
+
     /// The clip named `name` on V1.
     fn v1_clip(&self, name: &str) -> u64 {
         let seq = self.app().session.active_sequence().expect("sequence");
@@ -158,4 +172,18 @@ fn a_click_on_a_fade_handle_applies_the_default_transition() {
     });
     d.frames(2);
     assert_eq!(transitions_to(&d, city).len(), 1, "the default transition is at the clip's start");
+}
+
+/// Shift, Alt and Ctrl/Cmd are the selection modifiers: held over a fade handle, a click still
+/// selects the clip (add to the selection, one side of a link, toggle) and applies no transition.
+#[test]
+fn a_click_on_a_fade_handle_with_a_selection_modifier_selects_the_clip() {
+    for modifiers in [egui::Modifiers::SHIFT, egui::Modifiers::ALT, egui::Modifiers::COMMAND] {
+        let mut d = Driver::demo();
+        let city = d.v1_clip(CITY);
+        let at = handle_at(&mut d, city, false);
+        d.click_with(at, modifiers);
+        assert!(transitions_to(&d, city).is_empty(), "no transition with {modifiers:?} held");
+        assert!(d.app().session.state.selection.contains(&ClipId(city)), "the clip is selected with {modifiers:?} held");
+    }
 }
