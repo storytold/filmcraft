@@ -336,16 +336,29 @@ impl Limiter {
         self.rel = coef(self.pv.v("release"), self.sr);
         self.true_peak = self.pv.on("true_peak");
         // The moving average is as long as the look-ahead, and gain requests wait for the rest
-        // of the delay line first. Resized to the new ramp carrying the current gain, so the
-        // output does not step; a peak already in the delay line is still clipped at the ceiling.
+        // of the delay line first. Resized to the new ramp without losing anything: the requests
+        // waiting in the lag ring stay (the oldest ones a shorter ring cannot hold are released
+        // into the sliding minimum now, so a peak already in the delay line keeps its reduction),
+        // the sliding minimum keeps its entries (its window is read each sample), and the moving
+        // average is refilled with its current output, so the gain does not step.
         let ramp = self.ramp();
         if ramp != self.box_ring.len() {
-            self.box_ring = vec![self.rel_state; ramp];
+            let g = if self.box_ring.is_empty() { self.rel_state } else { (self.box_sum / self.box_ring.len() as f64) as f32 };
+            self.box_ring = vec![g; ramp];
             self.box_pos = 0;
-            self.box_sum = self.rel_state as f64 * ramp as f64;
-            self.lag = vec![1.0; self.look + 1 - ramp];
+            self.box_sum = g as f64 * ramp as f64;
+            let waiting: Vec<f32> = (0..self.lag.len()).map(|i| self.lag[(self.lag_pos + i) % self.lag.len()]).collect();
+            let len = self.look + 1 - ramp;
+            let (release_now, keep) = waiting.split_at(waiting.len().saturating_sub(len));
+            if let Some(m) = release_now.iter().copied().reduce(f32::min) {
+                self.minq.retain(|&(_, v)| v < m);
+                self.minq.push_back((self.t, m));
+            }
+            let mut lag = vec![1.0; len];
+            let start = len - keep.len();
+            lag[start..].copy_from_slice(keep);
+            self.lag = lag;
             self.lag_pos = 0;
-            self.minq.clear();
         }
         if snap {
             self.in_gain.snap();
@@ -730,6 +743,68 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// #905: changing the look-ahead while audio plays steps nowhere and loses nothing: under a
+    /// steady reduction (a sine over the ceiling) the sample at the change is the same as without
+    /// it and the ones after it stay within a hair of it (a window of another length smooths the
+    /// same requests a little differently, which is the setting's job, not a click), and a peak
+    /// already in the delay line when the ramp shortens still comes out limited by the smooth
+    /// gain, with the ramp before it, not only by the final clip.
+    #[test]
+    fn limiter_lookahead_changes_keep_pending_requests_and_do_not_step() {
+        let ceiling = -6.0f32;
+        let loud: Vec<f32> = (0..48000).map(|n| 0.9 * (2.0 * std::f32::consts::PI * 440.0 * n as f32 / SR).sin()).collect();
+        let steady = |switch: Option<(usize, f32)>| {
+            let mut lim = Limiter::new(SR, 1);
+            lim.set_param("ceiling", ceiling);
+            lim.set_param("true_peak", 0.0);
+            lim.set_param("lookahead", 30.0);
+            let mut y = loud.clone();
+            match switch {
+                Some((pos, ms)) => {
+                    lim.process(&mut [&mut y[..pos]]);
+                    lim.set_param("lookahead", ms);
+                    lim.process(&mut [&mut y[pos..]]);
+                }
+                None => lim.process(&mut [&mut y]),
+            }
+            y
+        };
+        let plain = steady(None);
+        for (pos, ms) in [(20000usize, 5.0f32), (20000, 0.0)] {
+            let switched = steady(Some((pos, ms)));
+            assert!((switched[pos] - plain[pos]).abs() < 1e-3, "30 -> {ms} ms: the output stepped at the change: {} vs {}", switched[pos], plain[pos]);
+            // 0 ms follows every request at once (a hard limit on a sine), which is the setting
+            // itself, so only the longer window is held to the steady output afterwards
+            if ms > 0.0 {
+                let worst = (pos..pos + 480).map(|n| (switched[n] - plain[n]).abs()).fold(0.0f32, f32::max);
+                assert!(worst < 0.02, "30 -> {ms} ms: a click after the change, {worst} off the steady output");
+            }
+        }
+
+        // in flight: a pulse enters, then the ramp shortens from 30 ms to 5 ms before it comes out
+        let pulse_at = 12000usize;
+        let input: Vec<f32> = (0..48000)
+            .map(|n| if (pulse_at..pulse_at + 48).contains(&n) { 0.9 } else { 0.08 * (2.0 * std::f32::consts::PI * 997.0 * n as f32 / SR).sin() })
+            .collect();
+        let mut lim = Limiter::new(SR, 1);
+        lim.set_param("ceiling", ceiling);
+        lim.set_param("true_peak", 0.0);
+        lim.set_param("lookahead", 30.0);
+        let lat = lim.latency();
+        let mut y = input.clone();
+        let cut = pulse_at + 200; // the pulse has been detected, and is still inside the delay line
+        lim.process(&mut [&mut y[..cut]]);
+        lim.set_param("lookahead", 5.0);
+        lim.process(&mut [&mut y[cut..]]);
+        let exit = pulse_at + lat;
+        let pulse = y[exit..exit + 48].iter().fold(0.0f32, |a, v| a.max(v.abs()));
+        assert!(pulse <= db_to_gain(ceiling) + 1e-6, "the pulse is limited: {pulse}");
+        // the smooth gain, not the final clip: the sample before the pulse comes out is already
+        // held down below the sine's untouched level
+        let before = y[exit - 240..exit - 1].iter().fold(0.0f32, |a, v| a.max(v.abs()));
+        assert!(before < 0.075, "the reduction requested for the pulse survived the ramp change: peak before the pulse {before}");
     }
 
     /// #905: at the default look-ahead (5 ms, the value the old fixed window had, and what the
