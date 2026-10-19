@@ -431,9 +431,9 @@ impl DragCheckbox for Ui {
             return resp;
         }
         let key = egui::Id::unique("checkbox-sweep");
-        let (down, pressed, released, pos) =
-            self.input(|i| (i.pointer.primary_down(), i.pointer.primary_pressed(), i.pointer.primary_released(), i.pointer.interact_pos()));
-        let inside = pos.is_some_and(|p| resp.rect.contains(p) && self.clip_rect().contains(p));
+        let (down, pressed, released) = self.input(|i| (i.pointer.primary_down(), i.pointer.primary_pressed(), i.pointer.primary_released()));
+        // over this checkbox and not under a menu, popup or window drawn above it
+        let inside = resp.contains_pointer();
         let mut sweep = self.ctx().data(|d| d.get_temp::<CheckboxSweep>(key));
         if !down && !released {
             self.ctx().data_mut(|d| d.remove::<CheckboxSweep>(key));
@@ -748,6 +748,42 @@ mod tests {
         let mut state = [false, false, true, true];
         drag_over(&mut state, 3, 0);
         assert_eq!(state, [false; 4], "a drag up from a checked one unchecks the ones above");
+    }
+
+    /// The checkboxes with a popup drawn over `covered`, as a menu or a dialog over a panel is.
+    fn checkboxes_under_popup(ctx: &egui::Context, state: &mut [bool; 4], events: Vec<egui::Event>, covered: Rect) {
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 300.0))), events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            for (i, v) in state.iter_mut().enumerate() {
+                ui.checkbox_drag(v, format!("option {i}"));
+            }
+            egui::Area::new(egui::Id::unique("popup")).order(egui::Order::Foreground).fixed_pos(covered.min).show(ui.ctx(), |ui| {
+                ui.add_sized(covered.size(), egui::Button::new("menu item"));
+            });
+        });
+        out.textures_delta.clear();
+    }
+
+    /// A press on a popup over a checkbox, dragged off the checkbox under it, changes no checkbox.
+    #[test]
+    fn a_press_on_a_popup_above_a_checkbox_leaves_it_alone() {
+        let ctx = egui::Context::default();
+        let mut state = [false; 4];
+        four_checkboxes(&ctx, &mut state, vec![]);
+        let rects = four_checkboxes(&ctx, &mut state, vec![]);
+        let covered = rects[1];
+        // an area is laid out unseen on its first frame; let it show before pressing on it
+        for _ in 0..2 {
+            checkboxes_under_popup(&ctx, &mut state, vec![], covered);
+        }
+        checkboxes_under_popup(&ctx, &mut state, vec![egui::Event::PointerMoved(covered.center())], covered);
+        checkboxes_under_popup(&ctx, &mut state, vec![primary(covered.center(), true)], covered);
+        for at in [covered.center() + vec2(0.0, 6.0), rects[2].center(), rects[3].center()] {
+            checkboxes_under_popup(&ctx, &mut state, vec![egui::Event::PointerMoved(at)], covered);
+        }
+        checkboxes_under_popup(&ctx, &mut state, vec![primary(rects[3].center(), false)], covered);
+        checkboxes_under_popup(&ctx, &mut state, vec![], covered);
+        assert_eq!(state, [false; 4], "the press went to the popup, not to the checkbox under it");
     }
 
     #[test]
