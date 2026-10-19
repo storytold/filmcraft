@@ -163,3 +163,31 @@ fn the_razor_line_crosses_the_linked_clips_or_every_track_with_shift() {
     let shifted = filmcraft_ui_egui::panels::timeline::razor_line_tracks(d.app(), ClipId(city), true);
     assert!(!shifted.contains(&locked) && shifted.len() + 1 == every.len(), "Shift: every track but the locked one: {shifted:?}");
 }
+
+/// The tool's pointer stays on through the drag it starts, not only while hovering.
+#[test]
+fn the_tool_pointer_stays_on_during_a_drag() {
+    let mut d = Driver::demo();
+    let city = d.v1_clip(CITY);
+    let at = clip_center(&mut d, city);
+    for tool in ["Slip", "Slide", "Hand"] {
+        d.ok("ui.set", json!({"tool": tool}));
+        d.frames(2);
+        d.hover(at);
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        d.harness.input_mut().events.push(button(true));
+        d.frames(1);
+        for dx in [4.0, 10.0, 18.0, 26.0] {
+            d.harness.input_mut().events.push(egui::Event::PointerMoved(at + egui::vec2(dx, 0.0)));
+            d.frames(1);
+        }
+        assert_eq!(d.cursor(), CursorIcon::None, "{tool}: its icon is still the pointer mid-drag");
+        d.harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: at + egui::vec2(26.0, 0.0),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        d.frames(2);
+    }
+}
