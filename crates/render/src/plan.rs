@@ -253,6 +253,36 @@ pub(crate) fn layered_at(project: &Project, seq: &Sequence, t: Tick) -> bool {
     true
 }
 
+/// Whether `it` is guaranteed to be an opaque, fullscreen picture at `t` (so premultiplied
+/// "over" blending in a cross dissolve matches a linear cross-fade without dipping or leaving
+fn is_fullscreen_opaque(project: &Project, seq: &Sequence, it: &TrackItem, t: Tick, sources: &dyn SourceProvider) -> bool {
+    let Some((_, media, _)) = project.resolve_media(it.item) else { return false };
+    match &media.media {
+        filmcraft_project::MediaRef::Generator(filmcraft_media::Generator::TransparentVideo) => return false,
+        filmcraft_project::MediaRef::Generator(filmcraft_media::Generator::ColorMatte { color }) if color[3] < 1.0 - 1e-5 => {
+            return false;
+        }
+        _ => {}
+    }
+    if media.info.video.as_ref().is_some_and(|v| v.has_alpha) {
+        return false;
+    }
+    if sources.source(it.item).is_some_and(|src| src.info().video.as_ref().is_some_and(|v| v.has_alpha)) {
+        return false;
+    }
+    let mt = it.effect_time_at(t);
+    let (op, bl) = crate::opacity_blend(it, mt);
+    if op < 1.0 - 1e-5 || bl != Blend::Normal || it.has_opacity_masks() {
+        return false;
+    }
+    if it.has_standard_effects() {
+        return false;
+    }
+    let Some(size) = crate::source_size(project, it.item) else { return false };
+    let motion = motion_matrix(seq, it, size, crate::source_par(project, it.item), mt);
+    near_identity(&motion) && size.0 >= seq.settings.width && size.1 >= seq.settings.height
+}
+
 /// Push the layers of every video track of `seq` at `t`, bottom track first (`seq` must be
 /// [`layered_at`] `t`). `nest` counts the nested sequences already followed to reach `seq`.
 fn push_tracks(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider, nest: u32, layers: &mut PlanStack) {
@@ -293,12 +323,34 @@ fn push_tracks(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, 
                     }
                 }
                 _ => {
-                    // cross dissolve: A at full, B over it at p (premultiplied over == linear mix when A is opaque)
-                    if let Some(it) = a {
-                        push_item(project, seq, it, t, opts, sources, 1.0 - if b.is_none() { p } else { 0.0 }, Some(Blend::Normal), nest, layers);
-                    }
-                    if let Some(it) = b {
-                        push_item(project, seq, it, t, opts, sources, p, Some(Blend::Normal), nest, layers);
+                    let a_opaque = a.is_some_and(|it| is_fullscreen_opaque(project, seq, it, t, sources));
+                    let b_opaque = b.is_some_and(|it| is_fullscreen_opaque(project, seq, it, t, sources));
+                    if a.is_some() && b.is_some() && (!a_opaque || !b_opaque) {
+                        // When either clip has transparency, non-fullscreen bounds, or effects,
+                        // a true transition mix is required so the outgoing clip fades out properly.
+                        let mut inputs = [Vec::new(), Vec::new()];
+                        for (slot, item) in inputs.iter_mut().zip([a, b]) {
+                            if let Some(item) = item {
+                                let mut input = PlanStack::default();
+                                push_item(project, seq, item, t, opts, sources, 1.0, Some(Blend::Normal), nest, &mut input);
+                                *slot = input.into_layers(w, h);
+                            }
+                        }
+                        let progress = if trn.reverse {
+                            inputs.swap(0, 1);
+                            1.0 - p
+                        } else {
+                            p
+                        };
+                        layers.0.push(PlanStep::Transition { inputs, effect: trn.effect.clone(), progress, scale: opts.scale });
+                    } else {
+                        // cross dissolve: A at full, B over it at p (premultiplied over == linear mix when A is opaque)
+                        if let Some(it) = a {
+                            push_item(project, seq, it, t, opts, sources, 1.0 - if b.is_none() { p } else { 0.0 }, Some(Blend::Normal), nest, layers);
+                        }
+                        if let Some(it) = b {
+                            push_item(project, seq, it, t, opts, sources, p, Some(Blend::Normal), nest, layers);
+                        }
                     }
                 }
             }
