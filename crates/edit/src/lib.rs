@@ -682,7 +682,11 @@ pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delt
         Edge::Out => {
             let lo = -(it.duration - ctx.min_duration);
             let mut hi = if mode == TrimMode::Regular { next_start - it.end() } else { Tick::MAX };
-            if it.reverse && it.frame_hold.is_none() {
+            if let Some(output) = it.remix_output_duration() {
+                // The existing arrangement is a virtual source. Cropping its tail must
+                // neither clamp to the original media nor re-plan any of its joints.
+                hi = hi.min(output - it.duration);
+            } else if it.reverse && it.frame_hold.is_none() {
                 // a reversed clip's Out edge consumes media before source_in
                 hi = hi.min(Tick((head(ctx, it).0 as f64 / speed).floor() as i64));
             } else if let Some(m) = media {

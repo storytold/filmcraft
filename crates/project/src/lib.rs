@@ -661,6 +661,38 @@ impl TrackItem {
     pub fn source_out(&self) -> Tick {
         self.source_in + Tick((self.duration.0 as f64 * self.speed.abs()).round() as i64)
     }
+    /// Available output of an enabled music remix, in timeline ticks. Its source pieces
+    /// can repeat, so the original media duration is not the limit for an Out trim.
+    /// Read only the bounded persisted plan; no analysis or new arrangement is needed.
+    pub fn remix_output_duration(&self) -> Option<Tick> {
+        let effect = self.effects.iter().find(|e| e.effect == "remix" && e.enabled)?;
+        let ParamValue::Text(plan) = &effect.param("plan")?.value else { return None };
+        if plan.len() > 2048 {
+            return None;
+        }
+        let mut fields = plan.split(';');
+        let xfade = fields.next()?.trim().parse::<i64>().ok()?;
+        if !(0..=Tick::MAX.0).contains(&xfade) {
+            return None;
+        }
+        let mut total = 0i64;
+        for (index, piece) in fields.enumerate() {
+            if index >= 33 {
+                return None;
+            }
+            let (start, length) = piece.split_once(',')?;
+            let start = start.trim().parse::<i64>().ok()?;
+            let length = length.trim().parse::<i64>().ok()?;
+            if start < 0 || length <= 0 || start.checked_add(length)? > Tick::MAX.0 {
+                return None;
+            }
+            total = total.checked_add(length)?;
+            if total > Tick::MAX.0 {
+                return None;
+            }
+        }
+        (total > 0).then_some(Tick(total))
+    }
     pub fn effect(&self, id: &str) -> Option<&EffectInstance> {
         self.effects.iter().find(|e| e.effect == id)
     }

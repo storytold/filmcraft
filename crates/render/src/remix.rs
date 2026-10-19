@@ -43,6 +43,8 @@ pub struct Remix {
     /// Crossfade at each joint.
     pub xfade: Tick,
     pub pieces: Vec<TickPiece>,
+    /// Optional local gains; span is stored in ticks.
+    pub levels: Option<dsp::LevelMatch>,
 }
 
 impl Remix {
@@ -66,6 +68,10 @@ impl Remix {
             Some(p) => (Tick(p.xfade), p.pieces.iter().map(|p| TickPiece { src: Tick(p.src), len: Tick(p.len) }).collect()),
             None => (Tick::ZERO, Vec::new()),
         };
+        let levels = match e.param("joinLevels").map(|p| &p.value) {
+            Some(ParamValue::Text(text)) => dsp::LevelMatch::from_text(text).filter(|m| m.joins.len() + 1 == pieces.len()),
+            _ => None,
+        };
         Some(Remix {
             target: Tick(f("target").unwrap_or(0.0) as i64),
             segments: f("segments").unwrap_or(50.0),
@@ -73,6 +79,7 @@ impl Remix {
             original: Tick(f("original").unwrap_or(item.duration.0 as f64) as i64),
             xfade,
             pieces,
+            levels,
         })
     }
 
@@ -80,6 +87,9 @@ impl Remix {
     pub fn to_effect(&self) -> EffectInstance {
         let plan = dsp::Plan { pieces: self.pieces.iter().map(|p| Piece { src: p.src.0, len: p.len.0 }).collect(), xfade: self.xfade.0 };
         let mut params = BTreeMap::new();
+        if let Some(levels) = &self.levels {
+            params.insert("joinLevels".to_string(), Param::new(ParamValue::Text(levels.to_text())));
+        }
         params.insert("target".to_string(), Param::new(ParamValue::Float(self.target.0 as f64)));
         params.insert("segments".to_string(), Param::new(ParamValue::Float(self.segments)));
         params.insert("variations".to_string(), Param::new(ParamValue::Float(self.variations)));
@@ -145,7 +155,8 @@ pub fn read(item: &TrackItem, read: &dyn Fn(i64, usize) -> Option<AudioBuffer>, 
         }
         b
     };
-    let out = dsp::render(&plan, rel0, n, channels, &mut rd);
+    let levels = rm.levels.as_ref().map(|m| dsp::LevelMatch { span: Tick(m.span).to_units_floor(i64::from(sr)).max(1), joins: m.joins.clone() });
+    let out = dsp::render_with_levels(&plan, levels.as_ref(), rel0, n, channels, &mut rd);
     Some(AudioBuffer { sample_rate: sr, channels: out })
 }
 
@@ -176,6 +187,7 @@ mod tests {
             variations: 50.0,
             original: s(1.0),
             xfade: s(0.002),
+            levels: None,
             pieces: vec![TickPiece { src: s(0.0), len: s(0.25) }, TickPiece { src: s(0.65), len: s(0.35) }],
         }
     }
@@ -222,5 +234,16 @@ mod tests {
         // other rates tile the same plan
         let p = remix().plan_at(44_100);
         assert_eq!(p.len(), (0.6 * 44_100.0) as i64);
+    }
+    #[test]
+    fn seam_levels_survive_save_and_apply_at_another_sample_rate() {
+        let mut r = remix();
+        r.levels = Some(dsp::LevelMatch { span: Tick::from_seconds_f64(0.1).0, joins: vec![dsp::JoinLevel { before: 1.0, after: 0.5, correlation: 0.0 }] });
+        let mut it = item();
+        r.store(&mut it);
+        assert_eq!(Remix::of(&it), Some(r));
+        let read_constant = |_: i64, n: usize| Some(AudioBuffer { sample_rate: 24_000, channels: vec![vec![0.8; n]] });
+        let output = read(&it, &read_constant, 6200, 10, 24_000).unwrap();
+        assert!(output.channels[0].iter().all(|x| (*x - 0.4).abs() < 1e-6));
     }
 }

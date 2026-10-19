@@ -905,3 +905,50 @@ fn moving_an_edge_keeps_the_media_under_the_timeline() {
         }
     }
 }
+
+fn remix_effect(plan: &str) -> filmcraft_project::EffectInstance {
+    use filmcraft_project::{EffectInstance, Param, ParamValue};
+    let mut params = std::collections::BTreeMap::new();
+    params.insert("plan".into(), Param::new(ParamValue::Text(plan.into())));
+    EffectInstance { effect: "remix".into(), enabled: true, params, masks: vec![], post_fader: false, essential: false, layer: None }
+}
+
+#[test]
+fn remix_out_trim_uses_plan_and_preserves_source_limits_for_ordinary_clips() {
+    for mode in [TrimMode::Regular, TrimMode::Ripple] {
+        let mut fx = Fx::new();
+        let track = fx.a(0);
+        let c = fx.put(track, 0, 1560, 0);
+        let text = format!("0;0,{};0,{};0,{}", f(768).0, f(768).0, f(24).0);
+        fx.seq.find_item_mut(c).unwrap().1.effects.push(remix_effect(&text));
+        let mut n = fx.next;
+        assert_eq!(clamp_trim(&fx.seq, c, Edge::Out, mode, -f(120), &Fx::ctx(&mut n)).unwrap(), -f(120));
+        trim(&mut fx.seq, c, Edge::Out, mode, -f(120), &mut Fx::ctx(&mut n)).unwrap();
+        assert_eq!(fx.seq.find_item(c).unwrap().1.duration, f(1440));
+        assert_eq!(clamp_trim(&fx.seq, c, Edge::Out, mode, f(500), &Fx::ctx(&mut n)).unwrap(), f(120));
+        assert_eq!(fx.seq.find_item(c).unwrap().1.effects[0], remix_effect(&text));
+    }
+    let mut fx = Fx::new();
+    let track = fx.v(0);
+    let c = fx.put(track, 0, 900, 0);
+    let mut n = fx.next;
+    assert_eq!(clamp_trim(&fx.seq, c, Edge::Out, TrimMode::Regular, f(500), &Fx::ctx(&mut n)).unwrap(), f(100));
+}
+
+#[test]
+fn remix_output_bound_rejects_invalid_and_disabled_plans() {
+    let mut fx = Fx::new();
+    let mut clip = fx.item(0, 10, 0);
+    for text in ["", "0", "-1;0,1", "0;-1,1", "0;0,0", "0;0,-1", "0;0,9223372036854775807", "0;9223372036854775807,1", "broken;0,1"] {
+        clip.effects = vec![remix_effect(text)];
+        assert_eq!(clip.remix_output_duration(), None, "{text}");
+    }
+    clip.effects = vec![remix_effect(&format!("0{}", ";0,1".repeat(34)))];
+    assert_eq!(clip.remix_output_duration(), None);
+    clip.effects = vec![remix_effect(&"9".repeat(3000))];
+    assert_eq!(clip.remix_output_duration(), None);
+    clip.effects = vec![remix_effect("0;0,100;50,200")];
+    assert_eq!(clip.remix_output_duration(), Some(Tick(300)));
+    clip.effects[0].enabled = false;
+    assert_eq!(clip.remix_output_duration(), None);
+}
