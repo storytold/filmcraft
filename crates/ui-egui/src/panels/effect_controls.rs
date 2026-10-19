@@ -197,9 +197,18 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             // Premiere lists the fixed effects (Motion, Opacity, Time Remapping / Volume…) first.
             let mut order: Vec<usize> = (0..it.effects.len()).collect();
             order.sort_by_key(|i| !it.effects[*i].def().is_some_and(|d| d.intrinsic));
+            let mut after_fixed = false;
             for idx in order {
                 let e = &it.effects[idx];
                 let Some(def) = e.def() else { continue };
+                // the first effect added from the library after the fixed ones gets a line on top
+                // (#2328); drawn on its edge, so no row moves
+                let first_added = if def.intrinsic {
+                    after_fixed = true;
+                    false
+                } else {
+                    std::mem::take(&mut after_fixed)
+                };
                 let key = format!("{}:{}", clip.0, idx);
                 let open = !app.ui.collapsed_fx.contains(&key);
                 let selected = app.session.state.selected_effect.as_ref().is_some_and(|s| s.clip == clip && s.index(&it.effects) == Some(idx));
@@ -210,6 +219,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     bui.painter().rect_filled(crate::panels::effect_controls::row_fill(r), 0.0, t.hover);
                 }
                 row_line(bui, r, &lane, &t);
+                if first_added {
+                    let line = Rect::from_min_max(pos2(r.min.x, r.min.y - 1.0), pos2(r.max.x, r.min.y + 1.0));
+                    bui.painter().rect_filled(line, 0.0, t.accent.gamma_multiply(0.8));
+                    let which = if *kind == TrackKind::Video { "video" } else { "audio" };
+                    app.auto.add(&format!("effectControls.addedEffects.{which}"), line, "Added effects");
+                }
                 // only the arrow twirls the effect open or shut; the rest of the header selects it
                 let tw = Rect::from_center_size(pos2(r.min.x + 10.0, r.center().y), vec2(10.0, 10.0));
                 icons::paint(bui.painter(), tw, if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_dim);
@@ -1112,6 +1127,16 @@ pub(crate) fn graph_rows(
         lo = lo.max(min);
         hi = hi.min(max);
     }
+    // While the graph stays open its range only widens: refitted to the keyframes, a keyframe
+    // dragged off the top or bottom edge was drawn back on that edge, the curve unchanged (#1918)
+    let range_id = egui::Id::new(("kfg-range", clip.0, idx, mask, pd.id));
+    let frame = ui.ctx().cumulative_frame_nr();
+    if let Some((a, b, seen)) = ui.data(|d| d.get_temp::<(f64, f64, u64)>(range_id))
+        && frame.saturating_sub(seen) <= 1
+    {
+        (lo, hi) = (lo.min(a), hi.max(b));
+    }
+    ui.data_mut(|d| d.insert_temp(range_id, (lo, hi, frame)));
     let area = Rect::from_min_max(pos2(lane.min.x, vr.min.y + 4.0), pos2(lane.max.x, vr.max.y - 4.0));
     let y_of = |v: f64| area.max.y - ((v - lo) / (hi - lo)) as f32 * area.height();
     let v_of = |y: f32| lo + ((area.max.y - y) / area.height()) as f64 * (hi - lo);
@@ -1534,6 +1559,31 @@ mod graph_drag_tests {
 
     fn button(pos: Pos2, pressed: bool) -> egui::Event {
         egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() }
+    }
+
+    /// #1918, #1921: a keyframe dragged to a new value stays where it was dropped. The graph
+    /// used to fit itself to the new values, so with two keyframes the one at the bottom (or
+    /// the top) went straight back there and the curve looked unchanged.
+    #[test]
+    fn a_dropped_graph_keyframe_stays_where_it_was_dropped() {
+        for (key, offset) in [(0, vec2(0.0, -20.0)), (1, vec2(0.0, 20.0))] {
+            let mut d = Driver::new();
+            let before = d.param();
+            d.frame(vec![]);
+            let id = format!("effectControls.scale.graph.keyframe.{}", before.keyframes[key].time.0);
+            let [x, y, w, h] = d.app.auto.find(&id).expect("the keyframe is drawn").rect;
+            let start = pos2(x + w / 2.0, y + h / 2.0);
+            d.frame(vec![egui::Event::PointerMoved(start), button(start, true)]);
+            d.frame(vec![egui::Event::PointerMoved(start + offset)]);
+            d.frame(vec![button(start + offset, false)]);
+            d.frame(vec![]);
+            d.frame(vec![]);
+            let changed = d.param();
+            assert_ne!(changed.keyframes[key].value, before.keyframes[key].value, "keyframe {key} takes the dropped value");
+            let [x, y, w, h] = d.app.auto.find(&id).expect("the keyframe is drawn").rect;
+            let now = pos2(x + w / 2.0, y + h / 2.0);
+            assert!(now.distance(start + offset) < 0.5, "keyframe {key} stays where it was dropped: dropped at {:?}, drawn at {now:?}", start + offset);
+        }
     }
 
     #[test]

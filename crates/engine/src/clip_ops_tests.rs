@@ -1059,3 +1059,26 @@ fn linked_rate_stretch_keeps_one_speed_when_a_neighbour_blocks_the_sound() {
     assert!((pic.speed - sound.speed).abs() < 1e-12);
     assert!((r["speed"].as_f64().unwrap() - 60.0 / 70.0).abs() < 1e-9);
 }
+
+/// #2358: Toggle Animation on a parameter an older effect instance lacks (it was added to the
+/// effect later) creates it from its default and animates it, instead of "no such param".
+#[test]
+fn toggle_animation_creates_a_parameter_missing_from_an_older_instance() {
+    let mut s = crate::Session::default();
+    s.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+    let seq = s.state.active_sequence.unwrap();
+    let clip = s.active_sequence().unwrap().video_tracks[0].items[0].id;
+    // an older project: Motion without its Rotation entry
+    {
+        let p = std::sync::Arc::make_mut(&mut s.project);
+        let q = p.sequence_mut(seq).unwrap();
+        let (_, it) = q.find_item_mut(clip).unwrap();
+        let m = it.effects.iter_mut().find(|e| e.effect == "motion").unwrap();
+        m.params.remove("rotation");
+    }
+    // `"mask": null` is no mask, as in effects.setParam
+    s.execute("effects.toggleAnimation", serde_json::json!({"clip": clip.0, "effect": "motion", "param": "rotation", "mask": null})).unwrap();
+    let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
+    let rot = it.effect("motion").unwrap().param("rotation").unwrap();
+    assert!(rot.is_animated(), "the stopwatch is on");
+}

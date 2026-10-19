@@ -416,3 +416,52 @@ fn copy_paste_duplicates_a_graphic_clip() {
     assert!((pasted[0].start.seconds() - 620.0).abs() < 0.05, "at the playhead: {:?}", pasted[0].start);
     assert_eq!(texts(&s, pasted[0].id), vec!["Lyric".to_string()]);
 }
+
+#[test]
+fn character_style_drag_merges_only_its_target_and_range() {
+    let mut s = demo("gt-char-drag");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text":"Alpha Bravo"})).unwrap());
+    let before = s.project.clone();
+    let n = s.history.undo.len();
+    for i in 0..8 {
+        s.execute("graphics.setCharStyle", json!({"clip":c.0,"start":0,"end":5,"style":{"size":105+i*5},"merge":true,"begin":i==0})).unwrap();
+    }
+    assert_eq!(s.history.undo.len(), n + 1, "one drag, one undo step");
+    let after = s.project.clone();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.project, *before);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(*s.project, *after);
+    s.execute("graphics.setCharStyle", json!({"clip":c.0,"start":0,"end":5,"style":{"size":150},"merge":true,"begin":true})).unwrap();
+    assert_eq!(s.history.undo.len(), n + 2, "a new gesture on the same range starts a new step");
+    s.execute("graphics.setCharStyle", json!({"clip":c.0,"start":6,"end":11,"style":{"size":160},"merge":true})).unwrap();
+    assert_eq!(s.history.undo.len(), n + 3, "another character range does not merge");
+    let before = s.project.clone();
+    assert!(s.execute("graphics.setCharStyle", json!({"clip":c.0,"start":3,"end":3,"style":{"size":170},"merge":true})).is_err());
+    assert_eq!(*s.project, *before);
+    assert_eq!(s.history.undo.len(), n + 3, "an invalid edit adds no undo step");
+}
+
+#[test]
+fn character_style_merge_preserves_default_calls_and_separate_clips() {
+    let mut s = demo("gt-char-merge-targets");
+    let a = clip_of(&s.execute("graphics.newText", json!({"text":"First", "newClip":true})).unwrap());
+    let b = clip_of(&s.execute("graphics.newText", json!({"text":"Other", "newClip":true})).unwrap());
+    assert_ne!(a, b);
+    let n = s.history.undo.len();
+    for c in [a, b] {
+        s.execute("graphics.setCharStyle", json!({"clip":c.0,"start":0,"end":5,"style":{"size":120},"merge":true})).unwrap();
+    }
+    assert_eq!(s.history.undo.len(), n + 2, "distinct clips do not merge");
+    for size in [130, 140] {
+        s.execute("graphics.setCharStyle", json!({"clip":b.0,"style":{"size":size}})).unwrap();
+    }
+    assert_eq!(s.history.undo.len(), n + 4, "default calls retain separate undo steps");
+    let added = s.execute("graphics.newText", json!({"clip":b.0,"text":"Layer"})).unwrap();
+    assert_eq!(clip_of(&added), b);
+    let n = s.history.undo.len();
+    for layer in [0, 1] {
+        s.execute("graphics.setCharStyle", json!({"clip":b.0,"layer":layer,"start":0,"end":5,"style":{"size":150},"merge":true})).unwrap();
+    }
+    assert_eq!(s.history.undo.len(), n + 2, "distinct layers do not merge");
+}

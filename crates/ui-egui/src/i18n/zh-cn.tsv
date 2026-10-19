@@ -1254,6 +1254,7 @@
 	59.94 fps Non Drop-Frame	59.94 fps 非掉帧
 	ASC CDL	ASC CDL
 	Accessible color contrast	无障碍颜色对比度
+	Animate zoom, scrolling and menus	缩放、滚动和菜单使用动画
 	Action-Safe Margin	动作安全边距
 	Active Monitor	活动监视器
 	Add	添加
@@ -3585,3 +3586,9 @@
 	Shows the version, community links and credits in a FilmCraft window.	在 FilmCraft 窗口中显示版本、社区链接和致谢。
 	Couldn't open your web browser	无法打开网页浏览器
 	Open this address in your browser yourself:	请自行在浏览器中打开此地址：
+# View ▸ Reset Interface Zoom (#2253).
+	Reset Interface Zoom	重置界面缩放
+	Track Color	轨道颜色
+	Open a sequence to search its graphics	打开序列以搜索其中的图形
+	No text graphics in this sequence. Add text with the Type tool.	此序列中没有文本图形。请用文字工具添加文本。
+	No matching text.	没有匹配的文本。

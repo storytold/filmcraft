@@ -135,10 +135,11 @@ fn ffmpeg_ycbcr_tiffs_match_ffmpeg_decode() {
     let Some(ff) = filmcraft_testkit::oracle::ffmpeg_or_skip("YCbCr TIFF oracle") else { return };
     let dir = filmcraft_testkit::fixtures::fixtures_dir("media/tiff_ycbcr");
     for pix_fmt in ["yuv420p", "yuv422p", "yuv444p"] {
-        let tiff = dir.join(format!("gradient_{pix_fmt}.tiff"));
+        let tiff = dir.join(format!("gradient_fixed_{pix_fmt}.tiff"));
         let made = filmcraft_testkit::fixtures::generate(&tiff, |tmp| {
             std::process::Command::new(&ff)
-                .args(["-y", "-v", "error", "-f", "lavfi", "-i", "gradients=size=95x63:seed=7", "-frames:v", "1", "-pix_fmt", pix_fmt])
+                // Default gradient colors stay random even with a fixed seed.
+                .args(["-y", "-v", "error", "-f", "lavfi", "-i", "gradients=size=95x63:seed=7:c0=0x204060:c1=0xd0a080", "-frames:v", "1", "-pix_fmt", pix_fmt])
                 .arg(tmp)
                 .status()
                 .is_ok_and(|s| s.success())

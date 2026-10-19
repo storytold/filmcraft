@@ -420,3 +420,62 @@ fn contact_sheets() {
         sheet.save(std::path::Path::new(&dir).join(format!("{f}.png"))).unwrap();
     }
 }
+
+/// The disc blur as it was before #1871: offsets worked out for every pixel.
+fn disc_blur_per_pixel(img: &Image, x: f32, y: f32, r: f32, n: usize) -> [f32; 4] {
+    if r < 0.5 || n <= 1 {
+        return img.sample_bilinear_clamped(x, y);
+    }
+    let mut acc = [0.0; 4];
+    for i in 0..n {
+        let rr = r * ((i as f32 + 0.5) / n as f32).sqrt();
+        let a = i as f32 * 2.399_963;
+        let p = img.sample_bilinear_clamped(x + rr * a.cos(), y + rr * a.sin());
+        for k in 0..4 {
+            acc[k] += p[k];
+        }
+    }
+    scale4(acc, 1.0 / n as f32)
+}
+
+/// #1871: offsets worked out once per frame give exactly the pixels the per-pixel version gave.
+#[test]
+fn disc_blur_with_shared_offsets_is_bit_identical() {
+    let img = frame_b();
+    for (r, n) in [(0.0, 24), (0.4, 24), (3.0, 8), (30.0, 24), (75.5, 48), (200.0, 48), (12.0, 1)] {
+        let offsets = disc_offsets(r, n);
+        for y in (0..H).step_by(7) {
+            for x in (0..W).step_by(5) {
+                let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+                let a = disc_blur_per_pixel(&img, fx, fy, r, n);
+                let b = disc_blur_with(&img, fx, fy, &offsets);
+                assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits), "r {r}, n {n}, at ({x}, {y})");
+            }
+        }
+    }
+}
+
+/// `cargo test --release -p filmcraft-render --lib lens_blur_frame_time -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn lens_blur_frame_time() {
+    let (w, h) = (1920, 1080);
+    let img = paint(w, h, |x, y| [x / w as f32, y / h as f32, 0.5, 1.0]);
+    let (r, n) = (30.0, 24);
+    let time = |f: &dyn Fn() -> Image| {
+        let t = std::time::Instant::now();
+        let mut out = f();
+        for _ in 0..4 {
+            out = f();
+        }
+        (t.elapsed().as_secs_f64() * 1000.0 / 5.0, out)
+    };
+    let (before, a) = time(&|| paint(w, h, |x, y| disc_blur_per_pixel(&img, x, y, r, n)));
+    let offsets = disc_offsets(r, n);
+    let (after, b) = time(&|| paint(w, h, |x, y| disc_blur_with(&img, x, y, &offsets)));
+    assert_eq!(a.px, b.px);
+    eprintln!(
+        "1080p disc blur of one picture, radius {r}, {n} samples: {before:.1} ms per pixel offsets, {after:.1} ms shared offsets ({:.2}x)",
+        before / after
+    );
+}

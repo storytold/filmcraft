@@ -262,3 +262,53 @@ fn shift_delete_ripple_deletes_with_the_timeline_focused() {
     let moved = after.iter().find(|i| i["clip"].as_u64() == Some(next)).map(|i| i["start"].as_i64().unwrap());
     assert_eq!(moved, Some(start), "and closed the gap");
 }
+
+#[test]
+fn alt_click_isolates_already_selected_linked_clip_before_delete() {
+    for audio in [false, true] {
+        let mut d = Driver::new();
+        d.focus("Timeline");
+        let q = d.app().session.active_sequence().unwrap();
+        let video = q.video_tracks[0].items[0].clone();
+        let sound = q.audio_tracks.iter().flat_map(|t| &t.items).find(|i| i.link == video.link).unwrap().clone();
+        let (selected, partner) = if audio { (sound.id, video.id) } else { (video.id, sound.id) };
+        d.exec("timeline.select", json!({"clips": [selected.0]}));
+        assert_eq!(d.app().session.state.selection.len(), 2);
+        let before = d.app().session.project.clone();
+        let r = d.app().auto.find(&format!("timeline.clip.{}", selected.0)).unwrap().rect;
+        d.ok("ui.click", json!({"x": r[0] + r[2] * 0.5, "y": r[1] + r[3] * 0.3, "modifiers": {"alt": true}}));
+        d.frames(3);
+        assert_eq!(d.app().session.state.selection, vec![selected], "Alt-click isolates the already-selected side");
+        assert!(d.app().session.state.linked_selection, "the global Linked Selection toggle stays on");
+        d.key("Delete");
+        let q = d.app().session.active_sequence().unwrap();
+        assert!(q.find_item(selected).is_none());
+        assert!(q.find_item(partner).is_some(), "Delete keeps the unselected linked partner");
+        d.key("Cmd+Z");
+        assert_eq!(*d.app().session.project, *before, "one undo restores both sides");
+    }
+}
+
+#[test]
+fn shift_alt_click_toggles_only_the_clicked_linked_side() {
+    for audio in [false, true] {
+        let mut d = Driver::new();
+        d.focus("Timeline");
+        let q = d.app().session.active_sequence().unwrap();
+        let video = q.video_tracks[0].items[0].clone();
+        let sound = q.audio_tracks.iter().flat_map(|t| &t.items).find(|i| i.link == video.link).unwrap().id;
+        let (clicked, partner) = if audio { (sound, video.id) } else { (video.id, sound) };
+        d.exec("timeline.select", json!({"clips": [clicked.0]}));
+        let before = d.app().session.project.clone();
+        let r = d.app().auto.find(&format!("timeline.clip.{}", clicked.0)).unwrap().rect;
+        let params = json!({"x": r[0] + r[2] * 0.5, "y": r[1] + r[3] * 0.3, "modifiers": {"alt": true, "shift": true}});
+        d.ok("ui.click", params.clone());
+        d.frames(3);
+        assert_eq!(d.app().session.state.selection, vec![partner], "Shift+Alt removes only the clicked side");
+        d.ok("ui.click", params);
+        d.frames(3);
+        assert_eq!(d.app().session.state.selection, vec![partner, clicked], "Shift+Alt adds that side back");
+        assert!(d.app().session.state.linked_selection);
+        assert_eq!(*d.app().session.project, *before, "selection does not edit the document");
+    }
+}

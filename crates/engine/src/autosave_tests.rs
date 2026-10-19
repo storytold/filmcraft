@@ -229,3 +229,99 @@ fn journal_costs_the_ui_thread_only_a_handoff() {
     s.shutdown();
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// Scratch Disks folders named in a project file are used only when they are inside the project's
+/// folder or were chosen on this computer: otherwise auto-saves and previews go to the default
+/// location, nothing is written to the named folder, and the user is told.
+#[test]
+fn project_scratch_folders_outside_the_project_are_not_used() {
+    let d = temp_dir("scratch-trust");
+    let outside = d.join("elsewhere");
+    let show = d.join("show");
+    std::fs::create_dir_all(&show).unwrap();
+    let proj = show.join("cut.fcproj").to_string_lossy().to_string();
+    let mut a = demo();
+    let named = outside.to_string_lossy().to_string();
+    a.edit("scratch", |p, _| {
+        p.settings.scratch.auto_save = Some(named.clone());
+        p.settings.scratch.video_previews = Some(named.clone());
+        Ok(())
+    })
+    .unwrap();
+    a.execute("file.saveAs", json!({"path": proj})).unwrap();
+    let _ = std::fs::remove_dir_all(&outside);
+
+    let mut s = Session::default();
+    start(&mut s, &d.join("data"));
+    s.execute("file.open", json!({"path": proj})).unwrap();
+    assert!(
+        s.drain_events().iter().any(|e| matches!(e, crate::Event::Toast { message, .. } if message.contains(&named))),
+        "the user is told the folder is not used"
+    );
+    assert_eq!(crate::project_tools::previews_dir(&s), Some(show.join("FilmCraft Previews").join("cut")));
+    s.execute("sequence.addEdit", json!({"seconds": 1.0})).unwrap();
+    let r = s.execute("file.autoSaveNow", json!({})).unwrap();
+    let written = std::path::PathBuf::from(r["path"].as_str().unwrap());
+    assert!(written.starts_with(show.join("Auto-Save")), "{}", written.display());
+    assert!(!outside.exists(), "nothing written to the folder the project names");
+
+    // A folder inside the project's folder is used as is.
+    let inner = show.join("Saves").to_string_lossy().to_string();
+    s.edit("scratch", |p, _| {
+        p.settings.scratch.auto_save = Some(inner.clone());
+        Ok(())
+    })
+    .unwrap();
+    s.sync_persistence();
+    let r = s.execute("file.autoSaveNow", json!({})).unwrap();
+    assert!(std::path::Path::new(r["path"].as_str().unwrap()).starts_with(&inner));
+
+    // Choosing the outside folder in Scratch Disks makes it usable; network shares never are.
+    s.execute("file.projectSettings.scratchDisks", json!({"autoSave": named})).unwrap();
+    let r = s.execute("file.autoSaveNow", json!({})).unwrap();
+    assert!(std::path::Path::new(r["path"].as_str().unwrap()).starts_with(&outside));
+    assert!(s.execute("file.projectSettings.scratchDisks", json!({"autoSave": r"\\server\share\saves"})).is_err());
+    assert!(crate::project_tools::trusted_scratch(Some(r"\\server\share"), Some(&proj), &[r"\\server\share".into()]).is_none());
+    assert!(crate::project_tools::trusted_scratch(Some(&format!("{}/../x", show.display())), Some(&proj), &[]).is_none());
+    s.shutdown();
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The Captured Audio and Video and Audio Previews folders a project names follow the same rule:
+/// voice-over takes, pasted images and proxies go next to the project unless the folder is
+/// inside the project's folder; folders on another computer are never used.
+#[test]
+fn project_captured_folder_outside_the_project_is_not_used() {
+    let d = temp_dir("scratch-captured");
+    let show = d.join("show");
+    std::fs::create_dir_all(&show).unwrap();
+    let proj = show.join("cut.fcproj").to_string_lossy().to_string();
+    let mut s = demo();
+    s.execute("file.saveAs", json!({"path": proj})).unwrap();
+    let mut named = vec![d.join("elsewhere").to_string_lossy().to_string(), r"\\192.0.2.1\share\cap".to_string(), "file://192.0.2.1/s/cap".to_string()];
+    if cfg!(unix) {
+        named.push(format!("/{}", show.join("Captured").display()));
+    }
+    let beside = show.to_string_lossy().to_string();
+    for dir in &named {
+        s.edit("scratch", |p, _| {
+            p.settings.scratch.captured = Some(dir.clone());
+            p.settings.scratch.audio_previews = Some(dir.clone());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(crate::voiceover::media_dir(&s, &serde_json::Value::Null, "Captured"), beside, "{dir}");
+        let paths = crate::project_tools::scratch_paths(&s);
+        assert_eq!(paths["captured"]["path"], json!(beside), "{dir}");
+        assert_eq!(paths["audioPreviews"]["path"], json!(beside), "{dir}");
+    }
+    let inner = show.join("Captured").to_string_lossy().to_string();
+    s.edit("scratch", |p, _| {
+        p.settings.scratch.captured = Some(inner.clone());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(crate::voiceover::media_dir(&s, &serde_json::Value::Null, "Captured"), inner);
+    assert!(s.execute("file.projectSettings.scratchDisks", json!({"captured": "file://192.0.2.1/s/cap"})).is_err());
+    let _ = std::fs::remove_dir_all(&d);
+}

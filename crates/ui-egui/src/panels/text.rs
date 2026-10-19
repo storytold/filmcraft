@@ -1,4 +1,6 @@
-//! The Text panel: Transcript / Captions / Graphics tabs. The Captions tab lists the caption
+//! The Text panel: Transcript / Captions / Graphics tabs. The Graphics tab lists the text of every
+//! text layer in the sequence's graphics (#1487), with a search; clicking an entry goes to its clip
+//! and selects the layer, and the text edits in place (`graphics.set`). The Captions tab lists the caption
 //! segments of a caption track with editable in/out timecodes and text, a toolbar (add, split,
 //! merge, delete), track choice and the track style. Every edit dispatches a `captions.*` engine
 //! command; every widget registers an automation id (`text.*`). The Transcript tab shows the
@@ -57,7 +59,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     match app.ui.text_tab.as_str() {
         "Captions" => captions(app, ui, body),
         "Transcript" => transcript(app, ui, body),
-        _ => crate::dock::placeholder(ui, body, &t, tl!("Graphics text search arrives with M10.1–M10.2")),
+        _ => graphics(app, ui, body),
     }
 }
 
@@ -278,6 +280,223 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 .color(t.text_faint),
             );
         }
+    });
+    run(app, ui, actions);
+}
+
+/// A text layer of a graphic clip in the active sequence, for the Graphics tab.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphicText {
+    pub clip: filmcraft_project::ClipId,
+    /// The layer's number among the clip's layers (what `graphics.set` / `graphics.selectLayer` take).
+    pub layer: usize,
+    pub start: filmcraft_time::Tick,
+    /// The track's label (`V2`).
+    pub track: String,
+    /// The layer's own name, when it has one.
+    pub name: Option<String>,
+    pub text: String,
+    /// The timeline time the text was read at (the playhead, or the clip's start when the
+    /// playhead is outside the clip): an edit is written there, so keyframed text changes the
+    /// value that is shown.
+    pub at: filmcraft_time::Tick,
+}
+
+/// Every text layer of every graphic clip in `seq`, in timeline order (then lower tracks first,
+/// then paint order), with its text at `at` when that falls in the clip (Source Text keyframes
+/// hold), else at the clip's first frame.
+pub fn graphic_texts(seq: &filmcraft_project::Sequence, at: filmcraft_time::Tick) -> Vec<GraphicText> {
+    use filmcraft_project::graphic::{TEXT_LAYER, layer_indices};
+    let mut out = Vec::new();
+    for (ti, track) in seq.video_tracks.iter().enumerate() {
+        for it in &track.items {
+            let t = if it.start <= at && at < it.end() { at } else { it.start };
+            let mt = it.effect_time_at(t);
+            for (layer, ei) in layer_indices(&it.effects).into_iter().enumerate() {
+                let Some(e) = it.effects.get(ei).filter(|e| e.effect == TEXT_LAYER) else { continue };
+                let text = match e.param("text").map(|p| p.value_at(mt)) {
+                    Some(filmcraft_project::ParamValue::Text(s)) => s,
+                    _ => String::new(),
+                };
+                let name = match e.param("name").map(|p| p.value.clone()) {
+                    Some(filmcraft_project::ParamValue::Text(n)) if !n.trim().is_empty() => Some(n),
+                    _ => None,
+                };
+                out.push((ti, GraphicText { clip: it.id, layer, start: it.start, track: format!("V{}", ti + 1), name, text, at: t }));
+            }
+        }
+    }
+    out.sort_by(|(ta, a), (tb, b)| a.start.cmp(&b.start).then(ta.cmp(tb)).then(a.layer.cmp(&b.layer)));
+    out.into_iter().map(|(_, g)| g).collect()
+}
+
+/// The Graphics tab (#1487): the text of every text layer in the sequence, searchable. The
+/// timecode goes to the clip and selects the layer; the text edits in place.
+fn graphics(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
+    let t = app.tokens;
+    let project = app.session.project.clone();
+    let Some(seq) = app.session.state.active_sequence.and_then(|id| project.sequence(id)) else {
+        crate::dock::placeholder(ui, rect, &t, tl!("Open a sequence to search its graphics"));
+        return;
+    };
+    let (rate, df) = (seq.settings.frame_rate, seq.settings.drop_frame);
+    let tc = |x: filmcraft_time::Tick| format_time(x, rate, df, TimeDisplay::Timecode, 48_000);
+    let ph = app.session.playhead();
+    let entries = graphic_texts(seq, ph);
+    let mut actions: Vec<(String, Value)> = Vec::new();
+    // search
+    let bar = Rect::from_min_size(rect.min + vec2(10.0, 2.0), vec2(rect.width() - 20.0, 26.0));
+    let skey = egui::Id::new("text-gfx-search");
+    let mut search = ui.data(|d| d.get_temp::<String>(skey)).unwrap_or_default();
+    let w = 220.0f32.min(bar.width());
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(bar.min, vec2(w, 24.0))));
+    let sresp = crate::widgets::search_field(&mut child, &mut search, tl!("Search"), w, &t);
+    app.auto.add("text.graphics.search", sresp.rect, "Search graphics text");
+    ui.data_mut(|d| d.insert_temp(skey, search.clone()));
+    let q = search.to_lowercase();
+    // list
+    let list = Rect::from_min_max(pos2(rect.min.x + 6.0, bar.max.y + 8.0), pos2(rect.max.x - 6.0, rect.max.y - 4.0));
+    ui.painter().rect_filled(list, 3.0, t.app_bg);
+    let sel_clips = app.session.state.selection.clone();
+    let sel_layers = app.session.state.graphic_layers.clone();
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(list.shrink(4.0)).id_salt("graphics-text-list"));
+    egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("graphics-text-scroll").show(&mut child, |ui| {
+        ui.set_width(list.width() - 12.0);
+        let mut shown = 0;
+        for (n, g) in entries.iter().enumerate() {
+            if !q.is_empty() && !g.text.to_lowercase().contains(&q) && !g.name.as_deref().unwrap_or("").to_lowercase().contains(&q) {
+                continue;
+            }
+            shown += 1;
+            let key = format!("{}.{}", g.clip.0, g.layer);
+            let selected = sel_clips.contains(&g.clip) && sel_layers.contains(&g.layer);
+            let fill = if selected {
+                t.row_selected
+            } else if n % 2 == 1 {
+                t.row_alt
+            } else {
+                Color32::TRANSPARENT
+            };
+            let select = |actions: &mut Vec<(String, Value)>| {
+                actions.push(("timeline.select".into(), json!({"clips": [g.clip.0]})));
+                actions.push(("graphics.selectLayer".into(), json!({"clip": g.clip.0, "layers": [g.layer]})));
+            };
+            let frame = egui::Frame::NONE.fill(fill).inner_margin(egui::Margin::symmetric(6, 4)).corner_radius(3.0);
+            let fr = frame.show(ui, |ui| {
+                ui.horizontal_top(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(92.0);
+                        let goto = ui.add(egui::Button::new(egui::RichText::new(tc(g.start)).font(Tokens::mono(11.0)).color(t.hot_text)).frame(false));
+                        app.auto.add(&format!("text.graphics.{key}.goto"), goto.rect, "Go to graphic");
+                        if goto.clicked() {
+                            actions.push(("playhead.set".into(), json!({"time": g.start.0})));
+                            select(&mut actions);
+                        }
+                        let label = match &g.name {
+                            Some(name) => format!("{} · {name}", g.track),
+                            None => g.track.clone(),
+                        };
+                        ui.label(egui::RichText::new(label).size(11.0).color(t.text_dim));
+                    });
+                    ui.vertical(|ui| {
+                        let tkey = egui::Id::new(("gfx-text", g.clip.0, g.layer));
+                        let mut buf = ui.data(|d| d.get_temp::<String>(tkey)).unwrap_or_else(|| g.text.clone());
+                        let resp = ui.add(
+                            egui::TextEdit::multiline(&mut buf)
+                                .id(tkey.with("te"))
+                                .desired_rows(1)
+                                .desired_width(ui.available_width())
+                                .font(Tokens::ui(12.5))
+                                .frame(egui::Frame::NONE),
+                        );
+                        app.auto.add(&format!("text.graphics.{key}.text"), resp.rect, "Graphic text");
+                        if resp.has_focus() {
+                            ui.data_mut(|d| d.insert_temp(tkey, buf.clone()));
+                            if !selected {
+                                select(&mut actions);
+                            }
+                        } else {
+                            ui.data_mut(|d| d.remove::<String>(tkey));
+                        }
+                        if resp.lost_focus() && buf != g.text {
+                            actions.push(("graphics.set".into(), json!({"clip": g.clip.0, "layer": g.layer, "props": {"text": buf}, "time": g.at.0})));
+                        }
+                    });
+                });
+            });
+            app.auto.add(&format!("text.graphics.{key}.row"), fr.response.rect, &g.text);
+            ui.add_space(2.0);
+        }
+        if shown == 0 {
+            ui.label(
+                egui::RichText::new(if entries.is_empty() {
+                    tl!("No text graphics in this sequence. Add text with the Type tool.")
+                } else {
+                    tl!("No matching text.")
+                })
+                .color(t.text_faint),
+            );
+        }
+    });
+    run(app, ui, actions);
+}
+
+/// Whether a caption is selected, so the Properties panel shows [`caption_properties`].
+pub fn caption_selected(app: &FilmcraftApp) -> bool {
+    app.session.active_sequence().is_some_and(|q| app.session.state.caption_selection.iter().any(|c| q.find_caption(*c).is_some()))
+}
+
+/// The Properties panel for the first selected caption (#1846): its text and in/out timecodes,
+/// edited with the same `captions.*` commands as the Captions tab. The style belongs to the caption
+/// track and stays in the Captions tab.
+pub fn caption_properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
+    let t = app.tokens;
+    let project = app.session.project.clone();
+    let Some(seq) = app.session.state.active_sequence.and_then(|id| project.sequence(id)) else { return };
+    let Some((track_id, c)) = app.session.state.caption_selection.iter().find_map(|id| seq.find_caption(*id)) else { return };
+    let track_idx = seq.caption_tracks.iter().position(|tr| tr.id == track_id).unwrap_or(0);
+    let track_name = seq.caption_tracks.get(track_idx).map(|tr| tr.name.as_str()).unwrap_or_default();
+    let (rate, df) = (seq.settings.frame_rate, seq.settings.drop_frame);
+    let tc = |x: filmcraft_time::Tick| format_time(x, rate, df, TimeDisplay::Timecode, 48_000);
+    let mut actions: Vec<(String, Value)> = Vec::new();
+    let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(14.0, 8.0))).id_salt("props-caption"));
+    let (hr, _) = bui.allocate_exact_size(vec2(bui.available_width(), 30.0), Sense::hover());
+    bui.painter().text(pos2(hr.min.x, hr.center().y), Align2::LEFT_CENTER, format!("C{} · {}", track_idx + 1, track_name), Tokens::semibold(12.5), t.text);
+    bui.label(egui::RichText::new(tl!("Text")).size(12.0).color(t.text_dim));
+    let key = egui::Id::new(("props-cap-text", c.id.0));
+    let mut buf = bui.data(|d| d.get_temp::<String>(key)).unwrap_or_else(|| c.text.clone());
+    let resp = bui.add(egui::TextEdit::multiline(&mut buf).id(key.with("te")).desired_rows(3).desired_width(bui.available_width()).font(Tokens::ui(12.5)));
+    app.auto.add("properties.caption.text", resp.rect, &c.text);
+    if resp.has_focus() {
+        bui.data_mut(|d| d.insert_temp(key, buf.clone()));
+    } else {
+        bui.data_mut(|d| d.remove::<String>(key));
+    }
+    if resp.lost_focus() && buf != c.text {
+        actions.push(("captions.setText".into(), json!({"caption": c.id.0, "text": buf})));
+    }
+    bui.add_space(8.0);
+    for (edge, label, val) in [("in", tl!("In"), c.start), ("out", tl!("Out"), c.end())] {
+        bui.horizontal(|ui| {
+            ui.add_sized(vec2(70.0, 22.0), egui::Label::new(egui::RichText::new(label).size(12.0).color(t.text_dim)));
+            let key = egui::Id::new(("props-cap-tc", c.id.0, edge));
+            let mut buf = ui.data(|d| d.get_temp::<String>(key)).unwrap_or_else(|| tc(val));
+            let resp = ui.add(egui::TextEdit::singleline(&mut buf).id(key.with("te")).desired_width(100.0).font(Tokens::mono(11.5)));
+            app.auto.add(&format!("properties.caption.{edge}"), resp.rect, &tc(val));
+            if resp.has_focus() {
+                ui.data_mut(|d| d.insert_temp(key, buf.clone()));
+            } else {
+                ui.data_mut(|d| d.remove::<String>(key));
+            }
+            if resp.lost_focus() && buf.trim() != tc(val) {
+                let k = if edge == "in" { "startTimecode" } else { "endTimecode" };
+                actions.push(("captions.setTimes".into(), json!({"caption": c.id.0, k: buf.trim()})));
+            }
+        });
+    }
+    bui.horizontal(|ui| {
+        ui.add_sized(vec2(70.0, 22.0), egui::Label::new(egui::RichText::new(tl!("Duration")).size(12.0).color(t.text_dim)));
+        ui.label(egui::RichText::new(tc(c.duration)).font(Tokens::mono(11.5)).color(t.text));
     });
     run(app, ui, actions);
 }
