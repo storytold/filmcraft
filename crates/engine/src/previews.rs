@@ -644,9 +644,12 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
         let t0 = web_time::Instant::now();
         let mut bytes = 0u64;
         let mut done_frames = 0u64;
+        let mut terminal_cancelled = false;
         let mut outcome: std::result::Result<(), String> = Ok(());
         for (k, t) in todo.iter().enumerate() {
             if prog.cancel.load(Ordering::Relaxed) {
+                terminal_cancelled = true;
+                prog.cancelled.store(true, Ordering::Relaxed);
                 outcome = Err("cancelled".into());
                 break;
             }
@@ -683,6 +686,8 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
                     let _ = store.open(&pool, &name);
                 }
                 Err(e) => {
+                    terminal_cancelled = matches!(&e, filmcraft_export::ExportError::Cancelled);
+                    prog.cancelled.store(terminal_cancelled, Ordering::Relaxed);
                     let _ = std::fs::remove_file(&part);
                     outcome = Err(e.to_string());
                     break;
@@ -703,6 +708,7 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
         }
         *prog.status.lock().unwrap_or_else(|e| e.into_inner()) =
             if r.is_ok() { format!("Rendered {done_frames} frames in {secs:.1}s") } else { "Render stopped".into() };
+        prog.record_terminal_cancellation(terminal_cancelled);
         prog.finished.store(true, Ordering::Relaxed);
         *res.lock().unwrap_or_else(|x| x.into_inner()) = Some(r);
     };
@@ -753,6 +759,7 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
             let mut pos = g.first_sample;
             while pos < g.first_sample + g.samples {
                 if prog.cancel.load(Ordering::Relaxed) {
+                    prog.cancelled.store(true, Ordering::Relaxed);
                     outcome = Err("cancelled".into());
                     break 'segs;
                 }
@@ -896,4 +903,161 @@ pub fn bar_json(s: &Session) -> Result<Value> {
             "hash": g.hash,
         })).collect::<Vec<_>>(),
     }))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod late_request_job_events {
+    use super::*;
+
+    struct OwnedPreviewDir(PathBuf);
+
+    impl Drop for OwnedPreviewDir {
+        fn drop(&mut self) {
+            // The guarded producer ran inline with wait:true before any terminal assertion.
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum Obstruction {
+        OutputOpen,
+        FinalRename,
+    }
+
+    fn snapshot(s: &mut Session) -> Value {
+        let history = s.execute("history.list", json!({})).unwrap();
+        json!({
+            "project": s.project.as_ref(), "editor": s.state, "history": history,
+            "revision": s.revision, "savedRevision": s.saved_revision, "path": s.path,
+            "previewBar": bar_json(s).unwrap(),
+            "previewGeneration": s.previews.generation.load(Ordering::Relaxed),
+        })
+    }
+
+    fn assert_preview_failure_survives_late_request(obstruction: Obstruction) {
+        let case = match obstruction {
+            Obstruction::OutputOpen => "terminal-output-open",
+            Obstruction::FinalRename => "terminal-final-rename",
+        };
+        let (mut s, _) = crate::previews_tests::session(case);
+        s.execute("events.clear", json!({})).unwrap();
+        assert!(s.jobs.is_empty());
+
+        let root = s.previews.dir().unwrap();
+        std::fs::create_dir(&root).expect("the fixture must own a freshly created cache directory");
+        let cleanup = OwnedPreviewDir(root.clone());
+
+        // Use the production segment/range/gap/name helpers, not a copied hash or path algorithm.
+        let (seq, range) = in_out(&s).unwrap();
+        let rate = s.project.sequence(seq).unwrap().settings.frame_rate;
+        let segments = s.previews.segments(&s.project, seq);
+        let affected: Vec<_> = segments.iter().filter(|segment| segment.need != Need::None).collect();
+        assert_eq!(affected.len(), 1, "the generated fixture has one effect segment");
+        let segment = affected[0];
+        let (a, b) = rel_range(segment, rate, &range);
+        let pending = gaps(&s.previews.coverage(segment), a, b);
+        assert_eq!(pending, vec![(0, segment.frames)], "the fixture renders one whole uncached segment");
+        let (off, end) = pending[0];
+        let name = part_name(&segment.hash, off, end - off, segment.frames);
+        let output = root.join(&name);
+        let part = root.join(format!("{name}.part"));
+        let blocker = match obstruction {
+            Obstruction::OutputOpen => &part,
+            Obstruction::FinalRename => &output,
+        };
+        std::fs::create_dir(blocker).unwrap();
+        let sentinel = blocker.join("owned-obstruction");
+        let original = b"owned preview fixture";
+        std::fs::write(&sentinel, original).unwrap();
+        assert_eq!(s.previews.count(), 0, "the obstruction is not an indexed preview");
+        let before = snapshot(&mut s);
+
+        let started = s.execute("sequence.renderEffectsInToOut", json!({"wait": true})).unwrap();
+        assert_eq!(started["segments"], 1);
+        assert_eq!(s.jobs.len(), 1);
+        let id = started["job"].as_u64().expect("the real preview job was registered");
+        let job = s.jobs.iter().find(|job| job.id == id).unwrap().clone();
+        let terminal = job.to_json();
+        assert_eq!(terminal["finished"], true, "wait:true must publish the actual terminal result");
+        assert!(job.progress.finished.load(Ordering::Relaxed));
+        let error = terminal["result"]["error"].as_str().expect("the real preview must fail").to_string();
+        assert!(!job.progress.cancel.load(Ordering::Relaxed));
+        assert!(!job.progress.cancelled.load(Ordering::Relaxed));
+        assert_eq!(s.previews.count(), 0, "a failed preview must not be indexed");
+
+        let retained_part = match obstruction {
+            Obstruction::OutputOpen => {
+                let path = part.to_str().unwrap();
+                assert!(error.starts_with("I/O: ") && error.contains(path), "{error}");
+                assert!(!output.exists());
+                None
+            }
+            Obstruction::FinalRename => {
+                assert!(std::fs::metadata(&part).unwrap().is_file(), "encoding must leave a regular staging file");
+                let bytes = std::fs::read(&part).unwrap();
+                assert!(!bytes.is_empty(), "the actual encoder must have written staging bytes");
+                assert!(output.is_dir());
+                assert_eq!(std::fs::read(&sentinel).unwrap(), original);
+                // The producer stores raw std::io::Error text here. Reproduce that owned-path
+                // rename failure without assuming an OS message or changing either fixture.
+                let rename_error = std::fs::rename(&part, &output).expect_err("a file cannot replace the owned nonempty directory");
+                assert_eq!(error, rename_error.to_string(), "the original result must be the final rename diagnostic");
+                assert_eq!(std::fs::read(&part).unwrap(), bytes);
+                Some(bytes)
+            }
+        };
+        let assert_files = || {
+            assert!(blocker.is_dir());
+            assert_eq!(std::fs::read(&sentinel).unwrap(), original);
+            if let Some(bytes) = &retained_part {
+                assert!(std::fs::metadata(&part).unwrap().is_file());
+                assert_eq!(&std::fs::read(&part).unwrap(), bytes);
+                assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
+            } else {
+                assert!(!output.exists());
+                assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+            }
+        };
+        assert_files();
+        assert_eq!(snapshot(&mut s), before);
+        assert!(s.log.entries.is_empty(), "no job Event may be delivered before the late request");
+
+        s.execute("jobs.cancel", json!({"job": id})).unwrap();
+        assert!(job.progress.cancel.load(Ordering::Relaxed));
+        assert!(!job.progress.cancelled.load(Ordering::Relaxed));
+        assert_eq!(job.to_json()["result"], terminal["result"], "the original diagnostic must remain unchanged");
+        assert_files();
+        assert_eq!(snapshot(&mut s), before);
+        assert!(s.log.entries.is_empty());
+
+        let delivered = s.execute("events.list", json!({})).unwrap();
+        let entries = delivered["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2, "one Started and one terminal Event");
+        assert_eq!(entries[0]["source"], "job");
+        assert_eq!(entries[0]["message"], format!("Started: {}", job.label));
+        assert_eq!(entries[1]["source"], "job");
+        assert_eq!(entries[1]["level"], "error", "a late request must not relabel the real preview I/O failure");
+        assert_eq!(entries[1]["message"], format!("Failed: {}: {error}", job.label));
+        assert_eq!(entries[0]["count"], 1);
+        assert_eq!(entries[1]["count"], 1);
+        s.poll_persistence();
+        assert_eq!(s.execute("events.list", json!({})).unwrap(), delivered, "terminal delivery remains once-only");
+        assert_eq!(job.to_json()["result"], terminal["result"]);
+        assert_eq!(snapshot(&mut s), before);
+        assert_files();
+
+        drop(s);
+        drop(cleanup);
+        assert!(!root.exists(), "the owned fixture must be removed after synchronous completion");
+    }
+
+    #[test]
+    fn video_preview_output_open_failure_stays_failed_after_late_request() {
+        assert_preview_failure_survives_late_request(Obstruction::OutputOpen);
+    }
+
+    #[test]
+    fn video_preview_final_rename_failure_stays_failed_after_late_request() {
+        assert_preview_failure_survives_late_request(Obstruction::FinalRename);
+    }
 }

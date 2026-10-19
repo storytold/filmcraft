@@ -147,7 +147,8 @@ pub fn events(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 pub fn progress(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let show_finished = app.ui.panels.progress.show_finished;
-    let jobs: Vec<serde_json::Value> = app.session.jobs.iter().rev().map(|j| j.to_json()).collect();
+    let jobs: Vec<(serde_json::Value, bool)> =
+        app.session.jobs.iter().rev().map(|j| (j.to_json(), j.progress.cancelled.load(std::sync::atomic::Ordering::Relaxed))).collect();
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(8.0, 6.0))));
     let ui = &mut child;
     let mut elems: Vec<(String, Rect, String)> = Vec::new();
@@ -156,10 +157,10 @@ pub fn progress(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let r = ui.checkbox(&mut finished, tl!("Show finished jobs"));
     elems.push(("progress.showFinished".into(), r.rect, "Show finished jobs".into()));
     ui.add_space(4.0);
-    let active = jobs.iter().filter(|j| j["finished"] != json!(true)).count();
+    let active = jobs.iter().filter(|(j, _)| j["finished"] != json!(true)).count();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         let mut shown = 0;
-        for j in &jobs {
+        for (j, cancelled) in &jobs {
             let done = j["finished"] == json!(true);
             if done && !show_finished {
                 continue;
@@ -173,7 +174,7 @@ pub fn progress(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.painter().text(r.min + vec2(8.0, 6.0), Align2::LEFT_TOP, label, Tokens::semibold(12.0), t.text);
             let err = j["result"]["error"].as_str();
             let status = match (done, err) {
-                (true, Some(e)) if e.to_ascii_lowercase().contains("cancel") => tl!("Cancelled").to_string(),
+                (true, Some(_)) if *cancelled => tl!("Cancelled").to_string(),
                 (true, Some(e)) => tlf!("Failed: {e}", e),
                 (true, None) => tl!("Done").to_string(),
                 (false, _) => {

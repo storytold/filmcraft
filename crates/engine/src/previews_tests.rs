@@ -18,7 +18,7 @@ fn tmp(name: &str) -> std::path::PathBuf {
 }
 
 /// A 64×36 24 fps sequence: V1 = matte with Tint (0..24) + plain matte (24..48), A1 = tone (0..48).
-fn session(name: &str) -> (Session, ClipId) {
+pub(super) fn session(name: &str) -> (Session, ClipId) {
     session_with(name, Generator::ColorMatte { color: [0.2, 0.5, 0.8, 1.0] })
 }
 
