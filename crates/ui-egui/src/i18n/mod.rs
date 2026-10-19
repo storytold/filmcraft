@@ -474,10 +474,9 @@ mod tests {
         assert!(missing.is_empty(), "untranslated menu labels: {missing:#?}");
     }
 
-    /// The core menus every other catalog must cover: the entries of the menus-only Ukrainian
-    /// catalog, which `ukrainian_entries_cover_the_original_menu_catalog` keeps to menu labels (and
-    /// the native macOS Settings menu). Brazilian Portuguese played this role while it was
-    /// menus-only.
+    /// Core labels every catalog covers: Ukrainian menu labels, native macOS Settings, and
+    /// registered AI-mask commands shown in History/Keyboard Shortcuts. The catalog checks below
+    /// reject entries outside those sources, including obsolete AI command labels.
     fn core_menu_labels() -> Vec<String> {
         let (entries, _) = catalog::parse_entries(include_str!("uk.tsv"));
         entries.into_iter().map(|(_, en, _)| en).collect()
@@ -1093,10 +1092,15 @@ mod tests {
     fn ukrainian_entries_cover_the_original_menu_catalog() {
         let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
         let items = crate::menus::menu_items(&app);
-        let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
+        let ai_commands: Vec<_> = filmcraft_engine::commands::command_specs().iter().filter(|c| c.id.starts_with("masks.ai.")).collect();
+        let known = |text: &str| {
+            crate::menus::MENUS.contains(&text)
+                || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text))
+                || ai_commands.iter().any(|c| c.label == text)
+        };
         let (entries, _) = catalog::parse_entries(include_str!("uk.tsv"));
         for (_, en, _) in entries {
-            assert!(known(&en) || en == "Settings", "not a menu label: {en}");
+            assert!(known(&en) || en == "Settings", "not a menu or AI command label: {en}");
         }
         for en in crate::menus::MENUS.into_iter().chain(["Audio", "Settings"]) {
             assert_ne!(Language::Uk.tr(en), en, "untranslated Ukrainian menu: {en}");
@@ -1200,10 +1204,15 @@ mod tests {
     fn russian_entries_cover_the_original_menu_catalog() {
         let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
         let items = crate::menus::menu_items(&app);
-        let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
+        let ai_commands: Vec<_> = filmcraft_engine::commands::command_specs().iter().filter(|c| c.id.starts_with("masks.ai.")).collect();
+        let known = |text: &str| {
+            crate::menus::MENUS.contains(&text)
+                || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text))
+                || ai_commands.iter().any(|c| c.label == text)
+        };
         let (entries, _) = catalog::parse_entries(include_str!("ru.tsv"));
         for (_, en, _) in entries {
-            assert!(known(&en) || en == "Settings", "not a menu label: {en}");
+            assert!(known(&en) || en == "Settings", "not a menu or AI command label: {en}");
         }
         for en in core_menu_labels() {
             assert!(Language::Ru.has(&en), "missing Russian menu label: {en}");

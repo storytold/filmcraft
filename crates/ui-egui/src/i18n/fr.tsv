@@ -3584,3 +3584,10 @@
 	Open a sequence to search its graphics	Ouvrez une séquence pour rechercher dans ses graphiques
 	No text graphics in this sequence. Add text with the Type tool.	Aucun graphique avec du texte dans cette séquence. Ajoutez du texte avec l'outil Texte.
 	No matching text.	Aucun texte ne correspond.
+
+	AI Rotoscope…	Rotoscopie IA…
+	AI Rotoscope Settings	Réglages de rotoscopie IA
+	AI Mask Point	Point de masque IA
+	Remove AI Mask Point	Supprimer un point de masque IA
+	Generate AI Mask	Générer un masque IA
+	Preview AI Mask	Aperçu du masque IA

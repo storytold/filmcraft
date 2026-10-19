@@ -287,6 +287,14 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G18. Effects depth: approximations and missing behaviour
 
+- **Experimental (#1733):** an opt-in native AI Rotoscope implementation runs EdgeTAM Fast /
+  ViTMatte Quality, previews Include/Exclude clicks, and caches undoable raster alpha inside
+  the project. Actual model inference runs in pure Rust on CPU; point edits have undo/redo
+  and Refine Edge runs ViTMatte after strokes with edge-region/alpha/composite views. It remains experimental and opt-in.
+  Native limits are 720 pixels / 120 frames, with CPU masked-layer preparation. Temporal
+  refinement, optical-flow corrections and a dedicated GPU alpha path remain missing.
+  See [the experiment](../experiments/rotoscope/README.md).
+
 - **Missing:** Warp Stabilizer is 2-D (Premiere's is 3-D subspace), Morph Cut has no face tracking
   (and occlusion edges are soft), Lumetri HDR-aware maths, multicam paging beyond 16 angles,
   redesigned 26.0 mask tools (a stored, re-editable

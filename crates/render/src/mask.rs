@@ -164,7 +164,57 @@ pub fn effect_coverage(masks: &[Mask], t: Tick, px_scale: f32, w: usize, h: usiz
     if masks.is_empty() {
         return None;
     }
-    coverage(&prepare(masks, t, px_scale), w, h)
+    if !masks.iter().any(|m| m.raster.is_some()) {
+        return coverage(&prepare(masks, t, px_scale), w, h);
+    }
+    let active: Vec<&Mask> = masks
+        .iter()
+        .filter(|m| m.mode != MaskMode::None && m.raster.as_ref().is_none_or(|r| r.frames.first().is_some_and(|f| t >= f.time && t < r.end)))
+        .collect();
+    let first = active.first()?;
+    let n = w.checked_mul(h)?;
+    if n > 16_777_216 {
+        return None;
+    }
+    let mut acc = vec![first.mode.start(); n];
+    for m in active {
+        let cov = if let Some(raster) = &m.raster {
+            let mut cov = vec![1.0; n];
+            if let Some(alpha) = raster.alpha_at(t) {
+                let rw = raster.width as usize;
+                let rh = raster.height as usize;
+                for (y, row) in cov.chunks_mut(w.max(1)).enumerate() {
+                    let sy = ((y as f64 + 0.5) * rh as f64 / h.max(1) as f64 - 0.5).clamp(0.0, rh.saturating_sub(1) as f64);
+                    let y0 = sy as usize;
+                    let y1 = y0.saturating_add(1).min(rh.saturating_sub(1));
+                    let fy = (sy - y0 as f64) as f32;
+                    for (x, out) in row.iter_mut().enumerate() {
+                        let sx = ((x as f64 + 0.5) * rw as f64 / w.max(1) as f64 - 0.5).clamp(0.0, rw.saturating_sub(1) as f64);
+                        let x0 = sx as usize;
+                        let x1 = x0.saturating_add(1).min(rw.saturating_sub(1));
+                        let fx = (sx - x0 as f64) as f32;
+                        let at = |x: usize, y: usize| alpha.get(y.saturating_mul(rw).saturating_add(x)).copied().unwrap_or(0.0);
+                        let a = at(x0, y0) * (1.0 - fx) + at(x1, y0) * fx;
+                        let b = at(x0, y1) * (1.0 - fx) + at(x1, y1) * fx;
+                        *out = a * (1.0 - fy) + b * fy;
+                    }
+                }
+            }
+            let opacity = (m.opacity.f64_at(t) / 100.0).clamp(0.0, 1.0) as f32;
+            for c in &mut cov {
+                *c = opacity * if m.inverted { 1.0 - *c } else { *c };
+            }
+            cov
+        } else {
+            let mut one = (*m).clone();
+            one.mode = MaskMode::Add;
+            coverage(&prepare(&[one], t, px_scale), w, h)?
+        };
+        for (a, c) in acc.iter_mut().zip(cov) {
+            *a = m.mode.combine(*a, c).clamp(0.0, 1.0);
+        }
+    }
+    Some(acc)
 }
 
 /// `img = lerp(original, img, cov)` on premultiplied pixels.
@@ -247,6 +297,53 @@ mod tests {
         let mut m = Mask::new("m", path);
         m.feather.value = filmcraft_project::ParamValue::Float(feather);
         m
+    }
+
+    fn raster() -> Mask {
+        use filmcraft_project::raster_mask::{RasterFrame, RasterMask};
+        use std::sync::Arc;
+        let mut m = mask(MaskPath::default(), 0.0);
+        m.raster = Some(Arc::new(RasterMask {
+            width: 2,
+            height: 1,
+            end: Tick(30),
+            quality: true,
+            frames: vec![
+                RasterFrame { time: Tick(10), runs: Arc::new(vec![(1, 0), (1, 32768)]) },
+                RasterFrame { time: Tick(20), runs: Arc::new(vec![(1, 65535), (1, 0)]) },
+            ],
+        }));
+        m
+    }
+
+    #[test]
+    fn raster_preserves_soft_alpha_premultiplication_and_source_timing() {
+        let m = raster();
+        let c = effect_coverage(std::slice::from_ref(&m), Tick(19), 1.0, 2, 1).unwrap();
+        let mut image = Image::filled(2, 1, [0.8, 0.4, 0.2, 1.0]);
+        scale_by(&mut image, &c);
+        assert_eq!(image.get(0, 0), [0.0; 4]);
+        for (value, expected) in image.get(1, 0).into_iter().zip([0.4, 0.2, 0.1, 0.5]) {
+            assert!((value - expected).abs() < 0.00002);
+        }
+        assert_eq!(effect_coverage(std::slice::from_ref(&m), Tick(20), 1.0, 2, 1).unwrap(), vec![1.0, 0.0]);
+        assert!(effect_coverage(std::slice::from_ref(&m), Tick(9), 1.0, 2, 1).is_none());
+        assert!(effect_coverage(&[m], Tick(30), 1.0, 2, 1).is_none());
+    }
+
+    #[test]
+    fn raster_resampling_and_manual_mask_combinations_match() {
+        let m = raster();
+        let c = effect_coverage(std::slice::from_ref(&m), Tick(20), 2.0, 4, 1).unwrap();
+        assert_eq!(c, vec![1.0, 0.75, 0.25, 0.0]);
+        let mut manual = mask(MaskPath::rect(0.0, 0.0, 1.0, 1.0), 0.0);
+        manual.mode = MaskMode::Subtract;
+        assert_eq!(effect_coverage(&[m.clone(), manual], Tick(20), 1.0, 2, 1).unwrap(), vec![0.0, 0.0]);
+        let mut inverted = m;
+        inverted.inverted = true;
+        inverted.opacity.value = filmcraft_project::ParamValue::Float(50.0);
+        assert_eq!(effect_coverage(std::slice::from_ref(&inverted), Tick(20), 1.0, 2, 1).unwrap(), vec![0.0, 0.5]);
+        assert!(effect_coverage(&[inverted], Tick(30), 1.0, 2, 1).is_none(), "unprocessed frames remain visible even with inversion");
     }
 
     #[test]

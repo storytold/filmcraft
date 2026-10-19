@@ -369,6 +369,46 @@ fn gpu_lut_matches_cpu_tetrahedral() {
     }
 }
 
+#[test]
+fn cached_raster_alpha_upload_composites_like_cpu() {
+    use filmcraft_project::{
+        Mask, MaskPath,
+        raster_mask::{RasterFrame, RasterMask},
+    };
+    use filmcraft_time::Tick;
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let (w, h) = (64usize, 36usize);
+    let mut mask = Mask::new("raster", MaskPath::default());
+    mask.raster = Some(Arc::new(RasterMask {
+        width: 64,
+        height: 1,
+        end: Tick(1),
+        quality: true,
+        frames: vec![RasterFrame { time: Tick(0), runs: Arc::new((0..64).map(|x| (1, (x * 65535 / 63) as u16)).collect()) }],
+    }));
+    let coverage = filmcraft_render::mask::effect_coverage(&[mask], Tick(0), 1.0, w, h).unwrap();
+    let mut image = filmcraft_render::Image::filled(w, h, [0.8, 0.2, 0.1, 1.0]);
+    filmcraft_render::mask::scale_by(&mut image, &coverage);
+    let background = filmcraft_render::Image::filled(w, h, [0.1, 0.2, 0.3, 1.0]);
+    let plan = FramePlan::Layers {
+        width: w,
+        height: h,
+        layers: vec![
+            PlanLayer::new(Arc::new(VideoFrame::rgba_f32(w as u32, h as u32, background.px)), Affine::IDENTITY, 1.0, Blend::Normal),
+            PlanLayer::new(Arc::new(VideoFrame::rgba_f32(w as u32, h as u32, image.px)), Affine::IDENTITY, 1.0, Blend::Normal),
+        ],
+    };
+    let expected = execute_cpu(&plan).over_black_rgba8();
+    let mut gpu = GpuCompositor::new(&dev, &q);
+    gpu.composite(&plan);
+    let (_, _, actual) = gpu.read_output().unwrap();
+    let worst = expected.iter().zip(actual).map(|(a, b)| (*a as i16 - b as i16).unsigned_abs()).max().unwrap();
+    assert!(worst <= 1, "cached alpha CPU/GPU difference: {worst}");
+}
+
 fn test_masks(scale: f32) -> Vec<filmcraft_render::mask::FlatMask> {
     use filmcraft_project::{Mask, MaskMode, MaskPath, ParamValue};
     let mut a = Mask::new("a", MaskPath::ellipse(Vec2::new(150.0, 90.0), Vec2::new(90.0, 55.0)));
