@@ -224,6 +224,9 @@ fn run_fade(app: &mut FilmcraftApp, clip: ClipId, edge: filmcraft_edit::Edge, au
 /// The fade handles on the hovered and the selected clips, and the fade being dragged (#1385).
 fn fade_overlay(app: &FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &Layout, pos: Option<Pos2>) {
     let ctx = ui.ctx().clone();
+    let mods = ctx.input(|i| i.modifiers);
+    // with a selection modifier held, a press on a handle selects the clip as anywhere else on it
+    let selecting = mods.shift || mods.alt || mods.command;
     if app.ui.tool == Tool::Selection {
         let painter = ui.painter().with_clip_rect(layout.content);
         let hot_text = app.tokens.hot_text;
@@ -242,11 +245,12 @@ fn fade_overlay(app: &FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     let Some(track) = seq.track(row.track) else { continue };
                     for it in track.items.iter().filter(|i| over == Some(i.id) || app.session.state.selection.contains(&i.id)) {
                         for (c, _) in fade_handles(seq, layout, row, it) {
-                            ring(c, pos.is_some_and(|p| c.distance(p) <= FADE_HANDLE_R));
+                            ring(c, !selecting && pos.is_some_and(|p| c.distance(p) <= FADE_HANDLE_R));
                         }
                     }
                 }
                 if let Some(p) = pos
+                    && !selecting
                     && fade_handle_at(seq, layout, p).is_some()
                 {
                     ctx.set_cursor_icon(CursorIcon::ResizeColumn);
@@ -267,7 +271,13 @@ fn fade_overlay(app: &FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     painter.rect_filled(Rect::from_min_max(pos2(a, top), pos2(b, bottom)), 0.0, Color32::from_black_alpha(70));
                     let (from, to) = if *edge == filmcraft_edit::Edge::In { (pos2(a, bottom), pos2(b, top)) } else { (pos2(a, top), pos2(b, bottom)) };
                     painter.line_segment([from, to], Stroke::new(1.5, Color32::WHITE));
-                    painter.text(pos2((a + b) / 2.0, top + 9.0), Align2::CENTER_CENTER, format!("{frames} f"), Tokens::ui(10.5), Color32::WHITE);
+                    painter.text(
+                        pos2((a + b) / 2.0, top + 9.0),
+                        Align2::CENTER_CENTER,
+                        format!("{frames}{}", tl!(" frames")),
+                        Tokens::ui(10.5),
+                        Color32::WHITE,
+                    );
                 }
                 ctx.set_cursor_icon(CursorIcon::ResizeColumn);
             }
@@ -515,7 +525,8 @@ fn start_drag(
     let mods = ctx.input(|i| i.modifiers);
     let rate = seq.settings.frame_rate;
     let roll_ripple = app.session.prefs.trim.selection_tool_roll_ripple;
-    let fade = if tool == Tool::Selection { fade_handle_at(seq, layout, p) } else { None };
+    let selecting = mods.shift || mods.alt || mods.command;
+    let fade = if tool == Tool::Selection && !selecting { fade_handle_at(seq, layout, p) } else { None };
     let started = match (tool, grab) {
         // a middle-button drag pans whatever the tool and whatever it starts on, as in the
         // monitors (#824) and DaVinci Resolve (#1490); only a primary press is kept in
