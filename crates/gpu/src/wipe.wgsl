@@ -88,7 +88,7 @@ fn field(at: vec2<f32>) -> f32 {
     return at.x;
 }
 
-fn smooth(edge0: f32, edge1: f32, x: f32) -> f32 {
+fn smooth_edge(edge0: f32, edge1: f32, x: f32) -> f32 {
     if edge1 <= edge0 { return select(1.0, 0.0, x < edge0); }
     let t = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
     return t * t * (3.0 - 2.0 * t);
@@ -126,9 +126,9 @@ fn fs(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let aa = params.style.x;
     let border = params.style.z;
     let softness = (feather + aa) * 0.5;
-    let kb = 1.0 - smooth(-softness, softness, distance);
+    let kb = 1.0 - smooth_edge(-softness, softness, distance);
     var ko = kb;
-    if border > 0.0 { ko = 1.0 - smooth(border - softness, border + softness, distance); }
+    if border > 0.0 { ko = 1.0 - smooth_edge(border - softness, border + softness, distance); }
     ko = max(ko, kb);
     let va = pixel(0u, vec2<i32>(at));
     let vb = pixel(1u, vec2<i32>(at));
