@@ -1,7 +1,8 @@
 //! Stretching a marker's range on the Timeline ruler (#1348): a drag on the end of a range band
 //! changes its duration, Option-drag on a pentagon gives a point marker a range, a plain drag on a
 //! pentagon or band moves the marker, and one undo puts it back. While dragging, the playhead
-//! follows and a tooltip shows the exact timecode; Escape puts both back.
+//! follows and a tooltip shows the exact timecode; Escape puts both back. Only the Selection tool
+//! drags markers; the other tools keep their own behaviour on the ruler.
 
 use std::sync::mpsc::{Sender, channel};
 
@@ -182,4 +183,25 @@ fn while_moving_the_playhead_follows_a_timecode_shows_and_escape_puts_both_back(
     assert_eq!(marker(&d, id).start, before.start, "Escape commits nothing");
     assert_eq!(d.harness.state().session.playhead(), before.start, "the playhead is back on the marker");
     assert!(d.ok("ui.elements", json!({"prefix": "timeline.markerDrag.time"})).as_array().unwrap().is_empty(), "the tooltip is gone");
+}
+
+#[test]
+fn only_the_selection_tool_drags_a_marker() {
+    let mut d = Driver::demo();
+    d.exec("markers.clearAll", json!({}));
+    let id = d.exec("markers.add", json!({"frame": 30, "durationFrames": 48, "name": "Stay"}))["marker"].as_u64().unwrap();
+    d.frames(2);
+    let before = marker(&d, id);
+    for tool in ["Hand", "Razor", "Zoom"] {
+        d.ok("ui.set", json!({"tool": tool}));
+        d.frames(2);
+        for target in [format!("timeline.marker.{id}"), format!("timeline.markerRange.{id}")] {
+            let r = d.rect(&target);
+            let (x, y) = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+            d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + 150.0, "y": y}, "steps": 10}));
+            d.frames(3);
+            let m = marker(&d, id);
+            assert_eq!((m.start, m.duration), (before.start, before.duration), "{tool} on {target} leaves the marker alone");
+        }
+    }
 }

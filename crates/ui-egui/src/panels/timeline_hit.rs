@@ -313,11 +313,14 @@ impl Grab {
 /// tools trim at a clip edge and which trim they start. `roll_ripple` is Settings ▸ Trim ▸ "Allow
 /// Selection tool to choose Roll and Ripple trims without modifier key".
 pub fn grab_at(seq: &Sequence, layout: &Layout, pos: Pos2, tool: Tool, mods: Modifiers, roll_ripple: bool) -> Grab {
-    if let Some(m) = marker_end_at(seq, layout, pos, mods.alt) {
-        return Grab::MarkerEnd(m);
-    }
-    if let Some(m) = marker_under_pointer(seq, layout, pos) {
-        return Grab::Marker(m.id);
+    // only the Selection tool drags markers; Hand, Zoom and Razor keep their own ruler behaviour
+    if tool == Tool::Selection {
+        if let Some(m) = marker_end_at(seq, layout, pos, mods.alt) {
+            return Grab::MarkerEnd(m);
+        }
+        if let Some(m) = marker_under_pointer(seq, layout, pos) {
+            return Grab::Marker(m.id);
+        }
     }
     let h = hit(seq, layout, pos);
     if let Hit::Clip { track, clip, edge: None } = h
