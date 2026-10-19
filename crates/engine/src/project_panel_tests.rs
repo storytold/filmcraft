@@ -377,3 +377,75 @@ fn select_all_rejects_bad_bins_without_touching_the_selection() {
     let r = s.execute("project.selectAll", json!({"bin": null})).unwrap();
     assert_eq!(r["selected"].as_u64(), Some(s.project.items.len() as u64));
 }
+
+#[test]
+fn metadata_identity_survives_columns_sort_edit_and_reload() {
+    use filmcraft_project::find::{FindOp, FindQuery, metadata_id};
+    let mut s = demo();
+    let ids = media(&s);
+    let a = ids[0];
+    let b = ids[1];
+    let name = s.project.item(a).unwrap().name.clone();
+    s.execute(
+        "metadata.set",
+        json!({"item": a.0, "fields": {
+            "metadata:Scene": "upper", "metadata:scene": "lower", "metadata:Name": "z custom",
+            "metadata:Label": "not a label", "metadata:File Path": "original path",
+            "metadata:Mood": "z", "metadata:mood": "a", "metadata:Blank": "",
+            "metadata:metadata:Name": "literal prefix", "metadata:résumé": "unicode"
+        }}),
+    )
+    .unwrap();
+    s.execute("metadata.set", json!({"item": b.0, "field": "metadata:Name", "value": "a custom"})).unwrap();
+    let columns = project_panel::all_columns(&s.project);
+    for key in ["metadata:Name", "metadata:Label", "metadata:File Path", "metadata:scene", "Mood", "mood", "metadata:metadata:Name"] {
+        assert!(columns.iter().any(|c| c == key), "missing {key}");
+    }
+    s.execute("project.columns.set", json!({"columns": ["Name", "metadata:Name", "Scene", "metadata:scene", "Mood", "mood"]})).unwrap();
+    s.execute("project.columns.resize", json!({"column": "mood", "width": 171})).unwrap();
+    let cols = &s.prefs.project_panel.view.columns;
+    assert_eq!(cols.iter().find(|c| c.name == "mood").unwrap().width, 171.0);
+    assert_ne!(cols.iter().find(|c| c.name == "Mood").unwrap().width, 171.0);
+    s.execute("project.sort", json!({"column": "metadata:Name", "descending": false})).unwrap();
+    let mut order = vec![a, b];
+    project_panel::sort_items(&s.project, &mut order, &s.prefs.project_panel.view.sort);
+    assert_eq!(order, vec![b, a]);
+    let it = s.project.item(a).unwrap();
+    for (key, expected) in
+        [("Name", name.as_str()), ("metadata:Name", "z custom"), ("Scene", "upper"), ("metadata:scene", "lower"), ("Mood", "z"), ("mood", "a")]
+    {
+        assert_eq!(project_panel::cell(&s.project, it, key).0, expected);
+    }
+    assert_eq!(FindQuery::simple(&metadata_id("Name"), FindOp::Matches, "z custom").find(&s.project), vec![a]);
+    assert_eq!(FindQuery::simple("scene", FindOp::Matches, "lower").find(&s.project), vec![a]);
+    assert_eq!(FindQuery::simple("SCENE", FindOp::Matches, "upper").find(&s.project), vec![]);
+    let fields = crate::panels::metadata_fields(&s.project, a);
+    assert_eq!(fields.iter().filter(|f| f.name == "Name").count(), 2);
+    assert!(fields.iter().any(|f| f.id == "metadata:Label" && f.editable && f.value == "not a label"));
+    let n = s.history.undo.len();
+    s.execute("metadata.set", json!({"item": a.0, "field": "metadata:Name", "value": "edited"})).unwrap();
+    assert_eq!(s.project.item(a).unwrap().name, name);
+    assert_eq!(s.history.undo.len(), n + 1);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project.item(a).unwrap().metadata["Name"], "z custom");
+    s.execute("edit.redo", json!({})).unwrap();
+    let back = filmcraft_format::decode(&filmcraft_format::encode(&s.project, false)).unwrap().project;
+    assert_eq!(back.item(a).unwrap().metadata, s.project.item(a).unwrap().metadata);
+    assert_eq!(back.item(a).unwrap().metadata.get("Blank").map(String::as_str), Some(""));
+    assert!(!back.item(b).unwrap().metadata.contains_key("Blank"));
+    let prefs: crate::autosave::Preferences = serde_json::from_str(&serde_json::to_string(&s.prefs).unwrap()).unwrap();
+    assert_eq!(prefs.project_panel, s.prefs.project_panel);
+}
+
+#[test]
+fn explicit_metadata_rejects_invalid_keys_atomically() {
+    let mut s = demo();
+    let id = media(&s)[0];
+    for key in ["metadata:", "metadata:   "] {
+        let before = filmcraft_format::encode(&s.project, false);
+        assert!(s.execute("metadata.set", json!({"item": id.0, "fields": {key: "x", "metadata:valid": "y"}})).is_err());
+        assert_eq!(filmcraft_format::encode(&s.project, false), before);
+    }
+    assert!(s.execute("metadata.set", json!({"item": id.0, "field": format!("metadata:{FREEFORM_POS}"), "value": "x"})).is_err());
+    assert!(s.execute("metadata.set", json!({"item": u64::MAX, "field": "metadata:Name", "value": "x"})).is_err());
+}

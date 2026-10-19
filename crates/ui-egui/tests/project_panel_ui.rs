@@ -1128,3 +1128,21 @@ fn escape_takes_back_a_media_browser_drag() {
     assert_eq!(d.app().session.project.to_json(), before, "nothing was placed on the Timeline");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn metadata_columns_keep_distinct_headers_and_sort_targets() {
+    let mut d = project_driver();
+    let (bin, items) = d.footage();
+    d.exec("metadata.set", json!({"item": items[0], "fields": {"metadata:Name": "Camera name", "metadata:scene": "lower", "metadata:Scene": "upper"}}));
+    d.exec("project.view.set", json!({"view": "list"}));
+    d.exec("project.columns.set", json!({"columns": ["Name", {"name": "metadata:Name", "width": 190}, "Scene", {"name": "metadata:scene", "width": 180}]}));
+    d.frames(3);
+    d.click(&format!("project.bin.{bin}.toggle"));
+    d.frames(3);
+    for c in ["Name", "metadata:Name", "Scene", "metadata:scene"] {
+        assert!(d.has(&format!("project.list.header.{c}")), "{c}");
+    }
+    d.click("project.list.header.metadata:scene");
+    assert_eq!(d.app().session.prefs.project_panel.view.sort.column, "metadata:scene");
+    d.snapshot("project-metadata-identities", Some("panel.Project"));
+}

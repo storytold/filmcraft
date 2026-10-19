@@ -107,8 +107,21 @@ pub const COLUMNS: [&str; 15] = [
     "Shot",
 ];
 
+/// An explicit stored-metadata selector. Strip exactly one prefix, so a key that itself
+/// starts with `metadata:` remains addressable. No normalization of user keys is performed.
+pub fn metadata_key(column: &str) -> Option<&str> {
+    column.strip_prefix("metadata:")
+}
+
+pub fn metadata_id(key: &str) -> String {
+    format!("metadata:{key}")
+}
+
 /// The text of one column of an item (empty when the item has no such value).
 pub fn column_text(p: &Project, it: &ProjectItem, column: &str) -> String {
+    if let Some(key) = metadata_key(column) {
+        return it.metadata.get(key).cloned().unwrap_or_default();
+    }
     let media = match &it.kind {
         ItemKind::Media(m) => Some(m),
         ItemKind::Subclip { parent, .. } => p.item(*parent).and_then(|x| x.as_media()),
@@ -138,7 +151,7 @@ pub fn column_text(p: &Project, it: &ProjectItem, column: &str) -> String {
             Some(MediaRef::File { path }) => path.clone(),
             _ => String::new(),
         },
-        _ => it.metadata.iter().find(|(k, _)| k.eq_ignore_ascii_case(column)).map(|(_, v)| v.clone()).unwrap_or_default(),
+        _ => it.metadata.get(column).cloned().unwrap_or_default(),
     }
 }
 

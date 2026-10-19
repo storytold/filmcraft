@@ -138,7 +138,7 @@ fn metadata_display(app: &mut FilmcraftApp, ui: &mut egui::Ui, columns: &mut Vec
                 for c in all.iter().filter(|c| f.is_empty() || c.to_ascii_lowercase().contains(&f)) {
                     let mut on = columns.contains(c);
                     let name_col = c == "Name";
-                    let r = ui.add_enabled(!name_col, egui::Checkbox::new(&mut on, crate::i18n::t(c)));
+                    let r = ui.add_enabled(!name_col, egui::Checkbox::new(&mut on, crate::i18n::t(&filmcraft_engine::project_panel::column_label(c))));
                     push(app, &format!("projectDialog.field.{c}"), &r, c);
                     if r.changed() {
                         if on {
@@ -152,9 +152,11 @@ fn metadata_display(app: &mut FilmcraftApp, ui: &mut egui::Ui, columns: &mut Vec
             ui.horizontal(|ui| {
                 let r = ui.button(tl!("Add Property…"));
                 push(app, "projectDialog.addProperty", &r, "Add Property…");
-                if r.clicked() && !filter.trim().is_empty() && !columns.iter().any(|c| c.eq_ignore_ascii_case(filter.trim())) {
-                    // a custom metadata field (typed in the search box)
-                    columns.push(filter.trim().to_string());
+                if r.clicked() && !filter.trim().is_empty() {
+                    let column = filmcraft_engine::project_panel::metadata_column(filter.trim());
+                    if !columns.contains(&column) {
+                        columns.push(column);
+                    }
                 }
             });
         });
@@ -171,7 +173,7 @@ fn metadata_display(app: &mut FilmcraftApp, ui: &mut egui::Ui, columns: &mut Vec
                         push(app, &format!("projectDialog.up.{c}"), &up, "Move up");
                         let down = ui.add_enabled(i > 0 && i + 1 < columns.len(), egui::Button::new("▼").small());
                         push(app, &format!("projectDialog.down.{c}"), &down, "Move down");
-                        ui.label(crate::i18n::t(c));
+                        ui.label(crate::i18n::t(&filmcraft_engine::project_panel::column_label(c)));
                         if up.clicked() {
                             mv = Some((i, -1));
                         }

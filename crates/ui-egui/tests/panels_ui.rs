@@ -781,3 +781,30 @@ fn effects_are_indented_under_their_folders() {
         assert!(b >= a + 12.0, "`{inner}` ({b}) is not indented under `{outer}` ({a})");
     }
 }
+
+#[test]
+fn metadata_custom_name_edits_without_renaming_clip() {
+    let mut d = Driver::demo();
+    let item = d.app().session.project.items.values().filter(|i| i.as_media().is_some()).map(|i| i.id).min().unwrap();
+    let name = d.app().session.project.item(item).unwrap().name.clone();
+    d.exec("metadata.set", json!({"item": item.0, "fields": {"metadata:Name": "", "metadata:Label": "custom label"}}));
+    d.app().session.state.project_selection = vec![item];
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.Metadata"}));
+    d.ok("ui.set", json!({"focused": "Project"}));
+    d.frames(3);
+    // Scroll the metadata panel to the stored fields, below the file properties.
+    d.ok("ui.scroll", json!({"id": "metadata.field.Scene", "dy": -1500.0}));
+    d.frames(3);
+    d.click("metadata.field.metadata:Name");
+    d.ok("ui.type", json!({"text": "original"}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(3);
+    assert_eq!(d.app().session.project.item(item).unwrap().name, name);
+    assert_eq!(d.app().session.project.item(item).unwrap().metadata["Name"], "original");
+    d.snapshot("panels-metadata-custom", Some("metadata."));
+    // Engine-visible identities remain separate from their display labels.
+    let fields = filmcraft_engine::panels::metadata_fields(&d.app().session.project, item);
+    assert!(fields.iter().any(|f| f.id == "Name" && f.value == name));
+    assert!(fields.iter().any(|f| f.id == "metadata:Name" && f.value == "original"));
+}
