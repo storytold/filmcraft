@@ -187,3 +187,26 @@ fn a_click_on_a_fade_handle_with_a_selection_modifier_selects_the_clip() {
         assert!(d.app().session.state.selection.contains(&ClipId(city)), "the clip is selected with {modifiers:?} held");
     }
 }
+
+/// At a cut the dissolve is centred on it, so a drag makes it at most twice as long as a shorter
+/// neighbour, which it would otherwise run past.
+#[test]
+fn a_fade_at_a_cut_stays_inside_a_short_neighbour() {
+    let mut d = Driver::demo();
+    let city = d.v1_clip(CITY);
+    let one = d.app().session.sequence_rate().frame_duration().0;
+    let start = d.app().session.active_sequence().unwrap().find_item(ClipId(city)).unwrap().1.start.0;
+    // cut 4 frames in: the 4-frame piece is the neighbour of the rest's start
+    d.exec("timeline.razor", json!({"track": "V1", "clip": city, "time": start + 4 * one}));
+    let rest = {
+        let q = d.app().session.active_sequence().unwrap();
+        q.video_tracks[0].items.iter().find(|i| i.start.0 == start + 4 * one).expect("the rest of the clip").id.0
+    };
+    d.frames(2);
+    let from = handle_at(&mut d, rest, false);
+    d.drag(from, from + egui::vec2(200.0, 0.0), 16);
+    let made = transitions_to(&d, rest);
+    assert_eq!(made.len(), 1, "one transition at the cut: {made:?}");
+    assert_eq!(made[0].1 / one, 8, "twice the 4-frame neighbour");
+    assert!(made[0].0 >= start, "it starts inside the neighbour: {made:?} for a neighbour at {start}");
+}

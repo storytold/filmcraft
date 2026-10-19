@@ -886,11 +886,19 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
                 Some(Drag::WorkArea { edge, from, start, end })
             }
             Drag::Fade { clip, edge, audio, .. } => {
-                // how far in from its edge the pointer is, in frames, up to half the clip
-                let frames = seq.find_item(clip).map_or(0, |(_, it)| {
+                // how far in from its edge the pointer is, in frames, up to half the clip; at a cut
+                // the dissolve is centred on it, so half of it lies in the neighbour, which it must
+                // not run past
+                let frames = seq.find_item(clip).map_or(0, |(track, it)| {
                     let frame_px = (layout.x_of(it.start + rate.frame_duration()) - layout.x_of(it.start)).max(0.001);
                     let along = if edge == filmcraft_edit::Edge::In { p.x - layout.x_of(it.start) } else { layout.x_of(it.end()) - p.x };
-                    let most = rate.frame_at(it.duration) / 2;
+                    let neighbour = seq.track(track).and_then(|t| {
+                        t.items.iter().find(|n| n.id != it.id && if edge == filmcraft_edit::Edge::In { n.end() == it.start } else { n.start == it.end() })
+                    });
+                    let mut most = rate.frame_at(it.duration) / 2;
+                    if let Some(n) = neighbour {
+                        most = most.min(rate.frame_at(n.duration).saturating_mul(2));
+                    }
                     ((along / frame_px).round() as i64).clamp(0, most.max(0))
                 });
                 Some(Drag::Fade { clip, edge, audio, frames })
