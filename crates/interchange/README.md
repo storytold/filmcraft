@@ -21,7 +21,7 @@ read off files it exports, never from the application itself.
 | OMF | Avid *OMF Interchange Specification* | Version 2.0 (1997) | classes (`HEAD`, `CMOB`, `MMOB`, `SMOB`, `MSLT`, `TRKD`, `SEQU`, `SCLP`, `FILL`, `TRAN`, `EFFE`, `ESLT`, `CVAL`, `VVAL`, `TCCP`, `WAVD`, `AIFD`, `WAVE`, `AIFC`, locators), property and type names |
 | OMF | Apple *Bento Specification* | revision 1.0d5 | container label, TOC encoding, objects / properties / types, references |
 | WAVE / AIFF | Microsoft RIFF WAVE; Apple AIFF 1.3 | — | embedded and separate audio files |
-| Premiere `.prproj` | no public specification; read off the author's own project files (gzip-compressed XML), never from the application, with no other `.prproj` parser used for reference | files written by Premiere Pro 25.5 and 25.6 | gzip envelope, object graph (`ObjectID` / `ObjectRef` / `ObjectURef`), sequences, track groups and their frame rate, clips, exact ticks, media paths, caption text |
+| Premiere `.prproj` | no public specification; the author's LLM Video Editor Python parser and structural observations of user-owned gzip/XML project files; no Adobe application code, proprietary documentation or other third-party parser consulted | files written by Premiere Pro 25.5 and 25.6 | gzip envelope, object graph (`ObjectID` / `ObjectUID` / `ObjectRef` / `ObjectURef`), sequence identity, track groups and frame rate, clip source chains, exact ticks, media paths, caption text, static Motion `MatchName` / `ParameterID` |
 
 The other formats' editions are listed in the module docs (`edl`, `fcp7`, `fcpxml`, `otio`, `ale`).
 

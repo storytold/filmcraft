@@ -4,6 +4,9 @@ use serde_json::json;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[path = "premiere_corpus_tests.rs"]
+mod corpus;
+
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
@@ -24,6 +27,34 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn premiere_duplicate_sequence_names_import_and_select_by_uid() {
+    let fixture = Fixture::new();
+    let doc = fixture.0.join("source.prproj");
+    let xml =
+        std::fs::read_to_string(&doc).unwrap().replace("</PremiereData>", "<Sequence ObjectUID=\"other\"><Name>Sequence 01</Name></Sequence></PremiereData>");
+    std::fs::write(&doc, xml).unwrap();
+    let before = hash_file(&doc).unwrap();
+    for selector in [None, Some("s"), Some("other"), Some("Sequence 01")] {
+        let mut s = Session::default();
+        let destination = fixture.0.join(selector.unwrap_or("default"));
+        let mut params = json!({"path":doc,"destination":destination,"mediaMode":"link"});
+        if let Some(selector) = selector {
+            params["sequence"] = json!(selector);
+        }
+        let result = s.execute("premiere.import", params);
+        if selector == Some("Sequence 01") {
+            assert!(result.unwrap_err().to_string().contains("ObjectUID"));
+            assert!(!destination.exists());
+        } else {
+            assert_eq!(result.unwrap()["sequences"].as_array().unwrap().len(), 2);
+            let active = s.active_sequence().unwrap();
+            assert_eq!(active.video_tracks.is_empty(), selector == Some("other"));
+        }
+        assert_eq!(hash_file(&doc).unwrap(), before);
     }
 }
 

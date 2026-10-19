@@ -100,8 +100,17 @@ pub fn import(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let (mut fragment, tree, mut report) = filmcraft_interchange::premiere::import(&bytes, &opts, fps).map_err(|e| bad(COMMAND, e.to_string()))?;
     let requested = string(p, "sequence")?;
-    let selected = if let Some(name) = requested {
-        tree.sequences.iter().position(|seq| seq.name == name).ok_or_else(|| bad(COMMAND, "unknown sequence name"))?
+    let selected = if let Some(selector) = requested {
+        if let Some(index) = tree.sequences.iter().position(|seq| seq.object_uid == selector) {
+            index
+        } else {
+            let mut matching = tree.sequences.iter().enumerate().filter(|(_, seq)| seq.name == selector);
+            let (index, _) = matching.next().ok_or_else(|| bad(COMMAND, "unknown sequence name or ObjectUID"))?;
+            if matching.next().is_some() {
+                return Err(bad(COMMAND, "ambiguous sequence name; pass its ObjectUID instead"));
+            }
+            index
+        }
     } else {
         tree.sequences.iter().position(|seq| seq.name == "Sequence 01").unwrap_or_else(|| {
             tree.sequences
@@ -267,7 +276,7 @@ pub fn commands() -> Vec<CommandSpec> {
         label: "Import Premiere Project",
         menu: &[],
         shortcut: None,
-        params: r#"{"path":str,"destination":str? (new directory),"mediaMode":"link"|"copy","sequence":str?,"frameRate":{"num":int,"den":int}?}"#,
+        params: r#"{"path":str,"destination":str? (new directory),"mediaMode":"link"|"copy","sequence":str? (ObjectUID or unique name),"frameRate":{"num":int,"den":int}?}"#,
         enabled: always,
         run: import,
         journal: true,

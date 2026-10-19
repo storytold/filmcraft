@@ -16,7 +16,8 @@ The same JSON command works through MCP `command_run` or the desktop control cha
 File → Import and `filmcraft-cli import source.prproj` also dispatch to this importer. Their
 default is linked media and a new `source.filmcraft-import-N` directory beside the source project.
 Use the explicit command for a custom destination, copied media or frame rate. Existing destination
-directories are refused. `sequence` optionally chooses the active sequence by name; all sequences
+directories are refused. `sequence` optionally chooses the active sequence by ObjectUID or unique
+name; an ambiguous requested name requires its ObjectUID. All sequences
 are imported. Without it, “Sequence 01” wins, then the sequence with the most video items.
 
 The destination contains the unchanged `source.prproj`, `provenance.json`, and (copy mode) a
@@ -48,12 +49,24 @@ The nearest rate from FilmCraft's common sequence rates is selected using intege
 comparisons, including exact 24000/1001, 30000/1001 and 60000/1001. Audio sample rates and
 source-media rates do not set the sequence rate. `frameRate` explicitly overrides every sequence;
 only a sequence without its own rate uses the warned 24 fps fallback. Invalid/nonpositive tick
-values are rejected. Integer timeline ticks are preserved in every case. Media lookup
-follows the reference's clip-title matching; duplicate titles with different paths are refused
-as ambiguous. Only timeline-referenced media is imported; unused bin media and bin organization
+values are rejected. Integer timeline ticks are preserved in every case. Media and nests follow
+`SubClip/Clip` → `Clip/Source` → `VideoMediaSource` / `AudioMediaSource` or
+`VideoSequenceSource` / `AudioSequenceSource` → `Media` / `Sequence`, resolving `ObjectRef` and
+`ObjectURef` through the document's ID maps. Sequences are keyed by ObjectUID. Clip labels and
+duplicate sequence/media display names do not affect a resolved reference. If the chain cannot
+be resolved, an unambiguous title match is used with a warning; ambiguous fallbacks stay offline.
+Only timeline-referenced media is imported; unused bin media and bin organization
 are not reconstructed. Reverse/time-remapped clips, native effect parameters and unsupported caption
 encodings need additional fixtures before claiming fidelity. No rendered-preview substitution
 is performed.
+
+Static Motion uses `MatchName` (`AE.ADBE Motion` / `ADBE Motion`) and ParameterID 1 (Position),
+2 (Scale), and 5 (Rotation); localized display/parameter names are diagnostic text only. Values
+come from `CurrentValue` or the static `StartKeyframe` record. Animated parameters are reported
+and retained in provenance; their animation is not reconstructed. Other Motion parameter IDs
+are not mapped. These fixes address the name/reference defects discussed in
+[issue #978](https://github.com/storytold/filmcraft/issues/978#issuecomment-6254913542);
+they do not add track-fader mute or change audio gain conversion.
 
 Projects containing only settings and no `Sequence` objects currently report an empty-document
 error. They do not create an imported project or destination; settings-only import is unsupported.
@@ -62,3 +75,18 @@ Input is bounded to 64 MiB compressed/expanded XML, 500,000 XML nodes, 256 seque
 per kind and 100,000 timeline items. A traversal budget also accounts for repeated references and text size; diagnostics are capped at 1,024 entries plus a truncation notice. DTD/entity expansion, duplicate IDs, invalid times/speeds,
 cyclic nesting and nesting deeper than 64 levels produce errors. A failed import removes only
 its newly created destination and leaves the editor project unchanged.
+
+## Regression and private-corpus checks
+
+```sh
+cargo test --locked -p filmcraft-engine -p filmcraft-interchange --lib premiere
+FILMCRAFT_PREMIERE_CORPUS=/path/to/local-manifest.json \
+  cargo test --locked -p filmcraft-engine -p filmcraft-interchange --lib premiere_private_corpus -- --ignored --nocapture
+```
+
+The opt-in corpus manifest is a local JSON array of `{"source":"/path/to/project.prproj",
+"maxOffline":0}` entries; set each offline ceiling to its recorded baseline. The test copies
+projects under `target/premiere-corpus/`, imports with linked media through a headless engine
+session without registering platform hardware, verifies source/project hashes and offline counts,
+and saves/reopens each result. Its private result JSON stays under `target/`. Only hand-written
+synthetic XML is committed in the regression tests; never add corpus projects or media paths.

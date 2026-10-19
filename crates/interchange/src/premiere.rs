@@ -24,6 +24,10 @@ const MAX_NODES: u32 = 500_000;
 const MAX_TRACKS: usize = 256;
 const MAX_SEQUENCES: usize = 256;
 
+#[cfg(test)]
+#[path = "premiere_reference_tests.rs"]
+mod reference_tests;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Document {
     pub sequences: Vec<Sequence>,
@@ -31,6 +35,7 @@ pub struct Document {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Sequence {
+    pub object_uid: String,
     pub name: String,
     pub width: u32,
     pub height: u32,
@@ -126,6 +131,50 @@ fn referred<'a, 'i>(n: Option<Node<'a, 'i>>, map: &BTreeMap<&str, Node<'a, 'i>>,
     map.get(n?.attribute(attr)?).copied()
 }
 
+fn reference<'a, 'i>(n: Option<Node<'a, 'i>>, ids: &BTreeMap<&str, Node<'a, 'i>>, uids: &BTreeMap<&str, Node<'a, 'i>>) -> Option<Node<'a, 'i>> {
+    referred(n, ids, "ObjectRef").or_else(|| referred(n, uids, "ObjectURef"))
+}
+
+/// Follow only the known two-edge source chain, never arbitrary references or display names.
+fn source_target<'a, 'i>(
+    clip: Option<Node<'a, 'i>>,
+    ids: &BTreeMap<&str, Node<'a, 'i>>,
+    uids: &BTreeMap<&str, Node<'a, 'i>>,
+    work_left: &mut usize,
+) -> Result<Option<Node<'a, 'i>>> {
+    let Some(clip) = clip else { return Ok(None) };
+    let clip = child(clip, "Clip").unwrap_or(clip);
+    let Some(source) = reference(child(clip, "Source"), ids, uids) else { return Ok(None) };
+    spend(work_left, source)?;
+    let (container, target) = match source.tag_name().name() {
+        "VideoMediaSource" | "AudioMediaSource" => ("MediaSource", "Media"),
+        "VideoSequenceSource" | "AudioSequenceSource" => ("SequenceSource", "Sequence"),
+        _ => return Ok(None),
+    };
+    let pointer = child(source, container).and_then(|n| child(n, target));
+    let Some(node) = reference(pointer, ids, uids).filter(|n| n.has_tag_name(target)) else { return Ok(None) };
+    spend(work_left, node)?;
+    Ok(Some(node))
+}
+
+fn media_path(n: Node<'_, '_>, base_dir: Option<&str>) -> Option<String> {
+    child_text(n, "ActualMediaFilePath").or_else(|| child_text(n, "FilePath")).filter(|p| !p.is_empty()).map(|p| crate::resolve_path(p, base_dir))
+}
+
+/// Stable identifiers observed in user-owned XML. Display names remain diagnostic text only.
+fn motion_parameter(n: Node<'_, '_>) -> Option<&'static str> {
+    match child_text(n, "ParameterID")? {
+        "1" => Some("Position"),
+        "2" => Some("Scale"),
+        "5" => Some("Rotation"),
+        _ => None,
+    }
+}
+
+fn static_parameter_value<'a>(n: Node<'a, '_>) -> Option<&'a str> {
+    child_text(n, "CurrentValue").or_else(|| child_text(n, "StartKeyframe")?.split(',').nth(1).map(str::trim))
+}
+
 /// Premiere stores ticks per frame, not frames per second. Compare rational fps distances
 /// exactly; common-rate numerators/denominators keep these i128 products within bounds even
 /// for an i64::MAX input. This also snaps slightly rounded phone rates to the intended rate.
@@ -191,7 +240,8 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
     }
     let mut ids = BTreeMap::new();
     let mut uids = BTreeMap::new();
-    let mut names = BTreeSet::new();
+    let mut names = BTreeMap::new();
+    let mut sequence_count = 0usize;
     let mut media = BTreeMap::new();
     let mut ambiguous = BTreeSet::new();
     for n in root.children().filter(Node::is_element) {
@@ -203,30 +253,30 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
             }
         }
         if n.has_tag_name("Sequence") {
+            sequence_count += 1;
             let name = child_text(n, "Name").ok_or_else(|| error("sequence without name"))?;
-            if !names.insert(name) {
-                return Err(error(format!("ambiguous sequence name: {name}")));
-            }
+            let uid = n.attribute("ObjectUID").filter(|uid| !uid.is_empty()).ok_or_else(|| error("sequence without ObjectUID"))?;
+            names.entry(name).and_modify(|entry| *entry = None).or_insert(Some(uid));
         }
-        if n.has_tag_name("Media")
-            && let (Some(title), Some(path)) = (child_text(n, "Title"), child_text(n, "ActualMediaFilePath").or_else(|| child_text(n, "FilePath")))
-        {
-            if title.len() > 4096 || path.len() > 16384 {
+        if n.has_tag_name("Media") {
+            if child_text(n, "Title").is_some_and(|s| s.len() > 4096)
+                || child_text(n, "ActualMediaFilePath").or_else(|| child_text(n, "FilePath")).is_some_and(|s| s.len() > 16384)
+            {
                 return Err(error("media title or path is too long"));
             }
-            let path = crate::resolve_path(path, base_dir);
-            if media.get(title).is_some_and(|p| p != &path) {
-                ambiguous.insert(title.to_string());
+            if let (Some(title), Some(path)) = (child_text(n, "Title"), media_path(n, base_dir)) {
+                if media.get(title).is_some_and(|p| p != &path) {
+                    ambiguous.insert(title.to_string());
+                }
+                media.insert(title.to_string(), path);
             }
-            media.insert(title.to_string(), path);
         }
     }
-    if names.len() > MAX_SEQUENCES {
+    if sequence_count > MAX_SEQUENCES {
         return Err(error("too many sequences"));
     }
-    for title in ambiguous {
-        media.remove(&title);
-        warning(report, format!("ambiguous media title {title}; left offline rather than guessing"));
+    for title in &ambiguous {
+        media.remove(title);
     }
     let mut work_left = 5_000_000usize;
     let mut sequences = Vec::new();
@@ -305,9 +355,6 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                     if let Some(clip) = clip {
                         spend(&mut work_left, clip)?;
                     }
-                    if let Some(path) = media.get(&label) {
-                        work_left = work_left.checked_sub(path.len() / 64).ok_or_else(|| error("media reference work limit exceeded"))?;
-                    }
                     let source_in = ticks(clip.and_then(|s| value(s, "InPoint")), Tick::ZERO)?;
                     let source_out = ticks(
                         clip.and_then(|s| value(s, "OutPoint")),
@@ -331,16 +378,21 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                             let Some(c) = referred(Some(ptr), &ids, "ObjectRef") else { continue };
                             spend(&mut work_left, c)?;
                             let effect = value(c, "DisplayName").or_else(|| child_text(c, "FilterMatchName")).unwrap_or("Unknown").to_string();
+                            let match_name = child_text(c, "MatchName").or_else(|| child_text(c, "FilterMatchName"));
                             if effect == "Text" {
                                 text = value(c, "InstanceName").map(|s| s.replace('\r', "\n"));
                             }
-                            if effect == "Motion" {
+                            if matches!(match_name, Some("AE.ADBE Motion" | "ADBE Motion")) {
                                 for ptr in c.descendants().filter(|n| n.has_tag_name("Param")) {
-                                    if let Some(p) = referred(Some(ptr), &ids, "ObjectRef")
-                                        && let (Some(k), Some(v)) = (child_text(p, "Name"), child_text(p, "CurrentValue"))
-                                    {
+                                    if let Some(p) = referred(Some(ptr), &ids, "ObjectRef") {
                                         spend(&mut work_left, p)?;
-                                        motion.insert(k.to_string(), v.to_string());
+                                        if let Some(key) = motion_parameter(p) {
+                                            if child_text(p, "IsTimeVarying").is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1") {
+                                                warning(report, format!("{label}: animated Motion {key} retained in provenance, not imported"));
+                                            } else if let Some(v) = static_parameter_value(p) {
+                                                motion.insert(key.to_string(), v.to_string());
+                                            }
+                                        }
                                     }
                                 }
                             } else if effect != "Text" {
@@ -370,10 +422,27 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                         }
                     }
                     let audio_category = value(item, "ESP.Tag").map(str::to_string);
+                    let target = source_target(clip, &ids, &uids, &mut work_left)?;
+                    let mut media_path = target.filter(|n| n.has_tag_name("Media")).and_then(|n| media_path(n, base_dir));
+                    let mut nested_sequence = target.filter(|n| n.has_tag_name("Sequence")).and_then(|n| n.attribute("ObjectUID")).map(str::to_string);
+                    if media_path.is_none() && nested_sequence.is_none() && kind != "caption" && !(label == "Graphic" && text.is_some()) {
+                        let named_sequence = names.get(label.as_str()).copied().flatten();
+                        let named_media = media.get(&label);
+                        if ambiguous.contains(&label) || names.get(label.as_str()) == Some(&None) || (named_sequence.is_some() && named_media.is_some()) {
+                            warning(report, format!("{label}: unresolved source reference; ambiguous title fallback refused; left offline"));
+                        } else if named_sequence.is_some() || named_media.is_some() {
+                            warning(report, format!("{label}: unresolved source reference; using title fallback"));
+                            media_path = named_media.cloned();
+                            nested_sequence = named_sequence.map(str::to_string);
+                        }
+                    }
+                    if let Some(path) = &media_path {
+                        work_left = work_left.checked_sub(path.len() / 64).ok_or_else(|| error("media reference work limit exceeded"))?;
+                    }
                     items.push(Item {
                         object_id: item.attribute("ObjectID").unwrap_or("").into(),
-                        media_path: media.get(&label).cloned(),
-                        nested_sequence: names.contains(label.as_str()).then(|| label.clone()),
+                        media_path,
+                        nested_sequence,
                         label,
                         start,
                         end,
@@ -390,7 +459,8 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                 tracks.push(Track { kind: kind.into(), index, muted, items });
             }
         }
-        sequences.push(Sequence { name, width, height, frame_rate, work_out: ticks(value(n, "MZ.WorkOutPoint"), Tick::ZERO)?, tracks });
+        let object_uid = n.attribute("ObjectUID").ok_or_else(|| error("sequence without ObjectUID"))?.to_string();
+        sequences.push(Sequence { object_uid, name, width, height, frame_rate, work_out: ticks(value(n, "MZ.WorkOutPoint"), Tick::ZERO)?, tracks });
     }
     if sequences.is_empty() {
         return Err(Error::Empty);
@@ -420,10 +490,10 @@ fn validate_nesting(sequences: &[Sequence]) -> Result<()> {
         depths.insert(name.to_string(), longest);
         Ok(longest)
     }
-    let graph: BTreeMap<_, _> = sequences.iter().map(|s| (s.name.as_str(), s)).collect();
+    let graph: BTreeMap<_, _> = sequences.iter().map(|s| (s.object_uid.as_str(), s)).collect();
     let mut depths = BTreeMap::new();
     for seq in sequences {
-        depth(&seq.name, &graph, &mut BTreeSet::new(), &mut depths)?;
+        depth(&seq.object_uid, &graph, &mut BTreeSet::new(), &mut depths)?;
     }
     Ok(())
 }
@@ -443,7 +513,7 @@ pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Re
         let settings = settings_for(fps, seq.width, seq.height, false);
         settings.validate().map_err(error)?;
         let id = b.reserve_sequence(&seq.name, settings, None);
-        sequences.insert(seq.name.clone(), id);
+        sequences.insert(seq.object_uid.clone(), id);
         b.top.push(id);
     }
     for src in &doc.sequences {
@@ -563,7 +633,7 @@ pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Re
             }
         }
         seq.check_bounds().map_err(error)?;
-        if let Some(id) = sequences.get(&src.name) {
+        if let Some(id) = sequences.get(&src.object_uid) {
             b.put_sequence(*id, seq);
         }
     }
@@ -663,7 +733,7 @@ mod tests {
                 (Tick::ZERO, Tick(3 * TPS), Tick(4 * TPS), Tick(10 * TPS), 2.0)
             );
             assert_eq!(tree.sequences[0].tracks[0].items[0].media_path.as_deref(), Some("/missing/camera.mov"));
-            assert!(!report.has_warnings());
+            assert!(report.mentions("using title fallback"));
             let ItemKind::Media(m) = &fragment.project.item(clip.item).unwrap().kind else { panic!() };
             assert!(m.offline);
         }
@@ -751,6 +821,7 @@ mod tests {
         for i in 0..65 {
             let items = if i < 64 { vec![item("64".into()), item((i + 1).to_string())] } else { vec![] };
             seqs.push(Sequence {
+                object_uid: i.to_string(),
                 name: i.to_string(),
                 width: 16,
                 height: 16,
