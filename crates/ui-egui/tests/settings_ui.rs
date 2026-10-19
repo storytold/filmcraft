@@ -344,6 +344,30 @@ fn dropdowns_numbers_and_reset() {
     assert_eq!(d.draft()["page"], "memory");
 }
 
+/// The workaround can be disabled from Audio Hardware without editing a preferences file.
+#[test]
+fn surround_compatibility_dropdown_applies_and_cancels() {
+    let mut d = Driver::demo();
+    let key = "audioHardware.surroundCompatibility";
+    let id = "settings.audioHardware.surroundCompatibility";
+    d.menu("app.settings.audioHardware");
+    assert_eq!(d.pref(key), "auto");
+    d.click(id);
+    for mode in ["auto", "on", "off"] {
+        assert!(d.has(&format!("{id}.{mode}")));
+    }
+    d.click(&format!("{id}.off"));
+    d.shot("surround-compatibility-off");
+    assert_eq!(d.pref(key), "auto", "editing a draft does not change playback");
+    d.click("settings.ok");
+    assert_eq!(d.pref(key), "off");
+    d.menu("app.settings.audioHardware");
+    d.click(id);
+    d.click(&format!("{id}.on"));
+    d.click("settings.cancel");
+    assert_eq!(d.pref(key), "off");
+}
+
 #[test]
 fn view_menu_and_settings_name_each_color_theme_alike() {
     let mut d = Driver::demo();

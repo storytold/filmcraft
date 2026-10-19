@@ -22,6 +22,30 @@ fn set(s: &mut Session, key: &str, value: Value) {
     s.execute("prefs.set", json!({"key": key, "value": value})).unwrap_or_else(|e| panic!("{key}: {e}"));
 }
 
+/// Existing preferences get automatic detection; explicit overrides survive saving and loading.
+#[test]
+fn surround_compatibility_migrates_persists_and_validates() {
+    let dir = tmp_dir("surround-compatibility");
+    let path = dir.join("preferences.json");
+    std::fs::write(&path, r#"{"audioHardware":{"sampleRate":44100}}"#).unwrap();
+    let prefs = Preferences::load(&path);
+    assert_eq!(prefs.audio_hardware.surround_compatibility, "auto");
+    assert_eq!(prefs.audio_hardware.sample_rate, 44_100);
+    let mut s = Session { prefs, prefs_path: Some(path.clone()), ..Session::default() };
+    let key = "audioHardware.surroundCompatibility";
+    for mode in ["off", "on", "auto", "off"] {
+        set(&mut s, key, json!(mode));
+        assert_eq!(Preferences::load(&path).audio_hardware.surround_compatibility, mode);
+    }
+    for value in [json!("invalid"), json!(true), json!(0), json!(null)] {
+        assert!(s.execute("prefs.set", json!({"key": key, "value": value})).is_err());
+        assert_eq!(s.prefs.audio_hardware.surround_compatibility, "off");
+    }
+    s.execute("prefs.reset", json!({"category": "audioHardware"})).unwrap();
+    assert_eq!(Preferences::load(&path).audio_hardware.surround_compatibility, "auto");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn interface_language_persists_and_rejects_hostile_values() {
     let dir = tmp_dir("interface-language");
