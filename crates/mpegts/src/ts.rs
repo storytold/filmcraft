@@ -461,12 +461,10 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
                         crc_errors += 1;
                         continue;
                     }
-                    if pmt_version.is_some() {
-                        // the first PMT wins: streams are never re-mapped or dropped mid-scan
-                        pmt_changed = true;
-                        continue;
-                    }
+                    // a later PMT version may only add PIDs; existing streams are never re-mapped or dropped
+                    let later = pmt_version.is_some();
                     pmt_version = Some(version);
+                    let mut listed: Vec<u16> = Vec::new();
                     let pinfo = (((sec[10] & 0x0F) as usize) << 8) | sec[11] as usize;
                     let prog_desc = sec.get(12..12 + pinfo).unwrap_or(&[]);
                     let hdmv = packet_size == 192 || prog_desc.windows(4).any(|w| w == b"HDMV");
@@ -478,7 +476,11 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
                         let ilen = (((sec[i + 3] & 0x0F) as usize) << 8) | sec[i + 4] as usize;
                         let desc = sec.get(i + 5..(i + 5 + ilen).min(end)).unwrap_or(&[]);
                         i += 5 + ilen;
-                        if es.contains_key(&pid) {
+                        listed.push(pid);
+                        if let Some(old) = es.get(&pid) {
+                            if later && old.stream.stream_type != st {
+                                pmt_changed = true;
+                            }
                             continue;
                         }
                         let mut codec = codec_of(st, desc, hdmv);
@@ -497,6 +499,9 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
                         };
                         es.insert(pid, EsState { stream, split: Splitter::new(&codec), asm: PesAsm::default(), cc: None, dup: DupGuard::default() });
                         order.push(pid);
+                    }
+                    if later && es.keys().any(|p| !listed.contains(p)) {
+                        pmt_changed = true;
                     }
                 }
                 continue;
@@ -547,7 +552,7 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
         warnings.push(format!("{duplicates} duplicate packet(s) dropped"));
     }
     if pmt_changed {
-        warnings.push("program map table changed mid-stream; the first one is used".into());
+        warnings.push("program map table changed mid-stream; new streams were added, changes to or removal of known ones ignored".into());
     }
     if crc_errors > 0 {
         warnings.push(format!("{crc_errors} PSI section(s) with bad CRC"));

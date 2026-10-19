@@ -430,7 +430,7 @@ fn pmt_section(version: u8, current_next: bool, streams: &[(u8, u16)]) -> Vec<u8
 }
 
 #[test]
-fn first_pmt_wins_later_changes_are_ignored_with_one_warning() {
+fn later_pmt_adds_streams_but_never_changes_or_removes_known_ones() {
     let mut mux = TsMux::new(false);
     mux.psi(&[(0x03, 0x1100)]);
     let audio = |mux: &mut TsMux, k: u8| {
@@ -445,11 +445,27 @@ fn first_pmt_wins_later_changes_are_ignored_with_one_warning() {
     mux.section(0x100, &pmt_section(2, true, &[(0x03, 0x1200)]));
     audio(&mut mux, 2);
     let f = open(&mux.out).unwrap();
-    assert_eq!(f.streams.len(), 1, "{:?}", f.streams.iter().map(|s| s.id).collect::<Vec<_>>());
+    assert!(f.streams.iter().any(|s| s.id == StreamId::Pid(0x1200)), "the PID added by a later PMT is read");
     assert_eq!(f.streams[0].id, StreamId::Pid(0x1100));
     assert_eq!(f.streams[0].codec, Codec::MpegAudio);
     assert_eq!(f.streams[0].units.len(), 6, "audio kept flowing through the first PMT's splitter");
     assert_eq!(f.warnings.iter().filter(|w| w.contains("program map table changed")).count(), 1, "{:?}", f.warnings);
+}
+
+#[test]
+fn audio_pid_announced_in_a_later_pmt_is_read_without_warning() {
+    let mut mux = TsMux::new(false);
+    mux.psi(&[(0x03, 0x1100)]);
+    let a: Vec<u8> = [mp2_frame(0), mp2_frame(1)].concat();
+    mux.pes(0x1100, &pes(0xC0, Some(90_000), None, &a, true));
+    // version 1 keeps 0x1100 as it was and announces a second audio PID
+    mux.section(0x100, &pmt_section(1, true, &[(0x03, 0x1100), (0x03, 0x1200)]));
+    let b: Vec<u8> = [mp2_frame(2), mp2_frame(3)].concat();
+    mux.pes(0x1200, &pes(0xC0, Some(90_000 + 8640), None, &b, true));
+    let f = open(&mux.out).unwrap();
+    let late = f.streams.iter().find(|s| s.id == StreamId::Pid(0x1200)).expect("late audio PID");
+    assert!(!late.units.is_empty(), "the late stream has units");
+    assert!(f.warnings.iter().all(|w| !w.contains("program map table")), "{:?}", f.warnings);
 }
 
 #[test]
