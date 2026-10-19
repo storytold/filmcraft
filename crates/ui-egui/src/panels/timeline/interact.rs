@@ -800,11 +800,13 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
             !blocked
         });
         // the trim cursor stays for the whole drag of an edge: the hover feedback above stops once
-        // a drag is in progress (#1780)
-        if matches!(
-            app.tl.drag,
-            Some(Drag::Trim { .. } | Drag::Roll { .. } | Drag::Stretch { .. } | Drag::Remix { .. } | Drag::Transition { edge: Some(_), .. })
-        ) {
+        // a drag is in progress (#1780); a tool that draws its own pointer keeps that one
+        if !tool_draws_pointer(app.ui.tool)
+            && matches!(
+                app.tl.drag,
+                Some(Drag::Trim { .. } | Drag::Roll { .. } | Drag::Stretch { .. } | Drag::Remix { .. } | Drag::Transition { edge: Some(_), .. })
+            )
+        {
             ctx.set_cursor_icon(CursorIcon::ResizeColumn);
         }
         // auto-scroll when dragging near the edges
@@ -1419,6 +1421,21 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
 
     drop_targets(app, ui, seq, layout);
 
+    // the tool's own pointer stays on through the drag it started (a trim, slip, slide, stretch,
+    // remix or pan); a blocked edit keeps the system's NotAllowed
+    if let Some(d) = &app.tl.drag
+        && let Some(p) = pos
+        && tool_draws_pointer(tool)
+        && match d {
+            Drag::Pan { .. } => tool == Tool::Hand,
+            Drag::Scrub { .. } | Drag::Volume(_) | Drag::Marquee { .. } | Drag::Divider | Drag::ZoomBar { .. } => false,
+            _ => true,
+        }
+        && ctx.output(|o| o.cursor_icon) != CursorIcon::NotAllowed
+    {
+        ctx.set_cursor_icon(CursorIcon::None);
+        paint_tool_pointer(&ctx, tool, p);
+    }
     app.auto.add("timeline.tracks", layout.content, "tracks");
 }
 
