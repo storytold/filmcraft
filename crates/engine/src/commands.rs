@@ -89,6 +89,11 @@ fn has_any_selection(s: &Session) -> std::result::Result<(), String> {
     }
 }
 /// Clips, captions or a gap selected (Ripple Delete: a transition has no length of its own to close).
+/// Delete/Ripple Delete with no explicit clips and both clips and captions selected (Select All).
+fn clips_and_captions_selected(s: &Session, p: &Value) -> bool {
+    p.get("clips").is_none() && p.get("clip").is_none() && !s.state.selection.is_empty() && !s.state.caption_selection.is_empty()
+}
+
 fn has_clip_or_caption_selection(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
     if s.state.selection.is_empty() && s.state.caption_selection.is_empty() && s.state.gap_selection.is_none() {
@@ -1647,9 +1652,15 @@ fn build() -> Vec<CommandSpec> {
                 return crate::captions::delete(s, &caps, false);
             }
             let sel = with_links(s, &clips_p(s, p));
+            // Select All leaves clips and captions both selected: Delete takes both, one undo step (#1912)
+            let caps = clips_and_captions_selected(s, p).then(|| s.state.caption_selection.clone()).unwrap_or_default();
             s.edit_sequence("Clear", |q, _, st| {
                 edit::delete_items(q, &sel);
                 st.selection.clear();
+                if !caps.is_empty() {
+                    edit::captions::delete_captions(q, &caps, false)?;
+                    st.caption_selection.retain(|c| !caps.contains(c));
+                }
                 Ok(())
             })?;
             Ok(Value::Null)
@@ -1665,6 +1676,7 @@ fn build() -> Vec<CommandSpec> {
                 return crate::captions::delete(s, &caps, true);
             }
             let sel = with_links(s, &clips_p(s, p));
+            let caps = clips_and_captions_selected(s, p).then(|| s.state.caption_selection.clone()).unwrap_or_default();
             s.edit_sequence("Ripple Delete", |q, _, st| {
                 let spans = edit::ripple_delete_items(q, &sel)?;
                 if st.ripple_sequence_markers {
@@ -1673,6 +1685,10 @@ fn build() -> Vec<CommandSpec> {
                     }
                 }
                 st.selection.clear();
+                if !caps.is_empty() {
+                    edit::captions::delete_captions(q, &caps, true)?;
+                    st.caption_selection.retain(|c| !caps.contains(c));
+                }
                 Ok(())
             })?;
             Ok(Value::Null)

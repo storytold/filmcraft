@@ -317,6 +317,27 @@ fn select_all_then_upgrade_converts_every_caption() {
 }
 
 #[test]
+fn select_all_then_delete_removes_clips_and_captions_in_one_undo() {
+    for cmd in ["edit.clear", "edit.rippleDelete"] {
+        let mut s = demo("gt-caption-all-delete");
+        s.execute("captions.add", json!({"text": "One", "seconds": 600, "durationSeconds": 2})).unwrap();
+        let count = |s: &Session| {
+            let q = s.active_sequence().unwrap();
+            let clips: usize = q.all_tracks().map(|t| t.items.len()).sum();
+            let caps: usize = q.caption_tracks.iter().map(|t| t.captions.len()).sum();
+            (clips, caps)
+        };
+        let before = count(&s);
+        assert!(before.0 > 0 && before.1 > 0);
+        s.execute("edit.selectAll", json!({})).unwrap();
+        s.execute(cmd, json!({})).unwrap();
+        assert_eq!(count(&s), (0, 0), "{cmd}: one Delete takes clips and captions");
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(count(&s), before, "{cmd}: one undo restores both");
+    }
+}
+
+#[test]
 fn source_graphics_share_edits() {
     let mut s = demo("gt-source");
     let c = clip_of(&s.execute("graphics.newText", json!({"text": "Shared"})).unwrap());
