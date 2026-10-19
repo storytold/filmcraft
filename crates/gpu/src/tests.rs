@@ -4,6 +4,7 @@ use filmcraft_geom::{Affine, Vec2};
 use filmcraft_render::Blend;
 use filmcraft_render::plan::execute_cpu;
 
+/// Uniforms for 8/10/12/16-bit Full and Limited YUV match the BT.709 / full-scale code ranges.
 #[test]
 fn yuv_code_range_uniforms() {
     let mut mismatches = Vec::new();

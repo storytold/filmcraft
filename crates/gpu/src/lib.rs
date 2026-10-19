@@ -1079,10 +1079,12 @@ impl GpuCompositor {
 
     /// Wait for the staging buffer filled by [`copy_accumulator`](Self::copy_accumulator) and
     /// convert its half floats to f32.
-    fn map_accumulator(&self, (w, h, row): (u32, u32, u32), sub: wgpu::SubmissionIndex) -> Option<(u32, u32, Vec<f32>)> {
+    fn map_accumulator(&mut self, (w, h, row): (u32, u32, u32), sub: wgpu::SubmissionIndex) -> Option<(u32, u32, Vec<f32>)> {
         if w == 0 || h == 0 {
             return None;
         }
+        let (width, row) = (w as usize, row as usize);
+        let out_len = width.checked_mul(h as usize)?.checked_mul(4)?;
         let t = std::time::Instant::now();
         let (buf, _) = self.accum_readback_buf.as_ref()?;
         let slice = buf.slice(..);
@@ -1090,12 +1092,19 @@ impl GpuCompositor {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        wait_mapped(&self.device, sub, &rx)?;
+        if wait_mapped(&self.device, sub, &rx).is_none() {
+            buf.unmap();
+            self.accum_readback_buf = None;
+            return None;
+        }
         export_renderer::timing::add_map_wait(t.elapsed());
         let t = std::time::Instant::now();
-        let (width, row) = (w as usize, row as usize);
-        let mut out = filmcraft_frame::pool::take_f32_overwritten(width.checked_mul(h as usize)?.checked_mul(4)?);
-        let data = slice.get_mapped_range().ok()?;
+        let mut out = filmcraft_frame::pool::take_f32_overwritten(out_len);
+        let Ok(data) = slice.get_mapped_range() else {
+            buf.unmap();
+            self.accum_readback_buf = None;
+            return None;
+        };
         // every row must be there: the pooled output holds stale values until written
         let converted = out.chunks_exact_mut(width * 4).enumerate().all(|(y, dst)| {
             let Some(src) = data.get(y * row..y * row + width * 8) else { return false };
@@ -1161,7 +1170,10 @@ pub(crate) fn wait_mapped(device: &wgpu::Device, sub: wgpu::SubmissionIndex, rx:
                     return None;
                 }
                 let _ = device.poll(wgpu::PollType::Poll);
-                std::thread::yield_now();
+                if let Ok(res) = rx.try_recv() {
+                    return res.ok();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
     }

@@ -10,6 +10,7 @@ use super::*;
 use filmcraft_geom::{Affine, Vec2};
 use filmcraft_render::plan::execute_cpu;
 
+/// Shared off-screen wgpu device and queue for the GPU unit tests.
 pub(crate) fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
     static SHARED: std::sync::OnceLock<Option<(wgpu::Instance, wgpu::Device, wgpu::Queue)>> = std::sync::OnceLock::new();
     let (_, dev, q) = SHARED

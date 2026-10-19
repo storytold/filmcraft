@@ -77,6 +77,7 @@ fn settings(path: String, hw: HardwareEncoding) -> ExportSettings {
     }
 }
 
+/// H.264 NVENC export matches the software encoder and writes the BT.709 `colr` box.
 #[test]
 fn hardware_export_matches_the_software_export() {
     let _one = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -100,6 +101,12 @@ fn hardware_export_matches_the_software_export() {
     }
     assert_eq!(report.frames, 72);
     assert_eq!(after.frames - before.frames, 72, "every picture went through NVENC");
+
+    let mp4 = filmcraft_isobmff::open(std::fs::read(&hw_path).unwrap()).unwrap();
+    let vt = mp4.track_of_kind(filmcraft_isobmff::TrackKind::Video).expect("a video track");
+    let ve = mp4.tracks[vt].entries[0].video.clone().expect("a video sample entry");
+    assert_eq!(ve.color, Some(filmcraft_isobmff::ColorInfo::Nclx { primaries: 1, transfer: 1, matrix: 1, full_range: false }));
+    assert!(ve.mastering_display.is_none() && ve.content_light.is_none());
 
     let (soft, hard) = (decode(&soft_path), decode(&hw_path));
     assert_eq!((soft.len(), hard.len()), (72, 72), "frame counts");

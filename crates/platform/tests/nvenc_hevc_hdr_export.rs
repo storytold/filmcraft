@@ -310,6 +310,7 @@ fn sdr_stays_main_8_bit_and_the_sdr_setting_tone_maps_hdr_sequences() {
     }
 }
 
+/// The NVENC factory validates HDR/SDR frame inputs, clamps hostile floats, and populates `colr`/`mdcv`/`clli` sample entries.
 #[test]
 fn the_factory_rejects_mismatched_pictures_and_clamps_hostile_floats() {
     let _one = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

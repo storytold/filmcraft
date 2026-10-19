@@ -117,6 +117,7 @@ pub struct Display {
 }
 
 impl Display {
+    /// Create a headless display target (GPU compositor when `gpu` is true and an adapter is available).
     pub fn new(gpu: bool) -> Self {
         let gpu = if gpu {
             filmcraft_gpu::adapter::offscreen_instance()

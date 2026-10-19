@@ -68,6 +68,7 @@ impl GpuMask {
         self.run(masks, w, h, Some((original, effected))).map(|(_, px)| px)
     }
 
+    /// Run the mask compute shader for `masks` over `w`×`h`, optionally mixing `original` and `effected`.
     fn run(&self, masks: &[FlatMask], w: usize, h: usize, mix: Option<(&[f32], &[f32])>) -> Option<(Vec<f32>, Vec<f32>)> {
         use wgpu::util::DeviceExt;
         let active: Vec<&FlatMask> = masks.iter().filter(|m| m.mode.index() != 0).collect();
