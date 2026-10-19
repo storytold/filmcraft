@@ -476,6 +476,8 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
                 app.session.set_playhead(i);
             }
             app.play(1.0);
+            // a range start: a stop goes back to it, even when it cut into playback
+            app.playback.origin = app.session.playhead();
             app.playback.stop_at = out;
             app.playback.rest_at = marked_out;
             return Ok(Value::Null);
