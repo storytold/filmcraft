@@ -33,10 +33,13 @@ its provenance record; save/reopen retains records that remain in the project.
 Copying just the `.fcproj` does not include its linked media or source snapshot. They must remain
 available at their recorded locations; automatic portable-project conversion is outside this importer.
 
-Supported: video/audio tracks, mute state, exact tick ranges, constant positive speed, nested
+Supported: video/audio tracks (track `IsMuted` only; the track-fader mute checkbox is not read),
+exact tick ranges, constant positive speed, nested
 sequences, still media, caption text, plain text graphics, static Motion scale/position/rotation,
 and clip-edge fades following the Python importer's transition mapping. Unknown effects remain
-in the original snapshot and are reported, rather than silently recreated with guessed parameters.
+in the original snapshot and are reported once per distinct effect name with an occurrence count,
+rather than silently recreated with guessed parameters. Fader-muted audio imports audible unless
+the track is also muted through `IsMuted`.
 Fonts/styles and transition appearance are not guaranteed to match Premiere. Missing, ambiguous
 or unreadable media remains visible as offline placeholders. A failure to open/read a media
 file for hashing reports its path and the OS error, leaves its hash/size unknown, and continues
@@ -72,8 +75,14 @@ Projects containing only settings and no `Sequence` objects currently report an 
 error. They do not create an imported project or destination; settings-only import is unsupported.
 
 Input is bounded to 64 MiB compressed/expanded XML, 500,000 XML nodes, 256 sequences, 256 tracks
-per kind and 100,000 timeline items. A traversal budget also accounts for repeated references and text size; diagnostics are capped at 1,024 entries plus a truncation notice. DTD/entity expansion, duplicate IDs, invalid times/speeds,
-cyclic nesting and nesting deeper than 64 levels produce errors. A failed import removes only
+per kind and 100,000 timeline items. A traversal budget also accounts for repeated references and
+text size; diagnostics are capped at 1,024 entries plus a truncation notice. Clips with nonpositive
+timeline duration, non-finite speed or speed outside 0.001–1000, or inverted/unsupported source
+ranges are skipped with a warning naming the clip. Other clips keep their original timeline
+positions; skipped clips can leave gaps. DTD/entity expansion, duplicate IDs, negative/non-integer
+timeline or source ticks, non-numeric speeds, cyclic nesting and nesting deeper than 64 levels
+still produce errors. The referenced graph is validated before unsupported clips are removed,
+so skipping a clip does not bypass the corruption or resource-limit checks. A failed import removes only
 its newly created destination and leaves the editor project unchanged.
 
 ## Regression and private-corpus checks
