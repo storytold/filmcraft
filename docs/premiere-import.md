@@ -200,3 +200,19 @@ the existing default-style mapping. This removes false offline artwork, but does
 editable title/shape fidelity. Complex graphics still require further mapping or an explicit user render.
 
 Single-sided Dip to Black/White transitions now fade across their full duration in both the CPU compositor and GPU frame plan; two-sided dips retain their midpoint colour.
+
+
+### Editable Motion animation and plugin diagnostics
+
+Position, Scale and Rotation animation now retain their saved source-time control points,
+including graphics with a nonzero source origin. Positions are converted from normalized
+coordinates to sequence pixels. Linear and hold segments are supported; native temporal
+velocities and spatial Bezier tangents remain approximate, with an explicit warning. PR #495
+already demonstrates the native parameter-ID/point mapping; this bounded reader uses the
+current importer's source-time representation.
+
+Unsupported effects retain their native match identifier in diagnostics, in addition to the
+display name. A plugin can call itself “Gaussian Blur” while identifying as `AE.Impact_Blur_FX`;
+it must not be silently treated as the standard `AE.ADBE Gaussian Blur 2` effect. Opaque shape
+appearance, advanced color data and unsupported plugins remain in provenance; the project stays editable
+and is not replaced with rendered media. These payloads are not recreated as native editable effects; their unsupported rendering is reported explicitly.

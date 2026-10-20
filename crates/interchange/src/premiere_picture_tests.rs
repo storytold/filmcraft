@@ -108,6 +108,7 @@ fn old_picture_provenance_defaults_remain_readable() {
             for item in track["items"].as_array_mut().unwrap() {
                 item.as_object_mut().unwrap().remove("video_effects");
                 item.as_object_mut().unwrap().remove("graphic");
+                item.as_object_mut().unwrap().remove("motion_keys");
                 for tr in item["transitions"].as_array_mut().unwrap() {
                     for key in ["object_id", "start", "end"] {
                         tr.as_object_mut().unwrap().remove(key);
@@ -119,4 +120,54 @@ fn old_picture_provenance_defaults_remain_readable() {
     let old: Document = serde_json::from_value(json).unwrap();
     assert!(old.sequences[0].tracks[0].items[0].video_effects.is_empty());
     assert!(!old.sequences[0].tracks[0].items[0].graphic);
+}
+
+fn animated_motion(keys: &str) -> String {
+    fixture(
+        r#"<VideoFilterComponent ObjectID="fx"><MatchName>AE.ADBE Motion</MatchName><Component><Params><Param ObjectRef="position"/><Param ObjectRef="scale"/></Params></Component></VideoFilterComponent>"#,
+        &format!(
+            r#"<VideoComponentParam ObjectID="position"><ParameterID>1</ParameterID><IsTimeVarying>true</IsTimeVarying><StartKeyframe>-100,0.5:0.5,0,0</StartKeyframe><Keyframes>{keys}</Keyframes></VideoComponentParam>
+<VideoComponentParam ObjectID="scale"><ParameterID>2</ParameterID><IsTimeVarying>true</IsTimeVarying><StartKeyframe>-100,100,0,0</StartKeyframe><DiscontinuousInterpolate>true</DiscontinuousInterpolate><Keyframes>0,100;254016000000,50;</Keyframes></VideoComponentParam>"#
+        ),
+    )
+}
+
+#[test]
+fn animated_motion_retains_source_times_points_and_hold_segments() {
+    let xml = animated_motion("254016000000,0.25:0.75;0,0.5:0.5;").replace("<InPoint>0</InPoint>", "<InPoint>127008000000</InPoint>");
+    let (p, _, _) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+    let seq = p.project.sequence(p.sequences[0]).unwrap();
+    let clip = &seq.video_tracks[0].items[0];
+    let time = clip.effect_time_at(clip.start);
+    assert_eq!(time, Tick(127008000000));
+    let motion = clip.effect("motion").unwrap();
+    let position = motion.param("position").unwrap();
+    assert_eq!(position.keyframes[1].time, Tick(254016000000));
+    assert_eq!(position.vec2_at(time), Vec2::new(f64::from(seq.settings.width) * 0.375, f64::from(seq.settings.height) * 0.625));
+    let scale = motion.param("scale").unwrap();
+    assert_eq!(scale.f64_at(time), 100.0);
+    assert_eq!(scale.f64_at(Tick(254016000000)), 50.0);
+}
+
+#[test]
+fn malformed_motion_keys_return_errors_without_panicking() {
+    for keys in ["0,NaN:0;".to_string(), "0,0:inf;".into(), "-1,0:0;".into(), "9223372036854775808,0:0;".into(), "0,0:0;0,1:1;".into(), "0,0:0;".repeat(10001)]
+    {
+        let xml = animated_motion(&keys);
+        let result = std::panic::catch_unwind(|| import(xml.as_bytes(), &ImportOptions::default(), None));
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_err());
+    }
+}
+
+#[test]
+fn plugin_blur_is_identified_and_not_silently_substituted() {
+    let xml = fixture(
+        r#"<VideoFilterComponent ObjectID="fx"><MatchName>AE.Impact_Blur_FX</MatchName><Component><DisplayName>Gaussian Blur</DisplayName></Component></VideoFilterComponent>"#,
+        "",
+    );
+    let (p, _, report) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+    let clip = &p.project.sequence(p.sequences[0]).unwrap().video_tracks[0].items[0];
+    assert!(clip.effect("gaussian_blur").is_none());
+    assert!(report.entries.iter().any(|e| e.message.contains("AE.Impact_Blur_FX") && e.message.contains("Gaussian Blur")));
 }
