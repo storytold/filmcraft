@@ -216,11 +216,11 @@ impl CodedPlanes {
 /// Block layout entry: plane, x offset and y offset (0 or 8) inside the macroblock.
 type BlockPos = (u8, u8, u8);
 
-const LAYOUT_422: [BlockPos; 8] = [(0, 0, 0), (0, 8, 0), (1, 0, 0), (2, 0, 0), (0, 0, 8), (0, 8, 8), (1, 0, 8), (2, 0, 8)];
-const LAYOUT_420: [BlockPos; 6] = [(0, 0, 0), (0, 8, 0), (1, 0, 0), (2, 0, 0), (0, 0, 8), (0, 8, 8)];
-const LAYOUT_444: [BlockPos; 12] =
+pub(crate) const LAYOUT_422: [BlockPos; 8] = [(0, 0, 0), (0, 8, 0), (1, 0, 0), (2, 0, 0), (0, 0, 8), (0, 8, 8), (1, 0, 8), (2, 0, 8)];
+pub(crate) const LAYOUT_420: [BlockPos; 6] = [(0, 0, 0), (0, 8, 0), (1, 0, 0), (2, 0, 0), (0, 0, 8), (0, 8, 8)];
+pub(crate) const LAYOUT_444: [BlockPos; 12] =
     [(0, 0, 0), (0, 8, 0), (1, 0, 0), (1, 8, 0), (2, 0, 0), (2, 8, 0), (0, 0, 8), (0, 8, 8), (1, 0, 8), (1, 8, 8), (2, 0, 8), (2, 8, 8)];
-const LAYOUT_ALPHA: [BlockPos; 4] = [(3, 0, 0), (3, 8, 0), (3, 0, 8), (3, 8, 8)];
+pub(crate) const LAYOUT_ALPHA: [BlockPos; 4] = [(3, 0, 0), (3, 8, 0), (3, 0, 8), (3, 8, 8)];
 
 /// Per-coding-unit decoding context.
 struct Ctx<'a> {
@@ -490,15 +490,20 @@ fn store(ctx: &Ctx, band: &mut [u16], position: BlockPosition, block: &mut [f32;
     }
 }
 
+/// The luma coefficients (Kr, Kb) `ConvertMacroblockColor` uses for a colour volume.
+pub(crate) fn mb_color_kr_kb(cv: crate::ColorVolume) -> (f32, f32) {
+    match cv {
+        crate::ColorVolume::Bt709 => (0.2126, 0.0722),
+        _ => (0.2627, 0.0593),
+    }
+}
+
 /// `ConvertMacroblockColor` (8.1.1): BT.709 Y′CbCr → R′G′B′ on the quantised (video-range)
 /// signals, in place over the macroblock's three planes.
 fn convert_mb_to_rgb(ctx: &Ctx, bands: [&mut [u16]; 3], mb: usize) {
     let stride = ctx.strides[0];
     let s = (1u32 << (ctx.h.bit_depth - 8)) as f32;
-    let (kr, kb) = match ctx.h.color_volume {
-        crate::ColorVolume::Bt709 => (0.2126f32, 0.0722f32),
-        _ => (0.2627, 0.0593),
-    };
+    let (kr, kb) = mb_color_kr_kb(ctx.h.color_volume);
     let kg = 1.0 - kr - kb;
     let c = 219.0 / 224.0;
     for y in 0..16 {

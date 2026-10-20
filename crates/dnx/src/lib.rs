@@ -6,8 +6,9 @@
 //!   rasters and 4:4:4 RGB, and the resolution-independent DNxHR IDs 1270–1274 (LB, SQ, HQ, HQX,
 //!   444) at 8, 10 and 12 bits in 4:2:0, 4:2:2 and 4:4:4, with DCT or lossless alpha. Macroblock
 //!   scan lines decode in parallel with the `threads` feature (rayon).
-//! - **Encoder** ([`Encoder`]): DNxHR SQ / HQ (8-bit 4:2:2) and HQX (10- or 12-bit 4:2:2), CBR
-//!   at the standard's frame sizes, progressive.
+//! - **Encoder** ([`Encoder`]): DNxHR LB / SQ / HQ (8-bit 4:2:2), HQX (10- or 12-bit 4:2:2) and
+//!   444 (10- or 12-bit 4:4:4), with DCT or lossless alpha, CBR at the standard's frame sizes,
+//!   progressive.
 //!
 //! See the crate README for accuracy, performance and limitations.
 
@@ -23,7 +24,7 @@ mod spec_tables;
 mod tables;
 
 pub use decode::{DecodeOptions, decode_frame, decode_frame_with, probe};
-pub use encode::{Encoder, EncoderConfig};
+pub use encode::{AlphaCoding, Encoder, EncoderConfig};
 pub use header::{FieldCode, FrameHeader};
 pub use layout::frame_layout;
 pub use tables::ri_frame_size;
@@ -132,13 +133,17 @@ impl Profile {
     }
     /// CBR frame size for a raster (equation 7.1).
     pub fn frame_size(self, width: u32, height: u32) -> u32 {
-        let c0 = match self {
+        ri_frame_size(width, height, self.c0(), false)
+    }
+
+    /// The constant `C0` of equation 7.1.
+    pub(crate) fn c0(self) -> u32 {
+        match self {
             Profile::Lb => 188416,
             Profile::Sq => 606208,
             Profile::Hq | Profile::Hqx => 917504,
             Profile::R444 => 1835008,
-        };
-        ri_frame_size(width, height, c0, false)
+        }
     }
 }
 

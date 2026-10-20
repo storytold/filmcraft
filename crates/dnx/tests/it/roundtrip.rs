@@ -1,6 +1,6 @@
 //! Encoder → decoder round trips and robustness against corrupt data (no ffmpeg needed).
 
-use filmcraft_dnx::{ChromaFormat, DecodeOptions, Encoder, EncoderConfig, Frame, Profile, decode_frame, decode_frame_with, probe};
+use filmcraft_dnx::{AlphaCoding, ChromaFormat, DecodeOptions, Encoder, EncoderConfig, Frame, Profile, decode_frame, decode_frame_with, probe};
 
 /// A synthetic picture: gradients, a ring pattern and some hashed texture.
 fn picture(w: u32, h: u32, chroma: ChromaFormat, depth: u8, seed: u32) -> Frame {
@@ -64,6 +64,66 @@ fn roundtrip_all_profiles() {
             assert!(p > min && pc > min, "{profile:?} {depth}-bit {w}x{h}: PSNR {p:.1}/{pc:.1}");
         }
     }
+}
+
+/// A matte: an opaque disc with a soft edge, a ramp, a noisy corner and transparent elsewhere.
+fn matte(f: &mut Frame, seed: u32) {
+    let (w, h) = (f.width as i64, f.height as i64);
+    let max = (1i64 << f.bit_depth) - 1;
+    let mut a = vec![0u16; (w * h) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            let d = (((x - w / 2).pow(2) + (y - h / 2).pow(2)) as f64).sqrt() - (w.min(h) / 3) as f64;
+            let mut v = ((0.5 - d / 6.0).clamp(0.0, 1.0) * max as f64) as i64;
+            if y < h / 4 {
+                v = x * max / w.max(1);
+            }
+            if x > w * 3 / 4 && y > h * 3 / 4 {
+                v = i64::from((x as u32).wrapping_mul(2654435761).wrapping_add(y as u32 * 40503 + seed) >> 7) & max;
+            }
+            a[(y * w + x) as usize] = v as u16;
+        }
+    }
+    f.alpha = Some(a);
+}
+
+#[test]
+fn alpha_round_trips() {
+    for (profile, depth, w, h) in [(Profile::Hq, 8, 320, 180), (Profile::Hqx, 10, 334, 201), (Profile::Hqx, 12, 128, 64), (Profile::R444, 10, 200, 120)] {
+        for coding in [AlphaCoding::Lossless, AlphaCoding::Dct] {
+            let cfg = EncoderConfig { bit_depth: depth, alpha: Some(coding), ..EncoderConfig::new(profile, w, h) };
+            let chroma = cfg.chroma();
+            let mut enc = Encoder::with_config(cfg).unwrap();
+            let mut src = picture(w, h, chroma, depth, 1);
+            matte(&mut src, 3);
+            let data = enc.encode(&src).unwrap_or_else(|e| panic!("{profile:?} {coding:?}: {e}"));
+            assert_eq!(data.len() as u32, enc.frame_size());
+            let hdr = probe(&data).unwrap();
+            assert!(hdr.alpha && hdr.lossless_alpha == (coding == AlphaCoding::Lossless));
+            // the size equation 7.1 gives with its alpha factor
+            assert_eq!(hdr.coding_unit_size(), Some(enc.frame_size()));
+            let dec = decode_frame(&data).unwrap();
+            let single = decode_frame_with(&data, &DecodeOptions { threads: false, ..Default::default() }).unwrap();
+            assert_eq!(dec, single);
+            let (want, got) = (src.alpha.as_ref().unwrap(), dec.alpha.as_ref().unwrap());
+            let label = format!("{profile:?} {depth}-bit {w}x{h} {coding:?}");
+            if coding == AlphaCoding::Lossless {
+                assert!(want == got, "{label}: lossless alpha differs");
+            } else {
+                let p = psnr(want, got, ((1u32 << depth) - 1) as f64);
+                assert!(p > 38.0, "{label}: alpha PSNR {p:.1}");
+            }
+            // and the colour is still the colour
+            let p = psnr(&src.y, &dec.y, ((1u32 << depth) - 1) as f64);
+            assert!(p > 35.0, "{label}: PSNR {p:.1}");
+        }
+    }
+}
+
+#[test]
+fn alpha_coding_needs_an_alpha_plane() {
+    let cfg = EncoderConfig { alpha: Some(AlphaCoding::Dct), ..EncoderConfig::new(Profile::Hq, 64, 32) };
+    assert!(Encoder::with_config(cfg).unwrap().encode(&Frame::new(64, 32, ChromaFormat::Yuv422, 8, false)).is_err());
 }
 
 #[test]
