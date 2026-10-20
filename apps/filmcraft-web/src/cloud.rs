@@ -76,10 +76,10 @@ impl Service {
                 emit(Event::Linked(answer));
             }
             Job::SignOut => {
-                // Cookie sessions: ask the server to clear the cookie, then reload.
-                let _ = post_logout().await;
-                if let Some(w) = web_sys::window() {
-                    let _ = w.location().reload();
+                if post_logout().await.is_ok() {
+                    if let Some(w) = web_sys::window() {
+                        let _ = w.location().reload();
+                    }
                 }
             }
             Job::List(path) => {
@@ -151,6 +151,10 @@ async fn post_logout() -> Result<(), String> {
     let req = web_sys::Request::new_with_str_and_init(LOGOUT_PATH, &init).map_err(|e| format!("{e:?}"))?;
     let promised = fetch.call1(global.as_ref(), req.as_ref()).map_err(|e| format!("{e:?}"))?;
     let promised: js_sys::Promise = promised.dyn_into().map_err(|_| "not a promise".to_owned())?;
-    wasm_bindgen_futures::JsFuture::from(promised).await.map_err(|e| format!("{e:?}"))?;
+    let value = wasm_bindgen_futures::JsFuture::from(promised).await.map_err(|e| format!("{e:?}"))?;
+    let response: web_sys::Response = value.dyn_into().map_err(|_| "logout response was not a Response".to_owned())?;
+    if !response.ok() {
+        return Err(format!("logout failed with HTTP {}", response.status()));
+    }
     Ok(())
 }
