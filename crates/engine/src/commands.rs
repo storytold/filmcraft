@@ -1837,11 +1837,14 @@ fn build() -> Vec<CommandSpec> {
                         edit::set_speed_group(q, &unlocked, speed, reverse, ripple, ctx)?;
                     }
                     for c in &sel {
+                        // a linked partner on a locked track keeps its speed (above) and how its sound
+                        // follows that speed
+                        let locked = q.find_item(*c).is_some_and(|(t, _)| q.track(t).is_some_and(|tr| tr.locked));
                         if let Some((_, it)) = q.find_item_mut(*c) {
                             if let Some(m) = interp {
                                 it.time_interpolation = m;
                             }
-                            if let Some(keep) = maintain_pitch {
+                            if let Some(keep) = maintain_pitch.filter(|_| !locked) {
                                 it.maintain_pitch = keep;
                             }
                         }

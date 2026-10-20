@@ -182,3 +182,17 @@ fn maintain_audio_pitch_goes_with_the_clip_and_its_sound() {
     s.execute("clip.speedDuration", json!({"clips": [picture.0], "speed": 120, "maintainPitch": false})).unwrap();
     assert!(!flag(&s, picture) && !flag(&s, sound));
 }
+
+/// A linked sound on a locked track keeps its speed, and so also how it follows that speed:
+/// turning Maintain Audio Pitch on for its picture leaves the locked sound as it was.
+#[test]
+fn maintain_audio_pitch_leaves_a_locked_linked_sound_alone() {
+    let mut s = Session::default();
+    let [(picture, sound), _, _] = three_clips(&mut s);
+    let flag = |s: &Session, c: ClipId| s.active_sequence().and_then(|q| q.find_item(c)).is_some_and(|(_, i)| i.maintain_pitch);
+    let id = s.state.active_sequence.unwrap();
+    std::sync::Arc::make_mut(&mut s.project).sequence_mut(id).unwrap().audio_tracks[0].locked = true;
+    s.execute("clip.speedDuration", json!({"clips": [picture.0], "speed": 150, "maintainPitch": true})).unwrap();
+    assert!(flag(&s, picture), "the picture's own setting changes");
+    assert!(!flag(&s, sound), "the locked sound keeps its setting");
+}

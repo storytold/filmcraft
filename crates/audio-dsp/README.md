@@ -152,11 +152,12 @@ Why not the shuttle's `PitchShifter` (`ui-egui`'s `shuttle` runs it ahead of a `
 keep pitch at J/L speeds)? That pair is a stream: it has latency (the FFT size) and state carried
 from one block to the next, so it only gives the right samples when it is fed every sample in
 order from where it started. Clip audio is read by random access: playback, export, scrubbing,
-waveforms and loudness matching each ask for any span of the timeline, and must get the same samples
-for it. A seek would have to rebuild the stream and pre-roll its latency, and two readers of one
-clip would need two streams that agree. `Wsola` keeps no state: grain `k`'s position follows only
-from grain `k - 1`'s, and the renderer keeps the last positions of each chain, so a read
-anywhere restarts a few grains early and a read in order continues exactly. A phase vocoder also
+waveforms and loudness matching each ask for any span of the timeline. A seek would have to rebuild
+the stream and pre-roll its latency, and every reader of a clip would need a stream of its own.
+`Wsola` keeps no state: grain `k`'s position follows only from grain `k - 1`'s, and the renderer
+keeps the last positions of each chain, so a read in order continues the chain exactly, however
+the reads are cut, and a read anywhere else starts a new chain a few grains early (see Known
+limits for what that means for the samples). A phase vocoder also
 smears transients over its FFT window, which matters for dialogue and music cut at speed; WSOLA
 copies the input's own waveform, so transients stay sharp at the 50 %–300 % speeds clips use.
 
@@ -167,3 +168,13 @@ copies the input's own waveform, so transients stay sharp at the 50 %–300 % sp
 - DeNoise adapts continuously; a perfectly stationary tone is (by design) treated as noise after
   ~1.5 s. There is no explicit "learn noise print" mode yet.
 - Filter type / choice changes switch immediately (continuous parameters are smoothed).
+- Time stretch (Maintain Audio Pitch): a read that starts a new chain (a seek, or a clip whose
+  chain was dropped from the renderer's cache) chooses its grains from its own start, so the same
+  span can come out slightly different (grain positions within the 8 ms tolerance) from one that
+  continued a chain from earlier. Pitch and level are the same; the samples are not, so two reads
+  of a span through different histories, such as an export that starts where playback stopped,
+  are not bit-identical. Making them so needs every chain to be canonical (computed from the clip's
+  start, or reset at fixed grains with a seam), which is not done.
+- Time stretch: a single read whose source span exceeds 2^24 samples (a very fast clip read in
+  one long request) is not stretched; the renderer resamples it instead (varispeed, so the pitch
+  changes for that read).
