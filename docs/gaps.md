@@ -105,11 +105,12 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Have:** hardware decode on macOS (VideoToolbox H.264 / HEVC), Windows (Media Foundation /
   D3D11: H.264, HEVC, VP9, AV1) and Linux (VA-API and NVDEC: H.264, HEVC); hardware encode
   VideoToolbox H.264 / HEVC 8-bit, NVENC H.264 (Windows, Linux) and HEVC incl. Main 10 HDR
-  (Windows); Media Foundation H.264 / HEVC 8-bit on Windows behind NVENC (#1575), which is the
-  vendor-neutral path for Intel, AMD and Qualcomm (verified on a Snapdragon X / Adreno X1-85);
+  (Windows); Media Foundation H.264 / HEVC 8-bit on Windows behind NVENC (#2488, split from #1575), using
+  available hardware encoder MFTs (verified on Qualcomm and AMD; Intel validation pending);
   GPU compositing, blend modes, 34 effect ids incl. Lumetri basic / creative / vignette,
-  GPU export rendering (#421). GPU export read-back is bounded, so an export with
-  `gpuRendering: auto` finishes even where the GPU does not answer a map in time (#1575).
+  GPU export rendering (#421). GPU export read-back bounds the GPU poll and callback receive
+  separately to eight seconds each, allowing CPU fallback when mapping is late (#2490). This is
+  not a deadline for the entire export or a guarantee against arbitrary driver stalls.
 - **Missing:** zero-copy decoded frames into wgpu (every frame is read back to the CPU and
   re-uploaded); VideoToolbox Main 10 / HDR HEVC encode and B-frames; ProRes hardware decode /
   encode on Apple silicon; 10-bit / HDR in the Media Foundation encoder (a fixed picture delay is taken and written as an

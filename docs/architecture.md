@@ -302,11 +302,13 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   H.265 encoder, what NVENC declines is counted and ends the export with an error that says why.
   On Windows, `platform::media_foundation::encode::factory` is registered **before** NVENC's
   (`register_encoder` tries the most recently registered factory first, so NVENC still wins on an
-  NVIDIA machine) and Media Foundation is the vendor-neutral encoder: Intel, AMD and Qualcomm all
-  go through it, which is what a machine with no NVIDIA driver has instead. Vendors' encoder MFTs are
+  NVIDIA machine) and Media Foundation uses available hardware encoder MFTs across vendors. Qualcomm and AMD
+  results are reported; Intel and explicit per-adapter session validation remain pending. Vendors' encoder MFTs are
   asynchronous — every call answers `MF_E_TRANSFORM_ASYNC_LOCKED` until `MF_TRANSFORM_ASYNC_UNLOCK` is
-  set — and do not declare their media types up front, so the candidates come from an unfiltered
-  hardware enumeration and are configured one output type at a time. The same opt-in rules apply
+  set. Candidates come from an unfiltered hardware enumeration and are configured one output type
+  at a time. Filtered enumeration follows `MFTEnumEx`'s input-then-output argument order; earlier
+  empty results from reversed arguments were not evidence of absent registered media types.
+  The same opt-in rules apply
   (Export ▸ Hardware encoding for H.264, the format choice for H.265), and its H.265 probe is a second
   alternative for `Format::Hevc`, so the format is offered wherever *either* encoder opens a session.
   An encoder that runs a fixed number of pictures behind is taken, with the delay written as an edit

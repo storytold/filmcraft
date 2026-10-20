@@ -80,15 +80,18 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   NVENC)](#hardware-h265-hevc-encoding-windows-nvenc).
 - **Windows: Media Foundation hardware H.264 and H.265 (HEVC) encoding** (`media_foundation/encode.rs`),
   8-bit SDR 4:2:0 for Export, registered *behind* NVENC so an NVIDIA machine keeps NVENC. This is
-  the vendor-neutral Windows encoder: Intel, AMD and Qualcomm all go through it. Two things make a
-  vendor's encoder MFT unusual, and both are handled in `media_foundation/mft.rs`:
+  a vendor-neutral path through available hardware encoder MFTs. Qualcomm and AMD results are
+  reported; Intel and explicit per-adapter acceptance remain pending. Transform activation and
+  media-type negotiation are handled in `media_foundation/mft.rs`:
   - they are **asynchronous** MFTs, and an asynchronous MFT answers `MF_E_TRANSFORM_ASYNC_LOCKED`
     (`0xC00D6D77`) to *every* call until the caller sets `MF_TRANSFORM_ASYNC_UNLOCK`, so activation
     unlocks it before anything else. The HRESULT's message text does not mention the cause;
-  - they do **not** declare their media types up front, so `MFTEnumEx` filtered on the input subtype
-    returns none of them. Candidates come from an unfiltered hardware enumeration and each is asked
-    for the output type it actually takes (an encoder refuses an input type before it has an output
-    one, so the output type is set first).
+  - candidates come from an unfiltered hardware enumeration and each is asked for the output type
+    it takes; the output type is set before the input type. Filtered enumeration passes the input
+    type before the output type, following the
+    [`MFTEnumEx` contract](https://learn.microsoft.com/en-us/windows/win32/api/mfapi/nf-mfapi-mftenumex).
+    An earlier empty encoder search used these arguments in reverse; it did not prove that vendor
+    MFTs omit their registered media types.
   A transform with `MFT_OUTPUT_STREAM_PROVIDES_SAMPLES` set must be given an output descriptor with
   no sample attached (`cbSize` is then 0); attaching one, as is natural, makes `ProcessOutput` fail
   forever while the MFT encodes correctly. **`IMFMediaBuffer::Lock` reports the buffer's size, not the
