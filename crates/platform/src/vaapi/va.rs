@@ -45,6 +45,7 @@ struct Api {
     sync_surface: ffi::vaSyncSurface,
     create_image: ffi::vaCreateImage,
     destroy_image: ffi::vaDestroyImage,
+    derive_image: ffi::vaDeriveImage,
     get_image: ffi::vaGetImage,
     put_image: ffi::vaPutImage,
     map_buffer: ffi::vaMapBuffer,
@@ -95,6 +96,7 @@ fn load() -> Result<Api, String> {
         sync_surface: sym!(va, vaSyncSurface),
         create_image: sym!(va, vaCreateImage),
         destroy_image: sym!(va, vaDestroyImage),
+        derive_image: sym!(va, vaDeriveImage),
         get_image: sym!(va, vaGetImage),
         put_image: sym!(va, vaPutImage),
         map_buffer: sym!(va, vaMapBuffer),
@@ -254,6 +256,11 @@ pub struct Session {
     context: ffi::VAContextID,
     surfaces: Vec<VASurfaceID>,
     image: Option<VAImage>,
+    /// Read pictures from the surface mapped in place (`vaDeriveImage`) rather than a copy
+    /// (`vaGetImage`): 15-23% less time per picture on radeonsi (Radeon 680M, Mesa 26.1; 4K HEVC
+    /// 10-bit 13.0 ms against 15.6, `examples/vabench.rs`). radeonsi gives the CPU a linear copy
+    /// of a tiled surface, with that copy's pitches. Off after a failure.
+    derive: bool,
     /// Coded size of the surfaces (luma samples).
     size: (u32, u32),
     geometry: Geometry,
@@ -320,8 +327,9 @@ impl Session {
             }
         }
         let config = config.ok_or(why)?;
+        let derive = display.vendor().contains("radeonsi");
         // From here on `Drop` releases what was made.
-        let mut s = Self { display, config, context: ffi::VA_INVALID_ID, surfaces: Vec::new(), image: None, size, geometry };
+        let mut s = Self { display, config, context: ffi::VA_INVALID_ID, surfaces: Vec::new(), image: None, derive, size, geometry };
         let count_c = c_uint::try_from(count).map_err(|_| "too many surfaces")?;
         let mut surfaces = vec![ffi::VA_INVALID_SURFACE; count];
         // SAFETY: `surfaces` has room for `count` ids; no attributes are passed (null, 0).
@@ -469,6 +477,25 @@ impl Session {
         decoded
     }
 
+    /// The picture in surface `index`, once decoded, read from the surface mapped in place.
+    fn read_derived(&self, index: usize) -> Result<VideoFrame, String> {
+        let surface = *self.surfaces.get(index).ok_or("surface out of range")?;
+        let api = self.display.api;
+        // SAFETY: `surface` is one of this session's surfaces.
+        let st = unsafe { (api.sync_surface)(self.display.dpy, surface) };
+        self.display.check(st, "vaSyncSurface")?;
+        let mut image = VAImage { image_id: ffi::VA_INVALID_ID, buf: ffi::VA_INVALID_ID, ..Default::default() };
+        // SAFETY: `surface` is one of this session's surfaces; `image` is a live output.
+        let st = unsafe { (api.derive_image)(self.display.dpy, surface, &mut image) };
+        self.display.check(st, "vaDeriveImage")?;
+        let frame = self.read_image(&image);
+        // SAFETY: the image was derived above and is destroyed once; `read_image` unmapped it.
+        let st = unsafe { (api.destroy_image)(self.display.dpy, image.image_id) };
+        let frame = frame?;
+        self.display.check(st, "vaDestroyImage")?;
+        Ok(frame)
+    }
+
     fn read_image(&self, image: &VAImage) -> Result<VideoFrame, String> {
         let api = self.display.api;
         let mut ptr: *mut c_void = std::ptr::null_mut();
@@ -531,6 +558,15 @@ impl Accel for Session {
     }
 
     fn read(&mut self, index: usize) -> Result<VideoFrame, String> {
+        if self.derive {
+            match self.read_derived(index) {
+                Ok(frame) => return Ok(frame),
+                Err(why) => {
+                    log::info!("VA-API ({}): reading a mapped surface failed ({why}); copying with vaGetImage", self.vendor());
+                    self.derive = false;
+                }
+            }
+        }
         let image = self.get_image(index)?;
         self.read_image(&image)
     }
