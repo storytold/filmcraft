@@ -2206,6 +2206,7 @@ impl FilmcraftApp {
         let body = egui::Rect::from_min_max(egui::pos2(full.min.x + 1.0, header.max.y + 1.0), egui::pos2(full.max.x - 1.0, full.max.y - status_h - 2.0));
         match self.ui.mode {
             state::Mode::Edit => self.dock_area(ui, body),
+            state::Mode::Home => panels::home::show(self, ui, body),
             state::Mode::Import => panels::import_mode::show(self, ui, body),
             state::Mode::Export => panels::export_mode::show(self, ui, body),
         }
@@ -2560,7 +2561,13 @@ impl FilmcraftApp {
                 }
                 filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
                 filmcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, now)),
-                filmcraft_engine::Event::ProjectChanged { .. } => {}
+                filmcraft_engine::Event::ProjectChanged { .. } => {
+                    // A project opened, created or recovered (nothing to undo or redo yet) replaces
+                    // Home with the editor; edits made while Home is up leave it there.
+                    if self.ui.mode == state::Mode::Home && !self.session.history.can_undo() && !self.session.history.can_redo() {
+                        self.ui.mode = state::Mode::Edit;
+                    }
+                }
             }
         }
     }

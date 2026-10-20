@@ -136,6 +136,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("tool.zoom", "Zoom Tool", [], Some("Z")),
     uic!("tool.type", "Type Tool", [], Some("T")),
     uic!("tool.verticalType", "Vertical Type Tool", [], None),
+    uic!("mode.home", "Home", [], None),
     uic!("mode.import", "Import", [], None),
     uic!("mode.edit", "Edit", [], None),
     uic!("mode.export", "Export", ["File", "Export"], Some("Cmd+M")),
@@ -432,6 +433,10 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         "view.resetInterfaceZoom" => {
             let zoom = app.reset_ui_zoom(ctx);
             return Ok(json!({"zoom": zoom}));
+        }
+        "mode.home" => {
+            app.ui.mode = Mode::Home;
+            return Ok(Value::Null);
         }
         "mode.import" => {
             app.ui.mode = Mode::Import;

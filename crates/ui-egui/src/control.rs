@@ -178,6 +178,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             }
             if let Some(m) = s("mode") {
                 app.ui.mode = match m.to_ascii_lowercase().as_str() {
+                    "home" => Mode::Home,
                     "import" => Mode::Import,
                     "export" => Mode::Export,
                     _ => Mode::Edit,
