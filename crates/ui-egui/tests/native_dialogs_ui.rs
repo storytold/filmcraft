@@ -94,6 +94,26 @@ impl Driver {
     fn items(&mut self) -> usize {
         self.app().session.project.items.len()
     }
+
+    /// Make an unsaved change (the first clip's label), as in the quit-prompt tests.
+    fn edit(&mut self) {
+        let c = self.app().session.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+        self.ok("engine.execute", json!({"command": "timeline.select", "params": json!({"clips": [c]})}));
+        self.ok("ui.menu.invoke", json!({"id": "edit.label.yellow"}));
+        self.frames(3);
+        assert!(self.app().session.is_dirty());
+    }
+
+    /// The window is asked to close (Quit, Cmd+Q, its close button) for one frame.
+    fn request_close(&mut self) {
+        self.harness.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+        self.frames(1);
+    }
+
+    /// The app sent `cmd` to the window in the last frame.
+    fn sent(&self, cmd: &egui::ViewportCommand) -> bool {
+        self.harness.output().viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.commands.contains(cmd))
+    }
 }
 
 /// A one-second 8 kHz mono WAV in Cargo's temporary folder for integration tests.
@@ -218,4 +238,54 @@ fn export_location_browse_works_with_the_runner_and_with_synchronous_pickers() {
     d.click("export.location.browse");
     assert_eq!(d.app().ui.export.location, "/tmp/exports-b");
     assert!(!d.app().native_dialog_open());
+}
+
+/// The Save button on the Quit prompt for a never-saved project opens the async save sheet; when
+/// it answers with a path the project is saved and the quit resumes without a second choice.
+#[test]
+fn a_save_sheet_from_the_quit_prompt_saves_and_resumes_the_quit_when_it_answers() {
+    let path = std::env::temp_dir().join(format!("fc-quit-save-sheet-{}.fcproj", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let mut d = Driver::new(true);
+    d.app().session.path = None;
+    d.edit();
+    d.request_close();
+    d.frames(2);
+    assert!(d.app().session.is_dirty() && !d.app().quit_confirmed);
+    // Save opens the sheet; the prompt waits for its answer. `pick_save` is set as on the real
+    // desktop hosts (macOS / Linux have both the async runner and the sync fallbacks).
+    d.app().hooks.pick_save = Some(Box::new(|_| None));
+    d.click("quit.save");
+    let (dialog, answer) = d.asked();
+    assert!(matches!(&dialog, FileDialog::SaveProject { .. }), "{dialog:?}");
+    d.frames(2);
+    assert!(d.app().session.is_dirty(), "the sheet is open, nothing is saved yet");
+    assert!(d.app().ui.clip_dialog.is_some() && !d.app().quit_confirmed);
+    // the user chooses a file: the project is saved and the quit is resumed
+    answer.send(vec![path.to_string_lossy().into_owned()]).unwrap();
+    d.frames(2);
+    assert!(!d.app().session.is_dirty() && d.app().quit_confirmed);
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert!(path.exists(), "saved to the chosen file");
+    d.request_close();
+    assert!(!d.sent(&egui::ViewportCommand::CancelClose), "the confirmed quit goes through");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Cancelling the sheet keeps the changes and the prompt, as when it was opened.
+#[test]
+fn cancelling_the_save_sheet_from_the_quit_prompt_restores_the_prompt() {
+    let mut d = Driver::new(true);
+    d.app().session.path = None;
+    d.edit();
+    d.request_close();
+    d.frames(2);
+    d.app().hooks.pick_save = Some(Box::new(|_| None));
+    d.click("quit.save");
+    let (_, answer) = d.asked();
+    answer.send(vec![]).unwrap();
+    d.frames(2);
+    assert!(!d.app().native_dialog_open());
+    assert!(d.app().session.is_dirty());
+    assert!(d.app().ui.clip_dialog.is_some() && !d.app().quit_confirmed, "back to the prompt");
 }

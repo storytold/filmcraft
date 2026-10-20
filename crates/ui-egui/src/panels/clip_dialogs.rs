@@ -125,6 +125,32 @@ pub fn intercept_quit(app: &mut FilmcraftApp) -> bool {
     true
 }
 
+/// `poll_native_dialog`: the Save button on a Quit / Close-project confirmation for a never-saved
+/// project opened the async save sheet; once the sheet has completed with a successful save,
+/// resume the close or quit it was asked for without a second choice. A cancelled sheet leaves the
+/// session dirty and the confirmation up, as when it was opened.
+pub(crate) fn resume_close_after_save(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    if app.session.is_dirty() {
+        return;
+    }
+    match app.ui.clip_dialog.as_ref().map(|d| d.command.as_str()) {
+        Some("file.closeProject") => {
+            if let Err(e) = app.session.execute("file.closeProject", json!({"force": true})) {
+                app.ui.status = e.to_string();
+            }
+            app.ui.clip_dialog = None;
+        }
+        Some("app.quit") => {
+            // the changes are in the file: closing the project would clear their recovery
+            // snapshot, so just quit (the same as the inline Save path in `show`)
+            app.quit_confirmed = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            app.ui.clip_dialog = None;
+        }
+        _ => {}
+    }
+}
+
 /// Initial parameters (and display info) of a command's dialog.
 fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
     let s = &app.session;

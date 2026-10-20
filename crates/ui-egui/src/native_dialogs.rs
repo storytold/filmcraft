@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::{FilmcraftApp, HostHooks, RelinkHint};
+use crate::{FilmcraftApp, HostHooks, RelinkHint, panels};
 
 /// A native file dialog. Filters are a name and extensions without dots.
 #[derive(Clone, Debug)]
@@ -182,6 +182,9 @@ impl FilmcraftApp {
         if let Err(e) = (pending.then)(self, paths) {
             self.ui.status = e;
         }
+        // a save sheet opened from a Quit / Close-project confirmation: a successful save
+        // resumes the close or quit it was asked for
+        panels::clip_dialogs::resume_close_after_save(self, ctx);
         ctx.request_repaint();
     }
 }
