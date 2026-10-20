@@ -50,7 +50,7 @@ fn braw_clips_open_decode_and_play_their_audio() {
         eprintln!("  frame 0 full: {}x{}", full.width, full.height);
         let PixelData::Rgba8(rgba) = &full.data else { panic!("RGBA 8-bit frames") };
         assert_eq!(rgba.len(), full.width as usize * full.height as usize * 4);
-        let lit = rgba.chunks_exact(4).filter(|p| p[0] > 8 || p[1] > 8 || p[2] > 8).count();
+        let lit = rgba.as_chunks::<4>().0.iter().filter(|&&[r, g, b, _]| r > 8 || g > 8 || b > 8).count();
         assert!(lit > rgba.len() / 4 / 10, "{name}: frame 0 is (nearly) black");
 
         let quarter = source.video_frame(FrameRequest { time: Tick::ZERO, scale: 0.25 }).unwrap_or_else(|e| panic!("{name}: quarter: {e}"));

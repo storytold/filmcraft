@@ -9,7 +9,7 @@
 //! take the lock (the API may hold its own while calling back) and never unwind into the API.
 
 #[cfg(target_os = "macos")]
-use objc2_core_foundation::{CFBundle, CFRetained, CFString, CFURL, CFURLPathStyle};
+use objc2_core_foundation::{CFBundle, CFError, CFRetained, CFString, CFURL, CFURLPathStyle};
 use std::ffi::c_void;
 #[cfg(target_os = "linux")]
 use std::ffi::{CStr, CString};
@@ -324,7 +324,25 @@ impl Runtime {
         let text = path.to_str().ok_or("the path is not valid UTF-8")?;
         let url =
             CFURL::with_file_system_path(None, Some(&CFString::from_str(text)), CFURLPathStyle::CFURLPOSIXPathStyle, true).ok_or("the path is not a folder")?;
-        CFBundle::new(None, Some(&url)).map(Self).ok_or_else(|| "not a loadable framework".into())
+        let bundle = CFBundle::new(None, Some(&url)).ok_or("not a loadable framework")?;
+        // Load it now rather than on the first symbol lookup, so that a refusal says why: a signed
+        // FilmCraft under the hardened runtime may load it only with the library-validation
+        // exception in its entitlements (packaging/macos/entitlements.plist).
+        let mut error: *mut CFError = std::ptr::null_mut();
+        // SAFETY: a live bundle and a valid out-pointer; on failure `error` is null or a CFError the
+        // call created for us.
+        if !unsafe { bundle.load_executable_and_return_error(&mut error) } {
+            // SAFETY: as above: owned by us (create rule), released when dropped.
+            let error = NonNull::new(error).map(|e| unsafe { CFRetained::from_raw(e) });
+            let Some(error) = error else { return Err("it could not be loaded (macOS gave no reason)".into()) };
+            log::warn!("Blackmagic RAW: {}: {error:?}", path.display());
+            let what = error.description().map(|d| d.to_string()).unwrap_or_else(|| "it could not be loaded".into());
+            return Err(match error.failure_reason() {
+                Some(why) => format!("{what} {why}"),
+                None => what,
+            });
+        }
+        Ok(Self(bundle))
     }
     /// A function the framework exports.
     fn symbol(&self, name: &str) -> Option<*mut c_void> {

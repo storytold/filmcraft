@@ -540,4 +540,15 @@ mod tests {
         let entitlements = macos_packaging("entitlements.plist");
         assert!(entitlements.contains("<key>com.apple.security.device.audio-input</key>\n  <true/>"));
     }
+
+    /// Blackmagic RAW's runtime is a framework Blackmagic signs: under the hardened runtime the app
+    /// and the CLI may load it only with library validation disabled, and the CLI must be signed
+    /// with its entitlements for that.
+    #[test]
+    fn macos_signed_builds_may_load_the_blackmagic_raw_runtime() {
+        let key = "<key>com.apple.security.cs.disable-library-validation</key>\n  <true/>";
+        assert!(macos_packaging("entitlements.plist").contains(key));
+        assert!(macos_packaging("entitlements-cli.plist").contains(key));
+        assert!(macos_packaging("package.sh").contains("--entitlements \"$HERE/entitlements-cli.plist\" \"$CLI_DIR/filmcraft-cli\""));
+    }
 }
