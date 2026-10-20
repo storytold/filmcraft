@@ -23,7 +23,7 @@ release notes (Premiere does not run on Linux).
 | VP9 profile 0 / 2 | — | software | — | **yes** | software (VA-API VP9 not yet) |
 | AV1 main 8 / 10 | — | software | yes | **yes** | software |
 | ProRes | Apple silicon (M1 Pro / Max and later) | software (fast: 318 fps); GPU compute in the monitors (ADR 0002) | software | GPU compute in the monitors (ADR 0002) | GPU compute in the monitors (ADR 0002) |
-| DNxHD / DNxHR 4:2:2 | software | software; GPU compute in the monitors (ADR 0002) | software | GPU compute in the monitors (ADR 0002) | GPU compute in the monitors (ADR 0002) |
+| DNxHD / DNxHR (4:2:2, 4:4:4, alpha) | software | software; GPU compute in the monitors (ADR 0002) | software | GPU compute in the monitors (ADR 0002) | GPU compute in the monitors (ADR 0002) |
 | Field-coded H.264 | yes | no | yes | no | no |
 
 Measured (`cargo xtask bench --hw off|auto`): M4 Pro, CPU per 2160p frame H.264 119 → 4.2 ms,

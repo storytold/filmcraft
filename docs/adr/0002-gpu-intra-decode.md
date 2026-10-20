@@ -81,11 +81,39 @@ instead of ProRes' ~4000.
   our streams (DNxHD 1080p/i, 720p, thin rasters; DNxHR LB to HQX, up to UHD) 90–97 % of the
   candidates are true boundaries, and no chain needed to pass more than 4 candidates (the shader
   allows 8; a line whose chain breaks counts as corrupt and shows its CPU decode).
-- **Scope:** Y'CbCr 4:2:2 without alpha, 8 / 10 / 12 bits, progressive or field-coded
-  (`filmcraft_dnx::frame_layout`, which parses the coding units and scan indices with the CPU
-  decoder's own code). 4:4:4 (RGB / adaptive colour), alpha, CID 1260 (macroblock-adaptive field
-  coding) and 4:2:0 (which the shaders handle but no available encoder writes, so nothing tests
-  it) are decoded on the CPU. 8-bit frames fall back to `PixelData::Yuv8`.
+- **Scope:** Y'CbCr 4:2:2 and 4:4:4 (Y'CbCr or RGB), with or without alpha, 8 / 10 / 12 bits,
+  progressive or field-coded (`filmcraft_dnx::frame_layout`, which parses the coding units and
+  scan indices with the CPU decoder's own code). CID 1260 (macroblock-adaptive field coding) and
+  4:2:0 (which the shaders handle but no available encoder writes, so nothing tests it) are
+  decoded on the CPU. 8-bit frames fall back to `PixelData::Yuv8`.
 - **Result:** 4K DNxHR HQ 15.2 → 4.5 ms per frame, 4K HQX 16.4 → 4.5 ms, 1080p HQX 4.3 → 2.0 ms
   (RTX 4090, Ryzen 7 7800X3D); the output matches the CPU decoder like ProRes' (`dnx_tests.rs`:
-  our encoder's frames and 18 ffmpeg fixtures, at most one code apart on rounding ties).
+  our encoder's frames and 18 ffmpeg fixtures, at most one code apart on rounding ties). Measured
+  again as the median of 60 frames: 14.4 → 3.3, 16.7 → 3.2 and 4.3 → 1.3 ms
+  ([performance](../performance.md)).
+
+### 4:4:4 and alpha (2026-10-20, later)
+
+- **4:4:4 / RGB:** a macroblock has 12 blocks, and in an RGB stream each macroblock says whether
+  it is R'G'B' or Y'CbCr (ACF), with a DC predictor set of its own for each. The parse does not
+  depend on the flag, only which predictor a block's DC difference counts for, so `trans` keeps
+  one hypothesis per block index and sums the blocks before its first macroblock header per plane;
+  `scan` assigns them once it knows the flag. `decode` records every macroblock's flag and counts
+  the Y'CbCr ones per coding unit; after all batches `rgb` does the CPU decoder's conversions
+  pixel by pixel (`ConvertMacroblockColor` for the Y'CbCr macroblocks of a mixed picture, then
+  R'G'B' → Y'CbCr as `filmcraft-codecs` hands the frame out), since whether a coding unit is all
+  Y'CbCr is known only then. Tested on ffmpeg's `dnxhr_444` (`yuv444p10le` and `gbrp10le`, up to
+  UHD and odd sizes), our encoder's Y'CbCr and RGB streams, and mixed streams made by flipping
+  flags. 4K DNxHR 444 RGB: 55.6 ms on the CPU (it cannot play in real time), 6.0 ms here.
+- **Alpha** follows a scan line's colour macroblocks, and where it starts is known only once the
+  colour is decoded: `decode` records it, so a split (colour on the GPU, alpha on the CPU) would
+  have had to wait for the GPU. DCT-coded alpha runs the same passes a second time over the alpha
+  macroblocks (`phase` 1: four blocks, one predictor, same segment grid). Lossless alpha starts
+  its predictors afresh in every macroblock, so one invocation per line (`rle_scan`) only finds
+  where each macroblock starts (skipping runs without expanding them) and one invocation per
+  macroblock (`rle_decode`) decodes it. That line walk stays serial: with a typical matte (flat,
+  soft edges) a 4K HQX frame takes 5.9 ms against 21.5 ms on the CPU, with fine gradients that
+  fall apart into thousands of short runs per line 17.5 ms against 21 ms. No encoder we can run
+  writes VC-3 alpha, so our encoder now does (DCT and lossless, `AlphaCoding`): the GPU matches
+  the CPU decoder on it (lossless bit-exact), which is the same reading of the standard on both
+  sides, not a third party's.

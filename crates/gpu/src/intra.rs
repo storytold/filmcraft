@@ -132,9 +132,9 @@ impl Pooled {
 pub(crate) struct IntraStage {
     entropy: wgpu::ComputePipeline,
     idct: wgpu::ComputePipeline,
-    /// `dnx.wgsl`'s passes, in order (sync, trans, scan, decode, idct), and their layout (the
-    /// intra layout plus the work buffer).
-    dnx: [wgpu::ComputePipeline; 5],
+    /// `dnx.wgsl`'s passes, in order (sync, trans, scan, decode, idct, rgb, rle_scan,
+    /// rle_decode), and their layout (the intra layout plus the work buffer).
+    dnx: [wgpu::ComputePipeline; 8],
     bgl: wgpu::BindGroupLayout,
     dnx_bgl: wgpu::BindGroupLayout,
     data: Pooled,
@@ -184,8 +184,8 @@ fn pitch_bytes(w: u32) -> u32 {
 /// words of a transition record and of a decoder state.
 const DNX_VLC_WORDS: usize = 3584;
 const DNX_WORKGROUP_BYTES: u32 = 3840 * 4;
-const DNX_TRANS_WORDS: u64 = 6;
-const DNX_STATE_WORDS: u64 = 8;
+const DNX_TRANS_WORDS: u64 = 13;
+const DNX_STATE_WORDS: u64 = 12;
 /// Segment length (bits) a DNx scan line is cut into for parallel decoding, the warm-up a
 /// segment's sync parse starts before it, and how many candidates a transition parse may pass
 /// without landing. Measured on DNxHD and DNxHR streams (ffmpeg's and ours, 1080 to UHD, LB to
@@ -271,7 +271,7 @@ impl IntraStage {
         IntraStage {
             entropy: pipeline(&pl, &shader, "entropy"),
             idct: pipeline(&pl, &shader, "idct"),
-            dnx: ["sync", "trans", "scan", "decode", "idct"].map(|e| pipeline(&dnx_pl, &dnx, e)),
+            dnx: ["sync", "trans", "scan", "decode", "idct", "rgb", "rle_scan", "rle_decode"].map(|e| pipeline(&dnx_pl, &dnx, e)),
             bgl,
             dnx_bgl,
             data: Pooled::new("intra-data", storage_dst),
@@ -466,7 +466,8 @@ impl IntraStage {
     }
 
     fn dnx(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, img: &Arc<CodedImage>, w: u32, h: u32) -> Option<Decoded> {
-        use filmcraft_dnx::ChromaFormat;
+        use filmcraft_dnx::layout::tables as dnx_tables;
+        use filmcraft_dnx::{ChromaFormat, ColorVolume};
         if img.gpu_failed() {
             return None;
         }
@@ -478,22 +479,27 @@ impl IntraStage {
                 return None;
             }
         };
-        if !layout.plain_ycbcr() {
+        if !layout.scan_line_decodable() {
             return None;
         }
         let hdr = &layout.header;
         let depth = u32::from(hdr.bit_depth);
-        let (chroma, bpm, cmb_h, cheight) = match hdr.chroma {
-            ChromaFormat::Yuv422 => (Chroma::C422, 8u32, 16u32, h),
+        let rgb = hdr.rgb_planes();
+        let alpha = hdr.alpha;
+        let rle = alpha && hdr.lossless_alpha;
+        let (chroma, cmb_w, cwidth) = match hdr.chroma {
+            ChromaFormat::Yuv422 if !rgb => (Chroma::C422, 8u32, w.div_ceil(2)),
+            ChromaFormat::Yuv444 => (Chroma::C444, 16, w),
             // (the shaders handle 4:2:0 too, but neither our encoder nor ffmpeg's writes it, so
             // nothing tests it: decoded on the CPU)
-            ChromaFormat::Yuv420 | ChromaFormat::Yuv444 => return None,
+            _ => return None,
         };
+        let (cmb_h, cheight) = (16u32, h);
         // the picture must be what the frame says it is (its CPU decode is the reference)
-        if (layout.width, layout.height) != (w, h) || img.chroma() != chroma || img.bits() != depth || img.has_alpha() || !(8..=12).contains(&depth) {
+        if (layout.width, layout.height) != (w, h) || img.chroma() != chroma || img.bits() != depth || img.has_alpha() != alpha || !(8..=12).contains(&depth) {
             return None;
         }
-        let tables = filmcraft_dnx::layout::tables::cid(hdr.cid)?;
+        let tables = dnx_tables::cid(hdr.cid)?;
         // the shader looks codes up in a 32-bit window
         if [tables.amp, tables.run, tables.dc].iter().any(|t| t.max_len() > 32 || t.bits == 0) {
             return None;
@@ -508,20 +514,26 @@ impl IntraStage {
         {
             return None;
         }
-        let cwidth = w.div_ceil(2);
         let (py, pc) = (pitch_bytes(w), pitch_bytes(cwidth));
         let (pyw, pcw) = (py / 4, pc / 4);
         let off_cb = u64::from(pyw) * u64::from(h);
         let off_cr = off_cb + u64::from(pcw) * u64::from(cheight);
-        let out_words = off_cr + u64::from(pcw) * u64::from(cheight);
+        let off_a = off_cr + u64::from(pcw) * u64::from(cheight);
+        let out_words = off_a + if alpha { u64::from(pyw) * u64::from(h) } else { 0 };
         let max_binding = limits.max_storage_buffer_binding_size.min(limits.max_buffer_size);
         let out_bytes = out_words * 4;
         if out_bytes > max_binding || u32::try_from(out_words).is_err() {
             return None;
         }
+        // blocks of a colour macroblock (one `trans` hypothesis each), coefficient slots per
+        // macroblock (colour, then alpha)
+        let blocks = dnx_tables::blocks(hdr.chroma);
+        let bpm = blocks.len() as u32;
+        let hyps = bpm;
+        let spm = bpm + if alpha && !rle { dnx_tables::alpha_blocks().len() as u32 } else { 0 };
         // coefficient slots per scan line: every block of every macroblock
         let nw = layout.mb_width();
-        let row_blocks = u64::from(nw) * u64::from(bpm);
+        let row_blocks = u64::from(nw) * u64::from(spm);
         let slot_bytes = row_blocks * 64 * 4;
         let nrows = layout.rows.len() as u64;
         let maxg = limits.max_compute_workgroups_per_dimension;
@@ -537,57 +549,21 @@ impl IntraStage {
         // inputs
         let mut bytes = data.to_vec();
         bytes.resize((bytes.len() + 8).next_multiple_of(4), 0);
-        let mut row_words = Vec::with_capacity(layout.rows.len() * 8);
-        for r in &layout.rows {
-            row_words.extend_from_slice(&[r.data.0, r.data.1, r.mb_row, r.first_line, r.line_step, 0, 0, 0]);
-        }
-        // every line cut into segments: the line of each segment, the first segment of each line
-        let mut row_seg = Vec::with_capacity(layout.rows.len() + 1);
-        let mut seg_row = Vec::new();
-        for (i, r) in layout.rows.iter().enumerate() {
-            row_seg.push(seg_row.len() as u32);
-            let n = (u64::from(r.data.1) * 8).div_ceil(u64::from(DNX_SEG_BITS)).max(1);
-            seg_row.extend(std::iter::repeat_n(i as u32, n as usize));
-        }
-        row_seg.push(seg_row.len() as u32);
-        let nsegs = seg_row.len() as u64;
-        let segrow_off = row_words.len() as u32;
-        row_words.extend_from_slice(&seg_row);
-        let rowseg_off = row_words.len() as u32;
-        row_words.extend_from_slice(&row_seg);
+        let DnxRows { words: row_words, row_seg, segrow_off, rowseg_off, linerec_off } = dnx_rows(&layout, h);
+        let nsegs = u64::from(row_seg.last().copied().unwrap_or(0));
+        // work: candidates, transition records, colour and alpha states, colour flags, lossless
+        // alpha macroblock starts, alpha starts
         let w_trans = nsegs;
-        let w_state = w_trans + nsegs * u64::from(bpm) * DNX_TRANS_WORDS;
-        let work_bytes = (w_state + nsegs * DNX_STATE_WORDS) * 4;
-        if work_bytes > max_binding || u32::try_from(work_bytes / 4).is_err() || groups(nsegs * u64::from(bpm), maxg).is_none() {
+        let w_state = w_trans + nsegs * u64::from(hyps) * DNX_TRANS_WORDS;
+        let w_state_a = w_state + nsegs * DNX_STATE_WORDS;
+        let w_acf = w_state_a + if alpha && !rle { nsegs * DNX_STATE_WORDS } else { 0 };
+        let w_rle = w_acf + if rgb { nrows * u64::from(nw) } else { 0 };
+        let w_astart = w_rle + if rle { nrows * u64::from(nw) } else { 0 };
+        let work_bytes = (w_astart + nrows) * 4;
+        if work_bytes > max_binding || u32::try_from(work_bytes / 4).is_err() || groups(nsegs * u64::from(hyps), maxg).is_none() {
             return None;
         }
-        let mut consts = vec![0u32; 264];
-        for (c, z) in consts.iter_mut().zip(filmcraft_dnx::layout::tables::zigzag()) {
-            *c = u32::from(z);
-        }
-        for (c, b) in consts[64..128].iter_mut().zip(filmcraft_dnx::layout::tables::basis().iter().flatten()) {
-            *c = b.to_bits();
-        }
-        for (k, wts) in tables.weights.iter().enumerate() {
-            for (c, &wt) in consts[128 + 64 * k..].iter_mut().zip(wts.iter()) {
-                *c = u32::from(wt);
-            }
-        }
-        // block order of a macroblock: (plane, x, y), as `filmcraft-dnx` decodes it
-        let blocks = [(0, 0, 0), (0, 8, 0), (1, 0, 0), (2, 0, 0), (0, 0, 8), (0, 8, 8), (1, 0, 8), (2, 0, 8)];
-        for (c, &(p, x, y)) in consts[256..].iter_mut().zip(&blocks) {
-            *c = p | x << 8 | y << 16;
-        }
-        // the VLC tables, which the entropy pass copies into workgroup memory
-        let vlc_base = consts.len();
-        let mut table = |t: &[u32]| {
-            let at = (consts.len() - vlc_base) as u32;
-            consts.extend_from_slice(t);
-            at
-        };
-        let (amp_p, amp_s) = (table(tables.amp.primary), table(tables.amp.secondary));
-        let (run_p, run_s) = (table(tables.run.primary), table(tables.run.secondary));
-        let (dc_p, dc_s) = (table(tables.dc.primary), table(tables.dc.secondary));
+        let DnxConsts { mut consts, vlc_base, amp: (amp_p, amp_s), run: (run_p, run_s), dc: (dc_p, dc_s) } = dnx_consts(&tables, blocks);
         let vlc_len = consts.len() - vlc_base;
         if vlc_len > DNX_VLC_WORDS || limits.max_compute_workgroup_storage_size < DNX_WORKGROUP_BYTES {
             return None;
@@ -607,18 +583,30 @@ impl IntraStage {
         queue.write_buffer(&consts_buf, 0, &words(&consts));
         let (status, readback) = status_buffers(device);
 
-        // `Params` of `dnx.wgsl`
+        // `Params` of `dnx.wgsl`: colour (`phase` 0) or alpha (1)
         let p = cid_p(tables.p)?;
-        let params = |row_base: u32, row_count: u32, seg_base: u32, seg_count: u32| -> [u32; 44] {
+        // ConvertMacroblockColor's coefficients, then R'G'B' → Y'CbCr with the matrix the frame's
+        // colour says (`filmcraft-codecs` `dnx_color`)
+        let (kr, kb) = dnx_tables::mb_color_kr_kb(hdr.color_volume);
+        let matrix = if matches!(hdr.color_volume, ColorVolume::Bt2020Ncl | ColorVolume::Bt2020Cl) {
+            filmcraft_color::Matrix::Bt2020Ncl
+        } else {
+            filmcraft_color::Matrix::Bt709
+        };
+        let (kr2, kb2) = matrix.kr_kb();
+        let units = layout.rows.iter().map(|r| r.unit).max().unwrap_or(0) + 1;
+        let params = |row_base: u32, row_count: u32, seg_base: u32, seg_count: u32, phase: u32| -> [u32; 64] {
+            let (pbpm, phyps, state, slot_off) = if phase == 0 { (bpm, hyps, w_state, 0) } else { (4, 4, w_state_a, bpm) };
             [
                 row_base,
                 row_count,
                 nw,
-                bpm,
+                pbpm,
                 w,
                 h,
                 cwidth,
                 cheight,
+                cmb_w,
                 cmb_h,
                 if depth == 8 { 4 } else { 6 },
                 (1.0 / (4 * p) as f32).to_bits(),
@@ -628,6 +616,7 @@ impl IntraStage {
                 0,
                 off_cb as u32,
                 off_cr as u32,
+                off_a as u32,
                 pyw,
                 pcw,
                 self.raw_codes as u32,
@@ -650,11 +639,29 @@ impl IntraStage {
                 DNX_CAP,
                 segrow_off,
                 rowseg_off,
+                linerec_off,
                 w_trans as u32,
-                w_state as u32,
-                0,
-                0,
-                0,
+                state as u32,
+                w_acf as u32,
+                w_astart as u32,
+                phyps,
+                rgb as u32,
+                rgb as u32,
+                phase,
+                bpm,
+                spm,
+                slot_off,
+                units,
+                nw * hdr.mb_rows,
+                (hdr.color_volume != ColorVolume::OutOfBand) as u32,
+                kr.to_bits(),
+                kb.to_bits(),
+                kr2.to_bits(),
+                kb2.to_bits(),
+                (219f32 / 224.0).to_bits(),
+                (224f32 / 219.0).to_bits(),
+                ((1u32 << (depth - 8)) as f32).to_bits(),
+                w_rle as u32,
             ]
         };
 
@@ -662,14 +669,9 @@ impl IntraStage {
         enc.clear_buffer(&status, 0, None);
         // (a segment the scan does not reach keeps a zeroed state: it decodes nothing)
         enc.clear_buffer(&work_buf, 0, Some(work_bytes.next_multiple_of(4)));
-        let mut r0 = 0u64;
-        while r0 < nrows {
-            let count = batch.min(nrows - r0);
-            let seg0 = u64::from(*row_seg.get(r0 as usize)?);
-            let segs = u64::from(*row_seg.get((r0 + count) as usize)?) - seg0;
-            let p = params(r0 as u32, count as u32, seg0 as u32, segs as u32);
-            let ubuf = uniform(device, queue, &words(&p));
-            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = |p: &[u32; 64], coeff_bytes: u64| {
+            let ubuf = uniform(device, queue, &words(p));
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("intra-dnx"),
                 layout: &self.dnx_bgl,
                 entries: &[
@@ -677,28 +679,53 @@ impl IntraStage {
                     bind(&data_buf, 1, None),
                     bind(&rows_buf, 2, None),
                     bind(&consts_buf, 3, None),
-                    bind(&coeff_buf, 4, Some(count * slot_bytes)),
+                    bind(&coeff_buf, 4, Some(coeff_bytes)),
                     bind(&out_buf, 5, Some(out_bytes.next_multiple_of(16))),
                     bind(&status, 6, None),
                     bind(&work_buf, 7, Some(work_bytes.next_multiple_of(16))),
                 ],
-            });
+            })
+        };
+        let [sync, trans, scan, decode, idct, rgb_pass, rle_scan, rle_decode] = &self.dnx;
+        let mut r0 = 0u64;
+        while r0 < nrows {
+            let count = batch.min(nrows - r0);
+            let seg0 = u64::from(*row_seg.get(r0 as usize)?);
+            let segs = u64::from(*row_seg.get((r0 + count) as usize)?) - seg0;
+            let entropy = |phase: u32| {
+                let bg = bind_group(&params(r0 as u32, count as u32, seg0 as u32, segs as u32, phase), count * slot_bytes);
+                let ph = if phase == 0 { u64::from(hyps) } else { 4 };
+                Some((
+                    bg,
+                    [
+                        (sync, "dnx-sync", groups(segs, maxg)?),
+                        (trans, "dnx-trans", groups(segs * ph, maxg)?),
+                        (scan, "dnx-scan", groups(count, maxg)?),
+                        (decode, "dnx-decode", groups(segs, maxg)?),
+                    ],
+                ))
+            };
             enc.clear_buffer(&coeff_buf, 0, Some(count * slot_bytes));
-            let [sync, trans, scan, decode, idct] = &self.dnx;
-            dispatch(
-                &mut enc,
-                &[
-                    (sync, "dnx-sync", groups(segs, maxg)?),
-                    (trans, "dnx-trans", groups(segs * u64::from(bpm), maxg)?),
-                    (scan, "dnx-scan", groups(count, maxg)?),
-                    (decode, "dnx-decode", groups(segs, maxg)?),
-                    (idct, "dnx-idct", groups(count * row_blocks, maxg)?),
-                ],
-                &bg,
-            );
+            let (bg, passes) = entropy(0)?;
+            dispatch(&mut enc, &passes, &bg);
+            // the alpha macroblocks, from where each line's colour ends
+            if rle {
+                let passes = [(rle_scan, "dnx-rle-scan", groups(count, maxg)?), (rle_decode, "dnx-rle-decode", groups(count * u64::from(nw), maxg)?)];
+                dispatch(&mut enc, &passes, &bg);
+            } else if alpha {
+                let (bga, passes) = entropy(1)?;
+                dispatch(&mut enc, &passes, &bga);
+            }
+            dispatch(&mut enc, &[(idct, "dnx-idct", groups(count * row_blocks, maxg)?)], &bg);
             r0 += count;
         }
+        if rgb {
+            // every macroblock decoded: the colour conversions, pixel pair by pixel pair
+            let bg = bind_group(&params(0, 0, 0, 0, 0), slot_bytes);
+            dispatch(&mut enc, &[(rgb_pass, "dnx-rgb", groups(u64::from(h) * u64::from(w.div_ceil(2)), maxg)?)], &bg);
+        }
         let mut planes = out_planes(device, &mut enc, &out_buf, &[(0, py, w, h), (off_cb, pc, cwidth, cheight), (off_cr, pc, cwidth, cheight)]);
+        let ta = alpha.then(|| out_planes(device, &mut enc, &out_buf, &[(off_a, py, w, h)]).pop()).flatten();
         enc.copy_buffer_to_buffer(&status, 0, &readback, 0, 16);
         queue.submit([enc.finish()]);
         watch_status(readback, img, "DNx");
@@ -707,7 +734,8 @@ impl IntraStage {
         let tcb = planes.pop()?;
         let ty = planes.pop()?;
         let planes = [view(&ty), view(&tcb), view(&tcr)];
-        Some(Decoded { planes, alpha: None, chroma: (cwidth, cheight), bits: depth, textures: vec![ty, tcb, tcr] })
+        let alpha = ta.as_ref().map(view);
+        Some(Decoded { planes, alpha, chroma: (cwidth, cheight), bits: depth, textures: [Some(ty), Some(tcb), Some(tcr), ta].into_iter().flatten().collect() })
     }
 
     /// The bind group of one batch: its parameters, then `bufs` (bitstream, unit records,
@@ -832,6 +860,96 @@ fn watch_status(readback: wgpu::Buffer, img: &Arc<CodedImage>, codec: &'static s
 
 /// Test support: read a decoded plane back as `u16` values (codes when the stage writes
 /// `raw_codes`).
+/// A DNx frame's row records for `dnx.wgsl`: one record per scan line, then the line of every
+/// 1024-bit segment, the first segment of every line, and the row record of every frame line (for
+/// `rgb`), with the word offsets of those three tables.
+struct DnxRows {
+    words: Vec<u32>,
+    /// The first segment of every line, and the segment count at the end.
+    row_seg: Vec<u32>,
+    segrow_off: u32,
+    rowseg_off: u32,
+    linerec_off: u32,
+}
+
+fn dnx_rows(layout: &filmcraft_dnx::layout::FrameLayout, h: u32) -> DnxRows {
+    let mut row_words = Vec::with_capacity(layout.rows.len() * 8);
+    for r in &layout.rows {
+        row_words.extend_from_slice(&[r.data.0, r.data.1, r.mb_row, r.first_line, r.line_step, r.unit, 0, 0]);
+    }
+    // every line cut into segments: the line of each segment, the first segment of each line
+    let mut row_seg = Vec::with_capacity(layout.rows.len() + 1);
+    let mut seg_row = Vec::new();
+    for (i, r) in layout.rows.iter().enumerate() {
+        row_seg.push(seg_row.len() as u32);
+        let n = (u64::from(r.data.1) * 8).div_ceil(u64::from(DNX_SEG_BITS)).max(1);
+        seg_row.extend(std::iter::repeat_n(i as u32, n as usize));
+    }
+    row_seg.push(seg_row.len() as u32);
+    let segrow_off = row_words.len() as u32;
+    row_words.extend_from_slice(&seg_row);
+    let rowseg_off = row_words.len() as u32;
+    row_words.extend_from_slice(&row_seg);
+    // the row record of every frame line (for `rgb`)
+    let linerec_off = row_words.len() as u32;
+    let mut line_rec = vec![0u32; h as usize];
+    for (i, r) in layout.rows.iter().enumerate() {
+        for k in 0..16u64 {
+            let line = u64::from(r.first_line) + (u64::from(r.mb_row) * 16 + k) * u64::from(r.line_step);
+            if let Some(l) = usize::try_from(line).ok().and_then(|l| line_rec.get_mut(l)) {
+                *l = i as u32;
+            }
+        }
+    }
+    row_words.extend_from_slice(&line_rec);
+    DnxRows { words: row_words, row_seg, segrow_off, rowseg_off, linerec_off }
+}
+
+/// The constants of a DNx frame for `dnx.wgsl` (zig-zag order, DCT basis, weights, block orders,
+/// then the VLC tables from `vlc_base` on), with each table's (primary, secondary) offset from
+/// `vlc_base`.
+struct DnxConsts {
+    consts: Vec<u32>,
+    vlc_base: usize,
+    amp: (u32, u32),
+    run: (u32, u32),
+    dc: (u32, u32),
+}
+
+fn dnx_consts(tables: &filmcraft_dnx::layout::tables::CidTables, blocks: &[(u8, u8, u8)]) -> DnxConsts {
+    use filmcraft_dnx::layout::tables as dnx_tables;
+    let mut consts = vec![0u32; 288];
+    for (c, z) in consts.iter_mut().zip(dnx_tables::zigzag()) {
+        *c = u32::from(z);
+    }
+    for (c, b) in consts.iter_mut().skip(64).take(64).zip(dnx_tables::basis().iter().flatten()) {
+        *c = b.to_bits();
+    }
+    for (k, wts) in tables.weights.iter().enumerate() {
+        for (c, &wt) in consts.iter_mut().skip(128 + 64 * k).zip(wts.iter()) {
+            *c = u32::from(wt);
+        }
+    }
+    // block orders of a colour and an alpha macroblock: (plane, x, y), as `filmcraft-dnx`
+    // decodes them
+    for (at, blocks) in [(256, blocks), (272, dnx_tables::alpha_blocks())] {
+        for (c, &(p, x, y)) in consts.iter_mut().skip(at).take(16).zip(blocks) {
+            *c = u32::from(p) | u32::from(x) << 8 | u32::from(y) << 16;
+        }
+    }
+    // the VLC tables, which the entropy passes copy into workgroup memory
+    let vlc_base = consts.len();
+    let mut table = |t: &[u32]| {
+        let at = (consts.len() - vlc_base) as u32;
+        consts.extend_from_slice(t);
+        at
+    };
+    let amp = (table(tables.amp.primary), table(tables.amp.secondary));
+    let run = (table(tables.run.primary), table(tables.run.secondary));
+    let dc = (table(tables.dc.primary), table(tables.dc.secondary));
+    DnxConsts { consts, vlc_base, amp, run, dc }
+}
+
 #[cfg(test)]
 pub(crate) fn read_plane(device: &wgpu::Device, queue: &wgpu::Queue, view_tex: &wgpu::Texture) -> Vec<u16> {
     let (w, h) = (view_tex.width(), view_tex.height());

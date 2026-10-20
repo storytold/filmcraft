@@ -45,7 +45,8 @@ let sample: Vec<u8> = enc.encode(&frame)?;               // exactly enc.frame_si
 
 `frame_layout(&sample)` parses and checks a frame's coding units and scan indices as the decoder
 does and returns where every macroblock scan line is; with `layout::tables` (VLC tables, weights,
-zig-zag order, DCT basis) it is what `filmcraft-gpu` decodes Y'CbCr 4:2:2 frames on the GPU with.
+zig-zag order, DCT basis, block layouts) it is what `filmcraft-gpu` decodes frames on the GPU
+with (all but CID 1260 and 4:2:0).
 
 `Frame { width, height, chroma, rgb, bit_depth, y, cb, cr: Vec<u16>, alpha, interlace,
 color_volume, cid, par }` holds planar samples without row padding. Interlaced frames are woven

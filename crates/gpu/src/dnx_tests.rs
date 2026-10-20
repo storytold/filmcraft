@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 
-use filmcraft_dnx::{ChromaFormat, Encoder, EncoderConfig, Frame, Profile};
+use filmcraft_dnx::{AlphaCoding, ChromaFormat, Encoder, EncoderConfig, Frame, Profile};
 use filmcraft_frame::{Chroma, CodedFormat, CodedImage, PixelData, VideoFrame};
 
 use crate::intra::{IntraStage, read_plane};
@@ -38,29 +38,29 @@ fn coded(sample: &[u8]) -> Arc<CodedImage> {
     ))
 }
 
-/// A decoded frame as planes (Y'CbCr streams only, which is all the GPU takes).
+/// A decoded frame as the decoder hands it out (R'G'B' converted to Y'CbCr).
 fn host_frame(f: Frame) -> VideoFrame {
-    let chroma = match f.chroma {
-        ChromaFormat::Yuv420 => Chroma::C420,
-        ChromaFormat::Yuv422 => Chroma::C422,
-        ChromaFormat::Yuv444 => Chroma::C444,
+    filmcraft_codecs::video::dnx_to_video_frame(f)
+}
+
+/// The planes of `sample`'s CPU decode as the decoder hands them out (Y, Cb, Cr, then A).
+fn reference(sample: &[u8], name: &str) -> (u32, u32, Vec<Vec<u16>>) {
+    let f = host_frame(filmcraft_dnx::decode_frame(sample).unwrap_or_else(|e| panic!("{name}: CPU decode: {e}")));
+    let planes = match f.data {
+        PixelData::Yuv8 { planes, alpha, .. } => planes.iter().chain(alpha.as_ref()).map(|p| p.iter().map(|&v| u16::from(v)).collect()).collect(),
+        PixelData::Yuv16 { planes, alpha, .. } => planes.iter().chain(alpha.as_ref()).map(|p| p.to_vec()).collect(),
+        _ => panic!("{name}: planes"),
     };
-    let data = if f.bit_depth == 8 {
-        let to8 = |p: Vec<u16>| Arc::new(p.into_iter().map(|v| v as u8).collect::<Vec<u8>>());
-        PixelData::Yuv8 { planes: [to8(f.y), to8(f.cb), to8(f.cr)], chroma, alpha: None }
-    } else {
-        PixelData::Yuv16 { planes: [Arc::new(f.y), Arc::new(f.cb), Arc::new(f.cr)], chroma, bits: u32::from(f.bit_depth), alpha: None }
-    };
-    VideoFrame { width: f.width, height: f.height, data, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), pts: filmcraft_time::Tick::ZERO }
+    (f.width, f.height, planes)
 }
 
 fn check(stage: &mut IntraStage, dev: &wgpu::Device, q: &wgpu::Queue, name: &str, sample: &[u8], failures: &mut Vec<String>) {
-    let cpu = filmcraft_dnx::decode_frame(sample).unwrap_or_else(|e| panic!("{name}: CPU decode: {e}"));
-    let Some(d) = stage.decode(dev, q, &coded(sample), cpu.width, cpu.height) else {
+    let (w, h, want) = reference(sample, name);
+    let Some(d) = stage.decode(dev, q, &coded(sample), w, h) else {
         failures.push(format!("{name}: the GPU did not take the frame"));
         return;
     };
-    let r: Vec<(usize, u16, usize)> = [&cpu.y, &cpu.cb, &cpu.cr]
+    let r: Vec<(usize, u16, usize)> = want
         .iter()
         .zip(&d.textures)
         .map(|(want, tex)| {
@@ -74,14 +74,16 @@ fn check(stage: &mut IntraStage, dev: &wgpu::Device, q: &wgpu::Queue, name: &str
     let summary: Vec<String> = r.iter().map(|(bad, max, n)| format!("{bad}/{n} (max {max})")).collect();
     eprintln!("{name}: {}", summary.join(", "));
     // as for ProRes: fused multiply-adds may move a sample at a rounding tie by one code
-    if d.textures.len() != 3 || r.iter().any(|(bad, max, n)| *max > 1 || *bad * 1000 > *n) {
-        failures.push(format!("{name}: {}", summary.join(", ")));
+    if d.textures.len() != want.len() || r.iter().any(|(bad, max, n)| *max > 1 || *bad * 1000 > *n) {
+        failures.push(format!("{name}: {} planes, {}", d.textures.len(), summary.join(", ")));
     }
 }
 
-/// A picture with detail everywhere (gradients, a checkerboard, noise) at `bits`.
-fn busy(w: u32, h: u32, bits: u8) -> Frame {
-    let mut f = Frame::new(w, h, ChromaFormat::Yuv422, bits, false);
+/// A picture with detail everywhere (gradients, a checkerboard, noise) at `bits`; R'G'B' (in
+/// G, B, R order) when `rgb`.
+fn busy(w: u32, h: u32, bits: u8, chroma: ChromaFormat, rgb: bool) -> Frame {
+    let mut f = Frame::new(w, h, chroma, bits, false);
+    f.rgb = rgb;
     let cw = f.chroma_width() as usize;
     let s = u32::from(bits) - 8;
     let mut seed = 7u32;
@@ -102,25 +104,104 @@ fn busy(w: u32, h: u32, bits: u8) -> Frame {
     f
 }
 
+fn encode(profile: Profile, w: u32, h: u32, bits: u8, rgb: bool) -> Vec<u8> {
+    encode_alpha(profile, w, h, bits, rgb, None)
+}
+
+/// As [`encode`], with a matte coded as `alpha` says: soft-edged disc, ramp, noisy corner.
+fn encode_alpha(profile: Profile, w: u32, h: u32, bits: u8, rgb: bool, alpha: Option<AlphaCoding>) -> Vec<u8> {
+    let cfg = EncoderConfig { bit_depth: bits, alpha, ..EncoderConfig::new(profile, w, h) };
+    let chroma = cfg.chroma();
+    let mut f = busy(w, h, bits, chroma, rgb);
+    if alpha.is_some() {
+        let (wi, hi) = (i64::from(w), i64::from(h));
+        let max = (1i64 << bits) - 1;
+        let mut a = vec![0u16; (w * h) as usize];
+        for y in 0..hi {
+            for x in 0..wi {
+                let d = (((x - wi / 2).pow(2) + (y - hi / 2).pow(2)) as f64).sqrt() - (wi.min(hi) / 3) as f64;
+                let mut v = ((0.5 - d / 6.0).clamp(0.0, 1.0) * max as f64) as i64;
+                if y < hi / 4 {
+                    v = x * max / wi;
+                }
+                if x > wi * 7 / 8 && y > hi * 7 / 8 {
+                    v = i64::from((x as u32 ^ (y as u32).wrapping_mul(40503)).wrapping_mul(2654435761) >> 20) & max;
+                }
+                a[(y * wi + x) as usize] = v as u16;
+            }
+        }
+        f.alpha = Some(a);
+    }
+    Encoder::with_config(cfg).unwrap().encode(&f).unwrap()
+}
+
+/// `sample` with the colour flag (ACF) of the first macroblock of every third scan line flipped:
+/// R'G'B' and Y'CbCr macroblocks mixed in one picture.
+fn mixed(sample: &[u8]) -> Vec<u8> {
+    let l = filmcraft_dnx::frame_layout(sample).unwrap();
+    let mut s = sample.to_vec();
+    for r in l.rows.iter().step_by(3) {
+        // qsf (11 bits), then ACF
+        s[r.data.0 as usize + 1] ^= 0x10;
+    }
+    s
+}
+
 #[test]
 fn gpu_dnx_matches_the_cpu_decoder_on_our_frames() {
     let Some((dev, q)) = device() else { return };
     let mut stage = IntraStage::new(&dev);
     stage.raw_codes = true;
     let mut failures = Vec::new();
-    for (profile, w, h, bits) in [
-        (Profile::Hq, 1920, 1080, 8),
-        (Profile::Sq, 1280, 720, 8),
-        (Profile::Lb, 334, 202, 8),
-        (Profile::Hqx, 1920, 1080, 10),
-        (Profile::Hqx, 640, 360, 12),
-        (Profile::Hqx, 70, 38, 10),
-        (Profile::Hq, 16, 16, 8),
-        (Profile::Hqx, 3840, 2160, 10),
+    for (profile, w, h, bits, rgb) in [
+        (Profile::Hq, 1920, 1080, 8, false),
+        (Profile::Sq, 1280, 720, 8, false),
+        (Profile::Lb, 334, 202, 8, false),
+        (Profile::Hqx, 1920, 1080, 10, false),
+        (Profile::Hqx, 640, 360, 12, false),
+        (Profile::Hqx, 70, 38, 10, false),
+        (Profile::Hq, 16, 16, 8, false),
+        (Profile::Hqx, 3840, 2160, 10, false),
+        (Profile::R444, 1920, 1080, 10, false),
+        (Profile::R444, 1920, 1080, 10, true),
+        (Profile::R444, 333, 201, 12, true),
+        (Profile::R444, 640, 360, 12, false),
+        (Profile::R444, 3840, 2160, 10, true),
     ] {
-        let cfg = EncoderConfig { bit_depth: bits, ..EncoderConfig::new(profile, w, h) };
-        let sample = Encoder::with_config(cfg).unwrap().encode(&busy(w, h, bits)).unwrap();
-        check(&mut stage, &dev, &q, &format!("{profile:?} {w}x{h} {bits}-bit"), &sample, &mut failures);
+        let sample = encode(profile, w, h, bits, rgb);
+        let name = format!("{profile:?} {w}x{h} {bits}-bit{}", if rgb { " RGB" } else { "" });
+        check(&mut stage, &dev, &q, &name, &sample, &mut failures);
+        if profile == Profile::R444 {
+            check(&mut stage, &dev, &q, &format!("{name} mixed"), &mixed(&sample), &mut failures);
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn gpu_dnx_alpha_matches_the_cpu_decoder() {
+    let Some((dev, q)) = device() else { return };
+    let mut stage = IntraStage::new(&dev);
+    stage.raw_codes = true;
+    let mut failures = Vec::new();
+    for coding in [AlphaCoding::Dct, AlphaCoding::Lossless] {
+        for (profile, w, h, bits, rgb) in [
+            (Profile::Hq, 1920, 1080, 8, false),
+            (Profile::Lb, 334, 202, 8, false),
+            (Profile::Hqx, 1920, 1080, 10, false),
+            (Profile::Hqx, 70, 38, 12, false),
+            (Profile::Hqx, 3840, 2160, 10, false),
+            (Profile::R444, 1280, 720, 10, true),
+            (Profile::R444, 333, 201, 12, false),
+        ] {
+            if profile == Profile::Lb && coding == AlphaCoding::Lossless {
+                // (lossless alpha of a ramp does not fit LB's bit budget)
+                continue;
+            }
+            let sample = encode_alpha(profile, w, h, bits, rgb, Some(coding));
+            let name = format!("{profile:?} {w}x{h} {bits}-bit{} {coding:?} alpha", if rgb { " RGB" } else { "" });
+            check(&mut stage, &dev, &q, &name, &sample, &mut failures);
+        }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
@@ -175,6 +256,11 @@ fn gpu_dnx_matches_the_cpu_decoder_on_ffmpeg_streams() {
         ("hr_hq_2k", format!("mandelbrot=s=2048x1080:r=25,{p8}"), hr("dnxhr_hq")),
         ("hr_hqx_uhd", format!("mandelbrot=s=3840x2160:r=25,{p10}"), hr("dnxhr_hqx")),
         ("hr_hqx_small", format!("testsrc2=s=352x288:r=25,{p10}"), hr("dnxhr_hqx")),
+        // 4:4:4: Y'CbCr (ACF = 1 everywhere) and R'G'B'
+        ("hr_444_yuv", "mandelbrot=s=1920x1080:r=25,format=yuv444p10le".into(), hr("dnxhr_444")),
+        ("hr_444_rgb", "testsrc2=s=1920x1080:r=25,format=gbrp10le".into(), hr("dnxhr_444")),
+        ("hr_444_rgb_uhd", "mandelbrot=s=3840x2160:r=25,format=gbrp10le".into(), hr("dnxhr_444")),
+        ("hr_444_rgb_odd", "testsrc2=s=718x405:r=25,format=gbrp10le".into(), hr("dnxhr_444")),
     ];
     let mut failures = Vec::new();
     for (name, lavfi, enc) in cases {
@@ -188,7 +274,7 @@ fn gpu_dnx_matches_the_cpu_decoder_on_ffmpeg_streams() {
 fn corrupt_scan_lines_are_reported_not_trusted() {
     let Some((dev, q)) = device() else { return };
     let mut stage = IntraStage::new(&dev);
-    let sample = Encoder::with_config(EncoderConfig::new(Profile::Hq, 640, 360)).unwrap().encode(&busy(640, 360, 8)).unwrap();
+    let sample = encode(Profile::Hq, 640, 360, 8, false);
     let l = filmcraft_dnx::frame_layout(&sample).unwrap();
     // garbage over the middle of a scan line: long runs past the end of a block
     let mut bad = sample.clone();
@@ -201,6 +287,21 @@ fn corrupt_scan_lines_are_reported_not_trusted() {
     assert!(stage.decode(&dev, &q, &img, 640, 360).is_some());
     let _ = dev.poll(wgpu::PollType::wait_indefinitely());
     assert!(img.gpu_failed(), "marked for the CPU decode");
+    // garbage at the end of a scan line: in its alpha
+    for coding in [AlphaCoding::Dct, AlphaCoding::Lossless] {
+        let sample = encode_alpha(Profile::Hq, 640, 360, 8, false, Some(coding));
+        let l = filmcraft_dnx::frame_layout(&sample).unwrap();
+        let mut bad = sample.clone();
+        let r = l.rows[5].data;
+        for b in &mut bad[(r.0 + r.1 - 24) as usize..(r.0 + r.1) as usize] {
+            *b = 0xff;
+        }
+        assert!(filmcraft_dnx::decode_frame(&bad).is_err(), "{coding:?}: the CPU rejects it too");
+        let img = coded(&bad);
+        assert!(stage.decode(&dev, &q, &img, 640, 360).is_some());
+        let _ = dev.poll(wgpu::PollType::wait_indefinitely());
+        assert!(img.gpu_failed(), "{coding:?}: marked for the CPU decode");
+    }
     // and from then on decoded on the CPU
     assert!(stage.decode(&dev, &q, &img, 640, 360).is_none());
     // a frame whose size disagrees with its header is not taken
@@ -211,17 +312,14 @@ fn corrupt_scan_lines_are_reported_not_trusted() {
 fn what_the_gpu_does_not_take_stays_on_the_cpu() {
     let Some((dev, q)) = device() else { return };
     let mut stage = IntraStage::new(&dev);
-    // DNxHR 444 (RGB / adaptive colour)
-    let mut f = Frame::new(64, 32, ChromaFormat::Yuv444, 10, false);
-    f.rgb = true;
-    let s = Encoder::with_config(EncoderConfig::new(Profile::R444, 64, 32)).and_then(|mut e| e.encode(&f));
-    if let Ok(s) = &s {
-        assert!(stage.decode(&dev, &q, &coded(s), 64, 32).is_none(), "4:4:4");
-    }
+    // macroblock-adaptive field coding signalled (CID 1260's coding)
+    let mut s = encode(Profile::Hqx, 64, 32, 10, false);
+    s[6] |= 0x20;
+    assert!(stage.decode(&dev, &q, &coded(&s), 64, 32).is_none(), "macroblock-adaptive");
     // not a VC-3 frame at all
     let junk = Arc::new(CodedImage::new(CodedFormat::Dnx, Arc::from(&[0u8; 700][..]), Chroma::C422, 8, false, Box::new(|_| None)));
     assert!(stage.decode(&dev, &q, &junk, 64, 32).is_none());
-    assert_eq!(stage.fallbacks, 2 - u64::from(s.is_err()));
+    assert_eq!(stage.fallbacks, 2);
 }
 
 #[test]
@@ -232,9 +330,15 @@ fn coded_dnx_frames_composite_like_their_cpu_decode() {
     use filmcraft_render::plan::{FramePlan, PlanLayer};
     let Some((dev, q)) = device() else { return };
     let mut c = GpuCompositor::new(&dev, &q);
-    for (profile, w, h, bits) in [(Profile::Hq, 1920, 1080, 8), (Profile::Hqx, 640, 360, 10), (Profile::Hqx, 334, 202, 12)] {
-        let cfg = EncoderConfig { bit_depth: bits, ..EncoderConfig::new(profile, w, h) };
-        let sample = Encoder::with_config(cfg).unwrap().encode(&busy(w, h, bits)).unwrap();
+    for (profile, w, h, bits, rgb, alpha) in [
+        (Profile::Hq, 1920, 1080, 8, false, None),
+        (Profile::Hqx, 640, 360, 10, false, None),
+        (Profile::Hqx, 334, 202, 12, false, None),
+        (Profile::R444, 640, 360, 10, true, None),
+        (Profile::Hq, 640, 360, 8, false, Some(AlphaCoding::Dct)),
+        (Profile::Hqx, 640, 360, 10, false, Some(AlphaCoding::Lossless)),
+    ] {
+        let sample = encode_alpha(profile, w, h, bits, rgb, alpha);
         let host = Arc::new(host_frame(filmcraft_dnx::decode_frame(&sample).unwrap()));
         let coded = Arc::new(VideoFrame { data: PixelData::Coded(coded(&sample)), ..(*host).clone() });
         let run = |c: &mut GpuCompositor, f: Arc<VideoFrame>| {
@@ -250,10 +354,10 @@ fn coded_dnx_frames_composite_like_their_cpu_decode() {
         let via_gpu = run(&mut c, coded.clone());
         let after = c.intra_decodes();
         let via_cpu = run(&mut c, host);
-        assert_eq!(after.0, before.0 + 1, "{profile:?} {bits}-bit: decoded on the GPU");
+        assert_eq!(after.0, before.0 + 1, "{profile:?} {bits}-bit {alpha:?}: decoded on the GPU");
         let max = via_gpu.iter().zip(&via_cpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
-        eprintln!("{profile:?} {w}x{h} {bits}-bit: at most {max} apart");
-        assert!(!via_cpu.is_empty() && max <= 1, "{profile:?} {bits}-bit: {max}");
+        eprintln!("{profile:?} {w}x{h} {bits}-bit {alpha:?}: at most {max} apart");
+        assert!(!via_cpu.is_empty() && max <= 1, "{profile:?} {bits}-bit {alpha:?}: {max}");
         // CPU consumers see the CPU decode
         assert_eq!(coded.to_rgba8(), host_frame(filmcraft_dnx::decode_frame(&sample).unwrap()).to_rgba8());
     }
@@ -272,9 +376,15 @@ fn dnx_gpu_vs_cpu_bench() {
     use std::time::Instant;
     let Some((dev, q)) = device() else { return };
     let mut c = GpuCompositor::new(&dev, &q);
-    for (profile, w, h, bits) in [(Profile::Hq, 3840, 2160, 8), (Profile::Hqx, 3840, 2160, 10), (Profile::Hqx, 1920, 1080, 10)] {
-        let cfg = EncoderConfig { bit_depth: bits, ..EncoderConfig::new(profile, w, h) };
-        let sample = Encoder::with_config(cfg).unwrap().encode(&busy(w, h, bits)).unwrap();
+    for (profile, w, h, bits, rgb, alpha) in [
+        (Profile::Hq, 3840, 2160, 8, false, None),
+        (Profile::Hqx, 3840, 2160, 10, false, None),
+        (Profile::Hqx, 1920, 1080, 10, false, None),
+        (Profile::R444, 3840, 2160, 10, true, None),
+        (Profile::Hqx, 3840, 2160, 10, false, Some(AlphaCoding::Dct)),
+        (Profile::Hqx, 3840, 2160, 10, false, Some(AlphaCoding::Lossless)),
+    ] {
+        let sample = encode_alpha(profile, w, h, bits, rgb, alpha);
         let run = |c: &mut GpuCompositor, f: Arc<VideoFrame>| {
             let plan = FramePlan::Layers {
                 width: 1920,
@@ -302,18 +412,29 @@ fn dnx_gpu_vs_cpu_bench() {
                 Arc::new(host_frame(filmcraft_dnx::decode_frame(&sample).unwrap()))
             }
         };
-        let n = 30;
+        let n = 60;
         for (label, gpu) in [("CPU decode + upload", false), ("GPU decode", true)] {
             // warm up (pipelines, pooled buffers, rayon)
             for _ in 0..3 {
                 run(&mut c, frame(gpu));
             }
-            let t = Instant::now();
-            for _ in 0..n {
-                run(&mut c, frame(gpu));
-            }
-            let ms = t.elapsed().as_secs_f64() * 1000.0 / n as f64;
-            eprintln!("{profile:?} {w}x{h} {bits}-bit ({:.1} MB/frame) {label:20}: {ms:6.2} ms/frame ({:5.1} fps)", sample.len() as f64 / 1e6, 1000.0 / ms);
+            let mut times: Vec<f64> = (0..n)
+                .map(|_| {
+                    let t = Instant::now();
+                    run(&mut c, frame(gpu));
+                    t.elapsed().as_secs_f64() * 1000.0
+                })
+                .collect();
+            times.sort_by(f64::total_cmp);
+            // (the median: GPU clocks change under a benchmark's bursts)
+            let ms = times[n / 2];
+            eprintln!(
+                "{profile:?} {w}x{h} {bits}-bit{} ({:.1} MB/frame) {label:20}: {ms:6.2} ms/frame ({:5.1} fps; fastest {:.2} ms)",
+                alpha.map_or(String::new(), |a| format!(" {a:?} alpha")),
+                sample.len() as f64 / 1e6,
+                1000.0 / ms,
+                times[0]
+            );
         }
     }
 }

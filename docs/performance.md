@@ -729,13 +729,19 @@ busy content (gradients, checkerboard, noise). Linux, AMD Ryzen 7 7800X3D (16 th
 
 DNxHD / DNxHR the same way (`dnx_gpu_vs_cpu_bench`), our encoder's frames over the same content,
 2026-10-20; a scan line is cut into 1024-bit segments decoded in parallel (ADR 0002). One
-invocation per scan line had taken 27 ms per 4K frame.
+invocation per scan line had taken 27 ms per 4K frame. The median of 60 frames (the mean of 30,
+first measured, put HQ 4K at 4.5 ms: GPU clocks change under a benchmark's bursts); the alpha
+rows code a matte with a soft-edged disc, a fine gradient over a quarter of the frame and a noisy
+corner, the worst case for lossless alpha (a matte without the gradient: 5.9 ms):
 
 | frame | bytes | CPU decode + upload | GPU decode | speed-up |
 |---|---|---|---|---|
-| DNxHR HQ 8-bit 3840×2160 | 3.6 MB | 15.19 ms | **4.49 ms** | 3.4× |
-| DNxHR HQX 10-bit 3840×2160 | 3.6 MB | 16.39 ms | **4.50 ms** | 3.6× |
-| DNxHR HQX 10-bit 1920×1080 | 0.9 MB | 4.26 ms | **1.96 ms** | 2.2× |
+| DNxHR HQ 8-bit 3840×2160 | 3.6 MB | 14.44 ms | **3.34 ms** | 4.3× |
+| DNxHR HQX 10-bit 3840×2160 | 3.6 MB | 16.73 ms | **3.19 ms** | 5.2× |
+| DNxHR HQX 10-bit 1920×1080 | 0.9 MB | 4.33 ms | **1.33 ms** | 3.3× |
+| DNxHR 444 10-bit RGB 3840×2160 | 7.3 MB | 57.81 ms | **6.01 ms** | 9.6× |
+| DNxHR HQX 10-bit 3840×2160 + DCT alpha | 5.5 MB | 23.55 ms | **6.37 ms** | 3.7× |
+| DNxHR HQX 10-bit 3840×2160 + lossless alpha | 5.5 MB | 21.18 ms | **17.49 ms** | 1.2× |
 
 ## Results (#847: AV1 in-loop filters in parallel row bands, before → after)
 
