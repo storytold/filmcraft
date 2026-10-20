@@ -486,7 +486,8 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
         }
     }
     for (effect, count) in unsupported_effects {
-        warning(report, format!("effect {effect} retained in provenance, not rendered ({count} occurrences)"));
+        let occurrences = if count == 1 { "occurrence" } else { "occurrences" };
+        warning(report, format!("effect {effect} retained in provenance, not rendered ({count} {occurrences})"));
     }
     Ok(Document { sequences, media })
 }
