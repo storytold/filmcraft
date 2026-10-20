@@ -42,6 +42,13 @@ mod limits_tests;
 #[path = "premiere_fidelity_tests.rs"]
 mod fidelity_tests;
 
+#[cfg(test)]
+#[path = "premiere_picture_tests.rs"]
+mod picture_tests;
+
+#[path = "premiere_color.rs"]
+mod color;
+
 #[path = "premiere_audio.rs"]
 mod audio;
 
@@ -77,6 +84,10 @@ pub struct Item {
     pub link: Option<String>,
     #[serde(default)]
     pub audio: BTreeMap<String, Param>,
+    #[serde(default)]
+    pub video_effects: Vec<filmcraft_project::EffectInstance>,
+    #[serde(default)]
+    pub graphic: bool,
     pub label: String,
     pub start: Tick,
     pub end: Tick,
@@ -94,6 +105,12 @@ pub struct Item {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SourceTransition {
+    #[serde(default)]
+    pub object_id: String,
+    #[serde(default)]
+    pub start: Option<Tick>,
+    #[serde(default)]
+    pub end: Option<Tick>,
     pub head: bool,
     pub name: String,
     pub duration: Tick,
@@ -416,6 +433,11 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                     if item_count > 100_000 {
                         return Err(error("too many timeline items"));
                     }
+                    // TransitionItems are a separate list, not source clips (also separated
+                    // by upstream PR #1694). Their Head/Tail references are handled below.
+                    if item.tag_name().name().ends_with("TransitionTrackItem") {
+                        continue;
+                    }
                     let start = ticks(value(item, "Start"), Tick::ZERO)?;
                     let end = ticks(value(item, "End"), start)?;
                     let sub = referred(descendant(item, "SubClip"), &ids, "ObjectRef");
@@ -452,6 +474,8 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                     let mut effects = Vec::new();
                     let mut motion = BTreeMap::new();
                     let mut audio = BTreeMap::new();
+                    let mut video_effects = Vec::new();
+                    let mut graphic = false;
                     let mut text = None;
                     let chain = referred(descendant(item, "ComponentOwner").and_then(|n| child(n, "Components")), &ids, "ObjectRef");
                     if let Some(chain) = chain {
@@ -462,6 +486,14 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                             let effect = value(c, "DisplayName").or_else(|| child_text(c, "FilterMatchName")).unwrap_or("Unknown").to_string();
                             let match_name = child_text(c, "MatchName").or_else(|| child_text(c, "FilterMatchName"));
                             let is_text = matches!(match_name, Some("AE.ADBE Text" | "ADBE Text"));
+                            let is_shape = matches!(match_name, Some("AE.ADBE Shape" | "ADBE Shape"));
+                            graphic |= is_text || is_shape;
+                            if is_shape {
+                                warning(
+                                    report,
+                                    "native shape retained as a graphic canvas; opaque path/appearance data is retained in provenance, not rendered",
+                                );
+                            }
                             if is_text {
                                 // User-owned XML stores Source Text in parameter 1. InstanceName
                                 // is the renameable layer label, not the displayed text.
@@ -492,9 +524,11 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                                         }
                                     }
                                 }
+                            } else if kind == "video" && matches!(match_name, Some("AE.ADBE Lumetri" | "ADBE Lumetri")) {
+                                video_effects.push(color::read(c, &ids, &mut work_left, report)?);
                             } else if kind == "audio" && matches!(match_name, Some("Internal Volume Stereo" | "Internal Channel Volume Stereo")) {
                                 audio::read(c, &ids, &mut work_left, &mut audio, report)?;
-                            } else if !is_text {
+                            } else if !is_text && !is_shape {
                                 let count = unsupported_effects.entry(effect.clone()).or_insert(0usize);
                                 *count = count.saturating_add(1);
                             }
@@ -522,14 +556,27 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                                 warning(report, format!("{label}: {name} end precedes start; transition skipped"));
                                 continue;
                             }
-                            transitions.push(SourceTransition { head: key == "HeadTransition", name, duration: end - start });
+                            transitions.push(SourceTransition {
+                                object_id: t.attribute("ObjectID").unwrap_or("").to_string(),
+                                start: t.tag_name().name().ends_with("TransitionTrackItem").then_some(start),
+                                end: t.tag_name().name().ends_with("TransitionTrackItem").then_some(end),
+                                head: key == "HeadTransition",
+                                name,
+                                duration: end - start,
+                            });
                         }
                     }
                     let audio_category = value(item, "ESP.Tag").map(str::to_string);
                     let target = source_target(clip, &ids, &uids, &mut work_left)?;
                     let mut media_path = target.filter(|n| n.has_tag_name("Media")).and_then(|n| media_path(n, base_dir));
                     let mut nested_sequence = target.filter(|n| n.has_tag_name("Sequence")).and_then(|n| n.attribute("ObjectUID")).map(str::to_string);
-                    if media_path.is_none() && nested_sequence.is_none() && kind != "caption" && text.is_none() {
+                    if graphic {
+                        // Generated graphic media may have an internal numeric pseudo-path.
+                        // It is a native canvas, not a missing filesystem asset.
+                        media_path = None;
+                        nested_sequence = None;
+                    }
+                    if media_path.is_none() && nested_sequence.is_none() && kind != "caption" && !graphic && text.is_none() {
                         let named_sequence = names.get(label.as_str()).copied().flatten();
                         let named_media = media.get(&label);
                         if ambiguous.contains(&label) || names.get(label.as_str()) == Some(&None) || (named_sequence.is_some() && named_media.is_some()) {
@@ -547,6 +594,8 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                         object_id: item.attribute("ObjectID").unwrap_or("").into(),
                         link: item.attribute("ObjectID").and_then(|id| links.get(id)).map(|id| (*id).to_string()),
                         audio,
+                        video_effects,
+                        graphic,
                         media_path,
                         nested_sequence,
                         label,
@@ -677,12 +726,15 @@ pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Re
                 t.enabled = !track.muted;
                 t.muted = track.muted;
             }
+            let mut transition_ids = BTreeMap::new();
             for item in &track.items {
                 let nested = item.nested_sequence.as_ref().and_then(|n| sequences.get(n)).copied();
                 let source = if let Some(id) = nested {
                     id
-                } else if item.text.is_some() {
-                    warning(&mut report, "text graphic imported with default font/style; source styling retained in original snapshot");
+                } else if item.graphic || item.text.is_some() {
+                    if item.text.is_some() {
+                        warning(&mut report, "text graphic imported with default font/style; source styling retained in original snapshot");
+                    }
                     b.p.add_item(&item.label, Label::Lavender, ItemKind::Graphic { width: src.width, height: src.height, rate: fps }, None)
                 } else {
                     let path = item.media_path.clone().unwrap_or_else(|| format!("__missing_premiere__/{}", item.object_id));
@@ -713,6 +765,7 @@ pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Re
                         set_param(&mut clip, effect, name, param.clone());
                     }
                 }
+                clip.effects.extend(item.video_effects.iter().cloned());
                 if let Some(text) = &item.text {
                     clip.effects.push(filmcraft_project::graphic::new_text_layer(text, Vec2::new(src.width as f64 / 2.0, src.height as f64 / 2.0), 54.0));
                 }
@@ -734,31 +787,47 @@ pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Re
                     }
                 }
                 for transition in &item.transitions {
-                    let duration = Tick(transition.duration.0.min(clip.duration.0));
-                    if duration.0 == 0 {
+                    let legacy_duration = Tick(transition.duration.0.min(clip.duration.0));
+                    let start = transition.start.unwrap_or_else(|| if transition.head { clip.start } else { clip.end() - legacy_duration });
+                    let end = transition.end.unwrap_or(start + legacy_duration);
+                    if transition.start.is_none() {
+                        limited_report(&mut report, crate::Level::Info, format!("{}: {} imported as a legacy clip-edge fade", item.label, transition.name));
+                    }
+                    let start = start.max(Tick::ZERO);
+                    if end <= start {
                         continue;
                     }
-                    if duration != transition.duration {
-                        warning(&mut report, format!("{}: transition shortened to clip duration", item.label));
+                    if !transition.object_id.is_empty()
+                        && let Some(id) = transition_ids.get(&transition.object_id)
+                        && let Some(existing) = seq.tracks_mut(kind).get_mut(track.index).and_then(|t| t.transitions.iter_mut().find(|t| t.id == *id))
+                    {
+                        if transition.head {
+                            existing.to = Some(clip.id);
+                        } else {
+                            existing.from = Some(clip.id);
+                        }
+                        continue;
                     }
-                    // The Python importer maps these to clip-edge fades. Preserve that behavior;
-                    // do not invent an overlapping edit or duplicate shared transition handles.
-                    let effect = crate::common::transition_effect(
-                        if kind == TrackKind::Audio { "Constant Gain" } else { "Cross Dissolve" },
-                        kind == TrackKind::Audio,
-                        &mut report,
-                    );
-                    limited_report(&mut report, crate::Level::Info, format!("{}: {} imported as a clip-edge fade", item.label, transition.name));
+                    let cut = if transition.head { clip.start } else { clip.end() };
                     let tr = Transition {
                         id: TransitionId(b.alloc()),
-                        effect,
-                        start: if transition.head { clip.start } else { clip.end() - duration },
-                        duration,
+                        effect: crate::common::transition_effect(&transition.name, kind == TrackKind::Audio, &mut report),
+                        start,
+                        duration: end - start,
                         from: (!transition.head).then_some(clip.id),
                         to: transition.head.then_some(clip.id),
-                        align: if transition.head { TransitionAlign::StartAtCut } else { TransitionAlign::EndAtCut },
+                        align: if cut <= start {
+                            TransitionAlign::StartAtCut
+                        } else if cut >= end {
+                            TransitionAlign::EndAtCut
+                        } else {
+                            TransitionAlign::CenterAtCut
+                        },
                         reverse: false,
                     };
+                    if !transition.object_id.is_empty() {
+                        transition_ids.insert(transition.object_id.clone(), tr.id);
+                    }
                     if let Some(t) = seq.tracks_mut(kind).get_mut(track.index) {
                         t.transitions.push(tr);
                     }
@@ -1134,6 +1203,8 @@ mod tests {
             object_id: String::new(),
             link: None,
             audio: BTreeMap::new(),
+            video_effects: Vec::new(),
+            graphic: false,
             label: name.clone(),
             start: Tick::ZERO,
             end: Tick(TPS),
