@@ -49,6 +49,9 @@ mod picture_tests;
 #[path = "premiere_color.rs"]
 mod color;
 
+#[path = "premiere_motion.rs"]
+mod motion;
+
 #[path = "premiere_audio.rs"]
 mod audio;
 
@@ -100,6 +103,8 @@ pub struct Item {
     pub audio_category: Option<String>,
     pub effects: Vec<String>,
     pub motion: BTreeMap<String, String>,
+    #[serde(default)]
+    pub motion_keys: BTreeMap<String, Param>,
     pub transitions: Vec<SourceTransition>,
 }
 
@@ -473,6 +478,7 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                     }
                     let mut effects = Vec::new();
                     let mut motion = BTreeMap::new();
+                    let mut motion_keys = BTreeMap::new();
                     let mut audio = BTreeMap::new();
                     let mut video_effects = Vec::new();
                     let mut graphic = false;
@@ -491,7 +497,9 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                             if is_shape {
                                 warning(
                                     report,
-                                    "native shape retained as a graphic canvas; opaque path/appearance data is retained in provenance, not rendered",
+                                    format!(
+                                        "{label}: native shape retained as a graphic canvas; opaque path/appearance data is retained in provenance, not rendered"
+                                    ),
                                 );
                             }
                             if is_text {
@@ -517,7 +525,9 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                                         spend(&mut work_left, p)?;
                                         if let Some(key) = motion_parameter(p) {
                                             if child_text(p, "IsTimeVarying").is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1") {
-                                                warning(report, format!("{label}: animated Motion {key} retained in provenance, not imported"));
+                                                if motion_keys.insert(key.to_string(), motion::read(p, key, report)?).is_some() {
+                                                    return Err(error("duplicate animated Motion control"));
+                                                }
                                             } else if let Some(v) = static_parameter_value(p) {
                                                 motion.insert(key.to_string(), v.to_string());
                                             }
@@ -529,7 +539,7 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                             } else if kind == "audio" && matches!(match_name, Some("Internal Volume Stereo" | "Internal Channel Volume Stereo")) {
                                 audio::read(c, &ids, &mut work_left, &mut audio, report)?;
                             } else if !is_text && !is_shape {
-                                let count = unsupported_effects.entry(effect.clone()).or_insert(0usize);
+                                let count = unsupported_effects.entry((effect.clone(), match_name.unwrap_or("unknown").to_string())).or_insert(0usize);
                                 *count = count.saturating_add(1);
                             }
                             effects.push(effect);
@@ -596,6 +606,7 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                         audio,
                         video_effects,
                         graphic,
+                        motion_keys,
                         media_path,
                         nested_sequence,
                         label,
@@ -637,9 +648,9 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
             track.items.retain(|item| !skipped_items.contains(&item.object_id));
         }
     }
-    for (effect, count) in unsupported_effects {
+    for ((effect, identifier), count) in unsupported_effects {
         let occurrences = if count == 1 { "occurrence" } else { "occurrences" };
-        warning(report, format!("effect {effect} retained in provenance, not rendered ({count} {occurrences})"));
+        warning(report, format!("effect {effect} retained in provenance, not rendered ({count} {occurrences}; identifier {identifier})"));
     }
     Ok(Document { sequences, media })
 }
@@ -785,6 +796,9 @@ pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Re
                     } else {
                         warning(&mut report, format!("{}: unsupported Motion parameter {key}", item.label));
                     }
+                }
+                for (key, param) in &item.motion_keys {
+                    set_param(&mut clip, "motion", &key.to_ascii_lowercase(), motion::in_pixels(param.clone(), src.width, src.height));
                 }
                 for transition in &item.transitions {
                     let legacy_duration = Tick(transition.duration.0.min(clip.duration.0));
@@ -1217,6 +1231,7 @@ mod tests {
             audio_category: None,
             effects: vec![],
             motion: BTreeMap::new(),
+            motion_keys: BTreeMap::new(),
             transitions: vec![],
         };
         let mut seqs = Vec::new();
