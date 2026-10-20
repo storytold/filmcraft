@@ -85,7 +85,10 @@ FILMCRAFT_PREMIERE_CORPUS=/path/to/local-manifest.json \
 ```
 
 The opt-in corpus manifest is a local JSON array of `{"source":"/path/to/project.prproj",
-"maxOffline":0}` entries; set each offline ceiling to its recorded baseline. The test copies
+"maxOffline":0}` entries; set each offline ceiling to its recorded baseline. An optional
+`"frameRate":{"num":25,"den":1}` checks that every imported sequence has that expected rate;
+it does not override the file's rate. When omitted, rates are recorded without an assertion.
+The test copies
 projects under `target/premiere-corpus/`, imports with linked media through a headless engine
 session without registering platform hardware, verifies source/project hashes and offline counts,
 and saves/reopens each result. Its private result JSON stays under `target/`. Only hand-written
