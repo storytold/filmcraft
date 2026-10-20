@@ -25,7 +25,7 @@
 //! sequence resolution, as the sum over visible layers of:
 //! * **decode**: per source codec at 1080p — H.264 3 ms, HEVC 6 ms, ProRes 2.5 ms, VP9 6 ms where
 //!   it is decoded in hardware (Apple silicon, Windows) and 30 ms elsewhere, AV1 6 ms in hardware
-//!   (Windows) and 20 ms elsewhere, VP8 10 ms, MJPEG 4 ms, other files 4 ms, stills/generators
+//!   (Apple silicon from the M3 on, Windows) and 20 ms elsewhere, VP8 10 ms, MJPEG 4 ms, other files 4 ms, stills/generators
 //!   1 ms — scaled by source pixels / 1080p pixels;
 //! * **CPU layer path**: a layer with standard effects or a non-Normal blend mode leaves the GPU
 //!   fast path and pays 10 ms (1080p) for linear conversion, transform and compositing;
@@ -67,7 +67,9 @@ const HD_PIXELS: f64 = 1920.0 * 1080.0;
 /// Whether this build's platform decodes VP9 / AV1 in hardware (VideoToolbox on Apple silicon,
 /// Media Foundation on Windows).
 const VP9_HW: bool = cfg!(any(all(target_os = "macos", target_arch = "aarch64"), target_os = "windows"));
-const AV1_HW: bool = cfg!(target_os = "windows");
+// AV1: Windows, and Apple silicon from the M3 on (an M1 / M2 has no AV1 decoder and gets the
+// software estimate wrong; the platform crate's availability query is below this crate's layer).
+const AV1_HW: bool = cfg!(any(all(target_os = "macos", target_arch = "aarch64"), target_os = "windows"));
 
 /// How a segment plays without a preview.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
