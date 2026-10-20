@@ -8,11 +8,11 @@
 //! completes jobs on its worker threads through the callback object below: those callbacks never
 //! take the lock (the API may hold its own while calling back) and never unwind into the API.
 
+#[cfg(target_os = "macos")]
+use objc2_core_foundation::{CFBundle, CFRetained, CFString, CFURL, CFURLPathStyle};
 use std::ffi::c_void;
 #[cfg(target_os = "linux")]
 use std::ffi::{CStr, CString};
-#[cfg(target_os = "macos")]
-use objc2_core_foundation::{CFBundle, CFRetained, CFString, CFURL, CFURLPathStyle};
 use std::mem::ManuallyDrop;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -322,8 +322,8 @@ impl Runtime {
     }
     fn open(path: &Path) -> Result<Self, String> {
         let text = path.to_str().ok_or("the path is not valid UTF-8")?;
-        let url = CFURL::with_file_system_path(None, Some(&CFString::from_str(text)), CFURLPathStyle::CFURLPOSIXPathStyle, true)
-            .ok_or("the path is not a folder")?;
+        let url =
+            CFURL::with_file_system_path(None, Some(&CFString::from_str(text)), CFURLPathStyle::CFURLPOSIXPathStyle, true).ok_or("the path is not a folder")?;
         CFBundle::new(None, Some(&url)).map(Self).ok_or_else(|| "not a loadable framework".into())
     }
     /// A function the framework exports.
@@ -644,9 +644,9 @@ impl Clip {
         let bytes = (bytes as usize).min(size).min((read as usize).saturating_mul(frame_bytes));
         let pcm = buf.get(..bytes).ok_or("audio read past its buffer")?;
         Ok(match info.bits {
-            16 => pcm.chunks_exact(2).map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) / 32_768.0).collect(),
-            24 => pcm.chunks_exact(3).map(|b| (i32::from_le_bytes([0, b[0], b[1], b[2]]) >> 8) as f32 / 8_388_608.0).collect(),
-            _ => pcm.chunks_exact(4).map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32 / 2_147_483_648.0).collect(),
+            16 => pcm.as_chunks::<2>().0.iter().map(|&b| f32::from(i16::from_le_bytes(b)) / 32_768.0).collect(),
+            24 => pcm.as_chunks::<3>().0.iter().map(|&[a, b, c]| (i32::from_le_bytes([0, a, b, c]) >> 8) as f32 / 8_388_608.0).collect(),
+            _ => pcm.as_chunks::<4>().0.iter().map(|&b| i32::from_le_bytes(b) as f32 / 2_147_483_648.0).collect(),
         })
     }
 }

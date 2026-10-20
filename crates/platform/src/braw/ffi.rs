@@ -43,9 +43,9 @@
 //! ```
 #![allow(non_upper_case_globals)]
 
-use std::ffi::c_void;
 #[cfg(target_os = "linux")]
 use std::ffi::c_ulong;
+use std::ffi::c_void;
 
 pub type Hresult = i32;
 /// `ULONG`: `unsigned long`, 64 bits on Linux and 32 on Windows and macOS (`UInt32`).
