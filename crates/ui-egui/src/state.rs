@@ -415,9 +415,9 @@ pub struct Eyedropper {
 
 /// Effects selected in Effect Controls together with the selected effect (the engine's
 /// `selected_effect`, here `anchor`): Ctrl/Cmd-click adds or removes one, Shift-click takes the
-/// effects between the selected one and the one clicked. They count only while `anchor` is still
-/// the selected effect, so any other selection change drops them. Save Preset… on one of them
-/// saves them all.
+/// effects between the selected one and the one clicked. Any other selection change drops them
+/// (`effect_controls::follow_selection`), so selecting `anchor` again later selects it alone.
+/// Save Preset… on one of them saves them all.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EffectMultiSelection {
     pub anchor: filmcraft_engine::EffectSel,

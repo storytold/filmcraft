@@ -1027,6 +1027,16 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     run(app, ui.ctx(), actions);
 }
 
+/// Drops the extra effects of a multi-selection as soon as the engine's selected effect is no longer
+/// their anchor (another effect or clip, undo, a script): coming back to that effect later selects
+/// it alone instead of bringing the old extra effects back. Called every frame, so it holds while
+/// the panel is hidden too.
+pub(crate) fn follow_selection(app: &mut FilmcraftApp) {
+    if app.ui.effect_multi_selection.as_ref().is_some_and(|m| app.session.state.selected_effect.as_ref() != Some(&m.anchor)) {
+        app.ui.effect_multi_selection = None;
+    }
+}
+
 /// The selected effects of `clip` (indices into `effects`, in the clip's order): the selected effect
 /// and those added to it with Ctrl/Cmd-click or Shift-click ([`crate::state::EffectMultiSelection`]).
 pub(crate) fn selected_effects(app: &FilmcraftApp, clip: ClipId, effects: &[EffectInstance]) -> Vec<usize> {

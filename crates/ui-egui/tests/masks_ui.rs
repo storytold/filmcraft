@@ -480,4 +480,23 @@ fn effects_selected_together_save_as_one_preset() {
     d.ok("ui.click", json!({"id": "effectControls.effect.mosaic"}));
     d.frames(2);
     assert!(d.harness.state().ui.effect_multi_selection.is_none());
+    // a selection that moves away and back does not bring the old extra effects back: Blur with
+    // Mosaic, then Opacity selected another way (a property row, a script), then Blur again
+    let index = |d: &mut Driver, id: &str| -> u64 {
+        let seq = d.exec("sequence.inspect", json!({}));
+        let fx = seq["video"][0]["items"].as_array().unwrap().iter().find(|c| c["clip"] == json!(a)).unwrap()["effects"].clone();
+        fx.as_array().unwrap().iter().position(|e| e["effect"] == id).unwrap() as u64
+    };
+    d.ok("ui.click", json!({"id": "effectControls.effect.gaussian_blur"}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "effectControls.effect.mosaic", "modifiers": {"command": true}}));
+    d.frames(2);
+    assert!(d.harness.state().ui.effect_multi_selection.is_some());
+    let (opacity, blur) = (index(&mut d, "opacity"), index(&mut d, "gaussian_blur"));
+    d.exec("effects.select", json!({"clip": a, "effect": opacity}));
+    d.frames(2);
+    d.exec("effects.select", json!({"clip": a, "effect": blur}));
+    d.frames(2);
+    assert!(d.harness.state().ui.effect_multi_selection.is_none(), "the old Mosaic is not selected again");
+    assert_eq!(save(&mut d, "gaussian_blur", "Blur Again"), json!(["Gaussian Blur"]));
 }
