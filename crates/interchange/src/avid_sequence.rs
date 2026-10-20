@@ -96,10 +96,10 @@ fn flag(v: &Value, key: &str) -> Result<bool> {
     }
 }
 
-/// The numeric controls verified against a user-saved 2025.12.1 calibration bin and its
-/// Avid-rendered frames. Other controls (including 3D rotation, axis, crop, keyframes and
-/// foreground compositing) need their own translation path; never flatten them to 2D.
-fn warp_transform(c: &Value, width: u32, height: u32) -> Result<EffectInstance> {
+/// The numeric controls verified against user-saved 2025.12.1 bins and Avid-rendered frames.
+/// Other controls (including 3D rotation, axis, keyframes and foreground compositing) need
+/// their own translation path; never flatten them to 2D.
+fn warp_effects(c: &Value, width: u32, height: u32) -> Result<Vec<EffectInstance>> {
     if !c["properties"]["numeric_parameters"].is_array() {
         return Err(bad("3D Warp has animated or unsupported parameter storage"));
     }
@@ -111,7 +111,7 @@ fn warp_transform(c: &Value, width: u32, height: u32) -> Result<EffectInstance> 
     const FAMILY: [u8; 14] = [0x56, 0x8d, 0x7e, 0x84, 0xd5, 0x11, 0x93, 0x5a, 0x50, 0xf8, 0x57, 0xc1, 0, 0];
     const KNOWN: &[u16] = &[
         0x812b, 0x81a1, 0x81a2, 0x81a4, 0x81a9, 0x81aa, 0x81ab, 0x81ac, 0x81b2, 0x81b3, 0x81b4, 0x81b7, 0x81b8, 0x81b9, 0x81ba, 0x81bc, 0x81bd, 0x81be, 0x81bf,
-        0x81d0, 0x81ed, 0x81fc, 0x821c, 0x828e,
+        0x81cb, 0x81cc, 0x81cd, 0x81ce, 0x81cf, 0x81d0, 0x81ed, 0x81fc, 0x821c, 0x828e,
     ];
     for p in params {
         let id = list(p, "id", 16)?;
@@ -140,7 +140,7 @@ fn warp_transform(c: &Value, width: u32, height: u32) -> Result<EffectInstance> 
     for (id, default) in [(0x81a1, 0.59), (0x81a2, 0.0), (0x81a4, 0.0), (0x81d0, 0.0), (0x81ed, 1.0), (0x81fc, 255.0), (0x821c, 0.0), (0x828e, 0.0)] {
         check(id, default)?;
     }
-    for id in [0x812b, 0x81a9, 0x81b2, 0x81b7, 0x81bc] {
+    for id in [0x812b, 0x81a9, 0x81b2, 0x81b7, 0x81bc, 0x81cb] {
         if !matches!(v(id, 0.0), 0.0 | 1.0) {
             return Err(bad("unsupported 3D Warp enable state"));
         }
@@ -170,6 +170,29 @@ fn warp_transform(c: &Value, width: u32, height: u32) -> Result<EffectInstance> 
     {
         return Err(bad("3D Warp value outside supported 2D range"));
     }
+    let mut effects = Vec::with_capacity(2);
+    if v(0x81cb, 0.0) == 1.0 {
+        // Avid stores the four crop edges in its -1000..1000 image coordinates.
+        // The first-party 1920x1080 export with (-799,699,839,-759) has visible
+        // boundaries at x≈193/1631 and y≈87/950. Crop precedes rotation/scale:
+        // the later combined frames rotate or scale the cropped rectangle.
+        let left = v(0x81cc, -1000.0);
+        let right = v(0x81cd, 1000.0);
+        let top = v(0x81ce, 1000.0);
+        let bottom = v(0x81cf, -1000.0);
+        if [left, right, top, bottom].iter().any(|n| !(-1000.0..=1000.0).contains(n)) || left >= right || bottom >= top {
+            return Err(bad("3D Warp Crop edges outside supported range"));
+        }
+        if (left, right, top, bottom) != (-1000.0, 1000.0, 1000.0, -1000.0) {
+            let mut crop = filmcraft_project::find_effect("crop").ok_or_else(|| bad("FilmCraft Crop is unavailable"))?.instance();
+            for (name, percent) in
+                [("left", (left + 1000.0) / 20.0), ("right", (1000.0 - right) / 20.0), ("top", (1000.0 - top) / 20.0), ("bottom", (bottom + 1000.0) / 20.0)]
+            {
+                crop.params.get_mut(name).ok_or_else(|| bad("FilmCraft Crop edge missing"))?.value = ParamValue::Float(percent);
+            }
+            effects.push(crop);
+        }
+    }
     let mut effect = filmcraft_project::find_effect("transform").ok_or_else(|| bad("FilmCraft Transform is unavailable"))?.instance();
     effect.params.get_mut("position").ok_or_else(|| bad("Transform position missing"))?.value =
         // In the 1920x1080 Avid render, +100 X moves the picture +192 px and
@@ -179,7 +202,8 @@ fn warp_transform(c: &Value, width: u32, height: u32) -> Result<EffectInstance> 
     effect.params.get_mut("scale_width").ok_or_else(|| bad("Transform width missing"))?.value = ParamValue::Float(sx);
     effect.params.get_mut("scale_height").ok_or_else(|| bad("Transform height missing"))?.value = ParamValue::Float(sy);
     effect.params.get_mut("rotation").ok_or_else(|| bad("Transform rotation missing"))?.value = ParamValue::Float(rotation);
-    Ok(effect)
+    effects.push(effect);
+    Ok(effects)
 }
 
 /// Resolve only masters imported for the explicitly selected bin: its own members and the
@@ -470,14 +494,14 @@ impl Walk<'_> {
                 {
                     return Err(bad("3D Warp background must be filler"));
                 }
-                let effect = warp_transform(c, self.frame_width, self.frame_height)?;
+                let effects = warp_effects(c, self.frame_width, self.frame_height)?;
                 let mut clips = self.node(&inputs[1]["component"], start, depth + 1)?;
                 if clips.len() != 1 || clips[0].placeholder.is_some() || clips[0].start != start || clips[0].duration != length {
                     return Err(bad("3D Warp foreground must be one supported clip"));
                 }
-                clips[0].effects.push(effect);
+                clips[0].effects.extend(effects);
                 self.warnings.push(format!(
-                    "Frame {}: static Avid 3D Warp Position, Scaling and Z Rotation mapped to FilmCraft Transform; Avid sampling/edge treatment may differ.",
+                    "Frame {}: static Avid 3D Warp Crop, Position, Scaling and Z Rotation mapped to FilmCraft effects; Avid sampling/edge treatment may differ.",
                     self.rate.frame_at(start)
                 ));
                 Ok(clips)
@@ -898,17 +922,33 @@ mod warp_tests {
 
     #[test]
     fn calibrated_static_2d_controls_convert_and_3d_controls_stop() {
-        let fx = warp_transform(&evidence(&[]), 1920, 1080).unwrap();
+        let effects = warp_effects(&evidence(&[]), 1920, 1080).unwrap();
+        assert_eq!(effects.len(), 1);
+        let fx = &effects[0];
         assert_eq!(fx.effect, "transform");
         assert_eq!(fx.param("position").unwrap().value, ParamValue::Vec2(Vec2::new(1152.0, 648.0)));
         assert_eq!(fx.param("scale_width").unwrap().value, ParamValue::Float(50.0));
         assert_eq!(fx.param("scale_height").unwrap().value, ParamValue::Float(75.0));
         assert_eq!(fx.param("rotation").unwrap().value, ParamValue::Float(30.0));
-        assert!(warp_transform(&evidence(&[(0x81b8, 30.0)]), 1920, 1080).is_err());
-        assert!(warp_transform(&evidence(&[(0x81bd, 100.0)]), 1920, 1080).is_err());
-        assert!(warp_transform(&evidence(&[(0x81cc, 50.0)]), 1920, 1080).is_err());
+        assert!(warp_effects(&evidence(&[(0x81b8, 30.0)]), 1920, 1080).is_err());
+        assert!(warp_effects(&evidence(&[(0x81bd, 100.0)]), 1920, 1080).is_err());
+        assert!(warp_effects(&evidence(&[(0x81c9, 50.0)]), 1920, 1080).is_err());
         let mut missing = evidence(&[]);
         missing["properties"]["numeric_parameters"] = Value::Null;
-        assert!(warp_transform(&missing, 1920, 1080).is_err());
+        assert!(warp_effects(&missing, 1920, 1080).is_err());
+    }
+
+    #[test]
+    fn crop_boundaries_from_avid_export_precede_transform_and_disabled_crop_is_ignored() {
+        let crop_values = [(0x81cb, 1.0), (0x81cc, -799.0), (0x81cd, 699.0), (0x81ce, 839.0), (0x81cf, -759.0)];
+        let effects = warp_effects(&evidence(&crop_values), 1920, 1080).unwrap();
+        assert_eq!(effects.iter().map(|e| e.effect.as_str()).collect::<Vec<_>>(), ["crop", "transform"]);
+        let crop = &effects[0];
+        for (name, value) in [("left", 10.05), ("right", 15.05), ("top", 8.05), ("bottom", 12.05)] {
+            assert_eq!(crop.param(name).unwrap().value, ParamValue::Float(value));
+        }
+        assert_eq!(warp_effects(&evidence(&[(0x81cb, 0.0), (0x81cc, -600.0)]), 1920, 1080).unwrap().len(), 1);
+        assert!(warp_effects(&evidence(&[(0x81cb, 1.0), (0x81cc, 1001.0)]), 1920, 1080).is_err());
+        assert!(warp_effects(&evidence(&[(0x81cb, 1.0), (0x81cc, 700.0), (0x81cd, 500.0)]), 1920, 1080).is_err());
     }
 }

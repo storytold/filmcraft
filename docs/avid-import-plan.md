@@ -120,13 +120,16 @@ does not establish full visual equivalence for a stacked Avid effect.
 
 For the observed Avid 2025.12.1 `EFF2_SBLEND` wrapper identified as `3DWarp` in its effect
 attributes, a static, single-picture foreground over filler maps Position X/Y, Scaling X/Y
-and Z Rotation to FilmCraft Transform.
+and Z Rotation to FilmCraft Transform. Enabled Crop edges map to FilmCraft Crop before Transform;
+the Avid edge range -1000..1000 becomes 0..100 percent on each side. Disabled Crop ignores
+stored edge values, which can remain after the control is turned off.
 The numeric parameter list is decoded within declared AVB object boundaries; a parameter
 linked to a `PRCL` curve is not treated as static. Position uses
 the sequence raster: in a 1920×1080 Avid render, +100 X moves the image +192 pixels and
 -100 Y moves it +108 pixels. The original first-party bin and Avid-rendered TIFFs establish
-that calibration; a synthetic FilmCraft import regression checks effect placement and values.
-Animated controls, Z Position, X/Y Rotation, nonzero Axis, Crop, other controls and a real
+that calibration. A second first-party bin and its TIFF export establish the static Crop
+boundaries; a synthetic FilmCraft import regression checks both effect placement and values.
+Animated controls, Z Position, X/Y Rotation, nonzero Axis, other controls and a real
 background input remain unsupported. They are reported rather than represented as an
 equivalent 2D Transform. Edge sampling and compositing equivalence still need Avid/FilmCraft
 side-by-side validation.

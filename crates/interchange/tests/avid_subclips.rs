@@ -113,6 +113,11 @@ fn a_static_avid_warp_maps_2d_controls_without_flattening_unknown_3d_controls() 
         guid(0x81b7, 1.0),
         guid(0x81ba, 30.0),
         guid(0x81bc, 1.0),
+        guid(0x81cb, 1.0),
+        guid(0x81cc, -799.0),
+        guid(0x81cd, 699.0),
+        guid(0x81ce, 839.0),
+        guid(0x81cf, -759.0),
         guid(0x81ed, 1.0),
         guid(0x81fc, 255.0),
     ];
@@ -157,6 +162,14 @@ fn a_static_avid_warp_maps_2d_controls_without_flattening_unknown_3d_controls() 
     let plan = seq::plan(&p, &bytes, bin).unwrap();
     let ids = seq::apply(&mut p, plan).unwrap();
     let clip = &p.sequence(ids[0]).unwrap().video_tracks[0].items[0];
+    let crop_index = clip.effects.iter().position(|e| e.effect == "crop").unwrap();
+    let transform_index = clip.effects.iter().position(|e| e.effect == "transform").unwrap();
+    assert!(crop_index < transform_index);
+    let crop = &clip.effects[crop_index];
+    assert_eq!(crop.f64_at("left", Tick::ZERO), 10.05);
+    assert_eq!(crop.f64_at("right", Tick::ZERO), 15.05);
+    assert_eq!(crop.f64_at("top", Tick::ZERO), 8.05);
+    assert_eq!(crop.f64_at("bottom", Tick::ZERO), 12.05);
     let transform = clip.effects.iter().find(|e| e.effect == "transform").unwrap();
     assert_eq!(transform.vec2_at("position", Tick::ZERO), filmcraft_geom::Vec2::new(1152.0, 648.0));
     assert_eq!(transform.f64_at("scale_width", Tick::ZERO), 50.0);
