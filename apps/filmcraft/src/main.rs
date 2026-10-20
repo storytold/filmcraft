@@ -552,11 +552,11 @@ fn run_dialog_sheet(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> st
             Box::pin(async move { f.await.map(&path).into_iter().collect() })
         }
         FileDialog::SaveProject { name } => {
-            let f = rfd::AsyncFileDialog::new().add_filter(&project, &project_exts).set_file_name(name).save_file();
+            let f = save_dialog(&project, &project_exts, &name).save_file();
             Box::pin(async move { f.await.map(&path).into_iter().collect() })
         }
         FileDialog::SaveAs { filter, exts, name } => {
-            let f = rfd::AsyncFileDialog::new().add_filter(&filter, &exts).set_file_name(name).save_file();
+            let f = save_dialog(&filter, &exts, &name).save_file();
             Box::pin(async move { f.await.map(&path).into_iter().collect() })
         }
         FileDialog::Folder { at } => {
@@ -582,6 +582,22 @@ fn run_dialog_sheet(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> st
         log::warn!("could not start the file dialog thread: {e}");
     }
     rx
+}
+
+/// A save dialog suggesting `name`, which may be a full path (Quick Export's): the basename is
+/// the suggested file name and, when the parent exists, the dialog starts in its folder — the
+/// same splitting the synchronous `pick_save_as` hook does. Without it, a full path in
+/// `set_file_name` opens the dialog in the wrong folder (CodeRabbit review of #2075).
+#[cfg(target_os = "macos")]
+fn save_dialog(filter: &str, exts: &[String], name: &str) -> rfd::AsyncFileDialog {
+    let p = std::path::Path::new(name);
+    let mut f = rfd::AsyncFileDialog::new()
+        .add_filter(filter, exts)
+        .set_file_name(p.file_name().map_or_else(|| name.to_string(), |n| n.to_string_lossy().into_owned()));
+    if let Some(dir) = p.parent().filter(|d| d.is_dir()) {
+        f = f.set_directory(dir);
+    }
+    f
 }
 
 #[cfg(test)]
