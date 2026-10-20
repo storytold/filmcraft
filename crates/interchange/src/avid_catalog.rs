@@ -128,41 +128,49 @@ fn identity_key(m: &Value) -> Result<Vec<u8>> {
     }
     Ok(bytes)
 }
+#[derive(Debug)]
+enum PrecomputeSearchError {
+    Incomplete,
+}
 /// A rendered motion effect carries its retime in media of its own, produced when the effect was
 /// rendered. Its component points at that precompute through a source clip, whose identity is the
 /// precompute master. Find that master, so the effect can be transferred as the baked clip it is
 /// and bound to the render like any other managed master.
-fn precompute_master<'a>(m: &Value, mobs: &'a [Value]) -> Option<&'a Value> {
-    fn find(v: &Value, out: &mut Vec<[u8; 32]>, depth: usize) {
-        if depth > 24 || out.len() > 64 {
-            return;
+fn precompute_master<'a>(m: &Value, mobs: &'a [Value]) -> std::result::Result<Option<&'a Value>, PrecomputeSearchError> {
+    // A partial walk cannot prove that every track names the same render. Report exhausted
+    // bounds to the caller instead of accepting the IDs collected before the limit.
+    fn find(v: &Value, out: &mut Vec<[u8; 32]>, depth: usize) -> bool {
+        if depth > 24 {
+            return false;
         }
         match v {
             Value::Object(o) => {
                 if let Some(p) = o.get("properties").and_then(|p| p.get("precomputed"))
                     && let Some(id) = p.get("source_id").and_then(|i| full_identity(i).ok())
                 {
+                    if out.len() >= 64 {
+                        return false;
+                    }
                     out.push(id);
                 }
-                for x in o.values() {
-                    find(x, out, depth + 1);
-                }
+                o.values().all(|x| find(x, out, depth + 1))
             }
-            Value::Array(a) => {
-                for x in a {
-                    find(x, out, depth + 1);
-                }
-            }
-            _ => {}
+            Value::Array(a) => a.iter().all(|x| find(x, out, depth + 1)),
+            _ => true,
         }
     }
     let mut found = Vec::new();
-    find(m.get("tracks")?, &mut found, 0);
+    let Some(tracks) = m.get("tracks") else { return Ok(None) };
+    if !find(tracks, &mut found, 0) {
+        return Err(PrecomputeSearchError::Incomplete);
+    }
     // One effect, one render. Tracks naming different precomputes are not a single baked clip,
     // and picking one of them would bind the item to the wrong media.
-    let id = *found.first()?;
-    found.iter().all(|x| *x == id).then_some(())?;
-    mobs.iter().find(|x| x["kind"] == "MasterMob" && full_identity(&x["id"]).ok() == Some(id))
+    let Some(&id) = found.first() else { return Ok(None) };
+    if !found.iter().all(|x| *x == id) {
+        return Ok(None);
+    }
+    Ok(mobs.iter().find(|x| x["kind"] == "MasterMob" && full_identity(&x["id"]).ok() == Some(id)))
 }
 fn membership(m: &Value) -> Result<bool> {
     m.get("user_placed").and_then(Value::as_bool).ok_or_else(|| bad("missing master bin membership"))
@@ -305,10 +313,12 @@ pub fn plan_document(doc: &Document, mode: TransferMode) -> Result<Plan> {
         // bound to its own render, and the master is not also imported as a separate source.
         let mut baked: BTreeMap<[u8; 32], Option<String>> = BTreeMap::new();
         let mut unrendered = 0usize;
+        let mut incomplete = 0usize;
         let mut contested = 0usize;
         for m in mobs.iter().filter(|m| m["kind"] == "CompositionMob" && m["user_placed"] == true && m["usage_code"] == 6) {
-            match precompute_master(m, mobs).and_then(|p| full_identity(&p["id"]).ok()) {
-                Some(id) => {
+            match precompute_master(m, mobs) {
+                Ok(Some(p)) => {
+                    let id = full_identity(&p["id"])?;
                     // Two effects sharing one render cannot both be it; neither is claimed, and
                     // the precompute stays an ordinary source rather than taking one of the names.
                     if baked.insert(id, Some(text(m, "name")?.to_owned())).is_some() {
@@ -317,7 +327,8 @@ pub fn plan_document(doc: &Document, mode: TransferMode) -> Result<Plan> {
                     }
                 }
                 // Not rendered, so there is no baked media to show.
-                None => unrendered += 1,
+                Ok(_) => unrendered += 1,
+                Err(PrecomputeSearchError::Incomplete) => incomplete += 1,
             }
         }
         if contested > 0 {
@@ -330,6 +341,12 @@ pub fn plan_document(doc: &Document, mode: TransferMode) -> Result<Plan> {
             result
                 .warnings
                 .push(format!("{}: {unrendered} motion effects have not been rendered, so they have no media of their own and were not imported.", out.name));
+        }
+        if incomplete > 0 {
+            result.warnings.push(format!(
+                "{}: {incomplete} motion effect render searches exceeded the identity or depth limit; their media could not be bound safely and they were not imported.",
+                out.name
+            ));
         }
         let rate_evidence = crate::avid_sequence::offline_rate_evidence(mobs)?;
         let mut sources = BTreeMap::new();
@@ -468,7 +485,12 @@ pub fn plan_document(doc: &Document, mode: TransferMode) -> Result<Plan> {
                         if matches!(m["usage_code"].as_i64(), Some(3 | 4)) {
                             let kind = if m["usage_code"] == 3 { "saved effect template" } else { "group clip" };
                             result.warnings.push(format!("{}: {kind} {} was not imported: unsupported bin item.", out.name, text(m, "name")?));
-                        } else if !precompute_master(m, mobs).and_then(|p| full_identity(&p["id"]).ok()).is_some_and(|id| transferred_baked.contains(&id)) {
+                        } else if !precompute_master(m, mobs)
+                            .ok()
+                            .flatten()
+                            .and_then(|p| full_identity(&p["id"]).ok())
+                            .is_some_and(|id| transferred_baked.contains(&id))
+                        {
                             result.warnings.push(format!("{}: motion effect clip {} was not imported as a baked clip; its render was unavailable, unclaimed, or outside this transfer mode.", out.name, text(m, "name")?));
                         }
                         continue;
@@ -884,6 +906,32 @@ mod tests {
         let mut project = Project::default();
         apply(&mut project, plan, None).unwrap();
         assert!(project.items.values().all(|i| i.name != "Fast (48.00 FPS)"));
+    }
+    #[test]
+    fn a_render_beyond_the_precompute_search_limit_cannot_be_claimed() {
+        // A truncated search used to see only the first 65 copies of A and rename A as the
+        // effect, even though the last track points at a different render.
+        let mut v = motion_effect_fixture(true);
+        let effect = v["bins"][0]["mobs"].as_array().unwrap().len() - 1;
+        let first = v["bins"][0]["mobs"][effect]["tracks"][0].clone();
+        let mut tracks = Vec::new();
+        for index in 1..=65 {
+            let mut track = first.clone();
+            track["index"] = json!(index);
+            tracks.push(track);
+        }
+        let mut conflicting = first;
+        conflicting["index"] = json!(66);
+        conflicting["component"]["properties"]["precomputed"]["source_id"]["raw"] = json!("0f".repeat(32));
+        tracks.push(conflicting);
+        v["bins"][0]["mobs"][effect]["tracks"] = json!(tracks);
+
+        let plan = plan_scoped(&serde_json::to_vec(&v).unwrap(), TransferMode::Sequences).unwrap();
+        assert!(plan.warnings.iter().any(|w| w.contains("render searches exceeded the identity or depth limit")), "{:?}", plan.warnings);
+        let mut project = Project::default();
+        apply(&mut project, plan, None).unwrap();
+        assert!(project.items.values().all(|i| i.name != "Fast (48.00 FPS)"));
+        assert!(project.items.values().any(|i| i.name == "Clip,Motion_Effect+1"));
     }
     #[test]
     fn an_unrendered_motion_effect_has_no_media_to_show() {

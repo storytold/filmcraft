@@ -382,3 +382,10 @@ to reduce validation time; GitHub CI will exercise its configured profile. Forma
 workspace Clippy with warnings denied, dependency layers, attribution for 69 assets, and WASM
 checks for 49 crates also passed. Earlier private corpus and render audits were not rerun for
 this checkpoint.
+
+A follow-up review of the baked motion-effect binding found that the precompute search could
+stop after 65 source identities and still treat the scanned prefix as complete. A 66-track
+synthetic case puts a conflicting render identity last; the importer now reports an incomplete
+identity search and refuses to claim either render for the effect. The precompute master remains
+an ordinary source. This guards source identity only; it does not extend Timewarp translation
+or establish an Avid render-equivalence claim.
