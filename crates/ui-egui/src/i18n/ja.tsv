@@ -3625,3 +3625,8 @@
 	No matching text.	一致するテキストはありません。
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) にはハードウェアエンコーダー（NVIDIA GPU の NVENC、macOS の VideoToolbox）が必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの H.265 エンコーダーがありません。代わりに H.264 または ProRes を選んでください。
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 にはハードウェアエンコーダーが必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの AV1 エンコーダーがありません。
+	Welcome to FilmCraft	FilmCraft へようこそ
+	Video editing — fast, open, scriptable.	動画編集 — 高速、オープン、スクリプト対応。
+	New Project	新規プロジェクト
+	Recent Projects	最近使用したプロジェクト
+	Start a New Sequence	新規シーケンスを開始

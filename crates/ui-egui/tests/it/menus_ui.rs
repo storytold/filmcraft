@@ -344,13 +344,15 @@ fn saved_projects_are_listed_in_home_and_open_recent() {
     d.menu("file.openRecent.1");
     assert_eq!(d.app().session.path.as_deref(), Some(a.as_str()));
     assert_eq!(d.app().session.prefs.general.recent_projects, [a.clone(), b.clone()]);
-    // Home lists them too, newest first, and a click opens one
+    // Home lists them too, newest first, and a click opens one in Edit
     d.click("header.home");
-    let rows = d.ok("ui.elements", json!({"prefix": "import.recent."}));
+    assert_eq!(d.app().ui.mode, filmcraft_ui_egui::state::Mode::Home);
+    let rows = d.ok("ui.elements", json!({"prefix": "home.recent."}));
     let rows: Vec<&str> = rows.as_array().unwrap().iter().map(|e| e["label"].as_str().unwrap()).collect();
     assert_eq!(rows, ["first cut.fcproj", "second cut.fcproj"]);
-    d.click("import.recent.1");
+    d.click("home.recent.1");
     assert_eq!(d.app().session.path.as_deref(), Some(b.as_str()));
+    assert_eq!(d.app().ui.mode, filmcraft_ui_egui::state::Mode::Edit);
     // Clear Recent Files empties both lists
     d.menu("file.clearRecent");
     assert!(d.app().session.prefs.general.recent_projects.is_empty());
@@ -358,5 +360,66 @@ fn saved_projects_are_listed_in_home_and_open_recent() {
     let clear = menus.as_array().unwrap().iter().find(|m| m["id"] == "file.clearRecent").cloned().expect("Clear Recent Files");
     assert_eq!(clear["enabled"], false);
     assert!(!menus.as_array().unwrap().iter().any(|m| m["id"].as_str().is_some_and(|id| id.starts_with("file.openRecent."))));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Home (the header's Home button): New Project and Open, the size cards, and the Community
+/// links. A size card adds a sequence of that size to the open project and goes to Edit, so the
+/// project's work is kept; New Project starts an empty one in Edit.
+#[test]
+fn home_starts_sequences_at_common_sizes_and_new_projects() {
+    use filmcraft_ui_egui::state::Mode;
+    let mut d = Driver::new();
+    let before = d.app().session.project.items.len();
+    d.click("header.home");
+    assert_eq!(d.app().ui.mode, Mode::Home);
+    for id in ["home.new", "home.open", "home.link.discord", "home.link.github"] {
+        assert!(d.has(id), "{id} on Home");
+    }
+    let cards = d.ok("ui.elements", json!({"prefix": "home.sequence."}));
+    let cards: Vec<&str> = cards.as_array().unwrap().iter().map(|e| e["id"].as_str().unwrap()).collect();
+    assert_eq!(
+        cards,
+        [
+            "home.sequence.1920x1080",
+            "home.sequence.3840x2160",
+            "home.sequence.1080x1920",
+            "home.sequence.2160x3840",
+            "home.sequence.1080x1350",
+            "home.sequence.1080x1080"
+        ]
+    );
+    // Vertical 4:5 is a new 1080 × 1350 sequence beside the demo's
+    d.click("home.sequence.1080x1350");
+    assert_eq!(d.app().ui.mode, Mode::Edit);
+    assert!(d.app().session.project.items.len() > before, "the demo project is kept");
+    let seq = d.app().session.active_sequence().map(|q| (q.settings.width, q.settings.height));
+    assert_eq!(seq, Some((1080, 1350)));
+    assert_eq!(d.app().session.state.active_sequence.map(|s| s.0), Some(d.item_named("Vertical 4:5")));
+    // Opening the Home screen and editing there doesn't leave it; New Project does
+    d.click("header.home");
+    d.exec("file.newBin", json!({"name": "Stays on Home"}));
+    d.frames(2);
+    assert_eq!(d.app().ui.mode, Mode::Home);
+    d.click("home.new");
+    assert_eq!(d.app().ui.mode, Mode::Edit);
+    assert!(d.app().session.active_sequence().is_none(), "a new, empty project");
+}
+
+/// A project opened from outside Home (File ▸ Open, an agent's `file.open`) replaces Home with Edit.
+#[test]
+fn opening_a_project_leaves_home() {
+    use filmcraft_ui_egui::state::Mode;
+    let dir = std::env::temp_dir().join(format!("fc-ui-home-open-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("cut.fcproj").to_string_lossy().to_string();
+    let mut d = Driver::new();
+    d.exec("file.saveAs", json!({"path": path}));
+    d.ok("engine.execute", json!({"command": "mode.home", "params": {}}));
+    d.frames(2);
+    assert_eq!(d.app().ui.mode, Mode::Home);
+    d.exec("file.open", json!({"path": path}));
+    d.frames(2);
+    assert_eq!(d.app().ui.mode, Mode::Edit);
     let _ = std::fs::remove_dir_all(&dir);
 }
