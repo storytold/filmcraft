@@ -708,3 +708,22 @@ fn mask_keyframe_menus_preserve_the_effect_and_other_masks() {
         assert_eq!(effect(&d), before);
     }
 }
+
+/// #2328: a line separates the fixed effects (Motion, Opacity, Time Remapping) from the effects
+/// added from the library; without added effects there is none.
+#[test]
+fn a_line_separates_added_effects_from_the_fixed_ones() {
+    let (mut d, clip) = Driver::demo();
+    assert!(d.find("effectControls.addedEffects.video").is_none(), "only fixed effects: no line");
+    d.exec("effects.apply", json!({"clips": [clip.id], "effect": "gaussian_blur"}));
+    d.exec("effects.apply", json!({"clips": [clip.id], "effect": "tint"}));
+    let line = d.rect("effectControls.addedEffects.video");
+    let opacity = d.rect("effectControls.effect.opacity");
+    let blur = d.rect("effectControls.effect.gaussian_blur");
+    let tint = d.rect("effectControls.effect.tint");
+    assert!(
+        opacity[1] < line[1] && (line[1] + line[3] / 2.0 - blur[1]).abs() <= 0.5,
+        "on the edge between the fixed and the added effects: {opacity:?} {line:?} {blur:?}"
+    );
+    assert!(tint[1] > blur[1], "one line, above all the added effects");
+}

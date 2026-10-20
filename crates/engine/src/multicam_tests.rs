@@ -328,6 +328,59 @@ const H: u32 = 90;
 /// Three 4-second cameras (different scenes, own audio), a multi-camera source sequence by In
 /// points, and a sequence holding one multi-camera clip on V1/A1. Returns (session, camera items,
 /// source sequence, edit sequence).
+/// #1362: with nothing selected in the Project panel, Create Multi-Camera Source Sequence and Merge
+/// Clips take the media of the clips selected in the Timeline.
+#[test]
+fn multicam_from_clips_selected_in_the_timeline() {
+    let dir = tmp_dir("mc-timeline");
+    let files: Vec<PathBuf> = ["a.mov", "b.mov", "c.mov"].iter().map(|f| dir.join(f)).collect();
+    for (f, sc) in files.iter().zip([DemoScene::OceanSunset, DemoScene::CityNight, DemoScene::Aurora]) {
+        make_movie(f, sc, W, H, 48);
+    }
+    let mut s = Session::default();
+    let refs: Vec<&Path> = files.iter().map(|p| p.as_path()).collect();
+    let items = import(&mut s, &refs);
+    let mut p = (*s.project).clone();
+    let edit =
+        p.new_sequence("Edit", filmcraft_project::SequenceSettings { width: W, height: H, frame_rate: FrameRate::FPS_24, ..Default::default() }, 1, 1, None);
+    s.project = std::sync::Arc::new(p);
+    s.state.active_sequence = Some(edit);
+    for (k, item) in items.iter().enumerate() {
+        s.set_playhead(FrameRate::FPS_24.tick_of(k as i64 * 48));
+        s.execute("source.open", json!({"item": item.0})).unwrap();
+        s.execute("source.overwrite", json!({})).unwrap();
+    }
+    s.execute("project.select", json!({"items": []})).unwrap();
+    s.execute("timeline.select", json!({"clips": []})).unwrap();
+    assert!(!s.is_enabled("clip.createMulticam"), "nothing selected anywhere");
+    let clips: Vec<u64> = s.active_sequence().unwrap().video_tracks[0].items.iter().map(|c| c.id.0).collect();
+    assert_eq!(clips.len(), 3);
+    s.execute("timeline.select", json!({"clips": clips})).unwrap();
+    assert!(s.is_enabled("clip.createMulticam") && s.is_enabled("clip.mergeClips"));
+    // Merge Clips opens on them, and says why it can't merge three video clips
+    assert!(s.execute("clip.mergeClips", json!({"method": "in"})).unwrap_err().to_string().contains("one video clip"));
+    let r = s.execute("clip.createMulticam", json!({"method": "in"})).unwrap();
+    let src = ItemId(r["sequence"].as_u64().unwrap());
+    let cameras: Vec<ItemId> = s.project.sequence(src).unwrap().video_tracks.iter().filter_map(|t| t.items.first().map(|c| c.item)).collect();
+    assert_eq!(cameras, items, "one camera per selected clip's media, in selection order");
+
+    // one video clip and an audio-only one, selected in the Timeline: Merge Clips takes them
+    s.state.active_sequence = Some(edit);
+    let wav = dir.join("room.wav");
+    std::fs::write(&wav, crate::voiceover::write_wav_f32(&vec![0.0; 48_000 * 2], 48_000)).unwrap();
+    let audio = import(&mut s, &[wav.as_path()])[0];
+    s.set_playhead(FrameRate::FPS_24.tick_of(200));
+    s.execute("source.open", json!({"item": audio.0})).unwrap();
+    s.execute("source.overwrite", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    let a = q.audio_tracks.iter().flat_map(|t| &t.items).find(|c| c.item == audio).unwrap().id.0;
+    s.execute("project.select", json!({"items": []})).unwrap();
+    s.execute("timeline.select", json!({"clips": [clips[0], a], "linked": false})).unwrap();
+    assert!(s.is_enabled("clip.mergeClips"));
+    let r = s.execute("clip.mergeClips", json!({"method": "in"})).unwrap();
+    assert!(r["item"].as_u64().is_some(), "{r}");
+}
+
 fn mc_session(audio: &str) -> (Session, Vec<ItemId>, ItemId, ItemId) {
     let dir = tmp_dir("mc-edit");
     let files: Vec<PathBuf> = ["a.mov", "b.mov", "c.mov"].iter().map(|f| dir.join(f)).collect();
@@ -1041,4 +1094,31 @@ fn perf_grid_of_four_1080p_angles() {
     eprintln!(
         "Multi-Camera grid (4 × 1080p H.264, ¼-scale cells): {grid_ms:.1} ms/frame wall, {grid_cpu:.1} ms/frame CPU; one angle at ½ scale: {one_ms:.1} ms/frame wall (24 fps budget 41.7 ms)"
     );
+}
+
+/// Clip ▸ Multi-Camera ▸ Enable / Flatten were enabled for any selection and then failed when
+/// chosen with plain clips selected. They are enabled when the selection holds what they work on:
+/// a nested sequence clip (Enable), an enabled multi-camera clip (Flatten). Naming the clips still
+/// works with nothing selected.
+#[test]
+fn multicam_menu_items_are_enabled_only_for_clips_they_work_on() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let first = s.active_sequence().unwrap().video_tracks[0].items[0].id;
+    s.execute("timeline.select", json!({"clips": [first.0]})).unwrap();
+    assert!(!s.is_enabled("clip.multicamEnable"), "a plain clip is not a nest");
+    assert!(!s.is_enabled("clip.multicamFlatten"));
+    s.execute("clip.nest", json!({"name": "Nest"})).unwrap();
+    let nest = s.active_sequence().unwrap().all_tracks().flat_map(|t| &t.items).find(|i| s.project.sequence(i.item).is_some()).map(|i| i.id).unwrap();
+    s.execute("timeline.select", json!({"clips": [nest.0]})).unwrap();
+    assert!(s.is_enabled("clip.multicamEnable"), "a nested sequence clip can become multi-camera");
+    assert!(!s.is_enabled("clip.multicamFlatten"), "not multi-camera yet");
+    s.execute("clip.multicamEnable", json!({})).unwrap();
+    assert!(s.is_enabled("clip.multicamFlatten"));
+    // agents naming the clips do not depend on the selection
+    s.execute("edit.deselectAll", json!({})).unwrap();
+    assert!(!s.is_enabled("clip.multicamFlatten"));
+    s.execute("clip.multicamFlatten", json!({"clips": [nest.0]})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert!(q.find_item(nest).is_none(), "flattened into the camera clips");
 }

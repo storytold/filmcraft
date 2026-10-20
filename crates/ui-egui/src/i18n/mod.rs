@@ -1103,16 +1103,17 @@ mod tests {
         }
     }
 
-    /// German covers at least the core menus (`core_menu_labels`, the top-level menus and the native
-    /// macOS app menu); every entry must still be a menu label.
+    /// German covers the whole interface (every entry of the Spanish catalog, the native macOS app
+    /// menu included), but, like French, the tests require only the core menus and the native app
+    /// menu, so strings added later show in English until they are translated. Every entry must
+    /// still have a Spanish counterpart: a renamed or removed source would otherwise leave a dead
+    /// German entry.
     #[test]
-    fn german_entries_cover_the_original_menu_catalog() {
-        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
-        let items = crate::menus::menu_items(&app);
-        let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
-        let (entries, _) = catalog::parse_entries(include_str!("de.tsv"));
-        for (_, en, _) in entries {
-            assert!(known(&en) || crate::menus::NATIVE_APP_MENU.contains(&en.as_str()), "not a menu label: {en}");
+    fn german_covers_the_menus_and_has_no_dead_entries() {
+        let (entries, errors) = catalog::parse_entries(include_str!("de.tsv"));
+        assert!(errors.is_empty(), "{errors:?}");
+        for (ctx, en, _) in &entries {
+            assert!(ctx.is_empty() && Language::Es.has(en), "German entry without a Spanish one: {ctx:?} {en:?}");
         }
         for en in core_menu_labels() {
             assert!(Language::De.has(&en), "missing German menu label: {en}");
@@ -1123,6 +1124,21 @@ mod tests {
         }
         assert_eq!(Language::De.tr("Settings"), "Voreinstellungen");
         assert_eq!(Language::De.tr("Quit FilmCraft"), "FilmCraft beenden");
+        // beyond the menus: panels, effects and their parameters, settings, status messages
+        for (en, de) in [
+            ("Gaussian Blur", "Gaußscher Weichzeichner"),
+            ("Audio Track Mixer", "Audiospur-Mischpult"),
+            ("Sequence", "Sequenz"),
+            ("Playhead", "Abspielposition"),
+            ("Keyboard Shortcuts", "Tastenkürzel"),
+            ("{n} min ago", "vor {n} Min."),
+        ] {
+            assert_eq!(Language::De.tr(en), de);
+        }
+        set_current(Language::De);
+        assert!(matches_query("Gaussian Blur", "weichzeichner"));
+        assert!(matches_query("Gaussian Blur", "gaussian"));
+        set_current(Language::En);
     }
 
     /// French covers the whole interface (the Spanish catalog's entries and the native macOS
@@ -1316,6 +1332,16 @@ mod tests {
         let alphabet = "ÀÂÆÇÉÈÊËÎÏÔŒÙÛÜŸàâæçéèêëîïôœùûüÿ«»’";
         let letters = entries.iter().flat_map(|(_, _, fr)| fr.chars()).filter(|ch| ch.is_alphabetic());
         assert_bundled_fonts_cover(alphabet.chars().chain(Language::Fr.name().chars()).chain(letters));
+    }
+
+    #[test]
+    fn german_renders_with_bundled_fonts() {
+        let (entries, _) = catalog::parse_entries(include_str!("de.tsv"));
+        // every German letter and quotation mark, even ones no entry uses yet, and every letter,
+        // dash and ellipsis the entries use (symbols such as ✔ come from the English sources)
+        let alphabet = "ÄÖÜäöüß„“‚‘";
+        let letters = entries.iter().flat_map(|(_, _, de)| de.chars()).filter(|ch| ch.is_alphabetic() || "„“‚‘–—…".contains(*ch));
+        assert_bundled_fonts_cover(alphabet.chars().chain(Language::De.name().chars()).chain(letters));
     }
 
     #[test]
