@@ -389,3 +389,28 @@ fn multicam_view_pages_beyond_sixteen_angles_and_edit_cameras() {
     assert!(!mc.cameras[1].enabled);
     assert_eq!(d.exec("multicam.grid", json!({}))["angles"], 19);
 }
+
+/// #1362: with nothing selected in the Project panel, Create Multi-Camera Source Sequence works on
+/// the clips selected in the Timeline.
+#[test]
+fn create_multicam_from_clips_selected_in_the_timeline() {
+    let (s, items) = session();
+    let mut d = Driver::new(s);
+    for (k, item) in items.iter().enumerate() {
+        d.exec("source.open", json!({"item": item}));
+        d.exec("playhead.set", json!({"frame": k as i64 * 96}));
+        d.exec("source.overwrite", json!({}));
+    }
+    let clips: Vec<u64> = d.app().session.active_sequence().unwrap().video_tracks[0].items.iter().map(|c| c.id.0).collect();
+    assert_eq!(clips.len(), 4);
+    d.exec("project.select", json!({"items": []}));
+    d.exec("timeline.select", json!({"clips": clips}));
+    d.ok("ui.menu.invoke", json!({"id": "clip.createMulticam"}));
+    d.frames(3);
+    assert_eq!(d.app().ui.sync_dialog.as_ref().map(|x| x.items.clone()), Some(items.clone()), "the dialog takes the Timeline clips' media");
+    d.click("mcam.method.in");
+    d.click("mcam.ok");
+    assert!(d.app().ui.sync_dialog.is_none(), "dialog closed: {}", d.app().ui.status);
+    let src = d.app().session.state.project_selection[0];
+    assert_eq!(d.app().session.project.sequence(src).unwrap().multicam.clone().unwrap().cameras.len(), 4);
+}

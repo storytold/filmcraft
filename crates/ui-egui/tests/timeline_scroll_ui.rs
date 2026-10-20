@@ -342,3 +342,33 @@ fn repeated_home_and_end_keys_reveal_a_playhead_already_at_the_endpoint() {
 fn repeated_start_and_end_commands_reveal_a_playhead_already_at_the_endpoint() {
     repeated_endpoint_navigation_reveals_the_same_playhead(false);
 }
+
+/// #2325: Settings ▸ Appearance ▸ "Animate zoom, scrolling and menus" off makes a zoom and a
+/// scroll land in one frame, and egui's fades (menus, collapsing sections, tooltips) instant.
+#[test]
+fn turning_animations_off_zooms_and_scrolls_in_one_step() {
+    let mut d = Driver::tall();
+    let animation_time = |d: &mut Driver| d.harness.ctx.global_style().animation_time;
+    assert!(animation_time(&mut d) > 0.0, "animated by default");
+    // animated: one frame later the zoom is on its way, not there
+    let v = &mut d.app().ui.timeline;
+    v.target_pps = 200.0;
+    v.target_scroll = 8.0;
+    d.frames(1);
+    let v = &d.app().ui.timeline;
+    assert!(v.pps > 50.0 && v.pps < 200.0 && v.scroll < 8.0, "eased: {} {}", v.pps, v.scroll);
+    assert_eq!(d.view(), (8.0, 200.0, 0.0, 0.0));
+    d.exec("prefs.set", json!({"key": "appearance.animations", "value": false}));
+    d.frames(2);
+    assert_eq!(animation_time(&mut d), 0.0);
+    let v = &mut d.app().ui.timeline;
+    v.target_pps = 50.0;
+    v.target_scroll = 3.0;
+    d.frames(1);
+    let v = &d.app().ui.timeline;
+    assert_eq!((v.pps, v.scroll), (50.0, 3.0), "in one step");
+    // and back on
+    d.exec("prefs.set", json!({"key": "appearance.animations", "value": true}));
+    d.frames(2);
+    assert!(animation_time(&mut d) > 0.0);
+}

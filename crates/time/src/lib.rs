@@ -416,11 +416,18 @@ pub fn format_time(t: Tick, rate: FrameRate, drop_frame: bool, display: TimeDisp
             format!("{}{}+{:02}", if neg { "-" } else { "" }, a / per_ft, a % per_ft)
         }
         TimeDisplay::AudioSamples => {
-            let secs = t.0.div_euclid(TICKS_PER_SECOND);
-            let rem = Tick(t.0.rem_euclid(TICKS_PER_SECOND)).to_units_floor(sample_rate);
-            format!("{:02}:{:02}:{:02}:{rem:05}", secs / 3600, (secs / 60) % 60, secs % 60)
+            let neg = t.0 < 0;
+            let a = t.0.unsigned_abs();
+            let tps = TICKS_PER_SECOND.unsigned_abs();
+            let secs = a / tps;
+            let rem = Tick((a % tps) as i64).to_units_floor(sample_rate);
+            format!("{}{:02}:{:02}:{:02}:{rem:05}", if neg { "-" } else { "" }, secs / 3600, (secs / 60) % 60, secs % 60)
         }
-        TimeDisplay::Seconds => format!("{:.3}", t.seconds()),
+        TimeDisplay::Seconds => {
+            let s = format!("{:.3}", t.seconds());
+            // A tiny negative time rounds to zero but keeps its sign: drop it.
+            if s == "-0.000" { "0.000".to_string() } else { s }
+        }
     }
 }
 
@@ -506,6 +513,24 @@ pub const SAMPLE_RATES: [i64; 6] = [32_000, 44_100, 48_000, 88_200, 96_000, 192_
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn seconds_display_has_no_negative_zero() {
+        let f = |t: i64| format_time(Tick(t), FrameRate::default(), false, TimeDisplay::Seconds, 48000);
+        assert_eq!(f(-1), "0.000");
+        assert_eq!(f(-2), "0.000");
+        assert_eq!(f(-(TICKS_PER_SECOND / 2500)), "0.000");
+        assert_eq!(f(-TICKS_PER_SECOND), "-1.000");
+        assert_eq!(f(-TICKS_PER_SECOND / 1000), "-0.001");
+    }
+
+    #[test]
+    fn audio_samples_negative_time_has_leading_minus() {
+        let r = FrameRate::new(30000, 1001);
+        let f = |t| format_time(Tick(t), r, false, TimeDisplay::AudioSamples, 48000);
+        assert_eq!(f(-TICKS_PER_SECOND), "-00:00:01:00000");
+        assert_eq!(f(-(TICKS_PER_SECOND + TICKS_PER_SECOND / 2)), "-00:00:01:24000");
+    }
 
     /// Damaged files and projects can carry zero / negative rates and timebases, and users or
     /// agents can type huge timecodes: these used to panic (division by zero, overflow,

@@ -744,3 +744,40 @@ fn middle_closing_an_inactive_project_tab_keeps_the_inspector_target() {
     let source = d.app().ui.panels.inspector_source;
     assert_eq!(d.label("info.item"), name, "closing a tab must not select its stale item; focused={focused:?}, source={source:?}");
 }
+
+/// #2329: in the Effects panel what a folder holds is indented under it: an effect's label starts
+/// right of its sub-folder's, a sub-folder's right of its top folder's, and the same for presets
+/// and Lumetri presets.
+#[test]
+fn effects_are_indented_under_their_folders() {
+    fn text_x(d: &mut Driver, text: &str) -> f32 {
+        fn find(shapes: &[egui::Shape], text: &str) -> Option<f32> {
+            shapes.iter().find_map(|s| match s {
+                egui::Shape::Text(t) if t.galley.text() == text => Some(t.pos.x),
+                egui::Shape::Vec(v) => find(v, text),
+                _ => None,
+            })
+        }
+        let shapes: Vec<egui::Shape> = d.harness.output().shapes.iter().map(|c| c.shape.clone()).collect();
+        find(&shapes, text).unwrap_or_else(|| panic!("`{text}` is not drawn"))
+    }
+    let mut d = Driver::demo();
+    d.ok("ui.panel.show", json!({"panel": "Effects"}));
+    d.frames(3);
+    for folder in ["Video Effects", "Video Effects/Blur & Sharpen", "Presets", "Lumetri Presets", "Lumetri Presets/Monochrome"] {
+        d.click(&format!("effects.folder.{folder}"));
+    }
+    d.frames(2);
+    let preset = d.app().session.presets.all()[0].name.clone();
+    let lumetri = filmcraft_render::lumetri_presets::presets().into_iter().find(|p| p.folder == "Monochrome").unwrap().name;
+    for (outer, inner) in [
+        ("Video Effects", "Blur & Sharpen"),
+        ("Blur & Sharpen", "Gaussian Blur"),
+        ("Presets", preset.as_str()),
+        ("Lumetri Presets", "Monochrome"),
+        ("Monochrome", lumetri),
+    ] {
+        let (a, b) = (text_x(&mut d, outer), text_x(&mut d, inner));
+        assert!(b >= a + 12.0, "`{inner}` ({b}) is not indented under `{outer}` ({a})");
+    }
+}

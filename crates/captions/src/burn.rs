@@ -287,6 +287,29 @@ mod tests {
     }
 
     #[test]
+    fn margin_is_a_fraction_of_frame_height() {
+        // #1542: on a portrait sequence, a bottom-anchored caption with margin 0.31 sits with
+        // its bottom edge 0.31 of the frame height above the bottom; the top anchor mirrors it.
+        let st = CaptionStyle { anchor: CaptionAnchor::Bottom, margin: 0.31, size: 78.0, ..Default::default() };
+        let o = render_caption(&cap("Hello world"), &st, 1080, 1920).unwrap();
+        // the overlay pads the content by the outline grow (the default outline is 0, so by 1 px)
+        let bottom = (o.y as usize + o.h) as f32;
+        let expected = 1920.0 - 0.31 * 1920.0;
+        assert!((bottom - expected).abs() <= 2.0, "bottom edge {bottom}, expected {expected}");
+        let st = CaptionStyle { anchor: CaptionAnchor::Top, margin: 0.31, size: 78.0, ..Default::default() };
+        let o = render_caption(&cap("Hello world"), &st, 1080, 1920).unwrap();
+        assert!((o.y as f32 - 0.31 * 1920.0).abs() <= 2.0, "top edge {}, expected {}", o.y, 0.31 * 1920.0);
+        // margin 0 and the 0.45 clamp stay inside the frame
+        for margin in [0.0, 0.31, 0.45, 9.0] {
+            let st = CaptionStyle { anchor: CaptionAnchor::Bottom, margin, size: 78.0, ..Default::default() };
+            let o = render_caption(&cap("Hello world"), &st, 1080, 1920).unwrap();
+            // the outline-grow padding plus ceil rounding may reach 2 px past the edge; the
+            // composite clips it
+            assert!(o.y >= 0 && o.y as usize + o.h <= 1922, "margin {margin}: y {} h {}", o.y, o.h);
+        }
+    }
+
+    #[test]
     fn wraps_and_composites() {
         let long = "word ".repeat(60);
         let o = render_caption(&cap(&long), &CaptionStyle::default(), 640, 360).unwrap();

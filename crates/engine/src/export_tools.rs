@@ -549,6 +549,12 @@ pub fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(pr) = preset {
         out["preset"] = json!(pr.name);
     }
+    if !wait {
+        // where the job can be followed (#1544: it is not in `export.queue.list`, which only lists
+        // the Export Queue, so agents looked there and found nothing)
+        out["poll"] = json!("jobs.list");
+        out["cancel"] = json!("jobs.cancel");
+    }
     if wait && let Some(j) = s.jobs.iter().find(|j| j.id == id) {
         let v = j.to_json();
         if let Some(e) = v["result"]["error"].as_str() {
