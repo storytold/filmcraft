@@ -182,9 +182,17 @@ the owner's call (#383). The rules above hold:
 - The decoder completes jobs on its own threads through a callback object FilmCraft implements.
   The callbacks run under `catch_unwind` and never take FilmCraft's lock. Frame waits time out. A
   clip whose job is still in flight is leaked rather than released under the API.
+- On macOS a signed FilmCraft runs under the hardened runtime, whose library validation loads only
+  code signed by FilmCraft's team or Apple; Blackmagic signs its framework. The app's and the CLI's
+  entitlements therefore carry `com.apple.security.cs.disable-library-validation`
+  (`packaging/macos/entitlements*.plist`, checked by an xtask test). Without it a signed build
+  refuses the framework, and the framework is loaded with `CFBundleLoadExecutableAndReturnError`
+  so that such a refusal reports macOS's reason.
 - Verified on Linux with the SDK's sample clips and with 6K camera clips. It also ran on Windows 11
   (in a virtual machine) and on macOS 15.8 (in a virtual machine) with the same clips: all three
   decode to the same numbers. Each platform's build was checked with clippy for its target
   (`x86_64-pc-windows-msvc`, `x86_64-apple-darwin`); the Windows runtime also ran under Wine before
-  that.
+  that. On macOS 27 on Apple silicon, the tests passed natively, and a `package.sh` build (ad-hoc
+  signed, hardened runtime) imported the SDK's clips and exported their frames, which it could not
+  do with the previous entitlements.
 
