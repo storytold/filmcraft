@@ -403,9 +403,11 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                         }
                     }
                     if kind == "caption" {
-                        text = referred(descendant(item, "BlockVectorItem"), &ids, "ObjectRef")
-                            .and_then(|b| child_text(b, "FormattedTextData"))
-                            .and_then(caption_text);
+                        let block = referred(descendant(item, "BlockVectorItem"), &ids, "ObjectRef");
+                        if let Some(block) = block {
+                            spend(&mut work_left, block)?;
+                        }
+                        text = block.and_then(|b| child_text(b, "FormattedTextData")).and_then(caption_text);
                         if text.is_none() {
                             warning(report, format!("{label}: caption text could not be decoded"));
                         }
@@ -763,6 +765,47 @@ mod tests {
         let (_, tree, report) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
         assert!(tree.sequences[0].tracks[0].items[0].media_path.is_none());
         assert!(report.mentions("ambiguous"));
+    }
+    // Hand-written XML: many pointers share one small caption item and one large payload.
+    fn repeated_caption_block(pointers: usize) -> String {
+        let mut bytes = vec![0; 3 * (1024 * 1024 / 4)];
+        bytes[..4].copy_from_slice(&4u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(b"Test");
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        assert_eq!(encoded.len(), 1024 * 1024);
+        let pointers = r#"<TrackItem ObjectRef="caption"/>"#.repeat(pointers);
+        format!(
+            r#"<PremiereData><Sequence ObjectUID="sequence"><Name>Captions</Name><TrackGroups><TrackGroup><Second ObjectRef="group"/></TrackGroup></TrackGroups></Sequence>
+<CaptionTrackGroup ObjectID="group"><TrackGroup><Tracks><Track ObjectURef="track"/></Tracks></TrackGroup></CaptionTrackGroup>
+<CaptionTrack ObjectUID="track"><ClipTrack><Track><Index>0</Index></Track><ClipItems><TrackItems>{pointers}</TrackItems></ClipItems></ClipTrack></CaptionTrack>
+<CaptionTrackItem ObjectID="caption"><TrackItem><Start>0</Start><End>254016000000</End></TrackItem><BlockVectorItem ObjectRef="block"/></CaptionTrackItem>
+<BlockVectorItem ObjectID="block"><FormattedTextData>{encoded}</FormattedTextData></BlockVectorItem></PremiereData>"#
+        )
+    }
+    #[test]
+    fn repeated_large_caption_blocks_exhaust_import_work_budget() {
+        let small = repeated_caption_block(2);
+        let (fragment, tree, _) = import(small.as_bytes(), &ImportOptions::default(), None).unwrap();
+        assert_eq!(tree.sequences[0].tracks[0].items.len(), 2);
+        let captions = &fragment.project.sequence(fragment.sequences[0]).unwrap().caption_tracks[0].captions;
+        assert_eq!(captions.len(), 2);
+        assert!(captions.iter().all(|caption| caption.text == "Test"));
+
+        let repeated = repeated_caption_block(400);
+        assert!(repeated.len() < MAX_DOCUMENT_BYTES);
+        match import(repeated.as_bytes(), &ImportOptions::default(), None) {
+            Err(error) => assert!(error.to_string().contains("import work limit"), "{error}"),
+            Ok(_) => panic!("repeated caption payload bypassed the import work limit"),
+        }
+    }
+    #[test]
+    fn missing_caption_block_references_remain_optional() {
+        let xml = repeated_caption_block(1);
+        for xml in [xml.replace(r#"<BlockVectorItem ObjectRef="block"/>"#, ""), xml.replace(r#"ObjectRef="block""#, r#"ObjectRef="absent""#)] {
+            let (_, tree, report) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+            assert!(tree.sequences[0].tracks[0].items[0].text.is_none());
+            assert!(report.mentions("caption text could not be decoded"));
+        }
     }
     #[test]
     fn caption_unicode_envelope_and_gzip_bomb_bounds() {
