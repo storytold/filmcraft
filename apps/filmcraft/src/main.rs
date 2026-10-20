@@ -472,7 +472,14 @@ fn run_dialog_off_thread(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) 
                     rfd::FileDialog::new().add_filter(&project, &project_exts).set_file_name(name).save_file().map(path).into_iter().collect()
                 }
                 FileDialog::SaveAs { filter, exts, name } => {
-                    rfd::FileDialog::new().add_filter(&filter, &exts).set_file_name(name).save_file().map(path).into_iter().collect()
+                    // the suggested name may be a full path (Quick Export's): suggest the basename
+                    // in the existing parent, like the macOS sheet and the sync pick_save_as
+                    let (dir, file) = super::save_name_parts(&name);
+                    let mut d = rfd::FileDialog::new().add_filter(&filter, &exts).set_file_name(file);
+                    if let Some(dir) = dir {
+                        d = d.set_directory(dir);
+                    }
+                    d.save_file().map(path).into_iter().collect()
                 }
                 FileDialog::Folder { at } => {
                     let d = rfd::FileDialog::new();
@@ -584,17 +591,25 @@ fn run_dialog_sheet(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> st
     rx
 }
 
-/// A save dialog suggesting `name`, which may be a full path (Quick Export's): the basename is
-/// the suggested file name and, when the parent exists, the dialog starts in its folder — the
-/// same splitting the synchronous `pick_save_as` hook does. Without it, a full path in
+/// A save dialog's suggested `name` may be a full path (Quick Export's): the basename is the
+/// suggested file name and, when the parent exists, the dialog starts in its folder — the same
+/// splitting the synchronous `pick_save_as` hook does. Without it, a full path in
 /// `set_file_name` opens the dialog in the wrong folder (CodeRabbit review of #2075).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn save_name_parts(name: &str) -> (Option<String>, String) {
+    let p = std::path::Path::new(name);
+    let file = p.file_name().map_or_else(|| name.to_string(), |n| n.to_string_lossy().into_owned());
+    let dir = p.parent().filter(|d| d.is_dir()).map(|d| d.to_string_lossy().into_owned());
+    (dir, file)
+}
+
+/// The macOS async save sheet (project saves and exports): filtered, suggesting `file`, and
+/// starting in the suggested path's existing folder (see [`save_name_parts`]).
 #[cfg(target_os = "macos")]
 fn save_dialog(filter: &str, exts: &[String], name: &str) -> rfd::AsyncFileDialog {
-    let p = std::path::Path::new(name);
-    let mut f = rfd::AsyncFileDialog::new()
-        .add_filter(filter, exts)
-        .set_file_name(p.file_name().map_or_else(|| name.to_string(), |n| n.to_string_lossy().into_owned()));
-    if let Some(dir) = p.parent().filter(|d| d.is_dir()) {
+    let (dir, file) = save_name_parts(name);
+    let mut f = rfd::AsyncFileDialog::new().add_filter(filter, exts).set_file_name(file);
+    if let Some(dir) = dir {
         f = f.set_directory(dir);
     }
     f
@@ -639,5 +654,24 @@ mod tests {
         let project = super::project_patterns();
         assert_eq!(project.first().map(String::as_str), Some("fcproj"));
         assert!(project.iter().any(|e| e == "[fF][cC][pP][rR][oO][jJ]"), "{project:?}");
+    }
+
+    /// A full-path save suggestion splits into the existing parent directory and the basename;
+    /// a missing parent suggests no directory and a bare name suggests none either.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn save_name_splits_a_full_path_into_directory_and_basename() {
+        let in_tmp = std::env::temp_dir().join("clip.mp4");
+        let (dir, file) = super::save_name_parts(&in_tmp.to_string_lossy());
+        assert_eq!(file, "clip.mp4");
+        assert_eq!(dir.as_deref(), in_tmp.parent().and_then(std::path::Path::to_str));
+        // a parent that doesn't exist must not be suggested
+        let (dir, file) = super::save_name_parts("/no/such/dir/clip.mp4");
+        assert_eq!(file, "clip.mp4");
+        assert_eq!(dir, None);
+        // a bare name stays as-is
+        let (dir, file) = super::save_name_parts("clip.mp4");
+        assert_eq!(file, "clip.mp4");
+        assert_eq!(dir, None);
     }
 }
