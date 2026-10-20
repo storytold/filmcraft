@@ -712,7 +712,7 @@ decode, and the UI-thread present (upload and draw, including the backdrop copie
 blended layers) stays at 9–10 ms p50, as for `stack3`. Before, every frame was composited on the
 CPU (≈ 2 cores more at 23.976 fps) and Full resolution could not keep up at this load.
 
-## Results (ADR 0002: ProRes decoded on the GPU, before → after)
+## Results (ADR 0002: ProRes and DNx decoded on the GPU, before → after)
 
 A ProRes frame through the GPU compositor, until the GPU is done (`cargo test --release -p
 filmcraft-gpu --lib prores_gpu_vs_cpu_bench -- --ignored --nocapture`): before, the CPU decodes
@@ -726,6 +726,16 @@ busy content (gradients, checkerboard, noise). Linux, AMD Ryzen 7 7800X3D (16 th
 | ProRes 422 HQ 3840×2160 | 3.6 MB | 14.65 ms | **2.83 ms** | 5.2× |
 | ProRes 4444 3840×2160 | 5.5 MB | 19.37 ms | **3.76 ms** | 5.2× |
 | ProRes 422 HQ 1920×1080 | 0.9 MB | 3.55 ms | **1.28 ms** | 2.8× |
+
+DNxHD / DNxHR the same way (`dnx_gpu_vs_cpu_bench`), our encoder's frames over the same content,
+2026-10-20; a scan line is cut into 1024-bit segments decoded in parallel (ADR 0002). One
+invocation per scan line had taken 27 ms per 4K frame.
+
+| frame | bytes | CPU decode + upload | GPU decode | speed-up |
+|---|---|---|---|---|
+| DNxHR HQ 8-bit 3840×2160 | 3.6 MB | 15.19 ms | **4.49 ms** | 3.4× |
+| DNxHR HQX 10-bit 3840×2160 | 3.6 MB | 16.39 ms | **4.50 ms** | 3.6× |
+| DNxHR HQX 10-bit 1920×1080 | 0.9 MB | 4.26 ms | **1.96 ms** | 2.2× |
 
 ## Results (#847: AV1 in-loop filters in parallel row bands, before → after)
 

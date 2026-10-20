@@ -23,6 +23,9 @@ const MAX_PLACEHOLDER_SAMPLES: usize = 8192 * 8192;
 pub enum CodedFormat {
     /// One Apple ProRes frame (SMPTE RDD 36), as stored in a QuickTime / MXF sample.
     ProRes,
+    /// One DNxHD / DNxHR frame (VC-3, SMPTE ST 2019-1): one coding unit, or two for a
+    /// field-coded interlaced frame.
+    Dnx,
 }
 
 /// Decodes a coded picture on the CPU (planar Y'CbCr, as the codec's CPU decoder returns it).
@@ -54,7 +57,8 @@ impl std::fmt::Debug for CodedImage {
 
 impl CodedImage {
     /// `chroma`, `bits` and `alpha` describe the planes the picture decodes to (what `fallback`
-    /// returns as [`PixelData::Yuv16`](crate::PixelData::Yuv16)).
+    /// returns: [`PixelData::Yuv8`](crate::PixelData::Yuv8) at 8 bits,
+    /// [`PixelData::Yuv16`](crate::PixelData::Yuv16) above).
     pub fn new(format: CodedFormat, data: Arc<[u8]>, chroma: Chroma, bits: u32, alpha: bool, fallback: CodedFallback) -> Self {
         CodedImage { format, data, chroma, bits, alpha, fallback, cpu: OnceLock::new(), gpu_failed: AtomicBool::new(false) }
     }
@@ -90,6 +94,7 @@ impl CodedImage {
     pub fn byte_size(&self) -> usize {
         let cpu = match self.cpu.get() {
             Some(crate::PixelData::Yuv16 { planes, alpha, .. }) => (planes.iter().map(|p| p.len()).sum::<usize>() + alpha.as_ref().map_or(0, |a| a.len())) * 2,
+            Some(crate::PixelData::Yuv8 { planes, alpha, .. }) => planes.iter().map(|p| p.len()).sum::<usize>() + alpha.as_ref().map_or(0, |a| a.len()),
             Some(_) | None => 0,
         };
         self.data.len() + cpu
@@ -104,16 +109,20 @@ impl CodedImage {
                 let (sx, sy) = self.chroma.shifts();
                 let n = (width as usize).saturating_mul(height as usize);
                 let cn = (width as usize).div_ceil(1 << sx).saturating_mul((height as usize).div_ceil(1 << sy));
+                let fits = |len: [usize; 3], alpha: Option<usize>| len == [n, cn, cn] && alpha.is_none_or(|a| a == n);
                 match (self.fallback)(&self.data) {
                     Some(crate::PixelData::Yuv16 { planes, chroma, bits, alpha })
                         if chroma == self.chroma
                             && bits == self.bits
-                            && planes[0].len() == n
-                            && planes[1].len() == cn
-                            && planes[2].len() == cn
-                            && alpha.as_ref().is_none_or(|a| a.len() == n) =>
+                            && bits > 8
+                            && fits(planes.each_ref().map(|p| p.len()), alpha.as_ref().map(|a| a.len())) =>
                     {
                         crate::PixelData::Yuv16 { planes, chroma, bits, alpha }
+                    }
+                    Some(crate::PixelData::Yuv8 { planes, chroma, alpha })
+                        if chroma == self.chroma && self.bits == 8 && fits(planes.each_ref().map(|p| p.len()), alpha.as_ref().map(|a| a.len())) =>
+                    {
+                        crate::PixelData::Yuv8 { planes, chroma, alpha }
                     }
                     other => {
                         log::warn!(
@@ -123,6 +132,13 @@ impl CodedImage {
                         );
                         let s = self.bits.saturating_sub(8).min(8);
                         let (n, cn) = if n <= MAX_PLACEHOLDER_SAMPLES { (n, cn) } else { (0, 0) };
+                        if self.bits <= 8 {
+                            return crate::PixelData::Yuv8 {
+                                planes: [Arc::new(vec![16u8; n]), Arc::new(vec![128u8; cn]), Arc::new(vec![128u8; cn])],
+                                chroma: self.chroma,
+                                alpha: None,
+                            };
+                        }
                         crate::PixelData::Yuv16 {
                             planes: [Arc::new(vec![16u16 << s; n]), Arc::new(vec![128u16 << s; cn]), Arc::new(vec![128u16 << s; cn])],
                             chroma: self.chroma,
@@ -156,5 +172,22 @@ mod tests {
         let crate::PixelData::Yuv16 { planes, .. } = img.cpu(64, 32) else { panic!("planes") };
         assert_eq!((planes[0].len(), planes[1].len()), (64 * 32, 32 * 32));
         assert!(planes[0].iter().all(|&v| v == 64));
+    }
+
+    #[test]
+    fn an_8_bit_picture_decodes_to_8_bit_planes() {
+        let yuv8 = |n: usize, cn: usize| crate::PixelData::Yuv8 {
+            planes: [Arc::new(vec![50u8; n]), Arc::new(vec![60; cn]), Arc::new(vec![70; cn])],
+            chroma: Chroma::C422,
+            alpha: None,
+        };
+        let img = CodedImage::new(CodedFormat::Dnx, Arc::from(&[0u8; 16][..]), Chroma::C422, 8, false, Box::new(move |_| Some(yuv8(64 * 32, 32 * 32))));
+        let crate::PixelData::Yuv8 { planes, .. } = img.cpu(64, 32) else { panic!("8-bit planes") };
+        assert_eq!(planes[0][0], 50);
+        assert_eq!(img.byte_size(), 16 + 64 * 32 * 2);
+        // the wrong geometry, or a failed decode: black 8-bit planes
+        let img = CodedImage::new(CodedFormat::Dnx, Arc::from(&[0u8; 16][..]), Chroma::C422, 8, false, Box::new(move |_| Some(yuv8(10, 10))));
+        let crate::PixelData::Yuv8 { planes, .. } = img.cpu(64, 32) else { panic!("8-bit planes") };
+        assert_eq!((planes[0].len(), planes[0][0], planes[1][0]), (64 * 32, 16, 128));
     }
 }

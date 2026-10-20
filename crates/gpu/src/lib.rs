@@ -1492,6 +1492,8 @@ fn quad_bounds(l: &PlanLayer, w: u32, h: u32) -> Option<(u32, u32, u32, u32)> {
 #[cfg(test)]
 mod blend_tests;
 #[cfg(test)]
+mod dnx_tests;
+#[cfg(test)]
 mod fx_tests;
 #[cfg(test)]
 mod intra_tests;

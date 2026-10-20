@@ -15,6 +15,7 @@ filmcraft-frame = { workspace = true }
 filmcraft-geom = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-prores = { workspace = true }
+filmcraft-dnx = { workspace = true }
 filmcraft-render = { workspace = true }
 filmcraft-time = { workspace = true }
 wgpu = { version = "30", default-features = false, features = ["wgsl"] }
