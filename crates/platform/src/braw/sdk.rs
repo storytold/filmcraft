@@ -362,14 +362,17 @@ impl Runtime {
     }
 }
 
-/// Where the runtime is called from by name when no folder holds it: the system's own search (its
-/// installer puts it on the library path). macOS only ever finds it by path.
+/// Where the runtime is called from by name when no folder holds it: on Linux the dynamic loader's
+/// own search (`LD_LIBRARY_PATH`, the loader cache, the system library folders; never the current
+/// folder). Windows and macOS only ever load it by path: Blackmagic's installers put it in the
+/// folders searched before, and on Windows a bare DLL name would let the default search find a copy
+/// planted in the current folder or on `PATH` (CWE-427).
 fn system_runtime() -> Option<PathBuf> {
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     {
         Some(PathBuf::from(LIBRARY))
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(not(target_os = "linux"))]
     {
         None
     }
@@ -386,9 +389,13 @@ fn open_library(path: &Path) -> Result<libloading::Library, String> {
 
 #[cfg(windows)]
 fn open_library(path: &Path) -> Result<libloading::Library, String> {
-    // SAFETY: loading Blackmagic's runtime runs its DllMain, which only sets up the library. Plain
-    // LoadLibraryEx flags, as the SDK's own loader uses.
-    unsafe { libloading::Library::new(path) }.map_err(|e| e.to_string())
+    use libloading::os::windows::{LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, Library};
+    // the folder flags below take an absolute path
+    let path = std::path::absolute(path).map_err(|e| e.to_string())?;
+    // SAFETY: loading Blackmagic's runtime runs its DllMain, which only sets up the library. The
+    // DLLs it imports are looked for in its own folder and the system's default folders, never in
+    // the current folder or on PATH, where a planted copy could be picked up (CWE-427).
+    unsafe { Library::load_with_flags(&path, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS) }.map(Into::into).map_err(|e| e.to_string())
 }
 
 impl Sdk {
