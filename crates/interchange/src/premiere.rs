@@ -281,6 +281,8 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
     let mut work_left = 5_000_000usize;
     let mut sequences = Vec::new();
     let mut item_count = 0usize;
+    let mut skipped_items = BTreeSet::new();
+    let mut unsupported_effects = BTreeMap::new();
     for n in root.children().filter(|n| n.has_tag_name("Sequence")) {
         spend(&mut work_left, n)?;
         let name = child_text(n, "Name").unwrap_or("Sequence").to_string();
@@ -343,9 +345,6 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                     }
                     let start = ticks(value(item, "Start"), Tick::ZERO)?;
                     let end = ticks(value(item, "End"), start)?;
-                    if end <= start {
-                        return Err(error("timeline item must have positive duration"));
-                    }
                     let sub = referred(descendant(item, "SubClip"), &ids, "ObjectRef");
                     if let Some(sub) = sub {
                         spend(&mut work_left, sub)?;
@@ -356,17 +355,26 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                         spend(&mut work_left, clip)?;
                     }
                     let source_in = ticks(clip.and_then(|s| value(s, "InPoint")), Tick::ZERO)?;
-                    let source_out = ticks(
-                        clip.and_then(|s| value(s, "OutPoint")),
-                        Tick(source_in.0.checked_add(end.0 - start.0).ok_or_else(|| error("source time overflow"))?),
-                    )?;
+                    let source_out = match clip.and_then(|s| value(s, "OutPoint")) {
+                        Some(raw) => ticks(Some(raw), Tick::ZERO)?,
+                        None => Tick(source_in.0.checked_add((end.0 - start.0).max(0)).ok_or_else(|| error("source time overflow"))?),
+                    };
                     let speed = clip.and_then(|s| value(s, "PlaybackSpeed")).unwrap_or("1").parse::<f64>().map_err(|_| error("invalid playback speed"))?;
-                    if !speed.is_finite()
+                    let unsupported = if end <= start {
+                        Some("timeline item must have positive duration")
+                    } else if !speed.is_finite()
                         || !(0.001..=1000.0).contains(&speed)
                         || source_out < source_in
+                        || source_out > Tick::MAX
                         || source_in.0 as f64 + (end.0 - start.0) as f64 * speed > Tick::MAX.0 as f64
                     {
-                        return Err(error("unsupported speed or source range"));
+                        Some("unsupported playback speed or source range")
+                    } else {
+                        None
+                    };
+                    if let Some(reason) = unsupported {
+                        warning(report, format!("{label}: {reason}; clip skipped"));
+                        skipped_items.insert(item.attribute("ObjectID").unwrap_or("").to_string());
                     }
                     let mut effects = Vec::new();
                     let mut motion = BTreeMap::new();
@@ -397,7 +405,8 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                                     }
                                 }
                             } else if !is_text {
-                                warning(report, format!("{label}: effect {effect} retained in provenance, not rendered"));
+                                let count = unsupported_effects.entry(effect.clone()).or_insert(0usize);
+                                *count = count.saturating_add(1);
                             }
                             effects.push(effect);
                         }
@@ -469,6 +478,16 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
         return Err(Error::Empty);
     }
     validate_nesting(&sequences)?;
+    // Validate the entire referenced graph before dropping unsupported clips, so skipping one
+    // cannot hide malformed ticks, cycles or resource-limit violations elsewhere in its graph.
+    for sequence in &mut sequences {
+        for track in &mut sequence.tracks {
+            track.items.retain(|item| !skipped_items.contains(&item.object_id));
+        }
+    }
+    for (effect, count) in unsupported_effects {
+        warning(report, format!("effect {effect} retained in provenance, not rendered ({count} occurrences)"));
+    }
     Ok(Document { sequences, media })
 }
 
@@ -740,16 +759,24 @@ mod tests {
         }
     }
     #[test]
-    fn unsafe_sizes_times_speeds_entities_and_duplicate_ids_are_errors() {
+    fn corrupt_sizes_ticks_speeds_entities_and_duplicate_ids_are_errors() {
         let xml = fixture();
         let cases = [
             xml.replace("<Index>0", "<Index>999999999999"),
             xml.replace("<Start>0", "<Start>-1"),
-            xml.replace("<PlaybackSpeed>2", "<PlaybackSpeed>NaN"),
+            xml.replace("<Start>0", "<Start>NaN"),
+            xml.replace(&format!("<End>{}", 3 * TPS), "<End>-1"),
+            xml.replace(&format!("<End>{}", 3 * TPS), "<End>invalid"),
+            xml.replace("<InPoint>", "<InPoint>-"),
+            xml.replace(&format!("<OutPoint>{}", 10 * TPS), "<OutPoint>-1"),
+            xml.replace(&format!("<OutPoint>{}", 10 * TPS), "<OutPoint>invalid"),
+            xml.replace("<PlaybackSpeed>2", "<PlaybackSpeed>invalid"),
             xml.replace("<InPoint>", "<InPoint>999999999999999999999"),
             xml.replace("<PremiereData Version=\"3\">", "<!DOCTYPE x [<!ENTITY a SYSTEM 'file:///etc/passwd'>]><PremiereData Version=\"3\">"),
             xml.replace("<Media>", "<Media ObjectID=\"20\">"),
             xml.replace("1080</MZ.Sequence", "4294967295</MZ.Sequence"),
+            mixed_support_fixture(3 * TPS, "-1", "", "1"),
+            mixed_support_fixture(3 * TPS, "invalid", "", "1"),
         ];
         for case in cases {
             let r = std::panic::catch_unwind(|| import(case.as_bytes(), &ImportOptions::default(), None));
@@ -757,10 +784,107 @@ mod tests {
             assert!(r.unwrap().is_err());
         }
     }
+    // Hand-written additions keep supported clips before and after one unsupported item.
+    fn mixed_support_fixture(end: i64, source_in: &str, source_out: &str, speed: &str) -> String {
+        let extra = format!(
+            r#"<VideoClipTrackItem ObjectID="unsupported"><ClipTrackItem><TrackItem><Start>{}</Start><End>{end}</End></TrackItem><SubClip ObjectRef="unsupported-sub"/></ClipTrackItem></VideoClipTrackItem>
+<SubClip ObjectID="unsupported-sub"><Name>Unsupported clip</Name><Clip ObjectRef="unsupported-clip"/></SubClip>
+<VideoClip ObjectID="unsupported-clip"><Clip><InPoint>{source_in}</InPoint>{source_out}<PlaybackSpeed>{speed}</PlaybackSpeed></Clip></VideoClip>
+<VideoClipTrackItem ObjectID="after"><ClipTrackItem><TrackItem><Start>{}</Start><End>{}</End></TrackItem><SubClip ObjectRef="21"/></ClipTrackItem></VideoClipTrackItem>"#,
+            3 * TPS,
+            4 * TPS,
+            5 * TPS,
+        );
+        fixture()
+            .replace(r#"<TrackItem ObjectRef="20"/>"#, r#"<TrackItem ObjectRef="20"/><TrackItem ObjectRef="unsupported"/><TrackItem ObjectRef="after"/>"#)
+            .replace("</PremiereData>", &format!("{extra}</PremiereData>"))
+    }
+    #[test]
+    fn unsupported_clips_are_skipped_without_losing_supported_neighbors() {
+        let cases = [
+            mixed_support_fixture(3 * TPS, "0", "", "1"),
+            mixed_support_fixture(2 * TPS, "0", "", "1"),
+            mixed_support_fixture(4 * TPS, "0", "", "0"),
+            mixed_support_fixture(4 * TPS, "0", "", "-1"),
+            mixed_support_fixture(4 * TPS, "0", "", "0.0009"),
+            mixed_support_fixture(4 * TPS, "0", "", "1000.001"),
+            mixed_support_fixture(4 * TPS, "0", "", "NaN"),
+            mixed_support_fixture(4 * TPS, "0", "", "inf"),
+            mixed_support_fixture(4 * TPS, "0", "", "-inf"),
+            mixed_support_fixture(4 * TPS, "1", "<OutPoint>0</OutPoint>", "1"),
+            mixed_support_fixture(4 * TPS, &Tick::MAX.0.to_string(), "", "1"),
+            mixed_support_fixture(4 * TPS, &(Tick::MAX.0 - TPS).to_string(), "", "1000"),
+        ];
+        for (index, xml) in cases.iter().enumerate() {
+            let result = std::panic::catch_unwind(|| import(xml.as_bytes(), &ImportOptions::default(), None)).unwrap();
+            let (fragment, tree, report) = result.unwrap_or_else(|error| panic!("case {index}: {error}"));
+            let items = &tree.sequences[0].tracks[0].items;
+            assert_eq!(items.iter().map(|item| item.object_id.as_str()).collect::<Vec<_>>(), ["20", "after"], "case {index}");
+            let clips = &fragment.project.sequence(fragment.sequences[0]).unwrap().video_tracks[0].items;
+            assert_eq!(clips.iter().map(|clip| clip.start).collect::<Vec<_>>(), [Tick::ZERO, Tick(4 * TPS)]);
+            assert!(
+                report.entries.iter().any(|entry| entry.message.contains("Unsupported clip") && entry.message.contains("skipped")),
+                "case {index}: {report:?}"
+            );
+        }
+        for speed in ["0.001", "1000"] {
+            let xml = mixed_support_fixture(4 * TPS, "0", &format!("<OutPoint>{}</OutPoint>", 1000 * TPS), speed);
+            let (_, tree, report) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+            assert_eq!(tree.sequences[0].tracks[0].items.len(), 3);
+            assert!(!report.mentions("clip skipped"));
+        }
+    }
+    #[test]
+    fn unsupported_clips_do_not_bypass_timeline_item_limit() {
+        let xml = fixture()
+            .replace(&format!("<End>{}</End>", 3 * TPS), "<End>0</End>")
+            .replace(r#"<TrackItem ObjectRef="20"/>"#, &r#"<TrackItem ObjectRef="20"/>"#.repeat(100_001));
+        let result = std::panic::catch_unwind(|| import(xml.as_bytes(), &ImportOptions::default(), None)).unwrap();
+        assert!(result.unwrap_err().to_string().contains("too many timeline items"));
+    }
+    #[test]
+    fn repeated_effect_warnings_keep_late_media_diagnostics_visible() {
+        let pointers: String = (0..2000).map(|index| format!(r#"<TrackItem ObjectRef="effect-item-{index}"/>"#)).collect();
+        let items: String = (0..2000)
+            .map(|index| {
+                format!(
+                    r#"<VideoClipTrackItem ObjectID="effect-item-{index}"><ClipTrackItem><TrackItem><Start>{}</Start><End>{}</End></TrackItem><SubClip ObjectRef="effect-sub-{index}"/></ClipTrackItem><ComponentOwner><Components ObjectRef="effects"/></ComponentOwner></VideoClipTrackItem>
+<SubClip ObjectID="effect-sub-{index}"><Name>Effect clip {index}</Name><Clip ObjectRef="22"/></SubClip>"#,
+                    index * TPS,
+                    (index + 1) * TPS,
+                )
+            })
+            .collect();
+        let extra = format!(
+            r#"{items}<VideoMediaSource ObjectID="media-source"><MediaSource><Media ObjectURef="media"/></MediaSource></VideoMediaSource>
+<VideoComponentChain ObjectID="effects"><Components><Component ObjectRef="unknown-effect"/></Components></VideoComponentChain>
+<VideoFilterComponent ObjectID="unknown-effect"><DisplayName>Example effect</DisplayName><MatchName>example.unknown</MatchName></VideoFilterComponent>
+<VideoClipTrackItem ObjectID="unresolved"><ClipTrackItem><TrackItem><Start>{}</Start><End>{}</End></TrackItem><SubClip ObjectRef="unresolved-sub"/></ClipTrackItem></VideoClipTrackItem>
+<SubClip ObjectID="unresolved-sub"><Name>Unresolved media clip</Name><Clip ObjectRef="unresolved-clip"/></SubClip>
+<VideoClip ObjectID="unresolved-clip"><Clip><InPoint>0</InPoint><OutPoint>{TPS}</OutPoint></Clip></VideoClip></PremiereData>"#,
+            2000 * TPS,
+            2001 * TPS,
+        );
+        let xml = fixture()
+            .replace(r#"<TrackItem ObjectRef="20"/>"#, &format!(r#"{pointers}<TrackItem ObjectRef="unresolved"/>"#))
+            .replace("<Media>", r#"<Media ObjectUID="media">"#)
+            .replace("<Clip><InPoint>", r#"<Clip><Source ObjectRef="media-source"/><InPoint>"#)
+            .replace("</PremiereData>", &extra);
+        let (_, tree, report) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+        assert_eq!(tree.sequences[0].tracks[0].items.len(), 2001);
+        assert!(report.entries.iter().any(|entry| entry.message.contains("Unresolved media clip") && entry.message.contains("media unresolved")), "{report:?}");
+        let effects: Vec<_> =
+            report.entries.iter().filter(|entry| entry.message.contains("effect Example effect retained in provenance, not rendered")).collect();
+        assert_eq!(effects.len(), 1);
+        assert!(effects[0].message.contains("2000"));
+        assert!(!report.mentions("further import diagnostics omitted"));
+    }
     #[test]
     fn self_nesting_refused_and_ambiguous_media_stays_offline() {
         let cycle = fixture().replace("<Name>camera.mov</Name>", "<Name>Sequence 01</Name>");
         assert!(import(cycle.as_bytes(), &ImportOptions::default(), None).unwrap_err().to_string().contains("cyclic"));
+        let unsupported_cycle = cycle.replace(&format!("<End>{}</End>", 3 * TPS), "<End>0</End>");
+        assert!(import(unsupported_cycle.as_bytes(), &ImportOptions::default(), None).unwrap_err().to_string().contains("cyclic"));
         let xml = fixture().replace("</PremiereData>", "<Media><Title>camera.mov</Title><FilePath>/different.mov</FilePath></Media></PremiereData>");
         let (_, tree, report) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
         assert!(tree.sequences[0].tracks[0].items[0].media_path.is_none());
