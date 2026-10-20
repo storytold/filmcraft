@@ -636,6 +636,28 @@ fn halation_glows_red_around_highlights() {
     assert!(close(at_half as f32, at_full as f32, at_full as f32 * 0.15), "full {at_full} px, half ×2 {at_half} px");
 }
 
+#[test]
+fn halation_core_suppression_clears_coloured_highlights() {
+    // an orange square (linear luminance ≈ 0.28) well above Threshold 20 %: at 100 % Core
+    // Suppression no glow lands on it, as on a white one
+    let mut img = solid(48, 48, [0.05, 0.05, 0.05]);
+    for y in 22..26 {
+        for x in 22..26 {
+            img.px[(y * 48 + x) * 4..(y * 48 + x) * 4 + 4].copy_from_slice(&[1.0, 0.1, 0.0, 1.0]);
+        }
+    }
+    let mut e = inst("halation");
+    setf(&mut e, "radius", 4.0);
+    setf(&mut e, "threshold", 20.0);
+    setf(&mut e, "core_suppression", 100.0);
+    let o = run("halation", &e, &img, &cx());
+    // it glows around the square…
+    assert!(o.get(30, 24)[0] - img.get(30, 24)[0] > 1e-3, "no halo {:?}", o.get(30, 24));
+    // …but not on it (suppression weighted by luminance left about 70 % of the halo there)
+    let (on, was) = (o.get(24, 24), img.get(24, 24));
+    assert!(close(on[0], was[0], 1e-4) && close(on[1], was[1], 1e-4), "glow on the square {on:?}");
+}
+
 /// A corrupt project can hold any number: Halation never panics, keeps every value finite, keeps
 /// the frame size and only ever adds light.
 #[test]

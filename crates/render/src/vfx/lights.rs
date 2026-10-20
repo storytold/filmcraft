@@ -312,9 +312,11 @@ pub fn halation(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     if inten <= 0.0 || !sigma.is_finite() || sigma < 0.3 {
         return;
     }
-    // 1. mask: the light above the threshold, k × linear luminance (premultiplied)
+    // 1. mask: the light above the threshold, k × linear luminance (premultiplied); core: how much
+    //    of each pixel is highlight (`highlights` scales alpha by k too), for Core Suppression
     let hi = highlights(img, threshold, 0.15);
-    let mask: Vec<f32> = hi.px.par_chunks(4).map(|p| luma([p[0], p[1], p[2]]).max(0.0)).collect();
+    let (mask, core): (Vec<f32>, Vec<f32>) =
+        hi.px.par_chunks(4).map(|p| (luma([p[0], p[1], p[2]]).max(0.0), if p[3].is_finite() { p[3].clamp(0.0, 1.0) } else { 0.0 })).unzip();
     // 2. blur it at a tight and a wide scale: a bright ring near the source and a long faint tail
     let blur = |s: f32| {
         let mut m = mask.clone();
@@ -323,8 +325,8 @@ pub fn halation(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     };
     let (tight, wide) = rayon::join(|| blur(sigma), || blur(sigma * 3.0));
     // 3. lift the halo off the source, 4. tint and add
-    img.px.par_chunks_mut(4).zip(tight.par_iter().zip(&wide).zip(&mask)).for_each(|(p, ((&t, &wd), &m))| {
-        let v = (t * 0.65 + wd * 0.35) * (1.0 - suppress * m.min(1.0)) * inten;
+    img.px.par_chunks_mut(4).zip(tight.par_iter().zip(&wide).zip(&core)).for_each(|(p, ((&t, &wd), &c))| {
+        let v = (t * 0.65 + wd * 0.35) * (1.0 - suppress * c) * inten;
         add_light(p, [col[0] * v, col[1] * v, col[2] * v]);
     });
 }
