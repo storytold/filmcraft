@@ -4,7 +4,8 @@ use crate::{Session, premiere::hash_file};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-/// Manifest: [{"source":"...","maxOffline":N}]. All imports are linked copies under target/.
+/// Manifest: [{"source":"...","maxOffline":N,"frameRate":{"num":25,"den":1}}].
+/// frameRate is an optional expectation, never an import override. Linked copies stay under target/.
 #[test]
 #[ignore = "set FILMCRAFT_PREMIERE_CORPUS to a local JSON manifest of user-owned projects"]
 fn premiere_private_corpus_preserves_sources_and_offline_counts() {
@@ -48,7 +49,10 @@ fn premiere_private_corpus_preserves_sources_and_offline_counts() {
         session.execute("file.open", json!({"path":project})).unwrap();
         assert_eq!(session.project.workflow.as_deref(), Some(&expected));
         let rates: Vec<_> = session.project.items.values().filter_map(|i| i.as_sequence().map(|s| s.frame_rate())).collect();
-        assert!(rates.iter().all(|r| *r == filmcraft_time::FrameRate::FPS_30));
+        if let Some(expected) = case.get("frameRate") {
+            let expected: filmcraft_time::FrameRate = serde_json::from_value(expected.clone()).expect("manifest frameRate must be a valid rational rate");
+            assert!(rates.iter().all(|rate| *rate == expected), "case {index}: expected {expected:?}, imported {rates:?}");
+        }
         let perf = session.execute("perf.stats", json!({})).unwrap();
         assert_eq!(perf["decode"]["hardware"]["backend"], Value::Null);
         assert_eq!(perf["decode"]["hardware"]["sessions"], 0);
