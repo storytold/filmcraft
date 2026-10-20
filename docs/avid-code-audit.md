@@ -375,9 +375,10 @@ synthetic tests and opt-in private fixture checks; they do not establish general
 tracking, or Timewarp equivalence. The user also checked the AniMatte and unsupported-effect
 cases in the local app. Group/MultiGroup conversion remains outside this change.
 
-Before rebasing on the latest upstream main, `cargo xtask ci` passed on macOS arm64 with Rust
-1.95.0. The local release build disabled link-time optimization and used 16 codegen units to
-reduce validation time; GitHub CI will exercise its configured profile. Formatting, release
-workspace Clippy with warnings denied, release workspace tests, dependency layers, asset
-attribution, and WASM checks for 49 crates all passed. Earlier private corpus and render
-audits were not rerun for this checkpoint.
+After merging upstream main `fb4cbda47a134eedabd89fe02cd59ebc69462737`, `cargo xtask ci`
+passed on macOS arm64 with Rust 1.95.0: **3,664 passed, zero failed, 76 ignored** across 317
+test suites. The local release build disabled link-time optimization and used 16 codegen units
+to reduce validation time; GitHub CI will exercise its configured profile. Formatting, release
+workspace Clippy with warnings denied, dependency layers, attribution for 69 assets, and WASM
+checks for 49 crates also passed. Earlier private corpus and render audits were not rerun for
+this checkpoint.

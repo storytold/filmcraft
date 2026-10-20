@@ -1,11 +1,11 @@
-asset:        filmcraft-lumetri.png
-title:        README: Lumetri Color panel
+asset:        filmcraft-color-panel.png
+title:        README: color grading panel
 author:       FilmCraft contributors (screenshot); film/footage/music credits below
 source:       original work (screenshot of FilmCraft captured with its ui.screenshot control command)
 license:      MIT OR Apache-2.0 (screenshot); embedded film frames are public domain, music CC0-1.0
 license-file:
 added:        2026-09-30 by Claude (agent) for Brandon Thomas
-notes:        Crop of the Lumetri Color panel (Basic Correction, Color Wheels) while grading Charade (1963); shows panel controls only. All UI icons are drawn in code; fonts are Inter and JetBrains Mono (OFL-1.1). Contains no Adobe artwork.
+notes:        Crop of the color grading panel (Basic Correction, Color Wheels) while grading Charade (1963); shows panel controls only. All UI icons are drawn in code; fonts are Inter and JetBrains Mono (OFL-1.1). Contains no Adobe artwork.
 Media visible in the screenshot (none of it is committed to the repository):
   - Night of the Living Dead (1968), dir. George A. Romero, Image Ten. US public domain (released without a copyright notice). Source: https://archive.org/details/night-of-the-living-dead-1968-english (Public Domain Mark).
   - Carnival of Souls (1962), dir. Herk Harvey, Harcourt Productions. US public domain. Source: https://archive.org/details/CarnivalOfSoulsVideoQualityUpgrade (Public Domain Mark).
