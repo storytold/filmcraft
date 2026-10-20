@@ -29,9 +29,44 @@ const MAX_SPAN: i64 = 1 << 24;
 /// Clip id, what the grain positions depend on, sample rate.
 type Key = (u64, u64, u32);
 
-/// Known grain positions of the chains read so far, per clip: `(grain, q)`.
-fn cache() -> &'static Mutex<HashMap<Key, Vec<(i64, i64)>>> {
-    static C: OnceLock<Mutex<HashMap<Key, Vec<(i64, i64)>>>> = OnceLock::new();
+/// Clips whose chains are kept. Past this many, the clip read longest ago loses its chain (its next
+/// read starts a new one); the chains of the clips playing stay.
+const MAX_CHAINS: usize = 256;
+
+/// Known grain positions of the chains read so far, per clip: `(grain, q)`, with when each clip
+/// was last read.
+#[derive(Default)]
+struct Chains {
+    clock: u64,
+    map: HashMap<Key, (u64, Vec<(i64, i64)>)>,
+}
+
+impl Chains {
+    /// The kept position of grain `g` of `key`'s chain; marks the clip as just read.
+    fn position(&mut self, key: Key, g: i64) -> Option<i64> {
+        self.clock += 1;
+        let (used, v) = self.map.get_mut(&key)?;
+        *used = self.clock;
+        v.iter().find(|(k, _)| *k == g).map(|(_, q)| *q)
+    }
+
+    /// `key`'s kept positions, making room for it first when it is new and the cache is full.
+    fn positions(&mut self, key: Key) -> &mut Vec<(i64, i64)> {
+        self.clock += 1;
+        if !self.map.contains_key(&key)
+            && self.map.len() >= MAX_CHAINS
+            && let Some(oldest) = self.map.iter().min_by_key(|(_, (used, _))| *used).map(|(k, _)| *k)
+        {
+            self.map.remove(&oldest);
+        }
+        let (used, v) = self.map.entry(key).or_default();
+        *used = self.clock;
+        v
+    }
+}
+
+fn cache() -> &'static Mutex<Chains> {
+    static C: OnceLock<Mutex<Chains>> = OnceLock::new();
     C.get_or_init(Default::default)
 }
 
@@ -64,7 +99,7 @@ pub(crate) fn read(item: &TrackItem, src: SourceAudio, a0: i64, n: usize, sr: u3
     // q of the source sample the clip shows where hop `k` starts
     let nominal = |k: i64| item.source_time_at(Tick::from_units(k.saturating_mul(h), rate)).to_units_floor(rate).saturating_mul(dir);
     let key = key(item, sr);
-    let known = cache().lock().unwrap_or_else(|e| e.into_inner()).get(&key).and_then(|v| v.iter().find(|(g, _)| *g == k0 - 1).map(|(_, q)| *q));
+    let known = cache().lock().unwrap_or_else(|e| e.into_inner()).position(key, k0 - 1);
     // `before`: the position of grain `first - 1`, which the chain continues from
     let (first, before) = match known {
         Some(q) => (k0, q),
@@ -117,10 +152,7 @@ pub(crate) fn read(item: &TrackItem, src: SourceAudio, a0: i64, n: usize, sr: u3
         }
     }
     let mut c = cache().lock().unwrap_or_else(|e| e.into_inner());
-    if c.len() > 256 {
-        c.clear();
-    }
-    let kept = c.entry(key).or_default();
+    let kept = c.positions(key);
     for k in [k1 - 1, k1] {
         if let Some(q) = at(k) {
             kept.retain(|(g, _)| *g != k);
@@ -131,4 +163,27 @@ pub(crate) fn read(item: &TrackItem, src: SourceAudio, a0: i64, n: usize, sr: u3
     let extra = kept.len().saturating_sub(8);
     kept.drain(..extra);
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A full cache drops the clip read longest ago, not every chain at once: a chain dropped in the
+    /// middle of playback restarts a few grains early and its samples change there (a click).
+    #[test]
+    fn a_full_cache_drops_only_the_clip_read_longest_ago() {
+        let mut c = Chains::default();
+        let key = |i: u64| (i, 0, 48_000);
+        for i in 0..MAX_CHAINS as u64 {
+            c.positions(key(i)).push((0, i as i64));
+        }
+        // clip 0 plays on: it is read again before the cache overflows
+        assert_eq!(c.position(key(0), 0), Some(0));
+        c.positions(key(MAX_CHAINS as u64)).push((0, 7));
+        assert_eq!(c.map.len(), MAX_CHAINS);
+        assert_eq!(c.position(key(0), 0), Some(0), "the clip still playing keeps its chain");
+        assert_eq!(c.position(key(1), 0), None, "the clip read longest ago lost its chain");
+        assert_eq!(c.position(key(MAX_CHAINS as u64), 0), Some(7));
+    }
 }

@@ -148,6 +148,18 @@ input (the renderer keeps it per clip, see `filmcraft-render`'s `stretch`). Test
 110 Hz to 1 kHz at 50 %–300 %: pitch within 2 %, level within 0.03 RMS, no steps larger than the
 tone's own slope.
 
+Why not the shuttle's `PitchShifter` (`ui-egui`'s `shuttle` runs it ahead of a `StreamResampler` to
+keep pitch at J/L speeds)? That pair is a stream: it has latency (the FFT size) and state carried
+from one block to the next, so it only gives the right samples when it is fed every sample in
+order from where it started. Clip audio is read by random access: playback, export, scrubbing,
+waveforms and loudness matching each ask for any span of the timeline, and must get the same samples
+for it. A seek would have to rebuild the stream and pre-roll its latency, and two readers of one
+clip would need two streams that agree. `Wsola` keeps no state: grain `k`'s position follows only
+from grain `k - 1`'s, and the renderer keeps the last positions of each chain, so a read
+anywhere restarts a few grains early and a read in order continues exactly. A phase vocoder also
+smears transients over its FFT window, which matters for dialogue and music cut at speed; WSOLA
+copies the input's own waveform, so transients stay sharp at the 50 %–300 % speeds clips use.
+
 ## Known limits
 
 - Effects assume ≤ the channel count they were built with; extra channels pass through

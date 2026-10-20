@@ -794,6 +794,25 @@ fn maintain_audio_pitch_keeps_a_faster_or_slower_clip_at_its_pitch() {
     assert!((pitch_hz(&mix) - 1000.0).abs() < 10.0, "{}", pitch_hz(&mix));
 }
 
+/// A read whose source span is longer than one stretch can take (a very fast clip read in one long
+/// request) is left to varispeed: `stretch::read` declines it without reading the source.
+#[test]
+fn a_stretch_too_long_for_one_read_falls_back_to_varispeed() {
+    let (p, outer, _) = tone_at_speed(100.0, false, true);
+    let mut item = p.sequence(outer).unwrap().audio_tracks[0].items[0].clone();
+    item.duration = Tick(1000 * TICKS_PER_SECOND);
+    let reads = std::cell::Cell::new(0);
+    let src = |_: i64, n: usize| {
+        reads.set(reads.get() + 1);
+        Some(AudioBuffer::silence(48_000, 2, n))
+    };
+    // 200 000 output samples at 100× read 20 million source samples, more than 2^24
+    assert!(crate::stretch::read(&item, &src, 0, 200_000, 48_000).is_none());
+    assert_eq!(reads.get(), 0, "the source is not read");
+    // a short read of the same clip is stretched
+    assert!(crate::stretch::read(&item, &src, 0, 4_800, 48_000).is_some());
+}
+
 #[test]
 fn a_time_stretched_clip_sounds_the_same_however_playback_cuts_its_reads() {
     let (p, outer, map) = tone_at_speed(1.25, false, true);
