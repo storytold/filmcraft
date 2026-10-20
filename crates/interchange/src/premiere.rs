@@ -38,6 +38,13 @@ mod reference_tests;
 #[path = "premiere_limits_tests.rs"]
 mod limits_tests;
 
+#[cfg(test)]
+#[path = "premiere_fidelity_tests.rs"]
+mod fidelity_tests;
+
+#[path = "premiere_audio.rs"]
+mod audio;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Document {
     pub sequences: Vec<Sequence>,
@@ -51,6 +58,8 @@ pub struct Sequence {
     pub height: u32,
     #[serde(default)]
     pub frame_rate: Option<FrameRate>,
+    #[serde(default)]
+    pub sample_rate: Option<u32>,
     pub work_out: Tick,
     pub tracks: Vec<Track>,
 }
@@ -64,6 +73,10 @@ pub struct Track {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Item {
     pub object_id: String,
+    #[serde(default)]
+    pub link: Option<String>,
+    #[serde(default)]
+    pub audio: BTreeMap<String, Param>,
     pub label: String,
     pub start: Tick,
     pub end: Tick,
@@ -314,6 +327,17 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
     // Scale with real document structure, not repeated references. Every visit still spends
     // subtree nodes and bytes, so a small document cannot request unbounded repeated decoding.
     let mut work_left = doc.descendants().len().saturating_mul(64).max(5_000_000);
+    let mut links = BTreeMap::new();
+    for group in root.children().filter(|n| n.has_tag_name("Link")) {
+        spend(&mut work_left, group)?;
+        let Some(id) = group.attribute("ObjectID") else { continue };
+        for pointer in group.descendants().filter(|n| n.has_tag_name("TrackItem")) {
+            let Some(item) = pointer.attribute("ObjectRef") else { continue };
+            if links.insert(item, id).is_some_and(|old| old != id) {
+                return Err(error("timeline item belongs to multiple link groups"));
+            }
+        }
+    }
     let mut sequences = Vec::new();
     let mut item_count = 0usize;
     let mut skipped_items = BTreeSet::new();
@@ -325,6 +349,7 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
         let height = dimension(value(n, "MZ.Sequence.PreviewFrameSizeHeight"), 1080)?;
         filmcraft_project::validate_frame_size(width, height).map_err(error)?;
         let mut frame_rate = None;
+        let mut sample_rate = None;
         let mut tracks = Vec::new();
         let pointers = child(n, "TrackGroups")
             .into_iter()
@@ -352,6 +377,19 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                     return Err(error(format!("{name}: conflicting video track group frame rates")));
                 }
                 frame_rate = Some(rate);
+            }
+            if group.has_tag_name("AudioTrackGroup")
+                && let Some(rate) = child(group, "TrackGroup").and_then(|g| child(g, "FrameRate"))
+            {
+                let raw = rate.text().unwrap_or("").trim().parse::<i64>().map_err(|_| error("invalid audio ticks per sample"))?;
+                if raw <= 0 || filmcraft_time::TICKS_PER_SECOND % raw != 0 {
+                    return Err(error("invalid audio ticks per sample"));
+                }
+                let parsed = u32::try_from(filmcraft_time::TICKS_PER_SECOND / raw).map_err(|_| error("invalid audio sample rate"))?;
+                if !(8000..=384000).contains(&parsed) || sample_rate.is_some_and(|old| old != parsed) {
+                    return Err(error("unsupported or conflicting audio sample rate"));
+                }
+                sample_rate = Some(parsed);
             }
             for (fallback, pointer) in group.descendants().filter(|n| n.has_tag_name("Track") && n.attribute("ObjectURef").is_some()).enumerate() {
                 let Some(track) = referred(Some(pointer), &uids, "ObjectURef") else {
@@ -413,6 +451,7 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                     }
                     let mut effects = Vec::new();
                     let mut motion = BTreeMap::new();
+                    let mut audio = BTreeMap::new();
                     let mut text = None;
                     let chain = referred(descendant(item, "ComponentOwner").and_then(|n| child(n, "Components")), &ids, "ObjectRef");
                     if let Some(chain) = chain {
@@ -453,6 +492,8 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                                         }
                                     }
                                 }
+                            } else if kind == "audio" && matches!(match_name, Some("Internal Volume Stereo" | "Internal Channel Volume Stereo")) {
+                                audio::read(c, &ids, &mut work_left, &mut audio, report)?;
                             } else if !is_text {
                                 let count = unsupported_effects.entry(effect.clone()).or_insert(0usize);
                                 *count = count.saturating_add(1);
@@ -504,6 +545,8 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                     }
                     items.push(Item {
                         object_id: item.attribute("ObjectID").unwrap_or("").into(),
+                        link: item.attribute("ObjectID").and_then(|id| links.get(id)).map(|id| (*id).to_string()),
+                        audio,
                         media_path,
                         nested_sequence,
                         label,
@@ -523,7 +566,16 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
             }
         }
         let object_uid = n.attribute("ObjectUID").ok_or_else(|| error("sequence without ObjectUID"))?.to_string();
-        sequences.push(Sequence { object_uid, name, width, height, frame_rate, work_out: ticks(value(n, "MZ.WorkOutPoint"), Tick::ZERO)?, tracks });
+        sequences.push(Sequence {
+            object_uid,
+            name,
+            width,
+            height,
+            frame_rate,
+            sample_rate,
+            work_out: ticks(value(n, "MZ.WorkOutPoint"), Tick::ZERO)?,
+            tracks,
+        });
     }
     if sequences.is_empty() {
         return Err(Error::Empty);
@@ -584,7 +636,8 @@ pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Re
             warning(&mut report, format!("{}: no video track group frame rate; using 24 fps (pass frameRate to override)", seq.name));
             FrameRate::FPS_24
         });
-        let settings = settings_for(fps, seq.width, seq.height, false);
+        let mut settings = settings_for(fps, seq.width, seq.height, false);
+        settings.sample_rate = seq.sample_rate.unwrap_or(48000);
         settings.validate().map_err(error)?;
         let id = b.reserve_sequence(&seq.name, settings, None);
         sequences.insert(seq.object_uid.clone(), id);
@@ -592,7 +645,10 @@ pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Re
     }
     for src in &doc.sequences {
         let fps = rate.or(src.frame_rate).unwrap_or(FrameRate::FPS_24);
-        let mut seq = empty_sequence(settings_for(fps, src.width, src.height, false));
+        let mut settings = settings_for(fps, src.width, src.height, false);
+        settings.sample_rate = src.sample_rate.unwrap_or(48000);
+        let mut seq = empty_sequence(settings);
+        let mut link_ids = BTreeMap::new();
         if src.work_out > Tick::ZERO {
             seq.work_area = Some(filmcraft_time::TimeRange::new(Tick::ZERO, src.work_out));
         }
@@ -649,6 +705,14 @@ pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Re
                 };
                 let mut clip = b.clip(source, kind, &item.label, item.start, item.end - item.start, item.source_in);
                 clip.speed = item.speed;
+                if let Some(link) = &item.link {
+                    clip.link = Some(*link_ids.entry(link.clone()).or_insert_with(|| b.alloc()));
+                }
+                for (key, param) in &item.audio {
+                    if let Some((effect, name)) = key.split_once('.') {
+                        set_param(&mut clip, effect, name, param.clone());
+                    }
+                }
                 if let Some(text) = &item.text {
                     clip.effects.push(filmcraft_project::graphic::new_text_layer(text, Vec2::new(src.width as f64 / 2.0, src.height as f64 / 2.0), 54.0));
                 }
@@ -1068,6 +1132,8 @@ mod tests {
     fn nesting_depth_is_checked_even_with_shortcuts_to_shared_sequences() {
         let item = |name: String| Item {
             object_id: String::new(),
+            link: None,
+            audio: BTreeMap::new(),
             label: name.clone(),
             start: Tick::ZERO,
             end: Tick(TPS),
@@ -1091,6 +1157,7 @@ mod tests {
                 width: 16,
                 height: 16,
                 frame_rate: None,
+                sample_rate: None,
                 work_out: Tick::ZERO,
                 tracks: vec![Track { kind: "video".into(), index: 0, muted: false, items }],
             });
