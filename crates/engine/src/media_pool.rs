@@ -139,17 +139,10 @@ fn file_name(path: &str) -> String {
 }
 
 /// The source a registered path opener makes of `path` (`filmcraft_codecs::register_path_opener`),
-/// if one takes it. A format only a path opener can decode ([`filmcraft_media::PATH_ONLY_FORMATS`])
-/// that none takes in this build is refused here, before anything reads the file.
+/// if one takes it; a format only a path opener decodes is refused here, unread
+/// ([`filmcraft_codecs::open_by_path`]).
 fn open_by_path(path: &str) -> Option<Result<SharedSource, MediaError>> {
-    if let Some(r) = filmcraft_codecs::path_openers().into_iter().find_map(|o| o(path)) {
-        return Some(r);
-    }
-    let format = filmcraft_media::path_only_format(path)?;
-    Some(Err(MediaError::Unsupported(format!(
-        "{}: {format} is decoded through its maker's runtime, which this build of FilmCraft cannot load (the desktop app on Linux, Windows and macOS can)",
-        file_name(path)
-    ))))
+    filmcraft_codecs::open_by_path(path)
 }
 
 impl MediaPool {

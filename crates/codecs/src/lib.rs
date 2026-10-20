@@ -186,6 +186,22 @@ pub fn register_path_opener(f: filmcraft_media::PathOpener) {
     }
 }
 
+/// The source a registered path opener makes of the native file `path`, if one takes it. A format
+/// only a path opener can decode ([`filmcraft_media::PATH_ONLY_FORMATS`]) that none takes in this
+/// build is refused here, before anything reads the file: a camera file is hundreds of gigabytes,
+/// and the other openers would read it whole (or take its container and fail on its codec).
+/// Everything else is `None`, for the reader and byte openers.
+pub fn open_by_path(path: &str) -> Option<filmcraft_media::Result<filmcraft_media::SharedSource>> {
+    if let Some(r) = path_openers().into_iter().find_map(|o| o(path)) {
+        return Some(r);
+    }
+    let format = filmcraft_media::path_only_format(path)?;
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    Some(Err(filmcraft_media::MediaError::Unsupported(format!(
+        "{name}: {format} is decoded through its maker's runtime, which this build of FilmCraft cannot load (the desktop app on Linux, Windows and macOS can)"
+    ))))
+}
+
 /// A media reader as the demuxers' byte source.
 #[derive(Clone)]
 pub(crate) struct Src(pub filmcraft_media::SharedReader);
