@@ -1188,7 +1188,9 @@ pub fn apply(p: &mut Project, plan: Plan) -> Result<Vec<ItemId>> {
                         if offset.0 < 0 || offset.0 as u64 > 1u64 << 53 {
                             return Err(bad("Timewarp sampled position is outside exact project range"));
                         }
-                        samples.keyframes.push(Keyframe::new(q.settings.frame_rate.tick_of(index as i64), ParamValue::Float(offset.0 as f64)));
+                        let mut key = Keyframe::new(q.settings.frame_rate.tick_of(index as i64), ParamValue::Float(offset.0 as f64));
+                        key.interp = filmcraft_project::keyframe::Interpolation::Hold;
+                        samples.keyframes.push(key);
                     }
                     lane.params.insert("sampled_source_offset_ticks".to_owned(), samples);
                 }

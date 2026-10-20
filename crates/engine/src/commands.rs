@@ -1531,7 +1531,7 @@ fn build() -> Vec<CommandSpec> {
             "Prepare Avid Bin",
             [],
             None,
-            r#"{"path":str,"parent":binId?,"mediaFolders":[str]?,"mediaFolder":str?,"wait":bool?} (imports all; per-item conversion problems are reported)"#,
+            r#"{"path":str,"parent":binId?,"mode":"metadata"|"media"|"sequences"?,"mediaFolders":[str]?,"mediaFolder":str?,"wait":bool?} (mode defaults to sequences; nonempty media folders require media or sequences; per-item conversion problems are reported)"#,
             always,
             crate::avid_bin_import::prepare
         ),
