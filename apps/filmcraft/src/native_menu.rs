@@ -58,7 +58,11 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
             native.push((Item { enabled: true, shortcut: None, ..it.clone() }, mi.clone()));
         }
     }
-    // the predefined items keep their native actions; our text lets them follow the language
+    // the predefined items keep their native actions; our text lets them follow the language.
+    // Quit is NOT predefined: `PredefinedMenuItem::quit` calls NSApplication terminate:, which
+    // skips the app's unsaved-changes prompt and quits with a file dialog up (#2018). A custom
+    // item routes Cmd+Q through the window-close flow (`app.quit`, handled in ui-egui).
+    let quit = MenuItem::with_id("app.quit", app.ui.language.tr(quit_label), true, accel("Cmd+Q"));
     let predefined = [
         (hide_label, PredefinedMenuItem::hide(Some(app.ui.language.tr(hide_label)))),
         (hide_others_label, PredefinedMenuItem::hide_others(Some(app.ui.language.tr(hide_others_label)))),

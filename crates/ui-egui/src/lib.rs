@@ -1849,6 +1849,14 @@ impl FilmcraftApp {
                 if self.control_input_only && id != "app.quit" {
                     continue;
                 }
+                // The native menu bar's Quit is a custom item: the system predefined one called
+                // NSApplication terminate:, which quits without the unsaved-changes prompt and
+                // with a file dialog up. Route it through the window-close flow instead, so
+                // intercept_quit asks to save and refuses while a file dialog is open (#2018).
+                if id == "app.quit" {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    continue;
+                }
                 if let Err(e) = menus::invoke(self, &ctx, &id, json!({})) {
                     self.ui.status = e;
                 }

@@ -113,6 +113,12 @@ fn refs(v: &[String]) -> Vec<&str> {
 }
 
 impl FilmcraftApp {
+    /// Whether a file dialog is open and waiting for the user (`pick`/`pick_ui` refuse while it
+    /// is, and quitting is refused until it is cancelled).
+    pub fn dialog_pending(&self) -> bool {
+        self.native_dialog.is_some()
+    }
+
     /// Show `dialog`, then call `then` with the chosen paths (empty when cancelled). With a host
     /// that shows dialogs without blocking, this returns `{"dialog": "open"}` and `then` runs on a
     /// later frame; otherwise `then` runs now and its result is returned. While a dialog is open
