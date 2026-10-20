@@ -326,6 +326,42 @@ fn a_coded_frame_falls_back_to_its_cpu_decode() {
     assert_eq!(c.intra_decodes().0, 0);
 }
 
+#[test]
+fn a_huge_corrupt_coded_frame_composites_transparent() {
+    // a header claiming 10000×10000 whose decode fails: the CPU placeholder has empty planes and
+    // the frame is larger than a texture, which must not reach wgpu (a validation error panics)
+    use filmcraft_frame::{PixelData, VideoFrame};
+    let Some((dev, q)) = device() else { return };
+    let mut c = crate::GpuCompositor::new(&dev, &q);
+    let img = CodedImage::new(CodedFormat::ProRes, Arc::from(&[0u8; 64][..]), Chroma::C422, 10, false, Box::new(|_| None));
+    let huge = Arc::new(VideoFrame {
+        width: 10_000,
+        height: 10_000,
+        data: PixelData::Coded(Arc::new(img)),
+        color: filmcraft_color::ColorInfo::REC709,
+        par: (1, 1),
+        pts: filmcraft_time::Tick::ZERO,
+    });
+    // and a host frame whose planes are shorter than its size
+    let short = Arc::new(VideoFrame {
+        width: 64,
+        height: 32,
+        data: PixelData::Yuv16 { planes: [Arc::new(vec![64; 10]), Arc::new(Vec::new()), Arc::new(Vec::new())], chroma: Chroma::C422, bits: 10, alpha: None },
+        ..(*huge).clone()
+    });
+    for f in [huge, short] {
+        let plan = filmcraft_render::plan::FramePlan::Layers {
+            width: 64,
+            height: 32,
+            layers: vec![filmcraft_render::plan::PlanLayer::new(f, filmcraft_geom::Affine::IDENTITY, 1.0, filmcraft_render::Blend::Normal)],
+        };
+        c.composite(&plan);
+        let out = c.read_output().map(|o| o.2).unwrap_or_default();
+        // (the output is opaque over black: nothing of the layer shows)
+        assert!(!out.is_empty() && out.as_chunks::<4>().0.iter().all(|p| p[..3] == [0, 0, 0]), "transparent");
+    }
+}
+
 /// Playback cost of a 4K ProRes frame through the compositor (`cargo test --release -p
 /// filmcraft-gpu --lib prores_gpu_vs_cpu_bench -- --ignored --nocapture`): CPU decode + half-float
 /// conversion + upload against bitstream upload + GPU decode, each until the GPU is done.

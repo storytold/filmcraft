@@ -145,6 +145,26 @@ impl VideoFrame {
         }
     }
 
+    /// Whether the host-memory pixels hold at least what `width`×`height` needs (always true for
+    /// GPU-side data). A short buffer (a failed decode's empty placeholder, a corrupt file) is
+    /// shown transparent instead of being indexed past its end.
+    pub fn data_fits(&self) -> bool {
+        let (w, h) = (self.width as usize, self.height as usize);
+        let n = w.saturating_mul(h);
+        let planar = |len: [usize; 3], chroma: Chroma, alpha: Option<usize>| {
+            let (sx, sy) = chroma.shifts();
+            let cn = w.div_ceil(1 << sx).saturating_mul(h.div_ceil(1 << sy));
+            len[0] >= n && len[1] >= cn && len[2] >= cn && alpha.is_none_or(|a| a >= n)
+        };
+        match &self.data {
+            PixelData::Rgba8(d) => d.len() >= n.saturating_mul(4),
+            PixelData::RgbaF32(d) => d.len() >= n.saturating_mul(4),
+            PixelData::Yuv8 { planes, chroma, alpha } => planar(planes.each_ref().map(|p| p.len()), *chroma, alpha.as_ref().map(|a| a.len())),
+            PixelData::Yuv16 { planes, chroma, alpha, .. } => planar(planes.each_ref().map(|p| p.len()), *chroma, alpha.as_ref().map(|a| a.len())),
+            PixelData::Coded(_) => true,
+        }
+    }
+
     /// The frame with its pixels in host memory: a [`PixelData::Coded`] picture decoded
     /// on the CPU (once, then shared), any other frame as it is.
     pub fn cpu_frame(&self) -> std::borrow::Cow<'_, VideoFrame> {
@@ -453,9 +473,10 @@ impl VideoFrame {
                             let y = (oy * n + dy).min(h - 1);
                             for dx in 0..n {
                                 let x = (ox * n + dx).min(w - 1);
-                                let i = (y * w + x) * 4;
+                                // samples past the end of the data add nothing (transparent)
+                                let Some(p) = d.get((y * w + x) * 4..(y * w + x) * 4 + 4) else { continue };
                                 for k in 0..4 {
-                                    acc[k] += d[i + k];
+                                    acc[k] += p[k];
                                 }
                             }
                         }
@@ -483,7 +504,8 @@ impl VideoFrame {
                             let y = (oy * n + dy).min(h - 1);
                             for dx in 0..n {
                                 let x = (ox * n + dx).min(w - 1);
-                                let s = &d[(y * w + x) * 4..(y * w + x) * 4 + 4];
+                                // samples past the end of the data add nothing (transparent)
+                                let Some(s) = d.get((y * w + x) * 4..(y * w + x) * 4 + 4) else { continue };
                                 let a = s[3] as f32 / 255.0;
                                 acc[0] += lut[s[0] as usize] * a;
                                 acc[1] += lut[s[1] as usize] * a;
@@ -588,10 +610,15 @@ impl VideoFrame {
                             for dx in 0..n {
                                 let x = (ox * n + dx).min(w - 1);
                                 let cx = x >> sx;
-                                let yy = ytab[planes[0][y * w + x] as usize];
-                                let u = ctab[planes[1][cy * cw + cx] as usize];
-                                let v = ctab[planes[2][cy * cw + cx] as usize];
-                                let a = alpha.as_ref().map_or(1.0, |al| al[y * w + x] as f32 / 255.0);
+                                // samples the planes do not hold add nothing (transparent)
+                                let (Some(&ys), Some(&us), Some(&vs)) = (planes[0].get(y * w + x), planes[1].get(cy * cw + cx), planes[2].get(cy * cw + cx))
+                                else {
+                                    continue;
+                                };
+                                let yy = ytab[ys as usize];
+                                let u = ctab[us as usize];
+                                let v = ctab[vs as usize];
+                                let a = alpha.as_ref().map_or(1.0, |al| al.get(y * w + x).map_or(0.0, |&s| s as f32 / 255.0));
                                 acc[0] += q(yy + cr_r * v) * a;
                                 acc[1] += q(yy - cr_g * v - cb_g * u) * a;
                                 acc[2] += q(yy + cb_b * u) * a;
@@ -627,11 +654,13 @@ impl VideoFrame {
                             for dx in 0..n {
                                 let x = (ox * n + dx).min(w - 1);
                                 let cx = x >> sx;
-                                let yy = ny(planes[0][y * w + x]);
-                                let u = nc(planes[1][cy * cw + cx]);
-                                let v = nc(planes[2][cy * cw + cx]);
-                                let rgb = ycbcr_to_rgb(yy, u, v, info.matrix);
-                                let a = alpha.as_ref().map_or(1.0, |al| al[y * w + x] as f32 / amax);
+                                // samples the planes do not hold add nothing (transparent)
+                                let (Some(&ys), Some(&us), Some(&vs)) = (planes[0].get(y * w + x), planes[1].get(cy * cw + cx), planes[2].get(cy * cw + cx))
+                                else {
+                                    continue;
+                                };
+                                let rgb = ycbcr_to_rgb(ny(ys), nc(us), nc(vs), info.matrix);
+                                let a = alpha.as_ref().map_or(1.0, |al| al.get(y * w + x).map_or(0.0, |&s| f32::from(s) / amax));
                                 acc[0] += q(rgb[0]) * a;
                                 acc[1] += q(rgb[1]) * a;
                                 acc[2] += q(rgb[2]) * a;
@@ -693,7 +722,7 @@ impl VideoFrame {
             PixelData::Rgba8(d) => d.as_ref().clone(),
             PixelData::Coded(_) => self.cpu_frame().to_rgba8(),
             PixelData::Yuv8 { planes, chroma, alpha: None }
-                if matches!(self.color.transfer, filmcraft_color::Transfer::Bt709 | filmcraft_color::Transfer::Srgb) =>
+                if matches!(self.color.transfer, filmcraft_color::Transfer::Bt709 | filmcraft_color::Transfer::Srgb) && self.data_fits() =>
             {
                 // Direct display path: Y'CbCr → R'G'B' without linearisation.
                 let (sx, sy) = chroma.shifts();
