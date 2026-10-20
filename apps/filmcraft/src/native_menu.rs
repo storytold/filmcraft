@@ -31,6 +31,10 @@ fn quit_item(app: &FilmcraftApp) -> (&'static str, Option<Accelerator>) {
 /// Updates native item labels, key equivalents and enablement when the menu tree changes.
 pub type MenuUpdater = Box<dyn FnMut(&[Item])>;
 
+/// Build the native menu bar from the engine's menu items (the App menu with its custom Quit,
+/// Settings as a submenu of its own, the command menus with their submenus) and return the
+/// channel the chosen command ids arrive on, plus a [`MenuUpdater`] that relabels, checks and
+/// enables items when the language or the items' state changes.
 pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, MenuUpdater) {
     let items = menu_items(app);
     // each native item with the menu entry it currently shows, so updates touch only what changed

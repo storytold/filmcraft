@@ -1804,6 +1804,8 @@ impl FilmcraftApp {
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
     }
 
+    /// One UI pass: drain the engine's events and the native menu's commands, run the shortcuts
+    /// and the playback, then draw the header, the panels and the status line.
     fn frame(&mut self, ui: &mut egui::Ui) {
         i18n::set_current(self.ui.language);
         if std::mem::take(&mut self.panic_next_frame) {
