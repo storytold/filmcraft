@@ -1,0 +1,496 @@
+# Thai (th) catalog. Columns separated by TAB: context <TAB> source <TAB> translation
+# Empty context is a plain UI string. Escapes: \n, \t, \\; preserve placeholders and trailing ….
+# Original clean-room translations from the meaning of FilmCraft's English interface text, using
+# Thai video-editing vocabulary (ซีเควนซ์, ไทม์ไลน์, แทร็ก, คลิป, หัวอ่าน, บิน…). No proprietary
+# localization resources were used. Product and technology names (FilmCraft, ArtCraft, Lumetri,
+# ProRes, LUFS…) keep their spelling.
+
+	About FilmCraft	เกี่ยวกับ FilmCraft
+	Add Audio Submix Track	เพิ่มแทร็กซับมิกซ์เสียง
+	Add Caption at Playhead	เพิ่มคำบรรยายที่หัวอ่าน
+	Add Chapter Marker…	เพิ่มมาร์กเกอร์บท…
+	Add Edit	เพิ่มจุดตัด
+	Add Edit to All Tracks	เพิ่มจุดตัดให้ทุกแทร็ก
+	Add Flash Cue Marker…	เพิ่มมาร์กเกอร์สัญญาณแฟลช…
+	Add Frame Hold	เพิ่มการหยุดเฟรม
+	Add Guide…	เพิ่มเส้นไกด์…
+	Add Marker	เพิ่มมาร์กเกอร์
+	Add New Caption Track…	เพิ่มแทร็กคำบรรยายใหม่…
+	Add Range Marker	เพิ่มมาร์กเกอร์ช่วง
+	Add Range Marker to In and Out	เพิ่มมาร์กเกอร์ช่วงที่จุดเข้าและออก
+	Add Tracks…	เพิ่มแทร็ก…
+	Adjustment Layer…	เลเยอร์ปรับแต่ง…
+	Align to Selection	จัดแนวกับการเลือก
+	Align to Video Frame	จัดแนวกับเฟรมวิดีโอ
+	Align to Video Frame as Group	จัดแนวกับเฟรมวิดีโอเป็นกลุ่ม
+	All Panels	แผงทั้งหมด
+	Alpha	อัลฟา
+	Appearance	รูปลักษณ์
+	Appearance…	รูปลักษณ์…
+	Apply Audio Transition	ใช้ทรานซิชันเสียง
+	Apply Default Transitions to Selection	ใช้ทรานซิชันเริ่มต้นกับการเลือก
+	Apply Video Transition	ใช้ทรานซิชันวิดีโอ
+	Arrange	จัดเรียง
+	ArtCraft Website	เว็บไซต์ ArtCraft
+	Assembly	การประกอบ
+	Attach Proxies…	แนบพร็อกซี…
+	Audio	เสียง
+	Audio Channels…	แชนเนลเสียง…
+	Audio Clip Mixer	มิกเซอร์คลิปเสียง
+	Audio Gain…	เกนเสียง…
+	Audio Hardware…	ฮาร์ดแวร์เสียง…
+	Audio In	เสียงเข้า
+	Audio Meters	มิเตอร์เสียง
+	Audio Options	ตัวเลือกเสียง
+	Audio Out	เสียงออก
+	Audio Track Mixer	มิกเซอร์แทร็กเสียง
+	Audio Waveform	รูปคลื่นเสียง
+	Auto Save…	บันทึกอัตโนมัติ…
+	Automate to Sequence…	สร้างอัตโนมัติเป็นซีเควนซ์…
+	Bars and Tone…	แถบสีและโทนเสียง…
+	Bin	บิน
+	Bin From Selection	บินจากการเลือก
+	Black Video…	วิดีโอสีดำ…
+	Blue	น้ำเงิน
+	Bottom	ล่าง
+	Breakout to Mono	แยกเป็นโมโน
+	Bring Forward	ยกขึ้นมาข้างหน้า
+	Bring to Front	นำไปไว้หน้าสุด
+	Brown	น้ำตาล
+	Captions	คำบรรยาย
+	Captions and Graphics	คำบรรยายและกราฟิก
+	Captions…	คำบรรยาย…
+	Caribbean	แคริบเบียน
+	Center Horizontally	จัดกึ่งกลางแนวนอน
+	Center Vertically	จัดกึ่งกลางแนวตั้ง
+	Cerulean	ซีรูเลียน
+	Clear	ล้าง
+	Clear Guides	ล้างเส้นไกด์
+	Clear In	ล้างจุดเข้า
+	Clear In and Out	ล้างจุดเข้าและออก
+	Clear Markers	ล้างมาร์กเกอร์
+	Clear Out	ล้างจุดออก
+	Clear Selected Marker	ล้างมาร์กเกอร์ที่เลือก
+	Clip	คลิป
+	Close	ปิด
+	Close All Other Projects	ปิดโปรเจกต์อื่นทั้งหมด
+	Close All Projects	ปิดโปรเจกต์ทั้งหมด
+	Close Gap	ปิดช่องว่าง
+	Close Project	ปิดโปรเจกต์
+	Color Management…	การจัดการสี…
+	Color Matte…	แมตต์สี…
+	Comparison View	มุมมองเปรียบเทียบ
+	Composite Video	วิดีโอคอมโพสิต
+	Consolidate Duplicates	รวมไฟล์ซ้ำ
+	Copy	คัดลอก
+	Copy Paste Includes Sequence Markers	การคัดลอกวางรวมมาร์กเกอร์ซีเควนซ์
+	Create Captions from Transcript…	สร้างคำบรรยายจากทรานสคริปต์…
+	Create Multi-Camera Source Sequence…	สร้างซีเควนซ์ต้นฉบับหลายกล้อง…
+	Create Proxies…	สร้างพร็อกซี…
+	Cut	ตัด
+	Dark	เข้ม
+	Darkest	เข้มที่สุด
+	Delete Render Files	ลบไฟล์เรนเดอร์
+	Delete Render Files In to Out	ลบไฟล์เรนเดอร์ช่วงเข้า–ออก
+	Delete Tracks…	ลบแทร็ก…
+	Delete Transcript	ลบทรานสคริปต์
+	Demo Footage	ฟุตเทจตัวอย่าง
+	Demo Project	โปรเจกต์ตัวอย่าง
+	Deselect All	ยกเลิกการเลือกทั้งหมด
+	Detach Proxies	ถอดพร็อกซี
+	Display Mode	โหมดการแสดงผล
+	Distribute	กระจาย
+	Distribute Horizontally	กระจายแนวนอน
+	Distribute Space Horizontally	กระจายระยะห่างแนวนอน
+	Distribute Space Vertically	กระจายระยะห่างแนวตั้ง
+	Distribute Vertically	กระจายแนวตั้ง
+	Duplicate	ทำสำเนา
+	Dynamic Audio Waveforms	รูปคลื่นเสียงแบบไดนามิก
+	Edit	แก้ไข
+	Edit Offline…	แก้ไขแบบออฟไลน์…
+	Edit Original	แก้ไขต้นฉบับ
+	Edit Subclip…	แก้ไขคลิปย่อย…
+	Editing	การตัดต่อ
+	Effect Controls	ตัวควบคุมเอฟเฟกต์
+	Effects	เอฟเฟกต์
+	Ellipse	วงรี
+	Enable	เปิดใช้
+	Enable Remix	เปิดใช้รีมิกซ์
+	Essential Graphics	กราฟิกจำเป็น
+	Essential Sound	เสียงจำเป็น
+	Events	เหตุการณ์
+	Export	ส่งออก
+	Export As Motion Graphics Template…	ส่งออกเป็นเทมเพลตโมชันกราฟิก…
+	Extract	แยกออก
+	Extract Audio	แยกเสียง
+	Field Options…	ตัวเลือกฟิลด์…
+	File	ไฟล์
+	File…	ไฟล์…
+	Fill frame	เติมเต็มเฟรม
+	FilmCraft Help…	ความช่วยเหลือ FilmCraft…
+	FilmCraft on GitHub	FilmCraft บน GitHub
+	FilmCraft on getartcraft.com	FilmCraft บน getartcraft.com
+	Find Next	ค้นหาถัดไป
+	Find…	ค้นหา…
+	Fit	พอดี
+	Fit to frame	พอดีกับเฟรม
+	Flatten	แบน
+	Forest	ฟอเรสต์
+	Frame Blending	การผสมเฟรม
+	Frame Hold Options…	ตัวเลือกการหยุดเฟรม…
+	Frame Sampling	การสุ่มเฟรม
+	From Bin	จากบิน
+	From Source Monitor	จากจอภาพต้นฉบับ
+	From Source Monitor, Match Frame	จากจอภาพต้นฉบับ จับคู่เฟรม
+	From file…	จากไฟล์…
+	Full	เต็ม
+	Gaussian Blur	เบลอแบบเกาส์เซียน
+	Generate Audio Waveform	สร้างรูปคลื่นเสียง
+	Get Media File Properties for	ดูคุณสมบัติไฟล์สื่อของ
+	Go to Gap	ไปยังช่องว่าง
+	Go to In	ไปยังจุดเข้า
+	Go to Next Caption Segment	ไปยังส่วนคำบรรยายถัดไป
+	Go to Next Marker	ไปยังมาร์กเกอร์ถัดไป
+	Go to Out	ไปยังจุดออก
+	Go to Previous Caption Segment	ไปยังส่วนคำบรรยายก่อนหน้า
+	Go to Previous Marker	ไปยังมาร์กเกอร์ก่อนหน้า
+	Go to Split	ไปยังจุดแยก
+	Graphics and Titles	กราฟิกและไตเติล
+	Graphics…	กราฟิก…
+	Green	เขียว
+	Group	จัดกลุ่ม
+	Guide Templates	เทมเพลตเส้นไกด์
+	Help	ช่วยเหลือ
+	Hide All Caption Tracks	ซ่อนแทร็กคำบรรยายทั้งหมด
+	High Quality Playback	การเล่นคุณภาพสูง
+	History	ประวัติ
+	Import From	นำเข้าจาก
+	Import Image Sequence…	นำเข้าลำดับภาพ…
+	Import from Media Browser	นำเข้าจากเบราว์เซอร์สื่อ
+	Import…	นำเข้า…
+	Info	ข้อมูล
+	Ingest Settings…	การตั้งค่าการนำเข้า…
+	Insert	แทรก
+	Insert Frame Hold Segment	แทรกช่วงหยุดเฟรม
+	Install Motion Graphics Template…	ติดตั้งเทมเพลตโมชันกราฟิก…
+	Interpret Footage…	ตีความฟุตเทจ…
+	Join the ArtCraft Discord…	เข้าร่วม Discord ของ ArtCraft…
+	Keyboard Shortcuts…	แป้นพิมพ์ลัด…
+	Label	ป้ายกำกับ
+	Labels…	ป้ายกำกับ…
+	Language	ภาษา
+	Lavender	ลาเวนเดอร์
+	Learning	การเรียนรู้
+	Left	ซ้าย
+	Libraries	ไลบรารี
+	Lift	ยกออก
+	Light	สว่าง
+	Link	เชื่อมโยง
+	Link Media…	เชื่อมโยงสื่อ…
+	Linked Selection	การเลือกที่เชื่อมโยง
+	Lock Guides	ล็อกเส้นไกด์
+	Lumetri Color	สี Lumetri
+	Lumetri Scopes	สโคป Lumetri
+	Magnification	กำลังขยาย
+	Make Offline…	ทำให้ออฟไลน์…
+	Make Subclip…	สร้างคลิปย่อย…
+	Make Subsequence	สร้างซีเควนซ์ย่อย
+	Manage Guides…	จัดการเส้นไกด์…
+	Mark Clip	มาร์กคลิป
+	Mark In	มาร์กจุดเข้า
+	Mark Out	มาร์กจุดออก
+	Mark Selection	มาร์กการเลือก
+	Mark Split	มาร์กจุดแยก
+	Markers	มาร์กเกอร์
+	Match Frame	จับคู่เฟรม
+	Media Analysis & Transcription…	การวิเคราะห์สื่อและการถอดเสียง…
+	Media Browser	เบราว์เซอร์สื่อ
+	Media Cache…	แคชสื่อ…
+	Media…	สื่อ…
+	Memory…	หน่วยความจำ…
+	Merge Clips…	รวมคลิป…
+	Metadata	เมตาดาต้า
+	Modify	แก้ไข
+	Motion Graphics Template…	เทมเพลตโมชันกราฟิก…
+	Multi-Camera	หลายกล้อง
+	Multi-Camera View	มุมมองหลายกล้อง
+	Nest…	ซ้อน…
+	New	ใหม่
+	New Layer	เลเยอร์ใหม่
+	New Project Panel	แผงโปรเจกต์ใหม่
+	Next Appearance Mode	โหมดรูปลักษณ์ถัดไป
+	Next in Sequence	ถัดไปในซีเควนซ์
+	Next in Track	ถัดไปในแทร็ก
+	Normalize Mix Track…	ปรับระดับแทร็กมิกซ์…
+	Offline File…	ไฟล์ออฟไลน์…
+	Open Project…	เปิดโปรเจกต์…
+	Open Recent	เปิดล่าสุด
+	Clear Recent Files	ล้างไฟล์ล่าสุด
+	Optical Flow	ออปติคัลโฟลว์
+	Overwrite	เขียนทับ
+	Paste	วาง
+	Paste Attributes…	วางแอตทริบิวต์…
+	Paste Insert	วางแบบแทรก
+	Paused Resolution	ความละเอียดขณะหยุด
+	Playback Resolution	ความละเอียดการเล่น
+	Playback…	การเล่น…
+	Playhead	หัวอ่าน
+	Plugins…	ปลั๊กอิน…
+	Polygon	รูปหลายเหลี่ยม
+	Preferences	การกำหนดลักษณะ
+	Previous in Sequence	ก่อนหน้าในซีเควนซ์
+	Previous in Track	ก่อนหน้าในแทร็ก
+	Program	โปรแกรม
+	Progress	ความคืบหน้า
+	Project	โปรเจกต์
+	Project Manager…	ตัวจัดการโปรเจกต์…
+	Project Settings	การตั้งค่าโปรเจกต์
+	Project…	โปรเจกต์…
+	Properties	คุณสมบัติ
+	Purple	ม่วง
+	Reconnect Full Resolution Media…	เชื่อมต่อสื่อความละเอียดเต็มอีกครั้ง…
+	Recover Unsaved Changes…	กู้คืนการเปลี่ยนแปลงที่ยังไม่ได้บันทึก…
+	Rectangle	สี่เหลี่ยมผืนผ้า
+	Red	แดง
+	Redo	ทำซ้ำ
+	Reference Monitor	จอภาพอ้างอิง
+	Remix	รีมิกซ์
+	Remix Properties…	คุณสมบัติรีมิกซ์…
+	Remove Attributes…	ลบแอตทริบิวต์…
+	Remove Filler Words	ลบคำเชื่อม
+	Remove Pauses	ลบช่วงหยุด
+	Remove Unused	ลบรายการที่ไม่ได้ใช้
+	Rename…	เปลี่ยนชื่อ…
+	Render Audio	เรนเดอร์เสียง
+	Render Effects In to Out	เรนเดอร์เอฟเฟกต์ช่วงเข้า–ออก
+	Render In to Out	เรนเดอร์ช่วงเข้า–ออก
+	Render Selection	เรนเดอร์การเลือก
+	Replace Fonts in Projects…	แทนที่แบบอักษรในโปรเจกต์…
+	Replace With Clip	แทนที่ด้วยคลิป
+	Report an Issue…	รายงานปัญหา…
+	Reset All Parameters	รีเซ็ตพารามิเตอร์ทั้งหมด
+	Reset Duration	รีเซ็ตระยะเวลา
+	Reset to Saved Layout	รีเซ็ตเป็นเลย์เอาต์ที่บันทึกไว้
+	Restore Captions from Source Clip	กู้คืนคำบรรยายจากคลิปต้นฉบับ
+	Reveal Log Files…	แสดงไฟล์บันทึก…
+	Reverse Match Frame	จับคู่เฟรมย้อนกลับ
+	Revert	ย้อนกลับ
+	Revert Remix	ย้อนกลับรีมิกซ์
+	Review	ตรวจทาน
+	Right	ขวา
+	Ripple Delete	ลบแบบริปเปิล
+	Ripple Delete Head Frame	ลบเฟรมหัวแบบริปเปิล
+	Ripple Sequence Markers	ริปเปิลมาร์กเกอร์ซีเควนซ์
+	Rose	โรส
+	Safe Margins	ระยะขอบปลอดภัย
+	Save	บันทึก
+	Save All	บันทึกทั้งหมด
+	Save As…	บันทึกเป็น…
+	Save Guides as Template…	บันทึกเส้นไกด์เป็นเทมเพลต…
+	Save a Copy…	บันทึกสำเนา…
+	Save as Template…	บันทึกเป็นเทมเพลต…
+	Scale to Frame Size	ปรับขนาดให้พอดีเฟรม
+	Scene Edit Detection…	ตรวจจับจุดตัดฉาก…
+	Scratch Disks…	ดิสก์ชั่วคราว…
+	Search Bin	ค้นหาบิน
+	Select	เลือก
+	Select All	เลือกทั้งหมด
+	Select All Matching	เลือกที่ตรงกันทั้งหมด
+	Select Label Group	เลือกกลุ่มป้ายกำกับ
+	Select Next Graphic	เลือกกราฟิกถัดไป
+	Select Next Layer	เลือกเลเยอร์ถัดไป
+	Select Previous Graphic	เลือกกราฟิกก่อนหน้า
+	Select Previous Layer	เลือกเลเยอร์ก่อนหน้า
+	Selection Follows Playhead	การเลือกตามหัวอ่าน
+	Selection as FilmCraft Project…	การเลือกเป็นโปรเจกต์ FilmCraft…
+	Selection…	การเลือก…
+	Send Backward	ส่งไปข้างหลัง
+	Send to Back	ส่งไปหลังสุด
+	Sequence	ซีเควนซ์
+	Sequence From Clip	ซีเควนซ์จากคลิป
+	Sequence Settings…	การตั้งค่าซีเควนซ์…
+	Sequence…	ซีเควนซ์…
+	Settings	การตั้งค่า
+	Show Active Caption Tracks Only	แสดงเฉพาะแทร็กคำบรรยายที่ใช้งาน
+	Show All Caption Tracks	แสดงแทร็กคำบรรยายทั้งหมด
+	Show All Marker Colors	แสดงสีมาร์กเกอร์ทั้งหมด
+	Show Guides	แสดงเส้นไกด์
+	Show Rulers	แสดงไม้บรรทัด
+	Show Through Edits	แสดงการตัดทะลุ
+	Simplify Sequence…	ทำให้ซีเควนซ์ง่ายขึ้น…
+	Snap in Program Monitor	สแนปในจอภาพโปรแกรม
+	Snap in Timeline	สแนปในไทม์ไลน์
+	Source	ต้นฉบับ
+	Source Settings…	การตั้งค่าต้นฉบับ…
+	Speed/Duration…	ความเร็ว/ระยะเวลา…
+	Synchronize…	ซิงโครไนซ์…
+	System Compatibility Report…	รายงานความเข้ากันได้ของระบบ…
+	Tan	น้ำตาลอ่อน
+	Teal	เขียวน้ำทะเล
+	Text	ข้อความ
+	Time Interpolation	การประมาณค่าเวลา
+	Timecode	ไทม์โค้ด
+	Timecode…	ไทม์โค้ด…
+	Timeline	ไทม์ไลน์
+	Timeline…	ไทม์ไลน์…
+	Toggle Proxies	สลับพร็อกซี
+	Tools	เครื่องมือ
+	Top	บน
+	Transcribe Sequence…	ถอดเสียงซีเควนซ์…
+	Transcribe…	ถอดเสียง…
+	Transcript	ทรานสคริปต์
+	Transparent Video…	วิดีโอโปร่งใส…
+	Trim Edit	ครอบตัดจุดตัด
+	Trim…	ครอบตัด…
+	Undo	เลิกทำ
+	Ungroup	ยกเลิกการจัดกลุ่ม
+	Universal Counting Leader…	ลีดเดอร์นับถอยหลังสากล…
+	Update Metadata…	อัปเดตเมตาดาต้า…
+	Upgrade Caption to Graphic	อัปเกรดคำบรรยายเป็นกราฟิก
+	Upgrade to Source Graphic	อัปเกรดเป็นกราฟิกต้นฉบับ
+	Vertical Text	ข้อความแนวตั้ง
+	Video In	วิดีโอเข้า
+	Video Options	ตัวเลือกวิดีโอ
+	Video Out	วิดีโอออก
+	Video and Audio Waveform Split	แยกวิดีโอและรูปคลื่นเสียง
+	View	มุมมอง
+	Violet	ไวโอเล็ต
+	Window	หน้าต่าง
+	Workspaces	พื้นที่ทำงาน
+	Yellow	เหลือง
+	Zoom In	ซูมเข้า
+	Zoom Out	ซูมออก
+	Zoom to Sequence	ซูมไปที่ซีเควนซ์
+	Project Notes	บันทึกโปรเจกต์
+	Text to Speech	แปลงข้อความเป็นเสียง
+	Color	สี
+	OK	ตกลง
+	Cancel	ยกเลิก
+	Apply	ใช้
+	Reset	รีเซ็ต
+	Delete	ลบ
+	Remove	นำออก
+	Add	เพิ่ม
+	Open	เปิด
+	Import	นำเข้า
+	Search	ค้นหา
+	Yes	ใช่
+	No	ไม่ใช่
+	On	เปิด
+	Off	ปิด
+	All	ทั้งหมด
+	Custom	กำหนดเอง
+	None	ไม่มี
+	Done	เสร็จสิ้น
+	Preset	พรีเซ็ต
+	Presets	พรีเซ็ต
+	Name	ชื่อ
+	Type	ชนิด
+	Duration	ระยะเวลา
+	Size	ขนาด
+	Speed	ความเร็ว
+	Opacity	ความทึบ
+	Position	ตำแหน่ง
+	Scale	มาตราส่วน
+	Rotation	การหมุน
+	Anchor Point	จุดยึด
+	Blend Mode	โหมดผสม
+	Crop	ครอป
+	Volume	ระดับเสียง
+	Pan	แพน
+	Mute	ปิดเสียง
+	Solo	โซโล
+	Curves	เส้นโค้ง
+	Basic Correction	การปรับพื้นฐาน
+	Creative	สร้างสรรค์
+	Vignette	ขอบมืด
+	HSL Secondary	HSL รอง
+	Advanced	ขั้นสูง
+	Basic	พื้นฐาน
+	Default	ค่าเริ่มต้น
+	Automatic	อัตโนมัติ
+	Width	ความกว้าง
+	Height	ความสูง
+	Frame Rate	อัตราเฟรม
+	Sample Rate	อัตราสุ่มตัวอย่าง
+	Channels	ช่อง
+	Format	รูปแบบ
+	Quality	คุณภาพ
+	Location	ตำแหน่งที่ตั้ง
+	Folder	โฟลเดอร์
+	Path	พาธ
+	Frames	เฟรม
+	Stop	หยุด
+	Loop	วนซ้ำ
+	Record	บันทึก
+	Filter	ตัวกรอง
+	Sort	เรียงลำดับ
+	Offline	ออฟไลน์
+	Missing	สูญหาย
+	Ready	พร้อม
+	Error	ข้อผิดพลาด
+	Warning	คำเตือน
+	Continue	ดำเนินการต่อ
+	Split	แยก
+	Align	จัดแนว
+	Transform	การแปลง
+	Motion	การเคลื่อนไหว
+	Time Remapping	การปรับเวลา
+	Video Effects	เอฟเฟกต์วิดีโอ
+	Audio Effects	เอฟเฟกต์เสียง
+	Transitions	ทรานซิชัน
+	Video Transitions	ทรานซิชันวิดีโอ
+	Audio Transitions	ทรานซิชันเสียง
+	Marker	มาร์กเกอร์
+	New Bin	บินใหม่
+	In Point	จุดเข้า
+	Out Point	จุดออก
+	Output	เอาต์พุต
+	Reverse	ย้อนกลับ
+	Waveform	รูปคลื่น
+	Histogram	ฮิสโตแกรม
+	Remaining	คงเหลือ
+	Panel	แผง
+	Selection Tool	เครื่องมือเลือก
+	Slide	สไลด์
+	Zoom	ซูม
+	Track Select Forward Tool	เครื่องมือเลือกแทร็กไปข้างหน้า
+	Track Select Backward Tool	เครื่องมือเลือกแทร็กย้อนกลับ
+	Ripple Edit Tool	เครื่องมือตัดแบบริปเปิล
+	Rolling Edit Tool	เครื่องมือตัดแบบโรลลิง
+	Rate Stretch Tool	เครื่องมือยืดอัตรา
+	Razor Tool	เครื่องมือมีดตัด
+	Slip Tool	เครื่องมือสลิป
+	Slide Tool	เครื่องมือสไลด์
+	Pen Tool	เครื่องมือปากกา
+	Hand Tool	เครื่องมือมือ
+	Zoom Tool	เครื่องมือซูม
+	Type Tool	เครื่องมือข้อความ
+	Vertical Type Tool	เครื่องมือข้อความแนวตั้ง
+	General…	ทั่วไป…
+	Color…	สี…
+	New Sequence	ซีเควนซ์ใหม่
+	Close Sequence	ปิดซีเควนซ์
+	Save Project	บันทึกโปรเจกต์
+	Sequence Name	ชื่อซีเควนซ์
+	Frame Size	ขนาดเฟรม
+	Start Queue	เริ่มคิว
+	Remove Effect	นำเอฟเฟกต์ออก
+	Reset Effect	รีเซ็ตเอฟเฟกต์
+	Effect	เอฟเฟกต์
+	Ease In	ผ่อนเข้า
+	Ease Out	ผ่อนออก
+	Linear	เชิงเส้น
+	Bezier	เบซิเยร์
+	Hold	คงที่
+	Auto Bezier	เบซิเยร์อัตโนมัติ
+	Continuous Bezier	เบซิเยร์ต่อเนื่อง
+	Level	ระดับ
+	Gain	เกน
+	Font	ฟอนต์
+	Fill	เติมสี
+	Stroke	เส้นขอบ
+	Shadow	เงา
+	Background	พื้นหลัง
+	Alignment	การจัดแนว
+	Find	ค้นหา

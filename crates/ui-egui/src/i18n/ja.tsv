@@ -3429,6 +3429,7 @@
 	The language changed but could not be saved: {e}	表示言語は変更されましたが、保存できませんでした: {e}
 	no Chinese font is installed on this system; the interface stays in English	このシステムには中国語フォントがインストールされていないため、表示は英語のままです
 	no Korean font is installed on this system; the interface stays in English	このシステムには韓国語フォントがインストールされていないため、表示は英語のままです
+	no Thai font is installed on this system; the interface stays in English	このシステムにはタイ語フォントがインストールされていないため、表示は英語のままです
 	no Japanese font is installed on this system; the interface stays in English	このシステムには日本語フォントがインストールされていないため、表示は英語のままです
 	Show	表示
 	Sort	並べ替え

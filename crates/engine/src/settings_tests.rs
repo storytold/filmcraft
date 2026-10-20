@@ -50,6 +50,12 @@ fn interface_language_persists_and_rejects_hostile_values() {
     }
     set(&mut s, "general.interfaceLanguage", json!("it"));
     assert_eq!(Preferences::load(&path).general.interface_language, "it");
+    // Thai is stored as `th`, not a locale tag
+    for value in [json!("th-TH"), json!("TH"), json!("thai")] {
+        assert!(s.execute("prefs.set", json!({"key": "general.interfaceLanguage", "value": value})).is_err());
+    }
+    set(&mut s, "general.interfaceLanguage", json!("th"));
+    assert_eq!(Preferences::load(&path).general.interface_language, "th");
     // back to following the operating system (#218)
     set(&mut s, "general.interfaceLanguage", json!("system"));
     assert_eq!(Preferences::load(&path).general.interface_language, "system");
