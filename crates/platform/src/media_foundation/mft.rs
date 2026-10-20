@@ -141,9 +141,10 @@ pub struct EncSpec {
 /// Vendors' encoders are usually **asynchronous** MFTs (Qualcomm's, Intel's and AMD's are), and
 /// an asynchronous MFT answers `MF_E_TRANSFORM_ASYNC_LOCKED` to every call until the caller sets
 /// `MF_TRANSFORM_ASYNC_UNLOCK`, so that happens right after activation — see
-/// <https://learn.microsoft.com/windows/win32/medfound/asynchronous-mfts>. They also do not
-/// declare their media types up front: `MFTEnumEx` filtered on the input subtype finds none of
-/// them, which is why the candidates come from an unfiltered [`MfApi::all_video_encoders`].
+/// <https://learn.microsoft.com/windows/win32/medfound/asynchronous-mfts>. Candidates come from
+/// an unfiltered [`MfApi::all_video_encoders`], then each is configured for the requested stream.
+/// The earlier empty filtered search was caused by reversed `MFTEnumEx` input/output arguments,
+/// corrected in `MfApi::enumerate`; it did not establish missing vendor media-type registrations.
 pub struct MfEncoder {
     transform: IMFTransform,
     /// The MFT hands out its finished samples itself, so the output descriptor carries none.
@@ -510,8 +511,8 @@ impl MfApi {
         self.enumerate(MFT_CATEGORY_VIDEO_DECODER, flags, Some(&input), None)
     }
 
-    /// The encoder MFTs writing `output` from `input`, as activation objects. The output type comes
-    /// first in `MFTEnumEx`'s argument list: it is what the filter is chosen for. With
+    /// The encoder MFTs writing `output` from `input`, as activation objects. This helper takes
+    /// `output` first; `MFTEnumEx` takes the input filter first, then the output filter. With
     /// `hardware_only` cleared the list also holds the software encoders, so a machine with no
     /// hardware encoder at all can still be told apart from one that has no encoder.
     pub fn encoders(&self, output: GUID, input: GUID, hardware_only: bool) -> Result<Vec<IMFActivate>, String> {
@@ -525,8 +526,8 @@ impl MfApi {
     }
 
     /// Every MFT in `MFT_CATEGORY_VIDEO_ENCODER`, with no constraint on either side's media type.
-    /// Some vendors' encoder MFTs only declare their input type once they have been activated with a
-    /// Direct3D device manager, so filtering on the input subtype can miss them; this does not.
+    /// The factory deliberately enumerates without type filters, then tries each candidate with
+    /// the requested output type, input type and Direct3D device manager during configuration.
     pub fn all_video_encoders(&self, hardware_only: bool) -> Result<Vec<IMFActivate>, String> {
         let mut flags = MFT_ENUM_FLAG_SORTANDFILTER.0;
         if hardware_only {
