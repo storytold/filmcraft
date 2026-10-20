@@ -1,6 +1,7 @@
 //! Native Avid bin preview. Parsing runs in an engine job; applying is one edit.
 use crate::{FilmcraftApp, native_dialogs::FileDialog, state::AvidImportDraft};
 use egui::{Color32, RichText};
+use filmcraft_project::BinId;
 use serde_json::{Value, json};
 
 // Both path rows use the same field width so their Browse buttons line up.
@@ -10,10 +11,17 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     if id != "file.importAvidBin" || params.get("job").is_some() {
         return None;
     }
-    let parent = app.import_bin().0;
-    app.ui.avid_import = Some(AvidImportDraft { parent: Some(parent), ..Default::default() });
-    Some(Ok(json!({"dialog":"avidImport"})))
+    let parent = params.get("parent").and_then(Value::as_u64).map(BinId).unwrap_or_else(|| app.import_bin());
+    let path = params.get("path").and_then(Value::as_str).unwrap_or_default().to_owned();
+    Some(Ok(open_for_path(app, path, parent)))
 }
+
+/// Open the Avid-specific preview after File ▸ Import selects a bin.
+pub fn open_for_path(app: &mut FilmcraftApp, path: String, parent: BinId) -> Value {
+    app.ui.avid_import = Some(AvidImportDraft { path, parent: Some(parent.0), ..Default::default() });
+    json!({"dialog":"avidImport"})
+}
+
 fn cancel(app: &mut FilmcraftApp, job: Option<u64>) {
     if let Some(job) = job
         && let Err(e) = app.session.execute("jobs.cancel", json!({"job":job}))
@@ -21,6 +29,7 @@ fn cancel(app: &mut FilmcraftApp, job: Option<u64>) {
         app.ui.status = e.to_string();
     }
 }
+
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut draft) = app.ui.avid_import.take() else { return };
     let mut open = true;
@@ -206,16 +215,26 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
         });
         ui.separator();
+        let close_label = if draft.completed { tl!("Close") } else { tl!("Cancel") };
+        let read_label = tl!("Read bin");
+        let import_label = tl!("Import");
+        let button_font = egui::TextStyle::Button.resolve(ui.style());
+        let button_width = |label: &str| {
+            (ui.painter().layout_no_wrap(label.to_owned(), button_font.clone(), Color32::WHITE).size().x + 2.0 * ui.spacing().button_padding.x)
+                .max(ui.spacing().interact_size.x)
+        };
+        let row_width = button_width(close_label) + button_width(read_label) + button_width(import_label) + 2.0 * ui.spacing().item_spacing.x;
         ui.horizontal(|ui| {
-            let r = ui.button(if draft.completed { tl!("Close") } else { tl!("Cancel") });
-            app.auto.add("avidImport.cancel", r.rect, tl!("Cancel"));
+            ui.add_space(((ui.available_width() - row_width) / 2.0 - ui.spacing().item_spacing.x).max(0.0));
+            let r = ui.button(close_label);
+            app.auto.add("avidImport.cancel", r.rect, close_label);
             if r.clicked() {
                 open = false;
             }
-            let r = ui.add_enabled(!running && !draft.completed && !draft.path.trim().is_empty(), egui::Button::new(tl!("Read bin")));
+            let r = ui.add_enabled(!running && !draft.completed && !draft.path.trim().is_empty(), egui::Button::new(read_label));
             app.auto.add("avidImport.read", r.rect, tl!("Read bin"));
             read = r.clicked();
-            let r = ui.add_enabled(draft.report.is_some() && draft.job.is_some(), egui::Button::new(tl!("Import")).fill(app.tokens.accent));
+            let r = ui.add_enabled(draft.report.is_some() && draft.job.is_some(), egui::Button::new(import_label).fill(app.tokens.accent));
             app.auto.add("avidImport.import", r.rect, tl!("Import"));
             apply = r.clicked();
         });
@@ -291,5 +310,29 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         app.ui.avid_import = Some(draft);
     } else {
         cancel(app, draft.job);
+    }
+}
+
+#[cfg(test)]
+mod picker_tests {
+    use super::*;
+
+    #[test]
+    fn file_import_routes_one_avb_to_avid_preview_and_rejects_mixed_selection() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.hooks.pick_files = Some(Box::new(|exts| {
+            assert!(exts.contains(&"avb"));
+            vec!["/tmp/example.AVB".into()]
+        }));
+        let result = app.file_dialog("file.import", &json!({})).unwrap();
+        assert_eq!(result["dialog"], "avidImport");
+        let draft = app.ui.avid_import.as_ref().unwrap();
+        assert_eq!(draft.path, "/tmp/example.AVB");
+        assert_eq!(draft.parent, Some(app.import_bin().0));
+        assert!(draft.job.is_none());
+
+        app.hooks.pick_files = Some(Box::new(|_| vec!["/tmp/a.avb".into(), "/tmp/b.mov".into()]));
+        assert!(app.file_dialog("file.import", &json!({})).unwrap_err().contains("one Avid bin"));
+        assert_eq!(app.ui.avid_import.as_ref().unwrap().path, "/tmp/example.AVB");
     }
 }

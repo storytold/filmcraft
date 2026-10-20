@@ -366,3 +366,18 @@ passed in a focused run. The release rebuild shared the machine with an unrelate
 for part of validation, so its elapsed time is not a reader-performance measurement.
 Those counts describe that earlier checkpoint. Later changes, including path handling and
 simple Flip/Flip-Flop translation, require their own validation before submission.
+
+The current import branch adds bounded static Resize and 3D Warp geometry/Crop, a narrow
+AniMatte shape-mask subset, and sampled Timewarp mapping. Unsupported effect payloads produce
+conversion diagnostics while retaining the underlying source clip when it is unambiguous.
+The File > Import picker now routes `.avb` to the bin preview. These changes are covered by
+synthetic tests and opt-in private fixture checks; they do not establish general AniMatte,
+tracking, or Timewarp equivalence. The user also checked the AniMatte and unsupported-effect
+cases in the local app. Group/MultiGroup conversion remains outside this change.
+
+Before rebasing on the latest upstream main, `cargo xtask ci` passed on macOS arm64 with Rust
+1.95.0. The local release build disabled link-time optimization and used 16 codegen units to
+reduce validation time; GitHub CI will exercise its configured profile. Formatting, release
+workspace Clippy with warnings denied, release workspace tests, dependency layers, asset
+attribution, and WASM checks for 49 crates all passed. Earlier private corpus and render
+audits were not rerun for this checkpoint.

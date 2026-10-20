@@ -256,7 +256,6 @@ pub(crate) fn apply_layout(v: &mut Vec<CommandSpec>) {
         (At::After("markers.addChapter"), vec!["markers.addFlashCue"]),
         (At::Before("file.close"), vec!["file.open"]),
         (At::After("media.makeOffline"), vec!["file.importFromMediaBrowser", "file.import", "file.importImageSequence"]),
-        (At::After("file.import"), vec!["file.importAvidBin"]),
     ];
     for (at, ids) in layout {
         let mut run = Vec::new();

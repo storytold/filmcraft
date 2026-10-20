@@ -8,6 +8,8 @@ use crate::{Error, Result};
 
 mod effects;
 pub use effects::*;
+mod animatte;
+pub use animatte::*;
 mod parameters;
 pub use parameters::*;
 mod picture;

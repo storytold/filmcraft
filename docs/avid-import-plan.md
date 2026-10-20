@@ -14,11 +14,11 @@ An `.avb` holds editorial records, not a playable media file. It can contain man
 subclips and sequences whose media is stored elsewhere or offline. Avid-managed picture and
 audio tracks are commonly separate OP-Atom MXF files. Transferring the bin requires matching
 those components by package identity and source track, then reviewing missing or ambiguous
-matches. FilmCraft's regular **File > Import…** creates media items from selected files; the
-separate **Import Avid Bin…** action provides a bin-wide preview, media search roots, conversion
-diagnostics and one undoable transfer.
+matches. **File > Import…** accepts media and interchange documents. Selecting one `.avb`
+opens the Avid-specific preview, which provides media search roots, conversion diagnostics
+and one undoable transfer. An AVB cannot be combined with other selected files in one import.
 
-1. Choose **File > Import Avid Bin…** and select one `.avb`.
+1. Choose **File > Import…** and select one `.avb`. The Import Avid Bin dialog opens with its path filled in.
 2. Optionally choose managed MXF folders. **+ Add folder** adds another location, including
    another drive. Selecting a parent includes its numbered subfolders. Leave the list empty
    to import supported sources offline.
@@ -134,8 +134,25 @@ background input remain unsupported. They are reported rather than represented a
 equivalent 2D Transform. Edge sampling and compositing equivalence still need Avid/FilmCraft
 side-by-side validation.
 
+The observed static Image > Resize Position and Scaling controls also map to FilmCraft
+Transform. Resize uses its own parameter family and Y direction; it is decoded separately
+from a promoted 3D Warp. Other Resize controls and animated values remain unsupported.
+
+For the tested 1920×1080 default Key In AniMatte layout, bounded shape records map to
+FilmCraft Opacity masks. The tested one-point tracked rectangle retains its 46 sampled
+positions and survives a FilmCraft save/reopen. Fixed-topology shape motion uses linear
+keyframes; this does not establish Avid's acceleration or interpolation at other settings.
+Unknown AniMatte layouts, feathering, other key modes and tracker combinations are not
+silently flattened. An unsupported single-input effect over plain filler may instead be
+skipped with a conversion warning while retaining its source clip.
+
+The tested Timewarp Frame Sampling path uses Avid's saved source-position samples rather
+than attempting to reproduce speed-curve interpolation. It keeps the timeline duration
+and reports that optical processing and speed handles are not translated. Mixed-rate,
+non-monotone and unrecognized position tables remain unsupported.
+
 Original color attributes and auxiliary tracks are retained as evidence, but visual color
-mapping, markers, mixer automation, creative retimes, transitions, nesting and complex effects
+mapping, markers, mixer automation, broader retimes, transitions, nesting and complex effects
 are outside the validated subset. Sequence audio output currently uses FilmCraft's 48 kHz
 stereo defaults.
 

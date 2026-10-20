@@ -159,7 +159,7 @@ pub struct HostHooks {
     pub open_path: Option<Box<dyn FnMut(&str, bool) -> Result<(), String>>>,
     /// Show a file dialog without blocking the UI thread and answer on the returned channel with
     /// the chosen paths (none: cancelled). With it, [`FilmcraftApp::pick`] keeps the frame loop
-    /// running while the dialog is open (the desktop app on Linux, #260); without it the
+    /// running while the dialog is open (the desktop app on Linux and macOS); without it the
     /// synchronous pickers above are used.
     pub run_dialog: Option<Box<dyn FnMut(native_dialogs::FileDialog) -> Receiver<Vec<String>>>>,
     /// Open a URL in the system browser (Help menu links, About dialog, Discord button, Import
@@ -1340,7 +1340,7 @@ impl FilmcraftApp {
                     .iter()
                     .chain(filmcraft_media::AUDIO_EXTENSIONS)
                     .chain(filmcraft_media::STILL_EXTENSIONS)
-                    .chain(&["srt", "vtt", "scc", "edl", "xml", "fcpxml", "otio", "aaf", "omf"])
+                    .chain(&["srt", "vtt", "scc", "edl", "xml", "fcpxml", "otio", "aaf", "omf", "avb"])
                     .copied()
                     .collect();
                 let bin = params.get("bin").cloned();
@@ -1349,6 +1349,16 @@ impl FilmcraftApp {
                         return Ok(Value::Null);
                     }
                     let bin = bin.unwrap_or_else(|| json!(app.import_bin().0));
+                    if paths
+                        .iter()
+                        .any(|path| std::path::Path::new(path).extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("avb")))
+                    {
+                        if paths.len() != 1 {
+                            return Err("Choose one Avid bin at a time, without other files.".into());
+                        }
+                        let parent = bin.as_u64().map(filmcraft_project::BinId).unwrap_or_else(|| app.import_bin());
+                        return Ok(crate::panels::avid_import::open_for_path(app, paths[0].clone(), parent));
+                    }
                     let r = app.session.execute("file.import", json!({"paths": paths, "bin": bin})).map_err(|e| e.to_string());
                     if let Ok(v) = &r
                         && let Some(errs) = v.get("errors").and_then(Value::as_array)

@@ -3,7 +3,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use filmcraft_geom::Vec2;
-use filmcraft_project::{AudioChannels, BinId, ItemId, MediaRef, Project, SequenceSettings, TrackKind, effect::EffectInstance, keyframe::ParamValue};
+use filmcraft_project::{
+    AudioChannels, BinId, ItemId, Mask, MaskPath, MaskVertex, MediaRef, Project, SequenceSettings, TrackKind,
+    effect::EffectInstance,
+    keyframe::{Keyframe, Param, ParamValue},
+};
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -50,6 +54,9 @@ struct ClipPlan {
     channels: Vec<u16>,
     scale_to_frame: bool,
     effects: Vec<EffectInstance>,
+    /// Source offsets at every output frame, including the boundary sample. Empty for
+    /// ordinary clips. The visible frames come from the saved Avid position table.
+    sampled_source_offsets: Vec<Tick>,
 }
 fn bad(s: impl Into<String>) -> Error {
     Error::Other(format!("Avid sequence: {}", s.into()))
@@ -96,6 +103,153 @@ fn flag(v: &Value, key: &str) -> Result<bool> {
     }
 }
 
+/// The default 1920x1080 Key In AniMatte path is represented by FilmCraft's
+/// intrinsic Opacity masks. Other AniMatte settings are not flattened here.
+fn animatte_masks(c: &Value, source_in: Tick, rate: FrameRate, length: Tick) -> Result<Vec<Mask>> {
+    let raw = &c["properties"]["animatte"];
+    let states = list(raw, "states", 128)?;
+    if states.len() < 2 {
+        return Err(bad("AniMatte shape states are incomplete"));
+    }
+    for state in states {
+        for shape in list(state, "shapes", 64)? {
+            if !(3..=4096).contains(&list(shape, "points", 4096)?.len()) {
+                return Err(bad("AniMatte shape point count is unsupported"));
+            }
+        }
+    }
+    if let Some(tracker) = raw.get("tracker_xy").filter(|v| !v.is_null())
+        && tracker.as_array().is_none_or(|v| v.len() > 8192)
+    {
+        return Err(bad("AniMatte tracker sample count is excessive"));
+    }
+    let data: crate::avid_bin::AniMatteData = serde_json::from_value(raw.clone()).map_err(|_| bad("invalid AniMatte geometry"))?;
+    let first = data.states.first().ok_or_else(|| bad("AniMatte has no first shape state"))?;
+    let count = first.shapes.len();
+    if count == 0 || data.states.iter().any(|s| s.shapes.len() != count) {
+        return Err(bad("AniMatte shape count changes during effect"));
+    }
+    let frames = rate.frame_at(length);
+    if frames < 2 || data.states.first().is_none_or(|s| s.frame != 0) || data.states.last().is_none_or(|s| i64::from(s.frame) != frames - 1) {
+        return Err(bad("AniMatte state timing disagrees with clip"));
+    }
+    let shape_path = |shape: &crate::avid_bin::AniMatteShape| -> Result<MaskPath> {
+        let point = |xy: [f64; 2], position: bool| -> Result<Vec2> {
+            let x = xy[0] * (1920.0 / 720.0) + if position { 960.0 } else { 0.0 };
+            let y = xy[1] * (1080.0 / 243.0) + if position { 540.0 } else { 0.0 };
+            if !x.is_finite() || !y.is_finite() || x.abs() > 100_000.0 || y.abs() > 100_000.0 {
+                return Err(bad("AniMatte point outside supported canvas"));
+            }
+            Ok(Vec2::new(x, y))
+        };
+        let mut vertices = Vec::with_capacity(shape.points.len());
+        for p in &shape.points {
+            vertices.push(MaskVertex {
+                p: point(p.xy, true)?,
+                t_in: if p.corner { Vec2::ZERO } else { point(p.incoming, false)? },
+                t_out: if p.corner { Vec2::ZERO } else { point(p.outgoing, false)? },
+            });
+        }
+        Ok(MaskPath { vertices, closed: true })
+    };
+    let mut masks = Vec::with_capacity(count);
+    for index in 0..count {
+        let shape = first.shapes.get(index).ok_or_else(|| bad("AniMatte shape missing"))?;
+        let original = shape_path(shape)?;
+        let mut mask = Mask::new(format!("Avid AniMatte {}", index + 1), original.clone());
+        mask.feather.value = ParamValue::Float(0.0);
+        if let Some(samples) = &data.tracker_xy {
+            if count != 1 || data.states.len() != 2 || data.states[0].shapes != data.states[1].shapes || samples.len() != frames as usize {
+                return Err(bad("AniMatte tracker combination is unsupported"));
+            }
+            let first_xy = *samples.first().ok_or_else(|| bad("AniMatte tracker is empty"))?;
+            for (frame, xy) in samples.iter().enumerate() {
+                let delta = Vec2::new((xy[0] - first_xy[0]) * 1920.0, (xy[1] - first_xy[1]) * 1080.0);
+                if !delta.x.is_finite() || !delta.y.is_finite() || delta.x.abs() > 100_000.0 || delta.y.abs() > 100_000.0 {
+                    return Err(bad("AniMatte tracker position is invalid"));
+                }
+                let shifted = MaskPath { vertices: original.vertices.iter().map(|v| MaskVertex { p: v.p + delta, ..*v }).collect(), closed: true };
+                let time = add(source_in, rate.tick_of(frame as i64))?;
+                mask.path.keyframes.push(Keyframe::new(time, ParamValue::Path(shifted)));
+            }
+        } else if data.states.iter().skip(1).any(|s| s.shapes[index] != *shape) {
+            for state in &data.states {
+                let state_shape = &state.shapes[index];
+                if state_shape.id != shape.id || state_shape.points.len() != shape.points.len() {
+                    return Err(bad("AniMatte animated shape identity changed"));
+                }
+                let time = add(source_in, rate.tick_of(i64::from(state.frame)))?;
+                mask.path.keyframes.push(Keyframe::new(time, ParamValue::Path(shape_path(state_shape)?)));
+            }
+        }
+        masks.push(mask);
+    }
+    Ok(masks)
+}
+
+/// Avid's native Image > Resize has a different parameter family from promoted
+/// 3D Warp. This bounded path converts only static geometry; nonzero crop and
+/// background controls retain their explicit unsupported result.
+fn resize_effects(c: &Value, width: u32, height: u32) -> Result<Vec<EffectInstance>> {
+    let params = list(&c["properties"], "numeric_parameters", 128)?;
+    if params.is_empty() {
+        return Err(bad("Resize has no verified static controls"));
+    }
+    const FAMILY: [u8; 14] = [0x56, 0x8d, 0x7e, 0x84, 0xd5, 0x11, 0x93, 0x5a, 0x50, 0xf8, 0x57, 0xc1, 0, 0];
+    const KNOWN: &[u16] = &[0x8125, 0x8126, 0x8129, 0x812a, 0x812b, 0x812e, 0x812f, 0x8130, 0x8131, 0x8147, 0x8148, 0x8149, 0x814d, 0x8153];
+    let mut values = BTreeMap::<u16, f64>::new();
+    for p in params {
+        let id = list(p, "id", 16)?;
+        if id.len() != 16 || id[2..].iter().zip(FAMILY).any(|(x, y)| x.as_u64() != Some(u64::from(y))) {
+            return Err(bad("unsupported Resize parameter family"));
+        }
+        let key = u16::from_le_bytes([
+            u8::try_from(id[0].as_u64().ok_or_else(|| bad("invalid Resize parameter id"))?).map_err(|_| bad("invalid Resize parameter id"))?,
+            u8::try_from(id[1].as_u64().ok_or_else(|| bad("invalid Resize parameter id"))?).map_err(|_| bad("invalid Resize parameter id"))?,
+        ]);
+        if !KNOWN.contains(&key) {
+            return Err(bad(format!("Resize control {key:04x} is not translated")));
+        }
+        let value = p["value"].as_f64().filter(|v| v.is_finite()).ok_or_else(|| bad("invalid Resize value"))?;
+        if values.insert(key, value).is_some() {
+            return Err(bad("duplicate Resize control"));
+        }
+    }
+    let v = |id, default| values.get(&id).copied().unwrap_or(default);
+    if ![0x8125, 0x8126, 0x8129, 0x812a].iter().all(|id| values.contains_key(id)) {
+        return Err(bad("Resize geometry controls are incomplete"));
+    }
+    for id in [0x812e, 0x812f, 0x8130, 0x8131, 0x8147, 0x8148, 0x8149, 0x814d, 0x8153] {
+        if v(id, 0.0) != 0.0 {
+            return Err(bad(format!("Resize control {id:04x} is not translated")));
+        }
+    }
+    if !matches!(v(0x812b, 0.0), 0.0 | 1.0) {
+        return Err(bad("unsupported Resize Fixed Aspect state"));
+    }
+    let x = v(0x8125, 0.0);
+    let y = v(0x8126, 0.0);
+    let sx = v(0x8129, 100.0);
+    let sy = v(0x812a, 100.0);
+    if !(-1000.0..=1000.0).contains(&x)
+        || !(-1000.0..=1000.0).contains(&y)
+        || !(0.0..=10000.0).contains(&sx)
+        || !(0.0..=10000.0).contains(&sy)
+        || (v(0x812b, 0.0) == 1.0 && (sx - sy).abs() > 1e-6)
+    {
+        return Err(bad("Resize geometry outside supported range"));
+    }
+    let mut effect = filmcraft_project::find_effect("transform").ok_or_else(|| bad("FilmCraft Transform is unavailable"))?.instance();
+    // First-party 1920x1080 renders: Resize X+100 moves +192px; its Y sign is
+    // opposite promoted Warp. Both scale controls use UI percent directly.
+    effect.params.get_mut("position").ok_or_else(|| bad("Transform position missing"))?.value =
+        ParamValue::Vec2(Vec2::new(f64::from(width) * (0.5 + x / 1000.0), f64::from(height) * (0.5 + y / 1000.0)));
+    effect.params.get_mut("uniform_scale").ok_or_else(|| bad("Transform scale mode missing"))?.value = ParamValue::Bool(false);
+    effect.params.get_mut("scale_width").ok_or_else(|| bad("Transform width missing"))?.value = ParamValue::Float(sx);
+    effect.params.get_mut("scale_height").ok_or_else(|| bad("Transform height missing"))?.value = ParamValue::Float(sy);
+    Ok(vec![effect])
+}
+
 /// The numeric controls verified against user-saved 2025.12.1 bins and Avid-rendered frames.
 /// Other controls (including 3D rotation, axis, keyframes and foreground compositing) need
 /// their own translation path; never flatten them to 2D.
@@ -111,7 +265,7 @@ fn warp_effects(c: &Value, width: u32, height: u32) -> Result<Vec<EffectInstance
     const FAMILY: [u8; 14] = [0x56, 0x8d, 0x7e, 0x84, 0xd5, 0x11, 0x93, 0x5a, 0x50, 0xf8, 0x57, 0xc1, 0, 0];
     const KNOWN: &[u16] = &[
         0x812b, 0x81a1, 0x81a2, 0x81a4, 0x81a9, 0x81aa, 0x81ab, 0x81ac, 0x81b2, 0x81b3, 0x81b4, 0x81b7, 0x81b8, 0x81b9, 0x81ba, 0x81bc, 0x81bd, 0x81be, 0x81bf,
-        0x81cb, 0x81cc, 0x81cd, 0x81ce, 0x81cf, 0x81d0, 0x81ed, 0x81fc, 0x821c, 0x828e,
+        0x81cb, 0x81cc, 0x81cd, 0x81ce, 0x81cf, 0x81d0, 0x81ed, 0x81fc, 0x821c, 0x828e, 0x814d, 0x8153, 0x8206, 0x8207, 0x8208, 0x8209,
     ];
     for p in params {
         let id = list(p, "id", 16)?;
@@ -137,7 +291,22 @@ fn warp_effects(c: &Value, width: u32, height: u32) -> Result<Vec<EffectInstance
         }
         Ok(())
     };
-    for (id, default) in [(0x81a1, 0.59), (0x81a2, 0.0), (0x81a4, 0.0), (0x81d0, 0.0), (0x81ed, 1.0), (0x81fc, 255.0), (0x821c, 0.0), (0x828e, 0.0)] {
+    for (id, default) in [
+        (0x81a1, 0.59),
+        (0x81a2, 0.0),
+        (0x81a4, 0.0),
+        (0x81d0, 0.0),
+        (0x81ed, 1.0),
+        (0x81fc, 255.0),
+        (0x821c, 0.0),
+        (0x828e, 0.0),
+        (0x814d, 0.0),
+        (0x8153, 0.0),
+        (0x8206, 0.0),
+        (0x8207, 0.0),
+        (0x8208, 0.0),
+        (0x8209, 0.0),
+    ] {
         check(id, default)?;
     }
     for id in [0x812b, 0x81a9, 0x81b2, 0x81b7, 0x81bc, 0x81cb] {
@@ -302,6 +471,7 @@ impl Walk<'_> {
             channels: vec![u16::try_from(index).map_err(|_| bad("source channel overflow"))?],
             scale_to_frame: false,
             effects: Vec::new(),
+            sampled_source_offsets: Vec::new(),
             placeholder: None,
         }])
     }
@@ -339,7 +509,84 @@ impl Walk<'_> {
         }
         self.phase_warning(c, start);
         self.warnings.push(format!("Frame {}: {}/{} fps source adapted to {}/{} fps with FilmCraft Frame Sampling at 100% playback speed; Avid interpolation/frame selection may differ.",self.rate.frame_at(start),src_rate.num,src_rate.den,self.rate.num,self.rate.den));
-        Ok(vec![ClipPlan { item, start, source_in, duration: length, channels: Vec::new(), scale_to_frame: false, effects: Vec::new(), placeholder: None }])
+        Ok(vec![ClipPlan {
+            item,
+            start,
+            source_in,
+            duration: length,
+            channels: Vec::new(),
+            scale_to_frame: false,
+            effects: Vec::new(),
+            sampled_source_offsets: Vec::new(),
+            placeholder: None,
+        }])
+    }
+
+    /// Avid saves the output-to-source position function at half-frame intervals. For
+    /// Frame Sampling, the integer-time samples directly determine displayed frames;
+    /// evaluating the speed-curve handles ourselves would disagree at some frames.
+    fn sampled_timewarp(&mut self, c: &Value, start: Tick, length: Tick, depth: usize) -> Result<Vec<ClipPlan>> {
+        let p = &c["properties"];
+        if p["mc_mode"] != 0 || p["phase_offset"] != 0 || p["offset_adjust"].as_f64() != Some(0.0) || p["new_source_calculation"] != true {
+            return Err(bad("unsupported Timewarp routing or phase"));
+        }
+        let ratio = list(p, "speed_ratio", 2)?;
+        if ratio.len() != 2 || ratio.iter().any(|v| v.as_i64().is_none_or(|n| n <= 0 || n > i64::from(u32::MAX))) {
+            return Err(bad("invalid Timewarp ratio"));
+        }
+        let frames = usize::try_from(number(c, "length")?).map_err(|_| bad("Timewarp duration overflow"))?;
+        let samples = list(p, "timewarp_positions", 8193)?;
+        if frames == 0 || frames > 4096 || samples.len() != frames * 2 + 1 || length != self.rate.tick_of(frames as i64) {
+            return Err(bad("unsupported Timewarp sample count or duration"));
+        }
+        let inputs = list(c, "input_tracks", 1)?;
+        let input = inputs.first().filter(|i| i["index"] == 1).ok_or_else(|| bad("unsupported Timewarp input"))?;
+        let leaf = rates::source_leaf(&input["component"], 1, depth + 1, self.nodes)?;
+        if rate(leaf)? != self.rate {
+            return Err(bad("mixed-rate Timewarp source is unsupported"));
+        }
+        let id = avid_catalog::full_identity(&leaf["source_id"])?;
+        let item = *self.sources.get(&id).ok_or_else(|| bad("Timewarp source master missing"))?;
+        let m = self.project.item(item).and_then(|i| i.as_media()).ok_or_else(|| bad("Timewarp source is not media"))?;
+        let MediaRef::Components { picture: Some(picture), .. } = &m.media else {
+            return Err(bad("Timewarp source must be bound to verified picture"));
+        };
+        if m.info.video.as_ref().is_none_or(|v| v.frame_rate != self.rate) || number(leaf, "source_track")? != i64::from(picture.track) {
+            return Err(bad("Timewarp source rate or track disagrees with picture"));
+        }
+        let source_in = ticks(leaf, "start")?;
+        let mut previous = 0.0;
+        let mut offsets = Vec::with_capacity(frames + 1);
+        for (i, sample) in samples.iter().enumerate() {
+            let value = sample.as_f64().filter(|v| v.is_finite() && *v >= 0.0 && *v <= 1_000_000.0).ok_or_else(|| bad("invalid Timewarp source position"))?;
+            if (i == 0 && value.abs() > 1e-9) || value + 1e-9 < previous {
+                return Err(bad("non-monotone Timewarp source positions"));
+            }
+            previous = value;
+            if i % 2 == 0 {
+                let source_frame = (value + 1e-9).floor() as i64;
+                offsets.push(self.rate.tick_of(source_frame));
+            }
+        }
+        let furthest = offsets.last().copied().ok_or_else(|| bad("Timewarp position table is empty"))?;
+        if add(source_in, furthest)? > picture.length || add(source_in, furthest)? > m.info.duration {
+            return Err(bad("Timewarp position exceeds source media"));
+        }
+        self.warnings.push(format!(
+            "Frame {}: Avid Timewarp imported from saved source-position samples with FilmCraft Frame Sampling; speed handles and optical processing are not translated.",
+            self.rate.frame_at(start)
+        ));
+        Ok(vec![ClipPlan {
+            item,
+            start,
+            source_in,
+            duration: length,
+            channels: Vec::new(),
+            scale_to_frame: false,
+            effects: Vec::new(),
+            sampled_source_offsets: offsets,
+            placeholder: None,
+        }])
     }
 
     fn checked_node(&mut self, c: &Value, start: Tick, depth: usize) -> Result<Vec<ClipPlan>> {
@@ -369,9 +616,17 @@ impl Walk<'_> {
             && self.kind == TrackKind::Video
             && c.pointer("/properties/effect_id").and_then(Value::as_str) == Some("EFF2_SBLEND")
             && c.pointer("/properties/attributes/_EFFECT_PLUGIN_NAME").and_then(Value::as_str) == Some("3DWarp");
+        let resize =
+            class == "TKFX" && self.kind == TrackKind::Video && c.pointer("/properties/effect_id").and_then(Value::as_str) == Some("EFF2_BLEND_RESIZE");
+        let animatte = class == "TKFX" && self.kind == TrackKind::Video && c.pointer("/properties/effect_id").and_then(Value::as_str) == Some("EFF_ANIMATTE");
         let motion = class == "SPED" && c.pointer("/properties/effect_id").and_then(Value::as_str) == Some("EFF_TIMEWARP.MOTION_CTL");
+        let timewarp =
+            class == "SPED" && self.kind == TrackKind::Video && c.pointer("/properties/effect_id").and_then(Value::as_str) == Some("EFF_ADV_MOTION_CTL");
         let audio_adapter = class == "SPED" && c.pointer("/properties/effect_id").and_then(Value::as_str) == Some("EFF_TIMEWARP.AUDIO_TIME_WARP");
-        if c.get("unsupported").is_some() && !((combiner || spatial || flip || warp || motion || audio_adapter) && c["unsupported"] == "component_semantics") {
+        if c.get("unsupported").is_some()
+            && !((combiner || spatial || flip || warp || resize || animatte || motion || timewarp || audio_adapter)
+                && c["unsupported"] == "component_semantics")
+        {
             return Err(bad(format!(
                 "unsupported {class} at frame {} ({})",
                 self.rate.frame_at(start),
@@ -463,6 +718,7 @@ impl Walk<'_> {
                     channels: mapping,
                     scale_to_frame: false,
                     effects: Vec::new(),
+                    sampled_source_offsets: Vec::new(),
                     placeholder: None,
                 }])
             }
@@ -481,6 +737,24 @@ impl Walk<'_> {
                 if c["properties"]["effect_id"] == "EFF2_BLEND_FLIP_BOTH" {
                     clip.effects.push(filmcraft_project::find_effect("horizontal_flip").ok_or_else(|| bad("horizontal flip unavailable"))?.instance());
                 }
+                Ok(clips)
+            }
+            "TKFX" if resize => {
+                let inputs = list(c, "input_tracks", 1)?;
+                let input = inputs.first().ok_or_else(|| bad("Resize needs one input"))?;
+                if inputs.len() != 1 || input["index"] != 1 || self.clock.ticks(&input["component"], "length")? != length || c["properties"]["mc_mode"] != 0 {
+                    return Err(bad("unsupported Resize input routing"));
+                }
+                let effects = resize_effects(c, self.frame_width, self.frame_height)?;
+                let mut clips = self.node(&input["component"], start, depth + 1)?;
+                if clips.len() != 1 || clips[0].placeholder.is_some() || clips[0].start != start || clips[0].duration != length {
+                    return Err(bad("Resize input must be one supported clip"));
+                }
+                clips[0].effects.extend(effects);
+                self.warnings.push(format!(
+                    "Frame {}: static Avid Resize Position and Scaling mapped to FilmCraft Transform; exposed areas use FilmCraft transparency, and other Resize controls remain unsupported.",
+                    self.rate.frame_at(start)
+                ));
                 Ok(clips)
             }
             "TKFX" if warp => {
@@ -506,6 +780,39 @@ impl Walk<'_> {
                 ));
                 Ok(clips)
             }
+            "TKFX" if animatte => {
+                if (self.frame_width, self.frame_height) != (1920, 1080) {
+                    return Err(bad("AniMatte canvas calibration is limited to 1920x1080"));
+                }
+                let inputs = list(c, "input_tracks", 2)?;
+                if inputs.len() != 2 || inputs[0]["index"] != 1 || inputs[1]["index"] != 2 || c["properties"]["mc_mode"] != 0 {
+                    return Err(bad("unsupported AniMatte input routing"));
+                }
+                if self.clock.ticks(&inputs[0]["component"], "length")? != length
+                    || self.clock.ticks(&inputs[1]["component"], "length")? != length
+                    || !self.node(&inputs[0]["component"], start, depth + 1)?.is_empty()
+                {
+                    return Err(bad("AniMatte background must be filler"));
+                }
+                let mut clips = self.node(&inputs[1]["component"], start, depth + 1)?;
+                if clips.len() != 1 || clips[0].placeholder.is_some() || clips[0].start != start || clips[0].duration != length {
+                    return Err(bad("AniMatte foreground must be one supported clip"));
+                }
+                if self.project.source_size(clips[0].item) != Some((1920, 1080)) {
+                    return Err(bad("AniMatte source must match the calibrated canvas"));
+                }
+                if clips[0].effects.iter().any(|e| e.effect == "opacity" && !e.masks.is_empty()) {
+                    return Err(bad("nested AniMatte composition is unsupported"));
+                }
+                let mut opacity = filmcraft_project::find_effect("opacity").ok_or_else(|| bad("FilmCraft Opacity is unavailable"))?.instance();
+                opacity.masks = animatte_masks(c, clips[0].source_in, self.rate, length)?;
+                clips[0].effects.push(opacity);
+                self.warnings.push(format!(
+                    "Frame {}: default Key In Avid AniMatte geometry mapped to FilmCraft Opacity masks; one-point tracking and linear shape motion are supported, while other AniMatte settings require separate validation.",
+                    self.rate.frame_at(start)
+                ));
+                Ok(clips)
+            }
             "TKFX" if spatial && self.kind == TrackKind::Video => {
                 let inputs = list(c, "input_tracks", 1)?;
                 let input = inputs.first().ok_or_else(|| bad("spatial adapter needs one input"))?;
@@ -523,6 +830,7 @@ impl Walk<'_> {
                 Ok(clips)
             }
             "SPED" if motion && self.kind == TrackKind::Video => self.motion_adapter(c, start, length, depth),
+            "SPED" if timewarp => self.sampled_timewarp(c, start, length, depth),
             "SPED" if audio_adapter && self.kind == TrackKind::Audio => self.audio_adapter(c, start, length, depth),
             "TKFX" if combiner && self.kind == TrackKind::Audio => {
                 let inputs = list(c, "input_tracks", 2)?;
@@ -702,6 +1010,7 @@ fn sequence(p: &Project, ids: &BTreeMap<[u8; 32], ItemId>, m: &Value, nodes: &mu
             channels: Vec::new(),
             scale_to_frame: false,
             effects: Vec::new(),
+            sampled_source_offsets: Vec::new(),
         };
         if let Some(track) = tracks.iter_mut().find(|t| t.kind == TrackKind::Video) {
             track.clips.push(placeholder);
@@ -865,7 +1174,24 @@ pub fn apply(p: &mut Project, plan: Plan) -> Result<Vec<ItemId>> {
                 }
                 clip.source_channels = c.channels;
                 clip.scale_to_frame = c.scale_to_frame;
-                clip.effects.extend(c.effects);
+                for effect in c.effects {
+                    if effect.effect == "opacity" && !effect.masks.is_empty() {
+                        clip.effect_mut("opacity").ok_or_else(|| bad("intrinsic Opacity is unavailable"))?.masks.extend(effect.masks);
+                    } else {
+                        clip.effects.push(effect);
+                    }
+                }
+                if !c.sampled_source_offsets.is_empty() {
+                    let lane = clip.effect_mut("time_remap").ok_or_else(|| bad("intrinsic Time Remapping is unavailable"))?;
+                    let mut samples = Param::new(ParamValue::Float(0.0));
+                    for (index, offset) in c.sampled_source_offsets.iter().enumerate() {
+                        if offset.0 < 0 || offset.0 as u64 > 1u64 << 53 {
+                            return Err(bad("Timewarp sampled position is outside exact project range"));
+                        }
+                        samples.keyframes.push(Keyframe::new(q.settings.frame_rate.tick_of(index as i64), ParamValue::Float(offset.0 as f64)));
+                    }
+                    lane.params.insert("sampled_source_offset_ticks".to_owned(), samples);
+                }
                 clip.time_interpolation = filmcraft_project::TimeInterpolation::FrameSampling;
                 placed.push(clip);
             }
@@ -895,6 +1221,32 @@ pub fn apply(p: &mut Project, plan: Plan) -> Result<Vec<ItemId>> {
 #[cfg(test)]
 mod warp_tests {
     use super::*;
+
+    fn resize_evidence(changes: &[(u16, f64)]) -> Value {
+        let mut controls = BTreeMap::from([(0x8125, 100.0), (0x8126, -100.0), (0x8129, 50.0), (0x812a, 50.0), (0x812b, 1.0)]);
+        controls.extend(changes.iter().copied());
+        let family = [0x56, 0x8d, 0x7e, 0x84, 0xd5, 0x11, 0x93, 0x5a, 0x50, 0xf8, 0x57, 0xc1, 0, 0];
+        json!({"properties":{"numeric_parameters":controls.into_iter().map(|(id,value)| {
+            let mut guid = Vec::from(id.to_le_bytes());
+            guid.extend(family);
+            json!({"id":guid,"value":value})
+        }).collect::<Vec<_>>()}})
+    }
+
+    #[test]
+    fn static_resize_geometry_converts_but_other_controls_stay_blocked() {
+        let effects = resize_effects(&resize_evidence(&[]), 1920, 1080).unwrap();
+        assert_eq!(effects.len(), 1);
+        let fx = &effects[0];
+        assert_eq!(fx.effect, "transform");
+        assert_eq!(fx.param("position").unwrap().value, ParamValue::Vec2(Vec2::new(1152.0, 432.0)));
+        assert_eq!(fx.param("scale_width").unwrap().value, ParamValue::Float(50.0));
+        assert_eq!(fx.param("scale_height").unwrap().value, ParamValue::Float(50.0));
+        assert!(resize_effects(&resize_evidence(&[(0x812e, 47.0)]), 1920, 1080).is_err());
+        assert!(resize_effects(&resize_evidence(&[(0x8147, 50.0)]), 1920, 1080).is_err());
+        assert!(resize_effects(&resize_evidence(&[(0x812a, 75.0)]), 1920, 1080).is_err());
+        assert!(resize_effects(&resize_evidence(&[(0x8125, 1e20)]), 1920, 1080).is_err());
+    }
 
     fn evidence(changes: &[(u16, f64)]) -> Value {
         let mut controls = BTreeMap::from([
@@ -933,6 +1285,8 @@ mod warp_tests {
         assert!(warp_effects(&evidence(&[(0x81b8, 30.0)]), 1920, 1080).is_err());
         assert!(warp_effects(&evidence(&[(0x81bd, 100.0)]), 1920, 1080).is_err());
         assert!(warp_effects(&evidence(&[(0x81c9, 50.0)]), 1920, 1080).is_err());
+        assert!(warp_effects(&evidence(&[(0x8206, 1.0)]), 1920, 1080).is_err());
+        assert_eq!(warp_effects(&evidence(&[(0x814d, 0.0), (0x8153, 0.0), (0x8206, 0.0)]), 1920, 1080).unwrap().len(), 1);
         let mut missing = evidence(&[]);
         missing["properties"]["numeric_parameters"] = Value::Null;
         assert!(warp_effects(&missing, 1920, 1080).is_err());

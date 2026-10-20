@@ -3,7 +3,7 @@ use super::*;
 
 /// Strip only complete single-source sequences with zero-length padding, retaining frame
 /// counts in their original domain until the identified MXF rate is available.
-fn source_leaf<'b>(c: &'b Value, kind: u64, depth: usize, nodes: &mut usize) -> Result<&'b Value> {
+pub(super) fn source_leaf<'b>(c: &'b Value, kind: u64, depth: usize, nodes: &mut usize) -> Result<&'b Value> {
     *nodes = nodes.checked_add(1).ok_or_else(|| bad("node count overflow"))?;
     if *nodes > MAX_NODES
         || depth >= 16

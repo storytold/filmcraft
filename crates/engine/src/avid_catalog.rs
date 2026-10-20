@@ -84,6 +84,7 @@ pub(crate) fn prepare_parsed_with_index(
     let ImportOptions { mode, allow_missing, best_effort } = options;
     checkpoint()?;
     let mut errors = Vec::new();
+    let mut media_binding_failed = false;
     let plan = adapter::plan_document(doc, mode).map_err(failure)?;
     let mut warnings = plan.warnings.clone();
     let mut project = original.clone();
@@ -111,6 +112,7 @@ pub(crate) fn prepare_parsed_with_index(
                             let message = format!("{}: media remains offline: {e}", item.name);
                             item.metadata.insert("filmcraft:avid-import-error".into(), message.clone());
                             errors.push(message);
+                            media_binding_failed = true;
                             continue;
                         }
                         Err(e) => return Err(e),
@@ -131,7 +133,7 @@ pub(crate) fn prepare_parsed_with_index(
                 Err(e) => return Err(failure(e)),
             };
             if best_effort {
-                errors.extend(plan.warnings.iter().filter(|s| s.contains("placeholder")).cloned());
+                errors.extend(plan.warnings.iter().filter(|s| s.contains("placeholder") || s.contains("effect skipped")).cloned());
             }
             warnings.extend(plan.warnings.iter().cloned());
             let ids = if best_effort {
@@ -153,7 +155,7 @@ pub(crate) fn prepare_parsed_with_index(
     if reconciled > 0 {
         warnings.push(format!("{reconciled} audio masters use Avid's nominal 23.976 clock corroborated by identified MXF track sample counts. Raw rates/counts are retained; component ends use declared whole samples, excluding stored padding."));
     }
-    let has_offline = !errors.is_empty() || bound.iter().any(|b| b["offlineComponents"].as_u64().is_some_and(|n| n > 0));
+    let has_offline = media_binding_failed || bound.iter().any(|b| b["offlineComponents"].as_u64().is_some_and(|n| n > 0));
     let result = json!({"bins":bins,"warnings":warnings,"errors":errors,"bound":bound,"sequences":sequences,
         "mediaBinding":if mode == TransferMode::Metadata { "unbound" } else if has_offline { "offline_components" } else { "verified_components" }});
     Ok(Prepared { project, result, first_sequence })

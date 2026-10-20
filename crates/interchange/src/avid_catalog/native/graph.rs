@@ -126,8 +126,36 @@ impl Graph<'_, '_> {
             }
             Decoded::Group(g) => {
                 let mut properties = self.properties(&g.common)?;
-                if g.common.effect.as_ref().is_some_and(|id| id.value.as_ref() == "EFF2_SBLEND")
+                if g.class == *b"TKFX"
+                    && g.common.effect.as_ref().is_some_and(|id| id.value.as_ref() == "EFF_ANIMATTE")
+                    && matches!(g.fields.get("info_smooth"), Some(Field::Integer(0)))
+                    && matches!(g.fields.get("info_is_reversed"), Some(Field::Integer(0)))
+                    && let Some(Field::Reference(keyframes)) = g.fields.get("keyframes")
+                    && let Some(Field::Reference(manager)) = g.fields.get("trackman")
+                    && let Ok(frames) = u32::try_from(g.length)
+                    && let Some(mask) = self.evidence.bin.animatte(*keyframes, *manager, frames)?
+                {
+                    self.charge(
+                        mask.states
+                            .iter()
+                            .map(|s| s.shapes.iter().map(|shape| shape.points.len()).sum::<usize>())
+                            .sum::<usize>()
+                            .checked_mul(256)
+                            .ok_or_else(|| bad("AniMatte expansion overflow"))?,
+                    )?;
+                    properties["animatte"] = json!(mask);
+                }
+                if g.class == *b"SPED"
+                    && g.common.effect.as_ref().is_some_and(|id| id.value.as_ref() == "EFF_ADV_MOTION_CTL")
+                    && let Some(reference) = g.common.parameters
+                    && let Some(positions) = self.evidence.bin.timewarp_positions(reference)?
+                {
+                    self.charge(positions.samples.len().checked_mul(32).ok_or_else(|| bad("timewarp expansion overflow"))?)?;
+                    properties["timewarp_positions"] = json!(positions.samples);
+                }
+                if (g.common.effect.as_ref().is_some_and(|id| id.value.as_ref() == "EFF2_SBLEND")
                     && properties["attributes"]["_EFFECT_PLUGIN_NAME"] == "3DWarp"
+                    || g.common.effect.as_ref().is_some_and(|id| id.value.as_ref() == "EFF2_BLEND_RESIZE"))
                     && let Some(reference) = g.common.parameters
                     && let Some(params) = self.evidence.bin.numeric_parameters(reference)?
                 {

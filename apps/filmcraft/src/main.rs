@@ -297,13 +297,11 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         app.hooks.pick_folder = Some(Box::new(|| rfd::FileDialog::new().pick_folder().map(|p| p.to_string_lossy().to_string())));
         app.hooks.pick_folder_at =
             Some(Box::new(|dir: &str| rfd::FileDialog::new().set_directory(dir).pick_folder().map(|p| p.to_string_lossy().into_owned())));
-        // Linux: the XDG portal call blocks until the user chooses, which would stop the frame
-        // loop (GNOME offers to force-quit the window after about five seconds, #260). Show the
-        // dialog on its own thread instead; the app keeps running and acts on the answer.
-        #[cfg(target_os = "linux")]
-        {
-            app.hooks.run_dialog = Some(Box::new(run_dialog_off_thread));
-        }
+        // Linux's XDG portal blocks the frame loop (#260). On macOS, opening a modal picker
+        // inside a winit event callback can re-enter that callback and abort the process.
+        // Schedule both through the dialog runner; rfd marshals Cocoa work to the main queue
+        // after the current callback returns.
+        install_dialog_runner(&mut app.hooks);
         app.hooks.open_path = Some(Box::new(open_path));
         // Help menu, About and Discord links (#642): eframe is built without its `links`
         // feature, so `ctx.open_url` does nothing on the desktop. Detached, so a launcher
@@ -438,10 +436,19 @@ fn agent_event_loop(agent: bool) -> Option<eframe::EventLoopBuilderHook> {
     None
 }
 
+fn install_dialog_runner(hooks: &mut filmcraft_ui_egui::HostHooks) {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        hooks.run_dialog = Some(Box::new(run_dialog_off_thread));
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let _ = hooks;
+}
+
 /// Show `dialog` with rfd on a worker thread and answer on the returned channel (#260). Filter
 /// names are translated here, on the UI thread (the interface language is per thread). A dialog
 /// thread that can't start or panics drops the sender: the app takes that as cancelled.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn run_dialog_off_thread(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> std::sync::mpsc::Receiver<Vec<String>> {
     use filmcraft_ui_egui::native_dialogs::FileDialog;
     let t = |s: &str| filmcraft_ui_egui::i18n::t(s).to_string();
@@ -489,10 +496,10 @@ fn run_dialog_off_thread(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) 
     rx
 }
 
-/// A dialog as the Linux dialog thread shows it: filter names translated (here, on the UI thread:
+/// A dialog as the worker shows it: filter names translated (here, on the UI thread:
 /// the interface language is per thread) and every extension list turned into the
 /// case-insensitive patterns the synchronous pickers use, so `CLIP.MP4` stays visible (#262).
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn prepare_dialog(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> filmcraft_ui_egui::native_dialogs::FileDialog {
     use filmcraft_ui_egui::native_dialogs::FileDialog;
     let t = |s: &str| filmcraft_ui_egui::i18n::t(s).to_string();
@@ -507,13 +514,24 @@ fn prepare_dialog(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> film
 }
 
 /// The project dialogs' filter patterns (`EDIT.FCPROJ` included).
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn project_patterns() -> Vec<String> {
     file_filters::extensions(&["fcproj"])
 }
 
 #[cfg(test)]
 mod tests {
+    /// A modal folder picker called directly from a macOS winit event callback can re-enter
+    /// winit's handler and abort the process. The desktop host must route it through the
+    /// deferred dialog runner before the user can click Browse in Import Avid Bin.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_installs_deferred_native_dialog_runner() {
+        let mut hooks = filmcraft_ui_egui::HostHooks::default();
+        super::install_dialog_runner(&mut hooks);
+        assert!(hooks.run_dialog.is_some());
+    }
+
     /// Start-up registers the hardware decoders whether or not anything is logged (no logger is
     /// installed here, as in a normal run).
     #[test]

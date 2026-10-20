@@ -1536,15 +1536,7 @@ fn build() -> Vec<CommandSpec> {
             crate::avid_bin_import::prepare
         ),
         query!("file.avidBinPreparation", "Review Avid Bin", r#"{"job":id}"#, |s, p| crate::avid_bin_import::preview(s, p)),
-        cmd!(
-            "file.importAvidBin",
-            "Import Avid Bin…",
-            ["File"],
-            None,
-            r#"{"job":id} (commit reviewed native bin snapshot)"#,
-            always,
-            crate::avid_bin_import::import
-        ),
+        cmd!("file.importAvidBin", "Import Avid Bin…", [], None, r#"{"job":id} (commit reviewed native bin snapshot)"#, always, crate::avid_bin_import::import),
         query!("file.inspectAvidBin", "Inspect Avid Bin", r#"{"path":str}  (native container/membership inspection; does not import)"#, |s, p| {
             crate::avid_bin::inspect(s, p)
         }),

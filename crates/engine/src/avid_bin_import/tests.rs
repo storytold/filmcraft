@@ -1,6 +1,147 @@
 use super::*;
 use crate::Services;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[test]
+#[ignore = "requires the locally preserved User AniMatte bin and matching MXF media"]
+fn native_one_point_animatte_imports_mask_motion() {
+    let path = std::env::var("FILMCRAFT_AVID_ANIMATTE_BIN").unwrap();
+    let media = std::env::var("FILMCRAFT_AVID_ANIMATTE_MEDIA_FOLDER").unwrap();
+    let mut s = Session::default();
+    let job = s.execute("file.prepareAvidBin", json!({"path":path,"mediaFolders":[media],"wait":true})).unwrap();
+    let result = s.execute("file.importAvidBin", job).unwrap();
+    assert_eq!(result["errors"], json!([]), "{result}");
+    let mut tracked = Vec::new();
+    for sequence in result["sequences"].as_array().unwrap() {
+        let id = filmcraft_project::ItemId(sequence["item"].as_u64().unwrap());
+        let q = s.project.sequence(id).unwrap();
+        for track in &q.video_tracks {
+            for clip in &track.items {
+                if let Some(opacity) = clip.effect("opacity") {
+                    for mask in &opacity.masks {
+                        tracked.push((mask.path.keyframes.len(), mask.path_at(clip.source_in).vertices.len()));
+                    }
+                }
+            }
+        }
+    }
+    assert!(tracked.contains(&(46, 4)), "AniMatte path keyframes missing: {tracked:?}; {result}");
+    let encoded = filmcraft_format::encode(&s.project, false);
+    let restored = filmcraft_format::decode(&encoded).unwrap().project;
+    let paths = |project: &filmcraft_project::Project| {
+        result["sequences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|sequence| {
+                let id = filmcraft_project::ItemId(sequence["item"].as_u64().unwrap());
+                project.sequence(id).into_iter().flat_map(|q| {
+                    q.video_tracks
+                        .iter()
+                        .flat_map(|track| track.items.iter().flat_map(|clip| clip.effect("opacity").into_iter().flat_map(|e| e.masks.iter().cloned())))
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = paths(&s.project);
+    let after = paths(&restored);
+    assert_eq!(after.len(), before.len(), "AniMatte mask count changed across save/load");
+    for (saved, loaded) in before.iter().zip(&after) {
+        assert_eq!(saved.name, loaded.name);
+        assert_eq!(saved.path.keyframes.len(), loaded.path.keyframes.len());
+        for (a, b) in saved.path.keyframes.iter().zip(&loaded.path.keyframes) {
+            assert_eq!(a.time, b.time);
+            let (filmcraft_project::keyframe::ParamValue::Path(a_path), filmcraft_project::keyframe::ParamValue::Path(b_path)) = (&a.value, &b.value) else {
+                panic!("AniMatte path keyframe became another value type");
+            };
+            assert_eq!(a_path.vertices.len(), b_path.vertices.len());
+            for (a_vertex, b_vertex) in a_path.vertices.iter().zip(&b_path.vertices) {
+                assert!((a_vertex.p.x - b_vertex.p.x).abs() < 1e-6);
+                assert!((a_vertex.p.y - b_vertex.p.y).abs() < 1e-6);
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires the locally preserved User AniMatte bin"]
+fn unsupported_two_input_effect_keeps_source_clip_and_reports_problem() {
+    let path = std::env::var("FILMCRAFT_AVID_ANIMATTE_BIN").unwrap();
+    let media = std::env::var("FILMCRAFT_AVID_ANIMATTE_MEDIA_FOLDER").unwrap();
+    let mut bytes = std::fs::read(path).unwrap();
+    let original = b"EFF_ANIMATTE";
+    let replacement = b"BAD_ANIMATTE";
+    let offsets: Vec<_> = bytes.windows(original.len()).enumerate().filter_map(|(i, part)| (part == original).then_some(i)).collect();
+    assert_eq!(offsets.len(), 1);
+    bytes[offsets[0]..offsets[0] + original.len()].copy_from_slice(replacement);
+    let copy = std::env::temp_dir().join(format!("filmcraft-unknown-animatte-{}.avb", std::process::id()));
+    std::fs::write(&copy, bytes).unwrap();
+    let mut s = Session::default();
+    let job = s.execute("file.prepareAvidBin", json!({"path":copy,"mediaFolders":[media],"wait":true})).unwrap();
+    let preview = s.execute("file.avidBinPreparation", job.clone()).unwrap();
+    assert!(preview["report"]["errors"].to_string().contains("effect skipped"), "{preview}");
+    let report = s.execute("file.importAvidBin", job).unwrap();
+    std::fs::remove_file(&copy).unwrap();
+    assert_eq!(report["mediaSearch"]["linkedComponents"], 1, "{report}");
+    assert_eq!(report["errors"].as_array().unwrap().len(), 1, "only the skipped effect should be a conversion problem: {report}");
+    let sequence = s.project.sequence(filmcraft_project::ItemId(report["sequences"][0]["item"].as_u64().unwrap())).unwrap();
+    let picture = sequence.video_tracks.iter().flat_map(|track| &track.items).next().unwrap();
+    let source = s.project.item(picture.item).unwrap();
+    assert_ne!(source.name, "Unconverted Avid segment", "{report}");
+    assert!(picture.effect("opacity").is_some_and(|effect| effect.masks.is_empty()), "unsupported AniMatte mask must not be applied");
+}
+
+#[test]
+#[ignore = "requires locally preserved first-party Timewarp bin and source media"]
+fn native_timewarp_ramps_use_saved_source_positions() {
+    let path = std::env::var("FILMCRAFT_AVID_TIMEWARP_BIN").unwrap();
+    let media = std::env::var("FILMCRAFT_AVID_TIMEWARP_MEDIA_FOLDER").unwrap();
+    let mut s = Session::default();
+    let job = s.execute("file.prepareAvidBin", json!({"path":path,"mediaFolders":[media],"wait":true})).unwrap();
+    let result = s.execute("file.importAvidBin", job).unwrap();
+    assert_eq!(result["errors"], json!([]), "{result}");
+    assert_eq!(result["mediaSearch"]["offlineComponents"], 1, "the original linked media is not in Avid OP-Atom MXF form");
+    let id = filmcraft_project::ItemId(result["sequences"][0]["item"].as_u64().unwrap());
+    let q = s.project.sequence(id).unwrap();
+    assert_eq!(q.video_tracks[0].items.len(), 3);
+    let rate = q.settings.frame_rate;
+    for clip in &q.video_tracks[0].items {
+        assert_eq!(clip.duration, rate.tick_of(48));
+        assert_eq!(clip.speed, 1.0);
+        assert_eq!(clip.source_time_at(clip.start), clip.source_in);
+        let lane = clip.effect("time_remap").unwrap().param("sampled_source_offset_ticks").unwrap();
+        assert_eq!(lane.keyframes.len(), 49);
+    }
+    for (clip, frame_offset) in q.video_tracks[0].items.iter().zip([47, 58, 58]) {
+        assert_eq!(clip.source_time_at(clip.start + rate.tick_of(47)), clip.source_in + rate.tick_of(frame_offset));
+    }
+    let encoded = filmcraft_format::encode(&s.project, false);
+    let restored = filmcraft_format::decode(&encoded).unwrap().project;
+    assert_eq!(restored, *s.project);
+}
+
+#[test]
+#[ignore = "set FILMCRAFT_AVID_STATIC_RESIZE_BIN and FILMCRAFT_AVID_PHASE12_MEDIA_FOLDER to local first-party evidence"]
+fn native_static_resize_and_promoted_warp_link_and_scale() {
+    let path = std::env::var("FILMCRAFT_AVID_STATIC_RESIZE_BIN").unwrap();
+    let media = std::env::var("FILMCRAFT_AVID_PHASE12_MEDIA_FOLDER").unwrap();
+    let mut s = Session::default();
+    let job = s.execute("file.prepareAvidBin", json!({"path":path,"mediaFolders":[media],"wait":true})).unwrap();
+    let result = s.execute("file.importAvidBin", job).unwrap();
+    assert_eq!(result["errors"], json!([]), "{result}");
+    assert_eq!(result["mediaSearch"]["offlineComponents"], 0);
+    let id = filmcraft_project::ItemId(result["sequences"][0]["item"].as_u64().unwrap());
+    let q = s.project.sequence(id).unwrap();
+    let track = &q.video_tracks[0];
+    assert_eq!(track.items.len(), 2);
+    for clip in &track.items {
+        let translated: Vec<_> = clip.effects.iter().filter(|e| e.effect == "transform").collect();
+        assert_eq!(translated.len(), 1, "{:?}", clip.effects.iter().map(|e| &e.effect).collect::<Vec<_>>());
+        let effect = translated[0];
+        assert_eq!(effect.param("scale_width").unwrap().value, filmcraft_project::keyframe::ParamValue::Float(50.0));
+        assert_eq!(effect.param("scale_height").unwrap().value, filmcraft_project::keyframe::ParamValue::Float(50.0));
+    }
+}
 fn text(b: &mut Vec<u8>, s: &str) {
     b.extend_from_slice(&(s.len() as u16).to_le_bytes());
     b.extend_from_slice(s.as_bytes());

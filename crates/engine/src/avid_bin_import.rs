@@ -148,7 +148,7 @@ pub(crate) fn prepare(s: &mut Session, p: &Value) -> Result<Value> {
                     .map(|b| b["item"].as_u64().map(filmcraft_project::ItemId).ok_or_else(|| bad("invalid prepared item")))
                     .collect::<Result<Vec<_>>>()?;
                 let links = crate::component_relink::link_prepared_index(&mut prepared.project, &ids, index, &*services, progress.clone())?;
-                prepared.result["mediaBinding"] = json!(if links["offlineComponents"] == 0 && prepared.result["errors"].as_array().is_none_or(Vec::is_empty) {
+                prepared.result["mediaBinding"] = json!(if links["offlineComponents"] == 0 && prepared.result["mediaBinding"] == "verified_components" {
                     "verified_components"
                 } else {
                     "offline_components"

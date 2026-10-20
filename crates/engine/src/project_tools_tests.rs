@@ -51,10 +51,10 @@ fn file_edit_clip_menu_order_and_shortcuts_match_premiere() {
             "media.makeOffline",
             "file.importFromMediaBrowser",
             "file.import",
-            "file.importAvidBin",
             "file.projectManager",
         ],
     );
+    assert!(crate::commands::command_specs().iter().find(|c| c.id == "file.importAvidBin").unwrap().menu.is_empty());
     assert_order(&menu_ids(&["File", "Export"]), &["file.exportEdl", "file.exportSelectionProject", "file.exportAle", "file.exportOtio", "file.exportFcp7Xml"]);
     assert_eq!(menu_ids(&["File", "Get Media File Properties for"]), vec!["file.mediaPropertiesFile", "file.mediaProperties"]);
     assert_eq!(menu_ids(&["File", "Project Settings"]), vec!["file.projectSettings.general", "file.projectSettings.scratchDisks", "project.ingestSettings"]);

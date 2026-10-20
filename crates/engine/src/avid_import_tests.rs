@@ -630,7 +630,7 @@ fn offline_import_reports_permission_failure_instead_of_absence() {
 }
 
 #[test]
-fn best_effort_sequence_bypasses_effects_and_marks_failed_segments() {
+fn best_effort_sequence_skips_effects_and_marks_failed_segments() {
     let (mut v, media) = fixture();
     let source = v["bins"][0]["mobs"][1]["tracks"][1]["component"]["components"][1].clone();
     let mut second = v["bins"][0]["mobs"][1].clone();
@@ -661,7 +661,8 @@ fn best_effort_sequence_bypasses_effects_and_marks_failed_segments() {
     .unwrap();
     assert_eq!(prepared.result["sequences"].as_array().unwrap().len(), 3);
     assert!(prepared.result["errors"].to_string().contains("Entire sequence represented"));
-    assert!(prepared.result["warnings"].to_string().contains("effect bypassed"));
+    assert!(prepared.result["warnings"].to_string().contains("effect skipped"));
+    assert!(prepared.result["errors"].to_string().contains("effect skipped"));
     assert!(prepared.result["errors"].to_string().contains("offline placeholder"));
     let a = prepared.project.sequence(ItemId(prepared.result["sequences"][0]["item"].as_u64().unwrap())).unwrap();
     let b = prepared.project.sequence(ItemId(prepared.result["sequences"][1]["item"].as_u64().unwrap())).unwrap();

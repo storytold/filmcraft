@@ -658,13 +658,32 @@ pub enum FieldProcessing {
 }
 
 impl TrackItem {
+    /// Internal sampled source-position lane used by imported retimes. The values are
+    /// offsets in project ticks from `source_in`, keyed by timeline time relative to this
+    /// clip. It is kept in the intrinsic effect so older project files need no migration.
+    fn sampled_source_time_at(&self, t: Tick) -> Option<Tick> {
+        let effect = self.effect("time_remap")?;
+        if !effect.enabled {
+            return None;
+        }
+        let lane = effect.params.get("sampled_source_offset_ticks")?;
+        if lane.keyframes.len() < 2 {
+            return None;
+        }
+        let offset = lane.f64_at(t - self.start);
+        if !offset.is_finite() || offset < 0.0 || offset > (1u64 << 53) as f64 {
+            return None;
+        }
+        self.source_in.0.checked_add(offset.round() as i64).map(Tick)
+    }
+
     pub fn end(&self) -> Tick {
         self.start + self.duration
     }
     pub fn range(&self) -> TimeRange {
         TimeRange::new(self.start, self.duration)
     }
-    /// Media time displayed at timeline time `t` (ignores time remapping keyframes).
+    /// Media time displayed at timeline time `t`.
     pub fn source_time_at(&self, t: Tick) -> Tick {
         if let Some(h) = self.frame_hold {
             return h;
@@ -682,6 +701,9 @@ impl TrackItem {
     }
     /// Media time at timeline time `t` ignoring any frame hold.
     pub fn moving_source_time_at(&self, t: Tick) -> Tick {
+        if let Some(sampled) = self.sampled_source_time_at(t) {
+            return sampled;
+        }
         let rel = t - self.start;
         let scaled = Tick((rel.0 as f64 * self.speed.abs()).round() as i64);
         if self.reverse {
@@ -692,6 +714,9 @@ impl TrackItem {
     }
     /// Media time consumed by the item (the source out point).
     pub fn source_out(&self) -> Tick {
+        if let Some(sampled) = self.sampled_source_time_at(self.end()) {
+            return sampled;
+        }
         self.source_in + Tick((self.duration.0 as f64 * self.speed.abs()).round() as i64)
     }
     pub fn effect(&self, id: &str) -> Option<&EffectInstance> {
@@ -2021,6 +2046,26 @@ mod tests {
         assert_eq!(t.item_at(rate.tick_of(10)).unwrap().id, a.id);
         assert!(t.item_at(rate.tick_of(48)).is_none());
         assert_eq!(a.source_time_at(rate.tick_of(10)), Tick(1000) + rate.tick_of(20));
+    }
+
+    #[test]
+    fn sampled_source_positions_select_repeated_and_skipped_frames() {
+        use crate::keyframe::{Keyframe, Param, ParamValue};
+        let (mut project, source, _) = demo_project();
+        let rate = FrameRate::FPS_24;
+        let mut clip = project.make_track_item(source, TrackKind::Video, rate.tick_of(10), TimeRange::new(rate.tick_of(48), rate.tick_of(2)), rate).unwrap();
+        let mut map = Param::new(ParamValue::Float(0.0));
+        for (frame, source_frame) in [(0, 0), (1, 0), (2, 3)] {
+            map.keyframes.push(Keyframe::new(rate.tick_of(frame), ParamValue::Float(rate.tick_of(source_frame).0 as f64)));
+        }
+        clip.effect_mut("time_remap").unwrap().params.insert("sampled_source_offset_ticks".into(), map);
+        assert_eq!(clip.source_time_at(clip.start), rate.tick_of(48));
+        assert_eq!(clip.source_time_at(clip.start + rate.tick_of(1)), rate.tick_of(48));
+        assert_eq!(clip.source_out(), rate.tick_of(51));
+        let restored: TrackItem = serde_json::from_str(&serde_json::to_string(&clip).unwrap()).unwrap();
+        assert_eq!(restored.source_time_at(restored.start + rate.tick_of(1)), rate.tick_of(48));
+        clip.effect_mut("time_remap").unwrap().enabled = false;
+        assert_eq!(clip.source_time_at(clip.start + rate.tick_of(1)), rate.tick_of(49));
     }
 
     #[test]
