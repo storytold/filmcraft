@@ -168,3 +168,35 @@ handles cannot be represented exactly by this mapping: interpolation uses linear
 and the import report explicitly warns about the approximation. Mute/bypass automation is still
 unsupported and reported. This is control-point preservation, not a claim of rendered-audio
 parity. Original source snapshots and existing user-edited imports are never rewritten.
+
+
+## Picture controls, transitions and generated graphics
+
+The picture follow-up reviewed upstream FilmCraft PRs [#1694](https://github.com/storytold/filmcraft/pull/1694),
+[#495](https://github.com/storytold/filmcraft/pull/495), and [#1652](https://github.com/storytold/filmcraft/pull/1652).
+These are competing importers, not drop-in dependencies for this provenance workflow. PR #1694's
+separation of ClipItems/TransitionItems and named native transitions informed this integration.
+Its optional-control-type filter does not cover scalar controls without ParameterControlType in
+the observed projects. The bounded scalar reader here is original work from user-owned XML,
+using stable ParameterID values rather than localized or duplicated labels. No code or assets
+from Adobe applications were read or copied.
+
+Lumetri Basic Correction scalar values, Creative scalar adjustments and Vignette values map to
+FilmCraft's native Lumetri effect. Section switches and component bypass are retained. Source-time
+scalar keys are sorted, bounded and imported with explicitly warned linear interpolation. Native
+range differences clamp with a warning; malformed/non-finite values and duplicate key times are
+errors. Opaque curves, wheels, LUT and HSL data remain in provenance and are not reproduced;
+the import warns. Matching control values does not promise identical grading algorithms or pixels.
+
+Transition list entries are never treated as media clips. Head/Tail references to the same object
+create one native transition with both sides, original timing and the named supported effect.
+Leading transitions are clipped at sequence zero. Unrecognised effects use the existing warned
+transition fallback. Older provenance without absolute transition fields retains legacy edge fades.
+
+A generated Shape component identifies a native graphic canvas, not a filesystem image, so its
+internal numeric pseudo-path no longer becomes a missing-media item. Opaque shape paths/appearance
+remain unsupported and explicitly warned: they are not reconstructed or rasterized. Text retains
+the existing default-style mapping. This removes false offline artwork, but does not claim complete
+editable title/shape fidelity. Complex graphics still require further mapping or an explicit user render.
+
+Single-sided Dip to Black/White transitions now fade across their full duration in both the CPU compositor and GPU frame plan; two-sided dips retain their midpoint colour.
