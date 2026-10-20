@@ -474,7 +474,7 @@ fn run_dialog_off_thread(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) 
                 FileDialog::SaveAs { filter, exts, name } => {
                     // the suggested name may be a full path (Quick Export's): suggest the basename
                     // in the existing parent, like the macOS sheet and the sync pick_save_as
-                    let (dir, file) = super::save_name_parts(&name);
+                    let (dir, file) = crate::save_name_parts(&name);
                     let mut d = rfd::FileDialog::new().add_filter(&filter, &exts).set_file_name(file);
                     if let Some(dir) = dir {
                         d = d.set_directory(dir);
