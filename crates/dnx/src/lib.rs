@@ -18,12 +18,14 @@ mod dct;
 mod decode;
 mod encode;
 pub mod header;
+pub mod layout;
 mod spec_tables;
 mod tables;
 
 pub use decode::{DecodeOptions, decode_frame, decode_frame_with, probe};
 pub use encode::{Encoder, EncoderConfig};
 pub use header::{FieldCode, FrameHeader};
+pub use layout::frame_layout;
 pub use tables::ri_frame_size;
 
 /// Codec errors.
