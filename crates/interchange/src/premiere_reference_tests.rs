@@ -99,7 +99,8 @@ fn localized_motion_uses_match_name_parameter_ids_and_static_values() {
 #[test]
 fn audio_media_and_sequence_sources_follow_the_same_reference_chain() {
     for xml in [media_fixture().to_string(), nested_fixture()] {
-        let xml = xml.replace("Video", "Audio");
+        // Audio groups store ticks per sample, not the video-frame duration.
+        let xml = xml.replace("Video", "Audio").replace("<FrameRate>8467200000</FrameRate>", "<FrameRate>5292000</FrameRate>");
         let (fragment, tree, report) = import(xml.as_bytes(), &ImportOptions::default(), Some(FrameRate::FPS_30)).unwrap();
         let first = &tree.sequences[0].tracks[0].items[0];
         if fragment.sequences.len() == 1 {

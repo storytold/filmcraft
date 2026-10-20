@@ -151,3 +151,20 @@ session without registering platform hardware, verifies source/project hashes an
 and saves/reopens each result. Media SHA-256 is explicitly inspected before and after save/reopen;
 linked provenance must remain unhashed throughout. Its private result JSON stays under `target/`. Only hand-written
 synthetic XML is committed in the regression tests; never add corpus projects or media paths.
+
+
+## Edit links and intrinsic audio controls
+
+Explicit Premiere Link groups are imported as sequence-local FilmCraft link IDs; clips are
+never linked merely because their timing or filenames match. Each sequence also reads its
+AudioTrackGroup ticks-per-sample rate separately from the video rate. Absent audio rate metadata
+keeps the 48 kHz default; invalid rates are rejected before changing the project.
+
+Internal Volume Stereo Level and Internal Channel Volume Stereo Left/Right control points are
+mapped to FilmCraft's intrinsic audio effects, retaining source-media ticks and normalized
+level values (0.17782794 is unity/0 dB in the observed native control; zero is silence).
+Keyframes are bounded, validated, sorted and retained in provenance. Native audio interpolation
+handles cannot be represented exactly by this mapping: interpolation uses linear dB segments
+and the import report explicitly warns about the approximation. Mute/bypass automation is still
+unsupported and reported. This is control-point preservation, not a claim of rendered-audio
+parity. Original source snapshots and existing user-edited imports are never rewritten.
