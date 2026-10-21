@@ -103,22 +103,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
             continue;
         }
-        let clip = p.get("clip").and_then(Value::as_u64);
-        match app.session.execute(&cmd, p) {
-            Err(error) => app.ui.status = error.to_string(),
-            Ok(result) if cmd == "clip.remix" => {
-                if let Some(clip) = clip {
-                    let id = egui::Id::new(("es-melody-options", clip));
-                    if result.get("applied").and_then(Value::as_bool) == Some(false) {
-                        let choices: Vec<f64> = result["alternatives"].as_array().into_iter().flatten().filter_map(|x| x["seconds"].as_f64()).collect();
-                        ui.ctx().data_mut(|data| data.insert_temp(id, choices));
-                        app.ui.status = tl!("No matching phrase at this duration. Choose another length below.").into();
-                    } else {
-                        ui.ctx().data_mut(|data| data.remove::<Vec<f64>>(id));
-                    }
-                }
-            }
-            _ => {}
+        if let Err(error) = app.session.execute(&cmd, p) {
+            app.ui.status = error.to_string();
         }
     }
 }
@@ -351,12 +337,28 @@ fn duration(ui: &mut egui::Ui, cx: &mut Ctx, items: &[TrackItem]) {
     };
     let remix = filmcraft_render::remix::Remix::of(item);
     let id = egui::Id::new(("es-duration-draft", item.id.0));
-    let mut draft: Tick = ui.data(|d| d.get_temp(id)).unwrap_or_else(|| remix.as_ref().map_or(item.duration, |r| r.target));
+    let model = (remix.as_ref().map(|r| r.target), item.duration);
+    let model_id = id.with("model");
     let controls_id = id.with("controls");
-    let mut controls: (bool, f64, f64) =
-        ui.data(|d| d.get_temp(controls_id)).unwrap_or((true, remix.as_ref().map_or(50., |r| r.segments), remix.as_ref().map_or(50., |r| r.variations)));
-    let options_id = egui::Id::new(("es-melody-options", item.id.0));
     let error_id = id.with("invalid");
+    let timecode_id = id.with("timecode");
+    // Keep an uncommitted edit while the clip is unchanged, but discard it after
+    // Timeline edits, Undo/Redo or another client changes the remix or its extent.
+    let changed = ui.data(|d| d.get_temp::<(Option<Tick>, Tick)>(model_id)) != Some(model);
+    if changed {
+        ui.data_mut(|d| {
+            d.remove::<Tick>(id);
+            d.remove::<bool>(error_id);
+            d.remove::<(f64, f64)>(controls_id);
+            d.remove::<String>(timecode_id.with("editing"));
+            d.remove::<bool>(timecode_id.with("select-all"));
+            d.remove::<(i64, f64, egui::Pos2)>(timecode_id.with("drag"));
+        });
+        ui.memory_mut(|memory| memory.surrender_focus(timecode_id.with("edit")));
+    }
+    let mut draft: Tick = ui.data(|d| d.get_temp(id)).unwrap_or(model.0.unwrap_or(item.duration));
+    let mut controls: (f64, f64) =
+        ui.data(|d| d.get_temp(controls_id)).unwrap_or((remix.as_ref().map_or(50., |r| r.segments), remix.as_ref().map_or(50., |r| r.variations)));
     let mut invalid = ui.data(|d| d.get_temp::<bool>(error_id)).unwrap_or(false) || draft < cx.rate.frame_duration() || draft > Tick::from_seconds_f64(3600.);
     let enter_pressed = ui.input(|input| input.key_pressed(egui::Key::Enter));
     let mut apply_requested = false;
@@ -370,7 +372,6 @@ fn duration(ui: &mut egui::Ui, cx: &mut Ctx, items: &[TrackItem]) {
                     draft = value;
                     invalid = false;
                     apply_requested = enter_pressed;
-                    ui.data_mut(|d| d.remove::<Vec<f64>>(options_id));
                 }
                 _ => invalid = true,
             }
@@ -383,16 +384,14 @@ fn duration(ui: &mut egui::Ui, cx: &mut Ctx, items: &[TrackItem]) {
         ui.label(tl!("Enter a valid duration up to one hour."));
     }
     let advanced = ui.collapsing(tl!("Advanced"), |ui| {
-        let r = ui.checkbox(&mut controls.0, tl!("Match melodic phrases"));
-        cx.auto.add("essentialSound.duration.matchMelody", r.rect, "Match melodic phrases");
         ui.horizontal(|ui| {
             ui.label(tl!("Segments"));
-            let r = ui.add(egui::DragValue::new(&mut controls.1).range(0.0..=100.0));
+            let r = ui.add(egui::DragValue::new(&mut controls.0).range(0.0..=100.0));
             cx.auto.add("essentialSound.duration.segments", r.rect, "Segments");
         });
         ui.horizontal(|ui| {
             ui.label(tl!("Variations"));
-            let r = ui.add(egui::DragValue::new(&mut controls.2).range(0.0..=100.0));
+            let r = ui.add(egui::DragValue::new(&mut controls.1).range(0.0..=100.0));
             cx.auto.add("essentialSound.duration.variations", r.rect, "Variations");
         });
     });
@@ -402,10 +401,7 @@ fn duration(ui: &mut egui::Ui, cx: &mut Ctx, items: &[TrackItem]) {
         let apply = ui.add_enabled(!invalid, egui::Button::new(tl!("Apply Remix")));
         cx.auto.add("essentialSound.duration.apply", apply.rect, "Apply Remix");
         if !invalid && (apply.clicked() || apply_requested) {
-            cx.actions.push((
-                "clip.remix".into(),
-                json!({"clip":item.id.0,"duration":draft.0,"matchMelody":controls.0,"segments":controls.1,"variations":controls.2}),
-            ));
+            cx.actions.push(("clip.remix".into(), json!({"clip":item.id.0,"duration":draft.0,"segments":controls.0,"variations":controls.1})));
         }
         if remix.is_some() {
             let revert = ui.button(tl!("Revert Remix"));
@@ -416,33 +412,14 @@ fn duration(ui: &mut egui::Ui, cx: &mut Ctx, items: &[TrackItem]) {
             }
         }
     });
-    if let Some(choices) = ui.data(|data| data.get_temp::<Vec<f64>>(options_id)) {
-        ui.label(tl!("No matching phrase at this duration. Choose another length below."));
-        for (index, seconds) in choices.iter().enumerate() {
-            let value = Tick::from_seconds_f64(*seconds);
-            let label = format_time(cx.rate.snap_nearest(value), cx.rate, cx.drop_frame, TimeDisplay::Timecode, 48000);
-            let valid = value >= cx.rate.frame_duration() && value <= Tick::from_seconds_f64(3600.);
-            let choice = ui.add_enabled(valid, egui::Button::new(label));
-            cx.auto.add(&format!("essentialSound.duration.alternative.{index}"), choice.rect, "Use suggested duration");
-            if choice.clicked() {
-                draft = value;
-                invalid = false;
-                cx.actions.push((
-                    "clip.remix".into(),
-                    json!({"clip":item.id.0,"duration":value.0,"matchMelody":controls.0,"segments":controls.1,"variations":controls.2}),
-                ));
-            }
-        }
-    }
     ui.label(format!("{}: {}", tl!("Duration"), format_time(cx.rate.snap_nearest(item.duration), cx.rate, cx.drop_frame, TimeDisplay::Timecode, 48000)));
-    ui.label(tl!("Original tempo is preserved. Other lengths are suggested when phrases do not match."));
     ui.label(tl!("Cuts follow musical beats. Actual duration may differ by up to one beat."));
     ui.data_mut(|d| {
+        d.insert_temp(model_id, model);
         if reverted {
             d.remove::<Tick>(id);
-            d.remove::<Vec<f64>>(options_id);
             d.remove::<bool>(error_id);
-            d.remove::<(bool, f64, f64)>(controls_id);
+            d.remove::<(f64, f64)>(controls_id);
         } else {
             d.insert_temp(id, draft);
             d.insert_temp(error_id, invalid);

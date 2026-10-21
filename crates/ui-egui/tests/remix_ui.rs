@@ -270,10 +270,6 @@ fn duration_timecode_uses_sequence_frames_without_moving_the_playhead() {
         d.frames(3);
         d.ok("ui.click", json!({"id":"essentialSound.section.Duration"}));
         d.frames(3);
-        d.ok("ui.click", json!({"id":"essentialSound.duration.advanced"}));
-        d.frames(2);
-        d.ok("ui.click", json!({"id":"essentialSound.duration.matchMelody"}));
-        d.frames(2);
         let n = d.harness.state().session.history.undo.len();
         d.ok("ui.click", json!({"id":"essentialSound.duration.timecode"}));
         d.frames(2);
@@ -309,7 +305,9 @@ fn invalid_duration_does_not_apply_and_advanced_controls_remain_available() {
     }
     d.ok("ui.click", json!({"id":"essentialSound.duration.advanced"}));
     d.frames(3);
-    for id in ["matchMelody", "segments", "variations"] {
+    assert!(d.ids("essentialSound.duration.matchMelody").is_empty());
+    assert!(d.ids("essentialSound.duration.alternative.").is_empty());
+    for id in ["segments", "variations"] {
         assert!(d.ids("essentialSound.duration.").contains(&format!("essentialSound.duration.{id}")));
     }
 }
@@ -325,7 +323,6 @@ fn duration_advanced_parameters_are_sent_to_the_remix_command() {
     d.frames(3);
     d.ok("ui.click", json!({"id":"essentialSound.duration.advanced"}));
     d.frames(2);
-    d.ok("ui.click", json!({"id":"essentialSound.duration.matchMelody"}));
     for (key, value) in [("segments", "20"), ("variations", "80")] {
         d.ok("ui.click", json!({"id":format!("essentialSound.duration.{key}"),"count":2}));
         d.ok("ui.key", json!({"key":"Cmd+A"}));
@@ -342,4 +339,85 @@ fn duration_advanced_parameters_are_sent_to_the_remix_command() {
     let r = d.exec("clip.remix.properties", json!({"clip":clip}));
     assert_eq!(r["segments"], 20.0);
     assert_eq!(r["variations"], 80.0);
+}
+
+#[test]
+fn duration_draft_tracks_remix_tool_and_undo_redo() {
+    use filmcraft_time::Tick;
+    let (s, clip) = session();
+    let mut d = Driver::new(s);
+    d.ok("ui.set", json!({"workspace":"Audio"}));
+    d.exec("essentialSound.setType", json!({"clips":[clip],"type":"music"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id":"essentialSound.section.Duration"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id":"essentialSound.duration.timecode"}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key":"Cmd+A"}));
+    d.ok("ui.type", json!({"text":"00:00:20:00"}));
+    d.ok("ui.key", json!({"key":"Enter"}));
+    d.frames(3);
+    let id = egui::Id::new(("es-duration-draft", clip));
+    assert_eq!(d.harness.ctx.data(|data| data.get_temp::<Tick>(id)), Some(Tick::from_seconds_f64(20.)));
+    d.ok("ui.menu.invoke", json!({"id":"tool.remix"}));
+    d.frames(2);
+    let edge = d.ok("ui.timeline.locate", json!({"clip":clip,"edge":"out"}));
+    let start = d.ok("ui.timeline.locate", json!({"clip":clip,"edge":"in"}));
+    let x = edge["x"].as_f64().unwrap();
+    let y = edge["y"].as_f64().unwrap();
+    let width = x - start["x"].as_f64().unwrap();
+    d.drag(egui::pos2(x as f32 - 0.5, y as f32), egui::pos2((x - 0.5 - width / 4.) as f32, y as f32), 100);
+    d.frames(4);
+    let state = d.exec("clip.remix.properties", json!({"clip":clip}));
+    let target = Tick(state["target"].as_i64().unwrap());
+    assert!((target.seconds() - 15.).abs() < 1.0, "actual drag target: {state}");
+    assert_eq!(d.harness.ctx.data(|data| data.get_temp::<Tick>(id)), Some(target));
+    d.exec("edit.undo", json!({}));
+    d.frames(3);
+    assert_eq!(d.harness.ctx.data(|data| data.get_temp::<Tick>(id)), Some(Tick::from_seconds_f64(20.)));
+    d.exec("edit.redo", json!({}));
+    d.frames(3);
+    assert_eq!(d.harness.ctx.data(|data| data.get_temp::<Tick>(id)), Some(target));
+    d.ok("ui.click", json!({"id":"essentialSound.duration.apply"}));
+    d.frames(3);
+    let applied = d.exec("clip.remix.properties", json!({"clip":clip}));
+    assert_eq!(applied["target"], state["target"], "Apply must not restore the stale 20-second draft");
+}
+
+#[test]
+fn duration_keeps_uncommitted_input_until_the_clip_changes() {
+    use filmcraft_time::Tick;
+    let (s, clip) = session();
+    let mut d = Driver::new(s);
+    d.ok("ui.set", json!({"workspace":"Audio"}));
+    d.exec("essentialSound.setType", json!({"clips":[clip],"type":"music"}));
+    d.exec("clip.remix", json!({"clip":clip,"seconds":20.}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id":"essentialSound.section.Duration"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id":"essentialSound.duration.timecode"}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key":"Cmd+A"}));
+    d.ok("ui.type", json!({"text":"00:00:22:00"}));
+    d.ok("ui.click", json!({"id":"essentialSound.duration.advanced"}));
+    d.frames(4);
+    let id = egui::Id::new(("es-duration-draft", clip));
+    assert_eq!(d.harness.ctx.data(|data| data.get_temp::<Tick>(id)), Some(Tick::from_seconds_f64(22.)));
+    assert!((d.duration(clip) - 20.).abs() <= 0.5, "draft is not applied on blur");
+    // A manual trim changes the duration without changing the stored remix target.
+    d.exec("timeline.trim", json!({"clip":clip,"edge":"out","delta":-Tick::from_seconds_f64(1.).0}));
+    d.frames(3);
+    assert_eq!(d.harness.ctx.data(|data| data.get_temp::<Tick>(id)), Some(Tick::from_seconds_f64(20.)));
+    // An external target change must also discard an active invalid text buffer.
+    d.ok("ui.click", json!({"id":"essentialSound.duration.timecode"}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key":"Cmd+A"}));
+    d.ok("ui.type", json!({"text":"not a time"}));
+    d.exec("clip.remix", json!({"clip":clip,"seconds":25.}));
+    d.frames(3);
+    assert_eq!(d.harness.ctx.data(|data| data.get_temp::<Tick>(id)), Some(Tick::from_seconds_f64(25.)));
+    assert!(d.harness.ctx.data(|data| data.get_temp::<String>(id.with("timecode").with("editing"))).is_none());
+    d.ok("ui.click", json!({"id":"essentialSound.duration.apply"}));
+    d.frames(3);
+    assert_eq!(d.exec("clip.remix.properties", json!({"clip":clip}))["targetSeconds"], 25.);
 }
