@@ -167,6 +167,72 @@ fn script_marks_follow_same_file_relink_but_block_unverified_forced_replacement(
 }
 
 #[test]
+fn confirming_one_script_relink_does_not_confirm_automatically_found_sources() {
+    let root = tmp_dir("relink-script-review-each-source");
+    let (path, items) = saved_project(&root);
+    let mut s = open(&path);
+    let script = s.execute("script.importText", json!({"name":"Script","text":"A\nB"})).unwrap()["item"].as_u64().unwrap();
+    let lines: Vec<u64> = s.project.item(ItemId(script)).unwrap().as_script().unwrap().lines.iter().map(|line| line.id.0).collect();
+    let takes: Vec<u64> = items
+        .iter()
+        .zip(&lines)
+        .map(|(source, line)| {
+            let take = s.execute("script.addTake", json!({"item":script,"source":source.0,"startLine":line,"endLine":line})).unwrap()["take"].as_u64().unwrap();
+            s.execute("script.addMark", json!({"item":script,"take":take,"line":line,"sourceTime":0})).unwrap();
+            take
+        })
+        .collect();
+    {
+        let project = std::sync::Arc::make_mut(&mut s.project);
+        let doc = project.item_mut(ItemId(script)).unwrap().as_script_mut().unwrap();
+        for take in &takes {
+            doc.take_mut(filmcraft_project::ScriptTakeId(*take)).unwrap().source_identity = None;
+        }
+        // An older project can have no stored identity for an automatically matched clip.
+        project.item_mut(items[1]).unwrap().as_media_mut().unwrap().identity = None;
+    }
+    s.execute("file.save", json!({"path":path})).unwrap();
+    drop(s);
+
+    let moved = root.join("Moved");
+    std::fs::rename(root.join("Media"), &moved).unwrap();
+    let mut s = open(&path);
+    let result = s
+        .execute(
+            "media.relink",
+            json!({
+                "item":items[0].0,
+                "path":moved.join("a.mov").to_string_lossy(),
+                "relinkOthers":true,
+                "confirmScriptSameFootage":true
+            }),
+        )
+        .unwrap();
+    assert_eq!(result["relinked"].as_array().unwrap().len(), 1, "{result}");
+    assert_eq!(result["remaining"], json!([items[1].0]));
+    assert_eq!(result["needsReview"][0]["item"], items[1].0);
+    let second = s.project.item(ItemId(script)).unwrap().as_script().unwrap().take(filmcraft_project::ScriptTakeId(takes[1])).unwrap();
+    assert_eq!(second.source_identity, None);
+    assert_eq!(second.marks.len(), 1);
+
+    s.execute(
+        "media.relink",
+        json!({
+            "item":items[1].0,
+            "path":moved.join("b.mov").to_string_lossy(),
+            "relinkOthers":false,
+            "confirmScriptSameFootage":true
+        }),
+    )
+    .unwrap();
+    let second = s.project.item(ItemId(script)).unwrap().as_script().unwrap().take(filmcraft_project::ScriptTakeId(takes[1])).unwrap();
+    assert!(second.source_identity.is_some());
+    assert_eq!(second.marks.len(), 1);
+    drop(s);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn forced_relink_takes_the_new_files_properties() {
     let root = tmp_dir("relink-forced-info");
     let (path, items) = saved_project(&root);

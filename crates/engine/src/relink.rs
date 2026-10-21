@@ -323,28 +323,30 @@ struct Plan {
     cand: Candidate,
 }
 
+fn script_users(s: &Session, media: ItemId) -> Vec<ItemId> {
+    s.project.items.keys().copied().filter(|source| s.project.resolve_media(*source).is_some_and(|(root, _, _)| root == media)).collect()
+}
+
+fn needs_script_review(s: &Session, media: ItemId, identity: Option<MediaIdentity>) -> bool {
+    let users = script_users(s, media);
+    s.project.items.values().filter_map(|item| item.as_script()).any(|doc| doc.unverified_marked_takes(&users, identity) > 0)
+}
+
 /// Apply planned relinks as one undo step.
-fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, confirm_script_same_footage: bool, label: &str) -> Result<Vec<Value>> {
+fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, confirmed_item: Option<ItemId>, label: &str) -> Result<Vec<Value>> {
     // A Script take, like a sequence clip, refers to a Project item. Resolve all subclips
     // before changing any media so both direct and nested references are checked together.
     let script_sources: Vec<_> = plans
         .iter()
         .map(|plan| {
-            let sources = s
-                .project
-                .items
-                .keys()
-                .copied()
-                .filter(|source| s.project.resolve_media(*source).is_some_and(|(root, _, _)| root == plan.item))
-                .collect::<Vec<_>>();
+            let sources = script_users(s, plan.item);
             (sources, plan.cand.identity)
         })
         .collect();
-    if !confirm_script_same_footage
-        && script_sources.iter().any(|(sources, identity)| {
-            s.project.items.values().filter_map(|item| item.as_script()).any(|doc| doc.unverified_marked_takes(sources, *identity) > 0)
-        })
-    {
+    if plans.iter().zip(&script_sources).any(|(plan, (sources, identity))| {
+        Some(plan.item) != confirmed_item
+            && s.project.items.values().filter_map(|item| item.as_script()).any(|doc| doc.unverified_marked_takes(sources, *identity) > 0)
+    }) {
         return Err(bad(
             "media.relink",
             format!(
@@ -463,11 +465,19 @@ pub fn relink(s: &mut Session, p: &Value) -> Result<Value> {
         c.source = Some(src);
     }
     let mut plans = vec![Plan { item, cand: c }];
+    let mut needs_review = Vec::new();
     if o.relink_others {
-        plans.extend(others(s, item, &old, &path, &o));
+        for plan in others(s, item, &old, &path, &o) {
+            if needs_script_review(s, plan.item, plan.cand.identity) {
+                needs_review.push(json!({"item": plan.item.0, "path": plan.cand.path, "reason": SCRIPT_MARKS_RELINK_REVIEW}));
+            } else {
+                plans.push(plan);
+            }
+        }
     }
-    let rows = apply(s, plans, o.align_timecode, bool_p(p, "confirmScriptSameFootage").unwrap_or(false), "Link Media")?;
-    Ok(json!({"relinked": rows, "remaining": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
+    let confirmed_item = bool_p(p, "confirmScriptSameFootage").unwrap_or(false).then_some(item);
+    let rows = apply(s, plans, o.align_timecode, confirmed_item, "Link Media")?;
+    Ok(json!({"relinked": rows, "needsReview": needs_review, "remaining": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
 }
 
 /// `media.autoRelink`: `{from, to}` remaps a folder prefix; `{folder}` searches a folder tree.
@@ -506,7 +516,7 @@ pub fn auto_relink(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         return Err(bad("media.autoRelink", "need `from` and `to`, or `folder`"));
     }
-    let rows = if plans.is_empty() { Vec::new() } else { apply(s, plans, o.align_timecode, false, "Link Media")? };
+    let rows = if plans.is_empty() { Vec::new() } else { apply(s, plans, o.align_timecode, None, "Link Media")? };
     refresh(s);
     Ok(json!({"relinked": rows, "failed": failed, "remaining": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
 }
