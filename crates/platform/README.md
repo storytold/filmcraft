@@ -100,20 +100,23 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   leftovers in the file — measured on a Snapdragon X, the first keyframe of a session carried 9 kB of
   stale bytes out to offset 262 kB, which showed up as a hardware export coming out *larger* than the
   software one at the same bitrate. Compare the two sizes when something looks wrong here.
-  An asynchronous MFT also answers "not yet" for a few
-  milliseconds after a picture goes in, so `MfEncoder::wait` asks again until it has been quiet for a
-  moment — bounded by a budget *and* by the quiet period. `mfcaps` lists the machine's encoder MFTs,
-  which is the first thing to ask on a machine that should have an encoder and does not.
+  Asynchronous MFT input and output calls consume NeedInput and HaveOutput event credits.
+  The final drain waits for DrainComplete and all pending output, with bounded polling and
+  allocation; quiet time alone cannot complete it. Accepted and emitted picture counts must match
+  before flush succeeds. Activated encoders are explicitly shut down on configuration failure,
+  diagnostic completion and normal drop. Initial output-type notifications have bounded recovery
+  only while the requested codec, size, rate and profile remain unchanged and no native picture
+  has been emitted; later format changes fail the export. `mfcaps` lists the encoder MFTs.
   H.264 is opt-in (Export ▸ Hardware encoding) exactly as with NVENC; H.265, which has no software
   encoder, fails with the reason and its availability probe makes the format offered wherever either
   encoder opens a session. It declines CRF, two-pass, HDR, MXF, interlaced output, non-square pixels
-  in H.265 and odd picture sizes. **An encoder that runs a fixed number of pictures behind is taken**:
-  the delay is measured in pictures and written as an edit list (`VideoEncoder::media_start`, the
-  same field NVENC uses for its B-frame delay), because the pictures are in order and complete and
-  the file just wants the video to start that far in. A delay that *changes* is reordering, and that
-  is an error naming the encoder rather than a file with wrong timestamps. Verified on a Snapdragon X
+  in H.265 and odd picture sizes. **A constant native timestamp offset of 0–16 pictures is accepted**
+  while packets remain ordered. MF packets have uniform durations and zero composition offsets;
+  their first picture stays at media time zero. The timestamp offset must not become an edit-list
+  trim, which would hide valid initial pictures. A changing offset is rejected as reordering with
+  an error naming the encoder. The earlier encoder implementation was verified on a Snapdragon X
   (Adreno X1-85, Windows 11 ARM64, driver `31.0.137.0`) with `QCOM Hardware Encoder - H264` and
-  `- HEVC`.
+  `- HEVC`. That historical result does not validate the revised transport on that device.
 - **Linux: NVDEC, H.264 (`avcC`) and HEVC (`hvcC`)** on NVIDIA's proprietary driver (`nvdec/`): H.264
   8-bit and HEVC 8- / 10-bit, 4:2:0 progressive. `libnvcuvid.so.1` and `libcuda.so.1` are loaded at
   run time; without them (or without a device) nothing is registered. NVIDIA's own parser takes the

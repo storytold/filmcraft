@@ -113,8 +113,8 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   not a deadline for the entire export or a guarantee against arbitrary driver stalls.
 - **Missing:** zero-copy decoded frames into wgpu (every frame is read back to the CPU and
   re-uploaded); VideoToolbox Main 10 / HDR HEVC encode and B-frames; ProRes hardware decode /
-  encode on Apple silicon; 10-bit / HDR in the Media Foundation encoder (a fixed picture delay is taken and written as an
-  edit list; only a delay that changes, which is reordering, is declined);
+  encode on Apple silicon; 10-bit / HDR in the Media Foundation encoder (a constant 0–16-picture
+  timestamp offset is accepted without trimming ordered packets; changing offsets are rejected);
   VA-API VP9 / AV1 and VA-API encode; HEVC encode on Linux; AV1 hardware encode — there is no AV1
   encoder plumbing at all. The MFTs do exist and open (`QCOM Hardware Encoder - AV1` on a Snapdragon
   X, Adreno X1-85, driver `31.0.137.0`, takes NV12 and writes pictures), and an earlier note here
