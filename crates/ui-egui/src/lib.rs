@@ -897,6 +897,7 @@ impl FilmcraftApp {
                 | PanelKind::LumetriScopes
                 | PanelKind::AudioTrackMixer
                 | PanelKind::Text
+                | PanelKind::Script
                 | PanelKind::ReferenceMonitor
                 | PanelKind::Timecode => PanelKind::Source,
                 _ => PanelKind::Project,
@@ -918,7 +919,7 @@ impl FilmcraftApp {
 
     /// Reveal in Project: bring the Project panel forward, showing the bin that holds `item` with
     /// the search cleared, so the (already selected) item is on show.
-    fn reveal_in_project(&mut self, item: filmcraft_project::ItemId) {
+    pub(crate) fn reveal_in_project(&mut self, item: filmcraft_project::ItemId) {
         // the bins on the way down to the item (bounded: a project file can nest bins arbitrarily deep)
         fn path(b: &filmcraft_project::Bin, item: filmcraft_project::ItemId, depth: usize, out: &mut Vec<u64>) -> bool {
             if depth > 256 {

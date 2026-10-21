@@ -114,6 +114,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("window.workspace.effects", "Effects", ["Window", "Workspaces"], Some("Alt+Shift+4")),
     uic!("window.workspace.audio", "Audio", ["Window", "Workspaces"], Some("Alt+Shift+5")),
     uic!("window.workspace.captionsandgraphics", "Captions and Graphics", ["Window", "Workspaces"], Some("Alt+Shift+6")),
+    uic!("window.workspace.script", "Script", ["Window", "Workspaces"], None),
+    uic!("script.openPanel", "Open Script", [], None),
+    uic!("script.findInScript", "Find in Script", [], None),
     uic!("window.workspace.allpanels", "All Panels", ["Window", "Workspaces"], None),
     uic!("window.workspace.reset", "Reset to Saved Layout", ["Window", "Workspaces"], Some("Alt+Shift+0")),
     uic!("window.workspace.saveChanges", "Save Changes to this Workspace", ["Window", "Workspaces"], None),
@@ -258,6 +261,25 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         let p = PanelKind::from_name(rest).ok_or_else(|| format!("unknown panel `{rest}`"))?;
         app.show_panel(p);
         return Ok(Value::Null);
+    }
+    if id == "script.openPanel" {
+        let item = params.get("item").and_then(Value::as_u64).ok_or("script.openPanel needs an item")?;
+        if app.session.project.item(filmcraft_project::ItemId(item)).and_then(|item| item.as_script()).is_none() {
+            return Err("that project item is not a script".into());
+        }
+        if app.ui.script.item != Some(item) {
+            app.ui.script.selected_lines = None;
+            app.ui.script.selected_slate = None;
+            app.ui.script.selected_take = None;
+        }
+        app.ui.script.item = Some(item);
+        app.show_panel(PanelKind::Script);
+        return Ok(json!({"item": item}));
+    }
+    if id == "script.findInScript" {
+        let source =
+            params.get("item").and_then(Value::as_u64).or_else(|| app.session.state.project_selection.first().map(|id| id.0)).ok_or("select a project clip")?;
+        return crate::panels::script::find_source(app, filmcraft_project::ItemId(source));
     }
     if let Some(r) = crate::panels::workspaces::route(app, id, &params) {
         return r;

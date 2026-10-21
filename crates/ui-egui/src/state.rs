@@ -495,6 +495,9 @@ pub struct UiState {
     /// Text panel: active tab ("Transcript" / "Captions" / "Graphics").
     #[serde(default = "captions_tab")]
     pub text_tab: String,
+    /// Script panel: selected document, lined rows, take and in-progress text edits.
+    #[serde(default)]
+    pub script: crate::panels::script::ScriptUi,
     /// Text panel: caption search filter.
     #[serde(default)]
     pub caption_search: String,
@@ -990,6 +993,7 @@ impl Default for UiState {
             tts: Default::default(),
             export: Default::default(),
             text_tab: captions_tab(),
+            script: Default::default(),
             caption_search: String::new(),
             transcript_sel: None,
             transcript_search: String::new(),

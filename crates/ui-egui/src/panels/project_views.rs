@@ -28,6 +28,7 @@ pub fn item_icon(k: &ItemKind) -> Icon {
         },
         ItemKind::Sequence(_) => Icon::Sequence,
         ItemKind::Subclip { .. } => Icon::Film,
+        ItemKind::Script(_) => Icon::Captions,
         ItemKind::AdjustmentLayer { .. } | ItemKind::Graphic { .. } => Icon::Adjust,
     }
 }
@@ -214,6 +215,8 @@ pub fn item_interactions(
             // like Premiere: double-clicking a Color Matte opens its color picker
             actions.push(("project.select".into(), json!({"items": [id.0]})));
             actions.push(("project.matteColor".into(), json!({})));
+        } else if matches!(kind, ItemKind::Script(_)) {
+            actions.push(("script.openPanel".into(), json!({"item": id.0})));
         } else {
             let cmd = if matches!(kind, ItemKind::Sequence(_)) { "sequence.open" } else { "source.open" };
             actions.push((cmd.into(), json!({"item": id.0})));
@@ -233,15 +236,24 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
         actions.push(("projectPanel.rename".into(), json!({"item": id.0})));
         ui.close();
     }
-    if ui.button(tl!("Open in Source Monitor")).clicked() {
+    if !matches!(kind, ItemKind::Script(_)) && ui.button(tl!("Open in Source Monitor")).clicked() {
         actions.push(("source.open".into(), json!({"item": id.0})));
+        ui.close();
+    }
+    if matches!(kind, ItemKind::Script(_)) {
+        if ui.button("Open Script").clicked() {
+            actions.push(("script.openPanel".into(), json!({"item": id.0})));
+            ui.close();
+        }
+    } else if ui.button("Find in Script").clicked() {
+        actions.push(("script.findInScript".into(), json!({"item": id.0})));
         ui.close();
     }
     if matches!(kind, ItemKind::Sequence(_)) && ui.button(tl!("Open in Timeline")).clicked() {
         actions.push(("sequence.open".into(), json!({"item": id.0})));
         ui.close();
     }
-    if ui.button(tl!("New Sequence From Clip")).clicked() {
+    if !matches!(kind, ItemKind::Script(_)) && ui.button(tl!("New Sequence From Clip")).clicked() {
         actions.push(("file.newSequence".into(), json!({"fromItem": id.0})));
         ui.close();
     }
@@ -250,14 +262,14 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
         actions.push(("edit.duplicate".into(), json!({})));
         ui.close();
     }
-    if ui.button(tl!("Set Poster Frame")).clicked() {
+    if !matches!(kind, ItemKind::Script(_)) && ui.button(tl!("Set Poster Frame")).clicked() {
         // the hover-scrubbed time when there is one
         let h = app.ui.project_panel.hover.filter(|h| h.item == id.0);
         actions.push(("project.select".into(), sel()));
         actions.push(("clip.setPosterFrame".into(), h.map(|h| json!({"item": id.0, "time": h.time})).unwrap_or(json!({}))));
         ui.close();
     }
-    if ui.button(tl!("Interpret Footage…")).clicked() {
+    if !matches!(kind, ItemKind::Script(_)) && ui.button(tl!("Interpret Footage…")).clicked() {
         actions.push(("clip.interpretFootage".into(), json!({"items": [id.0]})));
         ui.close();
     }
