@@ -174,13 +174,15 @@ mod tests {
 
     type Fill = Box<dyn FnMut(&mut [f32], usize) + Send>;
 
-    /// An output that keeps the callback it was started with.
+    /// An output that keeps the callback it was started with, and counts its starts.
     struct Out {
         fill: Arc<Mutex<Option<Fill>>>,
+        starts: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl crate::AudioOut for Out {
         fn start(&mut self, fill: Fill) -> Result<u32, String> {
+            self.starts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             *self.fill.lock().unwrap() = Some(fill);
             Ok(48_000)
         }
@@ -201,8 +203,39 @@ mod tests {
         s.prefs.audio.scrub_audio = scrub_audio;
         let mut app = FilmcraftApp::new(s);
         let fill = Arc::new(Mutex::new(None));
-        app.audio = Some(Box::new(Out { fill: fill.clone() }));
+        app.audio = Some(Box::new(Out { fill: fill.clone(), starts: Arc::default() }));
         (app, fill)
+    }
+
+    /// A scrub-bar drag stops playback on every move (`FilmcraftApp::stop`). With nothing playing
+    /// that leaves the scrub stream open: one stream for the whole drag. Before, each move closed
+    /// it and the next reopened it, and a sound-server stream reopened every frame never got to
+    /// make a sound (silent scrubbing on PipeWire).
+    #[test]
+    fn a_drag_that_stops_playback_on_every_move_keeps_one_scrub_stream() {
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        s.prefs.audio.scrub_audio = true;
+        let mut app = FilmcraftApp::new(s);
+        let (fill, starts) = (Arc::new(Mutex::new(None)), Arc::new(std::sync::atomic::AtomicUsize::new(0)));
+        app.audio = Some(Box::new(Out { fill: fill.clone(), starts: starts.clone() }));
+        let rate = app.session.sequence_rate();
+        app.session.set_playhead(rate.tick_of(48));
+        app.scrub_tick(0.0, true);
+        for (i, frame) in (60..120).step_by(6).enumerate() {
+            app.stop(); // what the scrub bar does before it moves the playhead
+            app.session.set_playhead(rate.tick_of(frame));
+            assert!(app.scrub_tick(0.02 * (i + 1) as f64, true));
+            assert!(loudness(&fill) > 0.0, "move {i} is heard");
+        }
+        assert_eq!(starts.load(std::sync::atomic::Ordering::SeqCst), 1, "one stream for the drag");
+        // a stop while playing still closes the device, and the next grain reopens it
+        app.playback.playing = true;
+        app.stop();
+        assert!(fill.lock().unwrap().is_none());
+        app.session.set_playhead(rate.tick_of(130));
+        assert!(app.scrub_tick(1.0, true));
+        assert_eq!(starts.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     fn loudness(fill: &Arc<Mutex<Option<Fill>>>) -> f32 {

@@ -224,8 +224,9 @@ impl FilmcraftApp {
             clock.audio_seen = (0, now);
         }
         let reading = if clock.audio_clock { self.audio.as_ref().and_then(|a| a.played_frames().map(|n| (n, a.sample_rate()))) } else { None };
+        let waiting = self.audio.as_ref().is_some_and(|a| a.waiting());
         if let Some((frames, _)) = reading
-            && frames != clock.audio_seen.0
+            && (frames != clock.audio_seen.0 || waiting)
         {
             clock.audio_seen = (frames, now);
         }
@@ -239,7 +240,7 @@ impl FilmcraftApp {
             self.ui.status = "Source audio output stopped responding: playing without sound (check Settings ▸ Audio Hardware)".into();
         }
         let elapsed = match reading {
-            Some((frames, sr)) if clock.audio_clock && sr > 0 => frames as f64 / f64::from(sr),
+            Some((frames, sr)) if clock.audio_clock && sr > 0 => frames as f64 / f64::from(sr) + crate::display_lead(ctx, self.audio.as_deref()),
             _ => (now - clock.anchor_time).max(0.0),
         };
         let next = Tick(clock.anchor_tick.0.saturating_add(Tick::from_seconds_f64(elapsed * clock.speed).0));

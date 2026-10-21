@@ -1516,6 +1516,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "enum-primitive-derive"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba7795da175654fe16979af73f81f26a8ea27638d8d9823d317016888a63dc4c"
+dependencies = [
+ "num-traits",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "enumflags2"
 version = "0.7.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1691,6 +1702,7 @@ dependencies = [
  "filmcraft-gpu",
  "filmcraft-platform",
  "filmcraft-project",
+ "filmcraft-pulse",
  "filmcraft-render",
  "filmcraft-time",
  "filmcraft-ui-egui",
@@ -2222,6 +2234,14 @@ dependencies = [
  "filmcraft-testkit",
  "rayon",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "filmcraft-pulse"
+version = "0.9.0"
+dependencies = [
+ "log",
+ "pulseaudio",
 ]
 
 [[package]]
@@ -3624,6 +3644,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b18443e9c262bfe8fa82f51666e2642c53393f7e5c27b3e1aeab922cff5b9d8"
 dependencies = [
  "libc",
+ "log",
  "wasi",
  "windows-sys 0.61.2",
 ]
@@ -4753,6 +4774,22 @@ name = "pulp-wasm-simd-flag"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d8f70e07b9c3962945a74e59ca1c511bba65b6419468acc217c457d93f3c740"
+
+[[package]]
+name = "pulseaudio"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d70623bd7967a9ca4c2ae0e807fc380b291f98480fc037042305ec643a4d3373"
+dependencies = [
+ "bitflags 2.13.2",
+ "byteorder",
+ "enum-primitive-derive",
+ "futures",
+ "log",
+ "mio",
+ "num-traits",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "pxfm"

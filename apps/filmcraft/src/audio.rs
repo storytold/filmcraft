@@ -157,6 +157,26 @@ impl CpalOut {
         }
     }
 
+    /// An output that has not looked for a device, for tests that do not use one: listing ALSA
+    /// devices can hang in PipeWire's ALSA plugin when no PipeWire server is running.
+    #[cfg(test)]
+    pub(crate) fn without_device() -> Self {
+        Self {
+            stream: None,
+            fill: None,
+            played: Arc::new(AtomicU64::new(0)),
+            health: Arc::new(Health::default()),
+            watchdog: Watchdog::default(),
+            epoch: Instant::now(),
+            rate: 48_000,
+            channels: 2,
+            hw: AudioHardwarePrefs::default(),
+            document_rate: None,
+            note: None,
+            fallback: Mutex::new(None),
+        }
+    }
+
     /// The stream configuration the settings ask for, falling back to the device default.
     fn config(&self, dev: &cpal::Device) -> Result<cpal::SupportedStreamConfig, String> {
         let default = dev.default_output_config().map_err(|e| e.to_string())?;

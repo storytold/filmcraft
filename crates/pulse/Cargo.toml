@@ -1,0 +1,18 @@
+[package]
+name = "filmcraft-pulse"
+description = "Audio playback over the PulseAudio native protocol (PipeWire's pipewire-pulse or PulseAudio), in pure Rust; Linux only, an empty crate elsewhere"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+log = { workspace = true }
+
+# `pulseaudio` is a pure-Rust implementation of the protocol (MIT), so nothing links or loads a C
+# sound library.
+[target.'cfg(target_os = "linux")'.dependencies]
+pulseaudio = "0.3.1"
