@@ -446,3 +446,90 @@ fn clip_context_menu_adds_a_marker_at_the_playhead_with_one_undo() {
         assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), serde_json::to_value(&*after).unwrap());
     }
 }
+
+/// #1953: the macOS menu bar takes ⌘C, ⌘X, ⌘V and ⌘A, so Edit menu commands arrive in the command
+/// inbox. While a text field has focus they edit its text instead of copying or pasting clips.
+#[test]
+fn native_edit_menu_edits_the_focused_text_field() {
+    let mut d = Driver::new();
+    let (tx, rx) = channel();
+    d.app().command_inbox = Some(rx);
+    d.app().hooks.clipboard_text = Some(Box::new(|| Some("Ocean".to_string())));
+    let project_before = d.app().session.project.clone();
+    d.click("project.search");
+    tx.send("edit.paste".to_string()).unwrap();
+    d.frames(3);
+    assert_eq!(d.app().ui.project_search, "Ocean", "Paste goes into the field");
+    tx.send("edit.selectAll".to_string()).unwrap();
+    d.frames(2);
+    tx.send("edit.cut".to_string()).unwrap();
+    let mut copied = None;
+    for _ in 0..3 {
+        d.frames(1);
+        copied = copied.or_else(|| {
+            d.harness.output().platform_output.commands.iter().find_map(|c| match c {
+                egui::OutputCommand::CopyText(t) => Some(t.clone()),
+                _ => None,
+            })
+        });
+    }
+    assert_eq!(d.app().ui.project_search, "", "Select All, then Cut empties the field");
+    assert_eq!(copied.as_deref(), Some("Ocean"), "Cut puts the field's text on the clipboard");
+    assert!(std::sync::Arc::ptr_eq(&project_before, &d.app().session.project), "no clips were cut or pasted");
+}
+
+/// #1333: the macOS menu bar takes ⌘B (File ▸ New ▸ Bin) before the window sees it, so recording
+/// ⌘B in Keyboard Shortcuts made a bin and the recorder never got the chord. A menu command that
+/// arrives while recording is recorded as its shortcut; with the dialog open and nothing being
+/// recorded it does not run.
+#[test]
+fn native_menu_chords_are_recorded_in_the_shortcut_editor() {
+    let mut d = Driver::new();
+    let (tx, rx) = channel();
+    d.app().command_inbox = Some(rx);
+    assert_eq!(d.app().session.shortcuts.primary("file.newBin").as_deref(), Some("Cmd+B"));
+    d.ok("ui.menu.invoke", json!({"id": "app.keyboardShortcuts"}));
+    d.frames(4);
+    d.ok("ui.click", json!({"id": "shortcuts.search"}));
+    d.ok("ui.type", json!({"text": "Add Edit"}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "shortcuts.cell.sequence.addEdit"}));
+    d.frames(3);
+    assert_eq!(d.app().shortcut_editor.recording, Some(("sequence.addEdit".into(), false)));
+    let project = d.app().session.project.clone();
+    // ⌘B pressed while recording: the menu bar sends New Bin
+    tx.send("file.newBin".to_string()).unwrap();
+    d.frames(3);
+    assert_eq!(d.app().shortcut_editor.recording, None, "the chord was recorded");
+    assert_eq!(d.app().session.shortcuts.primary("sequence.addEdit").as_deref(), Some("Cmd+B"));
+    assert!(std::sync::Arc::ptr_eq(&project, &d.app().session.project), "no bin was made");
+    // not recording: a menu shortcut still does not run behind the dialog
+    tx.send("sequence.addEdit".to_string()).unwrap();
+    d.frames(3);
+    assert!(std::sync::Arc::ptr_eq(&project, &d.app().session.project), "the dialog keeps menu shortcuts from running");
+}
+
+/// Review on #2081: with Keyboard Shortcuts open and nothing being recorded, the Edit menu's ⌘V,
+/// ⌘A and ⌘X still edit the dialog's focused search field, and clips are not pasted behind it.
+#[test]
+fn native_edit_menu_edits_the_shortcut_editor_search() {
+    let mut d = Driver::new();
+    let (tx, rx) = channel();
+    d.app().command_inbox = Some(rx);
+    d.app().hooks.clipboard_text = Some(Box::new(|| Some("Razor".to_string())));
+    d.ok("ui.menu.invoke", json!({"id": "app.keyboardShortcuts"}));
+    d.frames(4);
+    d.ok("ui.click", json!({"id": "shortcuts.search"}));
+    d.frames(2);
+    let project = d.app().session.project.clone();
+    tx.send("edit.paste".to_string()).unwrap();
+    d.frames(3);
+    assert_eq!(d.app().shortcut_editor.search, "Razor", "Paste goes into the search field");
+    tx.send("edit.selectAll".to_string()).unwrap();
+    d.frames(2);
+    tx.send("edit.cut".to_string()).unwrap();
+    d.frames(3);
+    assert_eq!(d.app().shortcut_editor.search, "", "Select All, then Cut empties the field");
+    assert_eq!(d.app().shortcut_editor.recording, None);
+    assert!(std::sync::Arc::ptr_eq(&project, &d.app().session.project), "no clips were cut or pasted");
+}

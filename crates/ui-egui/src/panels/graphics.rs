@@ -503,7 +503,7 @@ fn new_text_action(app: &FilmcraftApp, pic: Rect, frame: (u32, u32), at: Pos2, c
     ("graphics.newText#edit".into(), prm)
 }
 
-const TEXT_EDIT_ID: &str = "gfx-text-edit";
+pub(crate) const TEXT_EDIT_ID: &str = "gfx-text-edit";
 
 fn end_edit(app: &mut FilmcraftApp, ui: &egui::Ui) {
     app.ui.gfx_edit = None;

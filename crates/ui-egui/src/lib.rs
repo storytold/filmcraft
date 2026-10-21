@@ -173,6 +173,10 @@ pub struct HostHooks {
     /// Files or an image on the system clipboard, for Paste in the Timeline and the Project panel
     /// (#611). Without it Paste only pastes clips copied in FilmCraft.
     pub clipboard_media: Option<Box<dyn FnMut() -> Option<ClipboardMedia>>>,
+    /// Text on the system clipboard, for Edit ▸ Paste from the macOS menu bar while text is being
+    /// edited (#1953): the menu bar takes ⌘V before the window sees it, so egui never gets its own
+    /// Paste event. Without it that Paste does nothing.
+    pub clipboard_text: Option<Box<dyn FnMut() -> Option<String>>>,
 }
 
 /// What [`HostHooks::clipboard_media`] found on the system clipboard.
@@ -308,6 +312,10 @@ pub struct FilmcraftApp {
     deferred: Vec<(ControlRequest, f64)>,
     last_ui_time: f64,
     pub(crate) synthetic: Vec<egui::Event>,
+    /// Edit-menu commands from the native menu bar turned into the text events they stand for,
+    /// for the next frame while text is being edited (#1953), each with the widget it is for:
+    /// it is dropped if the keyboard focus has moved on by then. `None` goes to whoever has it.
+    menu_text_events: Vec<(egui::Event, Option<egui::Id>)>,
     /// macOS: a Control+Click already translated to a secondary (context) click, so its release is
     /// translated too even if Control is let go mid-click. AppKit delivers Control+Click to the
     /// view as a *primary* press with the Control modifier (`rightMouseDown:` only fires for a
@@ -568,6 +576,7 @@ impl FilmcraftApp {
             deferred: Vec::new(),
             last_ui_time: 0.0,
             synthetic: Vec::new(),
+            menu_text_events: Vec::new(),
             mac_ctrl_click_armed: false,
             value_press: None,
             loudness: None,
@@ -1493,14 +1502,94 @@ impl FilmcraftApp {
 
     // ---------------------------------------------------------------- input
 
+    /// The native menu bar (macOS) takes the key equivalents of its items before the window sees
+    /// them, so with the Keyboard Shortcuts dialog open a chord such as ⌘B arrives as its menu
+    /// command (New Bin) instead of a key press: it ran the command and the recorder never saw the
+    /// chord (#1333). While a shortcut is being recorded, the command becomes the key press of its
+    /// shortcut for the recorder. Otherwise the Edit menu's text commands go to the dialog's
+    /// search field when it has focus ([`Self::edit_menu_to_text`]), Quit still quits, and other
+    /// commands are kept from running, as the in-app shortcuts are. Returns whether `id` was taken.
+    fn menu_command_in_shortcut_editor(&mut self, ctx: &egui::Context, id: &str) -> bool {
+        if self.dialog != Some(Dialog::Shortcuts) {
+            return false;
+        }
+        if self.shortcut_editor.recording.is_some() {
+            if let Some((modifiers, key)) = self.session.shortcuts.primary(id).as_deref().and_then(menus::parse_shortcut) {
+                self.menu_text_events.push((egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers }, None));
+                ctx.request_repaint();
+            }
+            return true;
+        }
+        if id == "app.quit" {
+            return false;
+        }
+        // taken by the focused field, or dropped
+        self.edit_menu_to_text(ctx, id);
+        true
+    }
+
+    /// The native menu bar (macOS) takes the Edit menu's ⌘C, ⌘X, ⌘V, ⌘A, ⌘Z and ⇧⌘Z before the
+    /// window sees them, so they arrive as menu commands. While a text field or a graphic's text
+    /// is being edited they belong to the text, as they do on Windows and Linux: this queues the
+    /// events egui would have made for the next frame instead of copying or pasting clips (#1953).
+    /// Returns whether `id` was taken.
+    fn edit_menu_to_text(&mut self, ctx: &egui::Context, id: &str) -> bool {
+        let graphic_text = self.ui.gfx_edit.is_some();
+        let text_field = ctx.text_edit_focused();
+        if !graphic_text && !text_field {
+            return false;
+        }
+        let focused = ctx.memory(|m| m.focused());
+        let graphic = egui::Id::new(panels::graphics::TEXT_EDIT_ID);
+        // the field being typed in, else the graphic's text
+        let target = if text_field { focused } else { Some(graphic) };
+        let key = |key, modifiers| egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers };
+        let event = match id {
+            "edit.copy" => egui::Event::Copy,
+            "edit.cut" => egui::Event::Cut,
+            // nothing to paste as text: the clips on FilmCraft's own clipboard don't go into text
+            "edit.paste" => match self.hooks.clipboard_text.as_mut().and_then(|read| read()) {
+                Some(text) => egui::Event::Paste(text),
+                None => return true,
+            },
+            // a graphic's text: Select All and the undo history already handle it (menus::invoke)
+            "edit.selectAll" if text_field => key(egui::Key::A, egui::Modifiers::COMMAND),
+            "edit.undo" if text_field => key(egui::Key::Z, egui::Modifiers::COMMAND),
+            "edit.redo" if text_field => key(egui::Key::Z, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT),
+            _ => return false,
+        };
+        // a graphic's text gives the keyboard to any other focused widget (a button in Text
+        // Properties) and takes it back once nothing has it: free it, so the event reaches the text
+        if !text_field && let Some(other) = focused.filter(|f| *f != graphic) {
+            ctx.memory_mut(|m| m.surrender_focus(other));
+        }
+        self.menu_text_events.push((event, target));
+        ctx.request_repaint();
+        true
+    }
+
     /// Sends the menu tree to the native menu bar when it changed, so its items show the same
     /// labels, shortcuts and enablement as the in-window menus (Undo with nothing to undo is
     /// disabled). Without a native menu bar this does nothing.
-    fn sync_native_menu(&mut self) {
+    ///
+    /// While text is being edited the Edit items [`Self::edit_menu_to_text`] routes stay enabled,
+    /// whatever the project state: AppKit does not send a disabled item's command, so with no clip
+    /// selected ⌘C would never reach the text field. `text_field` is a focused text field (Copy,
+    /// Cut, Paste, Select All, Undo, Redo), `graphic_text` a graphic's text being edited (Copy,
+    /// Cut, Paste, and Select All, which `menus::invoke` applies to the text).
+    fn sync_native_menu(&mut self, text_field: bool, graphic_text: bool) {
         if self.hooks.menu_changed.is_none() {
             return;
         }
-        let items = menus::menu_items(self);
+        let mut items = menus::menu_items(self);
+        for it in &mut items {
+            let text_command = match it.id.as_str() {
+                "edit.copy" | "edit.cut" | "edit.paste" | "edit.selectAll" => text_field || graphic_text,
+                "edit.undo" | "edit.redo" => text_field,
+                _ => false,
+            };
+            it.enabled |= text_command;
+        }
         if items == self.menu_sent {
             return;
         }
@@ -1821,7 +1910,7 @@ impl FilmcraftApp {
         self.handle_drops(&ctx);
         if let Some(rx) = self.command_inbox.take() {
             while let Ok(id) = rx.try_recv() {
-                if self.control_input_only {
+                if self.control_input_only || self.menu_command_in_shortcut_editor(&ctx, &id) || self.edit_menu_to_text(&ctx, &id) {
                     continue;
                 }
                 if let Err(e) = menus::invoke(self, &ctx, &id, json!({})) {
@@ -1832,7 +1921,7 @@ impl FilmcraftApp {
         }
         self.begin_press(&ctx);
         self.handle_shortcuts(&ctx);
-        self.sync_native_menu();
+        self.sync_native_menu(ctx.text_edit_focused(), self.ui.gfx_edit.is_some());
         self.advance_playback(&ctx);
         self.advance_source_playback(&ctx);
         self.scrub_audio(&ctx);
@@ -2064,12 +2153,17 @@ fn synthesize_mac_ctrl_click(armed: &mut bool, raw_input: &mut egui::RawInput) {
 }
 
 impl eframe::App for FilmcraftApp {
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.native_window_focused = Some(raw_input.focused);
         #[cfg(target_os = "macos")]
         if !self.control_input_only {
             synthesize_mac_ctrl_click(&mut self.mac_ctrl_click_armed, raw_input);
         }
+        // an edit for a field that lost the keyboard meanwhile (a click on another field in the
+        // same frame) is dropped rather than applied to the new one; the graphic's text takes the
+        // keyboard back this frame when nothing has it
+        let focused = ctx.memory(|m| m.focused());
+        raw_input.events.extend(self.menu_text_events.drain(..).filter(|(_, target)| menu_text_event_wanted(*target, focused)).map(|(event, _)| event));
         if self.control_input_only {
             // Preserve screenshot responses and all viewport lifecycle/geometry metadata.
             raw_input.events.retain(|event| matches!(event, egui::Event::Screenshot { .. }));
@@ -2812,6 +2906,34 @@ mod voiceover_playback_tests {
     }
 }
 
+/// Whether a queued native Edit event for `target` still goes in, with `focused` holding the
+/// keyboard now: unbound events always do; a field's only while it keeps the keyboard; the
+/// graphic's text also when nothing has the keyboard, as it takes it back in this frame.
+fn menu_text_event_wanted(target: Option<egui::Id>, focused: Option<egui::Id>) -> bool {
+    let graphic = egui::Id::new(panels::graphics::TEXT_EDIT_ID);
+    target.is_none() || target == focused || (target == Some(graphic) && focused.is_none())
+}
+
+#[cfg(test)]
+mod menu_text_event_tests {
+    use super::menu_text_event_wanted;
+
+    /// CodeRabbit on #2081: an edit for field A is dropped once a click gave B the keyboard, rather
+    /// than pasted into B; the graphic's text gets its edit when it is about to take the keyboard back.
+    #[test]
+    fn a_queued_edit_follows_only_its_own_field() {
+        let (a, b) = (egui::Id::new("a"), egui::Id::new("b"));
+        let graphic = egui::Id::new(crate::panels::graphics::TEXT_EDIT_ID);
+        assert!(menu_text_event_wanted(Some(a), Some(a)));
+        assert!(!menu_text_event_wanted(Some(a), Some(b)), "B has the keyboard now");
+        assert!(!menu_text_event_wanted(Some(a), None));
+        assert!(menu_text_event_wanted(Some(graphic), None), "the graphic's text takes the keyboard back");
+        assert!(menu_text_event_wanted(Some(graphic), Some(graphic)));
+        assert!(!menu_text_event_wanted(Some(graphic), Some(b)));
+        assert!(menu_text_event_wanted(None, Some(b)), "a recorder key press goes to whoever has the keyboard");
+    }
+}
+
 /// A physical-pixel screen position as a point in the window's UI space, given the window's content origin in points.
 ///
 /// Assumes the whole virtual screen uses the window's `pixels_per_point`: with monitors of mixed
@@ -2859,23 +2981,49 @@ mod native_menu_tests {
         let sink = sent.clone();
         app.hooks.menu_changed = Some(Box::new(move |items: &[menus::MenuItem]| sink.borrow_mut().push(items.to_vec())));
 
-        app.sync_native_menu();
+        app.sync_native_menu(false, false);
         let last = |sent: &Rc<RefCell<Vec<Vec<menus::MenuItem>>>>, id: &str| sent.borrow().last().and_then(|items| enabled(items, id));
         assert_eq!(last(&sent, "edit.undo"), Some(false), "nothing to undo in an empty project");
         assert_eq!(last(&sent, "edit.redo"), Some(false), "nothing to redo in an empty project");
         assert_eq!(last(&sent, "file.newProject"), Some(true));
 
-        app.sync_native_menu();
+        app.sync_native_menu(false, false);
         assert_eq!(sent.borrow().len(), 1, "an unchanged menu is not sent again");
 
         app.session.execute("file.newSequence", json!({"width":16,"height":16})).unwrap();
-        app.sync_native_menu();
+        app.sync_native_menu(false, false);
         assert_eq!(last(&sent, "edit.undo"), Some(true), "an edit can be undone");
         assert_eq!(last(&sent, "edit.redo"), Some(false));
 
         app.session.execute("edit.undo", json!({})).unwrap();
-        app.sync_native_menu();
+        app.sync_native_menu(false, false);
         assert_eq!(last(&sent, "edit.undo"), Some(false));
         assert_eq!(last(&sent, "edit.redo"), Some(true), "the undone edit can be redone");
+    }
+
+    /// #1953 (CodeRabbit on #2010): with nothing selected, nothing to undo and no clips copied,
+    /// the native Edit items are disabled and AppKit would never send ⌘C / ⌘V / ⌘Z to a focused
+    /// text field. While text is being edited they stay enabled.
+    #[test]
+    fn native_edit_items_stay_enabled_while_text_is_edited() {
+        let sent: Rc<RefCell<Vec<Vec<menus::MenuItem>>>> = Rc::default();
+        let mut app = FilmcraftApp::new(Session::default());
+        let sink = sent.clone();
+        app.hooks.menu_changed = Some(Box::new(move |items: &[menus::MenuItem]| sink.borrow_mut().push(items.to_vec())));
+        let ids = ["edit.copy", "edit.cut", "edit.paste", "edit.undo", "edit.redo"];
+        let last = |sent: &Rc<RefCell<Vec<Vec<menus::MenuItem>>>>, id: &str| sent.borrow().last().and_then(|items| enabled(items, id));
+        app.sync_native_menu(false, false);
+        for id in ids {
+            assert_eq!(last(&sent, id), Some(false), "{id} with no text being edited");
+        }
+        app.sync_native_menu(true, false);
+        for id in ids {
+            assert_eq!(last(&sent, id), Some(true), "{id} in a text field");
+        }
+        // a graphic's text: the clipboard commands, not the project's Undo and Redo
+        app.sync_native_menu(false, true);
+        assert_eq!(last(&sent, "edit.copy"), Some(true));
+        assert_eq!(last(&sent, "edit.paste"), Some(true));
+        assert_eq!(last(&sent, "edit.undo"), Some(false));
     }
 }
