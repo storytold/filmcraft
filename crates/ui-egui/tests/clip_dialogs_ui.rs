@@ -446,3 +446,34 @@ fn clip_context_menu_adds_a_marker_at_the_playhead_with_one_undo() {
         assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), serde_json::to_value(&*after).unwrap());
     }
 }
+
+/// #1953: the macOS menu bar takes ⌘C, ⌘X, ⌘V and ⌘A, so Edit menu commands arrive in the command
+/// inbox. While a text field has focus they edit its text instead of copying or pasting clips.
+#[test]
+fn native_edit_menu_edits_the_focused_text_field() {
+    let mut d = Driver::new();
+    let (tx, rx) = channel();
+    d.app().command_inbox = Some(rx);
+    d.app().hooks.clipboard_text = Some(Box::new(|| Some("Ocean".to_string())));
+    let project_before = d.app().session.project.clone();
+    d.click("project.search");
+    tx.send("edit.paste".to_string()).unwrap();
+    d.frames(3);
+    assert_eq!(d.app().ui.project_search, "Ocean", "Paste goes into the field");
+    tx.send("edit.selectAll".to_string()).unwrap();
+    d.frames(2);
+    tx.send("edit.cut".to_string()).unwrap();
+    let mut copied = None;
+    for _ in 0..3 {
+        d.frames(1);
+        copied = copied.or_else(|| {
+            d.harness.output().platform_output.commands.iter().find_map(|c| match c {
+                egui::OutputCommand::CopyText(t) => Some(t.clone()),
+                _ => None,
+            })
+        });
+    }
+    assert_eq!(d.app().ui.project_search, "", "Select All, then Cut empties the field");
+    assert_eq!(copied.as_deref(), Some("Ocean"), "Cut puts the field's text on the clipboard");
+    assert!(std::sync::Arc::ptr_eq(&project_before, &d.app().session.project), "no clips were cut or pasted");
+}
