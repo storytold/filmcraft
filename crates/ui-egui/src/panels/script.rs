@@ -539,18 +539,18 @@ fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc: &ScriptDo
         }
         let selected = take.is_some_and(|take| app.ui.script.selected_take == Some(take.id.0));
         ui.painter().with_clip_rect(right_clip).rect_filled(cell, 3.0, if selected { t.hover } else { t.panel_bg });
-        if let Some(take) = take {
-            if let Some(source) = take.source.and_then(|id| app.session.project.item(id)) {
-                let thumb_item = app.session.project.resolve_media(source.id).map_or(source.id, |value| value.0);
-                if let Some((texture, size)) = app.thumbnail(ui.ctx(), thumb_item, Tick::ZERO, 96) {
-                    let thumbnail = Rect::from_min_size(cell.min + vec2(3.0, 3.0), vec2(51.0, 30.0));
-                    ui.painter().with_clip_rect(right_clip).image(
-                        texture,
-                        super::monitor::fit(thumbnail, size.x, size.y),
-                        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
-                }
+        if let Some(take) = take
+            && let Some(source) = take.source.and_then(|id| app.session.project.item(id))
+        {
+            let thumb_item = app.session.project.resolve_media(source.id).map_or(source.id, |value| value.0);
+            if let Some((texture, size)) = app.thumbnail(ui.ctx(), thumb_item, Tick::ZERO, 96) {
+                let thumbnail = Rect::from_min_size(cell.min + vec2(3.0, 3.0), vec2(51.0, 30.0));
+                ui.painter().with_clip_rect(right_clip).image(
+                    texture,
+                    super::monitor::fit(thumbnail, size.x, size.y),
+                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
             }
         }
         let title = take.map_or(*name, |take| {
@@ -803,11 +803,11 @@ fn row_view(
 }
 
 fn take_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, take: &ScriptTake, actions: &mut Vec<Action>) {
-    if let Some(source) = take.source {
-        if ui.button("Find in Project").clicked() {
-            actions.push(Action::FindInProject(source));
-            ui.close();
-        }
+    if let Some(source) = take.source
+        && ui.button("Find in Project").clicked()
+    {
+        actions.push(Action::FindInProject(source));
+        ui.close();
     }
     ui.menu_button("Candle Color", |ui| {
         for label in Label::ALL {

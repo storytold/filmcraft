@@ -489,6 +489,31 @@ mod tests {
     }
 
     #[test]
+    fn editing_keeps_line_marks_and_deletion_undo_restores_them() {
+        let mut session = Session::default();
+        let media = source(&mut session, "clip", 10);
+        let script = session.execute("script.importText", json!({"name":"Scene", "text":"MARA\nOriginal line"})).unwrap()["item"].as_u64().unwrap();
+        let lines = &session.project.item(ItemId(script)).unwrap().as_script().unwrap().lines;
+        let (first, second) = (lines[0].id.0, lines[1].id.0);
+        let take =
+            session.execute("script.addTake", json!({"item":script,"source":media.0,"startLine":first,"endLine":second})).unwrap()["take"].as_u64().unwrap();
+        let mark = session.execute("script.addMark", json!({"item":script,"take":take,"line":second,"sourceTime":100})).unwrap()["mark"].as_u64().unwrap();
+        session.execute("script.editLine", json!({"item":script,"line":second,"text":"Revised line"})).unwrap();
+        let doc = session.project.item(ItemId(script)).unwrap().as_script().unwrap();
+        assert_eq!(doc.lines[1].text, "Revised line");
+        assert_eq!(doc.take(ScriptTakeId(take)).unwrap().marks[0].id.0, mark);
+
+        session.execute("script.deleteLine", json!({"item":script,"line":second})).unwrap();
+        let doc = session.project.item(ItemId(script)).unwrap().as_script().unwrap();
+        assert_eq!(doc.lines.len(), 1);
+        assert!(doc.take(ScriptTakeId(take)).unwrap().marks.is_empty());
+        session.execute("edit.undo", json!({})).unwrap();
+        let doc = session.project.item(ItemId(script)).unwrap().as_script().unwrap();
+        assert_eq!(doc.lines[1].text, "Revised line");
+        assert_eq!(doc.take(ScriptTakeId(take)).unwrap().marks[0].id.0, mark);
+    }
+
+    #[test]
     fn delete_unbinds_and_same_identity_rebind_preserves_marks() {
         let mut s = Session::default();
         let original = source(&mut s, "original", 10);

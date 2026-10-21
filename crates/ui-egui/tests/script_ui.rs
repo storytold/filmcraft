@@ -143,3 +143,15 @@ fn narrow_script_panel_keeps_take_controls_accessible() {
     let _ = driver.rect("script.take.bottomDown");
     driver.snapshot("narrow-controls");
 }
+
+#[test]
+fn opening_script_panel_preserves_workspace_and_empty_state_has_actions() {
+    let mut driver = Driver::new();
+    driver.ok("ui.menu.invoke", json!({"id": "window.panel.Script"}));
+    let state = driver.ok("ui.inspect", json!({}));
+    assert_eq!(state["ui"]["workspace"], "Editing");
+    let _ = driver.rect("script.new");
+    let _ = driver.rect("script.import");
+    driver.ok("ui.menu.invoke", json!({"id": "window.workspace.script"}));
+    driver.snapshot("empty-dark");
+}
