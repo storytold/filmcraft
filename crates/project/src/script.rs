@@ -1,5 +1,7 @@
 //! Native lined scripts. A line's identity is independent of wrapping and its current row.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use filmcraft_time::Tick;
@@ -74,6 +76,7 @@ impl ScriptDocument {
     /// Maximum accepted plain text size and logical line count. Source text is untrusted input.
     pub const MAX_TEXT_BYTES: usize = 4 * 1024 * 1024;
     pub const MAX_LINES: usize = 50_000;
+    pub const MAX_LINE_BYTES: usize = 16_384;
 
     pub fn new() -> Self {
         Self { next_id: 1, ..Self::default() }
@@ -94,8 +97,15 @@ impl ScriptDocument {
             if doc.lines.len() >= Self::MAX_LINES {
                 return Err("script text exceeds the 50,000-line limit");
             }
+            if row.len() > Self::MAX_LINE_BYTES.saturating_add(1) {
+                return Err("a script line exceeds the 16 KiB limit");
+            }
             let id = ScriptLineId(doc.alloc_id()?);
-            doc.lines.push(ScriptLine { id, text: row.strip_suffix('\r').unwrap_or(row).to_owned(), scene: None, page: None });
+            let content = row.strip_suffix('\r').unwrap_or(row);
+            if content.len() > Self::MAX_LINE_BYTES {
+                return Err("a script line exceeds the 16 KiB limit");
+            }
+            doc.lines.push(ScriptLine { id, text: content.to_owned(), scene: None, page: None });
         }
         Ok(doc)
     }
@@ -131,21 +141,27 @@ impl ScriptDocument {
     /// line inside the old coverage, or the take is removed if no covered line remains.
     pub fn delete_line(&mut self, line: ScriptLineId) -> bool {
         let Some(index) = self.line_index(line) else { return false };
-        let ranges: Vec<(ScriptTakeId, Option<(ScriptLineId, ScriptLineId)>)> = self
+        let indexes: BTreeMap<ScriptLineId, usize> = self.lines.iter().enumerate().map(|(i, row)| (row.id, i)).collect();
+        let ranges: BTreeMap<ScriptTakeId, Option<(ScriptLineId, ScriptLineId)>> = self
             .slates
             .iter()
             .flat_map(|slate| slate.takes.iter())
             .filter_map(|take| {
-                let (a, b) = self.line_range(take.start_line, take.end_line)?;
-                let kept: Vec<_> = (a..=b).filter(|i| *i != index).filter_map(|i| self.lines.get(i).map(|l| l.id)).collect();
-                Some((take.id, kept.first().copied().zip(kept.last().copied())))
+                let (&a, &b) = (indexes.get(&take.start_line)?, indexes.get(&take.end_line)?);
+                if a > b {
+                    return None;
+                }
+                let left = if a == index { a.saturating_add(1) } else { a };
+                let right = if b == index { b.saturating_sub(1) } else { b };
+                let kept = (left <= right).then(|| self.lines.get(left).zip(self.lines.get(right)).map(|(x, y)| (x.id, y.id))).flatten();
+                Some((take.id, kept))
             })
             .collect();
         self.lines.remove(index);
         for slate in &mut self.slates {
-            slate.takes.retain(|take| ranges.iter().find(|(id, _)| *id == take.id).is_none_or(|(_, r)| r.is_some()));
+            slate.takes.retain(|take| ranges.get(&take.id).is_none_or(Option::is_some));
             for take in &mut slate.takes {
-                if let Some((_, Some((a, b)))) = ranges.iter().find(|(id, _)| *id == take.id) {
+                if let Some(Some((a, b))) = ranges.get(&take.id) {
                     take.start_line = *a;
                     take.end_line = *b;
                 }
@@ -186,6 +202,7 @@ mod tests {
         let doc = ScriptDocument::from_text("\u{feff} A\r\n\r\nA\n").unwrap();
         assert_eq!(doc.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), [" A", "", "A"]);
         assert_eq!(doc.lines.iter().map(|l| l.id.0).collect::<Vec<_>>(), [1, 2, 3]);
+        assert!(ScriptDocument::from_text(&"x".repeat(ScriptDocument::MAX_LINE_BYTES + 1)).is_err());
     }
 
     #[test]

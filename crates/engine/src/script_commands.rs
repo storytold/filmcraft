@@ -85,7 +85,7 @@ fn edit_line(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "script.editLine";
     let item = item(p, cmd)?;
     let line = ScriptLineId(id(p, "line", cmd)?);
-    let value = text(p, "text", cmd, 16_384)?.to_owned();
+    let value = text(p, "text", cmd, ScriptDocument::MAX_LINE_BYTES)?.to_owned();
     s.edit("Edit Script Line", |project, _| {
         let doc = script_mut(project, item, cmd)?;
         let line = doc.lines.iter_mut().find(|row| row.id == line).ok_or_else(|| bad(cmd, "line does not exist"))?;
@@ -99,7 +99,7 @@ fn insert_line(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "script.insertLine";
     let item = item(p, cmd)?;
     let after = p.get("after").filter(|v| !v.is_null()).map(|_| id(p, "after", cmd).map(ScriptLineId)).transpose()?;
-    let value = text(p, "text", cmd, 16_384)?.to_owned();
+    let value = text(p, "text", cmd, ScriptDocument::MAX_LINE_BYTES)?.to_owned();
     let created = s.edit("Insert Script Line", |project, _| {
         let doc = script_mut(project, item, cmd)?;
         if doc.lines.len() >= ScriptDocument::MAX_LINES {
@@ -256,9 +256,11 @@ fn set_coverage(s: &mut Session, p: &Value) -> Result<Value> {
         if take.marks.iter().any(|mark| !covered.contains(&mark.line)) {
             return Err(bad(cmd, "new candle range excludes existing marks; move or delete those marks first"));
         }
+        if take.offscreen_lines.iter().any(|line| !covered.contains(line)) {
+            return Err(bad(cmd, "new candle range excludes an off-screen passage; clear that passage first"));
+        }
         take.start_line = start;
         take.end_line = end;
-        take.offscreen_lines.retain(|line| covered.contains(line));
         Ok(())
     })?;
     Ok(Value::Null)
