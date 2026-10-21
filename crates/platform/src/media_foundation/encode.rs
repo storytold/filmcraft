@@ -180,11 +180,10 @@ pub fn factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettin
 /// but some run a pipeline a picture or two deep and stamp everything late: Qualcomm's AV1 encoder
 /// by exactly one picture, as does any B-frame encoder.
 ///
-/// A **constant** offset is ordinary. The pictures are in order and complete, and the file wants an
-/// edit list that starts the video that far in — which is what
-/// [`VideoEncoder::media_start`](filmcraft_export::VideoEncoder::media_start) is for. A **changing**
-/// offset is not something this path can describe, so it is an error naming the encoder rather than a
-/// file with wrong timestamps.
+/// A **constant** timestamp offset is accepted while packets remain ordered. Packets have uniform
+/// durations and zero composition offsets, so this clock offset must not become an edit-list trim:
+/// doing so would hide valid initial pictures. A **changing** offset is not something this path can
+/// describe, so it is an error naming the encoder rather than a file with wrong timestamps.
 #[derive(Clone, Copy, Debug, Default)]
 struct Timeline {
     /// How many pictures late every one of them is. `None` until the first picture with a time.
@@ -204,7 +203,7 @@ impl Timeline {
             return Ok(());
         }
         // The delay is measured in pictures, not in 100 ns units: a picture's length is
-        // `TIME_100NS / rate` nanoseconds, which does not divide evenly, and converting the
+        // `TIME_100NS / rate` 100 ns units, which does not divide evenly, and converting the
         // difference back would round a one-picture delay away to nothing.
         let matches = |k: u64| time_100ns(rate, written.saturating_add(k)) == time;
         match self.delay {
@@ -218,17 +217,16 @@ impl Timeline {
         Ok(())
     }
 
-    /// How far into the file the first picture starts, in the encoder's timescale.
-    fn media_start(&self, rate: FrameRate) -> Option<i64> {
-        let delay = self.delay.filter(|d| *d != 0)?;
-        i64::try_from(delay.saturating_mul(u64::try_from(rate.den.max(1)).ok()?)).ok().filter(|v| *v != 0)
+    /// Ordered packets start at media time zero regardless of their native timestamp offset.
+    fn media_start(&self, _rate: FrameRate) -> Option<i64> {
+        None
     }
 }
 
 /// The error for a picture that is not the one due, or the one after the encoder's delay.
 fn reorder(rate: &FrameRate, written: u64, time: i64) -> ExportError {
     ExportError::Encode(format!(
-        "Media Foundation: the encoder returned the picture after number {written} at {time} ns, which is not its turn at {} fps (it reorders frames)",
+        "Media Foundation: the encoder returned the picture after number {written} at {time} 100 ns units, which is not its turn at {} fps (it reorders frames)",
         rate.num as f64 / rate.den as f64
     ))
 }
@@ -543,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn a_constant_encoder_delay_is_an_edit_list_not_a_failure() {
+    fn a_constant_timestamp_offset_preserves_all_ordered_pictures() {
         // Most encoders report the picture's own time: nothing to correct.
         let mut t = Timeline::default();
         for n in 0..5u64 {
@@ -551,13 +549,12 @@ mod tests {
         }
         assert_eq!(t.media_start(FrameRate::FPS_24), None);
 
-        // An encoder a picture deep (Qualcomm's AV1 one does exactly this) is fine too: the same
-        // offset on every picture, and the edit list carries it.
+        // A constant timestamp offset is fine too, but does not justify trimming ordered packets.
         let mut t = Timeline::default();
         for n in 0..5u64 {
             t.accept(FrameRate::FPS_24, n, time_100ns(FrameRate::FPS_24, n + 1)).unwrap();
         }
-        assert_eq!(t.media_start(FrameRate::FPS_24), Some(1), "one picture late at 24 fps is one tick of the timescale");
+        assert_eq!(t.media_start(FrameRate::FPS_24), None, "the first ordered picture remains visible");
 
         // An encoder that reports no times at all cannot be checked on its first picture, which is
         // stamped 0 either way; from the second on, a 0 is not a time any of ours can have.
@@ -590,5 +587,26 @@ mod tests {
         // a frame rate that does not fit, or a picture count that would not, saturates
         assert_eq!(time_100ns(FrameRate { num: i64::MAX, den: 1 }, 1), i64::MAX);
         assert_eq!(time_100ns(FrameRate { num: 24, den: i64::MAX }, u64::MAX), i64::MAX);
+    }
+
+    #[test]
+    fn review_regression_constant_stamp_offset_keeps_ordered_samples_visible() {
+        for rate in [FrameRate::FPS_24, FrameRate { num: 30000, den: 1001 }] {
+            for delay in [1_u64, MAX_DELAY_PICTURES] {
+                let mut timeline = Timeline::default();
+                for written in 0..8_u64 {
+                    timeline.accept(rate, written, time_100ns(rate, written + delay)).unwrap();
+                }
+                // Ordered MF packets have no composition offsets and the muxer writes all of
+                // them. A positive edit-list media start would hide valid initial samples.
+                assert_eq!(timeline.media_start(rate), None, "rate {rate:?}, stamp offset {delay}");
+            }
+        }
+    }
+
+    #[test]
+    fn review_regression_reorder_diagnostic_names_hundred_nanosecond_units() {
+        let error = reorder(&FrameRate::FPS_24, 1, 2_500_000).to_string();
+        assert!(error.contains("2500000 100 ns units"), "{error}");
     }
 }
