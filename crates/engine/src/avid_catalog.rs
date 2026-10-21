@@ -13,37 +13,42 @@ fn failure(e: impl std::fmt::Display) -> EngineError {
 }
 
 /// A catalog report is a document, not an authorization to follow its media locations.
-/// Check every supplied location before binding can inspect or open any component.
+/// Check media-reference locations before binding can inspect or open any component.
+/// Other fields may legitimately use the name `locations` for user metadata.
 fn check_report_locations(doc: &adapter::Document, report_path: &str) -> Result<()> {
     let document = std::path::Path::new(report_path);
-    let mut pending: Vec<&Value> = doc.bins().iter().collect();
-    let mut visited = 0usize;
-    while let Some(value) = pending.pop() {
-        visited = visited.checked_add(1).ok_or_else(|| failure("report structure exceeds limit"))?;
-        if visited > 4_000_000 {
-            return Err(failure("report structure exceeds limit"));
-        }
-        match value {
-            Value::Object(object) => {
-                if let Some(locations) = object.get("locations") {
-                    let locations = locations.as_array().ok_or_else(|| failure("invalid report media locations"))?;
-                    for location in locations {
-                        let folder = location.get("folder").and_then(Value::as_str).ok_or_else(|| failure("invalid report media folder"))?;
-                        let filename = location
-                            .get("filename")
-                            .and_then(Value::as_str)
-                            .filter(|name| !name.is_empty() && name.len() <= 4096 && !name.contains(['/', '\\', '\0', ':']))
-                            .ok_or_else(|| failure("invalid report media filename"))?;
-                        crate::doc_path::resolve(folder, Some(document)).map_err(|_| failure("report media location is not allowed"))?;
-                        let candidate = std::path::Path::new(folder).join(filename);
-                        let candidate = candidate.to_str().ok_or_else(|| failure("invalid report media path"))?;
-                        crate::doc_path::resolve(candidate, Some(document)).map_err(|_| failure("report media location is not allowed"))?;
+    let mut references_seen = 0usize;
+    for bin in doc.bins() {
+        // The catalog is what the planner transfers. Check decoded masters as well, so a
+        // disagreeing report cannot smuggle a second location through retained evidence.
+        for masters in [bin.pointer("/catalog/clips"), bin.get("mobs")] {
+            let Some(masters) = masters.and_then(Value::as_array) else { continue };
+            for master in masters {
+                let Some(tracks) = master.get("tracks").and_then(Value::as_array) else { continue };
+                for track in tracks {
+                    let Some(references) = track.get("references").and_then(Value::as_array) else { continue };
+                    for reference in references {
+                        references_seen = references_seen.checked_add(1).ok_or_else(|| failure("report structure exceeds limit"))?;
+                        if references_seen > 4_000_000 {
+                            return Err(failure("report structure exceeds limit"));
+                        }
+                        let Some(locations) = reference.get("locations") else { continue };
+                        let locations = locations.as_array().ok_or_else(|| failure("invalid report media locations"))?;
+                        for location in locations {
+                            let folder = location.get("folder").and_then(Value::as_str).ok_or_else(|| failure("invalid report media folder"))?;
+                            let filename = location
+                                .get("filename")
+                                .and_then(Value::as_str)
+                                .filter(|name| !name.is_empty() && name.len() <= 4096 && !name.contains(['/', '\\', '\0', ':']))
+                                .ok_or_else(|| failure("invalid report media filename"))?;
+                            crate::doc_path::resolve(folder, Some(document)).map_err(|_| failure("report media location is not allowed"))?;
+                            let candidate = std::path::Path::new(folder).join(filename);
+                            let candidate = candidate.to_str().ok_or_else(|| failure("invalid report media path"))?;
+                            crate::doc_path::resolve(candidate, Some(document)).map_err(|_| failure("report media location is not allowed"))?;
+                        }
                     }
                 }
-                pending.extend(object.values());
             }
-            Value::Array(values) => pending.extend(values),
-            _ => {}
         }
     }
     Ok(())

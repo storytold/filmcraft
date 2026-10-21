@@ -392,11 +392,12 @@ or establish an Avid render-equivalence claim.
 
 Before merge, the separate JSON catalog-report route was checked against the stored-document
 media-path policy. A report can assert component locations, but selecting the report does not
-authorize unrelated network shares. Preview and import now reject disallowed locations before
-binding can inspect a component, including in metadata-only mode because it retains source
-locations for later binding. The native `.avb` workflow still uses media folders selected by the
-user. A synthetic unrelated-share regression covers all three report modes. On this final tree,
-`cargo xtask ci` passed with Rust 1.95.0: **3,666 passed, zero failed, 76 ignored** across 317
+authorize unrelated network shares. Preview and import now reject disallowed media-reference
+locations before binding can inspect a component, including in metadata-only mode because it
+retains source locations for later binding. Ordinary user metadata named `locations` is not a
+media reference and remains importable. The native `.avb` workflow still uses media folders
+selected by the user. Synthetic unrelated-share and metadata-name regressions cover all three
+report modes. On this final tree, `cargo xtask ci` passed with Rust 1.95.0: **3,667 passed, zero failed, 76 ignored** across 317
 test suites, plus formatting, release Clippy with warnings denied, dependency layers, 69
 attributed assets, and WASM checks for 49 crates. The earlier private corpus and render audits
 were not repeated for this path-policy change.

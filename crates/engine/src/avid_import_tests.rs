@@ -92,6 +92,19 @@ fn catalog_report_refuses_unrelated_network_media_before_binding() {
 }
 
 #[test]
+fn catalog_report_allows_user_metadata_named_locations() {
+    let (mut report, media) = fixture();
+    report["bins"][0]["catalog"]["clips"][0]["user"]["locations"] = json!("Studio A");
+    report["bins"][0]["mobs"][0] = report["bins"][0]["catalog"]["clips"][0].clone();
+    for mode in ["metadata", "media", "sequences"] {
+        let (mut session, _) = session(&report, media.clone());
+        session.execute("file.previewAvidCatalog", params(mode)).expect("user metadata must not be treated as a media path");
+        session.execute("file.importAvidCatalog", params(mode)).expect("user metadata must survive import");
+        assert!(!session.project.items.is_empty());
+    }
+}
+
+#[test]
 fn an_imported_subclip_is_not_offered_to_media_binding() {
     // A subclip has no media of its own: it binds through the master it restricts. Offering one
     // to binding fails the item, and in strict mode would fail the whole import.
