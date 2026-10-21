@@ -17,11 +17,11 @@
 //!
 //! # What the machine's encoder has to be like
 //!
-//! Every vendor's encoder MFT is an **asynchronous** MFT, and an asynchronous MFT answers
-//! `MF_E_TRANSFORM_ASYNC_LOCKED` to every call until the caller sets `MF_TRANSFORM_ASYNC_UNLOCK`;
-//! they also do not declare their media types up front, so `MFTEnumEx` filtered on the input
-//! subtype finds none of them and the candidates come from an unfiltered enumeration. Both are
-//! handled in [`MfEncoder::new`]; see `docs/adr/0001-platform-ffi.md`.
+//! Hardware encoder MFTs can be asynchronous. They must be unlocked and driven by
+//! their NeedInput / HaveOutput events, with DrainComplete ending the final drain.
+//! Candidates come from an unfiltered enumeration and each is configured for the
+//! requested stream; this does not imply missing vendor media-type registrations.
+//! See [`MfEncoder::new`] and `docs/adr/0001-platform-ffi.md`.
 
 use std::sync::{Once, OnceLock};
 
@@ -49,7 +49,7 @@ const FRAME_WAIT: std::time::Duration = std::time::Duration::ZERO;
 /// How long a full input queue waits for the encoder to catch up before the export is called off.
 /// Generous: this is the encoder setting the pace, and a real encode never gets near it.
 const INPUT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
-/// One wait on a full queue: the encoder's own quiet period, so the loop above sees its output.
+/// One bounded output/event pump while waiting for a full input queue to accept a picture.
 const IDLE_WAIT: std::time::Duration = std::time::Duration::from_millis(30);
 
 /// What the encoder is asked for, or why it is not used for that export.
@@ -170,7 +170,7 @@ pub fn factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettin
     };
     log::info!("hardware {} encoding on {}", if hard { "H.265" } else { "H.264" }, mft.name());
     filmcraft_export::note_hw_encode_session();
-    Some(Ok(Box::new(MfVideoEncoder { mft, api, cfg, rate, planes: Planes::default(), entry: None, written: 0, timeline: Timeline::default() })))
+    Some(Ok(Box::new(MfVideoEncoder { mft, api, cfg, rate, planes: Planes::default(), entry: None, written: 0, submitted: 0, timeline: Timeline::default() })))
 }
 
 /// What the encoder's picture times say about the stream it is producing.
@@ -276,6 +276,8 @@ struct MfVideoEncoder {
     entry: Option<SampleEntry>,
     /// Access units written so far, which is what their times are checked against.
     written: u64,
+    /// Pictures successfully accepted by ProcessInput; flush must account for every one.
+    submitted: u64,
     /// What the encoder's picture times say (see [`Timeline`]).
     timeline: Timeline,
 }
@@ -292,7 +294,7 @@ impl MfVideoEncoder {
         if self.entry.is_none() {
             self.entry = Some(self.sample_entry_from(annex_b)?);
         }
-        self.written += 1;
+        self.written = self.written.checked_add(1).ok_or_else(|| ExportError::Encode("Media Foundation: output picture count overflow".into()))?;
         filmcraft_export::note_hw_encode_frame();
         Ok(EncodedPacket { data, key, duration: u32::try_from(self.rate.den).unwrap_or(u32::MAX), composition_offset: 0 })
     }
@@ -385,9 +387,21 @@ impl VideoEncoder for MfVideoEncoder {
         let deadline = std::time::Instant::now() + INPUT_WAIT;
         loop {
             match self.mft.try_input(self.api, &self.planes.nv12[..needed], time) {
-                Ok(Input::Taken) => break,
+                Ok(Input::Taken) => {
+                    self.submitted =
+                        self.submitted.checked_add(1).ok_or_else(|| ExportError::Encode("Media Foundation: input picture count overflow".into()))?;
+                    break;
+                }
                 Ok(Input::Full) if std::time::Instant::now() < deadline => ready.extend(self.take_ready(IDLE_WAIT)?),
-                Ok(Input::Full) => return Err(ExportError::Encode("Media Foundation: the encoder stopped accepting pictures".into())),
+                Ok(Input::Full) => {
+                    return Err(ExportError::Encode(format!(
+                        "Media Foundation: {} stopped accepting picture {} ({} accepted, {} emitted)",
+                        self.mft.name(),
+                        f.index,
+                        self.submitted,
+                        self.written
+                    )));
+                }
                 Err(e) => return Err(ExportError::Encode(format!("Media Foundation: {e}"))),
             }
         }
@@ -402,8 +416,18 @@ impl VideoEncoder for MfVideoEncoder {
     fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
         self.mft.drain().map_err(|e| ExportError::Encode(format!("Media Foundation: {e}")))?;
         // everything the encoder still holds, which is a pipeline delay's worth of pictures
-        self.take_ready(DRAIN_WAIT)
+        let ready = self.take_ready(DRAIN_WAIT)?;
+        check_drain_count(self.submitted, self.written)?;
+        Ok(ready)
     }
+}
+
+/// A successful drain must account for every accepted picture exactly once.
+fn check_drain_count(submitted: u64, written: u64) -> Result<()> {
+    if submitted != written {
+        return Err(ExportError::Encode(format!("Media Foundation: incomplete drain ({submitted} pictures accepted, {written} emitted)")));
+    }
+    Ok(())
 }
 
 static HEVC_PROBE: OnceLock<bool> = OnceLock::new();
@@ -608,5 +632,21 @@ mod tests {
     fn review_regression_reorder_diagnostic_names_hundred_nanosecond_units() {
         let error = reorder(&FrameRate::FPS_24, 1, 2_500_000).to_string();
         assert!(error.contains("2500000 100 ns units"), "{error}");
+    }
+
+    #[test]
+    fn accounting_regression_missing_final_picture_is_an_error() {
+        assert!(check_drain_count(24, 23).is_err());
+    }
+
+    #[test]
+    fn accounting_regression_duplicate_output_is_an_error() {
+        assert!(check_drain_count(24, 25).is_err());
+    }
+
+    #[test]
+    fn accounting_regression_every_accepted_picture_is_accounted_for() {
+        assert!(check_drain_count(24, 24).is_ok());
+        assert!(check_drain_count(0, 0).is_ok());
     }
 }
