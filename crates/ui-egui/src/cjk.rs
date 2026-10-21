@@ -86,6 +86,7 @@ pub(crate) fn install(fonts: &mut FontDefinitions, korean_first: bool) {
     }
 }
 
+/// Append the selected Korean face to every family. Does nothing when no Korean face is installed.
 fn install_korean(fonts: &mut FontDefinitions) {
     let Some(font) = korean_font() else { return };
     fonts.font_data.insert("system-korean".into(), font);

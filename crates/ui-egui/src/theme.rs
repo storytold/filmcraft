@@ -527,10 +527,12 @@ mod tests {
 
     const JAPANESE: &str = "日本語の文字";
 
+    /// A context with the theme fonts installed for the English interface.
     fn installed() -> egui::Context {
         installed_for(crate::i18n::Language::En)
     }
 
+    /// A context with the theme fonts installed for `language`.
     fn installed_for(language: crate::i18n::Language) -> egui::Context {
         let ctx = egui::Context::default();
         install_for(&ctx, &Tokens::for_kind(ThemeKind::default()), language);

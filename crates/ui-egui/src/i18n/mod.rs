@@ -1338,6 +1338,8 @@ mod tests {
         assert_bundled_fonts_cover(alphabet.chars().chain(Language::It.name().chars()).chain(letters));
     }
 
+    /// Japanese uses the craft-fonts or an installed system face; without either the switch is
+    /// refused and the interface stays English.
     #[test]
     fn japanese_needs_an_installed_font() {
         let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
