@@ -349,7 +349,11 @@ fn the_factory_rejects_mismatched_pictures_and_clamps_hostile_floats() {
     let e = ten.sample_entry();
     let v = e.video.as_ref().unwrap();
     assert!(v.color.is_some() && v.mastering_display.is_some() && v.content_light == Some((0, 0)));
-    assert!(eight.sample_entry().video.as_ref().unwrap().color.is_none());
+    // SDR carries BT.709 colr as required by ColorSignal::apply_to, but no HDR metadata.
+    let sdr = eight.sample_entry();
+    let v = sdr.video.as_ref().unwrap();
+    assert_eq!(v.color, Some(filmcraft_isobmff::ColorInfo::Nclx { primaries: 1, transfer: 1, matrix: 1, full_range: false }));
+    assert!(v.mastering_display.is_none() && v.content_light.is_none());
     // HLG: colr only
     let Some(Ok(hlg)) = factory(Format::Hevc, w, h, rate, &ExportSettings { signal: ColorSignal::HLG, ..sdr_settings.clone() }) else {
         panic!("an HLG encoder")
