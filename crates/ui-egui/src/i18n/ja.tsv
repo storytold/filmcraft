@@ -3687,3 +3687,4 @@
 	If it is the same footage, confirm the relink to preserve their marks. Otherwise cancel and replace the takes in Script.	同じ映像なら再リンクを確認してマークを保持してください。異なる場合はキャンセルし、脚本でテイクを置き換えてください。
 	Relink canceled; Script marks were preserved.	再リンクをキャンセルしました。脚本のマークは保持されました。
 	Review Script marks	脚本のマークを確認
+	{n} Script-linked clip(s) still need review. Select each remaining source to relink.	脚本にリンクされたクリップ {n} 件は確認が必要です。残りの各ソースを選択して再リンクしてください。

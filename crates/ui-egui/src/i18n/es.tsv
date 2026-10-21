@@ -3688,3 +3688,4 @@
 	If it is the same footage, confirm the relink to preserve their marks. Otherwise cancel and replace the takes in Script.	Si es el mismo material, confirma la revinculación para conservar las marcas. De lo contrario, cancela y reemplaza las tomas en Guion.
 	Relink canceled; Script marks were preserved.	Revinculación cancelada; se conservaron las marcas del guion.
 	Review Script marks	Revisar marcas del guion
+	{n} Script-linked clip(s) still need review. Select each remaining source to relink.	Quedan {n} clips vinculados al guion por revisar. Selecciona cada fuente restante para volver a vincularla.

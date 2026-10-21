@@ -641,11 +641,10 @@ fn relink_to(app: &mut FilmcraftApp, d: &mut LinkMediaDraft, item: &Value, path:
     p["path"] = json!(path);
     match app.session.execute("media.relink", p.clone()) {
         Ok(v) => {
-            d.message.clear();
+            set_relink_result(app, d, &v);
             d.candidates.clear();
             d.candidate = None;
             d.pending_script_mark_relink = None;
-            app.ui.status = tlf!("Linked {n} clip(s)", n = v["relinked"].as_array().map_or(0, Vec::len));
         }
         Err(e) => {
             d.message = e.to_string();
@@ -654,6 +653,16 @@ fn relink_to(app: &mut FilmcraftApp, d: &mut LinkMediaDraft, item: &Value, path:
             }
         }
     }
+}
+
+fn set_relink_result(app: &mut FilmcraftApp, d: &mut LinkMediaDraft, result: &Value) {
+    app.ui.status = tlf!("Linked {n} clip(s)", n = result["relinked"].as_array().map_or(0, Vec::len));
+    let review_count = result["needsReview"].as_array().map_or(0, Vec::len);
+    d.message = if review_count == 0 {
+        String::new()
+    } else {
+        tlf!("{n} Script-linked clip(s) still need review. Select each remaining source to relink.", n = review_count)
+    };
 }
 
 fn review_script_mark_relink(app: &mut FilmcraftApp, ctx: &egui::Context, d: &mut LinkMediaDraft) {
@@ -682,10 +691,9 @@ fn review_script_mark_relink(app: &mut FilmcraftApp, ctx: &egui::Context, d: &mu
         match app.session.execute("media.relink", params) {
             Ok(v) => {
                 d.pending_script_mark_relink = None;
-                d.message.clear();
+                set_relink_result(app, d, &v);
                 d.candidates.clear();
                 d.candidate = None;
-                app.ui.status = tlf!("Linked {n} clip(s)", n = v["relinked"].as_array().map_or(0, Vec::len));
             }
             Err(e) => {
                 d.pending_script_mark_relink = None;
