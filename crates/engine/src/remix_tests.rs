@@ -196,3 +196,33 @@ fn remixed_out_trim_keeps_requested_duration_and_audio() {
     s.execute("clip.remix.revert", json!({"clip":c.0})).unwrap();
     assert_eq!(item(&s, c), original);
 }
+
+#[test]
+fn long_extension_survives_the_optional_level_matching_limit() {
+    let (m, _) = dsp::test_music(SR, 120.0, 15, 3);
+    let (mut s, c) = session(&m, None);
+    let original = item(&s, c);
+    let undo = s.history.undo.len();
+    let target = Tick::from_seconds_f64(15.0 * 60.0);
+    let report = s.execute("clip.remix", json!({"clip": c.0, "duration": target.0})).unwrap();
+    let extended = item(&s, c);
+    let rm = filmcraft_render::remix::Remix::of(&extended).unwrap();
+    assert!(rm.pieces.len() > 33, "must exercise the matching cap: {} pieces", rm.pieces.len());
+    assert!(rm.levels.is_none(), "over-budget matching falls back to the original crossfades");
+    assert!((extended.duration - target).abs() <= beat());
+    assert_eq!(report["remixed"], true);
+    assert_eq!(s.history.undo.len(), undo + 1);
+    // The persisted arrangement remains playable without joinLevels, including its tail.
+    let restored: TrackItem = serde_json::from_str(&serde_json::to_string(&extended).unwrap()).unwrap();
+    assert_eq!(filmcraft_render::remix::Remix::of(&restored), Some(rm));
+    let provider = s.media.provider(s.project.clone(), s.services.clone());
+    let q = s.active_sequence().unwrap();
+    let tail = extended.duration.to_units_floor(SR as i64) - SR as i64;
+    let audio = filmcraft_render::audio::mix_sequence(&s.project, q, tail, SR as usize, &provider);
+    assert!(audio.channels.iter().flatten().all(|sample| sample.is_finite()));
+    assert!(audio.channels.iter().flatten().any(|sample| sample.abs() > 0.01));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(item(&s, c), original);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(item(&s, c), extended);
+}
