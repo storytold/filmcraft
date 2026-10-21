@@ -520,6 +520,71 @@ impl MediaSource for Mp4Source {
     }
 }
 
+/// ETSI TS 102 366 Annex F: AC-3/E-AC-3 AudioSampleEntry ChannelCount is
+/// always 2. The first independent program's acmod/lfeon describe the channels
+/// our decoder outputs; dependent substreams are not additional decoded channels.
+fn dolby_config_info(codec: &CodecConfig) -> Option<(Option<u32>, u32)> {
+    use filmcraft_bitstream::BitReader;
+    let channels = |mode: u32, lfe: u32| [2, 1, 2, 3, 3, 4, 4, 5][mode as usize] + lfe;
+    let rate = |code: u32| [48_000, 44_100, 32_000].get(code as usize).copied();
+    match codec {
+        CodecConfig::Ac3 { dac3 } => {
+            let mut r = BitReader::new(dac3);
+            let sample_rate = rate(r.read_bits(2).ok()?)?;
+            let bsid = r.read_bits(5).ok()?;
+            if bsid > 10 {
+                return None;
+            }
+            r.read_bits(3).ok()?; // bsmod
+            let mode = r.read_bits(3).ok()?;
+            let lfe = r.read_bits(1).ok()?;
+            if r.read_bits(5).ok()? > 18 {
+                return None;
+            } // bit_rate_code
+            r.read_bits(5).ok()?; // reserved, still require a complete descriptor
+            let shift = bsid.saturating_sub(8);
+            Some((Some(sample_rate >> shift), channels(mode, lfe)))
+        }
+        CodecConfig::Eac3 { dec3 } => {
+            let mut r = BitReader::new(dec3);
+            r.read_bits(13).ok()?; // data_rate
+            let programs = r.read_bits(3).ok()? + 1;
+            let mut primary = None;
+            for i in 0..programs {
+                let sample_rate = rate(r.read_bits(2).ok()?);
+                let bsid = r.read_bits(5).ok()?;
+                if bsid > 16 {
+                    return None;
+                }
+                r.read_bits(5).ok()?; // reserved, asvc, bsmod
+                let mode = r.read_bits(3).ok()?;
+                let lfe = r.read_bits(1).ok()?;
+                r.read_bits(3).ok()?; // reserved
+                let dependent = r.read_bits(4).ok()?;
+                r.read_bits(if dependent > 0 { 9 } else { 1 }).ok()?;
+                if i == 0 {
+                    // EC3 may carry an AC-3 primary (Annex J); its reduced
+                    // rates use the same bsid rule as dac3.
+                    let shift = if bsid <= 10 { bsid.saturating_sub(8) } else { 0 };
+                    primary = Some((sample_rate.map(|rate| rate >> shift), channels(mode, lfe)));
+                }
+            }
+            primary
+        }
+        _ => None,
+    }
+}
+
+/// A missing/truncated descriptor can still be identified from a primary syncframe.
+/// Read at most eight 8-byte headers, regardless of hostile sample sizes.
+fn dolby_frame_info(t: &filmcraft_isobmff::Track, bytes: &crate::Src, eac3: bool) -> Option<(u32, u32)> {
+    t.samples.iter().take(8).find_map(|sample| {
+        let head = filmcraft_media::reader::read_range(&*bytes.0, sample.offset, (sample.size as usize).min(8)).ok()?;
+        let h = filmcraft_ac3::parse_header(&head).ok()?;
+        (h.is_primary() && (eac3 || !h.is_eac3())).then(|| (h.sample_rate, h.channels() as u32))
+    })
+}
+
 /// What the file says about one audio track (`None`: the track has no sample description).
 fn audio_stream_info(t: &filmcraft_isobmff::Track, bytes: &crate::Src) -> Option<AudioStreamInfo> {
     let entry = t.entries.first()?;
@@ -545,6 +610,13 @@ fn audio_stream_info(t: &filmcraft_isobmff::Track, bytes: &crate::Src) -> Option
             if a.channels() > 0 { a.channels() } else { ap.channels },
             None,
         ),
+        c @ (CodecConfig::Ac3 { .. } | CodecConfig::Eac3 { .. }) => {
+            let config = dolby_config_info(c);
+            let frame = dolby_frame_info(t, bytes, matches!(c, CodecConfig::Eac3 { .. }));
+            let rate = config.and_then(|x| x.0).or(frame.map(|x| x.0)).unwrap_or(if ap.sample_rate > 0.0 { ap.sample_rate as u32 } else { t.timescale });
+            let channels = config.map(|x| x.1).or(frame.map(|x| x.1)).unwrap_or(ap.channels.max(1));
+            (rate, channels, None)
+        }
         CodecConfig::Pcm(p) => (p.sample_rate as u32, p.channels, Some(p.bits as u32)),
         CodecConfig::Opus(o) => (crate::audio::OPUS_RATE, (o.output_channels as u32).max(1), None),
         _ => (if ap.sample_rate > 0.0 { ap.sample_rate as u32 } else { t.timescale }, ap.channels.max(1), None),
@@ -1316,5 +1388,70 @@ mod he_aac_tests {
             let buf = src.audio(0, 4800, 48_000).unwrap();
             assert!(buf.channels.iter().flatten().all(|v| v.is_finite() && v.abs() <= 1.0), "media_time {media_time}");
         }
+    }
+}
+
+#[cfg(test)]
+mod dolby_metadata_tests {
+    use super::*;
+    use filmcraft_bitstream::BitWriter;
+
+    fn config(eac3: bool, mode: u32, lfe: u32, fscod: u32, bsid: u32) -> CodecConfig {
+        let mut w = BitWriter::new();
+        if eac3 {
+            w.write_bits(384, 13);
+            w.write_bits(0, 3);
+        }
+        w.write_bits(fscod, 2);
+        w.write_bits(bsid, 5);
+        w.write_bits(0, if eac3 { 5 } else { 3 });
+        w.write_bits(mode, 3);
+        w.write_bits(lfe, 1);
+        w.write_bits(0, 10 - if eac3 { 2 } else { 0 });
+        if eac3 { CodecConfig::Eac3 { dec3: w.finish() } } else { CodecConfig::Ac3 { dac3: w.finish() } }
+    }
+
+    #[test]
+    fn dolby_descriptors_cover_every_mode_and_lfe() {
+        for (mode, expected) in [2, 1, 2, 3, 3, 4, 4, 5].into_iter().enumerate() {
+            for lfe in 0..=1 {
+                for eac3 in [false, true] {
+                    let c = config(eac3, mode as u32, lfe, 0, if eac3 { 16 } else { 8 });
+                    assert_eq!(dolby_config_info(&c), Some((Some(48_000), expected + lfe)));
+                }
+            }
+        }
+        assert_eq!(dolby_config_info(&config(false, 7, 1, 1, 9)), Some((Some(22_050), 6)));
+        assert_eq!(dolby_config_info(&config(false, 7, 1, 2, 10)), Some((Some(8_000), 6)));
+        assert_eq!(dolby_config_info(&config(true, 7, 1, 3, 16)), Some((None, 6)));
+        assert_eq!(dolby_config_info(&config(false, 7, 1, 3, 8)), None);
+        assert_eq!(dolby_config_info(&config(true, 7, 1, 0, 31)), None);
+    }
+
+    #[test]
+    fn ec3_accepts_an_ac3_primary_program() {
+        for bsid in [6, 8] {
+            assert_eq!(dolby_config_info(&config(true, 7, 1, 0, bsid)), Some((Some(48_000), 6)));
+        }
+    }
+
+    #[test]
+    fn incomplete_dolby_descriptors_are_unknown_without_panicking() {
+        for eac3 in [false, true] {
+            let c = config(eac3, 7, 1, 0, if eac3 { 16 } else { 8 });
+            let bytes = match c {
+                CodecConfig::Ac3 { dac3 } => dac3,
+                CodecConfig::Eac3 { dec3 } => dec3,
+                _ => unreachable!(),
+            };
+            for n in 0..bytes.len() {
+                let c = if eac3 { CodecConfig::Eac3 { dec3: bytes[..n].to_vec() } } else { CodecConfig::Ac3 { dac3: bytes[..n].to_vec() } };
+                assert_eq!(std::panic::catch_unwind(|| dolby_config_info(&c)).unwrap(), None);
+            }
+        }
+        // Two independent programs are declared but only one is supplied.
+        let CodecConfig::Eac3 { mut dec3 } = config(true, 7, 1, 0, 16) else { unreachable!() };
+        dec3[1] |= 1;
+        assert_eq!(dolby_config_info(&CodecConfig::Eac3 { dec3 }), None);
     }
 }

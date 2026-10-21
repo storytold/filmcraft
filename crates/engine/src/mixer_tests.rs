@@ -528,3 +528,43 @@ fn audio_transition_schema_lists_edge_params_and_reverse() {
         assert!(params.contains(key), "schema `{params}` is missing {key}");
     }
 }
+
+#[test]
+fn dolby_mp4_surround_reaches_the_stereo_sequence_mix() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let dir = filmcraft_testkit::fixtures_dir("engine/dolby-layout");
+    let signal = "aevalsrc=exprs=0.25*sin(2*PI*300*t)|0.25*sin(2*PI*400*t)|0.25*sin(2*PI*500*t)|0.25*sin(2*PI*60*t)|0.25*sin(2*PI*700*t)|0.25*sin(2*PI*800*t):s=48000:c=5.1";
+    for codec in ["ac3", "eac3"] {
+        let generated = filmcraft_testkit::fixtures::generate(&dir.join(format!("{codec}.mp4")), |tmp| {
+            std::process::Command::new(&ff)
+                .args(["-y", "-v", "error", "-f", "lavfi", "-i", signal, "-t", "1", "-c:a", codec, "-b:a", "384k"])
+                .arg(tmp)
+                .status()
+                .is_ok_and(|s| s.success())
+        })
+        .unwrap();
+        let mut bytes = std::fs::read(generated).unwrap();
+        let tag: &[u8] = if codec == "ac3" { b"ac-3" } else { b"ec-3" };
+        let at = bytes.windows(4).position(|b| b == tag).unwrap();
+        bytes[at + 20..at + 22].copy_from_slice(&2u16.to_be_bytes());
+        let path = dir.join(format!("{codec}-channelcount-two.mp4"));
+        std::fs::write(&path, bytes).unwrap();
+        let mut s = Session::default();
+        let r = s.execute("file.import", json!({"paths": [path.to_string_lossy()]})).unwrap();
+        let item = filmcraft_project::ItemId(r["items"][0].as_u64().unwrap());
+        s.execute("file.newSequenceFromClip", json!({"items": [item.0]})).unwrap();
+        let src = s.source(item).unwrap();
+        let decoded = src.audio(12_000, 4800, 48_000).unwrap();
+        assert_eq!(decoded.channels.len(), 6);
+        let provider = s.media.provider(s.project.clone(), s.services.clone());
+        let mixed = filmcraft_render::audio::mix_sequence(&s.project, s.active_sequence().unwrap(), 12_000, 4800, &provider);
+        assert_eq!(mixed.channels.len(), 2);
+        let k = std::f32::consts::FRAC_1_SQRT_2;
+        for i in 0..4800 {
+            let left = decoded.channels[0][i] + k * (decoded.channels[2][i] + decoded.channels[4][i]);
+            let right = decoded.channels[1][i] + k * (decoded.channels[2][i] + decoded.channels[5][i]);
+            assert!((mixed.channels[0][i] - left).abs() < 1e-5, "{codec}: centre and left surround");
+            assert!((mixed.channels[1][i] - right).abs() < 1e-5, "{codec}: centre and right surround");
+        }
+    }
+}
