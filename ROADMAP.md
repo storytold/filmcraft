@@ -5,7 +5,12 @@
 
 **Stage: alpha** · next: beta, ~19 points of ready-for-real-work and ~400–700 h away, plus opening Premiere's `.prproj` ([why](docs/target-app-parity.md#stage); passes the [core-workflow gate](docs/roadmap.md#alpha-gate))
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (language table: German covers the whole interface) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-21 (source audit) · **Last updated:** 2026-10-21 · **Change:** minor (link current source review; label historical estimates and correct implemented UI/web work) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+
+**Current source review:** [2026-10-21, FilmCraft 0.10.0 at `d643a886`](docs/progress-review.md).
+The percentages and hours below are the **2026-10-10 baseline**, not a new measurement of 0.10.0.
+This review inspected source and test coverage; it did not run the app, tests or benchmarks.
+It corrects implemented features without claiming beta readiness or changing the estimates.
 
 Progress toward parity with Adobe Premiere Pro. This page is the summary; the detail is in
 [docs/target-app-parity.md](docs/target-app-parity.md) (assessment, methodology, calibration),
@@ -22,7 +27,7 @@ Progress toward parity with Adobe Premiere Pro. This page is the summary; the de
 | **Essentials user** | **~60%** | Import, cut, title, music, export at default settings, discounted ×0.88 launch / stability, ×0.90 discoverability, ×0.95 opening files people send ([method](docs/target-app-parity.md#essentials-user)) |
 | **To beta** | **~400–700 Opus 5.5 agent-hours** | Estimated, calibrated from this repo's PR history |
 | **To full parity** | **~1,550–2,750 agent-hours** | ~70% parallelizes; plugins, AI models, native-speaker review and some hardware need a human |
-| Code (measured) | 45 crates, ~343k lines of Rust, 2,520 tests, 268 merged PRs, 69 authors | `git`, `gh`, `grep` |
+| Code (measured 2026-10-10; historical) | 45 crates, ~343k lines of Rust, 2,520 tests, 268 merged PRs, 69 authors | `git`, `gh`, `grep`; not recounted for 0.10.0 |
 
 Two numbers, because they answer different questions. The gap between them is the work that
 matters most now: breadth is nearly done, depth is not.
@@ -72,41 +77,46 @@ Evidence for every row: [docs/target-app-parity.md](docs/target-app-parity.md#by
 
 ## Languages
 
-Premiere ships 10 interface languages. Measured from our catalogs (3,498 strings):
+The [2026-10-21 catalog recount](docs/progress-review.md#recounted-localization-evidence)
+uses 3,597 unique keys: nine non-English catalogs cover 98.9–100.0%; Russian and Ukrainian 9.9%.
+Catalog coverage does not measure translation quality or all UI/engine text.
+
+Premiere's assessed version ships 10 interface languages. Catalog presence on 2026-10-21:
 
 | Language | Status | Strings |
 |---|---|---|
-| English | full | 100% |
-| Simplified Chinese | partial (whole interface; engine errors English) | 99.6% |
-| Spanish | partial (whole interface) | 99.9% |
+| English | source language | n/a (no TSV) |
+| Simplified Chinese | partial; engine errors English | 99.5% |
+| Spanish | partial; rounded percentage, one catalog key missing | 100.0% |
 | Hindi | none (no Devanagari shaping in the interface) | 0% |
 | Arabic | none (no RTL interface) | 0% |
-| French | partial (whole interface; native review welcome) | ~100% |
-| Portuguese (Brazil) | partial (whole interface; native review welcome) | ~100% |
-| Indonesian | partial (whole interface; native review welcome) | ~100% |
-| Italian | partial (whole interface; native review welcome) | ~100% |
-| Korean | partial (whole interface; needs an installed Hangul font; native review welcome) | ~100% |
-| Japanese | partial (whole interface) | 99.7% |
-| German | partial (whole interface; menus native-reviewed, the rest welcome) | ~100% |
+| French | partial; native review welcome | 99.1% |
+| Portuguese (Brazil) | partial; native review welcome | 98.9% |
+| Indonesian | partial; native review welcome | 98.9% |
+| Italian | partial; native review welcome | 99.9% |
+| Korean | partial; Hangul font and native review needed | 99.9% |
+| Japanese | partial; CJK fonts and native review needed | 99.9% |
+| German | partial; menus previously native-reviewed | 99.8% |
 | Vietnamese | none | 0% |
 
-Also shipped: Ukrainian (menus only, 10%). Detail: [docs/localization-parity.md](docs/localization-parity.md).
+Also shipped: Russian and Ukrainian partial catalogs (9.9% each). Detail: [docs/localization-parity.md](docs/localization-parity.md).
 
 ## Upcoming
 
 Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/gaps.md](docs/gaps.md).
 
-1. **No launch crashes, and CI on pull requests** (macOS 12, Intel UHD, Windows 11 reports; no workflow runs the tests today). 40–80 h.
+1. **Reproduce launch reports and verify PR test coverage** (historical macOS 12, Intel UHD and Windows 11 reports; the GitHub follow-up found FreeBSD skip-tests enabled and Windows ARM64 packaging/install/CLI coverage; no general PR Rust-test gate is declared locally). Historical estimate: 40–80 h.
 2. **Open Premiere's `.prproj`**, the beta blocker. 60–120 h.
 3. **10-bit / 4:2:2 camera media without hardware** (H.264 High 10 / 4:2:2, HEVC 4:2:2; #626). 30–50 h.
-4. **Measure fidelity against Premiere** and add `cargo xtask parity`. 50–90 h.
-5. **Real-world media corpus and workflow acceptance tests.** 40–70 h.
+4. **Measure fidelity against Premiere** and extend the existing `cargo xtask parity` tool beyond menus/effects/transitions, with verified CI enforcement. Historical estimate: 50–90 h.
+5. **Pinned real-world media corpus and broader workflow acceptance tests.** Two synthetic CLI workflows already exist. Historical estimate: 40–70 h.
 6. **Hardware acceleration, continued** (#30): zero-copy upload, more effects on the GPU, Quick Sync / AMD encoders, VideoToolbox Main 10. 120–200 h.
-7. **UI fidelity:** Program monitor transform handles, Effect Controls, docking. 120–200 h.
+7. **UI fidelity:** validate implemented monitor handles, Effect Controls divider/row lines and shared docking; address remaining interaction gaps. Historical estimate of 120–200 h has not been recalculated.
 8. **Plugin hosting** (VST3 / AU, then OpenFX). Owner decision needed. 200–400 h.
 
 ## Progress log
 
+- **2026-10-21:** [Source audit of all twenty gaps](docs/progress-review.md) against 0.10.0: correct handles/docking, multicam paging and browser-shell descriptions; recount catalog keys; keep readiness percentages and hours explicitly historical until runtime/fidelity measurements are repeated.
 - **2026-10-12:** Transform's motion-blur shutter on adjustment layers uses the sequence frame rate instead of 24 fps, so a 360° shutter in a 60 fps sequence spans one frame, not 2.5 (#1088)
 - **2026-10-10 (changed media):** Settings ▸ Media ▸ Automatically refresh growing files works: media files that change on disk while the project is open (a recording still being written, a render written over the file a clip uses) are read again every *Refresh growing files every* seconds and as soon as the window comes back to the front: the new length, picture and identity, without an undo step (`media.refreshChanged`, `media_watch`).
 - **2026-10-10 (re-measure):** full parity re-measure against Premiere Pro 26.5.2: menu label diff 338 / 366 (92%), installed bundle listings (10 UI languages, exporter and codec frameworks), 188 open issues. Breadth ~86% (file formats now counted), ready ~55%, stage **alpha**; progress docs reorganized per the craftrules standard ([target-app-parity](docs/target-app-parity.md), [gaps](docs/gaps.md), [roadmap](docs/roadmap.md), [codec](docs/codec-parity.md), [file-format](docs/file-format-parity.md), [hardware](docs/hardware-parity.md), [UI](docs/ui-parity.md), [localization](docs/localization-parity.md)).
