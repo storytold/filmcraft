@@ -117,6 +117,10 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("window.workspace.script", "Script", ["Window", "Workspaces"], None),
     uic!("script.openPanel", "Open Script", [], None),
     uic!("script.findInScript", "Find in Script", [], None),
+    uic!("script.addMarkAtSelection", "Add Script Mark", [], None),
+    uic!("script.toggleOffscreen", "Toggle Script Offscreen", [], None),
+    uic!("script.thumbnailBack", "Script Thumbnail Back", [], None),
+    uic!("script.thumbnailForward", "Script Thumbnail Forward", [], None),
     uic!("window.workspace.allpanels", "All Panels", ["Window", "Workspaces"], None),
     uic!("window.workspace.reset", "Reset to Saved Layout", ["Window", "Workspaces"], Some("Alt+Shift+0")),
     uic!("window.workspace.saveChanges", "Save Changes to this Workspace", ["Window", "Workspaces"], None),
@@ -271,6 +275,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             app.ui.script.selected_lines = None;
             app.ui.script.selected_slate = None;
             app.ui.script.selected_take = None;
+            app.ui.script.selected_section_slates.clear();
         }
         app.ui.script.item = Some(item);
         app.show_panel(PanelKind::Script);
@@ -280,6 +285,18 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         let source =
             params.get("item").and_then(Value::as_u64).or_else(|| app.session.state.project_selection.first().map(|id| id.0)).ok_or("select a project clip")?;
         return crate::panels::script::find_source(app, filmcraft_project::ItemId(source));
+    }
+    if id == "script.addMarkAtSelection" {
+        return crate::panels::script::add_mark_at_selection(app);
+    }
+    if id == "script.toggleOffscreen" {
+        return crate::panels::script::toggle_offscreen_selection(app);
+    }
+    if matches!(id, "script.thumbnailBack" | "script.thumbnailForward") {
+        return crate::panels::script::shuttle_thumbnail(app, ctx, if id == "script.thumbnailBack" { -1 } else { 1 });
+    }
+    if app.ui.focused == PanelKind::Script && params.as_object().is_none_or(|map| map.is_empty()) && matches!(id, "edit.copy" | "edit.paste") {
+        return crate::panels::script::copy_paste_section(app, id == "edit.copy");
     }
     if let Some(r) = crate::panels::workspaces::route(app, id, &params) {
         return r;

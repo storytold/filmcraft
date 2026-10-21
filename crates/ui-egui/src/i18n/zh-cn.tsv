@@ -3596,3 +3596,64 @@
 	Open Script	打开脚本
 	Find in Script	在脚本中查找
 	Take	拍摄条次
+
+# Script window
+	Add Script Mark	添加脚本标记
+	Script Thumbnail Back	脚本缩略图后退
+	Script Thumbnail Forward	脚本缩略图前进
+	Toggle Script Offscreen	切换脚本画外标记
+	Gray	灰色
+	Add Another Candle	添加另一条拍摄条
+	Add a mark at the Source playhead; cues the selected candle's source if needed	在源播放头处添加标记；必要时定位到所选拍摄条的源素材
+	Add or edit Page on the selected line	在所选行添加或编辑页码
+	Add or edit Scene on the selected line	在所选行添加或编辑场景号
+	Candle Color	拍摄条颜色
+	Candle color	拍摄条颜色
+	Cannot read script as UTF-8 text: {error}	无法将脚本作为 UTF-8 文本读取：{error}
+	Cannot read script: {error}	无法读取脚本：{error}
+	Choose a script	选择脚本
+	Choose linked take ({count})	选择已关联的拍摄条（{count}）
+	Clear Offscreen	清除画外标记
+	Click to cue Source; Command/Ctrl-drag to move this mark to another script line	点击以定位源素材；按住 Command/Ctrl 拖动可将此标记移到另一脚本行
+	Command-drag (Mac) or Ctrl-drag (Windows) to adjust candle length	按住 Command（Mac）或 Ctrl（Windows）拖动以调整拍摄条长度
+	Create a script or import a plain-text script.	创建脚本或导入纯文本脚本。
+	Delete Line	删除行
+	Delete Mark	删除标记
+	Double-click to edit Page	双击编辑页码
+	Double-click to edit Scene	双击编辑场景号
+	Drag to change script wrapping	拖动以更改脚本换行位置
+	Drag to change the script's left margin	拖动以更改脚本左边距
+	Edit Line	编辑行
+	Find in Project	在项目中查找
+	Import Text…	导入文本…
+	Insert Line Below	在下方插入行
+	Jump to {caption} label	跳转到{caption}标签
+	Left margin	左边距
+	Mark Offscreen	标记为画外
+	Mark or clear the selected candle rows as off-screen	将所选拍摄条行标记为画外或清除画外标记
+	Move Left	左移
+	Move Right	右移
+	Next match (Enter)	下一个匹配项（Enter）
+	No matches	无匹配项
+	Page	页码
+	Plain text .txt supported.	支持纯文本 .txt 文件。
+	Plain-text script	纯文本脚本
+	Previous match (Shift+Enter)	上一个匹配项（Shift+Enter）
+	Replace and Clear Marks	替换并清除标记
+	Replace take?	替换拍摄条？
+	Replace the take and clear its marks?	替换拍摄条并清除其标记？
+	Script section copied	已复制脚本片段
+	Script settings	脚本设置
+	Script text exceeds the 4 MiB import limit	脚本文本超过 4 MiB 导入上限
+	Script text needs room for five leading setup lines	脚本文本需要留出五行开头预留行
+	Search text	搜索文本
+	Set selected candle rows to the current color; right-click for palette	将所选拍摄条行设为当前颜色；右键打开调色板
+	Show line numbers	显示行号
+	Show row colors	显示行颜色
+	Text size	文字大小
+	This replacement could be different footage. Old script marks would point to the wrong frames.	替换素材可能包含不同画面。原有脚本标记将指向错误的帧。
+	Thumbnail size	缩略图大小
+	Untitled Script	未命名脚本
+	Wrap margin	换行边距
+	{current} of {count}	第 {current} 项，共 {count} 项
+	Line {current} of {total}	第 {current} 行，共 {total} 行

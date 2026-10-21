@@ -8,6 +8,103 @@ use filmcraft_time::Tick;
 
 use crate::{ItemId, Label, MediaIdentity};
 
+/// Candle colors are independent of Project-item labels. Default follows the
+/// Script canvas background, while White and Gray remain explicit colors.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScriptColor {
+    #[default]
+    Default,
+    White,
+    Gray,
+    Violet,
+    Iris,
+    Caribbean,
+    Lavender,
+    Cerulean,
+    Forest,
+    Rose,
+    Mango,
+    Purple,
+    Blue,
+    Teal,
+    Magenta,
+    Tan,
+    Green,
+    Brown,
+    Yellow,
+}
+
+impl ScriptColor {
+    pub const ALL: [Self; 19] = [
+        Self::Default,
+        Self::White,
+        Self::Gray,
+        Self::Violet,
+        Self::Iris,
+        Self::Caribbean,
+        Self::Lavender,
+        Self::Cerulean,
+        Self::Forest,
+        Self::Rose,
+        Self::Mango,
+        Self::Purple,
+        Self::Blue,
+        Self::Teal,
+        Self::Magenta,
+        Self::Tan,
+        Self::Green,
+        Self::Brown,
+        Self::Yellow,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Default => "Default",
+            Self::White => "White",
+            Self::Gray => "Gray",
+            Self::Violet => "Violet",
+            Self::Iris => "Iris",
+            Self::Caribbean => "Caribbean",
+            Self::Lavender => "Lavender",
+            Self::Cerulean => "Cerulean",
+            Self::Forest => "Forest",
+            Self::Rose => "Rose",
+            Self::Mango => "Mango",
+            Self::Purple => "Purple",
+            Self::Blue => "Blue",
+            Self::Teal => "Teal",
+            Self::Magenta => "Magenta",
+            Self::Tan => "Tan",
+            Self::Green => "Green",
+            Self::Brown => "Brown",
+            Self::Yellow => "Yellow",
+        }
+    }
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|color| color.name() == name)
+    }
+    pub fn label(self) -> Option<Label> {
+        match self {
+            Self::Default | Self::White | Self::Gray => None,
+            Self::Violet => Some(Label::Violet),
+            Self::Iris => Some(Label::Iris),
+            Self::Caribbean => Some(Label::Caribbean),
+            Self::Lavender => Some(Label::Lavender),
+            Self::Cerulean => Some(Label::Cerulean),
+            Self::Forest => Some(Label::Forest),
+            Self::Rose => Some(Label::Rose),
+            Self::Mango => Some(Label::Mango),
+            Self::Purple => Some(Label::Purple),
+            Self::Blue => Some(Label::Blue),
+            Self::Teal => Some(Label::Teal),
+            Self::Magenta => Some(Label::Magenta),
+            Self::Tan => Some(Label::Tan),
+            Self::Green => Some(Label::Green),
+            Self::Brown => Some(Label::Brown),
+            Self::Yellow => Some(Label::Yellow),
+        }
+    }
+}
+
 macro_rules! script_id {
     ($name:ident) => {
         #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -40,6 +137,12 @@ pub struct ScriptMark {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ScriptLineColor {
+    pub line: ScriptLineId,
+    pub color: ScriptColor,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ScriptTake {
     pub id: ScriptTakeId,
     /// None after the linked Project item is deleted; the slate and range remain for replacement.
@@ -47,7 +150,13 @@ pub struct ScriptTake {
     pub source_name: String,
     pub start_line: ScriptLineId,
     pub end_line: ScriptLineId,
-    pub color: Label,
+    /// Chosen thumbnail frame for this candle. None uses its first mark or source In.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail_time: Option<Tick>,
+    #[serde(default)]
+    pub color: ScriptColor,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub line_colors: Vec<ScriptLineColor>,
     /// Off-screen is a line-level annotation. Rendering coalesces adjacent lines into passages.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub offscreen_lines: Vec<ScriptLineId>,
@@ -62,6 +171,12 @@ pub struct ScriptTake {
 pub struct ScriptSlate {
     pub id: ScriptSlateId,
     pub name: String,
+    /// Optional independent row for the setup thumbnail; defaults to its first candle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail_line: Option<ScriptLineId>,
+    /// Thumbnail and candle-group center as a fraction of the Script canvas width.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail_x: Option<f32>,
     pub takes: Vec<ScriptTake>,
 }
 
@@ -129,10 +244,9 @@ impl ScriptDocument {
     }
 
     pub fn annotation_count(&self) -> Option<usize> {
-        self.slates
-            .iter()
-            .flat_map(|slate| &slate.takes)
-            .try_fold(0usize, |sum, take| sum.checked_add(take.marks.len()).and_then(|n| n.checked_add(take.offscreen_lines.len())))
+        self.slates.iter().flat_map(|slate| &slate.takes).try_fold(0usize, |sum, take| {
+            sum.checked_add(take.marks.len()).and_then(|n| n.checked_add(take.offscreen_lines.len())).and_then(|n| n.checked_add(take.line_colors.len()))
+        })
     }
 
     /// Validate untrusted serialized scripts before an editor can mutate them. Stable IDs are
@@ -165,6 +279,12 @@ impl ScriptDocument {
         let mut annotation_count = 0usize;
         for slate in &self.slates {
             accept_id(slate.id.0)?;
+            if slate.thumbnail_line.is_some_and(|line| !positions.contains_key(&line)) {
+                return Err("script setup thumbnail refers to a missing line".into());
+            }
+            if slate.thumbnail_x.is_some_and(|x| !x.is_finite() || !(0.0..=1.0).contains(&x)) {
+                return Err("script setup thumbnail position must be between 0 and 1".into());
+            }
             if slate.name.len() > 4096 {
                 return Err("script slate name exceeds its size limit".into());
             }
@@ -189,6 +309,7 @@ impl ScriptDocument {
                 annotation_count = annotation_count
                     .checked_add(take.offscreen_lines.len())
                     .and_then(|n| n.checked_add(take.marks.len()))
+                    .and_then(|n| n.checked_add(take.line_colors.len()))
                     .ok_or("too many script annotations")?;
                 if annotation_count > Self::MAX_ANNOTATIONS {
                     return Err("too many script annotations".into());
@@ -196,6 +317,12 @@ impl ScriptDocument {
                 for line in &take.offscreen_lines {
                     if positions.get(line).is_none_or(|i| !(a..=b).contains(i)) {
                         return Err("off-screen annotation is outside its take".into());
+                    }
+                }
+                let mut colored = BTreeSet::new();
+                for entry in &take.line_colors {
+                    if !colored.insert(entry.line) || positions.get(&entry.line).is_none_or(|i| !(a..=b).contains(i)) {
+                        return Err("candle color is duplicated or outside its take".into());
                     }
                 }
                 for mark in &take.marks {
@@ -252,6 +379,9 @@ impl ScriptDocument {
             .collect();
         self.lines.remove(index);
         for slate in &mut self.slates {
+            if slate.thumbnail_line == Some(line) {
+                slate.thumbnail_line = None;
+            }
             slate.takes.retain(|take| ranges.get(&take.id).is_none_or(Option::is_some));
             for take in &mut slate.takes {
                 if let Some(Some((a, b))) = ranges.get(&take.id) {
@@ -260,6 +390,7 @@ impl ScriptDocument {
                 }
                 take.marks.retain(|mark| mark.line != line);
                 take.offscreen_lines.retain(|id| *id != line);
+                take.line_colors.retain(|entry| entry.line != line);
             }
         }
         true
@@ -326,13 +457,17 @@ mod tests {
         doc.slates.push(ScriptSlate {
             id: ScriptSlateId(4),
             name: "setup".into(),
+            thumbnail_line: None,
+            thumbnail_x: None,
             takes: vec![ScriptTake {
                 id: ScriptTakeId(5),
                 source: Some(ItemId(9)),
                 source_name: "clip".into(),
                 start_line: ScriptLineId(1),
                 end_line: ScriptLineId(3),
-                color: Label::Blue,
+                thumbnail_time: None,
+                color: ScriptColor::Blue,
+                line_colors: vec![ScriptLineColor { line: ScriptLineId(2), color: ScriptColor::Rose }],
                 offscreen_lines: vec![ScriptLineId(2)],
                 marks: vec![ScriptMark { id: ScriptMarkId(6), line: ScriptLineId(2), source_time: Tick(42) }],
                 source_identity: None,
@@ -343,6 +478,7 @@ mod tests {
         assert_eq!((take.start_line.0, take.end_line.0), (1, 3));
         assert!(take.marks.is_empty());
         assert!(take.offscreen_lines.is_empty());
+        assert!(take.line_colors.is_empty());
         assert_eq!(doc.lines.len(), 2);
     }
 
@@ -359,13 +495,17 @@ mod tests {
         doc.slates.push(ScriptSlate {
             id: ScriptSlateId(3),
             name: "setup".into(),
+            thumbnail_line: None,
+            thumbnail_x: None,
             takes: vec![ScriptTake {
                 id: ScriptTakeId(4),
                 source: None,
                 source_name: "gone".into(),
                 start_line: ScriptLineId(1),
                 end_line: ScriptLineId(1),
-                color: Label::Blue,
+                thumbnail_time: None,
+                color: ScriptColor::Blue,
+                line_colors: vec![],
                 offscreen_lines: vec![],
                 marks: vec![ScriptMark { id: ScriptMarkId(5), line: ScriptLineId(2), source_time: Tick(-100) }],
                 source_identity: None,

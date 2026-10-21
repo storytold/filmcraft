@@ -1097,7 +1097,7 @@
 	Post-Fader	ポストフェーダー
 	Remove Effect	エフェクトを削除
 	Fill the slots above first	先に上のスロットを埋めてください
-	pre 	プリ 
+	pre 	プリ
 	Pre-Fader	プリフェーダー
 	Mute Send	センドをミュート
 	Remove Send	センドを削除
@@ -2862,7 +2862,7 @@
 	Click a key on the keyboard to see its shortcuts	キーボードのキーをクリックすると、割り当てられたショートカットを表示します
 	Assign {key} to {command}	{key} を「{command}」に割り当て
 	Conflict: {key} is assigned to {commands} ({ctx})	競合: {key} は「{commands}」に割り当てられています ({ctx})
-	 and 	 と 
+	 and 	 と
 	Click a command's Shortcut cell and press keys to assign it; + adds another shortcut.	コマンドの「ショートカット」セルをクリックしてキーを押すと割り当てられます。+ で別のショートカットを追加できます。
 	Cleared {n} shortcut(s) of {command}	「{command}」のショートカットを {n} 個クリアしました
 	No export preset named `{name}`	「{name}」という名前の書き出しプリセットはありません
@@ -3620,3 +3620,64 @@
 	Open Script	スクリプトを開く
 	Find in Script	スクリプト内を検索
 	Take	テイク
+
+# Script window
+	Add Script Mark	脚本マークを追加
+	Script Thumbnail Back	脚本サムネイルを戻す
+	Script Thumbnail Forward	脚本サムネイルを進める
+	Toggle Script Offscreen	脚本の画面外指定を切り替え
+	Gray	グレー
+	Add Another Candle	別のテイクを追加
+	Add a mark at the Source playhead; cues the selected candle's source if needed	ソースの再生ヘッド位置にマークを追加します。必要に応じて選択中のテイクのソースを開きます
+	Add or edit Page on the selected line	選択した行のページを追加または編集
+	Add or edit Scene on the selected line	選択した行のシーンを追加または編集
+	Candle Color	テイクの色
+	Candle color	テイクの色
+	Cannot read script as UTF-8 text: {error}	脚本をUTF-8テキストとして読み取れません: {error}
+	Cannot read script: {error}	脚本を読み取れません: {error}
+	Choose a script	脚本を選択
+	Choose linked take ({count})	リンク済みのテイクを選択（{count}）
+	Clear Offscreen	画面外指定を解除
+	Click to cue Source; Command/Ctrl-drag to move this mark to another script line	クリックしてソースを頭出し。Command/Ctrlキーを押しながらドラッグすると、このマークを別の脚本行へ移動できます
+	Command-drag (Mac) or Ctrl-drag (Windows) to adjust candle length	Commandキー（Mac）またはCtrlキー（Windows）を押しながらドラッグしてテイクの長さを調整
+	Create a script or import a plain-text script.	脚本を作成するか、プレーンテキストの脚本を読み込んでください。
+	Delete Line	行を削除
+	Delete Mark	マークを削除
+	Double-click to edit Page	ダブルクリックしてページを編集
+	Double-click to edit Scene	ダブルクリックしてシーンを編集
+	Drag to change script wrapping	ドラッグして脚本の折り返し位置を変更
+	Drag to change the script's left margin	ドラッグして脚本の左余白を変更
+	Edit Line	行を編集
+	Find in Project	プロジェクト内で表示
+	Import Text…	テキストを読み込み…
+	Insert Line Below	下に行を挿入
+	Jump to {caption} label	{caption}ラベルへ移動
+	Left margin	左余白
+	Mark Offscreen	画面外に指定
+	Mark or clear the selected candle rows as off-screen	選択したテイクの行を画面外に指定または解除
+	Move Left	左へ移動
+	Move Right	右へ移動
+	Next match (Enter)	次の一致（Enter）
+	No matches	一致なし
+	Page	ページ
+	Plain text .txt supported.	プレーンテキストの .txt ファイルに対応しています。
+	Plain-text script	プレーンテキストの脚本
+	Previous match (Shift+Enter)	前の一致（Shift+Enter）
+	Replace and Clear Marks	置き換えてマークを消去
+	Replace take?	テイクを置き換えますか？
+	Replace the take and clear its marks?	テイクを置き換えてマークを消去しますか？
+	Script section copied	脚本の範囲をコピーしました
+	Script settings	脚本の設定
+	Script text exceeds the 4 MiB import limit	脚本のテキストが4 MiBの読み込み上限を超えています
+	Script text needs room for five leading setup lines	脚本の先頭に準備用の5行を追加する余地がありません
+	Search text	テキストを検索
+	Set selected candle rows to the current color; right-click for palette	選択したテイクの行に現在の色を設定。右クリックでパレットを表示
+	Show line numbers	行番号を表示
+	Show row colors	行の色を表示
+	Text size	文字サイズ
+	This replacement could be different footage. Old script marks would point to the wrong frames.	置き換える映像が異なる可能性があります。既存の脚本マークが誤ったフレームを指すおそれがあります。
+	Thumbnail size	サムネイルのサイズ
+	Untitled Script	名称未設定の脚本
+	Wrap margin	折り返し位置
+	{current} of {count}	{count}件中{current}件目
+	Line {current} of {total}	{total}行中{current}行目

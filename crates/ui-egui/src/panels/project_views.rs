@@ -241,11 +241,11 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
         ui.close();
     }
     if matches!(kind, ItemKind::Script(_)) {
-        if ui.button("Open Script").clicked() {
+        if ui.button(tl!("Open Script")).clicked() {
             actions.push(("script.openPanel".into(), json!({"item": id.0})));
             ui.close();
         }
-    } else if ui.button("Find in Script").clicked() {
+    } else if ui.button(tl!("Find in Script")).clicked() {
         actions.push(("script.findInScript".into(), json!({"item": id.0})));
         ui.close();
     }

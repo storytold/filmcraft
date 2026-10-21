@@ -1,0 +1,8 @@
+asset:        filmcraft-script-window.png
+title:        FilmCraft Script window with linked setup candles
+author:       @whatever-industries (screenshot)
+source:       original work (user-provided screenshot of the FilmCraft Script test build)
+license:      MIT OR Apache-2.0
+license-file:
+added:        2026-10-21 by Codex for @whatever-industries
+notes:        FilmCraft UI only. The two thumbnails show locally generated synthetic color-bar test media, and the screenplay text is an original smoke-test script. No Avid or Adobe artwork or footage is present.

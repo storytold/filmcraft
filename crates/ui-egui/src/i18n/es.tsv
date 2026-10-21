@@ -1103,7 +1103,7 @@
 	Post-Fader	Post-fader
 	Remove Effect	Quitar efecto
 	Fill the slots above first	Rellena primero las ranuras de arriba
-	pre 	pre 
+	pre 	pre
 	Pre-Fader	Pre-fader
 	Mute Send	Silenciar envío
 	Remove Send	Quitar envío
@@ -2876,7 +2876,7 @@
 	Click a key on the keyboard to see its shortcuts	Haz clic en una tecla del teclado para ver sus atajos
 	Assign {key} to {command}	Asignar {key} a {command}
 	Conflict: {key} is assigned to {commands} ({ctx})	Conflicto: {key} está asignada a {commands} ({ctx})
-	 and 	 y 
+	 and 	 y
 	Click a command's Shortcut cell and press keys to assign it; + adds another shortcut.	Haz clic en la celda Atajo de un comando y pulsa las teclas para asignarlo; + añade otro atajo.
 	Cleared {n} shortcut(s) of {command}	Se borraron {n} atajo(s) de {command}
 	No export preset named `{name}`	No hay ningún ajuste preestablecido de exportación llamado `{name}`
@@ -3621,3 +3621,64 @@
 	Open Script	Abrir guion
 	Find in Script	Buscar en el guion
 	Take	Toma
+
+# Script window
+	Add Script Mark	Añadir marca de guion
+	Script Thumbnail Back	Retroceder miniatura del guion
+	Script Thumbnail Forward	Avanzar miniatura del guion
+	Toggle Script Offscreen	Alternar fuera de campo en el guion
+	Gray	Gris
+	Add Another Candle	Añadir otra toma
+	Add a mark at the Source playhead; cues the selected candle's source if needed	Añadir una marca en el cabezal de Origen; si hace falta, carga el origen de la toma seleccionada
+	Add or edit Page on the selected line	Añadir o editar la página en la línea seleccionada
+	Add or edit Scene on the selected line	Añadir o editar la escena en la línea seleccionada
+	Candle Color	Color de la toma
+	Candle color	Color de la toma
+	Cannot read script as UTF-8 text: {error}	No se puede leer el guion como texto UTF-8: {error}
+	Cannot read script: {error}	No se puede leer el guion: {error}
+	Choose a script	Elegir un guion
+	Choose linked take ({count})	Elegir toma vinculada ({count})
+	Clear Offscreen	Quitar fuera de campo
+	Click to cue Source; Command/Ctrl-drag to move this mark to another script line	Haz clic para localizar el Origen; arrastra con Comando/Ctrl para mover la marca a otra línea del guion
+	Command-drag (Mac) or Ctrl-drag (Windows) to adjust candle length	Arrastra con Comando (Mac) o Ctrl (Windows) para ajustar la longitud de la toma
+	Create a script or import a plain-text script.	Crea un guion o importa un guion de texto sin formato.
+	Delete Line	Eliminar línea
+	Delete Mark	Eliminar marca
+	Double-click to edit Page	Haz doble clic para editar la página
+	Double-click to edit Scene	Haz doble clic para editar la escena
+	Drag to change script wrapping	Arrastra para cambiar el ajuste de línea del guion
+	Drag to change the script's left margin	Arrastra para cambiar el margen izquierdo del guion
+	Edit Line	Editar línea
+	Find in Project	Buscar en el proyecto
+	Import Text…	Importar texto…
+	Insert Line Below	Insertar línea debajo
+	Jump to {caption} label	Ir a la etiqueta {caption}
+	Left margin	Margen izquierdo
+	Mark Offscreen	Marcar fuera de campo
+	Mark or clear the selected candle rows as off-screen	Marcar o quitar fuera de campo en las filas seleccionadas de la toma
+	Move Left	Mover a la izquierda
+	Move Right	Mover a la derecha
+	Next match (Enter)	Siguiente coincidencia (Intro)
+	No matches	Sin coincidencias
+	Page	Página
+	Plain text .txt supported.	Se admiten archivos .txt de texto sin formato.
+	Plain-text script	Guion de texto sin formato
+	Previous match (Shift+Enter)	Coincidencia anterior (Mayús+Intro)
+	Replace and Clear Marks	Reemplazar y borrar marcas
+	Replace take?	¿Reemplazar la toma?
+	Replace the take and clear its marks?	¿Reemplazar la toma y borrar sus marcas?
+	Script section copied	Se copió la sección del guion
+	Script settings	Ajustes del guion
+	Script text exceeds the 4 MiB import limit	El texto del guion supera el límite de importación de 4 MiB
+	Script text needs room for five leading setup lines	El texto del guion necesita espacio para cinco líneas iniciales de preparación
+	Search text	Buscar texto
+	Set selected candle rows to the current color; right-click for palette	Aplicar el color actual a las filas seleccionadas de la toma; clic derecho para abrir la paleta
+	Show line numbers	Mostrar números de línea
+	Show row colors	Mostrar colores de fila
+	Text size	Tamaño del texto
+	This replacement could be different footage. Old script marks would point to the wrong frames.	El reemplazo podría contener otras imágenes. Las marcas del guion apuntarían a fotogramas incorrectos.
+	Thumbnail size	Tamaño de miniatura
+	Untitled Script	Guion sin título
+	Wrap margin	Margen de ajuste de línea
+	{current} of {count}	{current} de {count}
+	Line {current} of {total}	Línea {current} de {total}

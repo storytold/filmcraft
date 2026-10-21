@@ -41,6 +41,8 @@
 //!   would drop them when saving.
 //! - **v16**: Script Project items with linked takes and marks. No-op step; older builds must
 //!   refuse scripts rather than drop them on save.
+//! - **v17**: Script thumbnail row independent of candle coverage. No-op step; older builds
+//!   would silently discard the thumbnail position when saving.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
@@ -63,7 +65,7 @@ pub type Migration = fn(Value) -> Result<Value, String>;
 /// edit a shipped one.
 pub const MIGRATIONS: &[Migration] = &[
     v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15,
-    v15_to_v16,
+    v15_to_v16, v16_to_v17,
 ];
 
 /// The schema version this build writes (and the newest it reads).
@@ -386,13 +388,18 @@ fn v15_to_v16(doc: Value) -> Result<Value, String> {
     Ok(doc)
 }
 
+/// v16 → v17: setup thumbnails can move independently of their candles.
+fn v16_to_v17(doc: Value) -> Result<Value, String> {
+    Ok(doc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn schema_version_matches_table() {
-        assert_eq!(SCHEMA_VERSION, 16);
+        assert_eq!(SCHEMA_VERSION, 17);
     }
 
     #[test]
@@ -449,7 +456,7 @@ mod tests {
 
     #[test]
     fn damaged_script_ids_and_links_are_rejected_on_load() {
-        use filmcraft_project::{ItemId, ItemKind, Label, ScriptDocument, ScriptSlate, ScriptSlateId, ScriptTake, ScriptTakeId};
+        use filmcraft_project::{ItemId, ItemKind, Label, ScriptColor, ScriptDocument, ScriptSlate, ScriptSlateId, ScriptTake, ScriptTakeId};
         use std::sync::Arc;
         let mut p = Project::new("script validation");
         let doc = ScriptDocument::from_text("one\ntwo").unwrap();
@@ -469,13 +476,17 @@ mod tests {
         doc.slates.push(ScriptSlate {
             id: ScriptSlateId(3),
             name: "setup".into(),
+            thumbnail_line: None,
+            thumbnail_x: None,
             takes: vec![ScriptTake {
                 id: ScriptTakeId(4),
                 source: Some(ItemId(999)),
                 source_name: "gone".into(),
                 start_line: first,
                 end_line: second,
-                color: Label::Blue,
+                thumbnail_time: None,
+                color: ScriptColor::Blue,
+                line_colors: vec![],
                 offscreen_lines: vec![],
                 marks: vec![],
                 source_identity: None,

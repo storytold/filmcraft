@@ -42,7 +42,9 @@ pub use mask::{Mask, MaskMode, MaskPath, MaskVertex, TrackMethod};
 pub use mixer::{AutomationMode, InputMap, MixerStrip, TrackSend};
 pub use multicam::{Camera, MergedClip, MulticamAudio, MulticamSel, MulticamSource};
 pub use narration::{Narration, VocalPitch};
-pub use script::{ScriptDocument, ScriptLine, ScriptLineId, ScriptMark, ScriptMarkId, ScriptSlate, ScriptSlateId, ScriptTake, ScriptTakeId};
+pub use script::{
+    ScriptColor, ScriptDocument, ScriptLine, ScriptLineColor, ScriptLineId, ScriptMark, ScriptMarkId, ScriptSlate, ScriptSlateId, ScriptTake, ScriptTakeId,
+};
 pub use transcript::{Speaker, Transcript, Word};
 
 macro_rules! id_type {
