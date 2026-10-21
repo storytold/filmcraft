@@ -258,6 +258,7 @@ pub fn grab_at(seq: &Sequence, layout: &Layout, pos: Pos2, tool: Tool, mods: Mod
     }
     let Hit::Clip { track, clip, edge: Some(edge) } = h else { return Grab::Other(h) };
     let kind = match tool {
+        Tool::Selection if mods.ctrl && !mods.shift => EdgeKind::Trim,
         Tool::Selection => {
             let (dist, neighbour) = edge_geometry(seq, layout, track, clip, edge, pos.x);
             match selection_trim_kind(roll_ripple, mods.command, mods.shift, dist, neighbour) {

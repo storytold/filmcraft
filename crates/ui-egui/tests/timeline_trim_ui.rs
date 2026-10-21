@@ -246,7 +246,7 @@ fn cursor_hit_test_and_press_agree_at_a_cut() {
         let h = hit(&mut d, x, json!({}));
         assert_eq!((h["clip"].as_u64(), h["edge"].as_str(), h["kind"].as_str()), (Some(clip), Some(edge), Some("trim")), "at x {x}: {h}");
         let h = hit(&mut d, x, json!({"command": true}));
-        assert_eq!(h["kind"], "ripple", "Cmd at x {x}: {h}");
+        assert_eq!(h["kind"], if cfg!(target_os = "macos") { "ripple" } else { "trim" }, "primary modifier at x {x}: {h}");
     }
     let mid = (x0 + cut) / 2.0;
     d.hover(pos2(mid, y));
@@ -562,4 +562,42 @@ fn linked_video_drag_adds_video_and_audio_tracks() {
 #[test]
 fn linked_audio_drag_adds_audio_and_video_tracks() {
     move_existing_clip_to_a_new_track(true, true);
+}
+
+#[test]
+fn ctrl_trims_only_the_grabbed_linked_stream_and_preserves_the_link() {
+    for audio in [false, true] {
+        for edge_in in [false, true] {
+            let mut d = Driver::demo();
+            d.exec("sequence.linkedSelection", json!({"on":true}));
+            let q = d.app().session.active_sequence().unwrap();
+            let track = if audio { &q.audio_tracks[0] } else { &q.video_tracks[0] };
+            let original = track.items[2].clone();
+            let partner = q.all_tracks().flat_map(|t| &t.items).find(|i| i.id != original.id && i.link.is_some() && i.link == original.link).unwrap().clone();
+            let layout = d.app().tl.layout.as_ref().unwrap();
+            let row = layout.rows.iter().find(|r| r.track == track.id).unwrap();
+            let x = layout.x_of(if edge_in { original.start } else { original.end() });
+            let from = pos2(x + if edge_in { 3.0 } else { -3.0 }, row.rect.min.y + 8.0);
+            let to = from + egui::vec2(if edge_in { 25.0 } else { -25.0 }, 0.0);
+            let mods = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
+            d.harness.input_mut().events.push(egui::Event::ModifiersChanged(mods));
+            d.harness.input_mut().events.push(egui::Event::PointerMoved(from));
+            d.frames(1);
+            d.harness.input_mut().events.push(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: mods });
+            d.frames(1);
+            for i in 1..=10 {
+                d.harness.input_mut().events.push(egui::Event::PointerMoved(from + (to - from) * (i as f32 / 10.0)));
+                d.frames(1);
+            }
+            d.harness.input_mut().events.push(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: mods });
+            d.frames(2);
+            let q = d.app().session.active_sequence().unwrap();
+            let changed = q.find_item(original.id).unwrap().1;
+            assert!(changed.duration < original.duration, "{}", d.app().ui.status);
+            assert_eq!(changed.link, original.link);
+            assert_eq!(q.find_item(partner.id).unwrap().1, &partner);
+            d.exec("edit.undo", json!({}));
+            assert_eq!(d.app().session.active_sequence().unwrap().find_item(original.id).unwrap().1, &original);
+        }
+    }
 }

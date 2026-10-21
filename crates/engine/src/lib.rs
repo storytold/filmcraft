@@ -14,6 +14,7 @@ pub mod aaf_omf;
 pub mod autosave;
 pub mod captions;
 pub mod clip_ops;
+pub mod clipboard;
 pub mod color;
 pub mod commands;
 pub mod demo;
@@ -293,6 +294,8 @@ pub struct EditorState {
     /// Timeline clipboard (serialized track items with their relative track index).
     #[serde(skip)]
     pub clipboard: Vec<(TrackKind, usize, filmcraft_project::TrackItem)>,
+    #[serde(skip)]
+    pub effect_clipboard: Option<clipboard::Payload>,
     pub default_video_transition: String,
     pub default_audio_transition: String,
     /// Selected edit points (trim mode).

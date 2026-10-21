@@ -262,6 +262,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let mut save_preset = false;
                 let fx_id = e.effect.clone();
                 resp.context_menu(|ui| {
+                    let copy = ui.button(tl!("Copy"));
+                    app.auto.add_response(&format!("effectControls.effect.{fx_id}.copy"), &copy, "Copy");
+                    if copy.clicked() {
+                        actions.push(("effects.copy".into(), json!({"clip": clip.0, "index": idx})));
+                        ui.close();
+                    }
                     let sp = ui.button(tl!("Save Preset…"));
                     app.auto.add(&format!("effectControls.effect.{fx_id}.savePreset"), sp.rect, "Save Preset…");
                     if sp.clicked() {
@@ -1047,7 +1053,7 @@ pub(crate) fn run(app: &mut FilmcraftApp, ctx: &egui::Context, actions: Vec<(Str
             p["begin"] = json!(begun != press && !wrote);
             wrote = true;
         }
-        if let Err(e) = app.session.execute(&cmd, p) {
+        if let Err(e) = crate::menus::invoke(app, ctx, &cmd, p) {
             app.ui.status = e.to_string();
         }
     }

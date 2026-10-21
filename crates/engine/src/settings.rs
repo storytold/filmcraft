@@ -744,7 +744,7 @@ impl Default for TimelinePrefs {
             still_image_duration: 5.0,
             still_image_unit: "seconds".into(),
             auto_scroll: "pageScroll".into(),
-            mouse_scrolling: "vertical".into(),
+            mouse_scrolling: if cfg!(target_os = "windows") { "horizontal" } else { "vertical" }.into(),
             mono_media_tracks: "useFile".into(),
             stereo_media_tracks: "useFile".into(),
             surround_media_tracks: "useFile".into(),
