@@ -1566,13 +1566,14 @@ impl Project {
         if delta == Tick::ZERO {
             return;
         }
-        let mut users = vec![item];
+        // Resolve each subclip's complete (bounded) parent chain. A direct-parent test misses
+        // subclips of subclips and leaves their source references in the old media frame space.
+        let users: Vec<ItemId> = self.items.keys().copied().filter(|id| self.resolve_media(*id).is_some_and(|(root, _, _)| root == item)).collect();
         for it in self.items.values_mut() {
-            if let ItemKind::Subclip { parent, range, .. } = &mut it.kind
-                && *parent == item
+            if let ItemKind::Subclip { range, .. } = &mut it.kind
+                && users.contains(&it.id)
             {
                 range.start -= delta;
-                users.push(it.id);
             }
         }
         for it in self.items.values_mut() {

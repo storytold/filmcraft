@@ -1,6 +1,6 @@
 //! Native lined scripts. A line's identity is independent of wrapping and its current row.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -77,6 +77,9 @@ impl ScriptDocument {
     pub const MAX_TEXT_BYTES: usize = 4 * 1024 * 1024;
     pub const MAX_LINES: usize = 50_000;
     pub const MAX_LINE_BYTES: usize = 16_384;
+    pub const MAX_SLATES: usize = 10_000;
+    pub const MAX_TAKES: usize = 50_000;
+    pub const MAX_ANNOTATIONS: usize = 200_000;
 
     pub fn new() -> Self {
         Self { next_id: 1, ..Self::default() }
@@ -117,6 +120,96 @@ impl ScriptDocument {
         }
         self.next_id = id.checked_add(1).ok_or("script has exhausted its IDs")?;
         Ok(id)
+    }
+
+    /// Sum visible text and the line separators that a plain-text export would need.
+    pub fn text_bytes(&self) -> Option<usize> {
+        let characters = self.lines.iter().try_fold(0usize, |sum, row| sum.checked_add(row.text.len()))?;
+        characters.checked_add(self.lines.len().saturating_sub(1))
+    }
+
+    pub fn annotation_count(&self) -> Option<usize> {
+        self.slates
+            .iter()
+            .flat_map(|slate| &slate.takes)
+            .try_fold(0usize, |sum, take| sum.checked_add(take.marks.len()).and_then(|n| n.checked_add(take.offscreen_lines.len())))
+    }
+
+    /// Validate untrusted serialized scripts before an editor can mutate them. Stable IDs are
+    /// unique across all node types, and every annotation must point into its take's candle.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.lines.len() > Self::MAX_LINES || self.slates.len() > Self::MAX_SLATES {
+            return Err("too many script lines or slates".into());
+        }
+        if self.text_bytes().is_none_or(|bytes| bytes > Self::MAX_TEXT_BYTES) {
+            return Err("script text exceeds the 4 MiB limit".into());
+        }
+        let mut ids = BTreeSet::new();
+        let mut greatest = 0;
+        let mut accept_id = |id: u64| -> Result<(), String> {
+            if id == 0 || !ids.insert(id) {
+                return Err(format!("duplicate or zero script ID {id}"));
+            }
+            greatest = greatest.max(id);
+            Ok(())
+        };
+        let mut positions = BTreeMap::new();
+        for (index, row) in self.lines.iter().enumerate() {
+            accept_id(row.id.0)?;
+            if row.text.len() > Self::MAX_LINE_BYTES || row.scene.as_ref().is_some_and(|s| s.len() > 256) || row.page.as_ref().is_some_and(|s| s.len() > 256) {
+                return Err("script line or Scene/Page label exceeds its size limit".into());
+            }
+            positions.insert(row.id, index);
+        }
+        let mut take_count = 0usize;
+        let mut annotation_count = 0usize;
+        for slate in &self.slates {
+            accept_id(slate.id.0)?;
+            if slate.name.len() > 4096 {
+                return Err("script slate name exceeds its size limit".into());
+            }
+            take_count = take_count.checked_add(slate.takes.len()).ok_or("too many script takes")?;
+            if take_count > Self::MAX_TAKES {
+                return Err("too many script takes".into());
+            }
+            for take in &slate.takes {
+                accept_id(take.id.0)?;
+                if take.source_name.len() > 4096 {
+                    return Err("script take source name exceeds its size limit".into());
+                }
+                if take.source.is_some_and(|id| id.0 == 0) {
+                    return Err("script take has a zero source ID".into());
+                }
+                let Some((&a, &b)) = positions.get(&take.start_line).zip(positions.get(&take.end_line)) else {
+                    return Err("script take refers to a missing line".into());
+                };
+                if a > b {
+                    return Err("script take has reversed coverage".into());
+                }
+                annotation_count = annotation_count
+                    .checked_add(take.offscreen_lines.len())
+                    .and_then(|n| n.checked_add(take.marks.len()))
+                    .ok_or("too many script annotations")?;
+                if annotation_count > Self::MAX_ANNOTATIONS {
+                    return Err("too many script annotations".into());
+                }
+                for line in &take.offscreen_lines {
+                    if positions.get(line).is_none_or(|i| !(a..=b).contains(i)) {
+                        return Err("off-screen annotation is outside its take".into());
+                    }
+                }
+                for mark in &take.marks {
+                    accept_id(mark.id.0)?;
+                    if positions.get(&mark.line).is_none_or(|i| !(a..=b).contains(i)) {
+                        return Err("script mark is outside its take".into());
+                    }
+                }
+            }
+        }
+        if self.next_id == 0 || self.next_id <= greatest {
+            return Err("script next_id does not follow its object IDs".into());
+        }
+        Ok(())
     }
 
     pub fn line_index(&self, id: ScriptLineId) -> Option<usize> {
@@ -184,9 +277,9 @@ impl ScriptDocument {
         for take in self.slates.iter_mut().flat_map(|slate| &mut slate.takes) {
             if take.source.is_some_and(|id| sources.contains(&id)) {
                 for mark in &mut take.marks {
-                    // Relink metadata is untrusted. Saturation avoids wrapping a corrupt mark
-                    // into an unrelated frame; healthy timecode shifts remain exact.
-                    mark.source_time = Tick(mark.source_time.0.saturating_sub(delta.0).max(0));
+                    // Preserve signed time: a relink can place a mark before the new source's
+                    // start. Cueing then reports it as unavailable instead of changing its frame.
+                    mark.source_time = Tick(mark.source_time.0.saturating_sub(delta.0));
                 }
             }
         }
@@ -229,5 +322,36 @@ mod tests {
         assert!(take.marks.is_empty());
         assert!(take.offscreen_lines.is_empty());
         assert_eq!(doc.lines.len(), 2);
+    }
+
+    #[test]
+    fn validator_rejects_duplicate_and_stale_ids_and_outside_marks() {
+        let mut doc = ScriptDocument::from_text("first\nsecond").unwrap();
+        assert!(doc.validate().is_ok());
+        doc.lines[1].id = doc.lines[0].id;
+        assert!(doc.validate().is_err());
+        doc.lines[1].id = ScriptLineId(2);
+        doc.next_id = 2;
+        assert!(doc.validate().is_err());
+        doc.next_id = 4;
+        doc.slates.push(ScriptSlate {
+            id: ScriptSlateId(3),
+            name: "setup".into(),
+            takes: vec![ScriptTake {
+                id: ScriptTakeId(4),
+                source: None,
+                source_name: "gone".into(),
+                start_line: ScriptLineId(1),
+                end_line: ScriptLineId(1),
+                color: Label::Blue,
+                offscreen_lines: vec![],
+                marks: vec![ScriptMark { id: ScriptMarkId(5), line: ScriptLineId(2), source_time: Tick(-100) }],
+                source_identity: None,
+            }],
+        });
+        doc.next_id = 6;
+        assert!(doc.validate().is_err());
+        doc.slates[0].takes[0].marks[0].line = ScriptLineId(1);
+        assert!(doc.validate().is_ok(), "signed post-relink source time is valid stored data");
     }
 }

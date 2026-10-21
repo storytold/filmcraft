@@ -248,6 +248,22 @@ fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
             sequence.check_bounds().map_err(|e| FormatError::Corrupt(format!("sequence `{}`: {e}", item.name)))?;
         }
     }
+    for item in loaded.project.items.values() {
+        if let filmcraft_project::ItemKind::Script(doc) = &item.kind {
+            doc.validate().map_err(|e| FormatError::Corrupt(format!("script `{}`: {e}", item.name)))?;
+            for source in doc.slates.iter().flat_map(|slate| slate.takes.iter()).filter_map(|take| take.source) {
+                let valid = loaded.project.item(source).is_some_and(|linked| match &linked.kind {
+                    filmcraft_project::ItemKind::Media(_) => true,
+                    filmcraft_project::ItemKind::Subclip { .. } => loaded.project.resolve_media(source).is_some(),
+                    filmcraft_project::ItemKind::Sequence(sequence) => sequence.multicam.is_some(),
+                    _ => false,
+                });
+                if !valid {
+                    return Err(FormatError::Corrupt(format!("script `{}`: linked take source {} is missing or unsupported", item.name, source.0)));
+                }
+            }
+        }
+    }
     Ok(loaded)
 }
 
@@ -429,6 +445,45 @@ mod tests {
             assert!(!l.migrated());
             assert_eq!(l.generator.as_deref(), Some(generator().as_str()));
         }
+    }
+
+    #[test]
+    fn damaged_script_ids_and_links_are_rejected_on_load() {
+        use filmcraft_project::{ItemId, ItemKind, Label, ScriptDocument, ScriptSlate, ScriptSlateId, ScriptTake, ScriptTakeId};
+        use std::sync::Arc;
+        let mut p = Project::new("script validation");
+        let doc = ScriptDocument::from_text("one\ntwo").unwrap();
+        let first = doc.lines[0].id;
+        let second = doc.lines[1].id;
+        let script = p.add_item("dialogue", Label::Blue, ItemKind::Script(Arc::new(doc)), None);
+        assert!(decode(&encode(&p, false)).is_ok());
+        let doc = p.item_mut(script).unwrap().as_script_mut().unwrap();
+        doc.lines[1].id = first;
+        assert!(matches!(decode(&encode(&p, false)), Err(FormatError::Corrupt(_))));
+        let doc = p.item_mut(script).unwrap().as_script_mut().unwrap();
+        doc.lines[1].id = second;
+        doc.next_id = second.0;
+        assert!(matches!(decode(&encode(&p, false)), Err(FormatError::Corrupt(_))));
+        let doc = p.item_mut(script).unwrap().as_script_mut().unwrap();
+        doc.next_id = 5;
+        doc.slates.push(ScriptSlate {
+            id: ScriptSlateId(3),
+            name: "setup".into(),
+            takes: vec![ScriptTake {
+                id: ScriptTakeId(4),
+                source: Some(ItemId(999)),
+                source_name: "gone".into(),
+                start_line: first,
+                end_line: second,
+                color: Label::Blue,
+                offscreen_lines: vec![],
+                marks: vec![],
+                source_identity: None,
+            }],
+        });
+        assert!(matches!(decode(&encode(&p, false)), Err(FormatError::Corrupt(_))));
+        p.item_mut(script).unwrap().as_script_mut().unwrap().slates[0].takes[0].source = None;
+        assert!(decode(&encode(&p, false)).is_ok(), "unlinked take slots remain valid");
     }
 
     /// What is open is stored beside the project. A file without it, or with one that cannot be

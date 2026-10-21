@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use filmcraft_project::{
-    BinId, ItemId, ItemKind, Label, MediaIdentity, Project, ScriptDocument, ScriptLine, ScriptLineId, ScriptMark, ScriptMarkId, ScriptSlate, ScriptSlateId,
-    ScriptTake, ScriptTakeId,
+    BinId, ItemId, ItemKind, Label, MediaIdentity, MediaRef, Project, ScriptDocument, ScriptLine, ScriptLineId, ScriptMark, ScriptMarkId, ScriptSlate,
+    ScriptSlateId, ScriptTake, ScriptTakeId,
 };
 use filmcraft_time::Tick;
 use serde_json::{Value, json};
@@ -88,6 +88,12 @@ fn edit_line(s: &mut Session, p: &Value) -> Result<Value> {
     let value = text(p, "text", cmd, ScriptDocument::MAX_LINE_BYTES)?.to_owned();
     s.edit("Edit Script Line", |project, _| {
         let doc = script_mut(project, item, cmd)?;
+        let old = doc.lines.iter().find(|row| row.id == line).ok_or_else(|| bad(cmd, "line does not exist"))?.text.len();
+        let total = doc.text_bytes().ok_or_else(|| bad(cmd, "script text size overflow"))?;
+        let updated = total.checked_sub(old).and_then(|bytes| bytes.checked_add(value.len())).ok_or_else(|| bad(cmd, "script text size overflow"))?;
+        if updated > ScriptDocument::MAX_TEXT_BYTES {
+            return Err(bad(cmd, "script text would exceed the 4 MiB limit"));
+        }
         let line = doc.lines.iter_mut().find(|row| row.id == line).ok_or_else(|| bad(cmd, "line does not exist"))?;
         line.text = value;
         Ok(())
@@ -104,6 +110,13 @@ fn insert_line(s: &mut Session, p: &Value) -> Result<Value> {
         let doc = script_mut(project, item, cmd)?;
         if doc.lines.len() >= ScriptDocument::MAX_LINES {
             return Err(bad(cmd, "script already has 50,000 lines"));
+        }
+        let total = doc.text_bytes().ok_or_else(|| bad(cmd, "script text size overflow"))?;
+        let extra_separator = usize::from(!doc.lines.is_empty());
+        let updated =
+            total.checked_add(value.len()).and_then(|bytes| bytes.checked_add(extra_separator)).ok_or_else(|| bad(cmd, "script text size overflow"))?;
+        if updated > ScriptDocument::MAX_TEXT_BYTES {
+            return Err(bad(cmd, "script text would exceed the 4 MiB limit"));
         }
         let index = match after {
             Some(line) => doc.line_index(line).ok_or_else(|| bad(cmd, "after line does not exist"))?.saturating_add(1),
@@ -165,6 +178,9 @@ fn add_slate(s: &mut Session, p: &Value) -> Result<Value> {
     let name = text(p, "name", cmd, 256)?.to_owned();
     let slate = s.edit("Add Script Slate", |project, _| {
         let doc = script_mut(project, item, cmd)?;
+        if doc.slates.len() >= ScriptDocument::MAX_SLATES {
+            return Err(bad(cmd, "script already has the maximum number of slates"));
+        }
         let slate = ScriptSlateId(doc.alloc_id().map_err(|e| bad(cmd, e))?);
         doc.slates.push(ScriptSlate { id: slate, name, takes: Vec::new() });
         Ok(slate)
@@ -182,6 +198,10 @@ fn add_take(s: &mut Session, p: &Value) -> Result<Value> {
     let (source_name, identity) = allowed_source(&s.project, source)?;
     let (slate, take) = s.edit("Add Script Take", |project, _| {
         let doc = script_mut(project, item, cmd)?;
+        let take_count = doc.slates.iter().try_fold(0usize, |sum, slate| sum.checked_add(slate.takes.len())).ok_or_else(|| bad(cmd, "take count overflow"))?;
+        if take_count >= ScriptDocument::MAX_TAKES {
+            return Err(bad(cmd, "script already has the maximum number of takes"));
+        }
         doc.line_range(start, end).ok_or_else(|| bad(cmd, "startLine and endLine must exist and be in script order"))?;
         let slate = if let Some(slate) = existing_slate {
             if !doc.slates.iter().any(|s| s.id == slate) {
@@ -189,6 +209,9 @@ fn add_take(s: &mut Session, p: &Value) -> Result<Value> {
             }
             slate
         } else {
+            if doc.slates.len() >= ScriptDocument::MAX_SLATES {
+                return Err(bad(cmd, "script already has the maximum number of slates"));
+            }
             let slate = ScriptSlateId(doc.alloc_id().map_err(|e| bad(cmd, e))?);
             doc.slates.push(ScriptSlate { id: slate, name: source_name.clone(), takes: Vec::new() });
             slate
@@ -218,10 +241,17 @@ fn rebind_take(s: &mut Session, p: &Value) -> Result<Value> {
     let source = ItemId(id(p, "source", cmd)?);
     let discard = p.get("discardMarks").and_then(Value::as_bool).unwrap_or(false);
     let (source_name, identity) = allowed_source(&s.project, source)?;
+    let stable_without_fingerprint = match s.project.item(source).map(|item| &item.kind) {
+        Some(ItemKind::Sequence(sequence)) => sequence.multicam.is_some(),
+        Some(ItemKind::Media(media)) => matches!(media.media, MediaRef::Generator(_)),
+        Some(ItemKind::Subclip { .. }) => s.project.resolve_media(source).is_some_and(|(_, media, _)| matches!(media.media, MediaRef::Generator(_))),
+        _ => false,
+    };
     let source_view = crate::clip_ops::source_view(s, source).ok_or_else(|| bad(cmd, "source cannot open in the Source monitor"))?;
     s.edit("Rebind Script Take", |project, _| {
         let take = script_mut(project, item, cmd)?.take_mut(take_id).ok_or_else(|| bad(cmd, "take does not exist"))?;
-        let same_footage = take.source == Some(source) || take.source_identity.is_some_and(|old| Some(old) == identity);
+        let same_footage = take.source_identity.is_some_and(|old| Some(old) == identity)
+            || (take.source == Some(source) && take.source_identity.is_none() && identity.is_none() && stable_without_fingerprint);
         if !same_footage && !take.marks.is_empty() && !discard {
             return Err(bad(
                 cmd,
@@ -272,7 +302,7 @@ fn set_style(s: &mut Session, p: &Value) -> Result<Value> {
     let take_id = ScriptTakeId(id(p, "take", cmd)?);
     let color =
         p.get("color").map(|v| v.as_str().and_then(Label::from_name).ok_or_else(|| bad(cmd, "color must be a known Filmcraft label name"))).transpose()?;
-    let offscreen = p
+    let mut offscreen = p
         .get("offscreenLines")
         .map(|v| -> Result<Vec<ScriptLineId>> {
             let a = v.as_array().ok_or_else(|| bad(cmd, "offscreenLines must be an array of line IDs"))?;
@@ -282,11 +312,23 @@ fn set_style(s: &mut Session, p: &Value) -> Result<Value> {
             a.iter().map(|x| x.as_u64().filter(|n| *n > 0).map(ScriptLineId).ok_or_else(|| bad(cmd, "offscreenLines must contain positive line IDs"))).collect()
         })
         .transpose()?;
+    if let Some(selected) = offscreen.as_mut() {
+        selected.sort_unstable();
+        selected.dedup();
+    }
     s.edit("Set Script Take Style", |project, _| {
         let doc = script_mut(project, item, cmd)?;
         let take = doc.take(take_id).ok_or_else(|| bad(cmd, "take does not exist"))?;
         let (a, b) = doc.line_range(take.start_line, take.end_line).ok_or_else(|| bad(cmd, "take coverage is damaged"))?;
         if let Some(ref selected) = offscreen {
+            let annotations = doc.annotation_count().ok_or_else(|| bad(cmd, "annotation count overflow"))?;
+            let updated = annotations
+                .checked_sub(take.offscreen_lines.len())
+                .and_then(|n| n.checked_add(selected.len()))
+                .ok_or_else(|| bad(cmd, "annotation count overflow"))?;
+            if updated > ScriptDocument::MAX_ANNOTATIONS {
+                return Err(bad(cmd, "script already has the maximum number of annotations"));
+            }
             let covered = doc.lines.get(a..=b).ok_or_else(|| bad(cmd, "take coverage is damaged"))?;
             if selected.iter().any(|line| !covered.iter().any(|row| row.id == *line)) {
                 return Err(bad(cmd, "off-screen line is outside the take"));
@@ -296,9 +338,7 @@ fn set_style(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some(color) = color {
             take.color = color;
         }
-        if let Some(mut selected) = offscreen {
-            selected.sort_unstable();
-            selected.dedup();
+        if let Some(selected) = offscreen {
             take.offscreen_lines = selected;
         }
         Ok(())
@@ -323,6 +363,9 @@ fn add_mark(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let mark = s.edit("Add Script Mark", |project, _| {
         let doc = script_mut(project, item, cmd)?;
+        if doc.annotation_count().is_none_or(|n| n >= ScriptDocument::MAX_ANNOTATIONS) {
+            return Err(bad(cmd, "script already has the maximum number of annotations"));
+        }
         let take = doc.take(take_id).ok_or_else(|| bad(cmd, "take does not exist"))?;
         let (a, b) = doc.line_range(take.start_line, take.end_line).ok_or_else(|| bad(cmd, "take coverage is damaged"))?;
         let row = doc.line_index(line).ok_or_else(|| bad(cmd, "line does not exist"))?;
@@ -362,8 +405,9 @@ fn cue_mark(s: &mut Session, p: &Value) -> Result<Value> {
     let mark_id = ScriptMarkId(id(p, "mark", cmd)?);
     let mark = take.marks.iter().find(|m| m.id == mark_id).ok_or_else(|| bad(cmd, "mark does not exist"))?;
     let at = mark.source_time;
-    if s.project.item(source).is_none() {
-        return Err(bad(cmd, "source item is gone"));
+    let view = crate::clip_ops::source_view(s, source).ok_or_else(|| bad(cmd, "source item is gone"))?;
+    if at < view.start || at >= view.end {
+        return Err(bad(cmd, "mark is outside the linked source's visible span after relink; review the footage or rebind the take"));
     }
     s.execute("source.open", json!({"item":source.0}))?;
     s.execute("source.setPlayhead", json!({"time":at.0}))?;
@@ -462,6 +506,39 @@ mod tests {
     }
 
     #[test]
+    fn same_item_after_forced_relink_does_not_authorize_old_marks() {
+        let mut s = Session::default();
+        let media = source(&mut s, "clip", 10);
+        let script = s.execute("script.importText", json!({"name":"Script","text":"line"})).unwrap()["item"].as_u64().unwrap();
+        let line = s.project.item(ItemId(script)).unwrap().as_script().unwrap().lines[0].id.0;
+        let take = s.execute("script.addTake", json!({"item":script,"source":media.0,"startLine":line,"endLine":line})).unwrap()["take"].as_u64().unwrap();
+        s.execute("script.addMark", json!({"item":script,"take":take,"line":line,"sourceTime":100})).unwrap();
+        Arc::make_mut(&mut s.project).item_mut(media).unwrap().as_media_mut().unwrap().identity = Some(MediaIdentity { size: 10, fingerprint: 99 });
+        assert!(s.execute("script.rebindTake", json!({"item":script,"take":take,"source":media.0})).is_err());
+        assert_eq!(s.project.item(ItemId(script)).unwrap().as_script().unwrap().take(ScriptTakeId(take)).unwrap().marks.len(), 1);
+        s.execute("script.rebindTake", json!({"item":script,"take":take,"source":media.0,"discardMarks":true})).unwrap();
+        assert!(s.project.item(ItemId(script)).unwrap().as_script().unwrap().take(ScriptTakeId(take)).unwrap().marks.is_empty());
+    }
+
+    #[test]
+    fn line_edits_and_inserts_respect_aggregate_text_budget() {
+        let mut s = Session::default();
+        let row = "x".repeat(ScriptDocument::MAX_LINE_BYTES - 1);
+        let text = vec![row; 256].join("\n");
+        assert_eq!(text.len(), ScriptDocument::MAX_TEXT_BYTES - 1);
+        let script = s.execute("script.importText", json!({"name":"long","text":text})).unwrap()["item"].as_u64().unwrap();
+        let lines = &s.project.item(ItemId(script)).unwrap().as_script().unwrap().lines;
+        let first = lines[0].id.0;
+        let second = lines[1].id.0;
+        let full = "y".repeat(ScriptDocument::MAX_LINE_BYTES);
+        s.execute("script.editLine", json!({"item":script,"line":first,"text":full})).unwrap();
+        let before = s.project.clone();
+        assert!(s.execute("script.editLine", json!({"item":script,"line":second,"text":full})).is_err());
+        assert!(s.execute("script.insertLine", json!({"item":script,"after":first,"text":"z"})).is_err());
+        assert_eq!(s.project.as_ref(), before.as_ref());
+    }
+
+    #[test]
     fn shifted_source_marks_keep_same_footage_frame_and_export_selection_keeps_source() {
         let mut s = Session::default();
         let media = source(&mut s, "clip", 10);
@@ -477,6 +554,26 @@ mod tests {
         assert_eq!(after + shift, before);
         let keep = crate::project_tools::closure(&s.project, &[ItemId(script)]);
         assert!(keep.contains(&media));
+    }
+
+    #[test]
+    fn shifted_out_of_range_mark_stays_signed_and_cue_reports_without_moving_monitor() {
+        let mut s = Session::default();
+        let media = source(&mut s, "clip", 10);
+        let other = source(&mut s, "other", 20);
+        let script = s.execute("script.importText", json!({"name":"Script","text":"line"})).unwrap()["item"].as_u64().unwrap();
+        let line = s.project.item(ItemId(script)).unwrap().as_script().unwrap().lines[0].id.0;
+        let take = s.execute("script.addTake", json!({"item":script,"source":media.0,"startLine":line,"endLine":line})).unwrap()["take"].as_u64().unwrap();
+        let mark = s.execute("script.addMark", json!({"item":script,"take":take,"line":line,"sourceTime":100})).unwrap()["mark"].as_u64().unwrap();
+        Arc::make_mut(&mut s.project).shift_media_time(media, Tick(200));
+        let stored = s.project.item(ItemId(script)).unwrap().as_script().unwrap().take(ScriptTakeId(take)).unwrap().marks[0].source_time;
+        assert_eq!(stored, Tick(-100));
+        s.execute("source.open", json!({"item":other.0})).unwrap();
+        s.execute("source.setPlayhead", json!({"time":FrameRate::FPS_24.tick_of(10).0})).unwrap();
+        let previous = (s.state.source_item, s.state.source_playhead);
+        let error = s.execute("script.cueMark", json!({"item":script,"take":take,"mark":mark})).unwrap_err().to_string();
+        assert!(error.contains("outside the linked source's visible span"), "{error}");
+        assert_eq!((s.state.source_item, s.state.source_playhead), previous);
     }
 
     #[test]
@@ -504,6 +601,40 @@ mod tests {
         assert_eq!(
             s.project.item(subclip).unwrap().kind,
             ItemKind::Subclip { parent, range: TimeRange::new(rate.tick_of(19), rate.tick_of(48)), restrict_trims: true }
+        );
+    }
+
+    #[test]
+    fn relink_shifts_nested_subclip_take_and_both_ranges() {
+        let mut s = Session::default();
+        let parent = source(&mut s, "parent", 10);
+        let rate = FrameRate::FPS_24;
+        let first = Arc::make_mut(&mut s.project).add_item(
+            "first",
+            Label::Blue,
+            ItemKind::Subclip { parent, range: TimeRange::new(rate.tick_of(24), rate.tick_of(48)), restrict_trims: true },
+            None,
+        );
+        let second = Arc::make_mut(&mut s.project).add_item(
+            "second",
+            Label::Blue,
+            ItemKind::Subclip { parent: first, range: TimeRange::new(rate.tick_of(30), rate.tick_of(24)), restrict_trims: true },
+            None,
+        );
+        let script = s.execute("script.importText", json!({"name":"Script","text":"line"})).unwrap()["item"].as_u64().unwrap();
+        let line = s.project.item(ItemId(script)).unwrap().as_script().unwrap().lines[0].id.0;
+        let take = s.execute("script.addTake", json!({"item":script,"source":second.0,"startLine":line,"endLine":line})).unwrap()["take"].as_u64().unwrap();
+        s.execute("script.addMark", json!({"item":script,"take":take,"line":line,"sourceTime":rate.tick_of(35).0})).unwrap();
+        Arc::make_mut(&mut s.project).shift_media_time(parent, rate.tick_of(5));
+        let mark = s.project.item(ItemId(script)).unwrap().as_script().unwrap().take(ScriptTakeId(take)).unwrap().marks[0].source_time;
+        assert_eq!(mark, rate.tick_of(30));
+        assert_eq!(
+            s.project.item(first).unwrap().kind,
+            ItemKind::Subclip { parent, range: TimeRange::new(rate.tick_of(19), rate.tick_of(48)), restrict_trims: true }
+        );
+        assert_eq!(
+            s.project.item(second).unwrap().kind,
+            ItemKind::Subclip { parent: first, range: TimeRange::new(rate.tick_of(25), rate.tick_of(24)), restrict_trims: true }
         );
     }
 
