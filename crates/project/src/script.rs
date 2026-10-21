@@ -284,6 +284,28 @@ impl ScriptDocument {
             }
         }
     }
+
+    pub fn unverified_marked_takes(&self, sources: &[ItemId], identity: Option<MediaIdentity>) -> usize {
+        self.slates
+            .iter()
+            .flat_map(|slate| &slate.takes)
+            .filter(|take| {
+                take.source.is_some_and(|id| sources.contains(&id))
+                    && !take.marks.is_empty()
+                    && (take.source_identity.is_none() || take.source_identity != identity)
+            })
+            .count()
+    }
+
+    /// A media relink keeps Project item IDs and Script marks stable. Refresh linked takes'
+    /// file identities after a verified or explicitly confirmed same-footage relink.
+    pub fn relink_sources(&mut self, sources: &[ItemId], identity: Option<MediaIdentity>) {
+        for take in self.slates.iter_mut().flat_map(|slate| &mut slate.takes) {
+            if take.source.is_some_and(|id| sources.contains(&id)) {
+                take.source_identity = identity;
+            }
+        }
+    }
 }
 
 #[cfg(test)]

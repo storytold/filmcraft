@@ -145,6 +145,11 @@ fn preview_texture(app: &FilmcraftApp, ctx: &egui::Context, path: &str) -> Optio
 
 fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.link_media.clone() else { return };
+    if d.pending_script_mark_relink.is_some() {
+        review_script_mark_relink(app, ctx, &mut d);
+        app.ui.link_media = Some(d);
+        return;
+    }
     let rows: Vec<_> = missing_list(app).into_iter().filter(|r| !d.skipped.contains(&r.0)).collect();
     if rows.is_empty() {
         app.ui.link_media = None;
@@ -634,13 +639,58 @@ fn relink_to(app: &mut FilmcraftApp, d: &mut LinkMediaDraft, item: &Value, path:
     let mut p = match_params(d);
     p["item"] = item.clone();
     p["path"] = json!(path);
-    match app.session.execute("media.relink", p) {
+    match app.session.execute("media.relink", p.clone()) {
         Ok(v) => {
             d.message.clear();
             d.candidates.clear();
             d.candidate = None;
+            d.pending_script_mark_relink = None;
             app.ui.status = tlf!("Linked {n} clip(s)", n = v["relinked"].as_array().map_or(0, Vec::len));
         }
-        Err(e) => d.message = e.to_string(),
+        Err(e) => {
+            d.message = e.to_string();
+            if d.message.contains(filmcraft_engine::relink::SCRIPT_MARKS_RELINK_REVIEW) {
+                d.pending_script_mark_relink = Some(p);
+            }
+        }
+    }
+}
+
+fn review_script_mark_relink(app: &mut FilmcraftApp, ctx: &egui::Context, d: &mut LinkMediaDraft) {
+    let Some(mut params) = d.pending_script_mark_relink.clone() else { return };
+    let path = params["path"].as_str().unwrap_or_default();
+    let mut confirm = false;
+    let mut cancel = false;
+    egui::Window::new("Review Script marks").collapsible(false).resizable(false).show(ctx, |ui| {
+        ui.label("FilmCraft cannot confirm this is the same footage used by linked Script takes.");
+        ui.label("If it is the same footage, confirm the relink to preserve their marks. Otherwise cancel and replace the takes in Script.");
+        ui.label(path);
+        ui.horizontal(|ui| {
+            let no = ui.button("Cancel relink");
+            app.auto.add("linkMedia.scriptMarks.cancel", no.rect, "Cancel relink");
+            cancel = no.clicked();
+            let yes = ui.button("Confirm Same Footage and Relink");
+            app.auto.add("linkMedia.scriptMarks.confirm", yes.rect, "Confirm same footage and preserve Script marks");
+            confirm = yes.clicked();
+        });
+    });
+    if cancel || crate::widgets::escape_closes(ctx) {
+        d.pending_script_mark_relink = None;
+        d.message = "Relink canceled; Script marks were preserved.".into();
+    } else if confirm {
+        params["confirmScriptSameFootage"] = json!(true);
+        match app.session.execute("media.relink", params) {
+            Ok(v) => {
+                d.pending_script_mark_relink = None;
+                d.message.clear();
+                d.candidates.clear();
+                d.candidate = None;
+                app.ui.status = tlf!("Linked {n} clip(s)", n = v["relinked"].as_array().map_or(0, Vec::len));
+            }
+            Err(e) => {
+                d.pending_script_mark_relink = None;
+                d.message = e.to_string();
+            }
+        }
     }
 }

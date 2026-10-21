@@ -283,10 +283,10 @@ have no identity, so relinking them skips the fingerprint check.
 | `media.findMissing` | `{missing: [{item, name, fileName, path, status: missing\|offline\|proxyMissing, duration, startTimecode}]}` |
 | `media.status {item?}` | per item: `online`, `missing`, `offline`, `unreadable` or `generated`, plus identity and proxy |
 | `media.linkMedia` | File ▸ Link Media… (rescans; the UI opens the dialog) |
-| `media.relink {item, path, force?, relinkOthers?=true, alignTimecode?, match?}` | check, link, then the others |
+| `media.relink {item, path, force?, confirmScriptSameFootage?, relinkOthers?=true, alignTimecode?, match?}` | check, link, then the others |
 | `media.autoRelink {from, to}` / `{folder}` | batch relink: a folder-prefix remap, or a search of a folder tree |
 | `media.search {folder, item?, exactName?=true}` | ranked candidates with `ok`, `identityMatch`, `problems` |
-| `media.replaceFootage {item, path}` | relink without checks (Replace Footage) |
+| `media.replaceFootage {item, path}` | force relink (Replace Footage); still checks Script marks |
 | `media.offlineAll` | close the dialog and leave the rest offline |
 
 `match` selects which properties must agree. Each defaults as shown:
@@ -298,7 +298,8 @@ have no identity, so relinking them skips the fingerprint check.
 - `mediaStart` (false): the start timecode;
 - `metadata` (true): frame size, frame rate and audio channels.
 
-`force: true` links regardless. **Relink others automatically** works out the folder remap from the
+`force: true` bypasses the media matching checks, but not the Script mark review described below.
+**Relink others automatically** works out the folder remap from the
 file just linked, by dropping the common trailing path components (`/Volumes/A/shoot/a.mov` →
 `/Users/me/shoot/a.mov` gives `/Volumes/A` → `/Users/me`). It applies the remap to the other missing
 files and checks each one. It also looks in the new file's folder. Windows and macOS separators both
@@ -306,11 +307,19 @@ work. **Align Timecode** keeps clips on the same timecode when the new file star
 timecode: the clips' source in-points, keyframes, marks and markers move with it
 (`Project::shift_media_time`). One relink, together with the files it pulls along, is one undo step.
 
+Script takes refer to the same Project media items as sequence clips. Relinking an offline item to
+its original file preserves Script marks and candles. If a relink candidate cannot be verified as
+the same file and a linked Script take has marks, the command stops before changing any media.
+The Link Media dialog asks for an explicit same-footage confirmation; command clients may pass
+`confirmScriptSameFootage: true` after review. This preserves the marks; to use different footage,
+replace the take in the Script window instead.
+
 Link Media dialog automation ids: `linkMedia.row.<n>`,
 `linkMedia.match.<fileName|extension|clipId|duration|mediaStart|metadata>`, `linkMedia.alignTimecode`,
 `linkMedia.relinkOthers`, `linkMedia.folder`, `linkMedia.browse`, `linkMedia.exactName`,
 `linkMedia.search`, `linkMedia.candidate.<n>`, `linkMedia.preview`, `linkMedia.link`,
-`linkMedia.locate`, `linkMedia.offline`, `linkMedia.offlineAll`, `linkMedia.cancel`.
+`linkMedia.locate`, `linkMedia.offline`, `linkMedia.offlineAll`, `linkMedia.cancel`,
+`linkMedia.scriptMarks.cancel`, `linkMedia.scriptMarks.confirm`.
 Make Offline: `makeOffline.keep|delete|ok|cancel`. In the Project panel, offline items get a
 broken-link badge (`project.item.<id>.offline` in Icon view), and items with a proxy get a **P**
 badge (`project.item.<id>.proxy`).

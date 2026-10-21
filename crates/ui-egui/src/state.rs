@@ -727,6 +727,8 @@ pub struct LinkMediaDraft {
     /// Rows the user set offline in this session of the dialog (item ids).
     pub skipped: Vec<u64>,
     pub message: String,
+    /// Original `media.relink` request awaiting explicit review of Script marks.
+    pub pending_script_mark_relink: Option<serde_json::Value>,
 }
 
 impl Default for LinkMediaDraft {
@@ -747,6 +749,7 @@ impl Default for LinkMediaDraft {
             candidate: None,
             skipped: vec![],
             message: String::new(),
+            pending_script_mark_relink: None,
         }
     }
 }

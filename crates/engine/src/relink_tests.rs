@@ -129,6 +129,44 @@ fn fingerprint_mismatch_is_refused_unless_forced() {
 }
 
 #[test]
+fn script_marks_follow_same_file_relink_but_block_unverified_forced_replacement() {
+    let root = tmp_dir("relink-script-marks");
+    let (path, items) = saved_project(&root);
+    let mut s = open(&path);
+    let script = s.execute("script.importText", json!({"name":"Script","text":"a line"})).unwrap()["item"].as_u64().unwrap();
+    let line = s.project.item(ItemId(script)).unwrap().as_script().unwrap().lines[0].id.0;
+    let take = s.execute("script.addTake", json!({"item":script,"source":items[0].0,"startLine":line,"endLine":line})).unwrap()["take"].as_u64().unwrap();
+    s.execute("script.addMark", json!({"item":script,"take":take,"line":line,"sourceTime":0})).unwrap();
+    s.execute("file.save", json!({"path":path})).unwrap();
+
+    let moved = root.join("Moved");
+    std::fs::rename(root.join("Media"), &moved).unwrap();
+    let mut s = open(&path);
+    let same = moved.join("a.mov").to_string_lossy().into_owned();
+    s.execute("media.relink", json!({"item":items[0].0,"path":same,"relinkOthers":false})).unwrap();
+    let script_take =
+        |session: &Session| session.project.item(ItemId(script)).unwrap().as_script().unwrap().take(filmcraft_project::ScriptTakeId(take)).unwrap().clone();
+    assert_eq!(script_take(&s).marks[0].source_time.0, 0);
+    assert_eq!(script_take(&s).source_identity, s.project.item(items[0]).unwrap().as_media().unwrap().identity);
+
+    let other = root.join("Other");
+    std::fs::create_dir_all(&other).unwrap();
+    make_movie(&other.join("a.mov"), DemoScene::Dunes, W, H, 12);
+    let replacement = other.join("a.mov").to_string_lossy().into_owned();
+    let err = s.execute("media.relink", json!({"item":items[0].0,"path":replacement,"force":true,"relinkOthers":false})).unwrap_err().to_string();
+    assert!(err.contains(crate::relink::SCRIPT_MARKS_RELINK_REVIEW), "{err}");
+    assert_eq!(script_take(&s).marks.len(), 1);
+    assert_eq!(s.project.item(items[0]).unwrap().as_media().unwrap().media, filmcraft_project::MediaRef::File { path: same });
+
+    // The command accepts a user's explicit same-footage assertion. The engine cannot infer
+    // visual equivalence from bytes; the UI requires a separate review before sending it.
+    s.execute("media.relink", json!({"item":items[0].0,"path":replacement,"force":true,"confirmScriptSameFootage":true,"relinkOthers":false})).unwrap();
+    assert_eq!(script_take(&s).marks.len(), 1);
+    assert_eq!(script_take(&s).source_identity, s.project.item(items[0]).unwrap().as_media().unwrap().identity);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn forced_relink_takes_the_new_files_properties() {
     let root = tmp_dir("relink-forced-info");
     let (path, items) = saved_project(&root);

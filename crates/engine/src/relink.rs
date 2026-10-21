@@ -27,6 +27,9 @@ use crate::{EngineError, MediaPool, Result, Services, Session};
 /// Bytes hashed at each end of the file.
 pub const FINGERPRINT_SPAN: usize = 1 << 20;
 
+/// A command-visible reason that lets the Link Media UI offer an explicit review step.
+pub const SCRIPT_MARKS_RELINK_REVIEW: &str = "Script marks require review";
+
 /// 64-bit hash of `size`, `head` and `tail` (a simple multiply–xorshift over 8-byte words).
 pub fn fingerprint(size: u64, head: &[u8], tail: &[u8]) -> u64 {
     let mut h: u64 = 0x243f_6a88_85a3_08d3 ^ size.wrapping_mul(0x9e37_79b9_7f4a_7c15);
@@ -321,12 +324,39 @@ struct Plan {
 }
 
 /// Apply planned relinks as one undo step.
-fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, label: &str) -> Result<Vec<Value>> {
+fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, confirm_script_same_footage: bool, label: &str) -> Result<Vec<Value>> {
+    // A Script take, like a sequence clip, refers to a Project item. Resolve all subclips
+    // before changing any media so both direct and nested references are checked together.
+    let script_sources: Vec<_> = plans
+        .iter()
+        .map(|plan| {
+            let sources = s
+                .project
+                .items
+                .keys()
+                .copied()
+                .filter(|source| s.project.resolve_media(*source).is_some_and(|(root, _, _)| root == plan.item))
+                .collect::<Vec<_>>();
+            (sources, plan.cand.identity)
+        })
+        .collect();
+    if !confirm_script_same_footage
+        && script_sources.iter().any(|(sources, identity)| {
+            s.project.items.values().filter_map(|item| item.as_script()).any(|doc| doc.unverified_marked_takes(sources, *identity) > 0)
+        })
+    {
+        return Err(bad(
+            "media.relink",
+            format!(
+                "{SCRIPT_MARKS_RELINK_REVIEW}: the file is not identity-confirmed as the same footage; retry with `confirmScriptSameFootage:true` only after review, or rebind the Script take"
+            ),
+        ));
+    }
     let rows: Vec<Value> = plans.iter().map(|p| json!({"item": p.item.0, "path": p.cand.path})).collect();
     let sources: Vec<(ItemId, String, filmcraft_media::SharedSource)> =
         plans.iter().filter_map(|p| p.cand.source.clone().map(|src| (p.item, p.cand.path.clone(), src))).collect();
     s.edit(label, |proj, _| {
-        for p in &plans {
+        for (p, (users, identity)) in plans.iter().zip(&script_sources) {
             let Some(m) = proj.item_mut(p.item).and_then(|i| i.as_media_mut()) else { continue };
             let old_tc = m.info.start_timecode;
             let rate = m.info.frame_rate();
@@ -345,6 +375,11 @@ fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, label: &str) -
                 m.info = info.clone();
             }
             proj.shift_media_time(p.item, shift);
+            for item in proj.items.values_mut() {
+                if let ItemKind::Script(doc) = &mut item.kind {
+                    std::sync::Arc::make_mut(doc).relink_sources(users, *identity);
+                }
+            }
             if p.cand.info.is_some() {
                 // The item's size is now the file's own. Clips that came from an interchange import
                 // while the file was missing still have an "auto" (NaN) anchor waiting for it:
@@ -429,7 +464,7 @@ pub fn relink(s: &mut Session, p: &Value) -> Result<Value> {
     if o.relink_others {
         plans.extend(others(s, item, &old, &path, &o));
     }
-    let rows = apply(s, plans, o.align_timecode, "Link Media")?;
+    let rows = apply(s, plans, o.align_timecode, bool_p(p, "confirmScriptSameFootage").unwrap_or(false), "Link Media")?;
     Ok(json!({"relinked": rows, "remaining": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
 }
 
@@ -469,7 +504,7 @@ pub fn auto_relink(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         return Err(bad("media.autoRelink", "need `from` and `to`, or `folder`"));
     }
-    let rows = if plans.is_empty() { Vec::new() } else { apply(s, plans, o.align_timecode, "Link Media")? };
+    let rows = if plans.is_empty() { Vec::new() } else { apply(s, plans, o.align_timecode, false, "Link Media")? };
     refresh(s);
     Ok(json!({"relinked": rows, "failed": failed, "remaining": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
 }
@@ -653,7 +688,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Relink Media",
             menu: &[],
             shortcut: None,
-            params: r#"{"item":id,"path":str,"force":bool=false,"relinkOthers":bool=true,"alignTimecode":bool=false,"match":{"fileName":bool,"extension":bool,"clipId":bool,"duration":bool,"mediaStart":bool,"metadata":bool}?}"#,
+            params: r#"{"item":id,"path":str,"force":bool=false,"confirmScriptSameFootage":bool=false,"relinkOthers":bool=true,"alignTimecode":bool=false,"match":{"fileName":bool,"extension":bool,"clipId":bool,"duration":bool,"mediaStart":bool,"metadata":bool}?}"#,
             enabled: always,
             run: relink,
             journal: true,

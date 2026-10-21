@@ -361,7 +361,11 @@ pub fn workspace(name: &str) -> DockNode {
             ),
             tabs(&[EssentialGraphics, Properties], 0),
         ),
-        "Script" => hsplit(Ratio(0.67), tabs(&[Script], 0), vsplit(Ratio(0.58), tabs(&[Source, Program, Text], 0), tabs(&[Project, MediaBrowser], 0))),
+        "Script" => vsplit(
+            Ratio(0.76),
+            hsplit(Ratio(0.67), tabs(&[Script], 0), vsplit(Ratio(0.58), tabs(&[Source, Program, Text], 0), tabs(&[Project, MediaBrowser], 0))),
+            tabs(&[Timeline], 0),
+        ),
         "All Panels" => vsplit(
             Ratio(0.5),
             hsplit(
