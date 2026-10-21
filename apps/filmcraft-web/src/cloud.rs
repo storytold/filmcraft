@@ -16,7 +16,7 @@ use filmcraft_ui_egui::cloud::{Account, CloudBackend, Event, Fault, Job, Post};
 
 #[path = "cloud_paths.rs"]
 mod cloud_paths;
-use cloud_paths::{LOGIN_PATH, LOGOUT_PATH};
+use cloud_paths::LOGOUT_PATH;
 
 /// Hands cloud jobs to async fetch tasks.  Cheap to clone because `Client`
 /// carries only a `String` base URL and an optional token string.
@@ -62,9 +62,6 @@ impl Service {
                     .await
                     .map(|me| Account { display: me.display, capabilities: me.capabilities, provider_linked: me.provider_linked })
                     .map_err(fault);
-                if matches!(&answer, Err(Fault::Unauthenticated)) {
-                    offer_login();
-                }
                 emit(Event::Account(answer));
             }
             Job::LinkStart => match self.client.link_start().await.map_err(fault) {
@@ -126,18 +123,6 @@ fn fault(e: Error) -> Fault {
             Fault::Refused("FilmCraft could not build that request".to_owned())
         }
     }
-}
-
-/// Redirect unsigned sessions to the sign-in page.
-///
-/// Skipped when already on an `/auth/` path to avoid a redirect loop.
-fn offer_login() {
-    let Some(window) = web_sys::window() else { return };
-    let Ok(path) = window.location().pathname() else { return };
-    if path.starts_with("/auth/") {
-        return;
-    }
-    let _ = window.location().set_href(LOGIN_PATH);
 }
 
 /// POST to the service's logout endpoint and let the browser clear the cookie.

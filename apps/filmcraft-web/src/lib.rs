@@ -88,6 +88,8 @@ pub struct WebApp {
     pub app: FilmcraftApp,
     pub audio: Option<audio::Handle>,
     pub autosave: recovery::Autosave,
+    /// Invited sessions must not overwrite the user's recovery snapshot.
+    autosave_enabled: bool,
 }
 
 impl eframe::App for WebApp {
@@ -109,7 +111,9 @@ impl eframe::App for WebApp {
         if let Some(a) = &self.audio {
             a.pump();
         }
-        self.autosave.tick(&self.app.session, ctx);
+        if self.autosave_enabled {
+            self.autosave.tick(&self.app.session, ctx);
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -210,6 +214,7 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 if let Some(t) = toast {
                     app.status(t);
                 }
+                let invited = invite.is_some();
                 if let Some(invitation) = invite.take() {
                     open_invite(&mut app, invitation);
                 }
@@ -232,7 +237,7 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 }
                 set_info("audio", json!(audio.is_some()));
                 set_info("restoredMedia", json!(restored));
-                Ok(Box::new(WebApp { app, audio, autosave: recovery::Autosave::default() }))
+                Ok(Box::new(WebApp { app, audio, autosave: recovery::Autosave::default(), autosave_enabled: !invited }))
             }),
         )
         .await?;
@@ -249,6 +254,7 @@ fn open_invite(app: &mut FilmcraftApp, invitation: craft_cloud_client::invite::I
     let name = invitation.name.clone();
     match filmcraft_ui_egui::cloud::CloudApp::open_bytes(app, &name, invitation.document.clone()) {
         Ok(Some(_)) => {
+            app.cloud.as_guest(invitation.recipient.clone(), invitation.read_only());
             let mode = if invitation.read_only() { " (view only)" } else { "" };
             let who = if invitation.recipient.is_empty() { String::new() } else { format!(" (shared with {})", invitation.recipient) };
             app.status(format!("Opened \"{name}\"{mode}{who}"));
