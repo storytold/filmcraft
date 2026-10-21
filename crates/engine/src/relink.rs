@@ -376,7 +376,9 @@ fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, confirm_script
             }
             proj.shift_media_time(p.item, shift);
             for item in proj.items.values_mut() {
-                if let ItemKind::Script(doc) = &mut item.kind {
+                if let ItemKind::Script(doc) = &mut item.kind
+                    && doc.slates.iter().flat_map(|slate| &slate.takes).any(|take| take.source.is_some_and(|source| users.contains(&source)))
+                {
                     std::sync::Arc::make_mut(doc).relink_sources(users, *identity);
                 }
             }

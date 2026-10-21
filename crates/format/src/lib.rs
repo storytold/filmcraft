@@ -253,15 +253,30 @@ fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
     for item in loaded.project.items.values() {
         if let filmcraft_project::ItemKind::Script(doc) = &item.kind {
             doc.validate().map_err(|e| FormatError::Corrupt(format!("script `{}`: {e}", item.name)))?;
-            for source in doc.slates.iter().flat_map(|slate| slate.takes.iter()).filter_map(|take| take.source) {
-                let valid = loaded.project.item(source).is_some_and(|linked| match &linked.kind {
-                    filmcraft_project::ItemKind::Media(_) => true,
-                    filmcraft_project::ItemKind::Subclip { .. } => loaded.project.resolve_media(source).is_some(),
-                    filmcraft_project::ItemKind::Sequence(sequence) => sequence.multicam.is_some(),
-                    _ => false,
-                });
-                if !valid {
-                    return Err(FormatError::Corrupt(format!("script `{}`: linked take source {} is missing or unsupported", item.name, source.0)));
+        }
+    }
+    // A missing linked clip must not make an otherwise sound project impossible to open.
+    let valid_take_sources: std::collections::HashSet<_> = loaded
+        .project
+        .items
+        .keys()
+        .copied()
+        .filter(|source| {
+            loaded.project.item(*source).is_some_and(|linked| match &linked.kind {
+                filmcraft_project::ItemKind::Media(_) => true,
+                filmcraft_project::ItemKind::Subclip { .. } => loaded.project.resolve_media(*source).is_some(),
+                filmcraft_project::ItemKind::Sequence(sequence) => sequence.multicam.is_some(),
+                _ => false,
+            })
+        })
+        .collect();
+    for item in loaded.project.items.values_mut() {
+        let name = item.name.clone();
+        if let Some(doc) = item.as_script_mut() {
+            for take in doc.slates.iter_mut().flat_map(|slate| &mut slate.takes) {
+                if take.source.is_some_and(|source| !valid_take_sources.contains(&source)) {
+                    log::warn!("script `{name}`: take {} lost its source, unlinked", take.id.0);
+                    take.source = None;
                 }
             }
         }
@@ -455,7 +470,7 @@ mod tests {
     }
 
     #[test]
-    fn damaged_script_ids_and_links_are_rejected_on_load() {
+    fn damaged_script_ids_are_rejected_and_missing_links_are_unbound_on_load() {
         use filmcraft_project::{ItemId, ItemKind, Label, ScriptColor, ScriptDocument, ScriptSlate, ScriptSlateId, ScriptTake, ScriptTakeId};
         use std::sync::Arc;
         let mut p = Project::new("script validation");
@@ -492,7 +507,10 @@ mod tests {
                 source_identity: None,
             }],
         });
-        assert!(matches!(decode(&encode(&p, false)), Err(FormatError::Corrupt(_))));
+        let repaired = decode(&encode(&p, false)).unwrap();
+        let take = &repaired.project.item(script).unwrap().as_script().unwrap().slates[0].takes[0];
+        assert_eq!(take.source, None);
+        assert_eq!(take.source_name, "gone");
         p.item_mut(script).unwrap().as_script_mut().unwrap().slates[0].takes[0].source = None;
         assert!(decode(&encode(&p, false)).is_ok(), "unlinked take slots remain valid");
     }

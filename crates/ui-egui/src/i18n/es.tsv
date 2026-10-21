@@ -3682,3 +3682,9 @@
 	Wrap margin	Margen de ajuste de línea
 	{current} of {count}	{current} de {count}
 	Line {current} of {total}	Línea {current} de {total}
+	Cancel relink	Volver sin vincular
+	Confirm Same Footage and Relink	Confirmar el mismo material y volver a vincular
+	FilmCraft cannot confirm this is the same footage used by linked Script takes.	FilmCraft no puede confirmar que sea el mismo material usado por las tomas vinculadas del guion.
+	If it is the same footage, confirm the relink to preserve their marks. Otherwise cancel and replace the takes in Script.	Si es el mismo material, confirma la revinculación para conservar las marcas. De lo contrario, cancela y reemplaza las tomas en Guion.
+	Relink canceled; Script marks were preserved.	Revinculación cancelada; se conservaron las marcas del guion.
+	Review Script marks	Revisar marcas del guion

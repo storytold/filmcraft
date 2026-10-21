@@ -7,7 +7,6 @@ use filmcraft_time::{TICKS_PER_SECOND, Tick};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
-use std::io::Read;
 
 use crate::FilmcraftApp;
 use crate::dock::PanelKind;
@@ -378,18 +377,24 @@ fn import_text(app: &mut FilmcraftApp) {
     app.pick_ui(FileDialog::open_file(tl!("Plain-text script"), &["txt"]), |app, paths| {
         let Some(path) = paths.into_iter().next() else { return };
         let file = std::path::Path::new(&path);
-        let input = match std::fs::File::open(file) {
-            Ok(file) => file,
+        let size = match app.session.services.file_size(&path) {
+            Ok(size) => size,
             Err(error) => {
                 app.ui.status = tlf!("Cannot read script: {error}", error);
                 return;
             }
         };
-        let mut bytes = Vec::new();
-        if let Err(error) = input.take(ScriptDocument::MAX_TEXT_BYTES as u64 + 1).read_to_end(&mut bytes) {
-            app.ui.status = tlf!("Cannot read script: {error}", error);
+        if size > ScriptDocument::MAX_TEXT_BYTES as u64 {
+            app.ui.status = tl!("Script text exceeds the 4 MiB import limit").into();
             return;
         }
+        let bytes = match app.session.services.read_file(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                app.ui.status = tlf!("Cannot read script: {error}", error);
+                return;
+            }
+        };
         if bytes.len() > ScriptDocument::MAX_TEXT_BYTES {
             app.ui.status = tl!("Script text exceeds the 4 MiB import limit").into();
             return;

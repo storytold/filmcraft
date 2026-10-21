@@ -661,22 +661,22 @@ fn review_script_mark_relink(app: &mut FilmcraftApp, ctx: &egui::Context, d: &mu
     let path = params["path"].as_str().unwrap_or_default();
     let mut confirm = false;
     let mut cancel = false;
-    egui::Window::new("Review Script marks").collapsible(false).resizable(false).show(ctx, |ui| {
-        ui.label("FilmCraft cannot confirm this is the same footage used by linked Script takes.");
-        ui.label("If it is the same footage, confirm the relink to preserve their marks. Otherwise cancel and replace the takes in Script.");
+    egui::Window::new(tl!("Review Script marks")).collapsible(false).resizable(false).show(ctx, |ui| {
+        ui.label(tl!("FilmCraft cannot confirm this is the same footage used by linked Script takes."));
+        ui.label(tl!("If it is the same footage, confirm the relink to preserve their marks. Otherwise cancel and replace the takes in Script."));
         ui.label(path);
         ui.horizontal(|ui| {
-            let no = ui.button("Cancel relink");
+            let no = ui.button(tl!("Cancel relink"));
             app.auto.add("linkMedia.scriptMarks.cancel", no.rect, "Cancel relink");
             cancel = no.clicked();
-            let yes = ui.button("Confirm Same Footage and Relink");
+            let yes = ui.button(tl!("Confirm Same Footage and Relink"));
             app.auto.add("linkMedia.scriptMarks.confirm", yes.rect, "Confirm same footage and preserve Script marks");
             confirm = yes.clicked();
         });
     });
     if cancel || crate::widgets::escape_closes(ctx) {
         d.pending_script_mark_relink = None;
-        d.message = "Relink canceled; Script marks were preserved.".into();
+        d.message = tl!("Relink canceled; Script marks were preserved.").into();
     } else if confirm {
         params["confirmScriptSameFootage"] = json!(true);
         match app.session.execute("media.relink", params) {

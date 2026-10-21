@@ -3657,3 +3657,9 @@
 	Wrap margin	换行边距
 	{current} of {count}	第 {current} 项，共 {count} 项
 	Line {current} of {total}	第 {current} 行，共 {total} 行
+	Cancel relink	取消重新链接
+	Confirm Same Footage and Relink	确认是相同素材并重新链接
+	FilmCraft cannot confirm this is the same footage used by linked Script takes.	FilmCraft 无法确认这是脚本中已链接镜次所用的相同素材。
+	If it is the same footage, confirm the relink to preserve their marks. Otherwise cancel and replace the takes in Script.	如果是相同素材，请确认重新链接以保留标记；否则请取消并在脚本中替换镜次。
+	Relink canceled; Script marks were preserved.	已取消重新链接；脚本标记已保留。
+	Review Script marks	检查脚本标记

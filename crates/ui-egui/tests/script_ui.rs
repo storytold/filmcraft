@@ -104,6 +104,33 @@ impl Driver {
 }
 
 #[test]
+fn switching_scripts_discards_pending_edits_and_rebinds_from_the_previous_document() {
+    let mut driver = Driver::new();
+    let first = driver.exec("script.importText", json!({"name":"First","text":"Line"}))["item"].as_u64().unwrap();
+    let second = driver.exec("script.importText", json!({"name":"Second","text":"Line"}))["item"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":first}}));
+    {
+        let ui = &mut driver.harness.state_mut().ui.script;
+        ui.selected_mark = Some(4);
+        ui.pending_rebind = Some((2, 3));
+        ui.edit_line = Some(1);
+        ui.edit_text = "old text".into();
+        ui.label_line = Some(1);
+        ui.scene_text = "old scene".into();
+        ui.page_text = "old page".into();
+    }
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":second}}));
+    let ui = &driver.harness.state_mut().ui.script;
+    assert_eq!(ui.item, Some(second));
+    assert_eq!(ui.selected_mark, None);
+    assert_eq!(ui.pending_rebind, None);
+    assert_eq!(ui.edit_line, None);
+    assert!(ui.edit_text.is_empty());
+    assert_eq!(ui.label_line, None);
+    assert!(ui.scene_text.is_empty() && ui.page_text.is_empty());
+}
+
+#[test]
 fn wrapped_line_and_candle_share_height_and_find_chooses_a_take() {
     let mut driver = Driver::new();
     let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).expect("demo media").id.0;

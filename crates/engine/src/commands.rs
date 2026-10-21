@@ -3321,9 +3321,24 @@ fn build() -> Vec<CommandSpec> {
                     pr.items.remove(i);
                     pr.root.remove_item(*i);
                 }
+                let invalid_take_sources: std::collections::HashSet<ItemId> = pr
+                    .items
+                    .values()
+                    .filter_map(filmcraft_project::ProjectItem::as_script)
+                    .flat_map(|doc| doc.slates.iter().flat_map(|slate| &slate.takes))
+                    .filter_map(|take| take.source)
+                    .filter(|source| {
+                        !pr.item(*source).is_some_and(|item| match &item.kind {
+                            ItemKind::Media(_) => true,
+                            ItemKind::Subclip { .. } => pr.resolve_media(*source).is_some(),
+                            ItemKind::Sequence(sequence) => sequence.multicam.is_some(),
+                            _ => false,
+                        })
+                    })
+                    .collect();
                 for it in pr.items.values_mut() {
                     if let Some(doc) = it.as_script_mut() {
-                        for source in gone.iter().chain(&offlined).chain(&retained_subclips) {
+                        for source in gone.iter().chain(&offlined).chain(&retained_subclips).chain(&invalid_take_sources) {
                             doc.unbind_source(*source);
                         }
                     }

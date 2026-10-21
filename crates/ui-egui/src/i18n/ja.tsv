@@ -3681,3 +3681,9 @@
 	Wrap margin	折り返し位置
 	{current} of {count}	{count}件中{current}件目
 	Line {current} of {total}	{total}行中{current}行目
+	Cancel relink	再リンクをキャンセル
+	Confirm Same Footage and Relink	同じ映像と確認して再リンク
+	FilmCraft cannot confirm this is the same footage used by linked Script takes.	FilmCraft はリンクされた脚本のテイクと同じ映像であることを確認できません。
+	If it is the same footage, confirm the relink to preserve their marks. Otherwise cancel and replace the takes in Script.	同じ映像なら再リンクを確認してマークを保持してください。異なる場合はキャンセルし、脚本でテイクを置き換えてください。
+	Relink canceled; Script marks were preserved.	再リンクをキャンセルしました。脚本のマークは保持されました。
+	Review Script marks	脚本のマークを確認
