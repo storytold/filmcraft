@@ -231,6 +231,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         let saved = app.session.execute("prefs.set", json!({"key": "general.interfaceLanguage", "value": language.code()}));
         app.ui.language = language;
         crate::i18n::set_current(language);
+        app.install_fonts_for_language(ctx);
         if let Err(e) = saved {
             app.ui.status = tlf!("The language changed but could not be saved: {e}", e);
         }

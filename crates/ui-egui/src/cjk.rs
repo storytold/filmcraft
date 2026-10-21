@@ -29,15 +29,8 @@ pub(crate) fn craft_fonts() -> impl Iterator<Item = &'static filmcraft_text::fon
 // Gothic Neo on macOS, then the shared OFL faces (Noto Sans KR, Nanum Gothic). The pan-CJK faces
 // stay last, for a machine with nothing else (artcraft#2093).
 const KOREAN_SAMPLE: &str = "한국어입력테스트";
-const KOREAN_PREFERRED: &[&str] = &[
-    "Malgun Gothic",
-    "Apple SD Gothic Neo",
-    "Noto Sans KR",
-    "NanumGothic",
-    "Nanum Gothic",
-    "Noto Sans CJK KR",
-    "Source Han Sans K",
-];
+const KOREAN_PREFERRED: &[&str] =
+    &["Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", "NanumGothic", "Nanum Gothic", "Noto Sans CJK KR", "Source Han Sans K"];
 
 fn system_font() -> Option<Arc<FontData>> {
     static FONT: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
@@ -76,18 +69,29 @@ pub(crate) fn available() -> bool {
     craft_fonts().next().is_some() || system_font().is_some()
 }
 
-/// Korean faces, then Chinese. Japanese craft faces are already in the stack (and do not cover
-/// Hangul), so kana and kanji keep Japanese forms. Hangul is taken from the Korean face because it
-/// is inserted before Noto Sans CJK, which also covers Hangul. Chinese faces still cover the hanzi
-/// the Japanese ones lack.
-pub(crate) fn install(fonts: &mut FontDefinitions) {
-    if let Some(font) = korean_font() {
-        fonts.font_data.insert("system-korean".into(), font);
-        for stack in fonts.families.values_mut() {
-            stack.push("system-korean".into());
-        }
+/// Korean and Chinese faces. Japanese craft faces are already in the stack (and do not cover
+/// Hangul), so kana and kanji keep Japanese forms.
+///
+/// `korean_first` is the Korean interface: there Hangul must come from the Korean face because the
+/// pan-CJK Chinese face also covers it. In every other interface language Chinese stays ahead so
+/// shared Hanzi in labels and media names keep their Chinese glyph forms; the Korean face is last
+/// and only supplies Hangul.
+pub(crate) fn install(fonts: &mut FontDefinitions, korean_first: bool) {
+    if korean_first {
+        install_korean(fonts);
+        install_chinese(fonts);
+    } else {
+        install_chinese(fonts);
+        install_korean(fonts);
     }
-    install_chinese(fonts);
+}
+
+fn install_korean(fonts: &mut FontDefinitions) {
+    let Some(font) = korean_font() else { return };
+    fonts.font_data.insert("system-korean".into(), font);
+    for stack in fonts.families.values_mut() {
+        stack.push("system-korean".into());
+    }
 }
 
 fn install_chinese(fonts: &mut FontDefinitions) {

@@ -332,6 +332,9 @@ pub struct FilmcraftApp {
     input_waiters: Vec<Sender<Value>>,
     next_token: u64,
     styled: bool,
+    /// The language the current font definitions were installed for. A language switch reorders
+    /// the Korean and Chinese fallbacks, so it has to reinstall the fonts.
+    fonts_language: Option<i18n::Language>,
     /// A panic in the UI pass, shown in an error window until dismissed (see [`crash`]).
     pub ui_error: Option<String>,
     /// The window runs in a fallback graphics mode (set by the desktop host): a notice with a
@@ -574,6 +577,7 @@ impl FilmcraftApp {
             input_waiters: Vec::new(),
             next_token: 1,
             styled: false,
+            fonts_language: None,
             ui_error: None,
             panic_next_frame: false,
             quit_confirmed: false,
@@ -647,6 +651,18 @@ impl FilmcraftApp {
         theme::apply_visuals(ctx, &self.tokens);
         self.apply_tooltips(ctx);
         self.ui.dark = k != ThemeKind::Light;
+    }
+
+    /// Reinstall the theme fonts for the current interface language. The Korean interface puts the
+    /// Korean face before Chinese; every other language keeps Chinese first. The system Japanese
+    /// face, when the build has no craft Japanese font, has to be added again after the reinstall.
+    pub(crate) fn install_fonts_for_language(&mut self, ctx: &egui::Context) {
+        theme::install_for(ctx, &self.tokens, self.ui.language);
+        if self.ui.language == i18n::Language::Ja {
+            i18n::install_japanese_font(ctx);
+        }
+        self.fonts_language = Some(self.ui.language);
+        ctx.request_repaint();
     }
 
     /// The system appearance: the host's reading, else what the windowing toolkit reports.
@@ -727,6 +743,11 @@ impl FilmcraftApp {
                 self.ui.language = language;
             }
             i18n::set_current(self.ui.language);
+            // The Korean interface puts the Korean face before the Chinese one; every other
+            // language keeps Chinese first so shared Hanzi keep their Chinese forms.
+            if self.fonts_language != Some(self.ui.language) {
+                self.install_fonts_for_language(ctx);
+            }
         }
         self.frames.set_cache_budget(p.memory.frame_cache_mb as usize * (1 << 20));
         self.ui.play_after_render = p.timeline.play_after_rendering;
@@ -2042,7 +2063,7 @@ impl eframe::App for FilmcraftApp {
         // a native file dialog's answer first, so the panels draw what it chose (#260)
         self.poll_native_dialog(ctx);
         if !self.styled {
-            theme::install(ctx, &self.tokens);
+            theme::install_for(ctx, &self.tokens, self.ui.language);
             // theme::install replaces the fonts: add the system Japanese font back (or fall back to
             // English when a saved Japanese setting meets a system without one)
             // (likewise Chinese without a Chinese face, Korean without a Hangul one)
@@ -2053,6 +2074,7 @@ impl eframe::App for FilmcraftApp {
             {
                 self.ui.language = i18n::Language::En;
             }
+            self.fonts_language = Some(self.ui.language);
             self.styled = true;
             ctx.request_repaint();
         } else {
