@@ -35,6 +35,7 @@ mod media_queue;
 pub mod media_watch;
 pub mod mixer;
 pub mod multicam;
+pub mod music;
 pub mod narration;
 mod palette;
 pub mod panels;
@@ -484,6 +485,10 @@ pub struct Session {
     pub tts_preview: Option<Arc<filmcraft_tts::Audio>>,
     /// Synthesized narrations (`tts.render` fills it from a background job).
     pub tts_cache: narration::SynthCache,
+    /// Generated music cues (`music.render` fills it from a background job).
+    pub music_cache: music::MusicCache,
+    /// Where music providers come from (tests replace it with a fake).
+    pub music_source: Arc<dyn music::MusicSource>,
     /// Dynamic (J/K/L) trimming and trim-mode loop playback in progress.
     pub trim_play: trim::TrimPlayback,
     /// Keyboard shortcuts (active bindings, presets; `shortcuts.*` commands).
@@ -599,6 +604,8 @@ impl Session {
             voiceover: Default::default(),
             tts_preview: None,
             tts_cache: Default::default(),
+            music_cache: Default::default(),
+            music_source: Arc::new(music::RealSource),
             trim_play: Default::default(),
             shortcuts: shortcuts::Shortcuts::new(),
             offline: Default::default(),
@@ -1396,6 +1403,8 @@ mod mixer_tests;
 mod multicam_tests;
 #[cfg(test)]
 mod named_targets_tests;
+#[cfg(test)]
+mod music_tests;
 #[cfg(test)]
 mod narration_tests;
 #[cfg(test)]

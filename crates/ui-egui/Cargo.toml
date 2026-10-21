@@ -18,6 +18,7 @@ filmcraft-frame = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-tts = { workspace = true }
+filmcraft-music = { workspace = true }
 filmcraft-edit = { workspace = true }
 filmcraft-render = { workspace = true }
 filmcraft-text = { workspace = true }

@@ -84,7 +84,7 @@ fn natural_installed() -> bool {
 }
 
 /// State of job `id`: `None` while running, else its result.
-fn job_outcome(app: &FilmcraftApp, id: u64) -> Option<Result<(), String>> {
+pub(super) fn job_outcome(app: &FilmcraftApp, id: u64) -> Option<Result<(), String>> {
     use std::sync::atomic::Ordering;
     let Some(j) = app.session.jobs.iter().find(|j| j.id == id) else { return Some(Err("the job disappeared".into())) };
     if !j.progress.finished.load(Ordering::Relaxed) {
@@ -434,17 +434,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 }
 
 /// The part of `r` the scroll area shows (what a click can reach).
-fn visible(ui: &egui::Ui, r: Rect) -> Rect {
+pub(super) fn visible(ui: &egui::Ui, r: Rect) -> Rect {
     r.intersect(ui.clip_rect())
 }
 
-fn label(ui: &mut egui::Ui, t: &Tokens, text: &str) {
+pub(super) fn label(ui: &mut egui::Ui, t: &Tokens, text: &str) {
     ui.label(egui::RichText::new(text).color(t.text).size(12.5).strong());
     ui.add_space(2.0);
 }
 
 #[allow(clippy::too_many_arguments)]
-fn button(ui: &mut egui::Ui, t: &Tokens, r: Rect, icon: Icon, text: &str, primary: bool, active: bool, id: &str) -> egui::Response {
+pub(super) fn button(ui: &mut egui::Ui, t: &Tokens, r: Rect, icon: Icon, text: &str, primary: bool, active: bool, id: &str) -> egui::Response {
     let resp = ui.interact(r, egui::Id::unique(id), Sense::click());
     let p = ui.painter();
     let (bg, fg) = match (primary, active) {
