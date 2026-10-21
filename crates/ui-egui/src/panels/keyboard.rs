@@ -278,7 +278,7 @@ fn focus_find_box(app: &mut FilmcraftApp, ctx: &egui::Context) -> Value {
     let p = app.ui.focused;
     let rect =
         app.auto.find(&format!("panel.{}", p.id())).map(|e| egui::Rect::from_min_size(egui::pos2(e.rect[0], e.rect[1]), egui::vec2(e.rect[2], e.rect[3])));
-    ctx.data_mut(|d| d.insert_temp(egui::Id::new(FOCUS_SEARCH), rect.unwrap_or(egui::Rect::EVERYTHING)));
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique(FOCUS_SEARCH), rect.unwrap_or(egui::Rect::EVERYTHING)));
     json!({"panel": p.title()})
 }
 
@@ -287,7 +287,7 @@ pub const FOCUS_SEARCH: &str = "fc-focus-search";
 
 /// Called by search fields: take focus when Select Find Box targets the panel they sit in.
 pub fn take_search_focus(ui: &egui::Ui, field: egui::Rect, resp: &egui::Response) {
-    let id = egui::Id::new(FOCUS_SEARCH);
+    let id = egui::Id::unique(FOCUS_SEARCH);
     let Some(panel) = ui.ctx().data(|d| d.get_temp::<egui::Rect>(id)) else { return };
     if panel.contains(field.center()) {
         resp.request_focus();

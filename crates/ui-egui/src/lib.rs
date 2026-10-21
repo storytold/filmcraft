@@ -64,8 +64,8 @@ mod theme_favorites;
 pub mod widgets;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use egui::{TextureHandle, TextureOptions};
 use filmcraft_engine::{Services, Session};
@@ -306,6 +306,9 @@ pub struct FilmcraftApp {
     synthetic_modifiers: egui::Modifiers,
     /// Requests waiting for the UI to show an element: (request, give-up time).
     deferred: Vec<(ControlRequest, f64)>,
+    /// Input and screenshot requests waiting to see a `ui` pass: (request, when it came in, how
+    /// long after that the first `ui` pass started).
+    awaiting_frame: Vec<(ControlRequest, web_time::Instant, Option<std::time::Duration>)>,
     last_ui_time: f64,
     pub(crate) synthetic: Vec<egui::Event>,
     /// macOS: a Control+Click already translated to a secondary (context) click, so its release is
@@ -324,6 +327,8 @@ pub struct FilmcraftApp {
     /// Screenshots waiting for their frame: (token, path, crop, reply, give-up time).
     pending_screenshots: Vec<(u64, Option<String>, Option<[f32; 4]>, Sender<Value>, f64)>,
     queued_screenshots: Vec<(u64, f64, u32)>,
+    /// Screenshots the backend has taken, by token, until `collect_screenshots` hands them out.
+    taken_screenshots: Arc<Mutex<Vec<(u64, Arc<egui::ColorImage>)>>>,
     /// A paused monitor drew a stand-in (nearest cached) picture last frame: its exact frame is
     /// still decoding.
     pub(crate) monitor_inexact: bool,
@@ -335,7 +340,9 @@ pub struct FilmcraftApp {
     /// Consecutive frames the timeline zoom / scroll has been at rest. `ui.elements` answers from
     /// the frame before the last one, so its timeline rects are final from 2 on.
     pub(crate) timeline_still: u32,
-    input_waiters: Vec<Sender<Value>>,
+    /// Replies for synthetic input, sent once a drawn pass has run it; each with the last time a
+    /// drawn pass worked on the input, so a window that stops drawing gets the reason instead.
+    input_waiters: Vec<(Sender<Value>, web_time::Instant)>,
     next_token: u64,
     styled: bool,
     /// A panic in the UI pass, shown in an error window until dismissed (see [`crash`]).
@@ -566,6 +573,7 @@ impl FilmcraftApp {
             native_window_focused: None,
             synthetic_modifiers: egui::Modifiers::NONE,
             deferred: Vec::new(),
+            awaiting_frame: Vec::new(),
             last_ui_time: 0.0,
             synthetic: Vec::new(),
             mac_ctrl_click_armed: false,
@@ -573,6 +581,7 @@ impl FilmcraftApp {
             loudness: None,
             status_seen: (String::new(), 0.0),
             pending_screenshots: Vec::new(),
+            taken_screenshots: Arc::default(),
             queued_screenshots: Vec::new(),
             monitor_inexact: false,
             monitor_asked: HashMap::new(),
@@ -1649,13 +1658,33 @@ impl FilmcraftApp {
         let Some(rx) = self.control_rx.take() else { return };
         let now = ctx.input(|i| i.time);
         let mut reqs: Vec<(ControlRequest, f64)> = std::mem::take(&mut self.deferred);
+        // Input and screenshots need a drawn frame: each goes ahead once a `ui` pass has started
+        // within `NOT_DRAWN` of it coming in, however long that pass took. A window the compositor isn't drawing (a Wayland window on another
+        // workspace or under a fullscreen one) runs only eframe's logic-only passes, so after
+        // `NOT_DRAWN` without one the request is answered with why instead of timing out.
+        for (req, since, first_pass) in std::mem::take(&mut self.awaiting_frame) {
+            match control::await_frame(first_pass, since.elapsed()) {
+                control::AwaitFrame::Release => reqs.push((req, now + 3.0)),
+                control::AwaitFrame::NotDrawn => {
+                    let _ = req.reply.send(json!({"ok": false, "error": control::NOT_DRAWN_ERROR}));
+                }
+                control::AwaitFrame::Wait => self.awaiting_frame.push((req, since, first_pass)),
+            }
+        }
         while let Ok(req) = rx.try_recv() {
             // UI requests need rendered frames: raise the window if `ui` hasn't run recently
             // (occluded macOS windows stop running `ui`).
             if req.method.starts_with("ui.") && now - self.last_ui_time > 0.25 {
                 self.raise_for_control(ctx);
             }
-            reqs.push((req, now + 3.0));
+            if control::needs_drawn_frame(&req.method) {
+                self.awaiting_frame.push((req, web_time::Instant::now(), None));
+            } else {
+                reqs.push((req, now + 3.0));
+            }
+        }
+        if !self.awaiting_frame.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         for (req, deadline) in reqs {
             let reply = req.reply.clone();
@@ -1671,7 +1700,7 @@ impl FilmcraftApp {
                         let _ = reply.send(json!({"ok": false, "error": msg}));
                     }
                 }
-                control::Outcome::AfterInput => self.input_waiters.push(reply),
+                control::Outcome::AfterInput => self.input_waiters.push((reply, web_time::Instant::now())),
                 control::Outcome::Screenshot { path, crop } => {
                     let token = self.next_token;
                     self.next_token += 1;
@@ -1694,7 +1723,11 @@ impl FilmcraftApp {
             *frames += 1;
             any = true;
             if now >= *at && *frames >= 3 && (settled || now >= *at + SCREENSHOT_SETTLE_MAX_S) {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(*token)));
+                let (token, taken, repaint) = (*token, Arc::clone(&self.taken_screenshots), ctx.clone());
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::ScreenshotCallback::new(move |image| {
+                    taken.lock().unwrap_or_else(PoisonError::into_inner).push((token, image));
+                    repaint.request_repaint();
+                })));
                 false
             } else {
                 true
@@ -1718,23 +1751,10 @@ impl FilmcraftApp {
     }
 
     fn collect_screenshots(&mut self, ctx: &egui::Context) {
-        if self.pending_screenshots.is_empty() {
-            return;
-        }
-        let events: Vec<_> = ctx.input(|i| {
-            i.raw
-                .events
-                .iter()
-                .filter_map(|e| match e {
-                    egui::Event::Screenshot { user_data, image, .. } => {
-                        let token = user_data.data.as_ref().and_then(|d| d.downcast_ref::<u64>()).copied()?;
-                        Some((token, image.clone()))
-                    }
-                    _ => None,
-                })
-                .collect()
-        });
-        for (token, image) in events {
+        // Drained also with nothing pending: an image for a request that already timed out is
+        // dropped here instead of piling up.
+        let taken = std::mem::take(&mut *self.taken_screenshots.lock().unwrap_or_else(PoisonError::into_inner));
+        for (token, image) in taken {
             if let Some(i) = self.pending_screenshots.iter().position(|(t, ..)| *t == token) {
                 let (_, path, crop, reply, _) = self.pending_screenshots.remove(i);
                 let r = control::save_screenshot(ctx, &image, path.as_deref(), crop);
@@ -1763,7 +1783,7 @@ impl FilmcraftApp {
         }
         let media = &self.session.prefs.media;
         let (on, every) = (media.refresh_growing_files, f64::from(media.growing_refresh_seconds.max(1)));
-        let (last_key, focus_key) = (egui::Id::new("mediaWatch.lastScan"), egui::Id::new("mediaWatch.focused"));
+        let (last_key, focus_key) = (egui::Id::unique("mediaWatch.lastScan"), egui::Id::unique("mediaWatch.focused"));
         let now = ctx.input(|i| i.time);
         let focused = ctx.input(|i| i.focused);
         let was_focused: bool = ctx.data(|d| d.get_temp(focus_key)).unwrap_or(focused);
@@ -1879,7 +1899,7 @@ impl FilmcraftApp {
         }
         let hint = if !self.ui.status.is_empty() { self.ui.status.clone() } else { self.hint_text() };
         ui.painter().text(egui::pos2(sb.min.x + 10.0, sb.center().y), egui::Align2::LEFT_CENTER, hint, Tokens::ui(11.0), t.text_dim);
-        let resp = ui.interact(sb, egui::Id::new("status-bar"), egui::Sense::click());
+        let resp = ui.interact(sb, egui::Id::unique("status-bar"), egui::Sense::click());
         if resp.clicked() {
             self.ui.status.clear();
         }
@@ -1932,7 +1952,7 @@ impl FilmcraftApp {
             Tokens::ui(11.0),
             t.text_dim,
         );
-        let resp = ui.interact(cancel, egui::Id::new(("job-cancel", job.id)), egui::Sense::click());
+        let resp = ui.interact(cancel, egui::Id::unique(("job-cancel", job.id)), egui::Sense::click());
         let c = if resp.hovered() { t.hot_text } else { t.text_dim };
         let k = 3.5;
         p.line_segment([cancel.center() - egui::vec2(k, k), cancel.center() + egui::vec2(k, k)], egui::Stroke::new(1.4, c));
@@ -2001,7 +2021,7 @@ impl FilmcraftApp {
         let Some(msg) = self.ui_error.clone() else { return };
         let mut close = false;
         egui::Window::new(tl!("FilmCraft hit an error"))
-            .id(egui::Id::new("FilmCraft hit an error"))
+            .id(egui::Id::unique("FilmCraft hit an error"))
             .collapsible(false)
             .resizable(false)
             .pivot(egui::Align2::CENTER_CENTER)
@@ -2071,8 +2091,9 @@ impl eframe::App for FilmcraftApp {
             synthesize_mac_ctrl_click(&mut self.mac_ctrl_click_armed, raw_input);
         }
         if self.control_input_only {
-            // Preserve screenshot responses and all viewport lifecycle/geometry metadata.
-            raw_input.events.retain(|event| matches!(event, egui::Event::Screenshot { .. }));
+            // Viewport lifecycle and geometry live in `raw_input.viewports`, and screenshots
+            // arrive through their callbacks, so no native event is needed.
+            raw_input.events.clear();
             raw_input.hovered_files.clear();
             raw_input.dropped_files.clear();
         }
@@ -2149,10 +2170,18 @@ impl eframe::App for FilmcraftApp {
         }
         if !self.synthetic.is_empty() {
             ctx.request_repaint();
-        } else if !self.input_waiters.is_empty() {
-            for w in self.input_waiters.drain(..) {
-                let _ = w.send(json!({"ok": true, "result": null}));
+        }
+        // Input is answered in `ui`, once a drawn pass has run it: a logic-only pass leaves the
+        // input for the next drawn one, so answering here would report input that has not run.
+        // When no pass has drawn for `NOT_DRAWN`, the window is hidden: answer with the reason,
+        // and drop the input not yet handed to egui so it does not run late.
+        if self.input_waiters.iter().any(|(_, drawn)| drawn.elapsed() >= control::NOT_DRAWN) {
+            self.synthetic.clear();
+            for (w, _) in self.input_waiters.drain(..) {
+                let _ = w.send(json!({"ok": false, "error": control::NOT_DRAWN_ERROR}));
             }
+        } else if !self.input_waiters.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         let settled = !std::mem::take(&mut self.monitor_inexact) && self.timeline_still > 0;
         self.issue_screenshots(ctx, settled);
@@ -2166,6 +2195,11 @@ impl eframe::App for FilmcraftApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // A drawn pass starts: requests waiting for one may go ahead, timed from now, before this
+        // pass's own work (see `control::await_frame`).
+        for (_, since, first_pass) in &mut self.awaiting_frame {
+            first_pass.get_or_insert_with(|| since.elapsed());
+        }
         if !self.fonts_ready {
             ui.ctx().request_repaint();
             return;
@@ -2188,9 +2222,13 @@ impl eframe::App for FilmcraftApp {
         self.last_ui_time = ctx.input(|i| i.time);
         if !self.synthetic.is_empty() {
             ctx.request_repaint();
+            let now = web_time::Instant::now();
+            for (_, drawn) in &mut self.input_waiters {
+                *drawn = now;
+            }
         } else if !self.input_waiters.is_empty() {
             ctx.request_repaint();
-            for w in self.input_waiters.drain(..) {
+            for (w, _) in self.input_waiters.drain(..) {
                 let _ = w.send(json!({"ok": true, "result": null}));
             }
         }

@@ -206,7 +206,7 @@ fn real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents() 
     assert!(h.state().ui.floating[0].rect[2] > original[2] + 25.0);
     assert!(h.state().ui.floating[0].rect[3] > original[3] + 15.0);
     action_log.push(action_state(&h, "resized"));
-    let grip_id = egui::Id::new(("floating-panel", PanelKind::Info.id())).with("resize");
+    let grip_id = egui::Id::unique(("floating-panel", PanelKind::Info.id())).with("resize");
     assert_eq!(h.ctx.memory(|memory| memory.focused()), Some(grip_id));
     let before_keys = h.state().ui.floating[0].rect;
     for key in [egui::Key::ArrowRight, egui::Key::ArrowDown] {
@@ -502,7 +502,7 @@ fn narration_selection_reveals_covered_floating_tts_once_without_editing_the_pro
             step(&mut h);
         }
     }
-    let layer = |panel: PanelKind| egui::LayerId::new(egui::Order::Middle, egui::Id::new(("floating-panel", panel.id())));
+    let layer = |panel: PanelKind| egui::LayerId::new(egui::Order::Middle, egui::Id::unique(("floating-panel", panel.id())));
     let covered = rect(&h, "panel.TextToSpeech").center();
     assert!(rect(&h, "panel.Info").contains(covered));
     ctx.move_to_top(layer(PanelKind::Info));

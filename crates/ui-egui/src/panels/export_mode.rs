@@ -342,7 +342,7 @@ fn opts(labels: &[&str]) -> Vec<(String, bool)> {
 
 fn section(ui: &mut egui::Ui, reg: &mut Reg, open: &mut Vec<String>, key: &str, title: &str, t: &Tokens) -> bool {
     let is_open = open.iter().any(|k| k == key);
-    let (r, now) = crate::widgets::section_header(ui, egui::Id::new(("export-sec", key)), title, is_open, t, true);
+    let (r, now) = crate::widgets::section_header(ui, egui::Id::unique(("export-sec", key)), title, is_open, t, true);
     reg.add(format!("export.section.{key}"), r.rect, title);
     if now != is_open {
         if now {
@@ -389,7 +389,7 @@ fn text(ui: &mut egui::Ui, reg: &mut Reg, id: &str, v: &mut String, hint: &str) 
 /// when that is not usable yet (emptied to retype, a half-typed path); each non-empty value is
 /// returned as it comes. Leaving shows the stored value again.
 fn draft_text(ui: &mut egui::Ui, reg: &mut Reg, id: &str, stored: &str, hint: &str) -> Option<String> {
-    let draft_id = egui::Id::new(("export-draft", id));
+    let draft_id = egui::Id::unique(("export-draft", id));
     let mut v = ui.data(|m| m.get_temp::<String>(draft_id)).unwrap_or_else(|| stored.to_string());
     let r = ui.add(egui::TextEdit::singleline(&mut v).hint_text(hint).desired_width(f32::INFINITY));
     reg.add(id, r.rect, hint);
@@ -1139,11 +1139,11 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
     // buttons
     let go = Rect::from_min_size(pos2(rect.max.x - 120.0, rect.max.y - 44.0), vec2(104.0, 30.0));
     let queue = Rect::from_min_size(pos2(go.min.x - 132.0, go.min.y), vec2(122.0, 30.0));
-    let qresp = ui.interact(queue, egui::Id::new("export-queue-send"), Sense::click());
+    let qresp = ui.interact(queue, egui::Id::unique("export-queue-send"), Sense::click());
     ui.painter().rect_stroke(queue, 15.0, egui::Stroke::new(1.0, if qresp.hovered() { t.text } else { t.text_dim }), egui::StrokeKind::Inside);
     ui.painter().text(queue.center(), Align2::CENTER_CENTER, tl!("Send to Queue"), Tokens::semibold(12.5), t.text);
     reg.add("export.sendToQueue", queue, "Send to Queue");
-    let resp = ui.interact(go, egui::Id::new("export-go"), Sense::click());
+    let resp = ui.interact(go, egui::Id::unique("export-go"), Sense::click());
     ui.painter().rect_filled(go, 15.0, if resp.hovered() { t.accent_hover } else { t.accent });
     ui.painter().text(go.center(), Align2::CENTER_CENTER, tl!("Export"), Tokens::semibold(13.0), Color32::WHITE);
     reg.add("export.button", go, "Export");
@@ -1200,8 +1200,8 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let favorite = |n: &str| app.session.export_presets.is_favorite(n);
     let q = m.query.to_lowercase();
     egui::Window::new(tl!("Preset Manager"))
-        .id(egui::Id::new("Preset Manager"))
-        .id(egui::Id::new("preset-manager"))
+        .id(egui::Id::unique("Preset Manager"))
+        .id(egui::Id::unique("preset-manager"))
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
@@ -1428,7 +1428,7 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
     let mut browse = false;
     let mut typed: Option<String> = None;
     let q = &mut app.ui.export;
-    let area = egui::Area::new(egui::Id::new("quick-export")).order(egui::Order::Foreground).fixed_pos(anchor).show(ctx, |ui| {
+    let area = egui::Area::new(egui::Id::unique("quick-export")).order(egui::Order::Foreground).fixed_pos(anchor).show(ctx, |ui| {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
             ui.set_width(340.0);
             ui.horizontal(|ui| {
@@ -1468,7 +1468,7 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
     });
     let clicked_elsewhere = area.response.clicked_elsewhere();
     // the header click that opened the popup is not a click elsewhere
-    let toggled = ctx.data_mut(|d| d.remove_temp::<bool>(egui::Id::new("quick-export-toggled")).unwrap_or(false));
+    let toggled = ctx.data_mut(|d| d.remove_temp::<bool>(egui::Id::unique("quick-export-toggled")).unwrap_or(false));
     reg.flush(app);
     if let Some(v) = typed {
         // a file name goes in the shown folder; a typed or pasted path replaces both

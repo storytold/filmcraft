@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn clicking_a_hot_number_selects_its_whole_value() {
         let ctx = egui::Context::default();
-        let id = egui::Id::new("hot");
+        let id = egui::Id::unique("hot");
         let pos = egui::pos2(14.0, 12.0);
         let button = |pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
         frame(&ctx, vec![egui::Event::PointerMoved(pos)], id);

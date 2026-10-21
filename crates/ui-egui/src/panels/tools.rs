@@ -11,7 +11,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let mut y = rect.min.y + 4.0;
     let size = 32.0;
-    let held_id = egui::Id::new("tools-held");
+    let held_id = egui::Id::unique("tools-held");
     if ui.input(|i| i.pointer.any_pressed()) {
         ui.data_mut(|d| d.remove::<egui::Id>(held_id));
     }
@@ -23,8 +23,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         } else {
             format!("{} ({})", app.ui.language.tr(current.label()), current.shortcut())
         };
-        let resp = ui.interact(r, egui::Id::new(("tool", format!("{:?}", group[0]))), Sense::click_and_drag()).on_hover_text(tip);
-        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, resp.enabled(), app.ui.tool == current, current.label()));
+        let resp = ui.interact(r, egui::Id::unique(("tool", format!("{:?}", group[0]))), Sense::click_and_drag()).on_hover_text(tip);
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, resp.enabled(), app.ui.tool == current, current.label()));
         for tl in &group {
             if *tl == current {
                 app.auto.add_response(&format!("tools.{tl:?}"), &resp, tl.label());

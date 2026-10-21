@@ -86,7 +86,7 @@ type Elems = Vec<(String, Rect, String)>;
 struct Lib(Arc<(f64, Vec<LibraryEntry>)>);
 
 fn lib_id() -> egui::Id {
-    egui::Id::new("gfx-template-library")
+    egui::Id::unique("gfx-template-library")
 }
 
 /// The template library, re-read at most every two seconds (or after [`invalidate`]).
@@ -110,7 +110,7 @@ const THUMB_W: u32 = 192;
 
 fn thumb_texture(ctx: &egui::Context, e: &LibraryEntry) -> egui::TextureHandle {
     let px = thumbnail_cached(&e.template, THUMB_W);
-    let key = egui::Id::new(("gfx-thumb", e.template.id.as_str(), Arc::as_ptr(&px) as usize));
+    let key = egui::Id::unique(("gfx-thumb", e.template.id.as_str(), Arc::as_ptr(&px) as usize));
     if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(key)) {
         return t;
     }
@@ -125,7 +125,7 @@ fn thumb_texture(ctx: &egui::Context, e: &LibraryEntry) -> egui::TextureHandle {
 // ------------------------------------------------------------------------------------------------
 
 fn tab_button(ui: &mut egui::Ui, r: Rect, label: &str, on: bool, t: &Tokens) -> egui::Response {
-    let resp = ui.interact(r, egui::Id::new(("eg-tab", label)), Sense::click());
+    let resp = ui.interact(r, egui::Id::unique(("eg-tab", label)), Sense::click());
     if on {
         ui.painter().line_segment([pos2(r.min.x + 6.0, r.max.y - 1.5), pos2(r.max.x - 6.0, r.max.y - 1.5)], Stroke::new(2.0, t.accent));
     }
@@ -186,7 +186,8 @@ fn browse(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ui.selectable_value(&mut st.category, c.clone(), crate::i18n::t(c));
             }
         });
-        elems.push(("gfxTemplates.category".into(), r.response.rect, "Category".into()));
+        let r = r.response.accessible_name(tl!("Category"));
+        elems.push(("gfxTemplates.category".into(), r.rect, "Category".into()));
         let r = ui.button(tl!("Install…")).on_hover_text(tl!("Install Motion Graphics Template (.fcgt)"));
         elems.push(("gfxTemplates.install".into(), r.rect, "Install".into()));
         install = r.clicked();
@@ -407,7 +408,7 @@ pub fn template_controls(
             ControlKind::Slider => {
                 let mut v = pv.and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let (lo, hi) = (c.min.unwrap_or(0.0), c.max.unwrap_or(100.0));
-                let r = vui.add(egui::Slider::new(&mut v, lo..=hi));
+                let r = vui.add(egui::Slider::new(&mut v, lo..=hi)).accessible_name(c.name.clone());
                 autos.push((id, r.rect, c.name.clone()));
                 if r.changed() {
                     set(json!(v), actions);
@@ -647,7 +648,7 @@ fn export_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut elems: Elems = Vec::new();
     let mut action: Option<bool> = None;
     egui::Window::new(tl!("Export As Motion Graphics Template"))
-        .id(egui::Id::new("Export As Motion Graphics Template"))
+        .id(egui::Id::unique("Export As Motion Graphics Template"))
         .collapsible(false)
         .resizable(false)
         .default_width(420.0)
@@ -726,7 +727,7 @@ fn replace_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut elems: Elems = Vec::new();
     let mut action: Option<bool> = None;
     egui::Window::new(tl!("Replace Fonts in Projects"))
-        .id(egui::Id::new("Replace Fonts in Projects"))
+        .id(egui::Id::unique("Replace Fonts in Projects"))
         .collapsible(false)
         .resizable(false)
         .default_width(440.0)

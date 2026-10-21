@@ -483,7 +483,7 @@ fn paused_meters_repaint_without_input_and_settle_after_release() {
         // Inspect both values that drive the bars: a silent level alone must not strand its
         // slower peak hold. No new frames or pointer events are injected to read this state.
         let (_, meters): (u64, std::collections::HashMap<u64, Vec<[f32; 2]>>) =
-            d.harness.ctx.data(|data| data.get_temp(egui::Id::new("mixer-meters"))).unwrap();
+            d.harness.ctx.data(|data| data.get_temp(egui::Id::unique("mixer-meters"))).unwrap();
         assert!(!meters.is_empty());
         assert!(meters.values().flatten().all(|meter| *meter == [-90.0; 2]), "{workspace}: meters stopped after {steps} requested frames: {meters:?}");
         assert_ne!(

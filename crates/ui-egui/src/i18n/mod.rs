@@ -289,7 +289,7 @@ pub fn system_japanese_font() -> Option<Arc<egui::FontData>> {
         // kept for the life of the process (one font, read once) so installing it again after a
         // theme change shares the bytes instead of copying the whole file
         let bytes: &'static [u8] = Box::leak(face.data()?.into_boxed_slice());
-        Some(Arc::new(egui::FontData { font: std::borrow::Cow::Borrowed(bytes), index: face.info.index, tweak: Default::default() }))
+        Some(Arc::new(egui::FontData::from_blob(Arc::new(bytes), face.info.index)))
     })
     .clone()
 }

@@ -437,9 +437,16 @@ fn screenshots() {
     d.screenshot("shortcuts-dialog-cmd");
 }
 
+/// The shortcut editor lists every command, including the Japanese language command, named in
+/// Japanese: without craft-fonts there is no CJK face to draw it (AGENTS.md §1.9), so it draws boxes.
+fn allow_missing_cjk(d: &Driver) {
+    d.harness.ctx.set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+}
+
 #[test]
 fn keyboard_shortcuts_dialog_assigns_live_and_cancel_restores() {
     let mut d = Driver::demo();
+    allow_missing_cjk(&d);
     let menu_shortcut = |d: &mut Driver, id: &str| -> Value {
         let items = d.ok("ui.menu.list", json!({}));
         items.as_array().unwrap().iter().find(|i| i["id"] == id).map(|i| i["shortcut"].clone()).unwrap_or(Value::Null)
@@ -559,6 +566,7 @@ fn waveform_peaks_do_not_survive_opening_another_project() {
 #[test]
 fn recording_a_shortcut_skips_the_modifier_key_presses() {
     let mut d = Driver::demo();
+    allow_missing_cjk(&d);
     d.ok("ui.menu.invoke", json!({"id": "app.keyboardShortcuts"}));
     d.frames(2);
     d.ok("ui.click", json!({"id": "shortcuts.search"}));

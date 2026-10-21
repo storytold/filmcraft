@@ -18,7 +18,7 @@ fn floating_rect(group: &dock::Floating, screen: Rect) -> Rect {
 }
 
 fn drag_id() -> egui::Id {
-    egui::Id::new("dock-panel-drag")
+    egui::Id::unique("dock-panel-drag")
 }
 
 pub(crate) fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Option<Result<Value, String>> {
@@ -179,7 +179,7 @@ impl FilmcraftApp {
                 .get(*index)
                 .and_then(|group| group.panels.first())
                 .and_then(|panel| {
-                    let id = egui::Id::new(("floating-panel", panel.id()));
+                    let id = egui::Id::unique(("floating-panel", panel.id()));
                     layers.iter().position(|layer| layer.id == id)
                 })
                 .unwrap_or(usize::MAX)
@@ -193,7 +193,7 @@ impl FilmcraftApp {
         if let Some(panel) = self.pending_panel_raise.take()
             && let Some(owner) = self.ui.floating.iter().find(|group| group.panels.contains(&panel)).and_then(|group| group.panels.first())
         {
-            ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, egui::Id::new(("floating-panel", owner.id()))));
+            ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, egui::Id::unique(("floating-panel", owner.id()))));
         }
         let maximized =
             self.ui.keys.maximized.filter(|panel| self.ui.dock.contains(*panel) || self.ui.floating.iter().any(|group| group.panels.contains(panel)));
@@ -282,8 +282,8 @@ impl FilmcraftApp {
                 DockAction::PanelMenu(panel, pos) => {
                     let frame = ctx.cumulative_frame_nr();
                     ctx.data_mut(|data| {
-                        data.insert_temp(egui::Id::new("panel-menu"), (panel, pos));
-                        data.insert_temp(egui::Id::new("panel-menu-opened"), frame);
+                        data.insert_temp(egui::Id::unique("panel-menu"), (panel, pos));
+                        data.insert_temp(egui::Id::unique("panel-menu-opened"), frame);
                     });
                 }
             }
@@ -298,14 +298,15 @@ impl FilmcraftApp {
         let panel = *floating.panels.first()?;
         let rect = floating_rect(&floating, ctx.content_rect());
         let t = self.tokens;
-        let id = egui::Id::new(("floating-panel", panel.id()));
+        let id = egui::Id::unique(("floating-panel", panel.id()));
         let mut output = None;
         egui::Area::new(id).order(egui::Order::Middle).fixed_pos(rect.min).constrain(false).interactable(true).show(ctx, |ui| {
             let (rect, _) = ui.allocate_exact_size(rect.size(), Sense::hover());
             let compact = floating.panels.len() == 1 && panel.compact();
             let header = if compact { 8.0 } else { t.tab_h };
             let strip = Rect::from_min_size(rect.min, vec2(rect.width(), header));
-            let response = ui.interact(strip, id.with("move"), Sense::drag());
+            // Not `id.with("move")`: the `Area` already interacts with that id itself.
+            let response = ui.interact(strip, id.with("header"), Sense::drag());
             self.auto.add_response(&format!("panel.float.{index}.move"), &response, "Move floating panel");
             let mut next = if response.dragged() { rect.translate(response.drag_delta()) } else { rect };
             let group = Group {
@@ -323,7 +324,7 @@ impl FilmcraftApp {
             ui.painter().rect_stroke(rect, t.radius, Stroke::new(1.0, t.focus), StrokeKind::Outside);
             let grip = Rect::from_min_max(rect.max - vec2(14.0, 14.0), rect.max);
             let response = ui.interact(grip, id.with("resize"), Sense::click_and_drag());
-            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), tl!("Resize floating panel")));
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), tl!("Resize floating panel")));
             self.auto.add_response(&format!("panel.float.{index}.resize"), &response, "Resize floating panel");
             for step in 0..3 {
                 let offset = 4.0 + step as f32 * 4.0;
@@ -361,7 +362,7 @@ impl FilmcraftApp {
         let force_float = ctx.input(|input| input.modifiers.command);
         let edge = (!force_float).then(|| workspace_edge(body, pos, targets)).flatten();
         let proposal = (!force_float && edge.is_none()).then(|| resolve_drop(&panel, pos, targets)).flatten();
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("dock-drop")));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("dock-drop")));
         let t = self.tokens;
         if let Some((_, _, preview)) = edge {
             painter.rect_filled(preview.shrink(2.0), t.radius, t.focus.gamma_multiply(0.2));

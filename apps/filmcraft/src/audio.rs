@@ -327,7 +327,8 @@ impl Watchdog {
         // An error that arrives with the stream still consuming samples is only a hiccup.
         self.pending_error |= errored;
         let stalled = now.saturating_sub(self.seen.1) >= STALL_RESTART;
-        if !lost && !(self.pending_error && stalled) {
+        let failed = lost || (self.pending_error && stalled);
+        if !failed {
             return Verdict::Healthy;
         }
         self.restarts.retain(|t| now.saturating_sub(*t) < RESTART_WINDOW);

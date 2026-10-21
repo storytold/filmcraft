@@ -71,7 +71,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 .unwrap_or_else(|| "—".into());
             let n = items.len();
             egui::Window::new(tl!("Interpret Footage"))
-                .id(egui::Id::new("Interpret Footage"))
+                .id(egui::Id::unique("Interpret Footage"))
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
@@ -102,7 +102,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         }
         ColorDialog::Sequence { working_space, wide_gamut, auto_tone_map } => {
             egui::Window::new(tl!("Sequence Color Management"))
-                .id(egui::Id::new("Sequence Color Management"))
+                .id(egui::Id::unique("Sequence Color Management"))
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)

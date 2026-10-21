@@ -13,7 +13,6 @@
 //! shaper draws right to left. Text being edited keeps egui's logical order: `TextEdit` maps the
 //! caret by character index, so a reordered galley would put it in the wrong place.
 
-use std::borrow::Cow;
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
@@ -89,7 +88,7 @@ fn system_fonts() -> &'static [(String, Arc<FontData>)] {
             let Some(data) = face.data() else {
                 continue;
             };
-            let font = FontData { font: Cow::Owned(data), index: face.info.index, tweak: Default::default() };
+            let font = FontData::from_blob(Arc::new(data), face.info.index);
             out.push((format!("system-{}", s.code.to_lowercase()), Arc::new(font)));
             chosen.push(face);
         }

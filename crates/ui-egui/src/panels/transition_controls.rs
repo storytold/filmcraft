@@ -159,8 +159,8 @@ pub fn effect_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, id
 
             for pd in def.map(|d| d.params.as_slice()).unwrap_or(&[]) {
                 let value = x.effect.params.get(pd.id).map_or(&pd.default, |p| &p.value);
-                ui.label(crate::i18n::t(pd.label));
-                if let Some(v) = param_widget(ui, &mut elems, pd.id, &pd.kind, value, (fw, fh)) {
+                let name = ui.label(crate::i18n::t(pd.label)).id;
+                if let Some(v) = param_widget(ui, &mut elems, pd.id, name, &pd.kind, value, (fw, fh)) {
                     changes.push(v);
                 }
                 ui.end_row();
@@ -179,7 +179,7 @@ pub fn effect_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, id
             changes.push(c);
         }
         let divider = Rect::from_min_max(pos2(split - 2.0, rect.min.y), pos2(split + 4.0, rect.max.y));
-        let dresp = ui.interact(divider, egui::Id::new("tr-ec-divider"), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+        let dresp = ui.interact(divider, egui::Id::unique("tr-ec-divider"), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
         if dresp.dragged() {
             app.ui.effect_controls_split = (list_w + dresp.drag_delta().x).clamp(MIN_LIST_W, max_list);
         }
@@ -252,7 +252,7 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
     let (_, cut, _) = trn::bounds(track, x)?;
     let clip_a = x.from.and_then(|c| track.item(c)).map(|it| (it.start, it.end(), it.name.clone()));
     let clip_b = x.to.and_then(|c| track.item(c)).map(|it| (it.start, it.end(), it.name.clone()));
-    let mem = egui::Id::new(("tr-ec-lane-drag", id.0));
+    let mem = egui::Id::unique(("tr-ec-lane-drag", id.0));
     let mut drag: Option<LaneDrag> = ui.data(|d| d.get_temp(mem));
     let v = drag.map_or_else(|| view(x, cut, frame), |d| d.view);
     let painter = ui.painter().with_clip_rect(lane.intersect(ui.clip_rect()));
@@ -311,7 +311,7 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
     elems.push(("effectControls.transition.timeline.ruler".into(), ruler, "time ruler".into()));
     // the ruler moves the playhead (once the sequence is no longer borrowed, below)
     let mut seek = None;
-    let rresp = ui.interact(ruler, egui::Id::new(("tr-ec-ruler", id.0)), Sense::click_and_drag());
+    let rresp = ui.interact(ruler, egui::Id::unique(("tr-ec-ruler", id.0)), Sense::click_and_drag());
     if (rresp.dragged() || rresp.clicked())
         && let Some(pos) = rresp.interact_pointer_pos()
     {
@@ -327,7 +327,7 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
             None
         }
     };
-    let sresp = ui.interact(span, egui::Id::new(("tr-ec-span", id.0)), Sense::click_and_drag());
+    let sresp = ui.interact(span, egui::Id::unique(("tr-ec-span", id.0)), Sense::click_and_drag());
     if let Some(h) = sresp.hover_pos() {
         ui.ctx().set_cursor_icon(if grab(h.x).is_some() { egui::CursorIcon::ResizeColumn } else { egui::CursorIcon::Grab });
     }
@@ -398,15 +398,18 @@ fn paint_ruler(p: &egui::Painter, ruler: Rect, view: (Tick, Tick), rate: FrameRa
     }
 }
 
-/// One of a transition's own settings. Returns the change, as `sequence.setTransition` params.
-fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, kind: &ParamKind, value: &ParamValue, frame: (f64, f64)) -> Option<Value> {
+/// One of a transition's own settings, named by the label `name` beside it. Returns the change, as
+/// `sequence.setTransition` params.
+fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, name: egui::Id, kind: &ParamKind, value: &ParamValue, frame: (f64, f64)) -> Option<Value> {
     let eid = format!("effectControls.transition.param.{pid}");
     let drag = |r: &egui::Response| json!({"merge": true, "begin": r.drag_started() || !r.dragged()});
     match (kind, value) {
         (ParamKind::Float { min, max, soft_min, soft_max, unit, decimals }, ParamValue::Float(v)) => {
             let mut v = *v;
             let speed = ((soft_max - soft_min) / 200.0).max(0.001);
-            let r = ui.add(crate::widgets::number_drag(&mut v).range(*min..=*max).speed(speed).max_decimals(usize::from(*decimals)).suffix(*unit));
+            let r = ui
+                .add(crate::widgets::number_drag(&mut v).range(*min..=*max).speed(speed).max_decimals(usize::from(*decimals)).suffix(*unit))
+                .labelled_by(name);
             elems.push((eid, r.rect, format!("{v}")));
             r.changed().then(|| {
                 let mut c = drag(&r);
@@ -416,7 +419,7 @@ fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, kind: &ParamKin
         }
         (ParamKind::Angle, ParamValue::Float(v)) => {
             let mut v = *v;
-            let r = ui.add(crate::widgets::number_drag(&mut v).speed(0.5).suffix("°"));
+            let r = ui.add(crate::widgets::number_drag(&mut v).speed(0.5).suffix("°")).labelled_by(name);
             elems.push((eid, r.rect, format!("{v}")));
             r.changed().then(|| {
                 let mut c = drag(&r);
@@ -426,7 +429,7 @@ fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, kind: &ParamKin
         }
         (ParamKind::Bool, ParamValue::Bool(b)) => {
             let mut b = *b;
-            let r = ui.checkbox(&mut b, "");
+            let r = ui.checkbox(&mut b, "").labelled_by(name);
             elems.push((eid, r.rect, b.to_string()));
             r.changed().then(|| json!({"params": { pid: b }}))
         }
@@ -443,13 +446,14 @@ fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, kind: &ParamKin
                     options.push((format!("{eid}.option.{i}"), r.rect, o.to_string()));
                 }
             });
+            let r = r.response.labelled_by(name);
             elems.extend(options);
-            elems.push((eid, r.response.rect, shown.to_string()));
+            elems.push((eid, r.rect, shown.to_string()));
             picked.map(|i| json!({"params": { pid: i }}))
         }
         (ParamKind::Color, ParamValue::Color(c)) => {
             let mut c = *c;
-            let r = ui.color_edit_button_rgba_unmultiplied(&mut c);
+            let r = ui.color_edit_button_rgba_unmultiplied(&mut c).labelled_by(name);
             elems.push((eid, r.rect, format!("{c:?}")));
             r.changed().then(|| {
                 let mut v = drag(&r);

@@ -385,7 +385,7 @@ pub fn zoom_pan_input(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area:
     }
     let mut d = Vec2::ZERO;
     // a middle-button drag that began over the picture pans it, whatever the tool
-    let held = egui::Id::new((prefix(w), "middle-pan"));
+    let held = egui::Id::unique((prefix(w), "middle-pan"));
     let (pressed, down, moved) = ui.input(|i| (i.pointer.button_pressed(egui::PointerButton::Middle), i.pointer.middle_down(), i.pointer.delta()));
     let panning = down && (ui.data(|m| m.get_temp::<bool>(held)).unwrap_or(false) || (pressed && ui.rect_contains_pointer(area)));
     ui.data_mut(|m| m.insert_temp(held, panning));
@@ -394,7 +394,7 @@ pub fn zoom_pan_input(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area:
         d += moved;
     }
     if app.ui.tool == Tool::Hand {
-        let resp = ui.interact(area, egui::Id::new((prefix(w), "pan")), Sense::drag());
+        let resp = ui.interact(area, egui::Id::unique((prefix(w), "pan")), Sense::drag());
         if resp.hovered() || resp.dragged() {
             ui.ctx().set_cursor_icon(if resp.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
         }
@@ -506,9 +506,9 @@ pub fn rulers(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, top: Rect, le
             }
         }
     }
-    let drag_id = egui::Id::new((pfx, "new-guide"));
+    let drag_id = egui::Id::unique((pfx, "new-guide"));
     for (r, name, vertical) in [(top, "top", false), (left, "left", true)] {
-        let resp = ui.interact(r, egui::Id::new((pfx, "ruler", name)), Sense::drag());
+        let resp = ui.interact(r, egui::Id::unique((pfx, "ruler", name)), Sense::drag());
         app.auto.add(&format!("{pfx}.ruler.{name}"), r, if vertical { "left ruler" } else { "top ruler" });
         if resp.hovered() {
             ui.ctx().set_cursor_icon(if vertical { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical });
@@ -560,13 +560,13 @@ pub fn guides(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area: Rect, p
         if v.lock_guides {
             continue;
         }
-        let resp = ui.interact(hit, egui::Id::new((pfx, "guide", i)), Sense::drag());
+        let resp = ui.interact(hit, egui::Id::unique((pfx, "guide", i)), Sense::drag());
         if resp.hovered() || resp.dragged() {
             ui.ctx().set_cursor_icon(if g.vertical { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical });
         }
         let left = egui::PointerButton::Primary;
         // egui ends a drag on Escape: that stop puts the guide back where it was (#580)
-        let before_id = egui::Id::new((pfx, "guide-before-drag", i));
+        let before_id = egui::Id::unique((pfx, "guide-before-drag", i));
         if resp.drag_started_by(left) {
             ui.data_mut(|d| d.insert_temp(before_id, g.position));
         }
@@ -651,7 +651,7 @@ pub fn waveform(
     }
     let x = xof(time);
     p.line_segment([pos2(x, area.min.y), pos2(x, area.max.y)], Stroke::new(1.0, t.playhead));
-    let resp = ui.interact(area, egui::Id::new("source-waveform"), Sense::click_and_drag());
+    let resp = ui.interact(area, egui::Id::unique("source-waveform"), Sense::click_and_drag());
     app.auto.add("source.waveform", area, "audio waveform");
     // Horizontal waveform drags scrub; dragging vertically lifts the marked audio to the timeline.
     let delta = resp.drag_delta();
@@ -694,7 +694,7 @@ pub fn compare_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, rate: f
     ] {
         let r = Rect::from_min_max(pos2(x - 34.0, bar.min.y + 1.0), pos2(x - 2.0, bar.max.y - 1.0));
         x -= 34.0;
-        let resp = ui.interact(r, egui::Id::new(("compare", key)), Sense::click()).on_hover_text(tip);
+        let resp = ui.interact(r, egui::Id::unique(("compare", key)), Sense::click()).on_hover_text(tip);
         ui.painter().rect_filled(r, 3.0, if resp.hovered() { t.hover } else { t.field_bg });
         ui.painter().text(r.center(), Align2::CENTER_CENTER, label, Tokens::ui(10.0), t.text);
         app.auto.add(&format!("program.compare.{key}"), r, tip);
@@ -801,7 +801,7 @@ fn push(e: &mut Elems, id: &str, r: &egui::Response, label: &str) {
 /// Add Guide… / Save Guides as Template… / Manage Guides… dialogs.
 pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.guide_dialog.clone() else { return };
-    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("guide-dialog-before-drag"), &mut d);
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::unique("guide-dialog-before-drag"), &mut d);
     let mut elems: Elems = Vec::new();
     let mut close = crate::widgets::escape_closes(ctx);
     let mut act: Option<(String, Value)> = None;
@@ -812,7 +812,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         GuideDialog::Manage { .. } => ("Manage Guides", tl!("Manage Guides")),
     };
     egui::Window::new(shown)
-        .id(egui::Id::new(title))
+        .id(egui::Id::unique(title))
         .collapsible(false)
         .resizable(false)
         .pivot(Align2::CENTER_CENTER)

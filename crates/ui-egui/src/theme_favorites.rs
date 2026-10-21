@@ -1,7 +1,7 @@
 //! Original theme favorite star artwork, MIT OR Apache-2.0.
 pub(crate) fn star(ui: &mut egui::Ui, favorite: bool, visible: bool, accent: egui::Color32, label: &str) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
     if visible {
         let color = if favorite { accent } else { ui.visuals().weak_text_color() };
         let center = rect.center();

@@ -239,7 +239,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // drag to trim: px → frames (6 px per frame), applied on release as one trim
     let fpp = 1.0 / 6.0;
     for (r, which) in [(lp, "out"), (rp, "in"), (mid, "roll")] {
-        let resp = ui.interact(r, egui::Id::new(("trim-monitor-drag", which)), Sense::drag());
+        let resp = ui.interact(r, egui::Id::unique(("trim-monitor-drag", which)), Sense::drag());
         if resp.dragged() || resp.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
         }
@@ -248,7 +248,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             // the same one data_mut() holds, and that lock is not reentrant (deadlock)
             let dx = resp.drag_delta().x;
             let total = ui.ctx().data_mut(|d| {
-                let v = d.get_temp_mut_or_default::<f32>(egui::Id::new("trim-monitor-dx"));
+                let v = d.get_temp_mut_or_default::<f32>(egui::Id::unique("trim-monitor-dx"));
                 *v += dx;
                 *v
             });
@@ -256,7 +256,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.painter().text(pos2(r.center().x, r.max.y - 14.0), Align2::CENTER_CENTER, shift_text(n), Tokens::semibold(14.0), col);
         }
         if resp.drag_stopped() {
-            let total = ui.ctx().data_mut(|d| d.remove_temp::<f32>(egui::Id::new("trim-monitor-dx")).unwrap_or(0.0));
+            let total = ui.ctx().data_mut(|d| d.remove_temp::<f32>(egui::Id::unique("trim-monitor-dx")).unwrap_or(0.0));
             let n = (total * fpp).round() as i64;
             // egui ends a drag on Escape: that stop abandons it (#580)
             if n != 0 && !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -298,7 +298,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let ctx = ui.ctx().clone();
     for (id, label, tip, w) in buttons {
         let r = Rect::from_min_size(pos2(x, bar.min.y), vec2(w, bar.height()));
-        let resp = ui.interact(r, egui::Id::new(id), Sense::click()).on_hover_text(tip);
+        let resp = ui.interact(r, egui::Id::unique(id), Sense::click()).on_hover_text(tip);
         let bg = if resp.is_pointer_button_down_on() {
             t.pressed
         } else if resp.hovered() {
@@ -331,7 +331,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     // exit trim mode
     let r = Rect::from_min_size(pos2(rect.max.x - 30.0, bar.min.y + 3.0), vec2(22.0, 22.0));
-    let resp = ui.interact(r, egui::Id::new("trimMonitor.exit"), Sense::click()).on_hover_text(tl!("Exit Trim Mode"));
+    let resp = ui.interact(r, egui::Id::unique("trimMonitor.exit"), Sense::click()).on_hover_text(tl!("Exit Trim Mode"));
     let c = if resp.hovered() { t.tab_text_active } else { t.text_dim };
     ui.painter().line_segment([r.min + vec2(6.0, 6.0), r.max - vec2(6.0, 6.0)], Stroke::new(1.5, c));
     ui.painter().line_segment([pos2(r.max.x - 6.0, r.min.y + 6.0), pos2(r.min.x + 6.0, r.max.y - 6.0)], Stroke::new(1.5, c));

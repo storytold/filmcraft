@@ -288,7 +288,7 @@ fn preset_grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) -> Option<
         }
         let pic = Rect::from_min_size(cell.min, vec2(cw, ch));
         let tex = preset_texture(app, ui.ctx(), p, 160);
-        let resp = ui.interact(cell, egui::Id::new(("lumetri-grid", p.name)), Sense::click_and_drag()).on_hover_text(crate::i18n::t(p.description));
+        let resp = ui.interact(cell, egui::Id::unique(("lumetri-grid", p.name)), Sense::click_and_drag()).on_hover_text(crate::i18n::t(p.description));
         ui.painter().rect_filled(cell, 3.0, if resp.hovered() { t.hover } else { t.field_bg });
         ui.painter().image(tex, pic.shrink(2.0), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         let label = ui.painter().layout(crate::i18n::t(p.name).to_string(), Tokens::ui(11.0), t.text, cw - 6.0);

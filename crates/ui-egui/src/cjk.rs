@@ -50,7 +50,7 @@ fn find_system_font(sample: &str, preferred: &[&str]) -> Option<Arc<FontData>> {
     let by_weight = |f: &&Arc<filmcraft_text::fonts::Face>| f.info.weight.abs_diff(400);
     let found = preferred.iter().find_map(|name| faces.iter().filter(|f| f.info.family.eq_ignore_ascii_case(name) && covers(f)).min_by_key(by_weight));
     let face = found.or_else(|| faces.iter().filter(|f| covers(f)).min_by_key(by_weight))?;
-    Some(Arc::new(FontData { font: std::borrow::Cow::Owned(face.data()?), index: face.info.index, tweak: Default::default() }))
+    Some(Arc::new(FontData::from_blob(Arc::new(face.data()?), face.info.index)))
 }
 
 /// Whether [`install`] has a Hangul face to add (an installed system face; none is bundled).

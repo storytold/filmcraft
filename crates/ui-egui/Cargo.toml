@@ -26,7 +26,7 @@ filmcraft-engine = { workspace = true }
 filmcraft-export = { workspace = true }
 filmcraft-gpu = { workspace = true }
 filmcraft-scopes = { workspace = true }
-egui = { workspace = true }
+egui = { workspace = true, features = ["monochrome_emoji_fonts"] }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

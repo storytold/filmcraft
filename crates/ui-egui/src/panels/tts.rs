@@ -329,7 +329,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             actions.push(Action::Run("tts.preview", json!({"sample": true, "voice": d.voice, "pitch": d.pitch.id(), "pace": d.pace}), true));
         }
         ui.add_space(8.0);
-        let (hr, open) = crate::widgets::section_header(ui, egui::Id::new("tts-advanced"), "Advanced", d.advanced_open, &t, true);
+        let (hr, open) = crate::widgets::section_header(ui, egui::Id::unique("tts-advanced"), "Advanced", d.advanced_open, &t, true);
         auto.add("tts.advanced", visible(ui, hr.rect), "Advanced");
         d.advanced_open = open;
         if open {
@@ -344,9 +344,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             });
             auto.add("tts.pitch", visible(ui, cb.response.rect), "Vocal pitch");
             ui.add_space(10.0);
-            label(ui, &t, "Pace");
+            let name = label(ui, &t, "Pace");
             ui.spacing_mut().slider_width = w - 56.0;
-            let s = ui.add(egui::Slider::new(&mut d.pace, filmcraft_tts::MIN_PACE..=filmcraft_tts::MAX_PACE).step_by(0.05).fixed_decimals(2).suffix("×"));
+            let s = ui
+                .add(egui::Slider::new(&mut d.pace, filmcraft_tts::MIN_PACE..=filmcraft_tts::MAX_PACE).step_by(0.05).fixed_decimals(2).suffix("×"))
+                .labelled_by(name.id);
             auto.add("tts.pace", visible(ui, s.rect), "Pace");
             let (r, _) = ui.allocate_exact_size(vec2(w - 56.0, 14.0), Sense::hover());
             for (x, l) in [(0.0, "0.5×"), (1.0 / 3.0, "1×"), (1.0, "2×")] {
@@ -438,14 +440,15 @@ fn visible(ui: &egui::Ui, r: Rect) -> Rect {
     r.intersect(ui.clip_rect())
 }
 
-fn label(ui: &mut egui::Ui, t: &Tokens, text: &str) {
-    ui.label(egui::RichText::new(text).color(t.text).size(12.5).strong());
+fn label(ui: &mut egui::Ui, t: &Tokens, text: &str) -> egui::Response {
+    let response = ui.label(egui::RichText::new(text).color(t.text).size(12.5).strong());
     ui.add_space(2.0);
+    response
 }
 
 #[allow(clippy::too_many_arguments)]
 fn button(ui: &mut egui::Ui, t: &Tokens, r: Rect, icon: Icon, text: &str, primary: bool, active: bool, id: &str) -> egui::Response {
-    let resp = ui.interact(r, egui::Id::new(id), Sense::click());
+    let resp = ui.interact(r, egui::Id::unique(id), Sense::click());
     let p = ui.painter();
     let (bg, fg) = match (primary, active) {
         (true, true) => (if resp.hovered() { t.accent_hover } else { t.accent }, egui::Color32::WHITE),

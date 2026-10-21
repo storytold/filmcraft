@@ -453,7 +453,7 @@ fn pairs(v: &[&str]) -> Vec<(String, String)> {
 /// Draw the open dialog, if any.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.extras.dialog.clone() else { return };
-    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("menu-dialog-before-drag"), &mut d);
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::unique("menu-dialog-before-drag"), &mut d);
     let Some((title, pre, ok_text)) = meta(&d.command) else {
         app.ui.extras.dialog = None;
         return;
@@ -463,7 +463,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut browse: Option<String> = None;
     let info_only = matches!(d.command.as_str(), "file.mediaProperties" | "clip.sourceSettings" | "help.systemCompatibilityReport");
     // the title is translated; the window keeps one id whatever the interface language
-    let id = egui::Id::new(("menu-dialog", pre));
+    let id = egui::Id::unique(("menu-dialog", pre));
     egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(420.0).centered(ctx).show(ctx, |ui| {
         let p = &mut d.params;
         match d.command.as_str() {
@@ -718,9 +718,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 check(ui, &mut elems, pre, p, "createSubclips", tl!("Create a bin of subclips from each detected cut point"));
                 check(ui, &mut elems, pre, p, "generateMarkers", tl!("Create a clip marker at each detected cut point"));
                 ui.horizontal(|ui| {
-                    ui.label(tl!("Sensitivity:"));
+                    let name = ui.label(tl!("Sensitivity:"));
                     let mut v = p["sensitivity"].as_f64().unwrap_or(50.0);
-                    let r = ui.add(egui::Slider::new(&mut v, 0.0..=100.0));
+                    let r = ui.add(egui::Slider::new(&mut v, 0.0..=100.0)).labelled_by(name.id);
                     push(&mut elems, "sceneDetect.sensitivity", &r, "Sensitivity");
                     p["sensitivity"] = json!(v);
                 });

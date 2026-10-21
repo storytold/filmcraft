@@ -97,9 +97,16 @@ fn band(r: &Row) -> Rect {
 pub fn header_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, r: &Row, rect: Rect, visible: Rect, label: &str, t: &Tokens) {
     let Some(tr) = seq.track(r.track) else { return };
     let showing = app.ui.timeline.track_lanes.get(&r.track.0).cloned();
-    let resp =
-        crate::widgets::icon_toggle(ui, rect.intersect(visible), Icon::Keyframe, showing.is_some(), t, egui::Id::new(("lanebtn", r.track.0)), Some(LANE_COL))
-            .on_hover_text(tl!("Show Keyframes"));
+    let resp = crate::widgets::icon_toggle(
+        ui,
+        rect.intersect(visible),
+        Icon::Keyframe,
+        showing.is_some(),
+        t,
+        egui::Id::unique(("lanebtn", r.track.0)),
+        Some(LANE_COL),
+    )
+    .on_hover_text(tl!("Show Keyframes"));
     app.auto.add(&format!("timeline.track.{label}.keyframes"), rect, "Show Keyframes");
     let opts = lane_options(tr);
     egui::Popup::menu(&resp).show(|ui| {
@@ -131,7 +138,7 @@ struct KfDrag {
 }
 
 fn drag_id() -> egui::Id {
-    egui::Id::new("tl-lane-kf-drag")
+    egui::Id::unique("tl-lane-kf-drag")
 }
 
 /// Draw the shown lanes (after clips) and handle their editing (after the timeline's own interaction,
@@ -173,7 +180,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         // add keyframes: Pen tool, or ⌘-click with any tool
         let adding = app.ui.tool == Tool::Pen || ui.input(|i| i.modifiers.command);
         if adding {
-            let bresp = ui.interact(vis, egui::Id::new(("lane-band", r.track.0)), Sense::click());
+            let bresp = ui.interact(vis, egui::Id::unique(("lane-band", r.track.0)), Sense::click());
             if bresp.hovered() {
                 ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
             }
@@ -199,7 +206,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 continue;
             }
             let hr = Rect::from_center_size(c, vec2(11.0, 11.0));
-            let resp = ui.interact(hr, egui::Id::new(("lane-kf", r.track.0, i)), Sense::click_and_drag());
+            let resp = ui.interact(hr, egui::Id::unique(("lane-kf", r.track.0, i)), Sense::click_and_drag());
             let hot = resp.hovered() || dragging.is_some();
             icons::paint(&p, Rect::from_center_size(c, vec2(9.0, 9.0)), Icon::Keyframe, if hot { Color32::WHITE } else { LANE_COL });
             app.auto.add(&format!("timeline.track.{label}.lane.kf.{i}"), hr, &format!("{name} keyframe {v:.1}"));
@@ -221,7 +228,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             }
             if dragging.is_some() {
                 let nv = denorm(tr, &key, ((b.max.y - c.y) / b.height()).clamp(0.0, 1.0));
-                egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::new("lane-kf-tip"), egui::PopupAnchor::Pointer).show(|ui| {
+                egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::unique("lane-kf-tip"), egui::PopupAnchor::Pointer).show(|ui| {
                     ui.label(if key == LANE_VOLUME { format!("{nv:.2} dB") } else { format!("{nv:.2}") });
                 });
             }

@@ -44,7 +44,7 @@ pub(crate) fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let title = tlf!("Safe graphics mode: {mode}", mode = i18n::t(&notice.mode));
     let (mut reset, mut close) = (false, false);
     let shown = egui::Window::new("graphics-notice")
-        .id(egui::Id::new("graphics-notice"))
+        .id(egui::Id::unique("graphics-notice"))
         .title_bar(false)
         .collapsible(false)
         .resizable(false)

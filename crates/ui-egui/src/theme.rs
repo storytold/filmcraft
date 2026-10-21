@@ -432,6 +432,14 @@ pub fn install(ctx: &egui::Context, t: &Tokens) {
     add_craft_fonts(&mut fonts);
     crate::cjk::install(&mut fonts);
     crate::rtl::install(&mut fonts);
+    // Last: egui's Hack has the arrows and symbols the UI draws in plain text (⇧ in shortcuts, ▸ in
+    // menu paths) that Inter and egui's proportional fonts lack; without it they are boxes where no
+    // installed fallback face has them (Windows, macOS).
+    for (family, stack) in &mut fonts.families {
+        if *family != FontFamily::Monospace && !stack.iter().any(|f| f == "Hack") {
+            stack.push("Hack".into());
+        }
+    }
     ctx.set_fonts(fonts);
     apply_visuals(ctx, t);
 }

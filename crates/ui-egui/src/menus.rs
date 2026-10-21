@@ -898,7 +898,7 @@ pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
 
 /// Draw the in-window menu bar.
 pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
-    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("interface-language"), app.ui.language));
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::unique("interface-language"), app.ui.language));
     let items = menu_items(app);
     // Draw Edit ▸ Label with the user's live palette, not the baked-in label colours.
     let labels = app.session.prefs.labels.clone();
@@ -958,7 +958,7 @@ fn menu_level(
             }
             subs.push(sub);
             let inner: Vec<&MenuItem> = items.iter().copied().filter(|x| x.path.get(depth).map(String::as_str) == Some(sub)).collect();
-            let language = ui.ctx().data(|d| d.get_temp::<crate::i18n::Language>(egui::Id::new("interface-language"))).unwrap_or_default();
+            let language = ui.ctx().data(|d| d.get_temp::<crate::i18n::Language>(egui::Id::unique("interface-language"))).unwrap_or_default();
             ui.menu_button(language.tr(sub), |ui| {
                 ui.set_min_width(220.0);
                 menu_level(ui, &inner, depth + 1, clicked, auto, labels);
@@ -1107,6 +1107,8 @@ mod tests {
 
         let app = FilmcraftApp::new(filmcraft_engine::Session::default());
         let mut harness = Harness::builder().with_size(egui::vec2(1200.0, 700.0)).build_ui_state(|ui, app| menu_bar(app, ui), app);
+        // the app's fonts, as the menus are drawn with them (egui's own lack ⇧)
+        crate::theme::install(&harness.ctx.clone(), &harness.state().tokens);
         harness.run_steps(3);
         // Nothing open: hovering a title does not open it.
         harness.get_by_label("Edit").hover();

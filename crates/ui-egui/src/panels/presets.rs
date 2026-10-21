@@ -103,7 +103,7 @@ pub fn save_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut open = true;
     let mut close = false;
     let mut apply = false;
-    egui::Window::new(tl!("Save Preset")).id(egui::Id::new("Save Preset")).open(&mut open).collapsible(false).resizable(false).default_width(340.0).show(
+    egui::Window::new(tl!("Save Preset")).id(egui::Id::unique("Save Preset")).open(&mut open).collapsible(false).resizable(false).default_width(340.0).show(
         ctx,
         |ui| {
             ui.horizontal(|ui| {

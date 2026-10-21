@@ -251,6 +251,7 @@ fn wheel_over_a_tab_strip_switches_tabs() {
             delta: egui::vec2(0.0, -10.0),
             modifiers: egui::Modifiers::NONE,
             phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
         });
         d.frames(1);
         let expect = if step < 3 { PanelKind::Project } else { PanelKind::MediaBrowser };

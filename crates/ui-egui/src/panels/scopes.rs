@@ -57,7 +57,7 @@ pub fn frame_signal(app: &mut FilmcraftApp, ctx: &egui::Context, slot: &str, fra
     let pq = hdr_seq && space == ColorSpace::Rec2100;
     let rate = q.settings.frame_rate;
     let rev = app.session.revision;
-    let id = egui::Id::new(("scope-signal", slot));
+    let id = egui::Id::unique(("scope-signal", slot));
     let cached: Option<(u64, Arc<Signal>, bool)> = ctx.data(|d| d.get_temp(id));
     let key = hash_of((seq_id.0, frame, rev, pq));
     if let Some((k, s, p)) = &cached
@@ -99,7 +99,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         None => crate::dock::placeholder(ui, area, &t, if app.session.state.active_sequence.is_some() { "…" } else { tl!("(no sequence)") }),
     }
     // right-click anywhere on the scopes: the settings menu
-    let resp = ui.interact(area, egui::Id::new("scopes-area"), Sense::click());
+    let resp = ui.interact(area, egui::Id::unique("scopes-area"), Sense::click());
     egui::Popup::context_menu(&resp).show(|ui| settings_menu(app, ui));
     footer(app, ui, Rect::from_min_max(pos2(rect.min.x, area.max.y), rect.max), sf.as_ref().map(|s| s.space));
 }
@@ -134,7 +134,7 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, space: Option<Colo
     let cresp = child.checkbox(&mut clamp, tl!("Clamp Signal"));
     app.auto.add("scopes.clamp", cresp.rect, "Clamp Signal");
     let wr = Rect::from_center_size(pos2(cr.min.x - 16.0, r.center().y), vec2(22.0, 22.0));
-    let wresp = ui.interact(wr, egui::Id::new("scopes-wrench"), Sense::click());
+    let wresp = ui.interact(wr, egui::Id::unique("scopes-wrench"), Sense::click());
     icons::paint(ui.painter(), wr.shrink(4.0), Icon::Wrench, if wresp.hovered() { t.tab_text_active } else { t.icon });
     app.auto.add("scopes.wrench", wr, "Scope settings");
     egui::Popup::menu(&wresp).show(|ui| settings_menu(app, ui));
@@ -314,7 +314,7 @@ fn plotted(st: &ScopesState, sf: &ScopeFrame) -> Arc<Signal> {
 
 /// A texture computed from (frame, settings, scope), kept until either changes.
 fn cached_texture(ctx: &egui::Context, slot: String, key: u64, make: impl FnOnce() -> (usize, usize, Vec<u8>)) -> Option<TextureHandle> {
-    let id = egui::Id::new(("scope-tex", slot.clone()));
+    let id = egui::Id::unique(("scope-tex", slot.clone()));
     if let Some((k, tex)) = ctx.data(|d| d.get_temp::<(u64, TextureHandle)>(id))
         && k == key
     {

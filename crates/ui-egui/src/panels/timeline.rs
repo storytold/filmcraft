@@ -265,7 +265,8 @@ pub fn max_scroll(sequence_seconds: f64, width: f32, pps: f64) -> f64 {
 /// Where the left edge goes so the playhead at `ph` seconds shows in a view `width` points wide
 /// (the page-scroll margin from the left), or `None` when it is in view already.
 pub fn scroll_to_reveal(ph: f64, scroll: f64, pps: f64, width: f64) -> Option<f64> {
-    if !ph.is_finite() || !scroll.is_finite() || !(pps > 0.0 && pps.is_finite()) {
+    let valid = ph.is_finite() && scroll.is_finite() && pps.is_finite() && pps > 0.0;
+    if !valid {
         return None;
     }
     let px = (ph - scroll) * pps;
@@ -644,7 +645,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // divider between video and audio
     let div = Rect::from_min_max(pos2(rect.min.x, split_y), pos2(content.max.x, split_y + DIVIDER_H));
     painter.rect_filled(div, 0.0, t.app_bg);
-    let div_resp = ui.interact(div, egui::Id::new("tl-divider"), Sense::drag());
+    let div_resp = ui.interact(div, egui::Id::unique("tl-divider"), Sense::drag());
     if div_resp.hovered() || div_resp.dragged() {
         ctx.set_cursor_icon(CursorIcon::ResizeVertical);
     }
@@ -738,7 +739,7 @@ fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.painter().text(rect.center() + vec2(0.0, 50.0), Align2::CENTER_CENTER, hint, Tokens::ui(12.0), t.text_dim);
     }
     let b = Rect::from_center_size(rect.center() + vec2(0.0, 20.0), vec2(170.0, 26.0));
-    let resp = ui.interact(b, egui::Id::new("tl-open-demo"), Sense::click());
+    let resp = ui.interact(b, egui::Id::unique("tl-open-demo"), Sense::click());
     app.auto.add("timeline.openDemo", b, "Open Demo Project");
     ui.painter().rect_filled(b, 13.0, if resp.hovered() { t.accent_hover } else { t.accent });
     ui.painter().text(b.center(), Align2::CENTER_CENTER, tl!("Open Demo Project"), Tokens::semibold(12.0), Color32::WHITE);
@@ -1307,7 +1308,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
         let patched = if r.kind == TrackKind::Video { tg.video_dest == Some(r.track) } else { tg.audio_dest == Some(r.track) };
         let pr = btn_rect(13.0);
         app.auto.add(&format!("timeline.track.{label}.sourcePatch"), pr, "Source patch");
-        if patch_button(ui, pr, visible, &label, patched, false, egui::Id::new(("patch", r.track.0)), t).clicked() {
+        if patch_button(ui, pr, visible, &label, patched, false, egui::Id::unique(("patch", r.track.0)), t).clicked() {
             actions.push(("timeline.setTargeting".into(), json!({"track": r.track.0, "sourcePatch": !patched})));
         }
         // 2. track lock
@@ -1320,7 +1321,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
             if tr.locked { Icon::Lock } else { Icon::Unlock },
             true,
             t,
-            egui::Id::new(("locked", r.track.0)),
+            egui::Id::unique(("locked", r.track.0)),
             Some(if tr.locked { t.icon_active } else { t.text_dim }),
         );
         app.auto.add(&format!("timeline.track.{label}.locked"), lock_r, "Toggle Track Lock");
@@ -1335,14 +1336,21 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
         let targeted = tg.targeted.contains(&r.track);
         let trr = btn_rect(61.0);
         app.auto.add(&format!("timeline.track.{label}.target"), trr, "Toggle track targeting");
-        if patch_button(ui, trr, visible, &label, targeted, true, egui::Id::new(("target", r.track.0)), t).clicked() {
+        if patch_button(ui, trr, visible, &label, targeted, true, egui::Id::unique(("target", r.track.0)), t).clicked() {
             actions.push(("timeline.setTargeting".into(), json!({"track": r.track.0, "targeted": !targeted})));
         }
         // 4. upper line icons
         let mut x = 102.0;
         let sr = small(x, upper_y);
-        let sresp =
-            crate::widgets::icon_toggle(ui, sr.intersect(visible), Icon::SyncLock, tr.sync_lock, t, egui::Id::new(("syncLock", r.track.0)), Some(t.text_dim));
+        let sresp = crate::widgets::icon_toggle(
+            ui,
+            sr.intersect(visible),
+            Icon::SyncLock,
+            tr.sync_lock,
+            t,
+            egui::Id::unique(("syncLock", r.track.0)),
+            Some(t.text_dim),
+        );
         app.auto.add(&format!("timeline.track.{label}.syncLock"), sr, "Toggle Sync Lock");
         if sresp.clicked() {
             actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "syncLock": !tr.sync_lock})));
@@ -1356,7 +1364,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
                 if tr.enabled { Icon::Eye } else { Icon::EyeOff },
                 true,
                 t,
-                egui::Id::new(("enabled", r.track.0)),
+                egui::Id::unique(("enabled", r.track.0)),
                 Some(t.text_dim),
             );
             app.auto.add(&format!("timeline.track.{label}.enabled"), er, "Toggle Track Output");
@@ -1372,7 +1380,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
                 tr.muted,
                 Color32::from_rgb(0x2d, 0x9d, 0x78),
                 t,
-                egui::Id::new(("mute", r.track.0)),
+                egui::Id::unique(("mute", r.track.0)),
             );
             app.auto.add(&format!("timeline.track.{label}.muted"), mr, "Mute Track");
             if mresp.clicked() {
@@ -1386,7 +1394,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
                 tr.solo,
                 Color32::from_rgb(0xf0, 0xf0, 0x4f),
                 t,
-                egui::Id::new(("solo", r.track.0)),
+                egui::Id::unique(("solo", r.track.0)),
             );
             app.auto.add(&format!("timeline.track.{label}.solo"), s2, "Solo Track");
             if so.clicked() {
@@ -1415,7 +1423,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
                 continue;
             }
             app.auto.add(&format!("timeline.track.{label}.{name}"), edge, "Drag to change the track height");
-            let eresp = ui.interact(edge, egui::Id::new(("trackh", name, r.track.0)), Sense::drag());
+            let eresp = ui.interact(edge, egui::Id::unique(("trackh", name, r.track.0)), Sense::drag());
             if eresp.hovered() || eresp.dragged() {
                 ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
             }
@@ -1427,7 +1435,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
         }
         let resp = ui.interact(
             Rect::from_min_max(pos2(hrect.min.x + 90.0, hrect.min.y + 26.0), hrect.max).intersect(visible),
-            egui::Id::new(("hdr", r.track.0)),
+            egui::Id::unique(("hdr", r.track.0)),
             Sense::click(),
         );
         if resp.double_clicked() {
@@ -1473,7 +1481,7 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
     // current timecode: Premiere's big blue timecode
     let tc = format_time(app.session.playhead(), rate, seq.settings.drop_frame, TimeDisplay::Timecode, seq.settings.sample_rate as i64);
     let tc_rect = Rect::from_min_size(pos2(rect.min.x + 14.0, rect.min.y + 4.0), vec2(hw - 20.0, 20.0));
-    let tc_id = egui::Id::new(("timeline-tc", seq_id));
+    let tc_id = egui::Id::unique(("timeline-tc", seq_id));
     match crate::widgets::timecode_field(ui, tc_id, tc_rect, &tc, app.session.playhead(), Tick::ZERO, rate, seq.settings.drop_frame, t.timecode) {
         Some(Ok(time)) => {
             if let Err(e) = app.session.execute("playhead.set", json!({"time": time.0})) {
@@ -1497,7 +1505,7 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
     ];
     for (icon, key, on, toggle, tip) in toggles {
         let r = Rect::from_min_size(pos2(x, y), vec2(28.0, 28.0));
-        let resp = ui.interact(r, egui::Id::new(("tl-toggle", key)), Sense::click()).on_hover_text(tip);
+        let resp = ui.interact(r, egui::Id::unique(("tl-toggle", key)), Sense::click()).on_hover_text(tip);
         app.auto.add(&format!("timeline.toggle.{key}"), r, tip);
         if toggle && on {
             p.rect_filled(r, 4.0, t.pressed);
@@ -1615,7 +1623,7 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
         let hit = r.expand2(vec2(0.0, 2.0));
         app.auto.add(&format!("timeline.renderBar.{i}"), hit, what);
         if ui.rect_contains_pointer(hit) {
-            egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::new(("rb", i)), egui::PopupAnchor::Pointer).show(|ui| {
+            egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::unique(("rb", i)), egui::PopupAnchor::Pointer).show(|ui| {
                 ui.label(what);
             });
         }
@@ -1635,7 +1643,7 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
         let mr = marker_rect(layout, m.start);
         app.auto.add(&format!("timeline.marker.{}", m.id.0), mr, &m.name);
         if ui.rect_contains_pointer(mr) && !m.name.is_empty() {
-            egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::new(("mk", m.id.0)), egui::PopupAnchor::Pointer).show(|ui| {
+            egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::unique(("mk", m.id.0)), egui::PopupAnchor::Pointer).show(|ui| {
                 ui.label(&m.name);
             });
         }
@@ -1677,7 +1685,7 @@ fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, seq_seco
     }
     app.auto.add("timeline.zoomBar", thumb, "zoom scroll bar");
     app.auto.add("timeline.zoomBar.track", bar, "zoom scroll bar track");
-    let resp = ui.interact(bar, egui::Id::new("tl-zoombar"), Sense::click_and_drag());
+    let resp = ui.interact(bar, egui::Id::unique("tl-zoombar"), Sense::click_and_drag());
     let range = (total - vis).max(0.0);
     // a press beside the thumb brings the thumb's middle under the pointer (and a drag goes on
     // from there)
@@ -1767,7 +1775,7 @@ fn vertical_scrollbar(ui: &mut egui::Ui, bar: Rect, value: &mut f32, max: f32, i
     p.rect_filled(track, track.width() / 2.0, t.separator);
     let hover = ui.rect_contains_pointer(thumb);
     p.rect_filled(thumb, thumb.width() / 2.0, if hover { t.scroll_thumb_hover } else { t.scroll_thumb });
-    let resp = ui.interact(bar, egui::Id::new(("tl-vs", id)), Sense::drag());
+    let resp = ui.interact(bar, egui::Id::unique(("tl-vs", id)), Sense::drag());
     if resp.dragged() {
         let d = resp.drag_delta().y / (bar.height() - h).max(1.0) * max;
         *value = (*value + if invert { -d } else { d }).clamp(0.0, max);
@@ -2256,7 +2264,7 @@ fn scrub_playhead(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, p: Po
 fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &Layout, rect: Rect) {
     let ctx = ui.ctx().clone();
     let area = Rect::from_min_max(pos2(layout.content.min.x, layout.ruler.min.y), layout.content.max);
-    let resp = ui.interact(area, egui::Id::new("timeline-area"), Sense::click_and_drag());
+    let resp = ui.interact(area, egui::Id::unique("timeline-area"), Sense::click_and_drag());
     let pos = resp.hover_pos().or(resp.interact_pointer_pos());
     let mods = ctx.input(|i| i.modifiers);
     let tool = app.ui.tool;
@@ -2562,10 +2570,8 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 Drag::Scrub { initial } => {
                     app.session.set_playhead(initial);
                 }
-                Drag::Volume(v) => {
-                    if v.changed() {
-                        let _ = app.session.execute("edit.undo", json!({}));
-                    }
+                Drag::Volume(v) if v.changed() => {
+                    let _ = app.session.execute("edit.undo", json!({}));
                 }
                 Drag::Pan { start_scroll, start_v, .. } => {
                     let v = &mut app.ui.timeline;
@@ -2806,11 +2812,11 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
 
     // ---- context menu on clips (right-clicking an unselected clip selects it first); on a clip's
     // edge, the edit point menu instead (right-clicking an unselected edit point selects it first)
-    let edit_point_menu_id = egui::Id::new("timeline.editPointMenu.target");
+    let edit_point_menu_id = egui::Id::unique("timeline.editPointMenu.target");
     // the clip right-clicked, remembered while its menu is open: Unlink leaves only it selected
-    let menu_clip_id = egui::Id::new("timeline.clipMenu.clip");
+    let menu_clip_id = egui::Id::unique("timeline.clipMenu.clip");
     // right-clicking empty time between clips selects the gap and opens its menu (#648, #668)
-    let gap_menu_id = egui::Id::new("timeline.gapMenu.open");
+    let gap_menu_id = egui::Id::unique("timeline.gapMenu.open");
     if resp.secondary_clicked()
         && let Some(p) = resp.interact_pointer_pos()
     {
@@ -2825,7 +2831,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         }
     }
     // on a marker of the ruler, the marker menu instead (right-clicking a marker selects it first)
-    let marker_menu_id = egui::Id::new("timeline.markerMenu.target");
+    let marker_menu_id = egui::Id::unique("timeline.markerMenu.target");
     if resp.secondary_clicked()
         && let Some(p) = resp.interact_pointer_pos()
     {

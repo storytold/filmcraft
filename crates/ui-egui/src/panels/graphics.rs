@@ -507,8 +507,8 @@ const TEXT_EDIT_ID: &str = "gfx-text-edit";
 
 fn end_edit(app: &mut FilmcraftApp, ui: &egui::Ui) {
     app.ui.gfx_edit = None;
-    ui.memory_mut(|m| m.surrender_focus(egui::Id::new(TEXT_EDIT_ID)));
-    ui.data_mut(|d| d.remove::<crate::dock::PanelKind>(egui::Id::new(TEXT_EDIT_ID).with("panel")));
+    ui.memory_mut(|m| m.surrender_focus(egui::Id::unique(TEXT_EDIT_ID)));
+    ui.data_mut(|d| d.remove::<crate::dock::PanelKind>(egui::Id::unique(TEXT_EDIT_ID).with("panel")));
 }
 
 /// A click on the Program monitor's empty space (the picture's, or around it): end the text edit
@@ -588,7 +588,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             }
         }
     }
-    let id = egui::Id::new("gfx-overlay");
+    let id = egui::Id::unique("gfx-overlay");
     let resp = ui.interact(pic, id, if graphics_tool { Sense::click_and_drag() } else { Sense::hover() });
     let hover = resp.hover_pos();
     let mut actions: Vec<(String, Value)> = Vec::new();
@@ -1015,17 +1015,17 @@ fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView, mut ed: G
     // being edited, so working there keeps it (#683). Only a move counts: an edit started with
     // another panel focused (an agent's `ui.set`) goes on until the focus moves.
     use crate::dock::PanelKind;
-    let panel_id = egui::Id::new(TEXT_EDIT_ID).with("panel");
+    let panel_id = egui::Id::unique(TEXT_EDIT_ID).with("panel");
     let before = ui.data(|d| d.get_temp::<PanelKind>(panel_id));
     ui.data_mut(|d| d.insert_temp(panel_id, app.ui.focused));
     if before.is_some_and(|b| b != app.ui.focused) && !matches!(app.ui.focused, PanelKind::Program | PanelKind::Properties | PanelKind::EssentialGraphics) {
         end_edit(app, ui);
         return;
     }
-    let eid = egui::Id::new(TEXT_EDIT_ID);
+    let eid = egui::Id::unique(TEXT_EDIT_ID);
     // a real (non-clickable) widget holds keyboard focus so shortcuts pause while typing
     let fr = ui.interact(Rect::from_points(&v.quad()), eid, Sense::focusable_noninteractive());
-    fr.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Text layer"));
+    fr.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Text layer"));
     // while another field has the keyboard (a value typed in Properties) the keys are its own;
     // the text takes the keyboard back once nothing has it (#683)
     if ui.memory(|m| m.focused().is_some_and(|f| f != eid)) {
@@ -1288,7 +1288,7 @@ impl Ctx<'_> {
     fn number(&mut self, ui: &mut egui::Ui, label: &str, id: &str, speed: f64, range: (f64, f64), dec: usize, unit: &str) {
         let v = pv(self.e, id, self.mt).as_f64().unwrap_or(0.0);
         let (r, mut vui) = self.row(ui, label);
-        let (resp, nv) = crate::widgets::hot_number(&mut vui, egui::Id::new(("gfxp", self.clip.0, self.layer, id)), v, speed, range, dec, unit, &self.t);
+        let (resp, nv) = crate::widgets::hot_number(&mut vui, egui::Id::unique(("gfxp", self.clip.0, self.layer, id)), v, speed, range, dec, unit, &self.t);
         self.auto(id, resp.rect, label);
         self.stopwatch(ui, r, id);
         if let Some(nv) = nv {
@@ -1297,7 +1297,7 @@ impl Ctx<'_> {
     }
     fn number_in(&mut self, vui: &mut egui::Ui, id: &str, speed: f64, range: (f64, f64), dec: usize, unit: &str) {
         let v = pv(self.e, id, self.mt).as_f64().unwrap_or(0.0);
-        let (resp, nv) = crate::widgets::hot_number(vui, egui::Id::new(("gfxp", self.clip.0, self.layer, id)), v, speed, range, dec, unit, &self.t);
+        let (resp, nv) = crate::widgets::hot_number(vui, egui::Id::unique(("gfxp", self.clip.0, self.layer, id)), v, speed, range, dec, unit, &self.t);
         self.auto(id, resp.rect, id);
         if let Some(nv) = nv {
             self.set(id, json!(nv));
@@ -1309,7 +1309,7 @@ impl Ctx<'_> {
         self.stopwatch(ui, r, id);
         let (rx, nx) = crate::widgets::hot_number(
             &mut vui,
-            egui::Id::new(("gfxp", self.clip.0, self.layer, id, "x")),
+            egui::Id::unique(("gfxp", self.clip.0, self.layer, id, "x")),
             v.x,
             1.0,
             (-100_000.0, 100_000.0),
@@ -1320,7 +1320,7 @@ impl Ctx<'_> {
         vui.add_space(10.0);
         let (ry, ny) = crate::widgets::hot_number(
             &mut vui,
-            egui::Id::new(("gfxp", self.clip.0, self.layer, id, "y")),
+            egui::Id::unique(("gfxp", self.clip.0, self.layer, id, "y")),
             v.y,
             1.0,
             (-100_000.0, 100_000.0),
@@ -1573,7 +1573,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ui.painter().text(pos2(r.min.x + 38.0, r.center().y), Align2::LEFT_CENTER, layer_display_name(e, li), Tokens::ui(12.0), t.text);
                 // visibility
                 let er = Rect::from_center_size(pos2(r.max.x - 14.0, r.center().y), vec2(16.0, 16.0));
-                let eresp = ui.interact(er, egui::Id::new(("gfx-eye", clip.0, li)), Sense::click());
+                let eresp = ui.interact(er, egui::Id::unique(("gfx-eye", clip.0, li)), Sense::click());
                 icons::paint(ui.painter(), er.shrink(2.0), if e.enabled { Icon::Eye } else { Icon::EyeOff }, t.text_dim);
                 autos.push((format!("graphics.layers.{li}.visible"), er, "Toggle visibility".into()));
                 autos.push((format!("graphics.layers.{li}"), r, layer_display_name(e, li)));
@@ -1648,7 +1648,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let (open, head) = section_header(ui, app, "Text", &t);
             // Text Properties: the layer type (point / paragraph) and text styling
             let wr = Rect::from_center_size(pos2(head.max.x - 16.0, head.center().y), vec2(22.0, 22.0));
-            let wresp = ui.interact(wr, egui::Id::new(("gfx-text-props", clip.0, l)), Sense::click());
+            let wresp = ui.interact(wr, egui::Id::unique(("gfx-text-props", clip.0, l)), Sense::click());
             icons::paint(ui.painter(), wr.shrink(4.0), Icon::Wrench, if wresp.hovered() { t.text } else { t.text_dim });
             cx.autos.push(("graphics.textProperties".into(), wr, "Text Properties".into()));
             if wresp.on_hover_text(tl!("Text Properties")).clicked() {
@@ -1845,7 +1845,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         app.auto.add(&id, r, &label);
     }
     let (down, press) = ui.ctx().input(|i| (i.pointer.any_down(), i.pointer.press_start_time()));
-    let key = egui::Id::new("gfx-props-drag-step");
+    let key = egui::Id::unique("gfx-props-drag-step");
     let begun = ui.ctx().data(|d| d.get_temp::<Option<f64>>(key)).flatten();
     let mut wrote = false;
     for (cmd, mut p) in actions {
@@ -1874,7 +1874,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut close = crate::widgets::escape_closes(ctx);
     let mut ok = false;
     let name = |paragraph: bool| if paragraph { tl!("Paragraph Text") } else { tl!("Point Text") };
-    let id = egui::Id::new("gfx-text-properties");
+    let id = egui::Id::unique("gfx-text-properties");
     egui::Window::new(tl!("Text Properties")).id(id).collapsible(false).resizable(false).centered(ctx).show(ctx, |ui| {
         ui.label(tl!("Text Layer Type"));
         let r = egui::ComboBox::from_id_salt("gfx-text-type").selected_text(name(d.paragraph)).width(190.0).show_ui(ui, |ui| {

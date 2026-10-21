@@ -37,7 +37,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let text_w = tab_text_width(ui.painter(), shown);
         let w = text_w + 16.0;
         let r = Rect::from_min_size(pos2(x, rect.min.y + 4.0), vec2(w, 24.0));
-        let resp = ui.interact(r, egui::Id::new(("text-tab", tab)), Sense::click());
+        let resp = ui.interact(r, egui::Id::unique(("text-tab", tab)), Sense::click());
         let active = app.ui.text_tab == tab;
         ui.painter().text(
             pos2(r.min.x, r.center().y),
@@ -65,7 +65,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 
 fn tool_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, icon: Icon, id: &str, label: &str, enabled: bool) -> bool {
     let t = app.tokens;
-    let resp = ui.interact(r, egui::Id::new(("text-tool", id)), if enabled { Sense::click() } else { Sense::hover() });
+    let resp = ui.interact(r, egui::Id::unique(("text-tool", id)), if enabled { Sense::click() } else { Sense::hover() });
     if enabled && resp.hovered() {
         ui.painter().rect_filled(r, 3.0, t.hover);
     }
@@ -95,7 +95,7 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         .enumerate()
         {
             let r = Rect::from_center_size(c + vec2(0.0, 26.0 + i as f32 * 34.0), vec2(200.0, 26.0));
-            let resp = ui.interact(r, egui::Id::new(id), Sense::click());
+            let resp = ui.interact(r, egui::Id::unique(id), Sense::click());
             ui.painter().rect_filled(r, 13.0, if i == 0 { if resp.hovered() { t.accent_hover } else { t.accent } } else { t.field_bg });
             ui.painter().text(r.center(), Align2::CENTER_CENTER, label, Tokens::semibold(12.0), if i == 0 { Color32::WHITE } else { t.text });
             app.auto.add(id, r, label);
@@ -112,7 +112,7 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // the track shown: the one holding the first selected caption, else C1
     let sel = app.session.state.caption_selection.clone();
     let track_idx = sel.first().and_then(|c| seq.caption_tracks.iter().position(|tr| tr.caption(*c).is_some())).unwrap_or(0);
-    let track_idx = ui.ctx().data(|d| d.get_temp::<usize>(egui::Id::new("text-cap-track"))).filter(|i| *i < seq.caption_tracks.len()).unwrap_or(track_idx);
+    let track_idx = ui.ctx().data(|d| d.get_temp::<usize>(egui::Id::unique("text-cap-track"))).filter(|i| *i < seq.caption_tracks.len()).unwrap_or(track_idx);
     let track = &seq.caption_tracks[track_idx];
 
     // ---- toolbar: search, track picker, add / split / merge / delete
@@ -123,12 +123,12 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut x = bar.min.x + 180.0f32.min(bar.width() * 0.4 + 10.0);
     let picker = Rect::from_min_size(pos2(x, bar.min.y + 1.0), vec2(130.0, 22.0));
     let label = format!("C{} · {}", track_idx + 1, track.name);
-    let presp = crate::widgets::dropdown_text(ui, picker, &label, &t, egui::Id::new("text-cap-track-picker"));
+    let presp = crate::widgets::dropdown_text(ui, picker, &label, &t, egui::Id::unique("text-cap-track-picker"));
     app.auto.add("text.captions.track", picker, "Caption track");
     egui::Popup::menu(&presp).show(|ui| {
         for (i, tr) in seq.caption_tracks.iter().enumerate() {
             if ui.selectable_label(i == track_idx, format!("C{} · {} ({})", i + 1, tr.name, crate::i18n::t(tr.format.label()))).clicked() {
-                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("text-cap-track"), i));
+                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::unique("text-cap-track"), i));
             }
         }
         ui.separator();
@@ -209,7 +209,7 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                             }
                         }
                         for (edge, val) in [("in", c.start), ("out", c.end())] {
-                            let key = egui::Id::new(("cap-tc", c.id.0, edge));
+                            let key = egui::Id::unique(("cap-tc", c.id.0, edge));
                             let mut buf = ui.data(|d| d.get_temp::<String>(key)).unwrap_or_else(|| tc(val));
                             let resp = ui.add(
                                 egui::TextEdit::singleline(&mut buf)
@@ -234,7 +234,7 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         if let Some(sp) = &c.speaker {
                             ui.label(egui::RichText::new(sp).size(11.0).color(t.text_dim).strong());
                         }
-                        let key = egui::Id::new(("cap-text", c.id.0));
+                        let key = egui::Id::unique(("cap-text", c.id.0));
                         let mut buf = ui.data(|d| d.get_temp::<String>(key)).unwrap_or_else(|| c.text.clone());
                         let resp = if crate::rtl::has_rtl(&buf) && !ui.memory(|m| m.has_focus(key.with("te"))) {
                             reading_order(ui, &buf, key.with("te"))
@@ -463,7 +463,7 @@ pub fn caption_properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect)
     let (hr, _) = bui.allocate_exact_size(vec2(bui.available_width(), 30.0), Sense::hover());
     bui.painter().text(pos2(hr.min.x, hr.center().y), Align2::LEFT_CENTER, format!("C{} · {}", track_idx + 1, track_name), Tokens::semibold(12.5), t.text);
     bui.label(egui::RichText::new(tl!("Text")).size(12.0).color(t.text_dim));
-    let key = egui::Id::new(("props-cap-text", c.id.0));
+    let key = egui::Id::unique(("props-cap-text", c.id.0));
     let mut buf = bui.data(|d| d.get_temp::<String>(key)).unwrap_or_else(|| c.text.clone());
     let resp = bui.add(egui::TextEdit::multiline(&mut buf).id(key.with("te")).desired_rows(3).desired_width(bui.available_width()).font(Tokens::ui(12.5)));
     app.auto.add("properties.caption.text", resp.rect, &c.text);
@@ -479,7 +479,7 @@ pub fn caption_properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect)
     for (edge, label, val) in [("in", tl!("In"), c.start), ("out", tl!("Out"), c.end())] {
         bui.horizontal(|ui| {
             ui.add_sized(vec2(70.0, 22.0), egui::Label::new(egui::RichText::new(label).size(12.0).color(t.text_dim)));
-            let key = egui::Id::new(("props-cap-tc", c.id.0, edge));
+            let key = egui::Id::unique(("props-cap-tc", c.id.0, edge));
             let mut buf = ui.data(|d| d.get_temp::<String>(key)).unwrap_or_else(|| tc(val));
             let resp = ui.add(egui::TextEdit::singleline(&mut buf).id(key.with("te")).desired_width(100.0).font(Tokens::mono(11.5)));
             app.auto.add(&format!("properties.caption.{edge}"), resp.rect, &tc(val));
@@ -537,7 +537,7 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         };
         ui.painter().text(c - vec2(0.0, 8.0), Align2::CENTER_CENTER, note, Tokens::ui(12.0), t.text_dim);
         let r = Rect::from_center_size(c + vec2(0.0, 26.0), vec2(200.0, 26.0));
-        let resp = ui.interact(r, egui::Id::new("text.transcript.generate"), Sense::click());
+        let resp = ui.interact(r, egui::Id::unique("text.transcript.generate"), Sense::click());
         ui.painter().rect_filled(r, 13.0, if resp.hovered() { t.accent_hover } else { t.accent });
         ui.painter().text(r.center(), Align2::CENTER_CENTER, tl!("Transcribe"), Tokens::semibold(12.0), Color32::WHITE);
         app.auto.add("text.transcript.generate", r, "Transcribe");

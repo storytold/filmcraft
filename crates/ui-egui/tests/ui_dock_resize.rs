@@ -64,7 +64,7 @@ fn focused_dock_resize_owns_arrows_and_keeps_pointer_dragging() {
     frames(&mut h, 3);
     let before_project = h.state().session.project.clone();
     let before_playheads = h.state().session.state.playheads.clone();
-    let id = Id::new(("dock-gutter", String::new()));
+    let id = Id::unique(("dock-gutter", String::new()));
     h.ctx.memory_mut(|memory| memory.request_focus(id));
     frames(&mut h, 2);
     assert_eq!(h.ctx.memory(|memory| memory.focused()), Some(id));
@@ -131,7 +131,7 @@ fn space_plays_after_a_pane_is_resized_with_the_pointer() {
     frames(&mut h, 3);
     assert_eq!(first_size(&h), 420.0);
     // The divider keeps keyboard focus so arrows can nudge it; that must not cost the editor its shortcuts.
-    assert_eq!(h.ctx.memory(|memory| memory.focused()), Some(Id::new(("dock-gutter", String::new()))));
+    assert_eq!(h.ctx.memory(|memory| memory.focused()), Some(Id::unique(("dock-gutter", String::new()))));
     press(&mut h, Key::Space);
     assert!(h.state().playback.playing, "Space must start playback after resizing a pane (#1482)");
     press(&mut h, Key::Space);

@@ -545,7 +545,7 @@ fn layout_inner(
         DockNode::Split { vertical, size, a, b } => {
             let axis = if *vertical { SplitAxis::Vertical } else { SplitAxis::Horizontal };
             let Some(split) = split_rect(rect, axis, size.shared(), t.gap, 20.0) else { return };
-            let id = egui::Id::new(("dock-gutter", path.to_string()));
+            let id = egui::Id::unique(("dock-gutter", path.to_string()));
             let handle_style = ResizeHandleStyle { hovered: t.focus.gamma_multiply(0.4), dragged: t.focus.gamma_multiply(0.9), focused: t.focus };
             let label = if *vertical { tl!("Height:") } else { tl!("Width:") };
             let response = ResizeHandle::new(id, axis, split.divider, label, handle_style).value(split.first_size(), 0.0..=split.available()).show(ui);
@@ -603,7 +603,7 @@ pub fn draw_group_chrome_details(ui: &mut egui::Ui, g: &Group, seqs: &SeqTabs, t
     // separately reorder open sequences.
     if let Some(panel) = active_panel {
         let grip = Rect::from_min_size(g.rect.min, vec2(if compact { g.rect.width() } else { 10.0 }, if compact { 8.0 } else { t.tab_h }));
-        let response = ui.interact(grip, egui::Id::new(("panel-drag", g.path.clone())), Sense::drag());
+        let response = ui.interact(grip, egui::Id::unique(("panel-drag", g.path.clone())), Sense::drag());
         reg.add_response(&format!("panel.drag.{}", panel.id()), &response, "Move panel");
         if response.drag_started() {
             actions.push(DockAction::BeginDrag(panel));
@@ -664,13 +664,13 @@ pub fn draw_group_chrome_details(ui: &mut egui::Ui, g: &Group, seqs: &SeqTabs, t
         while last + 1 < tabs.len() && span(first, last + 1) <= room {
             last += 1;
         }
-        let list_id = egui::Id::new(("tab-list", g.path.clone()));
+        let list_id = egui::Id::unique(("tab-list", g.path.clone()));
         let more = (!all_fit).then(|| Rect::from_min_size(pos2(strip.max.x - 22.0, strip.min.y + 6.0), vec2(18.0, 20.0)));
         let mut list_opened = false;
         if let Some(r) = more {
-            let resp = ui.interact(r, egui::Id::new(("tab-overflow", g.path.clone())), Sense::click());
+            let resp = ui.interact(r, egui::Id::unique(("tab-overflow", g.path.clone())), Sense::click());
             let name = if g.panels.contains(&PanelKind::Timeline) { "timeline.tabs.more".to_string() } else { format!("panel.tabs.more.{}", g.path) };
-            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, resp.enabled(), "more tabs"));
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, resp.enabled(), "more tabs"));
             reg.add_response(&name, &resp, "more tabs");
             let c = if resp.hovered() { t.tab_text_active } else { t.tab_text };
             icons::paint(&painter, r.shrink(4.0).translate(vec2(-2.0, 0.0)), Icon::ChevronRight, c);
@@ -684,7 +684,7 @@ pub fn draw_group_chrome_details(ui: &mut egui::Ui, g: &Group, seqs: &SeqTabs, t
         }
         // The wheel over the strip steps through the tabs: down = next, up = previous, one tab
         // per wheel notch (trackpad scrolling adds up to a notch first), stopping at the ends.
-        let wheel_id = egui::Id::new(("tab-wheel", g.path.clone()));
+        let wheel_id = egui::Id::unique(("tab-wheel", g.path.clone()));
         if ui.rect_contains_pointer(strip) && !tabs.is_empty() {
             const NOTCH: f32 = 40.0;
             let total = ui.ctx().data(|d| d.get_temp::<f32>(wheel_id)).unwrap_or(0.0) + crate::panels::timeline::wheel_input(ui.ctx()).delta.y;
@@ -711,8 +711,8 @@ pub fn draw_group_chrome_details(ui: &mut egui::Ui, g: &Group, seqs: &SeqTabs, t
             let tab_rect = Rect::from_min_size(pos2(x, strip.min.y), vec2(w, t.tab_h));
             // a sequence tab keeps its identity when the tabs are reordered under the pointer
             let resp = match tab.seq {
-                Some(id) => ui.interact(tab_rect, egui::Id::new(("tab-seq", g.path.clone(), id)), Sense::click_and_drag()),
-                None => ui.interact(tab_rect, egui::Id::new(("tab", g.path.clone(), i)), Sense::click_and_drag()),
+                Some(id) => ui.interact(tab_rect, egui::Id::unique(("tab-seq", g.path.clone(), id)), Sense::click_and_drag()),
+                None => ui.interact(tab_rect, egui::Id::unique(("tab", g.path.clone(), i)), Sense::click_and_drag()),
             };
             if tab.seq.is_none() && resp.drag_started() {
                 actions.push(DockAction::BeginDrag(*p));
@@ -722,7 +722,7 @@ pub fn draw_group_chrome_details(ui: &mut egui::Ui, g: &Group, seqs: &SeqTabs, t
             } else {
                 tab_rects.push((*p, tab_rect));
             }
-            resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, resp.enabled(), is_active, &tab.title));
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, resp.enabled(), is_active, &tab.title));
             ui.ctx().accesskit_node_builder(resp.id, |node| {
                 node.set_role(egui::accesskit::Role::Tab);
                 node.set_selected(is_active);
@@ -734,7 +734,7 @@ pub fn draw_group_chrome_details(ui: &mut egui::Ui, g: &Group, seqs: &SeqTabs, t
                     dragged = Some(id);
                 }
                 // Escape puts a dragged tab back where it was (egui ends the drag on Escape, #580)
-                let home = egui::Id::new(("tab-seq-home", id));
+                let home = egui::Id::unique(("tab-seq-home", id));
                 if resp.drag_started()
                     && let Some(at) = seqs.open.iter().position(|(s, _)| *s == id)
                 {
@@ -761,8 +761,8 @@ pub fn draw_group_chrome_details(ui: &mut egui::Ui, g: &Group, seqs: &SeqTabs, t
             if let Some(id) = tab.seq.filter(|_| is_active) {
                 // × closes the sequence's tab (the sequence stays in the project)
                 let cr = Rect::from_center_size(pos2(tab_rect.min.x + 10.0, text_y), vec2(8.0, 8.0));
-                let cresp = ui.interact(cr.expand(4.0), egui::Id::new(("tab-close", g.path.clone(), id)), Sense::click());
-                cresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, cresp.enabled(), "close sequence"));
+                let cresp = ui.interact(cr.expand(4.0), egui::Id::unique(("tab-close", g.path.clone(), id)), Sense::click());
+                cresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, cresp.enabled(), "close sequence"));
                 reg.add_response(&format!("timeline.tab.{id}.close"), &cresp, "close sequence");
                 let cc = if cresp.hovered() { t.tab_text_active } else { t.tab_text };
                 painter.line_segment([cr.left_top(), cr.right_bottom()], Stroke::new(1.2, cc));
@@ -775,8 +775,8 @@ pub fn draw_group_chrome_details(ui: &mut egui::Ui, g: &Group, seqs: &SeqTabs, t
             }
             if is_active {
                 let mr = Rect::from_center_size(pos2(label_x + label_w + 12.0, text_y), vec2(12.0, 10.0));
-                let mresp = ui.interact(mr.expand(3.0), egui::Id::new(("tab-menu", g.path.clone())), Sense::click());
-                mresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, mresp.enabled(), "panel menu"));
+                let mresp = ui.interact(mr.expand(3.0), egui::Id::unique(("tab-menu", g.path.clone())), Sense::click());
+                mresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, mresp.enabled(), "panel menu"));
                 reg.add_response(&format!("panel.menu.{}", p.id()), &mresp, "panel menu");
                 let mc = if mresp.hovered() { t.tab_text_active } else { t.tab_text };
                 icons::paint(&painter, Rect::from_center_size(mr.center(), vec2(16.0, 16.0)), Icon::Hamburger, mc);

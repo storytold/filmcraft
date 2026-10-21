@@ -12,7 +12,7 @@ use crate::{
 };
 
 fn state_id() -> Id {
-    Id::new("effect-controls-keyframe-selection")
+    Id::unique("effect-controls-keyframe-selection")
 }
 
 #[derive(Clone)]
@@ -112,7 +112,7 @@ impl Interaction {
         if cancelled {
             state.gesture = None;
         }
-        let background = ui.interact(area, Id::new(("ec-select", clip)), Sense::click_and_drag());
+        let background = ui.interact(area, Id::unique(("ec-select", clip)), Sense::click_and_drag());
         if background.clicked_by(egui::PointerButton::Primary) && !ui.input(|i| i.modifiers.shift) {
             app.ui.keyframe_selection.clear();
         }

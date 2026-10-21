@@ -181,7 +181,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         WorkspaceDialog::Edit { .. } => ("Edit Workspaces", tl!("Edit Workspaces")),
     };
     egui::Window::new(shown)
-        .id(egui::Id::new(title))
+        .id(egui::Id::unique(title))
         .collapsible(false)
         .resizable(false)
         .pivot(Align2::CENTER_CENTER)

@@ -34,7 +34,7 @@ fn harness_at_scale(width: f32, kind: ThemeKind, which: Which, scale: f32) -> Ha
                 monitor::show(app, ui, group.content, which);
             }
             let source = filmcraft_ui_egui::panels::dragged_source(ui);
-            ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("observed-source-drag"), source));
+            ui.ctx().data_mut(|data| data.insert_temp(egui::Id::unique("observed-source-drag"), source));
         },
         FilmcraftApp::new(session),
     );
@@ -178,6 +178,7 @@ fn transport_editor_keeps_its_own_space_and_customizes_compact_controls() {
                 delta: vec2(0.0, -1200.0),
                 modifiers: Modifiers::NONE,
                 phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
             });
             h.run_steps(5);
             let reset = element(&h, "program.transport.editor.reset");
@@ -232,7 +233,7 @@ fn source_drag_choices(width: f32) {
         h.run_steps(2);
         let source = h
             .ctx
-            .data(|data| data.get_temp::<Option<filmcraft_ui_egui::panels::source_drag::SourceDrag>>(egui::Id::new("observed-source-drag")))
+            .data(|data| data.get_temp::<Option<filmcraft_ui_egui::panels::source_drag::SourceDrag>>(egui::Id::unique("observed-source-drag")))
             .flatten()
             .expect("drag must create the production Source payload");
         assert_eq!((source.video, source.audio), (video, audio));

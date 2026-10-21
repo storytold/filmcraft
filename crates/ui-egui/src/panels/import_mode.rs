@@ -28,7 +28,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let cw = 260.0;
     for (i, (title, cmd, sub)) in cards.iter().enumerate() {
         let r = Rect::from_min_size(rect.min + vec2(24.0 + i as f32 * (cw + 16.0), 90.0), vec2(cw, 150.0));
-        let resp = ui.interact(r, egui::Id::new(("imp", *cmd)), Sense::click());
+        let resp = ui.interact(r, egui::Id::unique(("imp", *cmd)), Sense::click());
         app.auto.add(&format!("import.{cmd}"), r, title);
         ui.painter().rect_filled(r, 8.0, if resp.hovered() { t.hover } else { t.tl_header_bg });
         ui.painter().text(r.min + vec2(16.0, 110.0), Align2::LEFT_CENTER, *title, Tokens::semibold(14.0), t.text);
@@ -56,7 +56,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let label = if primary { tl!("Join us on Discord") } else { crate::i18n::t(label) };
         let g = ui.painter().layout_no_wrap(label.to_string(), Tokens::ui(13.0), t.text);
         let r = Rect::from_min_size(pos2(x, rect.min.y + y + 18.0), vec2(g.size().x + 44.0, 34.0));
-        let resp = ui.interact(r, egui::Id::new(("imp-link", *id)), Sense::click()).on_hover_text(*url);
+        let resp = ui.interact(r, egui::Id::unique(("imp-link", *id)), Sense::click()).on_hover_text(*url);
         app.auto.add(&format!("import.link.{}", id.trim_start_matches("help.")), r, label);
         let (bg, fg) = if primary {
             (if resp.hovered() { t.accent_hover } else { t.accent }, Color32::WHITE)
@@ -92,7 +92,7 @@ fn recent(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, y: f32) -> f32 
         let row =
             Rect::from_min_size(rect.min + vec2(16.0, y + 16.0 + i as f32 * RECENT_ROW_H), vec2(560.0_f32.min(rect.width() - 32.0).max(0.0), RECENT_ROW_H));
         let name = crate::menus::recent_name(path);
-        let resp = ui.interact(row, egui::Id::new(("imp-recent", i)), Sense::click()).on_hover_text(path.as_str());
+        let resp = ui.interact(row, egui::Id::unique(("imp-recent", i)), Sense::click()).on_hover_text(path.as_str());
         app.auto.add(&format!("import.recent.{i}"), row, &name);
         if resp.hovered() {
             ui.painter().rect_filled(row, 4.0, t.hover);

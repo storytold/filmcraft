@@ -90,7 +90,7 @@ fn ensure() -> Result<(), DevIconError> {
     }
     let applications = user_dir.join("applications");
     std::fs::create_dir_all(&applications).map_err(DevIconError::Io)?;
-    let body = desktop_file_content(crate::APP_ID, "FilmCraft", exe);
+    let body = desktop_file_content(exe);
     std::fs::write(applications.join(&file_name), body).map_err(DevIconError::Io)?;
     Ok(())
 }
@@ -199,24 +199,18 @@ fn unescape_string_value(value: &str) -> String {
     out
 }
 
-/// The `.desktop` body: same fields as `packaging/linux/ai.storyteller.filmcraft.desktop`, with
-/// `Exec` pointing at this exact binary (a dev build isn't on `$PATH`, so `TryExec` is left out)
-/// and the icon by theme name.
-fn desktop_file_content(app_id: &str, name: &str, exe: &str) -> String {
-    let mut out = String::new();
-    out.push_str("[Desktop Entry]\n");
-    out.push_str("Type=Application\n");
-    out.push_str(&format!("Name={name}\n"));
-    out.push_str("GenericName=Video Editor\n");
-    out.push_str("Comment=Edit video, color and sound\n");
-    out.push_str(&format!("Exec=\"{}\" %F\n", escape_exec_argument(exe)));
-    out.push_str(&format!("Icon={app_id}\n"));
-    out.push_str("Terminal=false\n");
-    out.push_str("StartupNotify=true\n");
-    out.push_str(&format!("StartupWMClass={app_id}\n"));
-    out.push_str("Categories=AudioVideo;Video;AudioVideoEditing;\n");
-    out.push_str("Keywords=video;editor;film;timeline;color;grading;nle;\n");
-    out
+/// The packaged desktop entry, the one source for the dev entry's fields (a hand-kept copy here
+/// fell behind when the packaged entry gained `MimeType=`).
+const PACKAGED_DESKTOP_ENTRY: &str = include_str!("../../../packaging/linux/ai.storyteller.filmcraft.desktop");
+
+/// The `.desktop` body: the packaged entry with `Exec` pointing at this exact binary (a dev build
+/// isn't on `$PATH`, so `TryExec` is left out).
+fn desktop_file_content(exe: &str) -> String {
+    PACKAGED_DESKTOP_ENTRY
+        .lines()
+        .filter(|l| !l.starts_with("TryExec="))
+        .map(|l| if l.starts_with("Exec=") { format!("Exec=\"{}\" %F\n", escape_exec_argument(exe)) } else { format!("{l}\n") })
+        .collect()
 }
 
 /// Escape `s` for the `Exec=` value's two layers, like `packaging/linux/install.sh`: first the
@@ -269,17 +263,15 @@ mod tests {
     }
 
     #[test]
-    fn desktop_file_matches_the_packaged_fields() {
-        let packaged = include_str!("../../../packaging/linux/ai.storyteller.filmcraft.desktop");
-        let expected = packaged
-            .lines()
-            .filter(|l| !l.starts_with("TryExec="))
-            .map(|l| if l.starts_with("Exec=") { "Exec=\"/target/debug/filmcraft\" %F" } else { l })
-            .collect::<Vec<_>>()
-            .join("\n")
-            + "\n";
-        let body = desktop_file_content("ai.storyteller.filmcraft", "FilmCraft", "/target/debug/filmcraft");
-        assert_eq!(body, expected);
+    fn desktop_file_is_the_packaged_entry_with_this_binary() {
+        let body = desktop_file_content("/target/debug/filmcraft");
+        assert!(body.lines().any(|l| l == "Exec=\"/target/debug/filmcraft\" %F"));
+        assert!(!body.contains("TryExec="));
+        assert!(body.lines().any(|l| l.starts_with("MimeType=")), "file managers offer FilmCraft through MimeType");
+        // The shell matches the window to this entry by app id.
+        for key in ["Icon", "StartupWMClass"] {
+            assert!(body.lines().any(|l| l == format!("{key}={}", crate::APP_ID)), "{key}= must be the app id");
+        }
     }
 
     /// Both layers are escaped, like install.sh: shell first (`` ` `` `"` `$` `\` get a
@@ -298,7 +290,7 @@ mod tests {
     #[test]
     fn exec_round_trips_through_both_layers() {
         for exe in ["/home/dev/Projects/filmcraft/target/debug/filmcraft", "/opt/film craft/filmcraft", "/a$b\"c`d\\e"] {
-            let body = desktop_file_content("ai.storyteller.filmcraft", "FilmCraft", exe);
+            let body = desktop_file_content(exe);
             assert_eq!(exec_line(&body).as_deref(), Some(exe));
             assert!(desktop_file_exec_is_ours(&body, exe));
         }
@@ -308,7 +300,7 @@ mod tests {
     /// prefix, and a packaged `Exec=filmcraft` are all someone else's entry.
     #[test]
     fn desktop_file_exec_is_ours_matches_only_our_binary() {
-        let body = desktop_file_content("ai.storyteller.filmcraft", "FilmCraft", "/a/filmcraft");
+        let body = desktop_file_content("/a/filmcraft");
         assert!(!desktop_file_exec_is_ours(&body, "/a/filmcraft-old"));
         assert!(!desktop_file_exec_is_ours(&body, "/b/filmcraft"));
         assert!(!desktop_file_exec_is_ours("Exec=filmcraft %F\n", "/a/filmcraft"));

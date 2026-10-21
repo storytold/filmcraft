@@ -129,7 +129,7 @@ fn match_params(d: &LinkMediaDraft) -> Value {
 }
 
 fn preview_texture(app: &FilmcraftApp, ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
-    let key = egui::Id::new(("link-preview", path));
+    let key = egui::Id::unique(("link-preview", path));
     if let Some(t) = ctx.data(|d| d.get_temp::<Option<egui::TextureHandle>>(key)) {
         return t;
     }
@@ -161,7 +161,7 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let rows_max_h = (ctx.content_rect().height() * 0.3).clamp(90.0, 320.0);
     let width = (ctx.content_rect().width() - 40.0).clamp(1.0, 760.0);
     egui::Window::new(tl!("Link Media"))
-        .id(egui::Id::new("Link Media"))
+        .id(egui::Id::unique("Link Media"))
         .collapsible(false)
         .resizable(false)
         .default_width(width)
@@ -371,7 +371,7 @@ fn make_offline(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut ok = false;
     let n = app.session.state.project_selection.len();
     egui::Window::new(tl!("Make Offline"))
-        .id(egui::Id::new("Make Offline"))
+        .id(egui::Id::unique("Make Offline"))
         .collapsible(false)
         .resizable(false)
         .pivot(egui::Align2::CENTER_CENTER)
@@ -416,7 +416,7 @@ fn create_proxies(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut ok = false;
     let mut browse = false;
     egui::Window::new(tl!("Create Proxies"))
-        .id(egui::Id::new("Create Proxies"))
+        .id(egui::Id::unique("Create Proxies"))
         .collapsible(false)
         .resizable(false)
         .pivot(egui::Align2::CENTER_CENTER)
@@ -489,14 +489,14 @@ fn pm_params(d: &ProjectManagerDraft, dry: bool) -> Value {
 
 fn project_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.project_manager.clone() else { return };
-    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("project-manager-before-drag"), &mut d);
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::unique("project-manager-before-drag"), &mut d);
     let before = d.clone();
     let mut elems: Elems = Vec::new();
     let mut keep = true;
     let (mut ok, mut calc, mut browse) = (false, false, false);
     let seqs: Vec<(u64, String)> = app.session.project.sequences().map(|i| (i.id.0, i.name.clone())).collect();
     egui::Window::new(tl!("Project Manager"))
-        .id(egui::Id::new("Project Manager"))
+        .id(egui::Id::unique("Project Manager"))
         .collapsible(false)
         .resizable(false)
         .pivot(egui::Align2::CENTER_CENTER)

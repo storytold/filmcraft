@@ -15,7 +15,7 @@ fn push(app: &mut FilmcraftApp, id: &str, r: &egui::Response, label: &str) {
 
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.project_panel.dialog.clone() else { return };
-    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("project-dialog-before-drag"), &mut d);
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::unique("project-dialog-before-drag"), &mut d);
     let mut close = false;
     let mut run: Option<(String, Value)> = None;
     let title = match &d {
@@ -25,7 +25,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         ProjectDialog::FreeformOptions { .. } => tl!("Freeform View Options"),
         ProjectDialog::SaveArrangement { .. } => tl!("Save Arrangement"),
     };
-    let mut win = egui::Window::new(title).id(egui::Id::new("project-dialog")).collapsible(false).resizable(false).centered(ctx);
+    let mut win = egui::Window::new(title).id(egui::Id::unique("project-dialog")).collapsible(false).resizable(false).centered(ctx);
     // a fixed size keeps the two-list dialog from shifting while its lists settle
     if matches!(d, ProjectDialog::MetadataDisplay { .. }) {
         win = win.fixed_size(egui::vec2(480.0, 470.0));

@@ -96,6 +96,45 @@ fn point(app: &FilmcraftApp, p: &Value) -> Result<egui::Pos2, String> {
     Ok(egui::pos2(x as f32, y as f32))
 }
 
+/// How long an input or screenshot request waits for a `ui` pass to start before the window
+/// counts as not drawn. A hidden window never draws, so this only has to outlast the gap between
+/// passes of a visible one; a pass that starts in time may take as long as it needs. Wall-clock
+/// time, so the wait doesn't depend on passes running.
+pub(crate) const NOT_DRAWN: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The reply to a request that needs a drawn frame while the window isn't drawn.
+pub(crate) const NOT_DRAWN_ERROR: &str = "the window is not being drawn (on another workspace or covered): \
+synthetic input and screenshots need it on screen; engine and inspect requests still work. The request was not run";
+
+/// What becomes of a request waiting for a drawn frame.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum AwaitFrame {
+    /// A `ui` pass started within [`NOT_DRAWN`] of it coming in: it can go ahead.
+    Release,
+    /// None did: answer it with [`NOT_DRAWN_ERROR`].
+    NotDrawn,
+    Wait,
+}
+
+/// [`AwaitFrame`] for a request that has waited `waited`, where `first_pass` is how long after it
+/// came in the first `ui` pass started, if one has. Measured at the pass's start, so a slow frame
+/// (software rendering a large window) does not count against it, and a pass that only starts
+/// after the deadline does not run it late.
+pub(crate) fn await_frame(first_pass: Option<std::time::Duration>, waited: std::time::Duration) -> AwaitFrame {
+    match first_pass {
+        Some(t) if t < NOT_DRAWN => AwaitFrame::Release,
+        Some(_) => AwaitFrame::NotDrawn,
+        None if waited >= NOT_DRAWN => AwaitFrame::NotDrawn,
+        None => AwaitFrame::Wait,
+    }
+}
+
+/// Requests that only complete in a drawn frame: synthetic input runs in `ui` passes and a
+/// screenshot needs a presented frame.
+pub(crate) fn needs_drawn_frame(method: &str) -> bool {
+    matches!(method, "ui.click" | "ui.move" | "ui.drag" | "ui.scroll" | "ui.key" | "ui.type" | "ui.screenshot")
+}
+
 pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
     let p = &req.params;
     let s = |k: &str| p.get(k).and_then(Value::as_str);
@@ -372,6 +411,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                 delta: egui::vec2(dx, dy),
                 modifiers: modifiers(p),
                 phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
             });
             app.synthetic.push(egui::Event::PointerButton {
                 pos: egui::pos2(-100.0, -100.0),
@@ -618,6 +658,32 @@ pub fn encode_png(rgba: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
     chunk(&mut out, b"IDAT", &z);
     chunk(&mut out, b"IEND", &[]);
     Ok(out)
+}
+
+#[cfg(test)]
+mod drawn_frame_tests {
+    #[test]
+    fn only_input_and_screenshots_need_a_drawn_frame() {
+        for m in ["ui.click", "ui.move", "ui.drag", "ui.scroll", "ui.key", "ui.type", "ui.screenshot"] {
+            assert!(super::needs_drawn_frame(m), "{m}");
+        }
+        for m in ["engine.execute", "ui.inspect", "ui.elements", "ui.set", "app.quit", ""] {
+            assert!(!super::needs_drawn_frame(m), "{m}");
+        }
+    }
+
+    #[test]
+    fn a_request_waits_for_a_ui_pass_until_its_deadline() {
+        use super::{AwaitFrame, NOT_DRAWN, await_frame};
+        let ms = std::time::Duration::from_millis;
+        assert_eq!(await_frame(None, ms(10)), AwaitFrame::Wait, "no pass yet");
+        assert_eq!(await_frame(Some(ms(5)), ms(10)), AwaitFrame::Release, "a pass started since it came in");
+        assert_eq!(await_frame(None, NOT_DRAWN), AwaitFrame::NotDrawn, "none within the deadline");
+        // A pass that starts after the deadline does not run it late.
+        assert_eq!(await_frame(Some(NOT_DRAWN + ms(1)), NOT_DRAWN + ms(2)), AwaitFrame::NotDrawn);
+        // A pass that started in time but took 3 s (a slow frame) still runs it.
+        assert_eq!(await_frame(Some(ms(5)), ms(3_000)), AwaitFrame::Release);
+    }
 }
 
 #[cfg(test)]

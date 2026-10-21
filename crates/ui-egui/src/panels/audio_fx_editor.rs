@@ -191,13 +191,13 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         let kind = if matches!(target, FxTarget::Clip { .. }) { tl!("Clip Fx Editor") } else { tl!("Track Fx Editor") };
         let title = format!("{kind} - {name}: {place}");
         let k = key(&target);
-        let drafts_id = egui::Id::new(("fx-editor-drafts", &k));
+        let drafts_id = egui::Id::unique(("fx-editor-drafts", &k));
         let drafts: HashMap<String, f64> = ctx.data(|d| d.get_temp(drafts_id)).unwrap_or_default();
         let fx_id = inst.effect.clone();
         let mut ed = Ed { t: app.tokens, fx: &fx_id, target: &target, inst, mt, drafts, acts: Vec::new(), autos: Vec::new() };
         let mut open = true;
         let mut closed = false;
-        egui::Window::new(title).id(egui::Id::new(("fx-editor", &k))).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+        egui::Window::new(title).id(egui::Id::unique(("fx-editor", &k))).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             match ed.fx {
                 "parametric_eq" => parametric(ui, &mut ed),
                 "graphic_eq" | "graphic_eq_20" | "graphic_eq_30" => graphic(ui, &mut ed),
@@ -322,7 +322,7 @@ fn parametric(ui: &mut egui::Ui, ed: &mut Ed) {
         let g = if gain { ed.v(&g_id) } else { 0.0 };
         let c = pos2(x_of(f, r), y_of(g, r, range));
         let nr = Rect::from_center_size(c, vec2(16.0, 16.0));
-        let id = egui::Id::new(("peq-node", ed.target.clone(), pre));
+        let id = egui::Id::unique(("peq-node", ed.target.clone(), pre));
         let resp = ui.interact(nr, id, Sense::click_and_drag());
         let on = ed.on(&on_id);
         let col = if on { ed.t.eq_node } else { ed.t.eq_node_off };
@@ -390,7 +390,7 @@ fn graphic(ui: &mut egui::Ui, ed: &mut Ed) {
         let v = ed.v(&pid);
         let ky = track.center().y - (v / 24.0) as f32 * track.height() * 0.5;
         let knob = Rect::from_center_size(pos2(x, ky), vec2(colw.min(18.0), 8.0));
-        let id = egui::Id::new(("geq-band", ed.target.clone(), i));
+        let id = egui::Id::unique(("geq-band", ed.target.clone(), i));
         let resp = ui.interact(knob.union(track).expand(3.0), id, Sense::click_and_drag());
         ui.painter().rect_filled(knob, 2.0, if resp.hovered() || resp.dragged() { ed.t.eq_knob_active } else { ed.t.eq_knob });
         ui.painter().text(pos2(x, area.max.y - 22.0), Align2::CENTER_CENTER, format!("{v:+.0}"), Tokens::ui(8.5), ed.t.text_dim);
@@ -470,7 +470,7 @@ fn multiband(ui: &mut egui::Ui, ed: &mut Ed) {
     for (k, pid) in ["xo1", "xo2", "xo3"].iter().enumerate() {
         let x = edges[k + 1];
         let hr = Rect::from_center_size(pos2(x, r.center().y), vec2(10.0, r.height()));
-        let resp = ui.interact(hr, egui::Id::new(("mb-xo", ed.target.clone(), k)), Sense::drag());
+        let resp = ui.interact(hr, egui::Id::unique(("mb-xo", ed.target.clone(), k)), Sense::drag());
         ui.painter()
             .line_segment([pos2(x, r.min.y), pos2(x, r.max.y)], Stroke::new(if resp.hovered() || resp.dragged() { 2.5 } else { 1.5 }, ed.t.crossover_handle));
         ui.painter().text(pos2(x + 3.0, r.min.y + 2.0), Align2::LEFT_TOP, format!("{:.0} Hz", xo[k]), Tokens::ui(9.0), ed.t.text_dim);

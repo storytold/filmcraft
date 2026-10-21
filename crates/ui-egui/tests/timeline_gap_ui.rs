@@ -177,9 +177,16 @@ fn the_gap_menu_follows_an_edit_point_menu() {
     assert!(d.rect("timeline.editPointMenu.rippleIn").is_none(), "not the edit point menu");
 }
 
+/// The shortcut editor lists every command, including the Japanese language command, named in
+/// Japanese: without craft-fonts there is no CJK face to draw it (AGENTS.md §1.9), so it draws boxes.
+fn allow_missing_cjk(d: &Driver) {
+    d.harness.ctx.set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+}
+
 #[test]
 fn close_gap_can_be_found_assigned_and_run_from_the_shortcut_editor() {
     let (mut d, a, b) = Driver::two_clips();
+    allow_missing_cjk(&d);
     let before = serde_json::to_value(&d.harness.state().session.project).unwrap();
     d.ok("ui.menu.invoke", json!({"id":"app.keyboardShortcuts"}));
     d.frames(4);
