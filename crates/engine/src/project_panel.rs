@@ -218,7 +218,7 @@ pub const DEFAULT_COLUMNS: [&str; 12] = [
 ];
 
 /// Every built-in column (Metadata Display ▸ Project Metadata), in display order.
-pub const BUILTIN_COLUMNS: [&str; 36] = [
+pub const BUILTIN_COLUMNS: [&str; 37] = [
     "Name",
     "Label",
     "Media Type",
@@ -250,6 +250,7 @@ pub const BUILTIN_COLUMNS: [&str; 36] = [
     "Description",
     "Scene",
     "Shot",
+    "Take",
     "Log Note",
     "Comment",
     "Tape Name",

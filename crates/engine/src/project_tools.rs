@@ -754,6 +754,9 @@ pub fn closure(p: &Project, roots: &[ItemId]) -> BTreeSet<ItemId> {
         }
         match &it.kind {
             ItemKind::Subclip { parent, .. } => todo.push(*parent),
+            ItemKind::Script(doc) => {
+                todo.extend(doc.slates.iter().flat_map(|slate| slate.takes.iter()).filter_map(|take| take.source));
+            }
             ItemKind::Sequence(q) => {
                 for t in q.all_tracks() {
                     todo.extend(t.items.iter().map(|i| i.item));

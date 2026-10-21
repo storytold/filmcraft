@@ -46,6 +46,7 @@ pub mod relink;
 pub mod remix;
 pub mod scene_detect;
 pub mod scopes;
+pub mod script_commands;
 pub mod sequence_extras;
 pub mod sequence_tools;
 pub mod settings;
@@ -1199,7 +1200,7 @@ pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick
                 id = *parent;
                 continue;
             }
-            filmcraft_project::ItemKind::AdjustmentLayer { .. } | filmcraft_project::ItemKind::Graphic { .. } => None,
+            filmcraft_project::ItemKind::AdjustmentLayer { .. } | filmcraft_project::ItemKind::Graphic { .. } | filmcraft_project::ItemKind::Script(_) => None,
         };
     }
     None

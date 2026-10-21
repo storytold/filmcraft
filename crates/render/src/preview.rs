@@ -344,6 +344,7 @@ fn hash_source(h: &mut Fnv128, project: &Project, id: ItemId, kind: TrackKind, d
         }
         ItemKind::AdjustmentLayer { .. } => h.json(&("adjustment", &pi.kind)),
         ItemKind::Graphic { .. } => h.json(&("graphic", &pi.kind)),
+        ItemKind::Script(_) => h.json(&"script-not-media"),
         ItemKind::Sequence(s) => {
             h.json(&("sequence", &s.settings));
             if kind == TrackKind::Audio {
@@ -459,6 +460,7 @@ fn decode_cost_ms(project: &Project, id: ItemId, depth: u32) -> f64 {
         }
         ItemKind::Subclip { parent, .. } => decode_cost_ms(project, *parent, depth + 1),
         ItemKind::AdjustmentLayer { .. } => 0.0,
+        ItemKind::Script(_) => 0.0,
         // vector layers are drawn on the CPU (cached while static)
         ItemKind::Graphic { .. } => 1.5,
         ItemKind::Sequence(s) => {

@@ -627,6 +627,7 @@ pub(crate) fn base_layer(
             }
         }
         ItemKind::AdjustmentLayer { .. } => return None,
+        ItemKind::Script(_) => return None,
         ItemKind::Graphic { .. } => {
             // standard effects work on the graphic at source resolution, then Motion places it
             let (gw, gh) = (((src_size.0 as f32 * want).ceil() as usize).max(1), ((src_size.1 as f32 * want).ceil() as usize).max(1));
