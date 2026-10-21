@@ -57,14 +57,16 @@ pub(crate) fn parse_time(s: &str) -> Option<Tick> {
         if b == 0 {
             return None;
         }
-        let n = a * TICKS_PER_SECOND as i128;
+        // a time too long for a tick count is not a time (checked: the values are the file's)
+        let n = a.checked_mul(TICKS_PER_SECOND as i128)?;
         // Exact for every broadcast rate; round to the nearest tick otherwise.
-        let q = n.div_euclid(b);
-        let r = n.rem_euclid(b);
-        return Some(Tick((if 2 * r >= b.abs() { q + 1 } else { q }) as i64));
+        let q = n.checked_div_euclid(b)?;
+        let r = n.checked_rem_euclid(b)?;
+        let q = if r.checked_mul(2)? >= b.checked_abs()? { q.checked_add(1)? } else { q };
+        return i64::try_from(q).ok().map(Tick);
     }
     if let Ok(i) = s.parse::<i64>() {
-        return Some(Tick(i * TICKS_PER_SECOND));
+        return i.checked_mul(TICKS_PER_SECOND).map(Tick);
     }
     s.parse::<f64>().ok().map(Tick::from_seconds_f64)
 }
@@ -1196,5 +1198,20 @@ mod tests {
         assert_eq!(parse_time(&fmt_time(odd, r)), Some(odd));
         assert_eq!(rate_from_frame_duration("1001/30000s"), Some(FrameRate::FPS_29_97));
         assert_eq!(rate_from_frame_duration("100/2500s"), Some(FrameRate::FPS_25));
+    }
+
+    /// Times too long for a tick count overflowed (a panic in debug builds, a wrapped time in
+    /// release builds); they are not times.
+    #[test]
+    fn times_too_long_are_rejected() {
+        let max_s = i64::MAX / TICKS_PER_SECOND;
+        assert_eq!(parse_time(&format!("{max_s}s")), Some(Tick(max_s * TICKS_PER_SECOND)));
+        assert_eq!(parse_time(&format!("{}s", max_s + 1)), None);
+        assert_eq!(parse_time("-9223372036854775808s"), None);
+        assert_eq!(parse_time("99999999999999999999/1s"), None);
+        assert_eq!(parse_time("170141183460469231731687303715884105727/1s"), None);
+        assert_eq!(parse_time("-170141183460469231731687303715884105728/-1s"), None);
+        assert_eq!(parse_time("1/-170141183460469231731687303715884105728s"), None);
+        assert_eq!(parse_time("-1001/24000s"), Some(-FrameRate::FPS_23_976.frame_duration()));
     }
 }

@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: ROADMAP's "Where we are lacking" re-measured against Premiere Pro 26.5.2 and the open issue list) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** minor (regression evidence for ten reliability fixes; parity estimates unchanged) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -79,6 +79,15 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G4. Crashes at start-up, and no test CI on pull requests
 
+- Regression coverage for the reliability batch: linked-clip selection and deletion (#1163),
+  unreadable overlays preserving lower tracks (#1563), VP9 worker starvation (#1283), H.264 YUV
+  conversion hangs (#1329), Unicode image-sequence names (#1565) and file URLs (#1591), malformed
+  FCPXML times and FCP7 timebases, healing cuts without losing audio choices or links (#1786),
+  SCC/MCC pop-on timing (#1791), and phone frame-rate detection (#1700). Tests live in the
+  engine individual-selection, sequence and multicam groups; render offline tests; VP9
+  conformance; export YUV tests; media sequence tests; interchange unit and mutation tests;
+  caption round trips; and codec rounded-timestamp tests. The combined interchange fuzzer no
+  longer exempts Unicode URLs, and duration-outlier arithmetic has an overflow regression.
 - **Have:** a graphics start-up fallback (#820): after two starts in a row that died within 15 s
   of launch without painting (a driver crash in wgpu instance / device creation; hangs, later
   crashes and concurrent instances don't count), the next launch moves on to DirectX 12 only
@@ -317,6 +326,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-14 | minor | Record regression coverage for ten reliability fixes and their integration guards; parity estimates unchanged |
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |

@@ -2,10 +2,13 @@
 //!
 //! - A **through edit** is a cut between two adjacent pieces of the same source that continue each
 //!   other in media time (what Add Edit leaves behind). The timeline can mark them (Sequence ▸ Show
-//!   Through Edits) and Join Through Edits heals them; the left piece's attributes win.
+//!   Through Edits) and Join Through Edits heals them; the left piece's source attributes and effects
+//!   win, while surviving partners of both pieces remain linked.
 //! - A **gap** is empty time followed by material: on one track, or on every track at once (Sequence
 //!   ▸ Go to Gap).
 //! - [`clip_item_to`] trims a copy of an item to a time range (Make Subsequence).
+
+use std::collections::HashMap;
 
 use filmcraft_project::{ClipId, Sequence, Track, TrackId, TrackItem};
 use filmcraft_time::{Tick, TimeRange};
@@ -17,9 +20,17 @@ use crate::remove_orphan_transitions;
 const MEDIA_SLACK: i64 = 2;
 
 /// Whether the cut between adjacent items `a` (left) and `b` (right) is a through edit: same
-/// source, same speed and direction, and `b` continues `a` in media time.
+/// source, audio stream and stored channel mapping, same speed and direction, and `b` continues
+/// `a` in media time. A current channel count cannot prove equivalence after source changes.
 pub fn is_through_edit(a: &TrackItem, b: &TrackItem) -> bool {
-    if a.end() != b.start || a.item != b.item || a.speed != b.speed || a.reverse != b.reverse || a.multicam != b.multicam {
+    if a.end() != b.start
+        || a.item != b.item
+        || a.audio_stream != b.audio_stream
+        || a.source_channels != b.source_channels
+        || a.speed != b.speed
+        || a.reverse != b.reverse
+        || a.multicam != b.multicam
+    {
         return false;
     }
     match (a.frame_hold, b.frame_hold) {
@@ -29,6 +40,57 @@ pub fn is_through_edit(a: &TrackItem, b: &TrackItem) -> bool {
     }
     let diff = if a.reverse { b.source_out() - a.source_in } else { b.source_in - a.source_out() };
     diff.0.abs() <= MEDIA_SLACK
+}
+
+/// Retain the partners of both pieces when a join removes one link group.
+#[derive(Default)]
+pub(crate) struct JoinedLinks {
+    parents: HashMap<u64, u64>,
+}
+
+impl JoinedLinks {
+    fn root(&mut self, link: u64) -> u64 {
+        let mut root = link;
+        for _ in 0..self.parents.len() {
+            let Some(&parent) = self.parents.get(&root) else { break };
+            root = parent;
+        }
+        let mut current = link;
+        for _ in 0..self.parents.len() {
+            let Some(&parent) = self.parents.get(&current) else { break };
+            self.parents.insert(current, root);
+            current = parent;
+        }
+        root
+    }
+
+    pub(crate) fn merge(&mut self, left: Option<u64>, right: Option<u64>) -> Option<u64> {
+        match (left, right) {
+            (Some(a), Some(b)) => {
+                let (a, b) = (self.root(a), self.root(b));
+                // Only distinct roots are connected; project link ids cannot create a cycle.
+                if a != b {
+                    self.parents.insert(b, a);
+                }
+                Some(a)
+            }
+            (Some(link), None) | (None, Some(link)) => Some(self.root(link)),
+            (None, None) => None,
+        }
+    }
+
+    pub(crate) fn apply_track(&mut self, track: &mut Track) {
+        for item in &mut track.items {
+            item.link = item.link.map(|link| self.root(link));
+        }
+    }
+
+    pub(crate) fn apply(&mut self, seq: &mut Sequence) {
+        // Link maintenance preserves shared relationships, including locked partners; their content stays fixed.
+        for track in seq.all_tracks_mut() {
+            self.apply_track(track);
+        }
+    }
 }
 
 /// One through edit on a track.
@@ -56,8 +118,9 @@ pub fn through_edits(seq: &Sequence) -> Vec<ThroughEdit> {
 }
 
 /// Join through edits on unlocked tracks. With `only` non-empty, just the edits whose left or right
-/// piece is listed. The left piece absorbs the right one (keeping its own effects and attributes);
-/// a transition sitting on the cut is removed. Returns the number of edits joined.
+/// piece is listed. The left piece absorbs the right one, keeping its effects and source attributes;
+/// surviving linked partners remain linked to the joined piece. A transition sitting on the cut is
+/// removed. Returns the number of edits joined.
 pub fn join_through_edits(seq: &mut Sequence, only: &[ClipId]) -> usize {
     join_through_edits_where(seq, |a, b| only.is_empty() || only.contains(&a) || only.contains(&b))
 }
@@ -65,6 +128,7 @@ pub fn join_through_edits(seq: &mut Sequence, only: &[ClipId]) -> usize {
 /// Join the through edits on unlocked tracks whose (left, right) pieces `wanted` accepts.
 pub fn join_through_edits_where(seq: &mut Sequence, wanted: impl Fn(ClipId, ClipId) -> bool) -> usize {
     let mut n = 0;
+    let mut links = JoinedLinks::default();
     for tr in seq.all_tracks_mut() {
         if tr.locked {
             continue;
@@ -78,7 +142,9 @@ pub fn join_through_edits_where(seq: &mut Sequence, wanted: impl Fn(ClipId, Clip
             }
             let (aid, bid) = (a.id, b.id);
             let (dur, b_source_in) = (b.duration, b.source_in);
+            let link = links.merge(a.link, b.link);
             let left = &mut tr.items[i];
+            left.link = link;
             left.duration += dur;
             if left.reverse {
                 // reversed: the right piece shows the earlier media
@@ -98,6 +164,7 @@ pub fn join_through_edits_where(seq: &mut Sequence, wanted: impl Fn(ClipId, Clip
         }
         remove_orphan_transitions(tr);
     }
+    links.apply(seq);
     n
 }
 
@@ -239,6 +306,60 @@ mod tests {
         other.item = ItemId(2);
         let q = seq_with(vec![item(10, 0, 40, 500), other]);
         assert!(through_edits(&q).is_empty());
+    }
+
+    #[test]
+    fn different_audio_sources_are_not_through_edits() {
+        let left = item(10, 0, 40, 500);
+        for (stream, channels) in [(1, vec![]), (0, vec![1])] {
+            let mut right = item(11, 40, 60, 540);
+            right.audio_stream = stream;
+            right.source_channels = channels;
+            let mut q = seq_with(Vec::new());
+            q.audio_tracks[0].items = vec![left.clone(), right];
+            let before = q.clone();
+            assert!(through_edits(&q).is_empty(), "different stream/channel mapping must preserve the cut");
+            assert_eq!(join_through_edits(&mut q, &[]), 0);
+            assert_eq!(q, before, "joining cannot replace a different audio source");
+        }
+    }
+
+    #[test]
+    fn partial_joins_retain_all_linked_partners() {
+        let mut q = seq_with(vec![item(10, 0, 30, 0), item(11, 30, 30, 30), item(12, 60, 30, 60)]);
+        for (i, clip) in q.video_tracks[0].items.iter_mut().enumerate() {
+            clip.link = Some(100 + i as u64);
+            let mut audio = clip.clone();
+            audio.id = ClipId(20 + i as u64);
+            audio.source_channels = vec![i as u16];
+            q.audio_tracks[0].items.push(audio);
+        }
+        let mut expected_audio = q.audio_tracks[0].items.clone();
+        for audio in &mut expected_audio {
+            audio.link = Some(100);
+        }
+        assert_eq!(join_through_edits(&mut q, &[]), 2);
+        assert_eq!(q.video_tracks[0].items.len(), 1);
+        assert_eq!(q.video_tracks[0].items[0].link, Some(100));
+        assert_eq!(q.audio_tracks[0].items, expected_audio);
+    }
+
+    #[test]
+    fn joining_keeps_one_sided_links_and_handles_repeated_groups() {
+        for groups in [[None, Some(200), Some(300)], [Some(200), None, Some(300)], [Some(200), Some(300), Some(200)]] {
+            let mut q = seq_with(vec![item(10, 0, 30, 0), item(11, 30, 30, 30), item(12, 60, 30, 60)]);
+            for (clip, link) in q.video_tracks[0].items.iter_mut().zip(groups) {
+                clip.link = link;
+            }
+            q.audio_tracks[0].items = vec![item(20, 100, 10, 0), item(21, 120, 10, 0)];
+            q.audio_tracks[0].items[0].link = Some(200);
+            q.audio_tracks[0].items[1].link = Some(300);
+            let mut expected_audio = q.audio_tracks[0].items.clone();
+            expected_audio[1].link = Some(200);
+            assert_eq!(join_through_edits(&mut q, &[]), 2);
+            assert_eq!(q.video_tracks[0].items[0].link, Some(200));
+            assert_eq!(q.audio_tracks[0].items, expected_audio);
+        }
     }
 
     #[test]

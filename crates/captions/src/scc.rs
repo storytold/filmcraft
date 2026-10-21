@@ -418,14 +418,32 @@ pub fn schedule(doc: &Document) -> BTreeMap<i64, (u8, u8)> {
         }
         let load = load_pairs(&c.text);
         let n = load.len() as i64;
-        // Doubled codes must stay adjacent, so the load is one contiguous run of free frames:
-        // the latest run ending by `s`, else the first run after `cursor` (delaying the caption).
-        let run_free = |occ: &BTreeMap<i64, (u8, u8)>, b: i64| (b..b + n).all(|f| !occ.contains_key(&f));
-        let b = (cursor..=s - n).rev().find(|&b| run_free(&occ, b)).unwrap_or_else(|| (cursor..).find(|&b| run_free(&occ, b)).unwrap_or(cursor));
-        for (k, p) in load.into_iter().enumerate() {
-            occ.insert(b + k as i64, p);
+        // Erasing displayed memory can interrupt loading non-displayed memory. Keep each
+        // doubled control/character code adjacent, but allow pauses between those groups.
+        let plan_load = |mut f: i64| {
+            let mut plan = Vec::with_capacity(load.len());
+            let mut k = 0;
+            while let Some(&p) = load.get(k) {
+                let doubled = (0x10..=0x1f).contains(&p.0) && load.get(k + 1) == Some(&p);
+                let width = if doubled { 2 } else { 1 };
+                while (f..f + width).any(|at| occ.contains_key(&at)) {
+                    f += 1;
+                }
+                for offset in 0..width {
+                    plan.push((f + offset, p));
+                }
+                f += width;
+                k += width as usize;
+            }
+            (plan, f)
+        };
+        // Prefer the latest load that finishes by the requested start; if it cannot fit,
+        // use the earliest available frames rather than waiting until the prior cue ends.
+        let (plan, end) = (cursor..=s - n).rev().map(plan_load).find(|(_, end)| *end <= s).unwrap_or_else(|| plan_load(cursor));
+        for (f, p) in plan {
+            occ.insert(f, p);
         }
-        let mut d = s.max(b + n);
+        let mut d = s.max(end);
         while occ.contains_key(&d) {
             d += 1;
         }

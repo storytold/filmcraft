@@ -364,12 +364,18 @@ fn join_through_edit_at(s: &mut Session, cut: &Value) -> Result<Value> {
         return Err(EngineError::Other("sequence.joinThroughEdits: `cut` needs two clip ids, [left, right]".into()));
     };
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
-    if !edit::through::through_edits(q).iter().any(|e| e.left == left && e.right == right) {
+    let edits = edit::through::through_edits(q);
+    let Some(at) = edits.iter().find(|edit| edit.left == left && edit.right == right).map(|edit| edit.time) else {
         return Err(EngineError::Other("that cut is not a through edit".into()));
+    };
+    if q.find_item(left).and_then(|(track, _)| q.track(track)).is_some_and(|track| track.locked) {
+        return Err(edit::EditError::Locked.into());
     }
     let (lefts, rights) = (with_links(s, &[left]), with_links(s, &[right]));
+    let pairs: Vec<_> =
+        edits.iter().filter(|edit| edit.time == at && lefts.contains(&edit.left) && rights.contains(&edit.right)).map(|edit| (edit.left, edit.right)).collect();
     let n = s.edit_sequence("Join Through Edits", |q, _, st| {
-        let n = edit::through::join_through_edits_where(q, |a, b| lefts.contains(&a) && rights.contains(&b));
+        let n = edit::through::join_through_edits_where(q, |a, b| pairs.contains(&(a, b)));
         st.selection.retain(|c| q.find_item(*c).is_some());
         Ok(n)
     })?;

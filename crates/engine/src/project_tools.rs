@@ -1325,11 +1325,10 @@ fn automate_to_sequence(s: &mut Session, p: &Value) -> Result<Value> {
         let len = end - first;
         let dests: Vec<_> = [vdest, adest].into_iter().flatten().collect();
         s.edit_sequence("Automate to Sequence", |q, ctx, _| {
-            let mut links = std::collections::HashMap::new();
-            for t in q.video_tracks.iter_mut().chain(q.audio_tracks.iter_mut()) {
-                if !t.locked && (t.sync_lock || dests.contains(&t.id)) {
-                    filmcraft_edit::insert_track_gap(t, first, len, ctx, &mut links);
-                }
+            let affected: Vec<_> = q.all_tracks().filter(|t| t.sync_lock || dests.contains(&t.id)).map(|t| t.id).collect();
+            filmcraft_edit::razor(q, &affected, first, ctx);
+            for t in q.all_tracks_mut().filter(|t| !t.locked && affected.contains(&t.id)) {
+                filmcraft_edit::shift_track_from(t, first, len);
             }
             Ok(())
         })?;

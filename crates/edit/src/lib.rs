@@ -24,7 +24,7 @@ pub mod through;
 pub mod transcript;
 pub mod transitions;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use filmcraft_project::{ClipId, ItemId, Sequence, Track, TrackId, TrackItem, Transition, TransitionId};
 use filmcraft_time::{Tick, TimeRange};
@@ -265,6 +265,14 @@ pub fn overwrite(seq: &mut Sequence, placements: Vec<(TrackId, TrackItem)>, ctx:
             return Err(EditError::Locked);
         }
     }
+    let mut boundaries: BTreeMap<Tick, Vec<TrackId>> = BTreeMap::new();
+    for (track, item) in &placements {
+        boundaries.entry(item.start).or_default().push(*track);
+        boundaries.entry(item.end()).or_default().push(*track);
+    }
+    for (time, tracks) in boundaries {
+        split_matching_at(seq, time, ctx, |track, _| tracks.contains(&track));
+    }
     for (tid, item) in placements {
         let t = track_mut(seq, tid)?;
         clear_track_range(t, item.range(), ctx, &mut links);
@@ -287,11 +295,10 @@ pub fn insert(seq: &mut Sequence, placements: Vec<(TrackId, TrackItem)>, ctx: &m
     let at = placements.iter().map(|p| p.1.start).min().unwrap_or_default();
     let dur = placements.iter().map(|p| p.1.end()).max().unwrap_or_default() - at;
     let targets: Vec<TrackId> = placements.iter().map(|p| p.0).collect();
-    let mut links = HashMap::new();
-    for t in seq.all_tracks_mut() {
-        if !t.locked && (targets.contains(&t.id) || t.sync_lock) {
-            insert_track_gap(t, at, dur, ctx, &mut links);
-        }
+    let affected: Vec<_> = seq.all_tracks().filter(|track| targets.contains(&track.id) || track.sync_lock).map(|track| track.id).collect();
+    split_matching_at(seq, at, ctx, |track, _| affected.contains(&track));
+    for track in seq.all_tracks_mut().filter(|track| !track.locked && affected.contains(&track.id)) {
+        shift_track_from(track, at, dur);
     }
     for ct in seq.caption_tracks.iter_mut().filter(|c| !c.locked && c.sync_lock) {
         captions::insert_gap(ct, at, dur, ctx);
@@ -305,42 +312,54 @@ pub fn insert(seq: &mut Sequence, placements: Vec<(TrackId, TrackItem)>, ctx: &m
     Ok(ids)
 }
 
-/// Add Edit (razor) at `t` on the given tracks (all unlocked tracks when empty). Returns new ids.
-pub fn razor(seq: &mut Sequence, tracks: &[TrackId], t: Tick, ctx: &mut EditCtx) -> Vec<ClipId> {
-    let mut links = HashMap::new();
-    let mut out = Vec::new();
-    for tr in seq.all_tracks_mut() {
-        if tr.locked || (!tracks.is_empty() && !tracks.contains(&tr.id)) {
-            continue;
-        }
-        if let Some(id) = split_track_at(tr, t, ctx, &mut links) {
-            out.push(id);
+/// Existing right fragments follow their split group without changing content, including on untargeted or locked tracks.
+pub(crate) fn relink_split_partners(seq: &mut Sequence, t: Tick, links: &HashMap<u64, u64>) {
+    if links.is_empty() {
+        return;
+    }
+    for track in seq.all_tracks_mut() {
+        for item in &mut track.items {
+            if item.start >= t
+                && let Some(&right_link) = item.link.and_then(|link| links.get(&link))
+            {
+                item.link = Some(right_link);
+            }
         }
     }
-    out
 }
 
-/// Razor only the given items (and their linked partners if listed) at `t`.
-pub fn razor_items(seq: &mut Sequence, items: &[ClipId], t: Tick, ctx: &mut EditCtx) -> Vec<ClipId> {
-    let tracks: Vec<TrackId> = items.iter().filter_map(|c| seq.find_item(*c).map(|(tid, _)| tid)).collect();
+fn split_matching_at(seq: &mut Sequence, time: Tick, ctx: &mut EditCtx, wanted: impl Fn(TrackId, &TrackItem) -> bool) -> Vec<ClipId> {
     let mut links = HashMap::new();
     let mut out = Vec::new();
-    for tr in seq.all_tracks_mut() {
-        if tr.locked || !tracks.contains(&tr.id) {
-            continue;
-        }
-        // only split if the item at t is one of ours
-        if tr.item_at(t).is_some_and(|i| items.contains(&i.id))
-            && let Some(id) = split_track_at(tr, t, ctx, &mut links)
+    for track in seq.all_tracks_mut().filter(|track| !track.locked) {
+        if track.items.iter().find(|item| item.start < time && time < item.end()).is_some_and(|item| wanted(track.id, item))
+            && let Some(id) = split_track_at(track, time, ctx, &mut links)
         {
             out.push(id);
         }
     }
+    relink_split_partners(seq, time, &links);
     out
+}
+
+/// Add Edit (razor) at `t` on the given tracks (all unlocked tracks when empty). Returns new ids.
+pub fn razor(seq: &mut Sequence, tracks: &[TrackId], t: Tick, ctx: &mut EditCtx) -> Vec<ClipId> {
+    split_matching_at(seq, t, ctx, |track, _| tracks.is_empty() || tracks.contains(&track))
+}
+
+/// Razor only the given items (and their linked partners if listed) at `t`.
+pub fn razor_items(seq: &mut Sequence, items: &[ClipId], t: Tick, ctx: &mut EditCtx) -> Vec<ClipId> {
+    split_matching_at(seq, t, ctx, |_, item| items.contains(&item.id))
 }
 
 /// Lift: remove `range` on tracks, leaving a gap.
 pub fn lift(seq: &mut Sequence, tracks: &[TrackId], range: TimeRange, ctx: &mut EditCtx) -> Vec<ClipId> {
+    if range.is_empty() {
+        return Vec::new();
+    }
+    for time in [range.start, range.end()] {
+        split_matching_at(seq, time, ctx, |track, _| tracks.contains(&track));
+    }
     let mut links = HashMap::new();
     let mut removed = Vec::new();
     for tr in seq.all_tracks_mut() {
@@ -353,6 +372,13 @@ pub fn lift(seq: &mut Sequence, tracks: &[TrackId], range: TimeRange, ctx: &mut 
 
 /// Extract: remove `range` on targeted and sync-locked tracks and close the gap.
 pub fn extract(seq: &mut Sequence, tracks: &[TrackId], range: TimeRange, ctx: &mut EditCtx) -> Vec<ClipId> {
+    if range.is_empty() {
+        return Vec::new();
+    }
+    let affected: Vec<_> = seq.all_tracks().filter(|track| tracks.contains(&track.id) || track.sync_lock).map(|track| track.id).collect();
+    for time in [range.start, range.end()] {
+        split_matching_at(seq, time, ctx, |track, _| affected.contains(&track));
+    }
     let mut links = HashMap::new();
     let mut removed = Vec::new();
     for tr in seq.all_tracks_mut() {
