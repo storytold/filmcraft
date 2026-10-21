@@ -9,7 +9,7 @@ use crate::intra::{IntraParams, is_directional_mode, predict_intra, round2_signe
 use crate::spec_tables::*;
 use crate::state::{FrameShared, TileState};
 use crate::symbol::SymbolDecoder;
-use crate::transform::inverse_transform_2d;
+use crate::transform::{inverse_transform_2d, inverse_transform_dc};
 
 /// Per-block state (the block-level variables of the syntax).
 #[derive(Clone, Default)]
@@ -1387,7 +1387,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         if !self.b.skip {
             let eob = self.coeffs(plane, start_x, start_y, tx_sz);
             if eob > 0 {
-                self.reconstruct(plane, start_x, start_y, tx_sz);
+                self.reconstruct(plane, start_x, start_y, tx_sz, eob == 1);
             }
         }
         for i in 0..step_y {
@@ -1902,7 +1902,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
     }
 
     /// Reconstruct process (7.12.3).
-    fn reconstruct(&mut self, plane: usize, x: usize, y: usize, tx_sz: usize) {
+    fn reconstruct(&mut self, plane: usize, x: usize, y: usize, tx_sz: usize, dc_only: bool) {
         let dq_denom: i64 = match tx_sz {
             TX_32X32 | TX_16X32 | TX_32X16 | TX_16X64 | TX_64X16 => 2,
             TX_64X64 | TX_32X64 | TX_64X32 => 4,
@@ -1955,7 +1955,9 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
             }
         }
         let lossless = self.b.lossless;
-        inverse_transform_2d(&self.dequant, &mut self.residual, tx_sz, t, lossless, bd);
+        if !(dc_only && t == DCT_DCT && !lossless && inverse_transform_dc(self.dequant[0], &mut self.residual, tx_sz, bd)) {
+            inverse_transform_2d(&self.dequant, &mut self.residual, tx_sz, t, lossless, bd);
+        }
         let pl = &mut self.t.cur.planes[plane];
         let max = (1i32 << bd) - 1;
         for i in 0..h {

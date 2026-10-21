@@ -20,14 +20,14 @@ pub(crate) fn bands(pool: &crate::par::Pool, rows: usize) -> Vec<(usize, usize)>
 /// The post-filters run on the frame worker, each in row bands on `pool` (the result does not
 /// depend on how the bands are scheduled). `draft`: only super-resolution (which sets the
 /// output size) runs.
-pub(crate) fn apply(fs: &mut FrameState, stats: &mut DecodeStats, pool: &crate::par::Pool, draft: bool) {
+pub(crate) fn apply(fs: &mut FrameState, stats: &mut DecodeStats, pool: &crate::par::Pool, draft: bool) -> crate::Result<()> {
     let mut t = Timer::start();
     let lvl = fs.fh.lf.level;
     if (lvl[0] != 0 || lvl[1] != 0) && !draft {
         loop_filter(fs, pool);
     }
     stats.add(Stage::LoopFilter, t.lap());
-    let cdef = if draft { None } else { crate::cdef::apply(fs, pool) };
+    let cdef = if draft { None } else { crate::cdef::apply(fs, pool)? };
     stats.add(Stage::Cdef, t.lap());
     let (up_cur, up_cdef) = if fs.fh.use_superres {
         let c = crate::restoration::upscale(fs, &fs.cur);
@@ -38,11 +38,12 @@ pub(crate) fn apply(fs: &mut FrameState, stats: &mut DecodeStats, pool: &crate::
     };
     stats.add(Stage::Superres, t.lap());
     fs.cur = if fs.fh.lr.uses_lr && !draft {
-        crate::restoration::loop_restoration(fs, &up_cur, up_cdef.as_ref().unwrap_or(&up_cur), pool)
+        crate::restoration::loop_restoration(fs, &up_cur, up_cdef.as_ref().unwrap_or(&up_cur), pool)?
     } else {
         up_cdef.unwrap_or(up_cur)
     };
     stats.add(Stage::Restoration, t.lap());
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -515,6 +515,37 @@ fn col_kind(tx_type: usize) -> Kind1d {
     }
 }
 
+/// DCT_DCT with one coefficient: transform its only non-zero row once, then its
+/// identical columns once. Reuse the full 1D stages to preserve every rounding/clamp.
+pub(crate) fn inverse_transform_dc(dc: i32, residual: &mut [i32], tx_sz: usize, bit_depth: u32) -> bool {
+    if !matches!(bit_depth, 8 | 10 | 12) || dc.unsigned_abs() > (1u32 << (bit_depth + 7)) {
+        return false;
+    }
+    let (Some(&log2w), Some(&log2h), Some(&shift)) = (TX_WIDTH_LOG2.get(tx_sz), TX_HEIGHT_LOG2.get(tx_sz), TRANSFORM_ROW_SHIFT.get(tx_sz)) else {
+        return false;
+    };
+    let (w, h) = (1usize << log2w, 1usize << log2h);
+    if w > 64 || h > 64 || residual.len() < w * h {
+        return false;
+    }
+    let mut row = [0i32; 64];
+    row[0] = if log2w.abs_diff(log2h) == 1 { round2_64(i64::from(dc) * 2896, 12) } else { dc };
+    inverse_dct(&mut row, u32::from(log2w), bit_depth + 8);
+    let col_clamp = (bit_depth + 6).max(16);
+    let (lo, hi) = (-(1i32 << (col_clamp - 1)), (1i32 << (col_clamp - 1)) - 1);
+    let value = round2(row[0], u32::from(shift)).clamp(lo, hi);
+    if row[..w].iter().any(|&v| round2(v, u32::from(shift)).clamp(lo, hi) != value) {
+        return false;
+    }
+    let mut column = [0i32; 64];
+    column[0] = value;
+    inverse_dct(&mut column, u32::from(log2h), col_clamp);
+    for (out, &v) in residual[..w * h].chunks_exact_mut(w).zip(&column[..h]) {
+        out.fill(round2(v, 4));
+    }
+    true
+}
+
 /// 2D inverse transform (7.13.3). `dequant` is 64x64 (row stride 64, only the top-left 32x32
 /// may be non-zero); the residual is written to `residual` with row stride `w`.
 pub(crate) fn inverse_transform_2d(dequant: &[i32], residual: &mut [i32], tx_sz: usize, tx_type: usize, lossless: bool, bit_depth: u32) {
@@ -665,6 +696,35 @@ fn transform_lanes<const L: usize>(dequant: &[i32], residual: &mut [i32], p: &Tx
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dc_fast_path_matches_full_transform_for_every_size_and_depth() {
+        for tx in 0..TX_WIDTH_LOG2.len() {
+            let samples = (1usize << TX_WIDTH_LOG2[tx]) * (1usize << TX_HEIGHT_LOG2[tx]);
+            for bd in [8, 10, 12] {
+                let limit = 1i32 << (bd + 7);
+                for dc in [-limit, -limit + 1, -4096, -31, -1, 0, 1, 31, 4096, limit - 1] {
+                    let mut dequant = [0; 4096];
+                    dequant[0] = dc;
+                    let mut full = [0; 4096];
+                    let mut fast = [0; 4096];
+                    inverse_transform_2d(&dequant, &mut full, tx, DCT_DCT, false, bd);
+                    assert!(inverse_transform_dc(dc, &mut fast, tx, bd));
+                    assert_eq!(full[..samples], fast[..samples], "tx={tx}, bd={bd}, dc={dc}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dc_fast_path_declines_hostile_parameters_without_modifying_output() {
+        for (dc, tx, bd) in [(0, usize::MAX, 8), (i32::MIN, TX_4X4, 8), (1, TX_4X4, 0), (1, TX_4X4, u32::MAX)] {
+            let mut residual = [7; 16];
+            assert!(!inverse_transform_dc(dc, &mut residual, tx, bd));
+            assert_eq!(residual, [7; 16]);
+        }
+        assert!(!inverse_transform_dc(1, &mut [], TX_4X4, 8));
+    }
 
     /// The DCT step list must implement an orthogonal transform: a DC-only input gives a flat
     /// output equal to DC * cos(pi/4) (in the 2^12 fixed-point scale).
