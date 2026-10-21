@@ -136,6 +136,38 @@ pub struct EncSpec {
     pub cbr: bool,
 }
 
+/// The cleanup contract is independent of COM so ownership transfers can be tested.
+trait ShutdownTarget {
+    fn shutdown(&mut self);
+}
+
+/// Owns the activating caller's shutdown responsibility, including early returns.
+struct ActivationOwner<T: ShutdownTarget> {
+    target: T,
+}
+
+impl<T: ShutdownTarget> ActivationOwner<T> {
+    fn new(target: T) -> Self {
+        Self { target }
+    }
+}
+
+impl<T: ShutdownTarget> Drop for ActivationOwner<T> {
+    fn drop(&mut self) {
+        self.target.shutdown();
+    }
+}
+
+impl ShutdownTarget for IMFActivate {
+    fn shutdown(&mut self) {
+        // SAFETY: this owner retains a live activation reference. ShutdownObject releases
+        // the object created by this activation; callers make no subsequent transform calls.
+        if let Err(error) = unsafe { self.ShutdownObject() } {
+            log::warn!("Media Foundation encoder shutdown failed: {error}");
+        }
+    }
+}
+
 /// A hardware encoder MFT, configured for one stream.
 ///
 /// Vendors' encoders are usually **asynchronous** MFTs (Qualcomm's, Intel's and AMD's are), and
@@ -146,6 +178,8 @@ pub struct EncSpec {
 /// The earlier empty filtered search was caused by reversed `MFTEnumEx` input/output arguments,
 /// corrected in `MfApi::enumerate`; it did not establish missing vendor media-type registrations.
 pub struct MfEncoder {
+    // Fields drop in declaration order: shut down while the transform reference is live.
+    _activation: ActivationOwner<IMFActivate>,
     transform: IMFTransform,
     /// The MFT hands out its finished samples itself, so the output descriptor carries none.
     provides: bool,
@@ -179,7 +213,9 @@ impl MfEncoder {
 
     fn configure(api: &MfApi, gpu: &Gpu, activate: &IMFActivate, spec: &EncSpec) -> Result<MfEncoder, String> {
         let name = friendly_name(activate).unwrap_or_else(|| "an encoder MFT".into());
-        // SAFETY: plain COM calls on live interfaces.
+        let activation = ActivationOwner::new(activate.clone());
+        // SAFETY: plain COM calls on live interfaces. The owner shuts down even if
+        // creation or any subsequent configuration step fails.
         let transform: IMFTransform = unsafe { activate.ActivateObject() }.map_err(|e| format!("{name}: cannot be created: {e}"))?;
         // SAFETY: as above; the attributes store belongs to this transform.
         let attributes = unsafe { transform.GetAttributes() }.map_err(|e| format!("{name}: no attributes: {e}"))?;
@@ -249,7 +285,7 @@ impl MfEncoder {
         if !provides && !can_provide {
             return Err(format!("{name}: will not provide output samples"));
         }
-        Ok(MfEncoder { transform, provides, buffer_size: if provides { 0 } else { info.cbSize.max(1) }, name })
+        Ok(MfEncoder { _activation: activation, transform, provides, buffer_size: if provides { 0 } else { info.cbSize.max(1) }, name })
     }
 
     /// The MFT's name, for logs.
@@ -373,11 +409,6 @@ fn sample_bytes(sample: &IMFSample) -> Result<Vec<u8>, String> {
         buffer.Unlock().map_err(|e| format!("cannot unlock the encoded sample: {e}"))?;
         Ok(bytes)
     }
-}
-
-/// An activation object's friendly name, for diagnostics (`examples/mfencprobe.rs`).
-pub fn activate_name(a: &IMFActivate) -> String {
-    friendly_name(a).unwrap_or_else(|| "?".into())
 }
 
 /// The exported function `name` of `module` as a function pointer of type `F`.
@@ -823,7 +854,9 @@ pub fn describe_encoders(api: &MfApi, output: GUID, input: GUID, hardware_only: 
     list.iter()
         .map(|a| {
             let name = friendly_name(a).unwrap_or_else(|| "?".into());
-            // SAFETY: plain COM calls on live interfaces.
+            let _activation = ActivationOwner::new(a.clone());
+            // SAFETY: plain COM calls on live interfaces. The scope's owner shuts
+            // down the activated encoder after reading its attributes, including errors.
             let d3d11 = unsafe {
                 a.ActivateObject::<IMFTransform>()
                     .ok()
@@ -926,5 +959,44 @@ mod tests {
             w.produced();
             assert!(!w.nothing_yet(STEP, IDLE), "a picture arrived, so the wait continues");
         }
+    }
+
+    struct FakeActivation(std::rc::Rc<std::cell::Cell<usize>>);
+
+    impl ShutdownTarget for FakeActivation {
+        fn shutdown(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    #[test]
+    fn lifecycle_regression_failed_configuration_shuts_down_once() {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let configure = || -> Result<(), &'static str> {
+            let _owner = ActivationOwner::new(FakeActivation(calls.clone()));
+            Err("configuration failed")
+        };
+        assert!(configure().is_err());
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn lifecycle_regression_success_transfers_shutdown_to_encoder_lifetime() {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let owner = ActivationOwner::new(FakeActivation(calls.clone()));
+        let encoder_owner = owner;
+        assert_eq!(calls.get(), 0, "configuration must not shut down a live encoder");
+        drop(encoder_owner);
+        assert_eq!(calls.get(), 1, "a moved owner shuts down exactly once");
+    }
+
+    #[test]
+    fn lifecycle_regression_diagnostic_scope_always_shuts_down() {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        {
+            let _owner = ActivationOwner::new(FakeActivation(calls.clone()));
+            assert_eq!(calls.get(), 0);
+        }
+        assert_eq!(calls.get(), 1);
     }
 }

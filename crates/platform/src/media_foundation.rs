@@ -44,8 +44,6 @@ use self::mft::{MfApi, Mft, Poll};
 
 use self::stream::Stream;
 use crate::biplanar::{self, Geometry};
-/// An encoder / decoder MFT activation object, as `MFTEnumEx` hands them over.
-pub use windows::Win32::Media::MediaFoundation::IMFActivate;
 
 /// Pictures the decoder may hold back (a DPB is at most 16 frames; more means it lost track).
 const MAX_IN_FLIGHT: usize = 64;
@@ -65,21 +63,6 @@ pub fn stream_info(entry: &filmcraft_isobmff::SampleEntry) -> Option<StreamInfo>
 /// Whether Media Foundation and a Direct3D 11 video device exist on this system.
 pub fn available() -> bool {
     mft::api().and_then(Gpu::shared).is_ok()
-}
-
-/// The Media Foundation entry points, loaded and started (diagnostics: `examples/mfencprobe.rs`).
-pub fn mft_api() -> std::result::Result<&'static mft::MfApi, String> {
-    mft::api()
-}
-
-/// The process-wide Direct3D 11 video device every decoder MFT is given (diagnostics).
-pub fn shared_gpu(api: &mft::MfApi) -> std::result::Result<Arc<Gpu>, String> {
-    Gpu::shared(api)
-}
-
-/// An encoder MFT's friendly name (diagnostics).
-pub fn activate_name(a: &IMFActivate) -> String {
-    mft::activate_name(a)
 }
 
 /// Open the machine's hardware encoder MFT for `spec`, on the shared Direct3D device. Errors say
