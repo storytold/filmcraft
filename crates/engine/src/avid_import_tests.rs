@@ -76,6 +76,22 @@ fn params(mode: &str) -> Value {
 }
 
 #[test]
+fn catalog_report_refuses_unrelated_network_media_before_binding() {
+    let (mut report, media) = fixture();
+    report["bins"][0]["catalog"]["clips"][0]["tracks"][0]["references"][0]["locations"][0]["folder"] = json!(r"\\192.0.2.1\unrelated");
+    report["bins"][0]["mobs"][0] = report["bins"][0]["catalog"]["clips"][0].clone();
+    let (mut session, _) = session(&report, media);
+    for mode in ["metadata", "media", "sequences"] {
+        for command in ["file.previewAvidCatalog", "file.importAvidCatalog"] {
+            let error = session.execute(command, params(mode)).unwrap_err().to_string();
+            assert!(error.contains("report media location is not allowed"), "{error}");
+            assert!(session.project.items.is_empty());
+            assert!(session.history.undo.is_empty());
+        }
+    }
+}
+
+#[test]
 fn an_imported_subclip_is_not_offered_to_media_binding() {
     // A subclip has no media of its own: it binds through the master it restricts. Offering one
     // to binding fails the item, and in strict mode would fail the whole import.

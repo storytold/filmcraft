@@ -12,6 +12,43 @@ fn failure(e: impl std::fmt::Display) -> EngineError {
     EngineError::Other(format!("Avid catalog import: {e}"))
 }
 
+/// A catalog report is a document, not an authorization to follow its media locations.
+/// Check every supplied location before binding can inspect or open any component.
+fn check_report_locations(doc: &adapter::Document, report_path: &str) -> Result<()> {
+    let document = std::path::Path::new(report_path);
+    let mut pending: Vec<&Value> = doc.bins().iter().collect();
+    let mut visited = 0usize;
+    while let Some(value) = pending.pop() {
+        visited = visited.checked_add(1).ok_or_else(|| failure("report structure exceeds limit"))?;
+        if visited > 4_000_000 {
+            return Err(failure("report structure exceeds limit"));
+        }
+        match value {
+            Value::Object(object) => {
+                if let Some(locations) = object.get("locations") {
+                    let locations = locations.as_array().ok_or_else(|| failure("invalid report media locations"))?;
+                    for location in locations {
+                        let folder = location.get("folder").and_then(Value::as_str).ok_or_else(|| failure("invalid report media folder"))?;
+                        let filename = location
+                            .get("filename")
+                            .and_then(Value::as_str)
+                            .filter(|name| !name.is_empty() && name.len() <= 4096 && !name.contains(['/', '\\', '\0', ':']))
+                            .ok_or_else(|| failure("invalid report media filename"))?;
+                        crate::doc_path::resolve(folder, Some(document)).map_err(|_| failure("report media location is not allowed"))?;
+                        let candidate = std::path::Path::new(folder).join(filename);
+                        let candidate = candidate.to_str().ok_or_else(|| failure("invalid report media path"))?;
+                        crate::doc_path::resolve(candidate, Some(document)).map_err(|_| failure("report media location is not allowed"))?;
+                    }
+                }
+                pending.extend(object.values());
+            }
+            Value::Array(values) => pending.extend(values),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub(crate) struct Prepared {
     pub(crate) project: Project,
@@ -39,7 +76,11 @@ fn prepare(s: &Session, p: &Value) -> Result<Prepared> {
         Some(v) => Some(BinId(v.as_u64().ok_or_else(|| failure("parent must be a bin ID"))?)),
     };
     let bytes = read_report(s, p)?;
-    prepare_document(&s.project, &*s.services, &bytes, ImportOptions { mode, allow_missing, best_effort: false }, parent, &|| Ok(()))
+    let doc = adapter::read_document(&bytes).map_err(failure)?;
+    // Metadata-only import retains these locations for later binding too.
+    let path = p.get("path").and_then(Value::as_str).ok_or_else(|| failure("missing catalog path"))?;
+    check_report_locations(&doc, path)?;
+    prepare_parsed_with_index(&s.project, &*s.services, &doc, ImportOptions { mode, allow_missing, best_effort: false }, parent, &|| Ok(()), None)
 }
 
 #[derive(Clone, Copy)]
@@ -49,6 +90,7 @@ pub(crate) struct ImportOptions {
     pub best_effort: bool,
 }
 /// Shared transaction builder for JSON research reports and the native AVB decoder.
+#[cfg(test)]
 pub(crate) fn prepare_document(
     original: &Project,
     services: &dyn crate::Services,
@@ -59,6 +101,7 @@ pub(crate) fn prepare_document(
 ) -> Result<Prepared> {
     prepare_document_with_index(original, services, bytes, options, parent, checkpoint, None)
 }
+#[cfg(test)]
 pub(crate) fn prepare_document_with_index(
     original: &Project,
     services: &dyn crate::Services,
