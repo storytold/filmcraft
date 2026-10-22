@@ -90,9 +90,15 @@ fn community_links_everywhere() {
     for (id, label, _) in links::ALL {
         assert!(text.contains(id) && text.contains(label), "Help menu lists {id}");
     }
-    // Header: the Discord button is always there.
+    // Header: the Discord button is there while Settings ▸ General ▸ Show Discord Button is on.
     assert_eq!(d.ids("header.discord"), vec!["header.discord".to_string()]);
     d.snapshot("header");
+    d.ok("engine.execute", json!({"command": "prefs.set", "params": {"key": "general.showDiscordButton", "value": false}}));
+    d.frames(2);
+    assert!(d.ids("header.discord").is_empty(), "header.discord hidden by general.showDiscordButton");
+    d.ok("engine.execute", json!({"command": "prefs.set", "params": {"key": "general.showDiscordButton", "value": true}}));
+    d.frames(2);
+    assert_eq!(d.ids("header.discord"), vec!["header.discord".to_string()]);
     // About dialog: Discord first, then website, app page, GitHub, issues.
     d.ok("engine.execute", json!({"command": "app.about", "params": {}}));
     d.frames(3);
