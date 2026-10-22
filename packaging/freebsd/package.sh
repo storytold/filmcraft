@@ -44,8 +44,12 @@ case "${CARGO_BUILD_TARGET:-}" in
   *-unknown-freebsd) ARCH="$(release_arch "${CARGO_BUILD_TARGET%%-*}")" ;;
   *) echo "CARGO_BUILD_TARGET=$CARGO_BUILD_TARGET is not a FreeBSD target" >&2; exit 2 ;;
 esac
-# Only binaries for this machine run here (the --version check at the end).
+# Only binaries for this machine run here (the --version check at the end); a FreeBSD target built
+# on another OS never does.
 HOST_ARCH="$(release_arch "$(uname -m)" 2>/dev/null)" || HOST_ARCH="$(uname -m)"
+if [ -n "${CARGO_BUILD_TARGET:-}" ] && [ "$(uname -s)" != FreeBSD ]; then
+  HOST_ARCH="$(uname -s) $HOST_ARCH"
+fi
 if [ "$DRY_RUN" = 0 ] && [ "$(uname -s)" != FreeBSD ]; then
   echo "error: build on FreeBSD (or pass --dry-run to check the tree layout)" >&2
   exit 2
