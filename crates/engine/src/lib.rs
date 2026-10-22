@@ -450,6 +450,9 @@ pub struct Session {
     /// Schema version of the file at `path` as found on disk (older = upgraded on load; the first
     /// save over it keeps a backup of the original).
     pub loaded_schema: u32,
+    /// The project's thumbnail (Home ▸ Recent Projects): the one read from the file, replaced by
+    /// the Program Monitor frame at each save. Not part of the project: never dirty, never undone.
+    pub thumbnail: Option<filmcraft_format::Thumbnail>,
     /// Render preview files + render-bar segments (shared with the frontend's frame workers).
     pub previews: Arc<previews::PreviewStore>,
     /// Audio Track Mixer automation pass in progress.
@@ -566,6 +569,7 @@ impl Session {
             prefs_path: None,
             persistence: None,
             loaded_schema: filmcraft_format::SCHEMA_VERSION,
+            thumbnail: None,
             previews: Arc::new(previews::PreviewStore::temp()),
             mixrec: Default::default(),
             mcrec: Default::default(),

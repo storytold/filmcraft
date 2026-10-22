@@ -115,3 +115,89 @@ fn open_demo_project_clears_saved_path_so_save_does_not_overwrite() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// Saving stores the Program Monitor frame as the project's thumbnail, outside the edit: the save
+/// leaves the project clean, adds no undo step, and the file opens with it (Home ▸ Recent Projects
+/// reads it with `filmcraft_format::read_thumbnail`).
+#[test]
+fn save_stores_a_thumbnail_of_the_program_monitor_without_dirtying() {
+    let d = temp_dir("thumb");
+    let path = d.join("p.fcproj").to_string_lossy().to_string();
+    let mut s = demo();
+    let seq = s.state.active_sequence.unwrap();
+    s.state.playheads.insert(seq, crate::commands::secs(2.0));
+    let undo = s.history.undo.len();
+    let r = s.execute("file.saveAs", json!({"path": path})).unwrap();
+    let (rev, saved) = (s.revision, s.saved_revision);
+    assert!(!s.is_dirty());
+    assert_eq!(s.history.undo.len(), undo, "the thumbnail is never an undo step");
+    let settings = &s.project.sequence(seq).unwrap().settings;
+    let (sw, sh) = (settings.width, settings.height);
+    let t = s.thumbnail.clone().expect("a thumbnail of the active sequence");
+    assert_eq!(t.width.max(t.height), 320.min(sw.max(sh)));
+    assert_eq!(r["thumbnail"]["width"], t.width);
+    let img = filmcraft_format::read_thumbnail(std::path::Path::new(&path)).unwrap().expect("the file has a thumbnail");
+    assert_eq!((img.width, img.height), (t.width, t.height));
+    assert!(img.rgba.chunks(4).any(|p| p[0] > 16 || p[1] > 16 || p[2] > 16), "the demo frame is not all black");
+    // saving again re-renders it and still leaves the project clean
+    s.execute("file.save", json!({})).unwrap();
+    assert!(!s.is_dirty());
+    assert_eq!((s.revision, s.history.undo.len()), (rev, undo));
+    assert!(s.saved_revision >= saved);
+    // the file opens with it
+    let mut o = Session::default();
+    o.execute("file.open", json!({"path": path})).unwrap();
+    assert_eq!(o.thumbnail.as_ref(), s.thumbnail.as_ref());
+    assert!(!o.is_dirty());
+}
+
+/// No open sequence: the save works and keeps the thumbnail the file was opened with (none for a
+/// new project).
+#[test]
+fn save_without_an_active_sequence_keeps_the_previous_thumbnail() {
+    let d = temp_dir("thumb-noseq");
+    let path = d.join("p.fcproj").to_string_lossy().to_string();
+    let mut s = Session::default();
+    assert!(s.state.active_sequence.is_none());
+    let r = s.execute("file.saveAs", json!({"path": path})).unwrap();
+    assert!(r["thumbnail"].is_null());
+    assert_eq!(filmcraft_format::read_thumbnail(std::path::Path::new(&path)).unwrap(), None);
+    let v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(v.get("thumbnail").is_none());
+
+    let mut s = demo();
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+    let mut o = Session::default();
+    o.execute("file.open", json!({"path": path})).unwrap();
+    let kept = o.thumbnail.clone().unwrap();
+    o.state.active_sequence = None;
+    o.state.open_sequences.clear();
+    o.execute("file.save", json!({})).unwrap();
+    let img = filmcraft_format::read_thumbnail(std::path::Path::new(&path)).unwrap().unwrap();
+    assert_eq!((img.width, img.height), (kept.width, kept.height));
+}
+
+/// A thumbnail that cannot be read never stops the project from opening, and the next save
+/// replaces it.
+#[test]
+fn a_damaged_thumbnail_is_ignored_on_open() {
+    let d = temp_dir("thumb-bad");
+    let path = d.join("p.fcproj").to_string_lossy().to_string();
+    let mut s = demo();
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+    let mut v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    for junk in [
+        json!("garbage"),
+        json!({"format": "jpeg", "width": 1u64 << 40, "height": 1, "data": "AAAA"}),
+        json!({"format": "jpeg", "width": 320, "height": 180, "data": "/9j/AAAA"}),
+    ] {
+        v["thumbnail"] = junk;
+        std::fs::write(&path, serde_json::to_vec(&v).unwrap()).unwrap();
+        let mut o = Session::default();
+        o.execute("file.open", json!({"path": path})).unwrap();
+        assert_eq!(*o.project, *s.project);
+        assert_eq!(filmcraft_format::read_thumbnail(std::path::Path::new(&path)).unwrap(), None);
+        o.execute("file.save", json!({})).unwrap();
+        assert!(filmcraft_format::read_thumbnail(std::path::Path::new(&path)).unwrap().is_some(), "the save writes a fresh one");
+    }
+}

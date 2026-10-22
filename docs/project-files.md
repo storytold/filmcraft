@@ -10,6 +10,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
   "format": "filmcraft.project",
   "schema_version": 13,
   "generator": "FilmCraft 0.1.0",
+  "thumbnail": { "format": "jpeg", "width": 320, "height": 180, "data": "/9j/4AAQSkZJRg…" },
   "project": { "name": "…", "settings": { … }, "root": { … }, "items": { … }, "next_id": 48 },
   "view": { "open_sequences": [21, 50], "active_sequence": 50, "sequences": { "21": { "pps": 40.0, "scroll": 0.0, … } } }
 }
@@ -20,6 +21,8 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 - `project` is the serialized `filmcraft_project::Project` (bins, media clips, sequences, tracks,
   clips, effects, keyframes, markers). Media is referenced by path, never embedded.
 - Files are written compact (no indentation). A 2,000-clip project is about 1.4 MB.
+- Keys are written in the order shown: `format`, `schema_version`, `generator`, `thumbnail`,
+  `project`, `view`.
 - `view` (optional) is what was open when the project was saved: the Timeline's sequence tabs in
   order, the active one, each sequence's zoom, scroll and track heights, and each sequence's
   playhead (`filmcraft_project::ProjectView`). It is beside the project, not in it: it is not part of the
@@ -28,6 +31,23 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
   is on. It is outside the schema version: older builds ignore it, ids that are not sequences and
   numbers out of range are dropped or clamped (a playhead also snaps to a frame of its sequence), and a `view` that cannot be read is ignored (the
   project opens on its first sequence, as it does without one or with no open sequence in it).
+- `thumbnail` (optional) is a small picture of the project for Home ▸ Recent Projects: the Program
+  Monitor frame of the active sequence at its playhead when the project was saved, rendered at
+  320 px on its longest side (proxies when they are on) and stored as base64 JPEG (quality 80,
+  about 5–20 KB) with its `format` (`jpeg`, or `png` on read), `width` and `height`
+  (`filmcraft_format::Thumbnail`). Like `view` it is beside the project, not in it: it is never an
+  undo step, saving it does not mark the project as changed, and it is outside the schema version
+  (older builds ignore it). A save with no open sequence, or whose frame cannot be rendered, keeps
+  the thumbnail the file was opened with; the thumbnail never fails a save. On read nothing in it is
+  trusted: a `thumbnail` that is not an object of this shape, is larger than 1024 px a side or
+  512 KB encoded, is not valid base64 or does not start with its format's signature is ignored,
+  never a load error, and decoding it is bounded by the same size limits. It is written before
+  `project`, so `filmcraft_format::read_thumbnail(path)` reads only the start of the file (at most
+  about 0.75 MB, whatever the project's size), never builds the project, and returns the decoded
+  RGBA picture (`Ok(None)` for files without a readable one; `filmcraft_format::scan_thumbnail`
+  does the same on bytes already in memory). It does blocking file I/O and a JPEG decode, so the
+  Home screen calls it off the UI thread and caches it. Auto-save copies and recovery snapshots
+  carry no thumbnail.
 - A coordinate of an effect's point parameter may be `null`. Point parameters use NaN for "auto"
   (the frame centre, or the source centre for `anchor`), and JSON writes NaN as `null`; it reads back
   as "auto". Placing a clip resolves these points at once. An interchange import resolves them
